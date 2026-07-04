@@ -6,7 +6,7 @@
   "homepage": "https://github.com/shaharyar/papa-audio",
   "main": "main.js",
   "scripts": {
-    "test": "node --test test/*.test.js",
+    "test": "node --test 'test/**/*.test.js'",
     "start": "electron .",
     "build": "electron-builder --linux AppImage deb",
     "build:rpm": "rpmbuild -bb --define '_topdir ./rpm-build' --define '_tmppath /tmp' ./rpm-build/SPECS/papa-audio.spec && cp rpm-build/RPMS/x86_64/*.rpm dist/",

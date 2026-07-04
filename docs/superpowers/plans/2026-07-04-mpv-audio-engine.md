@@ -17,7 +17,7 @@
 - mpv is a **hard requirement**: no `<audio>` fallback; blocking setup screen when missing.
 - ReplayGain via mpv `--replaygain` (`no`/`track`/`album`). Crossfade via two mpv instances; crossfade ⊕ gapless (settings toggle, default gapless).
 - Style: 2-space indent, CommonJS `require`, match existing file conventions. No new npm dependencies.
-- Tests run with `npm test` → `node --test test/`. TDD: write test → see it fail → implement → see it pass → commit.
+- Tests run with `npm test` → `node --test 'test/**/*.test.js'` (bare `node --test test/` is broken on this Node v24 — spurious failure). TDD: write test → see it fail → implement → see it pass → commit.
 - After editing any renderer/main file, run `node --check <file>` before committing.
 - Settings store key `playerSettings`: `{ outputMode:'default'|'exclusive', alsaDevice:string|null, mode:'gapless'|'crossfade', crossfadeSecs:number(4), replaygain:'no'|'track'|'album' }`.
 - `player-event` messages to renderer: `{ type, data }` with types `position|duration|paused|volume|audioParams|trackChanged|autoAdvanced|ended|loadError|engineDown|engineFailed|mpvMissing`.
