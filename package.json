@@ -1,0 +1,71 @@
+{
+  "name": "papa-audio",
+  "version": "1.0.0",
+  "description": "Papa Audio — hi-fi music player",
+  "author": "Shaharyar",
+  "homepage": "https://github.com/shaharyar/papa-audio",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --linux AppImage deb",
+    "build:rpm": "rpmbuild -bb --define '_topdir ./rpm-build' --define '_tmppath /tmp' ./rpm-build/SPECS/papa-audio.spec && cp rpm-build/RPMS/x86_64/*.rpm dist/",
+    "build:win": "electron-builder --win nsis portable"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.10",
+    "chokidar": "^3.6.0",
+    "electron-store": "^8.1.0",
+    "mpris-service": "^2.1.2",
+    "music-metadata": "^7.14.0",
+    "nat-upnp": "^1.1.1",
+    "webtorrent": "^1.9.7"
+  },
+  "devDependencies": {
+    "electron": "^28.3.3",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.papaudio.app",
+    "productName": "Papa Audio",
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**",
+      "assets/**",
+      "node_modules/**",
+      "!node_modules/.cache/**",
+      "!node_modules/electron/**"
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "icon": "assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Papa Audio"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Audio",
+      "icon": "assets/icon.png",
+      "maintainer": "Shaharyar",
+      "executableName": "papa-audio",
+      "desktop": {
+        "Name": "Papa Audio",
+        "Comment": "Hi-fi music player"
+      }
+    },
+    "directories": {
+      "output": "dist"
+    }
+  }
+}
