@@ -35,7 +35,7 @@
 - Consumes: nothing (leaf module).
 - Produces: `class MpvIpcClient extends EventEmitter` with `connect(timeoutMs=5000):Promise`, `command(...args):Promise<data>`, `observe(id, prop):Promise`, `close()`. Emits `'event'` (parsed mpv event objects) and `'disconnected'`. Export: `{ MpvIpcClient, COMMAND_TIMEOUT_MS }`.
 
-- [ ] **Step 1: Add test script to package.json**
+- [x] **Step 1: Add test script to package.json**
 
 In `package.json` `"scripts"`, add:
 
@@ -43,7 +43,7 @@ In `package.json` `"scripts"`, add:
 "test": "node --test test/"
 ```
 
-- [ ] **Step 2: Write the failing tests**
+- [x] **Step 2: Write the failing tests**
 
 Create `test/mpv-ipc.test.js`:
 
@@ -136,12 +136,12 @@ test('connect retries until socket exists, fails after timeout', async () => {
 })
 ```
 
-- [ ] **Step 3: Run tests to verify they fail**
+- [x] **Step 3: Run tests to verify they fail**
 
 Run: `npm test`
 Expected: FAIL — `Cannot find module '../mpv-ipc'`
 
-- [ ] **Step 4: Implement mpv-ipc.js**
+- [x] **Step 4: Implement mpv-ipc.js**
 
 Create `mpv-ipc.js`:
 
@@ -256,12 +256,12 @@ class MpvIpcClient extends EventEmitter {
 module.exports = { MpvIpcClient, COMMAND_TIMEOUT_MS }
 ```
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 Run: `npm test`
 Expected: all 6 tests PASS
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add package.json mpv-ipc.js test/mpv-ipc.test.js
@@ -281,7 +281,7 @@ git commit -m "feat: mpv JSON IPC client with request matching and timeouts"
 - Consumes: `MpvIpcClient` from `mpv-ipc.js`.
 - Produces: `class MpvEngine extends EventEmitter`. Constructor `new MpvEngine({ binary?, config?, spawnFn?, socketPath? })` (last two are test injection). Methods: `start():Promise`, `stop()`, `load(path, {play=true}):Promise`, `setNext(path|null):Promise`, `play():Promise`, `pause():Promise`, `seek(seconds):Promise`, `setVolume(0-100):Promise`, `setSpeed(x):Promise`, `setReplaygain('no'|'track'|'album'):Promise`, `listAudioDevices():Promise<[{name,description}]>`, `restart(newConfig):Promise`, `getState():{path,position,duration,paused,volume,audioParams}`. Events: `ready`, `position(sec)`, `duration(sec)`, `paused(bool)`, `volume(0-100)`, `audioParams({samplerate,format,channels})`, `trackChanged(path)`, `autoAdvanced(path)`, `ended`, `loadError(path)`, `engineDown`, `engineFailed`. Export: `{ MpvEngine }`.
 
-- [ ] **Step 1: Write failing unit tests (mock spawn + mock server)**
+- [x] **Step 1: Write failing unit tests (mock spawn + mock server)**
 
 Create `test/mpv-engine.test.js`:
 
@@ -443,12 +443,12 @@ test('default config uses no device pinning and gapless weak', () => {
 })
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `npm test`
 Expected: FAIL — `Cannot find module '../mpv-engine'`
 
-- [ ] **Step 3: Implement mpv-engine.js**
+- [x] **Step 3: Implement mpv-engine.js**
 
 Create `mpv-engine.js`:
 
@@ -670,12 +670,12 @@ class MpvEngine extends EventEmitter {
 module.exports = { MpvEngine }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `npm test`
 Expected: all Task 1 + Task 2 tests PASS
 
-- [ ] **Step 5: Write integration test against real mpv (auto-skips when absent)**
+- [x] **Step 5: Write integration test against real mpv (auto-skips when absent)**
 
 Create `test/mpv-engine.integration.test.js`:
 
@@ -745,12 +745,12 @@ test('real mpv: survives kill -9 via respawn', { skip: !hasMpv || !hasFfmpeg }, 
 })
 ```
 
-- [ ] **Step 6: Run tests (integration skips until mpv installed — that's expected)**
+- [x] **Step 6: Run tests (integration skips until mpv installed — that's expected)**
 
 Run: `npm test`
 Expected: unit tests PASS; integration tests report `# SKIP` if mpv/ffmpeg missing. Once `sudo dnf install -y mpv` has been run, re-run and expect PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add mpv-engine.js test/mpv-engine.test.js test/mpv-engine.integration.test.js
