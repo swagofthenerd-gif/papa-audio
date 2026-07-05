@@ -1655,7 +1655,7 @@ git commit -m "feat: blocking setup screen when mpv is missing or unrecoverable"
 
 Record any failure as a bug, fix using superpowers:systematic-debugging before proceeding.
 
-- [ ] **Step 2: Update CLAUDE.md**
+- [x] **Step 2: Update CLAUDE.md**
 
 In `CLAUDE.md` Stack section add:
 
@@ -1665,7 +1665,7 @@ In `CLAUDE.md` Stack section add:
 
 And under behavior rules: `8. Never reintroduce Web Audio / AudioContext processing — playback must stay in mpv.`
 
-- [ ] **Step 3: Final commit**
+- [x] **Step 3: Final commit**
 
 ```bash
 git add -A
