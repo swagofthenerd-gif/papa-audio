@@ -3612,6 +3612,36 @@ async function _executeTool(name, input) {
       return `Saved queue "${name}" with ${state.queue.length} tracks.`
     }
 
+    case 'youtube_search': {
+      const scope = input.scope === 'all' ? 'all' : 'music'
+      const call = scope === 'all' ? window.api.ytSearch : window.api.ytMusicSearch
+      const res = await call({ query: input.query })
+      if (!res.ok) return `YouTube search failed: ${res.error}`
+      if (!res.results.length) return `Nothing found on YouTube for "${input.query}"`
+      return 'Top YouTube results:\n' + res.results.slice(0, 5).map((r, i) =>
+        `${i + 1}. ${r.title} — ${r.artist} (${r.duration ? fmtDur(r.duration) : '?'}) [videoId: ${r.videoId}]`).join('\n')
+    }
+
+    case 'youtube_play': {
+      const res = await window.api.ytMusicSearch({ query: input.query })
+      if (!res.ok) return `YouTube search failed: ${res.error}`
+      const r = res.results[0]
+      if (!r) return `Nothing found on YouTube for "${input.query}"`
+      state.queue = [_ytQueueItem(r)]
+      state.queueIndex = 0
+      playCurrentTrack()
+      return `Streaming "${r.title}" by ${r.artist} from YouTube`
+    }
+
+    case 'youtube_download': {
+      const res = await window.api.ytMusicSearch({ query: input.query })
+      if (!res.ok) return `YouTube search failed: ${res.error}`
+      const r = res.results[0]
+      if (!r) return `Nothing found on YouTube for "${input.query}"`
+      await window.api.ytDownload({ videoId: r.videoId, title: r.title, artist: r.artist })
+      return `Downloading "${r.title}" by ${r.artist} from YouTube (check Downloads page)`
+    }
+
     default:
       return `Unknown tool: ${name}`
   }
