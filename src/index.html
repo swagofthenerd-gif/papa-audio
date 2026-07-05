@@ -206,6 +206,35 @@
     <!-- SETTINGS TAB -->
     <div class="mcs-panel mcs-panel-hidden" id="mcs-panel-settings">
       <div class="mcs-mem-scroll">
+        <div class="mcs-set-group" id="playback-settings">
+          <div class="mcs-set-group-label">Playback</div>
+          <label class="mcs-set-row">Output
+            <select class="mcs-set-select" id="pb-output-mode">
+              <option value="default">System (PipeWire)</option>
+              <option value="exclusive">Bit-perfect (exclusive ALSA)</option>
+            </select>
+          </label>
+          <label class="mcs-set-row" id="pb-device-row" style="display:none">Device
+            <select class="mcs-set-select" id="pb-alsa-device"></select>
+          </label>
+          <label class="mcs-set-row">Track transition
+            <select class="mcs-set-select" id="pb-mode">
+              <option value="gapless">Gapless</option>
+              <option value="crossfade">Crossfade</option>
+            </select>
+          </label>
+          <label class="mcs-set-row" id="pb-cf-row" style="display:none">Crossfade duration
+            <input type="range" id="pb-cf-secs" min="1" max="12" step="1" value="4">
+            <span id="pb-cf-label">4s</span>
+          </label>
+          <label class="mcs-set-row">ReplayGain
+            <select class="mcs-set-select" id="pb-replaygain">
+              <option value="no">Off</option>
+              <option value="track">Track</option>
+              <option value="album">Album</option>
+            </select>
+          </label>
+        </div>
         <div class="mcs-set-group">
           <div class="mcs-set-group-label">Provider</div>
           <select class="mcs-set-select" id="mcs-provider-sel">

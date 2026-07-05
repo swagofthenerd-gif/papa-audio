@@ -1445,7 +1445,7 @@ git commit -m "feat: renderer plays through mpv via HTMLAudioElement-compatible 
 - Consumes: `window.api.playerGetConfig/playerSetConfig/playerListDevices` (Task 5).
 - Produces: user-visible settings persisted in `playerSettings`; engine restarts seamlessly on structural changes.
 
-- [ ] **Step 1: Add markup**
+- [x] **Step 1: Add markup**
 
 Inside `#mcs-panel-settings` (src/index.html line ~207), before existing content, add:
 
@@ -1481,7 +1481,7 @@ Inside `#mcs-panel-settings` (src/index.html line ~207), before existing content
 </div>
 ```
 
-- [ ] **Step 2: Wire it in renderer.js**
+- [x] **Step 2: Wire it in renderer.js**
 
 Add near the other settings wiring (find with `grep -n "mcs-set-save-btn" src/renderer.js`):
 
@@ -1521,7 +1521,7 @@ async function initPlaybackSettings() {
 
 Call `initPlaybackSettings()` from `init()` (renderer.js:506).
 
-- [ ] **Step 3: Verify**
+- [x] **Step 3: Verify**
 
 ```bash
 node --check src/renderer.js && npm test
@@ -1532,7 +1532,7 @@ node --check src/renderer.js && npm test
 - ReplayGain Track/Album applies without playback interruption.
 - Output → Bit-perfect lists ALSA devices; selecting one restarts engine and resumes.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add -A

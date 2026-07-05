@@ -1690,6 +1690,12 @@ h2.section-title { font-size:18px; font-weight:700; }
   display:flex; flex-direction:column; gap:6px;
 }
 .mcs-set-hidden { display:none !important; }
+.mcs-set-row {
+  display:flex; align-items:center; justify-content:space-between; gap:10px;
+  font-size:11.5px; color:var(--text2);
+}
+.mcs-set-row .mcs-set-select { width:auto; flex:1; max-width:200px; }
+.mcs-set-row input[type="range"] { flex:1; max-width:160px; accent-color:var(--accent); cursor:pointer; }
 .mcs-set-group-label { font-size:9px; font-weight:700; letter-spacing:.8px; text-transform:uppercase; color:var(--text3); }
 .mcs-set-select {
   background:var(--glass); border:1px solid var(--glass-border);

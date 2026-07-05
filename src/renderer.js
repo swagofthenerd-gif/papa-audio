@@ -207,6 +207,7 @@ async function init() {
   renderSavedQueues()
   renderQualitySources()
   initChatSidebar()
+  initPlaybackSettings()
   setupListeners()
   window.api.slskStatus().then(s => { slsk.status = s }).catch(() => {})
   startDownloadsPolling(6000)
@@ -3759,6 +3760,38 @@ async function _initSettingsPanel() {
   })
 
   _refreshOllamaModels()
+}
+
+async function initPlaybackSettings() {
+  const cfg = await window.api.playerGetConfig()
+  const $ = id => document.getElementById(id)
+  $('pb-output-mode').value = cfg.outputMode
+  $('pb-mode').value = cfg.mode
+  $('pb-cf-secs').value = cfg.crossfadeSecs
+  $('pb-cf-label').textContent = `${cfg.crossfadeSecs}s`
+  $('pb-replaygain').value = cfg.replaygain
+  $('pb-device-row').style.display = cfg.outputMode === 'exclusive' ? '' : 'none'
+  $('pb-cf-row').style.display = cfg.mode === 'crossfade' ? '' : 'none'
+
+  const devices = await window.api.playerListDevices()
+  $('pb-alsa-device').innerHTML = devices
+    .filter(d => d.name.startsWith('alsa/'))
+    .map(d => `<option value="${d.name}" ${d.name === cfg.alsaDevice ? 'selected' : ''}>${d.description}</option>`)
+    .join('')
+
+  const apply = (partial) => window.api.playerSetConfig(partial)
+  $('pb-output-mode').onchange = e => {
+    $('pb-device-row').style.display = e.target.value === 'exclusive' ? '' : 'none'
+    apply({ outputMode: e.target.value, alsaDevice: $('pb-alsa-device').value || null })
+  }
+  $('pb-alsa-device').onchange = e => apply({ alsaDevice: e.target.value })
+  $('pb-mode').onchange = e => {
+    $('pb-cf-row').style.display = e.target.value === 'crossfade' ? '' : 'none'
+    apply({ mode: e.target.value })
+  }
+  $('pb-cf-secs').oninput = e => { $('pb-cf-label').textContent = `${e.target.value}s` }
+  $('pb-cf-secs').onchange = e => apply({ crossfadeSecs: Number(e.target.value) })
+  $('pb-replaygain').onchange = e => apply({ replaygain: e.target.value })
 }
 
 function _updateProviderRows(provider) {
