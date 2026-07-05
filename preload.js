@@ -49,14 +49,6 @@ contextBridge.exposeInMainWorld('api', {
   getFollowedArtists:  () => ipcRenderer.invoke('get-followed-artists'),
   saveFollowedArtists: (a) => ipcRenderer.send('save-followed-artists', a),
 
-  // Audio output settings
-  getAudioSettings:  ()  => ipcRenderer.invoke('get-audio-settings'),
-  saveAudioSettings: (s) => ipcRenderer.send('save-audio-settings', s),
-
-  // EQ settings
-  getEqSettings:  () => ipcRenderer.invoke('get-eq-settings'),
-  saveEqSettings: (s) => ipcRenderer.send('save-eq-settings', s),
-
   // Saved queues
   getSavedQueues:   ()         => ipcRenderer.invoke('get-saved-queues'),
   saveQueue:        (q)        => ipcRenderer.send('save-queue', q),

@@ -604,20 +604,6 @@ ipcMain.on('add-play-history', (_, entry) => {
 ipcMain.handle('get-followed-artists', () => store.get('followedArtists', []))
 ipcMain.on('save-followed-artists', (_, artists) => store.set('followedArtists', artists))
 
-// ── Audio output settings ─────────────────────────────────────────────────────
-ipcMain.handle('get-audio-settings', () => ({
-  outputMode: store.get('audioOutputMode', 'stereo'),
-}))
-ipcMain.on('save-audio-settings', (_, s) => {
-  if (s.outputMode) store.set('audioOutputMode', s.outputMode)
-})
-
-// ── EQ settings ───────────────────────────────────────────────────────────────
-ipcMain.handle('get-eq-settings', () => store.get('eqSettings', {
-  enabled: true, gains: [0,0,0,0,0,0,0,0,0,0], replayGainMode: 'track', preamp: 0,
-}))
-ipcMain.on('save-eq-settings', (_, s) => store.set('eqSettings', s))
-
 // ── Saved queues ─────────────────────────────────────────────────────────────
 ipcMain.handle('get-saved-queues', () => store.get('savedQueues', []))
 ipcMain.on('save-queue', (_, q) => {
@@ -1214,7 +1200,7 @@ function _buildAgentSystem() {
 
 ## Full capabilities
 PLAYBACK: play_from_library, play_track, play_artist, play_liked, control_playback (play/pause/next/prev/stop), seek, set_speed, set_repeat, set_shuffle
-VOLUME & EQ: set_volume (0–100), set_eq_preset (flat/bassBoost/vocal/rock/classical/electronic)
+VOLUME: set_volume (0–100)
 QUEUE: add_to_queue, clear_queue, shuffle_queue, get_queue, save_queue
 DOWNLOADS: auto_download (finds best FLAC and downloads automatically), search_and_download (shows options)
 LIBRARY: search_library, get_library (full overview)
@@ -1402,11 +1388,6 @@ const AGENT_TOOLS = [
     name: 'set_shuffle',
     description: 'Turn shuffle on or off',
     input_schema: { type: 'object', properties: { enabled: { type: 'boolean' } }, required: ['enabled'] },
-  },
-  {
-    name: 'set_eq_preset',
-    description: 'Apply an EQ preset: flat, bassBoost, vocal, rock, classical, or electronic',
-    input_schema: { type: 'object', properties: { preset: { type: 'string', enum: ['flat','bassBoost','vocal','rock','classical','electronic'] } }, required: ['preset'] },
   },
   {
     name: 'set_speed',
