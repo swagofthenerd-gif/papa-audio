@@ -1554,7 +1554,7 @@ git commit -m "feat: playback settings — output mode, gapless/crossfade, Repla
 - Consumes: `player-event` types `mpvMissing` / `engineFailed`; `playerGetStatus()`.
 - Produces: full-screen overlay `#mpv-blocker` that blocks all interaction until mpv is available; `window.api.playerRecheck()` → main re-runs `initPlayer()` and returns `{ available }`.
 
-- [ ] **Step 1: Markup + styles**
+- [x] **Step 1: Markup + styles**
 
 At the end of `<body>` in `src/index.html` (before scripts):
 
@@ -1584,7 +1584,7 @@ At the end of `<body>` in `src/index.html` (before scripts):
   background: var(--accent, #1db954); color: #000; font-weight: 600; cursor: pointer; }
 ```
 
-- [ ] **Step 2: Recheck handler in main + preload**
+- [x] **Step 2: Recheck handler in main + preload**
 
 `main.js` (in the player section from Task 5):
 
@@ -1598,7 +1598,7 @@ ipcMain.handle('player-recheck', async () => {
 
 `preload.js`: add `playerRecheck: () => ipcRenderer.invoke('player-recheck'),` next to the other player methods.
 
-- [ ] **Step 3: Renderer wiring**
+- [x] **Step 3: Renderer wiring**
 
 In `src/renderer.js` `init()` (renderer.js:506), add:
 
@@ -1619,11 +1619,11 @@ document.getElementById('mpv-recheck-btn').onclick = async () => {
 }
 ```
 
-- [ ] **Step 4: Verify**
+- [x] **Step 4: Verify**
 
 Temporarily rename the mpv binary lookup to simulate absence: launch with `PATH=/usr/bin-nonexistent npm start` is impractical for Electron; instead test by editing `detectMpv()` to `return false`, launch, confirm blocker shows and app is unusable behind it, revert the edit, click "check again" → blocker clears and playback works. Also `kill -9` the mpv PID 4+ times within a minute while playing → `engineFailed` → blocker appears.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A

@@ -209,6 +209,21 @@ async function init() {
   initChatSidebar()
   initPlaybackSettings()
   setupListeners()
+
+  const blocker = document.getElementById('mpv-blocker')
+  const showBlocker = show => { blocker.style.display = show ? 'flex' : 'none' }
+  window.api.on('player-event', ({ type }) => {
+    if (type === 'mpvMissing' || type === 'engineFailed') showBlocker(true)
+  })
+  const playerStatus = await window.api.playerGetStatus()
+  if (!playerStatus.available) showBlocker(true)
+  document.getElementById('mpv-recheck-btn').onclick = async () => {
+    const msg = document.getElementById('mpv-recheck-msg')
+    msg.textContent = 'Checking…'
+    const r = await window.api.playerRecheck()
+    if (r.available) { showBlocker(false); msg.textContent = '' }
+    else { msg.textContent = 'Still not found. Install mpv, then try again.' }
+  }
   window.api.slskStatus().then(s => { slsk.status = s }).catch(() => {})
   startDownloadsPolling(6000)
 

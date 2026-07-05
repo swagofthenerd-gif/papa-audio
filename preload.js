@@ -142,6 +142,7 @@ contextBridge.exposeInMainWorld('api', {
   playerGetConfig:   ()  => ipcRenderer.invoke('player-get-config'),
   playerSetConfig:   (c) => ipcRenderer.invoke('player-set-config', c),
   playerListDevices: ()  => ipcRenderer.invoke('player-list-devices'),
+  playerRecheck:     ()  => ipcRenderer.invoke('player-recheck'),
 
   // Events from main process
   on: (channel, cb) => {

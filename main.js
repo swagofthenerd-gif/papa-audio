@@ -472,6 +472,11 @@ ipcMain.handle('player-get-status', () => ({
   state: player ? player.getState() : null,
   config: getPlayerSettings(),
 }))
+ipcMain.handle('player-recheck', async () => {
+  if (player) { player.stop(); player = null }
+  await initPlayer()
+  return { available: mpvAvailable && !!player }
+})
 ipcMain.handle('player-get-config', () => getPlayerSettings())
 ipcMain.handle('player-list-devices', async () => {
   if (!player) return []

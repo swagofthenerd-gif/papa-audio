@@ -626,6 +626,17 @@
 <!-- Downloads right-click context menu -->
 <div class="dl-ctx-menu" id="dl-ctx-menu"></div>
 
+<div id="mpv-blocker" class="mpv-blocker" style="display:none">
+  <div class="mpv-blocker-card">
+    <h2>Playback engine required</h2>
+    <p>Papa Audio plays audio through <b>mpv</b>, which isn't installed (or keeps crashing).</p>
+    <pre>sudo dnf install -y mpv</pre>
+    <p class="mpv-blocker-hint">Debian/Ubuntu: <code>sudo apt install mpv</code> &middot; Arch: <code>sudo pacman -S mpv</code></p>
+    <button id="mpv-recheck-btn">I installed it — check again</button>
+    <p id="mpv-recheck-msg"></p>
+  </div>
+</div>
+
 <script src="player-shim.js"></script>
 <script src="renderer.js"></script>
 </body>

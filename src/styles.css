@@ -1689,6 +1689,15 @@ h2.section-title { font-size:18px; font-weight:700; }
   background:var(--bg3); border-radius:10px; padding:12px 14px;
   display:flex; flex-direction:column; gap:6px;
 }
+.mpv-blocker { position: fixed; inset: 0; z-index: 9999; background: rgba(8,8,12,.96);
+  display: flex; align-items: center; justify-content: center; }
+.mpv-blocker-card { max-width: 460px; padding: 32px; background: #16161d; border-radius: 12px;
+  text-align: center; }
+.mpv-blocker-card pre { background: #000; padding: 12px; border-radius: 8px; user-select: all; }
+.mpv-blocker-hint { opacity: .6; font-size: 12px; }
+#mpv-recheck-btn { margin-top: 12px; padding: 10px 20px; border-radius: 8px; border: 0;
+  background: var(--accent, #1db954); color: #000; font-weight: 600; cursor: pointer; }
+
 .mcs-set-hidden { display:none !important; }
 .mcs-set-row {
   display:flex; align-items:center; justify-content:space-between; gap:10px;
