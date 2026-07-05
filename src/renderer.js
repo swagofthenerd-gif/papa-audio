@@ -11,6 +11,7 @@ const state = {
   currentSearchQuery: '',
   queue: [],
   queueIndex: -1,
+  ytDownloads: new Map(),  // id → { id, videoId, title, artist, percent, state, error }
   shuffle: false,
   repeat: 'off',
   isPlaying: false,
@@ -1021,6 +1022,18 @@ function renderSearch(query) {
     html += `<div class="empty-wrap"><h2>Nothing in your library for "${esc(query)}"</h2><p>Search Soulseek below to find &amp; download it.</p></div>`
   }
 
+  // YouTube section (async — filled by runYtSearch)
+  html += `<div class="search-section" data-section="YouTube" id="yt-section">
+    <div class="section-header">
+      <span class="section-title">YouTube</span>
+      <div class="yt-scope-tabs">
+        <button class="yt-scope${ytSearchState.scope === 'music' ? ' active' : ''}" data-scope="music">Music</button>
+        <button class="yt-scope${ytSearchState.scope === 'all' ? ' active' : ''}" data-scope="all">All of YouTube</button>
+      </div>
+    </div>
+    <div id="yt-results"><div class="yt-status">Searching YouTube…</div></div>
+  </div>`
+
   // Online quality search section
   const enabledSources = state.qualitySources.filter(s => s.enabled)
   html += `<div class="online-search-section">
@@ -1056,6 +1069,15 @@ function renderSearch(query) {
     })
   })
 
+  // YouTube scope tabs (Music / All of YouTube)
+  document.querySelectorAll('.yt-scope').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.yt-scope').forEach(t => t.classList.remove('active'))
+      tab.classList.add('active')
+      runYtSearch(query, tab.dataset.scope)
+    })
+  })
+
   const sameQuery  = slsk.lastQuery === query
   const hasResults = slsk.results.length > 0
   if (enabledSources.length) {
@@ -1074,6 +1096,117 @@ function renderSearch(query) {
     const section = document.getElementById('slsk-section')
     if (section) { section.innerHTML = renderSoulseekRow(query); bindSlskSearchEvents(query) }
   }
+  runYtSearch(query, ytSearchState.scope)
+}
+
+// ── YouTube search section ──────────────────────────────────────────────────
+const ytSearchState = { scope: 'music', cache: new Map(), lastQuery: null }
+
+function _ytQueueItem(r) {
+  return {
+    filePath: `https://www.youtube.com/watch?v=${r.videoId}`,
+    title: r.title,
+    artist: r.artist,
+    albumArtist: r.artist,
+    albumName: r.album || 'YouTube',
+    albumId: `yt_${r.videoId}`,
+    artPath: r.thumbnailUrl || null,
+    duration: r.duration || 0,
+  }
+}
+
+async function runYtSearch(query, scope) {
+  ytSearchState.scope = scope
+  ytSearchState.lastQuery = query
+  const box = document.getElementById('yt-results')
+  if (!box) return
+  const cacheKey = `${scope}::${query}`
+  if (ytSearchState.cache.has(cacheKey)) {
+    renderYtResults(ytSearchState.cache.get(cacheKey), query)
+    return
+  }
+  box.innerHTML = `<div class="yt-status">Searching YouTube…</div>`
+  const call = scope === 'music' ? window.api.ytMusicSearch : window.api.ytSearch
+  const res = await call({ query }).catch(e => ({ ok: false, error: String(e) }))
+  // Stale response guard — user typed a new query or switched scope meanwhile
+  if (ytSearchState.lastQuery !== query || ytSearchState.scope !== scope) return
+  if (!res.ok) {
+    const cur = document.getElementById('yt-results')
+    if (cur) cur.innerHTML = `<div class="yt-status yt-error">YouTube search failed: ${esc(res.error || 'unknown error')}</div>`
+    return
+  }
+  ytSearchState.cache.set(cacheKey, res.results)
+  renderYtResults(res.results, query)
+}
+
+function renderYtResults(results, query) {
+  const box = document.getElementById('yt-results')
+  if (!box) return
+  if (!results.length) {
+    box.innerHTML = `<div class="yt-status">Nothing on YouTube for "${esc(query)}"</div>`
+    return
+  }
+  box.innerHTML = `<div class="yt-list">${results.map((r, i) => `
+    <div class="yt-row" data-i="${i}">
+      ${r.thumbnailUrl
+        ? `<img class="yt-thumb" src="${esc(r.thumbnailUrl)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`
+        : `<div class="yt-thumb yt-thumb-empty"></div>`}
+      <div class="yt-info">
+        <div class="yt-title">${esc(r.title)} <span class="yt-badge">YT</span></div>
+        <div class="yt-sub">${esc(r.artist)}${r.album ? ' · ' + esc(r.album) : ''}${r.viewCount ? ' · ' + esc(r.viewCount) : ''}</div>
+      </div>
+      <span class="yt-dur">${r.duration ? fmtDur(r.duration) : ''}</span>
+      <div class="yt-actions">
+        <button class="yt-btn yt-play" data-i="${i}" title="Stream now">
+          <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+        </button>
+        <button class="yt-btn yt-queue" data-i="${i}" title="Add to queue">+</button>
+        <button class="yt-btn yt-dl" data-i="${i}" title="Download">
+          <svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+        </button>
+      </div>
+    </div>`).join('')}</div>`
+  bindYtEvents(results)
+}
+
+function bindYtEvents(results) {
+  const box = document.getElementById('yt-results')
+  if (!box) return
+  box.querySelectorAll('.yt-play').forEach(btn => btn.addEventListener('click', e => {
+    e.stopPropagation()
+    const r = results[parseInt(btn.dataset.i)]
+    state.queue = [_ytQueueItem(r)]
+    state.queueIndex = 0
+    playCurrentTrack()
+  }))
+  box.querySelectorAll('.yt-queue').forEach(btn => btn.addEventListener('click', e => {
+    e.stopPropagation()
+    const r = results[parseInt(btn.dataset.i)]
+    state.queue.push(_ytQueueItem(r))
+    updateNextPrefetch()
+    if (state.queuePanelOpen) renderQueuePanel()
+    btn.textContent = '✓'
+    setTimeout(() => { btn.textContent = '+' }, 1200)
+  }))
+  box.querySelectorAll('.yt-dl').forEach(btn => btn.addEventListener('click', async e => {
+    e.stopPropagation()
+    const r = results[parseInt(btn.dataset.i)]
+    btn.disabled = true
+    btn.innerHTML = '…'
+    await window.api.ytDownload({ videoId: r.videoId, title: r.title, artist: r.artist })
+  }))
+  box.querySelectorAll('.yt-row').forEach(row => row.addEventListener('contextmenu', async e => {
+    e.preventDefault()
+    const r = results[parseInt(row.dataset.i)]
+    const action = await window.api.ctxMenuShow([
+      { label: 'Play now', action: 'play' },
+      { label: 'Add to queue', action: 'queue' },
+      { label: 'Download', action: 'download' },
+    ])
+    if (action === 'play') { state.queue = [_ytQueueItem(r)]; state.queueIndex = 0; playCurrentTrack() }
+    else if (action === 'queue') { state.queue.push(_ytQueueItem(r)); updateNextPrefetch() }
+    else if (action === 'download') window.api.ytDownload({ videoId: r.videoId, title: r.title, artist: r.artist })
+  }))
 }
 
 function renderArtist(artistName) {
@@ -2360,9 +2493,10 @@ function playCurrentTrack() {
   const track = state.queue[state.queueIndex]
   if (!track) return
   if (!audio.paused && !audio.ended) audio.pause()
-  audio.src = `file://${track.filePath}`
+  const isStream = /^https?:\/\//.test(track.filePath)
+  audio.src = isStream ? track.filePath : `file://${track.filePath}`
   audio.play().then(() => {
-    extractAlbumColor(track.artPath || null)
+    extractAlbumColor(/^https?:\/\//.test(track.artPath || '') ? null : (track.artPath || null))
     state.isPlaying = true
     updatePlayBtn()
     updateNowPlaying(track)
@@ -2414,7 +2548,7 @@ function updateNowPlaying(track) {
   if (sepEl)    sepEl.style.display = (artistStr && albumStr) ? 'inline' : 'none'
   if (artEl && artFb) {
     if (track.artPath) {
-      const newSrc = `file://${track.artPath}`
+      const newSrc = /^https?:\/\//.test(track.artPath) ? track.artPath : `file://${track.artPath}`
       if (artEl.getAttribute('src') !== newSrc) {
         artEl.style.opacity = '0'
         artEl.addEventListener('load', () => { artEl.style.opacity = '1' }, { once: true })
@@ -3476,6 +3610,36 @@ async function _executeTool(name, input) {
       state.savedQueues = [q, ...state.savedQueues]
       window.api.saveQueue(q)
       return `Saved queue "${name}" with ${state.queue.length} tracks.`
+    }
+
+    case 'youtube_search': {
+      const scope = input.scope === 'all' ? 'all' : 'music'
+      const call = scope === 'all' ? window.api.ytSearch : window.api.ytMusicSearch
+      const res = await call({ query: input.query })
+      if (!res.ok) return `YouTube search failed: ${res.error}`
+      if (!res.results.length) return `Nothing found on YouTube for "${input.query}"`
+      return 'Top YouTube results:\n' + res.results.slice(0, 5).map((r, i) =>
+        `${i + 1}. ${r.title} — ${r.artist} (${r.duration ? fmtDur(r.duration) : '?'}) [videoId: ${r.videoId}]`).join('\n')
+    }
+
+    case 'youtube_play': {
+      const res = await window.api.ytMusicSearch({ query: input.query })
+      if (!res.ok) return `YouTube search failed: ${res.error}`
+      const r = res.results[0]
+      if (!r) return `Nothing found on YouTube for "${input.query}"`
+      state.queue = [_ytQueueItem(r)]
+      state.queueIndex = 0
+      playCurrentTrack()
+      return `Streaming "${r.title}" by ${r.artist} from YouTube`
+    }
+
+    case 'youtube_download': {
+      const res = await window.api.ytMusicSearch({ query: input.query })
+      if (!res.ok) return `YouTube search failed: ${res.error}`
+      const r = res.results[0]
+      if (!r) return `Nothing found on YouTube for "${input.query}"`
+      await window.api.ytDownload({ videoId: r.videoId, title: r.title, artist: r.artist })
+      return `Downloading "${r.title}" by ${r.artist} from YouTube (check Downloads page)`
     }
 
     default:
@@ -5440,6 +5604,24 @@ function _fmtRelTime(ms) {
   return `${Math.floor(diff / 86400000)}d ago`
 }
 
+function _renderYtDownloadRows(box) {
+  const items = [...state.ytDownloads.values()].reverse()
+  const section = document.getElementById('yt-dl-section')
+  if (section) section.style.display = items.length ? '' : 'none'
+  box.innerHTML = items.map(d => `
+    <div class="yt-row">
+      <div class="yt-info">
+        <div class="yt-title">${esc(d.title)} <span class="yt-badge">YT</span></div>
+        <div class="yt-sub">${esc(d.artist || '')}</div>
+      </div>
+      ${d.state === 'downloading'
+        ? `<div class="yt-dl-bar"><div class="yt-dl-fill" style="width:${d.percent}%"></div></div><span class="yt-dur">${Math.round(d.percent)}%</span>`
+        : d.state === 'completed'
+          ? `<span class="yt-dl-done">✓ Done</span>`
+          : `<span class="yt-error" title="${esc(d.error || '')}">✗ Failed</span>`}
+    </div>`).join('')
+}
+
 function renderDownloads() {
   setContent(`<div class="dl2-page">
     <div class="dl2-topbar">
@@ -5474,6 +5656,10 @@ function renderDownloads() {
         <span class="dl2-tab-count" id="dl2-tab-count-torrents" style="display:none">0</span>
       </button>
     </div>
+    <div id="yt-dl-section" style="display:none">
+      <div class="section-header" style="margin:16px 0 8px"><span class="section-title">YouTube</span></div>
+      <div id="yt-dl-list"></div>
+    </div>
     <div class="dl2-filter-bar" id="dl2-filter-bar" style="display:none">
       <svg class="dl2-filter-icon" viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
       <input class="dl2-filter-input" id="dl2-filter-input" type="text" placeholder="Filter albums…" autocomplete="off">
@@ -5491,6 +5677,9 @@ function renderDownloads() {
       </div>
     </div>
   </div>`)
+
+  const ytBox = document.getElementById('yt-dl-list')
+  if (ytBox) _renderYtDownloadRows(ytBox)
 
   // Tab switching
   document.querySelectorAll('.dl2-tab').forEach(btn => {
@@ -6770,7 +6959,19 @@ function setupListeners() {
     const p = e.detail
     el.textContent = p?.samplerate ? `${(p.format || '').toUpperCase()} ${Math.round(p.samplerate / 1000)}kHz` : ''
   })
-  audio.addEventListener('error', e => console.error('Audio error:', e))
+  audio.addEventListener('error', e => {
+    console.error('Audio error:', e)
+    const t = state.queue[state.queueIndex]
+    if (!t || !/^https?:\/\//.test(t.filePath)) return
+    // Dead/region-locked YouTube stream — tell the user and move on
+    const titleEl = document.getElementById('np-title')
+    if (titleEl) {
+      const orig = titleEl.textContent
+      titleEl.textContent = 'Stream unavailable — skipping'
+      setTimeout(() => { titleEl.textContent = orig }, 2500)
+    }
+    if (state.queue.length > 1) playNext()
+  })
 
   // IPC events
   window.api.on('dl-started', ({ id, filename, total, isMusic }) => {
@@ -6812,6 +7013,20 @@ function setupListeners() {
     backgroundSync()
   })
   window.api.on('do-lib-rescan', () => backgroundSync())
+
+  window.api.on('yt-dl-progress', dl => {
+    const prev = state.ytDownloads.get(dl.id)
+    state.ytDownloads.set(dl.id, dl)
+    if (dl.state === 'completed' && prev?.state !== 'completed') {
+      _scheduleLibRescan()
+      window.api.notifyDownloadComplete({ count: 1, albumName: `${dl.artist ? dl.artist + ' — ' : ''}${dl.title}` })
+    }
+    const box = document.getElementById('yt-dl-list')
+    if (box) _renderYtDownloadRows(box)
+  })
+  window.api.ytGetDownloads().then(list => {
+    for (const d of (list || [])) state.ytDownloads.set(d.id, d)
+  }).catch(() => {})
 
   window.api.on('browser-url', url => {
     state.currentUrl = url

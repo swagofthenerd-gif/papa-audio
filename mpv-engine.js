@@ -55,6 +55,7 @@ class MpvEngine extends EventEmitter {
       `--gapless-audio=${this.config.gapless ? 'weak' : 'no'}`,
       `--audio-channels=${channelsValue(this.config.audioChannels)}`,
       '--volume-max=130',
+      '--ytdl-format=bestaudio',
     ]
     if (this.config.outputMode === 'exclusive' && this.config.alsaDevice) {
       a.push(`--audio-device=${this.config.alsaDevice}`, '--audio-exclusive=yes')

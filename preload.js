@@ -124,6 +124,12 @@ contextBridge.exposeInMainWorld('api', {
   saveLyrics:         (p) => ipcRenderer.invoke('save-lyrics', p),
   ctxMenuShow:        (items) => ipcRenderer.invoke('ctx-menu-show', items),
 
+  // YouTube
+  ytMusicSearch:  (p) => ipcRenderer.invoke('yt-music-search', p),
+  ytSearch:       (p) => ipcRenderer.invoke('yt-search', p),
+  ytDownload:     (p) => ipcRenderer.invoke('yt-download', p),
+  ytGetDownloads: ()  => ipcRenderer.invoke('yt-get-downloads'),
+
   // Agent memory
   agentGetMemory:    ()    => ipcRenderer.invoke('agent-get-memory'),
   agentSaveConv:     (p)   => ipcRenderer.invoke('agent-save-conv', p),
@@ -151,6 +157,7 @@ contextBridge.exposeInMainWorld('api', {
       'browser-url', 'browser-title', 'browser-loading', 'browser-load-error', 'browser-zoom',
       'media-key', 'ext-cmd', 'slsk-progress', 'player-event', 'media-seek',
       'torrent-progress', 'torrent-done', 'torrent-started', 'do-lib-rescan',
+      'yt-dl-progress',
     ]
     if (allowed.includes(channel)) ipcRenderer.on(channel, (_, data) => cb(data))
   },

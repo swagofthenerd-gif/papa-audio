@@ -218,3 +218,8 @@ test('setChannels sets property live and persists in config for restarts', async
   assert.deepStrictEqual(f.commands[1], ['set_property', 'audio-channels', 'auto-safe'])
   eng.stop(); f.close()
 })
+
+test('args enable audio-only ytdl format for URL streaming', () => {
+  const args = new MpvEngine({})._args('/tmp/x.sock')
+  assert.ok(args.includes('--ytdl-format=bestaudio'))
+})

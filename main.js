@@ -7,6 +7,8 @@ const { spawn, execSync, execFileSync } = require('child_process')
 const { MpvEngine } = require('./mpv-engine')
 const { MpvCrossfade } = require('./mpv-crossfade')
 const { linearToMpv } = require('./volume-map')
+const ytSearch = require('./youtube-search')
+const ytDownloader = require('./youtube-download')
 let natUpnp; try { natUpnp = require('nat-upnp') } catch (_) {}
 
 // Strip the automation flag so Cloudflare/bot-checks don't see navigator.webdriver = true
@@ -1315,7 +1317,7 @@ function _buildAgentSystem() {
 - Act immediately with tools — NEVER explain what you're about to do, just do it.
 - NEVER say things like "It looks like...", "Let me try...", "I'll attempt...", "The system seems to...". Just call the tool.
 - After ALL tools are done, respond with ONE sentence max. No paragraphs, no lists, no explanations.
-- If a tool returns "not found in library", try auto_download next without asking or commenting.
+- If a tool returns "not found in library", try youtube_play (instant stream) next without asking or commenting; use auto_download when the user wants to keep the file.
 - Prefer lossless (FLAC) sources always.
 
 ## Full capabilities
@@ -1323,12 +1325,15 @@ PLAYBACK: play_from_library, play_track, play_artist, play_liked, control_playba
 VOLUME: set_volume (0–100)
 QUEUE: add_to_queue, clear_queue, shuffle_queue, get_queue, save_queue
 DOWNLOADS: auto_download (finds best FLAC and downloads automatically), search_and_download (shows options)
+YOUTUBE: youtube_search (find on YouTube), youtube_play (stream instantly, nothing saved), youtube_download (save lossy audio file)
 LIBRARY: search_library, get_library (full overview)
 NAVIGATION: navigate (home/library/search/downloads/browse)
 UTILITY: get_status, sleep_timer, like_album
 
 ## Decision rules
-- "play X" → ALWAYS try play_from_library first. Pass ONLY the artist name, album name, or song title as the query — never pass the full user sentence. Example: user says "play some pink floyd songs" → query: "pink floyd". Only use auto_download if play_from_library explicitly returns "not found".
+- "play X" → ALWAYS try play_from_library first. Pass ONLY the artist name, album name, or song title as the query — never pass the full user sentence. Example: user says "play some pink floyd songs" → query: "pink floyd". If play_from_library returns "not found", use youtube_play to stream it instantly, then auto_download in the background if the user wants to keep it.
+- Fallback order for playing music: 1) local library, 2) youtube_play (instant stream), 3) auto_download from Soulseek (lossless, for keeps).
+- "download X" → auto_download first (lossless). If Soulseek finds nothing, youtube_download as last resort.
 - "play all songs by X" / "play artist X" → use play_artist with just the artist name as query.
 - NEVER assume something isn't in the library without calling play_from_library or search_library first.
 - "download X" → auto_download (no confirmation needed)
@@ -1543,6 +1548,21 @@ const AGENT_TOOLS = [
     name: 'save_queue',
     description: 'Save the current queue as a named playlist',
     input_schema: { type: 'object', properties: { name: { type: 'string', description: 'Name for the saved queue' } }, required: ['name'] },
+  },
+  {
+    name: 'youtube_search',
+    description: 'Search YouTube for music. Returns top matches with videoId, title, artist, duration. scope "music" searches the YouTube Music catalog (clean song results); scope "all" searches all of YouTube (live sets, bootlegs, mixes). Pass ONLY the artist/song/album name as query.',
+    input_schema: { type: 'object', properties: { query: { type: 'string', description: 'Artist, song, or album name ONLY' }, scope: { type: 'string', enum: ['music', 'all'], description: 'Default "music"' } }, required: ['query'] },
+  },
+  {
+    name: 'youtube_play',
+    description: 'Search YouTube Music and instantly STREAM the best match — nothing is saved to disk. Use when a track is not in the local library and the user wants to hear it NOW. Pass ONLY the artist/song name.',
+    input_schema: { type: 'object', properties: { query: { type: 'string', description: 'Song and/or artist name ONLY' } }, required: ['query'] },
+  },
+  {
+    name: 'youtube_download',
+    description: 'Search YouTube Music and download the best match as an audio file into the music library (native quality, ~256kbps lossy). Prefer auto_download (Soulseek, lossless) for keeps; use this when Soulseek has nothing or the user explicitly asks for YouTube.',
+    input_schema: { type: 'object', properties: { query: { type: 'string', description: 'Song and/or artist name ONLY' } }, required: ['query'] },
   },
 ]
 
@@ -2060,11 +2080,13 @@ ipcMain.handle('slsk-cancel-transfer', async (_, { username, id }) => {
   return { ok: true }
 })
 
-ipcMain.handle('slsk-get-download-dir', () => {
+function _downloadDir() {
   const cfg = store.get('slskConfig', {})
   const folders = store.get('musicFolders', [])
   return cfg.downloadDir || folders[0] || path.join(app.getPath('home'), 'Music')
-})
+}
+
+ipcMain.handle('slsk-get-download-dir', () => _downloadDir())
 
 ipcMain.handle('slsk-set-download-dir', async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
@@ -2083,6 +2105,45 @@ ipcMain.handle('slsk-show-in-folder', (_, filePath) => {
   shell.showItemInFolder(filePath)
   return { ok: true }
 })
+
+// ── YouTube ──────────────────────────────────────────────────────────────────
+ipcMain.handle('yt-music-search', async (_, { query }) => {
+  try { return { ok: true, results: await ytSearch.searchMusic(query) } }
+  catch (e) { return { ok: false, error: String(e?.message || e) } }
+})
+
+ipcMain.handle('yt-search', async (_, { query }) => {
+  try { return { ok: true, results: await ytSearch.searchAll(query) } }
+  catch (e) { return { ok: false, error: String(e?.message || e) } }
+})
+
+const _ytDownloads = new Map()
+
+function _ytEmit(dl) {
+  mainWindow?.webContents.send('yt-dl-progress', { ...dl })
+}
+
+ipcMain.handle('yt-download', (_, { videoId, title, artist }) => {
+  const id = `yt_${videoId}_${Date.now()}`
+  const dl = { id, videoId, title, artist, percent: 0, state: 'downloading', error: null }
+  _ytDownloads.set(id, dl)
+  _ytEmit(dl)
+  ytDownloader.downloadAudio({
+    videoId, title, artist,
+    outDir: _downloadDir(),
+    onProgress: pct => {
+      if (pct - dl.percent >= 1 || pct === 100) { dl.percent = pct; _ytEmit(dl) }
+    },
+  }).then(res => {
+    dl.percent = res.ok ? 100 : dl.percent
+    dl.state = res.ok ? 'completed' : 'failed'
+    dl.error = res.ok ? null : res.error
+    _ytEmit(dl)
+  })
+  return { ok: true, id }
+})
+
+ipcMain.handle('yt-get-downloads', () => [..._ytDownloads.values()])
 
 ipcMain.handle('save-lyrics', async (_, { filePath, lrcContent }) => {
   try {
