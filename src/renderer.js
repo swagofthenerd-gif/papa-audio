@@ -11,6 +11,7 @@ const state = {
   currentSearchQuery: '',
   queue: [],
   queueIndex: -1,
+  ytDownloads: new Map(),  // id → { id, videoId, title, artist, percent, state, error }
   shuffle: false,
   repeat: 'off',
   isPlaying: false,
@@ -5573,6 +5574,24 @@ function _fmtRelTime(ms) {
   return `${Math.floor(diff / 86400000)}d ago`
 }
 
+function _renderYtDownloadRows(box) {
+  const items = [...state.ytDownloads.values()].reverse()
+  const section = document.getElementById('yt-dl-section')
+  if (section) section.style.display = items.length ? '' : 'none'
+  box.innerHTML = items.map(d => `
+    <div class="yt-row">
+      <div class="yt-info">
+        <div class="yt-title">${esc(d.title)} <span class="yt-badge">YT</span></div>
+        <div class="yt-sub">${esc(d.artist || '')}</div>
+      </div>
+      ${d.state === 'downloading'
+        ? `<div class="yt-dl-bar"><div class="yt-dl-fill" style="width:${d.percent}%"></div></div><span class="yt-dur">${Math.round(d.percent)}%</span>`
+        : d.state === 'completed'
+          ? `<span class="yt-dl-done">✓ Done</span>`
+          : `<span class="yt-error" title="${esc(d.error || '')}">✗ Failed</span>`}
+    </div>`).join('')
+}
+
 function renderDownloads() {
   setContent(`<div class="dl2-page">
     <div class="dl2-topbar">
@@ -5607,6 +5626,10 @@ function renderDownloads() {
         <span class="dl2-tab-count" id="dl2-tab-count-torrents" style="display:none">0</span>
       </button>
     </div>
+    <div id="yt-dl-section" style="display:none">
+      <div class="section-header" style="margin:16px 0 8px"><span class="section-title">YouTube</span></div>
+      <div id="yt-dl-list"></div>
+    </div>
     <div class="dl2-filter-bar" id="dl2-filter-bar" style="display:none">
       <svg class="dl2-filter-icon" viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
       <input class="dl2-filter-input" id="dl2-filter-input" type="text" placeholder="Filter albums…" autocomplete="off">
@@ -5624,6 +5647,9 @@ function renderDownloads() {
       </div>
     </div>
   </div>`)
+
+  const ytBox = document.getElementById('yt-dl-list')
+  if (ytBox) _renderYtDownloadRows(ytBox)
 
   // Tab switching
   document.querySelectorAll('.dl2-tab').forEach(btn => {
@@ -6957,6 +6983,20 @@ function setupListeners() {
     backgroundSync()
   })
   window.api.on('do-lib-rescan', () => backgroundSync())
+
+  window.api.on('yt-dl-progress', dl => {
+    const prev = state.ytDownloads.get(dl.id)
+    state.ytDownloads.set(dl.id, dl)
+    if (dl.state === 'completed' && prev?.state !== 'completed') {
+      _scheduleLibRescan()
+      window.api.notifyDownloadComplete({ count: 1, albumName: `${dl.artist ? dl.artist + ' — ' : ''}${dl.title}` })
+    }
+    const box = document.getElementById('yt-dl-list')
+    if (box) _renderYtDownloadRows(box)
+  })
+  window.api.ytGetDownloads().then(list => {
+    for (const d of (list || [])) state.ytDownloads.set(d.id, d)
+  }).catch(() => {})
 
   window.api.on('browser-url', url => {
     state.currentUrl = url
