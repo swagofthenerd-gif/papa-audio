@@ -7,6 +7,8 @@ const { spawn, execSync, execFileSync } = require('child_process')
 const { MpvEngine } = require('./mpv-engine')
 const { MpvCrossfade } = require('./mpv-crossfade')
 const { linearToMpv } = require('./volume-map')
+const ytSearch = require('./youtube-search')
+const ytDownloader = require('./youtube-download')
 let natUpnp; try { natUpnp = require('nat-upnp') } catch (_) {}
 
 // Strip the automation flag so Cloudflare/bot-checks don't see navigator.webdriver = true
@@ -2060,11 +2062,13 @@ ipcMain.handle('slsk-cancel-transfer', async (_, { username, id }) => {
   return { ok: true }
 })
 
-ipcMain.handle('slsk-get-download-dir', () => {
+function _downloadDir() {
   const cfg = store.get('slskConfig', {})
   const folders = store.get('musicFolders', [])
   return cfg.downloadDir || folders[0] || path.join(app.getPath('home'), 'Music')
-})
+}
+
+ipcMain.handle('slsk-get-download-dir', () => _downloadDir())
 
 ipcMain.handle('slsk-set-download-dir', async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
@@ -2083,6 +2087,45 @@ ipcMain.handle('slsk-show-in-folder', (_, filePath) => {
   shell.showItemInFolder(filePath)
   return { ok: true }
 })
+
+// ── YouTube ──────────────────────────────────────────────────────────────────
+ipcMain.handle('yt-music-search', async (_, { query }) => {
+  try { return { ok: true, results: await ytSearch.searchMusic(query) } }
+  catch (e) { return { ok: false, error: String(e?.message || e) } }
+})
+
+ipcMain.handle('yt-search', async (_, { query }) => {
+  try { return { ok: true, results: await ytSearch.searchAll(query) } }
+  catch (e) { return { ok: false, error: String(e?.message || e) } }
+})
+
+const _ytDownloads = new Map()
+
+function _ytEmit(dl) {
+  mainWindow?.webContents.send('yt-dl-progress', { ...dl })
+}
+
+ipcMain.handle('yt-download', (_, { videoId, title, artist }) => {
+  const id = `yt_${videoId}_${Date.now()}`
+  const dl = { id, videoId, title, artist, percent: 0, state: 'downloading', error: null }
+  _ytDownloads.set(id, dl)
+  _ytEmit(dl)
+  ytDownloader.downloadAudio({
+    videoId, title, artist,
+    outDir: _downloadDir(),
+    onProgress: pct => {
+      if (pct - dl.percent >= 1 || pct === 100) { dl.percent = pct; _ytEmit(dl) }
+    },
+  }).then(res => {
+    dl.percent = res.ok ? 100 : dl.percent
+    dl.state = res.ok ? 'completed' : 'failed'
+    dl.error = res.ok ? null : res.error
+    _ytEmit(dl)
+  })
+  return { ok: true, id }
+})
+
+ipcMain.handle('yt-get-downloads', () => [..._ytDownloads.values()])
 
 ipcMain.handle('save-lyrics', async (_, { filePath, lrcContent }) => {
   try {
