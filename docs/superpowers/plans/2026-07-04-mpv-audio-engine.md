@@ -769,7 +769,7 @@ git commit -m "feat: mpv engine with lifecycle, gapless prefetch, respawn recove
 - Consumes: two objects with the `MpvEngine` surface (injected via factory for tests).
 - Produces: `class MpvCrossfade extends EventEmitter` with the **same public surface as MpvEngine** (`start/stop/load/setNext/play/pause/seek/setVolume/setSpeed/setReplaygain/listAudioDevices/restart/getState`) so `main.js` can hold either behind one variable. Extra constructor opts: `{ crossfadeSecs=4, engineFactory, tickMs=100 }`. Re-emits active-engine events; on fade completion emits `autoAdvanced(path)`. Export: `{ MpvCrossfade }`.
 
-- [ ] **Step 1: Write failing tests with fake engines**
+- [x] **Step 1: Write failing tests with fake engines**
 
 Create `test/mpv-crossfade.test.js`:
 
@@ -871,12 +871,12 @@ test('getState reflects active engine', async () => {
 })
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `npm test`
 Expected: FAIL — `Cannot find module '../mpv-crossfade'`
 
-- [ ] **Step 3: Implement mpv-crossfade.js**
+- [x] **Step 3: Implement mpv-crossfade.js**
 
 Create `mpv-crossfade.js`:
 
@@ -974,12 +974,12 @@ class MpvCrossfade extends EventEmitter {
 module.exports = { MpvCrossfade }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `npm test`
 Expected: all tests PASS (integration still SKIP without mpv)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add mpv-crossfade.js test/mpv-crossfade.test.js
