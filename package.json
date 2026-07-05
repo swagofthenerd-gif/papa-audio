@@ -19,7 +19,8 @@
     "mpris-service": "^2.1.2",
     "music-metadata": "^7.14.0",
     "nat-upnp": "^1.1.1",
-    "webtorrent": "^1.9.7"
+    "webtorrent": "^1.9.7",
+    "youtubei.js": "^17.2.0"
   },
   "devDependencies": {
     "electron": "^28.3.3",
