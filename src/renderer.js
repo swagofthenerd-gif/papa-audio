@@ -52,7 +52,7 @@ const navHistory = []
 const navFuture  = []
 let _playCountTimer = null
 let _shuffleHistory = []
-const audio = document.getElementById('audio')
+const audio = window.__papaPlayer
 let _volSaveTimer = null
 let _homeClockInterval = null
 let _allTracksCache = null
@@ -1981,6 +1981,7 @@ function renderQueuePanel() {
   clearBtn.addEventListener('click', () => {
     audio.pause()
     state.queue = []; state.queueIndex = -1; state.isPlaying = false
+    updateNextPrefetch()
     updatePlayBtn(); updateNowPlaying(null)
     renderQueuePanel()
   })
@@ -2325,6 +2326,20 @@ function playTrack(album, trackIdx) {
   playCurrentTrack()
 }
 
+// Mirror of playNext()'s selection, without side effects — used for gapless prefetch
+function computeNextIndex() {
+  if (state.repeat === 'one') return state.queueIndex
+  if (state.shuffle && state.queue.length > 1) return null // shuffle picks lazily; skip prefetch
+  if (state.queueIndex + 1 < state.queue.length) return state.queueIndex + 1
+  return state.repeat === 'all' ? 0 : null
+}
+
+function updateNextPrefetch() {
+  if (!state.queue.length) { audio.setNext(null); return }
+  const idx = computeNextIndex()
+  audio.setNext(idx == null ? null : state.queue[idx].filePath)
+}
+
 function playCurrentTrack() {
   const track = state.queue[state.queueIndex]
   if (!track) return
@@ -2354,6 +2369,7 @@ function playCurrentTrack() {
     updateLyricsDrawer()
     fetchLyrics(track).then(lines => { _lyrics = lines; renderLyricsPanel(); updateLyricsDrawer() })
     syncExtension()
+    updateNextPrefetch()
   }).catch(e => {
     console.error('Playback error:', e)
     state.isPlaying = false
@@ -3315,6 +3331,7 @@ async function _executeTool(name, input) {
     case 'clear_queue': {
       state.queue = []; state.queueIndex = -1; state.isPlaying = false
       audio.pause(); audio.currentTime = 0
+      updateNextPrefetch()
       updatePlayBtn?.(); updateNowPlaying?.(null)
       if (state.queuePanelOpen) renderQueuePanel()
       return 'Queue cleared.'
@@ -3331,6 +3348,7 @@ async function _executeTool(name, input) {
       state.queue = current ? [current, ...rest] : rest
       state.queueIndex = 0
       if (state.queuePanelOpen) renderQueuePanel()
+      updateNextPrefetch()
       return `Queue shuffled — ${state.queue.length} tracks.`
     }
 
@@ -3373,6 +3391,7 @@ async function _executeTool(name, input) {
       const isActive = mode !== 'off'
       document.getElementById('btn-repeat')?.classList.toggle('active', isActive)
       document.getElementById('np-modal-repeat')?.classList.toggle('active', isActive)
+      updateNextPrefetch()
       return `Repeat set to ${mode}.`
     }
 
@@ -3380,6 +3399,7 @@ async function _executeTool(name, input) {
       state.shuffle = !!input.enabled
       document.getElementById('btn-shuffle')?.classList.toggle('active', state.shuffle)
       document.getElementById('np-modal-shuffle')?.classList.toggle('active', state.shuffle)
+      updateNextPrefetch()
       return `Shuffle ${state.shuffle ? 'on' : 'off'}.`
     }
 
@@ -6318,6 +6338,7 @@ function setupListeners() {
     state.shuffle = !state.shuffle
     this.classList.toggle('active', state.shuffle)
     document.getElementById('np-modal-shuffle')?.classList.toggle('active', state.shuffle)
+    updateNextPrefetch()
   })
 
   document.getElementById('btn-repeat')?.addEventListener('click', function() {
@@ -6327,6 +6348,7 @@ function setupListeners() {
     this.classList.toggle('active', isActive)
     this.title = state.repeat === 'one' ? 'Repeat: one' : state.repeat === 'all' ? 'Repeat: all' : 'Repeat (R)'
     document.getElementById('np-modal-repeat')?.classList.toggle('active', isActive)
+    updateNextPrefetch()
   })
 
   // Like button (player bar)
@@ -6496,6 +6518,7 @@ function setupListeners() {
     state.shuffle = !state.shuffle
     this.classList.toggle('active', state.shuffle)
     document.getElementById('btn-shuffle')?.classList.toggle('active', state.shuffle)
+    updateNextPrefetch()
   })
   document.getElementById('np-modal-repeat')?.addEventListener('click', function() {
     const states = ['off','all','one']
@@ -6503,6 +6526,7 @@ function setupListeners() {
     const isActive = state.repeat !== 'off'
     this.classList.toggle('active', isActive)
     document.getElementById('btn-repeat')?.classList.toggle('active', isActive)
+    updateNextPrefetch()
   })
 
   // Context menu actions
@@ -6665,6 +6689,35 @@ function setupListeners() {
   audio.addEventListener('ended', () => {
     playNext()
   })
+  audio.addEventListener('autoadvanced', (e) => {
+    // mpv already switched tracks gaplessly — sync UI state without reloading
+    const idx = state.queue.findIndex(t => t.filePath === e.detail)
+    if (idx === -1) return
+    state.queueIndex = idx
+    const track = state.queue[idx]
+    state.isPlaying = true
+    updatePlayBtn()
+    updateNowPlaying(track)
+    updateTrackHighlight()
+    updatePlayerLikeBtn()
+    if (state.queuePanelOpen) renderQueuePanel()
+    if (state.modalOpen) { updateNowPlayingModal(); syncModalPlayBtn() }
+    window.api.savePlaybackState({ filePath: track.filePath, position: 0 })
+    state.playCounts[track.filePath] = (state.playCounts[track.filePath] || 0) + 1
+    window.api.incrementPlayCount(track.filePath)
+    _lyrics = null
+    renderLyricsPanel()
+    updateLyricsDrawer()
+    fetchLyrics(track).then(lines => { _lyrics = lines; renderLyricsPanel(); updateLyricsDrawer() })
+    syncExtension()
+    updateNextPrefetch()
+  })
+  audio.addEventListener('audioparams', (e) => {
+    const el = document.getElementById('np-format')
+    if (!el) return
+    const p = e.detail
+    el.textContent = p?.samplerate ? `${(p.format || '').toUpperCase()} ${Math.round(p.samplerate / 1000)}kHz` : ''
+  })
   audio.addEventListener('error', e => console.error('Audio error:', e))
 
   // IPC events
@@ -6749,6 +6802,7 @@ function setupListeners() {
       state.shuffle = !state.shuffle
       document.getElementById('btn-shuffle')?.classList.toggle('active', state.shuffle)
       document.getElementById('np-modal-shuffle')?.classList.toggle('active', state.shuffle)
+      updateNextPrefetch()
       syncExtension()
       return
     }
@@ -6834,6 +6888,7 @@ function setupListeners() {
     if (cmd === 'clear-queue') {
       audio.pause()
       state.queue = []; state.queueIndex = -1; state.isPlaying = false
+      updateNextPrefetch()
       updatePlayBtn(); updateNowPlaying(null)
       if (state.queuePanelOpen) renderQueuePanel()
       syncExtension()
@@ -6955,6 +7010,7 @@ function setupListeners() {
     if (e.key === 's' || e.key === 'S') {
       state.shuffle = !state.shuffle
       document.getElementById('btn-shuffle')?.classList.toggle('active', state.shuffle)
+      updateNextPrefetch()
       return
     }
     // Repeat

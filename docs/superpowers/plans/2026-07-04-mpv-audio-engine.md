@@ -1003,7 +1003,7 @@ App still plays through `<audio>` after this task — it just loses EQ/viz (appr
 - Consumes: nothing.
 - Produces: a renderer with **no** references to `audioCtx`, `AudioContext`, `analyser`, `eq`, `startViz`, `_cf`. `playCurrentTrack()` (renderer.js:2662) plays via bare `audio.src`/`audio.play()` with the graph calls removed. ReplayGain UI is gone for now (returns via mpv in Task 7).
 
-- [ ] **Step 1: Delete renderer Web Audio / EQ / viz / crossfade code**
+- [x] **Step 1: Delete renderer Web Audio / EQ / viz / crossfade code**
 
 In `src/renderer.js`, delete (find each with the grep below — line numbers will drift):
 - The state variables at top: `audioCtx`, `audioSource`, `replayGainNode`, `preampNode`, `eqNodes`, `analyserNode`, `_cfAudio`, `_cfSrc`, `_cfGain`, `_cfRgGain`, `_cfActive`, `_cfNextTrack`, and any `eqEnabled/eqGains/eqPreamp` fields in `state`.
@@ -1019,7 +1019,7 @@ grep -n -iE "audioCtx|AudioContext|analyser|eqNodes|eqGains|eqPreamp|eq-panel|bt
 
 Expected after edits: no output.
 
-- [ ] **Step 2: Delete markup and CSS**
+- [x] **Step 2: Delete markup and CSS**
 
 - `src/index.html`: delete the viz canvas (line 376), the EQ button (line 394), the now-playing-modal viz canvas (line 432), and the whole `#eq-panel` block (lines 562-~605).
 - `src/styles.css`: delete all `.eq-*`, `.viz-canvas`, `.np-modal-viz` rules.
@@ -1032,12 +1032,12 @@ grep -n -iE "eq-|viz" src/index.html src/styles.css
 
 Expected: no output (ignore unrelated matches like "request" — refine with `grep -w` if needed).
 
-- [ ] **Step 3: Delete main/preload EQ settings plumbing**
+- [x] **Step 3: Delete main/preload EQ settings plumbing**
 
 - `main.js`: delete the `get-eq-settings` handle and `save-eq-settings` listener (lines 616-620).
 - `preload.js`: delete lines 56-58 (`getEqSettings`, `saveEqSettings`).
 
-- [ ] **Step 4: Syntax-check and manually verify**
+- [x] **Step 4: Syntax-check and manually verify**
 
 ```bash
 node --check src/renderer.js && node --check main.js && node --check preload.js && npm test
@@ -1045,7 +1045,7 @@ node --check src/renderer.js && node --check main.js && node --check preload.js 
 
 Expected: no syntax errors, tests still pass. Then `npm start`: play a track — audio works, no console errors, EQ button and visualizer gone, crossfade slider gone.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A
@@ -1069,7 +1069,7 @@ git commit -m "refactor: remove EQ, visualizer, Web Audio graph, and element cro
   - `playerListDevices()` → mpv `audio-device-list` array.
   - Event channel `'player-event'` with `{ type, data }` (types listed in Global Constraints).
 
-- [ ] **Step 1: Add player module to main.js**
+- [x] **Step 1: Add player module to main.js**
 
 In `main.js`, after the existing `require` block at the top, add:
 
@@ -1183,7 +1183,7 @@ ipcMain.handle('player-set-config', async (_, partial) => {
 
 Call `initPlayer()` where the app finishes creating the window — find the line `initMpris()` (main.js:346) and add `initPlayer()` directly after it. Also add to the app-quit path (search `app.isQuitting = true`): `player?.stop()`.
 
-- [ ] **Step 2: Expose player API in preload.js**
+- [x] **Step 2: Expose player API in preload.js**
 
 In `preload.js`, add before the `// Events from main process` comment:
 
@@ -1204,7 +1204,7 @@ In `preload.js`, add before the `// Events from main process` comment:
 
 In the `allowed` channel list (preload.js:143-148), add `'player-event'` and `'media-seek'` (the MPRIS seek channel at main.js:431-432 sends `media-seek`, which the current allowlist silently drops — pre-existing bug, fixed here).
 
-- [ ] **Step 3: Verify**
+- [x] **Step 3: Verify**
 
 ```bash
 node --check main.js && node --check preload.js && npm test
@@ -1220,7 +1220,7 @@ await window.api.playerLoad({ path: '/mnt/data/MUSIC/<any file>.flac', play: tru
 // With mpv installed: audio plays OUTSIDE the <audio> element (old UI stays silent/idle)
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add main.js preload.js
@@ -1240,7 +1240,7 @@ git commit -m "feat: player IPC surface wiring mpv engine into main process"
 - Consumes: `window.api.player*` and `window.api.on('player-event')` from Task 5.
 - Produces: global `window.__papaPlayer` — an `EventTarget` implementing the `HTMLAudioElement` subset the renderer uses: `src` (get/set, accepts `file://` URLs), `play():Promise`, `pause()`, `paused`, `ended`, `currentTime` (get/set), `duration`, `volume` (0..1 get/set), `playbackRate` (set). Events dispatched: `timeupdate`, `loadedmetadata`, `durationchange`, `play`, `pause`, `ended`, `error`, plus custom `autoadvanced` (`detail: path`) and `audioparams` (`detail: {samplerate, format, channels}`).
 
-- [ ] **Step 1: Implement the shim**
+- [x] **Step 1: Implement the shim**
 
 Create `src/player-shim.js`:
 
@@ -1331,14 +1331,14 @@ class PapaPlayerShim extends EventTarget {
 window.__papaPlayer = new PapaPlayerShim()
 ```
 
-- [ ] **Step 2: Load shim and drop the element**
+- [x] **Step 2: Load shim and drop the element**
 
 In `src/index.html`:
 - Delete `<audio id="audio"></audio>` (line ~690).
 - Immediately before the `<script src="renderer.js">` tag, add `<script src="player-shim.js"></script>`.
 - In the player bar, next to the track title/artist block, add the live format chip: `<span class="np-format" id="np-format"></span>` and in `src/styles.css`: `.np-format { font-size: 10px; opacity: .6; margin-left: 8px; letter-spacing: .5px; }`.
 
-- [ ] **Step 3: Swap the renderer onto the shim**
+- [x] **Step 3: Swap the renderer onto the shim**
 
 In `src/renderer.js`:
 
@@ -1412,7 +1412,7 @@ audio.addEventListener('audioparams', (e) => {
 
 **Cross-check the UI-update calls above against the real `.then()` body of `playCurrentTrack()` (renderer.js:2670-2695)** — reuse exactly the functions it calls (they exist today: `updatePlayBtn`, `updateNowPlaying`, `updateTrackHighlight`, `updatePlayerLikeBtn`, `renderQueuePanel`, `updateNowPlayingModal`, `syncModalPlayBtn`, `syncExtension`).
 
-- [ ] **Step 4: Verify end-to-end**
+- [x] **Step 4: Verify end-to-end**
 
 ```bash
 node --check src/renderer.js src/player-shim.js && npm test
@@ -1425,7 +1425,7 @@ Then `npm start` (mpv must be installed by now — if not, install first):
 - Format chip shows e.g. `FLAC 44kHz` / `FLAC 96kHz` while playing.
 - Restart app → playback state resumes at saved position, paused.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A
