@@ -83,6 +83,7 @@ class MpvCrossfade extends EventEmitter {
   async setVolume(v) { this.userVolume = v; await this._active.setVolume(v) }
   async setSpeed(x) { await this._active.setSpeed(x) }
   async setReplaygain(m) { await Promise.all(this.engines.map(e => e.setReplaygain(m))) }
+  async setChannels(l) { await Promise.all(this.engines.map(e => e.setChannels(l))) }
   async listAudioDevices() { return this._active.listAudioDevices() }
   async restart(cfg) { for (const e of this.engines) await e.restart(cfg) }
   getState() { return this._active.getState() }

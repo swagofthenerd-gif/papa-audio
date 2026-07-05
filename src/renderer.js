@@ -3785,6 +3785,8 @@ async function initPlaybackSettings() {
   $('pb-cf-secs').value = cfg.crossfadeSecs
   $('pb-cf-label').textContent = `${cfg.crossfadeSecs}s`
   $('pb-replaygain').value = cfg.replaygain
+  $('pb-channels').value = cfg.channels
+  $('pb-boost').checked = !!cfg.boost
   $('pb-device-row').style.display = cfg.outputMode === 'exclusive' ? '' : 'none'
   $('pb-cf-row').style.display = cfg.mode === 'crossfade' ? '' : 'none'
 
@@ -3807,6 +3809,8 @@ async function initPlaybackSettings() {
   $('pb-cf-secs').oninput = e => { $('pb-cf-label').textContent = `${e.target.value}s` }
   $('pb-cf-secs').onchange = e => apply({ crossfadeSecs: Number(e.target.value) })
   $('pb-replaygain').onchange = e => apply({ replaygain: e.target.value })
+  $('pb-channels').onchange = e => apply({ channels: e.target.value })
+  $('pb-boost').onchange = e => apply({ boost: e.target.checked })
 }
 
 function _updateProviderRows(provider) {

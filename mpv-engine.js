@@ -14,6 +14,12 @@ const OBSERVED_PROPS = ['time-pos', 'duration', 'pause', 'path', 'audio-params',
 
 let sockCounter = 0
 
+// mpv's plain 'auto' can hand raw multichannel to devices that misreport
+// their layout; 'auto-safe' only picks layouts the device is known to handle.
+function channelsValue(layout) {
+  return layout === 'auto' ? 'auto-safe' : layout
+}
+
 class MpvEngine extends EventEmitter {
   constructor(opts = {}) {
     super()
@@ -23,6 +29,7 @@ class MpvEngine extends EventEmitter {
       alsaDevice: null,
       replaygain: 'no',
       gapless: true,
+      audioChannels: 'auto',
       ...opts.config,
     }
     this._spawnFn = opts.spawnFn || spawn
@@ -46,6 +53,8 @@ class MpvEngine extends EventEmitter {
       `--input-ipc-server=${socketPath}`,
       `--replaygain=${this.config.replaygain}`,
       `--gapless-audio=${this.config.gapless ? 'weak' : 'no'}`,
+      `--audio-channels=${channelsValue(this.config.audioChannels)}`,
+      '--volume-max=130',
     ]
     if (this.config.outputMode === 'exclusive' && this.config.alsaDevice) {
       a.push(`--audio-device=${this.config.alsaDevice}`, '--audio-exclusive=yes')
@@ -138,6 +147,10 @@ class MpvEngine extends EventEmitter {
   async setReplaygain(mode) {
     this.config.replaygain = mode
     await this.client.command('set_property', 'replaygain', mode)
+  }
+  async setChannels(layout) {
+    this.config.audioChannels = layout
+    await this.client.command('set_property', 'audio-channels', channelsValue(layout))
   }
 
   async listAudioDevices() {

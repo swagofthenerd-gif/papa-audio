@@ -194,3 +194,27 @@ test('seek while playing sends immediately; deferred seeks coalesce to latest', 
   assert.deepStrictEqual(seeks, [['seek', 7, 'absolute']], 'only latest deferred seek sent')
   eng.stop(); f.close()
 })
+
+test('audioChannels config maps to --audio-channels arg', () => {
+  const eng = new MpvEngine({ config: { audioChannels: '5.1' } })
+  assert.ok(eng._args('/tmp/x.sock').includes('--audio-channels=5.1'))
+})
+
+test('default channels is auto-safe and volume ceiling is 130', () => {
+  const args = new MpvEngine({})._args('/tmp/x.sock')
+  assert.ok(args.includes('--audio-channels=auto-safe'))
+  assert.ok(args.includes('--volume-max=130'))
+})
+
+test('setChannels sets property live and persists in config for restarts', async () => {
+  const f = await fakeMpv()
+  const eng = new MpvEngine({ spawnFn: f.spawnFn, socketPath: f.sock })
+  await eng.start()
+  f.commands.length = 0
+  await eng.setChannels('7.1')
+  assert.deepStrictEqual(f.commands[0], ['set_property', 'audio-channels', '7.1'])
+  assert.strictEqual(eng.config.audioChannels, '7.1')
+  await eng.setChannels('auto')
+  assert.deepStrictEqual(f.commands[1], ['set_property', 'audio-channels', 'auto-safe'])
+  eng.stop(); f.close()
+})

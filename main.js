@@ -6,6 +6,7 @@ const https = require('https')
 const { spawn, execSync, execFileSync } = require('child_process')
 const { MpvEngine } = require('./mpv-engine')
 const { MpvCrossfade } = require('./mpv-crossfade')
+const { linearToMpv } = require('./volume-map')
 let natUpnp; try { natUpnp = require('nat-upnp') } catch (_) {}
 
 // Strip the automation flag so Cloudflare/bot-checks don't see navigator.webdriver = true
@@ -412,6 +413,7 @@ function getPlayerSettings() {
   return {
     outputMode: 'default', alsaDevice: null,
     mode: 'gapless', crossfadeSecs: 4, replaygain: 'no',
+    channels: 'auto', boost: false,
     ...store.get('playerSettings', {}),
   }
 }
@@ -428,6 +430,7 @@ function buildPlayer(cfg) {
   const engineConfig = {
     outputMode: cfg.outputMode, alsaDevice: cfg.alsaDevice,
     replaygain: cfg.replaygain, gapless: cfg.mode === 'gapless',
+    audioChannels: cfg.channels,
   }
   const p = cfg.mode === 'crossfade'
     ? new MpvCrossfade({ crossfadeSecs: cfg.crossfadeSecs, engineOpts: { config: engineConfig } })
@@ -465,7 +468,13 @@ ipcMain.handle('player-set-next',   (_, p) => wrap(() => player.setNext(p))())
 ipcMain.handle('player-play',       () => wrap(() => player.play())())
 ipcMain.handle('player-pause',      () => wrap(() => player.pause())())
 ipcMain.handle('player-seek',       (_, s) => wrap(() => player.seek(s))())
-ipcMain.handle('player-set-volume', (_, v) => wrap(() => player.setVolume(v))())
+// Renderer sends linear 0–100 (HTMLAudioElement semantics); mpv softvol is
+// cubic, so convert or everything below max plays several dB too quiet.
+let lastLinearVolume = null
+ipcMain.handle('player-set-volume', (_, v) => wrap(() => {
+  lastLinearVolume = v / 100
+  return player.setVolume(linearToMpv(lastLinearVolume, getPlayerSettings().boost))
+})())
 ipcMain.handle('player-set-speed',  (_, x) => wrap(() => player.setSpeed(x))())
 ipcMain.handle('player-get-status', () => ({
   available: mpvAvailable && !!player,
@@ -500,8 +509,12 @@ ipcMain.handle('player-set-config', async (_, partial) => {
         await player.setVolume(resume.volume)
         if (!resume.paused) await player.play()
       }
-    } else if ('replaygain' in partial) {
-      await player.setReplaygain(cfg.replaygain)
+    } else {
+      if ('replaygain' in partial) await player.setReplaygain(cfg.replaygain)
+      if ('channels' in partial) await player.setChannels(cfg.channels)
+      if ('boost' in partial && lastLinearVolume != null) {
+        await player.setVolume(linearToMpv(lastLinearVolume, cfg.boost))
+      }
     }
     return { ok: true }
   } catch (e) { return { ok: false, error: String(e.message || e) } }

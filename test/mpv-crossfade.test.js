@@ -20,6 +20,7 @@ class FakeEngine extends EventEmitter {
   async setVolume(v) { this.calls.push(['setVolume', v]); this.state.volume = v }
   async setSpeed(x) { this.calls.push(['setSpeed', x]) }
   async setReplaygain(m) { this.calls.push(['setReplaygain', m]) }
+  async setChannels(l) { this.calls.push(['setChannels', l]) }
   async listAudioDevices() { return [] }
   async restart() { this.calls.push(['restart']) }
   getState() { return { ...this.state } }
@@ -92,4 +93,13 @@ test('getState reflects active engine', async () => {
   await cf.load('/m/a.flac')
   engines[0].state.position = 42
   assert.strictEqual(cf.getState().position, 42)
+})
+
+test('setChannels fans out to both engines', async () => {
+  const { cf, engines } = make()
+  await cf.start()
+  await cf.setChannels('5.1')
+  for (const e of engines) {
+    assert.ok(e.calls.some(c => c[0] === 'setChannels' && c[1] === '5.1'))
+  }
 })
