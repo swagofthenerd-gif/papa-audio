@@ -1,7 +1,7 @@
 {
   "name": "papa-audio",
   "version": "1.0.0",
-  "description": "Papa Audio — hi-fi music player",
+  "description": "Papa Audio \u2014 hi-fi music player",
   "author": "Shaharyar",
   "homepage": "https://github.com/shaharyar/papa-audio",
   "main": "main.js",
@@ -20,7 +20,7 @@
     "music-metadata": "^7.14.0",
     "nat-upnp": "^1.1.1",
     "webtorrent": "^1.9.7",
-    "youtubei.js": "^17.2.0"
+    "youtubei.js": "~14.0.0"
   },
   "devDependencies": {
     "electron": "^28.3.3",
