@@ -49,14 +49,6 @@ contextBridge.exposeInMainWorld('api', {
   getFollowedArtists:  () => ipcRenderer.invoke('get-followed-artists'),
   saveFollowedArtists: (a) => ipcRenderer.send('save-followed-artists', a),
 
-  // Audio output settings
-  getAudioSettings:  ()  => ipcRenderer.invoke('get-audio-settings'),
-  saveAudioSettings: (s) => ipcRenderer.send('save-audio-settings', s),
-
-  // EQ settings
-  getEqSettings:  () => ipcRenderer.invoke('get-eq-settings'),
-  saveEqSettings: (s) => ipcRenderer.send('save-eq-settings', s),
-
   // Saved queues
   getSavedQueues:   ()         => ipcRenderer.invoke('get-saved-queues'),
   saveQueue:        (q)        => ipcRenderer.send('save-queue', q),
@@ -138,12 +130,26 @@ contextBridge.exposeInMainWorld('api', {
   agentUpdateProfile:(p)   => ipcRenderer.invoke('agent-update-profile', p),
   agentClearMemory:  ()    => ipcRenderer.invoke('agent-clear-memory'),
 
+  // mpv player engine
+  playerLoad:        (p) => ipcRenderer.invoke('player-load', p),
+  playerSetNext:     (p) => ipcRenderer.invoke('player-set-next', p),
+  playerPlay:        ()  => ipcRenderer.invoke('player-play'),
+  playerPause:       ()  => ipcRenderer.invoke('player-pause'),
+  playerSeek:        (s) => ipcRenderer.invoke('player-seek', s),
+  playerSetVolume:   (v) => ipcRenderer.invoke('player-set-volume', v),
+  playerSetSpeed:    (x) => ipcRenderer.invoke('player-set-speed', x),
+  playerGetStatus:   ()  => ipcRenderer.invoke('player-get-status'),
+  playerGetConfig:   ()  => ipcRenderer.invoke('player-get-config'),
+  playerSetConfig:   (c) => ipcRenderer.invoke('player-set-config', c),
+  playerListDevices: ()  => ipcRenderer.invoke('player-list-devices'),
+  playerRecheck:     ()  => ipcRenderer.invoke('player-recheck'),
+
   // Events from main process
   on: (channel, cb) => {
     const allowed = [
       'dl-started', 'dl-progress', 'dl-complete', 'dl-cancelled', 'dl-failed',
       'browser-url', 'browser-title', 'browser-loading', 'browser-load-error', 'browser-zoom',
-      'media-key', 'ext-cmd', 'slsk-progress',
+      'media-key', 'ext-cmd', 'slsk-progress', 'player-event', 'media-seek',
       'torrent-progress', 'torrent-done', 'torrent-started', 'do-lib-rescan',
     ]
     if (allowed.includes(channel)) ipcRenderer.on(channel, (_, data) => cb(data))

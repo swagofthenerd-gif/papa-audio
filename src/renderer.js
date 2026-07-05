@@ -22,14 +22,8 @@ const state = {
   queuePanelOpen: false,
   lastVolume: 0.8,
   modalOpen: false,
-  audioMode: 'stereo',
-  eqEnabled: true,
-  eqGains: [0,0,0,0,0,0,0,0,0,0],
-  eqPreamp: 0,
-  replayGainMode: 'track',
   playbackSpeed: 1,
   sleepTimerEnd: null,
-  vizMode: 'spectrum',
   savedQueues: [],
   qualitySources: [],
   upgradeHints: new Map(),  // albumId → [{ source, searchUrl }]
@@ -37,7 +31,6 @@ const state = {
   libGenre: null,
   playlists: [],
   currentPlaylistId: null,
-  crossfadeSecs: 0,
   likedTracks: [],
   playCounts: {},
   playHistory: [],
@@ -59,7 +52,7 @@ const navHistory = []
 const navFuture  = []
 let _playCountTimer = null
 let _shuffleHistory = []
-const audio = document.getElementById('audio')
+const audio = window.__papaPlayer
 let _volSaveTimer = null
 let _homeClockInterval = null
 let _allTracksCache = null
@@ -71,118 +64,19 @@ const _scrollMemory = new Map()
 let _appVisible = !document.hidden
 const _dom = {}  // cached refs for hot-path elements (populated in init)
 
-// ── Web Audio API ────────────────────────────────────────────────────────────
-let audioCtx = null
-let audioSource = null
-
-// ── EQ constants ──────────────────────────────────────────────────────────────
-const EQ_FREQS   = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
-const EQ_LABELS  = ['32','64','125','250','500','1k','2k','4k','8k','16k']
-const EQ_PRESETS = {
-  flat:       [0,0,0,0,0,0,0,0,0,0],
-  bassBoost:  [6,5,4,2,0,-1,-1,0,0,0],
-  vocal:      [-2,-1,0,3,5,4,3,1,0,-1],
-  rock:       [4,3,2,0,-1,-1,0,2,3,3],
-  classical:  [4,3,2,0,0,0,0,0,3,4],
-  electronic: [5,4,1,-2,-1,0,1,3,4,4],
-}
 const SPEEDS = [1, 1.25, 1.5, 2, 0.75]
 
-// ── Web Audio nodes ───────────────────────────────────────────────────────────
-let replayGainNode = null
-let preampNode = null
-let eqNodes = []
-let analyserNode = null
-let vizAnimId = null
-let masterGainNode = null
-
-// ── Lyrics / Crossfade / Artist bio ────────────────────────────────────────────
+// ── Lyrics / Artist bio ────────────────────────────────────────────────────────
 let _lyrics = null
-let _cfAudio = null
-let _cfSrc = null
-let _cfGain = null
-let _cfRgGain = null
-let _cfActive = false
-let _cfNextTrack = null
 let _dlPrevActiveCount = 0
 const _bioCache = new Map()
-
-function ensureAudioGraph() {
-  if (audioCtx) return
-  audioCtx = new AudioContext({ latencyHint: 'playback' })
-  audioSource = audioCtx.createMediaElementSource(audio)
-
-  replayGainNode = audioCtx.createGain()
-  replayGainNode.gain.value = 1
-
-  preampNode = audioCtx.createGain()
-  preampNode.gain.value = Math.pow(10, state.eqPreamp / 20)
-
-  eqNodes = EQ_FREQS.map((freq, i) => {
-    const node = audioCtx.createBiquadFilter()
-    node.frequency.value = freq
-    node.gain.value = state.eqEnabled ? state.eqGains[i] : 0
-    node.Q.value = 1.4
-    if (i === 0)                      node.type = 'lowshelf'
-    else if (i === EQ_FREQS.length-1) node.type = 'highshelf'
-    else                               node.type = 'peaking'
-    return node
-  })
-
-  analyserNode = audioCtx.createAnalyser()
-  analyserNode.fftSize = 512          // 256 bins — plenty for 96 bars, was 2048
-  analyserNode.smoothingTimeConstant = 0.75
-  analyserNode.minDecibels = -90
-  analyserNode.maxDecibels = -10
-
-  let prev = audioSource
-  prev.connect(replayGainNode); prev = replayGainNode
-  prev.connect(preampNode);     prev = preampNode
-  for (const node of eqNodes) { prev.connect(node); prev = node }
-  prev.connect(analyserNode)
-  masterGainNode = audioCtx.createGain()
-  masterGainNode.gain.value = 1
-  analyserNode.connect(masterGainNode)
-  masterGainNode.connect(audioCtx.destination)
-
-  applyAudioMode()
-  startViz()
-}
-
-// ── Visualizer ────────────────────────────────────────────────────────────────
-// Reusable buffer — allocated once, never triggers GC each frame
-let vizFreqData = null
-let vizLastWidth = 0
-let vizAccentCache = ''
-let vizAccentTick = 0
-let vizLastFrameTime = 0
-const VIZ_FPS = 24
-const VIZ_FRAME_MS = 1000 / VIZ_FPS
-
-function startViz() {
-  if (vizAnimId) return
-  if (document.visibilityState === 'hidden') return
-  if (analyserNode) analyserNode.fftSize = 512
-  drawViz()
-}
-function stopViz() {
-  if (vizAnimId) { cancelAnimationFrame(vizAnimId); vizAnimId = null }
-  if (analyserNode) analyserNode.fftSize = 32  // minimum — Web Audio FFT still runs, keep it cheap
-}
 
 document.addEventListener('visibilitychange', () => {
   _appVisible = !document.hidden
   if (!_appVisible) {
-    stopViz()
     startDownloadsPolling(60000)
     if (_homeClockInterval) { clearInterval(_homeClockInterval); _homeClockInterval = null }
-    // Suspend audio graph when not playing — saves CPU/power
-    if (audioCtx?.state === 'running' && !state.isPlaying) audioCtx.suspend()
   } else {
-    if (state.isPlaying) {
-      startViz()
-      if (audioCtx?.state === 'suspended') audioCtx.resume()
-    }
     startDownloadsPolling(state.currentPage === 'downloads' ? 2000 : 6000)
     if (state.currentPage === 'home' && !_homeClockInterval) {
       _drawHomeClock()
@@ -190,172 +84,6 @@ document.addEventListener('visibilitychange', () => {
     }
   }
 })
-
-function drawViz() {
-  vizAnimId = requestAnimationFrame(drawViz)
-  if (!analyserNode) return
-
-  // Throttle to VIZ_FPS (30fps) — rAF fires at 60+ fps but we skip most frames
-  const now = performance.now()
-  if (now - vizLastFrameTime < VIZ_FRAME_MS) return
-  vizLastFrameTime = now
-
-  const bufLen = analyserNode.frequencyBinCount
-  if (!vizFreqData || vizFreqData.length !== bufLen) vizFreqData = new Uint8Array(bufLen)
-  analyserNode.getByteFrequencyData(vizFreqData)
-
-  // Skip draw entirely when silent
-  let maxVal = 0
-  for (let i = 0; i < vizFreqData.length; i++) if (vizFreqData[i] > maxVal) maxVal = vizFreqData[i]
-  if (maxVal < 3) return
-
-  // Re-read accent color only every 60 viz-frames (~2s at 30fps)
-  vizAccentTick++
-  if (vizAccentTick >= 60 || !vizAccentCache) {
-    vizAccentCache = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#1db954'
-    vizAccentTick = 0
-  }
-
-  const c = document.getElementById('viz-canvas')
-  if (c) {
-    const ctx = c.getContext('2d')
-    const W = c.clientWidth
-    // Only resize canvas when width actually changes (resizing is expensive)
-    if (W !== vizLastWidth) { c.width = W; vizLastWidth = W }
-    const H = c.height
-    ctx.clearRect(0, 0, W, H)
-    const bars = Math.min(96, Math.floor(W / 4))
-    const bw = (W / bars) - 1
-    const grad = ctx.createLinearGradient(0, 0, 0, H)
-    grad.addColorStop(0, vizAccentCache + 'cc')
-    grad.addColorStop(1, vizAccentCache + '44')
-    ctx.fillStyle = grad
-    for (let i = 0; i < bars; i++) {
-      const lo = Math.floor(Math.pow(i / bars, 1.8) * bufLen * 0.85)
-      const hi = Math.floor(Math.pow((i + 1) / bars, 1.8) * bufLen * 0.85)
-      let sum = 0
-      for (let k = lo; k <= hi && k < bufLen; k++) sum += vizFreqData[k]
-      const avg = sum / Math.max(1, hi - lo + 1)
-      const h = (avg / 255) * H
-      ctx.fillRect(i * (bw + 1), H - h, bw, h)
-    }
-  }
-
-  const mc = document.getElementById('np-modal-viz')
-  if (mc && state.modalOpen) {
-    const ctx = mc.getContext('2d')
-    const W = mc.clientWidth
-    if (W !== mc.width) mc.width = W
-    const H = mc.height
-    ctx.clearRect(0, 0, W, H)
-    const bars = Math.min(128, Math.floor(W / 5))
-    const bw = (W / bars) - 1
-    ctx.fillStyle = 'rgba(255,255,255,0.7)'
-    for (let i = 0; i < bars; i++) {
-      const lo = Math.floor(Math.pow(i / bars, 1.6) * bufLen * 0.9)
-      const hi = Math.floor(Math.pow((i + 1) / bars, 1.6) * bufLen * 0.9)
-      let sum = 0
-      for (let k = lo; k <= hi && k < bufLen; k++) sum += vizFreqData[k]
-      const avg = sum / Math.max(1, hi - lo + 1)
-      const h = (avg / 255) * H
-      ctx.fillRect(i * (bw + 1), H - h, bw, h)
-    }
-  }
-}
-
-// ── EQ ────────────────────────────────────────────────────────────────────────
-function buildEqBandsUI() {
-  const container = document.getElementById('eq-bands')
-  if (!container) return
-  container.innerHTML = EQ_FREQS.map((f, i) => `
-    <div class="eq-band">
-      <span class="eq-gain-label" id="eq-gain-${i}">${state.eqGains[i] >= 0 ? '+' : ''}${state.eqGains[i]}dB</span>
-      <div class="eq-slider-wrap">
-        <input type="range" class="eq-slider" id="eq-band-${i}"
-          min="-12" max="12" step="0.5" value="${state.eqGains[i]}" data-band="${i}">
-      </div>
-      <span class="eq-freq-label">${EQ_LABELS[i]}</span>
-    </div>`).join('')
-  container.querySelectorAll('.eq-slider').forEach(sl => {
-    sl.addEventListener('input', () => {
-      const i = parseInt(sl.dataset.band)
-      const val = parseFloat(sl.value)
-      state.eqGains[i] = val
-      const label = document.getElementById(`eq-gain-${i}`)
-      if (label) label.textContent = `${val >= 0 ? '+' : ''}${val}dB`
-      applyEqGain(i, val)
-      clearEqPresetHighlight()
-      saveEqSettings()
-    })
-  })
-}
-
-function applyEqGain(bandIndex, gainDb) {
-  if (!eqNodes[bandIndex]) return
-  eqNodes[bandIndex].gain.value = state.eqEnabled ? gainDb : 0
-}
-
-function applyAllEqGains() {
-  eqNodes.forEach((node, i) => {
-    node.gain.value = state.eqEnabled ? state.eqGains[i] : 0
-  })
-}
-
-function applyEqPreset(name) {
-  const gains = EQ_PRESETS[name]
-  if (!gains) return
-  state.eqGains = [...gains]
-  gains.forEach((g, i) => {
-    applyEqGain(i, g)
-    const sl = document.getElementById(`eq-band-${i}`)
-    const lb = document.getElementById(`eq-gain-${i}`)
-    if (sl) sl.value = g
-    if (lb) lb.textContent = `${g >= 0 ? '+' : ''}${g}dB`
-  })
-  document.querySelectorAll('.eq-preset-btn').forEach(b => b.classList.toggle('active', b.dataset.preset === name))
-  saveEqSettings()
-}
-
-function clearEqPresetHighlight() {
-  document.querySelectorAll('.eq-preset-btn').forEach(b => b.classList.remove('active'))
-}
-
-function saveEqSettings() {
-  window.api.saveEqSettings({
-    enabled: state.eqEnabled,
-    gains: state.eqGains,
-    replayGainMode: state.replayGainMode,
-    preamp: state.eqPreamp,
-    crossfadeSecs: state.crossfadeSecs,
-  })
-}
-
-function toggleEqPanel() {
-  const panel = document.getElementById('eq-panel')
-  const btn   = document.getElementById('btn-eq')
-  if (!panel) return
-  const isOpen = panel.classList.contains('open')
-  if (!isOpen) buildEqBandsUI()
-  panel.classList.toggle('open', !isOpen)
-  btn?.classList.toggle('active', !isOpen)
-}
-
-// ── ReplayGain ────────────────────────────────────────────────────────────────
-function applyReplayGain(track) {
-  if (!replayGainNode) return
-  const mode = state.replayGainMode
-  if (mode === 'off') { replayGainNode.gain.value = 1; return }
-  const gainDb = mode === 'album'
-    ? (track.replayGainAlbum ?? track.replayGainTrack ?? 0)
-    : (track.replayGainTrack ?? 0)
-  replayGainNode.gain.value = Math.pow(10, gainDb / 20)
-}
-
-// ── Preamp ────────────────────────────────────────────────────────────────────
-function applyPreamp(db) {
-  if (!preampNode) return
-  preampNode.gain.value = Math.pow(10, db / 20)
-}
 
 // ── Dynamic album art color ───────────────────────────────────────────────────
 // Single reusable canvas + image for color extraction — never recreated
@@ -436,57 +164,6 @@ function updateSleepBtn() {
     : 'Sleep timer'
 }
 
-// Maps mode key → target channel count
-const CH_MODE_MAP = { 'mono': 1, 'stereo': 2, '4.0': 4, '5.1': 6, '7.1': 8 }
-const CH_MODE_LABEL = { 'mono': '1.0', 'stereo': '2.0', '4.0': '4.0', '5.1': '5.1', '7.1': '7.1' }
-
-function applyAudioMode() {
-  if (!audioCtx) return
-  const dest = audioCtx.destination
-  const max  = dest.maxChannelCount
-  const want = CH_MODE_MAP[state.audioMode] ?? 2
-  dest.channelCount         = Math.min(want, max)
-  dest.channelCountMode     = 'explicit'
-  dest.channelInterpretation = 'speakers'
-  updateOutputModeBtn()
-  syncChPanelOptions()
-}
-
-function updateOutputModeBtn() {
-  const btn   = document.getElementById('btn-output-mode')
-  const label = document.getElementById('output-mode-label')
-  if (!btn || !label) return
-  const isStereo = state.audioMode === 'stereo'
-  label.textContent = CH_MODE_LABEL[state.audioMode] ?? '2.0'
-  btn.classList.toggle('active', !isStereo)
-}
-
-function syncChPanelOptions() {
-  // maxChannelCount is only known after AudioContext is created; before that, show all as available
-  const max = audioCtx ? audioCtx.destination.maxChannelCount : 32
-  document.querySelectorAll('.ch-option').forEach(opt => {
-    const need = parseInt(opt.dataset.ch)
-    opt.classList.toggle('disabled', need > max)
-    opt.classList.toggle('active', opt.dataset.mode === state.audioMode)
-  })
-}
-
-function toggleChPanel() {
-  const panel = document.getElementById('ch-panel')
-  if (!panel) return
-  const opening = !panel.classList.contains('open')
-  panel.classList.toggle('open', opening)
-  if (opening) syncChPanelOptions()
-}
-
-function chLabel(ch) {
-  if (ch <= 2) return 'Stereo'
-  if (ch === 4) return '4.0'
-  if (ch === 6) return '5.1'
-  if (ch === 8) return '7.1'
-  return `${ch}ch`
-}
-
 function updateFormatBadge(track) {
   const el = document.getElementById('np-format')
   if (!el) return
@@ -504,9 +181,9 @@ let ctxTarget = null  // { type: 'album'|'track', albumId, track, artist }
 
 // ── Init ───────────────────────────────────────────────────────────────────
 async function init() {
-  const [info, liked, audioSettings, eqSettings, savedQueues, qualitySources, playlists, likedTracks, playCounts, playHistory, followedArtists] = await Promise.all([
-    window.api.getAppInfo(), window.api.getLiked(), window.api.getAudioSettings(),
-    window.api.getEqSettings(), window.api.getSavedQueues(), window.api.getQualitySources(),
+  const [info, liked, savedQueues, qualitySources, playlists, likedTracks, playCounts, playHistory, followedArtists] = await Promise.all([
+    window.api.getAppInfo(), window.api.getLiked(),
+    window.api.getSavedQueues(), window.api.getQualitySources(),
     window.api.getPlaylists(), window.api.getLikedTracks(), window.api.getPlayCounts(),
     window.api.getPlayHistory(), window.api.getFollowedArtists(),
   ])
@@ -521,25 +198,32 @@ async function init() {
   state.savedSites     = info.savedSites     || []
   state.recentlyPlayed = info.recentlyPlayed || []
   state.likedAlbums    = liked || []
-  // Migrate old 'surround' value to 'stereo' (new panel handles mode selection)
-  const savedMode = audioSettings?.outputMode || 'stereo'
-  state.audioMode = CH_MODE_MAP[savedMode] ? savedMode : 'stereo'
-  state.eqEnabled      = eqSettings?.enabled ?? true
-  state.eqGains        = eqSettings?.gains   ?? [0,0,0,0,0,0,0,0,0,0]
-  state.eqPreamp       = eqSettings?.preamp  ?? 0
-  state.replayGainMode = eqSettings?.replayGainMode ?? 'track'
-  state.crossfadeSecs  = eqSettings?.crossfadeSecs ?? 0
   audio.volume = info.volume ?? 0.8
   state.lastVolume = audio.volume
   setVolDisplay(audio.volume)
-  updateOutputModeBtn()
 
   renderFolders()
   renderSavedSites()
   renderSavedQueues()
   renderQualitySources()
   initChatSidebar()
+  initPlaybackSettings()
   setupListeners()
+
+  const blocker = document.getElementById('mpv-blocker')
+  const showBlocker = show => { blocker.style.display = show ? 'flex' : 'none' }
+  window.api.on('player-event', ({ type }) => {
+    if (type === 'mpvMissing' || type === 'engineFailed') showBlocker(true)
+  })
+  const playerStatus = await window.api.playerGetStatus()
+  if (!playerStatus.available) showBlocker(true)
+  document.getElementById('mpv-recheck-btn').onclick = async () => {
+    const msg = document.getElementById('mpv-recheck-msg')
+    msg.textContent = 'Checking…'
+    const r = await window.api.playerRecheck()
+    if (r.available) { showBlocker(false); msg.textContent = '' }
+    else { msg.textContent = 'Still not found. Install mpv, then try again.' }
+  }
   window.api.slskStatus().then(s => { slsk.status = s }).catch(() => {})
   startDownloadsPolling(6000)
 
@@ -2313,6 +1997,7 @@ function renderQueuePanel() {
   clearBtn.addEventListener('click', () => {
     audio.pause()
     state.queue = []; state.queueIndex = -1; state.isPlaying = false
+    updateNextPrefetch()
     updatePlayBtn(); updateNowPlaying(null)
     renderQueuePanel()
   })
@@ -2544,8 +2229,6 @@ function hideNowPlayingModal() {
   if (artBg) artBg.src = ''
   const artImg = document.getElementById('np-modal-art-img')
   if (artImg) artImg.src = ''
-  const vizCanvas = document.getElementById('np-modal-viz')
-  if (vizCanvas) { const ctx = vizCanvas.getContext('2d'); ctx?.clearRect(0, 0, vizCanvas.width, vizCanvas.height) }
 }
 
 function updateNowPlayingModal() {
@@ -2659,19 +2342,27 @@ function playTrack(album, trackIdx) {
   playCurrentTrack()
 }
 
+// Mirror of playNext()'s selection, without side effects — used for gapless prefetch
+function computeNextIndex() {
+  if (state.repeat === 'one') return state.queueIndex
+  if (state.shuffle && state.queue.length > 1) return null // shuffle picks lazily; skip prefetch
+  if (state.queueIndex + 1 < state.queue.length) return state.queueIndex + 1
+  return state.repeat === 'all' ? 0 : null
+}
+
+function updateNextPrefetch() {
+  if (!state.queue.length) { audio.setNext(null); return }
+  const idx = computeNextIndex()
+  audio.setNext(idx == null ? null : state.queue[idx].filePath)
+}
+
 function playCurrentTrack() {
   const track = state.queue[state.queueIndex]
   if (!track) return
   if (!audio.paused && !audio.ended) audio.pause()
-  cleanupCrossfade()
-  // Apply gain before play() so the very first sample is already at the correct level
-  ensureAudioGraph()
-  applyReplayGain(track)
   audio.src = `file://${track.filePath}`
   audio.play().then(() => {
-    audioCtx?.resume()
     extractAlbumColor(track.artPath || null)
-    startViz()
     state.isPlaying = true
     updatePlayBtn()
     updateNowPlaying(track)
@@ -2694,6 +2385,7 @@ function playCurrentTrack() {
     updateLyricsDrawer()
     fetchLyrics(track).then(lines => { _lyrics = lines; renderLyricsPanel(); updateLyricsDrawer() })
     syncExtension()
+    updateNextPrefetch()
   }).catch(e => {
     console.error('Playback error:', e)
     state.isPlaying = false
@@ -2771,8 +2463,6 @@ function updatePlayBtn() {
   })
   document.getElementById('np-art')?.classList.toggle('paused-anim', !state.isPlaying)
   window.api.setPowerSave(state.isPlaying)
-  if (!state.isPlaying && audioCtx?.state === 'running' && !_appVisible) audioCtx.suspend()
-  if (state.isPlaying && audioCtx?.state === 'suspended') audioCtx.resume()
 }
 
 function updateTrackHighlight() {
@@ -3027,78 +2717,6 @@ async function searchAndSaveLyrics() {
   } finally {
     if (btn) { btn.classList.remove('searching'); btn.disabled = false }
   }
-}
-
-// ── Crossfade ───────────────────────────────────────────────────────────────
-function getNextTrackForCF() {
-  if (!state.queue.length) return null
-  if (state.repeat === 'one') return state.queue[state.queueIndex]
-  let idx
-  if (state.shuffle) {
-    do { idx = Math.floor(Math.random() * state.queue.length) }
-    while (idx === state.queueIndex && state.queue.length > 1)
-  } else {
-    idx = (state.queueIndex + 1) % state.queue.length
-    if (idx === 0 && state.repeat === 'off') return null
-  }
-  return state.queue[idx]
-}
-
-function startCrossfade(nextTrack) {
-  if (!nextTrack || !audioCtx || !masterGainNode) return
-  _cfActive = true
-  _cfNextTrack = nextTrack
-  _cfAudio = new Audio()
-  _cfAudio.crossOrigin = 'anonymous'
-  _cfAudio.src = `file://${nextTrack.filePath}`
-  _cfAudio.volume = 1
-  try {
-    _cfSrc = audioCtx.createMediaElementSource(_cfAudio)
-  } catch (_) { _cfActive = false; _cfAudio = null; return }
-  _cfRgGain = audioCtx.createGain()
-  _cfRgGain.gain.value = computeReplayGainValue(nextTrack)
-  _cfGain = audioCtx.createGain()
-  _cfGain.gain.value = 0
-  _cfSrc.connect(_cfRgGain)
-  _cfRgGain.connect(_cfGain)
-  _cfGain.connect(audioCtx.destination)
-  const dur = Math.max(0.5, state.crossfadeSecs)
-  const now = audioCtx.currentTime
-  masterGainNode.gain.cancelScheduledValues(now)
-  masterGainNode.gain.setValueAtTime(masterGainNode.gain.value, now)
-  masterGainNode.gain.linearRampToValueAtTime(0.0001, now + dur)
-  _cfGain.gain.cancelScheduledValues(now)
-  _cfGain.gain.setValueAtTime(0.0001, now)
-  _cfGain.gain.linearRampToValueAtTime(1, now + dur)
-  _cfAudio.play().catch(() => {})
-}
-
-function computeReplayGainValue(track) {
-  if (!track) return 1
-  const mode = state.replayGainMode
-  if (mode === 'off') return 1
-  const gainDb = mode === 'album'
-    ? (track.replayGainAlbum ?? track.replayGainTrack ?? 0)
-    : (track.replayGainTrack ?? 0)
-  return Math.pow(10, gainDb / 20)
-}
-
-function cleanupCrossfade() {
-  try { _cfAudio?.pause() } catch (_) {}
-  try { _cfSrc?.disconnect() } catch (_) {}
-  try { _cfRgGain?.disconnect() } catch (_) {}
-  try { _cfGain?.disconnect() } catch (_) {}
-  if (masterGainNode && audioCtx) {
-    const now = audioCtx.currentTime
-    masterGainNode.gain.cancelScheduledValues(now)
-    masterGainNode.gain.setValueAtTime(1, now)
-  }
-  _cfSrc = null
-  _cfRgGain = null
-  _cfGain = null
-  _cfAudio = null
-  _cfNextTrack = null
-  _cfActive = false
 }
 
 // ── Draggable bar ───────────────────────────────────────────────────────────
@@ -3729,6 +3347,7 @@ async function _executeTool(name, input) {
     case 'clear_queue': {
       state.queue = []; state.queueIndex = -1; state.isPlaying = false
       audio.pause(); audio.currentTime = 0
+      updateNextPrefetch()
       updatePlayBtn?.(); updateNowPlaying?.(null)
       if (state.queuePanelOpen) renderQueuePanel()
       return 'Queue cleared.'
@@ -3745,6 +3364,7 @@ async function _executeTool(name, input) {
       state.queue = current ? [current, ...rest] : rest
       state.queueIndex = 0
       if (state.queuePanelOpen) renderQueuePanel()
+      updateNextPrefetch()
       return `Queue shuffled — ${state.queue.length} tracks.`
     }
 
@@ -3787,6 +3407,7 @@ async function _executeTool(name, input) {
       const isActive = mode !== 'off'
       document.getElementById('btn-repeat')?.classList.toggle('active', isActive)
       document.getElementById('np-modal-repeat')?.classList.toggle('active', isActive)
+      updateNextPrefetch()
       return `Repeat set to ${mode}.`
     }
 
@@ -3794,14 +3415,8 @@ async function _executeTool(name, input) {
       state.shuffle = !!input.enabled
       document.getElementById('btn-shuffle')?.classList.toggle('active', state.shuffle)
       document.getElementById('np-modal-shuffle')?.classList.toggle('active', state.shuffle)
+      updateNextPrefetch()
       return `Shuffle ${state.shuffle ? 'on' : 'off'}.`
-    }
-
-    case 'set_eq_preset': {
-      const preset = input.preset || 'flat'
-      applyEqPreset(preset)
-      saveEqSettings()
-      return `EQ set to ${preset}.`
     }
 
     case 'set_speed': {
@@ -4160,6 +3775,42 @@ async function _initSettingsPanel() {
   })
 
   _refreshOllamaModels()
+}
+
+async function initPlaybackSettings() {
+  const cfg = await window.api.playerGetConfig()
+  const $ = id => document.getElementById(id)
+  $('pb-output-mode').value = cfg.outputMode
+  $('pb-mode').value = cfg.mode
+  $('pb-cf-secs').value = cfg.crossfadeSecs
+  $('pb-cf-label').textContent = `${cfg.crossfadeSecs}s`
+  $('pb-replaygain').value = cfg.replaygain
+  $('pb-channels').value = cfg.channels
+  $('pb-boost').checked = !!cfg.boost
+  $('pb-device-row').style.display = cfg.outputMode === 'exclusive' ? '' : 'none'
+  $('pb-cf-row').style.display = cfg.mode === 'crossfade' ? '' : 'none'
+
+  const devices = await window.api.playerListDevices()
+  $('pb-alsa-device').innerHTML = devices
+    .filter(d => d.name.startsWith('alsa/'))
+    .map(d => `<option value="${d.name}" ${d.name === cfg.alsaDevice ? 'selected' : ''}>${d.description}</option>`)
+    .join('')
+
+  const apply = (partial) => window.api.playerSetConfig(partial)
+  $('pb-output-mode').onchange = e => {
+    $('pb-device-row').style.display = e.target.value === 'exclusive' ? '' : 'none'
+    apply({ outputMode: e.target.value, alsaDevice: $('pb-alsa-device').value || null })
+  }
+  $('pb-alsa-device').onchange = e => apply({ alsaDevice: e.target.value })
+  $('pb-mode').onchange = e => {
+    $('pb-cf-row').style.display = e.target.value === 'crossfade' ? '' : 'none'
+    apply({ mode: e.target.value })
+  }
+  $('pb-cf-secs').oninput = e => { $('pb-cf-label').textContent = `${e.target.value}s` }
+  $('pb-cf-secs').onchange = e => apply({ crossfadeSecs: Number(e.target.value) })
+  $('pb-replaygain').onchange = e => apply({ replaygain: e.target.value })
+  $('pb-channels').onchange = e => apply({ channels: e.target.value })
+  $('pb-boost').onchange = e => apply({ boost: e.target.checked })
 }
 
 function _updateProviderRows(provider) {
@@ -6739,6 +6390,7 @@ function setupListeners() {
     state.shuffle = !state.shuffle
     this.classList.toggle('active', state.shuffle)
     document.getElementById('np-modal-shuffle')?.classList.toggle('active', state.shuffle)
+    updateNextPrefetch()
   })
 
   document.getElementById('btn-repeat')?.addEventListener('click', function() {
@@ -6748,6 +6400,7 @@ function setupListeners() {
     this.classList.toggle('active', isActive)
     this.title = state.repeat === 'one' ? 'Repeat: one' : state.repeat === 'all' ? 'Repeat: all' : 'Repeat (R)'
     document.getElementById('np-modal-repeat')?.classList.toggle('active', isActive)
+    updateNextPrefetch()
   })
 
   // Like button (player bar)
@@ -6876,41 +6529,6 @@ function setupListeners() {
     hideContextMenu()
   })
 
-  // EQ panel
-  document.getElementById('btn-eq')?.addEventListener('click', toggleEqPanel)
-  document.getElementById('eq-enabled')?.addEventListener('change', function() {
-    state.eqEnabled = this.checked
-    applyAllEqGains()
-    saveEqSettings()
-  })
-  document.querySelectorAll('.eq-preset-btn').forEach(btn => {
-    btn.addEventListener('click', () => applyEqPreset(btn.dataset.preset))
-  })
-  document.getElementById('rg-mode')?.addEventListener('change', function() {
-    state.replayGainMode = this.value
-    const track = state.queue[state.queueIndex]
-    if (track) applyReplayGain(track)
-    saveEqSettings()
-  })
-  document.getElementById('eq-preamp')?.addEventListener('input', function() {
-    state.eqPreamp = parseFloat(this.value)
-    const label = document.getElementById('eq-preamp-label')
-    if (label) label.textContent = `${state.eqPreamp >= 0 ? '+' : ''}${state.eqPreamp}dB`
-    applyPreamp(state.eqPreamp)
-    saveEqSettings()
-  })
-  const cfSlider = document.getElementById('eq-crossfade')
-  if (cfSlider) {
-    cfSlider.value = state.crossfadeSecs
-    const cfLabel = document.getElementById('eq-crossfade-label')
-    if (cfLabel) cfLabel.textContent = state.crossfadeSecs > 0 ? `${state.crossfadeSecs}s` : 'Off'
-    cfSlider.addEventListener('input', function() {
-      state.crossfadeSecs = parseInt(this.value)
-      if (cfLabel) cfLabel.textContent = state.crossfadeSecs > 0 ? `${state.crossfadeSecs}s` : 'Off'
-      saveEqSettings()
-    })
-  }
-
   // Playback speed
   document.getElementById('btn-speed')?.addEventListener('click', cycleSpeed)
 
@@ -6928,24 +6546,6 @@ function setupListeners() {
   document.addEventListener('click', e => {
     if (!e.target.closest('#sleep-panel') && !e.target.closest('#btn-sleep'))
       document.getElementById('sleep-panel')?.classList.remove('open')
-  })
-
-  // Audio output channel panel
-  document.getElementById('btn-output-mode')?.addEventListener('click', toggleChPanel)
-  document.querySelectorAll('.ch-option').forEach(opt => {
-    opt.addEventListener('click', () => {
-      if (opt.classList.contains('disabled')) return
-      state.audioMode = opt.dataset.mode
-      // Init audio graph if user hasn't played anything yet so applyAudioMode works
-      if (!audioCtx) ensureAudioGraph()
-      applyAudioMode()
-      window.api.saveAudioSettings({ outputMode: state.audioMode })
-      document.getElementById('ch-panel')?.classList.remove('open')
-    })
-  })
-  document.addEventListener('click', e => {
-    if (!e.target.closest('#ch-panel') && !e.target.closest('#btn-output-mode'))
-      document.getElementById('ch-panel')?.classList.remove('open')
   })
 
   // Queue panel
@@ -6970,6 +6570,7 @@ function setupListeners() {
     state.shuffle = !state.shuffle
     this.classList.toggle('active', state.shuffle)
     document.getElementById('btn-shuffle')?.classList.toggle('active', state.shuffle)
+    updateNextPrefetch()
   })
   document.getElementById('np-modal-repeat')?.addEventListener('click', function() {
     const states = ['off','all','one']
@@ -6977,6 +6578,7 @@ function setupListeners() {
     const isActive = state.repeat !== 'off'
     this.classList.toggle('active', isActive)
     document.getElementById('btn-repeat')?.classList.toggle('active', isActive)
+    updateNextPrefetch()
   })
 
   // Context menu actions
@@ -7115,15 +6717,6 @@ function setupListeners() {
       const track = state.queue[state.queueIndex]
       if (track) window.api.savePlaybackState({ filePath: track.filePath, position: ct })
     }
-    // Crossfade trigger (must run in background too)
-    if (state.crossfadeSecs > 0 && !_cfActive && audio.duration &&
-        (audio.duration - ct) <= state.crossfadeSecs + 0.5 &&
-        (audio.duration - ct) > 0.2) {
-      const nextTrack = getNextTrackForCF()
-      if (nextTrack && nextTrack.filePath !== state.queue[state.queueIndex]?.filePath) {
-        startCrossfade(nextTrack)
-      }
-    }
 
     // ── Skip all DOM updates when app is hidden ───────────────────────────
     if (!_appVisible) return
@@ -7146,43 +6739,36 @@ function setupListeners() {
     if (mt) mt.textContent = fmtDur(audio.duration)
   })
   audio.addEventListener('ended', () => {
-    if (_cfActive && _cfNextTrack && _cfAudio) {
-      const nextTrack = _cfNextTrack
-      const nextIdx = state.queue.findIndex(t => t.filePath === nextTrack.filePath)
-      const resumePos = _cfAudio.currentTime || 0
-      cleanupCrossfade()
-      if (nextIdx >= 0) state.queueIndex = nextIdx
-      else state.queueIndex = (state.queueIndex + 1) % state.queue.length
-      audio.src = `file://${nextTrack.filePath}`
-      const onMeta = () => {
-        if (resumePos > 0 && resumePos < (audio.duration || Infinity)) audio.currentTime = resumePos
-        audio.removeEventListener('loadedmetadata', onMeta)
-      }
-      audio.addEventListener('loadedmetadata', onMeta)
-      audio.play().then(() => {
-        ensureAudioGraph()
-        audioCtx?.resume()
-        applyReplayGain(nextTrack)
-        extractAlbumColor(nextTrack.artPath || null)
-        startViz()
-        state.isPlaying = true
-        updatePlayBtn()
-        updateNowPlaying(nextTrack)
-        updateTrackHighlight()
-        updatePlayerLikeBtn()
-        if (state.queuePanelOpen) renderQueuePanel()
-        if (state.modalOpen) { updateNowPlayingModal(); syncModalPlayBtn() }
-        window.api.savePlaybackState({ filePath: nextTrack.filePath, position: resumePos })
-        window.api.notifyTrack({ title: nextTrack.title, artist: nextTrack.albumArtist || nextTrack.artist || '', artPath: nextTrack.artPath || null })
-        _lyrics = null
-        renderLyricsPanel()
-        updateLyricsDrawer()
-        fetchLyrics(nextTrack).then(lines => { _lyrics = lines; renderLyricsPanel(); updateLyricsDrawer() })
-        syncExtension()
-      }).catch(() => playNext())
-      return
-    }
     playNext()
+  })
+  audio.addEventListener('autoadvanced', (e) => {
+    // mpv already switched tracks gaplessly — sync UI state without reloading
+    const idx = state.queue.findIndex(t => t.filePath === e.detail)
+    if (idx === -1) return
+    state.queueIndex = idx
+    const track = state.queue[idx]
+    state.isPlaying = true
+    updatePlayBtn()
+    updateNowPlaying(track)
+    updateTrackHighlight()
+    updatePlayerLikeBtn()
+    if (state.queuePanelOpen) renderQueuePanel()
+    if (state.modalOpen) { updateNowPlayingModal(); syncModalPlayBtn() }
+    window.api.savePlaybackState({ filePath: track.filePath, position: 0 })
+    state.playCounts[track.filePath] = (state.playCounts[track.filePath] || 0) + 1
+    window.api.incrementPlayCount(track.filePath)
+    _lyrics = null
+    renderLyricsPanel()
+    updateLyricsDrawer()
+    fetchLyrics(track).then(lines => { _lyrics = lines; renderLyricsPanel(); updateLyricsDrawer() })
+    syncExtension()
+    updateNextPrefetch()
+  })
+  audio.addEventListener('audioparams', (e) => {
+    const el = document.getElementById('np-format')
+    if (!el) return
+    const p = e.detail
+    el.textContent = p?.samplerate ? `${(p.format || '').toUpperCase()} ${Math.round(p.samplerate / 1000)}kHz` : ''
   })
   audio.addEventListener('error', e => console.error('Audio error:', e))
 
@@ -7268,6 +6854,7 @@ function setupListeners() {
       state.shuffle = !state.shuffle
       document.getElementById('btn-shuffle')?.classList.toggle('active', state.shuffle)
       document.getElementById('np-modal-shuffle')?.classList.toggle('active', state.shuffle)
+      updateNextPrefetch()
       syncExtension()
       return
     }
@@ -7353,6 +6940,7 @@ function setupListeners() {
     if (cmd === 'clear-queue') {
       audio.pause()
       state.queue = []; state.queueIndex = -1; state.isPlaying = false
+      updateNextPrefetch()
       updatePlayBtn(); updateNowPlaying(null)
       if (state.queuePanelOpen) renderQueuePanel()
       syncExtension()
@@ -7474,6 +7062,7 @@ function setupListeners() {
     if (e.key === 's' || e.key === 'S') {
       state.shuffle = !state.shuffle
       document.getElementById('btn-shuffle')?.classList.toggle('active', state.shuffle)
+      updateNextPrefetch()
       return
     }
     // Repeat
@@ -7481,8 +7070,6 @@ function setupListeners() {
       document.getElementById('btn-repeat')?.click()
       return
     }
-    // EQ panel toggle
-    if (e.key === 'e' || e.key === 'E') { toggleEqPanel(); return }
     // Playback speed cycle
     if (e.key === 'x' || e.key === 'X') { cycleSpeed(); return }
     // Lyrics drawer toggle

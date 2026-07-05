@@ -17,7 +17,7 @@
 - mpv is a **hard requirement**: no `<audio>` fallback; blocking setup screen when missing.
 - ReplayGain via mpv `--replaygain` (`no`/`track`/`album`). Crossfade via two mpv instances; crossfade ⊕ gapless (settings toggle, default gapless).
 - Style: 2-space indent, CommonJS `require`, match existing file conventions. No new npm dependencies.
-- Tests run with `npm test` → `node --test test/`. TDD: write test → see it fail → implement → see it pass → commit.
+- Tests run with `npm test` → `node --test 'test/**/*.test.js'` (bare `node --test test/` is broken on this Node v24 — spurious failure). TDD: write test → see it fail → implement → see it pass → commit.
 - After editing any renderer/main file, run `node --check <file>` before committing.
 - Settings store key `playerSettings`: `{ outputMode:'default'|'exclusive', alsaDevice:string|null, mode:'gapless'|'crossfade', crossfadeSecs:number(4), replaygain:'no'|'track'|'album' }`.
 - `player-event` messages to renderer: `{ type, data }` with types `position|duration|paused|volume|audioParams|trackChanged|autoAdvanced|ended|loadError|engineDown|engineFailed|mpvMissing`.
@@ -35,7 +35,7 @@
 - Consumes: nothing (leaf module).
 - Produces: `class MpvIpcClient extends EventEmitter` with `connect(timeoutMs=5000):Promise`, `command(...args):Promise<data>`, `observe(id, prop):Promise`, `close()`. Emits `'event'` (parsed mpv event objects) and `'disconnected'`. Export: `{ MpvIpcClient, COMMAND_TIMEOUT_MS }`.
 
-- [ ] **Step 1: Add test script to package.json**
+- [x] **Step 1: Add test script to package.json**
 
 In `package.json` `"scripts"`, add:
 
@@ -43,7 +43,7 @@ In `package.json` `"scripts"`, add:
 "test": "node --test test/"
 ```
 
-- [ ] **Step 2: Write the failing tests**
+- [x] **Step 2: Write the failing tests**
 
 Create `test/mpv-ipc.test.js`:
 
@@ -136,12 +136,12 @@ test('connect retries until socket exists, fails after timeout', async () => {
 })
 ```
 
-- [ ] **Step 3: Run tests to verify they fail**
+- [x] **Step 3: Run tests to verify they fail**
 
 Run: `npm test`
 Expected: FAIL — `Cannot find module '../mpv-ipc'`
 
-- [ ] **Step 4: Implement mpv-ipc.js**
+- [x] **Step 4: Implement mpv-ipc.js**
 
 Create `mpv-ipc.js`:
 
@@ -256,12 +256,12 @@ class MpvIpcClient extends EventEmitter {
 module.exports = { MpvIpcClient, COMMAND_TIMEOUT_MS }
 ```
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 Run: `npm test`
 Expected: all 6 tests PASS
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add package.json mpv-ipc.js test/mpv-ipc.test.js
@@ -281,7 +281,7 @@ git commit -m "feat: mpv JSON IPC client with request matching and timeouts"
 - Consumes: `MpvIpcClient` from `mpv-ipc.js`.
 - Produces: `class MpvEngine extends EventEmitter`. Constructor `new MpvEngine({ binary?, config?, spawnFn?, socketPath? })` (last two are test injection). Methods: `start():Promise`, `stop()`, `load(path, {play=true}):Promise`, `setNext(path|null):Promise`, `play():Promise`, `pause():Promise`, `seek(seconds):Promise`, `setVolume(0-100):Promise`, `setSpeed(x):Promise`, `setReplaygain('no'|'track'|'album'):Promise`, `listAudioDevices():Promise<[{name,description}]>`, `restart(newConfig):Promise`, `getState():{path,position,duration,paused,volume,audioParams}`. Events: `ready`, `position(sec)`, `duration(sec)`, `paused(bool)`, `volume(0-100)`, `audioParams({samplerate,format,channels})`, `trackChanged(path)`, `autoAdvanced(path)`, `ended`, `loadError(path)`, `engineDown`, `engineFailed`. Export: `{ MpvEngine }`.
 
-- [ ] **Step 1: Write failing unit tests (mock spawn + mock server)**
+- [x] **Step 1: Write failing unit tests (mock spawn + mock server)**
 
 Create `test/mpv-engine.test.js`:
 
@@ -443,12 +443,12 @@ test('default config uses no device pinning and gapless weak', () => {
 })
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `npm test`
 Expected: FAIL — `Cannot find module '../mpv-engine'`
 
-- [ ] **Step 3: Implement mpv-engine.js**
+- [x] **Step 3: Implement mpv-engine.js**
 
 Create `mpv-engine.js`:
 
@@ -670,12 +670,12 @@ class MpvEngine extends EventEmitter {
 module.exports = { MpvEngine }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `npm test`
 Expected: all Task 1 + Task 2 tests PASS
 
-- [ ] **Step 5: Write integration test against real mpv (auto-skips when absent)**
+- [x] **Step 5: Write integration test against real mpv (auto-skips when absent)**
 
 Create `test/mpv-engine.integration.test.js`:
 
@@ -745,12 +745,12 @@ test('real mpv: survives kill -9 via respawn', { skip: !hasMpv || !hasFfmpeg }, 
 })
 ```
 
-- [ ] **Step 6: Run tests (integration skips until mpv installed — that's expected)**
+- [x] **Step 6: Run tests (integration skips until mpv installed — that's expected)**
 
 Run: `npm test`
 Expected: unit tests PASS; integration tests report `# SKIP` if mpv/ffmpeg missing. Once `sudo dnf install -y mpv` has been run, re-run and expect PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add mpv-engine.js test/mpv-engine.test.js test/mpv-engine.integration.test.js
@@ -769,7 +769,7 @@ git commit -m "feat: mpv engine with lifecycle, gapless prefetch, respawn recove
 - Consumes: two objects with the `MpvEngine` surface (injected via factory for tests).
 - Produces: `class MpvCrossfade extends EventEmitter` with the **same public surface as MpvEngine** (`start/stop/load/setNext/play/pause/seek/setVolume/setSpeed/setReplaygain/listAudioDevices/restart/getState`) so `main.js` can hold either behind one variable. Extra constructor opts: `{ crossfadeSecs=4, engineFactory, tickMs=100 }`. Re-emits active-engine events; on fade completion emits `autoAdvanced(path)`. Export: `{ MpvCrossfade }`.
 
-- [ ] **Step 1: Write failing tests with fake engines**
+- [x] **Step 1: Write failing tests with fake engines**
 
 Create `test/mpv-crossfade.test.js`:
 
@@ -871,12 +871,12 @@ test('getState reflects active engine', async () => {
 })
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `npm test`
 Expected: FAIL — `Cannot find module '../mpv-crossfade'`
 
-- [ ] **Step 3: Implement mpv-crossfade.js**
+- [x] **Step 3: Implement mpv-crossfade.js**
 
 Create `mpv-crossfade.js`:
 
@@ -974,12 +974,12 @@ class MpvCrossfade extends EventEmitter {
 module.exports = { MpvCrossfade }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `npm test`
 Expected: all tests PASS (integration still SKIP without mpv)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add mpv-crossfade.js test/mpv-crossfade.test.js
@@ -1003,7 +1003,7 @@ App still plays through `<audio>` after this task — it just loses EQ/viz (appr
 - Consumes: nothing.
 - Produces: a renderer with **no** references to `audioCtx`, `AudioContext`, `analyser`, `eq`, `startViz`, `_cf`. `playCurrentTrack()` (renderer.js:2662) plays via bare `audio.src`/`audio.play()` with the graph calls removed. ReplayGain UI is gone for now (returns via mpv in Task 7).
 
-- [ ] **Step 1: Delete renderer Web Audio / EQ / viz / crossfade code**
+- [x] **Step 1: Delete renderer Web Audio / EQ / viz / crossfade code**
 
 In `src/renderer.js`, delete (find each with the grep below — line numbers will drift):
 - The state variables at top: `audioCtx`, `audioSource`, `replayGainNode`, `preampNode`, `eqNodes`, `analyserNode`, `_cfAudio`, `_cfSrc`, `_cfGain`, `_cfRgGain`, `_cfActive`, `_cfNextTrack`, and any `eqEnabled/eqGains/eqPreamp` fields in `state`.
@@ -1019,7 +1019,7 @@ grep -n -iE "audioCtx|AudioContext|analyser|eqNodes|eqGains|eqPreamp|eq-panel|bt
 
 Expected after edits: no output.
 
-- [ ] **Step 2: Delete markup and CSS**
+- [x] **Step 2: Delete markup and CSS**
 
 - `src/index.html`: delete the viz canvas (line 376), the EQ button (line 394), the now-playing-modal viz canvas (line 432), and the whole `#eq-panel` block (lines 562-~605).
 - `src/styles.css`: delete all `.eq-*`, `.viz-canvas`, `.np-modal-viz` rules.
@@ -1032,12 +1032,12 @@ grep -n -iE "eq-|viz" src/index.html src/styles.css
 
 Expected: no output (ignore unrelated matches like "request" — refine with `grep -w` if needed).
 
-- [ ] **Step 3: Delete main/preload EQ settings plumbing**
+- [x] **Step 3: Delete main/preload EQ settings plumbing**
 
 - `main.js`: delete the `get-eq-settings` handle and `save-eq-settings` listener (lines 616-620).
 - `preload.js`: delete lines 56-58 (`getEqSettings`, `saveEqSettings`).
 
-- [ ] **Step 4: Syntax-check and manually verify**
+- [x] **Step 4: Syntax-check and manually verify**
 
 ```bash
 node --check src/renderer.js && node --check main.js && node --check preload.js && npm test
@@ -1045,7 +1045,7 @@ node --check src/renderer.js && node --check main.js && node --check preload.js 
 
 Expected: no syntax errors, tests still pass. Then `npm start`: play a track — audio works, no console errors, EQ button and visualizer gone, crossfade slider gone.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A
@@ -1069,7 +1069,7 @@ git commit -m "refactor: remove EQ, visualizer, Web Audio graph, and element cro
   - `playerListDevices()` → mpv `audio-device-list` array.
   - Event channel `'player-event'` with `{ type, data }` (types listed in Global Constraints).
 
-- [ ] **Step 1: Add player module to main.js**
+- [x] **Step 1: Add player module to main.js**
 
 In `main.js`, after the existing `require` block at the top, add:
 
@@ -1183,7 +1183,7 @@ ipcMain.handle('player-set-config', async (_, partial) => {
 
 Call `initPlayer()` where the app finishes creating the window — find the line `initMpris()` (main.js:346) and add `initPlayer()` directly after it. Also add to the app-quit path (search `app.isQuitting = true`): `player?.stop()`.
 
-- [ ] **Step 2: Expose player API in preload.js**
+- [x] **Step 2: Expose player API in preload.js**
 
 In `preload.js`, add before the `// Events from main process` comment:
 
@@ -1204,7 +1204,7 @@ In `preload.js`, add before the `// Events from main process` comment:
 
 In the `allowed` channel list (preload.js:143-148), add `'player-event'` and `'media-seek'` (the MPRIS seek channel at main.js:431-432 sends `media-seek`, which the current allowlist silently drops — pre-existing bug, fixed here).
 
-- [ ] **Step 3: Verify**
+- [x] **Step 3: Verify**
 
 ```bash
 node --check main.js && node --check preload.js && npm test
@@ -1220,7 +1220,7 @@ await window.api.playerLoad({ path: '/mnt/data/MUSIC/<any file>.flac', play: tru
 // With mpv installed: audio plays OUTSIDE the <audio> element (old UI stays silent/idle)
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add main.js preload.js
@@ -1240,7 +1240,7 @@ git commit -m "feat: player IPC surface wiring mpv engine into main process"
 - Consumes: `window.api.player*` and `window.api.on('player-event')` from Task 5.
 - Produces: global `window.__papaPlayer` — an `EventTarget` implementing the `HTMLAudioElement` subset the renderer uses: `src` (get/set, accepts `file://` URLs), `play():Promise`, `pause()`, `paused`, `ended`, `currentTime` (get/set), `duration`, `volume` (0..1 get/set), `playbackRate` (set). Events dispatched: `timeupdate`, `loadedmetadata`, `durationchange`, `play`, `pause`, `ended`, `error`, plus custom `autoadvanced` (`detail: path`) and `audioparams` (`detail: {samplerate, format, channels}`).
 
-- [ ] **Step 1: Implement the shim**
+- [x] **Step 1: Implement the shim**
 
 Create `src/player-shim.js`:
 
@@ -1331,14 +1331,14 @@ class PapaPlayerShim extends EventTarget {
 window.__papaPlayer = new PapaPlayerShim()
 ```
 
-- [ ] **Step 2: Load shim and drop the element**
+- [x] **Step 2: Load shim and drop the element**
 
 In `src/index.html`:
 - Delete `<audio id="audio"></audio>` (line ~690).
 - Immediately before the `<script src="renderer.js">` tag, add `<script src="player-shim.js"></script>`.
 - In the player bar, next to the track title/artist block, add the live format chip: `<span class="np-format" id="np-format"></span>` and in `src/styles.css`: `.np-format { font-size: 10px; opacity: .6; margin-left: 8px; letter-spacing: .5px; }`.
 
-- [ ] **Step 3: Swap the renderer onto the shim**
+- [x] **Step 3: Swap the renderer onto the shim**
 
 In `src/renderer.js`:
 
@@ -1412,7 +1412,7 @@ audio.addEventListener('audioparams', (e) => {
 
 **Cross-check the UI-update calls above against the real `.then()` body of `playCurrentTrack()` (renderer.js:2670-2695)** — reuse exactly the functions it calls (they exist today: `updatePlayBtn`, `updateNowPlaying`, `updateTrackHighlight`, `updatePlayerLikeBtn`, `renderQueuePanel`, `updateNowPlayingModal`, `syncModalPlayBtn`, `syncExtension`).
 
-- [ ] **Step 4: Verify end-to-end**
+- [x] **Step 4: Verify end-to-end**
 
 ```bash
 node --check src/renderer.js src/player-shim.js && npm test
@@ -1425,7 +1425,7 @@ Then `npm start` (mpv must be installed by now — if not, install first):
 - Format chip shows e.g. `FLAC 44kHz` / `FLAC 96kHz` while playing.
 - Restart app → playback state resumes at saved position, paused.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A
@@ -1445,7 +1445,7 @@ git commit -m "feat: renderer plays through mpv via HTMLAudioElement-compatible 
 - Consumes: `window.api.playerGetConfig/playerSetConfig/playerListDevices` (Task 5).
 - Produces: user-visible settings persisted in `playerSettings`; engine restarts seamlessly on structural changes.
 
-- [ ] **Step 1: Add markup**
+- [x] **Step 1: Add markup**
 
 Inside `#mcs-panel-settings` (src/index.html line ~207), before existing content, add:
 
@@ -1481,7 +1481,7 @@ Inside `#mcs-panel-settings` (src/index.html line ~207), before existing content
 </div>
 ```
 
-- [ ] **Step 2: Wire it in renderer.js**
+- [x] **Step 2: Wire it in renderer.js**
 
 Add near the other settings wiring (find with `grep -n "mcs-set-save-btn" src/renderer.js`):
 
@@ -1521,7 +1521,7 @@ async function initPlaybackSettings() {
 
 Call `initPlaybackSettings()` from `init()` (renderer.js:506).
 
-- [ ] **Step 3: Verify**
+- [x] **Step 3: Verify**
 
 ```bash
 node --check src/renderer.js && npm test
@@ -1532,7 +1532,7 @@ node --check src/renderer.js && npm test
 - ReplayGain Track/Album applies without playback interruption.
 - Output → Bit-perfect lists ALSA devices; selecting one restarts engine and resumes.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add -A
@@ -1554,7 +1554,7 @@ git commit -m "feat: playback settings — output mode, gapless/crossfade, Repla
 - Consumes: `player-event` types `mpvMissing` / `engineFailed`; `playerGetStatus()`.
 - Produces: full-screen overlay `#mpv-blocker` that blocks all interaction until mpv is available; `window.api.playerRecheck()` → main re-runs `initPlayer()` and returns `{ available }`.
 
-- [ ] **Step 1: Markup + styles**
+- [x] **Step 1: Markup + styles**
 
 At the end of `<body>` in `src/index.html` (before scripts):
 
@@ -1584,7 +1584,7 @@ At the end of `<body>` in `src/index.html` (before scripts):
   background: var(--accent, #1db954); color: #000; font-weight: 600; cursor: pointer; }
 ```
 
-- [ ] **Step 2: Recheck handler in main + preload**
+- [x] **Step 2: Recheck handler in main + preload**
 
 `main.js` (in the player section from Task 5):
 
@@ -1598,7 +1598,7 @@ ipcMain.handle('player-recheck', async () => {
 
 `preload.js`: add `playerRecheck: () => ipcRenderer.invoke('player-recheck'),` next to the other player methods.
 
-- [ ] **Step 3: Renderer wiring**
+- [x] **Step 3: Renderer wiring**
 
 In `src/renderer.js` `init()` (renderer.js:506), add:
 
@@ -1619,11 +1619,11 @@ document.getElementById('mpv-recheck-btn').onclick = async () => {
 }
 ```
 
-- [ ] **Step 4: Verify**
+- [x] **Step 4: Verify**
 
 Temporarily rename the mpv binary lookup to simulate absence: launch with `PATH=/usr/bin-nonexistent npm start` is impractical for Electron; instead test by editing `detectMpv()` to `return false`, launch, confirm blocker shows and app is unusable behind it, revert the edit, click "check again" → blocker clears and playback works. Also `kill -9` the mpv PID 4+ times within a minute while playing → `engineFailed` → blocker appears.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A
@@ -1655,7 +1655,7 @@ git commit -m "feat: blocking setup screen when mpv is missing or unrecoverable"
 
 Record any failure as a bug, fix using superpowers:systematic-debugging before proceeding.
 
-- [ ] **Step 2: Update CLAUDE.md**
+- [x] **Step 2: Update CLAUDE.md**
 
 In `CLAUDE.md` Stack section add:
 
@@ -1665,7 +1665,7 @@ In `CLAUDE.md` Stack section add:
 
 And under behavior rules: `8. Never reintroduce Web Audio / AudioContext processing — playback must stay in mpv.`
 
-- [ ] **Step 3: Final commit**
+- [x] **Step 3: Final commit**
 
 ```bash
 git add -A

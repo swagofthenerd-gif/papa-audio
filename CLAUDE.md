@@ -9,6 +9,7 @@ Find and download the music the user asks for, however necessary. This is the on
 - Soulseek daemon (slskd) at `http://localhost:5030/api/v0` — JWT auth with username/password `slskd`/`slskd`
 - Music library: `/mnt/data/MUSIC` (scanned recursively; downloads go to `/mnt/data/MUSIC/Downloads/`)
 - slskd runs externally as PID ~466166, connected as Soulseek user "sherrybaaz"
+- Playback: mpv engine (`mpv-engine.js`, JSON IPC) — NOT the <audio> element. Purist mode: no EQ, no visualizer. Settings in electron-store key `playerSettings`. Renderer talks to it via `src/player-shim.js` (`window.__papaPlayer`). mpv is a hard requirement (`dnf install mpv`).
 
 ## How searching works
 - `slsk-search` IPC handler fires a slskd POST `/searches` with up to 6 query variants in parallel
@@ -26,6 +27,7 @@ Find and download the music the user asks for, however necessary. This is the on
 5. **Play buttons must always be visible** (not hidden behind hover). `opacity: .85` always on.
 6. **Progressive search display** — show results as each search variant completes; never make the user wait for all variants to finish before seeing anything.
 7. **Quality sources** in settings: Lucida, Monochrome, Lydia (`https://lydia.to/search?q={query}`), HDtracks, Qobuz, Beets.
+8. **Never reintroduce Web Audio / AudioContext processing** — playback must stay in mpv.
 
 ## Key IPC handlers (main.js)
 - `slsk-search` — start search, poll, return merged results

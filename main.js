@@ -3,7 +3,10 @@ const path = require('path')
 const fs = require('fs')
 const crypto = require('crypto')
 const https = require('https')
-const { spawn, execSync } = require('child_process')
+const { spawn, execSync, execFileSync } = require('child_process')
+const { MpvEngine } = require('./mpv-engine')
+const { MpvCrossfade } = require('./mpv-crossfade')
+const { linearToMpv } = require('./volume-map')
 let natUpnp; try { natUpnp = require('nat-upnp') } catch (_) {}
 
 // Strip the automation flag so Cloudflare/bot-checks don't see navigator.webdriver = true
@@ -344,6 +347,7 @@ app.whenReady().then(() => {
   }
   createWindow()
   initMpris()          // MPRIS D-Bus first; media-key grab only as fallback
+  initPlayer()
   createTray()
   setupLibraryWatcher()
   if (fs.existsSync(SLSKD_BIN)) startSlskd().catch(() => {})
@@ -351,6 +355,7 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
 app.on('will-quit', () => {
+  player?.stop()
   stopSlskd()
   try { if (fs.existsSync(NOW_PLAYING_PATH)) fs.unlinkSync(NOW_PLAYING_PATH) } catch (_) {}
   globalShortcut.unregisterAll()
@@ -399,6 +404,121 @@ function registerMediaKeys() {
   globalShortcut.register('MediaNextTrack',     () => mainWindow?.webContents.send('media-key', 'next'))
   globalShortcut.register('MediaPreviousTrack', () => mainWindow?.webContents.send('media-key', 'prev'))
 }
+
+// ── mpv player engine ─────────────────────────────────────────────────────────
+let player = null
+let mpvAvailable = false
+
+function getPlayerSettings() {
+  return {
+    outputMode: 'default', alsaDevice: null,
+    mode: 'gapless', crossfadeSecs: 4, replaygain: 'no',
+    channels: 'auto', boost: false,
+    ...store.get('playerSettings', {}),
+  }
+}
+
+function detectMpv() {
+  try { execFileSync('mpv', ['--version'], { stdio: 'ignore' }); return true } catch { return false }
+}
+
+function sendPlayerEvent(type, data) {
+  mainWindow?.webContents.send('player-event', { type, data })
+}
+
+function buildPlayer(cfg) {
+  const engineConfig = {
+    outputMode: cfg.outputMode, alsaDevice: cfg.alsaDevice,
+    replaygain: cfg.replaygain, gapless: cfg.mode === 'gapless',
+    audioChannels: cfg.channels,
+  }
+  const p = cfg.mode === 'crossfade'
+    ? new MpvCrossfade({ crossfadeSecs: cfg.crossfadeSecs, engineOpts: { config: engineConfig } })
+    : new MpvEngine({ config: engineConfig })
+  p.on('position',     d => sendPlayerEvent('position', d))
+  p.on('duration',     d => sendPlayerEvent('duration', d))
+  p.on('paused',       d => sendPlayerEvent('paused', d))
+  p.on('audioParams',  d => sendPlayerEvent('audioParams', d))
+  p.on('autoAdvanced', d => sendPlayerEvent('autoAdvanced', d))
+  p.on('trackChanged', d => sendPlayerEvent('trackChanged', d))
+  p.on('ended',        () => sendPlayerEvent('ended'))
+  p.on('loadError',    d => sendPlayerEvent('loadError', d))
+  p.on('engineDown',   () => sendPlayerEvent('engineDown'))
+  p.on('engineFailed', () => sendPlayerEvent('engineFailed'))
+  return p
+}
+
+async function initPlayer() {
+  mpvAvailable = detectMpv()
+  if (!mpvAvailable) { sendPlayerEvent('mpvMissing'); return }
+  player = buildPlayer(getPlayerSettings())
+  try { await player.start() } catch (e) {
+    console.error('mpv engine failed to start:', e)
+    sendPlayerEvent('engineFailed')
+  }
+}
+
+const wrap = fn => async (...args) => {
+  if (!player) return { ok: false, error: 'engine unavailable' }
+  try { await fn(...args); return { ok: true } } catch (e) { return { ok: false, error: String(e.message || e) } }
+}
+
+ipcMain.handle('player-load',       (_, { path: p, play }) => wrap(() => player.load(p, { play }))())
+ipcMain.handle('player-set-next',   (_, p) => wrap(() => player.setNext(p))())
+ipcMain.handle('player-play',       () => wrap(() => player.play())())
+ipcMain.handle('player-pause',      () => wrap(() => player.pause())())
+ipcMain.handle('player-seek',       (_, s) => wrap(() => player.seek(s))())
+// Renderer sends linear 0–100 (HTMLAudioElement semantics); mpv softvol is
+// cubic, so convert or everything below max plays several dB too quiet.
+let lastLinearVolume = null
+ipcMain.handle('player-set-volume', (_, v) => wrap(() => {
+  lastLinearVolume = v / 100
+  return player.setVolume(linearToMpv(lastLinearVolume, getPlayerSettings().boost))
+})())
+ipcMain.handle('player-set-speed',  (_, x) => wrap(() => player.setSpeed(x))())
+ipcMain.handle('player-get-status', () => ({
+  available: mpvAvailable && !!player,
+  state: player ? player.getState() : null,
+  config: getPlayerSettings(),
+}))
+ipcMain.handle('player-recheck', async () => {
+  if (player) { player.stop(); player = null }
+  await initPlayer()
+  return { available: mpvAvailable && !!player }
+})
+ipcMain.handle('player-get-config', () => getPlayerSettings())
+ipcMain.handle('player-list-devices', async () => {
+  if (!player) return []
+  try { return await player.listAudioDevices() } catch { return [] }
+})
+ipcMain.handle('player-set-config', async (_, partial) => {
+  const cfg = { ...getPlayerSettings(), ...partial }
+  store.set('playerSettings', cfg)
+  if (!player) return { ok: false, error: 'engine unavailable' }
+  const needsRebuild = ['outputMode', 'alsaDevice', 'mode', 'crossfadeSecs']
+    .some(k => k in partial)
+  try {
+    if (needsRebuild) {
+      const resume = player.getState()
+      player.stop()
+      player = buildPlayer(cfg)
+      await player.start()
+      if (resume.path) {
+        await player.load(resume.path, { play: false })
+        if (resume.position > 1) await player.seek(resume.position)
+        await player.setVolume(resume.volume)
+        if (!resume.paused) await player.play()
+      }
+    } else {
+      if ('replaygain' in partial) await player.setReplaygain(cfg.replaygain)
+      if ('channels' in partial) await player.setChannels(cfg.channels)
+      if ('boost' in partial && lastLinearVolume != null) {
+        await player.setVolume(linearToMpv(lastLinearVolume, cfg.boost))
+      }
+    }
+    return { ok: true }
+  } catch (e) { return { ok: false, error: String(e.message || e) } }
+})
 
 // ── MPRIS (D-Bus) — proper desktop media integration ────────────────────────
 // Gives GNOME/KDE media controls, lock screen, playerctl, and Bluetooth
@@ -603,20 +723,6 @@ ipcMain.on('add-play-history', (_, entry) => {
 
 ipcMain.handle('get-followed-artists', () => store.get('followedArtists', []))
 ipcMain.on('save-followed-artists', (_, artists) => store.set('followedArtists', artists))
-
-// ── Audio output settings ─────────────────────────────────────────────────────
-ipcMain.handle('get-audio-settings', () => ({
-  outputMode: store.get('audioOutputMode', 'stereo'),
-}))
-ipcMain.on('save-audio-settings', (_, s) => {
-  if (s.outputMode) store.set('audioOutputMode', s.outputMode)
-})
-
-// ── EQ settings ───────────────────────────────────────────────────────────────
-ipcMain.handle('get-eq-settings', () => store.get('eqSettings', {
-  enabled: true, gains: [0,0,0,0,0,0,0,0,0,0], replayGainMode: 'track', preamp: 0,
-}))
-ipcMain.on('save-eq-settings', (_, s) => store.set('eqSettings', s))
 
 // ── Saved queues ─────────────────────────────────────────────────────────────
 ipcMain.handle('get-saved-queues', () => store.get('savedQueues', []))
@@ -1214,7 +1320,7 @@ function _buildAgentSystem() {
 
 ## Full capabilities
 PLAYBACK: play_from_library, play_track, play_artist, play_liked, control_playback (play/pause/next/prev/stop), seek, set_speed, set_repeat, set_shuffle
-VOLUME & EQ: set_volume (0–100), set_eq_preset (flat/bassBoost/vocal/rock/classical/electronic)
+VOLUME: set_volume (0–100)
 QUEUE: add_to_queue, clear_queue, shuffle_queue, get_queue, save_queue
 DOWNLOADS: auto_download (finds best FLAC and downloads automatically), search_and_download (shows options)
 LIBRARY: search_library, get_library (full overview)
@@ -1402,11 +1508,6 @@ const AGENT_TOOLS = [
     name: 'set_shuffle',
     description: 'Turn shuffle on or off',
     input_schema: { type: 'object', properties: { enabled: { type: 'boolean' } }, required: ['enabled'] },
-  },
-  {
-    name: 'set_eq_preset',
-    description: 'Apply an EQ preset: flat, bassBoost, vocal, rock, classical, or electronic',
-    input_schema: { type: 'object', properties: { preset: { type: 'string', enum: ['flat','bassBoost','vocal','rock','classical','electronic'] } }, required: ['preset'] },
   },
   {
     name: 'set_speed',
