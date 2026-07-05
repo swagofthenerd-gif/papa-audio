@@ -2360,9 +2360,10 @@ function playCurrentTrack() {
   const track = state.queue[state.queueIndex]
   if (!track) return
   if (!audio.paused && !audio.ended) audio.pause()
-  audio.src = `file://${track.filePath}`
+  const isStream = /^https?:\/\//.test(track.filePath)
+  audio.src = isStream ? track.filePath : `file://${track.filePath}`
   audio.play().then(() => {
-    extractAlbumColor(track.artPath || null)
+    extractAlbumColor(/^https?:\/\//.test(track.artPath || '') ? null : (track.artPath || null))
     state.isPlaying = true
     updatePlayBtn()
     updateNowPlaying(track)
@@ -2414,7 +2415,7 @@ function updateNowPlaying(track) {
   if (sepEl)    sepEl.style.display = (artistStr && albumStr) ? 'inline' : 'none'
   if (artEl && artFb) {
     if (track.artPath) {
-      const newSrc = `file://${track.artPath}`
+      const newSrc = /^https?:\/\//.test(track.artPath) ? track.artPath : `file://${track.artPath}`
       if (artEl.getAttribute('src') !== newSrc) {
         artEl.style.opacity = '0'
         artEl.addEventListener('load', () => { artEl.style.opacity = '1' }, { once: true })
@@ -6770,7 +6771,19 @@ function setupListeners() {
     const p = e.detail
     el.textContent = p?.samplerate ? `${(p.format || '').toUpperCase()} ${Math.round(p.samplerate / 1000)}kHz` : ''
   })
-  audio.addEventListener('error', e => console.error('Audio error:', e))
+  audio.addEventListener('error', e => {
+    console.error('Audio error:', e)
+    const t = state.queue[state.queueIndex]
+    if (!t || !/^https?:\/\//.test(t.filePath)) return
+    // Dead/region-locked YouTube stream — tell the user and move on
+    const titleEl = document.getElementById('np-title')
+    if (titleEl) {
+      const orig = titleEl.textContent
+      titleEl.textContent = 'Stream unavailable — skipping'
+      setTimeout(() => { titleEl.textContent = orig }, 2500)
+    }
+    if (state.queue.length > 1) playNext()
+  })
 
   // IPC events
   window.api.on('dl-started', ({ id, filename, total, isMusic }) => {
