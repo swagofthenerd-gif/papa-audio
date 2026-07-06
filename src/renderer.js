@@ -2043,10 +2043,11 @@ function _plCollage(pl, cls) {
     const hue = _cardHue(pl.name || pl.id)
     return `<div class="${cls} pl-collage-empty" style="background:linear-gradient(135deg,hsl(${hue},55%,24%),hsl(${(hue+40)%360},45%,15%))">${note}</div>`
   }
+  const artUrl = p => (isHttpPath(p) ? p : `file://${p}`)
   if (paths.length < 4) {
-    return `<div class="${cls}" style="background:url('file://${paths[0]}') center/cover no-repeat"></div>`
+    return `<div class="${cls}" style="background:url('${artUrl(paths[0])}') center/cover no-repeat"></div>`
   }
-  return `<div class="${cls} pl-collage-grid">${paths.slice(0,4).map(p => `<div style="background:url('file://${p}') center/cover no-repeat"></div>`).join('')}</div>`
+  return `<div class="${cls} pl-collage-grid">${paths.slice(0,4).map(p => `<div style="background:url('${artUrl(p)}') center/cover no-repeat"></div>`).join('')}</div>`
 }
 
 function _plTotalDur(pl) {
@@ -2104,9 +2105,11 @@ function renderPlaylist(id, sortKey = 'default') {
   const colors = ['#5038a0','#a04038','#2d7a4a','#3850a0','#a07038','#6b38a0','#1a5a7a','#7a1a4a']
   const color = colors[parseInt((id.replace(/\D/g,'0').slice(-2) || '0'), 10) % colors.length]
 
-  // Recommended tracks: same genre or artist as playlist tracks
-  const plArtists = new Set(tracks.map(t => t.albumArtist || t.artist).filter(Boolean))
-  const plGenres  = new Set(tracks.map(t => {
+  // Recommended tracks: same genre or artist as playlist tracks (local only —
+  // YT rows have no library albumId/genre to match against)
+  const localTracks = tracks.filter(t => !isHttpPath(t.filePath))
+  const plArtists = new Set(localTracks.map(t => t.albumArtist || t.artist).filter(Boolean))
+  const plGenres  = new Set(localTracks.map(t => {
     const a = state.library.find(x => x.id === t.albumId); return a?.genre
   }).filter(Boolean))
   const plPaths = new Set(tracks.map(t => t.filePath))
@@ -2143,7 +2146,7 @@ function renderPlaylist(id, sortKey = 'default') {
           ? '<div class="playing-bars"><span></span><span></span><span></span></div>'
           : (i + 1)}</span>
         <div class="track-info">
-          <div class="track-title">${esc(t.title)}</div>
+          <div class="track-title">${esc(t.title)}${isHttpPath(t.filePath) ? ' <span class="yt-badge">YT</span>' : ''}</div>
           <div class="track-artist" data-artist="${esc(t.albumArtist || t.artist || '')}">${esc(t.albumArtist || t.artist || '')}</div>
         </div>
         <span class="track-dur">${fmtDur(t.duration)}</span>
@@ -2514,6 +2517,7 @@ function showAddToPlaylistModal(tracks) {
     id: t.id, title: t.title, artist: t.artist, albumArtist: t.albumArtist || t.artist || '',
     albumName: t.albumName || '', duration: t.duration || 0, filePath: t.filePath,
     artPath: t.artPath || null, albumId: t.albumId || null,
+    videoId: t.videoId || null, albumBrowseId: t.albumBrowseId || null, channelId: t.channelId || null,
     replayGainTrack: t.replayGainTrack ?? null, replayGainAlbum: t.replayGainAlbum ?? null,
     sampleRate: t.sampleRate || 0, bitsPerSample: t.bitsPerSample || 0, channels: t.channels || 0,
   }))
