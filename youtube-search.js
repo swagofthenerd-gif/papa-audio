@@ -2,14 +2,22 @@
 // YouTube search via youtubei.js (InnerTube). Search only — playback goes
 // through mpv's yt-dlp hook, downloads through youtube-download.js.
 
+const fs = require('fs')
+const path = require('path')
+
 let _clientPromise = null
+let _cacheDir = null
+
+// Called once from main.js with an app-data path — keeps this module electron-free.
+function setCacheDir(dir) { _cacheDir = dir }
 
 function _client() {
   if (!_clientPromise) {
     _clientPromise = (async () => {
-      const { Innertube } = await import('youtubei.js')
+      const { Innertube, UniversalCache } = await import('youtubei.js')
       // No player needed: we never decipher stream URLs here.
-      return Innertube.create({ retrieve_player: false })
+      const cache = _cacheDir ? new UniversalCache(true, _cacheDir) : undefined
+      return Innertube.create({ retrieve_player: false, cache })
     })()
   }
   return _clientPromise
@@ -239,30 +247,120 @@ async function getArtist(channelId) {
   }
 }
 
-// Album ids on YT Music start with MPREb; watch ids are 11 chars.
+// Album ids on YT Music start with MPREb; playlist/mix ids with VL/PL/RDCLAK;
+// watch ids are 11 chars.
 function _looksLikeAlbumId(id) { return typeof id === 'string' && /^MPRE/i.test(id) }
+function _looksLikePlaylistId(id) { return typeof id === 'string' && /^(VL|PL|RDCLAK)/.test(id) }
+
+const HOME_FEED_MAX_SECTIONS = 8
 
 async function getHomeFeed() {
   const yt = await _client()
   const feed = await yt.music.getHomeFeed()
   const sections = []
   for (const sec of (feed?.sections || [])) {
-    if (sections.length >= 3) break
+    if (sections.length >= HOME_FEED_MAX_SECTIONS) break
     const title = _text(sec?.header?.title) || _text(sec?.title)
     const contents = Array.isArray(sec?.contents) ? sec.contents : []
     if (!title || !contents.length) continue
     const albums = contents.filter(c => _looksLikeAlbumId(c?.id)).map(mapAlbumItem).filter(Boolean)
-    const songs = contents.filter(c => c?.id && !_looksLikeAlbumId(c.id)).map(mapMusicItem).filter(Boolean)
-    if (albums.length >= songs.length && albums.length) {
-      sections.push({ title, kind: 'albums', items: albums.slice(0, 12) })
-    } else if (songs.length) {
-      sections.push({ title, kind: 'songs', items: songs.slice(0, 8) })
-    }
+    const playlists = contents.filter(c => _looksLikePlaylistId(c?.id)).map(mapPlaylistItem).filter(Boolean)
+    const songs = contents.filter(c => c?.id && !_looksLikeAlbumId(c.id) && !_looksLikePlaylistId(c.id))
+      .map(mapMusicItem).filter(Boolean)
+    const best = [
+      { kind: 'albums', items: albums, cap: 12 },
+      { kind: 'playlists', items: playlists, cap: 12 },
+      { kind: 'songs', items: songs, cap: 12 },
+    ].sort((a, b) => b.items.length - a.items.length)[0]
+    if (best.items.length) sections.push({ title, kind: best.kind, items: best.items.slice(0, best.cap) })
   }
   return { sections }
 }
 
+// ── Radio (up-next) ─────────────────────────────────────────────────────────
+function _parseClock(t) {
+  const parts = String(t || '').split(':').map(n => parseInt(n, 10))
+  if (!parts.length || parts.some(isNaN)) return 0
+  return parts.reduce((s, n) => s * 60 + n, 0)
+}
+
+function mapUpNextItem(item) {
+  const vid = item?.video_id || item?.id
+  if (!vid) return null
+  return {
+    videoId: vid,
+    title: _text(item.title),
+    artist: _text(item.author?.name)
+      || (typeof item.author === 'string' ? item.author : '')
+      || (Array.isArray(item.artists) ? item.artists.map(a => a?.name).filter(Boolean).join(', ') : ''),
+    album: null,
+    duration: item.duration?.seconds || _parseClock(item.duration?.text || item.duration),
+    thumbnailUrl: _thumbUrl(item.thumbnail || item.thumbnails),
+  }
+}
+
+const RADIO_MAX_TRACKS = 30
+
+async function getRadio(videoId) {
+  const yt = await _client()
+  const panel = await yt.music.getUpNext(videoId, true)
+  return (panel?.contents || [])
+    .map(mapUpNextItem)
+    .filter(Boolean)
+    .filter(t => t.videoId !== videoId)
+    .slice(0, RADIO_MAX_TRACKS)
+}
+
+async function findVideoId(artist, title) {
+  const results = await searchMusic(`${artist || ''} ${title || ''}`.trim())
+  return results[0]?.videoId || null
+}
+
+// ── OAuth (TV device flow via youtubei.js) ──────────────────────────────────
+function hasCachedCredentials() {
+  if (!_cacheDir) return false
+  return fs.existsSync(path.join(_cacheDir, 'youtubei_oauth_credentials'))
+}
+
+async function isSignedIn() {
+  const yt = await _client()
+  return !!yt.session.logged_in
+}
+
+// onPending fires with { verificationUrl, userCode } when user action is needed;
+// resolves true once signed in. With cached credentials it resolves silently.
+async function signIn(onPending) {
+  const yt = await _client()
+  const pendingHandler = d => onPending?.({ verificationUrl: d.verification_url, userCode: d.user_code })
+  const credsHandler = async () => {
+    try { await yt.session.oauth.cacheCredentials() } catch { /* cache write only */ }
+  }
+  yt.session.on('auth-pending', pendingHandler)
+  yt.session.on('update-credentials', credsHandler)
+  try {
+    await yt.session.signIn()
+    await yt.session.oauth.cacheCredentials()
+    return true
+  } finally {
+    yt.session.off('auth-pending', pendingHandler)
+  }
+}
+
+async function signOut() {
+  const yt = await _client()
+  if (yt.session.logged_in) {
+    try { await yt.session.signOut() } catch { /* revocation can fail offline */ }
+  }
+  if (_cacheDir) {
+    try { fs.rmSync(path.join(_cacheDir, 'youtubei_oauth_credentials'), { force: true }) } catch {}
+  }
+  _clientPromise = null // next call builds a signed-out client
+  return true
+}
+
 module.exports = {
   searchMusic, searchAll, searchMusicFull, searchPage, getAlbum, getArtist, getPlaylist, getHomeFeed,
+  getRadio, findVideoId, mapUpNextItem,
+  setCacheDir, hasCachedCredentials, isSignedIn, signIn, signOut,
   mapMusicItem, mapVideoItem, mapAlbumItem, mapArtistItem, mapPlaylistItem, _setClientForTest,
 }
