@@ -351,3 +351,17 @@ test('getHomeFeed never throws on empty/odd feeds', async () => {
   assert.deepStrictEqual(sections, [])
   _setClientForTest(null)
 })
+
+test('searchPage handles MusicShelfContinuation-shaped page 2', async () => {
+  // Real continuation shape: { header, contents: MusicShelfContinuation { contents: [...] } }
+  const page2 = { contents: { contents: [{ ...songItem, id: 'contShelf01' }] }, has_continuation: true, getContinuation: async () => page2 }
+  const page1 = { songs: { contents: [songItem] }, has_continuation: true, getContinuation: async () => page2 }
+  _setClientForTest(Promise.resolve({ music: { search: async () => page1 } }))
+  const { searchPage } = require('../youtube-search')
+  await searchPage('song', 'cont-shape', false)
+  const p2 = await searchPage('song', 'cont-shape', true)
+  assert.strictEqual(p2.items.length, 1)
+  assert.strictEqual(p2.items[0].videoId, 'contShelf01')
+  assert.strictEqual(p2.hasMore, true)
+  _setClientForTest(null)
+})

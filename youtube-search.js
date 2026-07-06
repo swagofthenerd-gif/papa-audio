@@ -145,10 +145,13 @@ function _extractPageItems(res, kind) {
   if (kind === 'video') return res?.videos || res?.results || []
   const sec = res?.[PAGE_KEYS[kind]]?.contents
   if (Array.isArray(sec)) return sec
-  if (Array.isArray(res?.contents)) {
+  const c = res?.contents
+  if (Array.isArray(c)) {
     // Continuation pages come back as a flat item list or as shelves
-    return res.contents.flatMap(s => (Array.isArray(s?.contents) ? s.contents : (s?.id ? [s] : [])))
+    return c.flatMap(s => (Array.isArray(s?.contents) ? s.contents : (s?.id ? [s] : [])))
   }
+  // Music continuations wrap the list: contents is a MusicShelfContinuation
+  if (Array.isArray(c?.contents)) return c.contents
   if (Array.isArray(res?.results)) return res.results
   return []
 }

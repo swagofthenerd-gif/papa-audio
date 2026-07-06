@@ -646,7 +646,7 @@ function renderArtists() {
     if (!entry.artPath && album.artPath) entry.artPath = album.artPath
   }
   const artists = [...artistMap.values()].sort((a, b) => a.name.localeCompare(b.name))
-  if (!artists.length) { navigate('library'); return }
+  if (!artists.length && !state.ytFollowed.length) { navigate('library'); return }
 
   setContent(`<div class="page">
     <div class="page-header">
