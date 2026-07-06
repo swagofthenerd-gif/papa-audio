@@ -9,6 +9,7 @@ const { MpvCrossfade } = require('./mpv-crossfade')
 const { linearToMpv } = require('./volume-map')
 const ytSearch = require('./youtube-search')
 const ytDownloader = require('./youtube-download')
+const lyrics = require('./lyrics')
 let natUpnp; try { natUpnp = require('nat-upnp') } catch (_) {}
 
 // Strip the automation flag so Cloudflare/bot-checks don't see navigator.webdriver = true
@@ -347,6 +348,11 @@ app.whenReady().then(() => {
     sites.push({ url: 'https://rutracker.org/forum/index.php', name: 'Rutracker' })
     store.set('savedSites', sites)
   }
+  // YT client cache dir enables OAuth credential persistence; silent
+  // sign-in restore only when credentials are already cached (never
+  // starts a device flow at boot).
+  ytSearch.setCacheDir(path.join(USER_DATA, 'yt-cache'))
+  if (ytSearch.hasCachedCredentials()) ytSearch.signIn().catch(() => {})
   createWindow()
   initMpris()          // MPRIS D-Bus first; media-key grab only as fallback
   initPlayer()
@@ -2156,6 +2162,47 @@ ipcMain.handle('yt-playlist', async (_, { playlistId }) => {
 
 ipcMain.handle('yt-home', async () => {
   try { return { ok: true, ...(await ytSearch.getHomeFeed()) } }
+  catch (e) { return { ok: false, error: String(e?.message || e) } }
+})
+
+ipcMain.handle('yt-radio', async (_, { videoId }) => {
+  try { return { ok: true, tracks: await ytSearch.getRadio(videoId) } }
+  catch (e) { return { ok: false, error: String(e?.message || e) } }
+})
+
+ipcMain.handle('yt-find-video', async (_, { artist, title }) => {
+  try { return { ok: true, videoId: await ytSearch.findVideoId(artist, title) } }
+  catch (e) { return { ok: false, error: String(e?.message || e) } }
+})
+
+ipcMain.handle('get-lyrics', async (_, params) => {
+  try { return { ok: true, ...(await lyrics.fetchLyrics(params || {})) } }
+  catch (e) { return { ok: false, error: String(e?.message || e) } }
+})
+
+// ── YouTube account (OAuth device flow) ──────────────────────────────────────
+let _ytAuthInFlight = false
+ipcMain.handle('yt-auth-start', async () => {
+  if (_ytAuthInFlight) return { ok: false, error: 'Sign-in already in progress' }
+  _ytAuthInFlight = true
+  try {
+    await ytSearch.signIn(pending => mainWindow?.webContents.send('yt-auth-pending', pending))
+    mainWindow?.webContents.send('yt-auth-done', { signedIn: true })
+    return { ok: true, signedIn: true }
+  } catch (e) {
+    return { ok: false, error: String(e?.message || e) }
+  } finally {
+    _ytAuthInFlight = false
+  }
+})
+
+ipcMain.handle('yt-auth-signout', async () => {
+  try { await ytSearch.signOut(); return { ok: true } }
+  catch (e) { return { ok: false, error: String(e?.message || e) } }
+})
+
+ipcMain.handle('yt-auth-status', async () => {
+  try { return { ok: true, signedIn: await ytSearch.isSignedIn() } }
   catch (e) { return { ok: false, error: String(e?.message || e) } }
 })
 
