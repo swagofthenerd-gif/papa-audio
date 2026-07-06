@@ -3456,10 +3456,7 @@ function playCurrentTrack() {
       window.api.incrementPlayCount(track.filePath)
       window.api.addPlayHistory({ filePath: track.filePath, title: track.title, artist: track.albumArtist || track.artist, album: track.albumName, artPath: track.artPath || null, timestamp: Date.now() })
     }, 30000)
-    _lyrics = null
-    renderLyricsPanel()
-    updateLyricsDrawer()
-    fetchLyrics(track).then(lines => { _lyrics = lines; renderLyricsPanel(); updateLyricsDrawer() })
+    loadLyricsFor(track)
     syncExtension()
     updateNextPrefetch()
   }).catch(e => {
@@ -3611,16 +3608,18 @@ function playPrev() {
 }
 
 // ── Lyrics ──────────────────────────────────────────────────────────────────
-async function fetchLyrics(track) {
+async function fetchLyrics(track, force = false) {
   if (!track) return null
   // Fetched in the main process (lyrics.js): renderer CSP blocks direct
   // lrclib.net requests, and main adds search + YouTube fallbacks + caching.
   const res = await window.api.getLyrics({
+    force,
     artist: track.albumArtist || track.artist || '',
     title: track.title || '',
     album: track.albumName || '',
     duration: Math.round(track.duration || audio.duration || 0),
     videoId: track.videoId || null,
+    filePath: track.filePath || null,
   }).catch(() => null)
   if (!res?.ok) return null
   if (res.synced?.length) return res.synced.filter(l => l.text)
@@ -3634,6 +3633,39 @@ async function fetchLyrics(track) {
   return null
 }
 
+// Single entry point for track changes. The staleness guard matters: the
+// LRCLIB search fallback can take seconds, so a response for a track the
+// user already skipped must never overwrite the current track's lyrics.
+function loadLyricsFor(track) {
+  _lyrics = null
+  renderLyricsPanel()
+  updateLyricsDrawer()
+  fetchLyrics(track).then(lines => {
+    if (state.queue[state.queueIndex]?.filePath !== track.filePath) return
+    _lyrics = lines
+    renderLyricsPanel()
+    updateLyricsDrawer()
+  })
+}
+
+// Scroll only the lyrics container — scrollIntoView() also scrolls every
+// scrollable ancestor and yanks the whole page around during playback.
+function _scrollLineIntoView(container, el) {
+  const cRect = container.getBoundingClientRect()
+  const eRect = el.getBoundingClientRect()
+  const delta = (eRect.top + eRect.height / 2) - (cRect.top + cRect.height / 2)
+  container.scrollTo({ top: container.scrollTop + delta, behavior: 'smooth' })
+}
+
+function _bindLyricsSeek(container, lineSelector) {
+  container.querySelectorAll(lineSelector).forEach(el => {
+    el.addEventListener('click', () => {
+      const t = parseFloat(el.dataset.time)
+      if (!isNaN(t)) audio.currentTime = t
+    })
+  })
+}
+
 function renderLyricsPanel() {
   const panel = document.getElementById('lyrics-panel')
   if (!panel) return
@@ -3644,6 +3676,7 @@ function renderLyricsPanel() {
   panel.innerHTML = _lyrics.map(l =>
     `<div class="lyrics-line" data-time="${l.time}">${esc(l.text)}</div>`
   ).join('')
+  _bindLyricsSeek(panel, '.lyrics-line')
   updateLyricsHighlight()
 }
 
@@ -3660,7 +3693,7 @@ function updateLyricsHighlight() {
     const isActive = i === activeIdx
     if (isActive && !el.classList.contains('lyrics-line-active')) {
       el.classList.add('lyrics-line-active')
-      el.scrollIntoView({ block: 'center', behavior: 'smooth' })
+      _scrollLineIntoView(panel, el)
     } else if (!isActive) {
       el.classList.remove('lyrics-line-active')
     }
@@ -3713,6 +3746,7 @@ function updateLyricsDrawer() {
   body.innerHTML = _lyrics.map(l =>
     `<div class="lyrics-drawer-line" data-time="${l.time}">${esc(l.text)}</div>`
   ).join('')
+  _bindLyricsSeek(body, '.lyrics-drawer-line')
   updateLyricsDrawerHighlight()
 }
 
@@ -3730,7 +3764,7 @@ function updateLyricsDrawerHighlight() {
     const isActive = i === activeIdx
     if (isActive && !el.classList.contains('active')) {
       el.classList.add('active')
-      el.scrollIntoView({ block: 'center', behavior: 'smooth' })
+      _scrollLineIntoView(body, el)
     } else if (!isActive) {
       el.classList.remove('active')
     }
@@ -3746,7 +3780,7 @@ async function searchAndSaveLyrics() {
   if (btn) { btn.classList.add('searching'); btn.disabled = true }
 
   try {
-    const fetched = await fetchLyrics(track)
+    const fetched = await fetchLyrics(track, true) // force: bypass a cached miss
     if (!fetched || !fetched.length) {
       showToast('No lyrics found online')
       return
@@ -3759,13 +3793,13 @@ async function searchAndSaveLyrics() {
     }).join('\n')
 
     const filePath = track.filePath
-    if (filePath && window.api.saveLyrics) {
+    if (filePath && !isHttpPath(filePath)) {
       const result = await window.api.saveLyrics({ filePath, lrcContent: lrcLines })
-      if (result.success) {
+      if (result.ok) {
         _lyrics = fetched
         renderLyricsPanel()
         updateLyricsDrawer()
-        showToast('Lyrics saved ✓')
+        showToast('Lyrics saved next to the file ✓')
         if (btn) btn.classList.add('saved')
         setTimeout(() => btn?.classList.remove('saved'), 3000)
       } else {
@@ -3775,7 +3809,7 @@ async function searchAndSaveLyrics() {
       _lyrics = fetched
       renderLyricsPanel()
       updateLyricsDrawer()
-      showToast('Lyrics loaded (no file path to save)')
+      showToast('Lyrics loaded (streams have no file to save to)')
     }
   } catch (e) {
     showToast('Lyrics search failed')
@@ -7895,10 +7929,7 @@ function setupListeners() {
     window.api.savePlaybackState({ filePath: track.filePath, position: 0 })
     state.playCounts[track.filePath] = (state.playCounts[track.filePath] || 0) + 1
     window.api.incrementPlayCount(track.filePath)
-    _lyrics = null
-    renderLyricsPanel()
-    updateLyricsDrawer()
-    fetchLyrics(track).then(lines => { _lyrics = lines; renderLyricsPanel(); updateLyricsDrawer() })
+    loadLyricsFor(track)
     syncExtension()
     updateNextPrefetch()
   })

@@ -146,6 +146,7 @@ contextBridge.exposeInMainWorld('api', {
   ytRadio:           (p) => ipcRenderer.invoke('yt-radio', p),
   ytFindVideo:       (p) => ipcRenderer.invoke('yt-find-video', p),
   getLyrics:         (p) => ipcRenderer.invoke('get-lyrics', p),
+  saveLyrics:        (p) => ipcRenderer.invoke('save-lyrics', p),
   ytAuthStart:       ()  => ipcRenderer.invoke('yt-auth-start'),
   ytAuthSignOut:     ()  => ipcRenderer.invoke('yt-auth-signout'),
   ytAuthStatus:      ()  => ipcRenderer.invoke('yt-auth-status'),

@@ -2191,6 +2191,11 @@ ipcMain.handle('get-lyrics', async (_, params) => {
   catch (e) { return { ok: false, error: String(e?.message || e) } }
 })
 
+ipcMain.handle('save-lyrics', (_, params) => {
+  try { return lyrics.saveLyrics(params || {}) }
+  catch (e) { return { ok: false, error: String(e?.message || e) } }
+})
+
 // ── YouTube account (cookie auth via a real Google sign-in window) ──────────
 // OAuth device-flow tokens are rejected (HTTP 400) by every YT Music endpoint,
 // so we sign in through an actual browser window and hand Innertube the cookies.

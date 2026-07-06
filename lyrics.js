@@ -3,6 +3,8 @@
 // fallback for streamed tracks. Runs in the main process — no CSP involvement.
 
 const https = require('https')
+const fs = require('fs')
+const path = require('path')
 
 const LRCLIB_BASE = 'https://lrclib.net/api'
 const CACHE_MAX = 200
@@ -94,8 +96,41 @@ async function _ytLyrics(videoId) {
   } catch { return null }
 }
 
-async function fetchLyrics({ artist, title, album, duration, videoId }) {
+function _sidecarPath(filePath) {
+  if (!filePath || /^https?:\/\//.test(filePath)) return null
+  const ext = path.extname(filePath)
+  return ext ? filePath.slice(0, -ext.length) + '.lrc' : filePath + '.lrc'
+}
+
+// A saved .lrc next to the audio file always wins — works offline and lets
+// the user pin corrected lyrics.
+function _fromSidecar(filePath) {
+  const lrcPath = _sidecarPath(filePath)
+  if (!lrcPath) return null
+  try {
+    if (!fs.existsSync(lrcPath)) return null
+    const synced = parseLrc(fs.readFileSync(lrcPath, 'utf8'))
+    return synced ? { synced, plain: null, source: 'file' } : null
+  } catch { return null }
+}
+
+function saveLyrics({ filePath, lrcContent }) {
+  const lrcPath = _sidecarPath(filePath)
+  if (!lrcPath) return { ok: false, error: 'Streams have no local file to save next to' }
+  try {
+    fs.writeFileSync(lrcPath, lrcContent)
+    _cache.clear() // next fetch must pick up the sidecar
+    return { ok: true, path: lrcPath }
+  } catch (e) {
+    return { ok: false, error: String(e?.message || e) }
+  }
+}
+
+async function fetchLyrics({ artist, title, album, duration, videoId, filePath, force }) {
+  const fromFile = _fromSidecar(filePath)
+  if (fromFile) return fromFile
   const key = `${(artist || '').toLowerCase()}|${(title || '').toLowerCase()}`
+  if (force) _cache.delete(key)
   if (_cache.has(key)) return _cache.get(key)
   let result = null
   try { result = await _lrclibGet({ artist, title, album, duration }) } catch { /* fall through */ }
@@ -107,4 +142,4 @@ async function fetchLyrics({ artist, title, album, duration, videoId }) {
   return result
 }
 
-module.exports = { fetchLyrics, parseLrc, pickSearchHit, _setHttpForTest, _clearCacheForTest }
+module.exports = { fetchLyrics, saveLyrics, parseLrc, pickSearchHit, _setHttpForTest, _clearCacheForTest }
