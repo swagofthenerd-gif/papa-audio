@@ -2334,17 +2334,6 @@ ipcMain.handle('yt-download', (_, { videoId, title, artist, subdir }) => {
 
 ipcMain.handle('yt-get-downloads', () => [..._ytDownloads.values()])
 
-ipcMain.handle('save-lyrics', async (_, { filePath, lrcContent }) => {
-  try {
-    const path = require('path')
-    const lrcPath = filePath.replace(/\.[^/.]+$/, '.lrc')
-    fs.writeFileSync(lrcPath, lrcContent, 'utf8')
-    return { success: true, lrcPath }
-  } catch (e) {
-    return { success: false, error: e.message }
-  }
-})
-
 ipcMain.handle('ctx-menu-show', (event, items) => new Promise(resolve => {
   const menu = new Menu()
   for (const item of (items || [])) {
