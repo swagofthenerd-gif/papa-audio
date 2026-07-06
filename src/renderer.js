@@ -1473,6 +1473,13 @@ async function runYtSearch(query, scope) {
   renderYtResults(res.results, query)
 }
 
+function _ytArtistSpan(r) {
+  if (!r.artist) return ''
+  return r.channelId
+    ? `<span class="yt-link" data-yt-channel="${esc(r.channelId)}">${esc(r.artist)}</span>`
+    : `<span class="yt-link" data-yt-name="${esc(r.artist)}">${esc(r.artist)}</span>`
+}
+
 function _ytSongRows(songs) {
   return `<div class="yt-list">${songs.map((r, i) => `
     <div class="yt-row" data-i="${i}">
@@ -1481,7 +1488,7 @@ function _ytSongRows(songs) {
         : `<div class="yt-thumb yt-thumb-empty"></div>`}
       <div class="yt-info">
         <div class="yt-title">${esc(r.title)} <span class="yt-badge">YT</span></div>
-        <div class="yt-sub-line">${esc(r.artist)}${r.album ? ' · ' + esc(r.album) : ''}${r.viewCount ? ' · ' + esc(r.viewCount) : ''}</div>
+        <div class="yt-sub-line">${_ytArtistSpan(r)}${r.album ? ' · ' + (r.albumBrowseId ? `<span class="yt-link" data-yt-albumbrowse="${esc(r.albumBrowseId)}">${esc(r.album)}</span>` : esc(r.album)) : ''}${r.viewCount ? ' · ' + esc(r.viewCount) : ''}</div>
       </div>
       <span class="yt-dur">${r.duration ? fmtDur(r.duration) : ''}</span>
       <div class="yt-actions">
@@ -1691,6 +1698,32 @@ async function ytRowContextMenu(r) {
   return action
 }
 
+// Resolve "artist name only" → channel page via first artist search hit.
+async function openYtArtistByName(name) {
+  if (!name) return
+  const res = await window.api.ytSearchPage({ kind: 'artist', query: name, next: false }).catch(() => null)
+  const hit = res?.ok ? res.items?.[0] : null
+  if (hit?.channelId) navigate('yt-artist', hit.channelId)
+  else showToast(`Couldn't find "${name}" on YouTube Music`)
+}
+
+// Clickable artist/album names inside any container of YT rows or heroes.
+function bindYtEntityLinks(container) {
+  if (!container) return
+  container.querySelectorAll('[data-yt-channel]').forEach(el => el.addEventListener('click', e => {
+    e.stopPropagation()
+    navigate('yt-artist', el.dataset.ytChannel)
+  }))
+  container.querySelectorAll('[data-yt-name]').forEach(el => el.addEventListener('click', e => {
+    e.stopPropagation()
+    openYtArtistByName(el.dataset.ytName)
+  }))
+  container.querySelectorAll('[data-yt-albumbrowse]').forEach(el => el.addEventListener('click', e => {
+    e.stopPropagation()
+    navigate('yt-album', el.dataset.ytAlbumbrowse)
+  }))
+}
+
 function renderLikeButtons(box, results) {
   box.querySelectorAll('.yt-like').forEach(btn => {
     const r = results[parseInt(btn.dataset.i)]
@@ -1748,6 +1781,7 @@ function bindYtEvents(results, rootEl) {
     const action = await ytRowContextMenu(r)
     if (action === 'like') renderLikeButtons(box, results)
   }))
+  bindYtEntityLinks(box)
 }
 
 // ── YouTube album page ──────────────────────────────────────────────────────
@@ -1807,7 +1841,7 @@ function _paintYtAlbum(al) {
         <div class="album-hero-type">Album <span class="yt-badge">YT</span></div>
         <div class="album-hero-title">${esc(al.title)}</div>
         <div class="album-hero-meta">
-          <span>${esc(al.artist)}</span>
+          <span class="yt-link" data-yt-name="${esc(al.artist)}">${esc(al.artist)}</span>
           ${al.year ? `&bull; ${esc(al.year)}` : ''} ${al.summary ? `&bull; ${esc(al.summary)}` : ''}
         </div>
       </div>
@@ -1860,6 +1894,7 @@ function _paintYtAlbum(al) {
     const b = document.getElementById('yt-album-save-btn')
     if (b) { b.classList.toggle('saved', saved); b.textContent = saved ? '♥' : '♡'; b.title = saved ? 'Remove from library' : 'Save to library' }
   })
+  bindYtEntityLinks(document.querySelector('.album-hero'))
 }
 
 // ── YouTube artist page ─────────────────────────────────────────────────────
@@ -2417,7 +2452,9 @@ function renderPlaylist(id, sortKey = 'default') {
           : (i + 1)}</span>
         <div class="track-info">
           <div class="track-title">${esc(t.title)}${isHttpPath(t.filePath) ? ' <span class="yt-badge">YT</span>' : ''}</div>
-          <div class="track-artist" data-artist="${esc(t.albumArtist || t.artist || '')}">${esc(t.albumArtist || t.artist || '')}</div>
+          ${isHttpPath(t.filePath)
+    ? `<div class="track-artist">${_ytArtistSpan({ artist: t.albumArtist || t.artist || '', channelId: t.channelId || null })}</div>`
+    : `<div class="track-artist" data-artist="${esc(t.albumArtist || t.artist || '')}">${esc(t.albumArtist || t.artist || '')}</div>`}
         </div>
         <span class="track-dur">${fmtDur(t.duration)}</span>
         <div class="pl-track-actions">${actions}</div>
@@ -2498,6 +2535,7 @@ function renderPlaylist(id, sortKey = 'default') {
     navigate('playlists', null, { skipHistory: true })
   })
 
+  bindYtEntityLinks(document.querySelector('.track-list'))
   document.querySelectorAll('.pl-track-row').forEach(row => {
     row.addEventListener('click', e => {
       if (e.target.closest('.pl-track-actions')) return
@@ -2633,7 +2671,7 @@ function renderLikedSongs() {
               : `<div class="yt-thumb yt-thumb-empty"></div>`}
             <div class="track-info">
               <div class="track-title">${esc(t.title)} <span class="yt-badge">YT</span></div>
-              <div class="track-artist">${esc(t.artist)}</div>
+              <div class="track-artist">${_ytArtistSpan(t)}</div>
             </div>
             <button class="track-like-btn liked" data-yt-unlike="${i}" title="Unlike">♥</button>
             <span class="track-dur">${t.duration ? fmtDur(t.duration) : ''}</span>
@@ -2668,6 +2706,7 @@ function renderLikedSongs() {
       toggleYtLike(state.ytLiked[parseInt(btn.dataset.ytUnlike)])
       renderLikedSongs()
     }))
+    bindYtEntityLinks(ytList)
   }
   document.querySelectorAll('.liked-track-row').forEach(row => {
     row.addEventListener('click', e => {
@@ -7615,11 +7654,21 @@ function setupListeners() {
     const track = state.queue[state.queueIndex]
     if (!track) return
     const artist = track.albumArtist || track.artist
+    if (isHttpPath(track.filePath)) {
+      if (track.channelId) navigate('yt-artist', track.channelId)
+      else if (artist && artist !== '—') openYtArtistByName(artist)
+      return
+    }
     if (artist && artist !== '—') navigate('artist', artist)
   })
   document.getElementById('np-album')?.addEventListener('click', () => {
     const track = state.queue[state.queueIndex]
     if (!track) return
+    if (isHttpPath(track.filePath)) {
+      if (track.albumBrowseId) navigate('yt-album', track.albumBrowseId)
+      else if (track.albumName && track.albumName !== 'YouTube') navigate('search', track.albumName)
+      return
+    }
     const albumId = track.albumId || document.getElementById('np-album')?.dataset.albumId
     if (albumId) navigate('album', albumId)
     else if (track.albumName) navigate('search', track.albumName)

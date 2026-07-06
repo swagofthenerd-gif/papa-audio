@@ -443,3 +443,9 @@ test('getHomeFeed maps playlist sections and allows up to 8 sections', async () 
   assert.strictEqual(sections[0].items[0].playlistId, 'RDCLAK5uy_mix1')
   _setClientForTest(null)
 })
+
+test('mapVideoItem carries channelId when author has id', () => {
+  const r = mapVideoItem({ ...videoItem, author: { name: 'Boiler Room', id: 'UCboiler' } })
+  assert.strictEqual(r.channelId, 'UCboiler')
+  assert.strictEqual(mapVideoItem(videoItem).channelId, null)
+})

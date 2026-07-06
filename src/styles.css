@@ -4231,3 +4231,7 @@ input:focus:not(:focus-visible) { outline: none; }
 /* Lyrics: clickable lines seek */
 .lyrics-line, .lyrics-drawer-line { cursor: pointer; }
 .lyrics-line:hover, .lyrics-drawer-line:hover { opacity: .85; color: var(--text); }
+
+/* Clickable YT entity names (artist / album) */
+.yt-link { cursor: pointer; }
+.yt-link:hover { color: var(--text); text-decoration: underline; }
