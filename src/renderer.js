@@ -351,6 +351,7 @@ function navigate(page, navId, opts = {}) {
   else if (page === 'yt-artist') renderYtArtist(navId)
   else if (page === 'yt-see-all')  renderYtSeeAll(navId)
   else if (page === 'yt-playlist') renderYtPlaylist(navId)
+  else if (page === 'explore')     renderExplore()
 
   if (page === 'downloads') startDownloadsPolling(2000)
   else { _dlLastSig = ''; startDownloadsPolling(6000) }
@@ -605,6 +606,168 @@ function renderHome() {
   document.querySelectorAll('.following-card[data-channel]').forEach(card => {
     card.addEventListener('click', () => navigate('yt-artist', card.dataset.channel))
   })
+}
+
+// ── Explore page: full personalized YT feed + account connect ───────────────
+function _ytConnectBanner() {
+  return `<div class="yt-connect-banner" id="yt-connect-banner">
+    <div class="yt-connect-text">
+      <div class="yt-connect-title">Connect your YouTube account</div>
+      <div class="yt-connect-sub">Get recommendations, mixes and quick picks based on your taste.</div>
+    </div>
+    <button class="yt-connect-btn" id="yt-connect-btn">Connect</button>
+  </div>`
+}
+
+function _exploreSection(sec, si) {
+  const header = `<div class="section-header" style="margin-top:26px">
+    <span class="section-title">${esc(sec.title)}</span>
+  </div>`
+  if (sec.kind === 'songs') {
+    return `${header}<div class="explore-song-grid yt-home-songs" data-si="${si}">${_ytSongRows(sec.items)}</div>`
+  }
+  const card = sec.kind === 'albums' ? _ytAlbumCard : _ytPlaylistCard
+  return `${header}<div class="album-grid">${sec.items.map(card).join('')}</div>`
+}
+
+function _bindExploreSections(root, sections) {
+  root.querySelectorAll('.yt-home-songs').forEach(box => {
+    bindYtEvents(sections[parseInt(box.dataset.si)].items, box)
+  })
+  root.querySelectorAll('.yt-album-card').forEach(c => c.addEventListener('click', () => navigate('yt-album', c.dataset.browse)))
+  root.querySelectorAll('.yt-playlist-card').forEach(c => c.addEventListener('click', () => navigate('yt-playlist', c.dataset.playlist)))
+}
+
+async function renderExplore() {
+  setContent(`<div class="page"><div class="yt-status">Loading…</div></div>`)
+  const status = await window.api.ytAuthStatus().catch(() => ({ ok: false }))
+  if (state.currentPage !== 'explore') return
+  const signedIn = !!(status.ok && status.signedIn)
+
+  setContent(`<div class="page">
+    <div class="page-header" style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
+      <h1 class="section-title">Explore</h1><span class="yt-badge">YT</span>
+      <button class="sort-btn" id="explore-refresh-btn" style="margin-left:auto">Refresh</button>
+      ${signedIn ? `<button class="sort-btn" id="yt-signout-btn">Signed in ✓ · Sign out</button>` : ''}
+    </div>
+    ${signedIn ? '' : _ytConnectBanner()}
+    <div id="explore-feed"><div class="yt-status">Loading recommendations…</div></div>
+  </div>`)
+
+  document.getElementById('explore-refresh-btn')?.addEventListener('click', () => {
+    _ytHomeCache = null
+    renderExplore()
+  })
+  document.getElementById('yt-signout-btn')?.addEventListener('click', async () => {
+    await window.api.ytAuthSignOut().catch(() => {})
+    _ytHomeCache = null
+    renderExplore()
+  })
+  document.getElementById('yt-connect-btn')?.addEventListener('click', _startYtConnect)
+
+  if (!_ytHomeCache) {
+    const res = await window.api.ytHome().catch(e => ({ ok: false, error: String(e) }))
+    if (state.currentPage !== 'explore') return
+    if (!res.ok || !res.sections?.length) {
+      const feed = document.getElementById('explore-feed')
+      if (feed) feed.innerHTML = `<div class="yt-status yt-error">Couldn't load recommendations${res.error ? ': ' + esc(res.error) : ''}</div>`
+      return
+    }
+    _ytHomeCache = res.sections
+  }
+  const feed = document.getElementById('explore-feed')
+  if (!feed) return
+  feed.innerHTML = _ytHomeCache.map((sec, si) => _exploreSection(sec, si)).join('')
+  _bindExploreSections(feed, _ytHomeCache)
+}
+
+function _startYtConnect() {
+  const banner = document.getElementById('yt-connect-banner')
+  if (!banner) return
+  banner.innerHTML = `<div class="yt-connect-text">
+    <div class="yt-connect-title">Waiting for Google…</div>
+    <div class="yt-connect-sub" id="yt-connect-status">Requesting a sign-in code</div>
+  </div>`
+  window.api.on('yt-auth-pending', ({ verificationUrl, userCode }) => {
+    const el = document.getElementById('yt-connect-status')
+    if (!el) return
+    el.innerHTML = `Go to <b>${esc(verificationUrl || 'google.com/device')}</b> and enter code
+      <span class="yt-connect-code">${esc(userCode || '')}</span>
+      <button class="yt-connect-btn" id="yt-connect-open" style="margin-left:10px">Open page</button>`
+    document.getElementById('yt-connect-open')?.addEventListener('click', () => {
+      window.api.openExternal(verificationUrl && verificationUrl.startsWith('https') ? verificationUrl : 'https://www.google.com/device')
+    })
+  })
+  window.api.on('yt-auth-done', () => {
+    window.api.off('yt-auth-pending')
+    window.api.off('yt-auth-done')
+    _ytHomeCache = null
+    if (state.currentPage === 'explore') renderExplore()
+  })
+  window.api.ytAuthStart().then(res => {
+    if (!res?.ok) {
+      const el = document.getElementById('yt-connect-status')
+      if (el) el.innerHTML = `Sign-in failed: ${esc(res?.error || 'unknown error')} <button class="yt-connect-btn" id="yt-connect-retry" style="margin-left:10px">Retry</button>`
+      document.getElementById('yt-connect-retry')?.addEventListener('click', () => {
+        if (state.currentPage === 'explore') renderExplore()
+      })
+    }
+  })
+}
+
+// ── YT radio + autoplay ──────────────────────────────────────────────────────
+async function startYtRadio(seed) {
+  let vid = seed.videoId || null
+  if (!vid) {
+    const f = await window.api.ytFindVideo({ artist: seed.artist || '', title: seed.title || '' }).catch(() => null)
+    vid = f?.ok ? f.videoId : null
+  }
+  if (!vid) return false
+  const res = await window.api.ytRadio({ videoId: vid }).catch(() => null)
+  if (!res?.ok || !res.tracks?.length) return false
+  const seedItem = _ytQueueItem({
+    videoId: vid, title: seed.title, artist: seed.artist,
+    thumbnailUrl: seed.thumbnailUrl || null, duration: seed.duration || 0,
+    album: seed.album || null,
+  })
+  state.queue = [seedItem, ...res.tracks.map(_ytQueueItem)]
+  state.queueIndex = 0
+  playCurrentTrack()
+  if (state.queuePanelOpen) renderQueuePanel()
+  return true
+}
+
+function autoplayEnabled() { return localStorage.getItem('autoplay') !== '0' }
+function setAutoplay(on) { localStorage.setItem('autoplay', on ? '1' : '0') }
+
+let _autoplayBusy = false
+async function tryAutoplayContinue() {
+  if (_autoplayBusy || !state.queue.length) return
+  _autoplayBusy = true
+  const last = state.queue[state.queue.length - 1]
+  try {
+    let vid = last.videoId || null
+    if (!vid && isHttpPath(last.filePath)) vid = (last.filePath.match(/[?&]v=([\w-]{11})/) || [])[1] || null
+    if (!vid) {
+      const f = await window.api.ytFindVideo({ artist: last.albumArtist || last.artist || '', title: last.title || '' })
+      vid = f?.ok ? f.videoId : null
+    }
+    if (!vid) throw new Error('no seed')
+    const res = await window.api.ytRadio({ videoId: vid })
+    if (!res?.ok || !res.tracks?.length) throw new Error('no radio')
+    const have = new Set(state.queue.map(t => t.filePath))
+    const fresh = res.tracks.map(_ytQueueItem).filter(t => !have.has(t.filePath))
+    if (!fresh.length) throw new Error('nothing new')
+    const at = state.queue.length
+    state.queue.push(...fresh)
+    state.queueIndex = at
+    playCurrentTrack()
+    if (state.queuePanelOpen) renderQueuePanel()
+  } catch {
+    audio.pause(); state.isPlaying = false; updatePlayBtn(); syncExtension()
+  } finally {
+    _autoplayBusy = false
+  }
 }
 
 // ── YT Music home feed (session-cached; silently omitted offline) ───────────
@@ -1514,6 +1677,7 @@ async function ytRowContextMenu(r) {
     { label: 'Play next', action: 'playnext' },
     { label: 'Add to queue', action: 'queue' },
     { label: liked ? 'Unlike' : 'Like', action: 'like' },
+    { label: 'Start radio', action: 'radio' },
     { label: 'Add to playlist…', action: 'addpl' },
   ]
   if (r.albumBrowseId) items.push({ label: 'Go to album', action: 'goalbum' })
@@ -1524,6 +1688,7 @@ async function ytRowContextMenu(r) {
   else if (action === 'playnext') { state.queue.splice(state.queueIndex + 1, 0, _ytQueueItem(r)); updateNextPrefetch() }
   else if (action === 'queue') { state.queue.push(_ytQueueItem(r)); updateNextPrefetch() }
   else if (action === 'like') toggleYtLike(r)
+  else if (action === 'radio') startYtRadio(r)
   else if (action === 'addpl') showAddToPlaylistModal([_ytQueueItem(r)])
   else if (action === 'goalbum') navigate('yt-album', r.albumBrowseId)
   else if (action === 'goartist') navigate('yt-artist', r.channelId)
@@ -1882,6 +2047,7 @@ async function renderYtArtist(channelId) {
       <div class="artist-hero-name">${esc(ar.name)} <span class="yt-badge">YT</span></div>
       <div class="artist-hero-meta">${ar.albums.length + ar.singles.length} release${(ar.albums.length + ar.singles.length) !== 1 ? 's' : ''} on YouTube Music</div>
       <button class="follow-btn${isYtFollowed(channelId) ? ' following' : ''}" id="yt-follow-btn">${isYtFollowed(channelId) ? 'Following' : 'Follow'}</button>
+      ${ar.topSongs.length ? `<button class="follow-btn" id="yt-artist-radio-btn" title="Play a radio seeded from this artist">Radio</button>` : ''}
     </div>
     <div class="page" style="padding-top:16px">
       ${ar.topSongs.length ? `
@@ -1924,6 +2090,11 @@ async function renderYtArtist(channelId) {
     const now = toggleYtFollow({ channelId, name: ar.name, thumbnailUrl: ar.thumbnailUrl })
     const btn = document.getElementById('yt-follow-btn')
     if (btn) { btn.classList.toggle('following', now); btn.textContent = now ? 'Following' : 'Follow' }
+  })
+  document.getElementById('yt-artist-radio-btn')?.addEventListener('click', () => {
+    const btn = document.getElementById('yt-artist-radio-btn')
+    if (btn) btn.textContent = 'Radio…'
+    startYtRadio(ar.topSongs[0]).then(ok => { if (btn) btn.textContent = ok ? 'Radio ▸' : 'Radio' })
   })
 }
 
@@ -2851,11 +3022,19 @@ function renderQueuePanel() {
   if (!list) return
   const curTrack = state.queue[state.queueIndex]
   const fromName = curTrack?.albumName || ''
-  const fromHtml = fromName
+  const autoHtml = `<div class="queue-autoplay-row">
+    <span>Autoplay similar when queue ends</span>
+    <button class="queue-autoplay-toggle${autoplayEnabled() ? ' on' : ''}" id="queue-autoplay-toggle">${autoplayEnabled() ? 'On' : 'Off'}</button>
+  </div>`
+  const fromHtml = autoHtml + (fromName
     ? `<div class="queue-from">Playing from <span class="queue-from-name">${esc(fromName)}</span></div>`
-    : ''
+    : '')
   if (!state.queue.length) {
     list.innerHTML = fromHtml + `<div style="padding:20px 16px; color:var(--text3); font-size:13px;">Nothing in queue</div>`
+    document.getElementById('queue-autoplay-toggle')?.addEventListener('click', () => {
+      setAutoplay(!autoplayEnabled())
+      renderQueuePanel()
+    })
     return
   }
 
@@ -2896,6 +3075,12 @@ function renderQueuePanel() {
     renderQueuePanel()
   })
   list.appendChild(clearBtn)
+
+  // Autoplay toggle
+  document.getElementById('queue-autoplay-toggle')?.addEventListener('click', () => {
+    setAutoplay(!autoplayEnabled())
+    renderQueuePanel()
+  })
 
   // Click to play
   list.querySelectorAll('.queue-row').forEach(row => {
@@ -3408,6 +3593,8 @@ function playNext() {
     state.queueIndex = (state.queueIndex + 1) % state.queue.length
   }
   if (state.queueIndex === 0 && state.repeat === 'off') {
+    // Queue finished — Spotify-style autoplay keeps going with similar tracks
+    if (autoplayEnabled() && !state.shuffle) { tryAutoplayContinue(); return }
     audio.pause(); state.isPlaying = false; updatePlayBtn(); syncExtension(); return
   }
   playCurrentTrack()
@@ -3431,38 +3618,25 @@ function playPrev() {
 // ── Lyrics ──────────────────────────────────────────────────────────────────
 async function fetchLyrics(track) {
   if (!track) return null
-  try {
-    const params = new URLSearchParams({
-      track_name: track.title || '',
-      artist_name: track.albumArtist || track.artist || '',
-      album_name: track.albumName || '',
-      duration: String(Math.round(track.duration || audio.duration || 0)),
-    })
-    const res = await fetch('https://lrclib.net/api/get?' + params.toString())
-    if (!res.ok) return null
-    const json = await res.json()
-    if (json.syncedLyrics) {
-      const lines = []
-      for (const raw of json.syncedLyrics.split('\n')) {
-        const m = raw.match(/^\[(\d+):(\d+(?:\.\d+)?)\]\s*(.*)$/)
-        if (!m) continue
-        const time = parseInt(m[1]) * 60 + parseFloat(m[2])
-        const text = m[3].trim()
-        if (text) lines.push({ time, text })
-      }
-      if (lines.length) return lines.sort((a, b) => a.time - b.time)
-    }
-    if (json.plainLyrics) {
-      const paras = json.plainLyrics.split('\n').map(s => s.trim()).filter(Boolean)
-      if (!paras.length) return null
-      const dur = track.duration || audio.duration || paras.length
-      const step = dur / paras.length
-      return paras.map((text, i) => ({ time: i * step, text }))
-    }
-    return null
-  } catch (_) {
-    return null
+  // Fetched in the main process (lyrics.js): renderer CSP blocks direct
+  // lrclib.net requests, and main adds search + YouTube fallbacks + caching.
+  const res = await window.api.getLyrics({
+    artist: track.albumArtist || track.artist || '',
+    title: track.title || '',
+    album: track.albumName || '',
+    duration: Math.round(track.duration || audio.duration || 0),
+    videoId: track.videoId || null,
+  }).catch(() => null)
+  if (!res?.ok) return null
+  if (res.synced?.length) return res.synced.filter(l => l.text)
+  if (res.plain) {
+    const paras = res.plain.split('\n').map(s => s.trim()).filter(Boolean)
+    if (!paras.length) return null
+    const dur = track.duration || audio.duration || paras.length
+    const step = dur / paras.length
+    return paras.map((text, i) => ({ time: i * step, text }))
   }
+  return null
 }
 
 function renderLyricsPanel() {

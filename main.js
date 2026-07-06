@@ -2122,6 +2122,11 @@ ipcMain.handle('slsk-show-in-folder', (_, filePath) => {
   return { ok: true }
 })
 
+ipcMain.handle('open-external', (_, url) => {
+  if (typeof url === 'string' && /^https:\/\//.test(url)) shell.openExternal(url)
+  return { ok: true }
+})
+
 // ── YouTube ──────────────────────────────────────────────────────────────────
 ipcMain.handle('yt-music-search', async (_, { query }) => {
   try { return { ok: true, results: await ytSearch.searchMusic(query) } }
