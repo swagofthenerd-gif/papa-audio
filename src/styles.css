@@ -4163,3 +4163,31 @@ input:focus:not(:focus-visible) { outline: none; }
 .yt-dl-bar { width: 140px; height: 4px; background: rgba(255,255,255,.12); border-radius: 2px; overflow: hidden; }
 .yt-dl-fill { height: 100%; background: #1db954; transition: width .3s; }
 .yt-dl-done { color: #1db954; font-size: 12px; }
+
+/* ── YouTube Spotify-experience additions ─────────────────────────────── */
+.yt-sub-header { display: flex; align-items: center; }
+.yt-see-all {
+  margin-left: auto; background: none; border: none; color: var(--text3);
+  font-size: 12px; font-weight: 600; letter-spacing: .3px; cursor: pointer;
+}
+.yt-see-all:hover { color: var(--text); text-decoration: underline; }
+
+.yt-btn.yt-like { font-size: 14px; }
+.yt-btn.yt-like.liked { color: #1db954; }
+
+.yt-load-more {
+  display: block; margin: 18px auto; padding: 8px 22px; border-radius: 18px;
+  border: 1px solid var(--text3); background: transparent; color: var(--text);
+  font-weight: 600; cursor: pointer;
+}
+.yt-load-more:hover { border-color: var(--text); }
+.yt-retry {
+  margin-left: 8px; background: none; border: 1px solid var(--text3);
+  border-radius: 12px; color: var(--text2); padding: 2px 10px; cursor: pointer;
+}
+.yt-retry:hover { color: var(--text); border-color: var(--text); }
+
+.yt-album-save-btn.saved { color: #1db954; }
+.yt-liked-row .yt-thumb { width: 36px; height: 36px; border-radius: 4px; margin-right: 10px; }
+.yt-home-songs { max-width: 720px; }
+.album-card-meta { font-size: 12px; color: var(--text3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
