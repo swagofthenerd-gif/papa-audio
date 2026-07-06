@@ -358,8 +358,12 @@ async function signOut() {
   return true
 }
 
+// lyrics.js needs the shared (possibly signed-in) Innertube instance
+function _clientForLyrics() { return _client() }
+
 module.exports = {
   searchMusic, searchAll, searchMusicFull, searchPage, getAlbum, getArtist, getPlaylist, getHomeFeed,
+  _clientForLyrics,
   getRadio, findVideoId, mapUpNextItem,
   setCacheDir, hasCachedCredentials, isSignedIn, signIn, signOut,
   mapMusicItem, mapVideoItem, mapAlbumItem, mapArtistItem, mapPlaylistItem, _setClientForTest,
