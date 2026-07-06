@@ -348,11 +348,13 @@ app.whenReady().then(() => {
     sites.push({ url: 'https://rutracker.org/forum/index.php', name: 'Rutracker' })
     store.set('savedSites', sites)
   }
-  // YT client cache dir enables OAuth credential persistence; silent
-  // sign-in restore only when credentials are already cached (never
-  // starts a device flow at boot).
+  // YT client: session-data cache + cookie-auth restore. Leftover OAuth
+  // credentials from the abandoned device-flow must be purged — they 400
+  // every YT Music request.
   ytSearch.setCacheDir(path.join(USER_DATA, 'yt-cache'))
-  if (ytSearch.hasCachedCredentials()) ytSearch.signIn().catch(() => {})
+  ytSearch.purgeStaleOauth()
+  const ytCookie = store.get('ytCookie', null)
+  if (ytCookie) ytSearch.setCookie(ytCookie)
   createWindow()
   initMpris()          // MPRIS D-Bus first; media-key grab only as fallback
   initPlayer()
@@ -2185,29 +2187,73 @@ ipcMain.handle('get-lyrics', async (_, params) => {
   catch (e) { return { ok: false, error: String(e?.message || e) } }
 })
 
-// ── YouTube account (OAuth device flow) ──────────────────────────────────────
-let _ytAuthInFlight = false
+// ── YouTube account (cookie auth via a real Google sign-in window) ──────────
+// OAuth device-flow tokens are rejected (HTTP 400) by every YT Music endpoint,
+// so we sign in through an actual browser window and hand Innertube the cookies.
+async function _collectYtCookieHeader(sess) {
+  const cookies = await sess.cookies.get({ url: 'https://www.youtube.com' })
+  if (!cookies.some(c => c.name === 'SAPISID' || c.name === '__Secure-3PAPISID')) return null
+  return cookies.map(c => `${c.name}=${c.value}`).join('; ')
+}
+
+let _ytAuthWin = null
 ipcMain.handle('yt-auth-start', async () => {
-  if (_ytAuthInFlight) return { ok: false, error: 'Sign-in already in progress' }
-  _ytAuthInFlight = true
-  try {
-    await ytSearch.signIn(pending => mainWindow?.webContents.send('yt-auth-pending', pending))
-    mainWindow?.webContents.send('yt-auth-done', { signedIn: true })
-    return { ok: true, signedIn: true }
-  } catch (e) {
-    return { ok: false, error: String(e?.message || e) }
-  } finally {
-    _ytAuthInFlight = false
-  }
+  if (_ytAuthWin) { _ytAuthWin.focus(); return { ok: false, error: 'Sign-in window already open' } }
+  return new Promise(resolve => {
+    const { session } = require('electron')
+    const sess = session.fromPartition('persist:yt-auth')
+    _ytAuthWin = new BrowserWindow({
+      width: 520, height: 720, parent: mainWindow,
+      title: 'Sign in to YouTube',
+      autoHideMenuBar: true,
+      webPreferences: { session: sess, nodeIntegration: false, contextIsolation: true },
+    })
+    // Google refuses logins from obviously-embedded browsers; a plain Firefox
+    // UA keeps the flow open.
+    _ytAuthWin.webContents.setUserAgent('Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0')
+    _ytAuthWin.loadURL('https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fmusic.youtube.com%2F')
+
+    let settled = false
+    const finish = (result) => {
+      if (settled) return
+      settled = true
+      clearInterval(poll)
+      if (_ytAuthWin && !_ytAuthWin.isDestroyed()) _ytAuthWin.close()
+      _ytAuthWin = null
+      resolve(result)
+    }
+
+    const poll = setInterval(async () => {
+      try {
+        const header = await _collectYtCookieHeader(sess)
+        if (header) {
+          store.set('ytCookie', header)
+          ytSearch.setCookie(header)
+          mainWindow?.webContents.send('yt-auth-done', { signedIn: true })
+          finish({ ok: true, signedIn: true })
+        }
+      } catch { /* keep polling until the window closes */ }
+    }, 1500)
+
+    _ytAuthWin.on('closed', () => {
+      _ytAuthWin = null
+      if (!settled) { settled = true; clearInterval(poll); resolve({ ok: false, error: 'Sign-in window closed before login finished' }) }
+    })
+  })
 })
 
 ipcMain.handle('yt-auth-signout', async () => {
-  try { await ytSearch.signOut(); return { ok: true } }
-  catch (e) { return { ok: false, error: String(e?.message || e) } }
+  try {
+    store.delete('ytCookie')
+    ytSearch.setCookie(null)
+    const { session } = require('electron')
+    await session.fromPartition('persist:yt-auth').clearStorageData().catch(() => {})
+    return { ok: true }
+  } catch (e) { return { ok: false, error: String(e?.message || e) } }
 })
 
-ipcMain.handle('yt-auth-status', async () => {
-  try { return { ok: true, signedIn: await ytSearch.isSignedIn() } }
+ipcMain.handle('yt-auth-status', () => {
+  try { return { ok: true, signedIn: ytSearch.isSignedIn() } }
   catch (e) { return { ok: false, error: String(e?.message || e) } }
 })
 

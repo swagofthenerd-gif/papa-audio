@@ -685,31 +685,18 @@ function _startYtConnect() {
   const banner = document.getElementById('yt-connect-banner')
   if (!banner) return
   banner.innerHTML = `<div class="yt-connect-text">
-    <div class="yt-connect-title">Waiting for Google…</div>
-    <div class="yt-connect-sub" id="yt-connect-status">Requesting a sign-in code</div>
+    <div class="yt-connect-title">Sign in to Google</div>
+    <div class="yt-connect-sub" id="yt-connect-status">A Google sign-in window just opened — log in with your YouTube account there. This page updates automatically when you're done.</div>
   </div>`
-  window.api.on('yt-auth-pending', ({ verificationUrl, userCode }) => {
-    const el = document.getElementById('yt-connect-status')
-    if (!el) return
-    el.innerHTML = `Go to <b>${esc(verificationUrl || 'google.com/device')}</b> and enter code
-      <span class="yt-connect-code">${esc(userCode || '')}</span>
-      <button class="yt-connect-btn" id="yt-connect-open" style="margin-left:10px">Open page</button>`
-    document.getElementById('yt-connect-open')?.addEventListener('click', () => {
-      window.api.openExternal(verificationUrl && verificationUrl.startsWith('https') ? verificationUrl : 'https://www.google.com/device')
-    })
-  })
-  window.api.on('yt-auth-done', () => {
-    window.api.off('yt-auth-pending')
-    window.api.off('yt-auth-done')
-    _ytHomeCache = null
-    if (state.currentPage === 'explore') renderExplore()
-  })
   window.api.ytAuthStart().then(res => {
-    if (!res?.ok) {
-      window.api.off('yt-auth-pending')
-      window.api.off('yt-auth-done')
-      const el = document.getElementById('yt-connect-status')
-      if (el) el.innerHTML = `Sign-in failed: ${esc(res?.error || 'unknown error')} <button class="yt-connect-btn" id="yt-connect-retry" style="margin-left:10px">Retry</button>`
+    _ytHomeCache = null
+    if (res?.ok) {
+      if (state.currentPage === 'explore') renderExplore()
+      return
+    }
+    const el = document.getElementById('yt-connect-status')
+    if (el) {
+      el.innerHTML = `Sign-in didn't finish: ${esc(res?.error || 'unknown error')} <button class="yt-connect-btn" id="yt-connect-retry" style="margin-left:10px">Try again</button>`
       document.getElementById('yt-connect-retry')?.addEventListener('click', () => {
         if (state.currentPage === 'explore') renderExplore()
       })
