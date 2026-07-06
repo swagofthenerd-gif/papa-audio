@@ -36,6 +36,10 @@ const state = {
   playCounts: {},
   playHistory: [],
   followedArtists: [],
+  ytLiked: [],
+  ytFollowed: [],
+  ytSavedAlbums: [],
+  ytRecent: [],
 }
 
 const slsk = {
@@ -182,12 +186,18 @@ let ctxTarget = null  // { type: 'album'|'track', albumId, track, artist }
 
 // ── Init ───────────────────────────────────────────────────────────────────
 async function init() {
-  const [info, liked, savedQueues, qualitySources, playlists, likedTracks, playCounts, playHistory, followedArtists] = await Promise.all([
+  const [info, liked, savedQueues, qualitySources, playlists, likedTracks, playCounts, playHistory, followedArtists, ytLiked, ytFollowed, ytSavedAlbums, ytRecent] = await Promise.all([
     window.api.getAppInfo(), window.api.getLiked(),
     window.api.getSavedQueues(), window.api.getQualitySources(),
     window.api.getPlaylists(), window.api.getLikedTracks(), window.api.getPlayCounts(),
     window.api.getPlayHistory(), window.api.getFollowedArtists(),
+    window.api.getYtLiked(), window.api.getYtFollowed(),
+    window.api.getYtSavedAlbums(), window.api.getYtRecent(),
   ])
+  state.ytLiked        = ytLiked || []
+  state.ytFollowed     = ytFollowed || []
+  state.ytSavedAlbums  = ytSavedAlbums || []
+  state.ytRecent       = ytRecent || []
   state.likedTracks    = likedTracks || []
   state.playCounts     = playCounts || {}
   state.playHistory    = playHistory || []
@@ -337,6 +347,10 @@ function navigate(page, navId, opts = {}) {
   else if (page === 'playlist')  renderPlaylist(navId)
   else if (page === 'stats')     renderStats()
   else if (page === 'liked')     renderLikedSongs()
+  else if (page === 'yt-album')  renderYtAlbum(navId)
+  else if (page === 'yt-artist') renderYtArtist(navId)
+  else if (page === 'yt-see-all')  renderYtSeeAll(navId)
+  else if (page === 'yt-playlist') renderYtPlaylist(navId)
 
   if (page === 'downloads') startDownloadsPolling(2000)
   else { _dlLastSig = ''; startDownloadsPolling(6000) }
@@ -499,12 +513,21 @@ function renderHome() {
     </div>` : ''
 
   const recentAlbums = state.recentlyPlayed.map(id => state.library.find(a => a.id === id)).filter(Boolean).slice(0, 8)
-  const recentHTML = recentAlbums.length ? `
+  const ytRecentCards = state.ytRecent.slice(0, 4).map(r => `
+    <div class="album-card yt-recent-card" data-ytalbum="${esc(r.albumId)}">
+      <div class="album-card-art-wrap">
+        ${r.artUrl ? `<img class="album-card-art" src="${esc(r.artUrl)}" alt="" loading="lazy" onerror="this.style.display='none'">` : ''}
+        <span class="yt-badge yt-card-badge">YT</span>
+      </div>
+      <div class="album-card-name">${esc(r.title || r.name)}</div>
+      <div class="album-card-meta">${esc(r.artist || '')}</div>
+    </div>`).join('')
+  const recentHTML = (recentAlbums.length || state.ytRecent.length) ? `
     <div class="section-header">
       <span class="section-title">Recently Played</span>
       <button class="section-see-all" data-page="library" data-sort="recent">See all</button>
     </div>
-    <div class="scroll-row">${recentAlbums.map(albumCard).join('')}</div>` : ''
+    <div class="scroll-row">${recentAlbums.map(albumCard).join('')}${ytRecentCards}</div>` : ''
 
   const addedAlbums = [...state.library].filter(a => a.addedAt).sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0)).slice(0, 8)
   const addedHTML = addedAlbums.length ? `
@@ -514,11 +537,23 @@ function renderHome() {
     </div>
     <div class="scroll-row">${addedAlbums.map(albumCard).join('')}</div>` : ''
 
-  const followingHTML = state.followedArtists.length ? `
+  const ytFollowingCards = state.ytFollowed.map(a => `
+    <div class="artist-card following-card yt-artist-card" data-channel="${esc(a.channelId)}">
+      <div class="artist-card-art">
+        ${a.thumbnailUrl ? `<img src="${esc(a.thumbnailUrl)}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">` : ''}
+        <div class="artist-card-art-fallback" ${a.thumbnailUrl ? 'style="display:none"' : ''}>
+          <svg viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
+        </div>
+      </div>
+      <div class="artist-card-name">${esc(a.name)}</div>
+      <div class="artist-card-meta">Artist · YT</div>
+    </div>`).join('')
+
+  const followingHTML = (state.followedArtists.length || state.ytFollowed.length) ? `
     <div class="section-header">
       <span class="section-title">Following</span>
     </div>
-    <div class="scroll-row">${state.followedArtists.map(name => {
+    <div class="scroll-row">${ytFollowingCards}${state.followedArtists.map(name => {
       const ap = (state.library.find(a => a.artist === name || a.albumArtist === name) || {}).artPath
       const ct = _artistAlbumCount(name)
       return `<div class="artist-card following-card" data-follow-artist="${esc(name)}">
@@ -547,6 +582,7 @@ function renderHome() {
   setContent(`<div class="page">
     <div class="home-header"><div class="home-header-left"><canvas class="home-clock" id="home-clock" width="56" height="56"></canvas><div class="greeting">${greeting}</div></div>${artBtnHTML}</div>
     ${quickHTML}${followingHTML}${recentHTML}${addedHTML}${allHTML}
+    <div id="yt-home"></div>
   </div>`)
 
   document.querySelectorAll('.section-see-all').forEach(btn => {
@@ -555,9 +591,47 @@ function renderHome() {
       navigate(btn.dataset.page || 'library')
     })
   })
+  document.querySelectorAll('.yt-recent-card').forEach(card => card.addEventListener('click', () => {
+    const r = state.ytRecent.find(x => x.albumId === card.dataset.ytalbum)
+    if (!r) return
+    state.queue = [{ filePath: r.filePath, title: r.title || r.name, artist: r.artist, albumArtist: r.artist, albumName: r.name, albumId: r.albumId, artPath: r.artUrl, duration: 0 }]
+    state.queueIndex = 0
+    playCurrentTrack()
+  }))
+  loadYtHome()
   document.querySelectorAll('.following-card[data-follow-artist]').forEach(card => {
     card.addEventListener('click', () => navigate('artist', card.dataset.followArtist))
   })
+  document.querySelectorAll('.following-card[data-channel]').forEach(card => {
+    card.addEventListener('click', () => navigate('yt-artist', card.dataset.channel))
+  })
+}
+
+// ── YT Music home feed (session-cached; silently omitted offline) ───────────
+let _ytHomeCache = null
+async function loadYtHome() {
+  if (!document.getElementById('yt-home')) return
+  if (!_ytHomeCache) {
+    const res = await window.api.ytHome().catch(() => ({ ok: false }))
+    if (!res.ok || !res.sections?.length) return
+    _ytHomeCache = res.sections
+  }
+  const el = document.getElementById('yt-home')
+  if (!el || state.currentPage !== 'home') return
+  el.innerHTML = _ytHomeCache.map((sec, si) => `
+    <div class="section-header" style="margin-top:28px">
+      <span class="section-title">${esc(sec.title)} <span class="yt-badge">YT</span></span>
+    </div>
+    ${sec.kind === 'songs'
+      ? `<div class="yt-home-songs" data-si="${si}">${_ytSongRows(sec.items)}</div>`
+      : `<div class="scroll-row">${sec.items.map(_ytAlbumCard).join('')}</div>`}
+  `).join('')
+  el.querySelectorAll('.yt-home-songs').forEach(box => {
+    bindYtEvents(_ytHomeCache[parseInt(box.dataset.si)].items, box)
+  })
+  el.querySelectorAll('.yt-album-card').forEach(card => card.addEventListener('click', () => {
+    navigate('yt-album', card.dataset.browse)
+  }))
 }
 
 function renderArtists() {
@@ -572,7 +646,7 @@ function renderArtists() {
     if (!entry.artPath && album.artPath) entry.artPath = album.artPath
   }
   const artists = [...artistMap.values()].sort((a, b) => a.name.localeCompare(b.name))
-  if (!artists.length) { navigate('library'); return }
+  if (!artists.length && !state.ytFollowed.length) { navigate('library'); return }
 
   setContent(`<div class="page">
     <div class="page-header">
@@ -594,6 +668,19 @@ function renderArtists() {
         <div class="artist-card-name">${esc(ar.name)}</div>
         <div class="artist-card-meta">${ar.albums.length} album${ar.albums.length !== 1 ? 's' : ''}</div>
       </div>`).join('')}
+    ${state.ytFollowed.map(a => `
+      <div class="artist-card yt-artist-card" data-channel="${esc(a.channelId)}" data-artist="${esc(a.name)}">
+        <div class="artist-card-art">
+          ${a.thumbnailUrl
+            ? `<img src="${esc(a.thumbnailUrl)}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
+            : ''}
+          <div class="artist-card-art-fallback" ${a.thumbnailUrl ? 'style="display:none"' : ''}>
+            <svg viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
+          </div>
+        </div>
+        <div class="artist-card-name">${esc(a.name)}</div>
+        <div class="artist-card-meta">Artist · YT</div>
+      </div>`).join('')}
     </div>
   </div>`)
 
@@ -609,6 +696,7 @@ function renderArtists() {
 
   document.querySelectorAll('.artist-card').forEach(card => {
     card.addEventListener('click', () => {
+      if (card.dataset.channel) { navigate('yt-artist', card.dataset.channel); return }
       const artist = card.dataset.artist
       if (artist) navigate('artist', artist)
     })
@@ -617,8 +705,16 @@ function renderArtists() {
 
 function renderLibrary() {
   const getSorted = () => {
-    let albums = [...state.library]
-    if (state.libLikedOnly) albums = albums.filter(a => state.likedAlbums.includes(a.id))
+    // Saved YT albums are merged as pseudo-cards at render time — they never
+    // live in state.library, so a rescan can't clobber them.
+    const ytAlbums = state.ytSavedAlbums.map(a => ({
+      id: `yt_${a.browseId}`, isYt: true, browseId: a.browseId,
+      name: a.title, artist: a.artist, year: parseInt(a.year, 10) || 0,
+      artPath: a.thumbnailUrl || null, addedAt: a.savedAt || 0,
+      tracks: a.tracks || [], genre: null,
+    }))
+    let albums = [...state.library, ...ytAlbums]
+    if (state.libLikedOnly) albums = albums.filter(a => state.likedAlbums.includes(a.id) || a.isYt)
     if (state.libGenre) albums = albums.filter(a => a.genre === state.libGenre)
     if (state.libSort === 'alpha')  return albums.sort((a, b) => a.name.localeCompare(b.name))
     if (state.libSort === 'artist') return albums.sort((a, b) => a.artist.localeCompare(b.artist))
@@ -650,7 +746,7 @@ function renderLibrary() {
     <div class="page-header">
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
         <h1 class="section-title">Your Library</h1>
-        <span class="lib-count">${state.library.length} albums</span>
+        <span class="lib-count">${state.library.length + state.ytSavedAlbums.length} albums</span>
         <button class="rescan-btn" id="lib-rescan-btn" title="Rescan music folders">
           <svg viewBox="0 0 24 24"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/></svg>
           Rescan
@@ -938,8 +1034,9 @@ function renderSearch(query) {
   ).slice(0, 20)
 
   const hasLocal = matchAlbums.length || matchArtists.length || matchTracks.length
+  ytSearchState.showTopResult = !hasLocal
 
-  const tabs = ['All', 'Songs', 'Albums', 'Artists']
+  const tabs = ['All', 'Songs', 'Albums', 'Artists', 'Playlists']
   let html = `<div class="page">
     <div class="search-tabs" id="search-tabs">
       ${tabs.map(t => `<button class="search-tab${t==='All'?' active':''}" data-tab="${t}">${t}</button>`).join('')}
@@ -1064,8 +1161,14 @@ function renderSearch(query) {
       tab.classList.add('active')
       const active = tab.dataset.tab
       document.querySelectorAll('.search-section').forEach(sec => {
-        sec.hidden = active !== 'All' && sec.dataset.section !== active
+        if (sec.id === 'yt-section') {
+          // YouTube has its own Songs/Albums/Artists/Playlists sub-sections
+          sec.hidden = active !== 'All' && !['Songs', 'Albums', 'Artists', 'Playlists'].includes(active)
+        } else {
+          sec.hidden = active !== 'All' && sec.dataset.section !== active
+        }
       })
+      _applyYtFilter()
     })
   })
 
@@ -1100,11 +1203,23 @@ function renderSearch(query) {
 }
 
 // ── YouTube search section ──────────────────────────────────────────────────
-const ytSearchState = { scope: 'music', cache: new Map(), lastQuery: null }
+const ytSearchState = { scope: 'music', cache: new Map(), lastQuery: null, showTopResult: false }
+
+function _activeSearchTab() {
+  return document.querySelector('#search-tabs .search-tab.active')?.dataset.tab || 'All'
+}
+
+function _applyYtFilter() {
+  const active = _activeSearchTab()
+  document.querySelectorAll('.yt-sub').forEach(sub => {
+    sub.hidden = active !== 'All' && sub.dataset.sub !== active
+  })
+}
 
 function _ytQueueItem(r) {
   return {
     filePath: `https://www.youtube.com/watch?v=${r.videoId}`,
+    videoId: r.videoId,
     title: r.title,
     artist: r.artist,
     albumArtist: r.artist,
@@ -1112,7 +1227,68 @@ function _ytQueueItem(r) {
     albumId: `yt_${r.videoId}`,
     artPath: r.thumbnailUrl || null,
     duration: r.duration || 0,
+    albumBrowseId: r.albumBrowseId || null,
+    channelId: r.channelId || null,
   }
+}
+
+// ── YT saves: likes / follows / saved albums / recents ──────────────────────
+function watchUrl(videoId) { return `https://www.youtube.com/watch?v=${videoId}` }
+function isHttpPath(p) { return /^https?:\/\//.test(p || '') }
+
+function isYtLiked(videoId) { return state.ytLiked.some(t => t.videoId === videoId) }
+function toggleYtLike(track) {
+  const i = state.ytLiked.findIndex(t => t.videoId === track.videoId)
+  let liked
+  if (i >= 0) { state.ytLiked.splice(i, 1); liked = false }
+  else {
+    state.ytLiked.unshift({
+      videoId: track.videoId, title: track.title, artist: track.artist,
+      album: track.album || null, duration: track.duration || 0,
+      thumbnailUrl: track.thumbnailUrl || null,
+      albumBrowseId: track.albumBrowseId || null, channelId: track.channelId || null,
+      likedAt: Date.now(),
+    })
+    liked = true
+  }
+  window.api.saveYtLiked(state.ytLiked)
+  return liked
+}
+
+function isYtFollowed(channelId) { return state.ytFollowed.some(a => a.channelId === channelId) }
+function toggleYtFollow(artist) {
+  const i = state.ytFollowed.findIndex(a => a.channelId === artist.channelId)
+  let following
+  if (i >= 0) { state.ytFollowed.splice(i, 1); following = false }
+  else {
+    state.ytFollowed.unshift({
+      channelId: artist.channelId, name: artist.name,
+      thumbnailUrl: artist.thumbnailUrl || null, followedAt: Date.now(),
+    })
+    following = true
+  }
+  window.api.saveYtFollowed(state.ytFollowed)
+  return following
+}
+
+function isYtAlbumSaved(browseId) { return state.ytSavedAlbums.some(a => a.browseId === browseId) }
+function toggleYtSaveAlbum(album) {
+  const i = state.ytSavedAlbums.findIndex(a => a.browseId === album.browseId)
+  let saved
+  if (i >= 0) { state.ytSavedAlbums.splice(i, 1); saved = false }
+  else { state.ytSavedAlbums.unshift({ ...album, savedAt: Date.now() }); saved = true }
+  window.api.saveYtSavedAlbums(state.ytSavedAlbums)
+  return saved
+}
+
+function recordYtRecent(qItem) {
+  if (!qItem || !isHttpPath(qItem.filePath)) return
+  state.ytRecent = [
+    { albumId: qItem.albumId, name: qItem.albumName, artist: qItem.artist,
+      artUrl: qItem.artPath, filePath: qItem.filePath, title: qItem.title, playedAt: Date.now() },
+    ...state.ytRecent.filter(x => x.albumId !== qItem.albumId),
+  ].slice(0, 20)
+  window.api.saveYtRecent(state.ytRecent)
 }
 
 async function runYtSearch(query, scope) {
@@ -1126,7 +1302,7 @@ async function runYtSearch(query, scope) {
     return
   }
   box.innerHTML = `<div class="yt-status">Searching YouTube…</div>`
-  const call = scope === 'music' ? window.api.ytMusicSearch : window.api.ytSearch
+  const call = scope === 'music' ? window.api.ytMusicSearchFull : window.api.ytSearch
   const res = await call({ query }).catch(e => ({ ok: false, error: String(e) }))
   // Stale response guard — user typed a new query or switched scope meanwhile
   if (ytSearchState.lastQuery !== query || ytSearchState.scope !== scope) return
@@ -1139,21 +1315,15 @@ async function runYtSearch(query, scope) {
   renderYtResults(res.results, query)
 }
 
-function renderYtResults(results, query) {
-  const box = document.getElementById('yt-results')
-  if (!box) return
-  if (!results.length) {
-    box.innerHTML = `<div class="yt-status">Nothing on YouTube for "${esc(query)}"</div>`
-    return
-  }
-  box.innerHTML = `<div class="yt-list">${results.map((r, i) => `
+function _ytSongRows(songs) {
+  return `<div class="yt-list">${songs.map((r, i) => `
     <div class="yt-row" data-i="${i}">
       ${r.thumbnailUrl
         ? `<img class="yt-thumb" src="${esc(r.thumbnailUrl)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`
         : `<div class="yt-thumb yt-thumb-empty"></div>`}
       <div class="yt-info">
         <div class="yt-title">${esc(r.title)} <span class="yt-badge">YT</span></div>
-        <div class="yt-sub">${esc(r.artist)}${r.album ? ' · ' + esc(r.album) : ''}${r.viewCount ? ' · ' + esc(r.viewCount) : ''}</div>
+        <div class="yt-sub-line">${esc(r.artist)}${r.album ? ' · ' + esc(r.album) : ''}${r.viewCount ? ' · ' + esc(r.viewCount) : ''}</div>
       </div>
       <span class="yt-dur">${r.duration ? fmtDur(r.duration) : ''}</span>
       <div class="yt-actions">
@@ -1161,17 +1331,226 @@ function renderYtResults(results, query) {
           <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
         </button>
         <button class="yt-btn yt-queue" data-i="${i}" title="Add to queue">+</button>
+        <button class="yt-btn yt-like${isYtLiked(r.videoId) ? ' liked' : ''}" data-i="${i}" title="${isYtLiked(r.videoId) ? 'Unlike' : 'Like'}">${isYtLiked(r.videoId) ? '♥' : '♡'}</button>
         <button class="yt-btn yt-dl" data-i="${i}" title="Download">
           <svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
         </button>
       </div>
     </div>`).join('')}</div>`
-  bindYtEvents(results)
 }
 
-function bindYtEvents(results) {
+function _ytAlbumCard(a) {
+  const hue = _cardHue((a.artist || '') + (a.title || ''))
+  return `<div class="album-card yt-album-card" data-browse="${esc(a.browseId)}">
+    <div class="album-card-art-wrap">
+      ${a.thumbnailUrl
+        ? `<img class="album-card-art" src="${esc(a.thumbnailUrl)}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
+        : ''}
+      <div class="album-card-art-fallback" ${a.thumbnailUrl ? 'style="display:none"' : `style="background:linear-gradient(135deg,hsl(${hue},55%,22%) 0%,hsl(${(hue+40)%360},45%,14%) 100%)"`}>
+        <svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>
+      </div>
+      <span class="yt-badge yt-card-badge">YT</span>
+    </div>
+    <div class="album-card-name">${esc(a.title)}</div>
+    <div class="album-card-meta">${esc(a.year || '')}${a.year && a.artist ? ' · ' : ''}${esc(a.artist || '')}</div>
+  </div>`
+}
+
+function _ytArtistCard(a) {
+  return `<div class="artist-card yt-artist-card" data-channel="${esc(a.channelId)}">
+    <div class="artist-card-art">
+      ${a.thumbnailUrl
+        ? `<img src="${esc(a.thumbnailUrl)}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
+        : ''}
+      <div class="artist-card-art-fallback" ${a.thumbnailUrl ? 'style="display:none"' : ''}>
+        <svg viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
+      </div>
+    </div>
+    <div class="artist-card-name">${esc(a.name)}</div>
+    <div class="artist-card-meta">${esc((a.subtitle || 'Artist').split('•')[0].trim())} · YT</div>
+  </div>`
+}
+
+function _ytPlaylistCard(p) {
+  const hue = _cardHue((p.author || '') + (p.title || ''))
+  return `<div class="album-card yt-playlist-card" data-playlist="${esc(p.playlistId)}">
+    <div class="album-card-art-wrap">
+      ${p.thumbnailUrl
+        ? `<img class="album-card-art" src="${esc(p.thumbnailUrl)}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
+        : ''}
+      <div class="album-card-art-fallback" ${p.thumbnailUrl ? 'style="display:none"' : `style="background:linear-gradient(135deg,hsl(${hue},55%,22%) 0%,hsl(${(hue+40)%360},45%,14%) 100%)"`}>
+        <svg viewBox="0 0 24 24"><path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/></svg>
+      </div>
+      <span class="yt-badge yt-card-badge">YT</span>
+    </div>
+    <div class="album-card-name">${esc(p.title)}</div>
+    <div class="album-card-meta">Playlist${p.author ? ' · ' + esc(p.author) : ''}${p.songCount ? ' · ' + esc(p.songCount) : ''}</div>
+  </div>`
+}
+
+function _ytTopResultCard(r, query) {
+  // Spotify-style: prefer the artist when the query is (close to) their name
+  const artistHit = r.artists?.[0] && r.artists[0].name.toLowerCase().includes(query.toLowerCase().trim())
+  if (artistHit) {
+    const a = r.artists[0]
+    return `<div class="search-top-result yt-top-result" data-channel="${esc(a.channelId)}">
+      <div class="str-label">Top Result</div>
+      <div class="str-art yt-str-art-round" style="${a.thumbnailUrl ? `background:url('${esc(a.thumbnailUrl)}') center/cover no-repeat` : ''}"></div>
+      <div class="str-name">${esc(a.name)}</div>
+      <div class="str-artist">Artist · YouTube</div>
+    </div>`
+  }
+  const s = r.songs?.[0]
+  if (!s) return ''
+  return `<div class="search-top-result yt-top-result" data-i="0">
+    <div class="str-label">Top Result</div>
+    <div class="str-art" style="${s.thumbnailUrl ? `background:url('${esc(s.thumbnailUrl)}') center/cover no-repeat` : ''}"></div>
+    <div class="str-name">${esc(s.title)}</div>
+    <div class="str-artist">${esc(s.artist)} · Song · YouTube</div>
+    <button class="str-play album-card-play yt-top-play" data-i="0">
+      <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+    </button>
+  </div>`
+}
+
+function renderYtResults(results, query) {
   const box = document.getElementById('yt-results')
   if (!box) return
+
+  // "All of YouTube" scope — flat video list, counts as Songs for the filter tabs
+  if (Array.isArray(results)) {
+    if (!results.length) {
+      box.innerHTML = `<div class="yt-status">Nothing on YouTube for "${esc(query)}"</div>`
+      return
+    }
+    box.innerHTML = `<div class="yt-sub" data-sub="Songs">
+      <div class="yt-sub-header">Videos <button class="yt-see-all" data-kind="video">See all</button></div>
+      ${_ytSongRows(results)}</div>`
+    bindYtEvents(results)
+    _bindYtSeeAll(box)
+    _applyYtFilter()
+    return
+  }
+
+  // Music scope — Spotify-style entity sections
+  const { songs = [], albums = [], artists = [], playlists = [] } = results
+  if (!songs.length && !albums.length && !artists.length && !playlists.length) {
+    box.innerHTML = `<div class="yt-status">Nothing on YouTube Music for "${esc(query)}"</div>`
+    return
+  }
+  let html = ''
+  if (ytSearchState.showTopResult) {
+    html += `<div class="yt-sub yt-top-wrap" data-sub="All">${_ytTopResultCard(results, query)}</div>`
+  }
+  if (songs.length) {
+    html += `<div class="yt-sub" data-sub="Songs">
+      <div class="yt-sub-header">Songs <button class="yt-see-all" data-kind="song">See all</button></div>
+      ${_ytSongRows(songs)}
+    </div>`
+  }
+  if (artists.length) {
+    html += `<div class="yt-sub" data-sub="Artists">
+      <div class="yt-sub-header">Artists <button class="yt-see-all" data-kind="artist">See all</button></div>
+      <div class="artist-grid yt-artist-grid">${artists.map(_ytArtistCard).join('')}</div>
+    </div>`
+  }
+  if (albums.length) {
+    html += `<div class="yt-sub" data-sub="Albums">
+      <div class="yt-sub-header">Albums <button class="yt-see-all" data-kind="album">See all</button></div>
+      <div class="album-grid">${albums.map(_ytAlbumCard).join('')}</div>
+    </div>`
+  }
+  if (playlists.length) {
+    html += `<div class="yt-sub" data-sub="Playlists">
+      <div class="yt-sub-header">Playlists <button class="yt-see-all" data-kind="playlist">See all</button></div>
+      <div class="album-grid">${playlists.map(_ytPlaylistCard).join('')}</div>
+    </div>`
+  }
+  box.innerHTML = html
+  bindYtEvents(songs)
+  _bindYtEntityEvents(results)
+  _bindYtSeeAll(box)
+  _applyYtFilter()
+}
+
+function _bindYtSeeAll(box) {
+  box.querySelectorAll('.yt-see-all').forEach(btn => btn.addEventListener('click', () => {
+    navigate('yt-see-all', `${btn.dataset.kind}::${ytSearchState.lastQuery}`)
+  }))
+}
+
+function _bindYtEntityEvents(results) {
+  const box = document.getElementById('yt-results')
+  if (!box) return
+  box.querySelectorAll('.yt-album-card').forEach(card => card.addEventListener('click', () => {
+    navigate('yt-album', card.dataset.browse)
+  }))
+  box.querySelectorAll('.yt-artist-card').forEach(card => card.addEventListener('click', () => {
+    navigate('yt-artist', card.dataset.channel)
+  }))
+  box.querySelectorAll('.yt-playlist-card').forEach(card => card.addEventListener('click', () => {
+    navigate('yt-playlist', card.dataset.playlist)
+  }))
+  const top = box.querySelector('.yt-top-result')
+  if (top) {
+    top.addEventListener('click', () => {
+      if (top.dataset.channel) navigate('yt-artist', top.dataset.channel)
+    })
+    top.querySelector('.yt-top-play')?.addEventListener('click', e => {
+      e.stopPropagation()
+      const s = results.songs?.[0]
+      if (!s) return
+      state.queue = [_ytQueueItem(s)]
+      state.queueIndex = 0
+      playCurrentTrack()
+    })
+  }
+}
+
+async function ytRowContextMenu(r) {
+  const liked = isYtLiked(r.videoId)
+  const items = [
+    { label: 'Play now', action: 'play' },
+    { label: 'Play next', action: 'playnext' },
+    { label: 'Add to queue', action: 'queue' },
+    { label: liked ? 'Unlike' : 'Like', action: 'like' },
+    { label: 'Add to playlist…', action: 'addpl' },
+  ]
+  if (r.albumBrowseId) items.push({ label: 'Go to album', action: 'goalbum' })
+  if (r.channelId) items.push({ label: 'Go to artist', action: 'goartist' })
+  items.push({ label: 'Download', action: 'download' })
+  const action = await window.api.ctxMenuShow(items)
+  if (action === 'play') { state.queue = [_ytQueueItem(r)]; state.queueIndex = 0; playCurrentTrack() }
+  else if (action === 'playnext') { state.queue.splice(state.queueIndex + 1, 0, _ytQueueItem(r)); updateNextPrefetch() }
+  else if (action === 'queue') { state.queue.push(_ytQueueItem(r)); updateNextPrefetch() }
+  else if (action === 'like') toggleYtLike(r)
+  else if (action === 'addpl') showAddToPlaylistModal([_ytQueueItem(r)])
+  else if (action === 'goalbum') navigate('yt-album', r.albumBrowseId)
+  else if (action === 'goartist') navigate('yt-artist', r.channelId)
+  else if (action === 'download') window.api.ytDownload({ videoId: r.videoId, title: r.title, artist: r.artist })
+  return action
+}
+
+function renderLikeButtons(box, results) {
+  box.querySelectorAll('.yt-like').forEach(btn => {
+    const r = results[parseInt(btn.dataset.i)]
+    if (!r) return
+    const liked = isYtLiked(r.videoId)
+    btn.classList.toggle('liked', liked)
+    btn.textContent = liked ? '♥' : '♡'
+    btn.title = liked ? 'Unlike' : 'Like'
+  })
+}
+
+function bindYtEvents(results, rootEl) {
+  const box = rootEl || document.getElementById('yt-results')
+  if (!box) return
+  box.querySelectorAll('.yt-row').forEach(row => row.addEventListener('click', () => {
+    const r = results[parseInt(row.dataset.i)]
+    state.queue = [_ytQueueItem(r)]
+    state.queueIndex = 0
+    playCurrentTrack()
+  }))
   box.querySelectorAll('.yt-play').forEach(btn => btn.addEventListener('click', e => {
     e.stopPropagation()
     const r = results[parseInt(btn.dataset.i)]
@@ -1188,6 +1567,14 @@ function bindYtEvents(results) {
     btn.textContent = '✓'
     setTimeout(() => { btn.textContent = '+' }, 1200)
   }))
+  box.querySelectorAll('.yt-like').forEach(btn => btn.addEventListener('click', e => {
+    e.stopPropagation()
+    const r = results[parseInt(btn.dataset.i)]
+    const liked = toggleYtLike(r)
+    btn.classList.toggle('liked', liked)
+    btn.textContent = liked ? '♥' : '♡'
+    btn.title = liked ? 'Unlike' : 'Like'
+  }))
   box.querySelectorAll('.yt-dl').forEach(btn => btn.addEventListener('click', async e => {
     e.stopPropagation()
     const r = results[parseInt(btn.dataset.i)]
@@ -1198,15 +1585,346 @@ function bindYtEvents(results) {
   box.querySelectorAll('.yt-row').forEach(row => row.addEventListener('contextmenu', async e => {
     e.preventDefault()
     const r = results[parseInt(row.dataset.i)]
-    const action = await window.api.ctxMenuShow([
-      { label: 'Play now', action: 'play' },
-      { label: 'Add to queue', action: 'queue' },
-      { label: 'Download', action: 'download' },
-    ])
-    if (action === 'play') { state.queue = [_ytQueueItem(r)]; state.queueIndex = 0; playCurrentTrack() }
-    else if (action === 'queue') { state.queue.push(_ytQueueItem(r)); updateNextPrefetch() }
-    else if (action === 'download') window.api.ytDownload({ videoId: r.videoId, title: r.title, artist: r.artist })
+    const action = await ytRowContextMenu(r)
+    if (action === 'like') renderLikeButtons(box, results)
   }))
+}
+
+// ── YouTube album page ──────────────────────────────────────────────────────
+function _ytAlbumTrackItem(al, t) {
+  return {
+    filePath: `https://www.youtube.com/watch?v=${t.videoId}`,
+    title: t.title,
+    artist: al.artist,
+    albumArtist: al.artist,
+    albumName: al.title,
+    albumId: `yt_${al.browseId}`,
+    artPath: al.thumbnailUrl || null,
+    duration: t.duration || 0,
+  }
+}
+
+async function renderYtAlbum(browseId) {
+  // Saved albums open instantly from the stored snapshot; a background fetch
+  // refreshes the page only if the data actually changed.
+  const snap = state.ytSavedAlbums.find(a => a.browseId === browseId)
+  if (snap) _paintYtAlbum(snap)
+  else setContent(`<div class="page"><div class="yt-status">Loading album from YouTube…</div></div>`)
+  const res = await window.api.ytAlbum({ browseId }).catch(e => ({ ok: false, error: String(e) }))
+  if (state.currentPage !== 'yt-album') return
+  if (!res.ok) {
+    // A stale snapshot beats an error page
+    if (!snap) setContent(`<div class="page"><div class="yt-status yt-error">Couldn't load album: ${esc(res.error || 'unknown error')}</div></div>`)
+    return
+  }
+  const changed = !snap
+    || JSON.stringify({ ...snap, savedAt: 0 }) !== JSON.stringify({ ...res.album, savedAt: 0 })
+  if (changed) _paintYtAlbum(res.album)
+}
+
+function _paintYtAlbum(al) {
+  const colors = ['#5038a0','#a04038','#2d7a4a','#3850a0','#a07038','#6b38a0','#1a5a7a','#7a1a4a']
+  const color = colors[Math.abs(_cardHue(al.title + al.artist)) % colors.length]
+
+  const trackRows = al.tracks.map((t, i) => `
+    <div class="track-row yt-track-row" data-i="${i}">
+      <span class="track-num">${t.index}</span>
+      <div class="track-info">
+        <div class="track-title">${esc(t.title)}</div>
+        <div class="track-artist">${esc(al.artist)}</div>
+      </div>
+      <button class="yt-btn yt-track-dl" data-i="${i}" title="Download">
+        <svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+      </button>
+      <span class="track-dur">${t.duration ? fmtDur(t.duration) : ''}</span>
+    </div>`).join('')
+
+  setContent(`
+    <div class="album-hero" style="background: linear-gradient(${color}cc, var(--bg) 100%)">
+      <img class="album-hero-art" src="${esc(al.thumbnailUrl || '')}" alt="" ${!al.thumbnailUrl ? 'style="display:none"' : ''} onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+      <div class="album-hero-art-fallback" ${al.thumbnailUrl ? 'style="display:none"' : ''}><svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg></div>
+      <div class="album-hero-info">
+        <div class="album-hero-type">Album <span class="yt-badge">YT</span></div>
+        <div class="album-hero-title">${esc(al.title)}</div>
+        <div class="album-hero-meta">
+          <span>${esc(al.artist)}</span>
+          ${al.year ? `&bull; ${esc(al.year)}` : ''} ${al.summary ? `&bull; ${esc(al.summary)}` : ''}
+        </div>
+      </div>
+    </div>
+    <div class="album-controls">
+      <button class="album-play-btn" id="yt-album-play-btn" title="Play all">
+        <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+      </button>
+      <button class="ctrl-btn yt-album-dl-btn" id="yt-album-dl-btn" title="Download album">
+        <svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+      </button>
+      <button class="ctrl-btn yt-album-save-btn${isYtAlbumSaved(al.browseId) ? ' saved' : ''}" id="yt-album-save-btn" title="${isYtAlbumSaved(al.browseId) ? 'Remove from library' : 'Save to library'}">${isYtAlbumSaved(al.browseId) ? '♥' : '♡'}</button>
+      <span class="yt-album-dl-note" id="yt-album-dl-note"></span>
+    </div>
+    <div class="track-list">
+      <div class="track-list-header"><span>#</span><span>Title</span><span style="text-align:right">Duration</span></div>
+      ${trackRows}
+    </div>`)
+
+  const queueFrom = (i) => {
+    state.queue = al.tracks.slice(i).map(t => _ytAlbumTrackItem(al, t))
+    state.queueIndex = 0
+    playCurrentTrack()
+  }
+  document.getElementById('yt-album-play-btn')?.addEventListener('click', () => queueFrom(0))
+  document.getElementById('yt-album-dl-btn')?.addEventListener('click', async () => {
+    const note = document.getElementById('yt-album-dl-note')
+    if (note) note.textContent = `Queuing ${al.tracks.length} downloads…`
+    for (const t of al.tracks) {
+      await window.api.ytDownload({
+        videoId: t.videoId, title: t.title, artist: al.artist,
+        subdir: `${al.artist} - ${al.title}`,
+      })
+    }
+    if (note) note.textContent = `${al.tracks.length} tracks queued — see Downloads`
+    _scheduleLibRescan()
+  })
+  document.querySelectorAll('.yt-track-row').forEach(row => row.addEventListener('click', e => {
+    if (e.target.closest('.yt-track-dl')) return
+    queueFrom(parseInt(row.dataset.i))
+  }))
+  document.querySelectorAll('.yt-track-dl').forEach(btn => btn.addEventListener('click', e => {
+    e.stopPropagation()
+    const t = al.tracks[parseInt(btn.dataset.i)]
+    btn.disabled = true
+    window.api.ytDownload({ videoId: t.videoId, title: t.title, artist: al.artist, subdir: `${al.artist} - ${al.title}` })
+  }))
+  document.getElementById('yt-album-save-btn')?.addEventListener('click', () => {
+    const saved = toggleYtSaveAlbum(al)
+    const b = document.getElementById('yt-album-save-btn')
+    if (b) { b.classList.toggle('saved', saved); b.textContent = saved ? '♥' : '♡'; b.title = saved ? 'Remove from library' : 'Save to library' }
+  })
+}
+
+// ── YouTube artist page ─────────────────────────────────────────────────────
+// ── YouTube playlist page ───────────────────────────────────────────────────
+function sanitizePathSegment(s) { return String(s || '').replace(/[\/\\:*?"<>|]/g, '_').trim() }
+
+function _ytPlTrackToQueueItem(pl, t) {
+  return {
+    filePath: watchUrl(t.videoId),
+    videoId: t.videoId,
+    title: t.title,
+    artist: t.artist,
+    albumArtist: t.artist,
+    albumName: t.album || pl.title,
+    albumId: `yt_${t.videoId}`,
+    artPath: t.thumbnailUrl || pl.thumbnailUrl || null,
+    duration: t.duration || 0,
+    albumBrowseId: t.albumBrowseId || null,
+    channelId: t.channelId || null,
+  }
+}
+
+async function renderYtPlaylist(playlistId) {
+  setContent(`<div class="page"><div class="yt-status">Loading playlist from YouTube…</div></div>`)
+  const res = await window.api.ytPlaylist({ playlistId }).catch(e => ({ ok: false, error: String(e) }))
+  if (state.currentPage !== 'yt-playlist') return
+  if (!res.ok) {
+    setContent(`<div class="page"><div class="yt-status yt-error">Couldn't load playlist: ${esc(res.error || 'unknown error')}</div></div>`)
+    return
+  }
+  const pl = res.playlist
+  const colors = ['#5038a0','#a04038','#2d7a4a','#3850a0','#a07038','#6b38a0','#1a5a7a','#7a1a4a']
+  const color = colors[Math.abs(_cardHue(pl.title + pl.author)) % colors.length]
+  const totalDur = pl.tracks.reduce((s, t) => s + (t.duration || 0), 0)
+
+  setContent(`
+    <div class="album-hero" style="background: linear-gradient(${color}cc, var(--bg) 100%)">
+      <img class="album-hero-art" src="${esc(pl.thumbnailUrl || '')}" alt="" ${!pl.thumbnailUrl ? 'style="display:none"' : ''} onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+      <div class="album-hero-art-fallback" ${pl.thumbnailUrl ? 'style="display:none"' : ''}><svg viewBox="0 0 24 24"><path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/></svg></div>
+      <div class="album-hero-info">
+        <div class="album-hero-type">Playlist <span class="yt-badge">YT</span></div>
+        <div class="album-hero-title">${esc(pl.title)}</div>
+        <div class="album-hero-meta">
+          ${pl.author ? `<span>${esc(pl.author)}</span> &bull;` : ''}
+          ${pl.tracks.length} song${pl.tracks.length !== 1 ? 's' : ''}${totalDur ? `, ${fmtTime(totalDur)}` : ''}
+        </div>
+      </div>
+    </div>
+    <div class="album-controls">
+      <button class="album-play-btn" id="yt-pl-play-btn" title="Play all" ${!pl.tracks.length ? 'disabled' : ''}>
+        <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+      </button>
+      <button class="ctrl-btn" id="yt-pl-shuffle-btn" title="Shuffle">
+        <svg viewBox="0 0 24 24"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
+      </button>
+      <button class="ctrl-btn" id="yt-pl-queue-btn" title="Add all to queue">+</button>
+      <button class="ctrl-btn" id="yt-pl-dl-btn" title="Download all">
+        <svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+      </button>
+      <button class="ctrl-btn" id="yt-pl-save-btn" title="Save to your playlists">
+        <svg viewBox="0 0 24 24"><path d="M14 10H3v2h11v-2zm0-4H3v2h11V6zM3 16h7v-2H3v2zm18-4.5V22l-4-2-4 2V11.5c0-.83.67-1.5 1.5-1.5h5c.83 0 1.5.67 1.5 1.5z"/></svg>
+      </button>
+      <span class="yt-album-dl-note" id="yt-pl-note"></span>
+    </div>
+    <div class="track-list">
+      <div class="track-list-header"><span>#</span><span>Title</span><span style="text-align:right">Duration</span></div>
+      <div id="yt-pl-tracks">${_ytSongRows(pl.tracks)}</div>
+    </div>`)
+
+  const toQueue = t => _ytPlTrackToQueueItem(pl, t)
+  document.getElementById('yt-pl-play-btn')?.addEventListener('click', () => {
+    state.queue = pl.tracks.map(toQueue); state.queueIndex = 0; playCurrentTrack()
+  })
+  document.getElementById('yt-pl-shuffle-btn')?.addEventListener('click', () => {
+    state.queue = pl.tracks.map(toQueue).sort(() => Math.random() - 0.5)
+    state.queueIndex = 0; playCurrentTrack()
+  })
+  document.getElementById('yt-pl-queue-btn')?.addEventListener('click', () => {
+    state.queue.push(...pl.tracks.map(toQueue)); updateNextPrefetch()
+    const note = document.getElementById('yt-pl-note')
+    if (note) { note.textContent = `Added ${pl.tracks.length} to queue`; setTimeout(() => { note.textContent = '' }, 2000) }
+  })
+  document.getElementById('yt-pl-dl-btn')?.addEventListener('click', () => {
+    for (const t of pl.tracks) window.api.ytDownload({ videoId: t.videoId, title: t.title, artist: t.artist, subdir: sanitizePathSegment(pl.title) })
+    const note = document.getElementById('yt-pl-note')
+    if (note) note.textContent = `Downloading ${pl.tracks.length} tracks…`
+  })
+  document.getElementById('yt-pl-save-btn')?.addEventListener('click', () => {
+    const local = {
+      id: 'pl_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
+      name: pl.title, tracks: pl.tracks.map(toQueue), createdAt: Date.now(),
+    }
+    state.playlists.unshift(local)
+    window.api.savePlaylist(local)
+    navigate('playlist', local.id)
+  })
+  const tracksEl = document.getElementById('yt-pl-tracks')
+  if (tracksEl) bindYtEvents(pl.tracks, tracksEl)
+}
+
+// ── YouTube see-all page (paged search results) ─────────────────────────────
+const YT_KIND_LABEL = { song: 'Songs', album: 'Albums', artist: 'Artists', playlist: 'Playlists', video: 'Videos' }
+
+async function renderYtSeeAll(navId) {
+  const sep = navId.indexOf('::')
+  const kind = navId.slice(0, sep)
+  const query = navId.slice(sep + 2)
+  const items = []
+  let hasMore = false
+
+  setContent(`<div class="page">
+    <div class="section-header"><span class="section-title">${YT_KIND_LABEL[kind] || 'Results'} · “${esc(query)}” <span class="yt-badge">YT</span></span></div>
+    <div id="yt-seeall-body"><div class="yt-status">Loading…</div></div>
+    <div id="yt-seeall-more"></div>
+  </div>`)
+
+  async function loadPage(next) {
+    const res = await window.api.ytSearchPage({ kind, query, next }).catch(e => ({ ok: false, error: String(e) }))
+    if (state.currentPage !== 'yt-see-all') return
+    const body = document.getElementById('yt-seeall-body')
+    const moreBox = document.getElementById('yt-seeall-more')
+    if (!body) return
+    if (!res.ok) {
+      const note = `<div class="yt-status yt-error">Couldn't load${next ? ' more' : ''}: ${esc(res.error || 'unknown')} <button class="yt-retry" id="yt-seeall-retry">Retry</button></div>`
+      if (next) { moreBox.innerHTML = note } else { body.innerHTML = note }
+      document.getElementById('yt-seeall-retry')?.addEventListener('click', () => loadPage(next))
+      return
+    }
+    items.push(...res.items)
+    hasMore = res.hasMore
+    renderBody()
+  }
+
+  function renderBody() {
+    const body = document.getElementById('yt-seeall-body')
+    const moreBox = document.getElementById('yt-seeall-more')
+    if (!body) return
+    if (!items.length) { body.innerHTML = `<div class="yt-status">Nothing found.</div>`; moreBox.innerHTML = ''; return }
+    if (kind === 'song' || kind === 'video') {
+      body.innerHTML = _ytSongRows(items)
+      bindYtEvents(items, body)
+    } else {
+      const card = kind === 'album' ? _ytAlbumCard : kind === 'artist' ? _ytArtistCard : _ytPlaylistCard
+      body.innerHTML = `<div class="${kind === 'artist' ? 'artist-grid yt-artist-grid' : 'album-grid'}">${items.map(card).join('')}</div>`
+      body.querySelectorAll('.yt-album-card').forEach(c => c.addEventListener('click', () => navigate('yt-album', c.dataset.browse)))
+      body.querySelectorAll('.yt-artist-card').forEach(c => c.addEventListener('click', () => navigate('yt-artist', c.dataset.channel)))
+      body.querySelectorAll('.yt-playlist-card').forEach(c => c.addEventListener('click', () => navigate('yt-playlist', c.dataset.playlist)))
+    }
+    moreBox.innerHTML = hasMore ? `<button class="yt-load-more" id="yt-load-more">Load more</button>` : ''
+    document.getElementById('yt-load-more')?.addEventListener('click', () => {
+      document.getElementById('yt-load-more').textContent = 'Loading…'
+      loadPage(true)
+    })
+  }
+
+  await loadPage(false)
+}
+
+async function renderYtArtist(channelId) {
+  setContent(`<div class="page"><div class="yt-status">Loading artist from YouTube…</div></div>`)
+  const res = await window.api.ytArtist({ channelId }).catch(e => ({ ok: false, error: String(e) }))
+  if (state.currentPage !== 'yt-artist') return
+  if (!res.ok) {
+    setContent(`<div class="page"><div class="yt-status yt-error">Couldn't load artist: ${esc(res.error || 'unknown error')}</div></div>`)
+    return
+  }
+  const ar = res.artist
+
+  function albumSection(label, items) {
+    if (!items.length) return ''
+    return `<div class="album-type-section">
+      <div class="album-type-header">${label}</div>
+      <div class="album-grid">${items.map(_ytAlbumCard).join('')}</div>
+    </div>`
+  }
+
+  setContent(`<div>
+    <div class="artist-hero">
+      <img class="artist-hero-photo loaded" src="${esc(ar.thumbnailUrl || '')}" alt="" ${!ar.thumbnailUrl ? 'style="display:none"' : ''} onerror="this.style.display='none'">
+      <div class="artist-hero-name">${esc(ar.name)} <span class="yt-badge">YT</span></div>
+      <div class="artist-hero-meta">${ar.albums.length + ar.singles.length} release${(ar.albums.length + ar.singles.length) !== 1 ? 's' : ''} on YouTube Music</div>
+      <button class="follow-btn${isYtFollowed(channelId) ? ' following' : ''}" id="yt-follow-btn">${isYtFollowed(channelId) ? 'Following' : 'Follow'}</button>
+    </div>
+    <div class="page" style="padding-top:16px">
+      ${ar.topSongs.length ? `
+        <div class="section-header"><span class="section-title">Top songs</span></div>
+        <div id="yt-artist-top">${_ytSongRows(ar.topSongs)}</div>` : ''}
+      ${albumSection('Albums', ar.albums)}
+      ${albumSection('Singles & EPs', ar.singles)}
+    </div>
+  </div>`)
+
+  // Top songs: play streams from that song onward, +queue, download
+  const top = document.getElementById('yt-artist-top')
+  if (top) {
+    top.querySelectorAll('.yt-play').forEach(btn => btn.addEventListener('click', e => {
+      e.stopPropagation()
+      const i = parseInt(btn.dataset.i)
+      state.queue = ar.topSongs.slice(i).map(_ytQueueItem)
+      state.queueIndex = 0
+      playCurrentTrack()
+    }))
+    top.querySelectorAll('.yt-queue').forEach(btn => btn.addEventListener('click', e => {
+      e.stopPropagation()
+      state.queue.push(_ytQueueItem(ar.topSongs[parseInt(btn.dataset.i)]))
+      updateNextPrefetch()
+      btn.textContent = '✓'
+      setTimeout(() => { btn.textContent = '+' }, 1200)
+    }))
+    top.querySelectorAll('.yt-dl').forEach(btn => btn.addEventListener('click', e => {
+      e.stopPropagation()
+      const s = ar.topSongs[parseInt(btn.dataset.i)]
+      btn.disabled = true
+      btn.innerHTML = '…'
+      window.api.ytDownload({ videoId: s.videoId, title: s.title, artist: s.artist })
+    }))
+  }
+  document.querySelectorAll('.yt-album-card').forEach(card => card.addEventListener('click', () => {
+    navigate('yt-album', card.dataset.browse)
+  }))
+  document.getElementById('yt-follow-btn')?.addEventListener('click', () => {
+    const now = toggleYtFollow({ channelId, name: ar.name, thumbnailUrl: ar.thumbnailUrl })
+    const btn = document.getElementById('yt-follow-btn')
+    if (btn) { btn.classList.toggle('following', now); btn.textContent = now ? 'Following' : 'Follow' }
+  })
 }
 
 function renderArtist(artistName) {
@@ -1429,10 +2147,11 @@ function _plCollage(pl, cls) {
     const hue = _cardHue(pl.name || pl.id)
     return `<div class="${cls} pl-collage-empty" style="background:linear-gradient(135deg,hsl(${hue},55%,24%),hsl(${(hue+40)%360},45%,15%))">${note}</div>`
   }
+  const artUrl = p => (isHttpPath(p) ? p : `file://${p}`)
   if (paths.length < 4) {
-    return `<div class="${cls}" style="background:url('file://${paths[0]}') center/cover no-repeat"></div>`
+    return `<div class="${cls}" style="background:url('${artUrl(paths[0])}') center/cover no-repeat"></div>`
   }
-  return `<div class="${cls} pl-collage-grid">${paths.slice(0,4).map(p => `<div style="background:url('file://${p}') center/cover no-repeat"></div>`).join('')}</div>`
+  return `<div class="${cls} pl-collage-grid">${paths.slice(0,4).map(p => `<div style="background:url('${artUrl(p)}') center/cover no-repeat"></div>`).join('')}</div>`
 }
 
 function _plTotalDur(pl) {
@@ -1490,9 +2209,11 @@ function renderPlaylist(id, sortKey = 'default') {
   const colors = ['#5038a0','#a04038','#2d7a4a','#3850a0','#a07038','#6b38a0','#1a5a7a','#7a1a4a']
   const color = colors[parseInt((id.replace(/\D/g,'0').slice(-2) || '0'), 10) % colors.length]
 
-  // Recommended tracks: same genre or artist as playlist tracks
-  const plArtists = new Set(tracks.map(t => t.albumArtist || t.artist).filter(Boolean))
-  const plGenres  = new Set(tracks.map(t => {
+  // Recommended tracks: same genre or artist as playlist tracks (local only —
+  // YT rows have no library albumId/genre to match against)
+  const localTracks = tracks.filter(t => !isHttpPath(t.filePath))
+  const plArtists = new Set(localTracks.map(t => t.albumArtist || t.artist).filter(Boolean))
+  const plGenres  = new Set(localTracks.map(t => {
     const a = state.library.find(x => x.id === t.albumId); return a?.genre
   }).filter(Boolean))
   const plPaths = new Set(tracks.map(t => t.filePath))
@@ -1529,7 +2250,7 @@ function renderPlaylist(id, sortKey = 'default') {
           ? '<div class="playing-bars"><span></span><span></span><span></span></div>'
           : (i + 1)}</span>
         <div class="track-info">
-          <div class="track-title">${esc(t.title)}</div>
+          <div class="track-title">${esc(t.title)}${isHttpPath(t.filePath) ? ' <span class="yt-badge">YT</span>' : ''}</div>
           <div class="track-artist" data-artist="${esc(t.albumArtist || t.artist || '')}">${esc(t.albumArtist || t.artist || '')}</div>
         </div>
         <span class="track-dur">${fmtDur(t.duration)}</span>
@@ -1698,6 +2419,8 @@ function renderLikedSongs() {
   const byPath = new Map(all.map(t => [t.filePath, t]))
   const tracks = state.likedTracks.map(fp => byPath.get(fp)).filter(Boolean)
   const totalDur = tracks.reduce((s, t) => s + (t.duration || 0), 0)
+    + state.ytLiked.reduce((s, t) => s + (t.duration || 0), 0)
+  const totalCount = tracks.length + state.ytLiked.length
 
   const trackRows = tracks.map((t, i) => {
     const isPlaying = isCurrentTrack(t.filePath)
@@ -1723,26 +2446,63 @@ function renderLikedSongs() {
       <div class="album-hero-info">
         <div class="album-hero-type">Auto Playlist</div>
         <div class="album-hero-title">Liked Songs</div>
-        <div class="album-hero-meta">${tracks.length} song${tracks.length !== 1 ? 's' : ''}${tracks.length ? `, ${fmtTime(totalDur)}` : ''}</div>
+        <div class="album-hero-meta">${totalCount} song${totalCount !== 1 ? 's' : ''}${totalCount ? `, ${fmtTime(totalDur)}` : ''}</div>
       </div>
     </div>
     <div class="album-controls">
-      <button class="album-play-btn" id="liked-play-btn" ${!tracks.length ? 'disabled' : ''}>
+      <button class="album-play-btn" id="liked-play-btn" ${!totalCount ? 'disabled' : ''}>
         <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
       </button>
     </div>
     <div class="track-list">
       ${tracks.length
         ? trackRows
-        : '<div class="pl-empty-state" style="padding:40px 0"><p>No liked songs yet. Tap the heart on any track.</p></div>'}
+        : (state.ytLiked.length ? '' : '<div class="pl-empty-state" style="padding:40px 0"><p>No liked songs yet. Tap the heart on any track.</p></div>')}
+      ${state.ytLiked.length ? `
+        <div class="yt-sub-header" style="margin-top:20px">From YouTube</div>
+        <div id="yt-liked-list">${state.ytLiked.map((t, i) => `
+          <div class="track-row yt-row yt-liked-row" data-i="${i}">
+            ${t.thumbnailUrl
+              ? `<img class="yt-thumb" src="${esc(t.thumbnailUrl)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`
+              : `<div class="yt-thumb yt-thumb-empty"></div>`}
+            <div class="track-info">
+              <div class="track-title">${esc(t.title)} <span class="yt-badge">YT</span></div>
+              <div class="track-artist">${esc(t.artist)}</div>
+            </div>
+            <button class="track-like-btn liked" data-yt-unlike="${i}" title="Unlike">♥</button>
+            <span class="track-dur">${t.duration ? fmtDur(t.duration) : ''}</span>
+          </div>`).join('')}</div>` : ''}
     </div>`)
 
   document.getElementById('liked-play-btn')?.addEventListener('click', () => {
-    if (!tracks.length) return
-    state.queue = tracks.map(t => ({ ...t }))
+    if (!totalCount) return
+    state.queue = [...tracks.map(t => ({ ...t })), ...state.ytLiked.map(t => _ytQueueItem(t))]
     state.queueIndex = 0
     playCurrentTrack()
   })
+  const ytList = document.getElementById('yt-liked-list')
+  if (ytList) {
+    ytList.querySelectorAll('.yt-liked-row').forEach(row => {
+      row.addEventListener('click', e => {
+        if (e.target.closest('.track-like-btn')) return
+        const i = parseInt(row.dataset.i)
+        state.queue = state.ytLiked.slice(i).map(t => _ytQueueItem(t))
+        state.queueIndex = 0
+        playCurrentTrack()
+      })
+      row.addEventListener('contextmenu', async e => {
+        e.preventDefault()
+        const t = state.ytLiked[parseInt(row.dataset.i)]
+        const action = await ytRowContextMenu(t)
+        if (action === 'like') renderLikedSongs()
+      })
+    })
+    ytList.querySelectorAll('[data-yt-unlike]').forEach(btn => btn.addEventListener('click', e => {
+      e.stopPropagation()
+      toggleYtLike(state.ytLiked[parseInt(btn.dataset.ytUnlike)])
+      renderLikedSongs()
+    }))
+  }
   document.querySelectorAll('.liked-track-row').forEach(row => {
     row.addEventListener('click', e => {
       if (e.target.closest('.track-like-btn')) return
@@ -1900,6 +2660,7 @@ function showAddToPlaylistModal(tracks) {
     id: t.id, title: t.title, artist: t.artist, albumArtist: t.albumArtist || t.artist || '',
     albumName: t.albumName || '', duration: t.duration || 0, filePath: t.filePath,
     artPath: t.artPath || null, albumId: t.albumId || null,
+    videoId: t.videoId || null, albumBrowseId: t.albumBrowseId || null, channelId: t.channelId || null,
     replayGainTrack: t.replayGainTrack ?? null, replayGainAlbum: t.replayGainAlbum ?? null,
     sampleRate: t.sampleRate || 0, bitsPerSample: t.bitsPerSample || 0, channels: t.channels || 0,
   }))
@@ -2492,6 +3253,7 @@ function updateNextPrefetch() {
 function playCurrentTrack() {
   const track = state.queue[state.queueIndex]
   if (!track) return
+  if (isHttpPath(track.filePath)) recordYtRecent(track)
   if (!audio.paused && !audio.ended) audio.pause()
   const isStream = /^https?:\/\//.test(track.filePath)
   audio.src = isStream ? track.filePath : `file://${track.filePath}`
@@ -2949,19 +3711,35 @@ function bindContentEvents() {
   })
 
   document.querySelectorAll('.album-card').forEach(el => {
+    // YT entity cards bind their own navigation (browse/channel/playlist ids)
+    if (el.dataset.browse || el.dataset.channel || el.dataset.playlist) return
     el.addEventListener('click', e => {
       if (e.target.closest('.album-card-play') || e.target.closest('.album-card-artist')) return
-      navigate('album', el.dataset.album)
+      const id = el.dataset.album
+      if (id && id.startsWith('yt_')) { navigate('yt-album', id.slice(3)); return }
+      navigate('album', id)
     })
-    el.addEventListener('contextmenu', e =>
-      showContextMenu(e, { type: 'album', albumId: el.dataset.album,
-        artist: state.library.find(a => a.id === el.dataset.album)?.artist })
-    )
+    if (!(el.dataset.album || '').startsWith('yt_')) {
+      el.addEventListener('contextmenu', e =>
+        showContextMenu(e, { type: 'album', albumId: el.dataset.album,
+          artist: state.library.find(a => a.id === el.dataset.album)?.artist })
+      )
+    }
   })
   document.querySelectorAll('.album-card-play').forEach(btn => {
     btn.addEventListener('click', e => {
       e.stopPropagation()
-      const album = state.library.find(a => a.id === btn.dataset.play)
+      const id = btn.dataset.play
+      if (id && id.startsWith('yt_')) {
+        const saved = state.ytSavedAlbums.find(a => a.browseId === id.slice(3))
+        if (saved) {
+          state.queue = saved.tracks.map(t => _ytAlbumTrackItem(saved, t))
+          state.queueIndex = 0
+          playCurrentTrack()
+        }
+        return
+      }
+      const album = state.library.find(a => a.id === id)
       if (album) playAlbum(album, 0)
     })
   })
@@ -3062,11 +3840,12 @@ function albumCard(album) {
   return `<div class="album-card" data-album="${album.id}">
     <div class="album-card-art-wrap">
       ${album.artPath
-        ? `<img class="album-card-art" src="file://${album.artPath}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
+        ? `<img class="album-card-art" src="${isHttpPath(album.artPath) ? esc(album.artPath) : `file://${album.artPath}`}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
         : ''}
       <div class="album-card-art-fallback" ${album.artPath ? 'style="display:none"' : `style="${fallbackStyle}"`}>
         <svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>
       </div>
+      ${album.isYt ? '<span class="yt-badge yt-card-badge">YT</span>' : ''}
       ${hiResTag}${upgradeTag}
       <button class="album-card-play" data-play="${album.id}">
         <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
@@ -3085,7 +3864,8 @@ function fmtSpec(bd, sr) {
 function artImg(artPath, imgClass, fallbackClass) {
   const musicNote = `<svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>`
   if (artPath) {
-    return `<img class="${imgClass}" src="file://${artPath}" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+    const src = /^https?:\/\//.test(artPath) ? artPath : `file://${artPath}`
+    return `<img class="${imgClass}" src="${src}" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
             <div class="${fallbackClass}" style="display:none">${musicNote}</div>`
   }
   return `<div class="${fallbackClass}">${musicNote}</div>`

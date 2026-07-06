@@ -752,6 +752,16 @@ ipcMain.on('delete-playlist', (_, id) => {
   store.set('playlists', store.get('playlists', []).filter(p => p.id !== id))
 })
 
+// ── YouTube saves (parallel stores — never merged into the library cache) ────
+ipcMain.handle('get-yt-liked', () => store.get('ytLikedTracks', []))
+ipcMain.on('save-yt-liked', (_, arr) => store.set('ytLikedTracks', arr))
+ipcMain.handle('get-yt-followed', () => store.get('ytFollowedArtists', []))
+ipcMain.on('save-yt-followed', (_, arr) => store.set('ytFollowedArtists', arr))
+ipcMain.handle('get-yt-saved-albums', () => store.get('ytSavedAlbums', []))
+ipcMain.on('save-yt-saved-albums', (_, arr) => store.set('ytSavedAlbums', arr))
+ipcMain.handle('get-yt-recent', () => store.get('ytRecentAlbums', []))
+ipcMain.on('save-yt-recent', (_, arr) => store.set('ytRecentAlbums', arr))
+
 // ── Folder management ────────────────────────────────────────────────────────
 ipcMain.handle('add-music-folder', async () => {
   const r = await dialog.showOpenDialog(mainWindow, {
@@ -2117,24 +2127,62 @@ ipcMain.handle('yt-search', async (_, { query }) => {
   catch (e) { return { ok: false, error: String(e?.message || e) } }
 })
 
+ipcMain.handle('yt-music-search-full', async (_, { query }) => {
+  try { return { ok: true, results: await ytSearch.searchMusicFull(query) } }
+  catch (e) { return { ok: false, error: String(e?.message || e) } }
+})
+
+ipcMain.handle('yt-album', async (_, { browseId }) => {
+  try { return { ok: true, album: await ytSearch.getAlbum(browseId) } }
+  catch (e) { return { ok: false, error: String(e?.message || e) } }
+})
+
+ipcMain.handle('yt-artist', async (_, { channelId }) => {
+  try { return { ok: true, artist: await ytSearch.getArtist(channelId) } }
+  catch (e) { return { ok: false, error: String(e?.message || e) } }
+})
+
+ipcMain.handle('yt-search-page', async (_, { kind, query, next }) => {
+  try {
+    const { items, hasMore } = await ytSearch.searchPage(kind, query, !!next)
+    return { ok: true, items, hasMore }
+  } catch (e) { return { ok: false, error: String(e?.message || e) } }
+})
+
+ipcMain.handle('yt-playlist', async (_, { playlistId }) => {
+  try { return { ok: true, playlist: await ytSearch.getPlaylist(playlistId) } }
+  catch (e) { return { ok: false, error: String(e?.message || e) } }
+})
+
+ipcMain.handle('yt-home', async () => {
+  try { return { ok: true, ...(await ytSearch.getHomeFeed()) } }
+  catch (e) { return { ok: false, error: String(e?.message || e) } }
+})
+
 const _ytDownloads = new Map()
+let _ytQueue = Promise.resolve()
 
 function _ytEmit(dl) {
   mainWindow?.webContents.send('yt-dl-progress', { ...dl })
 }
 
-ipcMain.handle('yt-download', (_, { videoId, title, artist }) => {
+ipcMain.handle('yt-download', (_, { videoId, title, artist, subdir }) => {
   const id = `yt_${videoId}_${Date.now()}`
   const dl = { id, videoId, title, artist, percent: 0, state: 'downloading', error: null }
   _ytDownloads.set(id, dl)
   _ytEmit(dl)
-  ytDownloader.downloadAudio({
+  // yt-dlp creates missing output directories, so an album subfolder is just a path join
+  const outDir = subdir
+    ? path.join(_downloadDir(), ytDownloader.sanitizeFilename(subdir))
+    : _downloadDir()
+  // Serialize downloads so "Download Album" doesn't spawn one yt-dlp per track at once
+  _ytQueue = _ytQueue.then(() => ytDownloader.downloadAudio({
     videoId, title, artist,
-    outDir: _downloadDir(),
+    outDir,
     onProgress: pct => {
       if (pct - dl.percent >= 1 || pct === 100) { dl.percent = pct; _ytEmit(dl) }
     },
-  }).then(res => {
+  })).then(res => {
     dl.percent = res.ok ? 100 : dl.percent
     dl.state = res.ok ? 'completed' : 'failed'
     dl.error = res.ok ? null : res.error

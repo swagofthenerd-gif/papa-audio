@@ -125,10 +125,24 @@ contextBridge.exposeInMainWorld('api', {
   ctxMenuShow:        (items) => ipcRenderer.invoke('ctx-menu-show', items),
 
   // YouTube
-  ytMusicSearch:  (p) => ipcRenderer.invoke('yt-music-search', p),
+  ytMusicSearch:      (p) => ipcRenderer.invoke('yt-music-search', p),
+  ytMusicSearchFull:  (p) => ipcRenderer.invoke('yt-music-search-full', p),
+  ytAlbum:            (p) => ipcRenderer.invoke('yt-album', p),
+  ytArtist:           (p) => ipcRenderer.invoke('yt-artist', p),
   ytSearch:       (p) => ipcRenderer.invoke('yt-search', p),
   ytDownload:     (p) => ipcRenderer.invoke('yt-download', p),
   ytGetDownloads: ()  => ipcRenderer.invoke('yt-get-downloads'),
+  ytSearchPage:      (p) => ipcRenderer.invoke('yt-search-page', p),
+  ytPlaylist:        (p) => ipcRenderer.invoke('yt-playlist', p),
+  ytHome:            ()  => ipcRenderer.invoke('yt-home'),
+  getYtLiked:        ()  => ipcRenderer.invoke('get-yt-liked'),
+  saveYtLiked:       (a) => ipcRenderer.send('save-yt-liked', a),
+  getYtFollowed:     ()  => ipcRenderer.invoke('get-yt-followed'),
+  saveYtFollowed:    (a) => ipcRenderer.send('save-yt-followed', a),
+  getYtSavedAlbums:  ()  => ipcRenderer.invoke('get-yt-saved-albums'),
+  saveYtSavedAlbums: (a) => ipcRenderer.send('save-yt-saved-albums', a),
+  getYtRecent:       ()  => ipcRenderer.invoke('get-yt-recent'),
+  saveYtRecent:      (a) => ipcRenderer.send('save-yt-recent', a),
 
   // Agent memory
   agentGetMemory:    ()    => ipcRenderer.invoke('agent-get-memory'),
