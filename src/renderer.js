@@ -513,12 +513,21 @@ function renderHome() {
     </div>` : ''
 
   const recentAlbums = state.recentlyPlayed.map(id => state.library.find(a => a.id === id)).filter(Boolean).slice(0, 8)
-  const recentHTML = recentAlbums.length ? `
+  const ytRecentCards = state.ytRecent.slice(0, 4).map(r => `
+    <div class="album-card yt-recent-card" data-ytalbum="${esc(r.albumId)}">
+      <div class="album-card-art-wrap">
+        ${r.artUrl ? `<img class="album-card-art" src="${esc(r.artUrl)}" alt="" loading="lazy" onerror="this.style.display='none'">` : ''}
+        <span class="yt-badge yt-card-badge">YT</span>
+      </div>
+      <div class="album-card-name">${esc(r.title || r.name)}</div>
+      <div class="album-card-meta">${esc(r.artist || '')}</div>
+    </div>`).join('')
+  const recentHTML = (recentAlbums.length || state.ytRecent.length) ? `
     <div class="section-header">
       <span class="section-title">Recently Played</span>
       <button class="section-see-all" data-page="library" data-sort="recent">See all</button>
     </div>
-    <div class="scroll-row">${recentAlbums.map(albumCard).join('')}</div>` : ''
+    <div class="scroll-row">${recentAlbums.map(albumCard).join('')}${ytRecentCards}</div>` : ''
 
   const addedAlbums = [...state.library].filter(a => a.addedAt).sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0)).slice(0, 8)
   const addedHTML = addedAlbums.length ? `
@@ -573,6 +582,7 @@ function renderHome() {
   setContent(`<div class="page">
     <div class="home-header"><div class="home-header-left"><canvas class="home-clock" id="home-clock" width="56" height="56"></canvas><div class="greeting">${greeting}</div></div>${artBtnHTML}</div>
     ${quickHTML}${followingHTML}${recentHTML}${addedHTML}${allHTML}
+    <div id="yt-home"></div>
   </div>`)
 
   document.querySelectorAll('.section-see-all').forEach(btn => {
@@ -581,12 +591,47 @@ function renderHome() {
       navigate(btn.dataset.page || 'library')
     })
   })
+  document.querySelectorAll('.yt-recent-card').forEach(card => card.addEventListener('click', () => {
+    const r = state.ytRecent.find(x => x.albumId === card.dataset.ytalbum)
+    if (!r) return
+    state.queue = [{ filePath: r.filePath, title: r.title || r.name, artist: r.artist, albumArtist: r.artist, albumName: r.name, albumId: r.albumId, artPath: r.artUrl, duration: 0 }]
+    state.queueIndex = 0
+    playCurrentTrack()
+  }))
+  loadYtHome()
   document.querySelectorAll('.following-card[data-follow-artist]').forEach(card => {
     card.addEventListener('click', () => navigate('artist', card.dataset.followArtist))
   })
   document.querySelectorAll('.following-card[data-channel]').forEach(card => {
     card.addEventListener('click', () => navigate('yt-artist', card.dataset.channel))
   })
+}
+
+// ── YT Music home feed (session-cached; silently omitted offline) ───────────
+let _ytHomeCache = null
+async function loadYtHome() {
+  if (!document.getElementById('yt-home')) return
+  if (!_ytHomeCache) {
+    const res = await window.api.ytHome().catch(() => ({ ok: false }))
+    if (!res.ok || !res.sections?.length) return
+    _ytHomeCache = res.sections
+  }
+  const el = document.getElementById('yt-home')
+  if (!el || state.currentPage !== 'home') return
+  el.innerHTML = _ytHomeCache.map((sec, si) => `
+    <div class="section-header" style="margin-top:28px">
+      <span class="section-title">${esc(sec.title)} <span class="yt-badge">YT</span></span>
+    </div>
+    ${sec.kind === 'songs'
+      ? `<div class="yt-home-songs" data-si="${si}">${_ytSongRows(sec.items)}</div>`
+      : `<div class="scroll-row">${sec.items.map(_ytAlbumCard).join('')}</div>`}
+  `).join('')
+  el.querySelectorAll('.yt-home-songs').forEach(box => {
+    bindYtEvents(_ytHomeCache[parseInt(box.dataset.si)].items, box)
+  })
+  el.querySelectorAll('.yt-album-card').forEach(card => card.addEventListener('click', () => {
+    navigate('yt-album', card.dataset.browse)
+  }))
 }
 
 function renderArtists() {
