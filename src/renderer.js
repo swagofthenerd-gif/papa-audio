@@ -528,11 +528,23 @@ function renderHome() {
     </div>
     <div class="scroll-row">${addedAlbums.map(albumCard).join('')}</div>` : ''
 
-  const followingHTML = state.followedArtists.length ? `
+  const ytFollowingCards = state.ytFollowed.map(a => `
+    <div class="artist-card following-card yt-artist-card" data-channel="${esc(a.channelId)}">
+      <div class="artist-card-art">
+        ${a.thumbnailUrl ? `<img src="${esc(a.thumbnailUrl)}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">` : ''}
+        <div class="artist-card-art-fallback" ${a.thumbnailUrl ? 'style="display:none"' : ''}>
+          <svg viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
+        </div>
+      </div>
+      <div class="artist-card-name">${esc(a.name)}</div>
+      <div class="artist-card-meta">Artist · YT</div>
+    </div>`).join('')
+
+  const followingHTML = (state.followedArtists.length || state.ytFollowed.length) ? `
     <div class="section-header">
       <span class="section-title">Following</span>
     </div>
-    <div class="scroll-row">${state.followedArtists.map(name => {
+    <div class="scroll-row">${ytFollowingCards}${state.followedArtists.map(name => {
       const ap = (state.library.find(a => a.artist === name || a.albumArtist === name) || {}).artPath
       const ct = _artistAlbumCount(name)
       return `<div class="artist-card following-card" data-follow-artist="${esc(name)}">
@@ -572,6 +584,9 @@ function renderHome() {
   document.querySelectorAll('.following-card[data-follow-artist]').forEach(card => {
     card.addEventListener('click', () => navigate('artist', card.dataset.followArtist))
   })
+  document.querySelectorAll('.following-card[data-channel]').forEach(card => {
+    card.addEventListener('click', () => navigate('yt-artist', card.dataset.channel))
+  })
 }
 
 function renderArtists() {
@@ -608,6 +623,19 @@ function renderArtists() {
         <div class="artist-card-name">${esc(ar.name)}</div>
         <div class="artist-card-meta">${ar.albums.length} album${ar.albums.length !== 1 ? 's' : ''}</div>
       </div>`).join('')}
+    ${state.ytFollowed.map(a => `
+      <div class="artist-card yt-artist-card" data-channel="${esc(a.channelId)}" data-artist="${esc(a.name)}">
+        <div class="artist-card-art">
+          ${a.thumbnailUrl
+            ? `<img src="${esc(a.thumbnailUrl)}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
+            : ''}
+          <div class="artist-card-art-fallback" ${a.thumbnailUrl ? 'style="display:none"' : ''}>
+            <svg viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
+          </div>
+        </div>
+        <div class="artist-card-name">${esc(a.name)}</div>
+        <div class="artist-card-meta">Artist · YT</div>
+      </div>`).join('')}
     </div>
   </div>`)
 
@@ -623,6 +651,7 @@ function renderArtists() {
 
   document.querySelectorAll('.artist-card').forEach(card => {
     card.addEventListener('click', () => {
+      if (card.dataset.channel) { navigate('yt-artist', card.dataset.channel); return }
       const artist = card.dataset.artist
       if (artist) navigate('artist', artist)
     })
@@ -631,8 +660,16 @@ function renderArtists() {
 
 function renderLibrary() {
   const getSorted = () => {
-    let albums = [...state.library]
-    if (state.libLikedOnly) albums = albums.filter(a => state.likedAlbums.includes(a.id))
+    // Saved YT albums are merged as pseudo-cards at render time — they never
+    // live in state.library, so a rescan can't clobber them.
+    const ytAlbums = state.ytSavedAlbums.map(a => ({
+      id: `yt_${a.browseId}`, isYt: true, browseId: a.browseId,
+      name: a.title, artist: a.artist, year: parseInt(a.year, 10) || 0,
+      artPath: a.thumbnailUrl || null, addedAt: a.savedAt || 0,
+      tracks: a.tracks || [], genre: null,
+    }))
+    let albums = [...state.library, ...ytAlbums]
+    if (state.libLikedOnly) albums = albums.filter(a => state.likedAlbums.includes(a.id) || a.isYt)
     if (state.libGenre) albums = albums.filter(a => a.genre === state.libGenre)
     if (state.libSort === 'alpha')  return albums.sort((a, b) => a.name.localeCompare(b.name))
     if (state.libSort === 'artist') return albums.sort((a, b) => a.artist.localeCompare(b.artist))
@@ -664,7 +701,7 @@ function renderLibrary() {
     <div class="page-header">
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
         <h1 class="section-title">Your Library</h1>
-        <span class="lib-count">${state.library.length} albums</span>
+        <span class="lib-count">${state.library.length + state.ytSavedAlbums.length} albums</span>
         <button class="rescan-btn" id="lib-rescan-btn" title="Rescan music folders">
           <svg viewBox="0 0 24 24"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/></svg>
           Rescan
@@ -1523,14 +1560,24 @@ function _ytAlbumTrackItem(al, t) {
 }
 
 async function renderYtAlbum(browseId) {
-  setContent(`<div class="page"><div class="yt-status">Loading album from YouTube…</div></div>`)
+  // Saved albums open instantly from the stored snapshot; a background fetch
+  // refreshes the page only if the data actually changed.
+  const snap = state.ytSavedAlbums.find(a => a.browseId === browseId)
+  if (snap) _paintYtAlbum(snap)
+  else setContent(`<div class="page"><div class="yt-status">Loading album from YouTube…</div></div>`)
   const res = await window.api.ytAlbum({ browseId }).catch(e => ({ ok: false, error: String(e) }))
   if (state.currentPage !== 'yt-album') return
   if (!res.ok) {
-    setContent(`<div class="page"><div class="yt-status yt-error">Couldn't load album: ${esc(res.error || 'unknown error')}</div></div>`)
+    // A stale snapshot beats an error page
+    if (!snap) setContent(`<div class="page"><div class="yt-status yt-error">Couldn't load album: ${esc(res.error || 'unknown error')}</div></div>`)
     return
   }
-  const al = res.album
+  const changed = !snap
+    || JSON.stringify({ ...snap, savedAt: 0 }) !== JSON.stringify({ ...res.album, savedAt: 0 })
+  if (changed) _paintYtAlbum(res.album)
+}
+
+function _paintYtAlbum(al) {
   const colors = ['#5038a0','#a04038','#2d7a4a','#3850a0','#a07038','#6b38a0','#1a5a7a','#7a1a4a']
   const color = colors[Math.abs(_cardHue(al.title + al.artist)) % colors.length]
 
@@ -1567,6 +1614,7 @@ async function renderYtAlbum(browseId) {
       <button class="ctrl-btn yt-album-dl-btn" id="yt-album-dl-btn" title="Download album">
         <svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
       </button>
+      <button class="ctrl-btn yt-album-save-btn${isYtAlbumSaved(al.browseId) ? ' saved' : ''}" id="yt-album-save-btn" title="${isYtAlbumSaved(al.browseId) ? 'Remove from library' : 'Save to library'}">${isYtAlbumSaved(al.browseId) ? '♥' : '♡'}</button>
       <span class="yt-album-dl-note" id="yt-album-dl-note"></span>
     </div>
     <div class="track-list">
@@ -1602,6 +1650,11 @@ async function renderYtAlbum(browseId) {
     btn.disabled = true
     window.api.ytDownload({ videoId: t.videoId, title: t.title, artist: al.artist, subdir: `${al.artist} - ${al.title}` })
   }))
+  document.getElementById('yt-album-save-btn')?.addEventListener('click', () => {
+    const saved = toggleYtSaveAlbum(al)
+    const b = document.getElementById('yt-album-save-btn')
+    if (b) { b.classList.toggle('saved', saved); b.textContent = saved ? '♥' : '♡'; b.title = saved ? 'Remove from library' : 'Save to library' }
+  })
 }
 
 // ── YouTube artist page ─────────────────────────────────────────────────────
@@ -1783,6 +1836,7 @@ async function renderYtArtist(channelId) {
       <img class="artist-hero-photo loaded" src="${esc(ar.thumbnailUrl || '')}" alt="" ${!ar.thumbnailUrl ? 'style="display:none"' : ''} onerror="this.style.display='none'">
       <div class="artist-hero-name">${esc(ar.name)} <span class="yt-badge">YT</span></div>
       <div class="artist-hero-meta">${ar.albums.length + ar.singles.length} release${(ar.albums.length + ar.singles.length) !== 1 ? 's' : ''} on YouTube Music</div>
+      <button class="follow-btn${isYtFollowed(channelId) ? ' following' : ''}" id="yt-follow-btn">${isYtFollowed(channelId) ? 'Following' : 'Follow'}</button>
     </div>
     <div class="page" style="padding-top:16px">
       ${ar.topSongs.length ? `
@@ -1821,6 +1875,11 @@ async function renderYtArtist(channelId) {
   document.querySelectorAll('.yt-album-card').forEach(card => card.addEventListener('click', () => {
     navigate('yt-album', card.dataset.browse)
   }))
+  document.getElementById('yt-follow-btn')?.addEventListener('click', () => {
+    const now = toggleYtFollow({ channelId, name: ar.name, thumbnailUrl: ar.thumbnailUrl })
+    const btn = document.getElementById('yt-follow-btn')
+    if (btn) { btn.classList.toggle('following', now); btn.textContent = now ? 'Following' : 'Follow' }
+  })
 }
 
 function renderArtist(artistName) {
@@ -3607,19 +3666,35 @@ function bindContentEvents() {
   })
 
   document.querySelectorAll('.album-card').forEach(el => {
+    // YT entity cards bind their own navigation (browse/channel/playlist ids)
+    if (el.dataset.browse || el.dataset.channel || el.dataset.playlist) return
     el.addEventListener('click', e => {
       if (e.target.closest('.album-card-play') || e.target.closest('.album-card-artist')) return
-      navigate('album', el.dataset.album)
+      const id = el.dataset.album
+      if (id && id.startsWith('yt_')) { navigate('yt-album', id.slice(3)); return }
+      navigate('album', id)
     })
-    el.addEventListener('contextmenu', e =>
-      showContextMenu(e, { type: 'album', albumId: el.dataset.album,
-        artist: state.library.find(a => a.id === el.dataset.album)?.artist })
-    )
+    if (!(el.dataset.album || '').startsWith('yt_')) {
+      el.addEventListener('contextmenu', e =>
+        showContextMenu(e, { type: 'album', albumId: el.dataset.album,
+          artist: state.library.find(a => a.id === el.dataset.album)?.artist })
+      )
+    }
   })
   document.querySelectorAll('.album-card-play').forEach(btn => {
     btn.addEventListener('click', e => {
       e.stopPropagation()
-      const album = state.library.find(a => a.id === btn.dataset.play)
+      const id = btn.dataset.play
+      if (id && id.startsWith('yt_')) {
+        const saved = state.ytSavedAlbums.find(a => a.browseId === id.slice(3))
+        if (saved) {
+          state.queue = saved.tracks.map(t => _ytAlbumTrackItem(saved, t))
+          state.queueIndex = 0
+          playCurrentTrack()
+        }
+        return
+      }
+      const album = state.library.find(a => a.id === id)
       if (album) playAlbum(album, 0)
     })
   })
@@ -3720,11 +3795,12 @@ function albumCard(album) {
   return `<div class="album-card" data-album="${album.id}">
     <div class="album-card-art-wrap">
       ${album.artPath
-        ? `<img class="album-card-art" src="file://${album.artPath}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
+        ? `<img class="album-card-art" src="${isHttpPath(album.artPath) ? esc(album.artPath) : `file://${album.artPath}`}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
         : ''}
       <div class="album-card-art-fallback" ${album.artPath ? 'style="display:none"' : `style="${fallbackStyle}"`}>
         <svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>
       </div>
+      ${album.isYt ? '<span class="yt-badge yt-card-badge">YT</span>' : ''}
       ${hiResTag}${upgradeTag}
       <button class="album-card-play" data-play="${album.id}">
         <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
