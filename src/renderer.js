@@ -706,6 +706,8 @@ function _startYtConnect() {
   })
   window.api.ytAuthStart().then(res => {
     if (!res?.ok) {
+      window.api.off('yt-auth-pending')
+      window.api.off('yt-auth-done')
       const el = document.getElementById('yt-connect-status')
       if (el) el.innerHTML = `Sign-in failed: ${esc(res?.error || 'unknown error')} <button class="yt-connect-btn" id="yt-connect-retry" style="margin-left:10px">Retry</button>`
       document.getElementById('yt-connect-retry')?.addEventListener('click', () => {
@@ -781,13 +783,15 @@ async function loadYtHome() {
   }
   const el = document.getElementById('yt-home')
   if (!el || state.currentPage !== 'home') return
-  el.innerHTML = _ytHomeCache.map((sec, si) => `
+  const HOME_SECTIONS = 3
+  el.innerHTML = _ytHomeCache.slice(0, HOME_SECTIONS).map((sec, si) => `
     <div class="section-header" style="margin-top:28px">
       <span class="section-title">${esc(sec.title)} <span class="yt-badge">YT</span></span>
+      <button class="section-see-all" id="yt-home-explore-${si}">More in Explore</button>
     </div>
     ${sec.kind === 'songs'
-      ? `<div class="yt-home-songs" data-si="${si}">${_ytSongRows(sec.items)}</div>`
-      : `<div class="scroll-row">${sec.items.map(_ytAlbumCard).join('')}</div>`}
+      ? `<div class="yt-home-songs explore-song-grid" data-si="${si}">${_ytSongRows(sec.items)}</div>`
+      : `<div class="scroll-row">${sec.items.map(sec.kind === 'playlists' ? _ytPlaylistCard : _ytAlbumCard).join('')}</div>`}
   `).join('')
   el.querySelectorAll('.yt-home-songs').forEach(box => {
     bindYtEvents(_ytHomeCache[parseInt(box.dataset.si)].items, box)
@@ -795,6 +799,10 @@ async function loadYtHome() {
   el.querySelectorAll('.yt-album-card').forEach(card => card.addEventListener('click', () => {
     navigate('yt-album', card.dataset.browse)
   }))
+  el.querySelectorAll('.yt-playlist-card').forEach(card => card.addEventListener('click', () => {
+    navigate('yt-playlist', card.dataset.playlist)
+  }))
+  el.querySelectorAll('[id^="yt-home-explore-"]').forEach(btn => btn.addEventListener('click', () => navigate('explore')))
 }
 
 function renderArtists() {
