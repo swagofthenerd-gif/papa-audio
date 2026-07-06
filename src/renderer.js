@@ -952,7 +952,7 @@ function renderSearch(query) {
   const hasLocal = matchAlbums.length || matchArtists.length || matchTracks.length
   ytSearchState.showTopResult = !hasLocal
 
-  const tabs = ['All', 'Songs', 'Albums', 'Artists']
+  const tabs = ['All', 'Songs', 'Albums', 'Artists', 'Playlists']
   let html = `<div class="page">
     <div class="search-tabs" id="search-tabs">
       ${tabs.map(t => `<button class="search-tab${t==='All'?' active':''}" data-tab="${t}">${t}</button>`).join('')}
@@ -1078,8 +1078,8 @@ function renderSearch(query) {
       const active = tab.dataset.tab
       document.querySelectorAll('.search-section').forEach(sec => {
         if (sec.id === 'yt-section') {
-          // YouTube has its own Songs/Albums/Artists sub-sections
-          sec.hidden = active !== 'All' && !['Songs', 'Albums', 'Artists'].includes(active)
+          // YouTube has its own Songs/Albums/Artists/Playlists sub-sections
+          sec.hidden = active !== 'All' && !['Songs', 'Albums', 'Artists', 'Playlists'].includes(active)
         } else {
           sec.hidden = active !== 'All' && sec.dataset.section !== active
         }
@@ -1247,6 +1247,7 @@ function _ytSongRows(songs) {
           <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
         </button>
         <button class="yt-btn yt-queue" data-i="${i}" title="Add to queue">+</button>
+        <button class="yt-btn yt-like${isYtLiked(r.videoId) ? ' liked' : ''}" data-i="${i}" title="${isYtLiked(r.videoId) ? 'Unlike' : 'Like'}">${isYtLiked(r.videoId) ? '♥' : '♡'}</button>
         <button class="yt-btn yt-dl" data-i="${i}" title="Download">
           <svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
         </button>
@@ -1286,6 +1287,23 @@ function _ytArtistCard(a) {
   </div>`
 }
 
+function _ytPlaylistCard(p) {
+  const hue = _cardHue((p.author || '') + (p.title || ''))
+  return `<div class="album-card yt-playlist-card" data-playlist="${esc(p.playlistId)}">
+    <div class="album-card-art-wrap">
+      ${p.thumbnailUrl
+        ? `<img class="album-card-art" src="${esc(p.thumbnailUrl)}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
+        : ''}
+      <div class="album-card-art-fallback" ${p.thumbnailUrl ? 'style="display:none"' : `style="background:linear-gradient(135deg,hsl(${hue},55%,22%) 0%,hsl(${(hue+40)%360},45%,14%) 100%)"`}>
+        <svg viewBox="0 0 24 24"><path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/></svg>
+      </div>
+      <span class="yt-badge yt-card-badge">YT</span>
+    </div>
+    <div class="album-card-name">${esc(p.title)}</div>
+    <div class="album-card-meta">Playlist${p.author ? ' · ' + esc(p.author) : ''}${p.songCount ? ' · ' + esc(p.songCount) : ''}</div>
+  </div>`
+}
+
 function _ytTopResultCard(r, query) {
   // Spotify-style: prefer the artist when the query is (close to) their name
   const artistHit = r.artists?.[0] && r.artists[0].name.toLowerCase().includes(query.toLowerCase().trim())
@@ -1321,15 +1339,18 @@ function renderYtResults(results, query) {
       box.innerHTML = `<div class="yt-status">Nothing on YouTube for "${esc(query)}"</div>`
       return
     }
-    box.innerHTML = `<div class="yt-sub" data-sub="Songs">${_ytSongRows(results)}</div>`
+    box.innerHTML = `<div class="yt-sub" data-sub="Songs">
+      <div class="yt-sub-header">Videos <button class="yt-see-all" data-kind="video">See all</button></div>
+      ${_ytSongRows(results)}</div>`
     bindYtEvents(results)
+    _bindYtSeeAll(box)
     _applyYtFilter()
     return
   }
 
   // Music scope — Spotify-style entity sections
-  const { songs = [], albums = [], artists = [] } = results
-  if (!songs.length && !albums.length && !artists.length) {
+  const { songs = [], albums = [], artists = [], playlists = [] } = results
+  if (!songs.length && !albums.length && !artists.length && !playlists.length) {
     box.innerHTML = `<div class="yt-status">Nothing on YouTube Music for "${esc(query)}"</div>`
     return
   }
@@ -1339,26 +1360,39 @@ function renderYtResults(results, query) {
   }
   if (songs.length) {
     html += `<div class="yt-sub" data-sub="Songs">
-      <div class="yt-sub-header">Songs</div>
+      <div class="yt-sub-header">Songs <button class="yt-see-all" data-kind="song">See all</button></div>
       ${_ytSongRows(songs)}
     </div>`
   }
   if (artists.length) {
     html += `<div class="yt-sub" data-sub="Artists">
-      <div class="yt-sub-header">Artists</div>
+      <div class="yt-sub-header">Artists <button class="yt-see-all" data-kind="artist">See all</button></div>
       <div class="artist-grid yt-artist-grid">${artists.map(_ytArtistCard).join('')}</div>
     </div>`
   }
   if (albums.length) {
     html += `<div class="yt-sub" data-sub="Albums">
-      <div class="yt-sub-header">Albums</div>
+      <div class="yt-sub-header">Albums <button class="yt-see-all" data-kind="album">See all</button></div>
       <div class="album-grid">${albums.map(_ytAlbumCard).join('')}</div>
+    </div>`
+  }
+  if (playlists.length) {
+    html += `<div class="yt-sub" data-sub="Playlists">
+      <div class="yt-sub-header">Playlists <button class="yt-see-all" data-kind="playlist">See all</button></div>
+      <div class="album-grid">${playlists.map(_ytPlaylistCard).join('')}</div>
     </div>`
   }
   box.innerHTML = html
   bindYtEvents(songs)
   _bindYtEntityEvents(results)
+  _bindYtSeeAll(box)
   _applyYtFilter()
+}
+
+function _bindYtSeeAll(box) {
+  box.querySelectorAll('.yt-see-all').forEach(btn => btn.addEventListener('click', () => {
+    navigate('yt-see-all', `${btn.dataset.kind}::${ytSearchState.lastQuery}`)
+  }))
 }
 
 function _bindYtEntityEvents(results) {
@@ -1369,6 +1403,9 @@ function _bindYtEntityEvents(results) {
   }))
   box.querySelectorAll('.yt-artist-card').forEach(card => card.addEventListener('click', () => {
     navigate('yt-artist', card.dataset.channel)
+  }))
+  box.querySelectorAll('.yt-playlist-card').forEach(card => card.addEventListener('click', () => {
+    navigate('yt-playlist', card.dataset.playlist)
   }))
   const top = box.querySelector('.yt-top-result')
   if (top) {
@@ -1386,9 +1423,50 @@ function _bindYtEntityEvents(results) {
   }
 }
 
-function bindYtEvents(results) {
-  const box = document.getElementById('yt-results')
+async function ytRowContextMenu(r) {
+  const liked = isYtLiked(r.videoId)
+  const items = [
+    { label: 'Play now', action: 'play' },
+    { label: 'Play next', action: 'playnext' },
+    { label: 'Add to queue', action: 'queue' },
+    { label: liked ? 'Unlike' : 'Like', action: 'like' },
+    { label: 'Add to playlist…', action: 'addpl' },
+  ]
+  if (r.albumBrowseId) items.push({ label: 'Go to album', action: 'goalbum' })
+  if (r.channelId) items.push({ label: 'Go to artist', action: 'goartist' })
+  items.push({ label: 'Download', action: 'download' })
+  const action = await window.api.ctxMenuShow(items)
+  if (action === 'play') { state.queue = [_ytQueueItem(r)]; state.queueIndex = 0; playCurrentTrack() }
+  else if (action === 'playnext') { state.queue.splice(state.queueIndex + 1, 0, _ytQueueItem(r)); updateNextPrefetch() }
+  else if (action === 'queue') { state.queue.push(_ytQueueItem(r)); updateNextPrefetch() }
+  else if (action === 'like') toggleYtLike(r)
+  else if (action === 'addpl') showAddToPlaylistModal([_ytQueueItem(r)])
+  else if (action === 'goalbum') navigate('yt-album', r.albumBrowseId)
+  else if (action === 'goartist') navigate('yt-artist', r.channelId)
+  else if (action === 'download') window.api.ytDownload({ videoId: r.videoId, title: r.title, artist: r.artist })
+  return action
+}
+
+function renderLikeButtons(box, results) {
+  box.querySelectorAll('.yt-like').forEach(btn => {
+    const r = results[parseInt(btn.dataset.i)]
+    if (!r) return
+    const liked = isYtLiked(r.videoId)
+    btn.classList.toggle('liked', liked)
+    btn.textContent = liked ? '♥' : '♡'
+    btn.title = liked ? 'Unlike' : 'Like'
+  })
+}
+
+function bindYtEvents(results, rootEl) {
+  const box = rootEl || document.getElementById('yt-results')
   if (!box) return
+  box.querySelectorAll('.yt-row').forEach(row => row.addEventListener('click', () => {
+    const r = results[parseInt(row.dataset.i)]
+    state.queue = [_ytQueueItem(r)]
+    state.queueIndex = 0
+    playCurrentTrack()
+  }))
   box.querySelectorAll('.yt-play').forEach(btn => btn.addEventListener('click', e => {
     e.stopPropagation()
     const r = results[parseInt(btn.dataset.i)]
@@ -1405,6 +1483,14 @@ function bindYtEvents(results) {
     btn.textContent = '✓'
     setTimeout(() => { btn.textContent = '+' }, 1200)
   }))
+  box.querySelectorAll('.yt-like').forEach(btn => btn.addEventListener('click', e => {
+    e.stopPropagation()
+    const r = results[parseInt(btn.dataset.i)]
+    const liked = toggleYtLike(r)
+    btn.classList.toggle('liked', liked)
+    btn.textContent = liked ? '♥' : '♡'
+    btn.title = liked ? 'Unlike' : 'Like'
+  }))
   box.querySelectorAll('.yt-dl').forEach(btn => btn.addEventListener('click', async e => {
     e.stopPropagation()
     const r = results[parseInt(btn.dataset.i)]
@@ -1415,14 +1501,8 @@ function bindYtEvents(results) {
   box.querySelectorAll('.yt-row').forEach(row => row.addEventListener('contextmenu', async e => {
     e.preventDefault()
     const r = results[parseInt(row.dataset.i)]
-    const action = await window.api.ctxMenuShow([
-      { label: 'Play now', action: 'play' },
-      { label: 'Add to queue', action: 'queue' },
-      { label: 'Download', action: 'download' },
-    ])
-    if (action === 'play') { state.queue = [_ytQueueItem(r)]; state.queueIndex = 0; playCurrentTrack() }
-    else if (action === 'queue') { state.queue.push(_ytQueueItem(r)); updateNextPrefetch() }
-    else if (action === 'download') window.api.ytDownload({ videoId: r.videoId, title: r.title, artist: r.artist })
+    const action = await ytRowContextMenu(r)
+    if (action === 'like') renderLikeButtons(box, results)
   }))
 }
 
