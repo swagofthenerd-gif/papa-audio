@@ -752,6 +752,16 @@ ipcMain.on('delete-playlist', (_, id) => {
   store.set('playlists', store.get('playlists', []).filter(p => p.id !== id))
 })
 
+// ── YouTube saves (parallel stores — never merged into the library cache) ────
+ipcMain.handle('get-yt-liked', () => store.get('ytLikedTracks', []))
+ipcMain.on('save-yt-liked', (_, arr) => store.set('ytLikedTracks', arr))
+ipcMain.handle('get-yt-followed', () => store.get('ytFollowedArtists', []))
+ipcMain.on('save-yt-followed', (_, arr) => store.set('ytFollowedArtists', arr))
+ipcMain.handle('get-yt-saved-albums', () => store.get('ytSavedAlbums', []))
+ipcMain.on('save-yt-saved-albums', (_, arr) => store.set('ytSavedAlbums', arr))
+ipcMain.handle('get-yt-recent', () => store.get('ytRecentAlbums', []))
+ipcMain.on('save-yt-recent', (_, arr) => store.set('ytRecentAlbums', arr))
+
 // ── Folder management ────────────────────────────────────────────────────────
 ipcMain.handle('add-music-folder', async () => {
   const r = await dialog.showOpenDialog(mainWindow, {
@@ -2129,6 +2139,23 @@ ipcMain.handle('yt-album', async (_, { browseId }) => {
 
 ipcMain.handle('yt-artist', async (_, { channelId }) => {
   try { return { ok: true, artist: await ytSearch.getArtist(channelId) } }
+  catch (e) { return { ok: false, error: String(e?.message || e) } }
+})
+
+ipcMain.handle('yt-search-page', async (_, { kind, query, next }) => {
+  try {
+    const { items, hasMore } = await ytSearch.searchPage(kind, query, !!next)
+    return { ok: true, items, hasMore }
+  } catch (e) { return { ok: false, error: String(e?.message || e) } }
+})
+
+ipcMain.handle('yt-playlist', async (_, { playlistId }) => {
+  try { return { ok: true, playlist: await ytSearch.getPlaylist(playlistId) } }
+  catch (e) { return { ok: false, error: String(e?.message || e) } }
+})
+
+ipcMain.handle('yt-home', async () => {
+  try { return { ok: true, ...(await ytSearch.getHomeFeed()) } }
   catch (e) { return { ok: false, error: String(e?.message || e) } }
 })
 
