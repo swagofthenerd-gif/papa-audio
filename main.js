@@ -2117,24 +2117,45 @@ ipcMain.handle('yt-search', async (_, { query }) => {
   catch (e) { return { ok: false, error: String(e?.message || e) } }
 })
 
+ipcMain.handle('yt-music-search-full', async (_, { query }) => {
+  try { return { ok: true, results: await ytSearch.searchMusicFull(query) } }
+  catch (e) { return { ok: false, error: String(e?.message || e) } }
+})
+
+ipcMain.handle('yt-album', async (_, { browseId }) => {
+  try { return { ok: true, album: await ytSearch.getAlbum(browseId) } }
+  catch (e) { return { ok: false, error: String(e?.message || e) } }
+})
+
+ipcMain.handle('yt-artist', async (_, { channelId }) => {
+  try { return { ok: true, artist: await ytSearch.getArtist(channelId) } }
+  catch (e) { return { ok: false, error: String(e?.message || e) } }
+})
+
 const _ytDownloads = new Map()
+let _ytQueue = Promise.resolve()
 
 function _ytEmit(dl) {
   mainWindow?.webContents.send('yt-dl-progress', { ...dl })
 }
 
-ipcMain.handle('yt-download', (_, { videoId, title, artist }) => {
+ipcMain.handle('yt-download', (_, { videoId, title, artist, subdir }) => {
   const id = `yt_${videoId}_${Date.now()}`
   const dl = { id, videoId, title, artist, percent: 0, state: 'downloading', error: null }
   _ytDownloads.set(id, dl)
   _ytEmit(dl)
-  ytDownloader.downloadAudio({
+  // yt-dlp creates missing output directories, so an album subfolder is just a path join
+  const outDir = subdir
+    ? path.join(_downloadDir(), ytDownloader.sanitizeFilename(subdir))
+    : _downloadDir()
+  // Serialize downloads so "Download Album" doesn't spawn one yt-dlp per track at once
+  _ytQueue = _ytQueue.then(() => ytDownloader.downloadAudio({
     videoId, title, artist,
-    outDir: _downloadDir(),
+    outDir,
     onProgress: pct => {
       if (pct - dl.percent >= 1 || pct === 100) { dl.percent = pct; _ytEmit(dl) }
     },
-  }).then(res => {
+  })).then(res => {
     dl.percent = res.ok ? 100 : dl.percent
     dl.state = res.ok ? 'completed' : 'failed'
     dl.error = res.ok ? null : res.error

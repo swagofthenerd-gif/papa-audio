@@ -244,3 +244,45 @@ test('searchMusicFull includes playlists section', async () => {
   assert.strictEqual(res.playlists[0].playlistId, 'VLPLabc123')
   _setClientForTest(null)
 })
+
+// ── Paged search with continuations ─────────────────────────────────────────
+
+test('searchPage returns first page and continuation flag', async () => {
+  const page2 = { contents: [{ ...songItem, id: 'second00001' }], has_continuation: false }
+  const page1 = {
+    songs: { contents: [songItem] },
+    has_continuation: true,
+    getContinuation: async () => page2,
+  }
+  _setClientForTest(Promise.resolve({ music: { search: async () => page1 } }))
+  const { searchPage } = require('../youtube-search')
+
+  const p1 = await searchPage('song', 'rick', false)
+  assert.strictEqual(p1.items.length, 1)
+  assert.strictEqual(p1.items[0].videoId, 'dQw4w9WgXcQ')
+  assert.strictEqual(p1.hasMore, true)
+
+  const p2 = await searchPage('song', 'rick', true)
+  assert.strictEqual(p2.items[0].videoId, 'second00001')
+  assert.strictEqual(p2.hasMore, false)
+  _setClientForTest(null)
+})
+
+test('searchPage video kind uses main search', async () => {
+  let usedMain = false
+  _setClientForTest(Promise.resolve({
+    search: async () => { usedMain = true; return { videos: [videoItem], has_continuation: false } },
+    music: { search: async () => { throw new Error('wrong endpoint') } },
+  }))
+  const { searchPage } = require('../youtube-search')
+  const p = await searchPage('video', 'boiler room', false)
+  assert.ok(usedMain)
+  assert.strictEqual(p.items.length, 1)
+  assert.strictEqual(p.hasMore, false)
+  _setClientForTest(null)
+})
+
+test('searchPage rejects unknown kind', async () => {
+  const { searchPage } = require('../youtube-search')
+  await assert.rejects(() => searchPage('podcast', 'x', false), /unknown kind/)
+})

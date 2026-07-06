@@ -125,7 +125,10 @@ contextBridge.exposeInMainWorld('api', {
   ctxMenuShow:        (items) => ipcRenderer.invoke('ctx-menu-show', items),
 
   // YouTube
-  ytMusicSearch:  (p) => ipcRenderer.invoke('yt-music-search', p),
+  ytMusicSearch:      (p) => ipcRenderer.invoke('yt-music-search', p),
+  ytMusicSearchFull:  (p) => ipcRenderer.invoke('yt-music-search-full', p),
+  ytAlbum:            (p) => ipcRenderer.invoke('yt-album', p),
+  ytArtist:           (p) => ipcRenderer.invoke('yt-artist', p),
   ytSearch:       (p) => ipcRenderer.invoke('yt-search', p),
   ytDownload:     (p) => ipcRenderer.invoke('yt-download', p),
   ytGetDownloads: ()  => ipcRenderer.invoke('yt-get-downloads'),

@@ -131,6 +131,48 @@ async function searchMusicFull(query) {
   }
 }
 
+const PAGE_MAPPERS = {
+  song: mapMusicItem, album: mapAlbumItem, artist: mapArtistItem,
+  playlist: mapPlaylistItem, video: mapVideoItem,
+}
+const PAGE_KEYS = { song: 'songs', album: 'albums', artist: 'artists', playlist: 'playlists' }
+
+// Continuation objects aren't IPC-serializable — keep the last result per
+// (kind, query) here and let the renderer just ask for "next".
+const _pageSessions = new Map()
+
+function _extractPageItems(res, kind) {
+  if (kind === 'video') return res?.videos || res?.results || []
+  const sec = res?.[PAGE_KEYS[kind]]?.contents
+  if (Array.isArray(sec)) return sec
+  if (Array.isArray(res?.contents)) {
+    // Continuation pages come back as a flat item list or as shelves
+    return res.contents.flatMap(s => (Array.isArray(s?.contents) ? s.contents : (s?.id ? [s] : [])))
+  }
+  if (Array.isArray(res?.results)) return res.results
+  return []
+}
+
+async function searchPage(kind, query, next) {
+  if (!PAGE_MAPPERS[kind]) throw new Error(`unknown kind: ${kind}`)
+  const yt = await _client()
+  const key = `${kind}::${query}`
+  let res
+  const prev = next ? _pageSessions.get(key) : null
+  if (prev && typeof prev.getContinuation === 'function') {
+    res = await prev.getContinuation()
+  } else if (kind === 'video') {
+    res = await yt.search(query, { type: 'video' })
+  } else {
+    res = await yt.music.search(query, { type: kind })
+  }
+  _pageSessions.set(key, res)
+  if (_pageSessions.size > 40) _pageSessions.delete(_pageSessions.keys().next().value)
+  const items = _extractPageItems(res, kind).map(PAGE_MAPPERS[kind]).filter(Boolean)
+  const hasMore = !!(res?.has_continuation && typeof res.getContinuation === 'function')
+  return { items, hasMore }
+}
+
 async function getAlbum(browseId) {
   const yt = await _client()
   const al = await yt.music.getAlbum(browseId)
@@ -179,6 +221,6 @@ async function getArtist(channelId) {
 }
 
 module.exports = {
-  searchMusic, searchAll, searchMusicFull, getAlbum, getArtist,
+  searchMusic, searchAll, searchMusicFull, searchPage, getAlbum, getArtist,
   mapMusicItem, mapVideoItem, mapAlbumItem, mapArtistItem, mapPlaylistItem, _setClientForTest,
 }
