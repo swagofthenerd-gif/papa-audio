@@ -2315,6 +2315,8 @@ function renderLikedSongs() {
   const byPath = new Map(all.map(t => [t.filePath, t]))
   const tracks = state.likedTracks.map(fp => byPath.get(fp)).filter(Boolean)
   const totalDur = tracks.reduce((s, t) => s + (t.duration || 0), 0)
+    + state.ytLiked.reduce((s, t) => s + (t.duration || 0), 0)
+  const totalCount = tracks.length + state.ytLiked.length
 
   const trackRows = tracks.map((t, i) => {
     const isPlaying = isCurrentTrack(t.filePath)
@@ -2340,26 +2342,63 @@ function renderLikedSongs() {
       <div class="album-hero-info">
         <div class="album-hero-type">Auto Playlist</div>
         <div class="album-hero-title">Liked Songs</div>
-        <div class="album-hero-meta">${tracks.length} song${tracks.length !== 1 ? 's' : ''}${tracks.length ? `, ${fmtTime(totalDur)}` : ''}</div>
+        <div class="album-hero-meta">${totalCount} song${totalCount !== 1 ? 's' : ''}${totalCount ? `, ${fmtTime(totalDur)}` : ''}</div>
       </div>
     </div>
     <div class="album-controls">
-      <button class="album-play-btn" id="liked-play-btn" ${!tracks.length ? 'disabled' : ''}>
+      <button class="album-play-btn" id="liked-play-btn" ${!totalCount ? 'disabled' : ''}>
         <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
       </button>
     </div>
     <div class="track-list">
       ${tracks.length
         ? trackRows
-        : '<div class="pl-empty-state" style="padding:40px 0"><p>No liked songs yet. Tap the heart on any track.</p></div>'}
+        : (state.ytLiked.length ? '' : '<div class="pl-empty-state" style="padding:40px 0"><p>No liked songs yet. Tap the heart on any track.</p></div>')}
+      ${state.ytLiked.length ? `
+        <div class="yt-sub-header" style="margin-top:20px">From YouTube</div>
+        <div id="yt-liked-list">${state.ytLiked.map((t, i) => `
+          <div class="track-row yt-row yt-liked-row" data-i="${i}">
+            ${t.thumbnailUrl
+              ? `<img class="yt-thumb" src="${esc(t.thumbnailUrl)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`
+              : `<div class="yt-thumb yt-thumb-empty"></div>`}
+            <div class="track-info">
+              <div class="track-title">${esc(t.title)} <span class="yt-badge">YT</span></div>
+              <div class="track-artist">${esc(t.artist)}</div>
+            </div>
+            <button class="track-like-btn liked" data-yt-unlike="${i}" title="Unlike">♥</button>
+            <span class="track-dur">${t.duration ? fmtDur(t.duration) : ''}</span>
+          </div>`).join('')}</div>` : ''}
     </div>`)
 
   document.getElementById('liked-play-btn')?.addEventListener('click', () => {
-    if (!tracks.length) return
-    state.queue = tracks.map(t => ({ ...t }))
+    if (!totalCount) return
+    state.queue = [...tracks.map(t => ({ ...t })), ...state.ytLiked.map(t => _ytQueueItem(t))]
     state.queueIndex = 0
     playCurrentTrack()
   })
+  const ytList = document.getElementById('yt-liked-list')
+  if (ytList) {
+    ytList.querySelectorAll('.yt-liked-row').forEach(row => {
+      row.addEventListener('click', e => {
+        if (e.target.closest('.track-like-btn')) return
+        const i = parseInt(row.dataset.i)
+        state.queue = state.ytLiked.slice(i).map(t => _ytQueueItem(t))
+        state.queueIndex = 0
+        playCurrentTrack()
+      })
+      row.addEventListener('contextmenu', async e => {
+        e.preventDefault()
+        const t = state.ytLiked[parseInt(row.dataset.i)]
+        const action = await ytRowContextMenu(t)
+        if (action === 'like') renderLikedSongs()
+      })
+    })
+    ytList.querySelectorAll('[data-yt-unlike]').forEach(btn => btn.addEventListener('click', e => {
+      e.stopPropagation()
+      toggleYtLike(state.ytLiked[parseInt(btn.dataset.ytUnlike)])
+      renderLikedSongs()
+    }))
+  }
   document.querySelectorAll('.liked-track-row').forEach(row => {
     row.addEventListener('click', e => {
       if (e.target.closest('.track-like-btn')) return
