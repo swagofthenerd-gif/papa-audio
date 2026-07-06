@@ -355,6 +355,10 @@ app.whenReady().then(() => {
   ytSearch.purgeStaleOauth()
   const ytCookie = store.get('ytCookie', null)
   if (ytCookie) ytSearch.setCookie(ytCookie)
+  // Keep the Google session alive: silently touch music.youtube.com so cookies
+  // rotate/extend like in a normal browser, then re-store the fresh set.
+  setTimeout(refreshYtCookie, 8000)
+  setInterval(refreshYtCookie, 12 * 60 * 60 * 1000)
   createWindow()
   initMpris()          // MPRIS D-Bus first; media-key grab only as fallback
   initPlayer()
@@ -2194,6 +2198,40 @@ async function _collectYtCookieHeader(sess) {
   const cookies = await sess.cookies.get({ url: 'https://www.youtube.com' })
   if (!cookies.some(c => c.name === 'SAPISID' || c.name === '__Secure-3PAPISID')) return null
   return cookies.map(c => `${c.name}=${c.value}`).join('; ')
+}
+
+// Silent cookie refresh — no-op unless signed in. A hidden window loads
+// music.youtube.com on the auth partition so Google rotates/extends the
+// session cookies, then the fresh header replaces the stored one.
+let _ytRefreshWin = null
+function refreshYtCookie() {
+  if (!store.get('ytCookie', null) || _ytRefreshWin) return
+  const { session } = require('electron')
+  const sess = session.fromPartition('persist:yt-auth')
+  _ytRefreshWin = new BrowserWindow({
+    show: false,
+    webPreferences: { session: sess, nodeIntegration: false, contextIsolation: true },
+  })
+  const win = _ytRefreshWin
+  const done = () => {
+    if (_ytRefreshWin === win) _ytRefreshWin = null
+    if (!win.isDestroyed()) win.destroy()
+  }
+  const timer = setTimeout(done, 30000)
+  win.webContents.setUserAgent('Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0')
+  win.webContents.on('did-finish-load', async () => {
+    try {
+      await new Promise(r => setTimeout(r, 3000)) // let redirects settle
+      const header = await _collectYtCookieHeader(sess)
+      if (header) {
+        store.set('ytCookie', header)
+        ytSearch.setCookie(header)
+      }
+    } catch { /* keep the previous cookie */ }
+    clearTimeout(timer)
+    done()
+  })
+  win.loadURL('https://music.youtube.com/')
 }
 
 let _ytAuthWin = null
