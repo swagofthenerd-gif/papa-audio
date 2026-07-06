@@ -312,3 +312,42 @@ test('getPlaylist maps header and tracks', async () => {
   assert.strictEqual(pl.tracks[0].videoId, 'dQw4w9WgXcQ')
   _setClientForTest(null)
 })
+
+// ── Home feed mapping ────────────────────────────────────────────────────────
+
+test('getHomeFeed maps song and album sections, skips junk', async () => {
+  const albumFeedItem = {
+    id: 'MPREb_feed1', title: 'OK Computer',
+    author: { name: 'Radiohead' }, year: '1997',
+    thumbnail: { contents: [{ url: 'https://i.ytimg.com/okc.jpg', width: 226 }] },
+  }
+  _setClientForTest(Promise.resolve({
+    music: {
+      getHomeFeed: async () => ({
+        sections: [
+          { header: { title: 'Quick picks' }, contents: [songItem] },
+          { header: { title: 'Recommended albums' }, contents: [albumFeedItem] },
+          { header: { title: 'Weird shelf' }, contents: [{}] },
+          { contents: [songItem] },
+        ],
+      }),
+    },
+  }))
+  const { getHomeFeed } = require('../youtube-search')
+  const { sections } = await getHomeFeed()
+  assert.strictEqual(sections.length, 2)
+  assert.strictEqual(sections[0].title, 'Quick picks')
+  assert.strictEqual(sections[0].kind, 'songs')
+  assert.strictEqual(sections[0].items[0].videoId, 'dQw4w9WgXcQ')
+  assert.strictEqual(sections[1].kind, 'albums')
+  assert.strictEqual(sections[1].items[0].browseId, 'MPREb_feed1')
+  _setClientForTest(null)
+})
+
+test('getHomeFeed never throws on empty/odd feeds', async () => {
+  _setClientForTest(Promise.resolve({ music: { getHomeFeed: async () => ({}) } }))
+  const { getHomeFeed } = require('../youtube-search')
+  const { sections } = await getHomeFeed()
+  assert.deepStrictEqual(sections, [])
+  _setClientForTest(null)
+})

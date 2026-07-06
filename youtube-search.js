@@ -236,7 +236,30 @@ async function getArtist(channelId) {
   }
 }
 
+// Album ids on YT Music start with MPREb; watch ids are 11 chars.
+function _looksLikeAlbumId(id) { return typeof id === 'string' && /^MPRE/i.test(id) }
+
+async function getHomeFeed() {
+  const yt = await _client()
+  const feed = await yt.music.getHomeFeed()
+  const sections = []
+  for (const sec of (feed?.sections || [])) {
+    if (sections.length >= 3) break
+    const title = _text(sec?.header?.title) || _text(sec?.title)
+    const contents = Array.isArray(sec?.contents) ? sec.contents : []
+    if (!title || !contents.length) continue
+    const albums = contents.filter(c => _looksLikeAlbumId(c?.id)).map(mapAlbumItem).filter(Boolean)
+    const songs = contents.filter(c => c?.id && !_looksLikeAlbumId(c.id)).map(mapMusicItem).filter(Boolean)
+    if (albums.length >= songs.length && albums.length) {
+      sections.push({ title, kind: 'albums', items: albums.slice(0, 12) })
+    } else if (songs.length) {
+      sections.push({ title, kind: 'songs', items: songs.slice(0, 8) })
+    }
+  }
+  return { sections }
+}
+
 module.exports = {
-  searchMusic, searchAll, searchMusicFull, searchPage, getAlbum, getArtist, getPlaylist,
+  searchMusic, searchAll, searchMusicFull, searchPage, getAlbum, getArtist, getPlaylist, getHomeFeed,
   mapMusicItem, mapVideoItem, mapAlbumItem, mapArtistItem, mapPlaylistItem, _setClientForTest,
 }
