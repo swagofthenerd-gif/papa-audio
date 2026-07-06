@@ -36,6 +36,10 @@ const state = {
   playCounts: {},
   playHistory: [],
   followedArtists: [],
+  ytLiked: [],
+  ytFollowed: [],
+  ytSavedAlbums: [],
+  ytRecent: [],
 }
 
 const slsk = {
@@ -182,12 +186,18 @@ let ctxTarget = null  // { type: 'album'|'track', albumId, track, artist }
 
 // ── Init ───────────────────────────────────────────────────────────────────
 async function init() {
-  const [info, liked, savedQueues, qualitySources, playlists, likedTracks, playCounts, playHistory, followedArtists] = await Promise.all([
+  const [info, liked, savedQueues, qualitySources, playlists, likedTracks, playCounts, playHistory, followedArtists, ytLiked, ytFollowed, ytSavedAlbums, ytRecent] = await Promise.all([
     window.api.getAppInfo(), window.api.getLiked(),
     window.api.getSavedQueues(), window.api.getQualitySources(),
     window.api.getPlaylists(), window.api.getLikedTracks(), window.api.getPlayCounts(),
     window.api.getPlayHistory(), window.api.getFollowedArtists(),
+    window.api.getYtLiked(), window.api.getYtFollowed(),
+    window.api.getYtSavedAlbums(), window.api.getYtRecent(),
   ])
+  state.ytLiked        = ytLiked || []
+  state.ytFollowed     = ytFollowed || []
+  state.ytSavedAlbums  = ytSavedAlbums || []
+  state.ytRecent       = ytRecent || []
   state.likedTracks    = likedTracks || []
   state.playCounts     = playCounts || {}
   state.playHistory    = playHistory || []
@@ -1125,6 +1135,7 @@ function _applyYtFilter() {
 function _ytQueueItem(r) {
   return {
     filePath: `https://www.youtube.com/watch?v=${r.videoId}`,
+    videoId: r.videoId,
     title: r.title,
     artist: r.artist,
     albumArtist: r.artist,
@@ -1132,7 +1143,68 @@ function _ytQueueItem(r) {
     albumId: `yt_${r.videoId}`,
     artPath: r.thumbnailUrl || null,
     duration: r.duration || 0,
+    albumBrowseId: r.albumBrowseId || null,
+    channelId: r.channelId || null,
   }
+}
+
+// ── YT saves: likes / follows / saved albums / recents ──────────────────────
+function watchUrl(videoId) { return `https://www.youtube.com/watch?v=${videoId}` }
+function isHttpPath(p) { return /^https?:\/\//.test(p || '') }
+
+function isYtLiked(videoId) { return state.ytLiked.some(t => t.videoId === videoId) }
+function toggleYtLike(track) {
+  const i = state.ytLiked.findIndex(t => t.videoId === track.videoId)
+  let liked
+  if (i >= 0) { state.ytLiked.splice(i, 1); liked = false }
+  else {
+    state.ytLiked.unshift({
+      videoId: track.videoId, title: track.title, artist: track.artist,
+      album: track.album || null, duration: track.duration || 0,
+      thumbnailUrl: track.thumbnailUrl || null,
+      albumBrowseId: track.albumBrowseId || null, channelId: track.channelId || null,
+      likedAt: Date.now(),
+    })
+    liked = true
+  }
+  window.api.saveYtLiked(state.ytLiked)
+  return liked
+}
+
+function isYtFollowed(channelId) { return state.ytFollowed.some(a => a.channelId === channelId) }
+function toggleYtFollow(artist) {
+  const i = state.ytFollowed.findIndex(a => a.channelId === artist.channelId)
+  let following
+  if (i >= 0) { state.ytFollowed.splice(i, 1); following = false }
+  else {
+    state.ytFollowed.unshift({
+      channelId: artist.channelId, name: artist.name,
+      thumbnailUrl: artist.thumbnailUrl || null, followedAt: Date.now(),
+    })
+    following = true
+  }
+  window.api.saveYtFollowed(state.ytFollowed)
+  return following
+}
+
+function isYtAlbumSaved(browseId) { return state.ytSavedAlbums.some(a => a.browseId === browseId) }
+function toggleYtSaveAlbum(album) {
+  const i = state.ytSavedAlbums.findIndex(a => a.browseId === album.browseId)
+  let saved
+  if (i >= 0) { state.ytSavedAlbums.splice(i, 1); saved = false }
+  else { state.ytSavedAlbums.unshift({ ...album, savedAt: Date.now() }); saved = true }
+  window.api.saveYtSavedAlbums(state.ytSavedAlbums)
+  return saved
+}
+
+function recordYtRecent(qItem) {
+  if (!qItem || !isHttpPath(qItem.filePath)) return
+  state.ytRecent = [
+    { albumId: qItem.albumId, name: qItem.albumName, artist: qItem.artist,
+      artUrl: qItem.artPath, filePath: qItem.filePath, title: qItem.title, playedAt: Date.now() },
+    ...state.ytRecent.filter(x => x.albumId !== qItem.albumId),
+  ].slice(0, 20)
+  window.api.saveYtRecent(state.ytRecent)
 }
 
 async function runYtSearch(query, scope) {
@@ -2797,6 +2869,7 @@ function updateNextPrefetch() {
 function playCurrentTrack() {
   const track = state.queue[state.queueIndex]
   if (!track) return
+  if (isHttpPath(track.filePath)) recordYtRecent(track)
   if (!audio.paused && !audio.ended) audio.pause()
   const isStream = /^https?:\/\//.test(track.filePath)
   audio.src = isStream ? track.filePath : `file://${track.filePath}`
@@ -3390,7 +3463,8 @@ function fmtSpec(bd, sr) {
 function artImg(artPath, imgClass, fallbackClass) {
   const musicNote = `<svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>`
   if (artPath) {
-    return `<img class="${imgClass}" src="file://${artPath}" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+    const src = /^https?:\/\//.test(artPath) ? artPath : `file://${artPath}`
+    return `<img class="${imgClass}" src="${src}" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
             <div class="${fallbackClass}" style="display:none">${musicNote}</div>`
   }
   return `<div class="${fallbackClass}">${musicNote}</div>`
