@@ -143,6 +143,13 @@ contextBridge.exposeInMainWorld('api', {
   saveYtSavedAlbums: (a) => ipcRenderer.send('save-yt-saved-albums', a),
   getYtRecent:       ()  => ipcRenderer.invoke('get-yt-recent'),
   saveYtRecent:      (a) => ipcRenderer.send('save-yt-recent', a),
+  ytRadio:           (p) => ipcRenderer.invoke('yt-radio', p),
+  ytFindVideo:       (p) => ipcRenderer.invoke('yt-find-video', p),
+  getLyrics:         (p) => ipcRenderer.invoke('get-lyrics', p),
+  ytAuthStart:       ()  => ipcRenderer.invoke('yt-auth-start'),
+  ytAuthSignOut:     ()  => ipcRenderer.invoke('yt-auth-signout'),
+  ytAuthStatus:      ()  => ipcRenderer.invoke('yt-auth-status'),
+  openExternal:      (u) => ipcRenderer.invoke('open-external', u),
 
   // Agent memory
   agentGetMemory:    ()    => ipcRenderer.invoke('agent-get-memory'),
@@ -171,7 +178,7 @@ contextBridge.exposeInMainWorld('api', {
       'browser-url', 'browser-title', 'browser-loading', 'browser-load-error', 'browser-zoom',
       'media-key', 'ext-cmd', 'slsk-progress', 'player-event', 'media-seek',
       'torrent-progress', 'torrent-done', 'torrent-started', 'do-lib-rescan',
-      'yt-dl-progress',
+      'yt-dl-progress', 'yt-auth-pending', 'yt-auth-done',
     ]
     if (allowed.includes(channel)) ipcRenderer.on(channel, (_, data) => cb(data))
   },

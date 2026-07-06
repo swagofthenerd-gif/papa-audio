@@ -365,3 +365,81 @@ test('searchPage handles MusicShelfContinuation-shaped page 2', async () => {
   assert.strictEqual(p2.hasMore, true)
   _setClientForTest(null)
 })
+
+// ── Radio (up-next) + video lookup + feed playlists (round 3) ───────────────
+
+test('mapUpNextItem maps PlaylistPanelVideo shape incl. clock-text duration', () => {
+  const { mapUpNextItem } = require('../youtube-search')
+  const r = mapUpNextItem({
+    video_id: 'radio000001',
+    title: { text: 'Windowlicker' },
+    author: 'Aphex Twin',
+    duration: { text: '6:07' },
+    thumbnail: [{ url: 'https://i.ytimg.com/wl.jpg', width: 226 }],
+  })
+  assert.strictEqual(r.videoId, 'radio000001')
+  assert.strictEqual(r.title, 'Windowlicker')
+  assert.strictEqual(r.artist, 'Aphex Twin')
+  assert.strictEqual(r.duration, 367)
+  assert.strictEqual(r.thumbnailUrl, 'https://i.ytimg.com/wl.jpg')
+  assert.strictEqual(mapUpNextItem({ title: { text: 'no id' } }), null)
+})
+
+test('getRadio maps panel contents and drops the seed video', async () => {
+  _setClientForTest(Promise.resolve({
+    music: {
+      getUpNext: async () => ({
+        contents: [
+          { video_id: 'seedvid0001', title: { text: 'Seed' }, author: 'A', duration: { text: '1:00' } },
+          { video_id: 'nextvid0001', title: { text: 'Next One' }, author: 'B', duration: { text: '2:30' } },
+          { not_a_video: true },
+        ],
+      }),
+    },
+  }))
+  const { getRadio } = require('../youtube-search')
+  const items = await getRadio('seedvid0001')
+  assert.strictEqual(items.length, 1)
+  assert.strictEqual(items[0].videoId, 'nextvid0001')
+  assert.strictEqual(items[0].duration, 150)
+  _setClientForTest(null)
+})
+
+test('findVideoId returns first music search hit or null', async () => {
+  _setClientForTest(Promise.resolve({
+    music: { search: async () => ({ songs: { contents: [songItem] } }) },
+  }))
+  const { findVideoId } = require('../youtube-search')
+  assert.strictEqual(await findVideoId('Rick Astley', 'Never Gonna Give You Up'), 'dQw4w9WgXcQ')
+  _setClientForTest(Promise.resolve({
+    music: { search: async () => ({ songs: { contents: [] } }) },
+  }))
+  assert.strictEqual(await findVideoId('Nobody', 'Nothing'), null)
+  _setClientForTest(null)
+})
+
+test('getHomeFeed maps playlist sections and allows up to 8 sections', async () => {
+  const plFeedItem = {
+    id: 'RDCLAK5uy_mix1', title: 'My Supermix',
+    author: { name: 'YouTube Music' },
+    thumbnail: { contents: [{ url: 'https://i.ytimg.com/mix.jpg', width: 226 }] },
+  }
+  const mkSongSec = n => ({ header: { title: 'Sec ' + n }, contents: [{ ...songItem, id: 'vid' + n + '000000' }] })
+  _setClientForTest(Promise.resolve({
+    music: {
+      getHomeFeed: async () => ({
+        sections: [
+          { header: { title: 'Mixed for you' }, contents: [plFeedItem] },
+          mkSongSec(1), mkSongSec(2), mkSongSec(3), mkSongSec(4),
+          mkSongSec(5), mkSongSec(6), mkSongSec(7), mkSongSec(8),
+        ],
+      }),
+    },
+  }))
+  const { getHomeFeed } = require('../youtube-search')
+  const { sections } = await getHomeFeed()
+  assert.strictEqual(sections.length, 8)
+  assert.strictEqual(sections[0].kind, 'playlists')
+  assert.strictEqual(sections[0].items[0].playlistId, 'RDCLAK5uy_mix1')
+  _setClientForTest(null)
+})

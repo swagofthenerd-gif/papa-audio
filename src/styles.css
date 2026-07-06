@@ -4191,3 +4191,39 @@ input:focus:not(:focus-visible) { outline: none; }
 .yt-liked-row .yt-thumb { width: 36px; height: 36px; border-radius: 4px; margin-right: 10px; }
 .yt-home-songs { max-width: 720px; }
 .album-card-meta { font-size: 12px; color: var(--text3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ── Round 3: Explore, account connect, autoplay, radio ───────────────── */
+.yt-connect-banner {
+  display: flex; align-items: center; gap: 18px; padding: 18px 22px;
+  border-radius: var(--r-md, 10px); margin: 8px 0 4px;
+  background: linear-gradient(120deg, #7a1a1a66, #1a1a2a99);
+  border: 1px solid rgba(255,255,255,.08);
+}
+.yt-connect-title { font-size: 15px; font-weight: 700; color: var(--text); }
+.yt-connect-sub { font-size: 13px; color: var(--text2); margin-top: 4px; line-height: 1.5; }
+.yt-connect-btn {
+  margin-left: auto; flex-shrink: 0; padding: 9px 22px; border-radius: 20px;
+  border: none; background: #f11; color: #fff; font-weight: 700; cursor: pointer;
+}
+.yt-connect-btn:hover { filter: brightness(1.15); }
+.yt-connect-code {
+  font-family: monospace; font-size: 16px; font-weight: 700; letter-spacing: 2px;
+  background: rgba(255,255,255,.1); padding: 3px 10px; border-radius: 6px; color: var(--text);
+}
+
+.explore-song-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 2px 20px; max-width: none;
+}
+.explore-song-grid .yt-list { display: contents; }
+
+.queue-autoplay-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 16px; font-size: 12px; color: var(--text2);
+  border-bottom: 1px solid rgba(255,255,255,.06);
+}
+.queue-autoplay-toggle {
+  border: 1px solid var(--text3); background: transparent; color: var(--text3);
+  border-radius: 12px; padding: 2px 12px; font-size: 11px; font-weight: 700; cursor: pointer;
+}
+.queue-autoplay-toggle.on { border-color: #1db954; color: #1db954; }
