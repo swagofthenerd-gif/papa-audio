@@ -26,8 +26,7 @@ Find and download the music the user asks for, however necessary. This is the on
 4. **After every download, schedule a library rescan** at 15 s, 45 s, and 120 s so new files appear in the library without manual refresh.
 5. **Play buttons must always be visible** (not hidden behind hover). `opacity: .85` always on.
 6. **Progressive search display** — show results as each search variant completes; never make the user wait for all variants to finish before seeing anything.
-7. **Quality sources** in settings: Lucida, Monochrome, Lydia (`https://lydia.to/search?q={query}`), HDtracks, Qobuz, Beets.
-8. **Never reintroduce Web Audio / AudioContext processing** — playback must stay in mpv.
+7. **Never reintroduce Web Audio / AudioContext processing** — playback must stay in mpv.
 
 ## Key IPC handlers (main.js)
 - `slsk-search` — start search, poll, return merged results

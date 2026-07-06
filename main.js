@@ -311,7 +311,6 @@ async function downloadSlskd(progressCb) {
 
 let mainWindow  = null
 let browserView = null
-let autoDlView  = null
 let artworkDir  = ''
 let dlHandlerReady = false
 
@@ -342,12 +341,6 @@ app.whenReady().then(() => {
   fs.mkdirSync(artworkDir, { recursive: true })
   try { fs.writeFileSync(CMD_PATH, '') } catch (_) {}
   setInterval(pollCmd, 200)
-  // Seed Rutracker as a default saved site if not already present
-  const sites = store.get('savedSites', [])
-  if (!sites.some(s => s.url && s.url.includes('rutracker'))) {
-    sites.push({ url: 'https://rutracker.org/forum/index.php', name: 'Rutracker' })
-    store.set('savedSites', sites)
-  }
   // YT client: session-data cache + cookie-auth restore. Leftover OAuth
   // credentials from the abandoned device-flow must be purged — they 400
   // every YT Music request.
@@ -1176,52 +1169,6 @@ function ensureDlHandler() {
   })
 }
 
-// Site-specific JS injected into autoDlView to trigger the download automatically
-const AUTO_DL_SCRIPTS = {
-  '__default__': `(function(){
-    // Generic: prefer FLAC/lossless links, fall back to any download link
-    const all = Array.from(document.querySelectorAll('a[href], button'));
-    const priority = [
-      o => /\\bflac\\b/i.test(o.textContent + (o.href||'')),
-      o => /lossless|24.?bit|hi.?res|wav/i.test(o.textContent + (o.href||'')),
-      o => /download/i.test(o.textContent),
-      o => /\\.flac(\\?|$)/i.test(o.href||''),
-      o => /\\.mp3(\\?|$)/i.test(o.href||''),
-    ];
-    for (const test of priority) {
-      const match = all.find(test);
-      if (match) { match.click(); return; }
-    }
-  })()`,
-}
-
-function createAutoDlView() {
-  if (autoDlView) return
-  ensureDlHandler()
-  autoDlView = new BrowserView({ webPreferences: { nodeIntegration: false, contextIsolation: true } })
-
-  // Spoof a real Chrome user-agent so Cloudflare and other bot-checks pass
-  autoDlView.webContents.setUserAgent(
-    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
-  )
-
-  // Override all headers that reveal Electron/automation
-  autoDlView.webContents.session.webRequest.onBeforeSendHeaders((details, callback) => {
-    const headers = { ...details.requestHeaders }
-    headers['User-Agent']        = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
-    headers['sec-ch-ua']         = '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"'
-    headers['sec-ch-ua-mobile']  = '?0'
-    headers['sec-ch-ua-platform'] = '"Linux"'
-    callback({ requestHeaders: headers })
-  })
-
-  autoDlView.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('http')) autoDlView.webContents.loadURL(url)
-    return { action: 'deny' }
-  })
-
-}
-
 function createBrowserView () {
   if (browserView) return
   ensureDlHandler()
@@ -1816,111 +1763,6 @@ function httpsGet(url, redirects = 0) {
     req.setTimeout(12000, () => { req.destroy(); reject(new Error('Timeout')) })
   })
 }
-
-// ── Quality Sources ──────────────────────────────────────────────────────────
-const DEFAULT_QUALITY_SOURCES = [
-  {
-    id: 'hdtracks', name: 'HDtracks', enabled: false,
-    searchUrl: 'https://www.hdtracks.com/#/search?q={query}',
-    agentHint: 'Hi-res music store. Search for the album, click it, then look for the highest-resolution FLAC option and add to cart or download.'
-  },
-  {
-    id: 'qobuz', name: 'Qobuz', enabled: false,
-    searchUrl: 'https://open.qobuz.com/search/{query}',
-    agentHint: 'Qobuz streaming service. Search results appear automatically. Click a track or album, then click the download button (requires account).'
-  },
-  {
-    id: 'beets', name: 'Beets Music', enabled: false,
-    searchUrl: 'https://beets.io/search?q={query}',
-    agentHint: 'Music search. Find the track in results and click the download link.'
-  },
-]
-
-const REMOVED_SOURCE_IDS = new Set(['lucida', 'monochrome', 'lydia'])
-
-ipcMain.handle('get-quality-sources', () => {
-  const stored = store.get('qualitySources', null)
-  // Merge stored enabled/disabled state with default hints (hints may have been added/updated)
-  if (!stored) return DEFAULT_QUALITY_SOURCES
-  return DEFAULT_QUALITY_SOURCES.map(def => {
-    const s = stored.find(x => x.id === def.id)
-    if (!s) return def
-    // Keep user's enabled state; always use the built-in hint (it gets updated with fixes)
-    return { ...def, enabled: s.enabled }
-  }).concat(stored.filter(s => !DEFAULT_QUALITY_SOURCES.find(d => d.id === s.id) && !REMOVED_SOURCE_IDS.has(s.id)))
-})
-
-ipcMain.handle('save-quality-sources', (_, sources) => {
-  store.set('qualitySources', sources)
-  return sources
-})
-
-ipcMain.handle('search-online-source', async (_, { url }) => {
-  try {
-    const buf  = await httpsGet(url)
-    const html = buf.toString('utf8').toLowerCase()
-    const NO_RESULT_PATTERNS = [
-      'no results', '0 results', 'no result found', 'nothing found',
-      'no matches', 'your search returned no', 'could not be found',
-    ]
-    const noResult = NO_RESULT_PATTERNS.some(p => html.includes(p))
-    return { found: buf.length > 5000 && !noResult, size: buf.length }
-  } catch (e) {
-    return { found: false, error: e.message }
-  }
-})
-
-const KNOWN_SOURCES = [
-  { id: 'jukehost',   name: 'JukeHost',    searchUrl: 'https://www.jukehost.co.uk/search/{query}' },
-  { id: 'bandcamp',   name: 'Bandcamp',    searchUrl: 'https://bandcamp.com/search?q={query}'     },
-  { id: 'free-mp3',   name: 'Free MP3',    searchUrl: 'https://freemp3cloud.com/?s={query}'        },
-  { id: 'archive',    name: 'Archive.org', searchUrl: 'https://archive.org/search?query={query}&and[]=mediatype%3A%22audio%22' },
-]
-
-ipcMain.handle('probe-known-sources', async () => {
-  const results = await Promise.all(KNOWN_SOURCES.map(async (src) => {
-    try {
-      await httpsGet(src.searchUrl.replace('{query}', 'test'))
-      return { ...src, reachable: true }
-    } catch { return { ...src, reachable: false } }
-  }))
-  return results.filter(r => r.reachable)
-})
-
-ipcMain.handle('auto-download-from-source', async (_, { url, sourceId }) => {
-  createAutoDlView()
-  return new Promise((resolve) => {
-    const TIMEOUT_MS = 30000
-    let settled = false
-    const settle = (result) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      resolve(result)
-    }
-    const timer = setTimeout(() => settle({ ok: false, error: 'Timeout' }), TIMEOUT_MS)
-
-    autoDlView.webContents.once('did-finish-load', async () => {
-      // Allow JS-heavy SPAs to render
-      await new Promise(r => setTimeout(r, 2500))
-      try {
-        const hostname = new URL(url).hostname.replace(/^www\./, '')
-        const scriptKey = Object.keys(AUTO_DL_SCRIPTS).find(k => hostname.includes(k)) || '__default__'
-        await autoDlView.webContents.executeJavaScript(AUTO_DL_SCRIPTS[scriptKey])
-        // Give download a moment to trigger before resolving
-        setTimeout(() => settle({ ok: true }), 1500)
-      } catch (e) {
-        settle({ ok: false, error: e.message })
-      }
-    })
-    autoDlView.webContents.once('did-fail-load', (__, code, desc) => {
-      settle({ ok: false, error: `Load failed: ${desc}` })
-    })
-
-    const safe = url.startsWith('http') ? url : `https://${url}`
-    autoDlView.webContents.loadURL(safe)
-  })
-})
 
 ipcMain.handle('fetch-album-art', async (_, { albumId, artist, album }) => {
   try {
