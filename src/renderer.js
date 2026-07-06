@@ -1605,6 +1605,103 @@ async function renderYtAlbum(browseId) {
 }
 
 // ── YouTube artist page ─────────────────────────────────────────────────────
+// ── YouTube playlist page ───────────────────────────────────────────────────
+function sanitizePathSegment(s) { return String(s || '').replace(/[\/\\:*?"<>|]/g, '_').trim() }
+
+function _ytPlTrackToQueueItem(pl, t) {
+  return {
+    filePath: watchUrl(t.videoId),
+    videoId: t.videoId,
+    title: t.title,
+    artist: t.artist,
+    albumArtist: t.artist,
+    albumName: t.album || pl.title,
+    albumId: `yt_${t.videoId}`,
+    artPath: t.thumbnailUrl || pl.thumbnailUrl || null,
+    duration: t.duration || 0,
+    albumBrowseId: t.albumBrowseId || null,
+    channelId: t.channelId || null,
+  }
+}
+
+async function renderYtPlaylist(playlistId) {
+  setContent(`<div class="page"><div class="yt-status">Loading playlist from YouTube…</div></div>`)
+  const res = await window.api.ytPlaylist({ playlistId }).catch(e => ({ ok: false, error: String(e) }))
+  if (state.currentPage !== 'yt-playlist') return
+  if (!res.ok) {
+    setContent(`<div class="page"><div class="yt-status yt-error">Couldn't load playlist: ${esc(res.error || 'unknown error')}</div></div>`)
+    return
+  }
+  const pl = res.playlist
+  const colors = ['#5038a0','#a04038','#2d7a4a','#3850a0','#a07038','#6b38a0','#1a5a7a','#7a1a4a']
+  const color = colors[Math.abs(_cardHue(pl.title + pl.author)) % colors.length]
+  const totalDur = pl.tracks.reduce((s, t) => s + (t.duration || 0), 0)
+
+  setContent(`
+    <div class="album-hero" style="background: linear-gradient(${color}cc, var(--bg) 100%)">
+      <img class="album-hero-art" src="${esc(pl.thumbnailUrl || '')}" alt="" ${!pl.thumbnailUrl ? 'style="display:none"' : ''} onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+      <div class="album-hero-art-fallback" ${pl.thumbnailUrl ? 'style="display:none"' : ''}><svg viewBox="0 0 24 24"><path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/></svg></div>
+      <div class="album-hero-info">
+        <div class="album-hero-type">Playlist <span class="yt-badge">YT</span></div>
+        <div class="album-hero-title">${esc(pl.title)}</div>
+        <div class="album-hero-meta">
+          ${pl.author ? `<span>${esc(pl.author)}</span> &bull;` : ''}
+          ${pl.tracks.length} song${pl.tracks.length !== 1 ? 's' : ''}${totalDur ? `, ${fmtTime(totalDur)}` : ''}
+        </div>
+      </div>
+    </div>
+    <div class="album-controls">
+      <button class="album-play-btn" id="yt-pl-play-btn" title="Play all" ${!pl.tracks.length ? 'disabled' : ''}>
+        <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+      </button>
+      <button class="ctrl-btn" id="yt-pl-shuffle-btn" title="Shuffle">
+        <svg viewBox="0 0 24 24"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
+      </button>
+      <button class="ctrl-btn" id="yt-pl-queue-btn" title="Add all to queue">+</button>
+      <button class="ctrl-btn" id="yt-pl-dl-btn" title="Download all">
+        <svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+      </button>
+      <button class="ctrl-btn" id="yt-pl-save-btn" title="Save to your playlists">
+        <svg viewBox="0 0 24 24"><path d="M14 10H3v2h11v-2zm0-4H3v2h11V6zM3 16h7v-2H3v2zm18-4.5V22l-4-2-4 2V11.5c0-.83.67-1.5 1.5-1.5h5c.83 0 1.5.67 1.5 1.5z"/></svg>
+      </button>
+      <span class="yt-album-dl-note" id="yt-pl-note"></span>
+    </div>
+    <div class="track-list">
+      <div class="track-list-header"><span>#</span><span>Title</span><span style="text-align:right">Duration</span></div>
+      <div id="yt-pl-tracks">${_ytSongRows(pl.tracks)}</div>
+    </div>`)
+
+  const toQueue = t => _ytPlTrackToQueueItem(pl, t)
+  document.getElementById('yt-pl-play-btn')?.addEventListener('click', () => {
+    state.queue = pl.tracks.map(toQueue); state.queueIndex = 0; playCurrentTrack()
+  })
+  document.getElementById('yt-pl-shuffle-btn')?.addEventListener('click', () => {
+    state.queue = pl.tracks.map(toQueue).sort(() => Math.random() - 0.5)
+    state.queueIndex = 0; playCurrentTrack()
+  })
+  document.getElementById('yt-pl-queue-btn')?.addEventListener('click', () => {
+    state.queue.push(...pl.tracks.map(toQueue)); updateNextPrefetch()
+    const note = document.getElementById('yt-pl-note')
+    if (note) { note.textContent = `Added ${pl.tracks.length} to queue`; setTimeout(() => { note.textContent = '' }, 2000) }
+  })
+  document.getElementById('yt-pl-dl-btn')?.addEventListener('click', () => {
+    for (const t of pl.tracks) window.api.ytDownload({ videoId: t.videoId, title: t.title, artist: t.artist, subdir: sanitizePathSegment(pl.title) })
+    const note = document.getElementById('yt-pl-note')
+    if (note) note.textContent = `Downloading ${pl.tracks.length} tracks…`
+  })
+  document.getElementById('yt-pl-save-btn')?.addEventListener('click', () => {
+    const local = {
+      id: 'pl_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
+      name: pl.title, tracks: pl.tracks.map(toQueue), createdAt: Date.now(),
+    }
+    state.playlists.unshift(local)
+    window.api.savePlaylist(local)
+    navigate('playlist', local.id)
+  })
+  const tracksEl = document.getElementById('yt-pl-tracks')
+  if (tracksEl) bindYtEvents(pl.tracks, tracksEl)
+}
+
 // ── YouTube see-all page (paged search results) ─────────────────────────────
 const YT_KIND_LABEL = { song: 'Songs', album: 'Albums', artist: 'Artists', playlist: 'Playlists', video: 'Videos' }
 
