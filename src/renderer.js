@@ -349,6 +349,8 @@ function navigate(page, navId, opts = {}) {
   else if (page === 'liked')     renderLikedSongs()
   else if (page === 'yt-album')  renderYtAlbum(navId)
   else if (page === 'yt-artist') renderYtArtist(navId)
+  else if (page === 'yt-see-all')  renderYtSeeAll(navId)
+  else if (page === 'yt-playlist') renderYtPlaylist(navId)
 
   if (page === 'downloads') startDownloadsPolling(2000)
   else { _dlLastSig = ''; startDownloadsPolling(6000) }
@@ -1603,6 +1605,64 @@ async function renderYtAlbum(browseId) {
 }
 
 // ── YouTube artist page ─────────────────────────────────────────────────────
+// ── YouTube see-all page (paged search results) ─────────────────────────────
+const YT_KIND_LABEL = { song: 'Songs', album: 'Albums', artist: 'Artists', playlist: 'Playlists', video: 'Videos' }
+
+async function renderYtSeeAll(navId) {
+  const sep = navId.indexOf('::')
+  const kind = navId.slice(0, sep)
+  const query = navId.slice(sep + 2)
+  const items = []
+  let hasMore = false
+
+  setContent(`<div class="page">
+    <div class="section-header"><span class="section-title">${YT_KIND_LABEL[kind] || 'Results'} · “${esc(query)}” <span class="yt-badge">YT</span></span></div>
+    <div id="yt-seeall-body"><div class="yt-status">Loading…</div></div>
+    <div id="yt-seeall-more"></div>
+  </div>`)
+
+  async function loadPage(next) {
+    const res = await window.api.ytSearchPage({ kind, query, next }).catch(e => ({ ok: false, error: String(e) }))
+    if (state.currentPage !== 'yt-see-all') return
+    const body = document.getElementById('yt-seeall-body')
+    const moreBox = document.getElementById('yt-seeall-more')
+    if (!body) return
+    if (!res.ok) {
+      const note = `<div class="yt-status yt-error">Couldn't load${next ? ' more' : ''}: ${esc(res.error || 'unknown')} <button class="yt-retry" id="yt-seeall-retry">Retry</button></div>`
+      if (next) { moreBox.innerHTML = note } else { body.innerHTML = note }
+      document.getElementById('yt-seeall-retry')?.addEventListener('click', () => loadPage(next))
+      return
+    }
+    items.push(...res.items)
+    hasMore = res.hasMore
+    renderBody()
+  }
+
+  function renderBody() {
+    const body = document.getElementById('yt-seeall-body')
+    const moreBox = document.getElementById('yt-seeall-more')
+    if (!body) return
+    if (!items.length) { body.innerHTML = `<div class="yt-status">Nothing found.</div>`; moreBox.innerHTML = ''; return }
+    if (kind === 'song' || kind === 'video') {
+      body.innerHTML = _ytSongRows(items)
+      bindYtEvents(items, body)
+    } else {
+      const card = kind === 'album' ? _ytAlbumCard : kind === 'artist' ? _ytArtistCard : _ytPlaylistCard
+      body.innerHTML = `<div class="${kind === 'artist' ? 'artist-grid yt-artist-grid' : 'album-grid'}">${items.map(card).join('')}</div>`
+      body.querySelectorAll('.yt-album-card').forEach(c => c.addEventListener('click', () => navigate('yt-album', c.dataset.browse)))
+      body.querySelectorAll('.yt-artist-card').forEach(c => c.addEventListener('click', () => navigate('yt-artist', c.dataset.channel)))
+      body.querySelectorAll('.yt-playlist-card').forEach(c => c.addEventListener('click', () => navigate('yt-playlist', c.dataset.playlist)))
+    }
+    moreBox.innerHTML = hasMore ? `<button class="yt-load-more" id="yt-load-more">Load more</button>` : ''
+    document.getElementById('yt-load-more')?.addEventListener('click', () => {
+      document.getElementById('yt-load-more').textContent = 'Loading…'
+      loadPage(true)
+    })
+  }
+
+  await loadPage(false)
+}
+
 async function renderYtArtist(channelId) {
   setContent(`<div class="page"><div class="yt-status">Loading artist from YouTube…</div></div>`)
   const res = await window.api.ytArtist({ channelId }).catch(e => ({ ok: false, error: String(e) }))
