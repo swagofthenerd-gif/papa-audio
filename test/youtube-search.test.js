@@ -286,3 +286,29 @@ test('searchPage rejects unknown kind', async () => {
   const { searchPage } = require('../youtube-search')
   await assert.rejects(() => searchPage('podcast', 'x', false), /unknown kind/)
 })
+
+// ── Playlist page fetch ──────────────────────────────────────────────────────
+
+test('getPlaylist maps header and tracks', async () => {
+  _setClientForTest(Promise.resolve({
+    music: {
+      getPlaylist: async () => ({
+        header: {
+          title: 'Deep Focus',
+          author: { name: 'YouTube Music' },
+          thumbnail: { contents: [{ url: 'https://i.ytimg.com/pl.jpg', width: 544 }] },
+        },
+        items: [songItem, { no_id: true }],
+      }),
+    },
+  }))
+  const { getPlaylist } = require('../youtube-search')
+  const pl = await getPlaylist('VLPLabc123')
+  assert.strictEqual(pl.playlistId, 'VLPLabc123')
+  assert.strictEqual(pl.title, 'Deep Focus')
+  assert.strictEqual(pl.author, 'YouTube Music')
+  assert.strictEqual(pl.songCount, 1)
+  assert.strictEqual(pl.tracks.length, 1)
+  assert.strictEqual(pl.tracks[0].videoId, 'dQw4w9WgXcQ')
+  _setClientForTest(null)
+})

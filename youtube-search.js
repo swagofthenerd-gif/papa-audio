@@ -195,6 +195,22 @@ async function getAlbum(browseId) {
   }
 }
 
+async function getPlaylist(playlistId) {
+  const yt = await _client()
+  const pl = await yt.music.getPlaylist(playlistId)
+  const h = pl?.header || {}
+  const rawItems = pl?.items || pl?.contents || []
+  const tracks = rawItems.filter(t => t?.id).map(mapMusicItem).filter(Boolean)
+  return {
+    playlistId,
+    title: _text(h.title),
+    author: _text(h.author?.name) || _text(h.strapline_text_one) || '',
+    songCount: tracks.length,
+    thumbnailUrl: _thumbUrl(h.thumbnail || h.thumbnails),
+    tracks,
+  }
+}
+
 function _carousel(sections, name) {
   const sec = (sections || []).find(s => (_text(s?.header?.title) || _text(s?.title)) === name)
   return (sec?.contents || []).map(mapAlbumItem).filter(Boolean)
@@ -221,6 +237,6 @@ async function getArtist(channelId) {
 }
 
 module.exports = {
-  searchMusic, searchAll, searchMusicFull, searchPage, getAlbum, getArtist,
+  searchMusic, searchAll, searchMusicFull, searchPage, getAlbum, getArtist, getPlaylist,
   mapMusicItem, mapVideoItem, mapAlbumItem, mapArtistItem, mapPlaylistItem, _setClientForTest,
 }
