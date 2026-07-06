@@ -7,9 +7,18 @@ const path = require('path')
 
 let _clientPromise = null
 let _cacheDir = null
+let _cookie = null
 
 // Called once from main.js with an app-data path — keeps this module electron-free.
 function setCacheDir(dir) { _cacheDir = dir }
+
+// Cookie-based auth: OAuth TV tokens are rejected (HTTP 400) by every YouTube
+// Music InnerTube endpoint, so personalization must come from browser cookies.
+// Passing null reverts to an anonymous client.
+function setCookie(cookie) {
+  _cookie = cookie || null
+  _clientPromise = null
+}
 
 function _client() {
   if (!_clientPromise) {
@@ -17,7 +26,7 @@ function _client() {
       const { Innertube, UniversalCache } = await import('youtubei.js')
       // No player needed: we never decipher stream URLs here.
       const cache = _cacheDir ? new UniversalCache(true, _cacheDir) : undefined
-      return Innertube.create({ retrieve_player: false, cache })
+      return Innertube.create({ retrieve_player: false, cache, cookie: _cookie || undefined })
     })()
   }
   return _clientPromise
@@ -316,46 +325,14 @@ async function findVideoId(artist, title) {
   return results[0]?.videoId || null
 }
 
-// ── OAuth (TV device flow via youtubei.js) ──────────────────────────────────
-function hasCachedCredentials() {
-  if (!_cacheDir) return false
-  return fs.existsSync(path.join(_cacheDir, 'youtubei_oauth_credentials'))
-}
+// ── Auth status ──────────────────────────────────────────────────────────────
+function isSignedIn() { return !!_cookie }
 
-async function isSignedIn() {
-  const yt = await _client()
-  return !!yt.session.logged_in
-}
-
-// onPending fires with { verificationUrl, userCode } when user action is needed;
-// resolves true once signed in. With cached credentials it resolves silently.
-async function signIn(onPending) {
-  const yt = await _client()
-  const pendingHandler = d => onPending?.({ verificationUrl: d.verification_url, userCode: d.user_code })
-  const credsHandler = async () => {
-    try { await yt.session.oauth.cacheCredentials() } catch { /* cache write only */ }
-  }
-  yt.session.on('auth-pending', pendingHandler)
-  yt.session.on('update-credentials', credsHandler)
-  try {
-    await yt.session.signIn()
-    await yt.session.oauth.cacheCredentials()
-    return true
-  } finally {
-    yt.session.off('auth-pending', pendingHandler)
-  }
-}
-
-async function signOut() {
-  const yt = await _client()
-  if (yt.session.logged_in) {
-    try { await yt.session.signOut() } catch { /* revocation can fail offline */ }
-  }
-  if (_cacheDir) {
-    try { fs.rmSync(path.join(_cacheDir, 'youtubei_oauth_credentials'), { force: true }) } catch {}
-  }
-  _clientPromise = null // next call builds a signed-out client
-  return true
+// Leftover OAuth credentials from the abandoned device-flow approach break all
+// YT Music requests with HTTP 400 — purge them if present.
+function purgeStaleOauth() {
+  if (!_cacheDir) return
+  try { fs.rmSync(path.join(_cacheDir, 'youtubei_oauth_credentials'), { force: true }) } catch {}
 }
 
 // lyrics.js needs the shared (possibly signed-in) Innertube instance
@@ -365,6 +342,6 @@ module.exports = {
   searchMusic, searchAll, searchMusicFull, searchPage, getAlbum, getArtist, getPlaylist, getHomeFeed,
   _clientForLyrics,
   getRadio, findVideoId, mapUpNextItem,
-  setCacheDir, hasCachedCredentials, isSignedIn, signIn, signOut,
+  setCacheDir, setCookie, isSignedIn, purgeStaleOauth,
   mapMusicItem, mapVideoItem, mapAlbumItem, mapArtistItem, mapPlaylistItem, _setClientForTest,
 }
