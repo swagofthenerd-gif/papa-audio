@@ -75,6 +75,7 @@ function mapVideoItem(item) {
     artist: _text(item.author?.name),
     album: null,
     duration: item.duration?.seconds || 0,
+    channelId: item.author?.id || null,
     thumbnailUrl: _thumbUrl(item.thumbnails || item.thumbnail),
     viewCount: _text(item.short_view_count) || null,
   }
