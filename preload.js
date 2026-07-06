@@ -72,17 +72,6 @@ contextBridge.exposeInMainWorld('api', {
   // Power management
   setPowerSave: (playing) => ipcRenderer.send('set-power-save', playing),
 
-  // Sites
-  saveSite:   (s)   => ipcRenderer.invoke('save-site', s),
-  removeSite: (url) => ipcRenderer.invoke('remove-site', url),
-
-  // Quality Sources
-  getQualitySources:        ()      => ipcRenderer.invoke('get-quality-sources'),
-  saveQualitySources:       (srcs)  => ipcRenderer.invoke('save-quality-sources', srcs),
-  searchOnlineSource:       (p)     => ipcRenderer.invoke('search-online-source', p),
-  probeKnownSources:        ()      => ipcRenderer.invoke('probe-known-sources'),
-  autoDownloadFromSource:   (p)     => ipcRenderer.invoke('auto-download-from-source', p),
-
   // Music Chat Agent
   checkOllama:     ()  => ipcRenderer.invoke('check-ollama'),
   getAgentModel:   ()  => ipcRenderer.invoke('get-agent-model'),
@@ -92,20 +81,6 @@ contextBridge.exposeInMainWorld('api', {
   saveApiKeys:     (p) => ipcRenderer.invoke('save-api-keys', p),
   tasteRecordPlay: (d) => ipcRenderer.send('taste-record-play', d),
   tasteGetProfile: ()  => ipcRenderer.invoke('taste-get-profile'),
-
-  // Browser
-  showBrowser:          (url) => ipcRenderer.send('show-browser', url),
-  hideBrowser:          ()    => ipcRenderer.send('hide-browser'),
-  browserNavigate:      (url) => ipcRenderer.send('browser-navigate', url),
-  browserBack:          ()    => ipcRenderer.send('browser-back'),
-  browserForward:       ()    => ipcRenderer.send('browser-forward'),
-  browserRefresh:       ()    => ipcRenderer.send('browser-refresh'),
-  browserStop:          ()    => ipcRenderer.send('browser-stop'),
-  browserZoomIn:        ()    => ipcRenderer.send('browser-zoom-in'),
-  browserZoomOut:       ()    => ipcRenderer.send('browser-zoom-out'),
-  browserZoomReset:     ()    => ipcRenderer.send('browser-zoom-reset'),
-  cancelDownload:       (id)  => ipcRenderer.send('cancel-download', id),
-  openBrowserDevtools:  ()    => ipcRenderer.send('open-browser-devtools'),
 
   // Soulseek
   slskStatus:    ()  => ipcRenderer.invoke('slsk-status'),
@@ -121,7 +96,6 @@ contextBridge.exposeInMainWorld('api', {
   slskResolveFile:    (p) => ipcRenderer.invoke('slsk-resolve-file', p),
   slskShowInFolder:   (p) => ipcRenderer.invoke('slsk-show-in-folder', p),
   slskBrowseUser:     (p) => ipcRenderer.invoke('slsk-browse-user', p),
-  saveLyrics:         (p) => ipcRenderer.invoke('save-lyrics', p),
   ctxMenuShow:        (items) => ipcRenderer.invoke('ctx-menu-show', items),
 
   // YouTube

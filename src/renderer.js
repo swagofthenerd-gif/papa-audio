@@ -3,7 +3,6 @@ const state = {
   library: [],
   musicFolders: [],
   recentlyPlayed: [],
-  savedSites: [],
   likedAlbums: [],
   currentPage: 'home',
   currentAlbumId: null,
@@ -15,9 +14,7 @@ const state = {
   shuffle: false,
   repeat: 'off',
   isPlaying: false,
-  browserActive: false,
   browserLoading: false,
-  currentUrl: '',
   libSort: 'alpha',
   libLikedOnly: false,
   queuePanelOpen: false,
@@ -26,8 +23,6 @@ const state = {
   playbackSpeed: 1,
   sleepTimerEnd: null,
   savedQueues: [],
-  qualitySources: [],
-  upgradeHints: new Map(),  // albumId → [{ source, searchUrl }]
   libTab: 'albums',
   libGenre: null,
   playlists: [],
@@ -50,8 +45,6 @@ const slsk = {
   lastQuery: '',
   pendingSearches: 0,
 }
-// Cache for online source results: query → Map(sourceId → result object)
-const _onlineCache = new Map()
 
 const navHistory = []
 const navFuture  = []
@@ -186,9 +179,9 @@ let ctxTarget = null  // { type: 'album'|'track', albumId, track, artist }
 
 // ── Init ───────────────────────────────────────────────────────────────────
 async function init() {
-  const [info, liked, savedQueues, qualitySources, playlists, likedTracks, playCounts, playHistory, followedArtists, ytLiked, ytFollowed, ytSavedAlbums, ytRecent] = await Promise.all([
+  const [info, liked, savedQueues, playlists, likedTracks, playCounts, playHistory, followedArtists, ytLiked, ytFollowed, ytSavedAlbums, ytRecent] = await Promise.all([
     window.api.getAppInfo(), window.api.getLiked(),
-    window.api.getSavedQueues(), window.api.getQualitySources(),
+    window.api.getSavedQueues(),
     window.api.getPlaylists(), window.api.getLikedTracks(), window.api.getPlayCounts(),
     window.api.getPlayHistory(), window.api.getFollowedArtists(),
     window.api.getYtLiked(), window.api.getYtFollowed(),
@@ -204,9 +197,7 @@ async function init() {
   state.followedArtists = followedArtists || []
   state.playlists = playlists || []
   state.savedQueues = savedQueues || []
-  state.qualitySources = qualitySources || []
   state.musicFolders   = info.musicFolders   || []
-  state.savedSites     = info.savedSites     || []
   state.recentlyPlayed = info.recentlyPlayed || []
   state.likedAlbums    = liked || []
   audio.volume = info.volume ?? 0.8
@@ -214,9 +205,7 @@ async function init() {
   setVolDisplay(audio.volume)
 
   renderFolders()
-  renderSavedSites()
   renderSavedQueues()
-  renderQualitySources()
   initChatSidebar()
   initPlaybackSettings()
   setupListeners()
@@ -323,7 +312,6 @@ function navigate(page, navId, opts = {}) {
     navHistory.push({ page: state.currentPage, navId: _currentNavId() })
     navFuture.length = 0
   }
-  if (page !== 'browse' && state.browserActive) hideBrowser()
 
   document.querySelectorAll('.nav-item').forEach(el => {
     el.classList.toggle('active', el.dataset.page === page)
@@ -339,7 +327,6 @@ function navigate(page, navId, opts = {}) {
   else if (page === 'library')   renderLibrary()
   else if (page === 'artists')   renderArtists()
   else if (page === 'album')     renderAlbum(navId)
-  else if (page === 'browse')    renderBrowse()
   else if (page === 'artist')    renderArtist(navId)
   else if (page === 'search')    renderSearch(navId)
   else if (page === 'downloads') renderDownloads()
@@ -1289,23 +1276,9 @@ function renderSearch(query) {
     <div id="yt-results"><div class="yt-status">Searching YouTube…</div></div>
   </div>`
 
-  // Online quality search section
-  const enabledSources = state.qualitySources.filter(s => s.enabled)
+  // Soulseek section
   html += `<div class="online-search-section">
-    <div class="section-header" style="margin-top:28px">
-      <span class="section-title">Download at Highest Quality</span>
-    </div>
-    <div class="online-search-list" id="online-search-results">${
-      enabledSources.length
-        ? enabledSources.map(s => `
-            <div class="osrc-row" data-source="${esc(s.id)}">
-              <span class="osrc-name">${esc(s.name)}</span>
-              <span class="osrc-status searching">Searching…</span>
-            </div>`).join('')
-        : `<div class="osrc-empty">No sources enabled. Add sources in the sidebar.</div>`
-    }
     <div id="slsk-section">${renderSoulseekRow(query)}</div>
-    </div>
   </div>`
 
   html += `</div>`
@@ -1341,13 +1314,6 @@ function renderSearch(query) {
 
   const sameQuery  = slsk.lastQuery === query
   const hasResults = slsk.results.length > 0
-  if (enabledSources.length) {
-    if (sameQuery && _onlineCache.has(query) && hasResults) {
-      _restoreOnlineCache(query, enabledSources)
-    } else {
-      runOnlineSearch(query, enabledSources)
-    }
-  }
   bindSlskSearchEvents(query)
   if (!sameQuery || !slsk.searched || (!slsk.searching && !hasResults)) {
     runSlskSearch(query)
@@ -2926,83 +2892,6 @@ function showAddToPlaylistModal(tracks) {
 }
 
 // ── Download panel ──────────────────────────────────────────────────────────
-const _downloads = new Map()
-
-function renderDlPanel() {
-  const list = document.getElementById('dl-panel-list')
-  if (!list) return
-  const badge = document.getElementById('bnav-dl-badge')
-  const active = [..._downloads.values()].filter(d => d.state === 'active').length
-  if (badge) { badge.style.display = active > 0 ? 'flex' : 'none'; badge.textContent = active }
-  if (!_downloads.size) { list.innerHTML = '<div class="dl-empty">No downloads yet</div>'; return }
-  list.innerHTML = [..._downloads.entries()].reverse().map(([id, dl]) => {
-    const pct = dl.total ? Math.round((dl.received / dl.total) * 100) : 0
-    const kb  = dl.total ? `${Math.round(dl.received / 1024)} / ${Math.round(dl.total / 1024)} KB` : ''
-    const stateEl = dl.state === 'done'
-      ? `<span class="dl-item-state done">Done</span>`
-      : dl.state === 'cancelled'
-      ? `<span class="dl-item-state cancelled">Cancelled</span>`
-      : dl.state === 'failed'
-      ? `<span class="dl-item-state failed">Failed</span>`
-      : `<button class="dl-item-cancel" data-id="${id}">&#10005;</button>`
-    return `<div class="dl-item">
-      <div class="dl-item-top">
-        <span class="dl-item-name" title="${esc(dl.filename)}">${esc(dl.filename)}</span>
-        ${stateEl}
-      </div>
-      ${dl.state === 'active' ? `<div class="dl-item-bar-wrap">
-        <div class="dl-item-bar"><div class="dl-item-fill" style="width:${pct}%"></div></div>
-        <span class="dl-item-size">${kb}</span>
-      </div>` : ''}
-    </div>`
-  }).join('')
-  list.querySelectorAll('.dl-item-cancel').forEach(btn =>
-    btn.addEventListener('click', () => window.api.cancelDownload(btn.dataset.id))
-  )
-}
-
-function toggleDlPanel() {
-  const panel = document.getElementById('dl-panel')
-  if (!panel) return
-  panel.style.display = panel.style.display === 'none' ? 'flex' : 'none'
-}
-
-function renderBrowse() {
-  document.getElementById('browser-nav').style.display = 'flex'
-  document.getElementById('content').classList.add('browser-open')
-  state.browserActive = true
-  setContent(`<div class="browser-placeholder" style="height:100%">
-    <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
-    <h2>Browse &amp; Download</h2>
-    <p>Type a URL above and press Go, or click a saved site.</p>
-  </div>`)
-  // Only re-attach BrowserView if a page was previously loaded — otherwise show the placeholder
-  if (state.currentUrl) window.api.showBrowser('')
-}
-
-// ── Browser helpers ─────────────────────────────────────────────────────────
-function loadBrowserUrl(url) {
-  if (!url) return
-  const full = url.startsWith('http') ? url : `https://${url}`
-  state.currentUrl = full
-  const bar = document.getElementById('url-bar')
-  if (bar) bar.value = full
-  // showBrowser handles create, attach, and load — safe to call every time
-  window.api.showBrowser(full)
-  if (!state.browserActive) {
-    document.getElementById('browser-nav').style.display = 'flex'
-    document.getElementById('content').classList.add('browser-open')
-    state.browserActive = true
-  }
-}
-
-function hideBrowser() {
-  document.getElementById('browser-nav').style.display = 'none'
-  document.getElementById('content').classList.remove('browser-open')
-  state.browserActive = false
-  window.api.hideBrowser()
-}
-
 // ── Like / favourite ────────────────────────────────────────────────────────
 function toggleLike(albumId) {
   if (state.likedAlbums.includes(albumId)) {
@@ -4038,29 +3927,8 @@ function bindContentEvents() {
     })
   })
 
-  document.querySelectorAll('.album-upgrade-btn').forEach(btn => {
-    btn.addEventListener('click', e => {
-      e.stopPropagation()
-      const albumId = btn.dataset.album
-      const album = state.library.find(a => a.id === albumId)
-      if (!album) return
-      const hints = state.upgradeHints.get(albumId)
-      const searchUrl = hints?.[0]?.searchUrl
-      if (searchUrl) {
-        if (state.currentPage !== 'browse') navigate('browse')
-        setTimeout(() => { window.api.showBrowser(''); window.api.browserNavigate(searchUrl) }, 150)
-      } else {
-        const q = encodeURIComponent(`${album.artist} ${album.name}`)
-        const enabled = state.qualitySources.filter(s => s.enabled)
-        if (enabled.length) {
-          const url = enabled[0].searchUrl.replace('{query}', q)
-          if (state.currentPage !== 'browse') navigate('browse')
-          setTimeout(() => { window.api.showBrowser(''); window.api.browserNavigate(url) }, 150)
-        }
-      }
-    })
-  })
 }
+
 
 function _cardHue(str) {
   return Math.abs([...str].reduce((h, c) => (Math.imul(31, h) + c.charCodeAt(0)) | 0, 0)) % 360
@@ -4069,13 +3937,6 @@ function _cardHue(str) {
 function albumCard(album) {
   const hiResTag = album.isHiRes
     ? `<span class="album-hires-badge">${fmtSpec(album.maxBitsPerSample, album.maxSampleRate)}</span>`
-    : ''
-  const upgradeHints = state.upgradeHints.get(album.id)
-  const upgradeTag = upgradeHints?.length
-    ? `<button class="album-upgrade-btn" data-album="${album.id}" title="Higher quality found online — click to open">
-        <svg viewBox="0 0 24 24"><path d="M4 16v2h16v-2H4zm8-10.17L15.17 9l1.41-1.41L12 3 7.41 7.59 8.83 9 12 5.83z"/></svg>
-        HQ
-       </button>`
     : ''
   const hue = _cardHue((album.artist || '') + (album.name || ''))
   const fallbackStyle = `background:linear-gradient(135deg,hsl(${hue},55%,22%) 0%,hsl(${(hue+40)%360},45%,14%) 100%)`
@@ -4088,7 +3949,7 @@ function albumCard(album) {
         <svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>
       </div>
       ${album.isYt ? '<span class="yt-badge yt-card-badge">YT</span>' : ''}
-      ${hiResTag}${upgradeTag}
+      ${hiResTag}
       <button class="album-card-play" data-play="${album.id}">
         <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
       </button>
@@ -4145,31 +4006,6 @@ function setVolDisplay(vol) {
 }
 
 // ── Saved sites ─────────────────────────────────────────────────────────────
-function renderSavedSites() {
-  const list = document.getElementById('saved-sites-list')
-  if (!list) return
-  list.innerHTML = state.savedSites.map(s => `
-    <li class="site-item" data-url="${esc(s.url)}">
-      <span title="${esc(s.url)}">${esc(s.name || s.url)}</span>
-      <button class="site-item-del" data-url="${esc(s.url)}" title="Remove">&#10005;</button>
-    </li>`).join('')
-  list.querySelectorAll('.site-item').forEach(li => {
-    li.addEventListener('click', e => {
-      if (e.target.closest('.site-item-del')) return
-      const url = li.dataset.url
-      if (state.currentPage !== 'browse') navigate('browse')
-      setTimeout(() => loadBrowserUrl(url), 150)
-    })
-  })
-  list.querySelectorAll('.site-item-del').forEach(btn => {
-    btn.addEventListener('click', async e => {
-      e.stopPropagation()
-      state.savedSites = await window.api.removeSite(btn.dataset.url)
-      renderSavedSites()
-    })
-  })
-}
-
 // ── Saved queues ─────────────────────────────────────────────────────────────
 function renderSavedQueues() {
   const list = document.getElementById('saved-queues-list')
@@ -4217,39 +4053,6 @@ function renderSavedQueues() {
 }
 
 // ── Quality Sources ──────────────────────────────────────────────────────────
-function renderQualitySources() {
-  const list = document.getElementById('quality-sources-list')
-  if (!list) return
-  list.innerHTML = state.qualitySources.map(s => `
-    <li class="qsrc-item" data-id="${esc(s.id)}">
-      <button class="qsrc-toggle ${s.enabled ? 'on' : 'off'}" data-id="${esc(s.id)}" title="${s.enabled ? 'Enabled — click to disable' : 'Disabled — click to enable'}">
-        <span class="qsrc-dot"></span>
-      </button>
-      <span class="qsrc-name">${esc(s.name)}</span>
-<button class="qsrc-del" data-id="${esc(s.id)}" title="Remove source">
-        <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
-      </button>
-    </li>`).join('')
-
-  list.querySelectorAll('.qsrc-toggle').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const id = btn.dataset.id
-      state.qualitySources = state.qualitySources.map(s => s.id === id ? { ...s, enabled: !s.enabled } : s)
-      window.api.saveQualitySources(state.qualitySources)
-      renderQualitySources()
-    })
-  })
-list.querySelectorAll('.qsrc-del').forEach(btn => {
-    btn.addEventListener('click', () => {
-      state.qualitySources = state.qualitySources.filter(s => s.id !== btn.dataset.id)
-      window.api.saveQualitySources(state.qualitySources)
-      renderQualitySources()
-    })
-  })
-}
-
-
-
 // ══════════════════════════════════════════════════════════════════════════════
 // MUSIC CHAT SIDEBAR — multi-provider agent with persistent memory
 // ══════════════════════════════════════════════════════════════════════════════
@@ -5136,122 +4939,6 @@ function _initTasteTracking() {
   })
   audio.addEventListener('pause', () => { clearInterval(ticker); ticker = null })
   audio.addEventListener('ended', () => { clearInterval(ticker); ticker = null })
-}
-
-function showAddSourceDialog() {
-  const existing = document.getElementById('qsrc-add-dialog')
-  if (existing) { existing.remove(); return }
-  const dlg = document.createElement('div')
-  dlg.id = 'qsrc-add-dialog'
-  dlg.className = 'dialog-overlay'
-  dlg.innerHTML = `
-    <div class="dialog-card">
-      <h2>Add Quality Source</h2>
-      <p>Enter a site name and its search URL. Use <code>{query}</code> where the search term goes.</p>
-      <input class="dialog-input" id="qsrc-name-input"   type="text" placeholder="Site name (e.g. Monochrome)">
-      <input class="dialog-input" id="qsrc-url-input"    type="text" placeholder="Search URL (e.g. https://site.com/search?q={query})">
-      <div class="dialog-actions">
-        <button class="dialog-cancel" id="qsrc-cancel-btn">Cancel</button>
-        <button class="dialog-confirm" id="qsrc-confirm-btn">Add</button>
-      </div>
-    </div>`
-  document.body.appendChild(dlg)
-  document.getElementById('qsrc-cancel-btn').addEventListener('click', () => dlg.remove())
-  document.getElementById('qsrc-confirm-btn').addEventListener('click', () => {
-    const name = document.getElementById('qsrc-name-input').value.trim()
-    const url  = document.getElementById('qsrc-url-input').value.trim()
-    if (!name || !url || !url.includes('{query}')) return
-    const id = `custom_${Date.now()}`
-    state.qualitySources = [...state.qualitySources, { id, name, searchUrl: url, enabled: true }]
-    window.api.saveQualitySources(state.qualitySources)
-    renderQualitySources()
-    dlg.remove()
-  })
-  dlg.addEventListener('click', e => { if (e.target === dlg) dlg.remove() })
-}
-
-async function discoverSources() {
-  const btn = document.getElementById('qsrc-discover-btn')
-  if (btn) { btn.textContent = 'Discovering…'; btn.disabled = true }
-  try {
-    const found = await window.api.probeKnownSources()
-    const existing = new Set(state.qualitySources.map(s => s.id))
-    const newSrcs = found.filter(f => !existing.has(f.id))
-    if (newSrcs.length) {
-      state.qualitySources = [...state.qualitySources, ...newSrcs.map(f => ({ ...f, enabled: true }))]
-      window.api.saveQualitySources(state.qualitySources)
-      renderQualitySources()
-    }
-    if (btn) btn.textContent = newSrcs.length ? `Added ${newSrcs.length}` : 'None found'
-  } catch (_) {
-    if (btn) btn.textContent = 'Error'
-  }
-  setTimeout(() => { if (btn) { btn.textContent = 'Discover'; btn.disabled = false } }, 3000)
-}
-
-function _restoreOnlineCache(query, sources) {
-  const list = document.getElementById('online-search-results')
-  if (!list) return
-  const cached = _onlineCache.get(query)
-  if (!cached) return
-  for (const source of sources) {
-    const entry = cached.get(source.id)
-    if (!entry) continue
-    const row = list.querySelector(`[data-source="${source.id}"]`)
-    if (!row) continue
-    _applyOnlineResult(row, source, query, entry.result, entry.url)
-  }
-}
-
-function _applyOnlineResult(row, source, query, result, url) {
-  if (result === null) {
-    row.innerHTML = `<span class="osrc-name">${esc(source.name)}</span><span class="osrc-status error">Unreachable</span><button class="osrc-open-btn secondary" data-url="${esc(url)}">Try →</button>`
-    row.querySelector('.osrc-open-btn')?.addEventListener('click', e => openSourceUrl(e.currentTarget.dataset.url))
-    return
-  }
-  if (result.found) {
-    row.innerHTML = `
-      <span class="osrc-name">${esc(source.name)}</span>
-      <span class="osrc-status found">Found</span>
-      <button class="osrc-dl-btn" data-url="${esc(url)}" data-sid="${esc(source.id)}">↓ Download</button>
-      <button class="osrc-open-btn secondary" data-url="${esc(url)}">Open</button>`
-    row.querySelector('.osrc-dl-btn')?.addEventListener('click', async e => {
-      const btn = e.currentTarget; btn.disabled = true; btn.textContent = 'Starting…'
-      const res = await window.api.autoDownloadFromSource({ url: btn.dataset.url, sourceId: btn.dataset.sid })
-      if (res.ok) { btn.textContent = '↓ Downloading'; btn.style.opacity = '0.6' }
-      else { btn.disabled = false; btn.textContent = '↓ Download'; openSourceUrl(btn.dataset.url) }
-    })
-    row.querySelector('.osrc-open-btn')?.addEventListener('click', e => openSourceUrl(e.currentTarget.dataset.url))
-    _markUpgradeHints(query, source, url)
-  } else {
-    row.innerHTML = `<span class="osrc-name">${esc(source.name)}</span><span class="osrc-status not-found">Not found</span><button class="osrc-open-btn secondary" data-url="${esc(url)}">Search →</button>`
-    row.querySelector('.osrc-open-btn')?.addEventListener('click', e => openSourceUrl(e.currentTarget.dataset.url))
-  }
-}
-
-async function runOnlineSearch(query, sources) {
-  const list = document.getElementById('online-search-results')
-  if (!list) return
-  if (!_onlineCache.has(query)) _onlineCache.set(query, new Map())
-  const queryCache = _onlineCache.get(query)
-
-  await Promise.all(sources.map(async (source) => {
-    const url = source.searchUrl.replace('{query}', encodeURIComponent(query))
-    const row = list.querySelector(`[data-source="${source.id}"]`)
-    try {
-      const result = await window.api.searchOnlineSource({ url })
-      queryCache.set(source.id, { result, url })
-      if (row) _applyOnlineResult(row, source, query, result, url)
-    } catch (_) {
-      queryCache.set(source.id, { result: null, url })
-      if (row) _applyOnlineResult(row, source, query, null, url)
-    }
-  }))
-}
-
-function openSourceUrl(url) {
-  if (state.currentPage !== 'browse') navigate('browse')
-  setTimeout(() => { window.api.showBrowser(''); window.api.browserNavigate(url) }, 150)
 }
 
 // ── Soulseek ─────────────────────────────────────────────────────────────────
@@ -7262,8 +6949,7 @@ function showSlskConfigModal(query) {
   document.body.appendChild(dlg)
   dlg.querySelector('#slsk-signup-link')?.addEventListener('click', e => {
     e.preventDefault()
-    window.api.showBrowser('')
-    window.api.browserNavigate('https://www.slsknet.org/news/')
+    window.api.openExternal('https://www.slsknet.org/news/')
   })
   dlg.querySelector('#slsk-cfg-cancel')?.addEventListener('click', () => dlg.remove())
   dlg.querySelector('#slsk-cfg-save')?.addEventListener('click', async () => {
@@ -7289,43 +6975,6 @@ function showSlskConfigModal(query) {
     })()
   })
   dlg.addEventListener('click', e => { if (e.target === dlg) dlg.remove() })
-}
-
-function _markUpgradeHints(query, source, searchUrl) {
-  const q = query.toLowerCase()
-  const candidates = state.library.filter(a =>
-    !a.isHiRes && (
-      a.name.toLowerCase().includes(q) ||
-      a.artist.toLowerCase().includes(q) ||
-      a.tracks.some(t => t.title.toLowerCase().includes(q))
-    )
-  )
-  for (const album of candidates) {
-    if (!state.upgradeHints.has(album.id)) state.upgradeHints.set(album.id, [])
-    const hints = state.upgradeHints.get(album.id)
-    if (!hints.find(h => h.source.id === source.id)) hints.push({ source, searchUrl })
-  }
-  // Refresh album grids if visible to show badges
-  document.querySelectorAll('.album-card').forEach(card => {
-    const albumId = card.dataset.album
-    if (state.upgradeHints.has(albumId) && !card.querySelector('.album-upgrade-btn')) {
-      const album = state.library.find(a => a.id === albumId)
-      if (album) card.outerHTML = albumCard(album)
-    }
-  })
-  // Re-bind upgrade buttons
-  document.querySelectorAll('.album-upgrade-btn').forEach(btn => {
-    if (!btn._bound) {
-      btn._bound = true
-      btn.addEventListener('click', e => {
-        e.stopPropagation()
-        const albumId = btn.dataset.album
-        const hints = state.upgradeHints.get(albumId)
-        const url = hints?.[0]?.searchUrl
-        if (url) openSourceUrl(url)
-      })
-    }
-  })
 }
 
 function saveCurrentQueue(name) {
@@ -7544,28 +7193,6 @@ function setupListeners() {
   // Art fetch cancel
   document.getElementById('art-status-cancel')?.addEventListener('click', () => { artFetchCancelled = true })
 
-  // Add site
-  document.getElementById('add-site-btn')?.addEventListener('click', () => {
-    document.getElementById('add-site-dialog').style.display = 'flex'
-    document.getElementById('site-url-input').focus()
-  })
-  const closeDialog = () => {
-    document.getElementById('add-site-dialog').style.display = 'none'
-    document.getElementById('site-url-input').value = ''
-    document.getElementById('site-name-input').value = ''
-  }
-  document.getElementById('dialog-cancel')?.addEventListener('click', closeDialog)
-  document.getElementById('add-site-dialog')?.addEventListener('click', e => { if (e.target === e.currentTarget) closeDialog() })
-  document.getElementById('dialog-confirm')?.addEventListener('click', async () => {
-    const url  = document.getElementById('site-url-input').value.trim()
-    const name = document.getElementById('site-name-input').value.trim()
-    if (!url) return
-    const fullUrl = url.startsWith('http') ? url : `https://${url}`
-    state.savedSites = await window.api.saveSite({ url: fullUrl, name: name || fullUrl })
-    renderSavedSites()
-    closeDialog()
-  })
-
   // Setup overlay
   document.getElementById('choose-folder-btn')?.addEventListener('click', async () => {
     const folders = await window.api.addMusicFolder()
@@ -7579,8 +7206,6 @@ function setupListeners() {
   })
 
   // Quality sources sidebar buttons
-  document.getElementById('qsrc-add-btn')?.addEventListener('click', showAddSourceDialog)
-  document.getElementById('qsrc-discover-btn')?.addEventListener('click', discoverSources)
 
   // Add folder
   document.getElementById('add-folder-btn')?.addEventListener('click', async () => {
@@ -7881,38 +7506,6 @@ function setupListeners() {
   })
 
   // Browser nav
-  const urlBar = document.getElementById('url-bar')
-  const doNav = () => { const url = urlBar?.value.trim(); if (url) loadBrowserUrl(url) }
-  document.getElementById('bnav-go')?.addEventListener('click', doNav)
-  urlBar?.addEventListener('keydown', e => { if (e.key === 'Enter') doNav() })
-  document.getElementById('bnav-back')?.addEventListener('click', () => window.api.browserBack())
-  document.getElementById('bnav-fwd')?.addEventListener('click', () => window.api.browserForward())
-  document.getElementById('bnav-refresh')?.addEventListener('click', () => {
-    if (state.browserLoading) window.api.browserStop()
-    else window.api.browserRefresh()
-  })
-  document.getElementById('bnav-zoom-out')?.addEventListener('click', () => window.api.browserZoomOut())
-  document.getElementById('bnav-zoom-in')?.addEventListener('click', () => window.api.browserZoomIn())
-  document.getElementById('bnav-zoom-label')?.addEventListener('click', () => window.api.browserZoomReset())
-  document.getElementById('bnav-devtools')?.addEventListener('click', () => window.api.openBrowserDevtools())
-  document.getElementById('bnav-dl-toggle')?.addEventListener('click', toggleDlPanel)
-  document.getElementById('dl-panel-clear')?.addEventListener('click', () => {
-    for (const [id, dl] of _downloads.entries()) { if (dl.state !== 'active') _downloads.delete(id) }
-    renderDlPanel()
-  })
-  document.getElementById('save-site-btn')?.addEventListener('click', async () => {
-    const url = state.currentUrl
-    if (!url) return
-    try {
-      const hostname = new URL(url).hostname
-      const name = prompt('Name for this site:', hostname)
-      if (name !== null) {
-        state.savedSites = await window.api.saveSite({ url, name: name || url })
-        renderSavedSites()
-      }
-    } catch (_) {}
-  })
-  document.getElementById('bnav-close')?.addEventListener('click', () => { hideBrowser(); navigate('home') })
 
   // Cache persistent player-bar elements once — avoids getElementById on every tick
   _dom.fill     = document.getElementById('progress-fill')
@@ -8003,32 +7596,6 @@ function setupListeners() {
   })
 
   // IPC events
-  window.api.on('dl-started', ({ id, filename, total, isMusic }) => {
-    _downloads.set(id, { filename, total, received: 0, isMusic, state: 'active' })
-    renderDlPanel()
-    // Briefly show panel on new download
-    const panel = document.getElementById('dl-panel')
-    if (panel && panel.style.display === 'none') {
-      panel.style.display = 'flex'
-      setTimeout(() => { if (document.getElementById('dl-panel')?.style.display !== 'none') document.getElementById('dl-panel').style.display = 'none' }, 2500)
-    }
-  })
-  window.api.on('dl-progress', ({ id, received, total }) => {
-    const dl = _downloads.get(id)
-    if (dl) { dl.received = received; dl.total = total; renderDlPanel() }
-  })
-  window.api.on('dl-complete', ({ id, isMusic }) => {
-    const dl = _downloads.get(id)
-    if (dl) { dl.state = 'done'; dl.received = dl.total; renderDlPanel() }
-    if (isMusic) setTimeout(() => backgroundSync(), 800)
-  })
-  window.api.on('dl-cancelled', ({ id }) => {
-    const dl = _downloads.get(id); if (dl) { dl.state = 'cancelled'; renderDlPanel() }
-  })
-  window.api.on('dl-failed', ({ id }) => {
-    const dl = _downloads.get(id); if (dl) { dl.state = 'failed'; renderDlPanel() }
-  })
-
   // Torrent events
   window.api.on('torrent-started', () => { if (state.currentPage === 'downloads') navigate('downloads') })
   window.api.on('torrent-progress', snap => {
@@ -8057,33 +7624,6 @@ function setupListeners() {
     for (const d of (list || [])) state.ytDownloads.set(d.id, d)
   }).catch(() => {})
 
-  window.api.on('browser-url', url => {
-    state.currentUrl = url
-    const bar = document.getElementById('url-bar')
-    if (bar && document.activeElement !== bar) bar.value = url
-  })
-  window.api.on('browser-title', title => {
-    document.title = title ? `${title} — Papa Audio` : 'Papa Audio'
-  })
-  window.api.on('browser-loading', loading => {
-    state.browserLoading = loading
-    const refreshBtn = document.getElementById('bnav-refresh')
-    if (refreshBtn) {
-      const r = refreshBtn.querySelector('.icon-refresh')
-      const s = refreshBtn.querySelector('.icon-stop')
-      if (r) r.style.display = loading ? 'none' : ''
-      if (s) s.style.display = loading ? '' : 'none'
-    }
-    const lb = document.getElementById('bnav-loading-bar')
-    if (lb) lb.style.display = loading ? 'block' : 'none'
-  })
-  window.api.on('browser-zoom', pct => {
-    const label = document.getElementById('bnav-zoom-label')
-    if (label) label.textContent = `${pct}%`
-  })
-  window.api.on('browser-load-error', ({ desc }) => {
-    console.warn('Browser load error:', desc)
-  })
   window.api.on('media-key', key => {
     if (key === 'play-pause') togglePlay()
     else if (key === 'next')  playNext()
@@ -8219,31 +7759,12 @@ function setupListeners() {
       return
     }
 
-    // Ctrl+L → focus URL bar (browser mode)
-    if ((e.ctrlKey || e.metaKey) && e.key === 'l') {
-      if (state.browserActive) {
-        e.preventDefault()
-        const bar = document.getElementById('url-bar')
-        if (bar) { bar.focus(); bar.select() }
-      }
-      return
-    }
-
-    // Ctrl+Shift+I → browser devtools
-    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'I') {
-      if (state.browserActive) { e.preventDefault(); window.api.openBrowserDevtools() }
-      return
-    }
-
     // Escape
     if (e.key === 'Escape') {
       const sm = document.getElementById('shortcuts-modal')
       if (sm && sm.style.display !== 'none') { sm.style.display = 'none'; return }
       if (_lyricsDrawerOpen) { closeLyricsDrawer(); return }
       if (state.modalOpen) { hideNowPlayingModal(); return }
-      if (state.browserActive) { hideBrowser(); navigate('home'); return }
-      const d = document.getElementById('add-site-dialog')
-      if (d && d.style.display !== 'none') { d.style.display = 'none'; return }
       if (!document.getElementById('ctx-menu').style.display === 'none') hideContextMenu()
       return
     }
