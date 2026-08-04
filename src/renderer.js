@@ -1547,6 +1547,21 @@ function renderAlbum(albumId) {
     }
   })
 
+  document.querySelector('.album-hero-title')?.addEventListener('click', () => {
+    editField('Album title', album.name, function(v) { album.name = v; renderAlbum(albumId) })
+  })
+  document.querySelector('.hero-artist')?.addEventListener('click', e => {
+    e.stopPropagation()
+    editField('Artist', album.artist, function(v) { album.artist = v; renderAlbum(albumId) })
+  })
+  document.querySelector('.hero-year')?.addEventListener('click', e => {
+    e.stopPropagation()
+    editField('Year', String(album.year || ''), function(v) {
+      album.year = parseInt(v, 10) || v
+      renderAlbum(albumId)
+    })
+  })
+
   // Sticky header: show when hero scrolls out of view
   document.getElementById('sticky-play-btn')?.addEventListener('click', () => playAlbum(album, 0))
   const heroSentinel = document.getElementById('album-hero-sentinel')
