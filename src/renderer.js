@@ -4741,7 +4741,7 @@ function updateNowPlayingModal() {
   if (albumEl)  albumEl.textContent  = track?.albumName || ''
   if (artBgEl) {
     if (track?.artPath) {
-      artBgEl.src = `file://${track.artPath}`
+      artBgEl.src = /^https?:\/\//.test(track.artPath) ? track.artPath : `file://${track.artPath}`
       artBgEl.style.display = 'block'
     } else {
       artBgEl.style.display = 'none'
@@ -4751,7 +4751,7 @@ function updateNowPlayingModal() {
   const artFb  = document.getElementById('np-modal-art-fb')
   if (artImg) {
     if (track?.artPath) {
-      artImg.src = `file://${track.artPath}`
+      artImg.src = /^https?:\/\//.test(track.artPath) ? track.artPath : `file://${track.artPath}`
       artImg.style.display = 'block'
       if (artFb) artFb.style.display = 'none'
     } else {
