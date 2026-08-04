@@ -660,6 +660,28 @@ ipcMain.handle('player-list-devices', async () => {
   if (!player) return []
   try { return await player.listAudioDevices() } catch { return [] }
 })
+var _deviceVolumes = store.get('deviceVolumes', {})
+
+ipcMain.handle('get-device-volume', async () => {
+  try {
+    if (!player) return null
+    var device = await player.mpv.getProperty('audio-device')
+    var name = device || 'default'
+    return _deviceVolumes[name] || store.get('volume', 0.8)
+  } catch (_) { return store.get('volume', 0.8) }
+})
+
+ipcMain.handle('save-device-volume', async (_, vol) => {
+  try {
+    if (!player) { store.set('volume', vol); return }
+    var device = await player.mpv.getProperty('audio-device')
+    var name = device || 'default'
+    _deviceVolumes[name] = vol
+    store.set('deviceVolumes', _deviceVolumes)
+    store.set('volume', vol)
+  } catch (_) { store.set('volume', vol) }
+})
+
 ipcMain.handle('get-audio-devices', async () => {
   if (!player) return []
   try {

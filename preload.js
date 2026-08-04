@@ -164,7 +164,9 @@ contextBridge.exposeInMainWorld('api', {
   playerRecheck:     ()  => ipcRenderer.invoke('player-recheck'),
   getAudioDevices:   ()  => ipcRenderer.invoke('get-audio-devices'),
   setAudioDevice:    (d) => ipcRenderer.invoke('set-audio-device', d),
-  getStreamingVolumeOffset: ()  => ipcRenderer.invoke('get-streaming-volume-offset'),
+  getDeviceVolume:            ()  => ipcRenderer.invoke('get-device-volume'),
+  saveDeviceVolume:           (v) => ipcRenderer.invoke('save-device-volume', v),
+  getStreamingVolumeOffset:   ()  => ipcRenderer.invoke('get-streaming-volume-offset'),
   setStreamingVolumeOffset: (v) => ipcRenderer.send('set-streaming-volume-offset', v),
 
   // Events from main process
