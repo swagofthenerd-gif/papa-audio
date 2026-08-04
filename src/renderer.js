@@ -158,7 +158,7 @@ let _sleepTimeout = null
 function setSleepTimer(mins) {
   if (_sleepTimeout) { clearTimeout(_sleepTimeout); _sleepTimeout = null }
   state.sleepTimerEnd = null
-  if (mins <= 0) { updateSleepBtn(); return }
+  if (!Number.isFinite(mins) || mins <= 0) { updateSleepBtn(); return }
   state.sleepTimerEnd = Date.now() + mins * 60000
   _sleepTimeout = setTimeout(() => {
     audio.pause(); state.isPlaying = false
@@ -3401,12 +3401,16 @@ function renderQueuePanel() {
   const fromHtml = autoHtml + queueInfo + (fromName
     ? `<div class="queue-from">Playing from <span class="queue-from-name">${esc(fromName)}</span></div>`
     : '')
+  var qp = document.getElementById('queue-panel')
+  var st = qp ? qp.scrollTop : 0
   if (!state.queue.length) {
     list.innerHTML = fromHtml + `<div style="padding:20px 16px; color:var(--text3); font-size:13px;">Nothing in queue</div>`
     document.getElementById('queue-autoplay-toggle')?.addEventListener('click', () => {
       setAutoplay(!autoplayEnabled())
       renderQueuePanel()
     })
+    var qp2 = document.getElementById('queue-panel')
+    if (qp2) qp2.scrollTop = st
     return
   }
 
@@ -3618,6 +3622,8 @@ function renderQueuePanel() {
       list.appendChild(wrapper)
     }
   }
+  var qp3 = document.getElementById('queue-panel')
+  if (qp3) qp3.scrollTop = st
 }
 
 function addToQueue(album, tracksOverride) {
@@ -8505,6 +8511,7 @@ function setupListeners() {
     const prev = state.ytDownloads.get(dl.id)
     state.ytDownloads.set(dl.id, dl)
     if (dl.state === 'completed' && prev?.state !== 'completed') {
+      showSnackbar('Download complete: ' + dl.title, null, null, 3000)
       _scheduleLibRescan()
       window.api.notifyDownloadComplete({ count: 1, albumName: `${dl.artist ? dl.artist + ' — ' : ''}${dl.title}` })
     }
