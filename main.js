@@ -603,6 +603,22 @@ ipcMain.handle('player-list-devices', async () => {
   if (!player) return []
   try { return await player.listAudioDevices() } catch { return [] }
 })
+ipcMain.handle('get-audio-devices', async () => {
+  if (!player) return []
+  try {
+    const list = await player.mpv.command('audio-device-list')
+    return list.filter(d => d.name && d.name !== 'auto').map(d => ({ name: d.name, description: d.description || d.name }))
+  } catch (_) { return [] }
+})
+
+ipcMain.handle('set-audio-device', async (_, deviceName) => {
+  if (!player) return { ok: false, error: 'player not ready' }
+  try {
+    await player.mpv.command('set', 'audio-device', deviceName)
+    return { ok: true }
+  } catch (e) { return { ok: false, error: String(e.message) } }
+})
+
 ipcMain.handle('player-set-config', async (_, partial) => {
   const cfg = { ...getPlayerSettings(), ...partial }
   store.set('playerSettings', cfg)

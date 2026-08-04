@@ -162,6 +162,8 @@ contextBridge.exposeInMainWorld('api', {
   playerSetConfig:   (c) => ipcRenderer.invoke('player-set-config', c),
   playerListDevices: ()  => ipcRenderer.invoke('player-list-devices'),
   playerRecheck:     ()  => ipcRenderer.invoke('player-recheck'),
+  getAudioDevices:   ()  => ipcRenderer.invoke('get-audio-devices'),
+  setAudioDevice:    (d) => ipcRenderer.invoke('set-audio-device', d),
 
   // Events from main process
   on: (channel, cb) => {
