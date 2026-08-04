@@ -12,9 +12,11 @@ test('parseProgress reads yt-dlp percent lines', () => {
 })
 
 test('sanitizeFilename strips path separators and control chars', () => {
-  assert.strictEqual(sanitizeFilename('AC/DC: Back in Black'), 'AC_DC: Back in Black')
+  assert.strictEqual(sanitizeFilename('AC/DC: Back in Black'), 'AC_DC_ Back in Black')
   assert.strictEqual(sanitizeFilename('a b\nc'), 'a bc')
   assert.strictEqual(sanitizeFilename('  spaced  '), 'spaced')
+  assert.strictEqual(sanitizeFilename('CON? <title>"song" *feat|ft*>'), 'CON_ _title__song_ _feat_ft__')
+  assert.strictEqual(sanitizeFilename('song...  '), 'song')
 })
 
 test('buildArgs keeps native codec (no --audio-format) and guards dash ids', () => {

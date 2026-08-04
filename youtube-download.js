@@ -12,8 +12,9 @@ function parseProgress(line) {
 function sanitizeFilename(s) {
   return String(s || '')
     .replace(/[\x00-\x1f]/g, '')
-    .replace(/[/\\]/g, '_')
+    .replace(/[/\\:*?"<>|]/g, '_')
     .trim()
+    .replace(/[. ]+$/, '')
 }
 
 function buildArgs({ videoId, base, outDir }) {
