@@ -171,7 +171,14 @@ function sseSend(event, data) {
 
 // ── Express app ───────────────────────────────────────────────────────────────
 const app = express()
-app.use(cors({ origin: '*' }))
+app.use(cors({
+  origin: function(origin, cb) {
+    if (!origin) return cb(null, true)
+    const allowed = /^(https?:\/\/)?(localhost|127\.0\.0\.1|192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})(:\d+)?$/.test(origin)
+    if (allowed) cb(null, true)
+    else cb(null, false)
+  }
+}))
 app.use(express.json({ limit: '10mb' }))
 
 // ── Auth middleware ─────────────────────────────────────────────────────────────
