@@ -169,6 +169,9 @@ contextBridge.exposeInMainWorld('api', {
   getStreamingVolumeOffset:   ()  => ipcRenderer.invoke('get-streaming-volume-offset'),
   setStreamingVolumeOffset: (v) => ipcRenderer.send('set-streaming-volume-offset', v),
 
+  transcodeFile: (p) => ipcRenderer.invoke('transcode-file', p),
+  batchTranscode: (p) => ipcRenderer.invoke('batch-transcode', p),
+
   // Events from main process
   on: (channel, cb) => {
     const allowed = [

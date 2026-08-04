@@ -2572,3 +2572,34 @@ ipcMain.handle('slsk-browse-user', async (_, { username }) => {
     return { ok: false, error: e.message }
   }
 })
+
+ipcMain.handle('transcode-file', async (_, { filePath, format, outDir }) => {
+  return new Promise((resolve) => {
+    var args = ['-i', filePath]
+    if (format === 'opus') args.push('-c:a', 'libopus', '-b:a', '160k')
+    else if (format === 'mp3') args.push('-c:a', 'libmp3lame', '-b:a', '320k')
+    else if (format === 'aac') args.push('-c:a', 'aac', '-b:a', '256k')
+    else { resolve({ ok: false, error: 'Unsupported format: ' + format }); return }
+    
+    var name = path.basename(filePath).replace(/\.[^.]+$/, '.' + format)
+    var out = path.join(outDir || path.dirname(filePath), name)
+    args.push(out, '-y')
+    
+    var proc = spawn('ffmpeg', args)
+    var stderr = ''
+    proc.stderr.on('data', d => stderr = (stderr + d.toString()).slice(-500))
+    proc.on('error', e => resolve({ ok: false, error: e.message }))
+    proc.on('close', code => {
+      if (code === 0) resolve({ ok: true, output: out })
+      else resolve({ ok: false, error: stderr.trim() || 'ffmpeg exited ' + code })
+    })
+  })
+})
+
+ipcMain.handle('batch-transcode', async (_, { filePaths, format, outDir }) => {
+  var results = []
+  for (var fp of filePaths) {
+    results.push(await ipcMain.emit('transcode-file', null, { filePath: fp, format, outDir }))
+  }
+  return results
+})
