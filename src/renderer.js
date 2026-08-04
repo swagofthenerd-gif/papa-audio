@@ -172,14 +172,18 @@ const _colorCache = new Map()  // artPath → [r,g,b]
 _colorImg.onload = () => {
   _colorCtx.drawImage(_colorImg, 0, 0, 20, 20)
   const data = _colorCtx.getImageData(0, 0, 20, 20).data
-  let bestScore = -1, br = 29, bg = 185, bb = 84
+  let bestScore = -1, br = 142, bg = 68, bb = 173
   for (let i = 0; i < data.length; i += 4) {
     const r = data[i], g = data[i+1], b = data[i+2]
     const max = Math.max(r,g,b), min = Math.min(r,g,b)
     const sat = max === 0 ? 0 : (max - min) / max
     const lum = (max + min) / 510
-    const score = sat * (1 - Math.abs(lum - 0.45))
-    if (score > bestScore && lum > 0.12 && lum < 0.88 && sat > 0.3) {
+    const s = Math.min(1, sat * 1.5)
+    let penalty = 1
+    if (lum < 0.15 || lum > 0.85) penalty = 0.5
+    if (sat < 0.2) penalty = 0.3
+    const score = sat * (1 - Math.abs(lum - 0.45)) * s * penalty
+    if (score > bestScore) {
       bestScore = score; br = r; bg = g; bb = b
     }
   }
