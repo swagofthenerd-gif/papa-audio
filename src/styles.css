@@ -1277,14 +1277,24 @@ h2.section-title { font-size:18px; font-weight:700; }
   background:rgba(0,0,0,.65);
 }
 .np-modal-close {
-  position:absolute; top:24px; right:24px; z-index:10;
-  background:rgba(255,255,255,.08); border:1px solid var(--glass-border);
-  border-radius:50%; width:38px; height:38px;
+  position:absolute; top:20px; right:20px; z-index:20;
+  background:rgba(255,255,255,.2); border:none;
+  border-radius:50%; width:42px; height:42px;
   display:flex; align-items:center; justify-content:center;
-  cursor:pointer; color:var(--text); transition:background .15s;
+  cursor:pointer; color:#fff; transition:background .15s;
 }
-.np-modal-close svg { width:17px; height:17px; fill:currentColor; }
-.np-modal-close:hover { background:rgba(255,255,255,.14); }
+.np-modal-close svg { width:20px; height:20px; fill:currentColor; }
+.np-modal-close:hover { background:rgba(255,255,255,.4); }
+
+.np-modal-full-art {
+  position:absolute; top:20px; right:76px; z-index:20;
+  background:rgba(255,255,255,.2); border:none;
+  border-radius:50%; width:42px; height:42px;
+  display:flex; align-items:center; justify-content:center;
+  cursor:pointer; color:#fff; transition:background .15s;
+}
+.np-modal-full-art svg { width:19px; height:19px; fill:currentColor; }
+.np-modal-full-art:hover { background:rgba(255,255,255,.4); }
 .np-modal-content {
   position:relative; z-index:5;
   display:flex; flex-direction:column; align-items:center;
@@ -1317,29 +1327,26 @@ h2.section-title { font-size:18px; font-weight:700; }
 .np-modal-progress-row { display:flex; align-items:center; gap:12px; width:100%; }
 .np-modal-track { flex:1; height:4px; }
 .np-modal-ctrl { gap:8px; }
-.np-modal-play-btn { width:52px !important; height:52px !important; background:var(--accent); color:#000; border:none; }
+.np-modal-play-btn { width:52px !important; height:52px !important; background:var(--accent); color:#000; border:none; flex-shrink:0; }
 .np-modal-play-btn:hover { background:var(--accent); opacity:.9; }
 .np-modal-play-btn svg { width:22px !important; height:22px !important; fill:currentColor; }
-
-.np-modal-full-art {
-  position:absolute; top:24px; left:24px; z-index:10;
-  background:rgba(255,255,255,.08); border:1px solid var(--glass-border);
-  border-radius:50%; width:38px; height:38px;
-  display:flex; align-items:center; justify-content:center;
-  cursor:pointer; color:var(--text); transition:background .15s;
-}
-.np-modal-full-art svg { width:17px; height:17px; fill:currentColor; }
-.np-modal-full-art:hover { background:rgba(255,255,255,.14); }
+.np-modal-play-btn.play-pause-btn { width:52px !important; height:52px !important; background:var(--accent) !important; }
+.np-modal-play-btn.play-pause-btn svg { width:22px !important; height:22px !important; }
 
 .np-modal.art-expanded .np-modal-content { display:none; }
 .np-modal.art-expanded .np-modal-art-box {
   width:100vw; height:100vh; border-radius:0; box-shadow:none;
-  position:fixed; inset:0; z-index:3; max-width:none; max-height:none;
+  position:fixed; inset:0; z-index:3; max-width:none; max-height:none; cursor:pointer;
 }
-.np-modal.art-expanded .np-modal-art-box { cursor:pointer; }
 .np-modal.art-expanded .np-modal-art-img { object-fit:contain; }
 .np-modal.art-expanded .np-modal-art-bg { display:none; }
 .np-modal.art-expanded .np-modal-bg { background:rgba(0,0,0,.92); }
+
+/* Always keep close + full-art buttons visible, even when controls auto-hide */
+.np-modal.controls-hidden .np-modal-close,
+.np-modal.controls-hidden .np-modal-full-art { opacity: .09; }
+.np-modal.controls-hidden .np-modal-close:hover,
+.np-modal.controls-hidden .np-modal-full-art:hover { opacity: .55; }
 
 /* ══════════════════════════════════════════════════════
    SLEEP PANEL
@@ -3578,6 +3585,13 @@ textarea:focus:not(:focus-visible) { outline: none; }
 .np-modal-progress-row,
 .np-modal-ctrl { transition: opacity .4s ease; }
 .np-modal.controls-hidden .np-modal-close,
+.np-modal.controls-hidden .np-modal-full-art {
+  opacity: .15;
+}
+.np-modal.controls-hidden .np-modal-close:hover,
+.np-modal.controls-hidden .np-modal-full-art:hover {
+  opacity: .6; pointer-events: auto;
+}
 .np-modal.controls-hidden .np-modal-lyrics-toggle,
 .np-modal.controls-hidden .np-modal-content .np-modal-info,
 .np-modal.controls-hidden .np-modal-progress-row,
@@ -4897,7 +4911,7 @@ input::placeholder, textarea::placeholder { color:var(--text3);opacity:.6 }
 
 @media (max-width:480px) {
   .player-bar { padding:8px 12px }
-  .ctrl-btn { width:32px;height:32px }
+  .ctrl-btn:not(.np-modal-play-btn) { width:32px;height:32px }
   .np-meta { display:none }
   .np-art-wrap { width:40px;height:40px }
   .album-grid { grid-template-columns:repeat(auto-fill,minmax(120px,1fr)) }
@@ -5030,6 +5044,8 @@ code { font-family:var(--font-mono,monospace);background:var(--bg4);padding:1px 
   #progress-tooltip { display: none; }
   .ctrl-row button { width: 32px; height: 32px; }
   .ctrl-row button svg { width: 16px; height: 16px; }
+  #np-modal .ctrl-row button.np-modal-play-btn { width: 52px !important; height: 52px !important; }
+  #np-modal .ctrl-row button.np-modal-play-btn svg { width: 22px !important; height: 22px !important; }
 }
 
 /* Album art zoom on hover — grid view */
