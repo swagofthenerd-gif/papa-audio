@@ -171,6 +171,7 @@ function sseSend(event, data) {
 
 // ── Express app ───────────────────────────────────────────────────────────────
 const app = express()
+app.set('trust proxy', true)
 app.use(cors({
   origin: function(origin, cb) {
     if (!origin) return cb(null, true)
