@@ -1582,6 +1582,10 @@ function renderSearch(query) {
             <div class="track-title">${esc(t.title)}</div>
             <div class="track-artist" data-artist="${esc(t.albumArtist)}">${esc(t.albumArtist)}</div>
           </div>
+          <div class="hover-actions">
+            <button class="hover-action-btn" data-action="playnext" data-file="${esc(t.filePath)}" data-album="${t.albumId}" title="Play next">&#9654;+</button>
+            <button class="hover-action-btn" data-action="queue" data-file="${esc(t.filePath)}" data-album="${t.albumId}" title="Add to queue">+</button>
+          </div>
           <span class="track-dur">${fmtDur(t.duration)}</span>
         </div>`).join('')
       html += `</div></div>`
@@ -2759,7 +2763,7 @@ function renderPlaylist(id, sortKey) {
            <svg viewBox="0 0 24 24"><path d="M19 13H5v-2h14v2z"/></svg>
          </button>`
     return `
-      <div class="track-row pl-track-row ${isPlaying ? 'playing' : ''}" data-pl-idx="${i}">
+      <div class="track-row pl-track-row ${isPlaying ? 'playing' : ''}" data-pl-idx="${i}" data-file="${esc(t.filePath)}" data-album="${t.albumId || ''}">
         <span class="track-num">${isPlaying
           ? '<div class="playing-bars"><span></span><span></span><span></span></div>'
           : (i + 1)}</span>
@@ -2770,6 +2774,10 @@ function renderPlaylist(id, sortKey) {
     : `<div class="track-artist" data-artist="${esc(t.albumArtist || t.artist || '')}">${esc(t.albumArtist || t.artist || '')}</div>`}
         </div>
         <span class="track-dur">${fmtDur(t.duration)}</span>
+        <div class="hover-actions">
+          <button class="hover-action-btn" data-action="playnext" data-file="${esc(t.filePath)}" data-album="${t.albumId || ''}" title="Play next">&#9654;+</button>
+          <button class="hover-action-btn" data-action="queue" data-file="${esc(t.filePath)}" data-album="${t.albumId || ''}" title="Add to queue">+</button>
+        </div>
         <div class="pl-track-actions">${actions}</div>
       </div>`
   }).join('')
@@ -2963,7 +2971,7 @@ function renderLikedSongs() {
     const isPlaying = isCurrentTrack(t.filePath)
     const plays = state.playCounts[t.filePath] || 0
     return `
-      <div class="track-row liked-track-row ${isPlaying ? 'playing' : ''}" data-liked-idx="${i}">
+      <div class="track-row liked-track-row ${isPlaying ? 'playing' : ''}" data-liked-idx="${i}" data-file="${esc(t.filePath)}" data-album="${t.albumId}">
         <span class="track-num">${isPlaying
           ? '<div class="playing-bars"><span></span><span></span><span></span></div>'
           : (i + 1)}</span>
@@ -2973,6 +2981,10 @@ function renderLikedSongs() {
         </div>
         ${plays > 0 ? `<span class="track-plays">${plays}</span>` : '<span class="track-plays"></span>'}
         <button class="track-like-btn liked" data-like="${esc(t.filePath)}" title="Unlike">♥</button>
+        <div class="hover-actions">
+          <button class="hover-action-btn" data-action="playnext" data-file="${esc(t.filePath)}" data-album="${t.albumId}" title="Play next">&#9654;+</button>
+          <button class="hover-action-btn" data-action="queue" data-file="${esc(t.filePath)}" data-album="${t.albumId}" title="Add to queue">+</button>
+        </div>
         <span class="track-dur">${fmtDur(t.duration)}</span>
       </div>`
   }).join('')
@@ -9050,6 +9062,56 @@ function setupListeners() {
       document.body.style.cursor = ''
       document.body.style.userSelect = ''
     })
+  }
+
+  // ── Collapsible sidebar sections ──────────────────────────────────────────
+  function _makeCollapsible(headerEl, contentEls, storageKey) {
+    headerEl.addEventListener('click', function(e) {
+      if (e.target.closest('button')) return
+      var collapsed = headerEl.classList.toggle('collapsed')
+      contentEls.forEach(function(el) { el.style.display = collapsed ? 'none' : '' })
+      localStorage.setItem('sidebar-collapse-' + storageKey, collapsed ? '1' : '0')
+    })
+    if (localStorage.getItem('sidebar-collapse-' + storageKey) === '1') {
+      headerEl.classList.add('collapsed')
+      contentEls.forEach(function(el) { el.style.display = 'none' })
+    }
+  }
+
+  var sidebarEl = document.getElementById('sidebar')
+  if (sidebarEl) {
+    var navList = sidebarEl.querySelector('.nav-list')
+    if (navList) {
+      var libHeader = document.createElement('div')
+      libHeader.className = 'sidebar-collapsible-header'
+      libHeader.textContent = 'Library'
+      navList.parentNode.insertBefore(libHeader, navList)
+      _makeCollapsible(libHeader, [navList], 'library')
+    }
+
+    var sqSection = sidebarEl.querySelector('.saved-queues-section')
+    if (sqSection) {
+      var sqHeader = sqSection.querySelector('.sidebar-section-header')
+      if (sqHeader) {
+        sqHeader.classList.add('sidebar-collapsible-header')
+        var sqContent = []
+        var next = sqHeader.nextElementSibling
+        while (next) { sqContent.push(next); next = next.nextElementSibling }
+        _makeCollapsible(sqHeader, sqContent, 'saved-queues')
+      }
+    }
+
+    var mfSection = sidebarEl.querySelector('.sidebar-section:not(.saved-queues-section):not(.quality-sources-section)')
+    if (mfSection) {
+      var mfTitle = mfSection.querySelector('.sidebar-section-title')
+      if (mfTitle) {
+        mfTitle.classList.add('sidebar-collapsible-header')
+        var mfContent = []
+        var n = mfTitle.nextElementSibling
+        while (n) { mfContent.push(n); n = n.nextElementSibling }
+        _makeCollapsible(mfTitle, mfContent, 'music-folders')
+      }
+    }
   }
 }
 

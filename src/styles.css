@@ -223,6 +223,20 @@ img { display:block; }
   font-size:10px; font-weight:700; letter-spacing:1.2px;
   text-transform:uppercase; color:var(--text3); padding:0 4px;
 }
+
+/* Collapsible sidebar sections */
+.sidebar-collapsible-header {
+  display: flex; align-items: center; gap: 6px;
+  padding: 8px 16px 4px;
+  font-size: 11px; font-weight: 600; color: var(--text3);
+  text-transform: uppercase; letter-spacing: .5px;
+  cursor: pointer; user-select: none;
+}
+.sidebar-collapsible-header:hover { color: var(--text2); }
+.sidebar-collapsible-header::after {
+  content: '▾'; margin-left: auto; font-size: 10px; transition: transform .15s;
+}
+.sidebar-collapsible-header.collapsed::after { transform: rotate(-90deg); }
 .sq-save-btn {
   background:none; border:none; color:var(--text3); cursor:pointer;
   width:22px; height:22px; border-radius:50%;
@@ -759,6 +773,16 @@ h2.section-title { font-size:18px; font-weight:700; }
 }
 .track-row.playing .track-title { color:var(--accent); }
 .track-dur { font-size:11px; color:var(--text3); text-align:right; }
+
+.track-row .hover-actions { display:none; gap:4px; margin-left:4px; }
+.track-row:hover .hover-actions { display:flex; }
+.hover-action-btn {
+  width:22px; height:22px; border-radius:50%; border:none;
+  background:rgba(255,255,255,.1); color:var(--text); cursor:pointer;
+  font-size:10px; display:flex; align-items:center; justify-content:center;
+  transition:background .15s;
+}
+.hover-action-btn:hover { background:rgba(255,255,255,.2); }
 
 .track-more-btn {
   background:none; border:none; color:var(--text3); cursor:pointer;
