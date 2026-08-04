@@ -666,7 +666,7 @@ function updateMpris(data) {
     mprisPlayer.loopStatus = data.repeat === 'one' ? 'Track' : data.repeat === 'all' ? 'Playlist' : 'None'
     if (typeof data.volume === 'number') mprisPlayer.volume = data.volume
     _mprisPos = { position: data.position || 0, at: Date.now(), playing: !!data.playing }
-  } catch (_) {}
+  } catch (e) { console.error('[papa] mpris-update:', e.message || e) }
 }
 
 // ── System tray ──────────────────────────────────────────────────────────────
@@ -920,7 +920,7 @@ function writeJsonAtomic(file, obj) {
   } catch (e) { console.error('Atomic write failed:', file, e.message) }
 }
 function readJsonSafe(file, fallback) {
-  try { return JSON.parse(fs.readFileSync(file, 'utf8')) } catch (_) { return fallback }
+  try { return JSON.parse(fs.readFileSync(file, 'utf8')) } catch (e) { console.error('[papa] corrupt-cache:', e.message || e); return fallback }
 }
 
 async function scanDirAsync(dir, out = { audio: [], cues: [] }) {
@@ -1088,7 +1088,7 @@ async function performScan(onProgress) {
     onProgress?.({ done: total, total, parsed, phase: 'done', albums: albums.length })
     return { albums }
   } catch (e) {
-    console.error('Scan error:', e)
+    console.error('[papa] scan-error:', e?.code || e.message || e, '|', (e?.stack || '').split('\n')[0] || '')
     return { albums: [] }
   } finally {
     _scanRunning = false
@@ -2013,7 +2013,7 @@ ipcMain.handle('slsk-search', async (_, { query, timeoutMs = 25000, noCache = fa
   }
 
   const responses = await slskdFetch('GET', `/searches/${id}/responses`)
-  try { await slskdFetch('DELETE', `/searches/${id}`) } catch (_) {}
+  try { await slskdFetch('DELETE', `/searches/${id}`) } catch (e) { console.error('[papa] slsk-search-cleanup:', e.message || e) }
 
   const results = responses || []
   if (results.length) _searchCacheSet(cacheKey, results)
@@ -2273,7 +2273,7 @@ ipcMain.handle('yt-download', (_, { videoId, title, artist, subdir }) => {
     dl.state = res.ok ? 'completed' : 'failed'
     dl.error = res.ok ? null : res.error
     _ytEmit(dl)
-  }).catch(() => {})
+  }).catch(e => { console.error('[papa] yt-download-error:', e.message || e) })
   return { ok: true, id }
 })
 
