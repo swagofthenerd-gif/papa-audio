@@ -114,24 +114,56 @@ function mapPlaylistItem(item) {
   }
 }
 
+const _searchCache = new Map()
+const CACHE_TTL = 5 * 60 * 1000
+
+function _cached(key, fetchFn) {
+  const entry = _searchCache.get(key)
+  if (entry && Date.now() - entry.ts < CACHE_TTL) return entry.items
+  return null
+}
+
+function _cacheSet(key, items) {
+  _searchCache.set(key, { items, ts: Date.now() })
+  if (_searchCache.size > 100) {
+    const cutoff = Date.now() - CACHE_TTL
+    for (const [k, v] of _searchCache) if (v.ts < cutoff) _searchCache.delete(k)
+  }
+}
+
+function clearSearchCache() { _searchCache.clear() }
+
 const MAX_RESULTS = 25
 
 async function searchMusic(query) {
+  const key = 'music:' + query.toLowerCase()
+  const cached = _cached(key)
+  if (cached) return cached
   const yt = await _client()
   const res = await yt.music.search(query, { type: 'song' })
   const raw = res?.songs?.contents
     || (Array.isArray(res?.contents) ? res.contents.flatMap(s => s?.contents || []) : [])
-  return raw.map(mapMusicItem).filter(Boolean).slice(0, MAX_RESULTS)
+  const items = raw.map(mapMusicItem).filter(Boolean).slice(0, MAX_RESULTS)
+  _cacheSet(key, items)
+  return items
 }
 
 async function searchAll(query) {
+  const key = 'all:' + query.toLowerCase()
+  const cached = _cached(key)
+  if (cached) return cached
   const yt = await _client()
   const res = await yt.search(query, { type: 'video' })
   const raw = res?.videos || res?.results || []
-  return raw.map(mapVideoItem).filter(Boolean).slice(0, MAX_RESULTS)
+  const items = raw.map(mapVideoItem).filter(Boolean).slice(0, MAX_RESULTS)
+  _cacheSet(key, items)
+  return items
 }
 
 async function searchMusicFull(query) {
+  const key = 'full:' + query.toLowerCase()
+  const cached = _cached(key)
+  if (cached) return cached
   const yt = await _client()
   const [songRes, albumRes, artistRes, plRes] = await Promise.all([
     yt.music.search(query, { type: 'song' }),
@@ -141,12 +173,14 @@ async function searchMusicFull(query) {
   ])
   const raw = (res, key) => res?.[key]?.contents
     || (Array.isArray(res?.contents) ? res.contents.flatMap(s => s?.contents || []) : [])
-  return {
+  const items = {
     songs: raw(songRes, 'songs').map(mapMusicItem).filter(Boolean).slice(0, 10),
     albums: raw(albumRes, 'albums').map(mapAlbumItem).filter(Boolean).slice(0, 12),
     artists: raw(artistRes, 'artists').map(mapArtistItem).filter(Boolean).slice(0, 8),
     playlists: raw(plRes, 'playlists').map(mapPlaylistItem).filter(Boolean).slice(0, 8),
   }
+  _cacheSet(key, items)
+  return items
 }
 
 const PAGE_MAPPERS = {
@@ -176,6 +210,11 @@ function _extractPageItems(res, kind) {
 
 async function searchPage(kind, query, next) {
   if (!PAGE_MAPPERS[kind]) throw new Error(`unknown kind: ${kind}`)
+  const cacheKey = 'page:' + kind + ':' + query.toLowerCase()
+  if (!next) {
+    const cached = _cached(cacheKey)
+    if (cached) return cached
+  }
   const yt = await _client()
   const key = `${kind}::${query}`
   let res
@@ -191,7 +230,9 @@ async function searchPage(kind, query, next) {
   if (_pageSessions.size > 40) _pageSessions.delete(_pageSessions.keys().next().value)
   const items = _extractPageItems(res, kind).map(PAGE_MAPPERS[kind]).filter(Boolean)
   const hasMore = !!(res?.has_continuation && typeof res.getContinuation === 'function')
-  return { items, hasMore }
+  const result = { items, hasMore }
+  if (!next) _cacheSet(cacheKey, result)
+  return result
 }
 
 async function getAlbum(browseId) {
@@ -343,6 +384,6 @@ module.exports = {
   searchMusic, searchAll, searchMusicFull, searchPage, getAlbum, getArtist, getPlaylist, getHomeFeed,
   _clientForLyrics,
   getRadio, findVideoId, mapUpNextItem,
-  setCacheDir, setCookie, isSignedIn, purgeStaleOauth,
+  setCacheDir, setCookie, isSignedIn, purgeStaleOauth, clearSearchCache,
   mapMusicItem, mapVideoItem, mapAlbumItem, mapArtistItem, mapPlaylistItem, _setClientForTest,
 }
