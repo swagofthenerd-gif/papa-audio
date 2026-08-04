@@ -2388,6 +2388,46 @@ ipcMain.handle('slsk-resolve-file', (_, { username, filename }) => {
   return { path: null, downloadDir }
 })
 
+ipcMain.handle('slsk-verify-file', async (_, { username, filename }) => {
+  const resolved = await (async () => {
+    const cfg = store.get('slskConfig', {})
+    const folders = store.get('musicFolders', [])
+    const downloadDir = cfg.downloadDir || folders[0] || path.join(app.getPath('home'), 'Music')
+    const parts = (filename || '').replace(/\\/g, '/').split('/').filter(Boolean)
+    if (!parts.length) return null
+
+    const tail1 = parts.slice(1)
+    const tail2 = parts.slice(2)
+    const last2 = parts.slice(-2)
+    const last1 = parts.slice(-1)
+
+    const candidates = [
+      tail1.length ? path.join(downloadDir, ...tail1) : null,
+      path.join(downloadDir, ...parts),
+      tail1.length ? path.join(downloadDir, username, ...tail1) : null,
+      path.join(downloadDir, username, ...parts),
+      tail2.length ? path.join(downloadDir, ...tail2) : null,
+      tail2.length ? path.join(downloadDir, username, ...tail2) : null,
+      last2.length === 2 ? path.join(downloadDir, ...last2) : null,
+      path.join(downloadDir, ...last1),
+    ]
+
+    for (const c of candidates) {
+      if (c && fs.existsSync(c)) return c
+    }
+    return null
+  })()
+
+  if (!resolved) {
+    mainWindow?.webContents.send('slsk-verify', { ok: false, filename, error: 'File not found on disk' })
+    return { ok: false, error: 'File not found on disk' }
+  }
+
+  const result = await verifyAudioFile(resolved)
+  mainWindow?.webContents.send('slsk-verify', { ...result, filename, filePath: resolved })
+  return { ok: true, filePath: resolved, ...result }
+})
+
 ipcMain.handle('slsk-browse-user', async (_, { username }) => {
   try {
     const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('Browse timed out')), 30000))
