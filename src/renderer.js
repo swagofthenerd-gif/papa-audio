@@ -122,12 +122,19 @@ var ALL_SHORTCUTS = [
   { category: 'Navigation', keys: ['Q'], desc: 'Toggle queue panel' },
   { category: 'Navigation', keys: ['L'], desc: 'Toggle lyrics drawer' },
   { category: 'Navigation', keys: ['? / F1'], desc: 'Keyboard shortcuts' },
+  { category: 'Navigation', keys: ['F6 / Ctrl+Tab'], desc: 'Jump between sidebar, content, player' },
+  { category: 'Navigation', keys: ['Ctrl+1'], desc: 'Go to Home' },
+  { category: 'Navigation', keys: ['Ctrl+2'], desc: 'Go to Library' },
+  { category: 'Navigation', keys: ['Ctrl+3'], desc: 'Go to Search' },
+  { category: 'Navigation', keys: ['Ctrl+4'], desc: 'Go to Downloads' },
+  { category: 'Navigation', keys: ['Ctrl+5'], desc: 'Go to Playlists' },
   { category: 'Actions', keys: ['Ctrl+Shift+L'], desc: 'Like current track' },
   { category: 'Actions', keys: ['Ctrl+Shift+S'], desc: '30-min sleep timer' },
   { category: 'Actions', keys: ['Ctrl+S'], desc: 'Save current queue' },
   { category: 'Actions', keys: ['Ctrl+Q'], desc: 'Add to queue (current track)' },
   { category: 'Actions', keys: ['Ctrl+Z'], desc: 'Undo last action' },
   { category: 'Actions', keys: ['Ctrl+Shift+K'], desc: 'Toggle auto-skip short tracks' },
+  { category: 'Actions', keys: ['Ctrl+Shift+I'], desc: 'Toggle skip interludes' },
   { category: 'Actions', keys: ['Esc'], desc: 'Close modal/overlay' },
   { category: 'Window', keys: ['Ctrl+/'], desc: 'Toggle agent chat' },
   { category: 'Mouse', keys: ['Middle click'], desc: 'Play track/album standalone' },
@@ -1153,7 +1160,7 @@ function renderLibrary() {
     <div class="page-header">
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
         <h1 class="section-title">Your Library</h1>
-        <span class="lib-count">${state.library.length + state.ytSavedAlbums.length} albums</span>${filterBadge}${fmtBreak}${filterIndicator}
+        <span class="lib-count">${state.library.length + state.ytSavedAlbums.length} albums</span><span class="lib-count" style="margin-left:8px">${_fmtBytes(totalSize)}</span>${filterBadge}${fmtBreak}${filterIndicator}
         <button class="rescan-btn" id="lib-rescan-btn" title="Rescan music folders">
           <svg viewBox="0 0 24 24"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/></svg>
           Rescan
@@ -8339,6 +8346,10 @@ function initSearchHistory() {
 }
 
 function setupListeners() {
+  // Make major UI regions focusable for keyboard navigation
+  document.getElementById('content')?.setAttribute('tabindex', '0')
+  document.getElementById('player-bar')?.setAttribute('tabindex', '0')
+
   // Global delegation: track artist name → navigate to artist page
   document.getElementById('content')?.addEventListener('click', e => {
     const artistEl = e.target.closest('.track-artist[data-artist]')
@@ -9237,6 +9248,12 @@ function setupListeners() {
       e.preventDefault()
       state.skipShortTracks = !state.skipShortTracks
       showSnackbar('Auto-skip short tracks: ' + (state.skipShortTracks ? 'on' : 'off'))
+      return
+    }
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'I') {
+      e.preventDefault()
+      state.skipInterludes = !state.skipInterludes
+      showSnackbar('Skip interludes: ' + (state.skipInterludes ? 'on' : 'off'))
       return
     }
     if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === 's') {
