@@ -10753,9 +10753,16 @@ function _setupCP() {
 
 // ── Search operator parser ──────────────────────────────────────────────────
 function _parseSearchOperators(query) {
-  var result = { text: query, artist: null, yearMin: null, yearMax: null, format: null, album: null, genre: null, is: null, playsMin: null, durMin: null, durMax: null }
+  var result = { text: query, artist: null, yearMin: null, yearMax: null, format: null, album: null, genre: null, is: null, playsMin: null, durMin: null, durMax: null, source: null }
   var text = (query || '').trim()
   if (!text) return result
+
+  var sourceRx = /^source:(\S+)/i
+  var sourceMatch = text.match(sourceRx)
+  if (sourceMatch) {
+    result.source = sourceMatch[1].toLowerCase()
+    text = text.replace(sourceMatch[0], '').trim()
+  }
 
   var artistRx = /\bartist:(\S+)/i
   var artistMatch = text.match(artistRx)
