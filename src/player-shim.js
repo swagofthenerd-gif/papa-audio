@@ -52,7 +52,11 @@ class PapaPlayerShim extends EventTarget {
   _pathOf(src) {
     const s = String(src)
     if (/^https?:\/\//.test(s)) return s
-    return decodeURI(s.replace(/^file:\/\//, ''))
+    try {
+      return decodeURI(s.replace(/^file:\/\//, ''))
+    } catch {
+      return s.replace(/^file:\/\//, '')
+    }
   }
 
   get src() { return this._src }
