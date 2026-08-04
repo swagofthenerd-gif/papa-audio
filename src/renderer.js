@@ -8164,6 +8164,51 @@ function setupListeners() {
     }
   })
 
+  // Recently played dropdown button
+  var likeBtn = document.getElementById('btn-like')
+  if (likeBtn && !document.getElementById('btn-recent')) {
+    var recentBtn = document.createElement('button')
+    recentBtn.id = 'btn-recent'
+    recentBtn.className = 'ctrl-btn'
+    recentBtn.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M13 3a9 9 0 0 0-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42A8.954 8.954 0 0 0 13 21a9 9 0 0 0 0-18zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"/></svg>'
+    recentBtn.title = 'Recently played'
+    likeBtn.parentNode.insertBefore(recentBtn, likeBtn)
+
+    recentBtn.addEventListener('click', function(e) {
+      e.stopPropagation()
+      var existing = document.getElementById('recent-dropdown')
+      if (existing) { existing.remove(); return }
+      var dd = document.createElement('div')
+      dd.id = 'recent-dropdown'
+      dd.style.cssText = 'position:absolute;bottom:100%;right:0;background:var(--bg2);border:1px solid var(--glass-border);border-radius:var(--r);padding:8px;min-width:200px;z-index:100;margin-bottom:8px;box-shadow:0 8px 24px rgba(0,0,0,.4)'
+      var tracks = state.playHistory.slice(0, 5)
+      if (!tracks.length) { dd.innerHTML = '<div style="padding:8px;font-size:12px;color:var(--text3)">No recent plays</div>' }
+      else {
+        dd.innerHTML = tracks.map(function(t, i) {
+          return '<div class="recent-item" data-ri="' + i + '" style="padding:6px 8px;cursor:pointer;border-radius:4px;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(t.title) + ' &mdash; ' + esc(t.artist) + '</div>'
+        }).join('')
+        dd.querySelectorAll('.recent-item').forEach(function(item) {
+          item.addEventListener('mouseenter', function() { item.style.background = 'var(--glass)' })
+          item.addEventListener('mouseleave', function() { item.style.background = '' })
+          item.addEventListener('click', function() {
+            var t = tracks[parseInt(item.dataset.ri)]
+            if (t && t.filePath) {
+              state.queue = [{ filePath: t.filePath, title: t.title, artist: t.artist, albumArtist: t.artist, albumName: t.album || '', albumId: '', artPath: t.artPath || '', duration: 0 }]
+              state.queueIndex = 0
+              playCurrentTrack()
+            }
+            dd.remove()
+          })
+        })
+      }
+      recentBtn.parentNode.style.position = 'relative'
+      recentBtn.parentNode.appendChild(dd)
+      setTimeout(function() {
+        document.addEventListener('click', function close() { if (dd.parentNode) dd.remove(); document.removeEventListener('click', close) }, { once: true })
+      }, 100)
+    })
+  }
+
   // Lyrics drawer toggle button
   document.getElementById('btn-lyrics')?.addEventListener('click', () => toggleLyricsDrawer())
 
