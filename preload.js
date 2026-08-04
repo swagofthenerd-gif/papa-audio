@@ -123,6 +123,7 @@ contextBridge.exposeInMainWorld('api', {
   ytSearch:       (p) => ipcRenderer.invoke('yt-search', p),
   ytDownload:     (p) => ipcRenderer.invoke('yt-download', p),
   ytGetDownloads: ()  => ipcRenderer.invoke('yt-get-downloads'),
+  preResolveYtUrls: (v) => ipcRenderer.invoke('pre-resolve-yt-urls', v),
   ytSearchPage:      (p) => ipcRenderer.invoke('yt-search-page', p),
   ytPlaylist:        (p) => ipcRenderer.invoke('yt-playlist', p),
   ytHome:            ()  => ipcRenderer.invoke('yt-home'),

@@ -37,6 +37,46 @@ function withTimeout(promise, ms, label) {
   ]).finally(() => clearTimeout(timer))
 }
 
+// ── YouTube URL resolution cache ──────────────────────────────────────────────
+// mpv's built-in yt-dlp hook takes 2-10s per URL. Pre-resolve to googlevideo
+// direct URLs so playback starts near-instantly (like Spotify / YT Music).
+const _ytUrlCache = new Map() // videoId -> { url: string, expiresAt: number }
+const YT_URL_TTL = 60 * 60 * 1000 // 1 hour
+
+function resolveYtUrl(videoId) {
+  const cached = _ytUrlCache.get(videoId)
+  if (cached && cached.expiresAt > Date.now()) return Promise.resolve(cached.url)
+  return new Promise((resolve, reject) => {
+    var proc, out = '', err = ''
+    var timer = setTimeout(() => { try { proc.kill() } catch (_) {} reject(new Error('yt-dlp timed out')) }, 15000)
+    try {
+      proc = spawn('yt-dlp', ['-f', 'bestaudio', '-g', '--no-playlist', '--', videoId], { stdio: ['ignore', 'pipe', 'pipe'] })
+    } catch (e) { clearTimeout(timer); reject(e); return }
+    proc.stdout.on('data', d => out += d.toString())
+    proc.stderr.on('data', d => err = (err + d.toString()).slice(-500))
+    proc.on('error', e => { clearTimeout(timer); reject(e) })
+    proc.on('close', code => {
+      clearTimeout(timer)
+      var url = out.trim().split('\n')[0]
+      if (code === 0 && url && url.startsWith('http')) {
+        _ytUrlCache.set(videoId, { url, expiresAt: Date.now() + YT_URL_TTL })
+        if (_ytUrlCache.size > 200) {
+          var now = Date.now()
+          for (var [k, v] of _ytUrlCache) if (now > v.expiresAt) _ytUrlCache.delete(k)
+        }
+        resolve(url)
+      } else {
+        reject(new Error(err.trim() || 'yt-dlp exited ' + code))
+      }
+    })
+  })
+}
+
+function extractVideoId(path) {
+  var m = /[?&]v=([a-zA-Z0-9_-]{11})/.exec(path)
+  return m ? m[1] : null
+}
+
 async function withRetry(fn, maxRetries, label) {
   var lastErr
   for (var attempt = 0; attempt <= maxRetries; attempt++) {
@@ -691,8 +731,39 @@ const wrap = fn => async (...args) => {
   try { await fn(...args); return { ok: true } } catch (e) { return { ok: false, error: String(e.message || e) } }
 }
 
-ipcMain.handle('player-load',       (_, { path: p, play }) => wrap(() => player.load(p, { play }))())
-ipcMain.handle('player-set-next',   (_, p) => wrap(() => player.setNext(p))())
+// If the path is a YouTube watch URL, resolve to the direct audio stream first
+// so mpv doesn't have to run yt-dlp itself — cuts playback startup from 2-10s to <1s.
+async function _resolvePlayerPath(p) {
+  var vid = extractVideoId(p)
+  if (!vid) return p
+  try {
+    var url = await withTimeout(resolveYtUrl(vid), 12000, 'yt-url-resolve')
+    if (url) { console.log('[papa] yt-resolved:', vid, '->', url.slice(0, 80)); return url }
+  } catch (_) {
+    console.log('[papa] yt-resolve-fail, falling back to raw URL:', vid)
+  }
+  return p // fallback: let mpv handle it
+}
+
+ipcMain.handle('player-load',       async (_, { path: p, play }) => {
+  var resolved = await _resolvePlayerPath(p)
+  return wrap(() => player.load(resolved, { play }))()
+})
+ipcMain.handle('player-set-next',   async (_, p) => {
+  // Pre-warm the cache for the next track so it plays instantly
+  var vid = extractVideoId(p)
+  if (vid) resolveYtUrl(vid).catch(() => {})
+  return wrap(() => player.setNext(p))()
+})
+
+// ── YouTube URL pre-resolution ────────────────────────────────────────────────
+// Renderer can pre-resolve URLs in the background so they're cached when needed.
+ipcMain.handle('pre-resolve-yt-urls', async (_, videoIds) => {
+  if (!Array.isArray(videoIds)) return { ok: true }
+  var promises = videoIds.slice(0, 5).map(vid => resolveYtUrl(vid).catch(() => null))
+  await Promise.allSettled(promises)
+  return { ok: true }
+})
 ipcMain.handle('player-play',       () => wrap(() => player.play())())
 ipcMain.handle('player-pause',      () => wrap(() => player.pause())())
 ipcMain.handle('player-seek',       (_, s) => wrap(() => player.seek(s))())

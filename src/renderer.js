@@ -2258,6 +2258,11 @@ async function runYtSearch(query, scope) {
   updateYtHealth('ok')
   ytSearchState.cache.set(cacheKey, res.results)
   renderYtResults(res.results, query)
+  // Pre-resolve audio URLs for top YouTube results so playback is instant
+  var videoIds = []
+  if (res.results.songs) videoIds = res.results.songs.slice(0, 5).map(function(r) { return r.videoId }).filter(Boolean)
+  else if (Array.isArray(res.results)) videoIds = res.results.slice(0, 5).map(function(r) { return r.videoId }).filter(Boolean)
+  if (videoIds.length) window.api.preResolveYtUrls(videoIds).catch(function() {})
 }
 
 function _ytArtistSpan(r, query) {
