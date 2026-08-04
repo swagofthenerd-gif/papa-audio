@@ -1451,10 +1451,11 @@ function renderAlbum(albumId) {
         <div class="album-hero-type">Album</div>
         <div class="album-hero-title">${esc(album.name)}</div>
         <div class="album-hero-meta">
-          <span class="artist-link" data-artist="${esc(album.artist)}">${esc(album.artist)}</span>
+          <span class="hero-artist clickable-meta" data-artist="${esc(album.artist)}">${esc(album.artist)}</span>
           &bull; <span class="hero-year clickable-meta">${album.year || ''}</span> &bull; ${album.tracks.length} songs, ${fmtTime(totalDur)}
           ${album.isHiRes ? `&bull; <span class="hero-hires-badge">${fmtSpec(album.maxBitsPerSample, album.maxSampleRate)}</span>` : ''}
           ${album.genre ? `&bull; <span class="genre-badge">${esc(album.genre)}</span>` : ''}
+          ${drBadge(computeAlbumDR(album)) ? `&bull; ${drBadge(computeAlbumDR(album))}` : ''}
         </div>
       </div>
     </div>
