@@ -326,6 +326,29 @@ function updateFormatBadge(track) {
   el.className = 'np-format' + (isMaster ? ' hi-res master' : isHiRes ? ' hi-res' : '')
 }
 
+function updateBitPerfectBadge() {
+  var el = document.getElementById('np-bitperfect')
+  if (!el) return
+  var track = state.queue[state.queueIndex]
+  if (!track) { el.style.display = 'none'; return }
+  var settings = state._playerSettings || {}
+  var isBitPerfect = settings.outputMode === 'exclusive' && track.sampleRate && track.bitsPerSample
+  var noEffects = state.playbackSpeed === 1 && (!settings.replaygain || settings.replaygain === 'off')
+  if (isBitPerfect && noEffects) {
+    el.textContent = 'BIT-PERFECT'
+    el.style.display = ''
+    el.style.background = 'rgba(29,185,84,.15)'
+    el.style.color = '#1db954'
+  } else if (track.filePath && track.filePath.startsWith('http')) {
+    el.style.display = 'none'
+  } else {
+    el.textContent = 'LOSSLESS'
+    el.style.display = ''
+    el.style.background = 'rgba(255,255,255,.08)'
+    el.style.color = 'var(--text2)'
+  }
+}
+
 function updateCrossfadeBadge() {
   const el = document.getElementById('np-crossfade')
   if (!el) return
@@ -373,6 +396,13 @@ async function init() {
   renderSavedQueues()
   initChatSidebar()
   initPlaybackSettings()
+  var formatEl = document.getElementById('np-format')
+  if (formatEl && !document.getElementById('np-bitperfect')) {
+    var bp = document.createElement('span')
+    bp.id = 'np-bitperfect'
+    bp.className = 'np-format'
+    formatEl.parentNode.insertBefore(bp, formatEl.nextSibling)
+  }
   _setupCP()
   setupListeners()
 
@@ -1092,6 +1122,40 @@ function renderArtists() {
   })
 }
 
+function saveLibPreset() {
+  var name = prompt('Preset name:')
+  if (!name) return
+  var preset = {
+    name: name,
+    genre: state.libGenre,
+    year: state.libYear,
+    format: state.libFormat,
+    decade: state.libDecade,
+    likedOnly: state.libLikedOnly,
+    sort: state.libSort,
+    view: state.libView,
+  }
+  var existing = _libPresets.findIndex(function(p) { return p.name === name })
+  if (existing !== -1) _libPresets[existing] = preset
+  else _libPresets.push(preset)
+  localStorage.setItem('papa-lib-presets', JSON.stringify(_libPresets))
+  showSnackbar('Preset "' + name + '" saved')
+  renderLibrary()
+}
+
+function loadLibPreset(name) {
+  var preset = _libPresets.find(function(p) { return p.name === name })
+  if (!preset) return
+  state.libGenre = preset.genre
+  state.libYear = preset.year
+  state.libFormat = preset.format
+  state.libDecade = preset.decade
+  state.libLikedOnly = preset.likedOnly
+  state.libSort = preset.sort
+  state.libView = preset.view
+  renderLibrary()
+}
+
 function renderLibrary() {
   const getSorted = () => {
     // Saved YT albums are merged as pseudo-cards at render time — they never
@@ -1231,6 +1295,8 @@ function renderLibrary() {
         <select class="lib-select" id="lib-format-filter"><option value="">Format: All</option>${(()=>{var f=[...new Set(state.library.map(function(a){var t=a.tracks&&a.tracks[0];return t?(t.filePath||'').split('.').pop():null}).filter(Boolean))].sort();return f.map(function(v){return '<option value="'+v+'">'+v.toUpperCase()+'</option>'}).join('')})()}</select>
         <select class="lib-select" id="lib-decade-filter"><option value="">Decade: All</option><option value="1950"${state.libDecade==='1950'?' selected':''}>1950s</option><option value="1960"${state.libDecade==='1960'?' selected':''}>1960s</option><option value="1970"${state.libDecade==='1970'?' selected':''}>1970s</option><option value="1980"${state.libDecade==='1980'?' selected':''}>1980s</option><option value="1990"${state.libDecade==='1990'?' selected':''}>1990s</option><option value="2000"${state.libDecade==='2000'?' selected':''}>2000s</option><option value="2010"${state.libDecade==='2010'?' selected':''}>2010s</option><option value="2020"${state.libDecade==='2020'?' selected':''}>2020s</option></select>
         <button class="lib-reset-btn" id="lib-reset-filters">Reset</button>
+        <button class="lib-reset-btn" id="lib-save-preset" style="margin-left:12px">💾 Save preset</button>
+        ${_libPresets.length > 0 ? '<select class="lib-select" id="lib-preset-select" style="margin-left:8px"><option value="">Load preset…</option>' + _libPresets.map(function(p) { return '<option value="' + esc(p.name) + '">' + esc(p.name) + '</option>' }).join('') + ' <button class="lib-reset-btn" id="lib-delete-preset" style="display:none;margin-left:4px">✕</button></select>' : ''}
       </div>
     </div>
     ${state.libView === 'folders' ? buildFolderTree() : `<div class="album-grid" id="lib-grid">${sortedAlbums.map(function(a, i) { return albumCard(a, i, state.libSort) }).join('')}</div>`}
@@ -1289,6 +1355,9 @@ function renderLibrary() {
   document.getElementById('lib-format-filter')?.addEventListener('change', function() { state.libFormat = this.value; renderLibrary() })
   document.getElementById('lib-decade-filter')?.addEventListener('change', function() { state.libDecade = this.value; renderLibrary() })
   document.getElementById('lib-reset-filters')?.addEventListener('click', function() { state.libYear = ''; state.libFormat = ''; state.libDecade = ''; renderLibrary() })
+  document.getElementById('lib-save-preset')?.addEventListener('click', function() { saveLibPreset() })
+  document.getElementById('lib-preset-select')?.addEventListener('change', function() { var v = this.value; var d = document.getElementById('lib-delete-preset'); if (d) d.style.display = v ? 'inline-block' : 'none'; if (v) loadLibPreset(v) })
+  document.getElementById('lib-delete-preset')?.addEventListener('click', function() { var sel = document.getElementById('lib-preset-select'); var v = sel && sel.value; if (v && confirm('Delete preset "' + v + '"?')) { _libPresets = _libPresets.filter(function(p) { return p.name !== v }); localStorage.setItem('papa-lib-presets', JSON.stringify(_libPresets)); showSnackbar('Preset "' + v + '" deleted'); renderLibrary() } })
   document.getElementById('lib-view-folders')?.addEventListener('click', function() {
     state.libView = state.libView === 'folders' ? 'grid' : 'folders'
     state.libFolder = null
@@ -4365,6 +4434,7 @@ function updateNowPlaying(track) {
     npImg.removeAttribute('draggable')
   }
   updateFormatBadge(track)
+  updateBitPerfectBadge()
   updateCrossfadeBadge()
   updateStatsRow(track)
 }
@@ -9366,6 +9436,8 @@ function setupListeners() {
       if (cp && cp.style.display === 'flex') { toggleCommandPalette(); return }
       const sm = document.getElementById('shortcuts-modal')
       if (sm && sm.style.display !== 'none') { sm.style.display = 'none'; return }
+      const sc = document.getElementById('shortcuts-config-modal')
+      if (sc && sc.style.display === 'flex') { toggleShortcutsConfig(); return }
       if (_lyricsDrawerOpen) { closeLyricsDrawer(); return }
       if (state.modalOpen) { hideNowPlayingModal(); return }
       if (!document.getElementById('ctx-menu').style.display === 'none') hideContextMenu()
@@ -9455,6 +9527,10 @@ function setupListeners() {
     if (e.key === 'x' || e.key === 'X') { cycleSpeed(); return }
     // Lyrics drawer toggle
     if (e.key === 'l' || e.key === 'L') { if (state.queue.length) { toggleLyricsDrawer(); return } }
+    // Ctrl+Shift+, → shortcuts config
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === ',') {
+      e.preventDefault(); toggleShortcutsConfig(); return
+    }
     // Keyboard shortcuts modal
     if (e.key === '?' || e.key === 'F1') { e.preventDefault(); toggleShortcutsModal(); return }
   })
@@ -9663,6 +9739,39 @@ function toggleShortcutsModal() {
   const isHidden = m.style.display === 'none' || !m.style.display
   if (isHidden) renderShortcuts()
   m.style.display = isHidden ? 'flex' : 'none'
+}
+
+function renderShortcutsConfig() {
+  var grid = document.getElementById('shortcuts-config-grid')
+  if (!grid) return
+  var keys = Object.keys(DEFAULT_SHORTCUTS)
+  grid.innerHTML = '<div class="shortcuts-col">' + keys.map(function(action) {
+    return '<div class="shortcut-row"><kbd>' + esc(DEFAULT_SHORTCUTS[action]) + '</kbd><span>' + esc(action) + '</span></div>'
+  }).join('') + '</div>'
+}
+
+function toggleShortcutsConfig() {
+  var m = document.getElementById('shortcuts-config-modal')
+  if (m) { m.style.display = m.style.display === 'flex' ? 'none' : 'flex'; renderShortcutsConfig(); return }
+  m = document.createElement('div')
+  m.id = 'shortcuts-config-modal'
+  m.className = 'modal-overlay'
+  m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;z-index:10001'
+  m.innerHTML = '<div class="modal-content" style="background:var(--bg2,#1a1a1a);border-radius:12px;padding:24px;max-width:500px;width:90%;max-height:80vh;overflow:auto;color:var(--text1,#fff)">' +
+    '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">' +
+    '<h2 style="margin:0;font-size:18px;font-weight:600">Configure Shortcuts</h2>' +
+    '<button id="shortcuts-config-close" style="background:none;border:none;color:var(--text2,#aaa);font-size:20px;cursor:pointer;padding:4px 8px">&times;</button>' +
+    '</div>' +
+    '<div id="shortcuts-config-grid"></div>' +
+    '<div style="margin-top:16px;display:flex;gap:8px">' +
+    '<button id="shortcuts-config-reset" style="background:var(--bg3,#333);border:none;color:var(--text1,#fff);padding:8px 16px;border-radius:8px;cursor:pointer;font-size:13px">Reset to Defaults</button>' +
+    '</div>' +
+    '</div>'
+  document.body.appendChild(m)
+  m.addEventListener('click', function(e) { if (e.target === m) toggleShortcutsConfig() })
+  m.querySelector('#shortcuts-config-close').addEventListener('click', toggleShortcutsConfig)
+  m.querySelector('#shortcuts-config-reset').addEventListener('click', function() { resetShortcuts(); renderShortcutsConfig() })
+  renderShortcutsConfig()
 }
 
 // ── Extension sync ────────────────────────────────────────────────────────────
