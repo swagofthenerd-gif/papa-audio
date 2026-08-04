@@ -4154,11 +4154,15 @@ function playNext() {
 }
 
 function pickShuffleIndex(queue, recentIndices) {
+  if (queue.length <= 1) return 0
   const recentArtists = new Set(recentIndices.map(i => queue[i]?.albumArtist || queue[i]?.artist).filter(Boolean))
-  const candidates = queue.map((t, i) => i).filter(i => !recentIndices.includes(i))
-  const preferred = candidates.filter(i => !recentArtists.has(queue[i]?.albumArtist || queue[i]?.artist))
-  const pool = preferred.length > 0 ? preferred : candidates.length > 0 ? candidates : queue.map((_,i)=>i)
-  return pool[Math.floor(Math.random() * pool.length)]
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const idx = Math.floor(Math.random() * queue.length)
+    if (idx === state.queueIndex) continue
+    const artist = queue[idx]?.albumArtist || queue[idx]?.artist
+    if (!recentArtists.has(artist) || attempt >= 8) return idx
+  }
+  return Math.floor(Math.random() * queue.length)
 }
 
 function playPrev() {
