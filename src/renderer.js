@@ -48,6 +48,7 @@ const state = {
   stopAfterTrack: false,
   skipShortTracks: false,
   skipShortSecs: 30,
+  skipInterludes: false,
   connectionStatus: { slskd: 'unknown', youtube: 'unknown' },
 }
 
@@ -1099,7 +1100,7 @@ function renderLibrary() {
 
     if (state.libFolder) {
       var folderBreadcrumb = '<div class="folder-breadcrumb" id="folder-back-btn"><span class="folder-back-arrow">←</span> Back to folders</div>'
-      return folderBreadcrumb + '<div class="album-grid" id="lib-grid">' + sortedAlbums.map(albumCard).join('') + '</div>'
+      return folderBreadcrumb + '<div class="album-grid" id="lib-grid">' + sortedAlbums.map(function(a, i) { return albumCard(a, i, state.libSort) }).join('') + '</div>'
     }
 
     return '<div class="folder-tree">' + folders.map(function(f) {
@@ -1120,13 +1121,33 @@ function renderLibrary() {
       })
     }
   })
+  var totalSize = 0, formatCounts = {}
+  state.library.forEach(function(a) {
+    if (!a.tracks) return
+    a.tracks.forEach(function(t) {
+      totalSize += (t.fileSize || t.size || 0)
+      var ext = (t.filePath || '').toLowerCase().split('.').pop() || 'other'
+      formatCounts[ext] = (formatCounts[ext] || 0) + 1
+    })
+  })
+  var fmtPcts = Object.keys(formatCounts).sort(function(a, b) { return (formatCounts[b] || 0) - (formatCounts[a] || 0) })
+  var fmtBreakdownHTML = ''
+  if (fmtPcts.length > 0 && totalTrackCount > 0) {
+    fmtBreakdownHTML = '<div style="padding:0 28px 20px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">' +
+      '<span style="font-size:12px;color:var(--text3);font-weight:600">Formats:</span>' +
+      fmtPcts.map(function(fmt) {
+        var pct = Math.round(formatCounts[fmt] / totalTrackCount * 100)
+        return '<span style="display:inline-flex;align-items:center;gap:4px;font-size:12px;color:var(--text2);background:var(--bg3);padding:3px 8px;border-radius:6px">' + fmt.toUpperCase() + ' <strong>' + pct + '%</strong></span>'
+      }).join('') + '</div>'
+  }
   var summaryHTML = '<div class="section-header"><span class="section-title">Library Stats</span></div><div style="display:flex;gap:12px;padding:0 28px 20px;flex-wrap:wrap">' +
     '<div class="liked-stat"><div class="liked-stat-val">' + state.library.length + '</div><div class="liked-stat-lbl">Albums</div></div>' +
     '<div class="liked-stat"><div class="liked-stat-val">' + totalTrackCount + '</div><div class="liked-stat-lbl">Tracks</div></div>' +
     '<div class="liked-stat"><div class="liked-stat-val">' + fmtDur(totalLibDur) + '</div><div class="liked-stat-lbl">Duration</div></div>' +
+    '<div class="liked-stat"><div class="liked-stat-val">' + _fmtBytes(totalSize) + '</div><div class="liked-stat-lbl">Storage</div></div>' +
     '<div class="liked-stat"><div class="liked-stat-val">' + flacCount + '</div><div class="liked-stat-lbl">FLAC</div></div>' +
     '<div class="liked-stat"><div class="liked-stat-val">' + hiresCount + '</div><div class="liked-stat-lbl">Hi-Res</div></div>' +
-    '</div>'
+    '</div>' + fmtBreakdownHTML
 
   setContent(`<div class="page">
     <div class="page-header">
@@ -1150,7 +1171,7 @@ function renderLibrary() {
         <button class="lib-reset-btn" id="lib-reset-filters">Reset</button>
       </div>
     </div>
-    ${state.libView === 'folders' ? buildFolderTree() : `<div class="album-grid" id="lib-grid">${sortedAlbums.map(albumCard).join('')}</div>`}
+    ${state.libView === 'folders' ? buildFolderTree() : `<div class="album-grid" id="lib-grid">${sortedAlbums.map(function(a, i) { return albumCard(a, i, state.libSort) }).join('')}</div>`}
     ${summaryHTML}
   </div>`)
 
@@ -1160,7 +1181,7 @@ function renderLibrary() {
       a.name.toLowerCase().includes(q) || a.artist.toLowerCase().includes(q)
     )
     const grid = document.getElementById('lib-grid')
-    if (grid) grid.innerHTML = filtered.map(albumCard).join('')
+    if (grid) grid.innerHTML = filtered.map(function(a, i) { return albumCard(a, i, state.libSort) }).join('')
     bindContentEvents()
   })
 
@@ -4359,6 +4380,17 @@ function togglePlay() {
   syncExtension()
 }
 
+function _isInterlude(track) {
+  if (!track || track.duration == null || track.duration >= 60) return false
+  var album = state.library.find(function(a) {
+    return a.tracks && a.tracks.some(function(t) { return t.filePath === track.filePath })
+  })
+  if (!album || !album.tracks) return false
+  var tIdx = album.tracks.findIndex(function(t) { return t.filePath === track.filePath })
+  if (tIdx <= 0 || tIdx >= album.tracks.length - 1) return false
+  return true
+}
+
 function playNext() {
   if (state.stopAfterTrack) {
     state.stopAfterTrack = false
@@ -4393,6 +4425,12 @@ function playNext() {
       playNext()
       return
     }
+  }
+  if (state.skipInterludes && state.queue.length > 1 && _isInterlude(state.queue[state.queueIndex])) {
+    var interludeTrack = state.queue[state.queueIndex]
+    showSnackbar('Skipped interlude: ' + (interludeTrack.title || interludeTrack.filePath))
+    playNext()
+    return
   }
   _skipShortGuard = 0
   playCurrentTrack()
@@ -5021,10 +5059,11 @@ function _cardHue(str) {
   return Math.abs([...str].reduce((h, c) => (Math.imul(31, h) + c.charCodeAt(0)) | 0, 0)) % 360
 }
 
-function albumCard(album) {
+function albumCard(album, idx, sortMode) {
   const hiResTag = album.isHiRes
     ? `<span class="album-hires-badge">${fmtSpec(album.maxBitsPerSample, album.maxSampleRate)}</span>`
     : ''
+  const newBadge = (sortMode === 'added' && idx < 20) ? '<span class="new-badge">NEW</span>' : ''
   const hue = _cardHue((album.artist || '') + (album.name || ''))
   const fallbackStyle = `background:linear-gradient(135deg,hsl(${hue},55%,22%) 0%,hsl(${(hue+40)%360},45%,14%) 100%)`
   return `<div class="album-card" data-album="${album.id}">
@@ -5037,6 +5076,7 @@ function albumCard(album) {
       </div>
       ${album.isYt ? '<span class="yt-badge yt-card-badge">YT</span>' : ''}
       ${hiResTag}
+      ${newBadge}
       <button class="album-card-play" data-play="${album.id}">
         <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
       </button>
@@ -9461,6 +9501,31 @@ async function checkConnections() {
     updateNextPrefetch()
     showSnackbar('Added ' + tracks.length + ' files to queue')
   })
+
+  var waveformProgressRow = document.querySelector('.progress-row')
+  if (waveformProgressRow && !document.getElementById('waveform-canvas')) {
+    var canvas = document.createElement('canvas')
+    canvas.id = 'waveform-canvas'
+    canvas.style.cssText = 'width:100%;height:24px;margin-bottom:4px;border-radius:2px;opacity:0.3'
+    waveformProgressRow.parentNode.insertBefore(canvas, waveformProgressRow)
+
+    function drawWaveform() {
+      var ctx = canvas.getContext('2d')
+      var w = canvas.offsetWidth, h = canvas.offsetHeight
+      canvas.width = w; canvas.height = h
+      ctx.clearRect(0, 0, w, h)
+      var bars = Math.floor(w / 3)
+      var progress = audio.duration ? audio.currentTime / audio.duration : 0
+      for (var i = 0; i < bars; i++) {
+        var barH = Math.random() * h * 0.8 + h * 0.1
+        var x = i * (w / bars)
+        ctx.fillStyle = i / bars < progress ? 'rgba(29,185,84,0.5)' : 'rgba(255,255,255,0.15)'
+        ctx.fillRect(x, (h - barH) / 2, w / bars - 1, barH)
+      }
+    }
+    setInterval(drawWaveform, 1000)
+    drawWaveform()
+  }
 }
 
 function renderShortcuts() {
