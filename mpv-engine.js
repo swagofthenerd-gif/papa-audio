@@ -139,8 +139,8 @@ class MpvEngine extends EventEmitter {
       const done = this.client.command('seek', pending.seconds, 'absolute')
       for (const s of pending.settlers) done.then(s.resolve, s.reject)
     } else {
-      // Superseded by a new load or engine stop — nothing left to seek.
-      for (const s of pending.settlers) s.resolve()
+      const err = new Error('seek cancelled by new track load')
+      for (const s of pending.settlers) s.reject(err)
     }
   }
   async setVolume(v) { await this.client.command('set_property', 'volume', v) }
