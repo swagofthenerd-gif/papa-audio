@@ -1277,7 +1277,7 @@ h2.section-title { font-size:18px; font-weight:700; }
   background:rgba(0,0,0,.65);
 }
 .np-modal-close {
-  position:absolute; top:20px; right:20px; z-index:20;
+  position:fixed; top:20px; right:20px; z-index:860;
   background:rgba(255,255,255,.2); border:none;
   border-radius:50%; width:42px; height:42px;
   display:flex; align-items:center; justify-content:center;
@@ -1287,7 +1287,7 @@ h2.section-title { font-size:18px; font-weight:700; }
 .np-modal-close:hover { background:rgba(255,255,255,.4); }
 
 .np-modal-full-art {
-  position:absolute; top:20px; right:76px; z-index:20;
+  position:fixed; top:20px; right:76px; z-index:860;
   background:rgba(255,255,255,.2); border:none;
   border-radius:50%; width:42px; height:42px;
   display:flex; align-items:center; justify-content:center;
@@ -1333,14 +1333,20 @@ h2.section-title { font-size:18px; font-weight:700; }
 .np-modal-play-btn.play-pause-btn { width:52px !important; height:52px !important; background:var(--accent) !important; }
 .np-modal-play-btn.play-pause-btn svg { width:22px !important; height:22px !important; }
 
-.np-modal.art-expanded .np-modal-content { display:none; }
+.np-modal.art-expanded .np-modal-info,
+.np-modal.art-expanded .np-modal-progress-row,
+.np-modal.art-expanded .np-modal-ctrl,
+.np-modal.art-expanded .np-modal-lyrics-info,
+.np-modal.art-expanded .np-stats-row,
+.np-modal.art-expanded .np-next { display:none; }
 .np-modal.art-expanded .np-modal-art-box {
-  width:100vw; height:100vh; border-radius:0; box-shadow:none;
-  position:fixed; inset:0; z-index:3; max-width:none; max-height:none; cursor:pointer;
+  position:fixed; inset:0; z-index:850; border-radius:0; box-shadow:none;
+  width:100vw; height:100vh; max-width:none; max-height:none; cursor:pointer;
 }
 .np-modal.art-expanded .np-modal-art-img { object-fit:contain; }
 .np-modal.art-expanded .np-modal-art-bg { display:none; }
 .np-modal.art-expanded .np-modal-bg { background:rgba(0,0,0,.92); }
+.np-modal.art-expanded .np-modal-content { padding:0; }
 
 /* Always keep close + full-art buttons visible, even when controls auto-hide */
 .np-modal.controls-hidden .np-modal-close,
