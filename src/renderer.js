@@ -8534,11 +8534,11 @@ function setupListeners() {
     const pct = `${ratio * 100}%`
     if (_dom.fill)  _dom.fill.style.width = pct
     if (_dom.thumb) _dom.thumb.style.left = pct
-    if (_dom.timeCur) _dom.timeCur.textContent = timeDisplay === 'remaining' ? fmtDur(audio.duration - ct) : fmtDur(ct)
+    if (_dom.timeCur) _dom.timeCur.textContent = timeDisplay === 'total' ? fmtDur(_albumTotalDuration()) : timeDisplay === 'remaining' ? fmtDur(audio.duration - ct) : fmtDur(ct)
     if (state.modalOpen) {
       if (_dom.modalFill)  _dom.modalFill.style.width = pct
       if (_dom.modalThumb) _dom.modalThumb.style.left  = pct
-      if (_dom.modalCur)   _dom.modalCur.textContent = timeDisplay === 'remaining' ? fmtDur(audio.duration - ct) : fmtDur(ct)
+      if (_dom.modalCur)   _dom.modalCur.textContent = timeDisplay === 'total' ? fmtDur(_albumTotalDuration()) : timeDisplay === 'remaining' ? fmtDur(audio.duration - ct) : fmtDur(ct)
     }
     updateLyricsHighlight()
     updateLyricsDrawerHighlight()
