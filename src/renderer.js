@@ -392,12 +392,11 @@ async function restorePlaybackState() {
   if (idx < 0) return
   state.queue = album.tracks.map(t => ({ ...t, albumArtist: album.artist, artPath: album.artPath, albumName: album.name }))
   state.queueIndex = idx
-  const resumePos = saved.position || 0
-  if (resumePos > 0) {
-    const onMeta = () => { audio.currentTime = resumePos; audio.removeEventListener('loadedmetadata', onMeta) }
-    audio.addEventListener('loadedmetadata', onMeta)
-  }
   audio.src = `file://${saved.filePath}`
+  const resumePos = saved.position || 0
+  if (resumePos > 1) {
+    setTimeout(function() { audio.currentTime = resumePos }, 500)
+  }
   state.isPlaying = false
   updatePlayBtn()
   updateNowPlaying(state.queue[idx])
