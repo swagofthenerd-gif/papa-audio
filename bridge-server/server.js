@@ -30,6 +30,8 @@ const MUSIC_EXT   = /\.(flac|mp3|wav|aiff?|m4a|aac|ogg|opus|ape|wv|wma|dsf|dff)$
 fs.mkdirSync(USER_DATA,   { recursive: true })
 fs.mkdirSync(ARTWORK_DIR, { recursive: true })
 
+const BRIDGE_TOKEN = crypto.randomBytes(16).toString('hex')
+
 // Re-use the same electron-store data files the desktop app writes
 const store = new Store({ name: 'config', cwd: USER_DATA })
 
@@ -170,6 +172,17 @@ function sseSend(event, data) {
 const app = express()
 app.use(cors({ origin: '*' }))
 app.use(express.json({ limit: '10mb' }))
+
+// ── Auth middleware ─────────────────────────────────────────────────────────────
+app.use((req, res, next) => {
+  if (req.path === '/api/health') return next()
+  if (!req.path.startsWith('/api/') && req.path !== '/stream' && req.path !== '/art') return next()
+  const auth = req.headers.authorization
+  if (!auth || auth !== `Bearer ${BRIDGE_TOKEN}`) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+  next()
+})
 
 // ── SSE event stream ──────────────────────────────────────────────────────────
 app.get('/events', (req, res) => {
@@ -567,6 +580,7 @@ app.listen(PORT, '0.0.0.0', () => {
     }
   }
   console.log(`\n🎵 Papa Audio Bridge Server running on port ${PORT}`)
+  console.log(`Bridge token (add this to Android app): ${BRIDGE_TOKEN}`)
   console.log(`\nAndroid app should connect to one of:`)
   for (const ip of ips) console.log(`  http://${ip}:${PORT}`)
   console.log(`\nHealth check: http://localhost:${PORT}/api/health`)
