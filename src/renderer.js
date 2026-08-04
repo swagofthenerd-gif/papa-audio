@@ -8038,6 +8038,31 @@ function setupListeners() {
     }
   })
 
+  // Global delegation: hover action buttons (play next / add to queue)
+  document.getElementById('content')?.addEventListener('click', e => {
+    const btn = e.target.closest('[data-action]')
+    if (!btn) return
+    const action = btn.dataset.action
+    const album = state.library.find(a => a.id === btn.dataset.album)
+    if (!album) return
+    const track = album.tracks.find(t => t.filePath === btn.dataset.file)
+    if (!track) return
+    const queueTrack = { ...track, albumArtist: album.artist, artPath: album.artPath, albumName: album.name, albumId: album.id }
+    if (action === 'playnext') {
+      e.stopPropagation()
+      const insertIdx = state.queueIndex >= 0 ? state.queueIndex + 1 : 0
+      state.queue.splice(insertIdx, 0, queueTrack)
+      if (state.queuePanelOpen) renderQueuePanel()
+      showToast('Up next: ' + (track.title || 'track'))
+    } else if (action === 'queue') {
+      e.stopPropagation()
+      state.queue.push(queueTrack)
+      updateNextPrefetch()
+      if (state.queuePanelOpen) renderQueuePanel()
+      showToast('Added to queue: ' + (track.title || 'track'))
+    }
+  })
+
   // Middle-click on track/album/quick-card: play standalone without affecting queue
   document.getElementById('content')?.addEventListener('mousedown', e => {
     if (e.button !== 1) return
@@ -9057,10 +9082,32 @@ async function checkConnections() {
   }
 }
 
+function renderShortcuts() {
+  var grid = document.getElementById('shortcuts-grid')
+  if (!grid) return
+  var byCategory = {}
+  ALL_SHORTCUTS.forEach(function(s) {
+    if (!byCategory[s.category]) byCategory[s.category] = []
+    byCategory[s.category].push(s)
+  })
+  var categories = Object.keys(byCategory)
+  var mid = Math.ceil(categories.length / 2)
+  var cols = [categories.slice(0, mid), categories.slice(mid)]
+  grid.innerHTML = cols.map(function(colCats) {
+    return '<div class="shortcuts-col">' + colCats.map(function(cat) {
+      return '<div class="shortcuts-section-title">' + esc(cat) + '</div>' +
+        byCategory[cat].map(function(s) {
+          return '<div class="shortcut-row"><kbd>' + esc(s.keys.join(' / ')) + '</kbd><span>' + esc(s.desc) + '</span></div>'
+        }).join('')
+    }).join('') + '</div>'
+  }).join('')
+}
+
 function toggleShortcutsModal() {
   const m = document.getElementById('shortcuts-modal')
   if (!m) return
   const isHidden = m.style.display === 'none' || !m.style.display
+  if (isHidden) renderShortcuts()
   m.style.display = isHidden ? 'flex' : 'none'
 }
 
