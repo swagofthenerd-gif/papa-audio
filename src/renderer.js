@@ -425,6 +425,12 @@ async function init() {
     s.textContent = '.yt-health-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:middle}.yt-health-idle{background:var(--text3)}.yt-health-searching{background:#c4a747;animation:pulse 1s infinite}.yt-health-ok{background:#1db954}.yt-health-error{background:#e05c5c}@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}'
     document.head.appendChild(s)
   }
+  if (!document.getElementById('related-css')) {
+    var s = document.createElement('style')
+    s.id = 'related-css'
+    s.textContent = '.related-chip{padding:8px 16px;border-radius:100px;background:var(--glass);border:1px solid var(--glass-border);color:var(--text2);font-size:12px;cursor:pointer;transition:background .12s}.related-chip:hover{background:var(--bg3);color:var(--text)}'
+    document.head.appendChild(s)
+  }
   updateYtHealth('idle')
   setupListeners()
 
@@ -6970,6 +6976,7 @@ async function runSlskSearch(query) {
   slsk.searched  = false
   slsk.results   = []
   slsk.pendingSearches = 0
+  slsk.searchStart = Date.now()
   const sectionEarly = document.getElementById('slsk-section')
   if (sectionEarly) { sectionEarly.innerHTML = renderSoulseekRow(query); bindSlskSearchEvents(query) }
 
@@ -6980,6 +6987,7 @@ async function runSlskSearch(query) {
 
   if (!slsk.status.connected) {
     slsk.searching = false
+    if (_slskTimer) { clearInterval(_slskTimer); _slskTimer = null }
     section.innerHTML = renderSoulseekRow(query)
     return
   }
@@ -7005,6 +7013,10 @@ async function runSlskSearch(query) {
       if (content && st > 0) content.scrollTop = st
     })
   }
+
+  // Start 1s timer for elapsed-time display
+  if (_slskTimer) clearInterval(_slskTimer)
+  _slskTimer = setInterval(_flush, 1000)
 
   const _mergeResults = (results) => {
     for (const r of (results || [])) {
