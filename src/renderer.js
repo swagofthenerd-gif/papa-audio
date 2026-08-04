@@ -747,7 +747,7 @@ function _bindExploreSections(root, sections) {
 }
 
 async function renderExplore() {
-  setContent(`<div class="page"><div class="yt-status">Loading…</div></div>`)
+  setContent(`<div class="page">${Array(3).fill(0).map(() => '<div class="skeleton skeleton-card"></div>').join('')}</div>`)
   var moods = [
     { name:'Energetic', emoji:'⚡', color:'#e8484a' },
     { name:'Chill', emoji:'🌊', color:'#3850a0' },
@@ -2072,11 +2072,10 @@ async function renderYtAlbum(browseId) {
   // refreshes the page only if the data actually changed.
   const snap = state.ytSavedAlbums.find(a => a.browseId === browseId)
   if (snap) _paintYtAlbum(snap)
-  else setContent(`<div class="page"><div class="yt-status">Loading album from YouTube…</div></div>`)
+  else setContent(`<div class="page"><div class="skeleton skeleton-header"></div>${Array(6).fill(0).map(() => '<div class="skeleton-row"><div class="skeleton skeleton-thumb"></div><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line short"></div></div>').join('')}</div>`)
   const res = await window.api.ytAlbum({ browseId }).catch(e => ({ ok: false, error: String(e) }))
   if (state.currentPage !== 'yt-album') return
   if (!res.ok) {
-    // A stale snapshot beats an error page
     if (!snap) setContent(`<div class="page"><div class="yt-status yt-error">Couldn't load album: ${esc(res.error || 'unknown error')}</div></div>`)
     return
   }
@@ -2187,7 +2186,7 @@ function _ytPlTrackToQueueItem(pl, t) {
 }
 
 async function renderYtPlaylist(playlistId) {
-  setContent(`<div class="page"><div class="yt-status">Loading playlist from YouTube…</div></div>`)
+  setContent(`<div class="page"><div class="skeleton skeleton-header"></div>${Array(8).fill(0).map(() => '<div class="skeleton-row"><div class="skeleton skeleton-thumb"></div><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line short"></div></div>').join('')}</div>`)
   const res = await window.api.ytPlaylist({ playlistId }).catch(e => ({ ok: false, error: String(e) }))
   if (state.currentPage !== 'yt-playlist') return
   if (!res.ok) {
@@ -2276,7 +2275,7 @@ async function renderYtSeeAll(navId) {
 
   setContent(`<div class="page">
     <div class="section-header"><span class="section-title">${YT_KIND_LABEL[kind] || 'Results'} · “${esc(query)}” <span class="yt-badge">YT</span></span></div>
-    <div id="yt-seeall-body"><div class="yt-status">Loading…</div></div>
+    <div id="yt-seeall-body">${Array(8).fill(0).map(() => '<div class="skeleton-row"><div class="skeleton skeleton-thumb"></div><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line short"></div></div>').join('')}</div>
     <div id="yt-seeall-more"></div>
   </div>`)
 
@@ -2323,7 +2322,7 @@ async function renderYtSeeAll(navId) {
 }
 
 async function renderYtArtist(channelId) {
-  setContent(`<div class="page"><div class="yt-status">Loading artist from YouTube…</div></div>`)
+  setContent(`<div class="page"><div class="skeleton skeleton-header"></div>${Array(6).fill(0).map(() => '<div class="skeleton-row"><div class="skeleton skeleton-thumb"></div><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line short"></div></div>').join('')}</div>`)
   const res = await window.api.ytArtist({ channelId }).catch(e => ({ ok: false, error: String(e) }))
   if (state.currentPage !== 'yt-artist') return
   if (!res.ok) {
