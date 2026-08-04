@@ -7528,7 +7528,6 @@ async function showSlskUserLibrary(username) {
       const u = dlBtn.dataset.username
       const filename = dlBtn.dataset.filename
       const size = Number(dlBtn.dataset.size)
-      console.log('[lib-dl] user:', u, 'file:', filename)
       const orig = dlBtn.innerHTML
       dlBtn.disabled = true
       dlBtn.innerHTML = SPIN_SVG

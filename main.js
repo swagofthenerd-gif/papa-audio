@@ -1927,11 +1927,9 @@ ipcMain.handle('slsk-search', async (_, { query, timeoutMs = 25000, noCache = fa
 })
 
 ipcMain.handle('slsk-download', async (_, { username, filename, size }) => {
-  console.log('[slsk-download] username:', username, '| filename:', filename, '| size:', size)
   try {
     const res = await slskdFetch('POST', `/transfers/downloads/${encodeURIComponent(username)}`,
       [{ filename, size }])
-    console.log('[slsk-download] OK:', JSON.stringify(res)?.slice(0, 200))
     return { ok: true }
   } catch (e) {
     console.error('[slsk-download] FAILED:', e.message)
@@ -2180,23 +2178,28 @@ ipcMain.handle('yt-download', (_, { videoId, title, artist, subdir }) => {
     dl.state = res.ok ? 'completed' : 'failed'
     dl.error = res.ok ? null : res.error
     _ytEmit(dl)
-  })
+  }).catch(() => {})
   return { ok: true, id }
 })
 
 ipcMain.handle('yt-get-downloads', () => [..._ytDownloads.values()])
 
-ipcMain.handle('ctx-menu-show', (event, items) => new Promise(resolve => {
-  const menu = new Menu()
-  for (const item of (items || [])) {
-    if (item === 'sep' || item?.type === 'separator') {
-      menu.append(new MenuItem({ type: 'separator' }))
-    } else if (item?.label) {
-      menu.append(new MenuItem({ label: item.label, click: () => resolve(item.action) }))
-    }
-  }
-  menu.popup({ window: BrowserWindow.fromWebContents(event.sender), callback: () => resolve(null) })
-}))
+ipcMain.handle('ctx-menu-show', (event, items) => {
+  return Promise.race([
+    new Promise(resolve => {
+      const menu = new Menu()
+      for (const item of (items || [])) {
+        if (item === 'sep' || item?.type === 'separator') {
+          menu.append(new MenuItem({ type: 'separator' }))
+        } else if (item?.label) {
+          menu.append(new MenuItem({ label: item.label, click: () => resolve(item.action) }))
+        }
+      }
+      menu.popup({ window: BrowserWindow.fromWebContents(event.sender), callback: () => resolve(null) })
+    }),
+    new Promise(resolve => setTimeout(() => resolve(null), 10000))
+  ])
+})
 
 ipcMain.handle('slsk-resolve-file', (_, { username, filename }) => {
   const cfg = store.get('slskConfig', {})
