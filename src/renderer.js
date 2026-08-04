@@ -1815,6 +1815,7 @@ function renderSearch(query) {
     <div class="search-tabs" id="search-tabs">
       ${tabs.map(t => `<button class="search-tab${t==='All'?' active':''}" data-tab="${t}">${t}</button>`).join('')}
     </div>
+    ${query ? '<div style="padding:4px 0 8px 0"><button class="save-search-btn" id="save-search-btn" title="Save as smart playlist">+ Save search</button></div>' : ''}
     ${dymHTML}
     <div class="results-filter-wrap"><input class="results-filter" id="results-filter" placeholder="Filter results…"></div>`
 
@@ -1921,9 +1922,61 @@ function renderSearch(query) {
     <div id="slsk-section">${renderSoulseekRow(query)}</div>
   </div>`
 
+  // Related searches from matched artists
+  if (matchAlbums.length > 0) {
+    var relatedArtists = new Set()
+    matchAlbums.slice(0, 3).forEach(function(a) {
+      if (a.artist) relatedArtists.add(a.artist)
+    })
+    var genres = new Set()
+    matchAlbums.forEach(function(a) { if (a.genre) genres.add(a.genre) })
+    var related = []
+    state.library.forEach(function(a) {
+      if (a.genre && genres.has(a.genre) && !matchAlbums.includes(a)) {
+        related.push(a.artist + ' \u2014 ' + a.name)
+      }
+    })
+    related = [...new Set(related)].slice(0, 8)
+
+    if (related.length) {
+      html += '<div class="section-header" style="margin-top:24px"><span class="section-title">Related searches</span></div>'
+      html += '<div style="display:flex;flex-wrap:wrap;gap:8px;padding:0 28px">'
+      related.forEach(function(r) {
+        html += '<button class="related-chip" data-query="' + esc(r) + '">' + esc(r) + '</button>'
+      })
+      html += '</div>'
+    }
+  }
+
   html += `</div>`
   setContent(html)
   bindContentEvents()
+
+  document.querySelectorAll('.related-chip').forEach(function(chip) {
+    chip.addEventListener('click', function() {
+      commitSearch(chip.dataset.query)
+    })
+  })
+
+  document.getElementById('save-search-btn')?.addEventListener('click', function() {
+    var ops = _parseSearchOperators(query)
+    var cleanQuery = ops.text || query
+    var rules = []
+    if (cleanQuery && cleanQuery !== query) rules.push({ field: 'title', op: 'contains', value: cleanQuery })
+    ops.operators.forEach(function(op) {
+      rules.push({ field: op.field, op: op.op || 'is', value: op.value })
+    })
+    var sp = {
+      id: 'sp_' + Date.now(),
+      name: 'Search: ' + query.slice(0, 40),
+      rules: rules.length ? rules : [{ field: 'title', op: 'contains', value: query }],
+    }
+    state.smartPlaylists.unshift(sp)
+    try {
+      localStorage.setItem('papa-smart-playlists', JSON.stringify(state.smartPlaylists))
+    } catch (_) {}
+    showSnackbar('Smart playlist saved: ' + sp.name)
+  })
 
   document.querySelectorAll('.dym-link').forEach(function(link) {
     link.addEventListener('click', function() {
@@ -6703,12 +6756,15 @@ function _slskQualLabel(files) {
 function renderSoulseekRow(query) {
   const s = slsk.status
 
+  const _slskElapsed = slsk.searchStart ? Math.floor((Date.now() - slsk.searchStart) / 1000) : 0
+  const _slskElapsedStr = _slskElapsed > 0 ? ` (${_slskElapsed}s)` : ''
+
   // Pure spinner when no results yet
   if (slsk.searching && !slsk.results.length) {
     const pending = slsk.pendingSearches || 0
     const hint = pending > 1
-      ? `Searching ${pending} query variants…`
-      : 'Searching P2P network…'
+      ? `Searching ${pending} query variants…${_slskElapsedStr}`
+      : `Searching P2P network…${_slskElapsedStr}`
     return `<div class="slsk-container" id="slsk-row">
       <div class="slsk-header-row">
         <span class="osrc-name">Soulseek</span>
@@ -6736,6 +6792,7 @@ function renderSoulseekRow(query) {
     return `<div class="osrc-row slsk-row" id="slsk-row">
       <span class="osrc-name">Soulseek</span>
       <span class="osrc-status" style="color:var(--text3)">${s.running ? 'Connecting…' : 'Offline'}</span>
+      <button class="osrc-agent-btn" id="slsk-connect-btn">Connect</button>
     </div>`
   }
 
@@ -6780,7 +6837,7 @@ function renderSoulseekRow(query) {
   const displayList  = [...flacGroups, ...otherGroups].slice(0, 60)
   const isUpdating   = slsk.searching && slsk.results.length > 0
   const pending      = slsk.pendingSearches || 0
-  const updateNote   = isUpdating ? ` <span class="slsk-updating">· scanning${pending > 0 ? ' ('+pending+' left)' : ''}…</span>` : ''
+  const updateNote   = isUpdating ? ` <span class="slsk-updating">· scanning${pending > 0 ? ' ('+pending+' left)' : ''}${_slskElapsed > 0 ? ' ('+_slskElapsed+'s)' : ''}…</span>` : ''
   const summary      = flacGroups.length
     ? `${flacGroups.length} lossless${otherGroups.length > 0 ? ` · ${otherGroups.length} other` : ''} source${groups.length !== 1 ? 's' : ''}${updateNote}`
     : `${groups.length} source${groups.length !== 1 ? 's' : ''}${updateNote}`
@@ -6796,13 +6853,18 @@ function renderSoulseekRow(query) {
         const qual    = _slskQualLabel(g.files)
         const hasFlac = g.files.some(f => f.isFlac)
         const hue     = Math.abs([...g.folderName].reduce((h, c) => (Math.imul(31, h) + c.charCodeAt(0)) | 0, 0)) % 360
+        var slskInLib = state.library.some(function(a) {
+          var fn = g.folderName.toLowerCase()
+          return a.name && (a.name.toLowerCase().includes(fn) || fn.includes(a.name.toLowerCase()))
+        })
+        var slskBadge = slskInLib ? '<span class="in-lib-badge" style="background:rgba(29,185,84,.15);color:#1db954;font-size:10px;padding:1px 6px;border-radius:8px;margin-left:6px">In Library</span>' : ''
         return `<div class="slsk-card" data-gi="${gi}">
           <div class="slsk-card-art" style="background:linear-gradient(135deg,hsl(${hue},45%,16%),hsl(${(hue+40)%360},35%,10%))">
             ${hasFlac ? '<span class="slsk-card-lossless">LOSSLESS</span>' : ''}
             <svg class="slsk-card-note" viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>
           </div>
           <div class="slsk-card-body">
-            <div class="slsk-card-name" title="${esc(g.folderName)}">${highlightMatch(g.folderName, query)} <span style="font-size:11px;color:var(--text3);font-weight:400">(${g.files.length} files)</span></div>
+            <div class="slsk-card-name" title="${esc(g.folderName)}">${highlightMatch(g.folderName, query)}${slskBadge} <span style="font-size:11px;color:var(--text3);font-weight:400">(${g.files.length} files)</span></div>
             ${qual ? `<div class="slsk-card-qual">${esc(qual)}</div>` : ''}
             <div class="slsk-card-from">via <button class="slsk-user-link" data-gi="${gi}" data-username="${esc(g.username)}" title="Browse ${esc(g.username)}'s shared library">${esc(g.username)}</button></div>
             <div class="slsk-card-btns">
@@ -10534,6 +10596,19 @@ function _parseSearchOperators(query) {
   var m11 = text.match(/\byear:>(\d{4})\b/); if (m11) { result.yearMin = parseInt(m11[1]); text = text.replace(m11[0], '').trim() }
   var m12 = text.match(/\byear:<(\d{4})\b/); if (m12) { result.yearMax = parseInt(m12[1]); text = text.replace(m12[0], '').trim() }
 
+  var operators = []
+  if (result.artist) operators.push({ key: 'artist', field: 'artist', op: 'is', value: result.artist })
+  if (result.yearMin && result.yearMax && result.yearMin !== result.yearMax) operators.push({ key: 'year', field: 'year', op: 'range', value: result.yearMin + '-' + result.yearMax })
+  else if (result.yearMin) operators.push({ key: 'year', field: 'year', op: '>', value: result.yearMin })
+  else if (result.yearMax) operators.push({ key: 'year', field: 'year', op: '<', value: result.yearMax })
+  if (result.format) operators.push({ key: 'format', field: 'format', op: 'is', value: result.format })
+  if (result.album) operators.push({ key: 'album', field: 'album', op: 'is', value: result.album })
+  if (result.genre) operators.push({ key: 'genre', field: 'genre', op: 'is', value: result.genre })
+  if (result.is) operators.push({ key: 'is', field: 'is', op: 'is', value: result.is })
+  if (result.playsMin) operators.push({ key: 'plays', field: 'plays', op: '>', value: result.playsMin })
+  if (result.durMax) operators.push({ key: 'duration', field: 'duration', op: '<', value: result.durMax })
+  if (result.durMin) operators.push({ key: 'duration', field: 'duration', op: '>', value: result.durMin })
+  result.operators = operators
   result.text = text
   return result
 }
