@@ -1,4 +1,4 @@
-const { app, BrowserWindow, BrowserView, ipcMain, dialog, globalShortcut, Notification, shell, Menu, MenuItem, powerSaveBlocker } = require('electron')
+const { app, BrowserWindow, BrowserView, ipcMain, dialog, globalShortcut, Notification, shell, Menu, MenuItem, powerSaveBlocker, powerMonitor } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const crypto = require('crypto')
@@ -721,6 +721,15 @@ ipcMain.on('set-power-save', (_, playing) => {
   }
 })
 
+powerMonitor.on('suspend', () => {
+  if (player) player.pause().catch(() => {})
+  if (mainWindow) mainWindow.webContents.send('system-suspend')
+})
+
+powerMonitor.on('resume', () => {
+  if (mainWindow) mainWindow.webContents.send('system-resume')
+})
+
 ipcMain.on('notify-download-complete', (_, { count, albumName }) => {
   if (!Notification.isSupported()) return
   new Notification({
@@ -1387,6 +1396,7 @@ async function claudeChat(apiKey, model, messages, tools, system) {
       'content-type': 'application/json',
     },
     body,
+    signal: AbortSignal.timeout(30000),
   })
   if (!res.ok) { const t = await res.text(); throw new Error(`Claude API ${res.status}: ${t.slice(0,200)}`) }
   return res.json()
@@ -1408,6 +1418,7 @@ async function openaiChat(apiKey, model, messages, tools, system) {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${apiKey}`, 'content-type': 'application/json' },
     body,
+    signal: AbortSignal.timeout(30000),
   })
   if (!res.ok) { const t = await res.text(); throw new Error(`OpenAI API ${res.status}: ${t.slice(0,200)}`) }
   const data = await res.json()
@@ -1613,6 +1624,7 @@ async function ollamaToolChat(model, messages, tools, system) {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'Authorization': 'Bearer ollama' },
     body,
+    signal: AbortSignal.timeout(30000),
   })
   if (!res.ok) { const t = await res.text(); throw new Error(`Ollama ${res.status}: ${t.slice(0,300)}`) }
   const data = await res.json()
@@ -2036,49 +2048,49 @@ ipcMain.handle('open-external', (_, url) => {
 
 // ── YouTube ──────────────────────────────────────────────────────────────────
 ipcMain.handle('yt-music-search', async (_, { query }) => {
-  try { return { ok: true, results: await ytSearch.searchMusic(query) } }
+  try { return { ok: true, results: await withTimeout(ytSearch.searchMusic(query), 20000, 'YouTube music search') } }
   catch (e) { return { ok: false, error: String(e?.message || e) } }
 })
 
 ipcMain.handle('yt-search', async (_, { query }) => {
-  try { return { ok: true, results: await ytSearch.searchAll(query) } }
+  try { return { ok: true, results: await withTimeout(ytSearch.searchAll(query), 20000, 'YouTube search') } }
   catch (e) { return { ok: false, error: String(e?.message || e) } }
 })
 
 ipcMain.handle('yt-music-search-full', async (_, { query }) => {
-  try { return { ok: true, results: await ytSearch.searchMusicFull(query) } }
+  try { return { ok: true, results: await withTimeout(ytSearch.searchMusicFull(query), 20000, 'YouTube full search') } }
   catch (e) { return { ok: false, error: String(e?.message || e) } }
 })
 
 ipcMain.handle('yt-album', async (_, { browseId }) => {
-  try { return { ok: true, album: await ytSearch.getAlbum(browseId) } }
+  try { return { ok: true, album: await withTimeout(ytSearch.getAlbum(browseId), 20000, 'YouTube album') } }
   catch (e) { return { ok: false, error: String(e?.message || e) } }
 })
 
 ipcMain.handle('yt-artist', async (_, { channelId }) => {
-  try { return { ok: true, artist: await ytSearch.getArtist(channelId) } }
+  try { return { ok: true, artist: await withTimeout(ytSearch.getArtist(channelId), 20000, 'YouTube artist') } }
   catch (e) { return { ok: false, error: String(e?.message || e) } }
 })
 
 ipcMain.handle('yt-search-page', async (_, { kind, query, next }) => {
   try {
-    const { items, hasMore } = await ytSearch.searchPage(kind, query, !!next)
+    const { items, hasMore } = await withTimeout(ytSearch.searchPage(kind, query, !!next), 20000, 'YouTube search page')
     return { ok: true, items, hasMore }
   } catch (e) { return { ok: false, error: String(e?.message || e) } }
 })
 
 ipcMain.handle('yt-playlist', async (_, { playlistId }) => {
-  try { return { ok: true, playlist: await ytSearch.getPlaylist(playlistId) } }
+  try { return { ok: true, playlist: await withTimeout(ytSearch.getPlaylist(playlistId), 20000, 'YouTube playlist') } }
   catch (e) { return { ok: false, error: String(e?.message || e) } }
 })
 
 ipcMain.handle('yt-home', async () => {
-  try { return { ok: true, ...(await ytSearch.getHomeFeed()) } }
+  try { return { ok: true, ...(await withTimeout(ytSearch.getHomeFeed(), 20000, 'YouTube home feed')) } }
   catch (e) { return { ok: false, error: String(e?.message || e) } }
 })
 
 ipcMain.handle('yt-radio', async (_, { videoId }) => {
-  try { return { ok: true, tracks: await ytSearch.getRadio(videoId) } }
+  try { return { ok: true, tracks: await withTimeout(ytSearch.getRadio(videoId), 20000, 'YouTube radio') } }
   catch (e) { return { ok: false, error: String(e?.message || e) } }
 })
 
