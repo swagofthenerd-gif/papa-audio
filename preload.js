@@ -74,6 +74,11 @@ contextBridge.exposeInMainWorld('api', {
   // Power management
   setPowerSave: (playing) => ipcRenderer.send('set-power-save', playing),
 
+  // Last.fm
+  getLastfmConfig:  ()  => ipcRenderer.invoke('get-lastfm-config'),
+  setLastfmConfig:  (c) => ipcRenderer.invoke('set-lastfm-config', c),
+  scrobbleTrack:    (t) => ipcRenderer.invoke('scrobble-track', t),
+
   // Start on boot
   getStartOnBoot: () => ipcRenderer.invoke('get-start-on-boot'),
   setStartOnBoot: (e) => ipcRenderer.invoke('set-start-on-boot', e),
@@ -104,6 +109,8 @@ contextBridge.exposeInMainWorld('api', {
   slskSetDownloadDir: ()  => ipcRenderer.invoke('slsk-set-download-dir'),
   onSlskdStatusChange: (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('slskd-status-change', h); return () => ipcRenderer.removeListener('slskd-status-change', h) },
   slskResolveFile:    (p) => ipcRenderer.invoke('slsk-resolve-file', p),
+  slskVerifyFile:     (p) => ipcRenderer.invoke('slsk-verify-file', p),
+  onSlskVerify:       (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('slsk-verify', h); return () => ipcRenderer.removeListener('slsk-verify', h) },
   slskShowInFolder:   (p) => ipcRenderer.invoke('slsk-show-in-folder', p),
   slskBrowseUser:     (p) => ipcRenderer.invoke('slsk-browse-user', p),
   ctxMenuShow:        (items) => ipcRenderer.invoke('ctx-menu-show', items),
@@ -164,6 +171,7 @@ contextBridge.exposeInMainWorld('api', {
       'media-key', 'ext-cmd', 'slsk-progress', 'slskd-status-change', 'player-event', 'media-seek',
       'torrent-progress', 'torrent-done', 'torrent-started', 'do-lib-rescan',
       'yt-dl-progress', 'yt-auth-pending', 'yt-auth-done',
+      'slsk-verify',
     ]
     if (allowed.includes(channel)) ipcRenderer.on(channel, (_, data) => cb(data))
   },

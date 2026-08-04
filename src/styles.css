@@ -3166,6 +3166,21 @@ kbd {
 .pl-collage-grid > div { width:100%; height:100%; }
 .pl-card-name { font-size:14px; font-weight:600; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .pl-card-meta { font-size:12px; color:var(--text3); margin-top:3px; }
+.pl-folder-section { margin-bottom:8px; }
+.pl-folder-header {
+  display:flex; align-items:center; gap:8px;
+  padding:10px 12px; margin-bottom:4px; border-radius:var(--r-sm);
+  cursor:pointer; user-select:none;
+  transition:background .12s var(--ease);
+}
+.pl-folder-header:hover { background:var(--glass); }
+.pl-folder-chevron { font-size:12px; color:var(--text3); width:14px; text-align:center; }
+.pl-folder-name { font-size:13px; font-weight:600; color:var(--text); }
+.pl-folder-count { font-size:11px; color:var(--text3); margin-left:4px; }
+.pl-folder-body { overflow:hidden; transition:max-height .2s var(--ease); }
+.pl-folder-body.pl-folder-collapsed { display:none; }
+.pl-folder-badge { pointer-events:none; }
+
 .pl-empty-state {
   display:flex; flex-direction:column; align-items:center; justify-content:center;
   gap:14px; padding:60px 0; color:var(--text3); text-align:center;
