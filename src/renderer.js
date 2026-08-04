@@ -411,6 +411,12 @@ async function init() {
     formatEl.parentNode.insertBefore(bp, formatEl.nextSibling)
   }
   _setupCP()
+  if (!document.getElementById('highlight-css')) {
+    var hs = document.createElement('style')
+    hs.id = 'highlight-css'
+    hs.textContent = 'mark{background:rgba(29,185,84,.2);color:inherit;border-radius:2px;padding:0 2px}'
+    document.head.appendChild(hs)
+  }
   if (!document.getElementById('yt-health-css')) {
     var s = document.createElement('style')
     s.id = 'yt-health-css'
@@ -1711,16 +1717,29 @@ function renderSearch(query) {
   var filters = _parseSearchOperators(query)
   var searchText = filters.text
   const q = searchText.toLowerCase()
-  var matchAlbums = state.library.filter(a =>
-    a.name.toLowerCase().includes(q) || a.artist.toLowerCase().includes(q)
-  )
-  const artistSet = new Set()
-  state.library.forEach(a => { if (a.artist.toLowerCase().includes(q)) artistSet.add(a.artist) })
-  const matchArtists = [...artistSet]
-  var matchTracks = state.library.flatMap(a =>
-    a.tracks.filter(t => t.title.toLowerCase().includes(q))
-      .map(t => ({ ...t, albumId: a.id, albumArtist: a.artist, artPath: a.artPath }))
-  ).slice(0, 20)
+  var matchAlbums, matchTracks, artistSet, matchArtists, didYouMean
+
+  var useCache = false
+  if (state._lastSearch && state._lastSearch.query === query && (Date.now() - state._lastSearch.timestamp) < 30000) {
+    useCache = true
+    matchAlbums = state._lastSearch.localResults.albums
+    artistSet = new Set(state._lastSearch.localResults.artists)
+    matchArtists = state._lastSearch.localResults.artists
+    matchTracks = state._lastSearch.localResults.tracks
+    didYouMean = state._lastSearch.didYouMean
+  }
+
+  if (!useCache) {
+    matchAlbums = state.library.filter(a =>
+      a.name.toLowerCase().includes(q) || a.artist.toLowerCase().includes(q)
+    )
+    artistSet = new Set()
+    state.library.forEach(a => { if (a.artist.toLowerCase().includes(q)) artistSet.add(a.artist) })
+    matchArtists = [...artistSet]
+    matchTracks = state.library.flatMap(a =>
+      a.tracks.filter(t => t.title.toLowerCase().includes(q))
+        .map(t => ({ ...t, albumId: a.id, albumArtist: a.artist, artPath: a.artPath }))
+    ).slice(0, 20)
 
   if (filters.artist) {
     matchAlbums = matchAlbums.filter(function(a) { return (a.artist || '').toLowerCase().indexOf(filters.artist.toLowerCase()) !== -1 })
@@ -1743,10 +1762,18 @@ function renderSearch(query) {
   if (filters.durMax) matchTracks = matchTracks.filter(function(t) { return (t.duration || 0) < filters.durMax })
   if (filters.durMin) matchTracks = matchTracks.filter(function(t) { return (t.duration || 0) > filters.durMin })
 
-  var didYouMean = null
+  didYouMean = null
   if (!matchAlbums.length && !matchTracks.length && !artistSet.size && searchText.length > 2) {
     var candidates = state.library.map(function(a) { return a.artist + ' \u2014 ' + a.name })
     didYouMean = _fuzzyFind(searchText, candidates, 3)
+  }
+
+  state._lastSearch = {
+    query: query,
+    localResults: { albums: matchAlbums, artists: [...artistSet], tracks: matchTracks },
+    didYouMean: didYouMean,
+    timestamp: Date.now()
+  }
   }
 
   var dymHTML = didYouMean && didYouMean.length ? '<div class="did-you-mean">Did you mean: ' + didYouMean.map(function(d, i) { return '<span class="dym-link" data-dym-idx="' + i + '">' + esc(d) + '</span>' + (i < didYouMean.length - 1 ? ', ' : '') }).join('') + '?</div>' : ''
@@ -1775,8 +1802,8 @@ function renderSearch(query) {
           <div class="str-art" style="${artStyle}">
             ${!topAlbum.artPath ? `<svg viewBox="0 0 24 24" style="width:48px;height:48px;fill:rgba(255,255,255,.5)"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>` : ''}
           </div>
-          <div class="str-name">${esc(topAlbum.name)}</div>
-          <div class="str-artist">${esc(topAlbum.artist)} · Album</div>
+          <div class="str-name">${highlightMatch(topAlbum.name, searchText)}</div>
+          <div class="str-artist">${highlightMatch(topAlbum.artist, searchText)} · Album</div>
           <button class="str-play album-card-play" data-play="${topAlbum.id}">
             <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
           </button>
@@ -1792,8 +1819,8 @@ function renderSearch(query) {
           return `<div class="str-track track-row" data-file="${esc(t.filePath)}" data-idx="${i}" data-album="${t.albumId}">
             ${artThumb}
             <div class="str-track-info">
-              <div class="str-track-title">${esc(t.title)}</div>
-              <div class="str-track-artist">${esc(t.albumArtist)}</div>
+              <div class="str-track-title">${highlightMatch(t.title, searchText)}</div>
+              <div class="str-track-artist">${highlightMatch(t.albumArtist, searchText)}</div>
             </div>
             <span class="str-track-dur">${fmtDur(t.duration)}</span>
           </div>`
@@ -1808,7 +1835,7 @@ function renderSearch(query) {
       const startIdx = topAlbum ? 1 : 0
       html += `<div class="search-section" data-section="Albums">
         <div class="section-header"><span class="section-title">Albums · ${matchAlbums.length - (topAlbum ? 1 : 0)}</span></div>
-        <div class="album-grid">${matchAlbums.slice(startIdx, startIdx + 8).map(albumCard).join('')}</div>
+        <div class="album-grid">${matchAlbums.slice(startIdx, startIdx + 8).map(function(a) { return albumCard(a, 0, '', searchText) }).join('')}</div>
       </div>`
     }
     if (matchArtists.length) {
@@ -1827,8 +1854,8 @@ function renderSearch(query) {
         <div class="track-row" data-file="${esc(t.filePath)}" data-idx="${i + startIdx}" data-album="${t.albumId}">
           <span class="track-num">${i + startIdx + 1}</span>
           <div class="track-info">
-            <div class="track-title">${esc(t.title)}</div>
-            <div class="track-artist" data-artist="${esc(t.albumArtist)}">${esc(t.albumArtist)}</div>
+            <div class="track-title">${highlightMatch(t.title, searchText)}</div>
+            <div class="track-artist" data-artist="${esc(t.albumArtist)}">${highlightMatch(t.albumArtist, searchText)}</div>
           </div>
           <div class="hover-actions">
             <button class="hover-action-btn" data-action="playnext" data-file="${esc(t.filePath)}" data-album="${t.albumId}" title="Play next">&#9654;+</button>
@@ -2046,22 +2073,23 @@ async function runYtSearch(query, scope) {
   renderYtResults(res.results, query)
 }
 
-function _ytArtistSpan(r) {
+function _ytArtistSpan(r, query) {
   if (!r.artist) return ''
+  var artistHtml = query ? highlightMatch(r.artist, query) : esc(r.artist)
   return r.channelId
-    ? `<span class="yt-link" data-yt-channel="${esc(r.channelId)}">${esc(r.artist)}</span>`
-    : `<span class="yt-link" data-yt-name="${esc(r.artist)}">${esc(r.artist)}</span>`
+    ? `<span class="yt-link" data-yt-channel="${esc(r.channelId)}">${artistHtml}</span>`
+    : `<span class="yt-link" data-yt-name="${esc(r.artist)}">${artistHtml}</span>`
 }
 
-function _ytSongRows(songs) {
+function _ytSongRows(songs, query) {
   return `<div class="yt-list">${songs.map((r, i) => `
     <div class="yt-row" data-i="${i}">
       ${r.thumbnailUrl
         ? `<img class="yt-thumb" src="${esc(r.thumbnailUrl)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`
         : `<div class="yt-thumb yt-thumb-empty"></div>`}
       <div class="yt-info">
-        <div class="yt-title">${esc(r.title)} <span class="yt-badge">YT</span></div>
-        <div class="yt-sub-line">${_ytArtistSpan(r)}${r.album ? ' · ' + (r.albumBrowseId ? `<span class="yt-link" data-yt-albumbrowse="${esc(r.albumBrowseId)}">${esc(r.album)}</span>` : esc(r.album)) : ''}${r.viewCount ? ' · ' + esc(r.viewCount) : ''}</div>
+        <div class="yt-title">${query ? highlightMatch(r.title, query) : esc(r.title)} <span class="yt-badge">YT</span></div>
+        <div class="yt-sub-line">${_ytArtistSpan(r, query)}${r.album ? ' · ' + (r.albumBrowseId ? `<span class="yt-link" data-yt-albumbrowse="${esc(r.albumBrowseId)}">${esc(r.album)}</span>` : esc(r.album)) : ''}${r.viewCount ? ' · ' + esc(r.viewCount) : ''}</div>
       </div>
       <span class="yt-dur">${r.duration ? fmtDur(r.duration) : ''}</span>
       <div class="yt-actions">
@@ -2077,7 +2105,7 @@ function _ytSongRows(songs) {
     </div>`).join('')}</div>`
 }
 
-function _ytAlbumCard(a) {
+function _ytAlbumCard(a, query) {
   const hue = _cardHue((a.artist || '') + (a.title || ''))
   return `<div class="album-card yt-album-card" data-browse="${esc(a.browseId)}">
     <div class="album-card-art-wrap">
@@ -2089,8 +2117,8 @@ function _ytAlbumCard(a) {
       </div>
       <span class="yt-badge yt-card-badge">YT</span>
     </div>
-    <div class="album-card-name">${esc(a.title)}</div>
-    <div class="album-card-meta">${esc(a.year || '')}${a.year && a.artist ? ' · ' : ''}${esc(a.artist || '')}</div>
+    <div class="album-card-name">${query ? highlightMatch(a.title, query) : esc(a.title)}</div>
+    <div class="album-card-meta">${esc(a.year || '')}${a.year && a.artist ? ' · ' : ''}${query ? highlightMatch(a.artist || '', query) : esc(a.artist || '')}</div>
   </div>`
 }
 
@@ -5478,7 +5506,7 @@ function _cardHue(str) {
   return Math.abs([...str].reduce((h, c) => (Math.imul(31, h) + c.charCodeAt(0)) | 0, 0)) % 360
 }
 
-function albumCard(album, idx, sortMode) {
+function albumCard(album, idx, sortMode, query) {
   const hiResTag = album.isHiRes
     ? `<span class="album-hires-badge">${fmtSpec(album.maxBitsPerSample, album.maxSampleRate)}</span>`
     : ''
@@ -5501,8 +5529,8 @@ function albumCard(album, idx, sortMode) {
         <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
       </button>
     </div>
-    <div class="album-card-name">${esc(album.name)}</div>
-    <div class="album-card-artist" data-artist="${esc(album.artist)}">${esc(album.artist)}</div>
+    <div class="album-card-name">${query ? highlightMatch(album.name, query) : esc(album.name)}</div>
+    <div class="album-card-artist" data-artist="${esc(album.artist)}">${query ? highlightMatch(album.artist, query) : esc(album.artist)}</div>
   </div>`
 }
 
@@ -5545,6 +5573,13 @@ function drBadge(dr) {
 
 function esc(str) {
   return String(str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')
+}
+function highlightMatch(text, query) {
+  if (!query || !text) return esc(text)
+  var escaped = esc(text)
+  var escapedQuery = esc(query)
+  var regex = new RegExp('(' + escapedQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi')
+  return escaped.replace(regex, '<mark>$1</mark>')
 }
 function fmtDur(sec) {
   if (!sec) return '—'
