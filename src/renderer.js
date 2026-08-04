@@ -76,7 +76,58 @@ let _oldQueue = null
 let _suggCache = { trackFp: null, pool: [] }
 const _scrollMemory = new Map()
 var _undoStack = []
+var _libPresets = []
+try { _libPresets = JSON.parse(localStorage.getItem('papa-lib-presets') || '[]') } catch (_) {}
 var timeDisplay = localStorage.getItem('papa_time_display') || 'elapsed'
+
+// ── Keyboard shortcut configuration ─────────────────────────────────────────
+var DEFAULT_SHORTCUTS = {
+  'playPause': 'Space',
+  'nextTrack': 'ArrowRight',
+  'prevTrack': 'ArrowLeft',
+  'seekForward': 'Shift+ArrowRight',
+  'seekBackward': 'Shift+ArrowLeft',
+  'volumeUp': '=',
+  'volumeDown': '-',
+  'toggleMute': 'm',
+  'toggleShuffle': 's',
+  'cycleRepeat': 'r',
+  'cycleSpeed': 'x',
+  'fullscreen': 'f',
+  'toggleQueue': 'q',
+  'toggleLyrics': 'l',
+  'focusSearch': 'Control+k',
+  'commandPalette': 'Control+Shift+p',
+  'likeTrack': 'Control+Shift+l',
+  'sleepTimer': 'Control+Shift+s',
+  'saveQueue': 'Control+s',
+  'addToQueue': 'Control+q',
+  'undo': 'Control+z',
+  'skipShort': 'Control+Shift+k',
+  'stopAfter': 'Control+Shift+t',
+  'toggleAgent': 'Control+/',
+  'shortcuts': 'F1',
+}
+
+var _shortcuts = {}
+try {
+  var _savedShortcuts = JSON.parse(localStorage.getItem('papa-shortcuts') || '{}')
+  _shortcuts = Object.assign({}, DEFAULT_SHORTCUTS, _savedShortcuts)
+} catch (_) {
+  _shortcuts = Object.assign({}, DEFAULT_SHORTCUTS)
+}
+
+function getShortcut(action) { return _shortcuts[action] || DEFAULT_SHORTCUTS[action] }
+
+function saveShortcuts() {
+  localStorage.setItem('papa-shortcuts', JSON.stringify(_shortcuts))
+}
+
+function resetShortcuts() {
+  _shortcuts = Object.assign({}, DEFAULT_SHORTCUTS)
+  saveShortcuts()
+  showSnackbar('Shortcuts reset to defaults')
+}
 
 // ── Playlist import ──────────────────────────────────────────────────────────
 var fileInput = document.createElement('input')
@@ -9666,12 +9717,23 @@ function showSnackbar(msg, actionLabel, actionCallback, duration) {
   el.innerHTML = '<span class="snackbar-msg">' + msg + '</span>' +
     (actionLabel ? '<button class="snackbar-action">' + actionLabel + '</button>' : '') +
     '<button class="snackbar-dismiss">&times;</button>'
-  var dismiss = function() { el.classList.remove('show'); setTimeout(function() { el.remove() }, 300) }
-  el.querySelector('.snackbar-dismiss').addEventListener('click', dismiss)
-  if (actionLabel) el.querySelector('.snackbar-action').addEventListener('click', function() { actionCallback(); dismiss() })
+
+  el.addEventListener('click', function(e) {
+    if (!e.target.closest('.snackbar-action')) {
+      clearTimeout(el._timeout)
+      el.classList.remove('show')
+      setTimeout(function() { el.remove() }, 300)
+    }
+  })
+
+  var dismissBtn = el.querySelector('.snackbar-dismiss')
+  if (dismissBtn) dismissBtn.addEventListener('click', function(e) { e.stopPropagation() })
+  var actionBtn = el.querySelector('.snackbar-action')
+  if (actionBtn) actionBtn.addEventListener('click', function(e) { e.stopPropagation(); if (actionCallback) actionCallback(); clearTimeout(el._timeout); el.classList.remove('show'); setTimeout(function() { el.remove() }, 300) })
+
   container.appendChild(el)
   requestAnimationFrame(function() { el.classList.add('show') })
-  setTimeout(dismiss, duration)
+  el._timeout = setTimeout(function() { el.classList.remove('show'); setTimeout(function() { el.remove() }, 300) }, duration)
 }
 
 // ── Command palette wrapper functions ─────────────────────────────────────
