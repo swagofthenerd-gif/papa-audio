@@ -6116,8 +6116,11 @@ async function runSlskSearch(query) {
     _flushQueued = true
     requestAnimationFrame(() => {
       _flushQueued = false
+      const content = document.getElementById('content')
+      const st = content ? content.scrollTop : 0
       const sec = document.getElementById('slsk-section')
       if (sec) { sec.innerHTML = renderSoulseekRow(query); bindSlskSearchEvents(query) }
+      if (content && st > 0) content.scrollTop = st
     })
   }
 
