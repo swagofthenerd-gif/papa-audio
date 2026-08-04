@@ -32,6 +32,7 @@ const state = {
   libView: 'grid',
   libFolder: null,
   playlists: [],
+  playlistFolders: [],
   smartPlaylists: [],
   currentPlaylistId: null,
   playlistSort: 'alpha',
