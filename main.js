@@ -454,7 +454,26 @@ function createWindow() {
   }
   mainWindow.on('resize', () => { updateBrowserBounds(); saveWinState() })
   mainWindow.on('move', saveWinState)
-  mainWindow.on('close', saveWinState)
+  mainWindow.on('close', async (e) => {
+    saveWinState()
+    try {
+      const isPlaying = await mainWindow.webContents.executeJavaScript('state.isPlaying')
+      if (isPlaying) {
+        e.preventDefault()
+        const { response } = await dialog.showMessageBox(mainWindow, {
+          type: 'question',
+          buttons: ['Close anyway', 'Cancel'],
+          defaultId: 1,
+          title: 'Music is playing',
+          message: 'Music is still playing. Close anyway?',
+        })
+        if (response === 0) {
+          mainWindow.removeAllListeners('close')
+          mainWindow.close()
+        }
+      }
+    } catch (_) {}
+  })
   mainWindow.on('closed', () => {
     if (browserView) { try { browserView.webContents.destroy() } catch (_) {} browserView = null }
     mainWindow = null
