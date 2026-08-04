@@ -2673,20 +2673,62 @@ function renderPlaylists() {
       return bLatest - aLatest
     })
   }
-  const cards = sorted.map(pl => `
-    <div class="pl-card" data-pl="${esc(pl.id)}">
+
+  var folders = {}
+  var uncategorized = []
+  sorted.forEach(function(pl) {
+    var f = pl.folder || null
+    if (f) {
+      if (!folders[f]) folders[f] = []
+      folders[f].push(pl)
+    } else {
+      uncategorized.push(pl)
+    }
+  })
+
+  function _plCard(pl) {
+    return `<div class="pl-card" data-pl="${esc(pl.id)}">
       <button class="pl-rename-btn" data-pl-id="${esc(pl.id)}" title="Rename" style="position:absolute;top:4px;right:4px;background:none;border:none;color:var(--text3);cursor:pointer;font-size:12px">&#9998;</button>
       <button class="pl-dup-btn" data-pl-id="${esc(pl.id)}" title="Duplicate" style="position:absolute;top:4px;right:28px;background:none;border:none;color:var(--text3);cursor:pointer;font-size:12px">&#128203;</button>
+      <span class="pl-folder-badge" title="Folder: ${esc(pl.folder || '')}" style="position:absolute;top:4px;right:52px;font-size:10px;color:var(--text3);opacity:.6">${pl.folder ? '📁' : ''}</span>
       ${_plCollage(pl, 'pl-card-art')}
       <div class="pl-card-name">${esc(pl.name)}</div>
       <div class="pl-card-meta">${pl.type === 'smart' ? _evalSmartPlaylist(pl).length : (pl.tracks || []).length} song${(pl.type === 'smart' ? _evalSmartPlaylist(pl).length : (pl.tracks || []).length) !== 1 ? 's' : ''}</div>
-    </div>`).join('')
+    </div>`
+  }
+
+  function _folderSection(folderName, pls, collapsed) {
+    return `<div class="pl-folder-section">
+      <div class="pl-folder-header" data-folder="${esc(folderName)}">
+        <span class="pl-folder-chevron">${collapsed ? '▸' : '▾'}</span>
+        <span class="pl-folder-name">${esc(folderName)}</span>
+        <span class="pl-folder-count">${pls.length} playlist${pls.length !== 1 ? 's' : ''}</span>
+      </div>
+      <div class="pl-folder-body${collapsed ? ' pl-folder-collapsed' : ''}">
+        <div class="pl-grid">${pls.map(_plCard).join('')}</div>
+      </div>
+    </div>`
+  }
+
+  var folderSections = Object.keys(folders).sort().map(function(f) {
+    return _folderSection(f, folders[f], false)
+  })
+
+  var contentSections = folderSections.join('')
+
+  if (uncategorized.length && Object.keys(folders).length > 0) {
+    contentSections += _folderSection('Uncategorized', uncategorized, false)
+  }
 
   setContent(`<div class="page">
     <div class="page-header">
-      <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;flex-wrap:wrap">
         <h1 class="section-title">Playlists</h1>
         <span class="lib-count">${state.playlists.length} playlist${state.playlists.length !== 1 ? 's' : ''}</span>
+        <button class="rescan-btn" id="pl-new-folder-btn">
+          <svg viewBox="0 0 24 24"><path d="M20 6h-8l-2-2H4c-1.11 0-2 .89-2 2v12c0 1.11.89 2 2 2h16c1.11 0 2-.89 2-2V8c0-1.11-.89-2-2-2z"/></svg>
+          New folder
+        </button>
         <button class="rescan-btn" id="pl-new-btn" style="margin-left:auto">
           <svg viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
           New playlist
@@ -2700,25 +2742,170 @@ function renderPlaylists() {
       </div>
     </div>
     ${state.playlists.length
-      ? `<div class="pl-grid">${cards}</div>`
+      ? (Object.keys(folders).length === 0 && uncategorized.length > 0
+        ? `<div class="pl-grid">${uncategorized.map(_plCard).join('')}</div>`
+        : contentSections)
       : `<div class="pl-empty-state">
           <svg viewBox="0 0 24 24"><path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/></svg>
           <p>No playlists yet. Create one to get started.</p>
         </div>`}
   </div>`)
 
-  document.getElementById('pl-new-btn')?.addEventListener('click', () => {
-    showNameInputModal('New playlist', 'Playlist name…', name => {
-      const pl = { id: 'pl_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8), name, tracks: [], createdAt: Date.now() }
-      state.playlists.unshift(pl)
-      window.api.savePlaylist(pl)
-      navigate('playlist', pl.id)
+  document.getElementById('pl-new-folder-btn')?.addEventListener('click', function() {
+    showNameInputModal('New folder', 'Folder name…', function(name) {
+      if (state.playlistFolders.indexOf(name) === -1) state.playlistFolders.push(name)
+      renderPlaylists()
+      showSnackbar('Folder "' + name + '" created')
     })
   })
 
-  document.querySelectorAll('.pl-card[data-pl]').forEach(card => {
-    card.addEventListener('click', () => navigate('playlist', card.dataset.pl))
+  document.getElementById('pl-new-btn')?.addEventListener('click', function() {
+    _showNewPlaylistWithFolder()
   })
+
+  // Folder header collapse/expand
+  document.querySelectorAll('.pl-folder-header').forEach(function(hdr) {
+    hdr.addEventListener('click', function() {
+      var body = hdr.nextElementSibling
+      var chevron = hdr.querySelector('.pl-folder-chevron')
+      var collapsed = body.classList.toggle('pl-folder-collapsed')
+      chevron.textContent = collapsed ? '▸' : '▾'
+    })
+  })
+
+  // Right-click context menu on playlist cards
+  document.querySelectorAll('.pl-card[data-pl]').forEach(function(card) {
+    card.addEventListener('click', function() { navigate('playlist', card.dataset.pl) })
+    card.addEventListener('contextmenu', async function(e) {
+      e.preventDefault()
+      e.stopPropagation()
+      var plId = card.dataset.pl
+      var pl = state.playlists.find(function(p) { return p.id === plId })
+      if (!pl) return
+      var items = [
+        { label: 'Rename', action: 'rename' },
+        { label: 'Duplicate', action: 'dup' },
+        { label: pl.folder ? 'Move out of folder' : 'Move to folder…', action: 'move' },
+      ]
+      if (pl.folder) items.push({ label: 'Remove from folder', action: 'unfolder' })
+      var existingFolders = [].concat(Object.keys(folders), state.playlistFolders).filter(function(v, i, a) { return a.indexOf(v) === i })
+      var folderItems = existingFolders.map(function(f) { return { label: '▸ ' + f, action: 'move_' + f } })
+      var showFolderSub = false
+      var action = await window.api.ctxMenuShow(items)
+      if (action === 'rename') {
+        showNameInputModal('Rename playlist', pl.name, function(newName) {
+          pl.name = newName
+          window.api.savePlaylist(pl)
+          renderPlaylists()
+        })
+      } else if (action === 'dup') {
+        var dup = JSON.parse(JSON.stringify(pl))
+        dup.id = 'dup_' + Date.now()
+        dup.name = pl.name + ' (copy)'
+        dup.createdAt = Date.now()
+        state.playlists.push(dup)
+        window.api.savePlaylist(dup)
+        renderPlaylists()
+        showSnackbar('Playlist duplicated')
+      } else if (action === 'move') {
+        var subItems = [{ label: '+ New folder…', action: 'move_new' }].concat(folderItems)
+        var subAction = await window.api.ctxMenuShow(subItems)
+        if (subAction === 'move_new') {
+          showNameInputModal('New folder', 'Folder name…', function(folderName) {
+            if (state.playlistFolders.indexOf(folderName) === -1) state.playlistFolders.push(folderName)
+            pl.folder = folderName
+            window.api.savePlaylist(pl)
+            renderPlaylists()
+            showSnackbar('Moved to "' + folderName + '"')
+          })
+        } else if (subAction && subAction.indexOf('move_') === 0) {
+          var targetFolder = subAction.slice(5)
+          pl.folder = targetFolder
+          window.api.savePlaylist(pl)
+          renderPlaylists()
+          showSnackbar('Moved to "' + targetFolder + '"')
+        }
+      } else if (action === 'unfolder') {
+        pl.folder = null
+        window.api.savePlaylist(pl)
+        renderPlaylists()
+        showSnackbar('Removed from folder')
+      }
+    })
+  })
+}
+
+function _showNewPlaylistWithFolder() {
+  var existingFolders = state.playlistFolders.slice()
+  state.playlists.forEach(function(pl) { if (pl.folder && existingFolders.indexOf(pl.folder) === -1) existingFolders.push(pl.folder) })
+
+  var overlay = document.createElement('div')
+  overlay.id = 'new-pl-folder-modal'
+  overlay.className = 'addpl-overlay'
+  overlay.innerHTML = `
+    <div class="addpl-card" style="max-width:360px">
+      <div class="addpl-header">
+        <span>New playlist</span>
+        <button class="addpl-close" id="npfm-close">&#10005;</button>
+      </div>
+      <div style="padding:16px">
+        <input id="npfm-name" class="sq-name-input" style="width:100%;box-sizing:border-box" type="text" placeholder="Playlist name…" maxlength="80" autofocus>
+        <div style="margin-top:12px">
+          <label style="font-size:12px;color:var(--text3);display:block;margin-bottom:4px">Folder (optional)</label>
+          <div style="display:flex;gap:8px;align-items:center">
+            <select id="npfm-folder-select" style="flex:1;padding:6px 8px;border-radius:6px;background:var(--bg2);color:var(--text);border:1px solid var(--border);font-size:13px">
+              <option value="">No folder</option>
+              ${existingFolders.map(function(f) { return '<option value="' + esc(f) + '">' + esc(f) + '</option>' }).join('')}
+            </select>
+            <button id="npfm-new-folder-btn" style="padding:6px 10px;border-radius:6px;background:var(--bg3);color:var(--text2);border:1px solid var(--border);cursor:pointer;font-size:18px;line-height:1" title="New folder">+</button>
+          </div>
+        </div>
+        <div id="npfm-new-folder-row" style="display:none;margin-top:8px">
+          <input id="npfm-new-folder-input" class="sq-name-input" style="width:100%;box-sizing:border-box" type="text" placeholder="Folder name…" maxlength="40">
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px">
+          <button class="secondary" id="npfm-cancel">Cancel</button>
+          <button id="npfm-ok">Create</button>
+        </div>
+      </div>
+    </div>`
+  document.body.appendChild(overlay)
+
+  var nameInput = overlay.querySelector('#npfm-name')
+  var folderSelect = overlay.querySelector('#npfm-folder-select')
+  var newFolderRow = overlay.querySelector('#npfm-new-folder-row')
+  var newFolderInput = overlay.querySelector('#npfm-new-folder-input')
+  var close = function() { overlay.remove() }
+
+  var confirm = function() {
+    var name = (nameInput.value || '').trim()
+    if (!name) { nameInput.focus(); return }
+    var folder = null
+    if (newFolderRow.style.display !== 'none' && newFolderInput.value.trim()) {
+      folder = newFolderInput.value.trim()
+      if (state.playlistFolders.indexOf(folder) === -1) state.playlistFolders.push(folder)
+    } else if (folderSelect.value) {
+      folder = folderSelect.value
+    }
+    close()
+    var pl = { id: 'pl_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8), name: name, tracks: [], createdAt: Date.now(), folder: folder }
+    state.playlists.unshift(pl)
+    window.api.savePlaylist(pl)
+    navigate('playlist', pl.id)
+  }
+
+  overlay.querySelector('#npfm-close')?.addEventListener('click', close)
+  overlay.querySelector('#npfm-cancel')?.addEventListener('click', close)
+  overlay.querySelector('#npfm-ok')?.addEventListener('click', confirm)
+  overlay.querySelector('#npfm-new-folder-btn')?.addEventListener('click', function() {
+    newFolderRow.style.display = ''
+    folderSelect.disabled = true
+    newFolderInput.focus()
+  })
+  overlay.addEventListener('click', function(e) { if (e.target === overlay) close() })
+  nameInput.addEventListener('keydown', function(e) { if (e.key === 'Enter') confirm(); if (e.key === 'Escape') close() })
+  newFolderInput?.addEventListener('keydown', function(e) { if (e.key === 'Enter') confirm(); if (e.key === 'Escape') close() })
+  setTimeout(function() { nameInput.focus() }, 50)
 }
 
 function renderPlaylist(id, sortKey) {
@@ -9243,6 +9430,37 @@ async function checkConnections() {
     ytEl.style.color = isConnected2 ? 'var(--text1)' : 'var(--text3)'
     ytEl.childNodes[ytEl.childNodes.length - 1].textContent = isConnected2 ? ' YouTube' : ' YouTube offline'
   }
+
+  // Drag-and-drop audio files/folders to enqueue
+  document.addEventListener('dragover', function(e) { e.preventDefault() })
+  document.addEventListener('drop', function(e) {
+    e.preventDefault()
+    var droppedFiles = Array.from(e.dataTransfer.files || [])
+    if (!droppedFiles.length) return
+    var audioExt = /\.(flac|mp3|wav|aiff?|m4a|aac|ogg|opus|ape|wv|wma|dsf|dff)$/i
+    var audioFiles = droppedFiles.filter(function(f) {
+      var p = f.path || f.name
+      return audioExt.test(p)
+    })
+    if (!audioFiles.length) return
+    var tracks = audioFiles.map(function(f) {
+      var fp = f.path || f.name
+      var name = fp.split('/').pop().split('\\').pop().replace(/\.[^.]+$/, '')
+      return {
+        filePath: fp,
+        title: name,
+        artist: '',
+        albumArtist: '',
+        albumName: '',
+        albumId: '',
+        artPath: '',
+        duration: 0,
+      }
+    })
+    state.queue.push.apply(state.queue, tracks)
+    updateNextPrefetch()
+    showSnackbar('Added ' + tracks.length + ' files to queue')
+  })
 }
 
 function renderShortcuts() {
