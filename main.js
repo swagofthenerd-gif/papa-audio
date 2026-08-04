@@ -453,6 +453,50 @@ app.whenReady().then(() => {
     const configPath = path.join(app.getPath('userData'), 'config.json')
     if (fs.existsSync(configPath)) fs.chmodSync(configPath, 0o600)
   } catch (_) {}
+
+  async function processWishlist() {
+    const wishlist = store.get('downloadWishlist', [])
+    if (!wishlist.length) return
+    console.log('[papa] wishlist: checking', wishlist.length, 'items')
+    for (const item of wishlist) {
+      try {
+        const search = await slskdFetch('POST', '/searches', {
+          searchText: item.query,
+          searchTimeout: 15000,
+          responseLimit: 50,
+          fileLimit: 10000,
+        })
+        const id = search?.id
+        if (!id) continue
+
+        const start = Date.now()
+        let responses = []
+        for (let i = 0; i < 25; i++) {
+          await new Promise(r => setTimeout(r, 1000))
+          const st = await slskdFetch('GET', `/searches/${id}`)
+          responses = await slskdFetch('GET', `/searches/${id}/responses`) || []
+          if (st?.state?.includes('Completed') || responses.length > 0 || Date.now() - start > 20000) break
+        }
+
+        try { await slskdFetch('DELETE', `/searches/${id}`) } catch (_) {}
+
+        if (!responses.length) continue
+
+        const best = responses.find(f => /\.(flac|wav)$/i.test(f.filename)) || responses[0]
+        await slskdFetch('POST', `/transfers/downloads/${encodeURIComponent(best.username)}`,
+          [{ filename: best.filename, size: best.size }])
+
+        const updated = store.get('downloadWishlist', []).filter(w => w.query !== item.query)
+        store.set('downloadWishlist', updated)
+        console.log('[papa] wishlist: downloaded and removed', item.query)
+      } catch (e) {
+        console.error('[papa] wishlist error:', e.message || e)
+      }
+    }
+  }
+
+  setInterval(processWishlist, 30 * 60 * 1000)
+  setTimeout(processWishlist, 30000)
 })
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
