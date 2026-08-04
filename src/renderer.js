@@ -192,6 +192,12 @@ function updateSleepBtn() {
   }
 }
 
+function updateStopAfterBtn() {
+  const btn = document.getElementById('btn-stop-after')
+  if (!btn) return
+  btn.classList.toggle('active', state.stopAfterTrack)
+}
+
 function updateFormatBadge(track) {
   const el = document.getElementById('np-format')
   if (!el) return
@@ -4009,6 +4015,15 @@ function togglePlay() {
 }
 
 function playNext() {
+  if (state.stopAfterTrack) {
+    state.stopAfterTrack = false
+    state.isPlaying = false
+    audio.pause()
+    updatePlayBtn()
+    updateStopAfterBtn()
+    syncExtension()
+    return
+  }
   if (!state.queue.length) return
   if (state.repeat === 'one') { audio.currentTime = 0; audio.play(); return }
   if (state.shuffle) {
@@ -8051,6 +8066,11 @@ function setupListeners() {
     showSnackbar(state.repeat === 'one' ? 'Repeat: One' : state.repeat === 'all' ? 'Repeat: All' : 'Repeat: Off', '', function(){}, 1500)
   })
 
+  document.getElementById('btn-stop-after')?.addEventListener('click', function() {
+    state.stopAfterTrack = !state.stopAfterTrack
+    updateStopAfterBtn()
+  })
+
   // Like button (player bar)
   document.getElementById('btn-like')?.addEventListener('click', function() {
     const albumId = this.dataset.album
@@ -8419,6 +8439,14 @@ function setupListeners() {
     playNext()
   })
   audio.addEventListener('autoadvanced', (e) => {
+    if (state.stopAfterTrack) {
+      state.stopAfterTrack = false
+      state.isPlaying = false
+      audio.pause()
+      updatePlayBtn()
+      updateStopAfterBtn()
+      return
+    }
     // mpv already switched tracks gaplessly — sync UI state without reloading
     const idx = state.queue.findIndex(t => t.filePath === e.detail)
     if (idx === -1) return
