@@ -25,6 +25,8 @@ function buildArgs({ videoId, base, outDir }) {
     '--embed-thumbnail',
     '--no-playlist',
     '--newline',
+    '--continue',
+    '--no-part',
     '-o', path.join(outDir, `${base}.%(ext)s`),
     '--', videoId,
   ]
