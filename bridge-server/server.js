@@ -286,7 +286,7 @@ app.post('/api/library/cache', (req, res) => {
 })
 
 // ── Music streaming ───────────────────────────────────────────────────────────
-app.get('/stream', (req, res) => {
+app.get('/stream', async (req, res) => {
   const filePath = req.query.path
   if (!filePath) return res.status(400).json({ error: 'Missing path parameter' })
 
@@ -295,13 +295,14 @@ app.get('/stream', (req, res) => {
   const allowed = folders.some(function(f) { return resolved.startsWith(path.resolve(f)) })
   if (!allowed) return res.status(403).json({ error: 'Access denied: path outside music folders' })
 
-  if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File not found' })
+  let stat
+  try { stat = await fs.promises.stat(filePath) } catch (_) {
+    return res.status(404).json({ error: 'File not found' })
+  }
 
-  const stat = fs.statSync(filePath)
   const total = stat.size
   const range = req.headers.range
 
-  // Determine MIME type
   const ext = path.extname(filePath).toLowerCase()
   const mimeMap = {
     '.flac': 'audio/flac', '.mp3': 'audio/mpeg', '.wav': 'audio/wav',
@@ -330,7 +331,7 @@ app.get('/stream', (req, res) => {
 })
 
 // ── Album art ─────────────────────────────────────────────────────────────────
-app.get('/art', (req, res) => {
+app.get('/art', async (req, res) => {
   const artPath = req.query.path
   if (!artPath) return res.status(400).json({ error: 'Missing path parameter' })
 
@@ -339,7 +340,7 @@ app.get('/art', (req, res) => {
   const allowed = folders.some(function(f) { return resolved.startsWith(path.resolve(f)) }) || resolved.startsWith(path.resolve(os.homedir() + '/.config/papa-audio/artwork'))
   if (!allowed) return res.status(403).json({ error: 'Access denied' })
 
-  if (!fs.existsSync(artPath)) return res.status(404).send('Not found')
+  try { await fs.promises.stat(artPath) } catch (_) { return res.status(404).send('Not found') }
   const ext = path.extname(artPath).toLowerCase()
   const mime = ext === '.png' ? 'image/png' : 'image/jpeg'
   res.setHeader('Content-Type', mime)
