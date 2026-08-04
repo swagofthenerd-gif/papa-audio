@@ -30,6 +30,8 @@ contextBridge.exposeInMainWorld('api', {
   // Playback state (resume across restarts)
   getPlaybackState:  () => ipcRenderer.invoke('get-playback-state'),
   savePlaybackState: (s) => ipcRenderer.send('save-playback-state', s),
+  getSessionState:   () => ipcRenderer.invoke('get-session-state'),
+  saveSessionState:  (s) => ipcRenderer.send('save-session-state', s),
 
   // Liked albums
   getLiked:  () => ipcRenderer.invoke('get-liked'),
@@ -81,6 +83,9 @@ contextBridge.exposeInMainWorld('api', {
   saveApiKeys:     (p) => ipcRenderer.invoke('save-api-keys', p),
   tasteRecordPlay: (d) => ipcRenderer.send('taste-record-play', d),
   tasteGetProfile: ()  => ipcRenderer.invoke('taste-get-profile'),
+
+  getDownloadWishlist:  () => ipcRenderer.invoke('get-download-wishlist'),
+  saveDownloadWishlist: (w) => ipcRenderer.send('save-download-wishlist', w),
 
   // Soulseek
   slskStatus:    ()  => ipcRenderer.invoke('slsk-status'),

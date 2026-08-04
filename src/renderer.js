@@ -23,10 +23,18 @@ const state = {
   playbackSpeed: 1,
   sleepTimerEnd: null,
   savedQueues: [],
-  libTab: 'albums',
+   libTab: 'albums',
   libGenre: null,
+  statsRange: 'month',
+  libYear: '',
+  libFormat: '',
+  libDecade: '',
+  libView: 'grid',
+  libFolder: null,
   playlists: [],
+  smartPlaylists: [],
   currentPlaylistId: null,
+  playlistSort: 'alpha',
   likedTracks: [],
   playCounts: {},
   playHistory: [],
@@ -35,6 +43,7 @@ const state = {
   ytFollowed: [],
   ytSavedAlbums: [],
   ytRecent: [],
+  downloadWishlist: [],
 }
 
 const slsk = {
@@ -57,6 +66,14 @@ let _allTracksCache = null
 let _allTracksCacheRef = null
 let _suggCache = { trackFp: null, pool: [] }
 const _scrollMemory = new Map()
+var timeDisplay = localStorage.getItem('papa_time_display') || 'elapsed'
+
+// ── Playlist import ──────────────────────────────────────────────────────────
+var fileInput = document.createElement('input')
+fileInput.type = 'file'
+fileInput.accept = '.m3u,.m3u8'
+fileInput.style.display = 'none'
+document.body.appendChild(fileInput)
 
 // ── Visibility & power management ───────────────────────────────────────────
 let _appVisible = !document.hidden
@@ -157,9 +174,21 @@ function updateSleepBtn() {
   if (!btn) return
   const active = !!state.sleepTimerEnd
   btn.classList.toggle('active', active)
+  var remaining = active ? Math.max(0, Math.round((state.sleepTimerEnd - Date.now()) / 60000)) : 0
   btn.title = active
-    ? `Sleep timer: ${Math.round((state.sleepTimerEnd - Date.now()) / 60000)}m remaining`
+    ? `Sleep timer: ${remaining}m remaining`
     : 'Sleep timer'
+  var label = btn.querySelector('.sleep-label')
+  if (active) {
+    if (!label) {
+      label = document.createElement('span')
+      label.className = 'sleep-label'
+      btn.appendChild(label)
+    }
+    label.textContent = remaining + 'm'
+  } else {
+    if (label) label.remove()
+  }
 }
 
 function updateFormatBadge(track) {
@@ -167,11 +196,23 @@ function updateFormatBadge(track) {
   if (!el) return
   const sr = track?.sampleRate || 0
   const bd = track?.bitsPerSample || 0
+  if (track && track.filePath && track.filePath.startsWith('http')) { el.textContent = 'Stream'; el.className = 'np-format'; el.style.background = 'rgba(255,0,0,.1)'; el.style.color = 'var(--color-yt,#f00)'; return }
   if (!sr && !bd) { el.textContent = ''; el.className = 'np-format'; return }
   el.textContent = fmtSpec(bd, sr)
   const isMaster = bd >= 24 && sr >= 176400  // 24-bit / 176.4kHz+
   const isHiRes  = bd >= 24 && sr > 48000
   el.className = 'np-format' + (isMaster ? ' hi-res master' : isHiRes ? ' hi-res' : '')
+}
+
+function updateCrossfadeBadge() {
+  const el = document.getElementById('np-crossfade')
+  if (!el) return
+  if (state._playerSettings && state._playerSettings.mode === 'crossfade') {
+    el.textContent = 'CF ' + (state._playerSettings.crossfadeSecs || 4) + 's'
+    el.style.display = ''
+  } else {
+    el.style.display = 'none'
+  }
 }
 
 // ── Context menu target ─────────────────────────────────────────────────────
@@ -200,6 +241,7 @@ async function init() {
   state.musicFolders   = info.musicFolders   || []
   state.recentlyPlayed = info.recentlyPlayed || []
   state.likedAlbums    = liked || []
+  state.downloadWishlist = info.wishlist || []
   audio.volume = info.volume ?? 0.8
   state.lastVolume = audio.volume
   setVolDisplay(audio.volume)
@@ -208,6 +250,7 @@ async function init() {
   renderSavedQueues()
   initChatSidebar()
   initPlaybackSettings()
+  _setupCP()
   setupListeners()
 
   const blocker = document.getElementById('mpv-blocker')
@@ -236,7 +279,8 @@ async function init() {
   if (cached?.length) {
     state.library = cached
     checkFollowedArtistsForNew()
-    navigate('home', null, { skipHistory: true })
+    var session = await window.api.getSessionState()
+    navigate(session && session.page ? session.page : 'home', session && session.page ? session.navId : null, { skipHistory: true, restoreScroll: true })
     syncLibraryExt()
     setTimeout(backgroundSync, 800)
     setTimeout(restorePlaybackState, 1200)
@@ -253,6 +297,7 @@ async function fullScan() {
   navigate('home', null, { skipHistory: true })
   setTimeout(fetchMissingArtwork, 1200)
   syncLibraryExt()
+  showSnackbar('Library scan complete: ' + state.library.length + ' albums found')
 }
 
 function _libSig(lib) { return lib.length + ':' + lib.map(a => a.id).join('') }
@@ -299,6 +344,19 @@ async function restorePlaybackState() {
   updateTrackHighlight()
   updateLikeBtn()
   syncExtension()
+
+  var queues = await window.api.getSavedQueues()
+  var autoQueue = queues.find(function(q) { return q.id === '_auto' })
+  if (autoQueue && autoQueue.tracks && autoQueue.tracks.length) {
+    state.queue = autoQueue.tracks
+    state.queueIndex = autoQueue.index || 0
+    state._restoredFromQueue = true
+    if (state.queuePanelOpen) renderQueuePanel()
+    showSnackbar('Previous queue restored (' + autoQueue.tracks.length + ' tracks)', 'Clear', function() {
+      state.queue = []; state.queueIndex = -1
+      if (state.queuePanelOpen) renderQueuePanel()
+    })
+  }
 }
 
 // ── Navigation ──────────────────────────────────────────────────────────────
@@ -350,6 +408,8 @@ function navigate(page, navId, opts = {}) {
     const savedScroll = _scrollMemory.get(`${page}:${navId ?? ''}`) || 0
     requestAnimationFrame(() => { contentEl.scrollTop = savedScroll })
   }
+
+  window.api.saveSessionState({ page: page, navId: navId || null, scrollTop: contentEl ? contentEl.scrollTop || 0 : 0 })
 }
 
 function navigateBack() {
@@ -476,6 +536,20 @@ function showLoading() { setContent(`<div class="loading-wrap"><div class="spinn
 function renderHome() {
   const hour = new Date().getHours()
   const greeting = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening'
+  var subtitles = [
+    'Ready to discover something new?',
+    'Your library is waiting.',
+    'What genre today?',
+    'Music never stops.',
+    'Find your next favorite album.',
+    'Soulseek is your superpower.',
+    'Lossless sounds better.',
+    'Your collection, your rules.',
+    'Press Ctrl+Shift+P for quick actions.',
+    'Ask the agent to find anything.',
+  ]
+  var subtitle = subtitles[Math.floor(Math.random() * subtitles.length)]
+  var greetingHTML = '<div class="greeting-fade-in"><div class="greeting">' + greeting + '<div class="greeting-sub">' + subtitle + '</div></div></div>'
   const quickIds = state.recentlyPlayed.slice(0, 6)
   const quickAlbums = quickIds.map(id => state.library.find(a => a.id === id)).filter(Boolean)
   if (quickAlbums.length < 6) {
@@ -488,6 +562,8 @@ function renderHome() {
       <svg viewBox="0 0 24 24"><path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
       Find artwork for ${missingCount} album${missingCount !== 1 ? 's' : ''}
     </button>` : ''
+
+  const jumpBackHTML = (state.queue.length && state.queueIndex >= 0) ? '<div class="jumpback-card" id="jumpback-card"><div class="jumpback-art">' + artImg(state.queue[state.queueIndex].artPath, 'jumpback-art-img', 'jumpback-art-fallback') + '</div><div class="jumpback-info"><div class="jumpback-label">Continue listening</div><div class="jumpback-title">' + esc(state.queue[state.queueIndex].title || 'Unknown') + '</div><div class="jumpback-artist">' + esc(state.queue[state.queueIndex].artist || '') + '</div></div><button class="jumpback-play" id="jumpback-play"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button></div>' : ''
 
   const quickHTML = quickAlbums.length ? `
     <div class="quick-grid">${quickAlbums.map(a => `
@@ -556,6 +632,23 @@ function renderHome() {
       </div>`
     }).join('')}</div>` : ''
 
+  var thirtyDaysAgo = Date.now() - 30 * 86400000
+  var recents = {}
+  state.playHistory.forEach(function(p) { if (p.ts > thirtyDaysAgo) { for (var i = 0; i < state.library.length; i++) { var a = state.library[i]; if (!a.tracks) continue; for (var j = 0; j < a.tracks.length; j++) { if (a.tracks[j].filePath === p.filePath) { recents[a.id] = true } } } } })
+  var pcount = {}
+  state.playHistory.forEach(function(p) { for (var i = 0; i < state.library.length; i++) { var a = state.library[i]; if (!a.tracks) continue; for (var j = 0; j < a.tracks.length; j++) { if (a.tracks[j].filePath === p.filePath) { pcount[a.id] = (pcount[a.id] || 0) + 1; break } } } })
+  var backAlbums = state.library.filter(function(a) { return !recents[a.id] && (pcount[a.id] || 0) >= 10 }).sort(function(a, b) { return (pcount[b.id] || 0) - (pcount[a.id] || 0) }).slice(0, 6)
+  var backHTML = backAlbums.length ? '<div class="section-header"><span class="section-title">Back in rotation</span></div><div class="scroll-row">' + backAlbums.map(albumCard).join('') + '</div>' : ''
+
+  var genreCounts = {}
+  state.library.forEach(function(a) { if (a.genre) { genreCounts[a.genre] = (genreCounts[a.genre] || 0) + 1 } })
+  var topGenres = Object.keys(genreCounts).sort(function(a, b) { return (genreCounts[b] || 0) - (genreCounts[a] || 0) }).slice(0, 6)
+  var mixColors = [['#5038a0','#3850a0'],['#a04038','#a07038'],['#2d7a4a','#1a5a7a'],['#6b38a0','#5038a0'],['#3850a0','#6b38a0'],['#a07038','#a04038']]
+  if (topGenres.length === 0) topGenres = ['Your Mix 1','Your Mix 2','Your Mix 3','Your Mix 4','Your Mix 5','Your Mix 6']
+  var dailyMixHTML = '<div class="section-header"><span class="section-title">Made for you</span></div><div class="scroll-row">' + topGenres.map(function(g, i) {
+    return '<div class="daily-mix-card" style="background:linear-gradient(135deg,' + (mixColors[i] ? mixColors[i][0] : '#333') + ',' + (mixColors[i] ? mixColors[i][1] : '#555') + ')" data-mix-genre="' + (g || '') + '"><span class="daily-mix-num">' + g + ' Mix</span><span class="daily-mix-sub">Based on your taste</span></div>'
+  }).join('') + '</div>'
+
   const allHTML = state.library.length ? `
     <div class="section-header">
       <span class="section-title">Your Library</span>
@@ -568,8 +661,8 @@ function renderHome() {
     </div>`
 
   setContent(`<div class="page">
-    <div class="home-header"><div class="home-header-left"><canvas class="home-clock" id="home-clock" width="56" height="56"></canvas><div class="greeting">${greeting}</div></div>${artBtnHTML}</div>
-    ${quickHTML}${followingHTML}${recentHTML}${addedHTML}${allHTML}
+    <div class="home-header"><div class="home-header-left"><canvas class="home-clock" id="home-clock" width="56" height="56"></canvas>${greetingHTML}</div>${artBtnHTML}</div>
+    ${jumpBackHTML}${quickHTML}${followingHTML}${recentHTML}${addedHTML}${backHTML}${dailyMixHTML}${allHTML}
     <div id="yt-home"></div>
   </div>`)
 
@@ -627,9 +720,25 @@ function _bindExploreSections(root, sections) {
 
 async function renderExplore() {
   setContent(`<div class="page"><div class="yt-status">Loading…</div></div>`)
+  var moods = [
+    { name:'Energetic', emoji:'⚡', color:'#e8484a' },
+    { name:'Chill', emoji:'🌊', color:'#3850a0' },
+    { name:'Focus', emoji:'🎯', color:'#2d7a4a' },
+    { name:'Happy', emoji:'😊', color:'#a07038' },
+    { name:'Melancholy', emoji:'🌧️', color:'#5038a0' },
+    { name:'Romantic', emoji:'💝', color:'#a0405a' },
+    { name:'Dark', emoji:'🌑', color:'#1a1a2a' },
+    { name:'Epic', emoji:'🏔️', color:'#6b38a0' },
+  ]
+  var moodHTML = '<div class="section-header" style="margin-top:0"><span class="section-title">How are you feeling?</span></div><div class="mood-grid">' + moods.map(function(m) { return '<div class="mood-card" style="background:' + m.color + '" data-mood="' + m.name.toLowerCase() + '"><div class="mood-card-emoji">' + m.emoji + '</div><div class="mood-card-label">' + m.name + '</div></div>' }).join('') + '</div>'
   const status = await window.api.ytAuthStatus().catch(() => ({ ok: false }))
   if (state.currentPage !== 'explore') return
   const signedIn = !!(status.ok && status.signedIn)
+
+  var decades = ['1950s','1960s','1970s','1980s','1990s','2000s','2010s','2020s']
+  var eraHTML = '<div class="section-header"><span class="section-title">Time machine</span></div><div class="era-timeline">' + decades.map(function(d) { return '<button class="era-chip" data-era="' + d + '">' + d + '</button>' }).join('') + '</div>'
+
+  var discoveryHTML = '<div class="section-header"><span class="section-title">Discover</span></div><div class="discovery-swipe" id="discovery-swipe">' + state.library.slice(0, 10).map(function(a, i) { return '<div class="discovery-swipe-card" style="z-index:' + (10 - i) + '"><div style="width:100%;height:100%;background:var(--bg3);display:flex;align-items:center;justify-content:center;flex-direction:column;gap:8px">' + artImg(a.artPath, '', '') + '<div style="font-size:14px;font-weight:600;padding:0 16px;text-align:center">' + esc(a.name) + '</div><div style="font-size:12px;color:var(--text2)">' + esc(a.artist) + '</div></div></div>' }).join('') + '</div>'
 
   setContent(`<div class="page">
     <div class="page-header" style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
@@ -637,8 +746,11 @@ async function renderExplore() {
       <button class="sort-btn" id="explore-refresh-btn" style="margin-left:auto">Refresh</button>
       ${signedIn ? `<button class="sort-btn" id="yt-signout-btn">Signed in ✓ · Sign out</button>` : ''}
     </div>
+    ${moodHTML}
     ${signedIn ? '' : _ytConnectBanner()}
+    ${eraHTML}
     <div id="explore-feed"><div class="yt-status">Loading recommendations…</div></div>
+    ${discoveryHTML}
   </div>`)
 
   document.getElementById('explore-refresh-btn')?.addEventListener('click', () => {
@@ -801,7 +913,7 @@ function renderArtists() {
       </div>
     </div>
     <div class="artist-grid" id="artist-grid">${artists.map(ar => `
-      <div class="artist-card" data-artist="${esc(ar.name)}">
+      <div class="artist-card" data-artist="${esc(ar.name)}" style="position:relative">
         <div class="artist-card-art">
           ${ar.artPath
             ? `<img src="file://${ar.artPath}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
@@ -810,8 +922,11 @@ function renderArtists() {
             <svg viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
           </div>
         </div>
-        <div class="artist-card-name">${esc(ar.name)}</div>
+        <div class="artist-card-name">${esc(ar.name)}<span style="font-size:10px;color:${state.followedArtists.indexOf(ar.name) !== -1 ? 'var(--accent)' : 'var(--text3)'}">${state.followedArtists.indexOf(ar.name) !== -1 ? ' Following' : ''}</span></div>
         <div class="artist-card-meta">${ar.albums.length} album${ar.albums.length !== 1 ? 's' : ''}</div>
+        <button class="artist-play-btn" data-play-artist="${esc(ar.name)}" style="position:absolute;bottom:8px;right:8px;width:32px;height:32px;border-radius:50%;background:var(--accent);border:none;display:flex;align-items:center;justify-content:center;cursor:pointer;opacity:0;transition:opacity .15s">
+          <svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:#000"><path d="M8 5v14l11-7z"/></svg>
+        </button>
       </div>`).join('')}
     ${state.ytFollowed.map(a => `
       <div class="artist-card yt-artist-card" data-channel="${esc(a.channelId)}" data-artist="${esc(a.name)}">
@@ -861,6 +976,12 @@ function renderLibrary() {
     let albums = [...state.library, ...ytAlbums]
     if (state.libLikedOnly) albums = albums.filter(a => state.likedAlbums.includes(a.id) || a.isYt)
     if (state.libGenre) albums = albums.filter(a => a.genre === state.libGenre)
+    if (state.libYear) albums = albums.filter(a => String(a.year) === state.libYear)
+    if (state.libFormat) albums = albums.filter(function(a) { return a.tracks && a.tracks[0] && a.tracks[0].filePath && a.tracks[0].filePath.toLowerCase().endsWith('.' + state.libFormat) })
+    if (state.libDecade) { var d = parseInt(state.libDecade); albums = albums.filter(function(a) { return a.year >= d && a.year < d + 10 }) }
+    if (state.libFolder) albums = albums.filter(function(a) { return a.tracks && a.tracks[0] && a.tracks[0].filePath && a.tracks[0].filePath.indexOf(state.libFolder) === 0 })
+    var searchQ = (document.getElementById('lib-search') || {}).value || ''
+    if (searchQ) { var sq = searchQ.toLowerCase(); albums = albums.filter(function(a) { return (a.name && a.name.toLowerCase().indexOf(sq) !== -1) || (a.artist && a.artist.toLowerCase().indexOf(sq) !== -1) }) }
     if (state.libSort === 'alpha')  return albums.sort((a, b) => a.name.localeCompare(b.name))
     if (state.libSort === 'artist') return albums.sort((a, b) => a.artist.localeCompare(b.artist))
     if (state.libSort === 'year')   return albums.sort((a, b) => (b.year || 0) - (a.year || 0))
@@ -869,6 +990,11 @@ function renderLibrary() {
     if (state.libSort === 'genre') return albums.sort((a, b) => (a.genre || 'zzz').localeCompare(b.genre || 'zzz'))
     return albums
   }
+
+  var sortedAlbums = getSorted()
+  var fmtCounts = { flac: 0, mp3: 0, other: 0 }
+  sortedAlbums.forEach(function(a) { if (a.tracks && a.tracks[0] && a.tracks[0].filePath) { var ext = a.tracks[0].filePath.split('.').pop().toLowerCase(); if (ext === 'flac') fmtCounts.flac++; else if (ext === 'mp3') fmtCounts.mp3++; else fmtCounts.other++ } })
+  var fmtBreak = '<span style="font-size:11px;color:var(--text3);margin-left:12px">' + fmtCounts.flac + ' FLAC, ' + fmtCounts.mp3 + ' MP3, ' + fmtCounts.other + ' other</span>'
 
   const sortBtns = [
     { key: 'alpha', label: 'A–Z' },
@@ -879,19 +1005,68 @@ function renderLibrary() {
     { key: 'added', label: 'Recently added' },
   ].map(s => `<button class="sort-btn${state.libSort === s.key ? ' active' : ''}" data-sort="${s.key}">${s.label}</button>`).join('')
 
+  const viewToggle = `<button class="sort-btn${state.libView === 'folders' ? ' active' : ''}" id="lib-view-folders">📁 Folders</button>`
   const likedBtn = `<button class="sort-btn${state.libLikedOnly ? ' active' : ''}" id="liked-filter-btn" style="margin-left:auto">♥ Liked only</button>`
 
   const genres = [...new Set(state.library.map(a => a.genre).filter(Boolean))].sort()
   const genreChips = genres.length ? `<div class="genre-chip-bar">
     <button class="genre-chip${!state.libGenre ? ' active' : ''}" data-genre="">All</button>
-    ${genres.map(g => `<button class="genre-chip${state.libGenre === g ? ' active' : ''}" data-genre="${esc(g)}">${esc(g)}</button>`).join('')}
+    ${genres.map(g => `<button class="genre-chip${state.libGenre === g ? ' active' : ''}" data-genre="${esc(g)}" title="${state.library.filter(function(a){return a.genre===g}).length} albums">${esc(g)}</button>`).join('')}
   </div>` : ''
+
+  var activeFilterCount = 0
+  if (state.libGenre) activeFilterCount++
+  if (state.libYear) activeFilterCount++
+  if (state.libFormat) activeFilterCount++
+  if (state.libDecade) activeFilterCount++
+  var filterBadge = activeFilterCount > 0 ? '<span style="display:inline-block;margin-left:8px;padding:2px 8px;background:var(--accent);color:#000;border-radius:100px;font-size:11px;font-weight:600">' + activeFilterCount + ' filter' + (activeFilterCount > 1 ? 's' : '') + ' active</span>' : ''
+
+  var filterIndicator = ''
+  if (state.libDecade) filterIndicator = '<div style="display:inline-flex;align-items:center;gap:6px;margin-left:12px;padding:3px 10px;background:var(--accent);color:#000;border-radius:100px;font-size:11px;font-weight:600">' + state.libDecade + 's<button style="background:none;border:none;color:#000;cursor:pointer;font-size:14px;line-height:1" id="clear-decade-filter">&times;</button></div>'
+
+  function buildFolderTree() {
+    var folders = [...new Set(state.library.map(function(a) {
+      if (!a.tracks || !a.tracks[0] || !a.tracks[0].filePath) return ''
+      var parts = a.tracks[0].filePath.split('/'); parts.pop()
+      return parts.join('/')
+    }).filter(Boolean))].sort()
+
+    if (state.libFolder) {
+      var folderBreadcrumb = '<div class="folder-breadcrumb" id="folder-back-btn"><span class="folder-back-arrow">←</span> Back to folders</div>'
+      return folderBreadcrumb + '<div class="album-grid" id="lib-grid">' + sortedAlbums.map(albumCard).join('') + '</div>'
+    }
+
+    return '<div class="folder-tree">' + folders.map(function(f) {
+      var name = f.split('/').pop() || f
+      var count = state.library.filter(function(a) { return a.tracks && a.tracks[0] && a.tracks[0].filePath && a.tracks[0].filePath.indexOf(f) === 0 }).length
+      return '<div class="folder-tree-item" data-folder="' + esc(f) + '"><span class="folder-icon">📁</span><span class="folder-name">' + esc(name) + '</span><span class="folder-count">' + count + ' albums</span></div>'
+    }).join('') + '</div>'
+  }
+
+  var totalTrackCount = 0, totalLibDur = 0, flacCount = 0, hiresCount = 0
+  state.library.forEach(function(a) {
+    if (a.tracks) {
+      totalTrackCount += a.tracks.length
+      a.tracks.forEach(function(t) {
+        totalLibDur += t.duration || 0
+        if (t.filePath && t.filePath.toLowerCase().endsWith('.flac')) flacCount++
+        if (t.bitsPerSample >= 24 || t.sampleRate >= 96000) hiresCount++
+      })
+    }
+  })
+  var summaryHTML = '<div class="section-header"><span class="section-title">Library Stats</span></div><div style="display:flex;gap:12px;padding:0 28px 20px;flex-wrap:wrap">' +
+    '<div class="liked-stat"><div class="liked-stat-val">' + state.library.length + '</div><div class="liked-stat-lbl">Albums</div></div>' +
+    '<div class="liked-stat"><div class="liked-stat-val">' + totalTrackCount + '</div><div class="liked-stat-lbl">Tracks</div></div>' +
+    '<div class="liked-stat"><div class="liked-stat-val">' + fmtDur(totalLibDur) + '</div><div class="liked-stat-lbl">Duration</div></div>' +
+    '<div class="liked-stat"><div class="liked-stat-val">' + flacCount + '</div><div class="liked-stat-lbl">FLAC</div></div>' +
+    '<div class="liked-stat"><div class="liked-stat-val">' + hiresCount + '</div><div class="liked-stat-lbl">Hi-Res</div></div>' +
+    '</div>'
 
   setContent(`<div class="page">
     <div class="page-header">
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
         <h1 class="section-title">Your Library</h1>
-        <span class="lib-count">${state.library.length + state.ytSavedAlbums.length} albums</span>
+        <span class="lib-count">${state.library.length + state.ytSavedAlbums.length} albums</span>${filterBadge}${fmtBreak}${filterIndicator}
         <button class="rescan-btn" id="lib-rescan-btn" title="Rescan music folders">
           <svg viewBox="0 0 24 24"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/></svg>
           Rescan
@@ -900,10 +1075,17 @@ function renderLibrary() {
       <div class="library-search-wrap">
         <input class="library-search" id="lib-search" type="text" placeholder="Search albums or artists…">
       </div>
-      <div class="sort-bar">${sortBtns}${likedBtn}</div>
+      <div class="sort-bar">${sortBtns}${viewToggle}${likedBtn}</div>
       ${genreChips}
+      <div class="lib-advanced-bar">
+        <select class="lib-select" id="lib-year-filter"><option value="">Year: All</option>${(()=>{var y=[...new Set(state.library.map(function(a){return a.year}).filter(Boolean))].sort();return y.map(function(v){return '<option value="'+v+'">'+v+'</option>'}).join('')})()}</select>
+        <select class="lib-select" id="lib-format-filter"><option value="">Format: All</option>${(()=>{var f=[...new Set(state.library.map(function(a){var t=a.tracks&&a.tracks[0];return t?(t.filePath||'').split('.').pop():null}).filter(Boolean))].sort();return f.map(function(v){return '<option value="'+v+'">'+v.toUpperCase()+'</option>'}).join('')})()}</select>
+        <select class="lib-select" id="lib-decade-filter"><option value="">Decade: All</option><option value="1950"${state.libDecade==='1950'?' selected':''}>1950s</option><option value="1960"${state.libDecade==='1960'?' selected':''}>1960s</option><option value="1970"${state.libDecade==='1970'?' selected':''}>1970s</option><option value="1980"${state.libDecade==='1980'?' selected':''}>1980s</option><option value="1990"${state.libDecade==='1990'?' selected':''}>1990s</option><option value="2000"${state.libDecade==='2000'?' selected':''}>2000s</option><option value="2010"${state.libDecade==='2010'?' selected':''}>2010s</option><option value="2020"${state.libDecade==='2020'?' selected':''}>2020s</option></select>
+        <button class="lib-reset-btn" id="lib-reset-filters">Reset</button>
+      </div>
     </div>
-    <div class="album-grid" id="lib-grid">${getSorted().map(albumCard).join('')}</div>
+    ${state.libView === 'folders' ? buildFolderTree() : `<div class="album-grid" id="lib-grid">${sortedAlbums.map(albumCard).join('')}</div>`}
+    ${summaryHTML}
   </div>`)
 
   document.getElementById('lib-search')?.addEventListener('input', e => {
@@ -931,6 +1113,15 @@ function renderLibrary() {
       state.libGenre = btn.dataset.genre || null
       renderLibrary()
     })
+    btn.addEventListener('dblclick', function(e) {
+      e.preventDefault()
+      var genre = btn.dataset.genre
+      if (!genre) return
+      var albums = state.library.filter(function(a) { return a.genre === genre })
+      if (!albums.length) return
+      var album = albums[Math.floor(Math.random() * albums.length)]
+      if (album) playAlbum(album, 0)
+    })
   })
 
   document.getElementById('lib-rescan-btn')?.addEventListener('click', async () => {
@@ -942,7 +1133,33 @@ function renderLibrary() {
     state.library = data.albums || []
     renderLibrary()
     syncLibraryExt()
+    showSnackbar('Library scan complete: ' + state.library.length + ' albums found')
   })
+
+  document.getElementById('lib-year-filter')?.addEventListener('change', function() { state.libYear = this.value; renderLibrary() })
+  document.getElementById('lib-format-filter')?.addEventListener('change', function() { state.libFormat = this.value; renderLibrary() })
+  document.getElementById('lib-decade-filter')?.addEventListener('change', function() { state.libDecade = this.value; renderLibrary() })
+  document.getElementById('lib-reset-filters')?.addEventListener('click', function() { state.libYear = ''; state.libFormat = ''; state.libDecade = ''; renderLibrary() })
+  document.getElementById('lib-view-folders')?.addEventListener('click', function() {
+    state.libView = state.libView === 'folders' ? 'grid' : 'folders'
+    state.libFolder = null
+    renderLibrary()
+  })
+  document.querySelectorAll('.folder-tree-item').forEach(function(item) {
+    item.addEventListener('click', function() {
+      state.libFolder = item.dataset.folder
+      renderLibrary()
+    })
+  })
+  document.getElementById('folder-back-btn')?.addEventListener('click', function() {
+    state.libFolder = null
+    renderLibrary()
+  })
+  var libSearch = document.getElementById('lib-search')
+  if (libSearch) {
+    var searchTimeout
+    libSearch.addEventListener('input', function() { clearTimeout(searchTimeout); searchTimeout = setTimeout(renderLibrary, 250) })
+  }
 }
 
 function renderAlbum(albumId) {
@@ -1124,6 +1341,20 @@ function toggleTrackLike(filePath) {
   if (idx >= 0) { state.likedTracks.splice(idx, 1); liked = false }
   else { state.likedTracks.push(filePath); liked = true }
   window.api.saveLikedTracks(state.likedTracks)
+  if (liked) {
+    var likeHistory = JSON.parse(localStorage.getItem('papa_like_history') || '[]')
+    likeHistory.push({ path: filePath, ts: Date.now() })
+    if (likeHistory.length > 500) likeHistory = likeHistory.slice(-500)
+    localStorage.setItem('papa_like_history', JSON.stringify(likeHistory))
+  }
+  if (!liked) {
+    var fp = filePath
+    showSnackbar('Removed from Liked Songs', 'Undo', function() {
+      state.likedTracks.push(fp)
+      window.api.saveLikedTracks(state.likedTracks)
+      navigate(state.currentPage, _currentNavId(), { skipHistory: true })
+    })
+  }
   return liked
 }
 
@@ -1166,17 +1397,48 @@ function renderSearch(query) {
     })
     return
   }
-  const q = query.toLowerCase()
-  const matchAlbums = state.library.filter(a =>
+  var filters = _parseSearchOperators(query)
+  var searchText = filters.text
+  const q = searchText.toLowerCase()
+  var matchAlbums = state.library.filter(a =>
     a.name.toLowerCase().includes(q) || a.artist.toLowerCase().includes(q)
   )
   const artistSet = new Set()
   state.library.forEach(a => { if (a.artist.toLowerCase().includes(q)) artistSet.add(a.artist) })
   const matchArtists = [...artistSet]
-  const matchTracks = state.library.flatMap(a =>
+  var matchTracks = state.library.flatMap(a =>
     a.tracks.filter(t => t.title.toLowerCase().includes(q))
       .map(t => ({ ...t, albumId: a.id, albumArtist: a.artist, artPath: a.artPath }))
   ).slice(0, 20)
+
+  if (filters.artist) {
+    matchAlbums = matchAlbums.filter(function(a) { return (a.artist || '').toLowerCase().indexOf(filters.artist.toLowerCase()) !== -1 })
+    matchTracks = matchTracks.filter(function(t) { return (t.albumArtist || t.artist || '').toLowerCase().indexOf(filters.artist.toLowerCase()) !== -1 })
+  }
+  if (filters.yearMin) matchAlbums = matchAlbums.filter(function(a) { return a.year >= filters.yearMin })
+  if (filters.yearMax) matchAlbums = matchAlbums.filter(function(a) { return a.year <= filters.yearMax })
+  if (filters.format) {
+    var fmt = filters.format.toLowerCase()
+    matchTracks = matchTracks.filter(function(t) { return t.filePath && t.filePath.toLowerCase().endsWith('.' + fmt) })
+    matchAlbums = matchAlbums.filter(function(a) { return a.tracks && a.tracks[0] && a.tracks[0].filePath && a.tracks[0].filePath.toLowerCase().endsWith('.' + fmt) })
+  }
+  if (filters.album) matchAlbums = matchAlbums.filter(function(a) { return (a.name || '').toLowerCase().indexOf(filters.album.toLowerCase()) !== -1 })
+  if (filters.genre) matchAlbums = matchAlbums.filter(function(a) { return (a.genre || '').toLowerCase() === filters.genre.toLowerCase() })
+  if (filters.is === 'liked') { matchTracks = matchTracks.filter(function(t) { return state.likedTracks.indexOf(t.filePath) !== -1 }); matchAlbums = matchAlbums.filter(function(a) { return state.likedAlbums.indexOf(a.id) !== -1 }) }
+  if (filters.is === 'downloaded') { matchTracks = matchTracks.filter(function(t) { return t.filePath && t.filePath.indexOf('/mnt/data/MUSIC') === 0 }) }
+  if (filters.is === 'flac') { matchTracks = matchTracks.filter(function(t) { return t.filePath && t.filePath.toLowerCase().endsWith('.flac') }) }
+  if (filters.is === 'lossy') { matchTracks = matchTracks.filter(function(t) { var fp = (t.filePath||'').toLowerCase(); return fp.endsWith('.mp3') || fp.endsWith('.m4a') || fp.endsWith('.aac') }) }
+  if (filters.playsMin) matchTracks = matchTracks.filter(function(t) { return (state.playCounts[t.filePath] || 0) > filters.playsMin })
+  if (filters.durMax) matchTracks = matchTracks.filter(function(t) { return (t.duration || 0) < filters.durMax })
+  if (filters.durMin) matchTracks = matchTracks.filter(function(t) { return (t.duration || 0) > filters.durMin })
+
+  var didYouMean = null
+  if (!matchAlbums.length && !matchTracks.length && !artistSet.size && searchText.length > 2) {
+    var candidates = state.library.map(function(a) { return a.artist + ' \u2014 ' + a.name })
+    didYouMean = _fuzzyFind(searchText, candidates, 3)
+  }
+
+  var dymHTML = didYouMean && didYouMean.length ? '<div class="did-you-mean">Did you mean: ' + didYouMean.map(function(d, i) { return '<span class="dym-link" data-dym-idx="' + i + '">' + esc(d) + '</span>' + (i < didYouMean.length - 1 ? ', ' : '') }).join('') + '?</div>' : ''
 
   const hasLocal = matchAlbums.length || matchArtists.length || matchTracks.length
   ytSearchState.showTopResult = !hasLocal
@@ -1185,7 +1447,8 @@ function renderSearch(query) {
   let html = `<div class="page">
     <div class="search-tabs" id="search-tabs">
       ${tabs.map(t => `<button class="search-tab${t==='All'?' active':''}" data-tab="${t}">${t}</button>`).join('')}
-    </div>`
+    </div>
+    ${dymHTML}`
 
   if (hasLocal) {
     // Top result — best matching album or artist
@@ -1261,7 +1524,12 @@ function renderSearch(query) {
       html += `</div></div>`
     }
   } else {
-    html += `<div class="empty-wrap"><h2>Nothing in your library for "${esc(query)}"</h2><p>Search Soulseek below to find &amp; download it.</p></div>`
+    html += '<div class="empty-wrap" style="padding:60px 20px;text-align:center">' +
+      '<svg viewBox="0 0 24 24" style="width:64px;height:64px;fill:var(--text3);margin-bottom:16px;opacity:.4"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>' +
+      '<h2>No results for "' + esc(searchText || query) + '"</h2>' +
+      '<p>Try different keywords, check spelling, or use Soulseek search.</p>' +
+      '<p style="font-size:11px;color:var(--text3);margin-top:8px">Try operators: artist:"name", year:2020, format:flac, is:liked, genre:rock</p>' +
+      '</div>'
   }
 
   // YouTube section (async — filled by runYtSearch)
@@ -1284,6 +1552,13 @@ function renderSearch(query) {
   html += `</div>`
   setContent(html)
   bindContentEvents()
+
+  document.querySelectorAll('.dym-link').forEach(function(link) {
+    link.addEventListener('click', function() {
+      var idx = parseInt(link.dataset.dymIdx)
+      if (didYouMean && didYouMean[idx]) { navigate('search', didYouMean[idx]) }
+    })
+  })
 
   // Wire up filter tabs
   document.querySelectorAll('#search-tabs .search-tab').forEach(tab => {
@@ -2097,21 +2372,24 @@ async function renderYtArtist(channelId) {
 function renderArtist(artistName) {
   const artistAlbums = state.library.filter(a => a.artist === artistName || a.albumArtist === artistName)
   if (!artistAlbums.length) { navigate('home', null, { skipHistory: true }); return }
-  const totalTracks = artistAlbums.reduce((s, a) => s + a.tracks.length, 0)
-  const following = state.followedArtists.includes(artistName)
+  var totalTracks = 0, totalDur = 0
+  artistAlbums.forEach(function(a) { totalTracks += (a.tracks || []).length; (a.tracks || []).forEach(function(t) { totalDur += t.duration || 0 }) })
+  var artistHours = Math.floor(totalDur / 3600), artistMins = Math.floor((totalDur % 3600) / 60)
+  var isFollowed = state.followedArtists.indexOf(artistName) !== -1
+  var heroHTML = '<div class="artist-hero"><div class="artist-hero-art">' + (artistAlbums[0] && artistAlbums[0].artPath ? '<img src="file://' + artistAlbums[0].artPath + '" alt="">' : '<div style="width:100%;height:100%;background:var(--bg4);display:flex;align-items:center;justify-content:center"><svg viewBox="0 0 24 24" style="width:48px;height:48px;fill:var(--text3)"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg></div>') + '</div><div class="artist-hero-info"><div class="artist-hero-name">' + esc(artistName) + '</div><div class="artist-hero-meta">' + artistAlbums.length + ' albums &middot; ' + totalTracks + ' tracks &middot; ' + artistHours + 'h ' + artistMins + 'm</div><button class="follow-btn' + (isFollowed ? ' following' : '') + '" id="artist-follow-btn">' + (isFollowed ? 'Following' : 'Follow') + '</button></div></div>'
 
-  // Split albums by type
-  const albums   = artistAlbums.filter(a => a.tracks.length >= 6)
-  const eps      = artistAlbums.filter(a => a.tracks.length >= 3 && a.tracks.length <= 5)
-  const singles  = artistAlbums.filter(a => a.tracks.length <= 2)
+  var albums = [], eps = [], singles = []
+  artistAlbums.forEach(function(a) {
+    var tc = (a.tracks || []).length
+    if (tc <= 3) singles.push(a)
+    else if (tc <= 6) eps.push(a)
+    else albums.push(a)
+  })
 
-  function typeSection(label, items) {
-    if (!items.length) return ''
-    return `<div class="album-type-section">
-      <div class="album-type-header">${label}</div>
-      <div class="album-grid">${items.map(albumCard).join('')}</div>
-    </div>`
-  }
+  var discogHTML = ''
+  if (albums.length) discogHTML += '<div class="discography-section"><div class="discography-section-title">Albums</div><div class="album-grid">' + albums.map(albumCard).join('') + '</div></div>'
+  if (eps.length) discogHTML += '<div class="discography-section"><div class="discography-section-title">EPs & Singles</div><div class="album-grid">' + eps.concat(singles).map(albumCard).join('') + '</div></div>'
+  if (!albums.length && !eps.length && !singles.length) discogHTML += '<div class="album-grid">' + artistAlbums.map(albumCard).join('') + '</div>'
 
   // Related artists: same genre, different artist
   const artistGenres = new Set(artistAlbums.map(a => a.genre).filter(Boolean))
@@ -2133,31 +2411,16 @@ function renderArtist(artistName) {
       }).join('')}</div>
     </div>` : ''
 
-  // Derive hero art from first album with artwork
-  const heroArtAlbum = artistAlbums.find(a => a.artPath)
-  const heroArtSrc = heroArtAlbum ? 'file://' + heroArtAlbum.artPath : ''
-
-  setContent(`<div>
-    <div class="artist-hero" id="artist-hero">
-      <img class="artist-hero-photo" id="artist-hero-bg-img" src="${heroArtSrc}" alt="" ${heroArtSrc ? 'onload="this.classList.add(\'loaded\')"' : 'style="display:none"'} onerror="this.style.display='none'">
-      <img class="artist-portrait" id="artist-portrait-img" src="" alt="" style="display:none" onerror="this.style.display='none'">
-      <div class="artist-hero-name">${esc(artistName)}</div>
-      <div class="artist-hero-meta">${artistAlbums.length} release${artistAlbums.length !== 1 ? 's' : ''} · ${totalTracks} songs</div>
-      <button class="follow-btn ${following ? 'following' : ''}" id="artist-follow-btn" data-artist="${esc(artistName)}">${following ? 'Following' : 'Follow'}</button>
-    </div>
-    <div class="page" style="padding-top:16px">
+  setContent(`${heroHTML}<div class="page" style="padding-top:16px">
       <div class="artist-bio" id="artist-bio"><div class="artist-bio-skeleton"></div></div>
-      ${typeSection('Albums', albums)}
-      ${typeSection('EPs', eps)}
-      ${typeSection('Singles', singles)}
+      ${discogHTML}
       ${relatedHTML}
-    </div>
-  </div>`)
+    </div>`)
 
-  document.getElementById('artist-follow-btn')?.addEventListener('click', () => {
-    const now = toggleFollowArtist(artistName)
-    const btn = document.getElementById('artist-follow-btn')
-    if (btn) { btn.classList.toggle('following', now); btn.textContent = now ? 'Following' : 'Follow' }
+  document.getElementById('artist-follow-btn')?.addEventListener('click', function() {
+    var followed = toggleFollowArtist(artistName)
+    this.textContent = followed ? 'Following' : 'Follow'
+    this.classList.toggle('following', followed)
   })
   // Related artist cards click
   document.querySelectorAll('[data-artist]').forEach(card => {
@@ -2326,11 +2589,23 @@ function _plTotalDur(pl) {
 }
 
 function renderPlaylists() {
-  const cards = state.playlists.map(pl => `
+  var sorted = [...state.playlists]
+  if (state.playlistSort === 'recent') {
+    sorted.sort(function(a, b) {
+      var aLatest = 0, bLatest = 0
+      var aPaths = new Set((a.tracks || []).map(function(t) { return t.filePath }))
+      var bPaths = new Set((b.tracks || []).map(function(t) { return t.filePath }))
+      for (var i = 0; i < state.playHistory.length; i++) { var p = state.playHistory[i]; if (aPaths.has(p.filePath) && p.ts > aLatest) aLatest = p.ts; if (bPaths.has(p.filePath) && p.ts > bLatest) bLatest = p.ts }
+      return bLatest - aLatest
+    })
+  }
+  const cards = sorted.map(pl => `
     <div class="pl-card" data-pl="${esc(pl.id)}">
+      <button class="pl-rename-btn" data-pl-id="${esc(pl.id)}" title="Rename" style="position:absolute;top:4px;right:4px;background:none;border:none;color:var(--text3);cursor:pointer;font-size:12px">&#9998;</button>
+      <button class="pl-dup-btn" data-pl-id="${esc(pl.id)}" title="Duplicate" style="position:absolute;top:4px;right:28px;background:none;border:none;color:var(--text3);cursor:pointer;font-size:12px">&#128203;</button>
       ${_plCollage(pl, 'pl-card-art')}
       <div class="pl-card-name">${esc(pl.name)}</div>
-      <div class="pl-card-meta">${(pl.tracks || []).length} song${(pl.tracks || []).length !== 1 ? 's' : ''}</div>
+      <div class="pl-card-meta">${pl.type === 'smart' ? _evalSmartPlaylist(pl).length : (pl.tracks || []).length} song${(pl.type === 'smart' ? _evalSmartPlaylist(pl).length : (pl.tracks || []).length) !== 1 ? 's' : ''}</div>
     </div>`).join('')
 
   setContent(`<div class="page">
@@ -2342,6 +2617,12 @@ function renderPlaylists() {
           <svg viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
           New playlist
         </button>
+        <button class="rescan-btn" id="new-smart-pl-btn">
+          <svg viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+          + New Smart Playlist
+        </button>
+        <button class="new-pl-btn" id="import-pl-btn">📥 Import</button>
+        <button class="sort-btn" id="pl-sort-btn">${state.playlistSort === 'recent' ? 'Sort: Recent' : 'Sort: A-Z'}</button>
       </div>
     </div>
     ${state.playlists.length
@@ -2369,10 +2650,12 @@ function renderPlaylists() {
 function renderPlaylist(id, sortKey = 'default') {
   const pl = state.playlists.find(p => p.id === id)
   if (!pl) { navigate('playlists', null, { skipHistory: true }); return }
-  let tracks = [...(pl.tracks || [])]
+  let tracks = pl.type === 'smart' ? _evalSmartPlaylist(pl) : [...(pl.tracks || [])]
   if (sortKey === 'title') tracks.sort((a, b) => (a.title || '').localeCompare(b.title || ''))
   else if (sortKey === 'artist') tracks.sort((a, b) => (a.albumArtist || a.artist || '').localeCompare(b.albumArtist || b.artist || ''))
   const totalDur = tracks.reduce((s, t) => s + (t.duration || 0), 0)
+  const plTotalDur = (pl.tracks || []).reduce((s, t) => s + (t.duration || 0), 0)
+  const durStr = fmtDur(plTotalDur)
   const colors = ['#5038a0','#a04038','#2d7a4a','#3850a0','#a07038','#6b38a0','#1a5a7a','#7a1a4a']
   const color = colors[parseInt((id.replace(/\D/g,'0').slice(-2) || '0'), 10) % colors.length]
 
@@ -2446,13 +2729,15 @@ function renderPlaylist(id, sortKey = 'default') {
       </div>
     </div>` : ''
 
+  var plLiked = state.likedAlbums.indexOf('pl_' + id) !== -1
+
   setContent(`
     <div class="album-hero pl-hero" style="background: linear-gradient(${color}cc, var(--bg) 100%)">
       ${_plCollage(pl, 'album-hero-art pl-hero-art')}
       <div class="album-hero-info">
         <div class="album-hero-type">Playlist</div>
         <div class="album-hero-title">${esc(pl.name)}</div>
-        <div class="album-hero-meta">${pl.tracks.length} song${pl.tracks.length !== 1 ? 's' : ''}${pl.tracks.length ? `, ${fmtTime(totalDur)}` : ''}</div>
+        <div class="album-hero-meta">${tracks.length} tracks · ${durStr}</div>
       </div>
     </div>
     <div class="album-controls">
@@ -2465,6 +2750,8 @@ function renderPlaylist(id, sortKey = 'default') {
       <button class="ctrl-btn" id="pl-delete-btn" title="Delete playlist">
         <svg viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
       </button>
+      <button class="ctrl-btn${plLiked ? ' active' : ''}" id="pl-fav-btn" title="Favorite playlist">♥</button>
+      <button class="pl-action-btn" id="pl-export-btn">Export</button>
     </div>
     <div class="pl-sort-row">
       <span class="pl-sort-label">Sort:</span>
@@ -2494,11 +2781,21 @@ function renderPlaylist(id, sortKey = 'default') {
     })
   })
 
+  document.getElementById('pl-fav-btn')?.addEventListener('click', () => {
+    toggleLike('pl_' + id)
+    renderPlaylist(id)
+  })
+
   document.getElementById('pl-delete-btn')?.addEventListener('click', () => {
-    if (!confirm(`Delete playlist "${pl.name}"?`)) return
+    var deletedPl = JSON.parse(JSON.stringify(pl))
     state.playlists = state.playlists.filter(p => p.id !== id)
     window.api.deletePlaylist(id)
     navigate('playlists', null, { skipHistory: true })
+    showSnackbar('Playlist deleted', 'Undo', function() {
+      state.playlists.push(deletedPl)
+      window.api.savePlaylist(deletedPl)
+      renderPlaylists()
+    })
   })
 
   bindYtEntityLinks(document.querySelector('.track-list'))
@@ -2536,10 +2833,16 @@ function renderPlaylist(id, sortKey = 'default') {
   document.querySelectorAll('[data-pl-remove]').forEach(btn => {
     btn.addEventListener('click', e => {
       e.stopPropagation()
-      const i = parseInt(btn.dataset.plRemove)
+      var i = parseInt(btn.dataset.plRemove)
+      var removedTrack = pl.tracks[i]
       pl.tracks.splice(i, 1)
       window.api.savePlaylist(pl)
-      renderPlaylist(id, sortKey)
+      renderPlaylist(id)
+      showSnackbar('Track removed', 'Undo', function() {
+        pl.tracks.splice(i, 0, removedTrack)
+        window.api.savePlaylist(pl)
+        renderPlaylist(id)
+      })
     })
   })
   document.querySelectorAll('[data-pl-remove-fp]').forEach(btn => {
@@ -2610,6 +2913,52 @@ function renderLikedSongs() {
       </div>`
   }).join('')
 
+  var totalLikedLocal = state.likedTracks.length
+  var totalLikedYT = state.ytLiked.length
+  var likedArtists = {}
+  state.likedTracks.forEach(function(fp) {
+    for (var i = 0; i < state.library.length; i++) {
+      var a = state.library[i]
+      if (!a.tracks) continue
+      for (var j = 0; j < a.tracks.length; j++) {
+        if (a.tracks[j].filePath === fp) { likedArtists[a.artist] = (likedArtists[a.artist] || 0) + 1; break }
+      }
+    }
+  })
+  var uniqueLikedArtists = Object.keys(likedArtists).length
+  var likedTotalTime = 0
+  state.likedTracks.forEach(function(fp) {
+    for (var i = 0; i < state.library.length; i++) {
+      var a = state.library[i]
+      if (!a.tracks) continue
+      for (var j = 0; j < a.tracks.length; j++) {
+        if (a.tracks[j].filePath === fp) { likedTotalTime += (a.tracks[j].duration || 0); break }
+      }
+    }
+  })
+  var likedHours = Math.floor(likedTotalTime / 3600)
+  var likedMins = Math.floor((likedTotalTime % 3600) / 60)
+  var likedAvgDur = totalLikedLocal > 0 ? Math.round(likedTotalTime / totalLikedLocal) : 0
+  var likedAvgMin = Math.floor(likedAvgDur / 60)
+  var likedAvgSec = likedAvgDur % 60
+  var analyticsHTML = '<div class="liked-analytics"><div class="liked-stat"><div class="liked-stat-val">' + totalLikedLocal + '</div><div class="liked-stat-lbl">Local Likes</div></div><div class="liked-stat"><div class="liked-stat-val">' + totalLikedYT + '</div><div class="liked-stat-lbl">YT Likes</div></div><div class="liked-stat"><div class="liked-stat-val">' + uniqueLikedArtists + '</div><div class="liked-stat-lbl">Unique Artists</div></div><div class="liked-stat"><div class="liked-stat-val">' + likedHours + 'h ' + likedMins + 'm</div><div class="liked-stat-lbl">Total Time</div></div><div class="liked-stat"><div class="liked-stat-val">' + likedAvgMin + ':' + (likedAvgSec < 10 ? '0' : '') + likedAvgSec + '</div><div class="liked-stat-lbl">Avg Length</div></div></div>'
+
+  var likeHistory = JSON.parse(localStorage.getItem('papa_like_history') || '[]')
+  var likedByDay = {}
+  likeHistory.forEach(function(e) { var d = new Date(e.ts).toDateString(); likedByDay[d] = (likedByDay[d] || 0) + 1 })
+  var calHTML = '<div class="liked-calendar"><div style="font-size:12px;font-weight:600;margin-bottom:8px">Like History</div><div class="liked-calendar-grid">'
+  var now = new Date()
+  for (var w = 11; w >= 0; w--) {
+    for (var d = 6; d >= 0; d--) {
+      var day = new Date(now - ((w*7+d)*86400000))
+      var key = day.toDateString()
+      var count = likedByDay[key] || 0
+      var lvl = count >= 5 ? 'l4' : count >= 3 ? 'l3' : count >= 2 ? 'l2' : count > 0 ? 'l1' : ''
+      calHTML += '<div class="liked-calendar-day' + (lvl ? ' ' + lvl : '') + '" title="' + key + ': ' + count + ' like' + (count !== 1 ? 's' : '') + '"></div>'
+    }
+  }
+  calHTML += '</div></div>'
+
   setContent(`
     <div class="album-hero" style="background: linear-gradient(#5038a0cc, var(--bg) 100%)">
       <div class="album-hero-art-fallback" style="display:flex;background:linear-gradient(135deg,#4338a0,#a0387a)"><svg viewBox="0 0 24 24"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09A5.99 5.99 0 0 1 16.5 3C19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg></div>
@@ -2619,6 +2968,8 @@ function renderLikedSongs() {
         <div class="album-hero-meta">${totalCount} song${totalCount !== 1 ? 's' : ''}${totalCount ? `, ${fmtTime(totalDur)}` : ''}</div>
       </div>
     </div>
+    ${analyticsHTML}
+    ${calHTML}
     <div class="album-controls">
       <button class="album-play-btn" id="liked-play-btn" ${!totalCount ? 'disabled' : ''}>
         <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
@@ -2697,7 +3048,7 @@ function renderStats() {
   const all = _allLibraryTracks()
   const byPath = new Map(all.map(t => [t.filePath, t]))
   const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000
-  const recent = (state.playHistory || []).filter(h => (h.timestamp || 0) >= cutoff)
+  const recent = (state.playHistory || []).filter(function(h) { return (h.ts || 0) >= cutoff })
 
   let totalSecs = 0
   for (const h of recent) {
@@ -2706,6 +3057,16 @@ function renderStats() {
   }
   const hours = Math.floor(totalSecs / 3600)
   const mins  = Math.floor((totalSecs % 3600) / 60)
+
+  var totalAllTime = 0
+  state.playHistory.forEach(function(p) { totalAllTime += (p.duration || 0) })
+  var totalDays = Math.floor(totalAllTime / 86400)
+  var totalHrs = Math.floor((totalAllTime % 86400) / 3600)
+  var totalAllTimeStr = totalDays > 0 ? totalDays + 'd ' + totalHrs + 'h' : totalHrs + 'h ' + Math.floor((totalAllTime % 3600) / 60) + 'm'
+
+  var rangeStart = new Date(cutoff).toLocaleDateString()
+  var rangeText = state.statsRange === 'all' ? 'All time' : rangeStart + ' — Today'
+  var rangeLabel = state.statsRange === 'week' ? 'This Week' : state.statsRange === 'month' ? 'This Month' : state.statsRange === 'year' ? 'This Year' : 'All Time'
 
   const artistCounts = {}
   for (const h of recent) {
@@ -2761,8 +3122,86 @@ function renderStats() {
       <span class="stats-genre-ct">${count}</span>
     </div>`).join('') || '<div class="stats-rank-sub">No genre data yet.</div>'
 
+  var daysSet = {}
+  recent.forEach(function(p) { daysSet[new Date(p.ts).toDateString()] = true })
+  var currentStreak = 0
+  var checkDay = new Date()
+  while (daysSet[checkDay.toDateString()]) { currentStreak++; checkDay.setDate(checkDay.getDate() - 1) }
+
+  var achievements = [
+    { id:'century', icon:'💯', name:'Century', desc:'100 albums played', check:function() { var ids = {}; recent.forEach(function(p) { for (var i = 0; i < state.library.length; i++) { var a = state.library[i]; if (a.tracks) for (var j = 0; j < a.tracks.length; j++) { if (a.tracks[j].filePath === p.filePath) { ids[a.id] = true } } } }); return Object.keys(ids).length >= 100 } },
+    { id:'marathon', icon:'🏃', name:'Marathon', desc:'5+ hours in one day', check:function() { var byDay = {}; recent.forEach(function(p) { var d = new Date(p.ts).toDateString(); byDay[d] = (byDay[d] || 0) + (p.duration || 0) }); return Object.values(byDay).some(function(s) { return s >= 18000 }) } },
+    { id:'explorer', icon:'🌍', name:'Explorer', desc:'50 different artists', check:function() { var artists = {}; recent.forEach(function(p) { artists[p.artist || 'Unknown'] = true }); return Object.keys(artists).length >= 50 } },
+    { id:'nightowl', icon:'🦉', name:'Night Owl', desc:'Most listening after midnight', check:function() { var night = 0, day = 0; recent.forEach(function(p) { var h = new Date(p.ts).getHours(); if (h >= 0 && h < 6) night++; else day++ }); return night > day && recent.length > 10 } },
+    { id:'completist', icon:'✅', name:'Completionist', desc:'Finished 20 albums', check:function() { var byAlbum = {}; recent.forEach(function(p) { for (var i = 0; i < state.library.length; i++) { var a = state.library[i]; if (a.tracks) { var ti = -1; for (var j = 0; j < a.tracks.length; j++) { if (a.tracks[j].filePath === p.filePath) { ti = j; break } } if (ti >= 0) byAlbum[a.id] = Math.max(byAlbum[a.id] || 0, ti + 1) } } }); var count = 0; Object.keys(byAlbum).forEach(function(id) { var a = state.library.find(function(x) { return x.id === id }); if (a && a.tracks && byAlbum[id] >= a.tracks.length) count++ }); return count >= 20 } },
+    { id:'firstplay', icon:'🎵', name:'First Play', desc:'Played your first track', check:function() { return recent.length > 0 } },
+    { id:'collector', icon:'📚', name:'Collector', desc:'200+ albums in library', check:function() { return state.library.length >= 200 } },
+    { id:'dedicated', icon:'🔥', name:'Dedicated', desc:'7-day listening streak', check:function() { return currentStreak >= 7 } },
+    { id:'earlybird', icon:'🌅', name:'Early Bird', desc:'Most listening before 9 AM', check:function() { var am=0,pm=0; recent.forEach(function(p){var h=new Date(p.ts).getHours();if(h>=5&&h<9)am++;else pm++});return am>pm&&recent.length>10} },
+    { id:'binger', icon:'📺', name:'Binge Listener', desc:'10+ hours in one day', check:function() { var byDay={};recent.forEach(function(p){var d=new Date(p.ts).toDateString();byDay[d]=(byDay[d]||0)+(p.duration||0)});return Object.values(byDay).some(function(s){return s>=36000})} },
+    { id:'variety', icon:'🎨', name:'Variety Listener', desc:'20+ genres explored', check:function() { var genres={};recent.forEach(function(p){for(var i=0;i<state.library.length;i++){var a=state.library[i];if(!a.tracks)continue;for(var j=0;j<a.tracks.length;j++){if(a.tracks[j].filePath===p.filePath&&a.genre){genres[a.genre]=true}}} });return Object.keys(genres).length>=20} },
+    { id:'throwback', icon:'📼', name:'Throwback', desc:'Most listening is pre-2000', check:function() { var old=0,nu=0;recent.forEach(function(p){for(var i=0;i<state.library.length;i++){var a=state.library[i];if(!a.tracks)continue;for(var j=0;j<a.tracks.length;j++){if(a.tracks[j].filePath===p.filePath){if((a.year||0)>0&&a.year<2000)old++;else nu++;break}}}});return old>nu&&recent.length>10} },
+    { id:'globetrotter', icon:'🗺️', name:'Globetrotter', desc:'Music from 10+ countries', check:function() { var countries={};recent.forEach(function(p){for(var i=0;i<state.library.length;i++){var a=state.library[i];if(!a.tracks)continue;for(var j=0;j<a.tracks.length;j++){if(a.tracks[j].filePath===p.filePath){var parts=(a.tracks[j].filePath||'').split('/');countries[parts[3]||parts[2]||'']=true;break}}}});return Object.keys(countries).length>=10} },
+    { id:'newbie', icon:'👋', name:'Newbie', desc:'First day listening', check:function() { return recent.length > 0 && state.playHistory.length <= 50 } },
+    { id:'hundred', icon:'💯', name:'Century+', desc:'1000+ tracks played', check:function() { return state.playHistory.length >= 1000 } },
+    { id:'library50', icon:'📀', name:'Growing Library', desc:'50+ albums', check:function() { return state.library.length >= 50 } },
+    { id:'library100', icon:'💿', name:'Serious Collector', desc:'100+ albums', check:function() { return state.library.length >= 100 } },
+    { id:'library500', icon:'🏛️', name:'Archive', desc:'500+ albums', check:function() { return state.library.length >= 500 } },
+    { id:'flac50', icon:'🎧', name:'Audiophile', desc:'50+ FLAC albums', check:function() { return state.library.filter(function(a){return a.tracks&&a.tracks[0]&&a.tracks[0].filePath&&a.tracks[0].filePath.toLowerCase().endsWith('.flac')}).length >= 50 } },
+    { id:'liked100', icon:'❤️', name:'Lover', desc:'100+ liked tracks', check:function() { return state.likedTracks.length >= 100 } },
+    { id:'liked500', icon:'💕', name:'Devoted', desc:'500+ liked tracks', check:function() { return state.likedTracks.length >= 500 } },
+    { id:'artist10', icon:'🎤', name:'Fan', desc:'10+ followed artists', check:function() { return (state.followedArtists||[]).length >= 10 } },
+    { id:'playlist5', icon:'📋', name:'Curator', desc:'5+ playlists', check:function() { return (state.playlists||[]).length >= 5 } },
+    { id:'insomniac', icon:'😴', name:'Insomniac', desc:'Listening at 3-5 AM', check:function() { var late=0,total=0;recent.forEach(function(p){var h=new Date(p.ts).getHours();if(h>=3&&h<5)late++;total++});return total>0&&(late/total)>.1} },
+    { id:'weekend', icon:'🎉', name:'Weekend Warrior', desc:'Most listening on Fri/Sat', check:function() { var wknd=0,wkdy=0;recent.forEach(function(p){var d=new Date(p.ts).getDay();if(d===5||d===6)wknd++;else wkdy++});return wknd>wkdy&&recent.length>20} },
+    { id:'lunchbreak', icon:'🍽️', name:'Lunch Break', desc:'Most listening at noon', check:function() { var noon=0,other=0;recent.forEach(function(p){var h=new Date(p.ts).getHours();if(h===12)noon++;else other++});return noon>other&&recent.length>10} },
+    { id:'diversegenre', icon:'🌈', name:'Genre Explorer', desc:'5+ different genres this week', check:function() { var weekAgo=Date.now()-604800000;var genres={};recent.filter(function(p){return p.ts>weekAgo}).forEach(function(p){for(var i=0;i<state.library.length;i++){var a=state.library[i];if(!a.tracks)continue;for(var j=0;j<a.tracks.length;j++){if(a.tracks[j].filePath===p.filePath&&a.genre){genres[a.genre]=true}}}});return Object.keys(genres).length>=5} },
+    { id:'longesttrack', icon:'📏', name:'Long Haul', desc:'Played a track >15 min', check:function() { return recent.some(function(p){for(var i=0;i<state.library.length;i++){var a=state.library[i];if(!a.tracks)continue;for(var j=0;j<a.tracks.length;j++){if(a.tracks[j].filePath===p.filePath&&(a.tracks[j].duration||0)>900)return true}};return false})} },
+    { id:'shortesttrack', icon:'⚡', name:'Quick Hit', desc:'Played a track <30 sec', check:function() { return recent.some(function(p){for(var i=0;i<state.library.length;i++){var a=state.library[i];if(!a.tracks)continue;for(var j=0;j<a.tracks.length;j++){if(a.tracks[j].filePath===p.filePath&&(a.tracks[j].duration||0)>0&&(a.tracks[j].duration||0)<30)return true}};return false})} },
+    { id:'repeatlistener', icon:'🔂', name:'On Repeat', desc:'Same track 3+ times in one day', check:function() { var byDay={};recent.forEach(function(p){var d=new Date(p.ts).toDateString();byDay[d]=byDay[d]||{};byDay[d][p.filePath]=(byDay[d][p.filePath]||0)+1});return Object.values(byDay).some(function(day){return Object.values(day).some(function(c){return c>=3})})} },
+    { id:'skiphappy', icon:'⏭️', name:'Skip Happy', desc:'Average track plays <60%', check:function() { var total=0,full=0;recent.forEach(function(p){total++;if((p.duration||0)>0){var playPct=(p.position||0)/(p.duration||0);if(playPct>.8)full++}});return total>10&&(full/total)<.6} },
+    { id:'completelistener', icon:'✅', name:'Completionist+', desc:'Finish 80%+ of tracks', check:function() { var total=0,full=0;recent.forEach(function(p){total++;if((p.duration||0)>0){if((p.position||0)/(p.duration||0)>.8)full++}});return total>10&&(full/total)>.8} },
+    { id:'happyhour', icon:'🍸', name:'Happy Hour', desc:'Most listening 5-7 PM', check:function() { var hh=0,other=0;recent.forEach(function(p){var h=new Date(p.ts).getHours();if(h>=17&&h<19)hh++;else other++});return hh>other&&recent.length>10} },
+  ]
+  var earned = achievements.filter(function(a) { return a.check() })
+  var achHTML = earned.length ? '<div class="stats-section"><div class="section-title">Achievements</div><div class="stats-achievements">' + earned.map(function(a) { return '<div class="ach-badge earned"><div class="ach-icon">' + a.icon + '</div><div class="ach-name">' + a.name + '</div><div class="ach-desc">' + a.desc + '</div></div>' }).join('') + '</div></div>' : ''
+
+  var days = {}
+  recent.forEach(function(p) { days[new Date(p.ts).toDateString()] = true })
+  var calHTML = '<div class="stats-section"><div class="section-title">Listening Calendar</div><div class="stats-calendar"><div class="stats-calendar-grid">'
+  var now = new Date()
+  for (var w = 52; w >= 0; w--) {
+    for (var d = 6; d >= 0; d--) {
+      var day = new Date(now - ((w * 7 + d) * 86400000))
+      var key = day.toDateString()
+      var level = 0
+      if (days[key]) {
+        var dayPlays = state.playHistory.filter(function(p) { return new Date(p.ts).toDateString() === key }).length
+         if (dayPlays >= 16) level = 4
+        else if (dayPlays >= 6) level = 3
+        else if (dayPlays >= 2) level = 2
+        else level = 1
+      }
+      calHTML += '<div class="stats-calendar-day d' + level + '" title="' + key + ': ' + (days[key] ? dayPlays + ' play' + (dayPlays !== 1 ? 's' : '') : 'no plays') + '"></div>'
+    }
+  }
+  calHTML += '</div></div></div>'
+
+  var hourlyData = new Array(24).fill(0)
+  recent.forEach(function(p) { var h = new Date(p.ts).getHours(); hourlyData[h]++ })
+  var maxHourly = Math.max.apply(null, hourlyData) || 1
+  var hourLabels = ['12a','1a','2a','3a','4a','5a','6a','7a','8a','9a','10a','11a','12p','1p','2p','3p','4p','5p','6p','7p','8p','9p','10p','11p']
+  var heatmapHTML = '<div class="stats-section"><div class="section-title">Listening by Hour</div><div style="display:flex;align-items:flex-end;gap:1px;height:80px;padding:0 28px;margin-bottom:20px">'
+  hourlyData.forEach(function(count, h) {
+    var height = Math.max(2, Math.round((count / maxHourly) * 80))
+    var tooltip = hourLabels[h] + ': ' + count + ' plays'
+    heatmapHTML += '<div style="flex:1;background:var(--accent);height:' + height + 'px;border-radius:1px 1px 0 0;opacity:' + (0.3 + (count/maxHourly)*0.7) + '" title="' + tooltip + '"></div>'
+  })
+  heatmapHTML += '</div></div>'
+
   setContent(`<div class="stats-page">
-    <div class="stats-hero">Listening time this month<span>${hours}h ${mins}m</span></div>
+    <div class="stats-hero">Listening time (${rangeLabel})<span>${hours}h ${mins}m</span><div style="font-size:12px;color:var(--text3);margin-top:4px">All time: ${totalAllTimeStr}</div><div style="font-size:11px;color:var(--text3);margin-top:4px">${rangeText}</div></div>
+    ${achHTML}${calHTML}${heatmapHTML}
     <div class="stats-section">
       <h2>Top Artists</h2>
       ${artistRows}
@@ -2941,6 +3380,8 @@ function toggleQueuePanel() {
 }
 
 function renderQueuePanel() {
+  var qBtn = document.getElementById('btn-queue')
+  if (qBtn) qBtn.title = state.queue.length + ' tracks in queue'
   const list = document.getElementById('queue-list')
   if (!list) return
   const curTrack = state.queue[state.queueIndex]
@@ -2949,7 +3390,8 @@ function renderQueuePanel() {
     <span>Autoplay similar when queue ends</span>
     <button class="queue-autoplay-toggle${autoplayEnabled() ? ' on' : ''}" id="queue-autoplay-toggle">${autoplayEnabled() ? 'On' : 'Off'}</button>
   </div>`
-  const fromHtml = autoHtml + (fromName
+  var queueInfo = state._restoredFromQueue ? '<div style="padding:6px 12px;font-size:11px;color:var(--text3);text-align:center">Restored from previous session</div>' : ''
+  const fromHtml = autoHtml + queueInfo + (fromName
     ? `<div class="queue-from">Playing from <span class="queue-from-name">${esc(fromName)}</span></div>`
     : '')
   if (!state.queue.length) {
@@ -2964,7 +3406,10 @@ function renderQueuePanel() {
   const dragHandleSvg = `<svg viewBox="0 0 24 24"><path d="M9 4h2v2H9zm4 0h2v2h-2zM9 9h2v2H9zm4 0h2v2h-2zM9 14h2v2H9zm4 0h2v2h-2z"/></svg>`
   const removeSvg     = `<svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>`
 
-  list.innerHTML = fromHtml + state.queue.map((t, i) => {
+  var totalQD = state.queue.reduce(function(s, t) { return s + (t.duration || 0) }, 0)
+  var totalQDstr = fmtDur(totalQD)
+
+  list.innerHTML = fromHtml + '<div style="padding:12px;font-size:13px;font-weight:600;display:flex;justify-content:space-between"><span>Queue (' + state.queue.length + ')</span><span style="font-size:11px;color:var(--text3);font-weight:400">' + totalQDstr + '</span></div>' + state.queue.map((t, i) => {
     const isPlaying = i === state.queueIndex
     const art = t.artPath
       ? `<img class="queue-row-art" src="file://${t.artPath}" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
@@ -2991,11 +3436,17 @@ function renderQueuePanel() {
   clearBtn.className = 'queue-clear-btn'
   clearBtn.textContent = 'Clear queue'
   clearBtn.addEventListener('click', () => {
+    var savedQueue = state.queue.slice(), savedIdx = state.queueIndex
     audio.pause()
     state.queue = []; state.queueIndex = -1; state.isPlaying = false
+    state._restoredFromQueue = false
     updateNextPrefetch()
     updatePlayBtn(); updateNowPlaying(null)
     renderQueuePanel()
+    showSnackbar('Queue cleared', 'Undo', function() {
+      state.queue = savedQueue; state.queueIndex = savedIdx
+      if (state.queuePanelOpen) renderQueuePanel()
+    })
   })
   list.appendChild(clearBtn)
 
@@ -3020,7 +3471,8 @@ function renderQueuePanel() {
   list.querySelectorAll('.queue-row-remove').forEach(btn => {
     btn.addEventListener('click', e => {
       e.stopPropagation()
-      const idx = parseInt(btn.dataset.removeIdx)
+      var idx = parseInt(btn.dataset.removeIdx)
+      var removedQTrack = state.queue[idx]
       state.queue.splice(idx, 1)
       if (idx < state.queueIndex) state.queueIndex--
       else if (idx === state.queueIndex) {
@@ -3028,6 +3480,10 @@ function renderQueuePanel() {
         else { audio.pause(); state.isPlaying = false; state.queueIndex = -1; updatePlayBtn(); updateNowPlaying(null) }
       }
       renderQueuePanel()
+      showSnackbar('Removed from queue', 'Undo', function() {
+        state.queue.splice(idx, 0, removedQTrack)
+        if (state.queuePanelOpen) renderQueuePanel()
+      })
     })
   })
 
@@ -3158,6 +3614,7 @@ function renderQueuePanel() {
 }
 
 function addToQueue(album, tracksOverride) {
+  state._restoredFromQueue = false
   const tracks = tracksOverride
     ?? album.tracks.map(t => ({ ...t, albumArtist: album.artist, artPath: album.artPath, albumName: album.name }))
   if (!state.queue.length) {
@@ -3216,6 +3673,33 @@ function showNowPlayingModal() {
     if (modalTrack) {
       makeDraggable(modalTrack, modalFill, modalThumb, ratio => {
         if (audio.duration) audio.currentTime = ratio * audio.duration
+      })
+    }
+  }
+
+  if (!modal._tooltipWired) {
+    modal._tooltipWired = true
+    const modalTrack = document.getElementById('np-modal-track')
+    if (modalTrack) {
+      modalTrack.addEventListener('mousemove', function(e) {
+        if (!audio.duration) return
+        const rect = modalTrack.getBoundingClientRect()
+        const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
+        const tooltip = document.getElementById('progress-tooltip')
+        if (tooltip) {
+          tooltip.textContent = fmtDur(audio.duration * pct)
+          tooltip.style.position = 'fixed'
+          tooltip.style.display = 'block'
+          tooltip.style.left = (e.clientX - 50) + 'px'
+          tooltip.style.top  = (rect.top - 24) + 'px'
+        }
+      })
+      modalTrack.addEventListener('mouseleave', function() {
+        const tooltip = document.getElementById('progress-tooltip')
+        if (tooltip) {
+          tooltip.style.display = 'none'
+          tooltip.style.position = ''
+        }
       })
     }
   }
@@ -3375,6 +3859,7 @@ function playCurrentTrack() {
     if (state.queuePanelOpen) renderQueuePanel()
     if (state.modalOpen) { updateNowPlayingModal(); syncModalPlayBtn() }
     window.api.savePlaybackState({ filePath: track.filePath, position: 0 })
+    window.api.saveQueue({ id: '_auto', name: 'Previous Session', tracks: state.queue.slice(0, 100), index: state.queueIndex, savedAt: Date.now() })
     window.api.notifyTrack({ title: track.title, artist: track.albumArtist || track.artist || '', artPath: track.artPath || null })
     _shuffleHistory.push(state.queueIndex)
     if (_shuffleHistory.length > 10) _shuffleHistory.shift()
@@ -3382,7 +3867,7 @@ function playCurrentTrack() {
     _playCountTimer = setTimeout(() => {
       state.playCounts[track.filePath] = (state.playCounts[track.filePath] || 0) + 1
       window.api.incrementPlayCount(track.filePath)
-      window.api.addPlayHistory({ filePath: track.filePath, title: track.title, artist: track.albumArtist || track.artist, album: track.albumName, artPath: track.artPath || null, timestamp: Date.now() })
+      window.api.addPlayHistory({ filePath: track.filePath, title: track.title, artist: track.albumArtist || track.artist, album: track.albumName, artPath: track.artPath || null, ts: Date.now() })
     }, 30000)
     loadLyricsFor(track)
     syncExtension()
@@ -3426,7 +3911,26 @@ function updateNowPlaying(track) {
       artEl.style.display = 'none'; artFb.style.display = 'flex'
     }
   }
+  var npArtWrap = document.getElementById('np-art-wrap')
+  if (npArtWrap && track) {
+    var tt = track.title + ' — ' + (track.albumArtist || track.artist) + ' · ' + (track.albumName || '')
+    if (track.bitsPerSample || track.sampleRate) tt += ' · ' + fmtSpec(track.bitsPerSample, track.sampleRate)
+    npArtWrap.title = tt
+  }
+  var npImg = document.getElementById('np-art')
+  if (npImg && npImg.src && npImg.src.startsWith('file://')) {
+    npImg.setAttribute('draggable', 'true')
+    if (!npImg._dragSetup) {
+      npImg._dragSetup = true
+      npImg.addEventListener('dragstart', function(e) {
+        e.dataTransfer.setData('DownloadURL', 'image/jpeg:' + npImg.src.replace('file://', '').split('/').pop() + ':' + npImg.src)
+      })
+    }
+  } else if (npImg) {
+    npImg.removeAttribute('draggable')
+  }
   updateFormatBadge(track)
+  updateCrossfadeBadge()
   updateStatsRow(track)
 }
 
@@ -3827,6 +4331,8 @@ function _drawHomeClock() {
   ctx.arc(cx, cy, 2.5, 0, Math.PI * 2)
   ctx.fillStyle = '#1db954'
   ctx.fill()
+
+  canvas.title = now.toLocaleTimeString()
 }
 
 function bindContentEvents() {
@@ -3841,9 +4347,21 @@ function bindContentEvents() {
     fetchMissingArtwork()
   })
 
+  document.getElementById('jumpback-play')?.addEventListener('click', playCurrentTrack)
+  document.getElementById('jumpback-card')?.addEventListener('click', function(e) {
+    if (!e.target.closest('.jumpback-play')) playCurrentTrack()
+  })
+
   document.querySelectorAll('.album-card').forEach(el => {
     // YT entity cards bind their own navigation (browse/channel/playlist ids)
     if (el.dataset.browse || el.dataset.channel || el.dataset.playlist) return
+    el.addEventListener('dblclick', function(e) {
+      e.preventDefault()
+      var id = el.dataset.album
+      if (id && id.startsWith('yt_')) return
+      var album = state.library.find(function(a) { return a.id === id })
+      if (album) playAlbum(album, 0)
+    })
     el.addEventListener('click', e => {
       if (e.target.closest('.album-card-play') || e.target.closest('.album-card-artist')) return
       const id = el.dataset.album
@@ -3851,6 +4369,20 @@ function bindContentEvents() {
       navigate('album', id)
     })
     if (!(el.dataset.album || '').startsWith('yt_')) {
+      el.addEventListener('mousedown', function(e) {
+        if (e.button === 1) {
+          e.preventDefault()
+          var id = el.dataset.album
+          if (id && !id.startsWith('yt_')) {
+            var album = state.library.find(function(a) { return a.id === id })
+            if (album && album.tracks) {
+              album.tracks.forEach(function(t) { state.queue.push(t) })
+              if (state.queuePanelOpen) renderQueuePanel()
+              showSnackbar('Added "' + album.name + '" to queue')
+            }
+          }
+        }
+      })
       el.addEventListener('contextmenu', e =>
         showContextMenu(e, { type: 'album', albumId: el.dataset.album,
           artist: state.library.find(a => a.id === el.dataset.album)?.artist })
@@ -3896,10 +4428,15 @@ function bindContentEvents() {
   document.querySelectorAll('.track-row').forEach(row => {
     row.addEventListener('click', e => {
       if (e.target.closest('.track-more-btn') || e.target.closest('.track-like-btn')) return
-      const album = state.library.find(a => a.id === row.dataset.album)
-      if (!album) return
-      const idx = album.tracks.findIndex(t => t.filePath === row.dataset.file)
-      if (idx >= 0) playTrack(album, idx)
+      if (e.target.closest('.track-num')) {
+        const album = state.library.find(a => a.id === row.dataset.album)
+        if (!album) return
+        const idx = album.tracks.findIndex(t => t.filePath === row.dataset.file)
+        if (idx >= 0) playAlbum(album, idx)
+        return
+      }
+      const albumId = row.dataset.album
+      if (albumId) navigate('album', albumId)
     })
     row.addEventListener('contextmenu', e => {
       const album = state.library.find(a => a.id === row.dataset.album)
@@ -3920,11 +4457,197 @@ function bindContentEvents() {
     })
   })
 
+  document.querySelectorAll('.artist-play-btn').forEach(function(btn) {
+    btn.addEventListener('click', function(e) {
+      e.stopPropagation()
+      var artistName = btn.dataset.playArtist
+      var albums = state.library.filter(function(a) { return a.artist === artistName || a.albumArtist === artistName })
+      if (albums.length) playAlbum(albums[0], 0)
+    })
+  })
+
   document.querySelectorAll('.search-top-result').forEach(el => {
     el.addEventListener('click', e => {
       if (e.target.closest('.album-card-play')) return
       navigate('album', el.dataset.album)
     })
+  })
+
+  var swipeEl = document.getElementById('discovery-swipe')
+  if (swipeEl) {
+    var topCard = swipeEl.querySelector('.discovery-swipe-card')
+    if (topCard) {
+      var startX = 0
+      topCard.addEventListener('mousedown', function(e) { startX = e.clientX })
+      topCard.addEventListener('mouseup', function(e) {
+        var diff = e.clientX - startX
+        if (Math.abs(diff) > 80) {
+          topCard.classList.add(diff > 0 ? 'swipe-right' : 'swipe-left')
+          setTimeout(function() { topCard.remove() }, 300)
+        }
+      })
+    }
+  }
+
+  document.querySelectorAll('.era-chip').forEach(function(chip) {
+    chip.addEventListener('click', function() {
+      document.querySelectorAll('.era-chip').forEach(function(c) { c.classList.remove('active') })
+      this.classList.add('active')
+      state.libDecade = this.dataset.era.slice(0, 4)
+      navigate('library')
+    })
+  })
+
+  document.getElementById('clear-decade-filter')?.addEventListener('click', function() { state.libDecade = ''; renderLibrary() })
+
+  document.querySelectorAll('.mood-card').forEach(function(card) {
+    card.addEventListener('click', function() {
+      var mood = card.dataset.mood
+      var genreMap = { energetic:'rock', chill:'ambient', focus:'classical', happy:'pop', melancholy:'blues', romantic:'jazz', dark:'metal', epic:'soundtrack' }
+      var genre = genreMap[mood] || mood
+      navigate('search', genre)
+    })
+  })
+
+  document.querySelectorAll('.daily-mix-card[data-mix-genre]').forEach(function(card) {
+    card.addEventListener('click', function() {
+      var genre = card.dataset.mixGenre
+      if (genre) { state.libGenre = genre; navigate('library') }
+    })
+  })
+
+  document.getElementById('new-smart-pl-btn')?.addEventListener('click', function() {
+    showNameInputModal('New Smart Playlist', 'Playlist name', function(name) {
+      var pl = { id: 'smart_' + Date.now(), name: name, type: 'smart', rules: [{ field: 'genre', op: 'is', value: 'Rock' }], createdAt: Date.now() }
+      state.smartPlaylists.push(pl)
+      window.api.savePlaylist(pl)
+      navigate('playlist', pl.id)
+    })
+  })
+
+  document.querySelectorAll('.wishlist-search-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var w = state.downloadWishlist[parseInt(btn.dataset.wlIdx)]
+      if (w) { navigate('search', w.query) }
+    })
+  })
+  document.querySelectorAll('.wishlist-remove-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      state.downloadWishlist.splice(parseInt(btn.dataset.wlIdx), 1)
+      renderDownloads()
+      window.api.saveDownloadWishlist(state.downloadWishlist)
+      showSnackbar('Removed from wishlist')
+    })
+  })
+
+  document.querySelectorAll('.album-card-art').forEach(function(img) {
+    img.addEventListener('contextmenu', function(e) {
+      e.preventDefault()
+      e.stopPropagation()
+      var src = img.src || ''
+      if (src.startsWith('file://')) {
+        navigator.clipboard.writeText(src.replace('file://', '')).then(function() {
+          showSnackbar('Path copied')
+        })
+      }
+    })
+  })
+
+  document.querySelectorAll('.pl-rename-btn').forEach(function(btn) {
+    btn.addEventListener('click', function(e) {
+      e.stopPropagation()
+      var plId = btn.dataset.plId
+      var pl = state.playlists.find(function(p) { return p.id === plId })
+      if (!pl) {
+        var sp = state.smartPlaylists.find(function(p) { return p.id === plId })
+        if (sp) pl = sp; else return
+      }
+      showNameInputModal('Rename playlist', pl.name, function(newName) {
+        pl.name = newName
+        window.api.savePlaylist(pl)
+        renderPlaylists()
+      })
+    })
+  })
+
+  document.getElementById('pl-sort-btn')?.addEventListener('click', function() {
+    state.playlistSort = state.playlistSort === 'recent' ? 'alpha' : 'recent'
+    renderPlaylists()
+  })
+
+  document.querySelectorAll('.pl-dup-btn').forEach(function(btn) {
+    btn.addEventListener('click', function(e) {
+      e.stopPropagation()
+      var plId = btn.dataset.plId
+      var pl = state.playlists.find(function(p) { return p.id === plId })
+      if (!pl) {
+        var sp = state.smartPlaylists.find(function(p) { return p.id === plId })
+        if (sp) pl = sp; else return
+      }
+      var dup = JSON.parse(JSON.stringify(pl))
+      dup.id = 'dup_' + Date.now()
+      dup.name = pl.name + ' (copy)'
+      dup.createdAt = Date.now()
+      state.playlists.push(dup)
+      window.api.savePlaylist(dup)
+      renderPlaylists()
+      showSnackbar('Playlist duplicated')
+    })
+  })
+
+  document.getElementById('pl-export-btn')?.addEventListener('click', function() {
+    var id = state.currentPlaylistId
+    var pl = state.playlists.find(function(p) { return p.id === id })
+    if (!pl || !pl.tracks || !pl.tracks.length) return
+    var m3u = '#EXTM3U\n#PLAYLIST:' + pl.name + '\n'
+    pl.tracks.forEach(function(t, i) {
+      m3u += '#EXTINF:' + Math.round(t.duration || 0) + ',' + (t.albumArtist || t.artist || '') + ' - ' + (t.title || '') + '\n'
+      m3u += (t.filePath || '') + '\n'
+    })
+    var blob = new Blob([m3u], { type: 'audio/x-mpegurl' })
+    var url = URL.createObjectURL(blob)
+    var a = document.createElement('a')
+    a.href = url
+    a.download = (pl.name || 'playlist').replace(/[/\\?%*:|"<>]/g, '_') + '.m3u'
+    a.click()
+    URL.revokeObjectURL(url)
+    showSnackbar('Exported ' + pl.tracks.length + ' tracks')
+  })
+
+  document.getElementById('import-pl-btn')?.addEventListener('click', function() { fileInput.click() })
+  fileInput.addEventListener('change', function() {
+    var file = this.files[0]
+    if (!file) return
+    var reader = new FileReader()
+    reader.onload = function() {
+      var lines = reader.result.split('\n').filter(function(l) { return l.trim() && !l.startsWith('#') })
+      var tracks = []
+      lines.forEach(function(line) {
+        var fp = line.trim()
+        for (var i = 0; i < state.library.length; i++) {
+          var a = state.library[i]
+          if (a.tracks) {
+            for (var j = 0; j < a.tracks.length; j++) {
+              if (a.tracks[j].filePath && a.tracks[j].filePath.indexOf(fp.replace(/^.*[\\/]/, '')) !== -1) {
+                tracks.push(a.tracks[j])
+                break
+              }
+            }
+          }
+        }
+      })
+      if (tracks.length) {
+        var pl = { id: 'import_' + Date.now(), name: file.name.replace(/\.m3u8?$/i, ''), tracks: tracks, createdAt: Date.now() }
+        state.playlists.push(pl)
+        window.api.savePlaylist(pl)
+        renderPlaylists()
+        showSnackbar('Imported ' + tracks.length + ' tracks from ' + file.name)
+      } else {
+        showSnackbar('No matching tracks found in library')
+      }
+      this.value = ''
+    }
+    reader.readAsText(file)
   })
 
 }
@@ -3968,7 +4691,7 @@ function artImg(artPath, imgClass, fallbackClass) {
   const musicNote = `<svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>`
   if (artPath) {
     const src = /^https?:\/\//.test(artPath) ? artPath : `file://${artPath}`
-    return `<img class="${imgClass}" src="${src}" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+    return `<img class="${imgClass}" src="${src}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
             <div class="${fallbackClass}" style="display:none">${musicNote}</div>`
   }
   return `<div class="${fallbackClass}">${musicNote}</div>`
@@ -3987,6 +4710,7 @@ function fmtTime(sec) {
   const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60)
   return h ? `${h} hr ${m} min` : `${m} min`
 }
+var _lastVolDisplay = -1
 function setVolDisplay(vol) {
   const pct = `${Math.round(vol * 100)}%`
   const fill  = document.getElementById('vol-fill')
@@ -4003,6 +4727,18 @@ function setVolDisplay(vol) {
       icon.innerHTML = '<path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77 0-4.28-2.99-7.86-7-8.77z"/>'
     }
   }
+  var volIcon = document.querySelector('.vol-icon')
+  if (volIcon) volIcon.title = Math.round(vol * 100) + '%'
+
+  if (vol <= 0.01 && _lastVolDisplay > 0.01) {
+    showSnackbar('Muted', 'Unmute', function() { audio.volume = state.lastVolume || 0.8; setVolDisplay(audio.volume) }, 2000)
+  }
+  if (vol >= 0.99 && _lastVolDisplay < 0.99) {
+    showSnackbar('Volume max', null, null, 1500)
+  }
+  _lastVolDisplay = vol
+  var volIcon = document.querySelector('.vol-icon')
+  if (volIcon) { volIcon.classList.add('pulse'); setTimeout(function() { volIcon.classList.remove('pulse') }, 400) }
 }
 
 // ── Saved sites ─────────────────────────────────────────────────────────────
@@ -4045,9 +4781,14 @@ function renderSavedQueues() {
   list.querySelectorAll('.sq-item-del').forEach(btn => {
     btn.addEventListener('click', e => {
       e.stopPropagation()
-      state.savedQueues = state.savedQueues.filter(x => x.id !== btn.dataset.qid)
+      var deletedQ = null
+      for (var i = 0; i < state.savedQueues.length; i++) { if (state.savedQueues[i].id === btn.dataset.qid) { deletedQ = JSON.parse(JSON.stringify(state.savedQueues[i])); break } }
+      state.savedQueues = state.savedQueues.filter(function(x) { return x.id !== btn.dataset.qid })
       window.api.deleteSavedQueue(btn.dataset.qid)
       renderSavedQueues()
+      showSnackbar('Queue deleted', 'Undo', function() {
+        if (deletedQ) { state.savedQueues.push(deletedQ); renderSavedQueues() }
+      })
     })
   })
 }
@@ -4189,7 +4930,9 @@ async function _executeTool(name, input) {
       }
       if (!albums.length) return `No music by "${input.query}" in library.`
       const tracks = albums.flatMap(a => (a.tracks || []).map(t => ({ ...t, albumArtist: a.artist, artPath: a.artPath, albumName: a.name, albumId: a.id })))
+      const artistName = albums[0].artist
       state.queue = tracks; state.queueIndex = 0; playCurrentTrack()
+      showSnackbar('Agent: Playing ' + artistName)
       return `Playing ${tracks.length} tracks by ${albums[0].artist} across ${albums.length} album${albums.length !== 1 ? 's' : ''}.`
     }
 
@@ -4238,6 +4981,7 @@ async function _executeTool(name, input) {
         if (ok) downloaded++
       }
       _scheduleLibRescan()
+      showSnackbar('Agent: Download started')
       return `Downloading "${best.folderName}" — ${downloaded} ${isFlac ? 'FLAC' : 'audio'} file${downloaded !== 1 ? 's' : ''} from ${best.username}. Check the Downloads tab.`
     }
 
@@ -4287,6 +5031,7 @@ async function _executeTool(name, input) {
     case 'set_volume': {
       const v = Math.max(0, Math.min(1, (input.level ?? 80) / 100))
       audio.volume = v; setVolDisplay(v)
+      showSnackbar('Agent: Volume set to ' + input.level + '%')
       return `Volume set to ${Math.round(v * 100)}%.`
     }
 
@@ -4300,11 +5045,13 @@ async function _executeTool(name, input) {
       state.queue.push(...tracks)
       if (state.queueIndex < 0) { state.queueIndex = 0; playCurrentTrack() }
       else if (state.queuePanelOpen) renderQueuePanel()
+      showSnackbar('Agent: Added to queue')
       return `Added "${match.name}" (${tracks.length} tracks) to queue.`
     }
 
     case 'clear_queue': {
       state.queue = []; state.queueIndex = -1; state.isPlaying = false
+      state._restoredFromQueue = false
       audio.pause(); audio.currentTime = 0
       updateNextPrefetch()
       updatePlayBtn?.(); updateNowPlaying?.(null)
@@ -4343,6 +5090,7 @@ async function _executeTool(name, input) {
       const album = state.library.find(a => a.id === albumId)
       toggleLike(albumId)
       const nowLiked = state.likedAlbums.includes(albumId)
+      showSnackbar('Agent: Album liked', 'View', function() { navigate('liked') })
       return `${nowLiked ? 'Liked' : 'Unliked'} "${album?.name || albumId}".`
     }
 
@@ -4434,6 +5182,7 @@ async function _executeTool(name, input) {
       const q = { id: `sq_${Date.now()}`, name, tracks: state.queue, savedAt: Date.now() }
       state.savedQueues = [q, ...state.savedQueues]
       window.api.saveQueue(q)
+      showSnackbar('Agent: Queue saved')
       return `Saved queue "${name}" with ${state.queue.length} tracks.`
     }
 
@@ -4768,6 +5517,7 @@ async function _initSettingsPanel() {
 
 async function initPlaybackSettings() {
   const cfg = await window.api.playerGetConfig()
+  state._playerSettings = cfg
   const $ = id => document.getElementById(id)
   $('pb-output-mode').value = cfg.outputMode
   $('pb-mode').value = cfg.mode
@@ -4794,6 +5544,8 @@ async function initPlaybackSettings() {
   $('pb-mode').onchange = e => {
     $('pb-cf-row').style.display = e.target.value === 'crossfade' ? '' : 'none'
     apply({ mode: e.target.value })
+    var mode = e.target.value
+    showSnackbar('Playback mode: ' + (mode === 'gapless' ? 'Gapless' : 'Crossfade'))
   }
   $('pb-cf-secs').oninput = e => { $('pb-cf-label').textContent = `${e.target.value}s` }
   $('pb-cf-secs').onchange = e => apply({ crossfadeSecs: Number(e.target.value) })
@@ -5112,7 +5864,7 @@ function renderSoulseekRow(query) {
             <svg class="slsk-card-note" viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>
           </div>
           <div class="slsk-card-body">
-            <div class="slsk-card-name" title="${esc(g.folderName)}">${esc(g.folderName)}</div>
+            <div class="slsk-card-name" title="${esc(g.folderName)}">${esc(g.folderName)} <span style="font-size:11px;color:var(--text3);font-weight:400">(${g.files.length} files)</span></div>
             ${qual ? `<div class="slsk-card-qual">${esc(qual)}</div>` : ''}
             <div class="slsk-card-from">via <button class="slsk-user-link" data-gi="${gi}" data-username="${esc(g.username)}" title="Browse ${esc(g.username)}'s shared library">${esc(g.username)}</button></div>
             <div class="slsk-card-btns">
@@ -5364,9 +6116,10 @@ async function _pollAndRenderDownloads() {
   }
   _dlPrevActiveIds = nowActive
 
-  const activeCount = files.filter(f => _dlCategory(f.state) === 'active').length
+  const activeCount = files.filter(function(f) { return _dlIsActive(f.state) }).length
+  var todayDone = files.filter(function(f) { return _dlCategory(f.state) === 'completed' }).length
   const badge = document.getElementById('nav-dl-badge')
-  if (badge) { badge.style.display = activeCount > 0 ? 'flex' : 'none'; badge.textContent = activeCount }
+  if (badge) { badge.style.display = (activeCount > 0 || todayDone > 0) ? 'flex' : 'none'; badge.textContent = activeCount > 0 ? activeCount : todayDone; badge.title = activeCount + ' active, ' + todayDone + ' completed' }
 
   const completedNow = files.filter(f => _dlCategory(f.state) === 'completed')
   if (_dlPrevActiveCount > 0 && activeCount === 0 && completedNow.length > 0) {
@@ -6332,6 +7085,19 @@ function _renderYtDownloadRows(box) {
 }
 
 function renderDownloads() {
+  var totalDl = 0, activeDl = 0, completedDl = 0, failedDl = 0
+  state._dlFiles = state._dlFiles || []
+  state._dlFiles.forEach(function(f) {
+    totalDl++
+    var cat = _dlCategory(f.state || '')
+    if (cat === 'active') activeDl++
+    else if (cat === 'completed') completedDl++
+    else if (cat === 'failed') failedDl++
+  })
+  var dashHTML = '<div class="dl-dashboard"><div class="dl-stat-card"><div class="dl-stat-value">' + activeDl + '</div><div class="dl-stat-label">Active</div></div><div class="dl-stat-card"><div class="dl-stat-value">' + completedDl + '</div><div class="dl-stat-label">Completed</div></div><div class="dl-stat-card"><div class="dl-stat-value">' + failedDl + '</div><div class="dl-stat-label">Failed</div></div><div class="dl-stat-card"><div class="dl-stat-value">' + totalDl + '</div><div class="dl-stat-label">Total</div></div></div>'
+  var batchBtns = '<div style="display:flex;gap:8px;padding:12px 28px"><button class="dl-action-btn" id="dl-pause-all">\u23f8 Pause All</button><button class="dl-action-btn" id="dl-resume-all">\u25b6 Resume All</button></div>'
+  var wishlistHTML = state.downloadWishlist && state.downloadWishlist.length ? '<div class="section-header"><span class="section-title">Wishlist</span></div>' + state.downloadWishlist.map(function(w, i) { return '<div class="wishlist-row"><span>' + esc(w.query) + '</span><button class="wishlist-search-btn" data-wl-idx="' + i + '">Search</button><button class="wishlist-remove-btn" data-wl-idx="' + i + '">Remove</button></div>' }).join('') : '<div class="section-header"><span class="section-title">Wishlist</span></div><div style="padding:8px 28px;color:var(--text3);font-size:12px">Add albums to wishlist from any search result to auto-download them when available.</div>'
+
   setContent(`<div class="dl2-page">
     <div class="dl2-topbar">
       <div class="dl2-topbar-left">
@@ -6343,6 +7109,9 @@ function renderDownloads() {
       </div>
       <button class="dl2-action-btn" id="dl2-action-btn" style="display:none">Clear All</button>
     </div>
+    ${dashHTML}
+    ${batchBtns}
+    ${wishlistHTML}
     <div class="dl2-tabs" id="dl2-tabs">
       <button class="dl2-tab active" data-tab="active">
         <svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
@@ -6460,6 +7229,18 @@ function renderDownloads() {
     for (const g of _dlCompletedGroups) _dlOpenGroups.add(g.folder)
     _dlLastSig = ''
     _renderDlTab(_dlLastFiles)
+  })
+
+  document.getElementById('dl-pause-all')?.addEventListener('click', function() {
+    var active = state._dlFiles.filter(function(f) { return _dlCategory(f.state) === 'active' })
+    active.forEach(function(f) {
+      window.api.slskCancelTransfer({ username: f.username, id: f.id })
+    })
+    showSnackbar('Paused ' + active.length + ' downloads')
+  })
+
+  document.getElementById('dl-resume-all')?.addEventListener('click', function() {
+    showSnackbar('Resume not yet supported \u2014 re-queue downloads')
   })
 
   _pollAndRenderDownloads()
@@ -7108,6 +7889,8 @@ function initSearchHistory() {
     } else if (e.key === 'Enter') {
       const q = input.value.trim()
       hideDropdown()
+      var cp = document.getElementById('cmd-palette')
+      if (cp && cp.style.display === 'flex') toggleCommandPalette()
       commitSearch(q)
     } else if (e.key === 'Escape') {
       input.value = ''
@@ -7126,6 +7909,18 @@ function initSearchHistory() {
   document.addEventListener('mousedown', e => {
     if (!e.target.closest('#tb-search-wrap')) hideDropdown()
   })
+
+  // Clear-search button
+  var searchWrap = document.getElementById('tb-search-wrap')
+  if (searchWrap) {
+    var clearBtn = document.createElement('button')
+    clearBtn.className = 'tb-search-clear'
+    clearBtn.innerHTML = '&times;'
+    clearBtn.style.display = 'none'
+    clearBtn.addEventListener('click', function() { input.value = ''; clearBtn.style.display = 'none'; input.focus() })
+    searchWrap.appendChild(clearBtn)
+    input.addEventListener('input', function() { clearBtn.style.display = this.value ? 'flex' : 'none' })
+  }
 }
 
 function setupListeners() {
@@ -7156,9 +7951,11 @@ function setupListeners() {
   })
   document.getElementById('sq-confirm-btn')?.addEventListener('click', () => {
     const input = document.getElementById('sq-name-input')
-    if (input?.value.trim()) {
-      saveCurrentQueue(input.value)
+    var name = input?.value.trim()
+    if (name) {
+      saveCurrentQueue(name)
       document.getElementById('sq-save-form').style.display = 'none'
+      showSnackbar('Queue saved as "' + name + '"')
     }
   })
   document.getElementById('sq-name-input')?.addEventListener('keydown', e => {
@@ -7169,7 +7966,13 @@ function setupListeners() {
   // Window controls
   document.getElementById('btn-min')?.addEventListener('click', () => window.api.minimize())
   document.getElementById('btn-max')?.addEventListener('click', () => window.api.maximize())
-  document.getElementById('btn-close')?.addEventListener('click', () => window.api.close())
+  document.getElementById('btn-close')?.addEventListener('click', () => {
+    if (state.isPlaying) {
+      showSnackbar('Music is playing. Close anyway?', 'Close', () => window.api.close(), 4000)
+    } else {
+      window.api.close()
+    }
+  })
 
   // Nav history buttons
   document.getElementById('tb-back')?.addEventListener('click', navigateBack)
@@ -7177,6 +7980,13 @@ function setupListeners() {
 
   // Titlebar search with history
   initSearchHistory()
+  // Search operator hint bar — show/hide on focus/blur
+  var searchInput = document.getElementById('tb-search')
+  var hintBar = document.getElementById('search-operator-hint')
+  if (searchInput && hintBar) {
+    searchInput.addEventListener('focus', function() { hintBar.style.display = 'block' })
+    searchInput.addEventListener('blur', function() { setTimeout(function() { hintBar.style.display = 'none' }, 200) })
+  }
 
   // Sidebar nav
   document.querySelectorAll('.nav-item').forEach(el => {
@@ -7227,6 +8037,7 @@ function setupListeners() {
     this.classList.toggle('active', state.shuffle)
     document.getElementById('np-modal-shuffle')?.classList.toggle('active', state.shuffle)
     updateNextPrefetch()
+    showSnackbar(state.shuffle ? 'Shuffle on' : 'Shuffle off', '', function(){}, 1500)
   })
 
   document.getElementById('btn-repeat')?.addEventListener('click', function() {
@@ -7237,6 +8048,7 @@ function setupListeners() {
     this.title = state.repeat === 'one' ? 'Repeat: one' : state.repeat === 'all' ? 'Repeat: all' : 'Repeat (R)'
     document.getElementById('np-modal-repeat')?.classList.toggle('active', isActive)
     updateNextPrefetch()
+    showSnackbar(state.repeat === 'one' ? 'Repeat: One' : state.repeat === 'all' ? 'Repeat: All' : 'Repeat: Off', '', function(){}, 1500)
   })
 
   // Like button (player bar)
@@ -7315,13 +8127,19 @@ function setupListeners() {
       if (!audio.duration) return
       const rect = progressTrack.getBoundingClientRect()
       const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
-      const time = ratio * audio.duration
-      progressTooltip.textContent = fmtDur(time)
+      const timeVal = timeDisplay === 'remaining' ? audio.duration - (ratio * audio.duration) : ratio * audio.duration
+      progressTooltip.textContent = fmtDur(Math.abs(timeVal))
       progressTooltip.style.display = 'block'
       progressTooltip.style.left = `${e.clientX - rect.left}px`
     })
     progressTrack.addEventListener('mouseleave', () => {
       progressTooltip.style.display = 'none'
+    })
+    progressTrack.addEventListener('contextmenu', function(e) {
+      e.preventDefault()
+      timeDisplay = timeDisplay === 'elapsed' ? 'remaining' : 'elapsed'
+      localStorage.setItem('papa_time_display', timeDisplay)
+      showSnackbar('Showing ' + (timeDisplay === 'remaining' ? 'remaining' : 'elapsed') + ' time')
     })
   }
 
@@ -7402,9 +8220,35 @@ function setupListeners() {
     document.getElementById('btn-queue')?.classList.remove('active')
   })
 
+  // Sidebar right-click → toggle compact mode
+  document.querySelector('.sidebar')?.addEventListener('contextmenu', function(e) {
+    e.preventDefault()
+    var sidebar = this
+    sidebar.style.width = sidebar.style.width === '60px' ? '' : '60px'
+    localStorage.setItem('papa_compact_sidebar', sidebar.style.width === '60px' ? '1' : '0')
+  })
+
   // Now playing art → open modal
   document.getElementById('np-art-wrap')?.addEventListener('click', () => {
     if (state.queue.length) showNowPlayingModal()
+  })
+
+  // Now playing art → right-click/long-press to show recent
+  document.getElementById('np-art-wrap')?.addEventListener('contextmenu', function(e) {
+    e.preventDefault()
+    var recent = state.playHistory.slice(0, 5).map(function(p) {
+      for (var i = 0; i < state.library.length; i++) {
+        var a = state.library[i]
+        if (a.tracks) {
+          for (var j = 0; j < a.tracks.length; j++) {
+            if (a.tracks[j].filePath === p.filePath) return { title: a.tracks[j].title, artist: a.artist, filePath: p.filePath }
+          }
+        }
+      }
+      return { title: p.title || 'Unknown', artist: p.artist || '', filePath: p.filePath }
+    }).filter(function(t) { return t.filePath })
+
+    showSnackbar(recent.map(function(t, i) { return (i+1) + '. ' + t.title + ' — ' + t.artist }).join(' | '), '', function(){}, 4000)
   })
 
   // Now playing modal controls
@@ -7417,6 +8261,7 @@ function setupListeners() {
     this.classList.toggle('active', state.shuffle)
     document.getElementById('btn-shuffle')?.classList.toggle('active', state.shuffle)
     updateNextPrefetch()
+    showSnackbar(state.shuffle ? 'Shuffle on' : 'Shuffle off', '', function(){}, 1500)
   })
   document.getElementById('np-modal-repeat')?.addEventListener('click', function() {
     const states = ['off','all','one']
@@ -7425,6 +8270,7 @@ function setupListeners() {
     this.classList.toggle('active', isActive)
     document.getElementById('btn-repeat')?.classList.toggle('active', isActive)
     updateNextPrefetch()
+    showSnackbar(state.repeat === 'one' ? 'Repeat: One' : state.repeat === 'all' ? 'Repeat: All' : 'Repeat: Off', '', function(){}, 1500)
   })
 
   // Context menu actions
@@ -7476,6 +8322,13 @@ function setupListeners() {
     if (ctxTarget?.albumId) toggleLike(ctxTarget.albumId)
     hideContextMenu()
   })
+  document.getElementById('ctx-wishlist')?.addEventListener('click', () => {
+    if (!ctxTarget) return
+    state.downloadWishlist.push({ query: ctxTarget.artist + ' ' + (ctxTarget.track ? ctxTarget.track.album : ctxTarget.albumId), addedAt: Date.now() })
+    window.api.saveDownloadWishlist(state.downloadWishlist)
+    showSnackbar('Added to wishlist')
+    hideContextMenu()
+  })
   document.getElementById('ctx-play-next')?.addEventListener('click', () => {
     if (!ctxTarget) return
     const album = state.library.find(a => a.id === ctxTarget.albumId)
@@ -7496,6 +8349,16 @@ function setupListeners() {
   document.getElementById('ctx-show-folder')?.addEventListener('click', () => {
     const filePath = ctxTarget?.track?.filePath
     if (filePath) window.api.slskShowInFolder(filePath)
+    hideContextMenu()
+  })
+  document.getElementById('ctx-copy-path')?.addEventListener('click', () => {
+    if (!ctxTarget) return
+    var fp = ctxTarget.track ? ctxTarget.track.filePath : (state.library.find(function(a) { return a.id === ctxTarget.albumId })?.tracks?.[0]?.filePath)
+    if (fp) {
+      navigator.clipboard.writeText(fp).then(function() {
+        showSnackbar('Path copied: ' + fp.split('/').pop())
+      })
+    }
     hideContextMenu()
   })
   document.addEventListener('click', e => {
@@ -7538,11 +8401,11 @@ function setupListeners() {
     const pct = `${ratio * 100}%`
     if (_dom.fill)  _dom.fill.style.width = pct
     if (_dom.thumb) _dom.thumb.style.left = pct
-    if (_dom.timeCur) _dom.timeCur.textContent = fmtDur(ct)
+    if (_dom.timeCur) _dom.timeCur.textContent = timeDisplay === 'remaining' ? fmtDur(audio.duration - ct) : fmtDur(ct)
     if (state.modalOpen) {
       if (_dom.modalFill)  _dom.modalFill.style.width = pct
       if (_dom.modalThumb) _dom.modalThumb.style.left  = pct
-      if (_dom.modalCur)   _dom.modalCur.textContent = fmtDur(ct)
+      if (_dom.modalCur)   _dom.modalCur.textContent = timeDisplay === 'remaining' ? fmtDur(audio.duration - ct) : fmtDur(ct)
     }
     updateLyricsHighlight()
     updateLyricsDrawerHighlight()
@@ -7724,6 +8587,7 @@ function setupListeners() {
     if (cmd === 'clear-queue') {
       audio.pause()
       state.queue = []; state.queueIndex = -1; state.isPlaying = false
+      state._restoredFromQueue = false
       updateNextPrefetch()
       updatePlayBtn(); updateNowPlaying(null)
       if (state.queuePanelOpen) renderQueuePanel()
@@ -7758,9 +8622,38 @@ function setupListeners() {
       document.getElementById('tb-search')?.focus()
       return
     }
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'P') {
+      e.preventDefault(); toggleCommandPalette(); return
+    }
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'L') {
+      e.preventDefault()
+      var currentTrack = state.queue[state.queueIndex]
+      if (currentTrack && currentTrack.filePath) toggleTrackLike(currentTrack.filePath)
+      return
+    }
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'S') {
+      e.preventDefault()
+      setSleepTimer(30)
+      showSnackbar('Sleep timer: 30 min')
+      return
+    }
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === 's') {
+      e.preventDefault()
+      var name = 'Queue ' + new Date().toLocaleTimeString()
+      saveCurrentQueue(name)
+      showSnackbar('Queue saved: ' + name)
+      return
+    }
 
     // Escape
     if (e.key === 'Escape') {
+      if (document.activeElement === document.getElementById('tb-search')) {
+        document.getElementById('tb-search').value = ''
+        document.getElementById('tb-search').blur()
+        return
+      }
+      var cp = document.getElementById('cmd-palette')
+      if (cp && cp.style.display === 'flex') { toggleCommandPalette(); return }
       const sm = document.getElementById('shortcuts-modal')
       if (sm && sm.style.display !== 'none') { sm.style.display = 'none'; return }
       if (_lyricsDrawerOpen) { closeLyricsDrawer(); return }
@@ -7769,14 +8662,19 @@ function setupListeners() {
       return
     }
 
+    // Space: play/pause (works in search input when empty)
+    if (e.code === 'Space') {
+      if (inInput && e.target.id === 'tb-search' && e.target.value.trim() === '') {
+        e.preventDefault(); togglePlay(); return
+      }
+      if (!inInput) { e.preventDefault(); togglePlay(); return }
+    }
+
     if (inInput) return
 
     // App navigation
     if (e.key === 'ArrowLeft' && e.altKey)  { e.preventDefault(); navigateBack();    return }
     if (e.key === 'ArrowRight' && e.altKey) { e.preventDefault(); navigateForward(); return }
-
-    // Playback
-    if (e.code === 'Space') { e.preventDefault(); togglePlay(); return }
 
     // Seek ±10s
     if (e.key === 'ArrowRight' && !e.altKey && !e.metaKey && !e.ctrlKey) {
@@ -7823,11 +8721,19 @@ function setupListeners() {
     }
     // Queue toggle
     if (e.key === 'q' || e.key === 'Q') { toggleQueuePanel(); return }
+    if ((e.ctrlKey || e.metaKey) && e.key === 'q') {
+      e.preventDefault()
+      var t = state.queue[state.queueIndex]
+      if (t) { state.queue.push(t); showSnackbar('Added to queue again') }
+      return
+    }
     // Shuffle
     if (e.key === 's' || e.key === 'S') {
       state.shuffle = !state.shuffle
       document.getElementById('btn-shuffle')?.classList.toggle('active', state.shuffle)
+      document.getElementById('np-modal-shuffle')?.classList.toggle('active', state.shuffle)
       updateNextPrefetch()
+      showSnackbar(state.shuffle ? 'Shuffle on' : 'Shuffle off', '', function(){}, 1500)
       return
     }
     // Repeat
@@ -7840,7 +8746,7 @@ function setupListeners() {
     // Lyrics drawer toggle
     if (e.key === 'l' || e.key === 'L') { if (state.queue.length) { toggleLyricsDrawer(); return } }
     // Keyboard shortcuts modal
-    if (e.key === '?') { toggleShortcutsModal(); return }
+    if (e.key === '?' || e.key === 'F1') { e.preventDefault(); toggleShortcutsModal(); return }
   })
 
   // ── Sidebar resize ────────────────────────────────────────────────────────
@@ -7921,6 +8827,208 @@ function syncLibraryExt() {
 
 // Sync position every second while playing
 setInterval(() => { if (state.isPlaying) syncExtension() }, 1000)
+
+// ── Snackbar ─────────────────────────────────────────────────────────────────
+function showSnackbar(msg, actionLabel, actionCallback, duration) {
+  duration = duration || 5000
+  var container = document.getElementById('snackbar-container')
+  if (!container) return
+  var el = document.createElement('div')
+  el.className = 'snackbar'
+  el.innerHTML = '<span class="snackbar-msg">' + msg + '</span>' +
+    (actionLabel ? '<button class="snackbar-action">' + actionLabel + '</button>' : '') +
+    '<button class="snackbar-dismiss">&times;</button>'
+  var dismiss = function() { el.classList.remove('show'); setTimeout(function() { el.remove() }, 300) }
+  el.querySelector('.snackbar-dismiss').addEventListener('click', dismiss)
+  if (actionLabel) el.querySelector('.snackbar-action').addEventListener('click', function() { actionCallback(); dismiss() })
+  container.appendChild(el)
+  requestAnimationFrame(function() { el.classList.add('show') })
+  setTimeout(dismiss, duration)
+}
+
+// ── Command palette wrapper functions ─────────────────────────────────────
+function toggleShuffleWrap() {
+  state.shuffle = !state.shuffle
+  var b = document.getElementById('btn-shuffle')
+  if (b) b.classList.toggle('active', state.shuffle)
+  showSnackbar(state.shuffle ? 'Shuffle on' : 'Shuffle off', '', function(){}, 1500)
+}
+function cycleRepeatWrap() {
+  state.repeat = state.repeat === 'one' ? 'none' : state.repeat === 'all' ? 'one' : 'all'
+  var b = document.getElementById('btn-repeat')
+  if (b) b.classList.toggle('active', state.repeat !== 'none')
+  var lbl = state.repeat === 'one' ? 'Repeat: One' : state.repeat === 'all' ? 'Repeat: All' : 'Repeat: Off'
+  showSnackbar(lbl, '', function(){}, 1500)
+}
+
+// ── Command palette ──────────────────────────────────────────────────────────
+var _commands = [
+  { id:'nav-home', label:'Go to Home', action:function() { navigate('home') } },
+  { id:'nav-library', label:'Go to Library', action:function() { navigate('library') } },
+  { id:'nav-search', label:'Go to Search', action:function() { navigate('search') } },
+  { id:'nav-downloads', label:'Go to Downloads', action:function() { navigate('downloads') } },
+  { id:'nav-liked', label:'Go to Liked Songs', action:function() { navigate('liked') } },
+  { id:'nav-stats', label:'Go to Stats', action:function() { navigate('stats') } },
+  { id:'nav-explore', label:'Go to Explore', action:function() { navigate('explore') } },
+  { id:'nav-artists', label:'Go to Artists', action:function() { navigate('artists') } },
+  { id:'nav-playlists', label:'Go to Playlists', action:function() { navigate('playlists') } },
+  { id:'player-play', label:'Play / Pause', action:togglePlay },
+  { id:'player-next', label:'Next Track', action:playNext },
+  { id:'player-prev', label:'Previous Track', action:playPrev },
+  { id:'player-shuffle', label:'Toggle Shuffle', keys:'S', action:toggleShuffleWrap },
+  { id:'player-repeat', label:'Cycle Repeat', keys:'R', action:cycleRepeatWrap },
+]
+var _cpIdx = 0
+
+function toggleCommandPalette() {
+  var el = document.getElementById('cmd-palette')
+  if (!el) return
+  var showing = el.style.display === 'flex'
+  el.style.display = showing ? 'none' : 'flex'
+  if (!showing) {
+    var input = document.getElementById('cmd-palette-input')
+    if (input) { input.value = ''; _cpIdx = 0; _filterCP(''); input.focus() }
+  }
+}
+function _filterCP(q) {
+  q = (q || '').toLowerCase()
+  var results = _commands.filter(function(c) { return c.label.toLowerCase().indexOf(q) !== -1 })
+  var c = document.getElementById('cmd-palette-results')
+  if (!c) return
+  _cpIdx = Math.min(_cpIdx, Math.max(0, results.length - 1))
+  if (results.length) {
+    c.innerHTML = results.map(function(x, i) {
+      return '<div class="cmd-item' + (i === _cpIdx ? ' active' : '') + '" data-idx="' + i + '"><span>' + x.label + '</span></div>'
+    }).join('')
+  } else {
+    c.innerHTML = '<div class="cmd-empty">No matching commands</div>'
+  }
+}
+function _execCP(idx) {
+  var el = document.querySelector('.cmd-item[data-idx="' + idx + '"]')
+  if (!el) return
+  var cmd = _commands[parseInt(idx)]
+  if (!cmd) return
+  toggleCommandPalette()
+  cmd.action()
+}
+function _setupCP() {
+  var cp = document.getElementById('cmd-palette')
+  if (!cp) return
+  cp.addEventListener('click', function(e) { if (e.target === cp) toggleCommandPalette() })
+  var inp = document.getElementById('cmd-palette-input')
+  if (inp) {
+    inp.addEventListener('input', function(e) { _filterCP(e.target.value) })
+    inp.addEventListener('keydown', function(e) {
+      var results = document.querySelectorAll('.cmd-item')
+      if (e.key === 'ArrowDown') { e.preventDefault(); _cpIdx = Math.min(_cpIdx + 1, results.length - 1); _filterCP(inp.value) }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); _cpIdx = Math.max(_cpIdx - 1, 0); _filterCP(inp.value) }
+      else if (e.key === 'Enter') { e.preventDefault(); _execCP(_cpIdx) }
+      else if (e.key === 'Escape') toggleCommandPalette()
+    })
+  }
+  var results = document.getElementById('cmd-palette-results')
+  if (results) results.addEventListener('click', function(e) { var item = e.target.closest('.cmd-item'); if (item) _execCP(parseInt(item.dataset.idx)) })
+}
+
+// ── Search operator parser ──────────────────────────────────────────────────
+function _parseSearchOperators(query) {
+  var result = { text: query, artist: null, yearMin: null, yearMax: null, format: null, album: null, genre: null, is: null, playsMin: null, durMin: null, durMax: null }
+  var text = (query || '').trim()
+  if (!text) return result
+
+  var artistRx = /\bartist:(\S+)/i
+  var artistMatch = text.match(artistRx)
+  if (artistMatch) {
+    result.artist = artistMatch[1]
+    text = text.replace(artistMatch[0], '').trim()
+  }
+
+  var yearRx = /\byear:(\d{4})(?:-(\d{4}))?\b/i
+  var yearMatch = text.match(yearRx)
+  if (yearMatch) {
+    result.yearMin = parseInt(yearMatch[1])
+    result.yearMax = yearMatch[2] ? parseInt(yearMatch[2]) : parseInt(yearMatch[1])
+    text = text.replace(yearMatch[0], '').trim()
+  } else {
+    var yearMaxRx = /\byear:-(\d{4})\b/i
+    var yearMaxMatch = text.match(yearMaxRx)
+    if (yearMaxMatch) {
+      result.yearMax = parseInt(yearMaxMatch[1])
+      text = text.replace(yearMaxMatch[0], '').trim()
+    }
+  }
+
+  var formatRx = /\bformat:(\S+)/i
+  var formatMatch = text.match(formatRx)
+  if (formatMatch) {
+    result.format = formatMatch[1]
+    text = text.replace(formatMatch[0], '').trim()
+  }
+
+  var m5 = text.match(/\balbum:"([^"]+)"/); if (m5) { result.album = m5[1]; text = text.replace(m5[0], '').trim() }
+  var m6 = text.match(/\bgenre:"([^"]+)"/); if (m6) { result.genre = m6[1]; text = text.replace(m6[0], '').trim() }
+  var m7 = text.match(/\bis:(liked|downloaded|flac|lossy)\b/); if (m7) { result.is = m7[1]; text = text.replace(m7[0], '').trim() }
+  var m8 = text.match(/\bplays:>(\d+)\b/); if (m8) { result.playsMin = parseInt(m8[1]); text = text.replace(m8[0], '').trim() }
+  var m9 = text.match(/\bduration:<(\d+)\b/); if (m9) { result.durMax = parseInt(m9[1]); text = text.replace(m9[0], '').trim() }
+  var m10 = text.match(/\bduration:>(\d+)\b/); if (m10) { result.durMin = parseInt(m10[1]); text = text.replace(m10[0], '').trim() }
+  var m11 = text.match(/\byear:>(\d{4})\b/); if (m11) { result.yearMin = parseInt(m11[1]); text = text.replace(m11[0], '').trim() }
+  var m12 = text.match(/\byear:<(\d{4})\b/); if (m12) { result.yearMax = parseInt(m12[1]); text = text.replace(m12[0], '').trim() }
+
+  result.text = text
+  return result
+}
+
+// ── Fuzzy matching ───────────────────────────────────────────────────────────
+function _fuzzyFind(text, candidates, limit) {
+  limit = limit || 3
+  var lower = text.toLowerCase()
+  var scored = candidates.map(function(c) {
+    var dist = _levenshtein(lower, c.toLowerCase())
+    if (c.toLowerCase().indexOf(lower) !== -1) dist = Math.max(0, dist - 100)
+    return { text: c, dist: dist }
+  })
+  scored.sort(function(a, b) { return a.dist - b.dist })
+  return scored.slice(0, limit).filter(function(s) { return s.dist < Math.max(5, s.text.length / 2) }).map(function(s) { return s.text })
+}
+
+function _levenshtein(a, b) {
+  if (a.length === 0) return b.length
+  if (b.length === 0) return a.length
+  var matrix = []
+  for (var i = 0; i <= b.length; i++) { matrix[i] = [i] }
+  for (var j = 0; j <= a.length; j++) { matrix[0][j] = j }
+  for (var i = 1; i <= b.length; i++) {
+    for (var j = 1; j <= a.length; j++) {
+      if (b.charAt(i - 1) === a.charAt(j - 1)) {
+        matrix[i][j] = matrix[i - 1][j - 1]
+      } else {
+        matrix[i][j] = Math.min(matrix[i - 1][j - 1] + 1, Math.min(matrix[i][j - 1] + 1, matrix[i - 1][j] + 1))
+      }
+    }
+  }
+  return matrix[b.length][a.length]
+}
+
+function _evalSmartPlaylist(pl) {
+  var all = _allLibraryTracks()
+  if (!pl.rules || !pl.rules.length) return all
+  return all.filter(function(t) {
+    return pl.rules.every(function(rule) {
+      var val = t[rule.field]
+      if (val === undefined || val === null) return false
+      switch (rule.op) {
+        case 'is': return String(val).toLowerCase() === String(rule.value).toLowerCase()
+        case 'contains': return String(val).toLowerCase().indexOf(String(rule.value).toLowerCase()) !== -1
+        case 'gt': return Number(val) > Number(rule.value)
+        case 'lt': return Number(val) < Number(rule.value)
+        case 'gte': return Number(val) >= Number(rule.value)
+        case 'lte': return Number(val) <= Number(rule.value)
+        default: return true
+      }
+    })
+  })
+}
 
 // ── Start ───────────────────────────────────────────────────────────────────
 init()

@@ -1,9 +1,10 @@
 {
   "name": "papa-audio",
   "version": "1.0.0",
+  "appVersion": "1.0.0",
   "description": "Papa Audio \u2014 hi-fi music player",
   "author": "Shaharyar",
-  "homepage": "https://github.com/shaharyar/papa-audio",
+  "homepage": "https://github.com/swagofthenerd-gif/papa-audio",
   "main": "main.js",
   "scripts": {
     "test": "node --test 'test/**/*.test.js'",

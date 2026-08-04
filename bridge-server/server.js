@@ -17,6 +17,7 @@ const https    = require('https')
 const os       = require('os')
 const { parseFile } = require('music-metadata')
 const Store = require('electron-store')
+const registerYouTube = require('./youtube')
 
 // ── Config ────────────────────────────────────────────────────────────────────
 const PORT        = process.env.BRIDGE_PORT || 8765
@@ -248,7 +249,14 @@ app.post('/api/library/cache', (req, res) => {
 // ── Music streaming ───────────────────────────────────────────────────────────
 app.get('/stream', (req, res) => {
   const filePath = req.query.path
-  if (!filePath || !fs.existsSync(filePath)) return res.status(404).json({ error: 'File not found' })
+  if (!filePath) return res.status(400).json({ error: 'Missing path parameter' })
+
+  const folders = store.get('musicFolders', [])
+  const resolved = path.resolve(filePath)
+  const allowed = folders.some(function(f) { return resolved.startsWith(path.resolve(f)) })
+  if (!allowed) return res.status(403).json({ error: 'Access denied: path outside music folders' })
+
+  if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File not found' })
 
   const stat = fs.statSync(filePath)
   const total = stat.size
@@ -285,7 +293,14 @@ app.get('/stream', (req, res) => {
 // ── Album art ─────────────────────────────────────────────────────────────────
 app.get('/art', (req, res) => {
   const artPath = req.query.path
-  if (!artPath || !fs.existsSync(artPath)) return res.status(404).send('Not found')
+  if (!artPath) return res.status(400).json({ error: 'Missing path parameter' })
+
+  const folders = store.get('musicFolders', [])
+  const resolved = path.resolve(artPath)
+  const allowed = folders.some(function(f) { return resolved.startsWith(path.resolve(f)) }) || resolved.startsWith(path.resolve(os.homedir() + '/.config/papa-audio/artwork'))
+  if (!allowed) return res.status(403).json({ error: 'Access denied' })
+
+  if (!fs.existsSync(artPath)) return res.status(404).send('Not found')
   const ext = path.extname(artPath).toLowerCase()
   const mime = ext === '.png' ? 'image/png' : 'image/jpeg'
   res.setHeader('Content-Type', mime)
@@ -530,6 +545,19 @@ app.delete('/api/folders', (req, res) => {
 })
 
 // ── Start ─────────────────────────────────────────────────────────────────────
+// YouTube bridge (search, stream, download for Android app)
+fs.mkdirSync(path.join(USER_DATA, 'yt-cache'), { recursive: true })
+registerYouTube(app, {
+  sseSend,
+  getDownloadDir() {
+    const cfg = store.get('slskConfig', {})
+    const folders = store.get('musicFolders', [])
+    return cfg.downloadDir || folders[0] || path.join(os.homedir(), 'Music')
+  },
+  cacheDir: path.join(USER_DATA, 'yt-cache'),
+  scheduleRescan() {},
+})
+
 app.listen(PORT, '0.0.0.0', () => {
   const interfaces = os.networkInterfaces()
   const ips = []

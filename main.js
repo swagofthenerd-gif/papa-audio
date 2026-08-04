@@ -358,6 +358,10 @@ app.whenReady().then(() => {
   createTray()
   setupLibraryWatcher()
   if (fs.existsSync(SLSKD_BIN)) startSlskd().catch(() => {})
+  try {
+    const configPath = path.join(app.getPath('userData'), 'config.json')
+    if (fs.existsSync(configPath)) fs.chmodSync(configPath, 0o600)
+  } catch (_) {}
 })
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
@@ -694,9 +698,9 @@ ipcMain.handle('torrent-remove', async (_, infoHash) => {
 // ── App info ─────────────────────────────────────────────────────────────────
 ipcMain.handle('get-app-info', () => ({
   musicFolders:   store.get('musicFolders', []),
-  savedSites:     store.get('savedSites', []),
   recentlyPlayed: store.get('recentlyPlayed', []),
   volume:         store.get('volume', 0.8),
+  wishlist:       store.get('downloadWishlist', []),
 }))
 
 // ── Library cache ────────────────────────────────────────────────────────────
@@ -706,6 +710,9 @@ ipcMain.on('save-library-cache', (_, albums) => store.set('libraryCache', albums
 // ── Playback state persistence ───────────────────────────────────────────────
 ipcMain.handle('get-playback-state', () => store.get('playbackState', null))
 ipcMain.on('save-playback-state', (_, s) => store.set('playbackState', s))
+
+ipcMain.handle('get-session-state', () => store.get('sessionState', null))
+ipcMain.on('save-session-state', (_, s) => store.set('sessionState', s))
 
 // ── Liked albums ─────────────────────────────────────────────────────────────
 ipcMain.handle('get-liked', () => store.get('likedAlbums', []))
@@ -727,6 +734,9 @@ ipcMain.on('add-play-history', (_, entry) => {
   if (h.length > 2000) h.splice(2000)
   store.set('playHistory', h)
 })
+
+ipcMain.handle('get-download-wishlist', () => store.get('downloadWishlist', []))
+ipcMain.on('save-download-wishlist', (_, wl) => store.set('downloadWishlist', wl))
 
 ipcMain.handle('get-followed-artists', () => store.get('followedArtists', []))
 ipcMain.on('save-followed-artists', (_, artists) => store.set('followedArtists', artists))

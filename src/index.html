@@ -310,6 +310,7 @@
         </div>
       </div>
       <span class="np-format" id="np-format"></span>
+      <span class="np-format cf-badge" id="np-crossfade"></span>
     </div>
     <button class="ctrl-btn like-btn" id="btn-like" title="Like">
       <svg class="heart-outline" viewBox="0 0 24 24"><path d="M16.5 3c-1.74 0-3.41.81-4.5 2.09A5.99 5.99 0 0 0 7.5 3C4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3zm-4.4 15.55-.1.1-.1-.1C7.14 14.24 4 11.39 4 8.5 4 6.5 5.5 5 7.5 5c1.54 0 3.04.99 3.57 2.36h1.87C13.46 5.99 14.96 5 16.5 5c2 0 3.5 1.5 3.5 3.5 0 2.89-3.14 5.74-7.9 10.05z"/></svg>
@@ -471,9 +472,14 @@
   <button class="ctx-item" id="ctx-addpl">
     <svg viewBox="0 0 24 24"><path d="M14 10H2v2h12v-2zm0-4H2v2h12V6zM2 16h8v-2H2v2zm14-2v3h-3v2h3v3h2v-3h3v-2h-3v-3h-2z"/></svg> Add to playlist
   </button>
+  <button class="ctx-item" id="ctx-wishlist">
+    <svg viewBox="0 0 24 24"><path d="M17 3H7c-1.1 0-2 .9-2 2v16l7-3 7 3V5c0-1.1-.9-2-2-2z"/></svg> Add to wishlist
+  </button>
   <button class="ctx-item" id="ctx-artist">
     <svg viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg> View artist
   </button>
+  <div class="ctx-separator"></div>
+  <div class="ctx-item" id="ctx-copy-path"><svg viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg> Copy file path</div>
   <button class="ctx-item" id="ctx-show-folder">
     <svg viewBox="0 0 24 24"><path d="M20 6h-8l-2-2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2z"/></svg> Show in folder
   </button>
@@ -551,6 +557,7 @@
       <div class="shortcuts-col">
         <div class="shortcuts-section-title">Navigation</div>
         <div class="shortcut-row"><kbd>Ctrl+K</kbd><span>Search</span></div>
+        <div class="shortcut-row"><kbd>Ctrl+Shift+P</kbd><span>Command palette</span></div>
         <div class="shortcut-row"><kbd>Alt+←</kbd><span>Go back</span></div>
         <div class="shortcut-row"><kbd>Alt+→</kbd><span>Go forward</span></div>
         <div class="shortcut-row"><kbd>Q</kbd><span>Toggle queue</span></div>
@@ -575,6 +582,23 @@
     <button id="mpv-recheck-btn">I installed it — check again</button>
     <p id="mpv-recheck-msg"></p>
   </div>
+</div>
+
+<div class="snackbar-container" id="snackbar-container"></div>
+
+<div class="cmd-palette-overlay" id="cmd-palette" style="display:none">
+  <div class="cmd-palette-box">
+    <div class="cmd-palette-input-row">
+      <svg class="cmd-palette-search-icon" viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+      <input class="cmd-palette-input" id="cmd-palette-input" placeholder="Type a command..." autocomplete="off">
+    </div>
+    <div class="cmd-palette-results" id="cmd-palette-results"></div>
+    <div class="cmd-palette-footer"><span><kbd>Tab</kbd> navigate</span><span><kbd>Enter</kbd> execute</span><span><kbd>Esc</kbd> close</span></div>
+  </div>
+</div>
+
+<div class="search-operator-hint" id="search-operator-hint" style="display:none">
+  <span>Try: <code>artist:"name"</code> <code>year:2020-2024</code> <code>format:flac</code> <code>source:soulseek</code></span>
 </div>
 
 <script src="player-shim.js"></script>
