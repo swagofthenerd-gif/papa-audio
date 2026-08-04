@@ -1900,7 +1900,7 @@ function renderSearch(query) {
           const artThumb = t.artPath
             ? `<img src="file://${t.artPath}" class="str-track-thumb" alt="" onerror="this.style.display='none'">`
             : `<div class="str-track-thumb" style="background:linear-gradient(135deg,hsl(${trackHue},50%,22%),hsl(${(trackHue+40)%360},40%,14%))"></div>`
-          return `<div class="str-track track-row" data-file="${esc(t.filePath)}" data-idx="${i}" data-album="${t.albumId}">
+          return `<div class="str-track track-row search-animate-in" data-file="${esc(t.filePath)}" data-idx="${i}" data-album="${t.albumId}">
             ${artThumb}
             <div class="str-track-info">
               <div class="str-track-title">${highlightMatch(t.title, searchText)}</div>
@@ -1919,7 +1919,7 @@ function renderSearch(query) {
       const startIdx = topAlbum ? 1 : 0
       html += `<div class="search-section" data-section="Albums">
         <div class="section-header"><span class="section-title">Albums · ${matchAlbums.length - (topAlbum ? 1 : 0)}</span></div>
-        <div class="album-grid">${matchAlbums.slice(startIdx, startIdx + 8).map(function(a) { return albumCard(a, 0, '', searchText) }).join('')}</div>
+        <div class="album-grid">${matchAlbums.slice(startIdx, startIdx + 8).map(function(a) { return albumCard(a, 0, '', searchText).replace('class="album-card"', 'class="album-card search-animate-in"') }).join('')}</div>
       </div>`
     }
     if (matchArtists.length) {
@@ -1935,7 +1935,7 @@ function renderSearch(query) {
         <div class="track-list">
         <div class="track-list-header"><span>#</span><span>Title</span><span style="text-align:right">Duration</span></div>`
       html += matchTracks.slice(startIdx).map((t, i) => `
-        <div class="track-row" data-file="${esc(t.filePath)}" data-idx="${i + startIdx}" data-album="${t.albumId}">
+        <div class="track-row search-animate-in" data-file="${esc(t.filePath)}" data-idx="${i + startIdx}" data-album="${t.albumId}">
           <span class="track-num">${i + startIdx + 1}</span>
           <div class="track-info">
             <div class="track-title">${highlightMatch(t.title, searchText)}</div>
@@ -2282,7 +2282,7 @@ function _ytSongRows(songs, query) {
   return `<div class="yt-list">${songs.map((r, i) => {
     var inLib = isInLibrary(r.artist, r.title)
     var badge = inLib ? '<span class="in-lib-badge" style="background:rgba(29,185,84,.15);color:#1db954;font-size:10px;padding:1px 6px;border-radius:8px;margin-left:6px">In Library</span>' : ''
-    return `<div class="yt-row" data-i="${i}">
+    return `<div class="yt-row search-animate-in" data-i="${i}">
       ${r.thumbnailUrl
         ? `<img class="yt-thumb" src="${esc(r.thumbnailUrl)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`
         : `<div class="yt-thumb yt-thumb-empty"></div>`}
@@ -2309,7 +2309,7 @@ function _ytAlbumCard(a, query) {
   const hue = _cardHue((a.artist || '') + (a.title || ''))
   var inLib = isInLibrary(a.artist, a.title)
   var badge = inLib ? '<span class="in-lib-badge" style="background:rgba(29,185,84,.15);color:#1db954;font-size:10px;padding:1px 6px;border-radius:8px;margin-left:6px">In Library</span>' : ''
-  return `<div class="album-card yt-album-card" data-browse="${esc(a.browseId)}">
+  return `<div class="album-card yt-album-card search-animate-in" data-browse="${esc(a.browseId)}">
     <div class="album-card-art-wrap">
       ${a.thumbnailUrl
         ? `<img class="album-card-art" src="${esc(a.thumbnailUrl)}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
@@ -2325,7 +2325,7 @@ function _ytAlbumCard(a, query) {
 }
 
 function _ytArtistCard(a) {
-  return `<div class="artist-card yt-artist-card" data-channel="${esc(a.channelId)}">
+  return `<div class="artist-card yt-artist-card search-animate-in" data-channel="${esc(a.channelId)}">
     <div class="artist-card-art">
       ${a.thumbnailUrl
         ? `<img src="${esc(a.thumbnailUrl)}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
@@ -9071,6 +9071,51 @@ function initSearchHistory() {
     clearBtn.addEventListener('click', function() { input.value = ''; clearBtn.style.display = 'none'; input.focus() })
     searchWrap.appendChild(clearBtn)
     input.addEventListener('input', function() { clearBtn.style.display = this.value ? 'flex' : 'none' })
+
+    // Mic button for voice search
+    if (!document.getElementById('tb-mic-css')) {
+      var s = document.createElement('style')
+      s.id = 'tb-mic-css'
+      s.textContent = '.tb-mic{background:none;border:none;color:var(--text3);cursor:pointer;padding:4px;display:flex;align-items:center}.tb-mic:hover{color:var(--text)}.tb-mic.listening{color:#e05c5c;animation:pulse 1s infinite}'
+      document.head.appendChild(s)
+    }
+
+    var micBtn = document.createElement('button')
+    micBtn.id = 'tb-mic'
+    micBtn.className = 'tb-mic'
+    micBtn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/><path fill="currentColor" d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>'
+    micBtn.title = 'Voice search'
+    searchWrap.appendChild(micBtn)
+
+    micBtn.addEventListener('click', function() {
+      if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+        showSnackbar('Voice search not supported in this browser')
+        return
+      }
+      var SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
+      var recognition = new SpeechRecognition()
+      recognition.lang = 'en-US'
+      recognition.interimResults = false
+      recognition.maxAlternatives = 1
+
+      micBtn.classList.add('listening')
+      recognition.start()
+
+      recognition.onresult = function(event) {
+        var transcript = event.results[0][0].transcript
+        input.value = transcript
+        input.focus()
+        commitSearch(transcript)
+        micBtn.classList.remove('listening')
+      }
+      recognition.onerror = function() {
+        micBtn.classList.remove('listening')
+        showSnackbar('Voice search failed — try typing instead')
+      }
+      recognition.onend = function() {
+        micBtn.classList.remove('listening')
+      }
+    })
   }
 
   function showLiveResults(q) {
