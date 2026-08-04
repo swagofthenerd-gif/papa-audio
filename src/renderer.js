@@ -8801,6 +8801,73 @@ function initSearchHistory() {
     searchWrap.appendChild(clearBtn)
     input.addEventListener('input', function() { clearBtn.style.display = this.value ? 'flex' : 'none' })
   }
+
+  function showLiveResults(q) {
+    var albums = state.library.filter(function(a) {
+      return (a.name && a.name.toLowerCase().includes(q.toLowerCase())) ||
+             (a.artist && a.artist.toLowerCase().includes(q.toLowerCase()))
+    }).slice(0, 5)
+    var artists = {}
+    state.library.forEach(function(a) {
+      if (a.artist && a.artist.toLowerCase().includes(q.toLowerCase()) && !artists[a.artist]) {
+        artists[a.artist] = 1
+      }
+    })
+    var topArtists = Object.keys(artists).slice(0, 3)
+
+    if (!albums.length && !topArtists.length) {
+      hideLiveResults()
+      return
+    }
+
+    var dd = document.getElementById('live-search-dd')
+    if (!dd) {
+      dd = document.createElement('div')
+      dd.id = 'live-search-dd'
+      dd.style.cssText = 'position:absolute;top:100%;left:0;right:0;background:var(--bg2);border:1px solid var(--glass-border);border-radius:var(--r);z-index:100;max-height:300px;overflow-y:auto;margin-top:4px;box-shadow:0 8px 24px rgba(0,0,0,.4)'
+      input.parentNode.style.position = 'relative'
+      input.parentNode.appendChild(dd)
+    }
+
+    var html = ''
+    if (topArtists.length) {
+      html += '<div style="padding:6px 12px;font-size:11px;color:var(--text3);text-transform:uppercase">Artists</div>'
+      topArtists.forEach(function(a) {
+        html += '<div class="live-item" data-query="' + esc(a) + '" style="padding:6px 12px;cursor:pointer;font-size:13px">' + esc(a) + '</div>'
+      })
+    }
+    if (albums.length) {
+      html += '<div style="padding:6px 12px;font-size:11px;color:var(--text3);text-transform:uppercase">Albums</div>'
+      albums.forEach(function(a) {
+        html += '<div class="live-item" data-album="' + a.id + '" style="padding:6px 12px;cursor:pointer;font-size:13px;display:flex;gap:8px;align-items:center">' +
+          '<div style="width:28px;height:28px;border-radius:4px;overflow:hidden">' + (a.artPath ? '<img src="file://' + a.artPath + '" style="width:100%;height:100%;object-fit:cover">' : '<div style="width:100%;height:100%;background:var(--bg3)"></div>') + '</div>' +
+          '<span>' + esc(a.name) + '<span style="color:var(--text3);font-size:11px"> — ' + esc(a.artist) + '</span></span>' +
+          '</div>'
+      })
+    }
+    html += '<div class="live-item" data-query="' + esc(q) + '" style="padding:6px 12px;cursor:pointer;font-size:13px;border-top:1px solid var(--glass-border);color:var(--accent)">Search: ' + esc(q) + '</div>'
+
+    dd.innerHTML = html
+    dd.style.display = 'block'
+    _liveResultsVisible = true
+
+    dd.querySelectorAll('.live-item[data-album]').forEach(function(item) {
+      item.addEventListener('mousedown', function(e) { e.preventDefault(); navigate('album', item.dataset.album); hideLiveResults() })
+    })
+    dd.querySelectorAll('.live-item[data-query]').forEach(function(item) {
+      item.addEventListener('mousedown', function(e) { e.preventDefault(); commitSearch(item.dataset.query); hideLiveResults() })
+    })
+    dd.querySelectorAll('.live-item').forEach(function(item) {
+      item.addEventListener('mouseenter', function() { item.style.background = 'var(--glass)' })
+      item.addEventListener('mouseleave', function() { item.style.background = '' })
+    })
+  }
+
+  function hideLiveResults() {
+    var dd = document.getElementById('live-search-dd')
+    if (dd) { dd.style.display = 'none'; dd.innerHTML = '' }
+    _liveResultsVisible = false
+  }
 }
 
 function initResizableQueue() {
