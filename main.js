@@ -30,11 +30,10 @@ async function scrobbleTrack(track, timestamp) {
 }
 
 function withTimeout(promise, ms, label) {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), ms)
+  var timer
   return Promise.race([
     promise,
-    new Promise((_, reject) => setTimeout(() => reject(new Error(`${label || 'Request'} timed out`)), ms)),
+    new Promise((_, reject) => { timer = setTimeout(() => reject(new Error((label || 'Request') + ' timed out')), ms) })
   ]).finally(() => clearTimeout(timer))
 }
 
