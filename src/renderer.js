@@ -64,7 +64,9 @@ const slsk = {
   results: [],
   lastQuery: '',
   pendingSearches: 0,
+  searchStart: 0,
 }
+var _slskTimer = null
 
 var _playlistSorts = {}
 const navHistory = []
@@ -1331,7 +1333,15 @@ function renderLibrary() {
     )
     const grid = document.getElementById('lib-grid')
     if (grid) grid.innerHTML = filtered.map(function(a, i) { return albumCard(a, i, state.libSort) }).join('')
-    bindContentEvents()
+  bindContentEvents()
+
+  document.getElementById('results-filter')?.addEventListener('input', function() {
+    var q = this.value.toLowerCase()
+    document.querySelectorAll('.track-row, .album-card, .artist-pill, .yt-row, .yt-album-card').forEach(function(el) {
+      var text = (el.textContent || '').toLowerCase()
+      el.style.display = q && !text.includes(q) ? 'none' : ''
+    })
+  })
   })
 
   document.querySelectorAll('.sort-btn[data-sort]').forEach(btn => {
@@ -1805,7 +1815,8 @@ function renderSearch(query) {
     <div class="search-tabs" id="search-tabs">
       ${tabs.map(t => `<button class="search-tab${t==='All'?' active':''}" data-tab="${t}">${t}</button>`).join('')}
     </div>
-    ${dymHTML}`
+    ${dymHTML}
+    <div class="results-filter-wrap"><input class="results-filter" id="results-filter" placeholder="Filter results…"></div>`
 
   if (hasLocal) {
     // Top result — best matching album or artist
@@ -2100,14 +2111,26 @@ function _ytArtistSpan(r, query) {
     : `<span class="yt-link" data-yt-name="${esc(r.artist)}">${artistHtml}</span>`
 }
 
+function isInLibrary(artist, album) {
+  if (!artist || !album) return false
+  var aLower = artist.toLowerCase()
+  var bLower = album.toLowerCase()
+  return state.library.some(function(a) {
+    return (a.artist && a.artist.toLowerCase().includes(aLower) || aLower.includes(a.artist.toLowerCase())) &&
+           (a.name && a.name.toLowerCase().includes(bLower) || bLower.includes(a.name.toLowerCase()))
+  })
+}
+
 function _ytSongRows(songs, query) {
-  return `<div class="yt-list">${songs.map((r, i) => `
-    <div class="yt-row" data-i="${i}">
+  return `<div class="yt-list">${songs.map((r, i) => {
+    var inLib = isInLibrary(r.artist, r.title)
+    var badge = inLib ? '<span class="in-lib-badge" style="background:rgba(29,185,84,.15);color:#1db954;font-size:10px;padding:1px 6px;border-radius:8px;margin-left:6px">In Library</span>' : ''
+    return `<div class="yt-row" data-i="${i}">
       ${r.thumbnailUrl
         ? `<img class="yt-thumb" src="${esc(r.thumbnailUrl)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`
         : `<div class="yt-thumb yt-thumb-empty"></div>`}
       <div class="yt-info">
-        <div class="yt-title">${query ? highlightMatch(r.title, query) : esc(r.title)} <span class="yt-badge">YT</span></div>
+        <div class="yt-title">${query ? highlightMatch(r.title, query) : esc(r.title)} <span class="yt-badge">YT</span>${badge}</div>
         <div class="yt-sub-line">${_ytArtistSpan(r, query)}${r.album ? ' · ' + (r.albumBrowseId ? `<span class="yt-link" data-yt-albumbrowse="${esc(r.albumBrowseId)}">${esc(r.album)}</span>` : esc(r.album)) : ''}${r.viewCount ? ' · ' + esc(r.viewCount) : ''}</div>
       </div>
       <span class="yt-dur">${r.duration ? fmtDur(r.duration) : ''}</span>
@@ -2121,7 +2144,8 @@ function _ytSongRows(songs, query) {
           <svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
         </button>
       </div>
-    </div>`).join('')}</div>`
+    </div>`
+  }).join('')}</div>`
 }
 
 function _ytAlbumCard(a, query) {
@@ -8917,6 +8941,45 @@ function initSearchHistory() {
       item.addEventListener('mouseenter', function() { item.style.background = 'var(--glass)' })
       item.addEventListener('mouseleave', function() { item.style.background = '' })
     })
+
+    if (q.length >= 3) {
+      window.api.ytMusicSearch({ query: q }).then(function(res) {
+        var dd = document.getElementById('live-search-dd')
+        if (!dd || !_liveResultsVisible) return
+        if (!res.ok || !res.results || !res.results.length) return
+
+        var existing = dd.querySelector('.live-yt-section')
+        if (existing) existing.remove()
+
+        var ytHtml = '<div class="live-yt-section"><div style="padding:6px 12px;font-size:11px;color:var(--text3);text-transform:uppercase">YouTube <span class="yt-badge" style="font-size:9px">YT</span></div>'
+        res.results.slice(0, 3).forEach(function(r) {
+          ytHtml += '<div class="live-item live-yt-item" data-videoid="' + r.videoId + '" style="padding:6px 12px;cursor:pointer;font-size:13px;display:flex;gap:8px;align-items:center">' +
+            (r.thumbnailUrl ? '<div style="width:28px;height:28px;border-radius:4px;overflow:hidden;flex-shrink:0"><img src="' + esc(r.thumbnailUrl) + '" style="width:100%;height:100%;object-fit:cover" onerror="this.style.display=\'none\'"></div>' : '') +
+            '<div><div>' + esc(r.title) + '</div><div style="font-size:11px;color:var(--text3)">' + esc(r.artist) + '</div></div></div>'
+        })
+        ytHtml += '</div>'
+
+        var ytDiv = document.createElement('div')
+        ytDiv.innerHTML = ytHtml
+        dd.appendChild(ytDiv.firstChild)
+
+        dd.querySelectorAll('.live-yt-item').forEach(function(item) {
+          item.addEventListener('mousedown', function(e) {
+            e.preventDefault()
+            var videoId = item.dataset.videoid
+            var r = res.results.find(function(x) { return x.videoId === videoId })
+            if (r) {
+              state.queue = [_ytQueueItem(r)]
+              state.queueIndex = 0
+              playCurrentTrack()
+            }
+            hideLiveResults()
+          })
+          item.addEventListener('mouseenter', function() { item.style.background = 'var(--glass)' })
+          item.addEventListener('mouseleave', function() { item.style.background = '' })
+        })
+      }).catch(function() {})
+    }
   }
 
   function hideLiveResults() {
