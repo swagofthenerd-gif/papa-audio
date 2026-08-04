@@ -1962,11 +1962,16 @@ function renderSearch(query) {
   const sameQuery  = slsk.lastQuery === query
   const hasResults = slsk.results.length > 0
   bindSlskSearchEvents(query)
-  if (!sameQuery || !slsk.searched || (!slsk.searching && !hasResults)) {
-    runSlskSearch(query)
+  if (slsk.status.connected) {
+    if (!sameQuery || !slsk.searched || (!slsk.searching && !hasResults)) {
+      runSlskSearch(query)
+    } else {
+      const navQ = document.getElementById('nav-search-query')
+      if (navQ) navQ.textContent = query
+      const section = document.getElementById('slsk-section')
+      if (section) { section.innerHTML = renderSoulseekRow(query); bindSlskSearchEvents(query) }
+    }
   } else {
-    const navQ = document.getElementById('nav-search-query')
-    if (navQ) navQ.textContent = query
     const section = document.getElementById('slsk-section')
     if (section) { section.innerHTML = renderSoulseekRow(query); bindSlskSearchEvents(query) }
   }
@@ -2150,6 +2155,8 @@ function _ytSongRows(songs, query) {
 
 function _ytAlbumCard(a, query) {
   const hue = _cardHue((a.artist || '') + (a.title || ''))
+  var inLib = isInLibrary(a.artist, a.title)
+  var badge = inLib ? '<span class="in-lib-badge" style="background:rgba(29,185,84,.15);color:#1db954;font-size:10px;padding:1px 6px;border-radius:8px;margin-left:6px">In Library</span>' : ''
   return `<div class="album-card yt-album-card" data-browse="${esc(a.browseId)}">
     <div class="album-card-art-wrap">
       ${a.thumbnailUrl
@@ -2160,7 +2167,7 @@ function _ytAlbumCard(a, query) {
       </div>
       <span class="yt-badge yt-card-badge">YT</span>
     </div>
-    <div class="album-card-name">${query ? highlightMatch(a.title, query) : esc(a.title)}</div>
+    <div class="album-card-name">${query ? highlightMatch(a.title, query) : esc(a.title)}${badge}</div>
     <div class="album-card-meta">${esc(a.year || '')}${a.year && a.artist ? ' · ' : ''}${query ? highlightMatch(a.artist || '', query) : esc(a.artist || '')}</div>
   </div>`
 }
