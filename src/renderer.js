@@ -1461,6 +1461,9 @@ function renderAlbum(albumId) {
       <button class="album-play-btn" id="album-play-btn">
         <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
       </button>
+      <button class="ctrl-btn album-shuffle-btn" id="album-shuffle-btn" title="Shuffle play">
+        <svg viewBox="0 0 24 24"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
+      </button>
       <button class="ctrl-btn album-like-btn like-btn ${isLiked ? 'liked' : ''}" id="album-like-btn" data-album="${albumId}" title="${isLiked ? 'Unlike' : 'Like'}">
         <svg class="heart-outline" viewBox="0 0 24 24"><path d="M16.5 3c-1.74 0-3.41.81-4.5 2.09A5.99 5.99 0 0 0 7.5 3C4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3zm-4.4 15.55-.1.1-.1-.1C7.14 14.24 4 11.39 4 8.5 4 6.5 5.5 5 7.5 5c1.54 0 3.04.99 3.57 2.36h1.87C13.46 5.99 14.96 5 16.5 5c2 0 3.5 1.5 3.5 3.5 0 2.89-3.14 5.74-7.9 10.05z"/></svg>
         <svg class="heart-filled" viewBox="0 0 24 24" style="display:none"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09A5.99 5.99 0 0 1 16.5 3C19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
@@ -3244,6 +3247,15 @@ function renderPlaylist(id, sortKey) {
     </div>
     ${recHTML}`)
 
+  var searchInput = document.getElementById('pl-search')
+  if (searchInput) {
+    searchInput.addEventListener('input', function() {
+      state._plSearch = searchInput.value.toLowerCase()
+      renderPlaylist(id)
+    })
+    searchInput.focus()
+  }
+
   document.getElementById('pl-play-btn')?.addEventListener('click', () => {
     if (!tracks.length) return
     state.queue = tracks.map(t => ({ ...t }))
@@ -4125,6 +4137,8 @@ function renderQueuePanel() {
   clearBtn.className = 'queue-clear-btn'
   clearBtn.textContent = 'Clear queue'
   clearBtn.addEventListener('click', () => {
+    if (state.queue.length === 0) return
+    if (!confirm('Clear all ' + state.queue.length + ' tracks from the queue?')) return
     var savedQueue = state.queue.slice(), savedIdx = state.queueIndex
     audio.pause()
     state.queue = []; state.queueIndex = -1; state.isPlaying = false
