@@ -496,6 +496,13 @@ function updateNavBtns() {
 function renderFolders() {
   const list = document.getElementById('folders-list')
   if (!list) return
+  const section = list.closest('.sidebar-section')
+  if (!state.musicFolders.length) {
+    if (section) section.style.display = 'none'
+    document.getElementById('setup-overlay').style.display = 'flex'
+    return
+  }
+  if (section) section.style.display = ''
   list.innerHTML = state.musicFolders.map(f => `
     <li class="site-item" title="${esc(f)}">
       <span>${esc(shortPath(f))}</span>
@@ -3263,6 +3270,31 @@ function renderStats() {
   }
   calHTML += '</div></div></div>'
 
+  var weekMs = 7 * 86400000
+  var monthMs = 30 * 86400000
+  var weekSecs = 0
+  state.playHistory.forEach(function(p) {
+    if (p.ts > Date.now() - weekMs) weekSecs += (p.duration || 0)
+  })
+  var weekHours = Math.floor(weekSecs / 3600)
+  var weekMins = Math.floor((weekSecs % 3600) / 60)
+
+  var monthArtistCounts = {}
+  state.playHistory.forEach(function(p) {
+    if (p.ts > Date.now() - monthMs && p.artist) {
+      monthArtistCounts[p.artist] = (monthArtistCounts[p.artist] || 0) + 1
+    }
+  })
+  var topMonthArtists = Object.entries(monthArtistCounts).sort(function(a, b) { return b[1] - a[1] }).slice(0, 5)
+  var maxMonthArtist = topMonthArtists.length ? topMonthArtists[0][1] : 1
+
+  var libGenreCounts = {}
+  state.library.forEach(function(a) {
+    if (a.genre) libGenreCounts[a.genre] = (libGenreCounts[a.genre] || 0) + 1
+  })
+  var topLibGenres = Object.entries(libGenreCounts).sort(function(a, b) { return b[1] - a[1] }).slice(0, 8)
+  var maxLibGenre = topLibGenres.length ? topLibGenres[0][1] : 1
+
   var hourlyData = new Array(24).fill(0)
   recent.forEach(function(p) { var h = new Date(p.ts).getHours(); hourlyData[h]++ })
   var maxHourly = Math.max.apply(null, hourlyData) || 1
@@ -3277,6 +3309,32 @@ function renderStats() {
 
   setContent(`<div class="stats-page">
     <div class="stats-hero">Listening time (${rangeLabel})<span>${hours}h ${mins}m</span><div style="font-size:12px;color:var(--text3);margin-top:4px">All time: ${totalAllTimeStr}</div><div style="font-size:11px;color:var(--text3);margin-top:4px">${rangeText}</div></div>
+    <div class="stats-section">
+      <h2>This Week</h2>
+      <div class="stats-hero" style="margin:0;padding:16px 20px;font-size:13px">Listening time<span>${weekHours}h ${weekMins}m</span></div>
+    </div>
+    <div class="stats-section">
+      <h2>Top Artist This Month</h2>
+      ${topMonthArtists.length ? topMonthArtists.map(function (entry, i) {
+        var ap = artFor(entry[0])
+        return '<div class="stats-rank-row" data-stats-artist="' + esc(entry[0]) + '">' +
+          '<span class="stats-rank-num">' + (i + 1) + '</span>' +
+          (ap ? '<img class="stats-rank-art" src="file://' + ap + '" alt="">' : '<div class="stats-rank-art"></div>') +
+          '<div class="stats-rank-info"><div class="stats-rank-name">' + esc(entry[0]) + '</div></div>' +
+          '<span class="stats-rank-count">' + entry[1] + ' play' + (entry[1] !== 1 ? 's' : '') + '</span>' +
+          '</div>'
+      }).join('') : '<div class="stats-rank-sub" style="padding:8px 0">No plays yet this month.</div>'}
+    </div>
+    <div class="stats-section">
+      <h2>Library Genres</h2>
+      ${topLibGenres.length ? topLibGenres.map(function (entry) {
+        return '<div class="stats-genre-bar">' +
+          '<span class="stats-genre-name">' + esc(entry[0]) + '</span>' +
+          '<div class="stats-genre-track"><div class="stats-genre-fill" style="width:' + Math.round(entry[1] / maxLibGenre * 100) + '%"></div></div>' +
+          '<span class="stats-genre-ct">' + entry[1] + '</span>' +
+          '</div>'
+      }).join('') : '<div class="stats-rank-sub">No genre data yet.</div>'}
+    </div>
     ${achHTML}${calHTML}${heatmapHTML}
     <div class="stats-section">
       <h2>Top Artists</h2>
@@ -4866,12 +4924,14 @@ function setVolDisplay(vol) {
 // ── Saved sites ─────────────────────────────────────────────────────────────
 // ── Saved queues ─────────────────────────────────────────────────────────────
 function renderSavedQueues() {
+  const section = document.querySelector('.saved-queues-section')
   const list = document.getElementById('saved-queues-list')
   if (!list) return
   if (!state.savedQueues.length) {
-    list.innerHTML = `<li style="padding:4px 12px 8px; font-size:11px; color:var(--text3); opacity:0.6">No saved queues yet</li>`
+    if (section) section.style.display = 'none'
     return
   }
+  if (section) section.style.display = ''
   list.innerHTML = state.savedQueues.map(q => {
     const firstArt = q.tracks?.find(t => t.artPath)?.artPath
     const artHtml = firstArt
@@ -6231,13 +6291,16 @@ async function _pollAndRenderDownloads() {
 
   // Detect transitions from active → succeeded and trigger a library sync
   const nowActive = new Set(files.filter(f => _dlCategory(f.state) === 'active').map(f => f.id))
-  const justCompleted = [..._dlPrevActiveIds].some(id => {
-    const f = files.find(x => x.id === id)
-    return f && _dlCategory(f.state) === 'completed'
-  })
-  if (justCompleted) {
+  const prevActive = new Set(_dlPrevActiveIds)
+  const justCompletedIds = files.filter(f => prevActive.has(f.id) && _dlCategory(f.state) === 'completed').map(f => f.id)
+  if (justCompletedIds.length) {
     clearTimeout(_dlSyncTimer)
     _dlSyncTimer = setTimeout(() => backgroundSync(), 3000)
+    for (const f of files) {
+      if (justCompletedIds.includes(f.id)) {
+        window.api.slskVerifyFile({ username: f.username, filename: f.filename }).catch(() => {})
+      }
+    }
   }
   _dlPrevActiveIds = nowActive
 
@@ -8688,9 +8751,26 @@ function setupListeners() {
     if (mt) mt.textContent = fmtDur(audio.duration)
   })
   audio.addEventListener('ended', () => {
+    const finishedTrack = state.queue[state.queueIndex]
+    if (finishedTrack) {
+      window.api.scrobbleTrack({
+        artist: finishedTrack.albumArtist || finishedTrack.artist || '',
+        title: finishedTrack.title || '',
+        album: finishedTrack.albumName || '',
+      })
+    }
     playNext()
   })
   audio.addEventListener('autoadvanced', (e) => {
+    // Scrobble the track that just finished before updating the index
+    const finishedTrack = state.queue[state.queueIndex]
+    if (finishedTrack) {
+      window.api.scrobbleTrack({
+        artist: finishedTrack.albumArtist || finishedTrack.artist || '',
+        title: finishedTrack.title || '',
+        album: finishedTrack.albumName || '',
+      })
+    }
     if (state.stopAfterTrack) {
       state.stopAfterTrack = false
       state.isPlaying = false
