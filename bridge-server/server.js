@@ -594,7 +594,7 @@ app.delete('/api/folders', (req, res) => {
 // ── Start ─────────────────────────────────────────────────────────────────────
 // YouTube bridge (search, stream, download for Android app)
 fs.mkdirSync(path.join(USER_DATA, 'yt-cache'), { recursive: true })
-registerYouTube(app, {
+const ytBridge = registerYouTube(app, {
   sseSend,
   getDownloadDir() {
     const cfg = store.get('slskConfig', {})
@@ -604,6 +604,14 @@ registerYouTube(app, {
   cacheDir: path.join(USER_DATA, 'yt-cache'),
   scheduleRescan() {},
 })
+
+// Periodic cleanup of stale YouTube URL cache entries to prevent memory leak
+setInterval(function() {
+  const now = Date.now()
+  for (const [id, entry] of ytBridge._urlCache) {
+    if (now > entry.expiresAt) ytBridge._urlCache.delete(id)
+  }
+}, 600000) // Every 10 minutes
 
 app.listen(PORT, '0.0.0.0', () => {
   const interfaces = os.networkInterfaces()
