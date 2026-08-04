@@ -1725,11 +1725,43 @@ function renderSearch(query) {
       surpriseStyle.textContent = '.surprise-btn{padding:12px 32px;border-radius:100px;background:linear-gradient(135deg,var(--accent),#1db954);border:none;color:#000;font-size:16px;font-weight:600;cursor:pointer;transition:transform .15s,box-shadow .15s}.surprise-btn:hover{transform:scale(1.05);box-shadow:0 4px 16px rgba(29,185,84,.3)}'
       document.head.appendChild(surpriseStyle)
     }
+    var recentSearches = JSON.parse(localStorage.getItem('pa_search_history') || '[]').slice(0, 6)
+    var recentHTML = ''
+    if (recentSearches.length) {
+      var css = '.recent-search-card{flex:0 0 140px;height:100px;border-radius:var(--r);cursor:pointer;transition:transform .15s}.recent-search-card:hover{transform:scale(1.03)}'
+      var recentStyleEl = document.getElementById('recent-search-style')
+      if (!recentStyleEl) {
+        recentStyleEl = document.createElement('style')
+        recentStyleEl.id = 'recent-search-style'
+        recentStyleEl.textContent = css
+        document.head.appendChild(recentStyleEl)
+      }
+      recentHTML = '<div class="section-header"><span class="section-title">Recently searched</span></div>'
+      recentHTML += '<div class="scroll-row">'
+      recentSearches.forEach(function(h) {
+        var q = typeof h === 'string' ? h : h.query
+        recentHTML += '<div class="recent-search-card" data-query="' + esc(q) + '">' +
+          '<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:8px;background:var(--bg3);border-radius:var(--r)">' +
+          '<svg viewBox="0 0 24 24" style="width:24px;height:24px;fill:var(--text3)"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>' +
+          '<div style="font-size:13px;font-weight:600;text-align:center;padding:0 8px">' + esc(q) + '</div>' +
+          '</div></div>'
+      })
+      recentHTML += '</div>'
+    }
     setContent(`<div class="page">
       <div style="text-align:center;padding:20px 0"><button class="surprise-btn" id="surprise-btn">🎲 Surprise me</button></div>
+      ${recentHTML}
       <div class="section-header"><span class="section-title">Browse by genre</span></div>
       <div class="genre-grid">${tiles}</div>
     </div>`)
+    var searchInput = document.getElementById('tb-search')
+    var commitFn = searchInput && searchInput._commitSearch
+    document.querySelectorAll('.recent-search-card').forEach(function(card) {
+      card.addEventListener('click', function() {
+        if (commitFn) commitFn(card.dataset.query)
+        else navigate('search', card.dataset.query)
+      })
+    })
     document.querySelectorAll('.genre-tile[data-genre]').forEach(tile => {
       tile.addEventListener('click', () => {
         state.libGenre = tile.dataset.genre
@@ -7045,6 +7077,7 @@ async function runSlskSearch(query) {
         slsk.searching = false
         slsk.searched  = true
         window.api.off('slsk-progress')
+        if (_slskTimer) { clearInterval(_slskTimer); _slskTimer = null }
       }
       _flush()
     })
@@ -7054,6 +7087,7 @@ async function runSlskSearch(query) {
   window.api.off('slsk-progress')
   slsk.searching = false
   slsk.searched  = true
+  if (_slskTimer) { clearInterval(_slskTimer); _slskTimer = null }
   _flush()
 }
 
@@ -8286,6 +8320,15 @@ function bindSlskSearchEvents(query) {
 
   section.querySelector('#slsk-config-btn')?.addEventListener('click', () => showSlskConfigModal(query))
 
+  section.querySelector('#slsk-connect-btn')?.addEventListener('click', async () => {
+    await refreshSlskStatus()
+    if (slsk.status.connected) {
+      runSlskSearch(query)
+    } else {
+      showSlskConfigModal(query)
+    }
+  })
+
   section.querySelector('#slsk-retry-btn')?.addEventListener('click', () => {
     _searchCache_invalidate(query)  // force-fresh on manual retry
     runSlskSearch(query)
@@ -8902,6 +8945,7 @@ function initSearchHistory() {
     navigate('search', q)
     input.blur()
   }
+  input._commitSearch = commitSearch
 
   input.addEventListener('focus', () => {
     clearTimeout(blurTimer)
