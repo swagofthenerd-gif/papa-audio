@@ -1309,7 +1309,9 @@ const http = require('http')
 
 // POST to Ollama's chat endpoint, stream the response, resolve with full text
 function ollamaChat(model, messages, onToken) {
+  const MS = 30000
   return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { req.destroy(); reject(new Error('Ollama chat timed out')) }, MS)
     const body = JSON.stringify({ model, messages, stream: true })
     const req  = http.request(
       { hostname: '127.0.0.1', port: 11434, path: '/api/chat', method: 'POST',
@@ -1327,10 +1329,10 @@ function ollamaChat(model, messages, onToken) {
             } catch (_) {}
           }
         })
-        res.on('end', () => resolve(full))
+        res.on('end', () => { clearTimeout(timer); resolve(full) })
       }
     )
-    req.on('error', reject)
+    req.on('error', (err) => { clearTimeout(timer); reject(err) })
     req.write(body)
     req.end()
   })
