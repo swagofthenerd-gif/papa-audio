@@ -377,10 +377,49 @@ function pollCmd() {
   } catch (e) { console.error('[papa] poll-cmd:', e.message || e) }
 }
 
+function cleanupOldFiles() {
+  var logsDir = path.join(app.getPath('userData'), 'logs')
+  var cacheDir = path.join(app.getPath('userData'), 'yt-cache')
+
+  try {
+    if (fs.existsSync(logsDir)) {
+      var cutoff = Date.now() - 30 * 86400000
+      fs.readdirSync(logsDir).forEach(function(f) {
+        var p = path.join(logsDir, f)
+        if (fs.statSync(p).mtimeMs < cutoff) fs.unlinkSync(p)
+      })
+    }
+  } catch (_) {}
+
+  try {
+    if (fs.existsSync(cacheDir)) {
+      var cutoff = Date.now() - 7 * 86400000
+      fs.readdirSync(cacheDir).forEach(function(f) {
+        var p = path.join(cacheDir, f)
+        try { if (fs.statSync(p).mtimeMs < cutoff) fs.unlinkSync(p) } catch (_) {}
+      })
+    }
+  } catch (_) {}
+
+  try {
+    var artDir = path.join(app.getPath('userData'), 'artwork')
+    if (fs.existsSync(artDir)) {
+      var files = fs.readdirSync(artDir).map(function(f) {
+        var p = path.join(artDir, f)
+        return { path: p, mtime: fs.statSync(p).mtimeMs }
+      }).sort(function(a, b) { return a.mtime - b.mtime })
+      if (files.length > 500) {
+        files.slice(0, files.length - 500).forEach(function(f) { fs.unlinkSync(f.path) })
+      }
+    }
+  } catch (_) {}
+}
+
 app.whenReady().then(() => {
   const hidden = process.argv.includes('--hidden')
   artworkDir = path.join(USER_DATA, 'artwork')
   fs.mkdirSync(artworkDir, { recursive: true })
+  cleanupOldFiles()
 
   const LOG_DIR = path.join(app.getPath('userData'), 'logs')
   fs.mkdirSync(LOG_DIR, { recursive: true })
@@ -396,14 +435,6 @@ app.whenReady().then(() => {
   console.error = (...args) => { _origError(...args); logToFile('ERROR', ...args) }
   const _origLog = console.log
   console.log = (...args) => { _origLog(...args); logToFile('INFO', ...args) }
-  try {
-    const files = fs.readdirSync(LOG_DIR)
-    const cutoff = Date.now() - 7 * 86400000
-    for (const f of files) {
-      const p = path.join(LOG_DIR, f)
-      if (fs.statSync(p).mtimeMs < cutoff) fs.unlinkSync(p)
-    }
-  } catch (_) {}
   try { fs.writeFileSync(CMD_PATH, '') } catch (_) {}
   setInterval(pollCmd, 200)
   // YT client: session-data cache + cookie-auth restore. Leftover OAuth
