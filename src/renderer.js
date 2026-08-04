@@ -2615,12 +2615,17 @@ async function renderYtAlbum(browseId) {
   const res = await window.api.ytAlbum({ browseId }).catch(e => ({ ok: false, error: String(e) }))
   if (state.currentPage !== 'yt-album') return
   if (!res.ok) {
-    if (!snap) setContent(`<div class="page"><div class="yt-status yt-error">Couldn't load album: ${esc(res.error || 'unknown error')}</div></div>`)
+    if (!snap) setContent(`<div class="page"><div class="yt-status yt-error">Couldn't load album: ${esc(res.error || 'unknown error')} <button class="yt-retry" id="yt-album-retry">Retry</button></div></div>`)
+    bindYtAlbumRetry(browseId)
     return
   }
   const changed = !snap
     || JSON.stringify({ ...snap, savedAt: 0 }) !== JSON.stringify({ ...res.album, savedAt: 0 })
   if (changed) _paintYtAlbum(res.album)
+}
+
+function bindYtAlbumRetry(browseId) {
+  document.getElementById('yt-album-retry')?.addEventListener('click', () => renderYtAlbum(browseId))
 }
 
 function _paintYtAlbum(al) {
@@ -2739,7 +2744,8 @@ async function renderYtPlaylist(playlistId) {
   const res = await window.api.ytPlaylist({ playlistId }).catch(e => ({ ok: false, error: String(e) }))
   if (state.currentPage !== 'yt-playlist') return
   if (!res.ok) {
-    setContent(`<div class="page"><div class="yt-status yt-error">Couldn't load playlist: ${esc(res.error || 'unknown error')}</div></div>`)
+    setContent(`<div class="page"><div class="yt-status yt-error">Couldn't load playlist: ${esc(res.error || 'unknown error')} <button class="yt-retry" id="yt-pl-retry">Retry</button></div></div>`)
+    document.getElementById('yt-pl-retry')?.addEventListener('click', () => renderYtPlaylist(playlistId))
     return
   }
   const pl = res.playlist
@@ -2877,7 +2883,8 @@ async function renderYtArtist(channelId) {
   const res = await window.api.ytArtist({ channelId }).catch(e => ({ ok: false, error: String(e) }))
   if (state.currentPage !== 'yt-artist') return
   if (!res.ok) {
-    setContent(`<div class="page"><div class="yt-status yt-error">Couldn't load artist: ${esc(res.error || 'unknown error')}</div></div>`)
+    setContent(`<div class="page"><div class="yt-status yt-error">Couldn't load artist: ${esc(res.error || 'unknown error')} <button class="yt-retry" id="yt-ar-retry">Retry</button></div></div>`)
+    document.getElementById('yt-ar-retry')?.addEventListener('click', () => renderYtArtist(channelId))
     return
   }
   const ar = res.artist
