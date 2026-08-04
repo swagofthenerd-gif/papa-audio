@@ -2191,7 +2191,7 @@ function renderYtResults(results, query) {
     }
     box.innerHTML = `<div class="yt-sub" data-sub="Songs">
       <div class="yt-sub-header">Videos · ${results.length} <button class="yt-see-all" data-kind="video">See all</button></div>
-      ${_ytSongRows(results)}</div>`
+      ${_ytSongRows(results, query)}</div>`
     bindYtEvents(results)
     _bindYtSeeAll(box)
     _applyYtFilter()
@@ -2211,7 +2211,7 @@ function renderYtResults(results, query) {
   if (songs.length) {
     html += `<div class="yt-sub" data-sub="Songs">
       <div class="yt-sub-header">Songs · ${songs.length} <button class="yt-see-all" data-kind="song">See all</button></div>
-      ${_ytSongRows(songs)}
+      ${_ytSongRows(songs, query)}
     </div>`
   }
   if (artists.length) {
@@ -2223,7 +2223,7 @@ function renderYtResults(results, query) {
   if (albums.length) {
     html += `<div class="yt-sub" data-sub="Albums">
       <div class="yt-sub-header">Albums · ${albums.length} <button class="yt-see-all" data-kind="album">See all</button></div>
-      <div class="album-grid">${albums.map(_ytAlbumCard).join('')}</div>
+      <div class="album-grid">${albums.map(function(a) { return _ytAlbumCard(a, query) }).join('')}</div>
     </div>`
   }
   if (playlists.length) {
@@ -2644,12 +2644,14 @@ async function renderYtSeeAll(navId) {
     if (!body) return
     if (!items.length) { body.innerHTML = `<div class="yt-status">Nothing found.</div>`; moreBox.innerHTML = ''; return }
     if (kind === 'song' || kind === 'video') {
-      body.innerHTML = _ytSongRows(items)
+      body.innerHTML = _ytSongRows(items, query)
       bindYtEvents(items, body)
-    } else {
-      const card = kind === 'album' ? _ytAlbumCard : kind === 'artist' ? _ytArtistCard : _ytPlaylistCard
-      body.innerHTML = `<div class="${kind === 'artist' ? 'artist-grid yt-artist-grid' : 'album-grid'}">${items.map(card).join('')}</div>`
+    } else if (kind === 'album') {
+      body.innerHTML = `<div class="album-grid">${items.map(function(a) { return _ytAlbumCard(a, query) }).join('')}</div>`
       body.querySelectorAll('.yt-album-card').forEach(c => c.addEventListener('click', () => navigate('yt-album', c.dataset.browse)))
+    } else {
+      const card = kind === 'artist' ? _ytArtistCard : _ytPlaylistCard
+      body.innerHTML = `<div class="${kind === 'artist' ? 'artist-grid yt-artist-grid' : 'album-grid'}">${items.map(card).join('')}</div>`
       body.querySelectorAll('.yt-artist-card').forEach(c => c.addEventListener('click', () => navigate('yt-artist', c.dataset.channel)))
       body.querySelectorAll('.yt-playlist-card').forEach(c => c.addEventListener('click', () => navigate('yt-playlist', c.dataset.playlist)))
     }
@@ -6750,7 +6752,7 @@ function renderSoulseekRow(query) {
             <svg class="slsk-card-note" viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>
           </div>
           <div class="slsk-card-body">
-            <div class="slsk-card-name" title="${esc(g.folderName)}">${esc(g.folderName)} <span style="font-size:11px;color:var(--text3);font-weight:400">(${g.files.length} files)</span></div>
+            <div class="slsk-card-name" title="${esc(g.folderName)}">${highlightMatch(g.folderName, query)} <span style="font-size:11px;color:var(--text3);font-weight:400">(${g.files.length} files)</span></div>
             ${qual ? `<div class="slsk-card-qual">${esc(qual)}</div>` : ''}
             <div class="slsk-card-from">via <button class="slsk-user-link" data-gi="${gi}" data-username="${esc(g.username)}" title="Browse ${esc(g.username)}'s shared library">${esc(g.username)}</button></div>
             <div class="slsk-card-btns">
