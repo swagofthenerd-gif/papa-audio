@@ -4875,10 +4875,9 @@ function playCurrentTrack() {
   const track = state.queue[state.queueIndex]
   if (!track) return
   if (isHttpPath(track.filePath)) recordYtRecent(track)
-  if (!audio.paused && !audio.ended) audio.pause()
   const isStream = /^https?:\/\//.test(track.filePath)
-  audio.src = isStream ? track.filePath : `file://${track.filePath}`
-  audio.play().then(() => {
+
+  function onStarted() {
     extractAlbumColor(/^https?:\/\//.test(track.artPath || '') ? null : (track.artPath || null))
     state.isPlaying = true
     updatePlayBtn()
@@ -4901,7 +4900,9 @@ function playCurrentTrack() {
     loadLyricsFor(track)
     syncExtension()
     updateNextPrefetch()
-  }).catch(e => {
+  }
+
+  function onError(e) {
     console.error('Playback error:', e)
     state.isPlaying = false
     updatePlayBtn()
@@ -4911,7 +4912,24 @@ function playCurrentTrack() {
       titleEl.textContent = 'File not available'
       setTimeout(() => { titleEl.textContent = orig }, 2500)
     }
-  })
+  }
+
+  // Streaming tracks: use atomic switch (pause→resolve→load→play) to avoid
+  // the old track continuing during yt-dlp resolution.
+  if (isStream) {
+    state.isPlaying = true
+    updatePlayBtn()
+    updateNowPlaying(track)
+    updateTrackHighlight()
+    if (state.queuePanelOpen) renderQueuePanel()
+    audio.switchToTrack(track.filePath).then(onStarted).catch(onError)
+    return
+  }
+
+  // Local files: existing fast path
+  if (!audio.paused && !audio.ended) audio.pause()
+  audio.src = `file://${track.filePath}`
+  audio.play().then(onStarted).catch(onError)
 }
 
 function updateNowPlaying(track) {

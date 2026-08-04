@@ -76,6 +76,16 @@ class PapaPlayerShim extends EventTarget {
 
   pause() { this._paused = true; window.api.playerPause() }
 
+  async switchToTrack(path) {
+    this._src = path
+    this._ended = false
+    this._currentTime = 0
+    this._duration = 0
+    this._paused = false
+    var r = await window.api.playerSwitch(this._pathOf(path))
+    if (!r.ok) throw new Error(r.error)
+  }
+
   get paused() { return this._paused }
   get ended() { return this._ended }
   get duration() { return this._duration }

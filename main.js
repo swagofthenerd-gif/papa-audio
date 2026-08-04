@@ -766,6 +766,11 @@ ipcMain.handle('pre-resolve-yt-urls', async (_, videoIds) => {
 })
 ipcMain.handle('player-play',       () => wrap(() => player.play())())
 ipcMain.handle('player-pause',      () => wrap(() => player.pause())())
+ipcMain.handle('player-switch',     async (_, path) => {
+  try { if (player) await player.pause() } catch (_) {}
+  var resolved = await _resolvePlayerPath(path)
+  return wrap(() => player.load(resolved, { play: true }))()
+})
 ipcMain.handle('player-seek',       (_, s) => wrap(() => player.seek(s))())
 // Renderer sends linear 0–100 (HTMLAudioElement semantics); mpv softvol is
 // cubic, so convert or everything below max plays several dB too quiet.

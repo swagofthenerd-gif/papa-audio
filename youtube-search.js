@@ -18,17 +18,24 @@ function setCacheDir(dir) { _cacheDir = dir }
 function setCookie(cookie) {
   _cookie = cookie || null
   _clientPromise = null
+  _pageSessions.clear()
+  _searchCache.clear()
 }
 
 function _client() {
   if (!_clientPromise) {
     _clientPromise = (async () => {
       const { Innertube, UniversalCache } = await import('youtubei.js')
-      // No player needed: we never decipher stream URLs here.
       const cache = _cacheDir ? new UniversalCache(true, _cacheDir) : undefined
       return Innertube.create({ retrieve_player: false, cache, cookie: _cookie || undefined })
     })()
-      .catch(e => { _clientPromise = null; throw e })
+      .catch(e => {
+        var msg = String(e.message || e)
+        if (msg.includes('401') || msg.includes('403')) { console.error('[papa] yt-auth-expired, clearing cookie'); _cookie = null }
+        else console.error('[papa] yt-client-create-failed:', msg.slice(0, 120))
+        _clientPromise = null
+        throw e
+      })
   }
   return _clientPromise
 }

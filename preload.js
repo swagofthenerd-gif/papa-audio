@@ -153,7 +153,7 @@ contextBridge.exposeInMainWorld('api', {
 
   // mpv player engine
   playerLoad:        (p) => ipcRenderer.invoke('player-load', p),
-  playerSetNext:     (p) => ipcRenderer.invoke('player-set-next', p),
+  playerSwitch:      (p) => ipcRenderer.invoke('player-switch', p),
   playerPlay:        ()  => ipcRenderer.invoke('player-play'),
   playerPause:       ()  => ipcRenderer.invoke('player-pause'),
   playerSeek:        (s) => ipcRenderer.invoke('player-seek', s),
