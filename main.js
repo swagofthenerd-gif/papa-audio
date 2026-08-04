@@ -601,6 +601,7 @@ function initMpris() {
     mprisPlayer.canQuit = true
     mprisPlayer.canRaise = true
     mprisPlayer.canControl = true
+    mprisPlayer.loopStatus = 'None'
     const send = (cmd) => mainWindow?.webContents.send('media-key', cmd)
     mprisPlayer.on('playpause', () => send('play-pause'))
     mprisPlayer.on('play',      () => send('play'))
@@ -613,6 +614,8 @@ function initMpris() {
     mprisPlayer.on('position',  (e) => mainWindow?.webContents.send('media-seek', { position: e.position / 1e6 }))
     mprisPlayer.on('seek',      (offsetUs) => mainWindow?.webContents.send('media-seek', { offset: offsetUs / 1e6 }))
     mprisPlayer.on('volume',    (v) => mainWindow?.webContents.send('media-volume', Math.max(0, Math.min(1, v))))
+    mprisPlayer.on('shuffle',   (enabled) => mainWindow?.webContents.send('media-shuffle', !!enabled))
+    mprisPlayer.on('loopStatus',(status) => mainWindow?.webContents.send('media-loop-status', status))
     mprisPlayer.getPosition = () => {
       const drift = _mprisPos.playing ? (Date.now() - _mprisPos.at) / 1000 : 0
       return Math.round((_mprisPos.position + drift) * 1e6)
@@ -639,6 +642,7 @@ function updateMpris(data) {
     }
     mprisPlayer.playbackStatus = data.playing ? 'Playing' : (data.title ? 'Paused' : 'Stopped')
     mprisPlayer.shuffle = !!data.shuffle
+    mprisPlayer.loopStatus = data.repeat === 'one' ? 'Track' : data.repeat === 'all' ? 'Playlist' : 'None'
     if (typeof data.volume === 'number') mprisPlayer.volume = data.volume
     _mprisPos = { position: data.position || 0, at: Date.now(), playing: !!data.playing }
   } catch (_) {}
