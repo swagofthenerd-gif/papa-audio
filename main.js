@@ -117,6 +117,7 @@ let slskdToken       = null
 let slskdTokenExpiry = 0
 let upnpClient       = null
 let upnpRenewTimer   = null
+let _slskdFailures   = 0
 
 async function upnpMap(port) {
   if (!natUpnp) return false
@@ -358,6 +359,22 @@ app.whenReady().then(() => {
   createTray()
   setupLibraryWatcher()
   if (fs.existsSync(SLSKD_BIN)) startSlskd().catch(() => {})
+  // Auto-restart monitoring: ping slskd every 60s; restart after 3 consecutive failures
+  setInterval(async () => {
+    try {
+      await slskdFetch('GET', '/session')
+      _slskdFailures = 0
+      mainWindow?.webContents.send('slskd-status-change', { connected: true, restarting: false })
+    } catch {
+      _slskdFailures++
+      if (_slskdFailures >= 3) {
+        mainWindow?.webContents.send('slskd-status-change', { connected: false, restarting: true })
+        try { await startSlskd(); _slskdFailures = 0 } catch {}
+      } else {
+        mainWindow?.webContents.send('slskd-status-change', { connected: false, restarting: false })
+      }
+    }
+  }, 60000)
   try {
     const configPath = path.join(app.getPath('userData'), 'config.json')
     if (fs.existsSync(configPath)) fs.chmodSync(configPath, 0o600)

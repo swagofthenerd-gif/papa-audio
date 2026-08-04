@@ -98,6 +98,7 @@ contextBridge.exposeInMainWorld('api', {
   slskCancelTransfer: (p) => ipcRenderer.invoke('slsk-cancel-transfer', p),
   slskGetDownloadDir: ()  => ipcRenderer.invoke('slsk-get-download-dir'),
   slskSetDownloadDir: ()  => ipcRenderer.invoke('slsk-set-download-dir'),
+  onSlskdStatusChange: (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('slskd-status-change', h); return () => ipcRenderer.removeListener('slskd-status-change', h) },
   slskResolveFile:    (p) => ipcRenderer.invoke('slsk-resolve-file', p),
   slskShowInFolder:   (p) => ipcRenderer.invoke('slsk-show-in-folder', p),
   slskBrowseUser:     (p) => ipcRenderer.invoke('slsk-browse-user', p),
@@ -156,7 +157,7 @@ contextBridge.exposeInMainWorld('api', {
     const allowed = [
       'dl-started', 'dl-progress', 'dl-complete', 'dl-cancelled', 'dl-failed',
       'browser-url', 'browser-title', 'browser-loading', 'browser-load-error', 'browser-zoom',
-      'media-key', 'ext-cmd', 'slsk-progress', 'player-event', 'media-seek',
+      'media-key', 'ext-cmd', 'slsk-progress', 'slskd-status-change', 'player-event', 'media-seek',
       'torrent-progress', 'torrent-done', 'torrent-started', 'do-lib-rescan',
       'yt-dl-progress', 'yt-auth-pending', 'yt-auth-done',
     ]
