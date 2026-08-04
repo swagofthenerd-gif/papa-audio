@@ -3456,12 +3456,15 @@ kbd {
 }
 
 /* ── Custom focus rings ────────────────────────────── */
-*:focus-visible {
-  outline: 2px solid rgba(var(--accent-rgb), .65);
+:focus-visible {
+  outline: 2px solid var(--accent, #1db954);
   outline-offset: 2px;
+  border-radius: 2px;
 }
 button:focus:not(:focus-visible),
-input:focus:not(:focus-visible) { outline: none; }
+input:focus:not(:focus-visible),
+select:focus:not(:focus-visible),
+textarea:focus:not(:focus-visible) { outline: none; }
 
 /* ── Heart pulse on like click ─────────────────────── */
 @keyframes heartPulse {
@@ -4567,7 +4570,7 @@ button:active { transform:scale(.97) }
 button:disabled { opacity:.4;cursor:not-allowed;pointer-events:none }
 
 /* Input focus ring */
-input:focus, select:focus, textarea:focus { outline:none;border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-dim) }
+input:focus:not(:focus-visible), select:focus:not(:focus-visible), textarea:focus:not(:focus-visible) { outline:none;border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-dim) }
 input::placeholder, textarea::placeholder { color:var(--text3);opacity:.6 }
 
 /* Tag/badge system */
