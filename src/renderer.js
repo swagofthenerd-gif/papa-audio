@@ -8231,7 +8231,7 @@ function setupListeners() {
       if (!audio.duration) return
       const rect = progressTrack.getBoundingClientRect()
       const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
-      const timeVal = timeDisplay === 'remaining' ? audio.duration - (ratio * audio.duration) : ratio * audio.duration
+      const timeVal = timeDisplay === 'remaining' ? audio.duration - (ratio * audio.duration) : timeDisplay === 'total' ? _albumTotalDuration() : ratio * audio.duration
       progressTooltip.textContent = fmtDur(Math.abs(timeVal))
       progressTooltip.style.display = 'block'
       progressTooltip.style.left = `${e.clientX - rect.left}px`
@@ -8239,11 +8239,15 @@ function setupListeners() {
     progressTrack.addEventListener('mouseleave', () => {
       progressTooltip.style.display = 'none'
     })
+    function _cycleTimeDisplay() {
+      timeDisplay = timeDisplay === 'elapsed' ? 'remaining' : timeDisplay === 'remaining' ? 'total' : 'elapsed'
+      localStorage.setItem('papa_time_display', timeDisplay)
+      showSnackbar('Showing ' + timeDisplay + ' time')
+    }
+    document.getElementById('time-cur')?.addEventListener('click', _cycleTimeDisplay)
     progressTrack.addEventListener('contextmenu', function(e) {
       e.preventDefault()
-      timeDisplay = timeDisplay === 'elapsed' ? 'remaining' : 'elapsed'
-      localStorage.setItem('papa_time_display', timeDisplay)
-      showSnackbar('Showing ' + (timeDisplay === 'remaining' ? 'remaining' : 'elapsed') + ' time')
+      _cycleTimeDisplay()
     })
   }
 
@@ -8270,6 +8274,18 @@ function setupListeners() {
     clearTimeout(_volSaveTimer)
     _volSaveTimer = setTimeout(() => window.api.saveVolume(audio.volume), 300)
   }, { passive: false })
+
+  document.getElementById('vol-track')?.addEventListener('contextmenu', function(e) {
+    e.preventDefault()
+    var v = prompt('Volume (0-100)', Math.round(audio.volume * 100))
+    if (v !== null && !isNaN(v)) {
+      audio.volume = Math.max(0, Math.min(100, parseInt(v)) / 100)
+      state.lastVolume = audio.volume
+      setVolDisplay(audio.volume)
+      clearTimeout(_volSaveTimer)
+      _volSaveTimer = setTimeout(function() { window.api.saveVolume(audio.volume) }, 300)
+    }
+  })
 
   // Karaoke lyrics toggle
   document.getElementById('np-modal-lyrics-toggle')?.addEventListener('click', () => {
@@ -8354,6 +8370,20 @@ function setupListeners() {
 
     showSnackbar(recent.map(function(t, i) { return (i+1) + '. ' + t.title + ' — ' + t.artist }).join(' | '), '', function(){}, 4000)
   })
+
+  // Draggable album art — copy/save to file manager
+  var npArtImg = document.getElementById('np-art')
+  if (npArtImg) {
+    npArtImg.draggable = true
+    npArtImg.addEventListener('dragstart', function(e) {
+      var track = state.queue[state.queueIndex]
+      if (!track || !track.artPath) return
+      var path = track.artPath
+      if (path && !path.startsWith('http')) {
+        e.dataTransfer.setData('DownloadURL', 'image/jpeg:' + path.split('/').pop() + ':file://' + path)
+      }
+    })
+  }
 
   // Now playing modal controls
   document.getElementById('np-modal-close')?.addEventListener('click', hideNowPlayingModal)
