@@ -44,6 +44,7 @@ const state = {
   ytSavedAlbums: [],
   ytRecent: [],
   downloadWishlist: [],
+  stopAfterTrack: false,
 }
 
 const slsk = {
