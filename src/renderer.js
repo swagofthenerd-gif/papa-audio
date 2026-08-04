@@ -69,6 +69,7 @@ let _volSaveTimer = null
 let _homeClockInterval = null
 let _allTracksCache = null
 let _allTracksCacheRef = null
+let _oldQueue = null
 let _suggCache = { trackFp: null, pool: [] }
 const _scrollMemory = new Map()
 var _undoStack = []
@@ -3647,6 +3648,7 @@ function renderQueuePanel() {
 }
 
 function addToQueue(album, tracksOverride) {
+  _oldQueue = null
   state._restoredFromQueue = false
   const tracks = tracksOverride
     ?? album.tracks.map(t => ({ ...t, albumArtist: album.artist, artPath: album.artPath, albumName: album.name }))
@@ -3843,6 +3845,7 @@ function hideContextMenu() {
 
 // ── Player ──────────────────────────────────────────────────────────────────
 function playAlbum(album, startIndex) {
+  _oldQueue = null
   state.queue = album.tracks.map(t => ({ ...t, albumArtist: album.artist, artPath: album.artPath, albumName: album.name, albumId: album.id }))
   state.queueIndex = startIndex
   window.api.saveRecentlyPlayed(album.id)
@@ -3851,6 +3854,7 @@ function playAlbum(album, startIndex) {
 }
 
 function playTrack(album, trackIdx) {
+  _oldQueue = null
   if (!album.tracks[trackIdx]) return
   state.queue = album.tracks.slice(trackIdx).map(t => ({
     ...t, albumArtist: album.artist, artPath: album.artPath, albumName: album.name, albumId: album.id,
@@ -3858,6 +3862,28 @@ function playTrack(album, trackIdx) {
   state.queueIndex = 0
   window.api.saveRecentlyPlayed(album.id)
   state.recentlyPlayed = [album.id, ...state.recentlyPlayed.filter(x => x !== album.id)].slice(0, 20)
+  playCurrentTrack()
+}
+
+function playItemStandalone(track) {
+  _oldQueue = { queue: [...state.queue], index: state.queueIndex }
+  state.queue = [track]
+  state.queueIndex = 0
+  playCurrentTrack()
+}
+
+function playAlbumStandalone(album) {
+  _oldQueue = { queue: [...state.queue], index: state.queueIndex }
+  state.queue = album.tracks.map(t => ({ ...t, albumArtist: album.artist, artPath: album.artPath, albumName: album.name, albumId: album.id }))
+  state.queueIndex = 0
+  playCurrentTrack()
+}
+
+function restoreOldQueue() {
+  if (!_oldQueue) return
+  state.queue = _oldQueue.queue
+  state.queueIndex = _oldQueue.index
+  _oldQueue = null
   playCurrentTrack()
 }
 
@@ -4059,7 +4085,9 @@ function playNext() {
     state.queueIndex = (state.queueIndex + 1) % state.queue.length
   }
   if (state.queueIndex === 0 && state.repeat === 'off') {
-    // Queue finished — Spotify-style autoplay keeps going with similar tracks
+    // Queue finished — restore prior queue if standalone play was active
+    if (_oldQueue) { restoreOldQueue(); return }
+    // Spotify-style autoplay keeps going with similar tracks
     if (autoplayEnabled() && !state.shuffle) { tryAutoplayContinue(); return }
     audio.pause(); state.isPlaying = false; updatePlayBtn(); syncExtension(); return
   }
@@ -4422,20 +4450,6 @@ function bindContentEvents() {
       navigate('album', id)
     })
     if (!(el.dataset.album || '').startsWith('yt_')) {
-      el.addEventListener('mousedown', function(e) {
-        if (e.button === 1) {
-          e.preventDefault()
-          var id = el.dataset.album
-          if (id && !id.startsWith('yt_')) {
-            var album = state.library.find(function(a) { return a.id === id })
-            if (album && album.tracks) {
-              album.tracks.forEach(function(t) { state.queue.push(t) })
-              if (state.queuePanelOpen) renderQueuePanel()
-              showSnackbar('Added "' + album.name + '" to queue')
-            }
-          }
-        }
-      })
       el.addEventListener('contextmenu', e =>
         showContextMenu(e, { type: 'album', albumId: el.dataset.album,
           artist: state.library.find(a => a.id === el.dataset.album)?.artist })
@@ -7982,6 +7996,36 @@ function setupListeners() {
     if (artistEl && artistEl.dataset.artist) {
       e.stopPropagation()
       navigate('artist', artistEl.dataset.artist)
+    }
+  })
+
+  // Middle-click on track/album/quick-card: play standalone without affecting queue
+  document.getElementById('content')?.addEventListener('mousedown', e => {
+    if (e.button !== 1) return
+    const trackRow = e.target.closest('.track-row')
+    if (trackRow) {
+      e.preventDefault()
+      const album = state.library.find(a => a.id === trackRow.dataset.album)
+      if (!album) return
+      const track = album.tracks.find(t => t.filePath === trackRow.dataset.file)
+      if (track) playItemStandalone({ ...track, albumArtist: album.artist, artPath: album.artPath, albumName: album.name, albumId: album.id })
+      return
+    }
+    const albumCard = e.target.closest('.album-card')
+    if (albumCard && !albumCard.dataset.browse && !albumCard.dataset.channel && !albumCard.dataset.playlist) {
+      e.preventDefault()
+      const id = albumCard.dataset.album
+      if (id && !id.startsWith('yt_')) {
+        const album = state.library.find(a => a.id === id)
+        if (album) playAlbumStandalone(album)
+      }
+      return
+    }
+    const quickCard = e.target.closest('.quick-card')
+    if (quickCard) {
+      e.preventDefault()
+      const album = state.library.find(a => a.id === quickCard.dataset.album)
+      if (album) playAlbumStandalone(album)
     }
   })
 
