@@ -45,12 +45,17 @@ const state = {
   ytSavedAlbums: [],
   ytRecent: [],
   downloadWishlist: [],
+  _plSearch: '',
   stopAfterTrack: false,
   skipShortTracks: false,
   skipShortSecs: 30,
   skipInterludes: false,
   connectionStatus: { slskd: 'unknown', youtube: 'unknown' },
+  albumRatings: {},
+  albumNotes: {},
 }
+try { state.albumRatings = JSON.parse(localStorage.getItem('papa-album-ratings') || '{}') } catch (_) { state.albumRatings = {} }
+try { state.albumNotes = JSON.parse(localStorage.getItem('papa-album-notes') || '{}') } catch (_) { state.albumNotes = {} }
 
 const slsk = {
   status: { installed: false, running: false, connected: false, configured: false },
@@ -1382,6 +1387,14 @@ function renderLibrary() {
   }
 }
 
+function editField(field, currentValue, callback) {
+  var newVal = prompt('Edit ' + field + ':', currentValue)
+  if (newVal && newVal !== currentValue) {
+    callback(newVal)
+    showSnackbar(field + ' updated (visual only — save to file coming soon)')
+  }
+}
+
 function renderAlbum(albumId) {
   const album = state.library.find(a => a.id === albumId)
   if (!album) { navigate('home', null, { skipHistory: true }); return }
@@ -1438,7 +1451,7 @@ function renderAlbum(albumId) {
         <div class="album-hero-title">${esc(album.name)}</div>
         <div class="album-hero-meta">
           <span class="artist-link" data-artist="${esc(album.artist)}">${esc(album.artist)}</span>
-          &bull; ${album.year || ''} &bull; ${album.tracks.length} songs, ${fmtTime(totalDur)}
+          &bull; <span class="hero-year clickable-meta">${album.year || ''}</span> &bull; ${album.tracks.length} songs, ${fmtTime(totalDur)}
           ${album.isHiRes ? `&bull; <span class="hero-hires-badge">${fmtSpec(album.maxBitsPerSample, album.maxSampleRate)}</span>` : ''}
           ${album.genre ? `&bull; <span class="genre-badge">${esc(album.genre)}</span>` : ''}
         </div>
@@ -1456,6 +1469,15 @@ function renderAlbum(albumId) {
         <svg viewBox="0 0 24 24"><path d="M14 10H2v2h12v-2zm0-4H2v2h12V6zM2 16h8v-2H2v2zm14-2v3h-3v2h3v3h2v-3h3v-2h-3v-3h-2z"/></svg>
       </button>
     </div>
+    <div class="stars-row">${(() => {
+      var r = state.albumRatings[albumId] || 0
+      var s = ''
+      for (var i = 1; i <= 5; i++) {
+        s += '<button class="star-btn' + (i <= r ? ' active' : '') + '" data-star="' + i + '">' + (i <= r ? '★' : '☆') + '</button>'
+      }
+      return s
+    })()}</div>
+    <div class="album-notes${state.albumNotes[albumId] ? '' : ' empty'}">${state.albumNotes[albumId] ? esc(state.albumNotes[albumId]) : 'Add notes...'}</div>
     <div class="track-list">
       <div class="track-list-header"><span>#</span><span>Title</span><span style="text-align:right">Duration</span></div>
       ${trackRows}
@@ -1481,6 +1503,33 @@ function renderAlbum(albumId) {
   })
   wireTrackLikeButtons()
   renderAlbumCredits(album)
+
+  if (!document.getElementById('album-notes-css')) {
+    var style = document.createElement('style')
+    style.id = 'album-notes-css'
+    style.textContent = '.star-btn { background:none;border:none;color:var(--text3);font-size:18px;cursor:pointer;padding:2px } .star-btn.active { color:#c4a747 } .stars-row { margin:8px 0;padding:0 24px } .album-notes { font-size:12px;color:var(--text2);margin:8px 24px;cursor:pointer;font-style:italic } .album-notes.empty { color:var(--text3) }'
+    document.head.appendChild(style)
+  }
+
+  document.querySelectorAll('.star-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var star = parseInt(btn.dataset.star)
+      state.albumRatings[albumId] = star
+      localStorage.setItem('papa-album-ratings', JSON.stringify(state.albumRatings))
+      renderAlbum(albumId)
+    })
+  })
+
+  var notesEl = document.querySelector('.album-notes')
+  if (notesEl) notesEl.addEventListener('click', function() {
+    var existing = state.albumNotes[albumId] || ''
+    var note = prompt('Notes for ' + album.name + ':', existing)
+    if (note !== null) {
+      state.albumNotes[albumId] = note
+      localStorage.setItem('papa-album-notes', JSON.stringify(state.albumNotes))
+      renderAlbum(albumId)
+    }
+  })
 
   // Sticky header: show when hero scrolls out of view
   document.getElementById('sticky-play-btn')?.addEventListener('click', () => playAlbum(album, 0))
@@ -3069,6 +3118,14 @@ function renderPlaylist(id, sortKey) {
   let tracks = pl.type === 'smart' ? _evalSmartPlaylist(pl) : [...(pl.tracks || [])]
   if (sortKey === 'title') tracks.sort((a, b) => (a.title || '').localeCompare(b.title || ''))
   else if (sortKey === 'artist') tracks.sort((a, b) => (a.albumArtist || a.artist || '').localeCompare(b.albumArtist || b.artist || ''))
+  if (state._plSearch) {
+    var q = state._plSearch
+    tracks = tracks.filter(function(t) {
+      return (t.title || '').toLowerCase().includes(q) ||
+             (t.artist || '').toLowerCase().includes(q) ||
+             (t.albumName || '').toLowerCase().includes(q)
+    })
+  }
   const totalDur = tracks.reduce((s, t) => s + (t.duration || 0), 0)
   const plTotalDur = (pl.tracks || []).reduce((s, t) => s + (t.duration || 0), 0)
   const durStr = fmtDur(plTotalDur)
@@ -3179,6 +3236,7 @@ function renderPlaylist(id, sortKey) {
       <button class="pl-sort-btn${sortKey==='title'?' active':''}" data-sort="title">Title</button>
       <button class="pl-sort-btn${sortKey==='artist'?' active':''}" data-sort="artist">Artist</button>
     </div>
+    <div class="pl-search-wrap"><input class="pl-search" id="pl-search" placeholder="Filter tracks..." value="${esc(state._plSearch || '')}"></div>
     <div class="track-list">
       ${tracks.length
         ? trackRows
@@ -3649,6 +3707,10 @@ function renderStats() {
   heatmapHTML += '</div></div>'
 
   setContent(`<div class="stats-page">
+    <div class="stats-toolbar" style="display:flex;gap:8px;margin-bottom:16px;padding:0 28px">
+      <button id="export-json-btn" class="secondary" style="padding:6px 14px;font-size:12px">Export JSON</button>
+      <button id="export-csv-btn" class="secondary" style="padding:6px 14px;font-size:12px">Export CSV</button>
+    </div>
     <div class="stats-hero">Listening time (${rangeLabel})<span>${hours}h ${mins}m</span><div style="font-size:12px;color:var(--text3);margin-top:4px">All time: ${totalAllTimeStr}</div><div style="font-size:11px;color:var(--text3);margin-top:4px">${rangeText}</div></div>
     <div class="stats-section">
       <h2>This Week</h2>
@@ -3697,6 +3759,75 @@ function renderStats() {
   document.querySelectorAll('[data-stats-album]').forEach(row => {
     row.addEventListener('click', () => { if (row.dataset.statsAlbum) navigate('album', row.dataset.statsAlbum) })
   })
+  var exportJsonBtn = document.getElementById('export-json-btn')
+  var exportCsvBtn = document.getElementById('export-csv-btn')
+  if (exportJsonBtn) exportJsonBtn.addEventListener('click', function() { exportStats('json') })
+  if (exportCsvBtn) exportCsvBtn.addEventListener('click', function() { exportStats('csv') })
+}
+
+function exportStats(format) {
+  var data = {
+    generated: new Date().toISOString(),
+    totalTracks: 0,
+    totalAlbums: state.library.length,
+    totalDuration: 0,
+    topArtists: [],
+    topGenres: [],
+    playHistory: (state.playHistory || []).slice(0, 100),
+  }
+
+  state.library.forEach(function(a) {
+    if (!a.tracks) return
+    data.totalTracks += a.tracks.length
+    a.tracks.forEach(function(t) { data.totalDuration += t.duration || 0 })
+  })
+
+  var artistCounts = {}
+  state.playHistory.forEach(function(p) {
+    if (p.artist) artistCounts[p.artist] = (artistCounts[p.artist] || 0) + 1
+  })
+  data.topArtists = Object.entries(artistCounts).sort(function(a, b) { return b[1] - a[1] }).slice(0, 10).map(function(entry) { return { name: entry[0], count: entry[1] } })
+
+  var genreCounts = {}
+  state.library.forEach(function(a) {
+    if (a.genre) genreCounts[a.genre] = (genreCounts[a.genre] || 0) + 1
+  })
+  data.topGenres = Object.entries(genreCounts).sort(function(a, b) { return b[1] - a[1] }).slice(0, 10).map(function(entry) { return { name: entry[0], count: entry[1] } })
+
+  var content = format === 'csv' ? jsonToCsv(data) : JSON.stringify(data, null, 2)
+  var blob = new Blob([content], { type: format === 'csv' ? 'text/csv' : 'application/json' })
+  var url = URL.createObjectURL(blob)
+  var a = document.createElement('a')
+  a.href = url
+  a.download = 'papa-audio-stats.' + format
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+function jsonToCsv(data) {
+  var lines = []
+  lines.push('Generated,' + data.generated)
+  lines.push('Total Albums,' + data.totalAlbums)
+  lines.push('Total Tracks,' + data.totalTracks)
+  lines.push('Total Hours,' + (data.totalDuration / 3600).toFixed(1))
+  lines.push('')
+  lines.push('Top Artists')
+  for (var i = 0; i < data.topArtists.length; i++) {
+    lines.push(data.topArtists[i].name + ',' + data.topArtists[i].count)
+  }
+  lines.push('')
+  lines.push('Top Genres')
+  for (var j = 0; j < data.topGenres.length; j++) {
+    lines.push(data.topGenres[j].name + ',' + data.topGenres[j].count)
+  }
+  lines.push('')
+  lines.push('Play History (last 100)')
+  lines.push('Artist,Title,Time')
+  for (var k = 0; k < data.playHistory.length; k++) {
+    var p = data.playHistory[k]
+    lines.push((p.artist || '') + ',' + (p.title || '') + ',' + (p.ts ? new Date(p.ts).toISOString() : ''))
+  }
+  return lines.join('\n')
 }
 
 function showNameInputModal(title, placeholder, onConfirm) {
@@ -5307,6 +5438,28 @@ function artImg(artPath, imgClass, fallbackClass) {
             <div class="${fallbackClass}" style="display:none">${musicNote}</div>`
   }
   return `<div class="${fallbackClass}">${musicNote}</div>`
+}
+
+function computeDR(track) {
+  if (!track.replaygainTrackPeak || !track.replayGainTrack) return null
+  var peak = parseFloat(track.replaygainTrackPeak)
+  var gain = parseFloat(track.replayGainTrack)
+  if (isNaN(peak) || isNaN(gain)) return null
+  var dr = 20 * Math.log10(peak) - gain
+  return Math.round(dr)
+}
+
+function computeAlbumDR(album) {
+  if (!album.tracks || !album.tracks.length) return null
+  var drs = album.tracks.map(computeDR).filter(function(d) { return d != null })
+  if (!drs.length) return null
+  return Math.round(drs.reduce(function(s, d) { return s + d }, 0) / drs.length)
+}
+
+function drBadge(dr) {
+  if (dr == null) return ''
+  var color = dr >= 14 ? '#1db954' : dr >= 10 ? '#c4a747' : '#e05c5c'
+  return '<span class="dr-badge" style="background:' + color + '20;color:' + color + ';border:1px solid ' + color + '40">DR' + dr + '</span>'
 }
 
 function esc(str) {
@@ -8546,6 +8699,37 @@ function initSearchHistory() {
   }
 }
 
+function initResizableQueue() {
+  var panel = document.getElementById('queue-panel')
+  if (!panel || document.getElementById('queue-resize-handle')) return
+
+  var saved = localStorage.getItem('papa-queue-width')
+  if (saved) panel.style.width = saved
+
+  var handle = document.createElement('div')
+  handle.id = 'queue-resize-handle'
+  handle.style.cssText = 'position:absolute;left:0;top:0;bottom:0;width:4px;cursor:col-resize;z-index:10'
+  handle.addEventListener('mousedown', function(e) {
+    e.preventDefault()
+    var startX = e.clientX
+    var startWidth = panel.offsetWidth
+    function onMove(ev) {
+      var newWidth = startWidth - (ev.clientX - startX)
+      newWidth = Math.max(240, Math.min(500, newWidth))
+      panel.style.width = newWidth + 'px'
+    }
+    function onUp() {
+      localStorage.setItem('papa-queue-width', panel.style.width)
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  })
+  panel.style.position = 'relative'
+  panel.appendChild(handle)
+}
+
 function setupListeners() {
   // Make major UI regions focusable for keyboard navigation
   document.getElementById('content')?.setAttribute('tabindex', '0')
@@ -8967,6 +9151,7 @@ function setupListeners() {
     document.getElementById('queue-panel').classList.remove('open')
     document.getElementById('btn-queue')?.classList.remove('active')
   })
+  initResizableQueue()
 
   // Sidebar right-click → toggle compact mode
   document.querySelector('.sidebar')?.addEventListener('contextmenu', function(e) {
