@@ -74,19 +74,20 @@ async function slskFetch(method, endpoint, body) {
 }
 
 // ── Library helpers (copied from main.js) ─────────────────────────────────────
-function scanDir(dir) {
+async function scanDir(dir) {
   const results = []
   try {
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const entries = await fs.promises.readdir(dir, { withFileTypes: true })
+    for (const entry of entries) {
       const full = path.join(dir, entry.name)
-      if (entry.isDirectory())                        results.push(...scanDir(full))
+      if (entry.isDirectory())                        results.push(...(await scanDir(full)))
       else if (entry.isFile() && MUSIC_EXT.test(entry.name)) results.push(full)
     }
   } catch (_) {}
   return results
 }
 
-function buildAlbums(tracks) {
+async function buildAlbums(tracks) {
   const map = new Map()
   for (const t of tracks) {
     const key = `${(t.albumArtist || t.artist).toLowerCase()}_${t.album.toLowerCase()}`
@@ -110,7 +111,7 @@ function buildAlbums(tracks) {
   for (const [, a] of map) {
     if (!a.artPath) {
       const cached = path.join(ARTWORK_DIR, `${a.id}.jpg`)
-      if (fs.existsSync(cached)) a.artPath = cached
+      try { await fs.promises.stat(cached); a.artPath = cached } catch (_) {}
     }
     a.tracks.sort((x, y) => x.discNumber - y.discNumber || x.trackNumber - y.trackNumber)
     a.maxBitsPerSample = Math.max(0, ...a.tracks.map(t => t.bitsPerSample || 0))
@@ -184,6 +185,31 @@ app.use((req, res, next) => {
   next()
 })
 
+// ── Rate limiter ──────────────────────────────────────────────────────────────
+const rateLimit = new Map()
+const RATE_LIMIT_MAX = 60
+const RATE_LIMIT_WINDOW = 60 * 1000
+
+app.use((req, res, next) => {
+  const ip = req.ip || req.socket.remoteAddress || 'unknown'
+  const now = Date.now()
+  let entry = rateLimit.get(ip)
+  if (!entry || now > entry.resetAt) {
+    entry = { count: 0, resetAt: now + RATE_LIMIT_WINDOW }
+    rateLimit.set(ip, entry)
+  }
+  entry.count++
+  if (entry.count > RATE_LIMIT_MAX) {
+    return res.status(429).json({ error: 'Too many requests' })
+  }
+  next()
+})
+
+setInterval(() => {
+  const now = Date.now()
+  for (const [ip, e] of rateLimit) if (now > e.resetAt) rateLimit.delete(ip)
+}, 300000)
+
 // ── SSE event stream ──────────────────────────────────────────────────────────
 app.get('/events', (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream')
@@ -217,7 +243,7 @@ app.post('/api/library/scan', async (_, res) => {
   const folders = store.get('musicFolders', [])
   if (!folders.length) return res.json({ albums: [] })
   try {
-    const allFiles = folders.flatMap(f => scanDir(f))
+    const allFiles = (await Promise.all(folders.map(f => scanDir(f)))).flat()
     const tracks = []
     for (const filePath of allFiles) {
       try {
@@ -229,7 +255,7 @@ app.post('/api/library/scan', async (_, res) => {
           const ext = pic.format.includes('png') ? 'png' : 'jpg'
           const key = crypto.createHash('md5').update((c.albumartist||c.artist||'')+(c.album||'')).digest('hex')
           artPath = path.join(ARTWORK_DIR, `${key}.${ext}`)
-          if (!fs.existsSync(artPath)) fs.writeFileSync(artPath, pic.data)
+          try { await fs.promises.stat(artPath) } catch (_) { await fs.promises.writeFile(artPath, pic.data) }
         }
         tracks.push({
           id: crypto.createHash('md5').update(filePath).digest('hex'),
@@ -241,12 +267,12 @@ app.post('/api/library/scan', async (_, res) => {
           year: c.year || null, genre: c.genre?.[0] || null,
           duration: f.duration || 0, sampleRate: f.sampleRate || 0,
           bitsPerSample: f.bitsPerSample || 0, channels: f.numberOfChannels || 0,
-          addedAt: (() => { try { return fs.statSync(filePath).mtimeMs } catch { return 0 } })(),
+          addedAt: await fs.promises.stat(filePath).then(s => s.mtimeMs).catch(() => 0),
           filePath, artPath,
         })
       } catch (_) {}
     }
-    const albums = buildAlbums(tracks)
+    const albums = await buildAlbums(tracks)
     store.set('libraryCache', albums)
     res.json({ albums })
   } catch (e) {
