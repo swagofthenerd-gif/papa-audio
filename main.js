@@ -417,7 +417,17 @@ app.whenReady().then(() => {
   // rotate/extend like in a normal browser, then re-store the fresh set.
   setTimeout(refreshYtCookie, 8000)
   setInterval(refreshYtCookie, 12 * 60 * 60 * 1000)
+
+  // Crash recovery: detect if previous session ended ungracefully
+  const wasCleanShutdown = store.get('cleanShutdown', true)
+  store.set('cleanShutdown', false)
+
   createWindow(hidden)
+  if (!wasCleanShutdown) {
+    mainWindow.webContents.on('did-finish-load', () => {
+      mainWindow.webContents.send('app-recovered-from-crash')
+    })
+  }
   initMpris()          // MPRIS D-Bus first; media-key grab only as fallback
   initPlayer()
   createTray()
@@ -446,6 +456,9 @@ app.whenReady().then(() => {
 })
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
+app.on('before-quit', () => {
+  store.set('cleanShutdown', true)
+})
 app.on('will-quit', () => {
   player?.stop()
   stopSlskd()
@@ -774,6 +787,9 @@ ipcMain.on('save-general-settings', (_, s) => {
   if (typeof s.closeToTray === 'boolean') store.set('closeToTray', s.closeToTray)
   if (s.theme) store.set('theme', s.theme)
 })
+
+ipcMain.handle('get-streaming-volume-offset', () => store.get('streamingVolumeOffset', 0))
+ipcMain.on('set-streaming-volume-offset', (_, offset) => store.set('streamingVolumeOffset', offset))
 
 ipcMain.handle('get-lastfm-config', () => store.get('lastfmConfig', {}))
 ipcMain.handle('set-lastfm-config', (_, cfg) => { store.set('lastfmConfig', cfg) })
