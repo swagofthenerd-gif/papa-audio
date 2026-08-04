@@ -320,6 +320,8 @@ app.get('/stream', async (req, res) => {
   }
   const mime = mimeMap[ext] || 'audio/mpeg'
 
+  const etag = '"' + stat.mtimeMs.toString(36) + '-' + stat.size.toString(36) + '"'
+
   if (range) {
     const parts   = range.replace(/bytes=/, '').split('-')
     const start   = parseInt(parts[0], 10)
@@ -330,10 +332,12 @@ app.get('/stream', async (req, res) => {
       'Accept-Ranges':  'bytes',
       'Content-Length': chunkSz,
       'Content-Type':   mime,
+      'Cache-Control':  'no-cache',
+      'ETag':           etag,
     })
     fs.createReadStream(filePath, { start, end }).pipe(res)
   } else {
-    res.writeHead(200, { 'Content-Length': total, 'Content-Type': mime, 'Accept-Ranges': 'bytes' })
+    res.writeHead(200, { 'Content-Length': total, 'Content-Type': mime, 'Accept-Ranges': 'bytes', 'Cache-Control': 'no-cache', 'ETag': etag })
     fs.createReadStream(filePath).pipe(res)
   }
 })
@@ -348,11 +352,13 @@ app.get('/art', async (req, res) => {
   const allowed = folders.some(function(f) { return resolved.startsWith(path.resolve(f)) }) || resolved.startsWith(path.resolve(os.homedir() + '/.config/papa-audio/artwork'))
   if (!allowed) return res.status(403).json({ error: 'Access denied' })
 
-  try { await fs.promises.stat(artPath) } catch (_) { return res.status(404).send('Not found') }
+  let artStat
+  try { artStat = await fs.promises.stat(artPath) } catch (_) { return res.status(404).send('Not found') }
   const ext = path.extname(artPath).toLowerCase()
   const mime = ext === '.png' ? 'image/png' : 'image/jpeg'
   res.setHeader('Content-Type', mime)
-  res.setHeader('Cache-Control', 'public, max-age=604800')
+  res.setHeader('Cache-Control', 'public, max-age=86400')
+  res.setHeader('ETag', '"' + artStat.mtimeMs.toString(36) + '-' + artStat.size.toString(36) + '"')
   fs.createReadStream(artPath).pipe(res)
 })
 
