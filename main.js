@@ -532,6 +532,7 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
 app.on('before-quit', () => {
+  app.isQuitting = true
   store.set('cleanShutdown', true)
 })
 app.on('will-quit', () => {
@@ -575,6 +576,12 @@ function createWindow(hidden = false) {
   mainWindow.on('move', saveWinState)
   mainWindow.on('close', async (e) => {
     saveWinState()
+    if (!app.isQuitting && store.get('closeToTray', true) && tray) {
+      e.preventDefault()
+      mainWindow.hide()
+      return
+    }
+    if (app.isQuitting) return
     try {
       const isPlaying = await mainWindow.webContents.executeJavaScript('state.isPlaying')
       if (isPlaying) {
