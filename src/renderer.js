@@ -4777,6 +4777,9 @@ function fmtTime(sec) {
   const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60)
   return h ? `${h} hr ${m} min` : `${m} min`
 }
+function _albumTotalDuration() {
+  return state.queue.reduce(function(s, t) { return s + (t.duration || 0) }, 0)
+}
 var _lastVolDisplay = -1
 function setVolDisplay(vol) {
   const pct = `${Math.round(vol * 100)}%`
