@@ -141,6 +141,7 @@ contextBridge.exposeInMainWorld('api', {
   ytAuthStart:       ()  => ipcRenderer.invoke('yt-auth-start'),
   ytAuthSignOut:     ()  => ipcRenderer.invoke('yt-auth-signout'),
   ytAuthStatus:      ()  => ipcRenderer.invoke('yt-auth-status'),
+  validateYtCookie:  ()  => ipcRenderer.invoke('validate-yt-cookie'),
   openExternal:      (u) => ipcRenderer.invoke('open-external', u),
 
   // Agent memory

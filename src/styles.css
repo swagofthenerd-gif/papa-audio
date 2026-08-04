@@ -4217,6 +4217,7 @@ textarea:focus:not(:focus-visible) { outline: none; }
 .yt-scope.active { background: #fff; color: #000; font-weight: 600; }
 .yt-status { color: var(--text3); font-size: 13px; padding: 12px 0; }
 .yt-error { color: #e05c5c; }
+.yt-slow { color: #e8b44d; }
 .yt-list { display: flex; flex-direction: column; }
 .yt-row {
   display: flex; align-items: center; gap: 12px; padding: 6px 8px;

@@ -463,7 +463,9 @@ app.whenReady().then(() => {
   if (ytCookie) ytSearch.setCookie(ytCookie)
   // Keep the Google session alive: silently touch music.youtube.com so cookies
   // rotate/extend like in a normal browser, then re-store the fresh set.
-  setTimeout(refreshYtCookie, 8000)
+  setTimeout(async () => {
+    if (!(await validateYtCookie())) refreshYtCookie()
+  }, 8000)
   setInterval(refreshYtCookie, 12 * 60 * 60 * 1000)
 
   // Crash recovery: detect if previous session ended ungracefully
@@ -2368,6 +2370,26 @@ async function _collectYtCookieHeader(sess) {
 // Silent cookie refresh — no-op unless signed in. A hidden window loads
 // music.youtube.com on the auth partition so Google rotates/extends the
 // session cookies, then the fresh header replaces the stored one.
+async function validateYtCookie() {
+  var cookie = store.get('ytCookie', null)
+  if (!cookie) return false
+  try {
+    var res = await fetch('https://music.youtube.com/', {
+      headers: { 'Cookie': cookie, 'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0' },
+      redirect: 'manual',
+      signal: AbortSignal.timeout(8000),
+    })
+    var loc = res.headers.get('location') || ''
+    if (loc.includes('accounts.google.com')) {
+      console.error('[papa] yt-cookie-stale')
+      return false
+    }
+    return res.ok || res.status === 302
+  } catch (_) {
+    return false
+  }
+}
+
 let _ytRefreshWin = null
 function refreshYtCookie() {
   if (!store.get('ytCookie', null) || _ytRefreshWin) return
@@ -2458,6 +2480,15 @@ ipcMain.handle('yt-auth-signout', async () => {
 ipcMain.handle('yt-auth-status', () => {
   try { return { ok: true, signedIn: ytSearch.isSignedIn() } }
   catch (e) { return { ok: false, error: String(e?.message || e) } }
+})
+
+ipcMain.handle('validate-yt-cookie', async () => {
+  var valid = await validateYtCookie()
+  if (!valid) {
+    try { await refreshYtCookie() } catch (_) {}
+    valid = await validateYtCookie()
+  }
+  return { ok: true, valid }
 })
 
 const _ytDownloads = new Map()
