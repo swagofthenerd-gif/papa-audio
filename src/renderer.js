@@ -47,6 +47,7 @@ const state = {
   stopAfterTrack: false,
   skipShortTracks: false,
   skipShortSecs: 30,
+  connectionStatus: { slskd: 'unknown', youtube: 'unknown' },
 }
 
 const slsk = {
@@ -70,6 +71,7 @@ let _allTracksCache = null
 let _allTracksCacheRef = null
 let _suggCache = { trackFp: null, pool: [] }
 const _scrollMemory = new Map()
+var _undoStack = []
 var timeDisplay = localStorage.getItem('papa_time_display') || 'elapsed'
 
 // ── Playlist import ──────────────────────────────────────────────────────────
@@ -78,6 +80,21 @@ fileInput.type = 'file'
 fileInput.accept = '.m3u,.m3u8'
 fileInput.style.display = 'none'
 document.body.appendChild(fileInput)
+
+// ── Undo ──────────────────────────────────────────────────────────────────────
+function pushUndo(label, undoFn) {
+  _undoStack.push({ label: label, fn: undoFn })
+  showSnackbar(label, 'Undo', function() {
+    var item = _undoStack.pop()
+    if (item) item.fn()
+  })
+}
+
+function undoLastAction() {
+  if (!_undoStack.length) return
+  var item = _undoStack.pop()
+  item.fn()
+}
 
 // ── Visibility & power management ───────────────────────────────────────────
 let _appVisible = !document.hidden
@@ -3457,7 +3474,7 @@ function renderQueuePanel() {
     updateNextPrefetch()
     updatePlayBtn(); updateNowPlaying(null)
     renderQueuePanel()
-    showSnackbar('Queue cleared', 'Undo', function() {
+    pushUndo('Queue cleared', function() {
       state.queue = savedQueue; state.queueIndex = savedIdx
       if (state.queuePanelOpen) renderQueuePanel()
     })
@@ -3494,7 +3511,7 @@ function renderQueuePanel() {
         else { audio.pause(); state.isPlaying = false; state.queueIndex = -1; updatePlayBtn(); updateNowPlaying(null) }
       }
       renderQueuePanel()
-      showSnackbar('Removed from queue', 'Undo', function() {
+      pushUndo('Removed from queue', function() {
         state.queue.splice(idx, 0, removedQTrack)
         if (state.queuePanelOpen) renderQueuePanel()
       })
@@ -8665,6 +8682,13 @@ function setupListeners() {
   document.addEventListener('keydown', e => {
     const inInput = e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA'
 
+    // Ctrl+Z → undo last destructive action
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === 'z' && !inInput) {
+      e.preventDefault()
+      undoLastAction()
+      return
+    }
+
     // Ctrl+K → focus search
     if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
       e.preventDefault()
@@ -8804,6 +8828,18 @@ function setupListeners() {
     if (e.key === '?' || e.key === 'F1') { e.preventDefault(); toggleShortcutsModal(); return }
   })
 
+  // ── Connection status bar ─────────────────────────────────────────────────
+  var sidebar = document.getElementById('sidebar')
+  if (sidebar && !document.getElementById('conn-status')) {
+    var bar = document.createElement('div')
+    bar.id = 'conn-status'
+    bar.style.cssText = 'padding:8px 16px;font-size:11px;display:flex;gap:12px;border-top:1px solid var(--glass-border);margin-top:auto;color:var(--text2)'
+    bar.innerHTML = '<span id="conn-slskd" style="display:flex;align-items:center;gap:4px"><span class="conn-dot"></span> Soulseek</span><span id="conn-yt" style="display:flex;align-items:center;gap:4px"><span class="conn-dot"></span> YouTube</span>'
+    sidebar.appendChild(bar)
+    setInterval(checkConnections, 30000)
+    checkConnections()
+  }
+
   // ── Sidebar resize ────────────────────────────────────────────────────────
   const sidebarResizer = document.getElementById('sidebar-resizer')
   if (sidebarResizer) {
@@ -8831,6 +8867,35 @@ function setupListeners() {
       document.body.style.cursor = ''
       document.body.style.userSelect = ''
     })
+  }
+}
+
+async function checkConnections() {
+  try {
+    var s = await window.api.slskStatus().catch(function() { return null })
+    state.connectionStatus.slskd = (s && s.connected) ? 'connected' : 'disconnected'
+  } catch (_) { state.connectionStatus.slskd = 'disconnected' }
+
+  try {
+    var y = await window.api.ytAuthStatus().catch(function() { return null })
+    state.connectionStatus.youtube = (y && y.ok) ? 'connected' : 'disconnected'
+  } catch (_) { state.connectionStatus.youtube = 'disconnected' }
+
+  var slskdEl = document.getElementById('conn-slskd')
+  var ytEl = document.getElementById('conn-yt')
+  if (slskdEl) {
+    var dot = slskdEl.querySelector('.conn-dot')
+    var isConnected = state.connectionStatus.slskd === 'connected'
+    dot.style.cssText = 'width:7px;height:7px;border-radius:50%;display:inline-block;background:' + (isConnected ? 'var(--accent,#1db954)' : '#e74c3c')
+    slskdEl.style.color = isConnected ? 'var(--text1)' : 'var(--text3)'
+    slskdEl.childNodes[slskdEl.childNodes.length - 1].textContent = isConnected ? ' Soulseek' : ' Soulseek offline'
+  }
+  if (ytEl) {
+    var dot2 = ytEl.querySelector('.conn-dot')
+    var isConnected2 = state.connectionStatus.youtube === 'connected'
+    dot2.style.cssText = 'width:7px;height:7px;border-radius:50%;display:inline-block;background:' + (isConnected2 ? 'var(--accent,#1db954)' : '#e74c3c')
+    ytEl.style.color = isConnected2 ? 'var(--text1)' : 'var(--text3)'
+    ytEl.childNodes[ytEl.childNodes.length - 1].textContent = isConnected2 ? ' YouTube' : ' YouTube offline'
   }
 }
 
