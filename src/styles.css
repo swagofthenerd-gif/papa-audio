@@ -4945,3 +4945,10 @@ code { font-family:var(--font-mono,monospace);background:var(--bg4);padding:1px 
   .ctrl-row button { width: 32px; height: 32px; }
   .ctrl-row button svg { width: 16px; height: 16px; }
 }
+
+/* Album art zoom on hover — grid view */
+.album-card { transition: transform .2s cubic-bezier(0.16, 1, 0.3, 1), box-shadow .2s; }
+.album-card:hover { transform: scale(1.04); box-shadow: 0 8px 24px rgba(0,0,0,.3); }
+.album-card-art-wrap { overflow: hidden; }
+.album-card-art { transition: transform .3s cubic-bezier(0.16, 1, 0.3, 1); }
+.album-card:hover .album-card-art { transform: scale(1.08); }
