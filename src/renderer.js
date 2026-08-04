@@ -9264,11 +9264,47 @@ function setupListeners() {
       return
     }
 
+    // F6 / Ctrl+Tab → cycle focus between major regions
+    if (e.key === 'F6' || (e.ctrlKey && e.key === 'Tab')) {
+      e.preventDefault()
+      var regions = ['#sidebar', '#content', '#player-bar']
+      var current = document.activeElement
+      var idx = regions.findIndex(function(r) { return current.closest(r) })
+      idx = (idx + 1) % regions.length
+      var target = document.querySelector(regions[idx])
+      if (target) {
+        target.setAttribute('tabindex', '0')
+        target.focus({ preventScroll: false })
+      }
+      return
+    }
+
+    // Ctrl+1–5 → page shortcuts
+    if (e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey) {
+      var pageMap = { '1': 'home', '2': 'library', '3': 'search', '4': 'downloads', '5': 'playlists' }
+      var page = pageMap[e.key]
+      if (page) {
+        e.preventDefault()
+        var input = document.getElementById('tb-search')
+        if (document.activeElement === input) { input.blur() }
+        navigate(page, page === 'search' ? null : null)
+        return
+      }
+    }
+
     // Escape
     if (e.key === 'Escape') {
       if (document.activeElement === document.getElementById('tb-search')) {
         document.getElementById('tb-search').value = ''
         document.getElementById('tb-search').blur()
+        return
+      }
+      // Return focus to content if sidebar or player is focused
+      if (document.activeElement === document.getElementById('sidebar') ||
+          document.activeElement?.closest('#sidebar') ||
+          document.activeElement === document.getElementById('player-bar') ||
+          document.activeElement?.closest('#player-bar')) {
+        document.getElementById('content')?.focus({ preventScroll: false })
         return
       }
       var cp = document.getElementById('cmd-palette')
