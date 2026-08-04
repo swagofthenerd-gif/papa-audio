@@ -539,6 +539,7 @@ function navigate(page, navId, opts = {}) {
   state.currentArtistName  = page === 'artist' ? navId : ''
   state.currentSearchQuery = page === 'search' ? navId : ''
   state.currentPlaylistId  = page === 'playlist' ? navId : null
+  if (page !== 'playlist') state._plSearch = ''
 
   if (page === 'home')    renderHome()
   else if (page === 'library')   renderLibrary()
@@ -1497,6 +1498,17 @@ function renderAlbum(albumId) {
     })()}`)
 
   document.getElementById('album-play-btn')?.addEventListener('click', () => playAlbum(album, 0))
+  document.getElementById('album-shuffle-btn')?.addEventListener('click', function() {
+    var tracks = album.tracks.slice().sort(function() { return Math.random() - 0.5 })
+    tracks = tracks.map(function(t) { return Object.assign({}, t, { albumArtist: album.artist, artPath: album.artPath, albumName: album.name, albumId: album.id }) })
+    state.queue = tracks
+    state.queueIndex = 0
+    _oldQueue = null
+    window.api.saveRecentlyPlayed(album.id)
+    state.recentlyPlayed = [album.id, ...state.recentlyPlayed.filter(x => x !== album.id)].slice(0, 20)
+    playCurrentTrack()
+    showSnackbar('Shuffling ' + tracks.length + ' tracks')
+  })
   document.getElementById('album-like-btn')?.addEventListener('click', () => toggleLike(albumId))
   document.getElementById('album-addpl-btn')?.addEventListener('click', () => {
     showAddToPlaylistModal(album.tracks.map(t => ({ ...t, albumArtist: album.artist, artPath: album.artPath, albumName: album.name })))
@@ -2370,6 +2382,9 @@ function _paintYtAlbum(al) {
       <button class="album-play-btn" id="yt-album-play-btn" title="Play all">
         <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
       </button>
+      <button class="ctrl-btn yt-album-shuffle-btn" id="yt-album-shuffle-btn" title="Shuffle play">
+        <svg viewBox="0 0 24 24"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
+      </button>
       <button class="ctrl-btn yt-album-dl-btn" id="yt-album-dl-btn" title="Download album">
         <svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
       </button>
@@ -2387,6 +2402,13 @@ function _paintYtAlbum(al) {
     playCurrentTrack()
   }
   document.getElementById('yt-album-play-btn')?.addEventListener('click', () => queueFrom(0))
+  document.getElementById('yt-album-shuffle-btn')?.addEventListener('click', function() {
+    var tracks = al.tracks.slice().map(function(t) { return _ytAlbumTrackItem(al, t) }).sort(function() { return Math.random() - 0.5 })
+    state.queue = tracks
+    state.queueIndex = 0
+    playCurrentTrack()
+    showSnackbar('Shuffling ' + tracks.length + ' tracks')
+  })
   document.getElementById('yt-album-dl-btn')?.addEventListener('click', async () => {
     const note = document.getElementById('yt-album-dl-note')
     if (note) note.textContent = `Queuing ${al.tracks.length} downloads…`
@@ -5430,13 +5452,14 @@ function albumCard(album, idx, sortMode) {
       ${album.isYt ? '<span class="yt-badge yt-card-badge">YT</span>' : ''}
       ${hiResTag}
       ${newBadge}
+      ${drBadge(computeAlbumDR(album))}
       <button class="album-card-play" data-play="${album.id}">
         <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
       </button>
     </div>
     <div class="album-card-name">${esc(album.name)}</div>
     <div class="album-card-artist" data-artist="${esc(album.artist)}">${esc(album.artist)}</div>
-  </div>`
+  </div>\`
 }
 
 function fmtSpec(bd, sr) {
@@ -9585,6 +9608,8 @@ function setupListeners() {
       return
     }
     if (cmd === 'clear-queue') {
+      if (state.queue.length === 0) return
+      if (!confirm('Clear all ' + state.queue.length + ' tracks from the queue?')) return
       audio.pause()
       state.queue = []; state.queueIndex = -1; state.isPlaying = false
       state._restoredFromQueue = false
