@@ -53,6 +53,7 @@ const state = {
   connectionStatus: { slskd: 'unknown', youtube: 'unknown' },
   albumRatings: {},
   albumNotes: {},
+  searchSort: 'relevance',
 }
 try { state.albumRatings = JSON.parse(localStorage.getItem('papa-album-ratings') || '{}') } catch (_) { state.albumRatings = {} }
 try { state.albumNotes = JSON.parse(localStorage.getItem('papa-album-notes') || '{}') } catch (_) { state.albumNotes = {} }
@@ -1710,6 +1711,7 @@ const GENRE_COLORS = {
   'Latin':       'linear-gradient(135deg,#e05000,#6a2000)',
 }
 function renderSearch(query) {
+  query = (query || '').normalize('NFC')
   if (!query) {
     // Genre browse landing
     const libGenres = [...new Set(state.library.map(a => a.genre).filter(Boolean))]
@@ -1782,8 +1784,9 @@ function renderSearch(query) {
     return
   }
   var filters = _parseSearchOperators(query)
+  var hasOperators = filters.operators.length > 0
   var searchText = filters.text
-  const q = searchText.toLowerCase()
+  const q = searchText.normalize('NFC').toLowerCase()
   var matchAlbums, matchTracks, artistSet, matchArtists, didYouMean
 
   var useCache = false
@@ -1798,19 +1801,19 @@ function renderSearch(query) {
 
   if (!useCache) {
     matchAlbums = state.library.filter(a =>
-      a.name.toLowerCase().includes(q) || a.artist.toLowerCase().includes(q)
+      (a.name || '').normalize('NFC').toLowerCase().includes(q) || (a.artist || '').normalize('NFC').toLowerCase().includes(q)
     )
     artistSet = new Set()
-    state.library.forEach(a => { if (a.artist.toLowerCase().includes(q)) artistSet.add(a.artist) })
+    state.library.forEach(a => { if ((a.artist || '').normalize('NFC').toLowerCase().includes(q)) artistSet.add(a.artist) })
     matchArtists = [...artistSet]
     matchTracks = state.library.flatMap(a =>
-      a.tracks.filter(t => t.title.toLowerCase().includes(q))
+      a.tracks.filter(t => (t.title || '').normalize('NFC').toLowerCase().includes(q))
         .map(t => ({ ...t, albumId: a.id, albumArtist: a.artist, artPath: a.artPath }))
     ).slice(0, 20)
 
   if (filters.artist) {
-    matchAlbums = matchAlbums.filter(function(a) { return (a.artist || '').toLowerCase().indexOf(filters.artist.toLowerCase()) !== -1 })
-    matchTracks = matchTracks.filter(function(t) { return (t.albumArtist || t.artist || '').toLowerCase().indexOf(filters.artist.toLowerCase()) !== -1 })
+    matchAlbums = matchAlbums.filter(function(a) { return (a.artist || '').normalize('NFC').toLowerCase().indexOf(filters.artist.normalize('NFC').toLowerCase()) !== -1 })
+    matchTracks = matchTracks.filter(function(t) { return (t.albumArtist || t.artist || '').normalize('NFC').toLowerCase().indexOf(filters.artist.normalize('NFC').toLowerCase()) !== -1 })
   }
   if (filters.yearMin) matchAlbums = matchAlbums.filter(function(a) { return a.year >= filters.yearMin })
   if (filters.yearMax) matchAlbums = matchAlbums.filter(function(a) { return a.year <= filters.yearMax })
@@ -1819,7 +1822,7 @@ function renderSearch(query) {
     matchTracks = matchTracks.filter(function(t) { return t.filePath && t.filePath.toLowerCase().endsWith('.' + fmt) })
     matchAlbums = matchAlbums.filter(function(a) { return a.tracks && a.tracks[0] && a.tracks[0].filePath && a.tracks[0].filePath.toLowerCase().endsWith('.' + fmt) })
   }
-  if (filters.album) matchAlbums = matchAlbums.filter(function(a) { return (a.name || '').toLowerCase().indexOf(filters.album.toLowerCase()) !== -1 })
+  if (filters.album) matchAlbums = matchAlbums.filter(function(a) { return (a.name || '').normalize('NFC').toLowerCase().indexOf(filters.album.normalize('NFC').toLowerCase()) !== -1 })
   if (filters.genre) matchAlbums = matchAlbums.filter(function(a) { return (a.genre || '').toLowerCase() === filters.genre.toLowerCase() })
   if (filters.is === 'liked') { matchTracks = matchTracks.filter(function(t) { return state.likedTracks.indexOf(t.filePath) !== -1 }); matchAlbums = matchAlbums.filter(function(a) { return state.likedAlbums.indexOf(a.id) !== -1 }) }
   if (filters.is === 'downloaded') { matchTracks = matchTracks.filter(function(t) { return t.filePath && t.filePath.indexOf('/mnt/data/MUSIC') === 0 }) }
@@ -1828,6 +1831,9 @@ function renderSearch(query) {
   if (filters.playsMin) matchTracks = matchTracks.filter(function(t) { return (state.playCounts[t.filePath] || 0) > filters.playsMin })
   if (filters.durMax) matchTracks = matchTracks.filter(function(t) { return (t.duration || 0) < filters.durMax })
   if (filters.durMin) matchTracks = matchTracks.filter(function(t) { return (t.duration || 0) > filters.durMin })
+
+  if (state.searchSort === 'alpha') matchTracks.sort(function(a, b) { return (a.title || '').localeCompare(b.title || '') })
+  if (state.searchSort === 'duration') matchTracks.sort(function(a, b) { return (a.duration || 0) - (b.duration || 0) })
 
   didYouMean = null
   if (!matchAlbums.length && !matchTracks.length && !artistSet.size && searchText.length > 2) {
@@ -1853,9 +1859,10 @@ function renderSearch(query) {
     <div class="search-tabs" id="search-tabs">
       ${tabs.map(t => `<button class="search-tab${t==='All'?' active':''}" data-tab="${t}">${t}</button>`).join('')}
     </div>
-    ${query ? '<div style="padding:4px 0 8px 0"><button class="save-search-btn" id="save-search-btn" title="Save as smart playlist">+ Save search</button></div>' : ''}
+    ${query ? '<div style="padding:4px 0 8px 0;display:flex;align-items:center;gap:12px"><button class="save-search-btn" id="save-search-btn" title="Save as smart playlist">+ Save search</button><div class="search-sort"><select id="search-sort-select">' + sortOptions.map(function(o) { return '<option value="' + o.value + '"' + (o.value === currentSort ? ' selected' : '') + '>' + o.label + '</option>' }).join('') + '</select></div></div>' : ''}
     ${dymHTML}
-    <div class="results-filter-wrap"><input class="results-filter" id="results-filter" placeholder="Filter results…"></div>`
+    <div class="results-filter-wrap"><input class="results-filter" id="results-filter" placeholder="Filter results…"></div>
+    ${hasOperators ? '<div class="active-filters"><span>Filters active:</span>' + filters.operators.map(function(op) { return '<span class="filter-chip">' + op.key + ':' + op.value + '<button class="filter-chip-x" data-key="' + esc(op.key) + '">×</button></span>' }).join('') + '<button class="clear-filters-btn" id="clear-filters-btn">Clear all</button></div>' : ''}`
 
   if (hasLocal) {
     // Top result — best matching album or artist
@@ -2016,6 +2023,27 @@ function renderSearch(query) {
     showSnackbar('Smart playlist saved: ' + sp.name)
   })
 
+  document.getElementById('clear-filters-btn')?.addEventListener('click', function() {
+    var cleanQuery = filters.text
+    if (cleanQuery) {
+      commitSearch(cleanQuery)
+    } else {
+      navigate('search')
+    }
+  })
+
+  document.querySelectorAll('.filter-chip-x').forEach(function(btn) {
+    btn.addEventListener('click', function(e) {
+      e.stopPropagation()
+      var keyToRemove = btn.dataset.key
+      var remaining = filters.operators.filter(function(op) { return op.key !== keyToRemove })
+      var newQuery = filters.text
+      remaining.forEach(function(op) { newQuery += ' ' + op.key + ':' + op.value })
+      if (newQuery.trim()) { commitSearch(newQuery.trim()) }
+      else { navigate('search') }
+    })
+  })
+
   document.querySelectorAll('.dym-link').forEach(function(link) {
     link.addEventListener('click', function() {
       var idx = parseInt(link.dataset.dymIdx)
@@ -2046,6 +2074,7 @@ function renderSearch(query) {
     tab.addEventListener('click', () => {
       document.querySelectorAll('.yt-scope').forEach(t => t.classList.remove('active'))
       tab.classList.add('active')
+      try { localStorage.setItem('papa-yt-scope', tab.dataset.scope) } catch (_) {}
       runYtSearch(query, tab.dataset.scope)
     })
   })
@@ -2071,6 +2100,10 @@ function renderSearch(query) {
 
 // ── YouTube search section ──────────────────────────────────────────────────
 const ytSearchState = { scope: 'music', cache: new Map(), lastQuery: null, showTopResult: false }
+try {
+  var savedScope = localStorage.getItem('papa-yt-scope')
+  if (savedScope === 'all' || savedScope === 'music') ytSearchState.scope = savedScope
+} catch (_) {}
 
 function _activeSearchTab() {
   return document.querySelector('#search-tabs .search-tab.active')?.dataset.tab || 'All'
