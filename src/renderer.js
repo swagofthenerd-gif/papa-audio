@@ -8471,6 +8471,20 @@ function setupListeners() {
     if (state.queue.length) showNowPlayingModal()
   })
 
+  // Double-click album art → navigate to album page
+  var npArtImg = document.getElementById('np-art')
+  if (npArtImg) {
+    npArtImg.addEventListener('dblclick', function() {
+      var track = state.queue[state.queueIndex]
+      if (!track) return
+      if (track.albumId && track.albumId.startsWith('yt_')) {
+        navigate('yt-album', track.albumBrowseId || track.albumId.replace('yt_', ''))
+      } else if (track.albumId && !track.albumId.startsWith('file://')) {
+        navigate('album', track.albumId)
+      }
+    })
+  }
+
   // Now playing art → right-click/long-press to show recent
   document.getElementById('np-art-wrap')?.addEventListener('contextmenu', function(e) {
     e.preventDefault()
@@ -8490,7 +8504,6 @@ function setupListeners() {
   })
 
   // Draggable album art — copy/save to file manager
-  var npArtImg = document.getElementById('np-art')
   if (npArtImg) {
     npArtImg.draggable = true
     npArtImg.addEventListener('dragstart', function(e) {
