@@ -59,6 +59,7 @@ const slsk = {
   pendingSearches: 0,
 }
 
+var _playlistSorts = {}
 const navHistory = []
 const navFuture  = []
 let _playCountTimer = null
@@ -102,6 +103,35 @@ let _appVisible = !document.hidden
 const _dom = {}  // cached refs for hot-path elements (populated in init)
 
 const SPEEDS = [1, 1.25, 1.5, 2, 0.75]
+
+var ALL_SHORTCUTS = [
+  { category: 'Playback', keys: ['Space'], desc: 'Play/Pause' },
+  { category: 'Playback', keys: ['← / →'], desc: 'Seek ±10s' },
+  { category: 'Playback', keys: ['X'], desc: 'Cycle speed (1x→1.25x→1.5x→2x→0.75x)' },
+  { category: 'Playback', keys: ['S'], desc: 'Toggle shuffle' },
+  { category: 'Playback', keys: ['R'], desc: 'Cycle repeat (off/one/all)' },
+  { category: 'Playback', keys: ['M'], desc: 'Mute/Unmute' },
+  { category: 'Playback', keys: ['+ / -'], desc: 'Volume ±5%' },
+  { category: 'Playback', keys: ['F'], desc: 'Fullscreen now playing' },
+  { category: 'Navigation', keys: ['Ctrl+K'], desc: 'Focus search' },
+  { category: 'Navigation', keys: ['Ctrl+Shift+P'], desc: 'Command palette' },
+  { category: 'Navigation', keys: ['Alt+←'], desc: 'Go back' },
+  { category: 'Navigation', keys: ['Alt+→'], desc: 'Go forward' },
+  { category: 'Navigation', keys: ['Q'], desc: 'Toggle queue panel' },
+  { category: 'Navigation', keys: ['L'], desc: 'Toggle lyrics drawer' },
+  { category: 'Navigation', keys: ['? / F1'], desc: 'Keyboard shortcuts' },
+  { category: 'Actions', keys: ['Ctrl+Shift+L'], desc: 'Like current track' },
+  { category: 'Actions', keys: ['Ctrl+Shift+S'], desc: '30-min sleep timer' },
+  { category: 'Actions', keys: ['Ctrl+S'], desc: 'Save current queue' },
+  { category: 'Actions', keys: ['Ctrl+Q'], desc: 'Add to queue (current track)' },
+  { category: 'Actions', keys: ['Ctrl+Z'], desc: 'Undo last action' },
+  { category: 'Actions', keys: ['Ctrl+Shift+K'], desc: 'Toggle auto-skip short tracks' },
+  { category: 'Actions', keys: ['Esc'], desc: 'Close modal/overlay' },
+  { category: 'Window', keys: ['Ctrl+/'], desc: 'Toggle agent chat' },
+  { category: 'Mouse', keys: ['Middle click'], desc: 'Play track/album standalone' },
+  { category: 'Mouse', keys: ['Right click vol'], desc: 'Exact volume input' },
+  { category: 'Mouse', keys: ['Click time'], desc: 'Toggle elapsed/remaining/total' },
+]
 
 // ── Lyrics / Artist bio ────────────────────────────────────────────────────────
 let _lyrics = null
@@ -265,6 +295,7 @@ async function init() {
   state.playHistory    = playHistory || []
   state.followedArtists = followedArtists || []
   state.playlists = playlists || []
+  try { _playlistSorts = JSON.parse(localStorage.getItem('papa-pl-sorts') || '{}') } catch (_) { _playlistSorts = {} }
   state.savedQueues = savedQueues || []
   state.musicFolders   = info.musicFolders   || []
   state.recentlyPlayed = info.recentlyPlayed || []
@@ -1221,6 +1252,10 @@ function renderAlbum(albumId) {
         </div>
         ${plays > 0 ? `<span class="track-plays">${plays}</span>` : '<span class="track-plays"></span>'}
         <button class="track-like-btn ${tLiked ? 'liked' : ''}" data-like="${esc(t.filePath)}" title="${tLiked ? 'Unlike' : 'Like'}">${tLiked ? '♥' : '♡'}</button>
+        <div class="hover-actions">
+          <button class="hover-action-btn" data-action="playnext" data-file="${esc(t.filePath)}" data-album="${albumId}" title="Play next">&#9654;+</button>
+          <button class="hover-action-btn" data-action="queue" data-file="${esc(t.filePath)}" data-album="${albumId}" title="Add to queue">+</button>
+        </div>
         <span class="track-dur">${fmtDur(t.duration)}</span>
         <button class="track-more-btn" title="More options"><svg viewBox="0 0 24 24"><path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg></button>
       </div>`
@@ -2674,7 +2709,9 @@ function renderPlaylists() {
   })
 }
 
-function renderPlaylist(id, sortKey = 'default') {
+function renderPlaylist(id, sortKey) {
+  if (sortKey) { _playlistSorts[id] = sortKey; localStorage.setItem('papa-pl-sorts', JSON.stringify(_playlistSorts)) }
+  sortKey = sortKey || _playlistSorts[id] || 'default'
   const pl = state.playlists.find(p => p.id === id)
   if (!pl) { navigate('playlists', null, { skipHistory: true }); return }
   let tracks = pl.type === 'smart' ? _evalSmartPlaylist(pl) : [...(pl.tracks || [])]
