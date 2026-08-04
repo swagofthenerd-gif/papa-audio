@@ -2182,25 +2182,25 @@ function renderYtResults(results, query) {
   }
   if (songs.length) {
     html += `<div class="yt-sub" data-sub="Songs">
-      <div class="yt-sub-header">Songs <button class="yt-see-all" data-kind="song">See all</button></div>
+      <div class="yt-sub-header">Songs · ${songs.length} <button class="yt-see-all" data-kind="song">See all</button></div>
       ${_ytSongRows(songs)}
     </div>`
   }
   if (artists.length) {
     html += `<div class="yt-sub" data-sub="Artists">
-      <div class="yt-sub-header">Artists <button class="yt-see-all" data-kind="artist">See all</button></div>
+      <div class="yt-sub-header">Artists · ${artists.length} <button class="yt-see-all" data-kind="artist">See all</button></div>
       <div class="artist-grid yt-artist-grid">${artists.map(_ytArtistCard).join('')}</div>
     </div>`
   }
   if (albums.length) {
     html += `<div class="yt-sub" data-sub="Albums">
-      <div class="yt-sub-header">Albums <button class="yt-see-all" data-kind="album">See all</button></div>
+      <div class="yt-sub-header">Albums · ${albums.length} <button class="yt-see-all" data-kind="album">See all</button></div>
       <div class="album-grid">${albums.map(_ytAlbumCard).join('')}</div>
     </div>`
   }
   if (playlists.length) {
     html += `<div class="yt-sub" data-sub="Playlists">
-      <div class="yt-sub-header">Playlists <button class="yt-see-all" data-kind="playlist">See all</button></div>
+      <div class="yt-sub-header">Playlists · ${playlists.length} <button class="yt-see-all" data-kind="playlist">See all</button></div>
       <div class="album-grid">${playlists.map(_ytPlaylistCard).join('')}</div>
     </div>`
   }
