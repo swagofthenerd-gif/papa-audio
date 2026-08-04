@@ -51,6 +51,7 @@ const state = {
   skipShortSecs: 30,
   skipInterludes: false,
   connectionStatus: { slskd: 'unknown', youtube: 'unknown' },
+  isOnline: navigator.onLine !== false,
   albumRatings: {},
   albumNotes: {},
   searchSort: 'relevance',
@@ -1854,6 +1855,13 @@ function renderSearch(query) {
   const hasLocal = matchAlbums.length || matchArtists.length || matchTracks.length
   ytSearchState.showTopResult = !hasLocal
 
+  var sortOptions = [
+    { value: 'relevance', label: 'Relevance' },
+    { value: 'alpha', label: 'A-Z' },
+    { value: 'duration', label: 'Duration' }
+  ]
+  var currentSort = state.searchSort || 'relevance'
+
   const tabs = ['All', 'Songs', 'Albums', 'Artists', 'Playlists']
   var html = `<div class="page">
     <div class="search-tabs" id="search-tabs">
@@ -2051,6 +2059,11 @@ function renderSearch(query) {
     })
   })
 
+  document.getElementById('search-sort-select')?.addEventListener('change', function() {
+    state.searchSort = this.value
+    renderSearch(query)
+  })
+
   // Wire up filter tabs
   document.querySelectorAll('#search-tabs .search-tab').forEach(tab => {
     tab.addEventListener('click', () => {
@@ -2202,6 +2215,10 @@ async function runYtSearch(query, scope) {
   ytSearchState.lastQuery = query
   const box = document.getElementById('yt-results')
   if (!box) return
+  if (!state.isOnline) {
+    box.innerHTML = '<div class="yt-status yt-error">You are offline — YouTube unavailable</div>'
+    return
+  }
   var cacheKey = `${scope}::${query}`
   if (ytSearchState.cache.has(cacheKey)) {
     renderYtResults(ytSearchState.cache.get(cacheKey), query)
@@ -2210,8 +2227,19 @@ async function runYtSearch(query, scope) {
   }
   updateYtHealth('searching')
   box.innerHTML = '<div class="yt-status">Searching YouTube…</div><div class="skeleton-row"><div class="skeleton skeleton-thumb"></div><div class="skeleton skeleton-line"></div></div><div class="skeleton-row"><div class="skeleton skeleton-thumb"></div><div class="skeleton skeleton-line"></div></div><div class="skeleton-row"><div class="skeleton skeleton-thumb"></div><div class="skeleton skeleton-line"></div></div>'
+  var slowTimer = setTimeout(function() {
+    var cur = document.getElementById('yt-results')
+    if (cur && ytSearchState.lastQuery === query) {
+      cur.innerHTML = '<div class="yt-status yt-slow">Taking longer than expected… <button class="yt-retry" id="yt-cancel-btn">Cancel</button></div>'
+      document.getElementById('yt-cancel-btn')?.addEventListener('click', function() {
+        ytSearchState.lastQuery = null
+        cur.innerHTML = '<div class="yt-status">Search cancelled</div>'
+      })
+    }
+  }, 8000)
   const call = scope === 'music' ? window.api.ytMusicSearchFull : window.api.ytSearch
   const res = await call({ query }).catch(e => ({ ok: false, error: String(e) }))
+  clearTimeout(slowTimer)
   // Stale response guard — user typed a new query or switched scope meanwhile
   if (ytSearchState.lastQuery !== query || ytSearchState.scope !== scope) return
   if (!res.ok) {
@@ -7033,6 +7061,11 @@ function _searchCache_invalidate(query) {
 
 async function runSlskSearch(query) {
   slsk.lastQuery = query
+  if (!state.isOnline) {
+    const box = document.getElementById('slsk-results')
+    if (box) box.innerHTML = '<div class="yt-status yt-error">You are offline — Soulseek unavailable</div>'
+    return
+  }
   const navQ = document.getElementById('nav-search-query')
   if (navQ) navQ.textContent = query
 
@@ -10752,6 +10785,10 @@ function _evalSmartPlaylist(pl) {
     })
   })
 }
+
+// ── Online/offline detection ─────────────────────────────────────────────────
+window.addEventListener('online', () => { state.isOnline = true })
+window.addEventListener('offline', () => { state.isOnline = false })
 
 // ── Start ───────────────────────────────────────────────────────────────────
 init()
