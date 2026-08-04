@@ -28,6 +28,7 @@ function _client() {
       const cache = _cacheDir ? new UniversalCache(true, _cacheDir) : undefined
       return Innertube.create({ retrieve_player: false, cache, cookie: _cookie || undefined })
     })()
+      .catch(e => { _clientPromise = null; throw e })
   }
   return _clientPromise
 }
