@@ -174,7 +174,7 @@ contextBridge.exposeInMainWorld('api', {
     const allowed = [
       'dl-started', 'dl-progress', 'dl-complete', 'dl-cancelled', 'dl-failed',
       'browser-url', 'browser-title', 'browser-loading', 'browser-load-error', 'browser-zoom',
-      'media-key', 'ext-cmd', 'slsk-progress', 'slskd-status-change', 'player-event', 'media-seek',
+      'media-key', 'media-playpause', 'media-next', 'media-previous', 'update-tray-tooltip', 'ext-cmd', 'slsk-progress', 'slskd-status-change', 'player-event', 'media-seek',
       'torrent-progress', 'torrent-done', 'torrent-started', 'do-lib-rescan',
       'yt-dl-progress', 'yt-auth-pending', 'yt-auth-done',
       'slsk-verify',

@@ -825,7 +825,7 @@ function updateMpris(data) {
 }
 
 // ── System tray ──────────────────────────────────────────────────────────────
-const { Tray, nativeImage } = require('electron')
+const { Tray, nativeImage, Menu } = require('electron')
 let tray = null
 let _trayNow = { title: null, playing: false }
 
@@ -834,7 +834,7 @@ function createTray() {
     const img = nativeImage.createFromPath(ICON_PATH).resize({ width: 22, height: 22 })
     tray = new Tray(img)
     tray.setToolTip('Papa Audio')
-    rebuildTrayMenu()
+    updateTrayMenu(false)
     tray.on('click', () => {
       if (!mainWindow) return
       mainWindow.isVisible() ? mainWindow.hide() : (mainWindow.show(), mainWindow.focus())
@@ -842,20 +842,24 @@ function createTray() {
   } catch (e) { console.error('Tray unavailable:', e.message) }
 }
 
-function rebuildTrayMenu() {
+function updateTrayMenu(isPlaying) {
   if (!tray) return
-  const send = (cmd) => mainWindow?.webContents.send('media-key', cmd)
   tray.setContextMenu(Menu.buildFromTemplate([
-    { label: _trayNow.title || 'Nothing playing', enabled: false },
+    { label: isPlaying ? 'Pause' : 'Play', click: () => mainWindow?.webContents.send('media-playpause') },
+    { label: 'Next', click: () => mainWindow?.webContents.send('media-next') },
+    { label: 'Previous', click: () => mainWindow?.webContents.send('media-previous') },
     { type: 'separator' },
-    { label: _trayNow.playing ? 'Pause' : 'Play', click: () => send('play-pause') },
-    { label: 'Next',     click: () => send('next') },
-    { label: 'Previous', click: () => send('prev') },
-    { type: 'separator' },
-    { label: 'Show Papa Audio', click: () => { mainWindow?.show(); mainWindow?.focus() } },
-    { label: 'Quit', click: () => { app.isQuitting = true; app.quit() } },
+    { label: 'Show', click: () => { if (mainWindow) { mainWindow.show(); mainWindow.focus() } } },
+    { label: 'Quit', click: () => app.quit() },
   ]))
 }
+
+ipcMain.on('update-tray-tooltip', (_, track) => {
+  if (!tray) return
+  var tip = 'Papa Audio'
+  if (track && track.title) tip = track.title + (track.artist ? ' — ' + track.artist : '')
+  tray.setToolTip(tip)
+})
 
 function updateBrowserBounds() {
   if (!browserView || !mainWindow) return
@@ -1370,7 +1374,7 @@ ipcMain.on('update-now-playing',  (_, data)   => {
   const nowTitle = data.title ? `${data.title} — ${data.artist || ''}` : null
   if (_trayNow.title !== nowTitle || _trayNow.playing !== !!data.playing) {
     _trayNow = { title: nowTitle, playing: !!data.playing }
-    rebuildTrayMenu()
+    updateTrayMenu(!!data.playing)
     if (tray) tray.setToolTip(nowTitle ? `Papa Audio — ${nowTitle}` : 'Papa Audio')
   }
   if (data.title && data.playing && `${data.title}|${data.artist}|${data.album}` !== _lastNotifiedId) {
