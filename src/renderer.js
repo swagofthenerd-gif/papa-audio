@@ -411,6 +411,13 @@ async function init() {
     formatEl.parentNode.insertBefore(bp, formatEl.nextSibling)
   }
   _setupCP()
+  if (!document.getElementById('yt-health-css')) {
+    var s = document.createElement('style')
+    s.id = 'yt-health-css'
+    s.textContent = '.yt-health-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:middle}.yt-health-idle{background:var(--text3)}.yt-health-searching{background:#c4a747;animation:pulse 1s infinite}.yt-health-ok{background:#1db954}.yt-health-error{background:#e05c5c}@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}'
+    document.head.appendChild(s)
+  }
+  updateYtHealth('idle')
   setupListeners()
 
   const blocker = document.getElementById('mpv-blocker')
@@ -1800,20 +1807,20 @@ function renderSearch(query) {
     if (matchAlbums.length > 1 || (!topAlbum && matchAlbums.length)) {
       const startIdx = topAlbum ? 1 : 0
       html += `<div class="search-section" data-section="Albums">
-        <div class="section-header"><span class="section-title">Albums</span></div>
+        <div class="section-header"><span class="section-title">Albums · ${matchAlbums.length - (topAlbum ? 1 : 0)}</span></div>
         <div class="album-grid">${matchAlbums.slice(startIdx, startIdx + 8).map(albumCard).join('')}</div>
       </div>`
     }
     if (matchArtists.length) {
       html += `<div class="search-section" data-section="Artists">
-        <div class="section-header"><span class="section-title">Artists</span></div>
+        <div class="section-header"><span class="section-title">Artists · ${matchArtists.length}</span></div>
         <div class="artist-pill-list">${matchArtists.map(a => `<div class="artist-pill" data-artist="${esc(a)}">${esc(a)}</div>`).join('')}</div>
       </div>`
     }
     if (matchTracks.length > 4 || (!topAlbum && matchTracks.length)) {
       const startIdx = topAlbum ? 4 : 0
       html += `<div class="search-section" data-section="Songs">
-        <div class="section-header"><span class="section-title">Songs</span></div>
+        <div class="section-header"><span class="section-title">Songs · ${matchTracks.length}</span></div>
         <div class="track-list">
         <div class="track-list-header"><span>#</span><span>Title</span><span style="text-align:right">Duration</span></div>`
       html += matchTracks.slice(startIdx).map((t, i) => `
@@ -1843,7 +1850,7 @@ function renderSearch(query) {
   // YouTube section (async — filled by runYtSearch)
   html += `<div class="search-section" data-section="YouTube" id="yt-section">
     <div class="section-header">
-      <span class="section-title">YouTube</span>
+      <span class="section-title"><span class="yt-health-dot" id="yt-health-dot" title="YouTube status"></span>YouTube</span>
       <div class="yt-scope-tabs">
         <button class="yt-scope${ytSearchState.scope === 'music' ? ' active' : ''}" data-scope="music">Music</button>
         <button class="yt-scope${ytSearchState.scope === 'all' ? ' active' : ''}" data-scope="all">All of YouTube</button>
@@ -1998,6 +2005,12 @@ function recordYtRecent(qItem) {
   window.api.saveYtRecent(state.ytRecent)
 }
 
+function updateYtHealth(status) {
+  var dot = document.getElementById('yt-health-dot')
+  if (!dot) return
+  dot.className = 'yt-health-dot yt-health-' + status
+}
+
 async function runYtSearch(query, scope) {
   ytSearchState.scope = scope
   ytSearchState.lastQuery = query
@@ -2006,18 +2019,29 @@ async function runYtSearch(query, scope) {
   var cacheKey = `${scope}::${query}`
   if (ytSearchState.cache.has(cacheKey)) {
     renderYtResults(ytSearchState.cache.get(cacheKey), query)
+    updateYtHealth('ok')
     return
   }
-  box.innerHTML = `<div class="yt-status">Searching YouTube…</div>`
+  updateYtHealth('searching')
+  box.innerHTML = '<div class="yt-status">Searching YouTube…</div><div class="skeleton-row"><div class="skeleton skeleton-thumb"></div><div class="skeleton skeleton-line"></div></div><div class="skeleton-row"><div class="skeleton skeleton-thumb"></div><div class="skeleton skeleton-line"></div></div><div class="skeleton-row"><div class="skeleton skeleton-thumb"></div><div class="skeleton skeleton-line"></div></div>'
   const call = scope === 'music' ? window.api.ytMusicSearchFull : window.api.ytSearch
   const res = await call({ query }).catch(e => ({ ok: false, error: String(e) }))
   // Stale response guard — user typed a new query or switched scope meanwhile
   if (ytSearchState.lastQuery !== query || ytSearchState.scope !== scope) return
   if (!res.ok) {
+    updateYtHealth('error')
     const cur = document.getElementById('yt-results')
-    if (cur) cur.innerHTML = `<div class="yt-status yt-error">YouTube search failed: ${esc(res.error || 'unknown error')}</div>`
+    if (cur) cur.innerHTML = `<div class="yt-status yt-error">YouTube search failed: ${esc(res.error || 'unknown error')} <button class="yt-retry" id="yt-retry-btn">Retry</button></div>`
+    setTimeout(function() {
+      if (ytSearchState.lastQuery === query && ytSearchState.scope === scope) {
+        var cur2 = document.getElementById('yt-results')
+        if (cur2) cur2.innerHTML = '<div class="yt-status">Retrying YouTube…</div>'
+        runYtSearch(query, scope)
+      }
+    }, 3000)
     return
   }
+  updateYtHealth('ok')
   ytSearchState.cache.set(cacheKey, res.results)
   renderYtResults(res.results, query)
 }
@@ -2138,7 +2162,7 @@ function renderYtResults(results, query) {
       return
     }
     box.innerHTML = `<div class="yt-sub" data-sub="Songs">
-      <div class="yt-sub-header">Videos <button class="yt-see-all" data-kind="video">See all</button></div>
+      <div class="yt-sub-header">Videos · ${results.length} <button class="yt-see-all" data-kind="video">See all</button></div>
       ${_ytSongRows(results)}</div>`
     bindYtEvents(results)
     _bindYtSeeAll(box)
@@ -5157,6 +5181,10 @@ function bindContentEvents() {
   document.getElementById('find-art-btn')?.addEventListener('click', () => {
     document.getElementById('find-art-btn').remove()
     fetchMissingArtwork()
+  })
+
+  document.getElementById('yt-retry-btn')?.addEventListener('click', () => {
+    runYtSearch(ytSearchState.lastQuery, ytSearchState.scope)
   })
 
   document.getElementById('jumpback-play')?.addEventListener('click', playCurrentTrack)
