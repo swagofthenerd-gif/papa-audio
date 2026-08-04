@@ -1168,6 +1168,7 @@ async function parseTrackFile(filePath, st) {
     channels: f.numberOfChannels || 0,
     replayGainTrack: c.replaygain_track_gain?.dB ?? null,
     replayGainAlbum: c.replaygain_album_gain?.dB ?? null,
+    replaygainTrackPeak: c.replaygain_track_peak ?? null,
     codec,
     bitDepth:     f.bitsPerSample|| null,
     bitrate:      f.bitrate      || null,
