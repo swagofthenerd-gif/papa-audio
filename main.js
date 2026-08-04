@@ -3,13 +3,31 @@ const path = require('path')
 const fs = require('fs')
 const crypto = require('crypto')
 const https = require('https')
-const { spawn, execSync, execFileSync } = require('child_process')
+const { spawn, execSync, execFileSync, execFile } = require('child_process')
 const { MpvEngine } = require('./mpv-engine')
 const { MpvCrossfade } = require('./mpv-crossfade')
 const { linearToMpv } = require('./volume-map')
 const ytSearch = require('./youtube-search')
 const ytDownloader = require('./youtube-download')
 const lyrics = require('./lyrics')
+
+const LASTFM_API_KEY = 'PLACEHOLDER'
+const LASTFM_API_URL = 'https://ws.audioscrobbler.com/2.0/'
+
+async function scrobbleTrack(track, timestamp) {
+  const sk = store.get('lastfmConfig', {}).sessionKey
+  if (!sk) return
+  const params = new URLSearchParams({
+    method: 'track.scrobble',
+    api_key: LASTFM_API_KEY,
+    sk: sk,
+    'artist[0]': track.artist || '',
+    'track[0]': track.title || '',
+    'album[0]': track.album || '',
+    'timestamp[0]': Math.floor(timestamp / 1000),
+  })
+  try { await fetch(LASTFM_API_URL, { method: 'POST', body: params }) } catch (_) {}
+}
 
 function withTimeout(promise, ms, label) {
   const controller = new AbortController()
@@ -255,6 +273,17 @@ async function slskdFetch(method, endpoint, body) {
   if (res.status === 204 || res.headers.get('content-length') === '0') return null
   const text = await res.text()
   return text ? JSON.parse(text) : null
+}
+
+function verifyAudioFile(filePath) {
+  return new Promise((resolve) => {
+    execFile('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', filePath], { timeout: 10000 }, (err, stdout) => {
+      if (err) { resolve({ ok: false, error: err.message }); return }
+      const dur = parseFloat(stdout)
+      if (dur && dur > 0) resolve({ ok: true, duration: dur })
+      else resolve({ ok: false, error: 'Zero duration or invalid file' })
+    })
+  })
 }
 
 async function waitForSlskd(maxMs = 30000) {
@@ -730,6 +759,13 @@ ipcMain.on('save-general-settings', (_, s) => {
   if (s.theme) store.set('theme', s.theme)
 })
 
+ipcMain.handle('get-lastfm-config', () => store.get('lastfmConfig', {}))
+ipcMain.handle('set-lastfm-config', (_, cfg) => { store.set('lastfmConfig', cfg) })
+ipcMain.handle('scrobble-track', async (_, track) => {
+  if (!track) return
+  await scrobbleTrack(track, Date.now())
+})
+
 ipcMain.handle('get-start-on-boot', () => app.getLoginItemSettings().openAtLogin)
 ipcMain.handle('set-start-on-boot', (_, enabled) => {
   app.setLoginItemSettings({ openAtLogin: enabled, args: ['--hidden'] })
@@ -768,6 +804,11 @@ ipcMain.on('notify-download-complete', (_, { count, albumName }) => {
     icon: ICON_PATH,
     silent: false
   }).show()
+})
+
+ipcMain.on('show-notification', (_, { title, body }) => {
+  if (!Notification.isSupported()) return
+  new Notification({ title, body, silent: true }).show()
 })
 
 ipcMain.handle('torrent-add', async (_, { uri }) => {
@@ -1192,6 +1233,8 @@ function writeLibraryExt(albums) {
   } catch (_) {}
 }
 
+let _lastNotifiedId = null
+
 ipcMain.on('update-now-playing',  (_, data)   => {
   writeNowPlaying(data)
   updateMpris(data)
@@ -1200,6 +1243,19 @@ ipcMain.on('update-now-playing',  (_, data)   => {
     _trayNow = { title: nowTitle, playing: !!data.playing }
     rebuildTrayMenu()
     if (tray) tray.setToolTip(nowTitle ? `Papa Audio — ${nowTitle}` : 'Papa Audio')
+  }
+  if (data.title && data.playing && `${data.title}|${data.artist}|${data.album}` !== _lastNotifiedId) {
+    _lastNotifiedId = `${data.title}|${data.artist}|${data.album}`
+    if (Notification.isSupported()) {
+      const n = new Notification({
+        title: data.title || 'Unknown',
+        body: `${data.artist || ''}${data.album ? ' — ' + data.album : ''}`,
+        icon: data.artPath && !data.artPath.startsWith('http') ? data.artPath : undefined,
+        silent: true,
+      })
+      n.on('click', () => { if (mainWindow) mainWindow.show() })
+      n.show()
+    }
   }
 })
 ipcMain.on('update-library-ext',  (_, albums) => writeLibraryExt(albums))
