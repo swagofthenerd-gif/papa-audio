@@ -1702,7 +1702,15 @@ function renderSearch(query) {
       const bg = GENRE_COLORS[g] || `linear-gradient(135deg,hsl(${Math.abs(g.charCodeAt(0)*7)%360},55%,28%),hsl(${Math.abs(g.charCodeAt(0)*7+40)%360},45%,18%))`
       return `<div class="genre-tile" style="background:${bg}" data-genre="${esc(g)}">${esc(g)}</div>`
     }).join('')
+    var surpriseStyle = document.getElementById('surprise-style')
+    if (!surpriseStyle) {
+      surpriseStyle = document.createElement('style')
+      surpriseStyle.id = 'surprise-style'
+      surpriseStyle.textContent = '.surprise-btn{padding:12px 32px;border-radius:100px;background:linear-gradient(135deg,var(--accent),#1db954);border:none;color:#000;font-size:16px;font-weight:600;cursor:pointer;transition:transform .15s,box-shadow .15s}.surprise-btn:hover{transform:scale(1.05);box-shadow:0 4px 16px rgba(29,185,84,.3)}'
+      document.head.appendChild(surpriseStyle)
+    }
     setContent(`<div class="page">
+      <div style="text-align:center;padding:20px 0"><button class="surprise-btn" id="surprise-btn">🎲 Surprise me</button></div>
       <div class="section-header"><span class="section-title">Browse by genre</span></div>
       <div class="genre-grid">${tiles}</div>
     </div>`)
@@ -1711,6 +1719,17 @@ function renderSearch(query) {
         state.libGenre = tile.dataset.genre
         navigate('library')
       })
+    })
+    document.getElementById('surprise-btn')?.addEventListener('click', function() {
+      if (!state.library.length) return
+      var album = state.library[Math.floor(Math.random() * state.library.length)]
+      if (album.tracks && album.tracks.length) {
+        var track = album.tracks[Math.floor(Math.random() * album.tracks.length)]
+        state.queue = [track]
+        state.queueIndex = 0
+        playCurrentTrack()
+        showSnackbar('🎲 Playing: ' + track.title + ' — ' + (track.artist || album.artist))
+      }
     })
     return
   }
