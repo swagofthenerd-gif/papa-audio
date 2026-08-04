@@ -74,6 +74,10 @@ contextBridge.exposeInMainWorld('api', {
   // Power management
   setPowerSave: (playing) => ipcRenderer.send('set-power-save', playing),
 
+  // Start on boot
+  getStartOnBoot: () => ipcRenderer.invoke('get-start-on-boot'),
+  setStartOnBoot: (e) => ipcRenderer.invoke('set-start-on-boot', e),
+
   // Music Chat Agent
   checkOllama:     ()  => ipcRenderer.invoke('check-ollama'),
   getAgentModel:   ()  => ipcRenderer.invoke('get-agent-model'),

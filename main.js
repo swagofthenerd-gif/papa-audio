@@ -349,6 +349,7 @@ function pollCmd() {
 }
 
 app.whenReady().then(() => {
+  const hidden = process.argv.includes('--hidden')
   artworkDir = path.join(USER_DATA, 'artwork')
   fs.mkdirSync(artworkDir, { recursive: true })
 
@@ -387,7 +388,7 @@ app.whenReady().then(() => {
   // rotate/extend like in a normal browser, then re-store the fresh set.
   setTimeout(refreshYtCookie, 8000)
   setInterval(refreshYtCookie, 12 * 60 * 60 * 1000)
-  createWindow()
+  createWindow(hidden)
   initMpris()          // MPRIS D-Bus first; media-key grab only as fallback
   initPlayer()
   createTray()
@@ -423,7 +424,7 @@ app.on('will-quit', () => {
   globalShortcut.unregisterAll()
 })
 
-function createWindow() {
+function createWindow(hidden = false) {
   const winState = store.get('windowState', {})
   mainWindow = new BrowserWindow({
     width:  winState.width  || 1400,
@@ -434,6 +435,7 @@ function createWindow() {
     backgroundColor: '#121212',
     frame: false,
     icon: ICON_PATH,
+    show: !hidden,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -726,6 +728,11 @@ ipcMain.handle('get-general-settings', () => ({
 ipcMain.on('save-general-settings', (_, s) => {
   if (typeof s.closeToTray === 'boolean') store.set('closeToTray', s.closeToTray)
   if (s.theme) store.set('theme', s.theme)
+})
+
+ipcMain.handle('get-start-on-boot', () => app.getLoginItemSettings().openAtLogin)
+ipcMain.handle('set-start-on-boot', (_, enabled) => {
+  app.setLoginItemSettings({ openAtLogin: enabled, args: ['--hidden'] })
 })
 
 // ── Track notifications ──────────────────────────────────────────────────────
@@ -2272,7 +2279,7 @@ ipcMain.handle('yt-download', (_, { videoId, title, artist, subdir }) => {
 
 ipcMain.handle('yt-get-downloads', () => [..._ytDownloads.values()])
 
-ipcMain.handle('ctx-menu-show', (event, items) => {
+ipcMain.handle('ctx-menu-show', (event, items, x, y) => {
   return Promise.race([
     new Promise(resolve => {
       const menu = new Menu()
@@ -2283,7 +2290,7 @@ ipcMain.handle('ctx-menu-show', (event, items) => {
           menu.append(new MenuItem({ label: item.label, click: () => resolve(item.action) }))
         }
       }
-      menu.popup({ window: BrowserWindow.fromWebContents(event.sender), callback: () => resolve(null) })
+      menu.popup({ window: BrowserWindow.fromWebContents(event.sender), x: x ?? undefined, y: y ?? undefined, callback: () => resolve(null) })
     }),
     new Promise(resolve => setTimeout(() => resolve(null), 10000))
   ])
