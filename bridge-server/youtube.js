@@ -32,12 +32,24 @@ function resolveAudioUrl(videoId) {
       resolve({ ok: false, error: `yt-dlp spawn failed: ${e.message}` })
       return
     }
+    let timedOut = false
+    const timer = setTimeout(() => {
+      timedOut = true
+      proc.kill()
+      resolve({ ok: false, error: 'yt-dlp timed out after 30s' })
+    }, 30000)
     let out = ''
     let err = ''
     proc.stdout.on('data', d => { out += d.toString() })
     proc.stderr.on('data', d => { err = (err + d.toString()).slice(-500) })
-    proc.on('error', e => resolve({ ok: false, error: `yt-dlp error: ${e.message}` }))
+    proc.on('error', e => {
+      clearTimeout(timer)
+      if (timedOut) return
+      resolve({ ok: false, error: `yt-dlp error: ${e.message}` })
+    })
     proc.on('close', code => {
+      clearTimeout(timer)
+      if (timedOut) return
       const url = out.trim().split('\n')[0]
       if (code === 0 && url) {
         _urlCache.set(videoId, { url, expiresAt: Date.now() + URL_TTL_MS })
