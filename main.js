@@ -37,6 +37,24 @@ function withTimeout(promise, ms, label) {
   ]).finally(() => clearTimeout(timer))
 }
 
+async function withRetry(fn, maxRetries, label) {
+  var lastErr
+  for (var attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn()
+    } catch (e) {
+      lastErr = e
+      var msg = String(e.message || e)
+      if (msg.includes('401') || msg.includes('403') || msg.includes('400')) throw e
+      if (attempt < maxRetries) {
+        var delay = Math.min(1000 * Math.pow(2, attempt), 8000)
+        await new Promise(r => setTimeout(r, delay))
+      }
+    }
+  }
+  throw lastErr
+}
+
 let natUpnp; try { natUpnp = require('nat-upnp') } catch (_) {}
 
 // Strip the automation flag so Cloudflare/bot-checks don't see navigator.webdriver = true
@@ -2277,54 +2295,54 @@ ipcMain.handle('open-external', (_, url) => {
 
 // ── YouTube ──────────────────────────────────────────────────────────────────
 ipcMain.handle('yt-music-search', async (_, { query }) => {
-  try { return { ok: true, results: await withTimeout(ytSearch.searchMusic(query), 20000, 'YouTube music search') } }
+  try { return { ok: true, results: await withRetry(() => withTimeout(ytSearch.searchMusic(query), 20000, 'YouTube music search'), 2, 'yt-music-search') } }
   catch (e) { return { ok: false, error: String(e?.message || e) } }
 })
 
 ipcMain.handle('yt-search', async (_, { query }) => {
-  try { return { ok: true, results: await withTimeout(ytSearch.searchAll(query), 20000, 'YouTube search') } }
+  try { return { ok: true, results: await withRetry(() => withTimeout(ytSearch.searchAll(query), 20000, 'YouTube search'), 2, 'yt-search') } }
   catch (e) { return { ok: false, error: String(e?.message || e) } }
 })
 
 ipcMain.handle('yt-music-search-full', async (_, { query }) => {
-  try { return { ok: true, results: await withTimeout(ytSearch.searchMusicFull(query), 20000, 'YouTube full search') } }
+  try { return { ok: true, results: await withRetry(() => withTimeout(ytSearch.searchMusicFull(query), 20000, 'YouTube full search'), 2, 'yt-music-search-full') } }
   catch (e) { return { ok: false, error: String(e?.message || e) } }
 })
 
 ipcMain.handle('yt-album', async (_, { browseId }) => {
-  try { return { ok: true, album: await withTimeout(ytSearch.getAlbum(browseId), 20000, 'YouTube album') } }
+  try { return { ok: true, album: await withRetry(() => withTimeout(ytSearch.getAlbum(browseId), 20000, 'YouTube album'), 2, 'yt-album') } }
   catch (e) { return { ok: false, error: String(e?.message || e) } }
 })
 
 ipcMain.handle('yt-artist', async (_, { channelId }) => {
-  try { return { ok: true, artist: await withTimeout(ytSearch.getArtist(channelId), 20000, 'YouTube artist') } }
+  try { return { ok: true, artist: await withRetry(() => withTimeout(ytSearch.getArtist(channelId), 20000, 'YouTube artist'), 2, 'yt-artist') } }
   catch (e) { return { ok: false, error: String(e?.message || e) } }
 })
 
 ipcMain.handle('yt-search-page', async (_, { kind, query, next }) => {
   try {
-    const { items, hasMore } = await withTimeout(ytSearch.searchPage(kind, query, !!next), 20000, 'YouTube search page')
+    const { items, hasMore } = await withRetry(() => withTimeout(ytSearch.searchPage(kind, query, !!next), 20000, 'YouTube search page'), 2, 'yt-search-page')
     return { ok: true, items, hasMore }
   } catch (e) { return { ok: false, error: String(e?.message || e) } }
 })
 
 ipcMain.handle('yt-playlist', async (_, { playlistId }) => {
-  try { return { ok: true, playlist: await withTimeout(ytSearch.getPlaylist(playlistId), 20000, 'YouTube playlist') } }
+  try { return { ok: true, playlist: await withRetry(() => withTimeout(ytSearch.getPlaylist(playlistId), 20000, 'YouTube playlist'), 2, 'yt-playlist') } }
   catch (e) { return { ok: false, error: String(e?.message || e) } }
 })
 
 ipcMain.handle('yt-home', async () => {
-  try { return { ok: true, ...(await withTimeout(ytSearch.getHomeFeed(), 20000, 'YouTube home feed')) } }
+  try { return { ok: true, ...(await withRetry(() => withTimeout(ytSearch.getHomeFeed(), 20000, 'YouTube home feed'), 2, 'yt-home')) } }
   catch (e) { return { ok: false, error: String(e?.message || e) } }
 })
 
 ipcMain.handle('yt-radio', async (_, { videoId }) => {
-  try { return { ok: true, tracks: await withTimeout(ytSearch.getRadio(videoId), 20000, 'YouTube radio') } }
+  try { return { ok: true, tracks: await withRetry(() => withTimeout(ytSearch.getRadio(videoId), 20000, 'YouTube radio'), 2, 'yt-radio') } }
   catch (e) { return { ok: false, error: String(e?.message || e) } }
 })
 
 ipcMain.handle('yt-find-video', async (_, { artist, title }) => {
-  try { return { ok: true, videoId: await ytSearch.findVideoId(artist, title) } }
+  try { return { ok: true, videoId: await withRetry(() => ytSearch.findVideoId(artist, title), 2, 'yt-find-video') } }
   catch (e) { return { ok: false, error: String(e?.message || e) } }
 })
 
