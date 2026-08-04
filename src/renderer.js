@@ -383,6 +383,8 @@ async function init() {
   state.followedArtists = followedArtists || []
   state.playlists = playlists || []
   try { _playlistSorts = JSON.parse(localStorage.getItem('papa-pl-sorts') || '{}') } catch (_) { _playlistSorts = {} }
+  try { var savedSmart = JSON.parse(localStorage.getItem('papa-smart-playlists') || 'null') } catch (_) { savedSmart = null }
+  if (savedSmart) state.smartPlaylists = savedSmart
   state.savedQueues = savedQueues || []
   state.musicFolders   = info.musicFolders   || []
   state.recentlyPlayed = info.recentlyPlayed || []
@@ -2814,7 +2816,7 @@ function _plTotalDur(pl) {
 }
 
 function renderPlaylists() {
-  var sorted = [...state.playlists]
+  var sorted = [...state.playlists, ...state.smartPlaylists]
   if (state.playlistSort === 'recent') {
     sorted.sort(function(a, b) {
       var aLatest = 0, bLatest = 0
