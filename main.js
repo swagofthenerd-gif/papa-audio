@@ -581,7 +581,7 @@ function createWindow(hidden = false) {
       mainWindow.hide()
       return
     }
-    if (app.isQuitting) return
+    if (app.isQuitting) { player?.stop(); return }
     try {
       const isPlaying = await mainWindow.webContents.executeJavaScript('state.isPlaying')
       if (isPlaying) {
@@ -594,11 +594,13 @@ function createWindow(hidden = false) {
           message: 'Music is still playing. Close anyway?',
         })
         if (response === 0) {
+          player?.stop()
+          app.isQuitting = true
           mainWindow.removeAllListeners('close')
           mainWindow.close()
         }
       }
-    } catch (_) {}
+    } catch (_) { player?.stop() }
   })
   mainWindow.on('closed', () => {
     if (browserView) { try { browserView.webContents.destroy() } catch (_) {} browserView = null }
@@ -883,9 +885,8 @@ function updateBrowserBounds() {
 ipcMain.on('win-minimize', () => mainWindow?.minimize())
 ipcMain.on('win-maximize', () => mainWindow?.isMaximized() ? mainWindow.unmaximize() : mainWindow?.maximize())
 ipcMain.on('win-close',    () => {
-  // Close-to-tray: keep music playing in background unless disabled in settings
   if (store.get('closeToTray', true) && tray) mainWindow?.hide()
-  else { app.isQuitting = true; mainWindow?.close() }
+  else { player?.stop(); app.isQuitting = true; mainWindow?.close() }
 })
 ipcMain.handle('get-general-settings', () => ({
   closeToTray: store.get('closeToTray', true),
