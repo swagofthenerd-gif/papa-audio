@@ -267,7 +267,7 @@ async function startSlskd() {
     try {
       const r = await fetch(`${SLSKD_BASE}/application`)
       if (r.ok || r.status === 401) { slskdReady = true; await slskdAcquireToken(); return }
-    } catch (_) {}
+    } catch (e) { console.error('[papa] slskd-start:', e.message || e) }
   }
   if (slskdProc) return
   if (!fs.existsSync(SLSKD_CFG)) {
@@ -279,7 +279,7 @@ async function startSlskd() {
   slskdProc.on('exit', () => { slskdProc = null; slskdReady = false; slskdToken = null })
   await waitForSlskd()
   await slskdAcquireToken()
-  upnpMap(2234).catch(() => {})
+  upnpMap(2234).catch(e => { console.error('[papa] upnp-map:', e.message || e) })
 }
 
 function stopSlskd() {
@@ -322,7 +322,7 @@ const NOW_PLAYING_PATH = path.join(USER_DATA, 'now-playing.json')
 const CMD_PATH         = path.join(USER_DATA, 'cmd')
 
 function writeNowPlaying(data) {
-  try { fs.writeFileSync(NOW_PLAYING_PATH, JSON.stringify(data)) } catch (_) {}
+  try { fs.writeFileSync(NOW_PLAYING_PATH, JSON.stringify(data)) } catch (e) { console.error('[papa] write-now-playing:', e.message || e) }
 }
 
 let _lastCmd = ''
@@ -333,7 +333,7 @@ function pollCmd() {
     _lastCmd = cmd
     fs.writeFileSync(CMD_PATH, '')
     mainWindow?.webContents.send('ext-cmd', cmd)
-  } catch (_) {}
+  } catch (e) { console.error('[papa] poll-cmd:', e.message || e) }
 }
 
 app.whenReady().then(() => {
@@ -1168,7 +1168,7 @@ function ensureDlHandler() {
     item.once('done', (__, state) => {
       activeDownloads.delete(dlId)
       if (state === 'completed') {
-        if (isArchive) { try { new AdmZip(dest).extractAllTo(path.dirname(dest), true) } catch (_) {} }
+        if (isArchive) { try { new AdmZip(dest).extractAllTo(path.dirname(dest), true) } catch (e) { console.error('[papa] zip-extract:', e.message || e) } }
         mainWindow?.webContents.send('dl-complete', { id: dlId, filename, dest, isMusic })
       } else if (state === 'cancelled') {
         mainWindow?.webContents.send('dl-cancelled', { id: dlId, filename })
