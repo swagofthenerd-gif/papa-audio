@@ -3847,6 +3847,19 @@ textarea:focus:not(:focus-visible) { outline: none; }
 .album-card-skeleton-line:nth-child(2) { width: 80%; }
 .album-card-skeleton-line:nth-child(3) { width: 55%; }
 
+.skeleton {
+  background: linear-gradient(90deg, var(--bg3) 25%, var(--glass) 50%, var(--bg3) 75%);
+  background-size: 400px 100%;
+  animation: skeleton-shimmer 1.5s ease-in-out infinite;
+  border-radius: var(--r-sm);
+}
+.skeleton-row { display:flex; gap:12px; padding:8px; align-items:center; }
+.skeleton-thumb { width:44px; height:44px; }
+.skeleton-line { height:14px; border-radius:6px; flex:1; }
+.skeleton-line.short { flex:0 0 120px; }
+.skeleton-card { width:160px; height:160px; }
+.skeleton-header { height:20px; width:200px; margin-bottom:16px; }
+
 /* ── Smart Playlists ─────────────────────────────── */
 .smart-pl-modal {
   position: fixed; inset: 0;
@@ -4897,3 +4910,14 @@ code { font-family:var(--font-mono,monospace);background:var(--bg4);padding:1px 
 .text-accent { color:var(--accent) }
 .text-muted { color:var(--text3) }
 .text-error { color:var(--color-error,#ff4d4d) }
+
+@media (max-width: 700px) {
+  #vol-track { display: none; }
+  #np-format { display: none; }
+  #np-crossfade { display: none; }
+  #np-title { font-size: 13px; }
+  #np-artist { font-size: 11px; }
+  #progress-tooltip { display: none; }
+  .ctrl-row button { width: 32px; height: 32px; }
+  .ctrl-row button svg { width: 16px; height: 16px; }
+}
