@@ -8634,23 +8634,37 @@ function initSearchHistory() {
   const dropdown    = document.getElementById('search-history-dropdown')
   if (!input || !dropdown) return
 
-  let history       = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]')
+  let history       = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]').map(function(h) { return typeof h === 'string' ? { query: h, ts: Date.now() - 86400000 } : h })
   let activeIdx     = -1   // which row is highlighted by keyboard
   let blurTimer     = null
+  var _searchTimeout = null
+  var _liveResultsVisible = false
 
   function saveHistory() {
     localStorage.setItem(HISTORY_KEY, JSON.stringify(history))
   }
 
   function addToHistory(query) {
-    history = [query, ...history.filter(h => h.toLowerCase() !== query.toLowerCase())].slice(0, MAX_ITEMS)
+    history = history.filter(function(h) { return (typeof h === 'string' ? h : h.query).toLowerCase() !== query.toLowerCase() })
+    history.unshift({ query: query, ts: Date.now() })
+    if (history.length > MAX_ITEMS) history.pop()
     saveHistory()
   }
 
   function removeFromHistory(query) {
-    history = history.filter(h => h !== query)
+    history = history.filter(function(h) { return (typeof h === 'string' ? h : h.query) !== query })
     saveHistory()
     renderDropdown(input.value)
+  }
+
+  function relativeTime(ts) {
+    if (!ts) return ''
+    var diff = Date.now() - ts
+    if (diff < 60000) return 'just now'
+    if (diff < 3600000) return Math.floor(diff / 60000) + 'm ago'
+    if (diff < 86400000) return Math.floor(diff / 3600000) + 'h ago'
+    if (diff < 172800000) return 'yesterday'
+    return Math.floor(diff / 86400000) + 'd ago'
   }
 
   function highlight(text, filter) {
@@ -8665,17 +8679,21 @@ function initSearchHistory() {
   function renderDropdown(filter) {
     const q = (filter || '').trim().toLowerCase()
     const matches = q
-      ? history.filter(h => h.toLowerCase().includes(q))
+      ? history.filter(function(h) { var t = typeof h === 'string' ? h : h.query; return t.toLowerCase().includes(q) })
       : history
 
     if (!matches.length) { hideDropdown(); return }
 
-    dropdown.innerHTML = matches.slice(0, 10).map((h, i) => `
-      <div class="sh-item" data-idx="${i}" data-query="${esc(h)}">
-        <svg class="sh-item-icon" viewBox="0 0 24 24"><path d="M13 3a9 9 0 0 0-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42A8.954 8.954 0 0 0 13 21a9 9 0 0 0 0-18zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"/></svg>
-        <span class="sh-item-text">${highlight(h, filter)}</span>
-        <button class="sh-item-del" data-query="${esc(h)}" title="Remove">&#10005;</button>
-      </div>`).join('')
+    var filtered = matches.slice(0, 10)
+    dropdown.innerHTML = filtered.map(function(h, i) {
+      var qtext = typeof h === 'string' ? h : h.query
+      var ts = h.ts ? relativeTime(h.ts) : ''
+      return '<div class="sh-item' + (i === activeIdx ? ' active' : '') + '" data-idx="' + i + '" data-query="' + esc(qtext) + '">' +
+        '<svg class="sh-icon" viewBox="0 0 24 24"><path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/></svg>' +
+        '<span class="sh-text">' + highlight(qtext, filter) + '</span>' +
+        (ts ? '<span class="sh-time">' + ts + '</span>' : '') +
+        '<button class="sh-item-del" data-query="' + esc(qtext) + '" title="Remove">&#10005;</button></div>'
+    }).join('')
 
     // Bind remove buttons
     dropdown.querySelectorAll('.sh-item-del').forEach(btn => {
@@ -8732,6 +8750,10 @@ function initSearchHistory() {
   input.addEventListener('input', () => {
     activeIdx = -1
     renderDropdown(input.value)
+    clearTimeout(_searchTimeout)
+    var q = input.value.trim()
+    if (!q) { hideLiveResults(); return }
+    _searchTimeout = setTimeout(function() { showLiveResults(q) }, 300)
   })
 
   input.addEventListener('keydown', e => {
@@ -8746,6 +8768,7 @@ function initSearchHistory() {
     } else if (e.key === 'Enter') {
       const q = input.value.trim()
       hideDropdown()
+      hideLiveResults()
       var cp = document.getElementById('cmd-palette')
       if (cp && cp.style.display === 'flex') toggleCommandPalette()
       commitSearch(q)
@@ -8759,12 +8782,12 @@ function initSearchHistory() {
   })
 
   input.addEventListener('blur', () => {
-    blurTimer = setTimeout(hideDropdown, 150)
+    blurTimer = setTimeout(function() { hideDropdown(); hideLiveResults() }, 150)
   })
 
   // Close on click outside
   document.addEventListener('mousedown', e => {
-    if (!e.target.closest('#tb-search-wrap')) hideDropdown()
+    if (!e.target.closest('#tb-search-wrap')) { hideDropdown(); hideLiveResults() }
   })
 
   // Clear-search button

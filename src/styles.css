@@ -141,6 +141,16 @@ img { display:block; }
 .sh-item-text mark {
   background:none; color:var(--accent); font-weight:700;
 }
+.sh-icon { width:13px; height:13px; fill:var(--text3); flex-shrink:0; }
+.sh-text {
+  flex:1; font-size:12px; color:var(--text2);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.sh-text mark { background:none; color:var(--accent); font-weight:700; }
+.sh-time {
+  font-size:11px; color:var(--text3); flex-shrink:0;
+  white-space:nowrap;
+}
 .sh-item-del {
   background:none; border:none; color:var(--text3); cursor:pointer;
   width:18px; height:18px; border-radius:50%; padding:0; font-size:11px;
