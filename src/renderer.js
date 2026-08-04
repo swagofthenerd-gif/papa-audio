@@ -3736,6 +3736,85 @@ function showNameInputModal(title, placeholder, onConfirm) {
   setTimeout(() => input.focus(), 50)
 }
 
+function showSmartPlaylistDialog(existing) {
+  var fields = ['artist', 'album', 'genre', 'year', 'format', 'playCount']
+  var ops = ['is', 'contains', 'gt', 'lt', 'gte', 'lte']
+
+  var html = '<div class="modal-overlay" id="smart-pl-modal"><div class="modal-box">' +
+    '<h3 style="margin:0 0 12px">' + (existing ? 'Edit' : 'New') + ' Smart Playlist</h3>' +
+    '<input id="sp-name" placeholder="Playlist name" value="' + esc((existing && existing.name) || '') + '" style="width:100%;box-sizing:border-box;margin-bottom:12px;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg2);color:var(--text);font-size:14px">' +
+    '<div id="sp-rules" style="display:flex;flex-direction:column;gap:6px">' +
+    ((existing && existing.rules) || [{field:'genre',op:'is',value:''}]).map(function(r, i) {
+      return '<div class="sp-rule" style="display:flex;gap:6px;align-items:center">' +
+        '<select class="sp-field" style="padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg2);color:var(--text);font-size:13px">' + fields.map(function(f) { return '<option' + (r.field===f?' selected':'') + '>' + f + '</option>' }).join('') + '</select>' +
+        '<select class="sp-op" style="padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg2);color:var(--text);font-size:13px">' + ops.map(function(o) { return '<option' + (r.op===o?' selected':'') + '>' + o + '</option>' }).join('') + '</select>' +
+        '<input class="sp-val" value="' + esc(r.value) + '" style="flex:1;padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg2);color:var(--text);font-size:13px">' +
+        '<button class="sp-remove-rule" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:16px;padding:2px 6px">&times;</button></div>'
+    }).join('') + '</div>' +
+    '<button id="sp-add-rule" style="margin-top:8px;background:none;border:1px dashed var(--border);color:var(--text2);cursor:pointer;padding:6px 12px;border-radius:8px;font-size:13px;width:100%">+ Add rule</button>' +
+    '<div style="margin-top:16px;display:flex;gap:8px;justify-content:flex-end">' +
+    '<button id="sp-cancel">Cancel</button>' +
+    '<button id="sp-save" class="primary">Save</button></div></div></div>'
+
+  var overlay = document.createElement('div')
+  overlay.innerHTML = html
+  document.body.appendChild(overlay)
+
+  document.getElementById('sp-add-rule').addEventListener('click', function() {
+    var container = document.getElementById('sp-rules')
+    var div = document.createElement('div')
+    div.className = 'sp-rule'
+    div.style.cssText = 'display:flex;gap:6px;align-items:center'
+    div.innerHTML = '<select class="sp-field" style="padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg2);color:var(--text);font-size:13px">' + fields.map(function(f) { return '<option>' + f + '</option>' }).join('') + '</select>' +
+      '<select class="sp-op" style="padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg2);color:var(--text);font-size:13px">' + ops.map(function(o) { return '<option>' + o + '</option>' }).join('') + '</select>' +
+      '<input class="sp-val" style="flex:1;padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg2);color:var(--text);font-size:13px">' +
+      '<button class="sp-remove-rule" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:16px;padding:2px 6px">&times;</button>'
+    container.appendChild(div)
+  })
+
+  document.getElementById('sp-save').addEventListener('click', function() {
+    var name = document.getElementById('sp-name').value.trim()
+    if (!name) { document.getElementById('sp-name').focus(); return }
+    var rules = []
+    document.querySelectorAll('.sp-rule').forEach(function(row) {
+      rules.push({
+        field: row.querySelector('.sp-field').value,
+        op: row.querySelector('.sp-op').value,
+        value: row.querySelector('.sp-val').value.trim()
+      })
+    })
+    if (existing) {
+      var idx = state.smartPlaylists.indexOf(existing)
+      if (idx !== -1) {
+        existing.name = name
+        existing.rules = rules
+        state.smartPlaylists[idx] = existing
+      }
+    } else {
+      state.smartPlaylists.push({ id: 'sp_' + Date.now(), name: name, type: 'smart', rules: rules, createdAt: Date.now() })
+    }
+    localStorage.setItem('papa-smart-playlists', JSON.stringify(state.smartPlaylists))
+    renderPlaylists()
+    document.getElementById('smart-pl-modal').remove()
+  })
+
+  document.getElementById('sp-cancel').addEventListener('click', function() {
+    document.getElementById('smart-pl-modal').remove()
+  })
+
+  document.getElementById('sp-rules').addEventListener('click', function(e) {
+    if (e.target.classList.contains('sp-remove-rule')) {
+      e.target.closest('.sp-rule').remove()
+    }
+  })
+
+  overlay.addEventListener('click', function(e) {
+    if (e.target === overlay && e.target.className === 'modal-overlay') {
+      overlay.remove()
+    }
+  })
+}
+
 function showAddToPlaylistModal(tracks) {
   if (!tracks || !tracks.length) return
   const existing = document.getElementById('addpl-modal')
@@ -5053,12 +5132,7 @@ function bindContentEvents() {
   })
 
   document.getElementById('new-smart-pl-btn')?.addEventListener('click', function() {
-    showNameInputModal('New Smart Playlist', 'Playlist name', function(name) {
-      var pl = { id: 'smart_' + Date.now(), name: name, type: 'smart', rules: [{ field: 'genre', op: 'is', value: 'Rock' }], createdAt: Date.now() }
-      state.smartPlaylists.push(pl)
-      window.api.savePlaylist(pl)
-      navigate('playlist', pl.id)
-    })
+    showSmartPlaylistDialog()
   })
 
   document.querySelectorAll('.wishlist-search-btn').forEach(function(btn) {
