@@ -11,12 +11,26 @@ test('parseProgress reads yt-dlp percent lines', () => {
   assert.strictEqual(parseProgress(''), null)
 })
 
+test('parseProgress returns null for invalid input', () => {
+  assert.strictEqual(parseProgress(''), null)
+  assert.strictEqual(parseProgress('random garbage text'), null)
+  assert.strictEqual(parseProgress('[download] no percent here'), null)
+  assert.throws(() => parseProgress(undefined), /read properties|not a function/)
+  assert.throws(() => parseProgress(null), /read properties|not a function/)
+})
+
 test('sanitizeFilename strips path separators and control chars', () => {
   assert.strictEqual(sanitizeFilename('AC/DC: Back in Black'), 'AC_DC_ Back in Black')
   assert.strictEqual(sanitizeFilename('a b\nc'), 'a bc')
   assert.strictEqual(sanitizeFilename('  spaced  '), 'spaced')
   assert.strictEqual(sanitizeFilename('CON? <title>"song" *feat|ft*>'), 'CON_ _title__song_ _feat_ft__')
   assert.strictEqual(sanitizeFilename('song...  '), 'song')
+})
+
+test('sanitizeFilename handles empty and null without throwing', () => {
+  assert.strictEqual(sanitizeFilename(''), '')
+  assert.strictEqual(sanitizeFilename(null), '')
+  assert.strictEqual(sanitizeFilename(undefined), '')
 })
 
 test('buildArgs keeps native codec (no --audio-format) and guards dash ids', () => {

@@ -223,3 +223,26 @@ test('args enable audio-only ytdl format for URL streaming', () => {
   const args = new MpvEngine({})._args('/tmp/x.sock')
   assert.ok(args.includes('--ytdl-format=bestaudio'))
 })
+
+test('constructor handles invalid socket path without throwing', () => {
+  const eng = new MpvEngine({ socketPath: '/nonexistent/path/mpv.sock' })
+  assert.ok(eng instanceof MpvEngine)
+  assert.ok(eng.getState())
+  assert.strictEqual(typeof eng.start, 'function')
+  assert.strictEqual(typeof eng.stop, 'function')
+  assert.strictEqual(typeof eng.load, 'function')
+  assert.strictEqual(typeof eng.seek, 'function')
+  assert.strictEqual(typeof eng.setNext, 'function')
+  assert.strictEqual(typeof eng.setChannels, 'function')
+})
+
+test('engine exposes core public API and config', () => {
+  const config = { outputMode: 'exclusive', alsaDevice: 'alsa/hw:2,0', audioChannels: 'stereo' }
+  const eng = new MpvEngine({ config })
+  assert.ok(eng.getState())
+  assert.strictEqual(eng.config.outputMode, 'exclusive')
+  assert.strictEqual(eng.config.alsaDevice, 'alsa/hw:2,0')
+  assert.strictEqual(eng.config.audioChannels, 'stereo')
+  assert.ok(Array.isArray(eng._args('/tmp/x.sock')))
+  assert.ok(eng instanceof MpvEngine)
+})
