@@ -45,6 +45,8 @@ const state = {
   ytRecent: [],
   downloadWishlist: [],
   stopAfterTrack: false,
+  skipShortTracks: false,
+  skipShortSecs: 30,
 }
 
 const slsk = {
@@ -60,6 +62,7 @@ const navHistory = []
 const navFuture  = []
 let _playCountTimer = null
 let _shuffleHistory = []
+let _skipShortGuard = 0
 const audio = window.__papaPlayer
 let _volSaveTimer = null
 let _homeClockInterval = null
@@ -4043,6 +4046,17 @@ function playNext() {
     if (autoplayEnabled() && !state.shuffle) { tryAutoplayContinue(); return }
     audio.pause(); state.isPlaying = false; updatePlayBtn(); syncExtension(); return
   }
+  if (state.skipShortTracks && state.queue.length > 1) {
+    const track = state.queue[state.queueIndex]
+    if (track && track.duration != null && track.duration < state.skipShortSecs) {
+      _skipShortGuard++
+      if (_skipShortGuard > 20) { _skipShortGuard = 0; playCurrentTrack(); return }
+      showSnackbar('Skipped short track: ' + (track.title || track.filePath))
+      playNext()
+      return
+    }
+  }
+  _skipShortGuard = 0
   playCurrentTrack()
 }
 
@@ -8670,6 +8684,12 @@ function setupListeners() {
       e.preventDefault()
       setSleepTimer(30)
       showSnackbar('Sleep timer: 30 min')
+      return
+    }
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'K') {
+      e.preventDefault()
+      state.skipShortTracks = !state.skipShortTracks
+      showSnackbar('Auto-skip short tracks: ' + (state.skipShortTracks ? 'on' : 'off'))
       return
     }
     if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === 's') {
