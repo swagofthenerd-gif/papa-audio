@@ -825,7 +825,7 @@ function updateMpris(data) {
 }
 
 // ── System tray ──────────────────────────────────────────────────────────────
-const { Tray, nativeImage, Menu } = require('electron')
+const { Tray, nativeImage } = require('electron')
 let tray = null
 let _trayNow = { title: null, playing: false }
 
