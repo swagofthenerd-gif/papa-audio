@@ -9019,6 +9019,28 @@ function initSearchHistory() {
   })
 
   input.addEventListener('input', () => {
+    var val = input.value
+    var chip = document.getElementById('search-source-chip')
+    var sourceMatch = val.match(/^source:(\S+)/i)
+
+    if (sourceMatch) {
+      var source = sourceMatch[1].toLowerCase()
+      var sourceLabel = source.charAt(0).toUpperCase() + source.slice(1)
+      if (!chip) {
+        chip = document.createElement('span')
+        chip.id = 'search-source-chip'
+        chip.style.cssText = 'position:absolute;left:12px;top:50%;transform:translateY(-50%);background:rgba(29,185,84,.15);color:#1db954;font-size:11px;padding:2px 8px;border-radius:8px;font-weight:600;pointer-events:none;z-index:1'
+        var wrap = document.getElementById('tb-search-wrap')
+        wrap.style.position = 'relative'
+        wrap.appendChild(chip)
+      }
+      chip.textContent = sourceLabel
+      chip.style.display = ''
+      input.style.paddingLeft = (chip.offsetWidth + 20) + 'px'
+    } else {
+      if (chip) { chip.style.display = 'none'; input.style.paddingLeft = '' }
+    }
+
     activeIdx = -1
     renderDropdown(input.value)
     clearTimeout(_searchTimeout)
@@ -9038,6 +9060,16 @@ function initSearchHistory() {
       else setActive(activeIdx - 1)
     } else if (e.key === 'Enter') {
       const q = input.value.trim()
+      var sourceMatch = q.match(/^source:(\S+)/i)
+      if (sourceMatch) {
+        var clean = q.replace(/^source:\S+\s*/i, '').trim()
+        hideDropdown()
+        hideLiveResults()
+        if (clean) { addToHistory(clean); navigate('search', clean) }
+        else { navigate('home') }
+        input.blur()
+        return
+      }
       hideDropdown()
       hideLiveResults()
       var cp = document.getElementById('cmd-palette')
