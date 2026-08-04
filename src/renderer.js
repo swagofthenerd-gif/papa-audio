@@ -6241,7 +6241,7 @@ function renderSoulseekRow(query) {
                 <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg> Play
               </button>
               <button class="slsk-dl-all-btn slsk-card-action" data-gi="${gi}" title="Download all files">
-                <svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+                <svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg> ${g.files.length}
               </button>
               <button class="slsk-expand-btn slsk-card-action" data-gi="${gi}" title="Show tracks">
                 ${g.files.length} track${g.files.length !== 1 ? 's' : ''} ▾
@@ -7695,8 +7695,9 @@ function bindSlskSearchEvents(query) {
       btn.disabled = true
       btn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>'
       try {
-        for (const f of g.files)
-          await window.api.slskDownload({ username: g.username, filename: f.filename, size: f.size })
+        await Promise.all(g.files.map(f =>
+          window.api.slskDownload({ username: g.username, filename: f.filename, size: f.size })
+        ))
         _scheduleLibRescan()
       } catch (_) { btn.disabled = false; btn.innerHTML = origHtml }
     })
