@@ -657,7 +657,7 @@ async function fetchMissingArtwork() {
 }
 
 function patchAlbumArtInDOM(albumId, artPath) {
-  const src = `file://${artPath}`
+  var src = `file://${artPath}`
   document.querySelectorAll(`.album-card[data-album="${albumId}"]`).forEach(card => {
     const wrap = card.querySelector('.album-card-art-wrap')
     const fallback = card.querySelector('.album-card-art-fallback')
@@ -867,7 +867,7 @@ function _ytConnectBanner() {
 }
 
 function _exploreSection(sec, si) {
-  const header = `<div class="section-header" style="margin-top:26px">
+  var header = `<div class="section-header" style="margin-top:26px">
     <span class="section-title">${esc(sec.title)}</span>
   </div>`
   if (sec.kind === 'songs') {
@@ -1206,8 +1206,8 @@ function renderLibrary() {
     { key: 'added', label: 'Recently added' },
   ].map(s => `<button class="sort-btn${state.libSort === s.key ? ' active' : ''}" data-sort="${s.key}">${s.label}</button>`).join('')
 
-  const viewToggle = `<button class="sort-btn${state.libView === 'folders' ? ' active' : ''}" id="lib-view-folders">📁 Folders</button>`
-  const likedBtn = `<button class="sort-btn${state.libLikedOnly ? ' active' : ''}" id="liked-filter-btn" style="margin-left:auto">♥ Liked only</button>`
+  var viewToggle = `<button class="sort-btn${state.libView === 'folders' ? ' active' : ''}" id="lib-view-folders">📁 Folders</button>`
+  var likedBtn = `<button class="sort-btn${state.libLikedOnly ? ' active' : ''}" id="liked-filter-btn" style="margin-left:auto">♥ Liked only</button>`
 
   const genres = [...new Set(state.library.map(a => a.genre).filter(Boolean))].sort()
   const genreChips = genres.length ? `<div class="genre-chip-bar">
@@ -1748,7 +1748,7 @@ function renderSearch(query) {
   ytSearchState.showTopResult = !hasLocal
 
   const tabs = ['All', 'Songs', 'Albums', 'Artists', 'Playlists']
-  let html = `<div class="page">
+  var html = `<div class="page">
     <div class="search-tabs" id="search-tabs">
       ${tabs.map(t => `<button class="search-tab${t==='All'?' active':''}" data-tab="${t}">${t}</button>`).join('')}
     </div>
@@ -2003,7 +2003,7 @@ async function runYtSearch(query, scope) {
   ytSearchState.lastQuery = query
   const box = document.getElementById('yt-results')
   if (!box) return
-  const cacheKey = `${scope}::${query}`
+  var cacheKey = `${scope}::${query}`
   if (ytSearchState.cache.has(cacheKey)) {
     renderYtResults(ytSearchState.cache.get(cacheKey), query)
     return
@@ -2576,7 +2576,7 @@ async function renderYtSeeAll(navId) {
     const moreBox = document.getElementById('yt-seeall-more')
     if (!body) return
     if (!res.ok) {
-      const note = `<div class="yt-status yt-error">Couldn't load${next ? ' more' : ''}: ${esc(res.error || 'unknown')} <button class="yt-retry" id="yt-seeall-retry">Retry</button></div>`
+      var note = `<div class="yt-status yt-error">Couldn't load${next ? ' more' : ''}: ${esc(res.error || 'unknown')} <button class="yt-retry" id="yt-seeall-retry">Retry</button></div>`
       if (next) { moreBox.innerHTML = note } else { body.innerHTML = note }
       document.getElementById('yt-seeall-retry')?.addEventListener('click', () => loadPage(next))
       return
@@ -2889,7 +2889,7 @@ function _plArtPaths(pl) {
 
 function _plCollage(pl, cls) {
   const paths = _plArtPaths(pl)
-  const note = `<svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>`
+  var note = `<svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>`
   if (!paths.length) {
     const hue = _cardHue(pl.name || pl.id)
     return `<div class="${cls} pl-collage-empty" style="background:linear-gradient(135deg,hsl(${hue},55%,24%),hsl(${(hue+40)%360},45%,15%))">${note}</div>`
@@ -4121,7 +4121,7 @@ function renderQueuePanel() {
   if (!list) return
   const curTrack = state.queue[state.queueIndex]
   const fromName = curTrack?.albumName || ''
-  const autoHtml = `<div class="queue-autoplay-row">
+  var autoHtml = `<div class="queue-autoplay-row">
     <span>Autoplay similar when queue ends</span>
     <button class="queue-autoplay-toggle${autoplayEnabled() ? ' on' : ''}" id="queue-autoplay-toggle">${autoplayEnabled() ? 'On' : 'Off'}</button>
   </div>`
@@ -4142,8 +4142,8 @@ function renderQueuePanel() {
     return
   }
 
-  const dragHandleSvg = `<svg viewBox="0 0 24 24"><path d="M9 4h2v2H9zm4 0h2v2h-2zM9 9h2v2H9zm4 0h2v2h-2zM9 14h2v2H9zm4 0h2v2h-2z"/></svg>`
-  const removeSvg     = `<svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>`
+  var dragHandleSvg = `<svg viewBox="0 0 24 24"><path d="M9 4h2v2H9zm4 0h2v2h-2zM9 9h2v2H9zm4 0h2v2h-2zM9 14h2v2H9zm4 0h2v2h-2z"/></svg>`
+  var removeSvg     = `<svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>`
 
   var totalQD = state.queue.reduce(function(s, t) { return s + (t.duration || 0) }, 0)
   var totalQDstr = fmtDur(totalQD)
@@ -5456,7 +5456,7 @@ function albumCard(album, idx, sortMode) {
     : ''
   const newBadge = (sortMode === 'added' && idx < 20) ? '<span class="new-badge">NEW</span>' : ''
   const hue = _cardHue((album.artist || '') + (album.name || ''))
-  const fallbackStyle = `background:linear-gradient(135deg,hsl(${hue},55%,22%) 0%,hsl(${(hue+40)%360},45%,14%) 100%)`
+  var fallbackStyle = `background:linear-gradient(135deg,hsl(${hue},55%,22%) 0%,hsl(${(hue+40)%360},45%,14%) 100%)`
   return `<div class="album-card" data-album="${album.id}">
     <div class="album-card-art-wrap">
       ${album.artPath
@@ -5475,7 +5475,7 @@ function albumCard(album, idx, sortMode) {
     </div>
     <div class="album-card-name">${esc(album.name)}</div>
     <div class="album-card-artist" data-artist="${esc(album.artist)}">${esc(album.artist)}</div>
-  </div>\`
+  </div>`
 }
 
 function fmtSpec(bd, sr) {
@@ -5484,7 +5484,7 @@ function fmtSpec(bd, sr) {
 }
 
 function artImg(artPath, imgClass, fallbackClass) {
-  const musicNote = `<svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>`
+  var musicNote = `<svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>`
   if (artPath) {
     const src = /^https?:\/\//.test(artPath) ? artPath : `file://${artPath}`
     return `<img class="${imgClass}" src="${src}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
@@ -5533,7 +5533,7 @@ function _albumTotalDuration() {
 }
 var _lastVolDisplay = -1
 function setVolDisplay(vol) {
-  const pct = `${Math.round(vol * 100)}%`
+  var pct = `${Math.round(vol * 100)}%`
   const fill  = document.getElementById('vol-fill')
   const thumb = document.getElementById('vol-thumb')
   if (fill)  fill.style.width  = pct
@@ -6528,7 +6528,7 @@ function _slskGroupByFolder(queryHint) {
       const folderPath = parts.slice(0, -1).join('\\')
       const ext   = parts[parts.length - 1].split('.').pop().toLowerCase()
       if (!AUDIO.has(ext)) continue
-      const key   = `${resp.username}::${folderPath}`
+      var key   = `${resp.username}::${folderPath}`
       if (!folders.has(key)) {
         const folderName = parts[parts.length - 2] || parts[parts.length - 1] || folderPath
         folders.set(key, {
@@ -7230,7 +7230,7 @@ function _renderActiveTab(files, container) {
     .filter(f => (f.state || '').includes('InProgress'))
     .reduce((mx, f) => Math.max(mx, _hmsToSecs(f.remainingTime || '0')), 0)
 
-  let html = `<div class="dl2-stats-bar">
+  var html = `<div class="dl2-stats-bar">
     <div class="dl2-stat">
       <span class="dl2-stat-val" id="dl2-stat-dl">${inProgress}</span>
       <span class="dl2-stat-lbl">active</span>
@@ -7251,7 +7251,7 @@ function _renderActiveTab(files, container) {
   const byAlbum = new Map()
   for (const f of files) {
     const folder = _dlFolderName(f.filename) || f.username
-    const key    = `${f.username}::${folder}`
+    var key    = `${f.username}::${folder}`
     if (!byAlbum.has(key)) byAlbum.set(key, { folder, username: f.username, files: [] })
     byAlbum.get(key).files.push(f)
   }
@@ -7410,7 +7410,7 @@ function _renderCompletedTab(files, container) {
   const totalAlbums = allGroups.length
   const totalTracks = files.length
   const totalBytes  = files.reduce((s, f) => s + (f.size || 0), 0)
-  const statsHtml = `<div class="dl2-completed-stats">
+  var statsHtml = `<div class="dl2-completed-stats">
     <span>${totalAlbums} album${totalAlbums !== 1 ? 's' : ''}</span>
     <span class="dl2-cstat-dot">·</span>
     <span>${totalTracks} track${totalTracks !== 1 ? 's' : ''}</span>
@@ -7675,7 +7675,7 @@ function _renderFailedTab(files, container) {
 
   // Stats bar
   const totalBytes = files.reduce((s, f) => s + (f.size || 0), 0)
-  let html = `<div class="dl2-completed-stats">
+  var html = `<div class="dl2-completed-stats">
     <span>${groups.length} album${groups.length !== 1 ? 's' : ''}</span>
     <span class="dl2-cstat-dot">·</span>
     <span>${files.length} file${files.length !== 1 ? 's' : ''}</span>
@@ -9411,7 +9411,7 @@ function setupListeners() {
     // ── Skip all DOM updates when app is hidden ───────────────────────────
     if (!_appVisible) return
 
-    const pct = `${ratio * 100}%`
+    var pct = `${ratio * 100}%`
     if (_dom.fill)  _dom.fill.style.width = pct
     if (_dom.thumb) _dom.thumb.style.left = pct
     if (_dom.timeCur) _dom.timeCur.textContent = timeDisplay === 'total' ? fmtDur(_albumTotalDuration()) : timeDisplay === 'remaining' ? fmtDur(audio.duration - ct) : fmtDur(ct)
