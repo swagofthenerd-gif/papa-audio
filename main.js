@@ -10,6 +10,16 @@ const { linearToMpv } = require('./volume-map')
 const ytSearch = require('./youtube-search')
 const ytDownloader = require('./youtube-download')
 const lyrics = require('./lyrics')
+
+function withTimeout(promise, ms, label) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), ms)
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`${label || 'Request'} timed out`)), ms)),
+  ]).finally(() => clearTimeout(timer))
+}
+
 let natUpnp; try { natUpnp = require('nat-upnp') } catch (_) {}
 
 // Strip the automation flag so Cloudflare/bot-checks don't see navigator.webdriver = true
@@ -232,13 +242,14 @@ async function slskdFetch(method, endpoint, body) {
   if (!slskdToken || Date.now() > slskdTokenExpiry) await slskdAcquireToken()
   const headers = { 'Content-Type': 'application/json' }
   if (slskdToken) headers['Authorization'] = `Bearer ${slskdToken}`
-  const opts = { method, headers, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) }
+  const opts = { method, headers, signal: AbortSignal.timeout(15000), ...(body !== undefined ? { body: JSON.stringify(body) } : {}) }
   let res = await fetch(`${SLSKD_BASE}${endpoint}`, opts)
   if (res.status === 401) {
     slskdToken = null
     await slskdAcquireToken()
     if (slskdToken) headers['Authorization'] = `Bearer ${slskdToken}`
-    res = await fetch(`${SLSKD_BASE}${endpoint}`, opts)
+    const retryOpts = { ...opts, signal: AbortSignal.timeout(15000) }
+    res = await fetch(`${SLSKD_BASE}${endpoint}`, retryOpts)
   }
   if (!res.ok && res.status !== 204) throw new Error(`slskd ${res.status}`)
   if (res.status === 204 || res.headers.get('content-length') === '0') return null
@@ -340,6 +351,29 @@ function pollCmd() {
 app.whenReady().then(() => {
   artworkDir = path.join(USER_DATA, 'artwork')
   fs.mkdirSync(artworkDir, { recursive: true })
+
+  const LOG_DIR = path.join(app.getPath('userData'), 'logs')
+  fs.mkdirSync(LOG_DIR, { recursive: true })
+  function logToFile(level, ...args) {
+    const ts = new Date().toISOString()
+    const msg = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ')
+    const line = `[${ts}] [${level}] ${msg}\n`
+    const today = new Date().toISOString().slice(0, 10)
+    const f = path.join(LOG_DIR, `papa-${today}.log`)
+    try { fs.appendFileSync(f, line) } catch (_) {}
+  }
+  const _origError = console.error
+  console.error = (...args) => { _origError(...args); logToFile('ERROR', ...args) }
+  const _origLog = console.log
+  console.log = (...args) => { _origLog(...args); logToFile('INFO', ...args) }
+  try {
+    const files = fs.readdirSync(LOG_DIR)
+    const cutoff = Date.now() - 7 * 86400000
+    for (const f of files) {
+      const p = path.join(LOG_DIR, f)
+      if (fs.statSync(p).mtimeMs < cutoff) fs.unlinkSync(p)
+    }
+  } catch (_) {}
   try { fs.writeFileSync(CMD_PATH, '') } catch (_) {}
   setInterval(pollCmd, 200)
   // YT client: session-data cache + cookie-auth restore. Leftover OAuth
