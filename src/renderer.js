@@ -672,7 +672,7 @@ function renderHome() {
       <div class="artist-card-meta">Artist · YT</div>
     </div>`).join('')
 
-  const followingHTML = (state.followedArtists.length || state.ytFollowed.length) ? `
+  const followingHTML = (state.followedArtists.length > 0 || state.ytFollowed.length > 0) ? `
     <div class="section-header">
       <span class="section-title">Following</span>
     </div>
