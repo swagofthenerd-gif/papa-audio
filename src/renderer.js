@@ -4653,6 +4653,7 @@ function showNowPlayingModal() {
   state.modalOpen = true
   const modal = document.getElementById('np-modal')
   modal.style.display = 'flex'
+  modal.classList.remove('art-expanded')
   if (!modal._autoHideWired) {
     modal._autoHideWired = true
     modal.addEventListener('mousemove', resetNpHide)
@@ -9801,6 +9802,25 @@ function setupListeners() {
 
   // Now playing modal controls
   document.getElementById('np-modal-close')?.addEventListener('click', hideNowPlayingModal)
+  document.getElementById('np-modal-full-art')?.addEventListener('click', function() {
+    var modal = document.getElementById('np-modal')
+    modal.classList.toggle('art-expanded')
+    var icon = this.querySelector('svg')
+    if (icon) icon.innerHTML = modal.classList.contains('art-expanded')
+      ? '<path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"/>'
+      : '<path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/>'
+  })
+  document.getElementById('np-modal-art-box')?.addEventListener('click', function(e) {
+    var modal = document.getElementById('np-modal')
+    if (modal.classList.contains('art-expanded')) {
+      modal.classList.remove('art-expanded')
+      var btn = document.getElementById('np-modal-full-art')
+      if (btn) {
+        var icon = btn.querySelector('svg')
+        if (icon) icon.innerHTML = '<path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/>'
+      }
+    }
+  })
   document.getElementById('np-modal-play')?.addEventListener('click', togglePlay)
   document.getElementById('np-modal-prev')?.addEventListener('click', playPrev)
   document.getElementById('np-modal-next')?.addEventListener('click', playNext)
