@@ -4,6 +4,7 @@ const { EventEmitter } = require('events')
 const os = require('os')
 const path = require('path')
 const { MpvIpcClient } = require('./mpv-ipc')
+const { buildAfGraph, defaultSettings } = require('./eq')
 
 const POSITION_THROTTLE_MS = 250
 const RESPAWN_WINDOW_MS = 60000
@@ -30,6 +31,7 @@ class MpvEngine extends EventEmitter {
       replaygain: 'no',
       gapless: true,
       audioChannels: 'auto',
+      eq: defaultSettings(),
       ...opts.config,
     }
     this._spawnFn = opts.spawnFn || spawn
@@ -61,6 +63,10 @@ class MpvEngine extends EventEmitter {
     if (this.config.outputMode === 'exclusive' && this.config.alsaDevice) {
       a.push(`--audio-device=${this.config.alsaDevice}`, '--audio-exclusive=yes')
     }
+    // Passing the EQ at spawn time keeps it applied across the respawn and
+    // restart paths, which rebuild the process rather than reusing the socket.
+    const af = buildAfGraph(this.config.eq)
+    if (af) a.push(`--af=${af}`)
     return a
   }
 
@@ -153,6 +159,13 @@ class MpvEngine extends EventEmitter {
   async setChannels(layout) {
     this.config.audioChannels = layout
     await this.client.command('set_property', 'audio-channels', channelsValue(layout))
+  }
+
+  // Applies live to the running stream — mpv rebuilds the filter chain without
+  // dropping the current file, so there is no gap when the user moves a slider.
+  async setEq(settings) {
+    this.config.eq = settings
+    await this.client.command('set_property', 'af', buildAfGraph(settings))
   }
 
   async listAudioDevices() {

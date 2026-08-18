@@ -5,6 +5,7 @@ const crypto = require('crypto')
 const https = require('https')
 const { spawn, execSync, execFileSync, execFile } = require('child_process')
 const { MpvEngine } = require('./mpv-engine')
+const { defaultSettings: eqDefaults, BANDS: EQ_BANDS, GAIN_LIMIT: EQ_GAIN_LIMIT, PRESETS: EQ_PRESETS, presetSettings } = require('./eq')
 const { MpvCrossfade } = require('./mpv-crossfade')
 const { linearToMpv } = require('./volume-map')
 const ytSearch = require('./youtube-search')
@@ -682,6 +683,7 @@ function getPlayerSettings() {
     outputMode: 'default', alsaDevice: null,
     mode: 'gapless', crossfadeSecs: 4, replaygain: 'no',
     channels: 'auto', boost: false,
+    eq: eqDefaults(),
     ...store.get('playerSettings', {}),
   }
 }
@@ -699,6 +701,7 @@ function buildPlayer(cfg) {
     outputMode: cfg.outputMode, alsaDevice: cfg.alsaDevice,
     replaygain: cfg.replaygain, gapless: cfg.mode === 'gapless',
     audioChannels: cfg.channels,
+    eq: cfg.eq,
   }
   const p = cfg.mode === 'crossfade'
     ? new MpvCrossfade({ crossfadeSecs: cfg.crossfadeSecs, engineOpts: { config: engineConfig } })
@@ -791,6 +794,11 @@ ipcMain.handle('player-recheck', async () => {
   return { available: mpvAvailable && !!player }
 })
 ipcMain.handle('player-get-config', () => getPlayerSettings())
+// The preload is sandboxed and cannot require eq.js directly, so the band and
+// preset tables are served from here — one source of truth, no duplicated table.
+ipcMain.handle('eq-info', () => ({ bands: EQ_BANDS, presets: EQ_PRESETS, limit: EQ_GAIN_LIMIT }))
+ipcMain.handle('eq-preset', (_, name) => presetSettings(name))
+
 ipcMain.handle('player-list-devices', async () => {
   if (!player) return []
   try { return await player.listAudioDevices() } catch { return [] }
@@ -854,6 +862,7 @@ ipcMain.handle('player-set-config', async (_, partial) => {
     } else {
       if ('replaygain' in partial) await player.setReplaygain(cfg.replaygain)
       if ('channels' in partial) await player.setChannels(cfg.channels)
+      if ('eq' in partial) await player.setEq(cfg.eq)
       if ('boost' in partial && lastLinearVolume != null) {
         await player.setVolume(linearToMpv(lastLinearVolume, cfg.boost))
       }

@@ -5052,3 +5052,51 @@ code { font-family:var(--font-mono,monospace);background:var(--bg4);padding:1px 
 .album-card-art-wrap { overflow: hidden; }
 .album-card-art { transition: transform .3s cubic-bezier(0.16, 1, 0.3, 1); }
 .album-card:hover .album-card-art { transform: scale(1.08); }
+
+/* Equalizer settings panel */
+.eq-bands {
+  display: flex;
+  justify-content: space-between;
+  gap: 2px;
+  padding: 12px 2px 4px;
+}
+.eq-band {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+/* Vertical range inputs need an explicit height; writing-mode is the modern
+   way, with the appearance fallback for older Chromium in packaged builds. */
+.eq-band input[type=range] {
+  writing-mode: vertical-lr;
+  direction: rtl;
+  -webkit-appearance: slider-vertical;
+  width: 18px;
+  height: 96px;
+  padding: 0;
+  accent-color: var(--accent);
+}
+.eq-band-freq {
+  font-size: 9px;
+  opacity: .55;
+  white-space: nowrap;
+}
+.eq-band-gain {
+  font-size: 9px;
+  opacity: .8;
+  font-variant-numeric: tabular-nums;
+  min-height: 12px;
+}
+#eq-settings.eq-off .eq-bands,
+#eq-settings.eq-off #eq-preamp,
+#eq-settings.eq-off #eq-preset {
+  opacity: .4;
+  pointer-events: none;
+}
+.eq-reset {
+  width: 100%;
+  margin-top: 8px;
+}

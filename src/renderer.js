@@ -6673,6 +6673,84 @@ async function initPlaybackSettings() {
   $('pb-replaygain').onchange = e => apply({ replaygain: e.target.value })
   $('pb-channels').onchange = e => apply({ channels: e.target.value })
   $('pb-boost').onchange = e => apply({ boost: e.target.checked })
+
+  await _initEqSettings(cfg, apply)
+}
+
+// Ten-band EQ. The sliders write straight through to mpv's filter chain, so
+// dragging one is audible immediately — no apply button, no reload.
+async function _initEqSettings(cfg, apply) {
+  const $ = id => document.getElementById(id)
+  const { bands, presets, limit } = await window.api.eqInfo()
+  const group = $('eq-settings')
+  const bandsEl = $('eq-bands')
+  const fmtHz = hz => (hz >= 1000 ? `${hz / 1000}k` : String(hz))
+
+  let eq = {
+    enabled: false,
+    preamp: 0,
+    gains: new Array(bands.length).fill(0),
+    ...(cfg.eq || {}),
+  }
+  // A stored curve from an older build may be short; pad rather than crash.
+  eq.gains = bands.map((_, i) => Number(eq.gains?.[i]) || 0)
+
+  bandsEl.innerHTML = bands.map((hz, i) => `
+    <div class="eq-band">
+      <span class="eq-band-gain" id="eq-gain-label-${i}"></span>
+      <input type="range" id="eq-gain-${i}" min="${-limit}" max="${limit}" step="1" value="${eq.gains[i]}">
+      <span class="eq-band-freq">${fmtHz(hz)}</span>
+    </div>`).join('')
+
+  const paint = () => {
+    $('eq-enabled').checked = eq.enabled
+    group.classList.toggle('eq-off', !eq.enabled)
+    $('eq-preamp').value = eq.preamp
+    $('eq-preamp-label').textContent = `${eq.preamp > 0 ? '+' : ''}${eq.preamp} dB`
+    eq.gains.forEach((g, i) => {
+      $(`eq-gain-${i}`).value = g
+      $(`eq-gain-label-${i}`).textContent = g === 0 ? '' : `${g > 0 ? '+' : ''}${g}`
+    })
+    // Any hand-edit stops matching a named preset; say so rather than lie.
+    const match = Object.keys(presets).find(n =>
+      presets[n].every((g, i) => g === eq.gains[i]))
+    $('eq-preset').value = match || 'custom'
+  }
+
+  const push = () => { state._playerSettings = { ...state._playerSettings, eq }; apply({ eq }) }
+
+  $('eq-enabled').onchange = e => { eq.enabled = e.target.checked; paint(); push() }
+  $('eq-preamp').oninput = e => {
+    eq.preamp = Number(e.target.value)
+    $('eq-preamp-label').textContent = `${eq.preamp > 0 ? '+' : ''}${eq.preamp} dB`
+  }
+  $('eq-preamp').onchange = () => push()
+
+  bands.forEach((_, i) => {
+    const slider = $(`eq-gain-${i}`)
+    slider.oninput = e => {
+      eq.gains[i] = Number(e.target.value)
+      $(`eq-gain-label-${i}`).textContent = eq.gains[i] === 0 ? '' : `${eq.gains[i] > 0 ? '+' : ''}${eq.gains[i]}`
+      $('eq-preset').value = 'custom'
+    }
+    slider.onchange = () => { paint(); push() }
+  })
+
+  $('eq-preset').onchange = async e => {
+    const preset = await window.api.eqPreset(e.target.value)
+    if (!preset) return
+    eq = { ...preset, enabled: true }
+    paint(); push()
+    showSnackbar(`EQ preset: ${e.target.selectedOptions[0].textContent}`)
+  }
+
+  $('eq-reset').onclick = () => {
+    eq = { enabled: eq.enabled, preamp: 0, gains: bands.map(() => 0) }
+    paint(); push()
+    showSnackbar('Equalizer reset to flat')
+  }
+
+  paint()
 }
 
 function _updateProviderRows(provider) {

@@ -246,3 +246,54 @@ test('engine exposes core public API and config', () => {
   assert.ok(Array.isArray(eng._args('/tmp/x.sock')))
   assert.ok(eng instanceof MpvEngine)
 })
+
+test('setEq pushes an af property to the running process', async () => {
+  const f = await fakeMpv()
+  const eng = new MpvEngine({ spawnFn: f.spawnFn, socketPath: f.sock })
+  await eng.start()
+  const gains = new Array(10).fill(0)
+  gains[0] = 6
+  await eng.setEq({ enabled: true, preamp: -3, gains })
+  const set = f.commands.filter(c => c[0] === 'set_property' && c[1] === 'af')
+  assert.strictEqual(set.length, 1)
+  assert.strictEqual(set[0][2], 'lavfi=[volume=volume=-3dB,equalizer=f=31:t=q:w=1:g=6]')
+  eng.stop(); f.close()
+})
+
+test('disabling the EQ clears the af chain rather than flattening it', async () => {
+  const f = await fakeMpv()
+  const eng = new MpvEngine({ spawnFn: f.spawnFn, socketPath: f.sock })
+  await eng.start()
+  await eng.setEq({ enabled: false, preamp: 0, gains: new Array(10).fill(6) })
+  const set = f.commands.filter(c => c[0] === 'set_property' && c[1] === 'af')
+  assert.strictEqual(set[0][2], '')
+  eng.stop(); f.close()
+})
+
+test('EQ config is passed as --af so it survives a respawn', async () => {
+  const f = await fakeMpv()
+  const spawned = []
+  const gains = new Array(10).fill(0)
+  gains[9] = -5
+  const eng = new MpvEngine({
+    spawnFn: (bin, args) => { spawned.push(args); return f.proc },
+    socketPath: f.sock,
+    config: { eq: { enabled: true, preamp: 0, gains } },
+  })
+  await eng.start()
+  const af = spawned[0].find(a => a.startsWith('--af='))
+  assert.strictEqual(af, '--af=lavfi=[equalizer=f=16000:t=q:w=1:g=-5]')
+  eng.stop(); f.close()
+})
+
+test('a flat EQ adds no --af argument at all', async () => {
+  const f = await fakeMpv()
+  const spawned = []
+  const eng = new MpvEngine({
+    spawnFn: (bin, args) => { spawned.push(args); return f.proc },
+    socketPath: f.sock,
+  })
+  await eng.start()
+  assert.ok(!spawned[0].some(a => a.startsWith('--af=')))
+  eng.stop(); f.close()
+})
