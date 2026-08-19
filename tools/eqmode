@@ -34,7 +34,22 @@ if [ $# -eq 0 ]; then
   done < <(list_sinks)
   echo
   echo "Active: ${cur:-none}"
+  echo "  ('eqmode off' bypasses the EQ entirely)"
   [ "${cur:-}" = "${cur#papa_eq_}" ] && echo "  (not an EQ preset — audio is bypassing the EQ)"
+  exit 0
+fi
+
+# "off" bypasses the EQ entirely — straight to the 5.1 hardware sink. The
+# correction and bass management go away with it, so the satellites get full
+# range again.
+if [ "$1" = "off" ] || [ "$1" = "bypass" ]; then
+  HW=$(pactl list sinks short 2>/dev/null | awk '/analog-surround-51/{print $2; exit}')
+  [ -z "$HW" ] && { echo "5.1 hardware sink not found" >&2; exit 1; }
+  pactl set-default-sink "$HW" >/dev/null 2>&1
+  for i in $(pactl list sink-inputs short 2>/dev/null | cut -f1); do
+    pactl move-sink-input "$i" "$HW" >/dev/null 2>&1
+  done
+  echo "EQ: OFF — direct to hardware (no correction, no bass management)"
   exit 0
 fi
 

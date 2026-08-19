@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Enable or disable the Papa EQ filter chains entirely.
+#
+# Simply changing the default sink is not enough: WirePlumber keeps a stored
+# list of preferred sinks and re-selects a filter chain from it, so the EQ
+# creeps back. Unloading the chains removes the choice altogether.
+set -uo pipefail
+CONF="$HOME/.config/pipewire/pipewire.conf.d/60-papa-eq-51.conf"
+OFF="$CONF.disabled"
+
+reload() {
+  systemctl --user restart pipewire pipewire-pulse wireplumber >/dev/null 2>&1
+  sleep 8
+  systemctl --user restart papa-audio-51.service >/dev/null 2>&1
+  sleep 10
+}
+
+case "${1:-status}" in
+  off)
+    [ -f "$CONF" ] && mv "$CONF" "$OFF"
+    reload
+    pactl set-card-profile alsa_card.pci-0000_2b_00.4 \
+      output:analog-surround-51+input:analog-stereo >/dev/null 2>&1
+    echo "Papa EQ OFF — audio goes straight to the 5.1 output."
+    echo "  No correction, no bass management, no upmix shaping."
+    ;;
+  on)
+    [ -f "$OFF" ] && mv "$OFF" "$CONF"
+    reload
+    "$HOME/.local/bin/papa-eq-relink" >/dev/null 2>&1
+    echo "Papa EQ ON — $(pactl info | awk -F': ' '/Default Sink/{print $2}')"
+    ;;
+  *)
+    if [ -f "$CONF" ]; then echo "Papa EQ is ON  (current: $(pactl info | awk -F': ' '/Default Sink/{print $2}'))"
+    else echo "Papa EQ is OFF"; fi
+    ;;
+esac

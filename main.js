@@ -1446,6 +1446,9 @@ function buildAlbums(tracks) {
     a.tracks.sort((x, y) => x.discNumber - y.discNumber || x.trackNumber - y.trackNumber)
     a.maxBitsPerSample = Math.max(0, ...a.tracks.map(t => t.bitsPerSample || 0))
     a.maxSampleRate    = Math.max(0, ...a.tracks.map(t => t.sampleRate    || 0))
+    // Highest channel count on the album, so multichannel releases can be
+    // spotted while browsing rather than only inside the track list.
+    a.maxChannels      = Math.max(0, ...a.tracks.map(t => t.channels      || 0))
     a.isHiRes  = a.maxBitsPerSample >= 24 && a.maxSampleRate > 48000
     const genreCounts = {}
     for (const t of a.tracks) { if (t.genre) genreCounts[t.genre] = (genreCounts[t.genre]||0)+1 }

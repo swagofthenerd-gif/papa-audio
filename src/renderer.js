@@ -1453,7 +1453,7 @@ function renderAlbum(albumId) {
           ? '<div class="playing-bars"><span></span><span></span><span></span></div>'
           : (t.trackNumber || i + 1)}</span>
         <div class="track-info">
-          <div class="track-title">${esc(t.title)}${t.explicit ? '<span class="track-explicit">E</span>' : ''}</div>
+          <div class="track-title">${esc(t.title)}${t.explicit ? '<span class="track-explicit">E</span>' : ''}${surroundBadge(t.channels)}</div>
           <div class="track-artist" data-artist="${esc(t.artist || album.artist)}">${esc(t.artist || album.artist)}${t.bpm ? `<span class="track-bpm">${t.bpm} BPM</span>` : ''}</div>
         </div>
         ${plays > 0 ? `<span class="track-plays">${plays}</span>` : '<span class="track-plays"></span>'}
@@ -1485,6 +1485,7 @@ function renderAlbum(albumId) {
           <span class="hero-artist clickable-meta" data-artist="${esc(album.artist)}">${esc(album.artist)}</span>
           &bull; <span class="hero-year clickable-meta">${album.year || ''}</span> &bull; ${album.tracks.length} songs, ${fmtTime(totalDur)}
           ${album.isHiRes ? `&bull; <span class="hero-hires-badge">${fmtSpec(album.maxBitsPerSample, album.maxSampleRate)}</span>` : ''}
+          ${surroundLabel(album.maxChannels) ? `&bull; ${surroundBadge(album.maxChannels, 'hero-surround')}` : ''}
           ${album.genre ? `&bull; <span class="genre-badge">${esc(album.genre)}</span>` : ''}
           ${drBadge(computeAlbumDR(album)) ? `&bull; ${drBadge(computeAlbumDR(album))}` : ''}
         </div>
@@ -3700,7 +3701,7 @@ function renderLikedSongs() {
           ? '<div class="playing-bars"><span></span><span></span><span></span></div>'
           : (i + 1)}</span>
         <div class="track-info">
-          <div class="track-title">${esc(t.title)}${t.explicit ? '<span class="track-explicit">E</span>' : ''}</div>
+          <div class="track-title">${esc(t.title)}${t.explicit ? '<span class="track-explicit">E</span>' : ''}${surroundBadge(t.channels)}</div>
           <div class="track-artist" data-artist="${esc(t.albumArtist || t.artist || '')}">${esc(t.albumArtist || t.artist || '')}${t.bpm ? `<span class="track-bpm">${t.bpm} BPM</span>` : ''}</div>
         </div>
         ${plays > 0 ? `<span class="track-plays">${plays}</span>` : '<span class="track-plays"></span>'}
@@ -5758,6 +5759,7 @@ function albumCard(album, idx, sortMode, query) {
       </div>
       ${album.isYt ? '<span class="yt-badge yt-card-badge">YT</span>' : ''}
       ${hiResTag}
+      ${surroundBadge(album.maxChannels, 'card-surround')}
       ${newBadge}
       ${drBadge(computeAlbumDR(album))}
       <button class="album-card-play" data-play="${album.id}">
@@ -5816,6 +5818,23 @@ function highlightMatch(text, query) {
   var regex = new RegExp('(' + escapedQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi')
   return escaped.replace(regex, '<mark>$1</mark>')
 }
+// Multichannel label for a track or album. Stereo and mono get nothing —
+// a badge on almost every row would carry no information.
+function surroundLabel(channels) {
+  const c = Number(channels) || 0
+  if (c >= 8) return '7.1'
+  if (c === 7) return '6.1'
+  if (c >= 6) return '5.1'
+  if (c === 5) return '5.0'
+  if (c === 4) return '4.0'
+  return ''
+}
+
+function surroundBadge(channels, cls) {
+  const label = surroundLabel(channels)
+  return label ? `<span class="surround-badge${cls ? ' ' + cls : ''}" title="${label} multichannel audio">${label}</span>` : ''
+}
+
 function fmtDur(sec) {
   if (!sec) return '—'
   const m = Math.floor(sec / 60), s = Math.floor(sec % 60)
