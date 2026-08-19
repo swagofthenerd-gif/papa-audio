@@ -30,8 +30,18 @@ BAND_NAMES = {
 }
 
 
-def sh(cmd):
-    return subprocess.run(cmd, shell=True, capture_output=True, text=True).stdout.strip()
+def sh(cmd, timeout=2):
+    """Run a shell command, never blocking the GUI thread indefinitely.
+
+    These calls happen on a repeating timer in the UI thread. pactl can hang
+    while PipeWire is restarting, and without a timeout that freezes the whole
+    window — it stops repainting and will not even close.
+    """
+    try:
+        return subprocess.run(cmd, shell=True, capture_output=True,
+                              text=True, timeout=timeout).stdout.strip()
+    except (subprocess.TimeoutExpired, OSError):
+        return ''
 
 
 def load_store():
@@ -42,6 +52,13 @@ def load_store():
 def save_store(d):
     with open(STORE, 'w') as fh:
         json.dump(d, fh, indent=2)
+
+
+def _run(args, timeout=5):
+    try:
+        return subprocess.run(args, capture_output=True, timeout=timeout).returncode
+    except (subprocess.TimeoutExpired, OSError):
+        return 1
 
 
 class PapaEQ(QWidget):
@@ -55,6 +72,10 @@ class PapaEQ(QWidget):
         self._build()
         self._reload_list()
         QTimer(self, timeout=self._refresh_active, interval=3000).start()
+
+    def closeEvent(self, e):
+        QApplication.quit()
+        e.accept()
 
     # ---------- ui ----------
     def _build(self):
@@ -201,12 +222,12 @@ class PapaEQ(QWidget):
         if not p:
             return
         sink = f"papa_eq_{p['key']}{'51' if self.native51.isChecked() else ''}"
-        if subprocess.run(['pactl', 'set-default-sink', sink], capture_output=True).returncode != 0:
+        if _run(['pactl', 'set-default-sink', sink]) != 0:
             QMessageBox.warning(self, 'Papa EQ',
                                 f"{sink} does not exist yet.\nSave changes first to build it.")
             return
         for i in sh("pactl list sink-inputs short | cut -f1").split():
-            subprocess.run(['pactl', 'move-sink-input', i, sink], capture_output=True)
+            _run(['pactl', 'move-sink-input', i, sink])
         self._refresh_active()
 
     def _reset(self):
