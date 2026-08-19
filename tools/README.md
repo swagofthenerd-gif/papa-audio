@@ -49,6 +49,31 @@ rebuilds the filter graph and reloads PipeWire, about two seconds of silence.
 Presets live in `~/.config/papa-eq/presets.json`, shared with the generator so
 the two cannot drift.
 
+## Bass management and the LFE boost
+
+Satellites are high-passed at `SAT_CROSSOVER_HZ` (100) so they stop attempting
+bass they reproduce badly, leaving it all to the subwoofer — what an AV
+receiver does. Without it, the upmix COPIES low frequencies into LFE without
+removing them from the fronts, so both play bass and it sounds diffuse.
+
+A synthesised LFE arrives about 10 dB below where the standard puts it: real
+5.1 records LFE 10 dB down and expects the decoder to add it back, and the
+upmix does not. `LFE_BOOST_DB` restores it.
+
+That boost must NOT apply to material that already has a real LFE, and the
+filter chain cannot tell the two apart — by the time audio arrives, both are
+just six channels. So every preset is generated twice: `papa_eq_<name>` boosts
+LFE (for upmixed stereo) and `papa_eq_<name>51` does not (for native 5.1).
+The GUI has a "Source is native 5.1" toggle; `eqmode` takes the `51` suffix.
+
+## Player channel setting
+
+Set the player to `auto`, not a fixed layout. mpv then passes the source
+through unchanged: stereo stays 2ch so PipeWire upmixes it, and 5.1 stays 6ch
+so the discrete channels survive. Forcing `stereo` downmixes real 5.1 and
+destroys it; forcing `5.1` makes mpv pad stereo with silent centre/LFE/rears,
+which suppresses the upmix entirely.
+
 ## Stereo upmixing
 
 Stereo sources have nothing in the centre, rears or LFE. PipeWire can derive

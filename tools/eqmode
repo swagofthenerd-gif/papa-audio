@@ -12,13 +12,25 @@ list_sinks() { pactl list sinks short 2>/dev/null | awk '{print $2}' | grep '^pa
 desc_of() { pactl list sinks 2>/dev/null | grep -A3 "Name: $1\$" | grep -m1 "Description:" | sed 's/.*Description: //'; }
 current() { pactl info 2>/dev/null | awk -F': ' '/Default Sink/{print $2}'; }
 
+# Each preset exists twice. The plain name boosts the LFE, because an upmix
+# synthesises that channel about 10 dB below where the standard puts it. The
+# "51" variant leaves LFE alone, for material that already has a real one.
 if [ $# -eq 0 ]; then
-  echo "Presets:"
   cur=$(current)
+  echo "Presets — for stereo sources (LFE boosted for the upmix):"
   while read -r s; do
     [ -z "$s" ] && continue
+    case "$s" in *51) continue ;; esac
     mark="  "; [ "$s" = "$cur" ] && mark="* "
-    printf "%s%-16s %s\n" "$mark" "${s#papa_eq_}" "$(desc_of "$s")"
+    printf "%s%-14s %s\n" "$mark" "${s#papa_eq_}" "$(desc_of "$s")"
+  done < <(list_sinks)
+  echo
+  echo "Same presets for native 5.1 sources (LFE untouched) — add 51:"
+  while read -r s; do
+    [ -z "$s" ] && continue
+    case "$s" in *51) ;; *) continue ;; esac
+    mark="  "; [ "$s" = "$cur" ] && mark="* "
+    printf "%s%-14s\n" "$mark" "${s#papa_eq_}"
   done < <(list_sinks)
   echo
   echo "Active: ${cur:-none}"

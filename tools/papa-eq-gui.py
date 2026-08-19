@@ -13,7 +13,7 @@ import json, os, subprocess, sys
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QListWidget, QListWidgetItem, QSlider, QPushButton,
-                             QMessageBox, QInputDialog, QGroupBox, QFrame)
+                             QMessageBox, QInputDialog, QGroupBox, QFrame, QCheckBox)
 
 HOME = os.path.expanduser('~')
 STORE = os.path.join(HOME, '.config/papa-eq/presets.json')
@@ -58,6 +58,13 @@ class PapaEQ(QWidget):
         self.list.currentRowChanged.connect(self._on_select)
         self.list.itemDoubleClicked.connect(lambda _: self._activate())
         left.addWidget(self.list, 1)
+        # An upmix synthesises LFE about 10 dB low, so the default sinks boost
+        # it. Material that already carries a real LFE must not get that.
+        self.native51 = QCheckBox('Source is native 5.1\n(don\'t boost LFE)')
+        self.native51.setToolTip('Tick for real 5.1 recordings and films.\n'
+                                 'Leave unticked for stereo, which gets upmixed.')
+        self.native51.stateChanged.connect(lambda _: self._activate())
+        left.addWidget(self.native51)
         b = QPushButton('Activate');  b.clicked.connect(self._activate);  left.addWidget(b)
         b = QPushButton('New…');      b.clicked.connect(self._new);       left.addWidget(b)
         self.del_btn = QPushButton('Delete'); self.del_btn.clicked.connect(self._delete); left.addWidget(self.del_btn)
@@ -146,7 +153,9 @@ class PapaEQ(QWidget):
     def _refresh_active(self):
         cur = sh("pactl info | awk -F': ' '/Default Sink/{print $2}'")
         if cur.startswith('papa_eq_'):
-            self.status.setText(f'Active: <b>{cur[len("papa_eq_"):]}</b>')
+            name = cur[len('papa_eq_'):]
+            tag = ' <i>(native 5.1)</i>' if name.endswith('51') else ' <i>(upmixed)</i>'
+            self.status.setText(f'Active: <b>{name}</b>{tag}')
         else:
             self.status.setText(f'Active: {cur or "none"} — <b>not an EQ preset</b>')
 
@@ -155,7 +164,7 @@ class PapaEQ(QWidget):
         p = self._current()
         if not p:
             return
-        sink = f"papa_eq_{p['key']}"
+        sink = f"papa_eq_{p['key']}{'51' if self.native51.isChecked() else ''}"
         if subprocess.run(['pactl', 'set-default-sink', sink], capture_output=True).returncode != 0:
             QMessageBox.warning(self, 'Papa EQ',
                                 f"{sink} does not exist yet.\nSave changes first to build it.")
