@@ -21,6 +21,14 @@ CAL = os.path.join(HOME, '.cache/speakercal.json')
 GEN = os.path.join(HOME, 'flac-player/tools/build-pipewire-presets.js')
 LIMIT = 12
 
+# Frequencies mean nothing without knowing what they do to the sound. These
+# are the words people actually use to describe the problem they are trying
+# to fix, in the order the sliders appear.
+BAND_NAMES = {
+    31: 'Deep bass', 62: 'Bass', 125: 'Punch', 250: 'Warmth', 500: 'Body',
+    1000: 'Mids', 2000: 'Presence', 4000: 'Clarity', 8000: 'Detail', 16000: 'Air',
+}
+
 
 def sh(cmd):
     return subprocess.run(cmd, shell=True, capture_output=True, text=True).stdout.strip()
@@ -83,12 +91,40 @@ class PapaEQ(QWidget):
             s = QSlider(Qt.Orientation.Vertical)
             s.setRange(-LIMIT, LIMIT); s.setValue(0); s.setMinimumHeight(150)
             s.valueChanged.connect(self._on_slide)
+            name = QLabel(BAND_NAMES.get(hz, ''))
+            name.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+            name.setStyleSheet('font-size: 10px;')
+            name.setWordWrap(True)
             fl = QLabel(f'{hz//1000}k' if hz >= 1000 else str(hz))
             fl.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-            col.addWidget(vl); col.addWidget(s, 1); col.addWidget(fl)
+            fl.setStyleSheet('font-size: 9px; color: palette(mid);')
+            col.addWidget(vl); col.addWidget(s, 1); col.addWidget(name); col.addWidget(fl)
             bl.addLayout(col)
             self.sliders.append(s); self.value_labels.append(vl)
         right.addWidget(box, 1)
+
+        sub = QGroupBox('Subwoofer')
+        sl = QHBoxLayout(sub)
+        st = self.store.setdefault('settings', {})
+        sl.addWidget(QLabel('Level'))
+        self.lfe = QSlider(Qt.Orientation.Horizontal)
+        self.lfe.setRange(-6, 16); self.lfe.setValue(int(st.get('lfeBoost', 0)))
+        self.lfe_lbl = QLabel(f"{self.lfe.value():+d} dB")
+        self.lfe.valueChanged.connect(
+            lambda v: (self.lfe_lbl.setText(f'{v:+d} dB'), self.save_btn.setEnabled(True)))
+        sl.addWidget(self.lfe, 1); sl.addWidget(self.lfe_lbl)
+        sl.addSpacing(12)
+        sl.addWidget(QLabel('Hand over to sub below'))
+        self.xover = QSlider(Qt.Orientation.Horizontal)
+        self.xover.setRange(60, 160); self.xover.setValue(int(st.get('crossover', 100)))
+        self.xover_lbl = QLabel(f'{self.xover.value()} Hz')
+        self.xover.valueChanged.connect(
+            lambda v: (self.xover_lbl.setText(f'{v} Hz'), self.save_btn.setEnabled(True)))
+        sl.addWidget(self.xover, 1); sl.addWidget(self.xover_lbl)
+        sub.setToolTip('Level: how loud the subwoofer is.\n'
+                       'Hand over: below this, only the sub plays — raise it if the small\n'
+                       'speakers sound strained, lower it if bass feels detached.')
+        right.addWidget(sub)
 
         self.corr = QLabel(); self.corr.setWordWrap(True)
         self.corr.setFrameShape(QFrame.Shape.StyledPanel)
@@ -208,6 +244,8 @@ class PapaEQ(QWidget):
         if not p:
             return
         p['gains'] = [s.value() for s in self.sliders]
+        self.store.setdefault('settings', {})['lfeBoost'] = self.lfe.value()
+        self.store['settings']['crossover'] = self.xover.value()
         save_store(self.store)
         self._regenerate()
         self.dirty = False

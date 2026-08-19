@@ -1,11 +1,324 @@
 {
-  "bands": [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000],
+  "bands": [
+    31,
+    62,
+    125,
+    250,
+    500,
+    1000,
+    2000,
+    4000,
+    8000,
+    16000
+  ],
   "presets": [
-    { "key": "flat",   "label": "Flat (correction only)", "gains": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0] },
-    { "key": "music",  "label": "Music (Marshall)",       "gains": [0, 5, 3, 0, -1, 0, 3, 3, 1, -1] },
-    { "key": "warm",   "label": "Warm",                   "gains": [0, 4, 4, 1, 0, 0, 0, -1, -2, -3] },
-    { "key": "cinema", "label": "Cinema",                 "gains": [0, 3, 2, -1, -2, 0, 2, 2, 1, 0] },
-    { "key": "night",  "label": "Night (quiet)",          "gains": [0, -1, 0, 0, -1, 1, 3, 3, 1, 0] },
-    { "key": "vocal",  "label": "Dialogue",               "gains": [0, -3, -2, 0, -2, 2, 4, 3, 0, -2] }
-  ]
+    {
+      "key": "flat",
+      "label": "Flat (correction only)",
+      "gains": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "key": "music",
+      "label": "Marshall \u2014 rock, mid-forward",
+      "gains": [
+        0,
+        5,
+        3,
+        0,
+        -1,
+        0,
+        3,
+        3,
+        1,
+        -1
+      ]
+    },
+    {
+      "key": "warm",
+      "label": "Warm",
+      "gains": [
+        0,
+        4,
+        4,
+        1,
+        0,
+        0,
+        0,
+        -1,
+        -2,
+        -3
+      ]
+    },
+    {
+      "key": "bw",
+      "label": "Bowers & Wilkins \u2014 neutral, detailed",
+      "gains": [
+        0,
+        2,
+        1,
+        0,
+        -1,
+        0,
+        2,
+        3,
+        3,
+        3
+      ]
+    },
+    {
+      "key": "bo",
+      "label": "Bang & Olufsen \u2014 airy, sculpted",
+      "gains": [
+        0,
+        2,
+        1,
+        -1,
+        -1,
+        0,
+        1,
+        3,
+        5,
+        5
+      ]
+    },
+    {
+      "key": "devialet",
+      "label": "Devialet \u2014 deep bass, extended top",
+      "gains": [
+        0,
+        5,
+        3,
+        0,
+        0,
+        0,
+        0,
+        1,
+        3,
+        4
+      ]
+    },
+    {
+      "key": "focal",
+      "label": "Focal \u2014 bright, forward detail",
+      "gains": [
+        0,
+        2,
+        1,
+        -1,
+        -1,
+        1,
+        3,
+        4,
+        4,
+        4
+      ]
+    },
+    {
+      "key": "kef",
+      "label": "KEF \u2014 coherent, gentle",
+      "gains": [
+        0,
+        1,
+        1,
+        0,
+        0,
+        0,
+        1,
+        1,
+        2,
+        2
+      ]
+    },
+    {
+      "key": "klipsch",
+      "label": "Klipsch \u2014 horn punch, dynamic",
+      "gains": [
+        0,
+        4,
+        2,
+        -1,
+        -2,
+        0,
+        4,
+        4,
+        2,
+        1
+      ]
+    },
+    {
+      "key": "mcintosh",
+      "label": "McIntosh \u2014 rich, smooth",
+      "gains": [
+        0,
+        4,
+        3,
+        1,
+        0,
+        0,
+        0,
+        -1,
+        -1,
+        -2
+      ]
+    },
+    {
+      "key": "dynaudio",
+      "label": "Dynaudio \u2014 natural, warm-neutral",
+      "gains": [
+        0,
+        3,
+        2,
+        0,
+        0,
+        0,
+        1,
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "key": "sonusfaber",
+      "label": "Sonus Faber \u2014 silky, romantic",
+      "gains": [
+        0,
+        3,
+        3,
+        1,
+        0,
+        -1,
+        0,
+        0,
+        1,
+        2
+      ]
+    },
+    {
+      "key": "harman",
+      "label": "Harman target \u2014 research-backed",
+      "gains": [
+        0,
+        4,
+        2,
+        1,
+        0,
+        0,
+        0,
+        -1,
+        1,
+        2
+      ]
+    },
+    {
+      "key": "bose",
+      "label": "Bose \u2014 scooped, crowd-pleasing",
+      "gains": [
+        0,
+        5,
+        3,
+        0,
+        -3,
+        -3,
+        -1,
+        2,
+        4,
+        4
+      ]
+    },
+    {
+      "key": "studio",
+      "label": "Studio reference",
+      "gains": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        1
+      ]
+    },
+    {
+      "key": "cinema",
+      "label": "Cinema",
+      "gains": [
+        0,
+        3,
+        2,
+        -1,
+        -2,
+        0,
+        2,
+        2,
+        1,
+        0
+      ]
+    },
+    {
+      "key": "gaming",
+      "label": "Gaming \u2014 positional cues",
+      "gains": [
+        0,
+        2,
+        0,
+        -2,
+        -2,
+        1,
+        4,
+        4,
+        3,
+        1
+      ]
+    },
+    {
+      "key": "vocal",
+      "label": "Dialogue",
+      "gains": [
+        0,
+        -3,
+        -2,
+        0,
+        -2,
+        2,
+        4,
+        3,
+        0,
+        -2
+      ]
+    },
+    {
+      "key": "night",
+      "label": "Night (quiet listening)",
+      "gains": [
+        0,
+        -1,
+        0,
+        0,
+        -1,
+        1,
+        3,
+        3,
+        1,
+        0
+      ]
+    }
+  ],
+  "settings": {
+    "lfeBoost": 1,
+    "crossover": 100
+  }
 }
