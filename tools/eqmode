@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Switch the system-wide EasyEffects preset.
+# Usage: eqmode [name]   — no name lists what is available and what is active.
+set -euo pipefail
+DIR="$HOME/.local/share/easyeffects/output"
+
+start_service() {
+  pgrep -x easyeffects >/dev/null 2>&1 && return 0
+  setsid easyeffects --service-mode >/dev/null 2>&1 &
+  for _ in $(seq 1 20); do pgrep -x easyeffects >/dev/null 2>&1 && return 0; sleep 0.5; done
+  echo "easyeffects service did not start" >&2; return 1
+}
+
+if [ $# -eq 0 ]; then
+  echo "Presets:"
+  for f in "$DIR"/*.json; do [ -e "$f" ] || continue; echo "  $(basename "$f" .json)"; done
+  echo
+  if pgrep -x easyeffects >/dev/null 2>&1; then
+    echo "Active: $(easyeffects -a output 2>/dev/null | head -1)"
+  else
+    echo "Active: (service not running)"
+  fi
+  exit 0
+fi
+
+name="$1"
+if [ ! -f "$DIR/$name.json" ]; then
+  # Accept any unambiguous case-insensitive prefix, so "eqmode cin" works.
+  match=$(find "$DIR" -maxdepth 1 -name '*.json' -exec basename {} .json \; \
+          | grep -i "^$name" || true)
+  count=$(printf '%s' "$match" | grep -c . || true)
+  if [ "$count" = "1" ]; then name="$match"
+  elif [ "$count" = "0" ]; then echo "No preset matching '$1'. Run 'eqmode' to list." >&2; exit 1
+  else echo "'$1' is ambiguous:" >&2; echo "$match" >&2; exit 1; fi
+fi
+
+start_service
+easyeffects -l "$name" >/dev/null 2>&1
+echo "EQ mode: $name"

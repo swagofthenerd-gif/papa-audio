@@ -1,0 +1,135 @@
+#!/usr/bin/env python3
+"""Guided by-ear calibration for a specific speaker system + room.
+
+Method: play stepped tones at IDENTICAL amplitude and ask which ones jump out
+or vanish RELATIVE TO THEIR NEIGHBOURS. Absolute loudness judgements are
+useless here — the ear is far less sensitive to 31 Hz than to 1 kHz (the
+equal-loudness contours), so on a perfect system the bass tones genuinely
+sound quieter. Neighbour comparison cancels that bias out, which is what makes
+this method actually work by ear.
+
+Writes findings to ~/.cache/speakercal.json for the curve builder to consume.
+"""
+import json, os, subprocess, sys
+
+RESULT = os.path.expanduser('~/.cache/speakercal.json')
+TONE_SECS = 3.0
+
+def tone(freq, secs=TONE_SECS):
+    subprocess.run(
+        ['mpv', '--no-video', '--no-terminal', '--no-config',
+         f'--length={secs}', '--volume=70',
+         f'av://lavfi:sine=frequency={freq}:duration={secs + 1}'],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+def require_tty():
+    """Fail clearly instead of throwing EOFError.
+
+    Claude Code's `! cmd` prefix and any piped invocation give this script no
+    interactive stdin, so input() hits EOF on the first prompt. Detect that up
+    front and say what to do about it.
+    """
+    if not sys.stdin.isatty():
+        print("\nThis script is interactive and needs a real terminal.")
+        print("Run it directly in Konsole:\n")
+        print("    speakercal\n")
+        print("Or skip it entirely — ask Claude to run the calibration in chat")
+        print("and it will play the tones for you.\n")
+        sys.exit(2)
+
+
+def ask(prompt, valid=None):
+    while True:
+        a = input(prompt).strip().lower()
+        if valid is None or a in valid or a == '':
+            return a
+        print(f"  please answer one of: {', '.join(valid)}")
+
+def play_group(name, freqs, question):
+    print(f"\n--- {name} ---")
+    print("Playing each tone for 3 seconds. Listen for any that JUMP OUT as")
+    print("louder/boomier, or that VANISH, compared to the tones either side.")
+    while True:
+        for i, f in enumerate(freqs, 1):
+            print(f"  [{i}] {f} Hz ", end='', flush=True)
+            tone(f)
+            print("done")
+        if ask("\nReplay this group? (y/N) ", ['y', 'n', '']) != 'y':
+            break
+    print(f"\n{question}")
+    print(f"  Enter the NUMBERS from the list, comma separated (1-{len(freqs)}).")
+    loud = input("  Too loud / boomy / honky (blank = none): ").strip()
+    weak = input("  Missing / hollow / weak    (blank = none): ").strip()
+
+    def parse(s):
+        out = []
+        for part in s.replace(' ', '').split(','):
+            if part.isdigit() and 1 <= int(part) <= len(freqs):
+                out.append(freqs[int(part) - 1])
+        return out
+    return {'loud': parse(loud), 'weak': parse(weak)}
+
+def main():
+    require_tty()
+    print("=" * 62)
+    print("  SPEAKER CALIBRATION — by ear")
+    print("=" * 62)
+    print("""
+Before starting:
+  * Sit where you normally listen. Room position changes everything.
+  * Set volume to a normal-to-loud listening level, then DO NOT change it
+    for the rest of the test. Changing it invalidates the comparisons.
+  * The system EQ has been set to Flat so we measure your speakers, not
+    a preset. Verify with: eqmode
+  * Bass tones at high volume can damage drivers. If anything rattles,
+    buzzes or distorts, turn DOWN and restart.
+""")
+    if ask("Ready? (y/N) ", ['y', 'n', '']) != 'y':
+        print("Aborted."); return
+
+    print("\n\n### STAGE 1 — how low does your system actually go?")
+    print("Tones descend. Report the lowest one you hear as an actual TONE —")
+    print("a pitch, not a rattle, buzz, or 'something happening'.")
+    limit = None
+    for f in [100, 80, 63, 50, 40, 31, 25]:
+        print(f"  {f} Hz ", end='', flush=True)
+        tone(f)
+        r = ask(" — real tone? (y/n/r=replay) ", ['y', 'n', 'r'])
+        while r == 'r':
+            tone(f); r = ask("  again — real tone? (y/n/r) ", ['y', 'n', 'r'])
+        if r == 'y':
+            limit = f
+        else:
+            break
+    print(f"\n  -> Usable low-frequency limit: {limit or 'above 100'} Hz")
+
+    groups = {}
+    groups['bass'] = play_group(
+        'STAGE 2 — bass resonances (room modes and cabinet boom)',
+        [40, 50, 63, 80, 100, 125, 160],
+        'Which tones boomed or overhung compared to their neighbours?')
+    groups['mid'] = play_group(
+        'STAGE 3 — mud and boxiness',
+        [200, 250, 315, 400, 500, 630, 800],
+        'Which sounded thick, boxy, honky, or nasal?')
+    groups['high'] = play_group(
+        'STAGE 4 — harshness and sibilance',
+        [1250, 1600, 2000, 2500, 3150, 4000, 5000, 6300],
+        'Which sounded harsh, piercing, or made you want to turn it down?')
+
+    out = {'low_limit': limit, **groups}
+    os.makedirs(os.path.dirname(RESULT), exist_ok=True)
+    with open(RESULT, 'w') as fh:
+        json.dump(out, fh, indent=2)
+
+    print("\n" + "=" * 62)
+    print(f"Saved to {RESULT}")
+    print(json.dumps(out, indent=2))
+    print("\nTell Claude it's done and it will build your corrected preset.")
+
+if __name__ == '__main__':
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\nAborted.")
+        sys.exit(1)
