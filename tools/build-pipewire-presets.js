@@ -43,7 +43,7 @@ const preampFor = g => { const p = Math.max(0, ...g); return p > 0 ? -Math.round
 // it is headroom for cinema bass. PipeWire's upmix synthesises the channel but
 // does not apply the convention, so the subwoofer is left barely audible.
 // A low shelf restores it without touching anything above the crossover.
-const LFE_BOOST_DB = 10
+const LFE_BOOST_DB = 6
 const LFE_SHELF_HZ = 120
 
 // Bass management, as an AV receiver does it. Small satellites reproduce bass
@@ -60,7 +60,12 @@ const SAT_CROSSOVER_HZ = 100
 // reaches it — both are simply six channels — so each preset gets two sinks
 // and the source decides which one to use.
 function filtersFor(ch, gains, lfeBoost) {
-  const satHp = ch === 'LFE' ? hpFreq : Math.max(hpFreq, SAT_CROSSOVER_HZ)
+  // The subwoofer is high-passed AT its measured limit, not below it. Feeding
+  // it content it cannot reproduce buys cone excursion and distortion instead
+  // of output — audible immediately on bass-heavy material like film trailers,
+  // which carry far more low-frequency energy than music.
+  const lfeHp = cal.low_limit ? Math.round(cal.low_limit) : hpFreq
+  const satHp = ch === 'LFE' ? lfeHp : Math.max(hpFreq, SAT_CROSSOVER_HZ)
   const out = [{ label: 'bq_highpass', freq: satHp, gain: 0, q: 0.7, tag: 'hp' }]
   if (ch === 'LFE' && lfeBoost) {
     out.push({ label: 'bq_lowshelf', freq: LFE_SHELF_HZ, gain: LFE_BOOST_DB, q: 0.7, tag: 'lfeboost' })
