@@ -6695,6 +6695,18 @@ async function _initEqSettings(cfg, apply) {
   // A stored curve from an older build may be short; pad rather than crash.
   eq.gains = bands.map((_, i) => Number(eq.gains?.[i]) || 0)
 
+  // Built from the preset table rather than hardcoded markup, so adding a
+  // preset in eq.js is all it takes to make it appear here.
+  const groups = {}
+  for (const [key, p] of Object.entries(presets)) {
+    (groups[p.group] = groups[p.group] || []).push([key, p])
+  }
+  $('eq-preset').innerHTML = '<option value="custom">Custom</option>' +
+    Object.entries(groups).map(([group, items]) =>
+      `<optgroup label="${group}">` +
+      items.map(([key, p]) => `<option value="${key}">${p.label}</option>`).join('') +
+      '</optgroup>').join('')
+
   bandsEl.innerHTML = bands.map((hz, i) => `
     <div class="eq-band">
       <span class="eq-band-gain" id="eq-gain-label-${i}"></span>
@@ -6713,7 +6725,7 @@ async function _initEqSettings(cfg, apply) {
     })
     // Any hand-edit stops matching a named preset; say so rather than lie.
     const match = Object.keys(presets).find(n =>
-      presets[n].every((g, i) => g === eq.gains[i]))
+      presets[n].gains.every((g, i) => g === eq.gains[i]))
     $('eq-preset').value = match || 'custom'
   }
 
@@ -6741,7 +6753,7 @@ async function _initEqSettings(cfg, apply) {
     if (!preset) return
     eq = { ...preset, enabled: true }
     paint(); push()
-    showSnackbar(`EQ preset: ${e.target.selectedOptions[0].textContent}`)
+    showSnackbar(`EQ preset: ${presets[e.target.value]?.label || e.target.value}`)
   }
 
   $('eq-reset').onclick = () => {

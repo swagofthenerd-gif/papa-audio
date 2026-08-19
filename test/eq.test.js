@@ -65,16 +65,38 @@ test('default settings are off and flat', () => {
 const { PRESETS, presetSettings, suggestedPreamp } = require('../eq')
 
 test('every preset covers exactly the ten bands and stays in range', () => {
-  for (const [name, gains] of Object.entries(PRESETS)) {
-    assert.strictEqual(gains.length, BAND_COUNT, `${name} has wrong band count`)
-    assert.ok(gains.every(g => g >= -12 && g <= 12), `${name} out of range`)
+  for (const [name, p] of Object.entries(PRESETS)) {
+    assert.strictEqual(p.gains.length, BAND_COUNT, `${name} has wrong band count`)
+    assert.ok(p.gains.every(g => g >= -12 && g <= 12), `${name} out of range`)
+  }
+})
+
+test('every preset carries a label and a group for the dropdown', () => {
+  for (const [name, p] of Object.entries(PRESETS)) {
+    assert.ok(p.label && typeof p.label === 'string', `${name} has no label`)
+    assert.ok(p.group && typeof p.group === 'string', `${name} has no group`)
+  }
+})
+
+// Large boosts buy distortion and excursion limiting on small drivers, not
+// depth, so the curves are deliberately capped tighter than the slider range.
+test('preset curves stay within the +/-6 dB design budget', () => {
+  for (const [name, p] of Object.entries(PRESETS)) {
+    assert.ok(p.gains.every(g => g >= -6 && g <= 6), `${name} exceeds the design budget`)
   }
 })
 
 test('preset preamp cancels the peak boost to protect headroom', () => {
   const s = presetSettings('bass-boost')
-  assert.strictEqual(s.preamp, -Math.max(...PRESETS['bass-boost']))
+  assert.strictEqual(s.preamp, -Math.max(...PRESETS['bass-boost'].gains))
   assert.strictEqual(s.enabled, true)
+})
+
+test('speaker voicings are all distinct curves', () => {
+  const voicings = Object.entries(PRESETS).filter(([, p]) => p.group === 'Speaker voicings')
+  assert.ok(voicings.length >= 8, 'expected the voicing set to be present')
+  const seen = new Set(voicings.map(([, p]) => p.gains.join(',')))
+  assert.strictEqual(seen.size, voicings.length, 'two voicings share an identical curve')
 })
 
 test('a cut-only curve needs no preamp attenuation', () => {
@@ -92,5 +114,5 @@ test('unknown preset names return null instead of a broken curve', () => {
 test('presets do not mutate when the returned gains are edited', () => {
   const s = presetSettings('rock')
   s.gains[0] = 99
-  assert.notStrictEqual(PRESETS.rock[0], 99)
+  assert.notStrictEqual(PRESETS.rock.gains[0], 99)
 })
