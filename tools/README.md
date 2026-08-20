@@ -194,3 +194,29 @@ choice in ~/.config/papa-eq/active so login restores it.
   `node.autoconnect = false` plus `papa-eq-relink` asserting links afterwards.
 - The F6000X's mode display is not trustworthy. The position that yields
   discrete 5.1 is the one it is in now, whatever it reads.
+
+## Known limitations — things that still need your ears
+
+These are not defects in the code; they are decisions only a listener can make.
+
+- **`subMixGain` is 1.0, which is electrically neutral, not necessarily right.**
+  A powered 8" subwoofer is far more sensitive than a 3" satellite, so the
+  acoustically flat value is probably lower. Tune this first, by ear.
+  `audit-eq.py` warns if it is set low enough to be removing bass rather than
+  matching levels.
+- **No delay or polarity alignment.** Linkwitz-Riley puts both branches in
+  phase at the crossover, which makes it maximally sensitive to a sub that is
+  wired out of phase or sits further away: inverted gives a ~54 dB null at
+  80 Hz, and a 2 m path difference ~19 dB. Nothing in the chain can correct
+  either yet. If bass is weak specifically around 80 Hz after tuning
+  subMixGain, suspect this.
+- **The 125 Hz correction is stale.** It was measured by ear with the
+  satellites running full range, before bass management existed, so the
+  radiation pattern at that frequency has since changed.
+- **No limiter.** With unity mixer gains, bass correlated across five channels
+  plus LFE can sum to +15.6 dB. There is no limiter builtin available in
+  PipeWire's filter-chain. Lowering `subMixGain` is the remedy if you hear it.
+- **31 Hz sits at 0 in every preset except `harman`.** That was chosen when the
+  subwoofer's floor was believed to be 50 Hz; the datasheet says 25 Hz and the
+  high-pass is at 30, so there is usable output down there that the voicings
+  currently ignore.

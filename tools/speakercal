@@ -117,7 +117,15 @@ Before starting:
         [1250, 1600, 2000, 2500, 3150, 4000, 5000, 6300],
         'Which sounded harsh, piercing, or made you want to turn it down?')
 
-    out = {'low_limit': limit, **groups}
+    # Write subHighPass too, not just low_limit. The generator prefers
+    # settings.subHighPass, so a calibration that wrote only low_limit had no
+    # effect on the subwoofer's high-pass — surprising, and undocumented.
+    #
+    # Sit just above the measured floor: at its limit a driver is already
+    # struggling, and the last few Hz cost excursion for almost no output. A
+    # manufacturer figure, if you have one, beats this measurement — by-ear
+    # limits reflect what was audible at the tested level, not the driver.
+    out = {'low_limit': limit, 'suggested_sub_high_pass': round(limit * 1.1) if limit else None, **groups}
     os.makedirs(os.path.dirname(RESULT), exist_ok=True)
     with open(RESULT, 'w') as fh:
         json.dump(out, fh, indent=2)
@@ -125,6 +133,11 @@ Before starting:
     print("\n" + "=" * 62)
     print(f"Saved to {RESULT}")
     print(json.dumps(out, indent=2))
+    if limit:
+        print(f"\nSuggested subHighPass: {round(limit * 1.1)} Hz")
+        print("  Note: ~/.config/papa-eq/presets.json settings.subHighPass takes")
+        print("  precedence. If the speaker's datasheet gives a lower figure, use")
+        print("  that — a by-ear limit reflects the test level, not the driver.")
     print("\nTell Claude it's done and it will build your corrected preset.")
 
 if __name__ == '__main__':
