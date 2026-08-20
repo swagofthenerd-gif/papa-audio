@@ -23,8 +23,26 @@ const TARGET = 'alsa_output.pci-0000_2b_00.4.analog-surround-51'
 const SATELLITES = ['FL', 'FR', 'FC', 'RL', 'RR']
 const CHANNELS = ['FL', 'FR', 'FC', 'LFE', 'RL', 'RR']
 
-if (!fs.existsSync(STORE)) { console.error(`No preset store at ${STORE}`); process.exit(1) }
-const store = JSON.parse(fs.readFileSync(STORE, 'utf8'))
+if (!fs.existsSync(STORE)) {
+  console.error(`No preset store at ${STORE}`)
+  console.error('Restore it from ~/flac-player/tools/presets.default.json')
+  process.exit(1)
+}
+let store
+try {
+  store = JSON.parse(fs.readFileSync(STORE, 'utf8'))
+} catch (e) {
+  // Fail loudly but leave the existing config alone — writes are atomic and
+  // happen only on success, so the currently loaded graph keeps working.
+  console.error(`${STORE} is not valid JSON: ${e.message}`)
+  console.error('The existing config was left untouched.')
+  console.error('Restore the store from ~/flac-player/tools/presets.default.json')
+  process.exit(1)
+}
+if (!Array.isArray(store.presets) || store.presets.length === 0) {
+  console.error(`${STORE} contains no presets`)
+  process.exit(1)
+}
 const cal = fs.existsSync(CAL) ? JSON.parse(fs.readFileSync(CAL, 'utf8')) : {}
 const BANDS = store.bands || [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
 const corrections = cal.corrections || []
@@ -300,4 +318,20 @@ fs.writeFileSync(MANIFEST + '.tmp', JSON.stringify(manifest, null, 2))
 fs.renameSync(MANIFEST + '.tmp', MANIFEST)
 console.log('wrote', OUT)
 console.log('wrote', path.join(os.homedir(), '.config/papa-eq/controls.json'))
+
+// Validate what we just wrote. A malformed filter graph fails as SILENCE with
+// no error anywhere, so catching it here — before PipeWire ever loads it — is
+// the difference between a clear message and an evening of debugging.
+try {
+  const audit = path.join(__dirname, 'audit-eq.py')
+  if (fs.existsSync(audit)) {
+    const r = require('child_process').spawnSync('python3', [audit, '--quiet'],
+                                                 { encoding: 'utf8' })
+    if (r.status !== 0) {
+      console.error('\nAUDIT FAILED on the config just written:')
+      console.error((r.stdout || '') + (r.stderr || ''))
+      process.exitCode = 1
+    }
+  }
+} catch { /* audit is advisory; never block generation on it being unavailable */ }
 console.log(`  presets: ${store.presets.length}  bass management: ${BASS_MGMT ? `ON (${XOVER} Hz, redirected)` : 'OFF'}  sub HP: ${LFE_HP} Hz`)

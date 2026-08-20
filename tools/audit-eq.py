@@ -11,8 +11,26 @@ Exits non-zero if any invariant fails.
 import json, os, re, math, cmath, sys
 CONF = os.path.expanduser('~/.config/pipewire/pipewire.conf.d/60-papa-eq-51.conf')
 STORE = os.path.expanduser('~/.config/papa-eq/presets.json')
-conf = open(CONF).read()
-store = json.load(open(STORE))
+def die(msg, hint=''):
+    print(msg, file=sys.stderr)
+    if hint: print(hint, file=sys.stderr)
+    sys.exit(1)
+
+try:
+    with open(CONF) as fh:
+        conf = fh.read()
+except OSError:
+    die(f'No generated config at {CONF}',
+        'Run: node ~/flac-player/tools/build-pipewire-presets.js')
+try:
+    with open(STORE) as fh:
+        store = json.load(fh)
+except OSError:
+    die(f'No preset store at {STORE}',
+        'Restore it from ~/flac-player/tools/presets.default.json')
+except json.JSONDecodeError as e:
+    die(f'{STORE} is not valid JSON: {e}',
+        'Restore it from ~/flac-player/tools/presets.default.json')
 S = store['settings']; BANDS = store['bands']; X = S['crossover']
 chunks = conf.split('{ name = libpipewire-module-filter-chain')
 BLOCKS = {}
@@ -123,9 +141,40 @@ try:
 except Exception as e:
     print(f"  (live checks skipped: {e})")
 
-print(f"checked {len(store['presets'])} presets")
+QUIET = '--quiet' in sys.argv
+if not QUIET:
+    print(f"checked {len(store['presets'])} presets")
+# --- Consequence checks -------------------------------------------------
+# The checks above verify the config matches the settings. They cannot catch a
+# setting that is itself wrong, which is exactly how a 10 dB bass deficit went
+# unnoticed: subMixGain validated against itself. These evaluate the acoustic
+# RESULT instead.
+warn = []
+smg = S.get('subMixGain', 1.0)
+if S.get('bassManagement', True) and smg < 0.95:
+    import math as _m
+    deficit = -20 * _m.log10(smg)
+    warn.append(
+        f"subMixGain={smg} attenuates ONLY the low-pass branch. Below the "
+        f"crossover the subwoofer is the sole source, so this is a broadband "
+        f"bass deficit of {deficit:.1f} dB, not a level trim. If the sub is "
+        f"too loud, turn the subwoofer's own volume down instead.")
+hp = S.get('subHighPass')
+if hp and hp > 45:
+    warn.append(f"subHighPass={hp} Hz is well above a typical ported 8-inch "
+                f"driver's usable floor; check it against the speaker's rating.")
+xo = S.get('crossover', 80)
+if xo > 100:
+    warn.append(f"crossover={xo} Hz asks the subwoofer for output above where "
+                f"most compact subs roll off; check the speaker's rating.")
+if warn and not QUIET:
+    print(f"\n{len(warn)} WARNING(S):")
+    for w in warn: print("  !", w)
+
 if fail:
     print(f"\n{len(fail)} PROBLEM(S):")
     for f in fail: print("  -", f)
     sys.exit(1)
-print("\nAll structural invariants hold.")
+if not QUIET:
+    print("\nAll structural invariants hold." if not warn
+          else "\nStructural invariants hold, but see warnings above.")
