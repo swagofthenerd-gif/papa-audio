@@ -177,7 +177,8 @@
     "lfeBoost": 0,
     "crossover": 80,
     "bassManagement": true,
-    "subMixGain": 0.3,
-    "subHighPass": 30
+    "subMixGain": 1.0,
+    "subHighPass": 30,
+    "subHeadroom": 6
   }
 }

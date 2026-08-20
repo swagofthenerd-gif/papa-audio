@@ -39,13 +39,32 @@ const BASS_MGMT = settings.bassManagement !== false
 // already distorting; the last few Hz cost excursion and headroom while
 // producing almost nothing audible.
 const LFE_HP = settings.subHighPass || (cal.low_limit ? Math.round(cal.low_limit * 1.1) : 35)
-// Summing five satellites' bass into one driver overloads a modest subwoofer
-// long before it clips digitally — it simply runs out of excursion. Each
-// contribution is attenuated; lower this if the sub distorts, raise it if the
-// bass feels weak.
-const SAT_MIX_GAIN = settings.subMixGain != null ? settings.subMixGain : 0.30
+// The low-pass branch MUST arrive at the mixer at unity.
+//
+// A Linkwitz-Riley pair only sums flat when both halves are complementary.
+// Attenuating just the sub branch breaks that: below the crossover the sub is
+// the ONLY source, so the branch gain becomes the bass level outright — at
+// 0.30 that is 10.5 dB of missing bass, rising toward DC. That was the cause
+// of the "shallow, hollow" sound, and lowering it further made it worse.
+//
+// Level matching between the satellites and a more efficient powered sub
+// belongs on the subwoofer's own volume control, which sits AFTER the split
+// and therefore cannot break the pair. Any digital trim must be applied to
+// BOTH branches, which is what SINK_HEADROOM_DB below does.
+const SAT_MIX_GAIN = settings.subMixGain != null ? settings.subMixGain : 1.0
+
+// Bass management concentrates the low frequencies of five channels plus the
+// LFE track into one output, so the sub branch can sum well above unity.
+// Applied to the sink, ahead of the split, so both branches scale together.
+const SINK_HEADROOM_DB = settings.subHeadroom != null ? settings.subHeadroom : 6
 // Each section of a Linkwitz-Riley pair is a Butterworth section.
 const LR_Q = 0.7071
+
+// A label reaches the config as node.description. An unescaped quote or a
+// newline makes the whole SPA-JSON file unparseable, and PipeWire then rejects
+// it wholesale — every preset vanishes and the machine boots with no EQ. The
+// GUI takes labels from free text, so this is one keystroke away.
+const escLabel = v => String(v).replace(/[\\"]/g, '\\$&').replace(/[\r\n]+/g, ' ')
 
 const clamp = v => Math.max(-12, Math.min(12, v))
 // Headroom must be reckoned per PATH, not per preset. The sink's volume applies
@@ -61,7 +80,7 @@ const peakOf = vals => Math.max(0, ...vals)
 function pathPeaks(gains) {
   if (!BASS_MGMT) { const p = peakOf(gains); return { sat: p, sub: p } }
   const sat = peakOf(gains.filter((_, i) => BANDS[i] >= XOVER))
-  const sub = peakOf(gains.filter((_, i) => BANDS[i] <= XOVER))
+  const sub = peakOf(gains.filter((_, i) => BANDS[i] < XOVER))
   return { sat, sub }
 }
 
@@ -74,7 +93,11 @@ function pathPeaks(gains) {
 // equally pointless while lifting the crossover skirt.
 function inBand(ch, freq) {
   if (!BASS_MGMT) return true
-  return ch === 'LFE' ? freq <= XOVER : freq >= XOVER
+  // Exclusive on the sub side. With `<=` and `>=` a band sitting exactly on
+  // the crossover is emitted on both paths and double-counted in pathPeaks.
+  // The GUI crossover slider covers 60-160, and 62 and 125 are band centres,
+  // so this is one drag away.
+  return ch === 'LFE' ? freq < XOVER : freq >= XOVER
 }
 
 function toneChain(key, ch, gains) {
@@ -155,23 +178,26 @@ function moduleFor(key, voicing) {
   }
   outputs.LFE = chain(lfeOut, 'LFE', toneChain(key, 'LFE', voicing.gains))
 
-  // The sink volume now only covers the satellite peak, so any extra boost on
-  // the sub path has to come out of the mixer or it clips.
-  const subTrim = Math.pow(10, -Math.max(0, peaks.sub - peaks.sat) / 20)
+  // Every mixer input at SAT_MIX_GAIN (1.0 by default). The native LFE track
+  // always arrives at unity.
   const gains = BASS_MGMT
     ? Array.from({ length: mixIn }, (_, i) =>
-        `"Gain ${i + 1}" = ${((i === mixIn - 1 ? 1.0 : SAT_MIX_GAIN) * subTrim).toFixed(4)}`).join(' ')
+        `"Gain ${i + 1}" = ${(i === mixIn - 1 ? 1.0 : SAT_MIX_GAIN).toFixed(4)}`).join(' ')
     : ''
   if (BASS_MGMT) {
     const idx = nodes.findIndex(x => x.includes(`name = ${subMixer} `))
     nodes[idx] = `      { type = builtin name = ${subMixer} label = mixer control = { ${gains} } }`
   }
 
-  const preamp = peaks.sat > 0 ? -Math.round(peaks.sat) : 0
+  // One attenuation for the whole sink: the larger of the two path peaks plus
+  // summing headroom. Trimming one path relative to the other would undo the
+  // crossover's complementarity.
+  const worstPeak = Math.max(peaks.sat, peaks.sub)
+  const preamp = -(Math.round(worstPeak) + SINK_HEADROOM_DB)
   return `  { name = libpipewire-module-filter-chain
     args = {
-      node.description = "Papa EQ — ${voicing.label}"
-      media.name       = "Papa EQ — ${voicing.label}"
+      node.description = "Papa EQ — ${escLabel(voicing.label)}"
+      media.name       = "Papa EQ — ${escLabel(voicing.label)}"
       filter.graph = {
         nodes = [
 ${nodes.join('\n')}
@@ -184,7 +210,7 @@ ${links.join('\n')}
       }
       capture.props = {
         node.name        = "papa_eq_${key}"
-        node.description = "Papa EQ — ${voicing.label}"
+        node.description = "Papa EQ — ${escLabel(voicing.label)}"
         media.class      = Audio/Sink
         audio.channels   = 6
         audio.position   = [ FL FR FC LFE RL RR ]
@@ -219,7 +245,7 @@ ${mods.join('\n')}
 ]
 `
 fs.mkdirSync(path.dirname(OUT), { recursive: true })
-fs.writeFileSync(OUT, conf)
+fs.writeFileSync(OUT + '.tmp', conf); fs.renameSync(OUT + '.tmp', OUT)
 
 // Manifest of runtime-settable controls, consumed by papa-eq-apply.py.
 // Generated here rather than re-derived there: the naming and band-split rules
@@ -232,20 +258,23 @@ for (const p of store.presets) {
       entry.gains[`${p.key}_${f.tag}_${ch}:Gain`] = f.gain
     }
     if (ch !== 'LFE') {
-      for (const t of ['hp1','hp2','lp1','lp2']) entry.gains[`${p.key}_${t}_${ch}:Freq`] = XOVER
+      // Node names differ by topology; advertising the wrong ones makes every
+      // live apply report "missing" and fall back to a full rebuild.
+      const tags = BASS_MGMT ? ['hp1','hp2','lp1','lp2'] : ['hp']
+      const freq = BASS_MGMT ? XOVER : LFE_HP
+      for (const t of tags) entry.gains[`${p.key}_${t}_${ch}:Freq`] = freq
     }
   }
   entry.gains[`${p.key}_hp_LFE:Freq`] = LFE_HP
   if (BASS_MGMT) {
-    const pk = pathPeaks(p.gains)
-    const trim = Math.pow(10, -Math.max(0, pk.sub - pk.sat) / 20)
-    for (let i = 1; i <= 5; i++) entry.mixer[`${p.key}_submix_LFE:Gain ${i}`] = +(SAT_MIX_GAIN * trim).toFixed(4)
-    entry.mixer[`${p.key}_submix_LFE:Gain 6`] = +trim.toFixed(4)
+    for (let i = 1; i <= 5; i++) entry.mixer[`${p.key}_submix_LFE:Gain ${i}`] = +SAT_MIX_GAIN.toFixed(4)
+    entry.mixer[`${p.key}_submix_LFE:Gain 6`] = 1.0
   }
   manifest.presets[p.key] = entry
 }
 const MANIFEST = path.join(os.homedir(), '.config/papa-eq/controls.json')
-fs.writeFileSync(MANIFEST, JSON.stringify(manifest, null, 2))
+fs.writeFileSync(MANIFEST + '.tmp', JSON.stringify(manifest, null, 2))
+fs.renameSync(MANIFEST + '.tmp', MANIFEST)
 console.log('wrote', OUT)
 console.log('wrote', path.join(os.homedir(), '.config/papa-eq/controls.json'))
 console.log(`  presets: ${store.presets.length}  bass management: ${BASS_MGMT ? `ON (${XOVER} Hz, redirected)` : 'OFF'}  sub HP: ${LFE_HP} Hz`)

@@ -2,41 +2,90 @@
 # Restore the 5.1 audio setup. Run at login by papa-audio-51.service, and safe
 # to run by hand any time sound goes missing or collapses to two speakers.
 #
-# This lives in a script rather than the unit's ExecStart because the logic
-# needs nested quoting (awk programs, command substitution) that systemd's
-# single-quoted ExecStart cannot express — an earlier inline version failed
-# with "unexpected EOF".
+# Every step is checked and every failure is reported. An earlier version piped
+# all of this to /dev/null and printed success unconditionally, so the one
+# diagnostic the user had would claim everything was fine while there was no
+# sound at all.
 set -uo pipefail
-CARD=alsa_card.pci-0000_2b_00.4
+
+PCI=pci-0000_2b_00.4
+CARD_PW="alsa_card.$PCI"
 PROFILE=output:analog-surround-51+input:analog-stereo
 ACTIVE="$HOME/.config/papa-eq/active"
+fail=0
 
-sleep 5
+echo "Restoring 5.1 audio (about 15 seconds)…"
 
-# The codec boots in 2ch mode. While it is, PipeWire's analog-surround-51
-# profile does not exist at all, so this must come first.
-amixer -c 1 sset "Channel Mode" 6ch >/dev/null 2>&1
-for c in Master PCM Front Surround Center LFE; do
-  amixer -c 1 sset "$c" 100% unmute >/dev/null 2>&1
+# ALSA card INDEX is not stable across boots - two snd_hda_intel devices are
+# present. Resolve by name instead; everything else here uses the PCI path.
+# /proc/asound/cardN/id holds the stable ALSA id ("Generic"). Find the card
+# whose PCI path matches, rather than trusting index 1.
+CARD=""
+for d in /sys/class/sound/card*; do
+  [ -e "$d/device" ] || continue
+  case "$(basename "$(readlink -f "$d/device")")" in
+    0000:2b:00.4) CARD=$(cat "$d/id" 2>/dev/null); break ;;
+  esac
+done
+[ -z "$CARD" ] && CARD=$(cat /proc/asound/card1/id 2>/dev/null)
+[ -z "$CARD" ] && CARD=1
+echo "  codec card: $CARD"
+
+# Poll rather than sleep: on a slow boot a fixed delay silently misses the
+# window, and the steps that must succeed had no retry at all.
+for _ in $(seq 1 40); do pactl info >/dev/null 2>&1 && break; sleep 0.5; done
+pactl info >/dev/null 2>&1 || { echo "  PipeWire never became ready" >&2; exit 1; }
+
+for _ in $(seq 1 40); do
+  pactl list cards short 2>/dev/null | grep -q "$CARD_PW" && break; sleep 0.5
 done
 
-sleep 2
-pactl set-card-profile "$CARD" "$PROFILE" >/dev/null 2>&1
-sleep 2
+# The codec boots in 2ch. While it is, the analog-surround-51 profile does not
+# exist at all, so this must succeed before the profile can be selected.
+ok=0
+for _ in $(seq 1 10); do
+  if amixer -c "$CARD" sset "Channel Mode" 6ch >/dev/null 2>&1; then ok=1; break; fi
+  sleep 1
+done
+[ "$ok" = 1 ] || { echo "  FAILED: could not set Channel Mode 6ch on card $CARD" >&2; fail=1; }
+
+for c in Master PCM Front Surround Center LFE; do
+  amixer -c "$CARD" sset "$c" 100% unmute >/dev/null 2>&1
+done
+
+ok=0
+for _ in $(seq 1 20); do
+  pactl set-card-profile "$CARD_PW" "$PROFILE" >/dev/null 2>&1
+  sleep 0.5
+  pactl list sinks short 2>/dev/null | grep -q analog-surround-51 && { ok=1; break; }
+done
+[ "$ok" = 1 ] || { echo "  FAILED: 5.1 profile never took on $CARD_PW" >&2; fail=1; }
 
 sink_exists() { pactl list sinks short 2>/dev/null | awk '{print $2}' | grep -qx "$1"; }
 
-# Prefer the preset the user last selected; fall back to any EQ sink, then to
-# the hardware sink so an EQ-off setup still gets a working default.
+# Prefer the preset last selected; fall back to any EQ sink, then the hardware
+# sink so an EQ-off setup still gets a working default.
 SINK=$(cat "$ACTIVE" 2>/dev/null || true)
 if [ -z "$SINK" ] || ! sink_exists "$SINK"; then
   SINK=$(pactl list sinks short 2>/dev/null | awk '$2 ~ /^papa_eq_/ {print $2; exit}')
 fi
-if [ -z "$SINK" ]; then
-  SINK=$(pactl list sinks short 2>/dev/null | awk '/analog-surround-51/{print $2; exit}')
+[ -z "$SINK" ] && SINK=$(pactl list sinks short 2>/dev/null | awk '/analog-surround-51/{print $2; exit}')
+if [ -n "$SINK" ]; then
+  pactl set-default-sink "$SINK" >/dev/null 2>&1 || { echo "  FAILED: set-default-sink $SINK" >&2; fail=1; }
+else
+  echo "  FAILED: no usable sink found" >&2; fail=1
 fi
-[ -n "$SINK" ] && pactl set-default-sink "$SINK" >/dev/null 2>&1
 
-"$HOME/.local/bin/papa-eq-relink" >/dev/null 2>&1
+# Do NOT swallow this - its failure means audio reaches nothing.
+if pactl list sinks short 2>/dev/null | grep -q '^[0-9]*[[:space:]]*papa_eq_'; then
+  if ! "$HOME/.local/bin/papa-eq-relink"; then
+    echo "  FAILED: relink" >&2; fail=1
+  fi
+fi
 
-echo "papa-audio-51: 6ch, $PROFILE, default=${SINK:-none}"
+if [ "$fail" = 0 ]; then
+  echo "OK: 6ch, 5.1 profile, default=${SINK:-none}"
+else
+  echo "FINISHED WITH ERRORS - see above. Sound may not work." >&2
+fi
+exit "$fail"
