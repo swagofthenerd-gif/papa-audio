@@ -73,6 +73,10 @@ except json.JSONDecodeError as e:
     die(f'{STORE} is not valid JSON: {e}',
         'Restore it from ~/flac-player/tools/presets.default.json')
 S = store['settings']; BANDS = store['bands']; X = S['crossover']
+# Satellite high-pass is decoupled from the sub crossover: in a bass
+# REINFORCEMENT setup the satellites run full range while the sub still
+# receives a low-passed copy at the crossover.
+SAT_HP = S.get('satelliteHighPass', X)
 chunks = conf.split('{ name = libpipewire-module-filter-chain')
 BLOCKS = {}
 for c in chunks[1:]:
@@ -113,10 +117,11 @@ for p in store['presets']:
     #    have missed a fault confined to FL/FR/RL/RR).
     if S.get('bassManagement', True):
         for band in BANDS:
-            if band >= X: continue
+            if band >= SAT_HP: continue
             for ch in ('FL','FR','FC','RL','RR'):
                 if f'name = {k}_v{band}_{ch} ' in b:
-                    fail.append(f"{k}: satellite {ch} carries below-crossover filter at {band} Hz")
+                    fail.append(f"{k}: satellite {ch} carries a filter at {band} Hz, "
+                                f"below its {SAT_HP} Hz high-pass")
     # 4. Mixer must have exactly 6 inputs (5 satellites + LFE) — but only
     #    when bass management is on; with it off there is deliberately no
     #    mixer, and demanding one produced a false failure.
@@ -196,7 +201,11 @@ if not QUIET:
 # RESULT instead.
 warn = []
 smg = S.get('subMixGain', 1.0)
-if S.get('bassManagement', True) and smg < 0.95:
+# Only meaningful in a true bass-MANAGEMENT setup, where the satellites are
+# cut at the crossover and the sub is the sole source below it. In a
+# reinforcement setup the satellites still carry their own bass, so a sub feed
+# below unity is a blend control, not a deficit.
+if S.get('bassManagement', True) and smg < 0.95 and SAT_HP >= X * 0.9:
     import math as _m
     deficit = -20 * _m.log10(smg)
     warn.append(
@@ -205,7 +214,7 @@ if S.get('bassManagement', True) and smg < 0.95:
         f"bass deficit of {deficit:.1f} dB, not a level trim. If the sub is "
         f"too loud, turn the subwoofer's own volume down instead.")
 hp = S.get('subHighPass')
-if hp and hp > 45:
+if hp and hp > 55:
     warn.append(f"subHighPass={hp} Hz is well above a typical ported 8-inch "
                 f"driver's usable floor; check it against the speaker's rating.")
 xo = S.get('crossover', 80)

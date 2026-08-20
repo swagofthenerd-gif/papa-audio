@@ -49,6 +49,19 @@ const corrections = cal.corrections || []
 const settings = store.settings || {}
 
 const XOVER = settings.crossover || 100
+// The satellite high-pass is DECOUPLED from the crossover.
+//
+// Tying them together only expresses classic bass management: satellites cut
+// at the crossover, everything below handed to the sub. On this system that
+// overdrove the subwoofer, because the F6000X already band-limits internally
+// (satellite amps 60 Hz-20 kHz, sub amp 25-85 Hz) and we were stacking a
+// second split on top while summing five channels into one input.
+//
+// What actually works here is bass REINFORCEMENT: satellites run full range
+// into amps that roll them off at 60 Hz anyway, and the sub gets a low-passed
+// copy at a fraction of the level. Setting satelliteHighPass well below the
+// crossover expresses that; leaving it unset restores classic bass management.
+const SAT_HP = settings.satelliteHighPass != null ? settings.satelliteHighPass : XOVER
 const LFE_BOOST_DB = settings.lfeBoost || 0
 const BASS_MGMT = settings.bassManagement !== false
 // The sub is high-passed at its measured floor: below that it produces no
@@ -180,7 +193,7 @@ function inBand(ch, freq) {
   // the crossover is emitted on both paths and double-counted in pathPeaks.
   // The GUI crossover slider covers 60-160, and 62 and 125 are band centres,
   // so this is one drag away.
-  return ch === 'LFE' ? freq < XOVER : freq >= XOVER
+  return ch === 'LFE' ? freq < XOVER : freq >= SAT_HP
 }
 
 function toneChain(key, ch, gains) {
@@ -234,8 +247,8 @@ function moduleFor(key, voicing) {
       // gives -6 dB, which sums flat. With five satellites feeding the sub that
       // bump sat right where the driver was already working hardest.
       const hpOut = chain(`${n('split', ch)}:Out`, ch, [
-        { label: 'bq_highpass', freq: XOVER, gain: 0, q: LR_Q, tag: 'hp1' },
-        { label: 'bq_highpass', freq: XOVER, gain: 0, q: LR_Q, tag: 'hp2' },
+        { label: 'bq_highpass', freq: SAT_HP, gain: 0, q: LR_Q, tag: 'hp1' },
+        { label: 'bq_highpass', freq: SAT_HP, gain: 0, q: LR_Q, tag: 'hp2' },
       ])
       const lpOut = chain(`${n('split', ch)}:Out`, ch, [
         { label: 'bq_lowpass', freq: XOVER, gain: 0, q: LR_Q, tag: 'lp1' },
@@ -372,7 +385,7 @@ for (const p of store.presets) {
       // Node names differ by topology; advertising the wrong ones makes every
       // live apply report "missing" and fall back to a full rebuild.
       const tags = BASS_MGMT ? ['hp1','hp2','lp1','lp2'] : ['hp']
-      const freq = BASS_MGMT ? XOVER : LFE_HP
+      const freq = BASS_MGMT ? SAT_HP : LFE_HP
       for (const t of tags) entry.gains[`${p.key}_${t}_${ch}:Freq`] = freq
     }
   }
@@ -409,4 +422,5 @@ try {
     }
   }
 } catch { /* audit is advisory; never block generation on it being unavailable */ }
-console.log(`  presets: ${store.presets.length}  bass management: ${BASS_MGMT ? `ON (${XOVER} Hz, redirected)` : 'OFF'}  sub HP: ${LFE_HP} Hz`)
+console.log(`  presets: ${store.presets.length}  sat HP: ${SAT_HP} Hz  sub LP: ${XOVER} Hz  ` +
+            `sub HP: ${LFE_HP} Hz  sat->sub: ${SAT_MIX_GAIN}`)
