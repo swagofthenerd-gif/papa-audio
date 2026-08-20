@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# Switch the whole audio stack between three states, for comparison.
+#
+#   stock  everything off: stereo, no EQ, no 5.1 — what the machine did before
+#          any of this. Jack detection picks the profile, nothing is forced.
+#   raw    discrete 5.1, but ZERO processing. No correction, no voicing, no
+#          bass reinforcement, no upmix shaping. Straight to the hardware.
+#   tuned  the full setup: 5.1 + measured correction + voicing + sub blend.
+#
+# Nothing is deleted in any mode — files are renamed aside and restored, so
+# every switch is fully reversible.
+set -uo pipefail
+
+PWD_CONF="$HOME/.config/pipewire/pipewire.conf.d"
+CLIENT="$HOME/.config/pipewire/client.conf.d"
+PULSE="$HOME/.config/pipewire/pipewire-pulse.conf.d"
+WP="$HOME/.config/wireplumber/wireplumber.conf.d"
+CARD=alsa_card.pci-0000_2b_00.4
+STATE="$HOME/.config/papa-eq/mode"
+
+on()  { [ -f "$1.off" ] && command mv -f "$1.off" "$1"; return 0; }
+off() { [ -f "$1" ] && command mv -f "$1" "$1.off"; return 0; }
+
+alsa_card_id() {
+  local d
+  for d in /sys/class/sound/card*; do
+    [ -e "$d/device" ] || continue
+    case "$(basename "$(readlink -f "$d/device")")" in
+      0000:2b:00.4) cat "$d/id" 2>/dev/null; return ;;
+    esac
+  done
+  cat /proc/asound/card1/id 2>/dev/null || echo 1
+}
+
+reload() {
+  systemctl --user restart pipewire pipewire-pulse wireplumber >/dev/null 2>&1
+  sleep 10
+}
+
+case "${1:-status}" in
+  stock)
+    off "$PWD_CONF/60-papa-eq-51.conf"
+    off "$WP/51-alc892-pin.conf"
+    off "$CLIENT/10-hifi-audio.conf"
+    off "$PULSE/10-hifi-audio.conf"
+    systemctl --user stop papa-audio-51.service >/dev/null 2>&1
+    reload
+    amixer -c "$(alsa_card_id)" sset "Channel Mode" 2ch >/dev/null 2>&1
+    pactl set-card-profile "$CARD" output:analog-stereo+input:analog-stereo >/dev/null 2>&1
+    sleep 2
+    HW=$(pactl list sinks short 2>/dev/null | awk '/analog-stereo/{print $2; exit}')
+    [ -n "$HW" ] && pactl set-default-sink "$HW" >/dev/null 2>&1
+    echo "stock" > "$STATE"
+    echo "MODE: STOCK — 2-channel stereo, no EQ, no upmix, nothing forced."
+    echo "  Set the speaker system to its stereo/2.1 input for a fair comparison."
+    ;;
+  raw)
+    off "$PWD_CONF/60-papa-eq-51.conf"
+    on  "$WP/51-alc892-pin.conf"
+    on  "$CLIENT/10-hifi-audio.conf"
+    on  "$PULSE/10-hifi-audio.conf"
+    reload
+    "$HOME/.local/bin/papa-audio-51-setup" >/dev/null 2>&1
+    HW=$(pactl list sinks short 2>/dev/null | awk '/analog-surround-51/{print $2; exit}')
+    [ -n "$HW" ] && pactl set-default-sink "$HW" >/dev/null 2>&1
+    echo "raw" > "$STATE"
+    echo "MODE: RAW 5.1 — discrete six channels, zero processing."
+    echo "  No correction, no voicing, no sub blend. Speakers on 5.1 input."
+    ;;
+  tuned)
+    on "$PWD_CONF/60-papa-eq-51.conf"
+    on "$WP/51-alc892-pin.conf"
+    on "$CLIENT/10-hifi-audio.conf"
+    on "$PULSE/10-hifi-audio.conf"
+    reload
+    "$HOME/.local/bin/papa-audio-51-setup" >/dev/null 2>&1
+    echo "tuned" > "$STATE"
+    echo "MODE: TUNED — 5.1 + measured correction + voicing + sub blend."
+    echo "  Active preset: $(pactl info 2>/dev/null | awk -F': ' '/Default Sink/{print $2}')"
+    ;;
+  *)
+    echo "current mode : $(cat "$STATE" 2>/dev/null || echo unknown)"
+    echo "default sink : $(pactl info 2>/dev/null | awk -F': ' '/Default Sink/{print $2}')"
+    echo "channel mode : $(amixer -c "$(alsa_card_id)" sget 'Channel Mode' 2>/dev/null | grep -oE "Item0: '[0-9]ch'")"
+    echo
+    echo "usage: papa-audio-mode {stock|raw|tuned}"
+    echo "  stock  stereo, nothing forced   (the original machine)"
+    echo "  raw    discrete 5.1, no processing"
+    echo "  tuned  full setup               (current default)"
+    ;;
+esac
