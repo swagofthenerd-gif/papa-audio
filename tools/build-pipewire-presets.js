@@ -193,12 +193,25 @@ function moduleFor(key, voicing) {
     }
   }
 
-  // The source's own LFE joins the mixer un-filtered; the subsonic high-pass
-  // now sits AFTER the sum so it covers all six contributions.
+  // The source's own LFE, band-limited to the crossover BEFORE the mixer.
+  //
+  // Without this the LFE channel reached the driver unfiltered: PipeWire's
+  // upmix synthesises LFE up to channelmix.lfe-cutoff, and encoders band-limit
+  // a native LFE track to ~120 Hz — both well above this subwoofer's 85 Hz
+  // ceiling. That is excursion spent on frequencies it cannot reproduce, and a
+  // direct cause of audible distortion.
+  //
+  // It goes BEFORE the mixer, matching the satellites' low-pass. Placing it
+  // after would filter the satellite bass a second time and break the
+  // crossover's complementarity.
   add(n('lfein', 'LFE'), 'copy')
   inputs.LFE = `${n('lfein', 'LFE')}:In`
   let lfeOut = `${n('lfein', 'LFE')}:Out`
   if (BASS_MGMT) {
+    lfeOut = chain(lfeOut, 'LFE', [
+      { label: 'bq_lowpass', freq: XOVER, gain: 0, q: LR_Q, tag: 'lfelp1' },
+      { label: 'bq_lowpass', freq: XOVER, gain: 0, q: LR_Q, tag: 'lfelp2' },
+    ])
     links.push(`      { output = "${lfeOut}" input = "${subMixer}:In ${mixIn}" }`)
     lfeOut = `${subMixer}:Out`
   }
@@ -304,6 +317,10 @@ for (const p of store.presets) {
       const freq = BASS_MGMT ? XOVER : LFE_HP
       for (const t of tags) entry.gains[`${p.key}_${t}_${ch}:Freq`] = freq
     }
+  }
+  if (BASS_MGMT) {
+    entry.gains[`${p.key}_lfelp1_LFE:Freq`] = XOVER
+    entry.gains[`${p.key}_lfelp2_LFE:Freq`] = XOVER
   }
   entry.gains[`${p.key}_sub1_LFE:Freq`] = LFE_HP
   entry.gains[`${p.key}_sub2_LFE:Freq`] = LFE_HP
