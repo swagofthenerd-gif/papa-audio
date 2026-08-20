@@ -19,13 +19,43 @@ high-pass. Writes `~/.cache/speakercal.json`.
 
 Needs a real terminal — it exits with instructions if stdin is not a TTY.
 
+## Realtime changes
+
+Every filter control in the chain is a live PipeWire parameter, so changing a
+gain does NOT require regenerating the config and restarting PipeWire — that
+path costs 15-20 seconds of silence. `papa-eq-apply.py` pushes stored values
+into the running graph in about 300 ms, inaudibly.
+
+    papa-eq-apply music            # apply the stored curve live
+    papa-eq-apply music --check    # report what is settable, change nothing
+
+The generator emits `~/.config/papa-eq/controls.json` listing every settable
+control, so the apply tool never re-derives naming and cannot drift from it.
+
+Zero-gain bands are omitted from the graph, so a band moving OFF zero has no
+node to set. `papa-eq-apply` exits 2 in that case and the caller rebuilds; the
+GUI does this automatically. Everything else applies live.
+
+Note `pw-dump` reports CONFIGURED values, not live ones. A control changed at
+runtime still reads its old value there — verify by measuring the audio, not
+by reading it back.
+
+## Subwoofer high-pass precedence
+
+`settings.subHighPass` (from the F&D manual: the sub is rated 25-85 Hz) takes
+precedence over `speakercal`'s by-ear `low_limit`. The by-ear figure reflects
+what was audible at the tested level, not the driver's limit, and was an octave
+pessimistic here. Re-running `speakercal` will not change the sub's high-pass
+unless you also clear `subHighPass`.
+
 ## Applying the calibration
 
 | Script | Output |
 |---|---|
-| `build-pipewire-eq.js` | 6-channel PipeWire filter-chain (**current setup**) |
-| `easyeffects-presets.js` | EasyEffects presets — stereo only, superseded |
-| `build-corrected-presets.js` | Merges calibration into the EasyEffects suite |
+| `build-pipewire-presets.js` | 6-channel PipeWire filter chains (**the generator**) |
+| `papa-eq-apply.py` | Push values into the running graph, no restart |
+| `audit-eq.py` | Verify the generated config's structural invariants |
+| `papa-audio-51-setup` | Restore 6ch mode, profile, default sink and links |
 
 `EQ_STAGE=1|2|3` on `build-pipewire-eq.js` builds the chain incrementally
 (high-pass only / plus bass / everything), which is how to debug it — a bad

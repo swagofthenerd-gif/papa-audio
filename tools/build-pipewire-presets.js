@@ -220,5 +220,32 @@ ${mods.join('\n')}
 `
 fs.mkdirSync(path.dirname(OUT), { recursive: true })
 fs.writeFileSync(OUT, conf)
+
+// Manifest of runtime-settable controls, consumed by papa-eq-apply.py.
+// Generated here rather than re-derived there: the naming and band-split rules
+// live in this file, and two implementations of them would drift.
+const manifest = { generated: new Date().toISOString(), crossover: XOVER, presets: {} }
+for (const p of store.presets) {
+  const entry = { sink: `papa_eq_${p.key}`, gains: {}, mixer: {} }
+  for (const ch of SATELLITES.concat(['LFE'])) {
+    for (const f of toneChain(p.key, ch, p.gains)) {
+      entry.gains[`${p.key}_${f.tag}_${ch}:Gain`] = f.gain
+    }
+    if (ch !== 'LFE') {
+      for (const t of ['hp1','hp2','lp1','lp2']) entry.gains[`${p.key}_${t}_${ch}:Freq`] = XOVER
+    }
+  }
+  entry.gains[`${p.key}_hp_LFE:Freq`] = LFE_HP
+  if (BASS_MGMT) {
+    const pk = pathPeaks(p.gains)
+    const trim = Math.pow(10, -Math.max(0, pk.sub - pk.sat) / 20)
+    for (let i = 1; i <= 5; i++) entry.mixer[`${p.key}_submix_LFE:Gain ${i}`] = +(SAT_MIX_GAIN * trim).toFixed(4)
+    entry.mixer[`${p.key}_submix_LFE:Gain 6`] = +trim.toFixed(4)
+  }
+  manifest.presets[p.key] = entry
+}
+const MANIFEST = path.join(os.homedir(), '.config/papa-eq/controls.json')
+fs.writeFileSync(MANIFEST, JSON.stringify(manifest, null, 2))
 console.log('wrote', OUT)
+console.log('wrote', path.join(os.homedir(), '.config/papa-eq/controls.json'))
 console.log(`  presets: ${store.presets.length}  bass management: ${BASS_MGMT ? `ON (${XOVER} Hz, redirected)` : 'OFF'}  sub HP: ${LFE_HP} Hz`)

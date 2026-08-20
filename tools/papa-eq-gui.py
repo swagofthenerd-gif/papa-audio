@@ -19,6 +19,7 @@ HOME = os.path.expanduser('~')
 STORE = os.path.join(HOME, '.config/papa-eq/presets.json')
 CAL = os.path.join(HOME, '.cache/speakercal.json')
 GEN = os.path.join(HOME, 'flac-player/tools/build-pipewire-presets.js')
+APPLY = os.path.join(HOME, '.local/bin/papa-eq-apply')
 LIMIT = 12
 
 # Frequencies mean nothing without knowing what they do to the sound. These
@@ -268,9 +269,36 @@ class PapaEQ(QWidget):
         self.store.setdefault('settings', {})['lfeBoost'] = self.lfe.value()
         self.store['settings']['crossover'] = self.xover.value()
         save_store(self.store)
-        self._regenerate()
+
+        # Regenerate the config so the change survives a reboot, then push the
+        # values into the RUNNING graph. Every filter control is a live
+        # PipeWire parameter, so this is ~300 ms and inaudible, instead of the
+        # 15-20 seconds of silence a PipeWire restart costs.
+        self.status.setText('Applying…')
+        QApplication.processEvents()
+        r = subprocess.run(['node', GEN], capture_output=True, text=True)
+        if r.returncode != 0:
+            QMessageBox.critical(self, 'Papa EQ', f'Generator failed:\n{r.stderr[:500]}')
+            return
+        rc = _run([APPLY, p['key']])
+        if rc == 2:
+            # A band moved off zero, so its filter does not exist in the graph
+            # yet. Only that case needs the slow path.
+            self.status.setText('New band added — rebuilding…')
+            QApplication.processEvents()
+            self._reload_pipewire()
+        elif rc != 0:
+            self.status.setText('Apply failed — try Activate')
+        else:
+            self.status.setText('Applied live')
+            QTimer.singleShot(2500, self._refresh_active)
         self.dirty = False
         self.save_btn.setEnabled(False)
+
+    def _reload_pipewire(self):
+        subprocess.run(['systemctl', '--user', 'restart', 'pipewire', 'pipewire-pulse', 'wireplumber'],
+                       capture_output=True)
+        QTimer.singleShot(9000, self._after_reload)
 
     def _regenerate(self):
         self.status.setText('Rebuilding filter graph…')

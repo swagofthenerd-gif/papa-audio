@@ -24,14 +24,19 @@ if [ $# -eq 0 ]; then
     mark="  "; [ "$s" = "$cur" ] && mark="* "
     printf "%s%-14s %s\n" "$mark" "${s#papa_eq_}" "$(desc_of "$s")"
   done < <(list_sinks)
-  echo
-  echo "Same presets for native 5.1 sources (LFE untouched) — add 51:"
-  while read -r s; do
-    [ -z "$s" ] && continue
-    case "$s" in *51) ;; *) continue ;; esac
-    mark="  "; [ "$s" = "$cur" ] && mark="* "
-    printf "%s%-14s\n" "$mark" "${s#papa_eq_}"
-  done < <(list_sinks)
+  # The "51" variants only exist when the LFE boost is non-zero — at zero they
+  # would be byte-identical to the plain sinks, so the generator skips them.
+  # Listing them unconditionally advertised presets that do not exist.
+  if list_sinks | grep -q '51$'; then
+    echo
+    echo "Same presets for native 5.1 sources (LFE untouched) — add 51:"
+    while read -r s; do
+      [ -z "$s" ] && continue
+      case "$s" in *51) ;; *) continue ;; esac
+      mark="  "; [ "$s" = "$cur" ] && mark="* "
+      printf "%s%-14s\n" "$mark" "${s#papa_eq_}"
+    done < <(list_sinks)
+  fi
   echo
   echo "Active: ${cur:-none}"
   echo "  ('eqmode off' bypasses the EQ entirely)"
@@ -66,6 +71,9 @@ if ! list_sinks | grep -qx "$want"; then
 fi
 
 pactl set-default-sink "$want" >/dev/null 2>&1 || { echo "failed to set default sink" >&2; exit 1; }
+# Remember the choice so papa-audio-51.service restores it at login.
+mkdir -p "$HOME/.config/papa-eq" 2>/dev/null
+printf '%s\n' "$want" > "$HOME/.config/papa-eq/active" 2>/dev/null || true
 # Move anything already playing, otherwise running apps stay on the old preset.
 for i in $(pactl list sink-inputs short 2>/dev/null | cut -f1); do
   pactl move-sink-input "$i" "$want" >/dev/null 2>&1

@@ -8,25 +8,34 @@ set -uo pipefail
 CONF="$HOME/.config/pipewire/pipewire.conf.d/60-papa-eq-51.conf"
 OFF="$CONF.disabled"
 
+# $1 = "with-service" to let papa-audio-51.service pick the default sink.
+# When turning the EQ OFF that must be skipped: the service selects a papa_eq_*
+# sink, which no longer exists once the chains are unloaded, so it would either
+# fail or drag the EQ back.
 reload() {
   systemctl --user restart pipewire pipewire-pulse wireplumber >/dev/null 2>&1
   sleep 8
-  systemctl --user restart papa-audio-51.service >/dev/null 2>&1
-  sleep 10
+  if [ "${1:-}" = "with-service" ]; then
+    systemctl --user restart papa-audio-51.service >/dev/null 2>&1
+    sleep 10
+  fi
 }
 
 case "${1:-status}" in
   off)
-    [ -f "$CONF" ] && mv "$CONF" "$OFF"
+    [ -f "$CONF" ] && command mv -f "$CONF" "$OFF"
     reload
     pactl set-card-profile alsa_card.pci-0000_2b_00.4 \
       output:analog-surround-51+input:analog-stereo >/dev/null 2>&1
+    sleep 2
+    HW=$(pactl list sinks short 2>/dev/null | awk '/analog-surround-51/{print $2; exit}')
+    [ -n "$HW" ] && pactl set-default-sink "$HW" >/dev/null 2>&1
     echo "Papa EQ OFF — audio goes straight to the 5.1 output."
     echo "  No correction, no bass management, no upmix shaping."
     ;;
   on)
-    [ -f "$OFF" ] && mv "$OFF" "$CONF"
-    reload
+    [ -f "$OFF" ] && command mv -f "$OFF" "$CONF"
+    reload with-service
     "$HOME/.local/bin/papa-eq-relink" >/dev/null 2>&1
     echo "Papa EQ ON — $(pactl info | awk -F': ' '/Default Sink/{print $2}')"
     ;;

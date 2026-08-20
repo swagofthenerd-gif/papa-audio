@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Restore the 5.1 audio setup. Run at login by papa-audio-51.service, and safe
+# to run by hand any time sound goes missing or collapses to two speakers.
+#
+# This lives in a script rather than the unit's ExecStart because the logic
+# needs nested quoting (awk programs, command substitution) that systemd's
+# single-quoted ExecStart cannot express — an earlier inline version failed
+# with "unexpected EOF".
+set -uo pipefail
+CARD=alsa_card.pci-0000_2b_00.4
+PROFILE=output:analog-surround-51+input:analog-stereo
+ACTIVE="$HOME/.config/papa-eq/active"
+
+sleep 5
+
+# The codec boots in 2ch mode. While it is, PipeWire's analog-surround-51
+# profile does not exist at all, so this must come first.
+amixer -c 1 sset "Channel Mode" 6ch >/dev/null 2>&1
+for c in Master PCM Front Surround Center LFE; do
+  amixer -c 1 sset "$c" 100% unmute >/dev/null 2>&1
+done
+
+sleep 2
+pactl set-card-profile "$CARD" "$PROFILE" >/dev/null 2>&1
+sleep 2
+
+sink_exists() { pactl list sinks short 2>/dev/null | awk '{print $2}' | grep -qx "$1"; }
+
+# Prefer the preset the user last selected; fall back to any EQ sink, then to
+# the hardware sink so an EQ-off setup still gets a working default.
+SINK=$(cat "$ACTIVE" 2>/dev/null || true)
+if [ -z "$SINK" ] || ! sink_exists "$SINK"; then
+  SINK=$(pactl list sinks short 2>/dev/null | awk '$2 ~ /^papa_eq_/ {print $2; exit}')
+fi
+if [ -z "$SINK" ]; then
+  SINK=$(pactl list sinks short 2>/dev/null | awk '/analog-surround-51/{print $2; exit}')
+fi
+[ -n "$SINK" ] && pactl set-default-sink "$SINK" >/dev/null 2>&1
+
+"$HOME/.local/bin/papa-eq-relink" >/dev/null 2>&1
+
+echo "papa-audio-51: 6ch, $PROFILE, default=${SINK:-none}"
