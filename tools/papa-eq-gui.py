@@ -13,13 +13,24 @@ import json, os, string, subprocess, sys
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QListWidget, QListWidgetItem, QSlider, QPushButton,
-                             QMessageBox, QInputDialog, QGroupBox, QFrame, QCheckBox)
+                             QMessageBox, QInputDialog, QGroupBox, QFrame, QCheckBox,
+                             QRadioButton, QButtonGroup)
 
 HOME = os.path.expanduser('~')
 STORE = os.path.join(HOME, '.config/papa-eq/presets.json')
 CAL = os.path.join(HOME, '.cache/speakercal.json')
 GEN = os.path.join(HOME, 'flac-player/tools/build-pipewire-presets.js')
 APPLY = os.path.join(HOME, '.local/bin/papa-eq-apply')
+MODEBIN = os.path.join(HOME, '.local/bin/papa-audio-mode')
+MODEFILE = os.path.join(HOME, '.config/papa-eq/mode')
+
+# Switching mode restarts PipeWire, so it is not the instant operation that
+# switching a preset is. The labels say what each one actually removes.
+MODES = [
+    ('tuned', 'Tuned 5.1',   'Correction + voicing + sub blend'),
+    ('raw',   'Raw 5.1',     'Six channels, no processing at all'),
+    ('stock', 'Stock stereo', 'Two channels, nothing forced'),
+]
 LIMIT = 12
 
 # Frequencies mean nothing without knowing what they do to the sound. These
@@ -76,6 +87,7 @@ class PapaEQ(QWidget):
         self.resize(760, 460)
         self._build()
         self._reload_list()
+        self._refresh_mode()
         QTimer(self, timeout=self._refresh_active, interval=3000).start()
 
     def _confirm_discard(self):
@@ -109,6 +121,21 @@ class PapaEQ(QWidget):
         root.addLayout(left, 0)
 
         right = QVBoxLayout()
+
+        mbox = QGroupBox('Sound mode')
+        ml = QHBoxLayout(mbox)
+        self.mode_group = QButtonGroup(self)
+        self.mode_buttons = {}
+        for key, label, hint in MODES:
+            rb = QRadioButton(label)
+            rb.setToolTip(hint)
+            rb.clicked.connect(lambda _, k=key: self._on_mode(k))
+            self.mode_group.addButton(rb)
+            self.mode_buttons[key] = rb
+            ml.addWidget(rb)
+        ml.addStretch(1)
+        right.addWidget(mbox)
+
         self.title = QLabel('<b>—</b>')
         right.addWidget(self.title)
 
@@ -230,11 +257,68 @@ class PapaEQ(QWidget):
         self.save_btn.setEnabled(True)
 
     def _refresh_active(self):
+        self._refresh_mode()
         cur = sh("pactl info | awk -F': ' '/Default Sink/{print $2}'")
+        mode = self._read_mode()
         if cur.startswith('papa_eq_'):
             self.status.setText(f'Active: <b>{cur[len("papa_eq_"):]}</b>')
+        elif mode == 'tuned':
+            # The recorded mode once disagreed with reality — the EQ config was
+            # parked aside while the mode file still claimed tuned. Say so
+            # rather than showing a mode that is not actually running.
+            self.status.setText(
+                f'<b>Mode says Tuned but the EQ is not running</b> — output is {cur or "none"}.<br>'
+                'Re-select Tuned above to rebuild it.')
         else:
             self.status.setText(f'Active: {cur or "none"} — <b>not an EQ preset</b>')
+
+    def _read_mode(self):
+        try:
+            with open(MODEFILE) as fh:
+                return fh.read().strip()
+        except OSError:
+            return 'tuned'
+
+    def _refresh_mode(self):
+        """Reflect the mode without emitting clicked() and re-triggering a switch."""
+        cur = self._read_mode()
+        rb = self.mode_buttons.get(cur)
+        if rb and not rb.isChecked():
+            self.mode_group.setExclusive(False)
+            for b in self.mode_buttons.values():
+                b.setChecked(False)
+            rb.setChecked(True)
+            self.mode_group.setExclusive(True)
+        # Presets are filter-chain sinks; outside tuned mode they do not exist.
+        tuned = cur == 'tuned'
+        self.list.setEnabled(tuned)
+        for s_ in self.sliders:
+            s_.setEnabled(tuned)
+
+    def _on_mode(self, key):
+        if key == self._read_mode():
+            return
+        if self.dirty and not self._confirm_discard():
+            self._refresh_mode()
+            return
+        _, label, hint = next(m for m in MODES if m[0] == key)
+        if QMessageBox.question(
+                self, 'Papa EQ',
+                f'Switch to <b>{label}</b>?<br>{hint}<br><br>'
+                'This restarts PipeWire — audio drops for about 15 seconds.'
+        ) != QMessageBox.StandardButton.Yes:
+            self._refresh_mode()
+            return
+        self.setEnabled(False)
+        self.status.setText(f'Switching to {label}…')
+        QApplication.processEvents()
+        try:
+            subprocess.run([MODEBIN, key], capture_output=True, timeout=120)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            QMessageBox.critical(self, 'Papa EQ', f'Mode switch failed:\n{e}')
+        self.setEnabled(True)
+        self._refresh_mode()
+        self._refresh_active()
 
     # ---------- actions ----------
     def _activate(self):

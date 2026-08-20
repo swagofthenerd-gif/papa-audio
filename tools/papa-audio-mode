@@ -64,6 +64,7 @@ case "${1:-status}" in
     HW=$(pactl list sinks short 2>/dev/null | awk '/analog-surround-51/{print $2; exit}')
     [ -n "$HW" ] && pactl set-default-sink "$HW" >/dev/null 2>&1
     echo "raw" > "$STATE"
+    "$0" verify | grep -q '^OK' || echo "  WARNING: end state does not match — run: papa-audio-mode verify"
     echo "MODE: RAW 5.1 — discrete six channels, zero processing."
     echo "  No correction, no voicing, no sub blend. Speakers on 5.1 input."
     ;;
@@ -75,8 +76,26 @@ case "${1:-status}" in
     reload
     "$HOME/.local/bin/papa-audio-51-setup" >/dev/null 2>&1
     echo "tuned" > "$STATE"
+    "$0" verify | grep -q '^OK' || echo "  WARNING: end state does not match — run: papa-audio-mode verify"
     echo "MODE: TUNED — 5.1 + measured correction + voicing + sub blend."
     echo "  Active preset: $(pactl info 2>/dev/null | awk -F': ' '/Default Sink/{print $2}')"
+    ;;
+  verify)
+    want=$(cat "$STATE" 2>/dev/null || echo unknown)
+    eq=$(pactl list sinks short 2>/dev/null | grep -c papa_eq)
+    prof=$(pactl list cards 2>/dev/null | sed -n "/$CARD/,/^Card #/p" | awk '/Active Profile/{print $3}')
+    rc=0
+    case "$want" in
+      tuned) [ "$eq" -gt 0 ] || { echo "MISMATCH: mode=tuned but no EQ sinks"; rc=1; }
+             case "$prof" in *surround-51*) ;; *) echo "MISMATCH: mode=tuned but profile=$prof"; rc=1 ;; esac ;;
+      raw)   [ "$eq" -eq 0 ] || { echo "MISMATCH: mode=raw but $eq EQ sinks present"; rc=1; }
+             case "$prof" in *surround-51*) ;; *) echo "MISMATCH: mode=raw but profile=$prof"; rc=1 ;; esac ;;
+      stock) [ "$eq" -eq 0 ] || { echo "MISMATCH: mode=stock but $eq EQ sinks present"; rc=1; }
+             case "$prof" in *stereo*) ;; *) echo "MISMATCH: mode=stock but profile=$prof"; rc=1 ;; esac ;;
+      *)     echo "MISMATCH: unknown mode '$want'"; rc=1 ;;
+    esac
+    [ $rc -eq 0 ] && echo "OK: $want"
+    exit $rc
     ;;
   *)
     echo "current mode : $(cat "$STATE" 2>/dev/null || echo unknown)"
@@ -84,7 +103,8 @@ case "${1:-status}" in
     echo "channel mode : $(amixer -c "$(alsa_card_id)" sget 'Channel Mode' 2>/dev/null | grep -oE "Item0: '[0-9]ch'")"
     echo
     echo "usage: papa-audio-mode {stock|raw|tuned}"
-    echo "  stock  stereo, nothing forced   (the original machine)"
+    echo "  stock  stereo, nothing forced   (the original machine)
+  verify checks the real state matches the recorded mode"
     echo "  raw    discrete 5.1, no processing"
     echo "  tuned  full setup               (current default)"
     ;;
