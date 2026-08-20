@@ -168,14 +168,28 @@ function moduleFor(key, voicing) {
     }
   }
 
-  // The source's own LFE, high-passed at the driver's floor.
-  add(n('hp', 'LFE'), 'bq_highpass', `"Freq" = ${LFE_HP} "Q" = 0.7 "Gain" = 0`)
-  inputs.LFE = `${n('hp', 'LFE')}:In`
-  let lfeOut = `${n('hp', 'LFE')}:Out`
+  // The source's own LFE joins the mixer un-filtered; the subsonic high-pass
+  // now sits AFTER the sum so it covers all six contributions.
+  add(n('lfein', 'LFE'), 'copy')
+  inputs.LFE = `${n('lfein', 'LFE')}:In`
+  let lfeOut = `${n('lfein', 'LFE')}:Out`
   if (BASS_MGMT) {
     links.push(`      { output = "${lfeOut}" input = "${subMixer}:In ${mixIn}" }`)
     lfeOut = `${subMixer}:Out`
   }
+  // Subsonic protection, 4th order, on the SUMMED sub signal.
+  //
+  // Previously this was a single 2nd-order section on the LFE INPUT only, so
+  // the five satellite low-pass feeds reached the driver with no subsonic
+  // filter at all — and on stereo music, where the LFE channel is empty, that
+  // meant essentially none of the sub's content was protected. A 12 dB/oct
+  // slope also merely cancels the rising excursion below port tuning rather
+  // than reducing it; two cascaded sections give a real 24 dB/oct rumble
+  // filter.
+  lfeOut = chain(lfeOut, 'LFE', [
+    { label: 'bq_highpass', freq: LFE_HP, gain: 0, q: LR_Q, tag: 'sub1' },
+    { label: 'bq_highpass', freq: LFE_HP, gain: 0, q: LR_Q, tag: 'sub2' },
+  ])
   outputs.LFE = chain(lfeOut, 'LFE', toneChain(key, 'LFE', voicing.gains))
 
   // Every mixer input at SAT_MIX_GAIN (1.0 by default). The native LFE track
@@ -265,7 +279,8 @@ for (const p of store.presets) {
       for (const t of tags) entry.gains[`${p.key}_${t}_${ch}:Freq`] = freq
     }
   }
-  entry.gains[`${p.key}_hp_LFE:Freq`] = LFE_HP
+  entry.gains[`${p.key}_sub1_LFE:Freq`] = LFE_HP
+  entry.gains[`${p.key}_sub2_LFE:Freq`] = LFE_HP
   if (BASS_MGMT) {
     for (let i = 1; i <= 5; i++) entry.mixer[`${p.key}_submix_LFE:Gain ${i}`] = +SAT_MIX_GAIN.toFixed(4)
     entry.mixer[`${p.key}_submix_LFE:Gain 6`] = 1.0
