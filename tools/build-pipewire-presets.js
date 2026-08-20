@@ -1,105 +1,177 @@
 'use strict'
-// Builds several 6-channel EQ sinks — one per preset — all fed from the same
-// measured correction and all targeting the 5.1 hardware sink.
+// Builds one 6-channel EQ sink per preset, with TRUE bass management.
 //
-// Why one sink per preset rather than one sink that gets rewritten: a
-// filter-chain is defined statically in config and only loads at daemon start,
-// so changing a preset in place would mean restarting PipeWire and dropping
-// every stream. Running them side by side makes switching a default-sink
-// change, which is instant. Idle chains cost nothing while suspended.
+// Each satellite is split: the high-passed part goes to its own speaker, the
+// low-passed part is summed into the subwoofer along with the source's own LFE.
+// That redirection is the whole point — an earlier version only high-passed the
+// satellites, which DELETED their bass instead of moving it. On upmixed stereo
+// that was masked (PipeWire builds LFE from the full-range mix beforehand), but
+// on native 5.1 it threw away the bass from five channels and left the sound
+// shallow.
+//
+// Preset switching is a default-sink change, which is instant, so every preset
+// is its own sink. A filter graph is only built when the daemon starts.
 const fs = require('fs')
 const path = require('path')
 const os = require('os')
 
 const CAL = path.join(os.homedir(), '.cache/speakercal.json')
+const STORE = path.join(os.homedir(), '.config/papa-eq/presets.json')
 const OUT = path.join(os.homedir(), '.config/pipewire/pipewire.conf.d/60-papa-eq-51.conf')
 const TARGET = 'alsa_output.pci-0000_2b_00.4.analog-surround-51'
+
+const SATELLITES = ['FL', 'FR', 'FC', 'RL', 'RR']
 const CHANNELS = ['FL', 'FR', 'FC', 'LFE', 'RL', 'RR']
-let BANDS = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
 
-const cal = fs.existsSync(CAL) ? JSON.parse(fs.readFileSync(CAL, 'utf8')) : {}
-const corrections = cal.corrections || []
-const hpFreq = cal.low_limit ? Math.max(28, Math.round(cal.low_limit * 0.9)) : 35
-
-// Voicings live in ~/.config/papa-eq/presets.json so the GUI and this
-// generator share one source of truth. The measured correction sits underneath
-// every one of them.
-const STORE = path.join(os.homedir(), '.config/papa-eq/presets.json')
-if (!fs.existsSync(STORE)) {
-  console.error(`No preset store at ${STORE}`)
-  process.exit(1)
-}
+if (!fs.existsSync(STORE)) { console.error(`No preset store at ${STORE}`); process.exit(1) }
 const store = JSON.parse(fs.readFileSync(STORE, 'utf8'))
-if (Array.isArray(store.bands)) BANDS = store.bands
-const VOICINGS = {}
-for (const p of store.presets) VOICINGS[p.key] = { label: p.label, gains: p.gains }
+const cal = fs.existsSync(CAL) ? JSON.parse(fs.readFileSync(CAL, 'utf8')) : {}
+const BANDS = store.bands || [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
+const corrections = cal.corrections || []
+const settings = store.settings || {}
+
+const XOVER = settings.crossover || 100
+const LFE_BOOST_DB = settings.lfeBoost || 0
+const BASS_MGMT = settings.bassManagement !== false
+// The sub is high-passed at its measured floor: below that it produces no
+// output while still consuming excursion and headroom.
+// Sit just ABOVE the measured floor, not at it. A driver at its limit is
+// already distorting; the last few Hz cost excursion and headroom while
+// producing almost nothing audible.
+const LFE_HP = settings.subHighPass || (cal.low_limit ? Math.round(cal.low_limit * 1.1) : 35)
+// Summing five satellites' bass into one driver overloads a modest subwoofer
+// long before it clips digitally — it simply runs out of excursion. Each
+// contribution is attenuated; lower this if the sub distorts, raise it if the
+// bass feels weak.
+const SAT_MIX_GAIN = settings.subMixGain != null ? settings.subMixGain : 0.30
+// Each section of a Linkwitz-Riley pair is a Butterworth section.
+const LR_Q = 0.7071
 
 const clamp = v => Math.max(-12, Math.min(12, v))
-// Boosts eat headroom; give back exactly what the curve's peak consumes.
-const preampFor = g => { const p = Math.max(0, ...g); return p > 0 ? -Math.round(p) : 0 }
+// Headroom must be reckoned per PATH, not per preset. The sink's volume applies
+// to every channel, so taking the peak across all bands penalises the
+// satellites for a boost that — after the crossover split — only ever reaches
+// the subwoofer. On a bass-forward voicing that leaves the satellites several
+// dB quieter than the sub and skews the whole balance bass-heavy.
+//
+// So: set the sink volume from the SATELLITE peak, then scale the sub mixer by
+// the difference so the sub path keeps the same headroom without clipping.
+const peakOf = vals => Math.max(0, ...vals)
 
-// A generated LFE channel arrives about 10 dB quieter than it should. Real 5.1
-// content records LFE 10 dB down and expects the decoder to add that back —
-// it is headroom for cinema bass. PipeWire's upmix synthesises the channel but
-// does not apply the convention, so the subwoofer is left barely audible.
-// A low shelf restores it without touching anything above the crossover.
-const LFE_BOOST_DB = (store.settings && store.settings.lfeBoost != null) ? store.settings.lfeBoost : 0
-const LFE_SHELF_HZ = 120
+function pathPeaks(gains) {
+  if (!BASS_MGMT) { const p = peakOf(gains); return { sat: p, sub: p } }
+  const sat = peakOf(gains.filter((_, i) => BANDS[i] >= XOVER))
+  const sub = peakOf(gains.filter((_, i) => BANDS[i] <= XOVER))
+  return { sat, sub }
+}
 
-// Bass management, as an AV receiver does it. Small satellites reproduce bass
-// badly — diffuse and distorted — and the upmix COPIES low frequencies into
-// the LFE channel without removing them from the fronts, so both play it. High
-// passing the satellites at the crossover leaves bass solely to the subwoofer,
-// which both cleans up the midrange and makes the sub the thing you feel.
-const SAT_CROSSOVER_HZ = (store.settings && store.settings.crossover) || 100
+// Voicing + measured correction for one channel, as a serial chain.
+//
+// Bands are split at the crossover: a filter only goes to the output that
+// actually carries that frequency. Boosting 125 Hz on a subwoofer rated to
+// 85 Hz buys cone excursion and no output — it was a direct cause of audible
+// distortion — and a 62 Hz filter on a satellite high-passed at 80 Hz is
+// equally pointless while lifting the crossover skirt.
+function inBand(ch, freq) {
+  if (!BASS_MGMT) return true
+  return ch === 'LFE' ? freq <= XOVER : freq >= XOVER
+}
 
-// lfeBoost is applied only to the upmix variant. A synthesised LFE arrives
-// about 10 dB below where the standard puts it; a native 5.1 mix already
-// carries a properly-levelled LFE, so boosting that would just make real
-// surround music boomy. The chain cannot tell the two apart once the audio
-// reaches it — both are simply six channels — so each preset gets two sinks
-// and the source decides which one to use.
-function filtersFor(ch, gains, lfeBoost) {
-  // The subwoofer is high-passed AT its measured limit, not below it. Feeding
-  // it content it cannot reproduce buys cone excursion and distortion instead
-  // of output — audible immediately on bass-heavy material like film trailers,
-  // which carry far more low-frequency energy than music.
-  const lfeHp = cal.low_limit ? Math.round(cal.low_limit) : hpFreq
-  const satHp = ch === 'LFE' ? lfeHp : Math.max(hpFreq, SAT_CROSSOVER_HZ)
-  const out = [{ label: 'bq_highpass', freq: satHp, gain: 0, q: 0.7, tag: 'hp' }]
-  if (ch === 'LFE' && lfeBoost && LFE_BOOST_DB > 0) {
-    out.push({ label: 'bq_lowshelf', freq: LFE_SHELF_HZ, gain: LFE_BOOST_DB, q: 0.7, tag: 'lfeboost' })
-  }
+function toneChain(key, ch, gains) {
+  const out = []
   gains.forEach((g, i) => {
     if (g === 0) return
-    if (ch === 'LFE' && BANDS[i] > 300) return
+    if (!inBand(ch, BANDS[i])) return
     out.push({ label: 'bq_peaking', freq: BANDS[i], gain: clamp(g), q: 1.0, tag: `v${BANDS[i]}` })
   })
   for (const c of corrections) {
-    if (ch === 'LFE' && c.freq > 300) continue
+    if (!inBand(ch, c.freq)) continue
     out.push({ label: 'bq_peaking', freq: c.freq, gain: c.gain, q: c.q, tag: `c${c.freq}` })
+  }
+  if (ch === 'LFE' && LFE_BOOST_DB > 0) {
+    out.push({ label: 'bq_lowshelf', freq: 120, gain: LFE_BOOST_DB, q: 0.7, tag: 'lfeboost' })
   }
   return out
 }
 
-function moduleFor(key, voicing, lfeBoost) {
-  const nodes = []; const links = []; const inputs = []; const outputs = []
-  for (const ch of CHANNELS) {
-    const chain = filtersFor(ch, voicing.gains, lfeBoost)
-    const names = chain.map(f => `${key}_${f.tag}_${ch}`)
-    chain.forEach((f, i) => {
-      nodes.push(`      { type = builtin name = ${names[i]} label = ${f.label} ` +
-                 `control = { "Freq" = ${f.freq} "Q" = ${f.q} "Gain" = ${f.gain} } }`)
-      if (i > 0) links.push(`      { output = "${names[i - 1]}:Out" input = "${names[i]}:In" }`)
-    })
-    inputs.push(`"${names[0]}:In"`)
-    outputs.push(`"${names[names.length - 1]}:Out"`)
+function moduleFor(key, voicing) {
+  const peaks = pathPeaks(voicing.gains)
+  const nodes = []; const links = []
+  const inputs = {}; const outputs = {}
+  const n = (t, ch) => `${key}_${t}_${ch}`
+  const add = (name, label, control) =>
+    nodes.push(`      { type = builtin name = ${name} label = ${label}` +
+               (control ? ` control = { ${control} } }` : ' }'))
+  const chain = (startPort, ch, filters) => {
+    let prev = startPort
+    for (const f of filters) {
+      const name = n(f.tag, ch)
+      add(name, f.label, `"Freq" = ${f.freq} "Q" = ${f.q} "Gain" = ${f.gain}`)
+      links.push(`      { output = "${prev}" input = "${name}:In" }`)
+      prev = `${name}:Out`
+    }
+    return prev
   }
-  const preamp = preampFor(voicing.gains)
+
+  const subMixer = n('submix', 'LFE')
+  if (BASS_MGMT) add(subMixer, 'mixer')
+  let mixIn = 1
+
+  for (const ch of SATELLITES) {
+    if (BASS_MGMT) {
+      // Split: the copy feeds both the speaker path and the sub path.
+      add(n('split', ch), 'copy')
+      inputs[ch] = `${n('split', ch)}:In`
+      // Linkwitz-Riley 4th order: two cascaded Butterworth sections per side.
+      // A single Butterworth section is -3 dB at the corner, so its high-pass
+      // and low-pass halves sum to a +3 dB PEAK at the crossover. Cascading two
+      // gives -6 dB, which sums flat. With five satellites feeding the sub that
+      // bump sat right where the driver was already working hardest.
+      const hpOut = chain(`${n('split', ch)}:Out`, ch, [
+        { label: 'bq_highpass', freq: XOVER, gain: 0, q: LR_Q, tag: 'hp1' },
+        { label: 'bq_highpass', freq: XOVER, gain: 0, q: LR_Q, tag: 'hp2' },
+      ])
+      const lpOut = chain(`${n('split', ch)}:Out`, ch, [
+        { label: 'bq_lowpass', freq: XOVER, gain: 0, q: LR_Q, tag: 'lp1' },
+        { label: 'bq_lowpass', freq: XOVER, gain: 0, q: LR_Q, tag: 'lp2' },
+      ])
+      links.push(`      { output = "${lpOut}" input = "${subMixer}:In ${mixIn}" }`)
+      mixIn++
+      outputs[ch] = chain(hpOut, ch, toneChain(key, ch, voicing.gains))
+    } else {
+      add(n('hp', ch), 'bq_highpass', `"Freq" = ${LFE_HP} "Q" = 0.7 "Gain" = 0`)
+      inputs[ch] = `${n('hp', ch)}:In`
+      outputs[ch] = chain(`${n('hp', ch)}:Out`, ch, toneChain(key, ch, voicing.gains))
+    }
+  }
+
+  // The source's own LFE, high-passed at the driver's floor.
+  add(n('hp', 'LFE'), 'bq_highpass', `"Freq" = ${LFE_HP} "Q" = 0.7 "Gain" = 0`)
+  inputs.LFE = `${n('hp', 'LFE')}:In`
+  let lfeOut = `${n('hp', 'LFE')}:Out`
+  if (BASS_MGMT) {
+    links.push(`      { output = "${lfeOut}" input = "${subMixer}:In ${mixIn}" }`)
+    lfeOut = `${subMixer}:Out`
+  }
+  outputs.LFE = chain(lfeOut, 'LFE', toneChain(key, 'LFE', voicing.gains))
+
+  // The sink volume now only covers the satellite peak, so any extra boost on
+  // the sub path has to come out of the mixer or it clips.
+  const subTrim = Math.pow(10, -Math.max(0, peaks.sub - peaks.sat) / 20)
+  const gains = BASS_MGMT
+    ? Array.from({ length: mixIn }, (_, i) =>
+        `"Gain ${i + 1}" = ${((i === mixIn - 1 ? 1.0 : SAT_MIX_GAIN) * subTrim).toFixed(4)}`).join(' ')
+    : ''
+  if (BASS_MGMT) {
+    const idx = nodes.findIndex(x => x.includes(`name = ${subMixer} `))
+    nodes[idx] = `      { type = builtin name = ${subMixer} label = mixer control = { ${gains} } }`
+  }
+
+  const preamp = peaks.sat > 0 ? -Math.round(peaks.sat) : 0
   return `  { name = libpipewire-module-filter-chain
     args = {
-      node.description = "Papa EQ — ${voicing.label}${lfeBoost ? '' : ' [5.1 direct]'}"
-      media.name       = "Papa EQ — ${voicing.label}${lfeBoost ? '' : ' [5.1 direct]'}"
+      node.description = "Papa EQ — ${voicing.label}"
+      media.name       = "Papa EQ — ${voicing.label}"
       filter.graph = {
         nodes = [
 ${nodes.join('\n')}
@@ -107,28 +179,17 @@ ${nodes.join('\n')}
         links = [
 ${links.join('\n')}
         ]
-        inputs  = [ ${inputs.join(' ')} ]
-        outputs = [ ${outputs.join(' ')} ]
+        inputs  = [ ${CHANNELS.map(c => `"${inputs[c]}"`).join(' ')} ]
+        outputs = [ ${CHANNELS.map(c => `"${outputs[c]}"`).join(' ')} ]
       }
       capture.props = {
         node.name        = "papa_eq_${key}"
-        node.description = "Papa EQ — ${voicing.label}${lfeBoost ? '' : ' [5.1 direct]'}"
+        node.description = "Papa EQ — ${voicing.label}"
         media.class      = Audio/Sink
         audio.channels   = 6
         audio.position   = [ FL FR FC LFE RL RR ]
         channelmix.normalize = false
-        node.latency     = 1024/48000
-        # Stereo sources have nothing in the centre or rears. Passive surround
-        # decoding derives a centre from what the two channels share and rears
-        # from what differs, so music and YouTube use all six speakers instead
-        # of two. Without this, 'auto' simply pads the extra channels with
-        # silence.
-        channelmix.upmix        = true
-        channelmix.upmix-method = psd
-        channelmix.lfe-cutoff   = 120
-        channelmix.fc-cutoff    = 12000
-        channelmix.rear-delay   = 12.0
-${preamp !== 0 ? `        # headroom for this curve's peak boost\n        volume = ${Math.pow(10, preamp / 20).toFixed(4)}` : ''}
+${preamp !== 0 ? `        volume = ${Math.pow(10, preamp / 20).toFixed(4)}` : ''}
       }
       playback.props = {
         node.name      = "papa_eq_${key}_out"
@@ -136,12 +197,6 @@ ${preamp !== 0 ? `        # headroom for this curve's peak boost\n        volume
         audio.channels = 6
         audio.position = [ FL FR FC LFE RL RR ]
         target.object  = "${TARGET}"
-        # Without this, an unresolvable target makes a passive output
-        # auto-connect to the CURRENT DEFAULT SINK — which is another preset.
-        # The chains then daisy-chain into each other and audio never reaches
-        # the hardware. The 5.1 sink does not exist yet when these load,
-        # because the card profile is applied seconds later, so autoconnect is
-        # disabled and papa-eq-relink asserts the links once it appears.
         node.dont-reconnect = true
         node.autoconnect    = false
       }
@@ -149,23 +204,15 @@ ${preamp !== 0 ? `        # headroom for this curve's peak boost\n        volume
   }`
 }
 
-// The "51" variant exists only to skip the LFE boost. With the boost at 0 the
-// two are byte-identical, so generating both would double the node count for
-// nothing.
-const mods = []
-for (const [k, v] of Object.entries(VOICINGS)) {
-  mods.push(moduleFor(k, v, true))
-  if (LFE_BOOST_DB > 0) mods.push(moduleFor(`${k}51`, v, false))
-}
-const conf = `# Papa EQ — switchable 6-channel presets, generated by
-# flac-player/tools/build-pipewire-presets.js from ~/.cache/speakercal.json
+const mods = store.presets.map(p => moduleFor(p.key, { label: p.label, gains: p.gains }))
+const conf = `# Papa EQ — generated by flac-player/tools/build-pipewire-presets.js
 #
-# Measured on this system:
-#   low-frequency limit : ${cal.low_limit || '?'} Hz  -> high-pass at ${hpFreq} Hz
+# Measured: low-frequency limit ${cal.low_limit || '?'} Hz
 ${corrections.map(c => `#   ${String(c.freq).padStart(5)} Hz  ${c.gain} dB  Q=${c.q}`).join('\n')}
 #
-# Every preset applies that correction underneath its voicing.
-# Switch with:  eqmode <name>      List with:  eqmode
+# Bass management: ${BASS_MGMT ? `ON — satellites crossed over at ${XOVER} Hz, their low
+# frequencies SUMMED into the subwoofer (not discarded)` : 'OFF — satellites run full range'}
+# Subwoofer high-pass: ${LFE_HP} Hz${LFE_BOOST_DB ? `, +${LFE_BOOST_DB} dB shelf` : ''}
 
 context.modules = [
 ${mods.join('\n')}
@@ -174,6 +221,4 @@ ${mods.join('\n')}
 fs.mkdirSync(path.dirname(OUT), { recursive: true })
 fs.writeFileSync(OUT, conf)
 console.log('wrote', OUT)
-for (const [k, v] of Object.entries(VOICINGS)) {
-  console.log(`  papa_eq_${k.padEnd(7)} ${v.label}  (preamp ${preampFor(v.gains)} dB)`)
-}
+console.log(`  presets: ${store.presets.length}  bass management: ${BASS_MGMT ? `ON (${XOVER} Hz, redirected)` : 'OFF'}  sub HP: ${LFE_HP} Hz`)
