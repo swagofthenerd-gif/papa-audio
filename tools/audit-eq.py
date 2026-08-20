@@ -11,6 +11,47 @@ Exits non-zero if any invariant fails.
 import json, os, re, math, cmath, sys
 CONF = os.path.expanduser('~/.config/pipewire/pipewire.conf.d/60-papa-eq-51.conf')
 STORE = os.path.expanduser('~/.config/papa-eq/presets.json')
+
+def _biquad_peaking_db(f0, gain, Q, f, fs=48000.0):
+    A = 10 ** (gain / 40.0); w = 2*math.pi*f0/fs
+    al = math.sin(w)/(2*Q); c = math.cos(w); a0 = 1 + al/A
+    b0,b1,b2 = (1+al*A)/a0, (-2*c)/a0, (1-al*A)/a0
+    a1,a2 = (-2*c)/a0, (1-al/A)/a0
+    wz = -2*math.pi*f/fs
+    cr,ci = math.cos(wz), math.sin(wz)
+    c2r,c2i = math.cos(2*wz), math.sin(2*wz)
+    nr = b0 + b1*cr + b2*c2r; ni = b1*ci + b2*c2i
+    dr = 1 + a1*cr + a2*c2r;  di = a1*ci + a2*c2i
+    return 10*math.log10((nr*nr+ni*ni)/(dr*dr+di*di))
+
+
+def _response_peak(filters):
+    """Peak of the SUMMED response, swept on a fine log grid."""
+    if not filters: return 0.0
+    best = 0.0
+    for i in range(481):
+        f = 20 * (10 ** ((i/480.0) * math.log10(1000.0)))
+        db = sum(_biquad_peaking_db(fl[0], fl[1], fl[2], f) for fl in filters)
+        if db > best: best = db
+    return best
+
+
+def _path_filters(p, which, S, BANDS, X):
+    BM = S.get('bassManagement', True)
+    try:
+        corr = json.load(open(os.path.expanduser('~/.cache/speakercal.json'))).get('corrections', [])
+    except Exception:
+        corr = []
+    out = []
+    for band, g in zip(BANDS, p['gains']):
+        if not g: continue
+        if (not BM) or (band < X if which == 'sub' else band >= X):
+            out.append((band, g, 1.0))
+    for c in corr:
+        if (not BM) or (c['freq'] < X if which == 'sub' else c['freq'] >= X):
+            out.append((c['freq'], c['gain'], c['q']))
+    return out
+
 def die(msg, hint=''):
     print(msg, file=sys.stderr)
     if hint: print(hint, file=sys.stderr)
@@ -103,16 +144,20 @@ for p in store['presets']:
             fail.append(f"{k}: LFE mixer gain {gd['6']} != 1.0")
     # 6. Sink attenuation covers the LARGER path peak plus summing headroom,
     #    applied before the split so both branches scale together.
-    sat_peak = max([0]+[g for band,g in zip(BANDS,p['gains']) if band >= X])
-    sub_peak = max([0]+[g for band,g in zip(BANDS,p['gains']) if band <= X])
-    head = S.get('subHeadroom', 6)
-    want = round(10 ** (-(round(max(sat_peak, sub_peak)) + head)/20), 4)
+    # Same true-response maths as the generator: overlapping Q=1 peaking
+    # filters SUM, so the largest single band gain understates the real peak
+    # and leaves the output above full scale — digital clipping, audible at
+    # every volume setting.
+    peak = max(_response_peak(_path_filters(p, 'sat', S, BANDS, X)),
+               _response_peak(_path_filters(p, 'sub', S, BANDS, X)))
+    head = S.get('subHeadroom', 0)
+    want = round(10 ** (-(math.ceil(peak*10)/10 + head)/20), 4) if (peak > 0 or head > 0) else 1.0
     vol = re.search(r'volume = ([0-9.]+)', b)
     # The generator omits the line entirely at unity, so absent means 1.0.
     got = float(vol.group(1)) if vol else 1.0
     if abs(got-want) > 0.001:
         fail.append(f"{k}: volume {got} != expected {want} "
-                    f"(peak +{max(sat_peak, sub_peak)}, headroom {head} dB)")
+                    f"(true peak +{peak:.2f}, headroom {head} dB)")
     # 7. Every input/output port must exist as a node.
     io = re.search(r'inputs\s+= \[([^\]]*)\].*?outputs = \[([^\]]*)\]', b, re.S)
     if io:

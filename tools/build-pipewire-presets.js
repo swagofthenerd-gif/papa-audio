@@ -100,13 +100,71 @@ const clamp = v => Math.max(-12, Math.min(12, v))
 //
 // So: set the sink volume from the SATELLITE peak, then scale the sub mixer by
 // the difference so the sub path keeps the same headroom without clipping.
+// The TRUE peak of the combined response, not the largest single band gain.
+//
+// Peaking filters at Q=1 are about an octave wide, so neighbours overlap and
+// their gains sum. Marshall's +5 dB at 62 Hz actually reaches +5.9 dB once the
+// 31 Hz and 125 Hz skirts are added, so a preamp derived from "+5" left the
+// output 0.9 dB above full scale — hard digital clipping on bass, at every
+// volume setting. Evaluating the real magnitude response removes the guess.
+const FS = 48000
+function biquadPeaking(f0, gain, Q) {
+  const A = Math.pow(10, gain / 40)
+  const w = 2 * Math.PI * f0 / FS
+  const alpha = Math.sin(w) / (2 * Q)
+  const c = Math.cos(w)
+  const a0 = 1 + alpha / A
+  return [(1 + alpha * A) / a0, (-2 * c) / a0, (1 - alpha * A) / a0,
+          (-2 * c) / a0, (1 - alpha / A) / a0]
+}
+function magDb(co, f) {
+  const w = -2 * Math.PI * f / FS
+  const cr = Math.cos(w), ci = Math.sin(w)
+  const c2r = Math.cos(2 * w), c2i = Math.sin(2 * w)
+  const nr = co[0] + co[1] * cr + co[2] * c2r
+  const ni = co[1] * ci + co[2] * c2i
+  const dr = 1 + co[3] * cr + co[4] * c2r
+  const di = co[3] * ci + co[4] * c2i
+  return 10 * Math.log10((nr * nr + ni * ni) / (dr * dr + di * di))
+}
+
+// Peak of the summed response of a set of {freq, gain, q} filters, swept on a
+// fine log grid so a narrow peak between band centres is not missed.
+function responsePeak(filters) {
+  if (!filters.length) return 0
+  let peak = 0
+  for (let i = 0; i <= 480; i++) {
+    const f = 20 * Math.pow(10, (i / 480) * Math.log10(20000 / 20))
+    let db = 0
+    for (const flt of filters) db += magDb(biquadPeaking(flt.freq, flt.gain, flt.q), f)
+    if (db > peak) peak = db
+  }
+  return peak
+}
+
 const peakOf = vals => Math.max(0, ...vals)
 
+function pathFilters(gains, which) {
+  const out = []
+  gains.forEach((g, i) => {
+    if (!g) return
+    const inPath = !BASS_MGMT ? true
+      : (which === 'sub' ? BANDS[i] < XOVER : BANDS[i] >= XOVER)
+    if (inPath) out.push({ freq: BANDS[i], gain: g, q: 1.0 })
+  })
+  for (const c of corrections) {
+    const inPath = !BASS_MGMT ? true
+      : (which === 'sub' ? c.freq < XOVER : c.freq >= XOVER)
+    // Corrections count toward headroom too. All are cuts today, but a future
+    // boost would otherwise be silently unaccounted.
+    if (inPath) out.push({ freq: c.freq, gain: c.gain, q: c.q })
+  }
+  return out
+}
+
 function pathPeaks(gains) {
-  if (!BASS_MGMT) { const p = peakOf(gains); return { sat: p, sub: p } }
-  const sat = peakOf(gains.filter((_, i) => BANDS[i] >= XOVER))
-  const sub = peakOf(gains.filter((_, i) => BANDS[i] < XOVER))
-  return { sat, sub }
+  return { sat: responsePeak(pathFilters(gains, 'sat')),
+           sub: responsePeak(pathFilters(gains, 'sub')) }
 }
 
 // Voicing + measured correction for one channel, as a serial chain.
@@ -246,7 +304,7 @@ function moduleFor(key, voicing) {
   // crossover's complementarity.
   const worstPeak = Math.max(peaks.sat, peaks.sub)
   const preamp = (worstPeak > 0 || SINK_HEADROOM_DB > 0)
-    ? -(Math.round(worstPeak) + SINK_HEADROOM_DB) : 0
+    ? -(Math.ceil(worstPeak * 10) / 10 + SINK_HEADROOM_DB) : 0
   return `  { name = libpipewire-module-filter-chain
     args = {
       node.description = "Papa EQ — ${escLabel(voicing.label)}"
