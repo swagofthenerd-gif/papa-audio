@@ -53,10 +53,17 @@ const LFE_HP = settings.subHighPass || (cal.low_limit ? Math.round(cal.low_limit
 // BOTH branches, which is what SINK_HEADROOM_DB below does.
 const SAT_MIX_GAIN = settings.subMixGain != null ? settings.subMixGain : 1.0
 
-// Bass management concentrates the low frequencies of five channels plus the
-// LFE track into one output, so the sub branch can sum well above unity.
-// Applied to the sink, ahead of the split, so both branches scale together.
-const SINK_HEADROOM_DB = settings.subHeadroom != null ? settings.subHeadroom : 6
+// Extra attenuation on top of the voicing preamp. Default 0.
+//
+// An earlier version applied a blanket 6 dB here as "summing headroom", which
+// was the wrong instrument: it made even the Flat preset 6 dB quiet, left
+// presets differing by up to 5 dB (so any A/B between them was rigged toward
+// the quieter-voiced one), and was still 3.5 dB short of what correlated bass
+// actually sums to. The sub's level — and therefore its clipping margin — is
+// what subMixGain is for, and that has to be set by ear against a real
+// subwoofer's sensitivity. If bass distorts, lower subMixGain; do not
+// attenuate the whole system to compensate.
+const SINK_HEADROOM_DB = settings.subHeadroom != null ? settings.subHeadroom : 0
 // Each section of a Linkwitz-Riley pair is a Butterworth section.
 const LR_Q = 0.7071
 
@@ -207,7 +214,8 @@ function moduleFor(key, voicing) {
   // summing headroom. Trimming one path relative to the other would undo the
   // crossover's complementarity.
   const worstPeak = Math.max(peaks.sat, peaks.sub)
-  const preamp = -(Math.round(worstPeak) + SINK_HEADROOM_DB)
+  const preamp = (worstPeak > 0 || SINK_HEADROOM_DB > 0)
+    ? -(Math.round(worstPeak) + SINK_HEADROOM_DB) : 0
   return `  { name = libpipewire-module-filter-chain
     args = {
       node.description = "Papa EQ — ${escLabel(voicing.label)}"

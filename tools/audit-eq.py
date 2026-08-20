@@ -34,23 +34,37 @@ for p in store['presets']:
     if not b:
         fail.append(f"{k}: module block not found"); continue
 
-    # 1. Crossover must be LR4: two cascaded sections per side, per satellite.
+    # 1. Crossover topology. With bass management ON this must be LR4: two
+    #    cascaded sections per side per satellite. With it OFF there is a
+    #    single high-pass and no low-pass branch.
     for ch in ['FL','FR','FC','RL','RR']:
-        for tag in ['hp1','hp2','lp1','lp2']:
+        tags = ['hp1','hp2','lp1','lp2'] if S.get('bassManagement', True) else ['hp']
+        for tag in tags:
             if f'name = {k}_{tag}_{ch} ' not in b:
                 fail.append(f"{k}/{ch}: missing {tag}")
     # 2. Sub must NOT carry filters above the crossover.
-    for band in BANDS:
-        if band > X and (f'name = {k}_v{band}_LFE ' in b or f'name = {k}_c{band}_LFE ' in b):
-            fail.append(f"{k}: sub carries out-of-band filter at {band} Hz (xover {X})")
-    # 3. Satellites must NOT carry filters below the crossover.
-    for band in BANDS:
-        if band < X and f'name = {k}_v{band}_FC ' in b:
-            fail.append(f"{k}: satellite carries below-crossover filter at {band} Hz")
-    # 4. Mixer must have exactly 6 inputs (5 satellites + LFE).
+    if S.get('bassManagement', True):
+        for band in BANDS:
+            if band >= X and (f'name = {k}_v{band}_LFE ' in b or f'name = {k}_c{band}_LFE ' in b):
+                fail.append(f"{k}: sub carries out-of-band filter at {band} Hz (xover {X})")
+    # 3. Satellites must NOT carry filters below the crossover — but only when
+    #    bass management is on. With it off they run full range and SHOULD
+    #    carry every band, so this check produced a false failure there.
+    #    Checks all five satellites, not just FC (the earlier version would
+    #    have missed a fault confined to FL/FR/RL/RR).
+    if S.get('bassManagement', True):
+        for band in BANDS:
+            if band >= X: continue
+            for ch in ('FL','FR','FC','RL','RR'):
+                if f'name = {k}_v{band}_{ch} ' in b:
+                    fail.append(f"{k}: satellite {ch} carries below-crossover filter at {band} Hz")
+    # 4. Mixer must have exactly 6 inputs (5 satellites + LFE) — but only
+    #    when bass management is on; with it off there is deliberately no
+    #    mixer, and demanding one produced a false failure.
+    BM = S.get('bassManagement', True)
     mx = re.search(r'name = %s_submix_LFE label = mixer control = \{ ([^}]*) \}' % k, b)
-    if not mx: fail.append(f"{k}: no sub mixer")
-    else:
+    if BM and not mx: fail.append(f"{k}: no sub mixer")
+    if mx:
         g = re.findall(r'"Gain (\d+)" = ([0-9.]+)', mx.group(1))
         if len(g) != 6: fail.append(f"{k}: mixer has {len(g)} gains, expected 6")
         links = len(re.findall(r'input = "%s_submix_LFE:In \d+"' % k, b))
@@ -76,8 +90,9 @@ for p in store['presets']:
     head = S.get('subHeadroom', 6)
     want = round(10 ** (-(round(max(sat_peak, sub_peak)) + head)/20), 4)
     vol = re.search(r'volume = ([0-9.]+)', b)
-    got = float(vol.group(1)) if vol else None
-    if got is None or abs(got-want) > 0.001:
+    # The generator omits the line entirely at unity, so absent means 1.0.
+    got = float(vol.group(1)) if vol else 1.0
+    if abs(got-want) > 0.001:
         fail.append(f"{k}: volume {got} != expected {want} "
                     f"(peak +{max(sat_peak, sub_peak)}, headroom {head} dB)")
     # 7. Every input/output port must exist as a node.

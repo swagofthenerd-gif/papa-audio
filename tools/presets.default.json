@@ -179,6 +179,6 @@
     "bassManagement": true,
     "subMixGain": 1.0,
     "subHighPass": 30,
-    "subHeadroom": 6
+    "subHeadroom": 0
   }
 }
