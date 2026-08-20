@@ -8,6 +8,15 @@
 # sound at all.
 set -uo pipefail
 
+# This runs on every PipeWire restart. It must respect the selected mode, or a
+# mode switch (which restarts PipeWire) fires this and immediately drags the
+# system back to 5.1 + EQ - which is exactly what happened.
+MODE=$(cat "$HOME/.config/papa-eq/mode" 2>/dev/null || echo tuned)
+if [ "$MODE" = stock ]; then
+  echo "Mode is stock - leaving stereo alone."
+  exit 0
+fi
+
 PCI=pci-0000_2b_00.4
 CARD_PW="alsa_card.$PCI"
 PROFILE=output:analog-surround-51+input:analog-stereo
@@ -65,8 +74,9 @@ sink_exists() { pactl list sinks short 2>/dev/null | awk '{print $2}' | grep -qx
 
 # Prefer the preset last selected; fall back to any EQ sink, then the hardware
 # sink so an EQ-off setup still gets a working default.
-SINK=$(cat "$ACTIVE" 2>/dev/null || true)
-if [ -z "$SINK" ] || ! sink_exists "$SINK"; then
+SINK=""
+[ "$MODE" != raw ] && SINK=$(cat "$ACTIVE" 2>/dev/null || true)
+if [ "$MODE" != raw ] && { [ -z "$SINK" ] || ! sink_exists "$SINK"; }; then
   SINK=$(pactl list sinks short 2>/dev/null | awk '$2 ~ /^papa_eq_/ {print $2; exit}')
 fi
 [ -z "$SINK" ] && SINK=$(pactl list sinks short 2>/dev/null | awk '/analog-surround-51/{print $2; exit}')
@@ -84,7 +94,7 @@ if pactl list sinks short 2>/dev/null | grep -q '^[0-9]*[[:space:]]*papa_eq_'; t
 fi
 
 if [ "$fail" = 0 ]; then
-  echo "OK: 6ch, 5.1 profile, default=${SINK:-none}"
+  echo "OK: mode=$MODE, 6ch, 5.1 profile, default=${SINK:-none}"
 else
   echo "FINISHED WITH ERRORS - see above. Sound may not work." >&2
 fi

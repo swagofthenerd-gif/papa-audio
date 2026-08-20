@@ -17,7 +17,16 @@ const os = require('os')
 
 const CAL = path.join(os.homedir(), '.cache/speakercal.json')
 const STORE = path.join(os.homedir(), '.config/papa-eq/presets.json')
-const OUT = path.join(os.homedir(), '.config/pipewire/pipewire.conf.d/60-papa-eq-51.conf')
+const OUT_LIVE = path.join(os.homedir(), '.config/pipewire/pipewire.conf.d/60-papa-eq-51.conf')
+
+// papa-audio-mode parks this file aside as .off for the raw and stock modes.
+// Writing to the live path regardless would resurrect the EQ behind the mode's
+// back, which is how raw mode silently regained ten EQ sinks. Follow the mode.
+let mode = 'tuned'
+try {
+  mode = fs.readFileSync(path.join(os.homedir(), '.config/papa-eq/mode'), 'utf8').trim() || 'tuned'
+} catch { /* no mode file yet: treat as tuned */ }
+const OUT = mode === 'tuned' ? OUT_LIVE : OUT_LIVE + '.off'
 const TARGET = 'alsa_output.pci-0000_2b_00.4.analog-surround-51'
 
 const SATELLITES = ['FL', 'FR', 'FC', 'RL', 'RR']
@@ -404,7 +413,7 @@ for (const p of store.presets) {
 const MANIFEST = path.join(os.homedir(), '.config/papa-eq/controls.json')
 fs.writeFileSync(MANIFEST + '.tmp', JSON.stringify(manifest, null, 2))
 fs.renameSync(MANIFEST + '.tmp', MANIFEST)
-console.log('wrote', OUT)
+console.log('wrote', OUT, mode === 'tuned' ? '' : `(mode=${mode}: parked, not active)`)
 console.log('wrote', path.join(os.homedir(), '.config/papa-eq/controls.json'))
 
 // Validate what we just wrote. A malformed filter graph fails as SILENCE with

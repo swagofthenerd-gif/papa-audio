@@ -21,6 +21,17 @@ STATE="$HOME/.config/papa-eq/mode"
 on()  { [ -f "$1.off" ] && command mv -f "$1.off" "$1"; return 0; }
 off() { [ -f "$1" ] && command mv -f "$1" "$1.off"; return 0; }
 
+move_streams() {
+  # Switching the default sink does not move streams that are already playing.
+  # They stay pointed at a sink that no longer exists, and playback goes
+  # silent - which is exactly how "raw plays nothing" presented.
+  local target="$1" i
+  [ -n "$target" ] || return 0
+  for i in $(pactl list sink-inputs short 2>/dev/null | cut -f1); do
+    pactl move-sink-input "$i" "$target" >/dev/null 2>&1
+  done
+}
+
 alsa_card_id() {
   local d
   for d in /sys/class/sound/card*; do
@@ -39,6 +50,7 @@ reload() {
 
 case "${1:-status}" in
   stock)
+    echo "stock" > "$STATE"
     off "$PWD_CONF/60-papa-eq-51.conf"
     off "$WP/51-alc892-pin.conf"
     off "$CLIENT/10-hifi-audio.conf"
@@ -49,12 +61,13 @@ case "${1:-status}" in
     pactl set-card-profile "$CARD" output:analog-stereo+input:analog-stereo >/dev/null 2>&1
     sleep 2
     HW=$(pactl list sinks short 2>/dev/null | awk '/analog-stereo/{print $2; exit}')
-    [ -n "$HW" ] && pactl set-default-sink "$HW" >/dev/null 2>&1
+    [ -n "$HW" ] && { pactl set-default-sink "$HW" >/dev/null 2>&1; move_streams "$HW"; }
     echo "stock" > "$STATE"
     echo "MODE: STOCK — 2-channel stereo, no EQ, no upmix, nothing forced."
     echo "  Set the speaker system to its stereo/2.1 input for a fair comparison."
     ;;
   raw)
+    echo "raw" > "$STATE"
     off "$PWD_CONF/60-papa-eq-51.conf"
     on  "$WP/51-alc892-pin.conf"
     on  "$CLIENT/10-hifi-audio.conf"
@@ -62,19 +75,21 @@ case "${1:-status}" in
     reload
     "$HOME/.local/bin/papa-audio-51-setup" >/dev/null 2>&1
     HW=$(pactl list sinks short 2>/dev/null | awk '/analog-surround-51/{print $2; exit}')
-    [ -n "$HW" ] && pactl set-default-sink "$HW" >/dev/null 2>&1
+    [ -n "$HW" ] && { pactl set-default-sink "$HW" >/dev/null 2>&1; move_streams "$HW"; }
     echo "raw" > "$STATE"
     "$0" verify | grep -q '^OK' || echo "  WARNING: end state does not match — run: papa-audio-mode verify"
     echo "MODE: RAW 5.1 — discrete six channels, zero processing."
     echo "  No correction, no voicing, no sub blend. Speakers on 5.1 input."
     ;;
   tuned)
+    echo "tuned" > "$STATE"
     on "$PWD_CONF/60-papa-eq-51.conf"
     on "$WP/51-alc892-pin.conf"
     on "$CLIENT/10-hifi-audio.conf"
     on "$PULSE/10-hifi-audio.conf"
     reload
     "$HOME/.local/bin/papa-audio-51-setup" >/dev/null 2>&1
+    move_streams "$(pactl info 2>/dev/null | awk -F': ' '/Default Sink/{print $2}')"
     echo "tuned" > "$STATE"
     "$0" verify | grep -q '^OK' || echo "  WARNING: end state does not match — run: papa-audio-mode verify"
     echo "MODE: TUNED — 5.1 + measured correction + voicing + sub blend."

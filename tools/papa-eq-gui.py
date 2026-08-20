@@ -10,7 +10,7 @@ needs PipeWire reloaded — roughly a two second audio drop. The UI says so
 rather than letting it surprise you.
 """
 import json, os, string, subprocess, sys
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, QProcess
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QListWidget, QListWidgetItem, QSlider, QPushButton,
                              QMessageBox, QInputDialog, QGroupBox, QFrame, QCheckBox,
@@ -309,14 +309,25 @@ class PapaEQ(QWidget):
         ) != QMessageBox.StandardButton.Yes:
             self._refresh_mode()
             return
-        self.setEnabled(False)
-        self.status.setText(f'Switching to {label}…')
-        QApplication.processEvents()
-        try:
-            subprocess.run([MODEBIN, key], capture_output=True, timeout=120)
-        except (OSError, subprocess.TimeoutExpired) as e:
-            QMessageBox.critical(self, 'Papa EQ', f'Mode switch failed:\n{e}')
-        self.setEnabled(True)
+        # A mode switch restarts PipeWire and takes about 15 seconds. Running it
+        # with a blocking call froze the event loop, so the window stopped
+        # repainting and the desktop offered to kill it. Run it as a child
+        # process and keep the loop alive.
+        self._lock_ui(True)
+        self.status.setText(f'Switching to {label}… (about 15 seconds)')
+        self._switch = QProcess(self)
+        self._switch.finished.connect(lambda *_: self._mode_done())
+        self._switch.errorOccurred.connect(lambda *_: self._mode_done())
+        self._switch.start(MODEBIN, [key])
+
+    def _lock_ui(self, busy):
+        for w in (self.list, *self.sliders):
+            w.setEnabled(not busy)
+        for b in self.mode_buttons.values():
+            b.setEnabled(not busy)
+
+    def _mode_done(self):
+        self._lock_ui(False)
         self._refresh_mode()
         self._refresh_active()
 
