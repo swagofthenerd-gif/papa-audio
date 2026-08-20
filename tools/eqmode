@@ -8,7 +8,8 @@
 # audio drop. Idle chains cost nothing while suspended.
 set -uo pipefail
 
-list_sinks() { pactl list sinks short 2>/dev/null | awk '{print $2}' | grep '^papa_eq_' || true; }
+list_sinks() { pactl list sinks short 2>/dev/null | awk '{print $2}' | grep '^papa_eq_'; }
+server_up() { pactl info >/dev/null 2>&1; }
 desc_of() { pactl list sinks 2>/dev/null | grep -A3 "Name: $1\$" | grep -m1 "Description:" | sed 's/.*Description: //'; }
 current() { pactl info 2>/dev/null | awk -F': ' '/Default Sink/{print $2}'; }
 
@@ -64,7 +65,16 @@ if ! list_sinks | grep -qx "$want"; then
   n=$(printf '%s' "$match" | grep -c . || true)
   if [ "$n" = "1" ]; then want="$match"
   else
-    echo "No preset matching '$1'." >&2
+    if ! server_up; then
+    echo "PipeWire is not responding — audio server may be restarting." >&2
+    exit 1
+  fi
+  if [ -z "$(list_sinks)" ]; then
+    echo "No Papa EQ sinks are loaded — the EQ is switched off." >&2
+    echo "Turn it back on with:  papa-eq-toggle on" >&2
+    exit 1
+  fi
+  echo "No preset matching '$1'." >&2
     echo "Available: $(list_sinks | sed 's/^papa_eq_//' | tr '\n' ' ')" >&2
     exit 1
   fi
@@ -73,7 +83,8 @@ fi
 pactl set-default-sink "$want" >/dev/null 2>&1 || { echo "failed to set default sink" >&2; exit 1; }
 # Remember the choice so papa-audio-51.service restores it at login.
 mkdir -p "$HOME/.config/papa-eq" 2>/dev/null
-printf '%s\n' "$want" > "$HOME/.config/papa-eq/active" 2>/dev/null || true
+printf '%s\n' "$want" > "$HOME/.config/papa-eq/active" ||
+  echo "warning: could not record the preset; login will not restore it" >&2
 # Move anything already playing, otherwise running apps stay on the old preset.
 for i in $(pactl list sink-inputs short 2>/dev/null | cut -f1); do
   pactl move-sink-input "$i" "$want" >/dev/null 2>&1

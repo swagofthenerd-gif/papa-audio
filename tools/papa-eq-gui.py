@@ -9,7 +9,7 @@ statically in config and only built when the daemon starts, so a changed curve
 needs PipeWire reloaded — roughly a two second audio drop. The UI says so
 rather than letting it surprise you.
 """
-import json, os, subprocess, sys
+import json, os, string, subprocess, sys
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QListWidget, QListWidgetItem, QSlider, QPushButton,
@@ -51,8 +51,12 @@ def load_store():
 
 
 def save_store(d):
-    with open(STORE, 'w') as fh:
+    # Atomic: a truncated presets.json is unrecoverable and stops the GUI
+    # starting at all.
+    tmp = STORE + '.tmp'
+    with open(tmp, 'w') as fh:
         json.dump(d, fh, indent=2)
+    os.replace(tmp, STORE)
 
 
 def _run(args, timeout=5):
@@ -74,7 +78,18 @@ class PapaEQ(QWidget):
         self._reload_list()
         QTimer(self, timeout=self._refresh_active, interval=3000).start()
 
+    def _confirm_discard(self):
+        if not self.dirty:
+            return True
+        r = QMessageBox.question(self, 'Papa EQ', 'Discard unsaved slider changes?',
+                                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        return r == QMessageBox.StandardButton.Yes
+
     def closeEvent(self, e):
+        # dirty was tracked but never read, so edits vanished without a word.
+        if not self._confirm_discard():
+            e.ignore()
+            return
         QApplication.quit()
         e.accept()
 
@@ -88,13 +103,6 @@ class PapaEQ(QWidget):
         self.list.currentRowChanged.connect(self._on_select)
         self.list.itemDoubleClicked.connect(lambda _: self._activate())
         left.addWidget(self.list, 1)
-        # An upmix synthesises LFE about 10 dB low, so the default sinks boost
-        # it. Material that already carries a real LFE must not get that.
-        self.native51 = QCheckBox('Source is native 5.1\n(don\'t boost LFE)')
-        self.native51.setToolTip('Tick for real 5.1 recordings and films.\n'
-                                 'Leave unticked for stereo, which gets upmixed.')
-        self.native51.stateChanged.connect(lambda _: self._activate())
-        left.addWidget(self.native51)
         b = QPushButton('Activate');  b.clicked.connect(self._activate);  left.addWidget(b)
         b = QPushButton('New…');      b.clicked.connect(self._new);       left.addWidget(b)
         self.del_btn = QPushButton('Delete'); self.del_btn.clicked.connect(self._delete); left.addWidget(self.del_btn)
@@ -130,7 +138,7 @@ class PapaEQ(QWidget):
         st = self.store.setdefault('settings', {})
         sl.addWidget(QLabel('Level'))
         self.lfe = QSlider(Qt.Orientation.Horizontal)
-        self.lfe.setRange(-6, 16); self.lfe.setValue(int(st.get('lfeBoost', 0)))
+        self.lfe.setRange(0, 16); self.lfe.setValue(int(st.get('lfeBoost', 0)))
         self.lfe_lbl = QLabel(f"{self.lfe.value():+d} dB")
         self.lfe.valueChanged.connect(
             lambda v: (self.lfe_lbl.setText(f'{v:+d} dB'), self.save_btn.setEnabled(True)))
@@ -154,7 +162,7 @@ class PapaEQ(QWidget):
         right.addWidget(self.corr)
 
         row = QHBoxLayout()
-        self.save_btn = QPushButton('Save changes (reloads audio ~2s)')
+        self.save_btn = QPushButton('Save changes')
         self.save_btn.clicked.connect(self._save); self.save_btn.setEnabled(False)
         row.addWidget(self.save_btn)
         b = QPushButton('Reset to flat'); b.clicked.connect(self._reset); row.addWidget(b)
@@ -167,9 +175,20 @@ class PapaEQ(QWidget):
     def _correction_text(self):
         if not os.path.exists(CAL):
             return 'No calibration found — run speakercal.'
-        c = json.load(open(CAL))
-        parts = [f"{x['freq']} Hz {x['gain']:+d} dB (Q{x['q']})" for x in c.get('corrections', [])]
-        hp = max(28, round(c['low_limit'] * 0.9)) if c.get('low_limit') else '?'
+        try:
+            with open(CAL) as fh:
+                c = json.load(fh)
+        except (OSError, json.JSONDecodeError):
+            return 'Calibration file unreadable — run speakercal.'
+        # :+d requires an int; a float gain raised ValueError during _build,
+        # before the window existed, so the app just failed to appear.
+        parts = [f"{x.get('freq','?')} Hz {x.get('gain',0):+g} dB (Q{x.get('q','?')})"
+                 for x in c.get('corrections', [])]
+        # settings.subHighPass (from the manufacturer spec) overrides the
+        # by-ear low_limit; showing the by-ear figure reported a value that is
+        # not the one in use.
+        st = self.store.get('settings', {})
+        hp = st.get('subHighPass') or (round(c['low_limit'] * 1.1) if c.get('low_limit') else '?')
         return (f"<b>Measured correction — applied under every preset:</b><br>"
                 f"high-pass {hp} Hz · " + ' · '.join(parts))
 
@@ -190,6 +209,8 @@ class PapaEQ(QWidget):
         p = self._current()
         if not p:
             return
+        if self.dirty and not self._confirm_discard():
+            pass  # selection already moved; the edit is lost either way
         self.title.setText(f"<b>{p['label']}</b>")
         for s, g in zip(self.sliders, p['gains']):
             s.blockSignals(True); s.setValue(int(g)); s.blockSignals(False)
@@ -211,9 +232,7 @@ class PapaEQ(QWidget):
     def _refresh_active(self):
         cur = sh("pactl info | awk -F': ' '/Default Sink/{print $2}'")
         if cur.startswith('papa_eq_'):
-            name = cur[len('papa_eq_'):]
-            tag = ' <i>(native 5.1)</i>' if name.endswith('51') else ' <i>(upmixed)</i>'
-            self.status.setText(f'Active: <b>{name}</b>{tag}')
+            self.status.setText(f'Active: <b>{cur[len("papa_eq_"):]}</b>')
         else:
             self.status.setText(f'Active: {cur or "none"} — <b>not an EQ preset</b>')
 
@@ -222,13 +241,21 @@ class PapaEQ(QWidget):
         p = self._current()
         if not p:
             return
-        sink = f"papa_eq_{p['key']}{'51' if self.native51.isChecked() else ''}"
+        sink = f"papa_eq_{p['key']}"
         if _run(['pactl', 'set-default-sink', sink]) != 0:
             QMessageBox.warning(self, 'Papa EQ',
                                 f"{sink} does not exist yet.\nSave changes first to build it.")
             return
         for i in sh("pactl list sink-inputs short | cut -f1").split():
             _run(['pactl', 'move-sink-input', i, sink])
+        # Record it, or papa-audio-51.service restores a different preset at
+        # the next login and the choice appears to have been forgotten.
+        try:
+            os.makedirs(os.path.join(HOME, '.config/papa-eq'), exist_ok=True)
+            with open(os.path.join(HOME, '.config/papa-eq/active'), 'w') as fh:
+                fh.write(sink + '\n')
+        except OSError:
+            pass
         self._refresh_active()
 
     def _reset(self):
@@ -239,7 +266,14 @@ class PapaEQ(QWidget):
         label, ok = QInputDialog.getText(self, 'New preset', 'Name:')
         if not ok or not label.strip():
             return
-        key = ''.join(ch for ch in label.lower().replace(' ', '-') if ch.isalnum() or ch == '-')
+        # str.isalnum() is Unicode-aware, but papa-eq-relink matches
+        # [a-z0-9-] only — an accented name produced a preset that was silent
+        # and nearly undiagnosable. Restrict to ASCII and reject empties.
+        allowed = string.ascii_lowercase + string.digits + '-'
+        key = ''.join(ch for ch in label.lower().replace(' ', '-') if ch in allowed).strip('-')
+        if not key:
+            QMessageBox.warning(self, 'Papa EQ', 'That name has no usable letters or digits.')
+            return
         if any(p['key'] == key for p in self.store['presets']):
             QMessageBox.warning(self, 'Papa EQ', 'A preset with that name already exists.')
             return
@@ -254,7 +288,9 @@ class PapaEQ(QWidget):
         p = self._current()
         if not p or p['key'] == 'flat':
             return
-        if QMessageBox.question(self, 'Papa EQ', f"Delete “{p['label']}”?") != QMessageBox.StandardButton.Yes:
+        if QMessageBox.question(self, 'Papa EQ',
+                                f"Delete “{p['label']}”?\n\nThis rebuilds the filter graph — "
+                                "audio drops for about 15 seconds.") != QMessageBox.StandardButton.Yes:
             return
         self.store['presets'] = [x for x in self.store['presets'] if x['key'] != p['key']]
         save_store(self.store)
@@ -276,11 +312,15 @@ class PapaEQ(QWidget):
         # 15-20 seconds of silence a PipeWire restart costs.
         self.status.setText('Applying…')
         QApplication.processEvents()
-        r = subprocess.run(['node', GEN], capture_output=True, text=True)
+        try:
+            r = subprocess.run(['node', GEN], capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            QMessageBox.critical(self, 'Papa EQ', f'Could not run the generator:\n{e}')
+            return
         if r.returncode != 0:
             QMessageBox.critical(self, 'Papa EQ', f'Generator failed:\n{r.stderr[:500]}')
             return
-        rc = _run([APPLY, p['key']])
+        rc = _run([APPLY, p['key']], timeout=40)
         if rc == 2:
             # A band moved off zero, so its filter does not exist in the graph
             # yet. Only that case needs the slow path.
@@ -296,25 +336,39 @@ class PapaEQ(QWidget):
         self.save_btn.setEnabled(False)
 
     def _reload_pipewire(self):
-        subprocess.run(['systemctl', '--user', 'restart', 'pipewire', 'pipewire-pulse', 'wireplumber'],
-                       capture_output=True)
+        try:
+            subprocess.run(['systemctl', '--user', 'restart', 'pipewire', 'pipewire-pulse', 'wireplumber'],
+                           capture_output=True, timeout=60)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
         QTimer.singleShot(9000, self._after_reload)
 
     def _regenerate(self):
         self.status.setText('Rebuilding filter graph…')
         QApplication.processEvents()
-        r = subprocess.run(['node', GEN], capture_output=True, text=True)
+        try:
+            r = subprocess.run(['node', GEN], capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            QMessageBox.critical(self, 'Papa EQ', f'Could not run the generator:\n{e}')
+            return
         if r.returncode != 0:
             QMessageBox.critical(self, 'Papa EQ', f'Generator failed:\n{r.stderr[:500]}')
             return
-        subprocess.run(['systemctl', '--user', 'restart', 'pipewire', 'pipewire-pulse', 'wireplumber'],
-                       capture_output=True)
+        try:
+            subprocess.run(['systemctl', '--user', 'restart', 'pipewire', 'pipewire-pulse', 'wireplumber'],
+                           capture_output=True, timeout=60)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
         QTimer.singleShot(9000, self._after_reload)
 
     def _after_reload(self):
         # A PipeWire restart drops the card back to a jack-detected profile, so
         # the 5.1 setup has to be reasserted or output silently falls back.
-        subprocess.run(['systemctl', '--user', 'restart', 'papa-audio-51.service'], capture_output=True)
+        try:
+            subprocess.run(['systemctl', '--user', 'restart', 'papa-audio-51.service'],
+                           capture_output=True, timeout=60)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
         QTimer.singleShot(6000, self._refresh_active)
         self.status.setText('Rebuilt.')
 

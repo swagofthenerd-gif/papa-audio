@@ -22,39 +22,26 @@ MANIFEST = os.path.join(HOME, '.config/papa-eq/controls.json')
 STORE = os.path.join(HOME, '.config/papa-eq/presets.json')
 
 
-def node_id(sink):
-    """Global id of a sink node, or None."""
+def graph(sink):
+    """(node id, set of live control names) for a sink. One dump, not two."""
     try:
         dump = json.loads(subprocess.run(['pw-dump'], capture_output=True,
-                                         text=True, timeout=10).stdout)
+                                         text=True, timeout=15).stdout)
     except (subprocess.TimeoutExpired, OSError, json.JSONDecodeError):
-        return None
-    for o in dump:
-        if o.get('info', {}).get('props', {}).get('node.name') == sink:
-            return o.get('id')
-    return None
-
-
-def live_controls(sink):
-    """Control names the running graph actually exposes."""
-    try:
-        dump = json.loads(subprocess.run(['pw-dump'], capture_output=True,
-                                         text=True, timeout=10).stdout)
-    except (subprocess.TimeoutExpired, OSError, json.JSONDecodeError):
-        return set()
+        return None, set()
     for o in dump:
         if o.get('info', {}).get('props', {}).get('node.name') != sink:
             continue
         names = set()
-        for p in o['info']['params'].get('Props', []):
+        for p in o.get('info', {}).get('params', {}).get('Props', []):
             pr = p.get('params')
             if not pr:
                 continue
             for i in range(0, len(pr) - 1, 2):
                 if isinstance(pr[i], str) and ':' in pr[i]:
                     names.add(pr[i])
-        return names
-    return set()
+        return o.get('id'), names
+    return None, set()
 
 
 def apply(values, nid):
@@ -77,20 +64,25 @@ def main():
     if not os.path.exists(MANIFEST):
         print(f'no manifest at {MANIFEST} — run build-pipewire-presets.js', file=sys.stderr)
         return 1
-    man = json.load(open(MANIFEST))
-    if key not in man['presets']:
-        print(f'unknown preset {key}; have: {", ".join(man["presets"])}', file=sys.stderr)
+    try:
+        with open(MANIFEST) as fh:
+            man = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        print(f'{MANIFEST} is unreadable — re-run build-pipewire-presets.js', file=sys.stderr)
+        return 1
+    if key not in man.get('presets', {}):
+        print(f'unknown preset {key}; have: {", ".join(man.get("presets", {}))}', file=sys.stderr)
         return 1
     entry = man['presets'][key]
     sink = entry['sink']
 
-    nid = node_id(sink)
+    nid, have = graph(sink)
     if nid is None:
-        print(f'{sink} is not loaded', file=sys.stderr)
+        print(f'{sink} is not loaded — is the EQ switched off? '
+              'Try: papa-eq-toggle on', file=sys.stderr)
         return 1
 
-    wanted = dict(entry['gains']); wanted.update(entry['mixer'])
-    have = live_controls(sink)
+    wanted = dict(entry.get('gains', {})); wanted.update(entry.get('mixer', {}))
     missing = [k for k in wanted if k not in have]
     settable = {k: v for k, v in wanted.items() if k in have}
 
@@ -100,6 +92,9 @@ def main():
             print('  missing:', m)
         return 2 if missing else 0
 
+    if not settable:
+        print(f'{sink}: nothing to apply — no matching controls in the graph', file=sys.stderr)
+        return 2
     ok = apply(settable, nid)
     print(f'{sink}: applied {len(settable)} controls live' + (' (no restart)' if ok else ' — FAILED'))
     if missing:

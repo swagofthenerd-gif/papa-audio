@@ -1,4 +1,50 @@
-# Audio tooling
+# Papa Audio 5.1 + EQ toolchain
+
+## If sound breaks — do this first
+
+    papa-audio-51-setup
+
+Resets the codec to 6ch, reapplies the 5.1 profile, restores the default sink
+and re-links the filter chains. Takes about 15 seconds and prints what it did.
+Safe to run repeatedly. This is the same thing that runs at login and on every
+PipeWire restart.
+
+If that reports OK and the sound is still wrong, take the EQ out of the picture
+to find out whether it is the EQ or the hardware:
+
+    papa-eq-toggle off      # unload the chains entirely (~20 s)
+    papa-eq-toggle on       # put them back
+
+`eqmode off` is NOT the same thing — it only redirects the default sink, and
+WirePlumber may quietly re-select an EQ sink from its stored preferences.
+
+    papa-eq-relink          # chains loaded but audio reaches nothing
+    audit-eq.py             # check the generated config is internally sane
+
+## Which command do I want?
+
+| I want to… | Command |
+|---|---|
+| Pick a different sound | `papa-eq` (GUI) or `eqmode <name>` |
+| See what's active | `eqmode` |
+| Turn the EQ off properly | `papa-eq-toggle off` |
+| Get sound back after it broke | `papa-audio-51-setup` |
+| Re-measure my speakers | `speakercal` |
+
+Everything else is internal and the GUI calls it for you: `papa-eq-apply`
+(pushes values into the running graph), `papa-eq-relink`, `audit-eq.py`,
+`build-pipewire-presets.js`.
+
+## Installing changes
+
+`~/.local/bin/` holds COPIES, not symlinks. Editing a file in `tools/` changes
+nothing until you copy it across:
+
+    install -m755 tools/eqmode ~/.local/bin/eqmode
+
+Installed names drop the extension: `papa-eq-gui.py` -> `papa-eq`,
+`papa-eq-apply.py` -> `papa-eq-apply`, `papa-eq-relink.sh` -> `papa-eq-relink`.
+
 
 Scripts for calibrating this machine's speakers and applying the result, both
 inside Papa Audio and system-wide. They are specific to this hardware — an
@@ -57,9 +103,6 @@ unless you also clear `subHighPass`.
 | `audit-eq.py` | Verify the generated config's structural invariants |
 | `papa-audio-51-setup` | Restore 6ch mode, profile, default sink and links |
 
-`EQ_STAGE=1|2|3` on `build-pipewire-eq.js` builds the chain incrementally
-(high-pass only / plus bass / everything), which is how to debug it — a bad
-filter graph fails as silence, with no useful error.
 
 ## Why PipeWire and not EasyEffects
 
@@ -91,10 +134,9 @@ A synthesised LFE arrives about 10 dB below where the standard puts it: real
 upmix does not. `LFE_BOOST_DB` restores it.
 
 That boost must NOT apply to material that already has a real LFE, and the
-filter chain cannot tell the two apart — by the time audio arrives, both are
-just six channels. So every preset is generated twice: `papa_eq_<name>` boosts
-LFE (for upmixed stereo) and `papa_eq_<name>51` does not (for native 5.1).
-The GUI has a "Source is native 5.1" toggle; `eqmode` takes the `51` suffix.
+filter chain cannot tell the two apart. The generator emits `51` variants only
+when `settings.lfeBoost` is above zero; at zero they would be identical to the
+plain sinks, so none exist and nothing refers to them.
 
 ## Player channel setting
 
@@ -125,9 +167,12 @@ the PC.
 
 ## eqmode
 
-    eqmode [preset]
+    eqmode              list presets, mark the active one
+    eqmode music        switch to that preset (instant, no dropout)
+    eqmode off          send audio straight to the 5.1 hardware sink
 
-Switches the EasyEffects preset. Only relevant to the superseded stereo setup.
+Changes the default sink, moves anything already playing, and records the
+choice in ~/.config/papa-eq/active so login restores it.
 
 ## Hard-won notes
 
