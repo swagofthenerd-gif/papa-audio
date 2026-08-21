@@ -359,13 +359,38 @@ async function waitForSlskd(maxMs = 30000) {
   return false
 }
 
+// slskd runs a limited number of searches at once. A search is only removed
+// when the client deletes it, so every crash or kill -9 mid-search leaks one.
+// Once enough have leaked, every new search sits in state=Queued forever and
+// Soulseek looks broken while slskd reports itself perfectly connected - which
+// is exactly how it presents: healthy daemon, zero results.
+async function purgeStaleSearches() {
+  try {
+    const list = await slskdFetch('GET', '/searches')
+    const stale = (list || []).filter(s => /Completed|Errored|TimedOut/i.test(s.state || ''))
+    for (const s of stale) {
+      try { await slskdFetch('DELETE', `/searches/${s.id}`) } catch (_) {}
+    }
+    if (stale.length) console.log(`[papa] slskd: cleared ${stale.length} stale search(es)`)
+    return stale.length
+  } catch (e) {
+    console.error('[papa] slskd-purge:', e.message || e)
+    return 0
+  }
+}
+
 async function startSlskd() {
   if (!fs.existsSync(SLSKD_BIN)) return
   // If already running externally, just authenticate and mark ready
   if (!slskdProc) {
     try {
       const r = await fetch(`${SLSKD_BASE}/application`)
-      if (r.ok || r.status === 401) { slskdReady = true; await slskdAcquireToken(); return }
+      if (r.ok || r.status === 401) {
+        slskdReady = true
+        await slskdAcquireToken()
+        await purgeStaleSearches()
+        return
+      }
     } catch (e) { console.error('[papa] slskd-start:', e.message || e) }
   }
   if (slskdProc) return
@@ -378,6 +403,7 @@ async function startSlskd() {
   slskdProc.on('exit', () => { slskdProc = null; slskdReady = false; slskdToken = null })
   await waitForSlskd()
   await slskdAcquireToken()
+  await purgeStaleSearches()
   upnpMap(2234).catch(e => { console.error('[papa] upnp-map:', e.message || e) })
 }
 
