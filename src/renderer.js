@@ -8696,8 +8696,25 @@ function bindSlskSearchEvents(query) {
       btn.disabled = true
       btn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>'
       try {
-        await Promise.all(g.files.map(f =>
-          window.api.slskDownload({ username: g.username, filename: f.filename, size: f.size })
+        // Every file from one peer means waiting in that peer's queue once per
+        // file - they grant one or two upload slots, and our own download slots
+        // are already unlimited. Sourcing tracks from several peers that have
+        // the same release is the only thing that genuinely runs them in
+        // parallel. Size matching keeps a stereo rip from completing a
+        // surround album.
+        const S = window.PapaSpread
+        const alternates = S ? groups.filter(o =>
+          o.folderName && g.folderName &&
+          o.folderName.toLowerCase() === g.folderName.toLowerCase()) : []
+        const plan = (S && alternates.length > 1)
+          ? S.planSpread(alternates, { anchor: g, maxPerUser: 2 })
+          : g.files.map(f => ({ username: g.username, filename: f.filename, size: f.size }))
+
+        const peers = S ? S.planPeers(plan) : 1
+        if (peers > 1) showSnackbar(`Downloading from ${peers} sources in parallel`)
+
+        await Promise.all(plan.map(t =>
+          window.api.slskDownload({ username: t.username, filename: t.filename, size: t.size })
         ))
         _scheduleLibRescan()
       } catch (_) { btn.disabled = false; btn.innerHTML = origHtml }
