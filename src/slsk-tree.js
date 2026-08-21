@@ -12,9 +12,15 @@ function splitPath(p) {
   return String(p || '').replace(/\//g, SEP).split(SEP).filter(Boolean)
 }
 
-const AUDIO_RE = /\.(flac|mp3|wav|aiff?|m4a|aac|ogg|opus|ape|wv|wma|dsf|dff|mka|ec3)$/i
+// Deliberately broad. A hidden audio file looks like data loss to the user,
+// whereas an extra oddity in the list is merely untidy.
+const AUDIO_RE = /\.(flac|mp3|wav|aiff?|aif|m4a|m4b|aac|ogg|oga|opus|ape|wv|wma|dsf|dff|mka|ec3|ac3|alac|mpc|tta|shn|dts|spx|caf|w64)$/i
 
 function makeNode(name, path) {
+  // dirs is keyed by lowercased name: Windows paths are case-insensitive and
+  // peers really do share both "Dark The Suns" and "Dark the Suns". Keying by
+  // exact name splits one album across two folders, so half its files appear
+  // to be missing from whichever one you open.
   return { name, path, dirs: new Map(), files: [], fileCount: 0, totalSize: 0 }
 }
 
@@ -27,12 +33,16 @@ function buildTree(directories) {
     let acc = []
     for (const part of parts) {
       acc.push(part)
-      const path = acc.join(SEP)
-      if (!node.dirs.has(part)) node.dirs.set(part, makeNode(part, path))
-      node = node.dirs.get(part)
+      const key = part.toLowerCase()
+      if (!node.dirs.has(key)) node.dirs.set(key, makeNode(part, acc.join(SEP)))
+      node = node.dirs.get(key)
+      // Walk on using the casing we first saw, so node.path stays self-consistent.
+      acc[acc.length - 1] = node.name
     }
     for (const f of d.files || []) {
       const base = splitPath(f.filename).pop() || f.filename || ''
+      // fullPath must use the peer's own casing for this entry - it is what we
+      // send back to request the download - not the merged display casing.
       node.files.push({ ...f, name: base, fullPath: (d.name ? d.name + SEP : '') + base })
     }
   }
@@ -52,8 +62,9 @@ function buildTree(directories) {
 function getNode(root, path) {
   let node = root
   for (const part of splitPath(path)) {
-    if (!node.dirs.has(part)) return null
-    node = node.dirs.get(part)
+    const next = node.dirs.get(part.toLowerCase())
+    if (!next) return null
+    node = next
   }
   return node
 }

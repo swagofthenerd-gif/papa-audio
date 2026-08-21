@@ -2744,6 +2744,28 @@ ipcMain.handle('slsk-verify-file', async (_, { username, filename }) => {
   return { ok: true, filePath: resolved, ...result }
 })
 
+const savedUsers = require('./src/saved-users')
+
+ipcMain.handle('slsk-saved-users', () => savedUsers.sortUsers(store.get('slskSavedUsers', [])))
+
+ipcMain.handle('slsk-save-user', (_, { username, note, fileCount, dirCount }) => {
+  const list = savedUsers.saveUser(store.get('slskSavedUsers', []), username, { note, fileCount, dirCount })
+  store.set('slskSavedUsers', list)
+  return savedUsers.sortUsers(list)
+})
+
+ipcMain.handle('slsk-unsave-user', (_, { username }) => {
+  const list = savedUsers.removeUser(store.get('slskSavedUsers', []), username)
+  store.set('slskSavedUsers', list)
+  return savedUsers.sortUsers(list)
+})
+
+ipcMain.handle('slsk-touch-user', (_, { username, fileCount, dirCount }) => {
+  const list = savedUsers.touchUser(store.get('slskSavedUsers', []), username, { fileCount, dirCount })
+  store.set('slskSavedUsers', list)
+  return savedUsers.sortUsers(list)
+})
+
 ipcMain.handle('slsk-browse-user', async (_, { username }) => {
   try {
     const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('Browse timed out')), 30000))

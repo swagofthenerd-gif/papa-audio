@@ -125,3 +125,40 @@ test('the explorer is wired into the renderer', () => {
   assert.equal((r.match(/showSlskUserLibrary\((u|username)\)/g) || []).length, 0,
     'all call sites should use the explorer')
 })
+
+test('folders differing only in case are one folder, not two', () => {
+  // Real data from a live browse: "Dark The Suns" and "Dark the Suns" both
+  // exist. Treating them as siblings splits an album, and the files look
+  // missing from whichever one you happen to open.
+  const t = buildTree([
+    { name: 'Music\\Dark The Suns\\Album', files: [{ filename: 'a.flac', size: 1 }] },
+    { name: 'Music\\Dark the Suns\\Album', files: [{ filename: 'b.flac', size: 1 }] },
+  ])
+  const l = listDir(t, 'Music')
+  assert.equal(l.dirs.length, 1, 'should be one folder, not two')
+  const album = listDir(t, l.dirs[0].path + '\\Album')
+  assert.deepEqual(album.files.map(f => f.name).sort(), ['a.flac', 'b.flac'])
+})
+
+test('the download path keeps the casing the peer actually uses', () => {
+  // Merging for display must not corrupt the path we send back to the peer.
+  const t = buildTree([
+    { name: 'Music\\ARTIST', files: [{ filename: 'x.flac', size: 1 }] },
+    { name: 'Music\\artist', files: [{ filename: 'y.flac', size: 1 }] },
+  ])
+  const files = listDir(t, 'Music\\ARTIST').files
+  assert.equal(files.find(f => f.name === 'x.flac').fullPath, 'Music\\ARTIST\\x.flac')
+  assert.equal(files.find(f => f.name === 'y.flac').fullPath, 'Music\\artist\\y.flac')
+})
+
+test('audio-only keeps every audio format, not just the common ones', () => {
+  const { AUDIO_RE } = require('../src/slsk-tree')
+  for (const e of ['mp3','flac','wav','aiff','aif','m4a','m4b','aac','ogg','oga','opus',
+                   'ape','wv','wma','dsf','dff','mka','ec3','alac','mpc','tta','shn',
+                   'ac3','dts','spx','caf','w64']) {
+    assert.ok(AUDIO_RE.test('song.' + e), e + ' should count as audio')
+  }
+  for (const e of ['jpg','png','cue','log','txt','part','m3u','toc','info','accurip','nfo','sfv']) {
+    assert.ok(!AUDIO_RE.test('file.' + e), e + ' should not count as audio')
+  }
+})

@@ -113,6 +113,10 @@ contextBridge.exposeInMainWorld('api', {
   onSlskVerify:       (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('slsk-verify', h); return () => ipcRenderer.removeListener('slsk-verify', h) },
   slskShowInFolder:   (p) => ipcRenderer.invoke('slsk-show-in-folder', p),
   slskBrowseUser:     (p) => ipcRenderer.invoke('slsk-browse-user', p),
+  slskSavedUsers:     ()  => ipcRenderer.invoke('slsk-saved-users'),
+  slskSaveUser:       (p) => ipcRenderer.invoke('slsk-save-user', p),
+  slskUnsaveUser:     (p) => ipcRenderer.invoke('slsk-unsave-user', p),
+  slskTouchUser:      (p) => ipcRenderer.invoke('slsk-touch-user', p),
   ctxMenuShow:        (items) => ipcRenderer.invoke('ctx-menu-show', items),
 
   // YouTube

@@ -7102,7 +7102,8 @@ function renderSoulseekRow(query) {
     <div class="slsk-header-row">
       <span class="osrc-name">Soulseek</span>
       <span class="osrc-status found">${summary}</span>
-      <button class="slsk-retry-btn" id="slsk-retry-btn" title="Search again" style="margin-left:auto">↺</button>
+      <button class="slsk-retry-btn" id="slsk-saved-btn" title="Saved libraries" style="margin-left:auto">★</button>
+      <button class="slsk-retry-btn" id="slsk-retry-btn" title="Search again">↺</button>
     </div>
     <div class="slsk-filterbar">
       ${[['all', 'All', ordered.length],
@@ -8578,6 +8579,8 @@ function bindSlskSearchEvents(query) {
     }
   })
 
+  section.querySelector('#slsk-saved-btn')?.addEventListener('click', () => showSlskSavedUsers())
+
   section.querySelector('#slsk-retry-btn')?.addEventListener('click', () => {
     _searchCache_invalidate(query)  // force-fresh on manual retry
     runSlskSearch(query)
@@ -8766,6 +8769,7 @@ async function showSlskUserExplorer(username) {
   dlg.innerHTML = `<div class="modal-box slsk-lib-box">
     <div class="modal-header-row">
       <div class="modal-title">${esc(username)}</div>
+      <button class="slskx-star" id="slskx-star" title="Save this library">☆</button>
       <button class="modal-close-btn" id="slsk-lib-close">✕</button>
     </div>
     <div class="slskx-toolbar">
@@ -8997,6 +9001,26 @@ async function showSlskUserExplorer(username) {
     _st = setTimeout(() => { searching = search.value.trim(); render() }, 180)
   })
 
+  const starBtn = dlg.querySelector('#slskx-star')
+  let savedList = await window.api.slskSavedUsers().catch(() => [])
+  function paintStar() {
+    const on = window.PapaSavedUsers.isSaved(savedList, username)
+    starBtn.textContent = on ? '★' : '☆'
+    starBtn.classList.toggle('on', on)
+    starBtn.title = on ? 'Saved — click to remove' : 'Save this library for later'
+  }
+  paintStar()
+  starBtn.addEventListener('click', async () => {
+    const on = window.PapaSavedUsers.isSaved(savedList, username)
+    savedList = on
+      ? await window.api.slskUnsaveUser({ username })
+      : await window.api.slskSaveUser({ username,
+          fileCount: tree ? tree.fileCount : null,
+          dirCount: tree ? tree.dirs.size : null })
+    paintStar()
+    showSnackbar(on ? `Removed ${username}` : `Saved ${username}'s library`)
+  })
+
   const res = await window.api.slskBrowseUser({ username })
   if (!res.ok) {
     body.innerHTML = `<div class="slsk-lib-empty">Could not load this library: ${esc(res.error || 'unknown error')}</div>`
@@ -9013,6 +9037,56 @@ async function showSlskUserExplorer(username) {
   if (start) hist.go(start)
   render()
   search.focus()
+
+  // Keep a saved entry's counts and last-visited time current.
+  if (window.PapaSavedUsers.isSaved(savedList, username)) {
+    savedList = await window.api.slskTouchUser({
+      username, fileCount: tree.fileCount, dirCount: tree.dirs.size }).catch(() => savedList)
+  }
+}
+
+// ── Saved libraries ──────────────────────────────────────────────────────────
+async function showSlskSavedUsers() {
+  document.getElementById('slsk-saved-modal')?.remove()
+  const list = await window.api.slskSavedUsers().catch(() => [])
+  const dlg = document.createElement('div')
+  dlg.id = 'slsk-saved-modal'
+  dlg.className = 'modal-overlay'
+  const rows = list.length
+    ? list.map(u => `<div class="slskx-saved-row" data-user="${esc(u.username)}">
+        <span class="slskx-ico">★</span>
+        <span class="slskx-name">${esc(u.username)}</span>
+        <span class="slskx-meta">${u.fileCount ? u.fileCount.toLocaleString() + ' files' : ''}${
+          u.note ? ' · ' + esc(u.note) : ''}</span>
+        <button class="slskx-mini" data-remove="${esc(u.username)}" title="Remove">✕</button>
+      </div>`).join('')
+    : `<div class="slsk-lib-empty">No saved libraries yet.<br>
+         Open any user's library and click ☆ to keep it here.</div>`
+  dlg.innerHTML = `<div class="modal-box slsk-lib-box">
+    <div class="modal-header-row">
+      <div class="modal-title">Saved Libraries</div>
+      <button class="modal-close-btn" id="slsk-saved-close">✕</button>
+    </div>
+    <div class="slsk-lib-body">${rows}</div>
+  </div>`
+  document.body.appendChild(dlg)
+  dlg.querySelector('#slsk-saved-close').addEventListener('click', () => dlg.remove())
+  dlg.addEventListener('click', e => { if (e.target === dlg) dlg.remove() })
+  dlg.querySelectorAll('.slskx-saved-row').forEach(r => {
+    r.addEventListener('click', e => {
+      if (e.target.hasAttribute('data-remove')) return
+      dlg.remove()
+      showSlskUserExplorer(r.dataset.user)
+    })
+  })
+  dlg.querySelectorAll('[data-remove]').forEach(b => {
+    b.addEventListener('click', async e => {
+      e.stopPropagation()
+      await window.api.slskUnsaveUser({ username: b.dataset.remove })
+      dlg.remove()
+      showSlskSavedUsers()
+    })
+  })
 }
 
 function showSlskConfigModal(query) {

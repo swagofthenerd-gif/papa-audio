@@ -5272,3 +5272,19 @@ code { font-family:var(--font-mono,monospace);background:var(--bg4);padding:1px 
   padding: 6px 2px 0; border-top: 1px solid var(--border, #2a2a2a);
   color: var(--text3, #888); font-size: 11px;
 }
+
+/* Saved Soulseek libraries */
+.slskx-star {
+  background: none; border: 0; cursor: pointer;
+  color: var(--text3, #888); font-size: 18px; line-height: 1;
+  padding: 0 6px; margin-left: auto;
+}
+.slskx-star:hover { color: #f0c860; }
+.slskx-star.on { color: #f0c860; }
+.slskx-saved-row {
+  display: grid; grid-template-columns: 22px 1fr auto auto;
+  align-items: center; gap: 8px;
+  padding: 7px 6px; border-radius: 5px; font-size: 12.5px; cursor: pointer;
+}
+.slskx-saved-row:hover { background: rgba(255,255,255,.05); }
+.slskx-saved-row .slskx-ico { color: #f0c860; }
