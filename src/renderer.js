@@ -1485,7 +1485,7 @@ function renderAlbum(albumId) {
           <span class="hero-artist clickable-meta" data-artist="${esc(album.artist)}">${esc(album.artist)}</span>
           &bull; <span class="hero-year clickable-meta">${album.year || ''}</span> &bull; ${album.tracks.length} songs, ${fmtTime(totalDur)}
           ${album.isHiRes ? `&bull; <span class="hero-hires-badge">${fmtSpec(album.maxBitsPerSample, album.maxSampleRate)}</span>` : ''}
-          ${surroundLabel(album.maxChannels) ? `&bull; ${surroundBadge(album.maxChannels, 'hero-surround')}` : ''}
+          ${formatBadgeHtml(album, 'hero-surround') ? `&bull; ${formatBadgeHtml(album, 'hero-surround')}` : ''}
           ${album.genre ? `&bull; <span class="genre-badge">${esc(album.genre)}</span>` : ''}
           ${drBadge(computeAlbumDR(album)) ? `&bull; ${drBadge(computeAlbumDR(album))}` : ''}
         </div>
@@ -5759,7 +5759,7 @@ function albumCard(album, idx, sortMode, query) {
       </div>
       ${album.isYt ? '<span class="yt-badge yt-card-badge">YT</span>' : ''}
       ${hiResTag}
-      ${surroundBadge(album.maxChannels, 'card-surround')}
+      ${formatBadgeHtml(album) ? `<div class="fmt-stack">${formatBadgeHtml(album)}</div>` : ''}
       ${newBadge}
       ${drBadge(computeAlbumDR(album))}
       <button class="album-card-play" data-play="${album.id}">
@@ -5833,6 +5833,14 @@ function surroundLabel(channels) {
 function surroundBadge(channels, cls) {
   const label = surroundLabel(channels)
   return label ? `<span class="surround-badge${cls ? ' ' + cls : ''}" title="${label} multichannel audio">${label}</span>` : ''
+}
+
+// Badge rules live in format-badges.js so tests and UI share one implementation.
+function formatBadgeHtml(src, cls) {
+  const badges = (window.PapaFormat ? window.PapaFormat.formatBadges(src) : [])
+  return badges
+    .map(b => `<span class="fmt-badge fmt-${b.kind}${cls ? ' ' + cls : ''}" title="${esc(b.title)}">${b.label}</span>`)
+    .join('')
 }
 
 function fmtDur(sec) {

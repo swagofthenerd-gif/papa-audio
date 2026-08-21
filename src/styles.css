@@ -5126,3 +5126,36 @@ code { font-family:var(--font-mono,monospace);background:var(--bg4);padding:1px 
   background: rgba(0, 0, 0, .65);
   backdrop-filter: blur(4px);
 }
+
+/* Format badges — Atmos / surround / hi-res / DSD / lossy.
+   Colour-coded so the spec is readable at a glance on a wall of covers. */
+.fmt-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  line-height: 1.5;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+.fmt-atmos    { background: #1b1035; color: #c4a6ff; border: 1px solid #4b2fa0; }
+.fmt-surround { background: #0d2a1c; color: #6ee7a8; border: 1px solid #1f6b45; }
+.fmt-hires    { background: #2b2410; color: #f0c860; border: 1px solid #7a6320; }
+.fmt-dsd      { background: #10222b; color: #6ecbe7; border: 1px solid #205f7a; }
+.fmt-lossy    { background: #2a2a2a; color: #9a9a9a; border: 1px solid #444; }
+/* Stacked over the cover art: a column so several badges never collide. */
+.fmt-stack {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  pointer-events: none;
+}
+.fmt-stack .fmt-badge { margin-left: 0; box-shadow: 0 1px 4px rgba(0,0,0,.55); }

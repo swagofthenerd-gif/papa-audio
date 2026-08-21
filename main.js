@@ -1252,6 +1252,33 @@ function parseCueSheet(cuePath) {
   return sheets.filter(s => s.tracks.some(t => t.startSec !== null) && fs.existsSync(s.audioFile))
 }
 
+// music-metadata misreports container formats that carry a foreign codec:
+// an E-AC-3 Atmos track inside .m4a comes back as 2 channels with no codec at
+// all. ffprobe is authoritative, so consult it for those cases only - running
+// it on every FLAC in a large library would make scanning far slower for no
+// gain.
+const PROBE_EXT = /\.(m4a|mp4|mka|mkv|ec3|eac3|ac3|m4b)$/i
+
+function ffprobeAudio(filePath) {
+  try {
+    const out = require('child_process').execFileSync('ffprobe', [
+      '-v', 'error', '-select_streams', 'a:0',
+      '-show_entries', 'stream=codec_name,channels,sample_rate,profile',
+      '-of', 'json', filePath
+    ], { encoding: 'utf8', timeout: 10000, maxBuffer: 1 << 20 })
+    const st = (JSON.parse(out).streams || [])[0] || {}
+    return {
+      codec: st.codec_name || null,
+      channels: Number(st.channels) || 0,
+      sampleRate: Number(st.sample_rate) || 0,
+      // Both E-AC-3 JOC and TrueHD Atmos announce it in the profile string.
+      atmos: /atmos/i.test(st.profile || '')
+    }
+  } catch {
+    return { codec: null, channels: 0, sampleRate: 0, atmos: false }
+  }
+}
+
 async function parseTrackFile(filePath, st) {
   const meta = await mm.parseFile(filePath, { duration: true })
   const c = meta.common, f = meta.format
@@ -1263,7 +1290,10 @@ async function parseTrackFile(filePath, st) {
     artPath = path.join(artworkDir, `${key}.${ext}`)
     if (!fs.existsSync(artPath)) fs.writeFileSync(artPath, pic.data)
   }
-  const codec = f.codec || null
+  const probe = PROBE_EXT.test(filePath)
+    ? ffprobeAudio(filePath)
+    : { codec: null, channels: 0, sampleRate: 0, atmos: false }
+  const codec = f.codec || probe.codec || null
   return {
     id: crypto.createHash('md5').update(filePath).digest('hex'),
     title: c.title || path.basename(filePath, path.extname(filePath)),
@@ -1275,9 +1305,9 @@ async function parseTrackFile(filePath, st) {
     year: c.year || null,
     genre: c.genre?.[0] || null,
     duration: f.duration || 0,
-    sampleRate: f.sampleRate || 0,
+    sampleRate: f.sampleRate || probe.sampleRate || 0,
     bitsPerSample: f.bitsPerSample || 0,
-    channels: f.numberOfChannels || 0,
+    channels: probe.channels || f.numberOfChannels || 0,
     replayGainTrack: c.replaygain_track_gain?.dB ?? null,
     replayGainAlbum: c.replaygain_album_gain?.dB ?? null,
     replaygainTrackPeak: c.replaygain_track_peak ?? null,
@@ -1294,6 +1324,7 @@ async function parseTrackFile(filePath, st) {
     isrc:        (c.isrc?.[0])         || null,
     comment:     (c.comment?.[0]?.text || c.comment?.[0]) || null,
     hasEmbeddedLyrics: !!(c.lyrics && c.lyrics.length),
+    atmos: probe.atmos,
     needsTranscode: TRANSCODE_EXT.test(filePath) || /alac/i.test(codec || ''),
     addedAt: st ? st.mtimeMs : 0,
     filePath, artPath,
@@ -1318,9 +1349,12 @@ async function performScan(onProgress) {
       }
     }
 
-    const cache = readJsonSafe(TRACK_CACHE_PATH(), { version: 2, files: {} })
-    if (cache.version !== 2) cache.files = {}
-    const newCache = { version: 2, files: {} }
+    // v3 added ffprobe-derived codec/channels/atmos. v2 records predate it and
+    // would keep reporting a 6-channel Atmos file as 2-channel stereo, so they
+    // must be discarded rather than reused.
+    const cache = readJsonSafe(TRACK_CACHE_PATH(), { version: 3, files: {} })
+    if (cache.version !== 3) cache.files = {}
+    const newCache = { version: 3, files: {} }
     const tracks = []
     const total = found.audio.length
     let done = 0, parsed = 0
@@ -1435,7 +1469,7 @@ function buildAlbums(tracks) {
       replayGainTrack: t.replayGainTrack ?? null, replayGainAlbum: t.replayGainAlbum ?? null,
       year: t.year || null, composer: t.composer || null, codec: t.codec || null,
       bitrate: t.bitrate || null, fileSize: t.fileSize || null, addedAt: t.addedAt || 0,
-      needsTranscode: t.needsTranscode || false, hasEmbeddedLyrics: t.hasEmbeddedLyrics || false,
+      atmos: t.atmos || false, needsTranscode: t.needsTranscode || false, hasEmbeddedLyrics: t.hasEmbeddedLyrics || false,
       cueStart: t.cueStart ?? null, cueEnd: t.cueEnd ?? null })
   }
   for (const [, a] of map) {
@@ -1449,6 +1483,10 @@ function buildAlbums(tracks) {
     // Highest channel count on the album, so multichannel releases can be
     // spotted while browsing rather than only inside the track list.
     a.maxChannels      = Math.max(0, ...a.tracks.map(t => t.channels      || 0))
+    a.atmos            = a.tracks.some(t => t.atmos)
+    a.maxSampleRate    = Math.max(0, ...a.tracks.map(t => t.sampleRate    || 0))
+    a.maxBitsPerSample = Math.max(0, ...a.tracks.map(t => t.bitsPerSample || 0))
+    a.codec            = (a.tracks.find(t => t.codec) || {}).codec || null
     a.isHiRes  = a.maxBitsPerSample >= 24 && a.maxSampleRate > 48000
     const genreCounts = {}
     for (const t of a.tracks) { if (t.genre) genreCounts[t.genre] = (genreCounts[t.genre]||0)+1 }
