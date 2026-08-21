@@ -1193,7 +1193,7 @@ ipcMain.handle('remove-music-folder', (_, folderPath) => {
 
 // ── Library scan v2 ──────────────────────────────────────────────────────────
 // Async + incremental (mtime/size cache) + CUE sheets + progress events + watcher.
-const AUDIO_EXT = /\.(flac|mp3|wav|aiff?|m4a|aac|ogg|opus|ape|wv|wma|dsf|dff)$/i
+const AUDIO_EXT = /\.(flac|mp3|wav|aiff?|m4a|aac|ogg|opus|ape|wv|wma|dsf|dff|mka|ec3|eac3)$/i
 // Formats Chromium cannot decode natively — played via ffmpeg transcode cache
 const TRANSCODE_EXT = /\.(ape|wv|wma|dsf|dff)$/i
 const TRACK_CACHE_PATH = () => path.join(USER_DATA, 'track-cache.json')
