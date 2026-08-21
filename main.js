@@ -2712,6 +2712,44 @@ ipcMain.handle('ctx-menu-show', (event, items, x, y) => {
   ])
 })
 
+const surroundVerify = require('./src/surround-verify')
+
+// Read the real channel count off a file. Everything before this point is
+// working from folder names and file sizes, which can lie; ffprobe cannot.
+function probeChannels(filePath) {
+  return new Promise((resolve) => {
+    execFile('ffprobe', ['-v', 'error', '-select_streams', 'a:0',
+      '-show_entries', 'stream=channels', '-of', 'default=nw=1:nk=1', filePath],
+      { timeout: 15000 }, (err, stdout) => {
+        if (err) { resolve(0); return }
+        resolve(parseInt(String(stdout).trim(), 10) || 0)
+      })
+  })
+}
+
+// Check a finished download against what it claimed to be.
+ipcMain.handle('verify-surround', async (_, { filePath, expectedLabel }) => {
+  if (!filePath || !fs.existsSync(filePath)) return { ok: null, severity: 'unknown', message: 'File not found.' }
+  const channels = await probeChannels(filePath)
+  return { ...surroundVerify.verdict(expectedLabel || null, channels), channels }
+})
+
+// Audit a whole folder: an album is only surround if every track is, and one
+// stereo track hiding in a 5.1 album is the failure most likely to go unnoticed.
+ipcMain.handle('verify-surround-folder', async (_, { dir }) => {
+  try {
+    if (!dir || !fs.existsSync(dir)) return { ok: null, total: 0, offenders: [] }
+    const names = fs.readdirSync(dir).filter(n => AUDIO_EXT.test(n)).slice(0, 60)
+    const tracks = []
+    for (const n of names) {
+      tracks.push({ name: n, channels: await probeChannels(path.join(dir, n)) })
+    }
+    return surroundVerify.auditAlbum(tracks)
+  } catch (e) {
+    return { ok: null, total: 0, offenders: [], error: String(e.message || e) }
+  }
+})
+
 ipcMain.handle('slsk-resolve-file', (_, { username, filename }) => {
   const cfg = store.get('slskConfig', {})
   const folders = store.get('musicFolders', [])

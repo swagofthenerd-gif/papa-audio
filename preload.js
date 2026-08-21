@@ -114,6 +114,8 @@ contextBridge.exposeInMainWorld('api', {
   slskShowInFolder:   (p) => ipcRenderer.invoke('slsk-show-in-folder', p),
   slskBrowseUser:     (p) => ipcRenderer.invoke('slsk-browse-user', p),
   onWindowFocus:      (cb) => ipcRenderer.on('window-focus', (_, on) => cb(on)),
+  verifySurround:       (p) => ipcRenderer.invoke('verify-surround', p),
+  verifySurroundFolder: (p) => ipcRenderer.invoke('verify-surround-folder', p),
   slskSavedUsers:     ()  => ipcRenderer.invoke('slsk-saved-users'),
   slskSaveUser:       (p) => ipcRenderer.invoke('slsk-save-user', p),
   slskUnsaveUser:     (p) => ipcRenderer.invoke('slsk-unsave-user', p),

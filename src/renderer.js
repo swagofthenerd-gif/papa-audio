@@ -7039,6 +7039,37 @@ function _slskGroupByFolder(queryHint) {
     .sort((a, b) => score(b) - score(a))
 }
 
+// Folder names and file sizes are guesses. Once the files are on disk ffprobe
+// reports the real channel count, so a download that promised surround and
+// arrived stereo gets caught instead of quietly joining the library.
+async function _verifySurroundWhenDone(g, plan, label) {
+  const first = plan[0]
+  if (!first) return
+  const deadline = Date.now() + 15 * 60 * 1000
+  const poll = async () => {
+    if (Date.now() > deadline) return
+    const found = await window.api.slskResolveFile({
+      username: first.username, filename: first.filename }).catch(() => null)
+    if (!found || !found.path) { setTimeout(poll, 15000); return }
+    const dir = found.path.replace(/[^/]+$/, '')
+    const res = await window.api.verifySurroundFolder({ dir }).catch(() => null)
+    if (!res || res.ok === null) return
+    if (res.ok) {
+      showSnackbar(`Verified: all ${res.total} tracks are surround`)
+    } else if (res.mixed) {
+      showSnackbar(`Warning: only ${res.surround} of ${res.total} tracks are surround`, 'Show', () => {
+        alert(`Labelled ${label}, but these tracks are not surround:\n\n` +
+          res.offenders.map(o => `  ${o.name} — ${o.channels} channel${o.channels === 1 ? '' : 's'}`).join('\n'))
+      })
+    } else {
+      showSnackbar(`Warning: labelled ${label} but no track is surround`, 'Show', () => {
+        alert(res.offenders.map(o => `  ${o.name} — ${o.channels} channels`).join('\n'))
+      })
+    }
+  }
+  setTimeout(poll, 20000)
+}
+
 function _slskQualLabel(files) {
   const ref = files.find(f => f.isFlac) || files[0]
   if (!ref) return ''
@@ -7102,6 +7133,14 @@ function renderSoulseekRow(query) {
     ? qWords.filter(w => (g.folderName || '').toLowerCase().includes(w)).length / qWords.length
     : 0
   const groups = rawGroups.sort((a, b) => {
+    // Surround first, always. It is the rarest thing in these results and the
+    // whole reason for searching; a lossless stereo rip ranking above a 5.1 one
+    // buries the only copy worth having.
+    const SF = window.PapaSlskFilters
+    if (SF) {
+      const aS = SF.groupSurround(a) ? 1 : 0, bS = SF.groupSurround(b) ? 1 : 0
+      if (aS !== bS) return bS - aS
+    }
     const aF = a.files.filter(f => f.isFlac).length, bF = b.files.filter(f => f.isFlac).length
     if (bF !== aF) return bF - aF
     const qs = _qScore(b) - _qScore(a)
@@ -8703,9 +8742,17 @@ function bindSlskSearchEvents(query) {
         // parallel. Size matching keeps a stereo rip from completing a
         // surround album.
         const S = window.PapaSpread
-        const alternates = S ? groups.filter(o =>
-          o.folderName && g.folderName &&
-          o.folderName.toLowerCase() === g.folderName.toLowerCase()) : []
+        const SF2 = window.PapaSlskFilters
+        const anchorSur = SF2 ? SF2.groupSurround(g) : null
+        const alternates = S ? groups.filter(o => {
+          if (!o.folderName || !g.folderName) return false
+          if (o.folderName.toLowerCase() !== g.folderName.toLowerCase()) return false
+          // If the chosen release is surround, every alternate must be too.
+          // Size matching alone would let an unlabelled stereo rip through
+          // whenever its tracks happened to land in the tolerance window.
+          if (anchorSur && SF2 && !SF2.groupSurround(o)) return false
+          return true
+        }) : []
         const plan = (S && alternates.length > 1)
           ? S.planSpread(alternates, { anchor: g, maxPerUser: 2 })
           : g.files.map(f => ({ username: g.username, filename: f.filename, size: f.size }))
@@ -8717,6 +8764,7 @@ function bindSlskSearchEvents(query) {
           window.api.slskDownload({ username: t.username, filename: t.filename, size: t.size })
         ))
         _scheduleLibRescan()
+        if (anchorSur) _verifySurroundWhenDone(g, plan, anchorSur.label)
       } catch (_) { btn.disabled = false; btn.innerHTML = origHtml }
     })
   })
