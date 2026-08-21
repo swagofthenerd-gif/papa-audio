@@ -67,6 +67,8 @@ const slsk = {
   lastQuery: '',
   pendingSearches: 0,
   searchStart: 0,
+  filter: 'all',
+  sort: 'relevance',
 }
 var _slskTimer = null
 
@@ -7081,12 +7083,19 @@ function renderSoulseekRow(query) {
   const flacGroups  = groups.filter(g => g.files.some(f => f.isFlac))
   const otherGroups = groups.filter(g => !g.files.some(f => f.isFlac))
   // FLAC/lossless groups first, then other formats — show up to 60 sources
-  const displayList  = [...flacGroups, ...otherGroups].slice(0, 60)
+  const ordered      = [...flacGroups, ...otherGroups]
+  const SF           = window.PapaSlskFilters
+  const filtered     = SF ? SF.applyFilterSort(ordered, { filter: slsk.filter, sort: slsk.sort }) : ordered
+  const surroundCount = SF ? ordered.filter(g => SF.groupSurround(g)).length : 0
+  const hiresCount    = SF ? ordered.filter(g => SF.isHiRes(g)).length : 0
+  const displayList   = filtered.slice(0, 60)
+  const filteredNote  = slsk.filter !== 'all'
+    ? ` · <span class="slsk-filter-note">${filtered.length} match${filtered.length !== 1 ? 'es' : ''}</span>` : ''
   const isUpdating   = slsk.searching && slsk.results.length > 0
   const pending      = slsk.pendingSearches || 0
   const updateNote   = isUpdating ? ` <span class="slsk-updating">· scanning${pending > 0 ? ' ('+pending+' left)' : ''}${_slskElapsed > 0 ? ' ('+_slskElapsed+'s)' : ''}…</span>` : ''
   const summary      = flacGroups.length
-    ? `${flacGroups.length} lossless${otherGroups.length > 0 ? ` · ${otherGroups.length} other` : ''} source${groups.length !== 1 ? 's' : ''}${updateNote}`
+    ? `${flacGroups.length} lossless${otherGroups.length > 0 ? ` · ${otherGroups.length} other` : ''} source${groups.length !== 1 ? 's' : ''}${filteredNote}${updateNote}`
     : `${groups.length} source${groups.length !== 1 ? 's' : ''}${updateNote}`
 
   return `<div class="slsk-container" id="slsk-row">
@@ -7094,6 +7103,22 @@ function renderSoulseekRow(query) {
       <span class="osrc-name">Soulseek</span>
       <span class="osrc-status found">${summary}</span>
       <button class="slsk-retry-btn" id="slsk-retry-btn" title="Search again" style="margin-left:auto">↺</button>
+    </div>
+    <div class="slsk-filterbar">
+      ${[['all', 'All', ordered.length],
+         ['surround', '5.1 / Surround', surroundCount],
+         ['hires', 'Hi-Res', hiresCount],
+         ['lossless', 'Lossless', flacGroups.length]]
+        .map(([k, label, n]) => `<button class="slsk-chip${slsk.filter === k ? ' active' : ''}"
+              data-slsk-filter="${k}"${n === 0 && k !== 'all' ? ' disabled' : ''}
+              title="${n} source${n !== 1 ? 's' : ''}">${label}<span class="slsk-chip-n">${n}</span></button>`).join('')}
+      <label class="slsk-sort-wrap">Sort
+        <select class="slsk-sort" id="slsk-sort">
+          ${[['relevance', 'Best match'], ['sampleRate', 'Sample rate'], ['bitDepth', 'Bit depth'],
+             ['tracks', 'Track count'], ['speed', 'Upload speed'], ['size', 'File size']]
+            .map(([k, l]) => `<option value="${k}"${slsk.sort === k ? ' selected' : ''}>${l}</option>`).join('')}
+        </select>
+      </label>
     </div>
     <div class="slsk-grid">
       ${displayList.map((g, gi) => {
@@ -7108,6 +7133,8 @@ function renderSoulseekRow(query) {
         return `<div class="slsk-card" data-gi="${gi}">
           <div class="slsk-card-art" style="background:linear-gradient(135deg,hsl(${hue},45%,16%),hsl(${(hue+40)%360},35%,10%))">
             ${hasFlac ? '<span class="slsk-card-lossless">LOSSLESS</span>' : ''}
+            ${(() => { const sd = window.PapaSlskFilters && window.PapaSlskFilters.groupSurround(g)
+                       return sd ? `<span class="slsk-card-surround" title="Labelled ${esc(sd.label)} by the uploader">${esc(sd.label)}</span>` : '' })()}
             <svg class="slsk-card-note" viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>
           </div>
           <div class="slsk-card-body">
@@ -8512,6 +8539,14 @@ function renderDownloads() {
   _pollAndRenderDownloads()
 }
 
+// Re-render the results in place from data already fetched.
+function _rerenderSlskSection(query) {
+  const sec = document.getElementById('slsk-section')
+  if (!sec) return
+  sec.innerHTML = renderSoulseekRow(query)
+  bindSlskSearchEvents(query)
+}
+
 function bindSlskSearchEvents(query) {
   const section = document.getElementById('slsk-section')
   if (!section) return
@@ -8546,6 +8581,20 @@ function bindSlskSearchEvents(query) {
   section.querySelector('#slsk-retry-btn')?.addEventListener('click', () => {
     _searchCache_invalidate(query)  // force-fresh on manual retry
     runSlskSearch(query)
+  })
+
+  // Filter and sort are pure view state: re-render, never re-search. A repeat
+  // network search to narrow results already in hand would be slow and rude to
+  // the peers serving them.
+  section.querySelectorAll('[data-slsk-filter]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      slsk.filter = btn.getAttribute('data-slsk-filter')
+      _rerenderSlskSection(query)
+    })
+  })
+  section.querySelector('#slsk-sort')?.addEventListener('change', e => {
+    slsk.sort = e.target.value
+    _rerenderSlskSection(query)
   })
 
   const groups = _slskGroupByFolder()
