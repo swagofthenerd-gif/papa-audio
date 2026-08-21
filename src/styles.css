@@ -5326,3 +5326,4 @@ body.app-unfocused *::after {
   animation-play-state: paused !important;
   transition: none !important;
 }
+.slskx-sur-btn.active { background: rgba(29,185,84,.15); border-color: #1db954; color: #1db954; }

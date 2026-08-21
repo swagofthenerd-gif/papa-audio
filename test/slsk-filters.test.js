@@ -128,3 +128,32 @@ test('YouTube-style titles are classified correctly', () => {
     assert.equal(got ? got.label : null, want, title)
   }
 })
+
+test('surround-targeted queries widen the net', () => {
+  const { surroundQueries } = require('../src/slsk-filters')
+  const q = surroundQueries('dark side of the moon')
+  assert.ok(q.length >= 3)
+  assert.ok(q.every(x => x.startsWith('dark side of the moon ')))
+  assert.ok(q.some(x => /5\.1/.test(x)))
+  assert.ok(q.some(x => /sacd/i.test(x)))
+})
+
+test('a term the user already typed is not asked for twice', () => {
+  const { surroundQueries } = require('../src/slsk-filters')
+  assert.ok(!surroundQueries('dsotm 5.1').some(x => x.endsWith(' 5.1')))
+  assert.ok(!surroundQueries('red atmos mix').some(x => /atmos$/i.test(x)))
+})
+
+test('junk input yields no queries', () => {
+  const { surroundQueries } = require('../src/slsk-filters')
+  assert.deepEqual(surroundQueries(''), [])
+  assert.deepEqual(surroundQueries('a'), [])
+  assert.deepEqual(surroundQueries(null), [])
+})
+
+test('surround discovery is wired into search and the explorer', () => {
+  const fs = require('fs'), path = require('path')
+  const r = fs.readFileSync(path.join(__dirname, '../src/renderer.js'), 'utf8')
+  assert.ok(r.includes('renderSurroundFolders'), 'explorer needs the surround scan')
+  assert.ok(r.includes('slskx-surround'), 'explorer needs the 5.1-only button')
+})

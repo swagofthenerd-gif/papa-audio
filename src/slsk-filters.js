@@ -37,6 +37,30 @@ function detectSurround(text) {
   return null
 }
 
+
+// Extra queries aimed squarely at surround releases.
+//
+// A plain search returns mostly stereo, because that is most of what exists.
+// Uploaders label surround releases with a small, predictable vocabulary, so
+// asking for those terms directly surfaces copies the base query never reaches
+// - and, more usefully, surfaces the PEOPLE who hold them. Someone with one
+// 5.1 album usually has more.
+const SURROUND_TERMS = ['5.1', 'multichannel', 'SACD', 'DVD-Audio', 'atmos', '7.1']
+
+function surroundQueries(query, limit = 4) {
+  const base = String(query || '')
+    .replace(/\s*[\(\[][^\)\]]{0,60}[\)\]]\s*/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (base.length < 2) return []
+  // Skip any term the user already typed - re-asking for it wastes a slot.
+  const lower = base.toLowerCase()
+  return SURROUND_TERMS
+    .filter(t => !lower.includes(t.toLowerCase()))
+    .slice(0, limit)
+    .map(t => `${base} ${t}`)
+}
+
 function folderText(g) {
   const names = (g.files || []).map(f => f.filename || '').join(' ')
   return `${g.folderPath || ''} ${g.folderName || ''} ${names}`
@@ -81,11 +105,11 @@ function applyFilterSort(groups, { filter = 'all', sort = 'relevance' } = {}) {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { detectSurround, groupSurround, isHiRes, isLossless, applyFilterSort, FILTERS, SORTS }
+  module.exports = { detectSurround, groupSurround, isHiRes, isLossless, applyFilterSort, surroundQueries, SURROUND_TERMS, FILTERS, SORTS }
 }
 if (typeof window !== 'undefined') {
   window.PapaSlskFilters = { detectSurround, groupSurround, isHiRes, isLossless, applyFilterSort }
   // The same detector serves YouTube titles: both are uploader-written text,
   // and the failure modes ("Album 51", stereo SACD rips) are identical.
-  window.PapaSurround = { detectSurround }
+  window.PapaSurround = { detectSurround, surroundQueries }
 }

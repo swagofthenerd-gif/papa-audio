@@ -82,3 +82,15 @@ test('5.1 is prioritised and verified end to end', () => {
   assert.ok(r.includes('anchorSur && SF2 && !SF2.groupSurround(o)'),
     'alternates must match the anchor surround status')
 })
+
+test('the personal library can be filtered and sorted by surround', () => {
+  const fs = require('fs'), path = require('path')
+  const r = fs.readFileSync(path.join(__dirname, '../src/renderer.js'), 'utf8')
+  assert.ok(r.includes('libSurround'), 'library needs surround filter state')
+  assert.ok(r.includes('lib-surround-filter'), 'library needs the filter control')
+  assert.ok(r.includes("state.libSort === 'channels'"), 'library needs a channel sort')
+  assert.ok(r.includes("case 'atmos':  return !!a.atmos"), 'Atmos must be its own option')
+  // Reset must clear it too, or a hidden filter makes the library look empty.
+  assert.ok(/lib-reset-filters[\s\S]{0,220}libSurround = ''/.test(r),
+    'Reset must clear the surround filter')
+})

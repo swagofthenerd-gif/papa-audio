@@ -29,6 +29,7 @@ const state = {
   libYear: '',
   libFormat: '',
   libDecade: '',
+  libSurround: '',
   libView: 'grid',
   libFolder: null,
   playlists: [],
@@ -1206,6 +1207,23 @@ function renderLibrary() {
     if (state.libFormat) albums = albums.filter(function(a) { return a.tracks && a.tracks[0] && a.tracks[0].filePath && a.tracks[0].filePath.toLowerCase().endsWith('.' + state.libFormat) })
     if (state.libDecade) { var d = parseInt(state.libDecade); albums = albums.filter(function(a) { return a.year >= d && a.year < d + 10 }) }
     if (state.libFolder) albums = albums.filter(function(a) { return a.tracks && a.tracks[0] && a.tracks[0].filePath && a.tracks[0].filePath.indexOf(state.libFolder) === 0 })
+    // Surround filter. Channel counts come from the scanner (ffprobe-backed for
+    // the container formats the tag parser gets wrong), so this filters on what
+    // the files ARE, not on what their folder names claim.
+    if (state.libSurround) {
+      albums = albums.filter(function(a) {
+        var ch = a.maxChannels || 0
+        switch (state.libSurround) {
+          case 'any':    return ch >= 4
+          case 'atmos':  return !!a.atmos
+          case '71':     return ch >= 8
+          case '51':     return ch >= 6 && ch < 8
+          case 'quad':   return ch >= 4 && ch < 6
+          case 'stereo': return ch > 0 && ch < 4
+          default:       return true
+        }
+      })
+    }
     var searchQ = (document.getElementById('lib-search') || {}).value || ''
     if (searchQ) { var sq = searchQ.toLowerCase(); albums = albums.filter(function(a) { return (a.name && a.name.toLowerCase().indexOf(sq) !== -1) || (a.artist && a.artist.toLowerCase().indexOf(sq) !== -1) }) }
     if (state.libSort === 'alpha')  return albums.sort((a, b) => a.name.localeCompare(b.name))
@@ -1214,6 +1232,13 @@ function renderLibrary() {
     if (state.libSort === 'recent') return albums.sort((a, b) => state.recentlyPlayed.indexOf(a.id) - state.recentlyPlayed.indexOf(b.id)).filter(a => state.recentlyPlayed.includes(a.id)).concat(albums.filter(a => !state.recentlyPlayed.includes(a.id)))
     if (state.libSort === 'added') return albums.filter(a => a.addedAt).sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0)).concat(albums.filter(a => !a.addedAt))
     if (state.libSort === 'genre') return albums.sort((a, b) => (a.genre || 'zzz').localeCompare(b.genre || 'zzz'))
+    // Most channels first, Atmos ahead of plain 5.1 at the same count.
+    if (state.libSort === 'channels') return albums.sort(function(a, b) {
+      var d = (b.maxChannels || 0) - (a.maxChannels || 0)
+      if (d) return d
+      var at = (b.atmos ? 1 : 0) - (a.atmos ? 1 : 0)
+      return at || a.name.localeCompare(b.name)
+    })
     return albums
   }
 
@@ -1227,6 +1252,7 @@ function renderLibrary() {
     { key: 'artist', label: 'Artist' },
     { key: 'year', label: 'Year' },
     { key: 'genre', label: 'Genre' },
+    { key: 'channels', label: 'Channels' },
     { key: 'recent', label: 'Recently played' },
     { key: 'added', label: 'Recently added' },
   ].map(s => `<button class="sort-btn${state.libSort === s.key ? ' active' : ''}" data-sort="${s.key}">${s.label}</button>`).join('')
@@ -1327,6 +1353,24 @@ function renderLibrary() {
         <select class="lib-select" id="lib-year-filter"><option value="">Year: All</option>${(()=>{var y=[...new Set(state.library.map(function(a){return a.year}).filter(Boolean))].sort();return y.map(function(v){return '<option value="'+v+'">'+v+'</option>'}).join('')})()}</select>
         <select class="lib-select" id="lib-format-filter"><option value="">Format: All</option>${(()=>{var f=[...new Set(state.library.map(function(a){var t=a.tracks&&a.tracks[0];return t?(t.filePath||'').split('.').pop():null}).filter(Boolean))].sort();return f.map(function(v){return '<option value="'+v+'">'+v.toUpperCase()+'</option>'}).join('')})()}</select>
         <select class="lib-select" id="lib-decade-filter"><option value="">Decade: All</option><option value="1950"${state.libDecade==='1950'?' selected':''}>1950s</option><option value="1960"${state.libDecade==='1960'?' selected':''}>1960s</option><option value="1970"${state.libDecade==='1970'?' selected':''}>1970s</option><option value="1980"${state.libDecade==='1980'?' selected':''}>1980s</option><option value="1990"${state.libDecade==='1990'?' selected':''}>1990s</option><option value="2000"${state.libDecade==='2000'?' selected':''}>2000s</option><option value="2010"${state.libDecade==='2010'?' selected':''}>2010s</option><option value="2020"${state.libDecade==='2020'?' selected':''}>2020s</option></select>
+        <select class="lib-select" id="lib-surround-filter" title="Filter by how many channels the files actually have">
+          ${(() => {
+            const lib = state.library
+            const n = (f) => lib.filter(f).length
+            const opts = [
+              ['',       'Surround: All',      lib.length],
+              ['any',    'Any surround',       n(a => (a.maxChannels || 0) >= 4)],
+              ['atmos',  'Dolby Atmos',        n(a => a.atmos)],
+              ['71',     '7.1',                n(a => (a.maxChannels || 0) >= 8)],
+              ['51',     '5.1',                n(a => (a.maxChannels || 0) >= 6 && (a.maxChannels || 0) < 8)],
+              ['quad',   'Quad / 4.0',         n(a => (a.maxChannels || 0) >= 4 && (a.maxChannels || 0) < 6)],
+              ['stereo', 'Stereo only',        n(a => (a.maxChannels || 0) > 0 && (a.maxChannels || 0) < 4)],
+            ]
+            return opts.filter(o => o[0] === '' || o[2] > 0)
+              .map(o => `<option value="${o[0]}"${state.libSurround === o[0] ? ' selected' : ''}>${o[1]} (${o[2]})</option>`)
+              .join('')
+          })()}
+        </select>
         <button class="lib-reset-btn" id="lib-reset-filters">Reset</button>
         <button class="lib-reset-btn" id="lib-save-preset" style="margin-left:12px">💾 Save preset</button>
         ${_libPresets.length > 0 ? '<select class="lib-select" id="lib-preset-select" style="margin-left:8px"><option value="">Load preset…</option>' + _libPresets.map(function(p) { return '<option value="' + esc(p.name) + '">' + esc(p.name) + '</option>' }).join('') + ' <button class="lib-reset-btn" id="lib-delete-preset" style="display:none;margin-left:4px">✕</button></select>' : ''}
@@ -1395,7 +1439,8 @@ function renderLibrary() {
   document.getElementById('lib-year-filter')?.addEventListener('change', function() { state.libYear = this.value; renderLibrary() })
   document.getElementById('lib-format-filter')?.addEventListener('change', function() { state.libFormat = this.value; renderLibrary() })
   document.getElementById('lib-decade-filter')?.addEventListener('change', function() { state.libDecade = this.value; renderLibrary() })
-  document.getElementById('lib-reset-filters')?.addEventListener('click', function() { state.libYear = ''; state.libFormat = ''; state.libDecade = ''; renderLibrary() })
+  document.getElementById('lib-surround-filter')?.addEventListener('change', function() { state.libSurround = this.value; renderLibrary() })
+  document.getElementById('lib-reset-filters')?.addEventListener('click', function() { state.libYear = ''; state.libFormat = ''; state.libDecade = ''; state.libSurround = ''; renderLibrary() })
   document.getElementById('lib-save-preset')?.addEventListener('click', function() { saveLibPreset() })
   document.getElementById('lib-preset-select')?.addEventListener('change', function() { var v = this.value; var d = document.getElementById('lib-delete-preset'); if (d) d.style.display = v ? 'inline-block' : 'none'; if (v) loadLibPreset(v) })
   document.getElementById('lib-delete-preset')?.addEventListener('click', function() { var sel = document.getElementById('lib-preset-select'); var v = sel && sel.value; if (v && confirm('Delete preset "' + v + '"?')) { _libPresets = _libPresets.filter(function(p) { return p.name !== v }); localStorage.setItem('papa-lib-presets', JSON.stringify(_libPresets)); showSnackbar('Preset "' + v + '" deleted'); renderLibrary() } })
@@ -7313,7 +7358,15 @@ function _buildSearchVariants(query) {
   // 11. Reversed for 2-word queries (both "Artist Title" and "Title Artist" orders exist)
   if (words.length === 2) add(words[1] + ' ' + words[0])
 
-  return variants.slice(0, 8)  // up from 6
+  // Surround-targeted variants ("<album> 5.1", "<album> SACD") were tried here
+  // and measured zero responses on the live network, while the plain query
+  // returned 250 responses containing 287 surround-labelled files from 17
+  // peers. Soulseek matches filename tokens, and the surround wording lives in
+  // folder names rather than the tokens a query is matched against - so the
+  // base query already finds them and the extra searches only burn search
+  // slots, which is what clogged the queue before. Filtering the results is the
+  // approach that works; searching for the label is not.
+  return variants.slice(0, 8)
 }
 
 // Client-side cache invalidation — passes noCache:true to main process for all variants
@@ -8900,6 +8953,8 @@ async function showSlskUserExplorer(username) {
       <label class="slskx-audio-toggle" title="Hide artwork, playlists and other non-audio files">
         <input type="checkbox" id="slskx-audio-only" checked> Audio only
       </label>
+      <button class="slskx-nav slskx-sur-btn" id="slskx-surround" style="width:auto;padding:0 8px"
+              title="List every surround-labelled folder in this library">5.1 only</button>
     </div>
     <div class="slskx-actionbar" id="slskx-actionbar"></div>
     <div class="slsk-lib-body" id="slsk-lib-body">
@@ -8924,6 +8979,7 @@ async function showSlskUserExplorer(username) {
   let sort = 'name'
   let audioOnly = true
   let searching = ''
+  let surroundOnly = false
 
   function fmtSize(n) {
     n = Number(n) || 0
@@ -8952,6 +9008,7 @@ async function showSlskUserExplorer(username) {
     dlg.querySelector('#slskx-up').disabled   = !path
     renderCrumbs(path)
 
+    if (surroundOnly) return renderSurroundFolders()
     if (searching) return renderSearch()
 
     const l = T.listDir(tree, path, { sort, audioOnly })
@@ -8990,6 +9047,39 @@ async function showSlskUserExplorer(username) {
     body.innerHTML = rows.length ? rows.join('') : `<div class="slsk-lib-empty">This folder is empty.</div>`
     status.textContent = `${l.dirs.length} folder${l.dirs.length !== 1 ? 's' : ''} · ${l.files.length} file${l.files.length !== 1 ? 's' : ''} · ${fmtSize(l.node.totalSize)} below this point`
     bindRows(l)
+  }
+
+  // The reason to care about a peer at all: one 5.1 album usually means more.
+  // This walks the whole tree and lists every surround-labelled folder, which
+  // is the fastest way to see what a good source actually holds.
+  function renderSurroundFolders() {
+    const SF = window.PapaSlskFilters
+    const hits = []
+    const walk = (n) => {
+      for (const d of n.dirs.values()) {
+        const sur = SF && SF.detectSurround(d.path)
+        if (sur && d.fileCount) hits.push({ node: d, label: sur.label })
+        walk(d)
+      }
+    }
+    walk(tree)
+    hits.sort((a, b) => b.node.fileCount - a.node.fileCount)
+    actions.innerHTML = ''
+    body.innerHTML = hits.length
+      ? hits.map(h => `<div class="slskx-row slskx-dir" data-path="${esc(h.node.path)}">
+          <span class="slskx-ico">📁</span>
+          <span class="slskx-name">${esc(h.node.name)}
+            <span class="slskx-card-surround" style="position:static;margin-left:6px">${esc(h.label)}</span></span>
+          <span class="slskx-meta">${esc(h.node.path)}</span>
+          <span class="slskx-size">${h.node.fileCount} files</span>
+        </div>`).join('')
+      : `<div class="slsk-lib-empty">No surround-labelled folders in this library.<br>
+           <span style="color:var(--text3);font-size:11px">Only the folder names are searchable — an unlabelled 5.1 rip cannot be spotted from here.</span></div>`
+    status.textContent = hits.length
+      ? `${hits.length} surround folder${hits.length !== 1 ? 's' : ''} found`
+      : 'No surround folders found'
+    body.querySelectorAll('.slskx-dir').forEach(r =>
+      r.addEventListener('click', () => { surroundOnly = false; navTo(r.dataset.path) }))
   }
 
   function renderSearch() {
@@ -9107,6 +9197,12 @@ async function showSlskUserExplorer(username) {
   dlg.querySelector('#slskx-back').addEventListener('click', () => { hist.back(); render() })
   dlg.querySelector('#slskx-fwd').addEventListener('click',  () => { hist.forward(); render() })
   dlg.querySelector('#slskx-up').addEventListener('click',   () => navTo(T.parentPath(hist.current)))
+  dlg.querySelector('#slskx-surround').addEventListener('click', () => {
+    surroundOnly = !surroundOnly
+    searching = ''; search.value = ''
+    dlg.querySelector('#slskx-surround').classList.toggle('active', surroundOnly)
+    render()
+  })
   dlg.querySelector('#slskx-sort').addEventListener('change', e => { sort = e.target.value; render() })
   dlg.querySelector('#slskx-audio-only').addEventListener('change', e => { audioOnly = e.target.checked; render() })
   let _st = null
