@@ -146,12 +146,22 @@ test('exclusive config adds alsa device + exclusive flags', () => {
   assert.ok(args.includes('--audio-exclusive=yes'))
 })
 
-test('default config uses no device pinning and gapless weak', () => {
+test('default config pins no device and asks for real gapless', () => {
   const eng = new MpvEngine({})
   const args = eng._args('/tmp/x.sock')
   assert.ok(!args.some(a => a.startsWith('--audio-device')))
-  assert.ok(args.includes('--gapless-audio=weak'))
+  // Was 'weak', which stays gapless only when the next file's format matches
+  // exactly — so a 44.1kHz track after a 48kHz one gapped.
+  assert.ok(args.includes('--gapless-audio=yes'))
+  // And without prefetch mpv opens the next file only once the current one
+  // ends, which gaps regardless of the setting above.
+  assert.ok(args.includes('--prefetch-playlist=yes'))
   assert.ok(args.includes('--replaygain=no'))
+})
+
+test('gapless off means gapless off', () => {
+  const args = new MpvEngine({ config: { gapless: false } })._args('/tmp/x.sock')
+  assert.ok(args.includes('--gapless-audio=no'))
 })
 
 // mpv rejects seeks between start-file and playback-restart, so the engine

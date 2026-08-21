@@ -4963,9 +4963,21 @@ function restoreOldQueue() {
 }
 
 // Mirror of playNext()'s selection, without side effects — used for gapless prefetch
+// Deciding the shuffle pick lazily at end-of-track meant there was never a next
+// file for mpv to prefetch, so every shuffle transition reloaded from scratch
+// and the gap was audible. Committing to the pick in advance costs nothing -
+// it is the same random choice, made a few minutes earlier - and is the only
+// way shuffle can be gapless at all.
+let _pendingShuffle = null
+
 function computeNextIndex() {
   if (state.repeat === 'one') return state.queueIndex
-  if (state.shuffle && state.queue.length > 1) return null // shuffle picks lazily; skip prefetch
+  if (state.shuffle && state.queue.length > 1) {
+    if (_pendingShuffle == null || _pendingShuffle >= state.queue.length) {
+      _pendingShuffle = pickShuffleIndex(state.queue, _shuffleHistory.slice(-3))
+    }
+    return _pendingShuffle
+  }
   if (state.queueIndex + 1 < state.queue.length) return state.queueIndex + 1
   return state.repeat === 'all' ? 0 : null
 }
@@ -5184,8 +5196,12 @@ function playNext() {
   if (!state.queue.length) return
   if (state.repeat === 'one') { audio.currentTime = 0; audio.play(); return }
   if (state.shuffle) {
-    const recent = _shuffleHistory.slice(-3)
-    state.queueIndex = pickShuffleIndex(state.queue, recent)
+    // Use the pick already prefetched, or mpv played one file while we advance
+    // to a different one.
+    const committed = (_pendingShuffle != null && _pendingShuffle < state.queue.length)
+      ? _pendingShuffle : pickShuffleIndex(state.queue, _shuffleHistory.slice(-3))
+    _pendingShuffle = null
+    state.queueIndex = committed
   } else {
     state.queueIndex = (state.queueIndex + 1) % state.queue.length
   }
@@ -9924,6 +9940,7 @@ function setupListeners() {
 
   document.getElementById('btn-shuffle')?.addEventListener('click', function() {
     state.shuffle = !state.shuffle
+  _pendingShuffle = null
     this.classList.toggle('active', state.shuffle)
     document.getElementById('np-modal-shuffle')?.classList.toggle('active', state.shuffle)
     updateNextPrefetch()

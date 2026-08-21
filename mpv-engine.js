@@ -54,7 +54,15 @@ class MpvEngine extends EventEmitter {
       '--idle=yes', '--no-video', '--no-terminal', '--audio-display=no',
       `--input-ipc-server=${socketPath}`,
       `--replaygain=${this.config.replaygain}`,
-      `--gapless-audio=${this.config.gapless ? 'weak' : 'no'}`,
+      // 'weak' only stays gapless when the next file's format matches exactly,
+      // so a 44.1kHz track following a 48kHz one gets a gap. 'yes' resamples to
+      // hold the output open instead, which is what gapless has to mean when a
+      // playlist mixes sample rates.
+      `--gapless-audio=${this.config.gapless ? 'yes' : 'no'}`,
+      // Without this mpv does not open the next file until the current one
+      // ends, so every transition pays a demux-and-open delay no matter what
+      // gapless-audio is set to. This is the flag that actually removes the gap.
+      '--prefetch-playlist=yes',
       `--audio-channels=${channelsValue(this.config.audioChannels)}`,
       '--volume-max=130',
       '--ytdl-format=bestaudio',
