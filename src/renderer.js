@@ -7826,7 +7826,7 @@ function _renderActiveTab(files, container) {
     btn.addEventListener('click', e => {
       e.stopPropagation()
       const u = btn.dataset.username
-      if (u) showSlskUserLibrary(u)
+      if (u) showSlskUserExplorer(u)
     })
   })
 
@@ -8002,7 +8002,7 @@ function _renderCompletedTab(files, container) {
     btn.addEventListener('click', e => {
       e.stopPropagation()
       const u = btn.dataset.username
-      if (u) showSlskUserLibrary(u)
+      if (u) showSlskUserExplorer(u)
     })
   })
 
@@ -8257,7 +8257,7 @@ function _renderFailedTab(files, container) {
     btn.addEventListener('click', e => {
       e.stopPropagation()
       const u = btn.dataset.username
-      if (u) showSlskUserLibrary(u)
+      if (u) showSlskUserExplorer(u)
     })
   })
 
@@ -8744,290 +8744,275 @@ function bindSlskSearchEvents(query) {
     btn.addEventListener('click', e => {
       e.stopPropagation()
       const username = btn.dataset.username
-      if (username) showSlskUserLibrary(username)
+      if (username) showSlskUserExplorer(username)
     })
   })
 
 }
 
-async function showSlskUserLibrary(username) {
-  hideContextMenu()
-  const existing = document.getElementById('slsk-user-lib-modal')
-  if (existing) existing.remove()
 
+// ── Soulseek user library: file explorer ─────────────────────────────────────
+// The old view was a flat list of every folder path with a text filter, which
+// is unusable for a user sharing thousands of directories. This walks the tree
+// one level at a time with back/forward/up, breadcrumbs and per-folder actions.
+async function showSlskUserExplorer(username) {
+  hideContextMenu()
+  document.getElementById('slsk-user-lib-modal')?.remove()
+
+  const T = window.PapaSlskTree
   const dlg = document.createElement('div')
   dlg.id = 'slsk-user-lib-modal'
   dlg.className = 'modal-overlay'
   dlg.innerHTML = `<div class="modal-box slsk-lib-box">
     <div class="modal-header-row">
-      <div class="modal-title">${esc(username)}'s Library</div>
+      <div class="modal-title">${esc(username)}</div>
       <button class="modal-close-btn" id="slsk-lib-close">✕</button>
     </div>
-    <input class="sq-name-input slsk-lib-filter" id="slsk-lib-filter" placeholder="Filter files…" autocomplete="off">
-    <div class="slsk-lib-genre-bar" id="slsk-lib-genre-bar" style="display:none"></div>
-    <div class="slsk-lib-body" id="slsk-lib-body">
-      <div class="slsk-lib-loading">Loading library…</div>
+    <div class="slskx-toolbar">
+      <button class="slskx-nav" id="slskx-back" title="Back (Alt+←)" disabled>←</button>
+      <button class="slskx-nav" id="slskx-fwd"  title="Forward (Alt+→)" disabled>→</button>
+      <button class="slskx-nav" id="slskx-up"   title="Up one level (Backspace)" disabled>↑</button>
+      <div class="slskx-crumbs" id="slskx-crumbs"></div>
+      <input class="slskx-search" id="slskx-search" placeholder="Search this library…" autocomplete="off">
+      <select class="slskx-sort" id="slskx-sort" title="Sort">
+        <option value="name">Name</option>
+        <option value="size">Size</option>
+        <option value="type">Type</option>
+      </select>
+      <label class="slskx-audio-toggle" title="Hide artwork, playlists and other non-audio files">
+        <input type="checkbox" id="slskx-audio-only" checked> Audio only
+      </label>
     </div>
+    <div class="slskx-actionbar" id="slskx-actionbar"></div>
+    <div class="slsk-lib-body" id="slsk-lib-body">
+      <div class="slsk-lib-loading">Loading ${esc(username)}'s library…</div>
+    </div>
+    <div class="slskx-statusbar" id="slskx-status"></div>
   </div>`
   document.body.appendChild(dlg)
 
-  dlg.querySelector('#slsk-lib-close').addEventListener('click', () => dlg.remove())
-  dlg.addEventListener('click', e => { if (e.target === dlg) dlg.remove() })
+  const body    = dlg.querySelector('#slsk-lib-body')
+  const crumbs  = dlg.querySelector('#slskx-crumbs')
+  const status  = dlg.querySelector('#slskx-status')
+  const actions = dlg.querySelector('#slskx-actionbar')
+  const search  = dlg.querySelector('#slskx-search')
 
-  const body = dlg.querySelector('#slsk-lib-body')
-  const filterInput = dlg.querySelector('#slsk-lib-filter')
+  const close = () => { document.removeEventListener('keydown', onKey); dlg.remove() }
+  dlg.querySelector('#slsk-lib-close').addEventListener('click', close)
+  dlg.addEventListener('click', e => { if (e.target === dlg) close() })
 
-  let allDirs = []
-  const PAGE_SIZE = 30
+  let tree = null
+  const hist = new T.NavHistory('')
+  let sort = 'name'
+  let audioOnly = true
+  let searching = ''
 
-  const GENRE_KEYWORDS = ['rock','pop','jazz','classical','hip.hop','hip hop','r&b','rnb','country','electronic','dance','metal','punk','folk','blues','reggae','soul','funk','disco','house','techno','ambient','alternative','indie','latin','gospel','classical','opera','acoustic','grunge','edm','trap','lo.fi','lofi','world','experimental','post.rock','progressive','prog','synthwave','new wave','80s','90s','2000s']
-  function _detectGenre(dirName) {
-    const lc = (dirName || '').replace(/\\/g,'/').toLowerCase()
-    for (const g of GENRE_KEYWORDS) {
-      const re = new RegExp('(?:^|[/\\\\\\s_\\-\\(\\[])' + g.replace(/[.*+?^${}()|[\]\\]/g,'\\$&').replace(/\./g,'[.\\s]?') + '(?:[/\\\\\\s_\\-\\)\\]$]|$)')
-      if (re.test(lc)) return g.replace(/[. ]/g,' ').split(' ').map(w => w[0].toUpperCase()+w.slice(1)).join(' ')
-    }
-    return null
+  function fmtSize(n) {
+    n = Number(n) || 0
+    if (n >= 1073741824) return (n / 1073741824).toFixed(1) + ' GB'
+    if (n >= 1048576)    return (n / 1048576).toFixed(0) + ' MB'
+    if (n >= 1024)       return (n / 1024).toFixed(0) + ' KB'
+    return n + ' B'
   }
 
-  function _dirHtml(dir) {
-    const folderName = (dir.name || '').replace(/\\/g, '/').split('/').filter(Boolean).slice(-2).join('/')
-    const detectedGenre = _detectGenre(dir.name || '')
-    const dirPrefix  = dir.name ? dir.name + '\\' : ''
-    const audioFiles = (dir.files || []).filter(f => /\.(flac|mp3|wav|aiff?|m4a|aac|ogg|opus|ape|wv|wma|dsf|dff)$/i.test(f.filename || ''))
-    const allFiles   = dir.files || []
-    const files      = audioFiles.length ? audioFiles : allFiles
-    const filesHtml  = files.map(f => {
-      const fname   = (f.filename || '').replace(/\\/g, '/').split('/').pop()
-      const fdisp   = fname.replace(/\.[^.]+$/, '')
-      const ext     = (fname.match(/\.([^.]+)$/) || [])[1] || ''
-      const sizeMb  = f.size ? `${(f.size / 1048576).toFixed(1)} MB` : ''
-      const isFlac  = /flac|wav|aiff|alac/i.test(ext)
-      const fullPath = dirPrefix + f.filename  // full Soulseek path needed by slskd download API
-      const isAudio = /\.(flac|mp3|wav|aiff?|m4a|aac|ogg|opus|ape|wv|wma|dsf|dff)$/i.test(fname)
-      return `<div class="slsk-lib-file">
-        <span class="slsk-lib-file-name" title="${esc(fname)}">${esc(fdisp)}</span>
-        ${detectedGenre ? `<span class="slsk-lib-genre-tag">${esc(detectedGenre)}</span>` : ''}
-        ${isFlac ? `<span class="slsk-lib-ext lossless">${ext.toUpperCase()}</span>` : ext ? `<span class="slsk-lib-ext">${esc(ext.toUpperCase())}</span>` : ''}
-        <span class="slsk-lib-size">${sizeMb}</span>
-        ${isAudio ? `<button class="slsk-lib-play-btn" data-username="${esc(username)}" data-filename="${esc(fullPath)}" data-size="${f.size || 0}" data-title="${esc(fdisp)}" data-folder="${esc(dir.name || '')}" title="Play">
-          <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
-        </button>` : ''}
-        <button class="slsk-lib-dl-btn" data-username="${esc(username)}" data-filename="${esc(fullPath)}" data-size="${f.size || 0}" title="Download">
-          <svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
-        </button>
-      </div>`
-    }).join('')
-    const totalCount = allFiles.length
-    const audioCount = audioFiles.length
-    const countLabel = audioCount < totalCount
-      ? `${audioCount} audio · ${totalCount} total`
-      : `${totalCount} file${totalCount !== 1 ? 's' : ''}`
-    return `<div class="slsk-lib-dir" data-genre="${esc(detectedGenre || '')}">
-      <div class="slsk-lib-dir-header">
-        <span class="slsk-lib-dir-name" title="${esc(dir.name || '')}">${esc(folderName || dir.name || '(root)')}</span>
-        ${detectedGenre ? `<span class="slsk-lib-genre-tag">${esc(detectedGenre)}</span>` : ''}
-        <span class="slsk-lib-dir-count">${countLabel}</span>
-        <button class="slsk-lib-dl-all-btn" data-dir="${esc(dir.name || '')}" title="Download all audio files in this folder">
-          <svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg> All
-        </button>
-      </div>
-      <div class="slsk-lib-files">${filesHtml}</div>
-    </div>`
+  function navTo(path) { hist.go(path); searching = ''; search.value = ''; render() }
+
+  function renderCrumbs(path) {
+    crumbs.innerHTML = T.breadcrumbs(path)
+      .map((b, i, arr) => `<button class="slskx-crumb${i === arr.length - 1 ? ' current' : ''}"
+            data-path="${esc(b.path)}">${esc(b.name)}</button>`)
+      .join('<span class="slskx-crumb-sep">›</span>')
+    crumbs.querySelectorAll('.slskx-crumb').forEach(b =>
+      b.addEventListener('click', () => navTo(b.dataset.path)))
+    crumbs.scrollLeft = crumbs.scrollWidth
   }
 
-  const SPIN_SVG = '<svg viewBox="0 0 24 24" style="animation:dl2Spin 1s linear infinite"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/></svg>'
-  const CHECK_SVG = '<svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>'
+  function render() {
+    const path = hist.current
+    dlg.querySelector('#slskx-back').disabled = !hist.canBack
+    dlg.querySelector('#slskx-fwd').disabled  = !hist.canForward
+    dlg.querySelector('#slskx-up').disabled   = !path
+    renderCrumbs(path)
 
-  // Single delegated listener on body — catches clicks on all buttons including
-  // those added dynamically via Show More, without needing rebinding.
-  body.addEventListener('click', async e => {
-    const dlBtn   = e.target.closest('.slsk-lib-dl-btn')
-    const playBtn = e.target.closest('.slsk-lib-play-btn')
-    const allBtn  = e.target.closest('.slsk-lib-dl-all-btn')
-    if (!dlBtn && !playBtn && !allBtn) return
-    e.stopPropagation()
+    if (searching) return renderSearch()
 
-    if (dlBtn) {
-      if (dlBtn.disabled) return
-      const u = dlBtn.dataset.username
-      const filename = dlBtn.dataset.filename
-      const size = Number(dlBtn.dataset.size)
-      const orig = dlBtn.innerHTML
-      dlBtn.disabled = true
-      dlBtn.innerHTML = SPIN_SVG
-      try {
-        await window.api.slskDownload({ username: u, filename, size })
-        dlBtn.innerHTML = CHECK_SVG
-        _scheduleLibRescan()
-      } catch (err) {
-        console.error('[lib-dl] error:', err)
-        dlBtn.disabled = false
-        dlBtn.innerHTML = orig
-        dlBtn.title = 'Failed: ' + (err?.message || 'error')
-      }
+    const l = T.listDir(tree, path, { sort, audioOnly })
+    if (!l) { body.innerHTML = `<div class="slsk-lib-empty">Folder not found.</div>`; return }
+
+    const audioHere = l.files.filter(f => T.AUDIO_RE.test(f.name))
+    actions.innerHTML = audioHere.length
+      ? `<button class="slskx-act" id="slskx-dl-folder">Download folder (${audioHere.length})</button>
+         <button class="slskx-act" id="slskx-play-first">Play first track</button>`
+      : (l.node.fileCount
+          ? `<button class="slskx-act" id="slskx-dl-tree">Download everything below (${l.node.fileCount})</button>` : '')
+
+    const rows = []
+    for (const d of l.dirs) {
+      rows.push(`<div class="slskx-row slskx-dir" data-path="${esc(d.path)}">
+        <span class="slskx-ico">📁</span>
+        <span class="slskx-name">${esc(d.name)}</span>
+        <span class="slskx-meta">${d.subdirCount ? d.subdirCount + ' folders · ' : ''}${d.fileCount} files</span>
+        <span class="slskx-size">${fmtSize(d.totalSize)}</span>
+      </div>`)
     }
+    l.files.forEach((f, i) => {
+      const isAudio = T.AUDIO_RE.test(f.name)
+      rows.push(`<div class="slskx-row slskx-file${isAudio ? '' : ' dim'}" data-fi="${i}">
+        <span class="slskx-ico">${isAudio ? '🎵' : '📄'}</span>
+        <span class="slskx-name">${esc(f.name)}</span>
+        <span class="slskx-meta">${f.bitDepth ? f.bitDepth + '-bit ' : ''}${f.sampleRate ? (f.sampleRate/1000).toFixed(1) + 'kHz' : ''}</span>
+        <span class="slskx-size">${fmtSize(f.size)}</span>
+        <span class="slskx-rowbtns">
+          ${isAudio ? `<button class="slskx-mini" data-act="play" data-fi="${i}" title="Download &amp; play">▶</button>` : ''}
+          <button class="slskx-mini" data-act="dl" data-fi="${i}" title="Download">↓</button>
+        </span>
+      </div>`)
+    })
 
-    if (playBtn) {
-      if (playBtn.disabled) return
-      const u        = playBtn.dataset.username
-      const filename = playBtn.dataset.filename
-      const size     = Number(playBtn.dataset.size)
-      const title    = playBtn.dataset.title || filename
-      const folder   = playBtn.dataset.folder || ''
-      const orig = playBtn.innerHTML
-      playBtn.disabled = true
-      playBtn.innerHTML = SPIN_SVG
-      try {
-        const existing = await window.api.slskResolveFile({ username: u, filename })
-        if (existing?.path) {
-          state.queue = [{ filePath: existing.path, title, artist: u, albumArtist: u, artPath: null, albumName: folder, albumId: `slsk_lib_${u}` }]
-          state.queueIndex = 0
-          playCurrentTrack()
-          playBtn.innerHTML = orig; playBtn.disabled = false
-          return
-        }
-        await window.api.slskDownload({ username: u, filename, size })
-        _scheduleLibRescan()
-        const deadline = Date.now() + 120000
-        const poll = async () => {
-          if (Date.now() > deadline) { playBtn.innerHTML = orig; playBtn.disabled = false; return }
-          const found = await window.api.slskResolveFile({ username: u, filename })
-          if (found?.path) {
-            state.queue = [{ filePath: found.path, title, artist: u, albumArtist: u, artPath: null, albumName: folder, albumId: `slsk_lib_${u}` }]
-            state.queueIndex = 0
-            playCurrentTrack()
-            playBtn.innerHTML = orig; playBtn.disabled = false
-          } else { setTimeout(poll, 3000) }
-        }
-        setTimeout(poll, 3000)
-      } catch (err) {
-        playBtn.disabled = false; playBtn.innerHTML = orig
-        playBtn.title = 'Failed: ' + (err?.message || 'error')
-      }
-    }
+    body.innerHTML = rows.length ? rows.join('') : `<div class="slsk-lib-empty">This folder is empty.</div>`
+    status.textContent = `${l.dirs.length} folder${l.dirs.length !== 1 ? 's' : ''} · ${l.files.length} file${l.files.length !== 1 ? 's' : ''} · ${fmtSize(l.node.totalSize)} below this point`
+    bindRows(l)
+  }
 
-    if (allBtn) {
-      if (allBtn.disabled) return
-      const dirName = allBtn.dataset.dir
-      const dir = allDirs.find(d => d.name === dirName)
-      if (!dir) return
-      const dirPrefix  = dirName ? dirName + '\\' : ''
-      const audioFiles = (dir.files || []).filter(f => /\.(flac|mp3|wav|aiff?|m4a|aac|ogg|opus|ape|wv|wma|dsf|dff)$/i.test(f.filename || ''))
-      const filesToDl  = audioFiles.length ? audioFiles : (dir.files || [])
-      if (!filesToDl.length) return
-      allBtn.disabled = true
-      allBtn.innerHTML = SPIN_SVG + ' Queuing…'
-      let queued = 0
-      for (const f of filesToDl) {
-        try {
-          await window.api.slskDownload({ username, filename: dirPrefix + f.filename, size: f.size || 0 })
-          queued++
-        } catch (_) {}
-      }
-      allBtn.innerHTML = CHECK_SVG + ` ${queued} queued`
+  function renderSearch() {
+    const hits = T.searchTree(tree, searching)
+    actions.innerHTML = ''
+    body.innerHTML = hits.length
+      ? hits.map(h => h.type === 'dir'
+          ? `<div class="slskx-row slskx-dir" data-path="${esc(h.path)}">
+               <span class="slskx-ico">📁</span><span class="slskx-name">${esc(h.name)}</span>
+               <span class="slskx-meta">${esc(h.path)}</span>
+               <span class="slskx-size">${h.fileCount} files</span></div>`
+          : `<div class="slskx-row slskx-file" data-gopath="${esc(h.path)}">
+               <span class="slskx-ico">🎵</span><span class="slskx-name">${esc(h.name)}</span>
+               <span class="slskx-meta">${esc(h.path)}</span></div>`).join('')
+      : `<div class="slsk-lib-empty">Nothing matching “${esc(searching)}”.</div>`
+    status.textContent = `${hits.length} match${hits.length !== 1 ? 'es' : ''}${hits.length >= 300 ? ' (showing first 300)' : ''}`
+    body.querySelectorAll('.slskx-dir').forEach(r =>
+      r.addEventListener('click', () => navTo(r.dataset.path)))
+    body.querySelectorAll('[data-gopath]').forEach(r =>
+      r.addEventListener('click', () => navTo(r.dataset.gopath)))
+  }
+
+  async function dlFile(btn, f) {
+    const orig = btn.innerHTML
+    btn.disabled = true; btn.textContent = '…'
+    try {
+      await window.api.slskDownload({ username, filename: f.fullPath, size: f.size || 0 })
+      btn.textContent = '✓'
       _scheduleLibRescan()
+    } catch (e) {
+      btn.textContent = '✕'; btn.title = 'Failed: ' + (e?.message || 'error')
+      setTimeout(() => { btn.innerHTML = orig; btn.disabled = false }, 2500)
     }
-  })
+  }
 
-  function bindDlButtons(_container) { /* no-op: handled by delegated listener */ }
+  function bindRows(l) {
+    body.querySelectorAll('.slskx-dir').forEach(r =>
+      r.addEventListener('click', () => navTo(r.dataset.path)))
 
-  let _rendered = 0
-  let _currentFiltered = []
-  let _activeGenreFilter = ''
-
-  function buildGenreBar() {
-    const bar = dlg.querySelector('#slsk-lib-genre-bar')
-    if (!bar) return
-    const genres = [...new Set(allDirs.map(d => _detectGenre(d.name || '')).filter(Boolean))].sort()
-    if (!genres.length) { bar.style.display = 'none'; return }
-    bar.style.display = 'flex'
-    bar.innerHTML = `<button class="genre-chip${!_activeGenreFilter ? ' active' : ''}" data-g="">All</button>` +
-      genres.map(g => `<button class="genre-chip${_activeGenreFilter === g ? ' active' : ''}" data-g="${esc(g)}">${esc(g)}</button>`).join('')
-    bar.querySelectorAll('.genre-chip').forEach(btn => {
-      btn.addEventListener('click', () => {
-        _activeGenreFilter = btn.dataset.g || ''
-        buildGenreBar()
-        renderDirs(filterInput.value)
+    body.querySelectorAll('.slskx-mini').forEach(btn => {
+      btn.addEventListener('click', async e => {
+        e.stopPropagation()
+        const f = l.files[parseInt(btn.dataset.fi)]
+        if (!f) return
+        if (btn.dataset.act === 'dl') return dlFile(btn, f)
+        // play: queue the download, then poll for the finished file
+        btn.disabled = true; btn.textContent = '…'
+        try {
+          await window.api.slskDownload({ username, filename: f.fullPath, size: f.size || 0 })
+          _scheduleLibRescan()
+          const deadline = Date.now() + 120000
+          const poll = async () => {
+            if (Date.now() > deadline) { btn.textContent = '▶'; btn.disabled = false; return }
+            const found = await window.api.slskResolveFile({ username, filename: f.fullPath })
+            if (found?.path) {
+              state.queue = [{ filePath: found.path, title: f.name, artist: username,
+                               albumArtist: username, artPath: null,
+                               albumName: l.path.split('\\').pop() || username, albumId: `slsk_lib_${username}` }]
+              state.queueIndex = 0
+              playCurrentTrack()
+              btn.textContent = '▶'; btn.disabled = false
+            } else setTimeout(poll, 3000)
+          }
+          setTimeout(poll, 3000)
+        } catch (_) { btn.textContent = '▶'; btn.disabled = false }
       })
+    })
+
+    dlg.querySelector('#slskx-dl-folder')?.addEventListener('click', async ev => {
+      const files = l.files.filter(f => T.AUDIO_RE.test(f.name))
+      ev.target.disabled = true
+      let n = 0
+      for (const f of files) {
+        try { await window.api.slskDownload({ username, filename: f.fullPath, size: f.size || 0 }); n++ } catch (_) {}
+        ev.target.textContent = `Queuing ${n}/${files.length}…`
+      }
+      ev.target.textContent = `${n} queued`
+      _scheduleLibRescan()
+    })
+
+    dlg.querySelector('#slskx-play-first')?.addEventListener('click', () => {
+      const first = body.querySelector('.slskx-mini[data-act="play"]')
+      if (first) first.click()
+    })
+
+    dlg.querySelector('#slskx-dl-tree')?.addEventListener('click', async ev => {
+      // Walk every descendant folder, not just this one.
+      const collect = (n, out = []) => {
+        for (const f of n.files) if (T.AUDIO_RE.test(f.name)) out.push(f)
+        for (const c of n.dirs.values()) collect(c, out)
+        return out
+      }
+      const files = collect(l.node)
+      ev.target.disabled = true
+      let n = 0
+      for (const f of files) {
+        try { await window.api.slskDownload({ username, filename: f.fullPath, size: f.size || 0 }); n++ } catch (_) {}
+        if (n % 5 === 0) ev.target.textContent = `Queuing ${n}/${files.length}…`
+      }
+      ev.target.textContent = `${n} queued`
+      _scheduleLibRescan()
     })
   }
 
-  function renderDirs(filter) {
-    const q = filter.trim().toLowerCase()
-    let filtered = q
-      ? allDirs.map(d => ({
-          ...d,
-          files: (d.files || []).filter(f => (f.filename || '').toLowerCase().includes(q) || (d.name || '').toLowerCase().includes(q))
-        })).filter(d => d.files.length > 0)
-      : allDirs
-    _currentFiltered = _activeGenreFilter
-      ? filtered.filter(d => _detectGenre(d.name || '') === _activeGenreFilter)
-      : filtered
-
-    if (!_currentFiltered.length) {
-      body.innerHTML = `<div class="slsk-lib-empty">${q ? 'No matches.' : 'Library is empty.'}</div>`
-      _rendered = 0
-      return
-    }
-
-    _rendered = Math.min(PAGE_SIZE, _currentFiltered.length)
-    const frag = document.createDocumentFragment()
-    const wrap = document.createElement('div')
-    wrap.id = 'slsk-lib-dirs'
-    wrap.innerHTML = _currentFiltered.slice(0, _rendered).map(_dirHtml).join('')
-    frag.appendChild(wrap)
-
-    if (_currentFiltered.length > _rendered) {
-      const more = document.createElement('button')
-      more.id = 'slsk-lib-more'
-      more.className = 'slsk-lib-more-btn'
-      more.textContent = `Show more (${_currentFiltered.length - _rendered} remaining)`
-      frag.appendChild(more)
-    }
-
-    body.innerHTML = ''
-    body.appendChild(frag)
-    bindDlButtons(body)
-
-    document.getElementById('slsk-lib-more')?.addEventListener('click', loadMore)
+  function onKey(e) {
+    if (!document.getElementById('slsk-user-lib-modal')) return
+    if (e.key === 'Escape') return close()
+    if (document.activeElement === search) return
+    if (e.key === 'Backspace' && hist.current) { e.preventDefault(); navTo(T.parentPath(hist.current)) }
+    if (e.altKey && e.key === 'ArrowLeft')  { e.preventDefault(); hist.back(); render() }
+    if (e.altKey && e.key === 'ArrowRight') { e.preventDefault(); hist.forward(); render() }
   }
+  document.addEventListener('keydown', onKey)
 
-  function loadMore() {
-    const start = _rendered
-    const end   = Math.min(_rendered + PAGE_SIZE, _currentFiltered.length)
-    const wrap  = document.getElementById('slsk-lib-dirs')
-    if (!wrap) return
-    const tmp = document.createElement('div')
-    tmp.innerHTML = _currentFiltered.slice(start, end).map(_dirHtml).join('')
-    bindDlButtons(tmp)
-    while (tmp.firstChild) wrap.appendChild(tmp.firstChild)
-    _rendered = end
-
-    const moreBtn = document.getElementById('slsk-lib-more')
-    if (_rendered >= _currentFiltered.length) {
-      moreBtn?.remove()
-    } else if (moreBtn) {
-      moreBtn.textContent = `Show more (${_currentFiltered.length - _rendered} remaining)`
-    }
-  }
-
-  let _filterTimer = null
-  filterInput.addEventListener('input', () => {
-    clearTimeout(_filterTimer)
-    _filterTimer = setTimeout(() => renderDirs(filterInput.value), 150)
+  dlg.querySelector('#slskx-back').addEventListener('click', () => { hist.back(); render() })
+  dlg.querySelector('#slskx-fwd').addEventListener('click',  () => { hist.forward(); render() })
+  dlg.querySelector('#slskx-up').addEventListener('click',   () => navTo(T.parentPath(hist.current)))
+  dlg.querySelector('#slskx-sort').addEventListener('change', e => { sort = e.target.value; render() })
+  dlg.querySelector('#slskx-audio-only').addEventListener('change', e => { audioOnly = e.target.checked; render() })
+  let _st = null
+  search.addEventListener('input', () => {
+    clearTimeout(_st)
+    _st = setTimeout(() => { searching = search.value.trim(); render() }, 180)
   })
 
   const res = await window.api.slskBrowseUser({ username })
   if (!res.ok) {
-    body.innerHTML = `<div class="slsk-lib-empty">Failed to load library: ${esc(res.error || 'unknown error')}</div>`
+    body.innerHTML = `<div class="slsk-lib-empty">Could not load this library: ${esc(res.error || 'unknown error')}</div>`
     return
   }
-  allDirs = (res.directories || []).filter(d => (d.files || []).length > 0)
-    .sort((a, b) => (a.name || '').localeCompare(b.name || ''))
-  buildGenreBar()
-  renderDirs('')
-  filterInput.focus()
+  tree = T.buildTree(res.directories || [])
+  // Skip past a single wrapper folder so the first view is useful, not one row.
+  let start = ''
+  for (let i = 0; i < 3; i++) {
+    const l = T.listDir(tree, start, { audioOnly })
+    if (l && l.dirs.length === 1 && !l.files.length) start = l.dirs[0].path
+    else break
+  }
+  if (start) hist.go(start)
+  render()
+  search.focus()
 }
 
 function showSlskConfigModal(query) {

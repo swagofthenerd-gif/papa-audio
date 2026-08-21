@@ -5207,3 +5207,68 @@ code { font-family:var(--font-mono,monospace);background:var(--bg4);padding:1px 
   font-weight: 700;
   letter-spacing: .04em;
 }
+
+/* Soulseek user library — file explorer */
+.slskx-toolbar {
+  display: flex; align-items: center; gap: 6px;
+  padding: 8px 0 6px; border-bottom: 1px solid var(--border, #2a2a2a);
+}
+.slskx-nav {
+  width: 28px; height: 28px; flex: 0 0 28px;
+  border-radius: 6px; border: 1px solid var(--border, #333);
+  background: var(--bg2, #1c1c1c); color: var(--text2, #ccc);
+  font-size: 14px; line-height: 1; cursor: pointer;
+}
+.slskx-nav:hover:not(:disabled) { border-color: #1db954; color: #1db954; }
+.slskx-nav:disabled { opacity: .3; cursor: default; }
+.slskx-crumbs {
+  flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 2px;
+  overflow-x: auto; white-space: nowrap; scrollbar-width: thin;
+}
+.slskx-crumb {
+  background: none; border: 0; padding: 2px 5px; border-radius: 4px;
+  color: var(--text2, #bbb); font-size: 12px; cursor: pointer; white-space: nowrap;
+}
+.slskx-crumb:hover { background: rgba(255,255,255,.07); color: #fff; }
+.slskx-crumb.current { color: #1db954; font-weight: 600; }
+.slskx-crumb-sep { color: var(--text3, #666); font-size: 11px; }
+.slskx-search {
+  flex: 0 0 190px; background: var(--bg2, #1c1c1c); color: var(--text, #eee);
+  border: 1px solid var(--border, #333); border-radius: 6px; padding: 4px 8px; font-size: 12px;
+}
+.slskx-sort, .slskx-audio-toggle {
+  background: var(--bg2, #1c1c1c); color: var(--text2, #ccc);
+  border: 1px solid var(--border, #333); border-radius: 6px;
+  padding: 4px 6px; font-size: 11px;
+}
+.slskx-audio-toggle { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+.slskx-actionbar { display: flex; gap: 6px; padding: 6px 0; flex-wrap: wrap; }
+.slskx-act {
+  background: rgba(29,185,84,.12); color: #1db954; border: 1px solid #1db954;
+  border-radius: 6px; padding: 4px 10px; font-size: 11px; cursor: pointer;
+}
+.slskx-act:disabled { opacity: .6; cursor: default; }
+.slskx-row {
+  display: grid; grid-template-columns: 22px 1fr auto auto auto;
+  align-items: center; gap: 8px;
+  padding: 5px 6px; border-radius: 5px; font-size: 12.5px; cursor: default;
+}
+.slskx-row:hover { background: rgba(255,255,255,.05); }
+.slskx-dir { cursor: pointer; }
+.slskx-dir .slskx-name { color: #e8e8e8; font-weight: 500; }
+.slskx-file.dim { opacity: .5; }
+.slskx-ico { font-size: 13px; }
+.slskx-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slskx-meta { color: var(--text3, #888); font-size: 10.5px; white-space: nowrap; }
+.slskx-size { color: var(--text3, #888); font-size: 10.5px; min-width: 54px; text-align: right; }
+.slskx-rowbtns { display: flex; gap: 3px; }
+.slskx-mini {
+  width: 22px; height: 22px; border-radius: 4px;
+  border: 1px solid var(--border, #333); background: transparent;
+  color: var(--text2, #bbb); font-size: 11px; cursor: pointer; padding: 0;
+}
+.slskx-mini:hover:not(:disabled) { border-color: #1db954; color: #1db954; }
+.slskx-statusbar {
+  padding: 6px 2px 0; border-top: 1px solid var(--border, #2a2a2a);
+  color: var(--text3, #888); font-size: 11px;
+}
