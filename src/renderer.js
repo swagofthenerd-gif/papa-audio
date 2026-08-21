@@ -2115,6 +2115,15 @@ function renderSearch(query) {
 }
 
 // ── YouTube search section ──────────────────────────────────────────────────
+// Pause every animation while the window is unfocused. See main.js: this
+// machine renders in software, so animation costs a full CPU core.
+if (window.api && window.api.onWindowFocus) {
+  window.api.onWindowFocus(on => document.body.classList.toggle('app-unfocused', !on))
+}
+document.addEventListener('visibilitychange', () => {
+  document.body.classList.toggle('app-unfocused', document.hidden)
+})
+
 const ytSearchState = { scope: 'music', cache: new Map(), lastQuery: null, showTopResult: false, surroundOnly: false }
 try {
   var savedScope = localStorage.getItem('papa-yt-scope')

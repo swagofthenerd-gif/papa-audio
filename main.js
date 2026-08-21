@@ -624,6 +624,24 @@ function createWindow(hidden = false) {
   if (winState.maximized) mainWindow.maximize()
   mainWindow.loadFile('src/index.html')
 
+  // On this machine Electron gets no hardware acceleration, so Chromium
+  // composites with SwiftShader on the CPU. Any perpetual CSS animation - the
+  // spinning vinyl, the EQ bars, shimmer placeholders - then holds a core at
+  // ~100% for as long as the app is open, even buried behind a fullscreen
+  // game. Chromium's own background throttling does not help: KWin does not
+  // always report the window occluded, so it keeps painting at full rate.
+  //
+  // Pausing animations whenever the window loses focus costs nothing visually
+  // - nobody is looking at it - and hands the CPU back to whatever is.
+  const setFocused = (on) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    mainWindow.webContents.send('window-focus', on)
+  }
+  mainWindow.on('focus',   () => setFocused(true))
+  mainWindow.on('blur',    () => setFocused(false))
+  mainWindow.on('minimize',() => setFocused(false))
+  mainWindow.on('restore', () => setFocused(true))
+
   mainWindow.webContents.on('before-input-event', (_, input) => {
     if (input.key === 'F12') mainWindow.webContents.openDevTools()
   })

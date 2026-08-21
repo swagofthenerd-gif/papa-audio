@@ -5316,3 +5316,13 @@ code { font-family:var(--font-mono,monospace);background:var(--bg4);padding:1px 
 .yt-surround-hint { color: var(--text3, #777); font-size: 10.5px; }
 /* Hiding rather than re-rendering keeps the toggle instant. */
 #yt-results.surround-only .yt-row:not([data-surround]) { display: none; }
+
+/* Software rendering makes perpetual animation cost a whole CPU core, so stop
+   animating entirely when nobody is looking at the window. Paused rather than
+   removed, so everything resumes mid-stride on refocus. */
+body.app-unfocused *,
+body.app-unfocused *::before,
+body.app-unfocused *::after {
+  animation-play-state: paused !important;
+  transition: none !important;
+}
