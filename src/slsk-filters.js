@@ -85,4 +85,7 @@ if (typeof module !== 'undefined' && module.exports) {
 }
 if (typeof window !== 'undefined') {
   window.PapaSlskFilters = { detectSurround, groupSurround, isHiRes, isLossless, applyFilterSort }
+  // The same detector serves YouTube titles: both are uploader-written text,
+  // and the failure modes ("Album 51", stereo SACD rips) are identical.
+  window.PapaSurround = { detectSurround }
 }

@@ -100,3 +100,31 @@ test('real-world folder names from the tracker listings', () => {
     assert.equal(got ? got.label : null, want, name)
   }
 })
+
+test('the surround detector is shared with YouTube search', () => {
+  const fs = require('fs'), path = require('path')
+  const R = f => fs.readFileSync(path.join(__dirname, '..', f), 'utf8')
+  assert.ok(R('src/slsk-filters.js').includes('window.PapaSurround'),
+    'detector must be exposed for the YouTube renderer')
+  const r = R('src/renderer.js')
+  assert.ok(r.includes('_ytSurroundBadge'), 'YouTube rows need the badge')
+  assert.ok(r.includes('yt-surround-toggle'), 'YouTube needs the surround-only toggle')
+  assert.ok(r.includes('data-surround'), 'rows need the marker the filter hides on')
+  assert.ok(R('src/styles.css').includes('#yt-results.surround-only'),
+    'the filter needs its CSS rule')
+})
+
+test('YouTube-style titles are classified correctly', () => {
+  const cases = [
+    ['Official Dolby 5.1 Speaker Test Demo [True YouTube 5.1 Surround Sound]', '5.1'],
+    ['Pink Floyd - Time (Dolby Atmos Mix)', 'ATMOS'],
+    ['Hotel California - 7.1 surround', '7.1'],
+    ['Top 51 Guitar Solos of All Time', null],
+    ['Blink 182 - All The Small Things', null],
+    ['Bohemian Rhapsody (Official Video)', null],
+  ]
+  for (const [title, want] of cases) {
+    const got = detectSurround(title)
+    assert.equal(got ? got.label : null, want, title)
+  }
+})

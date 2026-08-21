@@ -5288,3 +5288,31 @@ code { font-family:var(--font-mono,monospace);background:var(--bg4);padding:1px 
 }
 .slskx-saved-row:hover { background: rgba(255,255,255,.05); }
 .slskx-saved-row .slskx-ico { color: #f0c860; }
+
+/* YouTube surround labelling */
+.yt-surround-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: #0d2a1c;
+  color: #6ee7a8;
+  border: 1px solid #1f6b45;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  vertical-align: middle;
+}
+.yt-surround-bar { display: flex; align-items: center; gap: 10px; padding: 4px 0 10px; flex-wrap: wrap; }
+.yt-surround-toggle {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 10px; border-radius: 12px;
+  border: 1px solid var(--border, #333); background: transparent;
+  color: var(--text2, #bbb); font-size: 11px; cursor: pointer;
+}
+.yt-surround-toggle:hover { border-color: #1db954; color: #e8e8e8; }
+.yt-surround-toggle.active { background: rgba(29,185,84,.15); border-color: #1db954; color: #1db954; }
+.yt-surround-n { font-size: 10px; opacity: .7; }
+.yt-surround-hint { color: var(--text3, #777); font-size: 10.5px; }
+/* Hiding rather than re-rendering keeps the toggle instant. */
+#yt-results.surround-only .yt-row:not([data-surround]) { display: none; }

@@ -2115,7 +2115,7 @@ function renderSearch(query) {
 }
 
 // ── YouTube search section ──────────────────────────────────────────────────
-const ytSearchState = { scope: 'music', cache: new Map(), lastQuery: null, showTopResult: false }
+const ytSearchState = { scope: 'music', cache: new Map(), lastQuery: null, showTopResult: false, surroundOnly: false }
 try {
   var savedScope = localStorage.getItem('papa-yt-scope')
   if (savedScope === 'all' || savedScope === 'music') ytSearchState.scope = savedScope
@@ -2286,16 +2286,32 @@ function isInLibrary(artist, album) {
   })
 }
 
+// YouTube serves stereo to every desktop client - verified against yt-dlp, where
+// even "Official Dolby 5.1" uploads offer nothing but 2-channel Opus and AAC.
+// So this badge reports what the uploader CLAIMS, and says so on hover. It is
+// there to help find surround-labelled uploads, not to promise surround audio.
+function _ytSurround(r) {
+  const D = window.PapaSurround
+  if (!D) return null
+  return D.detectSurround(`${r.title || ''} ${r.album || ''} ${r.artist || ''}`)
+}
+
+function _ytSurroundBadge(r) {
+  const s = _ytSurround(r)
+  return s ? `<span class="yt-surround-badge" title="Uploader labels this ${esc(s.label)} - YouTube still streams stereo">${esc(s.label)}</span>` : ''
+}
+
 function _ytSongRows(songs, query) {
   return `<div class="yt-list">${songs.map((r, i) => {
     var inLib = isInLibrary(r.artist, r.title)
     var badge = inLib ? '<span class="in-lib-badge" style="background:rgba(29,185,84,.15);color:#1db954;font-size:10px;padding:1px 6px;border-radius:8px;margin-left:6px">In Library</span>' : ''
-    return `<div class="yt-row search-animate-in" data-i="${i}">
+    var sur = _ytSurround(r)
+    return `<div class="yt-row search-animate-in" data-i="${i}"${sur ? ' data-surround="1"' : ''}>
       ${r.thumbnailUrl
         ? `<img class="yt-thumb" src="${esc(r.thumbnailUrl)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`
         : `<div class="yt-thumb yt-thumb-empty"></div>`}
       <div class="yt-info">
-        <div class="yt-title">${query ? highlightMatch(r.title, query) : esc(r.title)} <span class="yt-badge">YT</span>${badge}</div>
+        <div class="yt-title">${query ? highlightMatch(r.title, query) : esc(r.title)} <span class="yt-badge">YT</span>${_ytSurroundBadge(r)}${badge}</div>
         <div class="yt-sub-line">${_ytArtistSpan(r, query)}${r.album ? ' · ' + (r.albumBrowseId ? `<span class="yt-link" data-yt-albumbrowse="${esc(r.albumBrowseId)}">${esc(r.album)}</span>` : esc(r.album)) : ''}${r.viewCount ? ' · ' + esc(r.viewCount) : ''}</div>
       </div>
       <span class="yt-dur">${r.duration ? fmtDur(r.duration) : ''}</span>
@@ -2389,6 +2405,27 @@ function _ytTopResultCard(r, query) {
   </div>`
 }
 
+function _ytSurroundBar(n) {
+  if (!n) return ''
+  const on = ytSearchState.surroundOnly
+  return `<div class="yt-surround-bar">
+    <button class="yt-surround-toggle${on ? ' active' : ''}" id="yt-surround-toggle">
+      Surround only<span class="yt-surround-n">${n}</span>
+    </button>
+    <span class="yt-surround-hint">Uploader labels - YouTube streams stereo regardless</span>
+  </div>`
+}
+
+function _bindYtSurroundToggle(box) {
+  box.querySelector('#yt-surround-toggle')?.addEventListener('click', () => {
+    ytSearchState.surroundOnly = !ytSearchState.surroundOnly
+    const results = document.getElementById('yt-results')
+    results?.classList.toggle('surround-only', ytSearchState.surroundOnly)
+    box.querySelector('#yt-surround-toggle')?.classList.toggle('active', ytSearchState.surroundOnly)
+  })
+  if (ytSearchState.surroundOnly) document.getElementById('yt-results')?.classList.add('surround-only')
+}
+
 function renderYtResults(results, query) {
   const box = document.getElementById('yt-results')
   if (!box) return
@@ -2399,10 +2436,12 @@ function renderYtResults(results, query) {
       box.innerHTML = `<div class="yt-status">Nothing on YouTube for "${esc(query)}"</div>`
       return
     }
-    box.innerHTML = `<div class="yt-sub" data-sub="Songs">
+    const surN = results.filter(r => _ytSurround(r)).length
+    box.innerHTML = _ytSurroundBar(surN) + `<div class="yt-sub" data-sub="Songs">
       <div class="yt-sub-header">Videos · ${results.length} <button class="yt-see-all" data-kind="video">See all</button></div>
       ${_ytSongRows(results, query)}</div>`
     bindYtEvents(results)
+    _bindYtSurroundToggle(box)
     _bindYtSeeAll(box)
     _applyYtFilter()
     return
@@ -2414,7 +2453,7 @@ function renderYtResults(results, query) {
     box.innerHTML = `<div class="yt-status">Nothing on YouTube Music for "${esc(query)}"</div>`
     return
   }
-  let html = ''
+  let html = _ytSurroundBar(songs.filter(r => _ytSurround(r)).length)
   if (ytSearchState.showTopResult) {
     html += `<div class="yt-sub yt-top-wrap" data-sub="All">${_ytTopResultCard(results, query)}</div>`
   }
@@ -2443,6 +2482,7 @@ function renderYtResults(results, query) {
     </div>`
   }
   box.innerHTML = html
+  _bindYtSurroundToggle(box)
   bindYtEvents(songs)
   _bindYtEntityEvents(results)
   _bindYtSeeAll(box)
