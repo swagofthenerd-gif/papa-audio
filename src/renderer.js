@@ -2168,7 +2168,11 @@ function renderSearch(query) {
       surpriseStyle.textContent = '.surprise-btn{padding:12px 32px;border-radius:100px;background:linear-gradient(135deg,var(--accent),#1db954);border:none;color:#000;font-size:16px;font-weight:600;cursor:pointer;transition:transform .15s,box-shadow .15s}.surprise-btn:hover{transform:scale(1.05);box-shadow:0 4px 16px rgba(29,185,84,.3)}'
       document.head.appendChild(surpriseStyle)
     }
-    var recentSearches = JSON.parse(localStorage.getItem('pa_search_history') || '[]').slice(0, 6)
+    var recentSearches = []
+  try {
+    var _hist = JSON.parse(localStorage.getItem('pa_search_history') || '[]')
+    if (Array.isArray(_hist)) recentSearches = _hist.filter(function (h) { return typeof h === 'string' && h }).slice(0, 6)
+  } catch (_) {}
     var recentHTML = ''
     if (recentSearches.length) {
       var css = '.recent-search-card{flex:0 0 140px;height:100px;border-radius:var(--r);cursor:pointer;transition:transform .15s}.recent-search-card:hover{transform:scale(1.03)}'
@@ -2231,7 +2235,9 @@ function renderSearch(query) {
   var matchAlbums, matchTracks, artistSet, matchArtists, didYouMean
 
   var useCache = false
-  if (state._lastSearch && state._lastSearch.query === query && (Date.now() - state._lastSearch.timestamp) < 30000) {
+  if (state._lastSearch && state._lastSearch.query === query &&
+      state._lastSearch.libRef === state.library &&
+      (Date.now() - state._lastSearch.timestamp) < 30000) {
     useCache = true
     matchAlbums = state._lastSearch.localResults.albums
     artistSet = new Set(state._lastSearch.localResults.artists)
@@ -2250,7 +2256,7 @@ function renderSearch(query) {
     matchTracks = state.library.flatMap(a =>
       a.tracks.filter(t => (t.title || '').normalize('NFC').toLowerCase().includes(q))
         .map(t => ({ ...t, albumId: a.id, albumArtist: a.artist, artPath: a.artPath }))
-    ).slice(0, 20)
+    )
 
   if (filters.artist) {
     matchAlbums = matchAlbums.filter(function(a) { return (a.artist || '').normalize('NFC').toLowerCase().indexOf(filters.artist.normalize('NFC').toLowerCase()) !== -1 })
@@ -2266,15 +2272,12 @@ function renderSearch(query) {
   if (filters.album) matchAlbums = matchAlbums.filter(function(a) { return (a.name || '').normalize('NFC').toLowerCase().indexOf(filters.album.normalize('NFC').toLowerCase()) !== -1 })
   if (filters.genre) matchAlbums = matchAlbums.filter(function(a) { return (a.genre || '').toLowerCase() === filters.genre.toLowerCase() })
   if (filters.is === 'liked') { matchTracks = matchTracks.filter(function(t) { return state.likedTracks.indexOf(t.filePath) !== -1 }); matchAlbums = matchAlbums.filter(function(a) { return state.likedAlbums.indexOf(a.id) !== -1 }) }
-  if (filters.is === 'downloaded') { matchTracks = matchTracks.filter(function(t) { return t.filePath && t.filePath.indexOf('/mnt/data/MUSIC') === 0 }) }
+  if (filters.is === 'downloaded') { matchTracks = matchTracks.filter(function(t) { return t.filePath && (state.musicFolders || []).some(function (r) { return t.filePath.indexOf(r) === 0 }) }) }
   if (filters.is === 'flac') { matchTracks = matchTracks.filter(function(t) { return t.filePath && t.filePath.toLowerCase().endsWith('.flac') }) }
   if (filters.is === 'lossy') { matchTracks = matchTracks.filter(function(t) { var fp = (t.filePath||'').toLowerCase(); return fp.endsWith('.mp3') || fp.endsWith('.m4a') || fp.endsWith('.aac') }) }
   if (filters.playsMin) matchTracks = matchTracks.filter(function(t) { return (state.playCounts[t.filePath] || 0) > filters.playsMin })
   if (filters.durMax) matchTracks = matchTracks.filter(function(t) { return (t.duration || 0) < filters.durMax })
   if (filters.durMin) matchTracks = matchTracks.filter(function(t) { return (t.duration || 0) > filters.durMin })
-
-  if (state.searchSort === 'alpha') matchTracks.sort(function(a, b) { return (a.title || '').localeCompare(b.title || '') })
-  if (state.searchSort === 'duration') matchTracks.sort(function(a, b) { return (a.duration || 0) - (b.duration || 0) })
 
   didYouMean = null
   if (!matchAlbums.length && !matchTracks.length && !artistSet.size && searchText.length > 2) {
@@ -2284,11 +2287,26 @@ function renderSearch(query) {
 
   state._lastSearch = {
     query: query,
+    libRef: state.library,
     localResults: { albums: matchAlbums, artists: [...artistSet], tracks: matchTracks },
     didYouMean: didYouMean,
     timestamp: Date.now()
   }
   }
+
+  // Sorting happens AFTER the cache branch so the dropdown works on a cache hit
+  // too, and on a copy so the cached array is never reordered underneath it.
+  if (state.searchSort === 'alpha') {
+    matchTracks = matchTracks.slice().sort(function(a, b) { return String(a.title || '').localeCompare(String(b.title || '')) })
+  } else if (state.searchSort === 'duration') {
+    matchTracks = matchTracks.slice().sort(function(a, b) { return (a.duration || 0) - (b.duration || 0) })
+  }
+
+  // Display cap. Applied here, not before the filters, so an operator search
+  // reports what it actually matched rather than what survived an arbitrary
+  // 20-row window.
+  var matchTracksTotal = matchTracks.length
+  if (matchTracks.length > 20) matchTracks = matchTracks.slice(0, 20)
 
   var dymHTML = didYouMean && didYouMean.length ? '<div class="did-you-mean">Did you mean: ' + didYouMean.map(function(d, i) { return '<span class="dym-link" data-dym-idx="' + i + '">' + esc(d) + '</span>' + (i < didYouMean.length - 1 ? ', ' : '') }).join('') + '?</div>' : ''
 
@@ -2371,7 +2389,7 @@ function renderSearch(query) {
     if (matchTracks.length > 4 || (!topAlbum && matchTracks.length)) {
       const startIdx = topAlbum ? 4 : 0
       html += `<div class="search-section" data-section="Songs">
-        <div class="section-header"><span class="section-title">Songs · ${matchTracks.length}</span></div>
+        <div class="section-header"><span class="section-title">Songs · ${matchTracksTotal > matchTracks.length ? matchTracks.length + ' of ' + matchTracksTotal : matchTracks.length}</span></div>
         <div class="track-list">
         <div class="track-list-header"><span>#</span><span>Title</span><span style="text-align:right">Duration</span></div>`
       html += matchTracks.slice(startIdx).map((t, i) => `
@@ -2690,11 +2708,17 @@ async function runYtSearch(query, scope) {
   clearTimeout(slowTimer)
   // Stale response guard — user typed a new query or switched scope meanwhile
   if (ytSearchState.lastQuery !== query || ytSearchState.scope !== scope) return
+  if (res.ok) ytSearchState.retries = 0
   if (!res.ok) {
     updateYtHealth('error')
     const cur = document.getElementById('yt-results')
     if (cur) cur.innerHTML = `<div class="yt-status yt-error">YouTube search failed: ${esc(res.error || 'unknown error')} <button class="yt-retry" id="yt-retry-btn">Retry</button></div>`
     setTimeout(function() {
+      // Also stop when the user has left the search page, and give up after a
+      // few attempts: this used to retry forever, from any page.
+      if (state.currentPage !== 'search') return
+      ytSearchState.retries = (ytSearchState.retries || 0) + 1
+      if (ytSearchState.retries > 3) return
       if (ytSearchState.lastQuery === query && ytSearchState.scope === scope) {
         var cur2 = document.getElementById('yt-results')
         if (cur2) cur2.innerHTML = '<div class="yt-status">Retrying YouTube…</div>'
@@ -8312,6 +8336,7 @@ let _dlPollTimer        = null
 let _dlPollInterval     = 6000
 let _dlTab              = 'active'   // 'active' | 'completed' | 'failed'
 let _dlLastFiles        = []
+let _dlDaemonDown       = false
 
 // Amber sub-label for a row the local scheduler is holding back (it has not
 // been sent to slskd yet). Was called from _renderActiveTab but never defined,
@@ -8358,8 +8383,22 @@ async function _showDlCtxMenu(e, items, handlers) {
   if (action && handlers[action]) handlers[action]()
 }
 
+let _dlPollInFlight = false
+const _dlJustFinished = new Set()
 async function _pollAndRenderDownloads() {
-  const raw = await window.api.slskGetTransfers().catch(() => [])
+  // Re-entrancy guard: an older response landing after a newer one used to
+  // write stale _dlLastFiles, flickering cancelled rows back into the list.
+  if (_dlPollInFlight) return
+  _dlPollInFlight = true
+  try {
+  return await _pollAndRenderDownloadsInner()
+  } finally { _dlPollInFlight = false }
+}
+
+async function _pollAndRenderDownloadsInner() {
+  var _dlReachable = true
+  const raw = await window.api.slskGetTransfers().catch(function () { _dlReachable = false; return [] })
+  _dlDaemonDown = !_dlReachable
   const files = []
   for (const user of (raw || [])) {
     for (const dir of (user.directories || [])) {
@@ -8386,12 +8425,14 @@ async function _pollAndRenderDownloads() {
   // Detect transitions from active → succeeded and trigger a library sync
   const nowActive = new Set(files.filter(f => _dlCategory(f.state) === 'active').map(f => f.id))
   const prevActive = new Set(_dlPrevActiveIds)
-  const justCompletedIds = files.filter(f => prevActive.has(f.id) && _dlCategory(f.state) === 'completed').map(f => f.id)
-  if (justCompletedIds.length) {
+  const justCompleted = new Set(files.filter(f => prevActive.has(f.id) && _dlCategory(f.state) === 'completed').map(f => f.id))
+  if (justCompleted.size) {
     clearTimeout(_dlSyncTimer)
     _dlSyncTimer = setTimeout(() => backgroundSync(), 3000)
     for (const f of files) {
-      if (justCompletedIds.includes(f.id)) {
+      // Set lookup, not Array.includes inside a loop over the whole history.
+      if (justCompleted.has(f.id)) {
+        _dlJustFinished.add(f.id)
         window.api.slskVerifyFile({ username: f.username, filename: f.filename }).catch(() => {})
       }
     }
@@ -8409,10 +8450,13 @@ async function _pollAndRenderDownloads() {
   const badge = document.getElementById('nav-dl-badge')
   if (badge) { badge.style.display = (activeCount > 0 || todayDone > 0) ? 'flex' : 'none'; badge.textContent = activeCount > 0 ? activeCount : todayDone; badge.title = activeCount + ' active, ' + todayDone + ' completed' }
 
-  const completedNow = files.filter(f => _dlCategory(f.state) === 'completed')
+  // Only what just finished this session, not slskd's entire memory.
+  const completedNow = files.filter(f => _dlCategory(f.state) === 'completed' && _dlJustFinished.has(f.id))
   if (_dlPrevActiveCount > 0 && activeCount === 0 && completedNow.length > 0) {
     const folder = completedNow[0] ? _dlFolderName(completedNow[0].filename) || 'your music' : 'your music'
     window.api.notifyDownloadComplete({ count: completedNow.length, albumName: folder })
+    // Reset, so the next batch reports its own count rather than accumulating.
+    _dlJustFinished.clear()
   }
   _dlPrevActiveCount = activeCount
 
@@ -8611,10 +8655,24 @@ function _renderDlTab(files) {
       completed: 'M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z',
       failed:    'M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z',
     }
-    container.innerHTML = `<div class="dl2-empty">
-      <svg viewBox="0 0 24 24"><path d="${icons[_dlTab]}"/></svg>
-      <p>${msgs[_dlTab][0]}</p><span>${msgs[_dlTab][1]}</span>
-    </div>`
+    // "slskd is unreachable" and "you have no downloads" used to render the
+    // exact same friendly empty state, so a dead daemon looked like an idle one.
+    container.innerHTML = _dlDaemonDown
+      ? `<div class="dl2-empty">
+          <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
+          <p>Can't reach the Soulseek daemon</p>
+          <span>slskd isn't responding, so downloads can't be listed. Check that it's running, then retry.</span>
+          <button class="dl2-action-btn" id="dl2-daemon-retry" style="margin-top:12px">Retry</button>
+        </div>`
+      : `<div class="dl2-empty">
+          <svg viewBox="0 0 24 24"><path d="${icons[_dlTab]}"/></svg>
+          <p>${msgs[_dlTab][0]}</p><span>${msgs[_dlTab][1]}</span>
+        </div>`
+    container.querySelector('#dl2-daemon-retry')?.addEventListener('click', function () {
+      this.disabled = true
+      this.textContent = 'Retrying…'
+      _pollAndRenderDownloads()
+    })
     return
   }
 
@@ -9436,7 +9494,7 @@ function renderDownloads() {
     </div>
     <div class="dl2-filter-bar" id="dl2-filter-bar" style="display:none">
       <svg class="dl2-filter-icon" viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
-      <input class="dl2-filter-input" id="dl2-filter-input" type="text" placeholder="Filter albums…" autocomplete="off">
+      <input class="dl2-filter-input" id="dl2-filter-input" type="text" placeholder="Filter albums…" autocomplete="off" value="${esc(_dlFilter || '')}">
       <button class="dl2-ctrl-btn" id="dl2-collapse-all" title="Collapse all">
         <svg viewBox="0 0 24 24"><path d="M12 8l-6 6 1.41 1.41L12 10.83l4.59 4.58L18 14z"/></svg>
       </button>
@@ -11502,7 +11560,11 @@ function setupListeners() {
 
   // IPC events
   // Torrent events
-  window.api.on('torrent-started', () => { if (state.currentPage === 'downloads') navigate('downloads') })
+  window.api.on('torrent-started', () => {
+    if (state.currentPage !== 'downloads') return
+    if (_dlTab === 'torrents') _renderTorrentSection()
+    else _updateDlTabCounts(_dlLastFiles || [])
+  })
   window.api.on('torrent-progress', snap => {
     state._torrents = state._torrents || new Map()
     state._torrents.set(snap.infoHash, snap)
