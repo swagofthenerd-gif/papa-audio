@@ -3349,10 +3349,6 @@ kbd {
   background:var(--glass); border:1px solid var(--glass-border);
   border-radius:var(--r); padding:18px 20px; margin-bottom:28px;
 }
-.artist-bio-photo {
-  width:96px; height:96px; flex-shrink:0; border-radius:var(--r-sm);
-  object-fit:cover; box-shadow:0 4px 14px rgba(0,0,0,.4);
-}
 .artist-bio-text { min-width:0; }
 .artist-bio-heading {
   font-size:10px; font-weight:700; letter-spacing:1.2px; text-transform:uppercase;
@@ -3949,27 +3945,6 @@ textarea:focus:not(:focus-visible) { outline: none; }
   animation: skeleton-shimmer 1.6s infinite;
   border-radius: var(--r-sm);
 }
-.album-grid-skeleton {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-  gap: 16px;
-  padding: 0 4px;
-}
-.album-card-skeleton {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.album-card-skeleton-art {
-  aspect-ratio: 1;
-  border-radius: var(--r);
-}
-.album-card-skeleton-line {
-  height: 12px;
-  border-radius: 3px;
-}
-.album-card-skeleton-line:nth-child(2) { width: 80%; }
-.album-card-skeleton-line:nth-child(3) { width: 55%; }
 
 .skeleton {
   background: linear-gradient(90deg, var(--bg3) 25%, var(--glass) 50%, var(--bg3) 75%);
@@ -3984,148 +3959,6 @@ textarea:focus:not(:focus-visible) { outline: none; }
 .skeleton-card { width:160px; height:160px; }
 .skeleton-header { height:20px; width:200px; margin-bottom:16px; }
 
-/* ── Smart Playlists ─────────────────────────────── */
-.smart-pl-modal {
-  position: fixed; inset: 0;
-  background: rgba(0,0,0,.75);
-  display: flex; align-items: center; justify-content: center;
-  z-index: 2000;
-}
-.smart-pl-box {
-  background: var(--bg3);
-  border: 1px solid var(--glass-border);
-  border-radius: var(--r-xl);
-  padding: 28px 28px 24px;
-  width: min(560px, 90vw);
-  max-height: 80vh;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-.smart-pl-box h2 {
-  font-size: 16px;
-  font-weight: 700;
-  color: var(--text);
-  margin-bottom: 2px;
-}
-.smart-pl-name-input {
-  background: var(--bg4);
-  border: 1px solid var(--glass-border);
-  border-radius: var(--r-sm);
-  color: var(--text);
-  font-size: 14px;
-  padding: 9px 12px;
-  width: 100%;
-  outline: none;
-  transition: border-color .15s;
-}
-.smart-pl-name-input:focus { border-color: rgba(255,255,255,.2); }
-.smart-pl-rules-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.smart-pl-rule {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.smart-pl-rule select,
-.smart-pl-rule input {
-  background: var(--bg4);
-  border: 1px solid var(--glass-border);
-  border-radius: var(--r-sm);
-  color: var(--text);
-  font-size: 12px;
-  padding: 6px 8px;
-  outline: none;
-  transition: border-color .15s;
-  cursor: pointer;
-}
-.smart-pl-rule select:focus,
-.smart-pl-rule input:focus { border-color: rgba(255,255,255,.2); }
-.smart-pl-rule select { flex: 1.4; }
-.smart-pl-rule .op-select { flex: 1; }
-.smart-pl-rule input { flex: 1.2; }
-.smart-pl-rule-remove {
-  background: none; border: none;
-  color: var(--text3); cursor: pointer;
-  width: 26px; height: 26px;
-  border-radius: 50%;
-  display: flex; align-items: center; justify-content: center;
-  transition: background .15s, color .15s;
-  flex-shrink: 0;
-}
-.smart-pl-rule-remove:hover { background: rgba(255,60,60,.15); color: #ff4444; }
-.smart-pl-rule-remove svg { width: 14px; height: 14px; fill: currentColor; }
-.smart-pl-add-rule {
-  background: none;
-  border: 1px dashed var(--bg5);
-  border-radius: var(--r-sm);
-  color: var(--text3);
-  font-size: 12px;
-  padding: 7px 12px;
-  cursor: pointer;
-  transition: border-color .15s, color .15s;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  width: 100%;
-}
-.smart-pl-add-rule:hover { border-color: var(--text3); color: var(--text2); }
-.smart-pl-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-.smart-pl-limit-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--text2);
-}
-.smart-pl-limit-input {
-  background: var(--bg4);
-  border: 1px solid var(--glass-border);
-  border-radius: var(--r-sm);
-  color: var(--text);
-  font-size: 12px;
-  padding: 5px 8px;
-  width: 64px;
-  outline: none;
-}
-.smart-pl-footer-btns {
-  display: flex;
-  gap: 8px;
-}
-.smart-pl-badge {
-  font-size: 9px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: .7px;
-  background: rgba(29,185,84,.15);
-  color: var(--accent);
-  border-radius: 3px;
-  padding: 2px 5px;
-  margin-left: 6px;
-  vertical-align: middle;
-}
-.pl-card.smart-pl-card .pl-card-art::after {
-  content: '⚙';
-  position: absolute;
-  bottom: 6px; right: 6px;
-  font-size: 14px;
-  background: rgba(0,0,0,.65);
-  border-radius: 50%;
-  width: 22px; height: 22px;
-  display: flex; align-items: center; justify-content: center;
-  pointer-events: none;
-}
 
 /* ── Sticky album header ─────────────────────────── */
 .album-sticky-header {
@@ -4419,9 +4252,6 @@ textarea:focus:not(:focus-visible) { outline: none; }
 .artist-hero-info { flex:1 }
 .artist-hero-name { font-size:28px;font-weight:700;margin-bottom:4px }
 .artist-hero-meta { font-size:13px;color:var(--text2) }
-.artist-hero-bio { font-size:13px;color:var(--text2);margin-top:12px;line-height:1.6;max-height:80px;overflow:hidden;position:relative }
-.artist-hero-bio.expanded { max-height:none }
-.artist-bio-toggle { color:var(--accent);cursor:pointer;font-size:12px;margin-top:4px;display:inline-block }
 .discography-section { margin-bottom:28px }
 .discography-section-title { font-size:13px;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px;padding:0 28px }
 
