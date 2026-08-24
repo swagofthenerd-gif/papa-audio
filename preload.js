@@ -12,8 +12,9 @@ contextBridge.exposeInMainWorld('api', {
   saveLibraryCache: (albums) => ipcRenderer.send('save-library-cache', albums),
 
   // Folders
-  addMusicFolder:    () => ipcRenderer.invoke('add-music-folder'),
-  removeMusicFolder: (p) => ipcRenderer.invoke('remove-music-folder', p),
+  addMusicFolder:     () => ipcRenderer.invoke('add-music-folder'),
+  addMusicFolderPath: (p) => ipcRenderer.invoke('add-music-folder-path', p),
+  removeMusicFolder:  (p) => ipcRenderer.invoke('remove-music-folder', p),
 
   // Library
   scanLibrary:        () => ipcRenderer.invoke('scan-library'),
@@ -120,6 +121,33 @@ contextBridge.exposeInMainWorld('api', {
   slskSaveUser:       (p) => ipcRenderer.invoke('slsk-save-user', p),
   slskUnsaveUser:     (p) => ipcRenderer.invoke('slsk-unsave-user', p),
   slskTouchUser:      (p) => ipcRenderer.invoke('slsk-touch-user', p),
+  // Library management
+  libraryInspectPaths: (p) => ipcRenderer.invoke('library-inspect-paths', p),
+  libraryTrashPaths:   (p) => ipcRenderer.invoke('library-trash-paths', p),
+  libraryMovePath:     (p) => ipcRenderer.invoke('library-move-path', p),
+  libraryWriteTags:    (p) => ipcRenderer.invoke('library-write-tags', p),
+  libraryPruneState:   (p) => ipcRenderer.invoke('library-prune-state', p),
+  libraryRestoreState: (p) => ipcRenderer.invoke('library-restore-state', p),
+  libraryRestoreTrashed: (p) => ipcRenderer.invoke('library-restore-trashed', p),
+  libraryTrashList:    ()  => ipcRenderer.invoke('library-trash-list'),
+  libraryEmptyTrash:   (p) => ipcRenderer.invoke('library-empty-trash', p),
+  libraryScanExtras:   ()  => ipcRenderer.invoke('library-scan-extras'),
+  libraryStorageReport:()  => ipcRenderer.invoke('library-storage-report'),
+  libraryFreeSpace:    (p) => ipcRenderer.invoke('library-free-space', p),
+  libraryMigrateAlbumId: (p) => ipcRenderer.invoke('library-migrate-album-id', p),
+  libraryPickArtwork:  ()  => ipcRenderer.invoke('library-pick-artwork'),
+  librarySetArtwork:   (p) => ipcRenderer.invoke('library-set-artwork', p),
+
+  slskUserStatuses:        ()  => ipcRenderer.invoke('slsk-user-statuses'),
+  slskEnqueueDownloads:  (p) => ipcRenderer.invoke('slsk-enqueue-downloads', p),
+  slskSchedulerStats:    ()  => ipcRenderer.invoke('slsk-scheduler-stats'),
+  slskSchedulerQueue:    ()  => ipcRenderer.invoke('slsk-scheduler-queue'),
+  slskSchedulerConfig:   (p) => ipcRenderer.invoke('slsk-scheduler-config', p),
+  slskRespreadBacklog:   (p) => ipcRenderer.invoke('slsk-respread-backlog', p),
+  onSlskSchedulerStats:  (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('slsk-scheduler-stats', h); return () => ipcRenderer.removeListener('slsk-scheduler-stats', h) },
+  slskRefreshUserStatuses: ()  => ipcRenderer.invoke('slsk-refresh-user-statuses'),
+  onSlskUserStatus:      (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('slsk-user-status', h); return () => ipcRenderer.removeListener('slsk-user-status', h) },
+  onSlskSavedUsersChange:(cb) => { const h = (_, d) => cb(d); ipcRenderer.on('slsk-saved-users-changed', h); return () => ipcRenderer.removeListener('slsk-saved-users-changed', h) },
   ctxMenuShow:        (items) => ipcRenderer.invoke('ctx-menu-show', items),
 
   // YouTube
@@ -166,6 +194,7 @@ contextBridge.exposeInMainWorld('api', {
   playerSeek:        (s) => ipcRenderer.invoke('player-seek', s),
   playerSetVolume:   (v) => ipcRenderer.invoke('player-set-volume', v),
   playerSetSpeed:    (x) => ipcRenderer.invoke('player-set-speed', x),
+  playerSetNext:     (p) => ipcRenderer.invoke('player-set-next', p),
   playerGetStatus:   ()  => ipcRenderer.invoke('player-get-status'),
   playerGetConfig:   ()  => ipcRenderer.invoke('player-get-config'),
   playerSetConfig:   (c) => ipcRenderer.invoke('player-set-config', c),
@@ -191,7 +220,8 @@ contextBridge.exposeInMainWorld('api', {
       'media-key', 'media-playpause', 'media-next', 'media-previous', 'update-tray-tooltip', 'ext-cmd', 'slsk-progress', 'slskd-status-change', 'player-event', 'media-seek',
       'torrent-progress', 'torrent-done', 'torrent-started', 'do-lib-rescan',
       'yt-dl-progress', 'yt-auth-pending', 'yt-auth-done',
-      'slsk-verify',
+      'slsk-verify', 'slsk-user-status', 'slsk-saved-users-changed', 'slsk-scheduler-stats',
+      'library-updated', 'scan-progress',
     ]
     if (allowed.includes(channel)) ipcRenderer.on(channel, (_, data) => cb(data))
   },

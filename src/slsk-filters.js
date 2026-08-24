@@ -68,18 +68,18 @@ function folderText(g) {
 
 function groupSurround(g) { return detectSurround(folderText(g)) }
 
-function isHiRes(g) {
+function isHiResGroup(g) {
   return (g.files || []).some(f =>
     (Number(f.bitDepth) || 0) > 16 || (Number(f.sampleRate) || 0) > 48000)
 }
 
-function isLossless(g) { return (g.files || []).some(f => f.isFlac) }
+function isLosslessGroup(g) { return (g.files || []).some(f => f.isFlac) }
 
 const FILTERS = {
   all:      () => true,
   surround: g => !!groupSurround(g),
-  hires:    isHiRes,
-  lossless: isLossless,
+  hires:    isHiResGroup,
+  lossless: isLosslessGroup,
 }
 
 function bestOf(g, key) {
@@ -105,10 +105,10 @@ function applyFilterSort(groups, { filter = 'all', sort = 'relevance' } = {}) {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { detectSurround, groupSurround, isHiRes, isLossless, applyFilterSort, surroundQueries, SURROUND_TERMS, FILTERS, SORTS }
+  module.exports = { detectSurround, groupSurround, isHiResGroup, isLosslessGroup, applyFilterSort, surroundQueries, SURROUND_TERMS, FILTERS, SORTS }
 }
 if (typeof window !== 'undefined') {
-  window.PapaSlskFilters = { detectSurround, groupSurround, isHiRes, isLossless, applyFilterSort }
+  window.PapaSlskFilters = { detectSurround, groupSurround, isHiResGroup, isLosslessGroup, applyFilterSort }
   // The same detector serves YouTube titles: both are uploader-written text,
   // and the failure modes ("Album 51", stereo SACD rips) are identical.
   window.PapaSurround = { detectSurround, surroundQueries }

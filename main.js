@@ -1,6 +1,9 @@
 const { app, BrowserWindow, BrowserView, ipcMain, dialog, globalShortcut, Notification, shell, Menu, MenuItem, powerSaveBlocker, powerMonitor } = require('electron')
 const path = require('path')
 const fs = require('fs')
+// Required at the top: album ids are derived during scanning, long before the
+// handler section, and `const` is not hoisted.
+const tagEdit = require('./src/tag-edit')
 const crypto = require('crypto')
 const https = require('https')
 const { spawn, execSync, execFileSync, execFile } = require('child_process')
@@ -1330,7 +1333,12 @@ async function parseTrackFile(filePath, st) {
   let artPath = null
   if (pic) {
     const ext = pic.format.includes('png') ? 'png' : 'jpg'
-    const key = crypto.createHash('md5').update((c.albumartist||c.artist||'')+(c.album||'')).digest('hex')
+    // Used to hash the raw concatenation with no separator and no lowercasing,
+    // while buildAlbums hashed `artist_album` lowercased — two different values
+    // for the same album, so art written here was never found by album id.
+    const key = crypto.createHash('md5')
+      .update(tagEdit.albumKeyOf({ albumArtist: c.albumartist, artist: c.artist, album: c.album }))
+      .digest('hex')
     artPath = path.join(artworkDir, `${key}.${ext}`)
     if (!fs.existsSync(artPath)) fs.writeFileSync(artPath, pic.data)
   }
@@ -1460,6 +1468,682 @@ async function performScan(onProgress) {
   }
 }
 
+// ── Library management (destructive operations) ─────────────────────────────
+// Everything here can destroy the user's music, so every path is checked
+// against the configured music folders first. A bug elsewhere in the app must
+// not be able to turn into "deleted a directory outside the library".
+
+function libRoots() {
+  const folders = store.get('musicFolders', []) || []
+  const dl = store.get('slskConfig', {}).downloadDir
+  return folders.concat(dl ? [dl] : []).filter(Boolean).map(f => path.resolve(f))
+}
+
+// Deleting is allowed inside the library roots AND inside slskd's own
+// incomplete-downloads dir. That dir is app-managed storage the Health tab
+// explicitly offers to clean up, but it is not a library root -- it must never
+// become a move DESTINATION, so it is added here rather than to libRoots().
+function libDeletableRoots() {
+  return libRoots().concat([path.join(USER_DATA, 'slskd', 'incomplete')])
+}
+
+function libPathAllowed(target) {
+  let resolved
+  try { resolved = fs.realpathSync(path.resolve(String(target))) } catch (_) { return false }
+  const roots = libDeletableRoots()
+  if (!roots.length) return false
+  for (const root of roots) {
+    let r
+    try { r = fs.realpathSync(root) } catch (_) { r = root }
+    // Must be strictly INSIDE a root, never the root itself.
+    if (resolved !== r && resolved.startsWith(r + path.sep)) return true
+  }
+  return false
+}
+
+// What exactly would go, stated before anything is touched. The UI shows this
+// verbatim so a delete is never a leap of faith.
+// Deleting a whole artist can mean thousands of files. The walk used to be
+// fully synchronous on the main process, which freezes the window — including
+// playback controls — while it runs. It now yields between batches and stops
+// counting individual files past a cap, since nobody reads a 5000-line
+// confirmation anyway; the byte total keeps going.
+const INSPECT_FILE_CAP = 2000
+const INSPECT_YIELD_EVERY = 400
+
+ipcMain.handle('library-inspect-paths', async (_, { paths }) => {
+  const out = []
+  let seen = 0
+
+  const walk = async (dir, entry) => {
+    let names
+    try { names = await fs.promises.readdir(dir, { withFileTypes: true }) } catch (_) { return }
+    for (const d of names) {
+      const full = path.join(dir, d.name)
+      if (d.isDirectory()) { await walk(full, entry); continue }
+      let st
+      try { st = await fs.promises.stat(full) } catch (_) { continue }
+      entry.bytes += st.size
+      entry.fileCount++
+      if (entry.files.length < INSPECT_FILE_CAP) entry.files.push(full)
+      else entry.filesTruncated = true
+      if (++seen % INSPECT_YIELD_EVERY === 0) await new Promise(r => setImmediate(r))
+    }
+  }
+
+  for (const p of paths || []) {
+    const entry = {
+      path: p, allowed: libPathAllowed(p), exists: false, isDir: false,
+      files: [], fileCount: 0, bytes: 0, filesTruncated: false,
+    }
+    try {
+      const st = await fs.promises.stat(p)
+      entry.exists = true
+      entry.isDir = st.isDirectory()
+      if (entry.isDir) {
+        await walk(p, entry)
+      } else {
+        entry.files.push(p)
+        entry.fileCount = 1
+        entry.bytes = st.size
+      }
+    } catch (_) {}
+    out.push(entry)
+  }
+  return { entries: out }
+})
+
+const libPrune = require('./src/library-prune')
+
+// One handler, not seven. Pruning is a single logical transaction — the
+// renderer must never be able to complete three of these and abandon the rest.
+ipcMain.handle('library-prune-state', (_, { removed, renamed }) => {
+  const map = libPrune.buildRemap(removed || [], renamed || [])
+  if (!Object.keys(map).length) return { ok: true, summary: null, snapshot: null }
+
+  const snapshot = {
+    likedTracks:   store.get('likedTracks', []),
+    playCounts:    store.get('playCounts', {}),
+    playHistory:   store.get('playHistory', []),
+    playlists:     store.get('playlists', []),
+    savedQueues:   store.get('savedQueues', []),
+    playbackState: store.get('playbackState', null),
+  }
+  const { next, summary } = libPrune.pruneAll(snapshot, map)
+  if (!summary.touched && !summary.renamed) return { ok: true, summary, snapshot: null }
+
+  store.set('likedTracks',   next.likedTracks)
+  store.set('playCounts',    next.playCounts)
+  store.set('playHistory',   next.playHistory)
+  store.set('playlists',     next.playlists)
+  store.set('savedQueues',   next.savedQueues)
+  if (next.playbackState) store.set('playbackState', next.playbackState)
+  else store.delete('playbackState')
+
+  // The pre-prune snapshot IS the undo. Handed back so the renderer can offer
+  // it without main having to hold per-operation state.
+  return { ok: true, summary, snapshot }
+})
+
+ipcMain.handle('library-restore-state', (_, { snapshot }) => {
+  if (!snapshot) return { ok: false, error: 'Nothing to restore' }
+  if (snapshot.likedTracks)   store.set('likedTracks', snapshot.likedTracks)
+  if (snapshot.playCounts)    store.set('playCounts', snapshot.playCounts)
+  if (snapshot.playHistory)   store.set('playHistory', snapshot.playHistory)
+  if (snapshot.playlists)     store.set('playlists', snapshot.playlists)
+  if (snapshot.savedQueues)   store.set('savedQueues', snapshot.savedQueues)
+  if (snapshot.playbackState) store.set('playbackState', snapshot.playbackState)
+  return { ok: true }
+})
+
+// Freedesktop trash layout: <volume>/.Trash-<uid>/{files,info}. shell.trashItem
+// gives us no handle back, so restoring means finding what it wrote. The
+// .trashinfo file records the original path, which is the only reliable link.
+function trashRootsFor(originalPath) {
+  const roots = []
+  const home = path.join(app.getPath('home'), '.local', 'share', 'Trash')
+  let dir = path.resolve(originalPath)
+  // Walk up to the mount point that holds a .Trash-<uid>.
+  for (let i = 0; i < 12 && dir && dir !== path.dirname(dir); i++) {
+    dir = path.dirname(dir)
+    const cand = path.join(dir, `.Trash-${process.getuid ? process.getuid() : 1000}`)
+    if (fs.existsSync(cand)) { roots.push(cand); break }
+  }
+  if (fs.existsSync(home)) roots.push(home)
+  return roots
+}
+
+function findTrashedEntry(originalPath) {
+  const target = path.resolve(originalPath)
+  for (const root of trashRootsFor(originalPath)) {
+    const infoDir = path.join(root, 'info')
+    const filesDir = path.join(root, 'files')
+    let names
+    try { names = fs.readdirSync(infoDir) } catch (_) { continue }
+    // Newest first: the same path may have been trashed more than once.
+    const entries = names
+      .filter(n => n.endsWith('.trashinfo'))
+      .map(n => {
+        const full = path.join(infoDir, n)
+        let mtime = 0
+        try { mtime = fs.statSync(full).mtimeMs } catch (_) {}
+        return { name: n, full, mtime }
+      })
+      .sort((a, b) => b.mtime - a.mtime)
+
+    for (const e of entries) {
+      let body
+      try { body = fs.readFileSync(e.full, 'utf8') } catch (_) { continue }
+      const m = /^Path=(.*)$/m.exec(body)
+      if (!m) continue
+      let recorded = decodeURIComponent(m[1].trim())
+      // Paths are stored relative to the trash volume for non-home trashes.
+      if (!path.isAbsolute(recorded)) recorded = path.join(path.dirname(root), recorded)
+      if (path.resolve(recorded) !== target) continue
+      const payload = path.join(filesDir, e.name.replace(/\.trashinfo$/, ''))
+      if (fs.existsSync(payload)) return { payload, infoFile: e.full, original: target }
+    }
+  }
+  return null
+}
+
+// The trash that matters here is the one on the music volume. Because it lives
+// on the SAME drive as the library, moving files there reclaims nothing — the
+// UI has to say so, and give a way to actually empty it.
+function trashRootsAll() {
+  const roots = []
+  const uid = process.getuid ? process.getuid() : 1000
+  for (const root of libRoots()) {
+    let dir = path.resolve(root)
+    for (let i = 0; i < 12 && dir && dir !== path.dirname(dir); i++) {
+      const cand = path.join(dir, `.Trash-${uid}`)
+      if (fs.existsSync(cand) && roots.indexOf(cand) === -1) { roots.push(cand); break }
+      dir = path.dirname(dir)
+    }
+  }
+  const home = path.join(app.getPath('home'), '.local', 'share', 'Trash')
+  if (fs.existsSync(home) && roots.indexOf(home) === -1) roots.push(home)
+  return roots
+}
+
+function dirSize(target) {
+  let total = 0
+  const walk = (d) => {
+    let names
+    try { names = fs.readdirSync(d, { withFileTypes: true }) } catch (_) { return }
+    for (const n of names) {
+      const full = path.join(d, n.name)
+      if (n.isDirectory()) { walk(full); continue }
+      try { total += fs.statSync(full).size } catch (_) {}
+    }
+  }
+  try {
+    const st = fs.statSync(target)
+    if (st.isDirectory()) walk(target)
+    else total = st.size
+  } catch (_) {}
+  return total
+}
+
+const libHealth = require('./src/library-health')
+
+// The library index only knows about audio it could parse. Everything else —
+// installers, logs, leftovers, empty folders — is invisible to it, so it has
+// to be found by walking the disk.
+ipcMain.handle('library-scan-extras', async () => {
+  const nonAudio = []
+  const emptyDirs = []
+  const roots = store.get('musicFolders', []) || []
+
+  const walk = async (dir) => {
+    let names
+    try { names = await fs.promises.readdir(dir, { withFileTypes: true }) } catch (_) { return false }
+    let hasAudio = false
+    for (const d of names) {
+      if (d.name.startsWith('.')) continue          // .Trash-1000 and friends
+      const full = path.join(dir, d.name)
+      if (d.isDirectory()) {
+        const childHasAudio = await walk(full)
+        if (childHasAudio) hasAudio = true
+        continue
+      }
+      if (libHealth.AUDIO_RE.test(d.name)) { hasAudio = true; continue }
+      let st
+      try { st = await fs.promises.stat(full) } catch (_) { continue }
+      nonAudio.push({ path: full, bytes: st.size })
+    }
+    if (!hasAudio) emptyDirs.push(dir)
+    return hasAudio
+  }
+
+  for (const root of roots) {
+    // Never offer a configured music root itself for deletion.
+    let names
+    try { names = await fs.promises.readdir(root, { withFileTypes: true }) } catch (_) { continue }
+    for (const d of names) {
+      if (d.name.startsWith('.')) continue
+      const full = path.join(root, d.name)
+      if (d.isDirectory()) { await walk(full); continue }
+      if (libHealth.AUDIO_RE.test(d.name)) continue
+      let st
+      try { st = await fs.promises.stat(full) } catch (_) { continue }
+      nonAudio.push({ path: full, bytes: st.size })
+    }
+  }
+
+  // Partial downloads with no matching active transfer.
+  const partials = []
+  const incomplete = path.join(USER_DATA, 'slskd', 'incomplete')
+  let active = new Set()
+  try {
+    const data = await slskdFetch('GET', '/transfers/downloads')
+    for (const u of data || []) {
+      for (const dir of u.directories || []) {
+        for (const f of dir.files || []) {
+          if (!String(f.state || '').startsWith('Completed')) {
+            active.add(path.basename(String(f.filename).replace(/\\/g, '/')))
+          }
+        }
+      }
+    }
+  } catch (_) { active = null }   // slskd unreachable: do NOT guess, report none
+
+  if (active) {
+    const walkInc = async (dir) => {
+      let names
+      try { names = await fs.promises.readdir(dir, { withFileTypes: true }) } catch (_) { return }
+      for (const d of names) {
+        const full = path.join(dir, d.name)
+        if (d.isDirectory()) { await walkInc(full); continue }
+        if (active.has(d.name)) continue
+        let st
+        try { st = await fs.promises.stat(full) } catch (_) { continue }
+        partials.push({ path: full, bytes: st.size })
+      }
+    }
+    await walkInc(incomplete)
+  }
+
+  return { nonAudio, emptyDirs, partials, partialsChecked: !!active }
+})
+
+ipcMain.handle('library-storage-report', async () => {
+  const roots = store.get('musicFolders', []) || []
+  const out = { roots: [], artworkBytes: 0, trashBytes: 0, free: null, total: null }
+  for (const r of roots) {
+    out.roots.push({ path: r, bytes: dirSize(r) })
+  }
+  out.artworkBytes = dirSize(artworkDir)
+  for (const t of trashRootsAll()) out.trashBytes += dirSize(path.join(t, 'files'))
+  try {
+    const st = fs.statfsSync(roots[0] || app.getPath('home'))
+    out.free = st.bavail * st.bsize
+    out.total = st.blocks * st.bsize
+  } catch (_) {}
+  return out
+})
+
+// There was no free-space check anywhere in this app. With 51 GB free on a
+// 932 GB drive, a copy that runs the disk dry is a real outcome.
+function freeSpaceAt(target) {
+  try {
+    const st = fs.statfsSync(path.dirname(path.resolve(target)))
+    return st.bavail * st.bsize
+  } catch (_) { return null }
+}
+
+ipcMain.handle('library-free-space', (_, { at }) => ({ free: freeSpaceAt(at || app.getPath('home')) }))
+
+ipcMain.handle('library-trash-list', () => {
+  const roots = trashRootsAll()
+  const items = []
+  let totalBytes = 0
+  for (const root of roots) {
+    const filesDir = path.join(root, 'files')
+    const infoDir = path.join(root, 'info')
+    let names
+    try { names = fs.readdirSync(filesDir) } catch (_) { continue }
+    for (const name of names) {
+      const payload = path.join(filesDir, name)
+      let original = null
+      let deletedAt = null
+      try {
+        const body = fs.readFileSync(path.join(infoDir, name + '.trashinfo'), 'utf8')
+        const mp = /^Path=(.*)$/m.exec(body)
+        const md = /^DeletionDate=(.*)$/m.exec(body)
+        if (mp) {
+          original = decodeURIComponent(mp[1].trim())
+          if (!path.isAbsolute(original)) original = path.join(path.dirname(root), original)
+        }
+        if (md) deletedAt = md[1].trim()
+      } catch (_) {}
+      const bytes = dirSize(payload)
+      totalBytes += bytes
+      let isDir = false
+      try { isDir = fs.statSync(payload).isDirectory() } catch (_) {}
+      items.push({ name, root, payload, original, deletedAt, bytes, isDir })
+    }
+  }
+  items.sort((a, b) => String(b.deletedAt || '').localeCompare(String(a.deletedAt || '')))
+
+  // Whether emptying actually frees usable space depends on the volume.
+  const volumes = roots.map(r => {
+    const mount = path.dirname(r)
+    let free = null
+    try { const st = fs.statfsSync(mount); free = st.bavail * st.bsize } catch (_) {}
+    return { trashDir: r, mount, free }
+  })
+  return { items, totalBytes, roots, volumes }
+})
+
+ipcMain.handle('library-empty-trash', async (_, { names }) => {
+  // Only ever touches paths inside a recognised trash directory.
+  const roots = trashRootsAll()
+  const inTrash = (p) => roots.some(r => path.resolve(p).startsWith(path.join(r, 'files') + path.sep))
+  const results = []
+  let freed = 0
+  const all = names && names.length ? names : null
+
+  for (const root of roots) {
+    const filesDir = path.join(root, 'files')
+    const infoDir = path.join(root, 'info')
+    let entries
+    try { entries = fs.readdirSync(filesDir) } catch (_) { continue }
+    for (const name of entries) {
+      if (all && all.indexOf(name) === -1) continue
+      const payload = path.join(filesDir, name)
+      if (!inTrash(payload)) { results.push({ name, ok: false, error: 'Refused — not inside a trash folder' }); continue }
+      const bytes = dirSize(payload)
+      try {
+        fs.rmSync(payload, { recursive: true, force: true })
+        try { fs.rmSync(path.join(infoDir, name + '.trashinfo'), { force: true }) } catch (_) {}
+        freed += bytes
+        results.push({ name, ok: true, bytes })
+      } catch (e) {
+        results.push({ name, ok: false, error: e.message })
+      }
+    }
+  }
+  const removed = results.filter(r => r.ok).length
+  return { results, removed, failed: results.length - removed, freed }
+})
+
+ipcMain.handle('library-restore-trashed', async (_, { paths }) => {
+  const results = []
+  for (const p of paths || []) {
+    const found = findTrashedEntry(p)
+    if (!found) { results.push({ path: p, ok: false, error: 'Not found in Trash' }); continue }
+    if (fs.existsSync(found.original)) {
+      results.push({ path: p, ok: false, error: 'Something is already at that path' })
+      continue
+    }
+    try {
+      fs.mkdirSync(path.dirname(found.original), { recursive: true })
+      fs.renameSync(found.payload, found.original)
+      try { fs.unlinkSync(found.infoFile) } catch (_) {}
+      results.push({ path: p, ok: true })
+    } catch (e) {
+      results.push({ path: p, ok: false, error: e.message })
+    }
+  }
+  const restored = results.filter(r => r.ok).length
+  if (restored) _scheduleLibraryRescan()
+  return { results, restored, failed: results.length - restored }
+})
+
+ipcMain.handle('library-trash-paths', async (_, { paths }) => {
+  const results = []
+  for (const p of paths || []) {
+    if (!libPathAllowed(p)) {
+      results.push({ path: p, ok: false, error: 'Outside your music folders — refused' })
+      continue
+    }
+    if (!fs.existsSync(p)) { results.push({ path: p, ok: false, error: 'No longer on disk' }); continue }
+    try {
+      // Trash, never unlink: a wrong call has to be recoverable.
+      await shell.trashItem(path.resolve(p))
+      results.push({ path: p, ok: true })
+    } catch (e) {
+      results.push({ path: p, ok: false, error: e.message || 'Could not move to Trash' })
+    }
+  }
+  const moved = results.filter(r => r.ok).length
+  if (moved) _scheduleLibraryRescan()
+  return { results, moved, failed: results.length - moved }
+})
+
+ipcMain.handle('library-move-path', async (_, { from, to }) => {
+  if (!libPathAllowed(from)) return { ok: false, error: 'Source is outside your music folders' }
+  const dest = path.resolve(String(to))
+  const roots = libRoots()
+  const insideRoot = roots.some(r => dest === r || dest.startsWith(r + path.sep))
+  if (!insideRoot) return { ok: false, error: 'Destination is outside your music folders' }
+  if (fs.existsSync(dest)) return { ok: false, error: 'Something already exists at that name' }
+  const needed = dirSize(path.resolve(from))
+  const free = freeSpaceAt(dest)
+  if (free != null && free < needed + 1e9) {
+    return { ok: false, error: 'Not enough free space at the destination (' +
+      Math.round(needed / 1e6) + ' MB needed, ' + Math.round(free / 1e6) + ' MB free)' }
+  }
+  try {
+    fs.mkdirSync(path.dirname(dest), { recursive: true })
+    fs.renameSync(path.resolve(from), dest)
+  } catch (e) {
+    // Cross-device rename fails; fall back to copy-then-remove.
+    try {
+      fs.cpSync(path.resolve(from), dest, { recursive: true })
+      await shell.trashItem(path.resolve(from))
+    } catch (e2) {
+      return { ok: false, error: e2.message || e.message }
+    }
+  }
+  _scheduleLibraryRescan()
+  return { ok: true, path: dest }
+})
+
+const TAG_FIELDS = ['title', 'artist', 'album', 'albumartist', 'date', 'genre', 'track', 'disc', 'composer']
+
+// ffmpeg's canonical key for album artist is `album_artist`. Writing
+// `albumartist` instead ADDS a second tag next to the existing one, so the
+// field ends up holding both the old and new value ("New;Old") rather than
+// being replaced. Vorbis comments allow repeats, so nothing errors.
+const FFMPEG_TAG_KEY = { albumartist: 'album_artist', disc: 'disc' }
+
+// Alternate spellings the same field can already be stored under. Each one is
+// cleared explicitly, otherwise a stale duplicate survives the rewrite.
+const TAG_ALIASES = {
+  albumartist: ['albumartist', 'album_artist', 'ALBUMARTIST', 'ALBUM_ARTIST'],
+  date: ['date', 'year', 'DATE', 'YEAR'],
+  track: ['track', 'tracknumber', 'TRACK', 'TRACKNUMBER'],
+  disc: ['disc', 'discnumber', 'DISC', 'DISCNUMBER'],
+}
+
+// ffmpeg cannot edit tags in place, so this rewrites the stream losslessly to a
+// temp file and only replaces the original once ffmpeg has exited cleanly. A
+// failed write leaves the original untouched.
+function writeTagsOne(filePath, tags) {
+  return new Promise((resolve) => {
+    const dir = path.dirname(filePath)
+    const ext = path.extname(filePath)
+    const tmp = path.join(dir, '.papa-tag-' + crypto.randomBytes(6).toString('hex') + ext)
+    const args = ['-v', 'error', '-i', filePath, '-map', '0', '-c', 'copy']
+    for (const k of TAG_FIELDS) {
+      if (tags[k] === undefined) continue
+      const value = tags[k] == null ? '' : String(tags[k])
+      // Clear every spelling first so no stale duplicate survives...
+      for (const alias of (TAG_ALIASES[k] || [k])) args.push('-metadata', `${alias}=`)
+      // ...then write the one ffmpeg actually canonicalises.
+      args.push('-metadata', `${FFMPEG_TAG_KEY[k] || k}=${value}`)
+    }
+    args.push('-y', tmp)
+    const proc = spawn('ffmpeg', args)
+    let err = ''
+    proc.stderr.on('data', d => { err = (err + d.toString()).slice(-400) })
+    proc.on('error', e => { try { fs.unlinkSync(tmp) } catch (_) {} resolve({ ok: false, error: e.message }) })
+    proc.on('close', code => {
+      if (code !== 0) {
+        try { fs.unlinkSync(tmp) } catch (_) {}
+        resolve({ ok: false, error: err.trim() || ('ffmpeg exited ' + code) })
+        return
+      }
+      try {
+        fs.renameSync(tmp, filePath)
+        resolve({ ok: true })
+      } catch (e) {
+        try { fs.unlinkSync(tmp) } catch (_) {}
+        resolve({ ok: false, error: e.message })
+      }
+    })
+  })
+}
+
+// Correcting tags changes the album id, which is what everything album-scoped
+// is keyed by. Carry those keys across, or a person tidying their library
+// silently loses their likes, ratings, notes and cover art.
+// Setting a cover from a file. The cache is keyed by album id, so writing
+// there is enough for the app to show it. Embedding into the audio files is
+// offered separately and OFF by default, because it rewrites every file on the
+// album -- minutes of disk churn for a picture.
+ipcMain.handle('library-pick-artwork', async () => {
+  const r = await dialog.showOpenDialog(mainWindow, {
+    title: 'Choose album artwork',
+    properties: ['openFile'],
+    filters: [{ name: 'Images', extensions: ['jpg', 'jpeg', 'png', 'webp', 'bmp'] }],
+  })
+  if (r.canceled || !r.filePaths.length) return { ok: false, canceled: true }
+  return { ok: true, path: r.filePaths[0] }
+})
+
+function imageDimensions(file) {
+  // ffprobe is already a hard dependency here and reads every format we accept.
+  try {
+    const out = execFileSync('ffprobe', [
+      '-v', 'error', '-select_streams', 'v:0',
+      '-show_entries', 'stream=width,height,codec_name',
+      '-of', 'default=noprint_wrappers=1:nokey=1', file,
+    ], { timeout: 10000 }).toString().trim().split('\n')
+    return { codec: out[0] || null, width: parseInt(out[1], 10) || 0, height: parseInt(out[2], 10) || 0 }
+  } catch (_) { return null }
+}
+
+ipcMain.handle('library-set-artwork', async (_, { albumId, sourcePath, embed, filePaths }) => {
+  if (!albumId) return { ok: false, error: 'No album given' }
+  if (!sourcePath || !fs.existsSync(sourcePath)) return { ok: false, error: 'That image is gone' }
+
+  const info = imageDimensions(sourcePath)
+  if (!info || !info.width) return { ok: false, error: 'That file is not a readable image' }
+
+  const dest = path.join(artworkDir, `${albumId}.jpg`)
+  await new Promise((resolve) => {
+    // Normalise to JPEG at a sane size: the cache is displayed at a few hundred
+    // pixels, and a 20 MB PNG helps nobody.
+    const proc = spawn('ffmpeg', [
+      '-v', 'error', '-i', sourcePath,
+      '-vf', 'scale=min(1000\\,iw):-1', '-q:v', '3', '-y', dest,
+    ])
+    proc.on('error', resolve)
+    proc.on('close', resolve)
+  })
+  if (!fs.existsSync(dest)) return { ok: false, error: 'Could not write the artwork' }
+
+  // A stale PNG under the same id would win the lookup, so clear it.
+  try { fs.rmSync(path.join(artworkDir, `${albumId}.png`), { force: true }) } catch (_) {}
+
+  let embedded = 0
+  let embedFailed = 0
+  if (embed && Array.isArray(filePaths)) {
+    for (const fp of filePaths) {
+      if (!libPathAllowed(fp)) { embedFailed++; continue }
+      const ok = await embedArtworkOne(fp, dest)
+      if (ok) embedded++
+      else embedFailed++
+    }
+  }
+
+  _scheduleLibraryRescan()
+  return { ok: true, artPath: dest, width: info.width, height: info.height, embedded, embedFailed }
+})
+
+// Same temp-file discipline as tag writing: the original is only replaced once
+// ffmpeg has exited cleanly.
+function embedArtworkOne(filePath, imagePath) {
+  return new Promise((resolve) => {
+    const ext = path.extname(filePath)
+    const tmp = path.join(path.dirname(filePath), '.papa-art-' + crypto.randomBytes(6).toString('hex') + ext)
+    const proc = spawn('ffmpeg', [
+      '-v', 'error', '-i', filePath, '-i', imagePath,
+      '-map', '0:a', '-map', '1:v', '-c', 'copy',
+      '-disposition:v', 'attached_pic',
+      '-metadata:s:v', 'title=Album cover',
+      '-y', tmp,
+    ])
+    proc.on('error', () => { try { fs.unlinkSync(tmp) } catch (_) {} resolve(false) })
+    proc.on('close', (code) => {
+      if (code !== 0) { try { fs.unlinkSync(tmp) } catch (_) {} resolve(false); return }
+      try { fs.renameSync(tmp, filePath); resolve(true) }
+      catch (_) { try { fs.unlinkSync(tmp) } catch (_) {} resolve(false) }
+    })
+  })
+}
+
+ipcMain.handle('library-migrate-album-id', (_, { oldKey, newKey }) => {
+  if (!oldKey || !newKey || oldKey === newKey) return { ok: true, migrated: false }
+  const hash = (k) => crypto.createHash('md5').update(k).digest('hex')
+  const oldId = hash(oldKey)
+  const newId = hash(newKey)
+
+  const liked = store.get('likedAlbums', [])
+  if (liked.indexOf(oldId) !== -1) {
+    store.set('likedAlbums', liked.map(x => (x === oldId ? newId : x)).filter((x, i, a) => a.indexOf(x) === i))
+  }
+  const recent = store.get('recentlyPlayed', [])
+  if (recent.indexOf(oldId) !== -1) {
+    store.set('recentlyPlayed', recent.map(x => (x === oldId ? newId : x)).filter((x, i, a) => a.indexOf(x) === i))
+  }
+  const session = store.get('sessionState', null)
+  if (session && session.navId === oldId) store.set('sessionState', { ...session, navId: newId })
+
+  // The cached cover is named by album id.
+  for (const ext of ['jpg', 'png']) {
+    const from = path.join(artworkDir, `${oldId}.${ext}`)
+    const to = path.join(artworkDir, `${newId}.${ext}`)
+    try { if (fs.existsSync(from) && !fs.existsSync(to)) fs.renameSync(from, to) } catch (_) {}
+  }
+
+  const aliases = store.get('albumIdAliases', {})
+  aliases[oldId] = newId
+  store.set('albumIdAliases', aliases)
+
+  // Returned so the renderer can migrate the keys IT owns (ratings and notes
+  // live in localStorage, which main cannot reach).
+  return { ok: true, migrated: true, oldId, newId }
+})
+
+ipcMain.handle('library-write-tags', async (_, { files }) => {
+  const results = []
+  for (const item of files || []) {
+    const fp = item && item.filePath
+    if (!fp || !libPathAllowed(fp)) {
+      results.push({ filePath: fp, ok: false, error: 'Outside your music folders — refused' })
+      continue
+    }
+    results.push(Object.assign({ filePath: fp }, await writeTagsOne(fp, item.tags || {})))
+  }
+  const ok = results.filter(r => r.ok).length
+  if (ok) _scheduleLibraryRescan()
+  return { results, written: ok, failed: results.length - ok }
+})
+
+let _libRescanTimer = null
+function _scheduleLibraryRescan() {
+  clearTimeout(_libRescanTimer)
+  _libRescanTimer = setTimeout(async () => {
+    const { albums } = await performScan(null)
+    mainWindow?.webContents.send('library-updated', { albums, reason: 'manage' })
+    writeLibraryExt(albums)
+  }, 1200)
+}
+
 ipcMain.handle('scan-library', async () => {
   return performScan(p => mainWindow?.webContents.send('scan-progress', p))
 })
@@ -1495,7 +2179,7 @@ function setupLibraryWatcher() {
 function buildAlbums(tracks) {
   const map = new Map()
   for (const t of tracks) {
-    const key = `${(t.albumArtist||t.artist).toLowerCase()}_${t.album.toLowerCase()}`
+    const key = tagEdit.albumKeyOf(t)
     if (!map.has(key)) {
       map.set(key, {
         id: crypto.createHash('md5').update(key).digest('hex'),
@@ -2419,6 +3103,417 @@ ipcMain.handle('slsk-download', async (_, { username, filename, size }) => {
   }
 })
 
+// ── Multi-source download scheduler ─────────────────────────────────────────
+// Files are held here and metered out to peers a few at a time, rather than
+// dumped wholesale into one peer's remote queue. Every tick reconciles our
+// intent against what slskd actually reports, so a peer that stalls or dies
+// costs one file's delay instead of the whole album.
+const dlSched = require('./src/download-scheduler')
+
+const DL_TICK_MS = 4000
+let dlState = dlSched.createState()
+let dlTimer = null
+let dlTicking = false
+
+function dlConfig() {
+  const saved = store.get('slskSchedulerConfig', {})
+  return Object.assign({}, dlSched.DEFAULTS, saved)
+}
+
+// Finding "the same file" on another peer by basename alone is wrong: an
+// 08. Change.flac from a 5.1 rip and one from a stereo rip are indistinguishable
+// that way, so an album ends up half surround and half stereo. Matching would
+// have to compare channel count and size (see download-spread.js sizeCompatible)
+// before this can be trusted, so it stays off until it does.
+function dlDiscoveryEnabled() {
+  return store.get('slskSchedulerConfig', {}).discoverAlternates === true
+}
+
+// The queue now lives on our side, so it must survive a quit — previously
+// every request sat safely in slskd and a restart lost nothing.
+function dlPersist() {
+  try {
+    store.set('slskSchedulerState', {
+      pending: dlState.pending.map(e => ({
+        key: e.key, filename: e.filename, size: e.size, sources: e.sources,
+        tried: e.tried, triedAt: e.triedAt, attempts: e.attempts, addedAt: e.addedAt,
+      })),
+      // In-flight entries go back to pending: on restart slskd is the authority
+      // on what is really queued, and a duplicate request is harmless.
+      inflight: Object.keys(dlState.inflight).map(k => {
+        const v = dlState.inflight[k]
+        return { key: k, filename: v.filename, size: v.size, sources: v.sources,
+                 tried: v.tried, triedAt: v.triedAt, attempts: v.attempts, addedAt: v.addedAt }
+      }),
+      peerFailures: dlState.peerFailures,
+      // Cancelled/abandoned keys MUST survive a restart. Without this, quitting
+      // the app resurrects everything the user cancelled.
+      abandoned: Object.keys(dlState.done)
+        .filter(k => dlState.done[k] === 'abandoned')
+        .slice(-5000),
+      savedAt: Date.now(),
+    })
+  } catch (_) {}
+}
+
+function dlRestore() {
+  const saved = store.get('slskSchedulerState', null)
+  if (!saved) return 0
+  const abandoned = new Set(saved.abandoned || [])
+  const items = (saved.pending || []).concat(saved.inflight || [])
+  for (const e of items) {
+    if (!e || !e.filename) continue
+    if (abandoned.has(e.key || dlSched.itemKey(e.filename))) continue
+    const entry = dlSched.addItem(dlState, {
+      filename: e.filename, size: e.size, sources: e.sources || [], addedAt: e.addedAt,
+    })
+    if (entry) {
+      entry.tried = e.tried || []
+      entry.triedAt = e.triedAt || {}
+      entry.attempts = e.attempts || 0
+    }
+  }
+  for (const k of saved.abandoned || []) dlState.done[k] = 'abandoned'
+  dlState.peerFailures = saved.peerFailures || {}
+  return items.length
+}
+
+function dlBroadcast() {
+  try {
+    mainWindow?.webContents.send('slsk-scheduler-stats', dlSched.stats(dlState))
+  } catch (_) {}
+}
+
+// slskd reports state as e.g. "Completed, Succeeded" / "Queued, Remotely".
+function dlClassify(stateStr) {
+  const st = String(stateStr || '')
+  if (st.indexOf('Completed') !== 0) return 'active'
+  if (st.indexOf('Succeeded') !== -1) return 'succeeded'
+  if (st.indexOf('Cancelled') !== -1) return 'cancelled'
+  return 'failed'
+}
+
+async function dlSnapshot() {
+  const out = new Map()
+  let data
+  try { data = await slskdFetch('GET', '/transfers/downloads') } catch (_) { return null }
+  for (const user of data || []) {
+    for (const dir of user.directories || []) {
+      for (const f of dir.files || []) {
+        out.set(String(f.filename), {
+          username: user.username,
+          id: f.id,
+          state: f.state,
+          kind: dlClassify(f.state),
+        })
+      }
+    }
+  }
+  return out
+}
+
+// Ask the network who else has this file, so a dead source is not a dead end.
+async function dlFindAlternates(filename) {
+  const base = String(filename).split(/[\\/]/).pop().replace(/\.[^.]+$/, '')
+  const term = base.replace(/[_\-]+/g, ' ').trim()
+  if (term.length < 4) return []
+  let id
+  try {
+    const search = await slskdFetch('POST', '/searches', { searchText: term, fileLimit: 200 })
+    id = search?.id
+    if (!id) return []
+    for (let i = 0; i < 12; i++) {
+      await new Promise(r => setTimeout(r, 1000))
+      const st = await slskdFetch('GET', `/searches/${id}`)
+      if (st?.state?.includes('Completed')) break
+    }
+    const responses = await slskdFetch('GET', `/searches/${id}/responses`) || []
+    const wanted = String(filename).split(/[\\/]/).pop().toLowerCase()
+    const out = []
+    for (const r of responses) {
+      for (const f of r.files || []) {
+        const nm = String(f.filename).split(/[\\/]/).pop().toLowerCase()
+        if (nm !== wanted) continue
+        out.push({
+          username: r.username,
+          filename: f.filename,
+          size: f.size,
+          hasFreeUploadSlot: !!r.hasFreeUploadSlot,
+          queueLength: r.queueLength || 0,
+          uploadSpeed: r.uploadSpeed || 0,
+        })
+        break
+      }
+    }
+    return out
+  } catch (_) {
+    return []
+  } finally {
+    if (id) { try { await slskdFetch('DELETE', `/searches/${id}`) } catch (_) {} }
+  }
+}
+
+// slskd addresses transfers by its own id, which we do not keep; look it up.
+async function dlTransferId(username, filename) {
+  try {
+    const data = await slskdFetch('GET', '/transfers/downloads')
+    for (const u of data || []) {
+      if (u.username !== username) continue
+      for (const dir of u.directories || []) {
+        for (const f of dir.files || []) {
+          if (String(f.filename) === String(filename)) return f.id
+        }
+      }
+    }
+  } catch (_) {}
+  return ''
+}
+
+async function dlTick() {
+  if (dlTicking) return
+  dlTicking = true
+  try {
+    const cfg = dlConfig()
+    const now = Date.now()
+    const snap = await dlSnapshot()
+    // slskd unreachable — do nothing rather than double-request on recovery.
+    if (!snap) return
+
+    // Reconcile: anything we dispatched that slskd has finished with.
+    for (const key of Object.keys(dlState.inflight)) {
+      const live = dlState.inflight[key]
+      // Look it up under the path we SENT. An alternate source names the same
+      // music differently, and looking up the original key missed every time.
+      const seen = snap.get(live.sentFilename || live.filename)
+      if (!seen) {
+        // A transfer only disappears from slskd because it was removed —
+        // by the user cancelling, or by us. Re-requesting it is how "cancel"
+        // turned into "download it again", so this is terminal, not a retry.
+        if (now - live.since > 30000) dlSched.recordAbandoned(dlState, key)
+        continue
+      }
+      if (seen.kind === 'succeeded') dlSched.recordSuccess(dlState, key, seen.username)
+      else if (seen.kind === 'failed') dlSched.recordFailure(dlState, key, seen.username, cfg, now)
+      else if (seen.kind === 'cancelled') dlSched.recordAbandoned(dlState, key)
+    }
+
+    const plan = dlSched.planDispatch(dlState, cfg, now)
+    for (const item of plan) {
+      try {
+        await slskdFetch('POST', `/transfers/downloads/${encodeURIComponent(item.username)}`,
+          [{ filename: item.filename, size: item.size || 0 }])
+        dlSched.markDispatched(dlState, item.key, item.username, Date.now(), item.filename)
+      } catch (e) {
+        // Rejected at request time counts against that peer, same as a failure.
+        dlSched.markDispatched(dlState, item.key, item.username, Date.now(), item.filename)
+        dlSched.recordFailure(dlState, item.key, item.username, cfg, Date.now())
+      }
+    }
+
+    // A peer sitting on us for hours never errors, so failure logic never sees
+    // it. Move those files — but only where a better source already exists.
+    const stalled = dlSched.stalledItems(dlState, cfg, now)
+    for (const st of stalled) {
+      const live = dlState.inflight[st.key]
+      if (!live) continue
+      try {
+        await slskdFetch('DELETE',
+          `/transfers/downloads/${encodeURIComponent(st.from)}/${encodeURIComponent(await dlTransferId(st.from, live.sentFilename || live.filename))}?remove=true`)
+      } catch (_) {}
+      dlSched.recordStall(dlState, st.key, st.from, cfg, now)
+    }
+
+    // Files with no usable source, and files wedged in a single peer's queue,
+    // both need the same thing: somewhere else to get them from.
+    const hunt = dlSched.starvedItems(dlState, cfg, now)
+      .concat(dlSched.stalledWithoutAlternate(dlState, cfg, now)
+        .map(h => dlState.inflight[h.key])
+        .filter(Boolean))
+      .slice(0, 2)
+    for (const item of dlDiscoveryEnabled() ? hunt : []) {
+      if (!item || !item.filename) continue
+      if (item._searchedAt && now - item._searchedAt < 5 * 60 * 1000) continue
+      item._searchedAt = now
+      const alts = await dlFindAlternates(item.filename)
+      const key = item.key || dlSched.itemKey(item.filename)
+      if (alts.length) dlSched.addSources(dlState, key, alts)
+    }
+
+    dlPersist()
+    dlBroadcast()
+  } finally {
+    dlTicking = false
+  }
+}
+
+let dlRestored = false
+function dlStart() {
+  if (!dlRestored) { dlRestored = true; dlRestore() }
+  if (dlTimer) return
+  dlTimer = setInterval(() => { dlTick() }, DL_TICK_MS)
+  if (dlTimer.unref) dlTimer.unref()
+}
+
+// Downloading a folder out of one user's library gives the scheduler exactly
+// one source per file, so it can never spread or recover — it is stuck with
+// whoever you happened to be browsing. One search per folder buys it real
+// choices, cheaply: match by basename across everyone who answers.
+function dlBaseName(p) { return String(p).split(/[\\/]/).pop() }
+function dlFolderOf(p) {
+  const parts = String(p).split(/[\\/]/)
+  return parts.length > 1 ? parts[parts.length - 2] : ''
+}
+
+async function dlSeedFolderSources(items) {
+  const folders = new Map()
+  for (const it of items) {
+    const f = dlFolderOf(it.filename)
+    if (!f) continue
+    if (!folders.has(f)) folders.set(f, [])
+    folders.get(f).push(it)
+  }
+  // Cheap by construction: slskd rate-limits searches, so never storm it.
+  for (const [folder, group] of Array.from(folders).slice(0, 2)) {
+    const term = folder.replace(/[_\-\[\]()]+/g, ' ').replace(/\s+/g, ' ').trim()
+    if (term.length < 4) continue
+    let id
+    try {
+      const search = await slskdFetch('POST', '/searches', { searchText: term, fileLimit: 400 })
+      id = search?.id
+      if (!id) continue
+      for (let i = 0; i < 15; i++) {
+        await new Promise(r => setTimeout(r, 1000))
+        const st = await slskdFetch('GET', `/searches/${id}`)
+        if (st?.state?.includes('Completed')) break
+      }
+      const responses = await slskdFetch('GET', `/searches/${id}/responses`) || []
+      const want = new Map()
+      for (const it of group) want.set(dlBaseName(it.filename).toLowerCase(), it)
+      let added = 0
+      for (const r of responses) {
+        for (const f of r.files || []) {
+          const hit = want.get(dlBaseName(f.filename).toLowerCase())
+          if (!hit) continue
+          added += dlSched.addSources(dlState, dlSched.itemKey(hit.filename), [{
+            username: r.username, filename: f.filename, size: f.size,
+            hasFreeUploadSlot: !!r.hasFreeUploadSlot,
+            queueLength: r.queueLength || 0,
+            uploadSpeed: r.uploadSpeed || 0,
+          }])
+        }
+      }
+      if (added) { dlPersist(); dlBroadcast() }
+    } catch (_) {
+      // A failed hunt just means fewer choices, never a lost file.
+    } finally {
+      if (id) { try { await slskdFetch('DELETE', `/searches/${id}`) } catch (_) {} }
+    }
+  }
+}
+
+ipcMain.handle('slsk-enqueue-downloads', async (_, { items }) => {
+  let added = 0
+  for (const it of items || []) {
+    if (!it || !it.filename) continue
+    const sources = (it.sources && it.sources.length)
+      ? it.sources
+      : (it.username ? [{ username: it.username, filename: it.filename, size: it.size }] : [])
+    if (!sources.length) continue
+    if (dlSched.addItem(dlState, { filename: it.filename, size: it.size || 0, sources })) added++
+  }
+  dlStart()
+  dlTick()
+  // Runs behind the response: the files are already queued, this only widens
+  // the set of peers they can come from.
+  if (dlDiscoveryEnabled()) {
+    const single = (items || []).filter(it => it && it.filename && !(it.sources && it.sources.length > 1))
+    if (single.length) dlSeedFolderSources(single).catch(() => {})
+  }
+  return { ok: true, added, stats: dlSched.stats(dlState) }
+})
+
+function dlQueueFiles() {
+  const cfg = dlConfig()
+  const now = Date.now()
+  const byPeer = dlSched.inflightByPeer(dlState)
+  const out = []
+  for (const e of dlState.pending) {
+    const ranked = dlSched.rankSources(e.sources)
+    const next = ranked.find(src =>
+      !dlSched.peerBenched(dlState, src.username, now) &&
+      (byPeer[src.username] || 0) < cfg.maxPerPeer)
+    out.push({
+      id: 'sched:' + e.key,
+      filename: e.filename,
+      size: e.size || 0,
+      // Reuses the "Queued" family so existing category logic counts it as
+      // active; the extra token gives it its own label in the list.
+      state: 'Queued, Scheduled',
+      username: (next && next.username) || (e.sources[0] && e.sources[0].username) || 'searching…',
+      scheduled: true,
+      sourceCount: (e.sources || []).length,
+      attempts: e.attempts || 0,
+      percentComplete: 0,
+      averageSpeed: 0,
+    })
+  }
+  return out
+}
+
+ipcMain.handle('slsk-scheduler-queue', () => {
+  dlStart()
+  return { files: dlQueueFiles(), stats: dlSched.stats(dlState) }
+})
+
+ipcMain.handle('slsk-scheduler-stats', () => {
+  dlStart()
+  return dlSched.stats(dlState)
+})
+
+ipcMain.handle('slsk-scheduler-config', (_, patch) => {
+  if (patch && typeof patch === 'object') {
+    store.set('slskSchedulerConfig', Object.assign({}, store.get('slskSchedulerConfig', {}), patch))
+  }
+  return dlConfig()
+})
+
+// Pull deep per-peer queues back into the local scheduler so they can be
+// re-pointed at peers that are actually moving.
+ipcMain.handle('slsk-respread-backlog', async (_, opts) => {
+  const perPeerKeep = (opts && opts.perPeerKeep != null) ? opts.perPeerKeep : dlConfig().maxPerPeer
+  let data
+  try { data = await slskdFetch('GET', '/transfers/downloads') } catch (e) { return { ok: false, error: e.message } }
+
+  const queued = []
+  const purge = []
+  for (const user of data || []) {
+    const mine = []
+    for (const dir of user.directories || []) {
+      for (const f of dir.files || []) {
+        const kind = dlClassify(f.state)
+        if (kind === 'failed' || kind === 'cancelled') { purge.push({ username: user.username, id: f.id }); continue }
+        if (String(f.state).indexOf('Queued') === 0) mine.push(f)
+      }
+    }
+    // Leave the head of each peer's queue in place — those keep their position.
+    mine.slice(perPeerKeep).forEach(f => queued.push({ username: user.username, id: f.id, filename: f.filename, size: f.size }))
+  }
+
+  for (const p of purge) {
+    try { await slskdFetch('DELETE', `/transfers/downloads/${encodeURIComponent(p.username)}/${encodeURIComponent(p.id)}?remove=true`) } catch (_) {}
+  }
+  for (const q of queued) {
+    try { await slskdFetch('DELETE', `/transfers/downloads/${encodeURIComponent(q.username)}/${encodeURIComponent(q.id)}?remove=true`) } catch (_) {}
+    dlSched.addItem(dlState, {
+      filename: q.filename, size: q.size,
+      sources: [{ username: q.username, filename: q.filename, size: q.size }],
+    })
+  }
+  dlStart()
+  dlTick()
+  return { ok: true, purged: purge.length, respread: queued.length, stats: dlSched.stats(dlState) }
+})
+
 ipcMain.handle('slsk-get-transfers', async () => {
   try {
     const data = await slskdFetch('GET', '/transfers/downloads')
@@ -2427,12 +3522,66 @@ ipcMain.handle('slsk-get-transfers', async () => {
 })
 
 ipcMain.handle('slsk-cancel-transfer', async (_, { username, id }) => {
+  // Scheduler-held files are not known to slskd. Routing here means every
+  // existing Cancel button works on them without knowing they are different.
+  if (typeof id === 'string' && id.indexOf('sched:') === 0) {
+    const key = id.slice(6)
+    dlState.pending = dlState.pending.filter(e => e.key !== key)
+    delete dlState.inflight[key]
+    dlState.done[key] = 'exhausted'
+    dlPersist()
+    dlBroadcast()
+    return { ok: true }
+  }
+  // Cancelling must kill our INTENT to fetch the file, not just this transfer.
+  // Removing it from slskd alone leaves the scheduler still wanting it, and the
+  // next tick happily re-requests it from another peer.
+  try {
+    const filename = await dlFilenameForTransfer(username, id)
+    if (filename) dlAbandonByFilename(filename)
+  } catch (_) {}
   try {
     // ?remove=true removes completed/failed transfers from the list; harmless for active ones
     await slskdFetch('DELETE', `/transfers/downloads/${encodeURIComponent(username)}/${encodeURIComponent(id)}?remove=true`)
   } catch (_) {}
+  dlPersist()
+  dlBroadcast()
   return { ok: true }
 })
+
+async function dlFilenameForTransfer(username, id) {
+  try {
+    const data = await slskdFetch('GET', '/transfers/downloads')
+    for (const u of data || []) {
+      if (u.username !== username) continue
+      for (const dir of u.directories || []) {
+        for (const f of dir.files || []) {
+          if (String(f.id) === String(id)) return f.filename
+        }
+      }
+    }
+  } catch (_) {}
+  return null
+}
+
+// One piece of music can be known under several peers' paths, so match on the
+// basename too — otherwise cancelling the copy you can see leaves its twin
+// running under a different path.
+function dlAbandonByFilename(filename) {
+  const target = String(filename)
+  const base = dlBaseName(target).toLowerCase()
+  const hit = (name) => {
+    if (!name) return false
+    return String(name) === target || dlBaseName(name).toLowerCase() === base
+  }
+  for (const key of Object.keys(dlState.inflight)) {
+    const live = dlState.inflight[key]
+    if (hit(key) || hit(live.filename) || hit(live.sentFilename)) dlSched.recordAbandoned(dlState, key)
+  }
+  for (const e of dlState.pending.slice()) {
+    if (hit(e.key) || hit(e.filename)) dlSched.recordAbandoned(dlState, e.key)
+  }
+}
 
 function _downloadDir() {
   const cfg = store.get('slskConfig', {})
@@ -2833,19 +3982,124 @@ ipcMain.handle('slsk-saved-users', () => savedUsers.sortUsers(store.get('slskSav
 ipcMain.handle('slsk-save-user', (_, { username, note, fileCount, dirCount }) => {
   const list = savedUsers.saveUser(store.get('slskSavedUsers', []), username, { note, fileCount, dirCount })
   store.set('slskSavedUsers', list)
+  savedUsersChanged(list)
   return savedUsers.sortUsers(list)
 })
 
 ipcMain.handle('slsk-unsave-user', (_, { username }) => {
   const list = savedUsers.removeUser(store.get('slskSavedUsers', []), username)
   store.set('slskSavedUsers', list)
+  savedUsersChanged(list)
   return savedUsers.sortUsers(list)
 })
 
 ipcMain.handle('slsk-touch-user', (_, { username, fileCount, dirCount }) => {
   const list = savedUsers.touchUser(store.get('slskSavedUsers', []), username, { fileCount, dirCount })
   store.set('slskSavedUsers', list)
+  savedUsersChanged(list)
   return savedUsers.sortUsers(list)
+})
+
+// ── Saved-user presence ──────────────────────────────────────────────────────
+// Soulseek has no push channel for peer presence, so the main process polls
+// slskd on a fixed interval and pushes only to the renderer. Polling here (not
+// in the renderer) keeps the list warm across tab switches and reloads.
+const PRESENCE_POLL_MS = 20000
+const PRESENCE_CONCURRENCY = 4
+const presenceCache = new Map()
+let presenceTimer = null
+let presencePolling = false
+
+function presenceSnapshot() { return Array.from(presenceCache.values()) }
+
+function presenceBroadcast(changed, serverConnected) {
+  try {
+    mainWindow?.webContents.send('slsk-user-status', {
+      statuses: presenceSnapshot(), changed, serverConnected,
+    })
+  } catch (_) {}
+}
+
+function savedUsersChanged(list) {
+  try { mainWindow?.webContents.send('slsk-saved-users-changed', savedUsers.sortUsers(list)) } catch (_) {}
+  startPresenceWatch()
+  pollPresenceOnce()
+}
+
+async function fetchUserPresence(username) {
+  try {
+    const d = await slskdFetch('GET', `/users/${encodeURIComponent(username)}/status`)
+    return { presence: String(d?.presence || 'Offline'), isPrivileged: !!d?.isPrivileged }
+  } catch (_) {
+    // A failed lookup is unknown, not offline — painting it offline would lie.
+    return { presence: 'Unknown', isPrivileged: false }
+  }
+}
+
+function presenceRecord(username, presence, isPrivileged, changed) {
+  const key = String(username).toLowerCase()
+  const prev = presenceCache.get(key)
+  const next = { username, presence, isPrivileged, checkedAt: Date.now() }
+  presenceCache.set(key, next)
+  if (!prev || prev.presence !== presence || prev.isPrivileged !== isPrivileged) changed.push(next)
+}
+
+async function pollPresenceOnce() {
+  if (presencePolling) return presenceSnapshot()
+  presencePolling = true
+  try {
+    const names = savedUsers.sortUsers(store.get('slskSavedUsers', [])).map(u => u.username)
+    const live = new Set(names.map(n => String(n).toLowerCase()))
+    for (const key of Array.from(presenceCache.keys())) if (!live.has(key)) presenceCache.delete(key)
+    if (!names.length) { presenceBroadcast([], null); return presenceSnapshot() }
+
+    let connected = false
+    try {
+      const srv = await slskdFetch('GET', '/server')
+      connected = !!srv?.isLoggedIn
+    } catch (_) { connected = false }
+
+    const changed = []
+    if (!connected) {
+      for (const n of names) presenceRecord(n, 'Unknown', false, changed)
+      presenceBroadcast(changed, false)
+      return presenceSnapshot()
+    }
+
+    const queue = names.slice()
+    const worker = async () => {
+      while (queue.length) {
+        const n = queue.shift()
+        const r = await fetchUserPresence(n)
+        presenceRecord(n, r.presence, r.isPrivileged, changed)
+      }
+    }
+    const workers = []
+    for (let i = 0; i < Math.min(PRESENCE_CONCURRENCY, queue.length); i++) workers.push(worker())
+    await Promise.all(workers)
+    presenceBroadcast(changed, true)
+    return presenceSnapshot()
+  } finally {
+    presencePolling = false
+  }
+}
+
+function startPresenceWatch() {
+  if (presenceTimer) return
+  presenceTimer = setInterval(() => { pollPresenceOnce() }, PRESENCE_POLL_MS)
+  if (presenceTimer.unref) presenceTimer.unref()
+}
+
+ipcMain.handle('slsk-user-statuses', () => {
+  startPresenceWatch()
+  if (!presenceCache.size) pollPresenceOnce()
+  return { statuses: presenceSnapshot() }
+})
+
+ipcMain.handle('slsk-refresh-user-statuses', async () => {
+  startPresenceWatch()
+  await pollPresenceOnce()
+  return { statuses: presenceSnapshot() }
 })
 
 ipcMain.handle('slsk-browse-user', async (_, { username }) => {

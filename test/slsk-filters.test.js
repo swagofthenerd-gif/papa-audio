@@ -1,6 +1,6 @@
 const test = require('node:test')
 const assert = require('node:assert')
-const { detectSurround, groupSurround, isHiRes, isLossless, applyFilterSort } = require('../src/slsk-filters')
+const { detectSurround, groupSurround, isHiResGroup, isLosslessGroup, applyFilterSort } = require('../src/slsk-filters')
 
 const G = (folderName, files = [{ ext: 'flac', isFlac: true }], extra = {}) =>
   ({ folderName, folderPath: folderName, files, ...extra })
@@ -40,11 +40,11 @@ test('surround is found in file names, not just the folder', () => {
 })
 
 test('hi-res and lossless detection', () => {
-  assert.ok(isHiRes(G('a', [{ bitDepth: 24, sampleRate: 44100 }])))
-  assert.ok(isHiRes(G('a', [{ bitDepth: 16, sampleRate: 96000 }])))
-  assert.ok(!isHiRes(G('a', [{ bitDepth: 16, sampleRate: 44100 }])))
-  assert.ok(isLossless(G('a', [{ isFlac: true }])))
-  assert.ok(!isLossless(G('a', [{ isFlac: false }])))
+  assert.ok(isHiResGroup(G('a', [{ bitDepth: 24, sampleRate: 44100 }])))
+  assert.ok(isHiResGroup(G('a', [{ bitDepth: 16, sampleRate: 96000 }])))
+  assert.ok(!isHiResGroup(G('a', [{ bitDepth: 16, sampleRate: 44100 }])))
+  assert.ok(isLosslessGroup(G('a', [{ isFlac: true }])))
+  assert.ok(!isLosslessGroup(G('a', [{ isFlac: false }])))
 })
 
 test('the surround filter keeps only surround folders', () => {

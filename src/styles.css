@@ -209,6 +209,9 @@ img { display:block; }
 .sidebar-scroll-body {
   flex:1; overflow-y:auto; overflow-x:hidden;
   display:flex; flex-direction:column;
+  /* At reduced window heights this shrank to a sliver and cut straight through
+     a wrapped section heading, flush against the fixed footer. */
+  min-height:90px; padding-bottom:8px;
 }
 .nav-item {
   display:flex; align-items:center; gap:12px;
@@ -226,10 +229,6 @@ img { display:block; }
   width:3px; background:var(--accent); border-radius:0 3px 3px 0;
 }
 
-.sidebar-scroll-body {
-  flex:1; overflow-y:auto; overflow-x:hidden;
-  display:flex; flex-direction:column;
-}
 .sidebar-section {
   flex:0 0 auto;
   padding:14px 8px 8px;
@@ -989,7 +988,10 @@ h2.section-title { font-size:18px; font-weight:700; }
 .now-playing {
   display:flex; align-items:center; gap:clamp(8px, 1vw, 12px);
   min-width:0; overflow:hidden;
-  max-width: clamp(180px, calc(32vw - 124px), 280px);
+  /* The 280px cap truncated "Lone Digger" to "Lo…" while ~550px of its own
+     grid column sat empty. The column is 1fr against a capped centre section,
+     so there is room to let the title actually breathe. */
+  max-width: clamp(180px, calc(32vw - 124px), 460px);
 }
 .np-art-wrap {
   position:relative; flex-shrink:0;
@@ -4541,10 +4543,16 @@ textarea:focus:not(:focus-visible) { outline: none; }
   *, *::before, *::after { animation-duration:.01ms !important;transition-duration:.01ms !important }
 }
 
-/* Album card hover enhancements */
-.album-card { position:relative;transition:transform .15s var(--ease-out),box-shadow .15s }
-.album-card:hover { transform:translateY(-2px);box-shadow:0 4px 12px rgba(0,0,0,.3) }
-.album-card-play { position:absolute;right:10px;bottom:50px;width:40px;height:40px;border-radius:50%;background:var(--accent);border:none;display:flex;align-items:center;justify-content:center;cursor:pointer;opacity:0;transform:translateY(8px);transition:opacity .15s,transform .15s var(--ease-out);z-index:2;box-shadow:0 2px 8px rgba(0,0,0,.4) }
+/* Album card hover enhancements.
+   The hover transform itself lives with the grid-view zoom rule further down,
+   which redeclares this same selector; keeping a second one here only looked
+   like a lift while the later rule silently won. */
+.album-card { position:relative }
+/* Play buttons stay visible, per this project's rule: "not hidden behind
+   hover, opacity .85 always on". An earlier block further up sets exactly
+   that; this later one silently overrode it back to opacity:0, so every album
+   card's play button was invisible until hovered. */
+.album-card-play { position:absolute;right:10px;bottom:50px;width:40px;height:40px;border-radius:50%;background:var(--accent);border:none;display:flex;align-items:center;justify-content:center;cursor:pointer;opacity:.85;transform:translateY(0);transition:opacity .15s,transform .15s var(--ease-out);z-index:2;box-shadow:0 2px 8px rgba(0,0,0,.4) }
 .album-card:hover .album-card-play { opacity:1;transform:translateY(0) }
 .album-card-play:hover { transform:scale(1.1) }
 .album-card-play svg { width:18px;height:18px;fill:#000 }
@@ -4683,7 +4691,11 @@ textarea:focus:not(:focus-visible) { outline: none; }
 .shortcut-row span { color:var(--text2) }
 
 /* Dialog/modal backdrop */
-.modal-overlay { position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:900;display:flex;align-items:center;justify-content:center;animation:fadeIn .15s var(--ease-out) }
+/* z-index stays above the titlebar (1000), the setup overlay (999) and
+   dialog-overlay (950), as the earlier .modal-overlay block intends. This one
+   silently dropped it to 900, putting every modal UNDER the titlebar -- whose
+   -webkit-app-region:drag strip then swallowed clicks over the modal. */
+.modal-overlay { position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:1100;display:flex;align-items:center;justify-content:center;animation:fadeIn .15s var(--ease-out) }
 .modal-dialog { background:var(--bg2);border:1px solid var(--glass-border);border-radius:var(--r-lg);padding:20px;min-width:320px;max-width:480px;box-shadow:0 8px 30px rgba(0,0,0,.5);animation:pageEnter .2s var(--ease-out) }
 .modal-dialog-title { font-size:16px;font-weight:700;margin-bottom:12px }
 .modal-dialog-body { font-size:13px;color:var(--text2);margin-bottom:16px;line-height:1.5 }
@@ -5048,7 +5060,7 @@ code { font-family:var(--font-mono,monospace);background:var(--bg4);padding:1px 
 
 /* Album art zoom on hover — grid view */
 .album-card { transition: transform .2s cubic-bezier(0.16, 1, 0.3, 1), box-shadow .2s; }
-.album-card:hover { transform: scale(1.04); box-shadow: 0 8px 24px rgba(0,0,0,.3); }
+.album-card:hover { transform: translateY(-2px) scale(1.04); box-shadow: 0 8px 24px rgba(0,0,0,.3); }
 .album-card-art-wrap { overflow: hidden; }
 .album-card-art { transition: transform .3s cubic-bezier(0.16, 1, 0.3, 1); }
 .album-card:hover .album-card-art { transform: scale(1.08); }
@@ -5327,3 +5339,260 @@ body.app-unfocused *::after {
   transition: none !important;
 }
 .slskx-sur-btn.active { background: rgba(29,185,84,.15); border-color: #1db954; color: #1db954; }
+
+/* ── Soulseek friends (sidebar) ─────────────────────── */
+.slsk-friends-list { list-style:none; display:flex; flex-direction:column; gap:1px; }
+.slskf-count {
+  margin-left:6px; font-size:10px; font-weight:600; color:var(--text3);
+  letter-spacing:.02em;
+}
+.slskf-count.live { color:var(--accent); }
+.slskf-refresh.spin svg { animation:slskf-spin .8s linear infinite; }
+@keyframes slskf-spin { to { transform:rotate(360deg); } }
+.slskf-row {
+  display:flex; align-items:center; gap:8px;
+  padding:5px 8px; border-radius:var(--r-sm);
+  cursor:pointer; user-select:none;
+  transition:background .12s var(--ease);
+}
+.slskf-row:hover { background:var(--glass); }
+.slskf-row:hover .slskf-remove { opacity:1; }
+.slskf-dot {
+  flex:0 0 8px; width:8px; height:8px; border-radius:50%;
+  background:var(--text3); position:relative;
+  transition:background .25s var(--ease), box-shadow .25s var(--ease);
+}
+.slskf-row[data-presence="online"] .slskf-dot {
+  background:var(--accent); box-shadow:0 0 0 3px var(--accent-dim);
+}
+.slskf-row[data-presence="away"] .slskf-dot {
+  background:#e0a33e; box-shadow:0 0 0 3px rgba(224,163,62,.14);
+}
+.slskf-row[data-presence="offline"] .slskf-dot { background:#3d3d3d; }
+.slskf-row[data-presence="unknown"] .slskf-dot {
+  background:transparent; border:1.5px solid var(--text3); animation:slskf-pulse 1.6s ease-in-out infinite;
+}
+@keyframes slskf-pulse { 0%,100% { opacity:.35; } 50% { opacity:1; } }
+.slskf-name {
+  flex:1; min-width:0; font-size:12.5px; color:var(--text2);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  transition:color .15s var(--ease);
+}
+.slskf-row[data-presence="online"] .slskf-name,
+.slskf-row[data-presence="away"] .slskf-name { color:var(--text); }
+.slskf-row:hover .slskf-name { color:var(--text); }
+.slskf-remove {
+  flex:0 0 auto; opacity:0; background:none; border:none; cursor:pointer;
+  color:var(--text3); font-size:12px; line-height:1; padding:2px 3px;
+  border-radius:3px; transition:opacity .12s var(--ease), color .12s var(--ease);
+}
+.slskf-remove:hover { color:var(--text); background:var(--glass-hi); }
+.slskf-empty {
+  padding:6px 8px; font-size:11.5px; line-height:1.5; color:var(--text3);
+}
+
+/* ── Download scheduler readout ─────────────────────── */
+.dl2-topbar-right { display:flex; align-items:center; gap:10px; }
+.dl2-sched {
+  font-size:11.5px; color:var(--text3); white-space:nowrap;
+  letter-spacing:.01em;
+}
+.dl2-tag-waiting {
+  background:rgba(224,163,62,.14); color:#e0a33e;
+}
+.dl2-meta-wait { color:#e0a33e; }
+
+/* ── Library manager ────────────────────────────────── */
+.mg-page { padding-bottom:96px; }
+.mg-head { margin-bottom:6px; }
+.mg-title { font-size:26px; font-weight:700; }
+.mg-sub { font-size:13px; color:var(--text2); margin-top:4px; }
+.mg-note {
+  font-size:12.5px; color:var(--text2); background:var(--glass);
+  border:1px solid var(--glass-border); border-radius:var(--r-sm);
+  padding:10px 12px; margin:12px 0 20px;
+}
+.mg-empty { padding:40px; text-align:center; color:var(--text3); }
+.mg-group {
+  background:var(--bg2); border:1px solid var(--glass-border);
+  border-radius:var(--r); padding:14px; margin-bottom:14px;
+}
+.mg-group-unsafe { border-color:rgba(224,163,62,.3); }
+.mg-group-head { display:flex; justify-content:space-between; align-items:baseline; gap:12px; margin-bottom:8px; }
+.mg-group-title { font-size:15px; font-weight:600; }
+.mg-group-meta { font-size:11.5px; color:var(--text3); white-space:nowrap; }
+.mg-warn {
+  font-size:12px; color:#e0a33e; background:rgba(224,163,62,.1);
+  border-radius:var(--r-sm); padding:8px 10px; margin-bottom:10px; line-height:1.5;
+}
+.mg-folder {
+  display:flex; align-items:flex-start; gap:10px;
+  padding:10px; border-radius:var(--r-sm); background:var(--bg3); margin-top:8px;
+}
+.mg-folder-keep { opacity:.72; }
+.mg-pick { flex:0 0 20px; display:flex; justify-content:center; padding-top:2px; }
+.mg-check { width:16px; height:16px; accent-color:#e05555; cursor:pointer; }
+.mg-lock { font-size:12px; opacity:.55; }
+.mg-folder-body { flex:1; min-width:0; }
+.mg-folder-name {
+  font-size:13.5px; font-weight:500;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.mg-folder-meta {
+  display:flex; flex-wrap:wrap; gap:10px; align-items:center;
+  font-size:11.5px; color:var(--text3); margin-top:4px;
+}
+.mg-chip { padding:1px 7px; border-radius:100px; font-weight:600; font-size:10.5px; }
+.mg-ch-sur { background:var(--accent-dim); color:var(--accent); }
+.mg-ch-st  { background:var(--glass-hi); color:var(--text2); }
+.mg-verdict { font-size:11.5px; margin-top:5px; line-height:1.45; }
+.mg-ok   { color:var(--accent); }
+.mg-keep { color:var(--text3); }
+.mg-reveal {
+  flex:0 0 auto; background:none; border:none; color:var(--text3);
+  cursor:pointer; font-size:13px; padding:2px 5px; border-radius:4px;
+}
+.mg-reveal:hover { color:var(--text); background:var(--glass-hi); }
+.mg-bar {
+  position:fixed; left:calc(var(--sidebar-w) + 16px); right:16px; bottom:calc(var(--player-h) + 12px);
+  display:flex; align-items:center; justify-content:space-between; gap:16px;
+  background:var(--bg4); border:1px solid var(--glass-border);
+  border-radius:var(--r); padding:12px 16px; font-size:13px; z-index:60;
+  box-shadow:0 8px 28px rgba(0,0,0,.45);
+}
+.mg-btn {
+  padding:8px 16px; border-radius:100px; border:1px solid var(--glass-border);
+  background:var(--glass); color:var(--text); font-size:13px; font-weight:600; cursor:pointer;
+}
+.mg-btn:hover { background:var(--glass-hi); }
+.mg-btn-danger { background:#c0392b; border-color:#c0392b; color:#fff; }
+.mg-btn-danger:hover { background:#e05555; border-color:#e05555; }
+.mg-btn-danger:disabled { opacity:.6; cursor:default; }
+.mg-confirm-box { max-width:620px; }
+.mg-confirm-body { max-height:46vh; overflow-y:auto; }
+.mg-confirm-list { display:flex; flex-direction:column; gap:8px; }
+.mg-confirm-row { background:var(--bg3); border-radius:var(--r-sm); padding:9px 11px; }
+.mg-confirm-bad { background:rgba(224,163,62,.12); }
+.mg-confirm-path { font-size:12px; word-break:break-all; }
+.mg-confirm-meta { font-size:11px; color:var(--text3); margin-top:3px; }
+.mg-confirm-sum { font-size:12.5px; color:var(--text2); margin-top:14px; line-height:1.55; }
+.mg-confirm-actions { display:flex; justify-content:flex-end; gap:10px; margin-top:16px; }
+.ctx-item-danger { color:#e05555; }
+.ctx-item-danger:hover { background:rgba(224,85,85,.12); }
+.mg-confirm-warn {
+  font-size:12.5px; color:#e0a33e; background:rgba(224,163,62,.1);
+  border-radius:var(--r-sm); padding:9px 11px; margin-bottom:12px; line-height:1.5;
+}
+.mg-confirm-note { color:var(--text3); font-size:11.5px; line-height:1.5; margin-top:8px; }
+
+/* ── Row selection ──────────────────────────────────── */
+.row-selected {
+  background:var(--accent-dim) !important;
+  box-shadow:inset 2px 0 0 var(--accent);
+}
+.album-card.row-selected { outline:2px solid var(--accent); outline-offset:2px; }
+.sel-bar {
+  position:fixed; left:calc(var(--sidebar-w) + 16px); right:16px;
+  bottom:calc(var(--player-h) + 12px);
+  display:flex; align-items:center; justify-content:space-between; gap:16px;
+  background:var(--bg4); border:1px solid var(--glass-border);
+  border-radius:var(--r); padding:12px 16px; font-size:13px; z-index:60;
+  box-shadow:0 8px 28px rgba(0,0,0,.45);
+}
+.sel-bar-actions { display:flex; gap:8px; flex-wrap:wrap; }
+
+/* ── Manage tabs & trash ────────────────────────────── */
+.mg-tabs { display:flex; gap:4px; margin:14px 0 16px; }
+.mg-tab {
+  padding:7px 14px; border-radius:100px; border:1px solid var(--glass-border);
+  background:var(--glass); color:var(--text2); font-size:12.5px; font-weight:600; cursor:pointer;
+  transition:background .12s var(--ease), color .12s var(--ease);
+}
+.mg-tab:hover { background:var(--glass-hi); color:var(--text); }
+.mg-tab.active { background:var(--accent-dim); color:var(--accent); border-color:transparent; }
+.mg-trash-row {
+  display:flex; align-items:flex-start; gap:10px;
+  padding:10px; border-radius:var(--r-sm); background:var(--bg3); margin-bottom:8px;
+}
+.mg-trash-vol {
+  display:flex; flex-wrap:wrap; align-items:baseline; gap:10px; margin-top:8px;
+  font-size:11.5px; color:var(--text3);
+}
+.mg-trash-vol code { font-size:11px; color:var(--text2); }
+.mg-trash-free { color:var(--accent); }
+.mg-tcheck { width:16px; height:16px; accent-color:var(--accent); cursor:pointer; }
+.mg-btn-sm { padding:5px 12px; font-size:12px; }
+
+/* ── Health & storage ───────────────────────────────── */
+.mg-sev-high   { border-color:rgba(224,85,85,.4); }
+.mg-sev-medium { border-color:rgba(224,163,62,.3); }
+.mg-health-detail { font-size:12.5px; color:var(--text2); line-height:1.55; margin:6px 0 10px; }
+.mg-health-path {
+  font-size:11.5px; color:var(--text3); padding:2px 0;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.mg-health-actions { margin-top:12px; }
+.mg-health-note { font-size:11.5px; color:var(--text3); }
+.mg-store { display:flex; flex-direction:column; gap:2px; }
+.mg-store-row {
+  display:flex; justify-content:space-between; align-items:baseline; gap:16px;
+  padding:11px 12px; background:var(--bg3); border-radius:var(--r-sm); font-size:13px;
+}
+.mg-store-label { color:var(--text2); min-width:0; overflow:hidden; text-overflow:ellipsis; }
+.mg-store-val { font-weight:600; white-space:nowrap; }
+.mg-store-total { background:var(--bg4); margin-top:8px; }
+.mg-store-total .mg-store-val { color:var(--accent); }
+.mg-check-risky { accent-color:#e0a33e; }
+.mg-bar-warn { color:#e0a33e; font-size:11.5px; margin-left:8px; }
+
+/* ── Tag editor ─────────────────────────────────────── */
+.tag-form { display:flex; flex-direction:column; gap:8px; margin:12px 0; }
+.tag-row { display:flex; align-items:center; gap:12px; }
+.tag-label { flex:0 0 110px; font-size:12.5px; color:var(--text2); }
+.tag-input { flex:1; min-width:0; }
+.tag-check { display:flex; align-items:center; gap:8px; font-size:12.5px; color:var(--text2); margin-top:4px; }
+
+/* ── Artwork picker ─────────────────────────────────── */
+.art-preview {
+  display:flex; justify-content:center; margin:12px 0;
+}
+.art-preview img {
+  max-width:180px; max-height:180px; border-radius:var(--r-sm);
+  box-shadow:0 4px 16px rgba(0,0,0,.4);
+}
+
+/* Repeat: "one" must be tellable from "all" at rest — the snackbar is gone
+   after 1.5s, and both modes otherwise shared a single .active state. */
+#btn-repeat.repeat-one, #np-modal-repeat.repeat-one { position: relative; }
+#btn-repeat.repeat-one::after, #np-modal-repeat.repeat-one::after {
+  content: '1';
+  position: absolute; right: 1px; bottom: 0;
+  font-size: 9px; font-weight: 700; line-height: 1;
+  color: var(--accent);
+  background: var(--bg, #121212);
+  border-radius: 50%;
+  padding: 1px 2px;
+  pointer-events: none;
+}
+
+/* Home's greeting fades in once at launch, not on every return to the tab. */
+.greeting-static { animation: none }
+
+/* Before the first track loads these badges have no text, but still painted as
+   small coloured chips under the "—" placeholders. Nothing to say, nothing to
+   show. */
+#np-format:empty, #np-bitperfect:empty, #np-crossfade:empty { display: none }
+
+
+/* Content cards were plain divs with only a click listener: the small embedded
+   play button was focusable but navigating INTO an album/artist had no
+   non-mouse path at all. */
+.album-card[tabindex]:focus-visible,
+.quick-card[tabindex]:focus-visible,
+.artist-card[tabindex]:focus-visible,
+.daily-mix-card[tabindex]:focus-visible,
+.jumpback-card[tabindex]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: var(--r-sm);
+}

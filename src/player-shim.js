@@ -43,7 +43,9 @@ class PapaPlayerShim extends EventTarget {
           this.dispatchEvent(new Event('ended'))
           break
         case 'loadError':
-          this.dispatchEvent(new Event('error'))
+          // The path matters: the renderer has to know WHICH file failed so it
+          // can skip it. A bare Event threw that away.
+          this.dispatchEvent(new CustomEvent('error', { detail: { src: data } }))
           break
       }
     })
@@ -70,9 +72,19 @@ class PapaPlayerShim extends EventTarget {
 
   async play() {
     if (this._switching) return
-    const r = await window.api.playerPlay()
-    if (!r.ok) throw new Error(r.error)
+    // Set optimistically, exactly as pause() does. Waiting for the mpv
+    // round-trip left `paused` reading true mid-flight, so a click landing
+    // before it resolved saw "still paused" and started a second play instead
+    // of pausing -- rapid toggling silently dropped every other click.
+    const wasPaused = this._paused
     this._paused = false
+    try {
+      const r = await window.api.playerPlay()
+      if (!r.ok) throw new Error(r.error)
+    } catch (e) {
+      this._paused = wasPaused
+      throw e
+    }
   }
 
   pause() { if (this._switching) return; this._paused = true; window.api.playerPause() }

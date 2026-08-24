@@ -92,6 +92,22 @@ var _libPresets = []
 try { _libPresets = JSON.parse(localStorage.getItem('papa-lib-presets') || '[]') } catch (_) {}
 var timeDisplay = localStorage.getItem('papa_time_display') || 'elapsed'
 
+// All three time modes used to render as an identical bare number in the same
+// slot, so a stray right-click could leave the player showing "remaining" (or
+// a whole album's length) as if it were elapsed time, permanently and with no
+// way to tell. Each mode now labels itself.
+function _fmtTimeCur(ct) {
+  if (timeDisplay === 'total') return '\u03a3 ' + fmtDur(_albumTotalDuration())
+  if (timeDisplay === 'remaining') return '-' + fmtDur(Math.max(0, audio.duration - ct))
+  return fmtDur(ct)
+}
+function _timeCurTitle() {
+  return timeDisplay === 'total' ? 'Total album duration (click to cycle)'
+    : timeDisplay === 'remaining' ? 'Time remaining (click to cycle)'
+    : 'Time elapsed (click to cycle)'
+}
+
+
 // ── Keyboard shortcut configuration ─────────────────────────────────────────
 var DEFAULT_SHORTCUTS = {
   'playPause': 'Space',
@@ -282,19 +298,47 @@ function cycleSpeed() {
 
 // ── Sleep timer ───────────────────────────────────────────────────────────────
 let _sleepTimeout = null
+// The countdown in the tooltip/label is only true for the instant it is written,
+// so it has to be re-rendered while the timer runs.
+let _sleepTick = null
 function setSleepTimer(mins) {
   if (_sleepTimeout) { clearTimeout(_sleepTimeout); _sleepTimeout = null }
+  if (_sleepTick) { clearInterval(_sleepTick); _sleepTick = null }
   state.sleepTimerEnd = null
   if (!Number.isFinite(mins) || mins <= 0) { updateSleepBtn(); return }
+  _sleepTick = setInterval(function () {
+    if (!state.sleepTimerEnd) { clearInterval(_sleepTick); _sleepTick = null; return }
+    updateSleepBtn()
+  }, 30000)
   state.sleepTimerEnd = Date.now() + mins * 60000
   _sleepTimeout = setTimeout(() => {
     audio.pause(); state.isPlaying = false
     updatePlayBtn(); updateTrackHighlight()
     if (state.modalOpen) syncModalPlayBtn()
     state.sleepTimerEnd = null
+    if (_sleepTick) { clearInterval(_sleepTick); _sleepTick = null }
     updateSleepBtn()
   }, mins * 60000)
   updateSleepBtn()
+}
+
+// One place that paints repeat state, because the main bar and the modal each
+// used to do it themselves and had already drifted apart. "All" and "One" must
+// stay tellable apart at rest -- the snackbar is gone after 1.5s.
+function updateRepeatBtns() {
+  var active = state.repeat !== 'off'
+  var one = state.repeat === 'one'
+  var title = one ? 'Repeat: one' : active ? 'Repeat: all' : 'Repeat (R)'
+  var ids = ['btn-repeat', 'np-modal-repeat']
+  for (var i = 0; i < ids.length; i++) {
+    var b = document.getElementById(ids[i])
+    if (!b) continue
+    b.classList.toggle('active', active)
+    b.classList.toggle('repeat-one', one)
+    b.title = title
+    b.setAttribute('aria-pressed', active ? 'true' : 'false')
+    b.setAttribute('aria-label', title)
+  }
 }
 
 function updateSleepBtn() {
@@ -486,7 +530,13 @@ async function fullScan() {
   showSnackbar('Library scan complete: ' + state.library.length + ' albums found')
 }
 
-function _libSig(lib) { return lib.length + ':' + lib.map(a => a.id).join('') }
+// Album ids alone missed per-track deletes inside a surviving album, so a
+// deleted song stayed on screen until you navigated away and back.
+function _libSig(lib) {
+  return window.PapaLibrarySig
+    ? window.PapaLibrarySig.librarySignature(lib)
+    : (lib || []).length + ':' + (lib || []).map(a => a.id).join('')
+}
 
 async function backgroundSync() {
   const data = await window.api.scanLibrary()
@@ -498,6 +548,80 @@ async function backgroundSync() {
     setTimeout(fetchMissingArtwork, 600)
     syncLibraryExt()
   }
+}
+
+// Re-render in place after the library changes underneath us. Deliberately
+// conservative: a re-render tears down the DOM, so it must not fire while a
+// modal is open (it would rip out a confirmation the user is reading) and it
+// must put the scroll position back.
+var _pendingLibraryUpdate = null
+
+function _modalIsOpen() {
+  return !!document.querySelector('.modal-overlay, .addpl-overlay')
+}
+
+function applyLibraryUpdate(payload) {
+  var albums = (payload && payload.albums) || null
+  if (!albums) return
+  if (_libSig(albums) === _libSig(state.library)) return
+
+  // An open modal OR an active multi-selection is work in progress. Re-rendering
+  // under either one destroys #content and silently throws it away -- a
+  // selection just vanishes mid-action with no feedback. Hold the update; it is
+  // replayed when the modal closes or the selection is cleared.
+  if (_modalIsOpen() || _sel.selected.length) {
+    _pendingLibraryUpdate = payload
+    return
+  }
+  _pendingLibraryUpdate = null
+
+  var content = document.getElementById('content')
+  var scrollTop = content ? content.scrollTop : 0
+  state.library = albums
+  navigate(state.currentPage, _currentNavId(), { skipHistory: true })
+  if (content) {
+    var restore = document.getElementById('content')
+    if (restore) restore.scrollTop = scrollTop
+  }
+  syncLibraryExt()
+}
+
+// A file vanished under playback: say so, take it out of the queue, and keep
+// going. Silence here reads as "the app broke", which is how it used to feel.
+function dropMissingTrack(filePath, track) {
+  var R = window.PapaQueueRepair
+  var name = (track && track.title) || (filePath || '').split('/').pop() || 'That track'
+  if (!R) { if (state.queue.length > 1) playNext(); return }
+
+  var res = R.repairQueue({
+    queue: state.queue, queueIndex: state.queueIndex, removedPaths: [filePath],
+  })
+  state.queue = res.queue
+  state.queueIndex = res.queueIndex
+
+  if (res.empty) {
+    // Same stop sequence the queue-removal path uses (renderer.js ~4658);
+    // there is no stopPlayback() helper in this codebase.
+    audio.pause()
+    state.isPlaying = false
+    state.queueIndex = -1
+    updatePlayBtn()
+    updateNowPlaying(null)
+    showSnackbar(esc(name) + ' is missing — playback stopped')
+  } else if (res.removedCurrent) {
+    showSnackbar(esc(name) + ' is missing — skipped')
+    playCurrentTrack()
+  } else {
+    showSnackbar(esc(name) + ' is missing — removed from the queue')
+  }
+  renderQueuePanel()
+}
+
+function flushPendingLibraryUpdate() {
+  if (!_pendingLibraryUpdate) return
+  var p = _pendingLibraryUpdate
+  _pendingLibraryUpdate = null
+  applyLibraryUpdate(p)
 }
 
 function _currentNavId() {
@@ -534,7 +658,9 @@ async function restorePlaybackState() {
   var autoQueue = queues.find(function(q) { return q.id === '_auto' })
   if (autoQueue && autoQueue.tracks && autoQueue.tracks.length) {
     state.queue = autoQueue.tracks
-    state.queueIndex = autoQueue.index || 0
+    // Older saves were written with an unclamped index against a truncated
+    // tracks[], so don't trust it even now that the writer clamps.
+    state.queueIndex = Math.min(Math.max(0, autoQueue.index || 0), autoQueue.tracks.length - 1)
     state._restoredFromQueue = true
     if (state.queuePanelOpen) renderQueuePanel()
     showSnackbar('Previous queue restored (' + autoQueue.tracks.length + ' tracks)', 'Clear', function() {
@@ -552,7 +678,10 @@ function navigate(page, navId, opts = {}) {
     _scrollMemory.set(`${state.currentPage}:${_currentNavId() ?? ''}`, contentEl.scrollTop)
   }
   if (!opts.skipHistory) {
-    navHistory.push({ page: state.currentPage, navId: _currentNavId() })
+    // The first navigate() of the session has no page to come back to, and
+    // pushing that empty entry left Back permanently enabled (and a second
+    // press navigating to an undefined page, which renders nothing).
+    if (state.currentPage) navHistory.push({ page: state.currentPage, navId: _currentNavId() })
     navFuture.length = 0
   }
 
@@ -576,6 +705,7 @@ function navigate(page, navId, opts = {}) {
   else if (page === 'downloads') renderDownloads()
   else if (page === 'playlists') renderPlaylists()
   else if (page === 'playlist')  renderPlaylist(navId)
+  else if (page === 'manage')    renderManage()
   else if (page === 'stats')     renderStats()
   else if (page === 'liked')     renderLikedSongs()
   else if (page === 'yt-album')  renderYtAlbum(navId)
@@ -636,11 +766,9 @@ function renderFolders() {
       <button class="site-item-del" data-folder="${esc(f)}" title="Remove">&#10005;</button>
     </li>`).join('')
   list.querySelectorAll('.site-item-del').forEach(btn => {
-    btn.addEventListener('click', async e => {
+    btn.addEventListener('click', e => {
       e.stopPropagation()
-      state.musicFolders = await window.api.removeMusicFolder(btn.dataset.folder)
-      renderFolders()
-      await fullScan()
+      _confirmRemoveMusicFolder(btn.dataset.folder)
     })
   })
 }
@@ -648,6 +776,50 @@ function renderFolders() {
 function shortPath(p) {
   const home = '/home/' + (p.split('/')[2] || '')
   return p.startsWith(home) ? '~' + p.slice(home.length) : p
+}
+
+// Removing a folder never touches the files themselves -- it just stops the
+// app watching them -- but everything keyed off those paths (likes, playlists,
+// history, queues) would otherwise dangle silently, so this routes through the
+// same prune/undo discipline as a real delete instead of the old bare filter.
+function _confirmRemoveMusicFolder(folder) {
+  var prefix = folder.replace(/\/+$/, '') + '/'
+  var affected = []
+  for (var i = 0; i < state.library.length; i++) {
+    var tracks = state.library[i].tracks || []
+    for (var j = 0; j < tracks.length; j++) {
+      var fp = tracks[j].filePath
+      if (fp === folder || (fp && fp.indexOf(prefix) === 0)) affected.push(fp)
+    }
+  }
+  var body = '<p class="mg-confirm-sum" style="margin-top:0">' + esc(shortPath(folder)) + '</p>' +
+    (affected.length
+      ? '<p class="mg-confirm-warn">' + affected.length + ' track' + (affected.length === 1 ? '' : 's') +
+        ' will disappear from your library. Likes, playlists, history and queues referencing them will be cleaned up.</p>'
+      : '<p class="mg-confirm-sum">No tracks in your library are under this folder right now.</p>') +
+    '<p class="mg-confirm-note">The files themselves are not touched — only unwatched.</p>'
+
+  _mgConfirm('Stop watching this folder?', body, 'Remove folder', async function () {
+    state.musicFolders = await window.api.removeMusicFolder(folder)
+    var prune = await window.api.libraryPruneState({ removed: affected, renamed: [] }).catch(function () { return null })
+    renderFolders()
+    await fullScan()
+
+    var P = window.PapaLibraryPrune
+    var extra = (P && prune && prune.summary) ? P.describeSummary(prune.summary) : ''
+    var msg = 'Folder removed' + (extra ? '. ' + esc(extra) : '')
+
+    showSnackbar(msg, 'Undo', async function () {
+      state.musicFolders = await window.api.addMusicFolderPath(folder)
+      if (prune && prune.snapshot) {
+        await window.api.libraryRestoreState({ snapshot: prune.snapshot }).catch(function () {})
+        await reloadPersistedState()
+      }
+      renderFolders()
+      await fullScan()
+      showSnackbar('Folder restored')
+    }, 12000)
+  })
 }
 
 // ── Artwork fetching ───────────────────────────────────────────────────────
@@ -726,6 +898,7 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)) }
 function showLoading() { setContent(`<div class="loading-wrap"><div class="spinner"></div><p>Scanning your library…</p></div>`) }
 
 // ── Pages ───────────────────────────────────────────────────────────────────
+var _greetingAnimated = false
 function renderHome() {
   const hour = new Date().getHours()
   const greeting = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening'
@@ -742,7 +915,11 @@ function renderHome() {
     'Ask the agent to find anything.',
   ]
   var subtitle = subtitles[Math.floor(Math.random() * subtitles.length)]
-  var greetingHTML = '<div class="greeting-fade-in"><div class="greeting">' + greeting + '<div class="greeting-sub">' + subtitle + '</div></div></div>'
+  // setContent() rebuilds #content wholesale, so the CSS animation restarts on
+  // every visit to Home. It is a launch flourish, not a per-navigation one.
+  var greetingCls = _greetingAnimated ? 'greeting-static' : 'greeting-fade-in'
+  _greetingAnimated = true
+  var greetingHTML = '<div class="' + greetingCls + '"><div class="greeting">' + greeting + '<div class="greeting-sub">' + subtitle + '</div></div></div>'
   const quickIds = state.recentlyPlayed.slice(0, 6)
   const quickAlbums = quickIds.map(id => state.library.find(a => a.id === id)).filter(Boolean)
   if (quickAlbums.length < 6) {
@@ -756,7 +933,7 @@ function renderHome() {
       Find artwork for ${missingCount} album${missingCount !== 1 ? 's' : ''}
     </button>` : ''
 
-  const jumpBackHTML = (state.queue.length && state.queueIndex >= 0) ? '<div class="jumpback-card" id="jumpback-card"><div class="jumpback-art">' + artImg(state.queue[state.queueIndex].artPath, 'jumpback-art-img', 'jumpback-art-fallback') + '</div><div class="jumpback-info"><div class="jumpback-label">Continue listening</div><div class="jumpback-title">' + esc(state.queue[state.queueIndex].title || 'Unknown') + '</div><div class="jumpback-artist">' + esc(state.queue[state.queueIndex].artist || '') + '</div></div><button class="jumpback-play" id="jumpback-play"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button></div>' : ''
+  const jumpBackHTML = (state.queue.length && state.queueIndex >= 0 && state.queueIndex < state.queue.length) ? '<div class="jumpback-card" id="jumpback-card"><div class="jumpback-art">' + artImg(state.queue[state.queueIndex].artPath, 'jumpback-art-img', 'jumpback-art-fallback') + '</div><div class="jumpback-info"><div class="jumpback-label">Continue listening</div><div class="jumpback-title">' + esc(state.queue[state.queueIndex].title || 'Unknown') + '</div><div class="jumpback-artist">' + esc(state.queue[state.queueIndex].artist || '') + '</div></div><button class="jumpback-play" id="jumpback-play"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button></div>' : ''
 
   const quickHTML = quickAlbums.length ? `
     <div class="quick-grid">${quickAlbums.map(a => `
@@ -815,7 +992,7 @@ function renderHome() {
       const ct = _artistAlbumCount(name)
       return `<div class="artist-card following-card" data-follow-artist="${esc(name)}">
         <div class="artist-card-art">
-          ${ap ? `<img src="file://${ap}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">` : ''}
+          ${ap ? `<img src="${esc('file://' + ap)}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">` : ''}
           <div class="artist-card-art-fallback" ${ap ? 'style="display:none"' : ''}>
             <svg viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
           </div>
@@ -825,11 +1002,23 @@ function renderHome() {
       </div>`
     }).join('')}</div>` : ''
 
+  // One index, one pass. This used to scan the whole library (and every track
+  // in it) once per history entry, twice, on every single visit to Home.
   var thirtyDaysAgo = Date.now() - 30 * 86400000
+  var albumOfPath = {}
+  for (var _li = 0; _li < state.library.length; _li++) {
+    var _a = state.library[_li]
+    if (!_a.tracks) continue
+    for (var _tj = 0; _tj < _a.tracks.length; _tj++) albumOfPath[_a.tracks[_tj].filePath] = _a.id
+  }
   var recents = {}
-  state.playHistory.forEach(function(p) { if (p.ts > thirtyDaysAgo) { for (var i = 0; i < state.library.length; i++) { var a = state.library[i]; if (!a.tracks) continue; for (var j = 0; j < a.tracks.length; j++) { if (a.tracks[j].filePath === p.filePath) { recents[a.id] = true } } } } })
   var pcount = {}
-  state.playHistory.forEach(function(p) { for (var i = 0; i < state.library.length; i++) { var a = state.library[i]; if (!a.tracks) continue; for (var j = 0; j < a.tracks.length; j++) { if (a.tracks[j].filePath === p.filePath) { pcount[a.id] = (pcount[a.id] || 0) + 1; break } } } })
+  state.playHistory.forEach(function(p) {
+    var id = albumOfPath[p.filePath]
+    if (id === undefined) return
+    if (p.ts > thirtyDaysAgo) recents[id] = true
+    pcount[id] = (pcount[id] || 0) + 1
+  })
   var backAlbums = state.library.filter(function(a) { return !recents[a.id] && (pcount[a.id] || 0) >= 10 }).sort(function(a, b) { return (pcount[b.id] || 0) - (pcount[a.id] || 0) }).slice(0, 6)
   var backHTML = backAlbums.length ? '<div class="section-header"><span class="section-title">Back in rotation</span></div><div class="scroll-row">' + backAlbums.map(albumCard).join('') + '</div>' : ''
 
@@ -839,7 +1028,7 @@ function renderHome() {
   var mixColors = [['#5038a0','#3850a0'],['#a04038','#a07038'],['#2d7a4a','#1a5a7a'],['#6b38a0','#5038a0'],['#3850a0','#6b38a0'],['#a07038','#a04038']]
   if (topGenres.length === 0) topGenres = ['Your Mix 1','Your Mix 2','Your Mix 3','Your Mix 4','Your Mix 5','Your Mix 6']
   var dailyMixHTML = '<div class="section-header"><span class="section-title">Made for you</span></div><div class="scroll-row">' + topGenres.map(function(g, i) {
-    return '<div class="daily-mix-card" style="background:linear-gradient(135deg,' + (mixColors[i] ? mixColors[i][0] : '#333') + ',' + (mixColors[i] ? mixColors[i][1] : '#555') + ')" data-mix-genre="' + (g || '') + '"><span class="daily-mix-num">' + g + ' Mix</span><span class="daily-mix-sub">Based on your taste</span></div>'
+    return '<div class="daily-mix-card" style="background:linear-gradient(135deg,' + (mixColors[i] ? mixColors[i][0] : '#333') + ',' + (mixColors[i] ? mixColors[i][1] : '#555') + ')" data-mix-genre="' + esc(g || '') + '"><span class="daily-mix-num">' + esc(g) + ' Mix</span><span class="daily-mix-sub">Based on your taste</span></div>'
   }).join('') + '</div>'
 
   const allHTML = state.library.length ? `
@@ -1109,7 +1298,7 @@ function renderArtists() {
       <div class="artist-card" data-artist="${esc(ar.name)}" style="position:relative">
         <div class="artist-card-art">
           ${ar.artPath
-            ? `<img src="file://${ar.artPath}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
+            ? `<img src="${esc('file://' + ar.artPath)}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
             : ''}
           <div class="artist-card-art-fallback" ${ar.artPath ? 'style="display:none"' : ''}>
             <svg viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
@@ -1144,6 +1333,33 @@ function renderArtists() {
     grid.querySelectorAll('.artist-card').forEach(card => {
       const name = (card.dataset.artist || '').toLowerCase()
       card.style.display = name.includes(q) ? '' : 'none'
+    })
+  })
+
+  // Surfaces that previously had no context menu at all.
+  document.querySelectorAll('.artist-card[data-artist]').forEach(card => {
+    if (card.dataset.channel) return   // YouTube artists have no local files
+    card.addEventListener('contextmenu', e => {
+      const artist = card.dataset.artist
+      const albums = state.library.filter(a => a.artist === artist)
+      const paths = albums.flatMap(a => (a.tracks || []).map(t => t.filePath)).filter(Boolean)
+      showContextMenu(e, { type: 'artist', kind: 'artist', artist, paths,
+        label: artist + ' — ' + albums.length + ' album' + (albums.length === 1 ? '' : 's') })
+    })
+  })
+
+  document.querySelectorAll('.quick-card[data-album]').forEach(card => {
+    card.addEventListener('contextmenu', e => {
+      const album = state.library.find(a => a.id === card.dataset.album)
+      showContextMenu(e, { type: 'album', kind: 'album', albumId: card.dataset.album,
+        artist: album && album.artist })
+    })
+  })
+
+  document.querySelectorAll('.folder-tree-item[data-folder]').forEach(el => {
+    el.addEventListener('contextmenu', e => {
+      showContextMenu(e, { type: 'folder', kind: 'folder-node',
+        paths: [el.dataset.folder], label: el.dataset.folder })
     })
   })
 
@@ -1946,7 +2162,7 @@ function renderSearch(query) {
         html += matchTracks.slice(0, 4).map((t, i) => {
           const trackHue = _cardHue(t.albumArtist + t.title)
           const artThumb = t.artPath
-            ? `<img src="file://${t.artPath}" class="str-track-thumb" alt="" onerror="this.style.display='none'">`
+            ? `<img src="${esc('file://' + t.artPath)}" class="str-track-thumb" alt="" onerror="this.style.display='none'">`
             : `<div class="str-track-thumb" style="background:linear-gradient(135deg,hsl(${trackHue},50%,22%),hsl(${(trackHue+40)%360},40%,14%))"></div>`
           return `<div class="str-track track-row search-animate-in" data-file="${esc(t.filePath)}" data-idx="${i}" data-album="${t.albumId}">
             ${artThumb}
@@ -2357,7 +2573,7 @@ function _ytSurroundBadge(r) {
 
 function _ytSongRows(songs, query) {
   return `<div class="yt-list">${songs.map((r, i) => {
-    var inLib = isInLibrary(r.artist, r.title)
+    var inLib = isInLibrary(r.artist, r.album)
     var badge = inLib ? '<span class="in-lib-badge" style="background:rgba(29,185,84,.15);color:#1db954;font-size:10px;padding:1px 6px;border-radius:8px;margin-left:6px">In Library</span>' : ''
     var sur = _ytSurround(r)
     return `<div class="yt-row search-animate-in" data-i="${i}"${sur ? ' data-surround="1"' : ''}>
@@ -3995,7 +4211,7 @@ function renderStats() {
     const ap = artFor(name)
     return `<div class="stats-rank-row" data-stats-artist="${esc(name)}">
       <span class="stats-rank-num">${i + 1}</span>
-      ${ap ? `<img class="stats-rank-art" src="file://${ap}" alt="">` : '<div class="stats-rank-art"></div>'}
+      ${ap ? `<img class="stats-rank-art" src="${esc('file://' + ap)}" alt="">` : '<div class="stats-rank-art"></div>'}
       <div class="stats-rank-info"><div class="stats-rank-name">${esc(name)}</div></div>
       <span class="stats-rank-count">${count} play${count !== 1 ? 's' : ''}</span>
     </div>`
@@ -4004,7 +4220,7 @@ function renderStats() {
   const trackRows = topTracks.map(({ track, count }, i) => `
     <div class="stats-rank-row" data-stats-album="${esc(track.albumId || '')}">
       <span class="stats-rank-num">${i + 1}</span>
-      ${track.artPath ? `<img class="stats-rank-art" src="file://${track.artPath}" alt="">` : '<div class="stats-rank-art"></div>'}
+      ${track.artPath ? `<img class="stats-rank-art" src="${esc('file://' + track.artPath)}" alt="">` : '<div class="stats-rank-art"></div>'}
       <div class="stats-rank-info">
         <div class="stats-rank-name">${esc(track.title)}</div>
         <div class="stats-rank-sub">${esc(track.albumArtist || track.artist || '')}</div>
@@ -4137,7 +4353,7 @@ function renderStats() {
         var ap = artFor(entry[0])
         return '<div class="stats-rank-row" data-stats-artist="' + esc(entry[0]) + '">' +
           '<span class="stats-rank-num">' + (i + 1) + '</span>' +
-          (ap ? '<img class="stats-rank-art" src="file://' + ap + '" alt="">' : '<div class="stats-rank-art"></div>') +
+          (ap ? '<img class="stats-rank-art" src="' + esc('file://' + ap) + '" alt="">' : '<div class="stats-rank-art"></div>') +
           '<div class="stats-rank-info"><div class="stats-rank-name">' + esc(entry[0]) + '</div></div>' +
           '<span class="stats-rank-count">' + entry[1] + ' play' + (entry[1] !== 1 ? 's' : '') + '</span>' +
           '</div>'
@@ -4458,20 +4674,23 @@ function updateLikeBtn(albumId) {
 }
 
 function updatePlayerLikeBtn() {
-  const currentTrack = state.queue[state.queueIndex]
-  if (!currentTrack) return
-  const album = state.library.find(a => a.tracks.some(t => t.filePath === currentTrack.filePath))
-  if (!album) return
   const likeBtn = document.getElementById('btn-like')
-  if (likeBtn) {
-    likeBtn.classList.toggle('liked', state.likedAlbums.includes(album.id))
-    likeBtn.dataset.album = album.id
+  const currentTrack = state.queue[state.queueIndex]
+  const album = currentTrack && state.library.find(a => a.tracks.some(t => t.filePath === currentTrack.filePath))
+  if (!likeBtn) return
+  if (!album) {
+    likeBtn.classList.remove('liked')
+    delete likeBtn.dataset.album
+    return
   }
+  likeBtn.classList.toggle('liked', state.likedAlbums.includes(album.id))
+  likeBtn.dataset.album = album.id
 }
 
 // ── Queue panel ─────────────────────────────────────────────────────────────
 function toggleQueuePanel() {
   state.queuePanelOpen = !state.queuePanelOpen
+  updateAriaToggles()
   const panel = document.getElementById('queue-panel')
   const btn   = document.getElementById('btn-queue')
   panel.classList.toggle('open', state.queuePanelOpen)
@@ -4516,7 +4735,7 @@ function renderQueuePanel() {
   list.innerHTML = fromHtml + '<div style="padding:12px;font-size:13px;font-weight:600;display:flex;justify-content:space-between"><span>Queue (' + state.queue.length + ')</span><span style="font-size:11px;color:var(--text3);font-weight:400">' + totalQDstr + '</span></div>' + state.queue.map((t, i) => {
     const isPlaying = i === state.queueIndex
     const art = t.artPath
-      ? `<img class="queue-row-art" src="file://${t.artPath}" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
+      ? `<img class="queue-row-art" src="${esc('file://' + t.artPath)}" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
       : ''
     return `
       <div class="queue-row ${isPlaying ? 'playing' : ''}" draggable="true" data-queue-idx="${i}">
@@ -4563,6 +4782,17 @@ function renderQueuePanel() {
   })
 
   // Click to play
+  // Queue rows had no context menu; "Remove from queue" belongs here, and must
+  // read as removing from the queue, not deleting the file.
+  list.querySelectorAll('.queue-row').forEach(row => {
+    row.addEventListener('contextmenu', e => {
+      const t = state.queue[parseInt(row.dataset.queueIdx)]
+      if (!t) return
+      showContextMenu(e, { type: 'track', kind: 'queue-item', albumId: t.albumId,
+        track: t, artist: t.albumArtist || t.artist, queueIdx: parseInt(row.dataset.queueIdx) })
+    })
+  })
+
   list.querySelectorAll('.queue-row').forEach(row => {
     row.addEventListener('click', e => {
       if (e.target.closest('.queue-row-remove') || e.target.closest('.queue-drag-handle') || e.target.closest('.track-like-btn')) return
@@ -4687,7 +4917,7 @@ function renderQueuePanel() {
         suggs.map((t, i) => `
           <div class="queue-suggestion-row" data-sugg-idx="${i}">
             ${t.artPath
-              ? `<img class="queue-suggestion-art" src="file://${t.artPath}" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"><div class="queue-suggestion-art-fb" style="display:none"><svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg></div>`
+              ? `<img class="queue-suggestion-art" src="${esc('file://' + t.artPath)}" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"><div class="queue-suggestion-art-fb" style="display:none"><svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg></div>`
               : `<div class="queue-suggestion-art-fb"><svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg></div>`}
             <div class="queue-suggestion-info">
               <div class="queue-suggestion-title">${esc(t.title)}</div>
@@ -4859,7 +5089,7 @@ function updateNowPlayingModal() {
   }
   // Sync shuffle/repeat state
   document.getElementById('np-modal-shuffle')?.classList.toggle('active', state.shuffle)
-  document.getElementById('np-modal-repeat')?.classList.toggle('active', state.repeat !== 'off')
+  updateRepeatBtns()
   // Sync karaoke header
   if (track) {
     const lyrTitle = document.getElementById('np-modal-lyrics-title')
@@ -4896,12 +5126,120 @@ function syncModalPlayBtn() {
 }
 
 // ── Context menu ────────────────────────────────────────────────────────────
+// Icons live here, not in the model — the model decides WHAT is offered, the
+// renderer decides how it looks.
+var CTX_ICONS = {
+  'ctx-play':        '<path d="M8 5v14l11-7z"/>',
+  'ctx-queue':       '<path d="M4 6h16v2H4zm4 5h12v2H8zm4 5h8v2h-8z"/>',
+  'ctx-play-next':   '<path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/>',
+  'ctx-radio':       '<path d="M3.24 6.15C2.51 6.43 2 7.17 2 8v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8c0-1.1-.89-2-2-2H8.3l8.26-3.34L15.88 1 3.24 6.15zM12 19a3 3 0 1 1 0-6 3 3 0 0 1 0 6zm7-11a1 1 0 1 1 0-2 1 1 0 0 1 0 2z"/>',
+  'ctx-addpl':       '<path d="M14 10H2v2h12v-2zm0-4H2v2h12V6zM2 16h8v-2H2v2zm14-2v3h-3v2h3v3h2v-3h3v-2h-3v-3h-2z"/>',
+  'ctx-wishlist':    '<path d="M17 3H7c-1.1 0-2 .9-2 2v16l7-3 7 3V5c0-1.1-.9-2-2-2z"/>',
+  'ctx-artist':      '<path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>',
+  'ctx-copy-path':   '<path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>',
+  'ctx-show-folder': '<path d="M20 6h-8l-2-2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2z"/>',
+  'ctx-trash':       '<path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>',
+  'ctx-like':        '<path d="M16.5 3c-1.74 0-3.41.81-4.5 2.09A5.99 5.99 0 0 0 7.5 3C4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3z"/>',
+  'ctx-remove-playlist': '<path d="M14 10H2v2h12v-2zm0-4H2v2h12V6zM2 16h8v-2H2v2zm19-2h-8v2h8v-2z"/>',
+  'ctx-remove-queue':    '<path d="M14 10H2v2h12v-2zm0-4H2v2h12V6zM2 16h8v-2H2v2zm19-2h-8v2h8v-2z"/>',
+  'ctx-unlike':          '<path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09A5.99 5.99 0 0 1 16.5 3C19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>',
+}
+
+// The menu is rebuilt on every open from the model, so a surface can never show
+// an action that makes no sense there.
+function _ctxBuildMenu(menu, ctx) {
+  var M = window.PapaCtxMenu
+  if (!M) return []
+  var items = M.menuItemsFor(ctx)
+  var html = ''
+  for (var i = 0; i < items.length; i++) {
+    var it = items[i]
+    if (it.separatorBefore && i > 0) html += '<div class="ctx-separator"></div>'
+    html += '<button class="ctx-item' + (it.danger ? ' ctx-item-danger' : '') + '"' +
+      ' id="' + it.id + '" data-ctx-id="' + it.id + '">' +
+      '<svg viewBox="0 0 24 24">' + (CTX_ICONS[it.id] || '') + '</svg> ' + esc(it.label) +
+      '</button>'
+  }
+  menu.innerHTML = html
+  return items
+}
+
+function _ctxKindForRow(row) {
+  if (!row || !row.classList) return 'track'
+  if (row.classList.contains('queue-row')) return 'queue-item'
+  if (row.classList.contains('pl-track-row')) return 'playlist-track'
+  if (row.classList.contains('liked-track-row')) return 'liked-track'
+  if (row.classList.contains('yt-row') || row.classList.contains('yt-track-row')) return 'yt-track'
+  if (state.currentPage === 'playlist') return 'playlist-track'
+  if (state.currentPage === 'liked') return 'liked-track'
+  if (state.currentPage === 'search') return 'search-result'
+  return 'track'
+}
+
+function _ctxTargetForRow(row) {
+  var kind = _ctxKindForRow(row)
+  var album = state.library.find(function (a) { return a.id === row.dataset.album })
+  var track = album && album.tracks.find(function (t) { return t.filePath === row.dataset.file })
+  // Fall back to the list's own copy — a playlist can hold a track whose album
+  // is no longer in the library, and the menu must still work there.
+  if (!track && row.dataset.file) {
+    if (kind === 'playlist-track') {
+      var pl = state.playlists.find(function (p) { return p.id === state.currentPlaylistId })
+      track = pl && pl.tracks.find(function (t) { return t.filePath === row.dataset.file })
+    } else if (kind === 'queue-item') {
+      track = state.queue.find(function (t) { return t.filePath === row.dataset.file })
+    }
+    if (!track) track = { filePath: row.dataset.file }
+  }
+  var listName = null
+  if (kind === 'playlist-track') {
+    var cur = state.playlists.find(function (p) { return p.id === state.currentPlaylistId })
+    listName = cur && cur.name
+  }
+  return {
+    type: 'track', kind: kind, albumId: row.dataset.album, track: track,
+    artist: (album && album.artist) || (track && (track.albumArtist || track.artist)) || null,
+    listName: listName,
+  }
+}
+
 function showContextMenu(e, target) {
   e.preventDefault()
-  ctxTarget = target
-  const menu = document.getElementById('ctx-menu')
-  const liked = ctxTarget.albumId ? state.likedAlbums.includes(ctxTarget.albumId) : false
-  document.getElementById('ctx-like-label').textContent = liked ? 'Unlike' : 'Like'
+  ctxTarget = target || {}
+  var menu = document.getElementById('ctx-menu')
+  if (!menu) return
+
+  // Right-clicking a row that is part of an active multi-selection acts on the
+  // WHOLE selection. It used to build the menu around that one row and silently
+  // drop the rest, so "Move to Trash…" on 3 selected tracks deleted exactly one.
+  if (_sel.selected.length > 1 && e.target && e.target.closest) {
+    var _row = e.target.closest('.track-row, .album-card, .folder-node')
+    var _at = _row ? _sel.rows.indexOf(_row) : -1
+    if (_at !== -1 && _sel.selected.indexOf(_at) !== -1) {
+      var _paths = _selPaths()
+      if (_paths.length) {
+        ctxTarget.paths = _paths
+        ctxTarget.label = _sel.selected.length + ' ' + _sel.noun +
+          (_sel.selected.length === 1 ? '' : 's') + ' selected'
+        ctxTarget.multi = true
+      }
+    }
+  }
+
+  // Fill in what the model needs to decide, from what the caller knows.
+  var album = ctxTarget.albumId
+    ? state.library.find(function (a) { return a.id === ctxTarget.albumId })
+    : null
+  var track = ctxTarget.track
+  var path = (track && track.filePath) || (album && album.tracks && album.tracks[0] && album.tracks[0].filePath)
+  ctxTarget.kind = ctxTarget.kind || ctxTarget.type || 'track'
+  // An artist or a folder node has no single track; it carries its paths.
+  if (!path && ctxTarget.paths && ctxTarget.paths.length) path = ctxTarget.paths[0]
+  ctxTarget.hasPath = !!path && !/^https?:\/\//.test(path)
+  ctxTarget.isLiked = ctxTarget.albumId ? state.likedAlbums.indexOf(ctxTarget.albumId) !== -1 : false
+
+  _ctxBuildMenu(menu, ctxTarget)
+
   menu.style.left = '-9999px'
   menu.style.top  = '-9999px'
   menu.style.display = 'block'
@@ -4912,6 +5250,18 @@ function showContextMenu(e, target) {
   menu.style.left = `${x}px`
   menu.style.top  = `${y}px`
 }
+
+// The menu is rebuilt on every open, so per-button listeners would be lost.
+// Handlers register by id once and a single delegated listener dispatches.
+var _ctxHandlers = {}
+function _ctxOn(id, fn) { _ctxHandlers[id] = fn }
+
+document.addEventListener('click', function (e) {
+  var btn = e.target.closest ? e.target.closest('#ctx-menu [data-ctx-id]') : null
+  if (!btn) return
+  var fn = _ctxHandlers[btn.getAttribute('data-ctx-id')]
+  if (fn) fn()
+})
 
 function hideContextMenu() {
   document.getElementById('ctx-menu').style.display = 'none'
@@ -5004,7 +5354,23 @@ function playCurrentTrack() {
     if (state.queuePanelOpen) renderQueuePanel()
     if (state.modalOpen) { updateNowPlayingModal(); syncModalPlayBtn() }
     window.api.savePlaybackState({ filePath: track.filePath, position: 0 })
-    window.api.saveQueue({ id: '_auto', name: 'Previous Session', tracks: state.queue.slice(0, 100), index: state.queueIndex, savedAt: Date.now() })
+    // tracks[] is truncated, so index must be clamped to it or a restore lands
+    // out of bounds. Keep the in-memory copy in sync too: the sidebar reads
+    // state.savedQueues, which was otherwise only ever loaded at startup and
+    // showed a launch-time snapshot for the rest of the session.
+    var _autoTracks = state.queue.slice(0, 100)
+    var _autoQ = {
+      id: '_auto',
+      name: 'Previous Session',
+      tracks: _autoTracks,
+      index: Math.min(Math.max(0, state.queueIndex), Math.max(0, _autoTracks.length - 1)),
+      savedAt: Date.now(),
+    }
+    window.api.saveQueue(_autoQ)
+    var _autoAt = state.savedQueues.findIndex(function (q) { return q.id === '_auto' })
+    if (_autoAt >= 0) state.savedQueues[_autoAt] = _autoQ
+    else state.savedQueues.push(_autoQ)
+    renderSavedQueues()
     window.api.notifyTrack({ title: track.title, artist: track.albumArtist || track.artist || '', artPath: track.artPath || null })
     _shuffleHistory.push(state.queueIndex)
     if (_shuffleHistory.length > 10) _shuffleHistory.shift()
@@ -5049,7 +5415,23 @@ function playCurrentTrack() {
   audio.play().then(onStarted).catch(onError)
 }
 
+// Home's "Continue listening" card is built by renderHome(), so it froze on
+// whatever was playing when Home was last rendered. Keep it live instead.
+function refreshJumpbackCard() {
+  var card = document.getElementById('jumpback-card')
+  if (!card) return
+  var t = state.queue[state.queueIndex]
+  if (!t) { card.remove(); return }
+  var titleEl = card.querySelector('.jumpback-title')
+  var artistEl = card.querySelector('.jumpback-artist')
+  var artWrap = card.querySelector('.jumpback-art')
+  if (titleEl) titleEl.textContent = t.title || 'Unknown'
+  if (artistEl) artistEl.textContent = t.artist || ''
+  if (artWrap) artWrap.innerHTML = artImg(t.artPath, 'jumpback-art-img', 'jumpback-art-fallback')
+}
+
 function updateNowPlaying(track) {
+  refreshJumpbackCard()
   const titleEl  = document.getElementById('np-title')
   const artistEl = document.getElementById('np-artist')
   const albumEl  = document.getElementById('np-album')
@@ -5132,7 +5514,60 @@ function updatePlayBtn() {
     scope.querySelectorAll('.icon-pause').forEach(el => el.style.display = state.isPlaying ? 'block' : 'none')
   })
   document.getElementById('np-art')?.classList.toggle('paused-anim', !state.isPlaying)
+  var _pb = document.getElementById('btn-play')
+  if (_pb) _pb.setAttribute('aria-label', state.isPlaying ? 'Pause' : 'Play')
+  updateAriaToggles()
+  updateSecondaryPlayIcons()
   window.api.setPowerSave(state.isPlaying)
+}
+
+// Toggle state lives in .active/.liked classes, which assistive tech cannot
+// see. Mirror it onto aria-pressed so a screen-reader user can tell whether
+// shuffle/mute/like are currently on.
+function updateAriaToggles() {
+  function press(id, on) {
+    var el = document.getElementById(id)
+    if (el) el.setAttribute('aria-pressed', on ? 'true' : 'false')
+  }
+  press('btn-shuffle', state.shuffle)
+  press('btn-stop-after', state.stopAfterTrack)
+  press('btn-sleep', !!state.sleepTimerEnd)
+  press('btn-vol', audio && audio.volume === 0)
+  var like = document.getElementById('btn-like')
+  if (like) like.setAttribute('aria-pressed', like.classList.contains('liked') ? 'true' : 'false')
+  var q = document.getElementById('btn-queue')
+  if (q) q.setAttribute('aria-expanded', state.queuePanelOpen ? 'true' : 'false')
+}
+
+var _ICON_PLAY_PATH = 'M8 5v14l11-7z'
+var _ICON_PAUSE_PATH = 'M6 4h4v16H6zm8 0h4v16h-4z'
+
+// Is the album the currently-playing track belongs to?
+function _albumIsPlaying(albumId) {
+  var t = state.queue[state.queueIndex]
+  if (!t || !state.isPlaying) return false
+  var album = state.library.find(function (a) { return a.id === albumId })
+  if (!album || !album.tracks) return false
+  return album.tracks.some(function (x) { return x.filePath === t.filePath })
+}
+
+// The jumpback and quick-grid buttons hardcoded a play triangle, so the one
+// album actually playing still looked paused and clicking it restarted the
+// album from the top instead of pausing.
+function updateSecondaryPlayIcons() {
+  document.querySelectorAll('.quick-card-play').forEach(function (btn) {
+    var p = btn.querySelector('path')
+    if (!p) return
+    var playing = _albumIsPlaying(btn.dataset.play)
+    p.setAttribute('d', playing ? _ICON_PAUSE_PATH : _ICON_PLAY_PATH)
+    btn.title = playing ? 'Pause' : 'Play'
+  })
+  var jb = document.getElementById('jumpback-play')
+  if (jb) {
+    var jp = jb.querySelector('path')
+    if (jp) jp.setAttribute('d', state.isPlaying ? _ICON_PAUSE_PATH : _ICON_PLAY_PATH)
+    jb.title = state.isPlaying ? 'Pause' : 'Play'
+  }
 }
 
 function updateTrackHighlight() {
@@ -5480,6 +5915,10 @@ function makeDraggable(trackEl, fillEl, thumbEl, onChange) {
 // ── Helpers ─────────────────────────────────────────────────────────────────
 function setContent(html) {
   document.getElementById('content').innerHTML = html
+  // Row indices are only meaningful for the rows currently on screen.
+  if (typeof _sel !== 'undefined') { _sel.selected = []; _sel.anchor = null; _sel.rows = [] }
+  var bar = document.getElementById('sel-bar')
+  if (bar) bar.style.display = 'none'
   bindContentEvents()
 }
 
@@ -5548,6 +5987,12 @@ function _drawHomeClock() {
 }
 
 function bindContentEvents() {
+  document.querySelectorAll('#content .album-card,#content .quick-card,#content .artist-card,#content .daily-mix-card,#content .jumpback-card')
+    .forEach(function (c) {
+      if (c.hasAttribute('tabindex')) return
+      c.setAttribute('tabindex', '0')
+      c.setAttribute('role', 'button')
+    })
   if (document.getElementById('home-clock')) {
     if (_homeClockInterval) { clearInterval(_homeClockInterval); _homeClockInterval = null }
     _drawHomeClock()
@@ -5563,11 +6008,20 @@ function bindContentEvents() {
     runYtSearch(ytSearchState.lastQuery, ytSearchState.scope)
   })
 
-  document.getElementById('jumpback-play')?.addEventListener('click', playCurrentTrack)
+  document.getElementById('jumpback-play')?.addEventListener('click', function () {
+    // Already loaded? Then this is a pause/resume, not a restart-from-zero.
+    var t = state.queue[state.queueIndex]
+    if (t && audio.src && audio.src.indexOf(t.filePath) !== -1) { togglePlay(); return }
+    playCurrentTrack()
+  })
   document.getElementById('jumpback-card')?.addEventListener('click', function(e) {
     if (!e.target.closest('.jumpback-play')) playCurrentTrack()
   })
 
+  document.querySelectorAll('.album-card[data-album]').forEach(el => {
+    if ((el.dataset.album || '').indexOf('yt_') === 0) return
+    el.addEventListener('click', e => { _selHandleClick(e, el) }, true)
+  })
   document.querySelectorAll('.album-card').forEach(el => {
     // YT entity cards bind their own navigation (browse/channel/playlist ids)
     if (el.dataset.browse || el.dataset.channel || el.dataset.playlist) return
@@ -5586,7 +6040,7 @@ function bindContentEvents() {
     })
     if (!(el.dataset.album || '').startsWith('yt_')) {
       el.addEventListener('contextmenu', e =>
-        showContextMenu(e, { type: 'album', albumId: el.dataset.album,
+        showContextMenu(e, { type: 'album', kind: 'album', albumId: el.dataset.album,
           artist: state.library.find(a => a.id === el.dataset.album)?.artist })
       )
     }
@@ -5623,6 +6077,9 @@ function bindContentEvents() {
   document.querySelectorAll('.quick-card-play').forEach(btn => {
     btn.addEventListener('click', e => {
       e.stopPropagation()
+      // If this album is the one already playing, act as pause -- restarting it
+      // from track 1 is never what the click meant.
+      if (_albumIsPlaying(btn.dataset.play)) { togglePlay(); return }
       const album = state.library.find(a => a.id === btn.dataset.play)
       if (album) playAlbum(album, 0)
     })
@@ -5630,6 +6087,7 @@ function bindContentEvents() {
   document.querySelectorAll('.track-row').forEach(row => {
     row.addEventListener('click', e => {
       if (e.target.closest('.track-more-btn') || e.target.closest('.track-like-btn')) return
+      if (_selHandleClick(e, row)) return
       if (e.target.closest('.track-num')) {
         const album = state.library.find(a => a.id === row.dataset.album)
         if (!album) return
@@ -5640,16 +6098,10 @@ function bindContentEvents() {
       const albumId = row.dataset.album
       if (albumId) navigate('album', albumId)
     })
-    row.addEventListener('contextmenu', e => {
-      const album = state.library.find(a => a.id === row.dataset.album)
-      const track = album?.tracks.find(t => t.filePath === row.dataset.file)
-      showContextMenu(e, { type: 'track', albumId: row.dataset.album, track, artist: album?.artist })
-    })
+    row.addEventListener('contextmenu', e => showContextMenu(e, _ctxTargetForRow(row)))
     row.querySelector('.track-more-btn')?.addEventListener('click', e => {
       e.stopPropagation()
-      const album = state.library.find(a => a.id === row.dataset.album)
-      const track = album?.tracks.find(t => t.filePath === row.dataset.file)
-      showContextMenu(e, { type: 'track', albumId: row.dataset.album, track, artist: album?.artist })
+      showContextMenu(e, _ctxTargetForRow(row))
     })
   })
   document.querySelectorAll('.artist-link, .artist-pill').forEach(el => {
@@ -5864,7 +6316,7 @@ function albumCard(album, idx, sortMode, query) {
   return `<div class="album-card" data-album="${album.id}">
     <div class="album-card-art-wrap">
       ${album.artPath
-        ? `<img class="album-card-art" src="${isHttpPath(album.artPath) ? esc(album.artPath) : `file://${album.artPath}`}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
+        ? `<img class="album-card-art" src="${isHttpPath(album.artPath) ? esc(album.artPath) : esc(`file://${album.artPath}`)}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
         : ''}
       <div class="album-card-art-fallback" ${album.artPath ? 'style="display:none"' : `style="${fallbackStyle}"`}>
         <svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>
@@ -5892,7 +6344,7 @@ function artImg(artPath, imgClass, fallbackClass) {
   var musicNote = `<svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>`
   if (artPath) {
     const src = /^https?:\/\//.test(artPath) ? artPath : `file://${artPath}`
-    return `<img class="${imgClass}" src="${src}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+    return `<img class="${imgClass}" src="${esc(src)}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
             <div class="${fallbackClass}" style="display:none">${musicNote}</div>`
   }
   return `<div class="${fallbackClass}">${musicNote}</div>`
@@ -5932,18 +6384,15 @@ function highlightMatch(text, query) {
 }
 // Multichannel label for a track or album. Stereo and mono get nothing —
 // a badge on almost every row would carry no information.
-function surroundLabel(channels) {
-  const c = Number(channels) || 0
-  if (c >= 8) return '7.1'
-  if (c === 7) return '6.1'
-  if (c >= 6) return '5.1'
-  if (c === 5) return '5.0'
-  if (c === 4) return '4.0'
-  return ''
+// format-badges.js owns this, and formatBadges() calls it as a bare global.
+// Declaring a second copy here silently rebound that call to this file's
+// version -- harmless only while the two happened to be identical.
+function surroundLabelOf(channels) {
+  return window.PapaFormat ? window.PapaFormat.surroundLabel(channels) : ''
 }
 
 function surroundBadge(channels, cls) {
-  const label = surroundLabel(channels)
+  const label = surroundLabelOf(channels)
   return label ? `<span class="surround-badge${cls ? ' ' + cls : ''}" title="${label} multichannel audio">${label}</span>` : ''
 }
 
@@ -6013,7 +6462,7 @@ function renderSavedQueues() {
   list.innerHTML = state.savedQueues.map(q => {
     const firstArt = q.tracks?.find(t => t.artPath)?.artPath
     const artHtml = firstArt
-      ? `<img class="sq-item-art" src="file://${firstArt}" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
+      ? `<img class="sq-item-art" src="${esc('file://' + firstArt)}" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
         + `<span class="sq-item-art-fb" style="display:none"><svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg></span>`
       : `<span class="sq-item-art-fb"><svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg></span>`
     return `
@@ -6047,7 +6496,10 @@ function renderSavedQueues() {
       window.api.deleteSavedQueue(btn.dataset.qid)
       renderSavedQueues()
       showSnackbar('Queue deleted', 'Undo', function() {
-        if (deletedQ) { state.savedQueues.push(deletedQ); renderSavedQueues() }
+        if (!deletedQ) return
+        state.savedQueues.push(deletedQ)
+        window.api.saveQueue(deletedQ)   // the delete hit disk, so undo must too
+        renderSavedQueues()
       })
     })
   })
@@ -6371,9 +6823,7 @@ async function _executeTool(name, input) {
     case 'set_repeat': {
       const mode = input.mode || 'off'
       state.repeat = mode
-      const isActive = mode !== 'off'
-      document.getElementById('btn-repeat')?.classList.toggle('active', isActive)
-      document.getElementById('np-modal-repeat')?.classList.toggle('active', isActive)
+      updateRepeatBtns()
       updateNextPrefetch()
       return `Repeat set to ${mode}.`
     }
@@ -7236,7 +7686,7 @@ function renderSoulseekRow(query) {
   const SF           = window.PapaSlskFilters
   const filtered     = SF ? SF.applyFilterSort(ordered, { filter: slsk.filter, sort: slsk.sort }) : ordered
   const surroundCount = SF ? ordered.filter(g => SF.groupSurround(g)).length : 0
-  const hiresCount    = SF ? ordered.filter(g => SF.isHiRes(g)).length : 0
+  const hiresCount    = SF ? ordered.filter(g => SF.isHiResGroup(g)).length : 0
   const displayList   = filtered.slice(0, 60)
   const filteredNote  = slsk.filter !== 'all'
     ? ` · <span class="slsk-filter-note">${filtered.length} match${filtered.length !== 1 ? 'es' : ''}</span>` : ''
@@ -7550,6 +8000,19 @@ async function _pollAndRenderDownloads() {
       }
     }
   }
+
+  // Files the scheduler is holding are real, pending work — show them here or
+  // they read as lost. slskd only knows about what has actually been sent.
+  if (window.api.slskSchedulerQueue) {
+    const sched = await window.api.slskSchedulerQueue().catch(() => null)
+    if (sched) {
+      const known = new Set(files.map(f => f.filename))
+      for (const f of (sched.files || [])) {
+        if (!known.has(f.filename)) files.push(f)
+      }
+      _dlPaintSchedulerStats(sched.stats)
+    }
+  }
   _dlLastFiles = files
 
   // Detect transitions from active → succeeded and trigger a library sync
@@ -7568,7 +8031,13 @@ async function _pollAndRenderDownloads() {
   _dlPrevActiveIds = nowActive
 
   const activeCount = files.filter(function(f) { return _dlIsActive(f.state) }).length
-  var todayDone = files.filter(function(f) { return _dlCategory(f.state) === 'completed' }).length
+  var _startOfToday = new Date(); _startOfToday.setHours(0, 0, 0, 0)
+  var _todayMs = _startOfToday.getTime()
+  var todayDone = files.filter(function(f) {
+    if (_dlCategory(f.state) !== 'completed') return false
+    var t = new Date(f.endedAt || 0).getTime()
+    return t >= _todayMs
+  }).length
   const badge = document.getElementById('nav-dl-badge')
   if (badge) { badge.style.display = (activeCount > 0 || todayDone > 0) ? 'flex' : 'none'; badge.textContent = activeCount > 0 ? activeCount : todayDone; badge.title = activeCount + ' active, ' + todayDone + ' completed' }
 
@@ -7596,6 +8065,7 @@ function _dlIsActive(stateStr) { return _dlCategory(stateStr) === 'active' }
 function _dlStateLabel(stateStr) {
   const parts = (stateStr || '').split(',').map(s => s.trim())
   if (parts.includes('InProgress'))   return { label: 'Downloading', cls: 'dl2-tag-progress' }
+  if (parts.includes('Scheduled'))    return { label: 'Waiting',     cls: 'dl2-tag-waiting'  }
   if (parts.includes('Queued'))       return { label: 'Queued',      cls: 'dl2-tag-queued'   }
   if (parts.includes('Initialising')) return { label: 'Connecting',  cls: 'dl2-tag-queued'   }
   if (parts.includes('Requested'))    return { label: 'Requested',   cls: 'dl2-tag-queued'   }
@@ -7891,7 +8361,7 @@ function _renderActiveTab(files, container) {
     const groupIds   = g.files.map(f => f.id).join(',')
 
     const artHtml = artPath
-      ? `<img src="file://${artPath}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"><div class="dl2-group-album-art-fallback" style="display:none"><svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V5h4V3h-6z"/></svg></div>`
+      ? `<img src="${esc('file://' + artPath)}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"><div class="dl2-group-album-art-fallback" style="display:none"><svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V5h4V3h-6z"/></svg></div>`
       : `<div class="dl2-group-album-art-fallback"><svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V5h4V3h-6z"/></svg></div>`
 
     const trackRows = g.files.map(f => {
@@ -7916,6 +8386,7 @@ function _renderActiveTab(files, container) {
               ${speed ? `<span class="dl2-meta-speed">${esc(speed)}</span>` : ''}
               ${sizeStr ? `<span class="dl2-meta-size">${esc(sizeStr)}</span>` : ''}
               ${eta ? `<span class="dl2-meta-eta">ETA ${esc(eta)}</span>` : ''}
+              ${_dlWaitLabel(f) ? `<span class="dl2-meta-wait">${esc(_dlWaitLabel(f))}</span>` : ''}
             </div>
           </div>
           <div class="dl2-file-end">
@@ -8077,7 +8548,7 @@ function _renderCompletedTab(files, container) {
       const firstUser = [...g.users][0] || ''
 
       const artHtml = g.artPath
-        ? `<img src="file://${g.artPath}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"><div class="dl2-group-album-art-fallback" style="display:none"><svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V5h4V3h-6z"/></svg></div>`
+        ? `<img src="${esc('file://' + g.artPath)}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"><div class="dl2-group-album-art-fallback" style="display:none"><svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V5h4V3h-6z"/></svg></div>`
         : `<div class="dl2-group-album-art-fallback"><svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V5h4V3h-6z"/></svg></div>`
 
       const userBtnHtml = firstUser
@@ -8327,7 +8798,7 @@ function _renderFailedTab(files, container) {
     const firstUser = [...g.users][0] || ''
 
     const artHtml = g.artPath
-      ? `<img src="file://${g.artPath}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"><div class="dl2-group-album-art-fallback" style="display:none"><svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg></div>`
+      ? `<img src="${esc('file://' + g.artPath)}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"><div class="dl2-group-album-art-fallback" style="display:none"><svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg></div>`
       : `<div class="dl2-group-album-art-fallback"><svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg></div>`
 
     const userBtnHtml = firstUser
@@ -8558,7 +9029,11 @@ function renderDownloads() {
           <span id="dl2-folder-label">…</span>
         </button>
       </div>
-      <button class="dl2-action-btn" id="dl2-action-btn" style="display:none">Clear All</button>
+      <div class="dl2-topbar-right">
+        <span class="dl2-sched" id="dl2-sched" title="Files metered out across peers by the download scheduler"></span>
+        <button class="dl2-action-btn" id="dl2-rebalance-btn" title="Pull deep per-peer queues back and spread them across sources">Rebalance</button>
+        <button class="dl2-action-btn" id="dl2-action-btn" style="display:none">Clear All</button>
+      </div>
     </div>
     ${dashHTML}
     ${batchBtns}
@@ -8619,6 +9094,28 @@ function renderDownloads() {
       _dlLastSig = ''   // force full re-render on tab switch
       _renderDlTab(_dlLastFiles)
     })
+  })
+
+  // Scheduler: live spread readout + manual rebalance
+  _dlPaintSchedulerStats()
+  if (window.api && window.api.slskSchedulerStats) {
+    window.api.slskSchedulerStats().then(_dlPaintSchedulerStats).catch(function() {})
+  }
+  document.getElementById('dl2-rebalance-btn')?.addEventListener('click', async () => {
+    const btn = document.getElementById('dl2-rebalance-btn')
+    if (!btn || btn.disabled) return
+    btn.disabled = true
+    const orig = btn.textContent
+    btn.textContent = 'Rebalancing…'
+    const res = await window.api.slskRespreadBacklog({}).catch(function() { return null })
+    if (res && res.ok) {
+      showSnackbar(`Re-spread ${res.respread} queued file${res.respread === 1 ? '' : 's'}, cleared ${res.purged} dead`)
+      _dlPaintSchedulerStats(res.stats)
+    } else {
+      showSnackbar('Rebalance failed: ' + ((res && res.error) || 'slskd unreachable'))
+    }
+    btn.textContent = orig
+    btn.disabled = false
   })
 
   // Action button (Cancel All / Clear All) — parallel for speed
@@ -8829,9 +9326,7 @@ function bindSlskSearchEvents(query) {
         const peers = S ? S.planPeers(plan) : 1
         if (peers > 1) showSnackbar(`Downloading from ${peers} sources in parallel`)
 
-        await Promise.all(plan.map(t =>
-          window.api.slskDownload({ username: t.username, filename: t.filename, size: t.size })
-        ))
+        await _slskEnqueue(plan)
         _scheduleLibRescan()
         if (anchorSur) _verifySurroundWhenDone(g, plan, anchorSur.label)
       } catch (_) { btn.disabled = false; btn.innerHTML = origHtml }
@@ -8852,8 +9347,8 @@ function bindSlskSearchEvents(query) {
       const origHtml = btn.innerHTML
       await _slskDownloadAndPlay(btn, g, first)
       // Queue rest silently
-      for (const f of sorted.slice(1))
-        window.api.slskDownload({ username: g.username, filename: f.filename, size: f.size }).catch(() => {})
+      _slskEnqueue(sorted.slice(1).map(f =>
+        ({ username: g.username, filename: f.filename, size: f.size })))
       btn.innerHTML = origHtml
       btn.disabled = false
     })
@@ -9167,12 +9662,9 @@ async function showSlskUserExplorer(username) {
     dlg.querySelector('#slskx-dl-folder')?.addEventListener('click', async ev => {
       const files = l.files.filter(f => T.AUDIO_RE.test(f.name))
       ev.target.disabled = true
-      let n = 0
-      for (const f of files) {
-        try { await window.api.slskDownload({ username, filename: f.fullPath, size: f.size || 0 }); n++ } catch (_) {}
-        ev.target.textContent = `Queuing ${n}/${files.length}…`
-      }
-      ev.target.textContent = `${n} queued`
+      ev.target.textContent = `Queuing ${files.length}…`
+      await _slskEnqueue(files.map(f => ({ username, filename: f.fullPath, size: f.size || 0 })))
+      ev.target.textContent = `${files.length} queued`
       _scheduleLibRescan()
     })
 
@@ -9190,12 +9682,9 @@ async function showSlskUserExplorer(username) {
       }
       const files = collect(l.node)
       ev.target.disabled = true
-      let n = 0
-      for (const f of files) {
-        try { await window.api.slskDownload({ username, filename: f.fullPath, size: f.size || 0 }); n++ } catch (_) {}
-        if (n % 5 === 0) ev.target.textContent = `Queuing ${n}/${files.length}…`
-      }
-      ev.target.textContent = `${n} queued`
+      ev.target.textContent = `Queuing ${files.length}…`
+      await _slskEnqueue(files.map(f => ({ username, filename: f.fullPath, size: f.size || 0 })))
+      ev.target.textContent = `${files.length} queued`
       _scheduleLibRescan()
     })
   }
@@ -9602,6 +10091,12 @@ function initSearchHistory() {
     searchWrap.appendChild(micBtn)
 
     micBtn.addEventListener('click', function() {
+      if (micBtn._recognition) {
+        micBtn._recognition.stop()
+        micBtn._recognition = null
+        micBtn.classList.remove('listening')
+        return
+      }
       if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
         showSnackbar('Voice search not supported in this browser')
         return
@@ -9612,6 +10107,7 @@ function initSearchHistory() {
       recognition.interimResults = false
       recognition.maxAlternatives = 1
 
+      micBtn._recognition = recognition
       micBtn.classList.add('listening')
       recognition.start()
 
@@ -9627,6 +10123,7 @@ function initSearchHistory() {
         showSnackbar('Voice search failed — try typing instead')
       }
       recognition.onend = function() {
+        micBtn._recognition = null
         micBtn.classList.remove('listening')
       }
     })
@@ -9670,7 +10167,7 @@ function initSearchHistory() {
       html += '<div style="padding:6px 12px;font-size:11px;color:var(--text3);text-transform:uppercase">Albums</div>'
       albums.forEach(function(a) {
         html += '<div class="live-item" data-album="' + a.id + '" style="padding:6px 12px;cursor:pointer;font-size:13px;display:flex;gap:8px;align-items:center">' +
-          '<div style="width:28px;height:28px;border-radius:4px;overflow:hidden">' + (a.artPath ? '<img src="file://' + a.artPath + '" style="width:100%;height:100%;object-fit:cover">' : '<div style="width:100%;height:100%;background:var(--bg3)"></div>') + '</div>' +
+          '<div style="width:28px;height:28px;border-radius:4px;overflow:hidden">' + (a.artPath ? '<img src="' + esc('file://' + a.artPath) + '" style="width:100%;height:100%;object-fit:cover">' : '<div style="width:100%;height:100%;background:var(--bg3)"></div>') + '</div>' +
           '<span>' + esc(a.name) + '<span style="color:var(--text3);font-size:11px"> — ' + esc(a.artist) + '</span></span>' +
           '</div>'
       })
@@ -9766,7 +10263,6 @@ function initResizableQueue() {
     document.addEventListener('mousemove', onMove)
     document.addEventListener('mouseup', onUp)
   })
-  panel.style.position = 'relative'
   panel.appendChild(handle)
 }
 
@@ -9783,6 +10279,25 @@ function setupListeners() {
       navigate('artist', artistEl.dataset.artist)
     }
   })
+
+  // Cards are divs with a click listener; give them a real keyboard path.
+  document.getElementById('content')?.addEventListener('keydown', e => {
+    if (e.key !== 'Enter' && e.key !== ' ') return
+    const card = e.target.closest('.album-card,.quick-card,.artist-card,.daily-mix-card,.jumpback-card')
+    if (!card || e.target.closest('button')) return
+    e.preventDefault()
+    card.click()
+  })
+
+  // Global delegation: plain mouse wheel scrolls .scroll-row rows horizontally
+  document.getElementById('content')?.addEventListener('wheel', e => {
+    const row = e.target.closest('.scroll-row')
+    if (!row) return
+    if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return
+    if (row.scrollWidth <= row.clientWidth) return
+    row.scrollLeft += e.deltaY
+    e.preventDefault()
+  }, { passive: false })
 
   // Global delegation: hover action buttons (play next / add to queue)
   document.getElementById('content')?.addEventListener('click', e => {
@@ -9950,10 +10465,7 @@ function setupListeners() {
   document.getElementById('btn-repeat')?.addEventListener('click', function() {
     const states = ['off', 'all', 'one']
     state.repeat = states[(states.indexOf(state.repeat) + 1) % 3]
-    const isActive = state.repeat !== 'off'
-    this.classList.toggle('active', isActive)
-    this.title = state.repeat === 'one' ? 'Repeat: one' : state.repeat === 'all' ? 'Repeat: all' : 'Repeat (R)'
-    document.getElementById('np-modal-repeat')?.classList.toggle('active', isActive)
+    updateRepeatBtns()
     updateNextPrefetch()
     showSnackbar(state.repeat === 'one' ? 'Repeat: One' : state.repeat === 'all' ? 'Repeat: All' : 'Repeat: Off', '', function(){}, 1500)
   })
@@ -9961,6 +10473,18 @@ function setupListeners() {
   document.getElementById('btn-stop-after')?.addEventListener('click', function() {
     state.stopAfterTrack = !state.stopAfterTrack
     updateStopAfterBtn()
+  })
+
+  document.getElementById('btn-vol')?.addEventListener('click', function() {
+    if (audio.volume > 0) {
+      state.lastVolume = audio.volume
+      audio.volume = 0
+    } else {
+      audio.volume = state.lastVolume || 0.8
+    }
+    setVolDisplay(audio.volume)
+    window.api.saveVolume(audio.volume)
+    updateAriaToggles()
   })
 
   // Like button (player bar)
@@ -10095,7 +10619,8 @@ function setupListeners() {
     function _cycleTimeDisplay() {
       timeDisplay = timeDisplay === 'elapsed' ? 'remaining' : timeDisplay === 'remaining' ? 'total' : 'elapsed'
       localStorage.setItem('papa_time_display', timeDisplay)
-      showSnackbar('Showing ' + timeDisplay + ' time')
+      showSnackbar(timeDisplay === 'total' ? 'Showing total album duration'
+        : timeDisplay === 'remaining' ? 'Showing time remaining' : 'Showing time elapsed')
     }
     document.getElementById('time-cur')?.addEventListener('click', _cycleTimeDisplay)
     progressTrack.addEventListener('contextmenu', function(e) {
@@ -10156,7 +10681,7 @@ function setupListeners() {
   })
 
   // Radio context menu
-  document.getElementById('ctx-radio')?.addEventListener('click', () => {
+  _ctxOn('ctx-radio', () => {
     if (!ctxTarget) return
     const track = ctxTarget.type === 'track' ? ctxTarget.track : null
     const album = state.library.find(a => a.id === ctxTarget.albumId)
@@ -10286,15 +10811,13 @@ function setupListeners() {
   document.getElementById('np-modal-repeat')?.addEventListener('click', function() {
     const states = ['off','all','one']
     state.repeat = states[(states.indexOf(state.repeat)+1)%3]
-    const isActive = state.repeat !== 'off'
-    this.classList.toggle('active', isActive)
-    document.getElementById('btn-repeat')?.classList.toggle('active', isActive)
+    updateRepeatBtns()
     updateNextPrefetch()
     showSnackbar(state.repeat === 'one' ? 'Repeat: One' : state.repeat === 'all' ? 'Repeat: All' : 'Repeat: Off', '', function(){}, 1500)
   })
 
   // Context menu actions
-  document.getElementById('ctx-play')?.addEventListener('click', () => {
+  _ctxOn('ctx-play', () => {
     if (!ctxTarget) return
     if (ctxTarget.type === 'album') {
       const album = state.library.find(a => a.id === ctxTarget.albumId)
@@ -10308,7 +10831,7 @@ function setupListeners() {
     }
     hideContextMenu()
   })
-  document.getElementById('ctx-queue')?.addEventListener('click', () => {
+  _ctxOn('ctx-queue', () => {
     if (!ctxTarget) return
     const album = state.library.find(a => a.id === ctxTarget.albumId)
     if (!album) { hideContextMenu(); return }
@@ -10320,7 +10843,7 @@ function setupListeners() {
     }
     hideContextMenu()
   })
-  document.getElementById('ctx-addpl')?.addEventListener('click', () => {
+  _ctxOn('ctx-addpl', () => {
     if (!ctxTarget) { hideContextMenu(); return }
     const album = state.library.find(a => a.id === ctxTarget.albumId)
     let tracks = []
@@ -10333,23 +10856,23 @@ function setupListeners() {
     hideContextMenu()
     if (tracks.length) showAddToPlaylistModal(tracks)
   })
-  document.getElementById('ctx-artist')?.addEventListener('click', () => {
+  _ctxOn('ctx-artist', () => {
     if (!ctxTarget?.artist) return
     navigate('artist', ctxTarget.artist)
     hideContextMenu()
   })
-  document.getElementById('ctx-like')?.addEventListener('click', () => {
+  _ctxOn('ctx-like', () => {
     if (ctxTarget?.albumId) toggleLike(ctxTarget.albumId)
     hideContextMenu()
   })
-  document.getElementById('ctx-wishlist')?.addEventListener('click', () => {
+  _ctxOn('ctx-wishlist', () => {
     if (!ctxTarget) return
     state.downloadWishlist.push({ query: ctxTarget.artist + ' ' + (ctxTarget.track ? ctxTarget.track.album : ctxTarget.albumId), addedAt: Date.now() })
     window.api.saveDownloadWishlist(state.downloadWishlist)
     showSnackbar('Added to wishlist')
     hideContextMenu()
   })
-  document.getElementById('ctx-play-next')?.addEventListener('click', () => {
+  _ctxOn('ctx-play-next', () => {
     if (!ctxTarget) return
     const album = state.library.find(a => a.id === ctxTarget.albumId)
     if (!album) { hideContextMenu(); return }
@@ -10366,12 +10889,34 @@ function setupListeners() {
     showToast(`Up next: ${tracks[0].title || 'track'}`)
     hideContextMenu()
   })
-  document.getElementById('ctx-show-folder')?.addEventListener('click', () => {
-    const filePath = ctxTarget?.track?.filePath
+  _ctxOn('ctx-trash', () => {
+    if (!ctxTarget) return
+    var album = state.library.find(function(a) { return a.id === ctxTarget.albumId })
+    // A track deletes just that file; an album deletes only the files the
+    // library actually knows about, never a whole folder that may hold more.
+    var paths = ctxTarget.paths && ctxTarget.paths.length
+      ? ctxTarget.paths.slice()
+      : ctxTarget.track
+        ? [ctxTarget.track.filePath]
+        : (album ? album.tracks.map(function(t) { return t.filePath }).filter(Boolean) : [])
+    var what = ctxTarget.label
+      || (ctxTarget.track ? (ctxTarget.track.title || _mgBaseName(paths[0]))
+      : (album ? album.artist + ' — ' + album.name : ''))
+    hideContextMenu()
+    if (paths.length) _mgTrashPaths(paths, what)
+  })
+  _ctxOn('ctx-edit-tags', () => editTags())
+  _ctxOn('ctx-artwork', () => setAlbumArtwork())
+  _ctxOn('ctx-rename', () => libraryRenameFolder())
+  _ctxOn('ctx-move', () => libraryMoveFolder())
+  _ctxOn('ctx-show-folder', () => {
+    // Falls back to the album's first track — this used to no-op on albums.
+    const album = state.library.find(a => a.id === ctxTarget?.albumId)
+    const filePath = ctxTarget?.track?.filePath || album?.tracks?.[0]?.filePath
     if (filePath) window.api.slskShowInFolder(filePath)
     hideContextMenu()
   })
-  document.getElementById('ctx-copy-path')?.addEventListener('click', () => {
+  _ctxOn('ctx-copy-path', () => {
     if (!ctxTarget) return
     var fp = ctxTarget.track ? ctxTarget.track.filePath : (state.library.find(function(a) { return a.id === ctxTarget.albumId })?.tracks?.[0]?.filePath)
     if (fp) {
@@ -10381,11 +10926,70 @@ function setupListeners() {
     }
     hideContextMenu()
   })
+  // Removing from a list. Deliberately separate from ctx-trash: these touch
+  // only the list, never the disk.
+  _ctxOn('ctx-remove-playlist', () => {
+    const t = ctxTarget?.track
+    const pl = state.playlists.find(p => p.id === state.currentPlaylistId)
+    hideContextMenu()
+    if (!t || !pl) return
+    const idx = pl.tracks.findIndex(x => x.filePath && x.filePath === t.filePath)
+    if (idx < 0) return
+    const removed = pl.tracks.splice(idx, 1)[0]
+    window.api.savePlaylist(pl)
+    renderPlaylist(pl.id)
+    pushUndo('Removed from ' + pl.name, function () {
+      pl.tracks.splice(idx, 0, removed)
+      window.api.savePlaylist(pl)
+      renderPlaylist(pl.id)
+    })
+  })
+
+  _ctxOn('ctx-remove-queue', () => {
+    const t = ctxTarget?.track
+    const known = ctxTarget?.queueIdx
+    hideContextMenu()
+    if (!t) return
+    const idx = (typeof known === 'number' && !isNaN(known))
+      ? known
+      : state.queue.findIndex(x => x.filePath && x.filePath === t.filePath)
+    if (idx < 0 || idx >= state.queue.length) return
+    const removed = state.queue.splice(idx, 1)[0]
+    if (idx < state.queueIndex) state.queueIndex--
+    else if (idx === state.queueIndex) {
+      if (state.queue.length) playCurrentTrack()
+      else { audio.pause(); state.isPlaying = false; state.queueIndex = -1; updatePlayBtn(); updateNowPlaying(null) }
+    }
+    renderQueuePanel()
+    pushUndo('Removed from queue', function () {
+      state.queue.splice(idx, 0, removed)
+      if (idx <= state.queueIndex) state.queueIndex++
+      renderQueuePanel()
+    })
+  })
+
+  _ctxOn('ctx-unlike', () => {
+    const t = ctxTarget?.track
+    hideContextMenu()
+    if (!t || !t.filePath) return
+    const idx = state.likedTracks.indexOf(t.filePath)
+    if (idx < 0) return
+    state.likedTracks.splice(idx, 1)
+    window.api.saveLiked(state.likedTracks)
+    if (state.currentPage === 'liked') renderLikedSongs()
+    pushUndo('Removed from Liked Songs', function () {
+      state.likedTracks.splice(idx, 0, t.filePath)
+      window.api.saveLiked(state.likedTracks)
+      if (state.currentPage === 'liked') renderLikedSongs()
+    })
+  })
+
   document.addEventListener('click', e => {
     if (!e.target.closest('#ctx-menu')) hideContextMenu()
   })
+  var CTX_SURFACES = '.album-card, .track-row, .artist-card, .quick-card, .folder-tree-item, .queue-row'
   document.addEventListener('contextmenu', e => {
-    if (!e.target.closest('.album-card') && !e.target.closest('.track-row')) hideContextMenu()
+    if (!e.target.closest(CTX_SURFACES)) hideContextMenu()
   })
 
   // Browser nav
@@ -10421,11 +11025,11 @@ function setupListeners() {
     var pct = `${ratio * 100}%`
     if (_dom.fill)  _dom.fill.style.width = pct
     if (_dom.thumb) _dom.thumb.style.left = pct
-    if (_dom.timeCur) _dom.timeCur.textContent = timeDisplay === 'total' ? fmtDur(_albumTotalDuration()) : timeDisplay === 'remaining' ? fmtDur(audio.duration - ct) : fmtDur(ct)
+    if (_dom.timeCur) { _dom.timeCur.textContent = _fmtTimeCur(ct); _dom.timeCur.title = _timeCurTitle() }
     if (state.modalOpen) {
       if (_dom.modalFill)  _dom.modalFill.style.width = pct
       if (_dom.modalThumb) _dom.modalThumb.style.left  = pct
-      if (_dom.modalCur)   _dom.modalCur.textContent = timeDisplay === 'total' ? fmtDur(_albumTotalDuration()) : timeDisplay === 'remaining' ? fmtDur(audio.duration - ct) : fmtDur(ct)
+      if (_dom.modalCur) { _dom.modalCur.textContent = _fmtTimeCur(ct); _dom.modalCur.title = _timeCurTitle() }
     }
     updateLyricsHighlight()
     updateLyricsDrawerHighlight()
@@ -10492,15 +11096,32 @@ function setupListeners() {
   audio.addEventListener('error', e => {
     console.error('Audio error:', e)
     const t = state.queue[state.queueIndex]
-    if (!t || !/^https?:\/\//.test(t.filePath)) return
-    // Dead/region-locked YouTube stream — tell the user and move on
-    const titleEl = document.getElementById('np-title')
-    if (titleEl) {
-      const orig = titleEl.textContent
-      titleEl.textContent = 'Stream unavailable — skipping'
-      setTimeout(() => { titleEl.textContent = orig }, 2500)
+    if (!t) return
+    const isStream = /^https?:\/\//.test(t.filePath || '')
+
+    if (isStream) {
+      // Dead/region-locked YouTube stream — tell the user and move on
+      const titleEl = document.getElementById('np-title')
+      if (titleEl) {
+        const orig = titleEl.textContent
+        titleEl.textContent = 'Stream unavailable — skipping'
+        setTimeout(() => { titleEl.textContent = orig }, 2500)
+      }
+      if (state.queue.length > 1) playNext()
+      return
     }
-    if (state.queue.length > 1) playNext()
+
+    // A local file that will not load is almost always one that was deleted or
+    // moved. This used to `return` here, so playback simply stopped with no
+    // message and the dead entry stayed in the queue forever.
+    const failed = (e && e.detail && e.detail.src) || t.filePath
+    dropMissingTrack(failed, t)
+  })
+
+  // Library changed in main (a mutation, or the folder watcher). Until now this
+  // event had no listener at all, so the UI silently kept showing stale data.
+  window.api.on('library-updated', (payload) => {
+    applyLibraryUpdate(payload)
   })
 
   // IPC events
@@ -10966,14 +11587,14 @@ async function checkConnections() {
   if (slskdEl) {
     var dot = slskdEl.querySelector('.conn-dot')
     var isConnected = state.connectionStatus.slskd === 'connected'
-    dot.style.cssText = 'width:7px;height:7px;border-radius:50%;display:inline-block;background:' + (isConnected ? 'var(--accent,#1db954)' : '#e74c3c')
+    dot.style.cssText = 'width:7px;height:7px;border-radius:50%;display:inline-block;background:' + (isConnected ? '#1db954' : '#e74c3c')
     slskdEl.style.color = isConnected ? 'var(--text1)' : 'var(--text3)'
     slskdEl.childNodes[slskdEl.childNodes.length - 1].textContent = isConnected ? ' Soulseek' : ' Soulseek offline'
   }
   if (ytEl) {
     var dot2 = ytEl.querySelector('.conn-dot')
     var isConnected2 = state.connectionStatus.youtube === 'connected'
-    dot2.style.cssText = 'width:7px;height:7px;border-radius:50%;display:inline-block;background:' + (isConnected2 ? 'var(--accent,#1db954)' : '#e74c3c')
+    dot2.style.cssText = 'width:7px;height:7px;border-radius:50%;display:inline-block;background:' + (isConnected2 ? '#1db954' : '#e74c3c')
     ytEl.style.color = isConnected2 ? 'var(--text1)' : 'var(--text3)'
     ytEl.childNodes[ytEl.childNodes.length - 1].textContent = isConnected2 ? ' YouTube' : ' YouTube offline'
   }
@@ -11171,14 +11792,13 @@ function showSnackbar(msg, actionLabel, actionCallback, duration) {
 // ── Command palette wrapper functions ─────────────────────────────────────
 function toggleShuffleWrap() {
   state.shuffle = !state.shuffle
-  var b = document.getElementById('btn-shuffle')
-  if (b) b.classList.toggle('active', state.shuffle)
+  document.getElementById('btn-shuffle')?.classList.toggle('active', state.shuffle)
+  document.getElementById('np-modal-shuffle')?.classList.toggle('active', state.shuffle)
   showSnackbar(state.shuffle ? 'Shuffle on' : 'Shuffle off', '', function(){}, 1500)
 }
 function cycleRepeatWrap() {
-  state.repeat = state.repeat === 'one' ? 'none' : state.repeat === 'all' ? 'one' : 'all'
-  var b = document.getElementById('btn-repeat')
-  if (b) b.classList.toggle('active', state.repeat !== 'none')
+  state.repeat = state.repeat === 'one' ? 'off' : state.repeat === 'all' ? 'one' : 'all'
+  updateRepeatBtns()
   var lbl = state.repeat === 'one' ? 'Repeat: One' : state.repeat === 'all' ? 'Repeat: All' : 'Repeat: Off'
   showSnackbar(lbl, '', function(){}, 1500)
 }
@@ -11376,5 +11996,1317 @@ function _evalSmartPlaylist(pl) {
 window.addEventListener('online', () => { state.isOnline = true })
 window.addEventListener('offline', () => { state.isOnline = false })
 
+// ── Library manager ─────────────────────────────────────────────────────────
+// Deleting music is irreversible from the user's point of view even when the
+// files go to Trash, so this view never pre-selects anything, never hides why
+// a copy is or is not safe to remove, and always names the exact files and
+// total size before it touches the disk.
+
+var _mgState = { groups: [], picked: {}, busy: false, tab: 'duplicates', trash: null }
+
+function _mgTracksFromLibrary() {
+  var out = []
+  for (var i = 0; i < state.library.length; i++) {
+    var a = state.library[i]
+    for (var j = 0; j < (a.tracks || []).length; j++) {
+      var t = a.tracks[j]
+      if (!t.filePath) continue
+      out.push({
+        filePath: t.filePath,
+        title: t.title || null,
+        trackNumber: t.trackNumber || 0,
+        channels: t.channels || 0,
+        fileSize: t.fileSize || 0,
+        codec: t.codec || null,
+        bitsPerSample: t.bitsPerSample || 0,
+        sampleRate: t.sampleRate || 0,
+        album: a.name,
+        albumArtist: a.artist,
+        artist: t.artist || a.artist,
+      })
+    }
+  }
+  return out
+}
+
+function _mgFmtBytes(n) {
+  if (!n) return '0 MB'
+  if (n >= 1e9) return (n / 1e9).toFixed(1) + ' GB'
+  return Math.round(n / 1e6) + ' MB'
+}
+
+function _mgPickedPaths() {
+  var out = []
+  for (var k in _mgState.picked) {
+    if (Object.prototype.hasOwnProperty.call(_mgState.picked, k) && _mgState.picked[k]) out.push(k)
+  }
+  return out
+}
+
+function _mgTabsHtml() {
+  var t = _mgState.tab
+  return '<div class="mg-tabs">' +
+    '<button class="mg-tab' + (t === 'duplicates' ? ' active' : '') + '" data-mgtab="duplicates">Duplicates</button>' +
+    '<button class="mg-tab' + (t === 'health' ? ' active' : '') + '" data-mgtab="health">Health</button>' +
+    '<button class="mg-tab' + (t === 'storage' ? ' active' : '') + '" data-mgtab="storage">Storage</button>' +
+    '<button class="mg-tab' + (t === 'trash' ? ' active' : '') + '" data-mgtab="trash">Recently Deleted</button>' +
+    '</div>'
+}
+
+function _mgBindTabs() {
+  document.querySelectorAll('[data-mgtab]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      _mgState.tab = b.dataset.mgtab
+      renderManage()
+    })
+  })
+}
+
+function renderManage() {
+  if (_mgState.tab === 'trash') return renderManageTrash()
+  if (_mgState.tab === 'health') return renderManageHealth()
+  if (_mgState.tab === 'storage') return renderManageStorage()
+  return renderManageDuplicates()
+}
+
+function _mgShell(inner, sub) {
+  return '<div class="page mg-page">' +
+    '<div class="mg-head"><h2 class="mg-title">Manage Library</h2>' +
+    (sub ? '<div class="mg-sub">' + sub + '</div>' : '') + '</div>' +
+    _mgTabsHtml() + inner + '</div>'
+}
+
+// Everything here reports what it found and hands the fix to the same delete
+// funnel the rest of the app uses — so a "Fix" click still gets the file list,
+// the confirmation, the state pruning and the undo.
+async function renderManageHealth() {
+  setContent(_mgShell('<div class="mg-empty">Scanning the library…</div>'))
+  _mgBindTabs()
+
+  var extras = await window.api.libraryScanExtras().catch(function () { return null })
+  var H = window.PapaLibraryHealth
+  if (!H) { setContent(_mgShell('<div class="mg-empty">Health tools failed to load.</div>')); _mgBindTabs(); return }
+
+  var findings = H.assessLibrary(state.library, extras || {})
+  _mgState.findings = findings
+  var reclaim = H.reclaimable(findings)
+
+  if (!findings.length) {
+    setContent(_mgShell('<div class="mg-empty">Nothing wrong found. Library looks clean.</div>',
+      'No problems detected'))
+    _mgBindTabs()
+    return
+  }
+
+  var html = ''
+  for (var i = 0; i < findings.length; i++) {
+    var f = findings[i]
+    var sample = f.paths.slice(0, 6).map(function (p) {
+      return '<div class="mg-health-path">' + esc(_mgBaseName(p) || p) + '</div>'
+    }).join('')
+    html += '<div class="mg-group mg-sev-' + f.severity + '">' +
+      '<div class="mg-group-head">' +
+        '<span class="mg-group-title">' + esc(f.title) + '</span>' +
+        '<span class="mg-group-meta">' + f.count + ' item' + (f.count === 1 ? '' : 's') +
+          (f.bytes ? ' · ' + _mgFmtBytes(f.bytes) : '') + '</span>' +
+      '</div>' +
+      '<div class="mg-health-detail">' + esc(f.detail) + '</div>' +
+      sample +
+      (f.paths.length > 6 ? '<div class="mg-health-path">…and ' + (f.paths.length - 6) + ' more</div>' : '') +
+      (f.fixAction
+        ? '<div class="mg-health-actions"><button class="mg-btn mg-btn-danger mg-btn-sm" data-fix="' + esc(f.id) + '">Review &amp; remove…</button></div>'
+        : '<div class="mg-health-actions"><span class="mg-health-note">Nothing is removed for this — it needs a decision from you.</span></div>') +
+      '</div>'
+  }
+
+  if (extras && !extras.partialsChecked) {
+    html = '<div class="mg-warn">Soulseek is not reachable, so unfinished downloads were not checked ' +
+      '— nothing is guessed at here.</div>' + html
+  }
+
+  setContent(_mgShell(html, findings.length + ' finding' + (findings.length === 1 ? '' : 's') +
+    (reclaim ? ' · up to ' + _mgFmtBytes(reclaim) + ' reclaimable' : '')))
+  _mgBindTabs()
+  document.querySelectorAll('[data-fix]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var f = (_mgState.findings || []).filter(function (x) { return x.id === b.dataset.fix })[0]
+      if (f && f.fixAction) libraryMutate({ kind: 'trash', paths: f.fixAction.paths, label: f.title })
+    })
+  })
+}
+
+async function renderManageStorage() {
+  setContent(_mgShell('<div class="mg-empty">Measuring…</div>'))
+  _mgBindTabs()
+  var rep = await window.api.libraryStorageReport().catch(function () { return null })
+  if (!rep) { setContent(_mgShell('<div class="mg-empty">Could not read storage.</div>')); _mgBindTabs(); return }
+
+  var rows = (rep.roots || []).map(function (r) {
+    return '<div class="mg-store-row"><span class="mg-store-label">' + esc(r.path) + '</span>' +
+      '<span class="mg-store-val">' + _mgFmtBytes(r.bytes) + '</span></div>'
+  }).join('')
+  rows += '<div class="mg-store-row"><span class="mg-store-label">Cached artwork</span>' +
+    '<span class="mg-store-val">' + _mgFmtBytes(rep.artworkBytes) + '</span></div>'
+  rows += '<div class="mg-store-row"><span class="mg-store-label">Trash (recoverable, still using space)</span>' +
+    '<span class="mg-store-val">' + _mgFmtBytes(rep.trashBytes) + '</span></div>'
+  if (rep.free != null) {
+    rows += '<div class="mg-store-row mg-store-total"><span class="mg-store-label">Free on drive</span>' +
+      '<span class="mg-store-val">' + _mgFmtBytes(rep.free) +
+      (rep.total ? ' of ' + _mgFmtBytes(rep.total) : '') + '</span></div>'
+  }
+  setContent(_mgShell('<div class="mg-store">' + rows + '</div>' +
+    '<div class="mg-note">Trash counts against your free space until it is emptied — see Recently Deleted.</div>'))
+  _mgBindTabs()
+}
+
+// Files here have left the library but not the drive. Because the Trash sits on
+// the SAME volume as the music, this is the only place that actually frees
+// space — so it says so plainly rather than letting the user assume otherwise.
+async function renderManageTrash() {
+  setContent('<div class="page mg-page"><div class="mg-head"><h2 class="mg-title">Manage Library</h2></div>' +
+    _mgTabsHtml() + '<div class="mg-empty">Reading Trash…</div></div>')
+  _mgBindTabs()
+
+  var data = await window.api.libraryTrashList().catch(function () { return null })
+  if (!data) {
+    setContent('<div class="page mg-page"><div class="mg-head"><h2 class="mg-title">Manage Library</h2></div>' +
+      _mgTabsHtml() + '<div class="mg-empty">Could not read the Trash.</div></div>')
+    _mgBindTabs()
+    return
+  }
+  _mgState.trash = data
+
+  var loc = (data.volumes || []).map(function (v) {
+    return '<div class="mg-trash-vol"><code>' + esc(v.trashDir) + '</code>' +
+      (v.free != null ? '<span class="mg-trash-free">' + _mgFmtBytes(v.free) + ' free on ' + esc(v.mount) + '</span>' : '') +
+      '</div>'
+  }).join('')
+
+  var rows = (data.items || []).map(function (it) {
+    return '<div class="mg-trash-row">' +
+      '<label class="mg-pick"><input type="checkbox" class="mg-tcheck" data-name="' + esc(it.name) + '"></label>' +
+      '<div class="mg-folder-body">' +
+        '<div class="mg-folder-name" title="' + esc(it.original || it.payload) + '">' + esc(it.name) + '</div>' +
+        '<div class="mg-folder-meta">' +
+          '<span>' + _mgFmtBytes(it.bytes) + '</span>' +
+          (it.isDir ? '<span>folder</span>' : '') +
+          (it.deletedAt ? '<span>deleted ' + esc(String(it.deletedAt).replace('T', ' ').slice(0, 16)) + '</span>' : '') +
+        '</div>' +
+        (it.original ? '<div class="mg-verdict mg-keep">was ' + esc(it.original) + '</div>' : '') +
+      '</div>' +
+      (it.original ? '<button class="mg-btn mg-btn-sm" data-restore="' + esc(it.original) + '">Restore</button>' : '') +
+      '</div>'
+  }).join('')
+
+  setContent('<div class="page mg-page">' +
+    '<div class="mg-head"><h2 class="mg-title">Manage Library</h2>' +
+      '<div class="mg-sub">' + (data.items || []).length + ' item' + ((data.items || []).length === 1 ? '' : 's') +
+      ' in Trash · ' + _mgFmtBytes(data.totalBytes) + '</div></div>' +
+    _mgTabsHtml() +
+    '<div class="mg-note">Your music drive holds its own Trash, so deleting moved these files but did ' +
+      '<strong>not</strong> free any space. Emptying the Trash is what frees it — and cannot be undone.' +
+      loc + '</div>' +
+    (rows || '<div class="mg-empty">Trash is empty.</div>') +
+    '</div>' +
+    ((data.items || []).length
+      ? '<div class="mg-bar" id="mg-trash-bar">' +
+          '<span id="mg-trash-text">' + _mgFmtBytes(data.totalBytes) + ' recoverable</span>' +
+          '<div class="sel-bar-actions">' +
+            '<button class="mg-btn" id="mg-restore-sel">Restore selected</button>' +
+            '<button class="mg-btn mg-btn-danger" id="mg-empty-trash">Empty Trash…</button>' +
+          '</div></div>'
+      : ''))
+  _mgBindTabs()
+  _mgBindTrash()
+}
+
+function _mgSelectedTrashNames() {
+  return Array.prototype.map.call(document.querySelectorAll('.mg-tcheck:checked'), function (c) { return c.dataset.name })
+}
+
+function _mgBindTrash() {
+  document.querySelectorAll('[data-restore]').forEach(function (b) {
+    b.addEventListener('click', async function () {
+      b.disabled = true
+      b.textContent = 'Restoring…'
+      var r = await window.api.libraryRestoreTrashed({ paths: [b.dataset.restore] }).catch(function () { return null })
+      showSnackbar(r && r.restored ? 'Restored' : 'Could not restore — ' +
+        esc((r && r.results && r.results[0] && r.results[0].error) || 'unknown reason'))
+      _scheduleLibRescan()
+      renderManageTrash()
+    })
+  })
+
+  document.getElementById('mg-restore-sel')?.addEventListener('click', async function () {
+    var names = _mgSelectedTrashNames()
+    var items = (_mgState.trash.items || []).filter(function (i) { return names.indexOf(i.name) !== -1 && i.original })
+    if (!items.length) { showSnackbar('Select something to restore first'); return }
+    var r = await window.api.libraryRestoreTrashed({ paths: items.map(function (i) { return i.original }) })
+      .catch(function () { return null })
+    showSnackbar(r ? (r.restored + ' restored' + (r.failed ? ', ' + r.failed + ' failed' : '')) : 'Restore failed')
+    _scheduleLibRescan()
+    renderManageTrash()
+  })
+
+  document.getElementById('mg-empty-trash')?.addEventListener('click', function () {
+    var names = _mgSelectedTrashNames()
+    var items = (_mgState.trash.items || [])
+    var target = names.length ? items.filter(function (i) { return names.indexOf(i.name) !== -1 }) : items
+    var bytes = target.reduce(function (n, i) { return n + i.bytes }, 0)
+    // Emptying everything is the one action in this app with no way back, and
+    // a stray click should not be able to reach it. Typing the word is the
+    // cheapest way to make it deliberate.
+    var needsTyping = !names.length
+    _mgConfirm(
+      names.length ? 'Permanently delete ' + target.length + ' item' + (target.length === 1 ? '' : 's') + '?'
+                   : 'Empty the whole Trash?',
+      '<p class="mg-confirm-warn">This cannot be undone. There is no second copy.</p>' +
+      '<p class="mg-confirm-sum">' + target.length + ' item' + (target.length === 1 ? '' : 's') + ' · ' +
+        _mgFmtBytes(bytes) + ' will be permanently removed, freeing that space on your drive.</p>' +
+      (needsTyping
+        ? '<p class="mg-confirm-sum">Type <strong>EMPTY</strong> to confirm:</p>' +
+          '<input id="mg-empty-confirm" class="sq-name-input" style="width:100%;box-sizing:border-box" autocomplete="off">'
+        : ''),
+      'Delete permanently',
+      async function () {
+        if (needsTyping) {
+          var typed = (document.getElementById('mg-empty-confirm') || {}).value
+          if (String(typed).trim().toUpperCase() !== 'EMPTY') {
+            showSnackbar('Not emptied — type EMPTY to confirm')
+            return
+          }
+        }
+        var r = await window.api.libraryEmptyTrash({ names: names.length ? names : null })
+          .catch(function () { return null })
+        showSnackbar(r ? (r.removed + ' permanently deleted · ' + _mgFmtBytes(r.freed) + ' freed')
+                       : 'Could not empty the Trash')
+        renderManageTrash()
+      }
+    )
+  })
+}
+
+function renderManageDuplicates() {
+  var L = window.PapaLibraryManage
+  if (!L) { setContent('<div class="page"><p>Library tools failed to load.</p></div>'); return }
+  _mgState.groups = L.findDuplicates(_mgTracksFromLibrary())
+  _mgState.picked = {}
+
+  var groups = _mgState.groups
+  var reclaimable = groups.reduce(function (n, g) { return n + g.deletableBytes }, 0)
+
+  var html = '<div class="page mg-page">' +
+    '<div class="mg-head">' +
+      '<h2 class="mg-title">Manage Library</h2>' +
+      '<div class="mg-sub">' + groups.length + ' album' + (groups.length === 1 ? '' : 's') +
+        ' with more than one copy · up to ' + _mgFmtBytes(reclaimable) + ' safely reclaimable</div>' +
+    '</div>' +
+    _mgTabsHtml() +
+    '<div class="mg-note">Nothing is selected for you. Removed files go to your drive\'s Trash, so a wrong call is recoverable — see Recently Deleted to restore or free the space.</div>'
+
+  if (!groups.length) {
+    html += '<div class="mg-empty">No duplicate albums found.</div></div>'
+    setContent(html)
+    _mgBindTabs()
+    return
+  }
+
+  for (var i = 0; i < groups.length; i++) {
+    var g = groups[i]
+    html += '<div class="mg-group' + (g.reliable ? '' : ' mg-group-unsafe') + '">' +
+      '<div class="mg-group-head">' +
+        '<span class="mg-group-title">' + esc(g.artist || 'Unknown artist') + ' — ' + esc(g.album || 'Unknown album') + '</span>' +
+        '<span class="mg-group-meta">' + g.folders.length + ' copies · ' + _mgFmtBytes(g.totalBytes) + '</span>' +
+      '</div>'
+    for (var w = 0; w < g.warnings.length; w++) {
+      html += '<div class="mg-warn">' + esc(g.warnings[w]) + '</div>'
+    }
+    for (var f = 0; f < g.folders.length; f++) {
+      var fo = g.folders[f]
+      var name = L.baseOf(fo.dir) || fo.dir
+      html += '<div class="mg-folder' + (fo.safeToDelete ? '' : ' mg-folder-keep') + '">' +
+        '<label class="mg-pick">' +
+          '<input type="checkbox" class="mg-check' + (fo.safeToDelete ? '' : ' mg-check-risky') +
+          '" data-path="' + esc(fo.dir) + '" data-risky="' + (fo.safeToDelete ? '0' : '1') + '"' +
+          ' title="' + esc(fo.safeToDelete ? 'Fully covered by another copy' : fo.blockers.join('; ')) + '">' +
+        '</label>' +
+        '<div class="mg-folder-body">' +
+          '<div class="mg-folder-name" title="' + esc(fo.dir) + '">' + esc(name) + '</div>' +
+          '<div class="mg-folder-meta">' +
+            '<span class="mg-chip mg-ch-' + (fo.maxChannels >= 6 ? 'sur' : 'st') + '">' + esc(fo.channelLabel) + '</span>' +
+            '<span>' + fo.trackCount + ' track' + (fo.trackCount === 1 ? '' : 's') + '</span>' +
+            '<span>' + _mgFmtBytes(fo.bytes) + '</span>' +
+            (fo.partCount > 1 ? '<span>' + fo.partCount + ' discs</span>' : '') +
+            (fo.maxBitDepth ? '<span>' + fo.maxBitDepth + '-bit</span>' : '') +
+          '</div>' +
+          (fo.safeToDelete
+            ? '<div class="mg-verdict mg-ok">Fully covered by ' + esc(L.baseOf(fo.supersededBy)) + '</div>'
+            : '<div class="mg-verdict mg-keep">Keep — ' + esc(fo.blockers.join('; ')) + '</div>') +
+        '</div>' +
+        '<button class="mg-reveal" data-reveal="' + esc(fo.files[0] || '') + '" title="Show in file manager">⤢</button>' +
+      '</div>'
+    }
+    html += '</div>'
+  }
+  html += '</div>' +
+    '<div class="mg-bar" id="mg-bar" style="display:none">' +
+      '<span id="mg-bar-text"></span>' +
+      '<button class="mg-btn mg-btn-danger" id="mg-delete-btn">Move to Trash…</button>' +
+    '</div>'
+  setContent(html)
+  _mgBindTabs()
+  _mgBind()
+}
+
+function _mgBind() {
+  document.querySelectorAll('.mg-check').forEach(function (cb) {
+    cb.addEventListener('change', function () {
+      _mgState.picked[cb.dataset.path] = cb.checked
+      _mgUpdateBar()
+    })
+  })
+  document.querySelectorAll('[data-reveal]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      if (b.dataset.reveal) window.api.slskShowInFolder(b.dataset.reveal)
+    })
+  })
+  document.getElementById('mg-delete-btn')?.addEventListener('click', _mgConfirmDelete)
+}
+
+function _mgUpdateBar() {
+  var picked = _mgPickedPaths()
+  var bar = document.getElementById('mg-bar')
+  if (!bar) return
+  if (!picked.length) { bar.style.display = 'none'; return }
+  var bytes = 0
+  for (var i = 0; i < _mgState.groups.length; i++) {
+    var fs2 = _mgState.groups[i].folders
+    for (var j = 0; j < fs2.length; j++) {
+      if (picked.indexOf(fs2[j].dir) !== -1) bytes += fs2[j].bytes
+    }
+  }
+  bar.style.display = 'flex'
+  var risky = document.querySelectorAll('.mg-check:checked[data-risky="1"]').length
+  document.getElementById('mg-bar-text').innerHTML =
+    esc(picked.length + ' folder' + (picked.length === 1 ? '' : 's') + ' selected · ' + _mgFmtBytes(bytes)) +
+    (risky ? ' <span class="mg-bar-warn">' + risky + ' not fully covered</span>' : '')
+}
+
+function _mgBaseName(p) {
+  var s = String(p == null ? '' : p)
+  var i = Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\'))
+  return i >= 0 ? s.slice(i + 1) : s
+}
+
+// Shared by the Manage view and the right-click menu, so a delete started from
+// anywhere gets the same inspection, the same confirmation and the same Trash.
+// No generic confirm dialog exists in this app, and a destructive action is
+// the wrong place to reuse the playlist-name prompt.
+function _mgConfirm(title, bodyHtml, confirmLabel, onConfirm) {
+  document.getElementById('mg-confirm-modal')?.remove()
+  var dlg = document.createElement('div')
+  dlg.id = 'mg-confirm-modal'
+  dlg.className = 'modal-overlay'
+  dlg.innerHTML = '<div class="modal-box mg-confirm-box">' +
+    '<div class="modal-header-row">' +
+      '<div class="modal-title">' + esc(title) + '</div>' +
+      '<button class="modal-close-btn" id="mg-cf-x">✕</button>' +
+    '</div>' +
+    '<div class="mg-confirm-body">' + bodyHtml + '</div>' +
+    '<div class="mg-confirm-actions">' +
+      '<button class="mg-btn" id="mg-cf-cancel">Cancel</button>' +
+      '<button class="mg-btn mg-btn-danger" id="mg-cf-ok">' + esc(confirmLabel) + '</button>' +
+    '</div></div>'
+  document.body.appendChild(dlg)
+  function close() { dlg.remove(); document.removeEventListener('keydown', onKey); flushPendingLibraryUpdate() }
+  function onKey(e) { if (e.key === 'Escape') close() }
+  document.addEventListener('keydown', onKey)
+  // Enter submits from a text field, as it does everywhere else in the app.
+  // Scoped to inputs on purpose: a confirm with no input focuses Cancel, and
+  // Enter must not become a one-key path to a destructive action.
+  dlg.addEventListener('keydown', function (e) {
+    if (e.key !== 'Enter') return
+    var t = e.target
+    if (!t || t.tagName !== 'INPUT' || t.type === 'checkbox' || t.type === 'radio') return
+    e.preventDefault()
+    dlg.querySelector('#mg-cf-ok')?.click()
+  })
+  dlg.addEventListener('click', function (e) { if (e.target === dlg) close() })
+  dlg.querySelector('#mg-cf-x').addEventListener('click', close)
+  dlg.querySelector('#mg-cf-cancel').addEventListener('click', close)
+  dlg.querySelector('#mg-cf-ok').addEventListener('click', async function () {
+    var btn = dlg.querySelector('#mg-cf-ok')
+    btn.disabled = true
+    btn.textContent = 'Working…'
+    try { await onConfirm() } finally { close() }
+  })
+  dlg.querySelector('#mg-cf-cancel').focus()
+}
+
+// Bulk delete from the Manage view's checkbox selection.
+async function _mgConfirmDelete() {
+  if (_mgState.busy) return
+  var picked = _mgPickedPaths()
+  if (!picked.length) return
+
+  // Carry the reason each risky folder was flagged into the confirmation, so
+  // the decision is made with the warning in front of you rather than a count.
+  var warnings = []
+  for (var i = 0; i < _mgState.groups.length; i++) {
+    var fs2 = _mgState.groups[i].folders
+    for (var j = 0; j < fs2.length; j++) {
+      if (picked.indexOf(fs2[j].dir) === -1 || fs2[j].safeToDelete) continue
+      warnings.push(window.PapaLibraryManage.baseOf(fs2[j].dir) + ' — ' + fs2[j].blockers.join('; '))
+    }
+  }
+
+  _mgState.busy = true
+  try {
+    await libraryMutate({
+      kind: 'trash',
+      paths: picked,
+      label: picked.length + ' folder' + (picked.length === 1 ? '' : 's') + ' from Duplicates',
+      warnings: warnings,
+    })
+  } finally {
+    _mgState.busy = false
+  }
+}
+
+// ── Tag editing ─────────────────────────────────────────────────────────────
+// Fixing tags is the thing that makes duplicate detection and album grouping
+// trustworthy, so it has to be pleasant AND it has to carry the album identity
+// across — otherwise tidying up costs you your likes, ratings and cover art.
+
+var _tagState = { tracks: [], before: null }
+
+var _TAG_LABELS = {
+  title: 'Title', artist: 'Artist', album: 'Album', albumartist: 'Album artist',
+  date: 'Year', genre: 'Genre', track: 'Track #', disc: 'Disc #', composer: 'Composer',
+}
+
+// Library tracks use camelCase; the writer and the tag module use tag names.
+function _tagsFromTrack(t, album) {
+  return {
+    filePath: t.filePath,
+    title: t.title || '',
+    artist: t.artist || '',
+    album: (album && album.name) || t.albumName || '',
+    albumartist: (album && album.artist) || t.albumArtist || '',
+    date: t.year ? String(t.year) : '',
+    genre: t.genre || '',
+    track: t.trackNumber ? String(t.trackNumber) : '',
+    disc: t.discNumber ? String(t.discNumber) : '',
+    composer: t.composer || '',
+    albumArtist: (album && album.artist) || t.albumArtist || '',
+  }
+}
+
+function _tagTargets() {
+  var album = state.library.find(function (a) { return a.id === (ctxTarget && ctxTarget.albumId) })
+  if (ctxTarget && ctxTarget.track && ctxTarget.kind !== 'album') {
+    return { tracks: [_tagsFromTrack(ctxTarget.track, album)], scope: 'track', album: album }
+  }
+  if (album) {
+    return {
+      tracks: (album.tracks || []).map(function (t) { return _tagsFromTrack(t, album) }),
+      scope: 'album', album: album,
+    }
+  }
+  return { tracks: [], scope: 'none', album: null }
+}
+
+function editTags(explicitTracks, scopeLabel) {
+  var TE = window.PapaTagEdit
+  var target = explicitTracks
+    ? { tracks: explicitTracks, scope: 'selection', album: null }
+    : _tagTargets()
+  hideContextMenu()
+  if (!target.tracks.length) { showSnackbar('Nothing to edit'); return }
+
+  var common = TE.commonTags(target.tracks)
+  _tagState = { tracks: target.tracks, before: common, album: target.album }
+
+  var rows = TE.FIELDS.map(function (f) {
+    // Per-track fields make no sense to bulk-set across a whole album.
+    var perTrack = (f === 'title' || f === 'track')
+    if (perTrack && target.tracks.length > 1) return ''
+    return '<label class="tag-row">' +
+      '<span class="tag-label">' + esc(_TAG_LABELS[f] || f) + '</span>' +
+      '<input class="tag-input sq-name-input" data-tag="' + f + '" value="' + esc(common[f] || '') + '"' +
+      ' autocomplete="off">' +
+      '</label>'
+  }).join('')
+
+  var renumber = target.tracks.length > 1
+    ? '<label class="tag-check"><input type="checkbox" id="tag-renumber"> ' +
+      'Renumber tracks 1–' + target.tracks.length + ' in this order</label>'
+    : ''
+
+  _mgConfirm(
+    target.tracks.length === 1 ? 'Edit tags' : 'Edit tags — ' + target.tracks.length + ' tracks',
+    '<p class="mg-confirm-sum" style="margin-top:0">' +
+      esc(scopeLabel || (target.album ? target.album.artist + ' — ' + target.album.name
+                                      : target.tracks.length + ' files')) + '</p>' +
+    (target.tracks.length > 1
+      ? '<p class="mg-confirm-note">Fields that differ across the selection show ' + esc(TE.MIXED) +
+        ' — leave them and they stay as they are.</p>'
+      : '') +
+    '<div class="tag-form">' + rows + '</div>' + renumber +
+    '<p class="mg-confirm-note">Files are rewritten losslessly; the original is only replaced once the ' +
+      'write succeeds.</p>',
+    'Save tags',
+    _applyTagEdit)
+}
+
+async function _applyTagEdit() {
+  var TE = window.PapaTagEdit
+  var patch = {}
+  document.querySelectorAll('.tag-input').forEach(function (i) { patch[i.dataset.tag] = i.value })
+  var renumber = !!(document.getElementById('tag-renumber') || {}).checked
+
+  var writes = TE.bulkApply(_tagState.tracks, patch, { renumber: renumber })
+  if (!writes.length) { showSnackbar('Nothing changed'); return }
+
+  // Work out whether the album identity moves BEFORE the files change.
+  var first = _tagState.tracks[0]
+  var oldKey = TE.albumKeyOf({ albumArtist: first.albumartist, artist: first.artist, album: first.album })
+  var newKey = TE.albumKeyAfter(
+    { albumArtist: first.albumartist, artist: first.artist, album: first.album }, patch)
+
+  var res = await window.api.libraryWriteTags({ files: writes }).catch(function () { return null })
+  if (!res) { showSnackbar('Could not write tags'); return }
+  if (!res.written) {
+    var err = (res.results || [])[0]
+    showSnackbar('No tags written' + (err && err.error ? ' — ' + esc(err.error) : ''))
+    return
+  }
+
+  if (oldKey !== newKey) {
+    var m = await window.api.libraryMigrateAlbumId({ oldKey: oldKey, newKey: newKey })
+      .catch(function () { return null })
+    if (m && m.migrated) _tagMigrateLocalKeys(m.oldId, m.newId)
+  }
+
+  showSnackbar(res.written + ' file' + (res.written === 1 ? '' : 's') + ' updated' +
+    (res.failed ? ', ' + res.failed + ' failed' : '') +
+    (oldKey !== newKey ? ' · album details carried over' : ''))
+  _scheduleLibRescan()
+}
+
+// Ratings and notes live in the renderer's localStorage, so main cannot move
+// them; it hands back the ids and this finishes the job.
+function _tagMigrateLocalKeys(oldId, newId) {
+  if (!oldId || !newId) return
+  try {
+    if (state.albumRatings && state.albumRatings[oldId] !== undefined) {
+      state.albumRatings[newId] = state.albumRatings[oldId]
+      delete state.albumRatings[oldId]
+      localStorage.setItem('papa-album-ratings', JSON.stringify(state.albumRatings))
+    }
+    if (state.albumNotes && state.albumNotes[oldId] !== undefined) {
+      state.albumNotes[newId] = state.albumNotes[oldId]
+      delete state.albumNotes[oldId]
+      localStorage.setItem('papa-album-notes', JSON.stringify(state.albumNotes))
+    }
+    if (state.likedAlbums) {
+      var i = state.likedAlbums.indexOf(oldId)
+      if (i >= 0) state.likedAlbums[i] = newId
+    }
+  } catch (_) {}
+}
+
+// ── Album artwork ───────────────────────────────────────────────────────────
+// Writing the cache is enough for the app to show a cover. Embedding it into
+// every audio file is a separate, opt-in choice because it rewrites each one.
+
+async function setAlbumArtwork() {
+  var album = state.library.find(function (a) { return a.id === (ctxTarget && ctxTarget.albumId) })
+  hideContextMenu()
+  if (!album) { showSnackbar('Could not work out which album that is'); return }
+
+  var picked = await window.api.libraryPickArtwork().catch(function () { return null })
+  if (!picked || !picked.ok) return           // cancelled: say nothing
+
+  var files = (album.tracks || []).map(function (t) { return t.filePath }).filter(Boolean)
+
+  _mgConfirm('Set artwork',
+    '<p class="mg-confirm-sum" style="margin-top:0">' +
+      esc(album.artist + ' — ' + album.name) + '</p>' +
+    '<div class="art-preview"><img src="file://' + esc(picked.path) + '" alt=""></div>' +
+    '<p class="mg-confirm-note">' + esc(_mgBaseName(picked.path)) + '</p>' +
+    '<label class="tag-check"><input type="checkbox" id="art-embed"> ' +
+      'Also embed it into all ' + files.length + ' audio file' + (files.length === 1 ? '' : 's') +
+      '</label>' +
+    '<p class="mg-confirm-note">Embedding rewrites every file on the album, which takes a while on ' +
+      'large FLACs. The cover shows in Papa Audio either way — embedding is for other players.</p>',
+    'Set artwork',
+    async function () {
+      var embed = !!(document.getElementById('art-embed') || {}).checked
+      var res = await window.api.librarySetArtwork({
+        albumId: album.id, sourcePath: picked.path, embed: embed, filePaths: files,
+      }).catch(function () { return null })
+      if (!res || !res.ok) {
+        showSnackbar('Could not set artwork' + (res && res.error ? ' — ' + esc(res.error) : ''))
+        return
+      }
+      showSnackbar('Artwork set' +
+        (res.embedded ? ' · embedded in ' + res.embedded + ' file' + (res.embedded === 1 ? '' : 's') : '') +
+        (res.embedFailed ? ' · ' + res.embedFailed + ' failed' : ''))
+      // The cached file kept its name, so force the browser to re-read it.
+      album.artPath = res.artPath
+      _artCacheBust(album.id, res.artPath)
+      _scheduleLibRescan()
+    })
+}
+
+// Same path, same filename, new bytes — without this the old cover stays on
+// screen until the app restarts.
+function _artCacheBust(albumId, artPath) {
+  var stamp = '?v=' + Date.now()
+  document.querySelectorAll('img[src*="' + albumId + '"]').forEach(function (img) {
+    img.src = 'file://' + artPath + stamp
+  })
+  document.querySelectorAll('.album-hero-art img, .album-card img').forEach(function (img) {
+    if (img.src.indexOf(artPath) !== -1) img.src = 'file://' + artPath + stamp
+  })
+}
+
+// ── Rename and move ─────────────────────────────────────────────────────────
+// Both are planned in full before anything is touched, and both feed their
+// per-file remaps to the pruner — otherwise playlists, likes and play counts
+// keep pointing at the old paths and quietly stop working.
+
+function _dirOfPath(p) {
+  var s = String(p || '')
+  var i = s.lastIndexOf('/')
+  return i > 0 ? s.slice(0, i) : ''
+}
+
+// Every folder the library knows about, for sibling and destination checks.
+function _allLibraryFolders() {
+  var seen = {}
+  for (var i = 0; i < state.library.length; i++) {
+    var tr = state.library[i].tracks || []
+    for (var j = 0; j < tr.length; j++) {
+      var d = _dirOfPath(tr[j].filePath)
+      if (d) seen[d] = true
+    }
+  }
+  return Object.keys(seen)
+}
+
+function _filesUnder(dir) {
+  var out = []
+  var prefix = dir + '/'
+  for (var i = 0; i < state.library.length; i++) {
+    var tr = state.library[i].tracks || []
+    for (var j = 0; j < tr.length; j++) {
+      var fp = tr[j].filePath
+      if (fp && fp.indexOf(prefix) === 0) out.push(fp)
+    }
+  }
+  return out
+}
+
+// An album whose tracks live in more than one folder has no single folder to
+// rename, so say so rather than picking one and moving half the album.
+function _folderForTarget() {
+  if (ctxTarget && ctxTarget.paths && ctxTarget.paths.length === 1) return { dir: ctxTarget.paths[0] }
+  var album = state.library.find(function (a) { return a.id === (ctxTarget && ctxTarget.albumId) })
+  if (!album) return { error: 'Could not work out which folder this is.' }
+  var dirs = {}
+  for (var i = 0; i < (album.tracks || []).length; i++) {
+    var d = _dirOfPath(album.tracks[i].filePath)
+    if (d) dirs[d] = true
+  }
+  var list = Object.keys(dirs)
+  if (!list.length) return { error: 'This album has no files on disk.' }
+  if (list.length > 1) {
+    return { error: 'This album\'s tracks are spread across ' + list.length +
+      ' folders, so there is no single folder to act on.' }
+  }
+  return { dir: list[0], album: album }
+}
+
+async function _applyPathPlan(plan, verb) {
+  var res = await window.api.libraryMovePath({ from: plan.from, to: plan.to })
+    .catch(function () { return null })
+  if (!res || !res.ok) {
+    showSnackbar(verb + ' failed — ' + esc((res && res.error) || 'unknown reason'))
+    return
+  }
+  // The files moved; everything that referenced them has to follow.
+  var prune = await window.api.libraryPruneState({ removed: [], renamed: plan.remaps })
+    .catch(function () { return null })
+  var P = window.PapaLibraryPrune
+  var extra = (P && prune && prune.summary && prune.summary.renamed)
+    ? ' · ' + prune.summary.renamed + ' reference' + (prune.summary.renamed === 1 ? '' : 's') + ' updated'
+    : ''
+  showSnackbar(verb + ' to “' + esc(window.PapaPathPlan.baseOf(plan.to)) + '”' + extra)
+  _scheduleLibRescan()
+}
+
+function libraryRenameFolder() {
+  var PP = window.PapaPathPlan
+  var t = _folderForTarget()
+  hideContextMenu()
+  if (t.error) { showSnackbar(esc(t.error)); return }
+
+  var dir = t.dir
+  var current = PP.baseOf(dir)
+  var siblings = _allLibraryFolders().filter(function (d) { return _dirOfPath(d) === _dirOfPath(dir) })
+
+  _mgConfirm('Rename folder',
+    '<p class="mg-confirm-sum" style="margin-top:0">' + esc(dir) + '</p>' +
+    '<input id="mg-rename-input" class="sq-name-input" style="width:100%;box-sizing:border-box" ' +
+      'value="' + esc(current) + '" autocomplete="off">' +
+    '<p class="mg-confirm-sum" id="mg-rename-note">' +
+      _filesUnder(dir).length + ' file(s) will move with it.</p>',
+    'Rename',
+    async function () {
+      var val = (document.getElementById('mg-rename-input') || {}).value
+      var plan = PP.renamePlan({ dir: dir, newName: val, files: _filesUnder(dir), siblings: siblings })
+      if (!plan.ok) {
+        showSnackbar(esc(PP.describePlan(plan)) +
+          (plan.suggestion ? ' Try “' + esc(plan.suggestion) + '”.' : ''))
+        return
+      }
+      await _applyPathPlan(plan, 'Renamed')
+    })
+  setTimeout(function () {
+    var i = document.getElementById('mg-rename-input')
+    if (i) { i.focus(); i.select() }
+  }, 50)
+}
+
+function libraryMoveFolder() {
+  var PP = window.PapaPathPlan
+  var t = _folderForTarget()
+  hideContextMenu()
+  if (t.error) { showSnackbar(esc(t.error)); return }
+
+  var dir = t.dir
+  var roots = (state.musicFolders || []).slice()
+  if (!roots.length) { showSnackbar('No music folders configured to move into'); return }
+
+  var opts = roots.map(function (r) {
+    return '<option value="' + esc(r) + '">' + esc(r) + '</option>'
+  }).join('')
+
+  _mgConfirm('Move folder',
+    '<p class="mg-confirm-sum" style="margin-top:0">' + esc(dir) + '</p>' +
+    '<p class="mg-confirm-sum">Move into:</p>' +
+    '<select id="mg-move-dest" class="sq-name-input" style="width:100%;box-sizing:border-box">' + opts + '</select>' +
+    '<p class="mg-confirm-sum">' + _filesUnder(dir).length + ' file(s) will move. ' +
+      'The app checks there is room before starting.</p>',
+    'Move',
+    async function () {
+      var dest = (document.getElementById('mg-move-dest') || {}).value
+      var plan = PP.movePlan({
+        dir: dir, destRoot: dest, files: _filesUnder(dir), existing: _allLibraryFolders(),
+      })
+      if (!plan.ok) { showSnackbar(esc(PP.describePlan(plan))); return }
+      await _applyPathPlan(plan, 'Moved')
+    })
+}
+
+// ── Row selection ───────────────────────────────────────────────────────────
+// Plain clicks keep playing the track, exactly as before. Selection is only
+// entered with Shift or Ctrl/Cmd held, so nothing about normal use changes.
+
+var _sel = { rows: [], selected: [], anchor: null, noun: 'track' }
+
+function _selRowsInView() {
+  var content = document.getElementById('content')
+  if (!content) return []
+  var rows = content.querySelectorAll('.track-row')
+  if (rows.length) { _sel.noun = 'track'; return Array.prototype.slice.call(rows) }
+  var cards = content.querySelectorAll('.album-card[data-album]')
+  _sel.noun = 'album'
+  return Array.prototype.slice.call(cards).filter(function (c) {
+    return c.dataset.album && c.dataset.album.indexOf('yt_') !== 0
+  })
+}
+
+function _selClear() {
+  var had = _sel.selected.length
+  _sel.selected = []
+  _sel.anchor = null
+  _selPaint()
+  // A library refresh may have been held back while this selection was live.
+  if (had) flushPendingLibraryUpdate()
+}
+
+function _selPaint() {
+  var M = window.PapaMultiSelect
+  for (var i = 0; i < _sel.rows.length; i++) {
+    _sel.rows[i].classList.toggle('row-selected', M ? M.isSelected(_sel.selected, i) : false)
+  }
+  var bar = document.getElementById('sel-bar')
+  if (!bar) return
+  if (!_sel.selected.length) { bar.style.display = 'none'; return }
+  bar.style.display = 'flex'
+  document.getElementById('sel-bar-text').textContent =
+    M ? M.describe(_sel.selected.length, _sel.noun) : _sel.selected.length + ' selected'
+  // Deleting albums and deleting tracks are both fine; queueing a set of
+  // albums is not something this bar tries to express.
+  var q = document.getElementById('sel-queue')
+  if (q) q.style.display = _sel.noun === 'track' ? '' : 'none'
+}
+
+function _selHandleClick(e, row) {
+  var M = window.PapaMultiSelect
+  if (!M) return false
+  var ctrl = e.ctrlKey || e.metaKey
+  if (!e.shiftKey && !ctrl) return false     // ordinary click — leave it alone
+  e.preventDefault()
+  e.stopPropagation()
+
+  _sel.rows = _selRowsInView()
+  var index = _sel.rows.indexOf(row)
+  if (index < 0) return false
+
+  var res = M.applyClick({
+    index: index, shift: e.shiftKey, ctrl: ctrl,
+    selected: _sel.selected, anchor: _sel.anchor,
+  })
+  _sel.selected = res.selected
+  _sel.anchor = res.anchor
+  _selPaint()
+  return true
+}
+
+// Paths behind the current selection, whatever kind of row it is.
+function _selPaths() {
+  var out = []
+  for (var i = 0; i < _sel.selected.length; i++) {
+    var el = _sel.rows[_sel.selected[i]]
+    if (!el) continue
+    if (el.dataset.file) { out.push(el.dataset.file); continue }
+    if (el.dataset.album) {
+      var album = state.library.find(function (a) { return a.id === el.dataset.album })
+      if (album) {
+        for (var j = 0; j < (album.tracks || []).length; j++) {
+          if (album.tracks[j].filePath) out.push(album.tracks[j].filePath)
+        }
+      }
+    }
+  }
+  return out
+}
+
+function _selTracks() {
+  var out = []
+  var paths = _selPaths()
+  for (var i = 0; i < paths.length; i++) {
+    var found = null
+    for (var a = 0; a < state.library.length && !found; a++) {
+      var tr = state.library[a].tracks || []
+      for (var b = 0; b < tr.length; b++) {
+        if (tr[b].filePath === paths[i]) {
+          found = Object.assign({}, tr[b], {
+            albumArtist: state.library[a].artist,
+            albumName: state.library[a].name,
+            albumId: state.library[a].id,
+            artPath: state.library[a].artPath,
+          })
+          break
+        }
+      }
+    }
+    if (found) out.push(found)
+  }
+  return out
+}
+
+function _selBindBar() {
+  document.getElementById('sel-clear')?.addEventListener('click', _selClear)
+
+  document.getElementById('sel-addpl')?.addEventListener('click', function () {
+    var tracks = _selTracks()
+    if (!tracks.length) return
+    showAddToPlaylistModal(tracks)
+    // The other two actions on this bar clear afterwards; this one left stale
+    // highlighted rows behind.
+    _selClear()
+  })
+
+  document.getElementById('sel-queue')?.addEventListener('click', function () {
+    var tracks = _selTracks()
+    if (!tracks.length) return
+    for (var i = 0; i < tracks.length; i++) state.queue.push(tracks[i])
+    updateNextPrefetch()
+    renderQueuePanel()
+    showSnackbar(tracks.length + ' added to queue')
+    _selClear()
+  })
+
+  document.getElementById('sel-trash')?.addEventListener('click', function () {
+    var paths = _selPaths()
+    if (!paths.length) return
+    var label = window.PapaMultiSelect
+      ? window.PapaMultiSelect.describe(_sel.selected.length, _sel.noun)
+      : paths.length + ' items'
+    _selClear()
+    libraryMutate({ kind: 'trash', paths: paths, label: label })
+  })
+}
+
+// ── The mutation funnel ─────────────────────────────────────────────────────
+// Every destructive action in the app goes through here. Written once so that
+// each new delete surface inherits the same inspection, confirmation, playback
+// handling, state pruning and undo — instead of re-implementing them and
+// getting one of them wrong.
+async function _mgTrashPaths(paths, whatLabel) {
+  return libraryMutate({ kind: 'trash', paths: paths, label: whatLabel })
+}
+
+function _mgQueueImpact(paths) {
+  var R = window.PapaQueueRepair
+  if (!R) return { count: 0, playingHit: false, hits: [] }
+  // The confirm needs to know about queue entries whose FILES are going, which
+  // for a folder delete means matching by prefix as well as exact path.
+  var doomed = {}
+  for (var i = 0; i < paths.length; i++) doomed[paths[i]] = true
+  var expanded = []
+  for (var j = 0; j < state.queue.length; j++) {
+    var fp = state.queue[j] && state.queue[j].filePath
+    if (!fp) continue
+    if (doomed[fp]) { expanded.push(fp); continue }
+    for (var k = 0; k < paths.length; k++) {
+      if (fp.indexOf(paths[k] + '/') === 0) { expanded.push(fp); break }
+    }
+  }
+  return R.queueImpact(state.queue, state.queueIndex, expanded)
+}
+
+async function libraryMutate(op) {
+  var paths = (op && op.paths) || []
+  if (!paths.length) return
+
+  // 1. What is actually there, read from disk — not from the library index,
+  //    which can be stale in exactly the ways that matter here.
+  var res = await window.api.libraryInspectPaths({ paths: paths }).catch(function () { return null })
+  if (!res) { showSnackbar('Could not read those files'); return }
+  var entries = res.entries || []
+  var usable = entries.filter(function (e) { return e.allowed && e.exists })
+  if (!usable.length) {
+    showSnackbar('Nothing to remove — files are missing or outside your music folders')
+    return
+  }
+
+  var bytes = entries.reduce(function (n, e) { return n + e.bytes }, 0)
+  // fileCount is authoritative; files[] is capped for very large deletes.
+  var fileCount = entries.reduce(function (n, e) { return n + (e.fileCount != null ? e.fileCount : e.files.length) }, 0)
+  var impact = _mgQueueImpact(paths)
+
+  // 2. Say plainly what will happen, including the things people forget.
+  var list = ''
+  for (var i = 0; i < entries.length; i++) {
+    var e = entries[i]
+    var bad = !e.allowed || !e.exists
+    list += '<div class="mg-confirm-row' + (bad ? ' mg-confirm-bad' : '') + '">' +
+      '<div class="mg-confirm-path">' + esc(e.path) + '</div>' +
+      (!e.exists ? '<div class="mg-confirm-meta">No longer on disk — will be skipped</div>'
+        : !e.allowed ? '<div class="mg-confirm-meta">Outside your music folders — refused</div>'
+        : '<div class="mg-confirm-meta">' + (e.fileCount != null ? e.fileCount : e.files.length) +
+          ' file' + ((e.fileCount != null ? e.fileCount : e.files.length) === 1 ? '' : 's') +
+          ' · ' + _mgFmtBytes(e.bytes) + '</div>') +
+      '</div>'
+  }
+
+  var warn = ''
+  if (op.warnings && op.warnings.length) {
+    warn += '<p class="mg-confirm-warn"><strong>Not fully covered by another copy:</strong><br>' +
+      op.warnings.map(function (w) { return esc(w) }).join('<br>') +
+      '<br><br>Deleting these means losing those tracks unless you have them somewhere else.</p>'
+  }
+  if (impact.playingHit) {
+    warn += '<p class="mg-confirm-warn">This is playing right now. Playback will skip to the next track.</p>'
+  } else if (impact.count) {
+    warn += '<p class="mg-confirm-warn">' + impact.count + ' track' + (impact.count === 1 ? '' : 's') +
+      ' in your queue will be removed.</p>'
+  }
+
+  _mgConfirm(
+    'Move ' + usable.length + ' item' + (usable.length === 1 ? '' : 's') + ' to Trash?',
+    (op.label ? '<p class="mg-confirm-sum" style="margin-top:0">' + esc(op.label) + '</p>' : '') +
+    warn +
+    '<div class="mg-confirm-list">' + list + '</div>' +
+    '<p class="mg-confirm-sum">' + fileCount + ' file' + (fileCount === 1 ? '' : 's') + ' · ' +
+      _mgFmtBytes(bytes) + ' will go to your system Trash.<br>' +
+      '<span class="mg-confirm-note">Your music is on the same drive as the Trash, so this ' +
+      'will not free space until you empty it.</span></p>',
+    'Move to Trash',
+    function () { return _libraryMutateApply(op, paths, entries, impact) }
+  )
+}
+
+async function _libraryMutateApply(op, paths, entries, impact) {
+  // 3. Get out of the way of playback BEFORE the files disappear, so mpv is
+  //    never asked to keep reading something that has just been moved.
+  var allFiles = []
+  var truncated = false
+  for (var i = 0; i < entries.length; i++) {
+    if (entries[i].filesTruncated) truncated = true
+    for (var j = 0; j < entries[i].files.length; j++) allFiles.push(entries[i].files[j])
+  }
+  // A capped listing would prune only the first 2000 paths and silently leave
+  // the rest dangling, so fall back to every known library path under the
+  // folders being removed.
+  if (truncated) {
+    var prefixes = paths.slice()
+    for (var a = 0; a < state.library.length; a++) {
+      var tr = state.library[a].tracks || []
+      for (var b = 0; b < tr.length; b++) {
+        var fp = tr[b].filePath
+        if (!fp) continue
+        for (var c = 0; c < prefixes.length; c++) {
+          if (fp === prefixes[c] || fp.indexOf(prefixes[c] + '/') === 0) { allFiles.push(fp); break }
+        }
+      }
+    }
+  }
+  var R = window.PapaQueueRepair
+  if (R && impact.count) {
+    var rep = R.repairQueue({ queue: state.queue, queueIndex: state.queueIndex, removedPaths: allFiles })
+    var wasPlaying = state.isPlaying
+    state.queue = rep.queue
+    state.queueIndex = rep.queueIndex
+    if (rep.empty) {
+      audio.pause()
+      state.isPlaying = false
+      state.queueIndex = -1
+      updatePlayBtn()
+      updateNowPlaying(null)
+    } else if (rep.removedCurrent && wasPlaying) {
+      playCurrentTrack()
+    }
+    renderQueuePanel()
+  }
+
+  // 4. Move the files.
+  var out = await window.api.libraryTrashPaths({ paths: paths }).catch(function () { return null })
+  if (!out) { showSnackbar('Delete failed'); return }
+  var okPaths = (out.results || []).filter(function (r) { return r.ok }).map(function (r) { return r.path })
+  if (!okPaths.length) {
+    var firstErr = (out.results || [])[0]
+    showSnackbar('Nothing was removed' + (firstErr && firstErr.error ? ' — ' + esc(firstErr.error) : ''))
+    return
+  }
+
+  // 5. Prune every saved reference, in one transaction, and keep the snapshot
+  //    so undo can put the app's state back as well as the files.
+  var prune = await window.api.libraryPruneState({ removed: allFiles, renamed: [] })
+    .catch(function () { return null })
+
+  // 6. Offer it back. Undo has to restore BOTH the files and the state.
+  var P = window.PapaLibraryPrune
+  var extra = (P && prune && prune.summary) ? P.describeSummary(prune.summary) : ''
+  var msg = okPaths.length + ' moved to Trash' + (out.failed ? ', ' + out.failed + ' failed' : '')
+  if (extra) msg += '. ' + esc(extra)
+
+  showSnackbar(msg, 'Undo', async function () {
+    var back = await window.api.libraryRestoreTrashed({ paths: okPaths }).catch(function () { return null })
+    if (prune && prune.snapshot) {
+      await window.api.libraryRestoreState({ snapshot: prune.snapshot }).catch(function () {})
+      await reloadPersistedState()
+    }
+    showSnackbar(back && back.restored
+      ? back.restored + ' restored'
+      : 'Could not restore from Trash')
+    _scheduleLibRescan()
+  }, 12000)
+
+  _scheduleLibRescan()
+  if (state.currentPage === 'manage') setTimeout(renderManage, 1500)
+}
+
+// Undo rewrote the stores, so the renderer's copies have to be re-read.
+async function reloadPersistedState() {
+  try {
+    state.likedTracks = await window.api.getLiked()
+    state.playCounts  = await window.api.getPlayCounts()
+    state.playlists   = await window.api.getPlaylists()
+    state.savedQueues = await window.api.getSavedQueues()
+  } catch (_) {}
+  renderSavedQueues()
+}
+
+// ── Download scheduling ─────────────────────────────────────────────────────
+// Hand files to the main-process scheduler rather than POSTing each one, so a
+// folder does not land as one deep queue on a single peer.
+function _slskEnqueue(items) {
+  var list = (items || []).filter(function(it) { return it && it.filename && it.username })
+  if (!list.length) return Promise.resolve(null)
+  if (!window.api || !window.api.slskEnqueueDownloads) {
+    return Promise.all(list.map(function(it) {
+      return window.api.slskDownload({ username: it.username, filename: it.filename, size: it.size || 0 })
+        .catch(function() {})
+    }))
+  }
+  return window.api.slskEnqueueDownloads({ items: list }).catch(function() { return null })
+}
+
+// Scheduler readout: how wide the download spread currently is.
+var _dlSchedStats = null
+
+function _dlPaintSchedulerStats(stats) {
+  if (stats) _dlSchedStats = stats
+  var el = document.getElementById('dl2-sched')
+  if (!el) return
+  var s = _dlSchedStats
+  if (!s || (!s.pending && !s.inflight)) { el.textContent = ''; return }
+  var txt = s.inflight + ' active across ' + s.peers + ' peer' + (s.peers === 1 ? '' : 's')
+  if (s.pending) txt += ' · ' + s.pending + ' waiting'
+  if (s.benched && s.benched.length) txt += ' · ' + s.benched.length + ' benched'
+  el.textContent = txt
+}
+
+function initDownloadScheduler() {
+  if (!window.api || !window.api.onSlskSchedulerStats) return
+  window.api.onSlskSchedulerStats(function(stats) { _dlPaintSchedulerStats(stats) })
+  if (window.api.slskSchedulerStats) {
+    window.api.slskSchedulerStats().then(_dlPaintSchedulerStats).catch(function() {})
+  }
+}
+
+// ── Soulseek friends sidebar ────────────────────────────────────────────────
+// Saved peers, sorted with whoever is reachable right now on top. Presence is
+// pushed from the main process; this only paints what it is told.
+var _slskFriends = {
+  users: [],
+  statuses: [],
+  bound: false,
+  started: false,
+  refreshing: false,
+}
+
+function _slskFriendRows() {
+  var P = window.PapaSlskPresence
+  if (!P) return []
+  return P.sortFriends(P.mergeStatuses(_slskFriends.users, _slskFriends.statuses))
+}
+
+function renderSlskFriends() {
+  var list = document.getElementById('slsk-friends-list')
+  if (!list) return
+  var rows = _slskFriendRows()
+  var countEl = document.getElementById('slskf-count')
+  if (countEl) {
+    var online = window.PapaSlskPresence ? window.PapaSlskPresence.countOnline(rows) : 0
+    countEl.textContent = rows.length ? online + '/' + rows.length : ''
+    countEl.classList.toggle('live', online > 0)
+  }
+  if (!rows.length) {
+    list.innerHTML = '<li class="slskf-empty">No saved peers yet. Open a Soulseek user’s library and tap ☆ to keep them here.</li>'
+    return
+  }
+  var html = ''
+  for (var i = 0; i < rows.length; i++) {
+    var r = rows[i]
+    var meta = r.presenceText
+    if (r.fileCount) meta += ' · ' + r.fileCount.toLocaleString() + ' files'
+    if (r.note) meta += ' · ' + r.note
+    html += '<li class="slskf-row" data-presence="' + r.presence + '" data-user="' + esc(r.username) + '"' +
+      ' title="' + esc(r.username + ' — ' + meta) + '">' +
+      '<span class="slskf-dot"></span>' +
+      '<span class="slskf-name">' + esc(r.username) + '</span>' +
+      '<button class="slskf-remove" data-remove="' + esc(r.username) + '" title="Remove from saved">✕</button>' +
+      '</li>'
+  }
+  list.innerHTML = html
+}
+
+function _slskFriendsApplyStatuses(payload) {
+  if (!payload) return
+  if (Array.isArray(payload.statuses)) _slskFriends.statuses = payload.statuses
+  renderSlskFriends()
+}
+
+function _slskFriendsSetRefreshing(on) {
+  _slskFriends.refreshing = !!on
+  document.getElementById('slskf-refresh-btn')?.classList.toggle('spin', !!on)
+}
+
+function refreshSlskFriendStatuses() {
+  if (_slskFriends.refreshing) return Promise.resolve()
+  if (!window.api || !window.api.slskRefreshUserStatuses) return Promise.resolve()
+  _slskFriendsSetRefreshing(true)
+  return window.api.slskRefreshUserStatuses()
+    .then(function(res) { _slskFriendsApplyStatuses(res) })
+    .catch(function() {})
+    .then(function() { _slskFriendsSetRefreshing(false) })
+}
+
+function reloadSlskFriends() {
+  if (!window.api || !window.api.slskSavedUsers) return Promise.resolve()
+  return window.api.slskSavedUsers()
+    .then(function(users) {
+      _slskFriends.users = users || []
+      renderSlskFriends()
+    })
+    .catch(function() {})
+}
+
+function _slskFriendsBind() {
+  if (_slskFriends.bound) return
+  var list = document.getElementById('slsk-friends-list')
+  if (!list) return
+  _slskFriends.bound = true
+
+  list.addEventListener('click', function(e) {
+    var rm = e.target.closest ? e.target.closest('[data-remove]') : null
+    if (rm) {
+      e.stopPropagation()
+      var gone = rm.getAttribute('data-remove')
+      window.api.slskUnsaveUser({ username: gone })
+        .then(function(users) { _slskFriends.users = users || []; renderSlskFriends() })
+        .catch(function() {})
+      if (typeof showSnackbar === 'function') showSnackbar('Removed ' + gone)
+      return
+    }
+    var row = e.target.closest ? e.target.closest('.slskf-row') : null
+    if (!row) return
+    var name = row.getAttribute('data-user')
+    if (name && typeof showSlskUserExplorer === 'function') showSlskUserExplorer(name)
+  })
+
+  document.getElementById('slskf-refresh-btn')?.addEventListener('click', function(e) {
+    e.stopPropagation()
+    refreshSlskFriendStatuses()
+  })
+}
+
+function initSlskFriends() {
+  if (_slskFriends.started) return
+  if (!window.api || !window.api.slskSavedUsers) return
+  _slskFriends.started = true
+  _slskFriendsBind()
+
+  if (window.api.onSlskUserStatus) window.api.onSlskUserStatus(_slskFriendsApplyStatuses)
+  if (window.api.onSlskSavedUsersChange) {
+    window.api.onSlskSavedUsersChange(function(users) {
+      _slskFriends.users = users || []
+      renderSlskFriends()
+    })
+  }
+
+  reloadSlskFriends().then(function() {
+    if (window.api.slskUserStatuses) {
+      window.api.slskUserStatuses().then(_slskFriendsApplyStatuses).catch(function() {})
+    }
+  })
+
+  // Coming back to the window is the moment a stale list is most visible.
+  if (window.api.onWindowFocus) {
+    window.api.onWindowFocus(function(on) { if (on) refreshSlskFriendStatuses() })
+  }
+}
+
 // ── Start ───────────────────────────────────────────────────────────────────
 init()
+initSlskFriends()
+initDownloadScheduler()
+_selBindBar()

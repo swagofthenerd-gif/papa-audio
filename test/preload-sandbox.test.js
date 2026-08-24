@@ -29,3 +29,12 @@ test('every exposed EQ API goes through ipcRenderer', () => {
     assert.match(line, /ipcRenderer\.invoke/, `EQ bridge must use IPC, not a local table: ${line.trim()}`)
   }
 })
+
+test('library-updated and scan-progress are subscribable', () => {
+  // main emits both after every mutation and after the folder watcher fires.
+  // They were absent from the allowlist, so the UI never refreshed itself.
+  const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'preload.js'), 'utf8')
+  const allowed = src.slice(src.indexOf('const allowed = ['), src.indexOf(']', src.indexOf('const allowed = [')))
+  assert.match(allowed, /'library-updated'/)
+  assert.match(allowed, /'scan-progress'/)
+})

@@ -80,6 +80,10 @@
         <svg viewBox="0 0 24 24"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09A5.99 5.99 0 0 1 16.5 3C19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
         <span>Liked Songs</span>
       </li>
+      <li class="nav-item" data-page="manage" id="nav-manage" title="Manage library">
+        <svg viewBox="0 0 24 24"><path d="M3 5h18v2H3V5zm0 6h18v2H3v-2zm0 6h12v2H3v-2zm16.5-1.5l1.4 1.4-4.2 4.2-2.8-2.8 1.4-1.4 1.4 1.4 2.8-2.8z"/></svg>
+        <span>Manage</span>
+      </li>
       <li class="nav-item" data-page="stats" id="nav-stats" title="Stats">
         <svg viewBox="0 0 24 24"><rect x="3" y="12" width="4" height="9"/><rect x="10" y="7" width="4" height="14"/><rect x="17" y="3" width="4" height="18"/></svg>
         <span>Stats</span>
@@ -100,6 +104,16 @@
           <button class="sq-confirm-btn" id="sq-confirm-btn">Save</button>
         </div>
         <ul id="saved-queues-list" class="saved-queues-list"></ul>
+      </div>
+
+      <div class="sidebar-section slsk-friends-section" id="slsk-friends-section">
+        <div class="sidebar-section-header">
+          <div class="sidebar-section-title">Soulseek Friends<span class="slskf-count" id="slskf-count"></span></div>
+          <button class="sq-save-btn slskf-refresh" id="slskf-refresh-btn" title="Refresh online status">
+            <svg viewBox="0 0 24 24"><path d="M17.65 6.35A7.96 7.96 0 0 0 12 4a8 8 0 1 0 7.73 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+          </button>
+        </div>
+        <ul id="slsk-friends-list" class="slsk-friends-list"></ul>
       </div>
 
       <div class="sidebar-section">
@@ -329,7 +343,7 @@
       <span class="np-format" id="np-format"></span>
       <span class="np-format cf-badge" id="np-crossfade"></span>
     </div>
-    <button class="ctrl-btn like-btn" id="btn-like" title="Like">
+    <button class="ctrl-btn like-btn" id="btn-like" title="Like" aria-label="Like" aria-pressed="false">
       <svg class="heart-outline" viewBox="0 0 24 24"><path d="M16.5 3c-1.74 0-3.41.81-4.5 2.09A5.99 5.99 0 0 0 7.5 3C4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3zm-4.4 15.55-.1.1-.1-.1C7.14 14.24 4 11.39 4 8.5 4 6.5 5.5 5 7.5 5c1.54 0 3.04.99 3.57 2.36h1.87C13.46 5.99 14.96 5 16.5 5c2 0 3.5 1.5 3.5 3.5 0 2.89-3.14 5.74-7.9 10.05z"/></svg>
       <svg class="heart-filled" viewBox="0 0 24 24" style="display:none"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09A5.99 5.99 0 0 1 16.5 3C19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
     </button>
@@ -343,23 +357,23 @@
 
   <div class="player-center">
     <div class="ctrl-row">
-      <button class="ctrl-btn" id="btn-shuffle" title="Shuffle (S)">
+      <button class="ctrl-btn" id="btn-shuffle" title="Shuffle (S)" aria-label="Shuffle" aria-pressed="false">
         <svg viewBox="0 0 24 24"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
       </button>
-      <button class="ctrl-btn" id="btn-prev" title="Previous (←)">
+      <button class="ctrl-btn" id="btn-prev" title="Previous (←)" aria-label="Previous track">
         <svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
       </button>
-      <button class="ctrl-btn play-pause-btn" id="btn-play" title="Play/Pause (Space)">
+      <button class="ctrl-btn play-pause-btn" id="btn-play" title="Play/Pause (Space)" aria-label="Play">
         <svg class="icon-play" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
         <svg class="icon-pause" viewBox="0 0 24 24" style="display:none"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
       </button>
-      <button class="ctrl-btn" id="btn-next" title="Next (→)">
+      <button class="ctrl-btn" id="btn-next" title="Next (→)" aria-label="Next track">
         <svg viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
       </button>
-      <button class="ctrl-btn" id="btn-repeat" title="Repeat (R)">
+      <button class="ctrl-btn" id="btn-repeat" title="Repeat (R)" aria-label="Repeat" aria-pressed="false">
         <svg viewBox="0 0 24 24"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>
       </button>
-      <button class="ctrl-btn stop-after-btn" id="btn-stop-after" title="Stop after this track">
+      <button class="ctrl-btn stop-after-btn" id="btn-stop-after" title="Stop after this track" aria-label="Stop after this track" aria-pressed="false">
         <svg viewBox="0 0 24 24"><path d="M6 6h12v12H6z"/></svg>
       </button>
     </div>
@@ -377,19 +391,19 @@
   <div class="vol-section">
     <div class="vol-extra-row">
       <button class="ctrl-btn btn-speed" id="btn-speed" title="Playback speed (X)"><span class="btn-speed-label">1×</span></button>
-      <button class="ctrl-btn btn-sleep" id="btn-sleep" title="Sleep timer">
+      <button class="ctrl-btn btn-sleep" id="btn-sleep" title="Sleep timer" aria-label="Sleep timer" aria-pressed="false">
         <svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9c0-.46-.04-.92-.1-1.36a5.389 5.389 0 0 1-4.4 2.26 5.403 5.403 0 0 1-3.14-9.8c-.44-.06-.9-.1-1.36-.1z"/></svg>
       </button>
     </div>
     <div class="vol-row">
-      <button class="ctrl-btn vol-icon-btn" id="btn-vol" title="Mute (M)">
+      <button class="ctrl-btn vol-icon-btn" id="btn-vol" title="Mute (M)" aria-label="Mute" aria-pressed="false">
         <svg class="vol-icon" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77 0-4.28-2.99-7.86-7-8.77z"/></svg>
       </button>
       <div class="vol-track" id="vol-track">
         <div class="vol-fill" id="vol-fill" style="width:80%"></div>
         <div class="vol-thumb" id="vol-thumb" style="left:80%"></div>
       </div>
-      <button class="ctrl-btn queue-toggle-btn" id="btn-queue" title="Queue (Q)">
+      <button class="ctrl-btn queue-toggle-btn" id="btn-queue" title="Queue (Q)" aria-label="Queue" aria-expanded="false">
         <svg viewBox="0 0 24 24"><path d="M4 6h16v2H4zm4 5h12v2H8zm4 5h8v2h-8z"/></svg>
       </button>
     </div>
@@ -479,37 +493,19 @@
 <div class="toast-notification" id="toast-notification"></div>
 
 <!-- Context menu -->
-<div class="ctx-menu" id="ctx-menu" style="display:none">
-  <button class="ctx-item" id="ctx-play">
-    <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg> Play
-  </button>
-  <button class="ctx-item" id="ctx-queue">
-    <svg viewBox="0 0 24 24"><path d="M4 6h16v2H4zm4 5h12v2H8zm4 5h8v2h-8z"/></svg> Add to queue
-  </button>
-  <button class="ctx-item" id="ctx-play-next">
-    <svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg> Play next
-  </button>
-  <button class="ctx-item" id="ctx-radio">
-    <svg viewBox="0 0 24 24"><path d="M3.24 6.15C2.51 6.43 2 7.17 2 8v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8c0-1.1-.89-2-2-2H8.3l8.26-3.34L15.88 1 3.24 6.15zM12 19a3 3 0 1 1 0-6 3 3 0 0 1 0 6zm7-11a1 1 0 1 1 0-2 1 1 0 0 1 0 2z"/></svg> Go to Radio
-  </button>
-  <button class="ctx-item" id="ctx-addpl">
-    <svg viewBox="0 0 24 24"><path d="M14 10H2v2h12v-2zm0-4H2v2h12V6zM2 16h8v-2H2v2zm14-2v3h-3v2h3v3h2v-3h3v-2h-3v-3h-2z"/></svg> Add to playlist
-  </button>
-  <button class="ctx-item" id="ctx-wishlist">
-    <svg viewBox="0 0 24 24"><path d="M17 3H7c-1.1 0-2 .9-2 2v16l7-3 7 3V5c0-1.1-.9-2-2-2z"/></svg> Add to wishlist
-  </button>
-  <button class="ctx-item" id="ctx-artist">
-    <svg viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg> View artist
-  </button>
-  <div class="ctx-separator"></div>
-  <div class="ctx-item" id="ctx-copy-path"><svg viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg> Copy file path</div>
-  <button class="ctx-item" id="ctx-show-folder">
-    <svg viewBox="0 0 24 24"><path d="M20 6h-8l-2-2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2z"/></svg> Show in folder
-  </button>
-  <div class="ctx-divider"></div>
-  <button class="ctx-item" id="ctx-like">
-    <svg viewBox="0 0 24 24"><path d="M16.5 3c-1.74 0-3.41.81-4.5 2.09A5.99 5.99 0 0 0 7.5 3C4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3z"/></svg> <span id="ctx-like-label">Like</span>
-  </button>
+<!-- Populated at open time from the context-menu model, so each surface only
+     offers the actions that make sense there (see showContextMenu). -->
+<div class="ctx-menu" id="ctx-menu" style="display:none"></div>
+
+<!-- Shown only while rows are selected with Shift/Ctrl-click. -->
+<div class="sel-bar" id="sel-bar" style="display:none">
+  <span id="sel-bar-text"></span>
+  <div class="sel-bar-actions">
+    <button class="mg-btn" id="sel-addpl">Add to playlist</button>
+    <button class="mg-btn" id="sel-queue">Add to queue</button>
+    <button class="mg-btn mg-btn-danger" id="sel-trash">Move to Trash…</button>
+    <button class="mg-btn" id="sel-clear">Clear</button>
+  </div>
 </div>
 
 <!-- Artwork fetch status -->
@@ -605,6 +601,16 @@
 <script src="format-badges.js"></script>
 <script src="slsk-filters.js"></script>
 <script src="slsk-tree.js"></script>
+<script src="slsk-presence.js"></script>
+<script src="library-sig.js"></script>
+<script src="queue-repair.js"></script>
+<script src="library-prune.js"></script>
+<script src="ctx-menu-model.js"></script>
+<script src="multi-select.js"></script>
+<script src="library-health.js"></script>
+<script src="path-plan.js"></script>
+<script src="tag-edit.js"></script>
+<script src="library-manage.js"></script>
 <script src="saved-users.js"></script>
 <script src="download-spread.js"></script>
 <script src="surround-verify.js"></script>
