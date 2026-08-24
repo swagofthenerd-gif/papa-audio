@@ -16,6 +16,7 @@ const state = {
   isPlaying: false,
   browserLoading: false,
   libSort: 'alpha',
+  libSearch: '',
   libLikedOnly: false,
   queuePanelOpen: false,
   lastVolume: 0.8,
@@ -33,7 +34,7 @@ const state = {
   libView: 'grid',
   libFolder: null,
   playlists: [],
-  playlistFolders: [],
+  playlistFolders: [],   // persisted to localStorage: papa-playlist-folders
   smartPlaylists: [],
   currentPlaylistId: null,
   playlistSort: 'alpha',
@@ -89,7 +90,13 @@ let _suggCache = { trackFp: null, pool: [] }
 const _scrollMemory = new Map()
 var _undoStack = []
 var _libPresets = []
-try { _libPresets = JSON.parse(localStorage.getItem('papa-lib-presets') || '[]') } catch (_) {}
+try {
+  var _lp = JSON.parse(localStorage.getItem('papa-lib-presets') || '[]')
+  // JSON.parse succeeds for "null", "{}", "5" -- none of which have .length or
+  // .map, so an unvalidated value made renderLibrary() throw and the whole tab
+  // render as nothing, permanently, with no way back from the UI.
+  if (Array.isArray(_lp)) _libPresets = _lp.filter(function (x) { return x && typeof x.name === 'string' })
+} catch (_) {}
 var timeDisplay = localStorage.getItem('papa_time_display') || 'elapsed'
 
 // All three time modes used to render as an identical bare number in the same
@@ -164,19 +171,33 @@ fileInput.accept = '.m3u,.m3u8'
 fileInput.style.display = 'none'
 document.body.appendChild(fileInput)
 
+var _plCollapsedFolders = {}
+try {
+  var _pc = JSON.parse(localStorage.getItem('papa-pl-collapsed') || '{}')
+  if (_pc && typeof _pc === 'object' && !Array.isArray(_pc)) _plCollapsedFolders = _pc
+} catch (_) {}
+
 // ── Undo ──────────────────────────────────────────────────────────────────────
 function pushUndo(label, undoFn) {
-  _undoStack.push({ label: label, fn: undoFn })
+  var entry = { label: label, fn: undoFn, done: false }
+  _undoStack.push(entry)
   showSnackbar(label, 'Undo', function() {
-    var item = _undoStack.pop()
-    if (item) item.fn()
+    // Undo THIS action, not whatever happens to be on top of the stack. The
+    // old pop() meant two undoable actions within the snackbar window crossed
+    // wires: the older snackbar ran the newer undo.
+    if (entry.done) return
+    entry.done = true
+    var at = _undoStack.indexOf(entry)
+    if (at !== -1) _undoStack.splice(at, 1)
+    entry.fn()
   })
 }
 
 function undoLastAction() {
-  if (!_undoStack.length) return
-  var item = _undoStack.pop()
-  item.fn()
+  while (_undoStack.length) {
+    var item = _undoStack.pop()
+    if (item && !item.done) { item.done = true; item.fn(); return }
+  }
 }
 
 // ── Visibility & power management ───────────────────────────────────────────
@@ -441,6 +462,10 @@ async function init() {
   try { _playlistSorts = JSON.parse(localStorage.getItem('papa-pl-sorts') || '{}') } catch (_) { _playlistSorts = {} }
   try { var savedSmart = JSON.parse(localStorage.getItem('papa-smart-playlists') || 'null') } catch (_) { savedSmart = null }
   if (savedSmart) state.smartPlaylists = savedSmart
+  try {
+    var savedFolders = JSON.parse(localStorage.getItem('papa-playlist-folders') || '[]')
+    if (Array.isArray(savedFolders)) state.playlistFolders = savedFolders.filter(function (f) { return typeof f === 'string' && f })
+  } catch (_) {}
   state.savedQueues = savedQueues || []
   state.musicFolders   = info.musicFolders   || []
   state.recentlyPlayed = info.recentlyPlayed || []
@@ -607,12 +632,12 @@ function dropMissingTrack(filePath, track) {
     state.queueIndex = -1
     updatePlayBtn()
     updateNowPlaying(null)
-    showSnackbar(esc(name) + ' is missing — playback stopped')
+    showSnackbar(name + ' is missing — playback stopped')
   } else if (res.removedCurrent) {
-    showSnackbar(esc(name) + ' is missing — skipped')
+    showSnackbar(name + ' is missing — skipped')
     playCurrentTrack()
   } else {
-    showSnackbar(esc(name) + ' is missing — removed from the queue')
+    showSnackbar(name + ' is missing — removed from the queue')
   }
   renderQueuePanel()
 }
@@ -807,7 +832,7 @@ function _confirmRemoveMusicFolder(folder) {
 
     var P = window.PapaLibraryPrune
     var extra = (P && prune && prune.summary) ? P.describeSummary(prune.summary) : ''
-    var msg = 'Folder removed' + (extra ? '. ' + esc(extra) : '')
+    var msg = 'Folder removed' + (extra ? '. ' + extra : '')
 
     showSnackbar(msg, 'Undo', async function () {
       state.musicFolders = await window.api.addMusicFolderPath(folder)
@@ -1276,13 +1301,24 @@ async function loadYtHome() {
 function renderArtists() {
   const artistMap = new Map()
   for (const album of state.library) {
-    const key = album.artist
+    // Group by the SAME rule the artist page and _artistAlbumCount() use
+    // (artist OR albumArtist). Grouping on album.artist alone meant a card
+    // could say "2 albums" and the page it opened say "5", and albums tagged
+    // with a per-track artist but a proper albumArtist were filed under the
+    // featured guest. A blank artist is bucketed rather than left as a dead,
+    // unclickable card that still offered "Trash everything by this artist".
+    const names = []
+    if (album.artist && String(album.artist).trim()) names.push(album.artist)
+    if (album.albumArtist && String(album.albumArtist).trim() && album.albumArtist !== album.artist) names.push(album.albumArtist)
+    if (!names.length) names.push('Unknown Artist')
+    for (const key of names) {
     if (!artistMap.has(key)) {
-      artistMap.set(key, { name: album.artist, albums: [], artPath: null })
+      artistMap.set(key, { name: key, albums: [], artPath: null })
     }
     const entry = artistMap.get(key)
     entry.albums.push(album)
     if (!entry.artPath && album.artPath) entry.artPath = album.artPath
+    }
   }
   const artists = [...artistMap.values()].sort((a, b) => a.name.localeCompare(b.name))
   if (!artists.length && !state.ytFollowed.length) { navigate('library'); return }
@@ -1306,7 +1342,7 @@ function renderArtists() {
         </div>
         <div class="artist-card-name">${esc(ar.name)}<span style="font-size:10px;color:${state.followedArtists.indexOf(ar.name) !== -1 ? 'var(--accent)' : 'var(--text3)'}">${state.followedArtists.indexOf(ar.name) !== -1 ? ' Following' : ''}</span></div>
         <div class="artist-card-meta">${ar.albums.length} album${ar.albums.length !== 1 ? 's' : ''}</div>
-        <button class="artist-play-btn" data-play-artist="${esc(ar.name)}" style="position:absolute;bottom:8px;right:8px;width:32px;height:32px;border-radius:50%;background:var(--accent);border:none;display:flex;align-items:center;justify-content:center;cursor:pointer;opacity:0;transition:opacity .15s">
+        <button class="artist-play-btn" data-play-artist="${esc(ar.name)}" title="Play this artist" aria-label="Play this artist">
           <svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:#000"><path d="M8 5v14l11-7z"/></svg>
         </button>
       </div>`).join('')}
@@ -1341,7 +1377,7 @@ function renderArtists() {
     if (card.dataset.channel) return   // YouTube artists have no local files
     card.addEventListener('contextmenu', e => {
       const artist = card.dataset.artist
-      const albums = state.library.filter(a => a.artist === artist)
+      const albums = state.library.filter(a => a.artist === artist || a.albumArtist === artist)
       const paths = albums.flatMap(a => (a.tracks || []).map(t => t.filePath)).filter(Boolean)
       showContextMenu(e, { type: 'artist', kind: 'artist', artist, paths,
         label: artist + ' — ' + albums.length + ' album' + (albums.length === 1 ? '' : 's') })
@@ -1384,12 +1420,18 @@ function saveLibPreset() {
     likedOnly: state.libLikedOnly,
     sort: state.libSort,
     view: state.libView,
+    // These three were missing, so a preset restored a different result set
+    // than the one that was saved.
+    surround: state.libSurround,
+    folder: state.libFolder,
+    search: state.libSearch,
   }
   var existing = _libPresets.findIndex(function(p) { return p.name === name })
+  if (existing !== -1 && !confirm('A preset named "' + name + '" already exists. Replace it?')) return
   if (existing !== -1) _libPresets[existing] = preset
   else _libPresets.push(preset)
   localStorage.setItem('papa-lib-presets', JSON.stringify(_libPresets))
-  showSnackbar('Preset "' + name + '" saved')
+  showSnackbar('Preset "' + name + (existing !== -1 ? '" replaced' : '" saved'))
   renderLibrary()
 }
 
@@ -1403,6 +1445,11 @@ function loadLibPreset(name) {
   state.libLikedOnly = preset.likedOnly
   state.libSort = preset.sort
   state.libView = preset.view
+  // Restored explicitly, including when absent from an older preset -- leaving
+  // a stale surround/folder/search filter applied made the preset look broken.
+  state.libSurround = preset.surround || ''
+  state.libFolder = preset.folder || null
+  state.libSearch = preset.search || ''
   renderLibrary()
 }
 
@@ -1420,9 +1467,16 @@ function renderLibrary() {
     if (state.libLikedOnly) albums = albums.filter(a => state.likedAlbums.includes(a.id) || a.isYt)
     if (state.libGenre) albums = albums.filter(a => a.genre === state.libGenre)
     if (state.libYear) albums = albums.filter(a => String(a.year) === state.libYear)
-    if (state.libFormat) albums = albums.filter(function(a) { return a.tracks && a.tracks[0] && a.tracks[0].filePath && a.tracks[0].filePath.toLowerCase().endsWith('.' + state.libFormat) })
+    // Judge by ALL tracks, not tracks[0]. A mixed album (e.g. 18 tracks where
+    // the first is mp3 and the rest flac) was classified by one file, so the
+    // FLAC filter hid albums that genuinely contain FLAC.
+    if (state.libFormat) albums = albums.filter(function(a) {
+      return (a.tracks || []).some(function(t) {
+        return t.filePath && t.filePath.toLowerCase().endsWith('.' + state.libFormat)
+      })
+    })
     if (state.libDecade) { var d = parseInt(state.libDecade); albums = albums.filter(function(a) { return a.year >= d && a.year < d + 10 }) }
-    if (state.libFolder) albums = albums.filter(function(a) { return a.tracks && a.tracks[0] && a.tracks[0].filePath && a.tracks[0].filePath.indexOf(state.libFolder) === 0 })
+    if (state.libFolder) albums = albums.filter(function(a) { return _inFolder(a, state.libFolder) })
     // Surround filter. Channel counts come from the scanner (ffprobe-backed for
     // the container formats the tag parser gets wrong), so this filters on what
     // the files ARE, not on what their folder names claim.
@@ -1440,13 +1494,24 @@ function renderLibrary() {
         }
       })
     }
-    var searchQ = (document.getElementById('lib-search') || {}).value || ''
+    var searchQ = state.libSearch || ''
     if (searchQ) { var sq = searchQ.toLowerCase(); albums = albums.filter(function(a) { return (a.name && a.name.toLowerCase().indexOf(sq) !== -1) || (a.artist && a.artist.toLowerCase().indexOf(sq) !== -1) }) }
-    if (state.libSort === 'alpha')  return albums.sort((a, b) => a.name.localeCompare(b.name))
-    if (state.libSort === 'artist') return albums.sort((a, b) => a.artist.localeCompare(b.artist))
+    if (state.libSort === 'alpha')  return albums.sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')))
+    if (state.libSort === 'artist') return albums.sort((a, b) => String(a.artist || '').localeCompare(String(b.artist || '')))
     if (state.libSort === 'year')   return albums.sort((a, b) => (b.year || 0) - (a.year || 0))
-    if (state.libSort === 'recent') return albums.sort((a, b) => state.recentlyPlayed.indexOf(a.id) - state.recentlyPlayed.indexOf(b.id)).filter(a => state.recentlyPlayed.includes(a.id)).concat(albums.filter(a => !state.recentlyPlayed.includes(a.id)))
-    if (state.libSort === 'added') return albums.filter(a => a.addedAt).sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0)).concat(albums.filter(a => !a.addedAt))
+    if (state.libSort === 'recent') {
+      // One rank lookup per album instead of two indexOf() calls per comparison,
+      // and the un-played tail keeps a stable alphabetical order rather than
+      // whatever the comparator happened to leave behind.
+      var rank = {}
+      state.recentlyPlayed.forEach(function (rid, n) { if (rank[rid] === undefined) rank[rid] = n })
+      var played = albums.filter(function (a) { return rank[a.id] !== undefined })
+        .sort(function (a, b) { return rank[a.id] - rank[b.id] })
+      var rest = albums.filter(function (a) { return rank[a.id] === undefined })
+        .sort(function (a, b) { return String(a.name || '').localeCompare(String(b.name || '')) })
+      return played.concat(rest)
+    }
+    if (state.libSort === 'added') return albums.filter(a => a.addedAt).sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0)).concat(albums.filter(a => !a.addedAt).sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''))))
     if (state.libSort === 'genre') return albums.sort((a, b) => (a.genre || 'zzz').localeCompare(b.genre || 'zzz'))
     // Most channels first, Atmos ahead of plain 5.1 at the same count.
     if (state.libSort === 'channels') return albums.sort(function(a, b) {
@@ -1460,7 +1525,20 @@ function renderLibrary() {
 
   var sortedAlbums = getSorted()
   var fmtCounts = { flac: 0, mp3: 0, other: 0 }
-  sortedAlbums.forEach(function(a) { if (a.tracks && a.tracks[0] && a.tracks[0].filePath) { var ext = a.tracks[0].filePath.split('.').pop().toLowerCase(); if (ext === 'flac') fmtCounts.flac++; else if (ext === 'mp3') fmtCounts.mp3++; else fmtCounts.other++ } })
+  // Counted per album over ALL its tracks, so a mixed album is reported under
+  // every format it actually contains rather than whichever happened to be
+  // first. The buckets can therefore overlap, which is the honest answer.
+  sortedAlbums.forEach(function(a) {
+    var seen = {}
+    ;(a.tracks || []).forEach(function(t) {
+      if (!t.filePath) return
+      var ext = t.filePath.split('.').pop().toLowerCase()
+      seen[ext === 'flac' ? 'flac' : ext === 'mp3' ? 'mp3' : 'other'] = true
+    })
+    if (seen.flac) fmtCounts.flac++
+    if (seen.mp3) fmtCounts.mp3++
+    if (seen.other) fmtCounts.other++
+  })
   var fmtBreak = '<span style="font-size:11px;color:var(--text3);margin-left:12px">' + fmtCounts.flac + ' FLAC, ' + fmtCounts.mp3 + ' MP3, ' + fmtCounts.other + ' other</span>'
 
   const sortBtns = [
@@ -1473,40 +1551,75 @@ function renderLibrary() {
     { key: 'added', label: 'Recently added' },
   ].map(s => `<button class="sort-btn${state.libSort === s.key ? ' active' : ''}" data-sort="${s.key}">${s.label}</button>`).join('')
 
-  var viewToggle = `<button class="sort-btn${state.libView === 'folders' ? ' active' : ''}" id="lib-view-folders">📁 Folders</button>`
+  var viewToggle = `<button class="sort-btn${state.libView === 'folders' ? ' active' : ''}" id="lib-view-folders" title="${state.libView === 'folders' ? 'Back to the album grid' : 'Browse by folder'}" aria-pressed="${state.libView === 'folders'}">${state.libView === 'folders' ? '▦ Grid' : '📁 Folders'}</button>`
   var likedBtn = `<button class="sort-btn${state.libLikedOnly ? ' active' : ''}" id="liked-filter-btn" style="margin-left:auto">♥ Liked only</button>`
 
   const genres = [...new Set(state.library.map(a => a.genre).filter(Boolean))].sort()
   const genreChips = genres.length ? `<div class="genre-chip-bar">
     <button class="genre-chip${!state.libGenre ? ' active' : ''}" data-genre="">All</button>
-    ${genres.map(g => `<button class="genre-chip${state.libGenre === g ? ' active' : ''}" data-genre="${esc(g)}" title="${state.library.filter(function(a){return a.genre===g}).length} albums">${esc(g)}</button>`).join('')}
+    ${genres.map(g => `<button class="genre-chip${state.libGenre === g ? ' active' : ''}" data-genre="${esc(g)}" title="${state.library.filter(function(a){return a.genre===g}).length} albums in your library — Alt-click to play a random one">${esc(g)}</button>`).join('')}
   </div>` : ''
 
+  // This list and the Reset handler must stay in step. They had drifted:
+  // genre was COUNTED but never cleared (Reset left the badge showing "1 filter
+  // active" and the grid still filtered), while surround was cleared but never
+  // counted (an active surround filter showed no badge at all).
   var activeFilterCount = 0
   if (state.libGenre) activeFilterCount++
   if (state.libYear) activeFilterCount++
   if (state.libFormat) activeFilterCount++
   if (state.libDecade) activeFilterCount++
+  if (state.libSurround) activeFilterCount++
+  if (state.libFolder) activeFilterCount++
+  if (state.libLikedOnly) activeFilterCount++
+  if (state.libSearch) activeFilterCount++
   var filterBadge = activeFilterCount > 0 ? '<span style="display:inline-block;margin-left:8px;padding:2px 8px;background:var(--accent);color:#000;border-radius:100px;font-size:11px;font-weight:600">' + activeFilterCount + ' filter' + (activeFilterCount > 1 ? 's' : '') + ' active</span>' : ''
 
   var filterIndicator = ''
   if (state.libDecade) filterIndicator = '<div style="display:inline-flex;align-items:center;gap:6px;margin-left:12px;padding:3px 10px;background:var(--accent);color:#000;border-radius:100px;font-size:11px;font-weight:600">' + state.libDecade + 's<button style="background:none;border:none;color:#000;cursor:pointer;font-size:14px;line-height:1" id="clear-decade-filter">&times;</button></div>'
 
+  // Folder membership: an album belongs to every directory that holds ANY of
+  // its tracks, so a multi-disc album stored as Album/CD1 + Album/CD2 is no
+  // longer attributed entirely to CD1. Matching is boundary-aware -- a bare
+  // prefix test made /music/Rock also match /music/Rockabilly.
+  function _albumFolders(a) {
+    var out = {}
+    ;(a.tracks || []).forEach(function (t) {
+      if (!t.filePath) return
+      var parts = t.filePath.split('/'); parts.pop()
+      var dir = parts.join('/')
+      if (dir) out[dir] = true
+    })
+    return Object.keys(out)
+  }
+  function _inFolder(a, folder) {
+    var pre = String(folder).replace(/\/+$/, '') + '/'
+    return (a.tracks || []).some(function (t) {
+      return t.filePath && (t.filePath.indexOf(pre) === 0)
+    })
+  }
+
   function buildFolderTree() {
-    var folders = [...new Set(state.library.map(function(a) {
-      if (!a.tracks || !a.tracks[0] || !a.tracks[0].filePath) return ''
-      var parts = a.tracks[0].filePath.split('/'); parts.pop()
-      return parts.join('/')
-    }).filter(Boolean))].sort()
+    // Built from the FILTERED set, so a folder's count matches what clicking it
+    // actually shows. It used to be built from the whole library, so with a
+    // genre filter on a folder could claim "37 albums" and open showing 2.
+    var scope = sortedAlbums
+    var folders = [...new Set([].concat.apply([], scope.map(_albumFolders)))].sort()
 
     if (state.libFolder) {
-      var folderBreadcrumb = '<div class="folder-breadcrumb" id="folder-back-btn"><span class="folder-back-arrow">←</span> Back to folders</div>'
-      return folderBreadcrumb + '<div class="album-grid" id="lib-grid">' + sortedAlbums.map(function(a, i) { return albumCard(a, i, state.libSort) }).join('') + '</div>'
+      var folderBreadcrumb = '<div class="folder-breadcrumb" id="folder-back-btn" tabindex="0" role="button"><span class="folder-back-arrow">←</span> Back to folders</div>'
+      return folderBreadcrumb + (sortedAlbums.length
+        ? '<div class="album-grid" id="lib-grid">' + sortedAlbums.map(function(a, i) { return albumCard(a, i, state.libSort) }).join('') + '</div>'
+        : '<div class="empty-wrap"><h2>Nothing here</h2><p>No albums in this folder match your filters.</p></div>')
+    }
+
+    if (!folders.length) {
+      return '<div class="empty-wrap"><h2>No folders match</h2><p>Try clearing a filter or two.</p></div>'
     }
 
     return '<div class="folder-tree">' + folders.map(function(f) {
       var name = f.split('/').pop() || f
-      var count = state.library.filter(function(a) { return a.tracks && a.tracks[0] && a.tracks[0].filePath && a.tracks[0].filePath.indexOf(f) === 0 }).length
+      var count = scope.filter(function(a) { return _inFolder(a, f) }).length
       return '<div class="folder-tree-item" data-folder="' + esc(f) + '"><span class="folder-icon">📁</span><span class="folder-name">' + esc(name) + '</span><span class="folder-count">' + count + ' albums</span></div>'
     }).join('') + '</div>'
   }
@@ -1522,6 +1635,10 @@ function renderLibrary() {
       })
     }
   })
+  // This used to be a SECOND full library x tracks loop immediately after the
+  // one above, over exactly the same data. Merged; `filteredSize` is what the
+  // header shows, because reporting the whole library's size next to a filtered
+  // grid put two numbers that disagreed on the same line.
   var totalSize = 0, formatCounts = {}
   state.library.forEach(function(a) {
     if (!a.tracks) return
@@ -1530,6 +1647,10 @@ function renderLibrary() {
       var ext = (t.filePath || '').toLowerCase().split('.').pop() || 'other'
       formatCounts[ext] = (formatCounts[ext] || 0) + 1
     })
+  })
+  var filteredSize = 0
+  sortedAlbums.forEach(function(a) {
+    ;(a.tracks || []).forEach(function(t) { filteredSize += (t.fileSize || t.size || 0) })
   })
   var fmtPcts = Object.keys(formatCounts).sort(function(a, b) { return (formatCounts[b] || 0) - (formatCounts[a] || 0) })
   var fmtBreakdownHTML = ''
@@ -1554,20 +1675,22 @@ function renderLibrary() {
     <div class="page-header">
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
         <h1 class="section-title">Your Library</h1>
-        <span class="lib-count">${state.library.length + state.ytSavedAlbums.length} albums</span><span class="lib-count" style="margin-left:8px">${_fmtBytes(totalSize)}</span>${filterBadge}${fmtBreak}${filterIndicator}
+        <span class="lib-count">${sortedAlbums.length === (state.library.length + state.ytSavedAlbums.length)
+          ? sortedAlbums.length + ' albums'
+          : sortedAlbums.length + ' of ' + (state.library.length + state.ytSavedAlbums.length) + ' albums'}</span><span class="lib-count" style="margin-left:8px">${_fmtBytes(filteredSize)}</span>${filterBadge}${fmtBreak}${filterIndicator}
         <button class="rescan-btn" id="lib-rescan-btn" title="Rescan music folders">
           <svg viewBox="0 0 24 24"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/></svg>
           Rescan
         </button>
       </div>
       <div class="library-search-wrap">
-        <input class="library-search" id="lib-search" type="text" placeholder="Search albums or artists…">
+        <input class="library-search" id="lib-search" type="text" placeholder="Search albums or artists…" value="${esc(state.libSearch || '')}">
       </div>
       <div class="sort-bar">${sortBtns}${viewToggle}${likedBtn}</div>
       ${genreChips}
       <div class="lib-advanced-bar">
-        <select class="lib-select" id="lib-year-filter"><option value="">Year: All</option>${(()=>{var y=[...new Set(state.library.map(function(a){return a.year}).filter(Boolean))].sort();return y.map(function(v){return '<option value="'+v+'">'+v+'</option>'}).join('')})()}</select>
-        <select class="lib-select" id="lib-format-filter"><option value="">Format: All</option>${(()=>{var f=[...new Set(state.library.map(function(a){var t=a.tracks&&a.tracks[0];return t?(t.filePath||'').split('.').pop():null}).filter(Boolean))].sort();return f.map(function(v){return '<option value="'+v+'">'+v.toUpperCase()+'</option>'}).join('')})()}</select>
+        <select class="lib-select" id="lib-year-filter" title="Filter by release year"><option value="">Year: All</option>${(()=>{var y=[...new Set(state.library.map(function(a){return a.year}).filter(Boolean))].sort(function(a,b){return a-b});return y.map(function(v){return '<option value="'+esc(v)+'"'+(String(state.libYear)===String(v)?' selected':'')+'>'+esc(v)+'</option>'}).join('')})()}</select>
+        <select class="lib-select" id="lib-format-filter"><option value="">Format: All</option>${(()=>{var f=[...new Set([].concat.apply([], state.library.map(function(a){return (a.tracks||[]).map(function(t){return t.filePath?t.filePath.split('.').pop().toLowerCase():null})})).filter(Boolean))].sort();return f.map(function(v){return '<option value="'+esc(v)+'"'+(state.libFormat===v?' selected':'')+'>'+esc(v).toUpperCase()+'</option>'}).join('')})()}</select>
         <select class="lib-select" id="lib-decade-filter"><option value="">Decade: All</option><option value="1950"${state.libDecade==='1950'?' selected':''}>1950s</option><option value="1960"${state.libDecade==='1960'?' selected':''}>1960s</option><option value="1970"${state.libDecade==='1970'?' selected':''}>1970s</option><option value="1980"${state.libDecade==='1980'?' selected':''}>1980s</option><option value="1990"${state.libDecade==='1990'?' selected':''}>1990s</option><option value="2000"${state.libDecade==='2000'?' selected':''}>2000s</option><option value="2010"${state.libDecade==='2010'?' selected':''}>2010s</option><option value="2020"${state.libDecade==='2020'?' selected':''}>2020s</option></select>
         <select class="lib-select" id="lib-surround-filter" title="Filter by how many channels the files actually have">
           ${(() => {
@@ -1589,30 +1712,27 @@ function renderLibrary() {
         </select>
         <button class="lib-reset-btn" id="lib-reset-filters">Reset</button>
         <button class="lib-reset-btn" id="lib-save-preset" style="margin-left:12px">💾 Save preset</button>
-        ${_libPresets.length > 0 ? '<select class="lib-select" id="lib-preset-select" style="margin-left:8px"><option value="">Load preset…</option>' + _libPresets.map(function(p) { return '<option value="' + esc(p.name) + '">' + esc(p.name) + '</option>' }).join('') + ' <button class="lib-reset-btn" id="lib-delete-preset" style="display:none;margin-left:4px">✕</button></select>' : ''}
+        ${_libPresets.length > 0 ? '<select class="lib-select" id="lib-preset-select" style="margin-left:8px"><option value="">Load preset…</option>' + _libPresets.map(function(p) { return '<option value="' + esc(p.name) + '">' + esc(p.name) + '</option>' }).join('') + '</select>' +
+          // This button used to be emitted BEFORE </select>. A <select> may only
+          // contain <option>/<optgroup>, so the parser discarded it: presets
+          // could never be deleted and both handlers below were dead code.
+          '<button class="lib-reset-btn" id="lib-delete-preset" title="Delete the selected preset" aria-label="Delete the selected preset" style="display:none;margin-left:4px">✕</button>' : ''}
       </div>
     </div>
-    ${state.libView === 'folders' ? buildFolderTree() : `<div class="album-grid" id="lib-grid">${sortedAlbums.map(function(a, i) { return albumCard(a, i, state.libSort) }).join('')}</div>`}
+    ${state.libView === 'folders' ? buildFolderTree() : (sortedAlbums.length ? `<div class="album-grid" id="lib-grid">${sortedAlbums.map(function(a, i) { return albumCard(a, i, state.libSort) }).join('')}</div>` : `<div class="empty-wrap"><svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg><h2>No albums match</h2><p>${activeFilterCount ? 'Try clearing a filter or two.' : 'Your library is empty. Add a music folder to get started.'}</p>${activeFilterCount ? '<button class="lib-reset-btn" id="lib-empty-reset">Clear all filters</button>' : ''}</div>`)}
     ${summaryHTML}
   </div>`)
 
-  document.getElementById('lib-search')?.addEventListener('input', e => {
-    const q = e.target.value.toLowerCase()
-    const filtered = getSorted().filter(a =>
-      a.name.toLowerCase().includes(q) || a.artist.toLowerCase().includes(q)
-    )
-    const grid = document.getElementById('lib-grid')
-    if (grid) grid.innerHTML = filtered.map(function(a, i) { return albumCard(a, i, state.libSort) }).join('')
-  bindContentEvents()
-
-  document.getElementById('results-filter')?.addEventListener('input', function() {
-    var q = this.value.toLowerCase()
-    document.querySelectorAll('.track-row, .album-card, .artist-pill, .yt-row, .yt-album-card').forEach(function(el) {
-      var text = (el.textContent || '').toLowerCase()
-      el.style.display = q && !text.includes(q) ? 'none' : ''
-    })
-  })
-  })
+  // NOTE: there used to be a second, immediate `input` handler here that
+  // rewrote #lib-grid directly. Its arrow function was mis-closed, so
+  // bindContentEvents() -- and a #results-filter binding belonging to
+  // renderSearch() -- sat INSIDE the callback. Every keystroke therefore
+  // re-bound every card, row and nav element in the page: after typing 8
+  // characters one click on an album fired navigate() nine times and Back
+  // needed nine presses. It also meant the Search page's "Filter results…"
+  // box was only ever bound by typing in the LIBRARY search box, i.e. never.
+  // The debounced handler below is the single owner of this input now; the
+  // #results-filter binding moved to bindContentEvents() where it belongs.
 
   document.querySelectorAll('.sort-btn[data-sort]').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -1625,18 +1745,21 @@ function renderLibrary() {
     renderLibrary()
   })
   document.querySelectorAll('.genre-chip[data-genre]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      state.libGenre = btn.dataset.genre || null
-      renderLibrary()
-    })
-    btn.addEventListener('dblclick', function(e) {
-      e.preventDefault()
+    btn.addEventListener('click', e => {
+      // The random-play shortcut used to be on dblclick, which could never fire:
+      // this click handler re-renders and replaces the chip node, so the second
+      // click landed on a different element. Alt/Cmd-click is one event, so it
+      // survives -- and the chip's title now says so.
       var genre = btn.dataset.genre
-      if (!genre) return
-      var albums = state.library.filter(function(a) { return a.genre === genre })
-      if (!albums.length) return
-      var album = albums[Math.floor(Math.random() * albums.length)]
-      if (album) playAlbum(album, 0)
+      if ((e.altKey || e.metaKey) && genre) {
+        e.preventDefault()
+        var albums = state.library.filter(function(a) { return a.genre === genre })
+        if (!albums.length) return
+        playAlbum(albums[Math.floor(Math.random() * albums.length)], 0)
+        return
+      }
+      state.libGenre = genre || null
+      renderLibrary()
     })
   })
 
@@ -1645,18 +1768,51 @@ function renderLibrary() {
     if (!btn) return
     btn.disabled = true
     btn.innerHTML = '<svg viewBox="0 0 24 24" style="animation:dl2Spin 1s linear infinite"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/></svg> Scanning…'
-    const data = await window.api.scanLibrary()
-    state.library = data.albums || []
-    renderLibrary()
-    syncLibraryExt()
-    showSnackbar('Library scan complete: ' + state.library.length + ' albums found')
+    try {
+      const data = await window.api.scanLibrary()
+      state.library = data.albums || []
+      // The delete path prunes orphaned album likes; a rescan replaced the whole
+      // library without doing so, leaving ids that match nothing -- "Liked only"
+      // then claims N liked albums and renders fewer, with nothing to click.
+      // Only prune when the scan actually returned a library, so an empty or
+      // failed scan (unplugged drive) can never wipe every like.
+      if (state.library.length) {
+        var known = {}
+        state.library.forEach(function (a) { known[a.id] = true })
+        var keep = state.likedAlbums.filter(function (id) { return known[id] || /^pl_/.test(id) })
+        if (keep.length !== state.likedAlbums.length) {
+          state.likedAlbums = keep
+          window.api.saveLiked(keep)
+        }
+      }
+      // Don't yank the user back to Library if they navigated away mid-scan.
+      if (state.currentPage === 'library') renderLibrary()
+      syncLibraryExt()
+      showSnackbar('Library scan complete: ' + state.library.length + ' albums found')
+    } catch (err) {
+      // Unguarded, a failed scan (unplugged drive, permission error) left the
+      // button disabled and spinning with no message and no way to retry.
+      showSnackbar('Library scan failed' + (err && err.message ? ' — ' + err.message : ''))
+    } finally {
+      var again = document.getElementById('lib-rescan-btn')
+      if (again) { again.disabled = false }
+    }
   })
 
   document.getElementById('lib-year-filter')?.addEventListener('change', function() { state.libYear = this.value; renderLibrary() })
   document.getElementById('lib-format-filter')?.addEventListener('change', function() { state.libFormat = this.value; renderLibrary() })
   document.getElementById('lib-decade-filter')?.addEventListener('change', function() { state.libDecade = this.value; renderLibrary() })
   document.getElementById('lib-surround-filter')?.addEventListener('change', function() { state.libSurround = this.value; renderLibrary() })
-  document.getElementById('lib-reset-filters')?.addEventListener('click', function() { state.libYear = ''; state.libFormat = ''; state.libDecade = ''; state.libSurround = ''; renderLibrary() })
+  document.getElementById('lib-empty-reset')?.addEventListener('click', function() {
+    state.libYear = ''; state.libFormat = ''; state.libDecade = ''; state.libSurround = ''
+    state.libGenre = null; state.libFolder = null; state.libLikedOnly = false; state.libSearch = ''
+    renderLibrary()
+  })
+  document.getElementById('lib-reset-filters')?.addEventListener('click', function() {
+    state.libYear = ''; state.libFormat = ''; state.libDecade = ''; state.libSurround = ''
+    state.libGenre = null; state.libFolder = null; state.libLikedOnly = false; state.libSearch = ''
+    renderLibrary()
+  })
   document.getElementById('lib-save-preset')?.addEventListener('click', function() { saveLibPreset() })
   document.getElementById('lib-preset-select')?.addEventListener('change', function() { var v = this.value; var d = document.getElementById('lib-delete-preset'); if (d) d.style.display = v ? 'inline-block' : 'none'; if (v) loadLibPreset(v) })
   document.getElementById('lib-delete-preset')?.addEventListener('click', function() { var sel = document.getElementById('lib-preset-select'); var v = sel && sel.value; if (v && confirm('Delete preset "' + v + '"?')) { _libPresets = _libPresets.filter(function(p) { return p.name !== v }); localStorage.setItem('papa-lib-presets', JSON.stringify(_libPresets)); showSnackbar('Preset "' + v + '" deleted'); renderLibrary() } })
@@ -1678,7 +1834,23 @@ function renderLibrary() {
   var libSearch = document.getElementById('lib-search')
   if (libSearch) {
     var searchTimeout
-    libSearch.addEventListener('input', function() { clearTimeout(searchTimeout); searchTimeout = setTimeout(renderLibrary, 250) })
+    libSearch.addEventListener('input', function() {
+      state.libSearch = this.value
+      clearTimeout(searchTimeout)
+      searchTimeout = setTimeout(function () {
+        // setContent() replaces the input, so carry focus and caret across or
+        // the box silently stops accepting keystrokes mid-word.
+        var was = document.getElementById('lib-search')
+        var hadFocus = document.activeElement === was
+        var caret = was ? was.selectionStart : null
+        renderLibrary()
+        if (!hadFocus) return
+        var now = document.getElementById('lib-search')
+        if (!now) return
+        now.focus()
+        if (caret != null) { try { now.setSelectionRange(caret, caret) } catch (_) {} }
+      }, 150)
+    })
   }
 }
 
@@ -1739,7 +1911,7 @@ function renderAlbum(albumId) {
       <div class="sticky-album-artist">${esc(album.artist)}</div>
     </div>
     <div class="album-hero" id="album-hero-sentinel" style="background: linear-gradient(${color}cc, var(--bg) 100%)">
-      <img class="album-hero-art" src="${album.artPath ? 'file://' + album.artPath : ''}" alt="" ${!album.artPath ? 'style="display:none"' : ''} onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+      <img class="album-hero-art" src="${album.artPath ? esc('file://' + album.artPath) : ''}" alt="" ${!album.artPath ? 'style="display:none"' : ''} onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
       <div class="album-hero-art-fallback" ${album.artPath ? 'style="display:none"' : ''}><svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg></div>
       <div class="album-hero-info">
         <div class="album-hero-type">Album</div>
@@ -2142,7 +2314,7 @@ function renderSearch(query) {
     if (topAlbum) {
       const hue = _cardHue((topAlbum.artist||'') + (topAlbum.name||''))
       const artStyle = topAlbum.artPath
-        ? `background:url('file://${topAlbum.artPath}') center/cover no-repeat`
+        ? `background:url('${esc('file://' + topAlbum.artPath)}') center/cover no-repeat`
         : `background:linear-gradient(135deg,hsl(${hue},55%,28%) 0%,hsl(${(hue+40)%360},45%,18%) 100%)`
       html += `<div class="search-section" data-section="All"><div class="search-top-row">
         <div class="search-top-result" data-album="${topAlbum.id}">
@@ -3269,15 +3441,29 @@ async function renderYtArtist(channelId) {
 
 function renderArtist(artistName) {
   const artistAlbums = state.library.filter(a => a.artist === artistName || a.albumArtist === artistName)
-  if (!artistAlbums.length) { navigate('home', null, { skipHistory: true }); return }
+  if (!artistAlbums.length) {
+    // Reached by clicking a followed artist whose files were removed or
+    // retagged. It used to just become Home, with no message and no way to
+    // unfollow the now-unreachable entry.
+    const wasFollowed = state.followedArtists.indexOf(artistName) !== -1
+    navigate('home', null, { skipHistory: true })
+    showSnackbar('No albums found for "' + artistName + '"',
+      wasFollowed ? 'Unfollow' : '',
+      wasFollowed ? function () { toggleFollowArtist(artistName) } : function () {})
+    return
+  }
   var totalTracks = 0, totalDur = 0
   artistAlbums.forEach(function(a) { totalTracks += (a.tracks || []).length; (a.tracks || []).forEach(function(t) { totalDur += t.duration || 0 }) })
   var artistHours = Math.floor(totalDur / 3600), artistMins = Math.floor((totalDur % 3600) / 60)
   var isFollowed = state.followedArtists.indexOf(artistName) !== -1
-  var heroHTML = '<div class="artist-hero"><div class="artist-hero-art">' + (artistAlbums[0] && artistAlbums[0].artPath ? '<img src="file://' + artistAlbums[0].artPath + '" alt="">' : '<div style="width:100%;height:100%;background:var(--bg4);display:flex;align-items:center;justify-content:center"><svg viewBox="0 0 24 24" style="width:48px;height:48px;fill:var(--text3)"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg></div>') + '</div><div class="artist-hero-info"><div class="artist-hero-name">' + esc(artistName) + '</div><div class="artist-hero-meta">' + artistAlbums.length + ' albums &middot; ' + totalTracks + ' tracks &middot; ' + artistHours + 'h ' + artistMins + 'm</div><button class="follow-btn' + (isFollowed ? ' following' : '') + '" id="artist-follow-btn">' + (isFollowed ? 'Following' : 'Follow') + '</button></div></div>'
+  var heroHTML = '<div class="artist-hero"><div class="artist-hero-art">' + (artistAlbums[0] && artistAlbums[0].artPath ? '<img src="' + esc('file://' + artistAlbums[0].artPath) + '" alt="">' : '<div style="width:100%;height:100%;background:var(--bg4);display:flex;align-items:center;justify-content:center"><svg viewBox="0 0 24 24" style="width:48px;height:48px;fill:var(--text3)"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg></div>') + '</div><div class="artist-hero-info"><div class="artist-hero-name">' + esc(artistName) + '</div><div class="artist-hero-meta">' + artistAlbums.length + ' albums &middot; ' + totalTracks + ' tracks &middot; ' + artistHours + 'h ' + artistMins + 'm</div><button class="follow-btn' + (isFollowed ? ' following' : '') + '" id="artist-follow-btn">' + (isFollowed ? 'Following' : 'Follow') + '</button></div></div>'
 
   var albums = [], eps = [], singles = []
-  artistAlbums.forEach(function(a) {
+  // Newest first, then alphabetical. Unsorted, the discography reordered itself
+  // after every rescan because it followed raw scanner order.
+  artistAlbums.slice().sort(function (a, b) {
+    return (b.year || 0) - (a.year || 0) || String(a.name || '').localeCompare(String(b.name || ''))
+  }).forEach(function(a) {
     var tc = (a.tracks || []).length
     if (tc <= 3) singles.push(a)
     else if (tc <= 6) eps.push(a)
@@ -3286,7 +3472,10 @@ function renderArtist(artistName) {
 
   var discogHTML = ''
   if (albums.length) discogHTML += '<div class="discography-section"><div class="discography-section-title">Albums</div><div class="album-grid">' + albums.map(albumCard).join('') + '</div></div>'
-  if (eps.length) discogHTML += '<div class="discography-section"><div class="discography-section-title">EPs & Singles</div><div class="album-grid">' + eps.concat(singles).map(albumCard).join('') + '</div></div>'
+  // `singles` is rendered inside this same section, so gating on eps alone
+  // meant an artist whose releases are ALL <=3 tracks got a completely blank
+  // discography -- and the all-empty fallback below could never fire either.
+  if (eps.length || singles.length) discogHTML += '<div class="discography-section"><div class="discography-section-title">EPs & Singles</div><div class="album-grid">' + eps.concat(singles).map(albumCard).join('') + '</div></div>'
   if (!albums.length && !eps.length && !singles.length) discogHTML += '<div class="album-grid">' + artistAlbums.map(albumCard).join('') + '</div>'
 
   // Related artists: same genre, different artist
@@ -3301,10 +3490,10 @@ function renderArtist(artistName) {
       <div class="section-header"><span class="section-title">Fans also like</span></div>
       <div class="scroll-row">${relatedArtists.map(a => {
         const ct = _artistAlbumCount(a.artist)
-        return `<div class="album-card" data-artist="${esc(a.artist)}" style="cursor:pointer">
-          ${artImg(a.artPath, 'album-card-art', 'album-card-art-fallback')}
-          <div class="album-card-name">${esc(a.artist)}</div>
-          <div class="album-card-meta">Artist · ${ct} album${ct!==1?'s':''}</div>
+        return `<div class="artist-card artist-related-card" data-artist="${esc(a.artist)}" style="cursor:pointer">
+          <div class="artist-card-art">${artImg(a.artPath, 'artist-card-art-img', 'artist-card-art-fallback')}</div>
+          <div class="artist-card-name">${esc(a.artist)}</div>
+          <div class="artist-card-meta">${ct} album${ct!==1?'s':''}</div>
         </div>`
       }).join('')}</div>
     </div>` : ''
@@ -3320,8 +3509,11 @@ function renderArtist(artistName) {
     this.textContent = followed ? 'Following' : 'Follow'
     this.classList.toggle('following', followed)
   })
-  // Related artist cards click
-  document.querySelectorAll('[data-artist]').forEach(card => {
+  // Scoped to the related cards. It used to be document-wide, so it also bound
+  // a SECOND handler to every .album-card-artist[data-artist] inside the
+  // discography (bindContentEvents already handles those) -- one click pushed
+  // two history entries.
+  document.querySelectorAll('.artist-related-card[data-artist]').forEach(card => {
     card.addEventListener('click', () => navigate('artist', card.dataset.artist))
   })
   loadArtistBio(artistName)
@@ -3445,16 +3637,31 @@ async function loadArtistBio(artistName) {
     }
   }
   if (_bioCache.has(artistName)) { render(_bioCache.get(artistName)); return }
+  // A hung connection (captive portal, DNS blackhole) left the shimmering
+  // skeleton up forever, because nothing ever resolved to replace it.
+  var ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null
+  var bioTimer = setTimeout(function () { if (ctrl) ctrl.abort() }, 8000)
   try {
-    const res = await fetch('https://en.wikipedia.org/api/rest_v1/page/summary/' + encodeURIComponent(artistName))
+    const res = await fetch('https://en.wikipedia.org/api/rest_v1/page/summary/' + encodeURIComponent(artistName),
+      ctrl ? { signal: ctrl.signal } : undefined)
     if (!res.ok) throw new Error('no bio')
     const json = await res.json()
-    const data = { extract: json.extract || null, thumbnail: json.thumbnail?.source || null }
+    // A disambiguation page is never a biography -- "Air", "Bush", "Muse" and
+    // "Chicago" all resolve to one, and we used to print it as fact.
+    const isDisambig = json.type === 'disambiguation' ||
+      /may refer to|disambiguation/i.test(String(json.extract || '').slice(0, 120))
+    const data = isDisambig
+      ? { extract: null, thumbnail: null }
+      : { extract: json.extract || null, thumbnail: json.thumbnail?.source || null }
     _bioCache.set(artistName, data)
     if (state.currentPage === 'artist' && state.currentArtistName === artistName) render(data)
   } catch (_) {
-    _bioCache.set(artistName, null)
+    // Don't cache a network failure forever: going offline once used to mean
+    // that artist had no bio for the rest of the session, even after recovery.
+    if (state.isOnline !== false) _bioCache.set(artistName, null)
     if (state.currentPage === 'artist' && state.currentArtistName === artistName) render(null)
+  } finally {
+    clearTimeout(bioTimer)
   }
 }
 
@@ -3475,7 +3682,8 @@ function _plCollage(pl, cls) {
     const hue = _cardHue(pl.name || pl.id)
     return `<div class="${cls} pl-collage-empty" style="background:linear-gradient(135deg,hsl(${hue},55%,24%),hsl(${(hue+40)%360},45%,15%))">${note}</div>`
   }
-  const artUrl = p => (isHttpPath(p) ? p : `file://${p}`)
+  // Feeds background:url('...'), so it must survive a quote in the path.
+  const artUrl = p => esc(isHttpPath(p) ? p : `file://${p}`)
   if (paths.length < 4) {
     return `<div class="${cls}" style="background:url('${artUrl(paths[0])}') center/cover no-repeat"></div>`
   }
@@ -3522,6 +3730,7 @@ function renderPlaylists() {
   }
 
   function _folderSection(folderName, pls, collapsed) {
+    if (collapsed === undefined) collapsed = !!_plCollapsedFolders[folderName]
     return `<div class="pl-folder-section">
       <div class="pl-folder-header" data-folder="${esc(folderName)}">
         <span class="pl-folder-chevron">${collapsed ? '▸' : '▾'}</span>
@@ -3535,20 +3744,20 @@ function renderPlaylists() {
   }
 
   var folderSections = Object.keys(folders).sort().map(function(f) {
-    return _folderSection(f, folders[f], false)
+    return _folderSection(f, folders[f])
   })
 
   var contentSections = folderSections.join('')
 
   if (uncategorized.length && Object.keys(folders).length > 0) {
-    contentSections += _folderSection('Uncategorized', uncategorized, false)
+    contentSections += _folderSection('Uncategorized', uncategorized)
   }
 
   setContent(`<div class="page">
     <div class="page-header">
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;flex-wrap:wrap">
         <h1 class="section-title">Playlists</h1>
-        <span class="lib-count">${state.playlists.length} playlist${state.playlists.length !== 1 ? 's' : ''}</span>
+        <span class="lib-count">${sorted.length} playlist${sorted.length !== 1 ? 's' : ''}</span>
         <button class="rescan-btn" id="pl-new-folder-btn">
           <svg viewBox="0 0 24 24"><path d="M20 6h-8l-2-2H4c-1.11 0-2 .89-2 2v12c0 1.11.89 2 2 2h16c1.11 0 2-.89 2-2V8c0-1.11-.89-2-2-2z"/></svg>
           New folder
@@ -3565,7 +3774,7 @@ function renderPlaylists() {
         <button class="sort-btn" id="pl-sort-btn">${state.playlistSort === 'recent' ? 'Sort: Recent' : 'Sort: A-Z'}</button>
       </div>
     </div>
-    ${state.playlists.length
+    ${sorted.length
       ? (Object.keys(folders).length === 0 && uncategorized.length > 0
         ? `<div class="pl-grid">${uncategorized.map(_plCard).join('')}</div>`
         : contentSections)
@@ -3577,7 +3786,7 @@ function renderPlaylists() {
 
   document.getElementById('pl-new-folder-btn')?.addEventListener('click', function() {
     showNameInputModal('New folder', 'Folder name…', function(name) {
-      if (state.playlistFolders.indexOf(name) === -1) state.playlistFolders.push(name)
+      if (state.playlistFolders.indexOf(name) === -1) { state.playlistFolders.push(name); _persistPlaylistFolders() }
       renderPlaylists()
       showSnackbar('Folder "' + name + '" created')
     })
@@ -3594,6 +3803,10 @@ function renderPlaylists() {
       var chevron = hdr.querySelector('.pl-folder-chevron')
       var collapsed = body.classList.toggle('pl-folder-collapsed')
       chevron.textContent = collapsed ? '▸' : '▾'
+      // Remember it: this used to be DOM-only, so every re-render expanded
+      // every folder again.
+      _plCollapsedFolders[hdr.dataset.folder] = collapsed
+      try { localStorage.setItem('papa-pl-collapsed', JSON.stringify(_plCollapsedFolders)) } catch (_) {}
     })
   })
 
@@ -3613,7 +3826,7 @@ function renderPlaylists() {
       ]
       if (pl.folder) items.push({ label: 'Remove from folder', action: 'unfolder' })
       var existingFolders = [].concat(Object.keys(folders), state.playlistFolders).filter(function(v, i, a) { return a.indexOf(v) === i })
-      var folderItems = existingFolders.map(function(f) { return { label: '▸ ' + f, action: 'move_' + f } })
+      var folderItems = existingFolders.map(function(f, fi) { return { label: '▸ ' + f, action: 'movefolder:' + fi } })
       var showFolderSub = false
       var action = await window.api.ctxMenuShow(items)
       if (action === 'rename') {
@@ -3636,14 +3849,15 @@ function renderPlaylists() {
         var subAction = await window.api.ctxMenuShow(subItems)
         if (subAction === 'move_new') {
           showNameInputModal('New folder', 'Folder name…', function(folderName) {
-            if (state.playlistFolders.indexOf(folderName) === -1) state.playlistFolders.push(folderName)
+            if (state.playlistFolders.indexOf(folderName) === -1) { state.playlistFolders.push(folderName); _persistPlaylistFolders() }
             pl.folder = folderName
             window.api.savePlaylist(pl)
             renderPlaylists()
             showSnackbar('Moved to "' + folderName + '"')
           })
-        } else if (subAction && subAction.indexOf('move_') === 0) {
-          var targetFolder = subAction.slice(5)
+        } else if (subAction && subAction.indexOf('movefolder:') === 0) {
+          var targetFolder = existingFolders[parseInt(subAction.slice(11), 10)]
+          if (!targetFolder) return
           pl.folder = targetFolder
           window.api.savePlaylist(pl)
           renderPlaylists()
@@ -3707,7 +3921,7 @@ function _showNewPlaylistWithFolder() {
     var folder = null
     if (newFolderRow.style.display !== 'none' && newFolderInput.value.trim()) {
       folder = newFolderInput.value.trim()
-      if (state.playlistFolders.indexOf(folder) === -1) state.playlistFolders.push(folder)
+      if (state.playlistFolders.indexOf(folder) === -1) { state.playlistFolders.push(folder); _persistPlaylistFolders() }
     } else if (folderSelect.value) {
       folder = folderSelect.value
     }
@@ -3735,7 +3949,8 @@ function _showNewPlaylistWithFolder() {
 function renderPlaylist(id, sortKey) {
   if (sortKey) { _playlistSorts[id] = sortKey; localStorage.setItem('papa-pl-sorts', JSON.stringify(_playlistSorts)) }
   sortKey = sortKey || _playlistSorts[id] || 'default'
-  const pl = state.playlists.find(p => p.id === id)
+  const pl = state.playlists.find(p => p.id === id) ||
+             state.smartPlaylists.find(p => p.id === id)
   if (!pl) { navigate('playlists', null, { skipHistory: true }); return }
   let tracks = pl.type === 'smart' ? _evalSmartPlaylist(pl) : [...(pl.tracks || [])]
   if (sortKey === 'title') tracks.sort((a, b) => (a.title || '').localeCompare(b.title || ''))
@@ -3772,7 +3987,15 @@ function renderPlaylist(id, sortKey) {
     .slice(0, 6)
 
   const isSorted = sortKey !== 'default'
+  // `tracks` can be a FILTERED view holding the same object references as
+  // pl.tracks, so the visible index is not the index in pl.tracks. Emitting the
+  // visible index made Remove/Move-up delete or swap a completely different
+  // track whenever the filter box had anything in it.
+  const realIndexOf = new Map()
+  ;(pl.tracks || []).forEach((t, n) => { if (!realIndexOf.has(t)) realIndexOf.set(t, n) })
+  const plLen = (pl.tracks || []).length
   const trackRows = tracks.map((t, i) => {
+    const ri = realIndexOf.has(t) ? realIndexOf.get(t) : i
     const isPlaying = isCurrentTrack(t.filePath)
     // In default order: use position index for up/down/remove (maps to pl.tracks)
     // In sorted view: hide reorder buttons, use filePath for remove
@@ -3780,17 +4003,17 @@ function renderPlaylist(id, sortKey) {
       ? `<button class="pl-track-btn" data-pl-remove-fp="${esc(t.filePath)}" title="Remove">
            <svg viewBox="0 0 24 24"><path d="M19 13H5v-2h14v2z"/></svg>
          </button>`
-      : `<button class="pl-track-btn" data-pl-up="${i}" title="Move up" ${i === 0 ? 'disabled' : ''}>
+      : `<button class="pl-track-btn" data-pl-up="${ri}" title="Move up" ${ri === 0 ? 'disabled' : ''}>
            <svg viewBox="0 0 24 24"><path d="M7 14l5-5 5 5z"/></svg>
          </button>
-         <button class="pl-track-btn" data-pl-down="${i}" title="Move down" ${i === tracks.length - 1 ? 'disabled' : ''}>
+         <button class="pl-track-btn" data-pl-down="${ri}" title="Move down" ${ri === plLen - 1 ? 'disabled' : ''}>
            <svg viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>
          </button>
-         <button class="pl-track-btn" data-pl-remove="${i}" title="Remove">
+         <button class="pl-track-btn" data-pl-remove="${ri}" title="Remove">
            <svg viewBox="0 0 24 24"><path d="M19 13H5v-2h14v2z"/></svg>
          </button>`
     return `
-      <div class="track-row pl-track-row ${isPlaying ? 'playing' : ''}" data-pl-idx="${i}" data-file="${esc(t.filePath)}" data-album="${t.albumId || ''}">
+      <div class="track-row pl-track-row ${isPlaying ? 'playing' : ''}" data-pl-idx="${i}" data-idx="${i}" data-file="${esc(t.filePath)}" data-album="${esc(t.albumId || '')}" data-no-album-nav="1">
         <span class="track-num">${isPlaying
           ? '<div class="playing-bars"><span></span><span></span><span></span></div>'
           : (i + 1)}</span>
@@ -3836,7 +4059,9 @@ function renderPlaylist(id, sortKey) {
       <div class="album-hero-info">
         <div class="album-hero-type">Playlist</div>
         <div class="album-hero-title">${esc(pl.name)}</div>
-        <div class="album-hero-meta">${tracks.length} tracks · ${durStr}</div>
+        <div class="album-hero-meta">${tracks.length === (pl.tracks || []).length
+          ? `${tracks.length} track${tracks.length === 1 ? '' : 's'} · ${durStr}`
+          : `${tracks.length} of ${(pl.tracks || []).length} tracks · ${fmtDur(totalDur)} of ${durStr}`}</div>
       </div>
     </div>
     <div class="album-controls">
@@ -3868,11 +4093,26 @@ function renderPlaylist(id, sortKey) {
 
   var searchInput = document.getElementById('pl-search')
   if (searchInput) {
+    var _plSearchTimer
     searchInput.addEventListener('input', function() {
-      state._plSearch = searchInput.value.toLowerCase()
-      renderPlaylist(id)
+      state._plSearch = this.value.toLowerCase()
+      var caret = this.selectionStart
+      clearTimeout(_plSearchTimer)
+      _plSearchTimer = setTimeout(function () {
+        renderPlaylist(id)
+        var now = document.getElementById('pl-search')
+        if (!now) return
+        now.focus()
+        try { now.setSelectionRange(caret, caret) } catch (_) {}
+      }, 150)
     })
-    searchInput.focus()
+    // Only take focus if the user is actually filtering. It used to focus on
+    // every render, so merely opening a playlist yanked focus into this box.
+    if (state._plSearch) {
+      searchInput.value = state._plSearch
+      searchInput.focus()
+      try { searchInput.setSelectionRange(searchInput.value.length, searchInput.value.length) } catch (_) {}
+    }
   }
 
   document.getElementById('pl-play-btn')?.addEventListener('click', () => {
@@ -3896,6 +4136,7 @@ function renderPlaylist(id, sortKey) {
   })
 
   document.getElementById('pl-delete-btn')?.addEventListener('click', () => {
+    if (!confirm('Delete the playlist "' + pl.name + '"?\n\nThe tracks themselves are not touched.')) return
     var deletedPl = JSON.parse(JSON.stringify(pl))
     state.playlists = state.playlists.filter(p => p.id !== id)
     window.api.deletePlaylist(id)
@@ -3911,10 +4152,12 @@ function renderPlaylist(id, sortKey) {
   document.querySelectorAll('.pl-track-row').forEach(row => {
     row.addEventListener('click', e => {
       if (e.target.closest('.pl-track-actions')) return
-      const idx = parseInt(row.dataset.plIdx)
+      const idx = parseInt(row.dataset.plIdx, 10)
       if (!tracks[idx]) return
-      state.queue = tracks.slice(idx).map(t => ({ ...t }))
-      state.queueIndex = 0
+      // Queue the WHOLE playlist and point at the clicked track, rather than
+      // slicing it off -- Previous could never reach the earlier songs.
+      state.queue = tracks.map(t => ({ ...t }))
+      state.queueIndex = idx
       playCurrentTrack()
     })
   })
@@ -3942,13 +4185,19 @@ function renderPlaylist(id, sortKey) {
   document.querySelectorAll('[data-pl-remove]').forEach(btn => {
     btn.addEventListener('click', e => {
       e.stopPropagation()
-      var i = parseInt(btn.dataset.plRemove)
+      var i = parseInt(btn.dataset.plRemove, 10)
+      // Undo used to splice `removedTrack` back in unconditionally; with a bad
+      // index that value is undefined and Undo injected a hole into the
+      // playlist that later threw on esc(t.title).
+      if (!Number.isInteger(i) || i < 0 || i >= pl.tracks.length) return
       var removedTrack = pl.tracks[i]
+      if (!removedTrack) return
       pl.tracks.splice(i, 1)
       window.api.savePlaylist(pl)
       renderPlaylist(id)
       showSnackbar('Track removed', 'Undo', function() {
-        pl.tracks.splice(i, 0, removedTrack)
+        var at = Math.min(Math.max(0, i), pl.tracks.length)
+        pl.tracks.splice(at, 0, removedTrack)
         window.api.savePlaylist(pl)
         renderPlaylist(id)
       })
@@ -3975,6 +4224,9 @@ function renderPlaylist(id, sortKey) {
       const fp = btn.dataset.addTrack
       const track = _allLibraryTracks().find(t => t.filePath === fp)
       if (!track) return
+      if ((pl.tracks || []).some(function (x) { return x && x.filePath === track.filePath })) {
+        showSnackbar('Already in this playlist'); return
+      }
       pl.tracks.push({ ...track })
       window.api.savePlaylist(pl)
       showToast(`Added "${track.title}" to ${pl.name}`)
@@ -4461,7 +4713,10 @@ function jsonToCsv(data) {
   return lines.join('\n')
 }
 
-function showNameInputModal(title, placeholder, onConfirm) {
+function showNameInputModal(title, placeholder, onConfirm, confirmLabel) {
+  // The button always said "Create", including from the three "Rename playlist"
+  // call sites. Derive it from the title when the caller does not say.
+  confirmLabel = confirmLabel || (/rename/i.test(String(title)) ? 'Rename' : 'Create')
   const existing = document.getElementById('name-input-modal')
   if (existing) existing.remove()
   const overlay = document.createElement('div')
@@ -4477,7 +4732,7 @@ function showNameInputModal(title, placeholder, onConfirm) {
         <input id="nim-input" class="sq-name-input" style="width:100%;box-sizing:border-box" type="text" placeholder="${esc(placeholder)}" maxlength="80" autofocus>
         <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px">
           <button class="secondary" id="nim-cancel">Cancel</button>
-          <button id="nim-ok">Create</button>
+          <button id="nim-ok">${esc(confirmLabel)}</button>
         </div>
       </div>
     </div>`
@@ -4622,14 +4877,25 @@ function showAddToPlaylistModal(tracks) {
   const close = () => overlay.remove()
   const addTo = (pl) => {
     pl.tracks = pl.tracks || []
-    pl.tracks.push(...slim)
+    // Adding the same track twice used to silently double it, with no feedback
+    // at all -- from Home you could not tell the add had happened.
+    const have = new Set(pl.tracks.map(t => t && t.filePath).filter(Boolean))
+    const fresh = slim.filter(t => !t.filePath || !have.has(t.filePath))
+    const dupes = slim.length - fresh.length
+    pl.tracks.push(...fresh)
     window.api.savePlaylist(pl)
     close()
+    showSnackbar(fresh.length
+      ? 'Added ' + fresh.length + ' track' + (fresh.length === 1 ? '' : 's') + ' to "' + pl.name + '"' +
+        (dupes ? ' (' + dupes + ' already there)' : '')
+      : 'Already in "' + pl.name + '"')
     if (state.currentPage === 'playlist' && state.currentPlaylistId === pl.id) renderPlaylist(pl.id)
     if (state.currentPage === 'playlists') renderPlaylists()
   }
 
   overlay.addEventListener('click', e => { if (e.target === overlay) close() })
+  const onEsc = e => { if (e.key === 'Escape') { close(); document.removeEventListener('keydown', onEsc) } }
+  document.addEventListener('keydown', onEsc)
   document.getElementById('addpl-close')?.addEventListener('click', close)
   document.getElementById('addpl-new')?.addEventListener('click', () => {
     showNameInputModal('New playlist', 'Playlist name…', name => {
@@ -5916,7 +6182,16 @@ function makeDraggable(trackEl, fillEl, thumbEl, onChange) {
 function setContent(html) {
   document.getElementById('content').innerHTML = html
   // Row indices are only meaningful for the rows currently on screen.
-  if (typeof _sel !== 'undefined') { _sel.selected = []; _sel.anchor = null; _sel.rows = [] }
+  if (typeof _sel !== 'undefined') {
+    // applyLibraryUpdate() defers a background refresh to protect an active
+    // selection, but the user's own filter/sort clicks came through here and
+    // dropped it with no feedback at all. Say so rather than silently losing it.
+    if (_sel.selected.length > 1) {
+      var _lost = _sel.selected.length
+      setTimeout(function () { showSnackbar(_lost + ' ' + _sel.noun + 's deselected') }, 0)
+    }
+    _sel.selected = []; _sel.anchor = null; _sel.rows = []
+  }
   var bar = document.getElementById('sel-bar')
   if (bar) bar.style.display = 'none'
   bindContentEvents()
@@ -5987,7 +6262,18 @@ function _drawHomeClock() {
 }
 
 function bindContentEvents() {
-  document.querySelectorAll('#content .album-card,#content .quick-card,#content .artist-card,#content .daily-mix-card,#content .jumpback-card')
+  // Belongs to renderSearch(). It used to be bound inside renderLibrary()'s
+  // search callback, so it only ran when you typed in the Library box -- by
+  // which point this element does not exist. The filter never worked.
+  document.getElementById('results-filter')?.addEventListener('input', function () {
+    var q = this.value.toLowerCase()
+    document.querySelectorAll('.track-row, .album-card, .artist-pill, .yt-row, .yt-album-card').forEach(function (el) {
+      var text = (el.textContent || '').toLowerCase()
+      el.style.display = q && !text.includes(q) ? 'none' : ''
+    })
+  })
+
+  document.querySelectorAll('#content .album-card,#content .quick-card,#content .artist-card,#content .daily-mix-card,#content .jumpback-card,#content .folder-tree-item,#content .pl-card,#content .pl-folder-header,#content .genre-tile')
     .forEach(function (c) {
       if (c.hasAttribute('tabindex')) return
       c.setAttribute('tabindex', '0')
@@ -6088,6 +6374,12 @@ function bindContentEvents() {
     row.addEventListener('click', e => {
       if (e.target.closest('.track-more-btn') || e.target.closest('.track-like-btn')) return
       if (_selHandleClick(e, row)) return
+      // Surfaces that own their row click (playlists) opt out of album
+      // navigation. Playlist rows carry BOTH .track-row and .pl-track-row plus
+      // a data-album, so this generic handler and renderPlaylist's own handler
+      // both fired: clicking a track started playback AND yanked you to the
+      // album page. Multi-select above still applies to those rows.
+      if (row.dataset.noAlbumNav) return
       if (e.target.closest('.track-num')) {
         const album = state.library.find(a => a.id === row.dataset.album)
         if (!album) return
@@ -6213,7 +6505,7 @@ function bindContentEvents() {
       }
       showNameInputModal('Rename playlist', pl.name, function(newName) {
         pl.name = newName
-        window.api.savePlaylist(pl)
+        _persistPlaylist(pl)
         renderPlaylists()
       })
     })
@@ -6234,11 +6526,13 @@ function bindContentEvents() {
         if (sp) pl = sp; else return
       }
       var dup = JSON.parse(JSON.stringify(pl))
-      dup.id = 'dup_' + Date.now()
+      // Date.now() alone collides on a double-click; two other creation paths
+      // already add a random suffix.
+      dup.id = (pl.type === 'smart' ? 'sp_' : 'dup_') + Date.now() + '_' + Math.random().toString(36).slice(2, 8)
       dup.name = pl.name + ' (copy)'
       dup.createdAt = Date.now()
-      state.playlists.push(dup)
-      window.api.savePlaylist(dup)
+      if (pl.type === 'smart') { state.smartPlaylists.push(dup); _persistSmartPlaylists() }
+      else { state.playlists.push(dup); window.api.savePlaylist(dup) }
       renderPlaylists()
       showSnackbar('Playlist duplicated')
     })
@@ -6264,6 +6558,10 @@ function bindContentEvents() {
   })
 
   document.getElementById('import-pl-btn')?.addEventListener('click', function() { fileInput.click() })
+  // Bound exactly once: this element is module-level, but bindContentEvents()
+  // runs on EVERY setContent, so the listener accumulated and importing one
+  // .m3u after N navigations created N identical playlists.
+  if (!fileInput._bound) { fileInput._bound = true
   fileInput.addEventListener('change', function() {
     var file = this.files[0]
     if (!file) return
@@ -6271,22 +6569,34 @@ function bindContentEvents() {
     reader.onload = function() {
       var lines = reader.result.split('\n').filter(function(l) { return l.trim() && !l.startsWith('#') })
       var tracks = []
+      // Was: a substring match on the basename, breaking only the INNER loop --
+      // so "01.flac" matched once per album across the whole library and the
+      // import produced dozens of false positives per line. Now: exact path
+      // first, then an exact basename match, and stop at the first hit.
+      // Tracks are enriched the way _allLibraryTracks() does, or imported rows
+      // render with no artist and no cover.
+      var byPath = {}, byBase = {}
+      state.library.forEach(function (a) {
+        ;(a.tracks || []).forEach(function (t) {
+          if (!t.filePath) return
+          var enriched = Object.assign({}, t, {
+            albumArtist: a.artist, artPath: a.artPath, albumName: a.name, albumId: a.id,
+          })
+          byPath[t.filePath] = enriched
+          var base = t.filePath.split('/').pop()
+          if (base && !byBase[base]) byBase[base] = enriched
+        })
+      })
+      var seen = {}
       lines.forEach(function(line) {
         var fp = line.trim()
-        for (var i = 0; i < state.library.length; i++) {
-          var a = state.library[i]
-          if (a.tracks) {
-            for (var j = 0; j < a.tracks.length; j++) {
-              if (a.tracks[j].filePath && a.tracks[j].filePath.indexOf(fp.replace(/^.*[\\/]/, '')) !== -1) {
-                tracks.push(a.tracks[j])
-                break
-              }
-            }
-          }
-        }
+        var hit = byPath[fp] || byBase[fp.replace(/^.*[\\/]/, '')]
+        if (!hit || seen[hit.filePath]) return
+        seen[hit.filePath] = true
+        tracks.push(hit)
       })
       if (tracks.length) {
-        var pl = { id: 'import_' + Date.now(), name: file.name.replace(/\.m3u8?$/i, ''), tracks: tracks, createdAt: Date.now() }
+        var pl = { id: 'import_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8), name: file.name.replace(/\.m3u8?$/i, ''), tracks: tracks, createdAt: Date.now() }
         state.playlists.push(pl)
         window.api.savePlaylist(pl)
         renderPlaylists()
@@ -6294,10 +6604,13 @@ function bindContentEvents() {
       } else {
         showSnackbar('No matching tracks found in library')
       }
-      this.value = ''
     }
     reader.readAsText(file)
+    // Reset on the INPUT, not on the FileReader (`this` inside onload is the
+    // reader), or selecting the same file again fires no change event.
+    fileInput.value = ''
   })
+  }
 
 }
 
@@ -6310,7 +6623,11 @@ function albumCard(album, idx, sortMode, query) {
   const hiResTag = album.isHiRes
     ? `<span class="album-hires-badge">${fmtSpec(album.maxBitsPerSample, album.maxSampleRate)}</span>`
     : ''
-  const newBadge = (sortMode === 'added' && idx < 20) ? '<span class="new-badge">NEW</span>' : ''
+  // Was `idx < 20`, so on a library where fewer than 20 albums carry addedAt
+  // the badge landed on old albums in the un-dated tail -- and the 20 oldest
+  // additions stayed "NEW" forever. Tie it to a real 14-day window.
+  const newBadge = (sortMode === 'added' && album.addedAt && (Date.now() - album.addedAt) < 14 * 86400000)
+    ? '<span class="new-badge">NEW</span>' : ''
   const hue = _cardHue((album.artist || '') + (album.name || ''))
   var fallbackStyle = `background:linear-gradient(135deg,hsl(${hue},55%,22%) 0%,hsl(${(hue+40)%360},45%,14%) 100%)`
   return `<div class="album-card" data-album="${album.id}">
@@ -6373,7 +6690,11 @@ function drBadge(dr) {
 }
 
 function esc(str) {
-  return String(str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')
+  // ' is escaped too: several sinks are CSS url('...') and single-quoted
+  // attributes, where a bare apostrophe in a filename breaks out.
+  return String(str == null ? '' : str)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;')
 }
 function highlightMatch(text, query) {
   if (!query || !text) return esc(text)
@@ -10283,7 +10604,7 @@ function setupListeners() {
   // Cards are divs with a click listener; give them a real keyboard path.
   document.getElementById('content')?.addEventListener('keydown', e => {
     if (e.key !== 'Enter' && e.key !== ' ') return
-    const card = e.target.closest('.album-card,.quick-card,.artist-card,.daily-mix-card,.jumpback-card')
+    const card = e.target.closest('.album-card,.quick-card,.artist-card,.daily-mix-card,.jumpback-card,.folder-tree-item,.pl-card,.pl-folder-header,.genre-tile')
     if (!card || e.target.closest('button')) return
     e.preventDefault()
     card.click()
@@ -11767,9 +12088,22 @@ function showSnackbar(msg, actionLabel, actionCallback, duration) {
   if (!container) return
   var el = document.createElement('div')
   el.className = 'snackbar'
-  el.innerHTML = '<span class="snackbar-msg">' + msg + '</span>' +
-    (actionLabel ? '<button class="snackbar-action">' + actionLabel + '</button>' : '') +
-    '<button class="snackbar-dismiss">&times;</button>'
+  // Text, never markup: user-typed preset and folder names land here, and this
+  // renderer has window.api on it. Callers must NOT pre-escape.
+  var msgEl = document.createElement('span')
+  msgEl.className = 'snackbar-msg'
+  msgEl.textContent = String(msg == null ? '' : msg)
+  el.appendChild(msgEl)
+  if (actionLabel) {
+    var actEl = document.createElement('button')
+    actEl.className = 'snackbar-action'
+    actEl.textContent = String(actionLabel)
+    el.appendChild(actEl)
+  }
+  var dismissEl = document.createElement('button')
+  dismissEl.className = 'snackbar-dismiss'
+  dismissEl.innerHTML = '&times;'
+  el.appendChild(dismissEl)
 
   el.addEventListener('click', function(e) {
     if (!e.target.closest('.snackbar-action')) {
@@ -11972,12 +12306,51 @@ function _levenshtein(a, b) {
   return matrix[b.length][a.length]
 }
 
+// The rule editor offers artist/album/genre/year/format/playCount, but track
+// objects only carry artist/genre/year directly. `album` is `albumName`,
+// `format` is not stored at all, and playCount lives in a separate map -- so
+// `t[rule.field]` was undefined for those three and the rule silently matched
+// nothing, forever.
+function _smartFieldValue(t, field) {
+  switch (field) {
+    case 'album':     return t.albumName
+    case 'artist':    return t.albumArtist || t.artist
+    case 'format':    return (t.filePath || '').split('.').pop().toLowerCase()
+    case 'playCount': return state.playCounts[t.filePath] || 0
+    default:          return t[field]
+  }
+}
+
+// Smart playlists live in localStorage under papa-smart-playlists, regular
+// ones in the electron-store via IPC. Rename/duplicate used savePlaylist() for
+// both, so a renamed smart playlist was UNSHIFTED into the regular store: the
+// rename appeared to work, then a restart brought the old name back alongside a
+// permanent duplicate, and repeat renames piled up more copies.
+function _persistPlaylistFolders() {
+  try { localStorage.setItem('papa-playlist-folders', JSON.stringify(state.playlistFolders)) } catch (_) {}
+}
+
+function _persistSmartPlaylists() {
+  try { localStorage.setItem('papa-smart-playlists', JSON.stringify(state.smartPlaylists)) } catch (_) {}
+}
+
+function _persistPlaylist(pl) {
+  if (pl && pl.type === 'smart') _persistSmartPlaylists()
+  else window.api.savePlaylist(pl)
+}
+
 function _evalSmartPlaylist(pl) {
   var all = _allLibraryTracks()
-  if (!pl.rules || !pl.rules.length) return all
+  // A rule set that is empty, or whose every rule has a blank value, used to
+  // match the WHOLE library ('' is a substring of everything). An
+  // unconfigured smart playlist is empty, not everything.
+  var rules = (pl.rules || []).filter(function (r) {
+    return r && r.field && String(r.value == null ? '' : r.value).trim() !== ''
+  })
+  if (!rules.length) return []
   return all.filter(function(t) {
-    return pl.rules.every(function(rule) {
-      var val = t[rule.field]
+    return rules.every(function(rule) {
+      var val = _smartFieldValue(t, rule.field)
       if (val === undefined || val === null) return false
       switch (rule.op) {
         case 'is': return String(val).toLowerCase() === String(rule.value).toLowerCase()
@@ -12578,7 +12951,7 @@ async function _applyTagEdit() {
   if (!res) { showSnackbar('Could not write tags'); return }
   if (!res.written) {
     var err = (res.results || [])[0]
-    showSnackbar('No tags written' + (err && err.error ? ' — ' + esc(err.error) : ''))
+    showSnackbar('No tags written' + (err && err.error ? ' — ' + err.error : ''))
     return
   }
 
@@ -12647,7 +13020,7 @@ async function setAlbumArtwork() {
         albumId: album.id, sourcePath: picked.path, embed: embed, filePaths: files,
       }).catch(function () { return null })
       if (!res || !res.ok) {
-        showSnackbar('Could not set artwork' + (res && res.error ? ' — ' + esc(res.error) : ''))
+        showSnackbar('Could not set artwork' + (res && res.error ? ' — ' + res.error : ''))
         return
       }
       showSnackbar('Artwork set' +
@@ -12733,7 +13106,7 @@ async function _applyPathPlan(plan, verb) {
   var res = await window.api.libraryMovePath({ from: plan.from, to: plan.to })
     .catch(function () { return null })
   if (!res || !res.ok) {
-    showSnackbar(verb + ' failed — ' + esc((res && res.error) || 'unknown reason'))
+    showSnackbar(verb + ' failed — ' + ((res && res.error) || 'unknown reason'))
     return
   }
   // The files moved; everything that referenced them has to follow.
@@ -12743,7 +13116,7 @@ async function _applyPathPlan(plan, verb) {
   var extra = (P && prune && prune.summary && prune.summary.renamed)
     ? ' · ' + prune.summary.renamed + ' reference' + (prune.summary.renamed === 1 ? '' : 's') + ' updated'
     : ''
-  showSnackbar(verb + ' to “' + esc(window.PapaPathPlan.baseOf(plan.to)) + '”' + extra)
+  showSnackbar(verb + ' to “' + window.PapaPathPlan.baseOf(plan.to) + '”' + extra)
   _scheduleLibRescan()
 }
 
@@ -12751,7 +13124,7 @@ function libraryRenameFolder() {
   var PP = window.PapaPathPlan
   var t = _folderForTarget()
   hideContextMenu()
-  if (t.error) { showSnackbar(esc(t.error)); return }
+  if (t.error) { showSnackbar(t.error); return }
 
   var dir = t.dir
   var current = PP.baseOf(dir)
@@ -12768,7 +13141,7 @@ function libraryRenameFolder() {
       var val = (document.getElementById('mg-rename-input') || {}).value
       var plan = PP.renamePlan({ dir: dir, newName: val, files: _filesUnder(dir), siblings: siblings })
       if (!plan.ok) {
-        showSnackbar(esc(PP.describePlan(plan)) +
+        showSnackbar(PP.describePlan(plan) +
           (plan.suggestion ? ' Try “' + esc(plan.suggestion) + '”.' : ''))
         return
       }
@@ -12784,7 +13157,7 @@ function libraryMoveFolder() {
   var PP = window.PapaPathPlan
   var t = _folderForTarget()
   hideContextMenu()
-  if (t.error) { showSnackbar(esc(t.error)); return }
+  if (t.error) { showSnackbar(t.error); return }
 
   var dir = t.dir
   var roots = (state.musicFolders || []).slice()
@@ -12806,7 +13179,7 @@ function libraryMoveFolder() {
       var plan = PP.movePlan({
         dir: dir, destRoot: dest, files: _filesUnder(dir), existing: _allLibraryFolders(),
       })
-      if (!plan.ok) { showSnackbar(esc(PP.describePlan(plan))); return }
+      if (!plan.ok) { showSnackbar(PP.describePlan(plan)); return }
       await _applyPathPlan(plan, 'Moved')
     })
 }
@@ -13092,7 +13465,7 @@ async function _libraryMutateApply(op, paths, entries, impact) {
   var okPaths = (out.results || []).filter(function (r) { return r.ok }).map(function (r) { return r.path })
   if (!okPaths.length) {
     var firstErr = (out.results || [])[0]
-    showSnackbar('Nothing was removed' + (firstErr && firstErr.error ? ' — ' + esc(firstErr.error) : ''))
+    showSnackbar('Nothing was removed' + (firstErr && firstErr.error ? ' — ' + firstErr.error : ''))
     return
   }
 
@@ -13101,17 +13474,39 @@ async function _libraryMutateApply(op, paths, entries, impact) {
   var prune = await window.api.libraryPruneState({ removed: allFiles, renamed: [] })
     .catch(function () { return null })
 
+  // Album-level likes are keyed by album id, not by path, so libraryPruneState
+  // -- which is entirely path-based -- never touches them. Deleting an album
+  // therefore left its like dangling forever: "Liked only" would claim N liked
+  // albums and render fewer, with nothing to click. Drop the like only for
+  // albums whose every known track just went away, so an album that merely lost
+  // a track keeps its like.
+  var _removedSet = {}
+  for (var _r = 0; _r < allFiles.length; _r++) _removedSet[allFiles[_r]] = true
+  var _goneAlbumIds = state.library.filter(function (a) {
+    var tr = a.tracks || []
+    return tr.length && tr.every(function (t) { return _removedSet[t.filePath] })
+  }).map(function (a) { return a.id })
+  var _likedBefore = state.likedAlbums.slice()
+  if (_goneAlbumIds.length) {
+    state.likedAlbums = state.likedAlbums.filter(function (id) { return _goneAlbumIds.indexOf(id) === -1 })
+    if (state.likedAlbums.length !== _likedBefore.length) window.api.saveLiked(state.likedAlbums)
+  }
+
   // 6. Offer it back. Undo has to restore BOTH the files and the state.
   var P = window.PapaLibraryPrune
   var extra = (P && prune && prune.summary) ? P.describeSummary(prune.summary) : ''
   var msg = okPaths.length + ' moved to Trash' + (out.failed ? ', ' + out.failed + ' failed' : '')
-  if (extra) msg += '. ' + esc(extra)
+  if (extra) msg += '. ' + extra
 
   showSnackbar(msg, 'Undo', async function () {
     var back = await window.api.libraryRestoreTrashed({ paths: okPaths }).catch(function () { return null })
     if (prune && prune.snapshot) {
       await window.api.libraryRestoreState({ snapshot: prune.snapshot }).catch(function () {})
       await reloadPersistedState()
+    }
+    if (_likedBefore.length !== state.likedAlbums.length) {
+      state.likedAlbums = _likedBefore
+      window.api.saveLiked(state.likedAlbums)
     }
     showSnackbar(back && back.restored
       ? back.restored + ' restored'

@@ -12,6 +12,22 @@
 @keyframes searchFadeIn { from { opacity:0; transform:translateY(12px) } to { opacity:1; transform:translateY(0) } }
 
 :root {
+  /* These were referenced across the app but never defined. A var() with no
+     fallback makes the whole declaration invalid, so the property was silently
+     DROPPED: .stat-compact lost its border-radius entirely, the Smart Playlist
+     dialog's inputs rendered with no border, and the connection-status label
+     never returned to full brightness after a disconnect. */
+  --text1:            #e8e8e8;
+  --border:           rgba(255,255,255,.09);
+  --radius-pill:      100px;
+  --color-error:      #e05c5c;
+  --color-error-hover:#f07070;
+  --accent-hover:     #23d366;
+  --surface-card:     #16161d;
+  --font-mono:        ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --r-md:             10px;
+  --color-yt:         #ff0033;
+
   --bg:            #080808;
   --bg2:           #0f0f0f;
   --bg3:           #181818;
@@ -4955,7 +4971,7 @@ code { font-family:var(--font-mono,monospace);background:var(--bg4);padding:1px 
 
 /* Artist play button */
 .artist-card { position:relative;overflow:visible }
-.artist-play-btn { position:absolute;bottom:8px;right:8px;width:32px;height:32px;border-radius:50%;background:var(--accent);border:none;display:flex;align-items:center;justify-content:center;cursor:pointer;opacity:0;transition:opacity .15s;z-index:2 }
+.artist-play-btn { position:absolute;bottom:8px;right:8px;width:32px;height:32px;border-radius:50%;background:var(--accent);border:none;display:flex;align-items:center;justify-content:center;cursor:pointer;opacity:.85;transition:opacity .15s;z-index:2 }
 .artist-play-btn svg { width:14px;height:14px;fill:#000 }
 .artist-card:hover .artist-play-btn,.artist-card:focus-within .artist-play-btn { opacity:1 }
 
@@ -5596,3 +5612,69 @@ body.app-unfocused *::after {
   outline-offset: 3px;
   border-radius: var(--r-sm);
 }
+
+/* Library advanced-filter bar. These three had NO base rules at all -- only a
+   mobile media query referenced .lib-advanced-bar (implying a display:flex base
+   that was lost), and .lib-select / .lib-reset-btn appeared nowhere. The whole
+   row rendered as unstyled OS-default selects and buttons on a dark theme. */
+.lib-advanced-bar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  padding: 0 28px; margin-bottom: 12px;
+}
+.lib-select {
+  background: var(--bg3); color: var(--text2);
+  border: 1px solid var(--glass-border); border-radius: var(--r-sm);
+  padding: 5px 10px; font-size: 12px; font-family: inherit;
+  cursor: pointer; outline: none;
+  transition: border-color .15s, color .15s;
+}
+.lib-select:hover  { color: var(--text); }
+.lib-select:focus  { border-color: var(--accent); }
+.lib-reset-btn {
+  background: var(--glass); color: var(--text2);
+  border: 1px solid var(--glass-border); border-radius: var(--radius-pill);
+  padding: 5px 12px; font-size: 12px; font-family: inherit;
+  cursor: pointer; transition: background .15s, color .15s;
+}
+.lib-reset-btn:hover { background: var(--glass-hi); color: var(--text); }
+
+/* .pl-card had no `position`, so the rename/duplicate buttons -- which are
+   position:absolute -- anchored to the nearest positioned ancestor instead of
+   their own card, stacking every card's icons in one spot at the top of the
+   page. */
+.pl-card { position: relative; }
+.pl-card:focus-visible,
+.pl-folder-header:focus-visible,
+.pl-track-row:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--r-sm);
+}
+/* Keyboard users must be able to see the row actions they have focused. */
+.pl-track-row:focus-within .pl-track-actions { opacity: 1; }
+
+/* .pl-search / .pl-search-wrap had no rules at all -- the filter input rendered
+   as a default OS text box, unaligned with the sort row above it. */
+.pl-search-wrap { padding: 0 28px; margin-bottom: 12px; }
+.pl-search {
+  width: 100%; box-sizing: border-box;
+  background: var(--bg3); color: var(--text);
+  border: 1px solid var(--glass-border); border-radius: var(--r-sm);
+  padding: 8px 12px; font-size: 13px; font-family: inherit; outline: none;
+  transition: border-color .15s;
+}
+.pl-search::placeholder { color: var(--text3); }
+.pl-search:focus { border-color: var(--accent); }
+
+/* Focus rings for the card types added to the keyboard sweep. */
+.folder-tree-item[tabindex]:focus-visible,
+.genre-tile[tabindex]:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--r-sm);
+}
+
+/* .yt-card-badge is emitted by albumCard() but had no rule, so the YT badge
+   rendered inline inside the art wrap instead of pinned to a corner like the
+   hi-res and DR badges beside it. */
+.yt-card-badge {
+  position: absolute; top: 8px; left: 8px; z-index: 2;
+}
+/* The folder badge carried a title tooltip that could never appear. */
+.pl-folder-badge { pointer-events: auto; }
