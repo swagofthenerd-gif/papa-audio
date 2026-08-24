@@ -4116,7 +4116,12 @@ textarea:focus:not(:focus-visible) { outline: none; }
   background: #f00; color: #fff; font-size: 9px; font-weight: 700;
   padding: 1px 4px; border-radius: 3px; vertical-align: 2px;
 }
-.yt-sub { font-size: 12px; color: var(--text3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* .yt-sub is used for TWO different things: a one-line card subtitle, and (with
+   a data-sub attribute) the wrapper around a whole YouTube results SECTION.
+   Unscoped, every Songs/Albums/Artists/Playlists section inherited
+   nowrap + overflow:hidden at 12px grey, so grids could not wrap and content
+   was clipped at the container edge. Scope it to the subtitle use. */
+.yt-sub:not([data-sub]) { font-size: 12px; color: var(--text3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .yt-dur { font-size: 12px; color: var(--text3); }
 .yt-actions { display: flex; gap: 6px; }
 .yt-btn {
@@ -5508,3 +5513,77 @@ body.app-unfocused *::after {
 }
 /* The folder badge carried a title tooltip that could never appear. */
 .pl-folder-badge { pointer-events: auto; }
+
+/* ── Search surface: classes the renderer emits that had no rules at all ──
+   These all rendered as unstyled OS defaults or as invisible zero-size nodes. */
+
+/* The results filter sat as a raw white input on a dark theme, with no page
+   padding, unlike its styled siblings .library-search and .pl-search. */
+.results-filter-wrap { padding: 0 28px; margin-bottom: 12px; }
+.results-filter {
+  width: 100%; box-sizing: border-box;
+  background: var(--bg3); color: var(--text);
+  border: 1px solid var(--glass-border); border-radius: var(--r-sm);
+  padding: 8px 12px; font-size: 13px; font-family: inherit; outline: none;
+  transition: border-color .15s;
+}
+.results-filter::placeholder { color: var(--text3); }
+.results-filter:focus { border-color: var(--accent); }
+
+/* The YouTube row's second line. The class was renamed in JS and the CSS never
+   followed, so it rendered at inherited body size and never truncated. */
+.yt-sub-line {
+  font-size: 12px; color: var(--text3);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* "Did you mean" looked like plain text with no affordance. */
+.did-you-mean { padding: 0 28px; margin-bottom: 12px; font-size: 13px; color: var(--text2); }
+.dym-link { color: var(--accent); cursor: pointer; text-decoration: none; }
+.dym-link:hover { text-decoration: underline; }
+
+/* Active operator filters rendered as run-together inline spans with a bare x. */
+.active-filters { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 0 28px; margin-bottom: 12px; }
+.filter-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--glass); border: 1px solid var(--glass-border);
+  border-radius: var(--radius-pill); padding: 3px 10px;
+  font-size: 12px; color: var(--text2);
+}
+.filter-chip-x { cursor: pointer; color: var(--text3); font-weight: 700; line-height: 1; }
+.filter-chip-x:hover { color: var(--color-error); }
+.clear-filters-btn, .save-search-btn {
+  background: none; border: 1px solid var(--glass-border); color: var(--text2);
+  border-radius: var(--radius-pill); padding: 3px 10px;
+  font-size: 12px; font-family: inherit; cursor: pointer; transition: color .15s, border-color .15s;
+}
+.clear-filters-btn:hover, .save-search-btn:hover { color: var(--text); border-color: var(--text3); }
+
+.related-chip {
+  background: var(--glass); border: 1px solid var(--glass-border); color: var(--text2);
+  border-radius: var(--radius-pill); padding: 4px 12px;
+  font-size: 12px; font-family: inherit; cursor: pointer; transition: background .15s, color .15s;
+}
+.related-chip:hover { background: var(--glass-hi); color: var(--text); }
+
+.search-sort {
+  background: var(--bg3); color: var(--text2);
+  border: 1px solid var(--glass-border); border-radius: var(--r-sm);
+  padding: 5px 10px; font-size: 12px; font-family: inherit; cursor: pointer; outline: none;
+}
+.search-sort:focus { border-color: var(--accent); }
+
+/* updateYtHealth faithfully set ok/error/searching on a node with no width,
+   height or background — the status indicator was invisible. */
+.yt-health-dot {
+  display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--text3); margin-left: 6px; vertical-align: middle;
+}
+.yt-health-ok        { background: #1db954; }
+.yt-health-error     { background: var(--color-error); }
+.yt-health-searching { background: #e0a33e; }
+
+.yt-top-wrap { padding: 0 28px; margin-bottom: 16px; }
+.yt-artist-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 16px; }
+/* Meant to make the artist top-result circular; it was rendering square. */
+.yt-str-art-round, .yt-str-art-round img { border-radius: 50%; }

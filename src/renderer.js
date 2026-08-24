@@ -1145,7 +1145,7 @@ async function renderExplore() {
   var decades = ['1950s','1960s','1970s','1980s','1990s','2000s','2010s','2020s']
   var eraHTML = '<div class="section-header"><span class="section-title">Time machine</span></div><div class="era-timeline">' + decades.map(function(d) { return '<button class="era-chip" data-era="' + d + '">' + d + '</button>' }).join('') + '</div>'
 
-  var discoveryHTML = '<div class="section-header"><span class="section-title">Discover</span></div><div class="discovery-swipe" id="discovery-swipe">' + state.library.slice(0, 10).map(function(a, i) { return '<div class="discovery-swipe-card" style="z-index:' + (10 - i) + '"><div style="width:100%;height:100%;background:var(--bg3);display:flex;align-items:center;justify-content:center;flex-direction:column;gap:8px">' + artImg(a.artPath, '', '') + '<div style="font-size:14px;font-weight:600;padding:0 16px;text-align:center">' + esc(a.name) + '</div><div style="font-size:12px;color:var(--text2)">' + esc(a.artist) + '</div></div></div>' }).join('') + '</div>'
+  var discoveryHTML = '<div class="section-header"><span class="section-title">Discover</span></div><div class="discovery-swipe" id="discovery-swipe">' + state.library.slice(0, 10).map(function(a, i) { return '<div class="discovery-swipe-card" data-album="' + esc(a.id) + '" title="' + esc(a.artist + ' — ' + a.name) + '" style="cursor:pointer;z-index:' + (10 - i) + '"><div style="width:100%;height:100%;background:var(--bg3);display:flex;align-items:center;justify-content:center;flex-direction:column;gap:8px">' + artImg(a.artPath, '', '') + '<div style="font-size:14px;font-weight:600;padding:0 16px;text-align:center">' + esc(a.name) + '</div><div style="font-size:12px;color:var(--text2)">' + esc(a.artist) + '</div></div></div>' }).join('') + '</div>'
 
   setContent(`<div class="page">
     <div class="page-header" style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
@@ -2148,6 +2148,10 @@ const GENRE_COLORS = {
   'Latin':       'linear-gradient(135deg,#e05000,#6a2000)',
 }
 function renderSearch(query) {
+  // " " is truthy but means nothing: it used to fall through to the results
+  // path where the needle became '' and String.includes('') matched the entire
+  // library, presenting it as search results.
+  if (typeof query === 'string' && !query.trim()) query = ''
   query = (query || '').normalize('NFC')
   if (!query) {
     // Genre browse landing
@@ -2438,12 +2442,11 @@ function renderSearch(query) {
   }
 
   html += `</div>`
-  setContent(html)
-  bindContentEvents()
+  setContent(html)   // already calls bindContentEvents() as its last statement
 
   document.querySelectorAll('.related-chip').forEach(function(chip) {
     chip.addEventListener('click', function() {
-      commitSearch(chip.dataset.query)
+      commitSearchQuery(chip.dataset.query)
     })
   })
 
@@ -2470,7 +2473,7 @@ function renderSearch(query) {
   document.getElementById('clear-filters-btn')?.addEventListener('click', function() {
     var cleanQuery = filters.text
     if (cleanQuery) {
-      commitSearch(cleanQuery)
+      commitSearchQuery(cleanQuery)
     } else {
       navigate('search')
     }
@@ -2483,7 +2486,7 @@ function renderSearch(query) {
       var remaining = filters.operators.filter(function(op) { return op.key !== keyToRemove })
       var newQuery = filters.text
       remaining.forEach(function(op) { newQuery += ' ' + op.key + ':' + op.value })
-      if (newQuery.trim()) { commitSearch(newQuery.trim()) }
+      if (newQuery.trim()) { commitSearchQuery(newQuery.trim()) }
       else { navigate('search') }
     })
   })
@@ -2718,13 +2721,26 @@ function _ytArtistSpan(r, query) {
     : `<span class="yt-link" data-yt-name="${esc(r.artist)}">${artistHtml}</span>`
 }
 
+// initSearchHistory() owns the real commitSearch and exposes it on the input.
+// Anything outside that closure must go through here.
+function commitSearchQuery(q) {
+  var input = document.getElementById('tb-search')
+  var fn = input && input._commitSearch
+  if (fn) { fn(q); return }
+  if (input) input.value = q
+  navigate('search', q)
+}
+
 function isInLibrary(artist, album) {
   if (!artist || !album) return false
   var aLower = artist.toLowerCase()
   var bLower = album.toLowerCase()
   return state.library.some(function(a) {
-    return (a.artist && a.artist.toLowerCase().includes(aLower) || aLower.includes(a.artist.toLowerCase())) &&
-           (a.name && a.name.toLowerCase().includes(bLower) || bLower.includes(a.name.toLowerCase()))
+    var ar = String(a.artist || '').toLowerCase()
+    var nm = String(a.name || '').toLowerCase()
+    if (!ar || !nm) return false
+    return (ar.includes(aLower) || aLower.includes(ar)) &&
+           (nm.includes(bLower) || bLower.includes(nm))
   })
 }
 
@@ -6421,18 +6437,29 @@ function bindContentEvents() {
 
   var swipeEl = document.getElementById('discovery-swipe')
   if (swipeEl) {
-    var topCard = swipeEl.querySelector('.discovery-swipe-card')
-    if (topCard) {
-      var startX = 0
-      topCard.addEventListener('mousedown', function(e) { startX = e.clientX })
-      topCard.addEventListener('mouseup', function(e) {
-        var diff = e.clientX - startX
-        if (Math.abs(diff) > 80) {
-          topCard.classList.add(diff > 0 ? 'swipe-right' : 'swipe-left')
-          setTimeout(function() { topCard.remove() }, 300)
-        }
-      })
-    }
+    // Delegated on the container, so every card works -- not just the first
+    // one. It used to bind mousedown/mouseup on querySelector('.card') once and
+    // then remove that node, leaving the remaining nine cards inert. A swipe
+    // also did nothing at all, so a plain click now opens the album.
+    var _swipeStartX = 0
+    var _swipeCard = null
+    swipeEl.addEventListener('mousedown', function(e) {
+      _swipeCard = e.target.closest('.discovery-swipe-card')
+      _swipeStartX = e.clientX
+    })
+    swipeEl.addEventListener('mouseup', function(e) {
+      var card = e.target.closest('.discovery-swipe-card')
+      if (!card || card !== _swipeCard) { _swipeCard = null; return }
+      var diff = e.clientX - _swipeStartX
+      _swipeCard = null
+      if (Math.abs(diff) > 80) {
+        card.classList.add(diff > 0 ? 'swipe-right' : 'swipe-left')
+        setTimeout(function() { card.remove() }, 300)
+        return
+      }
+      // Not a swipe: treat it as a click and actually go somewhere.
+      if (card.dataset.album) navigate('album', card.dataset.album)
+    })
   }
 
   document.querySelectorAll('.era-chip').forEach(function(chip) {
@@ -6451,7 +6478,16 @@ function bindContentEvents() {
       var mood = card.dataset.mood
       var genreMap = { energetic:'rock', chill:'ambient', focus:'classical', happy:'pop', melancholy:'blues', romantic:'jazz', dark:'metal', epic:'soundtrack' }
       var genre = genreMap[mood] || mood
-      navigate('search', genre)
+      var known = state.library.find(function (a) {
+        return a.genre && a.genre.toLowerCase() === genre.toLowerCase()
+      })
+      if (known) {
+        state.libGenre = known.genre
+        state.libSearch = ''
+        navigate('library')
+      } else {
+        navigate('search', genre)
+      }
     })
   })
 
@@ -8276,6 +8312,17 @@ let _dlPollTimer        = null
 let _dlPollInterval     = 6000
 let _dlTab              = 'active'   // 'active' | 'completed' | 'failed'
 let _dlLastFiles        = []
+
+// Amber sub-label for a row the local scheduler is holding back (it has not
+// been sent to slskd yet). Was called from _renderActiveTab but never defined,
+// which threw on every render of the Downloading tab.
+function _dlWaitLabel(f) {
+  if (!f || !f.scheduled) return ''
+  var bits = []
+  if (f.sourceCount > 1) bits.push(f.sourceCount + ' sources')
+  if (f.attempts > 0) bits.push('retry ' + f.attempts)
+  return bits.length ? 'Waiting \u00b7 ' + bits.join(' \u00b7 ') : 'Waiting for a slot'
+}
 let _dlLastSig          = ''        // tracks current rendered structure to avoid full re-renders
 let _dlDownloadDir      = ''        // local download directory, loaded once on page open
 let _dlPrevActiveIds    = new Set() // IDs of files that were active on last poll
@@ -9329,8 +9376,10 @@ function _renderYtDownloadRows(box) {
 
 function renderDownloads() {
   var totalDl = 0, activeDl = 0, completedDl = 0, failedDl = 0
-  state._dlFiles = state._dlFiles || []
-  state._dlFiles.forEach(function(f) {
+  // Reads the array the poll actually writes. state._dlFiles is never assigned
+  // anywhere, so these four headline numbers were permanently 0/0/0/0 while the
+  // tab counts right below them showed the real values.
+  ;(_dlLastFiles || []).forEach(function(f) {
     totalDl++
     var cat = _dlCategory(f.state || '')
     if (cat === 'active') activeDl++
@@ -9501,11 +9550,17 @@ function renderDownloads() {
   })
 
   document.getElementById('dl-pause-all')?.addEventListener('click', function() {
-    var active = state._dlFiles.filter(function(f) { return _dlCategory(f.state) === 'active' })
+    var active = (_dlLastFiles || []).filter(function(f) { return _dlCategory(f.state) === 'active' })
+    if (!active.length) { showSnackbar('Nothing is downloading'); return }
+    // This calls slskCancelTransfer: Soulseek has no resume, so "pause" really
+    // aborts and loses queue position on every peer. It used to do it silently
+    // against an array that was always empty, so it also always did nothing.
+    if (!confirm('Stop ' + active.length + ' download' + (active.length === 1 ? '' : 's') +
+      '?\n\nSoulseek cannot resume — these will have to be queued again.')) return
     active.forEach(function(f) {
       window.api.slskCancelTransfer({ username: f.username, id: f.id })
     })
-    showSnackbar('Paused ' + active.length + ' downloads')
+    showSnackbar('Stopped ' + active.length + ' download' + (active.length === 1 ? '' : 's'))
   })
 
   document.getElementById('dl-resume-all')?.addEventListener('click', function() {
