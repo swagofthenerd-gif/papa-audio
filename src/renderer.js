@@ -13572,7 +13572,18 @@ function _selHandleClick(e, row) {
   var ctrl = e.ctrlKey || e.metaKey
   if (!e.shiftKey && !ctrl) return false     // ordinary click — leave it alone
   e.preventDefault()
+  // stopPropagation only stops ANCESTOR listeners. Track rows carry two click
+  // handlers on the SAME element -- the album page binds its own, and
+  // bindContentEvents binds a generic .track-row one -- and both reached here.
+  // A single Ctrl-click therefore ran applyClick twice: toggle on, toggle off,
+  // so the selection was always empty. Shift only looked fine because applying
+  // the same range twice is idempotent.
+  e.stopImmediatePropagation()
   e.stopPropagation()
+  // Belt and braces: listener order is not guaranteed, and a third binding on
+  // these rows would reintroduce the double-toggle silently.
+  if (e._papaSelHandled) return true
+  e._papaSelHandled = true
 
   _sel.rows = _selRowsInView()
   var index = _sel.rows.indexOf(row)
