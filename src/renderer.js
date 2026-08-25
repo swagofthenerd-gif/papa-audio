@@ -958,14 +958,14 @@ function renderHome() {
       Find artwork for ${missingCount} album${missingCount !== 1 ? 's' : ''}
     </button>` : ''
 
-  const jumpBackHTML = (state.queue.length && state.queueIndex >= 0 && state.queueIndex < state.queue.length) ? '<div class="jumpback-card" id="jumpback-card"><div class="jumpback-art">' + artImg(state.queue[state.queueIndex].artPath, 'jumpback-art-img', 'jumpback-art-fallback') + '</div><div class="jumpback-info"><div class="jumpback-label">Continue listening</div><div class="jumpback-title">' + esc(state.queue[state.queueIndex].title || 'Unknown') + '</div><div class="jumpback-artist">' + esc(state.queue[state.queueIndex].artist || '') + '</div></div><button class="jumpback-play" id="jumpback-play"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button></div>' : ''
+  const jumpBackHTML = (state.queue.length && state.queueIndex >= 0 && state.queueIndex < state.queue.length) ? '<div class="jumpback-card" id="jumpback-card"><div class="jumpback-art">' + artImg(state.queue[state.queueIndex].artPath, 'jumpback-art-img', 'jumpback-art-fallback') + '</div><div class="jumpback-info"><div class="jumpback-label">Continue listening</div><div class="jumpback-title">' + esc(state.queue[state.queueIndex].title || 'Unknown') + '</div><div class="jumpback-artist">' + esc(state.queue[state.queueIndex].artist || '') + '</div></div><button class="jumpback-play" id="jumpback-play" aria-label="Resume where you left off"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button></div>' : ''
 
   const quickHTML = quickAlbums.length ? `
     <div class="quick-grid">${quickAlbums.map(a => `
       <div class="quick-card" data-album="${esc(a.id)}">
         ${artImg(a.artPath, 'quick-card-art', 'quick-card-art-fallback')}
         <span class="quick-card-name">${esc(a.name)}</span>
-        <button class="quick-card-play" data-play="${esc(a.id)}">
+        <button class="quick-card-play" data-play="${esc(a.id)}" aria-label="Play ${esc(a.name || 'album')}">
           <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
         </button>
       </div>`).join('')}
@@ -1927,7 +1927,7 @@ function renderAlbum(albumId) {
       </div>
     </div>
     <div class="album-controls">
-      <button class="album-play-btn" id="album-play-btn">
+      <button class="album-play-btn" id="album-play-btn" aria-label="Play this album">
         <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
       </button>
       <button class="ctrl-btn album-shuffle-btn" id="album-shuffle-btn" title="Shuffle play">
@@ -4144,7 +4144,7 @@ function renderPlaylist(id, sortKey) {
       </div>
     </div>
     <div class="album-controls">
-      <button class="album-play-btn" id="pl-play-btn" ${!tracks.length ? 'disabled' : ''}>
+      <button class="album-play-btn" id="pl-play-btn" aria-label="Play this playlist" ${!tracks.length ? 'disabled' : ''}>
         <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
       </button>
       <button class="ctrl-btn" id="pl-rename-btn" title="Rename">
@@ -4416,7 +4416,7 @@ function renderLikedSongs() {
     ${analyticsHTML}
     ${calHTML}
     <div class="album-controls">
-      <button class="album-play-btn" id="liked-play-btn" ${!totalCount ? 'disabled' : ''}>
+      <button class="album-play-btn" id="liked-play-btn" aria-label="Play liked songs" ${!totalCount ? 'disabled' : ''}>
         <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
       </button>
     </div>
@@ -6807,7 +6807,7 @@ function albumCard(album, idx, sortMode, query) {
       ${formatBadgeHtml(album) ? `<div class="fmt-stack">${formatBadgeHtml(album)}</div>` : ''}
       ${newBadge}
       ${drBadge(computeAlbumDR(album))}
-      <button class="album-card-play" data-play="${esc(album.id)}">
+      <button class="album-card-play" data-play="${esc(album.id)}" aria-label="Play ${esc(album.name || 'album')}">
         <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
       </button>
     </div>
@@ -7727,7 +7727,9 @@ async function initPlaybackSettings() {
   const devices = await window.api.playerListDevices()
   $('pb-alsa-device').innerHTML = devices
     .filter(d => d.name.startsWith('alsa/'))
-    .map(d => `<option value="${d.name}" ${d.name === cfg.alsaDevice ? 'selected' : ''}>${d.description}</option>`)
+    // mpv reports these verbatim from the driver; a description containing a
+    // quote would break out of the attribute.
+    .map(d => `<option value="${esc(d.name)}" ${d.name === cfg.alsaDevice ? 'selected' : ''}>${esc(d.description)}</option>`)
     .join('')
 
   const apply = (partial) => window.api.playerSetConfig(partial)
