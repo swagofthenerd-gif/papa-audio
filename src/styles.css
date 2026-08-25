@@ -5573,3 +5573,14 @@ body.app-unfocused *::after {
 }
 /* Keyboard users must be able to see the row actions they have focused. */
 .yt-row:focus-within .yt-actions { opacity: 1; }
+
+/* Top Tracks is all-time while its neighbours are 30-day; say so quietly
+   rather than letting the two be read as comparable. */
+.stats-range-note {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: .5px;
+  margin-left: 8px;
+}

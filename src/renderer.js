@@ -4528,6 +4528,9 @@ function renderStats() {
   }
   const topArtists = Object.entries(artistCounts).sort((a, b) => b[1] - a[1]).slice(0, 10)
 
+  // All-time, unlike the 30-day sections around it: playCounts carries no
+  // timestamps to window on. Labelled in the UI so the two are not read as
+  // comparable.
   const topTracks = Object.entries(state.playCounts || {})
     .sort((a, b) => b[1] - a[1]).slice(0, 10)
     .map(([fp, count]) => ({ count, track: byPath.get(fp) }))
@@ -4735,7 +4738,7 @@ function renderStats() {
       ${artistRows}
     </div>
     <div class="stats-section">
-      <h2>Top Tracks</h2>
+      <h2>Top Tracks <span class="stats-range-note">all time</span></h2>
       ${trackRows}
     </div>
     <div class="stats-section">
@@ -5134,7 +5137,9 @@ function renderQueuePanel() {
   clearBtn.textContent = 'Clear queue'
   clearBtn.addEventListener('click', () => {
     if (state.queue.length === 0) return
-    if (!confirm('Clear all ' + state.queue.length + ' tracks from the queue?')) return
+    // Was a native confirm(), which blocks the renderer and mpv's IPC
+    // callbacks in a frameless app that uses its own dialogs everywhere else.
+    // This action is already undoable, so the prompt bought nothing.
     var savedQueue = state.queue.slice(), savedIdx = state.queueIndex
     audio.pause()
     state.queue = []; state.queueIndex = -1; state.isPlaying = false
@@ -12751,10 +12756,15 @@ function _mgShell(inner, sub) {
 // funnel the rest of the app uses — so a "Fix" click still gets the file list,
 // the confirmation, the state pruning and the undo.
 async function renderManageHealth() {
+  var _tabAtStart = _mgState.tab
   setContent(_mgShell('<div class="mg-empty">Scanning the library…</div>'))
   _mgBindTabs()
 
   var extras = await window.api.libraryScanExtras().catch(function () { return null })
+  // The scan takes seconds. If you switched sub-tab (or left Manage entirely)
+  // while it ran, the late result used to overwrite whatever you were now
+  // looking at.
+  if (_mgState.tab !== _tabAtStart || state.currentPage !== 'manage') return
   var H = window.PapaLibraryHealth
   if (!H) { setContent(_mgShell('<div class="mg-empty">Health tools failed to load.</div>')); _mgBindTabs(); return }
 
@@ -12909,7 +12919,7 @@ function _mgBindTrash() {
       b.textContent = 'Restoring…'
       var r = await window.api.libraryRestoreTrashed({ paths: [b.dataset.restore] }).catch(function () { return null })
       showSnackbar(r && r.restored ? 'Restored' : 'Could not restore — ' +
-        esc((r && r.results && r.results[0] && r.results[0].error) || 'unknown reason'))
+        ((r && r.results && r.results[0] && r.results[0].error) || 'unknown reason'))
       _scheduleLibRescan()
       renderManageTrash()
     })
