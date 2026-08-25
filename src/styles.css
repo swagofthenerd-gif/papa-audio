@@ -5601,3 +5601,22 @@ body.app-unfocused *::after {
   border-color: var(--glass-border);
   color: var(--text);
 }
+
+/* Focus rings for the clickable divs brought into the keyboard sweep. Without
+   these they take focus invisibly, which is worse than not being focusable. */
+.mood-card[tabindex]:focus-visible,
+.recent-search-card[tabindex]:focus-visible,
+.artist-pill[tabindex]:focus-visible,
+.discovery-swipe-card[tabindex]:focus-visible,
+.yt-row[tabindex]:focus-visible,
+.yt-album-card[tabindex]:focus-visible,
+.yt-artist-card[tabindex]:focus-visible,
+.yt-playlist-card[tabindex]:focus-visible,
+.dl2-group-toggle[tabindex]:focus-visible,
+.dl2-group-toggle-failed[tabindex]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+/* Keyboard users must be able to see the row actions they have focused. */
+.yt-row:focus-within .yt-actions { opacity: 1; }

@@ -2322,8 +2322,8 @@ function renderSearch(query) {
 
   const tabs = ['All', 'Songs', 'Albums', 'Artists', 'Playlists']
   var html = `<div class="page">
-    <div class="search-tabs" id="search-tabs">
-      ${tabs.map(t => `<button class="search-tab${t==='All'?' active':''}" data-tab="${t}">${t}</button>`).join('')}
+    <div class="search-tabs" id="search-tabs" role="tablist" aria-label="Search result categories">
+      ${tabs.map(t => `<button class="search-tab${t==='All'?' active':''}" role="tab" aria-selected="${t==='All'}" data-tab="${t}">${t}</button>`).join('')}
     </div>
     ${query ? '<div style="padding:4px 0 8px 0;display:flex;align-items:center;gap:12px"><button class="save-search-btn" id="save-search-btn" title="Save as smart playlist">+ Save search</button><div class="search-sort"><select id="search-sort-select">' + sortOptions.map(function(o) { return '<option value="' + o.value + '"' + (o.value === currentSort ? ' selected' : '') + '>' + o.label + '</option>' }).join('') + '</select></div></div>' : ''}
     ${dymHTML}
@@ -2524,8 +2524,7 @@ function renderSearch(query) {
   // Wire up filter tabs
   document.querySelectorAll('#search-tabs .search-tab').forEach(tab => {
     tab.addEventListener('click', () => {
-      document.querySelectorAll('#search-tabs .search-tab').forEach(t => t.classList.remove('active'))
-      tab.classList.add('active')
+      _setActiveTab('#search-tabs .search-tab', tab)
       const active = tab.dataset.tab
       document.querySelectorAll('.search-section').forEach(sec => {
         if (sec.id === 'yt-section') {
@@ -2798,12 +2797,12 @@ function _ytSongRows(songs, query) {
       </div>
       <span class="yt-dur">${r.duration ? fmtDur(r.duration) : ''}</span>
       <div class="yt-actions">
-        <button class="yt-btn yt-play" data-i="${i}" title="Stream now">
+        <button class="yt-btn yt-play" data-i="${i}" title="Stream now" aria-label="Stream now">
           <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
         </button>
-        <button class="yt-btn yt-queue" data-i="${i}" title="Add to queue">+</button>
-        <button class="yt-btn yt-like${isYtLiked(r.videoId) ? ' liked' : ''}" data-i="${i}" title="${isYtLiked(r.videoId) ? 'Unlike' : 'Like'}">${isYtLiked(r.videoId) ? '♥' : '♡'}</button>
-        <button class="yt-btn yt-dl" data-i="${i}" title="Download">
+        <button class="yt-btn yt-queue" data-i="${i}" title="Add to queue" aria-label="Add to queue">+</button>
+        <button class="yt-btn yt-like${isYtLiked(r.videoId) ? ' liked' : ''}" data-i="${i}" title="${isYtLiked(r.videoId) ? 'Unlike' : 'Like'}" aria-label="${isYtLiked(r.videoId) ? 'Unlike' : 'Like'}">${isYtLiked(r.videoId) ? '♥' : '♡'}</button>
+        <button class="yt-btn yt-dl" data-i="${i}" title="Download" aria-label="Download">
           <svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
         </button>
       </div>
@@ -3164,7 +3163,7 @@ function _paintYtAlbum(al) {
         <div class="track-title">${esc(t.title)}</div>
         <div class="track-artist">${esc(al.artist)}</div>
       </div>
-      <button class="yt-btn yt-track-dl" data-i="${i}" title="Download">
+      <button class="yt-btn yt-track-dl" data-i="${i}" title="Download" aria-label="Download">
         <svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
       </button>
       <span class="track-dur">${t.duration ? fmtDur(t.duration) : ''}</span>
@@ -6315,7 +6314,7 @@ function bindContentEvents() {
     })
   })
 
-  document.querySelectorAll('#content .album-card,#content .quick-card,#content .artist-card,#content .daily-mix-card,#content .jumpback-card,#content .folder-tree-item,#content .pl-card,#content .pl-folder-header,#content .genre-tile')
+  document.querySelectorAll('#content .album-card,#content .quick-card,#content .artist-card,#content .daily-mix-card,#content .jumpback-card,#content .folder-tree-item,#content .pl-card,#content .pl-folder-header,#content .genre-tile,#content .mood-card,#content .recent-search-card,#content .artist-pill,#content .discovery-swipe-card,#content .yt-row,#content .yt-album-card,#content .yt-artist-card,#content .yt-playlist-card,#content .dl2-group-toggle,#content .dl2-group-toggle-failed,#content .pl-track-row')
     .forEach(function (c) {
       if (c.hasAttribute('tabindex')) return
       c.setAttribute('tabindex', '0')
@@ -8359,6 +8358,16 @@ const _dlFailedOpenGroups = new Set() // folder names explicitly opened in faile
 let _dlFilter             = ''        // current text filter for completed tab
 let _dlCompletedGroups    = []        // flat group list from last completed render (for expand-all)
 
+// Keeps aria-selected in step with the .active class. Stale ARIA is worse than
+// none: it actively tells a screen-reader user the wrong tab is current.
+function _setActiveTab(selector, activeEl) {
+  document.querySelectorAll(selector).forEach(function (b) {
+    var on = b === activeEl
+    b.classList.toggle('active', on)
+    if (b.getAttribute('role') === 'tab') b.setAttribute('aria-selected', on ? 'true' : 'false')
+  })
+}
+
 function _dlSig(tab, files) {
   // Rolling hash rather than joining every id: the Completed tab can hold
   // thousands of rows and this runs on every poll tick.
@@ -8618,7 +8627,7 @@ function _renderTorrentSection() {
         <span class="torrent-pct">${pct}%</span>
         ${speed ? `<span class="torrent-speed">${speed}</span>` : ''}
         ${eta ? `<span class="torrent-eta">${eta}</span>` : ''}
-        <button class="torrent-remove" data-hash="${esc(t.infoHash)}" title="Cancel">✕</button>
+        <button class="torrent-remove" data-hash="${esc(t.infoHash)}" title="Cancel" aria-label="Cancel">✕</button>
       </div>
     </div>`
   }).join('')
@@ -8845,7 +8854,7 @@ function _renderActiveTab(files, container) {
           </div>
           <div class="dl2-file-end">
             <span class="dl2-tag ${cls}">${label}</span>
-            <button class="dl2-icon-btn dl2-cancel-btn" data-id="${esc(f.id)}" data-user="${esc(f.username)}" title="Cancel">
+            <button class="dl2-icon-btn dl2-cancel-btn" data-id="${esc(f.id)}" data-user="${esc(f.username)}" title="Cancel" aria-label="Cancel">
               <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
             </button>
           </div>
@@ -8878,7 +8887,7 @@ function _renderActiveTab(files, container) {
             ${maxEta2 ? `<span class="dla-grp-eta">ETA ${_fmtSecs(maxEta2)}</span>` : ''}
           </div>
         </div>
-        <button class="dl2-icon-btn dl2-grp-btn dl2-cancel-btn dl2-cancel-group-btn" data-user="${esc(g.username)}" data-ids="${esc(groupIds)}" title="Cancel all in group">
+        <button class="dl2-icon-btn dl2-grp-btn dl2-cancel-btn dl2-cancel-group-btn" data-user="${esc(g.username)}" data-ids="${esc(groupIds)}" title="Cancel all in group" aria-label="Cancel all in group">
           <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
         </button>
       </div>
@@ -9025,13 +9034,13 @@ function _renderCompletedTab(files, container) {
               ${sizeStr ? `<div class="dl2-file-meta"><span class="dl2-meta-size">${esc(sizeStr)}</span></div>` : ''}
             </div>
             <div class="dl2-file-end">
-              <button class="dl2-icon-btn dl2-play-btn" data-filename="${esc(f.filename)}" data-user="${esc(f.username)}" title="Play">
+              <button class="dl2-icon-btn dl2-play-btn" data-filename="${esc(f.filename)}" data-user="${esc(f.username)}" title="Play" aria-label="Play">
                 <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
               </button>
-              <button class="dl2-icon-btn dl2-open-btn" data-filename="${esc(f.filename)}" data-user="${esc(f.username)}" title="Show in folder">
+              <button class="dl2-icon-btn dl2-open-btn" data-filename="${esc(f.filename)}" data-user="${esc(f.username)}" title="Show in folder" aria-label="Show in folder">
                 <svg viewBox="0 0 24 24"><path d="M20 6h-8l-2-2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2z"/></svg>
               </button>
-              <button class="dl2-icon-btn dl2-remove-btn" data-id="${esc(f.id)}" data-user="${esc(f.username)}" title="Remove from list">
+              <button class="dl2-icon-btn dl2-remove-btn" data-id="${esc(f.id)}" data-user="${esc(f.username)}" title="Remove from list" aria-label="Remove from list">
                 <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
               </button>
             </div>
@@ -9049,7 +9058,7 @@ function _renderCompletedTab(files, container) {
               ${userBtnHtml}
             </div>
           </div>
-          <button class="dl2-icon-btn dl2-grp-btn dl2-play-btn dl2-play-all-btn" data-gi="${gi}" title="Play all">
+          <button class="dl2-icon-btn dl2-grp-btn dl2-play-btn dl2-play-all-btn" data-gi="${gi}" title="Play all" aria-label="Play all">
             <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
           </button>
           <svg class="dl2-chevron${isOpen ? ' dl2-chevron-up' : ''}" viewBox="0 0 24 24"><path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6z"/></svg>
@@ -9281,10 +9290,10 @@ function _renderFailedTab(files, container) {
             </div>
           </div>
           <div class="dl2-file-end">
-            <button class="dl2-icon-btn dl2-retry-btn" data-id="${esc(f.id)}" data-user="${esc(f.username)}" data-filename="${esc(f.filename)}" data-size="${f.size || 0}" title="Retry">
+            <button class="dl2-icon-btn dl2-retry-btn" data-id="${esc(f.id)}" data-user="${esc(f.username)}" data-filename="${esc(f.filename)}" data-size="${f.size || 0}" title="Retry" aria-label="Retry">
               <svg viewBox="0 0 24 24"><path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
             </button>
-            <button class="dl2-icon-btn dl2-remove-btn" data-id="${esc(f.id)}" data-user="${esc(f.username)}" title="Remove">
+            <button class="dl2-icon-btn dl2-remove-btn" data-id="${esc(f.id)}" data-user="${esc(f.username)}" title="Remove" aria-label="Remove">
               <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
             </button>
           </div>
@@ -9302,10 +9311,10 @@ function _renderFailedTab(files, container) {
             ${userBtnHtml}
           </div>
         </div>
-        <button class="dl2-icon-btn dl2-grp-btn dl2-retry-all-btn" data-gi="${gi}" data-user="${esc(firstUser)}" data-ids="${esc(groupIds)}" title="Retry all">
+        <button class="dl2-icon-btn dl2-grp-btn dl2-retry-all-btn" data-gi="${gi}" data-user="${esc(firstUser)}" data-ids="${esc(groupIds)}" title="Retry all" aria-label="Retry all">
           <svg viewBox="0 0 24 24"><path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
         </button>
-        <button class="dl2-icon-btn dl2-grp-btn dl2-clear-group-btn" data-pairs="${esc(JSON.stringify(g.files.map(function (f) { return [f.username, f.id] })))}" title="Clear group">
+        <button class="dl2-icon-btn dl2-grp-btn dl2-clear-group-btn" data-pairs="${esc(JSON.stringify(g.files.map(function (f) { return [f.username, f.id] })))}" title="Clear group" aria-label="Clear group">
           <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
         </button>
         <svg class="dl2-chevron${isOpen ? ' dl2-chevron-up' : ''}" viewBox="0 0 24 24"><path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6z"/></svg>
@@ -9360,8 +9369,7 @@ function _renderFailedTab(files, container) {
         window.api.slskDownload({ username: f.username, filename: f.filename, size: f.size || 0 }).catch(() => {})
       ))
       _dlTab = 'active'; _dlLastSig = ''
-      document.querySelectorAll('.dl2-tab').forEach(b => b.classList.remove('active'))
-      document.querySelector('.dl2-tab[data-tab="active"]')?.classList.add('active')
+      _setActiveTab('.dl2-tab', document.querySelector('.dl2-tab[data-tab="active"]'))
       await _pollAndRenderDownloads()
     })
   })
@@ -9394,8 +9402,7 @@ function _renderFailedTab(files, container) {
       await window.api.slskCancelTransfer({ username: btn.dataset.user, id: btn.dataset.id }).catch(() => {})
       await window.api.slskDownload({ username: btn.dataset.user, filename: btn.dataset.filename, size: Number(btn.dataset.size) }).catch(() => {})
       _dlTab = 'active'; _dlLastSig = ''
-      document.querySelectorAll('.dl2-tab').forEach(b => b.classList.remove('active'))
-      document.querySelector('.dl2-tab[data-tab="active"]')?.classList.add('active')
+      _setActiveTab('.dl2-tab', document.querySelector('.dl2-tab[data-tab="active"]'))
       await _pollAndRenderDownloads()
     })
   })
@@ -9479,7 +9486,7 @@ function _renderYtDownloadRows(box) {
         ? ''
         // Finished rows had no way to be dismissed and failed ones no way to be
         // retried, so they accumulated for the whole session.
-        : `<button class="yt-btn yt-dl-dismiss" data-ytdl="${esc(d.id)}" title="Dismiss">✕</button>`}
+        : `<button class="yt-btn yt-dl-dismiss" data-ytdl="${esc(d.id)}" title="Dismiss" aria-label="Dismiss">✕</button>`}
     </div>`).join('')
 
   box.querySelectorAll('.yt-dl-dismiss').forEach(function (btn) {
@@ -9517,7 +9524,7 @@ function renderDownloads() {
         </button>
       </div>
       <div class="dl2-topbar-right">
-        <span class="dl2-sched" id="dl2-sched" title="Files metered out across peers by the download scheduler"></span>
+        <span class="dl2-sched" id="dl2-sched" role="status" aria-live="polite" title="Files metered out across peers by the download scheduler"></span>
         <button class="dl2-action-btn" id="dl2-rebalance-btn" title="Pull deep per-peer queues back and spread them across sources">Rebalance</button>
         <button class="dl2-action-btn" id="dl2-action-btn" style="display:none">Clear All</button>
       </div>
@@ -9525,23 +9532,23 @@ function renderDownloads() {
     ${dashHTML}
     ${batchBtns}
     ${wishlistHTML}
-    <div class="dl2-tabs" id="dl2-tabs">
-      <button class="dl2-tab active" data-tab="active">
+    <div class="dl2-tabs" id="dl2-tabs" role="tablist" aria-label="Download categories">
+      <button class="dl2-tab active" role="tab" aria-selected="true" data-tab="active">
         <svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
         Downloading
         <span class="dl2-tab-count" id="dl2-tab-count-active" style="display:none">0</span>
       </button>
-      <button class="dl2-tab" data-tab="completed">
+      <button class="dl2-tab" role="tab" aria-selected="false" data-tab="completed">
         <svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
         Completed
         <span class="dl2-tab-count dl2-tab-count-green" id="dl2-tab-count-completed" style="display:none">0</span>
       </button>
-      <button class="dl2-tab" data-tab="failed">
+      <button class="dl2-tab" role="tab" aria-selected="false" data-tab="failed">
         <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
         Failed
         <span class="dl2-tab-count dl2-tab-count-red" id="dl2-tab-count-failed" style="display:none">0</span>
       </button>
-      <button class="dl2-tab" data-tab="torrents">
+      <button class="dl2-tab" role="tab" aria-selected="false" data-tab="torrents">
         <svg viewBox="0 0 24 24"><path d="M4 6h18V4H4c-1.1 0-2 .9-2 2v11H0v3h14v-3H4V6zm19 2h-6c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h6c.55 0 1-.45 1-1V9c0-.55-.45-1-1-1zm-1 9h-4v-7h4v7z"/></svg>
         Torrents
         <span class="dl2-tab-count" id="dl2-tab-count-torrents" style="display:none">0</span>
@@ -9575,8 +9582,7 @@ function renderDownloads() {
   // Tab switching
   document.querySelectorAll('.dl2-tab').forEach(btn => {
     btn.addEventListener('click', () => {
-      document.querySelectorAll('.dl2-tab').forEach(b => b.classList.remove('active'))
-      btn.classList.add('active')
+      _setActiveTab('.dl2-tab', btn)
       _dlTab = btn.dataset.tab
       _dlLastSig = ''   // force full re-render on tab switch
       _renderDlTab(_dlLastFiles)
@@ -9627,12 +9633,16 @@ function renderDownloads() {
   // Restore active tab to wherever user was
   const activeBtnForCurrentTab = document.querySelector(`.dl2-tab[data-tab="${_dlTab}"]`)
   if (activeBtnForCurrentTab) {
-    document.querySelectorAll('.dl2-tab').forEach(b => b.classList.remove('active'))
-    activeBtnForCurrentTab.classList.add('active')
+    _setActiveTab('.dl2-tab', activeBtnForCurrentTab)
   }
 
   // Load and display current download folder, also cache it for play buttons
-  window.api.slskGetDownloadDir().then(dir => {
+  window.api.slskGetDownloadDir().catch(function () { return null }).then(dir => {
+    if (!dir) {
+      var lbl = document.getElementById('dl2-folder-label')
+      if (lbl) { lbl.textContent = 'Not set'; lbl.title = 'Could not read the download folder from slskd' }
+      return
+    }
     _dlDownloadDir = dir
     const label = document.getElementById('dl2-folder-label')
     if (label) { label.textContent = dir.split('/').pop() || dir; label.title = dir }
@@ -10779,7 +10789,7 @@ function setupListeners() {
   // Cards are divs with a click listener; give them a real keyboard path.
   document.getElementById('content')?.addEventListener('keydown', e => {
     if (e.key !== 'Enter' && e.key !== ' ') return
-    const card = e.target.closest('.album-card,.quick-card,.artist-card,.daily-mix-card,.jumpback-card,.folder-tree-item,.pl-card,.pl-folder-header,.genre-tile')
+    const card = e.target.closest('.album-card,.quick-card,.artist-card,.daily-mix-card,.jumpback-card,.folder-tree-item,.pl-card,.pl-folder-header,.genre-tile,.mood-card,.recent-search-card,.artist-pill,.discovery-swipe-card,.yt-row,.yt-album-card,.yt-artist-card,.yt-playlist-card,.dl2-group-toggle,.dl2-group-toggle-failed,.pl-track-row')
     if (!card || e.target.closest('button')) return
     e.preventDefault()
     card.click()
@@ -13746,7 +13756,9 @@ function _dlPaintSchedulerStats(stats) {
   var el = document.getElementById('dl2-sched')
   if (!el) return
   var s = _dlSchedStats
-  if (!s || (!s.pending && !s.inflight)) { el.textContent = ''; return }
+  // Blanking made "scheduler idle" and "stats never arrived / scheduler
+  // broken" look identical.
+  if (!s || (!s.pending && !s.inflight)) { el.textContent = 'Scheduler idle'; return }
   var txt = s.inflight + ' active across ' + s.peers + ' peer' + (s.peers === 1 ? '' : 's')
   if (s.pending) txt += ' · ' + s.pending + ' waiting'
   if (s.benched && s.benched.length) txt += ' · ' + s.benched.length + ' benched'
