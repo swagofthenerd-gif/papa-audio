@@ -12016,7 +12016,11 @@ function setupListeners() {
       if (sc && sc.style.display === 'flex') { toggleShortcutsConfig(); return }
       if (_lyricsDrawerOpen) { closeLyricsDrawer(); return }
       if (state.modalOpen) { hideNowPlayingModal(); return }
-      if (!document.getElementById('ctx-menu').style.display === 'none') hideContextMenu()
+      // Was `!el.style.display === 'none'` -- `!` binds tighter than `===`, so
+      // this read `false === 'none'` and was ALWAYS false. Escape has never
+      // closed the context menu.
+      var cm = document.getElementById('ctx-menu')
+      if (cm && cm.style.display !== 'none') hideContextMenu()
       return
     }
 
