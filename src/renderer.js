@@ -2599,16 +2599,22 @@ function renderSearch(query) {
       document.querySelectorAll('.yt-scope').forEach(t => t.classList.remove('active'))
       tab.classList.add('active')
       try { localStorage.setItem('papa-yt-scope', tab.dataset.scope) } catch (_) {}
-      runYtSearch(query, tab.dataset.scope)
+      runYtSearch((searchText || query).trim(), tab.dataset.scope)
     })
   })
 
-  const sameQuery  = slsk.lastQuery === query
+  // Operators are a LOCAL filtering language. Sending them verbatim to slskd or
+  // YouTube meant `artist:"Miles Davis" year:1970 bitches brew` was matched
+  // against filenames as a literal string, which returns nothing -- so using an
+  // operator silently killed online search entirely.
+  const onlineQuery = (searchText || '').trim()
+  const canSearchOnline = onlineQuery.length >= 2
+  const sameQuery  = slsk.lastQuery === onlineQuery
   const hasResults = slsk.results.length > 0
   bindSlskSearchEvents(query)
-  if (slsk.status.connected) {
+  if (slsk.status.connected && canSearchOnline) {
     if (!sameQuery || !slsk.searched || (!slsk.searching && !hasResults)) {
-      runSlskSearch(query)
+      runSlskSearch(onlineQuery)
     } else {
       const navQ = document.getElementById('nav-search-query')
       if (navQ) navQ.textContent = query
@@ -2619,7 +2625,7 @@ function renderSearch(query) {
     const section = document.getElementById('slsk-section')
     if (section) { section.innerHTML = renderSoulseekRow(query); bindSlskSearchEvents(query) }
   }
-  runYtSearch(query, ytSearchState.scope)
+  if (canSearchOnline) runYtSearch(onlineQuery, ytSearchState.scope)
 }
 
 // ── YouTube search section ──────────────────────────────────────────────────
