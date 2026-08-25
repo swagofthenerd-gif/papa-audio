@@ -13632,6 +13632,27 @@ async function libraryMutate(op) {
     var bad = !e.allowed || !e.exists
     list += '<div class="mg-confirm-row' + (bad ? ' mg-confirm-bad' : '') + '">' +
       '<div class="mg-confirm-path">' + esc(e.path) + '</div>' +
+      (function () {
+        // A multi-disc release is grouped under its PARENT folder, so the path
+        // being trashed can hold more than the album -- other formats, scans, a
+        // second album sharing the folder. The disk count comes from
+        // libraryInspectPaths; compare it with what the library actually knows
+        // about under that path and say so when they disagree.
+        if (!e.allowed || !e.exists) return ''
+        var known = 0, pre = String(e.path).replace(/\/+$/, '') + '/'
+        for (var li = 0; li < state.library.length; li++) {
+          var tr = state.library[li].tracks || []
+          for (var tj = 0; tj < tr.length; tj++) {
+            if (tr[tj].filePath && tr[tj].filePath.indexOf(pre) === 0) known++
+          }
+        }
+        var onDisk = e.fileCount != null ? e.fileCount : e.files.length
+        if (known && onDisk > known) {
+          return '<div class="mg-confirm-meta mg-confirm-warn">Contains ' + (onDisk - known) +
+                 ' file' + ((onDisk - known) === 1 ? '' : 's') + ' your library does not track — they go too</div>'
+        }
+        return ''
+      })() +
       (!e.exists ? '<div class="mg-confirm-meta">No longer on disk — will be skipped</div>'
         : !e.allowed ? '<div class="mg-confirm-meta">Outside your music folders — refused</div>'
         : '<div class="mg-confirm-meta">' + (e.fileCount != null ? e.fileCount : e.files.length) +
