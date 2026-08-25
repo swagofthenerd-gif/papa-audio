@@ -881,7 +881,7 @@ async function fetchMissingArtwork() {
 
 function patchAlbumArtInDOM(albumId, artPath) {
   var src = `file://${artPath}`
-  document.querySelectorAll(`.album-card[data-album="${albumId}"]`).forEach(card => {
+  document.querySelectorAll(`.album-card[data-album="${esc(albumId)}"]`).forEach(card => {
     const wrap = card.querySelector('.album-card-art-wrap')
     const fallback = card.querySelector('.album-card-art-fallback')
     let img = card.querySelector('.album-card-art')
@@ -892,7 +892,7 @@ function patchAlbumArtInDOM(albumId, artPath) {
     if (img) { img.src = src; img.style.display = 'block' }
     if (fallback) fallback.style.display = 'none'
   })
-  document.querySelectorAll(`.quick-card[data-album="${albumId}"]`).forEach(card => {
+  document.querySelectorAll(`.quick-card[data-album="${esc(albumId)}"]`).forEach(card => {
     const img = card.querySelector('.quick-card-art')
     const fallback = card.querySelector('.quick-card-art-fallback')
     if (img) { img.src = src; img.style.display = 'block' }
@@ -962,10 +962,10 @@ function renderHome() {
 
   const quickHTML = quickAlbums.length ? `
     <div class="quick-grid">${quickAlbums.map(a => `
-      <div class="quick-card" data-album="${a.id}">
+      <div class="quick-card" data-album="${esc(a.id)}">
         ${artImg(a.artPath, 'quick-card-art', 'quick-card-art-fallback')}
         <span class="quick-card-name">${esc(a.name)}</span>
-        <button class="quick-card-play" data-play="${a.id}">
+        <button class="quick-card-play" data-play="${esc(a.id)}">
           <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
         </button>
       </div>`).join('')}
@@ -1883,7 +1883,7 @@ function renderAlbum(albumId) {
     const plays = state.playCounts[t.filePath] || 0
     const tLiked = state.likedTracks.includes(t.filePath)
     return discHeader + `
-      <div class="track-row ${isPlaying ? 'playing' : ''}" data-file="${esc(t.filePath)}" data-idx="${i}" data-album="${albumId}">
+      <div class="track-row ${isPlaying ? 'playing' : ''}" data-file="${esc(t.filePath)}" data-idx="${i}" data-album="${esc(albumId)}">
         <span class="track-num">${isPlaying
           ? '<div class="playing-bars"><span></span><span></span><span></span></div>'
           : (t.trackNumber || i + 1)}</span>
@@ -1894,8 +1894,8 @@ function renderAlbum(albumId) {
         ${plays > 0 ? `<span class="track-plays">${plays}</span>` : '<span class="track-plays"></span>'}
         <button class="track-like-btn ${tLiked ? 'liked' : ''}" data-like="${esc(t.filePath)}" title="${tLiked ? 'Unlike' : 'Like'}">${tLiked ? '♥' : '♡'}</button>
         <div class="hover-actions">
-          <button class="hover-action-btn" data-action="playnext" data-file="${esc(t.filePath)}" data-album="${albumId}" title="Play next">&#9654;+</button>
-          <button class="hover-action-btn" data-action="queue" data-file="${esc(t.filePath)}" data-album="${albumId}" title="Add to queue">+</button>
+          <button class="hover-action-btn" data-action="playnext" data-file="${esc(t.filePath)}" data-album="${esc(albumId)}" title="Play next">&#9654;+</button>
+          <button class="hover-action-btn" data-action="queue" data-file="${esc(t.filePath)}" data-album="${esc(albumId)}" title="Add to queue">+</button>
         </div>
         <span class="track-dur">${fmtDur(t.duration)}</span>
         <button class="track-more-btn" title="More options"><svg viewBox="0 0 24 24"><path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg></button>
@@ -1933,7 +1933,7 @@ function renderAlbum(albumId) {
       <button class="ctrl-btn album-shuffle-btn" id="album-shuffle-btn" title="Shuffle play">
         <svg viewBox="0 0 24 24"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
       </button>
-      <button class="ctrl-btn album-like-btn like-btn ${isLiked ? 'liked' : ''}" id="album-like-btn" data-album="${albumId}" title="${isLiked ? 'Unlike' : 'Like'}">
+      <button class="ctrl-btn album-like-btn like-btn ${isLiked ? 'liked' : ''}" id="album-like-btn" data-album="${esc(albumId)}" title="${isLiked ? 'Unlike' : 'Like'}">
         <svg class="heart-outline" viewBox="0 0 24 24"><path d="M16.5 3c-1.74 0-3.41.81-4.5 2.09A5.99 5.99 0 0 0 7.5 3C4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3zm-4.4 15.55-.1.1-.1-.1C7.14 14.24 4 11.39 4 8.5 4 6.5 5.5 5 7.5 5c1.54 0 3.04.99 3.57 2.36h1.87C13.46 5.99 14.96 5 16.5 5c2 0 3.5 1.5 3.5 3.5 0 2.89-3.14 5.74-7.9 10.05z"/></svg>
         <svg class="heart-filled" viewBox="0 0 24 24" style="display:none"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09A5.99 5.99 0 0 1 16.5 3C19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
       </button>
@@ -2339,14 +2339,14 @@ function renderSearch(query) {
         ? `background:url('${esc('file://' + topAlbum.artPath)}') center/cover no-repeat`
         : `background:linear-gradient(135deg,hsl(${hue},55%,28%) 0%,hsl(${(hue+40)%360},45%,18%) 100%)`
       html += `<div class="search-section" data-section="All"><div class="search-top-row">
-        <div class="search-top-result" data-album="${topAlbum.id}">
+        <div class="search-top-result" data-album="${esc(topAlbum.id)}">
           <div class="str-label">Top Result</div>
           <div class="str-art" style="${artStyle}">
             ${!topAlbum.artPath ? `<svg viewBox="0 0 24 24" style="width:48px;height:48px;fill:rgba(255,255,255,.5)"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>` : ''}
           </div>
           <div class="str-name">${highlightMatch(topAlbum.name, searchText)}</div>
           <div class="str-artist">${highlightMatch(topAlbum.artist, searchText)} · Album</div>
-          <button class="str-play album-card-play" data-play="${topAlbum.id}">
+          <button class="str-play album-card-play" data-play="${esc(topAlbum.id)}">
             <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
           </button>
         </div>`
@@ -6691,7 +6691,7 @@ function albumCard(album, idx, sortMode, query) {
     ? '<span class="new-badge">NEW</span>' : ''
   const hue = _cardHue((album.artist || '') + (album.name || ''))
   var fallbackStyle = `background:linear-gradient(135deg,hsl(${hue},55%,22%) 0%,hsl(${(hue+40)%360},45%,14%) 100%)`
-  return `<div class="album-card" data-album="${album.id}">
+  return `<div class="album-card" data-album="${esc(album.id)}">
     <div class="album-card-art-wrap">
       ${album.artPath
         ? `<img class="album-card-art" src="${isHttpPath(album.artPath) ? esc(album.artPath) : esc(`file://${album.artPath}`)}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
@@ -6704,7 +6704,7 @@ function albumCard(album, idx, sortMode, query) {
       ${formatBadgeHtml(album) ? `<div class="fmt-stack">${formatBadgeHtml(album)}</div>` : ''}
       ${newBadge}
       ${drBadge(computeAlbumDR(album))}
-      <button class="album-card-play" data-play="${album.id}">
+      <button class="album-card-play" data-play="${esc(album.id)}">
         <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
       </button>
     </div>
