@@ -8467,7 +8467,9 @@ async function runSlskSearch(query) {
   slsk.pendingSearches = variants.length
 
   // Dedup key set shared across all parallel searches
-  const seen = new Set()
+  // key -> index in slsk.results, so a later, richer response REPLACES an
+  // earlier partial one instead of being discarded.
+  const seen = new Map()
   let _flushQueued = false
 
   const _flush = () => {
@@ -8491,7 +8493,14 @@ async function runSlskSearch(query) {
   const _mergeResults = (results) => {
     for (const r of (results || [])) {
       const key = (r.username || '') + '\x00' + (r.files?.[0]?.filename || '')
-      if (!seen.has(key)) { seen.add(key); slsk.results.push(r) }
+      const at = seen.get(key)
+      if (at === undefined) { seen.set(key, slsk.results.length); slsk.results.push(r); continue }
+      // slskd pushes CUMULATIVE partial responses every ~2.5s, so the same peer
+      // arrives repeatedly with a growing file list under an unchanged key. The
+      // old code kept the FIRST, which is the smallest: albums showed as 3 of
+      // 12 tracks and "Download all" fetched an incomplete album.
+      const prev = slsk.results[at]
+      if ((r.files || []).length > (prev.files || []).length) slsk.results[at] = r
     }
   }
 
@@ -8523,6 +8532,12 @@ async function runSlskSearch(query) {
       if (slsk.pendingSearches === 0) {
         slsk.searching = false
         slsk.searched  = true
+        // Paint the finished state. The timer is torn down two lines below, so
+        // without this the last batch of results -- often ALL of them, when the
+        // variants resolve faster than the 1s tick -- was merged into
+        // slsk.results and never rendered. The page sat on "Searching…" or an
+        // empty grid until some unrelated action repainted the section.
+        _slskRepaint(query)
         window.api.off('slsk-progress')
         if (_slskTimer) { clearInterval(_slskTimer); _slskTimer = null }
       }
