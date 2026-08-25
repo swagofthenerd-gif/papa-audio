@@ -2426,7 +2426,7 @@ function renderSearch(query) {
             <div class="track-artist" data-artist="${esc(t.albumArtist)}">${highlightMatch(t.albumArtist, searchText)}</div>
           </div>
           <div class="hover-actions">
-            <button class="hover-action-btn" data-action="playnext" data-file="${esc(t.filePath)}" data-album="${t.albumId}" title="Play next">&#9654;+</button>
+            <button class="hover-action-btn" data-action="playnext" data-file="${esc(t.filePath)}" data-album="${esc(t.albumId || '')}" title="Play next">&#9654;+</button>
             <button class="hover-action-btn" data-action="queue" data-file="${esc(t.filePath)}" data-album="${t.albumId}" title="Add to queue">+</button>
           </div>
           <span class="track-dur">${fmtDur(t.duration)}</span>
@@ -4351,7 +4351,8 @@ function renderLikedSongs() {
         <button class="track-like-btn liked" data-like="${esc(t.filePath)}" title="Unlike">♥</button>
         <div class="hover-actions">
           <button class="hover-action-btn" data-action="playnext" data-file="${esc(t.filePath)}" data-album="${t.albumId}" title="Play next">&#9654;+</button>
-          <button class="hover-action-btn" data-action="queue" data-file="${esc(t.filePath)}" data-album="${t.albumId}" title="Add to queue">+</button>
+          <button class="hover-action-btn" data-action="queue" data-file="${esc(t.filePath)}" data-album="${esc(t.albumId || '')}" title="Add to queue">+</button>
+          <button class="track-more-btn" title="More options" aria-label="More options for ${esc(t.title)}">&#8942;</button>
         </div>
         <span class="track-dur">${fmtDur(t.duration)}</span>
       </div>`
@@ -4799,6 +4800,12 @@ function exportStats(format) {
 }
 
 function jsonToCsv(data) {
+  // RFC 4180: wrap anything containing a comma, quote or newline, and double
+  // the inner quotes. "Crosby, Stills & Nash" used to shift every later column.
+  function q(v) {
+    var s = String(v == null ? '' : v)
+    return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s
+  }
   var lines = []
   lines.push('Generated,' + data.generated)
   lines.push('Total Albums,' + data.totalAlbums)
@@ -4807,19 +4814,19 @@ function jsonToCsv(data) {
   lines.push('')
   lines.push('Top Artists')
   for (var i = 0; i < data.topArtists.length; i++) {
-    lines.push(data.topArtists[i].name + ',' + data.topArtists[i].count)
+    lines.push(q(data.topArtists[i].name) + ',' + data.topArtists[i].count)
   }
   lines.push('')
   lines.push('Top Genres')
   for (var j = 0; j < data.topGenres.length; j++) {
-    lines.push(data.topGenres[j].name + ',' + data.topGenres[j].count)
+    lines.push(q(data.topGenres[j].name) + ',' + data.topGenres[j].count)
   }
   lines.push('')
   lines.push('Play History (last 100)')
   lines.push('Artist,Title,Time')
   for (var k = 0; k < data.playHistory.length; k++) {
     var p = data.playHistory[k]
-    lines.push((p.artist || '') + ',' + (p.title || '') + ',' + (p.ts ? new Date(p.ts).toISOString() : ''))
+    lines.push(q(p.artist) + ',' + q(p.title) + ',' + (p.ts ? new Date(p.ts).toISOString() : ''))
   }
   return lines.join('\n')
 }
@@ -12768,7 +12775,13 @@ async function renderManageHealth() {
   var H = window.PapaLibraryHealth
   if (!H) { setContent(_mgShell('<div class="mg-empty">Health tools failed to load.</div>')); _mgBindTabs(); return }
 
-  var findings = H.assessLibrary(state.library, extras || {})
+  if (!extras) {
+    setContent(_mgShell('<div class="mg-empty">Could not scan the library, so nothing was checked. ' +
+      'Make sure the music folder is reachable, then try again.</div>', 'Scan failed'))
+    _mgBindTabs()
+    return
+  }
+  var findings = H.assessLibrary(state.library, extras)
   _mgState.findings = findings
   var reclaim = H.reclaimable(findings)
 
