@@ -4502,8 +4502,17 @@ function renderStats() {
   const hours = Math.floor(totalSecs / 3600)
   const mins  = Math.floor((totalSecs % 3600) / 60)
 
+  // History written before duration was recorded has none, so fall back to the
+  // library's duration for that path. Without this the all-time figure read
+  // "0h 0m" for every user, forever.
+  var _durByPath = {}
+  state.library.forEach(function (a) {
+    ;(a.tracks || []).forEach(function (t) { if (t.filePath) _durByPath[t.filePath] = t.duration || 0 })
+  })
+  var _histDur = function (p) { return p.duration || _durByPath[p.filePath] || 0 }
+
   var totalAllTime = 0
-  state.playHistory.forEach(function(p) { totalAllTime += (p.duration || 0) })
+  state.playHistory.forEach(function(p) { totalAllTime += _histDur(p) })
   var totalDays = Math.floor(totalAllTime / 86400)
   var totalHrs = Math.floor((totalAllTime % 86400) / 3600)
   var totalAllTimeStr = totalDays > 0 ? totalDays + 'd ' + totalHrs + 'h' : totalHrs + 'h ' + Math.floor((totalAllTime % 3600) / 60) + 'm'
@@ -4582,7 +4591,7 @@ function renderStats() {
     { id:'collector', icon:'📚', name:'Collector', desc:'200+ albums in library', check:function() { return state.library.length >= 200 } },
     { id:'dedicated', icon:'🔥', name:'Dedicated', desc:'7-day listening streak', check:function() { return currentStreak >= 7 } },
     { id:'earlybird', icon:'🌅', name:'Early Bird', desc:'Most listening before 9 AM', check:function() { var am=0,pm=0; recent.forEach(function(p){var h=new Date(p.ts).getHours();if(h>=5&&h<9)am++;else pm++});return am>pm&&recent.length>10} },
-    { id:'binger', icon:'📺', name:'Binge Listener', desc:'10+ hours in one day', check:function() { var byDay={};recent.forEach(function(p){var d=new Date(p.ts).toDateString();byDay[d]=(byDay[d]||0)+(p.duration||0)});return Object.values(byDay).some(function(s){return s>=36000})} },
+    { id:'binger', icon:'📺', name:'Binge Listener', desc:'10+ hours in one day', check:function() { var byDay={};recent.forEach(function(p){var d=new Date(p.ts).toDateString();byDay[d]=(byDay[d]||0)+_histDur(p)});return Object.values(byDay).some(function(s){return s>=36000})} },
     { id:'variety', icon:'🎨', name:'Variety Listener', desc:'20+ genres explored', check:function() { var genres={};recent.forEach(function(p){for(var i=0;i<state.library.length;i++){var a=state.library[i];if(!a.tracks)continue;for(var j=0;j<a.tracks.length;j++){if(a.tracks[j].filePath===p.filePath&&a.genre){genres[a.genre]=true}}} });return Object.keys(genres).length>=20} },
     { id:'throwback', icon:'📼', name:'Throwback', desc:'Most listening is pre-2000', check:function() { var old=0,nu=0;recent.forEach(function(p){for(var i=0;i<state.library.length;i++){var a=state.library[i];if(!a.tracks)continue;for(var j=0;j<a.tracks.length;j++){if(a.tracks[j].filePath===p.filePath){if((a.year||0)>0&&a.year<2000)old++;else nu++;break}}}});return old>nu&&recent.length>10} },
     { id:'globetrotter', icon:'🗺️', name:'Globetrotter', desc:'Music from 10+ countries', check:function() { var countries={};recent.forEach(function(p){for(var i=0;i<state.library.length;i++){var a=state.library[i];if(!a.tracks)continue;for(var j=0;j<a.tracks.length;j++){if(a.tracks[j].filePath===p.filePath){var parts=(a.tracks[j].filePath||'').split('/');countries[parts[3]||parts[2]||'']=true;break}}}});return Object.keys(countries).length>=10} },
@@ -4603,15 +4612,30 @@ function renderStats() {
     { id:'longesttrack', icon:'📏', name:'Long Haul', desc:'Played a track >15 min', check:function() { return recent.some(function(p){for(var i=0;i<state.library.length;i++){var a=state.library[i];if(!a.tracks)continue;for(var j=0;j<a.tracks.length;j++){if(a.tracks[j].filePath===p.filePath&&(a.tracks[j].duration||0)>900)return true}};return false})} },
     { id:'shortesttrack', icon:'⚡', name:'Quick Hit', desc:'Played a track <30 sec', check:function() { return recent.some(function(p){for(var i=0;i<state.library.length;i++){var a=state.library[i];if(!a.tracks)continue;for(var j=0;j<a.tracks.length;j++){if(a.tracks[j].filePath===p.filePath&&(a.tracks[j].duration||0)>0&&(a.tracks[j].duration||0)<30)return true}};return false})} },
     { id:'repeatlistener', icon:'🔂', name:'On Repeat', desc:'Same track 3+ times in one day', check:function() { var byDay={};recent.forEach(function(p){var d=new Date(p.ts).toDateString();byDay[d]=byDay[d]||{};byDay[d][p.filePath]=(byDay[d][p.filePath]||0)+1});return Object.values(byDay).some(function(day){return Object.values(day).some(function(c){return c>=3})})} },
-    { id:'skiphappy', icon:'⏭️', name:'Skip Happy', desc:'Average track plays <60%', check:function() { var total=0,full=0;recent.forEach(function(p){total++;if((p.duration||0)>0){var playPct=(p.position||0)/(p.duration||0);if(playPct>.8)full++}});return total>10&&(full/total)<.6} },
-    { id:'completelistener', icon:'✅', name:'Completionist+', desc:'Finish 80%+ of tracks', check:function() { var total=0,full=0;recent.forEach(function(p){total++;if((p.duration||0)>0){if((p.position||0)/(p.duration||0)>.8)full++}});return total>10&&(full/total)>.8} },
+    { id:'skiphappy', icon:'⏭️', name:'Skip Happy', _needsPosition:true, desc:'Average track plays <60%', check:function() { var total=0,full=0;recent.forEach(function(p){total++;if((_histDur(p)||0)>0){var playPct=(p.position||0)/(p.duration||0);if(playPct>.8)full++}});return total>10&&(full/total)<.6} },
+    { id:'completelistener', icon:'✅', name:'Completionist+', _needsPosition:true, desc:'Finish 80%+ of tracks', check:function() { var total=0,full=0;recent.forEach(function(p){total++;if((_histDur(p)||0)>0){if((p.position||0)/(p.duration||0)>.8)full++}});return total>10&&(full/total)>.8} },
     { id:'happyhour', icon:'🍸', name:'Happy Hour', desc:'Most listening 5-7 PM', check:function() { var hh=0,other=0;recent.forEach(function(p){var h=new Date(p.ts).getHours();if(h>=17&&h<19)hh++;else other++});return hh>other&&recent.length>10} },
   ]
-  var earned = achievements.filter(function(a) { return a.check() })
+  // Nothing records how far into a track playback got, so any achievement that
+  // needs it cannot be judged. They used to resolve anyway -- "Skip Happy" was
+  // awarded to every user with more than 10 plays, purely because the missing
+  // field made its ratio 0.
+  var _hasPosition = state.playHistory.some(function (p) { return p.position != null })
+  var earned = achievements.filter(function(a) {
+    if (a._needsPosition && !_hasPosition) return false
+    return a.check()
+  })
   var achHTML = earned.length ? '<div class="stats-section"><div class="section-title">Achievements</div><div class="stats-achievements">' + earned.map(function(a) { return '<div class="ach-badge earned"><div class="ach-icon">' + a.icon + '</div><div class="ach-name">' + a.name + '</div><div class="ach-desc">' + a.desc + '</div></div>' }).join('') + '</div></div>' : ''
 
-  var days = {}
-  recent.forEach(function(p) { days[new Date(p.ts).toDateString()] = true })
+  // Build a day -> play-count map from ALL history, not the 30-day `recent`
+  // window. The grid spans 53 weeks, so keying it off `recent` left eleven of
+  // twelve months permanently blank AND captioned "no plays" -- actively wrong.
+  // Counting here also replaces a full history re-scan per lit cell below.
+  var dayCounts = {}
+  state.playHistory.forEach(function (p) {
+    var k = new Date(p.ts).toDateString()
+    dayCounts[k] = (dayCounts[k] || 0) + 1
+  })
   var calHTML = '<div class="stats-section"><div class="section-title">Listening Calendar</div><div class="stats-calendar"><div class="stats-calendar-grid">'
   var now = new Date()
   for (var w = 52; w >= 0; w--) {
@@ -4619,14 +4643,14 @@ function renderStats() {
       var day = new Date(now - ((w * 7 + d) * 86400000))
       var key = day.toDateString()
       var level = 0
-      if (days[key]) {
-        var dayPlays = state.playHistory.filter(function(p) { return new Date(p.ts).toDateString() === key }).length
-         if (dayPlays >= 16) level = 4
+      var dayPlays = dayCounts[key] || 0
+      if (dayPlays) {
+        if (dayPlays >= 16) level = 4
         else if (dayPlays >= 6) level = 3
         else if (dayPlays >= 2) level = 2
         else level = 1
       }
-      calHTML += '<div class="stats-calendar-day d' + level + '" title="' + key + ': ' + (days[key] ? dayPlays + ' play' + (dayPlays !== 1 ? 's' : '') : 'no plays') + '"></div>'
+      calHTML += '<div class="stats-calendar-day d' + level + '" title="' + key + ': ' + (dayPlays ? dayPlays + ' play' + (dayPlays !== 1 ? 's' : '') : 'no plays') + '"></div>'
     }
   }
   calHTML += '</div></div></div>'
@@ -4635,7 +4659,7 @@ function renderStats() {
   var monthMs = 30 * 86400000
   var weekSecs = 0
   state.playHistory.forEach(function(p) {
-    if (p.ts > Date.now() - weekMs) weekSecs += (p.duration || 0)
+    if (p.ts > Date.now() - weekMs) weekSecs += _histDur(p)
   })
   var weekHours = Math.floor(weekSecs / 3600)
   var weekMins = Math.floor((weekSecs % 3600) / 60)
@@ -5744,7 +5768,8 @@ function playCurrentTrack() {
     _playCountTimer = setTimeout(() => {
       state.playCounts[track.filePath] = (state.playCounts[track.filePath] || 0) + 1
       window.api.incrementPlayCount(track.filePath)
-      window.api.addPlayHistory({ filePath: track.filePath, title: track.title, artist: track.albumArtist || track.artist, album: track.albumName, artPath: track.artPath || null, ts: Date.now() })
+      // duration was never written, so every stat derived from it read zero.
+      window.api.addPlayHistory({ filePath: track.filePath, title: track.title, artist: track.albumArtist || track.artist, album: track.albumName, artPath: track.artPath || null, duration: track.duration || 0, ts: Date.now() })
     }, 30000)
     loadLyricsFor(track)
     syncExtension()
