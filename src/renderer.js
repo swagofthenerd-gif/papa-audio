@@ -4575,10 +4575,15 @@ function renderStats() {
       <span class="stats-genre-ct">${count}</span>
     </div>`).join('') || '<div class="stats-rank-sub">No genre data yet.</div>'
 
+  // Built from ALL history, not the 30-day window, so a 40-day streak no longer
+  // reports 30. And the walk may start at YESTERDAY: keying off today alone
+  // meant that at 00:01, before you had played anything, the streak read 0 and
+  // "Dedicated (7-day streak)" un-earned itself every midnight.
   var daysSet = {}
-  recent.forEach(function(p) { daysSet[new Date(p.ts).toDateString()] = true })
+  state.playHistory.forEach(function (p) { daysSet[new Date(p.ts).toDateString()] = true })
   var currentStreak = 0
   var checkDay = new Date()
+  if (!daysSet[checkDay.toDateString()]) checkDay.setDate(checkDay.getDate() - 1)
   while (daysSet[checkDay.toDateString()]) { currentStreak++; checkDay.setDate(checkDay.getDate() - 1) }
 
   var achievements = [
