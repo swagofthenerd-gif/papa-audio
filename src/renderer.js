@@ -8027,7 +8027,16 @@ function _slskGroupByFolder(queryHint) {
         folders.set(key, {
           username: resp.username, folderPath, folderName,
           uploadSpeed: resp.uploadSpeed || 0,
-          freeUploadSlots: resp.freeUploadSlots || 0,
+          // slskd sends hasFreeUploadSlot (boolean) and queueLength. It has
+          // never sent freeUploadSlots -- confirmed against a live response,
+          // whose fields are: fileCount, files, hasFreeUploadSlot,
+          // lockedFileCount, lockedFiles, queueLength, token, uploadSpeed,
+          // username. main.js:3317 already read the right name; this path did
+          // not, so `freeUploadSlots || 0` was always 0 and the availability
+          // bonus never once fired.
+          hasFreeSlot: !!resp.hasFreeUploadSlot,
+          queueLength: resp.queueLength || 0,
+          lockedFileCount: resp.lockedFileCount || 0,
           files: [],
         })
       }
@@ -8052,8 +8061,13 @@ function _slskGroupByFolder(queryHint) {
     s += Math.min(trackCount, 20) * 2
     // Query keyword match
     for (const w of qWords) if (text.includes(w)) s += 5
-    // Peer availability (upload slots)
-    if (g.freeUploadSlots > 0) s += 10
+    // Can we actually download this NOW? For a Soulseek client this is the
+    // single most useful signal, and it was dead.
+    if (g.hasFreeSlot) s += 25
+    // Queue depth matters enormously and was ignored entirely: a peer 1700 deep
+    // ranked identically to an idle one. Log-scaled so a short queue is nearly
+    // free and a huge one is decisive, but bounded so it cannot swamp format.
+    if (g.queueLength > 0) s -= Math.min(Math.log2(g.queueLength + 1) * 3, 30)
     // Upload speed (log scale so fast peers get a reasonable bonus)
     if (g.uploadSpeed > 0) s += Math.min(Math.log2(g.uploadSpeed / 1024 + 1) * 2, 12)
     // Penalize single-file results (likely not an album)
@@ -8159,19 +8173,31 @@ function renderSoulseekRow(query) {
   const _qScore = g => qWords.length
     ? qWords.filter(w => (g.folderName || '').toLowerCase().includes(w)).length / qWords.length
     : 0
+  // Precomputed once per group rather than inside the comparator, which ran
+  // groupSurround (7 regexes over every filename in the folder) O(n log n)
+  // times per sort -- and this sort runs every second while a search is live.
+  const _SFpre = window.PapaSlskFilters
+  for (const g of rawGroups) {
+    g._sur  = _SFpre ? (_SFpre.groupSurround(g) ? 1 : 0) : 0
+    g._flac = g.files.filter(f => f.isFlac).length
+    g._q    = _qScore(g)
+  }
   const groups = rawGroups.sort((a, b) => {
     // Surround first, always. It is the rarest thing in these results and the
     // whole reason for searching; a lossless stereo rip ranking above a 5.1 one
     // buries the only copy worth having.
-    const SF = window.PapaSlskFilters
-    if (SF) {
-      const aS = SF.groupSurround(a) ? 1 : 0, bS = SF.groupSurround(b) ? 1 : 0
-      if (aS !== bS) return bS - aS
-    }
-    const aF = a.files.filter(f => f.isFlac).length, bF = b.files.filter(f => f.isFlac).length
-    if (bF !== aF) return bF - aF
-    const qs = _qScore(b) - _qScore(a)
+    if (a._sur !== b._sur) return b._sur - a._sur
+    if (b._flac !== a._flac) return b._flac - a._flac
+    const qs = b._q - a._q
     if (Math.abs(qs) > 0.15) return qs
+    // Between otherwise comparable copies, prefer the one you can actually
+    // start downloading. slskd gives us hasFreeUploadSlot and queueLength on
+    // every response and neither was used anywhere in ranking, so a peer 1700
+    // deep in its own queue ranked identically to an idle one.
+    const aAvail = (a.hasFreeSlot ? 1 : 0), bAvail = (b.hasFreeSlot ? 1 : 0)
+    if (aAvail !== bAvail) return bAvail - aAvail
+    const aQ = Math.min(a.queueLength || 0, 500), bQ = Math.min(b.queueLength || 0, 500)
+    if (Math.abs(aQ - bQ) > 25) return aQ - bQ
     if (b.files.length !== a.files.length) return b.files.length - a.files.length
     return b.uploadSpeed - a.uploadSpeed
   })
