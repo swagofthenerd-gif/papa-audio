@@ -101,6 +101,11 @@ function _slskErrText(e) {
 // The exact array the cards were rendered from. data-gi indexes THIS, so the
 // click handlers must read it too -- see the comment where it is assigned.
 var _slskRendered = []
+// Every runSlskSearch takes a ticket. Its callbacks do nothing once a newer
+// search has taken one: without this, search A's variants kept merging into
+// search B's results, and A's finally() flipped B's spinner off and killed B's
+// refresh timer, so B rendered "No results" while still fetching.
+var _slskRun = 0
 var _slskTimer = null
 
 var _playlistSorts = {}
@@ -8412,6 +8417,8 @@ function _searchCache_invalidate(query) {
 }
 
 async function runSlskSearch(query) {
+  const myRun = ++_slskRun
+  const current = () => _slskRun === myRun
   slsk.lastQuery = query
   slsk.error = null
   if (!state.isOnline) {
@@ -8438,7 +8445,14 @@ async function runSlskSearch(query) {
   await refreshSlskStatus()
 
   const section = document.getElementById('slsk-section')
-  if (!section) return
+  if (!section) {
+    // Bailing out here used to leave slsk.searching === true forever, with no
+    // timer running. Coming back to the search page then showed a frozen
+    // "Searching P2P network… (0s)" that nothing could ever clear.
+    slsk.searching = false
+    slsk.searched = false
+    return
+  }
 
   if (!slsk.status.connected) {
     slsk.searching = false
@@ -8461,6 +8475,7 @@ async function runSlskSearch(query) {
     _flushQueued = true
     requestAnimationFrame(() => {
       _flushQueued = false
+      if (!current()) return
       const content = document.getElementById('content')
       const st = content ? content.scrollTop : 0
       const sec = document.getElementById('slsk-section')
@@ -8485,6 +8500,7 @@ async function runSlskSearch(query) {
   window.api.off('slsk-progress')
   window.api.on('slsk-progress', (d) => {
     if (d.query && !variants.includes(d.query) && d.query.toLowerCase() !== query.toLowerCase()) return
+    if (!current()) return
     _mergeResults(d.results)
     _flush()
   })
@@ -8493,13 +8509,16 @@ async function runSlskSearch(query) {
   const TIMEOUT = 25000
   await Promise.all(variants.map(q =>
     window.api.slskSearch({ query: q, timeoutMs: TIMEOUT, noCache: _nocacheQueries.has(q.toLowerCase()) }).then(({ results }) => {
+      if (!current()) return
       _mergeResults(results)
     }).catch((e) => {
+      if (!current()) return
       // Was `.catch(() => {})`, so a dead daemon, a 401 or a timeout was
       // indistinguishable from a genuinely empty search: the user was told
       // "Nothing found on the P2P network" and invited to Retry forever.
       slsk.error = _slskErrText(e)
     }).finally(() => {
+      if (!current()) return
       slsk.pendingSearches = Math.max(0, slsk.pendingSearches - 1)
       if (slsk.pendingSearches === 0) {
         slsk.searching = false
