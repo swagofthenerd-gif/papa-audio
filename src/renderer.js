@@ -2110,8 +2110,15 @@ function renderAlbumCredits(album) {
     </div>`
 }
 
-function wireTrackLikeButtons() {
-  document.querySelectorAll('.track-like-btn[data-like]').forEach(btn => {
+function wireTrackLikeButtons(root) {
+  // Document-wide and called from BOTH renderAlbum and renderQueuePanel -- and
+  // the queue panel re-renders on every track change. Playing five tracks with
+  // an album page open left its hearts with six handlers each, so one click
+  // toggled the like six times and an even count looked like nothing happened.
+  // Elements are recreated on re-render, so a per-element marker is enough.
+  ;(root || document).querySelectorAll('.track-like-btn[data-like]').forEach(btn => {
+    if (btn._likeBound) return
+    btn._likeBound = true
     btn.addEventListener('click', e => {
       e.stopPropagation()
       const fp = btn.dataset.like
@@ -5145,17 +5152,32 @@ function renderQueuePanel() {
   list.querySelectorAll('.queue-row-remove').forEach(btn => {
     btn.addEventListener('click', e => {
       e.stopPropagation()
-      var idx = parseInt(btn.dataset.removeIdx)
+      var idx = parseInt(btn.dataset.removeIdx, 10)
+      if (!Number.isInteger(idx) || idx < 0 || idx >= state.queue.length) return
       var removedQTrack = state.queue[idx]
+      var prevIndex = state.queueIndex
       state.queue.splice(idx, 1)
       if (idx < state.queueIndex) state.queueIndex--
       else if (idx === state.queueIndex) {
-        if (state.queue.length) playCurrentTrack()
+        // Removing the LAST track while it was playing left queueIndex pointing
+        // past the end: playCurrentTrack() found undefined and returned
+        // silently, so the old track kept playing, the player bar still showed
+        // it, and the panel highlighted nothing. Clamp before deciding.
+        if (state.queueIndex >= state.queue.length) state.queueIndex = state.queue.length - 1
+        if (state.queue.length && state.queue[state.queueIndex]) playCurrentTrack()
         else { audio.pause(); state.isPlaying = false; state.queueIndex = -1; updatePlayBtn(); updateNowPlaying(null) }
       }
+      // The shuffle prefetch caches an INDEX and hands mpv a file; removing a
+      // track can leave the removed file itself queued as "next".
+      _pendingShuffle = null
+      updateNextPrefetch()
       renderQueuePanel()
       pushUndo('Removed from queue', function() {
         state.queue.splice(idx, 0, removedQTrack)
+        // Restore where playback was pointing, not just the array.
+        state.queueIndex = prevIndex
+        _pendingShuffle = null
+        updateNextPrefetch()
         if (state.queuePanelOpen) renderQueuePanel()
       })
     })
@@ -5223,6 +5245,12 @@ function renderQueuePanel() {
         state.queueIndex++
       }
       dragSrcIdx = null
+      // computeNextIndex() caches _pendingShuffle as an INDEX and mpv has
+      // already been handed that file. After a reorder that index points at a
+      // different track, so the wrong song plays next while the highlight says
+      // otherwise. The Clear handler already does this; reorder did not.
+      _pendingShuffle = null
+      updateNextPrefetch()
       renderQueuePanel()
     })
   })
