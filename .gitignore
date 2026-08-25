@@ -6,3 +6,4 @@ rpm-build/SRPMS/
 bridge-server/node_modules/
 *.backup
 .superpowers/
+.qa/

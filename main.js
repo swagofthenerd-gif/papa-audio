@@ -1,6 +1,7 @@
 const { app, BrowserWindow, BrowserView, ipcMain, dialog, globalShortcut, Notification, shell, Menu, MenuItem, powerSaveBlocker, powerMonitor } = require('electron')
 const path = require('path')
 const fs = require('fs')
+const os = require('os')
 // Required at the top: album ids are derived during scanning, long before the
 // handler section, and `const` is not hoisted.
 const tagEdit = require('./src/tag-edit')
@@ -503,6 +504,7 @@ function cleanupOldFiles() {
 }
 
 app.whenReady().then(() => {
+  reapOrphanedMpv()
   const hidden = process.argv.includes('--hidden')
   artworkDir = path.join(USER_DATA, 'artwork')
   fs.mkdirSync(artworkDir, { recursive: true })
@@ -618,6 +620,67 @@ app.whenReady().then(() => {
   setInterval(processWishlist, 30 * 60 * 1000)
   setTimeout(processWishlist, 30000)
 })
+
+// mpv is spawned as a plain child, so it dies with a graceful quit (will-quit
+// calls player.stop()). It does NOT die if this process is killed abruptly --
+// a crash, an OOM, or kill -9 -- and mpv then keeps playing audio forever with
+// no window left to stop it. Two guards:
+//
+//   1. Catch the signals that CAN be caught, and shut the player down properly.
+//   2. On startup, reap any mpv left behind by a previous run. Our socket names
+//      embed the owning Electron pid, so an orphan is identifiable: the pid in
+//      the name is no longer alive.
+//
+// SIGKILL cannot be caught by anyone, so (2) is what actually covers it -- the
+// stale player is stopped the next time the app starts.
+function pidAlive(pid) {
+  try { process.kill(pid, 0); return true } catch (e) { return e.code === 'EPERM' }
+}
+
+function reapOrphanedMpv() {
+  if (process.platform === 'win32') return
+  const runtimeDir = process.env.XDG_RUNTIME_DIR || os.tmpdir()
+  let entries = []
+  try { entries = fs.readdirSync(runtimeDir) } catch (_) { return }
+  const socks = entries.filter(f => /^papa-mpv-\d+-\d+\.sock$/.test(f))
+  if (!socks.length) return
+
+  let running = ''
+  try { running = require('child_process').execSync('ps -eo pid,args', { encoding: 'utf8' }) } catch (_) {}
+
+  for (const f of socks) {
+    const owner = Number((f.match(/^papa-mpv-(\d+)-/) || [])[1])
+    if (!owner || owner === process.pid || pidAlive(owner)) continue   // still someone's
+    const full = path.join(runtimeDir, f)
+    for (const line of running.split('\n')) {
+      if (line.includes(full) && /\bmpv\b/.test(line)) {
+        const pid = Number(line.trim().split(/\s+/)[0])
+        if (pid) { try { process.kill(pid, 'SIGKILL') } catch (_) {} }
+      }
+    }
+    try { fs.unlinkSync(full) } catch (_) {}
+  }
+}
+
+let _signalShutdown = false
+function shutdownFromSignal() {
+  if (_signalShutdown) return
+  _signalShutdown = true
+  // Do the will-quit work by hand: app.exit() skips those handlers, and
+  // app.quit() is cancellable and can stall, which left the process alive
+  // while mpv had already been stopped.
+  try { player?.stop() } catch (_) {}
+  try { stopSlskd() } catch (_) {}
+  try { store.set('cleanShutdown', true) } catch (_) {}
+  try { if (fs.existsSync(NOW_PLAYING_PATH)) fs.unlinkSync(NOW_PLAYING_PATH) } catch (_) {}
+  try { globalShortcut.unregisterAll() } catch (_) {}
+  try { app.exit(0) } catch (_) {}
+  // Deliberately NOT unref'd: an unref'd timer will not fire if Electron's
+  // main loop stops pumping Node timers, which is exactly the case here.
+  setTimeout(() => process.exit(0), 500)
+}
+
+for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.on(sig, shutdownFromSignal)
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
 app.on('before-quit', () => {
