@@ -3975,71 +3975,53 @@ ipcMain.handle('verify-surround-folder', async (_, { dir }) => {
   }
 })
 
-ipcMain.handle('slsk-resolve-file', (_, { username, filename }) => {
-  const cfg = store.get('slskConfig', {})
-  const folders = store.get('musicFolders', [])
-  const downloadDir = cfg.downloadDir || folders[0] || path.join(app.getPath('home'), 'Music')
-  const parts = (filename || '').replace(/\\/g, '/').split('/').filter(Boolean)
-  if (!parts.length) return { path: null, downloadDir }
+// Where a Soulseek file may have landed on disk. slskd does not report the
+// local path, so this walks the plausible layouts, most specific first.
+//
+// The bare-basename candidate is deliberately conditional. A remote file named
+// "01.flac" or "Track 03.mp3" would otherwise match ANY such file sitting loose
+// in the download root -- and the resolver's answer is handed straight to Play
+// and to "Show in folder", so a hit there plays the wrong song and never
+// downloads the right one. Generic names are exactly the collision-prone ones,
+// so they do not get that last-resort match; distinctive names still do.
+function slskGenericBaseName(name) {
+  var base = String(name || '').replace(/\.[A-Za-z0-9]{1,5}$/, '').trim()
+  if (base.length <= 3) return true
+  return /^(?:cd|disc|disk|track|t)?[\s._-]*\d{1,3}(?:[\s._-]*(?:of|\/)[\s._-]*\d{1,3})?$/i.test(base)
+}
 
-  // Build candidates from most-specific to least-specific and pick the first that exists on disk
-  const tail1 = parts.slice(1)   // strip remote share root (most common slskd layout)
-  const tail2 = parts.slice(2)   // strip two leading components
-  const last2 = parts.slice(-2)  // just folder/filename
-  const last1 = parts.slice(-1)  // just filename (flat download)
-
-  const candidates = [
-    // Most common: slskd strips remote root, stores as album/track
+function slskCandidatePaths(filename, username, downloadDir) {
+  var parts = String(filename || '').replace(/\\/g, '/').split('/').filter(Boolean)
+  if (!parts.length) return []
+  var tail1 = parts.slice(1)
+  var tail2 = parts.slice(2)
+  var last2 = parts.slice(-2)
+  var last1 = parts.slice(-1)
+  var out = [
     tail1.length ? path.join(downloadDir, ...tail1) : null,
-    // Full remote path under downloadDir
     path.join(downloadDir, ...parts),
-    // Under username subdir
     tail1.length ? path.join(downloadDir, username, ...tail1) : null,
     path.join(downloadDir, username, ...parts),
-    // Strip two leading components (e.g. username + share root)
     tail2.length ? path.join(downloadDir, ...tail2) : null,
     tail2.length ? path.join(downloadDir, username, ...tail2) : null,
-    // Just the last two path parts (folder/file) – handles deep remote paths
     last2.length === 2 ? path.join(downloadDir, ...last2) : null,
-    // Flat: just the filename in downloadDir root
-    path.join(downloadDir, ...last1),
   ]
+  if (!slskGenericBaseName(last1[0])) out.push(path.join(downloadDir, ...last1))
+  return out.filter(Boolean)
+}
 
-  for (const c of candidates) {
-    if (c && fs.existsSync(c)) return { path: c, downloadDir }
+ipcMain.handle('slsk-resolve-file', (_, { username, filename }) => {
+  const cfg = store.get('slskConfig', {})
+  const downloadDir = _downloadDir()
+  for (const c of slskCandidatePaths(filename, username, downloadDir)) {
+    if (fs.existsSync(c)) return { path: c, downloadDir }
   }
   return { path: null, downloadDir }
 })
 
 ipcMain.handle('slsk-verify-file', async (_, { username, filename }) => {
-  const resolved = await (async () => {
-    const cfg = store.get('slskConfig', {})
-    const folders = store.get('musicFolders', [])
-    const downloadDir = cfg.downloadDir || folders[0] || path.join(app.getPath('home'), 'Music')
-    const parts = (filename || '').replace(/\\/g, '/').split('/').filter(Boolean)
-    if (!parts.length) return null
-
-    const tail1 = parts.slice(1)
-    const tail2 = parts.slice(2)
-    const last2 = parts.slice(-2)
-    const last1 = parts.slice(-1)
-
-    const candidates = [
-      tail1.length ? path.join(downloadDir, ...tail1) : null,
-      path.join(downloadDir, ...parts),
-      tail1.length ? path.join(downloadDir, username, ...tail1) : null,
-      path.join(downloadDir, username, ...parts),
-      tail2.length ? path.join(downloadDir, ...tail2) : null,
-      tail2.length ? path.join(downloadDir, username, ...tail2) : null,
-      last2.length === 2 ? path.join(downloadDir, ...last2) : null,
-      path.join(downloadDir, ...last1),
-    ]
-
-    for (const c of candidates) {
-      if (c && fs.existsSync(c)) return c
-    }
-    return null
-  })()
+  const resolved = slskCandidatePaths(filename, username, _downloadDir())
+    .find(c => fs.existsSync(c)) || null
 
   if (!resolved) {
     mainWindow?.webContents.send('slsk-verify', { ok: false, filename, error: 'File not found on disk' })
