@@ -11495,11 +11495,14 @@ function setupListeners() {
     const idx = state.likedTracks.indexOf(t.filePath)
     if (idx < 0) return
     state.likedTracks.splice(idx, 1)
-    window.api.saveLiked(state.likedTracks)
+    // saveLiked() writes the likedALBUMS store. Sending likedTracks through it
+    // replaced every liked album with a list of file paths AND never persisted
+    // the unlike, so the track came back on restart while the albums were gone.
+    window.api.saveLikedTracks(state.likedTracks)
     if (state.currentPage === 'liked') renderLikedSongs()
     pushUndo('Removed from Liked Songs', function () {
       state.likedTracks.splice(idx, 0, t.filePath)
-      window.api.saveLiked(state.likedTracks)
+      window.api.saveLikedTracks(state.likedTracks)
       if (state.currentPage === 'liked') renderLikedSongs()
     })
   })
@@ -13739,7 +13742,13 @@ async function _libraryMutateApply(op, paths, entries, impact) {
 // Undo rewrote the stores, so the renderer's copies have to be re-read.
 async function reloadPersistedState() {
   try {
-    state.likedTracks = await window.api.getLiked()
+    // getLiked() is the liked-ALBUMS store; liked TRACKS come from
+    // getLikedTracks(). Loading albums into state.likedTracks replaced every
+    // liked song with an album-id string, and the next heart-click persisted
+    // that to disk via saveLikedTracks. init() at line ~446 gets this right;
+    // only this reload path did not.
+    state.likedAlbums = await window.api.getLiked()
+    state.likedTracks = await window.api.getLikedTracks()
     state.playCounts  = await window.api.getPlayCounts()
     state.playlists   = await window.api.getPlaylists()
     state.savedQueues = await window.api.getSavedQueues()
