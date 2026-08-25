@@ -253,7 +253,7 @@ document.addEventListener('visibilitychange', () => {
     startDownloadsPolling(60000)
     if (_homeClockInterval) { clearInterval(_homeClockInterval); _homeClockInterval = null }
   } else {
-    startDownloadsPolling(state.currentPage === 'downloads' ? 2000 : 6000)
+    startDownloadsPolling(state.currentPage === 'downloads' ? 2000 : 20000)
     if (state.currentPage === 'home' && !_homeClockInterval) {
       _drawHomeClock()
       _homeClockInterval = setInterval(_drawHomeClock, 1000)
@@ -740,7 +740,7 @@ function navigate(page, navId, opts = {}) {
   else if (page === 'explore')     renderExplore()
 
   if (page === 'downloads') startDownloadsPolling(2000)
-  else { _dlLastSig = ''; startDownloadsPolling(6000) }
+  else { _dlLastSig = ''; startDownloadsPolling(20000) }
 
   updateNavBtns()
   hideContextMenu()
@@ -6307,7 +6307,9 @@ function bindContentEvents() {
   // which point this element does not exist. The filter never worked.
   document.getElementById('results-filter')?.addEventListener('input', function () {
     var q = this.value.toLowerCase()
-    document.querySelectorAll('.track-row, .album-card, .artist-pill, .yt-row, .yt-album-card').forEach(function (el) {
+    // Scoped to #content: unscoped this also hid rows in the queue panel and
+    // any open modal, which share these class names.
+    document.querySelectorAll('#content .track-row, #content .album-card, #content .artist-pill, #content .yt-row, #content .yt-album-card, #content .str-track, #content .yt-artist-card, #content .yt-playlist-card').forEach(function (el) {
       var text = (el.textContent || '').toLowerCase()
       el.style.display = q && !text.includes(q) ? 'none' : ''
     })
@@ -8358,7 +8360,14 @@ let _dlFilter             = ''        // current text filter for completed tab
 let _dlCompletedGroups    = []        // flat group list from last completed render (for expand-all)
 
 function _dlSig(tab, files) {
-  return tab + '|' + files.map(f => f.id).join(',')
+  // Rolling hash rather than joining every id: the Completed tab can hold
+  // thousands of rows and this runs on every poll tick.
+  var h = 0
+  for (var i = 0; i < files.length; i++) {
+    var id = String(files[i].id)
+    for (var j = 0; j < id.length; j++) h = (h * 31 + id.charCodeAt(j)) | 0
+  }
+  return tab + '|' + files.length + '|' + h
 }
 
 function startDownloadsPolling(interval = 6000) {
@@ -8546,12 +8555,18 @@ function _cleanTrackName(filename, folder) {
 function _findAlbumArt(folder) {
   if (!state.library?.length) return null
   const fl = folder.toLowerCase()
-  const match = state.library.find(a => {
-    const nl = a.name.toLowerCase()
-    const al = (a.artist || '').toLowerCase()
-    return fl.includes(nl) || nl.includes(fl) || fl.includes(`${al} ${nl}`) || fl.includes(`${nl} ${al}`)
-  })
-  return match?.artPath || null
+  // An artist+album hit is unambiguous, so it wins outright. A bare name match
+  // needs to be long enough to mean something -- an album called "1" used to
+  // match almost any folder and stamp its cover over half the Completed tab.
+  let loose = null
+  for (const a of state.library) {
+    const nl = String(a.name || '').toLowerCase()
+    if (!nl) continue
+    const al = String(a.artist || '').toLowerCase()
+    if (al && (fl.includes(`${al} ${nl}`) || fl.includes(`${nl} ${al}`))) return a.artPath || null
+    if (!loose && nl.length >= 5 && (fl.includes(nl) || nl.includes(fl))) loose = a
+  }
+  return loose?.artPath || null
 }
 
 function _dlDateBucket(ts) {
@@ -9448,17 +9463,32 @@ function _renderYtDownloadRows(box) {
   const section = document.getElementById('yt-dl-section')
   if (section) section.style.display = items.length ? '' : 'none'
   box.innerHTML = items.map(d => `
-    <div class="yt-row">
+    <div class="yt-row" data-ytdl-row="${esc(d.id)}">
       <div class="yt-info">
         <div class="yt-title">${esc(d.title)} <span class="yt-badge">YT</span></div>
         <div class="yt-sub">${esc(d.artist || '')}</div>
       </div>
       ${d.state === 'downloading'
-        ? `<div class="yt-dl-bar"><div class="yt-dl-fill" style="width:${d.percent}%"></div></div><span class="yt-dur">${Math.round(d.percent)}%</span>`
+        // `d.percent` can be absent on the first event: width:undefined% is
+        // invalid (the bar collapses) and the label read "NaN%".
+        ? `<div class="yt-dl-bar"><div class="yt-dl-fill" style="width:${Math.max(0, Math.min(100, Number(d.percent) || 0))}%"></div></div><span class="yt-dur">${Math.round(Number(d.percent) || 0)}%</span>`
         : d.state === 'completed'
           ? `<span class="yt-dl-done">✓ Done</span>`
           : `<span class="yt-error" title="${esc(d.error || '')}">✗ Failed</span>`}
+      ${d.state === 'downloading'
+        ? ''
+        // Finished rows had no way to be dismissed and failed ones no way to be
+        // retried, so they accumulated for the whole session.
+        : `<button class="yt-btn yt-dl-dismiss" data-ytdl="${esc(d.id)}" title="Dismiss">✕</button>`}
     </div>`).join('')
+
+  box.querySelectorAll('.yt-dl-dismiss').forEach(function (btn) {
+    btn.addEventListener('click', function (e) {
+      e.stopPropagation()
+      state.ytDownloads.delete(btn.dataset.ytdl)
+      _renderYtDownloadRows(box)
+    })
+  })
 }
 
 function renderDownloads() {
@@ -11618,7 +11648,21 @@ function setupListeners() {
       window.api.notifyDownloadComplete({ count: 1, albumName: `${dl.artist ? dl.artist + ' — ' : ''}${dl.title}` })
     }
     const box = document.getElementById('yt-dl-list')
-    if (box) _renderYtDownloadRows(box)
+    if (!box) return
+    // Only the percentage moved: nudge the existing nodes instead of rebuilding
+    // the whole list, which flickered and dropped any text selection.
+    if (prev && prev.state === dl.state && dl.state === 'downloading') {
+      const pct = Math.max(0, Math.min(100, Number(dl.percent) || 0))
+      const row = box.querySelector(`[data-ytdl-row="${CSS.escape(String(dl.id))}"]`)
+      if (row) {
+        const fill = row.querySelector('.yt-dl-fill')
+        const lbl  = row.querySelector('.yt-dur')
+        if (fill) fill.style.width = pct + '%'
+        if (lbl)  lbl.textContent = Math.round(pct) + '%'
+        return
+      }
+    }
+    _renderYtDownloadRows(box)
   })
   window.api.ytGetDownloads().then(list => {
     for (const d of (list || [])) state.ytDownloads.set(d.id, d)
@@ -12369,10 +12413,11 @@ function _parseSearchOperators(query) {
     text = text.replace(sourceMatch[0], '').trim()
   }
 
-  var artistRx = /\bartist:(\S+)/i
+  var artistRx = /\bartist:"([^"]+)"|\bartist:(\S+)/i
   var artistMatch = text.match(artistRx)
   if (artistMatch) {
-    result.artist = artistMatch[1]
+    // group 1 = quoted form, group 2 = bare word
+    result.artist = artistMatch[1] || artistMatch[2]
     text = text.replace(artistMatch[0], '').trim()
   }
 
@@ -12398,8 +12443,8 @@ function _parseSearchOperators(query) {
     text = text.replace(formatMatch[0], '').trim()
   }
 
-  var m5 = text.match(/\balbum:"([^"]+)"/); if (m5) { result.album = m5[1]; text = text.replace(m5[0], '').trim() }
-  var m6 = text.match(/\bgenre:"([^"]+)"/); if (m6) { result.genre = m6[1]; text = text.replace(m6[0], '').trim() }
+  var m5 = text.match(/\balbum:"([^"]+)"|\balbum:(\S+)/i); if (m5) { result.album = m5[1] || m5[2]; text = text.replace(m5[0], '').trim() }
+  var m6 = text.match(/\bgenre:"([^"]+)"|\bgenre:(\S+)/i); if (m6) { result.genre = m6[1] || m6[2]; text = text.replace(m6[0], '').trim() }
   var m7 = text.match(/\bis:(liked|downloaded|flac|lossy)\b/); if (m7) { result.is = m7[1]; text = text.replace(m7[0], '').trim() }
   var m8 = text.match(/\bplays:>(\d+)\b/); if (m8) { result.playsMin = parseInt(m8[1]); text = text.replace(m8[0], '').trim() }
   var m9 = text.match(/\bduration:<(\d+)\b/); if (m9) { result.durMax = parseInt(m9[1]); text = text.replace(m9[0], '').trim() }
