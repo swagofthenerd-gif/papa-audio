@@ -9848,15 +9848,39 @@ function renderDownloads() {
     if (!btn || btn.disabled) return
     const subset = _dlLastFiles.filter(f => _dlCategory(f.state) === _dlTab)
     if (!subset.length) return
-    if (_dlTab === 'active' && !confirm(
-      'Cancel ' + subset.length + ' download' + (subset.length === 1 ? '' : 's') + '?\n\n' +
-      'Soulseek cannot resume — these have to be queued again.')) return
+    // The confirm used to be gated on the active tab only, so on Completed a
+    // single click irreversibly wiped the entire download history -- 1,451
+    // records on this machine -- with no warning at all.
+    const n = subset.length
+    const msg = _dlTab === 'active'
+      ? 'Cancel ' + n + ' download' + (n === 1 ? '' : 's') + '?\n\n' +
+        'Soulseek cannot resume — these have to be queued again.'
+      : 'Remove ' + n + ' ' + _dlTab + ' item' + (n === 1 ? '' : 's') + ' from the list?\n\n' +
+        'This clears the history in slskd. Files already on disk are not touched.'
+    if (!confirm(msg)) return
     const originalText = btn.textContent
     btn.disabled = true
-    btn.textContent = _dlTab === 'active' ? 'Cancelling…' : 'Clearing…'
-    await Promise.all(subset.map(f =>
-      window.api.slskCancelTransfer({ username: f.username, id: f.id }).catch(() => {})
-    ))
+    const done = { n: 0 }
+    const paint = () => { btn.textContent = (_dlTab === 'active' ? 'Cancelling ' : 'Clearing ') + done.n + '/' + n }
+    paint()
+    // Was Promise.all over the whole subset. Each cancel makes the main process
+    // fetch the FULL transfer list (~1 MB) to resolve the filename, so clearing
+    // 1,451 completed items fired ~1.4 GB of concurrent HTTP at slskd plus one
+    // synchronous store write each. Bounded concurrency, and completed/failed
+    // items skip the filename lookup entirely -- it exists to cancel a live
+    // scheduler intent, which a finished transfer does not have.
+    const alreadyDone = _dlTab !== 'active'
+    const queue = subset.slice()
+    const worker = async () => {
+      while (queue.length) {
+        const f = queue.shift()
+        await window.api.slskCancelTransfer({ username: f.username, id: f.id, alreadyDone })
+          .catch(() => {})
+        done.n++
+        if (done.n % 10 === 0 || !queue.length) paint()
+      }
+    }
+    await Promise.all([worker(), worker(), worker(), worker()])
     await _pollAndRenderDownloads()
     if (btn) { btn.disabled = false; btn.textContent = originalText }
   })

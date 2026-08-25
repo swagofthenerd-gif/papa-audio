@@ -3630,7 +3630,7 @@ ipcMain.handle('slsk-get-transfers', async () => {
   } catch (_) { return [] }
 })
 
-ipcMain.handle('slsk-cancel-transfer', async (_, { username, id }) => {
+ipcMain.handle('slsk-cancel-transfer', async (_, { username, id, alreadyDone }) => {
   // Scheduler-held files are not known to slskd. Routing here means every
   // existing Cancel button works on them without knowing they are different.
   if (typeof id === 'string' && id.indexOf('sched:') === 0) {
@@ -3645,10 +3645,16 @@ ipcMain.handle('slsk-cancel-transfer', async (_, { username, id }) => {
   // Cancelling must kill our INTENT to fetch the file, not just this transfer.
   // Removing it from slskd alone leaves the scheduler still wanting it, and the
   // next tick happily re-requests it from another peer.
-  try {
-    const filename = await dlFilenameForTransfer(username, id)
-    if (filename) dlAbandonByFilename(filename)
-  } catch (_) {}
+  //
+  // A finished transfer has no intent left to cancel, and this lookup costs a
+  // FULL /transfers/downloads fetch (~1 MB here). Clearing a large completed
+  // list used to pay that once per item.
+  if (!alreadyDone) {
+    try {
+      const filename = await dlFilenameForTransfer(username, id)
+      if (filename) dlAbandonByFilename(filename)
+    } catch (_) {}
+  }
   try {
     // ?remove=true removes completed/failed transfers from the list; harmless for active ones
     await slskdFetch('DELETE', `/transfers/downloads/${encodeURIComponent(username)}/${encodeURIComponent(id)}?remove=true`)
