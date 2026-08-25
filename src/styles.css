@@ -5587,3 +5587,18 @@ body.app-unfocused *::after {
   letter-spacing: .5px;
   margin-left: 8px;
 }
+
+/* Shown over the retained download list when slskd stops answering, instead of
+   blanking the page — the state underneath is still worth reading. */
+.dl2-daemon-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 12px;
+  padding: 10px 14px;
+  border: 1px solid rgba(224, 85, 85, .35);
+  border-radius: 8px;
+  background: rgba(224, 85, 85, .10);
+  color: var(--text2);
+  font-size: 13px;
+}

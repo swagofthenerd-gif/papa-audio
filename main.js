@@ -3624,10 +3624,14 @@ ipcMain.handle('slsk-respread-backlog', async (_, opts) => {
 })
 
 ipcMain.handle('slsk-get-transfers', async () => {
-  try {
-    const data = await slskdFetch('GET', '/transfers/downloads')
-    return data || []
-  } catch (_) { return [] }
+  // Was `catch (_) { return [] }`. The renderer detects an unreachable daemon by
+  // this promise REJECTING, so swallowing made that impossible: a dead slskd
+  // rendered as "No active downloads", the tab badges zeroed, the list blanked,
+  // and the "Can't reach the Soulseek daemon" empty state was unreachable dead
+  // code. It also fired a bogus "all downloads complete" notification, because
+  // the active count dropped to zero.
+  const data = await slskdFetch('GET', '/transfers/downloads')
+  return data || []
 })
 
 ipcMain.handle('slsk-cancel-transfer', async (_, { username, id, alreadyDone }) => {

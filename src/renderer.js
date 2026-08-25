@@ -8570,6 +8570,33 @@ let _dlTab              = 'active'   // 'active' | 'completed' | 'failed'
 let _dlLastFiles        = []
 let _dlDaemonDown       = false
 
+// Shown OVER the last known list rather than replacing it. Wiping the page on a
+// transient poll failure loses real state the user was reading, and slskd
+// restarts are routine (main.js restarts it automatically after 3 failures).
+function _dlRenderDaemonDown() {
+  var list = document.getElementById('dl2-list')
+  if (!list || !list.parentNode) return
+  var id = 'dl2-daemon-banner'
+  var el = document.getElementById(id)
+  if (!el) {
+    el = document.createElement('div')
+    el.id = id
+    el.className = 'dl2-daemon-banner'
+    list.parentNode.insertBefore(el, list)
+  }
+  el.textContent = "Can't reach the Soulseek daemon — showing the last known state. "
+  var btn = document.createElement('button')
+  btn.className = 'dl2-action-btn'
+  btn.textContent = 'Retry'
+  btn.addEventListener('click', function () { _pollAndRenderDownloads() })
+  el.appendChild(btn)
+}
+
+function _dlClearDaemonBanner() {
+  var el = document.getElementById('dl2-daemon-banner')
+  if (el && el.parentNode) el.parentNode.removeChild(el)
+}
+
 // Amber sub-label for a row the local scheduler is holding back (it has not
 // been sent to slskd yet). Was called from _renderActiveTab but never defined,
 // which threw on every render of the Downloading tab.
@@ -8646,8 +8673,18 @@ async function _pollAndRenderDownloads() {
 
 async function _pollAndRenderDownloadsInner() {
   var _dlReachable = true
-  const raw = await window.api.slskGetTransfers().catch(function () { _dlReachable = false; return [] })
+  const raw = await window.api.slskGetTransfers().catch(function () { _dlReachable = false; return null })
   _dlDaemonDown = !_dlReachable
+  // A single failed poll must not erase the page. Treating an unreachable
+  // daemon as "zero transfers" zeroed every tab badge, hid the nav badge,
+  // blanked the list, and -- because the active count had just dropped to zero
+  // -- fired a "downloads complete" notification mid-download. Keep showing the
+  // last known state; the banner says it is stale.
+  if (!_dlReachable) {
+    _dlRenderDaemonDown()
+    return
+  }
+  _dlClearDaemonBanner()
   const files = []
   for (const user of (raw || [])) {
     for (const dir of (user.directories || [])) {
