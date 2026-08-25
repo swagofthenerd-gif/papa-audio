@@ -1899,7 +1899,8 @@ ipcMain.handle('library-trash-list', () => {
   return { items, totalBytes, roots, volumes }
 })
 
-ipcMain.handle('library-empty-trash', async (_, { names }) => {
+ipcMain.handle('library-empty-trash', async (_, { names, payloads }) => {
+  const wanted = Array.isArray(payloads) && payloads.length ? payloads.map(p => path.resolve(p)) : null
   // Only ever touches paths inside a recognised trash directory.
   const roots = trashRootsAll()
   const inTrash = (p) => roots.some(r => path.resolve(p).startsWith(path.join(r, 'files') + path.sep))
@@ -1913,8 +1914,12 @@ ipcMain.handle('library-empty-trash', async (_, { names }) => {
     let entries
     try { entries = fs.readdirSync(filesDir) } catch (_) { continue }
     for (const name of entries) {
-      if (all && all.indexOf(name) === -1) continue
       const payload = path.join(filesDir, name)
+      // Prefer exact payload paths. Matching on the bare name meant that with
+      // two music volumes, ticking one "Greatest Hits" permanently destroyed
+      // the identically-named entry on the OTHER volume too.
+      if (wanted) { if (wanted.indexOf(payload) === -1) continue }
+      else if (all && all.indexOf(name) === -1) continue
       if (!inTrash(payload)) { results.push({ name, ok: false, error: 'Refused — not inside a trash folder' }); continue }
       const bytes = dirSize(payload)
       try {

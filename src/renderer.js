@@ -12797,7 +12797,7 @@ async function renderManageTrash() {
 
   var rows = (data.items || []).map(function (it) {
     return '<div class="mg-trash-row">' +
-      '<label class="mg-pick"><input type="checkbox" class="mg-tcheck" data-name="' + esc(it.name) + '"></label>' +
+      '<label class="mg-pick"><input type="checkbox" class="mg-tcheck" data-name="' + esc(it.name) + '" data-payload="' + esc(it.payload || '') + '"></label>' +
       '<div class="mg-folder-body">' +
         '<div class="mg-folder-name" title="' + esc(it.original || it.payload) + '">' + esc(it.name) + '</div>' +
         '<div class="mg-folder-meta">' +
@@ -12835,6 +12835,13 @@ async function renderManageTrash() {
 
 function _mgSelectedTrashNames() {
   return Array.prototype.map.call(document.querySelectorAll('.mg-tcheck:checked'), function (c) { return c.dataset.name })
+}
+
+// Bare basenames are ambiguous across trash volumes -- two drives can each hold
+// a "Greatest Hits". The payload path identifies exactly one entry.
+function _mgSelectedTrashPayloads() {
+  return Array.prototype.map.call(document.querySelectorAll('.mg-tcheck:checked'), function (c) { return c.dataset.payload })
+    .filter(Boolean)
 }
 
 function _mgBindTrash() {
@@ -12889,7 +12896,11 @@ function _mgBindTrash() {
             return
           }
         }
-        var r = await window.api.libraryEmptyTrash({ names: names.length ? names : null })
+        var _payloads = _mgSelectedTrashPayloads()
+        var r = await window.api.libraryEmptyTrash({
+          names: names.length ? names : null,
+          payloads: _payloads.length ? _payloads : null,
+        })
           .catch(function () { return null })
         showSnackbar(r ? (r.removed + ' permanently deleted · ' + _mgFmtBytes(r.freed) + ' freed')
                        : 'Could not empty the Trash')
@@ -13711,7 +13722,17 @@ async function _libraryMutateApply(op, paths, entries, impact) {
 
   // 5. Prune every saved reference, in one transaction, and keep the snapshot
   //    so undo can put the app's state back as well as the files.
-  var prune = await window.api.libraryPruneState({ removed: allFiles, renamed: [] })
+  //
+  //    Only the files that ACTUALLY moved. This used to prune `allFiles`, i.e.
+  //    everything inspected -- so when one folder failed (permissions, or
+  //    "outside your music folders"), that album's tracks were still stripped
+  //    from playlists, likes and play counts while the files sat untouched on
+  //    disk. The snackbar said "2 moved, 1 failed" while the state said all 3.
+  var _okPrefixes = okPaths.map(function (p2) { return String(p2).replace(/\/+$/, '') })
+  var prunedFiles = allFiles.filter(function (f) {
+    return _okPrefixes.some(function (pre) { return f === pre || f.indexOf(pre + '/') === 0 })
+  })
+  var prune = await window.api.libraryPruneState({ removed: prunedFiles, renamed: [] })
     .catch(function () { return null })
 
   // Album-level likes are keyed by album id, not by path, so libraryPruneState
@@ -13721,7 +13742,8 @@ async function _libraryMutateApply(op, paths, entries, impact) {
   // albums whose every known track just went away, so an album that merely lost
   // a track keeps its like.
   var _removedSet = {}
-  for (var _r = 0; _r < allFiles.length; _r++) _removedSet[allFiles[_r]] = true
+  // prunedFiles, not allFiles: an album whose delete FAILED must keep its like.
+  for (var _r = 0; _r < prunedFiles.length; _r++) _removedSet[prunedFiles[_r]] = true
   var _goneAlbumIds = state.library.filter(function (a) {
     var tr = a.tracks || []
     return tr.length && tr.every(function (t) { return _removedSet[t.filePath] })
