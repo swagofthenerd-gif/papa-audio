@@ -2887,7 +2887,17 @@ function _ytTopResultCard(r, query) {
 }
 
 function _ytSurroundBar(n) {
-  if (!n) return ''
+  // Still render the bar when the filter is ON but nothing matched, otherwise
+  // the results vanish with no way to switch it back off.
+  if (!n && !ytSearchState.surroundOnly) return ''
+  if (!n) {
+    return `<div class="yt-surround-bar">
+      <button class="yt-surround-toggle active" id="yt-surround-toggle">
+        Surround only<span class="yt-surround-n">0</span>
+      </button>
+      <span class="yt-surround-hint">No surround-labelled uploads in these results — click to show everything</span>
+    </div>`
+  }
   const on = ytSearchState.surroundOnly
   return `<div class="yt-surround-bar">
     <button class="yt-surround-toggle${on ? ' active' : ''}" id="yt-surround-toggle">
@@ -2919,7 +2929,7 @@ function renderYtResults(results, query) {
     }
     const surN = results.filter(r => _ytSurround(r)).length
     box.innerHTML = _ytSurroundBar(surN) + `<div class="yt-sub" data-sub="Songs">
-      <div class="yt-sub-header">Videos · ${results.length} <button class="yt-see-all" data-kind="video">See all</button></div>
+      <div class="yt-sub-header">Videos · ${results.length} <button class="yt-see-all" data-query="${esc(query)}" data-kind="video">See all</button></div>
       ${_ytSongRows(results, query)}</div>`
     bindYtEvents(results)
     _bindYtSurroundToggle(box)
@@ -2940,25 +2950,25 @@ function renderYtResults(results, query) {
   }
   if (songs.length) {
     html += `<div class="yt-sub" data-sub="Songs">
-      <div class="yt-sub-header">Songs · ${songs.length} <button class="yt-see-all" data-kind="song">See all</button></div>
+      <div class="yt-sub-header">Songs · ${songs.length} <button class="yt-see-all" data-query="${esc(query)}" data-kind="song">See all</button></div>
       ${_ytSongRows(songs, query)}
     </div>`
   }
   if (artists.length) {
     html += `<div class="yt-sub" data-sub="Artists">
-      <div class="yt-sub-header">Artists · ${artists.length} <button class="yt-see-all" data-kind="artist">See all</button></div>
+      <div class="yt-sub-header">Artists · ${artists.length} <button class="yt-see-all" data-query="${esc(query)}" data-kind="artist">See all</button></div>
       <div class="artist-grid yt-artist-grid">${artists.map(_ytArtistCard).join('')}</div>
     </div>`
   }
   if (albums.length) {
     html += `<div class="yt-sub" data-sub="Albums">
-      <div class="yt-sub-header">Albums · ${albums.length} <button class="yt-see-all" data-kind="album">See all</button></div>
+      <div class="yt-sub-header">Albums · ${albums.length} <button class="yt-see-all" data-query="${esc(query)}" data-kind="album">See all</button></div>
       <div class="album-grid">${albums.map(function(a) { return _ytAlbumCard(a, query) }).join('')}</div>
     </div>`
   }
   if (playlists.length) {
     html += `<div class="yt-sub" data-sub="Playlists">
-      <div class="yt-sub-header">Playlists · ${playlists.length} <button class="yt-see-all" data-kind="playlist">See all</button></div>
+      <div class="yt-sub-header">Playlists · ${playlists.length} <button class="yt-see-all" data-query="${esc(query)}" data-kind="playlist">See all</button></div>
       <div class="album-grid">${playlists.map(_ytPlaylistCard).join('')}</div>
     </div>`
   }
@@ -2972,7 +2982,11 @@ function renderYtResults(results, query) {
 
 function _bindYtSeeAll(box) {
   box.querySelectorAll('.yt-see-all').forEach(btn => btn.addEventListener('click', () => {
-    navigate('yt-see-all', `${btn.dataset.kind}::${ytSearchState.lastQuery}`)
+    // Use the query this section was rendered from. The global is mutated by a
+    // newer search and set to null by the Cancel button.
+    const q = btn.dataset.query || ytSearchState.lastQuery
+    if (!q) { showSnackbar('Search again to see all results'); return }
+    navigate('yt-see-all', `${btn.dataset.kind}::${q}`)
   }))
 }
 
