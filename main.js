@@ -746,14 +746,47 @@ function createWindow(hidden = false) {
     if (input.key === 'F12') mainWindow.webContents.openDevTools()
   })
 
+  // electron-store .set() is a SYNCHRONOUS writeFileSync of the entire config,
+  // and this config is ~2.5 MB (libraryCache alone is 1.4 MB). Electron emits
+  // 'move' continuously while a window is dragged, so every frame of a drag was
+  // serialising and fsync'ing 2.5 MB on the main process thread -- which also
+  // owns the window message pump. That is the stutter when dragging, and it is
+  // worst crossing between monitors, where the compositor emits a burst of
+  // move+resize as it renegotiates the surface.
+  //
+  // Coalesce to one write after motion stops, and skip it when nothing moved.
+  let _winSaveTimer = null
+  let _lastWinJson = ''
   const saveWinState = () => {
     if (!mainWindow) return
-    store.set('windowState', { ...mainWindow.getBounds(), maximized: mainWindow.isMaximized() })
+    if (_winSaveTimer) clearTimeout(_winSaveTimer)
+    _winSaveTimer = setTimeout(() => {
+      _winSaveTimer = null
+      if (!mainWindow || mainWindow.isDestroyed()) return
+      try {
+        const next = { ...mainWindow.getBounds(), maximized: mainWindow.isMaximized() }
+        const json = JSON.stringify(next)
+        if (json === _lastWinJson) return
+        _lastWinJson = json
+        store.set('windowState', next)
+      } catch (_) {}
+    }, 400)
+  }
+  // Flush immediately when it actually matters -- a debounce that has not fired
+  // must not lose the position on quit.
+  const saveWinStateNow = () => {
+    if (_winSaveTimer) { clearTimeout(_winSaveTimer); _winSaveTimer = null }
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    try {
+      const next = { ...mainWindow.getBounds(), maximized: mainWindow.isMaximized() }
+      _lastWinJson = JSON.stringify(next)
+      store.set('windowState', next)
+    } catch (_) {}
   }
   mainWindow.on('resize', () => { updateBrowserBounds(); saveWinState() })
   mainWindow.on('move', saveWinState)
   mainWindow.on('close', async (e) => {
-    saveWinState()
+    saveWinStateNow()
     if (!app.isQuitting && store.get('closeToTray', true) && tray) {
       e.preventDefault()
       mainWindow.hide()
