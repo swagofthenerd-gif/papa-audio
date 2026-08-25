@@ -8609,7 +8609,20 @@ function _renderTorrentSection() {
   }).join('')
   container.querySelectorAll('.torrent-remove').forEach(btn => {
     btn.addEventListener('click', async () => {
-      await window.api.torrentRemove(btn.dataset.hash)
+      if (btn.disabled) return
+      const t = state._torrents?.get(btn.dataset.hash)
+      const pct = t && t.progress ? Math.round(t.progress * 100) : 0
+      if (!confirm('Remove this torrent?' + (pct ? '\n\nIt is ' + pct + '% complete.' : ''))) return
+      btn.disabled = true
+      let ok = true
+      await window.api.torrentRemove(btn.dataset.hash).catch(() => { ok = false })
+      if (!ok) {
+        // Was dropped from local state regardless, so a failed remove left the
+        // row gone from the UI while the torrent kept running.
+        btn.disabled = false
+        showSnackbar("Couldn't remove that torrent")
+        return
+      }
       state._torrents?.delete(btn.dataset.hash)
       _renderTorrentSection()
     })
@@ -8838,10 +8851,10 @@ function _renderActiveTab(files, container) {
             <span class="dla-done-count">${doneTracks}/${g.files.length}</span>
           </div>
           <div class="dl2-group-sub-row">
-            <button class="dl2-meta-user-btn dl2-hdr-user-btn" data-username="${esc(g.username)}" title="Browse ${esc(g.username)}'s library">
+            ${/^searching/i.test(String(g.username || '')) ? `<span class="dl2-group-sub">Looking for a source…</span>` : `<button class="dl2-meta-user-btn dl2-hdr-user-btn" data-username="${esc(g.username)}" title="Browse ${esc(g.username)}'s library">
               <svg viewBox="0 0 24 24"><path d="M12 12c2.7 0 4.8-2.1 4.8-4.8S14.7 2.4 12 2.4 7.2 4.5 7.2 7.2 9.3 12 12 12zm0 2.4c-3.2 0-9.6 1.6-9.6 4.8v2.4h19.2v-2.4c0-3.2-6.4-4.8-9.6-4.8z"/></svg>
               ${esc(g.username)}
-            </button>
+            </button>`}
           </div>
           <div class="dla-prog-row">
             <div class="dla-grp-bar"><div class="dla-grp-fill" style="width:${albumPct}%"></div></div>
@@ -9277,7 +9290,7 @@ function _renderFailedTab(files, container) {
         <button class="dl2-icon-btn dl2-grp-btn dl2-retry-all-btn" data-gi="${gi}" data-user="${esc(firstUser)}" data-ids="${esc(groupIds)}" title="Retry all">
           <svg viewBox="0 0 24 24"><path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
         </button>
-        <button class="dl2-icon-btn dl2-grp-btn dl2-clear-group-btn" data-user="${esc(firstUser)}" data-ids="${esc(groupIds)}" title="Clear group">
+        <button class="dl2-icon-btn dl2-grp-btn dl2-clear-group-btn" data-pairs="${esc(JSON.stringify(g.files.map(function (f) { return [f.username, f.id] })))}" title="Clear group">
           <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
         </button>
         <svg class="dl2-chevron${isOpen ? ' dl2-chevron-up' : ''}" viewBox="0 0 24 24"><path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6z"/></svg>
@@ -9344,11 +9357,15 @@ function _renderFailedTab(files, container) {
       e.stopPropagation()
       if (btn.disabled) return
       btn.disabled = true
-      const ids = btn.dataset.ids.split(',').filter(Boolean)
-      const user = btn.dataset.user
-      await Promise.all(ids.map(id =>
-        window.api.slskCancelTransfer({ username: user, id }).catch(() => {})
-      ))
+      // Each file carries its own peer: a folder group can span several.
+      var pairs = []
+      try { pairs = JSON.parse(btn.dataset.pairs || '[]') } catch (_) {}
+      var results = await Promise.all(pairs.map(function (p) {
+        return window.api.slskCancelTransfer({ username: p[0], id: p[1] })
+          .then(function () { return true }).catch(function () { return false })
+      }))
+      var failed = results.filter(function (ok) { return !ok }).length
+      if (failed) showSnackbar(failed + ' of ' + results.length + " couldn't be cleared")
       await _pollAndRenderDownloads()
     })
   })
@@ -9399,9 +9416,21 @@ function _renderFailedTab(files, container) {
 function _bindDlCancelBtns(container) {
   container.querySelectorAll('.dl2-cancel-btn:not(.dl2-cancel-group-btn)').forEach(btn => {
     btn.addEventListener('click', async () => {
+      if (btn.disabled) return
+      const original = btn.innerHTML
       btn.disabled = true
+      let ok = true
+      await window.api.slskCancelTransfer({ username: btn.dataset.user, id: btn.dataset.id })
+        .catch(() => { ok = false })
+      if (!ok) {
+        // Restore rather than leaving a tick over a download that is still running.
+        btn.innerHTML = original
+        btn.disabled = false
+        showSnackbar("Couldn't cancel that download")
+        return
+      }
       btn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>'
-      await window.api.slskCancelTransfer({ username: btn.dataset.user, id: btn.dataset.id }).catch(() => {})
+      _pollAndRenderDownloads()
     })
   })
 }
@@ -9552,6 +9581,9 @@ function renderDownloads() {
     if (!btn || btn.disabled) return
     const subset = _dlLastFiles.filter(f => _dlCategory(f.state) === _dlTab)
     if (!subset.length) return
+    if (_dlTab === 'active' && !confirm(
+      'Cancel ' + subset.length + ' download' + (subset.length === 1 ? '' : 's') + '?\n\n' +
+      'Soulseek cannot resume — these have to be queued again.')) return
     const originalText = btn.textContent
     btn.disabled = true
     btn.textContent = _dlTab === 'active' ? 'Cancelling…' : 'Clearing…'

@@ -3015,13 +3015,11 @@ h2.section-title { font-size:18px; font-weight:700; }
   justify-content: center;
   background: var(--accent);
   color: #000;
-  border-radius: 10px;
+  /* border-radius / min-width / height / padding / margin-left are set again
+     by the later .nav-dl-badge rule, which also makes this absolutely
+     positioned — margin-left:auto there is inert. Values live there now. */
   font-size: 10px;
   font-weight: 700;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 4px;
-  margin-left: auto;
 }
 
 /* ══════════════════════════════════════════════════════
@@ -5587,3 +5585,19 @@ body.app-unfocused *::after {
 .yt-artist-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 16px; }
 /* Meant to make the artist top-result circular; it was rendering square. */
 .yt-str-art-round, .yt-str-art-round img { border-radius: 50%; }
+
+/* ── Downloads: gaps found in the surface audit ────────────────────────── */
+
+/* .dl2-remove-btn is emitted by the completed/failed rows but had no rule at
+   all, so the one DESTRUCTIVE button on the row was the only one without hover
+   feedback — its cancel/retry/open siblings all have one. */
+.dl2-remove-btn:hover { background: rgba(255,60,60,.12) !important; color: #f06060 !important; }
+
+/* Rebalance is a benign, recoverable "spread my queue across peers" action but
+   shares .dl2-action-btn with Cancel All / Clear All, so it turned danger-red
+   on hover and read as destructive. */
+#dl2-rebalance-btn:hover {
+  background: var(--glass-hi);
+  border-color: var(--glass-border);
+  color: var(--text);
+}
