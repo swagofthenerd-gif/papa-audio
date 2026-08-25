@@ -504,7 +504,15 @@ function cleanupOldFiles() {
 }
 
 app.whenReady().then(() => {
+  // Racy on its own: when the previous instance is still shutting down, its pid
+  // is briefly still alive, pidAlive() says "still someone's", and the mpv it
+  // already spawned is skipped -- so it keeps playing forever with no window.
+  // That is exactly the orphan the user hit. Re-check a few seconds later, by
+  // which point any dying predecessor is really gone. Also catches an mpv
+  // orphaned by a SIGKILL, which no shutdown handler can ever clean up.
   reapOrphanedMpv()
+  setTimeout(reapOrphanedMpv, 5000).unref?.()
+  setTimeout(reapOrphanedMpv, 30000).unref?.()
   const hidden = process.argv.includes('--hidden')
   artworkDir = path.join(USER_DATA, 'artwork')
   fs.mkdirSync(artworkDir, { recursive: true })
