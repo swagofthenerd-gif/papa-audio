@@ -71,7 +71,33 @@ const slsk = {
   searchStart: 0,
   filter: 'all',
   sort: 'relevance',
+  error: null,
 }
+// Repaint just the Soulseek section. Used by the failure paths, which
+// previously wrote into #slsk-results -- an element that does not exist.
+function _slskRepaint(query) {
+  var sec = document.getElementById('slsk-section')
+  if (!sec) return
+  sec.innerHTML = renderSoulseekRow(query)
+  bindSlskSearchEvents(query)
+}
+
+// Turn an IPC/daemon failure into something worth showing a person. Electron
+// wraps renderer-side IPC errors as "Error invoking remote method '...': ...",
+// which is noise to the user.
+function _slskErrText(e) {
+  var m = String((e && e.message) || e || 'Unknown error')
+  m = m.replace(/^Error invoking remote method '[^']*':\s*/, '').replace(/^Error:\s*/, '')
+  if (/not connected/i.test(m)) return 'Soulseek is not connected.'
+  if (/\b401\b|unauthor/i.test(m)) return 'slskd rejected our login — check its username and password.'
+  if (/ECONNREFUSED|fetch failed|ENOTFOUND/i.test(m)) return 'Could not reach the slskd daemon.'
+  if (/abort|timeout|timed out/i.test(m)) return 'slskd did not respond in time.'
+  // Seen in practice after several searches in quick succession.
+  if (/\b429\b/.test(m)) return 'slskd is rate-limiting searches — wait a moment and retry.'
+  if (/\b5\d\d\b/.test(m)) return 'slskd hit an internal error (' + m + ').'
+  return m
+}
+
 // The exact array the cards were rendered from. data-gi indexes THIS, so the
 // click handlers must read it too -- see the comment where it is assigned.
 var _slskRendered = []
@@ -8151,18 +8177,34 @@ function renderSoulseekRow(query) {
   })
 
   if (!groups.length && slsk.searched) {
+    // Same rule as the compact row: say what actually happened. Retrying a
+    // search against a daemon that is down or unauthenticated fails forever,
+    // and the old copy actively encouraged exactly that.
+    const failed = !!slsk.error
     return `<div class="slsk-container" id="slsk-row">
       <div class="slsk-header-row">
         <span class="osrc-name">Soulseek</span>
-        <span class="osrc-status not-found">No results</span>
+        <span class="osrc-status ${failed ? 'error' : 'not-found'}">${failed ? esc(slsk.error) : 'No results'}</span>
         <button class="slsk-retry-btn" id="slsk-retry-btn">↺ Retry</button>
       </div>
       <div class="slsk-nat-hint">
-        Nothing found on the P2P network. The Soulseek network may still be warming up — click <strong>Retry</strong> to search again.
+        ${failed
+          ? 'Nothing was searched — the error above needs fixing first. Check that slskd is running and connected.'
+          : 'Nothing found on the P2P network. The Soulseek network may still be warming up — click <strong>Retry</strong> to search again.'}
       </div>
     </div>`
   }
   if (!groups.length) {
+    // An actual failure must never render as "nothing found" -- that sends the
+    // user off retrying a search that cannot succeed. .osrc-status.error has
+    // had a CSS rule all along; nothing could ever trigger it until now.
+    if (slsk.error) {
+      return `<div class="osrc-row slsk-row" id="slsk-row">
+        <span class="osrc-name">Soulseek</span>
+        <span class="osrc-status error">${esc(slsk.error)}</span>
+        <button class="slsk-retry-btn" id="slsk-retry-btn" title="Search again">↺ Retry</button>
+      </div>`
+    }
     return `<div class="osrc-row slsk-row" id="slsk-row">
       <span class="osrc-name">Soulseek</span>
       <span class="osrc-status not-found">Nothing found</span>
@@ -8339,9 +8381,14 @@ function _searchCache_invalidate(query) {
 
 async function runSlskSearch(query) {
   slsk.lastQuery = query
+  slsk.error = null
   if (!state.isOnline) {
-    const box = document.getElementById('slsk-results')
-    if (box) box.innerHTML = '<div class="yt-status yt-error">You are offline — Soulseek unavailable</div>'
+    // #slsk-results does not exist -- the container is #slsk-section. This wrote
+    // into null and the user was shown the previous results with no message.
+    slsk.error = 'You are offline — Soulseek is unavailable.'
+    slsk.searching = false
+    slsk.searched = true
+    _slskRepaint(query)
     return
   }
   const navQ = document.getElementById('nav-search-query')
@@ -8415,7 +8462,12 @@ async function runSlskSearch(query) {
   await Promise.all(variants.map(q =>
     window.api.slskSearch({ query: q, timeoutMs: TIMEOUT, noCache: _nocacheQueries.has(q.toLowerCase()) }).then(({ results }) => {
       _mergeResults(results)
-    }).catch(() => {}).finally(() => {
+    }).catch((e) => {
+      // Was `.catch(() => {})`, so a dead daemon, a 401 or a timeout was
+      // indistinguishable from a genuinely empty search: the user was told
+      // "Nothing found on the P2P network" and invited to Retry forever.
+      slsk.error = _slskErrText(e)
+    }).finally(() => {
       slsk.pendingSearches = Math.max(0, slsk.pendingSearches - 1)
       if (slsk.pendingSearches === 0) {
         slsk.searching = false
