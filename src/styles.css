@@ -5328,6 +5328,9 @@ body.app-unfocused *::after {
 /* ── Health & storage ───────────────────────────────── */
 .mg-sev-high   { border-color:rgba(224,85,85,.4); }
 .mg-sev-medium { border-color:rgba(224,163,62,.3); }
+/* Four of the eight health checks emit 'low' and it had no rule, so the most
+   common severity was the one with no visual weight at all. */
+.mg-sev-low    { border-color:rgba(255,255,255,.10); }
 .mg-health-detail { font-size:12.5px; color:var(--text2); line-height:1.55; margin:6px 0 10px; }
 .mg-health-path {
   font-size:11.5px; color:var(--text3); padding:2px 0;
