@@ -102,6 +102,19 @@ async function withRetry(fn, maxRetries, label) {
 
 let natUpnp; try { natUpnp = require('nat-upnp') } catch (_) {}
 
+// Under Node 18+ an unhandled rejection TERMINATES the process by default, and
+// this file is full of un-awaited async IPC handlers and network calls
+// (youtubei.js, slskd, webtorrent). One rejected promise from a background
+// YouTube request would kill the app -- and the music with it -- with nothing
+// written down about why. Log it and keep running: a music player dying mid-song
+// because a metadata fetch 404'd is never the right trade.
+process.on('unhandledRejection', (reason) => {
+  console.error('[papa] unhandled rejection:', (reason && reason.stack) || reason)
+})
+process.on('uncaughtException', (err) => {
+  console.error('[papa] uncaught exception:', (err && err.stack) || err)
+})
+
 // Strip the automation flag so Cloudflare/bot-checks don't see navigator.webdriver = true
 app.commandLine.appendSwitch('disable-blink-features', 'AutomationControlled')
 
@@ -783,6 +796,26 @@ function createWindow(hidden = false) {
       store.set('windowState', next)
     } catch (_) {}
   }
+  // renderer-process-limit is 1, so if the renderer dies the user is left with a
+  // blank frameless window, no controls and no explanation. Say what happened
+  // and offer the reload rather than requiring a force-quit.
+  mainWindow.webContents.on('render-process-gone', (_e, details) => {
+    console.error('[papa] renderer gone:', details && details.reason)
+    if (details && details.reason === 'clean-exit') return
+    const win = mainWindow
+    dialog.showMessageBox(win, {
+      type: 'error',
+      title: 'Papa Audio stopped responding',
+      message: 'The window crashed (' + ((details && details.reason) || 'unknown') + ').',
+      detail: 'Playback is handled by mpv and may still be running. Reload to get the window back.',
+      buttons: ['Reload', 'Close'],
+      defaultId: 0,
+    }).then((r) => {
+      if (r.response === 0 && win && !win.isDestroyed()) win.reload()
+      else if (win && !win.isDestroyed()) win.close()
+    }).catch(() => {})
+  })
+
   mainWindow.on('resize', () => { updateBrowserBounds(); saveWinState() })
   mainWindow.on('move', saveWinState)
   mainWindow.on('close', async (e) => {

@@ -755,6 +755,10 @@ function navigate(page, navId, opts = {}) {
   state.currentPlaylistId  = page === 'playlist' ? navId : null
   if (page !== 'playlist') state._plSearch = ''
 
+  // Wrapped so one bad record cannot leave the app on a blank page with no way
+  // back. Everything above -- nav highlight, history, state.currentPage -- has
+  // already been applied, so the shell stays consistent either way.
+  try {
   if (page === 'home')    renderHome()
   else if (page === 'library')   renderLibrary()
   else if (page === 'artists')   renderArtists()
@@ -772,6 +776,9 @@ function navigate(page, navId, opts = {}) {
   else if (page === 'yt-see-all')  renderYtSeeAll(navId)
   else if (page === 'yt-playlist') renderYtPlaylist(navId)
   else if (page === 'explore')     renderExplore()
+  } catch (err) {
+    _renderFailure(page, err)
+  }
 
   if (page === 'downloads') startDownloadsPolling(2000)
   else { _dlLastSig = ''; startDownloadsPolling(20000) }
@@ -6361,6 +6368,23 @@ function makeDraggable(trackEl, fillEl, thumbEl, onChange) {
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
+// A page is built as ONE giant HTML string and assigned in one go, so a single
+// bad record -- a null album name reaching localeCompare, say -- throws
+// mid-build and leaves #content empty or half-written, with no way back except
+// restarting the app. Catch it, keep the shell usable, and say what happened.
+function _renderFailure(where, err) {
+  console.error('[papa] render failed in ' + where, err)
+  var c = document.getElementById('content')
+  if (!c) return
+  c.innerHTML = '<div class="mg-empty" style="padding:48px 24px">' +
+    '<p>This page failed to render.</p>' +
+    '<span>' + esc(String((err && err.message) || err || 'Unknown error')) + '</span>' +
+    '<div style="margin-top:14px"><button class="secondary" id="render-fail-home">Go Home</button></div>' +
+    '</div>'
+  var b = document.getElementById('render-fail-home')
+  if (b) b.addEventListener('click', function () { navigate('home') })
+}
+
 function setContent(html) {
   document.getElementById('content').innerHTML = html
   // Row indices are only meaningful for the rows currently on screen.
