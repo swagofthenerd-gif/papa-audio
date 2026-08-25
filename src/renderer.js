@@ -1883,7 +1883,7 @@ function renderAlbum(albumId) {
     const plays = state.playCounts[t.filePath] || 0
     const tLiked = state.likedTracks.includes(t.filePath)
     return discHeader + `
-      <div class="track-row ${isPlaying ? 'playing' : ''}" data-file="${esc(t.filePath)}" data-idx="${i}" data-album="${esc(albumId)}">
+      <div class="track-row ${isPlaying ? 'playing' : ''}" data-file="${esc(t.filePath)}" data-idx="${i}" data-album="${esc(albumId)}" data-no-album-nav="1">
         <span class="track-num">${isPlaying
           ? '<div class="playing-bars"><span></span><span></span><span></span></div>'
           : (t.trackNumber || i + 1)}</span>
@@ -1918,7 +1918,7 @@ function renderAlbum(albumId) {
         <div class="album-hero-title">${esc(album.name)}</div>
         <div class="album-hero-meta">
           <span class="hero-artist clickable-meta" data-artist="${esc(album.artist)}">${esc(album.artist)}</span>
-          &bull; <span class="hero-year clickable-meta">${album.year || ''}</span> &bull; ${album.tracks.length} songs, ${fmtTime(totalDur)}
+          &bull; <span class="hero-year clickable-meta">${esc(album.year || '')}</span> &bull; ${album.tracks.length} songs, ${fmtTime(totalDur)}
           ${album.isHiRes ? `&bull; <span class="hero-hires-badge">${fmtSpec(album.maxBitsPerSample, album.maxSampleRate)}</span>` : ''}
           ${formatBadgeHtml(album, 'hero-surround') ? `&bull; ${formatBadgeHtml(album, 'hero-surround')}` : ''}
           ${album.genre ? `&bull; <span class="genre-badge">${esc(album.genre)}</span>` : ''}
@@ -1964,6 +1964,21 @@ function renderAlbum(albumId) {
       </div>
       <div class="scroll-row more-by-row">${moreByArtist.map(albumCard).join('')}</div>`
     })()}`)
+
+  // Clicking a track row now plays that track. Previously the only row handler
+  // was the generic one in bindContentEvents(), whose data-album pointed at the
+  // album you were already on -- so a click silently re-rendered the page,
+  // jumped the scroll to the top and pushed a duplicate history entry, and
+  // nothing played.
+  document.querySelectorAll('#content .track-row[data-idx]').forEach(function (row) {
+    row.addEventListener('click', function (e) {
+      if (e.target.closest('.track-more-btn, .track-like-btn, .hover-actions, [data-action]')) return
+      if (typeof _selHandleClick === 'function' && _selHandleClick(e, row)) return
+      var idx = parseInt(row.dataset.idx, 10)
+      if (!Number.isInteger(idx) || !album.tracks[idx]) return
+      playAlbum(album, idx)
+    })
+  })
 
   document.getElementById('album-play-btn')?.addEventListener('click', () => playAlbum(album, 0))
   document.getElementById('album-shuffle-btn')?.addEventListener('click', function() {
@@ -2024,7 +2039,11 @@ function renderAlbum(albumId) {
   document.querySelector('.hero-year')?.addEventListener('click', e => {
     e.stopPropagation()
     editField('Year', String(album.year || ''), function(v) {
-      album.year = parseInt(v, 10) || v
+      // Was `parseInt(v, 10) || v`, which kept arbitrary text on non-numeric
+      // input and fed it to two unescaped sinks. A year is a number or nothing.
+      var yr = parseInt(v, 10)
+      if (!Number.isInteger(yr) || yr < 1 || yr > 9999) { showSnackbar('Year must be a number'); return }
+      album.year = yr
       renderAlbum(albumId)
     })
   })
@@ -2077,7 +2096,7 @@ function renderAlbumCredits(album) {
     label          ? `<div class="credit-item"><div class="credit-role">Label</div><div class="credit-name">${esc(label)}</div></div>` : '',
     catalogNumber  ? `<div class="credit-item"><div class="credit-role">Catalog #</div><div class="credit-name">${esc(catalogNumber)}</div></div>` : '',
     album.genre    ? `<div class="credit-item"><div class="credit-role">Genre</div><div class="credit-name">${esc(album.genre)}</div></div>` : '',
-    album.year     ? `<div class="credit-item"><div class="credit-role">Released</div><div class="credit-name">${album.year}</div></div>` : '',
+    album.year     ? `<div class="credit-item"><div class="credit-role">Released</div><div class="credit-name">${esc(album.year)}</div></div>` : '',
     (album.maxSampleRate && album.maxBitsPerSample) ? `<div class="credit-item"><div class="credit-role">Quality</div><div class="credit-name">${fmtSpec(album.maxBitsPerSample, album.maxSampleRate)}</div></div>` : '',
   ].filter(Boolean).join('')
 
@@ -4313,7 +4332,7 @@ function renderLikedSongs() {
     const isPlaying = isCurrentTrack(t.filePath)
     const plays = state.playCounts[t.filePath] || 0
     return `
-      <div class="track-row liked-track-row ${isPlaying ? 'playing' : ''}" data-liked-idx="${i}" data-file="${esc(t.filePath)}" data-album="${t.albumId}">
+      <div class="track-row liked-track-row ${isPlaying ? 'playing' : ''}" data-liked-idx="${i}" data-idx="${i}" data-file="${esc(t.filePath)}" data-album="${esc(t.albumId || '')}" data-no-album-nav="1">
         <span class="track-num">${isPlaying
           ? '<div class="playing-bars"><span></span><span></span><span></span></div>'
           : (i + 1)}</span>
