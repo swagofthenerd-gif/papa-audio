@@ -72,6 +72,9 @@ const slsk = {
   filter: 'all',
   sort: 'relevance',
 }
+// The exact array the cards were rendered from. data-gi indexes THIS, so the
+// click handlers must read it too -- see the comment where it is assigned.
+var _slskRendered = []
 var _slskTimer = null
 
 var _playlistSorts = {}
@@ -8175,6 +8178,11 @@ function renderSoulseekRow(query) {
   const surroundCount = SF ? ordered.filter(g => SF.groupSurround(g)).length : 0
   const hiresCount    = SF ? ordered.filter(g => SF.isHiResGroup(g)).length : 0
   const displayList   = filtered.slice(0, 60)
+  // data-gi is an index into displayList, which is FLAC-partitioned,
+  // surround-sorted, filtered and capped at 60. bindSlskSearchEvents used to
+  // rebuild its own array from _slskGroupByFolder(), which has none of that --
+  // so every handler indexed a different folder from a different peer.
+  _slskRendered = displayList
   const filteredNote  = slsk.filter !== 'all'
     ? ` · <span class="slsk-filter-note">${filtered.length} match${filtered.length !== 1 ? 'es' : ''}</span>` : ''
   const isUpdating   = slsk.searching && slsk.results.length > 0
@@ -9865,7 +9873,10 @@ function bindSlskSearchEvents(query) {
     _rerenderSlskSection(query)
   })
 
-  const groups = _slskGroupByFolder()
+  // Must be the array the cards were rendered from, not a fresh regroup:
+  // data-gi indexes displayList. This also avoids a second full regroup of
+  // every response on every one-second flush.
+  const groups = _slskRendered
 
   // Download all files in a card
   // Shared helper: download ONE file and play it when ready
