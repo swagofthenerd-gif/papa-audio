@@ -120,12 +120,15 @@ function deleteTitleFor(ctx, fileCount) {
   return 'Move ' + n + ' file' + (n === 1 ? '' : 's') + ' to Trash?'
 }
 
-var API = {
+// Named per file on purpose: eight scripts share one global scope, and a bare
+// `var API` in each meant every later file overwrote the earlier binding. It
+// was latent only because each one reads it on the next line.
+var _PapaCtxMenu = {
   LABELS: LABELS,
   DISK_SCOPED: DISK_SCOPED,
   menuItemsFor: menuItemsFor,
   deleteTitleFor: deleteTitleFor,
 }
 
-if (typeof module !== 'undefined' && module.exports) module.exports = API
-if (typeof window !== 'undefined') window.PapaCtxMenu = API
+if (typeof module !== 'undefined' && module.exports) module.exports = _PapaCtxMenu
+if (typeof window !== 'undefined') window.PapaCtxMenu = _PapaCtxMenu

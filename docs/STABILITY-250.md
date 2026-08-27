@@ -599,11 +599,13 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 ### 52. dlState.done grows for the life of the process
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** main.js:3256, written at 3677, restored at 3318. Only the persisted abandoned subset is capped at 5000; the in-memory map has no cap or TTL.
 
 **Solution.** Prune terminal entries on the same tick that already prunes the persisted set.
+
+**Done.** `pruneDlDone()` runs on the same tick that already prunes the persisted set, capping the in-memory map at 5000 keys and dropping the oldest first (string keys keep insertion order). Generous on purpose: these are keys, not payloads, and re-downloading something long abandoned is cheap. The point is that it is bounded at all.
 
 ### 53. The close handler runs executeJavaScript on a webContents that may be gone
 
@@ -1103,11 +1105,13 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 ### 136. A failed retry leaves the transfer cancelled
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** Retry cancels then re-downloads with no rollback, so a failure destroys the thing it was meant to recover.
 
 **Solution.** Queue the replacement first; cancel only once it is accepted.
+
+**Done as item 234.** The cancel and the re-queue were independent — the DELETE sat in an empty catch and `recordStall` ran regardless — so a failed cancel left slskd holding the transfer *and* the scheduler re-queueing it. `recordStall` now runs only once slskd has confirmed the cancel.
 
 ### 137. Transfer ids are round-tripped through a comma-joined string
 
@@ -1119,19 +1123,23 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 ### 138. dlAbandonByFilename matches basenames across unrelated albums
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** The twin-cancel behaviour is deliberate and commented, but the match is not scoped, so a generic track name abandons transfers from other releases.
 
 **Solution.** Scope to the same remote folder.
 
+**Done.** The basename match is scoped to the same remote folder. The twin-cancel behaviour is still deliberate — a peer names the same music differently, so a cancel has to reach the entry under whichever path was actually sent — but "01 - Intro.flac" is a name dozens of releases share, and the folder is what makes it one release's track.
+
 ### 139. _downloadDir falls back to the music library root
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** Latent here because the setting is populated, but a fresh install would write peer-supplied paths into the library root.
 
 **Solution.** Fail loudly with a setup prompt.
+
+**Done.** A dedicated `Papa Audio Downloads` subfolder rather than the library root, created rather than assumed, with a warning naming it and pointing at Settings. That is the difference between a download area and the library itself: the fallback used to mean whatever a stranger named their folders became directories inside the library.
 
 ### 140. No disk-space check before queueing
 
@@ -1339,11 +1347,13 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 ### 149. Retired searches are never cancelled at the daemon
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** Each search runs six variants for 90 s. Starting a new search leaves the old ones running.
 
 **Solution.** Track the slskd search ids per generation and delete them when the generation is retired.
+
+**Done, with item 227.** main now tracks every search slskd is running for us and the renderer generation that asked for it. Starting a new search cancels every older generation at the daemon, and each search loop notices its own cancellation at the next tick and stops — rather than polling a search that has already been deleted and 404ing. A superseded search returns `cancelled: true` and its results are not merged, so a late reply cannot repaint over the new search.
 
 ### 150. Results are capped at 60 with no way to see the rest
 
@@ -1477,11 +1487,13 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 ### 227. A running search cannot be cancelled
 
-`OPEN` `Medium` `was #18`
+`DONE` `Medium` `was #18`
 
 **Symptom.** Each variant runs for 90 s. Starting a new search leaves the old ones running against the daemon.
 
 **Solution.** Track the slskd search ids per generation and DELETE them when the generation is retired.
+
+**Done with item 149.** `slsk-cancel-searches` takes the generation to keep and deletes the rest at the daemon.
 
 ### 228. No indication of which variant produced a result
 
@@ -1557,11 +1569,13 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 ### 169. Scan failures are reported as an empty library rather than a failure
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** An empty result is indistinguishable from a failed scan at several consumers.
 
 **Solution.** A typed failure that every consumer must handle, as was done for the health check.
+
+**Done as item 258.** A typed `failed: true` that all four consumers check. The empty-array-as-failure was worse than the item describes: `applyLibraryUpdate`'s guard is `if (!albums) return` and `[]` is truthy, so a scan error blanked the whole library on screen.
 
 ### 170. Nothing bounds how long a scan may run
 
@@ -1972,11 +1986,13 @@ What this round did instead, which makes the split safer when it is attempted: f
 
 ### 184. var API is declared in eight files sharing one global scope
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** Latent rather than live — each file captures its namespaced export before the next overwrites the bare global, and nothing reads bare API. The real gap is that test/script-globals.test.js guards function collisions but not var.
 
 **Solution.** Extend the guard to var, then rename.
+
+**Done.** All eight renamed to a per-file name derived from the global each already publishes, so no two can collide. And the actual gap is closed: `test/script-globals.test.js` now guards top-level `var` as well as `const`/`let` and `function`. That guard is the durable half — the rename fixes today's eight, the test stops the ninth.
 
 ### 185. The playback state lives in three places that can disagree
 
@@ -2293,12 +2309,13 @@ found while instrumenting the engine, not by re-reading the catalogue.
 
 ### 254. package.json `files` omits every top-level module main.js requires
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** `build.files` lists `main.js`, `preload.js`, `src/**`, `assets/**` and `node_modules/**`. main.js requires eight local top-level modules — `eq.js`, `lyrics.js`, `mpv-crossfade.js`, `mpv-engine.js`, `volume-map.js`, `youtube-download.js`, `youtube-search.js` and now `engine-diagnostics.js` — and none of them is listed. Specifying `files` replaces electron-builder's default `**/*`, so a packaged build should fail at the first `require` with MODULE_NOT_FOUND, before a window ever opens. This has never been noticed because `launch.sh` runs electron directly against the source tree; the RPM path (`dist/linux-unpacked`) is the one that would break.
 
 **Solution.** Add the eight modules to `build.files`, or drop the `files` array and rely on the default plus negations. Not done here: it cannot be tested without running electron-builder, and an untested change to the build config is a worse trade than a recorded finding. Verify by building once and running the packaged binary rather than `launch.sh`.
 
+**Done, and it was safer than first judged.** Adding entries to `build.files` cannot break a build that currently works, and `launch.sh` does not use electron-builder at all — so the earlier decision to leave it was too cautious. All eleven top-level modules main.js requires are listed now, and `test/packaged-build.test.js` derives the required list from main.js's own `require` calls and fails if any is not covered by a pattern. That is the part that matters: the twelfth module cannot be forgotten.
 
 ### 255. The orphan reaper stopped matching the socket names the engine generates
 

@@ -383,7 +383,10 @@ function stats(state) {
   }
 }
 
-var API = {
+// Named per file on purpose: eight scripts share one global scope, and a bare
+// `var API` in each meant every later file overwrote the earlier binding. It
+// was latent only because each one reads it on the next line.
+var _PapaDownloadScheduler = {
   DEFAULTS: DEFAULTS,
   createState: createState,
   itemKey: itemKey,
@@ -407,5 +410,5 @@ var API = {
   stats: stats,
 }
 
-if (typeof module !== 'undefined' && module.exports) module.exports = API
-if (typeof window !== 'undefined') window.PapaDownloadScheduler = API
+if (typeof module !== 'undefined' && module.exports) module.exports = _PapaDownloadScheduler
+if (typeof window !== 'undefined') window.PapaDownloadScheduler = _PapaDownloadScheduler

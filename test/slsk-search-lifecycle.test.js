@@ -18,7 +18,11 @@ test('each search takes a generation ticket', () => {
 test('every async callback checks it is still the current search', () => {
   // Merge, progress, per-variant resolve/reject, the repaint tick and the
   // teardown all mutate shared state on the single `slsk` object.
-  const guards = (fn.match(/if \(!current\(\)\) return/g) || []).length
+  //
+  // Counts `if (!current())` however the condition is extended: the per-variant
+  // resolve also checks the daemon-side `cancelled` flag now, and that is a
+  // stronger guard, not the absence of one.
+  const guards = (fn.match(/if \(!current\(\)(?: \|\| \w+)?\) return/g) || []).length
   assert.ok(guards >= 5, `expected >=5 staleness guards, found ${guards}`)
 })
 

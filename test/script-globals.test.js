@@ -75,6 +75,27 @@ test('each renderer module executes cleanly in a browser-like scope', () => {
 // throw, the later file just silently overwrites the earlier binding. That is
 // how slsk-filters.js's isLossless(group) replaced format-badges.js's
 // isLossless(codec), making formatBadges() tag EVERY lossless file "LOSSY".
+// `var` was the gap: this guarded const/let (which throw) and function (which
+// silently overwrites), but not var — and eight files each declared a top-level
+// `var API`, so every later file overwrote the earlier binding. Latent only
+// because each file read it on the very next line.
+test('no two scripts declare the same top-level var', () => {
+  const owner = new Map()
+  const collisions = []
+  for (const file of scriptsInOrder()) {
+    let src
+    try { src = fs.readFileSync(path.join(SRC, file), 'utf8') } catch (_) { continue }
+    const names = new Set()
+    for (const m of src.matchAll(/^var\s+([A-Za-z_$][\w$]*)/gm)) names.add(m[1])
+    for (const n of names) {
+      if (owner.has(n)) collisions.push(`${n}: ${owner.get(n)} vs ${file}`)
+      else owner.set(n, file)
+    }
+  }
+  assert.deepEqual(collisions, [],
+    'a later file silently overwrites the earlier binding, with no error anywhere')
+})
+
 test('no two scripts declare the same top-level function', () => {
   const owner = new Map()
   const collisions = []

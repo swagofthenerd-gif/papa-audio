@@ -3875,7 +3875,40 @@ function _searchCacheSet(key, results) {
   }
 }
 
-ipcMain.handle('slsk-search', async (_, { query, timeoutMs = 25000, noCache = false }) => {
+// Every search slskd is currently running for us, and why. Each search runs six
+// variants for up to 30 s; starting a new one left all six of the old ones going,
+// competing for the daemon's search slots and for the same peers' attention.
+// Nothing could cancel them, and nothing even knew they existed.
+const _liveSearches = new Map()      // slskd search id -> { generation, query }
+const _cancelledSearches = new Set() // ids whose loop should stop at its next tick
+
+// Called with the generation the renderer is now on; everything older goes.
+async function cancelSearchesExcept(keepGeneration) {
+  const doomed = []
+  for (const [id, info] of _liveSearches) {
+    if (info.generation === keepGeneration) continue
+    doomed.push({ id, info })
+  }
+  for (const { id, info } of doomed) {
+    _cancelledSearches.add(id)
+    _liveSearches.delete(id)
+    try {
+      await slskdFetch('DELETE', `/searches/${id}`)
+    } catch (e) {
+      // Already gone is the common case and not worth reporting loudly.
+      if (!/\b404\b/.test(String(e && e.message || e))) {
+        console.error(`[papa] could not cancel the search for "${info.query}":`, String(e && e.message || e))
+      }
+    }
+  }
+  if (doomed.length) console.log(`[papa] cancelled ${doomed.length} superseded search(es) at the daemon`)
+  return doomed.length
+}
+
+ipcMain.handle('slsk-cancel-searches', async (_, { keepGeneration } = {}) =>
+  ({ cancelled: await cancelSearchesExcept(keepGeneration == null ? -1 : keepGeneration) }))
+
+ipcMain.handle('slsk-search', async (_, { query, timeoutMs = 25000, noCache = false, generation = 0 }) => {
   // Reconnect if needed
   if (!slskdReady) {
     try {
@@ -3905,13 +3938,18 @@ ipcMain.handle('slsk-search', async (_, { query, timeoutMs = 25000, noCache = fa
   })
   const id = search?.id
   if (!id) throw new Error('Search failed to start')
+  _liveSearches.set(id, { generation, query })
 
   const start = Date.now()
   let lastPushTime = 0
   let lastCount    = 0
 
+  let cancelled = false
   while (true) {
     await new Promise(r => setTimeout(r, 800))
+    // A newer search has superseded this one. Stop polling a search that has
+    // already been deleted at the daemon, rather than 404ing on the next GET.
+    if (_cancelledSearches.has(id)) { cancelled = true; break }
     const elapsed = Date.now() - start
     if (elapsed > capMs + 4000) break
 
@@ -3933,6 +3971,14 @@ ipcMain.handle('slsk-search', async (_, { query, timeoutMs = 25000, noCache = fa
     if (elapsed >= 7000  && lastCount >= 60) break
     if (elapsed >= 12000 && lastCount >= 20) break
     if (elapsed >= 18000 && lastCount >=  5) break
+  }
+
+  _liveSearches.delete(id)
+  if (cancelled) {
+    // Superseded: the caller is not waiting for this any more, the search is
+    // already deleted, and pushing its results would repaint over the new one.
+    _cancelledSearches.delete(id)
+    return { results: [], cancelled: true }
   }
 
   const responses = await slskdFetch('GET', `/searches/${id}/responses`)
@@ -4000,7 +4046,7 @@ function dlPersist() {
       peerFailures: dlState.peerFailures,
       // Cancelled/abandoned keys MUST survive a restart. Without this, quitting
       // the app resurrects everything the user cancelled.
-      abandoned: Object.keys(dlState.done)
+      abandoned: Object.keys(dlState.done)   // capped below, and pruned on the tick
         .filter(k => dlState.done[k] === 'abandoned')
         .slice(-5000),
       savedAt: Date.now(),
@@ -4267,6 +4313,11 @@ async function dlTick() {
       if (alts.length) dlSched.addSources(dlState, key, alts)
     }
 
+    // The persisted `abandoned` subset was capped at 5000; the in-memory map had
+    // no cap and no TTL, so it grew for the life of the process. Terminal entries
+    // are the whole content of it, so pruning here is pruning all of it.
+    pruneDlDone()
+
     // After reconciliation, never before: see the comment on dlPurgeSucceeded.
     try { await dlPurgeSucceeded(now) } catch (e) {
       console.error('[papa] transfer purge failed:', String(e && e.message || e))
@@ -4277,6 +4328,18 @@ async function dlTick() {
   } finally {
     dlTicking = false
   }
+}
+
+// Generous: this is a set of keys, not payloads, and a re-download of something
+// long abandoned is cheap. The point is that it is bounded at all.
+const DL_DONE_CAP = 5000
+function pruneDlDone() {
+  const keys = Object.keys(dlState.done)
+  if (keys.length <= DL_DONE_CAP) return
+  // Object key order is insertion order for string keys, so the oldest go first.
+  const drop = keys.length - DL_DONE_CAP
+  for (let i = 0; i < drop; i++) delete dlState.done[keys[i]]
+  console.log(`[papa] pruned ${drop} terminal download entries (kept ${DL_DONE_CAP})`)
 }
 
 let dlRestored = false
@@ -4551,12 +4614,27 @@ async function dlFilenameForTransfer(username, id) {
 // One piece of music can be known under several peers' paths, so match on the
 // basename too — otherwise cancelling the copy you can see leaves its twin
 // running under a different path.
+// The remote folder a peer's path sits in. "01 - Intro.flac" is a name dozens of
+// releases share; the folder is what makes it one release's track.
+function dlRemoteDir(p) {
+  const str = String(p == null ? '' : p)
+  const cut = Math.max(str.lastIndexOf('/'), str.lastIndexOf('\\'))
+  return cut < 0 ? '' : str.slice(0, cut).toLowerCase()
+}
+
+// The twin-cancel behaviour is deliberate: a peer names the same music
+// differently, so cancelling has to reach the entry under whichever path was
+// actually sent. But an unscoped basename match reached OTHER releases entirely —
+// cancel a generic track name and it abandoned transfers from unrelated albums.
 function dlAbandonByFilename(filename) {
   const target = String(filename)
   const base = dlBaseName(target).toLowerCase()
+  const dir = dlRemoteDir(target)
   const hit = (name) => {
     if (!name) return false
-    return String(name) === target || dlBaseName(name).toLowerCase() === base
+    if (String(name) === target) return true
+    // Same basename is only the same file when it is in the same remote folder.
+    return dlBaseName(name).toLowerCase() === base && dlRemoteDir(name) === dir
   }
   for (const key of Object.keys(dlState.inflight)) {
     const live = dlState.inflight[key]
@@ -4567,10 +4645,30 @@ function dlAbandonByFilename(filename) {
   }
 }
 
+// Peer-supplied paths must never be written into the music library root. On a
+// fresh install cfg.downloadDir is empty, and falling back to folders[0] meant
+// whatever a stranger named their folders became directories inside the library.
+// A dedicated subfolder is the difference between a download area and the
+// library itself; it is created rather than assumed to exist.
+const DOWNLOAD_SUBDIR = 'Papa Audio Downloads'
+let _warnedAboutDownloadDir = false
+
 function _downloadDir() {
   const cfg = store.get('slskConfig', {})
+  if (cfg.downloadDir) return cfg.downloadDir
   const folders = store.get('musicFolders', [])
-  return cfg.downloadDir || folders[0] || path.join(app.getPath('home'), 'Music')
+  const base = folders[0] || path.join(app.getPath('home'), 'Music')
+  const dir = path.join(base, DOWNLOAD_SUBDIR)
+  if (!_warnedAboutDownloadDir) {
+    _warnedAboutDownloadDir = true
+    console.warn(`[papa] no download folder is configured; using ${dir}. ` +
+      `Set one in Settings — peer-supplied folder names should not land in the library root.`)
+  }
+  try { fs.mkdirSync(dir, { recursive: true }) } catch (e) {
+    console.error('[papa] could not create the fallback download folder:', String(e && e.message || e))
+    return base
+  }
+  return dir
 }
 
 ipcMain.handle('slsk-get-download-dir', () => _downloadDir())

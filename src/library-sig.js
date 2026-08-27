@@ -101,7 +101,10 @@ function libraryDiff(prev, next) {
   }
 }
 
-var API = {
+// Named per file on purpose: eight scripts share one global scope, and a bare
+// `var API` in each meant every later file overwrote the earlier binding. It
+// was latent only because each one reads it on the next line.
+var _PapaLibrarySig = {
   trackPaths: trackPaths,
   albumSignature: albumSignature,
   librarySignature: librarySignature,
@@ -109,5 +112,5 @@ var API = {
   libraryDiff: libraryDiff,
 }
 
-if (typeof module !== 'undefined' && module.exports) module.exports = API
-if (typeof window !== 'undefined') window.PapaLibrarySig = API
+if (typeof module !== 'undefined' && module.exports) module.exports = _PapaLibrarySig
+if (typeof window !== 'undefined') window.PapaLibrarySig = _PapaLibrarySig

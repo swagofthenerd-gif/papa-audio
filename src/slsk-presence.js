@@ -88,7 +88,10 @@ function countOnline(rows) {
   return n
 }
 
-var API = {
+// Named per file on purpose: eight scripts share one global scope, and a bare
+// `var API` in each meant every later file overwrote the earlier binding. It
+// was latent only because each one reads it on the next line.
+var _PapaSlskPresence = {
   PRESENCE_ONLINE: PRESENCE_ONLINE,
   PRESENCE_AWAY: PRESENCE_AWAY,
   PRESENCE_OFFLINE: PRESENCE_OFFLINE,
@@ -103,5 +106,5 @@ var API = {
   countOnline: countOnline,
 }
 
-if (typeof module !== 'undefined' && module.exports) module.exports = API
-if (typeof window !== 'undefined') window.PapaSlskPresence = API
+if (typeof module !== 'undefined' && module.exports) module.exports = _PapaSlskPresence
+if (typeof window !== 'undefined') window.PapaSlskPresence = _PapaSlskPresence

@@ -79,7 +79,10 @@ function queueImpact(queue, index, removedPaths) {
   return { hits: hits, count: hits.length, playingHit: playingHit }
 }
 
-var API = { repairQueue: repairQueue, queueImpact: queueImpact, pathSet: pathSet }
+// Named per file on purpose: eight scripts share one global scope, and a bare
+// `var API` in each meant every later file overwrote the earlier binding. It
+// was latent only because each one reads it on the next line.
+var _PapaQueueRepair = { repairQueue: repairQueue, queueImpact: queueImpact, pathSet: pathSet }
 
-if (typeof module !== 'undefined' && module.exports) module.exports = API
-if (typeof window !== 'undefined') window.PapaQueueRepair = API
+if (typeof module !== 'undefined' && module.exports) module.exports = _PapaQueueRepair
+if (typeof window !== 'undefined') window.PapaQueueRepair = _PapaQueueRepair

@@ -228,7 +228,10 @@ function describeSummary(summary) {
   return 'Also removed from ' + bits.join(', ')
 }
 
-var API = {
+// Named per file on purpose: eight scripts share one global scope, and a bare
+// `var API` in each meant every later file overwrote the earlier binding. It
+// was latent only because each one reads it on the next line.
+var _PapaLibraryPrune = {
   normalizePath: normalizePath,
   buildRemap: buildRemap,
   pruneLikedTracks: pruneLikedTracks,
@@ -242,5 +245,5 @@ var API = {
   describeSummary: describeSummary,
 }
 
-if (typeof module !== 'undefined' && module.exports) module.exports = API
-if (typeof window !== 'undefined') window.PapaLibraryPrune = API
+if (typeof module !== 'undefined' && module.exports) module.exports = _PapaLibraryPrune
+if (typeof window !== 'undefined') window.PapaLibraryPrune = _PapaLibraryPrune

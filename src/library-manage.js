@@ -246,7 +246,10 @@ function findDuplicates(tracks) {
   })
 }
 
-var API = {
+// Named per file on purpose: eight scripts share one global scope, and a bare
+// `var API` in each meant every later file overwrote the earlier binding. It
+// was latent only because each one reads it on the next line.
+var _PapaLibraryManage = {
   normalizeName: normalizeName,
   isUnknown: isUnknown,
   dirOf: dirOf,
@@ -261,5 +264,5 @@ var API = {
   findDuplicates: findDuplicates,
 }
 
-if (typeof module !== 'undefined' && module.exports) module.exports = API
-if (typeof window !== 'undefined') window.PapaLibraryManage = API
+if (typeof module !== 'undefined' && module.exports) module.exports = _PapaLibraryManage
+if (typeof window !== 'undefined') window.PapaLibraryManage = _PapaLibraryManage

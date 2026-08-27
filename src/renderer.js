@@ -8797,6 +8797,12 @@ async function runSlskSearch(query) {
     _slskRepaint(query)
     return
   }
+  // Retire the previous generation's searches at the daemon. Each search runs
+  // six variants for up to 30 s, so starting a new one left all six of the old
+  // ones competing for the same peers and the daemon's search slots.
+  window.api.slskCancelSearches({ keepGeneration: myRun })
+    .catch(e => console.error('[papa] could not cancel the superseded searches:', String(e && e.message || e)))
+
   const navQ = document.getElementById('nav-search-query')
   if (navQ) navQ.textContent = query
 
@@ -8889,8 +8895,8 @@ async function runSlskSearch(query) {
   // Run all variants in parallel; each returns after 25s max (or earlier with enough results)
   const TIMEOUT = 25000
   await Promise.all(variants.map(q =>
-    window.api.slskSearch({ query: q, timeoutMs: TIMEOUT, noCache: _nocacheQueries.has(q.toLowerCase()) }).then(({ results }) => {
-      if (!current()) return
+    window.api.slskSearch({ query: q, timeoutMs: TIMEOUT, noCache: _nocacheQueries.has(q.toLowerCase()), generation: myRun }).then(({ results, cancelled }) => {
+      if (!current() || cancelled) return
       _mergeResults(results)
     }).catch((e) => {
       if (!current()) return

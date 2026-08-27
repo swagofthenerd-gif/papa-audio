@@ -88,7 +88,10 @@ function describe(count, noun) {
   return count + ' ' + noun + (count === 1 ? '' : 's') + ' selected'
 }
 
-var API = {
+// Named per file on purpose: eight scripts share one global scope, and a bare
+// `var API` in each meant every later file overwrote the earlier binding. It
+// was latent only because each one reads it on the next line.
+var _PapaMultiSelect = {
   applyClick: applyClick,
   isSelected: isSelected,
   selectAll: selectAll,
@@ -97,5 +100,5 @@ var API = {
   describe: describe,
 }
 
-if (typeof module !== 'undefined' && module.exports) module.exports = API
-if (typeof window !== 'undefined') window.PapaMultiSelect = API
+if (typeof module !== 'undefined' && module.exports) module.exports = _PapaMultiSelect
+if (typeof window !== 'undefined') window.PapaMultiSelect = _PapaMultiSelect
