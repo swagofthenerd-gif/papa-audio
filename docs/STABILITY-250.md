@@ -749,35 +749,43 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 ### 91. 463 plays — 38% of your listening history — are silently discarded by every reader
 
-`OPEN` `Critical`
+`DONE` `Critical`
 
 **Symptom.** playHistory entries changed key from timestamp to ts on 2026-08-04 with no migration. Indices 0-625 use ts; 626-1223 use timestamp, running back to 2026-06-25. Every entry has a valid time; the readers only look at ts. This also corrects my previous report, which called this corruption and proposed deleting the tail — that would have destroyed two months of real history.
 
 **Solution.** Read ts ?? timestamp everywhere, then migrate once to a single key.
 
+**Done.** `history.js` normalises every entry to `ts`, preferring `ts` when both keys are present and sane and falling back to `timestamp` otherwise. It runs once at startup, reports what it found in the log before writing anything, and writes nothing at all when there is nothing to change. Entries whose time is genuinely unusable — a clock before 2000, or more than a day in the future — are written to `history-quarantine.json` rather than deleted, because the previous report was wrong about exactly these and the call has to stay reversible. Tests: test/history.test.js, including against the reported 626-plus-598 shape.
+
 ### 92. Gapless auto-advanced tracks are never written to play history at all
 
-`OPEN` `Critical`
+`DONE` `Critical`
 
 **Symptom.** addPlayHistory has one call site, renderer.js:5836, inside onStarted(), which runs only for an explicitly started track. The autoadvanced handler at 11881 increments play counts but never adds history. A 12-track album listened gaplessly records one entry.
 
 **Solution.** Record history on auto-advance too, using the same 30 s threshold, so counts and history agree by construction.
 
+**Done.** Both paths now go through one `recordPlayAfterThreshold()` helper with the same 30 s threshold, so they cannot drift apart again. The explicit-start path kept its own play-count timer; history is recorded by the shared helper from both.
+
 ### 93. playCounts and playHistory disagree by design and nothing reconciles them
 
-`OPEN` `High`
+`DONE` `High`
 
 **Symptom.** Counts are incremented on auto-advance; history is not. Every statistic drawn from history under-reports album listening specifically — the exact listening style this app is built for.
 
 **Solution.** After the two fixes above, run a one-time reconciliation and report the delta rather than silently rewriting.
 
+**Done, as a report.** `reconcile()` compares counts against history and logs the totals, the number of disagreeing tracks, and which direction each disagreement runs. It rewrites nothing — which side is right is not the code's call, and the counts are the more complete record here. Exposed over `get-history-report` so the renderer can show it rather than only the log having it.
+
 ### 94. add-play-history trusts the renderer for the timestamp
 
-`OPEN` `High`
+`DONE` `High`
 
 **Symptom.** main.js:1291 stores whatever it is given. A clock change or a renderer bug writes an unusable entry with no validation.
 
 **Solution.** Stamp it in main and ignore any supplied value.
+
+**Done.** main stamps `ts` at receipt and deletes any `timestamp` the renderer sent. The renderer no longer sends a time at all, since its value was only ever "now".
 
 ### 95. History entries are denormalised at roughly 294 bytes each
 
@@ -787,13 +795,17 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 **Solution.** Store filePath and ts; resolve the rest from the library cache at read time.
 
+**Partly done.** playHistory left the shared config and is now its own file, written asynchronously and coalesced — so the 344 KB is no longer part of every 2.5 MB config write. The denormalisation itself is unchanged: entries are still ~294 bytes each. Narrowing them to filePath and ts means every reader has to resolve title, artist, album and artPath from the library cache, and a play of a file since removed from the library would lose its name entirely. That is a real design decision about what history means, not a mechanical change, so it was left.
+
 ### 96. The history cap silently drops the oldest entries with no archive
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** main.js:1228 splices at 2000. Once the migration recovers the older entries this cap will start discarding real history.
 
 **Solution.** Roll the overflow into a monthly archive file instead of dropping it.
+
+**Done.** The overflow is split off and appended to one file per month under `history-archive/`, written atomically, never overwritten. Nothing is dropped. This mattered more after item 91: the migration recovers the older entries, so the cap would have started discarding real history on the next few plays.
 
 ### 97. The saved _auto queue is truncated to 100 tracks with no indication
 
@@ -805,11 +817,13 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 ### 98. playbackState is written with position 0 on start and then updated in place
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** There is no marker distinguishing a clean stop from an abnormal one, which is why a crash and a deliberate pause look identical on restart.
 
 **Solution.** Record a clean-exit flag; its absence is what triggers the resume prompt.
+
+**Done, and it had a hidden half.** main has always set `cleanShutdown` and sent `app-recovered-from-crash` on an unclean restart — but the channel was not in preload's allowlist, so `window.api.on` silently never registered it, and no renderer script listened either. It could not have worked however hard the renderer tried. Now allowlisted, listened for, and answered with a dismissible notice offering to resume from the saved position — a notice with an action, never a blocking prompt, matching the decision made for engine recovery.
 
 ### 99. No schema version on the config
 
@@ -2156,7 +2170,7 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 **Solution.** Safe to purge in a dedicated pass. Left alone deliberately: zero user-visible benefit, non-zero regression risk.
 
 
-## Found during Tier 1  (5)
+## Found while working through the tiers  (6)
 
 Numbered from 251 so the existing items and section counts stay stable. These were
 found while instrumenting the engine, not by re-reading the catalogue.
@@ -2208,5 +2222,20 @@ found while instrumenting the engine, not by re-reading the catalogue.
 **Solution.** One shared `MPV_SOCK_RE` in main.js that accepts both the new hex form and the old counter form (a socket left behind by a build from before the rename still has to be recognised, or upgrading strands an orphan permanently). `test/mpv-socket-name.test.js` has the engine generate real names and asserts the reaper's pattern matches them, so the two cannot drift again.
 
 **Worth noting as a process point.** Nothing linked those two files but a shared naming convention, and nothing checked it. The same shape as item 3, where the engine emitted an event, main forwarded it, and the shim dropped it — and the same fix: a test that asserts the coupling across files, not within one.
+
+
+### 256. Eleven channels main pushes at the renderer have nothing listening
+
+`DONE` `High`
+
+**Symptom.** Found by writing a test that enumerates every `webContents.send` in main.js and checks it against preload's allowlist and the renderer scripts. The same shape as item 3, five more times over:
+
+- **The tray menu did nothing.** Play/Pause, Next and Previous send `media-playpause`, `media-next` and `media-previous`. None was in preload's allowlist, and nothing listened.
+- **MPRIS was half-wired.** Play/pause/next/previous go through `media-key`, which works. Seeking, volume, shuffle and loop status go through `media-seek`, `media-volume`, `media-shuffle` and `media-loop-status`, and did nothing — so a desktop media applet could start and stop playback but not seek it or change its volume.
+- **Suspend and resume did nothing in the UI.** main pauses mpv before the machine suspends, but the renderer was never told, so it came back still claiming to be playing.
+
+**Solution.** All ten allowlisted and handled. `system-resume` deliberately asks the engine for its real state rather than assuming anything, because the audio device is the thing most likely to have changed while the machine was asleep.
+
+**Still unhandled, deliberately, and now written down.** `dl-started`/`dl-progress`/`dl-complete`/`dl-cancelled`/`dl-failed`/`slsk-progress` have no listener because the renderer polls `get-downloads` instead (2 s on the Downloads page, 20 s elsewhere) — redundant on the sending side rather than broken. `scan-progress`, `slskd-status-change`, `yt-auth-pending`, `yt-auth-done` and `slsk-verify` have no consumer at all; `slsk-verify` even has a dedicated preload subscriber that nothing calls. `test/ipc-channel-wiring.test.js` lists every one of these with its reason, so a *new* dead channel fails the build while the known ones do not.
 
 ---

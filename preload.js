@@ -203,6 +203,7 @@ contextBridge.exposeInMainWorld('api', {
   eqPreset:          (n) => ipcRenderer.invoke('eq-preset', n),
   playerRecheck:     ()  => ipcRenderer.invoke('player-recheck'),
   playerGetDiagnostics: () => ipcRenderer.invoke('player-get-diagnostics'),
+  getHistoryReport:  ()  => ipcRenderer.invoke('get-history-report'),
   trackExists:       (p) => ipcRenderer.invoke('track-exists', p),
   getAudioDevices:   ()  => ipcRenderer.invoke('get-audio-devices'),
   setAudioDevice:    (d) => ipcRenderer.invoke('set-audio-device', d),
@@ -223,7 +224,15 @@ contextBridge.exposeInMainWorld('api', {
       'torrent-progress', 'torrent-done', 'torrent-started', 'do-lib-rescan',
       'yt-dl-progress', 'yt-auth-pending', 'yt-auth-done',
       'slsk-verify', 'slsk-user-status', 'slsk-saved-users-changed', 'slsk-scheduler-stats',
-      'library-updated', 'scan-progress',
+      'library-updated', 'scan-progress', 'app-recovered-from-crash',
+      // The tray menu, MPRIS and the power monitor all send these, and none of
+      // them was subscribable: Play, Next and Previous in the tray menu did
+      // nothing, and seeking or changing volume from a desktop applet did
+      // nothing. Note for future edits: no apostrophes inside this array, the
+      // wiring test parses it by quote pairs.
+      'media-playpause', 'media-next', 'media-previous',
+      'media-volume', 'media-shuffle', 'media-loop-status',
+      'system-suspend', 'system-resume',
     ]
     if (allowed.includes(channel)) ipcRenderer.on(channel, (_, data) => cb(data))
   },

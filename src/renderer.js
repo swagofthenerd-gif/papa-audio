@@ -746,6 +746,21 @@ function _currentNavId() {
 }
 
 // ── Playback state restore ──────────────────────────────────────────────────
+// Picks up where an unclean shutdown left off. restorePlaybackState already
+// rebuilds the queue and seeks; this is that, plus actually playing.
+async function resumeFromSavedState(saved) {
+  await restorePlaybackState()
+  const pos = Number(saved && saved.position) || 0
+  const idx = state.queue.findIndex(t => t.filePath === (saved && saved.filePath))
+  if (idx < 0) {
+    showSnackbar('That track is no longer in the library', '', function () {}, 5000)
+    return
+  }
+  state.queueIndex = idx
+  playCurrentTrack()
+  if (pos > 1) audio.currentTime = pos
+}
+
 async function restorePlaybackState() {
   const saved = await window.api.getPlaybackState()
   if (!saved || !saved.filePath) return
@@ -3729,6 +3744,27 @@ function checkFollowedArtistsForNew() {
   try { localStorage.setItem('followedAlbumCounts', JSON.stringify(current)) } catch(_) {}
 }
 
+// A play is recorded once it has been listened to for 30 s. Used by both the
+// explicit-start path and the gapless auto-advance path — they used to disagree,
+// which is what made history and play counts disagree.
+const PLAY_RECORD_MS = 30000
+let _historyTimer = null
+function recordPlayAfterThreshold(track) {
+  clearTimeout(_historyTimer)
+  if (!track || !track.filePath) return
+  _historyTimer = setTimeout(function () {
+    // No ts: main stamps it. It used to store whatever the renderer sent.
+    window.api.addPlayHistory({
+      filePath: track.filePath,
+      title: track.title,
+      artist: track.albumArtist || track.artist,
+      album: track.albumName,
+      artPath: track.artPath || null,
+      duration: track.duration || 0,
+    })
+  }, PLAY_RECORD_MS)
+}
+
 // ── Playback engine state, visible ───────────────────────────────────────────
 // A badge in the player bar, shown only while the engine is not healthy. Not a
 // dialog: the decided behaviour is a brief non-blocking notice, never a prompt.
@@ -5976,9 +6012,9 @@ function playCurrentTrack() {
     _playCountTimer = setTimeout(() => {
       state.playCounts[track.filePath] = (state.playCounts[track.filePath] || 0) + 1
       window.api.incrementPlayCount(track.filePath)
-      // duration was never written, so every stat derived from it read zero.
-      window.api.addPlayHistory({ filePath: track.filePath, title: track.title, artist: track.albumArtist || track.artist, album: track.albumName, artPath: track.artPath || null, duration: track.duration || 0, ts: Date.now() })
-    }, 30000)
+    }, PLAY_RECORD_MS)
+    // duration was never written, so every stat derived from it read zero.
+    recordPlayAfterThreshold(track)
     loadLyricsFor(track)
     syncExtension()
     updateNextPrefetch()
@@ -12083,6 +12119,12 @@ function setupListeners() {
     window.api.savePlaybackState({ filePath: track.filePath, position: 0 })
     state.playCounts[track.filePath] = (state.playCounts[track.filePath] || 0) + 1
     window.api.incrementPlayCount(track.filePath)
+    // Counts were incremented here and history was not written at all, so a
+    // 12-track album listened gaplessly recorded twelve counts and one history
+    // entry — and every statistic drawn from history under-reported album
+    // listening specifically. Same 30 s threshold as the explicit-start path, so
+    // counts and history now agree by construction.
+    recordPlayAfterThreshold(track)
     loadLyricsFor(track)
     syncExtension()
     updateNextPrefetch()
@@ -12212,6 +12254,24 @@ function setupListeners() {
     handleLoadError(failed, t)
   })
 
+  // main has always sent this when the previous session ended without a clean
+  // shutdown, and until now the channel was not even in preload's allowlist, so
+  // it went nowhere. A crash and a deliberate pause looked identical on restart.
+  window.api.on('app-recovered-from-crash', async () => {
+    console.error('[papa] the previous session did not shut down cleanly')
+    let saved = null
+    try { saved = await window.api.getPlaybackState() } catch (_) {}
+    if (!saved || !saved.filePath) {
+      showSnackbar('Papa Audio did not shut down cleanly last time', '', function () {}, 6000)
+      return
+    }
+    const name = (saved.filePath || '').split('/').pop() || 'the last track'
+    // A notice with an action, never a blocking prompt: the same rule as the
+    // engine-recovery notice.
+    showSnackbar(`Last time ended mid-track — ${name} at ${fmtDur(saved.position || 0)}`,
+      'Resume', function () { resumeFromSavedState(saved) }, 12000)
+  })
+
   // Library changed in main (a mutation, or the folder watcher). Until now this
   // event had no listener at all, so the UI silently kept showing stale data.
   window.api.on('library-updated', (payload) => {
@@ -12270,6 +12330,75 @@ function setupListeners() {
     if (key === 'play-pause') togglePlay()
     else if (key === 'next')  playNext()
     else if (key === 'prev')  playPrev()
+  })
+
+  // ── Tray menu, MPRIS and the power monitor ────────────────────────────────
+  // Every one of these was sent by main and had no listener anywhere — several
+  // were not even in preload's allowlist, so nothing could have listened. The
+  // tray's Play/Pause/Next/Previous did nothing at all.
+  window.api.on('media-playpause', () => togglePlay())
+  window.api.on('media-next',      () => playNext())
+  window.api.on('media-previous',  () => playPrev())
+
+  // MPRIS sends an absolute position or a relative offset, in seconds.
+  window.api.on('media-seek', d => {
+    if (!d) return
+    if (typeof d.position === 'number') audio.currentTime = Math.max(0, d.position)
+    else if (typeof d.offset === 'number') audio.currentTime = Math.max(0, (audio.currentTime || 0) + d.offset)
+  })
+
+  window.api.on('media-volume', v => {
+    const vol = Math.max(0, Math.min(1, Number(v)))
+    if (!Number.isFinite(vol)) return
+    audio.volume = vol
+    if (vol > 0) state.lastVolume = vol
+    setVolDisplay(vol)
+  })
+
+  window.api.on('media-shuffle', enabled => {
+    state.shuffle = !!enabled
+    document.getElementById('btn-shuffle')?.classList.toggle('active', state.shuffle)
+    document.getElementById('np-modal-shuffle')?.classList.toggle('active', state.shuffle)
+    updateNextPrefetch()
+  })
+
+  // MPRIS names these None / Track / Playlist.
+  window.api.on('media-loop-status', status => {
+    const map = { None: 'off', Track: 'one', Playlist: 'all' }
+    const next = map[status]
+    if (!next) return
+    state.repeat = next
+    updateRepeatBtns()
+    updateNextPrefetch()
+  })
+
+  // main pauses mpv before the machine suspends. Without this the UI came back
+  // still claiming to be playing.
+  window.api.on('system-suspend', () => {
+    console.log('[papa] system suspending')
+    state.isPlaying = false
+    updatePlayBtn()
+    if (state.modalOpen) syncModalPlayBtn()
+  })
+
+  // The audio device is the thing most likely to have changed underneath us, so
+  // ask the engine what is actually true rather than assuming anything.
+  window.api.on('system-resume', async () => {
+    console.log('[papa] system resumed; reconciling with the engine')
+    try {
+      const st = await window.api.playerGetStatus()
+      if (!st || !st.available) {
+        setEngineState('Playback engine unavailable', false)
+        return
+      }
+      if (st.state) {
+        state.isPlaying = !st.state.paused
+        updatePlayBtn()
+        if (state.modalOpen) syncModalPlayBtn()
+      }
+    } catch (e) {
+      console.error('[papa] could not reconcile after resume:', String(e && e.message || e))
+    }
   })
 
   window.api.on('ext-cmd', cmd => {

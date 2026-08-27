@@ -7,11 +7,12 @@ Written 2026-08-27. Read this first in a new session, then `docs/STABILITY-250.m
 | | |
 |---|---|
 | Branch | `feature/library-management-and-qa-fixes` |
-| Tests | 520 passing (`npm test`), 2 skipped — the two real-mpv integration tests, which need mpv installed |
+| Tests | 545 passing (`npm test`), 2 skipped — the two real-mpv integration tests, which need mpv installed |
 | Tier 1 | **done** — items 1, 2, 3, 6, 7 |
 | Tier 2 | **done** — items 4, 5, 8, 9, 10, 11, 12, 13, 14, 15, 17, 18, 19, 20, 21, 22, 23, 24, 25, 251, 252. Item 16 partly, and it says why |
 | Tier 3 | **done** — items 36, 37, 40, 41, 42, 43, 44, 45, 48, 49, 54, 55, plus 255, a regression this round introduced |
-| Tier 4–6 | not started |
+| Tier 4 | **done** — items 91, 92, 93, 94, 96, 98, plus 256. Item 95 partly, and it says which part |
+| Tier 5–6 | not started |
 | Verified against real mpv | **no.** Everything below is tests and reading. See "How this was, and was not, verified" |
 | New findings | items 251–254 at the end of `STABILITY-250.md`. 254 breaks packaged builds and is not fixed |
 
@@ -115,8 +116,12 @@ journalctl --user --since "<date>" | grep launch.sh
    Also: `dirSize` is async and yields and caches; `pollCmd`'s 200 ms sync read-and-write became an
    fs.watch with a 5 s backstop; logging is buffered with a size cap and is installed at module load
    so startup lines are no longer lost; and no synchronous child_process call is left in main.js.
-4. **Tier 4 — data integrity.** The `ts`/`timestamp` migration, history on auto-advance, reconcile
-   `playCounts` against `playHistory`.
+4. ~~**Tier 4 — data integrity.**~~ **Done.** The migration recovers the legacy-keyed entries instead of
+   dropping them, quarantines the genuinely unusable rather than deleting them, and reports the range
+   it recovered. History is recorded on gapless auto-advance through the same helper as the
+   explicit-start path, so the two cannot drift again. The reconciliation reports and does not rewrite.
+   The cap archives the overflow monthly instead of discarding it. And `app-recovered-from-crash` is
+   wired the whole way through for the first time.
 5. **Tier 5 — leaks, races, correctness.** Modal listener leaks, `_scheduleLibRescan` coalescing,
    missing stale-render guards, unguarded `JSON.parse(localStorage…)`, unbounded caches, the 105
    empty `catch` blocks.
@@ -146,7 +151,7 @@ The lesson from two rounds: **verify against ground truth, never against the UI'
 Being exact about this, because the rule in this project is that the UI's claims are not evidence — and
 neither are mine.
 
-**Verified.** 520 tests pass, up from 399. The 121 new ones test behaviour, not implementation:
+**Verified.** 545 tests pass, up from 399. The 146 new ones test behaviour, not implementation:
 every `end-file` reason including ones mpv has not invented yet; our own `loadfile`/`playlist-clear`
 not being mistaken for a fault; the timeline being bounded and copied on read; mpv's log reaching the
 ring and faults reaching the timeline inline; `engineDown` carrying `willRecover`; recovery seeking back
@@ -161,7 +166,7 @@ that implemented it was on a macOS machine with no mpv, no PipeWire, no `~/.conf
 `.qa/` (it is gitignored, so it does not travel). The two real-mpv integration tests skipped for exactly
 that reason. So on the Fedora machine, before trusting any of this:
 
-1. `npm test` — the two skipped tests should now run there. 522 passing expected.
+1. `npm test` — the two skipped tests should now run there. 547 passing expected.
 2. Play a local album. `node tools/mpv-probe.js` should agree with the UI about path, position and pause.
 3. `tools/fault-inject.sh` — SIGKILL, SIGSTOP, PipeWire restart, device suspend. It checks the daily log
    and mpv's socket automatically and prints what needs your eyes. Before this work all four were
@@ -195,6 +200,33 @@ Things I could not test at all, and would look at first if something is wrong:
 - **`fs.watch` on the command file.** If the browser extension stops working, that is the first
   suspect; the 5 s backstop poll should cover it, so a total failure would mean neither path fires.
 - **The `run()` helper's timeouts**: unzip 120 s, ffprobe 10 s, ps 10 s, mpv --version 5 s. All guesses.
+- **The history migration against the real file.** Tested against a reconstruction of the reported
+  shape, not against the actual 1224 entries. Back up `config.json` before the first launch if you want
+  a way back — the migration itself never deletes, but that is a claim about code I could not run here.
+- **The ten newly wired channels.** The tray menu, MPRIS seek/volume/shuffle/loop, and suspend/resume
+  have never worked, so there is no previous behaviour to compare against. MPRIS in particular needs a
+  desktop applet to test at all.
+
+## What the history migration will do on first launch — read this before running it
+
+It moves and rewrites two months of real listening data, so it is worth knowing what to expect.
+
+- **It reports before it writes.** The log will say how many entries were already keyed on `ts`, how
+  many were recovered from the old `timestamp` key, and the date range that recovery extends the
+  history to. On the reported data that should be roughly 626 already fine, 598 recovered, and a range
+  reaching back to 2026-06-25 instead of 2026-08-04.
+- **Statistics will change substantially, and that is the fix.** Every stat drawn from history was
+  reading 62% of it. Numbers going up is the migration working.
+- **Nothing is deleted.** Entries with a genuinely unusable time go to `history-quarantine.json`. If
+  that file appears, read it — on this data it should not, and if it does the assumption that every
+  entry has a valid time was wrong somewhere.
+- **The cap now archives.** Past 2000 entries the overflow goes to `history-archive/YYYY-MM.json`
+  rather than being spliced away. The migration recovering the older entries is what makes this
+  urgent: without it the next few plays would have started discarding real history.
+- **Counts and history will still disagree, and it will say so.** Gapless auto-advance counted a play
+  without recording it, so the counts are ahead. The reconciliation logs the delta and rewrites
+  nothing. From now on both paths record, so new plays agree by construction — the historical gap
+  stays, honestly, rather than being papered over.
 
 ## What the store split changes on disk
 

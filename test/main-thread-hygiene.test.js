@@ -18,9 +18,9 @@ const CODE = MAIN
 
 // ── The store split ──────────────────────────────────────────────────────────
 
-const HOT_KEYS = ['libraryCache', 'playbackState', 'sessionState', 'recentlyPlayed', 'slskSchedulerState']
+const HOT_KEYS = ['libraryCache', 'playbackState', 'sessionState', 'recentlyPlayed', 'slskSchedulerState', 'playHistory']
 
-test('the five hot keys are never read or written through the shared config', () => {
+test('the hot keys are never read or written through the shared config', () => {
   // electron-store rewrites and fsyncs the WHOLE file on every set. Mixing one
   // legacy read back in is worse than never having split it: reads and writes
   // would then disagree about where the value lives.

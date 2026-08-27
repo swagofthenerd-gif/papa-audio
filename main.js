@@ -11,6 +11,7 @@ const https = require('https')
 const { spawn, execFile } = require('child_process')
 const { MpvEngine } = require('./mpv-engine')
 const { formatDiagnostic } = require('./engine-diagnostics')
+const history = require('./history')
 const { defaultSettings: eqDefaults, BANDS: EQ_BANDS, GAIN_LIMIT: EQ_GAIN_LIMIT, PRESETS: EQ_PRESETS, presetSettings } = require('./eq')
 const { MpvCrossfade } = require('./mpv-crossfade')
 const { linearToMpv } = require('./volume-map')
@@ -299,6 +300,9 @@ const sideStores = {
   recentlyPlayed: new SideStore({ dir: USER_DATA, name: 'recently-played', fallback: [], debounceMs: 500, onError: _sideErr }),
   // Written from dlTick every 4 s for the whole life of any download.
   slskSchedulerState: new SideStore({ dir: USER_DATA, name: 'download-scheduler', fallback: null, debounceMs: 1000, onError: _sideErr }),
+  // 344 KB of the old config at ~294 bytes per play, rewritten in full on every
+  // save — the same defect as the others, and it grows with use.
+  playHistory: new SideStore({ dir: USER_DATA, name: 'play-history', fallback: [], debounceMs: 700, onError: _sideErr }),
 }
 
 // One-time move out of the shared config. adoptIfEmpty only takes the legacy
@@ -715,6 +719,11 @@ app.whenReady().then(() => {
     if (!(await validateYtCookie())) refreshYtCookie()
   }, 8000)
   setInterval(refreshYtCookie, 12 * 60 * 60 * 1000)
+
+  // Before the window opens: the statistics it draws are about to change.
+  try { _historyReport = migratePlayHistory() } catch (e) {
+    console.error('[papa][history] migration failed; history left exactly as it was:', e && e.message)
+  }
 
   // Crash recovery: detect if previous session ended ungracefully
   const wasCleanShutdown = store.get('cleanShutdown', true)
@@ -1560,13 +1569,83 @@ ipcMain.on('increment-play-count', (_, filePath) => {
   counts[filePath] = (counts[filePath] || 0) + 1
   store.set('playCounts', counts)
 })
-ipcMain.handle('get-play-history', () => store.get('playHistory', []))
+ipcMain.handle('get-play-history', () => sideStores.playHistory.get() || [])
+
 ipcMain.on('add-play-history', (_, entry) => {
-  const h = store.get('playHistory', [])
-  h.unshift(entry)
-  if (h.length > 2000) h.splice(2000)
-  store.set('playHistory', h)
+  if (!entry || !entry.filePath) return
+  // Stamped here, not in the renderer. main used to store whatever it was
+  // given, so a clock change or a renderer bug wrote an entry no reader could
+  // use — and the renderer's value is only ever "now" anyway.
+  const stamped = { ...entry, ts: Date.now() }
+  delete stamped.timestamp
+  const kept = sideStores.playHistory.update(prev => {
+    const list = Array.isArray(prev) ? prev : []
+    list.unshift(stamped)
+    const { keep, overflow } = history.splitForArchive(list, history.HISTORY_CAP)
+    // The cap used to splice the oldest entries away with nothing keeping them.
+    // Now that the migration has recovered the older ones, that would be
+    // discarding real history.
+    if (overflow.length) archiveHistoryOverflow(overflow)
+    return keep
+  })
+  if (!Array.isArray(kept)) console.error('[papa][history] update returned no list')
 })
+
+// Overflow goes to one file per month, appended, never overwritten.
+const HISTORY_ARCHIVE_DIR = path.join(USER_DATA, 'history-archive')
+function archiveHistoryOverflow(overflow) {
+  const byMonth = history.groupForArchive(overflow)
+  fs.promises.mkdir(HISTORY_ARCHIVE_DIR, { recursive: true }).then(async () => {
+    for (const [month, entries] of byMonth) {
+      const f = path.join(HISTORY_ARCHIVE_DIR, `${month}.json`)
+      let existing = []
+      try { existing = JSON.parse(await fs.promises.readFile(f, 'utf8')) } catch (_) { existing = [] }
+      if (!Array.isArray(existing)) existing = []
+      const merged = existing.concat(entries)
+      const tmp = f + '.tmp'
+      await fs.promises.writeFile(tmp, JSON.stringify(merged), 'utf8')
+      await fs.promises.rename(tmp, f)
+      console.log(`[papa][history] archived ${entries.length} entries to ${month}.json (${merged.length} total)`)
+    }
+  }).catch(e => console.error('[papa][history] archive failed, entries kept in memory only:', e && e.message))
+}
+
+// Runs once at startup. Reports what it found before changing anything, because
+// the numbers in the app's statistics are about to move substantially and
+// nothing else would explain why.
+function migratePlayHistory() {
+  const before = sideStores.playHistory.get() || []
+  const r = history.normaliseHistory(before)
+  console.log(`[papa][history] ${r.total} entries: ${r.alreadyOk} already keyed on ts, ` +
+    `${r.renamed} recovered from the old timestamp key, ${r.quarantined.length} without a usable time`)
+  if (r.oldest) {
+    console.log(`[papa][history] range ${new Date(r.oldest).toISOString().slice(0, 10)} ` +
+      `to ${new Date(r.newest).toISOString().slice(0, 10)}`)
+  }
+  if (r.quarantined.length) {
+    // Set aside rather than deleted: an earlier report proposed dropping these
+    // and it was wrong about them, so the call has to stay reversible.
+    const f = path.join(USER_DATA, 'history-quarantine.json')
+    fs.promises.writeFile(f, JSON.stringify(r.quarantined, null, 2), 'utf8')
+      .then(() => console.error(`[papa][history] ${r.quarantined.length} entries had no usable time; kept in ${f}, not deleted`))
+      .catch(e => console.error('[papa][history] could not write the quarantine file:', e && e.message))
+  }
+  if (r.changed) sideStores.playHistory.set(history.sortNewestFirst(r.entries))
+
+  // Reported, never rewritten: which side is right is not this code's call.
+  const rec = history.reconcile(r.entries, store.get('playCounts', {}))
+  if (rec.disagreeing) {
+    console.error(`[papa][history] play counts and history disagree on ${rec.disagreeing} tracks: ` +
+      `${rec.countedTotal} counted vs ${rec.historyTotal} recorded ` +
+      `(${rec.missingFromHistory} counted but never recorded, ${rec.extraInHistory} recorded but never counted). ` +
+      `Nothing was rewritten. Gapless auto-advance used to count a play without recording it, which is the likely cause.`)
+  }
+  return { migration: r, reconciliation: rec }
+}
+
+// So the renderer can show the numbers rather than only the log having them.
+let _historyReport = null
+ipcMain.handle('get-history-report', () => _historyReport)
 
 ipcMain.handle('get-download-wishlist', () => store.get('downloadWishlist', []))
 ipcMain.on('save-download-wishlist', (_, wl) => store.set('downloadWishlist', wl))
@@ -1996,7 +2075,7 @@ ipcMain.handle('library-prune-state', (_, { removed, renamed }) => {
   const snapshot = {
     likedTracks:   store.get('likedTracks', []),
     playCounts:    store.get('playCounts', {}),
-    playHistory:   store.get('playHistory', []),
+    playHistory:   sideStores.playHistory.get() || [],
     playlists:     store.get('playlists', []),
     savedQueues:   store.get('savedQueues', []),
     playbackState: sideStores.playbackState.get(),
@@ -2006,7 +2085,7 @@ ipcMain.handle('library-prune-state', (_, { removed, renamed }) => {
 
   store.set('likedTracks',   next.likedTracks)
   store.set('playCounts',    next.playCounts)
-  store.set('playHistory',   next.playHistory)
+  sideStores.playHistory.set(next.playHistory)
   store.set('playlists',     next.playlists)
   store.set('savedQueues',   next.savedQueues)
   if (next.playbackState) sideStores.playbackState.set(next.playbackState)
@@ -2021,7 +2100,7 @@ ipcMain.handle('library-restore-state', (_, { snapshot }) => {
   if (!snapshot) return { ok: false, error: 'Nothing to restore' }
   if (snapshot.likedTracks)   store.set('likedTracks', snapshot.likedTracks)
   if (snapshot.playCounts)    store.set('playCounts', snapshot.playCounts)
-  if (snapshot.playHistory)   store.set('playHistory', snapshot.playHistory)
+  if (snapshot.playHistory)   sideStores.playHistory.set(snapshot.playHistory)
   if (snapshot.playlists)     store.set('playlists', snapshot.playlists)
   if (snapshot.savedQueues)   store.set('savedQueues', snapshot.savedQueues)
   if (snapshot.playbackState) sideStores.playbackState.set(snapshot.playbackState)
