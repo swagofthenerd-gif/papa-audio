@@ -9,6 +9,88 @@ const crypto = require('crypto')
 const https = require('https')
 // No sync child_process on the main thread: every shell-out goes through run().
 const { spawn, execFile } = require('child_process')
+
+// ── A deadline on every IPC endpoint ────────────────────────────────────────
+// 130 handle() endpoints, none of which had one. A handler that never settles
+// hangs that UI action forever with no feedback and no way to tell a slow
+// operation from a dead one — and a renderer awaiting it simply stops.
+//
+// Deliberately generous: the default is 60 s, which nothing legitimate reaches.
+// The endpoints below genuinely can take longer and are exempted by name rather
+// than by guesswork, because killing a real library scan would be far worse than
+// the bug being fixed. 0 means no deadline.
+const IPC_DEFAULT_TIMEOUT_MS = 60000
+const IPC_TIMEOUT_OVERRIDES = {
+  // Minutes on a large library, by design.
+  'scan-library': 0,
+  'library-scan-extras': 0,
+  // Walks every music root, the artwork directory and every trash root.
+  'library-storage-report': 300000,
+  'library-trash-list': 300000,
+  'library-empty-trash': 0,
+  'library-move-path': 0,
+  'library-inspect-paths': 300000,
+  'library-trash-paths': 0,
+  'library-restore-trashed': 0,
+  'library-prune-state': 300000,
+  // ffmpeg, once per file.
+  'transcode-file': 0,
+  'batch-transcode': 0,
+  'library-write-tags': 0,
+  'library-set-artwork': 300000,
+  // Downloads a release from GitHub and unzips it.
+  'slsk-setup': 600000,
+  // 25 s per variant, six variants, plus slskd's own latency.
+  'slsk-search': 240000,
+  'slsk-enqueue-downloads': 180000,
+  'yt-download': 0,
+  'torrent-remove': 120000,
+  // 20 s timeout with two retries and exponential backoff already inside.
+  'yt-home': 120000,
+  'yt-search': 120000,
+  'yt-music-search': 120000,
+  'yt-music-search-full': 120000,
+  'yt-search-page': 120000,
+  'yt-album': 120000,
+  'yt-artist': 120000,
+  'yt-playlist': 120000,
+  'yt-radio': 120000,
+  'fetch-album-art': 120000,
+  'verify-surround': 120000,
+  'verify-surround-folder': 300000,
+  'slsk-verify-file': 120000,
+}
+
+// Patched here, before any handler registers, so every one is covered. The
+// alternative was 130 identical edits and a way for the 131st to be forgotten.
+const _ipcRawHandle = ipcMain.handle.bind(ipcMain)
+ipcMain.handle = function (channel, fn) {
+  const budget = Object.prototype.hasOwnProperty.call(IPC_TIMEOUT_OVERRIDES, channel)
+    ? IPC_TIMEOUT_OVERRIDES[channel]
+    : IPC_DEFAULT_TIMEOUT_MS
+  if (!budget) return _ipcRawHandle(channel, fn)
+  return _ipcRawHandle(channel, async (...args) => {
+    let timer
+    try {
+      return await Promise.race([
+        fn(...args),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => {
+            const err = new Error(`${channel} did not answer within ${budget}ms`)
+            err.code = 'IPC_TIMEOUT'
+            // Loud on purpose: this is a handler that is wedged, and the whole
+            // point is that it stops being invisible.
+            console.error(`[papa][ipc] ${channel} timed out after ${budget}ms`)
+            reject(err)
+          }, budget)
+          timer.unref?.()
+        }),
+      ])
+    } finally {
+      clearTimeout(timer)
+    }
+  })
+}
 const { MpvEngine } = require('./mpv-engine')
 const { formatDiagnostic } = require('./engine-diagnostics')
 const history = require('./history')
@@ -4365,6 +4447,37 @@ ipcMain.handle('slsk-respread-backlog', async (_, opts) => {
   return { ok: true, purged: purge.length, respread: queued.length, stats: dlSched.stats(dlState) }
 })
 
+// Only the fields the renderer actually reads. slskd's transfer records carry a
+// great deal more, and the whole list was structured-cloned across the bridge in
+// both directions — the measured worst case was 1,020,307 bytes every 6 s. The
+// purge (item 232) shrinks how many records there are; this shrinks each one.
+const TRANSFER_FIELDS = [
+  'id', 'filename', 'state', 'size', 'bytesTransferred', 'bytesRemaining',
+  'percentComplete', 'averageSpeed', 'remainingTime', 'startedAt', 'endedAt',
+  'requestedAt', 'enqueuedAt', 'direction', 'exception',
+]
+
+function slimTransfer(f) {
+  const out = {}
+  for (const k of TRANSFER_FIELDS) if (f[k] !== undefined) out[k] = f[k]
+  return out
+}
+
+// A rough size for a payload about to cross the bridge. Only used to warn: the
+// point is that a payload growing back to a megabyte becomes visible rather than
+// being rediscovered by measuring it a year later.
+const IPC_PAYLOAD_WARN_BYTES = 256 * 1024
+function warnIfLarge(channel, payload) {
+  try {
+    const bytes = Buffer.byteLength(JSON.stringify(payload))
+    if (bytes > IPC_PAYLOAD_WARN_BYTES) {
+      console.warn(`[papa][ipc] ${channel} returned ${Math.round(bytes / 1024)} KB ` +
+        `across the bridge (warning above ${Math.round(IPC_PAYLOAD_WARN_BYTES / 1024)} KB)`)
+    }
+    return bytes
+  } catch (_) { return 0 }
+}
+
 ipcMain.handle('slsk-get-transfers', async () => {
   // Was `catch (_) { return [] }`. The renderer detects an unreachable daemon by
   // this promise REJECTING, so swallowing made that impossible: a dead slskd
@@ -4373,7 +4486,17 @@ ipcMain.handle('slsk-get-transfers', async () => {
   // code. It also fired a bogus "all downloads complete" notification, because
   // the active count dropped to zero.
   const data = await slskdFetch('GET', '/transfers/downloads')
-  return data || []
+  // Same shape as slskd's — users, each with directories, each with files — but
+  // with every field the renderer never looks at removed.
+  const slim = (data || []).map(user => ({
+    username: user.username,
+    directories: (user.directories || []).map(dir => ({
+      directory: dir.directory,
+      files: (dir.files || []).map(slimTransfer),
+    })),
+  }))
+  warnIfLarge('slsk-get-transfers', slim)
+  return slim
 })
 
 ipcMain.handle('slsk-cancel-transfer', async (_, { username, id, alreadyDone }) => {

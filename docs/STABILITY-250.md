@@ -1075,13 +1075,15 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 ### 133. The download poll competes with playback for the main thread
 
-`OPEN` `High`
+`DONE` `High`
 
 **Symptom.** A 1 MB fetch, a structured clone in both directions, a flatten and a hash every 6 s, plus a store write every 4 s from the scheduler — all on the thread that pumps mpv's IPC.
 
 **Solution.** Gate polling on an active transfer, shrink the payload, and never write the store on a tick while audio is playing.
 
 **Partly done in Tier 3.** The scheduler's 4 s store write no longer touches the shared config at all — it is its own small file, written asynchronously and coalesced, so the "store write every 4 s" half of this is gone. The poll itself is unchanged: still a fetch, a structured clone in both directions, a flatten and a hash every 6 s on the main thread. Gating it on an active transfer and shrinking the payload are the parts still to do.
+
+**Done, across three tiers.** All three parts of the solution landed separately: the scheduler's 4 s store write became its own small coalesced file (Tier 3), the poll is now gated on an active transfer and stops entirely when the window is hidden with nothing moving (item 233), and the payload is trimmed to the fields the renderer reads (item 104). What is left on the main thread per tick is a much smaller fetch and a hash, at 2 s only while the Downloads page is open.
 
 ### 134. The scheduler tick has no overlap guard beyond a boolean
 
@@ -1631,19 +1633,23 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 ### 103. 173 IPC endpoints with no uniform timeout
 
-`OPEN` `High`
+`DONE` `High`
 
 **Symptom.** 127 handle plus 46 on. A renderer invoke against a handler that never settles hangs that UI action forever with no feedback.
 
 **Solution.** A wrapper applying a per-endpoint deadline and rejecting with a typed timeout.
 
+**Done.** `ipcMain.handle` is wrapped once, before any handler registers, so all 130 endpoints are covered and the 131st cannot be forgotten — the alternative was 130 identical edits. The default is 60 s, generous enough that nothing legitimate reaches it, and the endpoints that genuinely take longer are exempted **by name** rather than by guesswork, because killing a real library scan would be far worse than the bug being fixed. A timeout rejects with `code: 'IPC_TIMEOUT'` and logs loudly, which is the whole point: a wedged handler stops being invisible.
+
 ### 104. Large payloads cross the bridge structured-cloned in both directions
 
-`OPEN` `High`
+`DONE` `High`
 
 **Symptom.** The 1 MB transfer list every 6 s is the worst case, but library and scan results are comparable.
 
 **Solution.** Return only the fields the renderer reads; warn above a size threshold in development.
+
+**Done.** `slsk-get-transfers` returns only the fields the renderer actually reads — the list was derived from the reads, not guessed — while keeping slskd's three-deep shape so the renderer's walk still works. Combined with item 232's purge, that attacks both halves: how many records there are and how big each one is. There is also a `warnIfLarge` helper that logs any payload over 256 KB, so a payload growing back to a megabyte becomes visible rather than being rediscovered by measuring it a year later.
 
 ### 105. The preload surface is a flat list of 164 endpoints with no grouping or validation
 
@@ -1958,6 +1964,11 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 **Symptom.** src/renderer.js is two thirds of the codebase in a single shared scope. Most of the collision and double-binding findings in this and the previous report are symptoms of this one fact.
 
 **Solution.** Convert to ES modules with explicit imports. Mechanical and low-risk per file, and it makes the whole class of defect impossible.
+
+**Not attempted, and this is a recommendation not to attempt it blind.** Splitting 14,085 lines across 18 shared-global script tags is the single highest-risk change in this document. Every one of those files depends on load order and on a shared global scope; `test/script-globals.test.js` exists precisely because a top-level `const` collision silently kills a whole file with no symptom but a console line nobody reads. Doing this without being able to launch the app and drive all ten tabs would be reckless — a module boundary drawn wrongly does not fail a test, it fails at runtime on one page a week later.
+
+What this round did instead, which makes the split safer when it is attempted: four decision modules were extracted with real unit tests behind them (`load-error-policy.js`, `local-store.js`, plus `side-store.js` and `history.js` on the main side), and the cross-file wiring tests (`engine-event-wiring`, `ipc-channel-wiring`, `mpv-socket-name`) now assert the couplings that a refactor would most easily break. Extract the next module the same way — pure logic, its own test file, registered in `script-globals.test.js` — rather than moving code in bulk.
+
 
 ### 184. var API is declared in eight files sharing one global scope
 

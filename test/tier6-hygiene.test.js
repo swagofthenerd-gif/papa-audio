@@ -206,3 +206,49 @@ test('a failed scan is distinguishable from an empty library, everywhere', () =>
   const failBranch = full.slice(full.indexOf('data.failed'))
   assert.match(failBranch.slice(0, 400), /return/, 'it used to report "0 albums found" as the answer')
 })
+
+// ── Item 103: a deadline on every endpoint ────────────────────────────────
+
+test('every IPC endpoint gets a deadline, and the slow ones are exempted by name', () => {
+  // A handler that never settles hangs that UI action forever with no feedback
+  // and no way to tell a slow operation from a dead one.
+  assert.match(MAIN, /const _ipcRawHandle = ipcMain\.handle\.bind\(ipcMain\)/)
+  assert.match(MAIN, /IPC_DEFAULT_TIMEOUT_MS = 60000/, 'generous enough that nothing legitimate reaches it')
+  assert.match(MAIN, /err\.code = 'IPC_TIMEOUT'/)
+  // The patch has to come before any handler registers, or the early ones escape.
+  const patchAt = MAIN.indexOf('ipcMain.handle = function (channel, fn)')
+  const firstHandler = MAIN.indexOf("ipcMain.handle('")
+  assert.ok(patchAt > 0 && firstHandler > 0)
+  assert.ok(patchAt < firstHandler, 'the wrapper must be installed before the first handler')
+})
+
+test('the genuinely slow endpoints are not killed mid-operation', () => {
+  // Killing a real library scan would be far worse than the bug being fixed.
+  const table = MAIN.slice(MAIN.indexOf('const IPC_TIMEOUT_OVERRIDES = {'), MAIN.indexOf('const _ipcRawHandle'))
+  for (const ch of ['scan-library', 'library-write-tags', 'batch-transcode', 'library-empty-trash']) {
+    assert.match(table, new RegExp(`'${ch}': 0`), `${ch} must have no deadline`)
+  }
+  for (const ch of ['slsk-search', 'slsk-setup', 'library-storage-report', 'yt-search']) {
+    assert.match(table, new RegExp(`'${ch}': \\d+`), `${ch} needs a longer-than-default deadline`)
+  }
+})
+
+// ── Item 104: the payload that crossed the bridge twice every 6 s ─────────
+
+test('the transfer list is trimmed to the fields the renderer reads', () => {
+  assert.match(MAIN, /const TRANSFER_FIELDS = \[/)
+  const fn = MAIN.slice(MAIN.indexOf('ipcMain.handle(\'slsk-get-transfers\''), MAIN.indexOf('ipcMain.handle(\'slsk-cancel-transfer\''))
+  assert.match(fn, /\.map\(slimTransfer\)/)
+  assert.match(fn, /warnIfLarge\('slsk-get-transfers'/)
+  // The shape has to survive the trim, or the renderer's three-deep walk breaks.
+  assert.match(fn, /username: user\.username/)
+  assert.match(fn, /directories:/)
+  assert.match(fn, /files:/)
+})
+
+test('a payload growing back to a megabyte becomes visible', () => {
+  assert.match(MAIN, /IPC_PAYLOAD_WARN_BYTES/)
+  const fn = MAIN.slice(MAIN.indexOf('function warnIfLarge('), MAIN.indexOf("ipcMain.handle('slsk-get-transfers'"))
+  assert.match(fn, /console\.warn/)
+  assert.match(fn, /catch/, 'a payload that cannot be measured must not break the handler')
+})
