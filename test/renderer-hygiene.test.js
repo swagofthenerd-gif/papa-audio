@@ -147,3 +147,39 @@ test('the downloads poll survives a throwing frame and says so', () => {
   assert.match(fn, /showSnackbar/, 'a page frozen on stale data has to be visible')
   assert.match(fn, /finally/, 'the re-entrancy guard must still be released')
 })
+
+// ── Items 127, 128, 185: the UI converges on mpv ───────────────────────────
+
+test('the renderer reconciles its playback state against mpv once a second', () => {
+  // Three copies exist: mpv's properties, the shim's fields, and
+  // state.isPlaying. This makes the last converge on the first.
+  const at = CODE.indexOf('const reconcileTimer = setInterval(')
+  assert.ok(at > 0, 'the reconcile tick is missing')
+  const fn = CODE.slice(at, at + 2600)
+  assert.match(fn, /state\.isPlaying !== playing/, 'the UI flag must follow mpv, not the last optimistic write')
+  assert.match(fn, /audio\.mpvPath/, 'compare against what mpv has open')
+  assert.match(fn, /audio\.positionAgeMs > STALE_POSITION_MS/, 'a frozen bar is its own signal')
+  assert.match(fn, /if \(audio\.engineDown\) return/, 'do not shout while the engine is already down')
+  assert.match(fn, /reconcileTimer\.unref/, 'a 1s interval must not hold the process open')
+})
+
+test('the reconcile does not cry wolf over streams', () => {
+  // A stream is resolved to a direct URL before mpv sees it, so the paths
+  // legitimately differ and comparing them would fire on every track.
+  const at = CODE.indexOf('const reconcileTimer = setInterval(')
+  const fn = CODE.slice(at, at + 2600)
+  assert.match(fn, /\^https\?/, 'streams have to be exempted')
+})
+
+test('a disagreement resyncs to mpv rather than to the queue', () => {
+  const at = CODE.indexOf('const reconcileTimer = setInterval(')
+  const fn = CODE.slice(at, at + 2600)
+  assert.match(fn, /state\.queueIndex = idx/)
+  assert.match(fn, /updateNextPrefetch\(\)/, 'a resync without re-arming prefetch stops the album at the next boundary')
+  assert.match(fn, /updateNowPlayingFromPath\(real\)/, 'and mpv playing something not in the queue still has to be shown')
+})
+
+test('the stale bar has a visible style, not just a class', () => {
+  const css = fs.readFileSync(path.join(SRC, 'styles.css'), 'utf8')
+  assert.match(css, /\.progress-track\.stale/)
+})

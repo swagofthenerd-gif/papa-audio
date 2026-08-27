@@ -12400,6 +12400,65 @@ function setupListeners() {
     el.textContent = p?.samplerate ? `${(p.format || '').toUpperCase()} ${Math.round(p.samplerate / 1000)}kHz` : ''
   })
 
+  // ── Reconciling the UI against mpv ────────────────────────────────────────
+  // Three copies of playback state exist: mpv's observed properties, the shim's
+  // fields (now derived from them), and state.isPlaying here. This makes the
+  // last one converge on the first once a second, cheaply — a string compare and
+  // a boolean — rather than trusting whatever the last optimistic write left.
+  const RECONCILE_MS = 1000
+  // A bar that has not moved for this long while unpaused is frozen, not paused.
+  const STALE_POSITION_MS = 3000
+  let _reconcileWarnedPath = null
+  let _barStale = false
+
+  const reconcileTimer = setInterval(() => {
+    if (audio.engineDown) return          // already saying so, loudly
+    // 185, in practice: mpv's pause property is the authority, and the shim's
+    // `paused` is now a view of it with a short-lived optimistic overlay.
+    const playing = !audio.paused
+    if (state.isPlaying !== playing) {
+      state.isPlaying = playing
+      updatePlayBtn()
+      if (state.modalOpen) syncModalPlayBtn()
+    }
+
+    // 127: a frozen progress bar looked exactly like a paused track.
+    const stale = playing && audio.positionAgeMs > STALE_POSITION_MS
+    if (stale !== _barStale) {
+      _barStale = stale
+      document.getElementById('progress-track')?.classList.toggle('stale', stale)
+      document.getElementById('np-modal-track')?.classList.toggle('stale', stale)
+      if (stale) console.error(`[papa] the progress bar has not moved for ${Math.round(audio.positionAgeMs)}ms while unpaused`)
+    }
+
+    // 128: what the UI is showing versus what mpv actually has open.
+    const shown = state.queue[state.queueIndex]
+    const real = audio.mpvPath
+    if (!real || !shown || !shown.filePath) return
+    if (real === shown.filePath) { _reconcileWarnedPath = null; return }
+    // Streams are resolved to a direct URL before mpv sees them, so the paths
+    // legitimately differ and comparing them would cry wolf every track.
+    if (/^https?:\/\//.test(shown.filePath) || /^https?:\/\//.test(real)) return
+    if (_reconcileWarnedPath === real) return
+    _reconcileWarnedPath = real
+    const idx = state.queue.findIndex(t => t.filePath === real)
+    console.error('[papa] the UI and mpv disagree about what is playing:',
+      JSON.stringify({ shown: shown.filePath, mpv: real, foundInQueueAt: idx }))
+    if (idx >= 0) {
+      // mpv is the authority. Resync rather than leave scrobbling, now-playing
+      // and playNext's arithmetic all acting on the wrong track.
+      state.queueIndex = idx
+      updateNowPlaying(state.queue[idx])
+      updateTrackHighlight()
+      if (state.queuePanelOpen) renderQueuePanel()
+      if (state.modalOpen) updateNowPlayingModal()
+      updateNextPrefetch()
+    } else {
+      updateNowPlayingFromPath(real)
+    }
+  }, RECONCILE_MS)
+  reconcileTimer.unref?.()
+
   // ── Playback engine lifecycle ─────────────────────────────────────────────
   // mpv dying used to be invisible here. main forwarded engineDown, the shim
   // had no case for it, and nothing in the renderer listened — so through the
@@ -12422,9 +12481,13 @@ function setupListeners() {
     // The decided behaviour: resume at the same position, then say so once,
     // briefly, dismissibly. Never a blocking prompt, never silent.
     showSnackbar(
-      d.resumed
-        ? `Playback engine restarted — resumed at ${fmtDur(d.position || 0)}`
-        : 'Playback engine restarted',
+      d.rebuilt
+        ? (d.resumed
+          ? `Audio settings applied — resumed at ${fmtDur(d.position || 0)}`
+          : 'Audio settings applied')
+        : (d.resumed
+          ? `Playback engine restarted — resumed at ${fmtDur(d.position || 0)}`
+          : 'Playback engine restarted'),
       '', function () {}, 4000)
     // The respawn cleared mpv's playlist, and gapless prefetch lives in the
     // renderer's queue — without this the album plays this track and stops.
@@ -12453,6 +12516,18 @@ function setupListeners() {
     if (state.modalOpen) syncModalPlayBtn()
     setEngineState('Playback engine failed', false)
     console.error('[papa] engine failed:', JSON.stringify(d))
+  })
+
+  // A settings change is about to rebuild the engine mid-track. The audio stops
+  // either way; the point is that it stops for a stated reason.
+  audio.addEventListener('enginerebuilding', e => {
+    const d = e.detail || {}
+    const why = (d.because || []).join(', ')
+    console.log('[papa] engine rebuilding because of', why || 'a settings change')
+    state.isPlaying = false
+    updatePlayBtn()
+    if (state.modalOpen) syncModalPlayBtn()
+    setEngineState('Applying audio settings…', true)
   })
 
   // main rebuilt the engine on its own after a failure, without the user having

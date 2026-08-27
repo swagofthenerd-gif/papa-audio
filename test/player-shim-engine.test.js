@@ -210,3 +210,41 @@ test('the events that already worked still work', () => {
   assert.strictEqual(player.duration, 192)
   assert.strictEqual(player.currentTime, 12.5)
 })
+
+// ── Items 127 and 128: what mpv actually has open, and whether it is moving ──
+
+test('the shim records the path mpv reports, not the one the renderer asked for', () => {
+  const { player, emit } = loadShim()
+  assert.strictEqual(player.mpvPath, null)
+  emit('trackChanged', '/music/06 - The Snow Goose.flac')
+  assert.strictEqual(player.mpvPath, '/music/06 - The Snow Goose.flac')
+  emit('autoAdvanced', '/music/07 - Rhayader Alone.flac')
+  assert.strictEqual(player.mpvPath, '/music/07 - Rhayader Alone.flac')
+})
+
+test('trackChanged reaches the renderer instead of being dropped', () => {
+  // It was dropped on the grounds that the renderer issued the load and so
+  // already knows. It knows what it ASKED for; this is what mpv is playing, and
+  // that is the thing several desync findings turn on.
+  const { player, emit } = loadShim()
+  const seen = captured(player, 'trackchanged')
+  emit('trackChanged', '/music/a.flac')
+  assert.strictEqual(seen.length, 1)
+  assert.strictEqual(seen[0].detail, '/music/a.flac')
+})
+
+test('position age tells a frozen bar apart from a paused one', () => {
+  const { player, emit } = loadShim()
+  assert.strictEqual(player.positionAgeMs, Infinity, 'never having reported is not zero')
+  emit('position', 12.5)
+  assert.ok(player.positionAgeMs < 50)
+})
+
+test('loading a new track resets the position age', () => {
+  const { player, emit } = loadShim()
+  emit('position', 12.5)
+  assert.ok(player.positionAgeMs < 50)
+  player.src = 'file:///music/b.flac'
+  assert.strictEqual(player.positionAgeMs, Infinity,
+    'otherwise the first tick of a new track looks stale or fresh at random')
+})

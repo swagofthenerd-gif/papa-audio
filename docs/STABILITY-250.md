@@ -1877,19 +1877,23 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 ### 127. The progress bar freezing is indistinguishable from a paused track
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** When mpv dies, position stops updating and nothing else changes.
 
 **Solution.** Stale position is itself a signal; show it.
 
+**Done.** The shim records when mpv last reported a position, and the renderer's reconcile tick marks the bar stale after 3 s of no movement while unpaused — a hatched red fill and a red thumb, so a frozen bar looks like a fault instead of a pause. The engine's own stall watchdog (item 17) covers the mpv side at 8 s; this is the cheaper, faster signal about the *bar*.
+
 ### 128. Track changes do not verify that the UI matches what mpv is playing
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** Several findings above end in a desync between queueIndex and the actual file.
 
 **Solution.** Reconcile the displayed track against mpv's observed path on every position tick, cheaply.
+
+**Done.** The shim now keeps the path mpv reports — `trackChanged` used to be dropped there on the grounds that the renderer issued the load and therefore knew, which conflates what it *asked for* with what mpv actually has open. A 1 s tick compares the two: a string compare and a boolean. On a mismatch mpv wins, the index is resynced, and prefetch is re-armed on that path too. Streams are exempt, because they are resolved to a direct URL before mpv sees them and the paths legitimately differ.
 
 ### 129. No 'now playing from' provenance
 
@@ -2008,11 +2012,13 @@ What this round did instead, which makes the split safer when it is attempted: f
 
 ### 185. The playback state lives in three places that can disagree
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** mpv's observed properties, the shim's private fields, and state.isPlaying in the renderer.
 
 **Solution.** One state machine in the engine; the other two become views of it.
+
+**Done in practice, not in architecture.** The shim's `paused` is already a view of mpv's observed property with a short-lived optimistic overlay (item 14), and the reconcile tick now makes `state.isPlaying` converge on it once a second, so the third copy stops being independently authoritative. What was *not* done is the item's literal solution — one state machine in the engine with the other two as formal views — because that is a renderer-wide refactor of the same class as item 183 and needs the app to verify. The convergence is bounded and testable; the refactor is neither, from here.
 
 ### 186. There is no seam to test playback without a real mpv
 
@@ -2116,11 +2122,13 @@ What this round did instead, which makes the split safer when it is attempted: f
 
 ### 201. The tray tooltip is updated from renderer state that can be stale
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** After an engineDown the tooltip keeps claiming a track is playing.
 
 **Solution.** Drive it from the engine's own state.
+
+**Done.** The name still comes from the renderer, because main has paths and not titles — but whether it is playing now comes from the engine, and the tooltip is refreshed on `paused`, `engineDown`, `engineRecovered` and `engineFailed`. It says "— paused" or "— playback engine unavailable" rather than continuing to claim a track is playing.
 
 ### 202. No MPRIS integration on KDE
 
@@ -2160,11 +2168,13 @@ What this round did instead, which makes the split safer when it is attempted: f
 
 ### 206. Changing output settings rebuilds the engine mid-track with no warning
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** main.js:1032 rebuilds for outputMode, alsaDevice, mode and crossfadeSecs. The rebuild path replays load, seek, volume and play with no failure handling.
 
 **Solution.** Warn, then rebuild through the same supervised resume path as a respawn.
+
+**Done.** The renderer is told **before** the audio stops, not after: `engineRebuilding` names which settings caused it, and the badge says "Applying audio settings…". The rebuild then goes through the engine's own bounded `resumeState()` — the same path a respawn uses — so it cannot drift from it, and a rebuild that cannot finish reports itself instead of leaving the engine half-configured with no event. `resumeState` was added to MpvCrossfade too, since reaching into the engine's private `_resume` would have thrown for anyone using crossfade mode.
 
 ### 207. An invalid ALSA device is only discovered at spawn time
 

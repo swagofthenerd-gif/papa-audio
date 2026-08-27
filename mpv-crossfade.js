@@ -107,6 +107,9 @@ class MpvCrossfade extends EventEmitter {
     return true
   }
   async restart(cfg) { for (const e of this.engines) await e.restart(cfg) }
+  // Same surface as MpvEngine: the engine that is audible is the one that has to
+  // come back holding the track.
+  async resumeState(resume) { return this._active.resumeState(resume) }
   getState() { return this._active.getState() }
   // Both engines' timelines, interleaved by time and tagged with which engine
   // produced each entry — a crossfade fault is usually about the handoff.

@@ -1333,7 +1333,7 @@ function buildPlayer(cfg) {
     : new MpvEngine({ config: engineConfig })
   p.on('position',     d => sendPlayerEvent('position', d))
   p.on('duration',     d => sendPlayerEvent('duration', d))
-  p.on('paused',       d => sendPlayerEvent('paused', d))
+  p.on('paused',       d => { sendPlayerEvent('paused', d); refreshTrayTooltip() })
   p.on('audioParams',  d => sendPlayerEvent('audioParams', d))
   p.on('autoAdvanced', d => sendPlayerEvent('autoAdvanced', d))
   p.on('trackChanged', d => sendPlayerEvent('trackChanged', d))
@@ -1342,16 +1342,16 @@ function buildPlayer(cfg) {
   // These four carry a payload now. engineDown says whether recovery is coming,
   // stopped names the end-file reason, engineRecovered says where it resumed,
   // and engineFailed says what actually failed instead of blaming a missing mpv.
-  p.on('engineDown',      d => sendPlayerEvent('engineDown', d))
+  p.on('engineDown',      d => { sendPlayerEvent('engineDown', d); refreshTrayTooltip() })
   p.on('stopped',         d => sendPlayerEvent('stopped', d))
-  p.on('engineRecovered', d => sendPlayerEvent('engineRecovered', d))
+  p.on('engineRecovered', d => { sendPlayerEvent('engineRecovered', d); refreshTrayTooltip() })
   // Position stopped advancing while mpv says it is not paused. mpv itself is
   // asked what it thinks before this fires, so it is a finding, not a guess.
   p.on('stalled',         d => sendPlayerEvent('stalled', d))
   // The output device, specifically, as opposed to any other mpv complaint.
   p.on('audioDeviceLost', d => sendPlayerEvent('audioDeviceLost', d))
   p.on('audioDeviceFallback', d => sendPlayerEvent('audioDeviceFallback', d))
-  p.on('engineFailed',    d => { sendPlayerEvent('engineFailed', d); onEngineFailed(d) })
+  p.on('engineFailed',    d => { sendPlayerEvent('engineFailed', d); refreshTrayTooltip(); onEngineFailed(d) })
   // The whole reason this exists: mpv's own diagnosis and the timeline around
   // it, on disk, at the moment it happens. console.error is already tee'd to
   // the daily log.
@@ -1595,15 +1595,26 @@ ipcMain.handle('player-set-config', async (_, partial) => {
   try {
     if (needsRebuild) {
       const resume = player.getState()
+      // Tell the renderer before the audio stops, not after: changing the output
+      // device or the crossfade mode tears the engine down mid-track, and that
+      // used to happen with no warning at all.
+      sendPlayerEvent('engineRebuilding', {
+        because: Object.keys(partial).filter(k => ['outputMode', 'alsaDevice', 'mode', 'crossfadeSecs'].includes(k)),
+        path: resume.path, position: resume.position,
+      })
       player.stop()
       player = buildPlayer(cfg)
       await player.start()
-      if (resume.path) {
-        await player.load(resume.path, { play: false })
-        if (resume.position > 1) await player.seek(resume.position)
-        await player.setVolume(resume.volume)
-        if (!resume.paused) await player.play()
-      }
+      // The engine's own bounded resume, the same one the respawn path uses, so
+      // a rebuild that cannot finish reports itself instead of leaving the engine
+      // half-configured with no event.
+      const outcome = await player.resumeState(resume)
+      sendPlayerEvent('engineRecovered', {
+        path: resume.path, position: resume.position,
+        resumed: !!(outcome && outcome.resumed), wasPlaying: !resume.paused,
+        rebuilt: true,
+      })
+      refreshTrayTooltip()
     } else {
       if ('replaygain' in partial) await player.setReplaygain(cfg.replaygain)
       if ('channels' in partial) await player.setChannels(cfg.channels)
@@ -1712,11 +1723,30 @@ function updateTrayMenu(isPlaying) {
   ]))
 }
 
-ipcMain.on('update-tray-tooltip', (_, track) => {
+// The renderer's idea of the track, kept only as the source of the NAME — main
+// has no titles, only paths.
+let _trayTrack = null
+
+// The tooltip used to be whatever the renderer last sent, so after an engineDown
+// it kept claiming a track was playing. The name still comes from the renderer;
+// whether it is playing comes from the engine.
+function refreshTrayTooltip() {
   if (!tray) return
-  var tip = 'Papa Audio'
-  if (track && track.title) tip = track.title + (track.artist ? ' — ' + track.artist : '')
-  tray.setToolTip(tip)
+  let tip = 'Papa Audio'
+  if (_trayTrack && _trayTrack.title) {
+    const name = _trayTrack.title + (_trayTrack.artist ? ' — ' + _trayTrack.artist : '')
+    if (!playerReady()) tip = `${name} — playback engine unavailable`
+    else if (playerIsPlaying()) tip = name
+    else tip = `${name} — paused`
+  } else if (!playerReady()) {
+    tip = 'Papa Audio — playback engine unavailable'
+  }
+  try { tray.setToolTip(tip) } catch (_) { /* the tray can be gone mid-quit */ }
+}
+
+ipcMain.on('update-tray-tooltip', (_, track) => {
+  _trayTrack = track || null
+  refreshTrayTooltip()
 })
 
 function updateBrowserBounds() {

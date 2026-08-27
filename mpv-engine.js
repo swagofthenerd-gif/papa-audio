@@ -567,6 +567,12 @@ class MpvEngine extends EventEmitter {
     }
   }
 
+  // The supervised resume, as a public entry point. main uses it for a settings
+  // rebuild so that path cannot drift from the respawn path — which is exactly
+  // how the rebuild ended up replaying load/seek/volume/play with no failure
+  // handling of its own.
+  async resumeState(resume) { return this._resume(resume, 'resume') }
+
   async restart(newConfig = {}) {
     const resume = { ...this.state }
     this._rec('restart', { changed: Object.keys(newConfig), path: resume.path, position: resume.position })

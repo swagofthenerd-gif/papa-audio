@@ -3993,6 +3993,20 @@ textarea:focus:not(:focus-visible) { outline: none; }
   color: #f0a500;
   animation: pulse 1.2s infinite;
 }
+/* A progress bar that has stopped moving while mpv says it is not paused. The
+   bar freezing used to be indistinguishable from a paused track. */
+.progress-track.stale .progress-fill {
+  background: repeating-linear-gradient(
+    90deg,
+    rgba(224,92,92,.55) 0 6px,
+    rgba(224,92,92,.20) 6px 12px
+  );
+}
+.progress-track.stale .progress-thumb {
+  background: #e05c5c;
+  box-shadow: 0 0 0 3px rgba(224,92,92,.20);
+}
+
 /* mpv's own last words in the blocker: readable, scrollable, not a wall. */
 #mpv-blocker-log {
   max-height: 140px;

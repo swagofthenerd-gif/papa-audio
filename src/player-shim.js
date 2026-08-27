@@ -23,12 +23,19 @@ class PapaPlayerShim extends EventTarget {
     this._ended = false
     this._volume = 0.8
     this._engineDown = false
+    // The last path mpv reported. Not what the renderer asked for — what mpv
+    // says it has open.
+    this._mpvPath = null
+    // When the last position update arrived, so a frozen progress bar can be
+    // told apart from a paused one.
+    this._lastPositionAt = 0
     this.audioParams = null
 
     window.api.on('player-event', ({ type, data }) => {
       switch (type) {
         case 'position':
           this._currentTime = data
+          this._lastPositionAt = Date.now()
           this.dispatchEvent(new Event('timeupdate'))
           break
         case 'duration':
@@ -46,9 +53,18 @@ class PapaPlayerShim extends EventTarget {
           break
         case 'autoAdvanced':
           this._src = `file://${data}`
+          this._mpvPath = data
           this._currentTime = 0
           this._ended = false
           this.dispatchEvent(new CustomEvent('autoadvanced', { detail: data }))
+          break
+        case 'trackChanged':
+          // Previously dropped here on the grounds that the renderer issued the
+          // load and therefore already knows. It does know what it ASKED for;
+          // this is what mpv is actually playing, which is the thing several
+          // desync findings turn on.
+          this._mpvPath = data
+          this.dispatchEvent(new CustomEvent('trackchanged', { detail: data }))
           break
         case 'ended':
           this._ended = true
@@ -100,6 +116,14 @@ class PapaPlayerShim extends EventTarget {
           this._pausedTruth = true
           this.dispatchEvent(new CustomEvent('enginerestored', { detail: data || {} }))
           break
+        case 'engineRebuilding':
+          // A settings change is about to tear the engine down mid-track. Said
+          // before the audio stops, not after.
+          this._engineDown = true
+          this._clearPausedGuess()
+          this._pausedTruth = true
+          this.dispatchEvent(new CustomEvent('enginerebuilding', { detail: data || {} }))
+          break
         case 'stalled':
           // Position stopped advancing while mpv says it is not paused — and
           // mpv itself was asked before this was sent.
@@ -131,6 +155,7 @@ class PapaPlayerShim extends EventTarget {
     this._ended = false
     this._currentTime = 0
     this._duration = 0
+    this._lastPositionAt = 0
     window.api.playerLoad({ path: this._pathOf(v), play: false })
   }
 
@@ -200,6 +225,11 @@ class PapaPlayerShim extends EventTarget {
   }
 
   get engineDown() { return this._engineDown }
+  // What mpv has open, for reconciling against what the UI is showing.
+  get mpvPath() { return this._mpvPath }
+  // Milliseconds since mpv last reported a position, or Infinity if never. A
+  // frozen bar is otherwise indistinguishable from a paused track.
+  get positionAgeMs() { return this._lastPositionAt ? Date.now() - this._lastPositionAt : Infinity }
   get ended() { return this._ended }
   get duration() { return this._duration }
   get currentTime() { return this._currentTime }

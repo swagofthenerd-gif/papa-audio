@@ -34,7 +34,6 @@ const STOPS_AT_MAIN = {
 
 // An event main sends that the shim deliberately does not translate.
 const STOPS_AT_SHIM = {
-  trackChanged: 'only fires for a load the renderer itself issued, so it already knows',
   mpvMissing: 'the renderer subscribes to player-event directly for the blocker; there is no audio-element analogue',
 }
 
