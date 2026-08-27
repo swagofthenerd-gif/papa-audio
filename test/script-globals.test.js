@@ -37,6 +37,7 @@ test('every renderer module actually publishes its global', () => {
     'library-sig.js': 'PapaLibrarySig',
     'queue-repair.js': 'PapaQueueRepair',
     'load-error-policy.js': 'PapaLoadError',
+    'local-store.js': 'PapaLocal',
     'library-prune.js': 'PapaLibraryPrune',
     'ctx-menu-model.js': 'PapaCtxMenu',
     'multi-select.js': 'PapaMultiSelect',

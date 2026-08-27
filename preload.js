@@ -216,6 +216,10 @@ contextBridge.exposeInMainWorld('api', {
   batchTranscode: (p) => ipcRenderer.invoke('batch-transcode', p),
 
   // Events from main process
+  // Returns an unsubscribe function. Without one, callers had to use off(),
+  // which is removeAllListeners on the whole channel — so clicking Set up
+  // Soulseek during a streaming search tore down the search's listener too and
+  // the results silently stopped updating.
   on: (channel, cb) => {
     const allowed = [
       'dl-started', 'dl-progress', 'dl-complete', 'dl-cancelled', 'dl-failed',
@@ -234,7 +238,10 @@ contextBridge.exposeInMainWorld('api', {
       'media-volume', 'media-shuffle', 'media-loop-status',
       'system-suspend', 'system-resume',
     ]
-    if (allowed.includes(channel)) ipcRenderer.on(channel, (_, data) => cb(data))
+    if (!allowed.includes(channel)) return () => {}
+    const h = (_, data) => cb(data)
+    ipcRenderer.on(channel, h)
+    return () => ipcRenderer.removeListener(channel, h)
   },
   off: (channel) => ipcRenderer.removeAllListeners(channel),
 })

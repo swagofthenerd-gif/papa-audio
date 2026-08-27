@@ -7,12 +7,13 @@ Written 2026-08-27. Read this first in a new session, then `docs/STABILITY-250.m
 | | |
 |---|---|
 | Branch | `feature/library-management-and-qa-fixes` |
-| Tests | 545 passing (`npm test`), 2 skipped — the two real-mpv integration tests, which need mpv installed |
+| Tests | 571 passing (`npm test`), 2 skipped — the two real-mpv integration tests, which need mpv installed |
 | Tier 1 | **done** — items 1, 2, 3, 6, 7 |
 | Tier 2 | **done** — items 4, 5, 8, 9, 10, 11, 12, 13, 14, 15, 17, 18, 19, 20, 21, 22, 23, 24, 25, 251, 252. Item 16 partly, and it says why |
 | Tier 3 | **done** — items 36, 37, 40, 41, 42, 43, 44, 45, 48, 49, 54, 55, plus 255, a regression this round introduced |
 | Tier 4 | **done** — items 91, 92, 93, 94, 96, 98, plus 256. Item 95 partly, and it says which part |
-| Tier 5–6 | not started |
+| Tier 5 | **done** — items 71–81, 85, 89, plus 257. Items 82, 83 and 84 partly, each saying which part and why |
+| Tier 6 | not started |
 | Verified against real mpv | **no.** Everything below is tests and reading. See "How this was, and was not, verified" |
 | New findings | items 251–254 at the end of `STABILITY-250.md`. 254 breaks packaged builds and is not fixed |
 
@@ -122,9 +123,21 @@ journalctl --user --since "<date>" | grep launch.sh
    explicit-start path, so the two cannot drift again. The reconciliation reports and does not rewrite.
    The cap archives the overflow monthly instead of discarding it. And `app-recovered-from-crash` is
    wired the whole way through for the first time.
-5. **Tier 5 — leaks, races, correctness.** Modal listener leaks, `_scheduleLibRescan` coalescing,
-   missing stale-render guards, unguarded `JSON.parse(localStorage…)`, unbounded caches, the 105
-   empty `catch` blocks.
+5. ~~**Tier 5 — leaks, races, correctness.**~~ **Mostly done.** All three modal listener leaks (there
+   was a third, item 257), the rescan coalescing, both missing stale-render guards, generation tickets
+   on the YouTube renders, one validated localStorage reader with nothing parsing it directly any more,
+   bounded LRU on the three caches that had no ceiling, CSS.escape on ids from outside, per-subscriber
+   IPC teardown, a survivable downloads poll frame, and rejection handlers on the six uncaught chains.
+
+   The three items left partly done are deliberate, and each says so in the catalogue: the 54
+   `setTimeout` calls were not audited individually (the ones that mattered are done); item 83's premise
+   turned out not to hold — none of the 23 global listeners is reachable from `bindContentEvents`; and
+   the 104 empty `catch` blocks were **not** rewritten wholesale. On that last one the criterion was:
+   fix every one that hides a consequence the user would notice. Four did — a silently lost scrobble,
+   a failed slskd restart that left the UI saying "restarting" forever, a missing optional dependency
+   silently disabling the folder watcher, and a library Undo whose restore could fail silently after the
+   snackbar had promised it would work. The rest guard an unlink or a stat probe, and a blanket rewrite
+   would be a large diff with almost no signal.
 6. **Tier 6 — the remaining improvements.**
 
 ## How to verify (this matters more than the code)
@@ -151,7 +164,7 @@ The lesson from two rounds: **verify against ground truth, never against the UI'
 Being exact about this, because the rule in this project is that the UI's claims are not evidence — and
 neither are mine.
 
-**Verified.** 545 tests pass, up from 399. The 146 new ones test behaviour, not implementation:
+**Verified.** 571 tests pass, up from 399. The 172 new ones test behaviour, not implementation:
 every `end-file` reason including ones mpv has not invented yet; our own `loadfile`/`playlist-clear`
 not being mistaken for a fault; the timeline being bounded and copied on read; mpv's log reaching the
 ring and faults reaching the timeline inline; `engineDown` carrying `willRecover`; recovery seeking back
@@ -166,7 +179,7 @@ that implemented it was on a macOS machine with no mpv, no PipeWire, no `~/.conf
 `.qa/` (it is gitignored, so it does not travel). The two real-mpv integration tests skipped for exactly
 that reason. So on the Fedora machine, before trusting any of this:
 
-1. `npm test` — the two skipped tests should now run there. 547 passing expected.
+1. `npm test` — the two skipped tests should now run there. 573 passing expected.
 2. Play a local album. `node tools/mpv-probe.js` should agree with the UI about path, position and pause.
 3. `tools/fault-inject.sh` — SIGKILL, SIGSTOP, PipeWire restart, device suspend. It checks the daily log
    and mpv's socket automatically and prints what needs your eyes. Before this work all four were
@@ -206,6 +219,12 @@ Things I could not test at all, and would look at first if something is wrong:
 - **The ten newly wired channels.** The tray menu, MPRIS seek/volume/shuffle/loop, and suspend/resume
   have never worked, so there is no previous behaviour to compare against. MPRIS in particular needs a
   desktop applet to test at all.
+- **Everything in Tier 5.** All of it is renderer code, and the renderer cannot be loaded in a test
+  here: the checks are unit tests on the extracted modules (`local-store.js`, `load-error-policy.js`)
+  plus static assertions over renderer.js. The behaviour that matters — a modal opened twice not
+  leaking, a stale render not repainting, the YouTube ticket discarding a late response — needs the
+  real app. `test/renderer-hygiene.test.js` proves the code says what it should, not that it does what
+  it should.
 
 ## What the history migration will do on first launch — read this before running it
 

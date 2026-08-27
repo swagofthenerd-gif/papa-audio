@@ -34,7 +34,17 @@ async function scrobbleTrack(track, timestamp) {
     'album[0]': track.album || '',
     'timestamp[0]': Math.floor(timestamp / 1000),
   })
-  try { await fetch(LASTFM_API_URL, { method: 'POST', body: params }) } catch (_) {}
+  try {
+    const res = await fetch(LASTFM_API_URL, { method: 'POST', body: params })
+    // A non-2xx is a failure too: Last.fm answers 200 with an error body for
+    // some cases, but an HTTP failure is unambiguous and was also swallowed.
+    if (!res.ok) console.error(`[papa] scrobble rejected: ${res.status} ${res.statusText} for ${track.artist} - ${track.title}`)
+  } catch (e) {
+    // Silent scrobble loss means the user finds out weeks later by looking at
+    // their Last.fm profile. Not worth interrupting playback over, but it has to
+    // be in the log.
+    console.error('[papa] scrobble failed:', String(e && e.message || e))
+  }
 }
 
 function withTimeout(promise, ms, label) {
@@ -103,7 +113,11 @@ async function withRetry(fn, maxRetries, label) {
   throw lastErr
 }
 
-let natUpnp; try { natUpnp = require('nat-upnp') } catch (_) {}
+// Optional. Without it, port mapping is unavailable — which is a degraded
+// feature, not an error, but it has to be discoverable.
+let natUpnp; try { natUpnp = require('nat-upnp') } catch (e) {
+  console.error('[papa] nat-upnp unavailable; automatic port mapping is off:', e && e.message)
+}
 
 // Under Node 18+ an unhandled rejection TERMINATES the process by default, and
 // this file is full of un-awaited async IPC handlers and network calls
@@ -750,7 +764,17 @@ app.whenReady().then(() => {
       _slskdFailures++
       if (_slskdFailures >= 3) {
         mainWindow?.webContents.send('slskd-status-change', { connected: false, restarting: true })
-        try { await startSlskd(); _slskdFailures = 0 } catch {}
+        try {
+          await startSlskd()
+          _slskdFailures = 0
+          console.log('[papa] slskd restarted after 3 failed health checks')
+        } catch (e) {
+          // A restart that fails leaves downloads dead with the UI still saying
+          // "restarting". Say so, and let the counter keep climbing so the next
+          // cycle tries again rather than believing it succeeded.
+          console.error('[papa] slskd restart failed:', String(e && e.message || e))
+          mainWindow?.webContents.send('slskd-status-change', { connected: false, restarting: false })
+        }
       } else {
         mainWindow?.webContents.send('slskd-status-change', { connected: false, restarting: false })
       }
@@ -2697,7 +2721,11 @@ ipcMain.handle('scan-library', async () => {
 })
 
 // ── Realtime folder watching ─────────────────────────────────────────────────
-let chokidar; try { chokidar = require('chokidar') } catch (_) {}
+// Optional. Without it the library never notices files changing on disk, which
+// looks exactly like the scanner being broken.
+let chokidar; try { chokidar = require('chokidar') } catch (e) {
+  console.error('[papa] chokidar unavailable; the library folder watcher is off:', e && e.message)
+}
 let _libWatcher = null
 let _watchDebounce = null
 

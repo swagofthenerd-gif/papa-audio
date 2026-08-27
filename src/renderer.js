@@ -58,8 +58,8 @@ const state = {
   albumNotes: {},
   searchSort: 'relevance',
 }
-try { state.albumRatings = JSON.parse(localStorage.getItem('papa-album-ratings') || '{}') } catch (_) { state.albumRatings = {} }
-try { state.albumNotes = JSON.parse(localStorage.getItem('papa-album-notes') || '{}') } catch (_) { state.albumNotes = {} }
+state.albumRatings = window.PapaLocal.readObject('papa-album-ratings')
+state.albumNotes = window.PapaLocal.readObject('papa-album-notes')
 
 const slsk = {
   status: { installed: false, running: false, connected: false, configured: false },
@@ -107,6 +107,13 @@ var _slskRendered = []
 // refresh timer, so B rendered "No results" while still fetching.
 var _slskRun = 0
 var _slskTimer = null
+// The live slsk-progress subscription's own unsubscribe function, so tearing it
+// down cannot take somebody else's listener on the same channel with it.
+var _slskProgressOff = null
+// Interval handles. An interval with no handle can never be stopped or
+// superseded; several of these restarted without clearing the previous one.
+var _connCheckTimer = null
+var _waveformTimer = null
 
 var _playlistSorts = {}
 const navHistory = []
@@ -125,7 +132,7 @@ const _scrollMemory = new Map()
 var _undoStack = []
 var _libPresets = []
 try {
-  var _lp = JSON.parse(localStorage.getItem('papa-lib-presets') || '[]')
+  var _lp = window.PapaLocal.readArray('papa-lib-presets')
   // JSON.parse succeeds for "null", "{}", "5" -- none of which have .length or
   // .map, so an unvalidated value made renderLibrary() throw and the whole tab
   // render as nothing, permanently, with no way back from the UI.
@@ -180,7 +187,7 @@ var DEFAULT_SHORTCUTS = {
 
 var _shortcuts = {}
 try {
-  var _savedShortcuts = JSON.parse(localStorage.getItem('papa-shortcuts') || '{}')
+  var _savedShortcuts = window.PapaLocal.readObject('papa-shortcuts')
   _shortcuts = Object.assign({}, DEFAULT_SHORTCUTS, _savedShortcuts)
 } catch (_) {
   _shortcuts = Object.assign({}, DEFAULT_SHORTCUTS)
@@ -207,7 +214,7 @@ document.body.appendChild(fileInput)
 
 var _plCollapsedFolders = {}
 try {
-  var _pc = JSON.parse(localStorage.getItem('papa-pl-collapsed') || '{}')
+  var _pc = window.PapaLocal.readObject('papa-pl-collapsed')
   if (_pc && typeof _pc === 'object' && !Array.isArray(_pc)) _plCollapsedFolders = _pc
 } catch (_) {}
 
@@ -279,7 +286,28 @@ var ALL_SHORTCUTS = [
 // ── Lyrics / Artist bio ────────────────────────────────────────────────────────
 let _lyrics = null
 let _dlPrevActiveCount = 0
+// Bounded, least-recently-used. Three caches in this file held a full payload
+// per unique key for the life of the process, with no TTL and no cap: the
+// YouTube search cache (a whole result set per scope::query), artist bios, and
+// album colours. A Map keeps insertion order, so touching an entry on read is
+// enough to make eviction least-recently-used rather than oldest-inserted.
+function _cacheGet(map, key) {
+  if (!map.has(key)) return undefined
+  const v = map.get(key)
+  map.delete(key)
+  map.set(key, v)
+  return v
+}
+
+function _cacheSet(map, key, value, cap) {
+  map.delete(key)
+  map.set(key, value)
+  while (map.size > cap) map.delete(map.keys().next().value)
+  return value
+}
+
 const _bioCache = new Map()
+const _BIO_CACHE_CAP = 100
 
 document.addEventListener('visibilitychange', () => {
   _appVisible = !document.hidden
@@ -321,14 +349,14 @@ _colorImg.onload = () => {
       bestScore = score; br = r; bg = g; bb = b
     }
   }
-  if (_colorCache.size > 200) _colorCache.delete(_colorCache.keys().next().value)  // evict oldest
-  _colorCache.set(_colorImg._artPath, [br, bg, bb])
+  // Was oldest-inserted; least-recently-used keeps the covers actually in view.
+  _cacheSet(_colorCache, _colorImg._artPath, [br, bg, bb], 200)
   setAccent(`rgb(${br},${bg},${bb})`, `rgba(${br},${bg},${bb},0.85)`, `${br},${bg},${bb}`)
 }
 
 function extractAlbumColor(artPath) {
   if (!artPath) { setAccent('#1db954', '#1ed760'); return }
-  const cached = _colorCache.get(artPath)
+  const cached = _cacheGet(_colorCache, artPath)
   if (cached) { const [r,g,b] = cached; setAccent(`rgb(${r},${g},${b})`, `rgba(${r},${g},${b},0.85)`, `${r},${g},${b}`); return }
   _colorImg._artPath = artPath
   _colorImg.src = `file://${artPath}`
@@ -493,13 +521,13 @@ async function init() {
   state.playHistory    = playHistory || []
   state.followedArtists = followedArtists || []
   state.playlists = playlists || []
-  try { _playlistSorts = JSON.parse(localStorage.getItem('papa-pl-sorts') || '{}') } catch (_) { _playlistSorts = {} }
-  try { var savedSmart = JSON.parse(localStorage.getItem('papa-smart-playlists') || 'null') } catch (_) { savedSmart = null }
-  if (savedSmart) state.smartPlaylists = savedSmart
-  try {
-    var savedFolders = JSON.parse(localStorage.getItem('papa-playlist-folders') || '[]')
-    if (Array.isArray(savedFolders)) state.playlistFolders = savedFolders.filter(function (f) { return typeof f === 'string' && f })
-  } catch (_) {}
+  _playlistSorts = window.PapaLocal.readObject('papa-pl-sorts')
+  // readArray always returns an array, so the old `if (savedSmart)` guard —
+  // which was there because the parse could yield null — is now always true and
+  // says nothing. state.smartPlaylists starts as [] anyway.
+  state.smartPlaylists = window.PapaLocal.readArray('papa-smart-playlists')
+  state.playlistFolders = window.PapaLocal.readArray('papa-playlist-folders',
+    function (f) { return typeof f === 'string' && f })
   state.savedQueues = savedQueues || []
   state.musicFolders   = info.musicFolders   || []
   state.recentlyPlayed = info.recentlyPlayed || []
@@ -947,7 +975,16 @@ function _confirmRemoveMusicFolder(folder) {
     showSnackbar(msg, 'Undo', async function () {
       state.musicFolders = await window.api.addMusicFolderPath(folder)
       if (prune && prune.snapshot) {
-        await window.api.libraryRestoreState({ snapshot: prune.snapshot }).catch(function () {})
+        // A silently failed Undo is the user's data not coming back, with the
+        // snackbar having promised it would. Two call sites, both restoring a
+        // library snapshot after a folder removal.
+        var _restored = await window.api.libraryRestoreState({ snapshot: prune.snapshot })
+          .then(function () { return true })
+          .catch(function (e) {
+            console.error('[papa] undo could not restore the library snapshot:', String(e && e.message || e))
+            return false
+          })
+        if (!_restored) showSnackbar('The folder came back, but the library entries could not be restored', '', function () {}, 8000)
         await reloadPersistedState()
       }
       renderFolders()
@@ -1304,7 +1341,7 @@ function _startYtConnect() {
     <div class="yt-connect-title">Sign in to Google</div>
     <div class="yt-connect-sub" id="yt-connect-status">A Google sign-in window just opened — log in with your YouTube account there. This page updates automatically when you're done.</div>
   </div>`
-  window.api.ytAuthStart().then(res => {
+  window.api.ytAuthStart().catch(e => ({ ok: false, error: String(e && e.message || e) })).then(res => {
     _ytHomeCache = null
     if (res?.ok) {
       if (state.currentPage === 'explore') renderExplore()
@@ -2249,7 +2286,9 @@ function toggleTrackLike(filePath) {
   else { state.likedTracks.push(filePath); liked = true }
   window.api.saveLikedTracks(state.likedTracks)
   if (liked) {
-    var likeHistory = JSON.parse(localStorage.getItem('papa_like_history') || '[]')
+    // Was an unguarded parse: a bad value aborted the whole click handler, so
+    // liking a track did nothing and said nothing.
+    var likeHistory = window.PapaLocal.readArray('papa_like_history')
     likeHistory.push({ path: filePath, ts: Date.now() })
     if (likeHistory.length > 500) likeHistory = likeHistory.slice(-500)
     localStorage.setItem('papa_like_history', JSON.stringify(likeHistory))
@@ -2306,7 +2345,7 @@ function renderSearch(query) {
     }
     var recentSearches = []
   try {
-    var _hist = JSON.parse(localStorage.getItem('pa_search_history') || '[]')
+    var _hist = window.PapaLocal.readArray('pa_search_history')
     if (Array.isArray(_hist)) recentSearches = _hist.filter(function (h) { return typeof h === 'string' && h }).slice(0, 6)
   } catch (_) {}
     var recentHTML = ''
@@ -2719,6 +2758,9 @@ document.addEventListener('visibilitychange', () => {
   document.body.classList.toggle('app-unfocused', document.hidden)
 })
 
+// A whole result payload per unique scope::query. 40 is far more than a session
+// revisits, and bounded is the point.
+const YT_SEARCH_CACHE_CAP = 40
 const ytSearchState = { scope: 'music', cache: new Map(), lastQuery: null, showTopResult: false, surroundOnly: false }
 try {
   var savedScope = localStorage.getItem('papa-yt-scope')
@@ -2827,8 +2869,9 @@ async function runYtSearch(query, scope) {
     return
   }
   var cacheKey = `${scope}::${query}`
-  if (ytSearchState.cache.has(cacheKey)) {
-    renderYtResults(ytSearchState.cache.get(cacheKey), query)
+  var cached = _cacheGet(ytSearchState.cache, cacheKey)
+  if (cached !== undefined) {
+    renderYtResults(cached, query)
     updateYtHealth('ok')
     return
   }
@@ -2869,7 +2912,7 @@ async function runYtSearch(query, scope) {
     return
   }
   updateYtHealth('ok')
-  ytSearchState.cache.set(cacheKey, res.results)
+  _cacheSet(ytSearchState.cache, cacheKey, res.results, YT_SEARCH_CACHE_CAP)
   renderYtResults(res.results, query)
   // Pre-resolve audio URLs for top YouTube results so playback is instant
   var videoIds = []
@@ -3286,14 +3329,21 @@ function _ytAlbumTrackItem(al, t) {
   }
 }
 
+// A generation ticket per YouTube render, the same pattern the Soulseek search
+// already uses. Guarding on state.currentPage only meant that opening album A and
+// then album B before A resolved let A's late response repaint over B — leaving
+// the page showing B's title with handlers wired to A's browseId.
+const _ytTicket = { album: 0, playlist: 0, artist: 0 }
+
 async function renderYtAlbum(browseId) {
+  const _ticket = ++_ytTicket.album
   // Saved albums open instantly from the stored snapshot; a background fetch
   // refreshes the page only if the data actually changed.
   const snap = state.ytSavedAlbums.find(a => a.browseId === browseId)
   if (snap) _paintYtAlbum(snap)
   else setContent(`<div class="page"><div class="skeleton skeleton-header"></div>${Array(6).fill(0).map(() => '<div class="skeleton-row"><div class="skeleton skeleton-thumb"></div><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line short"></div></div>').join('')}</div>`)
   const res = await window.api.ytAlbum({ browseId }).catch(e => ({ ok: false, error: String(e) }))
-  if (state.currentPage !== 'yt-album') return
+  if (_ticket !== _ytTicket.album || state.currentPage !== 'yt-album') return
   if (!res.ok) {
     if (!snap) setContent(`<div class="page"><div class="yt-status yt-error">Couldn't load album: ${esc(res.error || 'unknown error')} <button class="yt-retry" id="yt-album-retry">Retry</button></div></div>`)
     bindYtAlbumRetry(browseId)
@@ -3420,9 +3470,10 @@ function _ytPlTrackToQueueItem(pl, t) {
 }
 
 async function renderYtPlaylist(playlistId) {
+  const _ticket = ++_ytTicket.playlist
   setContent(`<div class="page"><div class="skeleton skeleton-header"></div>${Array(8).fill(0).map(() => '<div class="skeleton-row"><div class="skeleton skeleton-thumb"></div><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line short"></div></div>').join('')}</div>`)
   const res = await window.api.ytPlaylist({ playlistId }).catch(e => ({ ok: false, error: String(e) }))
-  if (state.currentPage !== 'yt-playlist') return
+  if (_ticket !== _ytTicket.playlist || state.currentPage !== 'yt-playlist') return
   if (!res.ok) {
     setContent(`<div class="page"><div class="yt-status yt-error">Couldn't load playlist: ${esc(res.error || 'unknown error')} <button class="yt-retry" id="yt-pl-retry">Retry</button></div></div>`)
     document.getElementById('yt-pl-retry')?.addEventListener('click', () => renderYtPlaylist(playlistId))
@@ -3559,9 +3610,10 @@ async function renderYtSeeAll(navId) {
 }
 
 async function renderYtArtist(channelId) {
+  const _ticket = ++_ytTicket.artist
   setContent(`<div class="page"><div class="skeleton skeleton-header"></div>${Array(6).fill(0).map(() => '<div class="skeleton-row"><div class="skeleton skeleton-thumb"></div><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line short"></div></div>').join('')}</div>`)
   const res = await window.api.ytArtist({ channelId }).catch(e => ({ ok: false, error: String(e) }))
-  if (state.currentPage !== 'yt-artist') return
+  if (_ticket !== _ytTicket.artist || state.currentPage !== 'yt-artist') return
   if (!res.ok) {
     setContent(`<div class="page"><div class="yt-status yt-error">Couldn't load artist: ${esc(res.error || 'unknown error')} <button class="yt-retry" id="yt-ar-retry">Retry</button></div></div>`)
     document.getElementById('yt-ar-retry')?.addEventListener('click', () => renderYtArtist(channelId))
@@ -3630,7 +3682,13 @@ async function renderYtArtist(channelId) {
   document.getElementById('yt-artist-radio-btn')?.addEventListener('click', () => {
     const btn = document.getElementById('yt-artist-radio-btn')
     if (btn) btn.textContent = 'Radio…'
-    startYtRadio(ar.topSongs[0]).then(ok => { if (btn) btn.textContent = ok ? 'Radio ▸' : 'Radio' })
+    startYtRadio(ar.topSongs[0])
+      .then(ok => { if (btn) btn.textContent = ok ? 'Radio ▸' : 'Radio' })
+      .catch(e => {
+        console.error('[papa] radio failed to start:', String(e && e.message || e))
+        if (btn) btn.textContent = 'Radio'
+        showSnackbar('Could not start radio', '', function () {}, 4000)
+      })
   })
 }
 
@@ -3728,8 +3786,7 @@ function _artistAlbumCount(artistName) {
 }
 
 function checkFollowedArtistsForNew() {
-  let prev = {}
-  try { prev = JSON.parse(localStorage.getItem('followedAlbumCounts') || '{}') } catch(_) {}
+  const prev = window.PapaLocal.readObject('followedAlbumCounts')
   const current = {}
   for (const artistName of state.followedArtists) {
     const count = _artistAlbumCount(artistName)
@@ -3921,7 +3978,8 @@ async function loadArtistBio(artistName) {
       })
     }
   }
-  if (_bioCache.has(artistName)) { render(_bioCache.get(artistName)); return }
+  var _bio = _cacheGet(_bioCache, artistName)
+  if (_bio !== undefined) { render(_bio); return }
   // A hung connection (captive portal, DNS blackhole) left the shimmering
   // skeleton up forever, because nothing ever resolved to replace it.
   var ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null
@@ -3938,12 +3996,12 @@ async function loadArtistBio(artistName) {
     const data = isDisambig
       ? { extract: null, thumbnail: null }
       : { extract: json.extract || null, thumbnail: json.thumbnail?.source || null }
-    _bioCache.set(artistName, data)
+    _cacheSet(_bioCache, artistName, data, _BIO_CACHE_CAP)
     if (state.currentPage === 'artist' && state.currentArtistName === artistName) render(data)
   } catch (_) {
     // Don't cache a network failure forever: going offline once used to mean
     // that artist had no bio for the rest of the session, even after recovery.
-    if (state.isOnline !== false) _bioCache.set(artistName, null)
+    if (state.isOnline !== false) _cacheSet(_bioCache, artistName, null, _BIO_CACHE_CAP)
     if (state.currentPage === 'artist' && state.currentArtistName === artistName) render(null)
   } finally {
     clearTimeout(bioTimer)
@@ -4594,7 +4652,8 @@ function renderLikedSongs() {
   var likedAvgSec = likedAvgDur % 60
   var analyticsHTML = '<div class="liked-analytics"><div class="liked-stat"><div class="liked-stat-val">' + totalLikedLocal + '</div><div class="liked-stat-lbl">Local Likes</div></div><div class="liked-stat"><div class="liked-stat-val">' + totalLikedYT + '</div><div class="liked-stat-lbl">YT Likes</div></div><div class="liked-stat"><div class="liked-stat-val">' + uniqueLikedArtists + '</div><div class="liked-stat-lbl">Unique Artists</div></div><div class="liked-stat"><div class="liked-stat-val">' + likedHours + 'h ' + likedMins + 'm</div><div class="liked-stat-lbl">Total Time</div></div><div class="liked-stat"><div class="liked-stat-val">' + likedAvgMin + ':' + (likedAvgSec < 10 ? '0' : '') + likedAvgSec + '</div><div class="liked-stat-lbl">Avg Length</div></div></div>'
 
-  var likeHistory = JSON.parse(localStorage.getItem('papa_like_history') || '[]')
+  // Was an unguarded parse: a bad value took out the entire Liked Songs page.
+  var likeHistory = window.PapaLocal.readArray('papa_like_history', function (e) { return e && typeof e.ts === 'number' })
   var likedByDay = {}
   likeHistory.forEach(function(e) { var d = new Date(e.ts).toDateString(); likedByDay[d] = (likedByDay[d] || 0) + 1 })
   var calHTML = '<div class="liked-calendar"><div style="font-size:12px;font-weight:600;margin-bottom:8px">Like History</div><div class="liked-calendar-grid">'
@@ -5198,7 +5257,14 @@ function showAddToPlaylistModal(tracks) {
     </div>`
   document.body.appendChild(overlay)
 
-  const close = () => overlay.remove()
+  // The keydown listener used to be removed only inside the Escape handler, so
+  // closing via the overlay, the X, or picking a playlist left it attached
+  // forever — each closure holding the modal DOM and the whole track array.
+  // Removing it in close() covers every exit, including ones added later.
+  const close = () => {
+    document.removeEventListener('keydown', onEsc)
+    overlay.remove()
+  }
   const addTo = (pl) => {
     pl.tracks = pl.tracks || []
     // Adding the same track twice used to silently double it, with no feedback
@@ -5218,7 +5284,8 @@ function showAddToPlaylistModal(tracks) {
   }
 
   overlay.addEventListener('click', e => { if (e.target === overlay) close() })
-  const onEsc = e => { if (e.key === 'Escape') { close(); document.removeEventListener('keydown', onEsc) } }
+  // Declared with `function` so close(), defined above it, can refer to it.
+  function onEsc(e) { if (e.key === 'Escape') close() }
   document.addEventListener('keydown', onEsc)
   document.getElementById('addpl-close')?.addEventListener('click', close)
   document.getElementById('addpl-new')?.addEventListener('click', () => {
@@ -6376,6 +6443,10 @@ function loadLyricsFor(track) {
     _lyrics = lines
     renderLyricsPanel()
     updateLyricsDrawer()
+  }).catch(e => {
+    // Not worth a notice — lyrics are optional — but an unhandled rejection
+    // here aborted the rest of the callback silently.
+    console.error('[papa] lyrics lookup failed for', track.filePath, String(e && e.message || e))
   })
 }
 
@@ -6914,6 +6985,9 @@ function bindContentEvents() {
       if (src.startsWith('file://')) {
         navigator.clipboard.writeText(src.replace('file://', '')).then(function() {
           showSnackbar('Path copied')
+        }).catch(function (e) {
+          console.error('[papa] clipboard write failed:', String(e && e.message || e))
+          showSnackbar('Could not copy the path')
         })
       }
     })
@@ -8727,13 +8801,18 @@ async function runSlskSearch(query) {
 
   // Progressive results via push events — fires every ~2.5s from main process
   // This gives us intermediate results BEFORE the IPC invoke resolves
-  window.api.off('slsk-progress')
-  window.api.on('slsk-progress', (d) => {
+  // off() is removeAllListeners on the channel, so this search and the Set up
+  // Soulseek button were tearing down each other's listener — starting a setup
+  // mid-search silently stopped the results updating. Own the subscription
+  // instead.
+  if (_slskProgressOff) { _slskProgressOff(); _slskProgressOff = null }
+  _slskProgressOff = window.api.on('slsk-progress', (d) => {
     if (d.query && !variants.includes(d.query) && d.query.toLowerCase() !== query.toLowerCase()) return
     if (!current()) return
     _mergeResults(d.results)
     _flush()
   })
+  const _unsubscribeProgress = () => { if (_slskProgressOff) { _slskProgressOff(); _slskProgressOff = null } }
 
   // Run all variants in parallel; each returns after 25s max (or earlier with enough results)
   const TIMEOUT = 25000
@@ -8759,7 +8838,7 @@ async function runSlskSearch(query) {
         // slsk.results and never rendered. The page sat on "Searching…" or an
         // empty grid until some unrelated action repainted the section.
         _slskRepaint(query)
-        window.api.off('slsk-progress')
+        _unsubscribeProgress()
         if (_slskTimer) { clearInterval(_slskTimer); _slskTimer = null }
       }
       _flush()
@@ -8767,7 +8846,7 @@ async function runSlskSearch(query) {
   ))
 
   // Final cleanup in case some variant is still pending (shouldn't happen after Promise.all)
-  window.api.off('slsk-progress')
+  _unsubscribeProgress()
   slsk.searching = false
   slsk.searched  = true
   if (_slskTimer) { clearInterval(_slskTimer); _slskTimer = null }
@@ -8778,10 +8857,27 @@ async function refreshSlskStatus() {
   try { slsk.status = await window.api.slskStatus() } catch (_) {}
 }
 
+// Was three bare setTimeout calls with no stored handles, from 19 call sites. A
+// burst of downloads or tag edits queued dozens of overlapping full-library
+// syncs that could not be throttled or cancelled — and each one walks the whole
+// library. One handle per delay: a later call reschedules that delay rather than
+// stacking another timer on it.
+const _LIB_RESCAN_DELAYS = [15_000, 45_000, 120_000]
+const _libRescanTimers = new Map()
 function _scheduleLibRescan() {
-  setTimeout(backgroundSync, 15_000)
-  setTimeout(backgroundSync, 45_000)
-  setTimeout(backgroundSync, 120_000)
+  for (const delay of _LIB_RESCAN_DELAYS) {
+    clearTimeout(_libRescanTimers.get(delay))
+    _libRescanTimers.set(delay, setTimeout(() => {
+      _libRescanTimers.delete(delay)
+      backgroundSync()
+    }, delay))
+  }
+}
+
+// So a navigation away, or a shutdown, can stop work nobody is waiting for.
+function _cancelLibRescan() {
+  for (const t of _libRescanTimers.values()) clearTimeout(t)
+  _libRescanTimers.clear()
 }
 
 // ── Downloads page ────────────────────────────────────────────────────────────
@@ -8882,13 +8978,31 @@ async function _showDlCtxMenu(e, items, handlers) {
 
 let _dlPollInFlight = false
 const _dlJustFinished = new Set()
+// A poll frame that throws must not become an unhandled rejection every tick,
+// and must not leave the page silently frozen on stale data. The _dlWaitLabel
+// comment further down records a previous instance of exactly this: a function
+// referenced but never defined, throwing on every render of the Downloading tab.
+let _dlFrameFailures = 0
+const _DL_FRAME_FAILURES_BEFORE_TELLING = 3
+
 async function _pollAndRenderDownloads() {
   // Re-entrancy guard: an older response landing after a newer one used to
   // write stale _dlLastFiles, flickering cancelled rows back into the list.
   if (_dlPollInFlight) return
   _dlPollInFlight = true
   try {
-  return await _pollAndRenderDownloadsInner()
+    const r = await _pollAndRenderDownloadsInner()
+    _dlFrameFailures = 0
+    return r
+  } catch (e) {
+    _dlFrameFailures++
+    console.error(`[papa] downloads poll frame failed (${_dlFrameFailures} in a row):`,
+      (e && e.stack) || String(e))
+    // Once is a blip. Three times running means the page is showing stale data
+    // and will keep doing so, which the user has no way to know otherwise.
+    if (_dlFrameFailures === _DL_FRAME_FAILURES_BEFORE_TELLING) {
+      showSnackbar('The downloads list stopped updating — see the log for why', '', function () {}, 8000)
+    }
   } finally { _dlPollInFlight = false }
 }
 
@@ -9218,7 +9332,9 @@ function _updateActiveDlInPlace(files, container) {
 
   // Per-file rows
   for (const f of files) {
-    const row = container.querySelector(`.dl2-file[data-dl-id="${f.id}"]`)
+    // f.id comes from slskd. A quote in it made this throw on every tick until
+    // the download cleared — and line ~12356 already does this correctly.
+    const row = container.querySelector(`.dl2-file[data-dl-id="${CSS.escape(String(f.id))}"]`)
     if (!row) continue
     const pct       = f.percentComplete != null ? Math.round(f.percentComplete) : 0
     const fill      = row.querySelector('.dl2-fill');       if (fill)    fill.style.width = `${pct}%`
@@ -10228,9 +10344,11 @@ function bindSlskSearchEvents(query) {
   section.querySelector('#slsk-setup-btn')?.addEventListener('click', async () => {
     const btn = section.querySelector('#slsk-setup-btn')
     if (btn) { btn.disabled = true; btn.textContent = 'Downloading…' }
-    window.api.on('slsk-progress', d => { if (btn) btn.textContent = d.text })
+    // Its own subscription, removed by its own handle: this used to call
+    // off('slsk-progress') and take a running search's listener with it.
+    const offSetupProgress = window.api.on('slsk-progress', d => { if (btn) btn.textContent = d.text })
     const res = await window.api.slskSetup()
-    window.api.off('slsk-progress')
+    offSetupProgress()
     if (res.ok) {
       await refreshSlskStatus()
       if (!slsk.status.configured) showSlskConfigModal(query)
@@ -10458,8 +10576,16 @@ function bindSlskSearchEvents(query) {
 // The old view was a flat list of every folder path with a text filter, which
 // is unusable for a user sharing thousands of directories. This walks the tree
 // one level at a time with back/forward/up, breadcrumbs and per-folder actions.
+// The live explorer's own close function. Its close() does remove the keydown
+// listener — but opening the explorer for a second user removed the first one's
+// DOM directly, so that instance's listener stayed registered forever, holding
+// its whole closure: the folder tree, the history and every file list in it.
+// Third instance of the same shape as items 73 and 74.
+var _slskExplorerClose = null
+
 async function showSlskUserExplorer(username) {
   hideContextMenu()
+  if (_slskExplorerClose) { try { _slskExplorerClose() } catch (_) {} }
   document.getElementById('slsk-user-lib-modal')?.remove()
 
   const T = window.PapaSlskTree
@@ -10503,7 +10629,12 @@ async function showSlskUserExplorer(username) {
   const actions = dlg.querySelector('#slskx-actionbar')
   const search  = dlg.querySelector('#slskx-search')
 
-  const close = () => { document.removeEventListener('keydown', onKey); dlg.remove() }
+  const close = () => {
+    if (_slskExplorerClose === close) _slskExplorerClose = null
+    document.removeEventListener('keydown', onKey)
+    dlg.remove()
+  }
+  _slskExplorerClose = close
   dlg.querySelector('#slsk-lib-close').addEventListener('click', close)
   dlg.addEventListener('click', e => { if (e.target === dlg) close() })
 
@@ -10897,7 +11028,13 @@ function initSearchHistory() {
   const dropdown    = document.getElementById('search-history-dropdown')
   if (!input || !dropdown) return
 
-  let history       = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]').map(function(h) { return typeof h === 'string' ? { query: h, ts: Date.now() - 86400000 } : h })
+  // This one mattered most. initSearchHistory() is called synchronously from
+  // setupListeners(), so an unguarded throw here aborted the rest of the wiring:
+  // queue panel, sleep timer, sidebar resize, drag and drop and every keyboard
+  // shortcut went unbound for the whole session, with nothing shown.
+  let history       = window.PapaLocal.readArray(HISTORY_KEY)
+    .map(function(h) { return typeof h === 'string' ? { query: h, ts: Date.now() - 86400000 } : h })
+    .filter(function(h) { return h && typeof h.query === 'string' && h.query })
   let activeIdx     = -1   // which row is highlighted by keyboard
   let blurTimer     = null
   var _searchTimeout = null
@@ -11212,7 +11349,10 @@ function initSearchHistory() {
     })
 
     if (q.length >= 3) {
-      window.api.ytMusicSearch({ query: q }).then(function(res) {
+      window.api.ytMusicSearch({ query: q }).catch(function (e) {
+        console.error('[papa] live YouTube search failed:', String(e && e.message || e))
+        return { ok: false }
+      }).then(function(res) {
         var dd = document.getElementById('live-search-dd')
         if (!dd || !_liveResultsVisible) return
         if (!res.ok || !res.results || !res.results.length) return
@@ -11944,6 +12084,9 @@ function setupListeners() {
     if (fp) {
       navigator.clipboard.writeText(fp).then(function() {
         showSnackbar('Path copied: ' + fp.split('/').pop())
+      }).catch(function (e) {
+        console.error('[papa] clipboard write failed:', String(e && e.message || e))
+        showSnackbar('Could not copy the path')
       })
     }
     hideContextMenu()
@@ -12732,7 +12875,11 @@ function setupListeners() {
     bar.style.cssText = 'padding:8px 16px;font-size:11px;display:flex;gap:12px;border-top:1px solid var(--glass-border);margin-top:auto;color:var(--text2)'
     bar.innerHTML = '<span id="conn-slskd" style="display:flex;align-items:center;gap:4px"><span class="conn-dot"></span> Soulseek</span><span id="conn-yt" style="display:flex;align-items:center;gap:4px"><span class="conn-dot"></span> YouTube</span>'
     sidebar.appendChild(bar)
-    setInterval(checkConnections, 30000)
+    // Guarded by the !getElementById above, so it cannot double up today — but
+    // an interval with no handle can never be stopped, which is the reason for
+    // storing it rather than a bug being fixed.
+    clearInterval(_connCheckTimer)
+    _connCheckTimer = setInterval(checkConnections, 30000)
     checkConnections()
   }
 
@@ -12896,7 +13043,8 @@ async function checkConnections() {
         ctx.fillRect(x, (h - barH) / 2, w / bars - 1, barH)
       }
     }
-    setInterval(drawWaveform, 1000)
+    clearInterval(_waveformTimer)
+    _waveformTimer = setInterval(drawWaveform, 1000)
     drawWaveform()
   }
 }
@@ -13003,7 +13151,7 @@ function syncLibraryExt() {
 }
 
 // Sync position every second while playing
-setInterval(() => { if (state.isPlaying) syncExtension() }, 1000)
+const _extSyncTimer = setInterval(() => { if (state.isPlaying) syncExtension() }, 1000)
 
 // ── Snackbar ─────────────────────────────────────────────────────────────────
 function showSnackbar(msg, actionLabel, actionCallback, duration) {
@@ -13445,9 +13593,14 @@ async function renderManageHealth() {
 }
 
 async function renderManageStorage() {
+  var _tabAtStart = _mgState.tab
   setContent(_mgShell('<div class="mg-empty">Measuring…</div>'))
   _mgBindTabs()
   var rep = await window.api.libraryStorageReport().catch(function () { return null })
+  // Measuring walks every music root and every trash root, so it takes seconds.
+  // Without this the late result repainted over whatever you had switched to —
+  // the same bug renderManageHealth already fixed and documented.
+  if (_mgState.tab !== _tabAtStart || state.currentPage !== 'manage') return
   if (!rep) { setContent(_mgShell('<div class="mg-empty">Could not read storage.</div>')); _mgBindTabs(); return }
 
   var rows = (rep.roots || []).map(function (r) {
@@ -13472,11 +13625,14 @@ async function renderManageStorage() {
 // the SAME volume as the music, this is the only place that actually frees
 // space — so it says so plainly rather than letting the user assume otherwise.
 async function renderManageTrash() {
+  var _tabAtStart = _mgState.tab
   setContent('<div class="page mg-page"><div class="mg-head"><h2 class="mg-title">Manage Library</h2></div>' +
     _mgTabsHtml() + '<div class="mg-empty">Reading Trash…</div></div>')
   _mgBindTabs()
 
   var data = await window.api.libraryTrashList().catch(function () { return null })
+  // Same guard, same reason: reading the trash sizes every payload folder.
+  if (_mgState.tab !== _tabAtStart || state.currentPage !== 'manage') return
   if (!data) {
     setContent('<div class="page mg-page"><div class="mg-head"><h2 class="mg-title">Manage Library</h2></div>' +
       _mgTabsHtml() + '<div class="mg-empty">Could not read the Trash.</div></div>')
@@ -13722,7 +13878,16 @@ function _mgBaseName(p) {
 // anywhere gets the same inspection, the same confirmation and the same Trash.
 // No generic confirm dialog exists in this app, and a destructive action is
 // the wrong place to reuse the playlist-name prompt.
+// The live dialog's own close function. Removing the previous dialog's DOM
+// directly — which is what this used to do — left its document keydown listener
+// registered forever, holding that dialog's closure. Nine call sites in Manage,
+// so the leak compounded with ordinary use.
+var _mgConfirmClose = null
+
 function _mgConfirm(title, bodyHtml, confirmLabel, onConfirm) {
+  if (_mgConfirmClose) { try { _mgConfirmClose() } catch (_) {} }
+  // Belt and braces: if a dialog ever gets into the DOM without registering its
+  // close (a throw between the two), the element still goes.
   document.getElementById('mg-confirm-modal')?.remove()
   var dlg = document.createElement('div')
   dlg.id = 'mg-confirm-modal'
@@ -13738,9 +13903,15 @@ function _mgConfirm(title, bodyHtml, confirmLabel, onConfirm) {
       '<button class="mg-btn mg-btn-danger" id="mg-cf-ok">' + esc(confirmLabel) + '</button>' +
     '</div></div>'
   document.body.appendChild(dlg)
-  function close() { dlg.remove(); document.removeEventListener('keydown', onKey); flushPendingLibraryUpdate() }
+  function close() {
+    if (_mgConfirmClose === close) _mgConfirmClose = null
+    dlg.remove()
+    document.removeEventListener('keydown', onKey)
+    flushPendingLibraryUpdate()
+  }
   function onKey(e) { if (e.key === 'Escape') close() }
   document.addEventListener('keydown', onKey)
+  _mgConfirmClose = close
   // Enter submits from a text field, as it does everywhere else in the app.
   // Scoped to inputs on purpose: a confirm with no input focuses Cancel, and
   // Enter must not become a one-key path to a destructive action.
@@ -14491,7 +14662,16 @@ async function _libraryMutateApply(op, paths, entries, impact) {
   showSnackbar(msg, 'Undo', async function () {
     var back = await window.api.libraryRestoreTrashed({ paths: okPaths }).catch(function () { return null })
     if (prune && prune.snapshot) {
-      await window.api.libraryRestoreState({ snapshot: prune.snapshot }).catch(function () {})
+      // A silently failed Undo is the user's data not coming back, with the
+      // snackbar having promised it would. Two call sites, both restoring a
+      // library snapshot after a folder removal.
+      var _restored = await window.api.libraryRestoreState({ snapshot: prune.snapshot })
+        .then(function () { return true })
+        .catch(function (e) {
+          console.error('[papa] undo could not restore the library snapshot:', String(e && e.message || e))
+          return false
+        })
+      if (!_restored) showSnackbar('The folder came back, but the library entries could not be restored', '', function () {}, 8000)
       await reloadPersistedState()
     }
     if (_likedBefore.length !== state.likedAlbums.length) {

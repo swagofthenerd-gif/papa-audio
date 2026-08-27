@@ -863,123 +863,153 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 ### 71. A corrupted localStorage key can silently unbind most of the keyboard
 
-`OPEN` `Critical`
+`DONE` `Critical`
 
 **Symptom.** renderer.js:10703 parses pa_search_history inside initSearchHistory(), called synchronously from setupListeners() at 11228. An unguarded JSON.parse throw aborts the rest of setupListeners, so everything wired after it — queue panel, sleep timer, sidebar resize, drag and drop, keyboard shortcuts — is never bound, for the whole session, with no error shown.
 
 **Solution.** try/catch with a validated fallback, and reorder so no single parse can abort the listener wiring.
 
+**Done.** `src/local-store.js` is the one validated reader, and no code parses localStorage directly any more (there is a test asserting that). It returns the right shape for the caller — always an array, always a plain object — because a bare parse only guards against a syntax error: JSON.parse succeeds for "null", "{}" and "5", none of which have .length or .filter. Storage being unavailable at all (a private window, blocked site data) is handled too, since these are called from the top level of renderer.js. Malformed data is reported rather than silently defaulted; the silence is what made this bug invisible.
+
 ### 72. Liking a track throws on corrupt like history
 
-`OPEN` `High`
+`DONE` `High`
 
 **Symptom.** renderer.js:2183 and 4438 both JSON.parse papa_like_history unguarded. A bad value aborts the click handler, or the whole Liked Songs page.
 
 **Solution.** One validated reader for every localStorage key, as was done for _libPresets.
 
+**Done.** Both papa_like_history parses go through the reader, and the Liked page validates each entry rather than trusting the array. A bad member is dropped; the whole list is not.
+
 ### 73. The add-to-playlist modal leaks a document keydown listener on every open
 
-`OPEN` `High`
+`DONE` `High`
 
 **Symptom.** renderer.js:5062-5063 removes onEsc only on the Escape path. Closing via the overlay, the X, or picking a playlist leaves it attached forever, each closure holding the modal DOM and the track array. Five call sites.
 
 **Solution.** Remove the listener in close(), not in the handler.
 
+**Done.** The listener is removed in `close()`, which every exit path already calls — the overlay click, the X, picking a playlist, and Escape. Removing it inside the Escape handler meant any exit path added later leaked again, which is what happened.
+
 ### 74. _mgConfirm can orphan a keydown listener
 
-`OPEN` `High`
+`DONE` `High`
 
 **Symptom.** renderer.js:13330-13348 removes a previous dialog's DOM directly instead of calling its close(), so the first instance's handler is never unregistered. Nine call sites in Manage.
 
 **Solution.** Keep one dialog instance and close it properly before opening another.
 
+**Done.** One live-dialog reference; opening a new dialog calls the previous one's `close()` before anything else, and `close()` clears the reference. The direct `.remove()` is kept as a belt-and-braces line for the case where a dialog reaches the DOM without registering its close.
+
 ### 75. _scheduleLibRescan queues three uncancellable timers from 19 call sites
 
-`OPEN` `High`
+`DONE` `High`
 
 **Symptom.** renderer.js:8584-8588. None of the handles are stored. A burst of downloads or edits queues dozens of overlapping full-library syncs that cannot be throttled or cancelled.
 
 **Solution.** One coalescing scheduler with a single handle per delay; later calls reschedule rather than stack.
 
+**Done.** One handle per delay in a Map. A later call clears and reschedules that delay rather than stacking another timer on it, so a burst of 19 call sites produces three syncs, not dozens. There is also a `_cancelLibRescan()` now, so work nobody is waiting for can be stopped.
+
 ### 76. renderManageStorage and renderManageTrash are missing the stale-render guard their sibling documents
 
-`OPEN` `High`
+`DONE` `High`
 
 **Symptom.** renderer.js:13052-13058 and 13083-13091 call setContent unconditionally after a slow await. renderManageHealth at 13985-13995 has the exact guard, with a comment explaining that this bug was already fixed once.
 
 **Solution.** Apply the same tab-and-page guard to both.
 
+**Done.** Both have the same tab-and-page guard renderManageHealth already had, and a comment saying which slow operation makes it necessary.
+
 ### 77. The YouTube album, playlist and artist renders guard on page kind but not on identity
 
-`OPEN` `High`
+`DONE` `High`
 
 **Symptom.** renderer.js:3220-3230, 3352-3358, 3492-3498 check state.currentPage only. Open album A then album B before A resolves and A's late response repaints over B, leaving handlers wired to the wrong browseId.
 
 **Solution.** Compare the id being loaded against the id now displayed, the same generation-ticket pattern used for Soulseek search.
 
+**Done.** A generation ticket per YouTube page kind, checked after the await alongside the existing page-kind check. This also fixes the same-id case — a retry while the first request is still in flight — which an id comparison alone would not.
+
 ### 78. ytSearchState.cache never evicts
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** renderer.js:2653, 2761-2762, 2803. Every unique scope::query holds a full result payload for the life of the process, with no TTL and no cap.
 
 **Solution.** Bounded LRU.
 
+**Done.** A shared `_cacheGet`/`_cacheSet` pair gives least-recently-used eviction; the YouTube search cache is capped at 40 entries. Touching an entry on read is what makes it least-recently-used rather than oldest-inserted.
+
 ### 79. A poll-driven querySelector uses an unescaped download id
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** renderer.js:9024 interpolates f.id, which comes from slskd, into a selector on every 6 s tick. A quote in an id throws every tick until the download clears. Line 11988 already uses CSS.escape correctly.
 
 **Solution.** CSS.escape here too.
 
+**Done.** `CSS.escape`, and a test that flags any selector interpolating something whose name contains `id` without escaping it — the general case rather than this one line.
+
 ### 80. off('slsk-progress') tears down whichever listener happens to be live
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** renderer.js:10030-10036 and 8531-8536 both register and channel-wide-remove the same event. Clicking Set up Soulseek during a streaming search silently stops the search from updating.
 
 **Solution.** Remove the specific callback, not the channel.
 
+**Done.** `preload.on` returns an unsubscribe function, and both slsk-progress subscribers use their own. Nothing calls `off('slsk-progress')` any more, and there is a test asserting that. `off()` is removeAllListeners on the channel, so the search and the Set up button were tearing down each other's listener.
+
 ### 81. Poll-driven render functions are not wrapped, so one throw breaks every later tick
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** The _dlWaitLabel comment at renderer.js:8624-8633 records a previous instance of exactly this: a function referenced but undefined, throwing on every render of the Downloading tab.
 
 **Solution.** Wrap the poll render step so a bad frame is logged and skipped rather than killing the loop.
 
+**Done.** The frame is wrapped: a throw is logged with its stack, the re-entrancy guard is still released, and after three consecutive failures the user is told the list has stopped updating — a page frozen on stale data is otherwise indistinguishable from a quiet one.
+
 ### 82. 63 renderer timers, most without stored handles
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** 54 setTimeout and 9 setInterval. Several restart without clearing the previous handle.
 
 **Solution.** Audit each; store handles for anything that can be superseded, and clear on navigation.
 
+**Partly done.** Every `setInterval` now stores its handle — three had none at all, and an interval with no handle can never be stopped or superseded. The 54 `setTimeout` calls were not audited one by one: most are genuinely fire-and-forget UI delays where a stored handle would be noise. The ones that mattered are done: the library rescan (item 75), the prefetch retry, and the play-history threshold.
+
 ### 83. 23 document and window listeners registered from functions that can run more than once
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** Any of these reachable from bindContentEvents accumulates on every setContent.
 
 **Solution.** Register global listeners exactly once at startup; per-render listeners go on the rendered subtree.
 
+**Partly done, and the premise needed checking.** Of the 23 document and window listeners, none turned out to be reachable from bindContentEvents: `setupListeners()` is called exactly once, and the per-render binders attach to the rendered subtree. The real accumulators were the three modals — items 73 and 74, plus a third instance found while checking this one and recorded as item 257.
+
 ### 84. 31 empty catch blocks in the renderer
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** Same class as main: features degrade with no trace.
 
 **Solution.** Log with context.
 
+**Partly done, with a stated criterion.** 104 single-line empty catches remain; they were not rewritten wholesale, because most guard something genuinely inconsequential (an unlink, a stat probe, a clearTimeout) and a blanket rewrite would be a large diff with almost no signal. What was fixed is every one found to hide a consequence the user would notice: a silently lost Last.fm scrobble, a failed slskd restart that left the UI saying "restarting" forever, a missing optional dependency silently disabling the folder watcher or port mapping, and — worst — a library Undo whose restore could fail silently after the snackbar had promised it would work.
+
 ### 85. 24 .then() chains, several with no rejection handler
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** An unhandled rejection in the renderer aborts the rest of that callback silently.
 
 **Solution.** Catch at every chain, or convert to async/await under the existing boundaries.
+
+**Done.** Six chains had no rejection handler: the YouTube sign-in, radio start, lyrics lookup, live YouTube search, and both clipboard writes. Each now logs, and the ones with a visible consequence say so. The remaining `.then` chains all have a `.catch` in the chain.
 
 ### 86. setContent replaces innerHTML wholesale on every navigation
 
@@ -1007,11 +1037,13 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 ### 89. _colorCache and _bioCache never invalidate
 
-`PROPOSED` `Low`
+`DONE` `Low`
 
 **Symptom.** Small, but the same never-evicted pattern as the YouTube cache.
 
 **Solution.** Bound them.
+
+**Done.** Folded into item 78's mechanism: bios are capped at 100 and colours at 200, and both are least-recently-used now rather than oldest-inserted, which keeps the covers actually on screen.
 
 ### 90. No global keyboard shortcut map
 
@@ -2170,7 +2202,7 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 **Solution.** Safe to purge in a dedicated pass. Left alone deliberately: zero user-visible benefit, non-zero regression risk.
 
 
-## Found while working through the tiers  (6)
+## Found while working through the tiers  (7)
 
 Numbered from 251 so the existing items and section counts stay stable. These were
 found while instrumenting the engine, not by re-reading the catalogue.
@@ -2237,5 +2269,16 @@ found while instrumenting the engine, not by re-reading the catalogue.
 **Solution.** All ten allowlisted and handled. `system-resume` deliberately asks the engine for its real state rather than assuming anything, because the audio device is the thing most likely to have changed while the machine was asleep.
 
 **Still unhandled, deliberately, and now written down.** `dl-started`/`dl-progress`/`dl-complete`/`dl-cancelled`/`dl-failed`/`slsk-progress` have no listener because the renderer polls `get-downloads` instead (2 s on the Downloads page, 20 s elsewhere) — redundant on the sending side rather than broken. `scan-progress`, `slskd-status-change`, `yt-auth-pending`, `yt-auth-done` and `slsk-verify` have no consumer at all; `slsk-verify` even has a dedicated preload subscriber that nothing calls. `test/ipc-channel-wiring.test.js` lists every one of these with its reason, so a *new* dead channel fails the build while the known ones do not.
+
+
+### 257. A third modal leaks a document keydown listener when it is re-opened
+
+`DONE` `Medium`
+
+**Symptom.** Found while checking item 83's premise rather than from the catalogue. `showSlskUserExplorer` has a correct `close()` that removes its keydown listener — but the first line of the function removes a previous instance's DOM directly, exactly as `_mgConfirm` did. Opening the explorer for user A and then for user B leaves A's listener registered forever, holding its entire closure: the folder tree, the navigation history and every file list fetched into it. The handler guards on the element existing, so it is inert — but it is inert and permanently attached, which is the definition of a leak.
+
+**Solution.** Same as item 74: one live-instance reference, closed properly before a new one opens.
+
+**Worth noting.** Three instances of one pattern (items 73, 74, 257), each found separately. The shape is always the same — a modal that registers a document-level listener, and a re-open path that bypasses its own teardown. Any future modal that attaches to `document` should be checked against this.
 
 ---
