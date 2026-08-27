@@ -141,7 +141,21 @@ function withTimeout(promise, ms, label) {
 // mpv's built-in yt-dlp hook takes 2-10s per URL. Pre-resolve to googlevideo
 // direct URLs so playback starts near-instantly (like Spotify / YT Music).
 const _ytUrlCache = new Map() // videoId -> { url: string, expiresAt: number }
-const YT_URL_TTL = 60 * 60 * 1000 // 1 hour
+const YT_URL_TTL = 60 * 60 * 1000 // 1 hour, the ceiling
+// googlevideo URLs carry their own `expire` (Unix seconds), and it is often
+// sooner than an hour. Caching for a flat hour meant a queued YouTube track
+// could hold a URL that was already dead by the time it was reached.
+const YT_URL_EXPIRY_MARGIN_MS = 5 * 60 * 1000
+
+function ytUrlExpiresAt(url) {
+  const ceiling = Date.now() + YT_URL_TTL
+  const m = /[?&]expire=(\d+)/.exec(String(url || ''))
+  if (!m) return ceiling
+  const stated = Number(m[1]) * 1000
+  if (!Number.isFinite(stated) || stated <= Date.now()) return ceiling
+  // Re-resolve a few minutes early rather than at the moment it dies.
+  return Math.min(ceiling, stated - YT_URL_EXPIRY_MARGIN_MS)
+}
 
 function resolveYtUrl(videoId) {
   const cached = _ytUrlCache.get(videoId)
@@ -159,7 +173,7 @@ function resolveYtUrl(videoId) {
       clearTimeout(timer)
       var url = out.trim().split('\n')[0]
       if (code === 0 && url && url.startsWith('http')) {
-        _ytUrlCache.set(videoId, { url, expiresAt: Date.now() + YT_URL_TTL })
+        _ytUrlCache.set(videoId, { url, expiresAt: ytUrlExpiresAt(url) })
         if (_ytUrlCache.size > 200) {
           var now = Date.now()
           for (var [k, v] of _ytUrlCache) if (now > v.expiresAt) _ytUrlCache.delete(k)
@@ -334,6 +348,10 @@ const LOG_MIN_LEVEL = LOG_LEVELS[LOG_LEVEL_NAME] || LOG_LEVELS.info
 const LOG_FLUSH_MS = 1000
 const LOG_MAX_BUFFER = 2000          // lines; past this the oldest are dropped
 const LOG_MAX_BYTES = 8 * 1024 * 1024
+// One id on both streams. The renderer's console and main's daily log were
+// separate with nothing shared, so a report from one could not be lined up
+// against the other.
+const SESSION_ID = crypto.randomBytes(4).toString('hex')
 let _logDir = null
 let _logBuf = []
 let _logTimer = null
@@ -376,7 +394,7 @@ function _queueLog(level, args) {
     msg = args.map(a => String(a)).join(' ')   // circular structures, etc.
   }
   if (_logBuf.length >= LOG_MAX_BUFFER) { _logDropped++; return }
-  _logBuf.push(`[${new Date().toISOString()}] [${level}] ${msg}\n`)
+  _logBuf.push(`[${new Date().toISOString()}] [${SESSION_ID}] [${level}] ${msg}\n`)
   if (!_logTimer) {
     _logTimer = setTimeout(_flushLog, LOG_FLUSH_MS)
     _logTimer.unref?.()
@@ -903,9 +921,28 @@ app.whenReady().then(() => {
   // Keep the Google session alive: silently touch music.youtube.com so cookies
   // rotate/extend like in a normal browser, then re-store the fresh set.
   setTimeout(async () => {
-    if (!(await validateYtCookie())) refreshYtCookie()
+    try {
+      if (await validateYtCookie()) return
+      console.warn('[papa][yt] the stored cookie did not validate; refreshing')
+      const ok = await refreshYtCookie()
+      // A silent failure here is the reason YouTube features stop working, and
+      // it was behind a bare setTimeout with no surfaced outcome at all.
+      if (ok === false) {
+        console.error('[papa][yt] cookie refresh failed — YouTube features will not work until you sign in again')
+        safeSend('yt-auth-pending', { reason: 'cookie-refresh-failed' })
+      }
+    } catch (e) {
+      console.error('[papa][yt] cookie validation threw:', summariseYtError(e))
+    }
   }, 8000)
-  setInterval(refreshYtCookie, 12 * 60 * 60 * 1000)
+  setInterval(async () => {
+    try {
+      const ok = await refreshYtCookie()
+      if (ok === false) console.error('[papa][yt] scheduled cookie refresh failed')
+    } catch (e) {
+      console.error('[papa][yt] scheduled cookie refresh threw:', summariseYtError(e))
+    }
+  }, 12 * 60 * 60 * 1000)
 
   // Before the window opens: the statistics it draws are about to change.
   try { _historyReport = migratePlayHistory() } catch (e) {
@@ -1955,6 +1992,15 @@ function migratePlayHistory() {
 // So the renderer can show the numbers rather than only the log having them.
 let _historyReport = null
 ipcMain.handle('get-history-report', () => _historyReport)
+// So the renderer can stamp the same id on its own console lines and on
+// anything the user copies out of a failure card.
+ipcMain.handle('get-session-id', () => ({
+  sessionId: SESSION_ID,
+  // Bundled with it because a stack is much less useful without knowing
+  // which build produced it.
+  appVersion: app.getVersion(),
+  electron: process.versions.electron,
+}))
 
 ipcMain.handle('get-download-wishlist', () => store.get('downloadWishlist', []))
 ipcMain.on('save-download-wishlist', (_, wl) => store.set('downloadWishlist', wl))
@@ -4345,9 +4391,28 @@ async function dlTransferId(username, filename) {
   return ''
 }
 
+// dlTicking prevents re-entry, but a tick that hangs on a slow fetch blocked
+// every later tick indefinitely — the scheduler simply stopped, silently.
+const DL_TICK_DEADLINE_MS = 60000
+let _dlTickStartedAt = 0
+
 async function dlTick() {
-  if (dlTicking) return
+  if (dlTicking) {
+    const stuckFor = Date.now() - _dlTickStartedAt
+    if (stuckFor > DL_TICK_DEADLINE_MS) {
+      // Release the guard: the previous tick is not coming back, and every tick
+      // it blocks is a download that is not being dispatched or reconciled. It
+      // may still be in flight, which is why this only ever logs and re-arms —
+      // the work itself is idempotent per tick.
+      console.error(`[papa] the download scheduler tick has been running for ${Math.round(stuckFor / 1000)}s; ` +
+        `releasing the overlap guard so the scheduler resumes`)
+      dlTicking = false
+    } else {
+      return
+    }
+  }
   dlTicking = true
+  _dlTickStartedAt = Date.now()
   try {
     const cfg = dlConfig()
     const now = Date.now()
@@ -4367,6 +4432,12 @@ async function dlTick() {
         // turned into "download it again", so this is terminal, not a retry.
         if (now - live.since > 30000) dlSched.recordAbandoned(dlState, key)
         continue
+      }
+      // Transitions, at info, into the same daily log. When a download stalls
+      // there was no record at all of what slskd had been reporting.
+      if (live._lastState !== seen.state) {
+        console.log(`[papa][dl] ${dlBaseName(live.filename)}: ${live._lastState || '(new)'} -> ${seen.state} (${seen.username})`)
+        live._lastState = seen.state
       }
       if (seen.kind === 'succeeded') dlSched.recordSuccess(dlState, key, seen.username)
       else if (seen.kind === 'failed') dlSched.recordFailure(dlState, key, seen.username, cfg, now)
@@ -4914,8 +4985,13 @@ async function validateYtCookie() {
 }
 
 let _ytRefreshWin = null
+// Returns whether a fresh cookie was actually collected. It used to return
+// nothing and swallow every failure, which is why YouTube features could stop
+// working with no indication of why — the refresh is the thing that keeps them
+// alive, and nobody could tell whether it had run, let alone succeeded.
 function refreshYtCookie() {
-  if (!store.get('ytCookie', null) || _ytRefreshWin) return
+  if (!store.get('ytCookie', null)) return Promise.resolve(null)   // nothing to refresh
+  if (_ytRefreshWin) return Promise.resolve(null)                  // already running
   const { session } = require('electron')
   const sess = session.fromPartition('persist:yt-auth')
   _ytRefreshWin = new BrowserWindow({
@@ -4923,25 +4999,44 @@ function refreshYtCookie() {
     webPreferences: { session: sess, nodeIntegration: false, contextIsolation: true },
   })
   const win = _ytRefreshWin
-  const done = () => {
-    if (_ytRefreshWin === win) _ytRefreshWin = null
-    if (!win.isDestroyed()) win.destroy()
-  }
-  const timer = setTimeout(done, 30000)
-  win.webContents.setUserAgent('Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0')
-  win.webContents.on('did-finish-load', async () => {
-    try {
-      await new Promise(r => setTimeout(r, 3000)) // let redirects settle
-      const header = await _collectYtCookieHeader(sess)
-      if (header) {
-        store.set('ytCookie', header)
-        ytSearch.setCookie(header)
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (result, why) => {
+      if (settled) return
+      settled = true
+      if (_ytRefreshWin === win) _ytRefreshWin = null
+      if (!win.isDestroyed()) win.destroy()
+      if (result === false) console.error('[papa][yt] cookie refresh did not produce a cookie:', why)
+      resolve(result)
+    }
+    const timer = setTimeout(() => finish(false, 'timed out after 30s'), 30000)
+    win.webContents.setUserAgent('Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0')
+    win.webContents.on('did-fail-load', (_e, code, desc) => {
+      clearTimeout(timer)
+      finish(false, `load failed (${code} ${desc})`)
+    })
+    win.webContents.on('did-finish-load', async () => {
+      let ok = false
+      let why = ''
+      try {
+        await new Promise(r => setTimeout(r, 3000)) // let redirects settle
+        const header = await _collectYtCookieHeader(sess)
+        if (header) {
+          store.set('ytCookie', header)
+          ytSearch.setCookie(header)
+          ok = true
+        } else {
+          why = 'no cookie header in the session — the sign-in has probably expired'
+        }
+      } catch (e) {
+        // The previous cookie is kept either way; that part was right.
+        why = String(e && e.message || e)
       }
-    } catch { /* keep the previous cookie */ }
-    clearTimeout(timer)
-    done()
+      clearTimeout(timer)
+      finish(ok, why)
+    })
+    win.loadURL('https://music.youtube.com/')
   })
-  win.loadURL('https://music.youtube.com/')
 }
 
 let _ytAuthWin = null

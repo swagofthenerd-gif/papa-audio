@@ -282,6 +282,11 @@ function undoLastAction() {
 
 // ── Visibility & power management ───────────────────────────────────────────
 let _appVisible = !document.hidden
+// The id main stamps on every line of the daily log. Held here so anything the
+// user copies out of a failure card can be lined up against it — the two streams
+// had nothing shared at all.
+var _sessionId = null
+var _appVersion = null
 const _dom = {}  // cached refs for hot-path elements (populated in init)
 
 const SPEEDS = [1, 1.25, 1.5, 2, 0.75]
@@ -632,6 +637,17 @@ async function init() {
         : 'Still failing. The lines above are mpv\u2019s own report.'
     }
   }
+  // Fetched once, early, so a failure card later has it.
+  window.api.getSessionId()
+    .then(info => {
+      _sessionId = (info && info.sessionId) || null
+      _appVersion = (info && info.appVersion) || null
+      console.log('[papa] renderer session ' + _sessionId +
+        ' (app ' + _appVersion + ', electron ' + ((info && info.electron) || '?') + ')' +
+        ' — main stamps the same id on every log line')
+    })
+    .catch(e => console.error('[papa] could not read the session id:', String(e && e.message || e)))
+
   window.api.slskStatus().then(s => { slsk.status = s }).catch(() => {})
   // The rate is decided in one place; at startup nothing is known to be active
   // yet, so this starts slow and the first poll re-tunes it.
@@ -6727,13 +6743,50 @@ function _renderFailure(where, err) {
   console.error('[papa] render failed in ' + where, err)
   var c = document.getElementById('content')
   if (!c) return
+  // The stack used to reach devtools and nowhere else, so a report of this card
+  // could not be acted on. It is shown collapsed and copyable instead: the
+  // person who can fix it is not the person looking at the card.
+  var stack = String((err && err.stack) || (err && err.message) || err || 'Unknown error')
+  var diagnostics = [
+    'Papa Audio render failure',
+    'session: ' + (_sessionId || 'unknown'),
+    'when: ' + new Date().toISOString(),
+    'page: ' + where,
+    'app: ' + (_appVersion || 'unknown'),
+    '',
+    stack,
+  ].join('\n')
   c.innerHTML = '<div class="mg-empty" style="padding:48px 24px">' +
     '<p>This page failed to render.</p>' +
     '<span>' + esc(String((err && err.message) || err || 'Unknown error')) + '</span>' +
-    '<div style="margin-top:14px"><button class="secondary" id="render-fail-home">Go Home</button></div>' +
+    '<div style="margin-top:14px">' +
+      '<button class="secondary" id="render-fail-home">Go Home</button> ' +
+      '<button class="secondary" id="render-fail-copy">Copy diagnostics</button> ' +
+      '<button class="secondary" id="render-fail-details">Show details</button>' +
+    '</div>' +
+    '<pre id="render-fail-stack" style="display:none;text-align:left;max-height:280px;overflow:auto;' +
+      'white-space:pre-wrap;word-break:break-word;font-size:11px;line-height:1.5;margin-top:14px;opacity:.85">' +
+      esc(diagnostics) + '</pre>' +
     '</div>'
   var b = document.getElementById('render-fail-home')
   if (b) b.addEventListener('click', function () { navigate('home') })
+  var d = document.getElementById('render-fail-details')
+  var pre = document.getElementById('render-fail-stack')
+  if (d && pre) d.addEventListener('click', function () {
+    var open = pre.style.display !== 'none'
+    pre.style.display = open ? 'none' : ''
+    d.textContent = open ? 'Show details' : 'Hide details'
+  })
+  var cp = document.getElementById('render-fail-copy')
+  if (cp) cp.addEventListener('click', function () {
+    navigator.clipboard.writeText(diagnostics).then(function () {
+      cp.textContent = 'Copied'
+    }).catch(function (e) {
+      console.error('[papa] could not copy the diagnostics:', String(e && e.message || e))
+      cp.textContent = 'Copy failed — the details are below'
+      if (pre) { pre.style.display = ''; if (d) d.textContent = 'Hide details' }
+    })
+  })
 }
 
 function setContent(html) {
@@ -8143,12 +8196,35 @@ async function initPlaybackSettings() {
   $('pb-cf-row').style.display = cfg.mode === 'crossfade' ? '' : 'none'
 
   const devices = await window.api.playerListDevices()
-  $('pb-alsa-device').innerHTML = devices
-    .filter(d => d.name.startsWith('alsa/'))
-    // mpv reports these verbatim from the driver; a description containing a
-    // quote would break out of the attribute.
-    .map(d => `<option value="${esc(d.name)}" ${d.name === cfg.alsaDevice ? 'selected' : ''}>${esc(d.description)}</option>`)
-    .join('')
+  const alsa = devices.filter(d => d.name.startsWith('alsa/'))
+  // The saved device string can name a sink that no longer exists — a card
+  // removed, a dock unplugged, a PipeWire rename. That used to be discovered at
+  // spawn time, as a failure to start playing, with the setting still showing
+  // the missing device as if it were fine.
+  const savedMissing = !!cfg.alsaDevice && !alsa.some(d => d.name === cfg.alsaDevice)
+  $('pb-alsa-device').innerHTML =
+    // Keep the missing device in the list, marked, rather than silently
+    // selecting a different one: replacing the user's choice without saying so
+    // is worse than showing that it is gone.
+    (savedMissing
+      ? `<option value="${esc(cfg.alsaDevice)}" selected>${esc(cfg.alsaDevice)} — not connected</option>`
+      : '') +
+    alsa
+      // mpv reports these verbatim from the driver; a description containing a
+      // quote would break out of the attribute.
+      .map(d => `<option value="${esc(d.name)}" ${d.name === cfg.alsaDevice ? 'selected' : ''}>${esc(d.description)}</option>`)
+      .join('')
+  const devWarn = $('pb-device-warning')
+  if (devWarn) {
+    devWarn.textContent = savedMissing
+      ? `${cfg.alsaDevice} is not connected. Exclusive mode will fail to start until you pick another device.`
+      : ''
+    devWarn.style.display = savedMissing ? '' : 'none'
+  }
+  if (savedMissing && cfg.outputMode === 'exclusive') {
+    console.error('[papa] the configured ALSA device is not present:', cfg.alsaDevice)
+    showSnackbar(`The chosen audio device (${cfg.alsaDevice}) is not connected`, '', function () {}, 8000)
+  }
 
   const apply = (partial) => window.api.playerSetConfig(partial)
   $('pb-output-mode').onchange = e => {
@@ -9043,12 +9119,21 @@ function _setActiveTab(selector, activeEl) {
 function _dlSig(tab, files) {
   // Rolling hash rather than joining every id: the Completed tab can hold
   // thousands of rows and this runs on every poll tick.
+  //
+  // The id set alone was deliberate, so progress updates patch in place instead
+  // of repainting — but a transition that changed neither the id set nor the
+  // count was invisible, and Queued -> InProgress is exactly that. A coarse
+  // count-per-state is enough to notice it without repainting on every byte.
   var h = 0
+  var byState = {}
   for (var i = 0; i < files.length; i++) {
     var id = String(files[i].id)
     for (var j = 0; j < id.length; j++) h = (h * 31 + id.charCodeAt(j)) | 0
+    var st = String(files[i].state || '?')
+    byState[st] = (byState[st] || 0) + 1
   }
-  return tab + '|' + files.length + '|' + h
+  var states = Object.keys(byState).sort().map(function (k) { return k + ':' + byState[k] }).join(',')
+  return tab + '|' + files.length + '|' + h + '|' + states
 }
 
 function startDownloadsPolling(interval = 6000) {
@@ -9547,7 +9632,9 @@ function _renderActiveTab(files, container) {
     const maxEta2    = g.files.filter(f => (f.state || '').includes('InProgress'))
                                .reduce((mx, f) => Math.max(mx, _hmsToSecs(f.remainingTime || '0')), 0)
     const artPath    = _findAlbumArt(g.folder)
-    const groupIds   = g.files.map(f => f.id).join(',')
+    // JSON, not a comma join: slskd ids are file paths and file paths contain
+    // commas, so splitting on one tore an id in half and cancelled nothing.
+    const groupIds   = JSON.stringify(g.files.map(f => f.id))
 
     const artHtml = artPath
       ? `<img src="${esc('file://' + artPath)}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"><div class="dl2-group-album-art-fallback" style="display:none"><svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V5h4V3h-6z"/></svg></div>`
@@ -9631,7 +9718,15 @@ function _renderActiveTab(files, container) {
     btn.addEventListener('click', async () => {
       if (btn.disabled) return
       btn.disabled = true
-      const ids = btn.dataset.ids.split(',').filter(Boolean)
+      let ids = []
+      try {
+        ids = JSON.parse(btn.dataset.ids || '[]')
+      } catch (e) {
+        // An older render, or a value that did not survive the attribute.
+        console.error('[papa] could not read the transfer ids for this group:', String(e && e.message || e))
+      }
+      ids = (Array.isArray(ids) ? ids : []).filter(Boolean)
+      if (!ids.length) { btn.disabled = false; return }
       await Promise.all(ids.map(id =>
         window.api.slskCancelTransfer({ username: btn.dataset.user, id }).catch(() => {})
       ))
@@ -9997,7 +10092,8 @@ function _renderFailedTab(files, container) {
         </button>`
       : ''
 
-    const groupIds = g.files.map(f => f.id).join(',')
+    // JSON, not a comma join — see the note at the other call site.
+    const groupIds = JSON.stringify(g.files.map(f => f.id))
 
     const rows = g.files.map(f => {
       const cleanName     = _cleanTrackName(f.filename, g.folder)

@@ -43,3 +43,38 @@ test('the fallback offers a way out', () => {
   assert.ok(/render-fail-home/.test(fn) && /navigate\('home'\)/.test(fn),
     'a dead end is barely better than a blank page')
 })
+
+// ── Item 114: a card that can be acted on ─────────────────────────────────
+
+test('the failure card carries a copyable stack, not just a message', () => {
+  // The stack reached devtools and nowhere else, so a report of this card could
+  // not be acted on. The person looking at it is not the person who fixes it.
+  const fn = R.slice(R.indexOf('function _renderFailure'), R.indexOf('function setContent'))
+  assert.ok(/err && err\.stack/.test(fn), 'the stack has to be in the card')
+  assert.ok(/render-fail-copy/.test(fn) && /clipboard\.writeText\(diagnostics\)/.test(fn))
+  assert.ok(/render-fail-details/.test(fn), 'collapsed by default, not a wall of text')
+  // A clipboard write can be refused; falling back to showing the text matters
+  // more here than anywhere else in the app.
+  const copy = fn.slice(fn.indexOf('render-fail-copy'))
+  assert.ok(/\.catch\(/.test(copy) && /pre\.style\.display = ''/.test(copy))
+})
+
+test('the diagnostics identify the session and the build', () => {
+  const fn = R.slice(R.indexOf('function _renderFailure'), R.indexOf('function setContent'))
+  for (const field of ['session: ', 'page: ', 'app: ', 'when: ']) {
+    assert.ok(fn.includes(field), `diagnostics must include "${field}"`)
+  }
+})
+
+// ── Item 115: one id across both log streams ─────────────────────────────
+
+test('main stamps a session id on every log line', () => {
+  assert.ok(/const SESSION_ID = crypto\.randomBytes/.test(M))
+  assert.ok(/\[\$\{SESSION_ID\}\]/.test(M), 'it has to be in the line, not just in memory')
+})
+
+test('the renderer can read the same id', () => {
+  assert.ok(/ipcMain\.handle\('get-session-id'/.test(M))
+  assert.ok(/window\.api\.getSessionId\(\)/.test(R))
+  assert.ok(/_sessionId = /.test(R))
+})

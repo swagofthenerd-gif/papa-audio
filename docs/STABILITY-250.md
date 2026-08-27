@@ -1095,19 +1095,23 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 ### 134. The scheduler tick has no overlap guard beyond a boolean
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** dlTicking prevents re-entry but a tick that hangs on a slow fetch blocks every subsequent tick indefinitely with no timeout.
 
 **Solution.** Deadline the tick and log an overrun.
 
+**Done.** `dlTicking` still prevents re-entry, but a tick that has been running for over a minute now releases the guard with a log line rather than blocking every later tick forever — which is what a hang on a slow fetch used to do, stopping the scheduler silently. It only logs and re-arms rather than trying to abort the previous tick: the tick's work is idempotent, so a second one overlapping is far better than the scheduler stopping.
+
 ### 135. Transfer state transitions are not logged
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** When a download stalls there is no record of what slskd reported.
 
 **Solution.** Log state transitions at info, into the same daily log.
+
+**Done.** Transitions are logged at info into the same daily log, once per change rather than once per tick — `06 - The Snow Goose.flac: Queued, Remotely -> InProgress (peername)`. When a download stalls there was no record at all of what slskd had been reporting.
 
 ### 136. A failed retry leaves the transfer cancelled
 
@@ -1121,11 +1125,13 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 ### 137. Transfer ids are round-tripped through a comma-joined string
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** renderer.js:8929 joins, 9013 splits. slskd ids are file paths, which contain commas.
 
 **Solution.** Pass arrays across IPC.
+
+**Done.** JSON in the attribute rather than a comma join. slskd ids are file paths and file paths contain commas, so splitting on one tore an id in half and cancelled nothing — silently, because the cancel call for a malformed id just fails. The read side handles a malformed value and re-enables the button rather than leaving it disabled forever.
 
 ### 138. dlAbandonByFilename matches basenames across unrelated albums
 
@@ -1243,11 +1249,13 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 ### 235. _dlSig can miss a state transition
 
-`OPEN` `Medium` `was #46`
+`DONE` `Medium` `was #46`
 
 **Symptom.** The signature is deliberately id-set-based so progress updates patch in place, but a transition that changes neither the id set nor the count is invisible.
 
 **Solution.** Include a coarse state hash — count per state — in the signature.
+
+**Done.** The signature now includes a sorted count-per-state alongside the id hash. The id-set basis was deliberate, so progress updates patch in place instead of repainting — but a transition changing neither the id set nor the count was invisible, and Queued to InProgress is exactly that.
 
 ### 236. Group headers are not keyboard-focusable
 
@@ -1759,19 +1767,23 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 ### 114. The renderer's failure card shows no stack
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** The error boundaries added last round render a card, but the error itself only reaches devtools.
 
 **Solution.** Include a copyable stack and a one-click 'copy diagnostics'.
 
+**Done.** The stack is in the card, collapsed behind Show details, plus a Copy diagnostics button that copies the session id, the timestamp, the page, the app and Electron versions and the stack. If the clipboard write is refused the text is revealed instead — falling back matters more here than anywhere else in the app, because the whole point is getting the detail to someone who can act on it.
+
 ### 115. Nothing correlates renderer and main logs
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** They are separate streams with no shared identifier.
 
 **Solution.** A session id stamped on both.
+
+**Done.** main generates a four-byte session id at startup and stamps it on every line of the daily log; `get-session-id` hands it to the renderer along with the app and Electron versions, and it goes into anything copied out of a failure card. The two streams had nothing shared at all, so a report from one could not be lined up against the other.
 
 ### 116. No 'what just happened' panel
 
@@ -2052,27 +2064,33 @@ What this round did instead, which makes the split safer when it is attempted: f
 
 ### 193. youtubei.js schema drift degrades silently after the log line
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** A parser failure means the shelf simply does not appear.
 
 **Solution.** Report which section failed to the UI rather than rendering an empty page.
 
+**Partly done.** A parser failure is no longer silent in the log — `withRetry` writes one summarised line naming which request failed (item 192), and every YouTube handler returns that summary rather than pages of generated TypeScript. What is *not* done is the item's own solution: reporting **which section** failed to the UI so a missing shelf is explained rather than absent. That needs the parse to fail per-section rather than per-request, which is a change inside youtube-search.js's shape handling, and getting it wrong means showing errors for shelves YouTube simply did not send.
+
 ### 194. Resolved YouTube stream URLs expire and nothing tracks that
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** The log shows resolved googlevideo URLs with an expire parameter. A queued YouTube track can hold a URL that is dead by the time it plays.
 
 **Solution.** Re-resolve if the expiry is near when the track is reached.
 
+**Done.** googlevideo URLs carry their own `expire` (Unix seconds), often sooner than the flat one-hour TTL the cache used — so a queued YouTube track could hold a URL that was already dead when it was reached. The expiry is now parsed from the URL, with a five-minute margin, and the TTL is the ceiling rather than the answer.
+
 ### 195. The cookie refresh runs on a timer with no failure reporting
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** validateYtCookie and refreshYtCookie run at startup behind a setTimeout with no surfaced outcome.
 
 **Solution.** Report a failed refresh; it is the reason YouTube features stop working.
+
+**Done, and the real gap was deeper than the item says.** `refreshYtCookie` returned nothing and swallowed every failure, so it could not report an outcome even if someone asked. It returns a promise resolving to true, false, or null (nothing to refresh) now, distinguishes a load failure from a timeout from an empty cookie header, and both callers log the result. A failed refresh also tells the renderer, since it is the reason YouTube features stop working.
 
 ### 196. No offline mode
 
@@ -2178,11 +2196,13 @@ What this round did instead, which makes the split safer when it is attempted: f
 
 ### 207. An invalid ALSA device is only discovered at spawn time
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** The stored device string can name a sink that no longer exists.
 
 **Solution.** Validate against the device list when the setting is opened, and mark a missing device.
+
+**Done.** The saved device is validated against mpv's list when the settings panel opens. A device that is gone stays in the dropdown, marked "— not connected", with a warning row explaining that exclusive mode will fail to start — deliberately **not** silently reselecting a different device, because replacing the user's choice without saying so is worse than showing that it is gone.
 
 ### 208. No reset-to-defaults for player settings
 

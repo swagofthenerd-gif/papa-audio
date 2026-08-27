@@ -204,6 +204,7 @@ contextBridge.exposeInMainWorld('api', {
   playerRecheck:     ()  => ipcRenderer.invoke('player-recheck'),
   playerGetDiagnostics: () => ipcRenderer.invoke('player-get-diagnostics'),
   getHistoryReport:  ()  => ipcRenderer.invoke('get-history-report'),
+  getSessionId:      ()  => ipcRenderer.invoke('get-session-id'),
   trackExists:       (p) => ipcRenderer.invoke('track-exists', p),
   slskCancelSearches: (p) => ipcRenderer.invoke('slsk-cancel-searches', p),
   getAudioDevices:   ()  => ipcRenderer.invoke('get-audio-devices'),
