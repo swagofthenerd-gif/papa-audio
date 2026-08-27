@@ -183,3 +183,28 @@ test('the stale bar has a visible style, not just a class', () => {
   const css = fs.readFileSync(path.join(SRC, 'styles.css'), 'utf8')
   assert.match(css, /\.progress-track\.stale/)
 })
+
+// ── Item 167: a rescan must not rebuild the page you are reading ───────────
+
+test('backgroundSync goes through applyLibraryUpdate, not straight to navigate', () => {
+  // applyLibraryUpdate holds the update while a modal is open or a
+  // multi-selection is active, replays it afterwards, and restores the scroll
+  // position. backgroundSync called navigate() directly and did none of that.
+  const fn = CODE.slice(CODE.indexOf('async function backgroundSync()'),
+                        CODE.indexOf('async function backgroundSync()') + 900)
+  assert.match(fn, /applyLibraryUpdate\(/)
+  assert.doesNotMatch(fn, /navigate\(state\.currentPage/, 'that is the unconditional rebuild')
+})
+
+// ── Item 236: a collapsible header has to report its state ────────────────
+
+test('the download group toggles maintain aria-expanded', () => {
+  // Focus and Enter/Space already worked via the a11y sweep and the delegated
+  // keydown handler. The state did not: a screen reader was told this is a
+  // button and nothing about what it did.
+  const hits = [...CODE.matchAll(/hdr\.setAttribute\('aria-expanded', String\(isNowOpen\)\)/g)]
+  assert.strictEqual(hits.length, 2, 'both the completed and failed toggles')
+  // And the first render has to be right, not only the first click.
+  const sweep = CODE.slice(CODE.indexOf("c.setAttribute('role', 'button')"), CODE.indexOf("c.setAttribute('role', 'button')") + 700)
+  assert.match(sweep, /aria-expanded/)
+})

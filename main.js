@@ -326,10 +326,19 @@ function _torrentAdd(uri) {
       _activeTorrents.delete(torrent.infoHash)
       safeSend('torrent-done', { infoHash: torrent.infoHash, name: torrent.name })
       if (Notification.isSupported()) new Notification({ title: 'Torrent complete', body: torrent.name, silent: false }).show()
-      for (const delay of [8000, 25000, 60000]) setTimeout(() => safeSend('do-lib-rescan'), delay)
+      // One policy, matching the renderer's _LIB_RESCAN_DELAYS and CLAUDE.md.
+      // The torrent path used 8/25/60 while the Soulseek path used 15/45/120,
+      // and the document only described the second one.
+      for (const delay of LIB_RESCAN_DELAYS) {
+        setTimeout(() => safeSend('do-lib-rescan'), delay).unref?.()
+      }
     })
   })
 }
+
+// The one rescan cadence. Documented in CLAUDE.md and mirrored by the renderer's
+// _LIB_RESCAN_DELAYS, which coalesces rather than stacking (item 75).
+const LIB_RESCAN_DELAYS = [15000, 45000, 120000]
 
 // ── File logging ────────────────────────────────────────────────────────────
 // Every console line used to be a blocking appendFileSync on the main thread, so
@@ -3135,11 +3144,39 @@ function setupLibraryWatcher() {
   if (_libWatcher) { try { _libWatcher.close() } catch (_) {} _libWatcher = null }
   const folders = store.get('musicFolders', [])
   if (!folders.length) return
+  // The extension filter used to run in the handler, AFTER chokidar had already
+  // opened a descriptor for every directory 30 levels deep. On a large library
+  // that can exhaust the inotify limit — and ignorePermissionErrors:true masked
+  // it, so parts of the library silently stopped being watched.
+  const WATCH_DEPTH = 8
+  const IGNORED_DIRS = /(?:^|[\\/])(?:\.|@eaDir$|__MACOSX$|node_modules$|\$RECYCLE\.BIN$|System Volume Information$)/i
   _libWatcher = chokidar.watch(folders, {
     ignoreInitial: true,
     awaitWriteFinish: { stabilityThreshold: 2500, pollInterval: 400 },
     ignorePermissionErrors: true,
-    depth: 30,
+    // 30 was arbitrary; a music library is artist/album/disc at worst. Each
+    // extra level is a descriptor per directory at that level.
+    depth: WATCH_DEPTH,
+    ignored: (fsPath, stats) => {
+      if (IGNORED_DIRS.test(fsPath)) return true
+      // Only files are filtered by extension: a directory has to be watched to
+      // learn about the files inside it.
+      if (stats && stats.isFile()) return !AUDIO_EXT.test(fsPath) && !/\.cue$/i.test(fsPath)
+      return false
+    },
+  })
+  // Descriptor exhaustion is the failure this item is about, and it arrives here
+  // rather than as an exception. Hiding it is what made it invisible.
+  _libWatcher.on('error', (e) => {
+    const msg = String((e && e.message) || e)
+    if (/ENOSPC|EMFILE|ENFILE/.test(msg)) {
+      console.error('[papa] the library watcher ran out of file descriptors, so changes on disk will ' +
+        'no longer be noticed automatically. Raise fs.inotify.max_user_watches, or reduce the watched ' +
+        'folders. Original error: ' + msg)
+      safeSend('slskd-status-change', { watcherFailed: true })
+    } else {
+      console.error('[papa] library watcher error:', msg)
+    }
   })
   // The debounce cleared and reset on every event, so copying an album in kept
   // deferring the scan indefinitely while burning CPU on debounce churn. This is

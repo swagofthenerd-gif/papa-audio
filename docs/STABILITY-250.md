@@ -581,11 +581,13 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 ### 50. The chokidar watcher opens a descriptor per directory 30 levels deep
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** main.js:2298-2317 filters by extension only after chokidar has already watched everything. On a large library this can exhaust the inotify limit, and ignorePermissionErrors:true masks the failure — parts of the library silently stop being watched.
 
 **Solution.** Pass an ignored predicate so non-audio directories are never watched, and report descriptor exhaustion instead of hiding it.
+
+**Done.** An `ignored` predicate so a non-audio file is never watched, a depth of 8 instead of 30 (a music library is artist/album/disc at worst, and each extra level is a descriptor per directory at that level), dot-directories and the usual junk folders skipped outright — and an `error` handler that recognises ENOSPC/EMFILE/ENFILE and says plainly that changes on disk will no longer be noticed, naming the sysctl to raise. `ignorePermissionErrors: true` masking that was the actual harm: parts of the library silently stopped being watched.
 
 ### 51. The watcher debounce can be postponed indefinitely
 
@@ -1259,11 +1261,13 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 ### 236. Group headers are not keyboard-focusable
 
-`OPEN` `Medium` `was #47`
+`DONE` `Medium` `was #47`
 
 **Symptom.** Expanding a download group requires a mouse.
 
 **Solution.** Same a11y sweep extension as the other card classes.
+
+**Done.** Focus and Enter/Space already worked, via the a11y sweep's `tabindex`/`role=button` and the delegated keydown handler — so the item's symptom was already half-addressed. What was missing was `aria-expanded`: a screen reader was told this is a button and nothing about what pressing it did. Both toggles maintain it now, and the a11y sweep sets the correct initial value so the first announcement is right too.
 
 ### 237. No ETA
 
@@ -1567,19 +1571,23 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 ### 167. backgroundSync re-navigates the current page whenever the library signature changes
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** A rescan landing while you are reading a page rebuilds it under you.
 
 **Solution.** Update in place where possible; re-navigate only when the current page's data actually changed.
 
+**Done.** It goes through `applyLibraryUpdate` now, which already knew how to do this properly — it holds the update while a modal is open or a multi-selection is active, replays it when they close, and restores the scroll position. backgroundSync called `navigate()` directly and did none of that, so a rescan landing while you were reading rebuilt the page under you.
+
 ### 168. The rescan cadence in code does not match the documented one
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** CLAUDE.md documents 15/45/120 s after a Soulseek download; the torrent path uses 8/25/60. Two policies, one document.
 
 **Solution.** One scheduler, one policy, and correct the document.
+
+**Done.** One `LIB_RESCAN_DELAYS` in main, mirrored by the renderer's `_LIB_RESCAN_DELAYS`, and both matching what CLAUDE.md documents. The torrent path used 8/25/60 while the Soulseek path used 15/45/120 and the document described only the second. `test/rescan-cadence.test.js` parses all three and fails if they diverge — that is the part that keeps them honest, since nothing else links a constant in main to a constant in the renderer to a sentence in a markdown file.
 
 ### 169. Scan failures are reported as an empty library rather than a failure
 

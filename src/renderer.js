@@ -710,12 +710,15 @@ async function backgroundSync() {
   }
   const fresh = data.albums || []
   const changed = _libSig(fresh) !== _libSig(state.library)
-  if (changed) {
-    state.library = fresh
-    navigate(state.currentPage, _currentNavId(), { skipHistory: true })
-    setTimeout(fetchMissingArtwork, 600)
-    syncLibraryExt()
-  }
+  if (!changed) return
+  state.library = fresh
+  setTimeout(fetchMissingArtwork, 600)
+  syncLibraryExt()
+  // A rescan landing while you are reading a page used to rebuild it under you
+  // unconditionally. applyLibraryUpdate already knows how to do this properly:
+  // it holds the update while a modal is open or a multi-selection is active,
+  // replays it afterwards, and puts the scroll position back.
+  applyLibraryUpdate({ albums: fresh, reason: 'backgroundSync' })
 }
 
 // Re-render in place after the library changes underneath us. Deliberately
@@ -6890,6 +6893,14 @@ function bindContentEvents() {
       if (c.hasAttribute('tabindex')) return
       c.setAttribute('tabindex', '0')
       c.setAttribute('role', 'button')
+      // A collapsible header has to say whether it is open, and say it correctly
+      // from the first render — not only after the first click.
+      if (c.classList.contains('dl2-group-toggle') || c.classList.contains('dl2-group-toggle-failed')) {
+        var _gi = c.dataset.gi
+        var _list = _gi ? document.getElementById('dl2-gfiles-' + _gi) : null
+        c.setAttribute('aria-expanded',
+          String(!!(_list && _list.classList.contains('dl2-group-files-open'))))
+      }
     })
   if (document.getElementById('home-clock')) {
     if (_homeClockInterval) { clearInterval(_homeClockInterval); _homeClockInterval = null }
@@ -9035,6 +9046,8 @@ async function refreshSlskStatus() {
 // syncs that could not be throttled or cancelled — and each one walks the whole
 // library. One handle per delay: a later call reschedules that delay rather than
 // stacking another timer on it.
+// Must match main.js's LIB_RESCAN_DELAYS and the cadence CLAUDE.md documents.
+// test/rescan-cadence.test.js asserts all three agree.
 const _LIB_RESCAN_DELAYS = [15_000, 45_000, 120_000]
 const _libRescanTimers = new Map()
 function _scheduleLibRescan() {
@@ -9903,6 +9916,10 @@ function _renderCompletedTab(files, container) {
       if (!list) return
       const isNowOpen = list.classList.toggle('dl2-group-files-open')
       chev?.classList.toggle('dl2-chevron-up', isNowOpen)
+      // Focus and Enter/Space already worked, via the a11y sweep and the
+      // delegated keydown handler. What was missing was the state: a screen
+      // reader was told this is a button and nothing about what it did.
+      hdr.setAttribute('aria-expanded', String(isNowOpen))
       if (folder) {
         if (isNowOpen) _dlOpenGroups.add(folder)
         else _dlOpenGroups.delete(folder)
@@ -10159,6 +10176,7 @@ function _renderFailedTab(files, container) {
       if (!list) return
       const isNowOpen = list.classList.toggle('dl2-group-files-open')
       chev?.classList.toggle('dl2-chevron-up', isNowOpen)
+      hdr.setAttribute('aria-expanded', String(isNowOpen))
       if (folder) {
         if (isNowOpen) _dlFailedOpenGroups.add(folder)
         else _dlFailedOpenGroups.delete(folder)
