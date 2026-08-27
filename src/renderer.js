@@ -149,6 +149,10 @@ var _slskTimer = null
 // The live slsk-progress subscription's own unsubscribe function, so tearing it
 // down cannot take somebody else's listener on the same channel with it.
 var _slskProgressOff = null
+// How many source groups the results grid shows. Extended by Show more; reset
+// for every new search, so one long list does not make the next one enormous.
+const SLSK_SHOW_STEP = 60
+var _slskShowLimit = SLSK_SHOW_STEP
 // Interval handles. An interval with no handle can never be stopped or
 // superseded; several of these restarted without clearing the previous one.
 var _connCheckTimer = null
@@ -647,6 +651,8 @@ async function init() {
         ' — main stamps the same id on every log line')
     })
     .catch(e => console.error('[papa] could not read the session id:', String(e && e.message || e)))
+
+  document.getElementById('notice-badge')?.addEventListener('click', showNoticeHistory)
 
   window.api.slskStatus().then(s => { slsk.status = s }).catch(() => {})
   // The rate is decided in one place; at startup nothing is known to be active
@@ -8721,7 +8727,11 @@ function renderSoulseekRow(query) {
   const filtered     = SF ? SF.applyFilterSort(ordered, { filter: slsk.filter, sort: slsk.sort }) : ordered
   const surroundCount = SF ? ordered.filter(g => SF.groupSurround(g)).length : 0
   const hiresCount    = SF ? ordered.filter(g => SF.isHiResGroup(g)).length : 0
-  const displayList   = filtered.slice(0, 60)
+  // The cap keeps the grid usable, but with responseLimit 3000 across six
+  // variants the discarded tail routinely contains better sources — and nothing
+  // said it existed. The limit is now extensible and the count is stated.
+  const displayList   = filtered.slice(0, _slskShowLimit)
+  const hiddenCount   = Math.max(0, filtered.length - displayList.length)
   // data-gi is an index into displayList, which is FLAC-partitioned,
   // surround-sorted, filtered and capped at 60. bindSlskSearchEvents used to
   // rebuild its own array from _slskGroupByFolder(), which has none of that --
@@ -8729,12 +8739,14 @@ function renderSoulseekRow(query) {
   _slskRendered = displayList
   const filteredNote  = slsk.filter !== 'all'
     ? ` · <span class="slsk-filter-note">${filtered.length} match${filtered.length !== 1 ? 'es' : ''}</span>` : ''
+  const cappedNote    = hiddenCount
+    ? ` · <span class="slsk-filter-note">showing ${displayList.length} of ${filtered.length}</span>` : ''
   const isUpdating   = slsk.searching && slsk.results.length > 0
   const pending      = slsk.pendingSearches || 0
   const updateNote   = isUpdating ? ` <span class="slsk-updating">· scanning${pending > 0 ? ' ('+pending+' left)' : ''}${_slskElapsed > 0 ? ' ('+_slskElapsed+'s)' : ''}…</span>` : ''
   const summary      = flacGroups.length
-    ? `${flacGroups.length} lossless${otherGroups.length > 0 ? ` · ${otherGroups.length} other` : ''} source${groups.length !== 1 ? 's' : ''}${filteredNote}${updateNote}`
-    : `${groups.length} source${groups.length !== 1 ? 's' : ''}${updateNote}`
+    ? `${flacGroups.length} lossless${otherGroups.length > 0 ? ` · ${otherGroups.length} other` : ''} source${groups.length !== 1 ? 's' : ''}${filteredNote}${cappedNote}${updateNote}`
+    : `${groups.length} source${groups.length !== 1 ? 's' : ''}${cappedNote}${updateNote}`
 
   return `<div class="slsk-container" id="slsk-row">
     <div class="slsk-header-row">
@@ -8796,6 +8808,9 @@ function renderSoulseekRow(query) {
         </div>`
       }).join('')}
     </div>
+    ${hiddenCount ? `<div class="slsk-show-more-row">
+      <button class="slsk-retry-btn" id="slsk-show-more">Show ${Math.min(hiddenCount, SLSK_SHOW_STEP)} more of ${filtered.length}</button>
+    </div>` : ''}
   </div>`
 }
 
@@ -8886,7 +8901,7 @@ async function runSlskSearch(query) {
   const current = () => _slskRun === myRun
   // A different query gets its own retry allowance; the same query re-run by the
   // backoff keeps its latch so it cannot loop.
-  if (slsk.lastQuery !== query) _slskResetThrottleRetry()
+  if (slsk.lastQuery !== query) { _slskResetThrottleRetry(); _slskShowLimit = SLSK_SHOW_STEP }
   slsk.lastQuery = query
   slsk.error = null
   if (!state.isOnline) {
@@ -10606,6 +10621,13 @@ function bindSlskSearchEvents(query) {
   })
 
   section.querySelector('#slsk-saved-btn')?.addEventListener('click', () => showSlskSavedUsers())
+
+  section.querySelector('#slsk-show-more')?.addEventListener('click', () => {
+    // Extend rather than replace: the discarded tail routinely contains better
+    // sources, and nothing used to say it existed.
+    _slskShowLimit += SLSK_SHOW_STEP
+    _rerenderSlskSection(query)
+  })
 
   section.querySelector('#slsk-retry-btn')?.addEventListener('click', () => {
     _searchCache_invalidate(query)  // force-fresh on manual retry
@@ -13463,8 +13485,61 @@ function syncLibraryExt() {
 // Sync position every second while playing
 const _extSyncTimer = setInterval(() => { if (state.isPlaying) syncExtension() }, 1000)
 
+// ── Recent notices ───────────────────────────────────────────────────────────
+// Snackbars were the only failure channel and they expire, so anything that went
+// wrong while you were away was gone before you saw it. Every snackbar is kept
+// here, bounded, and the player bar shows a count when there is something to
+// read. Deliberately small: this is a record of what you missed, not an
+// inbox — the design of a fuller notification centre is not mine to choose.
+const NOTICE_HISTORY_CAP = 30
+const _noticeHistory = []
+let _noticesSeen = 0
+
+function recordNotice(msg) {
+  const text = String(msg == null ? '' : msg)
+  if (!text) return
+  _noticeHistory.unshift({ text, at: Date.now() })
+  if (_noticeHistory.length > NOTICE_HISTORY_CAP) _noticeHistory.pop()
+  updateNoticeBadge()
+}
+
+function updateNoticeBadge() {
+  const el = document.getElementById('notice-badge')
+  if (!el) return
+  const unread = Math.max(0, _noticeHistory.length - _noticesSeen)
+  el.textContent = unread ? String(unread) : ''
+  el.style.display = unread ? '' : 'none'
+  el.title = unread === 1 ? '1 recent notice' : `${unread} recent notices`
+}
+
+function showNoticeHistory() {
+  _noticesSeen = _noticeHistory.length
+  updateNoticeBadge()
+  const existing = document.getElementById('notice-history-modal')
+  if (existing) { existing.remove(); return }
+  const dlg = document.createElement('div')
+  dlg.id = 'notice-history-modal'
+  dlg.className = 'modal-overlay'
+  const rows = _noticeHistory.length
+    ? _noticeHistory.map(n => '<div class="notice-row"><span class="notice-when">' +
+        esc(new Date(n.at).toLocaleTimeString()) + '</span><span class="notice-text">' +
+        esc(n.text) + '</span></div>').join('')
+    : '<div class="mg-empty" style="padding:24px">Nothing has gone wrong yet.</div>'
+  dlg.innerHTML = '<div class="modal-box">' +
+    '<div class="modal-header-row"><div class="modal-title">Recent notices</div>' +
+    '<button class="modal-close-btn" id="notice-close">✕</button></div>' +
+    '<div class="notice-list">' + rows + '</div></div>'
+  document.body.appendChild(dlg)
+  const close = () => { document.removeEventListener('keydown', onKey); dlg.remove() }
+  function onKey(e) { if (e.key === 'Escape') close() }
+  document.addEventListener('keydown', onKey)
+  dlg.addEventListener('click', e => { if (e.target === dlg) close() })
+  dlg.querySelector('#notice-close')?.addEventListener('click', close)
+}
+
 // ── Snackbar ─────────────────────────────────────────────────────────────────
 function showSnackbar(msg, actionLabel, actionCallback, duration) {
+  recordNotice(msg)
   duration = duration || 5000
   var container = document.getElementById('snackbar-container')
   if (!container) return

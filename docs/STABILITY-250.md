@@ -1375,11 +1375,13 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 ### 150. Results are capped at 60 with no way to see the rest
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** With responseLimit 3000 across six variants the discarded tail routinely contains better sources.
 
 **Solution.** An explicit Show more that extends the slice.
+
+**Done.** The cap is extensible in steps of 60 with a Show more button, and the summary says "showing 60 of 214" — a cap with no count is indistinguishable from there being nothing else. The limit resets on a new search, so one long list does not make every later search enormous.
 
 ### 151. No per-variant progress
 
@@ -1709,11 +1711,13 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 ### 107. Events are broadcast to the window with no sequence numbers
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** A renderer that missed an event cannot tell.
 
 **Solution.** Monotonic sequence per channel so the renderer can detect a gap and resync.
+
+**Done.** `safeSend` stamps a monotonic sequence per channel, riding alongside the payload rather than inside it so no consumer's shape changes; preload checks it, strips it, and reports a gap — telling a *missed* event apart from an *out-of-order* one, since those mean different things. The counters reset on `did-start-loading`, because a fresh renderer has not missed anything, it simply was not there. The last 50 gaps are kept for a diagnostics copy-out.
 
 ### 108. No IPC call logging in development
 
@@ -1889,11 +1893,13 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 ### 126. Snackbars are the only failure channel and they expire in five seconds
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** Anything that goes wrong while you are away is gone before you see it.
 
 **Solution.** Keep a short dismissible history of recent notices.
+
+**Done, in the smaller form.** Every snackbar is now recorded in a bounded 30-entry history, and the player bar shows a count of unread notices that opens a plain list. Deliberately not a notification centre: what to do with a persistent notice stream — where it lives, whether it groups, whether it survives a restart — is a design decision, and the bug here was narrower than that. Anything that went wrong while you were away was simply gone; now it is readable.
 
 ### 127. The progress bar freezing is indistinguishable from a paused track
 

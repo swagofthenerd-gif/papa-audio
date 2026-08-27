@@ -20,12 +20,12 @@ test('nothing pushes to the renderer except through the helper', () => {
   // The single real send lives inside the helper, after both liveness checks.
   const sends = [...CODE.matchAll(/\bwc\.send\(/g)]
   assert.strictEqual(sends.length, 1)
-  const helper = CODE.slice(CODE.indexOf('function safeSend('), CODE.indexOf('function papaRoots('))
-  assert.ok(helper.includes('wc.send(channel, payload)'))
+  const helper = CODE.slice(CODE.indexOf('function safeSend('), CODE.indexOf('function resetChannelSeq('))
+  assert.ok(helper.includes('wc.send(channel, payload,'), 'the send carries the sequence alongside the payload')
 })
 
 test('safeSend checks the window and the webContents, and never throws', () => {
-  const fn = CODE.slice(CODE.indexOf('function safeSend('), CODE.indexOf('function playerReady('))
+  const fn = CODE.slice(CODE.indexOf('function safeSend('), CODE.indexOf('function resetChannelSeq('))
   assert.match(fn, /mainWindow\.isDestroyed\(\)/)
   assert.match(fn, /wc\.isDestroyed\(\)/)
   assert.match(fn, /catch/)

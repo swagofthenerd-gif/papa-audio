@@ -1231,6 +1231,9 @@ function createWindow(hidden = false) {
   // renderer-process-limit is 1, so if the renderer dies the user is left with a
   // blank frameless window, no controls and no explanation. Say what happened
   // and offer the reload rather than requiring a force-quit.
+  // A new renderer has not missed anything; it simply was not there.
+  mainWindow.webContents.on('did-start-loading', () => resetChannelSeq())
+
   mainWindow.webContents.on('render-process-gone', (_e, details) => {
     const reason = (details && details.reason) || 'unknown'
     console.error('[papa] renderer gone:', reason)
@@ -1338,18 +1341,36 @@ async function detectMpv() {
 // webContents.send throws if the window is gone, and during the close race that
 // reached only the blanket uncaughtException handler. One of the four call sites
 // was wrapped; the other three were not.
+// A monotonic sequence per channel. A renderer that missed an event — because
+// it was reloading, or because a send failed while the window was going away —
+// had no way to know. With this it can see the gap and resync instead of quietly
+// carrying stale state.
+const _channelSeq = new Map()
+
+function nextSeq(channel) {
+  const n = (_channelSeq.get(channel) || 0) + 1
+  _channelSeq.set(channel, n)
+  return n
+}
+
 function safeSend(channel, payload) {
   try {
     if (!mainWindow || mainWindow.isDestroyed()) return false
     const wc = mainWindow.webContents
     if (!wc || wc.isDestroyed()) return false
-    wc.send(channel, payload)
+    // The sequence rides alongside the payload rather than inside it, so no
+    // existing consumer shape changes. preload strips it back off.
+    wc.send(channel, payload, { seq: nextSeq(channel), session: SESSION_ID })
     return true
   } catch (e) {
     console.error(`[papa] could not send ${channel}:`, String(e && e.message || e))
     return false
   }
 }
+
+// A reload starts a fresh renderer with no idea what it missed, so the counters
+// restart with it and the first event of each channel is seq 1 again.
+function resetChannelSeq() { _channelSeq.clear() }
 
 function playerReady() {
   return !!(player && mpvAvailable && player.alive !== false)

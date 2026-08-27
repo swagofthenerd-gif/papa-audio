@@ -152,3 +152,35 @@ test('the crash-recovery notice is a notice, not a blocking prompt', () => {
   assert.match(handler, /showSnackbar/)
   assert.doesNotMatch(handler, /confirm\(|alert\(|dialog\./)
 })
+
+// ── Item 107: a renderer that missed an event could not tell ───────────────
+
+test('every push carries a monotonic sequence per channel', () => {
+  assert.match(MAIN, /const _channelSeq = new Map\(\)/)
+  assert.match(MAIN, /function nextSeq\(channel\)/)
+  const send = MAIN.slice(MAIN.indexOf('function safeSend('), MAIN.indexOf('function resetChannelSeq('))
+  assert.match(send, /wc\.send\(channel, payload, \{ seq: nextSeq\(channel\)/,
+    'the sequence must ride alongside the payload, not inside it')
+})
+
+test('a reload resets the counters instead of looking like a huge gap', () => {
+  assert.match(MAIN, /function resetChannelSeq\(\)/)
+  assert.match(MAIN, /did-start-loading['"]?, \(\) => resetChannelSeq\(\)/,
+    'a new renderer has not missed anything; it simply was not there')
+})
+
+test('preload checks the sequence and strips it before the callback', () => {
+  assert.match(PRELOAD, /function reportSeq\(channel, meta\)/)
+  const on = PRELOAD.slice(PRELOAD.indexOf('  on: (channel, cb) => {'), PRELOAD.indexOf('  off: (channel)'))
+  assert.match(on, /reportSeq\(channel, meta\)/)
+  assert.match(on, /cb\(data\)/, 'the payload shape must not change for any existing consumer')
+})
+
+test('a gap is reported and told apart from an out-of-order event', () => {
+  const fn = PRELOAD.slice(PRELOAD.indexOf('function reportSeq('), PRELOAD.indexOf("contextBridge.exposeInMainWorld('api'"))
+  assert.match(fn, /missed \$\{meta\.seq - prev - 1\} event/)
+  assert.match(fn, /out-of-order/)
+  assert.match(fn, /_seqGaps\.length > 50/, 'the record has to be bounded')
+  // The first event on a channel has no predecessor and is not a gap.
+  assert.match(fn, /if \(prev === undefined\) return/)
+})

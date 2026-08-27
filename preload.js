@@ -1,6 +1,31 @@
 const { contextBridge, ipcRenderer } = require('electron')
 
+// Per-channel sequence tracking. A gap means events were sent that this
+// renderer never received — during a reload, or while the window was going away
+// — and the point is that it becomes knowable rather than silently absent.
+const _seqSeen = new Map()
+const _seqGaps = []
+
+function reportSeq(channel, meta) {
+  const prev = _seqSeen.get(channel)
+  _seqSeen.set(channel, meta.seq)
+  if (prev === undefined) return
+  if (meta.seq === prev + 1) return
+  const gap = { channel, expected: prev + 1, got: meta.seq, at: Date.now() }
+  _seqGaps.push(gap)
+  if (_seqGaps.length > 50) _seqGaps.shift()
+  // Out of order rather than missing is worth telling apart.
+  if (meta.seq > prev + 1) {
+    console.error(`[papa][ipc] missed ${meta.seq - prev - 1} event(s) on ${channel} ` +
+      `(expected ${prev + 1}, got ${meta.seq})`)
+  } else {
+    console.error(`[papa][ipc] out-of-order event on ${channel} (expected ${prev + 1}, got ${meta.seq})`)
+  }
+}
+
 contextBridge.exposeInMainWorld('api', {
+  // What this renderer has missed, for a diagnostics copy-out.
+  ipcGaps: () => _seqGaps.slice(),
   // Window
   minimize: () => ipcRenderer.send('win-minimize'),
   maximize: () => ipcRenderer.send('win-maximize'),
@@ -241,7 +266,13 @@ contextBridge.exposeInMainWorld('api', {
       'system-suspend', 'system-resume',
     ]
     if (!allowed.includes(channel)) return () => {}
-    const h = (_, data) => cb(data)
+    const h = (_, data, meta) => {
+      // main stamps a monotonic sequence per channel. Checked here so every
+      // consumer benefits without any of them knowing about it, and stripped
+      // before the payload reaches the callback so no shape changes.
+      if (meta && typeof meta.seq === 'number') reportSeq(channel, meta)
+      cb(data)
+    }
     ipcRenderer.on(channel, h)
     return () => ipcRenderer.removeListener(channel, h)
   },

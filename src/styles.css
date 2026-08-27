@@ -3993,6 +3993,36 @@ textarea:focus:not(:focus-visible) { outline: none; }
   color: #f0a500;
   animation: pulse 1.2s infinite;
 }
+/* Unread-notice count in the player bar, and the list behind it. */
+.notice-badge {
+  background: rgba(240,165,0,.16);
+  color: #f0a500;
+  border: none;
+  cursor: pointer;
+  margin-left: 4px;
+  font-weight: 600;
+}
+.notice-badge:hover { background: rgba(240,165,0,.28); }
+.notice-list { max-height: 60vh; overflow: auto; padding: 4px 0; }
+.notice-row {
+  display: flex;
+  gap: 10px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--glass-border);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+.notice-row:last-child { border-bottom: none; }
+.notice-when { color: var(--text3); flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+.notice-text { color: var(--text2); }
+
+/* The row that reveals the rest of the search results. */
+.slsk-show-more-row {
+  display: flex;
+  justify-content: center;
+  padding: 10px 0 4px;
+}
+
 /* A settings row that is telling you something is wrong, rather than a value. */
 .mcs-set-warning {
   padding: 6px 10px;

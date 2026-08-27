@@ -208,3 +208,43 @@ test('the download group toggles maintain aria-expanded', () => {
   const sweep = CODE.slice(CODE.indexOf("c.setAttribute('role', 'button')"), CODE.indexOf("c.setAttribute('role', 'button')") + 700)
   assert.match(sweep, /aria-expanded/)
 })
+
+// ── Item 126: a notice you were not there to see ───────────────────────────
+
+test('every snackbar is recorded, not only shown', () => {
+  const fn = CODE.slice(CODE.indexOf('function showSnackbar(msg'), CODE.indexOf('function showSnackbar(msg') + 300)
+  assert.match(fn, /recordNotice\(msg\)/, 'snackbars expire; the record is the point')
+})
+
+test('the notice history is bounded and has a way in and out', () => {
+  assert.match(CODE, /NOTICE_HISTORY_CAP/)
+  const rec = CODE.slice(CODE.indexOf('function recordNotice('), CODE.indexOf('function updateNoticeBadge('))
+  assert.match(rec, /_noticeHistory\.length > NOTICE_HISTORY_CAP/)
+  const show = CODE.slice(CODE.indexOf('function showNoticeHistory('), CODE.indexOf('// ── Snackbar'))
+  assert.match(show, /removeEventListener\('keydown', onKey\)/,
+    'a modal that registers a document listener has to remove it — see items 73, 74 and 257')
+  assert.match(show, /notice-close/)
+})
+
+test('the badge shows only what has not been read', () => {
+  const fn = CODE.slice(CODE.indexOf('function updateNoticeBadge('), CODE.indexOf('function showNoticeHistory('))
+  assert.match(fn, /_noticeHistory\.length - _noticesSeen/)
+  assert.match(fn, /style\.display = unread \? '' : 'none'/)
+})
+
+// ── Item 150: the discarded tail ──────────────────────────────────────────
+
+test('the results cap is extensible and states what it is hiding', () => {
+  assert.match(CODE, /var _slskShowLimit = SLSK_SHOW_STEP/)
+  assert.match(CODE, /filtered\.slice\(0, _slskShowLimit\)/)
+  assert.match(CODE, /showing \$\{displayList\.length\} of \$\{filtered\.length\}/,
+    'a cap with no count is indistinguishable from there being nothing else')
+  assert.match(CODE, /_slskShowLimit \+= SLSK_SHOW_STEP/)
+})
+
+test('a new search resets the limit', () => {
+  const fn = CODE.slice(CODE.indexOf('async function runSlskSearch(query)'),
+                        CODE.indexOf('async function runSlskSearch(query)') + 600)
+  assert.match(fn, /_slskShowLimit = SLSK_SHOW_STEP/,
+    'otherwise one long list makes every later search enormous')
+})
