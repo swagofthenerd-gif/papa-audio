@@ -3981,6 +3981,29 @@ textarea:focus:not(:focus-visible) { outline: none; }
   color: #f0a500;
   margin-left: 4px;
 }
+/* Shown only while the playback engine is down. Deliberately loud enough to be
+   noticed in the player bar and quiet enough not to be a dialog. */
+.np-format.engine-state {
+  background: rgba(224,92,92,.14);
+  color: #e05c5c;
+  margin-left: 4px;
+}
+.np-format.engine-state.recovering {
+  background: rgba(240,165,0,.14);
+  color: #f0a500;
+  animation: pulse 1.2s infinite;
+}
+/* mpv's own last words in the blocker: readable, scrollable, not a wall. */
+#mpv-blocker-log {
+  max-height: 140px;
+  overflow: auto;
+  text-align: left;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 11px;
+  line-height: 1.45;
+  opacity: .85;
+}
 
 /* ── Context menu extras ─────────────────────────── */
 .ctx-divider {

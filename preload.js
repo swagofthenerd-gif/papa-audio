@@ -202,6 +202,8 @@ contextBridge.exposeInMainWorld('api', {
   eqInfo:            ()  => ipcRenderer.invoke('eq-info'),
   eqPreset:          (n) => ipcRenderer.invoke('eq-preset', n),
   playerRecheck:     ()  => ipcRenderer.invoke('player-recheck'),
+  playerGetDiagnostics: () => ipcRenderer.invoke('player-get-diagnostics'),
+  trackExists:       (p) => ipcRenderer.invoke('track-exists', p),
   getAudioDevices:   ()  => ipcRenderer.invoke('get-audio-devices'),
   setAudioDevice:    (d) => ipcRenderer.invoke('set-audio-device', d),
   getDeviceVolume:            ()  => ipcRenderer.invoke('get-device-volume'),

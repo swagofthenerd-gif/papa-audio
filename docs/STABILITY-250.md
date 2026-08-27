@@ -2,7 +2,8 @@
 
 Generated 2026-08-27. Companion artifact: https://claude.ai/code/artifact/c05899c1-fa21-4b19-8fc3-05b2745a97df
 
-Status legend: **OPEN** = verified defect, not yet fixed. **PROPOSED** = improvement. **CLOSED** = decided against, recorded so it is not re-raised.
+Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with the test that holds it.
+**PROPOSED** = improvement. **CLOSED** = decided against, recorded so it is not re-raised.
 
 `was #n` marks an item carried forward from the earlier 155-item report.
 
@@ -12,123 +13,153 @@ Status legend: **OPEN** = verified defect, not yet fixed. **PROPOSED** = improve
 
 ### 1. mpv's stderr is discarded, so the engine's own diagnosis is unreadable
 
-`OPEN` `Critical`
+`DONE` `Critical`
 
 **Symptom.** mpv-engine.js:86 spawns with stdio:'ignore'. When mpv says 'Audio device lost', 'Failed to open', or a decoder error, that text goes nowhere. This is why yesterday's stop cannot be explained.
 
-**Solution.** Spawn with stderr piped and --msg-level=all=warn; keep the last ~200 lines in a ring buffer and flush it to the daily log on any abnormal end.
+**The solution as proposed above was wrong, and the difference matters.** --no-terminal, which the engine has always passed, silences mpv's message output completely. Piping stderr and adding --msg-level=all=warn would have produced an empty ring buffer and the appearance of a fix. mpv's message stream is instead requested over the JSON IPC socket with request_log_messages warn, and arrives as log-message events carrying level, subsystem prefix and text.
+
+**Done.** Both channels feed one ring, tagged by source, readable via getLogTail() (200 lines): log-message over IPC for everything mpv chooses to say, and a piped stderr for what bypasses mpv's logging entirely — libav aborts, asserts, and anything printed while mpv dies before it accepts an IPC connection. No spawn flags were changed, so there is no chance of an mpv that will not start. Any line matching a fault pattern is also copied inline into the flight recorder, so the timeline and the diagnosis do not have to be correlated by eye. Tests: test/engine-flight-recorder.test.js.
 
 ### 2. end-file reasons other than eof and error emit nothing at all
 
-`OPEN` `Critical`
+`DONE` `Critical`
 
 **Symptom.** mpv-engine.js:201-206 handles only reason 'eof' and 'error'. mpv also emits 'stop', 'quit', 'redirect' and 'unknown'. Those produce no event: no ended, no loadError, no advance. mpv goes idle, state.isPlaying stays true, the progress bar freezes. A silent stop with no error and no skip.
 
 **Solution.** Map every reason explicitly. Anything that is not a normal handoff must emit a typed stopped event carrying the reason, and the renderer must act on it.
 
+**Done.** _onEndFile maps every reason, including reasons a future mpv invents: eof to ended, error to loadError, redirect to nothing (mpv opens the target itself), and everything else to a typed stopped event carrying reason, path, position and duration, plus a diagnostic dump to the daily log. The distinction that makes this usable in practice: loadfile replace, playlist-clear and stop() all legitimately end the current file with reason stop, so each opens a 1.5 s window in which an end-file stop is attributed to it. The classification is recorded either way, so a misattribution shows up in the log rather than being lost. Tests: test/engine-flight-recorder.test.js.
+
 ### 3. engineDown is emitted and forwarded but nothing in the renderer handles it
 
-`OPEN` `Critical`
+`DONE` `Critical`
 
 **Symptom.** mpv-engine.js:266 emits it on every mpv death; main.js:901 forwards it; player-shim.js has no case for it and renderer.js:547 only checks mpvMissing and engineFailed. During a respawn the UI still claims it is playing.
 
 **Solution.** Add the shim case, flip state.isPlaying, and show a 'reconnecting' state; per your decision, resume and then say so.
 
+**Done.** The whole chain is wired for all four lifecycle events (engineDown, engineRecovered, stopped, engineFailed): the engine emits with a payload, main forwards the payload, the shim translates it to a DOM event and corrects its own _paused, and the renderer clears state.isPlaying, updates the play button and shows a Reconnecting badge in the player bar. On recovery it shows one brief dismissible snackbar naming the position it resumed at — the decided behaviour, never blocking, never silent. test/engine-event-wiring.test.js asserts the chain across all four files, so an event that is emitted, forwarded and then dropped fails the build instead of going unnoticed for a release.
+
 ### 4. Every mpv command shares one 2-second timeout
 
-`OPEN` `Critical`
+`DONE` `Critical`
 
 **Symptom.** mpv-ipc.js:5. A 184 MB 24-bit 5.1 FLAC on a cold cache can exceed 2 s for loadfile alone. The rejection becomes {ok:false} in main's wrap(), and the shim's src setter (player-shim.js:65-71) returns nothing, so the renderer cannot observe the failure. Nothing retries.
 
 **Solution.** Per-operation timeouts — generous for loadfile, tight for get_property — plus one retry before surfacing failure.
 
+**Done.** Per-operation budgets in mpv-ipc.js: loadfile 20 s, seek 10 s, playlist ops and set/observe 5 s, get_property 2 s. One retry, but only for commands where running twice is indistinguishable from running once — get/set/observe_property and request_log_messages. loadfile is deliberately excluded: a timeout means no reply came, and a late reply plus a retry restarts the track the user is listening to. The rejection now names the command and the budget it exceeded. Tests: test/mpv-ipc-timeouts.test.js.
+
 ### 5. this.client is nulled mid-await, throwing inside setNext
 
-`OPEN` `Critical`
+`DONE` `Critical`
 
 **Symptom.** mpv-engine.js:261-266 sets client=null synchronously. setNext (124-128) awaits playlist-clear, then awaits loadfile. If mpv dies between them the second await throws TypeError. Prefetch is silently disabled and the album stops at the end of the current track.
 
 **Solution.** Capture the client in a local at entry and null-check between awaits; treat a vanished client as a typed EngineGone, not a TypeError.
 
+**Done.** Every command goes through `_guard(op)`, which pins the mpv generation at the start of a sequence and rejects with a typed `EngineGone` if the client is gone, the engine is not alive, or a respawn has happened since. That last part matters as much as the null check: without it a command belonging to the old mpv would be delivered to the one that replaced it. Tests: test/engine-recovery.test.js.
+
 ### 6. Gapless prefetch is not restored after a respawn
 
-`OPEN` `Critical`
+`DONE` `Critical`
 
 **Symptom.** _onExit restores path, position, volume and paused but never _nextPath, which load() has just set to null. Nothing re-arms it, so after any respawn the album plays the current track and then stops.
 
 **Solution.** Re-issue setNext from the renderer's queue after a successful respawn.
 
+**Done, ahead of its tier.** Landed with item 3 rather than waiting for Tier 2, because a recovery that resumes the track and then stops at the boundary is not a recovery. The renderer's enginerecovered handler calls updateNextPrefetch(), which is the only place that knows the queue. Not verified against real mpv yet — see "How this was and was not verified" in docs/HANDOFF.md.
+
 ### 7. engineFailed tells you to install mpv when mpv is installed and fine
 
-`OPEN` `High`
+`DONE` `High`
 
 **Symptom.** renderer.js:548 shows one blocker for both mpvMissing and engineFailed. After an audio-device loss the message is actively misleading.
 
 **Solution.** Carry the reason with the event and write the message from it.
 
+**Done.** engineFailed now carries {reason, detail, log} — reason being respawn-limit, respawn-error or start-error. The blocker's title, body and button text are written from the reason, the install instructions are hidden when mpv is present, and mpv's own last lines are shown in the card so the user sees the actual diagnosis instead of a guess. player-get-status additionally reports mpvAvailable separately from available, so the startup path can tell "not installed" from "installed and would not start" rather than assuming the first.
+
 ### 8. Three mpv deaths in 60 s leaves a dead engine object that still passes the guards
 
-`OPEN` `High`
+`DONE` `High`
 
 **Symptom.** mpv-engine.js:270 emits engineFailed but main.js keeps the old player with alive=false and client=null. Every later handler passes `if (!player)` because player is truthy, then dereferences a null client. Only a manual recheck recovers.
 
 **Solution.** Tear the engine down on engineFailed and attempt one supervised re-init before giving up.
 
+**Done.** main.js now tears the dead engine down on engineFailed — `player = null` before anything else, so the truthy-but-dead object can no longer pass `if (!player)` — and makes exactly one supervised re-init attempt. Success sends `engineRestored`, which takes the blocker down without the user pressing anything. A second failure waits for an explicit recheck, which re-arms the single attempt.
+
 ### 9. An exclusive-mode device loss burns the whole respawn budget in seconds
 
-`OPEN` `High`
+`DONE` `High`
 
 **Symptom.** _onExit rebuilds the same --audio-device and --audio-exclusive args from unchanged config, so if the device is still gone each respawn fails instantly — three in a row, well inside the 60 s window.
 
 **Solution.** Probe device availability before respawning; back off, and fall back to the default device with a notice rather than failing.
 
+**Done.** A device fault is recognised from mpv's own log rather than guessed at, and the respawn drops `--audio-device` and `--audio-exclusive` rather than asking again for a device that is not there. The user gets a notice naming the device that was given up on. If it still cannot recover, engineFailed's reason is `audio-device-lost` and not `respawn-limit`, because those need different answers.
+
 ### 10. The 150 ms EOF grace races gapless auto-advance
 
-`OPEN` `High`
+`DONE` `High`
 
 **Symptom.** mpv-engine.js:12,201-213. On eof a 150 ms timer arms 'ended'; the next file's path change fires 'autoAdvanced' independently. If start-file lands late both reach the renderer: the track is scrobbled twice and playNext() issues a loadfile replace on a file mpv is already playing — audible cut and restart mid-track.
 
 **Solution.** Make the two paths mutually exclusive with a single state machine keyed on the file mpv actually reports, rather than two independent timers.
 
+**Done.** One state machine, keyed on what mpv actually reports: idle -> pending (eof seen) -> advancing (start-file) -> idle, or pending -> ended when the wait expires. Exactly one of `ended` or `autoAdvanced` can reach the renderer. The grace period is now chosen from real state instead of being a blind 150 ms: nothing queued means eof really is the end, so 150 ms; something queued means the gapless handoff is coming, so wait up to 3 s for it. A handoff that never arrives is recorded as `advance-failed` with a diagnostic, and `ended` is still emitted so the album keeps playing. A path change arriving after `ended` is suppressed and recorded, which is the double scrobble and the audible cut.
+
 ### 11. dropMissingTrack permanently deletes present files from the queue
 
-`OPEN` `High`
+`DONE` `High`
 
 **Symptom.** renderer.js:650-677 splices on a single load error with no existence check. A transient demuxer or cache error on a large FLAC removes a track that is still on disk, and it never comes back.
 
 **Solution.** Confirm the file is genuinely gone over IPC before removing; on a transient error retry once, then skip without mutating the queue.
 
+**Done.** A new `track-exists` IPC asks the filesystem, and the decision itself moved to `src/load-error-policy.js` so it could be tested exhaustively. The invariant the tests assert: only a **confirmed** absence — `checked: true, exists: false` — may mutate the queue. ENOENT is an answer; EACCES, EIO and a dead mount are not, and are never treated as one. Anything else retries once, then skips while leaving the queue exactly as it was. Tests: test/load-error-policy.test.js.
+
 ### 12. autoadvanced bails out and leaves the queue index pointing at the wrong track
 
-`OPEN` `High`
+`DONE` `High`
 
 **Symptom.** renderer.js:11900-11901: `if (idx === -1) return`, which is before updateNextPrefetch(). mpv has already switched files, but queueIndex still points elsewhere, so scrobbling, savePlaybackState, now-playing and playNext's arithmetic all act on a track that is not playing — and prefetch is never re-armed.
 
 **Solution.** Resync the index from what mpv reports, and re-arm prefetch on every exit path from that handler.
 
+**Done.** The bare `return` is gone. When mpv reports a file the queue does not contain, the now-playing bar is rewritten from what mpv says (it is the authority on what is audible), the mismatch is logged, and prefetch is re-armed on that path too — without which the album stops at the next boundary, the exact failure the handler exists to prevent.
+
 ### 13. playerSetNext is fire-and-forget across three layers
 
-`OPEN` `High`
+`DONE` `High`
 
 **Symptom.** player-shim.js:116 does not return or await; the renderer never sees a prefetch failure. The first symptom is the album stopping at a track boundary.
 
 **Solution.** Return the result and surface a failed prefetch as a retry rather than silence.
 
+**Done.** The shim returns the IPC result, and updateNextPrefetch() checks it: one retry after 700 ms, then a notice saying the gap between tracks may be audible. Playback is never blocked on it — a failed prefetch costs a gap, not a stop.
+
 ### 14. state.isPlaying and the shim's _paused are maintained by two independent optimistic updates
 
-`OPEN` `High`
+`DONE` `High`
 
 **Symptom.** player-shim.js:73-88 reverts _paused on failure; renderer.js:5857-5865 sets state.isPlaying before the await and only clears it in a later callback. They can disagree, and after an engineDown both stay wrong.
 
 **Solution.** One source of truth, derived from mpv's observed pause property, with the optimistic value as a short-lived overlay.
 
+**Done.** `paused` is now derived. mpv's observed pause property is the only truth; a click writes a short-lived overlay that expires after 1.5 s, and mpv confirming the overlay retires it immediately. The optimistic value still applies instantly, so rapid toggling does not drop clicks — but it can no longer outlive the thing it was guessing about, which is how this and state.isPlaying ended up disagreeing and both staying wrong after an engineDown.
+
 ### 15. player-switch swallows a failed pause and proceeds anyway
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** main.js:956-960 wraps player.pause() in an empty catch, then loads with play:true regardless — including against a client that was just nulled.
 
 **Solution.** Treat a failed pause as a failed switch.
+
+**Done.** player-switch returns a failure naming the failed pause instead of loading anyway against a client that was just nulled.
 
 ### 16. playlist-clear inside setNext can end the current file
 
@@ -138,77 +169,97 @@ Status legend: **OPEN** = verified defect, not yet fixed. **PROPOSED** = improve
 
 **Solution.** Use playlist-remove on the specific queued index instead of clearing the whole playlist.
 
+**Partly done — read this before finishing it.** setNext now returns without sending anything at all when the requested next path is the one it already has, which is the common case: the renderer calls it on every prefetch update, usually with the same value. That removes most of the exposure with zero risk, because no command is sent. The playlist-remove change itself is NOT done: it needs `playlist-count` arithmetic and depends on mpv's exact playlist semantics after `loadfile ... replace`, and getting the index wrong removes the entry that is currently playing — an audible stop, which is worse than the bug. It needs real mpv to verify, so it was left for the machine that has one.
+
 ### 17. No watchdog on a stalled position
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** If time-pos stops advancing while pause is false, nothing notices. That is the exact signature of yesterday's stop.
 
 **Solution.** If position has not moved for several seconds while unpaused, log it, probe mpv, and recover.
 
+**Done.** A 2 s ticker watches for time-pos not advancing while pause is false. Past 8 s it asks mpv what it thinks — idle-active, core-idle, eof-reached, path, pause — rather than concluding anything from our own mirror of the state. mpv reporting idle while we believe we are playing IS the silent stop, and is reported as `stopped` with reason `stalled-idle`. Anything else is emitted as `stalled` with the probe attached, so the finding is real rather than inferred.
+
 ### 18. Seek rejections are silently dropped when a new track loads
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** _flushPendingSeek({send:false}) rejects every pending settler with 'seek cancelled by new track load'. Callers do not catch it, so it becomes an unhandled rejection.
 
 **Solution.** Resolve rather than reject on a legitimate cancellation, or catch at the call sites.
 
+**Done.** A deferred seek cancelled by a new load now resolves with `{cancelled: true, seconds}` instead of rejecting. It was never a failure the caller could do anything about, and rejecting made it an unhandled rejection at every call site.
+
 ### 19. Volume and speed commands have no failure path
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** setVolume/setSpeed await a command that can reject; nothing catches, so a slider drag during a respawn produces unhandled rejections.
 
 **Solution.** Wrap and ignore-with-log, since these are cosmetic and must never break playback.
 
+**Done.** setVolume and setSpeed absorb `EngineGone` and record it, so a slider moved during a respawn cannot become a playback failure. A real mpv error still propagates — only the engine having gone away is swallowed.
+
 ### 20. restart() replays load, seek, volume and play with no failure handling
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** If any step throws the engine is left half-configured with no event emitted.
 
 **Solution.** Wrap the resume sequence; on failure emit the typed stopped event so the UI can offer Resume.
 
+**Done.** The resume sequence is shared between restart() and the respawn path, so they cannot drift, and is bounded by a 15 s timeout. A restart that cannot finish emits `stopped` with reason `restart-incomplete` instead of leaving the engine half-configured with no event at all.
+
 ### 21. observe_property failures during start() are fatal but unreported
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** start() awaits five observe calls in a loop; a rejection escapes to whoever called start, which in the respawn path is a bare try/catch that emits engineFailed with no reason.
 
 **Solution.** Report which property failed.
 
+**Done.** Each observe_property is awaited individually; a failure is recorded with the property name and rethrown as an error carrying `code: 'OBSERVE_FAILED'` and `property`, so the respawn path's catch has something to report.
+
 ### 22. The IPC socket path embeds the Electron pid and a counter, and old sockets are only reaped opportunistically
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** A crash leaves the socket file behind; the reaper handles the common case but the naming makes collision handling fragile.
 
 **Solution.** Use a per-run random suffix and unlink the socket on stop.
 
+**Done.** The socket name now ends in four random bytes instead of a counter, and stop() unlinks it. Both halves matter: a random name cannot collide with the file a SIGKILLed predecessor left behind, and unlinking means the reaper is not looking at stale sockets in the first place.
+
 ### 23. connect() retries for 5 s with no signal about why it is failing
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** mpv-ipc.js:24-37 swallows every socket error and retries until the deadline, then rejects with a generic message.
 
 **Solution.** Keep the last underlying error and include it in the rejection.
 
+**Done.** connect() keeps the last underlying error and includes it in the rejection. ENOENT (mpv never created the socket) and ECONNREFUSED (it exists and nothing is listening) are completely different faults, and the old message distinguished neither.
+
 ### 24. A late mpv reply after a command timeout is silently discarded
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** _onData drops any reply whose request_id is no longer pending, so a slow loadfile that eventually succeeded looks like a failure to the app while mpv is actually playing.
 
 **Solution.** Log late replies; for loadfile specifically, reconcile against the observed path rather than assuming failure.
 
+**Done.** Timed-out request ids are kept in a small map. A reply that arrives afterwards emits `lateReply` with the command, how long it took and whether it succeeded, and the engine records it in the flight recorder. It cannot resolve the original promise — the caller has already been told it failed — but it is the evidence that the command DID run and the app's idea of state is now wrong.
+
 ### 25. The IPC read buffer is unbounded
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** mpv-ipc.js accumulates into this.buffer until a newline. A malformed or very long line grows it without limit.
 
 **Solution.** Cap the buffer and resync at the next newline.
+
+**Done.** The read buffer is capped at 1 MiB. Past that it is dropped, an `overflow` event is emitted with the byte count, and parsing resyncs at the next newline.
 
 ### 26. No structured playback event log
 
@@ -217,6 +268,8 @@ Status legend: **OPEN** = verified defect, not yet fixed. **PROPOSED** = improve
 **Symptom.** Nothing records track starts, ends, reasons, respawns or timeouts, so every playback complaint is unfalsifiable after the fact.
 
 **Solution.** A flight recorder appending one line per engine event to the existing daily log, asynchronously.
+
+**Done, except the word "asynchronously".** The flight recorder exists and records every engine transition. It is written to the daily log when a fault is detected rather than one line per event, because today's logger is a blocking appendFileSync on the main thread — a line per event would be the very stall Tier 3 exists to remove. See item 253.
 
 ### 27. No resume prompt after an abnormal stop
 
@@ -2078,5 +2131,47 @@ Status legend: **OPEN** = verified defect, not yet fixed. **PROPOSED** = improve
 
 **Solution.** Safe to purge in a dedicated pass. Left alone deliberately: zero user-visible benefit, non-zero regression risk.
 
----
 
+## Found during Tier 1  (4)
+
+Numbered from 251 so the existing items and section counts stay stable. These were
+found while instrumenting the engine, not by re-reading the catalogue.
+
+### 251. The respawn can hang forever, emitting neither engineRecovered nor engineFailed
+
+`DONE` `Critical`
+
+**Symptom.** mpv-engine.js `_onExit` awaits `seek(resume.position)` on the recovery path. `seek()` only issues the command if `_seekable` is true; otherwise it returns a promise that is settled only when mpv reports `playback-restart` (or when a later `load()` rejects it). If the respawned mpv never reaches playback-restart — the resumed file will not open, the device is still gone, mpv is wedged — that await never settles. `_onExit` stops mid-way: `alive` is true because `start()` succeeded, no `engineRecovered` is emitted so the UI keeps its Reconnecting badge forever, and no `engineFailed` is emitted so nothing escalates. `restart()` has the identical shape. Found because a fake mpv that never sends playback-restart hung the test suite; a real one usually gets there, which is exactly why this has never been seen.
+
+**Solution.** Bound the resume sequence with a timeout and treat expiry as a failed respawn (`engineFailed`, reason `resume-timeout`), so a recovery that cannot complete is reported rather than left pending. Belongs with item 4's per-operation timeouts.
+
+**Done.** The resume sequence is shared by restart() and the respawn path and bounded by a 15 s timeout; expiry emits engineFailed with reason `resume-timeout`. Tested by starving a fake mpv of playback-restart, which is exactly what hung the suite when this was found.
+
+### 252. Four audio-device IPC handlers call player.mpv, which does not exist
+
+`DONE` `High`
+
+**Symptom.** main.js:1028, 1037, 1048 and 1056 use `player.mpv.getProperty(...)` / `player.mpv.command(...)`. Neither MpvEngine nor MpvCrossfade has an `mpv` property, so every one of these throws `Cannot read properties of undefined` on the first line and is swallowed by the surrounding catch. Consequences, all silent: `get-audio-devices` always returns `[]`, so the device list in Settings is permanently empty; `set-audio-device` always fails, so choosing a device does nothing; and `get-device-volume` / `save-device-volume` always fall through to the single global volume, so per-device volumes have never worked. There is already a correct handler alongside them — `player-list-devices` uses `player.listAudioDevices()` — so the surface is half-migrated rather than simply broken.
+
+**Solution.** Route all four through the engine's own surface (`listAudioDevices()`, and a `getProperty`/`setProperty` pair added to both engine classes so crossfade mode works too). Then delete whichever of the two device-list handlers is unused, rather than leaving both.
+
+**Done.** All four now go through the engine's own surface — `listAudioDevices()`, and a new `getProperty`/`setProperty` pair added to both MpvEngine and MpvCrossfade (writes go to both crossfade engines, or the faded-in one comes up on the wrong device). The catch blocks log instead of swallowing, so the next failure here will not be silent for a year. The duplicate device-list handler is still there: `player-list-devices` and `get-audio-devices` now do the same thing by different names, and one should go.
+
+### 253. A silent stop is only durable if something is written when it happens
+
+`PROPOSED` `Medium`
+
+**Symptom.** The flight recorder is in memory and is written to the daily log when a fault is detected. That covers every fault the engine can see, but not the case that started this work: if the app or the machine goes away without an abnormal end, the timeline goes with it. The original incident logged nothing at all, which is consistent with exactly that.
+
+**Solution.** Once logging is off the main thread (Tier 3), write one heartbeat line per track transition and one per minute while playing. Deliberately not done now: today's logger is a blocking `appendFileSync` on the main thread, and a periodic synchronous write is the very stall Tier 3 exists to remove. The in-memory heartbeat is every 15 s and 300 entries deep, so ~75 minutes of timeline survives any fault the engine does see.
+
+
+### 254. package.json `files` omits every top-level module main.js requires
+
+`OPEN` `Medium`
+
+**Symptom.** `build.files` lists `main.js`, `preload.js`, `src/**`, `assets/**` and `node_modules/**`. main.js requires eight local top-level modules — `eq.js`, `lyrics.js`, `mpv-crossfade.js`, `mpv-engine.js`, `volume-map.js`, `youtube-download.js`, `youtube-search.js` and now `engine-diagnostics.js` — and none of them is listed. Specifying `files` replaces electron-builder's default `**/*`, so a packaged build should fail at the first `require` with MODULE_NOT_FOUND, before a window ever opens. This has never been noticed because `launch.sh` runs electron directly against the source tree; the RPM path (`dist/linux-unpacked`) is the one that would break.
+
+**Solution.** Add the eight modules to `build.files`, or drop the `files` array and rely on the default plus negations. Not done here: it cannot be tested without running electron-builder, and an untested change to the build config is a worse trade than a recorded finding. Verify by building once and running the packaged binary rather than `launch.sh`.
+
+---

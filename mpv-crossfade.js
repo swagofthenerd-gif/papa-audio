@@ -43,8 +43,19 @@ class MpvCrossfade extends EventEmitter {
     engine.on('ended', ifActive(() => this.emit('ended')))
     engine.on('loadError', ifActive(p => this.emit('loadError', p)))
     engine.on('trackChanged', ifActive(p => this.emit('trackChanged', p)))
-    engine.on('engineDown', () => this.emit('engineDown'))
-    engine.on('engineFailed', () => this.emit('engineFailed'))
+    // A stop on the engine being faded out is the fade doing its job. Only the
+    // active engine going quiet is a stop the user can hear.
+    engine.on('stopped', ifActive(d => this.emit('stopped', d)))
+    engine.on('stalled', ifActive(d => this.emit('stalled', d)))
+    // Device faults are about the output, not about which engine is faded up.
+    engine.on('audioDeviceLost', d => this.emit('audioDeviceLost', d))
+    engine.on('audioDeviceFallback', d => this.emit('audioDeviceFallback', d))
+    engine.on('engineDown', d => this.emit('engineDown', d))
+    engine.on('engineFailed', d => this.emit('engineFailed', d))
+    engine.on('engineRecovered', d => this.emit('engineRecovered', d))
+    // Diagnostics are never filtered by which engine is active — the whole
+    // point is that the evidence survives regardless of who was playing.
+    engine.on('diagnostic', d => this.emit('diagnostic', { ...d, engine: idx }))
   }
 
   _maybeStartFade(position) {
@@ -86,8 +97,29 @@ class MpvCrossfade extends EventEmitter {
   async setChannels(l) { await Promise.all(this.engines.map(e => e.setChannels(l))) }
   async setEq(s) { await Promise.all(this.engines.map(e => e.setEq(s))) }
   async listAudioDevices() { return this._active.listAudioDevices() }
+  // Reads come from whichever engine is audible; writes go to both, or the
+  // faded-in engine would come up with the wrong device.
+  async getProperty(name) { return this._active.getProperty(name) }
+  async setProperty(name, value) {
+    const results = await Promise.allSettled(this.engines.map(e => e.setProperty(name, value)))
+    const failed = results.filter(r => r.status === 'rejected')
+    if (failed.length === results.length) throw failed[0].reason
+    return true
+  }
   async restart(cfg) { for (const e of this.engines) await e.restart(cfg) }
   getState() { return this._active.getState() }
+  // Both engines' timelines, interleaved by time and tagged with which engine
+  // produced each entry — a crossfade fault is usually about the handoff.
+  getFlightRecorder() {
+    return this.engines
+      .flatMap((e, i) => e.getFlightRecorder().map(r => ({ ...r, engine: i })))
+      .sort((a, b) => a.at - b.at)
+  }
+  getLogTail() {
+    return this.engines
+      .flatMap((e, i) => e.getLogTail().map(r => ({ ...r, engine: i })))
+      .sort((a, b) => a.at - b.at)
+  }
 }
 
 module.exports = { MpvCrossfade }

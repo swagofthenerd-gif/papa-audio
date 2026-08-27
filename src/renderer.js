@@ -542,19 +542,28 @@ async function init() {
   updateYtHealth('idle')
   setupListeners()
 
-  const blocker = document.getElementById('mpv-blocker')
-  const showBlocker = show => { blocker.style.display = show ? 'flex' : 'none' }
-  window.api.on('player-event', ({ type }) => {
-    if (type === 'mpvMissing' || type === 'engineFailed') showBlocker(true)
+  window.api.on('player-event', ({ type, data }) => {
+    if (type === 'mpvMissing') showEngineBlocker('mpvMissing', null)
+    else if (type === 'engineFailed') showEngineBlocker('engineFailed', data)
   })
   const playerStatus = await window.api.playerGetStatus()
-  if (!playerStatus.available) showBlocker(true)
+  // "Unavailable" covers both a missing mpv and an mpv that would not start.
+  // Telling the user to install what they already have is the bug in item 7.
+  if (!playerStatus.available) {
+    showEngineBlocker(playerStatus.mpvAvailable ? 'engineFailed' : 'mpvMissing',
+      playerStatus.mpvAvailable ? { reason: 'start-error' } : null)
+  }
   document.getElementById('mpv-recheck-btn').onclick = async () => {
     const msg = document.getElementById('mpv-recheck-msg')
+    const wasMissing = _engineBlockerReason === 'mpvMissing'
     msg.textContent = 'Checking…'
     const r = await window.api.playerRecheck()
-    if (r.available) { showBlocker(false); msg.textContent = '' }
-    else { msg.textContent = 'Still not found. Install mpv, then try again.' }
+    if (r.available) { hideEngineBlocker(); msg.textContent = ''; setEngineState('', false) }
+    else {
+      msg.textContent = wasMissing
+        ? 'Still not found. Install mpv, then try again.'
+        : 'Still failing. The lines above are mpv\u2019s own report.'
+    }
   }
   window.api.slskStatus().then(s => { slsk.status = s }).catch(() => {})
   startDownloadsPolling(6000)
@@ -647,6 +656,51 @@ function applyLibraryUpdate(payload) {
 
 // A file vanished under playback: say so, take it out of the queue, and keep
 // going. Silence here reads as "the app broke", which is how it used to feel.
+// One retry per file per session. A file that fails twice is not transient, and
+// retrying forever would loop on a genuinely broken file.
+const _loadRetried = new Set()
+
+async function handleLoadError(filePath, track) {
+  const name = (track && track.title) || (filePath || '').split('/').pop() || 'That track'
+  let verdict = { checked: false, exists: true, reason: 'not asked' }
+  try {
+    verdict = await window.api.trackExists(filePath)
+  } catch (e) {
+    console.error('[papa] could not check whether the file exists:', String(e && e.message || e))
+  }
+
+  const P = window.PapaLoadError
+  const decision = P
+    ? P.decide({ verdict, alreadyRetried: _loadRetried.has(filePath), queueLength: state.queue.length })
+    // If the policy module failed to load, the safe default is the one that
+    // cannot lose the user's queue.
+    : { action: 'skip', reason: 'policy-module-missing' }
+  console.error('[papa] load failed:', filePath, '->', decision.action, `(${decision.reason})`)
+
+  if (decision.action === 'drop') {
+    _loadRetried.delete(filePath)
+    dropMissingTrack(filePath, track)
+    return
+  }
+
+  if (decision.action === 'retry') {
+    _loadRetried.add(filePath)
+    showSnackbar(name + ' would not load — retrying')
+    playCurrentTrack()
+    return
+  }
+
+  // 'skip' and 'stop' both leave the queue exactly as it was: the track is not
+  // missing, so removing it would be losing the user's data to work around a
+  // playback problem.
+  showSnackbar(name + ' would not play — skipped, but kept in the queue', '', function () {}, 6000)
+  if (decision.action === 'skip') playNext()
+  else {
+    state.isPlaying = false
+    updatePlayBtn()
+  }
+}
+
 function dropMissingTrack(filePath, track) {
   var R = window.PapaQueueRepair
   var name = (track && track.title) || (filePath || '').split('/').pop() || 'That track'
@@ -3675,6 +3729,75 @@ function checkFollowedArtistsForNew() {
   try { localStorage.setItem('followedAlbumCounts', JSON.stringify(current)) } catch(_) {}
 }
 
+// ── Playback engine state, visible ───────────────────────────────────────────
+// A badge in the player bar, shown only while the engine is not healthy. Not a
+// dialog: the decided behaviour is a brief non-blocking notice, never a prompt.
+function setEngineState(text, recovering) {
+  const el = document.getElementById('engine-state')
+  if (!el) return
+  el.textContent = text || ''
+  el.classList.toggle('recovering', !!recovering)
+  el.style.display = text ? '' : 'none'
+}
+
+// An unexplained stop has no safe automatic policy yet — deciding one is Tier 2
+// work. What we can do is offer the single action the user wants and put them
+// back exactly where the music stopped.
+function resumeAfterStop(d) {
+  const pos = Number(d && d.position) || 0
+  setEngineState('', false)
+  playCurrentTrack()
+  // The engine defers a seek issued before mpv reports the file seekable, so
+  // this does not race the load.
+  if (pos > 1) audio.currentTime = pos
+}
+
+let _engineBlockerReason = null
+const ENGINE_FAIL_TEXT = {
+  'respawn-limit': 'mpv kept crashing, so Papa Audio stopped restarting it.',
+  'respawn-error': 'mpv crashed and could not be restarted.',
+  'start-error': 'mpv is installed but would not start.',
+}
+
+// This blocker used to show the same "install mpv" text for every failure,
+// including an audio-device loss on a machine where mpv was installed and fine.
+// The message is now written from the reason the engine actually reported, and
+// mpv's own last words are shown instead of a guess.
+function showEngineBlocker(kind, detail) {
+  const el = document.getElementById('mpv-blocker')
+  if (!el) return
+  _engineBlockerReason = kind
+  const missing = kind === 'mpvMissing'
+  const title = document.getElementById('mpv-blocker-title')
+  const body = document.getElementById('mpv-blocker-body')
+  const install = document.getElementById('mpv-blocker-install')
+  const log = document.getElementById('mpv-blocker-log')
+  const btn = document.getElementById('mpv-recheck-btn')
+  if (title) title.textContent = missing ? 'Playback engine required' : 'Playback engine stopped working'
+  if (body) {
+    // textContent, never markup: detail.detail is text from mpv and from Error
+    // messages, and this renderer has window.api on it.
+    body.textContent = missing
+      ? "Papa Audio plays audio through mpv, which isn't installed."
+      : (ENGINE_FAIL_TEXT[detail && detail.reason] || 'The playback engine failed.') +
+        (detail && detail.detail ? ` (${detail.detail})` : '')
+  }
+  if (install) install.style.display = missing ? '' : 'none'
+  const lines = detail && Array.isArray(detail.log) ? detail.log.filter(Boolean) : []
+  if (log) {
+    log.textContent = lines.slice(-8).join('\n')
+    log.style.display = lines.length ? '' : 'none'
+  }
+  if (btn) btn.textContent = missing ? 'I installed it \u2014 check again' : 'Try starting it again'
+  el.style.display = 'flex'
+}
+
+function hideEngineBlocker() {
+  const el = document.getElementById('mpv-blocker')
+  if (el) el.style.display = 'none'
+  _engineBlockerReason = null
+}
+
 let _toastTimer = null
 function showToast(msg) {
   const el = document.getElementById('toast-notification')
@@ -5786,10 +5909,31 @@ function computeNextIndex() {
   return state.repeat === 'all' ? 0 : null
 }
 
-function updateNextPrefetch() {
-  if (!state.queue.length) { audio.setNext(null); return }
-  const idx = computeNextIndex()
-  audio.setNext(idx == null ? null : state.queue[idx].filePath)
+// Fire-and-forget across three layers meant the first symptom of a failed
+// gapless prefetch was the album stopping at a track boundary. One retry, then
+// say so — a silent failure here is the exact bug this round is about.
+let _prefetchRetry = null
+function updateNextPrefetch(isRetry) {
+  const want = state.queue.length ? (() => {
+    const idx = computeNextIndex()
+    return idx == null ? null : state.queue[idx].filePath
+  })() : null
+  clearTimeout(_prefetchRetry)
+  const result = audio.setNext(want)
+  if (!result || typeof result.then !== 'function') return
+  result.then(r => {
+    if (r && r.ok === false) throw new Error(r.error || 'prefetch rejected')
+  }).catch(err => {
+    console.error('[papa] gapless prefetch failed:', want, String(err && err.message || err))
+    if (isRetry) {
+      // Twice is not transient. The album will still play — the renderer's own
+      // ended handler advances it — but the transition will have a gap.
+      showSnackbar('Could not queue the next track — the gap between tracks may be audible',
+        '', function () {}, 5000)
+      return
+    }
+    _prefetchRetry = setTimeout(() => updateNextPrefetch(true), 700)
+  })
 }
 
 function playCurrentTrack() {
@@ -5883,6 +6027,23 @@ function refreshJumpbackCard() {
   if (titleEl) titleEl.textContent = t.title || 'Unknown'
   if (artistEl) artistEl.textContent = t.artist || ''
   if (artWrap) artWrap.innerHTML = artImg(t.artPath, 'jumpback-art-img', 'jumpback-art-fallback')
+}
+
+// mpv is playing a file the queue does not contain. mpv is the authority on
+// what is audible, so show that rather than leaving the bar describing a track
+// that stopped playing. Uses the library entry when there is one, and falls back
+// to the filename, which is still truer than the previous track's title.
+function updateNowPlayingFromPath(filePath) {
+  let track = null
+  try {
+    track = _allLibraryTracks().find(t => t.filePath === filePath) || null
+  } catch (_) { /* library not loaded yet; the fallback below still works */ }
+  if (!track) {
+    const base = String(filePath || '').split('/').pop() || ''
+    track = { title: base.replace(/\.[^.]+$/, '') || 'Unknown track', artist: '', albumName: '' }
+  }
+  updateNowPlaying(track)
+  updateTrackHighlight()
 }
 
 function updateNowPlaying(track) {
@@ -11896,9 +12057,20 @@ function setupListeners() {
       updateStopAfterBtn()
       return
     }
-    // mpv already switched tracks gaplessly — sync UI state without reloading
+    // mpv already switched tracks gaplessly — sync UI state without reloading.
+    // The bare `return` here left queueIndex pointing at a track that was not
+    // playing, so scrobbling, savePlaybackState, now-playing and playNext's
+    // arithmetic all acted on the wrong entry — and prefetch was never re-armed.
     const idx = state.queue.findIndex(t => t.filePath === e.detail)
-    if (idx === -1) return
+    if (idx === -1) {
+      console.error('[papa] mpv advanced to a file that is not in the queue:', e.detail)
+      // mpv is the authority on what is playing. Nothing here can fix the index,
+      // but prefetch must still be re-armed or the album stops at the next
+      // boundary — which is the whole failure this handler exists to prevent.
+      updateNowPlayingFromPath(e.detail)
+      updateNextPrefetch()
+      return
+    }
     state.queueIndex = idx
     const track = state.queue[idx]
     state.isPlaying = true
@@ -11921,6 +12093,98 @@ function setupListeners() {
     const p = e.detail
     el.textContent = p?.samplerate ? `${(p.format || '').toUpperCase()} ${Math.round(p.samplerate / 1000)}kHz` : ''
   })
+
+  // ── Playback engine lifecycle ─────────────────────────────────────────────
+  // mpv dying used to be invisible here. main forwarded engineDown, the shim
+  // had no case for it, and nothing in the renderer listened — so through the
+  // whole respawn the button still said "playing" and the bar still moved.
+  audio.addEventListener('enginedown', e => {
+    const d = e.detail || {}
+    state.isPlaying = false
+    updatePlayBtn()
+    if (state.modalOpen) syncModalPlayBtn()
+    setEngineState(d.willRecover ? 'Reconnecting…' : 'Playback engine stopped', !!d.willRecover)
+    console.error('[papa] engine down:', JSON.stringify(d))
+  })
+
+  audio.addEventListener('enginerecovered', e => {
+    const d = e.detail || {}
+    setEngineState('', false)
+    state.isPlaying = !!d.wasPlaying
+    updatePlayBtn()
+    if (state.modalOpen) syncModalPlayBtn()
+    // The decided behaviour: resume at the same position, then say so once,
+    // briefly, dismissibly. Never a blocking prompt, never silent.
+    showSnackbar(
+      d.resumed
+        ? `Playback engine restarted — resumed at ${fmtDur(d.position || 0)}`
+        : 'Playback engine restarted',
+      '', function () {}, 4000)
+    // The respawn cleared mpv's playlist, and gapless prefetch lives in the
+    // renderer's queue — without this the album plays this track and stops.
+    updateNextPrefetch()
+  })
+
+  // mpv ended the file for a reason that is neither eof nor error. Nothing else
+  // is coming: no ended, no autoadvanced, no error. This is the shape of the
+  // mid-album stop, and it is no longer silent.
+  audio.addEventListener('enginestopped', e => {
+    const d = e.detail || {}
+    state.isPlaying = false
+    updatePlayBtn()
+    if (state.modalOpen) syncModalPlayBtn()
+    const reason = d.reason || 'unknown'
+    setEngineState(`Stopped (${reason})`, false)
+    console.error('[papa] playback stopped without eof or error:', JSON.stringify(d))
+    showSnackbar(`Playback stopped at ${fmtDur(d.position || 0)} — mpv reported “${reason}”`,
+      'Resume', function () { resumeAfterStop(d) }, 8000)
+  })
+
+  audio.addEventListener('enginefailed', e => {
+    const d = e.detail || {}
+    state.isPlaying = false
+    updatePlayBtn()
+    if (state.modalOpen) syncModalPlayBtn()
+    setEngineState('Playback engine failed', false)
+    console.error('[papa] engine failed:', JSON.stringify(d))
+  })
+
+  // main rebuilt the engine on its own after a failure, without the user having
+  // to press the recheck button. Say so and take the blocker down.
+  audio.addEventListener('enginerestored', e => {
+    const d = e.detail || {}
+    console.log('[papa] engine restored after', d.after)
+    hideEngineBlocker()
+    setEngineState('', false)
+    state.isPlaying = false
+    updatePlayBtn()
+    showSnackbar('Playback engine restarted — press play to carry on', '', function () {}, 5000)
+  })
+
+  // Position stopped advancing while mpv says it is not paused. mpv was asked
+  // what it thought before this was sent, so it is a finding, not a guess.
+  audio.addEventListener('enginestalled', e => {
+    const d = e.detail || {}
+    console.error('[papa] playback stalled:', JSON.stringify(d))
+    setEngineState('Stalled', true)
+    showSnackbar(`Playback stalled at ${fmtDur(d.position || 0)}`, 'Restart track',
+      function () { setEngineState('', false); playCurrentTrack() }, 8000)
+  })
+
+  // The output device itself, as opposed to any other mpv complaint. Worth
+  // saying plainly: the fix is almost never in this app.
+  audio.addEventListener('audiodevicelost', e => {
+    const d = e.detail || {}
+    console.error('[papa] audio device lost:', d.text || '')
+    showSnackbar('The audio device went away — mpv is trying to reopen it', '', function () {}, 6000)
+  })
+
+  audio.addEventListener('audiodevicefallback', e => {
+    const d = e.detail || {}
+    console.error('[papa] falling back to the default audio device, away from', d.from)
+    showSnackbar(`Could not use ${d.from || 'the chosen device'} — switched to the default output`,
+      '', function () {}, 8000)
+  })
   audio.addEventListener('error', e => {
     console.error('Audio error:', e)
     const t = state.queue[state.queueIndex]
@@ -11939,11 +12203,13 @@ function setupListeners() {
       return
     }
 
-    // A local file that will not load is almost always one that was deleted or
-    // moved. This used to `return` here, so playback simply stopped with no
-    // message and the dead entry stayed in the queue forever.
+    // A local file that will not load is USUALLY one that was deleted or moved —
+    // but not always, and the old code spliced it out of the queue on a single
+    // load error with no check. A transient demuxer or cache error on a large
+    // FLAC permanently removed a track that was still on disk. Ask the
+    // filesystem first; retry once; only then treat it as gone.
     const failed = (e && e.detail && e.detail.src) || t.filePath
-    dropMissingTrack(failed, t)
+    handleLoadError(failed, t)
   })
 
   // Library changed in main (a mutation, or the folder watcher). Until now this

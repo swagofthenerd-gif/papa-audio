@@ -9,6 +9,7 @@ const crypto = require('crypto')
 const https = require('https')
 const { spawn, execSync, execFileSync, execFile } = require('child_process')
 const { MpvEngine } = require('./mpv-engine')
+const { formatDiagnostic } = require('./engine-diagnostics')
 const { defaultSettings: eqDefaults, BANDS: EQ_BANDS, GAIN_LIMIT: EQ_GAIN_LIMIT, PRESETS: EQ_PRESETS, presetSettings } = require('./eq')
 const { MpvCrossfade } = require('./mpv-crossfade')
 const { linearToMpv } = require('./volume-map')
@@ -898,18 +899,65 @@ function buildPlayer(cfg) {
   p.on('trackChanged', d => sendPlayerEvent('trackChanged', d))
   p.on('ended',        () => sendPlayerEvent('ended'))
   p.on('loadError',    d => sendPlayerEvent('loadError', d))
-  p.on('engineDown',   () => sendPlayerEvent('engineDown'))
-  p.on('engineFailed', () => sendPlayerEvent('engineFailed'))
+  // These four carry a payload now. engineDown says whether recovery is coming,
+  // stopped names the end-file reason, engineRecovered says where it resumed,
+  // and engineFailed says what actually failed instead of blaming a missing mpv.
+  p.on('engineDown',      d => sendPlayerEvent('engineDown', d))
+  p.on('stopped',         d => sendPlayerEvent('stopped', d))
+  p.on('engineRecovered', d => sendPlayerEvent('engineRecovered', d))
+  // Position stopped advancing while mpv says it is not paused. mpv itself is
+  // asked what it thinks before this fires, so it is a finding, not a guess.
+  p.on('stalled',         d => sendPlayerEvent('stalled', d))
+  // The output device, specifically, as opposed to any other mpv complaint.
+  p.on('audioDeviceLost', d => sendPlayerEvent('audioDeviceLost', d))
+  p.on('audioDeviceFallback', d => sendPlayerEvent('audioDeviceFallback', d))
+  p.on('engineFailed',    d => { sendPlayerEvent('engineFailed', d); onEngineFailed(d) })
+  // The whole reason this exists: mpv's own diagnosis and the timeline around
+  // it, on disk, at the moment it happens. console.error is already tee'd to
+  // the daily log.
+  p.on('diagnostic', d => {
+    try { console.error(formatDiagnostic(d)) }
+    catch (e) { console.error('[papa][engine] diagnostic format failed:', String(e && e.message || e)) }
+  })
   return p
+}
+
+// The old player object stayed in place after engineFailed with alive=false and
+// client=null, so every `if (!player)` guard passed — player was truthy — and
+// then dereferenced a null client. Only a manual recheck ever recovered.
+let _reinitTried = false
+
+async function onEngineFailed(d) {
+  const dead = player
+  player = null
+  try { dead?.stop() } catch (_) { /* it is already dead; this is hygiene */ }
+  if (_reinitTried) {
+    console.error('[papa] engine failed again after re-init; waiting for a manual recheck. reason:', d && d.reason)
+    return
+  }
+  _reinitTried = true
+  console.error('[papa] engine failed, attempting one supervised re-init. reason:', d && d.reason)
+  await initPlayer()
+  if (player) {
+    console.log('[papa] engine re-initialised after failure')
+    sendPlayerEvent('engineRestored', { after: (d && d.reason) || 'unknown' })
+  }
 }
 
 async function initPlayer() {
   mpvAvailable = detectMpv()
   if (!mpvAvailable) { sendPlayerEvent('mpvMissing'); return }
   player = buildPlayer(getPlayerSettings())
-  try { await player.start() } catch (e) {
+  try {
+    await player.start()
+    _reinitTried = false
+  } catch (e) {
     console.error('mpv engine failed to start:', e)
-    sendPlayerEvent('engineFailed')
+    sendPlayerEvent('engineFailed', {
+      reason: 'start-error',
+      detail: String((e && e.message) || e),
+      log: typeof player.getLogTail === 'function' ? player.getLogTail().slice(-20).map(l => l.text) : [],
+    })
   }
 }
 
@@ -954,7 +1002,16 @@ ipcMain.handle('pre-resolve-yt-urls', async (_, videoIds) => {
 ipcMain.handle('player-play',       () => wrap(() => player.play())())
 ipcMain.handle('player-pause',      () => wrap(() => player.pause())())
 ipcMain.handle('player-switch',     async (_, path) => {
-  try { if (player) await player.pause() } catch (_) {}
+  // Swallowing the pause and loading anyway meant switching against a client
+  // that had just been nulled: the load then failed too, and the renderer saw
+  // one opaque failure instead of "the engine is gone".
+  if (!player) return { ok: false, error: 'engine unavailable' }
+  try {
+    await player.pause()
+  } catch (e) {
+    console.error('[papa] switch aborted: pause failed:', String(e && e.message || e))
+    return { ok: false, error: `could not pause before switching: ${String(e && e.message || e)}` }
+  }
   var resolved = await _resolvePlayerPath(path)
   return wrap(() => player.load(resolved, { play: true }))()
 })
@@ -969,15 +1026,51 @@ ipcMain.handle('player-set-volume', (_, v) => wrap(() => {
 ipcMain.handle('player-set-speed',  (_, x) => wrap(() => player.setSpeed(x))())
 ipcMain.handle('player-get-status', () => ({
   available: mpvAvailable && !!player,
+  // Reported separately so the UI can tell "mpv is missing" apart from "mpv is
+  // here and would not start" instead of showing install instructions for both.
+  mpvAvailable,
   state: player ? player.getState() : null,
   config: getPlayerSettings(),
 }))
 ipcMain.handle('player-recheck', async () => {
   if (player) { player.stop(); player = null }
+  // An explicit ask from the user re-arms the one automatic re-init attempt.
+  _reinitTried = false
   await initPlayer()
   return { available: mpvAvailable && !!player }
 })
 ipcMain.handle('player-get-config', () => getPlayerSettings())
+// Whether a queued track is genuinely gone, asked of the filesystem rather than
+// inferred from one load error. A transient demuxer or cache error on a large
+// FLAC used to be enough to delete a present file from the queue for good.
+ipcMain.handle('track-exists', async (_, filePath) => {
+  const p = String(filePath || '')
+  if (!p) return { checked: false, exists: false, reason: 'no path' }
+  if (/^https?:\/\//.test(p)) return { checked: false, exists: true, reason: 'stream' }
+  if (!libPathInRoots(p)) return { checked: false, exists: true, reason: 'outside library roots' }
+  try {
+    const st = await fs.promises.stat(p)
+    return { checked: true, exists: st.isFile(), size: st.size }
+  } catch (e) {
+    // ENOENT is the answer. Anything else — EACCES, EIO, a dead mount — is not
+    // evidence the file is gone, and must not be treated as though it were.
+    if (e && e.code === 'ENOENT') return { checked: true, exists: false }
+    return { checked: false, exists: true, reason: (e && e.code) || 'stat failed' }
+  }
+})
+// Ground truth for the QA harness: the full flight recorder and mpv's own log,
+// straight off the engine, with no UI state anywhere in the answer.
+ipcMain.handle('player-get-diagnostics', () => {
+  if (!player || typeof player.getFlightRecorder !== 'function') {
+    return { available: false, flight: [], log: [], state: null }
+  }
+  return {
+    available: true,
+    flight: player.getFlightRecorder(),
+    log: player.getLogTail(),
+    state: player.getState(),
+  }
+})
 // The preload is sandboxed and cannot require eq.js directly, so the band and
 // preset tables are served from here — one source of truth, no duplicated table.
 ipcMain.handle('eq-info', () => ({ bands: EQ_BANDS, presets: EQ_PRESETS, limit: EQ_GAIN_LIMIT }))
@@ -989,40 +1082,54 @@ ipcMain.handle('player-list-devices', async () => {
 })
 var _deviceVolumes = store.get('deviceVolumes', {})
 
+// These four used to call player.mpv, which exists on neither engine class, so
+// every one of them threw on its first line and was swallowed: the device list
+// was permanently empty, choosing a device did nothing, and per-device volumes
+// never worked at all.
 ipcMain.handle('get-device-volume', async () => {
   try {
     if (!player) return null
-    var device = await player.mpv.getProperty('audio-device')
+    var device = await player.getProperty('audio-device')
     var name = device || 'default'
     return _deviceVolumes[name] || store.get('volume', 0.8)
-  } catch (_) { return store.get('volume', 0.8) }
+  } catch (e) {
+    console.error('[papa] get-device-volume fell back to the global volume:', String(e && e.message || e))
+    return store.get('volume', 0.8)
+  }
 })
 
 ipcMain.handle('save-device-volume', async (_, vol) => {
   try {
     if (!player) { store.set('volume', vol); return }
-    var device = await player.mpv.getProperty('audio-device')
+    var device = await player.getProperty('audio-device')
     var name = device || 'default'
     _deviceVolumes[name] = vol
     store.set('deviceVolumes', _deviceVolumes)
     store.set('volume', vol)
-  } catch (_) { store.set('volume', vol) }
+  } catch (e) {
+    console.error('[papa] save-device-volume could not read the device:', String(e && e.message || e))
+    store.set('volume', vol)
+  }
 })
 
 ipcMain.handle('get-audio-devices', async () => {
   if (!player) return []
   try {
-    const list = await player.mpv.command('audio-device-list')
+    const list = await player.listAudioDevices()
+    if (!Array.isArray(list)) return []
     return list.filter(d => d.name && d.name !== 'auto').map(d => ({ name: d.name, description: d.description || d.name }))
-  } catch (_) { return [] }
+  } catch (e) {
+    console.error('[papa] get-audio-devices failed:', String(e && e.message || e))
+    return []
+  }
 })
 
 ipcMain.handle('set-audio-device', async (_, deviceName) => {
-  if (!player) return { ok: false, error: 'player not ready' }
+  if (!player) return { ok: false, error: 'engine unavailable' }
   try {
-    await player.mpv.command('set', 'audio-device', deviceName)
+    await player.setProperty('audio-device', deviceName)
     return { ok: true }
-  } catch (e) { return { ok: false, error: String(e.message) } }
+  } catch (e) { return { ok: false, error: String(e && e.message || e) } }
 })
 
 ipcMain.handle('player-set-config', async (_, partial) => {
@@ -1622,6 +1729,19 @@ function libRoots() {
 // become a move DESTINATION, so it is added here rather than to libRoots().
 function libDeletableRoots() {
   return libRoots().concat([path.join(USER_DATA, 'slskd', 'incomplete')])
+}
+
+// Is this path lexically inside a library root? Unlike libPathAllowed this does
+// not require the file to exist, because the question being asked is whether it
+// still does. No realpath, so it cannot be used to probe outside the roots via
+// a symlink either: the answer is about the path as written.
+function libPathInRoots(target) {
+  const resolved = path.resolve(String(target || ''))
+  for (const root of libDeletableRoots()) {
+    const r = path.resolve(root)
+    if (resolved !== r && resolved.startsWith(r + path.sep)) return true
+  }
+  return false
 }
 
 function libPathAllowed(target) {
