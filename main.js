@@ -95,6 +95,23 @@ function extractVideoId(path) {
   return m ? m[1] : null
 }
 
+// youtubei.js throws InnertubeError with the whole generated parser type in the
+// message — pages of TypeScript, one line at a time, straight into the daily log
+// (and through the old synchronous appendFileSync path). These are expected
+// whenever YouTube changes its schema, so they belong on one line.
+const YT_ERR_MAX = 240
+function summariseYtError(e) {
+  let msg = String((e && e.message) || e || 'unknown error')
+  // The dump starts at the generated-type block; everything before it is the
+  // part that says what actually went wrong.
+  const cut = msg.search(/\n\s*(?:interface|type|export|class)\s/)
+  if (cut > 0) msg = msg.slice(0, cut)
+  msg = msg.replace(/\s+/g, ' ').trim()
+  const name = (e && e.name) || 'Error'
+  const short = msg.length > YT_ERR_MAX ? msg.slice(0, YT_ERR_MAX) + `… (${msg.length} chars, truncated)` : msg
+  return `${name}: ${short}`
+}
+
 async function withRetry(fn, maxRetries, label) {
   var lastErr
   for (var attempt = 0; attempt <= maxRetries; attempt++) {
@@ -110,6 +127,10 @@ async function withRetry(fn, maxRetries, label) {
       }
     }
   }
+  // One line, summarised. This used to be the only record of a YouTube failure
+  // and it was never written at all — the caller turned it into { ok: false }.
+  console.error(`[papa][yt] ${label || 'request'} failed after ${maxRetries + 1} attempts:`,
+    summariseYtError(lastErr))
   throw lastErr
 }
 
@@ -1340,9 +1361,19 @@ ipcMain.handle('player-get-config', () => getPlayerSettings())
 // Whether a queued track is genuinely gone, asked of the filesystem rather than
 // inferred from one load error. A transient demuxer or cache error on a large
 // FLAC used to be enough to delete a present file from the queue for good.
+// Files the app is rewriting right now. A rewrite is the one case where the
+// original genuinely is absent for a moment and the answer "it is gone" would be
+// both true and completely wrong.
+const _rewriting = new Set()
+
 ipcMain.handle('track-exists', async (_, filePath) => {
   const p = String(filePath || '')
   if (!p) return { checked: false, exists: false, reason: 'no path' }
+  // Deliberately `checked: false`: the load-error policy only ever removes a
+  // track on a CONFIRMED absence, so this makes it retry instead.
+  if (_rewriting.has(path.resolve(p))) {
+    return { checked: false, exists: true, reason: 'the app is rewriting this file' }
+  }
   if (/^https?:\/\//.test(p)) return { checked: false, exists: true, reason: 'stream' }
   if (!libPathInRoots(p)) return { checked: false, exists: true, reason: 'outside library roots' }
   try {
@@ -2004,7 +2035,18 @@ async function parseTrackFile(filePath, st) {
 }
 
 let _scanRunning = false
-async function performScan(onProgress) {
+// Item 62: later callers join the scan already running rather than being handed
+// the previous cache and told nothing. Returning stale data with busy:true meant
+// a user who pressed Scan got the old library back and no indication why.
+let _scanInFlight = null
+
+function performScan(onProgress) {
+  if (_scanInFlight) return _scanInFlight
+  _scanInFlight = _performScanOnce(onProgress).finally(() => { _scanInFlight = null })
+  return _scanInFlight
+}
+
+async function _performScanOnce(onProgress) {
   const folders = store.get('musicFolders', [])
   if (!folders.length) return { albums: [] }
   if (_scanRunning) return { albums: sideStores.libraryCache.get() || [], busy: true }
@@ -2082,7 +2124,11 @@ async function performScan(onProgress) {
     return { albums }
   } catch (e) {
     console.error('[papa] scan-error:', e?.code || e.message || e, '|', (e?.stack || '').split('\n')[0] || '')
-    return { albums: [] }
+    // `failed` matters: an empty array is a legitimate result for an empty
+    // folder, and the renderer's guard is `if (!albums) return` — so [] is
+    // truthy and a failed scan used to BLANK the library in the UI. The cache on
+    // disk was untouched, which made it look like the library had been lost.
+    return { albums: [], failed: true, error: String(e?.code || e?.message || e) }
   } finally {
     _scanRunning = false
   }
@@ -2797,7 +2843,16 @@ ipcMain.handle('library-write-tags', async (_, { files }) => {
       results.push({ filePath: fp, ok: false, error: 'Outside your music folders — refused' })
       continue
     }
-    results.push(Object.assign({ filePath: fp }, await writeTagsOne(fp, item.tags || {})))
+    // ffmpeg cannot edit tags in place: it writes a temp file and replaces the
+    // original. mpv is holding the same file open with 30 s of readahead, so a
+    // load error during that window used to reach the missing-file path and
+    // remove a track that was very much still there.
+    _rewriting.add(path.resolve(fp))
+    try {
+      results.push(Object.assign({ filePath: fp }, await writeTagsOne(fp, item.tags || {})))
+    } finally {
+      _rewriting.delete(path.resolve(fp))
+    }
   }
   const ok = results.filter(r => r.ok).length
   if (ok) _scheduleLibraryRescan()
@@ -2808,9 +2863,13 @@ let _libRescanTimer = null
 function _scheduleLibraryRescan() {
   clearTimeout(_libRescanTimer)
   _libRescanTimer = setTimeout(async () => {
-    const { albums } = await performScan(null)
-    mainWindow?.webContents.send('library-updated', { albums, reason: 'manage' })
-    writeLibraryExt(albums)
+    const res = await performScan(null)
+    if (res.failed) {
+      console.error('[papa] rescan after a tag write failed; leaving the library as it was')
+      return
+    }
+    mainWindow?.webContents.send('library-updated', { albums: res.albums, reason: 'manage' })
+    writeLibraryExt(res.albums)
   }, 1200)
 }
 
@@ -2838,14 +2897,48 @@ function setupLibraryWatcher() {
     ignorePermissionErrors: true,
     depth: 30,
   })
+  // The debounce cleared and reset on every event, so copying an album in kept
+  // deferring the scan indefinitely while burning CPU on debounce churn. This is
+  // the ceiling: once the first event is this old, the scan runs regardless.
+  const WATCH_DEBOUNCE_MS = 4000
+  const WATCH_MAX_WAIT_MS = 30000
+  let _watchFirstEventAt = 0
+  let _watchEvents = 0
+
+  const runWatchScan = async () => {
+    _watchDebounce = null
+    const events = _watchEvents
+    _watchFirstEventAt = 0
+    _watchEvents = 0
+    // Still a full-tree scan for one changed file — item 166, not fixed here:
+    // an incremental merge needs a real library to verify against, and getting a
+    // partial merge wrong silently drops albums. Logging what it cost at least
+    // makes the case measurable rather than asserted.
+    const started = Date.now()
+    const res = await performScan(null)
+    if (res.failed) {
+      console.error('[papa] watcher-triggered scan failed; leaving the library as it was')
+      return
+    }
+    console.log(`[papa] watcher: rescanned the whole library after ${events} file event(s) ` +
+      `in ${Date.now() - started}ms (${res.albums.length} albums)`)
+    mainWindow?.webContents.send('library-updated', { albums: res.albums, reason: 'watcher' })
+    writeLibraryExt(res.albums)
+  }
+
   const onFsEvent = (fsPath) => {
     if (!AUDIO_EXT.test(fsPath) && !/\.cue$/i.test(fsPath)) return
+    _watchEvents++
+    const now = Date.now()
+    if (!_watchFirstEventAt) _watchFirstEventAt = now
+    if (now - _watchFirstEventAt >= WATCH_MAX_WAIT_MS) {
+      // Past the ceiling: do not defer again, however many more events arrive.
+      if (_watchDebounce) { clearTimeout(_watchDebounce); _watchDebounce = null }
+      runWatchScan()
+      return
+    }
     clearTimeout(_watchDebounce)
-    _watchDebounce = setTimeout(async () => {
-      const { albums } = await performScan(null)
-      mainWindow?.webContents.send('library-updated', { albums, reason: 'watcher' })
-      writeLibraryExt(albums)
-    }, 4000)
+    _watchDebounce = setTimeout(runWatchScan, WATCH_DEBOUNCE_MS)
   }
   _libWatcher.on('add', onFsEvent).on('unlink', onFsEvent).on('change', onFsEvent)
 }
@@ -4057,11 +4150,23 @@ async function dlTick() {
     for (const st of stalled) {
       const live = dlState.inflight[st.key]
       if (!live) continue
+      // The cancel and the re-queue used to be independent: the DELETE was
+      // wrapped in an empty catch and recordStall ran regardless. A failed
+      // DELETE therefore left slskd still holding the transfer AND the scheduler
+      // treating the file as pending — so the same file could be dispatched to a
+      // second peer while the first was still sending it.
+      let cancelled = false
       try {
         await slskdFetch('DELETE',
           `/transfers/downloads/${encodeURIComponent(st.from)}/${encodeURIComponent(await dlTransferId(st.from, live.sentFilename || live.filename))}?remove=true`)
-      } catch (_) {}
-      dlSched.recordStall(dlState, st.key, st.from, cfg, now)
+        cancelled = true
+      } catch (e) {
+        console.error(`[papa] could not cancel the stalled transfer of ${live.filename} from ${st.from}; ` +
+          `leaving it in flight rather than queuing a second copy:`, String(e && e.message || e))
+      }
+      // Only hand it back to the scheduler once slskd has actually let go of it.
+      // If not, it stays in flight and the next tick tries again.
+      if (cancelled) dlSched.recordStall(dlState, st.key, st.from, cfg, now)
     }
 
     // Files with no usable source, and files wedged in a single peer's queue,
@@ -4373,64 +4478,64 @@ ipcMain.handle('open-external', (_, url) => {
 // ── YouTube ──────────────────────────────────────────────────────────────────
 ipcMain.handle('yt-music-search', async (_, { query }) => {
   try { return { ok: true, results: await withRetry(() => withTimeout(ytSearch.searchMusic(query), 20000, 'YouTube music search'), 2, 'yt-music-search') } }
-  catch (e) { return { ok: false, error: String(e?.message || e) } }
+  catch (e) { return { ok: false, error: summariseYtError(e) } }
 })
 
 ipcMain.handle('yt-search', async (_, { query }) => {
   try { return { ok: true, results: await withRetry(() => withTimeout(ytSearch.searchAll(query), 20000, 'YouTube search'), 2, 'yt-search') } }
-  catch (e) { return { ok: false, error: String(e?.message || e) } }
+  catch (e) { return { ok: false, error: summariseYtError(e) } }
 })
 
 ipcMain.handle('yt-music-search-full', async (_, { query }) => {
   try { return { ok: true, results: await withRetry(() => withTimeout(ytSearch.searchMusicFull(query), 20000, 'YouTube full search'), 2, 'yt-music-search-full') } }
-  catch (e) { return { ok: false, error: String(e?.message || e) } }
+  catch (e) { return { ok: false, error: summariseYtError(e) } }
 })
 
 ipcMain.handle('yt-album', async (_, { browseId }) => {
   try { return { ok: true, album: await withRetry(() => withTimeout(ytSearch.getAlbum(browseId), 20000, 'YouTube album'), 2, 'yt-album') } }
-  catch (e) { return { ok: false, error: String(e?.message || e) } }
+  catch (e) { return { ok: false, error: summariseYtError(e) } }
 })
 
 ipcMain.handle('yt-artist', async (_, { channelId }) => {
   try { return { ok: true, artist: await withRetry(() => withTimeout(ytSearch.getArtist(channelId), 20000, 'YouTube artist'), 2, 'yt-artist') } }
-  catch (e) { return { ok: false, error: String(e?.message || e) } }
+  catch (e) { return { ok: false, error: summariseYtError(e) } }
 })
 
 ipcMain.handle('yt-search-page', async (_, { kind, query, next }) => {
   try {
     const { items, hasMore } = await withRetry(() => withTimeout(ytSearch.searchPage(kind, query, !!next), 20000, 'YouTube search page'), 2, 'yt-search-page')
     return { ok: true, items, hasMore }
-  } catch (e) { return { ok: false, error: String(e?.message || e) } }
+  } catch (e) { return { ok: false, error: summariseYtError(e) } }
 })
 
 ipcMain.handle('yt-playlist', async (_, { playlistId }) => {
   try { return { ok: true, playlist: await withRetry(() => withTimeout(ytSearch.getPlaylist(playlistId), 20000, 'YouTube playlist'), 2, 'yt-playlist') } }
-  catch (e) { return { ok: false, error: String(e?.message || e) } }
+  catch (e) { return { ok: false, error: summariseYtError(e) } }
 })
 
 ipcMain.handle('yt-home', async () => {
   try { return { ok: true, ...(await withRetry(() => withTimeout(ytSearch.getHomeFeed(), 20000, 'YouTube home feed'), 2, 'yt-home')) } }
-  catch (e) { return { ok: false, error: String(e?.message || e) } }
+  catch (e) { return { ok: false, error: summariseYtError(e) } }
 })
 
 ipcMain.handle('yt-radio', async (_, { videoId }) => {
   try { return { ok: true, tracks: await withRetry(() => withTimeout(ytSearch.getRadio(videoId), 20000, 'YouTube radio'), 2, 'yt-radio') } }
-  catch (e) { return { ok: false, error: String(e?.message || e) } }
+  catch (e) { return { ok: false, error: summariseYtError(e) } }
 })
 
 ipcMain.handle('yt-find-video', async (_, { artist, title }) => {
   try { return { ok: true, videoId: await withRetry(() => ytSearch.findVideoId(artist, title), 2, 'yt-find-video') } }
-  catch (e) { return { ok: false, error: String(e?.message || e) } }
+  catch (e) { return { ok: false, error: summariseYtError(e) } }
 })
 
 ipcMain.handle('get-lyrics', async (_, params) => {
   try { return { ok: true, ...(await lyrics.fetchLyrics(params || {})) } }
-  catch (e) { return { ok: false, error: String(e?.message || e) } }
+  catch (e) { return { ok: false, error: summariseYtError(e) } }
 })
 
 ipcMain.handle('save-lyrics', (_, params) => {
   try { return lyrics.saveLyrics(params || {}) }
-  catch (e) { return { ok: false, error: String(e?.message || e) } }
+  catch (e) { return { ok: false, error: summariseYtError(e) } }
 })
 
 // ── YouTube account (cookie auth via a real Google sign-in window) ──────────
@@ -4549,12 +4654,12 @@ ipcMain.handle('yt-auth-signout', async () => {
     const { session } = require('electron')
     await session.fromPartition('persist:yt-auth').clearStorageData().catch(() => {})
     return { ok: true }
-  } catch (e) { return { ok: false, error: String(e?.message || e) } }
+  } catch (e) { return { ok: false, error: summariseYtError(e) } }
 })
 
 ipcMain.handle('yt-auth-status', () => {
   try { return { ok: true, signedIn: ytSearch.isSignedIn() } }
-  catch (e) { return { ok: false, error: String(e?.message || e) } }
+  catch (e) { return { ok: false, error: summariseYtError(e) } }
 })
 
 ipcMain.handle('validate-yt-cookie', async () => {

@@ -660,6 +660,15 @@ async function init() {
 // ── Library ─────────────────────────────────────────────────────────────────
 async function fullScan() {
   const data = await window.api.scanLibrary()
+  // A failed scan returns an empty array, and `|| []` cannot tell that apart
+  // from a genuinely empty folder — so this used to blank the library AND then
+  // report "Library scan complete: 0 albums found" as if that were the answer.
+  if (data && data.failed) {
+    console.error('[papa] library scan failed:', data.error || '')
+    showSnackbar('The library scan failed — nothing was changed. See the log for why.',
+      '', function () {}, 8000)
+    return
+  }
   state.library = data.albums || []
   navigate('home', null, { skipHistory: true })
   setTimeout(fetchMissingArtwork, 1200)
@@ -677,6 +686,12 @@ function _libSig(lib) {
 
 async function backgroundSync() {
   const data = await window.api.scanLibrary()
+  // This runs from 19 call sites via the rescan scheduler, so a transient scan
+  // failure during any download used to blank the library on screen.
+  if (data && data.failed) {
+    console.error('[papa] background library sync failed; keeping what we have:', data.error || '')
+    return
+  }
   const fresh = data.albums || []
   const changed = _libSig(fresh) !== _libSig(state.library)
   if (changed) {
@@ -698,6 +713,13 @@ function _modalIsOpen() {
 }
 
 function applyLibraryUpdate(payload) {
+  // A failed scan returns an empty array, and [] is truthy — so without this a
+  // scan error blanked the whole library in the UI while the cache on disk was
+  // untouched, which looks exactly like losing the library.
+  if (payload && payload.failed) {
+    console.error('[papa] ignoring a library update from a failed scan:', payload.error || '')
+    return
+  }
   var albums = (payload && payload.albums) || null
   if (!albums) return
   if (_libSig(albums) === _libSig(state.library)) return

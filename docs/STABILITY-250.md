@@ -589,11 +589,13 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 ### 51. The watcher debounce can be postponed indefinitely
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** main.js:2308-2319 clears and resets a 4 s timer on every event, so a large batch copy keeps deferring the scan while burning CPU on debounce churn.
 
 **Solution.** A maximum-wait so the scan runs even under a continuous event stream.
+
+**Done.** A 30 s ceiling alongside the 4 s debounce: once the first event in a burst is that old, the scan runs however many more arrive. Copying an album in used to keep deferring it indefinitely while burning CPU on debounce churn.
 
 ### 52. dlState.done grows for the life of the process
 
@@ -685,11 +687,13 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 ### 62. No single-flight guard around library scans
 
-`PROPOSED` `Medium`
+`DONE` `Medium`
 
 **Symptom.** Concurrent triggers can start overlapping scans of the same tree.
 
 **Solution.** One in-flight scan; later requests join the existing promise.
+
+**Done.** `performScan` is now a thin wrapper that returns the promise already in flight, so later callers join it instead of being handed the previous cache with `busy: true` — a user who pressed Scan got the old library back and no indication why.
 
 ### 63. IPC handlers have no uniform error envelope
 
@@ -1213,11 +1217,13 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 ### 234. Retry cancels then re-downloads with no rollback
 
-`OPEN` `High` `was #43`
+`DONE` `High` `was #43`
 
 **Symptom.** If the re-download call fails, the transfer is already cancelled — the retry destroys the thing it was meant to recover.
 
 **Solution.** Queue the new transfer first, cancel the old one only once the new one is accepted.
+
+**Done.** The DELETE and the re-queue were independent: the DELETE was wrapped in an empty catch and `recordStall` ran regardless. A failed cancel therefore left slskd still holding the transfer **and** the scheduler treating the file as pending, so the same file could be dispatched to a second peer while the first was still sending it. `recordStall` now runs only if slskd confirmed the cancel; otherwise the item stays in flight and the next tick tries again.
 
 ### 235. _dlSig can miss a state transition
 
@@ -1513,11 +1519,13 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 ### 165. A rescan can race a tag write and make a present file look missing
 
-`OPEN` `High`
+`DONE` `High`
 
 **Symptom.** Tag writes schedule a rescan on a 1.2 s debounce while mpv holds the file open with 30 s of readahead. A rename during that window produces end-file error, which reaches dropMissingTrack and removes a track that is not missing.
 
 **Solution.** Suppress the missing-file path for any file the app itself is currently rewriting.
+
+**Done.** main keeps a set of files it is currently rewriting, and `track-exists` answers `checked: false` for those. That matters specifically: the Tier 2 load-error policy only removes a track on a **confirmed** absence, so an unknown answer makes it retry. ffmpeg cannot edit tags in place — it writes a temp file and replaces the original — while mpv holds the same file open with 30 s of readahead, so there is a real window where the original is briefly absent and "it is gone" would be both true and completely wrong.
 
 ### 166. A full rescan runs for a single new file
 
@@ -1526,6 +1534,8 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 **Symptom.** The watcher triggers performScan over the whole tree after one event.
 
 **Solution.** Incremental scan of the changed directory; keep the full scan manual and scheduled.
+
+**Not done, deliberately.** An incremental merge needs a real library to verify against: getting a partial merge wrong drops albums silently, which is worse than the scan being slow. What was done instead makes the case measurable rather than asserted — the watcher now logs how many file events triggered the scan, how long it took, and how many albums came back, so the next session can see the actual cost on the real library before designing the merge. The debounce ceiling (item 51) and the single-flight join (item 62) also landed, which together stop a burst from queuing several full scans.
 
 ### 167. backgroundSync re-navigates the current page whenever the library signature changes
 
@@ -1987,11 +1997,13 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 ### 192. YouTube parser errors are logged as multi-page stack dumps into the app log
 
-`OPEN` `High`
+`DONE` `High`
 
 **Symptom.** Your 2026-08-26 log contains a full InnertubeError dump with generated TypeScript, from youtubei.js. Every line of it went through the synchronous appendFileSync path.
 
 **Solution.** Catch and summarise parser errors to one line; they are expected when YouTube changes its schema.
+
+**Done.** `summariseYtError` cuts the message at the generated-type block and caps what is left at 240 characters, prefixed with the error name. Every YouTube handler returns it, and `withRetry` now logs one summarised line when a chain is exhausted — previously the only record was the caller turning it into `{ ok: false }`, so nothing was written at all.
 
 ### 193. youtubei.js schema drift degrades silently after the log line
 
@@ -2234,7 +2246,7 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 **Solution.** Safe to purge in a dedicated pass. Left alone deliberately: zero user-visible benefit, non-zero regression risk.
 
 
-## Found while working through the tiers  (7)
+## Found while working through the tiers  (8)
 
 Numbered from 251 so the existing items and section counts stay stable. These were
 found while instrumenting the engine, not by re-reading the catalogue.
@@ -2312,5 +2324,18 @@ found while instrumenting the engine, not by re-reading the catalogue.
 **Solution.** Same as item 74: one live-instance reference, closed properly before a new one opens.
 
 **Worth noting.** Three instances of one pattern (items 73, 74, 257), each found separately. The shape is always the same — a modal that registers a document-level listener, and a re-open path that bypasses its own teardown. Any future modal that attaches to `document` should be checked against this.
+
+
+### 258. A failed library scan blanked the library on screen
+
+`DONE` `Critical`
+
+**Symptom.** Found while adding the single-flight guard for item 62, not from the catalogue. `performScan`'s catch returned `{ albums: [] }`. An empty array is a legitimate result for an empty folder, and every consumer wrote `data.albums || []` — including `applyLibraryUpdate`, whose guard is `if (!albums) return`, and `[]` is truthy. So any scan error set `state.library = []` and the entire library vanished from the UI. `fullScan` then reported **"Library scan complete: 0 albums found"** as though that were the answer.
+
+The cache on disk was never touched, so a restart brought everything back — which makes this worse rather than better: it looks exactly like losing a library, with no error anywhere, and the obvious user response is to rescan, which can fail the same way again.
+
+Reachable from 19 call sites, because `backgroundSync` runs from the rescan scheduler after every download and tag edit.
+
+**Solution.** The error path returns `{ albums: [], failed: true, error }`, and all four consumers — `fullScan`, `backgroundSync`, `applyLibraryUpdate` and the watcher — check the flag. `fullScan` says the scan failed and that nothing was changed, instead of claiming success with zero albums.
 
 ---

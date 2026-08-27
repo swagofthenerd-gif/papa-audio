@@ -133,3 +133,76 @@ test('a new query gets its own retry allowance', () => {
                             RENDERER.indexOf('async function runSlskSearch(query)') + 500)
   assert.match(fn, /_slskResetThrottleRetry\(\)/)
 })
+
+// ── Item 192: a parser error should be one line, not pages ─────────────────
+
+test('YouTube parser errors are summarised to one line', () => {
+  // youtubei.js puts the whole generated parser type in the message — pages of
+  // TypeScript, one log line at a time, through the old synchronous append path.
+  assert.match(MAIN, /function summariseYtError\(e\)/)
+  const fn = MAIN.slice(MAIN.indexOf('function summariseYtError(e)'), MAIN.indexOf('async function withRetry'))
+  assert.match(fn, /interface\|type\|export\|class/, 'cut at the generated-type block')
+  assert.match(fn, /YT_ERR_MAX/, 'and cap what is left')
+  assert.doesNotMatch(MAIN, /error: String\(e\?\.message \|\| e\) \}/, 'handlers must return the summary')
+})
+
+// ── Item 165: a file the app is rewriting is not a missing file ────────────
+
+test('a file being rewritten is never reported as confirmed missing', () => {
+  // ffmpeg cannot edit tags in place: it writes a temp file and replaces the
+  // original, while mpv holds the same file open with 30 s of readahead. A load
+  // error in that window used to reach the missing-file path.
+  const fn = MAIN.slice(MAIN.indexOf("ipcMain.handle('track-exists'"), MAIN.indexOf("ipcMain.handle('track-exists'") + 900)
+  assert.match(fn, /_rewriting\.has\(path\.resolve\(p\)\)/)
+  // checked:false matters specifically: the load-error policy only removes a
+  // track on a CONFIRMED absence, so this makes it retry instead.
+  const branch = fn.slice(fn.indexOf('_rewriting.has'))
+  assert.match(branch.slice(0, 200), /checked: false/)
+  // And the write path has to register and deregister, even if it throws.
+  const write = MAIN.slice(MAIN.indexOf("ipcMain.handle('library-write-tags'"), MAIN.indexOf("ipcMain.handle('library-write-tags'") + 1200)
+  assert.match(write, /_rewriting\.add/)
+  assert.match(write, /finally \{[\s\S]*_rewriting\.delete/)
+})
+
+// ── Item 234: do not queue a second copy of a transfer you failed to cancel ─
+
+test('a stalled transfer is only re-queued once slskd has let go of it', () => {
+  const tick = MAIN.slice(MAIN.indexOf('const stalled = dlSched.stalledItems'))
+  const block = tick.slice(0, 1400)
+  assert.match(block, /let cancelled = false/)
+  assert.match(block, /if \(cancelled\) dlSched\.recordStall/,
+    'recordStall used to run regardless, so a failed DELETE left slskd holding the transfer AND the scheduler re-queueing it')
+})
+
+// ── Items 51 and 62, and a failed scan that read as an empty library ───────
+
+test('the watcher debounce cannot be postponed forever', () => {
+  const fn = MAIN.slice(MAIN.indexOf('function setupLibraryWatcher'), MAIN.indexOf('function buildAlbums'))
+  assert.match(fn, /WATCH_MAX_WAIT_MS/)
+  assert.match(fn, /now - _watchFirstEventAt >= WATCH_MAX_WAIT_MS/,
+    'copying an album in kept deferring the scan while burning CPU on debounce churn')
+})
+
+test('concurrent scans join the one in flight', () => {
+  assert.match(MAIN, /let _scanInFlight = null/)
+  const fn = MAIN.slice(MAIN.indexOf('function performScan(onProgress)'), MAIN.indexOf('async function _performScanOnce'))
+  assert.match(fn, /if \(_scanInFlight\) return _scanInFlight/)
+})
+
+test('a failed scan is distinguishable from an empty library, everywhere', () => {
+  // An empty array is a legitimate result for an empty folder, and every
+  // consumer used `|| []` — so a scan error blanked the library on screen while
+  // the cache on disk was untouched, which looks exactly like losing it.
+  assert.match(MAIN, /return \{ albums: \[\], failed: true, error:/)
+  // Every consumer has to check the flag.
+  for (const fn of ['fullScan', 'backgroundSync', 'applyLibraryUpdate']) {
+    const at = RENDERER.indexOf(`function ${fn}(`)
+    assert.ok(at > 0, `${fn} not found`)
+    const body = RENDERER.slice(at, at + 900)
+    assert.match(body, /\.failed/, `${fn} must not treat a failed scan as an empty library`)
+  }
+  // And fullScan must not claim success.
+  const full = RENDERER.slice(RENDERER.indexOf('async function fullScan()'), RENDERER.indexOf('async function fullScan()') + 900)
+  const failBranch = full.slice(full.indexOf('data.failed'))
+  assert.match(failBranch.slice(0, 400), /return/, 'it used to report "0 albums found" as the answer')
+})
