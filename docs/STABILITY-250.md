@@ -609,11 +609,13 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 ### 53. The close handler runs executeJavaScript on a webContents that may be gone
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** main.js:812-835 awaits state.isPlaying from the renderer. If the renderer reloads or dies in that window the call rejects into a catch that silently closes the app — skipping the 'Music is playing' confirmation during active playback.
 
 **Solution.** Track playing state in main, where it already arrives via player events, instead of asking the renderer at close time.
+
+**Done.** main answers the question itself now, from the engine state that already arrives here as a player event — and mpv is the authority on whether it is playing anyway. `executeJavaScript('state.isPlaying')` rejected if the renderer had reloaded or died in that window, and the catch below it silently closed the app, skipping this confirmation during active playback.
 
 ### 54. The console log patch is installed after early startup logging
 
@@ -665,11 +667,13 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 ### 59. webContents.send is guarded inconsistently
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** main.js:4158 wraps it in try/catch; 588, 609 and 4187 do not. Any of the unguarded ones can throw during the close race and reach only the blanket uncaughtException handler.
 
 **Solution.** One safe send helper used everywhere.
+
+**Done.** One `safeSend` helper that checks the window and the webContents before sending and never throws, and all 60 call sites go through it. There is a test asserting zero direct `webContents.send` calls remain, which is the part that lasts.
 
 ### 60. Nothing offloads heavy scanning from the process that pumps the UI and mpv
 
@@ -827,11 +831,13 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 ### 97. The saved _auto queue is truncated to 100 tracks with no indication
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** renderer.js:5813. Restoring a long queue silently gives you a different one.
 
 **Solution.** Say so, or persist the whole queue to its own file.
+
+**Done.** The save records `truncatedFrom` when the queue was longer than the cap, and the restore says "first 100 of 340 tracks" instead of reporting the truncated count as though it were the whole thing. The cap itself is fine; it was the silence that was not.
 
 ### 98. playbackState is written with position 0 on start and then updated in place
 
@@ -1579,11 +1585,13 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 ### 170. Nothing bounds how long a scan may run
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** A slow or unresponsive mount stalls it indefinitely.
 
 **Solution.** A deadline, with partial results and a clear report.
+
+**Done.** A 30-minute deadline checked between roots, with partial results and a log line naming the folder it stopped before. Not a target — a real scan of a large library takes minutes — it is the point past which the scan is stuck rather than slow, which is what an unresponsive network mount produces.
 
 ### 171. No scan progress
 
@@ -1675,11 +1683,13 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 ### 106. Renderer-supplied paths reach main handlers that do not all go through libPathAllowed
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** The trash and show-in-folder paths are correctly guarded; other path-taking handlers are not consistently checked.
 
 **Solution.** Route every path-taking handler through the existing guard rather than adding a second one.
+
+**Done.** A `pathIsOurs` guard covering the music roots, the configured download folder, the download subfolder, slskd's incomplete folder and userData — lexical like `libPathInRoots`, so it works for a file that does not exist yet and cannot be widened through a symlink, and side-effect free because a guard must not create directories or warn. Four handlers had no check at all: `slsk-show-in-folder` (reveal any path), `verify-surround` (ffprobe any file), `verify-surround-folder` (a directory listing of anything), and `transcode-file` — which **writes**, and was therefore an arbitrary file write with an arbitrary input. Both ends of that one are checked. These are reachable only from our own renderer today, but "only from our own renderer" is a claim about the whole renderer, and that renderer embeds a web browser.
 
 ### 107. Events are broadcast to the window with no sequence numbers
 
@@ -1937,11 +1947,13 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 ### 179. Window state lives in the hot config
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** It changes more often than anything else in that file.
 
 **Solution.** Its own tiny file — free once the store is split.
+
+**Done.** Its own `window-state.json`, free once the store was split. It changed more often than anything else in the config: every resize and every move.
 
 ### 180. No measurement of main-thread block time
 
@@ -2094,11 +2106,13 @@ What this round did instead, which makes the split safer when it is attempted: f
 
 ### 200. Media keys and the tray can act on a dead engine
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** They call the same handlers, which pass the truthy-player guard even when the client is null.
 
 **Solution.** One engine-ready check shared by every entry point.
+
+**Done.** `playerReady()` is the one check, used by `wrap()` — which every player IPC endpoint goes through, and therefore every media key and tray action. `if (!player)` passed even when the client inside it was null, which is exactly how a truthy-but-dead engine got dereferenced.
 
 ### 201. The tray tooltip is updated from renderer state that can be stale
 

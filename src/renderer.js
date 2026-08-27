@@ -882,10 +882,17 @@ async function restorePlaybackState() {
     state.queueIndex = Math.min(Math.max(0, autoQueue.index || 0), autoQueue.tracks.length - 1)
     state._restoredFromQueue = true
     if (state.queuePanelOpen) renderQueuePanel()
-    showSnackbar('Previous queue restored (' + autoQueue.tracks.length + ' tracks)', 'Clear', function() {
+    // Say when the restored queue is not the queue that was saved. It used to
+    // report the truncated count as though that were the whole thing.
+    var _msg = 'Previous queue restored (' + autoQueue.tracks.length + ' tracks)'
+    if (autoQueue.truncatedFrom) {
+      _msg = 'Previous queue restored — first ' + autoQueue.tracks.length +
+        ' of ' + autoQueue.truncatedFrom + ' tracks'
+    }
+    showSnackbar(_msg, 'Clear', function() {
       state.queue = []; state.queueIndex = -1
       if (state.queuePanelOpen) renderQueuePanel()
-    })
+    }, autoQueue.truncatedFrom ? 8000 : 5000)
   }
 }
 
@@ -6069,6 +6076,10 @@ function restoreOldQueue() {
 // way shuffle can be gapless at all.
 let _pendingShuffle = null
 
+// The saved "Previous Session" queue is capped. The cap itself is fine — it is
+// the silence that was not.
+const AUTO_QUEUE_CAP = 100
+
 function computeNextIndex() {
   if (state.repeat === 'one') return state.queueIndex
   if (state.shuffle && state.queue.length > 1) {
@@ -6128,13 +6139,16 @@ function playCurrentTrack() {
     // out of bounds. Keep the in-memory copy in sync too: the sidebar reads
     // state.savedQueues, which was otherwise only ever loaded at startup and
     // showed a launch-time snapshot for the rest of the session.
-    var _autoTracks = state.queue.slice(0, 100)
+    var _autoTracks = state.queue.slice(0, AUTO_QUEUE_CAP)
     var _autoQ = {
       id: '_auto',
       name: 'Previous Session',
       tracks: _autoTracks,
       index: Math.min(Math.max(0, state.queueIndex), Math.max(0, _autoTracks.length - 1)),
       savedAt: Date.now(),
+      // Recorded so a restore can say so. Silently handing back a different
+      // queue is worse than a long one being truncated.
+      truncatedFrom: state.queue.length > AUTO_QUEUE_CAP ? state.queue.length : 0,
     }
     window.api.saveQueue(_autoQ)
     var _autoAt = state.savedQueues.findIndex(function (q) { return q.id === '_auto' })

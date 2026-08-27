@@ -15,10 +15,14 @@ const strip = src => src
 
 const MAIN_CODE = strip(MAIN)
 
-// Every channel main pushes at the renderer.
-const sentChannels = new Set(
-  [...MAIN_CODE.matchAll(/webContents\.send\(\s*'([^']+)'/g)].map(m => m[1])
-)
+// Every channel main pushes at the renderer. Sends go through the safeSend
+// helper now — webContents.send throws if the window is gone, and during the
+// close race that reached only the blanket uncaughtException handler — so both
+// forms are scraped: the helper's own call, and any raw one that comes back.
+const sentChannels = new Set([
+  ...[...MAIN_CODE.matchAll(/webContents\.send\(\s*'([^']+)'/g)].map(m => m[1]),
+  ...[...MAIN_CODE.matchAll(/\bsafeSend\(\s*'([^']+)'/g)].map(m => m[1]),
+])
 // The allowlist in preload's `on`. A channel missing from it is silently
 // unsubscribable: ipcRenderer.on is never called, with no error anywhere.
 const allowlist = (() => {

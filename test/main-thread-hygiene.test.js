@@ -18,7 +18,7 @@ const CODE = MAIN
 
 // ── The store split ──────────────────────────────────────────────────────────
 
-const HOT_KEYS = ['libraryCache', 'playbackState', 'sessionState', 'recentlyPlayed', 'slskSchedulerState', 'playHistory']
+const HOT_KEYS = ['libraryCache', 'playbackState', 'sessionState', 'recentlyPlayed', 'slskSchedulerState', 'playHistory', 'windowState']
 
 test('the hot keys are never read or written through the shared config', () => {
   // electron-store rewrites and fsyncs the WHOLE file on every set. Mixing one

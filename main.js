@@ -302,17 +302,17 @@ function _torrentAdd(uri) {
   if (client.get(uri)) return
   client.add(uri, { path: dlDir }, torrent => {
     _activeTorrents.set(torrent.infoHash, { infoHash: torrent.infoHash, name: torrent.name, progress: 0, speed: 0, downloaded: 0, total: torrent.length, eta: 0 })
-    mainWindow?.webContents.send('torrent-progress', { infoHash: torrent.infoHash, name: torrent.name, progress: 0, speed: 0, eta: 0 })
+    safeSend('torrent-progress', { infoHash: torrent.infoHash, name: torrent.name, progress: 0, speed: 0, eta: 0 })
     torrent.on('download', () => {
       const snap = { infoHash: torrent.infoHash, name: torrent.name, progress: torrent.progress, speed: torrent.downloadSpeed, downloaded: torrent.downloaded, total: torrent.length, eta: torrent.timeRemaining }
       _activeTorrents.set(torrent.infoHash, snap)
-      mainWindow?.webContents.send('torrent-progress', snap)
+      safeSend('torrent-progress', snap)
     })
     torrent.on('done', () => {
       _activeTorrents.delete(torrent.infoHash)
-      mainWindow?.webContents.send('torrent-done', { infoHash: torrent.infoHash, name: torrent.name })
+      safeSend('torrent-done', { infoHash: torrent.infoHash, name: torrent.name })
       if (Notification.isSupported()) new Notification({ title: 'Torrent complete', body: torrent.name, silent: false }).show()
-      for (const delay of [8000, 25000, 60000]) setTimeout(() => mainWindow?.webContents.send('do-lib-rescan'), delay)
+      for (const delay of [8000, 25000, 60000]) setTimeout(() => safeSend('do-lib-rescan'), delay)
     })
   })
 }
@@ -429,6 +429,9 @@ const sideStores = {
   playbackState: new SideStore({ dir: USER_DATA, name: 'playback-state', fallback: null, debounceMs: 300, onError: _sideErr }),
   sessionState: new SideStore({ dir: USER_DATA, name: 'session-state', fallback: null, debounceMs: 500, onError: _sideErr }),
   recentlyPlayed: new SideStore({ dir: USER_DATA, name: 'recently-played', fallback: [], debounceMs: 500, onError: _sideErr }),
+  // Changes more often than anything else that was in the config: every resize
+  // and every move.
+  windowState: new SideStore({ dir: USER_DATA, name: 'window-state', fallback: null, debounceMs: 400, onError: _sideErr }),
   // Written from dlTick every 4 s for the whole life of any download.
   slskSchedulerState: new SideStore({ dir: USER_DATA, name: 'download-scheduler', fallback: null, debounceMs: 1000, onError: _sideErr }),
   // 344 KB of the old config at ~294 bytes per play, rewritten in full on every
@@ -717,7 +720,7 @@ async function startSlskd() {
   slskdProc.on('error', (e) => {
     console.error('[papa] slskd could not be started:', String(e && e.message || e))
     slskdProc = null; slskdReady = false; slskdToken = null
-    mainWindow?.webContents.send('slskd-status-change', {
+    safeSend('slskd-status-change', {
       connected: false, restarting: false, error: String(e && e.message || e),
     })
   })
@@ -805,7 +808,7 @@ function readCmd() {
     if (!cmd || cmd === _lastCmd) return
     _lastCmd = cmd
     return fs.promises.writeFile(CMD_PATH, '').then(() => {
-      mainWindow?.webContents.send('ext-cmd', cmd)
+      safeSend('ext-cmd', cmd)
     })
   }).catch(e => {
     if (e && e.code === 'ENOENT') return   // not written yet; nothing to report
@@ -916,7 +919,7 @@ app.whenReady().then(() => {
   createWindow(hidden)
   if (!wasCleanShutdown) {
     mainWindow.webContents.on('did-finish-load', () => {
-      mainWindow.webContents.send('app-recovered-from-crash')
+      safeSend('app-recovered-from-crash')
     })
   }
   initMpris()          // MPRIS D-Bus first; media-key grab only as fallback
@@ -933,7 +936,7 @@ app.whenReady().then(() => {
     try {
       await slskdFetch('GET', '/session')
       _slskdFailures = 0
-      mainWindow?.webContents.send('slskd-status-change', { connected: true, restarting: false })
+      safeSend('slskd-status-change', { connected: true, restarting: false })
     } catch (e) {
       // Being rate-limited is the opposite problem to being unhealthy: one needs
       // patience, the other a restart. Counting a 429 as a failure meant that
@@ -941,12 +944,12 @@ app.whenReady().then(() => {
       // then hammering it again from a cold start.
       if (e && e.code === 'SLSKD_THROTTLED') {
         console.log('[papa] slskd health check skipped: it is rate-limiting us, which is not a fault')
-        mainWindow?.webContents.send('slskd-status-change', { connected: true, restarting: false, throttled: true })
+        safeSend('slskd-status-change', { connected: true, restarting: false, throttled: true })
         return
       }
       _slskdFailures++
       if (_slskdFailures >= 3) {
-        mainWindow?.webContents.send('slskd-status-change', { connected: false, restarting: true })
+        safeSend('slskd-status-change', { connected: false, restarting: true })
         try {
           await startSlskd()
           _slskdFailures = 0
@@ -956,10 +959,10 @@ app.whenReady().then(() => {
           // "restarting". Say so, and let the counter keep climbing so the next
           // cycle tries again rather than believing it succeeded.
           console.error('[papa] slskd restart failed:', String(e && e.message || e))
-          mainWindow?.webContents.send('slskd-status-change', { connected: false, restarting: false })
+          safeSend('slskd-status-change', { connected: false, restarting: false })
         }
       } else {
-        mainWindow?.webContents.send('slskd-status-change', { connected: false, restarting: false })
+        safeSend('slskd-status-change', { connected: false, restarting: false })
       }
     }
   }, 60000)
@@ -1099,7 +1102,7 @@ app.on('will-quit', () => {
 })
 
 function createWindow(hidden = false) {
-  const winState = store.get('windowState', {})
+  const winState = sideStores.windowState.get() || {}
   mainWindow = new BrowserWindow({
     width:  winState.width  || 1400,
     height: winState.height || 900,
@@ -1131,7 +1134,7 @@ function createWindow(hidden = false) {
   // - nobody is looking at it - and hands the CPU back to whatever is.
   const setFocused = (on) => {
     if (!mainWindow || mainWindow.isDestroyed()) return
-    mainWindow.webContents.send('window-focus', on)
+    safeSend('window-focus', on)
   }
   mainWindow.on('focus',   () => setFocused(true))
   mainWindow.on('blur',    () => setFocused(false))
@@ -1164,7 +1167,7 @@ function createWindow(hidden = false) {
         const json = JSON.stringify(next)
         if (json === _lastWinJson) return
         _lastWinJson = json
-        store.set('windowState', next)
+        sideStores.windowState.set(next)
       } catch (_) {}
     }, 400)
   }
@@ -1176,7 +1179,7 @@ function createWindow(hidden = false) {
     try {
       const next = { ...mainWindow.getBounds(), maximized: mainWindow.isMaximized() }
       _lastWinJson = JSON.stringify(next)
-      store.set('windowState', next)
+      sideStores.windowState.set(next)
     } catch (_) {}
   }
   // renderer-process-limit is 1, so if the renderer dies the user is left with a
@@ -1228,7 +1231,12 @@ function createWindow(hidden = false) {
     }
     if (app.isQuitting) { player?.stop(); return }
     try {
-      const isPlaying = await mainWindow.webContents.executeJavaScript('state.isPlaying')
+      // Was `executeJavaScript('state.isPlaying')`. If the renderer reloaded or
+      // died in that window the call rejected into the catch below, which
+      // silently closed the app — skipping this confirmation during active
+      // playback. main already knows: the engine's own paused property arrives
+      // here as a player event, and mpv is the authority on it anyway.
+      const isPlaying = playerIsPlaying()
       if (isPlaying) {
         e.preventDefault()
         const { response } = await dialog.showMessageBox(mainWindow, {
@@ -1254,9 +1262,9 @@ function createWindow(hidden = false) {
 }
 
 function registerMediaKeys() {
-  globalShortcut.register('MediaPlayPause',     () => mainWindow?.webContents.send('media-key', 'play-pause'))
-  globalShortcut.register('MediaNextTrack',     () => mainWindow?.webContents.send('media-key', 'next'))
-  globalShortcut.register('MediaPreviousTrack', () => mainWindow?.webContents.send('media-key', 'prev'))
+  globalShortcut.register('MediaPlayPause',     () => safeSend('media-key', 'play-pause'))
+  globalShortcut.register('MediaNextTrack',     () => safeSend('media-key', 'next'))
+  globalShortcut.register('MediaPreviousTrack', () => safeSend('media-key', 'prev'))
 }
 
 // ── mpv player engine ─────────────────────────────────────────────────────────
@@ -1277,8 +1285,40 @@ async function detectMpv() {
   try { await run('mpv', ['--version'], 5000); return true } catch { return false }
 }
 
+// One place that answers "is there a working engine, and is it playing?".
+// Every entry point — the close confirmation, the media keys, the tray — used to
+// answer this differently, and the truthy-player guard passed even when the
+// client inside it was null.
+// webContents.send throws if the window is gone, and during the close race that
+// reached only the blanket uncaughtException handler. One of the four call sites
+// was wrapped; the other three were not.
+function safeSend(channel, payload) {
+  try {
+    if (!mainWindow || mainWindow.isDestroyed()) return false
+    const wc = mainWindow.webContents
+    if (!wc || wc.isDestroyed()) return false
+    wc.send(channel, payload)
+    return true
+  } catch (e) {
+    console.error(`[papa] could not send ${channel}:`, String(e && e.message || e))
+    return false
+  }
+}
+
+function playerReady() {
+  return !!(player && mpvAvailable && player.alive !== false)
+}
+
+function playerIsPlaying() {
+  if (!playerReady()) return false
+  try {
+    const st = player.getState()
+    return !!(st && st.path && st.paused === false)
+  } catch (_) { return false }
+}
+
 function sendPlayerEvent(type, data) {
-  mainWindow?.webContents.send('player-event', { type, data })
+  safeSend('player-event', { type, data })
 }
 
 function buildPlayer(cfg) {
@@ -1362,7 +1402,11 @@ async function initPlayer() {
 }
 
 const wrap = fn => async (...args) => {
-  if (!player) return { ok: false, error: 'engine unavailable' }
+  // `if (!player)` passed even when the client inside it was null, which is how
+  // a media key or the tray could act on a dead engine and dereference it. The
+  // engine's own commands raise a typed EngineGone for the same case; this
+  // catches the entry points before they get that far.
+  if (!playerReady()) return { ok: false, error: 'engine unavailable' }
   try { await fn(...args); return { ok: true } } catch (e) { return { ok: false, error: String(e.message || e) } }
 }
 
@@ -1592,7 +1636,7 @@ function initMpris() {
     mprisPlayer.canRaise = true
     mprisPlayer.canControl = true
     mprisPlayer.loopStatus = 'None'
-    const send = (cmd) => mainWindow?.webContents.send('media-key', cmd)
+    const send = (cmd) => safeSend('media-key', cmd)
     mprisPlayer.on('playpause', () => send('play-pause'))
     mprisPlayer.on('play',      () => send('play'))
     mprisPlayer.on('pause',     () => send('pause'))
@@ -1601,11 +1645,11 @@ function initMpris() {
     mprisPlayer.on('stop',      () => send('pause'))
     mprisPlayer.on('quit',      () => { app.isQuitting = true; app.quit() })
     mprisPlayer.on('raise',     () => { mainWindow?.show(); mainWindow?.focus() })
-    mprisPlayer.on('position',  (e) => mainWindow?.webContents.send('media-seek', { position: e.position / 1e6 }))
-    mprisPlayer.on('seek',      (offsetUs) => mainWindow?.webContents.send('media-seek', { offset: offsetUs / 1e6 }))
-    mprisPlayer.on('volume',    (v) => mainWindow?.webContents.send('media-volume', Math.max(0, Math.min(1, v))))
-    mprisPlayer.on('shuffle',   (enabled) => mainWindow?.webContents.send('media-shuffle', !!enabled))
-    mprisPlayer.on('loopStatus',(status) => mainWindow?.webContents.send('media-loop-status', status))
+    mprisPlayer.on('position',  (e) => safeSend('media-seek', { position: e.position / 1e6 }))
+    mprisPlayer.on('seek',      (offsetUs) => safeSend('media-seek', { offset: offsetUs / 1e6 }))
+    mprisPlayer.on('volume',    (v) => safeSend('media-volume', Math.max(0, Math.min(1, v))))
+    mprisPlayer.on('shuffle',   (enabled) => safeSend('media-shuffle', !!enabled))
+    mprisPlayer.on('loopStatus',(status) => safeSend('media-loop-status', status))
     mprisPlayer.getPosition = () => {
       const drift = _mprisPos.playing ? (Date.now() - _mprisPos.at) / 1000 : 0
       return Math.round((_mprisPos.position + drift) * 1e6)
@@ -1659,9 +1703,9 @@ function createTray() {
 function updateTrayMenu(isPlaying) {
   if (!tray) return
   tray.setContextMenu(Menu.buildFromTemplate([
-    { label: isPlaying ? 'Pause' : 'Play', click: () => mainWindow?.webContents.send('media-playpause') },
-    { label: 'Next', click: () => mainWindow?.webContents.send('media-next') },
-    { label: 'Previous', click: () => mainWindow?.webContents.send('media-previous') },
+    { label: isPlaying ? 'Pause' : 'Play', click: () => safeSend('media-playpause') },
+    { label: 'Next', click: () => safeSend('media-next') },
+    { label: 'Previous', click: () => safeSend('media-previous') },
     { type: 'separator' },
     { label: 'Show', click: () => { if (mainWindow) { mainWindow.show(); mainWindow.focus() } } },
     { label: 'Quit', click: () => app.quit() },
@@ -1735,11 +1779,11 @@ ipcMain.on('set-power-save', (_, playing) => {
 
 powerMonitor.on('suspend', () => {
   if (player) player.pause().catch(() => {})
-  if (mainWindow) mainWindow.webContents.send('system-suspend')
+  if (mainWindow) safeSend('system-suspend')
 })
 
 powerMonitor.on('resume', () => {
-  if (mainWindow) mainWindow.webContents.send('system-resume')
+  if (mainWindow) safeSend('system-resume')
 })
 
 ipcMain.on('notify-download-complete', (_, { count, albumName }) => {
@@ -2128,14 +2172,29 @@ function performScan(onProgress) {
   return _scanInFlight
 }
 
+// A scan on an unresponsive network mount has no natural end: readdir simply
+// does not return. This is not a target — a real scan of a large library takes
+// minutes — it is the point past which the scan is stuck rather than slow.
+const SCAN_DEADLINE_MS = 30 * 60 * 1000
+
 async function _performScanOnce(onProgress) {
   const folders = store.get('musicFolders', [])
   if (!folders.length) return { albums: [] }
   if (_scanRunning) return { albums: sideStores.libraryCache.get() || [], busy: true }
   _scanRunning = true
+  const scanStarted = Date.now()
+  const overDeadline = () => Date.now() - scanStarted > SCAN_DEADLINE_MS
   try {
     const found = { audio: [], cues: [] }
-    for (const f of folders) await scanDirAsync(f, found)
+    for (const f of folders) {
+      if (overDeadline()) {
+        // Partial results with a clear report, rather than a stall with none.
+        console.error(`[papa] scan deadline reached after ${Math.round((Date.now() - scanStarted) / 1000)}s; ` +
+          `stopping before ${f}. A folder on an unresponsive mount is the usual cause.`)
+        break
+      }
+      await scanDirAsync(f, found)
+    }
 
     // CUE sheets: audio files fully described by a cue become virtual tracks
     const cueByAudio = new Map()
@@ -2233,6 +2292,33 @@ function libRoots() {
 // become a move DESTINATION, so it is added here rather than to libRoots().
 function libDeletableRoots() {
   return libRoots().concat([path.join(USER_DATA, 'slskd', 'incomplete')])
+}
+
+// Every directory this app legitimately reads or writes: the music roots, the
+// configured download folder, slskd's incomplete folder, and our own userData.
+// Side-effect free on purpose — _downloadDir() creates directories and warns,
+// which a guard must not do.
+function papaRoots() {
+  const cfg = store.get('slskConfig', {})
+  const folders = store.get('musicFolders', [])
+  const roots = folders.slice()
+  if (cfg.downloadDir) roots.push(cfg.downloadDir)
+  for (const base of folders) roots.push(path.join(base, DOWNLOAD_SUBDIR))
+  roots.push(path.join(SLSKD_DIR, 'incomplete'))
+  roots.push(USER_DATA)
+  return roots.filter(Boolean)
+}
+
+// A path the app may touch. Lexical, like libPathInRoots, so it works for a file
+// that does not exist yet and cannot be widened via a symlink.
+function pathIsOurs(target) {
+  const resolved = path.resolve(String(target || ''))
+  if (!resolved || resolved === path.sep) return false
+  for (const root of papaRoots()) {
+    const r = path.resolve(root)
+    if (resolved === r || resolved.startsWith(r + path.sep)) return true
+  }
+  return false
 }
 
 // Is this path lexically inside a library root? Unlike libPathAllowed this does
@@ -2950,13 +3036,13 @@ function _scheduleLibraryRescan() {
       console.error('[papa] rescan after a tag write failed; leaving the library as it was')
       return
     }
-    mainWindow?.webContents.send('library-updated', { albums: res.albums, reason: 'manage' })
+    safeSend('library-updated', { albums: res.albums, reason: 'manage' })
     writeLibraryExt(res.albums)
   }, 1200)
 }
 
 ipcMain.handle('scan-library', async () => {
-  return performScan(p => mainWindow?.webContents.send('scan-progress', p))
+  return performScan(p => safeSend('scan-progress', p))
 })
 
 // ── Realtime folder watching ─────────────────────────────────────────────────
@@ -3004,7 +3090,7 @@ function setupLibraryWatcher() {
     }
     console.log(`[papa] watcher: rescanned the whole library after ${events} file event(s) ` +
       `in ${Date.now() - started}ms (${res.albums.length} albums)`)
-    mainWindow?.webContents.send('library-updated', { albums: res.albums, reason: 'watcher' })
+    safeSend('library-updated', { albums: res.albums, reason: 'watcher' })
     writeLibraryExt(res.albums)
   }
 
@@ -3160,7 +3246,7 @@ function ensureDlHandler() {
       const tmp = path.join(app.getPath('temp'), filename)
       item.setSavePath(tmp)
       item.once('done', (__, state) => {
-        if (state === 'completed') { _torrentAdd(tmp); mainWindow?.webContents.send('torrent-started', { uri: tmp }) }
+        if (state === 'completed') { _torrentAdd(tmp); safeSend('torrent-started', { uri: tmp }) }
       })
       return
     }
@@ -3173,20 +3259,20 @@ function ensureDlHandler() {
       : path.join(app.getPath('downloads'), filename)
     item.setSavePath(dest)
     activeDownloads.set(dlId, item)
-    mainWindow?.webContents.send('dl-started', { id: dlId, filename, dest, total: item.getTotalBytes(), isMusic })
+    safeSend('dl-started', { id: dlId, filename, dest, total: item.getTotalBytes(), isMusic })
     item.on('updated', (__, state) => {
       if (state === 'progressing')
-        mainWindow?.webContents.send('dl-progress', { id: dlId, filename, received: item.getReceivedBytes(), total: item.getTotalBytes() })
+        safeSend('dl-progress', { id: dlId, filename, received: item.getReceivedBytes(), total: item.getTotalBytes() })
     })
     item.once('done', (__, state) => {
       activeDownloads.delete(dlId)
       if (state === 'completed') {
         if (isArchive) { try { new AdmZip(dest).extractAllTo(path.dirname(dest), true) } catch (e) { console.error('[papa] zip-extract:', e.message || e) } }
-        mainWindow?.webContents.send('dl-complete', { id: dlId, filename, dest, isMusic })
+        safeSend('dl-complete', { id: dlId, filename, dest, isMusic })
       } else if (state === 'cancelled') {
-        mainWindow?.webContents.send('dl-cancelled', { id: dlId, filename })
+        safeSend('dl-cancelled', { id: dlId, filename })
       } else {
-        mainWindow?.webContents.send('dl-failed', { id: dlId, filename })
+        safeSend('dl-failed', { id: dlId, filename })
       }
     })
   })
@@ -3201,31 +3287,31 @@ function createBrowserView () {
   browserView.webContents.setWindowOpenHandler(({ url }) => {
     const safe = url.startsWith('http') ? url : `https://${url}`
     browserView.webContents.loadURL(safe)
-    mainWindow?.webContents.send('browser-url', safe)
+    safeSend('browser-url', safe)
     return { action: 'deny' }
   })
 
   // Loading state events
   browserView.webContents.on('did-start-loading', () =>
-    mainWindow?.webContents.send('browser-loading', true))
+    safeSend('browser-loading', true))
   browserView.webContents.on('did-stop-loading',  () =>
-    mainWindow?.webContents.send('browser-loading', false))
+    safeSend('browser-loading', false))
   browserView.webContents.on('did-fail-load', (_, code, desc, url) => {
-    if (code !== -3) mainWindow?.webContents.send('browser-load-error', { code, desc, url })
-    mainWindow?.webContents.send('browser-loading', false)
+    if (code !== -3) safeSend('browser-load-error', { code, desc, url })
+    safeSend('browser-loading', false)
   })
 
   // Navigation events
-  browserView.webContents.on('did-navigate',         (_, u) => mainWindow?.webContents.send('browser-url',   u))
-  browserView.webContents.on('did-navigate-in-page', (_, u) => mainWindow?.webContents.send('browser-url',   u))
-  browserView.webContents.on('page-title-updated',   (_, t) => mainWindow?.webContents.send('browser-title', t))
+  browserView.webContents.on('did-navigate',         (_, u) => safeSend('browser-url',   u))
+  browserView.webContents.on('did-navigate-in-page', (_, u) => safeSend('browser-url',   u))
+  browserView.webContents.on('page-title-updated',   (_, t) => safeSend('browser-title', t))
 
   // Intercept magnet links — handle via WebTorrent instead of navigating
   browserView.webContents.on('will-navigate', (e, url) => {
     if (url.startsWith('magnet:')) {
       e.preventDefault()
       _torrentAdd(url)
-      mainWindow?.webContents.send('torrent-started', { uri: url })
+      safeSend('torrent-started', { uri: url })
     }
   })
 }
@@ -3248,9 +3334,9 @@ ipcMain.on('browser-back',          ()       => browserView?.webContents.canGoBa
 ipcMain.on('browser-forward',       ()       => browserView?.webContents.canGoForward() && browserView.webContents.goForward())
 ipcMain.on('browser-refresh',       ()       => browserView?.webContents.reload())
 ipcMain.on('browser-stop',          ()       => browserView?.webContents.stop())
-ipcMain.on('browser-zoom-in',       ()       => { if (!browserView) return; const z = Math.min(3.0, browserView.webContents.getZoomFactor() + 0.1); browserView.webContents.setZoomFactor(z); mainWindow?.webContents.send('browser-zoom', Math.round(z * 100)) })
-ipcMain.on('browser-zoom-out',      ()       => { if (!browserView) return; const z = Math.max(0.25, browserView.webContents.getZoomFactor() - 0.1); browserView.webContents.setZoomFactor(z); mainWindow?.webContents.send('browser-zoom', Math.round(z * 100)) })
-ipcMain.on('browser-zoom-reset',    ()       => { if (!browserView) return; browserView.webContents.setZoomFactor(1); mainWindow?.webContents.send('browser-zoom', 100) })
+ipcMain.on('browser-zoom-in',       ()       => { if (!browserView) return; const z = Math.min(3.0, browserView.webContents.getZoomFactor() + 0.1); browserView.webContents.setZoomFactor(z); safeSend('browser-zoom', Math.round(z * 100)) })
+ipcMain.on('browser-zoom-out',      ()       => { if (!browserView) return; const z = Math.max(0.25, browserView.webContents.getZoomFactor() - 0.1); browserView.webContents.setZoomFactor(z); safeSend('browser-zoom', Math.round(z * 100)) })
+ipcMain.on('browser-zoom-reset',    ()       => { if (!browserView) return; browserView.webContents.setZoomFactor(1); safeSend('browser-zoom', 100) })
 ipcMain.on('cancel-download',       (_, id)  => { const item = activeDownloads.get(id); if (item) { item.cancel(); activeDownloads.delete(id) } })
 ipcMain.on('open-browser-devtools', ()       => browserView?.webContents.openDevTools())
 
@@ -3846,12 +3932,12 @@ ipcMain.handle('slsk-configure', async (_, { username, password }) => {
 
 ipcMain.handle('slsk-setup', async () => {
   try {
-    await downloadSlskd(text => mainWindow?.webContents.send('slsk-progress', { text }))
+    await downloadSlskd(text => safeSend('slsk-progress', { text }))
     const cfg = store.get('slskConfig', {})
     const musicFolders = store.get('musicFolders', [])
     const downloadDir = musicFolders[0] || path.join(app.getPath('home'), 'Music')
     writeSlskdConfig({ ...cfg, downloadDir })
-    mainWindow?.webContents.send('slsk-progress', { text: 'Starting daemon…' })
+    safeSend('slsk-progress', { text: 'Starting daemon…' })
     await startSlskd()
     return { ok: true }
   } catch (e) {
@@ -3962,7 +4048,7 @@ ipcMain.handle('slsk-search', async (_, { query, timeoutMs = 25000, noCache = fa
       lastPushTime = elapsed
       if (count !== lastCount) {
         lastCount = count
-        mainWindow?.webContents.send('slsk-progress', { query, results: partial || [], done: false })
+        safeSend('slsk-progress', { query, results: partial || [], done: false })
       }
     }
 
@@ -3986,7 +4072,7 @@ ipcMain.handle('slsk-search', async (_, { query, timeoutMs = 25000, noCache = fa
 
   const results = responses || []
   if (results.length) _searchCacheSet(cacheKey, results)
-  mainWindow?.webContents.send('slsk-progress', { query, results, done: true })
+  safeSend('slsk-progress', { query, results, done: true })
   return { results }
 })
 
@@ -4077,9 +4163,7 @@ function dlRestore() {
 }
 
 function dlBroadcast() {
-  try {
-    mainWindow?.webContents.send('slsk-scheduler-stats', dlSched.stats(dlState))
-  } catch (_) {}
+  safeSend('slsk-scheduler-stats', dlSched.stats(dlState))
 }
 
 // slskd reports state as e.g. "Completed, Succeeded" / "Queued, Remotely".
@@ -4687,6 +4771,14 @@ ipcMain.handle('slsk-set-download-dir', async () => {
 })
 
 ipcMain.handle('slsk-show-in-folder', (_, filePath) => {
+  // Every path-taking handler goes through the guard rather than each growing
+  // its own. Reachable only from our own renderer today, but "only from our own
+  // renderer" is a claim about the whole renderer, and that renderer embeds a
+  // web browser.
+  if (!pathIsOurs(filePath)) {
+    console.error('[papa] refused to reveal a path outside the app folders:', filePath)
+    return { ok: false, error: 'Outside your music and download folders — refused' }
+  }
   shell.showItemInFolder(filePath)
   return { ok: true }
 })
@@ -4855,7 +4947,7 @@ ipcMain.handle('yt-auth-start', async () => {
         if (header) {
           store.set('ytCookie', header)
           ytSearch.setCookie(header)
-          mainWindow?.webContents.send('yt-auth-done', { signedIn: true })
+          safeSend('yt-auth-done', { signedIn: true })
           finish({ ok: true, signedIn: true })
         }
       } catch { /* keep polling until the window closes */ }
@@ -4896,7 +4988,7 @@ const _ytDownloads = new Map()
 let _ytQueue = Promise.resolve()
 
 function _ytEmit(dl) {
-  mainWindow?.webContents.send('yt-dl-progress', { ...dl })
+  safeSend('yt-dl-progress', { ...dl })
 }
 
 ipcMain.handle('yt-download', (_, { videoId, title, artist, subdir }) => {
@@ -4960,6 +5052,7 @@ function probeChannels(filePath) {
 
 // Check a finished download against what it claimed to be.
 ipcMain.handle('verify-surround', async (_, { filePath, expectedLabel }) => {
+  if (!pathIsOurs(filePath)) return { ok: null, severity: 'unknown', message: 'Outside your music and download folders — refused.' }
   if (!filePath || !fs.existsSync(filePath)) return { ok: null, severity: 'unknown', message: 'File not found.' }
   const channels = await probeChannels(filePath)
   return { ...surroundVerify.verdict(expectedLabel || null, channels), channels }
@@ -4969,6 +5062,8 @@ ipcMain.handle('verify-surround', async (_, { filePath, expectedLabel }) => {
 // stereo track hiding in a 5.1 album is the failure most likely to go unnoticed.
 ipcMain.handle('verify-surround-folder', async (_, { dir }) => {
   try {
+    // Unguarded this was a directory listing of anything on the machine.
+    if (!pathIsOurs(dir)) return { ok: null, total: 0, offenders: [], error: 'refused' }
     if (!dir || !fs.existsSync(dir)) return { ok: null, total: 0, offenders: [] }
     const names = fs.readdirSync(dir).filter(n => AUDIO_EXT.test(n)).slice(0, 60)
     const tracks = []
@@ -5030,12 +5125,12 @@ ipcMain.handle('slsk-verify-file', async (_, { username, filename }) => {
     .find(c => fs.existsSync(c)) || null
 
   if (!resolved) {
-    mainWindow?.webContents.send('slsk-verify', { ok: false, filename, error: 'File not found on disk' })
+    safeSend('slsk-verify', { ok: false, filename, error: 'File not found on disk' })
     return { ok: false, error: 'File not found on disk' }
   }
 
   const result = await verifyAudioFile(resolved)
-  mainWindow?.webContents.send('slsk-verify', { ...result, filename, filePath: resolved })
+  safeSend('slsk-verify', { ...result, filename, filePath: resolved })
   return { ok: true, filePath: resolved, ...result }
 })
 
@@ -5078,14 +5173,14 @@ function presenceSnapshot() { return Array.from(presenceCache.values()) }
 
 function presenceBroadcast(changed, serverConnected) {
   try {
-    mainWindow?.webContents.send('slsk-user-status', {
+    safeSend('slsk-user-status', {
       statuses: presenceSnapshot(), changed, serverConnected,
     })
   } catch (_) {}
 }
 
 function savedUsersChanged(list) {
-  try { mainWindow?.webContents.send('slsk-saved-users-changed', savedUsers.sortUsers(list)) } catch (_) {}
+  safeSend('slsk-saved-users-changed', savedUsers.sortUsers(list))
   startPresenceWatch()
   pollPresenceOnce()
 }
@@ -5185,6 +5280,10 @@ ipcMain.handle('slsk-browse-user', async (_, { username }) => {
 // as its results and ffmpeg never ran once. Both entry points call this now.
 function transcodeFile({ filePath, format, outDir }) {
   return new Promise((resolve) => {
+    // This one writes. Unguarded it was an arbitrary file write with an
+    // arbitrary input, which is the most consequential of the four.
+    if (!pathIsOurs(filePath)) { resolve({ ok: false, error: 'Source is outside your music and download folders — refused' }); return }
+    if (outDir && !pathIsOurs(outDir)) { resolve({ ok: false, error: 'Destination is outside your music and download folders — refused' }); return }
     var args = ['-i', filePath]
     if (format === 'opus') args.push('-c:a', 'libopus', '-b:a', '160k')
     else if (format === 'mp3') args.push('-c:a', 'libmp3lame', '-b:a', '320k')
