@@ -7,10 +7,11 @@ Written 2026-08-27. Read this first in a new session, then `docs/STABILITY-250.m
 | | |
 |---|---|
 | Branch | `feature/library-management-and-qa-fixes` |
-| Tests | 488 passing (`npm test`), 2 skipped — the two real-mpv integration tests, which need mpv installed |
+| Tests | 520 passing (`npm test`), 2 skipped — the two real-mpv integration tests, which need mpv installed |
 | Tier 1 | **done** — items 1, 2, 3, 6, 7 |
 | Tier 2 | **done** — items 4, 5, 8, 9, 10, 11, 12, 13, 14, 15, 17, 18, 19, 20, 21, 22, 23, 24, 25, 251, 252. Item 16 partly, and it says why |
-| Tier 3–6 | not started |
+| Tier 3 | **done** — items 36, 37, 40, 41, 42, 43, 44, 45, 48, 49, 54, 55, plus 255, a regression this round introduced |
+| Tier 4–6 | not started |
 | Verified against real mpv | **no.** Everything below is tests and reading. See "How this was, and was not, verified" |
 | New findings | items 251–254 at the end of `STABILITY-250.md`. 254 breaks packaged builds and is not fixed |
 
@@ -106,8 +107,14 @@ journalctl --user --since "<date>" | grep launch.sh
    resume, device-loss detection with a fallback away from a vanished device, and a load-error policy
    where only a **confirmed** absence may touch the queue. Item 16 is partly done on purpose — the
    playlist-remove arithmetic needs real mpv, and getting the index wrong stops playback audibly.
-3. **Tier 3 — stop the main thread freezing.** `dirSize` async, `dlPersist` debounced, split the
-   2.5 MB store, replace `pollCmd` with a watch, async logging, ffprobe off the main thread.
+3. ~~**Tier 3 — stop the main thread freezing.**~~ **Done.** The store split is the substantial part:
+   the five keys that were nearly all of the 2.5 MB config, and nearly all of its writes, each own a
+   small file now (`side-store.js`) — read once synchronously, written asynchronously, coalesced, and
+   replaced atomically. There is a one-time migration out of the shared config that can only ever run
+   when the side file does not exist yet, so a stale config value cannot resurrect over newer data.
+   Also: `dirSize` is async and yields and caches; `pollCmd`'s 200 ms sync read-and-write became an
+   fs.watch with a 5 s backstop; logging is buffered with a size cap and is installed at module load
+   so startup lines are no longer lost; and no synchronous child_process call is left in main.js.
 4. **Tier 4 — data integrity.** The `ts`/`timestamp` migration, history on auto-advance, reconcile
    `playCounts` against `playHistory`.
 5. **Tier 5 — leaks, races, correctness.** Modal listener leaks, `_scheduleLibRescan` coalescing,
@@ -139,7 +146,7 @@ The lesson from two rounds: **verify against ground truth, never against the UI'
 Being exact about this, because the rule in this project is that the UI's claims are not evidence — and
 neither are mine.
 
-**Verified.** 488 tests pass, up from 399. The 89 new ones test behaviour, not implementation:
+**Verified.** 520 tests pass, up from 399. The 121 new ones test behaviour, not implementation:
 every `end-file` reason including ones mpv has not invented yet; our own `loadfile`/`playlist-clear`
 not being mistaken for a fault; the timeline being bounded and copied on read; mpv's log reaching the
 ring and faults reaching the timeline inline; `engineDown` carrying `willRecover`; recovery seeking back
@@ -154,7 +161,7 @@ that implemented it was on a macOS machine with no mpv, no PipeWire, no `~/.conf
 `.qa/` (it is gitignored, so it does not travel). The two real-mpv integration tests skipped for exactly
 that reason. So on the Fedora machine, before trusting any of this:
 
-1. `npm test` — the two skipped tests should now run there. 490 passing expected.
+1. `npm test` — the two skipped tests should now run there. 522 passing expected.
 2. Play a local album. `node tools/mpv-probe.js` should agree with the UI about path, position and pause.
 3. `tools/fault-inject.sh` — SIGKILL, SIGSTOP, PipeWire restart, device suspend. It checks the daily log
    and mpv's socket automatically and prints what needs your eyes. Before this work all four were
@@ -183,6 +190,30 @@ Things I could not test at all, and would look at first if something is wrong:
   produce a false positive.
 - **`setProperty('audio-device', …)`** for the Settings device picker. That path has never once worked
   (item 252), so it has no working behaviour to regress — but equally, nobody has ever seen it succeed.
+- **The store migration**, above. It is tested, but not against a real 2.5 MB config with real data in
+  it.
+- **`fs.watch` on the command file.** If the browser extension stops working, that is the first
+  suspect; the 5 s backstop poll should cover it, so a total failure would mean neither path fires.
+- **The `run()` helper's timeouts**: unzip 120 s, ffprobe 10 s, ps 10 s, mpv --version 5 s. All guesses.
+
+## What the store split changes on disk
+
+Worth knowing before the first launch on the real machine, because it moves data:
+
+- Five keys leave `~/.config/papa-audio/config.json` and become their own files in the same directory:
+  `library-cache.json`, `playback-state.json`, `session-state.json`, `recently-played.json`,
+  `download-scheduler.json`.
+- The move happens once, at startup, and only for a key whose side file does not exist yet. A second
+  run cannot re-adopt a stale config value over what the app has since written — there is a test for
+  exactly that, because getting it wrong would resurrect an old library cache over a fresh scan.
+- The old keys are deleted from `config.json` after a successful adoption, so the file should shrink
+  from ~2.5 MB to a few tens of kilobytes on first launch. **That shrink is the thing to check first.**
+  If config.json is still 2.5 MB afterwards, the migration did not run and the log will say why.
+- Writes are coalesced and asynchronous, and flushed synchronously on both exit paths — the signal
+  handler as well as will-quit, because `app.exit()` skips handlers. If a playback position is ever
+  lost across a quit, that flush is where to look.
+- A corrupt side file falls back to the default and says so in the log rather than crashing, and is not
+  silently overwritten.
 
 ## New tools
 

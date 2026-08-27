@@ -7,7 +7,8 @@ const os = require('os')
 const tagEdit = require('./src/tag-edit')
 const crypto = require('crypto')
 const https = require('https')
-const { spawn, execSync, execFileSync, execFile } = require('child_process')
+// No sync child_process on the main thread: every shell-out goes through run().
+const { spawn, execFile } = require('child_process')
 const { MpvEngine } = require('./mpv-engine')
 const { formatDiagnostic } = require('./engine-diagnostics')
 const { defaultSettings: eqDefaults, BANDS: EQ_BANDS, GAIN_LIMIT: EQ_GAIN_LIMIT, PRESETS: EQ_PRESETS, presetSettings } = require('./eq')
@@ -198,7 +199,126 @@ function _torrentAdd(uri) {
   })
 }
 
+// ── File logging ────────────────────────────────────────────────────────────
+// Every console line used to be a blocking appendFileSync on the main thread, so
+// a burst — a failing loop, repeated 429s, a bad scan — became a burst of
+// synchronous disk I/O competing with playback. Lines are now buffered and
+// flushed on a timer, and the file has a size cap as well as an age cap.
+//
+// Installed from module scope rather than inside app.whenReady, because
+// everything logged during early startup used to land before the patch existed
+// and was therefore never written anywhere.
+const LOG_FLUSH_MS = 1000
+const LOG_MAX_BUFFER = 2000          // lines; past this the oldest are dropped
+const LOG_MAX_BYTES = 8 * 1024 * 1024
+let _logDir = null
+let _logBuf = []
+let _logTimer = null
+let _logDropped = 0
+let _logFlushing = false
+
+function _logFile() {
+  const today = new Date().toISOString().slice(0, 10)
+  return path.join(_logDir, `papa-${today}.log`)
+}
+
+function _flushLog() {
+  _logTimer = null
+  if (_logFlushing || !_logDir || !_logBuf.length) return
+  const lines = _logBuf
+  _logBuf = []
+  if (_logDropped) {
+    lines.unshift(`[${new Date().toISOString()}] [WARN] ${_logDropped} log lines dropped: the buffer filled faster than it could be written\n`)
+    _logDropped = 0
+  }
+  _logFlushing = true
+  const f = _logFile()
+  fs.promises.appendFile(f, lines.join(''))
+    .then(() => fs.promises.stat(f))
+    .then(st => {
+      // An age cap alone lets one bad day fill the disk.
+      if (st.size > LOG_MAX_BYTES) return fs.promises.rename(f, f + '.1')
+    })
+    .catch(() => { /* a log that cannot be written must not become the fault */ })
+    .finally(() => { _logFlushing = false })
+}
+
+function _queueLog(level, args) {
+  if (!_logDir) return
+  let msg
+  try {
+    msg = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ')
+  } catch (_) {
+    msg = args.map(a => String(a)).join(' ')   // circular structures, etc.
+  }
+  if (_logBuf.length >= LOG_MAX_BUFFER) { _logDropped++; return }
+  _logBuf.push(`[${new Date().toISOString()}] [${level}] ${msg}\n`)
+  if (!_logTimer) {
+    _logTimer = setTimeout(_flushLog, LOG_FLUSH_MS)
+    _logTimer.unref?.()
+  }
+}
+
+function installFileLogging(dir) {
+  try { fs.mkdirSync(dir, { recursive: true }) } catch (_) { return }
+  _logDir = dir
+  _flushLog()   // anything buffered before the directory was known
+}
+
+// Patched here, at module load, so startup logging is not lost.
+const _origError = console.error
+console.error = (...args) => { _origError(...args); _queueLog('ERROR', args) }
+const _origLog = console.log
+console.log = (...args) => { _origLog(...args); _queueLog('INFO', args) }
+
+// Nothing buffered may be lost on the way out. Sync here for the same reason
+// the side stores are: the process is exiting.
+function flushLogSync() {
+  if (!_logDir || !_logBuf.length) return
+  const lines = _logBuf
+  _logBuf = []
+  try { fs.appendFileSync(_logFile(), lines.join('')) } catch (_) {}
+}
+
 const store = new Store()
+
+// ── The five keys that were nearly all of the config, and nearly all of its
+// writes ────────────────────────────────────────────────────────────────────
+// electron-store rewrites and fsyncs the WHOLE file on every set. At 2.5 MB
+// that made a 200-byte playback position cost 2.5 MB of synchronous disk I/O on
+// the thread that drives mpv's IPC. Each of these now owns a small file, written
+// asynchronously and coalesced. See side-store.js.
+const { SideStore } = require('./side-store')
+const _sideErr = e => { try { console.error('[papa][store]', e.message) } catch (_) {} }
+const sideStores = {
+  // Largest: 1.37 MB, rewritten on every scan, watcher event and mutation.
+  libraryCache: new SideStore({ dir: USER_DATA, name: 'library-cache', fallback: null, debounceMs: 800, onError: _sideErr }),
+  // Smallest and by far the most frequent: written repeatedly during playback.
+  playbackState: new SideStore({ dir: USER_DATA, name: 'playback-state', fallback: null, debounceMs: 300, onError: _sideErr }),
+  sessionState: new SideStore({ dir: USER_DATA, name: 'session-state', fallback: null, debounceMs: 500, onError: _sideErr }),
+  recentlyPlayed: new SideStore({ dir: USER_DATA, name: 'recently-played', fallback: [], debounceMs: 500, onError: _sideErr }),
+  // Written from dlTick every 4 s for the whole life of any download.
+  slskSchedulerState: new SideStore({ dir: USER_DATA, name: 'download-scheduler', fallback: null, debounceMs: 1000, onError: _sideErr }),
+}
+
+// One-time move out of the shared config. adoptIfEmpty only takes the legacy
+// value when the side file does not exist yet, so a stale config value can never
+// resurrect over data the app has since written.
+for (const [key, side] of Object.entries(sideStores)) {
+  try {
+    if (side.adoptIfEmpty(store.get(key))) {
+      console.log(`[papa][store] moved ${key} out of the shared config`)
+      store.delete(key)
+    }
+  } catch (e) { _sideErr(new Error(`${key}: migration failed (${e && e.message})`)) }
+}
+
+// Nothing may be lost on the way out, and neither quit path can await.
+function flushSideStores() {
+  for (const side of Object.values(sideStores)) {
+    try { side.flushSync() } catch (_) { /* exiting anyway */ }
+  }
+}
 
 ;(function migrateFolder() {
   const old = store.get('musicFolder')
@@ -447,9 +567,27 @@ async function downloadSlskd(progressCb) {
   const buf = Buffer.from(await dlRes.arrayBuffer())
   fs.writeFileSync(zipPath, buf)
   progressCb?.('Extracting…')
-  execSync(`unzip -o ${JSON.stringify(zipPath)} -d ${JSON.stringify(SLSKD_DIR)}`)
+  // Was execSync through a shell with JSON.stringify standing in for quoting and
+  // no timeout at all: a hung unzip froze the app with no way out. execFile
+  // passes arguments as arguments, so there is no shell to quote for.
+  await run('unzip', ['-o', zipPath, '-d', SLSKD_DIR], 120000)
   fs.unlinkSync(zipPath)
-  execSync(`chmod +x ${JSON.stringify(SLSKD_BIN)}`)
+  await fs.promises.chmod(SLSKD_BIN, 0o755)
+}
+
+// execFile with a timeout, as a promise. Rejects with something that names the
+// command, because "Command failed" on its own is not a diagnosis.
+function run(cmd, args, timeout) {
+  return new Promise((resolve, reject) => {
+    execFile(cmd, args, { timeout: timeout || 30000, maxBuffer: 1 << 22 }, (err, stdout, stderr) => {
+      if (err) {
+        const why = err.killed ? `timed out after ${timeout || 30000}ms` : (err.message || 'failed')
+        reject(new Error(`${cmd} ${why}: ${String(stderr || '').slice(0, 400)}`))
+        return
+      }
+      resolve(String(stdout || ''))
+    })
+  })
 }
 
 let mainWindow  = null
@@ -469,14 +607,42 @@ function writeNowPlaying(data) {
 }
 
 let _lastCmd = ''
-function pollCmd() {
-  try {
-    const cmd = fs.readFileSync(CMD_PATH, 'utf8').trim()
+// The command file is how the browser extension talks to the app. This used to
+// be a synchronous read AND write every 200 ms for the life of the process —
+// five main-thread filesystem operations per second, forever, competing with
+// playback — to carry a message that arrives a few times a day.
+function readCmd() {
+  fs.promises.readFile(CMD_PATH, 'utf8').then(raw => {
+    const cmd = raw.trim()
     if (!cmd || cmd === _lastCmd) return
     _lastCmd = cmd
-    fs.writeFileSync(CMD_PATH, '')
-    mainWindow?.webContents.send('ext-cmd', cmd)
-  } catch (e) { console.error('[papa] poll-cmd:', e.message || e) }
+    return fs.promises.writeFile(CMD_PATH, '').then(() => {
+      mainWindow?.webContents.send('ext-cmd', cmd)
+    })
+  }).catch(e => {
+    if (e && e.code === 'ENOENT') return   // not written yet; nothing to report
+    console.error('[papa] read-cmd:', e.message || e)
+  })
+}
+
+let _cmdWatcher = null
+function watchCmd() {
+  // fs.watch is not reliable on every filesystem — network mounts and some
+  // overlays never fire — so a slow poll stays as a backstop. 5 s instead of
+  // 200 ms is a 25x reduction even where the watcher does nothing at all.
+  try {
+    _cmdWatcher = fs.watch(CMD_PATH, { persistent: false }, () => readCmd())
+    _cmdWatcher.on('error', e => {
+      console.error('[papa] cmd watcher failed, falling back to polling:', e.message || e)
+      try { _cmdWatcher.close() } catch (_) {}
+      _cmdWatcher = null
+    })
+  } catch (e) {
+    console.error('[papa] could not watch the command file:', e.message || e)
+  }
+  const backstop = setInterval(readCmd, 5000)
+  backstop.unref?.()
+  readCmd()
 }
 
 function cleanupOldFiles() {
@@ -524,30 +690,18 @@ app.whenReady().then(() => {
   // That is exactly the orphan the user hit. Re-check a few seconds later, by
   // which point any dying predecessor is really gone. Also catches an mpv
   // orphaned by a SIGKILL, which no shutdown handler can ever clean up.
-  reapOrphanedMpv()
-  setTimeout(reapOrphanedMpv, 5000).unref?.()
-  setTimeout(reapOrphanedMpv, 30000).unref?.()
+  // Fire and forget, as before: nothing waits on the reaper.
+  reapOrphanedMpv().catch(e => console.error('[papa] reap failed:', e && e.message))
+  setTimeout(() => reapOrphanedMpv().catch(() => {}), 5000).unref?.()
+  setTimeout(() => reapOrphanedMpv().catch(() => {}), 30000).unref?.()
   const hidden = process.argv.includes('--hidden')
   artworkDir = path.join(USER_DATA, 'artwork')
   fs.mkdirSync(artworkDir, { recursive: true })
   cleanupOldFiles()
 
-  const LOG_DIR = path.join(app.getPath('userData'), 'logs')
-  fs.mkdirSync(LOG_DIR, { recursive: true })
-  function logToFile(level, ...args) {
-    const ts = new Date().toISOString()
-    const msg = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ')
-    const line = `[${ts}] [${level}] ${msg}\n`
-    const today = new Date().toISOString().slice(0, 10)
-    const f = path.join(LOG_DIR, `papa-${today}.log`)
-    try { fs.appendFileSync(f, line) } catch (_) {}
-  }
-  const _origError = console.error
-  console.error = (...args) => { _origError(...args); logToFile('ERROR', ...args) }
-  const _origLog = console.log
-  console.log = (...args) => { _origLog(...args); logToFile('INFO', ...args) }
+  installFileLogging(path.join(app.getPath('userData'), 'logs'))
   try { fs.writeFileSync(CMD_PATH, '') } catch (_) {}
-  setInterval(pollCmd, 200)
+  watchCmd()
   // YT client: session-data cache + cookie-auth restore. Leftover OAuth
   // credentials from the abandoned device-flow must be purged — they 400
   // every YT Music request.
@@ -659,19 +813,27 @@ function pidAlive(pid) {
   try { process.kill(pid, 0); return true } catch (e) { return e.code === 'EPERM' }
 }
 
-function reapOrphanedMpv() {
+// Must stay in step with the name mpv-engine.js generates. That used to be
+// pid-then-counter; it is now pid-then-random-hex, and a reaper matching only
+// digits would silently never reap anything again. test/mpv-socket-name.test.js
+// asserts the two agree.
+const MPV_SOCK_RE = /^papa-mpv-(\d+)-[0-9a-f]+\.sock$/
+
+async function reapOrphanedMpv() {
   if (process.platform === 'win32') return
   const runtimeDir = process.env.XDG_RUNTIME_DIR || os.tmpdir()
   let entries = []
-  try { entries = fs.readdirSync(runtimeDir) } catch (_) { return }
-  const socks = entries.filter(f => /^papa-mpv-\d+-\d+\.sock$/.test(f))
+  try { entries = await fs.promises.readdir(runtimeDir) } catch (_) { return }
+  const socks = entries.filter(f => MPV_SOCK_RE.test(f))
   if (!socks.length) return
 
   let running = ''
-  try { running = require('child_process').execSync('ps -eo pid,args', { encoding: 'utf8' }) } catch (_) {}
+  // `ps` on the main thread is only ~20 ms, but it is 20 ms of the thread that
+  // drives mpv, three times per launch, for no reason.
+  try { running = await run('ps', ['-eo', 'pid,args'], 10000) } catch (_) {}
 
   for (const f of socks) {
-    const owner = Number((f.match(/^papa-mpv-(\d+)-/) || [])[1])
+    const owner = Number((f.match(MPV_SOCK_RE) || [])[1])
     if (!owner || owner === process.pid || pidAlive(owner)) continue   // still someone's
     const full = path.join(runtimeDir, f)
     for (const line of running.split('\n')) {
@@ -680,7 +842,7 @@ function reapOrphanedMpv() {
         if (pid) { try { process.kill(pid, 'SIGKILL') } catch (_) {} }
       }
     }
-    try { fs.unlinkSync(full) } catch (_) {}
+    try { await fs.promises.unlink(full) } catch (_) {}
   }
 }
 
@@ -694,6 +856,8 @@ function shutdownFromSignal() {
   try { player?.stop() } catch (_) {}
   try { stopSlskd() } catch (_) {}
   try { store.set('cleanShutdown', true) } catch (_) {}
+  flushSideStores()
+  flushLogSync()
   try { if (fs.existsSync(NOW_PLAYING_PATH)) fs.unlinkSync(NOW_PLAYING_PATH) } catch (_) {}
   try { globalShortcut.unregisterAll() } catch (_) {}
   try { app.exit(0) } catch (_) {}
@@ -712,6 +876,8 @@ app.on('before-quit', () => {
 app.on('will-quit', () => {
   player?.stop()
   stopSlskd()
+  flushSideStores()
+  flushLogSync()
   try { if (fs.existsSync(NOW_PLAYING_PATH)) fs.unlinkSync(NOW_PLAYING_PATH) } catch (_) {}
   globalShortcut.unregisterAll()
 })
@@ -873,8 +1039,8 @@ function getPlayerSettings() {
   }
 }
 
-function detectMpv() {
-  try { execFileSync('mpv', ['--version'], { stdio: 'ignore' }); return true } catch { return false }
+async function detectMpv() {
+  try { await run('mpv', ['--version'], 5000); return true } catch { return false }
 }
 
 function sendPlayerEvent(type, data) {
@@ -945,7 +1111,7 @@ async function onEngineFailed(d) {
 }
 
 async function initPlayer() {
-  mpvAvailable = detectMpv()
+  mpvAvailable = await detectMpv()
   if (!mpvAvailable) { sendPlayerEvent('mpvMissing'); return }
   player = buildPlayer(getPlayerSettings())
   try {
@@ -1365,21 +1531,21 @@ ipcMain.handle('torrent-remove', async (_, infoHash) => {
 // ── App info ─────────────────────────────────────────────────────────────────
 ipcMain.handle('get-app-info', () => ({
   musicFolders:   store.get('musicFolders', []),
-  recentlyPlayed: store.get('recentlyPlayed', []),
+  recentlyPlayed: sideStores.recentlyPlayed.get() || [],
   volume:         store.get('volume', 0.8),
   wishlist:       store.get('downloadWishlist', []),
 }))
 
 // ── Library cache ────────────────────────────────────────────────────────────
-ipcMain.handle('get-library-cache', () => store.get('libraryCache', null))
-ipcMain.on('save-library-cache', (_, albums) => store.set('libraryCache', albums))
+ipcMain.handle('get-library-cache', () => sideStores.libraryCache.get())
+ipcMain.on('save-library-cache', (_, albums) => sideStores.libraryCache.set(albums))
 
 // ── Playback state persistence ───────────────────────────────────────────────
-ipcMain.handle('get-playback-state', () => store.get('playbackState', null))
-ipcMain.on('save-playback-state', (_, s) => store.set('playbackState', s))
+ipcMain.handle('get-playback-state', () => sideStores.playbackState.get())
+ipcMain.on('save-playback-state', (_, s) => sideStores.playbackState.set(s))
 
-ipcMain.handle('get-session-state', () => store.get('sessionState', null))
-ipcMain.on('save-session-state', (_, s) => store.set('sessionState', s))
+ipcMain.handle('get-session-state', () => sideStores.sessionState.get())
+ipcMain.on('save-session-state', (_, s) => sideStores.sessionState.set(s))
 
 // ── Liked albums ─────────────────────────────────────────────────────────────
 ipcMain.handle('get-liked', () => store.get('likedAlbums', []))
@@ -1550,24 +1716,33 @@ function parseCueSheet(cuePath) {
 // gain.
 const PROBE_EXT = /\.(m4a|mp4|mka|mkv|ec3|eac3|ac3|m4b)$/i
 
+const NO_PROBE = { codec: null, channels: 0, sampleRate: 0, atmos: false }
+
+// execFileSync here blocked the main thread once per probed file, inside scan
+// loops — and the whole point of the process it blocks is pumping mpv's IPC.
+// parseTrackFile is already async, so this costs nothing to await.
 function ffprobeAudio(filePath) {
-  try {
-    const out = require('child_process').execFileSync('ffprobe', [
+  return new Promise(resolve => {
+    execFile('ffprobe', [
       '-v', 'error', '-select_streams', 'a:0',
       '-show_entries', 'stream=codec_name,channels,sample_rate,profile',
       '-of', 'json', filePath
-    ], { encoding: 'utf8', timeout: 10000, maxBuffer: 1 << 20 })
-    const st = (JSON.parse(out).streams || [])[0] || {}
-    return {
-      codec: st.codec_name || null,
-      channels: Number(st.channels) || 0,
-      sampleRate: Number(st.sample_rate) || 0,
-      // Both E-AC-3 JOC and TrueHD Atmos announce it in the profile string.
-      atmos: /atmos/i.test(st.profile || '')
-    }
-  } catch {
-    return { codec: null, channels: 0, sampleRate: 0, atmos: false }
-  }
+    ], { encoding: 'utf8', timeout: 10000, maxBuffer: 1 << 20 }, (err, stdout) => {
+      if (err) { resolve({ ...NO_PROBE }); return }
+      try {
+        const st = (JSON.parse(stdout).streams || [])[0] || {}
+        resolve({
+          codec: st.codec_name || null,
+          channels: Number(st.channels) || 0,
+          sampleRate: Number(st.sample_rate) || 0,
+          // Both E-AC-3 JOC and TrueHD Atmos announce it in the profile string.
+          atmos: /atmos/i.test(st.profile || ''),
+        })
+      } catch (_) {
+        resolve({ ...NO_PROBE })
+      }
+    })
+  })
 }
 
 async function parseTrackFile(filePath, st) {
@@ -1587,8 +1762,8 @@ async function parseTrackFile(filePath, st) {
     if (!fs.existsSync(artPath)) fs.writeFileSync(artPath, pic.data)
   }
   const probe = PROBE_EXT.test(filePath)
-    ? ffprobeAudio(filePath)
-    : { codec: null, channels: 0, sampleRate: 0, atmos: false }
+    ? await ffprobeAudio(filePath)
+    : { ...NO_PROBE }
   const codec = f.codec || probe.codec || null
   return {
     id: crypto.createHash('md5').update(filePath).digest('hex'),
@@ -1631,7 +1806,7 @@ let _scanRunning = false
 async function performScan(onProgress) {
   const folders = store.get('musicFolders', [])
   if (!folders.length) return { albums: [] }
-  if (_scanRunning) return { albums: store.get('libraryCache', []) || [], busy: true }
+  if (_scanRunning) return { albums: sideStores.libraryCache.get() || [], busy: true }
   _scanRunning = true
   try {
     const found = { audio: [], cues: [] }
@@ -1701,7 +1876,7 @@ async function performScan(onProgress) {
 
     writeJsonAtomic(TRACK_CACHE_PATH(), newCache)
     const albums = buildAlbums(tracks)
-    store.set('libraryCache', albums)
+    sideStores.libraryCache.set(albums)
     onProgress?.({ done: total, total, parsed, phase: 'done', albums: albums.length })
     return { albums }
   } catch (e) {
@@ -1824,7 +1999,7 @@ ipcMain.handle('library-prune-state', (_, { removed, renamed }) => {
     playHistory:   store.get('playHistory', []),
     playlists:     store.get('playlists', []),
     savedQueues:   store.get('savedQueues', []),
-    playbackState: store.get('playbackState', null),
+    playbackState: sideStores.playbackState.get(),
   }
   const { next, summary } = libPrune.pruneAll(snapshot, map)
   if (!summary.touched && !summary.renamed) return { ok: true, summary, snapshot: null }
@@ -1834,8 +2009,8 @@ ipcMain.handle('library-prune-state', (_, { removed, renamed }) => {
   store.set('playHistory',   next.playHistory)
   store.set('playlists',     next.playlists)
   store.set('savedQueues',   next.savedQueues)
-  if (next.playbackState) store.set('playbackState', next.playbackState)
-  else store.delete('playbackState')
+  if (next.playbackState) sideStores.playbackState.set(next.playbackState)
+  else sideStores.playbackState.set(null)
 
   // The pre-prune snapshot IS the undo. Handed back so the renderer can offer
   // it without main having to hold per-operation state.
@@ -1849,7 +2024,7 @@ ipcMain.handle('library-restore-state', (_, { snapshot }) => {
   if (snapshot.playHistory)   store.set('playHistory', snapshot.playHistory)
   if (snapshot.playlists)     store.set('playlists', snapshot.playlists)
   if (snapshot.savedQueues)   store.set('savedQueues', snapshot.savedQueues)
-  if (snapshot.playbackState) store.set('playbackState', snapshot.playbackState)
+  if (snapshot.playbackState) sideStores.playbackState.set(snapshot.playbackState)
   return { ok: true }
 })
 
@@ -1923,24 +2098,53 @@ function trashRootsAll() {
   return roots
 }
 
-function dirSize(target) {
+// Walking /mnt/data/MUSIC with readdirSync/statSync and no yielding froze the
+// one process that also pumps mpv's IPC, the window and every other handler —
+// from four separate call sites, one of them a pre-check before a move.
+//
+// Same numbers, same symlink behaviour (stat follows, and only real directories
+// are descended into, so a symlinked directory cannot make a loop). What changed
+// is that it yields, and that the result is cached briefly: a storage report
+// asks for every music root, the artwork directory and every trash root at once.
+const DIR_SIZE_TTL_MS = 15000
+const DIR_SIZE_YIELD_EVERY = 300
+const _dirSizeCache = new Map()
+
+async function dirSizeAsync(target, opts = {}) {
+  const key = path.resolve(String(target))
+  const useCache = opts.useCache !== false
+  if (useCache) {
+    const hit = _dirSizeCache.get(key)
+    if (hit && Date.now() - hit.at < DIR_SIZE_TTL_MS) return hit.bytes
+  }
   let total = 0
-  const walk = (d) => {
+  let seen = 0
+  let st
+  try { st = await fs.promises.stat(key) } catch (_) { return 0 }
+  if (!st.isDirectory()) {
+    _dirSizeCache.set(key, { bytes: st.size, at: Date.now() })
+    return st.size
+  }
+  const stack = [key]
+  while (stack.length) {
+    const d = stack.pop()
     let names
-    try { names = fs.readdirSync(d, { withFileTypes: true }) } catch (_) { return }
+    try { names = await fs.promises.readdir(d, { withFileTypes: true }) } catch (_) { continue }
     for (const n of names) {
       const full = path.join(d, n.name)
-      if (n.isDirectory()) { walk(full); continue }
-      try { total += fs.statSync(full).size } catch (_) {}
+      if (n.isDirectory()) { stack.push(full); continue }
+      try { total += (await fs.promises.stat(full)).size } catch (_) {}
+      // Let the event loop breathe. Without this a large library still blocks
+      // playback, just via promises instead of sync calls.
+      if (++seen % DIR_SIZE_YIELD_EVERY === 0) await new Promise(r => setImmediate(r))
     }
   }
-  try {
-    const st = fs.statSync(target)
-    if (st.isDirectory()) walk(target)
-    else total = st.size
-  } catch (_) {}
+  _dirSizeCache.set(key, { bytes: total, at: Date.now() })
   return total
 }
+
+// The cache must not outlive a change the user just made.
+function invalidateDirSizeCache() { _dirSizeCache.clear() }
 
 const libHealth = require('./src/library-health')
 
@@ -2028,10 +2232,10 @@ ipcMain.handle('library-storage-report', async () => {
   const roots = store.get('musicFolders', []) || []
   const out = { roots: [], artworkBytes: 0, trashBytes: 0, free: null, total: null }
   for (const r of roots) {
-    out.roots.push({ path: r, bytes: dirSize(r) })
+    out.roots.push({ path: r, bytes: await dirSizeAsync(r) })
   }
-  out.artworkBytes = dirSize(artworkDir)
-  for (const t of trashRootsAll()) out.trashBytes += dirSize(path.join(t, 'files'))
+  out.artworkBytes = await dirSizeAsync(artworkDir)
+  for (const t of trashRootsAll()) out.trashBytes += await dirSizeAsync(path.join(t, 'files'))
   try {
     const st = fs.statfsSync(roots[0] || app.getPath('home'))
     out.free = st.bavail * st.bsize
@@ -2051,7 +2255,7 @@ function freeSpaceAt(target) {
 
 ipcMain.handle('library-free-space', (_, { at }) => ({ free: freeSpaceAt(at || app.getPath('home')) }))
 
-ipcMain.handle('library-trash-list', () => {
+ipcMain.handle('library-trash-list', async () => {
   const roots = trashRootsAll()
   const items = []
   let totalBytes = 0
@@ -2074,7 +2278,7 @@ ipcMain.handle('library-trash-list', () => {
         }
         if (md) deletedAt = md[1].trim()
       } catch (_) {}
-      const bytes = dirSize(payload)
+      const bytes = await dirSizeAsync(payload)
       totalBytes += bytes
       let isDir = false
       try { isDir = fs.statSync(payload).isDirectory() } catch (_) {}
@@ -2115,9 +2319,10 @@ ipcMain.handle('library-empty-trash', async (_, { names, payloads }) => {
       if (wanted) { if (wanted.indexOf(payload) === -1) continue }
       else if (all && all.indexOf(name) === -1) continue
       if (!inTrash(payload)) { results.push({ name, ok: false, error: 'Refused — not inside a trash folder' }); continue }
-      const bytes = dirSize(payload)
+      const bytes = await dirSizeAsync(payload)
       try {
         fs.rmSync(payload, { recursive: true, force: true })
+        invalidateDirSizeCache()
         try { fs.rmSync(path.join(infoDir, name + '.trashinfo'), { force: true }) } catch (_) {}
         freed += bytes
         results.push({ name, ok: true, bytes })
@@ -2181,7 +2386,7 @@ ipcMain.handle('library-move-path', async (_, { from, to }) => {
   const insideRoot = roots.some(r => dest === r || dest.startsWith(r + path.sep))
   if (!insideRoot) return { ok: false, error: 'Destination is outside your music folders' }
   if (fs.existsSync(dest)) return { ok: false, error: 'Something already exists at that name' }
-  const needed = dirSize(path.resolve(from))
+  const needed = await dirSizeAsync(path.resolve(from), { useCache: false })
   const free = freeSpaceAt(dest)
   if (free != null && free < needed + 1e9) {
     return { ok: false, error: 'Not enough free space at the destination (' +
@@ -2276,14 +2481,16 @@ ipcMain.handle('library-pick-artwork', async () => {
   return { ok: true, path: r.filePaths[0] }
 })
 
-function imageDimensions(file) {
+async function imageDimensions(file) {
   // ffprobe is already a hard dependency here and reads every format we accept.
+  // Not in a scan loop like item 49's, but still up to 10 s of blocked main
+  // thread on the process that drives mpv, and the caller is already async.
   try {
-    const out = execFileSync('ffprobe', [
+    const out = (await run('ffprobe', [
       '-v', 'error', '-select_streams', 'v:0',
       '-show_entries', 'stream=width,height,codec_name',
       '-of', 'default=noprint_wrappers=1:nokey=1', file,
-    ], { timeout: 10000 }).toString().trim().split('\n')
+    ], 10000)).trim().split('\n')
     return { codec: out[0] || null, width: parseInt(out[1], 10) || 0, height: parseInt(out[2], 10) || 0 }
   } catch (_) { return null }
 }
@@ -2292,7 +2499,7 @@ ipcMain.handle('library-set-artwork', async (_, { albumId, sourcePath, embed, fi
   if (!albumId) return { ok: false, error: 'No album given' }
   if (!sourcePath || !fs.existsSync(sourcePath)) return { ok: false, error: 'That image is gone' }
 
-  const info = imageDimensions(sourcePath)
+  const info = await imageDimensions(sourcePath)
   if (!info || !info.width) return { ok: false, error: 'That file is not a readable image' }
 
   const dest = path.join(artworkDir, `${albumId}.jpg`)
@@ -2358,12 +2565,12 @@ ipcMain.handle('library-migrate-album-id', (_, { oldKey, newKey }) => {
   if (liked.indexOf(oldId) !== -1) {
     store.set('likedAlbums', liked.map(x => (x === oldId ? newId : x)).filter((x, i, a) => a.indexOf(x) === i))
   }
-  const recent = store.get('recentlyPlayed', [])
+  const recent = sideStores.recentlyPlayed.get() || []
   if (recent.indexOf(oldId) !== -1) {
-    store.set('recentlyPlayed', recent.map(x => (x === oldId ? newId : x)).filter((x, i, a) => a.indexOf(x) === i))
+    sideStores.recentlyPlayed.set(recent.map(x => (x === oldId ? newId : x)).filter((x, i, a) => a.indexOf(x) === i))
   }
-  const session = store.get('sessionState', null)
-  if (session && session.navId === oldId) store.set('sessionState', { ...session, navId: newId })
+  const session = sideStores.sessionState.get()
+  if (session && session.navId === oldId) sideStores.sessionState.set({ ...session, navId: newId })
 
   // The cached cover is named by album id.
   for (const ext of ['jpg', 'png']) {
@@ -2539,8 +2746,11 @@ ipcMain.on('update-library-ext',  (_, albums) => writeLibraryExt(albums))
 
 // ── Misc state ───────────────────────────────────────────────────────────────
 ipcMain.on('save-recently-played', (_, id) => {
-  let r = store.get('recentlyPlayed', []).filter(x => x !== id)
-  r.unshift(id); store.set('recentlyPlayed', r.slice(0, 20))
+  sideStores.recentlyPlayed.update(prev => {
+    const r = (Array.isArray(prev) ? prev : []).filter(x => x !== id)
+    r.unshift(id)
+    return r.slice(0, 20)
+  })
 })
 ipcMain.on('save-volume', (_, v) => store.set('volume', v))
 
@@ -3395,7 +3605,7 @@ function dlDiscoveryEnabled() {
 // every request sat safely in slskd and a restart lost nothing.
 function dlPersist() {
   try {
-    store.set('slskSchedulerState', {
+    sideStores.slskSchedulerState.set({
       pending: dlState.pending.map(e => ({
         key: e.key, filename: e.filename, size: e.size, sources: e.sources,
         tried: e.tried, triedAt: e.triedAt, attempts: e.attempts, addedAt: e.addedAt,
@@ -3419,7 +3629,7 @@ function dlPersist() {
 }
 
 function dlRestore() {
-  const saved = store.get('slskSchedulerState', null)
+  const saved = sideStores.slskSchedulerState.get()
   if (!saved) return 0
   const abandoned = new Set(saved.abandoned || [])
   const items = (saved.pending || []).concat(saved.inflight || [])

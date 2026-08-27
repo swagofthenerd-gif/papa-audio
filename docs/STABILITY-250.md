@@ -441,19 +441,23 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 ### 36. library-storage-report walks the whole music tree synchronously on the main thread
 
-`OPEN` `Critical`
+`DONE` `Critical`
 
 **Symptom.** main.js:1806-1823 dirSize() is recursive readdirSync/statSync with no yielding, called from an async handler at 1906-1914 for every music root, the artwork dir and every trash root. On /mnt/data/MUSIC that freezes the process that also pumps mpv's IPC and every other handler.
 
 **Solution.** Rewrite with fs.promises and a concurrency limit, or move it to a worker thread. Cache the result with a short TTL.
 
+**Done.** Rewritten as `dirSizeAsync` on fs.promises, with an explicit setImmediate yield every 300 files — without the yield it still blocks playback, just via promises instead of sync calls. Same numbers and same symlink behaviour as before (stat follows; only real directories are descended into, so a symlinked directory still cannot make a loop). Results are cached for 15 s, which is what makes the storage report cheap: it asks for every music root, the artwork directory and every trash root in one go. The cache is cleared when the trash is emptied.
+
 ### 37. The same synchronous walk runs from three more handlers
 
-`OPEN` `Critical`
+`DONE` `Critical`
 
 **Symptom.** main.js:1957, 1998, 2064 each call dirSize() on demand, including as a pre-check before a move.
 
 **Solution.** One shared async implementation for all four call sites.
+
+**Done.** All four call sites use the one async implementation. The pre-check before a move passes `useCache: false`, because a number up to 15 s stale is not good enough to decide whether a move will fit. `library-trash-list` became an async handler, which is transparent to the renderer.
 
 ### 38. A failed slskd spawn permanently disables restart for the session
 
@@ -473,51 +477,63 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 ### 40. The whole 2.4 MB store is rewritten synchronously every 4 seconds during any download
 
-`OPEN` `Critical`
+`DONE` `Critical`
 
 **Symptom.** dlPersist() (main.js:3276) is called from dlTick on a 4000 ms interval (main.js:3495). electron-store serialises and fsyncs the entire config, not the one key. The identical bug was fixed for window drag last round and not applied here.
 
 **Solution.** Debounce dlPersist the same way saveWinState was, and split the store so the scheduler state is its own small file.
 
+**Done.** The scheduler state is its own file (`download-scheduler.json`) with a 1 s coalescing window, so dlTick's 4 s call no longer touches the shared config at all. See item 42 for why the debounce has a ceiling.
+
 ### 41. save-library-cache rewrites 1.37 MB synchronously on every library update
 
-`OPEN` `High`
+`DONE` `High`
 
 **Symptom.** main.js:1268. Triggered by scans, watcher events and mutations.
 
 **Solution.** Own file, written asynchronously, with the write coalesced.
 
+**Done.** `library-cache.json`, written asynchronously with an 800 ms coalescing window.
+
 ### 42. save-playback-state rewrites the full store on every position save
 
-`OPEN` `High`
+`DONE` `High`
 
 **Symptom.** main.js:1272, called repeatedly during playback. Multi-megabyte writes on the thread that drives mpv is the worst possible place for them.
 
 **Solution.** Own tiny file; this one is written most often and is the smallest payload.
 
+**Done.** `playback-state.json` with a 300 ms window. This one is written most often and is the smallest payload, so it was the worst case in the old arrangement: a 200-byte position costing a 2.5 MB synchronous rewrite on the thread that drives mpv. The debounce also has a 4 s ceiling — a debounce with no ceiling can be postponed indefinitely by a steady stream of writes, which is the same defect this document records for the library watcher in item 51.
+
 ### 43. save-recently-played and save-session-state do the same
 
-`OPEN` `High`
+`DONE` `High`
 
 **Symptom.** main.js:2423 and 1275. Capped lists, uncapped write cost.
 
 **Solution.** Same split.
 
+**Done.** `session-state.json` and `recently-played.json`. save-recently-played now uses the store's `update()`, so the read-modify-write cannot race the file.
+
 ### 44. pollCmd does a synchronous read and write every 200 ms for the life of the process
 
-`OPEN` `High`
+`DONE` `High`
 
 **Symptom.** main.js:471-478, wired at 549, never cleared. Five main-thread filesystem operations per second, forever, competing with playback.
 
 **Solution.** Replace with fs.watch on the command file.
 
+**Done.** `fs.watch` on the command file, plus a 5 s backstop poll because fs.watch never fires on some network mounts and overlay filesystems. Even where the watcher does nothing that is a 25x reduction, and the read and write are both async now. Five main-thread filesystem operations per second, forever, to carry a message that arrives a few times a day.
+
 ### 45. Every console line is a blocking appendFileSync
 
-`OPEN` `High`
+`DONE` `High`
 
 **Symptom.** main.js:534-546 reassigns console.log and console.error globally to a synchronous append. A burst — a failing loop, repeated 429s, a bad scan — becomes a burst of blocking disk I/O on the main thread.
 
 **Solution.** Buffer and flush on a timer, or use a write stream.
+
+**Done.** Lines are buffered and flushed once a second with `fs.promises.appendFile`. The buffer is capped at 2000 lines and says how many it dropped if it ever fills, so a burst degrades honestly instead of silently. The only synchronous append left is `flushLogSync`, on the way out, where the process is exiting and there is no later chance to write.
 
 ### 46. slskd 429 is treated as a health failure, so throttling restarts the daemon
 
@@ -537,19 +553,23 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 ### 48. execSync shells out for unzip and chmod with JSON.stringify quoting and no timeout
 
-`OPEN` `High`
+`DONE` `High`
 
 **Symptom.** main.js:449-451. JSON.stringify escapes for JavaScript, not for sh — $( ), backticks, ; and | pass through. And execSync cannot be interrupted, so an unzip that prompts blocks the main thread forever.
 
 **Solution.** execFileSync with an argv array and an explicit timeout. The file already uses execFileSync correctly at 876, 1448 and 2162.
 
+**Done.** `execFile` through a shared `run()` helper that always passes a timeout and passes arguments as arguments, so there is no shell to quote for and `JSON.stringify` is no longer standing in for quoting. chmod is now `fs.promises.chmod`, which never needed a subprocess at all. The rejection names the command and says whether it timed out.
+
 ### 49. ffprobe is invoked synchronously per file inside scan loops
 
-`OPEN` `High`
+`DONE` `High`
 
 **Symptom.** main.js:1448-1460 and 2162-2180 use execFileSync, blocking the main thread once per file across a whole scan.
 
 **Solution.** Async spawn with a bounded worker pool.
+
+**Done.** `ffprobeAudio` is a promise around execFile; `parseTrackFile` was already async, so awaiting it costs nothing. `imageDimensions` went the same way — not in a scan loop, but still up to 10 s of blocked main thread per user action.
 
 ### 50. The chokidar watcher opens a descriptor per directory 30 levels deep
 
@@ -585,19 +605,23 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 ### 54. The console log patch is installed after early startup logging
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** main.js:534-546 runs inside whenReady, after module-load errors and after the unhandledRejection and uncaughtException handlers at 111-115 — which themselves log. Under --hidden that stdout goes nowhere, so exactly the failures that explain 'it never opened' leave no trace.
 
 **Solution.** Install the file logger first, before anything else can log.
 
+**Done.** The console patch is installed at module load rather than inside app.whenReady, and a test asserts the ordering. Anything logged before the log directory is known is buffered and flushed as soon as it is.
+
 ### 55. Log files are pruned by age but have no size cap
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** main.js:481-491 deletes after 30 days. A runaway error loop can grow one day's file without limit.
 
 **Solution.** Rotate at a size threshold as well.
+
+**Done.** An 8 MB cap; past it the file is rotated to `.log.1`. Pruning by age alone let one bad day fill the disk.
 
 ### 56. startSlskd failures at startup are discarded entirely
 
@@ -2132,7 +2156,7 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 **Solution.** Safe to purge in a dedicated pass. Left alone deliberately: zero user-visible benefit, non-zero regression risk.
 
 
-## Found during Tier 1  (4)
+## Found during Tier 1  (5)
 
 Numbered from 251 so the existing items and section counts stay stable. These were
 found while instrumenting the engine, not by re-reading the catalogue.
@@ -2173,5 +2197,16 @@ found while instrumenting the engine, not by re-reading the catalogue.
 **Symptom.** `build.files` lists `main.js`, `preload.js`, `src/**`, `assets/**` and `node_modules/**`. main.js requires eight local top-level modules — `eq.js`, `lyrics.js`, `mpv-crossfade.js`, `mpv-engine.js`, `volume-map.js`, `youtube-download.js`, `youtube-search.js` and now `engine-diagnostics.js` — and none of them is listed. Specifying `files` replaces electron-builder's default `**/*`, so a packaged build should fail at the first `require` with MODULE_NOT_FOUND, before a window ever opens. This has never been noticed because `launch.sh` runs electron directly against the source tree; the RPM path (`dist/linux-unpacked`) is the one that would break.
 
 **Solution.** Add the eight modules to `build.files`, or drop the `files` array and rely on the default plus negations. Not done here: it cannot be tested without running electron-builder, and an untested change to the build config is a worse trade than a recorded finding. Verify by building once and running the packaged binary rather than `launch.sh`.
+
+
+### 255. The orphan reaper stopped matching the socket names the engine generates
+
+`DONE` `Critical`
+
+**Symptom.** Introduced by the fix for item 22 in this same round, and caught by writing a test for it rather than by reading. The socket name changed from `papa-mpv-<pid>-<counter>.sock` to `papa-mpv-<pid>-<random hex>.sock`, but `reapOrphanedMpv` matched `/^papa-mpv-\d+-\d+\.sock$/`. Hex is not digits, so the reaper would have silently matched nothing, forever — and the only symptom is an mpv that keeps playing after the window is gone, which is precisely the orphan bug the reaper exists to prevent.
+
+**Solution.** One shared `MPV_SOCK_RE` in main.js that accepts both the new hex form and the old counter form (a socket left behind by a build from before the rename still has to be recognised, or upgrading strands an orphan permanently). `test/mpv-socket-name.test.js` has the engine generate real names and asserts the reaper's pattern matches them, so the two cannot drift again.
+
+**Worth noting as a process point.** Nothing linked those two files but a shared naming convention, and nothing checked it. The same shape as item 3, where the engine emitted an event, main forwarded it, and the shim dropped it — and the same fix: a test that asserts the coupling across files, not within one.
 
 ---
