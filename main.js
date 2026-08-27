@@ -223,6 +223,11 @@ function _torrentAdd(uri) {
 // Installed from module scope rather than inside app.whenReady, because
 // everything logged during early startup used to land before the patch existed
 // and was therefore never written anywhere.
+// Levels, so verbose diagnostics can exist in the code without shipping enabled
+// and the log can be filtered. PAPA_LOG_LEVEL overrides at launch.
+const LOG_LEVELS = { debug: 10, info: 20, warn: 30, error: 40 }
+const LOG_LEVEL_NAME = (process.env.PAPA_LOG_LEVEL || 'info').toLowerCase()
+const LOG_MIN_LEVEL = LOG_LEVELS[LOG_LEVEL_NAME] || LOG_LEVELS.info
 const LOG_FLUSH_MS = 1000
 const LOG_MAX_BUFFER = 2000          // lines; past this the oldest are dropped
 const LOG_MAX_BYTES = 8 * 1024 * 1024
@@ -260,6 +265,7 @@ function _flushLog() {
 
 function _queueLog(level, args) {
   if (!_logDir) return
+  if ((LOG_LEVELS[level.toLowerCase()] || LOG_LEVELS.info) < LOG_MIN_LEVEL) return
   let msg
   try {
     msg = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ')
@@ -285,6 +291,14 @@ const _origError = console.error
 console.error = (...args) => { _origError(...args); _queueLog('ERROR', args) }
 const _origLog = console.log
 console.log = (...args) => { _origLog(...args); _queueLog('INFO', args) }
+const _origWarn = console.warn
+console.warn = (...args) => { _origWarn(...args); _queueLog('WARN', args) }
+// Off by default: this is the level that exists so diagnostics can be written
+// now and switched on later, with PAPA_LOG_LEVEL=debug.
+console.debug = (...args) => {
+  if (LOG_MIN_LEVEL <= LOG_LEVELS.debug) _origLog(...args)
+  _queueLog('DEBUG', args)
+}
 
 // Nothing buffered may be lost on the way out. Sync here for the same reason
 // the side stores are: the process is exiting.
@@ -470,6 +484,15 @@ async function slskdAcquireToken() {
   } catch (_) { return false }
 }
 
+// A 429 is slskd asking us to slow down. It used to throw like any other
+// non-2xx, and the 60 s health monitor counted that as slskd being unhealthy —
+// so being rate-limited got the daemon RESTARTED, which loses every in-flight
+// transfer and then hammers it again from a cold start.
+const SLSKD_THROTTLE_BACKOFF_MS = [500, 1500, 4000]
+let _slskdThrottledUntil = 0
+
+function slskdIsThrottled() { return Date.now() < _slskdThrottledUntil }
+
 async function slskdFetch(method, endpoint, body) {
   if (!slskdToken || Date.now() > slskdTokenExpiry) await slskdAcquireToken()
   const headers = { 'Content-Type': 'application/json' }
@@ -483,7 +506,31 @@ async function slskdFetch(method, endpoint, body) {
     const retryOpts = { ...opts, signal: AbortSignal.timeout(15000) }
     res = await fetch(`${SLSKD_BASE}${endpoint}`, retryOpts)
   }
-  if (!res.ok && res.status !== 204) throw new Error(`slskd ${res.status}`)
+  // Back off and retry rather than failing. Retry-After is honoured when slskd
+  // sends one, since it knows better than a fixed schedule does.
+  for (let attempt = 0; res.status === 429 && attempt < SLSKD_THROTTLE_BACKOFF_MS.length; attempt++) {
+    const hinted = Number(res.headers.get('retry-after')) * 1000
+    const wait = Number.isFinite(hinted) && hinted > 0 ? Math.min(hinted, 10000) : SLSKD_THROTTLE_BACKOFF_MS[attempt]
+    _slskdThrottledUntil = Date.now() + wait
+    console.log(`[papa] slskd throttled us on ${method} ${endpoint}; waiting ${wait}ms (attempt ${attempt + 1})`)
+    await new Promise(r => setTimeout(r, wait))
+    res = await fetch(`${SLSKD_BASE}${endpoint}`, { ...opts, signal: AbortSignal.timeout(15000) })
+  }
+  if (res.status === 429) {
+    _slskdThrottledUntil = Date.now() + 15000
+    const err = new Error(`slskd is rate-limiting requests (429) on ${method} ${endpoint}`)
+    // Tagged so the health monitor can tell throttling from the daemon being
+    // unhealthy, which are opposite problems: one needs patience, the other a
+    // restart.
+    err.code = 'SLSKD_THROTTLED'
+    err.throttled = true
+    throw err
+  }
+  if (!res.ok && res.status !== 204) {
+    const err = new Error(`slskd ${res.status} on ${method} ${endpoint}`)
+    err.status = res.status
+    throw err
+  }
   if (res.status === 204 || res.headers.get('content-length') === '0') return null
   const text = await res.text()
   return text ? JSON.parse(text) : null
@@ -556,7 +603,21 @@ async function startSlskd() {
     writeSlskdConfig({ ...cfg, downloadDir: musicFolders[0] || path.join(app.getPath('home'), 'Music') })
   }
   slskdProc = spawn(SLSKD_BIN, ['--config', SLSKD_CFG, '--no-logo'], { stdio: 'ignore' })
-  slskdProc.on('exit', () => { slskdProc = null; slskdReady = false; slskdToken = null })
+  slskdProc.on('exit', (code, signal) => {
+    if (code) console.error(`[papa] slskd exited with code ${code}${signal ? ' signal ' + signal : ''}`)
+    slskdProc = null; slskdReady = false; slskdToken = null
+  })
+  // Without this, ENOENT fires 'error' and NOT 'exit', so slskdProc stayed
+  // truthy forever and the `if (slskdProc) return` guard above blocked every
+  // future restart — while the 60 s health monitor retried against a guard that
+  // could never open again.
+  slskdProc.on('error', (e) => {
+    console.error('[papa] slskd could not be started:', String(e && e.message || e))
+    slskdProc = null; slskdReady = false; slskdToken = null
+    mainWindow?.webContents.send('slskd-status-change', {
+      connected: false, restarting: false, error: String(e && e.message || e),
+    })
+  })
   await waitForSlskd()
   await slskdAcquireToken()
   await purgeStaleSearches()
@@ -607,6 +668,12 @@ function run(cmd, args, timeout) {
     })
   })
 }
+
+// Renderer crash-loop protection. Reloading into the same crash is worse than
+// stopping, because each round looks to the user like the app is trying.
+const RENDERER_CRASH_WINDOW_MS = 5 * 60 * 1000
+const MAX_RENDERER_CRASHES = 3
+let _rendererCrashes = []
 
 let mainWindow  = null
 let browserView = null
@@ -753,14 +820,27 @@ app.whenReady().then(() => {
   initPlayer()
   createTray()
   setupLibraryWatcher()
-  if (fs.existsSync(SLSKD_BIN)) startSlskd().catch(() => {})
+  // Item 56: a startup failure used to be discarded entirely, so a daemon that
+  // never came up looked identical to one that was never installed.
+  if (fs.existsSync(SLSKD_BIN)) {
+    startSlskd().catch(e => console.error('[papa] slskd failed to start at launch:', String(e && e.message || e)))
+  }
   // Auto-restart monitoring: ping slskd every 60s; restart after 3 consecutive failures
   setInterval(async () => {
     try {
       await slskdFetch('GET', '/session')
       _slskdFailures = 0
       mainWindow?.webContents.send('slskd-status-change', { connected: true, restarting: false })
-    } catch {
+    } catch (e) {
+      // Being rate-limited is the opposite problem to being unhealthy: one needs
+      // patience, the other a restart. Counting a 429 as a failure meant that
+      // throttling got the daemon restarted, losing every in-flight transfer and
+      // then hammering it again from a cold start.
+      if (e && e.code === 'SLSKD_THROTTLED') {
+        console.log('[papa] slskd health check skipped: it is rate-limiting us, which is not a fault')
+        mainWindow?.webContents.send('slskd-status-change', { connected: true, restarting: false, throttled: true })
+        return
+      }
       _slskdFailures++
       if (_slskdFailures >= 3) {
         mainWindow?.webContents.send('slskd-status-change', { connected: false, restarting: true })
@@ -1000,18 +1080,36 @@ function createWindow(hidden = false) {
   // blank frameless window, no controls and no explanation. Say what happened
   // and offer the reload rather than requiring a force-quit.
   mainWindow.webContents.on('render-process-gone', (_e, details) => {
-    console.error('[papa] renderer gone:', details && details.reason)
-    if (details && details.reason === 'clean-exit') return
+    const reason = (details && details.reason) || 'unknown'
+    console.error('[papa] renderer gone:', reason)
+    if (reason === 'clean-exit') return
     const win = mainWindow
+    const now = Date.now()
+    _rendererCrashes = _rendererCrashes.filter(t => now - t < RENDERER_CRASH_WINDOW_MS)
+    _rendererCrashes.push(now)
+    // A page that crashes ON LOAD can be reloaded straight back into the same
+    // crash, forever, one dialog at a time. Past the third in five minutes,
+    // stop offering the reload as the default and say what is actually wrong.
+    const looping = _rendererCrashes.length > MAX_RENDERER_CRASHES
+    if (looping) {
+      console.error(`[papa] renderer has crashed ${_rendererCrashes.length} times in ` +
+        `${Math.round(RENDERER_CRASH_WINDOW_MS / 60000)} minutes; not offering a reload loop`)
+    }
     dialog.showMessageBox(win, {
       type: 'error',
       title: 'Papa Audio stopped responding',
-      message: 'The window crashed (' + ((details && details.reason) || 'unknown') + ').',
-      detail: 'Playback is handled by mpv and may still be running. Reload to get the window back.',
-      buttons: ['Reload', 'Close'],
+      message: looping
+        ? `The window has crashed ${_rendererCrashes.length} times in a few minutes (${reason}).`
+        : 'The window crashed (' + reason + ').',
+      detail: looping
+        ? 'Reloading is putting it straight back into the same crash. Playback is handled by mpv and ' +
+          'may still be running. The daily log in ~/.config/papa-audio/logs has the reason.'
+        : 'Playback is handled by mpv and may still be running. Reload to get the window back.',
+      buttons: looping ? ['Close', 'Reload anyway'] : ['Reload', 'Close'],
       defaultId: 0,
     }).then((r) => {
-      if (r.response === 0 && win && !win.isDestroyed()) win.reload()
+      const wantsReload = looping ? r.response === 1 : r.response === 0
+      if (wantsReload && win && !win.isDestroyed()) win.reload()
       else if (win && !win.isDestroyed()) win.close()
     }).catch(() => {})
   })
@@ -3772,23 +3870,87 @@ function dlClassify(stateStr) {
   return 'failed'
 }
 
+// Every file in the last snapshot, flat. The Map above keys by filename and so
+// keeps one entry per name; purging needs all of them, with their ids.
+let _dlLastSnapshotFiles = []
+
 async function dlSnapshot() {
   const out = new Map()
+  const flat = []
   let data
   try { data = await slskdFetch('GET', '/transfers/downloads') } catch (_) { return null }
   for (const user of data || []) {
     for (const dir of user.directories || []) {
       for (const f of dir.files || []) {
-        out.set(String(f.filename), {
+        const rec = {
           username: user.username,
           id: f.id,
           state: f.state,
           kind: dlClassify(f.state),
-        })
+          filename: String(f.filename),
+          endedAt: f.endedAt || null,
+        }
+        out.set(rec.filename, rec)
+        flat.push(rec)
       }
     }
   }
+  _dlLastSnapshotFiles = flat
   return out
+}
+
+// Measured on the reported install: 1,490 records across 108 users, 1,451 of
+// them already Completed/Succeeded, and GET /transfers/downloads returning
+// 1,020,307 bytes. The renderer fetched that every 6 s and structured-cloned it
+// across the IPC bridge in both directions, then flattened and hashed all 1,490
+// files — with nothing downloading. purgeStaleSearches clears searches and the
+// scheduler purges failures and cancellations; nothing ever purged successes.
+const DL_PURGE_EVERY_MS = 10 * 60 * 1000
+// A cap per pass, because firing 1,451 DELETEs at once is exactly what earns a
+// 429 — and being rate-limited used to get the daemon restarted.
+const DL_PURGE_MAX_PER_PASS = 60
+// Succeeded transfers younger than this are left alone, so a completion the user
+// can still see in the UI does not vanish out from under them.
+const DL_PURGE_MIN_AGE_MS = 60 * 60 * 1000
+let _dlLastPurgeAt = 0
+
+async function dlPurgeSucceeded(now) {
+  if (now - _dlLastPurgeAt < DL_PURGE_EVERY_MS) return 0
+  _dlLastPurgeAt = now
+  const candidates = _dlLastSnapshotFiles.filter(f => {
+    if (f.kind !== 'succeeded') return false
+    // Never purge something the scheduler has not reconciled yet: dlTick treats
+    // a transfer that has disappeared from slskd as ABANDONED, so purging one
+    // early would be indistinguishable from the user cancelling it.
+    const key = dlSched.itemKey(f.filename)
+    if (dlState.inflight[key]) return false
+    // Where slskd tells us when it finished, respect the age floor. Where it
+    // does not, the transfer is reconciled and done, so it is safe to remove.
+    if (f.endedAt) {
+      const ended = Date.parse(f.endedAt)
+      if (Number.isFinite(ended) && now - ended < DL_PURGE_MIN_AGE_MS) return false
+    }
+    return true
+  }).slice(0, DL_PURGE_MAX_PER_PASS)
+
+  if (!candidates.length) return 0
+  let purged = 0
+  for (const f of candidates) {
+    try {
+      await slskdFetch('DELETE',
+        `/transfers/downloads/${encodeURIComponent(f.username)}/${encodeURIComponent(f.id)}?remove=true`)
+      purged++
+    } catch (e) {
+      // Throttling means stop for this pass and come back later, not keep going.
+      if (e && e.code === 'SLSKD_THROTTLED') break
+      console.error('[papa] could not purge a completed transfer:', String(e && e.message || e))
+    }
+  }
+  if (purged) {
+    const left = _dlLastSnapshotFiles.length - purged
+    console.log(`[papa] purged ${purged} completed transfer(s) from slskd; ~${left} records left in the poll payload`)
+  }
+  return purged
 }
 
 // Ask the network who else has this file, so a dead source is not a dead end.
@@ -3916,6 +4078,11 @@ async function dlTick() {
       const alts = await dlFindAlternates(item.filename)
       const key = item.key || dlSched.itemKey(item.filename)
       if (alts.length) dlSched.addSources(dlState, key, alts)
+    }
+
+    // After reconciliation, never before: see the comment on dlPurgeSucceeded.
+    try { await dlPurgeSucceeded(now) } catch (e) {
+      console.error('[papa] transfer purge failed:', String(e && e.message || e))
     }
 
     dlPersist()
@@ -4685,7 +4852,12 @@ ipcMain.handle('slsk-browse-user', async (_, { username }) => {
   }
 })
 
-ipcMain.handle('transcode-file', async (_, { filePath, format, outDir }) => {
+// The body, as a plain function. batch-transcode used to call
+// ipcMain.emit('transcode-file', …), which fires a plain EventEmitter event —
+// but ipcMain.handle registers on Electron's private invoke channel, so nothing
+// listened. emit() returns a boolean, so the batch reported [false, false, …]
+// as its results and ffmpeg never ran once. Both entry points call this now.
+function transcodeFile({ filePath, format, outDir }) {
   return new Promise((resolve) => {
     var args = ['-i', filePath]
     if (format === 'opus') args.push('-c:a', 'libopus', '-b:a', '160k')
@@ -4706,12 +4878,16 @@ ipcMain.handle('transcode-file', async (_, { filePath, format, outDir }) => {
       else resolve({ ok: false, error: stderr.trim() || 'ffmpeg exited ' + code })
     })
   })
-})
+}
+
+ipcMain.handle('transcode-file', (_, args) => transcodeFile(args || {}))
 
 ipcMain.handle('batch-transcode', async (_, { filePaths, format, outDir }) => {
   var results = []
-  for (var fp of filePaths) {
-    results.push(await ipcMain.emit('transcode-file', null, { filePath: fp, format, outDir }))
+  for (var fp of (filePaths || [])) {
+    // Sequential on purpose: ffmpeg is CPU-hungry and this runs alongside
+    // playback. One at a time is slower and does not fight mpv for the machine.
+    results.push(await transcodeFile({ filePath: fp, format, outDir }))
   }
   return results
 })

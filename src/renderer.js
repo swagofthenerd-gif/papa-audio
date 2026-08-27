@@ -67,6 +67,9 @@ const slsk = {
   searched: false,
   results: [],
   lastQuery: '',
+  // Non-zero while a throttle backoff is in progress, so the UI can say the
+  // search is waiting rather than that it found nothing.
+  throttledUntil: 0,
   pendingSearches: 0,
   searchStart: 0,
   filter: 'all',
@@ -96,6 +99,42 @@ function _slskErrText(e) {
   if (/\b429\b/.test(m)) return 'slskd is rate-limiting searches — wait a moment and retry.'
   if (/\b5\d\d\b/.test(m)) return 'slskd hit an internal error (' + m + ').'
   return m
+}
+
+function _slskIsThrottleError(e) {
+  var m = String((e && e.message) || e || '')
+  return /\b429\b/.test(m) || /rate-limit/i.test(m) || /SLSKD_THROTTLED/.test(m)
+}
+
+// One retry per search, not one per variant: six variants all firing again is
+// how the throttle was earned in the first place.
+var _slskThrottleRetry = null
+var _slskThrottleRetriedFor = ''
+const SLSK_THROTTLE_RETRY_MS = 8000
+
+function _slskScheduleThrottleRetry(query) {
+  if (_slskThrottleRetriedFor === query) return   // already had its one retry
+  if (_slskThrottleRetry) return
+  _slskThrottleRetriedFor = query
+  slsk.throttledUntil = Date.now() + SLSK_THROTTLE_RETRY_MS
+  slsk.error = 'slskd is throttling searches — retrying in ' +
+    Math.round(SLSK_THROTTLE_RETRY_MS / 1000) + 's'
+  _slskThrottleRetry = setTimeout(function () {
+    _slskThrottleRetry = null
+    slsk.throttledUntil = 0
+    // Only if the user is still looking at this search.
+    if (slsk.lastQuery !== query || state.currentPage !== 'search') return
+    slsk.error = ''
+    runSlskSearch(query)
+  }, SLSK_THROTTLE_RETRY_MS)
+}
+
+// A new search clears the one-retry latch: the next query deserves its own.
+function _slskResetThrottleRetry() {
+  clearTimeout(_slskThrottleRetry)
+  _slskThrottleRetry = null
+  _slskThrottleRetriedFor = ''
+  slsk.throttledUntil = 0
 }
 
 // The exact array the cards were rendered from. data-gi indexes THIS, so the
@@ -312,10 +351,10 @@ const _BIO_CACHE_CAP = 100
 document.addEventListener('visibilitychange', () => {
   _appVisible = !document.hidden
   if (!_appVisible) {
-    startDownloadsPolling(60000)
+    retuneDownloadsPolling()
     if (_homeClockInterval) { clearInterval(_homeClockInterval); _homeClockInterval = null }
   } else {
-    startDownloadsPolling(state.currentPage === 'downloads' ? 2000 : 20000)
+    retuneDownloadsPolling()
     if (state.currentPage === 'home' && !_homeClockInterval) {
       _drawHomeClock()
       _homeClockInterval = setInterval(_drawHomeClock, 1000)
@@ -594,7 +633,9 @@ async function init() {
     }
   }
   window.api.slskStatus().then(s => { slsk.status = s }).catch(() => {})
-  startDownloadsPolling(6000)
+  // The rate is decided in one place; at startup nothing is known to be active
+  // yet, so this starts slow and the first poll re-tunes it.
+  retuneDownloadsPolling()
 
   if (!state.musicFolders.length) {
     document.getElementById('setup-overlay').style.display = 'flex'
@@ -877,8 +918,8 @@ function navigate(page, navId, opts = {}) {
     _renderFailure(page, err)
   }
 
-  if (page === 'downloads') startDownloadsPolling(2000)
-  else { _dlLastSig = ''; startDownloadsPolling(20000) }
+  if (page !== 'downloads') _dlLastSig = ''
+  retuneDownloadsPolling()
 
   updateNavBtns()
   hideContextMenu()
@@ -2752,7 +2793,13 @@ function renderSearch(query) {
 // Pause every animation while the window is unfocused. See main.js: this
 // machine renders in software, so animation costs a full CPU core.
 if (window.api && window.api.onWindowFocus) {
-  window.api.onWindowFocus(on => document.body.classList.toggle('app-unfocused', !on))
+  window.api.onWindowFocus(on => {
+    document.body.classList.toggle('app-unfocused', !on)
+    // Losing focus with nothing downloading is the clearest case for stopping
+    // the poll altogether.
+    _appVisible = on || !document.hidden
+    retuneDownloadsPolling()
+  })
 }
 document.addEventListener('visibilitychange', () => {
   document.body.classList.toggle('app-unfocused', document.hidden)
@@ -8714,6 +8761,9 @@ function _searchCache_invalidate(query) {
 async function runSlskSearch(query) {
   const myRun = ++_slskRun
   const current = () => _slskRun === myRun
+  // A different query gets its own retry allowance; the same query re-run by the
+  // backoff keeps its latch so it cannot loop.
+  if (slsk.lastQuery !== query) _slskResetThrottleRetry()
   slsk.lastQuery = query
   slsk.error = null
   if (!state.isOnline) {
@@ -8826,6 +8876,11 @@ async function runSlskSearch(query) {
       // indistinguishable from a genuinely empty search: the user was told
       // "Nothing found on the P2P network" and invited to Retry forever.
       slsk.error = _slskErrText(e)
+      // Throttling is not a failed search, it is a search that has not happened
+      // yet. main already backs off internally; by the time it reaches here it
+      // has given up, so the retry belongs at this level — once, per search,
+      // with the wait visible rather than the results just never arriving.
+      if (_slskIsThrottleError(e)) _slskScheduleThrottleRetry(query)
     }).finally(() => {
       if (!current()) return
       slsk.pendingSearches = Math.max(0, slsk.pendingSearches - 1)
@@ -8966,6 +9021,27 @@ function stopDownloadsPolling() {
   if (_dlPollTimer) { clearInterval(_dlPollTimer); _dlPollTimer = null }
 }
 
+// One place that decides the rate. The poll fetches the whole transfer list,
+// structured-clones it across the IPC bridge in both directions, then flattens
+// and hashes it — on the thread that pumps mpv's IPC. It used to run at 6 s for
+// the life of the process regardless of what was on screen or whether anything
+// was downloading, and stopDownloadsPolling() was never called at all.
+const DL_POLL_ON_PAGE_MS = 2000
+const DL_POLL_ACTIVE_MS = 20000
+const DL_POLL_IDLE_MS = 60000
+function _dlHasActive() {
+  return (_dlLastFiles || []).some(f => _dlCategory(f.state) === 'active')
+}
+
+function retuneDownloadsPolling() {
+  // Nobody is looking and nothing is moving: stop entirely. The next transfer
+  // starts from a click or from the scheduler, and both repaint the page, which
+  // brings the poll back through the paths below.
+  if (!_appVisible && !_dlHasActive()) { stopDownloadsPolling(); return }
+  if (state.currentPage === 'downloads') { startDownloadsPolling(DL_POLL_ON_PAGE_MS); return }
+  startDownloadsPolling(_dlHasActive() ? DL_POLL_ACTIVE_MS : DL_POLL_IDLE_MS)
+}
+
 // ── Downloads context menu ───────────────────────────────────────────────────
 // Native Electron context menu — bypasses all DOM event issues
 // items: array of { action, label } or 'sep'; handlers: { [action]: fn }
@@ -9042,6 +9118,9 @@ async function _pollAndRenderDownloadsInner() {
     }
   }
   _dlLastFiles = files
+  // A transfer finishing is exactly when the fast poll stops being worth its
+  // cost, and a new one starting is when it becomes worth it again.
+  retuneDownloadsPolling()
 
   // Detect transitions from active → succeeded and trigger a library sync
   const nowActive = new Set(files.filter(f => _dlCategory(f.state) === 'active').map(f => f.id))

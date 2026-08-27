@@ -461,19 +461,23 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 ### 38. A failed slskd spawn permanently disables restart for the session
 
-`OPEN` `Critical`
+`DONE` `Critical`
 
 **Symptom.** main.js:419 spawns with no 'error' listener. On ENOENT the 'error' event fires instead of 'exit', slskdProc is never nulled, and the `if (slskdProc) return` guard at 413 blocks every future restart. The 60 s health monitor then retries forever against a guard that can never open.
 
 **Solution.** Attach an error handler that nulls slskdProc and reports the reason.
 
+**Done.** An `error` handler that nulls slskdProc, reports the reason, and tells the renderer. The exit handler now logs a non-zero code too — a daemon that dies on startup used to look identical to one that was never installed.
+
 ### 39. batch-transcode never transcodes anything and reports success
 
-`OPEN` `Critical`
+`DONE` `Critical`
 
 **Symptom.** main.js:4274-4279 calls ipcMain.emit('transcode-file', ...), which fires a plain EventEmitter event. ipcMain.handle registers on Electron's private invoke channel, so nothing listens. emit returns a boolean, so results is [false, false, ...]. ffmpeg never runs.
 
 **Solution.** Extract the transcode body into a plain function and call it directly from both the handler and the batch loop.
+
+**Done.** The body is a plain `transcodeFile()` function; the handler and the batch loop both call it. The batch stays sequential on purpose: ffmpeg is CPU-hungry and runs alongside playback, so one at a time is slower and does not fight mpv for the machine.
 
 ### 40. The whole 2.4 MB store is rewritten synchronously every 4 seconds during any download
 
@@ -537,19 +541,23 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 ### 46. slskd 429 is treated as a health failure, so throttling restarts the daemon
 
-`OPEN` `High`
+`DONE` `High`
 
 **Symptom.** main.js:346 throws a generic error for any non-2xx. The health check at 579-591 restarts slskd after three consecutive failures, so sustained 429s restart the daemon roughly every three minutes — and each restart hits the missing spawn error handler above. Your log has real 429s on 2026-08-26.
 
 **Solution.** Treat 429 as a distinct outcome: read Retry-After, back off exponentially, and never count it toward the restart threshold.
 
+**Done.** slskdFetch backs off on a 429 — honouring `Retry-After` where slskd sends one, since it knows better than a fixed schedule does — and retries up to three times before throwing an error tagged `SLSKD_THROTTLED`. The health monitor returns early on that tag instead of counting it, because being rate-limited and being unhealthy are opposite problems: one needs patience, the other a restart. Restarting for a 429 lost every in-flight transfer and then hammered slskd again from a cold start.
+
 ### 47. No timeout or AbortController on slskd fetches
 
-`OPEN` `High`
+`DONE` `High`
 
 **Symptom.** main.js:334-350. A hung daemon leaves requests outstanding indefinitely, and the 4 s scheduler tick keeps adding more.
 
 **Solution.** AbortController with a per-endpoint deadline.
+
+**Already done before this round.** slskdFetch has `AbortSignal.timeout(15000)` on both the initial request and the 401 retry. What was missing was the *error text*: `new Error('slskd 429')` named neither the method nor the endpoint, so a failure could not be attributed to a request. It does now.
 
 ### 48. execSync shells out for unzip and chmod with JSON.stringify quoting and no timeout
 
@@ -625,19 +633,23 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 ### 56. startSlskd failures at startup are discarded entirely
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** main.js:606: startSlskd().catch(() => {}). The renderer only learns the daemon is dead when a search eventually fails.
 
 **Solution.** Report the failure to the renderer so the daemon banner appears immediately.
 
+**Done.** The startup call reports its failure instead of `.catch(() => {})`.
+
 ### 57. The health check swallows restart failures
 
-`OPEN` `Medium`
+`DONE` `Medium`
 
 **Symptom.** main.js:591: try { await startSlskd(); ... } catch {}. The UI can sit in 'restarting' forever with no definitive signal.
 
 **Solution.** Emit a terminal failed state after N attempts.
+
+**Done in Tier 5's swallow pass.** A failed restart logs, and tells the renderer it is no longer restarting — it used to leave the UI saying "restarting" forever.
 
 ### 58. 74 empty catch blocks in main.js
 
@@ -1065,6 +1077,8 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 **Solution.** Gate polling on an active transfer, shrink the payload, and never write the store on a tick while audio is playing.
 
+**Partly done in Tier 3.** The scheduler's 4 s store write no longer touches the shared config at all — it is its own small file, written asynchronously and coalesced, so the "store write every 4 s" half of this is gone. The poll itself is unchanged: still a fetch, a structured clone in both directions, a flatten and a hash every 6 s on the main thread. Gating it on an active transfer and shrinking the payload are the parts still to do.
+
 ### 134. The scheduler tick has no overlap guard beyond a boolean
 
 `OPEN` `Medium`
@@ -1179,19 +1193,23 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 ### 232. Succeeded transfers are never purged, so the poll payload grows forever
 
-`OPEN` `Critical` `was #39`
+`DONE` `Critical` `was #39`
 
 **Symptom.** Measured: 1,490 records across 108 users, 1,451 of them Completed/Succeeded. GET /transfers/downloads returns 1,020,307 bytes. startDownloadsPolling fetches it every 6 s and structured-clones it across the IPC bridge in both directions, then flattens and hashes 1,490 files — even with nothing downloading. purgeStaleSearches clears searches; the scheduler purges failed and cancelled; nothing purges succeeded.
 
 **Solution.** Purge succeeded transfers older than N days on the same scheduler tick that already purges failures, and gate polling on there being an active transfer.
 
+**Done.** Completed transfers are purged on the scheduler tick, at most once every 10 minutes, at most 60 per pass, and only ones older than an hour where slskd reports a finish time. Two constraints matter more than the schedule: it runs **after** the reconcile loop and skips anything still in `dlState.inflight`, because dlTick treats a transfer that has vanished from slskd as *abandoned* — purging one early would be indistinguishable from the user cancelling it. And a 429 stops the pass rather than being pushed through, since 1,451 DELETEs at once is exactly what earns one.
+
 ### 233. stopDownloadsPolling is never called
 
-`OPEN` `High` `was #40`
+`DONE` `High` `was #40`
 
 **Symptom.** The 6-second poll starts and runs for the life of the process regardless of which page is open.
 
 **Solution.** Stop on navigate-away, restart on navigate-in; keep it running only while a transfer is active.
+
+**Done.** One `retuneDownloadsPolling()` decides the rate from what is actually true: 2 s on the Downloads page, 20 s off it with a transfer active, 60 s off it with nothing active, and **stopped** when the window is not visible and nothing is moving. `stopDownloadsPolling()` had never been called at all. Every call site now goes through the one decision, and the poll re-tunes itself after each pass — a transfer finishing is exactly when the fast poll stops being worth its cost.
 
 ### 234. Retry cancels then re-downloads with no rollback
 
@@ -1303,11 +1321,13 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 ### 148. 429 has no backoff on the renderer side either
 
-`OPEN` `High`
+`DONE` `High`
 
 **Symptom.** A throttled search returns nothing and the UI reports an empty result.
 
 **Solution.** Surface throttling explicitly and retry with backoff.
+
+**Done.** A throttle is recognised as its own condition and retried once per search after 8 s, with the wait shown. main already backs off internally, so by the time the renderer sees a 429 main has given up — which makes this the right level for the retry. One retry per search rather than per variant: six variants firing again is how the throttle was earned.
 
 ### 149. Retired searches are never cancelled at the daemon
 
@@ -1439,11 +1459,13 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 ### 226. slskd rate-limits (HTTP 429) with no backoff
 
-`OPEN` `High` `was #16`
+`DONE` `High` `was #16`
 
 **Symptom.** Repeated searches in quick succession get 429ed. Nothing retries and nothing tells the user why results stopped arriving.
 
 **Solution.** Detect 429, show 'the daemon is throttling — retrying in Ns', and back off exponentially per variant rather than firing all six again.
+
+**Done.** Same mechanism as item 148, plus the message the item asked for. The latch is per query, so a different search gets its own allowance and the backoff cannot loop.
 
 ### 227. A running search cannot be cancelled
 
@@ -1667,27 +1689,33 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 ### 111. There is no record of playback ever having stopped
 
-`OPEN` `Critical`
+`DONE` `Critical`
 
 **Symptom.** This is the finding that made yesterday's incident unexplainable. No engine event, no reason code, no respawn, no timeout is written anywhere.
 
 **Solution.** The flight recorder is the first thing built, before any other fix, so the next occurrence is diagnosable.
 
+**Done in Tier 1.** The flight recorder was the first thing built: 300 timestamped entries, a position heartbeat, every end-file reason, every respawn, every IPC timeout and late reply, and mpv's own log lines inline. On any abnormal end the whole timeline is written to the daily log as one greppable block. See items 1 and 2, and `docs/HANDOFF.md` for the log format.
+
 ### 112. No crash-loop protection
 
-`OPEN` `High`
+`DONE` `High`
 
 **Symptom.** The render-process-gone handler offers Reload, and a page that crashes on load can be reloaded into the same crash indefinitely.
 
 **Solution.** Count reloads in a window; after three, open on a safe page and say why.
 
+**Done.** Crashes are counted in a five-minute window. Past the third, the dialog says it has crashed repeatedly, explains that reloading is putting it straight back into the same crash, points at the daily log, and makes **Close** the default with "Reload anyway" as the second choice. Reloading into the same crash is worse than stopping, because each round looks to the user like the app is trying.
+
 ### 113. No log levels
 
-`OPEN` `High`
+`DONE` `High`
 
 **Symptom.** Everything is console.log, so verbose diagnostics cannot ship enabled and the log cannot be filtered.
 
 **Solution.** debug/info/warn/error behind a level gate, with the flight recorder always on at info.
+
+**Done.** debug/info/warn/error with a numeric gate, `PAPA_LOG_LEVEL` to change it at launch, and `console.warn`/`console.debug` now exist so code can use them. debug is off by default — that is the point of having it: diagnostics can be written now and switched on when something is wrong.
 
 ### 114. The renderer's failure card shows no stack
 
@@ -1791,11 +1819,13 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 ### 125. There is no visible state for 'the player is in trouble'
 
-`OPEN` `High`
+`DONE` `High`
 
 **Symptom.** The UI has playing, paused and a full-screen blocker, and nothing in between. Every transient failure therefore looks like normal playback.
 
 **Solution.** A quiet inline state on the player bar for reconnecting, retrying and resumed — which is what your chosen recovery behaviour needs.
+
+**Done in Tier 1.** A quiet inline badge on the player bar: `Reconnecting…` while the engine is down and recoverable, `Stopped (reason)` when mpv ended a file for a reason that is not eof or an error, `Stalled` when the position stops advancing, and `Playback engine failed` when it will not come back. Recovery shows one brief dismissible snackbar naming the position it resumed at — the decided behaviour, and the reason this item existed.
 
 ### 126. Snackbars are the only failure channel and they expire in five seconds
 
@@ -1859,11 +1889,13 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 ### 177. 73 store.set sites each pay a whole-document synchronous write
 
-`OPEN` `High`
+`DONE` `High`
 
 **Symptom.** The config is 2.56 MB. libraryCache is 1.37 MB, playHistory 344 KB, playCounts 110 KB. Playing one track writes the whole thing at least twice.
 
 **Solution.** Split into separate stores so the hot config is roughly 30 KB. This single change fixes every one of the 73 sites, including the download scheduler and playback state.
+
+**Done in Tier 3, and it did fix all 73 sites at once as predicted.** The six keys that were nearly all of the file — libraryCache, playHistory, playbackState, sessionState, recentlyPlayed and the download scheduler state — each own a small file now, written asynchronously and coalesced. What is left in the shared config is small, so the remaining store.set sites are writing tens of kilobytes rather than 2.5 MB. playCounts at 110 KB is the largest thing still in there and is the obvious next candidate if it ever matters.
 
 ### 178. The library cache is rewritten whole for one new album
 
