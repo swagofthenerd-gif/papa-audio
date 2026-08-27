@@ -1699,6 +1699,10 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 
 **Solution.** Group by domain and validate argument shapes at the boundary.
 
+**The half that was a real defect is done; the half that is cosmetic is not.** Argument *shape* validation belongs in main, not preload — main is the side that must not trust its input, and that is where the path guards now live (item 106). What preload had no protection against at all was a channel name that does not exist: `invoke` against an unregistered channel throws from deep inside Electron at the moment the user clicks something, with nothing linking it back to the typo. `test/preload-surface.test.js` now asserts every invoked channel has an `ipcMain.handle`, every sent channel has an `ipcMain.on`, no channel is registered both ways (one of the two callers would be silently doing nothing), and nothing is registered twice. All of it passes today, so the surface is consistent — the point is that it stays so.
+
+Grouping by domain is left undone on purpose: it is a rename of 164 call sites across preload and the renderer for readability alone, with no defect behind it, and it is exactly the kind of large mechanical diff that hides a real change.
+
 ### 106. Renderer-supplied paths reach main handlers that do not all go through libPathAllowed
 
 `DONE` `Medium`
@@ -1974,6 +1978,10 @@ Status legend: **OPEN** = verified defect, not yet fixed. **DONE** = fixed, with
 **Symptom.** 1.37 MB per change.
 
 **Solution.** Falls out of the split; consider SQLite past roughly 50k tracks.
+
+**The stated solution is done; the aside is not, and should not be yet.** It did fall out of the split: `library-cache.json` is its own file, written asynchronously with an 800 ms coalescing window, so one new album no longer costs a 2.5 MB synchronous rewrite of the whole config — it costs one async 1.37 MB write, coalesced with any others in the same second. Writing only a delta would mean the cache stops being a plain readable snapshot, which is worth something on its own.
+
+SQLite is a genuine option past roughly 50k tracks and deliberately not taken now: it is a storage-engine change with a migration, and the measurement that would justify it does not exist yet. The watcher now logs how long each scan took and how many albums it produced (item 166), which is the number to look at before deciding.
 
 ### 179. Window state lives in the hot config
 
@@ -2324,11 +2332,13 @@ What this round did instead, which makes the split safer when it is attempted: f
 
 ### 250. ~200 lines of confirmed-dead CSS
 
-`OPEN` `Low` `was #155`
+`CLOSED` `Low` `was #155`
 
 **Symptom.** .smart-pl-box/-rule/-badge, .playlist-folder-tree, .playlist-import-drop, .artist-bio-photo, .album-grid-skeleton, .artist-hero-bio — all verified to have zero class= producers. Two audit claims were rejected on close reading: .album-card-meta is used in 3 places, and .smart-pl-modal is dead as a class but live as an id.
 
 **Solution.** Safe to purge in a dedicated pass. Left alone deliberately: zero user-visible benefit, non-zero regression risk.
+
+**Closed rather than left open, because a decision was already recorded.** The reasoning above is a decision, not a plan — and an item that says "left alone deliberately" while sitting at OPEN reads as outstanding work forever. If it is ever revisited, note that two of the original audit's claims were wrong on close reading (`.album-card-meta` is used in three places, `.smart-pl-modal` is dead as a class but live as an id), which is the reason the regression risk is non-zero rather than theoretical.
 
 
 ## Found while working through the tiers  (8)

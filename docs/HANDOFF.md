@@ -7,13 +7,14 @@ Written 2026-08-27. Read this first in a new session, then `docs/STABILITY-250.m
 | | |
 |---|---|
 | Branch | `feature/library-management-and-qa-fixes` |
-| Tests | 571 passing (`npm test`), 2 skipped — the two real-mpv integration tests, which need mpv installed |
+| Tests | 635 passing (`npm test`), 2 skipped — the two real-mpv integration tests, which need mpv installed |
 | Tier 1 | **done** — items 1, 2, 3, 6, 7 |
 | Tier 2 | **done** — items 4, 5, 8, 9, 10, 11, 12, 13, 14, 15, 17, 18, 19, 20, 21, 22, 23, 24, 25, 251, 252. Item 16 partly, and it says why |
 | Tier 3 | **done** — items 36, 37, 40, 41, 42, 43, 44, 45, 48, 49, 54, 55, plus 255, a regression this round introduced |
 | Tier 4 | **done** — items 91, 92, 93, 94, 96, 98, plus 256. Item 95 partly, and it says which part |
 | Tier 5 | **done** — items 71–81, 85, 89, plus 257. Items 82, 83 and 84 partly, each saying which part and why |
-| Tier 6 | not started |
+| Tier 6 | **done as far as it can be from here.** Every OPEN Critical and all but two OPEN High are closed |
+| Catalogue | 125 DONE, 8 OPEN, 2 CLOSED, 123 PROPOSED — see "Where the catalogue stands" below |
 | Verified against real mpv | **no.** Everything below is tests and reading. See "How this was, and was not, verified" |
 | New findings | items 251–254 at the end of `STABILITY-250.md`. 254 breaks packaged builds and is not fixed |
 
@@ -138,7 +139,37 @@ journalctl --user --since "<date>" | grep launch.sh
    silently disabling the folder watcher, and a library Undo whose restore could fail silently after the
    snackbar had promised it would work. The rest guard an unlink or a stat probe, and a blanket rewrite
    would be a large diff with almost no signal.
-6. **Tier 6 — the remaining improvements.**
+6. **Tier 6 — the remaining improvements.** Worked through by severity rather than by number. Every
+   OPEN Critical is closed, and of the OPEN High only 166 and 183 remain — both deferred with the
+   reason written into the catalogue rather than left silent.
+
+## Where the catalogue stands
+
+125 DONE, 8 OPEN, 2 CLOSED, 123 PROPOSED, plus 8 items found while working (251–258) which are
+numbered from 251 so nothing renumbered.
+
+**The 8 still OPEN, and why each one is still open** — none of them is simply unfinished:
+
+| | |
+|---|---|
+| 16 | playlist-clear in setNext. The cheap half is done (setNext sends nothing when the next path is unchanged, which is the common case). The `playlist-remove` arithmetic depends on mpv's exact playlist semantics after `loadfile replace`, and getting the index wrong removes the entry that is **currently playing**. Needs real mpv. |
+| 58 | 104 empty catch blocks. Not rewritten wholesale, on a stated criterion: every one found to hide a consequence the user would notice was fixed (four did). The rest guard an unlink or a stat probe. |
+| 60 | Offloading the scan to a worker thread. A real architectural change, and the scan is the thing that builds the library — an incorrect worker boundary corrupts it silently. |
+| 95 | History entry size. It left the shared config, so the 344 KB is no longer part of every write. Narrowing entries to filePath and ts is a decision about what history *means* — a play of a file since removed from the library would lose its name. |
+| 105 | Preload surface. The half that was a defect is done (a test asserts every channel resolves to a handler). Grouping by domain is a 164-site rename for readability with no defect behind it. |
+| 166 | Incremental scan. A partial merge needs a real library to verify against; getting it wrong drops albums silently, which is worse than the scan being slow. The watcher now logs the real cost so the next session can measure before designing it. |
+| 178 | Library cache write. The stated solution landed with the store split. SQLite is a storage-engine change plus a migration, and the measurement justifying it does not exist yet. |
+| 183 | 14,085 lines across 18 shared-global script tags. The highest-risk change in the document; see the note on that item. Four decision modules were extracted with tests instead, which is how the next one should go. |
+
+**The 123 PROPOSED are not in that list on purpose.** They are improvements rather than defects, and a
+large number of them are decisions that are yours, not mine — what to show in the now-playing line,
+whether to surface the applied ReplayGain, how a notification centre should behave, whether the EQ
+should be on at all (item 32 explicitly says it is your setting and only asks that the contradiction be
+visible). Working through those unilaterally would be inventing product decisions, so they were left.
+
+Two exceptions where the *bug* inside a PROPOSED item was fixed and the *design* left alone: item 126
+(notices now persist in a bounded list; what a real notification centre looks like is still open) and
+item 150 (the results cap now says what it is hiding and can be extended; pagination proper is not).
 
 ## How to verify (this matters more than the code)
 
@@ -164,7 +195,7 @@ The lesson from two rounds: **verify against ground truth, never against the UI'
 Being exact about this, because the rule in this project is that the UI's claims are not evidence — and
 neither are mine.
 
-**Verified.** 571 tests pass, up from 399. The 172 new ones test behaviour, not implementation:
+**Verified.** 635 tests pass, up from 399. The 236 new ones test behaviour, not implementation:
 every `end-file` reason including ones mpv has not invented yet; our own `loadfile`/`playlist-clear`
 not being mistaken for a fault; the timeline being bounded and copied on read; mpv's log reaching the
 ring and faults reaching the timeline inline; `engineDown` carrying `willRecover`; recovery seeking back
@@ -179,12 +210,17 @@ that implemented it was on a macOS machine with no mpv, no PipeWire, no `~/.conf
 `.qa/` (it is gitignored, so it does not travel). The two real-mpv integration tests skipped for exactly
 that reason. So on the Fedora machine, before trusting any of this:
 
-1. `npm test` — the two skipped tests should now run there. 573 passing expected.
+1. `npm test` — the two skipped tests should now run there. 637 passing expected.
 2. Play a local album. `node tools/mpv-probe.js` should agree with the UI about path, position and pause.
 3. `tools/fault-inject.sh` — SIGKILL, SIGSTOP, PipeWire restart, device suspend. It checks the daily log
    and mpv's socket automatically and prints what needs your eyes. Before this work all four were
    silent; `sigkill` must now produce a named log line, a visible Reconnecting badge, a resume at the
    same position, and one brief notice.
+3b. **Check the log for the startup reports.** Three run before the window is usable and each says
+   something worth reading once: the history migration (how many entries were recovered from the old
+   `timestamp` key, and the date range that extends the history to), the counts-vs-history
+   reconciliation (a delta is expected and is not rewritten), and the store migration (five keys
+   leaving `config.json`, which should then shrink from ~2.5 MB to tens of kilobytes).
 4. The `sigstop` case should now **pass** its log check — per-operation timeouts landed in Tier 2, so a
    wedged mpv produces a timeout line naming the command. The harness's message still says it is
    expected to fail; if it passes, that message is what is out of date, not the result.
@@ -213,6 +249,22 @@ Things I could not test at all, and would look at first if something is wrong:
 - **`fs.watch` on the command file.** If the browser extension stops working, that is the first
   suspect; the 5 s backstop poll should cover it, so a total failure would mean neither path fires.
 - **The `run()` helper's timeouts**: unzip 120 s, ffprobe 10 s, ps 10 s, mpv --version 5 s. All guesses.
+- **The IPC deadlines.** 60 s default, with named exemptions for the endpoints that genuinely take
+  longer. If something legitimate ever times out, the log names the channel and the budget, so it is a
+  number to change rather than a mystery — but the exemption list was written by reading the handlers,
+  not by timing them.
+- **The completed-transfer purge.** It deletes from slskd. It runs only after reconciliation and skips
+  anything still in flight, and there are tests for both, but the first run on a real install will
+  delete around 1,451 records in passes of 60. If that is not wanted, raise `DL_PURGE_MIN_AGE_MS` or
+  disable `dlPurgeSucceeded` before the first launch.
+- **The download-folder fallback.** If `slskConfig.downloadDir` is empty, downloads now go to
+  `<first music folder>/Papa Audio Downloads` rather than the library root. On this install the
+  setting is populated, so nothing should move — but check it, because the alternative was peer-named
+  folders landing in the library root.
+- **The watcher depth change**, 30 to 8. A library nested deeper than artist/album/disc/CD1 would stop
+  being watched below level 8. Check `find <music root> -type d -printf '%d\n' | sort -rn | head -1`.
+- **Everything in Tier 6.** The same limitation as Tier 5: static assertions and unit tests on the
+  extracted modules, not the running app.
 - **The history migration against the real file.** Tested against a reconstruction of the reported
   shape, not against the actual 1224 entries. Back up `config.json` before the first launch if you want
   a way back — the migration itself never deletes, but that is a claim about code I could not run here.
@@ -265,6 +317,36 @@ Worth knowing before the first launch on the real machine, because it moves data
   lost across a quit, that flush is where to look.
 - A corrupt side file falls back to the default and says so in the log rather than crashing, and is not
   silently overwritten.
+
+## New modules, and why each one exists
+
+Four pieces of logic were pulled out of the two large files so they could be tested against real
+shapes rather than inferred from the code that uses them. If you extract a fifth, do it the same way —
+pure logic, its own test file, and for a renderer one, registered in `test/script-globals.test.js`.
+
+| | |
+|---|---|
+| `engine-diagnostics.js` | Formats the log entry that has to explain the next stop. Its own file because that text *is* the deliverable. |
+| `side-store.js` | One small file per hot key, read once synchronously, written asynchronously and coalesced, replaced atomically. |
+| `history.js` | The `ts`/`timestamp` migration, the counts reconciliation, and the archive split. Pure, so the migration could be tested against the reported 626-plus-598 shape. |
+| `src/load-error-policy.js` | Decides what to do about a track that will not load. The invariant its tests assert: only a **confirmed** absence may mutate the queue. |
+| `src/local-store.js` | The validated localStorage reader. Returns the right *shape*, not merely valid JSON. |
+
+## The tests that guard couplings across files
+
+Worth knowing these exist, because they are what will fail if a future change breaks a link that no
+single file owns. Every one of them was written after a real bug of exactly that shape.
+
+| | |
+|---|---|
+| `engine-event-wiring` | engine emits -> main forwards -> shim translates -> renderer listens, for every lifecycle event. Item 3 was an event that made it three of those four steps. |
+| `ipc-channel-wiring` | Every channel main pushes has something able to receive it, with the deliberate exceptions listed and reasoned. Item 256 was eleven that did not. |
+| `mpv-socket-name` | The engine generates socket names; main's reaper parses them. Item 255 was a rename that silently broke the reaper. |
+| `rescan-cadence` | One cadence across main, the renderer and CLAUDE.md. Item 168 was three different answers. |
+| `preload-surface` | Every preload channel resolves to a registered handler, and nothing is registered twice. |
+| `packaged-build` | Every local module main.js requires is in `build.files`. Derived from main.js's own requires, so the next module cannot be forgotten. |
+| `script-globals` | No two renderer scripts declare the same top-level `const`/`let`, `var` or `function`. The `var` half is item 184. |
+| `main-thread-hygiene` | No synchronous child_process, no direct `webContents.send`, the hot keys never read through the shared config. |
 
 ## New tools
 

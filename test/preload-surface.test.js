@@ -1,0 +1,68 @@
+'use strict'
+const test = require('node:test')
+const assert = require('node:assert')
+const fs = require('fs')
+const path = require('path')
+
+const root = f => fs.readFileSync(path.join(__dirname, '..', f), 'utf8')
+const PRELOAD = root('preload.js')
+const MAIN = root('main.js')
+
+const stripComments = src => src
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+  .split('\n').filter(l => !/^\s*\/\//.test(l)).join('\n')
+
+const MAIN_CODE = stripComments(MAIN)
+const PRELOAD_CODE = stripComments(PRELOAD)
+
+// The flat 164-endpoint surface has no validation of any kind, and the failure
+// it allows is quiet: a preload method naming a channel main never registered
+// throws "No handler registered for '...'" from deep inside Electron, at the
+// moment the user clicks something, with nothing linking it back to the typo.
+const invoked = new Set([...PRELOAD_CODE.matchAll(/ipcRenderer\.invoke\(\s*'([^']+)'/g)].map(m => m[1]))
+const sent = new Set([...PRELOAD_CODE.matchAll(/ipcRenderer\.send\(\s*'([^']+)'/g)].map(m => m[1])) 
+const handled = new Set([...MAIN_CODE.matchAll(/ipcMain\.handle\(\s*'([^']+)'/g)].map(m => m[1]))
+const onned = new Set([...MAIN_CODE.matchAll(/ipcMain\.on\(\s*'([^']+)'/g)].map(m => m[1]))
+
+test('every channel preload invokes has a handler in main', () => {
+  const missing = [...invoked].filter(c => !handled.has(c))
+  assert.deepStrictEqual(missing, [],
+    "invoke against an unregistered channel throws from inside Electron at click time")
+})
+
+test('every channel preload sends has a listener in main', () => {
+  const missing = [...sent].filter(c => !onned.has(c))
+  assert.deepStrictEqual(missing, [],
+    'send to nothing is silent: the action simply does not happen')
+})
+
+test('no channel is registered with both handle and on', () => {
+  // invoke() only reaches handle(), send() only reaches on(). A channel wired
+  // both ways means one of the two callers is silently doing nothing.
+  const both = [...handled].filter(c => onned.has(c))
+  assert.deepStrictEqual(both, [])
+})
+
+test('the surface is big enough that this test is the only thing checking it', () => {
+  // Not a style rule — a statement of why the checks above exist. If the surface
+  // ever shrinks to something a person can hold in their head, these can go.
+  assert.ok(invoked.size + sent.size > 100,
+    `expected a large surface, found ${invoked.size + sent.size}`)
+})
+
+test('nothing in main is registered twice', () => {
+  // The second registration of an ipcMain.handle throws at startup; a duplicate
+  // ipcMain.on silently runs both listeners.
+  for (const [label, src, re] of [
+    ['handle', MAIN_CODE, /ipcMain\.handle\(\s*'([^']+)'/g],
+    ['on', MAIN_CODE, /ipcMain\.on\(\s*'([^']+)'/g],
+  ]) {
+    const seen = new Map()
+    const dupes = []
+    for (const m of src.matchAll(re)) {
+      if (seen.has(m[1])) dupes.push(m[1])
+      else seen.set(m[1], true)
+    }
+    assert.deepStrictEqual([...new Set(dupes)], [], `duplicate ipcMain.${label} registrations`)
+  }
+})
