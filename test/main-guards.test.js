@@ -302,3 +302,97 @@ test('picking a download folder restarts slskd', () => {
   assert.match(h, /await startSlskd\(\)/)
   assert.match(h, /restarted:/, 'and it says whether the restart happened')
 })
+
+// ── Tier 3: what grows, blocks or drifts over a long session ───────────────
+
+test('the now-playing file is not written synchronously once a second', () => {
+  // syncExtension() fires this every second for the whole time anything is
+  // playing, and it was writeFileSync -- a blocking main-thread write per
+  // second, forever, competing with mpv's IPC.
+  const fn = CODE.slice(CODE.indexOf('function writeNowPlaying(data)'),
+                        CODE.indexOf('function stopNowPlayingWrites()'))
+  assert.doesNotMatch(fn, /writeFileSync/)
+  assert.match(fn, /fs\.promises\.writeFile/)
+  assert.match(fn, /NOW_PLAYING_COALESCE_MS/, 'and it coalesces')
+  assert.match(fn, /fs\.promises\.rename/, 'temp plus rename, so no half-written read')
+})
+
+test('pending now-playing writes are stopped before the file is deleted', () => {
+  // will-quit unlinks the file. An async write still in flight would land after
+  // the unlink and leave a stale now-playing file for the extension to read
+  // forever -- a race the async rewrite introduced.
+  const q = CODE.slice(CODE.indexOf("app.on('will-quit'"), CODE.indexOf('function createWindow'))
+  const stopAt = q.indexOf('stopNowPlayingWrites()')
+  const unlinkAt = q.indexOf('unlinkSync(NOW_PLAYING_PATH)')
+  assert.ok(stopAt > 0 && unlinkAt > 0, 'both present')
+  assert.ok(stopAt < unlinkAt, 'the stop must come first')
+  assert.match(q, /NOW_PLAYING_PATH \+ '\.tmp'/, 'and the temp file goes too')
+})
+
+test('the extension can send the same command twice', () => {
+  // The dedup check used to come BEFORE the clear, so a repeated command
+  // returned early with the file still full, and every later poll re-read the
+  // same value and ignored it. Pressing next twice advanced one track.
+  const fn = CODE.slice(CODE.indexOf('function readCmd()'), CODE.indexOf('let _cmdWatcher'))
+  const clearAt = fn.indexOf("writeFile(CMD_PATH, '')")
+  assert.ok(clearAt > 0, 'the file is still cleared')
+  assert.doesNotMatch(fn, /cmd === _lastCmd/, 'no payload dedup before the clear')
+  assert.doesNotMatch(CODE, /let _lastCmd/, 'and the dead variable is gone')
+})
+
+test('the yt downloads map is pruned and live entries are pinned', () => {
+  assert.match(CODE, /function _pruneYtDownloads\(\)/)
+  const fn = CODE.slice(CODE.indexOf('function _pruneYtDownloads()'), CODE.indexOf('function _ytEmit'))
+  assert.match(fn, /if \(dl\.state === 'downloading'\) continue/,
+    'an in-progress download must not be evicted under its own callbacks')
+  assert.match(fn, /YT_DL_FINISHED_TTL_MS/)
+  assert.match(fn, /_ytDownloads\.size > YT_DL_CAP/)
+  // And the handler that returned the whole map prunes first.
+  const h = CODE.slice(CODE.indexOf("ipcMain.handle('yt-get-downloads'"), CODE.indexOf("ipcMain.handle('yt-get-downloads'") + 200)
+  assert.match(h, /_pruneYtDownloads\(\)/)
+})
+
+test('a failed yt download does not stay pinned as in-progress', () => {
+  const h = CODE.slice(CODE.indexOf("ipcMain.handle('yt-download'"), CODE.indexOf("ipcMain.handle('yt-get-downloads'"))
+  const catchAt = h.lastIndexOf('.catch(e => {')
+  assert.ok(catchAt > 0)
+  const tail = h.slice(catchAt)
+  assert.match(tail, /dl\.state = 'failed'/, "the entry stayed 'downloading' forever")
+  assert.match(tail, /dl\.finishedAt = Date\.now\(\)/)
+})
+
+test('the log file is named by the local day, like every other day', () => {
+  // The stats group by toDateString(), which is local, so under
+  // TZ=Australia/Sydney an incident at 22:30 was written to the NEXT day's
+  // file -- and HANDOFF.md tells the next session to read papa-<date>.log.
+  assert.match(CODE, /function localDayStamp\(d\)/)
+  const fn = CODE.slice(CODE.indexOf('function _logFile()'), CODE.indexOf('function _flushLog'))
+  assert.match(fn, /localDayStamp\(\)/)
+  assert.doesNotMatch(fn, /toISOString/)
+})
+
+test('localDayStamp actually differs from the UTC day where it matters', () => {
+  // Run, not read: the point is arithmetic, and a comment cannot be wrong in
+  // the way arithmetic can.
+  const src = CODE.slice(CODE.indexOf('function localDayStamp(d)'), CODE.indexOf('function _logFile()'))
+  // eslint-disable-next-line no-new-func
+  const localDayStamp = new Function(src + '; return localDayStamp')()
+  const d = new Date('2026-08-27T22:30:00Z')
+  const utc = d.toISOString().slice(0, 10)
+  const local = localDayStamp(d)
+  // In UTC they agree; the assertion that holds everywhere is that the stamp
+  // matches what the stats page calls that day.
+  const statsDay = new Date(d).toDateString()
+  const [y, m, dd] = local.split('-').map(Number)
+  assert.strictEqual(new Date(y, m - 1, dd).toDateString(), statsDay,
+    `stamp ${local} must name the same day as the stats (${statsDay}); UTC said ${utc}`)
+})
+
+test('the YouTube sign-in poll has a deadline', () => {
+  // Nothing but the window closing used to stop it, so an abandoned sign-in
+  // polled the session store every 1.5s for as long as the app ran.
+  const h = CODE.slice(CODE.indexOf("ipcMain.handle('yt-auth-start'"), CODE.indexOf("ipcMain.handle('yt-auth-signout'"))
+  assert.match(h, /const AUTH_DEADLINE_MS = /)
+  assert.match(h, /Date\.now\(\) - startedAt > AUTH_DEADLINE_MS/)
+  assert.match(h, /finish\(\{ ok: false, error: 'Sign-in was not completed/, 'and it says why')
+})

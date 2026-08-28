@@ -6,6 +6,7 @@ const os = require('os')
 // handler section, and `const` is not hoisted.
 const tagEdit = require('./src/tag-edit')
 const crypto = require('crypto')
+const { makeCache } = require('./src/ttl-cache')
 const https = require('https')
 // No sync child_process on the main thread: every shell-out goes through run().
 const { spawn, execFile } = require('child_process')
@@ -150,7 +151,11 @@ function withTimeout(promise, ms, label) {
 // ── YouTube URL resolution cache ──────────────────────────────────────────────
 // mpv's built-in yt-dlp hook takes 2-10s per URL. Pre-resolve to googlevideo
 // direct URLs so playback starts near-instantly (like Spotify / YT Music).
-const _ytUrlCache = new Map() // videoId -> { url: string, expiresAt: number }
+// Capped as well as expiring. It used to evict only ALREADY-EXPIRED entries
+// when over 200, so 1000 unexpired resolutions left 1000 entries -- and
+// pre-resolution runs five at a time off search results, so it fills fast.
+const YT_URL_CACHE_CAP = 200
+const _ytUrlCache = makeCache({ cap: YT_URL_CACHE_CAP })
 const YT_URL_TTL = 60 * 60 * 1000 // 1 hour, the ceiling
 // googlevideo URLs carry their own `expire` (Unix seconds), and it is often
 // sooner than an hour. Caching for a flat hour meant a queued YouTube track
@@ -168,8 +173,9 @@ function ytUrlExpiresAt(url) {
 }
 
 function resolveYtUrl(videoId) {
+  // The cache applies the expiry itself now, so a hit is by definition live.
   const cached = _ytUrlCache.get(videoId)
-  if (cached && cached.expiresAt > Date.now()) return Promise.resolve(cached.url)
+  if (cached) return Promise.resolve(cached)
   return new Promise((resolve, reject) => {
     var proc, out = '', err = ''
     var timer = setTimeout(() => { try { proc.kill() } catch (_) {} reject(new Error('yt-dlp timed out')) }, 15000)
@@ -183,11 +189,7 @@ function resolveYtUrl(videoId) {
       clearTimeout(timer)
       var url = out.trim().split('\n')[0]
       if (code === 0 && url && url.startsWith('http')) {
-        _ytUrlCache.set(videoId, { url, expiresAt: ytUrlExpiresAt(url) })
-        if (_ytUrlCache.size > 200) {
-          var now = Date.now()
-          for (var [k, v] of _ytUrlCache) if (now > v.expiresAt) _ytUrlCache.delete(k)
-        }
+        _ytUrlCache.set(videoId, url, { expiresAt: ytUrlExpiresAt(url) })
         resolve(url)
       } else {
         reject(new Error(err.trim() || 'yt-dlp exited ' + code))
@@ -382,9 +384,18 @@ let _logTimer = null
 let _logDropped = 0
 let _logFlushing = false
 
+// Local date parts, not toISOString(). The stats group by toDateString(),
+// which is local, so under TZ=Australia/Sydney an incident at 22:30 was written
+// to the NEXT day's file -- and docs/HANDOFF.md tells the next session to read
+// papa-<incident date>.log, which would be the wrong file.
+function localDayStamp(d) {
+  const dt = d || new Date()
+  const p = n => String(n).padStart(2, '0')
+  return `${dt.getFullYear()}-${p(dt.getMonth() + 1)}-${p(dt.getDate())}`
+}
+
 function _logFile() {
-  const today = new Date().toISOString().slice(0, 10)
-  return path.join(_logDir, `papa-${today}.log`)
+  return path.join(_logDir, `papa-${localDayStamp()}.log`)
 }
 
 function _flushLog() {
@@ -862,11 +873,62 @@ const ICON_PATH = path.join(__dirname, 'assets', 'icon.png')
 const NOW_PLAYING_PATH = path.join(USER_DATA, 'now-playing.json')
 const CMD_PATH         = path.join(USER_DATA, 'cmd')
 
+// syncExtension() fires this once a second for the whole time anything is
+// playing, and it was writeFileSync -- a blocking main-thread write per second,
+// forever, competing with mpv's IPC. Coalesced and asynchronous now, the same
+// shape the side stores use: the newest payload wins, one write in flight at a
+// time, and a write that is still going does not stack up behind itself.
+let _npPending = null
+let _npWriting = false
+let _npTimer = null
+const NOW_PLAYING_COALESCE_MS = 250
+
 function writeNowPlaying(data) {
-  try { fs.writeFileSync(NOW_PLAYING_PATH, JSON.stringify(data)) } catch (e) { console.error('[papa] write-now-playing:', e.message || e) }
+  if (_npStopped) return
+  _npPending = data
+  if (_npTimer || _npWriting) return
+  _npTimer = setTimeout(_flushNowPlaying, NOW_PLAYING_COALESCE_MS)
+  // Not unref'd: it is a 250 ms timer, and it must run before quit so the last
+  // state on disk is the last state that was playing.
 }
 
-let _lastCmd = ''
+function _flushNowPlaying() {
+  _npTimer = null
+  if (_npStopped || _npPending == null || _npWriting) return
+  const payload = _npPending
+  _npPending = null
+  _npWriting = true
+  let body
+  try { body = JSON.stringify(payload) } catch (e) {
+    _npWriting = false
+    console.error('[papa] write-now-playing: unserialisable payload:', e.message || e)
+    return
+  }
+  // Temp plus rename, so the extension never reads a half-written file.
+  const tmp = NOW_PLAYING_PATH + '.tmp'
+  fs.promises.writeFile(tmp, body)
+    .then(() => fs.promises.rename(tmp, NOW_PLAYING_PATH))
+    .catch(e => {
+      console.error('[papa] write-now-playing:', e.message || e)
+      return fs.promises.unlink(tmp).catch(() => {})
+    })
+    .then(() => {
+      _npWriting = false
+      // Something arrived while that was in flight: write the newest, once.
+      if (!_npStopped && _npPending != null && !_npTimer) _npTimer = setTimeout(_flushNowPlaying, NOW_PLAYING_COALESCE_MS)
+    })
+}
+
+// Called on quit, BEFORE the file is deleted. will-quit unlinks
+// NOW_PLAYING_PATH, and an async write still in flight would land after the
+// unlink and leave a stale now-playing file for the extension to read forever.
+let _npStopped = false
+function stopNowPlayingWrites() {
+  _npStopped = true
+  if (_npTimer) { clearTimeout(_npTimer); _npTimer = null }
+  _npPending = null
+}
+
 // The command file is how the browser extension talks to the app. This used to
 // be a synchronous read AND write every 200 ms for the life of the process —
 // five main-thread filesystem operations per second, forever, competing with
@@ -874,9 +936,18 @@ let _lastCmd = ''
 function readCmd() {
   fs.promises.readFile(CMD_PATH, 'utf8').then(raw => {
     const cmd = raw.trim()
-    if (!cmd || cmd === _lastCmd) return
-    _lastCmd = cmd
+    if (!cmd) return
+    // The dedup check used to come BEFORE the clear, so a repeated command --
+    // "next" twice -- returned early with the file still full, and every later
+    // poll re-read the same value and ignored it again. The command stayed
+    // stuck until a DIFFERENT one arrived: pressing next twice from the
+    // extension advanced one track. Clear first, always.
     return fs.promises.writeFile(CMD_PATH, '').then(() => {
+      // Dedup on the payload can only ever mean "the same key pressed twice",
+      // which is a thing users do. What must not happen is one write being
+      // delivered twice, and clearing the file above is what prevents that --
+      // the watcher and the poll can both fire for one write, and the second
+      // reader finds it empty.
       safeSend('ext-cmd', cmd)
     })
   }).catch(e => {
@@ -1192,7 +1263,10 @@ app.on('will-quit', () => {
   stopSlskd()
   flushSideStores()
   flushLogSync()
+  // Before the unlink, or a write still in flight recreates the file.
+  stopNowPlayingWrites()
   try { if (fs.existsSync(NOW_PLAYING_PATH)) fs.unlinkSync(NOW_PLAYING_PATH) } catch (_) {}
+  try { if (fs.existsSync(NOW_PLAYING_PATH + '.tmp')) fs.unlinkSync(NOW_PLAYING_PATH + '.tmp') } catch (_) {}
   globalShortcut.unregisterAll()
 })
 
@@ -4178,19 +4252,18 @@ ipcMain.handle('slsk-setup', async () => {
 })
 
 // ── Search result cache (in-memory, 5-min TTL, cleared on restart) ────────────
-const _searchCache = new Map()
+// The cap of 200 used to be enforced by dropping only EXPIRED entries, so a run
+// of distinct searches inside the five minutes grew the Map without limit --
+// and each entry holds a whole search response, issued with responseLimit 5000.
+const SEARCH_CACHE_CAP = 200
+const SEARCH_CACHE_TTL_MS = 5 * 60 * 1000
+const _searchCache = makeCache({ cap: SEARCH_CACHE_CAP, ttlMs: SEARCH_CACHE_TTL_MS })
 function _searchCacheGet(key) {
-  const e = _searchCache.get(key)
-  if (!e) return null
-  if (Date.now() - e.ts > 5 * 60 * 1000) { _searchCache.delete(key); return null }
-  return e.results
+  const v = _searchCache.get(key)
+  return v === undefined ? null : v
 }
 function _searchCacheSet(key, results) {
-  _searchCache.set(key, { results, ts: Date.now() })
-  if (_searchCache.size > 200) {
-    const cutoff = Date.now() - 5 * 60 * 1000
-    for (const [k, v] of _searchCache) if (v.ts < cutoff) _searchCache.delete(k)
-  }
+  _searchCache.set(key, results)
 }
 
 // Every search slskd is currently running for us, and why. Each search runs six
@@ -5256,7 +5329,21 @@ ipcMain.handle('yt-auth-start', async () => {
       resolve(result)
     }
 
+    // Nothing but the window closing used to stop this, so an abandoned
+    // sign-in -- the window left open behind the main one, or a flow that never
+    // completes -- polled the session store every 1.5 s for as long as the app
+    // ran. A 2FA login with a password manager is slow, so the deadline is
+    // generous rather than tight.
+    const AUTH_POLL_MS = 1500
+    const AUTH_DEADLINE_MS = 10 * 60 * 1000
+    const startedAt = Date.now()
+
     const poll = setInterval(async () => {
+      if (Date.now() - startedAt > AUTH_DEADLINE_MS) {
+        safeSend('yt-auth-pending', { reason: 'sign-in-timed-out' })
+        finish({ ok: false, error: 'Sign-in was not completed within ten minutes' })
+        return
+      }
       try {
         const header = await _collectYtCookieHeader(sess)
         if (header) {
@@ -5265,8 +5352,8 @@ ipcMain.handle('yt-auth-start', async () => {
           safeSend('yt-auth-done', { signedIn: true })
           finish({ ok: true, signedIn: true })
         }
-      } catch { /* keep polling until the window closes */ }
-    }, 1500)
+      } catch { /* keep polling until the deadline or the window closes */ }
+    }, AUTH_POLL_MS)
 
     _ytAuthWin.on('closed', () => {
       _ytAuthWin = null
@@ -5299,8 +5386,30 @@ ipcMain.handle('validate-yt-cookie', async () => {
   return { ok: true, valid }
 })
 
+// Set on every download and never deleted or cleared, so both the map and the
+// yt-get-downloads payload grew for the life of the process. Finished entries
+// are worth keeping for a while -- the downloads page lists them -- so they
+// expire rather than vanishing the moment they complete. Live ones are pinned:
+// an in-progress download must not be evicted out from under its own callbacks.
+const YT_DL_CAP = 200
+const YT_DL_FINISHED_TTL_MS = 6 * 60 * 60 * 1000
 const _ytDownloads = new Map()
 let _ytQueue = Promise.resolve()
+
+function _pruneYtDownloads() {
+  const now = Date.now()
+  for (const [id, dl] of _ytDownloads) {
+    if (dl.state === 'downloading') continue
+    if (!dl.finishedAt || now - dl.finishedAt > YT_DL_FINISHED_TTL_MS) _ytDownloads.delete(id)
+  }
+  // Insertion-ordered, so this drops the oldest finished entries first.
+  if (_ytDownloads.size > YT_DL_CAP) {
+    for (const [id, dl] of _ytDownloads) {
+      if (_ytDownloads.size <= YT_DL_CAP) break
+      if (dl.state !== 'downloading') _ytDownloads.delete(id)
+    }
+  }
+}
 
 function _ytEmit(dl) {
   safeSend('yt-dl-progress', { ...dl })
@@ -5308,8 +5417,9 @@ function _ytEmit(dl) {
 
 ipcMain.handle('yt-download', (_, { videoId, title, artist, subdir }) => {
   const id = `yt_${videoId}_${Date.now()}`
-  const dl = { id, videoId, title, artist, percent: 0, state: 'downloading', error: null }
+  const dl = { id, videoId, title, artist, percent: 0, state: 'downloading', error: null, finishedAt: null }
   _ytDownloads.set(id, dl)
+  _pruneYtDownloads()
   _ytEmit(dl)
   // yt-dlp creates missing output directories, so an album subfolder is just a path join
   const outDir = subdir
@@ -5326,12 +5436,24 @@ ipcMain.handle('yt-download', (_, { videoId, title, artist, subdir }) => {
     dl.percent = res.ok ? 100 : dl.percent
     dl.state = res.ok ? 'completed' : 'failed'
     dl.error = res.ok ? null : res.error
+    dl.finishedAt = Date.now()
     _ytEmit(dl)
-  }).catch(e => { console.error('[papa] yt-download-error:', e.message || e) })
+  }).catch(e => {
+    console.error('[papa] yt-download-error:', e.message || e)
+    // Without this the entry stayed 'downloading' forever: pinned against
+    // eviction, and reported as in progress by yt-get-downloads.
+    dl.state = 'failed'
+    dl.error = String(e && e.message || e)
+    dl.finishedAt = Date.now()
+    _ytEmit(dl)
+  })
   return { ok: true, id }
 })
 
-ipcMain.handle('yt-get-downloads', () => [..._ytDownloads.values()])
+ipcMain.handle('yt-get-downloads', () => {
+  _pruneYtDownloads()
+  return [..._ytDownloads.values()]
+})
 
 ipcMain.handle('ctx-menu-show', (event, items, x, y) => {
   return Promise.race([

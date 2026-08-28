@@ -171,6 +171,10 @@ let _allTracksCache = null
 let _allTracksCacheRef = null
 let _oldQueue = null
 let _suggCache = { trackFp: null, pool: [] }
+// Bounded and LRU. One entry per page ever visited, written on every
+// navigation away and never pruned -- keyed by page:navId, so a long session
+// browsing albums accumulated one per album. Small entries, but unbounded.
+const SCROLL_MEMORY_CAP = 200
 const _scrollMemory = new Map()
 var _undoStack = []
 var _libPresets = []
@@ -359,9 +363,34 @@ try {
 } catch (_) {}
 
 // ── Undo ──────────────────────────────────────────────────────────────────────
+// An entry used to leave the stack only if the user clicked Undo or pressed
+// Ctrl+Z. Ignore both and it stayed forever -- so Ctrl+Z in a long session
+// reverted whatever destructive action had last been left un-undone, however
+// long ago, with no confirmation and no indication of what it was about to do.
+// Each retained closure also held its snapshot, and the library operations
+// snapshot liked tracks, play counts, play history, playlists and saved queues.
+//
+// An undo is now only offered while its snackbar could still plausibly be on
+// screen, it says WHAT it is undoing, and the stack is capped so a burst cannot
+// pin a run of snapshots in memory.
+const UNDO_WINDOW_MS = 30000
+const UNDO_STACK_CAP = 10
+
+function _pruneUndoStack() {
+  const now = Date.now()
+  for (let i = _undoStack.length - 1; i >= 0; i--) {
+    const e = _undoStack[i]
+    // Dropping the entry drops its closure, and with it the snapshot.
+    if (e.done || now - e.at > UNDO_WINDOW_MS) _undoStack.splice(i, 1)
+  }
+  while (_undoStack.length > UNDO_STACK_CAP) _undoStack.shift()
+}
+
 function pushUndo(label, undoFn) {
-  var entry = { label: label, fn: undoFn, done: false }
+  _pruneUndoStack()
+  var entry = { label: label, fn: undoFn, done: false, at: Date.now() }
   _undoStack.push(entry)
+  while (_undoStack.length > UNDO_STACK_CAP) _undoStack.shift()
   showSnackbar(label, 'Undo', function() {
     // Undo THIS action, not whatever happens to be on top of the stack. The
     // old pop() meant two undoable actions within the snackbar window crossed
@@ -375,10 +404,22 @@ function pushUndo(label, undoFn) {
 }
 
 function undoLastAction() {
+  _pruneUndoStack()
+  var item = null
   while (_undoStack.length) {
-    var item = _undoStack.pop()
-    if (item && !item.done) { item.done = true; item.fn(); return }
+    var candidate = _undoStack.pop()
+    if (candidate && !candidate.done) { item = candidate; break }
   }
+  if (!item) {
+    // Said out loud: silence here reads as a broken keyboard shortcut.
+    showSnackbar('Nothing recent to undo', null, null, 2500)
+    return
+  }
+  item.done = true
+  item.fn()
+  // Naming it is the point: Ctrl+Z used to revert something the user could no
+  // longer see, without saying what.
+  showSnackbar('Undone: ' + item.label, null, null, 4000)
 }
 
 // ── Visibility & power management ───────────────────────────────────────────
@@ -1068,7 +1109,12 @@ function navigate(page, navId, opts = {}) {
   // Save scroll position of page we're leaving
   const contentEl = document.getElementById('content')
   if (contentEl && state.currentPage) {
-    _scrollMemory.set(`${state.currentPage}:${_currentNavId() ?? ''}`, contentEl.scrollTop)
+    const _sk = `${state.currentPage}:${_currentNavId() ?? ''}`
+    _scrollMemory.delete(_sk)          // re-insert, so this key is newest
+    _scrollMemory.set(_sk, contentEl.scrollTop)
+    while (_scrollMemory.size > SCROLL_MEMORY_CAP) {
+      _scrollMemory.delete(_scrollMemory.keys().next().value)
+    }
   }
   if (!opts.skipHistory) {
     // The first navigate() of the session has no page to come back to, and
@@ -1797,7 +1843,15 @@ function renderArtists() {
 }
 
 function saveLibPreset() {
-  var name = prompt('Preset name:')
+  // Native prompt() and confirm() both stop the renderer's event loop.
+  _mgPrompt('Save this view as a preset', {
+    label: 'Preset name',
+    confirmLabel: 'Save',
+    onConfirm: function (name) { _saveLibPresetNamed(String(name || '').trim()) },
+  })
+}
+
+function _saveLibPresetNamed(name) {
   if (!name) return
   var preset = {
     name: name,
@@ -1815,12 +1869,17 @@ function saveLibPreset() {
     search: state.libSearch,
   }
   var existing = _libPresets.findIndex(function(p) { return p.name === name })
-  if (existing !== -1 && !confirm('A preset named "' + name + '" already exists. Replace it?')) return
-  if (existing !== -1) _libPresets[existing] = preset
-  else _libPresets.push(preset)
-  localStorage.setItem('papa-lib-presets', JSON.stringify(_libPresets))
-  showSnackbar('Preset "' + name + (existing !== -1 ? '" replaced' : '" saved'))
-  renderLibrary()
+  function commit() {
+    if (existing !== -1) _libPresets[existing] = preset
+    else _libPresets.push(preset)
+    localStorage.setItem('papa-lib-presets', JSON.stringify(_libPresets))
+    showSnackbar('Preset "' + name + (existing !== -1 ? '" replaced' : '" saved'))
+    renderLibrary()
+  }
+  if (existing === -1) { commit(); return }
+  _mgConfirm('Replace this preset?',
+    '<p>A preset named <strong>' + esc(name) + '</strong> already exists.</p>',
+    'Replace', commit)
 }
 
 function loadLibPreset(name) {
@@ -2203,7 +2262,17 @@ function renderLibrary() {
   })
   document.getElementById('lib-save-preset')?.addEventListener('click', function() { saveLibPreset() })
   document.getElementById('lib-preset-select')?.addEventListener('change', function() { var v = this.value; var d = document.getElementById('lib-delete-preset'); if (d) d.style.display = v ? 'inline-block' : 'none'; if (v) loadLibPreset(v) })
-  document.getElementById('lib-delete-preset')?.addEventListener('click', function() { var sel = document.getElementById('lib-preset-select'); var v = sel && sel.value; if (v && confirm('Delete preset "' + v + '"?')) { _libPresets = _libPresets.filter(function(p) { return p.name !== v }); localStorage.setItem('papa-lib-presets', JSON.stringify(_libPresets)); showSnackbar('Preset "' + v + '" deleted'); renderLibrary() } })
+  document.getElementById('lib-delete-preset')?.addEventListener('click', function() {
+    var sel = document.getElementById('lib-preset-select')
+    var v = sel && sel.value
+    if (!v) return
+    _mgConfirm('Delete this preset?', '<p><strong>' + esc(v) + '</strong></p>', 'Delete', function () {
+      _libPresets = _libPresets.filter(function(p) { return p.name !== v })
+      localStorage.setItem('papa-lib-presets', JSON.stringify(_libPresets))
+      showSnackbar('Preset "' + v + '" deleted')
+      renderLibrary()
+    })
+  })
   document.getElementById('lib-view-folders')?.addEventListener('click', function() {
     state.libView = state.libView === 'folders' ? 'grid' : 'folders'
     state.libFolder = null
@@ -2243,11 +2312,16 @@ function renderLibrary() {
 }
 
 function editField(field, currentValue, callback) {
-  var newVal = prompt('Edit ' + field + ':', currentValue)
-  if (newVal && newVal !== currentValue) {
-    callback(newVal)
-    showSnackbar(field + ' updated (visual only — save to file coming soon)')
-  }
+  _mgPrompt('Edit ' + field, {
+    label: field,
+    value: currentValue,
+    confirmLabel: 'Update',
+    onConfirm: function (newVal) {
+      if (!newVal || newVal === currentValue) return
+      callback(newVal)
+      showSnackbar(field + ' updated (visual only — save to file coming soon)')
+    },
+  })
 }
 
 function renderAlbum(albumId) {
@@ -2409,12 +2483,18 @@ function renderAlbum(albumId) {
   var notesEl = document.querySelector('.album-notes')
   if (notesEl) notesEl.addEventListener('click', function() {
     var existing = state.albumNotes[albumId] || ''
-    var note = prompt('Notes for ' + album.name + ':', existing)
-    if (note !== null) {
-      state.albumNotes[albumId] = note
-      localStorage.setItem('papa-album-notes', JSON.stringify(state.albumNotes))
-      renderAlbum(albumId)
-    }
+    // A note is prose, so it gets a textarea rather than a one-line prompt.
+    _mgPrompt('Notes', {
+      label: album.name,
+      value: existing,
+      multiline: true,
+      confirmLabel: 'Save note',
+      onConfirm: function (note) {
+        state.albumNotes[albumId] = note
+        localStorage.setItem('papa-album-notes', JSON.stringify(state.albumNotes))
+        renderAlbum(albumId)
+      },
+    })
   })
 
   document.querySelector('.album-hero-title')?.addEventListener('click', () => {
@@ -4915,7 +4995,9 @@ function renderPlaylist(id, sortKey) {
   })
 
   document.getElementById('pl-delete-btn')?.addEventListener('click', () => {
-    if (!confirm('Delete the playlist "' + pl.name + '"?\n\nThe tracks themselves are not touched.')) return
+    // Was a native confirm(). This action is already undoable from the snackbar
+    // below and the tracks themselves are untouched, so the blocking prompt
+    // bought nothing.
     var deletedPl = JSON.parse(JSON.stringify(pl))
     state.playlists = state.playlists.filter(p => p.id !== id)
     window.api.deletePlaylist(id)
@@ -6017,32 +6099,57 @@ function renderQueuePanel() {
     row.addEventListener('drop', e => {
       e.preventDefault()
       const destIdx = parseInt(row.dataset.queueIdx)
-      if (dragSrcIdx === null || dragSrcIdx === destIdx) return
       const rect = row.getBoundingClientRect()
       const insertBefore = e.clientY < rect.top + rect.height / 2
-      const insertAt = insertBefore ? destIdx : destIdx + 1
-
-      const [moved] = state.queue.splice(dragSrcIdx, 1)
-      const adjustedInsert = dragSrcIdx < insertAt ? insertAt - 1 : insertAt
-      state.queue.splice(adjustedInsert, 0, moved)
-
-      // Keep queueIndex pointing at the same track
-      if (dragSrcIdx === state.queueIndex) {
-        state.queueIndex = adjustedInsert
-      } else if (dragSrcIdx < state.queueIndex && adjustedInsert >= state.queueIndex) {
-        state.queueIndex--
-      } else if (dragSrcIdx > state.queueIndex && adjustedInsert <= state.queueIndex) {
-        state.queueIndex++
-      }
+      reorderQueue(dragSrcIdx, destIdx, insertBefore)
       dragSrcIdx = null
-      // computeNextIndex() caches _pendingShuffle as an INDEX and mpv has
-      // already been handed that file. After a reorder that index points at a
-      // different track, so the wrong song plays next while the highlight says
-      // otherwise. The Clear handler already does this; reorder did not.
-      _pendingShuffle = null
-      updateNextPrefetch()
-      renderQueuePanel()
     })
+  })
+
+  // ── The same reorder by touch ────────────────────────────────────────────
+  // The rows above use the native HTML drag-and-drop API, which does not fire
+  // at all for touch or pen -- so drag-to-reorder was mouse-only. The handle
+  // gets a pointer-driven path to the same reorderQueue() call.
+  let _touchDrag = null
+  list.querySelectorAll('.queue-drag-handle').forEach(handle => {
+    handle.addEventListener('pointerdown', e => {
+      // Mouse keeps the native path, which carries a proper drag image.
+      if (e.pointerType === 'mouse' || e.button !== 0) return
+      const row = handle.closest('.queue-row')
+      if (!row) return
+      e.preventDefault()
+      e.stopPropagation()
+      _touchDrag = { srcIdx: parseInt(row.dataset.queueIdx), row: row, id: e.pointerId }
+      row.classList.add('dragging')
+      try { handle.setPointerCapture(e.pointerId) } catch (_) {}
+    })
+    handle.addEventListener('pointermove', e => {
+      if (!_touchDrag || _touchDrag.id !== e.pointerId) return
+      e.preventDefault()
+      // With pointer capture the event targets the handle, so the row under the
+      // finger has to be found by position.
+      const over = _queueRowAt(list, e.clientX, e.clientY)
+      list.querySelectorAll('.queue-row').forEach(r => r.classList.remove('drag-over-top', 'drag-over-bottom'))
+      if (!over) return
+      const rect = over.getBoundingClientRect()
+      over.classList.add(e.clientY < rect.top + rect.height / 2 ? 'drag-over-top' : 'drag-over-bottom')
+    })
+    function endTouchDrag(e, commit) {
+      if (!_touchDrag || _touchDrag.id !== e.pointerId) return
+      const drag = _touchDrag
+      _touchDrag = null
+      try { handle.releasePointerCapture(e.pointerId) } catch (_) {}
+      drag.row.classList.remove('dragging')
+      list.querySelectorAll('.queue-row').forEach(r => r.classList.remove('drag-over-top', 'drag-over-bottom'))
+      if (!commit) return
+      const over = _queueRowAt(list, e.clientX, e.clientY)
+      if (!over) return
+      const rect = over.getBoundingClientRect()
+      reorderQueue(drag.srcIdx, parseInt(over.dataset.queueIdx), e.clientY < rect.top + rect.height / 2)
+    }
+    handle.addEventListener('pointerup', e => endTouchDrag(e, true))
+    // Cancelled by the OS taking the gesture: put the row back, change nothing.
+    handle.addEventListener('pointercancel', e => endTouchDrag(e, false))
   })
 
   const playingEl = list.querySelector('.queue-row.playing')
@@ -7111,18 +7218,91 @@ async function searchAndSaveLyrics() {
 }
 
 // ── Draggable bar ───────────────────────────────────────────────────────────
+// Pointer events, not mouse events. The app registered no touchstart,
+// touchmove, touchend, pointerdown or pointerup anywhere, so the progress bar,
+// volume slider, queue reorder, both resizers and the Discover swipe worked by
+// mouse only -- unusable by touch or stylus even though plain clicks were fine.
+// One Pointer Events API covers mouse, touch and pen.
+//
+// setPointerCapture is the other half of the win: move and up are delivered to
+// the element even when the pointer leaves it, so there are no document-level
+// listeners left running for the life of the page, and a drag that ends
+// off-screen still ends.
+// The row under a point, ignoring the dragged row's own handle. Used by the
+// touch path, which cannot rely on the event target.
+function _queueRowAt(list, x, y) {
+  const rows = list.querySelectorAll('.queue-row')
+  for (const r of rows) {
+    const b = r.getBoundingClientRect()
+    if (y >= b.top && y <= b.bottom && x >= b.left && x <= b.right) return r
+  }
+  return null
+}
+
+// One reorder, called by the mouse drop handler and the touch drag alike.
+// Extracted rather than duplicated: it carries queueIndex and the shuffle
+// prefetch across the move, and two copies of that would drift.
+function reorderQueue(srcIdx, destIdx, insertBefore) {
+  if (srcIdx == null || !Number.isFinite(srcIdx) || !Number.isFinite(destIdx)) return
+  if (srcIdx === destIdx) return
+  if (srcIdx < 0 || srcIdx >= state.queue.length) return
+  if (destIdx < 0 || destIdx >= state.queue.length) return
+
+  const insertAt = insertBefore ? destIdx : destIdx + 1
+  const [moved] = state.queue.splice(srcIdx, 1)
+  const adjustedInsert = srcIdx < insertAt ? insertAt - 1 : insertAt
+  state.queue.splice(adjustedInsert, 0, moved)
+
+  // Keep queueIndex pointing at the same track
+  if (srcIdx === state.queueIndex) {
+    state.queueIndex = adjustedInsert
+  } else if (srcIdx < state.queueIndex && adjustedInsert >= state.queueIndex) {
+    state.queueIndex--
+  } else if (srcIdx > state.queueIndex && adjustedInsert <= state.queueIndex) {
+    state.queueIndex++
+  }
+  // computeNextIndex() caches _pendingShuffle as an INDEX and mpv has already
+  // been handed that file. After a reorder that index points at a different
+  // track, so the wrong song plays next while the highlight says otherwise.
+  _pendingShuffle = null
+  updateNextPrefetch()
+  renderQueuePanel()
+}
+
 function makeDraggable(trackEl, fillEl, thumbEl, onChange) {
-  let dragging = false
+  if (!trackEl) return
+  let activeId = null
   function update(e) {
     const rect = trackEl.getBoundingClientRect()
+    if (!rect.width) return
     const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
     if (fillEl)  fillEl.style.width = `${ratio * 100}%`
     if (thumbEl) thumbEl.style.left = `${ratio * 100}%`
     onChange(ratio)
   }
-  trackEl.addEventListener('mousedown', e => { dragging = true; update(e) })
-  document.addEventListener('mousemove', e => { if (dragging) update(e) })
-  document.addEventListener('mouseup', () => { dragging = false })
+  trackEl.addEventListener('pointerdown', e => {
+    // Primary button / primary touch only: a right-click opens the context menu
+    // that the progress bar and volume bar both have.
+    if (e.button !== 0) return
+    activeId = e.pointerId
+    // preventDefault stops touch scrolling and the text-selection drag.
+    e.preventDefault()
+    try { trackEl.setPointerCapture(e.pointerId) } catch (_) {}
+    update(e)
+  })
+  trackEl.addEventListener('pointermove', e => {
+    if (activeId !== e.pointerId) return
+    update(e)
+  })
+  function end(e) {
+    if (activeId !== e.pointerId) return
+    activeId = null
+    try { trackEl.releasePointerCapture(e.pointerId) } catch (_) {}
+  }
+  // pointercancel matters on touch: the OS can take the gesture away (a
+  // system edge swipe), and without this the bar stayed latched to the finger.
+  trackEl.addEventListener('pointerup', end)
+  trackEl.addEventListener('pointercancel', end)
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -7436,15 +7616,34 @@ function bindContentEvents() {
     // one. It used to bind mousedown/mouseup on querySelector('.card') once and
     // then remove that node, leaving the remaining nine cards inert. A swipe
     // also did nothing at all, so a plain click now opens the album.
+    // Pointer events, so this is a swipe by finger as well as by mouse -- which
+    // is the gesture it is named after and the one it never supported.
     var _swipeStartX = 0
     var _swipeCard = null
-    swipeEl.addEventListener('mousedown', function(e) {
+    var _swipeId = null
+    swipeEl.addEventListener('pointerdown', function(e) {
+      if (e.button !== 0) return
       _swipeCard = e.target.closest('.discovery-swipe-card')
+      if (!_swipeCard) return
       _swipeStartX = e.clientX
+      _swipeId = e.pointerId
+      // Or a touch drag scrolls the page instead of moving the card.
+      e.preventDefault()
+      try { swipeEl.setPointerCapture(e.pointerId) } catch (_) {}
     })
-    swipeEl.addEventListener('mouseup', function(e) {
-      var card = e.target.closest('.discovery-swipe-card')
-      if (!card || card !== _swipeCard) { _swipeCard = null; return }
+    swipeEl.addEventListener('pointercancel', function(e) {
+      if (_swipeId !== e.pointerId) return
+      _swipeCard = null; _swipeId = null
+    })
+    swipeEl.addEventListener('pointerup', function(e) {
+      if (_swipeId !== e.pointerId) { _swipeCard = null; return }
+      _swipeId = null
+      try { swipeEl.releasePointerCapture(e.pointerId) } catch (_) {}
+      // With pointer capture the up event targets the container, so the card is
+      // the one recorded on the way down rather than whatever is under the
+      // finger now.
+      var card = _swipeCard
+      if (!card) return
       var diff = e.clientX - _swipeStartX
       _swipeCard = null
       if (Math.abs(diff) > 80) {
@@ -8862,9 +9061,14 @@ async function initChatSidebar() {
 
   // Memory clear button
   document.getElementById('mcs-mem-clear-btn')?.addEventListener('click', async () => {
-    if (!confirm('Clear all agent memory? This cannot be undone.')) return
-    await window.api.agentClearMemory()
-    _renderMemoryTab()
+    // This one really cannot be undone, so it keeps a confirmation -- the app's
+    // own, which does not stop the renderer's event loop.
+    _mgConfirm('Clear all assistant memory?',
+      '<p>Saved conversations and the taste profile are deleted. This cannot be undone.</p>',
+      'Clear memory', async function () {
+        await window.api.agentClearMemory()
+        _renderMemoryTab()
+      })
   })
 
   // Memory refresh button — force profile update from current conversation
@@ -9016,12 +9220,11 @@ async function _verifySurroundWhenDone(g, plan, label) {
       showSnackbar(`Verified: all ${res.total} tracks are surround`)
     } else if (res.mixed) {
       showSnackbar(`Warning: only ${res.surround} of ${res.total} tracks are surround`, 'Show', () => {
-        alert(`Labelled ${label}, but these tracks are not surround:\n\n` +
-          res.offenders.map(o => `  ${o.name} — ${o.channels} channel${o.channels === 1 ? '' : 's'}`).join('\n'))
+        _showSurroundOffenders(`Labelled ${label}, but these tracks are not surround`, res.offenders)
       })
     } else {
       showSnackbar(`Warning: labelled ${label} but no track is surround`, 'Show', () => {
-        alert(res.offenders.map(o => `  ${o.name} — ${o.channels} channels`).join('\n'))
+        _showSurroundOffenders(`Labelled ${label}, but no track is surround`, res.offenders)
       })
     }
   }
@@ -9904,23 +10107,30 @@ function _renderTorrentSection() {
     </div>`
   }).join('')
   container.querySelectorAll('.torrent-remove').forEach(btn => {
-    btn.addEventListener('click', async () => {
+    btn.addEventListener('click', () => {
       if (btn.disabled) return
       const t = state._torrents?.get(btn.dataset.hash)
       const pct = t && t.progress ? Math.round(t.progress * 100) : 0
-      if (!confirm('Remove this torrent?' + (pct ? '\n\nIt is ' + pct + '% complete.' : ''))) return
-      btn.disabled = true
-      let ok = true
-      await window.api.torrentRemove(btn.dataset.hash).catch(() => { ok = false })
-      if (!ok) {
-        // Was dropped from local state regardless, so a failed remove left the
-        // row gone from the UI while the torrent kept running.
-        btn.disabled = false
-        showSnackbar("Couldn't remove that torrent")
-        return
-      }
-      state._torrents?.delete(btn.dataset.hash)
-      _renderTorrentSection()
+      // The last native confirm() in the renderer. Partial progress is worth
+      // warning about -- it is thrown away -- so this keeps a confirmation, in
+      // the app's own modal.
+      _mgConfirm('Remove this torrent?',
+        '<p>' + esc((t && t.name) || 'This torrent') + '</p>' +
+        (pct ? '<p>It is ' + pct + '% complete. That progress is discarded.</p>' : ''),
+        'Remove', async function () {
+          btn.disabled = true
+          let ok = true
+          await window.api.torrentRemove(btn.dataset.hash).catch(() => { ok = false })
+          if (!ok) {
+            // Was dropped from local state regardless, so a failed remove left
+            // the row gone from the UI while the torrent kept running.
+            if (btn.isConnected) btn.disabled = false
+            showSnackbar("Couldn't remove that torrent")
+            return
+          }
+          state._torrents?.delete(btn.dataset.hash)
+          _renderTorrentSection()
+        })
     })
   })
 }
@@ -10926,12 +11136,18 @@ function renderDownloads() {
     // single click irreversibly wiped the entire download history -- 1,451
     // records on this machine -- with no warning at all.
     const n = subset.length
-    const msg = _dlTab === 'active'
-      ? 'Cancel ' + n + ' download' + (n === 1 ? '' : 's') + '?\n\n' +
-        'Soulseek cannot resume — these have to be queued again.'
-      : 'Remove ' + n + ' ' + _dlTab + ' item' + (n === 1 ? '' : 's') + ' from the list?\n\n' +
-        'This clears the history in slskd. Files already on disk are not touched.'
-    if (!confirm(msg)) return
+    const title = _dlTab === 'active'
+      ? 'Cancel ' + n + ' download' + (n === 1 ? '' : 's') + '?'
+      : 'Remove ' + n + ' ' + _dlTab + ' item' + (n === 1 ? '' : 's') + ' from the list?'
+    const body = _dlTab === 'active'
+      ? '<p>Soulseek cannot resume — these have to be queued again.</p>'
+      : '<p>This clears the history in slskd. Files already on disk are not touched.</p>'
+    _mgConfirm(title, body, _dlTab === 'active' ? 'Cancel them' : 'Remove them', function () {
+      return _dlClearAllNow(btn, subset, n)
+    })
+  })
+
+  async function _dlClearAllNow(btn, subset, n) {
     const originalText = btn.textContent
     btn.disabled = true
     const done = { n: 0 }
@@ -10957,7 +11173,7 @@ function renderDownloads() {
     await Promise.all([worker(), worker(), worker(), worker()])
     await _pollAndRenderDownloads()
     if (btn) { btn.disabled = false; btn.textContent = originalText }
-  })
+  }
 
   // Restore active tab to wherever user was
   const activeBtnForCurrentTab = document.querySelector(`.dl2-tab[data-tab="${_dlTab}"]`)
@@ -11014,12 +11230,14 @@ function renderDownloads() {
     // This calls slskCancelTransfer: Soulseek has no resume, so "pause" really
     // aborts and loses queue position on every peer. It used to do it silently
     // against an array that was always empty, so it also always did nothing.
-    if (!confirm('Stop ' + active.length + ' download' + (active.length === 1 ? '' : 's') +
-      '?\n\nSoulseek cannot resume — these will have to be queued again.')) return
-    active.forEach(function(f) {
-      window.api.slskCancelTransfer({ username: f.username, id: f.id })
-    })
-    showSnackbar('Stopped ' + active.length + ' download' + (active.length === 1 ? '' : 's'))
+    _mgConfirm('Stop ' + active.length + ' download' + (active.length === 1 ? '' : 's') + '?',
+      '<p>Soulseek cannot resume — these will have to be queued again.</p>',
+      'Stop them', function () {
+        active.forEach(function(f) {
+          window.api.slskCancelTransfer({ username: f.username, id: f.id })
+        })
+        showSnackbar('Stopped ' + active.length + ' download' + (active.length === 1 ? '' : 's'))
+      })
   })
 
   document.getElementById('dl-resume-all')?.addEventListener('click', function() {
@@ -11053,7 +11271,9 @@ function bindSlskSearchEvents(query) {
       await refreshSlskStatus()
       if (!slsk.status.configured) showSlskConfigModal(query)
     } else {
-      alert('slskd install failed: ' + (res.error || 'unknown'))
+      // A snackbar rather than a blocking alert; the section re-renders below
+      // and offers the button again either way.
+      showSnackbar('slskd install failed: ' + (res.error || 'unknown'), null, null, 8000)
     }
     section.innerHTML = renderSoulseekRow(query)
     bindSlskSearchEvents(query)
@@ -12163,24 +12383,33 @@ function initResizableQueue() {
 
   var handle = document.createElement('div')
   handle.id = 'queue-resize-handle'
-  handle.style.cssText = 'position:absolute;left:0;top:0;bottom:0;width:4px;cursor:col-resize;z-index:10'
-  handle.addEventListener('mousedown', function(e) {
+  // touch-action:none is not optional: without it a touch drag scrolls the
+  // panel instead of resizing it, and the pointermove events never arrive.
+  handle.style.cssText = 'position:absolute;left:0;top:0;bottom:0;width:10px;cursor:col-resize;z-index:10;touch-action:none'
+  var _qrId = null
+  var _qrStartX = 0
+  var _qrStartWidth = 0
+  handle.addEventListener('pointerdown', function(e) {
+    if (e.button !== 0) return
     e.preventDefault()
-    var startX = e.clientX
-    var startWidth = panel.offsetWidth
-    function onMove(ev) {
-      var newWidth = startWidth - (ev.clientX - startX)
-      newWidth = Math.max(240, Math.min(500, newWidth))
-      panel.style.width = newWidth + 'px'
-    }
-    function onUp() {
-      localStorage.setItem('papa-queue-width', panel.style.width)
-      document.removeEventListener('mousemove', onMove)
-      document.removeEventListener('mouseup', onUp)
-    }
-    document.addEventListener('mousemove', onMove)
-    document.addEventListener('mouseup', onUp)
+    _qrId = e.pointerId
+    _qrStartX = e.clientX
+    _qrStartWidth = panel.offsetWidth
+    try { handle.setPointerCapture(e.pointerId) } catch (_) {}
   })
+  handle.addEventListener('pointermove', function(e) {
+    if (_qrId !== e.pointerId) return
+    var newWidth = _qrStartWidth - (e.clientX - _qrStartX)
+    panel.style.width = Math.max(240, Math.min(500, newWidth)) + 'px'
+  })
+  function _qrEnd(e) {
+    if (_qrId !== e.pointerId) return
+    _qrId = null
+    try { handle.releasePointerCapture(e.pointerId) } catch (_) {}
+    try { localStorage.setItem('papa-queue-width', panel.style.width) } catch (_) {}
+  }
+  handle.addEventListener('pointerup', _qrEnd)
+  handle.addEventListener('pointercancel', _qrEnd)
   panel.appendChild(handle)
 }
 
@@ -12573,14 +12802,20 @@ function setupListeners() {
 
   document.getElementById('vol-track')?.addEventListener('contextmenu', function(e) {
     e.preventDefault()
-    var v = prompt('Volume (0-100)', Math.round(audio.volume * 100))
-    if (v !== null && !isNaN(v)) {
-      audio.volume = Math.max(0, Math.min(100, parseInt(v)) / 100)
-      state.lastVolume = audio.volume
-      setVolDisplay(audio.volume)
-      clearTimeout(_volSaveTimer)
-      _volSaveTimer = setTimeout(function() { window.api.saveVolume(audio.volume) }, 300)
-    }
+    _mgPrompt('Set volume', {
+      label: '0 to 100',
+      value: Math.round(audio.volume * 100),
+      confirmLabel: 'Set',
+      onConfirm: function (v) {
+        var n = parseInt(v, 10)
+        if (!Number.isFinite(n)) return
+        audio.volume = Math.max(0, Math.min(100, n)) / 100
+        state.lastVolume = audio.volume
+        setVolDisplay(audio.volume)
+        clearTimeout(_volSaveTimer)
+        _volSaveTimer = setTimeout(function() { window.api.saveVolume(audio.volume) }, 300)
+      },
+    })
   })
 
   // Karaoke lyrics toggle
@@ -13524,7 +13759,11 @@ function setupListeners() {
     }
     if (cmd === 'clear-queue') {
       if (state.queue.length === 0) return
-      if (!confirm('Clear all ' + state.queue.length + ' tracks from the queue?')) return
+      // Was a native confirm(), which is the worst possible place for one: this
+      // arrives from the browser extension, so a blocking dialog appeared in an
+      // app the user was not looking at and froze it until they found it. The
+      // action is undoable instead.
+      var savedQueue = state.queue.slice(), savedIdx = state.queueIndex
       audio.pause()
       state.queue = []; state.queueIndex = -1; state.isPlaying = false
       state._restoredFromQueue = false
@@ -13532,6 +13771,12 @@ function setupListeners() {
       updatePlayBtn(); updateNowPlaying(null)
       if (state.queuePanelOpen) renderQueuePanel()
       syncExtension()
+      pushUndo('Queue cleared (' + savedQueue.length + ' tracks)', function() {
+        state.queue = savedQueue; state.queueIndex = savedIdx
+        updateNextPrefetch()
+        if (state.queuePanelOpen) renderQueuePanel()
+        syncExtension()
+      })
       return
     }
     if (cmd.startsWith('move-queue:')) {
@@ -13788,19 +14033,24 @@ function setupListeners() {
   // ── Sidebar resize ────────────────────────────────────────────────────────
   const sidebarResizer = document.getElementById('sidebar-resizer')
   if (sidebarResizer) {
-    let _resizerDragging = false
+    let _resizerId = null
     let _resizerStartX = 0
     let _resizerStartW = 0
-    sidebarResizer.addEventListener('mousedown', e => {
-      _resizerDragging = true
+    sidebarResizer.addEventListener('pointerdown', e => {
+      if (e.button !== 0) return
+      e.preventDefault()
+      _resizerId = e.pointerId
       _resizerStartX = e.clientX
-      _resizerStartW = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--sidebar-w')) || 220
+      _resizerStartW = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--sidebar-w')) || SIDEBAR_DEFAULT_W
       sidebarResizer.classList.add('resizing')
       document.body.style.cursor = 'ew-resize'
       document.body.style.userSelect = 'none'
+      // Capture, so the two document-level listeners this used to leave running
+      // for the life of the page are gone.
+      try { sidebarResizer.setPointerCapture(e.pointerId) } catch (_) {}
     })
-    document.addEventListener('mousemove', e => {
-      if (!_resizerDragging) return
+    sidebarResizer.addEventListener('pointermove', e => {
+      if (_resizerId !== e.pointerId) return
       const delta = e.clientX - _resizerStartX
       const newW = Math.max(SIDEBAR_MIN_W, Math.min(SIDEBAR_MAX_W, _resizerStartW + delta))
       // Dragging is an explicit choice of width, so it leaves compact mode
@@ -13809,15 +14059,18 @@ function setupListeners() {
       _sidebarWidth = newW
       document.documentElement.style.setProperty('--sidebar-w', newW + 'px')
     })
-    document.addEventListener('mouseup', () => {
-      if (!_resizerDragging) return
-      _resizerDragging = false
+    const _resizerEnd = e => {
+      if (_resizerId !== e.pointerId) return
+      _resizerId = null
+      try { sidebarResizer.releasePointerCapture(e.pointerId) } catch (_) {}
       sidebarResizer.classList.remove('resizing')
       document.body.style.cursor = ''
       document.body.style.userSelect = ''
       // The dragged width was not persisted at all, so it reset every launch.
       _saveSidebarPrefs()
-    })
+    }
+    sidebarResizer.addEventListener('pointerup', _resizerEnd)
+    sidebarResizer.addEventListener('pointercancel', _resizerEnd)
   }
 
   // ── Collapsible sidebar sections ──────────────────────────────────────────
@@ -14958,6 +15211,90 @@ function _mgConfirm(title, bodyHtml, confirmLabel, onConfirm) {
     try { await onConfirm() } finally { close() }
   })
   dlg.querySelector('#mg-cf-cancel').focus()
+}
+
+// Two native alert()s used to dump this list, blocking the renderer while the
+// user read it -- and a long list in an alert is unreadable and uncopyable.
+function _showSurroundOffenders(title, offenders) {
+  var rows = (offenders || []).map(function (o) {
+    return '<li><strong>' + esc(o.name) + '</strong> — ' + esc(String(o.channels)) +
+      ' channel' + (o.channels === 1 ? '' : 's') + '</li>'
+  }).join('')
+  _mgConfirm(title,
+    '<ul class="mg-offender-list">' + (rows || '<li>No detail was returned.</li>') + '</ul>',
+    'Close', function () {})
+}
+
+// The non-blocking prompt. A native prompt() stops the renderer's event loop
+// dead: the progress bar freezes, the 1 s reconcile tick stops, the extension
+// sync stops, the downloads poll stops and player events queue up. Walk away
+// with one open and the UI is frozen until it is answered.
+//
+// Same shell as _mgConfirm, so Escape, the backdrop and the X all cancel, and
+// Enter in the field submits.
+function _mgPrompt(title, opts) {
+  opts = opts || {}
+  var label = opts.label || ''
+  var initial = opts.value == null ? '' : String(opts.value)
+  var confirmLabel = opts.confirmLabel || 'Save'
+  var multiline = !!opts.multiline
+  var onConfirm = typeof opts.onConfirm === 'function' ? opts.onConfirm : function () {}
+
+  if (_mgConfirmClose) { try { _mgConfirmClose() } catch (_) {} }
+  document.getElementById('mg-confirm-modal')?.remove()
+  var dlg = document.createElement('div')
+  dlg.id = 'mg-confirm-modal'
+  dlg.className = 'modal-overlay'
+  var field = multiline
+    ? '<textarea id="mg-pr-input" class="sq-name-input" rows="5" style="resize:vertical"></textarea>'
+    : '<input id="mg-pr-input" class="sq-name-input" type="text">'
+  dlg.innerHTML = '<div class="modal-box mg-confirm-box">' +
+    '<div class="modal-header-row">' +
+      '<div class="modal-title">' + esc(title) + '</div>' +
+      '<button class="modal-close-btn" id="mg-cf-x">✕</button>' +
+    '</div>' +
+    '<div class="mg-confirm-body">' +
+      (label ? '<label class="sq-label">' + esc(label) + '</label>' : '') + field +
+    '</div>' +
+    '<div class="mg-confirm-actions">' +
+      '<button class="mg-btn" id="mg-cf-cancel">Cancel</button>' +
+      '<button class="mg-btn" id="mg-cf-ok">' + esc(confirmLabel) + '</button>' +
+    '</div></div>'
+  document.body.appendChild(dlg)
+  // Assigned rather than interpolated: the value is user text and must never be
+  // parsed as markup, and a textarea's content is not attribute-escaped.
+  var input = dlg.querySelector('#mg-pr-input')
+  input.value = initial
+
+  function close() {
+    if (_mgConfirmClose === close) _mgConfirmClose = null
+    dlg.remove()
+    document.removeEventListener('keydown', onKey)
+  }
+  function onKey(e) { if (e.key === 'Escape') close() }
+  document.addEventListener('keydown', onKey)
+  _mgConfirmClose = close
+
+  function submit() {
+    var value = input.value
+    close()
+    // After close(), so a callback that opens another dialog is not closed by
+    // this one on its way out.
+    onConfirm(value)
+  }
+  dlg.addEventListener('keydown', function (e) {
+    if (e.key !== 'Enter') return
+    // A multiline field needs Enter for newlines; Ctrl+Enter submits.
+    if (multiline && !(e.ctrlKey || e.metaKey)) return
+    e.preventDefault()
+    submit()
+  })
+  dlg.addEventListener('click', function (e) { if (e.target === dlg) close() })
+  dlg.querySelector('#mg-cf-x').addEventListener('click', close)
+  dlg.querySelector('#mg-cf-cancel').addEventListener('click', close)
+  dlg.querySelector('#mg-cf-ok').addEventListener('click', submit)
+  input.focus()
+  input.select()
 }
 
 // Bulk delete from the Manage view's checkbox selection.

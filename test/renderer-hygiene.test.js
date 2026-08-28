@@ -492,3 +492,175 @@ test('a Discover swipe records something', () => {
   assert.match(RENDERER, /!_discoverDismissed\.has\(a\.id\)/)
   assert.match(RENDERER, /_discoverDismissed\.size > DISCOVER_DISMISS_CAP/, 'bounded')
 })
+
+// ── Item 3.1: no native dialog may stop the renderer ───────────────────────
+
+test('nothing calls the global alert, confirm or prompt', () => {
+  // A native dialog stops the renderer's event loop dead: the progress bar
+  // freezes, the 1s reconcile tick stops, the extension sync stops, the
+  // downloads poll stops and player events queue up. Walk away with one open
+  // and the UI is frozen until it is answered. One had been replaced with a
+  // comment saying exactly this; sixteen were left.
+  const lines = RENDERER.split('\n')
+  const offenders = []
+  // Local shadows are fine, and there are three: small dialog helpers that
+  // define their own confirm() for the OK button.
+  const shadows = []
+  lines.forEach((line, i) => {
+    if (/(?:function|var|const|let)\s+(?:confirm|alert|prompt)\b/.test(line)) shadows.push(i)
+  })
+  const shadowedFrom = shadows.length ? Math.min(...shadows) : Infinity
+  lines.forEach((line, i) => {
+    if (/^\s*(?:\/\/|\*)/.test(line)) return           // a comment about one
+    if (!/(^|[^.\w])(alert|confirm|prompt)\s*\(/.test(line)) return
+    // A shadow is only credible if one was declared earlier in the file.
+    if (i > shadowedFrom && /(^|[^.\w])confirm\s*\(\)/.test(line)) return
+    offenders.push(`${i + 1}: ${line.trim().slice(0, 90)}`)
+  })
+  assert.deepStrictEqual(offenders, [],
+    'use _mgConfirm, _mgPrompt, or a snackbar with an Undo')
+})
+
+test('the app has its own prompt, and it is non-blocking', () => {
+  assert.match(RENDERER, /function _mgPrompt\(title, opts\)/)
+  const fn = RENDERER.slice(RENDERER.indexOf('function _mgPrompt(title, opts)'),
+                            RENDERER.indexOf('// Bulk delete from the Manage'))
+  assert.match(fn, /onConfirm\(value\)/, 'the value comes back through a callback')
+  assert.match(fn, /input\.value = initial/, 'the initial value is assigned, never interpolated')
+  assert.doesNotMatch(fn, /value="\$\{/, 'user text must not be parsed as markup')
+  assert.match(fn, /e\.key === 'Escape'/, 'Escape cancels, as everywhere else')
+  assert.match(fn, /multiline && !\(e\.ctrlKey/, 'Enter is a newline in a textarea')
+})
+
+// ── Items 3.6 and 3.7: things that grow for the life of the session ────────
+
+test('the scroll memory is capped', () => {
+  assert.match(RENDERER, /const SCROLL_MEMORY_CAP = \d+/)
+  const w = RENDERER.slice(RENDERER.indexOf('const _sk = `${state.currentPage}'),
+                           RENDERER.indexOf('const _sk = `${state.currentPage}') + 500)
+  assert.match(w, /_scrollMemory\.delete\(_sk\)/, 're-inserted so the key is newest')
+  assert.match(w, /while \(_scrollMemory\.size > SCROLL_MEMORY_CAP\)/)
+})
+
+test('an undo expires, is capped, and says what it undid', () => {
+  const push = RENDERER.slice(RENDERER.indexOf('const UNDO_WINDOW_MS'),
+                              RENDERER.indexOf('// \u2500\u2500 Visibility & power management'))
+  assert.match(push, /const UNDO_WINDOW_MS = \d+/)
+  assert.match(push, /const UNDO_STACK_CAP = \d+/)
+  assert.match(push, /now - e\.at > UNDO_WINDOW_MS/, 'entries expire with their snackbar')
+  assert.match(push, /_pruneUndoStack\(\)/)
+  // The reason this matters: Ctrl+Z used to revert something from an hour ago
+  // without saying what.
+  assert.match(push, /'Undone: ' \+ item\.label/)
+  assert.match(push, /Nothing recent to undo/, 'and says so when there is nothing')
+})
+
+// ── Item 3.12: every drag must work by touch and pen, not mouse only ───────
+
+test('no drag is built on mouse events', () => {
+  // The app registered no touchstart, touchmove, touchend, pointerdown or
+  // pointerup anywhere: the progress bar, volume slider, queue reorder, both
+  // resizers and the Discover swipe were mouse-only, even though plain clicks
+  // worked. One Pointer Events API covers mouse, touch and pen.
+  //
+  // A drag needs an END and a MOVE. That is the definition, so it is what gets
+  // checked -- rather than a list of mousedowns judged one at a time, which
+  // needs an exemption for every legitimate one and rots on the next edit.
+  // A lone mousedown cannot be a drag: it is either a click alternative chosen
+  // to fire before blur (browsers synthesise mousedown on tap, so those work)
+  // or a non-primary-button handler, which touch does not have at all.
+  const lines = RENDERER.split('\n')
+  const ends = []
+  const moves = []
+  lines.forEach((line, i) => {
+    if (/addEventListener\('mouseup'/.test(line)) ends.push(i + 1)
+    // An element-level mousemove is a hover effect, which is a mouse concept
+    // and correctly stays. A DOCUMENT-level one is tracking a drag.
+    if (/document\.addEventListener\('mousemove'/.test(line)) moves.push(i + 1)
+  })
+  assert.deepStrictEqual(ends, [],
+    'a mouseup listener exists only to end a drag or complete a press, and ' +
+    'neither fires for touch: line(s) ' + ends.join(', '))
+  assert.deepStrictEqual(moves, [],
+    'a document-level mousemove tracks a drag, and also leaks a listener for ' +
+    'the life of the page: line(s) ' + moves.join(', '))
+})
+
+test('the six drags all start on pointerdown', () => {
+  // Named individually, because "no mouse events" would also pass if a drag
+  // were deleted rather than converted.
+  const anchors = [
+    ['makeDraggable', "trackEl.addEventListener('pointerdown'"],
+    ['the Discover swipe', "swipeEl.addEventListener('pointerdown'"],
+    ['the queue reorder', "handle.addEventListener('pointerdown', e => {"],
+    ['the queue-panel resizer', "handle.addEventListener('pointerdown', function(e) {"],
+    ['the sidebar resizer', "sidebarResizer.addEventListener('pointerdown'"],
+  ]
+  for (const [what, needle] of anchors) {
+    assert.ok(RENDERER.includes(needle), what + ' must start on pointerdown')
+  }
+  // makeDraggable serves both the player progress bar and the volume slider,
+  // which is why five anchors cover six drags.
+  const uses = [...RENDERER.matchAll(/makeDraggable\(/g)].length
+  assert.ok(uses >= 4, `makeDraggable is used ${uses} times (declaration + 3 bars)`)
+})
+
+test('makeDraggable uses pointer capture, not document listeners', () => {
+  const fn = RENDERER.slice(RENDERER.indexOf('function makeDraggable('),
+                            RENDERER.indexOf('// \u2500\u2500 Helpers \u2500'))
+  assert.match(fn, /addEventListener\('pointerdown'/)
+  assert.match(fn, /setPointerCapture/, 'so a drag that ends off-screen still ends')
+  assert.match(fn, /addEventListener\('pointercancel'/,
+    'the OS can take a touch gesture away; without this the bar stays latched')
+  assert.doesNotMatch(fn, /document\.addEventListener/)
+  assert.match(fn, /e\.button !== 0/, 'right-click still opens the context menu')
+})
+
+test('every element a drag starts on disables browser touch handling', () => {
+  // Without touch-action:none the browser scrolls and the pointermove events
+  // the handler needs never arrive at all — so the gesture silently does
+  // nothing on exactly the input method this was added for.
+  const CSS = fs.readFileSync(path.join(SRC, 'styles.css'), 'utf8')
+  for (const sel of ['.progress-track', '.vol-track', '.queue-drag-handle',
+                     '.sidebar-resizer', '.discovery-swipe']) {
+    const at = CSS.indexOf(sel + ' {')
+    assert.ok(at > 0, `found ${sel}`)
+    const rule = CSS.slice(at, CSS.indexOf('}', at))
+    assert.match(rule, /touch-action:\s*none/, sel)
+  }
+  // The queue resizer is created in JS with an inline style.
+  assert.match(RENDERER, /cursor:col-resize;z-index:10;touch-action:none/)
+})
+
+test('the drag handle is visible where there is no hover', () => {
+  // By touch there is no hover, so an opacity:0-until-hover handle is the one
+  // control that starts a reorder being invisible on the only input method
+  // that needs it.
+  const CSS = fs.readFileSync(path.join(SRC, 'styles.css'), 'utf8')
+  assert.match(CSS, /@media \(hover: none\) \{\s*\.queue-drag-handle \{ opacity:\.6/)
+})
+
+test('the queue reorder is one implementation, called by both paths', () => {
+  assert.match(RENDERER, /function reorderQueue\(srcIdx, destIdx, insertBefore\)/)
+  const fn = RENDERER.slice(RENDERER.indexOf('function reorderQueue('),
+                            RENDERER.indexOf('function makeDraggable('))
+  // The parts that would drift if there were two copies.
+  assert.match(fn, /state\.queueIndex = adjustedInsert/)
+  assert.match(fn, /_pendingShuffle = null/)
+  assert.match(fn, /destIdx >= state\.queue\.length/, 'both indices are range-checked')
+  // Called from the native drop handler and from the touch path.
+  const calls = [...RENDERER.matchAll(/reorderQueue\(/g)].length
+  assert.ok(calls >= 3, `declaration plus two call sites expected, found ${calls}`)
+})
+
+test('the touch reorder finds its target by position, not by event target', () => {
+  // Pointer capture means every move and the up event target the handle, so
+  // the row under the finger has to be found geometrically.
+  assert.match(RENDERER, /function _queueRowAt\(list, x, y\)/)
+  const fn = RENDERER.slice(RENDERER.indexOf('let _touchDrag = null'),
+                            RENDERER.indexOf('const playingEl = list.querySelector'))
+  assert.match(fn, /_queueRowAt\(list, e\.clientX, e\.clientY\)/)
+  assert.match(fn, /e\.pointerType === 'mouse'/, 'mouse keeps the native drag image')
+  assert.match(fn, /pointercancel', e => endTouchDrag\(e, false\)/,
+    'a cancelled gesture must change nothing')
+})
