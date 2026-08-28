@@ -7,6 +7,7 @@ const os = require('os')
 const tagEdit = require('./src/tag-edit')
 const crypto = require('crypto')
 const { makeCache } = require('./src/ttl-cache')
+const dlState_ = require('./src/dl-state')
 const https = require('https')
 // No sync child_process on the main thread: every shell-out goes through run().
 const { spawn, execFile } = require('child_process')
@@ -4488,12 +4489,14 @@ function dlBroadcast() {
 }
 
 // slskd reports state as e.g. "Completed, Succeeded" / "Queued, Remotely".
+// One classifier, shared with the renderer (src/dl-state.js). This one only
+// checked whether the state STARTS WITH "Completed", so a bare 'Failed' or
+// 'Aborted' looked like a running transfer: the scheduler never recorded the
+// failure and the file was not re-sourced until the 20-minute stall timer.
+// 'succeeded' is kept as this side's word for it.
 function dlClassify(stateStr) {
-  const st = String(stateStr || '')
-  if (st.indexOf('Completed') !== 0) return 'active'
-  if (st.indexOf('Succeeded') !== -1) return 'succeeded'
-  if (st.indexOf('Cancelled') !== -1) return 'cancelled'
-  return 'failed'
+  const kind = dlState_.classify(stateStr)
+  return kind === 'completed' ? 'succeeded' : kind
 }
 
 // Every file in the last snapshot, flat. The Map above keys by filename and so

@@ -16,14 +16,41 @@ var EDITION_WORDS = [
   'flac', 'mix', 'remix',
 ]
 
+// This was a plain substring replace -- out.split(word).join(' ') -- with no
+// word boundary, and 'remaster' sits before 'remastered' in the list, so the
+// shorter word destroyed the longer one from the inside:
+//
+//   "The Snow Goose (Remastered)"  ->  "the snow goose"      (bracket stripped)
+//   "The Snow Goose Remastered"    ->  "the snow goose ed"   (letters eaten)
+//
+// and findDuplicates() therefore did not see the two spellings of one album as
+// duplicates -- the exact job it exists to do. It also mangled legitimate
+// titles: "Editions of You" -> "s of you", "Stereo" -> "", "Deluxe Edition" ->
+// "".
+//
+// Word boundaries, longest-first so a prefix cannot pre-empt a longer word, and
+// built once. \b does not work against '5.1' or 'hi-res' (the boundary falls
+// inside them), so the edges are spelled out as "not a word character".
+var EDITION_RES = EDITION_WORDS
+  .slice()
+  .sort(function (a, b) { return b.length - a.length })
+  .map(function (w) {
+    var body = w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/[\s_-]+/g, '[\\s._-]+')
+    return new RegExp('(^|[^a-z0-9])' + body + '(?![a-z0-9])', 'gi')
+  })
+
 var UNKNOWN_RE = /^(unknown|various|va|untitled)?\s*(artist|album)?\s*$/i
 
 function normalizeName(s) {
   var out = String(s == null ? '' : s).toLowerCase()
   out = out.replace(/\[[^\]]*\]/g, ' ').replace(/\([^)]*\)/g, ' ')
   out = out.replace(/\{[^}]*\}/g, ' ')
-  for (var i = 0; i < EDITION_WORDS.length; i++) {
-    out = out.split(EDITION_WORDS[i]).join(' ')
+  for (var i = 0; i < EDITION_RES.length; i++) {
+    var next = out.replace(EDITION_RES[i], '$1 ')
+    // Never strip a word that is the whole remaining title: "Stereo" as an
+    // album name is an album called Stereo, and reducing it to '' makes it
+    // match every other untitled thing.
+    if (next.replace(/[^a-z0-9]+/g, '')) out = next
   }
   out = out.replace(/\b(19|20)\d{2}\b/g, ' ')
   out = out.replace(/[^a-z0-9]+/g, ' ').trim()

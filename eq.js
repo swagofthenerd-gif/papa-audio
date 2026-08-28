@@ -32,7 +32,14 @@ function defaultSettings() {
   return { enabled: false, preamp: 0, gains: new Array(BAND_COUNT).fill(0) }
 }
 
-function normalize(settings = {}) {
+// The default parameter defends against `undefined` and not against `null` --
+// and getPlayerSettings() spreads the persisted playerSettings over the
+// defaults, so a stored `eq: null` wins and reaches here. buildAfGraph(null)
+// then threw inside _args(), inside start(), surfacing as a confusing
+// start-error with no audio at all. One hand-edit or one bad write and the app
+// is silent, so it coerces rather than trusting the caller.
+function normalize(settings) {
+  settings = settings && typeof settings === 'object' ? settings : {}
   const gains = Array.isArray(settings.gains) ? settings.gains : []
   return {
     enabled: Boolean(settings.enabled),

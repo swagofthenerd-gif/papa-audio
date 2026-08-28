@@ -9,10 +9,22 @@
 // Ordered: the first match wins, so the most specific pattern comes first.
 // The separator in 5.1/7.1 is mandatory - making it optional matched "Album 51
 // Greatest Hits", and track and album numbers are everywhere in these paths.
+//
+// But `\s` in that separator class reintroduced the same class of error it was
+// written to prevent, and worse: "Beethoven Symphony 5 1st Movement",
+// "Bach BWV 5 1 Aria" and "Disc 5 1 of 3" all came back as 5.1. That is not
+// only a wrong badge -- the result is a SORT KEY for search results, it drives
+// the surround-only filter and its count, and a falsely-surround anchor
+// EXCLUDES genuinely matching folders from an album download group. It also
+// runs on YouTube titles.
+//
+// So: no space. A real 5.1 label is written 5.1, 5_1, 5-1 or 5ch1 -- never with
+// a space, because "5 1" is two numbers. And an ordinal suffix is rejected
+// outright, since "5 1st" and "5.1st" are both a movement number.
 const SURROUND_PATTERNS = [
   { kind: 'atmos',  label: 'ATMOS', re: /\b(dolby[\s._-]*)?atmos\b/i },
-  { kind: 'ch71',   label: '7.1',   re: /(^|[^\d])7[\s._-]1(ch)?([^\d]|$)/i },
-  { kind: 'ch51',   label: '5.1',   re: /(^|[^\d])5[\s._-]1(ch)?([^\d]|$)/i },
+  { kind: 'ch71',   label: '7.1',   re: /(^|[^\d])7[._-]1(ch)?(?!st|nd|rd|th|\d)([^\d]|$)/i },
+  { kind: 'ch51',   label: '5.1',   re: /(^|[^\d])5[._-]1(ch)?(?!st|nd|rd|th|\d)([^\d]|$)/i },
   { kind: 'quad',   label: 'QUAD',  re: /\b(quadraphonic|quadrophonic|quad)\b/i },
   { kind: 'mch',    label: 'MCH',   re: /\b(multi[\s._-]?channel|mch|surround)\b/i },
   { kind: 'sacd',   label: 'SACD',  re: /\bsacd\b/i },

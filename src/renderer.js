@@ -8031,10 +8031,26 @@ function formatBadgeHtml(src, cls) {
     .join('')
 }
 
+// Two things were wrong here. `!sec` treated 0 as unknown, so the elapsed-time
+// readout showed an em dash for the first second of every track, and "-—" as a
+// track ended in remaining mode. And there was no hours component, so an
+// hour-long file -- a live set, a DJ mix, a single classical movement -- read as
+// "60:00", and fmtDur(-1) gave "-1:-1".
+//
+// Unknown is now only genuinely unknown: null, undefined or not a number. Zero
+// is a real duration and formats as 0:00.
 function fmtDur(sec) {
-  if (!sec) return '—'
-  const m = Math.floor(sec / 60), s = Math.floor(sec % 60)
-  return `${m}:${String(s).padStart(2, '0')}`
+  // Number(null) and Number('') are both 0, which would render "unknown" as
+  // 0:00 -- the opposite of the bug being fixed.
+  if (sec == null || sec === '') return '—'
+  const n = Number(sec)
+  if (!Number.isFinite(n)) return '—'
+  const total = Math.max(0, Math.round(n))
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  const s = total % 60
+  const ss = String(s).padStart(2, '0')
+  return h ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`
 }
 function fmtTime(sec) {
   if (!sec) return '0 min'
@@ -10011,35 +10027,35 @@ async function _pollAndRenderDownloadsInner() {
   _renderDlTab(files)
 }
 
+// One classifier, shared with main (src/dl-state.js). This one filed
+// 'Scheduled' under FAILED while the label table below called it "Waiting", so
+// a scheduled transfer appeared in the Failed tab labelled "Waiting".
 function _dlCategory(stateStr) {
-  const parts = (stateStr || '').split(',').map(s => s.trim())
-  if (parts.some(p => ['Requested','Queued','Initialising','InProgress'].includes(p))) return 'active'
-  if (parts.includes('Succeeded')) return 'completed'
-  return 'failed'
+  return window.PapaDlState.classify(stateStr)
 }
 
 function _dlIsActive(stateStr) { return _dlCategory(stateStr) === 'active' }
 
+// The label lives next to the classifier now, so a state can never be labelled
+// from one table and filed under another.
 function _dlStateLabel(stateStr) {
-  const parts = (stateStr || '').split(',').map(s => s.trim())
-  if (parts.includes('InProgress'))   return { label: 'Downloading', cls: 'dl2-tag-progress' }
-  if (parts.includes('Scheduled'))    return { label: 'Waiting',     cls: 'dl2-tag-waiting'  }
-  if (parts.includes('Queued'))       return { label: 'Queued',      cls: 'dl2-tag-queued'   }
-  if (parts.includes('Initialising')) return { label: 'Connecting',  cls: 'dl2-tag-queued'   }
-  if (parts.includes('Requested'))    return { label: 'Requested',   cls: 'dl2-tag-queued'   }
-  if (parts.includes('Succeeded'))    return { label: 'Done',        cls: 'dl2-tag-done'     }
-  if (parts.includes('TimedOut'))     return { label: 'Timed out',   cls: 'dl2-tag-failed'   }
-  if (parts.includes('Failed'))       return { label: 'Failed',      cls: 'dl2-tag-failed'   }
-  if (parts.includes('Cancelled'))    return { label: 'Cancelled',   cls: 'dl2-tag-failed'   }
-  if (parts.includes('Aborted'))      return { label: 'Aborted',     cls: 'dl2-tag-failed'   }
-  return { label: stateStr || '?', cls: '' }
+  return window.PapaDlState.label(stateStr)
 }
 
+// The B branch only fired for exactly zero, so a 1-byte file read "0.0 KB",
+// and there was no TB unit, so a terabyte read "1024.00 GB" -- which matters
+// because the storage report totals a multi-terabyte library.
+const _BYTE_UNITS = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
 function _fmtBytes(b) {
-  if (!b) return '0 B'
-  if (b < 1048576) return `${(b / 1024).toFixed(1)} KB`
-  if (b < 1073741824) return `${(b / 1048576).toFixed(1)} MB`
-  return `${(b / 1073741824).toFixed(2)} GB`
+  const n = Number(b)
+  if (!Number.isFinite(n) || n <= 0) return '0 B'
+  let i = 0
+  let v = n
+  while (v >= 1024 && i < _BYTE_UNITS.length - 1) { v /= 1024; i++ }
+  // Whole bytes are whole; everything else keeps enough precision to be useful
+  // without pretending to more than it has.
+  if (i === 0) return `${Math.round(v)} B`
+  return `${v.toFixed(i >= 3 ? 2 : 1)} ${_BYTE_UNITS[i]}`
 }
 
 function _fmtSpeed(bps) {
@@ -10048,24 +10064,62 @@ function _fmtSpeed(bps) {
   return `${(bps / 1048576).toFixed(1)} MB/s`
 }
 
-function _fmtEta(s) {
-  if (!s || s === '00:00:00') return ''
-  const [h, m, sec] = s.split(':').map(Number)
-  if (h > 0)  return `${h}h ${m}m`
-  if (m > 0)  return `${m}m ${sec}s`
-  return `${sec}s`
+// slskd is .NET, and a TimeSpan serialises as `[d.]hh:mm:ss[.fffffff]` -- the
+// day part only appears past 24 hours, which is exactly when the number matters
+// most. Splitting on ':' and calling the first field "hours" made
+// "1.02:03:04" (1d 2h 3m 4s = 93,784 s) parse as 3,856 s and display as
+// "1h 4m", and "2.00:00:00" display as "2h 0m". A single field was read as
+// hours, so "30" became thirty hours.
+//
+// One parser, used by both readers below.
+function _hmsToSecs(hms) {
+  const str = String(hms == null ? '' : hms).trim()
+  if (!str) return 0
+  let days = 0
+  let rest = str
+  // The day separator is a dot, and so is the fractional-seconds separator, so
+  // the day part is only the leading dot-group when a colon follows it.
+  const dot = rest.indexOf('.')
+  if (dot > 0 && rest.indexOf(':') > dot) {
+    const d = Number(rest.slice(0, dot))
+    if (Number.isFinite(d)) days = d
+    rest = rest.slice(dot + 1)
+  }
+  const parts = rest.split(':')
+  // Fractional seconds are dropped rather than rounded: an ETA to the
+  // ten-millionth of a second is noise.
+  const nums = parts.map(p => {
+    const v = Number(String(p).split('.')[0])
+    return Number.isFinite(v) ? v : 0
+  })
+  // A short value is seconds, then mm:ss, then hh:mm:ss -- counted from the
+  // right, which is how every one of these formats works.
+  let secs = 0
+  let mult = 1
+  // Stops after the hours field: anything beyond it is the day part, already
+  // taken above, and a fourth colon-group would be malformed.
+  for (let i = nums.length - 1; i >= 0 && mult <= 3600; i--) {
+    secs += nums[i] * mult
+    mult *= 60
+  }
+  return Math.max(0, days * 86400 + secs)
 }
 
-function _hmsToSecs(hms) {
-  const [h, m, s] = (hms || '').split(':').map(Number)
-  return (h || 0) * 3600 + (m || 0) * 60 + (s || 0)
+function _fmtEta(s) {
+  const secs = _hmsToSecs(s)
+  if (!secs) return ''
+  return _fmtSecs(secs)
 }
 
 function _fmtSecs(secs) {
-  if (!secs) return ''
-  if (secs >= 3600) return `${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m`
-  if (secs >= 60)   return `${Math.floor(secs / 60)}m ${secs % 60}s`
-  return `${secs}s`
+  const n = Math.floor(Number(secs) || 0)
+  if (n <= 0) return ''
+  // A days component, because a Soulseek ETA genuinely does exceed a day and
+  // "51h 4m" is harder to read than "2d 3h".
+  if (n >= 86400) return `${Math.floor(n / 86400)}d ${Math.floor((n % 86400) / 3600)}h`
+  if (n >= 3600)  return `${Math.floor(n / 3600)}h ${Math.floor((n % 3600) / 60)}m`
+  if (n >= 60)    return `${Math.floor(n / 60)}m ${n % 60}s`
+  return `${n}s`
 }
 
 function _dlFileName(filename) {
