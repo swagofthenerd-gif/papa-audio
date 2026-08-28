@@ -1059,11 +1059,11 @@ function renderFolders() {
   }
   if (section) section.style.display = ''
   list.innerHTML = state.musicFolders.map(f => `
-    <li class="site-item" title="${esc(f)}">
+    <li class="folder-item" title="${esc(f)}">
       <span>${esc(shortPath(f))}</span>
-      <button class="site-item-del" data-folder="${esc(f)}" title="Remove">&#10005;</button>
+      <button class="folder-item-del" data-folder="${esc(f)}" title="Remove">&#10005;</button>
     </li>`).join('')
-  list.querySelectorAll('.site-item-del').forEach(btn => {
+  list.querySelectorAll('.folder-item-del').forEach(btn => {
     btn.addEventListener('click', e => {
       e.stopPropagation()
       _confirmRemoveMusicFolder(btn.dataset.folder)
@@ -3850,7 +3850,14 @@ function renderArtist(artistName) {
   artistAlbums.forEach(function(a) { totalTracks += (a.tracks || []).length; (a.tracks || []).forEach(function(t) { totalDur += t.duration || 0 }) })
   var artistHours = Math.floor(totalDur / 3600), artistMins = Math.floor((totalDur % 3600) / 60)
   var isFollowed = state.followedArtists.indexOf(artistName) !== -1
-  var heroHTML = '<div class="artist-hero"><div class="artist-hero-art">' + (artistAlbums[0] && artistAlbums[0].artPath ? '<img src="' + esc('file://' + artistAlbums[0].artPath) + '" alt="">' : '<div style="width:100%;height:100%;background:var(--bg4);display:flex;align-items:center;justify-content:center"><svg viewBox="0 0 24 24" style="width:48px;height:48px;fill:var(--text3)"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg></div>') + '</div><div class="artist-hero-info"><div class="artist-hero-name">' + esc(artistName) + '</div><div class="artist-hero-meta">' + artistAlbums.length + ' albums &middot; ' + totalTracks + ' tracks &middot; ' + artistHours + 'h ' + artistMins + 'm</div><button class="follow-btn' + (isFollowed ? ' following' : '') + '" id="artist-follow-btn">' + (isFollowed ? 'Following' : 'Follow') + '</button></div></div>'
+  // The blurred backdrop and the portrait at the right are fully styled
+  // (.artist-hero-photo, .artist-portrait) and the elements were never created,
+  // so loadArtistBio fetched the Wikipedia photo on every artist page and wrote
+  // it into two ids that do not exist. They exist now.
+  var heroHTML = '<div class="artist-hero">' +
+    '<img class="artist-hero-photo" id="artist-hero-bg-img" alt="" style="display:none" onerror="this.style.display=\'none\'">' +
+    '<img class="artist-portrait" id="artist-portrait-img" alt="" style="display:none" onerror="this.style.display=\'none\'">' +
+    '<div class="artist-hero-art">' + (artistAlbums[0] && artistAlbums[0].artPath ? '<img src="' + esc('file://' + artistAlbums[0].artPath) + '" alt="">' : '<div style="width:100%;height:100%;background:var(--bg4);display:flex;align-items:center;justify-content:center"><svg viewBox="0 0 24 24" style="width:48px;height:48px;fill:var(--text3)"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg></div>') + '</div><div class="artist-hero-info"><div class="artist-hero-name">' + esc(artistName) + '</div><div class="artist-hero-meta">' + artistAlbums.length + ' albums &middot; ' + totalTracks + ' tracks &middot; ' + artistHours + 'h ' + artistMins + 'm</div><button class="follow-btn' + (isFollowed ? ' following' : '') + '" id="artist-follow-btn">' + (isFollowed ? 'Following' : 'Follow') + '</button></div></div>'
 
   var albums = [], eps = [], singles = []
   // Newest first, then alphabetical. Unsorted, the discography reordered itself
@@ -3947,7 +3954,32 @@ function checkFollowedArtistsForNew() {
 // which is what made history and play counts disagree.
 const PLAY_RECORD_MS = 30000
 let _historyTimer = null
+// The history entry is written at the 30 s mark, where the position is always
+// ~30 s. Two achievements ask "did you finish it", which needs the position the
+// track was LEFT at -- so the last sampled position is remembered and flushed
+// when the track is left. Sampled rather than read at flush time because by
+// then audio.currentTime already belongs to the next track.
+let _recordedPlay = null
+let _lastSampledPos = 0
+
+function sampleHistoryPosition(pos) {
+  const n = Number(pos)
+  if (Number.isFinite(n) && n >= 0) _lastSampledPos = n
+}
+
+// Called when a track is left, from every path that leaves one.
+function flushPlayHistoryPosition() {
+  const rec = _recordedPlay
+  _recordedPlay = null
+  if (!rec || !rec.filePath) return
+  if (_lastSampledPos <= 0) return
+  window.api.updatePlayHistoryPosition({ filePath: rec.filePath, position: _lastSampledPos })
+}
+
 function recordPlayAfterThreshold(track) {
+  // The previous track's real position, before the sampler starts over.
+  flushPlayHistoryPosition()
+  _lastSampledPos = 0
   clearTimeout(_historyTimer)
   if (!track || !track.filePath) return
   _historyTimer = setTimeout(function () {
@@ -3960,6 +3992,7 @@ function recordPlayAfterThreshold(track) {
       artPath: track.artPath || null,
       duration: track.duration || 0,
     })
+    _recordedPlay = { filePath: track.filePath }
   }, PLAY_RECORD_MS)
 }
 
@@ -4091,6 +4124,7 @@ async function loadArtistBio(artistName) {
       const bgImg = document.getElementById('artist-hero-bg-img')
       if (bgImg) {
         bgImg.src = data.thumbnail
+        bgImg.style.display = ''
         bgImg.onload = () => bgImg.classList.add('loaded')
       }
     }
@@ -5027,8 +5061,13 @@ function renderStats() {
     { id:'longesttrack', icon:'📏', name:'Long Haul', desc:'Played a track >15 min', check:function() { return recent.some(function(p){for(var i=0;i<state.library.length;i++){var a=state.library[i];if(!a.tracks)continue;for(var j=0;j<a.tracks.length;j++){if(a.tracks[j].filePath===p.filePath&&(a.tracks[j].duration||0)>900)return true}};return false})} },
     { id:'shortesttrack', icon:'⚡', name:'Quick Hit', desc:'Played a track <30 sec', check:function() { return recent.some(function(p){for(var i=0;i<state.library.length;i++){var a=state.library[i];if(!a.tracks)continue;for(var j=0;j<a.tracks.length;j++){if(a.tracks[j].filePath===p.filePath&&(a.tracks[j].duration||0)>0&&(a.tracks[j].duration||0)<30)return true}};return false})} },
     { id:'repeatlistener', icon:'🔂', name:'On Repeat', desc:'Same track 3+ times in one day', check:function() { var byDay={};recent.forEach(function(p){var d=new Date(p.ts).toDateString();byDay[d]=byDay[d]||{};byDay[d][p.filePath]=(byDay[d][p.filePath]||0)+1});return Object.values(byDay).some(function(day){return Object.values(day).some(function(c){return c>=3})})} },
-    { id:'skiphappy', icon:'⏭️', name:'Skip Happy', _needsPosition:true, desc:'Average track plays <60%', check:function() { var total=0,full=0;recent.forEach(function(p){total++;if((_histDur(p)||0)>0){var playPct=(p.position||0)/(p.duration||0);if(playPct>.8)full++}});return total>10&&(full/total)<.6} },
-    { id:'completelistener', icon:'✅', name:'Completionist+', _needsPosition:true, desc:'Finish 80%+ of tracks', check:function() { var total=0,full=0;recent.forEach(function(p){total++;if((_histDur(p)||0)>0){if((p.position||0)/(p.duration||0)>.8)full++}});return total>10&&(full/total)>.8} },
+    // Both divided by p.duration while guarding on _histDur(p), the library
+    // fallback -- so every entry written before the duration field existed
+    // divided by zero and counted as not-finished. And the labels described a
+    // different figure from the one computed: this counts tracks played past
+    // 80%, not an average.
+    { id:'skiphappy', icon:'⏭️', name:'Skip Happy', _needsPosition:true, desc:'Under 60% of tracks played to the end', check:function() { var total=0,full=0;recent.forEach(function(p){var d=_histDur(p)||0;if(d<=0)return;total++;if((p.position||0)/d>.8)full++});return total>10&&(full/total)<.6} },
+    { id:'completelistener', icon:'✅', name:'Completionist+', _needsPosition:true, desc:'80%+ of tracks played to the end', check:function() { var total=0,full=0;recent.forEach(function(p){var d=_histDur(p)||0;if(d<=0)return;total++;if((p.position||0)/d>.8)full++});return total>10&&(full/total)>.8} },
     { id:'happyhour', icon:'🍸', name:'Happy Hour', desc:'Most listening 5-7 PM', check:function() { var hh=0,other=0;recent.forEach(function(p){var h=new Date(p.ts).getHours();if(h>=17&&h<19)hh++;else other++});return hh>other&&recent.length>10} },
   ]
   // Nothing records how far into a track playback got, so any achievement that
@@ -8309,7 +8348,23 @@ async function initPlaybackSettings() {
   $('pb-channels').onchange = e => apply({ channels: e.target.value })
   $('pb-boost').onchange = e => apply({ boost: e.target.checked })
 
+  await _initGeneralSettings()
   await _initEqSettings(cfg, apply)
+}
+
+// Reads what main will actually consult, not a separate renderer copy — the
+// setting is stored once and honoured in main's close handler.
+async function _initGeneralSettings() {
+  const el = document.getElementById('gen-close-to-tray')
+  if (!el) return
+  try {
+    const gen = await window.api.getGeneralSettings()
+    el.checked = gen && gen.closeToTray !== false
+  } catch (_) {
+    // A failed read must not leave the box showing a value main does not hold.
+    el.checked = true
+  }
+  el.onchange = e => window.api.saveGeneralSettings({ closeToTray: !!e.target.checked })
 }
 
 // Ten-band EQ. The sliders write straight through to mpv's filter chain, so
@@ -12482,6 +12537,7 @@ function setupListeners() {
     if (!audio.duration) return
     const ct = audio.currentTime
     const ratio = ct / audio.duration
+    sampleHistoryPosition(ct)
 
     // ── Always-run (background-safe) ──────────────────────────────────────
     // Position autosave every 5s, but only once per second boundary
@@ -12514,6 +12570,11 @@ function setupListeners() {
   })
   audio.addEventListener('ended', () => {
     const finishedTrack = state.queue[state.queueIndex]
+    // A track that reaches 'ended' was played to the end. Sampled and flushed
+    // here because playNext() may find nothing to play, in which case
+    // recordPlayAfterThreshold -- the usual flush point -- never runs.
+    if (audio.duration) sampleHistoryPosition(audio.duration)
+    flushPlayHistoryPosition()
     if (finishedTrack) {
       window.api.scrobbleTrack({
         artist: finishedTrack.albumArtist || finishedTrack.artist || '',
@@ -12819,6 +12880,50 @@ function setupListeners() {
     backgroundSync()
   })
   window.api.on('do-lib-rescan', () => backgroundSync())
+
+  // Electron-initiated downloads: a link clicked in the Google sign-in window,
+  // or a .torrent. main has always emitted these five events and offered a
+  // cancel channel; nothing listened, so a file appeared on disk with no
+  // indication it had arrived and no way to stop it.
+  var _elDownloads = new Map()
+  window.api.on('dl-started', function (d) {
+    if (!d || !d.id) return
+    _elDownloads.set(d.id, d)
+    // Bounded: a runaway page could fire these faster than they complete.
+    if (_elDownloads.size > 50) {
+      var oldest = _elDownloads.keys().next().value
+      _elDownloads.delete(oldest)
+    }
+    showSnackbar('Downloading ' + (d.filename || 'file'), 'Cancel', function () {
+      window.api.cancelDownload(d.id)
+    }, 8000)
+  })
+  window.api.on('dl-complete', function (d) {
+    if (!d) return
+    _elDownloads.delete(d.id)
+    showSnackbar('Downloaded ' + (d.filename || 'file'), null, null, 4000)
+    // A music file or an extracted archive means the library changed.
+    if (d.isMusic) _scheduleLibRescan()
+  })
+  window.api.on('dl-cancelled', function (d) {
+    if (!d) return
+    _elDownloads.delete(d.id)
+    showSnackbar('Download cancelled' + (d.filename ? ': ' + d.filename : ''), null, null, 3000)
+  })
+  window.api.on('dl-failed', function (d) {
+    if (!d) return
+    _elDownloads.delete(d.id)
+    // Said out loud rather than swallowed: this is the case that used to leave
+    // the user with no file and no explanation.
+    showSnackbar('Download failed' + (d.filename ? ': ' + d.filename : ''), null, null, 6000)
+  })
+  // dl-progress fires several times a second per item. It updates the record so
+  // anything that asks can see it, and deliberately raises no UI of its own.
+  window.api.on('dl-progress', function (d) {
+    if (!d || !d.id) return
+    var prev = _elDownloads.get(d.id)
+    if (prev) _elDownloads.set(d.id, Object.assign({}, prev, d))
+  })
 
   window.api.on('yt-dl-progress', dl => {
     const prev = state.ytDownloads.get(dl.id)

@@ -230,3 +230,75 @@ test('a miss is remembered with an expiry, not written as a file', () => {
   // Every early return records the miss, or the next visit refetches immediately.
   assert.ok([...h.matchAll(/_artMisses\.set\(albumId, Date\.now\(\)\)/g)].length >= 4)
 })
+
+// ── Item 2.6: a store key read on one side and written on the other ────────
+
+test('every store key that is read is also written somewhere', () => {
+  // _torrentAdd read a top-level `downloadDir` that nothing wrote, so every
+  // torrent went to a hardcoded /mnt/data path regardless of the setting. The
+  // symmetry is mechanical, so check it mechanically.
+  const reads = new Set([...CODE.matchAll(/store\.get\(\s*'([^']+)'/g)].map(m => m[1]))
+  const writes = new Set([...CODE.matchAll(/store\.(?:set|delete)\(\s*'([^']+)'/g)].map(m => m[1]))
+  const orphans = [...reads].filter(k => !writes.has(k)).sort()
+  assert.deepStrictEqual(orphans, [],
+    'a key that is read and never written is a setting that cannot be changed')
+})
+
+test('every store key that is written is also read somewhere', () => {
+  const reads = new Set([...CODE.matchAll(/store\.get\(\s*'([^']+)'/g)].map(m => m[1]))
+  const writes = new Set([...CODE.matchAll(/store\.(?:set|delete)\(\s*'([^']+)'/g)].map(m => m[1]))
+  const orphans = [...writes].filter(k => !reads.has(k)).sort()
+  assert.deepStrictEqual(orphans, [],
+    'a key that is written and never read is a setting that does nothing')
+})
+
+test('no download path is a literal from one machine', () => {
+  assert.doesNotMatch(CODE, /'\/mnt\//, 'derive it, or ask')
+  const fn = CODE.slice(CODE.indexOf('function _torrentAdd('), CODE.indexOf('function _torrentAdd(') + 400)
+  assert.match(fn, /_downloadDir\(\)/)
+})
+
+test('slskd is configured with the credentials we authenticate with', () => {
+  // slskdApiCreds was read and never written, so the only reachable value was
+  // slskd's literal default on a listening port.
+  assert.match(CODE, /function _slskdApiCreds\(\)/)
+  assert.match(CODE, /function _mintSlskdApiCreds\(\)/)
+  const tok = CODE.slice(CODE.indexOf('async function slskdAcquireToken'), CODE.indexOf('async function slskdAcquireToken') + 600)
+  assert.match(tok, /_slskdApiCreds\(\)/, 'the token request uses the shared accessor')
+  const wr = CODE.slice(CODE.indexOf('function writeSlskdConfig('), CODE.indexOf('async function slskdAcquireToken'))
+  assert.match(wr, /_mintSlskdApiCreds\(\)/)
+  assert.match(wr, /authentication:/, 'and the config we write names them')
+  // Minting must not happen on read: an existing config has no auth block, so
+  // inventing a password would lock us out of a running daemon.
+  const read = CODE.slice(CODE.indexOf('function _slskdApiCreds()'), CODE.indexOf('function _mintSlskdApiCreds()'))
+  assert.doesNotMatch(read, /store\.set/)
+})
+
+test('reconfiguring Soulseek credentials keeps the download folder', () => {
+  const h = CODE.slice(CODE.indexOf("ipcMain.handle('slsk-configure'"), CODE.indexOf("ipcMain.handle('slsk-setup'"))
+  assert.match(h, /store\.set\('slskConfig', \{ \.\.\.prev, username, password \}\)/,
+    'a wholesale replace used to drop downloadDir')
+})
+
+test('every writeSlskdConfig caller derives the download folder', () => {
+  // folders[0] means peer-supplied folder names land in the library root.
+  const calls = [...CODE.matchAll(/writeSlskdConfig\(\{[^}]*\}\)/g)].map(m => m[0])
+  assert.ok(calls.length >= 3, `found ${calls.length} call sites`)
+  // The picker is the one exception: it passes the folder the user just chose.
+  const picker = CODE.slice(CODE.indexOf("ipcMain.handle('slsk-set-download-dir'"),
+                            CODE.indexOf("ipcMain.handle('slsk-show-in-folder'"))
+  for (const c of calls) {
+    if (picker.includes(c)) continue
+    assert.match(c, /downloadDir: _downloadDir\(\)/, c)
+  }
+})
+
+test('picking a download folder restarts slskd', () => {
+  // slskd reads the folder once at startup, so writing the config and stopping
+  // there left the new folder inert while the UI reported success.
+  const h = CODE.slice(CODE.indexOf("ipcMain.handle('slsk-set-download-dir'"),
+                       CODE.indexOf("ipcMain.handle('slsk-show-in-folder'"))
+  assert.match(h, /stopSlskd\(\)/)
+  assert.match(h, /await startSlskd\(\)/)
+  assert.match(h, /restarted:/, 'and it says whether the restart happened')
+})

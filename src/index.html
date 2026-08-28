@@ -118,8 +118,8 @@
 
       <div class="sidebar-section">
         <div class="sidebar-section-title">Music Folders</div>
-        <ul id="folders-list" class="sites-list"></ul>
-        <button class="add-site-btn" id="add-folder-btn">
+        <ul id="folders-list" class="folder-list"></ul>
+        <button class="add-folder-btn" id="add-folder-btn">
           <span>+</span> Add Folder
         </button>
       </div>
@@ -198,6 +198,14 @@
     <!-- SETTINGS TAB -->
     <div class="mcs-panel mcs-panel-hidden" id="mcs-panel-settings">
       <div class="mcs-mem-scroll">
+        <div class="mcs-set-group" id="general-settings">
+          <div class="mcs-set-group-label">General</div>
+          <!-- main has always honoured closeToTray in two places; until now
+               there was no way for anyone to change it. -->
+          <label class="mcs-set-row">Close to tray
+            <input type="checkbox" id="gen-close-to-tray">
+          </label>
+        </div>
         <div class="mcs-set-group" id="playback-settings">
           <div class="mcs-set-group-label">Playback</div>
           <label class="mcs-set-row">Output
@@ -536,20 +544,6 @@
     <h1>Welcome to Papa Audio</h1>
     <p>Choose the folder where your music is stored to get started.</p>
     <button class="choose-folder-btn" id="choose-folder-btn">Choose Music Folder</button>
-  </div>
-</div>
-
-<!-- Add site dialog -->
-<div class="dialog-overlay" id="add-site-dialog" style="display:none">
-  <div class="dialog-card">
-    <h2>Add a Website</h2>
-    <p>Enter the URL of a music download site.</p>
-    <input class="dialog-input" id="site-url-input" type="text" placeholder="e.g. https://www.monochrome.jp">
-    <input class="dialog-input" id="site-name-input" type="text" placeholder="Site name (e.g. Monochrome)">
-    <div class="dialog-actions">
-      <button class="dialog-cancel" id="dialog-cancel">Cancel</button>
-      <button class="dialog-confirm" id="dialog-confirm">Add</button>
-    </div>
   </div>
 </div>
 

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, BrowserView, ipcMain, dialog, globalShortcut, Notification, shell, Menu, MenuItem, powerSaveBlocker, powerMonitor } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog, globalShortcut, Notification, shell, Menu, MenuItem, powerSaveBlocker, powerMonitor } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
@@ -321,7 +321,12 @@ function getTorrentClient() {
   return _torrentClient
 }
 function _torrentAdd(uri) {
-  const dlDir = store.get('downloadDir', '/mnt/data/MUSIC/Downloads')
+  // This read a top-level `downloadDir` key that nothing ever writes -- the
+  // folder picker writes slskConfig.downloadDir -- so every torrent went to
+  // the literal path below regardless of the setting, and on a machine with no
+  // /mnt/data it went somewhere the user never chose. A default should be
+  // derived, never a literal from one machine.
+  const dlDir = _downloadDir()
   const client = getTorrentClient()
   if (client.get(uri)) return
   client.add(uri, { path: dlDir }, torrent => {
@@ -543,10 +548,34 @@ function upnpUnmap(port) {
   }
 }
 
-function writeSlskdConfig({ username = '', password = '', downloadDir = '/mnt/data/MUSIC/Downloads' } = {}) {
+// The API credentials slskd is configured with and the ones we authenticate
+// with are now the same value. slskdApiCreds used to be read and never written,
+// so the code read as though the credentials were configurable when the only
+// possible value was slskd's literal default on a listening port.
+function _slskdApiCreds() {
+  const stored = store.get('slskdApiCreds', null)
+  if (stored && stored.username && stored.password) return stored
+  // Not generated here: an existing config on disk has no authentication block,
+  // so slskd is using its own defaults and inventing a password would lock us
+  // out of a daemon that is already running. New credentials are minted only
+  // when we write a config, below.
+  return { username: 'slskd', password: 'slskd' }
+}
+
+function _mintSlskdApiCreds() {
+  const stored = store.get('slskdApiCreds', null)
+  if (stored && stored.username && stored.password) return stored
+  const creds = { username: 'papa', password: crypto.randomBytes(24).toString('base64url') }
+  store.set('slskdApiCreds', creds)
+  return creds
+}
+
+function writeSlskdConfig({ username = '', password = '', downloadDir = '' } = {}) {
+  if (!downloadDir) downloadDir = _downloadDir()
   fs.mkdirSync(SLSKD_DIR, { recursive: true })
   fs.mkdirSync(path.join(SLSKD_DIR, 'incomplete'), { recursive: true })
   fs.mkdirSync(downloadDir, { recursive: true })
+  const apiCreds = _mintSlskdApiCreds()
   // Share the parent of the download dir if it's a subfolder, so the whole library is shared
   const musicFolders = store.get('musicFolders', [])
   const shareDir = musicFolders[0] || path.dirname(downloadDir)
@@ -605,6 +634,9 @@ function writeSlskdConfig({ username = '', password = '', downloadDir = '/mnt/da
     `      response_file_limit: 5000`,
     `web:`,
     `  port: ${SLSKD_PORT}`,
+    `  authentication:`,
+    `    username: ${JSON.stringify(apiCreds.username)}`,
+    `    password: ${JSON.stringify(apiCreds.password)}`,
     `logger:`,
     `  minimum: "Warning"`,
   ].join('\n')
@@ -616,7 +648,7 @@ async function slskdAcquireToken() {
     const res = await fetch(`${SLSKD_BASE}/session`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(store.get('slskdApiCreds', { username: 'slskd', password: 'slskd' })),
+      body: JSON.stringify(_slskdApiCreds()),
     })
     if (!res.ok) return false
     const data = await res.json()
@@ -741,9 +773,10 @@ async function startSlskd() {
   }
   if (slskdProc) return
   if (!fs.existsSync(SLSKD_CFG)) {
-    const musicFolders = store.get('musicFolders', [])
     const cfg = store.get('slskConfig', {})
-    writeSlskdConfig({ ...cfg, downloadDir: musicFolders[0] || path.join(app.getPath('home'), 'Music') })
+    // _downloadDir() rather than folders[0]: peer-supplied folder names must not
+    // land in the library root.
+    writeSlskdConfig({ ...cfg, downloadDir: _downloadDir() })
   }
   slskdProc = spawn(SLSKD_BIN, ['--config', SLSKD_CFG, '--no-logo'], { stdio: 'ignore' })
   slskdProc.on('exit', (code, signal) => {
@@ -819,11 +852,10 @@ const MAX_RENDERER_CRASHES = 3
 let _rendererCrashes = []
 
 let mainWindow  = null
-let browserView = null
 let artworkDir  = ''
 let dlHandlerReady = false
 
-const LAYOUT = { TITLEBAR: 52, SIDEBAR: 230, BROWSER_NAV: 56, PLAYER: 112 }
+const LAYOUT = { TITLEBAR: 52, SIDEBAR: 230, PLAYER: 112 }
 const ICON_PATH = path.join(__dirname, 'assets', 'icon.png')
 
 // ── Extension IPC (state file + command polling) ─────────────────────────────
@@ -1286,7 +1318,7 @@ function createWindow(hidden = false) {
     }).catch(() => {})
   })
 
-  mainWindow.on('resize', () => { updateBrowserBounds(); saveWinState() })
+  mainWindow.on('resize', () => { saveWinState() })
   mainWindow.on('move', saveWinState)
   mainWindow.on('close', async (e) => {
     saveWinStateNow()
@@ -1322,7 +1354,6 @@ function createWindow(hidden = false) {
     } catch (_) { player?.stop() }
   })
   mainWindow.on('closed', () => {
-    if (browserView) { try { browserView.webContents.destroy() } catch (_) {} browserView = null }
     mainWindow = null
   })
 }
@@ -1828,22 +1859,6 @@ function refreshTrayTooltip() {
   try { tray.setToolTip(tip) } catch (_) { /* the tray can be gone mid-quit */ }
 }
 
-ipcMain.on('update-tray-tooltip', (_, track) => {
-  _trayTrack = track || null
-  refreshTrayTooltip()
-})
-
-function updateBrowserBounds() {
-  if (!browserView || !mainWindow) return
-  const [w, h] = mainWindow.getContentSize()
-  browserView.setBounds({
-    x: LAYOUT.SIDEBAR,
-    y: LAYOUT.TITLEBAR + LAYOUT.BROWSER_NAV,
-    width:  w - LAYOUT.SIDEBAR,
-    height: h - LAYOUT.TITLEBAR - LAYOUT.BROWSER_NAV - LAYOUT.PLAYER
-  })
-}
-
 // ── Window controls ──────────────────────────────────────────────────────────
 ipcMain.on('win-minimize', () => mainWindow?.minimize())
 ipcMain.on('win-maximize', () => mainWindow?.isMaximized() ? mainWindow.unmaximize() : mainWindow?.maximize())
@@ -1851,13 +1866,14 @@ ipcMain.on('win-close',    () => {
   if (store.get('closeToTray', true) && tray) mainWindow?.hide()
   else { player?.stop(); app.isQuitting = true; mainWindow?.close() }
 })
+// `theme` used to be here. It was stored and read by nothing -- the app is
+// dark-only -- so it was a setting that could be changed and would never do
+// anything. closeToTray is real: two places in main honour it.
 ipcMain.handle('get-general-settings', () => ({
   closeToTray: store.get('closeToTray', true),
-  theme: store.get('theme', 'dark'),
 }))
 ipcMain.on('save-general-settings', (_, s) => {
-  if (typeof s.closeToTray === 'boolean') store.set('closeToTray', s.closeToTray)
-  if (s.theme) store.set('theme', s.theme)
+  if (s && typeof s.closeToTray === 'boolean') store.set('closeToTray', s.closeToTray)
 })
 
 ipcMain.handle('get-streaming-volume-offset', () => store.get('streamingVolumeOffset', 0))
@@ -1908,11 +1924,6 @@ ipcMain.on('notify-download-complete', (_, { count, albumName }) => {
     icon: ICON_PATH,
     silent: false
   }).show()
-})
-
-ipcMain.on('show-notification', (_, { title, body }) => {
-  if (!Notification.isSupported()) return
-  new Notification({ title, body, silent: true }).show()
 })
 
 ipcMain.handle('torrent-add', async (_, { uri }) => {
@@ -1982,6 +1993,31 @@ ipcMain.on('add-play-history', (_, entry) => {
     return keep
   })
   if (!Array.isArray(kept)) console.error('[papa][history] update returned no list')
+})
+
+// How far a track actually got. The entry is written at the 30 s mark, where
+// the position is always ~30 s, so the two achievements that need "did you
+// finish it" could never be answered from it. The renderer sends the real
+// figure when the track is left.
+const HISTORY_PATCH_WINDOW_MS = 60 * 60 * 1000
+ipcMain.on('update-play-history-position', (_, { filePath, position } = {}) => {
+  if (!filePath) return
+  const pos = Number(position)
+  if (!Number.isFinite(pos) || pos < 0) return
+  sideStores.playHistory.update(prev => {
+    const list = Array.isArray(prev) ? prev : []
+    // Only the newest match, and only while it is fresh: a track played again
+    // next week must not rewrite last week's entry.
+    const i = list.findIndex(e => e && e.filePath === filePath)
+    if (i < 0) return list
+    const entry = list[i]
+    if (!entry.ts || Date.now() - entry.ts > HISTORY_PATCH_WINDOW_MS) return list
+    // Monotonic: a seek backwards before the track ends must not lower it.
+    if (Number(entry.position) >= pos) return list
+    const copy = list.slice()
+    copy[i] = { ...entry, position: pos }
+    return copy
+  })
 })
 
 // Overflow goes to one file per month, appended, never overwritten.
@@ -3421,22 +3457,15 @@ ipcMain.on('save-recently-played', (_, id) => {
 })
 ipcMain.on('save-volume', (_, v) => store.set('volume', v))
 
-// ── Sites ────────────────────────────────────────────────────────────────────
-ipcMain.handle('save-site', (_, site) => {
-  const sites = store.get('savedSites', [])
-  if (!sites.find(s => s.url === site.url)) sites.push(site)
-  store.set('savedSites', sites); return sites
-})
-ipcMain.handle('remove-site', (_, url) => {
-  const sites = store.get('savedSites', []).filter(s => s.url !== url)
-  store.set('savedSites', sites); return sites
-})
+// The "saved sites" pair lived here. They stored URLs for the embedded browser
+// to open; with that browser gone there is nothing to open them in, and neither
+// handler was ever reachable from the renderer in the first place.
 
-// ── Browser view ─────────────────────────────────────────────────────────────
+// ── Downloads ────────────────────────────────────────────────────────────────
 const activeDownloads = new Map()
 const MUSIC_EXT = /\.(flac|mp3|wav|aiff?|m4a|ogg|opus|ape|wv|wma|dsf|dff|aac|m4b)$/i
 
-// ── Download handler (session-level, catches all BrowserViews) ───────────────
+// ── Download handler (session-level: the sign-in window, magnet/.torrent) ───
 function ensureDlHandler() {
   if (dlHandlerReady) return
   dlHandlerReady = true
@@ -3479,70 +3508,17 @@ function ensureDlHandler() {
   })
 }
 
-function createBrowserView () {
-  if (browserView) return
-  ensureDlHandler()
-  browserView = new BrowserView({ webPreferences: { nodeIntegration: false, contextIsolation: true } })
-
-  // Open _blank / window.open() links inside the same BrowserView instead of failing silently
-  browserView.webContents.setWindowOpenHandler(({ url }) => {
-    const safe = url.startsWith('http') ? url : `https://${url}`
-    browserView.webContents.loadURL(safe)
-    safeSend('browser-url', safe)
-    return { action: 'deny' }
-  })
-
-  // Loading state events
-  browserView.webContents.on('did-start-loading', () =>
-    safeSend('browser-loading', true))
-  browserView.webContents.on('did-stop-loading',  () =>
-    safeSend('browser-loading', false))
-  browserView.webContents.on('did-fail-load', (_, code, desc, url) => {
-    if (code !== -3) safeSend('browser-load-error', { code, desc, url })
-    safeSend('browser-loading', false)
-  })
-
-  // Navigation events
-  browserView.webContents.on('did-navigate',         (_, u) => safeSend('browser-url',   u))
-  browserView.webContents.on('did-navigate-in-page', (_, u) => safeSend('browser-url',   u))
-  browserView.webContents.on('page-title-updated',   (_, t) => safeSend('browser-title', t))
-
-  // Intercept magnet links — handle via WebTorrent instead of navigating
-  browserView.webContents.on('will-navigate', (e, url) => {
-    if (url.startsWith('magnet:')) {
-      e.preventDefault()
-      _torrentAdd(url)
-      safeSend('torrent-started', { uri: url })
-    }
-  })
-}
-
-ipcMain.on('show-browser', (_, url) => {
-  if (!mainWindow) return
-  createBrowserView()
-  const views = mainWindow.getBrowserViews()
-  if (!views.includes(browserView)) mainWindow.addBrowserView(browserView)
-  updateBrowserBounds()
-  if (url) {
-    const full = url.startsWith('http') ? url : `https://${url}`
-    browserView.webContents.loadURL(full)
-  }
+// Electron-initiated downloads (a link clicked in the Google sign-in window, a
+// .torrent) are cancellable from the downloads page.
+ipcMain.on('cancel-download', (_, id) => {
+  const item = activeDownloads.get(id)
+  if (!item) return
+  try { item.cancel() } catch (_) { /* already finished */ }
+  activeDownloads.delete(id)
 })
 
-ipcMain.on('hide-browser',          ()       => { if (browserView && mainWindow) mainWindow.removeBrowserView(browserView) })
-ipcMain.on('browser-navigate',      (_, url) => { if (browserView) browserView.webContents.loadURL(url.startsWith('http') ? url : `https://${url}`) })
-ipcMain.on('browser-back',          ()       => browserView?.webContents.canGoBack()    && browserView.webContents.goBack())
-ipcMain.on('browser-forward',       ()       => browserView?.webContents.canGoForward() && browserView.webContents.goForward())
-ipcMain.on('browser-refresh',       ()       => browserView?.webContents.reload())
-ipcMain.on('browser-stop',          ()       => browserView?.webContents.stop())
-ipcMain.on('browser-zoom-in',       ()       => { if (!browserView) return; const z = Math.min(3.0, browserView.webContents.getZoomFactor() + 0.1); browserView.webContents.setZoomFactor(z); safeSend('browser-zoom', Math.round(z * 100)) })
-ipcMain.on('browser-zoom-out',      ()       => { if (!browserView) return; const z = Math.max(0.25, browserView.webContents.getZoomFactor() - 0.1); browserView.webContents.setZoomFactor(z); safeSend('browser-zoom', Math.round(z * 100)) })
-ipcMain.on('browser-zoom-reset',    ()       => { if (!browserView) return; browserView.webContents.setZoomFactor(1); safeSend('browser-zoom', 100) })
-ipcMain.on('cancel-download',       (_, id)  => { const item = activeDownloads.get(id); if (item) { item.cancel(); activeDownloads.delete(id) } })
-ipcMain.on('open-browser-devtools', ()       => browserView?.webContents.openDevTools())
-
 // ══════════════════════════════════════════════════════════════════════════════
-// LOCAL AGENT — Ollama-powered autonomous web navigator
+// LOCAL AGENT — Ollama-powered assistant over the app's own pages
 // ══════════════════════════════════════════════════════════════════════════════
 
 const http = require('http')
@@ -4177,10 +4153,12 @@ ipcMain.handle('slsk-get-config', () => {
 })
 
 ipcMain.handle('slsk-configure', async (_, { username, password }) => {
-  store.set('slskConfig', { username, password })
-  const musicFolders = store.get('musicFolders', [])
-  const downloadDir = musicFolders[0] || path.join(app.getPath('home'), 'Music')
-  writeSlskdConfig({ username, password, downloadDir })
+  // Merged, not replaced: this used to overwrite the whole slskConfig object,
+  // so changing the Soulseek password silently forgot the download folder the
+  // user had picked -- and the next config write sent downloads somewhere else.
+  const prev = store.get('slskConfig', {})
+  store.set('slskConfig', { ...prev, username, password })
+  writeSlskdConfig({ username, password, downloadDir: _downloadDir() })
   stopSlskd()
   await startSlskd()
   return { ok: true }
@@ -4190,9 +4168,7 @@ ipcMain.handle('slsk-setup', async () => {
   try {
     await downloadSlskd(text => safeSend('slsk-progress', { text }))
     const cfg = store.get('slskConfig', {})
-    const musicFolders = store.get('musicFolders', [])
-    const downloadDir = musicFolders[0] || path.join(app.getPath('home'), 'Music')
-    writeSlskdConfig({ ...cfg, downloadDir })
+    writeSlskdConfig({ ...cfg, downloadDir: _downloadDir() })
     safeSend('slsk-progress', { text: 'Starting daemon…' })
     await startSlskd()
     return { ok: true }
@@ -5071,7 +5047,18 @@ ipcMain.handle('slsk-set-download-dir', async () => {
   const cfg = store.get('slskConfig', {})
   store.set('slskConfig', { ...cfg, downloadDir })
   writeSlskdConfig({ ...cfg, downloadDir })
-  return { ok: true, downloadDir }
+  // slskd reads its download folder once, at startup. Writing the config and
+  // stopping there meant the newly picked folder did nothing until the next
+  // launch, while the UI reported the change as applied.
+  if (slskdProc || slskdReady) {
+    stopSlskd()
+    try { await startSlskd() } catch (e) {
+      console.error('[papa] slskd restart after folder change:', String(e && e.message || e))
+      return { ok: true, downloadDir, restarted: false }
+    }
+    return { ok: true, downloadDir, restarted: true }
+  }
+  return { ok: true, downloadDir, restarted: false }
 })
 
 ipcMain.handle('slsk-show-in-folder', (_, filePath) => {

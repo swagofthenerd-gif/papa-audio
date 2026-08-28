@@ -66,3 +66,60 @@ test('nothing in main is registered twice', () => {
     assert.deepStrictEqual([...new Set(dupes)], [], `duplicate ipcMain.${label} registrations`)
   }
 })
+
+// ── The reverse direction, which is what let 2.1-2.5 accumulate ────────────
+//
+// The forward tests above catch a preload method naming a channel main never
+// registered. Nothing caught the opposite: a channel main registers that no
+// preload method reaches. That failure is silent by construction -- the code
+// looks finished, the handler is correct, and it can never run. Eighteen had
+// piled up: the entire embedded-browser feature (eleven channels), the saved
+// sites pair, cancel-download, show-notification, the general-settings pair,
+// and a tray-tooltip handler left dead by an earlier fix.
+//
+// Anything genuinely main-only belongs in this map with a reason, so the next
+// person sees a decision rather than an oversight.
+const MAIN_ONLY = {
+  // (empty: every registration is currently reachable from the renderer)
+}
+
+test('every channel main registers is reachable from the renderer', () => {
+  const reachable = new Set([...invoked, ...sent])
+  const orphans = [...handled, ...onned]
+    .filter(c => !reachable.has(c))
+    .filter(c => !(c in MAIN_ONLY))
+    .sort()
+  assert.deepStrictEqual(orphans, [],
+    'an unreachable handler is a feature that cannot run; wire it, delete it, ' +
+    'or list it in MAIN_ONLY with a reason')
+})
+
+test('MAIN_ONLY does not name channels that no longer exist', () => {
+  // Otherwise the exceptions map becomes its own graveyard.
+  const registered = new Set([...handled, ...onned])
+  const stale = Object.keys(MAIN_ONLY).filter(c => !registered.has(c)).sort()
+  assert.deepStrictEqual(stale, [], 'remove these from MAIN_ONLY')
+})
+
+test('MAIN_ONLY entries each carry a reason', () => {
+  for (const [chan, why] of Object.entries(MAIN_ONLY)) {
+    assert.ok(typeof why === 'string' && why.length > 20,
+      `${chan} needs a real reason, not "${why}"`)
+  }
+})
+
+test('the receive allowlist has no channel main never sends', () => {
+  // The mirror of the above for push channels. Five browser-* entries and
+  // update-tray-tooltip sat in the allowlist after their senders were gone.
+  const allow = PRELOAD_CODE.slice(PRELOAD_CODE.indexOf('  on: (channel, cb) =>'))
+  const listEnd = allow.indexOf(']')
+  const listed = [...allow.slice(0, listEnd).matchAll(/'([^']+)'/g)].map(m => m[1])
+  assert.ok(listed.length > 20, 'found the allowlist')
+  const sends = new Set([...MAIN.matchAll(/safeSend\(\s*'([^']+)'/g)].map(m => m[1]))
+  // Channels pushed with a computed name, which the regex above cannot see.
+  const DYNAMIC = new Set(['player-event'])
+  const never = listed.filter(c => !sends.has(c) && !DYNAMIC.has(c)).sort()
+  assert.deepStrictEqual(never, [],
+    'a listener on a channel nothing sends is a feature waiting for an event ' +
+    'that never arrives')
+})

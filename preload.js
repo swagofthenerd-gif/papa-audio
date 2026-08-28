@@ -72,6 +72,7 @@ contextBridge.exposeInMainWorld('api', {
   incrementPlayCount: (p) => ipcRenderer.send('increment-play-count', p),
   getPlayHistory:     () => ipcRenderer.invoke('get-play-history'),
   addPlayHistory:     (e) => ipcRenderer.send('add-play-history', e),
+  updatePlayHistoryPosition: (e) => ipcRenderer.send('update-play-history-position', e),
 
   // Followed artists
   getFollowedArtists:  () => ipcRenderer.invoke('get-followed-artists'),
@@ -91,6 +92,9 @@ contextBridge.exposeInMainWorld('api', {
   // Notifications
   notifyTrack: (data) => ipcRenderer.send('notify-track', data),
   notifyDownloadComplete: (d) => ipcRenderer.send('notify-download-complete', d),
+  getGeneralSettings: () => ipcRenderer.invoke('get-general-settings'),
+  saveGeneralSettings: (s) => ipcRenderer.send('save-general-settings', s),
+  cancelDownload: (id) => ipcRenderer.send('cancel-download', id),
 
   // Torrents
   torrentAdd:    (p) => ipcRenderer.invoke('torrent-add', p),
@@ -251,8 +255,7 @@ contextBridge.exposeInMainWorld('api', {
   on: (channel, cb) => {
     const allowed = [
       'dl-started', 'dl-progress', 'dl-complete', 'dl-cancelled', 'dl-failed',
-      'browser-url', 'browser-title', 'browser-loading', 'browser-load-error', 'browser-zoom',
-      'media-key', 'media-playpause', 'media-next', 'media-previous', 'update-tray-tooltip', 'ext-cmd', 'slsk-progress', 'slskd-status-change', 'player-event', 'media-seek',
+      'media-key', 'media-playpause', 'media-next', 'media-previous', 'ext-cmd', 'slsk-progress', 'slskd-status-change', 'player-event', 'media-seek',
       'torrent-progress', 'torrent-done', 'torrent-started', 'do-lib-rescan',
       'yt-dl-progress', 'yt-auth-pending', 'yt-auth-done',
       'slsk-verify', 'slsk-user-status', 'slsk-saved-users-changed', 'slsk-scheduler-stats',
