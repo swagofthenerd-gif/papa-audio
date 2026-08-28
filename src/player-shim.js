@@ -139,14 +139,15 @@ class PapaPlayerShim extends EventTarget {
     })
   }
 
+  // The renderer assigns `src` as 'file://' + the RAW path, with no encoding, so
+  // decoding it here was guarding against an encoding that never happened: a real
+  // filename containing %20 or %25 was silently rewritten to a different path,
+  // mpv failed to open it, and the load-error policy then removed a file that was
+  // sitting on disk. Strip the scheme and nothing else.
   _pathOf(src) {
     const s = String(src)
     if (/^https?:\/\//.test(s)) return s
-    try {
-      return decodeURI(s.replace(/^file:\/\//, ''))
-    } catch {
-      return s.replace(/^file:\/\//, '')
-    }
+    return s.replace(/^file:\/\//, '')
   }
 
   get src() { return this._src }

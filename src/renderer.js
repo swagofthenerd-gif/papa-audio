@@ -641,6 +641,29 @@ async function init() {
         : 'Still failing. The lines above are mpv\u2019s own report.'
     }
   }
+  // Album ids stopped depending on tag padding, so ratings and notes — which the
+  // renderer keys by album id in localStorage — have to follow the ids that moved.
+  window.api.getAlbumIdRemap()
+    .then(remap => {
+      if (!remap || !Object.keys(remap).length) return
+      let moved = 0
+      for (const store of ['albumRatings', 'albumNotes']) {
+        const key = store === 'albumRatings' ? 'papa-album-ratings' : 'papa-album-notes'
+        const obj = window.PapaLocal.readObject(key)
+        let changed = false
+        for (const [oldId, newId] of Object.entries(remap)) {
+          if (obj[oldId] === undefined || obj[newId] !== undefined) continue
+          obj[newId] = obj[oldId]
+          delete obj[oldId]
+          changed = true
+          moved++
+        }
+        if (changed) { window.PapaLocal.write(key, obj); state[store] = obj }
+      }
+      if (moved) console.log(`[papa] remapped ${moved} rating/note key(s) onto the new album ids`)
+    })
+    .catch(e => console.error('[papa] album id remap failed:', String(e && e.message || e)))
+
   // Fetched once, early, so a failure card later has it.
   window.api.getSessionId()
     .then(info => {
@@ -865,7 +888,7 @@ function _currentNavId() {
 // Picks up where an unclean shutdown left off. restorePlaybackState already
 // rebuilds the queue and seeks; this is that, plus actually playing.
 async function resumeFromSavedState(saved) {
-  await restorePlaybackState()
+  await restorePlaybackState({ force: true })
   const pos = Number(saved && saved.position) || 0
   const idx = state.queue.findIndex(t => t.filePath === (saved && saved.filePath))
   if (idx < 0) {
@@ -877,8 +900,18 @@ async function resumeFromSavedState(saved) {
   if (pos > 1) audio.currentTime = pos
 }
 
-async function restorePlaybackState() {
+// opts.force is for the explicit "resume where you left off" card, where the
+// user has asked for exactly this and the guards below would be wrong.
+async function restorePlaybackState(opts) {
+  opts = opts || {}
+  const gen = _playbackIntent
+  // Abandoned rather than merged: half-restoring over a queue the user built
+  // would be worse than not restoring at all.
+  const superseded = () => !opts.force && (_playbackIntent !== gen || state.isPlaying)
+  if (!opts.force && (state.queue.length || state.isPlaying)) return
+
   const saved = await window.api.getPlaybackState()
+  if (superseded()) return
   if (!saved || !saved.filePath) return
   const album = state.library.find(a => a.tracks.some(t => t.filePath === saved.filePath))
   if (!album) return
@@ -889,7 +922,13 @@ async function restorePlaybackState() {
   audio.src = `file://${saved.filePath}`
   const resumePos = saved.position || 0
   if (resumePos > 1) {
-    setTimeout(function() { audio.currentTime = resumePos }, 500)
+    // This fires 500ms later on its own and used to seek whatever was loaded by
+    // then -- including a track the user had just picked.
+    setTimeout(function() {
+      if (superseded()) return
+      if (audio.src !== 'file://' + saved.filePath) return
+      audio.currentTime = resumePos
+    }, 500)
   }
   state.isPlaying = false
   updatePlayBtn()
@@ -899,6 +938,7 @@ async function restorePlaybackState() {
   syncExtension()
 
   var queues = await window.api.getSavedQueues()
+  if (superseded()) return
   var autoQueue = queues.find(function(q) { return q.id === '_auto' })
   if (autoQueue && autoQueue.tracks && autoQueue.tracks.length) {
     state.queue = autoQueue.tracks
@@ -6144,9 +6184,16 @@ function updateNextPrefetch(isRetry) {
   })
 }
 
+// Bumped on every deliberate start. restorePlaybackState runs 1.2s after
+// startup and awaits two IPC round trips inside that; anything the user starts
+// in the meantime used to be silently replaced by the restored queue. The
+// restore now watches this and abandons rather than overwrite.
+var _playbackIntent = 0
+
 function playCurrentTrack() {
   const track = state.queue[state.queueIndex]
   if (!track) return
+  _playbackIntent++
   if (isHttpPath(track.filePath)) recordYtRecent(track)
   const isStream = /^https?:\/\//.test(track.filePath)
 
@@ -15103,7 +15150,55 @@ function _slskEnqueue(items) {
         .catch(function() {})
     }))
   }
-  return window.api.slskEnqueueDownloads({ items: list }).catch(function() { return null })
+  return window.api.slskEnqueueDownloads({ items: list })
+    .then(function (res) {
+      // A refusal used to be a silent null in main, so asking again for
+      // something you had cancelled looked like a button that did nothing.
+      // Offer the one thing the user wants: ask again and mean it.
+      var refused = (res && res.refused) || []
+      if (refused.length) _slskOfferForcedEnqueue(list, refused)
+      return res
+    })
+    .catch(function (e) {
+      console.error('[papa] enqueue failed:', String(e && e.message || e))
+      showSnackbar('Could not queue those downloads')
+      return null
+    })
+}
+
+// The scheduler refuses a file it has already been told to abandon or that ran
+// out of sources. That is correct on its own initiative and wrong when the user
+// is standing there asking again, so the decision is handed back to them.
+function _slskOfferForcedEnqueue(list, refused) {
+  var cancelled = refused.filter(function (r) { return r.reason === 'abandoned' })
+  var exhausted = refused.filter(function (r) { return r.reason === 'exhausted' })
+  var already = refused.filter(function (r) { return r.reason === 'succeeded' || r.reason === 'inflight' })
+  if (already.length && !cancelled.length && !exhausted.length) {
+    showSnackbar(already.length === 1
+      ? 'That file is already downloaded or downloading'
+      : already.length + ' of those are already downloaded or downloading')
+    return
+  }
+  var again = cancelled.concat(exhausted)
+  if (!again.length) return
+  var names = again.map(function (r) { return String(r.filename).split(/[\\/]/).pop() })
+  var label = again.length === 1
+    ? '“' + names[0] + '” was cancelled earlier'
+    : again.length + ' of those were cancelled or gave up earlier'
+  showSnackbar(label, 'Download anyway', function () {
+    var forcedPaths = {}
+    again.forEach(function (r) { forcedPaths[r.filename] = true })
+    var subset = list.filter(function (it) { return forcedPaths[it.filename] })
+    window.api.slskEnqueueDownloads({ items: subset, force: true })
+      .then(function (r) {
+        showSnackbar('Queued ' + ((r && r.added) || subset.length) + ' file' +
+          (((r && r.added) || subset.length) === 1 ? '' : 's'))
+      })
+      .catch(function (e) {
+        console.error('[papa] forced enqueue failed:', String(e && e.message || e))
+        showSnackbar('Could not queue those downloads')
+      })
+  }, 10000)
 }
 
 // Scheduler readout: how wide the download spread currently is.

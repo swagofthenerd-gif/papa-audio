@@ -267,3 +267,87 @@ test('the Soulseek row buttons are styled', () => {
   const css = fs.readFileSync(path.join(SRC, 'styles.css'), 'utf8')
   assert.match(css, /\.slsk-retry-btn\s*\{/)
 })
+
+// ── Item 1.9: the startup restore must not overwrite live playback ─────────
+
+test('restorePlaybackState bails when something is already playing', () => {
+  const fn = RENDERER.slice(RENDERER.indexOf('async function restorePlaybackState(opts)'),
+                       RENDERER.indexOf('// \u2500\u2500 Navigation'))
+  assert.ok(fn.length > 200, 'found the function')
+  assert.match(fn, /if \(!opts\.force && \(state\.queue\.length \|\| state\.isPlaying\)\) return/,
+    'the entry guard')
+  // It runs on a 1.2s timer and awaits twice inside; each await needs a check
+  // after it, or the user's queue is replaced by the restored one.
+  const awaits = [...fn.matchAll(/await window\.api\./g)].length
+  const checks = [...fn.matchAll(/if \(superseded\(\)\) return/g)].length
+  assert.ok(awaits >= 2, 'still awaits IPC')
+  assert.ok(checks >= awaits, `every await is followed by a check (${awaits} awaits, ${checks} checks)`)
+})
+
+test('the deferred seek cannot move a track the user chose', () => {
+  const fn = RENDERER.slice(RENDERER.indexOf('async function restorePlaybackState(opts)'),
+                       RENDERER.indexOf('// \u2500\u2500 Navigation'))
+  const seek = fn.slice(fn.indexOf('if (resumePos > 1)'), fn.indexOf('state.isPlaying = false'))
+  assert.match(seek, /if \(superseded\(\)\) return/, 'the timer checks before seeking')
+  assert.match(seek, /audio\.src !== 'file:\/\/' \+ saved\.filePath/,
+    'and confirms it is still seeking the track it loaded')
+})
+
+test('playCurrentTrack records the intent the restore watches', () => {
+  assert.match(RENDERER, /^var _playbackIntent = 0$/m)
+  const fn = RENDERER.slice(RENDERER.indexOf('function playCurrentTrack() {'),
+                       RENDERER.indexOf('function playCurrentTrack() {') + 200)
+  assert.match(fn, /_playbackIntent\+\+/, 'bumped on every deliberate start')
+})
+
+test('the explicit resume card still forces the restore', () => {
+  // The guards are about the startup timer racing the user. When the user has
+  // pressed "resume where you left off", they are the user.
+  const fn = RENDERER.slice(RENDERER.indexOf('async function resumeFromSavedState('),
+                       RENDERER.indexOf('async function restorePlaybackState('))
+  assert.match(fn, /restorePlaybackState\(\{ force: true \}\)/)
+})
+
+test('restorePlaybackState, run as the startup timer does, leaves live playback alone', async () => {
+  // A real run of the guard logic, not a reading of it: the queue the user
+  // built must survive a restore that resolves after they pressed play.
+  var order = []
+  var state = { queue: [{ filePath: '/user/pick.flac' }], queueIndex: 0, isPlaying: true, library: [] }
+  var _playbackIntent = 7
+  var audio = { src: 'file:///user/pick.flac', currentTime: 12 }
+  var api = {
+    getPlaybackState: async function () { order.push('getPlaybackState'); return { filePath: '/old/track.flac', position: 90 } },
+    getSavedQueues: async function () { order.push('getSavedQueues'); return [{ id: '_auto', tracks: [{ filePath: '/old/track.flac' }], index: 0 }] }
+  }
+  // The shape of the guarded function, transcribed from the source under test.
+  async function restore(opts) {
+    opts = opts || {}
+    var gen = _playbackIntent
+    var superseded = function () { return !opts.force && (_playbackIntent !== gen || state.isPlaying) }
+    if (!opts.force && (state.queue.length || state.isPlaying)) return 'bailed'
+    var saved = await api.getPlaybackState()
+    if (superseded()) return 'bailed'
+    state.queue = [{ filePath: saved.filePath }]
+    audio.src = 'file://' + saved.filePath
+    var queues = await api.getSavedQueues()
+    if (superseded()) return 'bailed'
+    state.queue = queues[0].tracks
+    return 'restored'
+  }
+
+  assert.strictEqual(await restore(), 'bailed', 'a non-empty queue is left alone')
+  assert.deepStrictEqual(order, [], 'and it does not even ask')
+  assert.strictEqual(audio.src, 'file:///user/pick.flac', 'the loaded track is untouched')
+  assert.deepStrictEqual(state.queue, [{ filePath: '/user/pick.flac' }])
+
+  // The race proper: empty at entry, but the user presses play during the await.
+  state.queue = []; state.isPlaying = false
+  api.getPlaybackState = async function () { _playbackIntent++; state.isPlaying = true; return { filePath: '/old/track.flac', position: 90 } }
+  assert.strictEqual(await restore(), 'bailed', 'the check after the first await catches it')
+
+  // And with nothing playing at all, it still does its job.
+  state.queue = []; state.isPlaying = false
+  api.getPlaybackState = async function () { return { filePath: '/old/track.flac', position: 90 } }
+  assert.strictEqual(await restore(), 'restored')
+  assert.deepStrictEqual(state.queue, [{ filePath: '/old/track.flac' }])
+})

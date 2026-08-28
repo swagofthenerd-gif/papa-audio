@@ -230,6 +230,7 @@ contextBridge.exposeInMainWorld('api', {
   playerGetDiagnostics: () => ipcRenderer.invoke('player-get-diagnostics'),
   getHistoryReport:  ()  => ipcRenderer.invoke('get-history-report'),
   getSessionId:      ()  => ipcRenderer.invoke('get-session-id'),
+  getAlbumIdRemap:   ()  => ipcRenderer.invoke('get-album-id-remap'),
   trackExists:       (p) => ipcRenderer.invoke('track-exists', p),
   slskCancelSearches: (p) => ipcRenderer.invoke('slsk-cancel-searches', p),
   getAudioDevices:   ()  => ipcRenderer.invoke('get-audio-devices'),

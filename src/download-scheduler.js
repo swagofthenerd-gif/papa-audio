@@ -39,13 +39,25 @@ function createState() {
 // same want, so re-requesting elsewhere reuses the key rather than duplicating.
 function itemKey(filename) { return String(filename == null ? '' : filename) }
 
-// Peers name the same music under their own paths, so path equality is not
-// enough to tell two requests apart. The basename is what a human means by
-// "the same file", and it is what stops one track downloading twice at once.
-function fileIdentity(filename) {
+// Two competing requirements meet here, and the basename alone satisfies only
+// one of them.
+//
+//   - The same song offered by two peers under two paths is ONE want. Fetching
+//     it twice wastes both slots. (Basename matching gets this right.)
+//   - "01 - Intro.flac" is a name dozens of albums share. Matching on the
+//     basename globally meant one album in flight blocked every other album's
+//     first track indefinitely. (Basename matching gets this wrong.)
+//
+// Size is what separates them: the same release circulating between peers has
+// the same byte count, while two different tracks that happen to share a name do
+// not. So identity is basename plus size, and a missing size falls back to the
+// basename so nothing becomes un-dedupable.
+function fileIdentity(filename, size) {
   var s = String(filename == null ? '' : filename)
   var i = Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\'))
-  return (i >= 0 ? s.slice(i + 1) : s).toLowerCase()
+  var base = (i >= 0 ? s.slice(i + 1) : s).toLowerCase()
+  var n = Number(size)
+  return Number.isFinite(n) && n > 0 ? base + '|' + n : base
 }
 
 function inflightIdentities(state) {
@@ -53,8 +65,8 @@ function inflightIdentities(state) {
   var keys = Object.keys(state.inflight)
   for (var i = 0; i < keys.length; i++) {
     var v = state.inflight[keys[i]]
-    out[fileIdentity(v.sentFilename || v.filename || keys[i])] = true
-    out[fileIdentity(keys[i])] = true
+    out[fileIdentity(v.sentFilename || v.filename || keys[i], v.size)] = true
+    out[fileIdentity(keys[i], v.size)] = true
   }
   return out
 }
@@ -73,11 +85,23 @@ function normalizeSource(s) {
   }
 }
 
-function addItem(state, item) {
+// `reason` on the way out instead of a bare null, so a caller can tell "already
+// downloading" from "you cancelled this" and say so. The old null meant the UI
+// showed nothing at all when a re-add was refused.
+function addItem(state, item, opts) {
   var key = itemKey(item.filename)
   if (!key) return null
-  if (state.done[key]) return null
-  if (state.inflight[key]) return null
+  var force = !!(opts && opts.force)
+  var terminal = state.done[key]
+  if (terminal && !force) {
+    // Not silent any more: the caller decides whether to ask the user.
+    return { refused: terminal, key: key }
+  }
+  // An explicit ask overrides a terminal state. The scheduler must not revive a
+  // cancelled file by itself — that is what makes cancel look broken — but the
+  // user asking again is new information, not the scheduler second-guessing them.
+  if (terminal && force) delete state.done[key]
+  if (state.inflight[key]) return { refused: 'inflight', key: key }
   var existing = null
   for (var i = 0; i < state.pending.length; i++) {
     if (state.pending[i].key === key) { existing = state.pending[i]; break }
@@ -171,7 +195,7 @@ function planDispatch(state, cfg, now) {
     var entry = queue[i]
     if (entry.attempts >= cfg.maxAttempts) continue
     // Already coming from someone — never race a second copy of it.
-    if (busy[fileIdentity(entry.filename)]) continue
+    if (busy[fileIdentity(entry.filename, entry.size)]) continue
     var src = eligibleSource(state, entry, cfg, byPeer, now)
     if (!src) continue
     plan.push({
@@ -181,8 +205,9 @@ function planDispatch(state, cfg, now) {
       size: src.size != null && src.size > 0 ? src.size : entry.size,
     })
     byPeer[src.username] = (byPeer[src.username] || 0) + 1
-    busy[fileIdentity(entry.filename)] = true
-    busy[fileIdentity(src.filename || entry.filename)] = true
+    var dispatchedSize = src.size != null && src.size > 0 ? src.size : entry.size
+    busy[fileIdentity(entry.filename, entry.size)] = true
+    busy[fileIdentity(src.filename || entry.filename, dispatchedSize)] = true
     total++
   }
   return plan
@@ -267,13 +292,26 @@ function recordFailure(state, key, username, cfg, now) {
   return entry
 }
 
-function addSources(state, key, sources) {
+function addSources(state, key, sources, cfg) {
+  cfg = Object.assign({}, DEFAULTS, cfg || {})
   var norm = (sources || []).map(normalizeSource).filter(Boolean)
   var target = state.inflight[key] || null
   if (!target) {
     for (var i = 0; i < state.pending.length; i++) {
       if (state.pending[i].key === key) { target = state.pending[i]; break }
     }
+  }
+  // A file that exhausted its attempts is exactly the case the alternate-source
+  // search exists for, and it used to be the one case that could not benefit: it
+  // was in `done`, so nothing would take a new source for it. A real new peer
+  // resets the attempt count and puts it back in the queue.
+  if (!target && state.done[key] === 'exhausted' && norm.length) {
+    delete state.done[key]
+    target = {
+      key: key, filename: key, size: 0, sources: [], tried: [], triedAt: {},
+      attempts: 0, addedAt: Date.now(),
+    }
+    state.pending.push(target)
   }
   if (!target) return 0
   var added = 0
@@ -332,6 +370,14 @@ function recordStall(state, key, username, cfg, now) {
   var live = state.inflight[key]
   if (!live) return null
   delete state.inflight[key]
+  // Re-queueing at the attempt limit made a zombie: planDispatch skips it on
+  // attempts, starvedItems skips it too so no fresh-source search ever runs, it
+  // is never written to done, and it is persisted — so it showed in the UI as a
+  // download waiting forever, across restarts.
+  if (live.attempts >= cfg.maxAttempts) {
+    state.done[key] = 'exhausted'
+    return null
+  }
   var entry = {
     key: key,
     filename: live.filename,

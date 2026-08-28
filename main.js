@@ -963,6 +963,13 @@ app.whenReady().then(() => {
     }
   }, 12 * 60 * 60 * 1000)
 
+  // Album ids are md5(albumKeyOf(track)), and albumKeyOf now trims. Any album
+  // whose tags carried padding gets a NEW id, so its artwork file and every
+  // id-keyed piece of state has to follow it or the album loses its cover.
+  try { migrateAlbumKeys() } catch (e) {
+    console.error('[papa][albumkey] migration failed; ids left as they were:', e && e.message)
+  }
+
   // Before the window opens: the statistics it draws are about to change.
   try { _historyReport = migratePlayHistory() } catch (e) {
     console.error('[papa][history] migration failed; history left exactly as it was:', e && e.message)
@@ -2028,6 +2035,52 @@ function migratePlayHistory() {
   }
   return { migration: r, reconciliation: rec }
 }
+
+// One-time move for the album-id change described at the call site. Derives the
+// old and new key from the cached library rather than re-reading tags, renames
+// the artwork, and records an alias so anything still holding an old id resolves.
+function migrateAlbumKeys() {
+  const albums = sideStores.libraryCache.get()
+  if (!Array.isArray(albums) || !albums.length) return
+  const aliases = store.get('albumIdAliases', {})
+  const done = store.get('albumKeyTrimMigrated', false)
+  if (done) return
+
+  let renamedArt = 0, aliased = 0
+  for (const a of albums) {
+    for (const t of (a.tracks || [])) {
+      const legacyKey = tagEdit.legacyAlbumKeyOf({
+        albumArtist: a.artist, artist: t.artist, album: a.name,
+      })
+      if (!legacyKey) continue
+      const oldId = crypto.createHash('md5').update(legacyKey).digest('hex')
+      const newId = crypto.createHash('md5').update(
+        tagEdit.albumKeyOf({ albumArtist: a.artist, artist: t.artist, album: a.name })).digest('hex')
+      if (oldId === newId) break
+      for (const ext of ['jpg', 'png']) {
+        const from = path.join(artworkDir, `${oldId}.${ext}`)
+        const to = path.join(artworkDir, `${newId}.${ext}`)
+        try {
+          if (fs.existsSync(from) && !fs.existsSync(to)) { fs.renameSync(from, to); renamedArt++ }
+        } catch (e) { console.error('[papa][albumkey] could not move artwork:', e && e.message) }
+      }
+      if (!aliases[oldId]) { aliases[oldId] = newId; aliased++ }
+      break   // one album, one key
+    }
+  }
+  store.set('albumIdAliases', aliases)
+  store.set('albumKeyTrimMigrated', true)
+  if (renamedArt || aliased) {
+    console.log(`[papa][albumkey] album ids now ignore tag padding: ${renamedArt} artwork file(s) moved, ` +
+      `${aliased} alias(es) recorded. Ratings and notes live in the renderer and are remapped there.`)
+  }
+  // The renderer owns ratings and notes (localStorage), so it is told which ids
+  // moved and remaps them itself.
+  _albumIdRemap = aliases
+}
+
+let _albumIdRemap = null
+ipcMain.handle('get-album-id-remap', () => _albumIdRemap || store.get('albumIdAliases', {}))
 
 // So the renderer can show the numbers rather than only the log having them.
 let _historyReport = null
@@ -4016,6 +4069,16 @@ function httpsGet(url, redirects = 0) {
     const req = https.get(url, { headers: { 'User-Agent': 'PapaAudio/1.0' } }, res => {
       if ([301,302,303,307,308].includes(res.statusCode) && res.headers.location)
         return httpsGet(res.headers.location, redirects + 1).then(resolve).catch(reject)
+      // A 404 or 403 body used to resolve as if it were the payload, and
+      // fetch-album-art wrote it to disk as <albumId>.jpg — poisoning that
+      // album's artwork permanently, because the next call short-circuits on
+      // the file existing.
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        res.resume()
+        const err = new Error(`HTTP ${res.statusCode} for ${url}`)
+        err.statusCode = res.statusCode
+        return reject(err)
+      }
       const chunks = []
       res.on('data', c => chunks.push(c))
       res.on('end', () => resolve(Buffer.concat(chunks)))
@@ -4026,23 +4089,68 @@ function httpsGet(url, redirects = 0) {
   })
 }
 
+// An image, not just bytes. A 404 page written as <albumId>.jpg is worse than no
+// artwork: the file exists, so every later attempt short-circuits and the album
+// can never get a cover again.
+function looksLikeImage(buf) {
+  if (!buf || buf.length < 1024) return false          // no real cover is under 1 KB
+  const b = buf
+  const jpeg = b[0] === 0xFF && b[1] === 0xD8 && b[2] === 0xFF
+  const png = b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4E && b[3] === 0x47
+  const webp = b.length > 12 && b.toString('ascii', 0, 4) === 'RIFF' && b.toString('ascii', 8, 12) === 'WEBP'
+  return jpeg || png || webp
+}
+
+// Remembers which albums have already been looked up and found nothing, so a
+// miss costs one request a day rather than one per visit — and, unlike writing a
+// broken file, it can expire.
+const ART_MISS_TTL_MS = 24 * 60 * 60 * 1000
+const _artMisses = new Map()
+
 ipcMain.handle('fetch-album-art', async (_, { albumId, artist, album }) => {
+  const cached = path.join(artworkDir, `${albumId}.jpg`)
   try {
-    const cached = path.join(artworkDir, `${albumId}.jpg`)
-    if (fs.existsSync(cached)) return { artPath: cached }
+    if (fs.existsSync(cached)) {
+      // Trust the file only if it is actually an image. A previously poisoned
+      // cache entry is repaired here rather than being believed forever.
+      const existing = fs.readFileSync(cached)
+      if (looksLikeImage(existing)) return { artPath: cached }
+      console.warn(`[papa][art] ${albumId}.jpg is not an image (${existing.length} bytes); refetching`)
+      try { fs.unlinkSync(cached) } catch (_) {}
+    }
+    const missAt = _artMisses.get(albumId)
+    if (missAt && Date.now() - missAt < ART_MISS_TTL_MS) return null
+    if (_artMisses.size > 500) _artMisses.clear()
+
     const query = encodeURIComponent(`${artist} ${album}`)
     const raw = await httpsGet(`https://itunes.apple.com/search?term=${query}&entity=album&limit=8&media=music`)
     const data = JSON.parse(raw.toString())
-    if (!data.results?.length) return null
-    const al = album.toLowerCase(), ar = artist.toLowerCase().split(/\s+/)[0]
+    if (!data.results?.length) { _artMisses.set(albumId, Date.now()); return null }
+    const al = String(album || '').toLowerCase(), ar = String(artist || '').toLowerCase().split(/\s+/)[0]
+    // No fallback to results[0]: with limit=8 on a free-text search the first
+    // result for anything obscure is routinely a different release, and writing
+    // it used to cache the wrong cover permanently. No match means no art.
     const best = data.results.find(r =>
       r.collectionName?.toLowerCase().includes(al) && r.artistName?.toLowerCase().includes(ar)
-    ) || data.results.find(r => r.collectionName?.toLowerCase().includes(al)) || data.results[0]
-    if (!best?.artworkUrl100) return null
+    ) || data.results.find(r => r.collectionName?.toLowerCase().includes(al))
+    if (!best?.artworkUrl100) { _artMisses.set(albumId, Date.now()); return null }
     const imgBuf = await httpsGet(best.artworkUrl100.replace('100x100bb', '600x600bb'))
-    fs.writeFileSync(cached, imgBuf)
+    if (!looksLikeImage(imgBuf)) {
+      console.error(`[papa][art] ${artist} — ${album}: response was not an image, not caching`)
+      _artMisses.set(albumId, Date.now())
+      return null
+    }
+    // Temp file plus rename, so a partial write is never visible as a cover.
+    const tmp = cached + '.part'
+    fs.writeFileSync(tmp, imgBuf)
+    fs.renameSync(tmp, cached)
     return { artPath: cached }
-  } catch (_) { return null }
+  } catch (e) {
+    _artMisses.set(albumId, Date.now())
+    console.error(`[papa][art] ${artist} — ${album}:`, String(e && e.message || e))
+    try { if (fs.existsSync(cached + '.part')) fs.unlinkSync(cached + '.part') } catch (_) {}
+    return null
+  }
 })
 
 // ── Soulseek IPC ─────────────────────────────────────────────────────────────
@@ -4311,7 +4419,9 @@ function dlRestore() {
     const entry = dlSched.addItem(dlState, {
       filename: e.filename, size: e.size, sources: e.sources || [], addedAt: e.addedAt,
     })
-    if (entry) {
+    // addItem reports a refusal as {refused, key}, which is truthy but is not an
+    // entry — writing the attempt history onto that would silently lose it.
+    if (entry && !entry.refused) {
       entry.tried = e.tried || []
       entry.triedAt = e.triedAt || {}
       entry.attempts = e.attempts || 0
@@ -4676,15 +4786,21 @@ async function dlSeedFolderSources(items) {
   }
 }
 
-ipcMain.handle('slsk-enqueue-downloads', async (_, { items }) => {
+ipcMain.handle('slsk-enqueue-downloads', async (_, { items, force }) => {
   let added = 0
+  const refused = []
   for (const it of items || []) {
     if (!it || !it.filename) continue
     const sources = (it.sources && it.sources.length)
       ? it.sources
       : (it.username ? [{ username: it.username, filename: it.filename, size: it.size }] : [])
     if (!sources.length) continue
-    if (dlSched.addItem(dlState, { filename: it.filename, size: it.size || 0, sources })) added++
+    const r = dlSched.addItem(dlState, { filename: it.filename, size: it.size || 0, sources },
+      { force: !!force })
+    // A refusal used to be a silent null the caller discarded, so asking again
+    // for something you had cancelled looked like a button that did nothing.
+    if (r && r.refused) refused.push({ filename: it.filename, reason: r.refused })
+    else if (r) added++
   }
   dlStart()
   dlTick()
@@ -4694,7 +4810,7 @@ ipcMain.handle('slsk-enqueue-downloads', async (_, { items }) => {
     const single = (items || []).filter(it => it && it.filename && !(it.sources && it.sources.length > 1))
     if (single.length) dlSeedFolderSources(single).catch(() => {})
   }
-  return { ok: true, added, stats: dlSched.stats(dlState) }
+  return { ok: true, added, refused, stats: dlSched.stats(dlState) }
 })
 
 function dlQueueFiles() {
@@ -4769,10 +4885,13 @@ ipcMain.handle('slsk-respread-backlog', async (_, opts) => {
   }
   for (const q of queued) {
     try { await slskdFetch('DELETE', `/transfers/downloads/${encodeURIComponent(q.username)}/${encodeURIComponent(q.id)}?remove=true`) } catch (_) {}
+    // force: this path has just deleted the transfer at the daemon and means to
+    // re-source it. Without it a file that had been cancelled once could never
+    // be respread.
     dlSched.addItem(dlState, {
       filename: q.filename, size: q.size,
       sources: [{ username: q.username, filename: q.filename, size: q.size }],
-    })
+    }, { force: true })
   }
   dlStart()
   dlTick()

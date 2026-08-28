@@ -14,11 +14,28 @@
 ;(function () {
 
   // Must stay byte-identical to what main hashes, or ids drift.
+  // Trimmed and internally collapsed. Untrimmed tags are routine in downloaded
+  // rips, and without this one album whose tracks disagree about padding became
+  // several albums in the library — each with its own id, and therefore its own
+  // artwork file, rating and notes. Changing this changes album ids, so
+  // main.js migrates the artwork and the id-keyed state on startup.
+  function normKeyPart(v) {
+    return String(v == null ? '' : v).toLowerCase().replace(/\s+/g, ' ').trim()
+  }
+
   function albumKeyOf(t) {
+    t = t || {}
+    return normKeyPart(t.albumArtist || t.artist) + '_' + normKeyPart(t.album)
+  }
+
+  // The key this track WOULD have had before the trim, so a migration can find
+  // what to rename. Returns null when the two agree and nothing needs moving.
+  function legacyAlbumKeyOf(t) {
     t = t || {}
     var artist = String(t.albumArtist || t.artist || '').toLowerCase()
     var album = String(t.album || '').toLowerCase()
-    return artist + '_' + album
+    var legacy = artist + '_' + album
+    return legacy === albumKeyOf(t) ? null : legacy
   }
 
   // Fields the writer understands. Anything else is ignored rather than
@@ -135,6 +152,7 @@
     FIELDS: FIELDS,
     MIXED: MIXED,
     albumKeyOf: albumKeyOf,
+    legacyAlbumKeyOf: legacyAlbumKeyOf,
     albumKeyAfter: albumKeyAfter,
     diffTags: diffTags,
     changedFieldCount: changedFieldCount,

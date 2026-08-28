@@ -153,3 +153,80 @@ test('the search registry is cleaned in a finally', () => {
   assert.match(tail, /_liveSearches\.delete\(id\)/)
   assert.match(tail, /_cancelledSearches\.delete\(id\)/)
 })
+
+// ── Items 1.7 and 1.8: the artwork cache must never be poisoned ────────────
+
+// Extracted and run for real, because the whole point of this function is what
+// it says about specific bytes.
+function loadLooksLikeImage() {
+  const src = MAIN.slice(MAIN.indexOf('function looksLikeImage('), MAIN.indexOf('const ART_MISS_TTL_MS'))
+  // eslint-disable-next-line no-new-func
+  return new Function('Buffer', src + '; return looksLikeImage')(Buffer)
+}
+
+function pad(head, len) {
+  const b = Buffer.alloc(len || 4096)
+  Buffer.from(head).copy(b, 0)
+  return b
+}
+
+test('looksLikeImage accepts the three formats iTunes actually serves', () => {
+  const looksLikeImage = loadLooksLikeImage()
+  assert.strictEqual(looksLikeImage(pad([0xFF, 0xD8, 0xFF, 0xE0])), true, 'JPEG')
+  assert.strictEqual(looksLikeImage(pad([0x89, 0x50, 0x4E, 0x47])), true, 'PNG')
+  const webp = pad([], 4096)
+  Buffer.from('RIFF').copy(webp, 0)
+  Buffer.from('WEBP').copy(webp, 8)
+  assert.strictEqual(looksLikeImage(webp), true, 'WEBP')
+})
+
+test('looksLikeImage rejects what a failed request actually returns', () => {
+  const looksLikeImage = loadLooksLikeImage()
+  // The three shapes seen in the wild, each of which used to be written to
+  // disk as <albumId>.jpg and then believed forever.
+  assert.strictEqual(looksLikeImage(Buffer.from('{"errorMessage":"Not Found"}')), false, 'a JSON error body')
+  assert.strictEqual(looksLikeImage(pad(Buffer.from('<!DOCTYPE html><html><body>403'))), false, 'an HTML error page')
+  assert.strictEqual(looksLikeImage(Buffer.alloc(0)), false, 'an empty body')
+  assert.strictEqual(looksLikeImage(null), false, 'nothing at all')
+  // A truncated JPEG header with no image behind it is not a cover either.
+  assert.strictEqual(looksLikeImage(Buffer.from([0xFF, 0xD8, 0xFF])), false, 'three bytes of JPEG')
+})
+
+test('httpsGet rejects a non-2xx instead of resolving the error body', () => {
+  const fn = CODE.slice(CODE.indexOf('function httpsGet('), CODE.indexOf('function httpsGet(') + 1600)
+  assert.match(fn, /res\.statusCode < 200 \|\| res\.statusCode >= 300/)
+  // The redirect branch has to come first, or a 302 rejects instead of following.
+  assert.ok(fn.indexOf('308].includes(res.statusCode)') < fn.indexOf('res.statusCode < 200'),
+    'redirects are handled before the non-2xx rejection')
+  assert.match(fn, /res\.resume\(\)/, 'the discarded body is drained, not left to hold the socket')
+})
+
+test('album art has no results[0] fallback', () => {
+  const h = CODE.slice(CODE.indexOf("ipcMain.handle('fetch-album-art'"), CODE.indexOf("ipcMain.handle('fetch-album-art'") + 2600)
+  assert.doesNotMatch(h, /\|\| data\.results\[0\]/,
+    'the first result of a free-text search is routinely a different release')
+  // Both remaining candidates still require the album name to match.
+  assert.strictEqual([...h.matchAll(/collectionName\?\.toLowerCase\(\)\.includes\(al\)/g)].length, 2)
+})
+
+test('a cached cover is verified, and a bad one is repaired not believed', () => {
+  const h = CODE.slice(CODE.indexOf("ipcMain.handle('fetch-album-art'"), CODE.indexOf("ipcMain.handle('fetch-album-art'") + 2600)
+  assert.match(h, /looksLikeImage\(existing\)/, 'the file on disk is checked, not just its existence')
+  assert.match(h, /unlinkSync\(cached\)/, 'and a poisoned entry is removed so it can be refetched')
+  assert.match(h, /looksLikeImage\(imgBuf\)/, 'the download is checked before it is written')
+})
+
+test('the cover is written through a temp file', () => {
+  const h = CODE.slice(CODE.indexOf("ipcMain.handle('fetch-album-art'"), CODE.indexOf("ipcMain.handle('fetch-album-art'") + 2600)
+  assert.match(h, /const tmp = cached \+ '\.part'/)
+  assert.match(h, /renameSync\(tmp, cached\)/, 'so a partial write is never visible as a cover')
+  assert.doesNotMatch(h, /writeFileSync\(cached, imgBuf\)/, 'nothing writes the destination directly')
+})
+
+test('a miss is remembered with an expiry, not written as a file', () => {
+  const h = CODE.slice(CODE.indexOf("const ART_MISS_TTL_MS"), CODE.indexOf("ipcMain.handle('fetch-album-art'") + 2600)
+  assert.match(h, /ART_MISS_TTL_MS/)
+  assert.match(h, /_artMisses\.size > 500\) _artMisses\.clear\(\)/, 'the miss map is bounded')
+  // Every early return records the miss, or the next visit refetches immediately.
+  assert.ok([...h.matchAll(/_artMisses\.set\(albumId, Date\.now\(\)\)/g)].length >= 4)
+})

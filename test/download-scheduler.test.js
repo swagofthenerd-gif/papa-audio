@@ -115,12 +115,76 @@ test('oldest request goes first so a big album is not starved by later ones', ()
   assert.equal(plan[0].key, 'early')
 })
 
-test('completed files are not re-queued', () => {
+test('completed files are not re-queued, and the refusal is reported', () => {
   const st = seed(['a'], [src('x')])
   S.markDispatched(st, 'a', 'x', 1)
   S.recordSuccess(st, 'a', 'x')
-  assert.equal(S.addItem(st, { filename: 'a', size: 1, sources: [src('x')] }), null)
+  // The behaviour is unchanged: nothing is queued and nothing is dispatched.
+  // What changed is that the refusal says WHY instead of returning a bare null,
+  // so the caller can tell "already downloaded" from "you cancelled this" and
+  // show something. A silent null was the whole reason a refused re-add looked
+  // like a button that did nothing.
+  const r = S.addItem(st, { filename: 'a', size: 1, sources: [src('x')] })
+  assert.equal(r.refused, 'succeeded')
+  assert.equal(st.pending.length, 0)
   assert.equal(S.planDispatch(st, {}, 2).length, 0)
+})
+
+test('an explicit re-add overrides a terminal state, but only when asked', () => {
+  // The scheduler must never revive a cancelled file on its own — that is what
+  // made cancel look broken. The user asking again is new information.
+  const st = seed(['a'], [src('x')])
+  S.markDispatched(st, 'a', 'x', 1)
+  S.recordAbandoned(st, 'a')
+  assert.equal(S.addItem(st, { filename: 'a', size: 1, sources: [src('x')] }).refused, 'abandoned')
+  assert.equal(st.pending.length, 0, 'not without force')
+  const forced = S.addItem(st, { filename: 'a', size: 1, sources: [src('x')] }, { force: true })
+  assert.equal(forced.key, 'a')
+  assert.equal(st.pending.length, 1)
+  assert.equal(st.done['a'], undefined, 'the terminal mark is cleared')
+})
+
+test('a genuinely new source revives an exhausted file', () => {
+  // The one case the alternate-source search exists for was the one case that
+  // could not benefit: the file was in `done`, so nothing would take a source.
+  const st = seed(['a'], [src('x')])
+  S.markDispatched(st, 'a', 'x', 1)
+  S.recordFailure(st, 'a', 'x', { maxAttempts: 1 }, 2)
+  assert.equal(st.done['a'], 'exhausted')
+  assert.equal(S.addSources(st, 'a', [src('z')]), 1)
+  assert.equal(st.done['a'], undefined)
+  assert.equal(st.pending.length, 1)
+  assert.equal(st.pending[0].attempts, 0, 'a new peer earns a fresh attempt count')
+})
+
+test('a stall at the attempt limit is exhausted, not re-queued forever', () => {
+  // Re-queueing made a zombie: planDispatch skips it on attempts, starvedItems
+  // skips it so no fresh-source search runs, it is never written to done, and it
+  // is persisted — a download waiting forever, across restarts.
+  const st = seed(['a'], [src('x')])
+  S.markDispatched(st, 'a', 'x', 1)
+  st.inflight['a'].attempts = 4
+  assert.equal(S.recordStall(st, 'a', 'x', { maxAttempts: 4 }, 99999), null)
+  assert.equal(st.pending.length, 0)
+  assert.equal(st.done['a'], 'exhausted')
+})
+
+test('no entry in pending may sit at or above the attempt limit', () => {
+  // The invariant behind the zombie bug. Drive every terminal path and check it.
+  const cfg = { maxAttempts: 2 }
+  const st = seed(['a'], [src('x'), src('y'), src('z')])
+  for (let i = 0; i < 6; i++) {
+    const plan = S.planDispatch(st, cfg, i * 10)
+    if (plan.length) S.markDispatched(st, plan[0].key, plan[0].username, i * 10, plan[0].filename)
+    if (st.inflight['a']) {
+      if (i % 2) S.recordFailure(st, 'a', st.inflight['a'].username, cfg, i * 10 + 1)
+      else S.recordStall(st, 'a', st.inflight['a'].username, cfg, i * 10 + 1)
+    }
+    for (const e of st.pending) {
+      assert.ok(e.attempts < cfg.maxAttempts,
+        `pending entry has attempts=${e.attempts} of ${cfg.maxAttempts}`)
+    }
+  }
 })
 
 test('stats report the live spread across peers', () => {
@@ -213,10 +277,23 @@ test('an alternate source is tracked under the path actually sent', () => {
 test('the same music is never fetched from two peers at once', () => {
   const st = S.createState()
   // Two separate requests that are really the same track under different paths.
+  // Same byte count is what says "same release" — see fileIdentity.
   S.addItem(st, { filename: 'peerA/Change.flac', size: 1, sources: [src('A')], addedAt: 1 })
   S.addItem(st, { filename: 'peerB/deep/Change.flac', size: 1, sources: [src('B')], addedAt: 2 })
   const plan = S.planDispatch(st, {}, 10)
   assert.equal(plan.length, 1, 'only one copy of a given track may be dispatched')
+})
+
+test('two different tracks that share a filename do not block each other', () => {
+  // "01 - Intro.flac" is a name dozens of albums share. Basename-only identity
+  // meant one album in flight blocked every other album's first track for good.
+  const st = S.createState()
+  S.addItem(st, { filename: '/AlbumA/01 - Intro.flac', size: 100, sources: [src('A')], addedAt: 1 })
+  S.addItem(st, { filename: '/AlbumB/01 - Intro.flac', size: 200, sources: [src('B')], addedAt: 2 })
+  assert.equal(S.planDispatch(st, {}, 10).length, 2)
+  const first = S.planDispatch(st, {}, 10)[0]
+  S.markDispatched(st, first.key, first.username, 10, first.filename)
+  assert.equal(S.planDispatch(st, {}, 11).length, 1, 'the other album is still dispatchable')
 })
 
 test('a dispatched track blocks a second copy on the next pass too', () => {
@@ -236,8 +313,9 @@ test('an abandoned file never comes back', () => {
   assert.equal(st.done['a'], 'abandoned')
   assert.equal(st.pending.length, 0)
   assert.equal(S.planDispatch(st, {}, 99999).length, 0)
-  // ...and re-adding it does not resurrect it either.
-  assert.equal(S.addItem(st, { filename: 'a', size: 1, sources: [src('y')] }), null)
+  // ...and re-adding it does not resurrect it either, unless the user forces it.
+  assert.equal(S.addItem(st, { filename: 'a', size: 1, sources: [src('y')] }).refused, 'abandoned')
+  assert.equal(st.pending.length, 0)
 })
 
 test('abandoning clears a file that is only pending, not in flight', () => {
