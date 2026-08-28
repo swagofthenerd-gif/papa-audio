@@ -32,16 +32,35 @@ function _httpGet(url) {
 }
 
 // "[mm:ss.xx]text" lines → [{ time, text }] sorted by time; null if no timestamps.
+// Standard LRC repeats a chorus by stacking timestamps on one line:
+//   [00:10.00][01:20.00][02:30.00]the same words
+// Taking only the first left the rest sitting in the text, so the panel showed
+// a literal "[01:20.00]the same words" and the line never highlighted at its
+// later occurrences.
+const LRC_STAMP = /^\s*\[(\d+):(\d+(?:[.:]\d+)?)\]/
+
 function parseLrc(lrc) {
   if (!lrc) return null
   const lines = []
   for (const raw of String(lrc).split('\n')) {
-    const m = raw.match(/^\s*\[(\d+):(\d+(?:\.\d+)?)\](.*)$/)
-    if (!m) continue
-    const time = parseInt(m[1], 10) * 60 + parseFloat(m[2])
-    if (isNaN(time)) continue
-    const text = m[3].replace(/<[^>]*>/g, '').trim()
-    lines.push({ time, text })
+    let rest = raw
+    const times = []
+    // Consume every leading timestamp, not just one.
+    for (;;) {
+      const m = rest.match(LRC_STAMP)
+      if (!m) break
+      // Some files use [mm:ss:cc] instead of [mm:ss.cc].
+      const secs = parseFloat(String(m[2]).replace(':', '.'))
+      const time = parseInt(m[1], 10) * 60 + secs
+      if (!isNaN(time)) times.push(time)
+      rest = rest.slice(m[0].length)
+    }
+    if (!times.length) continue
+    // Metadata lines -- [ar:...], [length:...] -- do not match LRC_STAMP
+    // because the tag is not numeric, so they are skipped above.
+    const text = rest.replace(/<[^>]*>/g, '').trim()
+    // One entry per timestamp, all with the same text.
+    for (const time of times) lines.push({ time, text })
   }
   if (!lines.length) return null
   return lines.sort((a, b) => a.time - b.time)

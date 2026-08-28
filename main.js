@@ -1842,7 +1842,9 @@ function initMpris() {
     mprisPlayer.on('pause',     () => send('pause'))
     mprisPlayer.on('next',      () => send('next'))
     mprisPlayer.on('previous',  () => send('prev'))
-    mprisPlayer.on('stop',      () => send('pause'))
+    // 'stop' meant pause, so a desktop applet's Stop button paused. Stop
+    // stops: the renderer clears the position too.
+    mprisPlayer.on('stop',      () => send('stop'))
     mprisPlayer.on('quit',      () => { app.isQuitting = true; app.quit() })
     mprisPlayer.on('raise',     () => { mainWindow?.show(); mainWindow?.focus() })
     mprisPlayer.on('position',  (e) => safeSend('media-seek', { position: e.position / 1e6 }))

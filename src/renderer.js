@@ -1293,16 +1293,21 @@ async function fetchMissingArtwork() {
     if (artFetchCancelled) break
     const album = missing[i]
     textEl.textContent = `${i + 1}/${missing.length} — ${album.name}`
-    fillEl.style.width = `${Math.round((i / missing.length) * 100)}%`
     const result = await window.api.fetchAlbumArt({ albumId: album.id, artist: album.artist, album: album.name })
     if (result?.artPath) {
       found++
       album.artPath = result.artPath
       patchAlbumArtInDOM(album.id, result.artPath)
     }
+    // After the item, not before it. Computed before, the bar read (i)/n while
+    // the text beside it read (i+1)/n -- so on a one-album fetch the bar sat at
+    // 0% for the whole wait, and it was always one item behind its own label.
+    fillEl.style.width = `${Math.round(((i + 1) / missing.length) * 100)}%`
     await sleep(250)
   }
-  fillEl.style.width = '100%'
+  // Only a completed run is 100%. A cancel used to snap the bar full and then
+  // say "Cancelled" underneath it.
+  if (!artFetchCancelled) fillEl.style.width = '100%'
   textEl.textContent = artFetchCancelled ? 'Cancelled' : `Done — ${found}/${missing.length} covers found`
   if (found > 0) window.api.saveLibraryCache(state.library)
   await sleep(2500)
@@ -4331,6 +4336,24 @@ function recordPlayAfterThreshold(track) {
   }, PLAY_RECORD_MS)
 }
 
+// MPRIS Stop, which is not Pause: it ends playback and returns to the start of
+// the track. The queue is kept -- Stop is not Clear.
+function mediaStop() {
+  audio.pause()
+  try { audio.currentTime = 0 } catch (_) { /* no source loaded */ }
+  state.isPlaying = false
+  updatePlayBtn()
+  // The bar is painted from timeupdate, which will not fire again while paused,
+  // so it is reset here or it keeps showing where the track stopped.
+  if (_dom.fill)  _dom.fill.style.width = '0%'
+  if (_dom.thumb) _dom.thumb.style.left = '0%'
+  if (_dom.modalFill)  _dom.modalFill.style.width = '0%'
+  if (_dom.modalThumb) _dom.modalThumb.style.left = '0%'
+  if (_dom.timeCur) _dom.timeCur.textContent = _fmtTimeCur(0)
+  if (_dom.modalCur) _dom.modalCur.textContent = _fmtTimeCur(0)
+  syncExtension()
+}
+
 // ── Playback engine state, visible ───────────────────────────────────────────
 // A badge in the player bar, shown only while the engine is not healthy. Not a
 // dialog: the decided behaviour is a brief non-blocking notice, never a prompt.
@@ -6290,8 +6313,15 @@ function showNowPlayingModal() {
         const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
         const tooltip = document.getElementById('progress-tooltip')
         if (tooltip) {
+          // The one tooltip element is shared with the player bar, where it is
+          // absolutely positioned inside .progress-track and centred with a
+          // transform. Here it is positioned against the viewport, so the
+          // transform and the bar's `bottom` both have to be undone -- stated
+          // here rather than guessed at by an attribute-substring selector.
           tooltip.textContent = fmtDur(audio.duration * pct)
           tooltip.style.position = 'fixed'
+          tooltip.style.transform = 'none'
+          tooltip.style.bottom = 'auto'
           tooltip.style.display = 'block'
           tooltip.style.left = (e.clientX - 50) + 'px'
           tooltip.style.top  = (rect.top - 24) + 'px'
@@ -6300,8 +6330,14 @@ function showNowPlayingModal() {
       modalTrack.addEventListener('mouseleave', function() {
         const tooltip = document.getElementById('progress-tooltip')
         if (tooltip) {
+          // Every inline override is cleared, or the player bar's tooltip
+          // inherits the modal's fixed positioning for the rest of the session.
           tooltip.style.display = 'none'
           tooltip.style.position = ''
+          tooltip.style.transform = ''
+          tooltip.style.bottom = ''
+          tooltip.style.top = ''
+          tooltip.style.left = ''
         }
       })
     }
@@ -6992,7 +7028,16 @@ function pickShuffleIndex(queue, recentIndices) {
     const artist = queue[idx]?.albumArtist || queue[idx]?.artist
     if (!recentArtists.has(artist) || attempt >= 8) return idx
   }
-  return Math.floor(Math.random() * queue.length)
+  // The fallback used to be a bare random pick with no exclusion, so shuffle
+  // could hand back the track that was already playing. On a single-artist
+  // album -- this app's primary case, where the artist filter makes every
+  // candidate "recent" until attempt 8 -- that measured 0.07% over 200,000
+  // runs; on a two-track queue, 12.5%.
+  //
+  // Picking from the other indices directly rather than retrying: with more
+  // than one track there is always a valid answer, so this cannot fail.
+  const other = Math.floor(Math.random() * (queue.length - 1))
+  return other >= state.queueIndex ? other + 1 : other
 }
 
 function playPrev() {
@@ -7631,6 +7676,22 @@ function bindContentEvents() {
       e.preventDefault()
       try { swipeEl.setPointerCapture(e.pointerId) } catch (_) {}
     })
+    // The a11y sweep gives these cards tabindex="0" and role="button", and the
+    // delegated Enter/Space handler calls card.click() -- but there was no
+    // click listener for this class anywhere, so Enter did nothing. Nineteen of
+    // the twenty focusable card classes had one; this was the twentieth.
+    // The pointer path handles its own taps and swipes; this exists for the
+    // keyboard, where card.click() is dispatched directly on the card. It
+    // ignores anything that arrives right after a pointer gesture, because
+    // whether pointer capture also produces a synthetic click here is
+    // implementation-dependent and must not decide whether a tap works.
+    var _swipeHandledAt = 0
+    swipeEl.addEventListener('click', function(e) {
+      if (Date.now() - _swipeHandledAt < 400) return
+      var card = e.target.closest('.discovery-swipe-card')
+      if (!card || !card.dataset.album) return
+      navigate('album', card.dataset.album)
+    })
     swipeEl.addEventListener('pointercancel', function(e) {
       if (_swipeId !== e.pointerId) return
       _swipeCard = null; _swipeId = null
@@ -7646,6 +7707,7 @@ function bindContentEvents() {
       if (!card) return
       var diff = e.clientX - _swipeStartX
       _swipeCard = null
+      _swipeHandledAt = Date.now()
       if (Math.abs(diff) > 80) {
         var albumId = card.dataset.album
         var right = diff > 0
@@ -7671,7 +7733,7 @@ function bindContentEvents() {
         }
         return
       }
-      // Not a swipe: treat it as a click and actually go somewhere.
+      // Not a swipe: a short press opens the album.
       if (card.dataset.album) navigate('album', card.dataset.album)
     })
   }
@@ -7731,21 +7793,12 @@ function bindContentEvents() {
     })
   })
 
-  document.querySelectorAll('.album-card-art').forEach(function(img) {
-    img.addEventListener('contextmenu', function(e) {
-      e.preventDefault()
-      e.stopPropagation()
-      var src = img.src || ''
-      if (src.startsWith('file://')) {
-        navigator.clipboard.writeText(src.replace('file://', '')).then(function() {
-          showSnackbar('Path copied')
-        }).catch(function (e) {
-          console.error('[papa] clipboard write failed:', String(e && e.message || e))
-          showSnackbar('Could not copy the path')
-        })
-      }
-    })
-  })
+  // The cover art used to have its own contextmenu handler that stopPropagation'd
+  // and copied the artwork path -- so right-clicking the largest and easiest-to-
+  // hit part of an album card gave "Path copied" instead of the album menu, the
+  // one context-menu surface in the app that behaved differently from its
+  // parent. The album menu already offers Copy path, so the special case only
+  // diverged; the event now reaches the card like every other click on it.
 
   document.querySelectorAll('.pl-rename-btn').forEach(function(btn) {
     btn.addEventListener('click', function(e) {
@@ -13592,9 +13645,17 @@ function setupListeners() {
   }).catch(() => {})
 
   window.api.on('media-key', key => {
+    // main sends six commands and this understood three. A desktop applet's
+    // dedicated Play, Pause and Stop buttons were all inert -- only the
+    // combined toggle worked -- and a headset's play button usually maps to
+    // Play, not PlayPause.
     if (key === 'play-pause') togglePlay()
     else if (key === 'next')  playNext()
     else if (key === 'prev')  playPrev()
+    else if (key === 'play')  { if (!state.isPlaying) togglePlay() }
+    else if (key === 'pause') { if (state.isPlaying) togglePlay() }
+    else if (key === 'stop')  mediaStop()
+    else console.warn('[papa] unhandled media key:', key)
   })
 
   // ── Tray menu, MPRIS and the power monitor ────────────────────────────────

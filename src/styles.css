@@ -5620,3 +5620,67 @@ body.app-unfocused *::after {
 }
 .mg-offender-list li:last-child { border-bottom:none; }
 .mg-offender-list strong { color:var(--text); font-weight:600; }
+
+/* ══════════════════════════════════════════════════════
+   THINGS THAT HAD NO RULE AT ALL
+   Each of these classes is applied by the app and had no
+   selector in this file, so the element existed and did
+   nothing visible.
+══════════════════════════════════════════════════════ */
+
+/* The seek preview. With no `position` the `left` the handler sets was ignored
+   and the div joined the normal flow INSIDE the 5px .progress-track, so
+   hovering the bar distorted it. In the modal the handler set position:fixed
+   inline but there was still no background, padding, colour or z-index, so the
+   time read as bare text over whatever was beneath it. */
+.progress-tooltip {
+  position: absolute;
+  bottom: 14px;
+  transform: translateX(-50%);
+  background: rgba(20,20,20,.96);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--r-sm);
+  padding: 3px 8px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  white-space: nowrap;
+  z-index: 300;
+  /* Or the tooltip sits under the cursor and eats the drag it is describing. */
+  pointer-events: none;
+}
+
+/* The first full scan is the longest wait in the app, and its spinner was a
+   zero-size empty div. */
+.loading-wrap {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 18px; padding: 80px 24px; text-align: center;
+}
+.loading-wrap p { font-size: 13px; color: var(--text2); margin: 0; }
+.spinner {
+  width: 34px; height: 34px; flex-shrink: 0;
+  border: 3px solid var(--glass-border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: papa-spin .8s linear infinite;
+}
+@keyframes papa-spin { to { transform: rotate(360deg); } }
+/* Respect the setting rather than spinning at someone who asked us not to;
+   the border still marks the element as busy. */
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation: none; border-top-color: var(--accent); opacity: .7; }
+}
+
+/* The mic button added and removed .listening five times against no rule, so
+   there was no way to tell whether it was recording. */
+.listening {
+  color: var(--accent) !important;
+  animation: papa-listening 1.2s ease-in-out infinite;
+}
+@keyframes papa-listening {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: .55; transform: scale(1.12); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .listening { animation: none; opacity: 1; }
+}
