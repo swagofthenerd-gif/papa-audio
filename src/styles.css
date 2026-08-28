@@ -5587,3 +5587,14 @@ body.app-unfocused *::after {
   color: var(--text2);
   font-size: 13px;
 }
+
+/* ── Configure Shortcuts ────────────────────────────────
+   The rows are buttons now: click one, then press the keys. */
+.shortcut-key-btn {
+  background:none; border:1px solid transparent; padding:0; cursor:pointer;
+  border-radius:var(--r-sm); transition:border-color .15s, background .15s;
+}
+.shortcut-key-btn:hover { border-color:var(--glass-border); background:var(--glass); }
+.shortcut-key-btn:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.shortcut-key-btn.capturing { border-color:var(--accent); background:var(--glass); }
+.shortcut-key-btn.capturing kbd { color:var(--accent); }

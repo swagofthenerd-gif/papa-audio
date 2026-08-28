@@ -200,12 +200,18 @@ function _timeCurTitle() {
 
 
 // ── Keyboard shortcut configuration ─────────────────────────────────────────
+// The keydown handler used to test literal keys and never consult this table,
+// so every value in it was decorative: "Configure Shortcuts" listed keys the
+// app did not read, and getShortcut was referenced nowhere. Two entries also
+// described the opposite of the behaviour -- the plain arrows seek, they have
+// never changed track -- and nextTrack, prevTrack and stopAfter had no binding
+// at all. Every test in the handler now goes through matchesShortcut().
 var DEFAULT_SHORTCUTS = {
   'playPause': 'Space',
-  'nextTrack': 'ArrowRight',
-  'prevTrack': 'ArrowLeft',
-  'seekForward': 'Shift+ArrowRight',
-  'seekBackward': 'Shift+ArrowLeft',
+  'nextTrack': 'Shift+ArrowRight',
+  'prevTrack': 'Shift+ArrowLeft',
+  'seekForward': 'ArrowRight',
+  'seekBackward': 'ArrowLeft',
   'volumeUp': '=',
   'volumeDown': '-',
   'toggleMute': 'm',
@@ -225,7 +231,39 @@ var DEFAULT_SHORTCUTS = {
   'skipShort': 'Control+Shift+k',
   'stopAfter': 'Control+Shift+t',
   'toggleAgent': 'Control+/',
+  'skipInterludes': 'Control+Shift+i',
   'shortcuts': 'F1',
+}
+
+// What each one does, for the dialog. An action with no label here would show
+// its camelCase identifier, which is what the old dialog did for all of them.
+var SHORTCUT_LABELS = {
+  playPause: 'Play / pause',
+  nextTrack: 'Next track',
+  prevTrack: 'Previous track',
+  seekForward: 'Seek forward 10s',
+  seekBackward: 'Seek back 10s',
+  volumeUp: 'Volume up',
+  volumeDown: 'Volume down',
+  toggleMute: 'Mute',
+  toggleShuffle: 'Shuffle',
+  cycleRepeat: 'Repeat mode',
+  cycleSpeed: 'Playback speed',
+  fullscreen: 'Full-screen now playing',
+  toggleQueue: 'Show queue',
+  toggleLyrics: 'Show lyrics',
+  focusSearch: 'Search',
+  commandPalette: 'Command palette',
+  likeTrack: 'Like this track',
+  sleepTimer: 'Sleep timer (30 min)',
+  saveQueue: 'Save the queue',
+  addToQueue: 'Queue this track again',
+  undo: 'Undo',
+  skipShort: 'Auto-skip short tracks',
+  stopAfter: 'Stop after this track',
+  toggleAgent: 'Assistant',
+  skipInterludes: 'Skip interludes',
+  shortcuts: 'Keyboard shortcuts',
 }
 
 var _shortcuts = {}
@@ -237,6 +275,65 @@ try {
 }
 
 function getShortcut(action) { return _shortcuts[action] || DEFAULT_SHORTCUTS[action] }
+
+// One canonical spelling for a key combination, so a stored binding and a live
+// event can be compared as strings. Modifiers in a fixed order; letters always
+// lowercase, because Shift+p arrives as 'P' and a binding written 'Control+
+// Shift+p' must still match it.
+var SHORTCUT_KEY_ALIASES = {
+  ' ': 'Space', 'Spacebar': 'Space',
+  '+': '=',              // Shift+= on most layouts
+  'Esc': 'Escape',
+  'Left': 'ArrowLeft', 'Right': 'ArrowRight', 'Up': 'ArrowUp', 'Down': 'ArrowDown',
+}
+
+function normalizeShortcutKey(key) {
+  if (key == null) return ''
+  var k = String(key)
+  if (SHORTCUT_KEY_ALIASES[k]) k = SHORTCUT_KEY_ALIASES[k]
+  // Single characters normalize to lower case; named keys keep their spelling.
+  return k.length === 1 ? k.toLowerCase() : k
+}
+
+function normalizeShortcut(combo) {
+  if (!combo) return ''
+  var parts = String(combo).split('+')
+  var key = normalizeShortcutKey(parts.pop())
+  var mods = {}
+  parts.forEach(function (p) {
+    var m = p.trim().toLowerCase()
+    if (m === 'ctrl' || m === 'control' || m === 'cmd' || m === 'meta' || m === 'command') mods.control = true
+    else if (m === 'alt' || m === 'option') mods.alt = true
+    else if (m === 'shift') mods.shift = true
+  })
+  var out = []
+  if (mods.control) out.push('Control')
+  if (mods.alt) out.push('Alt')
+  if (mods.shift) out.push('Shift')
+  out.push(key)
+  return out.join('+')
+}
+
+// Control and Meta are folded together: the same binding should work for a
+// user on a keyboard where Cmd is the modifier.
+function comboFromEvent(e) {
+  var out = []
+  if (e.ctrlKey || e.metaKey) out.push('Control')
+  if (e.altKey) out.push('Alt')
+  if (e.shiftKey) out.push('Shift')
+  // e.code for the space bar: e.key is ' ', which is invisible in a binding.
+  var key = e.code === 'Space' ? 'Space' : normalizeShortcutKey(e.key)
+  // A modifier pressed on its own is not a combination.
+  if (key === 'Control' || key === 'Shift' || key === 'Alt' || key === 'Meta') return ''
+  out.push(key)
+  return out.join('+')
+}
+
+function matchesShortcut(action, e) {
+  var want = normalizeShortcut(getShortcut(action))
+  if (!want) return false
+  return comboFromEvent(e) === want
+}
 
 function saveShortcuts() {
   localStorage.setItem('papa-shortcuts', JSON.stringify(_shortcuts))
@@ -676,6 +773,11 @@ async function init() {
     .catch(e => console.error('[papa] could not read the session id:', String(e && e.message || e)))
 
   document.getElementById('notice-badge')?.addEventListener('click', showNoticeHistory)
+
+  // Local preferences that were being written and never read back.
+  restoreSidebarPrefs()
+  restoreStatsRange()
+  restoreDiscoverDismissals()
 
   window.api.slskStatus().then(s => { slsk.status = s }).catch(() => {})
   // The rate is decided in one place; at startup nothing is known to be active
@@ -1427,7 +1529,11 @@ async function renderExplore() {
   var decades = ['1950s','1960s','1970s','1980s','1990s','2000s','2010s','2020s']
   var eraHTML = '<div class="section-header"><span class="section-title">Time machine</span></div><div class="era-timeline">' + decades.map(function(d) { return '<button class="era-chip" data-era="' + d + '">' + d + '</button>' }).join('') + '</div>'
 
-  var discoveryHTML = '<div class="section-header"><span class="section-title">Discover</span></div><div class="discovery-swipe" id="discovery-swipe">' + state.library.slice(0, 10).map(function(a, i) { return '<div class="discovery-swipe-card" data-album="' + esc(a.id) + '" title="' + esc(a.artist + ' — ' + a.name) + '" style="cursor:pointer;z-index:' + (10 - i) + '"><div style="width:100%;height:100%;background:var(--bg3);display:flex;align-items:center;justify-content:center;flex-direction:column;gap:8px">' + artImg(a.artPath, '', '') + '<div style="font-size:14px;font-weight:600;padding:0 16px;text-align:center">' + esc(a.name) + '</div><div style="font-size:12px;color:var(--text2)">' + esc(a.artist) + '</div></div></div>' }).join('') + '</div>'
+  // Dismissed albums are skipped, so the deck advances. A swipe used to be
+  // animation only -- the card was removed after 300ms and reappeared on the
+  // next Home render, with nothing recorded either way.
+  var _discoverDeck = state.library.filter(function (a) { return !_discoverDismissed.has(a.id) }).slice(0, 10)
+  var discoveryHTML = '<div class="section-header"><span class="section-title">Discover</span></div><div class="discovery-swipe" id="discovery-swipe">' + _discoverDeck.map(function(a, i) { return '<div class="discovery-swipe-card" data-album="' + esc(a.id) + '" title="' + esc(a.artist + ' — ' + a.name) + '" style="cursor:pointer;z-index:' + (10 - i) + '"><div style="width:100%;height:100%;background:var(--bg3);display:flex;align-items:center;justify-content:center;flex-direction:column;gap:8px">' + artImg(a.artPath, '', '') + '<div style="font-size:14px;font-weight:600;padding:0 16px;text-align:center">' + esc(a.name) + '</div><div style="font-size:12px;color:var(--text2)">' + esc(a.artist) + '</div></div></div>' }).join('') + '</div>'
 
   setContent(`<div class="page">
     <div class="page-header" style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
@@ -3440,12 +3546,10 @@ function bindYtEvents(results, rootEl) {
     btn.textContent = liked ? '♥' : '♡'
     btn.title = liked ? 'Unlike' : 'Like'
   }))
-  box.querySelectorAll('.yt-dl').forEach(btn => btn.addEventListener('click', async e => {
+  box.querySelectorAll('.yt-dl').forEach(btn => btn.addEventListener('click', e => {
     e.stopPropagation()
     const r = results[parseInt(btn.dataset.i)]
-    btn.disabled = true
-    btn.innerHTML = '…'
-    await window.api.ytDownload({ videoId: r.videoId, title: r.title, artist: r.artist })
+    startYtDownloadFromButton(btn, { videoId: r.videoId, title: r.title, artist: r.artist })
   }))
   box.querySelectorAll('.yt-row').forEach(row => row.addEventListener('contextmenu', async e => {
     e.preventDefault()
@@ -3579,8 +3683,7 @@ function _paintYtAlbum(al) {
   document.querySelectorAll('.yt-track-dl').forEach(btn => btn.addEventListener('click', e => {
     e.stopPropagation()
     const t = al.tracks[parseInt(btn.dataset.i)]
-    btn.disabled = true
-    window.api.ytDownload({ videoId: t.videoId, title: t.title, artist: al.artist, subdir: `${al.artist} - ${al.title}` })
+    startYtDownloadFromButton(btn, { videoId: t.videoId, title: t.title, artist: al.artist, subdir: `${al.artist} - ${al.title}` })
   }))
   document.getElementById('yt-album-save-btn')?.addEventListener('click', () => {
     const saved = toggleYtSaveAlbum(al)
@@ -3807,9 +3910,7 @@ async function renderYtArtist(channelId) {
     top.querySelectorAll('.yt-dl').forEach(btn => btn.addEventListener('click', e => {
       e.stopPropagation()
       const s = ar.topSongs[parseInt(btn.dataset.i)]
-      btn.disabled = true
-      btn.innerHTML = '…'
-      window.api.ytDownload({ videoId: s.videoId, title: s.title, artist: s.artist })
+      startYtDownloadFromButton(btn, { videoId: s.videoId, title: s.title, artist: s.artist })
     }))
   }
   document.querySelectorAll('.yt-album-card').forEach(card => card.addEventListener('click', () => {
@@ -3947,6 +4048,160 @@ function checkFollowedArtistsForNew() {
     }
   }
   try { localStorage.setItem('followedAlbumCounts', JSON.stringify(current)) } catch(_) {}
+}
+
+// ── Downloads-page buttons ──────────────────────────────────────────────────
+// Every one of these disables itself and relies on the re-render at the end to
+// replace it. When that re-render throws -- the daemon going away mid-action is
+// exactly when these buttons get pressed -- the button stayed dead with no way
+// to retry, on the page whose whole job is retrying. One wrapper, one finally.
+async function _dlBtnAction(btn, fn) {
+  if (!btn || btn.disabled) return
+  btn.disabled = true
+  try {
+    await fn()
+  } catch (e) {
+    showSnackbar('That did not work: ' + String(e && e.message || e), null, null, 6000)
+  } finally {
+    // isConnected: the usual, successful path replaces the button, and there is
+    // nothing to re-enable then.
+    if (btn.isConnected) btn.disabled = false
+  }
+}
+
+// ── YouTube download buttons ────────────────────────────────────────────────
+// One place that starts a download and reflects the outcome on the button that
+// started it. All three call sites used to disable the button, set '…' and
+// never touch it again -- so it read '…' forever whether the download worked or
+// not, and could not be retried. yt-download returns as soon as the job is
+// queued, so the real outcome arrives later on yt-dl-progress; the button is
+// looked up by download id when it does.
+const _ytBtnById = new Map()
+const YT_BTN_MAP_CAP = 100
+
+function _ytBtnDone(id, ok, error) {
+  const rec = _ytBtnById.get(id)
+  if (!rec) return
+  _ytBtnById.delete(id)
+  if (ok) rec.restore('\u2713', 'Downloaded')
+  else rec.restore('\u21bb', (error || 'Download failed') + ' — click to retry')
+}
+
+async function startYtDownloadFromButton(btn, payload) {
+  if (!btn || btn.dataset.ytBusy === '1') return
+  const original = btn.innerHTML
+  const originalTitle = btn.title || ''
+  btn.dataset.ytBusy = '1'
+  btn.disabled = true
+  btn.innerHTML = '\u2026'
+  btn.title = 'Downloading…'
+  const restore = function (mark, title) {
+    // A re-render can replace the button under us; nothing to restore then.
+    if (!btn.isConnected) return
+    delete btn.dataset.ytBusy
+    btn.disabled = false
+    btn.innerHTML = mark || original
+    btn.title = title || originalTitle
+    if (mark === '\u2713') {
+      setTimeout(function () {
+        if (!btn.isConnected) return
+        btn.innerHTML = original
+        btn.title = originalTitle
+      }, 4000)
+    }
+  }
+  try {
+    const res = await window.api.ytDownload(payload)
+    if (!res || !res.ok) {
+      restore('\u21bb', ((res && res.error) || 'Download failed') + ' — click to retry')
+      return
+    }
+    _ytBtnById.set(res.id, { btn: btn, restore: restore })
+    if (_ytBtnById.size > YT_BTN_MAP_CAP) _ytBtnById.delete(_ytBtnById.keys().next().value)
+  } catch (e) {
+    // The case that used to leave '…' on screen forever with no explanation.
+    restore('\u21bb', 'Download failed: ' + String(e && e.message || e) + ' — click to retry')
+  }
+}
+
+// ── Discover dismissals ─────────────────────────────────────────────────────
+// Bounded, because this grows with every swipe and nothing else prunes it.
+const DISCOVER_DISMISS_CAP = 300
+const _discoverDismissed = new Set()
+
+function restoreDiscoverDismissals() {
+  var list = window.PapaLocal.readArray('papa_discover_dismissed', function (e) { return typeof e === 'string' })
+  _discoverDismissed.clear()
+  ;(list || []).slice(-DISCOVER_DISMISS_CAP).forEach(function (id) { _discoverDismissed.add(id) })
+}
+
+function _saveDiscoverDismissals() {
+  var list = Array.from(_discoverDismissed).slice(-DISCOVER_DISMISS_CAP)
+  try { localStorage.setItem('papa_discover_dismissed', JSON.stringify(list)) } catch (_) {}
+}
+
+function _discoverDismiss(albumId) {
+  if (!albumId) return
+  _discoverDismissed.add(albumId)
+  // Insertion-ordered, so the oldest dismissal is the one dropped at the cap.
+  if (_discoverDismissed.size > DISCOVER_DISMISS_CAP) {
+    _discoverDismissed.delete(_discoverDismissed.values().next().value)
+  }
+  _saveDiscoverDismissals()
+}
+
+function _discoverUndismiss(albumId) {
+  if (!albumId) return
+  _discoverDismissed.delete(albumId)
+  _saveDiscoverDismissals()
+}
+
+// ── Sidebar width ───────────────────────────────────────────────────────────
+// One source of truth, restored at startup. papa_compact_sidebar was written on
+// every right-click toggle and read by nothing, so compact mode reset on every
+// launch; the dragged width was not persisted at all.
+const SIDEBAR_COMPACT_W = 60
+const SIDEBAR_MIN_W = 160
+const SIDEBAR_MAX_W = 340
+const SIDEBAR_DEFAULT_W = 220
+let _sidebarCompact = false
+let _sidebarWidth = SIDEBAR_DEFAULT_W
+
+function _applySidebarWidth() {
+  const w = _sidebarCompact ? SIDEBAR_COMPACT_W : _sidebarWidth
+  document.documentElement.style.setProperty('--sidebar-w', w + 'px')
+  document.querySelector('.sidebar')?.classList.toggle('compact', _sidebarCompact)
+}
+
+function _saveSidebarPrefs() {
+  try {
+    localStorage.setItem('papa_compact_sidebar', _sidebarCompact ? '1' : '0')
+    localStorage.setItem('papa_sidebar_width', String(_sidebarWidth))
+  } catch (_) { /* private mode, quota */ }
+}
+
+function setSidebarCompact(on) {
+  _sidebarCompact = !!on
+  _applySidebarWidth()
+  _saveSidebarPrefs()
+}
+
+function restoreSidebarPrefs() {
+  try {
+    _sidebarCompact = localStorage.getItem('papa_compact_sidebar') === '1'
+    // Clamped on read: a stored value from an older build, or a hand-edited
+    // one, must not be able to render the sidebar unusable.
+    const w = parseInt(localStorage.getItem('papa_sidebar_width'), 10)
+    if (Number.isFinite(w)) _sidebarWidth = Math.max(SIDEBAR_MIN_W, Math.min(SIDEBAR_MAX_W, w))
+  } catch (_) { /* nothing stored, or storage unavailable */ }
+  _applySidebarWidth()
+}
+
+function restoreStatsRange() {
+  try {
+    const r = localStorage.getItem('papa_stats_range')
+    if (r && r in STATS_RANGE_DAYS) state.statsRange = r
+  } catch (_) {}
 }
 
 // A play is recorded once it has been listened to for 30 s. Used by both the
@@ -4453,10 +4708,16 @@ function _showNewPlaylistWithFolder() {
   overlay.querySelector('#npfm-close')?.addEventListener('click', close)
   overlay.querySelector('#npfm-cancel')?.addEventListener('click', close)
   overlay.querySelector('#npfm-ok')?.addEventListener('click', confirm)
+  // A toggle, not a one-way door: this used to disable the folder select with
+  // nothing re-enabling it, so choosing "New folder" removed any way back to
+  // picking an existing one short of closing the dialog.
   overlay.querySelector('#npfm-new-folder-btn')?.addEventListener('click', function() {
-    newFolderRow.style.display = ''
-    folderSelect.disabled = true
-    newFolderInput.focus()
+    var opening = newFolderRow.style.display === 'none'
+    newFolderRow.style.display = opening ? '' : 'none'
+    folderSelect.disabled = opening
+    this.textContent = opening ? 'Use existing folder' : 'New folder'
+    if (opening) newFolderInput.focus()
+    else { newFolderInput.value = ''; folderSelect.focus() }
   })
   overlay.addEventListener('click', function(e) { if (e.target === overlay) close() })
   nameInput.addEventListener('keydown', function(e) { if (e.key === 'Enter') confirm(); if (e.key === 'Escape') close() })
@@ -4929,14 +5190,31 @@ function renderLikedSongs() {
   })
 }
 
+// state.statsRange was initialised to 'month' and no control anywhere set it,
+// so three of its four values were unreachable while the header rendered "This
+// Month" over figures computed from a hardcoded rolling 30 days. The range now
+// decides the window, and there are buttons.
+const STATS_RANGE_DAYS = { week: 7, month: 30, year: 365, all: 0 }
+
+function _statsCutoff(range) {
+  const days = STATS_RANGE_DAYS[range]
+  return days ? Date.now() - days * 86400000 : 0
+}
+
 function renderStats() {
   const all = _allLibraryTracks()
   const byPath = new Map(all.map(t => [t.filePath, t]))
-  const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000
-  const recent = (state.playHistory || []).filter(function(h) { return (h.ts || 0) >= cutoff })
+  if (!(state.statsRange in STATS_RANGE_DAYS)) state.statsRange = 'month'
+  const cutoff = _statsCutoff(state.statsRange)
+  const ranged = (state.playHistory || []).filter(function(h) { return (h.ts || 0) >= cutoff })
+  // Achievements keep their own fixed 30-day window on purpose: they must not
+  // earn and un-earn themselves as the user changes a view filter.
+  const recent = state.statsRange === 'month'
+    ? ranged
+    : (state.playHistory || []).filter(function(h) { return (h.ts || 0) >= Date.now() - 30 * 86400000 })
 
   let totalSecs = 0
-  for (const h of recent) {
+  for (const h of ranged) {
     const t = byPath.get(h.filePath)
     if (t) totalSecs += (t.duration || 0)
   }
@@ -4958,12 +5236,11 @@ function renderStats() {
   var totalHrs = Math.floor((totalAllTime % 86400) / 3600)
   var totalAllTimeStr = totalDays > 0 ? totalDays + 'd ' + totalHrs + 'h' : totalHrs + 'h ' + Math.floor((totalAllTime % 3600) / 60) + 'm'
 
-  var rangeStart = new Date(cutoff).toLocaleDateString()
-  var rangeText = state.statsRange === 'all' ? 'All time' : rangeStart + ' — Today'
-  var rangeLabel = state.statsRange === 'week' ? 'This Week' : state.statsRange === 'month' ? 'This Month' : state.statsRange === 'year' ? 'This Year' : 'All Time'
+  var rangeText = cutoff ? new Date(cutoff).toLocaleDateString() + ' — Today' : 'All time'
+  var rangeLabel = state.statsRange === 'week' ? 'Last 7 days' : state.statsRange === 'month' ? 'Last 30 days' : state.statsRange === 'year' ? 'Last 365 days' : 'All time'
 
   const artistCounts = {}
-  for (const h of recent) {
+  for (const h of ranged) {
     const a = h.artist || (byPath.get(h.filePath)?.albumArtist) || 'Unknown'
     artistCounts[a] = (artistCounts[a] || 0) + 1
   }
@@ -4978,7 +5255,7 @@ function renderStats() {
     .filter(x => x.track)
 
   const genreCounts = {}
-  for (const h of recent) {
+  for (const h of ranged) {
     const t = byPath.get(h.filePath)
     const g = t?.genre
     if (g) genreCounts[g] = (genreCounts[g] || 0) + 1
@@ -5147,7 +5424,16 @@ function renderStats() {
   heatmapHTML += '</div></div>'
 
   setContent(`<div class="stats-page">
-    <div class="stats-toolbar" style="display:flex;gap:8px;margin-bottom:16px;padding:0 28px">
+    <div class="stats-toolbar" style="display:flex;gap:8px;margin-bottom:16px;padding:0 28px;align-items:center;flex-wrap:wrap">
+      <div class="stats-range-group" style="display:flex;gap:4px">
+        ${['week','month','year','all'].map(function (r) {
+          return '<button class="secondary stats-range-btn' + (state.statsRange === r ? ' active' : '') +
+            '" data-range="' + r + '" style="padding:6px 12px;font-size:12px">' +
+            (r === 'week' ? '7 days' : r === 'month' ? '30 days' : r === 'year' ? '365 days' : 'All time') +
+            '</button>'
+        }).join('')}
+      </div>
+      <div style="flex:1"></div>
       <button id="export-json-btn" class="secondary" style="padding:6px 14px;font-size:12px">Export JSON</button>
       <button id="export-csv-btn" class="secondary" style="padding:6px 14px;font-size:12px">Export CSV</button>
     </div>
@@ -5203,6 +5489,16 @@ function renderStats() {
   var exportCsvBtn = document.getElementById('export-csv-btn')
   if (exportJsonBtn) exportJsonBtn.addEventListener('click', function() { exportStats('json') })
   if (exportCsvBtn) exportCsvBtn.addEventListener('click', function() { exportStats('csv') })
+  document.querySelectorAll('.stats-range-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var r = btn.dataset.range
+      if (!(r in STATS_RANGE_DAYS) || r === state.statsRange) return
+      state.statsRange = r
+      // Remembered, so the page does not snap back to 30 days on every visit.
+      try { localStorage.setItem('papa_stats_range', r) } catch (_) {}
+      renderStats()
+    })
+  })
 }
 
 function exportStats(format) {
@@ -7152,8 +7448,28 @@ function bindContentEvents() {
       var diff = e.clientX - _swipeStartX
       _swipeCard = null
       if (Math.abs(diff) > 80) {
-        card.classList.add(diff > 0 ? 'swipe-right' : 'swipe-left')
+        var albumId = card.dataset.album
+        var right = diff > 0
+        card.classList.add(right ? 'swipe-right' : 'swipe-left')
         setTimeout(function() { card.remove() }, 300)
+        if (!albumId) return
+        var album = state.library.find(function (a) { return a.id === albumId })
+        // Right is "yes": the album is queued. Left is "not this one". Either
+        // way it leaves the deck, and either way it is undoable -- a gesture
+        // that quietly discards a choice is worse than one that does nothing.
+        _discoverDismiss(albumId)
+        if (right && album) {
+          addToQueue(album)
+          showSnackbar('Queued ' + (album.name || 'album'), 'Undo', function () {
+            _discoverUndismiss(albumId)
+            renderHome()
+          }, 5000)
+        } else {
+          showSnackbar('Hidden from Discover', 'Undo', function () {
+            _discoverUndismiss(albumId)
+            renderHome()
+          }, 5000)
+        }
         return
       }
       // Not a swipe: treat it as a click and actually go somewhere.
@@ -8146,12 +8462,28 @@ async function _chatDoSearch(query) {
   msgs.scrollTop = msgs.scrollHeight
 
   document.getElementById(`${cardId}-dl`)?.addEventListener('click', async function () {
-    this.disabled = true
-    this.textContent = 'Downloading…'
-    for (const f of best.files)
-      await window.api.slskDownload({ username: best.username, filename: f.filename, size: f.size || 0 }).catch(() => {})
-    this.textContent = 'Queued ✓'
-    _scheduleLibRescan()
+    const btn = this
+    const label = btn.textContent
+    btn.disabled = true
+    btn.textContent = 'Downloading…'
+    // Every enqueue used to be .catch(() => {}) individually, so a run where
+    // all of them failed still reported "Queued ✓". Count instead.
+    let queued = 0, failed = 0
+    try {
+      for (const f of best.files) {
+        try {
+          await window.api.slskDownload({ username: best.username, filename: f.filename, size: f.size || 0 })
+          queued++
+        } catch (_) { failed++ }
+      }
+    } finally {
+      if (btn.isConnected) {
+        if (queued && !failed) btn.textContent = 'Queued ✓'
+        else if (queued) { btn.textContent = `Queued ${queued}, ${failed} failed`; btn.disabled = false }
+        else { btn.textContent = label; btn.disabled = false; btn.title = 'Nothing could be queued — click to retry' }
+      }
+    }
+    if (queued) _scheduleLibRescan()
   })
 
   chatState.history.push({ role: 'assistant', content: `Found ${isLossless ? 'FLAC' : 'MP3'} · ${trackCount} tracks via ${best.username}` })
@@ -9646,9 +9978,17 @@ function _renderDlTab(files) {
           <p>${msgs[_dlTab][0]}</p><span>${msgs[_dlTab][1]}</span>
         </div>`
     container.querySelector('#dl2-daemon-retry')?.addEventListener('click', function () {
-      this.disabled = true
-      this.textContent = 'Retrying…'
-      _pollAndRenderDownloads()
+      const btn = this
+      btn.disabled = true
+      btn.textContent = 'Retrying…'
+      // _pollAndRenderDownloads re-renders on success, replacing this button.
+      // When it fails it does not, so without this the only retry control on
+      // the page stayed dead and the user was stuck on the error state.
+      Promise.resolve(_pollAndRenderDownloads()).catch(() => {}).then(function () {
+        if (!btn.isConnected) return
+        btn.disabled = false
+        btn.textContent = 'Retry'
+      })
     })
     return
   }
@@ -10103,11 +10443,15 @@ function _renderCompletedTab(files, container) {
 
   // Remove from list
   container.querySelectorAll('.dl2-remove-btn').forEach(btn => {
-    btn.addEventListener('click', async (e) => {
+    btn.addEventListener('click', (e) => {
       e.stopPropagation()
-      btn.disabled = true
-      await window.api.slskCancelTransfer({ username: btn.dataset.user, id: btn.dataset.id }).catch(() => {})
-      await _pollAndRenderDownloads()
+      _dlBtnAction(btn, async () => {
+        // alreadyDone: this transfer has already finished or failed, so there
+        // is no live scheduler intent to cancel -- and skipping that lookup
+        // skips a FULL /transfers/downloads fetch (~1 MB) per item.
+        await window.api.slskCancelTransfer({ username: btn.dataset.user, id: btn.dataset.id, alreadyDone: true }).catch(() => {})
+        await _pollAndRenderDownloads()
+      })
     })
   })
 
@@ -10313,66 +10657,69 @@ function _renderFailedTab(files, container) {
 
   // Retry all files in a group
   container.querySelectorAll('.dl2-retry-all-btn').forEach(btn => {
-    btn.addEventListener('click', async e => {
+    btn.addEventListener('click', e => {
       e.stopPropagation()
-      if (btn.disabled) return
-      btn.disabled = true
-      const gi = parseInt(btn.dataset.gi)
-      const g  = groups[gi]
-      if (!g) return
-      await Promise.all(g.files.map(f =>
-        window.api.slskCancelTransfer({ username: f.username, id: f.id }).catch(() => {})
-      ))
-      await Promise.all(g.files.map(f =>
-        window.api.slskDownload({ username: f.username, filename: f.filename, size: f.size || 0 }).catch(() => {})
-      ))
-      _dlTab = 'active'; _dlLastSig = ''
-      _setActiveTab('.dl2-tab', document.querySelector('.dl2-tab[data-tab="active"]'))
-      await _pollAndRenderDownloads()
+      _dlBtnAction(btn, async () => {
+        const gi = parseInt(btn.dataset.gi)
+        const g  = groups[gi]
+        // This used to return with the button already disabled, so a stale gi
+        // killed the control permanently.
+        if (!g) return
+        await Promise.all(g.files.map(f =>
+          // Failed, so no live intent -- and the re-download below re-creates it.
+          window.api.slskCancelTransfer({ username: f.username, id: f.id, alreadyDone: true }).catch(() => {})
+        ))
+        await Promise.all(g.files.map(f =>
+          window.api.slskDownload({ username: f.username, filename: f.filename, size: f.size || 0 }).catch(() => {})
+        ))
+        _dlTab = 'active'; _dlLastSig = ''
+        _setActiveTab('.dl2-tab', document.querySelector('.dl2-tab[data-tab="active"]'))
+        await _pollAndRenderDownloads()
+      })
     })
   })
 
   // Clear all files in a group
   container.querySelectorAll('.dl2-clear-group-btn').forEach(btn => {
-    btn.addEventListener('click', async e => {
+    btn.addEventListener('click', e => {
       e.stopPropagation()
-      if (btn.disabled) return
-      btn.disabled = true
-      // Each file carries its own peer: a folder group can span several.
-      var pairs = []
-      try { pairs = JSON.parse(btn.dataset.pairs || '[]') } catch (_) {}
-      var results = await Promise.all(pairs.map(function (p) {
-        return window.api.slskCancelTransfer({ username: p[0], id: p[1] })
-          .then(function () { return true }).catch(function () { return false })
-      }))
-      var failed = results.filter(function (ok) { return !ok }).length
-      if (failed) showSnackbar(failed + ' of ' + results.length + " couldn't be cleared")
-      await _pollAndRenderDownloads()
+      _dlBtnAction(btn, async () => {
+        // Each file carries its own peer: a folder group can span several.
+        var pairs = []
+        try { pairs = JSON.parse(btn.dataset.pairs || '[]') } catch (_) {}
+        var results = await Promise.all(pairs.map(function (p) {
+          return window.api.slskCancelTransfer({ username: p[0], id: p[1], alreadyDone: true })
+            .then(function () { return true }).catch(function () { return false })
+        }))
+        var failed = results.filter(function (ok) { return !ok }).length
+        if (failed) showSnackbar(failed + ' of ' + results.length + " couldn't be cleared")
+        await _pollAndRenderDownloads()
+      })
     })
   })
 
   // Retry single file
   container.querySelectorAll('.dl2-retry-btn').forEach(btn => {
-    btn.addEventListener('click', async e => {
+    btn.addEventListener('click', e => {
       e.stopPropagation()
-      if (btn.disabled) return
-      btn.disabled = true
-      await window.api.slskCancelTransfer({ username: btn.dataset.user, id: btn.dataset.id }).catch(() => {})
-      await window.api.slskDownload({ username: btn.dataset.user, filename: btn.dataset.filename, size: Number(btn.dataset.size) }).catch(() => {})
-      _dlTab = 'active'; _dlLastSig = ''
-      _setActiveTab('.dl2-tab', document.querySelector('.dl2-tab[data-tab="active"]'))
-      await _pollAndRenderDownloads()
+      _dlBtnAction(btn, async () => {
+        await window.api.slskCancelTransfer({ username: btn.dataset.user, id: btn.dataset.id, alreadyDone: true }).catch(() => {})
+        await window.api.slskDownload({ username: btn.dataset.user, filename: btn.dataset.filename, size: Number(btn.dataset.size) }).catch(() => {})
+        _dlTab = 'active'; _dlLastSig = ''
+        _setActiveTab('.dl2-tab', document.querySelector('.dl2-tab[data-tab="active"]'))
+        await _pollAndRenderDownloads()
+      })
     })
   })
 
   // Remove single file
   container.querySelectorAll('.dl2-remove-btn').forEach(btn => {
-    btn.addEventListener('click', async e => {
+    btn.addEventListener('click', e => {
       e.stopPropagation()
-      if (btn.disabled) return
-      btn.disabled = true
-      await window.api.slskCancelTransfer({ username: btn.dataset.user, id: btn.dataset.id }).catch(() => {})
-      await _pollAndRenderDownloads()
+      _dlBtnAction(btn, async () => {
+        await window.api.slskCancelTransfer({ username: btn.dataset.user, id: btn.dataset.id, alreadyDone: true }).catch(() => {})
+        await _pollAndRenderDownloads()
+      })
     })
   })
 
@@ -11133,9 +11480,12 @@ async function showSlskUserExplorer(username) {
       await window.api.slskDownload({ username, filename: f.fullPath, size: f.size || 0 })
       btn.textContent = '✓'
       _scheduleLibRescan()
+      // Restored on success too: the tick used to be permanent, so a file that
+      // failed later in the transfer could not be asked for again.
+      setTimeout(() => { if (btn.isConnected) { btn.innerHTML = orig; btn.disabled = false } }, 2500)
     } catch (e) {
       btn.textContent = '✕'; btn.title = 'Failed: ' + (e?.message || 'error')
-      setTimeout(() => { btn.innerHTML = orig; btn.disabled = false }, 2500)
+      setTimeout(() => { if (btn.isConnected) { btn.innerHTML = orig; btn.disabled = false } }, 2500)
     }
   }
 
@@ -11157,7 +11507,15 @@ async function showSlskUserExplorer(username) {
           const deadline = Date.now() + 120000
           const poll = async () => {
             if (Date.now() > deadline) { btn.textContent = '▶'; btn.disabled = false; return }
-            const found = await window.api.slskResolveFile({ username, filename: f.fullPath })
+            // poll is called from setTimeout, so a rejection here was an
+            // unhandled one and the button stayed '…' and disabled forever.
+            let found
+            try {
+              found = await window.api.slskResolveFile({ username, filename: f.fullPath })
+            } catch (_) {
+              btn.textContent = '▶'; btn.disabled = false
+              return
+            }
             if (found?.path) {
               state.queue = [{ filePath: found.path, title: f.name, artist: username,
                                albumArtist: username, artPath: null,
@@ -11173,12 +11531,21 @@ async function showSlskUserExplorer(username) {
     })
 
     dlg.querySelector('#slskx-dl-folder')?.addEventListener('click', async ev => {
+      const btn = ev.target
+      const label = btn.textContent
       const files = l.files.filter(f => T.AUDIO_RE.test(f.name))
-      ev.target.disabled = true
-      ev.target.textContent = `Queuing ${files.length}…`
-      await _slskEnqueue(files.map(f => ({ username, filename: f.fullPath, size: f.size || 0 })))
-      ev.target.textContent = `${files.length} queued`
-      _scheduleLibRescan()
+      btn.disabled = true
+      btn.textContent = `Queuing ${files.length}…`
+      // Without this, a throw left "Queuing N…" on a dead button forever.
+      try {
+        await _slskEnqueue(files.map(f => ({ username, filename: f.fullPath, size: f.size || 0 })))
+        btn.textContent = `${files.length} queued`
+        _scheduleLibRescan()
+      } catch (e) {
+        btn.disabled = false
+        btn.textContent = label
+        showSnackbar('Could not queue the folder: ' + String(e && e.message || e), null, null, 6000)
+      }
     })
 
     dlg.querySelector('#slskx-play-first')?.addEventListener('click', () => {
@@ -11194,11 +11561,19 @@ async function showSlskUserExplorer(username) {
         return out
       }
       const files = collect(l.node)
-      ev.target.disabled = true
-      ev.target.textContent = `Queuing ${files.length}…`
-      await _slskEnqueue(files.map(f => ({ username, filename: f.fullPath, size: f.size || 0 })))
-      ev.target.textContent = `${files.length} queued`
-      _scheduleLibRescan()
+      const btn = ev.target
+      const label = btn.textContent
+      btn.disabled = true
+      btn.textContent = `Queuing ${files.length}…`
+      try {
+        await _slskEnqueue(files.map(f => ({ username, filename: f.fullPath, size: f.size || 0 })))
+        btn.textContent = `${files.length} queued`
+        _scheduleLibRescan()
+      } catch (e) {
+        btn.disabled = false
+        btn.textContent = label
+        showSnackbar('Could not queue the tree: ' + String(e && e.message || e), null, null, 6000)
+      }
     })
   }
 
@@ -11333,6 +11708,9 @@ function showSlskConfigModal(query) {
     <input id="slsk-cfg-user" class="sq-name-input" type="text" placeholder="soulseek username" value="${esc(slsk.status.username || '')}">
     <label class="sq-label" style="margin-top:10px">Password</label>
     <input id="slsk-cfg-pass" class="sq-name-input" type="password" placeholder="password">
+    <!-- Errors land here rather than in a blocking alert, and the dialog stays
+         usable so the user can correct the password and try again. -->
+    <div id="slsk-cfg-error" class="mcs-set-warning" style="display:none;margin-top:10px"></div>
     <div style="display:flex;gap:8px;margin-top:18px;justify-content:flex-end">
       <button class="secondary" id="slsk-cfg-cancel">Cancel</button>
       <button id="slsk-cfg-save">Save &amp; Connect</button>
@@ -11347,11 +11725,29 @@ function showSlskConfigModal(query) {
   dlg.querySelector('#slsk-cfg-save')?.addEventListener('click', async () => {
     const username = dlg.querySelector('#slsk-cfg-user')?.value.trim()
     const password = dlg.querySelector('#slsk-cfg-pass')?.value
-    if (!username || !password) { alert('Username and password are required'); return }
+    if (!username || !password) {
+      const err = dlg.querySelector('#slsk-cfg-error')
+      if (err) { err.textContent = 'Username and password are required'; err.style.display = '' }
+      return
+    }
     const saveBtn = dlg.querySelector('#slsk-cfg-save')
+    const saveLabel = saveBtn.textContent
     saveBtn.disabled = true
     saveBtn.textContent = 'Connecting…'
-    await window.api.slskConfigure({ username, password })
+    // A rejection here used to leave the dialog open with a dead button, no
+    // error and no way to retry but closing and reopening it.
+    try {
+      const res = await window.api.slskConfigure({ username, password })
+      if (res && res.ok === false) throw new Error(res.error || 'slskd refused the credentials')
+    } catch (e) {
+      saveBtn.disabled = false
+      saveBtn.textContent = saveLabel
+      const err = dlg.querySelector('#slsk-cfg-error')
+      const msg = 'Could not connect: ' + String(e && e.message || e)
+      if (err) { err.textContent = msg; err.style.display = '' }
+      else showSnackbar(msg, null, null, 6000)
+      return
+    }
     dlg.remove()
     // Poll in background until Soulseek login completes (takes ~5-20s), then auto-search
     ;(async () => {
@@ -12241,12 +12637,15 @@ function setupListeners() {
   })
   initResizableQueue()
 
-  // Sidebar right-click → toggle compact mode
+  // Sidebar right-click → toggle compact mode.
+  // The toggle used to set sidebar.style.width while the resizer set the
+  // --sidebar-w custom property, so the two fought: compacting then dragging
+  // left an inline width the drag could not override. Both now write the one
+  // property, and papa_compact_sidebar -- written on every toggle and read by
+  // nothing -- is restored at startup.
   document.querySelector('.sidebar')?.addEventListener('contextmenu', function(e) {
     e.preventDefault()
-    var sidebar = this
-    sidebar.style.width = sidebar.style.width === '60px' ? '' : '60px'
-    localStorage.setItem('papa_compact_sidebar', sidebar.style.width === '60px' ? '1' : '0')
+    setSidebarCompact(!_sidebarCompact)
   })
 
   // Now playing art → open modal
@@ -12928,6 +13327,9 @@ function setupListeners() {
   window.api.on('yt-dl-progress', dl => {
     const prev = state.ytDownloads.get(dl.id)
     state.ytDownloads.set(dl.id, dl)
+    // The button that started this download learns how it ended.
+    if (dl.state === 'completed' && prev?.state !== 'completed') _ytBtnDone(dl.id, true)
+    if (dl.state === 'failed' && prev?.state !== 'failed') _ytBtnDone(dl.id, false, dl.error)
     if (dl.state === 'completed' && prev?.state !== 'completed') {
       showSnackbar('Download complete: ' + dl.title, null, null, 3000)
       _scheduleLibRescan()
@@ -13154,47 +13556,46 @@ function setupListeners() {
   document.addEventListener('keydown', e => {
     const inInput = e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA'
 
-    // Ctrl+Z → undo last destructive action
-    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === 'z' && !inInput) {
+    // Every test below asks matchesShortcut, so rebinding in the dialog works.
+    if (matchesShortcut('undo', e) && !inInput) {
       e.preventDefault()
       undoLastAction()
       return
     }
 
-    // Ctrl+K → focus search
-    if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+    if (matchesShortcut('focusSearch', e)) {
       e.preventDefault()
       document.getElementById('tb-search')?.focus()
       return
     }
-    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'P') {
+    if (matchesShortcut('commandPalette', e)) {
       e.preventDefault(); toggleCommandPalette(); return
     }
-    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'L') {
+    if (matchesShortcut('likeTrack', e)) {
       e.preventDefault()
       var currentTrack = state.queue[state.queueIndex]
       if (currentTrack && currentTrack.filePath) toggleTrackLike(currentTrack.filePath)
       return
     }
-    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'S') {
+    if (matchesShortcut('sleepTimer', e)) {
       e.preventDefault()
       setSleepTimer(30)
       showSnackbar('Sleep timer: 30 min')
       return
     }
-    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'K') {
+    if (matchesShortcut('skipShort', e)) {
       e.preventDefault()
       state.skipShortTracks = !state.skipShortTracks
       showSnackbar('Auto-skip short tracks: ' + (state.skipShortTracks ? 'on' : 'off'))
       return
     }
-    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'I') {
+    if (matchesShortcut('skipInterludes', e)) {
       e.preventDefault()
       state.skipInterludes = !state.skipInterludes
       showSnackbar('Skip interludes: ' + (state.skipInterludes ? 'on' : 'off'))
       return
     }
-    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === 's') {
+    if (matchesShortcut('saveQueue', e)) {
       e.preventDefault()
       var name = 'Queue ' + new Date().toLocaleTimeString()
       saveCurrentQueue(name)
@@ -13261,8 +13662,8 @@ function setupListeners() {
       return
     }
 
-    // Space: play/pause (works in search input when empty)
-    if (e.code === 'Space') {
+    // Play/pause (works in the search input when it is empty)
+    if (matchesShortcut('playPause', e)) {
       if (inInput && e.target.id === 'tb-search' && e.target.value.trim() === '') {
         e.preventDefault(); togglePlay(); return
       }
@@ -13275,34 +13676,40 @@ function setupListeners() {
     if (e.key === 'ArrowLeft' && e.altKey)  { e.preventDefault(); navigateBack();    return }
     if (e.key === 'ArrowRight' && e.altKey) { e.preventDefault(); navigateForward(); return }
 
+    // Next and previous had no keyboard binding at all, despite the table
+    // claiming one, so they are checked before the seek pair they share arrows
+    // with.
+    if (matchesShortcut('nextTrack', e)) { e.preventDefault(); playNext(); return }
+    if (matchesShortcut('prevTrack', e)) { e.preventDefault(); playPrev(); return }
+
     // Seek ±10s
-    if (e.key === 'ArrowRight' && !e.altKey && !e.metaKey && !e.ctrlKey) {
+    if (matchesShortcut('seekForward', e)) {
       e.preventDefault()
       audio.currentTime = Math.min(audio.duration || 0, audio.currentTime + 10)
       return
     }
-    if (e.key === 'ArrowLeft' && !e.altKey && !e.metaKey && !e.ctrlKey) {
+    if (matchesShortcut('seekBackward', e)) {
       e.preventDefault()
       audio.currentTime = Math.max(0, audio.currentTime - 10)
       return
     }
 
     // Volume
-    if (e.key === '=' || e.key === '+') {
+    if (matchesShortcut('volumeUp', e)) {
       audio.volume = Math.min(1, audio.volume + 0.05)
       state.lastVolume = audio.volume
       setVolDisplay(audio.volume)
       window.api.saveVolume(audio.volume)
       return
     }
-    if (e.key === '-') {
+    if (matchesShortcut('volumeDown', e)) {
       audio.volume = Math.max(0, audio.volume - 0.05)
       state.lastVolume = audio.volume
       setVolDisplay(audio.volume)
       window.api.saveVolume(audio.volume)
       return
     }
-    if (e.key === 'm' || e.key === 'M') {
+    if (matchesShortcut('toggleMute', e)) {
       if (audio.volume > 0) {
         state.lastVolume = audio.volume
         audio.volume = 0
@@ -13315,19 +13722,20 @@ function setupListeners() {
     }
 
     // Fullscreen now-playing
-    if (e.key === 'f' || e.key === 'F') {
+    if (matchesShortcut('fullscreen', e)) {
       if (state.queue.length && state.queueIndex >= 0) { showNowPlayingModal(); return }
     }
-    // Queue toggle
-    if (e.key === 'q' || e.key === 'Q') { toggleQueuePanel(); return }
-    if ((e.ctrlKey || e.metaKey) && e.key === 'q') {
+    // addToQueue is checked before toggleQueue: their defaults differ only by
+    // the modifier, and the bare one used to swallow the pair.
+    if (matchesShortcut('addToQueue', e)) {
       e.preventDefault()
       var t = state.queue[state.queueIndex]
       if (t) { state.queue.push(t); showSnackbar('Added to queue again') }
       return
     }
+    if (matchesShortcut('toggleQueue', e)) { toggleQueuePanel(); return }
     // Shuffle
-    if (e.key === 's' || e.key === 'S') {
+    if (matchesShortcut('toggleShuffle', e)) {
       state.shuffle = !state.shuffle
       document.getElementById('btn-shuffle')?.classList.toggle('active', state.shuffle)
       document.getElementById('np-modal-shuffle')?.classList.toggle('active', state.shuffle)
@@ -13336,20 +13744,29 @@ function setupListeners() {
       return
     }
     // Repeat
-    if (e.key === 'r' || e.key === 'R') {
+    if (matchesShortcut('cycleRepeat', e)) {
       document.getElementById('btn-repeat')?.click()
       return
     }
     // Playback speed cycle
-    if (e.key === 'x' || e.key === 'X') { cycleSpeed(); return }
+    if (matchesShortcut('cycleSpeed', e)) { cycleSpeed(); return }
     // Lyrics drawer toggle
-    if (e.key === 'l' || e.key === 'L') { if (state.queue.length) { toggleLyricsDrawer(); return } }
-    // Ctrl+Shift+, → shortcuts config
+    if (matchesShortcut('toggleLyrics', e)) { if (state.queue.length) { toggleLyricsDrawer(); return } }
+    // Declared in the table and bound to nothing until now.
+    if (matchesShortcut('stopAfter', e)) {
+      e.preventDefault()
+      state.stopAfterTrack = !state.stopAfterTrack
+      document.getElementById('btn-stop-after')?.classList.toggle('active', state.stopAfterTrack)
+      showSnackbar(state.stopAfterTrack ? 'Stopping after this track' : 'Stop-after cancelled', '', function () {}, 2000)
+      return
+    }
+    // Ctrl+Shift+, → shortcuts config. Deliberately not rebindable: it is the
+    // way back if a binding is set to something unreachable.
     if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === ',') {
       e.preventDefault(); toggleShortcutsConfig(); return
     }
     // Keyboard shortcuts modal
-    if (e.key === '?' || e.key === 'F1') { e.preventDefault(); toggleShortcutsModal(); return }
+    if (matchesShortcut('shortcuts', e) || e.key === '?') { e.preventDefault(); toggleShortcutsModal(); return }
   })
 
   // ── Connection status bar ─────────────────────────────────────────────────
@@ -13385,7 +13802,11 @@ function setupListeners() {
     document.addEventListener('mousemove', e => {
       if (!_resizerDragging) return
       const delta = e.clientX - _resizerStartX
-      const newW = Math.max(160, Math.min(340, _resizerStartW + delta))
+      const newW = Math.max(SIDEBAR_MIN_W, Math.min(SIDEBAR_MAX_W, _resizerStartW + delta))
+      // Dragging is an explicit choice of width, so it leaves compact mode
+      // rather than being silently overridden by it.
+      _sidebarCompact = false
+      _sidebarWidth = newW
       document.documentElement.style.setProperty('--sidebar-w', newW + 'px')
     })
     document.addEventListener('mouseup', () => {
@@ -13394,6 +13815,8 @@ function setupListeners() {
       sidebarResizer.classList.remove('resizing')
       document.body.style.cursor = ''
       document.body.style.userSelect = ''
+      // The dragged width was not persisted at all, so it reset every launch.
+      _saveSidebarPrefs()
     })
   }
 
@@ -13563,16 +13986,78 @@ function toggleShortcutsModal() {
   m.style.display = isHidden ? 'flex' : 'none'
 }
 
+// The rows used to be built from DEFAULT_SHORTCUTS -- not the user's bindings --
+// and were plain <kbd> text with no input, no click handler and no key capture.
+// The only working control was "Reset to Defaults", which reset a value nothing
+// read.
+var _shortcutCapture = null   // { action, btn } while waiting for a keypress
+
+function shortcutConflict(action, combo) {
+  var norm = normalizeShortcut(combo)
+  var hit = null
+  Object.keys(DEFAULT_SHORTCUTS).forEach(function (other) {
+    if (other === action) return
+    if (normalizeShortcut(getShortcut(other)) === norm) hit = other
+  })
+  return hit
+}
+
 function renderShortcutsConfig() {
   var grid = document.getElementById('shortcuts-config-grid')
   if (!grid) return
-  var keys = Object.keys(DEFAULT_SHORTCUTS)
-  grid.innerHTML = '<div class="shortcuts-col">' + keys.map(function(action) {
-    return '<div class="shortcut-row"><kbd>' + esc(DEFAULT_SHORTCUTS[action]) + '</kbd><span>' + esc(action) + '</span></div>'
-  }).join('') + '</div>'
+  var actions = Object.keys(DEFAULT_SHORTCUTS)
+  grid.innerHTML = '<div class="shortcuts-col">' + actions.map(function (action) {
+    var combo = getShortcut(action)
+    var changed = normalizeShortcut(combo) !== normalizeShortcut(DEFAULT_SHORTCUTS[action])
+    return '<div class="shortcut-row">' +
+      '<button class="shortcut-key-btn" data-sc-action="' + esc(action) + '" title="Click, then press the keys you want">' +
+        '<kbd>' + esc(combo) + '</kbd>' +
+      '</button>' +
+      '<span>' + esc(SHORTCUT_LABELS[action] || action) + (changed ? ' <em style="opacity:.6;font-style:normal">(changed)</em>' : '') + '</span>' +
+      '</div>'
+  }).join('') + '</div>' +
+    '<p style="font-size:11px;color:var(--text3);margin-top:12px">' +
+    'Click a key, then press the combination you want. Escape cancels.</p>'
+
+  grid.querySelectorAll('[data-sc-action]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      if (_shortcutCapture) _shortcutCapture.btn.classList.remove('capturing')
+      _shortcutCapture = { action: btn.dataset.scAction, btn: btn }
+      btn.classList.add('capturing')
+      btn.innerHTML = '<kbd>Press keys…</kbd>'
+    })
+  })
+}
+
+// Capture runs on the modal, in the capture phase, so a rebind cannot also fire
+// the shortcut it is being bound to.
+function _onShortcutCaptureKey(e) {
+  if (!_shortcutCapture) return
+  e.preventDefault()
+  e.stopPropagation()
+  var action = _shortcutCapture.action
+  _shortcutCapture.btn.classList.remove('capturing')
+  _shortcutCapture = null
+  if (e.key === 'Escape') { renderShortcutsConfig(); return }
+  var combo = comboFromEvent(e)
+  // A modifier alone is not a binding; keep waiting rather than storing ''.
+  if (!combo) { renderShortcutsConfig(); return }
+  var clash = shortcutConflict(action, combo)
+  if (clash) {
+    showSnackbar('That is already ' + (SHORTCUT_LABELS[clash] || clash), null, null, 4000)
+    renderShortcutsConfig()
+    return
+  }
+  _shortcuts[action] = combo
+  saveShortcuts()
+  renderShortcutsConfig()
+  showSnackbar((SHORTCUT_LABELS[action] || action) + ' is now ' + combo, null, null, 3000)
 }
 
 function toggleShortcutsConfig() {
+  // A capture left armed by closing the dialog mid-rebind would swallow the
+  // next keypress the next time it opened.
+  _shortcutCapture = null
   var m = document.getElementById('shortcuts-config-modal')
   if (m) { m.style.display = m.style.display === 'flex' ? 'none' : 'flex'; renderShortcutsConfig(); return }
   m = document.createElement('div')
@@ -13593,6 +14078,9 @@ function toggleShortcutsConfig() {
   m.addEventListener('click', function(e) { if (e.target === m) toggleShortcutsConfig() })
   m.querySelector('#shortcuts-config-close').addEventListener('click', toggleShortcutsConfig)
   m.querySelector('#shortcuts-config-reset').addEventListener('click', function() { resetShortcuts(); renderShortcutsConfig() })
+  // Capture phase, on the modal: the keypress being recorded must not also run
+  // as a shortcut on its way to the document handler.
+  m.addEventListener('keydown', _onShortcutCaptureKey, true)
   renderShortcutsConfig()
 }
 

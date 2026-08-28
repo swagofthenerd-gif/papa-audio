@@ -351,3 +351,144 @@ test('restorePlaybackState, run as the startup timer does, leaves live playback 
   assert.strictEqual(await restore(), 'restored')
   assert.deepStrictEqual(state.queue, [{ filePath: '/old/track.flac' }])
 })
+
+// ── Items 2.12 and 2.13: a disabled button must always come back ───────────
+
+// Brace-depth scan over the real source, because the pattern being checked is
+// "somewhere in the enclosing function", which no regex can express.
+function functionsDisablingAButton(src) {
+  const depth = new Array(src.length)
+  let d = 0, instr = null, esc = false, comment = null
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i]
+    if (comment === 'line') { if (c === '\n') comment = null }
+    else if (comment === 'block') {
+      if (c === '*' && src[i + 1] === '/') { comment = null; depth[i] = d; depth[i + 1] = d; i++; continue }
+    } else if (instr) {
+      if (esc) esc = false
+      else if (c === '\\') esc = true
+      else if (c === instr) instr = null
+    } else {
+      if (c === '/' && src[i + 1] === '/') comment = 'line'
+      else if (c === '/' && src[i + 1] === '*') comment = 'block'
+      else if (c === "'" || c === '"' || c === '`') instr = c
+      else if (c === '{') d++
+      else if (c === '}') d--
+    }
+    depth[i] = d
+  }
+
+  const out = []
+  for (const m of src.matchAll(/\.disabled\s*=\s*true/g)) {
+    let cur = m.index, found = null
+    for (let hop = 0; hop < 14; hop++) {
+      const dd = depth[cur]
+      let j = cur
+      while (j > 0 && !(src[j] === '{' && depth[j] === dd)) j--
+      if (j <= 0) break
+      let k = j + 1
+      while (k < src.length && depth[k] >= dd) k++
+      const head = src.slice(Math.max(0, j - 220), j)
+      if (/(function\b|=>|async)\s*[^{}]*$/.test(head)) { found = src.slice(j, k); break }
+      cur = j - 1
+    }
+    if (!found) continue
+    const restores = /finally/.test(found) ||
+                     /\.disabled\s*=\s*false/.test(found) ||
+                     /disabled\s*=\s*!/.test(found) ||
+                     /disabled\s*=\s*\w+\s*[;)]/.test(found)
+    if (!restores) {
+      const line = src.slice(0, m.index).split('\n').length
+      out.push(line)
+    }
+  }
+  return out
+}
+
+test('no handler disables a button without a path back', () => {
+  // Fifteen did. The shapes: "…" forever on a YouTube download whether it
+  // worked or not; "Connecting…" on a dead Save button after a rejected
+  // credential; "Queuing N…" if the enqueue threw; and every button on the
+  // downloads page, which disables itself and relies on a re-render that does
+  // not happen when the daemon is the thing that failed.
+  const stuck = functionsDisablingAButton(RENDERER)
+  assert.deepStrictEqual(stuck, [],
+    'each of these needs a finally, or a re-enable on the failure path: ' +
+    'src/renderer.js lines ' + stuck.join(', '))
+})
+
+test('the downloads page routes its buttons through one wrapper', () => {
+  assert.match(RENDERER, /async function _dlBtnAction\(btn, fn\)/)
+  const fn = RENDERER.slice(RENDERER.indexOf('async function _dlBtnAction'),
+                            RENDERER.indexOf('// \u2500\u2500 YouTube download buttons'))
+  assert.match(fn, /finally/)
+  assert.match(fn, /btn\.isConnected/, 'the successful path replaces the button')
+  // Every downloads-page handler goes through it.
+  const uses = [...RENDERER.matchAll(/_dlBtnAction\(btn,/g)].length
+  assert.ok(uses >= 5, `only ${uses} call sites`)
+})
+
+test('a YouTube download button learns how the download ended', () => {
+  assert.match(RENDERER, /async function startYtDownloadFromButton\(btn, payload\)/)
+  const fn = RENDERER.slice(RENDERER.indexOf('async function startYtDownloadFromButton'),
+                            RENDERER.indexOf('// \u2500\u2500 Discover dismissals'))
+  assert.match(fn, /catch \(e\)/, 'a rejected ytDownload restores the button')
+  assert.match(fn, /_ytBtnById\.set/, 'and the async outcome finds it again')
+  assert.match(fn, /_ytBtnById\.size > YT_BTN_MAP_CAP/, 'the map is bounded')
+  // The outcome is actually delivered.
+  assert.match(RENDERER, /_ytBtnDone\(dl\.id, true\)/)
+  assert.match(RENDERER, /_ytBtnDone\(dl\.id, false, dl\.error\)/)
+  // And no call site does it by hand any more.
+  assert.doesNotMatch(RENDERER, /btn\.disabled = true\n\s*btn\.innerHTML = '\u2026'/)
+})
+
+// ── Items 2.9, 2.10, 2.11: written and never read ─────────────────────────
+
+test('every localStorage key that is written is read back', () => {
+  // papa_compact_sidebar was written on every toggle and read by nothing, so
+  // compact mode reset on every launch.
+  const writes = new Set([...RENDERER.matchAll(/localStorage\.setItem\(\s*'([\w.:-]+)'/g)].map(m => m[1]))
+  // Two readers: localStorage directly, and the PapaLocal helpers.
+  const reads = new Set([
+    ...[...RENDERER.matchAll(/localStorage\.(?:getItem|removeItem)\(\s*'([\w.:-]+)'/g)].map(m => m[1]),
+    ...[...RENDERER.matchAll(/PapaLocal\.(?:readArray|readObject|read|remove|push)\(\s*'([\w.:-]+)'/g)].map(m => m[1]),
+  ])
+  const orphans = [...writes].filter(k => !reads.has(k)).sort()
+  assert.deepStrictEqual(orphans, [], 'written and never read back')
+})
+
+test('the sidebar has one width mechanism, and it is restored', () => {
+  // The toggle set sidebar.style.width while the resizer set --sidebar-w, so
+  // the two fought.
+  assert.doesNotMatch(RENDERER, /sidebar\.style\.width = /,
+    'both paths write the --sidebar-w custom property')
+  assert.match(RENDERER, /function restoreSidebarPrefs\(\)/)
+  assert.match(RENDERER, /restoreSidebarPrefs\(\)\n/, 'and it is called')
+  const fn = RENDERER.slice(RENDERER.indexOf('function restoreSidebarPrefs()'),
+                            RENDERER.indexOf('function restoreStatsRange()'))
+  assert.match(fn, /Math\.max\(SIDEBAR_MIN_W/, 'a stored width is clamped on read')
+})
+
+test('the stats range decides the window it labels', () => {
+  const fn = RENDERER.slice(RENDERER.indexOf('function renderStats()'),
+                            RENDERER.indexOf('function renderStats()') + 2000)
+  assert.match(fn, /_statsCutoff\(state\.statsRange\)/,
+    'the header used to say "This Month" over a hardcoded 30 days')
+  assert.match(RENDERER, /const STATS_RANGE_DAYS = \{ week: 7, month: 30, year: 365, all: 0 \}/)
+  // And there is a control, which is what was missing.
+  assert.match(RENDERER, /stats-range-btn/)
+  assert.match(RENDERER, /state\.statsRange = r/)
+  // Achievements keep a fixed window so they do not un-earn on a view change.
+  assert.match(fn, /Achievements keep their own fixed 30-day window/)
+})
+
+test('a Discover swipe records something', () => {
+  const fn = RENDERER.slice(RENDERER.indexOf("var swipeEl = document.getElementById('discovery-swipe')"),
+                            RENDERER.indexOf("document.querySelectorAll('.era-chip')"))
+  assert.match(fn, /_discoverDismiss\(albumId\)/, 'the gesture was animation only')
+  assert.match(fn, /addToQueue\(album\)/, 'right means yes')
+  assert.match(fn, /Undo/, 'and either direction is undoable')
+  // The deck respects the dismissals, or the card comes back next render.
+  assert.match(RENDERER, /!_discoverDismissed\.has\(a\.id\)/)
+  assert.match(RENDERER, /_discoverDismissed\.size > DISCOVER_DISMISS_CAP/, 'bounded')
+})
