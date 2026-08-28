@@ -7,7 +7,7 @@ Written 2026-08-27. Read this first in a new session, then `docs/STABILITY-250.m
 | | |
 |---|---|
 | Branch | `feature/library-management-and-qa-fixes` |
-| Tests | 635 passing (`npm test`), 2 skipped — the two real-mpv integration tests, which need mpv installed |
+| Tests | 752 passing (`npm test`), 2 skipped — the two real-mpv integration tests, which need mpv installed |
 | Tier 1 | **done** — items 1, 2, 3, 6, 7 |
 | Tier 2 | **done** — items 4, 5, 8, 9, 10, 11, 12, 13, 14, 15, 17, 18, 19, 20, 21, 22, 23, 24, 25, 251, 252. Item 16 partly, and it says why |
 | Tier 3 | **done** — items 36, 37, 40, 41, 42, 43, 44, 45, 48, 49, 54, 55, plus 255, a regression this round introduced |
@@ -16,8 +16,9 @@ Written 2026-08-27. Read this first in a new session, then `docs/STABILITY-250.m
 | Tier 6 | **done as far as it can be from here.** Every OPEN Critical and all but two OPEN High are closed |
 | Catalogue | 125 DONE, 8 OPEN, 2 CLOSED, 123 PROPOSED — see "Where the catalogue stands" below |
 | Verified against real mpv | **no.** Everything below is tests and reading. See "How this was, and was not, verified" |
-| New findings | items 251–258 at the end of `STABILITY-250.md`, all DONE |
-| **Second audit** | **`docs/AUDIT-2026-08-28.md` — 57 further bugs, none of them duplicates. Five are regressions from this round and are Tier 0 there. Read it before starting anything new.** |
+| New findings | items 251–267 at the end of `STABILITY-250.md`, all DONE |
+| **Second audit** | **`docs/AUDIT-2026-08-28.md` — 57 further bugs. ALL 57 ARE NOW FIXED.** Each entry is marked `[FIXED]`. |
+| Second audit status | Tier 0 `dc2f510` · Tier 1 `2907e93` · Tier 2 `99ae51f` + `f8611ec` · Tier 3 `151c302` · Tier 4 `00884df` · Tier 5 `ef57edc` |
 
 Two rounds of QA are already done and merged into this branch (Library, Artists, Playlists, Stats,
 Search, Downloads, plus a first stability pass). Round 3 — the full stability pass — is inventoried in
@@ -140,29 +141,77 @@ journalctl --user --since "<date>" | grep launch.sh
    silently disabling the folder watcher, and a library Undo whose restore could fail silently after the
    snackbar had promised it would work. The rest guard an unlink or a stat probe, and a blanket rewrite
    would be a large diff with almost no signal.
-6. **Tier 6 — the remaining improvements.** Worked through by severity rather than by number. Every
-   OPEN Critical is closed, and of the OPEN High only 166 and 183 remain — both deferred with the
-   reason written into the catalogue rather than left silent.
+6. ~~**Tier 6 — the remaining improvements.**~~ **Done as far as it can be from here.** Worked through
+   by severity rather than by number. Every OPEN Critical is closed, and of the OPEN High only 166 and
+   183 remain — both deferred with the reason written into the catalogue rather than left silent.
+7. ~~**The second audit, all six of its tiers.**~~ **Done.** See the section below.
 
-## There is a second audit, and it comes first
+## What is actually left
+
+Everything that can be fixed by reading and testing has been. What remains needs
+the app running on the Fedora machine:
+
+1. **Verify against real mpv.** No line of any of this has run against mpv,
+   PipeWire, or a real library — this machine has none of them, and the two
+   real-mpv integration tests skip throughout. `tools/mpv-probe.js` and
+   `tools/fault-inject.sh` exist for exactly this and have never been run.
+2. **The three classes of bug no static pass can reach**, listed at the end of
+   the audit: render order and layout (does the element land where the CSS
+   says), event double-binding (a re-render that binds a handler twice), and
+   behaviour over hours (drift, growth, and the interactions between them).
+   All three need CDP against the running app.
+3. **Catalogue items 166 and 183**, both OPEN High, both deferred with a stated
+   reason.
+4. **Item 16's playlist-remove arithmetic**, deliberately left partly done: the
+   index has to be right against real mpv, and getting it wrong stops playback
+   audibly.
+
+## The second audit is complete
 
 `docs/AUDIT-2026-08-28.md` is a separate pass run after the 125 fixes landed. It
 found **57 more bugs**, none of which duplicate an OPEN item in
-`STABILITY-250.md`. It is organised as a fix plan in six tiers.
+`STABILITY-250.md`. **All 57 are now fixed**, in the audit's own tier order, one
+commit per tier. Every entry in that document is marked `[FIXED]`.
 
-**Tier 0 of that document is five regressions introduced by this round's work** —
-the tray tooltip, the 60-second IPC deadline breaking every dialog, two
-background searches being cancelled, a leaked search id, and an unstyled button.
-Two of them defeat guards added in the same round. Fix Tier 0 before resuming the
-catalogue.
+What each tier was, and what closing it changed:
+
+- **Tier 0 (5)** — regressions this round introduced, two of them defeating
+  guards added in the same round.
+- **Tier 1 (9)** — everything that lost or corrupted data: a path round trip
+  that decoded what was never encoded, an album key that did not trim,
+  double-queued downloads, a permanently poisoned artwork cache, and a startup
+  restore that silently replaced whatever the user had just started playing.
+- **Tier 2 (14)** — features that were wired and unreachable, or that lied. The
+  embedded browser and the saved-sites pair were deleted (nothing could drive
+  them); cancel-download, the general settings, the shortcuts dialog, the stats
+  range, the compact sidebar and the Discover swipe were wired for real.
+- **Tier 3 (12)** — long-session stability: sixteen native dialogs that froze
+  the renderer, a synchronous write once a second through all playback, three
+  unbounded caches, an undo stack that never expired, and every drag in the app
+  being mouse-only.
+- **Tier 4 (9)** — interaction: MPRIS Play/Pause/Stop inert, shuffle able to
+  pick the current track, and four classes the app applies that had no CSS rule
+  at all.
+- **Tier 5 (8)** — numbers: no hours in a duration, .NET TimeSpans past a day
+  read as hours, no TB unit, a `5.1` detector that matched "Symphony 5 1st
+  Movement", a normaliser that ate letters out of album titles, two
+  download-state classifiers that disagreed, and a null `eq` that silenced the
+  app.
+
+Nine further bugs turned up *while* fixing those, and are items 259–267 in
+`STABILITY-250.md`. Two of them (262, 265) were defects introduced by a fix in
+this round and caught before shipping; both have a test that pins the ordering
+or the state they got wrong.
 
 The audit also records what was checked and came back clean, and the three classes
 of bug it structurally could not reach without the app running — which is the
-argument for the CDP harness.
+argument for the CDP harness. **That argument is now the main outstanding one:
+nothing here has been verified against real mpv, and three classes of bug remain
+unreachable from this machine.**
 
 ## Where the catalogue stands
 
-125 DONE, 8 OPEN, 2 CLOSED, 123 PROPOSED, plus 8 items found while working (251–258) which are
+125 DONE, 8 OPEN, 2 CLOSED, 123 PROPOSED, plus 17 items found while working (251–267) which are
 numbered from 251 so nothing renumbered.
 
 **The 8 still OPEN, and why each one is still open** — none of them is simply unfinished:

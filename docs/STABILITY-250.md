@@ -2435,3 +2435,139 @@ Reachable from 19 call sites, because `backgroundSync` runs from the rescan sche
 **Solution.** The error path returns `{ albums: [], failed: true, error }`, and all four consumers — `fullScan`, `backgroundSync`, `applyLibraryUpdate` and the watcher — check the flag. `fullScan` says the scan failed and that nothing was changed, instead of claiming success with zero albums.
 
 ---
+
+## Found while fixing the second audit  (259-267)
+
+These were not in either catalogue. Each turned up while fixing an
+AUDIT-2026-08-28 item, and each is recorded here because the audit doc records
+what was *found* and this one records what was *changed*.
+
+
+### 259. Changing the Soulseek password silently forgot the download folder
+
+`DONE` `High`
+
+**Symptom.** Found while fixing 2.6. `slsk-configure` did
+`store.set('slskConfig', { username, password })` — a wholesale replace of an
+object that also holds `downloadDir`. So re-entering credentials dropped the
+folder the user had picked, and because `writeSlskdConfig` is called immediately
+afterwards, the very next slskd config wrote downloads to the derived fallback
+instead. Nothing said so.
+
+**Solution.** Spread the previous value. A store key that holds several
+unrelated fields must never be assigned whole from a handler that owns one.
+
+
+### 260. Picking a download folder did nothing until the next launch
+
+`DONE` `High`
+
+**Symptom.** Found while fixing 2.6. `slsk-set-download-dir` writes the store,
+writes slskd's config file, and returns `{ ok: true }`. slskd reads its download
+folder once, at startup — so the new folder was inert while the UI reported the
+change as applied. The user would discover it by finding files in the old place.
+
+**Solution.** Restart slskd when it is running, and return `restarted` so the
+caller knows which happened rather than assuming.
+
+
+### 261. A CSS syntax error voided an `.artist-hero` rule
+
+`DONE` `Low`
+
+**Symptom.** Found while fixing 2.7. `styles.css:825` read `.artist-hero {;;` —
+the stray semicolons make the browser discard the whole rule, so its
+`position:relative; overflow:hidden` never applied. A second `.artist-hero` rule
+later in the file happened to re-declare both, which is why nothing looked
+broken and why it survived.
+
+**Worth noting.** A CSS parse error is silent by design. Nothing in this project
+lints the stylesheet, so a broken selector or a dropped brace is invisible until
+someone reads that exact line.
+
+
+### 262. A thrown YouTube download stayed 'downloading' forever
+
+`DONE` `Medium`
+
+**Symptom.** Found while fixing 3.5. The `.catch` on the download promise logged
+and returned, leaving `dl.state === 'downloading'`. `yt-get-downloads` therefore
+reported it as in progress for the life of the process, and — once 3.5 added a
+prune that pins live entries against eviction — it would have been pinned
+permanently. A fix for a growth bug would have introduced a smaller one.
+
+**Solution.** The catch marks the entry failed and stamps `finishedAt`.
+
+
+### 263. Cancelling the artwork fetch filled its progress bar
+
+`DONE` `Low`
+
+**Symptom.** Found while fixing 4.9. `fillEl.style.width = '100%'` ran
+unconditionally after the loop, so pressing Cancel snapped the bar to full and
+then wrote "Cancelled" underneath it.
+
+**Worth noting.** The audit's claim for 4.9 — that the bar never reaches 100% —
+was wrong; there *is* a 100% after the loop. The real defects were this and the
+bar reading (i)/n beside a label reading (i+1)/n. The audit entry has been
+corrected in place rather than quietly re-scoped.
+
+
+### 264. `_fmtEta` had the .NET TimeSpan bug independently
+
+`DONE` `Medium`
+
+**Symptom.** Found while fixing 5.3, which named `_hmsToSecs` only. `_fmtEta`
+did its own `s.split(':')` and treated the first field as hours, so it was wrong
+in exactly the same way for exactly the same inputs.
+
+**Solution.** One parser. Two functions reading the same wire format is two
+chances to read it differently, which is also the shape of items 5.7 and 5.3
+itself.
+
+
+### 265. The now-playing file's async write raced its own deletion at quit
+
+`DONE` `High`
+
+**Symptom.** Introduced by the fix for 3.2 and caught before it shipped. Making
+`writeNowPlaying` asynchronous meant a write could still be in flight when
+`will-quit` unlinked the file — recreating it after the deletion and leaving a
+permanently stale now-playing file for the browser extension to read.
+
+**Solution.** `stopNowPlayingWrites()` runs before the unlink, and the temp file
+is removed too. A test asserts the ordering, because the correct behaviour here
+is entirely a matter of which line comes first.
+
+**Worth noting.** This is the second time this round that moving a synchronous
+write off the main thread created a shutdown race. The pattern to check for is
+any sync write whose file is deleted or read at quit.
+
+
+### 266. `_lastCmd` was left dead by its own fix
+
+`DONE` `Low`
+
+**Symptom.** Found while fixing 3.11. Removing the payload dedup left
+`_lastCmd` assigned and never read.
+
+**Solution.** Deleted, and `test/main-guards.test.js` asserts it is gone —
+a variable that is written and never read is the same class of defect as the
+store keys and localStorage keys the other sweeps look for.
+
+
+### 267. Several hundred lines of CSS for a feature with no elements
+
+`DONE` `Low`
+
+**Symptom.** Found while deleting the embedded browser for 2.1. The stylesheet
+carried a full `BROWSER NAV` section and a `.dl-panel` download panel —
+`.bnav-btn`, `.url-bar`, `.dl-item-*`, a loading shimmer — and not one of those
+elements exists in `index.html` or is created by the renderer. The download
+panel in particular reads as a finished feature.
+
+**Solution.** Removed with the feature. `.site-*` went the same way, and the
+music-folder list's `.site-item` class — which was the *folder* remove button
+wearing a "site" name — is now `.folder-item`.
+
+---
