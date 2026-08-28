@@ -16,7 +16,8 @@ Written 2026-08-27. Read this first in a new session, then `docs/STABILITY-250.m
 | Tier 6 | **done as far as it can be from here.** Every OPEN Critical and all but two OPEN High are closed |
 | Catalogue | 125 DONE, 8 OPEN, 2 CLOSED, 123 PROPOSED — see "Where the catalogue stands" below |
 | Verified against real mpv | **no.** Everything below is tests and reading. See "How this was, and was not, verified" |
-| New findings | items 251–254 at the end of `STABILITY-250.md`. 254 breaks packaged builds and is not fixed |
+| New findings | items 251–258 at the end of `STABILITY-250.md`, all DONE |
+| **Second audit** | **`docs/AUDIT-2026-08-28.md` — 57 further bugs, none of them duplicates. Five are regressions from this round and are Tier 0 there. Read it before starting anything new.** |
 
 Two rounds of QA are already done and merged into this branch (Library, Artists, Playlists, Stats,
 Search, Downloads, plus a first stability pass). Round 3 — the full stability pass — is inventoried in
@@ -142,6 +143,22 @@ journalctl --user --since "<date>" | grep launch.sh
 6. **Tier 6 — the remaining improvements.** Worked through by severity rather than by number. Every
    OPEN Critical is closed, and of the OPEN High only 166 and 183 remain — both deferred with the
    reason written into the catalogue rather than left silent.
+
+## There is a second audit, and it comes first
+
+`docs/AUDIT-2026-08-28.md` is a separate pass run after the 125 fixes landed. It
+found **57 more bugs**, none of which duplicate an OPEN item in
+`STABILITY-250.md`. It is organised as a fix plan in six tiers.
+
+**Tier 0 of that document is five regressions introduced by this round's work** —
+the tray tooltip, the 60-second IPC deadline breaking every dialog, two
+background searches being cancelled, a leaked search id, and an unstyled button.
+Two of them defeat guards added in the same round. Fix Tier 0 before resuming the
+catalogue.
+
+The audit also records what was checked and came back clean, and the three classes
+of bug it structurally could not reach without the app running — which is the
+argument for the CDP harness.
 
 ## Where the catalogue stands
 
