@@ -248,3 +248,22 @@ test('a new search resets the limit', () => {
   assert.match(fn, /_slskShowLimit = SLSK_SHOW_STEP/,
     'otherwise one long list makes every later search enormous')
 })
+
+// ── Tier 0.3 and 0.5 ────────────────────────────────────────────────────────
+
+test('the assistant-panel searches declare themselves as background searches', () => {
+  // They defaulted to generation 0 and were cancelled by the next ordinary
+  // search, coming back {results: [], cancelled: true} — read as "found nothing".
+  const calls = [...CODE.matchAll(/window\.api\.slskSearch\(\s*\{([^}]*)\}/g)].map(m => m[1])
+  assert.ok(calls.length >= 3, `expected several call sites, found ${calls.length}`)
+  for (const args of calls) {
+    assert.match(args, /generation:/, `every slskSearch must state its generation: {${args.trim()}}`)
+  }
+  const bg = calls.filter(a => /generation:\s*-1/.test(a))
+  assert.strictEqual(bg.length, 2, 'the two assistant-panel searches are the background ones')
+})
+
+test('the Soulseek row buttons are styled', () => {
+  const css = fs.readFileSync(path.join(SRC, 'styles.css'), 'utf8')
+  assert.match(css, /\.slsk-retry-btn\s*\{/)
+})

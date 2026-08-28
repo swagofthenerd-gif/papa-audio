@@ -108,3 +108,48 @@ test('the scan has a deadline and reports what it skipped', () => {
   assert.match(fn, /overDeadline\(\)/)
   assert.match(fn, /console\.error/, 'stopping early has to say so')
 })
+
+// ── Tier 0 regressions from the 125-item round ──────────────────────────────
+
+test('nothing that waits on a person is deadlined', () => {
+  // A deadline on a dialog does not protect against a wedged handler, it cancels
+  // the user. add-music-folder commits the folder BEFORE it returns, so a
+  // rejected invoke left main and the renderer disagreeing about the library.
+  const tbl = CODE.slice(CODE.indexOf('const IPC_TIMEOUT_OVERRIDES = {'), CODE.indexOf('const _ipcRawHandle'))
+  const humanWaiting = []
+  for (const m of CODE.matchAll(/ipcMain\.handle\(\s*'([^']+)'/g)) {
+    const nxt = CODE.indexOf('ipcMain.', m.index + 10)
+    const body = CODE.slice(m.index, nxt > 0 ? nxt : m.index + 2500)
+    if (/showOpenDialog|showSaveDialog|showMessageBox|new BrowserWindow/.test(body)) humanWaiting.push(m[1])
+  }
+  assert.ok(humanWaiting.length >= 5, `expected several, found ${humanWaiting}`)
+  const missing = humanWaiting.filter(ch => !new RegExp(`'${ch}': 0`).test(tbl))
+  assert.deepStrictEqual(missing, [], 'these wait on a person and must be exempt with 0')
+})
+
+test('the tray tooltip has exactly one writer', () => {
+  // update-now-playing used to set it directly while the engine-event refresh —
+  // reading a _trayTrack nothing fed — overwrote it with a bare "Papa Audio".
+  const sets = [...CODE.matchAll(/tray\.setToolTip\(/g)]
+  assert.strictEqual(sets.length, 2, 'createTray plus refreshTrayTooltip, nothing else')
+  const nowPlaying = CODE.slice(CODE.indexOf("ipcMain.on('update-now-playing'"), CODE.indexOf("ipcMain.on('update-now-playing'") + 900)
+  assert.doesNotMatch(nowPlaying, /tray\.setToolTip\(/, 'it must go through refreshTrayTooltip')
+  assert.match(nowPlaying, /_trayTrack = data\.title/, 'and it must feed the name it already has')
+})
+
+test('a background search is never cancelled by a UI search', () => {
+  assert.match(CODE, /const BACKGROUND_GENERATION = -1/)
+  const fn = CODE.slice(CODE.indexOf('async function cancelSearchesExcept'), CODE.indexOf('async function cancelSearchesExcept') + 700)
+  assert.match(fn, /info\.generation <= BACKGROUND_GENERATION\) continue/)
+})
+
+test('the search registry is cleaned in a finally', () => {
+  // Any slskdFetch in the polling loop can throw; the cleanup used to sit after
+  // the loop, so a thrown search leaked its id forever.
+  const h = CODE.slice(CODE.indexOf("ipcMain.handle('slsk-search'"), CODE.indexOf("ipcMain.handle('slsk-download'"))
+  const fin = h.lastIndexOf('} finally {')
+  assert.ok(fin > 0, 'the handler needs a finally')
+  const tail = h.slice(fin)
+  assert.match(tail, /_liveSearches\.delete\(id\)/)
+  assert.match(tail, /_cancelledSearches\.delete\(id\)/)
+})

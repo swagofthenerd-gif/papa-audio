@@ -7648,7 +7648,7 @@ async function _executeTool(name, input) {
       const variants = _buildSearchVariants(q)
       const seen = new Set(); const allResults = []
       await Promise.all(variants.map(v =>
-        window.api.slskSearch({ query: v, timeoutMs: 45000 }).then(({ results }) => {
+        window.api.slskSearch({ query: v, timeoutMs: 45000, generation: -1 }).then(({ results }) => {
           for (const r of (results || [])) {
             const key = r.username + '\x00' + (r.files?.[0]?.filename || '')
             if (!seen.has(key)) { seen.add(key); allResults.push(r) }
@@ -8017,7 +8017,8 @@ async function _chatDoSearch(query) {
   _addChatMsg('status', `Searching ${variants.length} variant${variants.length > 1 ? 's' : ''} on Soulseek…`, { id: statusId })
 
   await Promise.all(variants.map(q =>
-    window.api.slskSearch({ query: q, timeoutMs: 60000 })
+    // generation -1: a background search the UI search box must not cancel.
+    window.api.slskSearch({ query: q, timeoutMs: 60000, generation: -1 })
       .then(({ results }) => {
         for (const r of (results || [])) {
           const key = (r.username || '') + '\x00' + (r.files?.[0]?.filename || '')

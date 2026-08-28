@@ -59,6 +59,16 @@ const IPC_TIMEOUT_OVERRIDES = {
   'verify-surround': 120000,
   'verify-surround-folder': 300000,
   'slsk-verify-file': 120000,
+  // Anything that waits on a person. A deadline here does not protect against a
+  // wedged handler, it just cancels the user: a Google sign-in with 2FA takes
+  // minutes, and add-music-folder commits the folder BEFORE it returns, so a
+  // rejected invoke left main and the renderer disagreeing about the library.
+  // test/main-guards.test.js asserts this list stays complete.
+  'add-music-folder': 0,
+  'library-pick-artwork': 0,
+  'slsk-set-download-dir': 0,
+  'save-lyrics': 0,
+  'yt-auth-start': 0,
 }
 
 // Patched here, before any handler registers, so every one is covered. The
@@ -3323,11 +3333,15 @@ ipcMain.on('update-now-playing',  (_, data)   => {
   writeNowPlaying(data)
   updateMpris(data)
   const nowTitle = data.title ? `${data.title} — ${data.artist || ''}` : null
+  // The tooltip has exactly one writer: refreshTrayTooltip. This used to set it
+  // here too, and the engine-event refresh — reading a _trayTrack that nothing
+  // ever fed — overwrote it with a bare "Papa Audio" on every play/pause.
+  _trayTrack = data.title ? { title: data.title, artist: data.artist || '' } : null
   if (_trayNow.title !== nowTitle || _trayNow.playing !== !!data.playing) {
     _trayNow = { title: nowTitle, playing: !!data.playing }
     updateTrayMenu(!!data.playing)
-    if (tray) tray.setToolTip(nowTitle ? `Papa Audio — ${nowTitle}` : 'Papa Audio')
   }
+  refreshTrayTooltip()
   if (data.title && data.playing && `${data.title}|${data.artist}|${data.album}` !== _lastNotifiedId) {
     _lastNotifiedId = `${data.title}|${data.artist}|${data.album}`
     if (Notification.isSupported()) {
@@ -4102,11 +4116,17 @@ function _searchCacheSet(key, results) {
 const _liveSearches = new Map()      // slskd search id -> { generation, query }
 const _cancelledSearches = new Set() // ids whose loop should stop at its next tick
 
+// A generation below this is a background search that no UI search owns — the
+// assistant panel's, for instance. Those must never be cancelled by someone
+// typing in the search box, so they are excluded rather than compared.
+const BACKGROUND_GENERATION = -1
+
 // Called with the generation the renderer is now on; everything older goes.
 async function cancelSearchesExcept(keepGeneration) {
   const doomed = []
   for (const [id, info] of _liveSearches) {
     if (info.generation === keepGeneration) continue
+    if (info.generation <= BACKGROUND_GENERATION) continue
     doomed.push({ id, info })
   }
   for (const { id, info } of doomed) {
@@ -4159,7 +4179,11 @@ ipcMain.handle('slsk-search', async (_, { query, timeoutMs = 25000, noCache = fa
   const id = search?.id
   if (!id) throw new Error('Search failed to start')
   _liveSearches.set(id, { generation, query })
-
+  // The cleanup lives in a finally because any slskdFetch below can throw — a
+  // 429, a 500, a socket error — and it used to sit after the loop, so a thrown
+  // search leaked its id and left _cancelledSearches growing for the life of the
+  // process.
+  try {
   const start = Date.now()
   let lastPushTime = 0
   let lastCount    = 0
@@ -4193,11 +4217,9 @@ ipcMain.handle('slsk-search', async (_, { query, timeoutMs = 25000, noCache = fa
     if (elapsed >= 18000 && lastCount >=  5) break
   }
 
-  _liveSearches.delete(id)
   if (cancelled) {
     // Superseded: the caller is not waiting for this any more, the search is
     // already deleted, and pushing its results would repaint over the new one.
-    _cancelledSearches.delete(id)
     return { results: [], cancelled: true }
   }
 
@@ -4208,6 +4230,10 @@ ipcMain.handle('slsk-search', async (_, { query, timeoutMs = 25000, noCache = fa
   if (results.length) _searchCacheSet(cacheKey, results)
   safeSend('slsk-progress', { query, results, done: true })
   return { results }
+  } finally {
+    _liveSearches.delete(id)
+    _cancelledSearches.delete(id)
+  }
 })
 
 ipcMain.handle('slsk-download', async (_, { username, filename, size }) => {

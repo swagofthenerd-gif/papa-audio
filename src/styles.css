@@ -4016,6 +4016,22 @@ textarea:focus:not(:focus-visible) { outline: none; }
 .notice-when { color: var(--text3); flex: 0 0 auto; font-variant-numeric: tabular-nums; }
 .notice-text { color: var(--text2); }
 
+/* Retry / Saved libraries / Show more on the Soulseek row. Four buttons carried
+   this class with no other, so they rendered with browser-default chrome. */
+.slsk-retry-btn {
+  background: var(--glass);
+  border: 1px solid var(--glass-border);
+  color: var(--text2);
+  padding: 5px 12px;
+  border-radius: 100px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background .12s, color .12s;
+}
+.slsk-retry-btn:hover { background: var(--bg3); color: var(--text); }
+.slsk-retry-btn:disabled { opacity: .5; cursor: default; }
+
 /* The row that reveals the rest of the search results. */
 .slsk-show-more-row {
   display: flex;
