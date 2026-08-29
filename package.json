@@ -37,6 +37,7 @@
       "eq.js",
       "history.js",
       "lyrics.js",
+      "analysis-runner.js",
       "mpv-crossfade.js",
       "mpv-engine.js",
       "mpv-ipc.js",

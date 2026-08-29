@@ -115,6 +115,9 @@ test('every channel main sends has something that actually listens', () => {
     // so the verification feed has a bridge and no consumer.
     'slsk-verify': 'preload exposes onSlskVerify; no renderer script calls it',
     'yt-auth-done': 'no listener',
+    // Wired end to end (main -> preload allowlist) in the smart-queues feature
+    // store/IPC task; the renderer UI that subscribes to it is a later task.
+    'queue-analysis-progress': 'no renderer UI yet; queue analysis is IPC-only so far',
   }
   const unheard = [...sentChannels]
     .filter(c => !heard.has(c) && !(c in NOT_FOR_THE_RENDERER) && !(c in DELIBERATELY_UNHANDLED))
