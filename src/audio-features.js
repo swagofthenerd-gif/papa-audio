@@ -76,10 +76,12 @@ function buildNormaliser(vectors) {
     const m = list.reduce((s, v) => s + v[k], 0) / list.length
     const varc = list.reduce((s, v) => s + (v[k] - m) ** 2, 0) / list.length
     mean[k] = m
-    // A constant dimension has zero spread. Dividing by it yields Infinity and
-    // poisons every distance, so it is floored -- a dimension that never varies
-    // simply contributes nothing.
-    sd[k] = Math.max(Math.sqrt(varc), 1)
+    // A constant dimension has no spread, but float error in the mean leaves
+    // varc around 3e-33 rather than exactly 0 -- so `|| 1` never fires and the
+    // z-score becomes 1.0, full-scale noise. Floor on a threshold instead, and
+    // leave every real spread untouched so narrow dimensions still count.
+    const s = Math.sqrt(varc)
+    sd[k] = s < 1e-9 ? 1 : s
   }
   return { mean, sd }
 }

@@ -111,3 +111,21 @@ test('distance is zero to itself and grows with difference', () => {
 test('dynamics is weighted above punch, because this library is prog', () => {
   assert.ok(DEFAULT_WEIGHTS.dynamics > DEFAULT_WEIGHTS.punch)
 })
+
+test('normalisation preserves real spread: a narrow dimension is not crushed', () => {
+  // Realistic: every feature lies in 0..1, so every real sd is well under 1.
+  const vs = [
+    { energy: 0.10, brightness: 0.5, dynamics: 0.5, density: 0.5, punch: 0.5 },
+    { energy: 0.14, brightness: 0.5, dynamics: 0.5, density: 0.5, punch: 0.5 },
+    { energy: 0.18, brightness: 0.5, dynamics: 0.5, density: 0.5, punch: 0.5 },
+  ]
+  const n = buildNormaliser(vs)
+  const lo = normalise(vs[0], n)
+  const hi = normalise(vs[2], n)
+  // A 0.08 spread must separate into a real z-score gap. Flooring sd at 1
+  // would leave these 0.08 apart instead of more than 2 standard deviations.
+  assert.ok(Math.abs(hi.energy - lo.energy) > 2, `narrow dimension was crushed: gap ${Math.abs(hi.energy - lo.energy)}`)
+  // And a dimension that never varies must contribute nothing, not noise.
+  assert.strictEqual(lo.brightness, 0)
+  assert.strictEqual(hi.brightness, 0)
+})
