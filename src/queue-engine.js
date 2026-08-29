@@ -58,6 +58,12 @@ function buildQueue({
   })
 
   // Oversample, then let sequencing choose the order from a slightly wider set.
+  // Slicing a PREFIX afterwards is safe only because `sequence` places tracks
+  // left to right and checks spacing against already-placed predecessors only.
+  // Every prefix of a valid sequence is therefore itself valid. If `sequence`
+  // ever gains lookahead or a global reordering pass, this slice stops being
+  // safe and the spacing guarantee is lost silently -- no current test would
+  // catch it, because they all assert on the whole returned queue.
   const want = Math.min(length, pool.length)
   const picked = softmaxSample(pool, scores, {
     count: Math.min(pool.length, Math.ceil(want * 1.5)),
