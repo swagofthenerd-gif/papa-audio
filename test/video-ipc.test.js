@@ -45,6 +45,19 @@ test('the preload surface exposes the video methods', () => {
   assert.deepStrictEqual(missing, [], 'these video methods are not exposed on window.api')
 })
 
+test('tmdb apiKey is wired as a per-request getter', () => {
+  assert.match(MAIN, /apiKey:\s*\(\)\s*=>\s*_videoSettings\(\)\.tmdbApiKey/)
+})
+
+test('video-settings-set invalidates video caches when the key changes', () => {
+  const start = MAIN.indexOf("ipcMain.handle('video-settings-set'")
+  const end = MAIN.indexOf('ipcMain.handle', start + 1)
+  const handler = MAIN.slice(start, end)
+  assert.match(handler, /patch\s*&&\s*patch\.tmdbApiKey/)
+  assert.match(handler, /_videoCatalogCache\.clear\(\)/)
+  assert.match(handler, /_videoStreamCache\.clear\(\)/)
+})
+
 test('video-event is in the preload channel allowlist', () => {
   const start = PRELOAD.indexOf('const allowed = [')
   const end = PRELOAD.indexOf(']', start)

@@ -5978,7 +5978,7 @@ function _lazy(factory) {
 }
 
 const tmdb = _lazy(() => createTmdbCatalog({
-  apiKey: _videoSettings().tmdbApiKey || process.env.TMDB_API_KEY,
+  apiKey: () => _videoSettings().tmdbApiKey || process.env.TMDB_API_KEY,
   fetchFn: fetchWithTimeout(15000),
 }))
 const anilist = _lazy(() => createAnilistCatalog({ fetchFn: fetchWithTimeout(15000) }))
@@ -6046,6 +6046,10 @@ ipcMain.handle('video-settings-set', (_, { patch }) => {
   try {
     const current = _videoSettings()
     store.set('videoSettings', { ...current, ...(patch || {}) })
+    if (patch && patch.tmdbApiKey) {
+      _videoCatalogCache.clear()
+      _videoStreamCache.clear()
+    }
     return { ok: true }
   } catch (e) {
     return { ok: false, error: e.message }
