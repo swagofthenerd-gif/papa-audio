@@ -4,6 +4,7 @@ const assert = require('node:assert')
 const {
   normalizeMedia,
   buildQuery,
+  buildVariables,
   createAnilistCatalog,
 } = require('../catalog/anilist')
 
@@ -31,6 +32,7 @@ test('normalizeMedia maps a raw AniList media node to an anime catalog entry', (
     title: 'Fullmetal Alchemist: Brotherhood',
     year: 2009,
     poster: 'https://example.com/fma.jpg',
+    backdrop: null,
     overview: 'Two brothers search for the Philosopher\'s Stone.',
     rating: 90,
     genres: ['Action', 'Adventure', 'Fantasy'],
@@ -60,6 +62,7 @@ test('normalizeMedia nulls missing fields', () => {
   assert.strictEqual(e.title, null)
   assert.strictEqual(e.year, null)
   assert.strictEqual(e.poster, null)
+  assert.strictEqual(e.backdrop, null)
   assert.strictEqual(e.overview, null)
   assert.strictEqual(e.rating, null)
   assert.deepStrictEqual(e.genres, [])
@@ -70,6 +73,17 @@ test('normalizeMedia nulls missing fields', () => {
 test('normalizeMedia leaves rating null when averageScore is null', () => {
   const e = normalizeMedia({ id: 6, averageScore: null })
   assert.strictEqual(e.rating, null)
+})
+
+test('normalizeMedia emits backdrop from bannerImage, falls back to coverImage.extraLarge, else null', () => {
+  const banner = normalizeMedia({ id: 1, bannerImage: 'http://x/banner.jpg' })
+  assert.strictEqual(banner.backdrop, 'http://x/banner.jpg')
+
+  const cover = normalizeMedia({ id: 2, coverImage: { extraLarge: 'http://x/cover-xl.jpg' } })
+  assert.strictEqual(cover.backdrop, 'http://x/cover-xl.jpg')
+
+  const none = normalizeMedia({ id: 3 })
+  assert.strictEqual(none.backdrop, null)
 })
 
 test('buildQuery produces a query string per kind', () => {
@@ -83,6 +97,18 @@ test('buildQuery produces a query string per kind', () => {
   assert.ok(buildQuery('popular').includes('POPULARITY_DESC'))
   assert.ok(buildQuery('season').includes('season: $season'))
   assert.throws(() => buildQuery('bogus'), /Unknown AniList query kind/)
+})
+
+test('buildQuery signature accepts an options object without changing the query', () => {
+  const base = buildQuery('trending')
+  const withOpts = buildQuery('trending', { page: 1, perPage: 20 })
+  assert.strictEqual(base, withOpts)
+})
+
+test('buildVariables injects season/seasonYear for the season kind', () => {
+  const v = buildVariables('season', { season: 'WINTER', seasonYear: 2020 })
+  assert.strictEqual(v.season, 'WINTER')
+  assert.strictEqual(v.seasonYear, 2020)
 })
 
 test('createAnilistCatalog.search POSTs the right variables and normalizes the response', async () => {
@@ -126,6 +152,20 @@ test('createAnilistCatalog.trending/popular/season normalize data.Page.media', a
     assert.strictEqual(res[0].type, 'anime')
     assert.strictEqual(res[0].title, 'A')
   }
+})
+
+test('createAnilistCatalog.season passes injected season/seasonYear to fetchFn', async () => {
+  const media = [{ id: 11, title: { english: 'S' } }]
+  let captured
+  const fetchFn = async (url, init) => {
+    captured = JSON.parse(init.body)
+    return { ok: true, json: async () => ({ data: { Page: { media } } }) }
+  }
+  const cat = createAnilistCatalog({ fetchFn })
+  const res = await cat.season(1, { season: 'WINTER', seasonYear: 2020 })
+  assert.deepStrictEqual(captured.variables, { page: 1, perPage: 20, season: 'WINTER', seasonYear: 2020 })
+  assert.strictEqual(res.length, 1)
+  assert.strictEqual(res[0].title, 'S')
 })
 
 test('createAnilistCatalog throws an Error containing AniList on non-OK response', async () => {
