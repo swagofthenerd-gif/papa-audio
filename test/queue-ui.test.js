@@ -43,3 +43,23 @@ test('every new class the renderer emits has a CSS rule', () => {
 test('the empty state says features are still being built rather than showing nothing', () => {
   assert.ok(/still (listening|analysing|analyzing)/i.test(renderer), 'no "still analysing" empty state')
 })
+
+// Fix round 1: two mode:'mix' calls returned disjoint tracks from unrelated
+// artists — five "Mix N" cards were five random draws from one pool, not real
+// daily mixes. Mixes must be named from queueMixes() and, until analysis has
+// produced clusters, the UI must show ONE honest unlock prompt rather than
+// five placeholder cards that would all build the same undifferentiated queue.
+test('made-for-you mixes come from queueMixes(), not a fixed "Mix N" placeholder loop', () => {
+  assert.ok(/window\.api\.queueMixes\(\)/.test(renderer), 'renderer never calls queueMixes()')
+  assert.ok(!/\[1,\s*2,\s*3,\s*4,\s*5\]/.test(renderer), 'still generating five fixed placeholder mix cards')
+})
+
+test('mix cards target a specific cluster via mixIndex', () => {
+  assert.ok(/startSmartQueue\(\s*'mix'\s*,\s*null\s*,\s*\{\s*mixIndex/.test(renderer), 'mix cards must pass mixIndex through to startSmartQueue')
+})
+
+test('an empty mixes list renders one unlock prompt, not fake cards', () => {
+  assert.ok(renderer.includes('q-mix-card-unlock'), 'no unlock-prompt card for the no-features case')
+  assert.ok(/\.q-mix-card-unlock\s*[{,]/.test(css), 'q-mix-card-unlock has no CSS rule')
+  assert.ok(/queueAnalysisStart\(\)/.test(renderer), 'unlock prompt must be able to kick off analysis')
+})

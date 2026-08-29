@@ -1701,7 +1701,23 @@ ipcMain.handle('queue-analysis-start', async () => {
   return { ok: true }
 })
 
-ipcMain.handle('queue-build', async (_e, { mode = 'surprise', seedFilePath = null, length = 30 } = {}) => {
+ipcMain.handle('queue-mixes', async () => {
+  const tracks = allLibraryTracks()
+  const vectors = new Map([...featureMap()].map(([fp, entry]) => [fp, entry.vector]))
+  // Without features there are no clusters, so there are no mixes to name yet.
+  // Returning an empty list lets the UI say so honestly rather than showing
+  // cards that would all produce the same undifferentiated queue.
+  if (!vectors.size) return { ok: true, featuresReady: false, mixes: [] }
+  const c = clusterLibrary({ tracks, vectors, k: 5 })
+  const sizes = new Map()
+  for (const [, idx] of c.clusterOf) sizes.set(idx, (sizes.get(idx) || 0) + 1)
+  const mixes = c.names
+    .map((name, index) => ({ index, name, size: sizes.get(index) || 0 }))
+    .filter(m => m.size > 0)
+  return { ok: true, featuresReady: true, mixes }
+})
+
+ipcMain.handle('queue-build', async (_e, { mode = 'surprise', seedFilePath = null, mixIndex = null, length = 30 } = {}) => {
   const tracks = allLibraryTracks()
   const vectors = new Map([...featureMap()].map(([fp, entry]) => [fp, entry.vector]))
   const history = readHistoryEntries()
@@ -1712,7 +1728,9 @@ ipcMain.handle('queue-build', async (_e, { mode = 'surprise', seedFilePath = nul
   if (mode === 'mix') {
     const c = clusterLibrary({ tracks, vectors, k: 5 })
     clusterOf = c.clusterOf
-    seedCluster = seedFilePath ? c.clusterOf.get(seedFilePath) ?? 0 : 0
+    seedCluster = Number.isInteger(mixIndex)
+      ? mixIndex
+      : (seedFilePath ? c.clusterOf.get(seedFilePath) ?? 0 : 0)
   }
   const seed = seedFilePath ? tracks.find(t => t.filePath === seedFilePath) : null
   const featuresReady = vectors.size > 0

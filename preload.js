@@ -248,6 +248,7 @@ contextBridge.exposeInMainWorld('api', {
   batchTranscode: (p) => ipcRenderer.invoke('batch-transcode', p),
 
   queueBuild:          (opts) => ipcRenderer.invoke('queue-build', opts),
+  queueMixes:          () => ipcRenderer.invoke('queue-mixes'),
   queueAnalysisStatus: () => ipcRenderer.invoke('queue-analysis-status'),
   queueAnalysisStart:  () => ipcRenderer.invoke('queue-analysis-start'),
 

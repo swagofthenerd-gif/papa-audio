@@ -7,7 +7,7 @@ const path = require('node:path')
 const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
 const preload = fs.readFileSync(path.join(__dirname, '..', 'preload.js'), 'utf8')
 
-const CHANNELS = ['queue-build', 'queue-analysis-status', 'queue-analysis-start']
+const CHANNELS = ['queue-build', 'queue-analysis-status', 'queue-analysis-start', 'queue-mixes']
 
 test('every queue channel has a handler in main', () => {
   for (const c of CHANNELS) {
@@ -47,4 +47,21 @@ test('queue-build reports whether features were available for this build', () =>
     /featuresReady/.test(main),
     'queue-build must tell the renderer whether analysis has run, so a fresh install with no features can show an honest degraded-mode message instead of pretending'
   )
+})
+
+// Fix round 1: daily mixes must be named from real clusters, not five
+// identical random draws labelled "Mix N". queue-mixes is the endpoint that
+// makes that possible, and queue-build must accept an explicit mixIndex so a
+// card can target the exact cluster it was named after.
+test('queue-mixes returns an honest empty list without features', () => {
+  const handler = main.slice(main.indexOf("ipcMain.handle('queue-mixes'"))
+  const body = handler.slice(0, handler.indexOf("ipcMain.handle('queue-build'"))
+  assert.ok(/featuresReady:\s*false,\s*mixes:\s*\[\]/.test(body), 'no-features case must report featuresReady:false and an empty mixes list')
+  assert.ok(/clusterLibrary\(/.test(body), 'queue-mixes must actually cluster the library')
+})
+
+test('queue-build accepts an explicit mixIndex to target a specific mix', () => {
+  const handler = main.slice(main.indexOf("ipcMain.handle('queue-build'"))
+  assert.ok(/mixIndex/.test(handler.slice(0, 400)), 'queue-build must destructure mixIndex from its options')
+  assert.ok(/Number\.isInteger\(mixIndex\)/.test(handler), 'an explicit mixIndex must be preferred over deriving one from the seed file')
 })

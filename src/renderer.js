@@ -1482,17 +1482,13 @@ function renderHome() {
   var backAlbums = state.library.filter(function(a) { return !recents[a.id] && (pcount[a.id] || 0) >= 10 }).sort(function(a, b) { return (pcount[b.id] || 0) - (pcount[a.id] || 0) }).slice(0, 6)
   var backHTML = backAlbums.length ? '<div class="section-header"><span class="section-title">Back in rotation</span></div><div class="scroll-row">' + backAlbums.map(albumCard).join('') + '</div>' : ''
 
-  // "Made for you" — smart-queue mixes plus Surprise Me and Rediscover. There
-  // is no IPC surface to name these after the taste model's actual clusters
-  // (queueBuild only accepts a mode, not a cluster id), so the five mix cards
-  // are generic "Mix N" entries that each start an independent mode:'mix'
-  // build — the randomness in the sampler (spec §7) means they will not all
-  // land on the same tracks.
+  // "Made for you" — smart-queue mixes plus Surprise Me and Rediscover. The
+  // mix cards are filled in asynchronously by loadMadeForYou() once
+  // queueMixes() resolves (mirrors the loadYtHome() pattern below), because
+  // clustering the library is real IPC work and must not block the rest of
+  // Home from painting.
   var dailyMixHTML = '<div class="section-header"><span class="section-title">Made for you</span></div>' +
-    '<div class="scroll-row q-madeforyou">' +
-    [1, 2, 3, 4, 5].map(function (i) {
-      return '<div class="q-mix-card" data-q-mode="mix"><span class="q-mix-card-title">Mix ' + i + '</span><span class="q-mix-card-sub">Based on your taste</span></div>'
-    }).join('') +
+    '<div class="scroll-row q-madeforyou" id="q-madeforyou">' +
     '<div class="q-mix-card q-mix-card-surprise" data-q-mode="surprise"><span class="q-mix-card-title">Surprise Me</span><span class="q-mix-card-sub">Something you would not have picked</span></div>' +
     '<div class="q-mix-card q-mix-card-rediscover" data-q-mode="rediscover"><span class="q-mix-card-title">Rediscover</span><span class="q-mix-card-sub">Tracks you used to love</span></div>' +
     '</div>'
@@ -1536,6 +1532,46 @@ function renderHome() {
   })
   document.querySelectorAll('.q-mix-card[data-q-mode]').forEach(card => {
     card.addEventListener('click', () => startSmartQueue(card.dataset.qMode))
+  })
+  loadMadeForYou()
+}
+
+// Mix cards need the library clustered first (real IPC work), so they are
+// filled in after the rest of Home has already painted — same pattern as
+// loadYtHome(). Named per fix-round-1: mixes must show their dominant-artist
+// name (from queue-clusters' nameCluster), never a placeholder "Mix N" —
+// otherwise every card is a random draw from the same undifferentiated pool.
+async function loadMadeForYou() {
+  const container = document.getElementById('q-madeforyou')
+  if (!container) return
+  const res = await window.api.queueMixes().catch(() => null)
+  if (!container.isConnected || state.currentPage !== 'home') return
+  if (!res || !res.featuresReady || !res.mixes || !res.mixes.length) {
+    // Not enough analysis yet to name real mixes — say so honestly instead of
+    // showing five cards that would all build the same undifferentiated queue.
+    const unlock = document.createElement('div')
+    unlock.className = 'q-mix-card q-mix-card-unlock'
+    unlock.innerHTML = '<span class="q-mix-card-title">Mixes unlock after analysis</span>' +
+      '<span class="q-mix-card-sub">Analyse your library to get mixes named for your taste</span>' +
+      '<button class="q-mix-card-analyse-btn" id="q-mix-analyse-btn">Start analysis</button>'
+    container.insertBefore(unlock, container.firstChild)
+    document.getElementById('q-mix-analyse-btn')?.addEventListener('click', (e) => {
+      e.stopPropagation()
+      window.api.queueAnalysisStart().catch(() => {})
+      showSnackbar('Analysis started — mixes will appear once it finishes')
+    })
+    return
+  }
+  const wrap = document.createElement('div')
+  wrap.innerHTML = res.mixes.map(m =>
+    '<div class="q-mix-card" data-q-mode="mix" data-mix-index="' + m.index + '">' +
+      '<span class="q-mix-card-title">' + esc(m.name) + '</span>' +
+      '<span class="q-mix-card-sub">' + m.size + ' track' + (m.size === 1 ? '' : 's') + '</span>' +
+    '</div>').join('')
+  const anchor = container.firstChild
+  while (wrap.firstChild) container.insertBefore(wrap.firstChild, anchor)
+  container.querySelectorAll('.q-mix-card[data-mix-index]').forEach(card => {
+    card.addEventListener('click', () => startSmartQueue('mix', null, { mixIndex: parseInt(card.dataset.mixIndex, 10) }))
   })
 }
 
@@ -6630,8 +6666,9 @@ function restoreOldQueue() {
 // All the building happens in the main process (Task 11). The renderer only
 // asks for a finished, playable list and starts it — same shape as playAlbum.
 var SMART_QUEUE_MODES = ['radio', 'mix', 'surprise', 'rediscover']
-async function startSmartQueue(mode, seedFilePath) {
-  const result = await window.api.queueBuild({ mode: mode, seedFilePath: seedFilePath, length: 40 }).catch(() => null)
+async function startSmartQueue(mode, seedFilePath, opts) {
+  const mixIndex = opts && Number.isInteger(opts.mixIndex) ? opts.mixIndex : null
+  const result = await window.api.queueBuild({ mode: mode, seedFilePath: seedFilePath, mixIndex: mixIndex, length: 40 }).catch(() => null)
   if (!result || !result.tracks || !result.tracks.length) {
     showSnackbar('Still analysing your library — try again shortly')
     return null
