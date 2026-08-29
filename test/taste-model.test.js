@@ -1,7 +1,7 @@
 'use strict'
 const { test } = require('node:test')
 const assert = require('node:assert')
-const { buildAffinity } = require('../src/taste-model')
+const { buildAffinity, buildColdSet, buildTransitions } = require('../src/taste-model')
 
 const NOW = Date.UTC(2026, 7, 29)
 const day = 86400000
@@ -65,4 +65,65 @@ test('affinity spreads across a realistic range instead of saturating', () => {
   assert.ok(distinct >= 6, `affinity collapsed: only ${distinct} distinct values across 7 play counts`)
   assert.ok(vals.filter(v => v >= 1).length === 1, 'exactly one track should sit at the top of the scale')
   assert.ok(a.get('/t40.flac') > a.get('/t2.flac'), '40 plays must outrank 2')
+})
+
+test('cold set holds tracks played twice or more but not in 90 days', () => {
+  const cold = buildColdSet({
+    playCounts: { '/cold.flac': 5, '/warm.flac': 5, '/once.flac': 1 },
+    history: [
+      { filePath: '/cold.flac', ts: NOW - 200 * day },
+      { filePath: '/warm.flac', ts: NOW - 3 * day },
+      { filePath: '/once.flac', ts: NOW - 300 * day },
+    ],
+    now: NOW,
+  })
+  assert.ok(cold.has('/cold.flac'), 'old favourite should be cold')
+  assert.ok(!cold.has('/warm.flac'), 'recent play is not cold')
+  assert.ok(!cold.has('/once.flac'), 'a single play is not a favourite gone cold')
+})
+
+test('a track never played is not cold, it is unheard', () => {
+  const cold = buildColdSet({ playCounts: { '/x.flac': 4 }, history: [], now: NOW })
+  assert.ok(!cold.has('/x.flac'))
+})
+
+test('transitions record what actually followed what, as probabilities', () => {
+  const trackArtist = new Map([['/p1.flac', 'Pink Floyd'], ['/p2.flac', 'Pink Floyd'], ['/y1.flac', 'Yes']])
+  // normaliseHistory sorts newest first, so listening order here is y1 -> p2 -> p1
+  const t = buildTransitions({
+    history: [
+      { filePath: '/p1.flac', ts: NOW },
+      { filePath: '/p2.flac', ts: NOW - 1000 },
+      { filePath: '/y1.flac', ts: NOW - 2000 },
+    ],
+    trackArtist,
+  })
+  const fromYes = t.get('Yes')
+  assert.ok(fromYes, 'Yes should have an outgoing row')
+  assert.strictEqual(fromYes.get('Pink Floyd'), 1)
+})
+
+test('each transition row sums to 1', () => {
+  const trackArtist = new Map([['/a.flac', 'A'], ['/b.flac', 'B'], ['/c.flac', 'C']])
+  const t = buildTransitions({
+    history: [
+      { filePath: '/c.flac', ts: NOW },
+      { filePath: '/a.flac', ts: NOW - 1000 },
+      { filePath: '/b.flac', ts: NOW - 2000 },
+      { filePath: '/a.flac', ts: NOW - 3000 },
+    ],
+    trackArtist,
+  })
+  for (const [, row] of t) {
+    const total = [...row.values()].reduce((s, v) => s + v, 0)
+    assert.ok(Math.abs(total - 1) < 1e-9)
+  }
+})
+
+test('transitions ignore a track whose artist is unknown', () => {
+  const t = buildTransitions({
+    history: [{ filePath: '/a.flac', ts: NOW }, { filePath: '/ghost.flac', ts: NOW - 1000 }],
+    trackArtist: new Map([['/a.flac', 'A']]),
+  })
+  assert.strictEqual(t.size, 0)
 })

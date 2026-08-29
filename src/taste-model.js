@@ -56,4 +56,45 @@ function buildAffinity({ history = [], playCounts = {}, likedTracks = [], now = 
   return out
 }
 
-module.exports = { buildAffinity, HALF_LIFE_DAYS, LIKED_BOOST }
+function buildColdSet({ history = [], playCounts = {}, now = Date.now(), days = 90, minPlays = 2 } = {}) {
+  const { entries } = normaliseHistory(history, { now })
+  const lastPlayed = new Map()
+  for (const e of entries) {
+    const prev = lastPlayed.get(e.filePath) || 0
+    if (e.ts > prev) lastPlayed.set(e.filePath, e.ts)
+  }
+  const cutoff = now - days * DAY
+  const cold = new Set()
+  for (const [p, last] of lastPlayed) {
+    if ((Number(playCounts[p]) || 0) < minPlays) continue
+    if (last < cutoff) cold.add(p)
+  }
+  return cold
+}
+
+function buildTransitions({ history = [], trackArtist = new Map() } = {}) {
+  const { entries } = normaliseHistory(history, { now: Date.now() })
+  // normaliseHistory returns newest first; listening order is the reverse.
+  const chron = [...entries].reverse()
+
+  const counts = new Map()
+  for (let i = 1; i < chron.length; i++) {
+    const from = trackArtist.get(chron[i - 1].filePath)
+    const to = trackArtist.get(chron[i].filePath)
+    if (!from || !to) continue
+    if (!counts.has(from)) counts.set(from, new Map())
+    const row = counts.get(from)
+    row.set(to, (row.get(to) || 0) + 1)
+  }
+
+  const out = new Map()
+  for (const [from, row] of counts) {
+    const total = [...row.values()].reduce((s, v) => s + v, 0)
+    const probs = new Map()
+    for (const [to, c] of row) probs.set(to, c / total)
+    out.set(from, probs)
+  }
+  return out
+}
+
+module.exports = { buildAffinity, buildColdSet, buildTransitions, HALF_LIFE_DAYS, LIKED_BOOST }
