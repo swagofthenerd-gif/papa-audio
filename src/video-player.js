@@ -523,6 +523,9 @@
         }
         case 'exit':
           if (!$('vt-menu').classList.contains('hidden')) { closeMenu(); break }
+          // Escape means "back out one level": leave fullscreen first, and only
+          // close the theatre when there is nothing left to back out of.
+          if (isFullscreen) { toggleFullscreen(false); break }
           close()
           break
         default: return
@@ -530,8 +533,22 @@
       e.preventDefault()
     }
 
-    function toggleFullscreen() {
-      if (api && api.videoFullscreen) api.videoFullscreen().catch(function () {})
+    // Fullscreen expands the app: the stage grows to fill the screen while the
+    // deck and the skip offer stay reachable. Fullscreening the video window
+    // itself would cover them, which is the whole problem this avoids.
+    let isFullscreen = false
+    function toggleFullscreen(force) {
+      if (!api || !api.videoFullscreen) return
+      const want = typeof force === 'boolean' ? force : !isFullscreen
+      api.videoFullscreen({ value: want }).then(function (res) {
+        isFullscreen = !!(res && res.fullscreen)
+        const root = $('vtheatre')
+        if (root) root.classList.toggle('fullscreen', isFullscreen)
+        const btn = $('vt-full')
+        if (btn) btn.setAttribute('aria-label', isFullscreen ? 'Exit fullscreen' : 'Fullscreen')
+        // The layout has changed, so the stage rectangle has too.
+        scheduleBounds()
+      }).catch(function () {})
     }
 
     // ── Seek interaction ────────────────────────────────────────────────────
@@ -645,6 +662,7 @@
       cancelAutoSkip()
       stopUpNext()
       closeMenu()
+      if (isFullscreen) toggleFullscreen(false)
       const root = $('vtheatre')
       if (root) root.classList.add('hidden')
       if (unsubscribe) { unsubscribe(); unsubscribe = null }

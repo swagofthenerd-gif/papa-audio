@@ -6089,6 +6089,14 @@ body.app-unfocused *::after {
 }
 .vtheatre.hidden { display:none; }
 
+/* In fullscreen the chrome gets out of the way: the title bar is redundant
+   when the video fills the screen, and every pixel it gave up goes to the
+   stage. The deck stays — it is the only way to pause, skip or advance, and
+   hiding it would recreate exactly the problem fullscreen used to cause. */
+.vtheatre.fullscreen .vt-top { display:none; }
+.vtheatre.fullscreen .vt-deck { padding:8px 20px 12px; }
+.vtheatre.fullscreen .vt-strip { padding-bottom:8px; }
+
 /* ── Top bar ─────────────────────────────────────────── */
 .vt-top { display:flex; align-items:center; gap:14px; padding:14px 20px; background:#0a0a0a; }
 .vt-heading { min-width:0; flex:1; }

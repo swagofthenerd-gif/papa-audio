@@ -1334,6 +1334,9 @@ function createWindow(hidden = false) {
   })
   if (winState.maximized) mainWindow.maximize()
   mainWindow.loadFile('src/index.html')
+  // Keep the embedded video window glued to its stage rectangle when the app
+  // is moved, resized or fullscreened.
+  _rebindVideoFollow()
 
   // On this machine Electron gets no hardware acceleration, so Chromium
   // composites with SwiftShader on the CPU. Any perpetual CSS animation - the
@@ -5972,7 +5975,7 @@ ipcMain.handle('batch-transcode', async (_, { filePaths, format, outDir }) => {
 
 function _videoSettings() {
   return Object.assign(
-    { tmdbApiKey: '', preferSurround: true, preferredQuality: '1080p', torrentSources: true, embed: 'panel' },
+    { tmdbApiKey: '', preferSurround: true, preferredQuality: '1080p', torrentSources: true },
     store.get('videoSettings')
   )
 }
@@ -6073,20 +6076,42 @@ ipcMain.handle('video-surface-bounds', (_, rect) => {
 
 // Fullscreen means the video window alone goes fullscreen; the deck is not
 // drawn over it in either state, so there is nothing to hide or re-show.
-ipcMain.handle('video-fullscreen', () => {
+// Fullscreen expands the APP, not the mpv window. Fullscreening mpv would put
+// the video on top of everything — including the deck, the skip offer and the
+// Up Next card, all of which live in the main window — leaving the viewer with
+// a picture they cannot pause, skip or advance. Expanding the app instead lets
+// the stage grow to fill the screen while the controls stay reachable.
+ipcMain.handle('video-fullscreen', (_, opts) => {
   try {
-    const win = _videoWindow()
-    if (!win || win.isDestroyed()) return { ok: false }
-    const next = !win.isFullScreen()
-    win.setFullScreen(next)
-    // Leaving fullscreen must snap the window back onto the stage rectangle,
-    // or it keeps the screen-sized bounds and covers the whole app.
-    if (!next && _videoSession.bounds) setTimeout(() => _positionVideoWindow(_videoSession.bounds), 60)
-    return { ok: true, fullscreen: next }
+    if (!mainWindow || mainWindow.isDestroyed()) return { ok: false }
+    const want = opts && typeof opts.value === 'boolean' ? opts.value : !mainWindow.isFullScreen()
+    if (want !== mainWindow.isFullScreen()) mainWindow.setFullScreen(want)
+    // The renderer re-measures on its own resize event and sends fresh bounds,
+    // but a fullscreen transition can settle after that fires, so re-apply the
+    // last known rectangle as a backstop.
+    if (_videoSession.bounds) setTimeout(() => _positionVideoWindow(_videoSession.bounds), 120)
+    return { ok: true, fullscreen: want }
   } catch (e) {
     return { ok: false, error: (e && e.message) || String(e) }
   }
 })
+
+// The mpv window is a child of the main window, so it does not move with it
+// automatically — dragging the app to another monitor would leave the video
+// behind. Re-applying the stage rectangle on every move and resize keeps them
+// glued together.
+function _rebindVideoFollow() {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  const follow = () => {
+    if (_videoSession.bounds && _videoSession.win && !_videoSession.win.isDestroyed()) {
+      _positionVideoWindow(_videoSession.bounds)
+    }
+  }
+  mainWindow.on('move', follow)
+  mainWindow.on('resize', follow)
+  mainWindow.on('enter-full-screen', () => setTimeout(follow, 120))
+  mainWindow.on('leave-full-screen', () => setTimeout(follow, 120))
+}
 
 function _showVideoWindow() {
   try {
@@ -6402,9 +6427,14 @@ ipcMain.handle('video-play', async (_, { result }) => {
     if (player) { try { player.pause().catch(() => {}) } catch (_) {} }
     // When the user wants the in-app panel, obtain the X11 wid now and show the
     // host window; on failure (wid null) mpv opens its own window instead.
-    const embed = _videoSettings().embed !== 'window'
-    const wid = embed ? _videoWid() : null
+    // Always embed. The old `embed: 'window'` setting predates the theatre and
+    // is deliberately ignored: with a separate window the deck, the skip offer
+    // and the Up Next card all sit behind the video, attached to nothing. When
+    // a wid cannot be obtained mpv still opens its own window, so the fallback
+    // is preserved without offering it as a choice.
+    const wid = _videoWid()
     if (wid) _showVideoWindow()
+    else console.warn('[papa-video] no X11 window id — mpv will open its own window')
     // Every async callback below is stamped with the play that created it, so
     // a torrent that becomes ready after the user already started something
     // else cannot hijack the engine or overwrite the newer status.

@@ -339,3 +339,43 @@ test('the preload surface exposes onVideoState and returns an unsubscribe fn', (
   const line = PRELOAD.slice(at, PRELOAD.indexOf('\n', at))
   assert.match(line, /removeListener\('video-state', h\)/, 'the unsubscribe must remove only its own listener')
 })
+
+// The old `embed: 'window'` setting predates the theatre. With a separate mpv
+// window the deck, the skip offer and the Up Next card all sit behind the
+// video attached to nothing — which is exactly the bug this removes. A stored
+// value must not be able to bring that back.
+test('playback always embeds; the old separate-window setting is gone', () => {
+  const body = handlerBody('video-play')
+  assert.match(body, /const wid = _videoWid\(\)/)
+  // Comments explaining the removal are fine; a live read of the setting is not.
+  const code = body.split('\n').filter(l => !/^\s*(\/\/|\*)/.test(l)).join('\n')
+  assert.ok(!/_videoSettings\(\)\.embed/.test(code), 'no setting may gate embedding any more')
+  assert.ok(!/embed \?/.test(code))
+  const defaults = MAIN.slice(MAIN.indexOf('function _videoSettings'), MAIN.indexOf('function _videoSettings') + 400)
+  assert.ok(!/embed:/.test(defaults), 'embed must not be a video setting')
+})
+
+test('a failed embed is reported rather than silently opening a bare window', () => {
+  assert.match(handlerBody('video-play'), /no X11 window id/)
+})
+
+// Fullscreening mpv would cover the deck and leave the viewer with a picture
+// they cannot pause, skip or advance.
+test('fullscreen expands the app, never the video window', () => {
+  const body = handlerBody('video-fullscreen')
+  assert.match(body, /mainWindow\.setFullScreen\(want\)/)
+  assert.ok(!/_videoWindow\(\)\.setFullScreen|win\.setFullScreen/.test(body),
+    'the mpv window must never be fullscreened on its own')
+})
+
+// The mpv window is a child of the main window but does not move with it, so
+// dragging the app to another monitor would otherwise leave the video behind.
+test('the video window follows the app when it moves, resizes or fullscreens', () => {
+  const start = MAIN.indexOf('function _rebindVideoFollow()')
+  assert.ok(start > -1, 'the follow handlers must exist')
+  const body = MAIN.slice(start, MAIN.indexOf('\n}', start))
+  for (const ev of ['move', 'resize', 'enter-full-screen', 'leave-full-screen']) {
+    assert.match(body, new RegExp("on\\('" + ev + "'"), 'not following ' + ev)
+  }
+  assert.match(MAIN, /_rebindVideoFollow\(\)/)
+})
