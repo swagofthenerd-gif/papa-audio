@@ -45,34 +45,38 @@ function buildQuery(kind, options) {
   // builders; pagination lives in `buildVariables`, not the query string.
   void options
   switch (kind) {
+    // NOTE: `sort`/`search`/`season`/`seasonYear`/`type` are arguments of the
+    // `media` field, NOT of `Page`. Placing them on `Page` makes AniList return
+    // a 400 (`Unknown argument "sort" on field "Page"`). `type: ANIME` is also
+    // required on `media`, otherwise the page returns manga/other types too.
     case 'trending':
       return `query ($page: Int, $perPage: Int) {
-  Page(page: $page, perPage: $perPage, sort: TRENDING_DESC) {
-    media {
+  Page(page: $page, perPage: $perPage) {
+    media(type: ANIME, sort: TRENDING_DESC) {
       ${MEDIA_SELECTION}
     }
   }
 }`
     case 'popular':
       return `query ($page: Int, $perPage: Int) {
-  Page(page: $page, perPage: $perPage, sort: POPULARITY_DESC) {
-    media {
+  Page(page: $page, perPage: $perPage) {
+    media(type: ANIME, sort: POPULARITY_DESC) {
       ${MEDIA_SELECTION}
     }
   }
 }`
     case 'season':
       return `query ($page: Int, $perPage: Int, $season: MediaSeason, $seasonYear: Int) {
-  Page(page: $page, perPage: $perPage, season: $season, seasonYear: $seasonYear, sort: POPULARITY_DESC) {
-    media {
+  Page(page: $page, perPage: $perPage) {
+    media(season: $season, seasonYear: $seasonYear, type: ANIME, sort: POPULARITY_DESC) {
       ${MEDIA_SELECTION}
     }
   }
 }`
     case 'search':
       return `query ($page: Int, $perPage: Int, $search: String, $type: MediaType) {
-  Page(page: $page, perPage: $perPage, search: $search, type: $type) {
-    media {
+  Page(page: $page, perPage: $perPage) {
+    media(search: $search, type: $type) {
       ${MEDIA_SELECTION}
     }
   }

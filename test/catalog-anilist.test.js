@@ -99,6 +99,26 @@ test('buildQuery produces a query string per kind', () => {
   assert.throws(() => buildQuery('bogus'), /Unknown AniList query kind/)
 })
 
+test('buildQuery places sort/search/type/season on media, never on Page (AniList 400 regression)', () => {
+  // AniList rejects `sort`/`search`/`season`/`type` as Page arguments with a
+  // 400 ("Unknown argument ... on field Page"). They must sit on the `media`
+  // field instead. Guard the exact query shapes so this can't regress.
+  const trending = buildQuery('trending')
+  const popular = buildQuery('popular')
+  const season = buildQuery('season')
+  const search = buildQuery('search')
+
+  for (const q of [trending, popular, season, search]) {
+    assert.ok(!q.includes('Page(page: $page, perPage: $perPage,'), 'no args on Page')
+    assert.ok(q.includes('media('), 'media field carries the args')
+  }
+
+  assert.ok(trending.includes('media(type: ANIME, sort: TRENDING_DESC)'))
+  assert.ok(popular.includes('media(type: ANIME, sort: POPULARITY_DESC)'))
+  assert.ok(season.includes('media(season: $season, seasonYear: $seasonYear, type: ANIME, sort: POPULARITY_DESC)'))
+  assert.ok(search.includes('media(search: $search, type: $type)'))
+})
+
 test('buildQuery signature accepts an options object without changing the query', () => {
   const base = buildQuery('trending')
   const withOpts = buildQuery('trending', { page: 1, perPage: 20 })
