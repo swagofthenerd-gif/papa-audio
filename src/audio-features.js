@@ -35,4 +35,72 @@ function parseAnalysis(stderrText) {
   }
 }
 
-module.exports = { FEATURE_KEYS, FEATURE_VERSION, parseAnalysis }
+const DEFAULT_WEIGHTS = { energy: 1.0, brightness: 0.8, dynamics: 1.3, density: 0.8, punch: 0.5 }
+
+const REQUIRED = ['rms', 'crest', 'lra', 'centroid', 'rolloff', 'flatness', 'entropy', 'zcr']
+
+// Squash an open-ended measurement into roughly 0..1 before z-scoring. This is
+// only to stop one wild outlier dominating the mean and standard deviation --
+// the real scaling is the z-score in normalise().
+function unit(value, lo, hi) {
+  if (!Number.isFinite(value)) return 0
+  const t = (value - lo) / (hi - lo)
+  return t < 0 ? 0 : t > 1 ? 1 : t
+}
+
+function rawToVector(raw) {
+  if (!raw) return null
+  for (const k of REQUIRED) {
+    if (!Number.isFinite(raw[k])) return null
+  }
+  const loudness = unit(raw.rms, -40, -5)
+  const bright   = unit(raw.centroid, 400, 6000)
+  const roll     = unit(raw.rolloff, 1000, 12000)
+  const range    = unit(raw.lra, 0, 20)
+  const crest    = unit(raw.crest, 2, 15)
+
+  return {
+    energy:     0.6 * loudness + 0.2 * crest + 0.2 * bright,
+    brightness: 0.6 * bright + 0.4 * roll,
+    dynamics:   0.7 * range + 0.3 * crest,
+    density:    0.5 * unit(raw.flatness, 0, 0.5) + 0.5 * unit(raw.entropy, 0, 1),
+    punch:      unit(raw.zcr, 0, 0.15),
+  }
+}
+
+function buildNormaliser(vectors) {
+  const list = (vectors || []).filter(Boolean)
+  const mean = {}, sd = {}
+  for (const k of FEATURE_KEYS) {
+    if (!list.length) { mean[k] = 0; sd[k] = 1; continue }
+    const m = list.reduce((s, v) => s + v[k], 0) / list.length
+    const varc = list.reduce((s, v) => s + (v[k] - m) ** 2, 0) / list.length
+    mean[k] = m
+    // A constant dimension has zero spread. Dividing by it yields Infinity and
+    // poisons every distance, so it is floored -- a dimension that never varies
+    // simply contributes nothing.
+    sd[k] = Math.max(Math.sqrt(varc), 1)
+  }
+  return { mean, sd }
+}
+
+function normalise(vec, norm) {
+  const out = {}
+  for (const k of FEATURE_KEYS) {
+    const z = (vec[k] - norm.mean[k]) / norm.sd[k]
+    // Floating point rounding can produce values very close to 0; zero them out
+    out[k] = Math.abs(z) < 1e-14 ? 0 : z
+  }
+  return out
+}
+
+function distance(a, b, weights = DEFAULT_WEIGHTS) {
+  let sum = 0
+  for (const k of FEATURE_KEYS) {
+    const d = (a[k] - b[k]) * (weights[k] ?? 1)
+    sum += d * d
+  }
+  return Math.sqrt(sum)
+}
+
+module.exports = { FEATURE_KEYS, FEATURE_VERSION, parseAnalysis, rawToVector, buildNormaliser, normalise, distance, DEFAULT_WEIGHTS }
