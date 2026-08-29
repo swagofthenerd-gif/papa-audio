@@ -1264,6 +1264,20 @@ function _videoPlayResult(result) {
   })
 }
 
+function _videoError(message) {
+  const msg = message || 'Something went wrong'
+  const hint = /TMDB API key|401/i.test(msg)
+    ? '<div class="video-error-hint">Set your TMDB API key in Settings → Video.</div>'
+    : ''
+  setContent('<div class="page"><div class="video-error">' +
+    '<div class="video-error-title">Couldn\'t load this</div>' +
+    '<div class="video-error-message">' + esc(msg) + '</div>' +
+    hint +
+    '<div class="video-error-actions"><button class="secondary" id="video-error-back">Back to Movies &amp; TV</button></div>' +
+  '</div></div>')
+  document.getElementById('video-error-back')?.addEventListener('click', function () { navigate('video') })
+}
+
 async function renderVideo() {
   _initVideoUI()
   setContent(`<div class="page">
@@ -1279,8 +1293,12 @@ async function renderVideo() {
     if (!row) continue
     const res = await window.api.videoCatalogGet({ section: sec.key, page: 1 }).catch(function (e) { return { ok: false, error: String((e && e.message) || e) } })
     if (state.currentPage !== 'video') return
-    if (!res.ok || !Array.isArray(res.results) || !res.results.length) {
-      row.innerHTML = '<div class="yt-status yt-error">' + (res.error ? esc(res.error) : 'Nothing here yet') + '</div>'
+    if (!res.ok) {
+      _videoError(res.error)
+      return
+    }
+    if (!Array.isArray(res.results) || !res.results.length) {
+      row.innerHTML = '<div class="yt-status yt-error">Nothing here yet</div>'
       continue
     }
     row.innerHTML = res.results.map(_videoCard).join('')
@@ -1323,8 +1341,7 @@ async function renderVideoDetail(navId) {
   const res = await window.api.videoDetail({ type, id }).catch(function (e) { return { ok: false, error: String((e && e.message) || e) } })
   if (_videoDetailTicket !== ticket) return
   if (!res.ok || !res.detail) {
-    setContent('<div class="page"><div class="mg-empty" style="padding:48px 24px"><p>Couldn\'t load this title.</p><span>' + esc(res.error || 'Not found') + '</span><div style="margin-top:14px"><button class="secondary" id="video-detail-back">Back to Movies &amp; TV</button></div></div></div>')
-    document.getElementById('video-detail-back')?.addEventListener('click', function () { navigate('video') })
+    _videoError(res.error)
     return
   }
   _videoDetail = { type, id, d: res.detail }
@@ -1460,10 +1477,14 @@ async function _loadVideoSources(ticket) {
   box.innerHTML = '<div class="yt-status">Looking for sources…</div>'
   const res = await window.api.videoStreams(_videoStreamRequest()).catch(function (e) { return { ok: false, error: String((e && e.message) || e) } })
   if (_videoDetailTicket !== ticket || !document.getElementById('video-sources')) return
-  const streams = (res.ok && Array.isArray(res.streams)) ? res.streams : []
+  if (!res.ok) {
+    _videoError(res.error)
+    return
+  }
+  const streams = Array.isArray(res.streams) ? res.streams : []
   _videoStreams = streams
   if (!streams.length) {
-    box.innerHTML = '<div class="yt-status yt-error">No sources found' + (res.error ? ': ' + esc(res.error) : '') + '</div>'
+    box.innerHTML = '<div class="yt-status yt-error">No sources found</div>'
     return
   }
   box.innerHTML = '<div class="video-sources-header"><span class="section-title">Sources</span><div class="video-status" id="video-status"></div><button class="video-stop-btn" id="video-stop-btn">Stop</button></div><div class="video-source-list">' +
@@ -9266,12 +9287,17 @@ async function _initVideoSettings() {
   $('video-embed').value = s.embed === 'panel' ? 'panel' : 'window'
   if (s.tmdbApiKey) keyInput.placeholder = 'Key saved ✓ — paste new one to change'
   const save = patch => window.api.videoSettingsSet(patch).catch(() => {})
-  keyInput.addEventListener('change', e => {
-    const v = e.target.value.trim()
+  const saveKey = function () {
+    const v = keyInput.value.trim()
     if (!v) return
     save({ tmdbApiKey: v })
-    e.target.value = ''
-    e.target.placeholder = 'Key saved ✓ — paste new one to change'
+    keyInput.value = ''
+    keyInput.placeholder = 'Saved ✓'
+    setTimeout(function () { keyInput.placeholder = 'Key saved ✓ — paste new one to change' }, 1500)
+  }
+  keyInput.addEventListener('change', saveKey)
+  keyInput.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') saveKey()
   })
   $('video-prefer-surround').addEventListener('change', e => save({ preferSurround: !!e.target.checked }))
   $('video-quality').addEventListener('change', e => save({ preferredQuality: e.target.value }))

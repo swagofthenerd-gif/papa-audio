@@ -41,3 +41,24 @@ test('the source picker play buttons are always visible', () => {
   const opacity = parseFloat(m[1])
   assert.ok(opacity >= 0.85, `opacity must be >= .85, found ${m[1]}`)
 })
+
+test('renderer.js surfaces catalog/detail/streams errors with a helper', () => {
+  assert.match(RENDERER, /function _videoError\b/, 'a _videoError helper must exist')
+  assert.match(
+    RENDERER,
+    /TMDB API key\|401/,
+    'the helper must detect TMDB-key and 401 errors'
+  )
+})
+
+test('renderer.js hints where to set the TMDB key', () => {
+  assert.match(
+    RENDERER,
+    /Set your TMDB API key in Settings → Video\./,
+    'the hint string must be present'
+  )
+})
+
+test('styles.css defines the error banner rule', () => {
+  assert.match(CSS, /\.video-error\s*\{/, 'a .video-error rule must exist')
+})
