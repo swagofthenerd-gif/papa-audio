@@ -16,7 +16,7 @@
 - **No new runtime dependencies.** Torrents reuse `webtorrent@1.9.7` (already installed). Catalog uses the global `fetch`. Everything else is `require` of existing modules.
 - **Tests run with** `node --test 'test/**/*.test.js'` (full suite via `npm test`). Single file: `node --test test/<file>`.
 - **5.1 / surround:** the video mpv must reuse `channelsValue(layout)` from `mpv-engine.js` (it maps `'auto'` → `'auto-safe'`); never omit `--audio-channels`; never add `--audio-spdif`. Exclusive ALSA output reuses the existing `outputMode`/`alsaDevice` config keys.
-- **TMDB key** is read from `electron-store` key `videoSettings.tmdbApiKey`, falling back to env `TMDB_API_KEY`. It must **never** be hardcoded or committed. (The user's key is `5f55ab3ab40475113ac279cfdddda6c1` — reference it only in Settings UI text/local config, never in source.)
+- **TMDB key** is read from `electron-store` key `videoSettings.tmdbApiKey`, falling back to env `TMDB_API_KEY`. It must **never** be hardcoded or committed — paste it only in the Settings UI field or a local config.
 - **Playback stays in mpv.** Never reintroduce Web Audio / `<audio>` / `<video>` element playback for video.
 - **Play buttons always visible** (`opacity: .85` at minimum), matching the music-side rule.
 - **Styling** uses the existing CSS variables (`--bg3`, `--text2`, `--bg4`, `--border`, `--r`, `--text3`, etc.) and the Spotify-like look already in `src/styles.css`.

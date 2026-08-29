@@ -81,7 +81,16 @@ class VideoEngine extends EventEmitter {
     this.proc.on('exit', () => this._onExit())
     this.proc.on('error', () => this._onExit())
     this.client = new MpvIpcClient(socketPath)
-    await this.client.connect()
+    try {
+      await this.client.connect()
+    } catch (err) {
+      // mpv spawned but its socket never became ready — do not leak an idle
+      // process. Tear down and surface the real connect error.
+      this.client = null
+      try { this.proc?.kill() } catch { /* already dead */ }
+      this.proc = null
+      throw err
+    }
     this.client.on('event', e => this.emit('event', e))
     this.client.on('disconnected', () => this._onExit())
     this.alive = true
