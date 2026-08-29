@@ -1261,17 +1261,76 @@ var _VICON = {
 // index.html and outlives every page, so this must not re-subscribe per render.
 var _player = null
 
+// What is currently playing, for the watch store. Set when the theatre opens
+// and cleared when it closes, so a state tick after a stop cannot write a
+// position against the previous title.
+var _watch = { key: null, meta: null, savedAt: 0, resumed: false }
+
 function _initVideoUI() {
   if (_videoUiReady) return
   _videoUiReady = true
   if (window.PapaVideoPlayer) {
     _player = window.PapaVideoPlayer.create({
-      onExit: function () { window.api.videoStop().catch(function () {}) },
-      onNext: null,
+      onExit: function () {
+        _persistPosition(true)
+        _watch = { key: null, meta: null, savedAt: 0, resumed: false }
+        window.api.videoStop().catch(function () {})
+      },
+      onNext: _playNextEpisode,
+      onState: _onVideoStateTick,
     })
     _player.bind()
   }
   window.api.onVideoEvent(function (payload) { _handleVideoEvent(payload || {}) })
+}
+
+// The identity a position is stored against. An episode is keyed per episode,
+// a film per film, so a series remembers where you are in each one.
+function _watchKey(type, id, season, episode) {
+  if (type === 'movie') return 'movie:' + id
+  if (type === 'tv') return 'tv:' + id + ':s' + season + 'e' + episode
+  return 'anime:' + id + ':e' + episode
+}
+
+// Called on every state tick (~4/s). Writing that often would thrash
+// localStorage for no benefit, so it is throttled to once every five seconds
+// and on stop.
+function _onVideoStateTick(st) {
+  if (!st || !_watch.key) return
+  if (!st.duration || st.paused) return
+  const now = Date.now()
+  if (now - _watch.savedAt < 5000) return
+  _watch.savedAt = now
+  _persistPosition(false, st)
+}
+
+function _persistPosition(final, st) {
+  const store = _vStore()
+  if (!store || !_watch.key) return
+  const state = st || (_player && _player._state())
+  if (!state || !state.duration) return
+  try {
+    store.setPosition(_watch.key, _watch.meta || {}, state.position, state.duration)
+  } catch (_) { /* a full or broken store must never interrupt playback */ }
+  void final
+}
+
+// Offered rather than applied: silently jumping into the middle of a film is
+// disorienting when it is not what you wanted, and there is no undo once mpv
+// has seeked.
+function _offerResume(state) {
+  const store = _vStore()
+  if (!store || !_watch.key || _watch.resumed) return
+  _watch.resumed = true
+  let saved = null
+  try { saved = store.get(_watch.key) } catch (_) { return }
+  if (!saved || saved.watched) return
+  const pos = Number(saved.position) || 0
+  const dur = Number(saved.duration) || Number(state && state.duration) || 0
+  if (!dur || pos < 30 || pos / dur > 0.95) return
+  const label = _player && _player.fmtTime ? _player.fmtTime(pos) : Math.round(pos) + 's'
+  showToast('Resuming from ' + label)
+  window.api.videoControl('seek', { seconds: pos, mode: 'absolute' }).catch(function () {})
 }
 
 function _videoStopAndHide() {
@@ -1298,6 +1357,7 @@ function _handleVideoEvent(payload) {
   } else if (payload.kind === 'playing') {
     _player.setStageMessage('')
     _loadSkipSegments()
+    _offerResume(_player._state())
   } else if (payload.kind === 'error') {
     _player.setStageMessage('<div style="color:var(--color-error)">' +
       esc(_videoErrorText(payload.message || 'Playback error')) + '</div>')
@@ -1335,12 +1395,90 @@ async function _loadSkipSegments() {
   _player.setSegments(res && res.ok ? res.segments : [])
 }
 
+// ── Binge: advancing to the next episode ────────────────────────────────────
+// Films have no next; a series advances within the season, then rolls into the
+// next one. Returns null at the end of the last season rather than wrapping.
+function _nextEpisodeOf(detail, stateNow) {
+  if (!detail || !detail.d || detail.type === 'movie') return null
+  const d = detail.d
+  if (detail.type === 'anime') {
+    const total = Number(d.episodeCount) || 0
+    const next = (Number(stateNow.episode) || 1) + 1
+    if (total && next > total) return null
+    return { season: null, episode: next }
+  }
+  const seasons = Array.isArray(d.seasons) ? d.seasons.filter(function (x) { return x.seasonNumber != null } ) : []
+  const cur = seasons.find(function (x) { return x.seasonNumber === stateNow.season })
+  const count = cur ? Number(cur.episodeCount) || 0 : 0
+  const nextEp = (Number(stateNow.episode) || 1) + 1
+  if (!count || nextEp <= count) return { season: stateNow.season, episode: nextEp }
+  // End of the season: roll into the next real season, skipping specials (0).
+  const later = seasons.filter(function (x) { return x.seasonNumber > stateNow.season && x.seasonNumber >= 1 })
+  if (!later.length) return null
+  return { season: later[0].seasonNumber, episode: 1 }
+}
+
+// Resolves sources for the next episode and starts the best one. The source
+// list is already ranked, so "best" is simply the first entry.
+async function _playNextEpisode() {
+  if (!_videoDetail || !_videoDetail.d) return
+  const next = _nextEpisodeOf(_videoDetail, _videoState)
+  if (!next) {
+    showToast('That was the last episode')
+    return
+  }
+  _persistPosition(true)
+  const store = _vStore()
+  // Finishing an episode by advancing counts as having watched it.
+  try { if (store && _watch.key) store.markWatched(_watch.key) } catch (_) {}
+
+  if (next.season != null) _videoState.season = next.season
+  _videoState.episode = next.episode
+
+  _player.setSegments([])
+  _player.setStageMessage('<div class="spin"></div><div>Finding sources for episode ' + next.episode + '…</div>')
+  _player.open({
+    title: _videoDetail.d.title,
+    subtitle: _videoDetail.type === 'tv'
+      ? 'Season ' + _videoState.season + ' · Episode ' + _videoState.episode
+      : 'Episode ' + _videoState.episode,
+  })
+
+  const res = await window.api.videoStreams(_videoStreamRequest())
+    .catch(function (e) { return { ok: false, error: String((e && e.message) || e) } })
+  if (!res.ok || !Array.isArray(res.streams) || !res.streams.length) {
+    _player.setStageMessage('<div style="color:var(--color-error)">' +
+      esc(res.ok ? 'No sources found for episode ' + next.episode : _videoErrorText(res.error)) + '</div>')
+    return
+  }
+  _videoStreams = res.streams
+  _videoPlayResult(res.streams[0])
+  // The detail page behind the theatre should reflect where we now are.
+  if (_videoDetail.type === 'tv') _renderVideoControls('tv')
+}
+
 function _videoPlayResult(result) {
   if (!result) return
   _initVideoUI()
   const d = _videoDetail && _videoDetail.d
   const isEpisode = _videoDetail && _videoDetail.type !== 'movie'
+
+  // Identify the title for the watch store before anything starts, so the very
+  // first state tick already has somewhere to write.
+  if (d) {
+    _watch = {
+      key: _watchKey(_videoDetail.type, d.id, _videoState.season, _videoState.episode),
+      meta: {
+        type: _videoDetail.type, id: d.id, title: d.title, poster: d.poster || null,
+        season: _videoDetail.type === 'tv' ? _videoState.season : null,
+        episode: isEpisode ? _videoState.episode : null,
+      },
+      savedAt: 0, resumed: false,
+    }
+  }
+
   _player.open({
+    hasNext: !!_nextEpisodeOf(_videoDetail, _videoState),
     title: d ? d.title : 'Video',
     subtitle: isEpisode
       ? (_videoDetail.type === 'tv'
@@ -1626,9 +1764,11 @@ function _toggleWatchlist(item) {
   const store = _vStore()
   if (!store) return showToast('Watchlist is not available yet')
   try {
-    const added = store.toggleWatchlist({
-      type: item.type || 'movie', id: item.id, title: item.title, poster: item.poster || null,
-    })
+    const type = item.type || 'movie'
+    // toggleWatchlist returns the new list, not a boolean, and an array is
+    // always truthy — asking the store afterwards is the only honest answer.
+    store.toggleWatchlist({ type: type, id: item.id, title: item.title, poster: item.poster || null })
+    const added = store.inWatchlist(type, item.id)
     showToast(added ? 'Added to My List' : 'Removed from My List')
     document.querySelectorAll('.vcard-act-list[data-key="' + (item.type || 'movie') + ':' + item.id + '"]')
       .forEach(function (b) { b.classList.toggle('on', added); b.innerHTML = added ? _VICON.check : _VICON.plus })

@@ -46,6 +46,9 @@
     const skipModel = opts.skipModel || (typeof window !== 'undefined' ? window.PapaSkipModel : null)
     const onExit = opts.onExit || function () {}
     const onNext = opts.onNext || null
+    // The renderer persists progress from here rather than opening a second
+    // subscription to the same throttled stream.
+    const onState = opts.onState || null
 
     const $ = id => doc && doc.getElementById(id)
 
@@ -506,14 +509,20 @@
       root.classList.remove('hidden')
       const t = $('vt-title'); if (t) t.textContent = media.title || 'Video'
       const sub = $('vt-sub'); if (sub) sub.textContent = media.subtitle || ''
-      const next = $('vt-next'); if (next) next.hidden = !onNext
+      // Hidden for a film, or for the last episode of the last season — a
+      // control that cannot do anything is worse than no control.
+      const next = $('vt-next'); if (next) next.hidden = !onNext || media.hasNext === false
       segments = []
       prefs = media.prefs || {}
       lastSkipShown = null
       delayMs = { subDelay: 0, audioDelay: 0 }
       setStageMessage('<div class="spin"></div><div>Starting…</div>')
       if (!unsubscribe && api && api.onVideoState) {
-        unsubscribe = api.onVideoState(function (s) { state = s; render() })
+        unsubscribe = api.onVideoState(function (s) {
+          state = s
+          render()
+          if (onState) { try { onState(s) } catch (_) { /* never let a listener stop playback */ } }
+        })
       }
       // Two frames: one for the theatre to lay out, one for the stage to have
       // its final size before the mpv window is positioned onto it. Guarded so
