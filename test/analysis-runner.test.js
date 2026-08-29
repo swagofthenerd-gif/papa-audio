@@ -82,3 +82,94 @@ test('a spawn error is reported', async () => {
   assert.strictEqual(r.ok, false)
   assert.match(r.error, /ENOENT/)
 })
+
+const { runAnalysis, needsAnalysis } = require('../analysis-runner')
+const { FEATURE_VERSION } = require('../src/audio-features')
+
+const V = { energy: 1, brightness: 1, dynamics: 1, density: 1, punch: 1 }
+const okFn = async () => ({ ok: true, vector: V, featureVersion: FEATURE_VERSION })
+
+function trk(i, mtimeMs = 100, size = 10) {
+  return { filePath: `/t${i}.flac`, mtimeMs, size }
+}
+
+test('a track with a current entry is skipped', () => {
+  const t = trk(1)
+  const entry = { vector: V, featureVersion: FEATURE_VERSION, mtimeMs: 100, size: 10 }
+  assert.strictEqual(needsAnalysis(t, entry), false)
+})
+
+test('a changed file, a resized file, or a stale version is re-analysed', () => {
+  const t = trk(1, 100, 10)
+  const base = { vector: V, featureVersion: FEATURE_VERSION, mtimeMs: 100, size: 10 }
+  assert.strictEqual(needsAnalysis(t, { ...base, mtimeMs: 99 }), true)
+  assert.strictEqual(needsAnalysis(t, { ...base, size: 11 }), true)
+  assert.strictEqual(needsAnalysis(t, { ...base, featureVersion: FEATURE_VERSION - 1 }), true)
+  assert.strictEqual(needsAnalysis(t, undefined), true)
+})
+
+test('only unanalysed tracks are processed', async () => {
+  const tracks = [trk(1), trk(2), trk(3)]
+  const existing = new Map([['/t1.flac', { vector: V, featureVersion: FEATURE_VERSION, mtimeMs: 100, size: 10 }]])
+  const seen = []
+  const r = await runAnalysis({
+    tracks, existing, concurrency: 2,
+    analyseFn: async fp => { seen.push(fp); return { ok: true, vector: V, featureVersion: FEATURE_VERSION } },
+  })
+  assert.deepStrictEqual(seen.sort(), ['/t2.flac', '/t3.flac'])
+  assert.strictEqual(r.analysed, 2)
+  assert.strictEqual(r.skipped, 1)
+})
+
+test('concurrency is never exceeded', async () => {
+  let inFlight = 0, peak = 0
+  const analyseFn = async () => {
+    inFlight++; peak = Math.max(peak, inFlight)
+    await new Promise(r => setTimeout(r, 5))
+    inFlight--
+    return { ok: true, vector: V, featureVersion: FEATURE_VERSION }
+  }
+  await runAnalysis({ tracks: Array.from({ length: 12 }, (_, i) => trk(i)), existing: new Map(), concurrency: 3, analyseFn })
+  assert.ok(peak <= 3, `peak concurrency was ${peak}`)
+})
+
+test('analysis stops while audio is playing', async () => {
+  let calls = 0
+  const r = await runAnalysis({
+    tracks: Array.from({ length: 10 }, (_, i) => trk(i)),
+    existing: new Map(), concurrency: 2,
+    isPlaying: () => true,
+    analyseFn: async () => { calls++; return { ok: true, vector: V, featureVersion: FEATURE_VERSION } },
+  })
+  assert.strictEqual(calls, 0, 'analysis ran while audio was playing')
+  assert.strictEqual(r.analysed, 0)
+})
+
+test('one failure does not abort the batch', async () => {
+  const r = await runAnalysis({
+    tracks: [trk(1), trk(2), trk(3)], existing: new Map(), concurrency: 2,
+    analyseFn: async fp => fp === '/t2.flac'
+      ? { ok: false, error: 'bad file' }
+      : { ok: true, vector: V, featureVersion: FEATURE_VERSION },
+  })
+  assert.strictEqual(r.analysed, 2)
+  assert.strictEqual(r.failed, 1)
+  assert.ok(r.results.has('/t1.flac') && r.results.has('/t3.flac'))
+})
+
+test('progress is reported and shouldStop halts cleanly', async () => {
+  const seenProgress = []
+  const r = await runAnalysis({
+    tracks: Array.from({ length: 20 }, (_, i) => trk(i)), existing: new Map(), concurrency: 1,
+    analyseFn: okFn,
+    onProgress: p => seenProgress.push(p),
+    shouldStop: () => seenProgress.length >= 3,
+  })
+  assert.ok(seenProgress.length >= 3)
+  assert.ok(r.analysed < 20, 'shouldStop did not halt the run')
+})
+
+test('an empty track list resolves rather than hanging', async () => {
+  const r = await runAnalysis({ tracks: [], existing: new Map(), analyseFn: okFn })
+  assert.strictEqual(r.analysed, 0)
+})

@@ -54,4 +54,62 @@ function analyseOne(filePath, { spawnFn = spawn, timeoutMs = DEFAULT_TIMEOUT_MS 
   })
 }
 
-module.exports = { buildFfmpegArgs, analyseOne, DEFAULT_TIMEOUT_MS }
+
+const os = require('os')
+
+function defaultConcurrency() {
+  return Math.max(1, (os.cpus() || []).length - 1)
+}
+
+function needsAnalysis(track, entry) {
+  if (!entry || !entry.vector) return true
+  if (entry.featureVersion !== FEATURE_VERSION) return true
+  if (Number(entry.mtimeMs) !== Number(track.mtimeMs)) return true
+  if (Number(entry.size) !== Number(track.size)) return true
+  return false
+}
+
+async function runAnalysis({
+  tracks = [], existing = new Map(), concurrency = defaultConcurrency(),
+  isPlaying = () => false, analyseFn = analyseOne,
+  onProgress = () => {}, shouldStop = () => false,
+} = {}) {
+  const todo = []
+  let skipped = 0
+  for (const t of tracks) {
+    if (needsAnalysis(t, existing.get(t.filePath))) todo.push(t)
+    else skipped++
+  }
+
+  const results = new Map()
+  let analysed = 0, failed = 0, cursor = 0, halted = false
+
+  async function worker() {
+    while (!halted) {
+      // Playback owns the machine. The stability round established that heavy
+      // background work on this path is what breaks audio; this yields to it
+      // rather than competing.
+      if (isPlaying() || shouldStop()) { halted = true; return }
+      const i = cursor++
+      if (i >= todo.length) return
+      const t = todo[i]
+      const r = await analyseFn(t.filePath)
+      if (r && r.ok) {
+        results.set(t.filePath, {
+          vector: r.vector, featureVersion: FEATURE_VERSION,
+          mtimeMs: t.mtimeMs, size: t.size,
+        })
+        analysed++
+      } else {
+        failed++
+      }
+      onProgress({ done: analysed + failed, total: todo.length, filePath: t.filePath })
+    }
+  }
+
+  const n = Math.max(1, Math.min(concurrency, todo.length || 1))
+  await Promise.all(Array.from({ length: n }, worker))
+  return { analysed, skipped, failed, results }
+}
+
+module.exports = { buildFfmpegArgs, analyseOne, DEFAULT_TIMEOUT_MS, needsAnalysis, runAnalysis }
