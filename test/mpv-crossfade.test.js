@@ -24,6 +24,7 @@ class FakeEngine extends EventEmitter {
   async listAudioDevices() { return [] }
   async restart() { this.calls.push(['restart']) }
   getState() { return { ...this.state } }
+  isActuallyPlaying() { return Boolean(!this.state.paused && this.state.path) }
 }
 
 function make(crossfadeSecs = 2) {
@@ -93,6 +94,15 @@ test('getState reflects active engine', async () => {
   await cf.load('/m/a.flac')
   engines[0].state.position = 42
   assert.strictEqual(cf.getState().position, 42)
+})
+
+test('isActuallyPlaying forwards to the active engine', async () => {
+  const { cf, engines } = make()
+  await cf.start()
+  await cf.load('/m/a.flac')
+  assert.strictEqual(cf.isActuallyPlaying(), false, 'loaded but paused by default')
+  engines[0].state.paused = false
+  assert.strictEqual(cf.isActuallyPlaying(), true)
 })
 
 test('setChannels fans out to both engines', async () => {

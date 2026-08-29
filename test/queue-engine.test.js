@@ -1,7 +1,7 @@
 'use strict'
 const { test } = require('node:test')
 const assert = require('node:assert')
-const { buildQueue, MODE_TEMPERATURE } = require('../src/queue-engine')
+const { buildQueue, MODE_TEMPERATURE, MODE_AFFINITY, AFFINITY_WEIGHT } = require('../src/queue-engine')
 const { seeded } = require('./helpers/seeded-rng')
 
 const V = e => ({ energy: e, brightness: e, dynamics: e, density: e, punch: e })
@@ -110,4 +110,12 @@ test('mix falls back to the whole library before analysis has run', () => {
   // No vectors, so clusterLibrary produces no clusters and every lookup misses.
   const q = buildQueue({ mode: 'mix', tracks, vectors: new Map(), clusterOf: new Map(), seedCluster: 0, length: 10 })
   assert.strictEqual(q.length, 10, 'a Daily Mix played nothing before analysis ran')
+})
+
+test('radio affinity is scaled far below the other modes, so distance to the seed still dominates', () => {
+  assert.ok(MODE_AFFINITY.radio < 2, `radio affinity ${MODE_AFFINITY.radio} is too high to let seed distance dominate`)
+  for (const m of ['mix', 'surprise', 'rediscover']) {
+    assert.ok(MODE_AFFINITY[m] > MODE_AFFINITY.radio * 3, `${m} affinity should carry the mode, same order as AFFINITY_WEIGHT`)
+    assert.strictEqual(MODE_AFFINITY[m], AFFINITY_WEIGHT, `${m} should keep the historical weight`)
+  }
 })

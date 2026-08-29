@@ -65,3 +65,19 @@ test('queue-build accepts an explicit mixIndex to target a specific mix', () => 
   assert.ok(/mixIndex/.test(handler.slice(0, 400)), 'queue-build must destructure mixIndex from its options')
   assert.ok(/Number\.isInteger\(mixIndex\)/.test(handler), 'an explicit mixIndex must be preferred over deriving one from the seed file')
 })
+
+test('a halted analysis run is reported as not finished, with halted flagged', () => {
+  assert.ok(/finished:\s*!r\.halted/.test(main), 'finished must be derived from r.halted, not assumed true')
+  assert.ok(/halted:\s*r\.halted/.test(main), 'the halted flag must be forwarded to the renderer')
+})
+
+test('a halted run schedules exactly one resume re-check, guarded against stacking and quit', () => {
+  assert.ok(/analysisResumeTimer/.test(main), 'no resume-timer guard found')
+  assert.ok(/!analysisResumeTimer/.test(main), 'must guard against a second pending re-check')
+  assert.ok(/app\.isQuitting/.test(main.slice(main.indexOf('startAnalysisRun'))), 'resume must not fire once quitting')
+})
+
+test('the feature store is flushed at quit like every other side store', () => {
+  const body = main.slice(main.indexOf('function flushSideStores'), main.indexOf('function flushSideStores') + 800)
+  assert.match(body, /featureStore\.flushSync\(\)/, 'featureStore is skipped by the quit-time flush')
+})

@@ -117,7 +117,7 @@ async function runAnalysis({
 
   const n = Math.max(1, Math.min(concurrency, todo.length || 1))
   await Promise.all(Array.from({ length: n }, worker))
-  return { analysed, skipped, failed, results }
+  return { analysed, skipped, failed, halted, results }
 }
 
 module.exports = { buildFfmpegArgs, analyseOne, DEFAULT_TIMEOUT_MS, needsAnalysis, runAnalysis }

@@ -111,6 +111,7 @@ class MpvCrossfade extends EventEmitter {
   // come back holding the track.
   async resumeState(resume) { return this._active.resumeState(resume) }
   getState() { return this._active.getState() }
+  isActuallyPlaying() { return this._active.isActuallyPlaying() }
   // Both engines' timelines, interleaved by time and tagged with which engine
   // produced each entry — a crossfade fault is usually about the handoff.
   getFlightRecorder() {

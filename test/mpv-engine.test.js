@@ -307,3 +307,42 @@ test('a flat EQ adds no --af argument at all', async () => {
   assert.ok(!spawned[0].some(a => a.startsWith('--af=')))
   eng.stop(); f.close()
 })
+
+test('isActuallyPlaying is true while loaded and unpaused', async () => {
+  const f = await fakeMpv()
+  const eng = new MpvEngine({ spawnFn: f.spawnFn, socketPath: f.sock })
+  await eng.start()
+  f.push({ event: 'property-change', name: 'path', data: '/music/a.flac' })
+  f.push({ event: 'property-change', name: 'pause', data: false })
+  await new Promise(r => setTimeout(r, 20))
+  assert.strictEqual(eng.isActuallyPlaying(), true)
+  eng.stop(); f.close()
+})
+
+test('isActuallyPlaying is false once idle after a track ends, even though pause never fired', async () => {
+  // This is the exact bug isActuallyPlaying exists to fix: state.paused only
+  // updates from mpv's pause observer, which never fires again once mpv goes
+  // idle after end-of-file. paused stays false forever, but the track is
+  // over -- isActuallyPlaying must say so via _eofState, not via paused.
+  const f = await fakeMpv()
+  const eng = new MpvEngine({ spawnFn: f.spawnFn, socketPath: f.sock })
+  await eng.start()
+  f.push({ event: 'property-change', name: 'path', data: '/music/a.flac' })
+  f.push({ event: 'property-change', name: 'pause', data: false })
+  await new Promise(r => setTimeout(r, 20))
+  assert.strictEqual(eng.isActuallyPlaying(), true, 'sanity: playing before eof')
+  const ended = new Promise(r => eng.once('ended', r))
+  f.push({ event: 'end-file', reason: 'eof' })
+  await ended
+  assert.strictEqual(eng.getState().paused, false, 'sanity: paused never flips')
+  assert.strictEqual(eng.isActuallyPlaying(), false, 'idle after eof must not read as playing')
+  eng.stop(); f.close()
+})
+
+test('isActuallyPlaying is false with no path loaded', async () => {
+  const f = await fakeMpv()
+  const eng = new MpvEngine({ spawnFn: f.spawnFn, socketPath: f.sock })
+  await eng.start()
+  assert.strictEqual(eng.isActuallyPlaying(), false)
+  eng.stop(); f.close()
+})

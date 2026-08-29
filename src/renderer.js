@@ -13697,8 +13697,9 @@ function setupListeners() {
   window.api.on('queue-analysis-progress', (d) => {
     if (!d) return
     _queueAnalysis.running = !d.finished
+    _queueAnalysis.halted = !!d.halted
     if (typeof d.total === 'number') _queueAnalysis.total = d.total
-    _queueAnalysis.analysed = d.finished ? _queueAnalysis.total : (_queueAnalysis.analysed + 1)
+    if (typeof d.done === 'number') _queueAnalysis.analysed = d.done
     var label = document.querySelector('.q-analysis-progress-label')
     if (label) label.textContent = _mgAnalysisLabel()
     if (d.finished) {
@@ -14947,19 +14948,23 @@ window.addEventListener('offline', () => { state.isOnline = false })
 // total size before it touches the disk.
 
 var _mgState = { groups: [], picked: {}, busy: false, tab: 'duplicates', trash: null }
-var _queueAnalysis = { analysed: 0, total: 0, running: false }
+var _queueAnalysis = { analysed: 0, total: 0, running: false, halted: false }
 
 function _mgAnalysisLabel() {
   var a = _queueAnalysis
   var pct = a.total > 0 ? Math.min(100, Math.round((a.analysed / a.total) * 100)) : 0
   if (a.total === 0) return 'Smart queues: still analysing your library'
   if (a.analysed >= a.total) return 'Smart queues: analysis complete (' + a.total + ' tracks)'
+  // A halted run is not done and not an error — it is waiting its turn behind
+  // playback, which always wins. Say so honestly rather than looking stalled
+  // or, worse, looking finished.
+  if (a.halted) return 'Smart queues: paused while you’re listening — will continue automatically (' + a.analysed + ' of ' + a.total + ' tracks)'
   return 'Smart queues: analysing your library — ' + a.analysed + ' of ' + a.total + ' tracks (' + pct + '%)'
 }
 
 function _mgAnalysisProgressHtml() {
   var a = _queueAnalysis
-  var btn = (!a.running && a.analysed < a.total)
+  var btn = (!a.running && !a.halted && a.analysed < a.total)
     ? '<button class="mg-btn mg-btn-sm" id="q-analysis-start-btn">' + (a.analysed > 0 ? 'Resume analysis' : 'Start analysis') + '</button>'
     : ''
   return '<div class="q-analysis-progress"><span class="q-analysis-progress-label">' + esc(_mgAnalysisLabel()) + '</span>' + btn + '</div>'

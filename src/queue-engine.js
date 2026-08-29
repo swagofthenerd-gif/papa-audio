@@ -15,6 +15,10 @@ const MODE_TEMPERATURE = { radio: 0.4, mix: 1.0, surprise: 2.5, rediscover: 1.2 
 // Changing either one means re-checking the other.
 const SURROUND_BONUS = 2.8
 const AFFINITY_WEIGHT = 6.0
+// Radio's whole job is "sounds like this seed", so affinity must not drown
+// out the distance term (order 0-3 in z-space). The other modes have no
+// proximity term at all, so affinity carries them.
+const MODE_AFFINITY = { radio: 1.0, mix: 6.0, surprise: 6.0, rediscover: 6.0 }
 const ZERO = { energy: 0, brightness: 0, dynamics: 0, density: 0, punch: 0 }
 
 function poolFor(mode, tracks, seed, coldSet, clusterOf, seedCluster) {
@@ -57,7 +61,7 @@ function buildQueue({
   const scores = pool.map(t => {
     let s = 0
     if (seedZ && mode === 'radio') s -= distance(seedZ, zOf(t))
-    s += AFFINITY_WEIGHT * (affinity.get(t.filePath) || 0)
+    s += (MODE_AFFINITY[mode] ?? AFFINITY_WEIGHT) * (affinity.get(t.filePath) || 0)
     if ((t.channels || 0) >= 6) s += surroundBias
     return s
   })
@@ -80,4 +84,4 @@ function buildQueue({
   return sequence(picked, { vectors: zVectors }).slice(0, want)
 }
 
-module.exports = { buildQueue, MODE_TEMPERATURE, SURROUND_BONUS, AFFINITY_WEIGHT }
+module.exports = { buildQueue, MODE_TEMPERATURE, SURROUND_BONUS, AFFINITY_WEIGHT, MODE_AFFINITY }

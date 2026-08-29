@@ -186,3 +186,32 @@ test('a rejecting analyseFn is counted as a failure, not an aborted batch', asyn
   assert.strictEqual(r.failed, 1)
   assert.ok(r.results.has('/t1.flac') && r.results.has('/t3.flac'))
 })
+
+test('a halted run reports halted: true so callers do not mistake it for done', async () => {
+  const r = await runAnalysis({
+    tracks: Array.from({ length: 10 }, (_, i) => trk(i)),
+    existing: new Map(), concurrency: 2,
+    isPlaying: () => true,
+    analyseFn: okFn,
+  })
+  assert.strictEqual(r.halted, true)
+  assert.strictEqual(r.analysed, 0)
+})
+
+test('a clean pass to completion reports halted: false', async () => {
+  const r = await runAnalysis({
+    tracks: [trk(1), trk(2)], existing: new Map(), concurrency: 2,
+    analyseFn: okFn,
+  })
+  assert.strictEqual(r.halted, false)
+  assert.strictEqual(r.analysed, 2)
+})
+
+test('shouldStop also reports halted: true, same as the playback gate', async () => {
+  const r = await runAnalysis({
+    tracks: Array.from({ length: 10 }, (_, i) => trk(i)), existing: new Map(), concurrency: 1,
+    analyseFn: okFn,
+    shouldStop: () => true,
+  })
+  assert.strictEqual(r.halted, true)
+})

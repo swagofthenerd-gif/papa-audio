@@ -475,7 +475,7 @@ const store = new Store()
 // the thread that drives mpv's IPC. Each of these now owns a small file, written
 // asynchronously and coalesced. See side-store.js.
 const { SideStore } = require('./side-store')
-const { runAnalysis } = require('./analysis-runner')
+const { runAnalysis, analyseOne } = require('./analysis-runner')
 const { buildQueue } = require('./src/queue-engine')
 const { clusterLibrary } = require('./src/queue-clusters')
 const { buildAffinity, buildColdSet } = require('./src/taste-model')
@@ -510,10 +510,17 @@ for (const [key, side] of Object.entries(sideStores)) {
 }
 
 // Nothing may be lost on the way out, and neither quit path can await.
+// featureStore is declared later in the file (it needs USER_DATA already set
+// up), but this function only ever runs at quit time, well after that
+// declaration has executed — the closure sees it fine despite the textual
+// order. It is deliberately not part of `sideStores`: that map exists before
+// featureStore does, and is iterated elsewhere (migration) in ways that
+// shouldn't pick up a smart-queues-only store.
 function flushSideStores() {
   for (const side of Object.values(sideStores)) {
     try { side.flushSync() } catch (_) { /* exiting anyway */ }
   }
+  try { featureStore.flushSync() } catch (_) { /* exiting anyway */ }
 }
 
 ;(function migrateFolder() {
@@ -1627,6 +1634,11 @@ const featureStore = new SideStore({
 })
 
 let analysisRunning = false
+// Guards against two overlapping resume timers ever existing at once — a run
+// that halts twice in a row must not stack a second pending re-check on top
+// of the first.
+let analysisResumeTimer = null
+const ANALYSIS_RESUME_DELAY_MS = 30000
 
 function featureMap() {
   const raw = (featureStore.get() || {}).features || {}
@@ -1677,14 +1689,43 @@ ipcMain.handle('queue-analysis-status', async () => {
   return { analysed: featureMap().size, total: tracks.length, running: analysisRunning }
 })
 
-ipcMain.handle('queue-analysis-start', async () => {
-  if (analysisRunning) return { ok: true, alreadyRunning: true }
+// Runs one analysis pass. If it halts because playback started (or the gate
+// tripped for any other reason `runAnalysis` recognises), it is not done —
+// it is paused. Schedule exactly one re-check to pick the pass back up once
+// listening has stopped, rather than abandoning it silently. This is the
+// only path allowed to (re)start a run, so `analysisRunning` stays accurate
+// for the doubling-ffmpeg-load guard even across many pause/resume cycles.
+function startAnalysisRun() {
+  if (analysisRunning) return
   analysisRunning = true
   const tracks = allLibraryTracks()
+  const trackByPath = new Map(tracks.map(t => [t.filePath, t]))
+  // A 2,300-track library can take a long time end to end, and queue-analysis-
+  // status reads straight off featureStore. Without persisting as each file
+  // finishes, "analysed" would sit at 0 for the whole run (or the whole pause/
+  // resume cycle) and only jump at the very end -- indistinguishable from the
+  // gate being stuck. Write each result through immediately; SideStore
+  // debounces the actual disk I/O, so this does not add write pressure.
+  const persistOne = (filePath, r) => {
+    const t = trackByPath.get(filePath)
+    featureStore.update(v => {
+      const features = { ...((v || {}).features || {}) }
+      features[filePath] = {
+        vector: r.vector, featureVersion: r.featureVersion,
+        mtimeMs: t ? t.mtimeMs : 0, size: t ? t.size : 0,
+      }
+      return { features }
+    })
+  }
   runAnalysis({
     tracks,
     existing: featureMap(),
-    isPlaying: () => Boolean(player && player.getState && !player.getState().paused),
+    isPlaying: () => Boolean(player && player.isActuallyPlaying && player.isActuallyPlaying()),
+    analyseFn: async filePath => {
+      const r = await analyseOne(filePath)
+      if (r && r.ok) persistOne(filePath, r)
+      return r
+    },
     onProgress: p => safeSend('queue-analysis-progress', p),
   }).then(r => {
     featureStore.update(v => {
@@ -1693,11 +1734,24 @@ ipcMain.handle('queue-analysis-start', async () => {
       return { features }
     })
     analysisRunning = false
-    safeSend('queue-analysis-progress', { done: r.analysed, total: tracks.length, finished: true })
+    safeSend('queue-analysis-progress', { done: r.analysed, total: tracks.length, finished: !r.halted, halted: r.halted })
+    if (r.halted && !app.isQuitting && !analysisResumeTimer) {
+      analysisResumeTimer = setTimeout(() => {
+        analysisResumeTimer = null
+        if (app.isQuitting) return
+        startAnalysisRun()
+      }, ANALYSIS_RESUME_DELAY_MS)
+      analysisResumeTimer.unref?.()
+    }
   }).catch(e => {
     analysisRunning = false
     console.error('[features] run failed:', e && e.message)
   })
+}
+
+ipcMain.handle('queue-analysis-start', async () => {
+  if (analysisRunning) return { ok: true, alreadyRunning: true }
+  startAnalysisRun()
   return { ok: true }
 })
 
