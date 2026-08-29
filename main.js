@@ -6400,6 +6400,11 @@ function _wireVideoEngine() {
   if (_videoEngineWired) return
   _videoEngineWired = true
   const engine = videoEngine()
+  // Keys pressed while the video window has focus. The deck is in another
+  // window and cannot see them, so mpv forwards the ones the app owns.
+  engine.on('appKey', payload => {
+    safeSend('video-event', { kind: 'key', action: payload && payload.action })
+  })
   engine.on('engineDown', () => {
     if (_videoSession.streamer) {
       try { _videoSession.streamer.stop() } catch (_) {}
@@ -6444,14 +6449,13 @@ ipcMain.handle('video-play', async (_, { result }) => {
     if (player) { try { player.pause().catch(() => {}) } catch (_) {} }
     // When the user wants the in-app panel, obtain the X11 wid now and show the
     // host window; on failure (wid null) mpv opens its own window instead.
-    // Always embed. The old `embed: 'window'` setting predates the theatre and
-    // is deliberately ignored: with a separate window the deck, the skip offer
-    // and the Up Next card all sit behind the video, attached to nothing. When
-    // a wid cannot be obtained mpv still opens its own window, so the fallback
-    // is preserved without offering it as a choice.
-    const wid = _videoWid()
-    if (wid) _showVideoWindow()
-    else console.warn('[papa-video] no X11 window id — mpv will open its own window')
+    // mpv opens and manages its own window. Embedding it into a child
+    // BrowserWindow put a native surface on top of the app, where it covered
+    // the deck it was supposed to sit beside; the window manager handles
+    // moving, resizing and fullscreening it far better than positioning it by
+    // hand ever did. mpv carries its own on-screen controls, and the app's
+    // own actions are bound inside it (see VideoEngine._bindAppKeys).
+    const wid = null
     // Every async callback below is stamped with the play that created it, so
     // a torrent that becomes ready after the user already started something
     // else cannot hijack the engine or overwrite the newer status.

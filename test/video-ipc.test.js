@@ -344,19 +344,24 @@ test('the preload surface exposes onVideoState and returns an unsubscribe fn', (
 // window the deck, the skip offer and the Up Next card all sit behind the
 // video attached to nothing — which is exactly the bug this removes. A stored
 // value must not be able to bring that back.
-test('playback always embeds; the old separate-window setting is gone', () => {
+// mpv opens and manages its own window. Embedding it into a child
+// BrowserWindow put a native surface on top of the app, covering the deck it
+// was meant to sit beside, and the window manager handles moving, resizing and
+// fullscreening it far better than positioning it by hand ever did.
+test('mpv owns its window; nothing is embedded', () => {
   const body = handlerBody('video-play')
-  assert.match(body, /const wid = _videoWid\(\)/)
-  // Comments explaining the removal are fine; a live read of the setting is not.
+  assert.match(body, /const wid = null/)
   const code = body.split('\n').filter(l => !/^\s*(\/\/|\*)/.test(l)).join('\n')
-  assert.ok(!/_videoSettings\(\)\.embed/.test(code), 'no setting may gate embedding any more')
-  assert.ok(!/embed \?/.test(code))
-  const defaults = MAIN.slice(MAIN.indexOf('function _videoSettings'), MAIN.indexOf('function _videoSettings') + 400)
-  assert.ok(!/embed:/.test(defaults), 'embed must not be a video setting')
+  assert.ok(!/_videoSettings\(\)\.embed/.test(code), 'no setting may gate this')
+  assert.ok(!/_showVideoWindow\(\)/.test(code), 'there is no window of ours to show')
 })
 
-test('a failed embed is reported rather than silently opening a bare window', () => {
-  assert.match(handlerBody('video-play'), /no X11 window id/)
+// The deck is in another window and cannot see keys pressed over the video.
+test('app actions pressed in the video window are relayed back', () => {
+  const start = MAIN.indexOf('function _wireVideoEngine()')
+  const body = MAIN.slice(start, MAIN.indexOf('\n}\n', start))
+  assert.match(body, /engine\.on\('appKey'/)
+  assert.match(body, /kind: 'key'/)
 })
 
 // Fullscreening mpv would cover the deck and leave the viewer with a picture

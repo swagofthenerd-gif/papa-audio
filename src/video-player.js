@@ -702,6 +702,12 @@
       render: render,
       setSegments: setSegments,
       setPrefs: setPrefs,
+      // Triggered by the S key relayed from the video window, where the deck
+      // cannot see the keypress.
+      skipNow: function () {
+        const seg = skipModel && skipModel.activeSegment(segments, Number(state && state.position) || 0)
+        if (seg) doSkip(seg)
+      },
       setUpNext: setUpNext,
       setStageMessage: setStageMessage,
       reportBounds: reportBounds,

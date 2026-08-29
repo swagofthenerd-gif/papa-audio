@@ -1345,6 +1345,14 @@ function _handleVideoEvent(payload) {
   if (!_player) return
   if (payload.kind === 'audio') return   // badges come from the state stream
 
+  // A key pressed inside the video window. mpv owns the keyboard while it has
+  // focus, so it forwards the actions that belong to the app.
+  if (payload.kind === 'key') {
+    if (payload.action === 'skip') _player.skipNow()
+    else if (payload.action === 'next') _playNextEpisode()
+    return
+  }
+
   if (payload.kind === 'buffering') {
     const pct = payload.percent != null ? Math.round(payload.percent * 100) : null
     const mbps = payload.speed ? (payload.speed / 125000).toFixed(1) + ' Mb/s' : null

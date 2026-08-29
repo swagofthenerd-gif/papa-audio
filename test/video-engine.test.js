@@ -489,12 +489,16 @@ test('emptyState has the full §4.2 shape with safe defaults', () => {
 // intro, 'f' fullscreened the video out from under the deck, and 'q' quit
 // the player outright. Every control is driven over IPC, so mpv needs no
 // keyboard of its own.
-test('_args gives mpv no keyboard and no on-screen UI of its own', () => {
+// The video plays in its own window, so it needs its own controls: the app's
+// deck is in a different window and unreachable while the video has focus.
+// Stripping mpv's on-screen controller left a bare picture with no way to
+// pause, seek or change volume at all.
+test('_args keeps mpv\u2019s own transport controls', () => {
   const args = new VideoEngine({ config: {} })._args('/tmp/v.sock')
-  assert.ok(args.includes('--input-default-bindings=no'), 'mpv must not act on keys itself')
-  assert.ok(args.includes('--input-vo-keyboard=no'), 'the video window must not take keyboard input')
-  assert.ok(args.includes('--no-osc'), 'the app draws the controls')
-  assert.ok(args.includes('--osd-level=0'))
+  assert.ok(args.includes('--osc=yes'), 'the video window needs a transport')
+  assert.ok(!args.includes('--input-default-bindings=no'), 'mpv keeps its keyboard')
+  assert.ok(!args.includes('--input-vo-keyboard=no'))
+  assert.ok(!args.includes('--no-osc'))
 })
 
 // Without this, mpv writes mpv-shot0001.jpg into the process working
@@ -513,4 +517,35 @@ test('screenshotDir resolves without Electron present', () => {
   const dir = screenshotDir()
   assert.ok(typeof dir === 'string' && dir.length > 0)
   assert.ok(dir !== process.cwd())
+})
+
+
+// The app's actions have to work while the video window has focus, because the
+// deck is in another window and never sees those keypresses. Binding them over
+// IPC after connect left pending commands that outlived the socket and held
+// the event loop open; a config file is applied by mpv at startup instead.
+test('app actions are bound through an input.conf, not post-connect IPC', () => {
+  const { inputConfBody, APP_KEYS } = require('../video-engine')
+  const body = inputConfBody()
+  assert.match(body, /^s script-message papa skip$/m)
+  assert.match(body, /^n script-message papa next$/m)
+  assert.strictEqual(APP_KEYS.length, 3)
+  const args = new VideoEngine({ config: {}, inputConf: '/tmp/papa-input.conf' })._args('/tmp/v.sock')
+  assert.ok(args.includes('--input-conf=/tmp/papa-input.conf'))
+})
+
+// Only the listed keys are overridden; every other mpv default still applies,
+// which is what keeps the window's native transport intact.
+test('the input.conf claims only the keys the app owns', () => {
+  const { inputConfBody } = require('../video-engine')
+  const lines = inputConfBody().trim().split('\n')
+  assert.ok(lines.every(l => /^\S+ script-message papa \w+$/.test(l)), 'no line may rebind anything else')
+  assert.ok(!inputConfBody().includes('f '), 'fullscreen stays mpv\u2019s own')
+  assert.ok(!inputConfBody().includes('space'), 'play/pause stays mpv\u2019s own')
+})
+
+test('a video engine still builds when the input.conf cannot be written', () => {
+  const args = new VideoEngine({ config: {}, inputConf: null })._args('/tmp/v.sock')
+  assert.ok(!args.some(a => a.startsWith('--input-conf=')), 'a missing conf must not produce a broken flag')
+  assert.ok(args.includes('--osc=yes'), 'and playback still has controls')
 })

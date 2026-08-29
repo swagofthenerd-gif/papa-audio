@@ -3,19 +3,54 @@ const { spawn } = require('child_process')
 const { EventEmitter } = require('events')
 const os = require('os')
 const path = require('path')
+const fs = require('fs')
 const crypto = require('crypto')
 const { MpvIpcClient } = require('./mpv-ipc')
 
-// Screenshots must never land in the process working directory, which is the
-// application folder. Resolved lazily so the module stays loadable in tests
-// that have no Electron app object.
-function screenshotDir() {
+// The app's own actions, bound inside mpv so they work while the video window
+// has focus — the deck is in another window and never sees those keypresses.
+// Written as an input.conf rather than sent as keybind commands after connect:
+// a config file is applied at startup with no round trip, and four pending IPC
+// commands outliving the socket held the event loop open.
+//
+// Only the listed keys are overridden; every other mpv default still applies,
+// which is the point — the window keeps its full native transport.
+const APP_KEYS = [
+  ['s', 'skip'],
+  ['n', 'next'],
+  ['b', 'bookmark'],
+]
+
+function inputConfBody() {
+  return APP_KEYS.map(([key, action]) => `${key} script-message papa ${action}`).join('\n') + '\n'
+}
+
+function writeInputConf(dir) {
+  try {
+    const file = path.join(dir, 'papa-input.conf')
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(file, inputConfBody(), 'utf8')
+    return file
+  } catch (_) {
+    // Losing a shortcut must never stop playback.
+    return null
+  }
+}
+
+// Resolved lazily so the module stays loadable in tests that have no Electron
+// app object.
+function _dataDir(leaf) {
   try {
     const { app } = require('electron')
-    if (app && typeof app.getPath === 'function') return path.join(app.getPath('userData'), 'screenshots')
+    if (app && typeof app.getPath === 'function') return path.join(app.getPath('userData'), leaf)
   } catch (_) { /* not running under Electron */ }
-  return path.join(os.tmpdir(), 'papa-video-screenshots')
+  return path.join(os.tmpdir(), 'papa-video-' + leaf)
 }
+
+// Screenshots must never land in the process working directory, which is the
+// application folder.
+function screenshotDir() { return _dataDir('screenshots') }
+function configDir() { return _dataDir('config') }
 const { channelsValue } = require('./mpv-engine')
 const { classify } = require('./src/surround-verify')
 
@@ -125,6 +160,7 @@ class VideoEngine extends EventEmitter {
     // be delivered to the mpv that replaced it.
     this._gen = 0
     this._socketPath = null
+    this._inputConf = opts.inputConf !== undefined ? opts.inputConf : writeInputConf(configDir())
     // The live §4.2 payload, plus the raw lists the track/chapter endpoints read.
     this.state = emptyState()
     this._trackList = []
@@ -163,18 +199,20 @@ class VideoEngine extends EventEmitter {
       // unchanged. auto-safe falls back to software whenever the hardware path
       // is not known-good for the codec.
       '--hwdec=auto-safe',
-      // The app owns every key. mpv's built-in bindings are active by default
-      // on its own window, so with the video focused 's' took an mpv
-      // screenshot instead of skipping the intro, 'f' fullscreened the video
-      // window out from under the deck, and 'q' quit the player outright.
-      // Every control is driven over IPC, so mpv needs no keyboard at all.
-      '--input-default-bindings=no',
-      '--input-vo-keyboard=no',
-      '--no-osc',
-      '--osd-level=0',
-      // A safety net for any screenshot that still reaches mpv's own path:
-      // without this they land in the process working directory, which is the
-      // application folder.
+      // The video plays in its own window, so it needs its own controls: the
+      // app's deck is in a different window and unreachable while the video
+      // has focus. mpv's on-screen controller is a complete transport — seek
+      // bar, play/pause, volume, fullscreen, track selection — and its default
+      // keybindings come with it. Stripping them left a bare picture with no
+      // way to do anything, which is worse than any styling gained.
+      '--osc=yes',
+      '--osd-bar=yes',
+      // Papa's own actions are bound on top in _bindAppKeys(); those bindings
+      // override the defaults for the keys they claim.
+      '--title=Papa Video',
+      ...(this._inputConf ? [`--input-conf=${this._inputConf}`] : []),
+      // Without this mpv writes mpv-shot0001.jpg into the process working
+      // directory, which is the application folder.
       `--screenshot-directory=${screenshotDir()}`,
       '--ytdl=no',
     ]
@@ -373,8 +411,17 @@ class VideoEngine extends EventEmitter {
   // ── Property observation ───────────────────────────────────────────────────
 
   _onEvent(e) {
-    if (e && e.event === 'property-change') this._onProp(e.name, e.data)
+    if (!e) return
+    if (e.event === 'property-change') return this._onProp(e.name, e.data)
+    // Keys bound in _bindAppKeys arrive as client messages. They are the only
+    // way an action that lives in the app — skip intro, next episode — can be
+    // triggered from the video window, which owns the keyboard while focused.
+    if (e.event === 'client-message' && Array.isArray(e.args) && e.args[0] === 'papa') {
+      this.emit('appKey', { action: e.args[1] || null })
+    }
   }
+
+
 
   _onProp(name, data) {
     const s = this.state
@@ -463,6 +510,9 @@ class VideoEngine extends EventEmitter {
 module.exports = {
   VideoEngine,
   screenshotDir,
+  configDir,
+  inputConfBody,
+  APP_KEYS,
   EngineGone,
   OBSERVED_PROPS,
   STATE_THROTTLE_MS,
