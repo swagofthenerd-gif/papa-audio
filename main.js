@@ -7,6 +7,10 @@ const os = require('os')
 const tagEdit = require('./src/tag-edit')
 const crypto = require('crypto')
 const { makeCache } = require('./src/ttl-cache')
+const { mergeSegments, creditsFallback } = require('./src/skip-model')
+const { classifyChapters } = require('./skip/chapters')
+const { createAniSkip } = require('./skip/aniskip')
+const { detectIntro } = require('./skip/detect-intro')
 const dlState_ = require('./src/dl-state')
 const https = require('https')
 // No sync child_process on the main thread: every shell-out goes through run().
@@ -6465,15 +6469,84 @@ ipcMain.handle('video-chapters', async () => {
   }
 })
 
-// Skip segments (intro/recap/credits). The full four-layer merge lands with
-// Phase 3; this handler exists from Phase 1 so the overlay can subscribe to an
-// empty list and light up without a later contract change.
+const aniskip = _lazy(() => createAniSkip({ fetchFn: fetchWithTimeout(10000) }))
+// AniSkip answers are crowd-sourced and effectively static for a given
+// episode, so a week is a safe TTL. Cached per (malId, episode) — never per
+// playback — so a rewatch costs nothing.
+const _aniskipCache = makeCache({ cap: 500, ttlMs: 1000 * 60 * 60 * 24 * 7 })
+
+// Skip segments (intro / recap / credits), merged across the layers in §9 of
+// the plan. Higher-confidence sources win an overlap, so a chapter marker or a
+// manual correction always beats the tail-of-file credits guess.
+//
+// Layers 1, 2 and 4 run here and are cheap. Layer 3 (cross-episode audio
+// correlation) needs a second episode to compare against and is minutes of
+// ffmpeg work, so it never runs inline — see video-detect-intro.
 ipcMain.handle('video-skip-segments', async (_, req) => {
   try {
-    void req
-    return { ok: true, segments: [] }
+    req = req || {}
+    const duration = Number(req.duration) || 0
+    const sources = []
+
+    // Layer 1 — chapters baked into the file. Free, instant, highest
+    // confidence when the release ships named chapters.
+    try {
+      const chapters = await videoEngine().getChapters()
+      sources.push(classifyChapters(chapters, { duration }))
+    } catch (_) { /* no chapters is the common case, not an error */ }
+
+    // Layer 2 — AniSkip, exact OP/ED intervals for anime.
+    const malId = Number(req.malId) || 0
+    const episode = Number(req.episode) || 0
+    if (req.type === 'anime' && malId && episode) {
+      const key = `${malId}:${episode}`
+      let segs = _aniskipCache.get(key)
+      if (!segs) {
+        segs = await aniskip()({ malId, episode, episodeLength: Math.round(duration) })
+        // Only a real answer is cached; an empty list is usually AniSkip being
+        // briefly unreachable, and caching it would hide the segments for a week.
+        if (segs.length) _aniskipCache.set(key, segs)
+      }
+      sources.push(segs)
+    }
+
+    // Layer 4 — the user's own corrections, and the tail-of-file credits guess.
+    // Manual segments come from the renderer because the watch store lives
+    // there; they carry the highest priority in the merge.
+    if (Array.isArray(req.manual) && req.manual.length) sources.push(req.manual)
+    const fallback = creditsFallback(duration)
+    if (fallback) sources.push([fallback])
+
+    return { ok: true, segments: mergeSegments(sources) }
   } catch (e) {
+    // A skip service must never be able to stop playback.
     return { ok: false, error: (e && e.message) || String(e), segments: [] }
+  }
+})
+
+// Layer 3 — cross-episode audio correlation, for series with neither chapters
+// nor an AniSkip entry. Deliberately a separate call: it decodes five minutes
+// of two episodes with ffmpeg, so it is background work the UI fires and
+// forgets, never something playback waits on. One run at a time; a new request
+// cancels the one in flight.
+let _introDetectAbort = null
+ipcMain.handle('video-detect-intro', async (_, req) => {
+  try {
+    req = req || {}
+    if (!req.currentUrl || !req.referenceUrl) return { ok: true, segment: null }
+    if (_introDetectAbort) { try { _introDetectAbort.abort() } catch (_) {} }
+    const controller = new AbortController()
+    _introDetectAbort = controller
+    const segment = await detectIntro({
+      currentUrl: req.currentUrl,
+      referenceUrl: req.referenceUrl,
+      execFn: execFile,
+      signal: controller.signal,
+    })
+    if (_introDetectAbort === controller) _introDetectAbort = null
+    return { ok: true, segment: segment || null }
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e), segment: null }
   }
 })
 

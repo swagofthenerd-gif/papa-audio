@@ -272,9 +272,51 @@ test('video-tracks and video-chapters return their payloads and degrade on failu
   assert.match(chapters, /ok: true, chapters/)
 })
 
-test('video-skip-segments exists now and returns an empty list until Phase 3', () => {
+test('video-skip-segments merges every cheap layer', () => {
   const body = handlerBody('video-skip-segments')
-  assert.match(body, /ok: true, segments: \[\]/)
+  assert.match(body, /classifyChapters\(chapters/, 'layer 1: chapters in the file')
+  assert.match(body, /aniskip\(\)\(/, 'layer 2: AniSkip for anime')
+  assert.match(body, /req\.manual/, 'layer 4: the user\u2019s own corrections')
+  assert.match(body, /creditsFallback\(duration\)/, 'layer 4: tail-of-file credits guess')
+  assert.match(body, /mergeSegments\(sources\)/)
+})
+
+// A skip service must never be able to stop playback.
+test('every skip layer fails soft', () => {
+  const body = handlerBody('video-skip-segments')
+  assert.match(body, /catch \(_\)/, 'a file with no chapters is the common case, not an error')
+  assert.match(body, /return \{ ok: false[^}]*segments: \[\] \}/s)
+})
+
+// An empty AniSkip answer usually means the service was briefly unreachable;
+// caching it would hide real segments for the whole TTL.
+test('only a real AniSkip answer is cached', () => {
+  const body = handlerBody('video-skip-segments')
+  assert.match(body, /if \(segs\.length\) _aniskipCache\.set/)
+})
+
+// Layer 3 decodes five minutes of two episodes with ffmpeg. It must never be
+// something playback waits on.
+test('cross-episode intro detection is a separate, cancellable call', () => {
+  const body = handlerBody('video-detect-intro')
+  assert.match(body, /_introDetectAbort/)
+  assert.match(body, /abort\(\)/, 'a new request must cancel the run in flight')
+  assert.match(body, /signal: controller\.signal/)
+  assert.ok(!/detectIntro/.test(handlerBody('video-skip-segments')),
+    'layer 3 must not run inline with the cheap layers')
+})
+
+test('detect-intro is reachable from the renderer', () => {
+  assert.match(PRELOAD, /videoDetectIntro:/)
+})
+
+// skip/, subtitles/ and trakt/ are required at startup; without them in the
+// build globs a packaged app crashes before it opens a window.
+test('the new module directories are in the packaged build', () => {
+  const pkg = require('../package.json')
+  for (const glob of ['skip/**', 'subtitles/**', 'trakt/**']) {
+    assert.ok(pkg.build.files.includes(glob), `${glob} is missing from build.files`)
+  }
 })
 
 test('the throttled state stream is pushed on video-state', () => {

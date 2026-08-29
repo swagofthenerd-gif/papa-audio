@@ -115,6 +115,7 @@ contextBridge.exposeInMainWorld('api', {
   videoTracks:      ()  => ipcRenderer.invoke('video-tracks'),
   videoChapters:    ()  => ipcRenderer.invoke('video-chapters'),
   videoSkipSegments:(req) => ipcRenderer.invoke('video-skip-segments', req),
+  videoDetectIntro: (req) => ipcRenderer.invoke('video-detect-intro', req),
   onVideoEvent: (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('video-event', h); return () => ipcRenderer.removeListener('video-event', h) },
   onVideoState: (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('video-state', h); return () => ipcRenderer.removeListener('video-state', h) },
 

@@ -109,12 +109,24 @@
       credits: prefs.autoSkipCredits === true,
       preview: prefs.autoSkipPreview === true,
     }
-    return {
-      label: `Skip ${KIND_LABEL[seg.kind] || 'Segment'}`,
-      action: autoPref[seg.kind] ? 'auto' : 'offer',
-      segment: seg,
-    }
+  return {
+    label: `Skip ${KIND_LABEL[seg.kind] || 'Segment'}`,
+    action: autoPref[seg.kind] ? 'auto' : 'offer',
+    segment: seg,
   }
+}
 
-  return { mergeSegments, activeSegment, buttonFor, KIND_LABEL, MANUAL, APPEAR_BEFORE_S, DISMISS_AFTER_S }
+// Layer 4 fallback: with no better credits source (chapter, AniSkip, manual),
+// the tail of the file is the credits. Conservative — min(8% of runtime, 90 s) —
+// so a film whose final minutes are the climax is not mislabelled. Returns a
+// low-confidence segment the higher-confidence sources will outrank in a merge.
+function creditsFallback(duration, { maxSeconds = 90, maxFraction = 0.08 } = {}) {
+  const dur = Number(duration)
+  if (!Number.isFinite(dur) || dur <= 0) return null
+  const tail = Math.min(dur * maxFraction, maxSeconds)
+  if (tail < 5) return null
+  return { kind: 'credits', start: dur - tail, end: dur, origin: 'detected', confidence: 0.3 }
+}
+
+  return { mergeSegments, activeSegment, buttonFor, creditsFallback, KIND_LABEL, MANUAL, APPEAR_BEFORE_S, DISMISS_AFTER_S }
 })

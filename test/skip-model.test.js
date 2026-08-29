@@ -1,7 +1,7 @@
 'use strict'
 const test = require('node:test')
 const assert = require('node:assert')
-const { mergeSegments, activeSegment, buttonFor } = require('../src/skip-model')
+const { mergeSegments, activeSegment, buttonFor, creditsFallback } = require('../src/skip-model')
 
 const intro = (start, end, extra = {}) => ({ kind: 'intro', start, end, origin: 'chapters', confidence: 0.8, ...extra })
 const recap = (start, end, extra = {}) => ({ kind: 'recap', start, end, origin: 'chapters', confidence: 0.8, ...extra })
@@ -113,4 +113,20 @@ test('buttonFor labels every known kind and guards unknowns', () => {
   assert.strictEqual(buttonFor([{ kind: 'preview', start: 0, end: 10, confidence: 1 }], 5).label, 'Skip Preview')
   assert.strictEqual(buttonFor([{ kind: 'recap', start: 0, end: 10, confidence: 1 }], 5).label, 'Skip Recap')
   assert.strictEqual(buttonFor([{ kind: 'whatever', start: 0, end: 10, confidence: 1 }], 5).label, 'Skip Segment')
+})
+
+test('creditsFallback caps the tail at min(8%, 90s)', () => {
+  const seg = creditsFallback(3600)
+  assert.strictEqual(seg.kind, 'credits')
+  assert.strictEqual(seg.origin, 'detected')
+  assert.strictEqual(seg.start, 3510)
+  assert.strictEqual(seg.end, 3600)
+  // A very long file caps at 90 s, not 8% of two hours.
+  assert.strictEqual(creditsFallback(7200).start, 7110)
+})
+
+test('creditsFallback returns null for a short or invalid duration', () => {
+  assert.strictEqual(creditsFallback(null), null)
+  assert.strictEqual(creditsFallback(0), null)
+  assert.strictEqual(creditsFallback(50), null, 'a 4s tail is not worth a button')
 })
