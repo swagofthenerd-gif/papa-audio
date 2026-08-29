@@ -116,17 +116,30 @@ test('a failed source lookup stays inside the sources panel', () => {
 })
 
 test('a failing catalog row does not wipe the rows that already loaded', () => {
-  const body = fnBody('renderVideo')
+  const body = fnBody('_renderVideoTab')
   assert.match(body, /Promise\.all/, 'rows must load in parallel')
-  assert.ok(!/_videoError\(res\.error\)\s*\n\s*return/.test(body),
+  assert.ok(!/_videoError\(res\.error\)/.test(body),
     'one bad section must not replace the whole page')
-  assert.match(body, /row\.innerHTML = '<div class="yt-status yt-error">/)
+  // The failure is rendered into that row's own shell, with a retry.
+  assert.match(body, /_rowError\(row\.key, res\.error\)/)
+  assert.match(RENDERER, /function _rowError\(/)
+  assert.match(fnBody('_rowError'), /data-retry=/)
 })
 
 test('the catalog rows load in parallel rather than one after another', () => {
-  const body = fnBody('renderVideo')
-  assert.ok(!/for \(const sec of _videoSections\)/.test(body),
-    'the sequential await loop cost three round-trips back to back')
+  const body = fnBody('_renderVideoTab')
+  assert.ok(!/for \(const sec of _videoRows\)/.test(body),
+    'a sequential await loop costs one round-trip per row, back to back')
+})
+
+// popular-movies, trending-tv and season-anime were built in the backend and
+// never requested — the page only ever showed three of the seven rows.
+test('every catalog row the backend serves is used', () => {
+  const block = RENDERER.slice(RENDERER.indexOf('var _videoRows = ['), RENDERER.indexOf('var _videoTabs'))
+  for (const key of ['trending-movies', 'popular-movies', 'trending-tv', 'popular-tv',
+                     'trending-anime', 'popular-anime', 'season-anime']) {
+    assert.ok(block.includes(key), `row ${key} is served by the backend but never requested`)
+  }
 })
 
 // videoSearch was fully implemented in main and preload and called by nothing.
@@ -139,7 +152,81 @@ test('the search box exists and is wired to videoSearch', () => {
 })
 
 test('the search box is styled', () => {
-  assert.match(CSS, /\.video-search-box/)
+  assert.match(CSS, /\.vsearch\b/)
+  assert.match(CSS, /\.vsearch input:focus/, 'a text field needs a visible focus state')
+})
+
+// The old catalog was a wrapping grid called a "row": twenty posters in a
+// block, three sections stacked into one long scroll.
+test('the rails scroll horizontally instead of wrapping into a grid', () => {
+  assert.match(CSS, /\.vrail\s*\{[^}]*overflow-x:\s*auto/s)
+  assert.match(CSS, /\.vrail\s*\{[^}]*grid-auto-flow:\s*column/s)
+  assert.ok(!/\.video-poster-row/.test(CSS), 'the wrapping grid must be gone')
+})
+
+test('rail arrows are hidden when there is nothing to scroll to', () => {
+  const body = fnBody('_bindRail')
+  assert.match(body, /prev\.hidden = rail\.scrollLeft <= 4/)
+  assert.match(body, /next\.hidden = rail\.scrollLeft >= max - 4/)
+})
+
+test('cards carry rating, type and resume progress, not just a title', () => {
+  const body = fnBody('_videoCard')
+  assert.match(body, /vbadge-rating/)
+  assert.match(body, /vbadge-type/)
+  assert.match(body, /vcard-progress/)
+  // AniList scores 0-100 and TMDB 0-10; one badge must mean one thing.
+  assert.match(body, /r > 10 \? Math\.round\(r \/ 10/)
+})
+
+test('a card is keyboard operable', () => {
+  const card = fnBody('_videoCard')
+  assert.match(card, /tabindex="0"/)
+  assert.match(card, /role="button"/)
+  assert.match(card, /aria-label=/)
+  const bind = fnBody('_bindVideoCards')
+  assert.match(bind, /e\.key === 'Enter' \|\| e\.key === ' '/)
+})
+
+// The store lands with the engine work; until then these rows are simply
+// absent rather than throwing on every render.
+test('the catalog degrades when the watch store is not loaded', () => {
+  const body = fnBody('_personalRows')
+  assert.match(body, /if \(!store\) return \[\]/)
+  assert.match(body, /catch/)
+})
+
+test('search results are grouped by type and overlay the catalog', () => {
+  const body = fnBody('_bindVideoSearch')
+  assert.match(body, /Films/)
+  assert.match(body, /Series/)
+  assert.match(body, /Anime/)
+  // Hidden, not unmounted, so clearing the query does not refetch every row.
+  assert.match(body, /rows\.style\.display = 'none'/)
+  assert.match(body, /_videoSearchTicket !== ticket/)
+})
+
+test('the hero rotates and is stopped when the page changes', () => {
+  assert.match(fnBody('_startVideoHero'), /setInterval/)
+  assert.match(fnBody('_stopVideoHero'), /clearInterval/)
+  assert.match(fnBody('_startVideoHero'), /state\.currentPage !== 'video'/)
+})
+
+// AniList overviews are HTML fragments, unlike TMDB's plain text.
+test('AniList markup is stripped before it reaches the hero', () => {
+  assert.match(fnBody('_stripTags'), /replace\(\/<\[\^>\]\*>/)
+  assert.match(fnBody('_paintVideoHero'), /_stripTags\(item\.overview\)/)
+})
+
+test('the tab strip is an accessible tablist', () => {
+  const head = fnBody('_vHeadHtml')
+  assert.match(head, /role="tablist"/)
+  assert.match(head, /role="tab"/)
+  assert.match(head, /aria-selected=/)
+})
+
+test('reduced motion is respected', () => {
+  assert.match(CSS, /@media \(prefers-reduced-motion: reduce\)/)
 })
 
 test('the stream request carries the imdb id the TV indexer needs', () => {

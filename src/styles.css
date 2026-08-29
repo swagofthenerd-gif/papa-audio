@@ -5724,64 +5724,250 @@ body.app-unfocused *::after {
    PAPA VIDEO — Movies / TV / Anime
 ══════════════════════════════════════════════════════ */
 
-.video-catalog { display:flex; flex-direction:column; gap:8px; }
+/* ══════════════════════════════════════════════════════
+   PAPA VIDEO · catalog, hero, rails, cards
+   The old catalog was a wrapping grid called a "row": twenty posters
+   dumped into a block and three sections stacked into one long scroll.
+   This is a proper browse surface — a spotlight, horizontal rails, and
+   cards that carry the metadata we already fetch.
+══════════════════════════════════════════════════════ */
 
+.vpage { padding-top:0; }
+
+/* ── Header: tabs + search ───────────────────────────── */
+.vhead {
+  position:sticky; top:0; z-index:5;
+  display:flex; align-items:center; gap:16px;
+  padding:14px 28px 12px;
+  background:linear-gradient(180deg, var(--bg) 60%, transparent);
+  backdrop-filter:blur(12px);
+}
+.vtabs { display:flex; gap:4px; flex-shrink:0; }
+.vtab {
+  background:none; border:none; cursor:pointer;
+  padding:7px 14px; border-radius:100px;
+  font-size:13px; font-weight:600; color:var(--text2);
+  transition:color .15s var(--ease), background .15s var(--ease);
+}
+.vtab:hover { color:var(--text); background:var(--glass); }
+.vtab.active { color:#000; background:var(--accent); }
+.vtab:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+
+.vsearch { display:flex; align-items:center; gap:8px; margin-left:auto; min-width:0; flex:1 1 300px; max-width:460px; }
+.vsearch-field { position:relative; flex:1 1 auto; min-width:0; }
+.vsearch-field svg { position:absolute; left:11px; top:50%; transform:translateY(-50%); width:14px; height:14px; fill:var(--text3); pointer-events:none; }
+.vsearch input {
+  width:100%; padding:8px 30px 8px 32px;
+  background:var(--bg3); border:1px solid var(--glass-border); border-radius:100px;
+  color:var(--text); font-family:inherit; font-size:13px; outline:none;
+  transition:border-color .15s var(--ease), background .15s var(--ease);
+}
+.vsearch input::placeholder { color:var(--text3); }
+.vsearch input:focus { border-color:var(--accent); background:var(--bg4); }
+.vsearch-clear {
+  position:absolute; right:8px; top:50%; transform:translateY(-50%);
+  background:none; border:none; cursor:pointer; color:var(--text3);
+  font-size:15px; line-height:1; padding:2px 4px; border-radius:50%;
+}
+.vsearch-clear:hover { color:var(--text); }
+
+/* ── Hero spotlight ──────────────────────────────────── */
+.vhero {
+  position:relative; isolation:isolate;
+  min-height:min(58vh, 460px);
+  display:flex; align-items:flex-end;
+  margin:0 0 8px; padding:28px;
+  overflow:hidden;
+}
+.vhero-bg {
+  position:absolute; inset:0; z-index:-2;
+  width:100%; height:100%; object-fit:cover; object-position:center 18%;
+  opacity:0; transition:opacity .6s var(--ease-out);
+}
+.vhero-bg.ready { opacity:1; }
+/* Two scrims, not one: a vertical fade so the page melts into the rails
+   below, and a horizontal one so the text keeps contrast over a bright
+   backdrop without dimming the whole image. */
+.vhero-scrim {
+  position:absolute; inset:0; z-index:-1;
+  background:
+    linear-gradient(90deg, var(--bg) 0%, rgba(8,8,8,.82) 34%, rgba(8,8,8,.15) 68%, transparent 100%),
+    linear-gradient(0deg, var(--bg) 0%, rgba(8,8,8,.45) 26%, transparent 62%);
+}
+.vhero-body { max-width:min(620px, 60%); }
+.vhero-kicker {
+  display:inline-flex; align-items:center; gap:6px;
+  font-size:10px; font-weight:700; letter-spacing:1.4px; text-transform:uppercase;
+  color:var(--accent); margin-bottom:10px;
+}
+.vhero-title {
+  font-size:clamp(28px, 4.4vw, 52px); font-weight:800; letter-spacing:-1.2px;
+  line-height:1.04; color:#fff; margin-bottom:10px;
+  text-shadow:0 2px 24px rgba(0,0,0,.6);
+}
+.vhero-meta { display:flex; align-items:center; flex-wrap:wrap; gap:8px; font-size:12.5px; color:var(--text); margin-bottom:12px; }
+.vhero-overview {
+  font-size:13.5px; line-height:1.55; color:rgba(240,240,240,.82); margin-bottom:18px;
+  display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden;
+}
+.vhero-actions { display:flex; flex-wrap:wrap; gap:10px; }
+.vhero-dots { position:absolute; right:28px; bottom:28px; display:flex; gap:6px; }
+.vhero-dot {
+  width:22px; height:3px; border-radius:2px; border:none; padding:0; cursor:pointer;
+  background:rgba(255,255,255,.24); transition:background .2s var(--ease), width .2s var(--ease);
+}
+.vhero-dot:hover { background:rgba(255,255,255,.5); }
+.vhero-dot.active { background:var(--accent); width:34px; }
+
+/* ── Buttons ─────────────────────────────────────────── */
+.vbtn {
+  display:inline-flex; align-items:center; gap:8px;
+  padding:10px 20px; border-radius:100px; cursor:pointer;
+  font-family:inherit; font-size:13px; font-weight:600;
+  background:var(--glass-hi); border:1px solid var(--glass-border); color:var(--text);
+  transition:background .15s var(--ease), transform .12s var(--ease), border-color .15s var(--ease);
+}
+.vbtn:hover { background:rgba(255,255,255,.16); transform:translateY(-1px); }
+.vbtn:active { transform:translateY(0); }
+.vbtn:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.vbtn svg { width:15px; height:15px; fill:currentColor; }
+.vbtn-primary { background:var(--accent); border-color:transparent; color:#000; }
+.vbtn-primary:hover { background:var(--accent-hover); }
+.vbtn-icon { padding:10px; border-radius:50%; }
+
+/* ── Rails ───────────────────────────────────────────── */
+.vrows { display:flex; flex-direction:column; gap:26px; padding-bottom:32px; }
+.vrow-head { display:flex; align-items:baseline; gap:12px; padding:0 28px 10px; }
+.vrow-title { font-size:17px; font-weight:700; letter-spacing:-.3px; color:var(--text); }
+.vrow-count { font-size:11px; color:var(--text3); }
+
+.vrail-wrap { position:relative; }
+.vrail {
+  display:grid; grid-auto-flow:column; grid-auto-columns:minmax(158px, 1fr);
+  gap:14px; padding:4px 28px 8px;
+  overflow-x:auto; overflow-y:hidden;
+  scroll-snap-type:x proximity; scroll-behavior:smooth;
+  scrollbar-width:none;
+}
+.vrail::-webkit-scrollbar { display:none; }
+.vrail > * { scroll-snap-align:start; }
+/* The arrows sit over the rail edges and fade in with the row, so they
+   never occupy layout or appear on a touch/trackpad-only scroll. */
+.vrail-nav {
+  position:absolute; top:0; bottom:16px; width:56px; z-index:2;
+  display:flex; align-items:center; justify-content:center;
+  background:none; border:none; cursor:pointer; color:#fff;
+  opacity:0; transition:opacity .18s var(--ease);
+}
+.vrail-nav[hidden] { display:none; }
+.vrail-wrap:hover .vrail-nav, .vrail-nav:focus-visible { opacity:1; }
+.vrail-prev { left:0;  background:linear-gradient(90deg, var(--bg) 30%, transparent); }
+.vrail-next { right:0; background:linear-gradient(270deg, var(--bg) 30%, transparent); }
+.vrail-nav svg { width:26px; height:26px; fill:currentColor; filter:drop-shadow(0 2px 6px rgba(0,0,0,.6)); }
+.vrail-nav:hover svg { transform:scale(1.15); }
+
+/* ── Card ────────────────────────────────────────────── */
+.vcard { cursor:pointer; min-width:0; }
+.vcard:focus { outline:none; }
+.vcard:focus-visible .vcard-art { outline:2px solid var(--accent); outline-offset:3px; }
+.vcard-art {
+  position:relative; aspect-ratio:2/3; overflow:hidden;
+  border-radius:var(--r); background:var(--bg3);
+  transition:transform .22s cubic-bezier(.16,1,.3,1), box-shadow .22s var(--ease);
+}
+.vcard:hover .vcard-art, .vcard:focus-visible .vcard-art {
+  transform:translateY(-4px) scale(1.035);
+  box-shadow:0 14px 34px rgba(0,0,0,.55);
+}
+.vcard-poster { width:100%; height:100%; object-fit:cover; }
+.vcard-fallback {
+  position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+  padding:12px; text-align:center; background:var(--bg3); color:var(--text2);
+  font-size:12px; font-weight:600; line-height:1.3; overflow:hidden;
+}
+.vcard-badges { position:absolute; top:8px; left:8px; right:8px; display:flex; gap:5px; pointer-events:none; }
+.vbadge {
+  font-size:10px; font-weight:700; letter-spacing:.3px;
+  padding:3px 6px; border-radius:5px;
+  background:rgba(0,0,0,.72); color:#fff; backdrop-filter:blur(6px);
+}
+.vbadge-rating { color:#f5c518; }
+.vbadge-new { background:var(--accent); color:#000; }
+.vbadge-type { margin-left:auto; background:rgba(0,0,0,.72); color:var(--text2); }
+
+/* Resume progress, so Continue Watching reads at a glance. */
+.vcard-progress { position:absolute; left:0; right:0; bottom:0; height:3px; background:rgba(0,0,0,.6); }
+.vcard-progress i { display:block; height:100%; background:var(--accent); }
+
+/* Quick actions. Revealed on hover/focus, but always reachable by keyboard. */
+.vcard-actions {
+  position:absolute; inset:auto 0 0 0; display:flex; gap:6px; padding:10px;
+  background:linear-gradient(0deg, rgba(0,0,0,.88), transparent);
+  opacity:0; transform:translateY(6px);
+  transition:opacity .18s var(--ease), transform .18s var(--ease);
+}
+.vcard:hover .vcard-actions, .vcard:focus-within .vcard-actions { opacity:1; transform:translateY(0); }
+.vcard-act {
+  width:30px; height:30px; border-radius:50%; border:none; cursor:pointer;
+  display:flex; align-items:center; justify-content:center;
+  background:rgba(255,255,255,.16); color:#fff; backdrop-filter:blur(6px);
+  transition:background .15s var(--ease), transform .12s var(--ease);
+}
+.vcard-act svg { width:13px; height:13px; fill:currentColor; }
+.vcard-act:hover { background:rgba(255,255,255,.3); transform:scale(1.1); }
+.vcard-act-play { background:var(--accent); color:#000; }
+.vcard-act-play:hover { background:var(--accent-hover); }
+.vcard-act.on { background:var(--accent); color:#000; }
+
+.vcard-title { margin-top:9px; font-size:12.5px; font-weight:600; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.vcard-meta  { font-size:11px; color:var(--text3); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+/* ── Skeletons ───────────────────────────────────────── */
+.vskel { background:var(--bg3); border-radius:var(--r); position:relative; overflow:hidden; }
+.vskel::after {
+  content:''; position:absolute; inset:0;
+  background:linear-gradient(90deg, transparent, rgba(255,255,255,.05), transparent);
+  background-size:200% 100%; animation:shimmer 1.4s linear infinite;
+}
+.vskel-card { aspect-ratio:2/3; }
+.vskel-line { height:11px; margin-top:9px; border-radius:4px; }
+.vskel-line.short { width:55%; }
+.vskel-hero { position:absolute; inset:0; z-index:-2; }
+
+/* ── Row-level states ────────────────────────────────── */
+.vrow-msg {
+  margin:0 28px; padding:22px; border-radius:var(--r);
+  background:var(--bg2); border:1px solid var(--glass-border);
+  font-size:13px; color:var(--text2);
+}
+.vrow-msg.err { border-color:rgba(224,92,92,.28); }
+.vrow-msg .vbtn { margin-top:12px; }
+
+/* ── Empty states ────────────────────────────────────── */
+.vempty { padding:64px 28px; text-align:center; }
+.vempty-icon { font-size:34px; margin-bottom:14px; opacity:.5; }
+.vempty-title { font-size:16px; font-weight:700; color:var(--text); margin-bottom:6px; }
+.vempty-text { font-size:13px; color:var(--text2); max-width:420px; margin:0 auto 18px; line-height:1.55; }
+
+@media (prefers-reduced-motion: reduce) {
+  .vcard-art, .vcard-actions, .vrail-nav, .vhero-bg { transition:none; }
+  .vcard:hover .vcard-art { transform:none; }
+  .vrail { scroll-behavior:auto; }
+  .vskel::after { animation:none; }
+}
+
+/* Retained until the detail and source surfaces are redesigned in their own
+   phases; still referenced by _videoError() and _loadVideoSources(). */
 .video-error {
-  margin: 8px 28px;
-  padding: 24px;
-  background: var(--bg3);
-  border: 1px solid var(--border);
-  border-radius: var(--r);
+  margin: 8px 28px; padding: 24px;
+  background: var(--bg3); border: 1px solid var(--border); border-radius: var(--r);
 }
 .video-error-title { font-size:15px; font-weight:700; color:var(--text); margin-bottom:6px; }
 .video-error-message { font-size:13px; color:var(--text2); margin-bottom:6px; }
 .video-error-hint { font-size:12px; color:var(--accent); margin-bottom:12px; }
 .video-error-actions { margin-top:4px; }
-
-/* Search box in the Movies & TV header. The input flexes so the type filter
-   stays a fixed size at any window width. */
-.video-search-box { display:flex; align-items:center; gap:8px; margin-left:auto; min-width:0; flex:1 1 320px; max-width:520px; }
-.video-search-box input { flex:1 1 auto; min-width:0; }
-.video-search-box select { flex:0 0 auto; }
-.video-search-results:empty { display:none; }
 .video-sources-header + .yt-status { margin:12px 0; }
 #video-sources-retry { margin-top:8px; }
-
-.video-poster-row {
-  display:grid;
-  grid-template-columns:repeat(auto-fill, minmax(150px, 1fr));
-  gap:16px;
-  padding:0 28px;
-  margin-bottom:12px;
-}
-
-.video-card {
-  cursor:pointer;
-  border-radius:var(--r);
-  transition:transform .2s cubic-bezier(.16,1,.3,1), background .15s;
-}
-.video-card:hover { transform:translateY(-2px) scale(1.03); }
-.video-card-art {
-  position:relative;
-  aspect-ratio:2 / 3;
-  border-radius:var(--r);
-  overflow:hidden;
-  background:var(--bg3);
-}
-.video-card-poster { width:100%; height:100%; object-fit:cover; }
-.video-card-fallback {
-  position:absolute; inset:0;
-  display:flex; align-items:center; justify-content:center;
-  padding:12px; text-align:center;
-  background:var(--bg3); color:var(--text2);
-  font-size:12px; font-weight:600; line-height:1.3;
-  overflow:hidden;
-}
-.video-card-title {
-  margin-top:8px; font-size:13px; font-weight:600; color:var(--text);
-  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
-}
-.video-card-meta { font-size:11px; color:var(--text2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 
 /* Detail */
 .video-detail-page { padding-top:0; }

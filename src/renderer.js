@@ -1209,11 +1209,50 @@ var _videoState = { season: null, episode: 1, sub: true }
 var _videoStreams = []
 var _videoUiReady = false
 
-var _videoSections = [
-  { key: 'trending-movies', label: 'Trending Movies' },
-  { key: 'popular-tv', label: 'Popular TV' },
-  { key: 'trending-anime', label: 'Trending Anime' },
+// Every row the backend can serve. `popular-movies`, `trending-tv` and
+// `season-anime` were built and then never requested — the page only ever
+// showed three of these seven.
+var _videoRows = [
+  { key: 'trending-movies', label: 'Trending Movies',  tabs: ['all', 'movie'] },
+  { key: 'popular-movies',  label: 'Popular Movies',   tabs: ['all', 'movie'] },
+  { key: 'trending-tv',     label: 'Trending TV',      tabs: ['all', 'tv'] },
+  { key: 'popular-tv',      label: 'Popular TV',       tabs: ['all', 'tv'] },
+  { key: 'trending-anime',  label: 'Trending Anime',   tabs: ['all', 'anime'] },
+  { key: 'popular-anime',   label: 'Popular Anime',    tabs: ['anime'] },
+  { key: 'season-anime',    label: 'This Season',      tabs: ['anime'] },
 ]
+
+var _videoTabs = [
+  { key: 'all',   label: 'All' },
+  { key: 'movie', label: 'Movies' },
+  { key: 'tv',    label: 'TV' },
+  { key: 'anime', label: 'Anime' },
+  { key: 'list',  label: 'My List' },
+]
+
+var _videoTab = 'all'
+var _videoHero = { items: [], index: 0, timer: null }
+
+// The watch store lands with the engine work. Until it does, every call has to
+// degrade to "nothing saved" rather than throwing — Continue Watching and My
+// List simply do not appear.
+function _vStore() {
+  return (typeof window !== 'undefined' && window.PapaVideoStore) || null
+}
+function _vFmt() {
+  return (typeof window !== 'undefined' && window.PapaVideoFormat) || null
+}
+
+// SVG is inlined rather than loaded, matching the rest of the renderer.
+var _VICON = {
+  play:   '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>',
+  plus:   '<svg viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>',
+  check:  '<svg viewBox="0 0 24 24"><path d="M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"/></svg>',
+  info:   '<svg viewBox="0 0 24 24"><path d="M11 7h2v2h-2zm0 4h2v6h-2zm1-9a10 10 0 1 0 0 20 10 10 0 0 0 0-20z"/></svg>',
+  left:   '<svg viewBox="0 0 24 24"><path d="M15.4 7.4 14 6l-6 6 6 6 1.4-1.4L10.8 12z"/></svg>',
+  right:  '<svg viewBox="0 0 24 24"><path d="M8.6 16.6 10 18l6-6-6-6-1.4 1.4 4.6 4.6z"/></svg>',
+  search: '<svg viewBox="0 0 24 24"><path d="M15.5 14h-.8l-.3-.3a6.5 6.5 0 1 0-.7.7l.3.3v.8l5 5 1.5-1.5zm-6 0a4.5 4.5 0 1 1 0-9 4.5 4.5 0 0 1 0 9z"/></svg>',
+}
 
 // Binds the static video-panel chrome and the one shared video-event channel
 // subscription. Idempotent: the panel lives in index.html and outlives every
@@ -1326,116 +1365,423 @@ function _videoError(message) {
 async function renderVideo() {
   _initVideoUI()
   const ticket = ++_videoCatalogTicket
-  setContent(`<div class="page">
-    <div class="page-header" style="display:flex;align-items:center;gap:12px">
-      <h1 class="section-title">Movies &amp; TV</h1>
-      <div class="video-search-box">
-        <input id="video-search-input" class="mcs-set-input" type="search" placeholder="Search movies, TV &amp; anime…" autocomplete="off">
-        <select id="video-search-type" class="mcs-set-select">
-          <option value="all">All</option>
-          <option value="movie">Movies</option>
-          <option value="tv">TV</option>
-          <option value="anime">Anime</option>
-        </select>
-      </div>
-    </div>
-    <div class="video-search-results" id="video-search-results"></div>
-    <div class="video-catalog">${_videoSections.map(function (s) {
-      return '<div class="video-section"><div class="section-header" style="margin-top:0"><span class="section-title">' + esc(s.label) + '</span></div><div class="video-poster-row" data-row="' + s.key + '"><div class="yt-status">Loading…</div></div></div>'
-    }).join('')}</div>
-  </div>`)
-  _bindVideoSearch()
+  setContent('<div class="page vpage">' +
+    _vHeadHtml() +
+    '<div id="vhero-mount"></div>' +
+    '<div class="video-search-results" id="video-search-results"></div>' +
+    '<div class="vrows" id="vrows"></div>' +
+  '</div>')
+  _bindVideoHead()
+  _renderVideoTab(ticket)
+}
 
-  // Rows load in parallel and each one owns its own failure. Sequentially
-  // awaiting them cost three round-trips back to back, and a single failing
-  // section used to replace the entire page — wiping rows that had already
-  // loaded fine.
-  await Promise.all(_videoSections.map(async function (sec) {
-    const res = await window.api.videoCatalogGet({ section: sec.key, page: 1 })
+function _vHeadHtml() {
+  const tabs = _videoTabs.map(function (t) {
+    return '<button class="vtab' + (t.key === _videoTab ? ' active' : '') + '" data-vtab="' + t.key + '"' +
+      ' role="tab" aria-selected="' + (t.key === _videoTab) + '">' + esc(t.label) + '</button>'
+  }).join('')
+  return '<div class="vhead">' +
+    '<div class="vtabs" role="tablist">' + tabs + '</div>' +
+    '<div class="vsearch">' +
+      '<div class="vsearch-field">' + _VICON.search +
+        '<input id="video-search-input" type="search" placeholder="Search movies, TV &amp; anime…" autocomplete="off" aria-label="Search">' +
+        '<button class="vsearch-clear" id="video-search-clear" hidden aria-label="Clear search">&#10005;</button>' +
+      '</div>' +
+    '</div>' +
+  '</div>'
+}
+
+function _bindVideoHead() {
+  document.querySelectorAll('.vtab').forEach(function (b) {
+    b.addEventListener('click', function () {
+      if (_videoTab === b.dataset.vtab) return
+      _videoTab = b.dataset.vtab
+      document.querySelectorAll('.vtab').forEach(function (x) {
+        const on = x.dataset.vtab === _videoTab
+        x.classList.toggle('active', on)
+        x.setAttribute('aria-selected', String(on))
+      })
+      _renderVideoTab(++_videoCatalogTicket)
+    })
+  })
+  _bindVideoSearch()
+}
+
+// One tab render: the hero (skipped for My List, which has no editorial
+// content to feature) plus the rows that belong to this tab.
+async function _renderVideoTab(ticket) {
+  const heroMount = document.getElementById('vhero-mount')
+  const rows = document.getElementById('vrows')
+  if (!rows) return
+  _stopVideoHero()
+
+  if (_videoTab === 'list') {
+    if (heroMount) heroMount.innerHTML = ''
+    _renderMyList(rows)
+    return
+  }
+
+  const wanted = _videoRows.filter(function (r) { return r.tabs.indexOf(_videoTab) !== -1 })
+  const personal = _personalRows()
+
+  if (heroMount) heroMount.innerHTML = _vHeroSkeleton()
+  rows.innerHTML = personal.map(function (r) { return _vRowShell(r.key, r.label, r.items.length) }).join('') +
+    wanted.map(function (r) { return _vRowShell(r.key, r.label, 0) }).join('')
+
+  personal.forEach(function (r) { _fillRow(r.key, r.items) })
+
+  // Rows load in parallel and each owns its own failure, so one dead section
+  // cannot wipe the ones that already arrived.
+  await Promise.all(wanted.map(async function (row) {
+    const res = await window.api.videoCatalogGet({ section: row.key, page: 1 })
       .catch(function (e) { return { ok: false, error: String((e && e.message) || e) } })
     if (_videoCatalogTicket !== ticket || state.currentPage !== 'video') return
-    const row = document.querySelector('.video-poster-row[data-row="' + sec.key + '"]')
-    if (!row) return
-    if (!res.ok) {
-      row.innerHTML = '<div class="yt-status yt-error">' + esc(_videoErrorText(res.error)) + '</div>'
-      return
-    }
-    if (!Array.isArray(res.results) || !res.results.length) {
-      row.innerHTML = '<div class="yt-status">Nothing here yet</div>'
-      return
-    }
-    row.innerHTML = res.results.map(_videoCard).join('')
-    _bindVideoCards(row)
+    if (!res.ok) return _rowError(row.key, res.error)
+    const items = Array.isArray(res.results) ? res.results : []
+    if (!items.length) return _rowEmpty(row.key, 'Nothing here right now')
+    _fillRow(row.key, items)
+    if (row.key === wanted[0].key) _startVideoHero(items, ticket)
   }))
 }
 
-// Debounced so typing does not fire a request per keystroke; ticketed so a
-// slow earlier query cannot overwrite the results of a later one.
+// Continue Watching and My List come from the local store, which may not be
+// loaded yet — both are simply absent until it is.
+function _personalRows() {
+  const store = _vStore()
+  if (!store) return []
+  const out = []
+  try {
+    const cont = store.continueWatching(20) || []
+    if (cont.length) out.push({ key: 'continue', label: 'Continue Watching', items: cont })
+    const list = store.watchlist() || []
+    if (list.length && _videoTab === 'all') out.push({ key: 'mylist', label: 'My List', items: list.slice(0, 20) })
+  } catch (_) { /* a broken store must not take the page down */ }
+  return out
+}
+
+function _vRowShell(key, label, count) {
+  return '<section class="vrow" data-row="' + esc(key) + '">' +
+    '<div class="vrow-head"><h2 class="vrow-title">' + esc(label) + '</h2>' +
+      (count ? '<span class="vrow-count">' + count + '</span>' : '') + '</div>' +
+    '<div class="vrail-wrap">' +
+      '<button class="vrail-nav vrail-prev" aria-label="Scroll left" hidden>' + _VICON.left + '</button>' +
+      '<div class="vrail" data-rail="' + esc(key) + '">' + _vRailSkeleton() + '</div>' +
+      '<button class="vrail-nav vrail-next" aria-label="Scroll right" hidden>' + _VICON.right + '</button>' +
+    '</div>' +
+  '</section>'
+}
+
+function _vRailSkeleton(n) {
+  let out = ''
+  for (let i = 0; i < (n || 7); i++) {
+    out += '<div><div class="vskel vskel-card"></div><div class="vskel vskel-line"></div><div class="vskel vskel-line short"></div></div>'
+  }
+  return out
+}
+
+function _vHeroSkeleton() {
+  return '<div class="vhero"><div class="vskel vskel-hero"></div></div>'
+}
+
+function _rowMsg(key, html, isError) {
+  const row = document.querySelector('.vrow[data-row="' + key + '"] .vrail-wrap')
+  if (!row) return
+  row.outerHTML = '<div class="vrow-msg' + (isError ? ' err' : '') + '">' + html + '</div>'
+}
+
+function _rowEmpty(key, text) { _rowMsg(key, esc(text), false) }
+
+function _rowError(key, error) {
+  _rowMsg(key, esc(_videoErrorText(error)) +
+    '<div><button class="vbtn" data-retry="' + esc(key) + '">Try again</button></div>', true)
+  const btn = document.querySelector('[data-retry="' + key + '"]')
+  if (btn) btn.addEventListener('click', function () { _renderVideoTab(++_videoCatalogTicket) })
+}
+
+function _fillRow(key, items) {
+  const rail = document.querySelector('.vrail[data-rail="' + key + '"]')
+  if (!rail) return
+  rail.innerHTML = items.map(_videoCard).join('')
+  _bindVideoCards(rail)
+  _bindRail(rail)
+}
+
+// Arrow visibility is driven by actual scroll position, so a rail that fits
+// on screen never shows a control that would do nothing.
+function _bindRail(rail) {
+  const wrap = rail.closest('.vrail-wrap')
+  if (!wrap) return
+  const prev = wrap.querySelector('.vrail-prev')
+  const next = wrap.querySelector('.vrail-next')
+  const sync = function () {
+    const max = rail.scrollWidth - rail.clientWidth
+    if (prev) prev.hidden = rail.scrollLeft <= 4
+    if (next) next.hidden = rail.scrollLeft >= max - 4
+  }
+  const page = function (dir) { rail.scrollBy({ left: dir * Math.max(rail.clientWidth - 120, 200) }) }
+  prev?.addEventListener('click', function () { page(-1) })
+  next?.addEventListener('click', function () { page(1) })
+  rail.addEventListener('scroll', sync, { passive: true })
+  requestAnimationFrame(sync)
+}
+
+// ── Hero spotlight ──────────────────────────────────────────────────────────
+function _startVideoHero(items, ticket) {
+  const pool = items.filter(function (i) { return i && i.backdrop })
+  if (!pool.length) {
+    const mount = document.getElementById('vhero-mount')
+    if (mount) mount.innerHTML = ''
+    return
+  }
+  _videoHero.items = pool.slice(0, 5)
+  _videoHero.index = 0
+  _paintVideoHero()
+  _stopVideoHero()
+  _videoHero.timer = setInterval(function () {
+    if (_videoCatalogTicket !== ticket || state.currentPage !== 'video') return _stopVideoHero()
+    _videoHero.index = (_videoHero.index + 1) % _videoHero.items.length
+    _paintVideoHero()
+  }, 9000)
+}
+
+function _stopVideoHero() {
+  if (_videoHero.timer) { clearInterval(_videoHero.timer); _videoHero.timer = null }
+}
+
+function _paintVideoHero() {
+  const mount = document.getElementById('vhero-mount')
+  const item = _videoHero.items[_videoHero.index]
+  if (!mount || !item) return
+  const key = (item.type || 'movie') + ':' + (item.id == null ? '' : item.id)
+  const kind = item.type === 'anime' ? 'Anime' : item.type === 'tv' ? 'Series' : 'Film'
+  const bits = []
+  if (item.year != null) bits.push(esc(String(item.year)))
+  bits.push(kind)
+  if (item.rating != null) bits.push('★ ' + esc(String(Math.round(item.rating * 10) / 10)))
+  const dots = _videoHero.items.map(function (_, i) {
+    return '<button class="vhero-dot' + (i === _videoHero.index ? ' active' : '') +
+      '" data-hero="' + i + '" aria-label="Feature ' + (i + 1) + '"></button>'
+  }).join('')
+
+  mount.innerHTML = '<div class="vhero">' +
+    '<img class="vhero-bg" alt="" src="' + esc(item.backdrop) + '">' +
+    '<div class="vhero-scrim"></div>' +
+    '<div class="vhero-body">' +
+      '<div class="vhero-kicker">Featured</div>' +
+      '<h1 class="vhero-title">' + esc(item.title || 'Untitled') + '</h1>' +
+      '<div class="vhero-meta">' + bits.join(' · ') + '</div>' +
+      (item.overview ? '<p class="vhero-overview">' + esc(_stripTags(item.overview)) + '</p>' : '') +
+      '<div class="vhero-actions">' +
+        '<button class="vbtn vbtn-primary" id="vhero-play">' + _VICON.play + 'Play</button>' +
+        '<button class="vbtn" id="vhero-list">' + _VICON.plus + 'My List</button>' +
+        '<button class="vbtn" id="vhero-info">' + _VICON.info + 'Details</button>' +
+      '</div>' +
+    '</div>' +
+    '<div class="vhero-dots">' + dots + '</div>' +
+  '</div>'
+
+  const img = mount.querySelector('.vhero-bg')
+  if (img) {
+    if (img.complete) img.classList.add('ready')
+    else img.addEventListener('load', function () { img.classList.add('ready') })
+    img.addEventListener('error', function () { img.remove() })
+  }
+  const go = function () { navigate('video-detail', key) }
+  document.getElementById('vhero-play')?.addEventListener('click', go)
+  document.getElementById('vhero-info')?.addEventListener('click', go)
+  document.getElementById('vhero-list')?.addEventListener('click', function () { _toggleWatchlist(item) })
+  mount.querySelectorAll('.vhero-dot').forEach(function (d) {
+    d.addEventListener('click', function () {
+      _videoHero.index = Number(d.dataset.hero) || 0
+      _paintVideoHero()
+    })
+  })
+}
+
+// AniList overviews are HTML fragments (<br>, <i>), unlike TMDB's plain text.
+function _stripTags(text) {
+  return String(text == null ? '' : text).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()
+}
+
+function _toggleWatchlist(item) {
+  const store = _vStore()
+  if (!store) return showToast('Watchlist is not available yet')
+  try {
+    const added = store.toggleWatchlist({
+      type: item.type || 'movie', id: item.id, title: item.title, poster: item.poster || null,
+    })
+    showToast(added ? 'Added to My List' : 'Removed from My List')
+    document.querySelectorAll('.vcard-act-list[data-key="' + (item.type || 'movie') + ':' + item.id + '"]')
+      .forEach(function (b) { b.classList.toggle('on', added); b.innerHTML = added ? _VICON.check : _VICON.plus })
+  } catch (_) { showToast('Could not update My List') }
+}
+
+function _renderMyList(rows) {
+  const store = _vStore()
+  const list = store ? (store.watchlist() || []) : []
+  if (!list.length) {
+    rows.innerHTML = '<div class="vempty">' +
+      '<div class="vempty-icon">☆</div>' +
+      '<div class="vempty-title">Nothing saved yet</div>' +
+      '<div class="vempty-text">Add films and series here from any poster or detail page, and they will be waiting for you.</div>' +
+      '<button class="vbtn vbtn-primary" id="vempty-browse">Browse</button>' +
+    '</div>'
+    document.getElementById('vempty-browse')?.addEventListener('click', function () {
+      _videoTab = 'all'
+      renderVideo()
+    })
+    return
+  }
+  rows.innerHTML = _vRowShell('mylist', 'My List', list.length)
+  _fillRow('mylist', list)
+}
+
+// Search overlays the catalog instead of replacing it, groups results by type,
+// and is ticketed so a slow earlier query cannot overwrite a later one.
 function _bindVideoSearch() {
   const input = document.getElementById('video-search-input')
-  const typeSel = document.getElementById('video-search-type')
+  const clear = document.getElementById('video-search-clear')
   if (!input) return
   let timer = null
+
+  const reset = function () {
+    _videoSearchTicket++
+    const box = document.getElementById('video-search-results')
+    if (box) box.innerHTML = ''
+    document.getElementById('vrows')?.style.removeProperty('display')
+    document.getElementById('vhero-mount')?.style.removeProperty('display')
+    if (clear) clear.hidden = true
+  }
+
   const run = function () {
     const query = input.value.trim()
+    if (clear) clear.hidden = !query
+    if (!query) return reset()
+
     const box = document.getElementById('video-search-results')
-    const catalog = document.querySelector('.video-catalog')
     if (!box) return
-    if (!query) {
-      _videoSearchTicket++
-      box.innerHTML = ''
-      if (catalog) catalog.style.display = ''
-      return
-    }
     const ticket = ++_videoSearchTicket
-    if (catalog) catalog.style.display = 'none'
-    box.innerHTML = '<div class="yt-status">Searching…</div>'
-    window.api.videoSearch({ query: query, type: typeSel ? typeSel.value : 'all' })
+    // Hide rather than unmount, so clearing the query restores the catalog
+    // instantly without refetching every row.
+    const rows = document.getElementById('vrows')
+    const hero = document.getElementById('vhero-mount')
+    if (rows) rows.style.display = 'none'
+    if (hero) hero.style.display = 'none'
+    box.innerHTML = _vRowShell('search', 'Searching…', 0)
+
+    window.api.videoSearch({ query: query, type: 'all' })
       .catch(function (e) { return { ok: false, error: String((e && e.message) || e) } })
       .then(function (res) {
         if (_videoSearchTicket !== ticket) return
         const target = document.getElementById('video-search-results')
         if (!target) return
         if (!res.ok) {
-          target.innerHTML = '<div class="yt-status yt-error">' + esc(_videoErrorText(res.error)) + '</div>'
+          target.innerHTML = '<div class="vrow-msg err">' + esc(_videoErrorText(res.error)) + '</div>'
           return
         }
         const results = Array.isArray(res.results) ? res.results : []
         if (!results.length) {
-          target.innerHTML = '<div class="yt-status">No matches for “' + esc(query) + '”</div>'
+          target.innerHTML = '<div class="vempty">' +
+            '<div class="vempty-icon">◎</div>' +
+            '<div class="vempty-title">No matches for &ldquo;' + esc(query) + '&rdquo;</div>' +
+            '<div class="vempty-text">Check the spelling, or try the original-language title — anime in particular is often indexed under its romaji name.</div>' +
+          '</div>'
           return
         }
-        target.innerHTML = '<div class="video-section"><div class="section-header" style="margin-top:0"><span class="section-title">Results</span></div>' +
-          '<div class="video-poster-row">' + results.map(_videoCard).join('') + '</div></div>'
-        _bindVideoCards(target)
+        // Grouped, because a film, a series and an anime are different answers
+        // to the same query and a single flat grid hides that.
+        const groups = [
+          { key: 'movie', label: 'Films' },
+          { key: 'tv',    label: 'Series' },
+          { key: 'anime', label: 'Anime' },
+        ]
+        let html = ''
+        for (const g of groups) {
+          const items = results.filter(function (r) { return (r.type || 'movie') === g.key })
+          if (!items.length) continue
+          html += _vRowShell('search-' + g.key, g.label, items.length)
+        }
+        target.innerHTML = html
+        for (const g of groups) {
+          const items = results.filter(function (r) { return (r.type || 'movie') === g.key })
+          if (items.length) _fillRow('search-' + g.key, items)
+        }
       })
   }
-  input.addEventListener('input', function () {
-    clearTimeout(timer)
-    timer = setTimeout(run, 300)
+
+  input.addEventListener('input', function () { clearTimeout(timer); timer = setTimeout(run, 300) })
+  input.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { clearTimeout(timer); run() }
+    if (e.key === 'Escape') { input.value = ''; reset(); input.blur() }
   })
-  input.addEventListener('keydown', function (e) { if (e.key === 'Enter') { clearTimeout(timer); run() } })
-  if (typeSel) typeSel.addEventListener('change', function () { clearTimeout(timer); run() })
+  clear?.addEventListener('click', function () { input.value = ''; reset(); input.focus() })
 }
 
 function _videoCard(item) {
   item = item || {}
   const key = (item.type || 'movie') + ':' + (item.id == null ? '' : item.id)
   const img = item.poster
-    ? '<img class="video-card-poster" src="' + esc(item.poster) + '" alt="" loading="lazy" onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\'">'
+    ? '<img class="vcard-poster" src="' + esc(item.poster) + '" alt="" loading="lazy" decoding="async"' +
+      ' onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\'">'
     : ''
-  const fb = '<div class="video-card-fallback"' + (item.poster ? ' style="display:none"' : '') + '>' + esc(item.title || '') + '</div>'
+  const fb = '<div class="vcard-fallback"' + (item.poster ? ' style="display:none"' : '') + '>' + esc(item.title || '') + '</div>'
   const kind = item.type === 'anime' ? 'Anime' : item.type === 'tv' ? 'TV' : 'Movie'
-  return '<div class="video-card" data-video="' + esc(key) + '">' +
-    '<div class="video-card-art">' + img + fb + '</div>' +
-    '<div class="video-card-title">' + esc(item.title || 'Untitled') + '</div>' +
-    '<div class="video-card-meta">' + esc(item.year || '') + (item.year ? ' · ' : '') + kind + '</div>' +
-  '</div>'
+
+  const badges = []
+  if (item.rating != null && Number(item.rating) > 0) {
+    const r = Number(item.rating)
+    // AniList scores 0-100, TMDB 0-10. Normalise so one badge means one thing.
+    badges.push('<span class="vbadge vbadge-rating">★ ' + esc(String(r > 10 ? Math.round(r / 10 * 10) / 10 : Math.round(r * 10) / 10)) + '</span>')
+  }
+  badges.push('<span class="vbadge vbadge-type">' + kind + '</span>')
+
+  const pct = item.position && item.duration ? Math.min(100, Math.round(item.position / item.duration * 100)) : 0
+  const progress = pct > 1 ? '<div class="vcard-progress"><i style="width:' + pct + '%"></i></div>' : ''
+
+  const inList = (function () {
+    const store = _vStore()
+    try { return store ? !!store.inWatchlist(item.type || 'movie', item.id) : false } catch (_) { return false }
+  })()
+
+  const metaBits = []
+  if (item.year != null && item.year !== '') metaBits.push(esc(String(item.year)))
+  if (item.season != null && item.episode != null) metaBits.push('S' + item.season + ' · E' + item.episode)
+
+  return '<article class="vcard" data-video="' + esc(key) + '" tabindex="0" role="button"' +
+      ' aria-label="' + esc(item.title || 'Untitled') + '">' +
+    '<div class="vcard-art">' + img + fb +
+      '<div class="vcard-badges">' + badges.join('') + '</div>' +
+      progress +
+      '<div class="vcard-actions">' +
+        '<button class="vcard-act vcard-act-play" data-act="play" aria-label="Play">' + _VICON.play + '</button>' +
+        '<button class="vcard-act vcard-act-list' + (inList ? ' on' : '') + '" data-act="list" data-key="' + esc(key) + '"' +
+          ' aria-label="' + (inList ? 'Remove from My List' : 'Add to My List') + '">' + (inList ? _VICON.check : _VICON.plus) + '</button>' +
+      '</div>' +
+    '</div>' +
+    '<div class="vcard-title">' + esc(item.title || 'Untitled') + '</div>' +
+    '<div class="vcard-meta">' + (metaBits.join(' · ') || kind) + '</div>' +
+  '</article>'
 }
 
 function _bindVideoCards(root) {
-  ;(root || document).querySelectorAll('.video-card').forEach(function (c) {
-    c.addEventListener('click', function () { navigate('video-detail', c.dataset.video) })
+  ;(root || document).querySelectorAll('.vcard').forEach(function (c) {
+    const open = function () { navigate('video-detail', c.dataset.video) }
+    c.addEventListener('click', function (e) {
+      const act = e.target.closest('[data-act]')
+      if (!act) return open()
+      e.stopPropagation()
+      if (act.dataset.act === 'play') return open()
+      const parts = String(c.dataset.video || '').split(':')
+      _toggleWatchlist({
+        type: parts[0], id: parts.slice(1).join(':'),
+        title: c.querySelector('.vcard-title')?.textContent || '',
+        poster: c.querySelector('.vcard-poster')?.getAttribute('src') || null,
+      })
+    })
+    // A card is a button, so it must answer to Enter and Space.
+    c.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open() }
+    })
   })
 }
 
