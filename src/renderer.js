@@ -1254,79 +1254,100 @@ var _VICON = {
   search: '<svg viewBox="0 0 24 24"><path d="M15.5 14h-.8l-.3-.3a6.5 6.5 0 1 0-.7.7l.3.3v.8l5 5 1.5-1.5zm-6 0a4.5 4.5 0 1 1 0-9 4.5 4.5 0 0 1 0 9z"/></svg>',
 }
 
-// Binds the static video-panel chrome and the one shared video-event channel
+// Binds the theatre chrome and the one shared video-event channel
 // subscription. Idempotent: the panel lives in index.html and outlives every
 // page, so this must not double-subscribe on each navigation.
+// The theatre replaces the old corner panel. Bound once: the markup lives in
+// index.html and outlives every page, so this must not re-subscribe per render.
+var _player = null
+
 function _initVideoUI() {
   if (_videoUiReady) return
   _videoUiReady = true
-  document.getElementById('video-panel-close')?.addEventListener('click', _videoStopAndHide)
+  if (window.PapaVideoPlayer) {
+    _player = window.PapaVideoPlayer.create({
+      onExit: function () { window.api.videoStop().catch(function () {}) },
+      onNext: null,
+    })
+    _player.bind()
+  }
   window.api.onVideoEvent(function (payload) { _handleVideoEvent(payload || {}) })
-}
-
-function _showVideoPanel(title) {
-  _initVideoUI()
-  const panel = document.getElementById('video-panel')
-  if (!panel) return
-  const t = document.getElementById('video-panel-title')
-  if (t) t.textContent = title || 'Video'
-  panel.classList.remove('hidden')
-}
-
-function _hideVideoPanel() {
-  const panel = document.getElementById('video-panel')
-  if (panel) panel.classList.add('hidden')
-  const status = document.getElementById('video-status')
-  if (status) { status.className = 'video-status'; status.textContent = '' }
 }
 
 function _videoStopAndHide() {
   window.api.videoStop().catch(function () {})
-  _hideVideoPanel()
+  if (_player) _player.close()
 }
 
+// The theatre shows lifecycle on the stage, because until mpv is actually
+// playing there is nothing behind the deck to look at. Once it is playing the
+// message is cleared so the video is unobstructed.
 function _handleVideoEvent(payload) {
-  const status = document.getElementById('video-status')
-  // The real audio layout, measured by ffprobe once mpv is actually playing.
-  // Indexer metadata is a claim; this is the file.
-  if (payload.kind === 'audio') {
-    if (status && payload.audioLayout) {
-      status.dataset.audio = payload.audioLayout
-      status.title = 'Audio: ' + payload.audioLayout + (payload.codec ? ' (' + payload.codec + ')' : '')
-      if (status.classList.contains('video-status-playing')) {
-        status.textContent = 'Playing · ' + payload.audioLayout
-      }
-    }
-    return
-  }
-  if (!status) return
+  if (!_player) return
+  if (payload.kind === 'audio') return   // badges come from the state stream
+
   if (payload.kind === 'buffering') {
-    status.className = 'video-status video-status-buffering'
-    // Percent, speed and peer count turn an indefinite "Buffering…" into
-    // something the user can judge — a torrent with no peers looks identical
-    // to a slow one otherwise.
     const pct = payload.percent != null ? Math.round(payload.percent * 100) : null
     const mbps = payload.speed ? (payload.speed / 125000).toFixed(1) + ' Mb/s' : null
     const peers = payload.peers != null ? payload.peers + ' peers' : null
-    // The prebuffer phase is the wait before playback starts; the download
-    // phase continues underneath it once playing.
     const label = payload.phase === 'prebuffer' ? 'Buffering' : 'Downloading'
-    status.textContent = label + (pct != null ? ' ' + pct + '%' : '…') +
-      (mbps ? ' · ' + mbps : '') + (peers ? ' · ' + peers : '')
+    const detail = [mbps, peers].filter(Boolean).join(' · ')
+    _player.setStageMessage('<div class="spin"></div><div>' +
+      esc(label + (pct != null ? ' ' + pct + '%' : '…')) + '</div>' +
+      (detail ? '<div style="opacity:.6">' + esc(detail) + '</div>' : ''))
   } else if (payload.kind === 'playing') {
-    status.className = 'video-status video-status-playing'
-    status.textContent = status.dataset.audio ? 'Playing · ' + status.dataset.audio : 'Playing…'
+    _player.setStageMessage('')
+    _loadSkipSegments()
   } else if (payload.kind === 'error') {
-    status.className = 'video-status video-status-error'
-    status.textContent = _videoErrorText(payload.message || 'Playback error')
+    _player.setStageMessage('<div style="color:var(--color-error)">' +
+      esc(_videoErrorText(payload.message || 'Playback error')) + '</div>')
   }
+}
+
+// Segments are asked for once playback starts, because the cheap layers need
+// the file's real duration and chapter list, which only exist by then.
+async function _loadSkipSegments() {
+  if (!_player || !_videoDetail || !_videoDetail.d) return
+  const d = _videoDetail.d
+  const store = _vStore()
+  const seasonKey = _videoDetail.type === 'tv'
+    ? 'tv:' + d.id + ':s' + _videoState.season
+    : _videoDetail.type + ':' + d.id
+  let manual = []
+  let prefs = {}
+  try {
+    if (store) {
+      manual = store.skip(seasonKey) || []
+      prefs = store.prefs(_videoDetail.type + ':' + d.id) || {}
+    }
+  } catch (_) { /* a broken store must not stop playback */ }
+  _player.setPrefs(prefs)
+
+  const state = _player._state()
+  const res = await window.api.videoSkipSegments({
+    type: _videoDetail.type,
+    id: d.id,
+    malId: d.idMal || null,
+    episode: _videoState.episode,
+    duration: state ? state.duration : 0,
+    manual: manual,
+  }).catch(function () { return { ok: false, segments: [] } })
+  _player.setSegments(res && res.ok ? res.segments : [])
 }
 
 function _videoPlayResult(result) {
   if (!result) return
-  _showVideoPanel(_videoDetail && _videoDetail.d ? _videoDetail.d.title : 'Video')
-  const status = document.getElementById('video-status')
-  if (status) delete status.dataset.audio
+  _initVideoUI()
+  const d = _videoDetail && _videoDetail.d
+  const isEpisode = _videoDetail && _videoDetail.type !== 'movie'
+  _player.open({
+    title: d ? d.title : 'Video',
+    subtitle: isEpisode
+      ? (_videoDetail.type === 'tv'
+          ? 'Season ' + _videoState.season + ' · Episode ' + _videoState.episode
+          : 'Episode ' + _videoState.episode)
+      : (d && d.year ? String(d.year) : ''),
+  })
   _handleVideoEvent({ kind: 'buffering' })
   window.api.videoPlay({ result }).then(function (res) {
     // The handler rejects unplayable sources (no magnet, no URL) with ok:false
@@ -1337,9 +1358,7 @@ function _videoPlayResult(result) {
   })
 }
 
-// One place that turns a backend error string into something a person can act
-// on. Used by the row/search/source panels, which now report failures in place
-// instead of replacing the page.
+
 function _videoErrorText(message) {
   const msg = String(message || 'Something went wrong')
   if (/401|api key/i.test(msg)) return 'TMDB API key missing or invalid — set it in Settings → Video.'
@@ -1986,9 +2005,10 @@ async function _loadVideoSources(ticket, seasonTicket) {
     })
     return
   }
-  target.innerHTML = '<div class="video-sources-header"><span class="section-title">Sources</span><div class="video-status" id="video-status"></div><button class="video-stop-btn" id="video-stop-btn">Stop</button></div><div class="video-source-list">' +
+  // Playback status and stopping now live in the theatre, which owns the video
+  // for as long as it is open. The sources list is only a picker again.
+  target.innerHTML = '<div class="video-sources-header"><span class="section-title">Sources</span></div><div class="video-source-list">' +
     streams.map(_videoStreamRow).join('') + '</div>'
-  document.getElementById('video-stop-btn')?.addEventListener('click', _videoStopAndHide)
   target.querySelectorAll('.video-source-play').forEach(function (btn) {
     btn.addEventListener('click', function () {
       _videoPlayResult(_videoStreams[Number(btn.dataset.idx)])

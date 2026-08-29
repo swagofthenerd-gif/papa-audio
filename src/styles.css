@@ -6073,28 +6073,172 @@ body.app-unfocused *::after {
 .video-source-play svg { width:15px; height:15px; fill:#000; }
 .video-source-play:hover { opacity:1; transform:scale(1.08); }
 
-/* Video panel (mpv surface mounts here in a later task) */
-.video-panel {
-  position:fixed; z-index:900;
-  right:24px; bottom:calc(var(--player-h) + 24px);
-  width:560px; max-width:calc(100vw - 48px);
-  background:var(--bg2); border:1px solid var(--border);
-  border-radius:var(--r-lg); overflow:hidden;
-  box-shadow:0 20px 60px rgba(0,0,0,.5);
-  display:flex; flex-direction:column;
+/* ══════════════════════════════════════════════════════
+   PAPA VIDEO · theatre
+   mpv paints into its own frameless child window via --wid. A native child
+   window sits above the page's compositing layer, so HTML can never be drawn
+   on top of it — a floating overlay would simply be invisible behind the
+   video. So #vt-stage reserves the rectangle main.js positions that window
+   onto, and every control lives outside it. Nothing overlaps the video.
+══════════════════════════════════════════════════════ */
+.vtheatre {
+  position:fixed; inset:0; z-index:2000;
+  display:grid; grid-template-rows:auto 1fr auto;
+  background:#000; color:#fff;
+  animation:fadeIn .18s var(--ease-out);
 }
-.video-panel.hidden { display:none; }
-.video-panel-header {
-  display:flex; align-items:center; justify-content:space-between;
-  padding:10px 14px; background:var(--bg3); border-bottom:1px solid var(--border);
+.vtheatre.hidden { display:none; }
+
+/* ── Top bar ─────────────────────────────────────────── */
+.vt-top { display:flex; align-items:center; gap:14px; padding:14px 20px; background:#0a0a0a; }
+.vt-heading { min-width:0; flex:1; }
+.vt-title { font-size:15px; font-weight:700; color:#fff; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.vt-sub { font-size:12px; color:var(--text2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.vt-badges { display:flex; gap:6px; flex-shrink:0; }
+.vt-badge {
+  font-size:10px; font-weight:700; letter-spacing:.4px; text-transform:uppercase;
+  padding:3px 7px; border-radius:5px;
+  background:var(--glass-hi); color:var(--text); border:1px solid var(--glass-border);
 }
-.video-panel-title { font-size:13px; font-weight:600; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.video-panel-close {
-  background:none; border:none; color:var(--text2); cursor:pointer;
-  font-size:14px; line-height:1; padding:4px 6px; border-radius:var(--r-sm);
+.vt-badge-hi { background:var(--accent-dim); color:var(--accent); border-color:transparent; }
+
+/* ── Stage: the rectangle mpv is positioned onto ─────── */
+.vt-stage { position:relative; background:#000; min-height:0; }
+.vt-stage-msg {
+  position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+  flex-direction:column; gap:10px; text-align:center; padding:24px;
+  font-size:13px; color:var(--text2); pointer-events:none;
 }
-.video-panel-close:hover { color:var(--text); background:var(--glass-hi); }
-.video-panel-surface {
-  aspect-ratio:16 / 9; background:#000;
+.vt-stage-msg .spin {
+  width:26px; height:26px; border-radius:50%;
+  border:2px solid rgba(255,255,255,.16); border-top-color:var(--accent);
+  animation:vtSpin .8s linear infinite;
+}
+@keyframes vtSpin { to { transform:rotate(360deg) } }
+
+/* Skip button. Bottom-right of the stage, clear of the video's subtitles,
+   which sit bottom-centre. */
+.vt-skip { position:absolute; right:22px; bottom:22px; z-index:3; }
+.vt-skip[hidden] { display:none; }
+.vt-skip button {
+  display:inline-flex; align-items:center; gap:8px;
+  padding:11px 20px; border-radius:8px; cursor:pointer;
+  font-family:inherit; font-size:13px; font-weight:700;
+  background:rgba(20,20,20,.94); color:#fff;
+  border:1px solid rgba(255,255,255,.28);
+  box-shadow:0 6px 24px rgba(0,0,0,.6);
+  animation:fadeIn .2s var(--ease-out);
+}
+.vt-skip button:hover { background:#fff; color:#000; border-color:#fff; }
+.vt-skip button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+/* Countdown ring for an automatic skip, so it is visibly cancellable rather
+   than something that just happens to you. */
+.vt-skip-count { font-variant-numeric:tabular-nums; opacity:.7; font-weight:600; }
+
+/* ── Control deck ────────────────────────────────────── */
+.vt-deck { padding:10px 20px 16px; background:#0a0a0a; }
+
+/* Seek bar. The hit area is deliberately taller than the visible track so it
+   is grabbable without precision aiming. */
+.vt-seek { position:relative; padding:9px 0; cursor:pointer; }
+.vt-seek:focus-visible { outline:2px solid var(--accent); outline-offset:4px; border-radius:4px; }
+.vt-seek-track { position:relative; height:4px; border-radius:2px; background:rgba(255,255,255,.18); transition:height .12s var(--ease); }
+.vt-seek:hover .vt-seek-track, .vt-seek:focus-visible .vt-seek-track { height:6px; }
+.vt-seek-buffer { position:absolute; inset:0 auto 0 0; width:0; background:rgba(255,255,255,.3); border-radius:2px; }
+.vt-seek-fill   { position:absolute; inset:0 auto 0 0; width:0; background:var(--accent); border-radius:2px; }
+.vt-seek-knob {
+  position:absolute; top:50%; left:0; width:13px; height:13px; margin:-6.5px 0 0 -6.5px;
+  border-radius:50%; background:var(--accent); box-shadow:0 2px 8px rgba(0,0,0,.6);
+  opacity:0; transition:opacity .12s var(--ease);
+}
+.vt-seek:hover .vt-seek-knob, .vt-seek:focus-visible .vt-seek-knob { opacity:1; }
+/* Skippable regions drawn on the bar, so you can see an intro coming. */
+.vt-seek-marks { position:absolute; inset:0; pointer-events:none; }
+.vt-seek-mark { position:absolute; top:0; bottom:0; border-radius:2px; background:rgba(255,255,255,.42); }
+.vt-seek-mark.credits { background:rgba(196,167,71,.6); }
+.vt-seek-bubble {
+  position:absolute; bottom:26px; transform:translateX(-50%);
+  padding:3px 8px; border-radius:5px; white-space:nowrap;
+  background:#1a1a1a; border:1px solid var(--glass-border);
+  font-size:11px; font-variant-numeric:tabular-nums; color:#fff; pointer-events:none;
+}
+.vt-seek-bubble[hidden] { display:none; }
+
+.vt-row { display:flex; align-items:center; gap:8px; margin-top:4px; }
+.vt-spacer { flex:1 1 auto; }
+
+.vt-icon {
   display:flex; align-items:center; justify-content:center;
+  width:36px; height:36px; flex-shrink:0;
+  background:none; border:none; border-radius:50%; cursor:pointer; color:#fff;
+  transition:background .14s var(--ease), transform .1s var(--ease);
+}
+.vt-icon svg { width:19px; height:19px; fill:currentColor; }
+.vt-icon:hover { background:var(--glass-hi); }
+.vt-icon:active { transform:scale(.92); }
+.vt-icon:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.vt-icon[hidden] { display:none; }
+.vt-play { background:var(--accent); color:#000; width:42px; height:42px; }
+.vt-play:hover { background:var(--accent-hover); }
+.vt-play svg { width:21px; height:21px; }
+
+.vt-chip {
+  padding:7px 12px; border-radius:100px; cursor:pointer; flex-shrink:0;
+  background:none; border:1px solid var(--glass-border); color:var(--text);
+  font-family:inherit; font-size:12px; font-weight:600;
+  transition:background .14s var(--ease), border-color .14s var(--ease);
+}
+.vt-chip:hover { background:var(--glass-hi); }
+.vt-chip.on { background:var(--accent-dim); border-color:var(--accent); color:var(--accent); }
+.vt-chip:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+
+.vt-time { font-size:12px; font-variant-numeric:tabular-nums; color:var(--text2); margin:0 6px; white-space:nowrap; }
+.vt-time-sep { margin:0 4px; opacity:.5; }
+#vt-pos { color:#fff; }
+
+.vt-vol { display:flex; align-items:center; gap:4px; }
+.vt-vol-range {
+  width:88px; height:4px; cursor:pointer; appearance:none;
+  background:rgba(255,255,255,.2); border-radius:2px; outline:none;
+}
+.vt-vol-range::-webkit-slider-thumb {
+  appearance:none; width:12px; height:12px; border-radius:50%;
+  background:#fff; cursor:pointer;
+}
+.vt-vol-range:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+
+/* ── Popover menus (subtitles, audio, speed, settings) ── */
+.vt-menu {
+  position:fixed; z-index:2100; min-width:230px; max-height:56vh; overflow-y:auto;
+  padding:6px; border-radius:var(--r);
+  background:#141414; border:1px solid var(--glass-border);
+  box-shadow:0 18px 50px rgba(0,0,0,.7);
+  animation:fadeIn .12s var(--ease-out);
+}
+.vt-menu.hidden { display:none; }
+.vt-menu-head {
+  padding:8px 10px 6px; font-size:10px; font-weight:700;
+  letter-spacing:1px; text-transform:uppercase; color:var(--text3);
+}
+.vt-menu-item {
+  display:flex; align-items:center; gap:10px; width:100%;
+  padding:8px 10px; border:none; border-radius:var(--r-sm); cursor:pointer;
+  background:none; color:var(--text); font-family:inherit; font-size:13px; text-align:left;
+}
+.vt-menu-item:hover { background:var(--glass-hi); }
+.vt-menu-item:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+.vt-menu-item.on { color:var(--accent); }
+.vt-menu-tick { width:14px; flex-shrink:0; }
+.vt-menu-tick svg { width:14px; height:14px; fill:currentColor; }
+.vt-menu-label { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.vt-menu-note { font-size:11px; color:var(--text3); flex-shrink:0; }
+.vt-menu-sep { height:1px; margin:5px 8px; background:var(--glass-border); }
+.vt-menu-row { display:flex; align-items:center; gap:8px; padding:6px 10px; font-size:12.5px; color:var(--text2); }
+.vt-menu-row .vt-chip { padding:4px 9px; font-size:11px; }
+.vt-menu-val { margin-left:auto; font-variant-numeric:tabular-nums; color:#fff; font-size:12px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .vtheatre, .vt-menu, .vt-skip button { animation:none; }
+  .vt-seek-track, .vt-seek-knob, .vt-icon { transition:none; }
+  .vt-stage-msg .spin { animation:none; }
 }

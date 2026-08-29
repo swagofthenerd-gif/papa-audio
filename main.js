@@ -6015,7 +6015,7 @@ const movieTv = _lazy(() => createMovieTvProvider({ fetchFn: fetchWithTimeout(15
 const anime = _lazy(() => createAnimeProvider({ fetchFn: fetchWithTimeout(15000), resolvers: [] }))
 const videoEngine = _lazy(() => new VideoEngine())
 const yarrlist = _lazy(() => createYarrlistDirectory({ fetchFn: fetchWithTimeout(15000) }))
-const _videoSession = { streamer: null, win: null, token: 0 }
+const _videoSession = { streamer: null, win: null, token: 0, bounds: null }
 
 // In-app embedding of the mpv video surface. mpv's `--wid` is an X11 concept:
 // on this XWayland session the native handle of a child BrowserWindow is the
@@ -6043,6 +6043,50 @@ function _videoWid() {
     return handle.readUInt32LE(0) || null
   } catch (_) { return null }
 }
+
+// The renderer owns the layout, so it measures the stage and tells main where
+// the video belongs. Converting from content-relative to screen coordinates is
+// main's job because only main knows where the window sits on the desktop.
+function _positionVideoWindow(rect) {
+  try {
+    if (!rect || !mainWindow || mainWindow.isDestroyed()) return false
+    const win = _videoWindow()
+    if (!win || win.isDestroyed()) return false
+    const content = mainWindow.getContentBounds()
+    const width = Math.max(2, Math.round(rect.width))
+    const height = Math.max(2, Math.round(rect.height))
+    win.setBounds({
+      x: Math.round(content.x + rect.x),
+      y: Math.round(content.y + rect.y),
+      width, height,
+    })
+    return true
+  } catch (_) {
+    return false
+  }
+}
+
+ipcMain.handle('video-surface-bounds', (_, rect) => {
+  _videoSession.bounds = rect || null
+  return { ok: _positionVideoWindow(rect) }
+})
+
+// Fullscreen means the video window alone goes fullscreen; the deck is not
+// drawn over it in either state, so there is nothing to hide or re-show.
+ipcMain.handle('video-fullscreen', () => {
+  try {
+    const win = _videoWindow()
+    if (!win || win.isDestroyed()) return { ok: false }
+    const next = !win.isFullScreen()
+    win.setFullScreen(next)
+    // Leaving fullscreen must snap the window back onto the stage rectangle,
+    // or it keeps the screen-sized bounds and covers the whole app.
+    if (!next && _videoSession.bounds) setTimeout(() => _positionVideoWindow(_videoSession.bounds), 60)
+    return { ok: true, fullscreen: next }
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) }
+  }
+})
 
 function _showVideoWindow() {
   try {

@@ -16,8 +16,52 @@ test('index.html declares the Movies & TV nav entry', () => {
   assert.match(HTML, /Movies &amp; TV/, 'and it must be labelled')
 })
 
-test('index.html declares the video playback panel', () => {
-  assert.match(HTML, /id="video-panel"/, 'the mpv surface mounts in this panel')
+test('index.html declares the theatre and its stage', () => {
+  assert.match(HTML, /id="vtheatre"/, 'the theatre root')
+  assert.match(HTML, /id="vt-stage"/, 'the rectangle the mpv window is positioned onto')
+  assert.match(HTML, /id="vt-deck"/, 'the control deck')
+})
+
+// mpv paints into a native child window, which sits above the page's
+// compositing layer — controls drawn "over" the video would be invisible
+// behind it. Every control must therefore live outside the stage element.
+test('no control is nested inside the video stage', () => {
+  const stage = HTML.slice(HTML.indexOf('id="vt-stage"'), HTML.indexOf('id="vt-deck"'))
+  for (const id of ['vt-play', 'vt-seek', 'vt-vol', 'vt-full', 'vt-subs']) {
+    assert.ok(!stage.includes('id="' + id + '"'), id + ' must not be inside the stage')
+  }
+  // The skip button is the one exception, and it is deliberate: it belongs to
+  // the video, is bottom-right clear of subtitles, and is drawn by the deck
+  // layer rather than composited over mpv.
+  assert.ok(stage.includes('id="vt-skip"'))
+})
+
+test('the theatre has the full transport, not just play and stop', () => {
+  for (const id of ['vt-play', 'vt-back10', 'vt-fwd10', 'vt-seek', 'vt-vol',
+                    'vt-mute', 'vt-subs', 'vt-audio', 'vt-speed', 'vt-settings', 'vt-full']) {
+    assert.match(HTML, new RegExp('id="' + id + '"'), 'missing control: ' + id)
+  }
+})
+
+test('the transport is labelled for assistive tech', () => {
+  const deck = HTML.slice(HTML.indexOf('id="vt-deck"'), HTML.indexOf('id="vt-menu"'))
+  const buttons = deck.match(/<button[^>]*>/g) || []
+  for (const b of buttons) {
+    assert.ok(/aria-label=/.test(b), 'button without an aria-label: ' + b.slice(0, 60))
+  }
+  assert.match(HTML, /id="vt-seek"[^>]*role="slider"/s)
+  assert.match(HTML, /aria-valuemin="0"/)
+})
+
+test('the theatre is a modal dialog', () => {
+  assert.match(HTML, /id="vtheatre"[^>]*role="dialog"/s)
+  assert.match(HTML, /aria-modal="true"/)
+})
+
+test('the player controller is loaded before the renderer', () => {
+  const player = HTML.indexOf('video-player.js')
+  const renderer = HTML.indexOf('renderer.js"')
+  assert.ok(player > -1 && player < renderer, 'video-player.js must load before renderer.js')
 })
 
 test('renderer.js defines the catalog and detail renders', () => {
