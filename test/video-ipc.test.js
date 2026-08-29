@@ -379,3 +379,28 @@ test('the video window follows the app when it moves, resizes or fullscreens', (
   }
   assert.match(MAIN, /_rebindVideoFollow\(\)/)
 })
+
+// Without a reported rectangle the window would be shown at its creation size,
+// floating over the app — which is the separate-window bug.
+test('a missing stage rectangle falls back to a derived one', () => {
+  const start = MAIN.indexOf('function _fallbackStageBounds()')
+  assert.ok(start > -1, 'there must be a fallback rectangle')
+  const body = MAIN.slice(start, MAIN.indexOf('\n}', start))
+  assert.match(body, /getContentBounds\(\)/)
+  const showStart = MAIN.indexOf('function _showVideoWindow()')
+  const show = MAIN.slice(showStart, showStart + 700)
+  assert.match(show, /_videoSession\.bounds \|\| _fallbackStageBounds\(\)/)
+  assert.match(show, /_positionVideoWindow\(rect\)/)
+})
+
+test('playback waits for the stage rectangle before starting', () => {
+  const RENDERER = require('fs').readFileSync(require('path').join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
+  const at = RENDERER.indexOf('function _videoPlayResult(')
+  assert.ok(at > -1)
+  const body = RENDERER.slice(at, at + 2600)
+  const ready = body.indexOf('_player.ready')
+  const play = body.indexOf('api.videoPlay')
+  assert.ok(ready > -1, 'the stage rectangle must be reported before playback')
+  assert.ok(play > -1)
+  assert.ok(ready < play, 'showing the video window before its rectangle is known makes it float over the app')
+})

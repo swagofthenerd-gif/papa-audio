@@ -1622,12 +1622,17 @@ function _videoPlayResult(result) {
       : (d && d.year ? String(d.year) : ''),
   })
   _handleVideoEvent({ kind: 'buffering' })
+  // Wait until main knows the stage rectangle. Starting playback first shows
+  // the mpv window at its creation size, floating over the app as a separate
+  // window before any bounds arrive.
+  Promise.resolve(_player.ready ? _player.ready() : null).then(function () {
   window.api.videoPlay({ result }).then(function (res) {
     // The handler rejects unplayable sources (no magnet, no URL) with ok:false
     // rather than throwing, so this has to be checked, not just caught.
     if (res && res.ok === false) _handleVideoEvent({ kind: 'error', message: res.error })
   }).catch(function (e) {
     _handleVideoEvent({ kind: 'error', message: String((e && e.message) || e) })
+  })
   })
 }
 

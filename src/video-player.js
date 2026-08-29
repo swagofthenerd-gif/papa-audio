@@ -74,13 +74,25 @@
     // on any resize, or the video and its frame drift apart.
     function reportBounds() {
       const stage = $('vt-stage')
-      if (!stage || !api || !api.videoSurfaceBounds) return
+      if (!stage || !api || !api.videoSurfaceBounds) return Promise.resolve(false)
       const r = stage.getBoundingClientRect()
-      if (r.width < 2 || r.height < 2) return
-      api.videoSurfaceBounds({
+      if (r.width < 2 || r.height < 2) return Promise.resolve(false)
+      return api.videoSurfaceBounds({
         x: Math.round(r.left), y: Math.round(r.top),
         width: Math.round(r.width), height: Math.round(r.height),
-      }).catch(function () {})
+      }).then(function () { return true }).catch(function () { return false })
+    }
+
+    // Resolves once main has been told where the video belongs. The caller
+    // must await this before starting playback: showing the mpv window before
+    // its rectangle is known puts it on screen at its creation size, floating
+    // over the app as a separate window — which is exactly the bug this
+    // prevents. Layout is forced synchronously rather than waited for over two
+    // animation frames, because the play call cannot be delayed by frames.
+    function ready() {
+      const stage = $('vt-stage')
+      if (stage) void stage.offsetHeight   // force layout now
+      return reportBounds()
     }
     function scheduleBounds() {
       clearTimeout(boundsTimer)
@@ -649,13 +661,11 @@
           if (onState) { try { onState(s) } catch (_) { /* never let a listener stop playback */ } }
         })
       }
-      // Two frames: one for the theatre to lay out, one for the stage to have
-      // its final size before the mpv window is positioned onto it. Guarded so
-      // the module stays loadable outside a browser (tests, and any future
-      // main-process use).
-      const raf = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : null
-      if (raf) raf(function () { raf(reportBounds) })
-      else scheduleBounds()
+      // The stage rectangle is reported synchronously here so it is known even
+      // if the caller does not await ready(); scheduleBounds re-sends after
+      // any late layout settling.
+      ready()
+      scheduleBounds()
     }
 
     function close() {
@@ -695,6 +705,7 @@
       setUpNext: setUpNext,
       setStageMessage: setStageMessage,
       reportBounds: reportBounds,
+      ready: ready,
       // Exposed for tests and for the renderer's own event handling.
       _state: function () { return state },
       _setState: function (s) { state = s; render() },

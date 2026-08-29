@@ -357,3 +357,63 @@ test('a hostile episode title cannot break out of the card', () => {
   assert.ok(!/<img onerror/.test(nodes['vt-upnext'].innerHTML))
   assert.ok(!/'"><b>/.test(nodes['vt-upnext'].innerHTML))
 })
+
+
+// ── Stage bounds ────────────────────────────────────────────────────────────
+// Showing the mpv window before main knows where the video belongs puts it on
+// screen at its creation size, floating over the app as a separate window.
+// This was the bug: open() scheduled the report on an animation frame while
+// playback started immediately after, so the window was always shown first.
+test('open() reports the stage rectangle synchronously', async () => {
+  const sent = []
+  const nodes = {}
+  for (const id of ['vtheatre', 'vt-stage', 'vt-stage-msg', 'vt-skip', 'vt-upnext',
+                    'vt-strip', 'vt-title', 'vt-sub', 'vt-next', 'vt-menu']) nodes[id] = el(id)
+  nodes['vt-menu'].classList.add('hidden')
+  nodes['vt-stage'].getBoundingClientRect = () => ({ left: 0, top: 62, width: 1400, height: 700 })
+  const p = create({
+    document: { getElementById: id => nodes[id] || null, querySelector: () => null,
+                addEventListener () {}, documentElement: { clientWidth: 1400 } },
+    api: {
+      videoControl: () => Promise.resolve({ ok: true }),
+      videoSurfaceBounds: r => { sent.push(r); return Promise.resolve({ ok: true }) },
+      onVideoState: () => () => {},
+    },
+    keymap, skipModel,
+  })
+  p.open({ title: 'X' })
+  assert.strictEqual(sent.length, 1, 'bounds must be sent during open(), not a frame later')
+  assert.deepStrictEqual(sent[0], { x: 0, y: 62, width: 1400, height: 700 })
+})
+
+test('ready() resolves so playback can wait for the rectangle to land', async () => {
+  const nodes = {}
+  for (const id of ['vtheatre', 'vt-stage', 'vt-menu']) nodes[id] = el(id)
+  nodes['vt-menu'].classList.add('hidden')
+  nodes['vt-stage'].getBoundingClientRect = () => ({ left: 0, top: 0, width: 800, height: 450 })
+  const p = create({
+    document: { getElementById: id => nodes[id] || null, querySelector: () => null,
+                addEventListener () {}, documentElement: { clientWidth: 800 } },
+    api: { videoSurfaceBounds: () => Promise.resolve({ ok: true }), videoControl: () => Promise.resolve({}) },
+    keymap, skipModel,
+  })
+  assert.strictEqual(await p.ready(), true)
+})
+
+// A collapsed stage would place the video window in a two-pixel box.
+test('a stage with no size reports nothing rather than a degenerate rectangle', async () => {
+  const nodes = {}
+  for (const id of ['vtheatre', 'vt-stage', 'vt-menu']) nodes[id] = el(id)
+  nodes['vt-menu'].classList.add('hidden')
+  nodes['vt-stage'].getBoundingClientRect = () => ({ left: 0, top: 0, width: 0, height: 0 })
+  let sent = 0
+  const p = create({
+    document: { getElementById: id => nodes[id] || null, querySelector: () => null,
+                addEventListener () {}, documentElement: { clientWidth: 800 } },
+    api: { videoSurfaceBounds: () => { sent++; return Promise.resolve({ ok: true }) },
+           videoControl: () => Promise.resolve({}) },
+    keymap, skipModel,
+  })
+  assert.strictEqual(await p.ready(), false)
+  assert.strictEqual(sent, 0)
+})

@@ -6113,10 +6113,27 @@ function _rebindVideoFollow() {
   mainWindow.on('leave-full-screen', () => setTimeout(follow, 120))
 }
 
+// If the renderer never reported a stage rectangle, derive one from the main
+// window rather than letting the video window appear at its creation size,
+// floating over the app as a separate window. The numbers mirror the theatre's
+// layout: a top bar, and a deck plus action strip at the bottom.
+function _fallbackStageBounds() {
+  try {
+    if (!mainWindow || mainWindow.isDestroyed()) return null
+    const c = mainWindow.getContentBounds()
+    const TOP = 62, BOTTOM = 128
+    return { x: 0, y: TOP, width: c.width, height: Math.max(80, c.height - TOP - BOTTOM) }
+  } catch (_) { return null }
+}
+
 function _showVideoWindow() {
   try {
     const win = _videoWindow()
-    if (_videoSession.bounds) _positionVideoWindow(_videoSession.bounds)
+    const rect = _videoSession.bounds || _fallbackStageBounds()
+    if (rect) {
+      _positionVideoWindow(rect)
+      if (!_videoSession.bounds) console.warn('[papa-video] no stage bounds reported; using a derived rectangle')
+    }
     win.showInactive()
     // Focus stays with the main window: the deck, the keyboard shortcuts and
     // the skip buttons all live there, and stealing focus into a blank mpv
