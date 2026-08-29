@@ -70,9 +70,49 @@ test('exclusive config adds alsa device + exclusive flags', () => {
 test('_args always includes required mpv basics', () => {
   const eng = new VideoEngine({ config: {} })
   const args = eng._args('/tmp/v.sock')
-  for (const flag of ['--no-terminal', '--idle=yes', '--cache=yes', '--demuxer-max-bytes=64MiB', '--ytdl=no']) {
+  for (const flag of ['--no-terminal', '--idle=yes', '--cache=yes', '--ytdl=no']) {
     assert.ok(args.includes(flag), `missing ${flag}`)
   }
+})
+
+// 64MiB is only a few seconds of a 1080p stream, so mpv drained its buffer and
+// stalled even while the torrent was keeping up. These are buffer-size and
+// transport options only — none of them touch the decode path, so the picture
+// and sound are bit-for-bit what the source carries.
+test('_args gives mpv a streaming-sized buffer', () => {
+  const args = new VideoEngine({ config: {} })._args('/tmp/v.sock')
+  const bytes = args.find(a => a.startsWith('--demuxer-max-bytes='))
+  assert.ok(bytes, 'a demuxer buffer size must be set')
+  const mib = Number(/(\d+)MiB/.exec(bytes)[1])
+  assert.ok(mib >= 128, `buffer too small for streaming: ${mib}MiB`)
+  assert.ok(args.some(a => a.startsWith('--cache-secs=')))
+  assert.ok(args.some(a => a.startsWith('--demuxer-readahead-secs=')))
+  assert.ok(args.some(a => a.startsWith('--demuxer-max-back-bytes=')), 'back-buffer makes small seeks instant')
+})
+
+// The torrent server returns transient errors while a piece is in flight.
+// Without reconnect mpv treats that as end-of-stream and stops.
+test('_args tells mpv to ride through transient stream errors', () => {
+  const args = new VideoEngine({ config: {} })._args('/tmp/v.sock')
+  const lavf = args.find(a => a.startsWith('--stream-lavf-o='))
+  assert.ok(lavf, 'reconnect options must be set')
+  assert.match(lavf, /reconnect=1/)
+  assert.match(lavf, /reconnect_streamed=1/)
+  assert.ok(args.some(a => a.startsWith('--network-timeout=')))
+})
+
+// Hardware decode offloads the CPU; it does not re-encode or rescale, and
+// auto-safe falls back to software whenever the hardware path is not
+// known-good for the codec.
+test('_args enables hardware decoding without any quality-reducing flag', () => {
+  const args = new VideoEngine({ config: {} })._args('/tmp/v.sock')
+  assert.ok(args.includes('--hwdec=auto-safe'))
+  // These would visibly degrade the picture. None of them may ever appear.
+  for (const bad of ['--profile=fast', '--profile=low-latency', '--vd-lavc-skiploopfilter=all', '--scale=bilinear', '--sws-scaler=fast-bilinear']) {
+    assert.ok(!args.includes(bad), `${bad} trades quality for speed and must not be set`)
+  }
+  assert.ok(!args.some(a => a.startsWith('--vf=')), 'no video filter may be inserted')
+  assert.ok(!args.some(a => a.startsWith('--af=')), 'no audio filter may be inserted')
 })
 
 test('start spawns mpv and connects the IPC client', async () => {
@@ -147,4 +187,41 @@ test('engine exposes core public API and config', () => {
   assert.strictEqual(typeof eng.stop, 'function')
   assert.strictEqual(typeof eng.load, 'function')
   assert.strictEqual(typeof eng.command, 'function')
+})
+
+// ── Restart discipline ──────────────────────────────────────────────────────
+// start() used to overwrite this.proc without killing the process it replaced,
+// so every play stacked another mpv on top of the last one: several windows
+// fighting for the audio device, and none of them reachable to stop.
+test('a second start() kills the mpv it replaces', async () => {
+  const a = await fakeMpv()
+  const b = await fakeMpv()
+  let killed = 0
+  a.proc.kill = () => { killed++; a.proc.emit('exit', 0) }
+
+  const spawned = [a, b]
+  let n = 0
+  const eng = new VideoEngine({ spawnFn: () => spawned[n++].proc, socketPath: a.sock })
+  await eng.start()
+  assert.strictEqual(killed, 0, 'nothing to kill on the first start')
+
+  // Point the engine at the second fake socket for the restart.
+  eng._fixedSocketPath = b.sock
+  await eng.start()
+  assert.strictEqual(killed, 1, 'the previous mpv must be killed before respawning')
+  assert.strictEqual(eng.alive, true)
+
+  eng.stop()
+  a.close(); b.close()
+})
+
+test('the generation guard still rejects commands issued against a replaced mpv', async () => {
+  const a = await fakeMpv()
+  const eng = new VideoEngine({ spawnFn: () => a.proc, socketPath: a.sock })
+  await eng.start()
+  const stale = eng._guard('load')
+  eng._gen++
+  await assert.rejects(() => stale('loadfile', 'x'), /ENGINE_GONE|went away/)
+  eng.stop()
+  a.close()
 })

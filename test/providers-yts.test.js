@@ -36,8 +36,11 @@ test('normalizeMovieResult maps torrents to torrent entries and drops hashless t
     fileIndex: 0,
     source: 'YTS',
     quality: '720p',
-    label: 'YTS · 720p',
-    audioLayout: '5.1',
+    label: 'YTS · 720p · 10 seeds',
+    // The layout is whatever YTS reported, not a hardcoded '5.1'. This fixture
+    // carries no audio_channels, so the honest answer is "unknown" (null).
+    audioLayout: null,
+    seeds: 10,
     sub: null,
     dub: null,
   })
@@ -52,6 +55,7 @@ test('normalizeMovieResult maps unrecognized qualities to unknown', () => {
   assert.strictEqual(entries.length, 1)
   assert.strictEqual(entries[0].quality, 'unknown')
   assert.strictEqual(entries[0].label, 'YTS · unknown')
+  assert.strictEqual(entries[0].audioLayout, null)
 })
 
 test('createYtsProvider builds the list URL against the first default mirror and resolves a matched title', async () => {
@@ -64,7 +68,7 @@ test('createYtsProvider builds the list URL against the first default mirror and
   const entries = await provider({ type: 'movie', title: 'Inception', year: 2010 })
   assert.strictEqual(entries.length, 3)
   assert.strictEqual(entries[0].source, 'YTS')
-  assert.strictEqual(entries[0].audioLayout, '5.1')
+  assert.strictEqual(entries[0].audioLayout, null)
   assert.deepStrictEqual(calls, [
     `${DEFAULT_BASE_URLS[0]}/api/v2/list_movies.json?query_term=Inception%202010&limit=5`,
   ])
@@ -170,4 +174,36 @@ test('DEFAULT_BASE_URLS no longer includes the dead yts.mx domain', () => {
   assert.ok(Array.isArray(DEFAULT_BASE_URLS) && DEFAULT_BASE_URLS.length > 0)
   assert.ok(DEFAULT_BASE_URLS.every(u => typeof u === 'string' && u.startsWith('https://')))
   assert.ok(!DEFAULT_BASE_URLS.includes('https://yts.mx'))
+})
+
+test('audio layout comes from YTS audio_channels, never a hardcoded guess', () => {
+  const { mapAudioLayout } = require('../providers/yts')
+  assert.strictEqual(mapAudioLayout('5.1'), '5.1')
+  assert.strictEqual(mapAudioLayout('6'), '5.1')
+  assert.strictEqual(mapAudioLayout('2'), 'stereo')
+  assert.strictEqual(mapAudioLayout('7.1'), '7.1')
+  // Unknown must stay null: claiming 5.1 promoted every YTS entry to the top of
+  // a surround-preferring sort on a value nobody had measured.
+  assert.strictEqual(mapAudioLayout(undefined), null)
+  assert.strictEqual(mapAudioLayout(''), null)
+})
+
+test('pickBestMovie survives punctuation differences between TMDB and YTS', () => {
+  const { pickBestMovie } = require('../providers/yts')
+  const movies = [{ title: 'Spider Man Across the Spider Verse', year: 2023 }]
+  const hit = pickBestMovie(movies, { title: 'Spider-Man: Across the Spider-Verse', year: 2023 })
+  assert.ok(hit, 'punctuation-only differences must still match')
+  assert.strictEqual(hit.year, 2023)
+})
+
+test('pickBestMovie still refuses a genuinely different film', () => {
+  const { pickBestMovie } = require('../providers/yts')
+  const movies = [{ title: 'Interstellar', year: 2014 }]
+  assert.strictEqual(pickBestMovie(movies, { title: 'Inception', year: 2010 }), null)
+})
+
+test('pickBestMovie prefers the year match among same-title results', () => {
+  const { pickBestMovie } = require('../providers/yts')
+  const movies = [{ title: 'Dune', year: 1984 }, { title: 'Dune', year: 2021 }]
+  assert.strictEqual(pickBestMovie(movies, { title: 'Dune', year: 2021 }).year, 2021)
 })

@@ -30,6 +30,13 @@ test('normalizeMedia maps a raw AniList media node to an anime catalog entry', (
     id: 101,
     type: 'anime',
     title: 'Fullmetal Alchemist: Brotherhood',
+    // All three variants are kept: the torrent indexer needs the romaji name,
+    // which is what release groups actually use.
+    titles: {
+      english: 'Fullmetal Alchemist: Brotherhood',
+      romaji: 'Hagane no Renkinjutsushi',
+      native: '鋼の錬金術師 FULLMETAL ALCHEMIST',
+    },
     year: 2009,
     poster: 'https://example.com/fma.jpg',
     backdrop: null,
@@ -199,3 +206,54 @@ test('createAnilistCatalog throws on a GraphQL error response', async () => {
   const cat = createAnilistCatalog({ fetchFn })
   await assert.rejects(() => cat.popular(1), /Rate limited/)
 })
+
+// ── Detail by id ────────────────────────────────────────────────────────────
+// The detail handler used to run a TEXT search for the numeric id — searching
+// AniList for the string "21" — which routinely opened an unrelated show.
+{
+  const { buildQuery, buildVariables, createAnilistCatalog } = require('../catalog/anilist')
+
+  test('buildQuery byId selects the top-level Media field, not a Page search', () => {
+    const q = buildQuery('byId')
+    assert.match(q, /Media\(id: \$id, type: ANIME\)/)
+    assert.ok(!/Page\(/.test(q), 'byId must not go through Page')
+    assert.ok(!/search:/.test(q), 'byId must not be a text search')
+  })
+
+  test('buildVariables byId sends a numeric id and nothing else', () => {
+    assert.deepStrictEqual(buildVariables('byId', { id: '21' }), { id: 21 })
+    assert.deepStrictEqual(buildVariables('byId', { id: 21, page: 3 }), { id: 21 })
+  })
+
+  test('byId reads data.Media and returns one normalized entry', async () => {
+    let body = null
+    const fetchFn = async (_url, opts) => {
+      body = JSON.parse(opts.body)
+      return {
+        ok: true,
+        json: async () => ({
+          data: { Media: { id: 21, title: { english: 'One Piece' }, seasonYear: 1999, episodes: 1100 } },
+        }),
+      }
+    }
+    const cat = createAnilistCatalog({ fetchFn })
+    const detail = await cat.byId(21)
+    assert.strictEqual(detail.id, 21)
+    assert.strictEqual(detail.title, 'One Piece')
+    assert.strictEqual(detail.type, 'anime')
+    assert.strictEqual(detail.episodeCount, 1100)
+    assert.deepStrictEqual(body.variables, { id: 21 })
+  })
+
+  test('byId returns null for an unknown id rather than an unrelated show', async () => {
+    const fetchFn = async () => ({ ok: true, json: async () => ({ data: { Media: null } }) })
+    const cat = createAnilistCatalog({ fetchFn })
+    assert.strictEqual(await cat.byId(999999999), null)
+  })
+
+  test('byId surfaces a GraphQL error instead of silently returning nothing', async () => {
+    const fetchFn = async () => ({ ok: true, json: async () => ({ errors: [{ message: 'Not Found' }] }) })
+    const cat = createAnilistCatalog({ fetchFn })
+    await assert.rejects(() => cat.byId(1), /Not Found/)
+  })
+}

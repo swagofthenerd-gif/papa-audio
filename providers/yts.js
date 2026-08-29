@@ -26,6 +26,36 @@ function mapQuality(q) {
   return VALID_QUALITIES.includes(q) ? q : 'unknown'
 }
 
+// YTS reports `audio_channels` as a string ("2", "5.1", "7.1") on newer API
+// responses and omits it on older ones. This used to be hardcoded to '5.1' for
+// every torrent, which made the surround-aware ranker sort on a value that was
+// simply invented — most YTS web-rips are stereo. Unknown now means null, and
+// the ranker treats null as "not surround" rather than promoting it.
+function mapAudioLayout(raw) {
+  const ch = raw == null ? null : String(raw).trim()
+  if (!ch) return null
+  if (ch === '5.1' || ch === '6') return '5.1'
+  if (ch === '7.1' || ch === '8') return '7.1'
+  if (ch === '2' || ch === '2.0') return 'stereo'
+  if (ch === '1' || ch === '1.0') return 'mono'
+  return null
+}
+
+// Titles differ between TMDB and YTS in punctuation and separators far more
+// often than in words ("Spider-Man: Across the Spider-Verse" vs
+// "Spider Man Across the Spider Verse"). Comparing on a punctuation-stripped,
+// collapsed-whitespace form turns most of those near-misses into matches,
+// while still refusing genuinely different films.
+function normalizeTitle(title) {
+  return String(title == null ? '' : title)
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+}
+
 function buildListUrl(baseUrl, query) {
   return `${baseUrl}/api/v2/list_movies.json?query_term=${encodeURIComponent(query)}&limit=5`
 }
@@ -39,6 +69,8 @@ function normalizeMovieResult(raw) {
     .filter(t => t && typeof t.hash === 'string' && t.hash.length > 0)
     .map(t => {
       const quality = mapQuality(t.quality)
+      const audioLayout = mapAudioLayout(t.audio_channels)
+      const seeds = Number(t.seeds) || 0
       return {
         kind: 'torrent',
         url: null,
@@ -47,8 +79,9 @@ function normalizeMovieResult(raw) {
         fileIndex: 0,
         source: 'YTS',
         quality,
-        label: `YTS · ${quality}`,
-        audioLayout: '5.1',
+        label: `YTS · ${quality}${audioLayout ? ` · ${audioLayout}` : ''}${seeds ? ` · ${seeds} seeds` : ''}`,
+        audioLayout,
+        seeds,
         sub: null,
         dub: null,
       }
@@ -59,12 +92,19 @@ function normalizeMovieResult(raw) {
 // match, then — when `request.year` is given — prefer the title match whose
 // `year` equals it.
 function pickBestMovie(movies, request) {
-  const title = (request.title || '').trim().toLowerCase()
+  const title = normalizeTitle(request.title)
   if (!title) return null
   const year = request.year != null && request.year !== '' ? String(request.year) : null
-  const titleMatches = (movies || []).filter(
-    m => m && (m.title || '').trim().toLowerCase() === title
-  )
+  // Exact (normalized) title first; only if nothing matches do we accept a
+  // title that merely contains the requested one, which catches YTS entries
+  // carrying an edition suffix ("Dune Part Two Extended").
+  let titleMatches = (movies || []).filter(m => m && normalizeTitle(m.title) === title)
+  if (titleMatches.length === 0) {
+    titleMatches = (movies || []).filter(m => {
+      const t = normalizeTitle(m && m.title)
+      return t && (t.startsWith(title + ' ') || t === title)
+    })
+  }
   if (titleMatches.length === 0) return null
   if (year) {
     const yearMatch = titleMatches.find(m => String(m.year) === year)
@@ -114,6 +154,8 @@ function createYtsProvider({ fetchFn, baseUrls = DEFAULT_BASE_URLS } = {}) {
 module.exports = {
   DEFAULT_BASE_URLS,
   mapQuality,
+  mapAudioLayout,
+  normalizeTitle,
   buildListUrl,
   normalizeMovieResult,
   pickBestMovie,

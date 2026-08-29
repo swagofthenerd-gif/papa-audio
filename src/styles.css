@@ -5738,6 +5738,15 @@ body.app-unfocused *::after {
 .video-error-hint { font-size:12px; color:var(--accent); margin-bottom:12px; }
 .video-error-actions { margin-top:4px; }
 
+/* Search box in the Movies & TV header. The input flexes so the type filter
+   stays a fixed size at any window width. */
+.video-search-box { display:flex; align-items:center; gap:8px; margin-left:auto; min-width:0; flex:1 1 320px; max-width:520px; }
+.video-search-box input { flex:1 1 auto; min-width:0; }
+.video-search-box select { flex:0 0 auto; }
+.video-search-results:empty { display:none; }
+.video-sources-header + .yt-status { margin:12px 0; }
+#video-sources-retry { margin-top:8px; }
+
 .video-poster-row {
   display:grid;
   grid-template-columns:repeat(auto-fill, minmax(150px, 1fr));

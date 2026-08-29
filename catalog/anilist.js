@@ -26,6 +26,15 @@ function normalizeMedia(raw) {
     id: raw.id ?? null,
     type: 'anime',
     title: title.english || title.romaji || title.native || null,
+    // All three variants are kept, not just the display pick. Fansub groups
+    // release under the ROMAJI title ("Sousou no Frieren"), so searching a
+    // torrent indexer with the English one ("Frieren: Beyond Journey's End")
+    // finds nothing at all for a large share of shows.
+    titles: {
+      english: title.english || null,
+      romaji: title.romaji || null,
+      native: title.native || null,
+    },
     year: raw.seasonYear ?? null,
     poster: raw.coverImage?.large ?? null,
     backdrop: raw.bannerImage || (raw.coverImage && raw.coverImage.extraLarge) || null,
@@ -81,12 +90,24 @@ function buildQuery(kind, options) {
     }
   }
 }`
+    // A detail lookup by id is NOT a text search. `Media(id:)` is a top-level
+    // field, not a Page child, so this query shape differs from the others and
+    // its result is read from `data.Media`, not `data.Page.media`.
+    case 'byId':
+      return `query ($id: Int) {
+  Media(id: $id, type: ANIME) {
+    ${MEDIA_SELECTION}
+  }
+}`
     default:
       throw new Error(`Unknown AniList query kind: ${kind}`)
   }
 }
 
-function buildVariables(kind, { page, perPage, query, season, seasonYear } = {}) {
+function buildVariables(kind, { page, perPage, query, season, seasonYear, id } = {}) {
+  // The byId query takes only $id; sending page/perPage would be rejected as
+  // unknown variables are not, but keeping it clean matches the query shape.
+  if (kind === 'byId') return { id: Number(id) }
   const vars = {
     page: page ?? 1,
     perPage: perPage ?? 20,
@@ -127,6 +148,10 @@ function createAnilistCatalog({ fetchFn } = {}) {
     if (data && Array.isArray(data.errors) && data.errors.length) {
       throw new Error(`AniList GraphQL error: ${data.errors[0].message}`)
     }
+    if (kind === 'byId') {
+      const one = data?.data?.Media
+      return one ? normalizeMedia(one) : null
+    }
     const media = data?.data?.Page?.media
     return (media || []).map(normalizeMedia)
   }
@@ -143,6 +168,9 @@ function createAnilistCatalog({ fetchFn } = {}) {
     },
     search(query, page) {
       return _post('search', { query, page })
+    },
+    byId(id) {
+      return _post('byId', { id })
     },
   }
 }

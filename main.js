@@ -123,6 +123,9 @@ const { createTmdbCatalog } = require('./catalog/tmdb')
 const { createAnilistCatalog } = require('./catalog/anilist')
 const { resolveStream } = require('./providers/index')
 const { createYtsProvider } = require('./providers/yts')
+const { createEztvProvider } = require('./providers/eztv')
+const { createNyaaProvider } = require('./providers/nyaa')
+const { createApibayProvider } = require('./providers/apibay')
 const { createMovieTvProvider, createVidsrcResolver } = require('./providers/movie-tv')
 const { createAnimeProvider } = require('./providers/anime')
 const { TorrentStreamer } = require('./torrent-stream')
@@ -335,7 +338,10 @@ let _torrentClient = null
 const _activeTorrents = new Map()
 function getTorrentClient() {
   if (!_torrentClient) {
-    _torrentClient = new WebTorrent()
+    // The default cap of 55 connections is tuned for background downloading.
+    // Streaming is latency-sensitive: the head of the file has to arrive now,
+    // not eventually, and more peers is the single biggest lever on that.
+    _torrentClient = new WebTorrent({ maxConns: 150 })
     _torrentClient.on('error', err => console.error('[WebTorrent]', err.message))
   }
   return _torrentClient
@@ -1289,6 +1295,10 @@ app.on('before-quit', () => {
 })
 app.on('will-quit', () => {
   player?.stop()
+  // The video mpv is a separate child process from the music one, and a live
+  // torrent stream keeps a socket server open. Neither is reached by
+  // player.stop(), so quitting used to leave both behind.
+  try { _videoTeardown() } catch (_) {}
   stopSlskd()
   flushSideStores()
   flushLogSync()
@@ -5983,15 +5993,25 @@ const tmdb = _lazy(() => createTmdbCatalog({
 }))
 const anilist = _lazy(() => createAnilistCatalog({ fetchFn: fetchWithTimeout(15000) }))
 const yts = _lazy(() => createYtsProvider({ fetchFn: fetchWithTimeout(15000) }))
-// vidsrc is the only concrete HTTP resolver shipped; it maps a TMDB id to an
-// embed URL. More can be appended live without touching the router.
-const movieTv = _lazy(() => createMovieTvProvider({ fetchFn: fetchWithTimeout(15000), resolvers: [createVidsrcResolver()] }))
-// No concrete anime resolver ships yet, so this starts empty and returns []
-// until one is added.
+// EZTV covers TV episodes (YTS is movies-only) and Nyaa covers anime. Both are
+// keyless and magnet-based, so they ride the same torrent path as YTS.
+const eztv = _lazy(() => createEztvProvider({ fetchFn: fetchWithTimeout(15000) }))
+const nyaa = _lazy(() => createNyaaProvider({ fetchFn: fetchWithTimeout(15000) }))
+// The broad-coverage indexer. YTS only carries its own encodes, so any film it
+// never released had no sources at all; apibay covers the whole public index
+// for both movies and TV.
+const apibay = _lazy(() => createApibayProvider({ fetchFn: fetchWithTimeout(15000) }))
+// The HTTP adapters ship with no resolvers. The former vidsrc resolver was
+// removed from the wiring because it returned an *embed page* URL: mpv runs
+// with --ytdl=no, so every one of those entries failed the moment it was
+// clicked, while still occupying the top of the source list. The adapters stay
+// so a real direct-stream resolver can be dropped in without touching the
+// router, the engine, or the UI.
+const movieTv = _lazy(() => createMovieTvProvider({ fetchFn: fetchWithTimeout(15000), resolvers: [] }))
 const anime = _lazy(() => createAnimeProvider({ fetchFn: fetchWithTimeout(15000), resolvers: [] }))
 const videoEngine = _lazy(() => new VideoEngine())
 const yarrlist = _lazy(() => createYarrlistDirectory({ fetchFn: fetchWithTimeout(15000) }))
-const _videoSession = { streamer: null, win: null }
+const _videoSession = { streamer: null, win: null, token: 0 }
 
 // In-app embedding of the mpv video surface. mpv's `--wid` is an X11 concept:
 // on this XWayland session the native handle of a child BrowserWindow is the
@@ -6037,6 +6057,27 @@ function _closeVideoWindow() {
 
 const _videoCatalogCache = makeCache({ cap: 50, ttlMs: 1000 * 60 * 60 * 24 })
 const _videoStreamCache = makeCache({ cap: 200, ttlMs: 1000 * 60 * 15 })
+// Season browsing re-asked for the same show detail on every season switch —
+// two TMDB calls per click, forever, because nothing cached the detail. Shows
+// change rarely; six hours is generous and still picks up new seasons the same
+// day. Season payloads are cached separately so switching back to a season
+// already viewed costs nothing.
+const _videoDetailCache = makeCache({ cap: 120, ttlMs: 1000 * 60 * 60 * 6 })
+const _videoSeasonCache = makeCache({ cap: 400, ttlMs: 1000 * 60 * 60 * 6 })
+
+function _currentAnimeSeasonTag() {
+  const now = new Date()
+  const m = now.getMonth() + 1
+  const season = m <= 3 ? 'WINTER' : m <= 6 ? 'SPRING' : m <= 9 ? 'SUMMER' : 'FALL'
+  return `${season}-${now.getFullYear()}`
+}
+
+function _clearVideoCaches() {
+  _videoCatalogCache.clear()
+  _videoStreamCache.clear()
+  _videoDetailCache.clear()
+  _videoSeasonCache.clear()
+}
 
 ipcMain.handle('video-settings-get', () => {
   return { ok: true, settings: _videoSettings() }
@@ -6045,9 +6086,15 @@ ipcMain.handle('video-settings-get', () => {
 ipcMain.handle('video-settings-set', (_, { patch }) => {
   try {
     const current = _videoSettings()
-    store.set('videoSettings', { ...current, ...(patch || {}) })
-    if (patch && patch.tmdbApiKey) {
-      _videoCatalogCache.clear()
+    const next = { ...current, ...(patch || {}) }
+    store.set('videoSettings', next)
+    // Clearing the key is as much a change as setting one, and the ranking and
+    // source-filtering settings decide what a cached stream list contains, so
+    // any of them going stale would serve results from the previous setting.
+    if (next.tmdbApiKey !== current.tmdbApiKey) _clearVideoCaches()
+    else if (next.preferSurround !== current.preferSurround ||
+             next.torrentSources !== current.torrentSources ||
+             next.preferredQuality !== current.preferredQuality) {
       _videoStreamCache.clear()
     }
     return { ok: true }
@@ -6058,21 +6105,29 @@ ipcMain.handle('video-settings-set', (_, { patch }) => {
 
 ipcMain.handle('video-catalog-get', async (_, { section, page = 1 }) => {
   try {
-    const key = `${section}:${page}`
+    // The season-anime section resolves "current season" at call time, so its
+    // cache key carries the season: without it a 24h entry written in March
+    // would still be served in April under the same key.
+    const key = section === 'season-anime'
+      ? `${section}:${page}:${_currentAnimeSeasonTag()}`
+      : `${section}:${page}`
     const cached = _videoCatalogCache.get(key)
     if (cached) return { ok: true, results: cached }
     let results
     switch (section) {
-      case 'trending-movies': results = await tmdb().trending('movie'); break
-      case 'trending-tv': results = await tmdb().trending('tv'); break
-      case 'popular-movies': results = await tmdb().popular('movie'); break
-      case 'popular-tv': results = await tmdb().popular('tv'); break
+      case 'trending-movies': results = await tmdb().trending('movie', page); break
+      case 'trending-tv': results = await tmdb().trending('tv', page); break
+      case 'popular-movies': results = await tmdb().popular('movie', page); break
+      case 'popular-tv': results = await tmdb().popular('tv', page); break
       case 'trending-anime': results = await anilist().trending(page); break
       case 'popular-anime': results = await anilist().popular(page); break
       case 'season-anime': results = await anilist().season(page); break
       default: return { ok: false, error: `Unknown catalog section: ${section}` }
     }
-    _videoCatalogCache.set(key, results)
+    // An empty list is almost always a transient upstream failure dressed up as
+    // success. Caching it for a day would keep the row empty long after the API
+    // recovered, so only real results are stored.
+    if (Array.isArray(results) && results.length) _videoCatalogCache.set(key, results)
     return { ok: true, results }
   } catch (e) {
     return { ok: false, error: e.message }
@@ -6094,22 +6149,53 @@ ipcMain.handle('video-search', async (_, { query, type }) => {
   }
 })
 
+// The show payload and each season payload are fetched and cached separately:
+// switching season then costs one season request the first time and nothing
+// afterwards, instead of re-fetching the entire show every click.
+async function _videoShowDetail(type, id) {
+  const key = `${type}:${id}`
+  const cached = _videoDetailCache.get(key)
+  if (cached) return cached
+  let detail
+  if (type === 'anime') {
+    // AniList *does* have a by-id field (`Media(id:)`). This used to run a text
+    // search for the id — searching for the string "21" — which routinely
+    // opened a completely unrelated show.
+    detail = await anilist().byId(id)
+  } else {
+    detail = await tmdb().detail(type === 'tv' ? 'tv' : 'movie', id)
+  }
+  if (detail) _videoDetailCache.set(key, detail)
+  return detail
+}
+
+async function _videoSeasonDetail(tvId, season) {
+  const key = `tv:${tvId}:s${season}`
+  const cached = _videoSeasonCache.get(key)
+  if (cached) return cached
+  const payload = await tmdb().season(tvId, season)
+  if (payload && Array.isArray(payload.episodes) && payload.episodes.length) {
+    _videoSeasonCache.set(key, payload)
+  }
+  return payload
+}
+
 ipcMain.handle('video-detail', async (_, { type, id, season }) => {
   try {
-    let detail
-    if (type === 'movie') {
-      detail = await tmdb().detail('movie', id)
-    } else if (type === 'tv') {
-      detail = await tmdb().detail('tv', id)
-      if (typeof season === 'number' && Array.isArray(detail.seasons)) {
-        const eps = await tmdb().season(id, season)
-        const entry = detail.seasons.find(s => s.seasonNumber === season)
-        if (entry) entry.episodes = eps.episodes
+    const detail = await _videoShowDetail(type, id)
+    if (!detail) return { ok: false, error: 'Not found' }
+    if (type === 'tv' && typeof season === 'number' && Array.isArray(detail.seasons)) {
+      const eps = await _videoSeasonDetail(id, season)
+      const entry = detail.seasons.find(s => s.seasonNumber === season)
+      // The cached show object is shared across calls, so the episode list is
+      // attached to a shallow copy rather than mutated in place — otherwise a
+      // second season's episodes would overwrite the first inside the cache.
+      if (entry && eps) {
+        const seasons = detail.seasons.map(sn =>
+          sn.seasonNumber === season ? { ...sn, episodes: eps.episodes || [] } : sn
+        )
+        return { ok: true, detail: { ...detail, seasons } }
       }
-    } else {
-      // AniList has no by-id detail endpoint; search and take the first hit.
-      const list = await anilist().search(String(id), 1)
-      detail = list[0] || null
     }
     return { ok: true, detail }
   } catch (e) {
@@ -6117,15 +6203,62 @@ ipcMain.handle('video-detail', async (_, { type, id, season }) => {
   }
 })
 
-ipcMain.handle('video-streams', async (_, { type, tmdbId, anilistId, title, year, season, episode }) => {
+// Only the backends that can actually answer for this media type are asked.
+// Previously every TV episode also queried YTS, which indexes movies only —
+// one guaranteed-empty network round-trip per episode click.
+function _videoBackends(type, settings) {
+  const torrents = settings.torrentSources !== false
+  if (type === 'anime') return torrents ? [nyaa(), apibay(), anime()] : [anime()]
+  // Every type gets the broad indexer alongside its specialist one. They run
+  // in parallel and their results are merged and de-duplicated by info hash,
+  // so the specialist's better metadata wins where both have the same torrent
+  // and the broad one fills in everything the specialist never carried.
+  if (type === 'tv') return torrents ? [eztv(), apibay(), movieTv()] : [movieTv()]
+  return torrents ? [yts(), apibay(), movieTv()] : [movieTv()]
+}
+
+// The preferred-quality setting was stored and read by nothing. It is applied
+// as a stable partition rather than a filter: sources at or below the preferred
+// quality come first (best first), and anything higher is kept but pushed
+// below, so the user still sees a 2160p option without it hijacking the top
+// slot on a connection chosen for 1080p.
+function _applyQualityPreference(streams, preferred) {
+  const rank = { '2160p': 4, '1080p': 3, '720p': 2, '480p': 1 }
+  const want = rank[preferred]
+  if (!want) return streams
+  const within = []
+  const above = []
+  // Cam rips stay at the very bottom whatever the preference says. Without
+  // this, preferring 1080p would push a real 2160p release below a telesync,
+  // because the telesync's quality parses as "unknown" and lands in `within`.
+  const low = []
+  for (const s of streams) {
+    if (s && s.lowQuality === true) { low.push(s); continue }
+    const r = rank[s && s.quality] || 0
+    ;(r > want ? above : within).push(s)
+  }
+  return within.concat(above, low)
+}
+
+ipcMain.handle('video-streams', async (_, { type, tmdbId, anilistId, imdbId, title, titles, year, season, episode, sub, dub }) => {
   try {
-    const request = { type, tmdbId, anilistId, title, year, season, episode }
-    const key = JSON.stringify(request)
+    const settings = _videoSettings()
+    const request = { type, tmdbId, anilistId, imdbId, title, titles, year, season, episode, sub, dub }
+    // Key on the request plus the settings that change the answer, so a
+    // settings change can never be masked by a cache hit.
+    const key = JSON.stringify([request, settings.preferSurround, settings.preferredQuality, settings.torrentSources])
     const cached = _videoStreamCache.get(key)
     if (cached) return { ok: true, streams: cached }
-    const backends = type === 'anime' ? [anime()] : [yts(), movieTv()]
-    const streams = await resolveStream(request, backends, { preferSurround: _videoSettings().preferSurround })
-    _videoStreamCache.set(key, streams)
+    const backends = _videoBackends(type, settings)
+    const ranked = await resolveStream(request, backends, {
+      preferSurround: settings.preferSurround,
+      timeoutMs: 20000,
+    })
+    const streams = _applyQualityPreference(ranked, settings.preferredQuality)
+    // An empty result is almost always a mirror being briefly unreachable.
+    // Caching it pinned "No sources found" on that title for the full 15-minute
+    // TTL even after the indexer came back.
+    if (streams.length) _videoStreamCache.set(key, streams)
     return { ok: true, streams }
   } catch (e) {
     return { ok: false, error: e.message }
@@ -6151,8 +6284,64 @@ ipcMain.handle('video-probe', async (_, { url }) => {
   }
 })
 
+// Tear down whatever is currently playing before starting anything new.
+// Without this every play stacked another mpv process and another live torrent
+// on top of the last one: `video-play` overwrote `_videoSession.streamer` and
+// `VideoEngine.start()` overwrote its own `proc`, so nothing ever stopped. A
+// few plays into a session there were several mpv windows fighting for audio
+// and several torrents still downloading and seeding in the background.
+function _videoTeardown() {
+  if (_videoSession.streamer) {
+    try { _videoSession.streamer.stop() } catch (_) {}
+    _videoSession.streamer = null
+  }
+  try { videoEngine().stop() } catch (_) {}
+}
+
+// mpv dying mid-playback used to be invisible: VideoEngine emits 'engineDown'
+// and nobody listened, so the UI sat on "Playing" forever. Subscribed once,
+// on the lazily-built engine.
+let _videoEngineWired = false
+function _wireVideoEngine() {
+  if (_videoEngineWired) return
+  _videoEngineWired = true
+  const engine = videoEngine()
+  engine.on('engineDown', () => {
+    if (_videoSession.streamer) {
+      try { _videoSession.streamer.stop() } catch (_) {}
+      _videoSession.streamer = null
+    }
+    _closeVideoWindow()
+    safeSend('video-event', { kind: 'error', message: 'Playback stopped unexpectedly (mpv exited).' })
+  })
+}
+
+// The stream list only carries what the indexer claimed about the audio. Once
+// mpv is actually playing we know the file's real layout, so probe it and tell
+// the UI. This is what the video-probe handler was built for and nothing called.
+function _probePlayingAudio(url) {
+  execFile('ffprobe', [
+    '-v', 'error',
+    '-show_entries', 'stream=codec_type,channels,codec_name',
+    '-of', 'json', url
+  ], { encoding: 'utf8', timeout: 20000, maxBuffer: 1 << 20 }, (err, out) => {
+    if (err) return
+    try {
+      const audio = (JSON.parse(out).streams || []).find(st => st.codec_type === 'audio')
+      if (!audio) return
+      const channels = Number(audio.channels) || 0
+      safeSend('video-event', {
+        kind: 'audio', audioLayout: classify(channels), channels, codec: audio.codec_name || null,
+      })
+    } catch (_) { /* probe is advisory only */ }
+  })
+}
+
 ipcMain.handle('video-play', async (_, { result }) => {
   try {
+    if (!result || typeof result !== 'object') return { ok: false, error: 'No source selected' }
+    _videoTeardown()
+    _wireVideoEngine()
     // The music engine must not keep talking over the video.
     if (player) { try { player.pause().catch(() => {}) } catch (_) {} }
     // When the user wants the in-app panel, obtain the X11 wid now and show the
@@ -6160,24 +6349,42 @@ ipcMain.handle('video-play', async (_, { result }) => {
     const embed = _videoSettings().embed === 'panel'
     const wid = embed ? _videoWid() : null
     if (wid) _showVideoWindow()
-    if (result && result.kind === 'torrent') {
-      const streamer = new TorrentStreamer({ client: getTorrentClient(), timeoutMs: 30000 })
-      streamer.on('error', err => safeSend('video-event', { kind: 'error', message: err && err.message }))
-      streamer.on('progress', p => safeSend('video-event', { kind: 'buffering', ...p }))
+    // Every async callback below is stamped with the play that created it, so
+    // a torrent that becomes ready after the user already started something
+    // else cannot hijack the engine or overwrite the newer status.
+    const token = ++_videoSession.token
+    const current = () => _videoSession.token === token
+    const fail = e => { if (current()) safeSend('video-event', { kind: 'error', message: (e && e.message) || String(e) }) }
+    const started = url => {
+      if (!current()) return
+      safeSend('video-event', { kind: 'playing' })
+      _probePlayingAudio(url)
+    }
+
+    if (result.kind === 'torrent') {
+      if (!result.magnet) return { ok: false, error: 'This source has no magnet link' }
+      const streamer = new TorrentStreamer({
+        client: getTorrentClient(),
+        timeoutMs: 30000,
+        // Enough of the head on disk that mpv starts playing instead of
+        // opening an empty stream and immediately stalling.
+        prebufferBytes: 12 * 1024 * 1024,
+        prebufferTimeoutMs: 45000,
+      })
+      streamer.on('error', err => { if (current()) fail(err) })
+      streamer.on('progress', p => { if (current()) safeSend('video-event', { kind: 'buffering', ...p }) })
       streamer.on('ready', ({ url }) => {
-        videoEngine().start(url, { wid })
-          .then(() => safeSend('video-event', { kind: 'playing' }))
-          .catch(e => safeSend('video-event', { kind: 'error', message: e && e.message }))
+        if (!current()) { try { streamer.stop() } catch (_) {} ; return }
+        videoEngine().start(url, { wid }).then(() => started(url)).catch(fail)
       })
       _videoSession.streamer = streamer
       // Deliberately not awaited: start() resolves on 'ready', and awaiting it
       // would hang this handler on a slow torrent — and on stop.
       streamer.start({ magnet: result.magnet, fileIndex: result.fileIndex ?? 0 })
-        .catch(e => safeSend('video-event', { kind: 'error', message: e && e.message }))
+        .catch(e => { if (e && e.code === 'STOPPED') return; fail(e) })
     } else {
-      videoEngine().start(result.url, { wid })
-        .then(() => safeSend('video-event', { kind: 'playing' }))
-        .catch(e => safeSend('video-event', { kind: 'error', message: e && e.message }))
+      if (!result.url) return { ok: false, error: 'This source has no playable URL' }
+      videoEngine().start(result.url, { wid }).then(() => started(result.url)).catch(fail)
     }
     return { ok: true }
   } catch (e) {
@@ -6187,8 +6394,8 @@ ipcMain.handle('video-play', async (_, { result }) => {
 
 ipcMain.handle('video-stop', async () => {
   try {
-    if (_videoSession.streamer) { _videoSession.streamer.stop(); _videoSession.streamer = null }
-    videoEngine().stop()
+    _videoSession.token++
+    _videoTeardown()
     _closeVideoWindow()
     return { ok: true }
   } catch (e) {

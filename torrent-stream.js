@@ -5,14 +5,70 @@ function buildFileUrl(port, fileIndex, fileName) {
   return `http://127.0.0.1:${port}/${fileIndex}/${encodeURIComponent(fileName)}`
 }
 
+const VIDEO_EXT = /\.(mkv|mp4|avi|m4v|mov|webm|ts|m2ts|wmv|flv|ogv)$/i
+// Release packs carry samples, trailers and extras. A "sample" is a real video
+// file, just not the one anybody wants, and it is small enough to look like a
+// fast start while playing the wrong thing.
+const JUNK = /(^|[\/\\._-])(sample|trailer|extras?|featurette|behindthescenes)([\/\\._-]|$)/i
+
+// Index 0 was hardcoded. In a multi-file torrent that is very often a .nfo, a
+// .txt or a sample clip — so playback either failed outright or streamed the
+// wrong file while the real one was never prioritised. The right pick is the
+// largest non-junk video file.
+function pickVideoFile(files) {
+  const list = Array.isArray(files) ? files : []
+  if (!list.length) return -1
+  const scored = list
+    .map((f, index) => ({ index, name: (f && f.name) || '', length: Number(f && f.length) || 0 }))
+    .filter(f => VIDEO_EXT.test(f.name))
+  const usable = scored.filter(f => !JUNK.test(f.name))
+  const pool = usable.length ? usable : scored
+  if (!pool.length) {
+    // No recognisable video extension: fall back to the largest file rather
+    // than blindly taking index 0.
+    let best = 0
+    for (let i = 1; i < list.length; i++) {
+      if ((Number(list[i] && list[i].length) || 0) > (Number(list[best] && list[best].length) || 0)) best = i
+    }
+    return best
+  }
+  return pool.reduce((a, b) => (b.length > a.length ? b : a)).index
+}
+
+// How much of the head of the file must be on disk before mpv is launched.
+// Starting mpv at zero bytes is what made playback look like it was "buffering
+// slowly": mpv opened, found nothing, and stalled on its own.
+const DEFAULT_PREBUFFER_BYTES = 12 * 1024 * 1024
+
+// Bytes of the file's leading pieces that are verified and present.
+function headBytesReady(torrent, file) {
+  if (!torrent || !file || !torrent.bitfield) return 0
+  const pieceLength = Number(torrent.pieceLength) || 0
+  if (!pieceLength) return 0
+  const start = file._startPiece
+  const end = file._endPiece
+  if (typeof start !== 'number' || typeof end !== 'number') return 0
+  let bytes = 0
+  for (let i = start; i <= end; i++) {
+    if (!torrent.bitfield.get(i)) break // contiguous from the head only
+    bytes += pieceLength
+  }
+  return bytes
+}
+
 class TorrentStreamer extends EventEmitter {
-  constructor({ client, timeoutMs = 20000 } = {}) {
+  constructor({ client, timeoutMs = 20000, prebufferBytes = DEFAULT_PREBUFFER_BYTES, prebufferTimeoutMs = 45000 } = {}) {
     super()
     if (!client || typeof client.add !== 'function') {
       throw new TypeError('TorrentStreamer requires a webtorrent client with an add() method')
     }
     this.client = client
     this.timeoutMs = timeoutMs
+    this.prebufferBytes = prebufferBytes
+    this.prebufferTimeoutMs = prebufferTimeoutMs
+    this._fileIndex = 0
+    this._file = null
+    this._prebufferTimer = null
     this._torrent = null
     this._server = null
     this._timer = null
@@ -24,10 +80,12 @@ class TorrentStreamer extends EventEmitter {
       const downloaded = torrent.downloaded ?? 0
       const total = torrent.length ?? 0
       this.emit('progress', {
+        phase: 'download',
         downloaded,
         total,
         speed: torrent.downloadSpeed ?? 0,
         percent: total ? downloaded / total : 0,
+        peers: torrent.numPeers ?? 0,
       })
     }
   }
@@ -58,11 +116,37 @@ class TorrentStreamer extends EventEmitter {
     if (this._settled) return
     this._torrent = torrent
 
-    const file = torrent && torrent.files && torrent.files[fileIndex]
+    // The caller's fileIndex is only a hint. Honour it when it names a real
+    // file, otherwise pick the largest non-junk video file in the pack.
+    const files = (torrent && torrent.files) || []
+    let index = Number.isInteger(fileIndex) && files[fileIndex] ? fileIndex : -1
+    if (index === -1 || !VIDEO_EXT.test(files[index].name || '')) {
+      const picked = pickVideoFile(files)
+      if (picked >= 0) index = picked
+    }
+    const file = files[index]
     if (!file) {
       this._settle(reject, { code: 'NO_FILE', message: `No file at index ${fileIndex}` })
       return
     }
+    this._fileIndex = index
+    this._file = file
+
+    // Everything else in the pack is dead weight. A season pack or a batch
+    // release would otherwise download all of it in parallel with the episode
+    // being watched, splitting the connection for no benefit.
+    try {
+      for (let i = 0; i < files.length; i++) {
+        if (i !== index && typeof files[i].deselect === 'function') files[i].deselect()
+      }
+      if (typeof file.select === 'function') file.select()
+    } catch (_) { /* selection is an optimisation, never fatal */ }
+
+    // Streaming wants the front of the file first. WebTorrent's default is
+    // rarest-first, which is right for archiving and wrong for playback: it
+    // scatters pieces across the file so the player has nothing contiguous to
+    // read. Marking the head critical pulls it down in order.
+    this._prioritiseHead(torrent, file)
 
     let server
     try {
@@ -82,14 +166,79 @@ class TorrentStreamer extends EventEmitter {
         return
       }
       const port = server.address().port
-      const url = buildFileUrl(port, fileIndex, file.name)
+      // The URL must name the file that was actually picked, not the caller's
+      // guess, or the server serves a different file than the one prioritised.
+      const url = buildFileUrl(port, index, file.name)
       torrent.on('download', this._onDownload)
-      this._settled = true
-      this._pendingReject = null
+      // The connect timeout has done its job — peers are found and the server
+      // is up. From here the prebuffer window has its own, longer deadline.
       this._clearTimer()
-      this.emit('ready', { url })
-      resolve({ url })
+      this._awaitPrebuffer(torrent, file, () => {
+        if (this._settled) return
+        this._settled = true
+        this._pendingReject = null
+        this.emit('ready', { url })
+        resolve({ url })
+      })
     })
+  }
+
+  // Marks the leading pieces of the file critical so they arrive in order and
+  // first. Re-armed as playback advances would be better still, but the head is
+  // what decides how long the user stares at a black screen.
+  _prioritiseHead(torrent, file) {
+    try {
+      const pieceLength = Number(torrent.pieceLength) || 0
+      const start = file._startPiece
+      if (typeof start !== 'number' || !pieceLength) return
+      const wanted = Math.max(1, Math.ceil(this.prebufferBytes / pieceLength))
+      const end = Math.min(file._endPiece, start + wanted - 1)
+      if (typeof torrent.select === 'function') torrent.select(start, file._endPiece, 1)
+      if (typeof torrent.critical === 'function') torrent.critical(start, end)
+    } catch (_) { /* prioritisation is an optimisation, never fatal */ }
+  }
+
+  // Holds back the 'ready' event until enough of the head is on disk for mpv to
+  // start playing instead of immediately stalling. Progress is reported the
+  // whole time, so the panel shows real percentages rather than a spinner.
+  _awaitPrebuffer(torrent, file, done) {
+    const need = Number(this.prebufferBytes) || 0
+    if (need <= 0) return done()
+    // If progress cannot be measured at all (no bitfield / no piece length),
+    // waiting would just burn the whole deadline for nothing. Start immediately
+    // and let mpv's own cache absorb it.
+    if (!torrent || !torrent.bitfield || !(Number(torrent.pieceLength) > 0)) return done()
+    const total = Number(file.length) || 0
+    // A file smaller than the prebuffer target only has to finish.
+    const target = total > 0 ? Math.min(need, total) : need
+    const deadline = Date.now() + this.prebufferTimeoutMs
+
+    const check = () => {
+      if (this._settled) return
+      const ready = headBytesReady(torrent, file)
+      if (ready >= target || Date.now() >= deadline) {
+        this._clearPrebufferTimer()
+        done()
+        return
+      }
+      this.emit('progress', {
+        phase: 'prebuffer',
+        downloaded: ready,
+        total: target,
+        speed: torrent.downloadSpeed ?? 0,
+        percent: target ? Math.min(1, ready / target) : 0,
+        peers: torrent.numPeers ?? 0,
+      })
+      this._prebufferTimer = setTimeout(check, 400)
+    }
+    check()
+  }
+
+  _clearPrebufferTimer() {
+    if (this._prebufferTimer) {
+      clearTimeout(this._prebufferTimer)
+      this._prebufferTimer = null
+    }
   }
 
   _onTimeout(reject) {
@@ -111,6 +260,7 @@ class TorrentStreamer extends EventEmitter {
     this._settled = true
     this._pendingReject = null
     this._clearTimer()
+    this._clearPrebufferTimer()
     if (this.listenerCount('error') > 0) {
       this.emit('error', err)
     }
@@ -127,6 +277,8 @@ class TorrentStreamer extends EventEmitter {
   stop() {
     this._settled = true
     this._clearTimer()
+    this._clearPrebufferTimer()
+    this._file = null
     const server = this._server
     this._server = null
     if (server) {
@@ -147,4 +299,4 @@ class TorrentStreamer extends EventEmitter {
   }
 }
 
-module.exports = { TorrentStreamer, buildFileUrl }
+module.exports = { TorrentStreamer, buildFileUrl, pickVideoFile, headBytesReady, VIDEO_EXT }

@@ -1199,6 +1199,11 @@ function updateNavBtns() {
 
 // ── Papa Video: Movies / TV / Anime ──────────────────────────────────────────
 var _videoDetailTicket = 0
+var _videoCatalogTicket = 0
+var _videoSearchTicket = 0
+// Bumped on every season/episode change so a slow response for the season the
+// user just left cannot overwrite the one they are now looking at.
+var _videoSeasonTicket = 0
 var _videoDetail = null
 var _videoState = { season: null, episode: 1, sub: true }
 var _videoStreams = []
@@ -1243,25 +1248,65 @@ function _videoStopAndHide() {
 
 function _handleVideoEvent(payload) {
   const status = document.getElementById('video-status')
+  // The real audio layout, measured by ffprobe once mpv is actually playing.
+  // Indexer metadata is a claim; this is the file.
+  if (payload.kind === 'audio') {
+    if (status && payload.audioLayout) {
+      status.dataset.audio = payload.audioLayout
+      status.title = 'Audio: ' + payload.audioLayout + (payload.codec ? ' (' + payload.codec + ')' : '')
+      if (status.classList.contains('video-status-playing')) {
+        status.textContent = 'Playing · ' + payload.audioLayout
+      }
+    }
+    return
+  }
   if (!status) return
   if (payload.kind === 'buffering') {
     status.className = 'video-status video-status-buffering'
-    status.textContent = 'Buffering…'
+    // Percent, speed and peer count turn an indefinite "Buffering…" into
+    // something the user can judge — a torrent with no peers looks identical
+    // to a slow one otherwise.
+    const pct = payload.percent != null ? Math.round(payload.percent * 100) : null
+    const mbps = payload.speed ? (payload.speed / 125000).toFixed(1) + ' Mb/s' : null
+    const peers = payload.peers != null ? payload.peers + ' peers' : null
+    // The prebuffer phase is the wait before playback starts; the download
+    // phase continues underneath it once playing.
+    const label = payload.phase === 'prebuffer' ? 'Buffering' : 'Downloading'
+    status.textContent = label + (pct != null ? ' ' + pct + '%' : '…') +
+      (mbps ? ' · ' + mbps : '') + (peers ? ' · ' + peers : '')
   } else if (payload.kind === 'playing') {
     status.className = 'video-status video-status-playing'
-    status.textContent = 'Playing…'
+    status.textContent = status.dataset.audio ? 'Playing · ' + status.dataset.audio : 'Playing…'
   } else if (payload.kind === 'error') {
     status.className = 'video-status video-status-error'
-    status.textContent = payload.message || 'Playback error'
+    status.textContent = _videoErrorText(payload.message || 'Playback error')
   }
 }
 
 function _videoPlayResult(result) {
   if (!result) return
   _showVideoPanel(_videoDetail && _videoDetail.d ? _videoDetail.d.title : 'Video')
-  window.api.videoPlay({ result }).catch(function (e) {
+  const status = document.getElementById('video-status')
+  if (status) delete status.dataset.audio
+  _handleVideoEvent({ kind: 'buffering' })
+  window.api.videoPlay({ result }).then(function (res) {
+    // The handler rejects unplayable sources (no magnet, no URL) with ok:false
+    // rather than throwing, so this has to be checked, not just caught.
+    if (res && res.ok === false) _handleVideoEvent({ kind: 'error', message: res.error })
+  }).catch(function (e) {
     _handleVideoEvent({ kind: 'error', message: String((e && e.message) || e) })
   })
+}
+
+// One place that turns a backend error string into something a person can act
+// on. Used by the row/search/source panels, which now report failures in place
+// instead of replacing the page.
+function _videoErrorText(message) {
+  const msg = String(message || 'Something went wrong')
+  if (/401|api key/i.test(msg)) return 'TMDB API key missing or invalid — set it in Settings → Video.'
+  if (/timed out|timeout|abort/i.test(msg)) return 'The source timed out. Check your connection and try again.'
+  if (/fetch failed|ENOTFOUND|ECONNREFUSED|network/i.test(msg)) return 'Could not reach the service. Check your connection.'
+  return msg
 }
 
 function _videoError(message) {
@@ -1280,30 +1325,97 @@ function _videoError(message) {
 
 async function renderVideo() {
   _initVideoUI()
+  const ticket = ++_videoCatalogTicket
   setContent(`<div class="page">
     <div class="page-header" style="display:flex;align-items:center;gap:12px">
       <h1 class="section-title">Movies &amp; TV</h1>
+      <div class="video-search-box">
+        <input id="video-search-input" class="mcs-set-input" type="search" placeholder="Search movies, TV &amp; anime…" autocomplete="off">
+        <select id="video-search-type" class="mcs-set-select">
+          <option value="all">All</option>
+          <option value="movie">Movies</option>
+          <option value="tv">TV</option>
+          <option value="anime">Anime</option>
+        </select>
+      </div>
     </div>
+    <div class="video-search-results" id="video-search-results"></div>
     <div class="video-catalog">${_videoSections.map(function (s) {
       return '<div class="video-section"><div class="section-header" style="margin-top:0"><span class="section-title">' + esc(s.label) + '</span></div><div class="video-poster-row" data-row="' + s.key + '"><div class="yt-status">Loading…</div></div></div>'
     }).join('')}</div>
   </div>`)
-  for (const sec of _videoSections) {
+  _bindVideoSearch()
+
+  // Rows load in parallel and each one owns its own failure. Sequentially
+  // awaiting them cost three round-trips back to back, and a single failing
+  // section used to replace the entire page — wiping rows that had already
+  // loaded fine.
+  await Promise.all(_videoSections.map(async function (sec) {
+    const res = await window.api.videoCatalogGet({ section: sec.key, page: 1 })
+      .catch(function (e) { return { ok: false, error: String((e && e.message) || e) } })
+    if (_videoCatalogTicket !== ticket || state.currentPage !== 'video') return
     const row = document.querySelector('.video-poster-row[data-row="' + sec.key + '"]')
-    if (!row) continue
-    const res = await window.api.videoCatalogGet({ section: sec.key, page: 1 }).catch(function (e) { return { ok: false, error: String((e && e.message) || e) } })
-    if (state.currentPage !== 'video') return
+    if (!row) return
     if (!res.ok) {
-      _videoError(res.error)
+      row.innerHTML = '<div class="yt-status yt-error">' + esc(_videoErrorText(res.error)) + '</div>'
       return
     }
     if (!Array.isArray(res.results) || !res.results.length) {
-      row.innerHTML = '<div class="yt-status yt-error">Nothing here yet</div>'
-      continue
+      row.innerHTML = '<div class="yt-status">Nothing here yet</div>'
+      return
     }
     row.innerHTML = res.results.map(_videoCard).join('')
     _bindVideoCards(row)
+  }))
+}
+
+// Debounced so typing does not fire a request per keystroke; ticketed so a
+// slow earlier query cannot overwrite the results of a later one.
+function _bindVideoSearch() {
+  const input = document.getElementById('video-search-input')
+  const typeSel = document.getElementById('video-search-type')
+  if (!input) return
+  let timer = null
+  const run = function () {
+    const query = input.value.trim()
+    const box = document.getElementById('video-search-results')
+    const catalog = document.querySelector('.video-catalog')
+    if (!box) return
+    if (!query) {
+      _videoSearchTicket++
+      box.innerHTML = ''
+      if (catalog) catalog.style.display = ''
+      return
+    }
+    const ticket = ++_videoSearchTicket
+    if (catalog) catalog.style.display = 'none'
+    box.innerHTML = '<div class="yt-status">Searching…</div>'
+    window.api.videoSearch({ query: query, type: typeSel ? typeSel.value : 'all' })
+      .catch(function (e) { return { ok: false, error: String((e && e.message) || e) } })
+      .then(function (res) {
+        if (_videoSearchTicket !== ticket) return
+        const target = document.getElementById('video-search-results')
+        if (!target) return
+        if (!res.ok) {
+          target.innerHTML = '<div class="yt-status yt-error">' + esc(_videoErrorText(res.error)) + '</div>'
+          return
+        }
+        const results = Array.isArray(res.results) ? res.results : []
+        if (!results.length) {
+          target.innerHTML = '<div class="yt-status">No matches for “' + esc(query) + '”</div>'
+          return
+        }
+        target.innerHTML = '<div class="video-section"><div class="section-header" style="margin-top:0"><span class="section-title">Results</span></div>' +
+          '<div class="video-poster-row">' + results.map(_videoCard).join('') + '</div></div>'
+        _bindVideoCards(target)
+      })
   }
+  input.addEventListener('input', function () {
+    clearTimeout(timer)
+    timer = setTimeout(run, 300)
+  })
+  input.addEventListener('keydown', function (e) { if (e.key === 'Enter') { clearTimeout(timer); run() } })
+  if (typeSel) typeSel.addEventListener('change', function () { clearTimeout(timer); run() })
 }
 
 function _videoCard(item) {
@@ -1353,12 +1465,12 @@ async function renderVideoDetail(navId) {
     const pick = seasons.find(function (s) { return s.seasonNumber >= 1 }) || seasons[0] || null
     _videoState.season = pick ? pick.seasonNumber : 1
     _renderVideoControls(type)
-    await _refreshTvEpisodes(ticket)
+    await _refreshTvEpisodes(ticket, ++_videoSeasonTicket)
   } else if (type === 'anime') {
     _renderVideoControls(type)
-    await _loadVideoSources(ticket)
+    await _loadVideoSources(ticket, ++_videoSeasonTicket)
   } else {
-    await _loadVideoSources(ticket)
+    await _loadVideoSources(ticket, ++_videoSeasonTicket)
   }
 }
 
@@ -1400,7 +1512,7 @@ function _renderVideoControls(type) {
     document.getElementById('video-season-select')?.addEventListener('change', function (e) {
       _videoState.season = Number(e.target.value) || 1
       _videoState.episode = 1
-      _refreshTvEpisodes(_videoDetailTicket)
+      _refreshTvEpisodes(_videoDetailTicket, ++_videoSeasonTicket)
     })
     return
   }
@@ -1422,75 +1534,116 @@ function _renderVideoControls(type) {
       const sel = document.getElementById('video-episode-select')
       const inp = document.getElementById('video-episode-input')
       _videoState.episode = sel ? Number(sel.value) || 1 : (inp ? Number(inp.value) || 1 : 1)
-      _loadVideoSources(_videoDetailTicket)
+      _loadVideoSources(_videoDetailTicket, ++_videoSeasonTicket)
     }
     document.getElementById('video-episode-select')?.addEventListener('change', setEp)
     document.getElementById('video-episode-input')?.addEventListener('change', setEp)
     document.getElementById('video-dub-toggle')?.addEventListener('change', function (e) {
       _videoState.sub = !e.target.checked
-      _loadVideoSources(_videoDetailTicket)
+      _loadVideoSources(_videoDetailTicket, ++_videoSeasonTicket)
     })
     return
   }
   box.innerHTML = ''
 }
 
-async function _refreshTvEpisodes(ticket) {
+// `seasonTicket` is what makes rapid season switching safe. The old code passed
+// the live `_videoDetailTicket` into its own guard, so the comparison was
+// always true and whichever response happened to land last won — switching
+// 1 → 2 → 3 quickly could leave season 3 selected while showing season 1's
+// episodes. A ticket captured before the request fixes that.
+async function _refreshTvEpisodes(ticket, seasonTicket) {
   const detail = _videoDetail
   if (!detail || detail.type !== 'tv') return
+  if (seasonTicket == null) seasonTicket = ++_videoSeasonTicket
+  const season = _videoState.season
   const box = document.getElementById('video-episode-list')
-  const res = await window.api.videoDetail({ type: 'tv', id: detail.id, season: _videoState.season }).catch(function (e) { return { ok: false, error: String((e && e.message) || e) } })
-  if (_videoDetailTicket !== ticket || !document.getElementById('video-episode-list')) return
-  let episodes = []
-  if (res.ok && res.detail && Array.isArray(res.detail.seasons)) {
-    const s = res.detail.seasons.find(function (x) { return x.seasonNumber === _videoState.season })
-    if (s && Array.isArray(s.episodes)) episodes = s.episodes
+
+  // Episodes already fetched for this season are reused: the payload is stored
+  // back onto the detail object, so revisiting a season costs nothing instead
+  // of refetching the whole show every time.
+  const known = Array.isArray(detail.d && detail.d.seasons)
+    ? detail.d.seasons.find(function (x) { return x.seasonNumber === season })
+    : null
+  let episodes = known && Array.isArray(known.episodes) && known.episodes.length ? known.episodes : null
+
+  if (!episodes) {
+    if (box) box.innerHTML = '<div class="yt-status">Loading episodes…</div>'
+    const res = await window.api.videoDetail({ type: 'tv', id: detail.id, season: season })
+      .catch(function (e) { return { ok: false, error: String((e && e.message) || e) } })
+    if (_videoDetailTicket !== ticket || _videoSeasonTicket !== seasonTicket) return
+    episodes = []
+    if (res.ok && res.detail && Array.isArray(res.detail.seasons)) {
+      const s = res.detail.seasons.find(function (x) { return x.seasonNumber === season })
+      if (s && Array.isArray(s.episodes)) episodes = s.episodes
+    }
+    if (episodes.length && known) known.episodes = episodes
   }
-  if (box) {
-    box.innerHTML = episodes.length
+
+  const target = document.getElementById('video-episode-list')
+  if (target) {
+    target.innerHTML = episodes.length
       ? episodes.map(function (ep) {
-          return '<button class="video-episode-btn' + (ep.episodeNumber === _videoState.episode ? ' active' : '') + '" data-ep="' + ep.episodeNumber + '">' + ep.episodeNumber + '</button>'
+          return '<button class="video-episode-btn' + (ep.episodeNumber === _videoState.episode ? ' active' : '') + '" data-ep="' + ep.episodeNumber + '" title="' + esc(ep.name || '') + '">' + ep.episodeNumber + '</button>'
         }).join('')
       : '<div class="yt-status">No episodes</div>'
-    box.querySelectorAll('.video-episode-btn').forEach(function (b) {
+    target.querySelectorAll('.video-episode-btn').forEach(function (b) {
       b.addEventListener('click', function () {
         _videoState.episode = Number(b.dataset.ep) || 1
-        box.querySelectorAll('.video-episode-btn').forEach(function (x) { x.classList.toggle('active', Number(x.dataset.ep) === _videoState.episode) })
-        _loadVideoSources(_videoDetailTicket)
+        target.querySelectorAll('.video-episode-btn').forEach(function (x) { x.classList.toggle('active', Number(x.dataset.ep) === _videoState.episode) })
+        _loadVideoSources(_videoDetailTicket, ++_videoSeasonTicket)
       })
     })
   }
-  await _loadVideoSources(ticket)
+  await _loadVideoSources(ticket, seasonTicket)
 }
 
 function _videoStreamRequest() {
   const d = _videoDetail.d
   const base = { type: _videoDetail.type, title: d.title, year: d.year }
-  if (_videoDetail.type === 'movie') return Object.assign(base, { tmdbId: d.id })
-  if (_videoDetail.type === 'tv') return Object.assign(base, { tmdbId: d.id, season: _videoState.season, episode: _videoState.episode })
-  return Object.assign(base, { anilistId: d.id, episode: _videoState.episode, sub: _videoState.sub, dub: !_videoState.sub })
+  if (_videoDetail.type === 'movie') return Object.assign(base, { tmdbId: d.id, imdbId: d.imdbId || null })
+  if (_videoDetail.type === 'tv') return Object.assign(base, { tmdbId: d.id, imdbId: d.imdbId || null, season: _videoState.season, episode: _videoState.episode })
+  // The torrent indexer needs the romaji title, not the English display one,
+  // so every variant AniList returned is sent along.
+  return Object.assign(base, { anilistId: d.id, titles: d.titles || null, episode: _videoState.episode, sub: _videoState.sub, dub: !_videoState.sub })
 }
 
-async function _loadVideoSources(ticket) {
+async function _loadVideoSources(ticket, seasonTicket) {
   const box = document.getElementById('video-sources')
   if (!box) return
+  if (seasonTicket == null) seasonTicket = _videoSeasonTicket
   box.innerHTML = '<div class="yt-status">Looking for sources…</div>'
   const res = await window.api.videoStreams(_videoStreamRequest()).catch(function (e) { return { ok: false, error: String((e && e.message) || e) } })
-  if (_videoDetailTicket !== ticket || !document.getElementById('video-sources')) return
+  if (_videoDetailTicket !== ticket || _videoSeasonTicket !== seasonTicket) return
+  const target = document.getElementById('video-sources')
+  if (!target) return
   if (!res.ok) {
-    _videoError(res.error)
+    // A failed source lookup used to replace the whole page, throwing away the
+    // hero, the season picker and the episode list the user was working with.
+    // The failure belongs in the sources panel and nowhere else.
+    target.innerHTML = '<div class="video-sources-header"><span class="section-title">Sources</span></div>' +
+      '<div class="yt-status yt-error">' + esc(_videoErrorText(res.error)) + '</div>' +
+      '<button class="secondary" id="video-sources-retry">Try again</button>'
+    document.getElementById('video-sources-retry')?.addEventListener('click', function () {
+      _loadVideoSources(_videoDetailTicket, ++_videoSeasonTicket)
+    })
     return
   }
   const streams = Array.isArray(res.streams) ? res.streams : []
   _videoStreams = streams
   if (!streams.length) {
-    box.innerHTML = '<div class="yt-status yt-error">No sources found</div>'
+    target.innerHTML = '<div class="video-sources-header"><span class="section-title">Sources</span></div>' +
+      '<div class="yt-status">No sources found for this ' + (_videoDetail.type === 'movie' ? 'film' : 'episode') + '.</div>' +
+      '<button class="secondary" id="video-sources-retry">Try again</button>'
+    document.getElementById('video-sources-retry')?.addEventListener('click', function () {
+      _loadVideoSources(_videoDetailTicket, ++_videoSeasonTicket)
+    })
     return
   }
-  box.innerHTML = '<div class="video-sources-header"><span class="section-title">Sources</span><div class="video-status" id="video-status"></div><button class="video-stop-btn" id="video-stop-btn">Stop</button></div><div class="video-source-list">' +
+  target.innerHTML = '<div class="video-sources-header"><span class="section-title">Sources</span><div class="video-status" id="video-status"></div><button class="video-stop-btn" id="video-stop-btn">Stop</button></div><div class="video-source-list">' +
     streams.map(_videoStreamRow).join('') + '</div>'
   document.getElementById('video-stop-btn')?.addEventListener('click', _videoStopAndHide)
-  box.querySelectorAll('.video-source-play').forEach(function (btn) {
+  target.querySelectorAll('.video-source-play').forEach(function (btn) {
     btn.addEventListener('click', function () {
       _videoPlayResult(_videoStreams[Number(btn.dataset.idx)])
     })

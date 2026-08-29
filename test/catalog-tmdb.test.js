@@ -37,6 +37,7 @@ test('normalizeMovie maps a raw movie to a catalog entry', () => {
     overview: 'A thief who steals secrets.',
     rating: 8.3,
     genres: [],
+    imdbId: null,
   })
 })
 
@@ -129,8 +130,12 @@ test('URL builders produce exact strings', () => {
   assert.strictEqual(buildPopularUrl('tv'), 'https://api.themoviedb.org/3/tv/popular')
   assert.strictEqual(buildSearchUrl('inception'), 'https://api.themoviedb.org/3/search/multi?query=inception')
   assert.strictEqual(buildSearchUrl('breaking bad'), 'https://api.themoviedb.org/3/search/multi?query=breaking%20bad')
-  assert.strictEqual(buildDetailUrl('movie', 101), 'https://api.themoviedb.org/3/movie/101')
-  assert.strictEqual(buildDetailUrl('tv', 9), 'https://api.themoviedb.org/3/tv/9')
+  // external_ids rides along so the TV torrent indexer has an IMDb id to key on.
+  assert.strictEqual(buildDetailUrl('movie', 101), 'https://api.themoviedb.org/3/movie/101?append_to_response=external_ids')
+  assert.strictEqual(buildDetailUrl('tv', 9), 'https://api.themoviedb.org/3/tv/9?append_to_response=external_ids')
+  // Paging is threaded through popular/search, not silently dropped.
+  assert.strictEqual(buildPopularUrl('movie', { page: 3 }), 'https://api.themoviedb.org/3/movie/popular?page=3')
+  assert.strictEqual(buildSearchUrl('dune', { page: 2 }), 'https://api.themoviedb.org/3/search/multi?query=dune&page=2')
   assert.strictEqual(buildSeasonUrl(9, 1), 'https://api.themoviedb.org/3/tv/9/season/1')
 })
 

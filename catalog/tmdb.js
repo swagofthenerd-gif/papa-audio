@@ -17,6 +17,13 @@ function _image(path) {
 // genre_ids are numeric IDs without names, so they cannot populate the string
 // genres[] the UI renders. Only raw.genres (detail responses, array of
 // {id,name}) feeds genres; everything else falls back to [].
+// TMDB puts the IMDb id at raw.imdb_id for movies and at
+// raw.external_ids.imdb_id for tv (only when external_ids was appended).
+function _imdbId(raw) {
+  const id = raw?.imdb_id || raw?.external_ids?.imdb_id
+  return typeof id === 'string' && id.length ? id : null
+}
+
 function _genres(raw) {
   if (!Array.isArray(raw?.genres)) return []
   return raw.genres.map(g => (typeof g === 'string' ? g : g?.name)).filter(Boolean)
@@ -34,6 +41,7 @@ function normalizeMovie(raw) {
     overview: raw.overview ?? null,
     rating: raw.vote_average ?? null,
     genres: _genres(raw),
+    imdbId: _imdbId(raw),
   }
 }
 
@@ -70,6 +78,7 @@ function normalizeTv(raw) {
     overview: raw.overview ?? null,
     rating: raw.vote_average ?? null,
     genres: _genres(raw),
+    imdbId: _imdbId(raw),
   }
   if (Array.isArray(raw.seasons)) entry.seasons = raw.seasons.map(normalizeSeason)
   return entry
@@ -97,16 +106,22 @@ function buildTrendingUrl(kind, opts = {}) {
   return url
 }
 
-function buildPopularUrl(kind) {
-  return `${TMDB_BASE}/${kind}/popular`
+function buildPopularUrl(kind, opts = {}) {
+  let url = `${TMDB_BASE}/${kind}/popular`
+  if (opts.page != null) url += `?page=${opts.page}`
+  return url
 }
 
-function buildSearchUrl(query) {
-  return `${TMDB_BASE}/search/multi?query=${encodeURIComponent(query)}`
+function buildSearchUrl(query, opts = {}) {
+  let url = `${TMDB_BASE}/search/multi?query=${encodeURIComponent(query)}`
+  if (opts.page != null) url += `&page=${opts.page}`
+  return url
 }
 
 function buildDetailUrl(type, id) {
-  return `${TMDB_BASE}/${type}/${id}`
+  // append_to_response pulls external_ids in the same round-trip. TV torrent
+  // indexers key on the IMDb id, which the base detail payload omits for tv.
+  return `${TMDB_BASE}/${type}/${id}?append_to_response=external_ids`
 }
 
 function buildSeasonUrl(tvId, n) {
@@ -130,18 +145,18 @@ function createTmdbCatalog({ apiKey, fetchFn } = {}) {
   }
 
   return {
-    async trending(kind) {
-      const data = await _fetch(buildTrendingUrl(kind))
+    async trending(kind, page) {
+      const data = await _fetch(buildTrendingUrl(kind, { page }))
       const norm = kind === 'tv' ? normalizeTv : normalizeMovie
       return (data.results || []).map(norm)
     },
-    async popular(kind) {
-      const data = await _fetch(buildPopularUrl(kind))
+    async popular(kind, page) {
+      const data = await _fetch(buildPopularUrl(kind, { page }))
       const norm = kind === 'tv' ? normalizeTv : normalizeMovie
       return (data.results || []).map(norm)
     },
-    async search(query) {
-      const data = await _fetch(buildSearchUrl(query))
+    async search(query, page) {
+      const data = await _fetch(buildSearchUrl(query, { page }))
       return (data.results || []).map(normalizeSearchResult).filter(Boolean)
     },
     async detail(type, id) {

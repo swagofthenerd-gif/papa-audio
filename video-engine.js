@@ -46,7 +46,28 @@ class VideoEngine extends EventEmitter {
       `--input-ipc-server=${socketPath}`,
       `--audio-channels=${channelsValue(this.config.audioChannels)}`,
       '--cache=yes',
-      '--demuxer-max-bytes=64MiB',
+      // 64MiB is only a few seconds of a 1080p stream, so mpv kept draining its
+      // buffer and stalling on a torrent that was actually keeping up. A larger
+      // readahead window costs RAM and nothing else — it does not touch the
+      // decode path, so there is no quality change.
+      '--demuxer-max-bytes=256MiB',
+      // Keeping some of the past in memory makes a small seek backwards
+      // instant instead of a re-fetch from the torrent.
+      '--demuxer-max-back-bytes=96MiB',
+      // Read ahead by time as well as by bytes, so a high-bitrate scene does
+      // not shrink the buffer to nothing.
+      '--cache-secs=300',
+      '--demuxer-readahead-secs=20',
+      // The torrent server briefly returns errors while a piece is still in
+      // flight. Without reconnect mpv treats that as end-of-stream and stops;
+      // with it, playback rides through the gap.
+      '--stream-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_on_network_error=1,reconnect_delay_max=5',
+      '--network-timeout=30',
+      // Hardware decoding where the driver supports it. This offloads decode
+      // from the CPU; it does not re-encode or rescale, so the picture is
+      // unchanged. auto-safe falls back to software whenever the hardware path
+      // is not known-good for the codec.
+      '--hwdec=auto-safe',
       '--ytdl=no',
     ]
     if (wid) a.push(`--wid=${wid}`)
@@ -67,6 +88,10 @@ class VideoEngine extends EventEmitter {
   }
 
   async start(url, { wid } = {}) {
+    // A second start() must never leave the previous mpv running. Without this
+    // every play stacked another process (and another audio output) on top of
+    // the last one, because start() simply overwrote this.proc.
+    if (this.proc || this.client) this.stop()
     const runtimeDir = process.env.XDG_RUNTIME_DIR || os.tmpdir()
     const socketPath = this._fixedSocketPath ||
       path.join(runtimeDir, `papa-video-${process.pid}-${crypto.randomBytes(4).toString('hex')}.sock`)

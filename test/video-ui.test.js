@@ -62,3 +62,115 @@ test('renderer.js hints where to set the TMDB key', () => {
 test('styles.css defines the error banner rule', () => {
   assert.match(CSS, /\.video-error\s*\{/, 'a .video-error rule must exist')
 })
+
+// ── Season browsing, search and error containment ───────────────────────────
+
+function fnBody(name) {
+  const start = RENDERER.indexOf(`function ${name}(`)
+  assert.ok(start > -1, `${name} not found in the renderer`)
+  const next = RENDERER.indexOf('\nfunction ', start + 1)
+  const nextAsync = RENDERER.indexOf('\nasync function ', start + 1)
+  const ends = [next, nextAsync].filter(i => i > -1)
+  return RENDERER.slice(start, ends.length ? Math.min(...ends) : RENDERER.length)
+}
+
+// The old guard compared the live _videoDetailTicket against itself, so it was
+// always true: switching season 1 → 2 → 3 quickly could leave season 3 selected
+// while showing season 1's episodes.
+test('season switching is guarded by a ticket captured before the request', () => {
+  assert.match(RENDERER, /var _videoSeasonTicket = 0/, 'a season ticket must exist')
+  const body = fnBody('_refreshTvEpisodes')
+  assert.match(body, /function _refreshTvEpisodes\(ticket, seasonTicket\)/)
+  assert.match(RENDERER, /async function _refreshTvEpisodes\(ticket, seasonTicket\)/)
+  assert.match(body, /_videoSeasonTicket !== seasonTicket/, 'the response must be checked against its own ticket')
+  assert.ok(!/_refreshTvEpisodes\(_videoDetailTicket\)\s*$/m.test(RENDERER),
+    'no caller may pass the live detail ticket as its own guard')
+})
+
+test('every season and episode change mints a new season ticket', () => {
+  const changes = RENDERER.match(/\+\+_videoSeasonTicket/g) || []
+  assert.ok(changes.length >= 6, `expected the season ticket to be bumped on each change, saw ${changes.length}`)
+})
+
+test('_loadVideoSources checks both tickets before touching the DOM', () => {
+  const body = fnBody('_loadVideoSources')
+  assert.match(body, /_videoDetailTicket !== ticket \|\| _videoSeasonTicket !== seasonTicket/)
+})
+
+// Refetching the whole show on every season click was two TMDB calls per click,
+// forever, because nothing kept what came back.
+test('episodes already fetched for a season are reused instead of refetched', () => {
+  const body = fnBody('_refreshTvEpisodes')
+  assert.match(body, /const known =/)
+  assert.match(body, /if \(!episodes\)/, 'the request must be skipped when episodes are known')
+  assert.match(body, /known\.episodes = episodes/, 'the payload must be stored back on the detail')
+})
+
+// A failing source lookup used to replace the whole page, throwing away the
+// hero, the season picker and the episode list.
+test('a failed source lookup stays inside the sources panel', () => {
+  const body = fnBody('_loadVideoSources')
+  assert.ok(!/_videoError\(res\.error\)/.test(body),
+    'a source failure must not blow away the detail page')
+  assert.match(body, /video-sources-retry/, 'and it must offer a retry')
+})
+
+test('a failing catalog row does not wipe the rows that already loaded', () => {
+  const body = fnBody('renderVideo')
+  assert.match(body, /Promise\.all/, 'rows must load in parallel')
+  assert.ok(!/_videoError\(res\.error\)\s*\n\s*return/.test(body),
+    'one bad section must not replace the whole page')
+  assert.match(body, /row\.innerHTML = '<div class="yt-status yt-error">/)
+})
+
+test('the catalog rows load in parallel rather than one after another', () => {
+  const body = fnBody('renderVideo')
+  assert.ok(!/for \(const sec of _videoSections\)/.test(body),
+    'the sequential await loop cost three round-trips back to back')
+})
+
+// videoSearch was fully implemented in main and preload and called by nothing.
+test('the search box exists and is wired to videoSearch', () => {
+  assert.match(RENDERER, /id="video-search-input"/, 'there must be a search input')
+  assert.match(RENDERER, /window\.api\.videoSearch\(/, 'and it must call the search API')
+  const body = fnBody('_bindVideoSearch')
+  assert.match(body, /setTimeout\(run, 300\)/, 'typing must be debounced')
+  assert.match(body, /_videoSearchTicket !== ticket/, 'a slow earlier query must not win')
+})
+
+test('the search box is styled', () => {
+  assert.match(CSS, /\.video-search-box/)
+})
+
+test('the stream request carries the imdb id the TV indexer needs', () => {
+  const body = fnBody('_videoStreamRequest')
+  assert.match(body, /imdbId: d\.imdbId \|\| null/)
+})
+
+test('an unplayable source reported as ok:false is surfaced, not swallowed', () => {
+  const body = fnBody('_videoPlayResult')
+  assert.match(body, /res\.ok === false/)
+})
+
+test('the measured audio layout from ffprobe is displayed', () => {
+  const body = fnBody('_handleVideoEvent')
+  assert.match(body, /payload\.kind === 'audio'/)
+})
+
+test('buffering shows real progress rather than an indefinite spinner', () => {
+  const body = fnBody('_handleVideoEvent')
+  assert.match(body, /payload\.percent/)
+})
+
+test('backend errors are translated into something actionable', () => {
+  const body = fnBody('_videoErrorText')
+  assert.match(body, /401\|api key/)
+  assert.match(body, /Settings → Video/)
+})
+
+// Nyaa indexes under the romaji title, so the English display title alone
+// found nothing for a large share of shows.
+test('the anime stream request carries every AniList title variant', () => {
+  const body = fnBody('_videoStreamRequest')
+  assert.match(body, /titles: d\.titles \|\| null/)
+})

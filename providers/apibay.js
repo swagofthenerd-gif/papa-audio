@@ -1,0 +1,266 @@
+'use strict'
+// The Pirate Bay (apibay) torrent provider — the broad-coverage source.
+//
+// YTS only indexes its own encodes, so any film YTS never released simply had
+// no sources at all. apibay is a keyless JSON endpoint over the whole public
+// index, which is what closes that gap:
+//   GET <base>/q.php?q=<query>&cat=200        (200 = the whole Video category)
+// answering with a flat array of
+//   { id, name, info_hash, seeders, leechers, size, category }
+//
+// An empty search is signalled by a single sentinel row named "No results
+// returned" with id "0" — not an empty array — so that has to be filtered out
+// explicitly or it becomes an unplayable entry.
+//
+// Results are a plain text search over release names, so unrelated films come
+// back for short titles. Every result is therefore checked against the
+// requested title (and episode, for TV) before it is offered.
+
+const {
+  parseQuality, parseAudioLayout, isLowQualitySource, magnetFromHash,
+} = require('./quality')
+
+const DEFAULT_BASE_URLS = [
+  'https://apibay.org',
+  'https://thepiratebay10.org/apibay',
+]
+
+// The whole Video category: movies, HD movies, TV, HD TV.
+const CATEGORY_VIDEO = 200
+
+function buildSearchUrl(baseUrl, query, cat = CATEGORY_VIDEO) {
+  return `${baseUrl}/q.php?q=${encodeURIComponent(query)}&cat=${cat}`
+}
+
+function normalizeText(value) {
+  return String(value == null ? '' : value)
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+}
+
+// Words too common to prove a match on their own.
+const STOPWORDS = new Set(['the', 'a', 'an', 'of', 'and', 'in', 'on', 'part'])
+
+function titleTokens(title) {
+  return normalizeText(title).split(' ').filter(t => t && !STOPWORDS.has(t))
+}
+
+// Every significant word of the requested title must appear in the release
+// name. Without this a search for "Dune" happily returns "Dune Drifter".
+function matchesTitle(name, title) {
+  const tokens = titleTokens(title)
+  if (!tokens.length) return false
+  const haystack = ` ${normalizeText(name)} `
+  return tokens.every(t => haystack.includes(` ${t} `) || haystack.includes(`${t} `))
+}
+
+function matchesYear(name, year) {
+  if (year == null || year === '') return true
+  const n = Number(year)
+  if (!Number.isFinite(n)) return true
+  const text = String(name || '')
+  // Re-releases and remasters carry a second year, so a one-year drift either
+  // way is accepted rather than discarding a correct result.
+  if ([n - 1, n, n + 1].some(y => text.includes(String(y)))) return true
+  // A release name with no year in it at all cannot contradict the requested
+  // one. Rejecting those would throw away exactly the results the bare-title
+  // fallback query exists to find.
+  return !/\b(19|20)\d{2}\b/.test(text)
+}
+
+function matchesEpisode(name, season, episode) {
+  if (season == null && episode == null) return true
+  const s = Number(season)
+  const e = Number(episode)
+  if (!Number.isFinite(s) || !Number.isFinite(e)) return true
+  const text = String(name || '')
+  if (new RegExp(`s0*${s}[\\s._-]?e0*${e}\\b`, 'i').test(text)) return true
+  if (new RegExp(`\\b${s}x0*${e}\\b`, 'i').test(text)) return true
+  // A complete-season pack contains the episode even though it does not name it.
+  if (new RegExp(`(season[\\s._-]*0*${s}|s0*${s})\\b(?![\\s._-]*e)`, 'i').test(text)) return true
+  return false
+}
+
+// Anime is numbered by a bare episode number far more often than by SxxEyy,
+// and batch packs ("01-24") legitimately contain the episode.
+function matchesAnimeEpisode(name, episode) {
+  if (episode == null || episode === '') return true
+  const n = Number(episode)
+  if (!Number.isFinite(n)) return true
+  const text = String(name || '')
+  if (new RegExp(`s\\d{1,3}[\\s._-]?e0*${n}\\b`, 'i').test(text)) return true
+  if (new RegExp(`(?:^|[\\s\\-_\\[(.])(?:e|ep|episode\\s*)?0*${n}(?:v\\d)?(?:$|[\\s\\-_\\])."'])`, 'i').test(text)) return true
+  // A range that spans the episode: "01-24", "1~24", "Complete".
+  const range = /(\d{1,4})\s*[-~]\s*(\d{1,4})/.exec(text)
+  if (range && n >= Number(range[1]) && n <= Number(range[2])) return true
+  if (/\b(complete|batch|season\s*\d+)\b/i.test(text)) return true
+  return false
+}
+
+// apibay signals "nothing found" with one sentinel row rather than an empty
+// array. Left in, it becomes an entry with a zero hash that can never play.
+function isSentinel(raw) {
+  return !raw || raw.id === '0' || raw.id === 0 ||
+    /^no results returned$/i.test(String(raw.name || '')) ||
+    !/^[0-9a-f]{40}$/i.test(String(raw.info_hash || ''))
+}
+
+function normalizeResult(raw) {
+  if (isSentinel(raw)) return null
+  const name = String(raw.name || '')
+  const infoHash = String(raw.info_hash)
+  const magnet = magnetFromHash(infoHash, name)
+  if (!magnet) return null
+  const quality = parseQuality(name)
+  const audioLayout = parseAudioLayout(name)
+  const seeds = Number(raw.seeders) || 0
+  const lowQuality = isLowQualitySource(name)
+  const sizeGb = Number(raw.size) ? (Number(raw.size) / 1e9).toFixed(1) + ' GB' : null
+  return {
+    kind: 'torrent',
+    url: null,
+    magnet,
+    infoHash,
+    fileIndex: 0,
+    source: 'TPB',
+    quality,
+    // Flagged rather than dropped: a film with nothing but a cam rip should
+    // still be playable, just never chosen ahead of a real encode.
+    lowQuality,
+    label: `TPB · ${lowQuality ? 'CAM/TS (poor quality)' : quality}` +
+      `${audioLayout ? ` · ${audioLayout}` : ''}${sizeGb ? ` · ${sizeGb}` : ''}${seeds ? ` · ${seeds} seeds` : ''}`,
+    audioLayout,
+    seeds,
+    name,
+    sub: null,
+    dub: null,
+  }
+}
+
+async function tryMirror(baseUrl, query, fetcher) {
+  try {
+    const res = await fetcher(buildSearchUrl(baseUrl, query))
+    if (!res || !res.ok) return null
+    const text = await res.text()
+    let data
+    try { data = JSON.parse(text) } catch (_err) { return null }
+    return Array.isArray(data) ? data : null
+  } catch (_err) {
+    return null
+  }
+}
+
+// Movies are searched as "<title> <year>" and, if that finds nothing, as the
+// bare title — some releases omit the year entirely.
+// Every name the show is known by: AniList hands back romaji/english/native,
+// and releases are indexed under any of them.
+function requestTitles(request) {
+  const t = (request && request.titles) || {}
+  const out = []
+  for (const v of [t.romaji, t.english, request && request.title, t.native]) {
+    const s = String(v == null ? '' : v).trim()
+    if (s && !out.some(x => x.toLowerCase() === s.toLowerCase())) out.push(s)
+  }
+  return out
+}
+
+function buildQueries(request) {
+  const title = String(request.title || '').trim()
+  if (request.type === 'anime') {
+    const names = requestTitles(request)
+    if (!names.length) return []
+    const e = Number(request.episode)
+    const out = []
+    for (const name of names) {
+      if (Number.isFinite(e) && e >= 1) out.push(`${name} ${String(e).padStart(2, '0')}`)
+      out.push(name)
+    }
+    return out
+  }
+  if (!title) return []
+  if (request.type === 'tv') {
+    const s = Number(request.season)
+    const e = Number(request.episode)
+    const out = []
+    if (Number.isFinite(s) && Number.isFinite(e)) {
+      out.push(`${title} S${String(s).padStart(2, '0')}E${String(e).padStart(2, '0')}`)
+      out.push(`${title} season ${s}`)
+    }
+    out.push(title)
+    return out
+  }
+  const out = []
+  if (request.year != null && request.year !== '') out.push(`${title} ${request.year}`)
+  out.push(title)
+  return out
+}
+
+function createApibayProvider({ fetchFn, baseUrls = DEFAULT_BASE_URLS, maxResults = 25 } = {}) {
+  const fetcher = fetchFn || fetch
+  const urls = Array.isArray(baseUrls) && baseUrls.length > 0 ? baseUrls : DEFAULT_BASE_URLS
+
+  return async function apibayProvider(request) {
+    request = request || {}
+    if (request.type !== 'movie' && request.type !== 'tv' && request.type !== 'anime') return []
+    const queries = buildQueries(request)
+    if (!queries.length) return []
+    const seen = new Set()
+    const entries = []
+
+    for (const query of queries) {
+      let rows = null
+      for (const baseUrl of urls) {
+        rows = await tryMirror(baseUrl, query, fetcher)
+        if (rows) break
+      }
+      if (!rows || !rows.length) continue
+      for (const raw of rows) {
+        const entry = normalizeResult(raw)
+        if (!entry) continue
+        if (seen.has(entry.infoHash)) continue
+        // A release only has to match one of the names the show goes by.
+        const names = request.type === 'anime' ? requestTitles(request) : [request.title]
+        if (!names.some(n => matchesTitle(entry.name, n))) continue
+        if (request.type === 'movie' && !matchesYear(entry.name, request.year)) continue
+        if (request.type === 'tv' && !matchesEpisode(entry.name, request.season, request.episode)) continue
+        if (request.type === 'anime' && !matchesAnimeEpisode(entry.name, request.episode)) continue
+        seen.add(entry.infoHash)
+        entries.push(entry)
+      }
+      // A query that produced usable results is enough; the broader fallback
+      // queries exist only to rescue an empty first attempt.
+      if (entries.length) break
+    }
+
+    // Real encodes first, then by seeds. The final ordering is the router's
+    // job; this only makes sure a cam rip never heads the provider's own list.
+    entries.sort((a, b) => {
+      if (a.lowQuality !== b.lowQuality) return a.lowQuality ? 1 : -1
+      return b.seeds - a.seeds
+    })
+    return entries.slice(0, maxResults).map(e => {
+      delete e.name
+      return e
+    })
+  }
+}
+
+module.exports = {
+  DEFAULT_BASE_URLS,
+  CATEGORY_VIDEO,
+  buildSearchUrl,
+  buildQueries,
+  normalizeText,
+  matchesTitle,
+  matchesYear,
+  matchesEpisode,
+  matchesAnimeEpisode,
+  requestTitles,
+  isSentinel,
+  normalizeResult,
+  createApibayProvider,
+}
