@@ -8,7 +8,10 @@
 
 const ANILIST_BASE = 'https://graphql.anilist.co'
 
+// idMal is the MyAnimeList id AniSkip keys on, so it has to ride along on every
+// anime lookup — without it the skip-intro feature has nothing to ask AniSkip.
 const MEDIA_SELECTION = `id
+          idMal
           title { english romaji native }
           seasonYear
           bannerImage
@@ -25,6 +28,8 @@ function normalizeMedia(raw) {
   return {
     id: raw.id ?? null,
     type: 'anime',
+    // The MyAnimeList id AniSkip needs; null for shows that have no MAL entry.
+    idMal: raw.idMal ?? null,
     title: title.english || title.romaji || title.native || null,
     // All three variants are kept, not just the display pick. Fansub groups
     // release under the ROMAJI title ("Sousou no Frieren"), so searching a

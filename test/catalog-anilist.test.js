@@ -29,6 +29,7 @@ test('normalizeMedia maps a raw AniList media node to an anime catalog entry', (
   assert.deepStrictEqual(normalizeMedia(raw), {
     id: 101,
     type: 'anime',
+    idMal: null,
     title: 'Fullmetal Alchemist: Brotherhood',
     // All three variants are kept: the torrent indexer needs the romaji name,
     // which is what release groups actually use.
@@ -66,6 +67,7 @@ test('normalizeMedia nulls missing fields', () => {
   const e = normalizeMedia({ id: 5 })
   assert.strictEqual(e.id, 5)
   assert.strictEqual(e.type, 'anime')
+  assert.strictEqual(e.idMal, null)
   assert.strictEqual(e.title, null)
   assert.strictEqual(e.year, null)
   assert.strictEqual(e.poster, null)
@@ -80,6 +82,13 @@ test('normalizeMedia nulls missing fields', () => {
 test('normalizeMedia leaves rating null when averageScore is null', () => {
   const e = normalizeMedia({ id: 6, averageScore: null })
   assert.strictEqual(e.rating, null)
+})
+
+test('normalizeMedia carries idMal through for AniSkip', () => {
+  const e = normalizeMedia({ id: 21, idMal: 21 })
+  assert.strictEqual(e.idMal, 21)
+  const none = normalizeMedia({ id: 7 })
+  assert.strictEqual(none.idMal, null)
 })
 
 test('normalizeMedia emits backdrop from bannerImage, falls back to coverImage.extraLarge, else null', () => {
@@ -232,17 +241,19 @@ test('createAnilistCatalog throws on a GraphQL error response', async () => {
       return {
         ok: true,
         json: async () => ({
-          data: { Media: { id: 21, title: { english: 'One Piece' }, seasonYear: 1999, episodes: 1100 } },
+          data: { Media: { id: 21, idMal: 21, title: { english: 'One Piece' }, seasonYear: 1999, episodes: 1100 } },
         }),
       }
     }
     const cat = createAnilistCatalog({ fetchFn })
     const detail = await cat.byId(21)
     assert.strictEqual(detail.id, 21)
+    assert.strictEqual(detail.idMal, 21, 'the MAL id AniSkip needs must survive the normaliser')
     assert.strictEqual(detail.title, 'One Piece')
     assert.strictEqual(detail.type, 'anime')
     assert.strictEqual(detail.episodeCount, 1100)
     assert.deepStrictEqual(body.variables, { id: 21 })
+    assert.match(body.query, /\bidMal\b/, 'the byId query must select idMal')
   })
 
   test('byId returns null for an unknown id rather than an unrelated show', async () => {
