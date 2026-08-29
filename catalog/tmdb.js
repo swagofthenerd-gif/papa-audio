@@ -118,10 +118,12 @@ function createTmdbCatalog({ apiKey, fetchFn } = {}) {
 
   async function _fetch(url) {
     const sep = url.includes('?') ? '&' : '?'
-    const full = apiKey ? `${url}${sep}api_key=${apiKey}` : url
+    const key = typeof apiKey === 'function' ? apiKey() : apiKey
+    const full = key ? `${url}${sep}api_key=${key}` : url
     const res = await fetcher(full)
     if (!res || !res.ok) {
       const status = res && res.status != null ? res.status : 'unknown'
+      if (status === 401) throw new Error('Invalid or missing TMDB API key (401)')
       throw new Error(`TMDB request failed (${status})`)
     }
     return res.json()

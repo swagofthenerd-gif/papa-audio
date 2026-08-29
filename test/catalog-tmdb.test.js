@@ -190,3 +190,31 @@ test('createTmdbCatalog throws an Error containing TMDB on non-OK response', asy
   const cat = createTmdbCatalog({ apiKey: 'KEY', fetchFn })
   await assert.rejects(() => cat.search('x'), /TMDB/)
 })
+
+test('a function apiKey is resolved fresh on every fetch', async () => {
+  let counter = 0
+  const seen = []
+  const apiKey = () => `KEY${++counter}`
+  const fetchFn = async (url) => {
+    seen.push(url)
+    return { ok: true, json: async () => ({ results: [] }) }
+  }
+  const cat = createTmdbCatalog({ apiKey, fetchFn })
+  await cat.search('a')
+  await cat.search('b')
+  assert.strictEqual(counter, 2)
+  assert.ok(seen[0].includes('api_key=KEY1'))
+  assert.ok(seen[1].includes('api_key=KEY2'))
+})
+
+test('a 401 response rejects with a clear API key message', async () => {
+  const fetchFn = async () => ({ ok: false, status: 401, json: async () => ({}) })
+  const cat = createTmdbCatalog({ apiKey: 'KEY', fetchFn })
+  await assert.rejects(() => cat.search('x'), /TMDB API key/)
+})
+
+test('a non-401 failure rejects with the generic status message', async () => {
+  const fetchFn = async () => ({ ok: false, status: 500 })
+  const cat = createTmdbCatalog({ apiKey: 'KEY', fetchFn })
+  await assert.rejects(() => cat.search('x'), /TMDB request failed \(500\)/)
+})
