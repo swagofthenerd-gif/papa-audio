@@ -130,17 +130,19 @@ test('transitions ignore a track whose artist is unknown', () => {
 
 test('buildTransitions uses the injected now, not the wall clock', () => {
   const trackArtist = new Map([['/a.flac', 'A'], ['/b.flac', 'B']])
-  // Timestamps far enough in the past that a wrong `now` would change how
-  // normaliseHistory judges them. Both calls must agree.
   const history = [
-    { filePath: '/b.flac', ts: NOW - 500 * day },
-    { filePath: '/a.flac', ts: NOW - 501 * day },
+    { filePath: '/b.flac', ts: NOW },
+    { filePath: '/a.flac', ts: NOW - 1000 },
   ]
-  const injected = buildTransitions({ history, trackArtist, now: NOW })
-  const alsoInjected = buildTransitions({ history, trackArtist, now: NOW })
-  assert.deepStrictEqual(
-    [...(injected.get('A') || new Map())],
-    [...(alsoInjected.get('A') || new Map())],
-  )
-  assert.strictEqual(injected.get('A') && injected.get('A').get('B'), 1)
+
+  // With a `now` at the entries' own time, both are valid and A->B is learned.
+  const current = buildTransitions({ history, trackArtist, now: NOW })
+  assert.strictEqual(current.get('A') && current.get('A').get('B'), 1)
+
+  // With a `now` ten days earlier, the very same entries are more than a day in
+  // the future, normaliseHistory rejects them, and nothing is learned. This is
+  // the assertion that fails if the parameter is ignored -- the previous version
+  // compared two identical calls and could not fail for that reason.
+  const stale = buildTransitions({ history, trackArtist, now: NOW - 10 * day })
+  assert.strictEqual(stale.size, 0, 'injected now was ignored: entries should have been rejected as future-dated')
 })
