@@ -5,6 +5,17 @@ const os = require('os')
 const path = require('path')
 const crypto = require('crypto')
 const { MpvIpcClient } = require('./mpv-ipc')
+
+// Screenshots must never land in the process working directory, which is the
+// application folder. Resolved lazily so the module stays loadable in tests
+// that have no Electron app object.
+function screenshotDir() {
+  try {
+    const { app } = require('electron')
+    if (app && typeof app.getPath === 'function') return path.join(app.getPath('userData'), 'screenshots')
+  } catch (_) { /* not running under Electron */ }
+  return path.join(os.tmpdir(), 'papa-video-screenshots')
+}
 const { channelsValue } = require('./mpv-engine')
 const { classify } = require('./src/surround-verify')
 
@@ -152,6 +163,19 @@ class VideoEngine extends EventEmitter {
       // unchanged. auto-safe falls back to software whenever the hardware path
       // is not known-good for the codec.
       '--hwdec=auto-safe',
+      // The app owns every key. mpv's built-in bindings are active by default
+      // on its own window, so with the video focused 's' took an mpv
+      // screenshot instead of skipping the intro, 'f' fullscreened the video
+      // window out from under the deck, and 'q' quit the player outright.
+      // Every control is driven over IPC, so mpv needs no keyboard at all.
+      '--input-default-bindings=no',
+      '--input-vo-keyboard=no',
+      '--no-osc',
+      '--osd-level=0',
+      // A safety net for any screenshot that still reaches mpv's own path:
+      // without this they land in the process working directory, which is the
+      // application folder.
+      `--screenshot-directory=${screenshotDir()}`,
       '--ytdl=no',
     ]
     if (wid) a.push(`--wid=${wid}`)
@@ -438,6 +462,7 @@ class VideoEngine extends EventEmitter {
 
 module.exports = {
   VideoEngine,
+  screenshotDir,
   EngineGone,
   OBSERVED_PROPS,
   STATE_THROTTLE_MS,

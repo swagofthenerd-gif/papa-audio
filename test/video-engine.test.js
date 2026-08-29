@@ -483,3 +483,34 @@ test('emptyState has the full §4.2 shape with safe defaults', () => {
     chapters: [],
   })
 })
+
+// mpv's built-in keybindings are active on its own window by default. With
+// the video focused, 's' took an mpv screenshot instead of skipping the
+// intro, 'f' fullscreened the video out from under the deck, and 'q' quit
+// the player outright. Every control is driven over IPC, so mpv needs no
+// keyboard of its own.
+test('_args gives mpv no keyboard and no on-screen UI of its own', () => {
+  const args = new VideoEngine({ config: {} })._args('/tmp/v.sock')
+  assert.ok(args.includes('--input-default-bindings=no'), 'mpv must not act on keys itself')
+  assert.ok(args.includes('--input-vo-keyboard=no'), 'the video window must not take keyboard input')
+  assert.ok(args.includes('--no-osc'), 'the app draws the controls')
+  assert.ok(args.includes('--osd-level=0'))
+})
+
+// Without this, mpv writes mpv-shot0001.jpg into the process working
+// directory — which is the application folder.
+test('_args points mpv screenshots away from the working directory', () => {
+  const args = new VideoEngine({ config: {} })._args('/tmp/v.sock')
+  const dir = args.find(a => a.startsWith('--screenshot-directory='))
+  assert.ok(dir, 'a screenshot directory must be set')
+  const value = dir.split('=')[1]
+  assert.ok(value && value !== '.' && value !== process.cwd(),
+    'screenshots must not land in the application folder')
+})
+
+test('screenshotDir resolves without Electron present', () => {
+  const { screenshotDir } = require('../video-engine')
+  const dir = screenshotDir()
+  assert.ok(typeof dir === 'string' && dir.length > 0)
+  assert.ok(dir !== process.cwd())
+})

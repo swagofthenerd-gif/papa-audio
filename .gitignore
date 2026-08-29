@@ -7,3 +7,7 @@ bridge-server/node_modules/
 *.backup
 .superpowers/
 .qa/
+
+# mpv's own screenshot path, if one ever escapes the configured directory
+mpv-shot*.jpg
+mpv-shot*.png
