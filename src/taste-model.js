@@ -72,8 +72,8 @@ function buildColdSet({ history = [], playCounts = {}, now = Date.now(), days = 
   return cold
 }
 
-function buildTransitions({ history = [], trackArtist = new Map() } = {}) {
-  const { entries } = normaliseHistory(history, { now: Date.now() })
+function buildTransitions({ history = [], trackArtist = new Map(), now = Date.now() } = {}) {
+  const { entries } = normaliseHistory(history, { now })
   // normaliseHistory returns newest first; listening order is the reverse.
   const chron = [...entries].reverse()
 

@@ -127,3 +127,20 @@ test('transitions ignore a track whose artist is unknown', () => {
   })
   assert.strictEqual(t.size, 0)
 })
+
+test('buildTransitions uses the injected now, not the wall clock', () => {
+  const trackArtist = new Map([['/a.flac', 'A'], ['/b.flac', 'B']])
+  // Timestamps far enough in the past that a wrong `now` would change how
+  // normaliseHistory judges them. Both calls must agree.
+  const history = [
+    { filePath: '/b.flac', ts: NOW - 500 * day },
+    { filePath: '/a.flac', ts: NOW - 501 * day },
+  ]
+  const injected = buildTransitions({ history, trackArtist, now: NOW })
+  const alsoInjected = buildTransitions({ history, trackArtist, now: NOW })
+  assert.deepStrictEqual(
+    [...(injected.get('A') || new Map())],
+    [...(alsoInjected.get('A') || new Map())],
+  )
+  assert.strictEqual(injected.get('A') && injected.get('A').get('B'), 1)
+})
