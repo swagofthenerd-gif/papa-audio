@@ -1647,11 +1647,18 @@ function allLibraryTracks() {
   for (const album of albums) {
     for (const t of (album.tracks || [])) {
       out.push({
-        filePath: t.filePath,
+        ...t,
         artist: t.artist || album.artist || '',
+        albumArtist: album.artist || '',
+        albumName: album.name || '',
         albumId: album.id,
+        artPath: album.artPath || null,
         channels: t.channels || 0,
         size: t.fileSize || 0,
+        // The library cache records fileSize but no mtime. Change detection is by
+        // size plus FEATURE_VERSION. Supplying 0 rather than undefined is load
+        // bearing: needsAnalysis compares Number(mtimeMs), and NaN !== NaN would
+        // make every track look stale and re-analyse the whole library every run.
         mtimeMs: 0,
       })
     }

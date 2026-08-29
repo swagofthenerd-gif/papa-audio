@@ -29,3 +29,15 @@ test('the feature store is a side store, never the shared config', () => {
 test('analysis is gated on playback', () => {
   assert.ok(/isPlaying\s*:/.test(main), 'runAnalysis must be passed an isPlaying gate')
 })
+
+test('allLibraryTracks emits tracks the renderer can actually play', () => {
+  // queue-build's output is assigned straight into state.queue, which renders
+  // the now-playing bar and the queue panel. A track without title/artPath
+  // shows as blank rather than failing loudly, so pin the shape here.
+  for (const field of ['title', 'albumName', 'albumArtist', 'artPath', 'duration']) {
+    assert.ok(
+      new RegExp(`\\b${field}\\b`).test(main),
+      `allLibraryTracks must carry ${field} through to queue-build`,
+    )
+  }
+})
