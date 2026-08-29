@@ -19,6 +19,7 @@ function fakeTorrent({ name = 'Movie (2010) 1080p.mp4', length = 1000 } = {}) {
   torrent.createServer = () => http.createServer()
   torrent.destroy = (cb) => {
     torrent.destroyed = true
+    torrent.destroyCalls = (torrent.destroyCalls || 0) + 1
     torrent.emit('close')
     if (cb) cb()
   }
@@ -80,6 +81,53 @@ test('start() rejects and emits NO_SEEDERS when the client never calls back', as
   assert.strictEqual(errors.length, 1)
   assert.strictEqual(errors[0].code, 'NO_SEEDERS')
   assert.strictEqual(torrent.destroyed, true)
+})
+
+test('start() rejects NO_SEEDERS with no error listener (no crash)', async () => {
+  const torrent = fakeTorrent()
+  const client = { add: () => torrent }
+  const streamer = new TorrentStreamer({ client, timeoutMs: 10 })
+  await assert.rejects(
+    streamer.start({ magnet: 'magnet:?xt=urn:btih:AAA' }),
+    { code: 'NO_SEEDERS' }
+  )
+})
+
+test('stop() immediately after start() settles without ready or leak', async () => {
+  const torrent = fakeTorrent()
+  let readyCb
+  const client = {
+    add(magnet, cb) {
+      readyCb = cb
+      return torrent
+    },
+  }
+  const streamer = new TorrentStreamer({ client, timeoutMs: 50 })
+  let ready = false
+  streamer.on('ready', () => { ready = true })
+  let settled = false
+  const p = streamer.start({ magnet: 'magnet:?xt=urn:btih:AAA' }).then(
+    () => { settled = true },
+    () => { settled = true }
+  )
+  streamer.stop()
+  readyCb(torrent)
+  await new Promise((r) => setTimeout(r, 80))
+  assert.strictEqual(settled, false)
+  assert.strictEqual(ready, false)
+  assert.strictEqual(torrent.destroyCalls, 1)
+})
+
+test("start() emits 'ready' with { url }", async () => {
+  const torrent = fakeTorrent()
+  const client = readyClient(torrent)
+  const streamer = new TorrentStreamer({ client })
+  const events = []
+  streamer.on('ready', (e) => events.push(e))
+  const result = await streamer.start({ magnet: 'magnet:?xt=urn:btih:AAA' })
+  assert.strictEqual(events.length, 1)
+  assert.deepStrictEqual(events[0], { url: result.url })
+  streamer.stop()
 })
 
 test('stop() is idempotent and does not throw', async () => {

@@ -75,6 +75,10 @@ class TorrentStreamer extends EventEmitter {
       this._settle(reject, { code: 'SERVER_ERROR', message: err.message })
     })
     server.listen(0, '127.0.0.1', () => {
+      if (this._settled) {
+        try { server.close(() => {}) } catch {}
+        return
+      }
       const port = server.address().port
       const url = buildFileUrl(port, fileIndex, file.name)
       torrent.on('download', this._onDownload)
@@ -86,10 +90,15 @@ class TorrentStreamer extends EventEmitter {
   }
 
   _onTimeout(reject) {
+    if (this._settled) return
     const torrent = this._torrent
+    this._torrent = null
+    if (this._server) {
+      try { this._server.close(() => {}) } catch {}
+      this._server = null
+    }
     this._settle(reject, { code: 'NO_SEEDERS', message: `No seeders after ${this.timeoutMs}ms` })
     if (torrent) {
-      this._torrent = null
       try { torrent.destroy(() => {}) } catch {}
     }
   }
@@ -98,7 +107,9 @@ class TorrentStreamer extends EventEmitter {
     if (this._settled) return
     this._settled = true
     this._clearTimer()
-    this.emit('error', err)
+    if (this.listenerCount('error') > 0) {
+      this.emit('error', err)
+    }
     reject(err)
   }
 
@@ -110,6 +121,7 @@ class TorrentStreamer extends EventEmitter {
   }
 
   stop() {
+    this._settled = true
     this._clearTimer()
     const server = this._server
     this._server = null
