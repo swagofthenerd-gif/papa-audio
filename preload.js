@@ -247,6 +247,11 @@ contextBridge.exposeInMainWorld('api', {
   transcodeFile: (p) => ipcRenderer.invoke('transcode-file', p),
   batchTranscode: (p) => ipcRenderer.invoke('batch-transcode', p),
 
+  queueBuild:          (opts) => ipcRenderer.invoke('queue-build', opts),
+  queueMixes:          () => ipcRenderer.invoke('queue-mixes'),
+  queueAnalysisStatus: () => ipcRenderer.invoke('queue-analysis-status'),
+  queueAnalysisStart:  () => ipcRenderer.invoke('queue-analysis-start'),
+
   // Events from main process
   // Returns an unsubscribe function. Without one, callers had to use off(),
   // which is removeAllListeners on the whole channel — so clicking Set up
@@ -260,6 +265,7 @@ contextBridge.exposeInMainWorld('api', {
       'yt-dl-progress', 'yt-auth-pending', 'yt-auth-done',
       'slsk-verify', 'slsk-user-status', 'slsk-saved-users-changed', 'slsk-scheduler-stats',
       'library-updated', 'scan-progress', 'app-recovered-from-crash',
+      'queue-analysis-progress',
       // The tray menu, MPRIS and the power monitor all send these, and none of
       // them was subscribable: Play, Next and Previous in the tray menu did
       // nothing, and seeking or changing volume from a desktop applet did

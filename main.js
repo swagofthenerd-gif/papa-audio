@@ -475,6 +475,10 @@ const store = new Store()
 // the thread that drives mpv's IPC. Each of these now owns a small file, written
 // asynchronously and coalesced. See side-store.js.
 const { SideStore } = require('./side-store')
+const { runAnalysis, analyseOne } = require('./analysis-runner')
+const { buildQueue } = require('./src/queue-engine')
+const { clusterLibrary } = require('./src/queue-clusters')
+const { buildAffinity, buildColdSet } = require('./src/taste-model')
 const _sideErr = e => { try { console.error('[papa][store]', e.message) } catch (_) {} }
 const sideStores = {
   // Largest: 1.37 MB, rewritten on every scan, watcher event and mutation.
@@ -506,10 +510,17 @@ for (const [key, side] of Object.entries(sideStores)) {
 }
 
 // Nothing may be lost on the way out, and neither quit path can await.
+// featureStore is declared later in the file (it needs USER_DATA already set
+// up), but this function only ever runs at quit time, well after that
+// declaration has executed — the closure sees it fine despite the textual
+// order. It is deliberately not part of `sideStores`: that map exists before
+// featureStore does, and is iterated elsewhere (migration) in ways that
+// shouldn't pick up a smart-queues-only store.
 function flushSideStores() {
   for (const side of Object.values(sideStores)) {
     try { side.flushSync() } catch (_) { /* exiting anyway */ }
   }
+  try { featureStore.flushSync() } catch (_) { /* exiting anyway */ }
 }
 
 ;(function migrateFolder() {
@@ -1613,6 +1624,173 @@ async function _resolvePlayerPath(p) {
   }
   return p // fallback: let mpv handle it
 }
+
+// ── Smart queues: audio feature analysis + queue building ────────────────────
+// Its own side store, never the shared config — the library alone is 2.5 MB
+// of playCounts/likedTracks and features would grow with every track analysed.
+const featureStore = new SideStore({
+  dir: USER_DATA, name: 'audio-features', fallback: { features: {} },
+  onError: e => console.error('[features]', e.message),
+})
+
+let analysisRunning = false
+// Guards against two overlapping resume timers ever existing at once — a run
+// that halts twice in a row must not stack a second pending re-check on top
+// of the first.
+let analysisResumeTimer = null
+const ANALYSIS_RESUME_DELAY_MS = 30000
+
+function featureMap() {
+  const raw = (featureStore.get() || {}).features || {}
+  return new Map(Object.entries(raw))
+}
+
+// The library cache is an array of albums, each with a tracks array. Flatten
+// it and carry the album's identity down onto each track. The cache records
+// fileSize but no mtime, so change detection is by size plus FEATURE_VERSION
+// (see analysis-runner's needsAnalysis). Supplying mtimeMs: 0 rather than
+// undefined is load bearing: needsAnalysis compares Number(entry.mtimeMs) !==
+// Number(track.mtimeMs), and undefined would compare as NaN !== NaN, which is
+// always true — the whole library would look stale and re-analyse from
+// scratch on every launch.
+function allLibraryTracks() {
+  const albums = sideStores.libraryCache.get() || []
+  const out = []
+  for (const album of albums) {
+    for (const t of (album.tracks || [])) {
+      out.push({
+        ...t,
+        artist: t.artist || album.artist || '',
+        albumArtist: album.artist || '',
+        albumName: album.name || '',
+        albumId: album.id,
+        artPath: album.artPath || null,
+        channels: t.channels || 0,
+        size: t.fileSize || 0,
+        // The library cache records fileSize but no mtime. Change detection is by
+        // size plus FEATURE_VERSION. Supplying 0 rather than undefined is load
+        // bearing: needsAnalysis compares Number(mtimeMs), and NaN !== NaN would
+        // make every track look stale and re-analyse the whole library every run.
+        mtimeMs: 0,
+      })
+    }
+  }
+  return out
+}
+
+// The raw array from the play-history side store. buildAffinity and
+// buildColdSet normalise it themselves — never read entry.ts directly here.
+function readHistoryEntries() {
+  return sideStores.playHistory.get() || []
+}
+
+ipcMain.handle('queue-analysis-status', async () => {
+  const tracks = allLibraryTracks()
+  return { analysed: featureMap().size, total: tracks.length, running: analysisRunning }
+})
+
+// Runs one analysis pass. If it halts because playback started (or the gate
+// tripped for any other reason `runAnalysis` recognises), it is not done —
+// it is paused. Schedule exactly one re-check to pick the pass back up once
+// listening has stopped, rather than abandoning it silently. This is the
+// only path allowed to (re)start a run, so `analysisRunning` stays accurate
+// for the doubling-ffmpeg-load guard even across many pause/resume cycles.
+function startAnalysisRun() {
+  if (analysisRunning) return
+  analysisRunning = true
+  const tracks = allLibraryTracks()
+  const trackByPath = new Map(tracks.map(t => [t.filePath, t]))
+  // A 2,300-track library can take a long time end to end, and queue-analysis-
+  // status reads straight off featureStore. Without persisting as each file
+  // finishes, "analysed" would sit at 0 for the whole run (or the whole pause/
+  // resume cycle) and only jump at the very end -- indistinguishable from the
+  // gate being stuck. Write each result through immediately; SideStore
+  // debounces the actual disk I/O, so this does not add write pressure.
+  const persistOne = (filePath, r) => {
+    const t = trackByPath.get(filePath)
+    featureStore.update(v => {
+      const features = { ...((v || {}).features || {}) }
+      features[filePath] = {
+        vector: r.vector, featureVersion: r.featureVersion,
+        mtimeMs: t ? t.mtimeMs : 0, size: t ? t.size : 0,
+      }
+      return { features }
+    })
+  }
+  runAnalysis({
+    tracks,
+    existing: featureMap(),
+    isPlaying: () => Boolean(player && player.isActuallyPlaying && player.isActuallyPlaying()),
+    analyseFn: async filePath => {
+      const r = await analyseOne(filePath)
+      if (r && r.ok) persistOne(filePath, r)
+      return r
+    },
+    onProgress: p => safeSend('queue-analysis-progress', p),
+  }).then(r => {
+    featureStore.update(v => {
+      const features = { ...((v || {}).features || {}) }
+      for (const [fp, entry] of r.results) features[fp] = entry
+      return { features }
+    })
+    analysisRunning = false
+    safeSend('queue-analysis-progress', { done: r.analysed, total: tracks.length, finished: !r.halted, halted: r.halted })
+    if (r.halted && !app.isQuitting && !analysisResumeTimer) {
+      analysisResumeTimer = setTimeout(() => {
+        analysisResumeTimer = null
+        if (app.isQuitting) return
+        startAnalysisRun()
+      }, ANALYSIS_RESUME_DELAY_MS)
+      analysisResumeTimer.unref?.()
+    }
+  }).catch(e => {
+    analysisRunning = false
+    console.error('[features] run failed:', e && e.message)
+  })
+}
+
+ipcMain.handle('queue-analysis-start', async () => {
+  if (analysisRunning) return { ok: true, alreadyRunning: true }
+  startAnalysisRun()
+  return { ok: true }
+})
+
+ipcMain.handle('queue-mixes', async () => {
+  const tracks = allLibraryTracks()
+  const vectors = new Map([...featureMap()].map(([fp, entry]) => [fp, entry.vector]))
+  // Without features there are no clusters, so there are no mixes to name yet.
+  // Returning an empty list lets the UI say so honestly rather than showing
+  // cards that would all produce the same undifferentiated queue.
+  if (!vectors.size) return { ok: true, featuresReady: false, mixes: [] }
+  const c = clusterLibrary({ tracks, vectors, k: 5 })
+  const sizes = new Map()
+  for (const [, idx] of c.clusterOf) sizes.set(idx, (sizes.get(idx) || 0) + 1)
+  const mixes = c.names
+    .map((name, index) => ({ index, name, size: sizes.get(index) || 0 }))
+    .filter(m => m.size > 0)
+  return { ok: true, featuresReady: true, mixes }
+})
+
+ipcMain.handle('queue-build', async (_e, { mode = 'surprise', seedFilePath = null, mixIndex = null, length = 30 } = {}) => {
+  const tracks = allLibraryTracks()
+  const vectors = new Map([...featureMap()].map(([fp, entry]) => [fp, entry.vector]))
+  const history = readHistoryEntries()
+  const playCounts = store.get('playCounts', {})
+  const affinity = buildAffinity({ history, playCounts, likedTracks: store.get('likedTracks', []) })
+  const coldSet = mode === 'rediscover' ? buildColdSet({ history, playCounts }) : null
+  let clusterOf = null, seedCluster = null
+  if (mode === 'mix') {
+    const c = clusterLibrary({ tracks, vectors, k: 5 })
+    clusterOf = c.clusterOf
+    seedCluster = Number.isInteger(mixIndex)
+      ? mixIndex
+      : (seedFilePath ? c.clusterOf.get(seedFilePath) ?? 0 : 0)
+  }
+  const seed = seedFilePath ? tracks.find(t => t.filePath === seedFilePath) : null
+  const featuresReady = vectors.size > 0
+  return { ok: true, featuresReady, tracks: buildQueue({ mode, seed, tracks, vectors, affinity, coldSet, clusterOf, seedCluster, length }) }
+})
+
 
 ipcMain.handle('player-load',       async (_, { path: p, play }) => {
   var resolved = await _resolvePlayerPath(p)

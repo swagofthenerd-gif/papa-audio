@@ -342,7 +342,7 @@ class MpvEngine extends EventEmitter {
       })
     }
     const stalledFor = Date.now() - this._lastPosChangeAt
-    const shouldBeMoving = !this.state.paused && this.state.path && this._eofState === 'idle'
+    const shouldBeMoving = this.isActuallyPlaying()
     if (!shouldBeMoving || stalledFor < this._stallMs) {
       if (shouldBeMoving) this._stallReported = false
       return
@@ -600,6 +600,16 @@ class MpvEngine extends EventEmitter {
   }
 
   getState() { return { ...this.state } }
+
+  // True only while mpv is actually moving audio forward: not paused, has a
+  // loaded path, and not sitting in an end-of-file/idle state after a track
+  // ended or playback stopped. state.paused alone is stale once mpv goes idle
+  // (its 'pause' property observer never fires again), which is why callers
+  // that need "can I hog the CPU with a background job right now" must use
+  // this instead of `!getState().paused`.
+  isActuallyPlaying() {
+    return Boolean(!this.state.paused && this.state.path && this._eofState === 'idle')
+  }
 
   _onEvent(e) {
     if (e.event === 'property-change') {
