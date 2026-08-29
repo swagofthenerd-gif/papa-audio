@@ -31,6 +31,9 @@ function buildAffinity({ history = [], playCounts = {}, likedTracks = [], now = 
   for (const p of paths) {
     const countFromPlayCounts = Math.max(0, Number(playCounts[p]) || 0)
     const countFromHistory = historyCount.get(p) || 0
+    // A track can appear in history with no playCounts entry — this is the case
+    // for the 463 legacy entries (38% of real history) written under the old
+    // `timestamp` key. Fall back to history count when playCounts is missing.
     const count = countFromPlayCounts || countFromHistory
     // log damping: 40 plays is worth more than 2, but not twenty times more.
     let score = Math.log1p(count)
@@ -49,7 +52,7 @@ function buildAffinity({ history = [], playCounts = {}, likedTracks = [], now = 
   }
 
   const out = new Map()
-  for (const [p, s] of raw) out.set(p, Math.min(1, s))
+  for (const [p, s] of raw) out.set(p, max > 0 ? s / max : 0)
   return out
 }
 
