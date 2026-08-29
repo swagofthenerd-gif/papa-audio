@@ -19,12 +19,14 @@ const HANDLERS = [
   'video-settings-get', 'video-settings-set', 'video-catalog-get',
   'video-search', 'video-detail', 'video-streams', 'video-probe',
   'video-play', 'video-stop',
+  'video-control', 'video-tracks', 'video-chapters', 'video-skip-segments',
 ]
 
 const PRELOAD_METHODS = [
   'videoSettingsGet', 'videoSettingsSet', 'videoCatalogGet',
   'videoSearch', 'videoDetail', 'videoStreams', 'videoProbe',
-  'videoPlay', 'videoStop', 'onVideoEvent',
+  'videoPlay', 'videoStop', 'videoControl', 'videoTracks',
+  'videoChapters', 'videoSkipSegments', 'onVideoEvent', 'onVideoState',
 ]
 
 test('every Papa Video handler is registered in main', () => {
@@ -231,4 +233,67 @@ test('cam rips stay last even through the quality preference', () => {
   const body = MAIN.slice(start, MAIN.indexOf('\n}', start))
   assert.match(body, /lowQuality === true/)
   assert.match(body, /within\.concat\(above, low\)/)
+})
+
+// ── Phase 1: the theatre control surface ────────────────────────────────────
+
+test('video-control dispatches the §4.1 verbs onto the engine', () => {
+  const body = handlerBody('video-control')
+  for (const verb of ['seek', 'pause', 'play', 'volume', 'mute', 'speed', 'track',
+                      'subAdd', 'subDelay', 'audioDelay', 'subStyle', 'aspect',
+                      'zoom', 'audioFilter', 'screenshot', 'frameStep', 'stop']) {
+    assert.match(body, new RegExp(`case '${verb}'`), `missing the ${verb} verb`)
+  }
+  assert.match(body, /Unknown video verb/, 'an unknown verb must be reported, not ignored')
+  assert.match(body, /videoEngine\(\)/, 'the verbs must land on the video engine')
+})
+
+test('the screenshot verb returns a path in the value field', () => {
+  const body = handlerBody('video-control')
+  assert.match(body, /case 'screenshot'/)
+  assert.match(body, /_videoScreenshotPath\(\)/)
+  assert.match(body, /value: \{ path: filePath \}/)
+})
+
+test('_videoScreenshotPath writes under USER_DATA and does not clobber', () => {
+  const start = MAIN.indexOf('function _videoScreenshotPath()')
+  const body = MAIN.slice(start, MAIN.indexOf('\n}', start))
+  assert.match(body, /path\.join\(USER_DATA, 'screenshots'\)/)
+  assert.match(body, /toISOString\(\)/, 'a timestamp keeps one screenshot from clobbering the next')
+})
+
+test('video-tracks and video-chapters return their payloads and degrade on failure', () => {
+  const tracks = handlerBody('video-tracks')
+  assert.match(tracks, /getTracks\(\)/)
+  assert.match(tracks, /ok: true, tracks/)
+  assert.match(tracks, /ok: false[^\n]*tracks: \[\]/, 'a failed read still returns an empty list, not an exception')
+  const chapters = handlerBody('video-chapters')
+  assert.match(chapters, /getChapters\(\)/)
+  assert.match(chapters, /ok: true, chapters/)
+})
+
+test('video-skip-segments exists now and returns an empty list until Phase 3', () => {
+  const body = handlerBody('video-skip-segments')
+  assert.match(body, /ok: true, segments: \[\]/)
+})
+
+test('the throttled state stream is pushed on video-state', () => {
+  const start = MAIN.indexOf('function _wireVideoEngine()')
+  const body = MAIN.slice(start, MAIN.indexOf('\n}\n', start))
+  assert.match(body, /engine\.on\('state'/)
+  assert.match(body, /safeSend\('video-state'/)
+})
+
+test('video-state is in the preload channel allowlist', () => {
+  const start = PRELOAD.indexOf('const allowed = [')
+  const end = PRELOAD.indexOf(']', start)
+  const allowed = PRELOAD.slice(start, end)
+  assert.match(allowed, /'video-state'/, 'main sends video-state; preload must allow it')
+})
+
+test('the preload surface exposes onVideoState and returns an unsubscribe fn', () => {
+  assert.match(PRELOAD, /onVideoState: \(cb\) =>/)
+  const at = PRELOAD.indexOf('onVideoState:')
+  const line = PRELOAD.slice(at, PRELOAD.indexOf('\n', at))
+  assert.match(line, /removeListener\('video-state', h\)/, 'the unsubscribe must remove only its own listener')
 })

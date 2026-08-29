@@ -116,6 +116,7 @@ test('every channel main sends has something that actually listens', () => {
     'slsk-verify': 'preload exposes onSlskVerify; no renderer script calls it',
     'yt-auth-done': 'no listener',
     'video-event': 'preload exposes onVideoEvent; no renderer script calls it yet (Papa Video UI is a later task)',
+    'video-state': 'preload exposes onVideoState; no renderer script calls it yet (Papa Video UI is a later task)',
   }
   const unheard = [...sentChannels]
     .filter(c => !heard.has(c) && !(c in NOT_FOR_THE_RENDERER) && !(c in DELIBERATELY_UNHANDLED))

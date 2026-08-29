@@ -111,7 +111,12 @@ contextBridge.exposeInMainWorld('api', {
   videoProbe:       (p) => ipcRenderer.invoke('video-probe', p),
   videoPlay:        (p) => ipcRenderer.invoke('video-play', p),
   videoStop:        ()  => ipcRenderer.invoke('video-stop'),
+  videoControl:     (verb, args) => ipcRenderer.invoke('video-control', { verb, args }),
+  videoTracks:      ()  => ipcRenderer.invoke('video-tracks'),
+  videoChapters:    ()  => ipcRenderer.invoke('video-chapters'),
+  videoSkipSegments:(req) => ipcRenderer.invoke('video-skip-segments', req),
   onVideoEvent: (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('video-event', h); return () => ipcRenderer.removeListener('video-event', h) },
+  onVideoState: (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('video-state', h); return () => ipcRenderer.removeListener('video-state', h) },
 
   // Power management
   setPowerSave: (playing) => ipcRenderer.send('set-power-save', playing),
@@ -279,6 +284,7 @@ contextBridge.exposeInMainWorld('api', {
       'library-updated', 'scan-progress', 'app-recovered-from-crash',
       'queue-analysis-progress',
       'video-event',
+      'video-state',
       // The tray menu, MPRIS and the power monitor all send these, and none of
       // them was subscribable: Play, Next and Previous in the tray menu did
       // nothing, and seeking or changing volume from a desktop applet did

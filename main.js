@@ -6314,6 +6314,10 @@ function _wireVideoEngine() {
     _closeVideoWindow()
     safeSend('video-event', { kind: 'error', message: 'Playback stopped unexpectedly (mpv exited).' })
   })
+  // The theatre's control deck is driven by the throttled state stream, not by
+  // individual property updates — the UI merges nothing (§4.2), so every emit
+  // is a complete object.
+  engine.on('state', s => safeSend('video-state', s))
 }
 
 // The stream list only carries what the indexer claimed about the audio. Once
@@ -6402,3 +6406,83 @@ ipcMain.handle('video-stop', async () => {
     return { ok: false, error: e.message }
   }
 })
+
+// The theatre control deck. One channel for every verb (§4.1), so the overlay
+// does not need to know how a verb reaches mpv — only that it did.
+ipcMain.handle('video-control', async (_, { verb, args } = {}) => {
+  try {
+    const engine = videoEngine()
+    switch (verb) {
+      case 'seek': await engine.seek(args?.seconds, args?.mode || 'relative'); break
+      case 'pause': await engine.setPause(args?.paused !== false); break
+      case 'play': await engine.setPause(false); break
+      case 'volume': await engine.setVolume(args?.volume); break
+      case 'mute': await engine.setMute(!!args?.muted); break
+      case 'speed': await engine.setSpeed(args?.speed); break
+      case 'track': await engine.setTrack(args?.type, args?.id); break
+      case 'subAdd': await engine.addSubtitle(args?.path, args?.select !== false); break
+      case 'subDelay': await engine.setSubDelay(args?.ms); break
+      case 'audioDelay': await engine.setAudioDelay(args?.ms); break
+      case 'subStyle': await engine.setSubStyle(args); break
+      case 'aspect': await engine.setAspect(args?.aspect); break
+      case 'zoom': await engine.setZoom(args?.zoom); break
+      case 'audioFilter': await engine.setAudioFilter(args?.af); break
+      case 'screenshot': {
+        const filePath = _videoScreenshotPath()
+        await engine.screenshot(filePath)
+        return { ok: true, value: { path: filePath } }
+      }
+      case 'frameStep': await engine.frameStep(args?.dir); break
+      case 'stop':
+        _videoSession.token++
+        _videoTeardown()
+        _closeVideoWindow()
+        break
+      default:
+        return { ok: false, error: `Unknown video verb: ${verb}` }
+    }
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) }
+  }
+})
+
+ipcMain.handle('video-tracks', async () => {
+  try {
+    const tracks = await videoEngine().getTracks()
+    return { ok: true, tracks }
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e), tracks: [] }
+  }
+})
+
+ipcMain.handle('video-chapters', async () => {
+  try {
+    const chapters = await videoEngine().getChapters()
+    return { ok: true, chapters }
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e), chapters: [] }
+  }
+})
+
+// Skip segments (intro/recap/credits). The full four-layer merge lands with
+// Phase 3; this handler exists from Phase 1 so the overlay can subscribe to an
+// empty list and light up without a later contract change.
+ipcMain.handle('video-skip-segments', async (_, req) => {
+  try {
+    void req
+    return { ok: true, segments: [] }
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e), segments: [] }
+  }
+})
+
+// Screenshots land in a per-app folder rather than mpv's cwd, so the file is
+// findable from the settings gear. The timestamp keeps one from clobbering the
+// next on the same second.
+function _videoScreenshotPath() {
+  const dir = path.join(USER_DATA, 'screenshots')
+  try { fs.mkdirSync(dir, { recursive: true }) } catch (_) { /* read-only is not fatal */ }
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+  return path.join(dir, `papa-video-${stamp}.png`)
+}
