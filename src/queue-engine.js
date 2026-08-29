@@ -22,8 +22,13 @@ function poolFor(mode, tracks, seed, coldSet, clusterOf, seedCluster) {
     const cold = coldSet || new Set()
     return tracks.filter(t => cold.has(t.filePath))
   }
-  if (mode === 'mix' && clusterOf) {
-    return tracks.filter(t => clusterOf.get(t.filePath) === seedCluster)
+  if (mode === 'mix' && clusterOf && clusterOf.size) {
+    const inCluster = tracks.filter(t => clusterOf.get(t.filePath) === seedCluster)
+    // Before analysis has run there are no clusters, and every lookup misses.
+    // Falling back to the whole library makes a mix behave like a surprise queue
+    // until features exist, which is the documented degraded mode -- an empty
+    // queue is not, and "Daily Mix" is the first thing a new user presses.
+    if (inCluster.length) return inCluster
   }
   if (mode === 'radio' && seed) {
     return tracks.filter(t => t.filePath !== seed.filePath)

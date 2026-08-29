@@ -104,3 +104,10 @@ test('radio is the tightest mode and surprise the loosest', () => {
   assert.ok(MODE_TEMPERATURE.radio < MODE_TEMPERATURE.mix)
   assert.ok(MODE_TEMPERATURE.mix < MODE_TEMPERATURE.surprise)
 })
+
+test('mix falls back to the whole library before analysis has run', () => {
+  const { tracks } = lib(40)
+  // No vectors, so clusterLibrary produces no clusters and every lookup misses.
+  const q = buildQueue({ mode: 'mix', tracks, vectors: new Map(), clusterOf: new Map(), seedCluster: 0, length: 10 })
+  assert.strictEqual(q.length, 10, 'a Daily Mix played nothing before analysis ran')
+})

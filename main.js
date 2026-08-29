@@ -1715,7 +1715,8 @@ ipcMain.handle('queue-build', async (_e, { mode = 'surprise', seedFilePath = nul
     seedCluster = seedFilePath ? c.clusterOf.get(seedFilePath) ?? 0 : 0
   }
   const seed = seedFilePath ? tracks.find(t => t.filePath === seedFilePath) : null
-  return { ok: true, tracks: buildQueue({ mode, seed, tracks, vectors, affinity, coldSet, clusterOf, seedCluster, length }) }
+  const featuresReady = vectors.size > 0
+  return { ok: true, featuresReady, tracks: buildQueue({ mode, seed, tracks, vectors, affinity, coldSet, clusterOf, seedCluster, length }) }
 })
 
 

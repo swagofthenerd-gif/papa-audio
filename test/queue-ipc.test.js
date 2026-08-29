@@ -41,3 +41,10 @@ test('allLibraryTracks emits tracks the renderer can actually play', () => {
     )
   }
 })
+
+test('queue-build reports whether features were available for this build', () => {
+  assert.ok(
+    /featuresReady/.test(main),
+    'queue-build must tell the renderer whether analysis has run, so a fresh install with no features can show an honest degraded-mode message instead of pretending'
+  )
+})
