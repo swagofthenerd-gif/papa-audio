@@ -93,7 +93,7 @@ test('start() rejects NO_SEEDERS with no error listener (no crash)', async () =>
   )
 })
 
-test('stop() immediately after start() settles without ready or leak', async () => {
+test('stop() before ready settles the pending start() with STOPPED, no ready', async () => {
   const torrent = fakeTorrent()
   let readyCb
   const client = {
@@ -105,15 +105,12 @@ test('stop() immediately after start() settles without ready or leak', async () 
   const streamer = new TorrentStreamer({ client, timeoutMs: 50 })
   let ready = false
   streamer.on('ready', () => { ready = true })
-  let settled = false
-  const p = streamer.start({ magnet: 'magnet:?xt=urn:btih:AAA' }).then(
-    () => { settled = true },
-    () => { settled = true }
-  )
+  const p = streamer.start({ magnet: 'magnet:?xt=urn:btih:AAA' })
   streamer.stop()
+  await assert.rejects(p, { code: 'STOPPED' })
+  // The late 'ready' callback must be swallowed by the _settled guard.
   readyCb(torrent)
   await new Promise((r) => setTimeout(r, 80))
-  assert.strictEqual(settled, false)
   assert.strictEqual(ready, false)
   assert.strictEqual(torrent.destroyCalls, 1)
 })
@@ -137,4 +134,28 @@ test('stop() is idempotent and does not throw', async () => {
   await streamer.start({ magnet: 'magnet:?xt=urn:btih:AAA' })
   assert.doesNotThrow(() => streamer.stop())
   assert.doesNotThrow(() => streamer.stop())
+})
+
+test('stop() closes the server, destroys the torrent and removes the download listener', async () => {
+  const torrent = fakeTorrent()
+  let closed = 0
+  const server = {
+    once() {},
+    listen(port, host, cb) { cb() },
+    address() { return { port: 1234 } },
+    close(cb) { closed++; if (cb) cb() },
+  }
+  torrent.createServer = () => server
+  const client = readyClient(torrent)
+  const streamer = new TorrentStreamer({ client })
+  await streamer.start({ magnet: 'magnet:?xt=urn:btih:AAA' })
+  assert.strictEqual(torrent.listenerCount('download'), 1, 'download listener attached on ready')
+  streamer.stop()
+  assert.strictEqual(closed, 1, 'server closed exactly once')
+  assert.strictEqual(streamer._server, null, 'server reference dropped')
+  assert.strictEqual(torrent.listenerCount('download'), 0, 'download listener removed')
+  assert.strictEqual(torrent.destroyCalls, 1, 'torrent destroyed once')
+  streamer.stop()
+  assert.strictEqual(torrent.destroyCalls, 1, 'second stop() does not re-destroy')
+  assert.strictEqual(closed, 1, 'second stop() does not re-close')
 })
