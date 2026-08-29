@@ -1482,14 +1482,20 @@ function renderHome() {
   var backAlbums = state.library.filter(function(a) { return !recents[a.id] && (pcount[a.id] || 0) >= 10 }).sort(function(a, b) { return (pcount[b.id] || 0) - (pcount[a.id] || 0) }).slice(0, 6)
   var backHTML = backAlbums.length ? '<div class="section-header"><span class="section-title">Back in rotation</span></div><div class="scroll-row">' + backAlbums.map(albumCard).join('') + '</div>' : ''
 
-  var genreCounts = {}
-  state.library.forEach(function(a) { if (a.genre) { genreCounts[a.genre] = (genreCounts[a.genre] || 0) + 1 } })
-  var topGenres = Object.keys(genreCounts).sort(function(a, b) { return (genreCounts[b] || 0) - (genreCounts[a] || 0) }).slice(0, 6)
-  var mixColors = [['#5038a0','#3850a0'],['#a04038','#a07038'],['#2d7a4a','#1a5a7a'],['#6b38a0','#5038a0'],['#3850a0','#6b38a0'],['#a07038','#a04038']]
-  if (topGenres.length === 0) topGenres = ['Your Mix 1','Your Mix 2','Your Mix 3','Your Mix 4','Your Mix 5','Your Mix 6']
-  var dailyMixHTML = '<div class="section-header"><span class="section-title">Made for you</span></div><div class="scroll-row">' + topGenres.map(function(g, i) {
-    return '<div class="daily-mix-card" style="background:linear-gradient(135deg,' + (mixColors[i] ? mixColors[i][0] : '#333') + ',' + (mixColors[i] ? mixColors[i][1] : '#555') + ')" data-mix-genre="' + esc(g || '') + '"><span class="daily-mix-num">' + esc(g) + ' Mix</span><span class="daily-mix-sub">Based on your taste</span></div>'
-  }).join('') + '</div>'
+  // "Made for you" — smart-queue mixes plus Surprise Me and Rediscover. There
+  // is no IPC surface to name these after the taste model's actual clusters
+  // (queueBuild only accepts a mode, not a cluster id), so the five mix cards
+  // are generic "Mix N" entries that each start an independent mode:'mix'
+  // build — the randomness in the sampler (spec §7) means they will not all
+  // land on the same tracks.
+  var dailyMixHTML = '<div class="section-header"><span class="section-title">Made for you</span></div>' +
+    '<div class="scroll-row q-madeforyou">' +
+    [1, 2, 3, 4, 5].map(function (i) {
+      return '<div class="q-mix-card" data-q-mode="mix"><span class="q-mix-card-title">Mix ' + i + '</span><span class="q-mix-card-sub">Based on your taste</span></div>'
+    }).join('') +
+    '<div class="q-mix-card q-mix-card-surprise" data-q-mode="surprise"><span class="q-mix-card-title">Surprise Me</span><span class="q-mix-card-sub">Something you would not have picked</span></div>' +
+    '<div class="q-mix-card q-mix-card-rediscover" data-q-mode="rediscover"><span class="q-mix-card-title">Rediscover</span><span class="q-mix-card-sub">Tracks you used to love</span></div>' +
+    '</div>'
 
   const allHTML = state.library.length ? `
     <div class="section-header">
@@ -1527,6 +1533,9 @@ function renderHome() {
   })
   document.querySelectorAll('.following-card[data-channel]').forEach(card => {
     card.addEventListener('click', () => navigate('yt-artist', card.dataset.channel))
+  })
+  document.querySelectorAll('.q-mix-card[data-q-mode]').forEach(card => {
+    card.addEventListener('click', () => startSmartQueue(card.dataset.qMode))
   })
 }
 
@@ -5970,11 +5979,17 @@ function renderQueuePanel() {
   var totalQD = state.queue.reduce(function(s, t) { return s + (t.duration || 0) }, 0)
   var totalQDstr = fmtDur(totalQD)
 
+  // A surround-first queue (Task 7) mixes 5.1+ tracks with the occasional
+  // stereo one. Once at least one surround track is present, mark the stereo
+  // ones so it is obvious why they will not fill the room the same way.
+  var hasSurround = state.queue.some(function (t) { return (t.channels || 0) >= 6 })
+
   list.innerHTML = fromHtml + '<div style="padding:12px;font-size:13px;font-weight:600;display:flex;justify-content:space-between"><span>Queue (' + state.queue.length + ')</span><span style="font-size:11px;color:var(--text3);font-weight:400">' + totalQDstr + '</span></div>' + state.queue.map((t, i) => {
     const isPlaying = i === state.queueIndex
     const art = t.artPath
       ? `<img class="queue-row-art" src="${esc('file://' + t.artPath)}" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
       : ''
+    const stereoBadge = (hasSurround && (t.channels || 0) < 6) ? '<span class="q-stereo-badge">STEREO</span>' : ''
     return `
       <div class="queue-row ${isPlaying ? 'playing' : ''}" draggable="true" data-queue-idx="${i}">
         <div class="queue-drag-handle">${dragHandleSvg}</div>
@@ -5983,7 +5998,7 @@ function renderQueuePanel() {
           <svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>
         </div>
         <div class="queue-row-info">
-          <div class="queue-row-title">${esc(t.title)}${t.explicit ? '<span class="track-explicit">E</span>' : ''}</div>
+          <div class="queue-row-title">${esc(t.title)}${t.explicit ? '<span class="track-explicit">E</span>' : ''}${stereoBadge}</div>
           <div class="queue-row-artist">${esc(t.albumArtist || t.artist || '')}${t.bpm ? `<span class="track-bpm">${t.bpm} BPM</span>` : ''}</div>
         </div>
         ${(state.playCounts[t.filePath] || 0) > 0 ? `<span class="track-plays">${state.playCounts[t.filePath]}</span>` : ''}
@@ -6609,6 +6624,27 @@ function restoreOldQueue() {
   state.queueIndex = _oldQueue.index
   _oldQueue = null
   playCurrentTrack()
+}
+
+// ── Smart queues (radio / mix / surprise / rediscover) ──────────────────────
+// All the building happens in the main process (Task 11). The renderer only
+// asks for a finished, playable list and starts it — same shape as playAlbum.
+var SMART_QUEUE_MODES = ['radio', 'mix', 'surprise', 'rediscover']
+async function startSmartQueue(mode, seedFilePath) {
+  const result = await window.api.queueBuild({ mode: mode, seedFilePath: seedFilePath, length: 40 }).catch(() => null)
+  if (!result || !result.tracks || !result.tracks.length) {
+    showSnackbar('Still analysing your library — try again shortly')
+    return null
+  }
+  _oldQueue = null
+  state.queue = result.tracks
+  state.queueIndex = 0
+  playCurrentTrack()
+  if (state.queuePanelOpen) renderQueuePanel()
+  if (!result.featuresReady) {
+    showSnackbar('Analysis isn’t finished yet, so this is a general queue for now')
+  }
+  return result
 }
 
 // Mirror of playNext()'s selection, without side effects — used for gapless prefetch
@@ -7501,7 +7537,7 @@ function bindContentEvents() {
     })
   })
 
-  document.querySelectorAll('#content .album-card,#content .quick-card,#content .artist-card,#content .daily-mix-card,#content .jumpback-card,#content .folder-tree-item,#content .pl-card,#content .pl-folder-header,#content .genre-tile,#content .mood-card,#content .recent-search-card,#content .artist-pill,#content .discovery-swipe-card,#content .yt-row,#content .yt-album-card,#content .yt-artist-card,#content .yt-playlist-card,#content .dl2-group-toggle,#content .dl2-group-toggle-failed,#content .pl-track-row')
+  document.querySelectorAll('#content .album-card,#content .quick-card,#content .artist-card,#content .daily-mix-card,#content .q-mix-card,#content .jumpback-card,#content .folder-tree-item,#content .pl-card,#content .pl-folder-header,#content .genre-tile,#content .mood-card,#content .recent-search-card,#content .artist-pill,#content .discovery-swipe-card,#content .yt-row,#content .yt-album-card,#content .yt-artist-card,#content .yt-playlist-card,#content .dl2-group-toggle,#content .dl2-group-toggle-failed,#content .pl-track-row')
     .forEach(function (c) {
       if (c.hasAttribute('tabindex')) return
       c.setAttribute('tabindex', '0')
@@ -12537,7 +12573,7 @@ function setupListeners() {
   // Cards are divs with a click listener; give them a real keyboard path.
   document.getElementById('content')?.addEventListener('keydown', e => {
     if (e.key !== 'Enter' && e.key !== ' ') return
-    const card = e.target.closest('.album-card,.quick-card,.artist-card,.daily-mix-card,.jumpback-card,.folder-tree-item,.pl-card,.pl-folder-header,.genre-tile,.mood-card,.recent-search-card,.artist-pill,.discovery-swipe-card,.yt-row,.yt-album-card,.yt-artist-card,.yt-playlist-card,.dl2-group-toggle,.dl2-group-toggle-failed,.pl-track-row')
+    const card = e.target.closest('.album-card,.quick-card,.artist-card,.daily-mix-card,.q-mix-card,.jumpback-card,.folder-tree-item,.pl-card,.pl-folder-header,.genre-tile,.mood-card,.recent-search-card,.artist-pill,.discovery-swipe-card,.yt-row,.yt-album-card,.yt-artist-card,.yt-playlist-card,.dl2-group-toggle,.dl2-group-toggle-failed,.pl-track-row')
     if (!card || e.target.closest('button')) return
     e.preventDefault()
     card.click()
@@ -12940,19 +12976,30 @@ function setupListeners() {
     }
   })
 
-  // Radio context menu
+  // Radio context menu — smart-queue radio when we have a seed file, falling
+  // back to the old artist/genre radio for surfaces with no single track.
   _ctxOn('ctx-radio', () => {
     if (!ctxTarget) return
     const track = ctxTarget.type === 'track' ? ctxTarget.track : null
     const album = state.library.find(a => a.id === ctxTarget.albumId)
     const artist = ctxTarget.artist || album?.artist || track?.albumArtist
     const genre = album?.genre || (track ? state.library.find(a => a.id === track.albumId)?.genre : null)
-    startRadio(track, artist, genre)
+    const seedFilePath = (track && track.filePath) || (album && album.tracks && album.tracks[0] && album.tracks[0].filePath)
+    if (seedFilePath) startSmartQueue('radio', seedFilePath)
+    else startRadio(track, artist, genre)
     hideContextMenu()
   })
 
   // Playback speed
   document.getElementById('btn-speed')?.addEventListener('click', cycleSpeed)
+
+  // Radio button on the now-playing bar — starts a smart-queue radio seeded
+  // from whatever is currently playing.
+  document.getElementById('btn-np-radio')?.addEventListener('click', () => {
+    const track = state.queue[state.queueIndex]
+    if (!track || !track.filePath) { showSnackbar('Nothing is playing to start radio from'); return }
+    startSmartQueue('radio', track.filePath)
+  })
 
   // Sleep timer
   document.getElementById('btn-sleep')?.addEventListener('click', () => {
@@ -13601,6 +13648,26 @@ function setupListeners() {
   // event had no listener at all, so the UI silently kept showing stale data.
   window.api.on('library-updated', (payload) => {
     applyLibraryUpdate(payload)
+  })
+
+  // Smart-queue background analysis. Read the current status once up front
+  // (the pass may already be running or finished from a previous session),
+  // then keep the running total live off the progress channel.
+  window.api.queueAnalysisStatus().then(function (s) {
+    if (s) _queueAnalysis = { analysed: s.analysed || 0, total: s.total || 0, running: !!s.running }
+    if (state.currentPage === 'manage') renderManage()
+  }).catch(function () {})
+  window.api.on('queue-analysis-progress', (d) => {
+    if (!d) return
+    _queueAnalysis.running = !d.finished
+    if (typeof d.total === 'number') _queueAnalysis.total = d.total
+    _queueAnalysis.analysed = d.finished ? _queueAnalysis.total : (_queueAnalysis.analysed + 1)
+    var label = document.querySelector('.q-analysis-progress-label')
+    if (label) label.textContent = _mgAnalysisLabel()
+    if (d.finished) {
+      var btn = document.getElementById('q-analysis-start-btn')
+      if (btn) btn.remove()
+    }
   })
 
   // IPC events
@@ -14843,6 +14910,23 @@ window.addEventListener('offline', () => { state.isOnline = false })
 // total size before it touches the disk.
 
 var _mgState = { groups: [], picked: {}, busy: false, tab: 'duplicates', trash: null }
+var _queueAnalysis = { analysed: 0, total: 0, running: false }
+
+function _mgAnalysisLabel() {
+  var a = _queueAnalysis
+  var pct = a.total > 0 ? Math.min(100, Math.round((a.analysed / a.total) * 100)) : 0
+  if (a.total === 0) return 'Smart queues: still analysing your library'
+  if (a.analysed >= a.total) return 'Smart queues: analysis complete (' + a.total + ' tracks)'
+  return 'Smart queues: analysing your library — ' + a.analysed + ' of ' + a.total + ' tracks (' + pct + '%)'
+}
+
+function _mgAnalysisProgressHtml() {
+  var a = _queueAnalysis
+  var btn = (!a.running && a.analysed < a.total)
+    ? '<button class="mg-btn mg-btn-sm" id="q-analysis-start-btn">' + (a.analysed > 0 ? 'Resume analysis' : 'Start analysis') + '</button>'
+    : ''
+  return '<div class="q-analysis-progress"><span class="q-analysis-progress-label">' + esc(_mgAnalysisLabel()) + '</span>' + btn + '</div>'
+}
 
 function _mgTracksFromLibrary() {
   var out = []
@@ -14900,6 +14984,13 @@ function _mgBindTabs() {
       renderManage()
     })
   })
+  document.getElementById('q-analysis-start-btn')?.addEventListener('click', function () {
+    _queueAnalysis.running = true
+    var label = document.querySelector('.q-analysis-progress-label')
+    if (label) label.textContent = 'Smart queues: starting analysis…'
+    document.getElementById('q-analysis-start-btn')?.remove()
+    window.api.queueAnalysisStart().catch(function () {})
+  })
 }
 
 function renderManage() {
@@ -14913,6 +15004,7 @@ function _mgShell(inner, sub) {
   return '<div class="page mg-page">' +
     '<div class="mg-head"><h2 class="mg-title">Manage Library</h2>' +
     (sub ? '<div class="mg-sub">' + sub + '</div>' : '') + '</div>' +
+    _mgAnalysisProgressHtml() +
     _mgTabsHtml() + inner + '</div>'
 }
 
