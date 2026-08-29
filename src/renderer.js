@@ -1358,6 +1358,10 @@ function _handleVideoEvent(payload) {
     _player.setStageMessage('')
     _loadSkipSegments()
     _offerResume(_player._state())
+    _setUpNextInfo()
+    // Resolving the next episode's sources now means advancing later is
+    // instant instead of a fresh round-trip to five indexers.
+    _prefetchNextSources()
   } else if (payload.kind === 'error') {
     _player.setStageMessage('<div style="color:var(--color-error)">' +
       esc(_videoErrorText(payload.message || 'Playback error')) + '</div>')
@@ -1393,6 +1397,70 @@ async function _loadSkipSegments() {
     manual: manual,
   }).catch(function () { return { ok: false, segments: [] } })
   _player.setSegments(res && res.ok ? res.segments : [])
+}
+
+// Sources for the next episode, resolved while the current one plays so
+// advancing is instant rather than a fresh round-trip to five indexers.
+// Keyed by the episode it belongs to, so a season change invalidates it.
+var _prefetch = { key: null, streams: null, inflight: false }
+
+function _prefetchKey(next) {
+  return next ? (next.season == null ? 'e' : 's' + next.season + 'e') + next.episode : null
+}
+
+async function _prefetchNextSources() {
+  if (!_videoDetail || !_videoDetail.d) return
+  const next = _nextEpisodeOf(_videoDetail, _videoState)
+  const key = _prefetchKey(next)
+  if (!key || _prefetch.key === key || _prefetch.inflight) return
+  _prefetch = { key: key, streams: null, inflight: true }
+
+  // The request is the one we would make after advancing, with the episode
+  // moved on. Building it by hand avoids mutating _videoState, which the UI
+  // is still rendering from.
+  const d = _videoDetail.d
+  const req = {
+    type: _videoDetail.type, title: d.title, year: d.year,
+    tmdbId: _videoDetail.type === 'tv' ? d.id : undefined,
+    imdbId: d.imdbId || null,
+    anilistId: _videoDetail.type === 'anime' ? d.id : undefined,
+    titles: d.titles || null,
+    season: next.season != null ? next.season : undefined,
+    episode: next.episode,
+    sub: _videoState.sub, dub: !_videoState.sub,
+  }
+  const res = await window.api.videoStreams(req).catch(function () { return { ok: false } })
+  if (_prefetch.key !== key) return   // season changed while we were waiting
+  _prefetch.inflight = false
+  _prefetch.streams = res && res.ok && Array.isArray(res.streams) && res.streams.length ? res.streams : null
+}
+
+// Tells the theatre what is coming, so the Up Next card can show the real
+// episode rather than a generic "next".
+function _setUpNextInfo() {
+  if (!_player || !_videoDetail || !_videoDetail.d) return
+  const next = _nextEpisodeOf(_videoDetail, _videoState)
+  if (!next) return _player.setUpNext(null)
+  const d = _videoDetail.d
+  let title = 'Episode ' + next.episode
+  let still = null
+  if (_videoDetail.type === 'tv' && Array.isArray(d.seasons)) {
+    const season = d.seasons.find(function (x) { return x.seasonNumber === next.season })
+    const ep = season && Array.isArray(season.episodes)
+      ? season.episodes.find(function (e) { return e.episodeNumber === next.episode })
+      : null
+    if (ep) {
+      if (ep.name) title = ep.name
+      still = ep.still || null
+    }
+  }
+  _player.setUpNext({
+    title: title,
+    subtitle: _videoDetail.type === 'tv'
+      ? 'Season ' + next.season + ' · Episode ' + next.episode
+      : d.title,
+    still: still,
+  })
 }
 
 // ── Binge: advancing to the next episode ────────────────────────────────────
@@ -1444,8 +1512,13 @@ async function _playNextEpisode() {
       : 'Episode ' + _videoState.episode,
   })
 
-  const res = await window.api.videoStreams(_videoStreamRequest())
-    .catch(function (e) { return { ok: false, error: String((e && e.message) || e) } })
+  // Use what was resolved during the credits when it matches this episode.
+  const wantKey = _prefetchKey(next)
+  const res = (_prefetch.key === wantKey && _prefetch.streams)
+    ? { ok: true, streams: _prefetch.streams }
+    : await window.api.videoStreams(_videoStreamRequest())
+        .catch(function (e) { return { ok: false, error: String((e && e.message) || e) } })
+  _prefetch = { key: null, streams: null, inflight: false }
   if (!res.ok || !Array.isArray(res.streams) || !res.streams.length) {
     _player.setStageMessage('<div style="color:var(--color-error)">' +
       esc(res.ok ? 'No sources found for episode ' + next.episode : _videoErrorText(res.error)) + '</div>')

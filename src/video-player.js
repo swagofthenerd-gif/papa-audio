@@ -63,6 +63,10 @@
     let autoSkipUntil = 0
     let lastSkipShown = null
     let lastMarkDuration = -1
+    let upNextTimer = null
+    let upNextLeft = 0
+    let upNextInfo = null
+    let upNextDismissed = false
     let media = null   // { title, sub, next }
 
     // ── Stage geometry ──────────────────────────────────────────────────────
@@ -123,6 +127,7 @@
       // duration changes, or they would never appear at all.
       if (dur !== lastMarkDuration) { lastMarkDuration = dur; paintMarks() }
       paintSkip(pos)
+      paintUpNext(pos, dur)
     }
 
     function paintSeek(pos, dur) {
@@ -171,12 +176,22 @@
     }
 
     // ── Skip ────────────────────────────────────────────────────────────────
+    // The strip only exists when something is in it, so it does not reserve
+    // empty space under the video for the whole film.
+    function syncStrip() {
+      const strip = $('vt-strip')
+      if (!strip) return
+      const skip = $('vt-skip')
+      const up = $('vt-upnext')
+      strip.hidden = (!skip || skip.hidden) && (!up || up.hidden)
+    }
+
     function paintSkip(pos) {
       const box = $('vt-skip')
       if (!box || !skipModel) return
       const btn = skipModel.buttonFor(segments, pos, prefs)
       if (!btn) {
-        if (!box.hidden) { box.hidden = true; box.innerHTML = '' }
+        if (!box.hidden) { box.hidden = true; box.innerHTML = ''; syncStrip() }
         lastSkipShown = null
         cancelAutoSkip()
         return
@@ -187,6 +202,7 @@
       if (sig === lastSkipShown) return
       lastSkipShown = sig
       box.hidden = false
+      syncStrip()
 
       if (btn.action === 'auto') {
         // An automatic skip still shows for a beat with a visible cancel, so it
@@ -224,13 +240,100 @@
     function doSkip(segment) {
       cancelAutoSkip()
       const box = $('vt-skip')
-      if (box) { box.hidden = true; box.innerHTML = '' }
+      if (box) { box.hidden = true; box.innerHTML = ''; syncStrip() }
       lastSkipShown = null
       // Credits at the very end means "this is over" — go to the next episode
       // rather than seeking to a black frame and sitting there.
       const dur = Number(state && state.duration) || 0
       if (segment.kind === 'credits' && dur && segment.end >= dur - 1 && onNext) return onNext()
       send('seek', { seconds: segment.end, mode: 'absolute' })
+    }
+
+    // ── Up Next ─────────────────────────────────────────────────────────────
+    // Triggered by the credits segment when there is one, otherwise by the
+    // tail of the file. Either way it fires while something is still on
+    // screen, never after the picture has already gone black.
+    const UPNEXT_SECONDS = 10
+
+    function upNextTrigger(pos, dur) {
+      if (!dur || !onNext) return false
+      const credits = segments.find(function (s) { return s.kind === 'credits' && s.end >= dur - 2 })
+      if (credits) return pos >= credits.start
+      // No credits information: fall back to the last 45 seconds, which is
+      // late enough not to interrupt a film that simply has a quiet ending.
+      return pos >= dur - 45
+    }
+
+    function paintUpNext(pos, dur) {
+      const box = $('vt-upnext')
+      if (!box) return
+      if (!upNextTrigger(pos, dur) || upNextDismissed) {
+        if (!box.hidden) { box.hidden = true; box.innerHTML = ''; stopUpNext(); syncStrip() }
+        return
+      }
+      if (!box.hidden) return   // already showing; the countdown owns it now
+      box.hidden = false
+      syncStrip()
+      const n = upNextInfo || {}
+      const still = n.still
+        ? '<img class="vt-upnext-still" src="' + escapeHtml(n.still) + '" alt="" ' +
+          'onerror="this.style.visibility=\'hidden\'">'
+        : '<div class="vt-upnext-still"></div>'
+      box.innerHTML = still +
+        '<div class="vt-upnext-body">' +
+          '<div class="vt-upnext-kicker">Up next</div>' +
+          '<div class="vt-upnext-title">' + escapeHtml(n.title || 'Next episode') + '</div>' +
+          (n.subtitle ? '<div class="vt-upnext-sub">' + escapeHtml(n.subtitle) + '</div>' : '') +
+          '<div class="vt-upnext-actions">' +
+            '<button type="button" class="vt-upnext-go" id="vt-upnext-go">Play now</button>' +
+            '<button type="button" id="vt-upnext-stay">Watch credits</button>' +
+          '</div>' +
+        '</div>' +
+        '<div class="vt-ring" id="vt-upnext-ring">' +
+          '<svg viewBox="0 0 34 34"><circle class="bg" cx="17" cy="17" r="14"></circle>' +
+          '<circle class="fg" cx="17" cy="17" r="14" id="vt-ring-fg"></circle></svg>' +
+          '<div class="vt-ring-num" id="vt-ring-num">' + UPNEXT_SECONDS + '</div>' +
+        '</div>'
+      $('vt-upnext-go')?.addEventListener('click', function () { stopUpNext(); onNext() })
+      $('vt-upnext-stay')?.addEventListener('click', function () {
+        // Dismissed for this file only — it must not reappear thirty seconds
+        // later having been explicitly declined.
+        upNextDismissed = true
+        stopUpNext()
+        box.hidden = true
+        box.innerHTML = ''
+        syncStrip()
+      })
+      startUpNext()
+    }
+
+    function startUpNext() {
+      stopUpNext()
+      upNextLeft = UPNEXT_SECONDS
+      const circumference = 2 * Math.PI * 14
+      const ring = $('vt-ring-fg')
+      if (ring) {
+        ring.setAttribute('stroke-dasharray', String(circumference))
+        ring.setAttribute('stroke-dashoffset', '0')
+      }
+      upNextTimer = setInterval(function () {
+        upNextLeft--
+        const num = $('vt-ring-num')
+        if (num) num.textContent = String(Math.max(0, upNextLeft))
+        const fg = $('vt-ring-fg')
+        if (fg) fg.setAttribute('stroke-dashoffset',
+          String(circumference * (1 - Math.max(0, upNextLeft) / UPNEXT_SECONDS)))
+        if (upNextLeft <= 0) { stopUpNext(); if (onNext) onNext() }
+      }, 1000)
+    }
+
+    function stopUpNext() {
+      if (upNextTimer) { clearInterval(upNextTimer); upNextTimer = null }
+    }
+
+    function setUpNext(info) {
+      upNextInfo = info || null
+      upNextDismissed = false
     }
 
     function escapeHtml(v) {
@@ -515,6 +618,11 @@
       segments = []
       prefs = media.prefs || {}
       lastSkipShown = null
+      upNextDismissed = false
+      stopUpNext()
+      const upBox = $('vt-upnext')
+      if (upBox) { upBox.hidden = true; upBox.innerHTML = '' }
+      syncStrip()
       delayMs = { subDelay: 0, audioDelay: 0 }
       setStageMessage('<div class="spin"></div><div>Starting…</div>')
       if (!unsubscribe && api && api.onVideoState) {
@@ -535,6 +643,7 @@
 
     function close() {
       cancelAutoSkip()
+      stopUpNext()
       closeMenu()
       const root = $('vtheatre')
       if (root) root.classList.add('hidden')
@@ -565,6 +674,7 @@
       render: render,
       setSegments: setSegments,
       setPrefs: setPrefs,
+      setUpNext: setUpNext,
       setStageMessage: setStageMessage,
       reportBounds: reportBounds,
       // Exposed for tests and for the renderer's own event handling.

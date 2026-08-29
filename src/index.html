@@ -153,7 +153,15 @@
 
     <div class="vt-stage" id="vt-stage">
       <div class="vt-stage-msg" id="vt-stage-msg"></div>
+    </div>
+
+    <!-- Action strip. The skip offer and the Up Next card live here, directly
+         above the deck and OUTSIDE the stage: the mpv window covers the stage
+         rectangle entirely, so anything placed inside it would be hidden
+         behind the video rather than drawn over it. -->
+    <div class="vt-strip" id="vt-strip" hidden>
       <div class="vt-skip" id="vt-skip" hidden></div>
+      <div class="vt-upnext" id="vt-upnext" hidden></div>
     </div>
 
     <div class="vt-deck" id="vt-deck">

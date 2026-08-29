@@ -38,8 +38,12 @@ function harness({ segments = [], prefs = {}, onNext = null } = {}) {
     'vt-play', 'vt-back10', 'vt-fwd10', 'vt-next', 'vt-back', 'vt-pos', 'vt-dur',
     'vt-mute', 'vt-vol', 'vt-speed', 'vt-subs', 'vt-audio', 'vt-settings', 'vt-full',
     'vt-seek', 'vt-seek-fill', 'vt-seek-knob', 'vt-seek-buffer', 'vt-seek-marks',
-    'vt-seek-bubble', 'vt-badges', 'vt-title', 'vt-sub', 'vt-menu']
+    'vt-seek-bubble', 'vt-badges', 'vt-title', 'vt-sub', 'vt-menu',
+    'vt-strip', 'vt-upnext', 'vt-upnext-go', 'vt-upnext-stay', 'vt-ring-fg', 'vt-ring-num']
   for (const id of ids) nodes[id] = el(id)
+  nodes['vt-skip'].hidden = true
+  nodes['vt-upnext'].hidden = true
+  nodes['vt-strip'].hidden = true
   nodes['vt-menu'].classList.add('hidden')
 
   const sent = []
@@ -254,4 +258,102 @@ test('the stage message is escaped-safe and clearable', () => {
   assert.match(nodes['vt-stage-msg'].innerHTML, /spin/)
   p.setStageMessage('')
   assert.strictEqual(nodes['vt-stage-msg'].innerHTML, '')
+})
+
+
+// ── Up Next ─────────────────────────────────────────────────────────────────
+// mpv's window covers the stage rectangle completely, so anything placed
+// inside the stage is hidden behind the video rather than drawn over it. The
+// skip offer and the Up Next card therefore live in a strip outside it, and
+// that strip must only take up space when it has something to show.
+test('the action strip is hidden while nothing is offered', () => {
+  const { p, nodes } = harness()
+  p._setState(stateAt(600))
+  assert.strictEqual(nodes['vt-strip'].hidden, true)
+})
+
+test('the strip appears with a skip offer and hides again after it', () => {
+  const { p, nodes } = harness({
+    segments: [{ kind: 'intro', start: 60, end: 150, origin: 'chapters', confidence: 0.9 }],
+  })
+  p._setState(stateAt(90))
+  assert.strictEqual(nodes['vt-strip'].hidden, false)
+  p._setState(stateAt(400))
+  assert.strictEqual(nodes['vt-strip'].hidden, true)
+})
+
+test('Up Next fires at the start of the credits, not at the end of the file', () => {
+  let advanced = 0
+  const { p, nodes } = harness({
+    segments: [{ kind: 'credits', start: 3400, end: 3600, origin: 'aniskip', confidence: 0.95 }],
+    onNext: () => { advanced++ },
+  })
+  p.setUpNext({ title: 'Ozymandias', subtitle: 'Season 5 · Episode 14' })
+  p._setState(stateAt(3300))
+  assert.strictEqual(nodes['vt-upnext'].hidden, true, 'not before the credits')
+  p._setState(stateAt(3450))
+  assert.strictEqual(nodes['vt-upnext'].hidden, false)
+  assert.match(nodes['vt-upnext'].innerHTML, /Ozymandias/)
+  assert.match(nodes['vt-upnext'].innerHTML, /Season 5/)
+})
+
+test('with no credits information Up Next falls back to the tail of the file', () => {
+  const { p, nodes } = harness({ onNext: () => {} })
+  p.setUpNext({ title: 'Next' })
+  p._setState(stateAt(3500))
+  assert.strictEqual(nodes['vt-upnext'].hidden, true, '100s left is too early')
+  p._setState(stateAt(3570))
+  assert.strictEqual(nodes['vt-upnext'].hidden, false)
+})
+
+test('a film never offers Up Next', () => {
+  const { p, nodes } = harness()   // no onNext handler
+  p.setUpNext({ title: 'Nope' })
+  p._setState(stateAt(3590))
+  assert.strictEqual(nodes['vt-upnext'].hidden, true)
+})
+
+test('the card shows a countdown ring, not a bare number', () => {
+  const { p, nodes } = harness({
+    segments: [{ kind: 'credits', start: 3400, end: 3600, origin: 'chapters', confidence: 0.9 }],
+    onNext: () => {},
+  })
+  p.setUpNext({ title: 'Next' })
+  p._setState(stateAt(3450))
+  assert.match(nodes['vt-upnext'].innerHTML, /vt-ring/)
+  assert.match(nodes['vt-upnext'].innerHTML, /stroke-linecap|vt-ring-num|circle/)
+})
+
+test('the card is not re-rendered on every state tick', () => {
+  const { p, nodes } = harness({
+    segments: [{ kind: 'credits', start: 3400, end: 3600, origin: 'chapters', confidence: 0.9 }],
+    onNext: () => {},
+  })
+  p.setUpNext({ title: 'Next' })
+  p._setState(stateAt(3450))
+  nodes['vt-upnext'].innerHTML = 'SENTINEL'
+  p._setState(stateAt(3451))
+  // A countdown that restarts four times a second would never reach zero.
+  assert.strictEqual(nodes['vt-upnext'].innerHTML, 'SENTINEL')
+})
+
+test('opening a new file clears a dismissed Up Next', () => {
+  const { p, nodes } = harness({ onNext: () => {} })
+  p.setUpNext({ title: 'A' })
+  p._setState(stateAt(3580))
+  assert.strictEqual(nodes['vt-upnext'].hidden, false)
+  p.open({ title: 'New file' })
+  assert.strictEqual(nodes['vt-upnext'].hidden, true)
+  assert.strictEqual(nodes['vt-strip'].hidden, true)
+})
+
+test('a hostile episode title cannot break out of the card', () => {
+  const { p, nodes } = harness({
+    segments: [{ kind: 'credits', start: 3400, end: 3600, origin: 'chapters', confidence: 0.9 }],
+    onNext: () => {},
+  })
+  p.setUpNext({ title: '"><img onerror=alert(1)>', still: '\'"><b>' })
+  p._setState(stateAt(3450))
+  assert.ok(!/<img onerror/.test(nodes['vt-upnext'].innerHTML))
+  assert.ok(!/'"><b>/.test(nodes['vt-upnext'].innerHTML))
 })

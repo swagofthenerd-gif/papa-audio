@@ -26,14 +26,18 @@ test('index.html declares the theatre and its stage', () => {
 // compositing layer — controls drawn "over" the video would be invisible
 // behind it. Every control must therefore live outside the stage element.
 test('no control is nested inside the video stage', () => {
-  const stage = HTML.slice(HTML.indexOf('id="vt-stage"'), HTML.indexOf('id="vt-deck"'))
+  // Just the stage element itself — the strip that follows it is outside the
+  // mpv rectangle and is allowed to hold controls.
+  const stage = HTML.slice(HTML.indexOf('id="vt-stage"'), HTML.indexOf('id="vt-strip"'))
   for (const id of ['vt-play', 'vt-seek', 'vt-vol', 'vt-full', 'vt-subs']) {
     assert.ok(!stage.includes('id="' + id + '"'), id + ' must not be inside the stage')
   }
-  // The skip button is the one exception, and it is deliberate: it belongs to
-  // the video, is bottom-right clear of subtitles, and is drawn by the deck
-  // layer rather than composited over mpv.
-  assert.ok(stage.includes('id="vt-skip"'))
+  // Nothing at all lives inside the stage, the skip offer included: it was
+  // there originally and would have been invisible behind the video. It and
+  // the Up Next card now sit in a strip between the stage and the deck.
+  assert.ok(!stage.includes('id="vt-skip"'), 'the skip offer would be hidden behind mpv')
+  assert.ok(!stage.includes('id="vt-upnext"'))
+  assert.match(HTML, /id="vt-strip"[\s\S]*id="vt-skip"[\s\S]*id="vt-upnext"/)
 })
 
 test('the theatre has the full transport, not just play and stop', () => {
