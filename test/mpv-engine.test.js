@@ -6,7 +6,7 @@ const os = require('os')
 const path = require('path')
 const fs = require('fs')
 const { EventEmitter } = require('events')
-const { MpvEngine } = require('../mpv-engine')
+const { MpvEngine, channelsValue } = require('../mpv-engine')
 
 // Fake mpv: a mock IPC server + a fake child process handle.
 function fakeMpv() {
@@ -208,6 +208,12 @@ test('seek while playing sends immediately; deferred seeks coalesce to latest', 
 test('audioChannels config maps to --audio-channels arg', () => {
   const eng = new MpvEngine({ config: { audioChannels: '5.1' } })
   assert.ok(eng._args('/tmp/x.sock').includes('--audio-channels=5.1'))
+})
+
+test('channelsValue is a pure helper: auto -> auto-safe, others pass through', () => {
+  assert.strictEqual(channelsValue('auto'), 'auto-safe')
+  assert.strictEqual(channelsValue('5.1'), '5.1')
+  assert.strictEqual(channelsValue('stereo'), 'stereo')
 })
 
 test('default channels is auto-safe and volume ceiling is 130', () => {

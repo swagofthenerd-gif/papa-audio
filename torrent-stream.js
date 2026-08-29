@@ -17,6 +17,7 @@ class TorrentStreamer extends EventEmitter {
     this._server = null
     this._timer = null
     this._settled = false
+    this._pendingReject = null
     this._onDownload = () => {
       const torrent = this._torrent
       if (!torrent) return
@@ -39,6 +40,7 @@ class TorrentStreamer extends EventEmitter {
     this.stop()
     this._settled = false
     return new Promise((resolve, reject) => {
+      this._pendingReject = reject
       this._timer = setTimeout(() => this._onTimeout(reject), this.timeoutMs)
 
       let torrent
@@ -83,6 +85,7 @@ class TorrentStreamer extends EventEmitter {
       const url = buildFileUrl(port, fileIndex, file.name)
       torrent.on('download', this._onDownload)
       this._settled = true
+      this._pendingReject = null
       this._clearTimer()
       this.emit('ready', { url })
       resolve({ url })
@@ -106,6 +109,7 @@ class TorrentStreamer extends EventEmitter {
   _settle(reject, err) {
     if (this._settled) return
     this._settled = true
+    this._pendingReject = null
     this._clearTimer()
     if (this.listenerCount('error') > 0) {
       this.emit('error', err)
@@ -134,6 +138,12 @@ class TorrentStreamer extends EventEmitter {
       try { torrent.removeListener('download', this._onDownload) } catch {}
       try { torrent.destroy(() => {}) } catch {}
     }
+    // A caller awaiting start() must not hang forever when stop() races the
+    // 'ready' callback. Settle the pending promise with a deliberate, distinct
+    // code so the caller can tell a stop apart from a real failure.
+    const reject = this._pendingReject
+    this._pendingReject = null
+    if (reject) reject({ code: 'STOPPED', message: 'stopped before ready' })
   }
 }
 

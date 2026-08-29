@@ -105,6 +105,37 @@ test('start with wid includes --wid in spawn args', async () => {
   eng.stop(); f.close()
 })
 
+test('start drains stderr so mpv cannot block on a full pipe', async () => {
+  const f = await fakeMpv()
+  let resumed = 0
+  f.proc.stderr = { resume: () => { resumed++ } }
+  const eng = new VideoEngine({ spawnFn: f.spawnFn, socketPath: f.sock })
+  await eng.start()
+  assert.strictEqual(resumed, 1)
+  eng.stop(); f.close()
+})
+
+test('start kills the spawned mpv when the IPC connect fails', async () => {
+  const f = await fakeMpv()
+  let killed = false
+  f.proc.kill = () => { killed = true; f.proc.emit('exit', 0) }
+  const { MpvIpcClient } = require('../mpv-ipc')
+  const originalConnect = MpvIpcClient.prototype.connect
+  MpvIpcClient.prototype.connect = async () => {
+    throw Object.assign(new Error('mpv socket never appeared'), { code: 'ENOENT' })
+  }
+  const eng = new VideoEngine({ spawnFn: f.spawnFn, socketPath: f.sock })
+  try {
+    await assert.rejects(eng.start(), /mpv socket never appeared/)
+  } finally {
+    MpvIpcClient.prototype.connect = originalConnect
+  }
+  assert.strictEqual(killed, true, 'spawned mpv killed on connect failure')
+  assert.strictEqual(eng.proc, null)
+  assert.strictEqual(eng.alive, false)
+  f.close()
+})
+
 test('engine exposes core public API and config', () => {
   const config = { outputMode: 'exclusive', alsaDevice: 'alsa/hw:2,0', audioChannels: '5.1' }
   const eng = new VideoEngine({ config })
