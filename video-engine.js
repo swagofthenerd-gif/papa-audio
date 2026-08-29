@@ -74,6 +74,10 @@ class VideoEngine extends EventEmitter {
     this._stopping = false
     this._gen++
     this.proc = this._spawnFn(this.binary, this._args(socketPath, { wid }), { stdio: ['ignore', 'ignore', 'pipe'] })
+    // mpv is chatty on stderr; without a drain the pipe buffer fills and the
+    // process blocks. The log content is not needed here. Optional: a test's
+    // injected proc may not carry a stderr stream.
+    this.proc.stderr?.resume()
     this.proc.on('exit', () => this._onExit())
     this.proc.on('error', () => this._onExit())
     this.client = new MpvIpcClient(socketPath)

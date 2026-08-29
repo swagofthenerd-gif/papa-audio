@@ -47,6 +47,10 @@ const IPC_TIMEOUT_OVERRIDES = {
   'slsk-enqueue-downloads': 180000,
   'yt-download': 0,
   'torrent-remove': 120000,
+  // ffprobe over a remote URL: generous, but never unbounded.
+  'video-probe': 30000,
+  // torrent handoff + mpv spawn; a hung streamer must not wedge the handler.
+  'video-play': 60000,
   // 20 s timeout with two retries and exponential backoff already inside.
   'yt-home': 120000,
   'yt-search': 120000,
@@ -112,6 +116,19 @@ const { linearToMpv } = require('./volume-map')
 const ytSearch = require('./youtube-search')
 const ytDownloader = require('./youtube-download')
 const lyrics = require('./lyrics')
+// Papa Video — catalog, providers and engines are pure CommonJS factories.
+// Nothing is constructed here: the factories run on first use, so no network
+// or mpv spawn happens at import time.
+const { createTmdbCatalog } = require('./catalog/tmdb')
+const { createAnilistCatalog } = require('./catalog/anilist')
+const { resolveStream } = require('./providers/index')
+const { createYtsProvider } = require('./providers/yts')
+const { createMovieTvProvider, createVidsrcResolver } = require('./providers/movie-tv')
+const { createAnimeProvider } = require('./providers/anime')
+const { TorrentStreamer } = require('./torrent-stream')
+const { VideoEngine } = require('./video-engine')
+const { createYarrlistDirectory } = require('./yarrlist-directory')
+const { classify } = require('./src/surround-verify')
 
 const LASTFM_API_KEY = 'PLACEHOLDER'
 const LASTFM_API_URL = 'https://ws.audioscrobbler.com/2.0/'
@@ -5935,4 +5952,194 @@ ipcMain.handle('batch-transcode', async (_, { filePaths, format, outDir }) => {
     results.push(await transcodeFile({ filePath: fp, format, outDir }))
   }
   return results
+})
+
+// ── Papa Video: settings, catalogs, providers, streaming ─────────────────────
+
+function _videoSettings() {
+  return Object.assign(
+    { tmdbApiKey: '', preferSurround: true, preferredQuality: '1080p', torrentSources: true },
+    store.get('videoSettings')
+  )
+}
+
+// A hung backend must never hang the app: every catalog/provider fetch goes
+// through this so the request aborts on its own. 15 s is well beyond anything
+// legitimate these APIs take.
+function fetchWithTimeout(ms) {
+  return (url, opts) => fetch(url, { ...(opts || {}), signal: AbortSignal.timeout(ms) })
+}
+
+// Lazy singletons: built on first use so nothing runs at import time, and the
+// TMDB key is read fresh when the catalog is first needed.
+function _lazy(factory) {
+  let value
+  return () => (value ??= factory())
+}
+
+const tmdb = _lazy(() => createTmdbCatalog({
+  apiKey: _videoSettings().tmdbApiKey || process.env.TMDB_API_KEY,
+  fetchFn: fetchWithTimeout(15000),
+}))
+const anilist = _lazy(() => createAnilistCatalog({ fetchFn: fetchWithTimeout(15000) }))
+const yts = _lazy(() => createYtsProvider({ fetchFn: fetchWithTimeout(15000) }))
+// vidsrc is the only concrete HTTP resolver shipped; it maps a TMDB id to an
+// embed URL. More can be appended live without touching the router.
+const movieTv = _lazy(() => createMovieTvProvider({ fetchFn: fetchWithTimeout(15000), resolvers: [createVidsrcResolver()] }))
+// No concrete anime resolver ships yet, so this starts empty and returns []
+// until one is added.
+const anime = _lazy(() => createAnimeProvider({ fetchFn: fetchWithTimeout(15000), resolvers: [] }))
+const videoEngine = _lazy(() => new VideoEngine())
+const yarrlist = _lazy(() => createYarrlistDirectory({ fetchFn: fetchWithTimeout(15000) }))
+const _videoSession = { streamer: null }
+
+const _videoCatalogCache = makeCache({ cap: 50, ttlMs: 1000 * 60 * 60 * 24 })
+const _videoStreamCache = makeCache({ cap: 200, ttlMs: 1000 * 60 * 15 })
+
+ipcMain.handle('video-settings-get', () => {
+  return { ok: true, settings: _videoSettings() }
+})
+
+ipcMain.handle('video-settings-set', (_, { patch }) => {
+  try {
+    const current = _videoSettings()
+    store.set('videoSettings', { ...current, ...(patch || {}) })
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: e.message }
+  }
+})
+
+ipcMain.handle('video-catalog-get', async (_, { section, page = 1 }) => {
+  try {
+    const key = `${section}:${page}`
+    const cached = _videoCatalogCache.get(key)
+    if (cached) return { ok: true, results: cached }
+    let results
+    switch (section) {
+      case 'trending-movies': results = await tmdb().trending('movie'); break
+      case 'trending-tv': results = await tmdb().trending('tv'); break
+      case 'popular-movies': results = await tmdb().popular('movie'); break
+      case 'popular-tv': results = await tmdb().popular('tv'); break
+      case 'trending-anime': results = await anilist().trending(page); break
+      case 'popular-anime': results = await anilist().popular(page); break
+      case 'season-anime': results = await anilist().season(page); break
+      default: return { ok: false, error: `Unknown catalog section: ${section}` }
+    }
+    _videoCatalogCache.set(key, results)
+    return { ok: true, results }
+  } catch (e) {
+    return { ok: false, error: e.message }
+  }
+})
+
+ipcMain.handle('video-search', async (_, { query, type }) => {
+  try {
+    let results
+    if (type === 'anime') {
+      results = await anilist().search(query)
+    } else {
+      results = await tmdb().search(query)
+      if (type === 'movie' || type === 'tv') results = results.filter(r => r.type === type)
+    }
+    return { ok: true, results }
+  } catch (e) {
+    return { ok: false, error: e.message }
+  }
+})
+
+ipcMain.handle('video-detail', async (_, { type, id, season }) => {
+  try {
+    let detail
+    if (type === 'movie') {
+      detail = await tmdb().detail('movie', id)
+    } else if (type === 'tv') {
+      detail = await tmdb().detail('tv', id)
+      if (typeof season === 'number' && Array.isArray(detail.seasons)) {
+        const eps = await tmdb().season(id, season)
+        const entry = detail.seasons.find(s => s.seasonNumber === season)
+        if (entry) entry.episodes = eps.episodes
+      }
+    } else {
+      // AniList has no by-id detail endpoint; search and take the first hit.
+      const list = await anilist().search(String(id), 1)
+      detail = list[0] || null
+    }
+    return { ok: true, detail }
+  } catch (e) {
+    return { ok: false, error: e.message }
+  }
+})
+
+ipcMain.handle('video-streams', async (_, { type, tmdbId, anilistId, title, year, season, episode }) => {
+  try {
+    const request = { type, tmdbId, anilistId, title, year, season, episode }
+    const key = JSON.stringify(request)
+    const cached = _videoStreamCache.get(key)
+    if (cached) return { ok: true, streams: cached }
+    const backends = type === 'anime' ? [anime()] : [yts(), movieTv()]
+    const streams = await resolveStream(request, backends, { preferSurround: _videoSettings().preferSurround })
+    _videoStreamCache.set(key, streams)
+    return { ok: true, streams }
+  } catch (e) {
+    return { ok: false, error: e.message }
+  }
+})
+
+ipcMain.handle('video-probe', async (_, { url }) => {
+  try {
+    const stdout = await new Promise((resolve, reject) => {
+      execFile('ffprobe', [
+        '-v', 'error',
+        '-show_entries', 'stream=codec_type,channels,codec_name',
+        '-of', 'json', url
+      ], { encoding: 'utf8', timeout: 20000, maxBuffer: 1 << 20 }, (err, out) => err ? reject(err) : resolve(out))
+    })
+    const streams = (JSON.parse(stdout).streams || [])
+    const audio = streams.find(s => s.codec_type === 'audio')
+    if (!audio) return { ok: true, audioLayout: 'unknown', channels: 0, codec: null }
+    const channels = Number(audio.channels) || 0
+    return { ok: true, audioLayout: classify(channels), channels, codec: audio.codec_name || null }
+  } catch (e) {
+    return { ok: false, error: e.message }
+  }
+})
+
+ipcMain.handle('video-play', async (_, { result }) => {
+  try {
+    // The music engine must not keep talking over the video.
+    if (player) { try { player.pause().catch(() => {}) } catch (_) {} }
+    if (result && result.kind === 'torrent') {
+      const streamer = new TorrentStreamer({ client: getTorrentClient(), timeoutMs: 30000 })
+      streamer.on('error', err => safeSend('video-event', { kind: 'error', message: err && err.message }))
+      streamer.on('progress', p => safeSend('video-event', { kind: 'buffering', ...p }))
+      streamer.on('ready', ({ url }) => {
+        videoEngine().start(url, {})
+          .then(() => safeSend('video-event', { kind: 'playing' }))
+          .catch(e => safeSend('video-event', { kind: 'error', message: e && e.message }))
+      })
+      _videoSession.streamer = streamer
+      // Deliberately not awaited: start() resolves on 'ready', and awaiting it
+      // would hang this handler on a slow torrent — and on stop.
+      streamer.start({ magnet: result.magnet, fileIndex: result.fileIndex ?? 0 })
+        .catch(e => safeSend('video-event', { kind: 'error', message: e && e.message }))
+    } else {
+      videoEngine().start(result.url, {})
+        .then(() => safeSend('video-event', { kind: 'playing' }))
+        .catch(e => safeSend('video-event', { kind: 'error', message: e && e.message }))
+    }
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: e.message }
+  }
+})
+
+ipcMain.handle('video-stop', async () => {
+  try {
+    if (_videoSession.streamer) { _videoSession.streamer.stop(); _videoSession.streamer = null }
+    videoEngine().stop()
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: e.message }
+  }
 })

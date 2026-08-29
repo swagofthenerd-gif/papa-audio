@@ -101,6 +101,18 @@ contextBridge.exposeInMainWorld('api', {
   torrentList:   ()  => ipcRenderer.invoke('torrent-list'),
   torrentRemove: (h) => ipcRenderer.invoke('torrent-remove', h),
 
+  // Papa Video
+  videoSettingsGet: () => ipcRenderer.invoke('video-settings-get'),
+  videoSettingsSet: (patch) => ipcRenderer.invoke('video-settings-set', { patch }),
+  videoCatalogGet:  (p) => ipcRenderer.invoke('video-catalog-get', p),
+  videoSearch:      (p) => ipcRenderer.invoke('video-search', p),
+  videoDetail:      (p) => ipcRenderer.invoke('video-detail', p),
+  videoStreams:     (p) => ipcRenderer.invoke('video-streams', p),
+  videoProbe:       (p) => ipcRenderer.invoke('video-probe', p),
+  videoPlay:        (p) => ipcRenderer.invoke('video-play', p),
+  videoStop:        ()  => ipcRenderer.invoke('video-stop'),
+  onVideoEvent: (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('video-event', h); return () => ipcRenderer.removeListener('video-event', h) },
+
   // Power management
   setPowerSave: (playing) => ipcRenderer.send('set-power-save', playing),
 
@@ -266,6 +278,7 @@ contextBridge.exposeInMainWorld('api', {
       'slsk-verify', 'slsk-user-status', 'slsk-saved-users-changed', 'slsk-scheduler-stats',
       'library-updated', 'scan-progress', 'app-recovered-from-crash',
       'queue-analysis-progress',
+      'video-event',
       // The tray menu, MPRIS and the power monitor all send these, and none of
       // them was subscribable: Play, Next and Previous in the tray menu did
       // nothing, and seeking or changing volume from a desktop applet did

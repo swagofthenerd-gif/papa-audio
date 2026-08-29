@@ -115,6 +115,7 @@ test('every channel main sends has something that actually listens', () => {
     // so the verification feed has a bridge and no consumer.
     'slsk-verify': 'preload exposes onSlskVerify; no renderer script calls it',
     'yt-auth-done': 'no listener',
+    'video-event': 'preload exposes onVideoEvent; no renderer script calls it yet (Papa Video UI is a later task)',
   }
   const unheard = [...sentChannels]
     .filter(c => !heard.has(c) && !(c in NOT_FOR_THE_RENDERER) && !(c in DELIBERATELY_UNHANDLED))
