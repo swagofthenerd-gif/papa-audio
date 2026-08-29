@@ -1156,6 +1156,8 @@ function navigate(page, navId, opts = {}) {
   else if (page === 'yt-see-all')  renderYtSeeAll(navId)
   else if (page === 'yt-playlist') renderYtPlaylist(navId)
   else if (page === 'explore')     renderExplore()
+  else if (page === 'video')       renderVideo()
+  else if (page === 'video-detail') renderVideoDetail(navId)
   } catch (err) {
     _renderFailure(page, err)
   }
@@ -1193,6 +1195,300 @@ function updateNavBtns() {
   const fwd  = document.getElementById('tb-fwd')
   if (back) back.disabled = navHistory.length === 0
   if (fwd)  fwd.disabled  = navFuture.length  === 0
+}
+
+// ── Papa Video: Movies / TV / Anime ──────────────────────────────────────────
+var _videoDetailTicket = 0
+var _videoDetail = null
+var _videoState = { season: null, episode: 1, sub: true }
+var _videoStreams = []
+var _videoUiReady = false
+
+var _videoSections = [
+  { key: 'trending-movies', label: 'Trending Movies' },
+  { key: 'popular-tv', label: 'Popular TV' },
+  { key: 'trending-anime', label: 'Trending Anime' },
+]
+
+// Binds the static video-panel chrome and the one shared video-event channel
+// subscription. Idempotent: the panel lives in index.html and outlives every
+// page, so this must not double-subscribe on each navigation.
+function _initVideoUI() {
+  if (_videoUiReady) return
+  _videoUiReady = true
+  document.getElementById('video-panel-close')?.addEventListener('click', _videoStopAndHide)
+  window.api.onVideoEvent(function (payload) { _handleVideoEvent(payload || {}) })
+}
+
+function _showVideoPanel(title) {
+  _initVideoUI()
+  const panel = document.getElementById('video-panel')
+  if (!panel) return
+  const t = document.getElementById('video-panel-title')
+  if (t) t.textContent = title || 'Video'
+  panel.classList.remove('hidden')
+}
+
+function _hideVideoPanel() {
+  const panel = document.getElementById('video-panel')
+  if (panel) panel.classList.add('hidden')
+  const status = document.getElementById('video-status')
+  if (status) { status.className = 'video-status'; status.textContent = '' }
+}
+
+function _videoStopAndHide() {
+  window.api.videoStop().catch(function () {})
+  _hideVideoPanel()
+}
+
+function _handleVideoEvent(payload) {
+  const status = document.getElementById('video-status')
+  if (!status) return
+  if (payload.kind === 'buffering') {
+    status.className = 'video-status video-status-buffering'
+    status.textContent = 'Buffering…'
+  } else if (payload.kind === 'playing') {
+    status.className = 'video-status video-status-playing'
+    status.textContent = 'Playing…'
+  } else if (payload.kind === 'error') {
+    status.className = 'video-status video-status-error'
+    status.textContent = payload.message || 'Playback error'
+  }
+}
+
+function _videoPlayResult(result) {
+  if (!result) return
+  _showVideoPanel(_videoDetail && _videoDetail.d ? _videoDetail.d.title : 'Video')
+  window.api.videoPlay({ result }).catch(function (e) {
+    _handleVideoEvent({ kind: 'error', message: String((e && e.message) || e) })
+  })
+}
+
+async function renderVideo() {
+  _initVideoUI()
+  setContent(`<div class="page">
+    <div class="page-header" style="display:flex;align-items:center;gap:12px">
+      <h1 class="section-title">Movies &amp; TV</h1>
+    </div>
+    <div class="video-catalog">${_videoSections.map(function (s) {
+      return '<div class="video-section"><div class="section-header" style="margin-top:0"><span class="section-title">' + esc(s.label) + '</span></div><div class="video-poster-row" data-row="' + s.key + '"><div class="yt-status">Loading…</div></div></div>'
+    }).join('')}</div>
+  </div>`)
+  for (const sec of _videoSections) {
+    const row = document.querySelector('.video-poster-row[data-row="' + sec.key + '"]')
+    if (!row) continue
+    const res = await window.api.videoCatalogGet({ section: sec.key, page: 1 }).catch(function (e) { return { ok: false, error: String((e && e.message) || e) } })
+    if (state.currentPage !== 'video') return
+    if (!res.ok || !Array.isArray(res.results) || !res.results.length) {
+      row.innerHTML = '<div class="yt-status yt-error">' + (res.error ? esc(res.error) : 'Nothing here yet') + '</div>'
+      continue
+    }
+    row.innerHTML = res.results.map(_videoCard).join('')
+    _bindVideoCards(row)
+  }
+}
+
+function _videoCard(item) {
+  item = item || {}
+  const key = (item.type || 'movie') + ':' + (item.id == null ? '' : item.id)
+  const img = item.poster
+    ? '<img class="video-card-poster" src="' + esc(item.poster) + '" alt="" loading="lazy" onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\'">'
+    : ''
+  const fb = '<div class="video-card-fallback"' + (item.poster ? ' style="display:none"' : '') + '>' + esc(item.title || '') + '</div>'
+  const kind = item.type === 'anime' ? 'Anime' : item.type === 'tv' ? 'TV' : 'Movie'
+  return '<div class="video-card" data-video="' + esc(key) + '">' +
+    '<div class="video-card-art">' + img + fb + '</div>' +
+    '<div class="video-card-title">' + esc(item.title || 'Untitled') + '</div>' +
+    '<div class="video-card-meta">' + esc(item.year || '') + (item.year ? ' · ' : '') + kind + '</div>' +
+  '</div>'
+}
+
+function _bindVideoCards(root) {
+  ;(root || document).querySelectorAll('.video-card').forEach(function (c) {
+    c.addEventListener('click', function () { navigate('video-detail', c.dataset.video) })
+  })
+}
+
+async function renderVideoDetail(navId) {
+  _initVideoUI()
+  const parts = String(navId || '').split(':')
+  const type = parts[0] || 'movie'
+  const id = parts.slice(1).join(':')
+  const ticket = ++_videoDetailTicket
+  _videoDetail = { type, id, d: null }
+  _videoState = { season: null, episode: 1, sub: true }
+  _videoStreams = []
+  setContent('<div class="page"><div class="skeleton skeleton-card" style="height:280px"></div></div>')
+
+  const res = await window.api.videoDetail({ type, id }).catch(function (e) { return { ok: false, error: String((e && e.message) || e) } })
+  if (_videoDetailTicket !== ticket) return
+  if (!res.ok || !res.detail) {
+    setContent('<div class="page"><div class="mg-empty" style="padding:48px 24px"><p>Couldn\'t load this title.</p><span>' + esc(res.error || 'Not found') + '</span><div style="margin-top:14px"><button class="secondary" id="video-detail-back">Back to Movies &amp; TV</button></div></div></div>')
+    document.getElementById('video-detail-back')?.addEventListener('click', function () { navigate('video') })
+    return
+  }
+  _videoDetail = { type, id, d: res.detail }
+  const d = res.detail
+  setContent('<div class="page video-detail-page">' + _videoDetailShell(d) + '</div>')
+
+  if (type === 'tv') {
+    const seasons = Array.isArray(d.seasons) ? d.seasons : []
+    const pick = seasons.find(function (s) { return s.seasonNumber >= 1 }) || seasons[0] || null
+    _videoState.season = pick ? pick.seasonNumber : 1
+    _renderVideoControls(type)
+    await _refreshTvEpisodes(ticket)
+  } else if (type === 'anime') {
+    _renderVideoControls(type)
+    await _loadVideoSources(ticket)
+  } else {
+    await _loadVideoSources(ticket)
+  }
+}
+
+function _videoDetailShell(d) {
+  const backdrop = d.backdrop
+  const poster = d.poster
+  const genres = Array.isArray(d.genres) ? d.genres : []
+  const rating = d.rating != null ? (typeof d.rating === 'number' ? (Math.round(d.rating * 10) / 10) : d.rating) : null
+  const kind = d.type === 'anime' ? 'Anime' : d.type === 'tv' ? 'TV Series' : 'Movie'
+  const metaBits = []
+  if (d.year != null) metaBits.push(esc(String(d.year)))
+  metaBits.push(kind)
+  if (rating != null) metaBits.push('★ ' + esc(String(rating)))
+  const hero = '<div class="video-detail-hero"' + (backdrop ? ' style="background-image:url(\'' + esc(backdrop) + '\')"' : '') + '>' +
+    '<div class="video-detail-overlay"></div>' +
+    (poster ? '<img class="video-detail-poster" src="' + esc(poster) + '" alt="" onerror="this.style.display=\'none\'">' : '<div class="video-detail-poster video-detail-poster-fallback">' + esc(d.title || '') + '</div>') +
+    '<div class="video-detail-info">' +
+      '<h1 class="video-detail-title">' + esc(d.title || 'Untitled') + '</h1>' +
+      '<div class="video-detail-meta">' + metaBits.join(' · ') + '</div>' +
+      (genres.length ? '<div class="video-detail-genres">' + genres.map(function (g) { return '<span class="video-genre-chip">' + esc(g) + '</span>' }).join('') + '</div>' : '') +
+      (d.overview ? '<p class="video-detail-overview">' + esc(d.overview) + '</p>' : '') +
+    '</div>' +
+  '</div>'
+  return hero +
+    '<div class="video-controls" id="video-controls"></div>' +
+    '<div class="video-sources" id="video-sources"></div>'
+}
+
+function _renderVideoControls(type) {
+  const box = document.getElementById('video-controls')
+  if (!box) return
+  if (type === 'tv') {
+    const d = _videoDetail.d
+    const seasons = Array.isArray(d.seasons) ? d.seasons.filter(function (s) { return s.seasonNumber != null }) : []
+    const opts = seasons.map(function (s) {
+      return '<option value="' + s.seasonNumber + '"' + (s.seasonNumber === _videoState.season ? ' selected' : '') + '>Season ' + s.seasonNumber + (s.name ? ' — ' + esc(s.name) : '') + '</option>'
+    }).join('')
+    box.innerHTML = '<div class="video-controls-row"><label class="video-control">Season<select class="mcs-set-select video-season-select" id="video-season-select">' + opts + '</select></label><div class="video-episode-list" id="video-episode-list"></div></div>'
+    document.getElementById('video-season-select')?.addEventListener('change', function (e) {
+      _videoState.season = Number(e.target.value) || 1
+      _videoState.episode = 1
+      _refreshTvEpisodes(_videoDetailTicket)
+    })
+    return
+  }
+  if (type === 'anime') {
+    const n = Number(_videoDetail.d.episodeCount) || 0
+    let epControl
+    if (n > 0) {
+      let opts = ''
+      for (let i = 1; i <= Math.min(n, 2000); i++) opts += '<option value="' + i + '"' + (i === _videoState.episode ? ' selected' : '') + '>Episode ' + i + '</option>'
+      epControl = '<select class="mcs-set-select" id="video-episode-select">' + opts + '</select>'
+    } else {
+      epControl = '<input class="mcs-set-input" id="video-episode-input" type="number" min="1" value="' + _videoState.episode + '" style="width:90px">'
+    }
+    box.innerHTML = '<div class="video-controls-row">' +
+      '<label class="video-control">Episode ' + epControl + '</label>' +
+      '<label class="video-control">Dub <input type="checkbox" id="video-dub-toggle"' + (_videoState.sub ? '' : ' checked') + '></label>' +
+    '</div>'
+    const setEp = function () {
+      const sel = document.getElementById('video-episode-select')
+      const inp = document.getElementById('video-episode-input')
+      _videoState.episode = sel ? Number(sel.value) || 1 : (inp ? Number(inp.value) || 1 : 1)
+      _loadVideoSources(_videoDetailTicket)
+    }
+    document.getElementById('video-episode-select')?.addEventListener('change', setEp)
+    document.getElementById('video-episode-input')?.addEventListener('change', setEp)
+    document.getElementById('video-dub-toggle')?.addEventListener('change', function (e) {
+      _videoState.sub = !e.target.checked
+      _loadVideoSources(_videoDetailTicket)
+    })
+    return
+  }
+  box.innerHTML = ''
+}
+
+async function _refreshTvEpisodes(ticket) {
+  const detail = _videoDetail
+  if (!detail || detail.type !== 'tv') return
+  const box = document.getElementById('video-episode-list')
+  const res = await window.api.videoDetail({ type: 'tv', id: detail.id, season: _videoState.season }).catch(function (e) { return { ok: false, error: String((e && e.message) || e) } })
+  if (_videoDetailTicket !== ticket || !document.getElementById('video-episode-list')) return
+  let episodes = []
+  if (res.ok && res.detail && Array.isArray(res.detail.seasons)) {
+    const s = res.detail.seasons.find(function (x) { return x.seasonNumber === _videoState.season })
+    if (s && Array.isArray(s.episodes)) episodes = s.episodes
+  }
+  if (box) {
+    box.innerHTML = episodes.length
+      ? episodes.map(function (ep) {
+          return '<button class="video-episode-btn' + (ep.episodeNumber === _videoState.episode ? ' active' : '') + '" data-ep="' + ep.episodeNumber + '">' + ep.episodeNumber + '</button>'
+        }).join('')
+      : '<div class="yt-status">No episodes</div>'
+    box.querySelectorAll('.video-episode-btn').forEach(function (b) {
+      b.addEventListener('click', function () {
+        _videoState.episode = Number(b.dataset.ep) || 1
+        box.querySelectorAll('.video-episode-btn').forEach(function (x) { x.classList.toggle('active', Number(x.dataset.ep) === _videoState.episode) })
+        _loadVideoSources(_videoDetailTicket)
+      })
+    })
+  }
+  await _loadVideoSources(ticket)
+}
+
+function _videoStreamRequest() {
+  const d = _videoDetail.d
+  const base = { type: _videoDetail.type, title: d.title, year: d.year }
+  if (_videoDetail.type === 'movie') return Object.assign(base, { tmdbId: d.id })
+  if (_videoDetail.type === 'tv') return Object.assign(base, { tmdbId: d.id, season: _videoState.season, episode: _videoState.episode })
+  return Object.assign(base, { anilistId: d.id, episode: _videoState.episode, sub: _videoState.sub, dub: !_videoState.sub })
+}
+
+async function _loadVideoSources(ticket) {
+  const box = document.getElementById('video-sources')
+  if (!box) return
+  box.innerHTML = '<div class="yt-status">Looking for sources…</div>'
+  const res = await window.api.videoStreams(_videoStreamRequest()).catch(function (e) { return { ok: false, error: String((e && e.message) || e) } })
+  if (_videoDetailTicket !== ticket || !document.getElementById('video-sources')) return
+  const streams = (res.ok && Array.isArray(res.streams)) ? res.streams : []
+  _videoStreams = streams
+  if (!streams.length) {
+    box.innerHTML = '<div class="yt-status yt-error">No sources found' + (res.error ? ': ' + esc(res.error) : '') + '</div>'
+    return
+  }
+  box.innerHTML = '<div class="video-sources-header"><span class="section-title">Sources</span><div class="video-status" id="video-status"></div><button class="video-stop-btn" id="video-stop-btn">Stop</button></div><div class="video-source-list">' +
+    streams.map(_videoStreamRow).join('') + '</div>'
+  document.getElementById('video-stop-btn')?.addEventListener('click', _videoStopAndHide)
+  box.querySelectorAll('.video-source-play').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      _videoPlayResult(_videoStreams[Number(btn.dataset.idx)])
+    })
+  })
+}
+
+function _videoStreamRow(s, i) {
+  const badge = (s.quality || 'unknown') + ' · ' + (s.audioLayout || 'stereo')
+  const torrent = s.kind === 'torrent' ? '<span class="video-torrent-badge">torrent</span>' : ''
+  const subDub = (s.sub != null && s.dub != null)
+    ? '<span class="video-source-tag">' + (s.sub && !s.dub ? 'sub' : s.dub && !s.sub ? 'dub' : 'sub+dub') + '</span>'
+    : ''
+  const label = s.label || s.source || (s.kind === 'torrent' ? (s.magnet || '') : (s.url || '')) || ''
+  return '<div class="video-source-row" data-idx="' + i + '">' +
+    '<span class="video-source-badge">' + esc(badge) + '</span>' +
+    torrent + subDub +
+    '<span class="video-source-label">' + esc(label) + '</span>' +
+    '<button class="video-source-play" data-idx="' + i + '" aria-label="Play ' + esc(badge) + '"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button>' +
+  '</div>'
 }
 
 // ── Folder management ──────────────────────────────────────────────────────
@@ -8956,6 +9252,28 @@ async function _initSettingsPanel() {
   })
 
   _refreshOllamaModels()
+  await _initVideoSettings()
+}
+
+async function _initVideoSettings() {
+  const $ = id => document.getElementById(id)
+  const keyInput = $('video-tmdb-key')
+  if (!keyInput) return
+  const res = await window.api.videoSettingsGet().catch(() => ({ ok: false }))
+  const s = (res && res.settings) || {}
+  $('video-prefer-surround').checked = s.preferSurround !== false
+  $('video-quality').value = s.preferredQuality || '1080p'
+  if (s.tmdbApiKey) keyInput.placeholder = 'Key saved ✓ — paste new one to change'
+  const save = patch => window.api.videoSettingsSet(patch).catch(() => {})
+  keyInput.addEventListener('change', e => {
+    const v = e.target.value.trim()
+    if (!v) return
+    save({ tmdbApiKey: v })
+    e.target.value = ''
+    e.target.placeholder = 'Key saved ✓ — paste new one to change'
+  })
+  $('video-prefer-surround').addEventListener('change', e => save({ preferSurround: !!e.target.checked }))
+  $('video-quality').addEventListener('change', e => save({ preferredQuality: e.target.value }))
 }
 
 async function initPlaybackSettings() {
