@@ -871,7 +871,7 @@ class MpvEngine extends EventEmitter {
 }
 
 module.exports = {
-  MpvEngine, EngineGone,
+  MpvEngine, EngineGone, channelsValue,
   FLIGHT_ENTRIES, LOG_LINES, EXPECTED_STOP_WINDOW_MS,
   EOF_GRACE_MS, EOF_ADVANCE_TIMEOUT_MS, RESUME_TIMEOUT_MS, STALL_THRESHOLD_MS,
 }
