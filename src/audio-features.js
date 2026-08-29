@@ -17,6 +17,19 @@ function lastNumber(text, pattern) {
   return found === null ? null : Number(found)
 }
 
+// aspectralstats has no summary block -- it only exports per-frame metadata, one
+// line per key per frame. Averaging across frames is the whole measurement, so a
+// missing key here is a real failure rather than a missing optional extra.
+function meanMetadata(text, key) {
+  const re = new RegExp(`aspectralstats\\.\\d+\\.${key}=([-\\d.eE+]+)`, 'g')
+  let m, sum = 0, n = 0
+  while ((m = re.exec(text)) !== null) {
+    const v = Number(m[1])
+    if (Number.isFinite(v)) { sum += v; n++ }
+  }
+  return n ? sum / n : null
+}
+
 function parseAnalysis(stderrText) {
   const t = String(stderrText || '')
   return {
@@ -27,11 +40,11 @@ function parseAnalysis(stderrText) {
     crest:          lastNumber(t, 'Crest factor:\\s*(-?[\\d.]+)'),
     zcr:            lastNumber(t, 'Zero crossings rate:\\s*(-?[\\d.]+)'),
     flatFactor:     lastNumber(t, 'Flat factor:\\s*(-?[\\d.]+)'),
-    centroid:       lastNumber(t, 'mean centroid:\\s*(-?[\\d.]+)'),
-    spread:         lastNumber(t, 'mean spread:\\s*(-?[\\d.]+)'),
-    flatness:       lastNumber(t, 'mean flatness:\\s*(-?[\\d.]+)'),
-    rolloff:        lastNumber(t, 'mean rolloff:\\s*(-?[\\d.]+)'),
-    entropy:        lastNumber(t, 'mean entropy:\\s*(-?[\\d.]+)'),
+    centroid:       meanMetadata(t, 'centroid'),
+    spread:         meanMetadata(t, 'spread'),
+    flatness:       meanMetadata(t, 'flatness'),
+    rolloff:        meanMetadata(t, 'rolloff'),
+    entropy:        meanMetadata(t, 'entropy'),
   }
 }
 

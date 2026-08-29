@@ -14,7 +14,7 @@ function buildFfmpegArgs(filePath) {
     '-hide_banner', '-nostats', '-nostdin',
     '-i', filePath,
     '-map', '0:a:0',
-    '-af', 'aresample=22050,aformat=channel_layouts=mono,ebur128=peak=true,astats=metadata=1:reset=0,aspectralstats',
+    '-af', 'aresample=22050,aformat=channel_layouts=mono,ebur128=peak=true,astats=reset=0,aspectralstats=win_size=8192:overlap=0,ametadata=mode=print',
     '-f', 'null', '-',
   ]
 }

@@ -12,11 +12,14 @@ const GOOD = `
 [astats] Crest factor: 6.221
 [astats] Zero crossings rate: 0.041270
 [astats] Flat factor: 0.000000
-[aspectralstats] mean centroid: 1842.310
-[aspectralstats] mean spread: 2210.775
-[aspectralstats] mean flatness: 0.128
-[aspectralstats] mean rolloff: 4820.500
-[aspectralstats] mean entropy: 0.712
+[Parsed_ametadata_5 @ 0x4] lavfi.aspectralstats.1.centroid=1800.00
+[Parsed_ametadata_5 @ 0x4] lavfi.aspectralstats.1.flatness=0.128
+[Parsed_ametadata_5 @ 0x4] lavfi.aspectralstats.1.rolloff=4820.50
+[Parsed_ametadata_5 @ 0x4] lavfi.aspectralstats.1.entropy=0.712
+[Parsed_ametadata_5 @ 0x4] lavfi.aspectralstats.2.centroid=1884.62
+[Parsed_ametadata_5 @ 0x4] lavfi.aspectralstats.2.flatness=0.128
+[Parsed_ametadata_5 @ 0x4] lavfi.aspectralstats.2.rolloff=4820.50
+[Parsed_ametadata_5 @ 0x4] lavfi.aspectralstats.2.entropy=0.712
 `
 
 function fakeSpawn({ stderr = '', code = 0, delay = 0 }) {
