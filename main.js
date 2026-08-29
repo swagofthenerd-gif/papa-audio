@@ -5958,7 +5958,7 @@ ipcMain.handle('batch-transcode', async (_, { filePaths, format, outDir }) => {
 
 function _videoSettings() {
   return Object.assign(
-    { tmdbApiKey: '', preferSurround: true, preferredQuality: '1080p', torrentSources: true },
+    { tmdbApiKey: '', preferSurround: true, preferredQuality: '1080p', torrentSources: true, embed: 'window' },
     store.get('videoSettings')
   )
 }
@@ -5991,7 +5991,49 @@ const movieTv = _lazy(() => createMovieTvProvider({ fetchFn: fetchWithTimeout(15
 const anime = _lazy(() => createAnimeProvider({ fetchFn: fetchWithTimeout(15000), resolvers: [] }))
 const videoEngine = _lazy(() => new VideoEngine())
 const yarrlist = _lazy(() => createYarrlistDirectory({ fetchFn: fetchWithTimeout(15000) }))
-const _videoSession = { streamer: null }
+const _videoSession = { streamer: null, win: null }
+
+// In-app embedding of the mpv video surface. mpv's `--wid` is an X11 concept:
+// on this XWayland session the native handle of a child BrowserWindow is the
+// X11 window id mpv renders into. When a wid cannot be obtained (native-Wayland
+// Electron, or the child window fails to open) we fall back to mpv opening its
+// own window — playback still works, just not embedded.
+function _videoWindow() {
+  if (_videoSession.win && !_videoSession.win.isDestroyed()) return _videoSession.win
+  _videoSession.win = new BrowserWindow({
+    width: 1280, height: 720,
+    show: false, frame: false,
+    backgroundColor: '#000000',
+    parent: mainWindow,
+    webPreferences: { contextIsolation: true, nodeIntegration: false },
+  })
+  _videoSession.win.loadURL('about:blank')
+  _videoSession.win.on('closed', () => { if (_videoSession.win) _videoSession.win = null })
+  return _videoSession.win
+}
+
+function _videoWid() {
+  try {
+    const handle = _videoWindow().getNativeWindowHandle()
+    if (!handle || handle.length < 4) return null
+    return handle.readUInt32LE(0) || null
+  } catch (_) { return null }
+}
+
+function _showVideoWindow() {
+  try {
+    const win = _videoWindow()
+    win.show()
+    win.focus()
+  } catch (_) {}
+}
+
+function _closeVideoWindow() {
+  try {
+    if (_videoSession.win && !_videoSession.win.isDestroyed()) _videoSession.win.destroy()
+  } catch (_) {}
+  _videoSession.win = null
+}
 
 const _videoCatalogCache = makeCache({ cap: 50, ttlMs: 1000 * 60 * 60 * 24 })
 const _videoStreamCache = makeCache({ cap: 200, ttlMs: 1000 * 60 * 15 })
@@ -6109,12 +6151,17 @@ ipcMain.handle('video-play', async (_, { result }) => {
   try {
     // The music engine must not keep talking over the video.
     if (player) { try { player.pause().catch(() => {}) } catch (_) {} }
+    // When the user wants the in-app panel, obtain the X11 wid now and show the
+    // host window; on failure (wid null) mpv opens its own window instead.
+    const embed = _videoSettings().embed === 'panel'
+    const wid = embed ? _videoWid() : null
+    if (wid) _showVideoWindow()
     if (result && result.kind === 'torrent') {
       const streamer = new TorrentStreamer({ client: getTorrentClient(), timeoutMs: 30000 })
       streamer.on('error', err => safeSend('video-event', { kind: 'error', message: err && err.message }))
       streamer.on('progress', p => safeSend('video-event', { kind: 'buffering', ...p }))
       streamer.on('ready', ({ url }) => {
-        videoEngine().start(url, {})
+        videoEngine().start(url, { wid })
           .then(() => safeSend('video-event', { kind: 'playing' }))
           .catch(e => safeSend('video-event', { kind: 'error', message: e && e.message }))
       })
@@ -6124,7 +6171,7 @@ ipcMain.handle('video-play', async (_, { result }) => {
       streamer.start({ magnet: result.magnet, fileIndex: result.fileIndex ?? 0 })
         .catch(e => safeSend('video-event', { kind: 'error', message: e && e.message }))
     } else {
-      videoEngine().start(result.url, {})
+      videoEngine().start(result.url, { wid })
         .then(() => safeSend('video-event', { kind: 'playing' }))
         .catch(e => safeSend('video-event', { kind: 'error', message: e && e.message }))
     }
@@ -6138,6 +6185,7 @@ ipcMain.handle('video-stop', async () => {
   try {
     if (_videoSession.streamer) { _videoSession.streamer.stop(); _videoSession.streamer = null }
     videoEngine().stop()
+    _closeVideoWindow()
     return { ok: true }
   } catch (e) {
     return { ok: false, error: e.message }

@@ -9263,6 +9263,7 @@ async function _initVideoSettings() {
   const s = (res && res.settings) || {}
   $('video-prefer-surround').checked = s.preferSurround !== false
   $('video-quality').value = s.preferredQuality || '1080p'
+  $('video-embed').value = s.embed === 'panel' ? 'panel' : 'window'
   if (s.tmdbApiKey) keyInput.placeholder = 'Key saved ✓ — paste new one to change'
   const save = patch => window.api.videoSettingsSet(patch).catch(() => {})
   keyInput.addEventListener('change', e => {
@@ -9274,6 +9275,7 @@ async function _initVideoSettings() {
   })
   $('video-prefer-surround').addEventListener('change', e => save({ preferSurround: !!e.target.checked }))
   $('video-quality').addEventListener('change', e => save({ preferredQuality: e.target.value }))
+  $('video-embed').addEventListener('change', e => save({ embed: e.target.value }))
 }
 
 async function initPlaybackSettings() {
