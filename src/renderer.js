@@ -1427,7 +1427,11 @@ async function _prefetchNextSources() {
     titles: d.titles || null,
     season: next.season != null ? next.season : undefined,
     episode: next.episode,
-    sub: _videoState.sub, dub: !_videoState.sub,
+    // Ask for the language actually being watched. _videoState.sub tracks the
+    // Dub checkbox, which is not touched when a dubbed source is picked
+    // straight out of the list.
+    sub: _playing.dub === true ? false : true,
+    dub: _playing.dub === true,
   }
   const res = await window.api.videoStreams(req).catch(function () { return { ok: false } })
   if (_prefetch.key !== key) return   // season changed while we were waiting
@@ -1461,6 +1465,42 @@ function _setUpNextInfo() {
       : d.title,
     still: still,
   })
+}
+
+// Picks the next episode's source to match what is already playing, rather
+// than taking whatever ranked first. Language is the part a viewer notices
+// immediately, so it outranks quality and seeds; the indexer and quality are
+// weaker preferences on top.
+var _QUALITY_ORDER = ['480p', '720p', '1080p', '2160p']
+
+// Distance between two resolutions in steps, so an exact match wins, one step
+// away is a near miss, and unknown is worst. Falling from 1080p to 720p is a
+// far smaller insult than falling to an unlabelled release.
+function _qualityDistance(a, b) {
+  const ia = _QUALITY_ORDER.indexOf(a)
+  const ib = _QUALITY_ORDER.indexOf(b)
+  if (ia === -1 || ib === -1) return 9
+  return Math.abs(ia - ib)
+}
+
+function _pickMatchingStream(streams, want) {
+  const list = Array.isArray(streams) ? streams : []
+  if (!list.length) return null
+  if (!want || (want.dub == null && !want.quality)) return list[0]
+  const scored = list.map(function (s, i) {
+    let score = 0
+    // Language is what a viewer notices in the first second, so it outranks
+    // everything else and can never be outvoted by resolution or seeds.
+    if (want.dub != null && (s.dub === true) === want.dub) score += 1000
+    // Resolution is the next thing they notice. Scored by closeness rather
+    // than exact match, so 1080p -> 720p beats 1080p -> unlabelled.
+    if (want.quality) score += Math.max(0, 100 - _qualityDistance(want.quality, s.quality) * 25)
+    // The indexer is only a tiebreaker: it says nothing about how it looks.
+    if (want.source && s.source === want.source) score += 10
+    return { s: s, score: score, i: i }
+  })
+  scored.sort(function (a, b) { return b.score - a.score || a.i - b.i })
+  return scored[0].s
 }
 
 // ── Binge: advancing to the next episode ────────────────────────────────────
@@ -1525,14 +1565,36 @@ async function _playNextEpisode() {
     return
   }
   _videoStreams = res.streams
-  _videoPlayResult(res.streams[0])
+  const pick = _pickMatchingStream(res.streams, _playing)
+  // Say so when the match had to be compromised, rather than quietly handing
+  // over something different from what was being watched.
+  const notes = []
+  if (_playing.dub != null && pick && (pick.dub === true) !== _playing.dub) {
+    notes.push(_playing.dub ? 'no dub available' : 'no subbed release')
+  }
+  if (_playing.quality && pick && pick.quality !== _playing.quality) {
+    notes.push((pick.quality || 'unknown quality') + ' instead of ' + _playing.quality)
+  }
+  if (notes.length) showToast('Episode ' + next.episode + ': ' + notes.join(' · '))
+  _videoPlayResult(pick)
   // The detail page behind the theatre should reflect where we now are.
   if (_videoDetail.type === 'tv') _renderVideoControls('tv')
 }
 
+// The characteristics of the source actually playing. Picking the next
+// episode's "best" source ignores this: a viewer watching a dub does not want
+// the next episode in Japanese because that release happened to have more
+// seeds.
+var _playing = { dub: null, source: null, quality: null }
+
 function _videoPlayResult(result) {
   if (!result) return
   _initVideoUI()
+  _playing = {
+    dub: result.dub === true,
+    source: result.source || null,
+    quality: result.quality || null,
+  }
   const d = _videoDetail && _videoDetail.d
   const isEpisode = _videoDetail && _videoDetail.type !== 'movie'
 
@@ -2026,6 +2088,8 @@ async function renderVideoDetail(navId) {
   _videoDetail = { type, id, d: null }
   _videoState = { season: null, episode: 1, sub: true }
   _videoStreams = []
+  _playing = { dub: null, source: null, quality: null }
+  _prefetch = { key: null, streams: null, inflight: false }
   setContent('<div class="page"><div class="skeleton skeleton-card" style="height:280px"></div></div>')
 
   const res = await window.api.videoDetail({ type, id }).catch(function (e) { return { ok: false, error: String((e && e.message) || e) } })
@@ -2183,7 +2247,13 @@ function _videoStreamRequest() {
   if (_videoDetail.type === 'tv') return Object.assign(base, { tmdbId: d.id, imdbId: d.imdbId || null, season: _videoState.season, episode: _videoState.episode })
   // The torrent indexer needs the romaji title, not the English display one,
   // so every variant AniList returned is sent along.
-  return Object.assign(base, { anilistId: d.id, titles: d.titles || null, episode: _videoState.episode, sub: _videoState.sub, dub: !_videoState.sub })
+  // Once something is playing, its language is the better signal: a dubbed
+  // source picked straight from the list never touches the Dub checkbox.
+  const wantDub = _playing.dub != null ? _playing.dub : !_videoState.sub
+  return Object.assign(base, {
+    anilistId: d.id, titles: d.titles || null, episode: _videoState.episode,
+    sub: !wantDub, dub: wantDub,
+  })
 }
 
 async function _loadVideoSources(ticket, seasonTicket) {

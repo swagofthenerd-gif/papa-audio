@@ -5972,7 +5972,7 @@ ipcMain.handle('batch-transcode', async (_, { filePaths, format, outDir }) => {
 
 function _videoSettings() {
   return Object.assign(
-    { tmdbApiKey: '', preferSurround: true, preferredQuality: '1080p', torrentSources: true, embed: 'window' },
+    { tmdbApiKey: '', preferSurround: true, preferredQuality: '1080p', torrentSources: true, embed: 'panel' },
     store.get('videoSettings')
   )
 }
@@ -6091,8 +6091,12 @@ ipcMain.handle('video-fullscreen', () => {
 function _showVideoWindow() {
   try {
     const win = _videoWindow()
-    win.show()
-    win.focus()
+    if (_videoSession.bounds) _positionVideoWindow(_videoSession.bounds)
+    win.showInactive()
+    // Focus stays with the main window: the deck, the keyboard shortcuts and
+    // the skip buttons all live there, and stealing focus into a blank mpv
+    // window would make every one of them stop responding.
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.focus()
   } catch (_) {}
 }
 
@@ -6398,7 +6402,7 @@ ipcMain.handle('video-play', async (_, { result }) => {
     if (player) { try { player.pause().catch(() => {}) } catch (_) {} }
     // When the user wants the in-app panel, obtain the X11 wid now and show the
     // host window; on failure (wid null) mpv opens its own window instead.
-    const embed = _videoSettings().embed === 'panel'
+    const embed = _videoSettings().embed !== 'window'
     const wid = embed ? _videoWid() : null
     if (wid) _showVideoWindow()
     // Every async callback below is stamped with the play that created it, so

@@ -147,3 +147,74 @@ test('toggleWatchlist returns a list, so membership must be asked for', () => {
   assert.ok(afterRemove.length === 0 || !store.inWatchlist('movie', 7))
   assert.strictEqual(store.inWatchlist('movie', 7), false)
 })
+
+// ── Carrying language and resolution across episodes ────────────────────────
+// Advancing used to take streams[0], the globally best-ranked source. A viewer
+// watching a 1080p dub does not want the next episode in Japanese at 2160p
+// because that release happened to have more seeds.
+vm.runInContext('var _QUALITY_ORDER = ' + JSON.stringify(['480p', '720p', '1080p', '2160p']), ctx)
+vm.runInContext(extract('_qualityDistance'), ctx)
+vm.runInContext(extract('_pickMatchingStream'), ctx)
+const pickMatching = ctx._pickMatchingStream
+const qualityDistance = ctx._qualityDistance
+
+const STREAMS = [
+  { source: 'Nyaa', quality: '2160p', dub: false, label: '2160p sub' },
+  { source: 'Nyaa', quality: '720p', dub: true, label: '720p dub' },
+  { source: 'Nyaa', quality: '1080p', dub: true, label: '1080p dub' },
+  { source: 'TPB', quality: '1080p', dub: false, label: '1080p sub' },
+]
+
+test('quality distance ranks a near miss above an unlabelled release', () => {
+  assert.strictEqual(qualityDistance('1080p', '1080p'), 0)
+  assert.strictEqual(qualityDistance('1080p', '720p'), 1)
+  assert.strictEqual(qualityDistance('1080p', '2160p'), 1)
+  assert.strictEqual(qualityDistance('1080p', '480p'), 2)
+  assert.ok(qualityDistance('1080p', 'unknown') > 2, 'unlabelled is worse than any real step')
+})
+
+test('the next episode keeps the language being watched', () => {
+  assert.strictEqual(pickMatching(STREAMS, { dub: true, quality: '1080p' }).label, '1080p dub')
+  assert.strictEqual(pickMatching(STREAMS, { dub: false, quality: '1080p' }).label, '1080p sub')
+})
+
+test('the next episode keeps the resolution being watched', () => {
+  assert.strictEqual(pickMatching(STREAMS, { dub: true, quality: '720p' }).label, '720p dub')
+  assert.strictEqual(pickMatching(STREAMS, { dub: false, quality: '2160p' }).label, '2160p sub')
+})
+
+// Language is what you notice in the first second; resolution takes longer.
+test('language outranks resolution when both cannot be satisfied', () => {
+  const only = [
+    { source: 'Nyaa', quality: '2160p', dub: false, label: 'best picture, wrong language' },
+    { source: 'Nyaa', quality: '480p', dub: true, label: 'worse picture, right language' },
+  ]
+  assert.strictEqual(pickMatching(only, { dub: true, quality: '2160p' }).label, 'worse picture, right language')
+})
+
+test('resolution falls to the nearest step rather than anything at all', () => {
+  const near = [
+    { source: 'Nyaa', quality: 'unknown', dub: true, label: 'unlabelled' },
+    { source: 'Nyaa', quality: '720p', dub: true, label: 'one step down' },
+  ]
+  assert.strictEqual(pickMatching(near, { dub: true, quality: '1080p' }).label, 'one step down')
+})
+
+test('the indexer is only a tiebreaker, never a reason to change language', () => {
+  const tie = [
+    { source: 'TPB', quality: '1080p', dub: true, label: 'other indexer' },
+    { source: 'Nyaa', quality: '1080p', dub: true, label: 'same indexer' },
+  ]
+  assert.strictEqual(pickMatching(tie, { dub: true, quality: '1080p', source: 'Nyaa' }).label, 'same indexer')
+})
+
+test('with no dub anywhere it still returns something playable', () => {
+  const subsOnly = [{ source: 'Nyaa', quality: '1080p', dub: false, label: 'only sub' }]
+  assert.strictEqual(pickMatching(subsOnly, { dub: true, quality: '1080p' }).label, 'only sub')
+})
+
+test('nothing known about the current source falls back to the ranked best', () => {
+  assert.strictEqual(pickMatching(STREAMS, null).label, '2160p sub')
+  assert.strictEqual(pickMatching(STREAMS, { dub: null, quality: null }).label, '2160p sub')
+  assert.strictEqual(pickMatching([], { dub: true }), null)
+})
