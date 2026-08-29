@@ -54,7 +54,6 @@ function analyseOne(filePath, { spawnFn = spawn, timeoutMs = DEFAULT_TIMEOUT_MS 
   })
 }
 
-
 const os = require('os')
 
 function defaultConcurrency() {
@@ -93,7 +92,16 @@ async function runAnalysis({
       const i = cursor++
       if (i >= todo.length) return
       const t = todo[i]
-      const r = await analyseFn(t.filePath)
+      // analyseFn is injectable, so it can reject as well as resolve {ok:false}.
+      // A rejection here would take down Promise.all and discard every vector
+      // already collected -- one bad file costing the whole run. Both shapes of
+      // failure are the same thing to this loop: count it and carry on.
+      let r
+      try {
+        r = await analyseFn(t.filePath)
+      } catch (e) {
+        r = { ok: false, error: String((e && e.message) || e) }
+      }
       if (r && r.ok) {
         results.set(t.filePath, {
           vector: r.vector, featureVersion: FEATURE_VERSION,

@@ -173,3 +173,16 @@ test('an empty track list resolves rather than hanging', async () => {
   const r = await runAnalysis({ tracks: [], existing: new Map(), analyseFn: okFn })
   assert.strictEqual(r.analysed, 0)
 })
+
+test('a rejecting analyseFn is counted as a failure, not an aborted batch', async () => {
+  const r = await runAnalysis({
+    tracks: [trk(1), trk(2), trk(3)], existing: new Map(), concurrency: 2,
+    analyseFn: async fp => {
+      if (fp === '/t2.flac') throw new Error('unreadable file')
+      return { ok: true, vector: V, featureVersion: FEATURE_VERSION }
+    },
+  })
+  assert.strictEqual(r.analysed, 2, 'results from the other files were discarded')
+  assert.strictEqual(r.failed, 1)
+  assert.ok(r.results.has('/t1.flac') && r.results.has('/t3.flac'))
+})
