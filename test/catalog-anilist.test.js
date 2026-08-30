@@ -42,7 +42,12 @@ test('normalizeMedia maps a raw AniList media node to an anime catalog entry', (
     poster: 'https://example.com/fma.jpg',
     backdrop: null,
     overview: 'Two brothers search for the Philosopher\'s Stone.',
-    rating: 90,
+    // Normalised to TMDB's 0-10 at the catalog boundary; the raw 0-100 value
+    // stays available for anything that needs it.
+    rating: 9,
+    scoreRaw: 90,
+    format: null,
+    trailer: null,
     genres: ['Action', 'Adventure', 'Fantasy'],
     episodeCount: 64,
     status: 'FINISHED',

@@ -207,6 +207,22 @@ function normalizeTv(raw) {
   return entry
 }
 
+function normalizePerson(raw) {
+  if (!raw || raw.id == null) return null
+  return {
+    id: raw.id,
+    type: 'person',
+    title: raw.name ?? null,
+    poster: _image(raw.profile_path),
+    department: raw.known_for_department ?? null,
+    // The titles TMDB considers this person best known for — enough to tell
+    // two actors with the same name apart without a second request.
+    knownFor: (raw.known_for || [])
+      .map(k => (k && k.media_type === 'tv' ? k.name : k && k.title))
+      .filter(Boolean).slice(0, 3),
+  }
+}
+
 function normalizeSearchResult(raw) {
   if (!raw || (raw.media_type !== 'movie' && raw.media_type !== 'tv')) return null
   const isTv = raw.media_type === 'tv'
@@ -246,6 +262,75 @@ function buildSearchUrl(query, opts = {}) {
 // a 422 that would break every detail page of that type, so the two lists differ.
 const MOVIE_APPEND = 'credits,videos,similar,recommendations,release_dates,external_ids,watch/providers'
 const TV_APPEND = 'credits,videos,similar,recommendations,content_ratings,external_ids,watch/providers'
+
+// The discover endpoint is what makes real browsing possible: everything the
+// catalog rows do is a fixed slice of it. Params are whitelisted rather than
+// passed through, so a UI bug cannot send arbitrary query keys to TMDB.
+//
+// TMDB names differ per media type — a movie has primary_release_date and a
+// series has first_air_date — so the caller passes neutral names and the
+// mapping happens here.
+const SORTS = {
+  popularity: 'popularity.desc',
+  rating: 'vote_average.desc',
+  newest: 'primary_release_date.desc',
+  oldest: 'primary_release_date.asc',
+  title: 'title.asc',
+  revenue: 'revenue.desc',
+}
+
+const TV_SORTS = {
+  popularity: 'popularity.desc',
+  rating: 'vote_average.desc',
+  newest: 'first_air_date.desc',
+  oldest: 'first_air_date.asc',
+  title: 'name.asc',
+  revenue: 'popularity.desc',
+}
+
+function buildDiscoverUrl(kind, opts = {}) {
+  const isTv = kind === 'tv'
+  const q = []
+  const push = (k, v) => { if (v != null && v !== '') q.push(`${k}=${encodeURIComponent(v)}`) }
+
+  push('page', opts.page || 1)
+  push('sort_by', (isTv ? TV_SORTS : SORTS)[opts.sort] || (isTv ? TV_SORTS : SORTS).popularity)
+  if (Array.isArray(opts.genres) && opts.genres.length) push('with_genres', opts.genres.join(','))
+  if (Array.isArray(opts.excludeGenres) && opts.excludeGenres.length) push('without_genres', opts.excludeGenres.join(','))
+  push(isTv ? 'first_air_date.gte' : 'primary_release_date.gte', opts.yearFrom ? `${opts.yearFrom}-01-01` : null)
+  push(isTv ? 'first_air_date.lte' : 'primary_release_date.lte', opts.yearTo ? `${opts.yearTo}-12-31` : null)
+  push('vote_average.gte', opts.minRating)
+  push('with_original_language', opts.language)
+  push('with_runtime.gte', opts.runtimeFrom)
+  push('with_runtime.lte', opts.runtimeTo)
+  push('with_watch_providers', opts.provider)
+  push('with_keywords', opts.keyword)
+  push('with_people', Array.isArray(opts.people) && opts.people.length ? opts.people.join(',') : null)
+  // A rating sort with no vote floor surfaces titles with three votes and a
+  // perfect score, which is noise rather than a recommendation.
+  if (opts.sort === 'rating') push('vote_count.gte', opts.minVotes != null ? opts.minVotes : 200)
+  if (opts.includeAdult !== true) push('include_adult', 'false')
+
+  return `${TMDB_BASE}/discover/${isTv ? 'tv' : 'movie'}?${q.join('&')}`
+}
+
+function buildGenresUrl(kind) {
+  return `${TMDB_BASE}/genre/${kind === 'tv' ? 'tv' : 'movie'}/list`
+}
+
+function buildPersonSearchUrl(query, opts = {}) {
+  let url = `${TMDB_BASE}/search/person?query=${encodeURIComponent(query)}`
+  if (opts.page != null) url += `&page=${opts.page}`
+  return url
+}
+
+function buildPersonCreditsUrl(personId) {
+  return `${TMDB_BASE}/person/${personId}/combined_credits`
+}
+
+function buildCollectionUrl(collectionId) {
+  return `${TMDB_BASE}/collection/${collectionId}`
+}
 
 function buildDetailUrl(type, id) {
   const append = type === 'tv' ? TV_APPEND : MOVIE_APPEND
@@ -291,6 +376,55 @@ function createTmdbCatalog({ apiKey, fetchFn } = {}) {
       const data = await _fetch(buildDetailUrl(type, id))
       return type === 'tv' ? normalizeTv(data) : normalizeMovie(data)
     },
+    async discover(kind, opts) {
+      const data = await _fetch(buildDiscoverUrl(kind, opts))
+      const norm = kind === 'tv' ? normalizeTv : normalizeMovie
+      return {
+        results: (data.results || []).map(norm),
+        page: data.page || 1,
+        totalPages: data.total_pages || 1,
+        totalResults: data.total_results || 0,
+      }
+    },
+    async genres(kind) {
+      const data = await _fetch(buildGenresUrl(kind))
+      return (data.genres || []).filter(g => g && g.id != null && g.name)
+        .map(g => ({ id: g.id, name: g.name }))
+    },
+    async searchPeople(query, page) {
+      const data = await _fetch(buildPersonSearchUrl(query, { page }))
+      return (data.results || []).map(normalizePerson).filter(Boolean)
+    },
+    async personCredits(personId) {
+      const data = await _fetch(buildPersonCreditsUrl(personId))
+      const cast = Array.isArray(data.cast) ? data.cast : []
+      const crew = Array.isArray(data.crew) ? data.crew : []
+      // One person can appear many times on the same title (writer and
+      // director, or a recurring role); the filmography wants each title once.
+      const seen = new Set()
+      const out = []
+      for (const raw of cast.concat(crew)) {
+        const type = raw && raw.media_type
+        if (type !== 'movie' && type !== 'tv') continue
+        const key = type + ':' + raw.id
+        if (seen.has(key)) continue
+        seen.add(key)
+        out.push(type === 'tv' ? normalizeTv(raw) : normalizeMovie(raw))
+      }
+      return out.sort((a, b) => (Number(b.year) || 0) - (Number(a.year) || 0))
+    },
+    async collection(collectionId) {
+      const data = await _fetch(buildCollectionUrl(collectionId))
+      return {
+        id: data.id ?? null,
+        name: data.name ?? null,
+        overview: data.overview ?? null,
+        poster: _image(data.poster_path),
+        backdrop: _image(data.backdrop_path),
+        parts: (data.parts || []).map(normalizeMovie)
+          .sort((a, b) => (Number(a.year) || 0) - (Number(b.year) || 0)),
+      }
+    },
     async season(tvId, n) {
       const data = await _fetch(buildSeasonUrl(tvId, n))
       return normalizeSeason(data)
@@ -299,6 +433,14 @@ function createTmdbCatalog({ apiKey, fetchFn } = {}) {
 }
 
 module.exports = {
+  SORTS,
+  TV_SORTS,
+  buildDiscoverUrl,
+  buildGenresUrl,
+  buildPersonSearchUrl,
+  buildPersonCreditsUrl,
+  buildCollectionUrl,
+  normalizePerson,
   normalizeMovie,
   normalizeTv,
   normalizeSeason,

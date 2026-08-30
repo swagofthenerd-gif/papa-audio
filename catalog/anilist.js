@@ -20,7 +20,9 @@ const MEDIA_SELECTION = `id
           averageScore
           genres
           episodes
-          status`
+          status
+          format
+          trailer { id site }`
 
 function normalizeMedia(raw) {
   raw = raw || {}
@@ -44,7 +46,13 @@ function normalizeMedia(raw) {
     poster: raw.coverImage?.large ?? null,
     backdrop: raw.bannerImage || (raw.coverImage && raw.coverImage.extraLarge) || null,
     overview: raw.description ?? null,
-    rating: raw.averageScore ?? null,
+    // 0-10, matching TMDB. The raw 0-100 value is kept for anyone who needs it.
+    rating: scoreTo10(raw.averageScore),
+    scoreRaw: raw.averageScore ?? null,
+    format: raw.format ?? null,
+    trailer: raw.trailer && raw.trailer.id
+      ? { id: raw.trailer.id, site: String(raw.trailer.site || 'youtube').toLowerCase() }
+      : null,
     genres: Array.isArray(raw.genres) ? raw.genres : [],
     episodeCount: raw.episodes ?? null,
     status: raw.status ?? null,
@@ -59,6 +67,23 @@ function buildQuery(kind, options) {
   // builders; pagination lives in `buildVariables`, not the query string.
   void options
   switch (kind) {
+    // The browse query. Every argument is optional at the GraphQL level, so one
+    // query shape serves every combination of filters — AniList ignores a
+    // variable that is null rather than erroring, which is why this does not
+    // need to be assembled as a string per request.
+    case 'discover':
+      return `query ($page: Int, $perPage: Int, $genre: [String], $tag: [String],
+                     $season: MediaSeason, $seasonYear: Int, $format: [MediaFormat],
+                     $status: MediaStatus, $score: Int, $sort: [MediaSort], $isAdult: Boolean) {
+  Page(page: $page, perPage: $perPage) {
+    pageInfo { total currentPage lastPage hasNextPage }
+    media(type: ANIME, genre_in: $genre, tag_in: $tag, season: $season,
+          seasonYear: $seasonYear, format_in: $format, status: $status,
+          averageScore_greater: $score, sort: $sort, isAdult: $isAdult) {
+      ${MEDIA_SELECTION}
+    }
+  }
+}`
     // NOTE: `sort`/`search`/`season`/`seasonYear`/`type` are arguments of the
     // `media` field, NOT of `Page`. Placing them on `Page` makes AniList return
     // a 400 (`Unknown argument "sort" on field "Page"`). `type: ANIME` is also
@@ -109,13 +134,61 @@ function buildQuery(kind, options) {
   }
 }
 
-function buildVariables(kind, { page, perPage, query, season, seasonYear, id } = {}) {
+// AniList scores out of 100. Everything downstream — the card badge, the
+// filter rail, the sort — works in TMDB's 0-10, so the conversion happens once
+// here rather than at each display site.
+// null and '' both coerce to 0 through Number(), so they have to be rejected
+// before the finite check — otherwise an unrated title scores 0, which shows
+// as "0.0" on the badge and sorts below everything rather than as unrated.
+function _score(value) {
+  if (value == null || value === '') return null
+  const n = Number(value)
+  return Number.isFinite(n) ? n : null
+}
+
+function scoreTo10(score) {
+  const n = _score(score)
+  return n == null ? null : Math.round(n) / 10
+}
+
+function scoreTo100(score) {
+  const n = _score(score)
+  return n == null ? null : Math.round(n * 10)
+}
+
+const SORTS = {
+  popularity: ['POPULARITY_DESC'],
+  rating: ['SCORE_DESC'],
+  newest: ['START_DATE_DESC'],
+  oldest: ['START_DATE'],
+  title: ['TITLE_ROMAJI'],
+  trending: ['TRENDING_DESC'],
+}
+
+function buildVariables(kind, opts = {}) {
+  const { page, perPage, query, season, seasonYear, id } = opts
   // The byId query takes only $id; sending page/perPage would be rejected as
   // unknown variables are not, but keeping it clean matches the query shape.
   if (kind === 'byId') return { id: Number(id) }
   const vars = {
     page: page ?? 1,
     perPage: perPage ?? 20,
+  }
+  if (kind === 'discover') {
+    // Only set what the caller asked for: AniList treats an explicit null as
+    // "no filter", but leaving the key out entirely is clearer and avoids any
+    // argument that does not accept null.
+    if (Array.isArray(opts.genres) && opts.genres.length) vars.genre = opts.genres
+    if (Array.isArray(opts.tags) && opts.tags.length) vars.tag = opts.tags
+    if (Array.isArray(opts.formats) && opts.formats.length) vars.format = opts.formats
+    if (opts.season) vars.season = opts.season
+    if (opts.seasonYear) vars.seasonYear = Number(opts.seasonYear)
+    if (opts.status) vars.status = opts.status
+    // The caller works in 0-10; AniList's averageScore_greater is 0-100.
+    if (opts.minRating != null && opts.minRating !== '') vars.score = scoreTo100(opts.minRating)
+    vars.sort = SORTS[opts.sort] || SORTS.popularity
+    vars.isAdult = opts.includeAdult === true
+    return vars
   }
   if (kind === 'search') {
     vars.search = query ?? ''
@@ -157,8 +230,21 @@ function createAnilistCatalog({ fetchFn } = {}) {
       const one = data?.data?.Media
       return one ? normalizeMedia(one) : null
     }
-    const media = data?.data?.Page?.media
-    return (media || []).map(normalizeMedia)
+    const page = data?.data?.Page
+    const media = (page?.media || []).map(normalizeMedia)
+    // Browsing needs to know how many there are and whether to keep paging;
+    // the fixed rows only ever wanted the list.
+    if (kind === 'discover') {
+      const info = page?.pageInfo || {}
+      return {
+        results: media,
+        page: info.currentPage || 1,
+        totalPages: info.lastPage || 1,
+        totalResults: info.total || media.length,
+        hasMore: info.hasNextPage === true,
+      }
+    }
+    return media
   }
 
   return {
@@ -177,10 +263,53 @@ function createAnilistCatalog({ fetchFn } = {}) {
     byId(id) {
       return _post('byId', { id })
     },
+    discover(opts) {
+      return _post('discover', opts || {})
+    },
+    // The browse vocabularies. Both are static enough to cache for a week: 19
+    // genres, and 361 tags that change when AniList's editors add one.
+    async genres() {
+      const res = await fetcher(ANILIST_BASE, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: '{ GenreCollection }' }),
+      })
+      if (!res || !res.ok) return []
+      const data = await res.json()
+      const list = data?.data?.GenreCollection
+      // Hentai is a genre in AniList's vocabulary; it is filtered here rather
+      // than in the UI so it cannot leak into a chip list by accident.
+      return Array.isArray(list) ? list.filter(g => g && g !== 'Hentai') : []
+    },
+    async tags() {
+      const res = await fetcher(ANILIST_BASE, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: '{ MediaTagCollection { name category isAdult } }' }),
+      })
+      if (!res || !res.ok) return []
+      const data = await res.json()
+      const list = data?.data?.MediaTagCollection
+      if (!Array.isArray(list)) return []
+      // Grouped by category: 361 tags as a flat list is unusable.
+      const byCategory = new Map()
+      for (const t of list) {
+        if (!t || !t.name || t.isAdult) continue
+        const cat = t.category || 'Other'
+        if (!byCategory.has(cat)) byCategory.set(cat, [])
+        byCategory.get(cat).push(t.name)
+      }
+      return [...byCategory.entries()]
+        .map(([category, tags]) => ({ category, tags: tags.sort() }))
+        .sort((a, b) => a.category.localeCompare(b.category))
+    },
   }
 }
 
 module.exports = {
+  SORTS,
+  scoreTo10,
+  scoreTo100,
   normalizeMedia,
   buildQuery,
   buildVariables,
