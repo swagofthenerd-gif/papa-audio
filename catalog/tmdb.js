@@ -277,6 +277,11 @@ function normalizeSearchResult(raw) {
     title: (isTv ? raw.name : raw.title) ?? null,
     year: _year(date),
     poster: _image(raw.poster_path),
+    // search/multi returns genre_ids rather than genres, which _isAnime reads
+    // too. Carried so a merged search can tell a tv entry that is really anime
+    // from one that is not, without a second request per result.
+    originalName: raw.original_name ?? null,
+    isAnime: isTv && _isAnime(raw),
   }
 }
 

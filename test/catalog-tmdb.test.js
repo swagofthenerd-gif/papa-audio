@@ -197,11 +197,15 @@ test('normalizeSeason maps season fields', () => {
 test('normalizeSearchResult handles movie/tv and ignores others', () => {
   assert.deepStrictEqual(
     normalizeSearchResult({ media_type: 'movie', id: 1, title: 'M', release_date: '2020-05-05', poster_path: '/p.jpg' }),
-    { id: 1, type: 'movie', title: 'M', year: '2020', poster: `${IMG}/p.jpg` }
+    // originalName and isAnime ride along so a merged search can spot the
+    // duplicate an anime title produces across the two catalogs.
+    { id: 1, type: 'movie', title: 'M', year: '2020', poster: `${IMG}/p.jpg`,
+      originalName: null, isAnime: false }
   )
   assert.deepStrictEqual(
     normalizeSearchResult({ media_type: 'tv', id: 2, name: 'T', first_air_date: '2021-06-06', poster_path: null }),
-    { id: 2, type: 'tv', title: 'T', year: '2021', poster: null }
+    { id: 2, type: 'tv', title: 'T', year: '2021', poster: null,
+      originalName: null, isAnime: false }
   )
   assert.strictEqual(normalizeSearchResult({ media_type: 'person', id: 3 }), null)
   assert.strictEqual(normalizeSearchResult(null), null)
@@ -242,7 +246,10 @@ test('createTmdbCatalog.search fetches, appends api_key, returns normalized resu
   const cat = createTmdbCatalog({ apiKey: 'KEY', fetchFn })
   const res = await cat.search('M')
   assert.strictEqual(res.length, 1)
-  assert.deepStrictEqual(res[0], { id: 1, type: 'movie', title: 'M', year: '2020', poster: `${IMG}/p.jpg` })
+  assert.deepStrictEqual(res[0], {
+    id: 1, type: 'movie', title: 'M', year: '2020', poster: `${IMG}/p.jpg`,
+    originalName: null, isAnime: false,
+  })
 })
 
 test('createTmdbCatalog.detail normalizes a full movie', async () => {

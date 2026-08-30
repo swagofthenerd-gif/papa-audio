@@ -514,3 +514,45 @@ test('the renderer tells main when a tv entry is anime', () => {
   assert.match(body, /isAnime: d\.isAnime === true/)
   assert.match(body, /titles: d\.titles \|\| null/)
 })
+
+// ── Merged search ───────────────────────────────────────────────────────────
+// Searching only TMDB returned a tv entry for an anime and no AniList entry at
+// all, so there was never a good result to click: that entry sent the source
+// lookup to the TV indexer, which found nothing for Frieren against nyaa's 22.
+test('an unfiltered search asks both catalogs', () => {
+  const body = handlerBody('video-search')
+  assert.match(body, /Promise\.all\(\[/)
+  assert.match(body, /tmdb\(\)\.search\(query\)/)
+  assert.match(body, /anilist\(\)\.search\(query\)/)
+})
+
+// A dead catalog should still return the other one's results.
+test('neither catalog can fail the whole search', () => {
+  const body = handlerBody('video-search')
+  assert.match(body, /tmdb\(\)\.search\(query\)\.catch\(\(\) => \[\]\)/)
+  assert.match(body, /anilist\(\)\.search\(query\)\.catch\(\(\) => \[\]\)/)
+})
+
+test('a tv entry that is really anime is dropped when AniList has it too', () => {
+  const body = handlerBody('video-search')
+  assert.match(body, /if \(r\.isAnime && animeRes\.some\(a => _sameShow\(a, r\)\)\) continue/)
+})
+
+// The English, romaji and original names rarely agree across the two
+// catalogs, so every title each side knows has to be compared.
+test('the duplicate test compares every title both catalogs know', () => {
+  const start = MAIN.indexOf('function _sameShow(')
+  assert.ok(start > -1)
+  const body = MAIN.slice(start, MAIN.indexOf('\n}', start))
+  assert.match(body, /t\.romaji, t\.english, t\.native/)
+  assert.match(body, /tmdbEntry\.title, tmdbEntry\.originalName/)
+  // An entry with no usable title must not match everything.
+  assert.match(body, /if \(!left\.length \|\| !right\.length\) return false/)
+})
+
+// A single-catalog search must stay single-catalog.
+test('a filtered search does not merge', () => {
+  const body = handlerBody('video-search')
+  assert.match(body, /if \(type === 'anime'\) return \{ ok: true, results: await anilist\(\)\.search\(query\) \}/)
+  assert.match(body, /if \(type === 'movie' \|\| type === 'tv'\)/)
+})

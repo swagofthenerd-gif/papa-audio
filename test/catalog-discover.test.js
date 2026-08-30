@@ -419,3 +419,18 @@ test('an ordinary series is not flagged', () => {
   const tv = tmdb.normalizeTv({ id: 2, name: 'Breaking Bad', original_language: 'en', genres: [{ id: 18 }] })
   assert.strictEqual(tv.isAnime, false)
 })
+
+// search/multi returns genre_ids rather than genres, so the anime test has to
+// read either shape — otherwise a merged search cannot tell a tv entry that is
+// really anime from one that is not.
+test('a search result carries the anime flag and original name', () => {
+  const anime = tmdb.normalizeSearchResult({
+    media_type: 'tv', id: 1, name: 'Frieren', original_name: '葬送のフリーレン',
+    original_language: 'ja', genre_ids: [16], first_air_date: '2023-09-29',
+  })
+  assert.strictEqual(anime.isAnime, true)
+  assert.strictEqual(anime.originalName, '葬送のフリーレン')
+
+  const film = tmdb.normalizeSearchResult({ media_type: 'movie', id: 2, title: 'Dune', release_date: '2021-01-01' })
+  assert.strictEqual(film.isAnime, false, 'a film is never flagged as anime')
+})

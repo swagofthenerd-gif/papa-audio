@@ -6362,20 +6362,57 @@ ipcMain.handle('video-person', async (_, { id, query } = {}) => {
   }
 })
 
+// Searching every catalog at once, and collapsing the duplicate an anime
+// title produces.
+//
+// TMDB has no concept of anime — it files it as ordinary television — so
+// searching only TMDB returned a tv entry for an anime and no AniList entry at
+// all. That entry carried TMDB's good detail but sent the source lookup to the
+// TV indexer, which barely carries anime: measured on Frieren, 0 sources
+// against nyaa's 22. AniList is now searched alongside, and where both
+// describe the same show the AniList entry wins, because that is the one the
+// Anime tab opens and its sources are the reason this was reported.
 ipcMain.handle('video-search', async (_, { query, type }) => {
   try {
-    let results
-    if (type === 'anime') {
-      results = await anilist().search(query)
-    } else {
-      results = await tmdb().search(query)
-      if (type === 'movie' || type === 'tv') results = results.filter(r => r.type === type)
+    if (type === 'anime') return { ok: true, results: await anilist().search(query) }
+
+    if (type === 'movie' || type === 'tv') {
+      const results = (await tmdb().search(query)).filter(r => r.type === type)
+      return { ok: true, results }
     }
-    return { ok: true, results }
+
+    // Both catalogs, in parallel. Neither is allowed to fail the search: a
+    // dead AniList should still return films, and vice versa.
+    const [tmdbRes, animeRes] = await Promise.all([
+      tmdb().search(query).catch(() => []),
+      anilist().search(query).catch(() => []),
+    ])
+
+    const merged = []
+    for (const r of tmdbRes) {
+      // A tv entry that is really anime and that AniList also has is the same
+      // show twice. Keeping both is confusing, and the TMDB one is the half
+      // with the worse sources.
+      if (r.isAnime && animeRes.some(a => _sameShow(a, r))) continue
+      merged.push(r)
+    }
+    return { ok: true, results: merged.concat(animeRes) }
   } catch (e) {
     return { ok: false, error: e.message }
   }
 })
+
+// Whether an AniList entry and a TMDB entry describe the same show. Compared
+// on every title each side knows, because the English, romaji and original
+// names rarely agree across the two.
+function _sameShow(anilistEntry, tmdbEntry) {
+  const norm = v => String(v || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+  const t = anilistEntry.titles || {}
+  const left = [anilistEntry.title, t.romaji, t.english, t.native].map(norm).filter(Boolean)
+  const right = [tmdbEntry.title, tmdbEntry.originalName].map(norm).filter(Boolean)
+  if (!left.length || !right.length) return false
+  return left.some(a => right.some(b => a === b || a.includes(b) || b.includes(a)))
+}
 
 // The show payload and each season payload are fetched and cached separately:
 // switching season then costs one season request the first time and nothing
