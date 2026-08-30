@@ -6073,6 +6073,46 @@ body.app-unfocused *::after {
 .video-source-play svg { width:15px; height:15px; fill:#000; }
 .video-source-play:hover { opacity:1; transform:scale(1.08); }
 
+/* ── Season / franchise selector ─────────────────────
+   AniList models each anime season as a separate entry, and a film franchise
+   is a collection, so "the rest of this series" is a list of other titles
+   rather than a number. Rendered as a rail of small cards: a dropdown would
+   hide how many there are and lose the artwork that makes them recognisable. */
+.vseasons { padding:14px 28px 0; }
+.vseasons-head { display:flex; align-items:baseline; gap:10px; margin-bottom:10px; }
+.vseasons-title { font-size:14px; font-weight:700; color:var(--text); }
+.vseasons-count { font-size:11px; color:var(--text3); }
+.vseason-rail {
+  display:grid; grid-auto-flow:column; grid-auto-columns:minmax(190px, 1fr);
+  gap:10px; overflow-x:auto; padding-bottom:8px; scrollbar-width:none;
+  scroll-snap-type:x proximity;
+}
+.vseason-rail::-webkit-scrollbar { display:none; }
+.vseason {
+  display:flex; align-items:center; gap:10px; text-align:left;
+  padding:8px; border-radius:var(--r); cursor:pointer; scroll-snap-align:start;
+  background:var(--bg3); border:1px solid var(--glass-border); color:var(--text);
+  font-family:inherit; transition:background .15s var(--ease), border-color .15s var(--ease);
+}
+.vseason:hover { background:var(--bg4); }
+.vseason:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+/* The entry you are already on is marked rather than hidden, so the list
+   always reads as the complete run. */
+.vseason.current { border-color:var(--accent); background:var(--accent-dim); }
+.vseason-art {
+  width:40px; height:58px; flex-shrink:0; object-fit:cover;
+  border-radius:var(--r-sm); background:var(--bg4);
+}
+.vseason-body { min-width:0; flex:1; }
+.vseason-n { font-size:10px; font-weight:700; letter-spacing:.6px; text-transform:uppercase; color:var(--text3); }
+.vseason.current .vseason-n { color:var(--accent); }
+.vseason-name {
+  font-size:12.5px; font-weight:600; color:var(--text);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.vseason-meta { font-size:11px; color:var(--text3); }
+.vseason-watched { font-size:10px; color:var(--accent); }
+
 /* ══════════════════════════════════════════════════════
    PAPA VIDEO · theatre
    mpv paints into its own frameless child window via --wid. A native child

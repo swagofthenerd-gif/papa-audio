@@ -6228,6 +6228,112 @@ ipcMain.handle('video-catalog-get', async (_, { section, page = 1 }) => {
   }
 })
 
+// Browse vocabularies change when an editor adds a genre — annually at most,
+// so a week is conservative. The chain and franchise caches exist because a
+// season list is walked one request per hop and must not be re-walked on every
+// visit to a detail page.
+const _videoVocabCache = makeCache({ cap: 8, ttlMs: 1000 * 60 * 60 * 24 * 7 })
+const _videoChainCache = makeCache({ cap: 300, ttlMs: 1000 * 60 * 60 * 24 })
+const _videoDiscoverCache = makeCache({ cap: 200, ttlMs: 1000 * 60 * 15 })
+
+ipcMain.handle('video-genres', async (_, { catalog } = {}) => {
+  try {
+    const key = `genres:${catalog || 'movie'}`
+    const cached = _videoVocabCache.get(key)
+    if (cached) return { ok: true, genres: cached }
+    let genres
+    if (catalog === 'anime') {
+      // AniList genres are plain strings; TMDB's are {id,name}. The shape is
+      // unified here so the filter rail does not need to know which catalog
+      // it is rendering.
+      genres = (await anilist().genres()).map(name => ({ id: name, name }))
+    } else {
+      genres = await tmdb().genres(catalog === 'tv' ? 'tv' : 'movie')
+    }
+    if (genres.length) _videoVocabCache.set(key, genres)
+    return { ok: true, genres }
+  } catch (e) {
+    return { ok: false, error: e.message, genres: [] }
+  }
+})
+
+ipcMain.handle('video-tags', async () => {
+  try {
+    const cached = _videoVocabCache.get('tags')
+    if (cached) return { ok: true, tags: cached }
+    const tags = await anilist().tags()
+    if (tags.length) _videoVocabCache.set('tags', tags)
+    return { ok: true, tags }
+  } catch (e) {
+    return { ok: false, error: e.message, tags: [] }
+  }
+})
+
+ipcMain.handle('video-discover', async (_, req) => {
+  try {
+    req = req || {}
+    const catalog = req.catalog === 'tv' ? 'tv' : req.catalog === 'anime' ? 'anime' : 'movie'
+    const key = JSON.stringify([catalog, req])
+    const cached = _videoDiscoverCache.get(key)
+    if (cached) return { ok: true, ...cached }
+    const out = catalog === 'anime'
+      ? await anilist().discover(req)
+      : await tmdb().discover(catalog, req)
+    // An empty page is usually a genuinely narrow filter rather than a
+    // transient failure, so unlike the catalog rows this is worth caching —
+    // paging to the end of a result set would otherwise re-query every time.
+    _videoDiscoverCache.set(key, out)
+    return { ok: true, ...out }
+  } catch (e) {
+    return { ok: false, error: e.message, results: [], totalResults: 0, totalPages: 0 }
+  }
+})
+
+// The other entries in a series. Anime chains are walked from AniList
+// relations; a film's equivalent is the franchise it belongs to.
+ipcMain.handle('video-seasons', async (_, { type, id } = {}) => {
+  try {
+    if (type !== 'anime' || !id) return { ok: true, seasons: [], related: [] }
+    const key = `anime:${id}`
+    const cached = _videoChainCache.get(key)
+    if (cached) return { ok: true, ...cached }
+    const out = await anilist().seasonChain(id)
+    if (out.seasons.length) _videoChainCache.set(key, out)
+    return { ok: true, ...out }
+  } catch (e) {
+    return { ok: false, error: e.message, seasons: [], related: [] }
+  }
+})
+
+ipcMain.handle('video-collection', async (_, { id } = {}) => {
+  try {
+    if (!id) return { ok: true, collection: null }
+    const key = `collection:${id}`
+    const cached = _videoChainCache.get(key)
+    if (cached) return { ok: true, collection: cached }
+    const collection = await tmdb().collection(id)
+    if (collection) _videoChainCache.set(key, collection)
+    return { ok: true, collection }
+  } catch (e) {
+    return { ok: false, error: e.message, collection: null }
+  }
+})
+
+ipcMain.handle('video-person', async (_, { id, query } = {}) => {
+  try {
+    if (query) return { ok: true, people: await tmdb().searchPeople(query) }
+    if (!id) return { ok: true, credits: [] }
+    const key = `person:${id}`
+    const cached = _videoChainCache.get(key)
+    if (cached) return { ok: true, credits: cached }
+    const credits = await tmdb().personCredits(id)
+    if (credits.length) _videoChainCache.set(key, credits)
+    return { ok: true, credits }
+  } catch (e) {
+    return { ok: false, error: e.message, credits: [], people: [] }
+  }
+})
+
 ipcMain.handle('video-search', async (_, { query, type }) => {
   try {
     let results

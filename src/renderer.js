@@ -2115,6 +2115,10 @@ async function renderVideoDetail(navId) {
   const d = res.detail
   setContent('<div class="page video-detail-page">' + _videoDetailShell(d) + '</div>')
 
+  // Not awaited: an anime chain is one request per hop, and the source list
+  // must not wait on it.
+  _renderSeasonChain(ticket)
+
   if (type === 'tv') {
     const seasons = Array.isArray(d.seasons) ? d.seasons : []
     const pick = seasons.find(function (s) { return s.seasonNumber >= 1 }) || seasons[0] || null
@@ -2150,8 +2154,91 @@ function _videoDetailShell(d) {
     '</div>' +
   '</div>'
   return hero +
+    '<div class="vseasons" id="vseasons" hidden></div>' +
     '<div class="video-controls" id="video-controls"></div>' +
     '<div class="video-sources" id="video-sources"></div>'
+}
+
+// The other entries in this series. For anime that is the PREQUEL/SEQUEL chain
+// walked from AniList relations, because each season is a separate entry with
+// its own id. For a film it is the franchise. TV needs none of this: TMDB
+// already nests seasons inside the show, and the season picker handles them.
+async function _renderSeasonChain(ticket) {
+  const box = document.getElementById('vseasons')
+  const detail = _videoDetail
+  if (!box || !detail || !detail.d) return
+
+  let items = []
+  let label = ''
+  let currentId = detail.d.id
+
+  if (detail.type === 'anime') {
+    const res = await window.api.videoSeasons({ type: 'anime', id: detail.d.id })
+      .catch(function () { return { ok: false } })
+    if (_videoDetailTicket !== ticket) return
+    items = (res && res.ok && Array.isArray(res.seasons)) ? res.seasons : []
+    label = 'Seasons'
+  } else if (detail.type === 'movie' && detail.d.collection && detail.d.collection.id) {
+    const res = await window.api.videoCollection({ id: detail.d.collection.id })
+      .catch(function () { return { ok: false } })
+    if (_videoDetailTicket !== ticket) return
+    const parts = res && res.ok && res.collection && Array.isArray(res.collection.parts)
+      ? res.collection.parts : []
+    items = parts.map(function (p) {
+      return { id: p.id, title: p.title, year: p.year, poster: p.poster, format: null, episodeCount: null }
+    })
+    label = detail.d.collection.name || 'Collection'
+  }
+
+  // One entry is just this title; a list of one is noise.
+  if (items.length < 2) { box.hidden = true; box.innerHTML = ''; return }
+
+  const store = _vStore()
+  box.hidden = false
+  box.innerHTML = '<div class="vseasons-head">' +
+      '<span class="vseasons-title">' + esc(label) + '</span>' +
+      '<span class="vseasons-count">' + items.length + '</span>' +
+    '</div>' +
+    '<div class="vseason-rail">' + items.map(function (item, i) {
+      const isCurrent = String(item.id) === String(currentId)
+      const bits = []
+      if (item.year) bits.push(esc(String(item.year)))
+      if (item.format) bits.push(esc(item.format))
+      if (item.episodeCount) bits.push(item.episodeCount + ' ep')
+      // Watched state comes from whatever has been played of this entry, so
+      // the run shows how far through it you are.
+      let watched = ''
+      try {
+        if (store && detail.type === 'movie' && store.get('movie:' + item.id)?.watched) watched = 'Watched'
+      } catch (_) { /* a broken store must not break the list */ }
+      const art = item.poster
+        ? '<img class="vseason-art" src="' + esc(item.poster) + '" alt="" loading="lazy" onerror="this.style.visibility=\'hidden\'">'
+        : '<div class="vseason-art"></div>'
+      return '<button type="button" class="vseason' + (isCurrent ? ' current' : '') + '"' +
+          ' data-season-id="' + esc(item.id) + '"' +
+          (isCurrent ? ' aria-current="true"' : '') +
+          ' aria-label="' + esc(item.title || '') + (isCurrent ? ' (current)' : '') + '">' +
+        art +
+        '<div class="vseason-body">' +
+          '<div class="vseason-n">' + (isCurrent ? 'Watching' : 'Part ' + (i + 1)) + '</div>' +
+          '<div class="vseason-name">' + esc(item.title || 'Untitled') + '</div>' +
+          '<div class="vseason-meta">' + bits.join(' · ') +
+            (watched ? ' <span class="vseason-watched">' + watched + '</span>' : '') + '</div>' +
+        '</div>' +
+      '</button>'
+    }).join('') + '</div>'
+
+  box.querySelectorAll('.vseason').forEach(function (b) {
+    b.addEventListener('click', function () {
+      const id = b.dataset.seasonId
+      if (String(id) === String(currentId)) return
+      navigate('video-detail', detail.type + ':' + id)
+    })
+  })
+  // Bring the entry being watched into view; in a long run it is often
+  // scrolled off the left.
+  const cur = box.querySelector('.vseason.current')
+  if (cur && cur.scrollIntoView) cur.scrollIntoView({ block: 'nearest', inline: 'center' })
 }
 
 function _renderVideoControls(type) {
