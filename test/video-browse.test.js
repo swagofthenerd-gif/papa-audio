@@ -278,3 +278,54 @@ test('genre chips are buttons, not inert spans', () => {
   assert.match(SRC, /<button class="video-genre-chip" data-genre-jump=/)
   assert.match(CSS, /\.video-genre-chip:focus-visible/)
 })
+
+// ── Keyboard ────────────────────────────────────────────────────────────────
+// The player handler already caused this bug once: bound to document for the
+// life of the app and firing on every screen, it swallowed characters typed
+// into the app's search box.
+test('browsing keys are inert unless a video page is showing', () => {
+  const bind = extract('_bindBrowseKeys')
+  assert.match(bind, /page !== 'video' && page !== 'browse' && page !== 'person' && page !== 'video-detail'/)
+  assert.match(bind, /_videoKeysBound/, 'it must bind once, not per render')
+})
+
+test('typing in a field never triggers a browsing shortcut', () => {
+  const bind = extract('_bindBrowseKeys')
+  assert.match(bind, /tag === 'INPUT' \|\| tag === 'TEXTAREA' \|\| tag === 'SELECT'/)
+  assert.match(bind, /isContentEditable === true/)
+  assert.match(bind, /if \(typing\) \{/)
+  // Escape must still get you out of the box without reaching for the mouse.
+  assert.match(bind, /e\.target\.blur\(\)/)
+})
+
+// The theatre is modal; while it is open its keys apply, not these.
+test('the theatre keeps the keyboard while it is open', () => {
+  assert.match(extract('_bindBrowseKeys'), /theatre\.classList\.contains\('hidden'\)/)
+})
+
+test('slash focuses search and b opens Browse', () => {
+  const bind = extract('_bindBrowseKeys')
+  assert.match(bind, /e\.key === '\/'/)
+  assert.match(bind, /getElementById\('video-search-input'\)/)
+  assert.match(bind, /e\.key === 'b' \|\| e\.key === 'B'/)
+})
+
+// The grid is responsive, so the column count changes with the window and
+// cannot be assumed.
+test('vertical movement measures the row width rather than assuming it', () => {
+  const move = extract('_moveCardFocus')
+  assert.match(move, /getBoundingClientRect\(\)\.top/)
+  assert.match(move, /perRow/)
+  assert.match(move, /if \(perRow <= 0\) perRow = cards\.length/, 'a single-row grid must not divide by zero')
+})
+
+test('arrow movement stays inside the grid', () => {
+  const move = extract('_moveCardFocus')
+  assert.match(move, /Math\.min\(cards\.length - 1, index \+ 1\)/)
+  assert.match(move, /Math\.max\(0, index - 1\)/)
+  assert.match(move, /cards\[0\]\.focus\(\)/, 'the first press enters the grid')
+})
+
+test('Enter opens the focused card', () => {
+  assert.match(extract('_bindBrowseKeys'), /classList\.contains\('vcard'\)[\s\S]*?el\.click\(\)/)
+})

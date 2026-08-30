@@ -1211,6 +1211,92 @@ var _videoState = { season: null, episode: 1, sub: true }
 var _videoStreams = []
 var _videoUiReady = false
 
+// ── Keyboard: browsing ──────────────────────────────────────────────────────
+// The theatre owns the keyboard while it is open (see video-player.js). This
+// handles the browsing surfaces, where the useful actions are different: focus
+// the search box, move across the grid, open what is focused.
+//
+// Bound once, on document, and inert unless a video page is showing — the same
+// discipline the player handler needed after playback shortcuts started
+// swallowing characters typed into the app's search box.
+var _videoKeysBound = false
+
+function _bindBrowseKeys() {
+  if (_videoKeysBound) return
+  _videoKeysBound = true
+  document.addEventListener('keydown', function (e) {
+    if (e.ctrlKey || e.altKey || e.metaKey) return
+    const page = state.currentPage
+    if (page !== 'video' && page !== 'browse' && page !== 'person' && page !== 'video-detail') return
+    // The theatre is modal; while it is open its own keys apply.
+    const theatre = document.getElementById('vtheatre')
+    if (theatre && !theatre.classList.contains('hidden')) return
+
+    const tag = String(e.target && e.target.tagName || '').toUpperCase()
+    const typing = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' ||
+      (e.target && e.target.isContentEditable === true)
+
+    if (typing) {
+      // Escape gets you out of the search box without reaching for the mouse.
+      if (e.key === 'Escape') { e.target.blur(); e.preventDefault() }
+      return
+    }
+
+    if (e.key === '/') {
+      const input = document.getElementById('video-search-input')
+      if (input) { input.focus(); input.select?.(); e.preventDefault() }
+      return
+    }
+    if (e.key === 'b' || e.key === 'B') {
+      if (page !== 'browse') { _videoTab = 'browse'; navigate('browse'); e.preventDefault() }
+      return
+    }
+    if (e.key === 'Enter') {
+      const el = document.activeElement
+      if (el && el.classList && el.classList.contains('vcard')) { el.click(); e.preventDefault() }
+      return
+    }
+    if (e.key.startsWith('Arrow')) _moveCardFocus(e)
+  })
+}
+
+// Grid-aware arrow movement. Left and right step through the cards in order;
+// up and down move by a row, worked out from the cards' own positions rather
+// than assumed, because the grid is responsive and the column count changes
+// with the window.
+function _moveCardFocus(e) {
+  const cards = Array.prototype.slice.call(document.querySelectorAll('.vcard'))
+  if (!cards.length) return
+  const active = document.activeElement
+  let index = cards.indexOf(active)
+
+  if (index === -1) {
+    // Nothing focused yet: the first arrow press enters the grid.
+    cards[0].focus()
+    e.preventDefault()
+    return
+  }
+
+  let next = index
+  if (e.key === 'ArrowRight') next = Math.min(cards.length - 1, index + 1)
+  else if (e.key === 'ArrowLeft') next = Math.max(0, index - 1)
+  else {
+    // Column count from the first row: every card sharing the first card's
+    // top offset is on row one.
+    const firstTop = cards[0].getBoundingClientRect().top
+    let perRow = cards.findIndex(function (c) { return c.getBoundingClientRect().top > firstTop + 4 })
+    if (perRow <= 0) perRow = cards.length
+    next = e.key === 'ArrowDown'
+      ? Math.min(cards.length - 1, index + perRow)
+      : Math.max(0, index - perRow)
+  }
+  if (next !== index) {
+    cards[next].focus()
+    cards[next].scrollIntoView({ block: 'nearest' })
+  }
+  e.preventDefault()
+}
+
 // ── Person page ─────────────────────────────────────────────────────────────
 // Reachable from any cast photo or crew name. TMDB gives a combined credit
 // list; the catalog already de-duplicates it and sorts newest first, because
@@ -1902,6 +1988,7 @@ var _watch = { key: null, meta: null, savedAt: 0, resumed: false }
 function _initVideoUI() {
   if (_videoUiReady) return
   _videoUiReady = true
+  _bindBrowseKeys()
   if (window.PapaVideoPlayer) {
     _player = window.PapaVideoPlayer.create({
       onExit: function () {
