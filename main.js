@@ -6601,12 +6601,30 @@ ipcMain.handle('video-play', async (_, { result }) => {
       streamer.on('progress', p => { if (current()) safeSend('video-event', { kind: 'buffering', ...p }) })
       streamer.on('ready', ({ url }) => {
         if (!current()) { try { streamer.stop() } catch (_) {} ; return }
-        videoEngine().start(url, { wid }).then(() => started(url)).catch(fail)
+        videoEngine().start(url, { wid }).then(() => {
+          started(url)
+          // A season pack already contains every episode. Telling the UI what
+          // is in it turns episode switching into a file change on a torrent
+          // that is already running — same peers, no new resolve, no wait.
+          try {
+            const files = streamer.files()
+            if (files.length > 1) safeSend('video-event', { kind: 'pack', files })
+          } catch (_) { /* the pack list is a convenience, never required */ }
+        }).catch(fail)
       })
       _videoSession.streamer = streamer
       // Deliberately not awaited: start() resolves on 'ready', and awaiting it
       // would hang this handler on a slow torrent — and on stop.
-      streamer.start({ magnet: result.magnet, fileIndex: result.fileIndex ?? 0 })
+      // A season pack holds every episode; without the episode the streamer
+      // would pick the largest file, which is an arbitrary one. Dubbed anime
+      // is released almost exclusively as packs, so this is the common case
+      // rather than an edge one.
+      streamer.start({
+        magnet: result.magnet,
+        fileIndex: result.fileIndex ?? 0,
+        season: result.season ?? null,
+        episode: result.episode ?? null,
+      })
         .catch(e => { if (e && e.code === 'STOPPED') return; fail(e) })
     } else {
       if (!result.url) return { ok: false, error: 'This source has no playable URL' }
@@ -6638,6 +6656,21 @@ ipcMain.handle('video-trailer', async (_, { youtubeId, title } = {}) => {
     await videoEngine().start(url, { wid: null })
     if (_videoSession.token === token) safeSend('video-event', { kind: 'playing', trailer: true })
     return { ok: true, title: title || null }
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) }
+  }
+})
+
+// Switch to another file inside the pack already streaming.
+ipcMain.handle('video-pack-select', async (_, { index } = {}) => {
+  try {
+    const streamer = _videoSession.streamer
+    if (!streamer) return { ok: false, error: 'Nothing is streaming' }
+    const url = streamer.selectFile(Number(index))
+    if (!url) return { ok: false, error: 'That episode is not in this release' }
+    await videoEngine().load(url)
+    safeSend('video-event', { kind: 'playing' })
+    return { ok: true, url, files: streamer.files() }
   } catch (e) {
     return { ok: false, error: (e && e.message) || String(e) }
   }

@@ -125,6 +125,36 @@ function parseFeed(xml) {
 // The feed is a plain text search, so a query for "Frieren 09" happily returns
 // batch packs and episode 19; playing one of those instead is worse than
 // showing nothing.
+// A season or batch pack containing the requested episode. Dubbed anime is
+// released almost exclusively this way rather than per-episode, so rejecting
+// packs — which the first version of this did — filtered out nearly every dub
+// there is. The streamer finds the right file inside the pack by name.
+const RANGE_RE = /(\d{1,4})\s*(?:-|~|to)\s*(\d{1,4})/
+const PACK_RE = /\b(batch|complete|season\s*\d+|collection|bd[\s._-]?box)\b/i
+
+function isPack(title, episode) {
+  const t = String(title || '')
+  const n = Number(episode)
+  // A single named episode is never a pack, whatever else the title says.
+  if (/s\d{1,3}[\s._-]?e\d{1,4}/i.test(t)) return false
+  const range = RANGE_RE.exec(t)
+  if (range) {
+    const from = Number(range[1]), to = Number(range[2])
+    if (to > from) {
+      // A stated range is authoritative in both directions. Falling through to
+      // the keyword check when it does not span the episode would accept
+      // "Batch 01~12" as a source for episode 20 purely because it says batch.
+      return !Number.isFinite(n) || (n >= from && n <= to)
+    }
+  }
+  return PACK_RE.test(t)
+}
+
+// Release groups tag a dub as "Dual Audio" far more often than "Dub", and the
+// two together cover nearly everything. Asking for them explicitly is the
+// difference between finding a dub and hoping one turns up in a general search.
+const DUB_QUALIFIERS = ['Dual Audio', 'Dub']
+
 function matchesEpisode(title, episode) {
   if (episode == null || episode === '') return true
   const n = Number(episode)
@@ -138,12 +168,14 @@ function matchesEpisode(title, episode) {
   // never matches inside 109 or 190.
   const re = new RegExp(`(?:^|[\\s\\-_\\[(.])(?:e|ep|episode\\s*)?0*${n}(?:v\\d)?(?:$|[\\s\\-_\\])."'])`, 'i')
   if (re.test(t)) return true
-  return t.includes(` ${pad} `)
+  if (t.includes(` ${pad} `)) return true
+  return isPack(t, n)
 }
 
-function normalizeItem(raw, { preferDub = false } = {}) {
+function normalizeItem(raw, { preferDub = false, episode = null } = {}) {
   raw = raw || {}
   const title = typeof raw.title === 'string' ? raw.title : ''
+  const pack = isPack(title, episode)
   const magnet = magnetFromHash(raw.infoHash, title)
   if (!magnet) return null
   const quality = parseQuality(title)
@@ -158,7 +190,9 @@ function normalizeItem(raw, { preferDub = false } = {}) {
     fileIndex: 0,
     source: 'Nyaa',
     quality,
-    label: `Nyaa · ${quality}${dub ? ' · dub' : ' · sub'}${seeds ? ` · ${seeds} seeds` : ''}`,
+    label: `Nyaa · ${quality}${dub ? ' · dub' : ' · sub'}${pack ? ' · season pack' : ''}${seeds ? ` · ${seeds} seeds` : ''}`,
+    // The streamer needs to know it must find one episode inside many files.
+    isPack: pack,
     audioLayout,
     seeds,
     sub: !dub || parseSub(title),
@@ -199,7 +233,7 @@ function createNyaaProvider({ fetchFn, baseUrls = DEFAULT_BASE_URLS, maxResults 
         if (!i || !i.infoHash) continue
         if (seenHash.has(i.infoHash)) continue
         if (!matchesEpisode(i.title, request.episode)) continue
-        const entry = normalizeItem(i, { preferDub })
+        const entry = normalizeItem(i, { preferDub, episode: request.episode })
         if (!entry) continue
         seenHash.add(i.infoHash)
         entries.push(entry)
@@ -207,11 +241,19 @@ function createNyaaProvider({ fetchFn, baseUrls = DEFAULT_BASE_URLS, maxResults 
       return entries
     }
 
-    // Each candidate is tried in turn and the first one that yields anything
-    // wins. Stopping at the first hit keeps this to one request in the common
-    // case while still rescuing the shows whose English title matches nothing.
+    // A dub request tries dub-qualified queries before the plain ones. A
+    // general search is dominated by subs, so without this a dub sits behind
+    // twenty subbed releases even when one exists.
+    const queries = []
     for (const candidate of candidates) {
-      const query = buildQuery(candidate, request.episode)
+      if (preferDub) for (const q of DUB_QUALIFIERS) queries.push(`${candidate} ${q}`)
+      queries.push(buildQuery(candidate, request.episode))
+    }
+
+    // Each query is tried in turn and the first that yields anything wins.
+    // Stopping at the first hit keeps this to one request in the common case
+    // while still rescuing the shows whose English title matches nothing.
+    for (const query of queries) {
       if (!query) continue
       let items = null
       for (const baseUrl of urls) {
@@ -238,6 +280,8 @@ function createNyaaProvider({ fetchFn, baseUrls = DEFAULT_BASE_URLS, maxResults 
 
 module.exports = {
   DEFAULT_BASE_URLS,
+  isPack,
+  DUB_QUALIFIERS,
   buildQuery,
   titleCandidates,
   buildFeedUrl,

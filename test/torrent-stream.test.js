@@ -273,7 +273,7 @@ test('stop() closes the server, destroys the torrent and removes the download li
   // contiguous to read.
   test('the head of the file is marked critical so it arrives in order', async () => {
     const torrent = packTorrent([{ name: 'M.mkv', length: 90000, _startPiece: 0, _endPiece: 89 }])
-    const streamer = new TorrentStreamer({ client: readyClient(torrent), prebufferBytes: 5000 })
+    const streamer = new TorrentStreamer({ client: readyClient(torrent), prebufferBytes: 5000, prebufferTimeoutMs: 300 })
     await streamer.start({ magnet: 'magnet:?xt=urn:btih:A' })
     assert.deepStrictEqual(torrent.selectCalls, [[0, 89, 1]], 'the whole file is selected at high priority')
     assert.deepStrictEqual(torrent.criticalCalls, [[0, 4]], '5000 bytes / 1000 per piece = 5 head pieces')
@@ -288,7 +288,7 @@ test('stop() closes the server, destroys the torrent and removes the download li
       [{ name: 'M.mkv', length: 90000, _startPiece: 0, _endPiece: 89 }],
       { have: i => i < havePieces }
     )
-    const streamer = new TorrentStreamer({ client: readyClient(torrent), prebufferBytes: 5000 })
+    const streamer = new TorrentStreamer({ client: readyClient(torrent), prebufferBytes: 5000, prebufferTimeoutMs: 300 })
     let ready = false
     streamer.on('ready', () => { ready = true })
     const started = streamer.start({ magnet: 'magnet:?xt=urn:btih:A' })
@@ -306,7 +306,7 @@ test('stop() closes the server, destroys the torrent and removes the download li
       [{ name: 'M.mkv', length: 90000, _startPiece: 0, _endPiece: 89 }],
       { have: i => i < havePieces }
     )
-    const streamer = new TorrentStreamer({ client: readyClient(torrent), prebufferBytes: 5000 })
+    const streamer = new TorrentStreamer({ client: readyClient(torrent), prebufferBytes: 5000, prebufferTimeoutMs: 300 })
     const seen = []
     streamer.on('progress', p => seen.push(p))
     const started = streamer.start({ magnet: 'magnet:?xt=urn:btih:A' })
@@ -324,7 +324,7 @@ test('stop() closes the server, destroys the torrent and removes the download li
   test('an unmeasurable torrent starts immediately instead of waiting', async () => {
     const torrent = packTorrent([{ name: 'M.mkv', length: 9000, _startPiece: 0, _endPiece: 8 }])
     torrent.bitfield = null
-    const streamer = new TorrentStreamer({ client: readyClient(torrent), prebufferBytes: 5000, prebufferTimeoutMs: 60000 })
+    const streamer = new TorrentStreamer({ client: readyClient(torrent), prebufferBytes: 5000, prebufferTimeoutMs: 400 })
     const t = Date.now()
     await streamer.start({ magnet: 'magnet:?xt=urn:btih:A' })
     assert.ok(Date.now() - t < 1000, 'must not block on an unmeasurable torrent')
@@ -333,12 +333,125 @@ test('stop() closes the server, destroys the torrent and removes the download li
 
   test('stop() during prebuffer does not leave the poll running', async () => {
     const torrent = packTorrent([{ name: 'M.mkv', length: 90000, _startPiece: 0, _endPiece: 89 }])
-    const streamer = new TorrentStreamer({ client: readyClient(torrent), prebufferBytes: 50000 })
+    const streamer = new TorrentStreamer({ client: readyClient(torrent), prebufferBytes: 50000, prebufferTimeoutMs: 300 })
     const started = streamer.start({ magnet: 'magnet:?xt=urn:btih:A' }).catch(e => e)
     await new Promise(r => setTimeout(r, 50))
     streamer.stop()
     const err = await started
     assert.strictEqual(err.code, 'STOPPED')
     assert.strictEqual(streamer._prebufferTimer, null)
+  })
+}
+
+// ── Season packs ────────────────────────────────────────────────────────────
+// Dubbed anime is released almost exclusively as season and batch packs rather
+// than per-episode. Picking the largest file out of a twelve-episode pack
+// hands back an arbitrary episode, usually not the one asked for.
+{
+  const { pickVideoFile, matchesWantedEpisode, episodeNumberOf } = require('../torrent-stream')
+
+  test('the requested episode is found inside a pack, not the largest file', () => {
+    const pack = [
+      { name: '[G] Show - S01E01.mkv', length: 1e9 },
+      { name: '[G] Show - S01E09.mkv', length: 9e8 },
+      { name: '[G] Show - S01E28.mkv', length: 3e9 },
+      { name: 'readme.txt', length: 100 },
+    ]
+    assert.strictEqual(pickVideoFile(pack, { episode: 9 }), 1)
+    assert.strictEqual(pickVideoFile(pack, { episode: 28 }), 2)
+    // With no episode wanted — a film — the largest is still right.
+    assert.strictEqual(pickVideoFile(pack), 2)
+  })
+
+  test('a season mismatch rules an episode out', () => {
+    assert.strictEqual(matchesWantedEpisode('Show S02E09.mkv', { season: 1, episode: 9 }), false)
+    assert.strictEqual(matchesWantedEpisode('Show S01E09.mkv', { season: 1, episode: 9 }), true)
+    // With no season stated the episode number alone decides.
+    assert.strictEqual(matchesWantedEpisode('Show - 09.mkv', { season: 1, episode: 9 }), true)
+  })
+
+  test('an episode number is bounded, so 9 never matches 109 or a year', () => {
+    assert.strictEqual(matchesWantedEpisode('Show - 109.mkv', { episode: 9 }), false)
+    assert.strictEqual(matchesWantedEpisode('Show 2009 1080p.mkv', { episode: 9 }), false)
+    assert.strictEqual(matchesWantedEpisode('Show - 09v2.mkv', { episode: 9 }), true)
+  })
+
+  test('several versions of the same episode resolve to the largest', () => {
+    const pack = [
+      { name: '[G] Show - 09 [480p].mkv', length: 3e8 },
+      { name: '[G] Show - 09 [1080p].mkv', length: 2e9 },
+    ]
+    assert.strictEqual(pickVideoFile(pack, { episode: 9 }), 1)
+  })
+
+  test('an episode missing from the pack falls back rather than failing', () => {
+    const pack = [{ name: '[G] Show - S01E01.mkv', length: 1e9 }]
+    assert.strictEqual(pickVideoFile(pack, { episode: 99 }), 0)
+  })
+
+  test('episode numbers are read from either naming convention', () => {
+    assert.strictEqual(episodeNumberOf('[G] Show - S01E09.mkv'), 9)
+    assert.strictEqual(episodeNumberOf('[G] Show - 09 [1080p].mkv'), 9)
+    assert.strictEqual(episodeNumberOf('[G] Show E28.mkv'), 28)
+    // A four-digit number in a filename is a year far more often than an
+    // episode.
+    assert.strictEqual(episodeNumberOf('Movie 2009 1080p.mkv'), null)
+    assert.strictEqual(episodeNumberOf('readme.mkv'), null)
+  })
+
+  test('the pack listing is ordered by episode, unnumbered files last', async () => {
+    const torrent = new EventEmitter()
+    torrent.files = [
+      { name: '[G] Show - 03.mkv', length: 1e9, select () {}, deselect () {} },
+      // Deliberately not "extras.mkv": that is filtered as junk, correctly.
+      { name: 'OP creditless.mkv', length: 1e8, select () {}, deselect () {} },
+      { name: '[G] Show - 01.mkv', length: 1e9, select () {}, deselect () {} },
+    ]
+    torrent.pieceLength = 1000
+    torrent.bitfield = null
+    torrent.createServer = () => http.createServer()
+    torrent.destroy = cb => { if (cb) cb() }
+    const streamer = new TorrentStreamer({ client: readyClient(torrent), prebufferBytes: 0 })
+    await streamer.start({ magnet: 'magnet:?xt=urn:btih:A', episode: 1 })
+    const files = streamer.files()
+    assert.deepStrictEqual(files.map(f => f.episode), [1, 3, null])
+    assert.strictEqual(files[0].current, true, 'the episode being played is marked')
+    streamer.stop()
+  })
+
+  // Switching is a file change on a torrent that is already running: same
+  // peers, no new resolve, no wait.
+  test('selecting another file returns a URL without restarting the torrent', async () => {
+    const deselected = []
+    const torrent = new EventEmitter()
+    torrent.files = [
+      { name: '[G] Show - 01.mkv', length: 1e9, select () { this.sel = true }, deselect () { deselected.push('01') } },
+      { name: '[G] Show - 02.mkv', length: 1e9, select () { this.sel = true }, deselect () { deselected.push('02') } },
+    ]
+    torrent.pieceLength = 1000
+    torrent.bitfield = null
+    torrent.createServer = () => http.createServer()
+    torrent.destroy = cb => { if (cb) cb() }
+    const streamer = new TorrentStreamer({ client: readyClient(torrent), prebufferBytes: 0 })
+    await streamer.start({ magnet: 'magnet:?xt=urn:btih:A', episode: 1 })
+    const url = streamer.selectFile(1)
+    assert.match(url, /\/1\/%5BG%5D%20Show%20-%2002\.mkv$/)
+    assert.strictEqual(torrent.files[1].sel, true, 'the new file is prioritised')
+    assert.ok(deselected.includes('01'), 'the old one is dropped')
+    assert.strictEqual(streamer.files().find(f => f.current).episode, 2)
+    streamer.stop()
+  })
+
+  test('selecting a file that does not exist returns null', async () => {
+    const torrent = new EventEmitter()
+    torrent.files = [{ name: 'a.mkv', length: 1e9, select () {}, deselect () {} }]
+    torrent.pieceLength = 1000
+    torrent.bitfield = null
+    torrent.createServer = () => http.createServer()
+    torrent.destroy = cb => { if (cb) cb() }
+    const streamer = new TorrentStreamer({ client: readyClient(torrent), prebufferBytes: 0 })
+    await streamer.start({ magnet: 'magnet:?xt=urn:btih:A' })
+    assert.strictEqual(streamer.selectFile(99), null)
+    streamer.stop()
   })
 }

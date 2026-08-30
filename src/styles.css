@@ -6307,6 +6307,36 @@ body.app-unfocused *::after {
 }
 @keyframes vtSpin { to { transform:rotate(360deg) } }
 
+/* ── Pack episode strip ──────────────────────────────
+   A season pack already holds every episode, so this is a file change on a
+   torrent that is already running: same peers, no new resolve, no wait. That
+   makes a full episode list worth showing rather than a next/previous pair. */
+.vt-pack {
+  display:flex; align-items:center; gap:10px;
+  padding:8px 20px; background:#0a0a0a; border-top:1px solid rgba(255,255,255,.06);
+}
+.vt-pack[hidden] { display:none; }
+.vt-pack-label {
+  font-size:10px; font-weight:700; letter-spacing:1px; text-transform:uppercase;
+  color:var(--text3); flex-shrink:0;
+}
+.vt-pack-list {
+  display:flex; gap:5px; overflow-x:auto; padding-bottom:2px;
+  scrollbar-width:none; scroll-snap-type:x proximity;
+}
+.vt-pack-list::-webkit-scrollbar { display:none; }
+.vt-ep {
+  flex-shrink:0; min-width:34px; padding:5px 9px; border-radius:var(--r-sm);
+  cursor:pointer; scroll-snap-align:start;
+  background:var(--bg3); border:1px solid var(--glass-border); color:var(--text2);
+  font-family:inherit; font-size:11.5px; font-variant-numeric:tabular-nums;
+  transition:background .13s var(--ease), color .13s var(--ease);
+}
+.vt-ep:hover { background:var(--bg4); color:var(--text); }
+.vt-ep:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.vt-ep.current { background:var(--accent); border-color:transparent; color:#000; font-weight:700; }
+.vt-ep.watched { color:var(--accent); }
+
 /* ── Action strip ────────────────────────────────────
    Sits between the stage and the deck. Everything here is outside the mpv
    window's rectangle, which is the only way it can be seen at all: a native

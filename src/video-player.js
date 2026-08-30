@@ -343,6 +343,48 @@
       if (upNextTimer) { clearInterval(upNextTimer); upNextTimer = null }
     }
 
+    // ── Season pack episodes ────────────────────────────────────────────────
+    // The pack streaming right now already contains these, so choosing one is
+    // a file change on a live torrent rather than a fresh search.
+    let packFiles = []
+
+    function setPack(files, onSelect) {
+      packFiles = Array.isArray(files) ? files : []
+      const box = $('vt-pack')
+      const list = $('vt-pack-list')
+      if (!box || !list) return
+      if (packFiles.length < 2) { box.hidden = true; list.innerHTML = ''; return }
+      box.hidden = false
+      const label = $('vt-pack-label')
+      if (label) label.textContent = packFiles.length + ' episodes'
+      list.innerHTML = packFiles.map(function (f, i) {
+        // An unnumbered file still needs a handle; its position is the least
+        // wrong thing to show.
+        const name = f.episode != null ? String(f.episode) : String(i + 1)
+        return '<button class="vt-ep' + (f.current ? ' current' : '') + '"' +
+          ' data-file="' + f.index + '"' +
+          ' title="' + escapeHtml(f.name) + '"' +
+          (f.current ? ' aria-current="true"' : '') +
+          ' aria-label="Episode ' + escapeHtml(name) + '">' + escapeHtml(name) + '</button>'
+      }).join('')
+      list.querySelectorAll('.vt-ep').forEach(function (b) {
+        b.addEventListener('click', function () {
+          if (b.classList.contains('current')) return
+          if (onSelect) onSelect(Number(b.dataset.file))
+        })
+      })
+      const cur = list.querySelector('.vt-ep.current')
+      if (cur && cur.scrollIntoView) cur.scrollIntoView({ block: 'nearest', inline: 'center' })
+    }
+
+    function clearPack() {
+      packFiles = []
+      const box = $('vt-pack')
+      const list = $('vt-pack-list')
+      if (box) box.hidden = true
+      if (list) list.innerHTML = ''
+    }
+
     function setUpNext(info) {
       upNextInfo = info || null
       upNextDismissed = false
@@ -666,6 +708,7 @@
       lastSkipShown = null
       upNextDismissed = false
       stopUpNext()
+      clearPack()
       const upBox = $('vt-upnext')
       if (upBox) { upBox.hidden = true; upBox.innerHTML = '' }
       syncStrip()
@@ -726,6 +769,8 @@
         if (seg) doSkip(seg)
       },
       setUpNext: setUpNext,
+      setPack: setPack,
+      clearPack: clearPack,
       setStageMessage: setStageMessage,
       reportBounds: reportBounds,
       ready: ready,
