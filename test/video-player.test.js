@@ -47,10 +47,13 @@ function harness({ segments = [], prefs = {}, onNext = null } = {}) {
   nodes['vt-menu'].classList.add('hidden')
 
   const sent = []
+  // Captured so tests can fire real keydown events at the document handler,
+  // which is where the shortcut logic lives.
+  const docHandlers = {}
   const doc = {
     getElementById: id => nodes[id] || null,
     querySelector: () => nodes['vt-seek'],
-    addEventListener () {},
+    addEventListener (ev, fn) { (docHandlers[ev] = docHandlers[ev] || []).push(fn) },
     activeElement: null,
     documentElement: { clientWidth: 1280 },
   }
@@ -65,7 +68,14 @@ function harness({ segments = [], prefs = {}, onNext = null } = {}) {
   p.bind()
   p.setPrefs(prefs)
   p.setSegments(segments)
-  return { p, nodes, sent }
+  const press = (key, target = { tagName: 'DIV' }) => {
+    let prevented = false
+    const e = { key, shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+                target, preventDefault () { prevented = true } }
+    ;(docHandlers.keydown || []).forEach(fn => fn(e))
+    return prevented
+  }
+  return { p, nodes, sent, press }
 }
 
 const stateAt = (position, over = {}) => Object.assign({
@@ -208,19 +218,54 @@ test('mid-file credits seek rather than advancing', () => {
 })
 
 test('the keyboard drives the same commands as the buttons', () => {
-  const { p, sent } = harness()
+  const { p, sent, press } = harness()
+  p.open({ title: 'X' })
   p._setState(stateAt(100))
-  const press = (key, over = {}) => {
-    const e = Object.assign({ key, shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
-      target: { tagName: 'DIV' }, preventDefault () {} }, over)
-    // The handler is registered on document; call the resolver path directly.
-    return e
+  assert.strictEqual(press(' '), true, 'space is handled')
+  assert.strictEqual(sent.pop().verb, 'pause')
+  press('ArrowRight')
+  assert.deepStrictEqual(sent.pop(), { verb: 'seek', args: { seconds: 10, mode: 'relative' } })
+  press('m')
+  assert.strictEqual(sent.pop().verb, 'mute')
+})
+
+// This was reported from real use: typing in the app's search box silently
+// triggered playback shortcuts, so m, n, s and others never reached the field.
+// The keymap guards on context.isInput, but that is a value the caller has to
+// supply from the DOM — and it was not being passed at all.
+test('typing in a text field never triggers a shortcut', () => {
+  const { p, sent, press } = harness()
+  p.open({ title: 'X' })
+  p._setState(stateAt(100))
+  const before = sent.length
+  for (const tag of ['INPUT', 'TEXTAREA', 'SELECT']) {
+    for (const key of ['m', 'n', 's', 'k', 'f', 'b', ' ']) {
+      assert.strictEqual(press(key, { tagName: tag }), false, key + ' was swallowed in a ' + tag)
+    }
   }
-  // The keymap itself is the contract; verify the deck's action table covers it.
-  assert.deepStrictEqual(keymap.resolve(press(' ')), { action: 'playPause' })
-  assert.deepStrictEqual(keymap.resolve(press('ArrowRight')).action, 'seek')
-  assert.strictEqual(keymap.resolve(press('a', { target: { tagName: 'INPUT' } })), null,
-    'typing in a field must never trigger playback shortcuts')
+  assert.strictEqual(sent.length, before, 'no command may be sent while typing')
+})
+
+test('typing in a contenteditable never triggers a shortcut', () => {
+  const { p, sent, press } = harness()
+  p.open({ title: 'X' })
+  p._setState(stateAt(100))
+  const before = sent.length
+  assert.strictEqual(press('m', { tagName: 'DIV', isContentEditable: true }), false)
+  assert.strictEqual(sent.length, before)
+})
+
+// The handler is attached to document for the life of the app, so with the
+// theatre closed these shortcuts would apply to every screen in it.
+test('shortcuts do nothing while the theatre is closed', () => {
+  const { p, nodes, sent, press } = harness()
+  p._setState(stateAt(100))
+  nodes['vtheatre'].classList.add('hidden')
+  const before = sent.length
+  for (const key of ['m', 'n', 's', ' ', 'f']) {
+    assert.strictEqual(press(key), false, key + ' fired with the theatre closed')
+  }
+  assert.strictEqual(sent.length, before)
 })
 
 test('speed steps through the fixed ladder and never off the ends', () => {

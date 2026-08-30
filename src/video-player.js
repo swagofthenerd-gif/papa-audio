@@ -511,9 +511,26 @@
     }
 
     // ── Keyboard ────────────────────────────────────────────────────────────
+    // True when the keystroke belongs to a text field. The keymap guards on
+    // this but cannot work it out itself — it is handed an event, not a DOM.
+    // Without it every shortcut fired while typing: m muted, n advanced an
+    // episode, s skipped, and the character never reached the field.
+    function isTypingTarget(target) {
+      if (!target) return false
+      const tag = String(target.tagName || '').toUpperCase()
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true
+      return target.isContentEditable === true
+    }
+
     function onKey(e) {
       if (!keymap) return
-      const hit = keymap.resolve(e)
+      // The handler lives on document for the life of the app, so it must do
+      // nothing at all unless the theatre is actually open. Otherwise these
+      // shortcuts apply to every screen in the app.
+      const root = $('vtheatre')
+      if (!root || root.classList.contains('hidden')) return
+      if (isTypingTarget(e.target)) return
+      const hit = keymap.resolve(e, { isInput: isTypingTarget(e.target) })
       if (!hit) return
       const dur = Number(state && state.duration) || 0
       switch (hit.action) {
