@@ -744,6 +744,7 @@
       if (upBox) { upBox.hidden = true; upBox.innerHTML = '' }
       syncStrip()
       delayMs = { subDelay: 0, audioDelay: 0 }
+      setVideoActive(true)
       setStageMessage('<div class="spin"></div><div>Starting…</div>')
       if (!unsubscribe && api && api.onVideoState) {
         unsubscribe = api.onVideoState(function (s) {
@@ -799,7 +800,19 @@
       if (unsubscribe) { unsubscribe(); unsubscribe = null }
       state = null
       segments = []
+      // Only on a real stop: minimising keeps playing, so the music bar stays
+      // out of the way until the video is actually finished with.
+      setVideoActive(false)
       onExit()
+    }
+
+    // Marks the app as having a video open, which collapses the music bar to a
+    // small card in the opposite corner so it stops sitting across the episode
+    // list. Guarded because the test harness has no body.
+    function setVideoActive(on) {
+      const body = doc && doc.body
+      if (!body || !body.classList) return
+      body.classList.toggle('video-active', !!on)
     }
 
     function setStageMessage(html) {

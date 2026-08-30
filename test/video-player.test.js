@@ -572,3 +572,81 @@ test('a stage with no size reports nothing rather than a degenerate rectangle', 
     assert.strictEqual(p.isMinimised(), false)
   })
 }
+
+// ── Music bar while a video is open ─────────────────────────────────────────
+// The music bar is a full-width strip pinned to the bottom, and the content
+// stops short of it — so with a video open it sat across the episode list for
+// a track that is paused anyway, since video playback pauses the music engine.
+{
+  function bodyHarness () {
+    const nodes = {}
+    for (const id of ['vtheatre', 'vt-stage', 'vt-stage-msg', 'vt-skip', 'vt-upnext', 'vt-strip',
+      'vt-title', 'vt-sub', 'vt-next', 'vt-menu', 'vt-pack', 'vt-pack-list',
+      'vmini', 'vmini-title']) nodes[id] = el(id)
+    nodes['vt-menu'].classList.add('hidden')
+    nodes.vmini.classList.add('hidden')
+    const body = el('body')
+    const p = create({
+      document: {
+        getElementById: id => nodes[id] || null,
+        querySelector: () => null,
+        addEventListener () {},
+        documentElement: { clientWidth: 1280 },
+        body,
+      },
+      api: { videoControl: () => Promise.resolve({ ok: true }), onVideoState: () => () => {} },
+      keymap, skipModel,
+    })
+    return { p, body, nodes }
+  }
+
+  test('opening a video collapses the music bar', () => {
+    const { p, body } = bodyHarness()
+    assert.ok(!body.classList.contains('video-active'))
+    p.open({ title: 'Dune' })
+    assert.ok(body.classList.contains('video-active'))
+  })
+
+  // Minimising keeps playing, so the music bar must stay out of the way.
+  test('minimising keeps the music bar collapsed', () => {
+    const { p, body } = bodyHarness()
+    p.open({ title: 'Dune' })
+    p.minimise()
+    assert.ok(body.classList.contains('video-active'))
+  })
+
+  test('stopping restores the music bar', () => {
+    const { p, body } = bodyHarness()
+    p.open({ title: 'Dune' })
+    p.close()
+    assert.ok(!body.classList.contains('video-active'))
+  })
+
+  test('a document with no body does not break the player', () => {
+    const nodes = {}
+    for (const id of ['vtheatre', 'vt-stage', 'vt-menu', 'vmini']) nodes[id] = el(id)
+    nodes['vt-menu'].classList.add('hidden')
+    const p = create({
+      document: { getElementById: id => nodes[id] || null, querySelector: () => null,
+                  addEventListener () {}, documentElement: { clientWidth: 800 } },
+      api: { videoControl: () => Promise.resolve({}) }, keymap, skipModel,
+    })
+    assert.doesNotThrow(() => { p.open({ title: 'X' }); p.close() })
+  })
+
+  // The two corners must not collide: the video's mini player is bottom-right.
+  test('the collapsed music bar sits in the opposite corner to the video mini player', () => {
+    const css = require('node:fs').readFileSync(
+      require('node:path').join(__dirname, '..', 'src', 'styles.css'), 'utf8')
+    assert.match(css, /body\.video-active \.player-bar \{[^}]*left:16px;\s*right:auto/s)
+    assert.match(css, /\.vmini \{[^}]*right:20px/s)
+    // And the content reclaims the height the strip gave up.
+    assert.match(css, /body\.video-active \{ --player-h: 8px; \}/)
+  })
+
+  test('the transport is hidden on the collapsed bar', () => {
+    const css = require('node:fs').readFileSync(
+      require('node:path').join(__dirname, '..', 'src', 'styles.css'), 'utf8')
+    assert.match(css, /body\.video-active \.player-bar \.player-center,\s*\n?body\.video-active \.player-bar \.vol-section \{ display:none; \}/)
+  })
+}
