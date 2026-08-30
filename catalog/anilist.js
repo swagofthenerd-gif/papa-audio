@@ -24,6 +24,29 @@ const MEDIA_SELECTION = `id
           format
           trailer { id site }`
 
+// PREQUEL and SEQUEL are the story spine. SIDE_STORY, SPIN_OFF, ALTERNATIVE,
+// SUMMARY, CHARACTER and the rest are related works, not seasons, and putting
+// them in a season list would misrepresent the watch order.
+const CHAIN_RELATIONS = new Set(['PREQUEL', 'SEQUEL'])
+
+// AniList's own data contains the occasional relation cycle; without a hop
+// budget the walk would never terminate.
+const MAX_CHAIN_HOPS = 12
+
+function normalizeChainNode(n) {
+  const title = (n && n.title) || {}
+  return {
+    id: n.id,
+    title: title.english || title.romaji || title.native || null,
+    titles: { english: title.english || null, romaji: title.romaji || null, native: title.native || null },
+    year: n.seasonYear ?? null,
+    episodeCount: n.episodes ?? null,
+    format: n.format ?? null,
+    status: n.status ?? null,
+    poster: n.coverImage?.large ?? null,
+  }
+}
+
 function normalizeMedia(raw) {
   raw = raw || {}
   const title = raw.title || {}
@@ -120,6 +143,26 @@ function buildQuery(kind, options) {
     }
   }
 }`
+    // One hop of the season chain. AniList models a multi-season anime as
+    // separate entries linked by PREQUEL/SEQUEL edges, unlike TMDB where
+    // seasons nest inside one show — so "the other seasons of Baki" has to be
+    // walked, one request per hop.
+    case 'relations':
+      return `query ($id: Int) {
+  Media(id: $id, type: ANIME) {
+    id
+    relations {
+      edges {
+        relationType
+        node {
+          id type format status seasonYear episodes
+          title { english romaji native }
+          coverImage { large }
+        }
+      }
+    }
+  }
+}`
     // A detail lookup by id is NOT a text search. `Media(id:)` is a top-level
     // field, not a Page child, so this query shape differs from the others and
     // its result is read from `data.Media`, not `data.Page.media`.
@@ -169,7 +212,7 @@ function buildVariables(kind, opts = {}) {
   const { page, perPage, query, season, seasonYear, id } = opts
   // The byId query takes only $id; sending page/perPage would be rejected as
   // unknown variables are not, but keeping it clean matches the query shape.
-  if (kind === 'byId') return { id: Number(id) }
+  if (kind === 'byId' || kind === 'relations') return { id: Number(id) }
   const vars = {
     page: page ?? 1,
     perPage: perPage ?? 20,
@@ -230,6 +273,10 @@ function createAnilistCatalog({ fetchFn } = {}) {
       const one = data?.data?.Media
       return one ? normalizeMedia(one) : null
     }
+    if (kind === 'relations') {
+      const edges = data?.data?.Media?.relations?.edges
+      return Array.isArray(edges) ? edges : []
+    }
     const page = data?.data?.Page
     const media = (page?.media || []).map(normalizeMedia)
     // Browsing needs to know how many there are and whether to keep paging;
@@ -265,6 +312,88 @@ function createAnilistCatalog({ fetchFn } = {}) {
     },
     discover(opts) {
       return _post('discover', opts || {})
+    },
+    relations(id) {
+      return _post('relations', { id })
+    },
+
+    // The full run of a series, in watch order.
+    //
+    // AniList has no concept of "season 3 of Baki": each season is its own
+    // entry, linked to its neighbours by PREQUEL and SEQUEL edges. So the run
+    // is reconstructed by walking backwards to the first entry and then
+    // forwards to the last, one request per hop.
+    //
+    // Only ANIME nodes are followed — a manga ADAPTATION edge is not a season.
+    // Only PREQUEL and SEQUEL build the spine; SIDE_STORY, SPIN_OFF and the
+    // rest are collected separately as related titles rather than being
+    // presented as seasons, because they are not part of the main story.
+    async seasonChain(id, { maxHops = MAX_CHAIN_HOPS } = {}) {
+      const start = Number(id)
+      if (!start) return { seasons: [], related: [] }
+
+      const nodes = new Map()      // id -> normalized entry
+      const related = new Map()
+      const seen = new Set()
+
+      const record = (edge) => {
+        const n = edge && edge.node
+        if (!n || n.type !== 'ANIME' || n.id == null) return null
+        const entry = normalizeChainNode(n)
+        if (CHAIN_RELATIONS.has(edge.relationType)) return entry
+        if (!nodes.has(entry.id)) related.set(entry.id, entry)
+        return null
+      }
+
+      // Walk one direction until the chain ends or the hop budget runs out.
+      // The budget is a guard against a cycle in AniList's own data, which
+      // does happen — a bad edge would otherwise loop forever.
+      const walk = async (fromId, relation, out) => {
+        let current = fromId
+        for (let hop = 0; hop < maxHops; hop++) {
+          if (seen.has(current)) break
+          seen.add(current)
+          let edges = []
+          try { edges = await _post('relations', { id: current }) } catch (_) { break }
+          let next = null
+          for (const edge of edges) {
+            const entry = record(edge)
+            if (!entry) continue
+            if (edge.relationType === relation && !seen.has(entry.id)) next = entry
+            if (!nodes.has(entry.id)) nodes.set(entry.id, entry)
+          }
+          if (!next) break
+          current = next.id
+        }
+      }
+
+      // The starting entry belongs in the list even if it has no relations.
+      // Guarded like every hop: a season list is an enhancement, and losing it
+      // must never take the detail page down with it.
+      let self = null
+      try { self = await _post('byId', { id: start }) } catch (_) { /* degrade to empty */ }
+      if (self) nodes.set(self.id, { id: self.id, title: self.title, titles: self.titles,
+        year: self.year, episodeCount: self.episodeCount, format: self.format,
+        status: self.status, poster: self.poster })
+
+      // The visited set is per direction. Sharing it meant the sequel walk saw
+      // the start id already marked and stopped on its first iteration, so a
+      // series only ever gained the one sequel picked up incidentally while
+      // walking backwards — Baki ended at 2020 with Baki Hanma missing.
+      await walk(start, 'PREQUEL', nodes)
+      seen.clear()
+      await walk(start, 'SEQUEL', nodes)
+
+      // Chronological, which for a prequel/sequel chain is watch order. Entries
+      // with no year sort last rather than to 1970.
+      const seasons = [...nodes.values()].sort((a, b) => {
+        const ay = Number(a.year) || Infinity
+        const by = Number(b.year) || Infinity
+        if (ay !== by) return ay - by
+        return String(a.title || '').localeCompare(String(b.title || ''))
+      })
+      for (const s of seasons) related.delete(s.id)
+      return { seasons, related: [...related.values()] }
     },
     // The browse vocabularies. Both are static enough to cache for a week: 19
     // genres, and 361 tags that change when AniList's editors add one.
@@ -308,6 +437,9 @@ function createAnilistCatalog({ fetchFn } = {}) {
 
 module.exports = {
   SORTS,
+  CHAIN_RELATIONS,
+  MAX_CHAIN_HOPS,
+  normalizeChainNode,
   scoreTo10,
   scoreTo100,
   normalizeMedia,
