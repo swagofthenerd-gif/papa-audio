@@ -63,6 +63,7 @@
     let autoSkipUntil = 0
     let lastSkipShown = null
     let lastMarkDuration = -1
+    let minimised = false
     let upNextTimer = null
     let upNextLeft = 0
     let upNextInfo = null
@@ -134,6 +135,7 @@
       if (subs) subs.classList.toggle('on', state.tracks && state.tracks.sub != null)
 
       paintBadges()
+      paintMini()
       // Segments are set before the first state tick, when the duration is
       // still 0 and the marks cannot be positioned. Repaint whenever the
       // duration changes, or they would never appear at all.
@@ -157,6 +159,22 @@
         seek.setAttribute('aria-valuenow', String(Math.round(pos)))
         seek.setAttribute('aria-valuetext', fmtTime(pos) + ' of ' + fmtTime(dur))
       }
+    }
+
+    function paintMini() {
+      const mini = $('vmini')
+      if (!mini || mini.classList.contains('hidden') || !state) return
+      const dur = Number(state.duration) || 0
+      const pos = Number(state.position) || 0
+      const play = $('vmini-play')
+      if (play) {
+        play.innerHTML = state.paused ? ICON.play : ICON.pause
+        play.setAttribute('aria-label', state.paused ? 'Play' : 'Pause')
+      }
+      const fill = $('vmini-fill')
+      if (fill) fill.style.width = (dur > 0 ? Math.min(100, (pos / dur) * 100) : 0) + '%'
+      const time = $('vmini-time')
+      if (time) time.textContent = fmtTime(pos)
     }
 
     function paintBadges() {
@@ -597,7 +615,8 @@
           // Escape means "back out one level": leave fullscreen first, and only
           // close the theatre when there is nothing left to back out of.
           if (isFullscreen) { toggleFullscreen(false); break }
-          close()
+          // Escape backs out of the player, it does not stop playback.
+          minimise()
           break
         default: return
       }
@@ -674,7 +693,13 @@
       $('vt-play')?.addEventListener('click', togglePlay)
       $('vt-back10')?.addEventListener('click', function () { seekBy(-10) })
       $('vt-fwd10')?.addEventListener('click', function () { seekBy(10) })
-      $('vt-back')?.addEventListener('click', close)
+      // Back leaves the player without stopping it. Stopping is the Stop
+      // control on the mini player, so the destructive action is never the
+      // one you hit reflexively on the way out.
+      $('vt-back')?.addEventListener('click', minimise)
+      $('vmini-open')?.addEventListener('click', restore)
+      $('vmini-stop')?.addEventListener('click', close)
+      $('vmini-play')?.addEventListener('click', togglePlay)
       $('vt-next')?.addEventListener('click', function () { if (onNext) onNext() })
       $('vt-mute')?.addEventListener('click', function () { send('mute', { value: !(state && state.muted) }) })
       $('vt-vol')?.addEventListener('input', function (e) { setVolume(Number(e.target.value)) })
@@ -698,8 +723,14 @@
       const root = $('vtheatre')
       if (!root) return
       root.classList.remove('hidden')
+      const mini = $('vmini')
+      if (mini) mini.classList.add('hidden')
+      minimised = false
       const t = $('vt-title'); if (t) t.textContent = media.title || 'Video'
       const sub = $('vt-sub'); if (sub) sub.textContent = media.subtitle || ''
+      // The mini player shows the same thing in one line.
+      const mt = $('vmini-title')
+      if (mt) mt.textContent = [media.title, media.subtitle].filter(Boolean).join(' · ') || 'Playing'
       // Hidden for a film, or for the last episode of the last season — a
       // control that cannot do anything is worse than no control.
       const next = $('vt-next'); if (next) next.hidden = !onNext || media.hasNext === false
@@ -728,6 +759,33 @@
       scheduleBounds()
     }
 
+    // Leaving the theatre is not the same as stopping. mpv plays in its own
+    // window, so the theatre is only a control surface — hiding it lets the
+    // app be browsed while something plays, which is the whole point of
+    // minimising rather than closing.
+    function minimise() {
+      closeMenu()
+      if (isFullscreen) toggleFullscreen(false)
+      const root = $('vtheatre')
+      if (root) root.classList.add('hidden')
+      const mini = $('vmini')
+      if (mini) mini.classList.remove('hidden')
+      minimised = true
+      // The state subscription stays open: the mini player shows the same
+      // position and play state, and returning must not have to rebuild it.
+      render()
+    }
+
+    function restore() {
+      const mini = $('vmini')
+      if (mini) mini.classList.add('hidden')
+      const root = $('vtheatre')
+      if (root) root.classList.remove('hidden')
+      minimised = false
+      render()
+    }
+
+    // Stopping for real: tears everything down and tells the caller.
     function close() {
       cancelAutoSkip()
       stopUpNext()
@@ -735,6 +793,9 @@
       if (isFullscreen) toggleFullscreen(false)
       const root = $('vtheatre')
       if (root) root.classList.add('hidden')
+      const mini = $('vmini')
+      if (mini) mini.classList.add('hidden')
+      minimised = false
       if (unsubscribe) { unsubscribe(); unsubscribe = null }
       state = null
       segments = []
@@ -770,6 +831,9 @@
       },
       setUpNext: setUpNext,
       setPack: setPack,
+      minimise: minimise,
+      restore: restore,
+      isMinimised: function () { return minimised },
       clearPack: clearPack,
       setStageMessage: setStageMessage,
       reportBounds: reportBounds,

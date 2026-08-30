@@ -5,6 +5,10 @@
 const test = require('node:test')
 const assert = require('node:assert')
 const { create, fmtTime, SPEEDS } = require('../src/video-player')
+const HTML_SRC = require('node:fs').readFileSync(
+  require('node:path').join(__dirname, '..', 'src', 'index.html'), 'utf8')
+const PLAYER_SRC = require('node:fs').readFileSync(
+  require('node:path').join(__dirname, '..', 'src', 'video-player.js'), 'utf8')
 const skipModel = require('../src/skip-model')
 const keymap = require('../src/video-keymap')
 
@@ -462,3 +466,109 @@ test('a stage with no size reports nothing rather than a degenerate rectangle', 
   assert.strictEqual(await p.ready(), false)
   assert.strictEqual(sent, 0)
 })
+
+// ── Minimise ────────────────────────────────────────────────────────────────
+// mpv plays in its own window, so the theatre is only a control surface.
+// Leaving it should never stop playback — that was the complaint: the player
+// covered the app and the only way out was to close the stream.
+{
+  function miniHarness () {
+    const nodes = {}
+    for (const id of ['vtheatre', 'vt-stage', 'vt-stage-msg', 'vt-skip', 'vt-upnext', 'vt-strip',
+      'vt-title', 'vt-sub', 'vt-next', 'vt-menu', 'vt-play', 'vt-pos', 'vt-dur', 'vt-badges',
+      'vt-seek', 'vt-seek-fill', 'vt-seek-knob', 'vt-seek-buffer', 'vt-seek-marks', 'vt-mute',
+      'vt-vol', 'vt-speed', 'vt-subs', 'vt-pack', 'vt-pack-list',
+      'vmini', 'vmini-open', 'vmini-stop', 'vmini-play', 'vmini-title', 'vmini-fill', 'vmini-time']) {
+      nodes[id] = el(id)
+    }
+    nodes['vt-menu'].classList.add('hidden')
+    nodes.vmini.classList.add('hidden')
+    let exited = 0
+    const sent = []
+    const p = create({
+      document: {
+        getElementById: id => nodes[id] || null,
+        querySelector: () => nodes['vt-seek'],
+        addEventListener () {},
+        documentElement: { clientWidth: 1280 },
+      },
+      api: {
+        videoControl: (verb, args) => { sent.push({ verb, args }); return Promise.resolve({ ok: true }) },
+        onVideoState: () => () => {},
+        videoSurfaceBounds: () => Promise.resolve({ ok: true }),
+      },
+      keymap, skipModel,
+      onExit: () => { exited++ },
+    })
+    p.bind()
+    return { p, nodes, sent, exited: () => exited }
+  }
+
+  test('minimising hides the theatre and shows the mini player', () => {
+    const { p, nodes } = miniHarness()
+    p.open({ title: 'Dune', subtitle: '2024' })
+    p.minimise()
+    assert.ok(nodes.vtheatre.classList.contains('hidden'))
+    assert.ok(!nodes.vmini.classList.contains('hidden'))
+    assert.strictEqual(p.isMinimised(), true)
+  })
+
+  // The whole point: browsing while something plays.
+  test('minimising does not stop playback', () => {
+    const { p, exited, sent } = miniHarness()
+    p.open({ title: 'Dune' })
+    p.minimise()
+    assert.strictEqual(exited(), 0, 'onExit means stop, and must not fire on minimise')
+    assert.ok(!sent.some(s => s.verb === 'stop'))
+  })
+
+  test('restoring brings the theatre back and hides the mini player', () => {
+    const { p, nodes } = miniHarness()
+    p.open({ title: 'Dune' })
+    p.minimise()
+    p.restore()
+    assert.ok(!nodes.vtheatre.classList.contains('hidden'))
+    assert.ok(nodes.vmini.classList.contains('hidden'))
+    assert.strictEqual(p.isMinimised(), false)
+  })
+
+  test('closing stops playback and clears both surfaces', () => {
+    const { p, nodes, exited } = miniHarness()
+    p.open({ title: 'Dune' })
+    p.minimise()
+    p.close()
+    assert.strictEqual(exited(), 1)
+    assert.ok(nodes.vtheatre.classList.contains('hidden'))
+    assert.ok(nodes.vmini.classList.contains('hidden'))
+  })
+
+  test('the mini player follows the same state stream', () => {
+    const { p, nodes } = miniHarness()
+    p.open({ title: 'Dune', subtitle: '2024' })
+    assert.match(nodes['vmini-title'].textContent, /Dune · 2024/)
+    p.minimise()
+    p._setState(stateAt(900))          // 15:00 of 1:00:00
+    assert.strictEqual(nodes['vmini-fill'].style.width, '25%')
+    assert.strictEqual(nodes['vmini-time'].textContent, '15:00')
+  })
+
+  // Back is the control people hit on the way out; it must not be the
+  // destructive one.
+  test('back minimises while stop is a separate control', () => {
+    const html = HTML_SRC
+    assert.match(html, /id="vt-back"[\s\S]*?keeps playing/i)
+    assert.match(html, /id="vmini-stop"/)
+    const src = PLAYER_SRC
+    assert.match(src, /\$\('vt-back'\)\?\.addEventListener\('click', minimise\)/)
+    assert.match(src, /\$\('vmini-stop'\)\?\.addEventListener\('click', close\)/)
+  })
+
+  test('opening a new title clears a minimised session', () => {
+    const { p, nodes } = miniHarness()
+    p.open({ title: 'A' })
+    p.minimise()
+    p.open({ title: 'B' })
+    assert.ok(nodes.vmini.classList.contains('hidden'))
+    assert.strictEqual(p.isMinimised(), false)
+  })
+}
