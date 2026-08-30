@@ -2067,6 +2067,12 @@ function _handleVideoEvent(payload) {
 
   // A key pressed inside the video window. mpv owns the keyboard while it has
   // focus, so it forwards the actions that belong to the app.
+  // The episodes inside the season pack now streaming.
+  if (payload.kind === 'pack') {
+    _player.setPack(payload.files || [], _switchPackEpisode)
+    return
+  }
+
   if (payload.kind === 'key') {
     if (payload.action === 'skip') _player.skipNow()
     else if (payload.action === 'next') _playNextEpisode()
@@ -2314,6 +2320,42 @@ async function _playNextEpisode() {
 // the next episode in Japanese because that release happened to have more
 // seeds.
 var _playing = { dub: null, source: null, quality: null }
+
+// Switching episode inside the pack that is already streaming. No new search,
+// no new torrent, no waiting on peers — the file is already being served.
+async function _switchPackEpisode(index) {
+  if (!_player) return
+  _player.setStageMessage('<div class="spin"></div><div>Switching episode…</div>')
+  const res = await window.api.videoPackSelect({ index: index })
+    .catch(function (e) { return { ok: false, error: String((e && e.message) || e) } })
+  if (!res.ok) {
+    _player.setStageMessage('<div style="color:var(--color-error)">' + esc(_videoErrorText(res.error)) + '</div>')
+    return
+  }
+  _player.setStageMessage('')
+  _player.setPack(res.files || [], _switchPackEpisode)
+
+  // Keep the rest of the app in step: the episode being watched drives the
+  // watch store, the skip segments and what counts as next.
+  const chosen = (res.files || []).find(function (f) { return f.current })
+  if (chosen && chosen.episode != null) {
+    _videoState.episode = chosen.episode
+    const d = _videoDetail && _videoDetail.d
+    if (d) {
+      _watch = {
+        key: _watchKey(_videoDetail.type, d.id, _videoState.season, _videoState.episode),
+        meta: {
+          type: _videoDetail.type, id: d.id, title: d.title, poster: d.poster || null,
+          season: _videoDetail.type === 'tv' ? _videoState.season : null,
+          episode: _videoState.episode,
+        },
+        savedAt: 0, resumed: true,
+      }
+    }
+    _player.setSegments([])
+    _loadSkipSegments()
+  }
+}
 
 function _videoPlayResult(result) {
   if (!result) return

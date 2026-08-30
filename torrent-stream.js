@@ -208,6 +208,57 @@ class TorrentStreamer extends EventEmitter {
     return buildFileUrl(port, fileIndex, fileName)
   }
 
+  // Every playable file in the torrent, with whatever episode number can be
+  // read out of its name. A season pack already holds every episode, so
+  // switching between them costs nothing: same torrent, same peers, no new
+  // resolve — just a different URL from the server that is already running.
+  files() {
+    const torrent = this._torrent
+    const addr = this._server && this._server.address && this._server.address()
+    if (!torrent || !Array.isArray(torrent.files) || !addr) return []
+    const port = addr.port
+    return torrent.files
+      .map((f, index) => ({ index, name: f.name || '', length: Number(f.length) || 0 }))
+      .filter(f => VIDEO_EXT.test(f.name) && !JUNK.test(f.name))
+      .map(f => ({
+        index: f.index,
+        name: f.name,
+        length: f.length,
+        episode: episodeNumberOf(f.name),
+        url: buildFileUrl(port, f.index, f.name),
+        current: f.index === this._fileIndex,
+      }))
+      .sort((a, b) => {
+        // Episode order where it is known; anything unnumbered goes last in
+        // name order rather than being interleaved arbitrarily.
+        if (a.episode == null && b.episode == null) return a.name.localeCompare(b.name)
+        if (a.episode == null) return 1
+        if (b.episode == null) return -1
+        return a.episode - b.episode
+      })
+  }
+
+  // Switch to another file in the same torrent. The server is already serving
+  // it, so this is only a matter of moving the download priority and pointing
+  // the player somewhere else.
+  selectFile(index) {
+    const torrent = this._torrent
+    const files = (torrent && torrent.files) || []
+    const file = files[index]
+    const addr = this._server && this._server.address && this._server.address()
+    if (!file || !addr) return null
+    try {
+      for (let i = 0; i < files.length; i++) {
+        if (i !== index && typeof files[i].deselect === 'function') files[i].deselect()
+      }
+      if (typeof file.select === 'function') file.select()
+    } catch (_) { /* selection is an optimisation, never fatal */ }
+    this._fileIndex = index
+    this._file = file
+    this._prioritiseHead(torrent, file)
+    return buildFileUrl(addr.port, index, file.name)
+  }
+
   async start({ magnet, fileIndex = 0, season = null, episode = null } = {}) {
     // Captured before stop(), which clears it.
     const want = episode != null ? { season, episode } : null
@@ -420,6 +471,13 @@ class TorrentStreamer extends EventEmitter {
       } catch (_) {
         removeDir(storeDir)
       }
+      // destroy() is asynchronous and, on a pack with many files, can take
+      // longer than the process has left — an exit right after stop() would
+      // leave the whole cache behind, which is the leak this class exists to
+      // prevent. Removing the directory directly does not need the callback,
+      // and rm with force is a no-op once destroy has already cleared it.
+      removeDir(storeDir)
+      setTimeout(() => removeDir(storeDir), 1500).unref?.()
     } else {
       removeDir(storeDir)
     }

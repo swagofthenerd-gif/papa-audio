@@ -447,3 +447,31 @@ test('a title with no trailer is refused rather than played as nothing', () => {
 test('the trailer channel is reachable from the renderer', () => {
   assert.match(PRELOAD, /videoTrailer:/)
 })
+
+// ── Season pack episode switching ───────────────────────────────────────────
+// The pack already holds every episode, so switching is a file change on a
+// torrent that is already running rather than a fresh search.
+test('the pack contents are announced once playback starts', () => {
+  const body = handlerBody('video-play')
+  assert.match(body, /streamer\.files\(\)/)
+  assert.match(body, /kind: 'pack', files/)
+  // One file is not a pack, and a strip of one is noise.
+  assert.match(body, /files\.length > 1/)
+})
+
+test('switching episode reuses the running torrent', () => {
+  const body = handlerBody('video-pack-select')
+  assert.match(body, /streamer\.selectFile\(Number\(index\)\)/)
+  assert.match(body, /videoEngine\(\)\.load\(url\)/, 'the player is pointed at the new file')
+  assert.ok(!/streamer\.start|new TorrentStreamer/.test(body),
+    'a switch must not start a second torrent')
+})
+
+test('switching with nothing streaming is refused', () => {
+  const body = handlerBody('video-pack-select')
+  assert.match(body, /if \(!streamer\) return \{ ok: false/)
+})
+
+test('the pack channel is reachable from the renderer', () => {
+  assert.match(PRELOAD, /videoPackSelect:/)
+})

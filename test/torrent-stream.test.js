@@ -418,6 +418,78 @@ test('stop() closes the server, destroys the torrent and removes the download li
 }
 
 
+// ── Pack episode listing and switching ─────────────────────────────────────
+// A season pack already holds every episode, so switching between them is a
+// file change on a torrent that is already running — same peers, no new
+// resolve, no wait. That is what makes a full episode strip worth showing.
+{
+  function packTorrentWithFiles(names) {
+    const torrent = new EventEmitter()
+    torrent.files = names.map(name => ({
+      name, length: 1e9,
+      select () { this.sel = true },
+      deselect () { this.sel = false },
+      createReadStream: () => new Readable(),
+      _startPiece: 0, _endPiece: 9,
+    }))
+    torrent.pieceLength = 1000
+    torrent.bitfield = null
+    torrent.select = () => {}
+    torrent.critical = () => {}
+    torrent.createServer = () => http.createServer()
+    torrent.destroy = (opts, cb) => { if (typeof opts === 'function') opts(); else if (cb) cb() }
+    return torrent
+  }
+
+  test('the pack listing is ordered by episode, unnumbered files last', async () => {
+    const torrent = packTorrentWithFiles([
+      '[G] Show - 03.mkv', 'OP creditless.mkv', '[G] Show - 01.mkv',
+    ])
+    const streamer = new TorrentStreamer({ client: readyClient(torrent), prebufferBytes: 0 })
+    await streamer.start({ magnet: 'magnet:?xt=urn:btih:A', episode: 1 })
+    const files = streamer.files()
+    assert.deepStrictEqual(files.map(f => f.episode), [1, 3, null])
+    assert.strictEqual(files[0].current, true, 'the episode being played is marked')
+    streamer.stop()
+  })
+
+  test('selecting another file returns a URL without restarting the torrent', async () => {
+    const torrent = packTorrentWithFiles(['[G] Show - 01.mkv', '[G] Show - 02.mkv'])
+    const streamer = new TorrentStreamer({ client: readyClient(torrent), prebufferBytes: 0 })
+    await streamer.start({ magnet: 'magnet:?xt=urn:btih:A', episode: 1 })
+    const url = streamer.selectFile(1)
+    assert.match(url, /\/1\/.*Show.*02/)
+    assert.strictEqual(torrent.files[1].sel, true, 'the new file is prioritised')
+    assert.strictEqual(torrent.files[0].sel, false, 'the old one is dropped')
+    assert.strictEqual(streamer.files().find(f => f.current).episode, 2)
+    streamer.stop()
+  })
+
+  test('selecting a file that does not exist returns null', async () => {
+    const torrent = packTorrentWithFiles(['a.mkv'])
+    const streamer = new TorrentStreamer({ client: readyClient(torrent), prebufferBytes: 0 })
+    await streamer.start({ magnet: 'magnet:?xt=urn:btih:A' })
+    assert.strictEqual(streamer.selectFile(99), null)
+    streamer.stop()
+  })
+
+  test('files() is empty before anything is streaming', () => {
+    const streamer = new TorrentStreamer({ client: { add () {} } })
+    assert.deepStrictEqual(streamer.files(), [])
+  })
+
+  // destroy() is asynchronous and on a pack can outlive the process; the
+  // directory is removed directly as well so an immediate exit cannot leak it.
+  test('the cache directory is removed without waiting on destroy', () => {
+    const src = require('node:fs').readFileSync(
+      require('node:path').join(__dirname, '..', 'torrent-stream.js'), 'utf8')
+    const stop = src.slice(src.indexOf('\n  stop() {'))
+    assert.match(stop, /destroyStore: true/)
+    // Once in the callback, once directly, once on a timer.
+    assert.ok((stop.match(/removeDir\(storeDir\)/g) || []).length >= 3)
+  })
+}
+
 // ── Stream cache lifetime ───────────────────────────────────────────────────
 // Streamed video is watched once. Without an explicit path WebTorrent writes
 // into its own default under the system temp directory and nothing removes it,
