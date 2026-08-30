@@ -352,3 +352,34 @@ test('a film carries the collection it belongs to, and null when standalone', ()
   assert.strictEqual(inSeries.collection.name, 'Dune Collection')
   assert.strictEqual(tmdb.normalizeMovie({ id: 2, title: 'Fight Club' }).collection, null)
 })
+
+// ── Trailers ────────────────────────────────────────────────────────────────
+// A teaser is a poor substitute for a trailer but a good substitute for
+// nothing, and plenty of titles have only one or the other.
+test('trailers rank official first, then newest, with teasers last', () => {
+  const out = tmdb._trailers({ videos: { results: [
+    { key: 'old-teaser', type: 'Teaser', site: 'YouTube', official: true, published_at: '2020-01-01' },
+    { key: 'unofficial', type: 'Trailer', site: 'YouTube', official: false, published_at: '2023-06-01' },
+    { key: 'official-new', type: 'Trailer', site: 'YouTube', official: true, published_at: '2023-09-01' },
+    { key: 'official-old', type: 'Trailer', site: 'YouTube', official: true, published_at: '2022-01-01' },
+  ] } })
+  assert.deepStrictEqual(out.map(v => v.key),
+    ['official-new', 'official-old', 'unofficial', 'old-teaser'])
+})
+
+// Only YouTube ids can be resolved to a playable stream, so anything else
+// would be a button that cannot work.
+test('non-YouTube and non-trailer videos are dropped', () => {
+  const out = tmdb._trailers({ videos: { results: [
+    { key: 'vimeo', type: 'Trailer', site: 'Vimeo', official: true },
+    { key: 'clip', type: 'Clip', site: 'YouTube' },
+    { key: 'featurette', type: 'Featurette', site: 'YouTube' },
+    { key: 'good', type: 'Trailer', site: 'YouTube' },
+  ] } })
+  assert.deepStrictEqual(out.map(v => v.key), ['good'])
+})
+
+test('a title with no videos yields no trailers', () => {
+  assert.deepStrictEqual(tmdb._trailers({}), [])
+  assert.deepStrictEqual(tmdb._trailers({ videos: { results: null } }), [])
+})

@@ -2600,6 +2600,8 @@ async function renderVideoDetail(navId) {
   const d = res.detail
   setContent('<div class="page video-detail-page">' + _videoDetailShell(d) + '</div>')
 
+  _bindTrailerButton()
+
   // Not awaited: an anime chain is one request per hop, and the source list
   // must not wait on it.
   _renderSeasonChain(ticket)
@@ -2636,6 +2638,8 @@ function _videoDetailShell(d) {
       '<div class="video-detail-meta">' + metaBits.join(' · ') + '</div>' +
       (genres.length ? '<div class="video-detail-genres">' + genres.map(function (g) { return '<span class="video-genre-chip">' + esc(g) + '</span>' }).join('') + '</div>' : '') +
       (d.overview ? '<p class="video-detail-overview">' + esc(d.overview) + '</p>' : '') +
+      (_bestTrailer(d) ? '<div class="vhero-actions" style="margin-top:12px">' +
+        '<button class="vbtn" id="video-trailer-btn">' + _VICON.play + 'Trailer</button></div>' : '') +
     '</div>' +
   '</div>'
   return hero +
@@ -2724,6 +2728,49 @@ async function _renderSeasonChain(ticket) {
   // scrolled off the left.
   const cur = box.querySelector('.vseason.current')
   if (cur && cur.scrollIntoView) cur.scrollIntoView({ block: 'nearest', inline: 'center' })
+}
+
+// The best available trailer, whichever catalog this came from. TMDB returns
+// a ranked list; AniList returns a single {id, site}. Only YouTube is
+// resolvable, so anything else is treated as no trailer rather than offering
+// a button that cannot work.
+function _bestTrailer(d) {
+  if (!d) return null
+  if (Array.isArray(d.trailers) && d.trailers.length) {
+    const hit = d.trailers.find(function (t) { return t && t.key && (!t.site || t.site === 'YouTube') })
+    if (hit) return { youtubeId: hit.key, name: hit.name || null }
+  }
+  if (d.trailer && d.trailer.id && String(d.trailer.site || '').toLowerCase() === 'youtube') {
+    return { youtubeId: d.trailer.id, name: null }
+  }
+  return null
+}
+
+function _bindTrailerButton() {
+  const btn = document.getElementById('video-trailer-btn')
+  if (!btn) return
+  btn.addEventListener('click', async function () {
+    const d = _videoDetail && _videoDetail.d
+    const t = _bestTrailer(d)
+    if (!t) return showToast('No trailer available')
+    _initVideoUI()
+    // A trailer is not the thing you were watching: nothing is written to the
+    // watch store while one plays, and nothing is marked watched.
+    _watch = { key: null, meta: null, savedAt: 0, resumed: true }
+    _player.setSegments([])
+    _player.setUpNext(null)
+    _player.open({
+      hasNext: false,
+      title: (d && d.title ? d.title : 'Trailer'),
+      subtitle: t.name || 'Trailer',
+    })
+    _handleVideoEvent({ kind: 'buffering' })
+    btn.disabled = true
+    const res = await window.api.videoTrailer({ youtubeId: t.youtubeId, title: d && d.title })
+      .catch(function (e) { return { ok: false, error: String((e && e.message) || e) } })
+    btn.disabled = false
+    if (res && res.ok === false) _handleVideoEvent({ kind: 'error', message: res.error })
+  })
 }
 
 function _renderVideoControls(type) {

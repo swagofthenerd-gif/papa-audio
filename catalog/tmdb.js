@@ -56,13 +56,33 @@ function _crew(raw) {
   return _people(raw?.credits?.crew)
 }
 
+// A teaser is a poor substitute for a trailer but a good substitute for
+// nothing, and plenty of titles have only one or the other. Both are kept and
+// ranked: official trailers first, then unofficial, then teasers, and the
+// newest within each band — an old teaser for a film that later got a proper
+// trailer should never win.
+const _TRAILER_RANK = { Trailer: 0, Teaser: 1 }
+
 function _trailers(raw) {
   const results = raw?.videos?.results
   if (!Array.isArray(results)) return []
   return results
-    .filter(v => v && v.type === 'Trailer')
-    .map(v => ({ key: v.key ?? null, name: v.name ?? null, site: v.site ?? null, type: v.type ?? null, size: v.size ?? null }))
-    .filter(v => v.key)
+    .filter(v => v && v.key && _TRAILER_RANK[v.type] != null && v.site === 'YouTube')
+    .map(v => ({
+      key: v.key,
+      name: v.name ?? null,
+      site: v.site ?? null,
+      type: v.type ?? null,
+      size: v.size ?? null,
+      official: v.official === true,
+      publishedAt: v.published_at ?? null,
+    }))
+    .sort((a, b) => {
+      const ta = _TRAILER_RANK[a.type], tb = _TRAILER_RANK[b.type]
+      if (ta !== tb) return ta - tb
+      if (a.official !== b.official) return a.official ? -1 : 1
+      return String(b.publishedAt || '').localeCompare(String(a.publishedAt || ''))
+    })
 }
 
 // Studios and spoken languages are arrays of {name, ...}; keep the names.
@@ -433,6 +453,7 @@ function createTmdbCatalog({ apiKey, fetchFn } = {}) {
 }
 
 module.exports = {
+  _trailers,
   SORTS,
   TV_SORTS,
   buildDiscoverUrl,

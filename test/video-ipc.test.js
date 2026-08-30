@@ -409,3 +409,41 @@ test('playback waits for the stage rectangle before starting', () => {
   assert.ok(play > -1)
   assert.ok(ready < play, 'showing the video window before its rectangle is known makes it float over the app')
 })
+
+// ── Trailers ────────────────────────────────────────────────────────────────
+// resolveYtUrl was written for music, where bestaudio is exactly right. A
+// trailer resolved that way plays with no picture at all.
+test('trailers resolve as video, not audio', () => {
+  assert.match(MAIN, /const YT_FORMATS = \{/)
+  const start = MAIN.indexOf('const YT_FORMATS = {')
+  const table = MAIN.slice(start, MAIN.indexOf('}', start))
+  assert.match(table, /audio: 'bestaudio'/)
+  assert.match(table, /video: 'best\[height<=1080\]/)
+  assert.match(handlerBody('video-trailer'), /resolveYtUrl\(youtubeId, 'video'\)/)
+})
+
+// The same id resolves to a different URL for audio and for video; serving one
+// for the other is exactly what the key must prevent.
+test('the YouTube URL cache is keyed per format', () => {
+  const start = MAIN.indexOf('function resolveYtUrl(')
+  const body = MAIN.slice(start, MAIN.indexOf('\n}', start))
+  assert.match(body, /const cacheKey = kind === 'audio' \? videoId : `\$\{kind\}:\$\{videoId\}`/)
+  assert.match(body, /_ytUrlCache\.get\(cacheKey\)/)
+  assert.match(body, /_ytUrlCache\.set\(cacheKey/)
+})
+
+// A trailer is not the thing you were watching.
+test('playing a trailer is a separate path from playing a title', () => {
+  const body = handlerBody('video-trailer')
+  assert.match(body, /_videoTeardown\(\)/, 'whatever was playing must stop')
+  assert.ok(!/setPosition|markWatched/.test(body), 'a trailer must not touch watch state')
+  assert.match(body, /_videoSession\.token/, 'a late resolve must not hijack a newer play')
+})
+
+test('a title with no trailer is refused rather than played as nothing', () => {
+  assert.match(handlerBody('video-trailer'), /if \(!youtubeId\) return \{ ok: false/)
+})
+
+test('the trailer channel is reachable from the renderer', () => {
+  assert.match(PRELOAD, /videoTrailer:/)
+})

@@ -110,7 +110,13 @@ test('normalizeMovie maps cast, crew, trailers, studios, languages, providers', 
   assert.deepStrictEqual(e.cast, [{ id: 2, name: 'Actor', character: 'Role', job: null, department: null, profilePath: `${IMG}/c.jpg`, order: 0 }])
   assert.strictEqual(e.crew[0].name, 'Director')
   assert.strictEqual(e.crew[0].job, 'Director')
-  assert.deepStrictEqual(e.trailers, [{ key: 'k1', name: 'Trailer', site: 'YouTube', type: 'Trailer', size: null }])
+  // Teasers are kept now as a fallback for titles that have no trailer, ranked
+  // below real trailers rather than discarded.
+  assert.deepStrictEqual(e.trailers.map(t => t.key), ['k1', 'k2'])
+  assert.deepStrictEqual(e.trailers[0], {
+    key: 'k1', name: 'Trailer', site: 'YouTube', type: 'Trailer',
+    size: null, official: false, publishedAt: null,
+  })
   assert.deepStrictEqual(e.studios, ['Warner Bros.'])
   assert.deepStrictEqual(e.languages, ['English'])
   assert.deepStrictEqual(e.providers, { US: { flatrate: ['Netflix'] } })

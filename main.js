@@ -197,15 +197,28 @@ function ytUrlExpiresAt(url) {
   return Math.min(ceiling, stated - YT_URL_EXPIRY_MARGIN_MS)
 }
 
-function resolveYtUrl(videoId) {
+// `kind` picks the yt-dlp format. This function was written for music, where
+// bestaudio is exactly right — but a trailer resolved that way plays with no
+// picture at all. Video asks for a single muxed stream so mpv gets one URL
+// rather than needing separate audio and video inputs.
+const YT_FORMATS = {
+  audio: 'bestaudio',
+  video: 'best[height<=1080][ext=mp4]/best[ext=mp4]/best',
+}
+
+function resolveYtUrl(videoId, kind = 'audio') {
+  const format = YT_FORMATS[kind] || YT_FORMATS.audio
+  // Cached per format: the same id resolves to a different URL for audio and
+  // for video, and serving one for the other is the bug this guards against.
+  const cacheKey = kind === 'audio' ? videoId : `${kind}:${videoId}`
   // The cache applies the expiry itself now, so a hit is by definition live.
-  const cached = _ytUrlCache.get(videoId)
+  const cached = _ytUrlCache.get(cacheKey)
   if (cached) return Promise.resolve(cached)
   return new Promise((resolve, reject) => {
     var proc, out = '', err = ''
     var timer = setTimeout(() => { try { proc.kill() } catch (_) {} reject(new Error('yt-dlp timed out')) }, 15000)
     try {
-      proc = spawn('yt-dlp', ['-f', 'bestaudio', '-g', '--no-playlist', '--', videoId], { stdio: ['ignore', 'pipe', 'pipe'] })
+      proc = spawn('yt-dlp', ['-f', format, '-g', '--no-playlist', '--', videoId], { stdio: ['ignore', 'pipe', 'pipe'] })
     } catch (e) { clearTimeout(timer); reject(e); return }
     proc.stdout.on('data', d => out += d.toString())
     proc.stderr.on('data', d => err = (err + d.toString()).slice(-500))
@@ -214,7 +227,7 @@ function resolveYtUrl(videoId) {
       clearTimeout(timer)
       var url = out.trim().split('\n')[0]
       if (code === 0 && url && url.startsWith('http')) {
-        _ytUrlCache.set(videoId, url, { expiresAt: ytUrlExpiresAt(url) })
+        _ytUrlCache.set(cacheKey, url, { expiresAt: ytUrlExpiresAt(url) })
         resolve(url)
       } else {
         reject(new Error(err.trim() || 'yt-dlp exited ' + code))
@@ -6602,6 +6615,31 @@ ipcMain.handle('video-play', async (_, { result }) => {
     return { ok: true }
   } catch (e) {
     return { ok: false, error: e.message }
+  }
+})
+
+// Trailers reuse the YouTube resolver the music side already has: the id
+// becomes a direct googlevideo URL, which mpv plays like any other stream. No
+// embedded webview, no CSP exception, and it inherits the hardware decoding
+// and audio configuration the main player uses.
+//
+// Deliberately a separate handler from video-play: a trailer must never touch
+// watch state, be marked watched, or count as the thing you were watching.
+ipcMain.handle('video-trailer', async (_, { youtubeId, title } = {}) => {
+  try {
+    if (!youtubeId) return { ok: false, error: 'No trailer available' }
+    _videoTeardown()
+    _wireVideoEngine()
+    if (player) { try { player.pause().catch(() => {}) } catch (_) {} }
+    const token = ++_videoSession.token
+    const url = await resolveYtUrl(youtubeId, 'video')
+    if (!url) return { ok: false, error: 'Could not load this trailer' }
+    if (_videoSession.token !== token) return { ok: true, cancelled: true }
+    await videoEngine().start(url, { wid: null })
+    if (_videoSession.token === token) safeSend('video-event', { kind: 'playing', trailer: true })
+    return { ok: true, title: title || null }
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) }
   }
 })
 
