@@ -6000,10 +6000,13 @@ body.app-unfocused *::after {
 .video-detail-meta { font-size:13px; color:var(--text2); margin-bottom:10px; }
 .video-detail-genres { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:12px; }
 .video-genre-chip {
-  font-size:11px; color:var(--text2);
+  font-size:11px; color:var(--text2); font-family:inherit; cursor:pointer;
   background:var(--glass); border:1px solid var(--glass-border);
   border-radius:100px; padding:3px 10px;
+  transition:background .14s var(--ease), color .14s var(--ease);
 }
+.video-genre-chip:hover { background:var(--glass-hi); color:var(--text); }
+.video-genre-chip:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 .video-detail-overview {
   font-size:13px; color:var(--text); max-width:720px; line-height:1.5;
   display:-webkit-box; -webkit-line-clamp:4; -webkit-box-orient:vertical; overflow:hidden;

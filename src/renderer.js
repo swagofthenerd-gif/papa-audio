@@ -1301,6 +1301,16 @@ var _browse = {
 }
 var _browseVocab = { genres: {}, tags: null }
 
+// Presets worth shipping. "Hidden gems" is the one a streaming service could
+// never offer: well rated but not widely voted on, which is precisely what
+// their popularity-driven rows bury.
+var _BROWSE_PRESETS = [
+  { name: 'Hidden gems', filters: { minRating: 7.5, sort: 'rating' } },
+  { name: 'Recent & great', filters: { minRating: 7, yearFrom: new Date().getFullYear() - 3, sort: 'rating' } },
+  { name: 'Short films', filters: { runtimeTo: 90, sort: 'rating' }, catalog: 'movie' },
+  { name: 'This season', filters: { seasonYear: new Date().getFullYear(), sort: 'popularity' }, catalog: 'anime' },
+]
+
 var _BROWSE_SORTS = [
   { key: 'popularity', label: 'Popular' },
   { key: 'rating', label: 'Top rated' },
@@ -1392,6 +1402,8 @@ async function renderBrowse() {
     '</div>' +
   '</div>')
   _bindVideoHead()
+  // The filters may already be set — arriving from a genre chip, or coming
+  // back to a query that was left mid-scroll.
   await _loadBrowseVocab(_browse.filters.catalog)
   if (_videoCatalogTicket !== ticket) return
   _renderFilterRail()
@@ -1438,7 +1450,19 @@ function _renderFilterRail() {
       esc(g.name) + '</button>'
   }).join('')
 
+  const presets = _BROWSE_PRESETS.filter(function (p) { return !p.catalog || p.catalog === f.catalog })
+  const saved = _savedPresets()
   let html = group('Catalog', '<div class="vf-chips">' + catalogChips + '</div>')
+  if (presets.length || saved.length) {
+    html += group('Presets', '<div class="vf-chips">' +
+      presets.map(function (p, i) {
+        return '<button class="vf-chip" data-preset="' + i + '">' + esc(p.name) + '</button>'
+      }).join('') +
+      saved.map(function (p, i) {
+        return '<button class="vf-chip" data-saved="' + i + '" title="Saved preset — right-click to delete">' + esc(p.name) + '</button>'
+      }).join('') +
+      '</div>')
+  }
   html += group('Sort', '<select class="vf-select" id="vf-sort">' +
     _BROWSE_SORTS.map(function (o) {
       return '<option value="' + o.key + '"' + (f.sort === o.key ? ' selected' : '') + '>' + o.label + '</option>'
@@ -1483,6 +1507,7 @@ function _renderFilterRail() {
     }
   }
 
+  html += '<button class="vf-clear" id="vf-save" style="margin-bottom:6px">Save this filter set</button>'
   html += '<button class="vf-clear" id="vf-clear">Clear all filters</button>'
   rail.innerHTML = html
   _bindFilterRail()
@@ -1603,12 +1628,72 @@ function _bindFilterRail() {
     _runBrowse(true)
   })
 
+  document.querySelectorAll('[data-preset]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      const p = _BROWSE_PRESETS.filter(function (x) { return !x.catalog || x.catalog === f.catalog })[Number(b.dataset.preset)]
+      if (!p) return
+      const catalog = f.catalog
+      _browse.filters = Object.assign(_emptyFilters(), { catalog: catalog }, p.filters)
+      rerun(true)
+    })
+  })
+  document.querySelectorAll('[data-saved]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      const p = _savedPresets()[Number(b.dataset.saved)]
+      if (!p) return
+      _browse.filters = Object.assign(_emptyFilters(), p.filters)
+      rerun(true)
+    })
+    // Right-click deletes, so a saved set is removable without a separate
+    // management screen.
+    b.addEventListener('contextmenu', function (e) {
+      e.preventDefault()
+      const list = _savedPresets()
+      const p = list[Number(b.dataset.saved)]
+      if (!p) return
+      list.splice(Number(b.dataset.saved), 1)
+      _writePresets(list)
+      showToast('Removed “' + p.name + '”')
+      _renderFilterRail()
+    })
+  })
+
+  document.getElementById('vf-save')?.addEventListener('click', function () {
+    const chips = _activeFilterChips(f)
+    if (!chips.length) return showToast('Set some filters first')
+    const name = chips.slice(0, 3).map(function (c) { return c.label }).join(' · ')
+    const list = _savedPresets()
+    if (list.some(function (p) { return p.name === name })) return showToast('Already saved')
+    list.unshift({ name: name, filters: JSON.parse(JSON.stringify(f)) })
+    _writePresets(list.slice(0, 12))
+    showToast('Saved “' + name + '”')
+    _renderFilterRail()
+  })
+
   document.getElementById('vf-clear')?.addEventListener('click', function () {
     const catalog = f.catalog
     _browse.filters = _emptyFilters()
     _browse.filters.catalog = catalog
     rerun(true)
   })
+}
+
+// Saved filter sets. Kept in the same validated localStorage reader the rest
+// of the renderer uses, so a corrupt value degrades to none rather than
+// throwing on every render of the rail.
+function _savedPresets() {
+  try {
+    const list = window.PapaLocal && window.PapaLocal.readArray
+      ? window.PapaLocal.readArray('papaVideoPresets', function (p) { return p && p.name && p.filters })
+      : []
+    return Array.isArray(list) ? list : []
+  } catch (_) { return [] }
+}
+
+function _writePresets(list) {
+  try {
+    if (window.PapaLocal && window.PapaLocal.write) window.PapaLocal.write('papaVideoPresets', list)
+  } catch (_) { /* a full store must not break browsing */ }
 }
 
 // Debounced and ticketed: a filter change mid-request must never render the
@@ -2674,6 +2759,7 @@ async function renderVideoDetail(navId) {
   _renderProviders(d)
   _renderSimilar(d)
   _bindPersonLinks()
+  _bindGenreJumps()
 
   // Not awaited: an anime chain is one request per hop, and the source list
   // must not wait on it.
@@ -2711,7 +2797,9 @@ function _videoDetailShell(d) {
       '<div class="video-detail-meta">' + metaBits.join(' · ') + '</div>' +
       (d.tagline ? '<div class="vdet-tagline">' + esc(d.tagline) + '</div>' : '') +
       _videoFactsHtml(d) +
-      (genres.length ? '<div class="video-detail-genres">' + genres.map(function (g) { return '<span class="video-genre-chip">' + esc(g) + '</span>' }).join('') + '</div>' : '') +
+      (genres.length ? '<div class="video-detail-genres">' + genres.map(function (g) {
+        return '<button class="video-genre-chip" data-genre-jump="' + esc(g) + '" title="Browse ' + esc(g) + '">' + esc(g) + '</button>'
+      }).join('') + '</div>' : '') +
       (d.overview ? '<p class="video-detail-overview">' + esc(d.overview) + '</p>' : '') +
       _videoCrewHtml(d) +
       (_bestTrailer(d) ? '<div class="vhero-actions" style="margin-top:12px">' +
@@ -2904,6 +2992,33 @@ function _renderSimilar(d) {
   const label = (Array.isArray(d.recommendations) && d.recommendations.length) ? 'More like this' : 'Similar titles'
   box.innerHTML = _vRowShell('similar', label, list.length)
   _fillRow('similar', list)
+}
+
+// A genre chip anywhere opens Browse already filtered to it. TMDB genres are
+// numeric ids and AniList's are names, so the chip carries the display name
+// and the id is looked up in whichever vocabulary applies.
+function _bindGenreJumps(root) {
+  ;(root || document).querySelectorAll('[data-genre-jump]').forEach(function (el) {
+    el.addEventListener('click', function (e) {
+      e.stopPropagation()
+      _jumpToGenre(el.dataset.genreJump, _videoDetail ? _videoDetail.type : 'movie')
+    })
+  })
+}
+
+async function _jumpToGenre(name, type) {
+  const catalog = type === 'anime' ? 'anime' : type === 'tv' ? 'tv' : 'movie'
+  _browse.filters = _emptyFilters()
+  _browse.filters.catalog = catalog
+  await _loadBrowseVocab(catalog)
+  const list = _browseVocab.genres[catalog] || []
+  const hit = list.find(function (g) { return String(g.name).toLowerCase() === String(name).toLowerCase() })
+  // A genre the target catalog does not have is not an error: Browse opens
+  // unfiltered rather than silently doing nothing.
+  if (hit) _browse.filters.genres = [hit.id]
+  else showToast('No “' + name + '” genre in this catalog')
+  _videoTab = 'browse'
+  navigate('browse')
 }
 
 // Anything carrying a person id opens that person's filmography.

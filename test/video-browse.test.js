@@ -216,3 +216,65 @@ test('the excluded-genre chip is visually distinct', () => {
 test('the filter rail stays reachable while the grid scrolls', () => {
   assert.match(CSS, /\.vfilters[\s\S]*?position:\s*sticky/)
 })
+
+// ── Presets ─────────────────────────────────────────────────────────────────
+// "Hidden gems" is the preset a streaming service could never offer: well
+// rated but not widely voted on, which is precisely what popularity-driven
+// rows bury.
+test('the shipped presets are scoped to the catalogs they make sense in', () => {
+  const block = SRC.slice(SRC.indexOf('var _BROWSE_PRESETS'), SRC.indexOf('var _BROWSE_SORTS'))
+  assert.match(block, /Hidden gems/)
+  assert.match(block, /Short films/)
+  // A runtime filter is meaningless for a series, and a season for a film.
+  assert.match(block, /'Short films'[\s\S]*?catalog: 'movie'/)
+  assert.match(block, /'This season'[\s\S]*?catalog: 'anime'/)
+})
+
+test('a preset applies over a clean slate, keeping the catalog', () => {
+  const bind = extract('_bindFilterRail')
+  assert.match(bind, /_browse\.filters = Object\.assign\(_emptyFilters\(\), \{ catalog: catalog \}, p\.filters\)/)
+})
+
+test('saving names the set after its own filters', () => {
+  const bind = extract('_bindFilterRail')
+  assert.match(bind, /chips\.slice\(0, 3\)/, 'the name comes from the active filters')
+  assert.match(bind, /Set some filters first/, 'an empty set is not worth saving')
+  assert.match(bind, /Already saved/, 'the same set must not be stored twice')
+})
+
+test('saved presets are capped so the rail cannot grow without limit', () => {
+  assert.match(extract('_bindFilterRail'), /_writePresets\(list\.slice\(0, 12\)\)/)
+})
+
+// A corrupt stored value must degrade to none rather than throwing on every
+// render of the rail.
+test('preset storage goes through the validated reader and fails soft', () => {
+  const read = extract('_savedPresets')
+  assert.match(read, /PapaLocal/)
+  assert.match(read, /readArray/)
+  assert.match(read, /catch \(_\) \{ return \[\] \}/)
+  assert.match(extract('_writePresets'), /catch/)
+})
+
+// ── Genre navigation ────────────────────────────────────────────────────────
+test('a genre chip anywhere opens Browse filtered to it', () => {
+  const jump = SRC.slice(SRC.indexOf('async function _jumpToGenre('), SRC.indexOf('// Anything carrying a person id'))
+  assert.match(jump, /_browse\.filters = _emptyFilters\(\)/)
+  assert.match(jump, /navigate\('browse'\)/)
+  // TMDB genres are numeric ids and AniList's are names, so the display name
+  // has to be resolved against whichever vocabulary applies.
+  assert.match(jump, /String\(g\.name\)\.toLowerCase\(\) === String\(name\)\.toLowerCase\(\)/)
+})
+
+test('a genre the target catalog lacks opens Browse rather than doing nothing', () => {
+  const jump = SRC.slice(SRC.indexOf('async function _jumpToGenre('), SRC.indexOf('// Anything carrying a person id'))
+  assert.match(jump, /else showToast/)
+  const navAt = jump.indexOf("navigate('browse')")
+  const elseAt = jump.indexOf('else showToast')
+  assert.ok(elseAt < navAt, 'it must still navigate when the genre is unknown')
+})
+
+test('genre chips are buttons, not inert spans', () => {
+  assert.match(SRC, /<button class="video-genre-chip" data-genre-jump=/)
+  assert.match(CSS, /\.video-genre-chip:focus-visible/)
+})
