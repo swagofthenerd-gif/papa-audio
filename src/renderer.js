@@ -2318,6 +2318,14 @@ var _playing = { dub: null, source: null, quality: null }
 function _videoPlayResult(result) {
   if (!result) return
   _initVideoUI()
+  // The source does not know which episode was asked for, and a season pack
+  // contains them all — so the request's episode travels with it.
+  if (_videoDetail && _videoDetail.type !== 'movie') {
+    result = Object.assign({}, result, {
+      season: _videoDetail.type === 'tv' ? _videoState.season : null,
+      episode: _videoState.episode,
+    })
+  }
   _playing = {
     dub: result.dub === true,
     source: result.source || null,

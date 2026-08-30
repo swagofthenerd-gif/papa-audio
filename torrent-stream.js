@@ -75,7 +75,44 @@ const JUNK = /(^|[\/\\._-])(sample|trailer|extras?|featurette|behindthescenes)([
 // .txt or a sample clip — so playback either failed outright or streamed the
 // wrong file while the real one was never prioritised. The right pick is the
 // largest non-junk video file.
-function pickVideoFile(files) {
+// Does this filename name the episode being asked for?
+//
+// Dubbed anime is released almost exclusively as season and batch packs rather
+// than per-episode, so a pack is usually the only dub there is. Taking the
+// largest file out of a twelve-episode pack hands back an arbitrary episode,
+// which is why packs are worthless without this.
+function matchesWantedEpisode(name, want) {
+  const n = Number(want && want.episode)
+  if (!Number.isFinite(n) || n < 0) return false
+  const text = String(name || '')
+  const s = Number(want && want.season)
+  // SxxEyy is unambiguous, so when a season is known it has to agree.
+  const sxe = /s(\d{1,3})[\s._-]?e(\d{1,4})/i.exec(text)
+  if (sxe) {
+    if (Number(sxe[2]) !== n) return false
+    if (Number.isFinite(s) && s > 0 && Number(sxe[1]) !== s) return false
+    return true
+  }
+  // Otherwise a bare episode number, bounded on both sides so 9 never matches
+  // inside 109, and a year like 2009 is never mistaken for one.
+  return new RegExp(`(?:^|[\\s._\\-\\[(])(?:e|ep|episode\\s*)?0*${n}(?:v\\d)?(?:$|[\\s._\\-\\])])`, 'i').test(text)
+}
+
+// The episode number a filename states, or null.
+function episodeNumberOf(name) {
+  const t = String(name || '')
+  const sxe = /s\d{1,3}[\s._-]?e(\d{1,4})/i.exec(t)
+  if (sxe) return Number(sxe[1])
+  const bare = /(?:^|[\s._\-\[(])(?:e|ep|episode\s*)?(\d{1,4})(?:v\d)?(?:$|[\s._\-\])])/i.exec(t)
+  if (!bare) return null
+  const n = Number(bare[1])
+  // A four-digit number in a filename is a year far more often than an
+  // episode, and 0 is not an episode.
+  if (!Number.isFinite(n) || n <= 0 || n > 2000) return null
+  return n
+}
+
+function pickVideoFile(files, want) {
   const list = Array.isArray(files) ? files : []
   if (!list.length) return -1
   const scored = list
@@ -83,6 +120,14 @@ function pickVideoFile(files) {
     .filter(f => VIDEO_EXT.test(f.name))
   const usable = scored.filter(f => !JUNK.test(f.name))
   const pool = usable.length ? usable : scored
+
+  // In a pack the requested episode is the answer, never the biggest file.
+  if (want && want.episode != null && pool.length > 1) {
+    const matches = pool.filter(f => matchesWantedEpisode(f.name, want))
+    // Several matches means the pack holds more than one version of the
+    // episode — a v2, or two encodes; the largest of those is the right pick.
+    if (matches.length) return matches.reduce((a, b) => (b.length > a.length ? b : a)).index
+  }
   if (!pool.length) {
     // No recognisable video extension: fall back to the largest file rather
     // than blindly taking index 0.
@@ -137,6 +182,7 @@ class TorrentStreamer extends EventEmitter {
     this._file = null
     this._prebufferTimer = null
     this._storeDir = null
+    this._want = null
     this._torrent = null
     this._server = null
     this._timer = null
@@ -162,8 +208,11 @@ class TorrentStreamer extends EventEmitter {
     return buildFileUrl(port, fileIndex, fileName)
   }
 
-  async start({ magnet, fileIndex = 0 } = {}) {
+  async start({ magnet, fileIndex = 0, season = null, episode = null } = {}) {
+    // Captured before stop(), which clears it.
+    const want = episode != null ? { season, episode } : null
     this.stop()
+    this._want = want
     this._settled = false
     return new Promise((resolve, reject) => {
       this._pendingReject = reject
@@ -190,12 +239,12 @@ class TorrentStreamer extends EventEmitter {
     if (this._settled) return
     this._torrent = torrent
 
-    // The caller's fileIndex is only a hint. Honour it when it names a real
-    // file, otherwise pick the largest non-junk video file in the pack.
+    // The caller's fileIndex is only a hint, and it means nothing for a pack:
+    // when a specific episode is wanted the file has to be found by name.
     const files = (torrent && torrent.files) || []
     let index = Number.isInteger(fileIndex) && files[fileIndex] ? fileIndex : -1
-    if (index === -1 || !VIDEO_EXT.test(files[index].name || '')) {
-      const picked = pickVideoFile(files)
+    if (this._want || index === -1 || !VIDEO_EXT.test(files[index].name || '')) {
+      const picked = pickVideoFile(files, this._want)
       if (picked >= 0) index = picked
     }
     const file = files[index]
@@ -383,4 +432,4 @@ class TorrentStreamer extends EventEmitter {
   }
 }
 
-module.exports = { TorrentStreamer, buildFileUrl, pickVideoFile, STREAM_ROOT, purgeOrphanStreams, newStreamDir, headBytesReady, VIDEO_EXT }
+module.exports = { TorrentStreamer, buildFileUrl, pickVideoFile, matchesWantedEpisode, episodeNumberOf, STREAM_ROOT, purgeOrphanStreams, newStreamDir, headBytesReady, VIDEO_EXT }

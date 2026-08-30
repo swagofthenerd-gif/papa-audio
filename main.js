@@ -6627,7 +6627,14 @@ ipcMain.handle('video-play', async (_, { result }) => {
       _videoSession.streamer = streamer
       // Deliberately not awaited: start() resolves on 'ready', and awaiting it
       // would hang this handler on a slow torrent — and on stop.
-      streamer.start({ magnet: result.magnet, fileIndex: result.fileIndex ?? 0 })
+      // A season pack holds every episode, so the streamer is told which one is
+      // wanted; without it the largest file wins, which is an arbitrary episode.
+      streamer.start({
+        magnet: result.magnet,
+        fileIndex: result.fileIndex ?? 0,
+        season: result.season ?? null,
+        episode: result.episode ?? null,
+      })
         .catch(e => { if (e && e.code === 'STOPPED') return; fail(e) })
     } else {
       if (!result.url) return { ok: false, error: 'This source has no playable URL' }

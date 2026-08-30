@@ -127,10 +127,9 @@ function parseFeed(xml) {
 // showing nothing.
 // Whether a release is a season or batch pack rather than one episode.
 //
-// Used only to label a result. Packs are not offered as sources: they are
-// where the dubs live, but playing one needs the streamer to select a file by
-// name inside the torrent, and that half is not in place. Offering them
-// without it plays an arbitrary episode.
+// Packs are offered as sources because that is where the dubs live. Playing
+// one relies on the streamer selecting the episode's file by name, and on the
+// stream cache being deleted when playback ends — both of which are in place.
 const RANGE_RE = /(\d{1,4})\s*(?:-|~|to)\s*(\d{1,4})/
 const PACK_RE = /\b(batch|complete|season\s*\d+|collection|bd[\s._-]?box)\b/i
 
@@ -170,15 +169,12 @@ function matchesEpisode(title, episode) {
   // never matches inside 109 or 190.
   const re = new RegExp(`(?:^|[\\s\\-_\\[(.])(?:e|ep|episode\\s*)?0*${n}(?:v\\d)?(?:$|[\\s\\-_\\])."'])`, 'i')
   if (re.test(t)) return true
-  return t.includes(` ${pad} `)
-  // Season packs are NOT accepted here.
-  //
-  // They were, briefly, because that is where the dubs live — but picking the
-  // right episode out of a pack needs the streamer to select a file by name,
-  // and that support is not present. Handing a twenty-gigabyte pack to a
-  // streamer that takes the largest file plays an arbitrary episode and drags
-  // the whole release down to do it. Single episodes only until the streamer
-  // can do the other half.
+  if (t.includes(` ${pad} `)) return true
+  // A pack spanning the episode is a legitimate source for it. Dubs are
+  // released almost exclusively this way, so excluding packs excluded nearly
+  // every dub there is. Safe now that the streamer selects the episode's file
+  // by name and deletes the cache when the stream ends.
+  return isPack(t, n)
 }
 
 function normalizeItem(raw, { preferDub = false, episode = null } = {}) {

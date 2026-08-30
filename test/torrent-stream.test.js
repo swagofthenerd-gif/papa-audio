@@ -351,11 +351,72 @@ test('stop() closes the server, destroys the torrent and removes the download li
   })
 }
 
-// The season-pack tests lived here. They covered picking an episode out of a
-// pack by name, which needs TorrentStreamer.files()/selectFile() — that work
-// was reverted along with the rest of commit 6ba213e, so the functions they
-// exercised no longer exist. providers/nyaa.js no longer offers packs either,
-// which keeps the two halves consistent. Restore both together, not one.
+// ── Season packs ────────────────────────────────────────────────────────────
+// Dubbed anime is released almost exclusively as season and batch packs rather
+// than per-episode, so a pack is usually the only dub there is. Taking the
+// largest file out of a twelve-episode pack hands back an arbitrary episode,
+// which is why packs are worthless without this.
+{
+  const { pickVideoFile, matchesWantedEpisode, episodeNumberOf } = require('../torrent-stream')
+
+  test('the requested episode is found inside a pack, not the largest file', () => {
+    const pack = [
+      { name: '[G] Show - S01E01.mkv', length: 1e9 },
+      { name: '[G] Show - S01E09.mkv', length: 9e8 },
+      { name: '[G] Show - S01E28.mkv', length: 3e9 },
+      { name: 'readme.txt', length: 100 },
+    ]
+    assert.strictEqual(pickVideoFile(pack, { episode: 9 }), 1)
+    assert.strictEqual(pickVideoFile(pack, { episode: 28 }), 2)
+    // With no episode wanted — a film — the largest is still right.
+    assert.strictEqual(pickVideoFile(pack), 2)
+  })
+
+  test('a season mismatch rules an episode out', () => {
+    assert.strictEqual(matchesWantedEpisode('Show S02E09.mkv', { season: 1, episode: 9 }), false)
+    assert.strictEqual(matchesWantedEpisode('Show S01E09.mkv', { season: 1, episode: 9 }), true)
+    // With no season in the name the episode number alone decides.
+    assert.strictEqual(matchesWantedEpisode('Show - 09.mkv', { season: 1, episode: 9 }), true)
+  })
+
+  test('an episode number is bounded, so 9 never matches 109 or a year', () => {
+    assert.strictEqual(matchesWantedEpisode('Show - 109.mkv', { episode: 9 }), false)
+    assert.strictEqual(matchesWantedEpisode('Show 2009 1080p.mkv', { episode: 9 }), false)
+    assert.strictEqual(matchesWantedEpisode('Show - 09v2.mkv', { episode: 9 }), true)
+  })
+
+  test('several versions of the same episode resolve to the largest', () => {
+    const pack = [
+      { name: '[G] Show - 09 [480p].mkv', length: 3e8 },
+      { name: '[G] Show - 09 [1080p].mkv', length: 2e9 },
+    ]
+    assert.strictEqual(pickVideoFile(pack, { episode: 9 }), 1)
+  })
+
+  test('an episode missing from the pack falls back rather than failing', () => {
+    const pack = [{ name: '[G] Show - S01E01.mkv', length: 1e9 }]
+    assert.strictEqual(pickVideoFile(pack, { episode: 99 }), 0)
+  })
+
+  test('episode numbers are read from either naming convention', () => {
+    assert.strictEqual(episodeNumberOf('[G] Show - S01E09.mkv'), 9)
+    assert.strictEqual(episodeNumberOf('[G] Show - 09 [1080p].mkv'), 9)
+    assert.strictEqual(episodeNumberOf('[G] Show E28.mkv'), 28)
+    // A four-digit number in a filename is a year far more often than an episode.
+    assert.strictEqual(episodeNumberOf('Movie 2009 1080p.mkv'), null)
+    assert.strictEqual(episodeNumberOf('readme.mkv'), null)
+  })
+
+  test('the streamer is told which episode to look for', () => {
+    const src = require('node:fs').readFileSync(
+      require('node:path').join(__dirname, '..', 'torrent-stream.js'), 'utf8')
+    assert.match(src, /async start\(\{ magnet, fileIndex = 0, season = null, episode = null \} = \{\}\)/)
+    // Captured before stop(), which clears it.
+    assert.match(src, /const want = episode != null[\s\S]*?this\.stop\(\)[\s\S]*?this\._want = want/)
+    assert.match(src, /pickVideoFile\(files, this\._want\)/)
+  })
+}
+
 
 // ── Stream cache lifetime ───────────────────────────────────────────────────
 // Streamed video is watched once. Without an explicit path WebTorrent writes
