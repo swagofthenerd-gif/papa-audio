@@ -1158,6 +1158,7 @@ function navigate(page, navId, opts = {}) {
   else if (page === 'explore')     renderExplore()
   else if (page === 'video')       renderVideo()
   else if (page === 'browse')      renderBrowse()
+  else if (page === 'person')      renderPerson(navId)
   else if (page === 'video-detail') renderVideoDetail(navId)
   } catch (err) {
     _renderFailure(page, err)
@@ -1209,6 +1210,74 @@ var _videoDetail = null
 var _videoState = { season: null, episode: 1, sub: true }
 var _videoStreams = []
 var _videoUiReady = false
+
+// ── Person page ─────────────────────────────────────────────────────────────
+// Reachable from any cast photo or crew name. TMDB gives a combined credit
+// list; the catalog already de-duplicates it and sorts newest first, because
+// one person is frequently writer and director on the same title.
+var _personTicket = 0
+
+async function renderPerson(personId) {
+  _initVideoUI()
+  const ticket = ++_personTicket
+  if (!personId) return navigate('video')
+
+  setContent('<div class="page vpage">' +
+    '<div class="vperson-head">' +
+      '<div class="vskel vperson-photo"></div>' +
+      '<div><div class="vskel vskel-line" style="width:220px;height:22px"></div>' +
+      '<div class="vskel vskel-line short" style="margin-top:8px"></div></div>' +
+    '</div>' +
+    '<div class="vrows" id="vperson-rows"></div>' +
+  '</div>')
+
+  const res = await window.api.videoPerson({ id: personId })
+    .catch(function (e) { return { ok: false, error: String((e && e.message) || e) } })
+  if (_personTicket !== ticket || state.currentPage !== 'person') return
+
+  const rows = document.getElementById('vperson-rows')
+  if (!res.ok) {
+    if (rows) rows.innerHTML = '<div class="vrow-msg err">' + esc(_videoErrorText(res.error)) + '</div>'
+    return
+  }
+  const credits = Array.isArray(res.credits) ? res.credits : []
+
+  // The person's own details are not a separate request: everything needed to
+  // head the page is already on the credit that led here.
+  const head = document.querySelector('.vperson-head')
+  const name = _personName(personId)
+  if (head) {
+    head.innerHTML =
+      (name.photo
+        ? '<img class="vperson-photo" src="' + esc(name.photo) + '" alt="" onerror="this.style.visibility=\'hidden\'">'
+        : '<div class="vperson-photo vcast-photo-fallback">' + esc(String(name.name || '?').charAt(0)) + '</div>') +
+      '<div><div class="vperson-name">' + esc(name.name || 'Filmography') + '</div>' +
+      '<div class="vperson-role">' + credits.length + ' credit' + (credits.length === 1 ? '' : 's') + '</div></div>'
+  }
+
+  if (!credits.length) {
+    if (rows) rows.innerHTML = '<div class="vempty"><div class="vempty-title">No credits found</div></div>'
+    return
+  }
+
+  // Split by type, because a director's films and their television work are
+  // different things a viewer is looking for.
+  const films = credits.filter(function (c) { return c.type === 'movie' })
+  const series = credits.filter(function (c) { return c.type === 'tv' })
+  let html = ''
+  if (films.length) html += _vRowShell('person-movies', 'Films', films.length)
+  if (series.length) html += _vRowShell('person-tv', 'Television', series.length)
+  if (rows) rows.innerHTML = html
+  if (films.length) _fillRow('person-movies', films)
+  if (series.length) _fillRow('person-tv', series)
+}
+
+// The name and photo of the person just clicked. Carried across navigation
+// rather than refetched: the credit that linked here already had both.
+var _lastPerson = {}
+function _personName(id) {
+  return _lastPerson && String(_lastPerson.id) === String(id) ? _lastPerson : {}
+}
 
 // ── Browse ──────────────────────────────────────────────────────────────────
 // The filter state is one plain object so it can be serialised into the nav id
@@ -2601,6 +2670,10 @@ async function renderVideoDetail(navId) {
   setContent('<div class="page video-detail-page">' + _videoDetailShell(d) + '</div>')
 
   _bindTrailerButton()
+  _renderCastRow(d)
+  _renderProviders(d)
+  _renderSimilar(d)
+  _bindPersonLinks()
 
   // Not awaited: an anime chain is one request per hop, and the source list
   // must not wait on it.
@@ -2636,14 +2709,20 @@ function _videoDetailShell(d) {
     '<div class="video-detail-info">' +
       '<h1 class="video-detail-title">' + esc(d.title || 'Untitled') + '</h1>' +
       '<div class="video-detail-meta">' + metaBits.join(' · ') + '</div>' +
+      (d.tagline ? '<div class="vdet-tagline">' + esc(d.tagline) + '</div>' : '') +
+      _videoFactsHtml(d) +
       (genres.length ? '<div class="video-detail-genres">' + genres.map(function (g) { return '<span class="video-genre-chip">' + esc(g) + '</span>' }).join('') + '</div>' : '') +
       (d.overview ? '<p class="video-detail-overview">' + esc(d.overview) + '</p>' : '') +
+      _videoCrewHtml(d) +
       (_bestTrailer(d) ? '<div class="vhero-actions" style="margin-top:12px">' +
         '<button class="vbtn" id="video-trailer-btn">' + _VICON.play + 'Trailer</button></div>' : '') +
     '</div>' +
   '</div>'
   return hero +
     '<div class="vseasons" id="vseasons" hidden></div>' +
+    '<div id="vcast"></div>' +
+    '<div id="vwatch"></div>' +
+    '<div id="vsimilar"></div>' +
     '<div class="video-controls" id="video-controls"></div>' +
     '<div class="video-sources" id="video-sources"></div>'
 }
@@ -2728,6 +2807,119 @@ async function _renderSeasonChain(ticket) {
   // scrolled off the left.
   const cur = box.querySelector('.vseason.current')
   if (cur && cur.scrollIntoView) cur.scrollIntoView({ block: 'nearest', inline: 'center' })
+}
+
+// Runtime, certification, studio and language — all fetched with the detail
+// and none of it previously shown.
+function _videoFactsHtml(d) {
+  const facts = []
+  if (d.certification) facts.push('<span class="vfact vfact-cert">' + esc(d.certification) + '</span>')
+  if (d.runtime) facts.push('<span class="vfact">' + _fmtRuntime(d.runtime) + '</span>')
+  if (d.episodeCount) facts.push('<span class="vfact">' + d.episodeCount + ' episodes</span>')
+  if (d.status && d.type === 'anime') facts.push('<span class="vfact">' + esc(_animeStatus(d.status)) + '</span>')
+  const studios = Array.isArray(d.studios) ? d.studios.slice(0, 2) : []
+  for (const st of studios) facts.push('<span class="vfact">' + esc(st) + '</span>')
+  const langs = Array.isArray(d.languages) ? d.languages.slice(0, 1) : []
+  for (const l of langs) facts.push('<span class="vfact">' + esc(l) + '</span>')
+  return facts.length ? '<div class="vdet-facts">' + facts.join('') + '</div>' : ''
+}
+
+// Hours and minutes, because "166 min" makes the reader do the arithmetic.
+function _fmtRuntime(mins) {
+  const n = Number(mins)
+  if (!Number.isFinite(n) || n <= 0) return ''
+  const h = Math.floor(n / 60)
+  const m = n % 60
+  return h ? (m ? h + 'h ' + m + 'm' : h + 'h') : m + 'm'
+}
+
+function _animeStatus(status) {
+  const map = { RELEASING: 'Airing', FINISHED: 'Finished', NOT_YET_RELEASED: 'Upcoming', CANCELLED: 'Cancelled', HIATUS: 'On hiatus' }
+  return map[status] || String(status || '').toLowerCase()
+}
+
+// Director and writers. Not a full crew list: those are the two credits a
+// viewer actually chooses a film by.
+function _videoCrewHtml(d) {
+  const crew = Array.isArray(d.crew) ? d.crew : []
+  if (!crew.length) return ''
+  const pick = jobs => {
+    const seen = new Set()
+    return crew.filter(function (c) {
+      if (!c || jobs.indexOf(c.job) === -1 || seen.has(c.id)) return false
+      seen.add(c.id)
+      return true
+    }).slice(0, 3)
+  }
+  const directors = pick(['Director'])
+  const writers = pick(['Screenplay', 'Writer', 'Story'])
+  const bits = []
+  const link = list => list.map(function (c) {
+    return '<b data-person="' + esc(c.id) + '" style="cursor:pointer">' + esc(c.name) + '</b>'
+  }).join(', ')
+  if (directors.length) bits.push('Directed by ' + link(directors))
+  if (writers.length) bits.push('Written by ' + link(writers))
+  return bits.length ? '<div class="vdet-crew">' + bits.join(' · ') + '</div>' : ''
+}
+
+function _renderCastRow(d) {
+  const box = document.getElementById('vcast')
+  if (!box) return
+  const cast = Array.isArray(d.cast) ? d.cast.filter(function (c) { return c && c.name }).slice(0, 20) : []
+  if (!cast.length) { box.innerHTML = ''; return }
+  box.innerHTML = '<div class="vsection"><div class="vsection-title">Cast</div>' +
+    '<div class="vcast-rail">' + cast.map(function (c) {
+      const photo = c.profile
+        ? '<img class="vcast-photo" src="' + esc(c.profile) + '" alt="" loading="lazy" onerror="this.style.visibility=\'hidden\'">'
+        : '<div class="vcast-photo vcast-photo-fallback">' + esc(String(c.name || '?').charAt(0)) + '</div>'
+      return '<button class="vcast" data-person="' + esc(c.id) + '" aria-label="' + esc(c.name) + '">' +
+        photo +
+        '<div class="vcast-name">' + esc(c.name) + '</div>' +
+        (c.character ? '<div class="vcast-role">' + esc(c.character) + '</div>' : '') +
+      '</button>'
+    }).join('') + '</div></div>'
+}
+
+// Where a title can be streamed legitimately. Shown because knowing a film is
+// on a service you already pay for is worth more than a torrent.
+function _renderProviders(d) {
+  const box = document.getElementById('vwatch')
+  if (!box) return
+  const providers = d.providers || {}
+  const region = providers.GB || providers.US || providers[Object.keys(providers)[0]] || null
+  const names = region ? [].concat(region.flatrate || [], region.free || []) : []
+  if (!names.length) { box.innerHTML = ''; return }
+  box.innerHTML = '<div class="vsection"><div class="vsection-title">Also streaming on</div>' +
+    '<div class="vprov">' + [...new Set(names)].slice(0, 8).map(function (n) {
+      return '<span class="vprov-chip">' + esc(n) + '</span>'
+    }).join('') + '</div></div>'
+}
+
+function _renderSimilar(d) {
+  const box = document.getElementById('vsimilar')
+  if (!box) return
+  const items = (Array.isArray(d.recommendations) && d.recommendations.length ? d.recommendations : d.similar) || []
+  const list = items.filter(function (x) { return x && x.id && x.poster }).slice(0, 20)
+  if (!list.length) { box.innerHTML = ''; return }
+  const label = (Array.isArray(d.recommendations) && d.recommendations.length) ? 'More like this' : 'Similar titles'
+  box.innerHTML = _vRowShell('similar', label, list.length)
+  _fillRow('similar', list)
+}
+
+// Anything carrying a person id opens that person's filmography.
+function _bindPersonLinks(root) {
+  ;(root || document).querySelectorAll('[data-person]').forEach(function (el) {
+    el.addEventListener('click', function (e) {
+      e.stopPropagation()
+      const card = el.closest('.vcast')
+      _lastPerson = {
+        id: el.dataset.person,
+        name: card ? (card.querySelector('.vcast-name')?.textContent || '') : (el.textContent || ''),
+        photo: card ? (card.querySelector('.vcast-photo')?.getAttribute('src') || null) : null,
+      }
+      navigate('person', el.dataset.person)
+    })
+  })
 }
 
 // The best available trailer, whichever catalog this came from. TMDB returns
