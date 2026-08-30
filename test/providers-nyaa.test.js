@@ -64,17 +64,13 @@ test('matchesEpisode handles the SxxEyy and v2 forms', () => {
   assert.strictEqual(matchesEpisode('[Group] Show - 09v2 [1080p]', 9), true)
 })
 
-// This assertion used to be the opposite, and that was the bug: dubbed anime
-// is released almost exclusively as season and batch packs rather than
-// per-episode, so excluding packs excluded nearly every dub there is. The
-// streamer finds the right file inside the pack by name.
-test('a pack spanning the episode is accepted', () => {
-  assert.strictEqual(matchesEpisode('[Batch] Frieren - 01~28 (1080p)', 9), true)
-  assert.strictEqual(matchesEpisode('[G] Frieren Season 1 Complete', 9), true)
-})
-
-test('a pack that does not span the episode is still rejected', () => {
-  assert.strictEqual(matchesEpisode('[Batch] Frieren - 01~12 (1080p)', 20), false)
+// Packs are not offered as sources. They are where the dubs live, but playing
+// one needs the streamer to select a file by name inside the torrent, and that
+// half was reverted — offering them without it plays an arbitrary episode.
+// Restore both halves together or neither.
+test('a batch pack is not offered as a single episode', () => {
+  assert.strictEqual(matchesEpisode('[Batch] Frieren - 01~28 (1080p)', 9), false)
+  assert.strictEqual(matchesEpisode('[G] Frieren Season 1 Complete', 9), false)
 })
 
 test('a single named episode is never treated as a pack', () => {
@@ -86,17 +82,14 @@ test('a single named episode is never treated as a pack', () => {
 test('the provider returns only matching episodes, best-seeded first', async () => {
   const provider = createNyaaProvider({ fetchFn: async () => feedResponse(FEED) })
   const entries = await provider({ type: 'anime', title: 'Frieren', episode: 9 })
-  // The batch pack spans episode 9 and is a legitimate source for it; only
-  // episode 19 is genuinely the wrong episode.
-  assert.strictEqual(entries.length, 3, 'only episode 19 is excluded')
-  assert.ok(entries.some(e => e.isPack), 'the pack is offered and flagged as one')
+  assert.strictEqual(entries.length, 2, 'episode 19 and the batch pack are both excluded')
   // Ordering is by seeds, so the well-seeded pack legitimately leads: a pack
   // is not a worse source now that the streamer picks the episode out of it,
   // and it is the better one for switching episodes without re-resolving.
-  assert.strictEqual(entries[0].infoHash, 'HASHBATCH')
-  assert.ok(entries.some(e => e.infoHash === 'HASH09'), 'the exact episode is still offered')
+  assert.strictEqual(entries[0].infoHash, 'HASH09')
+  assert.strictEqual(entries[0].seeds, 120)
   assert.strictEqual(entries[0].source, 'Nyaa')
-  assert.ok(entries[0].magnet.startsWith('magnet:?xt=urn:btih:HASHBATCH'))
+  assert.ok(entries[0].magnet.startsWith('magnet:?xt=urn:btih:HASH09'))
   // The scratch ordering field must not leak into the entry contract.
   assert.ok(!('_preferred' in entries[0]))
 })
@@ -128,7 +121,7 @@ test('a dead mirror falls through and a total failure yields []', async () => {
     },
   })
   const entries = await provider({ type: 'anime', title: 'Frieren', episode: 9 })
-  assert.strictEqual(entries.length, 3)
+  assert.strictEqual(entries.length, 2)
   assert.strictEqual(calls.length, 2)
 
   const allDead = createNyaaProvider({ baseUrls: ['https://a'], fetchFn: async () => { throw new Error('boom') } })

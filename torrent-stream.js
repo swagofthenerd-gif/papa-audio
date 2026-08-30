@@ -1,5 +1,65 @@
 'use strict'
 const { EventEmitter } = require('node:events')
+const fs = require('node:fs')
+const os = require('node:os')
+const path = require('node:path')
+const crypto = require('node:crypto')
+
+// Streamed video is watched once and then wanted gone. Without an explicit
+// path WebTorrent writes into its own default under the system temp directory
+// and nothing ever removes it, so every film ever streamed accumulates there —
+// on this machine /tmp is a tmpfs, so that was 19 GB of RAM before playback
+// stopped working entirely for want of space.
+//
+// Each stream therefore gets its own directory, and it is deleted when the
+// stream stops.
+const STREAM_ROOT = path.join(os.tmpdir(), 'papa-video-streams')
+
+function newStreamDir() {
+  return path.join(STREAM_ROOT, `s-${process.pid}-${crypto.randomBytes(4).toString('hex')}`)
+}
+
+// Directories from streams that never got to clean up after themselves — a
+// crash, a kill, a power cut. Called at startup, so one bad exit cannot leave
+// data behind for good.
+function purgeOrphanStreams({ keep = null } = {}) {
+  let removed = 0
+  let bytes = 0
+  let entries = []
+  try { entries = fs.readdirSync(STREAM_ROOT) } catch (_) { return { removed, bytes } }
+  for (const name of entries) {
+    const dir = path.join(STREAM_ROOT, name)
+    if (keep && dir === keep) continue
+    // A directory belonging to a process that is still running is in use.
+    const owner = /^s-(\d+)-/.exec(name)
+    if (owner) {
+      const pid = Number(owner[1])
+      if (pid !== process.pid && isProcessAlive(pid)) continue
+    }
+    try {
+      bytes += dirSize(dir)
+      fs.rmSync(dir, { recursive: true, force: true })
+      removed++
+    } catch (_) { /* a directory we cannot remove is not worth failing over */ }
+  }
+  return { removed, bytes }
+}
+
+function isProcessAlive(pid) {
+  try { process.kill(pid, 0); return true } catch (e) { return e && e.code === 'EPERM' }
+}
+
+function dirSize(dir) {
+  let total = 0
+  let entries = []
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch (_) { return 0 }
+  for (const e of entries) {
+    const full = path.join(dir, e.name)
+    if (e.isDirectory()) total += dirSize(full)
+    else { try { total += fs.statSync(full).size } catch (_) {} }
+  }
+  return total
+}
 
 function buildFileUrl(port, fileIndex, fileName) {
   return `http://127.0.0.1:${port}/${fileIndex}/${encodeURIComponent(fileName)}`
@@ -15,44 +75,7 @@ const JUNK = /(^|[\/\\._-])(sample|trailer|extras?|featurette|behindthescenes)([
 // .txt or a sample clip — so playback either failed outright or streamed the
 // wrong file while the real one was never prioritised. The right pick is the
 // largest non-junk video file.
-// Does this filename name the episode we want? Dubbed anime is released
-// almost exclusively as season and batch packs rather than per-episode, so
-// picking the largest file out of a twelve-episode pack would hand back an
-// arbitrary episode — usually not the one asked for.
-function matchesWantedEpisode(name, { season, episode } = {}) {
-  const n = Number(episode)
-  if (!Number.isFinite(n) || n < 0) return false
-  const text = String(name || '')
-  const s = Number(season)
-  // SxxEyy is unambiguous, so when a season is known it must agree.
-  const sxe = /s(\d{1,3})[\s._-]?e(\d{1,4})/i.exec(text)
-  if (sxe) {
-    if (Number(sxe[2]) !== n) return false
-    if (Number.isFinite(s) && s > 0 && Number(sxe[1]) !== s) return false
-    return true
-  }
-  // Otherwise a bare, bounded episode number: " - 09 ", "[09]", "E09".
-  // Bounded on both sides so 09 never matches inside 109 or 190.
-  return new RegExp(`(?:^|[\\s._\\-\\[(])(?:e|ep|episode\\s*)?0*${n}(?:v\\d)?(?:$|[\\s._\\-\\])])`, 'i').test(text)
-}
-
-// The episode number a filename states, or null. Used to order a pack's files
-// and to label them in the UI.
-function episodeNumberOf(name) {
-  const t = String(name || '')
-  const sxe = /s\d{1,3}[\s._-]?e(\d{1,4})/i.exec(t)
-  if (sxe) return Number(sxe[1])
-  // A bounded standalone number: " - 09 ", "[09]", "E09".
-  const bare = /(?:^|[\s._\-\[(])(?:e|ep|episode\s*)?(\d{1,4})(?:v\d)?(?:$|[\s._\-\])])/i.exec(t)
-  if (!bare) return null
-  const n = Number(bare[1])
-  // A four-digit number in a filename is a year far more often than an
-  // episode, and 0 is not an episode.
-  if (!Number.isFinite(n) || n <= 0 || n > 2000) return null
-  return n
-}
-
-function pickVideoFile(files, want) {
+function pickVideoFile(files) {
   const list = Array.isArray(files) ? files : []
   if (!list.length) return -1
   const scored = list
@@ -60,14 +83,6 @@ function pickVideoFile(files, want) {
     .filter(f => VIDEO_EXT.test(f.name))
   const usable = scored.filter(f => !JUNK.test(f.name))
   const pool = usable.length ? usable : scored
-
-  // In a pack, the requested episode is the answer — never the biggest file.
-  if (want && want.episode != null && pool.length > 1) {
-    const matches = pool.filter(f => matchesWantedEpisode(f.name, want))
-    // More than one match means the pack has several versions of the episode
-    // (different encodes, or a v2); the largest of those is the right pick.
-    if (matches.length) return matches.reduce((a, b) => (b.length > a.length ? b : a)).index
-  }
   if (!pool.length) {
     // No recognisable video extension: fall back to the largest file rather
     // than blindly taking index 0.
@@ -101,6 +116,13 @@ function headBytesReady(torrent, file) {
   return bytes
 }
 
+// Removing the directory as well as destroying the store: destroyStore clears
+// the files, this clears what held them.
+function removeDir(dir) {
+  if (!dir) return
+  try { fs.rmSync(dir, { recursive: true, force: true }) } catch (_) {}
+}
+
 class TorrentStreamer extends EventEmitter {
   constructor({ client, timeoutMs = 20000, prebufferBytes = DEFAULT_PREBUFFER_BYTES, prebufferTimeoutMs = 45000 } = {}) {
     super()
@@ -113,8 +135,8 @@ class TorrentStreamer extends EventEmitter {
     this.prebufferTimeoutMs = prebufferTimeoutMs
     this._fileIndex = 0
     this._file = null
-    this._want = null
     this._prebufferTimer = null
+    this._storeDir = null
     this._torrent = null
     this._server = null
     this._timer = null
@@ -140,58 +162,7 @@ class TorrentStreamer extends EventEmitter {
     return buildFileUrl(port, fileIndex, fileName)
   }
 
-  // Every playable file in the torrent, with whatever episode number can be
-  // read out of its name. A season pack already contains every episode, so
-  // switching between them costs nothing: same torrent, same peers, no new
-  // resolve — just a different URL from the server that is already running.
-  files() {
-    const torrent = this._torrent
-    const port = this._server && this._server.address && this._server.address()
-      ? this._server.address().port : null
-    if (!torrent || !Array.isArray(torrent.files) || !port) return []
-    return torrent.files
-      .map((f, index) => ({ index, name: f.name || '', length: Number(f.length) || 0 }))
-      .filter(f => VIDEO_EXT.test(f.name) && !JUNK.test(f.name))
-      .map(f => ({
-        index: f.index,
-        name: f.name,
-        length: f.length,
-        episode: episodeNumberOf(f.name),
-        url: buildFileUrl(port, f.index, f.name),
-        current: f.index === this._fileIndex,
-      }))
-      .sort((a, b) => {
-        // Episode order where it is known; anything unnumbered goes last in
-        // name order rather than being interleaved arbitrarily.
-        if (a.episode == null && b.episode == null) return a.name.localeCompare(b.name)
-        if (a.episode == null) return 1
-        if (b.episode == null) return -1
-        return a.episode - b.episode
-      })
-  }
-
-  // Switch to another file in the same torrent. The server is already serving
-  // it, so this is only a matter of pointing the player elsewhere and moving
-  // the download priority.
-  selectFile(index) {
-    const torrent = this._torrent
-    const files = (torrent && torrent.files) || []
-    const file = files[index]
-    if (!file || !this._server || !this._server.address()) return null
-    try {
-      for (let i = 0; i < files.length; i++) {
-        if (i !== index && typeof files[i].deselect === 'function') files[i].deselect()
-      }
-      if (typeof file.select === 'function') file.select()
-    } catch (_) { /* selection is an optimisation, never fatal */ }
-    this._fileIndex = index
-    this._file = file
-    this._prioritiseHead(torrent, file)
-    return buildFileUrl(this._server.address().port, index, file.name)
-  }
-
-  async start({ magnet, fileIndex = 0, season = null, episode = null } = {}) {
-    this._want = episode != null ? { season, episode } : null
+  async start({ magnet, fileIndex = 0 } = {}) {
     this.stop()
     this._settled = false
     return new Promise((resolve, reject) => {
@@ -200,7 +171,13 @@ class TorrentStreamer extends EventEmitter {
 
       let torrent
       try {
-        torrent = this.client.add(magnet, t => this._onReady(t, fileIndex, resolve, reject))
+        // An explicit path, so the data lands somewhere this class owns and can
+        // delete. Without it WebTorrent picks its own directory and nothing
+        // ever cleans it up.
+        this._storeDir = newStreamDir()
+        try { fs.mkdirSync(this._storeDir, { recursive: true }) } catch (_) {}
+        torrent = this.client.add(magnet, { path: this._storeDir },
+          t => this._onReady(t, fileIndex, resolve, reject))
       } catch (err) {
         this._settle(reject, { code: 'CLIENT_ERROR', message: err.message })
         return
@@ -216,11 +193,9 @@ class TorrentStreamer extends EventEmitter {
     // The caller's fileIndex is only a hint. Honour it when it names a real
     // file, otherwise pick the largest non-junk video file in the pack.
     const files = (torrent && torrent.files) || []
-    // A caller's fileIndex is only a hint, and it is meaningless for a pack:
-    // when a specific episode is wanted the file has to be found by name.
     let index = Number.isInteger(fileIndex) && files[fileIndex] ? fileIndex : -1
-    if (this._want || index === -1 || !VIDEO_EXT.test(files[index].name || '')) {
-      const picked = pickVideoFile(files, this._want)
+    if (index === -1 || !VIDEO_EXT.test(files[index].name || '')) {
+      const picked = pickVideoFile(files)
       if (picked >= 0) index = picked
     }
     const file = files[index]
@@ -385,9 +360,19 @@ class TorrentStreamer extends EventEmitter {
     }
     const torrent = this._torrent
     this._torrent = null
+    const storeDir = this._storeDir
+    this._storeDir = null
     if (torrent) {
       try { torrent.removeListener('download', this._onDownload) } catch {}
-      try { torrent.destroy(() => {}) } catch {}
+      // destroyStore is the whole point: without it the downloaded pieces stay
+      // on disk after the torrent object is gone.
+      try {
+        torrent.destroy({ destroyStore: true }, () => removeDir(storeDir))
+      } catch (_) {
+        removeDir(storeDir)
+      }
+    } else {
+      removeDir(storeDir)
     }
     // A caller awaiting start() must not hang forever when stop() races the
     // 'ready' callback. Settle the pending promise with a deliberate, distinct
@@ -398,4 +383,4 @@ class TorrentStreamer extends EventEmitter {
   }
 }
 
-module.exports = { TorrentStreamer, buildFileUrl, pickVideoFile, matchesWantedEpisode, episodeNumberOf, headBytesReady, VIDEO_EXT }
+module.exports = { TorrentStreamer, buildFileUrl, pickVideoFile, STREAM_ROOT, purgeOrphanStreams, newStreamDir, headBytesReady, VIDEO_EXT }

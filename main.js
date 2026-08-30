@@ -132,7 +132,7 @@ const { createNyaaProvider } = require('./providers/nyaa')
 const { createApibayProvider } = require('./providers/apibay')
 const { createMovieTvProvider, createVidsrcResolver } = require('./providers/movie-tv')
 const { createAnimeProvider } = require('./providers/anime')
-const { TorrentStreamer } = require('./torrent-stream')
+const { TorrentStreamer, purgeOrphanStreams } = require('./torrent-stream')
 const { VideoEngine } = require('./video-engine')
 const { createYarrlistDirectory } = require('./yarrlist-directory')
 const { classify } = require('./src/surround-verify')
@@ -1076,6 +1076,21 @@ app.whenReady().then(() => {
   // Fire and forget, as before: nothing waits on the reaper.
   reapOrphanedMpv().catch(e => console.error('[papa] reap failed:', e && e.message))
   setTimeout(() => reapOrphanedMpv().catch(() => {}), 5000).unref?.()
+
+  // Streamed video is deleted when its stream stops, but a crash or a SIGKILL
+  // leaves it behind — and on this machine the system temp directory is a
+  // tmpfs, so orphaned streams consume RAM until the disk is full and nothing
+  // can play at all. Sweep them at startup, skipping any still owned by a
+  // running process.
+  try {
+    const swept = purgeOrphanStreams()
+    if (swept.removed) {
+      console.log(`[papa-video] removed ${swept.removed} orphaned stream cache(s), ` +
+        `${(swept.bytes / 1073741824).toFixed(2)} GB reclaimed`)
+    }
+  } catch (e) {
+    console.error('[papa-video] stream cache sweep failed:', e && e.message)
+  }
   setTimeout(() => reapOrphanedMpv().catch(() => {}), 30000).unref?.()
   const hidden = process.argv.includes('--hidden')
   artworkDir = path.join(USER_DATA, 'artwork')
@@ -6592,39 +6607,27 @@ ipcMain.handle('video-play', async (_, { result }) => {
       const streamer = new TorrentStreamer({
         client: getTorrentClient(),
         timeoutMs: 30000,
-        // Enough of the head on disk that mpv starts playing instead of
-        // opening an empty stream and immediately stalling.
-        prebufferBytes: 12 * 1024 * 1024,
-        prebufferTimeoutMs: 45000,
+        // No prebuffer gate: mpv starts the moment the local server is up and
+        // buffers itself, which is how this behaved when it played well.
+        //
+        // Waiting for 12 MB here was a misdiagnosis of the original stutter.
+        // The stutter was mpv's 64 MiB demuxer cache, which is now 256 MiB —
+        // that was the real fix, and the gate only added a wait on top of it.
+        // Worse, readiness is measured as contiguous bytes from the file's
+        // FIRST piece, so until that one piece verifies it reads exactly 0%
+        // however much is downloading, which is what looked like a freeze.
+        prebufferBytes: 0,
       })
       streamer.on('error', err => { if (current()) fail(err) })
       streamer.on('progress', p => { if (current()) safeSend('video-event', { kind: 'buffering', ...p }) })
       streamer.on('ready', ({ url }) => {
         if (!current()) { try { streamer.stop() } catch (_) {} ; return }
-        videoEngine().start(url, { wid }).then(() => {
-          started(url)
-          // A season pack already contains every episode. Telling the UI what
-          // is in it turns episode switching into a file change on a torrent
-          // that is already running — same peers, no new resolve, no wait.
-          try {
-            const files = streamer.files()
-            if (files.length > 1) safeSend('video-event', { kind: 'pack', files })
-          } catch (_) { /* the pack list is a convenience, never required */ }
-        }).catch(fail)
+        videoEngine().start(url, { wid }).then(() => started(url)).catch(fail)
       })
       _videoSession.streamer = streamer
       // Deliberately not awaited: start() resolves on 'ready', and awaiting it
       // would hang this handler on a slow torrent — and on stop.
-      // A season pack holds every episode; without the episode the streamer
-      // would pick the largest file, which is an arbitrary one. Dubbed anime
-      // is released almost exclusively as packs, so this is the common case
-      // rather than an edge one.
-      streamer.start({
-        magnet: result.magnet,
-        fileIndex: result.fileIndex ?? 0,
-        season: result.season ?? null,
-        episode: result.episode ?? null,
-      })
+      streamer.start({ magnet: result.magnet, fileIndex: result.fileIndex ?? 0 })
         .catch(e => { if (e && e.code === 'STOPPED') return; fail(e) })
     } else {
       if (!result.url) return { ok: false, error: 'This source has no playable URL' }
@@ -6656,21 +6659,6 @@ ipcMain.handle('video-trailer', async (_, { youtubeId, title } = {}) => {
     await videoEngine().start(url, { wid: null })
     if (_videoSession.token === token) safeSend('video-event', { kind: 'playing', trailer: true })
     return { ok: true, title: title || null }
-  } catch (e) {
-    return { ok: false, error: (e && e.message) || String(e) }
-  }
-})
-
-// Switch to another file inside the pack already streaming.
-ipcMain.handle('video-pack-select', async (_, { index } = {}) => {
-  try {
-    const streamer = _videoSession.streamer
-    if (!streamer) return { ok: false, error: 'Nothing is streaming' }
-    const url = streamer.selectFile(Number(index))
-    if (!url) return { ok: false, error: 'That episode is not in this release' }
-    await videoEngine().load(url)
-    safeSend('video-event', { kind: 'playing' })
-    return { ok: true, url, files: streamer.files() }
   } catch (e) {
     return { ok: false, error: (e && e.message) || String(e) }
   }

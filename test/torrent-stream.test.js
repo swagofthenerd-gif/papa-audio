@@ -28,7 +28,11 @@ function fakeTorrent({ name = 'Movie (2010) 1080p.mp4', length = 1000 } = {}) {
 
 function readyClient(torrent) {
   return {
-    add(magnet, cb) {
+    // WebTorrent's real signature is add(magnet, opts, cb); the streamer now
+    // passes an explicit store path, so the callback is the third argument.
+    add(magnet, opts, cb) {
+      if (typeof opts === 'function') { cb = opts; opts = {} }
+      this.opts = opts
       this.magnet = magnet
       queueMicrotask(() => cb(torrent))
       return torrent
@@ -99,7 +103,11 @@ test('stop() before ready settles the pending start() with STOPPED, no ready', a
   const torrent = fakeTorrent()
   let readyCb
   const client = {
-    add(magnet, cb) {
+    // WebTorrent's real signature is add(magnet, opts, cb); the streamer now
+    // passes an explicit store path, so the callback is the third argument.
+    add(magnet, opts, cb) {
+      if (typeof opts === 'function') { cb = opts; opts = {} }
+      this.opts = opts
       readyCb = cb
       return torrent
     },
@@ -343,115 +351,84 @@ test('stop() closes the server, destroys the torrent and removes the download li
   })
 }
 
-// ── Season packs ────────────────────────────────────────────────────────────
-// Dubbed anime is released almost exclusively as season and batch packs rather
-// than per-episode. Picking the largest file out of a twelve-episode pack
-// hands back an arbitrary episode, usually not the one asked for.
+// The season-pack tests lived here. They covered picking an episode out of a
+// pack by name, which needs TorrentStreamer.files()/selectFile() — that work
+// was reverted along with the rest of commit 6ba213e, so the functions they
+// exercised no longer exist. providers/nyaa.js no longer offers packs either,
+// which keeps the two halves consistent. Restore both together, not one.
+
+// ── Stream cache lifetime ───────────────────────────────────────────────────
+// Streamed video is watched once. Without an explicit path WebTorrent writes
+// into its own default under the system temp directory and nothing removes it,
+// so every film ever streamed accumulates — on this machine /tmp is a tmpfs,
+// so that reached 19 GB of RAM and playback stopped working entirely for want
+// of space. That is the bug these pin.
 {
-  const { pickVideoFile, matchesWantedEpisode, episodeNumberOf } = require('../torrent-stream')
+  const fsx = require('node:fs')
+  const osx = require('node:os')
+  const pathx = require('node:path')
+  const { STREAM_ROOT, purgeOrphanStreams, newStreamDir } = require('../torrent-stream')
 
-  test('the requested episode is found inside a pack, not the largest file', () => {
-    const pack = [
-      { name: '[G] Show - S01E01.mkv', length: 1e9 },
-      { name: '[G] Show - S01E09.mkv', length: 9e8 },
-      { name: '[G] Show - S01E28.mkv', length: 3e9 },
-      { name: 'readme.txt', length: 100 },
-    ]
-    assert.strictEqual(pickVideoFile(pack, { episode: 9 }), 1)
-    assert.strictEqual(pickVideoFile(pack, { episode: 28 }), 2)
-    // With no episode wanted — a film — the largest is still right.
-    assert.strictEqual(pickVideoFile(pack), 2)
+  test('each stream gets its own directory under one known root', () => {
+    const a = newStreamDir()
+    const b = newStreamDir()
+    assert.notStrictEqual(a, b, 'two streams must not share a directory')
+    assert.ok(a.startsWith(STREAM_ROOT))
+    assert.ok(STREAM_ROOT.startsWith(osx.tmpdir()))
+    // The owning pid is in the name so a sweep can tell live from orphaned.
+    assert.match(pathx.basename(a), new RegExp('^s-' + process.pid + '-'))
   })
 
-  test('a season mismatch rules an episode out', () => {
-    assert.strictEqual(matchesWantedEpisode('Show S02E09.mkv', { season: 1, episode: 9 }), false)
-    assert.strictEqual(matchesWantedEpisode('Show S01E09.mkv', { season: 1, episode: 9 }), true)
-    // With no season stated the episode number alone decides.
-    assert.strictEqual(matchesWantedEpisode('Show - 09.mkv', { season: 1, episode: 9 }), true)
+  test('the torrent is added with an explicit path it owns', () => {
+    const src = fsx.readFileSync(pathx.join(__dirname, '..', 'torrent-stream.js'), 'utf8')
+    assert.match(src, /this\.client\.add\(magnet, \{ path: this\._storeDir \}/,
+      'without a path WebTorrent picks its own directory and nothing cleans it')
   })
 
-  test('an episode number is bounded, so 9 never matches 109 or a year', () => {
-    assert.strictEqual(matchesWantedEpisode('Show - 109.mkv', { episode: 9 }), false)
-    assert.strictEqual(matchesWantedEpisode('Show 2009 1080p.mkv', { episode: 9 }), false)
-    assert.strictEqual(matchesWantedEpisode('Show - 09v2.mkv', { episode: 9 }), true)
+  // destroyStore is the whole point: without it the pieces stay on disk after
+  // the torrent object is gone.
+  test('stopping destroys the store and removes the directory', () => {
+    const src = fsx.readFileSync(pathx.join(__dirname, '..', 'torrent-stream.js'), 'utf8')
+    const stop = src.slice(src.indexOf('\n  stop() {'))
+    assert.match(stop, /destroyStore: true/)
+    assert.match(stop, /removeDir\(storeDir\)/)
   })
 
-  test('several versions of the same episode resolve to the largest', () => {
-    const pack = [
-      { name: '[G] Show - 09 [480p].mkv', length: 3e8 },
-      { name: '[G] Show - 09 [1080p].mkv', length: 2e9 },
-    ]
-    assert.strictEqual(pickVideoFile(pack, { episode: 9 }), 1)
+  test('a sweep removes an orphan whose process is gone', () => {
+    const dead = pathx.join(STREAM_ROOT, 's-999998-testorphan')
+    fsx.mkdirSync(dead, { recursive: true })
+    fsx.writeFileSync(pathx.join(dead, 'data.bin'), Buffer.alloc(2048))
+    const out = purgeOrphanStreams()
+    assert.ok(out.removed >= 1)
+    assert.ok(out.bytes >= 2048, 'the reclaimed size is reported')
+    assert.strictEqual(fsx.existsSync(dead), false)
   })
 
-  test('an episode missing from the pack falls back rather than failing', () => {
-    const pack = [{ name: '[G] Show - S01E01.mkv', length: 1e9 }]
-    assert.strictEqual(pickVideoFile(pack, { episode: 99 }), 0)
+  // A directory belonging to a running process is in use; removing it would
+  // pull the file out from under a stream that is playing.
+  test('a sweep leaves a directory owned by a live process alone', () => {
+    const live = pathx.join(STREAM_ROOT, 's-' + process.pid + '-testlive')
+    fsx.mkdirSync(live, { recursive: true })
+    try {
+      purgeOrphanStreams({ keep: live })
+      assert.strictEqual(fsx.existsSync(live), true)
+    } finally {
+      fsx.rmSync(live, { recursive: true, force: true })
+    }
   })
 
-  test('episode numbers are read from either naming convention', () => {
-    assert.strictEqual(episodeNumberOf('[G] Show - S01E09.mkv'), 9)
-    assert.strictEqual(episodeNumberOf('[G] Show - 09 [1080p].mkv'), 9)
-    assert.strictEqual(episodeNumberOf('[G] Show E28.mkv'), 28)
-    // A four-digit number in a filename is a year far more often than an
-    // episode.
-    assert.strictEqual(episodeNumberOf('Movie 2009 1080p.mkv'), null)
-    assert.strictEqual(episodeNumberOf('readme.mkv'), null)
+  test('a sweep with nothing to do is harmless', () => {
+    const out = purgeOrphanStreams()
+    assert.ok(typeof out.removed === 'number')
+    assert.ok(typeof out.bytes === 'number')
   })
 
-  test('the pack listing is ordered by episode, unnumbered files last', async () => {
-    const torrent = new EventEmitter()
-    torrent.files = [
-      { name: '[G] Show - 03.mkv', length: 1e9, select () {}, deselect () {} },
-      // Deliberately not "extras.mkv": that is filtered as junk, correctly.
-      { name: 'OP creditless.mkv', length: 1e8, select () {}, deselect () {} },
-      { name: '[G] Show - 01.mkv', length: 1e9, select () {}, deselect () {} },
-    ]
-    torrent.pieceLength = 1000
-    torrent.bitfield = null
-    torrent.createServer = () => http.createServer()
-    torrent.destroy = cb => { if (cb) cb() }
-    const streamer = new TorrentStreamer({ client: readyClient(torrent), prebufferBytes: 0 })
-    await streamer.start({ magnet: 'magnet:?xt=urn:btih:A', episode: 1 })
-    const files = streamer.files()
-    assert.deepStrictEqual(files.map(f => f.episode), [1, 3, null])
-    assert.strictEqual(files[0].current, true, 'the episode being played is marked')
-    streamer.stop()
-  })
-
-  // Switching is a file change on a torrent that is already running: same
-  // peers, no new resolve, no wait.
-  test('selecting another file returns a URL without restarting the torrent', async () => {
-    const deselected = []
-    const torrent = new EventEmitter()
-    torrent.files = [
-      { name: '[G] Show - 01.mkv', length: 1e9, select () { this.sel = true }, deselect () { deselected.push('01') } },
-      { name: '[G] Show - 02.mkv', length: 1e9, select () { this.sel = true }, deselect () { deselected.push('02') } },
-    ]
-    torrent.pieceLength = 1000
-    torrent.bitfield = null
-    torrent.createServer = () => http.createServer()
-    torrent.destroy = cb => { if (cb) cb() }
-    const streamer = new TorrentStreamer({ client: readyClient(torrent), prebufferBytes: 0 })
-    await streamer.start({ magnet: 'magnet:?xt=urn:btih:A', episode: 1 })
-    const url = streamer.selectFile(1)
-    assert.match(url, /\/1\/%5BG%5D%20Show%20-%2002\.mkv$/)
-    assert.strictEqual(torrent.files[1].sel, true, 'the new file is prioritised')
-    assert.ok(deselected.includes('01'), 'the old one is dropped')
-    assert.strictEqual(streamer.files().find(f => f.current).episode, 2)
-    streamer.stop()
-  })
-
-  test('selecting a file that does not exist returns null', async () => {
-    const torrent = new EventEmitter()
-    torrent.files = [{ name: 'a.mkv', length: 1e9, select () {}, deselect () {} }]
-    torrent.pieceLength = 1000
-    torrent.bitfield = null
-    torrent.createServer = () => http.createServer()
-    torrent.destroy = cb => { if (cb) cb() }
-    const streamer = new TorrentStreamer({ client: readyClient(torrent), prebufferBytes: 0 })
-    await streamer.start({ magnet: 'magnet:?xt=urn:btih:A' })
-    assert.strictEqual(streamer.selectFile(99), null)
-    streamer.stop()
+  // A crash or SIGKILL cannot run stop(), so the sweep is the only thing that
+  // reclaims that space.
+  test('the app sweeps orphaned caches at startup', () => {
+    const main = fsx.readFileSync(pathx.join(__dirname, '..', 'main.js'), 'utf8')
+    assert.match(main, /purgeOrphanStreams/)
+    const at = main.indexOf('purgeOrphanStreams()')
+    assert.ok(at > main.indexOf('app.whenReady'), 'the sweep runs on startup')
   })
 }

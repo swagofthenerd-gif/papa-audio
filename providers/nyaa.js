@@ -125,10 +125,12 @@ function parseFeed(xml) {
 // The feed is a plain text search, so a query for "Frieren 09" happily returns
 // batch packs and episode 19; playing one of those instead is worse than
 // showing nothing.
-// A season or batch pack containing the requested episode. Dubbed anime is
-// released almost exclusively this way rather than per-episode, so rejecting
-// packs — which the first version of this did — filtered out nearly every dub
-// there is. The streamer finds the right file inside the pack by name.
+// Whether a release is a season or batch pack rather than one episode.
+//
+// Used only to label a result. Packs are not offered as sources: they are
+// where the dubs live, but playing one needs the streamer to select a file by
+// name inside the torrent, and that half is not in place. Offering them
+// without it plays an arbitrary episode.
 const RANGE_RE = /(\d{1,4})\s*(?:-|~|to)\s*(\d{1,4})/
 const PACK_RE = /\b(batch|complete|season\s*\d+|collection|bd[\s._-]?box)\b/i
 
@@ -168,8 +170,15 @@ function matchesEpisode(title, episode) {
   // never matches inside 109 or 190.
   const re = new RegExp(`(?:^|[\\s\\-_\\[(.])(?:e|ep|episode\\s*)?0*${n}(?:v\\d)?(?:$|[\\s\\-_\\])."'])`, 'i')
   if (re.test(t)) return true
-  if (t.includes(` ${pad} `)) return true
-  return isPack(t, n)
+  return t.includes(` ${pad} `)
+  // Season packs are NOT accepted here.
+  //
+  // They were, briefly, because that is where the dubs live — but picking the
+  // right episode out of a pack needs the streamer to select a file by name,
+  // and that support is not present. Handing a twenty-gigabyte pack to a
+  // streamer that takes the largest file plays an arbitrary episode and drags
+  // the whole release down to do it. Single episodes only until the streamer
+  // can do the other half.
 }
 
 function normalizeItem(raw, { preferDub = false, episode = null } = {}) {
