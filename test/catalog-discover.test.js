@@ -434,3 +434,31 @@ test('a search result carries the anime flag and original name', () => {
   const film = tmdb.normalizeSearchResult({ media_type: 'movie', id: 2, title: 'Dune', release_date: '2021-01-01' })
   assert.strictEqual(film.isAnime, false, 'a film is never flagged as anime')
 })
+
+// Anime films — Jujutsu Kaisen 0, Suzume, A Silent Voice — are as much anime
+// as the series. Restricting the flag to television left them routed to the
+// film indexers: 4 sources against nyaa's 45, and no dub at all.
+test('an anime film is flagged, on both the detail and the search shape', () => {
+  const film = tmdb.normalizeMovie({
+    id: 1, title: 'Jujutsu Kaisen 0', original_title: '劇場版 呪術廻戦 0',
+    original_language: 'ja', genres: [{ id: 16, name: 'Animation' }],
+  })
+  assert.strictEqual(film.isAnime, true)
+  assert.strictEqual(film.originalName, '劇場版 呪術廻戦 0')
+
+  const result = tmdb.normalizeSearchResult({
+    media_type: 'movie', id: 2, title: 'Suzume', original_title: 'すずめの戸締まり',
+    original_language: 'ja', genre_ids: [16],
+  })
+  assert.strictEqual(result.isAnime, true)
+  // A film uses original_title where a series uses original_name.
+  assert.strictEqual(result.originalName, 'すずめの戸締まり')
+})
+
+test('a live-action film is never flagged as anime', () => {
+  const dune = tmdb.normalizeMovie({ id: 3, title: 'Dune', original_language: 'en', genres: [{ id: 878 }] })
+  assert.strictEqual(dune.isAnime, false)
+  // A western animated film is animation, not anime.
+  const pixar = tmdb.normalizeMovie({ id: 4, title: 'Up', original_language: 'en', genres: [{ id: 16 }] })
+  assert.strictEqual(pixar.isAnime, false)
+})

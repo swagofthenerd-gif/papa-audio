@@ -163,6 +163,11 @@ function normalizeMovie(raw) {
     rating: raw.vote_average ?? null,
     genres: _genres(raw),
     imdbId: _imdbId(raw),
+    // Anime films are anime. Without this they route to the film indexers,
+    // which carry no dub and none of nyaa's releases.
+    originalName: raw.original_title ?? null,
+    originalLanguage: raw.original_language ?? null,
+    isAnime: _isAnime(raw),
     runtime: raw.runtime ?? null,
     tagline: raw.tagline ?? null,
     certification: certification(raw.release_dates),
@@ -280,8 +285,12 @@ function normalizeSearchResult(raw) {
     // search/multi returns genre_ids rather than genres, which _isAnime reads
     // too. Carried so a merged search can tell a tv entry that is really anime
     // from one that is not, without a second request per result.
-    originalName: raw.original_name ?? null,
-    isAnime: isTv && _isAnime(raw),
+    // A film uses original_title where a series uses original_name.
+    originalName: (isTv ? raw.original_name : raw.original_title) ?? null,
+    // Anime films — Jujutsu Kaisen 0, Suzume, A Silent Voice — are just as
+    // much anime as the series, and restricting this to television left them
+    // routed to the film indexers with no dub and no nyaa.
+    isAnime: _isAnime(raw),
   }
 }
 

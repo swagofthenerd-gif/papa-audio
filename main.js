@@ -6390,9 +6390,10 @@ ipcMain.handle('video-search', async (_, { query, type }) => {
 
     const merged = []
     for (const r of tmdbRes) {
-      // A tv entry that is really anime and that AniList also has is the same
-      // show twice. Keeping both is confusing, and the TMDB one is the half
-      // with the worse sources.
+      // A TMDB entry that is really anime and that AniList also has is the
+      // same show twice. Keeping both is confusing, and the TMDB one is the
+      // half with the worse sources. Films as well as series: an anime film
+      // duplicated this way is the case that was reported.
       if (r.isAnime && animeRes.some(a => _sameShow(a, r))) continue
       merged.push(r)
     }
@@ -6556,15 +6557,21 @@ ipcMain.handle('video-streams', async (_, req) => {
   const { type, tmdbId, anilistId, imdbId, title, titles, year, season, episode, sub, dub } = req || {}
   try {
     const settings = _videoSettings()
-    const request = { type, tmdbId, anilistId, imdbId, title, titles, year, season, episode, sub, dub }
+    // Anime that TMDB files as a series or a film is looked up as anime,
+    // whichever entry the viewer opened. This has to change the request's own
+    // type, not just the choice of backends: nyaa refuses anything that is not
+    // type 'anime', so routing to it while still saying 'tv' would have
+    // returned nothing at all. Films count too — restricting this to
+    // television left Jujutsu Kaisen 0 on the film indexers, with no dub.
+    const sourceType = (req.isAnime === true && type !== 'anime') ? 'anime' : type
+    const request = {
+      type: sourceType, tmdbId, anilistId, imdbId, title, titles, year, season, episode, sub, dub,
+    }
     // Key on the request plus the settings that change the answer, so a
     // settings change can never be masked by a cache hit.
     const key = JSON.stringify([request, settings.preferSurround, settings.preferredQuality, settings.torrentSources])
     const cached = _videoStreamCache.get(key)
     if (cached) return { ok: true, streams: cached }
-    // An anime released as a TMDB tv show is looked up like anime, whichever
-    // entry the viewer opened.
-    const sourceType = (type === 'tv' && req.isAnime === true) ? 'anime' : type
     const backends = _videoBackends(sourceType, settings)
     const ranked = await resolveStream(request, backends, {
       preferSurround: settings.preferSurround,

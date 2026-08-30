@@ -20,9 +20,13 @@ const {
 const IMG = 'https://image.tmdb.org/t/p/w500'
 
 // The extras a detail entry always carries, empty when TMDB sent nothing.
+// originalName/originalLanguage/isAnime are here too: anime is routed by what
+// it is rather than which catalog it came from, and a film TMDB files as
+// animation needs the same treatment as a series.
 const NO_EXTRAS = {
   cast: [], crew: [], trailers: [], studios: [], languages: [],
   providers: null, collection: null, similar: [], recommendations: [],
+  originalName: null, originalLanguage: null, isAnime: false,
 }
 
 test('normalizeMovie maps a raw movie to a catalog entry', () => {

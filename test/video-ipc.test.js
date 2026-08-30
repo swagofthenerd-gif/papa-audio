@@ -503,7 +503,7 @@ test('an AniList match is only trusted when a title corresponds', () => {
 
 test('sources are routed by what the show is, not where it was opened', () => {
   const body = handlerBody('video-streams')
-  assert.match(body, /const sourceType = \(type === 'tv' && req\.isAnime === true\) \? 'anime' : type/)
+  assert.match(body, /const sourceType = \(req\.isAnime === true && type !== 'anime'\) \? 'anime' : type/)
   assert.match(body, /_videoBackends\(sourceType, settings\)/)
 })
 
@@ -555,4 +555,29 @@ test('a filtered search does not merge', () => {
   const body = handlerBody('video-search')
   assert.match(body, /if \(type === 'anime'\) return \{ ok: true, results: await anilist\(\)\.search\(query\) \}/)
   assert.match(body, /if \(type === 'movie' \|\| type === 'tv'\)/)
+})
+
+// nyaa refuses anything whose type is not 'anime', so routing to it while the
+// request still said 'tv' or 'movie' would have returned nothing at all — the
+// backend choice alone was not enough.
+test('anime routing rewrites the request type, not just the backends', () => {
+  const body = handlerBody('video-streams')
+  assert.match(body, /const sourceType = \(req\.isAnime === true && type !== 'anime'\) \? 'anime' : type/)
+  assert.match(body, /const request = \{\s*\n?\s*type: sourceType/)
+  assert.match(body, /_videoBackends\(sourceType, settings\)/)
+})
+
+// Films as well as series: this was the reported case.
+test('an anime film is routed to the anime indexer', () => {
+  const body = handlerBody('video-streams')
+  assert.ok(!/type === 'tv' && req\.isAnime/.test(body),
+    'restricting the check to television left anime films on the film indexers')
+})
+
+test('the renderer flags anime films as well as series', () => {
+  const RENDERER = require('fs').readFileSync(require('path').join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
+  const at = RENDERER.indexOf('function _videoStreamRequest(')
+  const body = RENDERER.slice(at, at + 1800)
+  // Both branches must send it.
+  assert.strictEqual((body.match(/isAnime: d\.isAnime === true/g) || []).length, 2)
 })

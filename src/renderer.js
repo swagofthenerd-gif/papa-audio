@@ -3319,7 +3319,17 @@ async function _refreshTvEpisodes(ticket, seasonTicket) {
 function _videoStreamRequest() {
   const d = _videoDetail.d
   const base = { type: _videoDetail.type, title: d.title, year: d.year }
-  if (_videoDetail.type === 'movie') return Object.assign(base, { tmdbId: d.id, imdbId: d.imdbId || null })
+  if (_videoDetail.type === 'movie') {
+    // An anime film is anime: it wants nyaa and the romaji title, not the film
+    // indexers. The detail was enriched with AniList's titles for exactly this.
+    const wantDub = _playing.dub != null ? _playing.dub : !_videoState.sub
+    return Object.assign(base, {
+      tmdbId: d.id, imdbId: d.imdbId || null,
+      isAnime: d.isAnime === true,
+      titles: d.titles || null,
+      ...(d.isAnime ? { sub: !wantDub, dub: wantDub } : {}),
+    })
+  }
   if (_videoDetail.type === 'tv') {
     // An anime that TMDB files as television. The detail was enriched with
     // AniList's titles, so the source lookup can use the anime indexer and the
