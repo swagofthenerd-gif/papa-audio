@@ -6392,9 +6392,53 @@ async function _videoShowDetail(type, id) {
     detail = await anilist().byId(id)
   } else {
     detail = await tmdb().detail(type === 'tv' ? 'tv' : 'movie', id)
+    // TMDB carries the better description, cast and artwork; AniList carries
+    // the romaji title the release groups actually index under, and the MAL id
+    // the skip service is keyed on. A show opened from a search lands on the
+    // TMDB entry and used to get the TV indexer's sources, which barely carry
+    // anime — the same show opened from the Anime tab got nyaa and a far
+    // better list. Borrowing AniList's titles here means the entry point stops
+    // mattering: TMDB's detail, nyaa's sources.
+    if (detail && detail.isAnime) detail = await _enrichAnimeDetail(detail)
   }
   if (detail) _videoDetailCache.set(key, detail)
   return detail
+}
+
+// Finds the AniList entry for a TMDB anime and copies across what the source
+// router and the skip service need. Failure is not fatal: without it the show
+// simply behaves as it did before.
+async function _enrichAnimeDetail(detail) {
+  try {
+    // The original Japanese name matches AniList far more reliably than the
+    // English one, which is often a licensor's retitling.
+    const queries = [detail.originalName, detail.title].filter(Boolean)
+    for (const q of queries) {
+      const hits = await anilist().search(q, 1)
+      if (!hits || !hits.length) continue
+      // Trust a hit only when a title actually corresponds — AniList search is
+      // fuzzy, and the wrong show's romaji title would send the source lookup
+      // somewhere unrelated.
+      const match = hits.find(h => _titlesOverlap(h, detail)) || null
+      if (!match) continue
+      return {
+        ...detail,
+        titles: match.titles || null,
+        idMal: match.idMal || null,
+        anilistId: match.id,
+        episodeCount: detail.episodeCount || match.episodeCount || null,
+      }
+    }
+  } catch (_) { /* enrichment is a bonus, never a requirement */ }
+  return detail
+}
+
+function _titlesOverlap(a, b) {
+  const norm = v => String(v || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+  const aNames = [a.title, a.titles && a.titles.romaji, a.titles && a.titles.english,
+                  a.titles && a.titles.native].map(norm).filter(Boolean)
+  const bNames = [b.title, b.originalName].map(norm).filter(Boolean)
+  return aNames.some(x => bNames.some(y => x === y || x.includes(y) || y.includes(x)))
 }
 
 async function _videoSeasonDetail(tvId, season) {
@@ -6436,6 +6480,9 @@ ipcMain.handle('video-detail', async (_, { type, id, season }) => {
 // one guaranteed-empty network round-trip per episode click.
 function _videoBackends(type, settings) {
   const torrents = settings.torrentSources !== false
+  // `type` here is the *source* type, which is not always the catalog the
+  // entry came from: a TMDB tv show flagged as anime is routed to nyaa, so a
+  // show found by search gets the same sources as one found in the Anime tab.
   if (type === 'anime') return torrents ? [nyaa(), apibay(), anime()] : [anime()]
   // Every type gets the broad indexer alongside its specialist one. They run
   // in parallel and their results are merged and de-duplicated by info hash,
@@ -6468,7 +6515,8 @@ function _applyQualityPreference(streams, preferred) {
   return within.concat(above, low)
 }
 
-ipcMain.handle('video-streams', async (_, { type, tmdbId, anilistId, imdbId, title, titles, year, season, episode, sub, dub }) => {
+ipcMain.handle('video-streams', async (_, req) => {
+  const { type, tmdbId, anilistId, imdbId, title, titles, year, season, episode, sub, dub } = req || {}
   try {
     const settings = _videoSettings()
     const request = { type, tmdbId, anilistId, imdbId, title, titles, year, season, episode, sub, dub }
@@ -6477,7 +6525,10 @@ ipcMain.handle('video-streams', async (_, { type, tmdbId, anilistId, imdbId, tit
     const key = JSON.stringify([request, settings.preferSurround, settings.preferredQuality, settings.torrentSources])
     const cached = _videoStreamCache.get(key)
     if (cached) return { ok: true, streams: cached }
-    const backends = _videoBackends(type, settings)
+    // An anime released as a TMDB tv show is looked up like anime, whichever
+    // entry the viewer opened.
+    const sourceType = (type === 'tv' && req.isAnime === true) ? 'anime' : type
+    const backends = _videoBackends(sourceType, settings)
     const ranked = await resolveStream(request, backends, {
       preferSurround: settings.preferSurround,
       timeoutMs: 20000,

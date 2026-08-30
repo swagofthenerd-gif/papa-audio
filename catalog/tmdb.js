@@ -214,6 +214,14 @@ function normalizeTv(raw) {
     rating: raw.vote_average ?? null,
     genres: _genres(raw),
     imdbId: _imdbId(raw),
+    // TMDB files anime as ordinary television, so a search for an anime title
+    // returns a tv entry alongside AniList's. Routed as tv its sources come
+    // from the TV indexer, which barely carries anime — the same show opened
+    // from the Anime tab gets nyaa and a far better list. Flagging it here lets
+    // the source router treat it as what it is, whichever entry was opened.
+    originalName: raw.original_name ?? null,
+    originalLanguage: raw.original_language ?? null,
+    isAnime: _isAnime(raw),
     // A show has no single runtime; TMDB reports episode_run_time as an array.
     // The first entry is the representative number for the hero's "· 47m".
     runtime: (Array.isArray(raw.episode_run_time) && raw.episode_run_time.length) ? raw.episode_run_time[0] : null,
@@ -241,6 +249,22 @@ function normalizePerson(raw) {
       .map(k => (k && k.media_type === 'tv' ? k.name : k && k.title))
       .filter(Boolean).slice(0, 3),
   }
+}
+
+// Japanese animation. TMDB has no anime flag, but genre 16 is Animation and
+// the original language and origin country settle the rest. Deliberately
+// narrow: a French cartoon is animation, not anime, and routing it to an
+// anime indexer would find nothing.
+const TMDB_ANIMATION_GENRE = 16
+
+function _isAnime(raw) {
+  if (!raw) return false
+  const ids = Array.isArray(raw.genres)
+    ? raw.genres.map(g => (g && typeof g === 'object' ? g.id : g))
+    : (Array.isArray(raw.genre_ids) ? raw.genre_ids : [])
+  if (!ids.includes(TMDB_ANIMATION_GENRE)) return false
+  if (raw.original_language === 'ja') return true
+  return Array.isArray(raw.origin_country) && raw.origin_country.includes('JP')
 }
 
 function normalizeSearchResult(raw) {
@@ -454,6 +478,8 @@ function createTmdbCatalog({ apiKey, fetchFn } = {}) {
 
 module.exports = {
   _trailers,
+  _isAnime,
+  TMDB_ANIMATION_GENRE,
   SORTS,
   TV_SORTS,
   buildDiscoverUrl,

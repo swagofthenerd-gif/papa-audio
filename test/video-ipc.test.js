@@ -475,3 +475,42 @@ test('switching with nothing streaming is refused', () => {
 test('the pack channel is reachable from the renderer', () => {
   assert.match(PRELOAD, /videoPackSelect:/)
 })
+
+// ── Anime opened from search ────────────────────────────────────────────────
+// TMDB files anime as tv, so a searched anime landed on the tv entry and got
+// the TV indexer's sources — nearly none. The entry point must not decide the
+// quality of the source list.
+test('a TMDB anime is enriched with AniList titles', () => {
+  assert.match(MAIN, /async function _enrichAnimeDetail\(detail\)/)
+  const start = MAIN.indexOf('async function _enrichAnimeDetail(')
+  const body = MAIN.slice(start, MAIN.indexOf('\nfunction _titlesOverlap', start))
+  // The original Japanese name matches AniList more reliably than the English.
+  assert.match(body, /detail\.originalName, detail\.title/)
+  assert.match(body, /titles: match\.titles/)
+  assert.match(body, /idMal: match\.idMal/, 'the skip service is keyed on the MAL id')
+  assert.match(body, /catch \(_\)/, 'enrichment must never be fatal')
+})
+
+// AniList search is fuzzy; the wrong show's romaji title would send the source
+// lookup somewhere unrelated.
+test('an AniList match is only trusted when a title corresponds', () => {
+  assert.match(MAIN, /function _titlesOverlap\(a, b\)/)
+  const start = MAIN.indexOf('function _titlesOverlap(')
+  const body = MAIN.slice(start, MAIN.indexOf('\n}', start))
+  assert.match(body, /romaji/)
+  assert.match(body, /native/)
+})
+
+test('sources are routed by what the show is, not where it was opened', () => {
+  const body = handlerBody('video-streams')
+  assert.match(body, /const sourceType = \(type === 'tv' && req\.isAnime === true\) \? 'anime' : type/)
+  assert.match(body, /_videoBackends\(sourceType, settings\)/)
+})
+
+test('the renderer tells main when a tv entry is anime', () => {
+  const RENDERER = require('fs').readFileSync(require('path').join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
+  const at = RENDERER.indexOf('function _videoStreamRequest(')
+  const body = RENDERER.slice(at, at + 1400)
+  assert.match(body, /isAnime: d\.isAnime === true/)
+  assert.match(body, /titles: d\.titles \|\| null/)
+})

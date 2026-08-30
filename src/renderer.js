@@ -3320,7 +3320,20 @@ function _videoStreamRequest() {
   const d = _videoDetail.d
   const base = { type: _videoDetail.type, title: d.title, year: d.year }
   if (_videoDetail.type === 'movie') return Object.assign(base, { tmdbId: d.id, imdbId: d.imdbId || null })
-  if (_videoDetail.type === 'tv') return Object.assign(base, { tmdbId: d.id, imdbId: d.imdbId || null, season: _videoState.season, episode: _videoState.episode })
+  if (_videoDetail.type === 'tv') {
+    // An anime that TMDB files as television. The detail was enriched with
+    // AniList's titles, so the source lookup can use the anime indexer and the
+    // romaji name it indexes under — the same sources the Anime tab would give
+    // for this show, rather than the TV indexer's thin anime coverage.
+    const wantDub = _playing.dub != null ? _playing.dub : !_videoState.sub
+    return Object.assign(base, {
+      tmdbId: d.id, imdbId: d.imdbId || null,
+      season: _videoState.season, episode: _videoState.episode,
+      isAnime: d.isAnime === true,
+      titles: d.titles || null,
+      ...(d.isAnime ? { sub: !wantDub, dub: wantDub } : {}),
+    })
+  }
   // The torrent indexer needs the romaji title, not the English display one,
   // so every variant AniList returned is sent along.
   // Once something is playing, its language is the better signal: a dubbed

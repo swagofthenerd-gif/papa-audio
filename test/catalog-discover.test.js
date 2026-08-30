@@ -383,3 +383,39 @@ test('a title with no videos yields no trailers', () => {
   assert.deepStrictEqual(tmdb._trailers({}), [])
   assert.deepStrictEqual(tmdb._trailers({ videos: { results: null } }), [])
 })
+
+// ── Anime filed as television ───────────────────────────────────────────────
+// TMDB has no anime flag: it files anime as ordinary tv. A search therefore
+// returns a tv entry alongside AniList's, and opening the tv one used to route
+// the source lookup to the TV indexer, which barely carries anime. Measured on
+// Frieren: the tv path returned 0 sources, the anime path 22.
+test('Japanese animation is recognised among TMDB tv entries', () => {
+  assert.strictEqual(tmdb._isAnime({ genres: [{ id: 16 }], original_language: 'ja' }), true)
+  assert.strictEqual(tmdb._isAnime({ genre_ids: [16], origin_country: ['JP'] }), true)
+})
+
+// Deliberately narrow: a French cartoon is animation, not anime, and routing
+// it to an anime indexer would find nothing.
+test('animation that is not anime is left as television', () => {
+  assert.strictEqual(tmdb._isAnime({ genres: [{ id: 16 }], original_language: 'fr' }), false)
+  assert.strictEqual(tmdb._isAnime({ genres: [{ id: 18 }], original_language: 'ja' }), false)
+  assert.strictEqual(tmdb._isAnime({}), false)
+  assert.strictEqual(tmdb._isAnime(null), false)
+})
+
+test('a tv detail carries the flag and the original title', () => {
+  const tv = tmdb.normalizeTv({
+    id: 1, name: 'Frieren: Beyond Journey’s End', original_name: '葬送のフリーレン',
+    original_language: 'ja', genres: [{ id: 16, name: 'Animation' }],
+  })
+  assert.strictEqual(tv.isAnime, true)
+  // The original Japanese name matches AniList far more reliably than a
+  // licensor's English retitling.
+  assert.strictEqual(tv.originalName, '葬送のフリーレン')
+  assert.strictEqual(tv.originalLanguage, 'ja')
+})
+
+test('an ordinary series is not flagged', () => {
+  const tv = tmdb.normalizeTv({ id: 2, name: 'Breaking Bad', original_language: 'en', genres: [{ id: 18 }] })
+  assert.strictEqual(tv.isAnime, false)
+})
