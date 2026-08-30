@@ -1157,6 +1157,7 @@ function navigate(page, navId, opts = {}) {
   else if (page === 'yt-playlist') renderYtPlaylist(navId)
   else if (page === 'explore')     renderExplore()
   else if (page === 'video')       renderVideo()
+  else if (page === 'browse')      renderBrowse()
   else if (page === 'video-detail') renderVideoDetail(navId)
   } catch (err) {
     _renderFailure(page, err)
@@ -1209,6 +1210,483 @@ var _videoState = { season: null, episode: 1, sub: true }
 var _videoStreams = []
 var _videoUiReady = false
 
+// ── Browse ──────────────────────────────────────────────────────────────────
+// The filter state is one plain object so it can be serialised into the nav id
+// and compared cheaply. `genres` holds included ids; `exclude` holds the ones
+// clicked a second time.
+function _emptyFilters() {
+  return {
+    catalog: 'movie',
+    genres: [], exclude: [], tags: [],
+    yearFrom: null, yearTo: null,
+    minRating: null, sort: 'popularity',
+    runtimeFrom: null, runtimeTo: null,
+    season: null, seasonYear: null, format: null, status: null,
+  }
+}
+
+var _browse = {
+  filters: _emptyFilters(),
+  page: 1, results: [], total: 0, totalPages: 1,
+  loading: false, ticket: 0, observer: null,
+}
+var _browseVocab = { genres: {}, tags: null }
+
+var _BROWSE_SORTS = [
+  { key: 'popularity', label: 'Popular' },
+  { key: 'rating', label: 'Top rated' },
+  { key: 'newest', label: 'Newest' },
+  { key: 'oldest', label: 'Oldest' },
+  { key: 'title', label: 'A–Z' },
+]
+var _ANIME_FORMATS = ['TV', 'MOVIE', 'OVA', 'ONA', 'SPECIAL']
+var _ANIME_SEASONS = ['WINTER', 'SPRING', 'SUMMER', 'FALL']
+var _ANIME_STATUS = [
+  { key: 'RELEASING', label: 'Airing' },
+  { key: 'FINISHED', label: 'Finished' },
+  { key: 'NOT_YET_RELEASED', label: 'Upcoming' },
+]
+
+// Only the filters that differ from empty, as removable chips.
+function _activeFilterChips(f) {
+  const out = []
+  const genreName = id => {
+    const list = _browseVocab.genres[f.catalog] || []
+    const hit = list.find(g => String(g.id) === String(id))
+    return hit ? hit.name : String(id)
+  }
+  for (const id of f.genres) out.push({ key: 'genre:' + id, label: genreName(id) })
+  for (const id of f.exclude) out.push({ key: 'exclude:' + id, label: 'not ' + genreName(id) })
+  for (const t of f.tags) out.push({ key: 'tag:' + t, label: t })
+  if (f.yearFrom || f.yearTo) {
+    out.push({ key: 'years', label: (f.yearFrom || '…') + '–' + (f.yearTo || '…') })
+  }
+  if (f.minRating) out.push({ key: 'rating', label: '★ ' + f.minRating + '+' })
+  if (f.runtimeFrom || f.runtimeTo) {
+    out.push({ key: 'runtime', label: (f.runtimeFrom || 0) + '–' + (f.runtimeTo || '…') + ' min' })
+  }
+  if (f.season) out.push({ key: 'season', label: f.season[0] + f.season.slice(1).toLowerCase() })
+  if (f.seasonYear) out.push({ key: 'seasonYear', label: String(f.seasonYear) })
+  if (f.format) out.push({ key: 'format', label: f.format })
+  if (f.status) {
+    const hit = _ANIME_STATUS.find(x => x.key === f.status)
+    out.push({ key: 'status', label: hit ? hit.label : f.status })
+  }
+  return out
+}
+
+function _clearFilterKey(f, key) {
+  const [kind, value] = String(key).split(':')
+  if (kind === 'genre') f.genres = f.genres.filter(g => String(g) !== value)
+  else if (kind === 'exclude') f.exclude = f.exclude.filter(g => String(g) !== value)
+  else if (kind === 'tag') f.tags = f.tags.filter(t => t !== value)
+  else if (kind === 'years') { f.yearFrom = null; f.yearTo = null }
+  else if (kind === 'rating') f.minRating = null
+  else if (kind === 'runtime') { f.runtimeFrom = null; f.runtimeTo = null }
+  else if (kind === 'season') f.season = null
+  else if (kind === 'seasonYear') f.seasonYear = null
+  else if (kind === 'format') f.format = null
+  else if (kind === 'status') f.status = null
+}
+
+// The request the backend expects, with the anime vocabulary swapped in for
+// the anime catalog. Genres are ids for TMDB and names for AniList, which the
+// vocab endpoint already unified.
+function _browseRequest(f, page) {
+  const base = { catalog: f.catalog, page: page, sort: f.sort }
+  if (f.catalog === 'anime') {
+    return Object.assign(base, {
+      genres: f.genres.slice(), tags: f.tags.slice(),
+      minRating: f.minRating, seasonYear: f.seasonYear || f.yearFrom || null,
+      season: f.season, formats: f.format ? [f.format] : [], status: f.status,
+    })
+  }
+  return Object.assign(base, {
+    genres: f.genres.slice(), excludeGenres: f.exclude.slice(),
+    yearFrom: f.yearFrom, yearTo: f.yearTo, minRating: f.minRating,
+    runtimeFrom: f.runtimeFrom, runtimeTo: f.runtimeTo,
+  })
+}
+
+async function renderBrowse() {
+  _initVideoUI()
+  const ticket = ++_videoCatalogTicket
+  setContent('<div class="page vpage">' + _vHeadHtml() +
+    '<div class="vbrowse">' +
+      '<aside class="vfilters" id="vfilters" aria-label="Filters"></aside>' +
+      '<section class="vresults">' +
+        '<div class="vres-head"><div class="vres-count" id="vres-count">Loading…</div></div>' +
+        '<div class="vactive" id="vactive"></div>' +
+        '<div class="vgrid" id="vgrid"></div>' +
+        '<div class="vgrid-more" id="vgrid-more"></div>' +
+      '</section>' +
+    '</div>' +
+  '</div>')
+  _bindVideoHead()
+  await _loadBrowseVocab(_browse.filters.catalog)
+  if (_videoCatalogTicket !== ticket) return
+  _renderFilterRail()
+  _runBrowse(true)
+}
+
+// Vocabularies are fetched once per catalog and cached in main for a week, so
+// switching tabs back and forth costs nothing.
+async function _loadBrowseVocab(catalog) {
+  if (!_browseVocab.genres[catalog]) {
+    const res = await window.api.videoGenres({ catalog: catalog }).catch(function () { return { ok: false } })
+    _browseVocab.genres[catalog] = (res && res.ok && res.genres) ? res.genres : []
+  }
+  if (catalog === 'anime' && !_browseVocab.tags) {
+    const res = await window.api.videoTags().catch(function () { return { ok: false } })
+    _browseVocab.tags = (res && res.ok && res.tags) ? res.tags : []
+  }
+}
+
+function _renderFilterRail() {
+  const rail = document.getElementById('vfilters')
+  if (!rail) return
+  const f = _browse.filters
+  const anime = f.catalog === 'anime'
+  const genres = _browseVocab.genres[f.catalog] || []
+  const thisYear = new Date().getFullYear()
+
+  const group = (label, body) =>
+    '<div class="vf-group"><div class="vf-label">' + esc(label) + '</div>' + body + '</div>'
+
+  const catalogChips = ['movie', 'tv', 'anime'].map(function (c) {
+    const name = c === 'movie' ? 'Movies' : c === 'tv' ? 'TV' : 'Anime'
+    return '<button class="vf-chip' + (f.catalog === c ? ' on' : '') + '" data-catalog="' + c + '">' + name + '</button>'
+  }).join('')
+
+  // A genre chip has three states: off, included, excluded. Clicking cycles.
+  const genreChips = genres.map(function (g) {
+    const inc = f.genres.some(x => String(x) === String(g.id))
+    const exc = f.exclude.some(x => String(x) === String(g.id))
+    return '<button class="vf-chip' + (inc ? ' on' : exc ? ' off' : '') + '"' +
+      ' data-genre="' + esc(g.id) + '"' +
+      ' aria-pressed="' + (inc || exc) + '"' +
+      ' title="' + (inc ? 'Included — click to exclude' : exc ? 'Excluded — click to clear' : 'Click to include') + '">' +
+      esc(g.name) + '</button>'
+  }).join('')
+
+  let html = group('Catalog', '<div class="vf-chips">' + catalogChips + '</div>')
+  html += group('Sort', '<select class="vf-select" id="vf-sort">' +
+    _BROWSE_SORTS.map(function (o) {
+      return '<option value="' + o.key + '"' + (f.sort === o.key ? ' selected' : '') + '>' + o.label + '</option>'
+    }).join('') + '</select>')
+  html += group(genres.length ? 'Genres' : 'Genres (unavailable)', '<div class="vf-chips">' + genreChips + '</div>')
+
+  html += group('Minimum rating',
+    '<input class="vf-range" id="vf-rating" type="range" min="0" max="9" step="0.5" value="' + (f.minRating || 0) + '">' +
+    '<div class="vf-value" id="vf-rating-value">' + (f.minRating ? '★ ' + f.minRating + ' and above' : 'Any') + '</div>')
+
+  if (anime) {
+    html += group('Season', '<div class="vf-row">' +
+      '<select class="vf-select" id="vf-season">' +
+        '<option value="">Any</option>' +
+        _ANIME_SEASONS.map(function (x) {
+          return '<option value="' + x + '"' + (f.season === x ? ' selected' : '') + '>' + x[0] + x.slice(1).toLowerCase() + '</option>'
+        }).join('') + '</select>' +
+      '<input class="vf-input" id="vf-seasonyear" type="number" placeholder="Year" min="1940" max="' + (thisYear + 2) + '" value="' + (f.seasonYear || '') + '">' +
+    '</div>')
+    html += group('Format', '<div class="vf-chips">' + _ANIME_FORMATS.map(function (x) {
+      return '<button class="vf-chip' + (f.format === x ? ' on' : '') + '" data-format="' + x + '">' + x + '</button>'
+    }).join('') + '</div>')
+    html += group('Status', '<div class="vf-chips">' + _ANIME_STATUS.map(function (x) {
+      return '<button class="vf-chip' + (f.status === x.key ? ' on' : '') + '" data-status="' + x.key + '">' + x.label + '</button>'
+    }).join('') + '</div>')
+    // 361 tags, grouped and searchable. A flat list would be unusable, and no
+    // streaming service offers this vocabulary at all.
+    html += group('Themes', '<input class="vf-input vf-tagsearch" id="vf-tagsearch" type="search" placeholder="Search themes…">' +
+      '<div class="vf-tags-scroll" id="vf-tags">' + _tagChipsHtml('') + '</div>')
+  } else {
+    html += group('Year', '<div class="vf-row">' +
+      '<input class="vf-input" id="vf-yearfrom" type="number" placeholder="From" min="1900" max="' + (thisYear + 2) + '" value="' + (f.yearFrom || '') + '">' +
+      '<span class="vf-sep">–</span>' +
+      '<input class="vf-input" id="vf-yearto" type="number" placeholder="To" min="1900" max="' + (thisYear + 2) + '" value="' + (f.yearTo || '') + '">' +
+    '</div>')
+    if (f.catalog === 'movie') {
+      html += group('Runtime (minutes)', '<div class="vf-row">' +
+        '<input class="vf-input" id="vf-runfrom" type="number" placeholder="Min" min="0" max="600" value="' + (f.runtimeFrom || '') + '">' +
+        '<span class="vf-sep">–</span>' +
+        '<input class="vf-input" id="vf-runto" type="number" placeholder="Max" min="0" max="600" value="' + (f.runtimeTo || '') + '">' +
+      '</div>')
+    }
+  }
+
+  html += '<button class="vf-clear" id="vf-clear">Clear all filters</button>'
+  rail.innerHTML = html
+  _bindFilterRail()
+}
+
+function _tagChipsHtml(query) {
+  const groups = _browseVocab.tags || []
+  const q = String(query || '').trim().toLowerCase()
+  const f = _browse.filters
+  let out = ''
+  for (const g of groups) {
+    const tags = q ? g.tags.filter(t => t.toLowerCase().includes(q)) : g.tags
+    if (!tags.length) continue
+    out += '<div class="vf-tagcat"><div class="vf-tagcat-name">' + esc(g.category) + '</div><div class="vf-chips">' +
+      tags.map(function (t) {
+        return '<button class="vf-chip' + (f.tags.indexOf(t) !== -1 ? ' on' : '') + '" data-tag="' + esc(t) + '">' + esc(t) + '</button>'
+      }).join('') + '</div></div>'
+  }
+  return out || '<div class="vf-value">No themes match</div>'
+}
+
+function _bindFilterRail() {
+  const f = _browse.filters
+  const rerun = function (rebuild) {
+    if (rebuild) _renderFilterRail()
+    _runBrowse(true)
+  }
+
+  document.querySelectorAll('[data-catalog]').forEach(function (b) {
+    b.addEventListener('click', async function () {
+      if (f.catalog === b.dataset.catalog) return
+      // Genre ids are per catalog and the anime vocabulary is different
+      // entirely, so those are dropped; the numeric filters carry over,
+      // because "rated 7+, since 2015" means the same thing everywhere.
+      f.catalog = b.dataset.catalog
+      f.genres = []; f.exclude = []; f.tags = []
+      f.season = null; f.seasonYear = null; f.format = null; f.status = null
+      await _loadBrowseVocab(f.catalog)
+      rerun(true)
+    })
+  })
+
+  // Off → included → excluded → off.
+  document.querySelectorAll('[data-genre]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      const id = b.dataset.genre
+      const inc = f.genres.some(x => String(x) === id)
+      const exc = f.exclude.some(x => String(x) === id)
+      f.genres = f.genres.filter(x => String(x) !== id)
+      f.exclude = f.exclude.filter(x => String(x) !== id)
+      // AniList genres are names, TMDB's are numeric ids.
+      const value = f.catalog === 'anime' ? id : Number(id)
+      if (!inc && !exc) f.genres.push(value)
+      else if (inc && f.catalog !== 'anime') f.exclude.push(value)
+      rerun(true)
+    })
+  })
+
+  document.querySelectorAll('[data-format]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      f.format = f.format === b.dataset.format ? null : b.dataset.format
+      rerun(true)
+    })
+  })
+  document.querySelectorAll('[data-status]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      f.status = f.status === b.dataset.status ? null : b.dataset.status
+      rerun(true)
+    })
+  })
+  document.getElementById('vf-tags')?.addEventListener('click', function (e) {
+    const b = e.target.closest('[data-tag]')
+    if (!b) return
+    const t = b.dataset.tag
+    const i = f.tags.indexOf(t)
+    if (i === -1) f.tags.push(t); else f.tags.splice(i, 1)
+    b.classList.toggle('on', i === -1)
+    _runBrowse(true)
+  })
+  // Filtering the tag list must not re-render the rail, or the search box
+  // would lose focus on every keystroke.
+  document.getElementById('vf-tagsearch')?.addEventListener('input', function (e) {
+    const box = document.getElementById('vf-tags')
+    if (box) box.innerHTML = _tagChipsHtml(e.target.value)
+  })
+
+  document.getElementById('vf-sort')?.addEventListener('change', function (e) {
+    f.sort = e.target.value
+    _runBrowse(true)
+  })
+
+  const rating = document.getElementById('vf-rating')
+  rating?.addEventListener('input', function (e) {
+    const v = Number(e.target.value)
+    f.minRating = v > 0 ? v : null
+    const out = document.getElementById('vf-rating-value')
+    if (out) out.textContent = f.minRating ? '★ ' + f.minRating + ' and above' : 'Any'
+  })
+  rating?.addEventListener('change', function () { _runBrowse(true) })
+
+  // Numbers commit on change rather than input: re-querying on every digit of
+  // "2015" would fire four times, three of them for nonsense years.
+  const num = function (id, apply) {
+    const el = document.getElementById(id)
+    el?.addEventListener('change', function (e) {
+      const v = e.target.value === '' ? null : Number(e.target.value)
+      apply(Number.isFinite(v) ? v : null)
+      _runBrowse(true)
+    })
+  }
+  num('vf-yearfrom', v => { f.yearFrom = v })
+  num('vf-yearto', v => { f.yearTo = v })
+  num('vf-runfrom', v => { f.runtimeFrom = v })
+  num('vf-runto', v => { f.runtimeTo = v })
+  num('vf-seasonyear', v => { f.seasonYear = v })
+  document.getElementById('vf-season')?.addEventListener('change', function (e) {
+    f.season = e.target.value || null
+    _runBrowse(true)
+  })
+
+  document.getElementById('vf-clear')?.addEventListener('click', function () {
+    const catalog = f.catalog
+    _browse.filters = _emptyFilters()
+    _browse.filters.catalog = catalog
+    rerun(true)
+  })
+}
+
+// Debounced and ticketed: a filter change mid-request must never render the
+// previous query's results.
+var _browseTimer = null
+function _runBrowse(reset) {
+  clearTimeout(_browseTimer)
+  _browseTimer = setTimeout(function () { _fetchBrowse(reset) }, 350)
+  if (reset) _paintActiveFilters()
+}
+
+async function _fetchBrowse(reset) {
+  const ticket = ++_browse.ticket
+  if (reset) { _browse.page = 1; _browse.results = [] }
+  _browse.loading = true
+
+  const grid = document.getElementById('vgrid')
+  const more = document.getElementById('vgrid-more')
+  const count = document.getElementById('vres-count')
+  if (reset && grid) grid.innerHTML = _vGridSkeleton()
+  if (more) more.textContent = ''
+  if (reset && count) count.textContent = 'Searching…'
+
+  const res = await window.api.videoDiscover(_browseRequest(_browse.filters, _browse.page))
+    .catch(function (e) { return { ok: false, error: String((e && e.message) || e) } })
+  if (_browse.ticket !== ticket || state.currentPage !== 'browse') return
+  _browse.loading = false
+
+  if (!res.ok) {
+    if (grid) grid.innerHTML = ''
+    if (count) count.innerHTML = ''
+    if (more) more.innerHTML = '<div class="vrow-msg err">' + esc(_videoErrorText(res.error)) + '</div>'
+    return
+  }
+
+  _browse.total = res.totalResults || 0
+  _browse.totalPages = res.totalPages || 1
+  _browse.results = _browse.results.concat(res.results || [])
+
+  if (count) {
+    count.innerHTML = _browse.total
+      ? '<b>' + _browse.total.toLocaleString() + '</b> ' + (_browse.total === 1 ? 'title' : 'titles')
+      : ''
+  }
+
+  if (!_browse.results.length) {
+    if (grid) grid.innerHTML = ''
+    if (more) more.innerHTML = _browseEmptyHtml()
+    _bindBrowseEmpty()
+    return
+  }
+
+  if (grid) {
+    grid.innerHTML = _browse.results.map(_videoCard).join('')
+    _bindVideoCards(grid)
+  }
+  _armBrowseObserver()
+}
+
+function _vGridSkeleton() {
+  let out = ''
+  for (let i = 0; i < 12; i++) {
+    out += '<div><div class="vskel vskel-card"></div><div class="vskel vskel-line"></div><div class="vskel vskel-line short"></div></div>'
+  }
+  return out
+}
+
+// An empty result is almost always one filter set too tight. Naming the likely
+// culprit is the difference between a dead end and an obvious next move.
+function _browseEmptyHtml() {
+  const f = _browse.filters
+  let culprit = null
+  if (f.minRating && f.minRating >= 8) culprit = { key: 'rating', text: 'a rating of ' + f.minRating + ' and above is very high' }
+  else if (f.tags.length > 2) culprit = { key: 'tags', text: 'combining ' + f.tags.length + ' themes narrows this a lot' }
+  else if (f.genres.length > 2) culprit = { key: 'genres', text: 'a title has to match all ' + f.genres.length + ' genres' }
+  else if (f.yearFrom && f.yearTo && f.yearTo - f.yearFrom < 3) culprit = { key: 'years', text: 'that year range is narrow' }
+  else if (f.minRating) culprit = { key: 'rating', text: 'the rating filter may be too high' }
+
+  return '<div class="vempty">' +
+    '<div class="vempty-icon">◍</div>' +
+    '<div class="vempty-title">Nothing matches all of that</div>' +
+    '<div class="vempty-text">' +
+      (culprit ? esc(culprit.text[0].toUpperCase() + culprit.text.slice(1)) + '.' : 'Try removing a filter or two.') +
+    '</div>' +
+    (culprit ? '<button class="vbtn vbtn-primary" id="vempty-relax" data-relax="' + culprit.key + '">Remove that filter</button> ' : '') +
+    '<button class="vbtn" id="vempty-clear">Clear all filters</button>' +
+  '</div>'
+}
+
+function _bindBrowseEmpty() {
+  document.getElementById('vempty-relax')?.addEventListener('click', function (e) {
+    const f = _browse.filters
+    const key = e.currentTarget.dataset.relax
+    if (key === 'rating') f.minRating = null
+    else if (key === 'tags') f.tags = []
+    else if (key === 'genres') f.genres = []
+    else if (key === 'years') { f.yearFrom = null; f.yearTo = null }
+    _renderFilterRail()
+    _runBrowse(true)
+  })
+  document.getElementById('vempty-clear')?.addEventListener('click', function () {
+    const catalog = _browse.filters.catalog
+    _browse.filters = _emptyFilters()
+    _browse.filters.catalog = catalog
+    _renderFilterRail()
+    _runBrowse(true)
+  })
+}
+
+function _paintActiveFilters() {
+  const box = document.getElementById('vactive')
+  if (!box) return
+  const chips = _activeFilterChips(_browse.filters)
+  box.innerHTML = chips.map(function (c) {
+    return '<span class="vactive-chip">' + esc(c.label) +
+      '<button data-drop="' + esc(c.key) + '" aria-label="Remove ' + esc(c.label) + '">&#10005;</button></span>'
+  }).join('')
+  box.querySelectorAll('[data-drop]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      _clearFilterKey(_browse.filters, b.dataset.drop)
+      _renderFilterRail()
+      _runBrowse(true)
+    })
+  })
+}
+
+// Infinite scroll. The sentinel is re-observed after every page because the
+// grid is re-rendered wholesale.
+function _armBrowseObserver() {
+  const more = document.getElementById('vgrid-more')
+  if (!more) return
+  if (_browse.observer) { _browse.observer.disconnect(); _browse.observer = null }
+  if (_browse.page >= _browse.totalPages) {
+    more.textContent = _browse.results.length ? 'That is everything' : ''
+    return
+  }
+  more.textContent = 'Loading more…'
+  if (typeof IntersectionObserver !== 'function') return
+  _browse.observer = new IntersectionObserver(function (entries) {
+    if (!entries.some(e => e.isIntersecting) || _browse.loading) return
+    if (_browse.page >= _browse.totalPages) return
+    _browse.page++
+    _fetchBrowse(false)
+  }, { rootMargin: '600px' })
+  _browse.observer.observe(more)
+}
+
 // Every row the backend can serve. `popular-movies`, `trending-tv` and
 // `season-anime` were built and then never requested — the page only ever
 // showed three of these seven.
@@ -1227,6 +1705,7 @@ var _videoTabs = [
   { key: 'movie', label: 'Movies' },
   { key: 'tv',    label: 'TV' },
   { key: 'anime', label: 'Anime' },
+  { key: 'browse', label: 'Browse' },
   { key: 'list',  label: 'My List' },
 ]
 
@@ -1669,6 +2148,9 @@ function _videoError(message) {
 
 async function renderVideo() {
   _initVideoUI()
+  // Arriving here from Browse, the tab state still says 'browse'; the catalog
+  // page has no such row set, so fall back to All.
+  if (_videoTab === 'browse') _videoTab = 'all'
   const ticket = ++_videoCatalogTicket
   setContent('<div class="page vpage">' +
     _vHeadHtml() +
@@ -1699,8 +2181,11 @@ function _vHeadHtml() {
 function _bindVideoHead() {
   document.querySelectorAll('.vtab').forEach(function (b) {
     b.addEventListener('click', function () {
-      if (_videoTab === b.dataset.vtab) return
+      if (_videoTab === b.dataset.vtab && state.currentPage !== 'browse') return
       _videoTab = b.dataset.vtab
+      // Browse is a page of its own rather than a filtered set of rows.
+      if (_videoTab === 'browse') return navigate('browse')
+      if (state.currentPage === 'browse') return navigate('video')
       document.querySelectorAll('.vtab').forEach(function (x) {
         const on = x.dataset.vtab === _videoTab
         x.classList.toggle('active', on)
