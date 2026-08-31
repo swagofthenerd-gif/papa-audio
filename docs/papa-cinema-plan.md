@@ -132,6 +132,11 @@ Three rules:
 
 Each ends green (`npm test`), launching clean, and committed.
 
+**Status, 2026-08-31: all seven done.** All forty-one features have an
+implementation, verified by auditing the code rather than reading this table —
+which is how three features with no implementation at all, and a fifth
+built-but-never-called module, were found after the table already said "done".
+
 | # | Pass | Files |
 |---|---|---|
 | 1 | **Foundations** — OMDb client, richer TMDB detail, keyword/crew/discover helpers, the taste store | `catalog/omdb.js`, `catalog/tmdb.js`, `main.js`, `preload.js`, `src/video-store.js` |
@@ -141,6 +146,51 @@ Each ends green (`npm test`), launching clean, and committed.
 | 5 | **Taste** — ratings, diary, notes, lists, favourites, profile, year in review | `src/video-store.js`, `src/renderer.js` |
 | 6 | **Movement** — see-all, sort, keyboard, hover trailers, parsed search | `src/renderer.js`, `src/video-keymap.js` |
 | 7 | **The soak** — long unattended run, leak hunt | `tools/video-soak.js` (new) |
+
+### What the phases did not catch, and what did
+
+Five modules in this project were written, tested, exported and reachable by
+nothing: `taste-store.js`, `taste-panel.js`, `video-query.js`,
+`video-keymap.js` (reachable, as it turned out, but only from the player) and
+`shelves.directorInFocus`. Two more, `ttl-cache.js` and `surround-verify.js`,
+were parsed into the renderer at every startup for main's benefit only.
+
+A phase is not done when its module passes its tests. It is done when something
+in the app calls it. There are now three tests that say so mechanically:
+
+- `test/preload-surface.test.js` — every `ipcMain` registration is reachable
+  from preload, or listed with a reason.
+- `test/soak-probe.test.js` — no script is loaded into the renderer that
+  nothing there uses.
+- `test/video-ui.test.js` — every shelf the page asks for can be resolved, and
+  every shelf the backend serves is asked for.
+
+### What the soak found
+
+It had never run, and could not have: its entry guard is false under Electron,
+so the child it spawns for itself loaded the module, defined every function and
+did nothing, forever. Separately, main loaded the renderer by a relative path,
+so under the harness every measurement would have been of a blank window.
+
+Once running it reported a listener leak. That was its own metric — it counted
+registrations, not live listeners, which on an innerHTML renderer can only
+rise. Corrected to a WeakRef live count, the picture was flat.
+
+Then, with per-call-site attribution added, it found a real one:
+
+    global: 20 x checkConnections :: dragover
+    global: 20 x checkConnections :: drop
+
+The drag-and-drop file handlers were registered at the end of a function that
+runs on a thirty-second interval. Two listeners a minute, for as long as the
+app was open — and because every drop event runs all of them, dropping a file
+after an hour enqueued it about a hundred and twenty times.
+
+The lesson is specific and worth keeping: **when a measurement disagrees with
+you, make it name its own cause before you touch its threshold.** A controlled
+reproduction of six rounds of clicking showed the count flat, and it was flat,
+because the leak is driven by a timer and not by navigation. Four minutes of
+clicking is not four minutes of waiting.
 
 ### On the soak (phase 7)
 
