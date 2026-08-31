@@ -778,3 +778,15 @@ test('specials go last in the season picker and are named, not numbered', () => 
   // "Season 3 — Season 3".
   assert.match(fn, /\^season\\s\*\\d\+\$/)
 })
+
+// _videoErrorText exists to turn backend failures into something a person can
+// act on, and the detail page skipped it — a dropped connection showed the
+// literal string "fetch failed".
+test('load failures are shown in human terms, with a way to retry', () => {
+  const fn = _rend.slice(_rend.indexOf('function _videoError(message)'), _rend.indexOf('async function renderVideo()'))
+  assert.match(fn, /const msg = _videoErrorText\(raw\)/)
+  assert.match(fn, /id="video-error-retry"/)
+  assert.match(fn, /navigate\(state\.currentPage, _currentNavId\(\), \{ skipHistory: true \}\)/)
+  // The API-key hint keys off the raw message, not the humanised one.
+  assert.match(fn, /test\(raw\)/)
+})

@@ -2435,17 +2435,29 @@ function _videoErrorText(message) {
 }
 
 function _videoError(message) {
-  const msg = message || 'Something went wrong'
-  const hint = /TMDB API key|401/i.test(msg)
+  const raw = message || 'Something went wrong'
+  // _videoErrorText exists precisely to turn these into something a person can
+  // act on, and this was the one place that skipped it — so a dropped
+  // connection showed the literal string "fetch failed".
+  const msg = _videoErrorText(raw)
+  const hint = /TMDB API key|401/i.test(raw)
     ? '<div class="video-error-hint">Set your TMDB API key in Settings → Video.</div>'
     : ''
   setContent('<div class="page"><div class="video-error">' +
     '<div class="video-error-title">Couldn\'t load this</div>' +
     '<div class="video-error-message">' + esc(msg) + '</div>' +
     hint +
-    '<div class="video-error-actions"><button class="secondary" id="video-error-back">Back to Movies &amp; TV</button></div>' +
+    '<div class="video-error-actions">' +
+      // Most failures here are a blip. Without this the only way back to the
+      // title was to leave the page and find it again.
+      '<button id="video-error-retry">Try again</button>' +
+      '<button class="secondary" id="video-error-back">Back to Movies &amp; TV</button>' +
+    '</div>' +
   '</div></div>')
   document.getElementById('video-error-back')?.addEventListener('click', function () { navigate('video') })
+  document.getElementById('video-error-retry')?.addEventListener('click', function () {
+    navigate(state.currentPage, _currentNavId(), { skipHistory: true })
+  })
 }
 
 async function renderVideo() {
