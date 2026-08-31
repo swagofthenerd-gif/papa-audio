@@ -216,7 +216,20 @@ class VideoEngine extends EventEmitter {
       `--screenshot-directory=${screenshotDir()}`,
       '--ytdl=no',
     ]
-    if (wid) a.push(`--wid=${wid}`)
+    if (wid) {
+      // --gpu-context is not optional when embedding. Left to choose for
+      // itself under XWayland, mpv picks a context that renders nothing into a
+      // foreign window: it starts, reports no error, exits 0, and leaves the
+      // surface pure black. That is the whole of the "blank black window"
+      // failure, and it is silent, which is why it read as an mpv limitation
+      // rather than a missing flag.
+      //
+      // Measured on this machine by capturing the embedded window's pixels:
+      // default gpu -> 1 unique colour (black); x11egl -> 26297; x11vk ->
+      // 28660; x11 -> 22107; xv -> 19288. x11egl is the pick because it is
+      // hardware-accelerated and needs no Vulkan driver.
+      a.push(`--wid=${wid}`, '--gpu-context=x11egl')
+    }
     if (this.config.outputMode === 'exclusive' && this.config.alsaDevice) {
       a.push(`--audio-device=${this.config.alsaDevice}`, '--audio-exclusive=yes')
     }

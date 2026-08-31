@@ -61,6 +61,22 @@ test('_args with wid appends --wid', () => {
   assert.ok(eng._args('/tmp/v.sock', { wid: '0x1a2b' }).includes('--wid=0x1a2b'))
 })
 
+// Embedding without pinning the GPU context is the "blank black window" bug:
+// under XWayland mpv otherwise chooses a context that draws nothing into a
+// foreign window, starts cleanly, reports no error and exits 0. Verified by
+// capturing the embedded window's pixels — default gpu gave one unique colour,
+// x11egl gave 26297.
+test('_args with wid pins the GPU context so the surface actually renders', () => {
+  const eng = new VideoEngine({ config: {} })
+  const a = eng._args('/tmp/v.sock', { wid: '0x1a2b' })
+  assert.ok(a.includes('--gpu-context=x11egl'))
+})
+
+test('_args without wid leaves the GPU context alone', () => {
+  const eng = new VideoEngine({ config: {} })
+  assert.ok(!eng._args('/tmp/v.sock').some(a => a.startsWith('--gpu-context=')))
+})
+
 test('_args without wid omits --wid', () => {
   const eng = new VideoEngine({ config: {} })
   assert.ok(!eng._args('/tmp/v.sock').some(a => a.startsWith('--wid=')))
