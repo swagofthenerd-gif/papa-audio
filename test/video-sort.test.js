@@ -140,7 +140,9 @@ test('a sorted shelf repaints instead of appending', () => {
   // the end.
   const fn = RENDERER.slice(RENDERER.indexOf('async function _loadShelfPage'),
                             RENDERER.indexOf('function _repaintShelfGrid'))
-  assert.match(fn, /if \(_shelfPage\.sort\)/)
+  // The condition also covers the hide-seen filter, which is a whole-grid
+  // question for the same reason: the count of hidden titles changes.
+  assert.match(fn, /if \(_shelfPage\.sort \|\| _hideSeen\)/)
   assert.match(fn, /_repaintShelfGrid\(\)/)
   assert.match(fn, /insertAdjacentHTML\('beforeend'/, 'the unsorted path still appends')
 })

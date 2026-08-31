@@ -387,3 +387,39 @@ test('no function called on an interval registers a global listener', () => {
       name + ' runs on an interval and registers a global listener, which grows without bound')
   }
 })
+
+// ── every renderer script must be reachable from the renderer ─────────────
+
+test('no script is loaded into the renderer that the renderer never uses', () => {
+  // This project has now shipped four modules that were written, tested and
+  // loaded, and that nothing could reach: the taste store, the taste panel, the
+  // search parser and the keymap. Two more were being parsed at startup for
+  // main's benefit only — main requires them directly, so the script tag bought
+  // nothing.
+  //
+  // A module can legitimately be used by another renderer script rather than by
+  // renderer.js, so the search is across all of them.
+  const root = path.join(__dirname, '..')
+  const html = fs.readFileSync(path.join(root, 'src', 'index.html'), 'utf8')
+  const scripts = [...html.matchAll(/<script src="([^"]+)"/g)].map(m => m[1])
+  assert.ok(scripts.length > 10, 'found the script list')
+
+  const sources = new Map()
+  for (const f of scripts) sources.set(f, fs.readFileSync(path.join(root, 'src', f), 'utf8'))
+
+  const orphans = []
+  for (const [file, src] of sources) {
+    const m = /root\.(Papa[A-Za-z]+)\s*=/.exec(src) || /window\.(Papa[A-Za-z]+)\s*=/.exec(src)
+    if (!m) continue                       // not a UMD module; nothing to check
+    const globalName = m[1]
+    let used = false
+    for (const [other, otherSrc] of sources) {
+      if (other === file) continue
+      if (otherSrc.includes(globalName)) { used = true; break }
+    }
+    if (!used) orphans.push(globalName + ' (' + file + ')')
+  }
+  assert.deepStrictEqual(orphans, [],
+    'loaded into the renderer and used by nothing there. Either wire it, or ' +
+    'drop the script tag and let main require it.')
+})

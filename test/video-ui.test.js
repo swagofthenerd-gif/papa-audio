@@ -202,7 +202,11 @@ test('every catalog row the backend serves is used', () => {
 // is a row that renders an error every time it loads.
 test('every curated shelf the page asks for can be resolved', () => {
   const MAIN = require('fs').readFileSync(require('path').join(__dirname, '..', 'main.js'), 'utf8')
-  const resolver = MAIN.slice(MAIN.indexOf('function _shelfDefinition'),
+  // From the handler, not from _shelfDefinition: resolution begins in the
+  // handler, which turns a rotating key into a concrete one before the
+  // definition is looked up. director-of-the-day is resolved there because it
+  // needs an async person lookup that a synchronous definition cannot do.
+  const resolver = MAIN.slice(MAIN.indexOf("ipcMain.handle('video-shelf'"),
     MAIN.indexOf('ipcMain.handle(\'video-catalog-get\''))
   const fn = RENDERER.slice(RENDERER.indexOf('function _curatedRows'),
     RENDERER.indexOf('var _videoTabs'))

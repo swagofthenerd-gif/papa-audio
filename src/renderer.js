@@ -820,6 +820,7 @@ async function init() {
   restoreStatsRange()
   restoreDiscoverDismissals()
   restoreHoverTrailerPref()
+  restoreHideSeenPref()
 
   window.api.slskStatus().then(s => { slsk.status = s }).catch(() => {})
   // The rate is decided in one place; at startup nothing is known to be active
@@ -1519,7 +1520,8 @@ async function renderBrowse() {
     '<div class="vbrowse">' +
       '<aside class="vfilters" id="vfilters" aria-label="Filters"></aside>' +
       '<section class="vresults">' +
-        '<div class="vres-head"><div class="vres-count" id="vres-count">Loading…</div></div>' +
+        '<div class="vres-head"><div class="vres-count" id="vres-count">Loading…</div>' +
+          _hideSeenToggleHtml('vbrowse-hide-seen') + '</div>' +
         '<div class="vactive" id="vactive"></div>' +
         '<div class="vgrid" id="vgrid"></div>' +
         '<div class="vgrid-more" id="vgrid-more"></div>' +
@@ -1527,6 +1529,10 @@ async function renderBrowse() {
     '</div>' +
   '</div>')
   _bindVideoHead()
+  document.getElementById('vbrowse-hide-seen')?.addEventListener('change', function () {
+    setHideSeen(this.checked)
+    _paintBrowseGrid()
+  })
   // The filters may already be set — arriving from a genre chip, or coming
   // back to a query that was left mid-scroll.
   await _loadBrowseVocab(_browse.filters.catalog)
@@ -1937,11 +1943,19 @@ async function _fetchBrowse(reset) {
     return
   }
 
-  if (grid) {
-    grid.innerHTML = _browse.results.map(_videoCard).join('')
-    _bindVideoCards(grid)
-  }
+  _paintBrowseGrid()
   _armBrowseObserver()
+}
+
+// Extracted so the hide-what-I-have-seen toggle can repaint without refetching:
+// what you have watched is not part of the query, and asking TMDB again for the
+// same page to apply a local filter would be a request for nothing.
+function _paintBrowseGrid() {
+  const grid = document.getElementById('vgrid')
+  if (!grid) return
+  const vis = _hideSeenApply(_browse.results)
+  grid.innerHTML = _hideSeenNote(vis.hidden) + vis.shown.map(_videoCard).join('')
+  _bindVideoCards(grid)
 }
 
 function _vGridSkeleton() {
@@ -2073,6 +2087,9 @@ function _curatedRows(tab) {
   const studios = [41077, 10342, 3]
   return [
     { key: 'canon' },
+    // Resolved server-side from a rotating name, so the renderer does not hold
+    // a person id either.
+    { key: 'director-of-the-day' },
     { key: 'world-cinema' },
     { key: 'decade-' + decade },
     { key: 'movement-' + movements[day % movements.length] },
@@ -2934,6 +2951,152 @@ function _videoError(message) {
 // behind it than fits on one screen.
 var _shelfPage = { key: null, page: 1, items: [], loading: false, done: false, ticket: 0 }
 
+// ── Recommendations from your own diary ─────────────────────────────────────
+// The taste store has held directors, decades and countries since phase 1 and
+// nothing ever asked it a question. This is the question.
+//
+// The renderer sends conclusions, not history: one director, one decade, one
+// country, already ranked. main turns whichever is strongest into a discover
+// query. Sending the diary itself would put taste logic in two places, and the
+// store is the place.
+//
+// A short diary has no taste in it yet, and the row says so rather than showing
+// an empty rail under a confident heading.
+const TASTE_ROW_MIN_TITLES = 5
+
+function _tasteSignals() {
+  const store = window.PapaTasteStore
+  if (!store) return null
+  const meta = _tasteMetaMap()
+  const p = store.profile(meta)
+  if (!p || p.titles < TASTE_ROW_MIN_TITLES) {
+    return { enough: false, titles: (p && p.titles) || 0 }
+  }
+  const top = list => (Array.isArray(list) && list.length ? list[0].name : null)
+  return {
+    enough: true,
+    titles: p.titles,
+    director: top(p.topDirectors),
+    // The store keeps a decade as a number; main wants the same.
+    decade: top(p.decades),
+    // A country name is what the diary stored, and TMDB's discover wants a
+    // language code. Only pass it when it already looks like one.
+    country: _tasteLanguageCode(p.topLanguages),
+  }
+}
+
+// The diary stores whatever the detail page gave it — "Japanese", not "ja". The
+// discover query needs a code, so a name that cannot be turned into one is
+// dropped rather than guessed at: a wrong code returns a confident shelf of the
+// wrong cinema.
+const TASTE_LANGUAGE_CODES = {
+  japanese: 'ja', korean: 'ko', french: 'fr', italian: 'it', spanish: 'es',
+  german: 'de', mandarin: 'zh', cantonese: 'zh', chinese: 'zh', hindi: 'hi',
+  persian: 'fa', farsi: 'fa', russian: 'ru', swedish: 'sv', danish: 'da',
+  polish: 'pl', portuguese: 'pt', english: 'en', thai: 'th', turkish: 'tr',
+  arabic: 'ar', hebrew: 'he', czech: 'cs', hungarian: 'hu', dutch: 'nl',
+}
+
+function _tasteLanguageCode(list) {
+  if (!Array.isArray(list) || !list.length) return null
+  for (const entry of list) {
+    const raw = String((entry && entry.name) || '').trim()
+    if (!raw) continue
+    // Already a code.
+    if (/^[a-z]{2}$/.test(raw)) return raw
+    const hit = TASTE_LANGUAGE_CODES[raw.toLowerCase()]
+    if (hit) return hit
+  }
+  return null
+}
+
+async function _renderTasteRow(ticket) {
+  const mount = document.getElementById('vtaste-row')
+  if (!mount) return
+  const sig = _tasteSignals()
+  if (!sig) { mount.innerHTML = ''; return }
+
+  if (!sig.enough) {
+    // Said plainly, and only once there is something to build on: an empty
+    // promise on a first run is worse than no row.
+    mount.innerHTML = sig.titles
+      ? '<div class="vrow-head"><h2 class="vrow-title">From your diary</h2></div>' +
+        '<p class="vrow-note">' + sig.titles +
+        (sig.titles === 1 ? ' film logged' : ' films logged') +
+        ' so far. This fills in at ' + TASTE_ROW_MIN_TITLES + '.</p>'
+      : ''
+    return
+  }
+
+  mount.innerHTML = _vRowShell('taste', 'From your diary', 0)
+  const res = await window.api.videoTasteShelf({
+    director: sig.director, decade: sig.decade, country: sig.country,
+  }).catch(function (e) { return { ok: false, error: String((e && e.message) || e) } })
+  if (_videoCatalogTicket !== ticket) return
+  const box = document.getElementById('vtaste-row')
+  if (!box) return
+  if (!res.ok) {
+    box.innerHTML = '<div class="vrow-msg err">' + esc(_videoErrorText(res.error)) + '</div>'
+    return
+  }
+  const items = Array.isArray(res.results) ? res.results : []
+  if (!items.length) { box.innerHTML = ''; return }
+  // The heading says WHY, which is the whole difference between a
+  // recommendation and a row of posters.
+  box.innerHTML = _vRowShell('taste', res.reason || 'From your diary', items.length)
+  _fillRow('taste', items)
+}
+
+// ── Hide what you have seen ─────────────────────────────────────────────────
+// The store has always had unwatchedFilter() and nothing called it. It is a
+// view filter, not a query one: TMDB does not know what you have watched, so
+// the filtering happens after the results arrive.
+//
+// Consequences worth stating, because a hidden card is easy to mistake for a
+// missing one:
+//   - the count says how many were hidden, rather than quietly showing fewer;
+//   - it is off by default, because a first-time user has seen nothing and a
+//     toggle that appears to do nothing is worse than no toggle;
+//   - it does not affect the diary or a person's filmography, where the whole
+//     point is the films you have seen.
+const HIDE_SEEN_KEY = 'papa_hide_seen'
+var _hideSeen = false
+
+function restoreHideSeenPref() {
+  try { _hideSeen = localStorage.getItem(HIDE_SEEN_KEY) === '1' } catch (_) { _hideSeen = false }
+}
+
+function setHideSeen(on) {
+  _hideSeen = !!on
+  try { localStorage.setItem(HIDE_SEEN_KEY, _hideSeen ? '1' : '0') } catch (_) {}
+}
+
+// A card's key is the same _watchKey shape the diary stores, so "seen" here and
+// "seen" in the diary cannot disagree.
+function _cardKey(item) {
+  if (!item) return ''
+  return (item.type || 'movie') + ':' + (item.id == null ? '' : item.id)
+}
+
+function _hideSeenApply(items) {
+  const list = Array.isArray(items) ? items : []
+  if (!_hideSeen || !window.PapaTasteStore) return { shown: list, hidden: 0 }
+  const shown = list.filter(function (i) { return !window.PapaTasteStore.hasSeen(_cardKey(i)) })
+  return { shown: shown, hidden: list.length - shown.length }
+}
+
+function _hideSeenToggleHtml(id) {
+  return '<label class="vhide-seen"><input type="checkbox" id="' + id + '"' +
+    (_hideSeen ? ' checked' : '') + '> <span>Hide what I have seen</span></label>'
+}
+
+// Says what it did. A grid that silently drops rows reads as a broken query.
+function _hideSeenNote(hidden) {
+  if (!hidden) return ''
+  return '<div class="vhide-seen-note">' + hidden +
+    (hidden === 1 ? ' title you have seen is hidden' : ' titles you have seen are hidden') + '</div>'
+}
+
 // ── Sorting a loaded grid ───────────────────────────────────────────────────
 // A curated shelf's order IS the curation: The Canon is rating-first by design,
 // and asking TMDB for a different order would make it a different shelf. So
@@ -3017,6 +3180,7 @@ async function renderShelf(key) {
       '<h1 class="vshelf-title" id="vshelf-title">Loading…</h1>' +
       '<p class="vrow-note" id="vshelf-note"></p>' +
       _vSortControlHtml('', 'vshelf-sort', true) +
+      _hideSeenToggleHtml('vshelf-hide-seen') +
     '</div>' +
     '<div class="vgrid" id="vshelf-grid"></div>' +
     '<div class="vshelf-more" id="vshelf-more"></div>' +
@@ -3024,6 +3188,10 @@ async function renderShelf(key) {
   document.getElementById('vshelf-back')?.addEventListener('click', function () { navigate('video') })
   document.getElementById('vshelf-sort')?.addEventListener('change', function () {
     _shelfPage.sort = this.value || ''
+    _repaintShelfGrid()
+  })
+  document.getElementById('vshelf-hide-seen')?.addEventListener('change', function () {
+    setHideSeen(this.checked)
     _repaintShelfGrid()
   })
   await _loadShelfPage(ticket)
@@ -3059,9 +3227,10 @@ async function _loadShelfPage(ticket) {
   _shelfPage.items = _shelfPage.items.concat(added)
   const grid = document.getElementById('vshelf-grid')
   if (grid) {
-    if (_shelfPage.sort) {
+    if (_shelfPage.sort || _hideSeen) {
       // A sorted grid cannot append: the new page belongs wherever the sort puts
-      // it, which is usually not the end.
+      // it, which is usually not the end. And a filtered grid has to recount how
+      // many are hidden, which is a whole-grid question.
       _repaintShelfGrid()
     } else {
       grid.insertAdjacentHTML('beforeend', added.map(_videoCard).join(''))
@@ -3079,7 +3248,8 @@ function _repaintShelfGrid() {
   const grid = document.getElementById('vshelf-grid')
   if (!grid) return
   const sorted = _vSortItems(_shelfPage.items, _shelfPage.sort)
-  grid.innerHTML = sorted.map(_videoCard).join('')
+  const vis = _hideSeenApply(sorted)
+  grid.innerHTML = _hideSeenNote(vis.hidden) + vis.shown.map(_videoCard).join('')
   _bindVideoCards(grid)
   // The note under the control appears and disappears with the sort.
   const note = document.querySelector('#vshelf-head .vsort-note')
@@ -3113,6 +3283,7 @@ async function renderVideo() {
   setContent('<div class="page vpage cinema">' +
     _vHeadHtml() +
     '<div id="vhero-mount"></div>' +
+    '<div class="vrow vtaste-row" id="vtaste-row"></div>' +
     '<div class="video-search-results" id="video-search-results"></div>' +
     '<div class="vrows" id="vrows"></div>' +
   '</div>')
@@ -3164,10 +3335,18 @@ async function _renderVideoTab(ticket) {
   if (!rows) return
   _stopVideoHero()
 
+  const tasteRow = document.getElementById('vtaste-row')
   if (_videoTab === 'list') {
     if (heroMount) heroMount.innerHTML = ''
+    if (tasteRow) tasteRow.innerHTML = ''
     _renderMyList(rows)
     return
+  }
+  // Only on All and Movies: the recommendation is built from a film diary, and
+  // offering it above a TV or anime tab would be answering a different question.
+  if (tasteRow) {
+    if (_videoTab === 'all' || _videoTab === 'movie') _renderTasteRow(ticket)
+    else tasteRow.innerHTML = ''
   }
 
   const wanted = _videoRows.filter(function (r) { return r.tabs.indexOf(_videoTab) !== -1 })

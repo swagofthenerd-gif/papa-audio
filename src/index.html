@@ -753,8 +753,10 @@
 <script src="queue-repair.js"></script>
 <script src="load-error-policy.js"></script>
 <script src="local-store.js"></script>
-<!-- Shared with main: one TTL+LRU cache, one download-state classifier. -->
-<script src="ttl-cache.js"></script>
+<!-- dl-state.js is shared: the renderer classifies transfer states with the
+     same module main does. ttl-cache.js is NOT here — main requires it and the
+     renderer never touched it, so a script tag would be one more file parsed
+     at startup for nothing. -->
 <script src="dl-state.js"></script>
 <script src="library-prune.js"></script>
 <script src="ctx-menu-model.js"></script>
@@ -765,7 +767,6 @@
 <script src="library-manage.js"></script>
 <script src="saved-users.js"></script>
 <script src="download-spread.js"></script>
-<script src="surround-verify.js"></script>
 <script src="video-format.js"></script>
 <script src="video-store.js"></script>
 <script src="video-enrich.js"></script>

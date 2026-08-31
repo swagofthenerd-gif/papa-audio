@@ -7535,3 +7535,26 @@ body.video-active .np-byline { font-size:10.5px; }
 @media (hover: none) {
   .cinema .vcard-preview { display: none; }
 }
+
+/* ── Hide what you have seen ─────────────────────────────────────────────────
+   A hidden card is easy to mistake for a missing one, so the note that says how
+   many were hidden is part of the feature, not a decoration. */
+.cinema .vhide-seen {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: 12.5px; color: var(--cin-bone-2);
+  cursor: pointer; user-select: none;
+}
+.cinema .vhide-seen input { accent-color: var(--cin-ember); cursor: pointer; }
+.cinema .vhide-seen:hover { color: var(--cin-bone); }
+.cinema .vhide-seen-note {
+  grid-column: 1 / -1;
+  font-size: 12px; color: var(--cin-muted); font-style: italic;
+  padding: 2px 0 10px;
+}
+.cinema .vres-head { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.cinema .vres-head .vhide-seen { margin-left: auto; }
+
+/* The diary row sits directly under the hero, before the editorial shelves:
+   what you have chosen before you are shown what to choose. */
+.cinema .vtaste-row:empty { display: none; }
+.cinema .vtaste-row { margin-top: 6px; }

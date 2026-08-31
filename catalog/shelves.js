@@ -158,6 +158,48 @@ function decade(start, opts) {
   )
 }
 
+// Rotated by day, and named rather than numbered.
+//
+// The plan's own rule is that a shelf query is tuned against the live API and
+// never by reasoning — and a TMDB person id is exactly the kind of thing that
+// cannot be reasoned about. A wrong id does not fail loudly; it builds a
+// confident shelf of the wrong person's films. So the rotation holds names,
+// which are checkable by anyone reading them, and the id is resolved at request
+// time. If the name does not resolve, there is no shelf, which is the same rule
+// the movement shelves follow.
+//
+// Chosen for range rather than ranking: four continents, silent to present, and
+// nobody who needs a vote floor tuned for Hollywood to appear at all.
+const FOCUS_DIRECTORS = [
+  'Akira Kurosawa',
+  'Agnès Varda',
+  'Yasujirō Ozu',
+  'Abbas Kiarostami',
+  'Andrei Tarkovsky',
+  'Chantal Akerman',
+  'Federico Fellini',
+  'Wong Kar-wai',
+  'Béla Tarr',
+  'Ousmane Sembène',
+  'Krzysztof Kieślowski',
+  'Hayao Miyazaki',
+  'Robert Bresson',
+  'Věra Chytilová',
+  'Satyajit Ray',
+  'Edward Yang',
+  'Claire Denis',
+  'Apichatpong Weerasethakul',
+]
+
+// Deterministic per day, so the page reads as arranged for today rather than
+// regenerated on every render — the same rule the other rotating shelves use.
+function directorOfTheDay(nowMs) {
+  const n = Number(nowMs)
+  const ms = Number.isFinite(n) ? n : Date.now()
+  const day = Math.floor(ms / 86400000)
+  return FOCUS_DIRECTORS[((day % FOCUS_DIRECTORS.length) + FOCUS_DIRECTORS.length) % FOCUS_DIRECTORS.length]
+}
+
 function directorInFocus(personId, name, opts) {
   if (personId == null || personId === '' || !name) return null
   return _shelf(
@@ -539,6 +581,8 @@ module.exports = {
   canon,
   decade,
   directorInFocus,
+  directorOfTheDay,
+  FOCUS_DIRECTORS,
   movement,
   theme,
   country,

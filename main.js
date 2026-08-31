@@ -6347,8 +6347,123 @@ ipcMain.handle('video-settings-set', (_, { patch }) => {
 // Each shelf is a discover query built in catalog/shelves.js and fetched here,
 // where the key lives. Results go through the same normaliser as everything
 // else so a curated card is identical to a trending one.
+// Name to TMDB person id, once per name per process. The rotation holds names
+// precisely so no id has to be trusted, and this is where the trust is earned:
+// a name that does not resolve produces no shelf rather than a shelf of the
+// wrong person.
+const _personIdCache = new Map()
+// id -> name, so _shelfDefinition can label a shelf it is handed only an id for.
+const _directorNames = new Map()
+async function _resolvePersonId(name) {
+  if (!name) return null
+  if (_personIdCache.has(name)) return _personIdCache.get(name)
+  let id = null
+  try {
+    const people = await tmdb().searchPeople(name)
+    const list = Array.isArray(people) ? people : []
+    // An exact name match, not merely the top hit: searching a director's name
+    // can rank an actor of the same name first.
+    const exact = list.find(p => p && String(p.name || '').toLowerCase() === name.toLowerCase())
+    const pick = exact || list[0] || null
+    id = pick && pick.id != null ? pick.id : null
+  } catch (_) { id = null }
+  // Cached either way, including the null: a name TMDB does not know will not
+  // start knowing it within a session, and retrying on every render is a
+  // request per shelf render for nothing.
+  _personIdCache.set(name, id)
+  return id
+}
+
+// A shelf built from what the diary says you like.
+//
+// The taste lives in the renderer's own store, so the renderer sends its
+// conclusions rather than main reaching into them: one director, one decade and
+// one country, each already ranked. That keeps the store in one place and means
+// this handler works the same whether the taste came from a diary of nine
+// entries or nine hundred.
+//
+// The films you have already seen are NOT filtered here. The renderer's
+// hide-what-I-have-seen toggle owns that decision, and a recommendation shelf
+// that silently dropped them would disagree with the toggle.
+ipcMain.handle('video-taste-shelf', async (_, { director, decade, country, seenKeys } = {}) => {
+  try {
+    const apiKey = _videoSettings().tmdbApiKey || process.env.TMDB_API_KEY
+    if (!apiKey) return { ok: false, error: 'TMDB API key missing or invalid — set it in Settings → Video.' }
+
+    // Nothing to go on is not a failure: a diary of one film has no taste in it
+    // yet, and saying so is better than an empty row with a confident label.
+    if (!director && !decade && !country) {
+      return { ok: true, results: [], reason: null, empty: 'not-enough-history' }
+    }
+
+    // One of the three, chosen by what is strongest, because three at once
+    // intersects to almost nothing: a Kurosawa-and-1950s-and-Japan query is
+    // Kurosawa's 1950s films, which the user has by definition already seen.
+    let params = null
+    let reason = null
+    if (director) {
+      const id = await _resolvePersonId(director)
+      if (id) {
+        params = { with_crew: String(id), sort_by: 'vote_average.desc', 'vote_count.gte': '150' }
+        reason = 'You keep coming back to ' + director
+      }
+    }
+    if (!params && decade) {
+      const start = Number(decade)
+      if (Number.isFinite(start)) {
+        params = {
+          'primary_release_date.gte': start + '-01-01',
+          'primary_release_date.lte': (start + 9) + '-12-31',
+          sort_by: 'vote_average.desc',
+          'vote_count.gte': '300',
+        }
+        reason = 'More from the ' + start + 's'
+      }
+    }
+    if (!params && country) {
+      params = {
+        with_original_language: String(country).toLowerCase(),
+        sort_by: 'vote_average.desc',
+        // The floor that lets a small national cinema in at all — the same
+        // reasoning the world-cinema shelf is built on.
+        'vote_average.gte': '7.2',
+        'vote_count.gte': '80',
+      }
+      reason = 'More films in ' + String(country).toUpperCase()
+    }
+    if (!params) return { ok: true, results: [], reason: null, empty: 'unresolved' }
+
+    // (baseUrl, apiKey, params) — the key goes through the builder rather than
+    // being appended, so it is encoded the same way every other shelf's is.
+    const url = shelves.buildDiscoverUrl(null, apiKey, params)
+    const res = await fetchWithTimeout(15000)(url)
+    if (!res || !res.ok) return { ok: false, error: 'Recommendations request failed (' + (res && res.status) + ')' }
+    const json = await res.json()
+    const raw = Array.isArray(json && json.results) ? json.results : []
+    // The same normalise-then-filter order every other shelf uses: the quality
+    // filter reads normalised genre ids, so filtering raw results would silently
+    // pass everything.
+    const results = raw
+      .map(r => tmdbCatalog.normalizeMovie(r))
+      .filter(Boolean)
+      .filter(item => !shelves.isLowQualityForFilmShelf(item))
+    return { ok: true, results: results, reason: reason }
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) }
+  }
+})
+
 ipcMain.handle('video-shelf', async (_, { key, page = 1 } = {}) => {
   try {
+    // Resolved before the definition, because the definition needs the id.
+    if (String(key) === 'director-of-the-day') {
+      const name = shelves.directorOfTheDay(Date.now())
+      const id = await _resolvePersonId(name)
+      // The plan's rule: a shelf that cannot be filled honestly is not shown.
+      if (!id) return { ok: false, error: `Could not find ${name} on TMDB` }
+      key = 'director-' + id
+      _directorNames.set(String(id), name)
+    }
     const def = _shelfDefinition(key)
     if (!def) return { ok: false, error: `Unknown shelf: ${key}` }
     const cacheKey = `shelf:${key}:${page}`
@@ -6396,6 +6511,13 @@ function _shelfDefinition(key) {
   if (k === 'runtime-under-90') return build(shelves.runtimeUnder, 90)
   if (k === 'runtime-over-180') return build(shelves.runtimeOver, 180)
   let m
+  // The name came from the rotation and was stashed when the id was resolved;
+  // without it the shelf would be headed "Director in Focus: undefined".
+  if ((m = /^director-(\d+)$/.exec(k))) {
+    const name = _directorNames.get(m[1])
+    if (!name) return null
+    return build(() => shelves.directorInFocus(Number(m[1]), name))
+  }
   if ((m = /^decade-(\d{4})$/.exec(k))) return build(shelves.decade, Number(m[1]))
   if ((m = /^movement-(.+)$/.exec(k))) return build(shelves.movement, m[1])
   if ((m = /^theme-(.+)$/.exec(k))) return build(shelves.theme, m[1])
