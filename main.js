@@ -7022,6 +7022,40 @@ ipcMain.handle('video-trailer', async (_, { youtubeId, title } = {}) => {
   }
 })
 
+// The URL of a title's trailer, and nothing else.
+//
+// video-trailer above deliberately takes over the player: pressing Trailer on a
+// detail page is a decision to watch it. A hover preview is not that decision,
+// so this channel resolves and returns a URL and never touches the engine, the
+// session token, or whatever is currently playing.
+//
+// Both halves are cached — _videoShowDetail by the detail cache, resolveYtUrl by
+// the TTL cache — so a second hover over the same card costs nothing. The first
+// one can take seconds, because yt-dlp does; the renderer treats a slow answer
+// as "not yet" rather than waiting on it.
+ipcMain.handle('video-trailer-url', async (_, { type, id } = {}) => {
+  try {
+    if (!type || id == null) return { ok: false, error: 'Nothing to preview' }
+    const detail = await _videoShowDetail(type, id)
+    if (!detail) return { ok: true, url: null }
+    const list = Array.isArray(detail.trailers) ? detail.trailers : []
+    let key = null
+    for (const t of list) {
+      if (t && t.key && (!t.site || t.site === 'YouTube')) { key = t.key; break }
+    }
+    if (!key && detail.trailer && detail.trailer.id &&
+        String(detail.trailer.site || '').toLowerCase() === 'youtube') {
+      key = detail.trailer.id
+    }
+    // No trailer is a real answer, not a failure — most older films have none.
+    if (!key) return { ok: true, url: null }
+    const url = await resolveYtUrl(key, 'video')
+    return { ok: true, url: url || null }
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) }
+  }
+})
+
 // Switch to another episode inside the pack already streaming.
 ipcMain.handle('video-pack-select', async (_, { index } = {}) => {
   try {

@@ -112,6 +112,7 @@ contextBridge.exposeInMainWorld('api', {
   videoSeasons:     (p) => ipcRenderer.invoke('video-seasons', p),
   videoCollection:  (p) => ipcRenderer.invoke('video-collection', p),
   videoPerson:      (p) => ipcRenderer.invoke('video-person', p),
+  videoTrailerUrl:  (p) => ipcRenderer.invoke('video-trailer-url', p),
   videoTrailer:     (p) => ipcRenderer.invoke('video-trailer', p),
   videoPackSelect:  (p) => ipcRenderer.invoke('video-pack-select', p),
   videoDetail:      (p) => ipcRenderer.invoke('video-detail', p),

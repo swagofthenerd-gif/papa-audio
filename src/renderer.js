@@ -819,6 +819,7 @@ async function init() {
   restoreSidebarPrefs()
   restoreStatsRange()
   restoreDiscoverDismissals()
+  restoreHoverTrailerPref()
 
   window.api.slskStatus().then(s => { slsk.status = s }).catch(() => {})
   // The rate is decided in one place; at startup nothing is known to be active
@@ -3777,6 +3778,139 @@ function _vRuntime(mins) {
   return h ? (m ? h + 'h ' + m + 'm' : h + 'h') : m + 'm'
 }
 
+// ── Trailer on hover ────────────────────────────────────────────────────────
+// Muted, looping, inside the card, and only after you have clearly stopped on
+// it. Three things make this honest rather than annoying:
+//
+//   1. Dwell, not entry. A pointer crossing a rail passes over eight cards; a
+//      preview that starts on mouseenter starts eight of them. HOVER_DWELL_MS
+//      is the difference between "the cursor went past" and "you are looking at
+//      this".
+//
+//   2. Resolving a YouTube trailer runs yt-dlp, which takes seconds on a cold
+//      cache. So the first hover over a card usually shows nothing and warms
+//      the cache instead; the next one is instant. A slow answer is dropped
+//      rather than played into a card the pointer has already left — the
+//      alternative is a video starting somewhere you are no longer looking.
+//
+//   3. It is a setting, and it can be off. Autoplay on hover is the kind of
+//      thing people either love or want gone immediately, and guessing which
+//      is not a decision to make on someone's behalf.
+//
+// Touch is excluded entirely: there is no hover, and a tap must open the film.
+const HOVER_DWELL_MS = 650
+const HOVER_TRAILER_KEY = 'papa_hover_trailers'
+var _hoverTrailersOn = true
+var _hoverTimer = null
+var _hoverCard = null
+var _hoverTicket = 0
+
+function restoreHoverTrailerPref() {
+  try {
+    const v = localStorage.getItem(HOVER_TRAILER_KEY)
+    // Absent means on: the plan asks for this feature, so it is the default.
+    _hoverTrailersOn = v === null ? true : v === '1'
+  } catch (_) { _hoverTrailersOn = true }
+}
+
+function setHoverTrailers(on) {
+  _hoverTrailersOn = !!on
+  try { localStorage.setItem(HOVER_TRAILER_KEY, _hoverTrailersOn ? '1' : '0') } catch (_) {}
+  if (!_hoverTrailersOn) _stopHoverTrailer()
+}
+
+function _hoverTrailerAllowed() {
+  if (!_hoverTrailersOn) return false
+  // The theatre is modal and has its own audio; a preview behind it is noise.
+  const theatre = document.getElementById('vtheatre')
+  if (theatre && !theatre.classList.contains('hidden')) return false
+  // Nor while the music player is going: two things playing at once is never
+  // what anyone meant, even muted, because the preview steals attention.
+  if (state.isPlaying) return false
+  return true
+}
+
+function _stopHoverTrailer() {
+  clearTimeout(_hoverTimer)
+  _hoverTimer = null
+  _hoverTicket++
+  if (_hoverCard) {
+    const v = _hoverCard.querySelector('.vcard-preview')
+    if (v) {
+      // Emptying the source as well as pausing: a paused <video> keeps its
+      // buffer, and a rail of them would hold several hundred megabytes.
+      try { v.pause() } catch (_) {}
+      v.removeAttribute('src')
+      try { v.load() } catch (_) {}
+      v.remove()
+    }
+    _hoverCard.classList.remove('is-previewing', 'is-preview-loading')
+    _hoverCard = null
+  }
+}
+
+function _bindHoverTrailer(card) {
+  if (!card || card.dataset.hoverBound === '1') return
+  card.dataset.hoverBound = '1'
+
+  card.addEventListener('pointerenter', function (e) {
+    // Mouse and pen only. A touch "hover" is a tap on its way to opening the
+    // film, and a preview would fight it.
+    if (e.pointerType === 'touch') return
+    if (!_hoverTrailerAllowed()) return
+    clearTimeout(_hoverTimer)
+    _hoverTimer = setTimeout(function () { _startHoverTrailer(card) }, HOVER_DWELL_MS)
+  })
+  card.addEventListener('pointerleave', function () {
+    if (_hoverCard === card || _hoverTimer) _stopHoverTrailer()
+  })
+  // Opening the film, or moving focus away, both end the preview.
+  card.addEventListener('click', function () { _stopHoverTrailer() })
+  card.addEventListener('blur', function () { if (_hoverCard === card) _stopHoverTrailer() })
+}
+
+async function _startHoverTrailer(card) {
+  if (!card.isConnected || !_hoverTrailerAllowed()) return
+  const nav = String(card.dataset.video || '')
+  const parts = nav.split(':')
+  if (parts.length < 2) return
+  const ticket = ++_hoverTicket
+  _hoverCard = card
+  card.classList.add('is-preview-loading')
+
+  const res = await window.api.videoTrailerUrl({ type: parts[0], id: parts.slice(1).join(':') })
+    .catch(function () { return { ok: false } })
+
+  // Everything that can have changed while yt-dlp was running.
+  if (_hoverTicket !== ticket) return
+  card.classList.remove('is-preview-loading')
+  if (!card.isConnected || !_hoverTrailerAllowed()) return _stopHoverTrailer()
+  if (!res || !res.ok || !res.url) {
+    // No trailer, or not resolvable. Nothing to say: a card that flashes an
+    // error because you looked at it would be worse than silence.
+    _hoverCard = null
+    return
+  }
+
+  const art = card.querySelector('.vcard-art') || card
+  const v = document.createElement('video')
+  v.className = 'vcard-preview'
+  v.muted = true
+  v.loop = true
+  v.playsInline = true
+  v.preload = 'auto'
+  // No controls and no pointer target: the card is still the click surface.
+  v.setAttribute('aria-hidden', 'true')
+  v.src = res.url
+  art.appendChild(v)
+  card.classList.add('is-previewing')
+  // A rejected play() is normal — an autoplay policy, or the pointer left
+  // between appending and playing.
+  v.play().catch(function () {
+    if (_hoverTicket === ticket) _stopHoverTrailer()
+  })
+}
+
 function _bindVideoCards(root) {
   // Binding is the one thing every card insertion has in common, so the queue
   // is joined here rather than at each of the half-dozen call sites.
@@ -3799,6 +3933,7 @@ function _bindVideoCards(root) {
     c.addEventListener('keydown', function (e) {
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open() }
     })
+    _bindHoverTrailer(c)
   })
 }
 
@@ -10766,6 +10901,9 @@ function _renderFailure(where, err) {
 }
 
 function setContent(html) {
+  // Any page change removes the card a preview is playing in, and a <video>
+  // whose element is gone keeps its buffer and its decoder. Stopped explicitly.
+  if (typeof _stopHoverTrailer === 'function') _stopHoverTrailer()
   document.getElementById('content').innerHTML = html
   // Row indices are only meaningful for the rows currently on screen.
   if (typeof _sel !== 'undefined') {
@@ -12352,6 +12490,13 @@ async function _initGeneralSettings() {
     el.checked = true
   }
   el.onchange = e => window.api.saveGeneralSettings({ closeToTray: !!e.target.checked })
+
+  const hov = document.getElementById('gen-hover-trailers')
+  if (!hov) return
+  // Local, not in the main store: it changes nothing outside this window and
+  // the renderer is the only thing that reads it.
+  hov.checked = _hoverTrailersOn
+  hov.onchange = e => setHoverTrailers(!!e.target.checked)
 }
 
 // Ten-band EQ. The sliders write straight through to mpv's filter chain, so

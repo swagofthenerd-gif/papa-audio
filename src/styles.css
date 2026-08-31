@@ -7498,3 +7498,40 @@ body.video-active .np-byline { font-size:10.5px; }
    already carries the portrait and the name. */
 .cinema .vperson-sort { display: flex; padding: 0 28px; margin: 4px 0 10px; }
 .cinema .vperson-sort .vsort { margin-left: auto; }
+
+/* ── Trailer on hover ────────────────────────────────────────────────────────
+   The preview sits over the poster inside the card's own art box, so the card's
+   rounding and shadow still frame it. pointer-events:none keeps the card itself
+   the click target. */
+.cinema .vcard-art { position: relative; overflow: hidden; }
+.cinema .vcard-preview {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .35s var(--cin-ease);
+  z-index: 2;
+}
+.cinema .vcard.is-previewing .vcard-preview { opacity: 1; }
+/* While yt-dlp resolves, the card says something is coming without claiming a
+   trailer exists — most older films have none, and a spinner that resolves to
+   nothing is worse than a still poster. */
+.cinema .vcard.is-preview-loading .vcard-art::after {
+  content: '';
+  position: absolute; left: 10px; bottom: 10px;
+  width: 14px; height: 14px; border-radius: 50%;
+  border: 2px solid rgba(237,232,224,.25);
+  border-top-color: var(--cin-ember);
+  animation: papa-spin .8s linear infinite;
+  z-index: 3;
+}
+@media (prefers-reduced-motion: reduce) {
+  .cinema .vcard-preview { transition: none; }
+  .cinema .vcard.is-preview-loading .vcard-art::after { animation: none; }
+}
+/* No hover means no hover preview; the rule is here so the intent is explicit
+   rather than resting on pointerType alone. */
+@media (hover: none) {
+  .cinema .vcard-preview { display: none; }
+}
