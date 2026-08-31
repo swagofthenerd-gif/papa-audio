@@ -5,6 +5,7 @@ const os = require('os')
 const path = require('path')
 const fs = require('fs')
 const crypto = require('crypto')
+const net = require('net')
 const { MpvIpcClient } = require('./mpv-ipc')
 
 // The app's own actions, bound inside mpv so they work while the video window
@@ -49,6 +50,60 @@ function writeInputConf(dir, embedded) {
     // Losing a shortcut must never stop playback.
     return null
   }
+}
+
+// mpv does not die with the app. If Papa Audio is killed rather than closed —
+// a crash, an OOM kill, a SIGKILL — the mpv it spawned keeps running, keeps
+// playing, and keeps holding an audio device. The next launch spawns its own
+// mpv, so the user hears one process while the app's controls drive a
+// different one: audio with no picture and a deck that appears to do nothing.
+// Observed exactly that way, with an orphan from a long-dead instance still
+// playing alongside a live one.
+//
+// The socket name carries the pid that spawned it, so an orphan is one whose
+// owner is gone. It is stopped by asking it to quit over its own socket rather
+// than by matching process names: if something answers, it is an mpv of ours
+// and it exits cleanly; if nothing answers, the socket is stale and is simply
+// removed. This mirrors purgeOrphanStreams, which solves the same problem for
+// the download caches.
+function orphanPlayerSockets(dir) {
+  let names = []
+  try { names = fs.readdirSync(dir) } catch (_) { return [] }
+  const out = []
+  for (const name of names) {
+    const m = /^papa-video-(\d+)-[0-9a-f]+\.sock$/.exec(name)
+    if (!m) continue
+    const pid = Number(m[1])
+    if (pid === process.pid) continue
+    if (isProcessAlive(pid)) continue
+    out.push(path.join(dir, name))
+  }
+  return out
+}
+
+function isProcessAlive(pid) {
+  try { process.kill(pid, 0); return true } catch (e) { return e && e.code === 'EPERM' }
+}
+
+function purgeOrphanPlayers({ dir = (process.env.XDG_RUNTIME_DIR || os.tmpdir()), timeoutMs = 1200 } = {}) {
+  const sockets = orphanPlayerSockets(dir)
+  if (!sockets.length) return Promise.resolve({ quit: 0, stale: 0 })
+  let quit = 0
+  let stale = 0
+  return Promise.all(sockets.map(file => new Promise(resolve => {
+    let done = false
+    const finish = () => { if (!done) { done = true; try { fs.unlinkSync(file) } catch (_) {} ; resolve() } }
+    let sock
+    try { sock = net.connect(file) } catch (_) { stale++; return finish() }
+    const timer = setTimeout(() => { try { sock.destroy() } catch (_) {} ; finish() }, timeoutMs)
+    sock.on('connect', () => {
+      quit++
+      try { sock.write(JSON.stringify({ command: ['quit'] }) + '\n') } catch (_) {}
+      // Give mpv a moment to act on it before the socket goes away.
+      setTimeout(() => { try { sock.end() } catch (_) {} ; clearTimeout(timer); finish() }, 150)
+    })
+    sock.on('error', () => { stale++; clearTimeout(timer); finish() })
+  }))).then(() => ({ quit, stale }))
 }
 
 // Resolved lazily so the module stays loadable in tests that have no Electron
@@ -550,6 +605,8 @@ class VideoEngine extends EventEmitter {
 
 module.exports = {
   VideoEngine,
+  purgeOrphanPlayers,
+  orphanPlayerSockets,
   screenshotDir,
   configDir,
   inputConfBody,

@@ -133,7 +133,7 @@ const { createApibayProvider } = require('./providers/apibay')
 const { createMovieTvProvider, createVidsrcResolver } = require('./providers/movie-tv')
 const { createAnimeProvider } = require('./providers/anime')
 const { TorrentStreamer, purgeOrphanStreams } = require('./torrent-stream')
-const { VideoEngine } = require('./video-engine')
+const { VideoEngine, purgeOrphanPlayers } = require('./video-engine')
 const { createYarrlistDirectory } = require('./yarrlist-directory')
 const { classify } = require('./src/surround-verify')
 
@@ -1088,6 +1088,16 @@ app.whenReady().then(() => {
       console.log(`[papa-video] removed ${swept.removed} orphaned stream cache(s), ` +
         `${(swept.bytes / 1073741824).toFixed(2)} GB reclaimed`)
     }
+  // Same problem, other resource: an mpv from a killed instance keeps playing
+  // and keeps an audio device, so the user hears one process while the app's
+  // controls drive another.
+  purgeOrphanPlayers()
+    .then(r => {
+      if (r.quit || r.stale) {
+        console.log(`[papa-video] stopped ${r.quit} orphaned player(s), cleared ${r.stale} stale socket(s)`)
+      }
+    })
+    .catch(e => console.error('[papa-video] player sweep failed:', e && e.message))
   } catch (e) {
     console.error('[papa-video] stream cache sweep failed:', e && e.message)
   }

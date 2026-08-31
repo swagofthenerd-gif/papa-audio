@@ -606,3 +606,59 @@ test('the embedded and windowed configs are separate files', () => {
   assert.notStrictEqual(conf(a), conf(b), 'one file cannot carry both bindings')
   assert.match(conf(a), /embedded/)
 })
+
+// ── Orphaned players ───────────────────────────────────────────────────────
+// mpv does not die with the app. If Papa Audio is killed rather than closed,
+// its mpv keeps running, keeps playing and keeps an audio device. The next
+// launch spawns its own, so the user hears one process while the deck drives
+// another: audio with no picture and controls that appear to do nothing.
+// Seen exactly that way, an orphan from a long-dead instance playing beside a
+// live one.
+const _fs = require('fs')
+const _os = require('os')
+const _path = require('path')
+const { orphanPlayerSockets, purgeOrphanPlayers } = require('../video-engine.js')
+
+function socketDir(names) {
+  const dir = _fs.mkdtempSync(_path.join(_os.tmpdir(), 'papa-orphan-test-'))
+  for (const n of names) _fs.writeFileSync(_path.join(dir, n), '')
+  return dir
+}
+
+test('a socket whose owning process is gone is an orphan', () => {
+  const dir = socketDir(['papa-video-999999-aabbccdd.sock'])
+  assert.deepStrictEqual(
+    orphanPlayerSockets(dir).map(f => _path.basename(f)),
+    ['papa-video-999999-aabbccdd.sock'])
+  _fs.rmSync(dir, { recursive: true, force: true })
+})
+
+// Killing a running instance's player would stop the video the user is
+// actually watching, which is far worse than leaving an orphan behind.
+test('a socket owned by a live process is left alone', () => {
+  const dir = socketDir([`papa-video-${process.pid}-aabbccdd.sock`])
+  assert.deepStrictEqual(orphanPlayerSockets(dir), [])
+  _fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test('unrelated sockets are never touched', () => {
+  const dir = socketDir(['papa-mpv-999999-aabbccdd.sock', 'something.sock', 'papa-video-notapid-x.sock'])
+  assert.deepStrictEqual(orphanPlayerSockets(dir), [])
+  _fs.rmSync(dir, { recursive: true, force: true })
+})
+
+// A socket file left behind by a player that already died has nothing to quit;
+// it should be cleared rather than waited on.
+test('a stale socket is removed without hanging', async () => {
+  const dir = socketDir(['papa-video-999998-deadbeef.sock'])
+  const r = await purgeOrphanPlayers({ dir, timeoutMs: 300 })
+  assert.strictEqual(r.quit, 0)
+  assert.strictEqual(_fs.existsSync(_path.join(dir, 'papa-video-999998-deadbeef.sock')), false)
+  _fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test('an empty directory is not an error', async () => {
+  const dir = socketDir([])
+  assert.deepStrictEqual(await purgeOrphanPlayers({ dir }), { quit: 0, stale: 0 })
+  _fs.rmSync(dir, { recursive: true, force: true })
+})
