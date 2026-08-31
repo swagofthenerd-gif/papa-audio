@@ -1970,10 +1970,13 @@ function _curatedRows(tab) {
   const decade = decades[day % decades.length]
   const movements = ['french-new-wave', 'new-hollywood', 'italian-neorealism', 'japanese-golden-age']
   const themes = ['neo-noir', 'heist', 'coming-of-age', 'unreliable-narrator']
-  const countries = ['KR', 'JP', 'FR', 'IT']
+  // Iran, Taiwan and Argentina belong here as much as France does; the reason
+  // they were missing is that the vote floor was set for Hollywood.
+  const countries = ['IR', 'KR', 'JP', 'TW', 'FR', 'IT', 'AR', 'HK']
   const studios = [41077, 10342, 3]
   return [
     { key: 'canon' },
+    { key: 'world-cinema' },
     { key: 'decade-' + decade },
     { key: 'movement-' + movements[day % movements.length] },
     { key: 'hidden-gems' },
@@ -2717,18 +2720,11 @@ async function _renderVideoTab(ticket) {
   _bindShelfExpanders(rows)
   personal.forEach(function (r) { _fillRow(r.key, r.items) })
 
-  // Every title already on the page. A film that has earned its place on a
-  // specific shelf should not also pad out a general one — seeing the same
-  // poster three times on one page is what made the old rows feel like filler.
-  const seen = new Set()
-  const claim = function (items) {
-    return items.filter(function (it) {
-      const id = (it.type || 'movie') + ':' + it.id
-      if (seen.has(id)) return false
-      seen.add(id)
-      return true
-    })
-  }
+  // A film is not removed from one shelf because it appears on another. Seven
+  // Samurai belongs in the canon, in Japanese cinema and in world cinema, and
+  // taking it out of two of them to avoid a repeat makes those two shelves
+  // less true to what they claim to be. A shelf's job is to be right about its
+  // own category, not to be disjoint from its neighbours.
 
   // Curated shelves load in parallel with the rest and fill in as they arrive.
   Promise.all(curated.map(async function (row) {
@@ -2737,7 +2733,7 @@ async function _renderVideoTab(ticket) {
       .catch(function (e) { return { ok: false, error: String((e && e.message) || e) } })
     if (_videoCatalogTicket !== ticket || state.currentPage !== 'video') return
     if (!res.ok) return _rowError(row.key, res.error)
-    const items = claim(Array.isArray(res.results) ? res.results : [])
+    const items = Array.isArray(res.results) ? res.results : []
     // A shelf that cannot be filled honestly is not shown at all rather than
     // padded out with whatever else matched.
     if (items.length < 4) return _dropRow(row.key)

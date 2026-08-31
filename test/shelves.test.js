@@ -327,3 +327,48 @@ test('a gem must still be under-seen', () => {
   assert.ok(GEMS_CEILING > FLOOR.gems, 'the ceiling has to leave a band to select from')
   assert.match(hiddenGems().url, new RegExp('vote_count\\.lte=' + GEMS_CEILING))
 })
+
+// ── World cinema ────────────────────────────────────────────────────────────
+// A per-country shelf can only show one country at a time and the small ones
+// are thin: Iran has twenty films above the floor. This is the shelf where
+// Rashomon sits next to Parasite and Close-Up.
+test('world cinema excludes English rather than naming one country', () => {
+  const { worldCinema, WORLD_LANGUAGES } = require('../catalog/shelves')
+  const url = worldCinema().url
+  assert.ok(WORLD_LANGUAGES.length > 10, 'a handful of languages is not the world')
+  assert.ok(!WORLD_LANGUAGES.includes('en'), 'English is the one thing it is not')
+  for (const lang of ['ja', 'fa', 'ko', 'it', 'hi']) {
+    assert.ok(WORLD_LANGUAGES.includes(lang), lang + ' cinema belongs on this shelf')
+  }
+  assert.match(url, /with_original_language=/)
+})
+
+// The floor is deliberately low for a shelf ranked by rating, because the
+// alternative excludes the very films it exists for: Close-Up has 458 votes,
+// Rashomon 2588, Parasite 21204. A floor that keeps the noise out also keeps
+// Kiarostami out, so the rating floor does that work instead.
+test('the world shelf is gated on rating, not on popularity', () => {
+  const { worldCinema, WORLD_MIN_VOTES, WORLD_MIN_RATING, FLOOR } = require('../catalog/shelves')
+  assert.ok(WORLD_MIN_VOTES < FLOOR.gems, 'a national masterpiece is not a popular film')
+  assert.ok(WORLD_MIN_RATING >= 7.5, 'and the quality bar carries the weight instead')
+  assert.match(worldCinema().url, /vote_average\.gte=/)
+})
+
+// National cinemas are under-voted on a database whose users are mostly
+// American. A floor set for Hollywood returned five Iranian films and none of
+// the ones a person would name.
+test('a national shelf can reach a small cinema', () => {
+  const { FLOOR } = require('../catalog/shelves')
+  assert.ok(FLOOR.country <= 200,
+    'Close-Up has 458 votes and is one of the most admired films made in Iran')
+})
+
+// The Korean shelf opened with two BTS tour recordings, because their fans rate
+// them very highly and there are a lot of fans.
+test('a concert film is not a national cinema', () => {
+  const { country } = require('../catalog/shelves')
+  const url = country('KR').url
+  assert.match(url, /without_genres=/)
+  assert.match(decodeURIComponent(url), /99/, 'documentary')
+  assert.match(decodeURIComponent(url), /10402/, 'music')
+})

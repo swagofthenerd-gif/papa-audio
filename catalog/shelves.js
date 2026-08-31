@@ -23,7 +23,7 @@ const FLOOR = {
   director: 100,
   movement: 100,
   theme: 500,
-  country: 500,
+  country: 150,
   anniversary: 1000,
   runtime: 1000,
   gems: 1000,
@@ -49,6 +49,18 @@ const GEMS_MIN_RATING = 7.5
 const GEMS_SETTLE_YEARS = 3
 
 const RATED = 'vote_average.desc'
+
+const DOCUMENTARY_GENRE = 99
+const MUSIC_GENRE = 10402
+
+// A film's average peaks in its first weeks, before the wider audience arrives
+// to pull it back down, so any shelf that ranks by rating has to exclude the
+// hype window or it fills with whatever came out this month. The Japanese
+// shelf opened with three current anime releases until this was applied.
+const SETTLE_YEARS = 3
+function _settledBefore() {
+  return (new Date().getFullYear() - SETTLE_YEARS) + '-12-31'
+}
 
 // Specificity ranking, used by dedupe(). A lower number is a stronger claim on
 // a title: "Kurosawa" or "neo-noir" tells you something about the film, while
@@ -298,7 +310,56 @@ function country(code, opts) {
     `Made in ${name}`,
     `The best-reviewed films out of ${name}.`,
     RANK.country,
-    { with_origin_country: code, sort_by: RATED, 'vote_count.gte': FLOOR.country },
+    {
+      with_origin_country: code,
+      sort_by: RATED,
+      // National cinemas are under-voted by definition on a database whose
+      // users are mostly American: Kiarostami's Close-Up, one of the most
+      // admired films ever made in Iran, has 458 votes. A floor set for
+      // Hollywood returned five Iranian films and none of the ones a person
+      // would name; at this floor it returns Close-Up, Where Is The Friend's
+      // House?, A Separation and Children of Heaven.
+      'vote_count.gte': FLOOR.country,
+      // Which then admits concert films — the Korean shelf opened with two BTS
+      // tour recordings, because their fans rate them very highly and there are
+      // a lot of fans. A concert film is not a national cinema.
+      without_genres: `${DOCUMENTARY_GENRE},${MUSIC_GENRE}`,
+      'primary_release_date.lte': _settledBefore(),
+    },
+    opts
+  )
+}
+
+// The films everyone means by "world cinema": the best of what was not made in
+// English, from anywhere. A per-country shelf can only show you one country at a
+// time and the small ones are thin; this is the shelf where Rashomon sits next
+// to Parasite and Close-Up.
+//
+// The language list is explicit because the catalogue has no "not English"
+// filter. The floor is deliberately low for a shelf ranked by rating — 400
+// rather than the canon's 5000 — because the alternative excludes the very
+// films the shelf exists for. Close-Up has 458 votes; Rashomon has 2588;
+// Parasite has 21204. A floor that keeps the noise out also keeps Kiarostami
+// out, so the rating floor does that work instead.
+const WORLD_LANGUAGES = ['ja', 'fa', 'ko', 'fr', 'it', 'es', 'hi', 'zh', 'cn',
+  'ru', 'sv', 'de', 'da', 'pt', 'pl', 'tr', 'th']
+const WORLD_MIN_RATING = 7.8
+const WORLD_MIN_VOTES = 400
+
+function worldCinema(opts) {
+  return _shelf(
+    'world-cinema',
+    'World Cinema',
+    'The greatest films never made in English.',
+    RANK.canon,
+    {
+      with_original_language: WORLD_LANGUAGES.join('|'),
+      sort_by: RATED,
+      'vote_count.gte': WORLD_MIN_VOTES,
+      'vote_average.gte': WORLD_MIN_RATING,
+      'primary_release_date.lte': _settledBefore(),
+      without_genres: `${DOCUMENTARY_GENRE},${MUSIC_GENRE}`,
+    },
     opts
   )
 }
@@ -483,6 +544,11 @@ module.exports = {
   country,
   studio,
   hiddenGems,
+  worldCinema,
+  WORLD_LANGUAGES,
+  WORLD_MIN_RATING,
+  WORLD_MIN_VOTES,
+  SETTLE_YEARS,
   anniversary,
   runtimeUnder,
   runtimeOver,

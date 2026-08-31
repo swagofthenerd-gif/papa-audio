@@ -6387,6 +6387,7 @@ function _shelfDefinition(key) {
   }
   if (k === 'canon') return build(shelves.canon)
   if (k === 'hidden-gems') return build(shelves.hiddenGems)
+  if (k === 'world-cinema') return build(shelves.worldCinema)
   if (k === 'runtime-under-90') return build(shelves.runtimeUnder, 90)
   if (k === 'runtime-over-180') return build(shelves.runtimeOver, 180)
   let m

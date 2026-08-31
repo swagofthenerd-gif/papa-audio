@@ -357,13 +357,25 @@ test('the rotating shelves are stable within a day and change between days', () 
   assert.match(fn, /day % /, 'and it must actually select with it')
 })
 
-// A poster seen three times on one page is what made the old rows read as
-// filler rather than as choice.
-test('a title claimed by one shelf cannot pad out another', () => {
+// Deliberately NOT de-duplicated across shelves. Seven Samurai belongs in the
+// canon, in Japanese cinema and in world cinema, and removing it from two of
+// them to avoid a repeat makes those two shelves less true to what they claim
+// to be. A shelf's job is to be right about its own category, not to be
+// disjoint from its neighbours.
+//
+// Within a single grid is different: the catalogue repeats titles across page
+// boundaries, and the same poster twice in one grid is a bug, not a category.
+test('a film may appear on every shelf it genuinely belongs to', () => {
   const fn = fnBody('_renderVideoTab')
-  assert.match(fn, /const seen = new Set\(\)/)
-  assert.match(fn, /seen\.has\(id\)/)
-  assert.match(fn, /seen\.add\(id\)/)
+  assert.ok(!/const seen = new Set/.test(fn),
+    'cross-shelf de-duplication would make a shelf lie about its own category')
+})
+
+test('but one grid never shows the same film twice', () => {
+  const fn = RENDERER.slice(RENDERER.indexOf('async function _loadShelfPage'),
+    RENDERER.indexOf('function _bindShelfScroll'))
+  assert.match(fn, /const have = new Set/)
+  assert.match(fn, /!have\.has/)
 })
 
 // An empty shelf reads as a failure of the app rather than as an absence of
