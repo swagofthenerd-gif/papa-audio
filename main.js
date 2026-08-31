@@ -6907,8 +6907,10 @@ ipcMain.handle('video-control', async (_, { verb, args } = {}) => {
       case 'speed': await engine.setSpeed(args?.value ?? args?.speed); break
       case 'track': await engine.setTrack(args?.type, args?.id); break
       case 'subAdd': await engine.addSubtitle(args?.path, args?.select !== false); break
-      case 'subDelay': await engine.setSubDelay(args?.ms); break
-      case 'audioDelay': await engine.setAudioDelay(args?.ms); break
+      // Milliseconds. The player sent `seconds` while this read `ms`, so both
+      // nudges resolved to NaN and did nothing at all.
+      case 'subDelay': await engine.setSubDelay(args?.value ?? args?.ms); break
+      case 'audioDelay': await engine.setAudioDelay(args?.value ?? args?.ms); break
       case 'subStyle': await engine.setSubStyle(args); break
       case 'aspect': await engine.setAspect(args?.aspect); break
       case 'zoom': await engine.setZoom(args?.value ?? args?.zoom); break

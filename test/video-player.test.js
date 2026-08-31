@@ -712,3 +712,38 @@ test('every theatre row has an explicit place, so hiding one moves nothing', () 
   const rule = _css.slice(_css.indexOf('.vtheatre {'), _css.indexOf('.vtheatre.hidden'))
   assert.match(rule, /grid-template-rows:\s*auto 1fr auto auto auto/)
 })
+
+// ── Chapters ───────────────────────────────────────────────────────────────
+// mpv's own controller offered chapter navigation. Turning it off when
+// embedded took that away with nothing in its place — the one capability that
+// was genuinely lost rather than replaced.
+const _html = require('fs').readFileSync(require('path').join(__dirname, '..', 'src', 'index.html'), 'utf8')
+
+test('the deck has a chapters control, hidden until a file has chapters', () => {
+  assert.match(_html, /id="vt-chapters"[^>]*hidden/)
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'src', 'video-player.js'), 'utf8')
+  assert.match(src, /\$\('vt-chapters'\)\?\.addEventListener\('click', openChapterMenu\)/)
+  // Shown from the state stream, so it appears when the file turns out to
+  // have them rather than being permanently present and usually useless.
+  assert.match(src, /function syncChapterButton/)
+  assert.match(src, /btn\.hidden = n < 2/)
+})
+
+// The engine reports chapters as { index, title, start } — reading `time`
+// instead put every entry at 0:00 and every jump at the start of the file.
+test('the chapter menu reads the field the engine actually reports', () => {
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'src', 'video-player.js'), 'utf8')
+  const fn = src.slice(src.indexOf('async function openChapterMenu'), src.indexOf('function syncChapterButton'))
+  assert.ok(/\.start/.test(fn), 'chapters carry start, not time')
+  assert.ok(!/c\.time|\[i\]\.time/.test(fn), 'there is no time field on a chapter')
+})
+
+// Sent `seconds` while main read `ms`, so both nudges resolved to NaN and did
+// nothing. The contract test could not catch it because the verb here is a
+// variable rather than a literal.
+test('the delay nudges send milliseconds under the shared value key', () => {
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'src', 'video-player.js'), 'utf8')
+  const fn = src.slice(src.indexOf('function bindDelay'), src.indexOf('function openSpeedMenu'))
+  assert.match(fn, /send\(verb, \{ value: delayMs\[verb\] \}\)/)
+  assert.ok(!/seconds:/.test(fn), 'main reads milliseconds')
+})

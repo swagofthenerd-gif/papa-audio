@@ -135,6 +135,7 @@
       if (subs) subs.classList.toggle('on', state.tracks && state.tracks.sub != null)
 
       paintBadges()
+      syncChapterButton()
       paintMini()
       // Segments are set before the first state tick, when the duration is
       // still 0 and the marks cannot be positioned. Repaint whenever the
@@ -533,11 +534,56 @@
       menu.querySelectorAll(selector).forEach(function (b) {
         b.addEventListener('click', function () {
           delayMs[verb] += Number(b.dataset[dataKey])
-          send(verb, { seconds: delayMs[verb] / 1000 })
+          // Milliseconds, under the same `value` key every other single-argument
+          // verb uses. This sent `seconds` while main read `ms`, so both delay
+          // controls did nothing — and the contract test could not see it,
+          // because the verb here is a variable rather than a literal.
+          send(verb, { value: delayMs[verb] })
           const el = doc.getElementById(valueId)
           if (el) el.textContent = delayMs[verb] + ' ms'
         })
       })
+    }
+
+    // Chapters. mpv's own controller offered chapter navigation, and turning it
+    // off when embedded took that away with nothing in its place — the one
+    // capability genuinely lost rather than replaced. Films and long episodes
+    // carry them, so this is how you jump to a scene without scrubbing.
+    async function openChapterMenu() {
+      const res = api && api.videoChapters ? await api.videoChapters().catch(function () { return null }) : null
+      const list = (res && res.ok && Array.isArray(res.chapters)) ? res.chapters : []
+      const pos = Number(state && state.position) || 0
+      // The chapter you are in is the last one that has already started.
+      let currentIndex = -1
+      for (let i = 0; i < list.length; i++) {
+        if (Number(list[i].start) <= pos + 0.25) currentIndex = i
+      }
+      let html = '<div class="vt-menu-head">Chapters</div>'
+      if (!list.length) {
+        html += '<div class="vt-menu-row">This file has no chapters</div>'
+      } else {
+        html += list.map(function (c, i) {
+          return menuItem(c.title || ('Chapter ' + (i + 1)), i === currentIndex, fmtTime(Number(c.start) || 0))
+        }).join('')
+      }
+      openMenu('vt-chapters', html, function (m) {
+        m.querySelectorAll('.vt-menu-item').forEach(function (el, i) {
+          el.addEventListener('click', function () {
+            const c = list[i]
+            if (c) seekTo(Number(c.start) || 0)
+            closeMenu()
+          })
+        })
+      })
+    }
+
+    // The button only earns its place when the file actually has chapters, so
+    // it is shown from the state stream rather than always.
+    function syncChapterButton() {
+      const btn = $('vt-chapters')
+      if (!btn) return
+      const n = (state && Array.isArray(state.chapters)) ? state.chapters.length : 0
+      btn.hidden = n < 2
     }
 
     function openSpeedMenu() {
@@ -714,6 +760,7 @@
       $('vt-vol')?.addEventListener('input', function (e) { setVolume(Number(e.target.value)) })
       $('vt-subs')?.addEventListener('click', function () { openTrackMenu('sub') })
       $('vt-audio')?.addEventListener('click', function () { openTrackMenu('audio') })
+      $('vt-chapters')?.addEventListener('click', openChapterMenu)
       $('vt-speed')?.addEventListener('click', openSpeedMenu)
       $('vt-settings')?.addEventListener('click', openSettingsMenu)
       $('vt-full')?.addEventListener('click', toggleFullscreen)
