@@ -332,3 +332,58 @@ test('the probe source has no unescaped newline inside its template literal', ()
     assert.doesNotThrow(() => new Function('return ' + m[1]), name + ' does not parse')
   }
 })
+
+// ── the leak the soak actually found ───────────────────────────────────────
+
+test('the file-drop handlers are not registered by a polling function', () => {
+  // They lived at the end of checkConnections(), which runs every thirty
+  // seconds on an interval — so the app added one dragover and one drop
+  // listener to document twice a minute for as long as it was open.
+  //
+  // The leak was not only memory. Every drop event runs all of them, so
+  // dropping a file after an hour of uptime enqueued it about a hundred and
+  // twenty times. The soak named it once its probe reported call sites:
+  // "7 x checkConnections :: dragover" after five minutes.
+  const from = RENDERER.indexOf('async function checkConnections()')
+  assert.ok(from > 0, 'found checkConnections')
+  // To the next top-level function.
+  const rest = RENDERER.slice(from + 10)
+  const to = from + 10 + (rest.search(/\n(async )?function /) >>> 0)
+  const body = RENDERER.slice(from, to)
+  assert.doesNotMatch(body, /document\.addEventListener/,
+    'checkConnections runs on a timer and must not register a global listener')
+})
+
+test('the file drop is bound once, behind a guard', () => {
+  assert.match(RENDERER, /var _dropBound = false/)
+  const fn = RENDERER.slice(RENDERER.indexOf('function _bindFileDrop()'),
+                            RENDERER.indexOf('async function checkConnections()'))
+  assert.match(fn, /if \(_dropBound\) return/)
+  assert.match(fn, /_dropBound = true/)
+  // Both halves of the gesture live in the one guarded place.
+  assert.match(fn, /addEventListener\('dragover'/)
+  assert.match(fn, /addEventListener\('drop'/)
+})
+
+test('nothing else registers a document drop listener', () => {
+  // Two of these means a dropped file is enqueued twice.
+  const globals = [...RENDERER.matchAll(/document\.addEventListener\('(dragover|drop)'/g)]
+  assert.strictEqual(globals.length, 2, 'expected exactly one dragover and one drop')
+})
+
+test('no function called on an interval registers a global listener', () => {
+  // The general shape of what went wrong. Every function named in a setInterval
+  // is checked, because a listener added on a timer grows without bound by
+  // definition — no amount of care at the call site helps.
+  const timed = new Set([...RENDERER.matchAll(/setInterval\(\s*([A-Za-z_$][\w$]*)\s*,/g)].map(m => m[1]))
+  assert.ok(timed.size > 0, 'found interval callbacks by name')
+  for (const name of timed) {
+    const at = RENDERER.indexOf('function ' + name + '(')
+    if (at < 0) continue
+    const rest = RENDERER.slice(at + 10)
+    const end = at + 10 + (rest.search(/\n(async )?function /) >>> 0)
+    const body = RENDERER.slice(at, end)
+    assert.doesNotMatch(body, /(document|window)\.addEventListener/,
+      name + ' runs on an interval and registers a global listener, which grows without bound')
+  }
+})

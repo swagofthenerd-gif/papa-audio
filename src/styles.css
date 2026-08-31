@@ -7468,3 +7468,33 @@ body.video-active .np-byline { font-size:10.5px; }
 .cinema .tp-linked:focus-visible {
   outline: 2px solid var(--cin-ember); outline-offset: 2px; border-radius: 2px;
 }
+
+/* ── Sorting a loaded grid ───────────────────────────────────────────────────
+   A curated shelf's order is the curation, so this sorts what has been loaded
+   and says so. The note is part of the control, not decoration. */
+.cinema .vsort { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.cinema .vsort-label {
+  font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--cin-muted);
+}
+.cinema .vsort-select {
+  background: var(--cin-surface);
+  border: 1px solid var(--cin-line);
+  color: var(--cin-bone);
+  font-family: var(--cin-body); font-size: 12.5px;
+  padding: 5px 10px; border-radius: 2px; cursor: pointer;
+}
+.cinema .vsort-select:hover { border-color: var(--cin-bone-2); }
+.cinema .vsort-select:focus-visible { outline: 2px solid var(--cin-ember); outline-offset: 1px; }
+.cinema .vsort-note { font-size: 11.5px; color: var(--cin-muted); font-style: italic; }
+/* The shelf head is a row with the title taking the space and the sort at the
+   end; on a narrow window the control drops below rather than squeezing. */
+.cinema .vshelf-head { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.cinema .vshelf-head .vshelf-title { margin-right: 4px; }
+@media (max-width: 720px) {
+  .cinema .vsort { margin-left: 0; width: 100%; }
+}
+/* The filmography's sort sits above its rails rather than in the head, which
+   already carries the portrait and the name. */
+.cinema .vperson-sort { display: flex; padding: 0 28px; margin: 4px 0 10px; }
+.cinema .vperson-sort .vsort { margin-left: auto; }

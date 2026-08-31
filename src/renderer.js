@@ -1359,12 +1359,33 @@ async function renderPerson(personId) {
   // different things a viewer is looking for.
   const films = credits.filter(function (c) { return c.type === 'movie' })
   const series = credits.filter(function (c) { return c.type === 'tv' })
-  let html = ''
+
+  // A filmography is the one place where the order is the question. TMDB
+  // returns credits in its own order, which is neither chronological nor
+  // ranked; the plan asks for ranked, so the control offers both and defaults
+  // to newest, which is what someone looking up a director expects to see.
+  _person = { films: films, series: series, sort: 'newest' }
+  _paintPersonRows()
+}
+
+var _person = { films: [], series: [], sort: 'newest' }
+
+function _paintPersonRows() {
+  const rows = document.getElementById('vperson-rows')
+  if (!rows) return
+  const films = _vSortItems(_person.films, _person.sort)
+  const series = _vSortItems(_person.series, _person.sort)
+  let html = '<div class="vperson-sort">' + _vSortControlHtml(_person.sort, 'vperson-sort-select') + '</div>'
   if (films.length) html += _vRowShell('person-movies', 'Films', films.length)
   if (series.length) html += _vRowShell('person-tv', 'Television', series.length)
-  if (rows) rows.innerHTML = html
+  rows.innerHTML = html
   if (films.length) _fillRow('person-movies', films)
   if (series.length) _fillRow('person-tv', series)
+  // Re-bound on every paint because innerHTML above discarded the old control.
+  document.getElementById('vperson-sort-select')?.addEventListener('change', function () {
+    _person.sort = this.value || ''
+    _paintPersonRows()
+  })
 }
 
 // The name and photo of the person just clicked. Carried across navigation
@@ -2912,20 +2933,98 @@ function _videoError(message) {
 // behind it than fits on one screen.
 var _shelfPage = { key: null, page: 1, items: [], loading: false, done: false, ticket: 0 }
 
+// ── Sorting a loaded grid ───────────────────────────────────────────────────
+// A curated shelf's order IS the curation: The Canon is rating-first by design,
+// and asking TMDB for a different order would make it a different shelf. So
+// this sorts what has been loaded, and the control says so rather than implying
+// the whole shelf was re-queried.
+//
+// Kept as one table and one comparator because the shelf page and the see-all
+// grids both need it, and two copies of a sort drift on the tie-break first.
+const VSORTS = [
+  { key: '', label: 'Default order' },
+  { key: 'rating', label: 'Best first' },
+  { key: 'newest', label: 'Newest' },
+  { key: 'oldest', label: 'Oldest' },
+  { key: 'title', label: 'A\u2013Z' },
+]
+
+function _vSortItems(items, sort) {
+  const list = Array.isArray(items) ? items.slice() : []
+  if (!sort) return list
+  // Number(null), Number(undefined) and Number('') are 0, NaN and 0 — so a
+  // missing year read as the year 0 and sorted first under "oldest". Absence
+  // has to be checked before the coercion, not after it.
+  const num = v => {
+    if (v === null || v === undefined || v === '') return null
+    const n = Number(v)
+    return Number.isFinite(n) ? n : null
+  }
+  const title = i => String((i && (i.title || i.name)) || '').toLowerCase()
+  // Anything without the field being sorted on goes last rather than sorting as
+  // zero, which would put every untitled or undated item at the top.
+  const cmp = {
+    rating: (a, b) => _vNullsLast(num(a.rating), num(b.rating), (x, y) => y - x),
+    newest: (a, b) => _vNullsLast(num(a.year), num(b.year), (x, y) => y - x),
+    oldest: (a, b) => _vNullsLast(num(a.year), num(b.year), (x, y) => x - y),
+    title: (a, b) => title(a).localeCompare(title(b)),
+  }[sort]
+  if (!cmp) return list
+  // A stable tie-break on the original position, so two films of the same year
+  // do not swap places every time the grid repaints.
+  return list
+    .map((item, i) => ({ item, i }))
+    .sort((x, y) => cmp(x.item, y.item) || x.i - y.i)
+    .map(x => x.item)
+}
+
+function _vNullsLast(a, b, compare) {
+  if (a === null && b === null) return 0
+  if (a === null) return 1
+  if (b === null) return -1
+  return compare(a, b)
+}
+
+// `partial` marks a grid that is paged, where a sort can only order what has
+// arrived. A filmography is not paged -- every credit is already loaded -- so
+// the caveat would be a lie there.
+function _vSortControlHtml(current, id, partial) {
+  return '<div class="vsort">' +
+    '<label class="vsort-label" for="' + id + '">Sort</label>' +
+    '<select class="vsort-select" id="' + id + '">' +
+      VSORTS.map(function (s) {
+        return '<option value="' + s.key + '"' + (s.key === (current || '') ? ' selected' : '') + '>' +
+          esc(s.label) + '</option>'
+      }).join('') +
+    '</select>' +
+    // Said plainly: the alternative is a control that looks like it re-queried
+    // the shelf and did not.
+    (current && partial ? '<span class="vsort-note">of what is loaded</span>' : '') +
+  '</div>'
+}
+
 async function renderShelf(key) {
   _initVideoUI()
   const ticket = ++_shelfPage.ticket
-  _shelfPage = { key: key, page: 1, items: [], loading: false, done: false, ticket: ticket }
+  // The sort is deliberately not carried across shelves: it belongs to the grid
+  // you are looking at, and inheriting it would silently reorder the next
+  // curated shelf you opened.
+  _shelfPage = { key: key, page: 1, items: [], loading: false, done: false, ticket: ticket, sort: '' }
   setContent('<div class="page vpage cinema">' +
     '<div class="vshelf-head" id="vshelf-head">' +
       '<button class="vshelf-back" id="vshelf-back">&larr; Back</button>' +
       '<h1 class="vshelf-title" id="vshelf-title">Loading…</h1>' +
       '<p class="vrow-note" id="vshelf-note"></p>' +
+      _vSortControlHtml('', 'vshelf-sort', true) +
     '</div>' +
     '<div class="vgrid" id="vshelf-grid"></div>' +
     '<div class="vshelf-more" id="vshelf-more"></div>' +
   '</div>')
   document.getElementById('vshelf-back')?.addEventListener('click', function () { navigate('video') })
+  document.getElementById('vshelf-sort')?.addEventListener('change', function () {
+    _shelfPage.sort = this.value || ''
+    _repaintShelfGrid()
+  })
   await _loadShelfPage(ticket)
   _bindShelfScroll(ticket)
 }
@@ -2959,14 +3058,36 @@ async function _loadShelfPage(ticket) {
   _shelfPage.items = _shelfPage.items.concat(added)
   const grid = document.getElementById('vshelf-grid')
   if (grid) {
-    grid.insertAdjacentHTML('beforeend', added.map(_videoCard).join(''))
-    _bindVideoCards(grid)
+    if (_shelfPage.sort) {
+      // A sorted grid cannot append: the new page belongs wherever the sort puts
+      // it, which is usually not the end.
+      _repaintShelfGrid()
+    } else {
+      grid.insertAdjacentHTML('beforeend', added.map(_videoCard).join(''))
+      _bindVideoCards(grid)
+    }
   }
   // An empty page is the end of the shelf; TMDB keeps answering past it with
   // nothing rather than with an error.
   if (!fresh.length) _shelfPage.done = true
   _shelfPage.page += 1
   if (more) more.innerHTML = _shelfPage.done ? '<div class="vshelf-end">That is the whole shelf.</div>' : ''
+}
+
+function _repaintShelfGrid() {
+  const grid = document.getElementById('vshelf-grid')
+  if (!grid) return
+  const sorted = _vSortItems(_shelfPage.items, _shelfPage.sort)
+  grid.innerHTML = sorted.map(_videoCard).join('')
+  _bindVideoCards(grid)
+  // The note under the control appears and disappears with the sort.
+  const note = document.querySelector('#vshelf-head .vsort-note')
+  if (_shelfPage.sort && !note) {
+    document.querySelector('#vshelf-head .vsort')
+      ?.insertAdjacentHTML('beforeend', '<span class="vsort-note">of what is loaded</span>')
+  } else if (!_shelfPage.sort && note) {
+    note.remove()
+  }
 }
 
 // Loads the next page as the end of the grid comes into view, rather than
@@ -17427,6 +17548,9 @@ function setupListeners() {
     if (matchesShortcut('shortcuts', e) || e.key === '?') { e.preventDefault(); toggleShortcutsModal(); return }
   })
 
+  // Dropping a file in is not a connection check; it is bound once here.
+  _bindFileDrop()
+
   // ── Connection status bar ─────────────────────────────────────────────────
   var sidebar = document.getElementById('sidebar')
   if (sidebar && !document.getElementById('conn-status')) {
@@ -17537,35 +17661,21 @@ function setupListeners() {
   }
 }
 
-async function checkConnections() {
-  try {
-    var s = await window.api.slskStatus().catch(function() { return null })
-    state.connectionStatus.slskd = (s && s.connected) ? 'connected' : 'disconnected'
-  } catch (_) { state.connectionStatus.slskd = 'disconnected' }
+// ── Drag a file in to play it ───────────────────────────────────────────────
+// These two lived at the end of checkConnections(), which runs every thirty
+// seconds on an interval. So the app added one dragover and one drop listener
+// to document twice a minute for as long as it was open — and every drop event
+// runs all of them, so dropping a file after an hour of uptime enqueued it
+// about a hundred and twenty times.
+//
+// Found by the soak harness once its listener probe was made to name the call
+// site of each surviving global listener: "7 x checkConnections :: dragover"
+// after five minutes. Nothing about this belongs to a connection check.
+var _dropBound = false
 
-  try {
-    var y = await window.api.ytAuthStatus().catch(function() { return null })
-    state.connectionStatus.youtube = (y && y.ok) ? 'connected' : 'disconnected'
-  } catch (_) { state.connectionStatus.youtube = 'disconnected' }
-
-  var slskdEl = document.getElementById('conn-slskd')
-  var ytEl = document.getElementById('conn-yt')
-  if (slskdEl) {
-    var dot = slskdEl.querySelector('.conn-dot')
-    var isConnected = state.connectionStatus.slskd === 'connected'
-    dot.style.cssText = 'width:7px;height:7px;border-radius:50%;display:inline-block;background:' + (isConnected ? '#1db954' : '#e74c3c')
-    slskdEl.style.color = isConnected ? 'var(--text1)' : 'var(--text3)'
-    slskdEl.childNodes[slskdEl.childNodes.length - 1].textContent = isConnected ? ' Soulseek' : ' Soulseek offline'
-  }
-  if (ytEl) {
-    var dot2 = ytEl.querySelector('.conn-dot')
-    var isConnected2 = state.connectionStatus.youtube === 'connected'
-    dot2.style.cssText = 'width:7px;height:7px;border-radius:50%;display:inline-block;background:' + (isConnected2 ? '#1db954' : '#e74c3c')
-    ytEl.style.color = isConnected2 ? 'var(--text1)' : 'var(--text3)'
-    ytEl.childNodes[ytEl.childNodes.length - 1].textContent = isConnected2 ? ' YouTube' : ' YouTube offline'
-  }
-
-  // Drag-and-drop audio files/folders to enqueue
+function _bindFileDrop() {
+  if (_dropBound) return
+  _dropBound = true
   document.addEventListener('dragover', function(e) { e.preventDefault() })
   document.addEventListener('drop', function(e) {
     e.preventDefault()
@@ -17595,6 +17705,35 @@ async function checkConnections() {
     updateNextPrefetch()
     showSnackbar('Added ' + tracks.length + ' files to queue')
   })
+}
+
+async function checkConnections() {
+  try {
+    var s = await window.api.slskStatus().catch(function() { return null })
+    state.connectionStatus.slskd = (s && s.connected) ? 'connected' : 'disconnected'
+  } catch (_) { state.connectionStatus.slskd = 'disconnected' }
+
+  try {
+    var y = await window.api.ytAuthStatus().catch(function() { return null })
+    state.connectionStatus.youtube = (y && y.ok) ? 'connected' : 'disconnected'
+  } catch (_) { state.connectionStatus.youtube = 'disconnected' }
+
+  var slskdEl = document.getElementById('conn-slskd')
+  var ytEl = document.getElementById('conn-yt')
+  if (slskdEl) {
+    var dot = slskdEl.querySelector('.conn-dot')
+    var isConnected = state.connectionStatus.slskd === 'connected'
+    dot.style.cssText = 'width:7px;height:7px;border-radius:50%;display:inline-block;background:' + (isConnected ? '#1db954' : '#e74c3c')
+    slskdEl.style.color = isConnected ? 'var(--text1)' : 'var(--text3)'
+    slskdEl.childNodes[slskdEl.childNodes.length - 1].textContent = isConnected ? ' Soulseek' : ' Soulseek offline'
+  }
+  if (ytEl) {
+    var dot2 = ytEl.querySelector('.conn-dot')
+    var isConnected2 = state.connectionStatus.youtube === 'connected'
+    dot2.style.cssText = 'width:7px;height:7px;border-radius:50%;display:inline-block;background:' + (isConnected2 ? '#1db954' : '#e74c3c')
+    ytEl.style.color = isConnected2 ? 'var(--text1)' : 'var(--text3)'
+    ytEl.childNodes[ytEl.childNodes.length - 1].textContent = isConnected2 ? ' YouTube' : ' YouTube offline'
+  }
 
   var waveformProgressRow = document.querySelector('.progress-row')
   if (waveformProgressRow && !document.getElementById('waveform-canvas')) {
