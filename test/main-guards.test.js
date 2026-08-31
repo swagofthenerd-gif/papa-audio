@@ -396,3 +396,25 @@ test('the YouTube sign-in poll has a deadline', () => {
   assert.match(h, /Date\.now\(\) - startedAt > AUTH_DEADLINE_MS/)
   assert.match(h, /finish\(\{ ok: false, error: 'Sign-in was not completed/, 'and it says why')
 })
+
+// ── Surviving a GPU that will not start ─────────────────────────────────────
+// Chromium retries a failed GPU process a few times and then aborts the whole
+// process: "GPU process isn't usable. Goodbye." Observed intermittently on this
+// machine — twice in about fifteen launches, with no pattern under CPU load,
+// concurrent launches or a cold profile. Losing the window because compositing
+// could not start is a far worse outcome than compositing slowly.
+test('a GPU that will not start does not take the app with it', () => {
+  const MAIN = require('fs').readFileSync(require('path').join(__dirname, '..', 'main.js'), 'utf8')
+  assert.match(MAIN, /disable-gpu-process-crash-limit/)
+})
+
+// Chromium's helper processes die out of sight of every JavaScript handler, so
+// without these an intermittent crash leaves nothing behind to diagnose.
+test('a helper process that dies leaves a record', () => {
+  const MAIN = require('fs').readFileSync(require('path').join(__dirname, '..', 'main.js'), 'utf8')
+  assert.match(MAIN, /app\.on\('child-process-gone'/)
+  assert.match(MAIN, /child process gone:/)
+  // Renderer crashes already have their own handler with loop detection; a
+  // second one registered earlier would shadow it.
+  assert.strictEqual((MAIN.match(/app\.on\('render-process-gone'/g) || []).length, 0)
+})

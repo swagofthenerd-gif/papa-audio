@@ -304,8 +304,31 @@ process.on('uncaughtException', (err) => {
   console.error('[papa] uncaught exception:', (err && err.stack) || err)
 })
 
+// The GPU and utility processes die out of sight of every JavaScript handler,
+// so without this a GPU failure leaves nothing behind to look at — which is
+// exactly the position an intermittent crash puts you in. Renderer crashes are
+// already handled further down, with loop detection; this covers the ones that
+// are not the renderer.
+app.on('child-process-gone', (_event, details) => {
+  console.error('[papa] child process gone:', JSON.stringify(details))
+})
+
 // Strip the automation flag so Cloudflare/bot-checks don't see navigator.webdriver = true
 app.commandLine.appendSwitch('disable-blink-features', 'AutomationControlled')
+
+// A GPU process that fails to launch must not take the whole app down with it.
+// Chromium's default is to retry a few times and then abort the process
+// outright — "GPU process isn't usable. Goodbye." — which on this machine
+// (RTX 3070, proprietary driver, Wayland session) happens intermittently: twice
+// in about fifteen launches, with no pattern found under CPU load, concurrent
+// launches or a cold profile. This switch makes Chromium keep going with
+// software compositing instead of dying, which is a slower window rather than
+// no window.
+//
+// It is a mitigation, not a diagnosis. The handler below is what will actually
+// identify the cause, because it records the failure the next time it happens
+// rather than losing it with the process.
+app.commandLine.appendSwitch('disable-gpu-process-crash-limit')
 
 // GPU memory optimisations
 app.commandLine.appendSwitch('disable-gpu-rasterization')         // CPU rasterise tiles — less VRAM
