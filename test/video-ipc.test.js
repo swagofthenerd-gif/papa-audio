@@ -605,3 +605,74 @@ test('the renderer flags anime films as well as series', () => {
   // Both branches must send it.
   assert.strictEqual((body.match(/isAnime: d\.isAnime === true/g) || []).length, 2)
 })
+
+// ── Stage geometry ─────────────────────────────────────────────────────────
+// The renderer measures the stage in CSS pixels; setBounds takes DIP. They are
+// equal only at zoom 1, and this app runs at 0.9128 — so unconverted, a stage
+// 2472 CSS px wide became 2472 DIP inside a 2256 DIP window and the video
+// covered the whole app, controls included, with no way back. These numbers
+// are the ones measured from the running app.
+function geometry({ zoom = 1, content = { x: 1916, y: 0, width: 2256, height: 1224 } } = {}) {
+  const vm = require('vm')
+  const src = [_fn('_cssToDip'), _fn('_positionVideoWindow')].join('\n')
+  const applied = []
+  const ctx = {
+    mainWindow: {
+      isDestroyed: () => false,
+      getContentBounds: () => content,
+      webContents: { getZoomFactor: () => zoom },
+    },
+    _videoWindow: () => ({ isDestroyed: () => false, setBounds: b => applied.push(b) }),
+    Number, Math,
+  }
+  vm.createContext(ctx)
+  vm.runInContext(src, ctx)
+  return {
+    place: rect => { ctx._positionVideoWindow(ctx._cssToDip(rect)); return applied[applied.length - 1] },
+    toDip: rect => ctx._cssToDip(rect),
+  }
+}
+function _fn(name) {
+  const at = MAIN.indexOf(`function ${name}(`)
+  if (at < 0) throw new Error(`${name} not found in main.js`)
+  let depth = 0, i = MAIN.indexOf('{', at)
+  for (let k = i; ; k++) {
+    if (MAIN[k] === '{') depth++
+    else if (MAIN[k] === '}') { depth--; if (depth === 0) return MAIN.slice(at, k + 1) }
+  }
+}
+
+test('a CSS-pixel stage is converted to DIP by the zoom factor', () => {
+  const g = geometry({ zoom: 0.9128709291752769 })
+  const r = g.toDip({ x: 0, y: 75, width: 2472, height: 1179 })
+  assert.ok(Math.abs(r.width - 2256.6) < 1, 'width should land on the window width, got ' + r.width)
+  assert.ok(Math.abs(r.y - 68.5) < 1, 'y should scale too, got ' + r.y)
+})
+
+test('at zoom 1 the rectangle is unchanged', () => {
+  const r = geometry({ zoom: 1 }).toDip({ x: 10, y: 20, width: 300, height: 200 })
+  assert.deepStrictEqual(
+    { x: r.x, y: r.y, width: r.width, height: r.height },
+    { x: 10, y: 20, width: 300, height: 200 })
+})
+
+test('the real measured stage no longer covers the whole app', () => {
+  const b = geometry({ zoom: 0.9128709291752769 }).place({ x: 0, y: 75, width: 2472, height: 1179 })
+  assert.ok(b.height < 1224, 'the video must not fill the window height, got ' + b.height)
+  assert.ok(b.y + b.height <= 1224, 'it must leave the deck on screen')
+  assert.ok(b.width <= 2256, 'it must not be wider than the app, got ' + b.width)
+})
+
+// However wrong an incoming rectangle is, the video must never grow past the
+// app and swallow the controls with it.
+test('an oversized rectangle is clamped to the content area', () => {
+  const b = geometry({ zoom: 1 }).place({ x: 0, y: 0, width: 99999, height: 99999 })
+  assert.strictEqual(b.width, 2256)
+  assert.strictEqual(b.height, 1224)
+})
+
+test('a negative offset cannot push the surface off the window', () => {
+  const b = geometry({ zoom: 1 }).place({ x: -500, y: -500, width: 400, height: 300 })
+  assert.strictEqual(b.x, 1916)
+  assert.strictEqual(b.y, 0)
+})

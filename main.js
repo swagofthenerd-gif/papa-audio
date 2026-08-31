@@ -6078,17 +6078,41 @@ function _videoWid() {
 // The renderer owns the layout, so it measures the stage and tells main where
 // the video belongs. Converting from content-relative to screen coordinates is
 // main's job because only main knows where the window sits on the desktop.
+// The renderer measures in CSS pixels; setBounds takes device-independent
+// pixels. Those are only the same number when the page zoom is exactly 1, and
+// here it is 0.9128 — so an unconverted rectangle came out about 10% too big
+// in every direction. A stage 2472 CSS px wide became 2472 DIP inside a window
+// only 2256 DIP wide, and the video covered the entire app: no poster, no
+// deck, no way back. Multiplying by the zoom factor is the conversion.
+function _cssToDip(rect) {
+  if (!rect) return null
+  let z = 1
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) z = mainWindow.webContents.getZoomFactor() || 1
+  } catch (_) { z = 1 }
+  if (!Number.isFinite(z) || z <= 0) z = 1
+  return {
+    x: rect.x * z, y: rect.y * z,
+    width: rect.width * z, height: rect.height * z,
+  }
+}
+
+// Positions the surface from a rectangle already in DIP. Clamped to the
+// content area so that however wrong an incoming rectangle is, the video can
+// never grow past the app and swallow the controls with it.
 function _positionVideoWindow(rect) {
   try {
     if (!rect || !mainWindow || mainWindow.isDestroyed()) return false
     const win = _videoWindow()
     if (!win || win.isDestroyed()) return false
     const content = mainWindow.getContentBounds()
-    const width = Math.max(2, Math.round(rect.width))
-    const height = Math.max(2, Math.round(rect.height))
+    const x = Math.min(Math.max(0, rect.x), Math.max(0, content.width - 2))
+    const y = Math.min(Math.max(0, rect.y), Math.max(0, content.height - 2))
+    const width = Math.max(2, Math.min(Math.round(rect.width), content.width - x))
+    const height = Math.max(2, Math.min(Math.round(rect.height), content.height - y))
     win.setBounds({
-      x: Math.round(content.x + rect.x),
-      y: Math.round(content.y + rect.y),
+      x: Math.round(content.x + x),
+      y: Math.round(content.y + y),
       width, height,
     })
     return true
@@ -6120,8 +6144,10 @@ ipcMain.handle('video-surface-visible', (_, { visible } = {}) => {
 })
 
 ipcMain.handle('video-surface-bounds', (_, rect) => {
-  _videoSession.bounds = rect || null
-  return { ok: _positionVideoWindow(rect) }
+  // Converted on arrival, so everything downstream — the move/resize follower,
+  // the fullscreen backstop, restoring after a minimise — works in one unit.
+  _videoSession.bounds = _cssToDip(rect)
+  return { ok: _positionVideoWindow(_videoSession.bounds) }
 })
 
 // Fullscreen means the video window alone goes fullscreen; the deck is not
