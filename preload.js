@@ -123,6 +123,7 @@ contextBridge.exposeInMainWorld('api', {
   videoTracks:      ()  => ipcRenderer.invoke('video-tracks'),
   videoChapters:    ()  => ipcRenderer.invoke('video-chapters'),
   videoEnrich:      (p) => ipcRenderer.invoke('video-enrich', p),
+  videoShelf:       (p) => ipcRenderer.invoke('video-shelf', p),
   videoSubOpen:     ()  => ipcRenderer.invoke('video-sub-open'),
   videoSkipSegments:(req) => ipcRenderer.invoke('video-skip-segments', req),
   videoDetectIntro: (req) => ipcRenderer.invoke('video-detect-intro', req),

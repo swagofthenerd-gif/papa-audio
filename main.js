@@ -125,7 +125,9 @@ const lyrics = require('./lyrics')
 // Papa Video — catalog, providers and engines are pure CommonJS factories.
 // Nothing is constructed here: the factories run on first use, so no network
 // or mpv spawn happens at import time.
-const { createTmdbCatalog } = require('./catalog/tmdb')
+const tmdbCatalog = require('./catalog/tmdb')
+const { createTmdbCatalog } = tmdbCatalog
+const shelves = require('./catalog/shelves')
 const { createAnilistCatalog } = require('./catalog/anilist')
 const { createOmdbCatalog } = require('./catalog/omdb')
 const { resolveStream } = require('./providers/index')
@@ -6331,6 +6333,72 @@ ipcMain.handle('video-settings-set', (_, { patch }) => {
   }
 })
 
+// The curated shelves. Everything the home tab showed before was a variant of
+// "what is popular right now", which is why nothing made before this year ever
+// appeared on it. These ask different questions: what is the canon, what did
+// the seventies leave us, what came out of the French New Wave, what is good
+// and under-seen.
+//
+// Each shelf is a discover query built in catalog/shelves.js and fetched here,
+// where the key lives. Results go through the same normaliser as everything
+// else so a curated card is identical to a trending one.
+ipcMain.handle('video-shelf', async (_, { key, page = 1 } = {}) => {
+  try {
+    const def = _shelfDefinition(key)
+    if (!def) return { ok: false, error: `Unknown shelf: ${key}` }
+    const cacheKey = `shelf:${key}:${page}`
+    const cached = _videoCatalogCache.get(cacheKey)
+    if (cached) return { ok: true, shelf: def.meta, results: cached }
+
+    const apiKey = _videoSettings().tmdbApiKey || process.env.TMDB_API_KEY
+    if (!apiKey) return { ok: false, error: 'TMDB API key missing or invalid — set it in Settings → Video.' }
+    const url = `${def.url}&page=${page}&api_key=${encodeURIComponent(apiKey)}`
+    const res = await fetchWithTimeout(15000)(url)
+    if (!res || !res.ok) return { ok: false, error: `Shelf request failed (${res && res.status})` }
+    const json = await res.json()
+    const raw = Array.isArray(json && json.results) ? json.results : []
+
+    // A daily news bulletin airs forever and so ranks by popularity forever;
+    // Tagesschau sat in Popular TV for exactly that reason. A film shelf is not
+    // the place for it.
+    const results = raw
+      .map(r => tmdbCatalog.normalizeMovie(r))
+      .filter(Boolean)
+      .filter(item => !shelves.isLowQualityForFilmShelf(item))
+
+    if (results.length) _videoCatalogCache.set(cacheKey, results)
+    return { ok: true, shelf: def.meta, results }
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) }
+  }
+})
+
+// Resolves a shelf key like "decade-1970" or "movement-french-new-wave" to its
+// query. Parameterised shelves are expanded here rather than enumerated, so a
+// new decade costs nothing.
+function _shelfDefinition(key) {
+  const k = String(key || '')
+  const build = (fn, arg) => {
+    try {
+      const def = arg === undefined ? fn() : fn(arg)
+      if (!def || !def.url) return null
+      return { url: def.url, meta: { key: def.key, label: def.label, note: def.note } }
+    } catch (_) { return null }
+  }
+  if (k === 'canon') return build(shelves.canon)
+  if (k === 'hidden-gems') return build(shelves.hiddenGems)
+  if (k === 'runtime-under-90') return build(shelves.runtimeUnder, 90)
+  if (k === 'runtime-over-180') return build(shelves.runtimeOver, 180)
+  let m
+  if ((m = /^decade-(\d{4})$/.exec(k))) return build(shelves.decade, Number(m[1]))
+  if ((m = /^movement-(.+)$/.exec(k))) return build(shelves.movement, m[1])
+  if ((m = /^theme-(.+)$/.exec(k))) return build(shelves.theme, m[1])
+  if ((m = /^country-(.+)$/.exec(k))) return build(shelves.country, m[1])
+  if ((m = /^studio-(\d+)$/.exec(k))) return build(shelves.studio, Number(m[1]))
+  if ((m = /^anniversary-(\d+)$/.exec(k))) return build(shelves.anniversary, Number(m[1]))
+  return null
+}
+
 ipcMain.handle('video-catalog-get', async (_, { section, page = 1 }) => {
   try {
     // The season-anime section resolves "current season" at call time, so its
@@ -6345,7 +6413,6 @@ ipcMain.handle('video-catalog-get', async (_, { section, page = 1 }) => {
     switch (section) {
       case 'trending-movies': results = await tmdb().trending('movie', page); break
       case 'trending-tv': results = await tmdb().trending('tv', page); break
-      case 'popular-movies': results = await tmdb().popular('movie', page); break
       case 'popular-tv': results = await tmdb().popular('tv', page); break
       case 'trending-anime': results = await anilist().trending(page); break
       case 'popular-anime': results = await anilist().popular(page); break

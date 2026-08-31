@@ -182,11 +182,40 @@ test('the catalog rows load in parallel rather than one after another', () => {
 
 // popular-movies, trending-tv and season-anime were built in the backend and
 // never requested — the page only ever showed three of the seven rows.
+// Derived from the backend rather than listed here, so it keeps telling the
+// truth when a section is deliberately added or removed. Hardcoding the seven
+// names meant the test failed on a considered removal exactly as loudly as on
+// an accidental one, which is the wrong signal.
 test('every catalog row the backend serves is used', () => {
-  const block = RENDERER.slice(RENDERER.indexOf('var _videoRows = ['), RENDERER.indexOf('var _videoTabs'))
-  for (const key of ['trending-movies', 'popular-movies', 'trending-tv', 'popular-tv',
-                     'trending-anime', 'popular-anime', 'season-anime']) {
+  const MAIN = require('fs').readFileSync(require('path').join(__dirname, '..', 'main.js'), 'utf8')
+  const handler = MAIN.slice(MAIN.indexOf("ipcMain.handle('video-catalog-get'"))
+  const served = [...handler.slice(0, handler.indexOf('ipcMain.handle', 10))
+    .matchAll(/case '([a-z-]+)':/g)].map(m => m[1])
+  assert.ok(served.length >= 5, 'expected the catalog sections, found ' + served.length)
+  const block = RENDERER.slice(RENDERER.indexOf('var _videoRows = ['), RENDERER.indexOf('function _curatedRows'))
+  for (const key of served) {
     assert.ok(block.includes(key), `row ${key} is served by the backend but never requested`)
+  }
+})
+
+// The other direction: a shelf the page asks for that the backend cannot build
+// is a row that renders an error every time it loads.
+test('every curated shelf the page asks for can be resolved', () => {
+  const MAIN = require('fs').readFileSync(require('path').join(__dirname, '..', 'main.js'), 'utf8')
+  const resolver = MAIN.slice(MAIN.indexOf('function _shelfDefinition'),
+    MAIN.indexOf('ipcMain.handle(\'video-catalog-get\''))
+  const fn = RENDERER.slice(RENDERER.indexOf('function _curatedRows'),
+    RENDERER.indexOf('var _videoTabs'))
+  // A key ending in a dash is a prefix being concatenated with a rotating
+  // value, not a shelf name; those are checked as families below.
+  const fixed = [...fn.matchAll(/key: '([a-z0-9-]+)'/g)].map(m => m[1]).filter(k => !k.endsWith('-'))
+  for (const key of fixed) {
+    assert.ok(resolver.includes("'" + key + "'"), key + ' is requested but cannot be resolved')
+  }
+  // The parameterised families are matched by pattern, not by name.
+  for (const family of ['decade-', 'movement-', 'theme-', 'country-', 'studio-']) {
+    assert.ok(fn.includes("'" + family) && resolver.includes(family),
+      family + ' shelves are built but not resolvable')
   }
 })
 
@@ -308,4 +337,47 @@ test('backend errors are translated into something actionable', () => {
 test('the anime stream request carries every AniList title variant', () => {
   const body = fnBody('_videoStreamRequest')
   assert.match(body, /titles: d\.titles \|\| null/)
+})
+
+// ── Curation ────────────────────────────────────────────────────────────────
+// Every shelf the home tab showed was a variant of "what is popular right now",
+// which is why nothing made before this year ever reached the page.
+test('the page carries shelves that are not about this week', () => {
+  const fn = RENDERER.slice(RENDERER.indexOf('function _curatedRows'), RENDERER.indexOf('var _videoTabs'))
+  for (const family of ['canon', 'decade-', 'movement-', 'theme-', 'country-', 'studio-', 'hidden-gems']) {
+    assert.ok(fn.includes(family), family + ' is missing from the home page')
+  }
+})
+
+// Eight decade rows at once would bury everything else, and a page that shows
+// the same rows forever stops being worth opening.
+test('the rotating shelves are stable within a day and change between days', () => {
+  const fn = RENDERER.slice(RENDERER.indexOf('function _curatedRows'), RENDERER.indexOf('var _videoTabs'))
+  assert.match(fn, /Math\.floor\(Date\.now\(\) \/ 86400000\)/, 'the seed must be the day, not the moment')
+  assert.match(fn, /day % /, 'and it must actually select with it')
+})
+
+// A poster seen three times on one page is what made the old rows read as
+// filler rather than as choice.
+test('a title claimed by one shelf cannot pad out another', () => {
+  const fn = fnBody('_renderVideoTab')
+  assert.match(fn, /const seen = new Set\(\)/)
+  assert.match(fn, /seen\.has\(id\)/)
+  assert.match(fn, /seen\.add\(id\)/)
+})
+
+// An empty shelf reads as a failure of the app rather than as an absence of
+// films, and a shelf padded to look full is worse than either.
+test('a shelf that cannot be filled honestly is removed', () => {
+  const fn = fnBody('_renderVideoTab')
+  assert.match(fn, /items\.length < \d+\) return _dropRow/)
+  assert.match(RENDERER, /function _dropRow/)
+})
+
+// The label and the line beneath it live beside the query that justifies them,
+// so the copy cannot drift away from what the shelf actually returns.
+test('the curatorial line arrives with the results', () => {
+  assert.match(RENDERER, /function _setRowHead/)
+  assert.match(RENDERER, /_setRowHead\(row\.key, res\.shelf\)/)
+  assert.match(RENDERER, /vrow-note/)
 })

@@ -1934,18 +1934,54 @@ function _armBrowseObserver() {
   _browse.observer.observe(more)
 }
 
-// Every row the backend can serve. `popular-movies`, `trending-tv` and
-// `season-anime` were built and then never requested — the page only ever
-// showed three of these seven.
+// The shelves the catalogue serves directly, and every one of them is
+// requested — a row the backend can serve but nothing asks for is dead code
+// that looks like a feature.
+//
+// The film "popular" row is gone, backend case included: it returned nearly the
+// same titles as Trending, so the page repeated itself while appearing to offer
+// variety. Its place is taken by the curated shelves below.
 var _videoRows = [
   { key: 'trending-movies', label: 'Trending Movies',  tabs: ['all', 'movie'] },
-  { key: 'popular-movies',  label: 'Popular Movies',   tabs: ['all', 'movie'] },
   { key: 'trending-tv',     label: 'Trending TV',      tabs: ['all', 'tv'] },
-  { key: 'popular-tv',      label: 'Popular TV',       tabs: ['all', 'tv'] },
+  // Television keeps its second row. Only the film tabs gain curated shelves,
+  // so dropping this one would leave TV with a single row.
+  { key: 'popular-tv',      label: 'Popular TV',       tabs: ['tv'] },
   { key: 'trending-anime',  label: 'Trending Anime',   tabs: ['all', 'anime'] },
   { key: 'popular-anime',   label: 'Popular Anime',    tabs: ['anime'] },
   { key: 'season-anime',    label: 'This Season',      tabs: ['anime'] },
 ]
+
+// The curated shelves, which is where cinema older than this year finally
+// reaches the page. Each is a query in catalog/shelves.js; the label and the
+// line underneath come back with the results, so the copy lives with the query
+// that justifies it rather than being restated here.
+//
+// Decades rotate rather than all appearing at once: eight decade rows would
+// bury everything else, and a home page that shows you the same eight rows
+// forever stops being worth opening.
+function _curatedRows(tab) {
+  if (tab !== 'all' && tab !== 'movie') return []
+  const decades = [1950, 1960, 1970, 1980, 1990, 2000, 2010]
+  // Stable within a day, different tomorrow: discovery should feel like the
+  // page has been arranged for today, not generated afresh on every render.
+  const day = Math.floor(Date.now() / 86400000)
+  const decade = decades[day % decades.length]
+  const movements = ['french-new-wave', 'new-hollywood', 'italian-neorealism', 'japanese-golden-age']
+  const themes = ['neo-noir', 'heist', 'coming-of-age', 'unreliable-narrator']
+  const countries = ['KR', 'JP', 'FR', 'IT']
+  const studios = [41077, 10342, 3]
+  return [
+    { key: 'canon' },
+    { key: 'decade-' + decade },
+    { key: 'movement-' + movements[day % movements.length] },
+    { key: 'hidden-gems' },
+    { key: 'theme-' + themes[day % themes.length] },
+    { key: 'country-' + countries[day % countries.length] },
+    { key: 'studio-' + studios[day % studios.length] },
+    { key: 'runtime-under-90' },
+  ]
+}
 
 var _videoTabs = [
   { key: 'all',   label: 'All' },
@@ -2591,13 +2627,46 @@ async function _renderVideoTab(ticket) {
   }
 
   const wanted = _videoRows.filter(function (r) { return r.tabs.indexOf(_videoTab) !== -1 })
+  const curated = _curatedRows(_videoTab)
   const personal = _personalRows()
 
   if (heroMount) heroMount.innerHTML = _vHeroSkeleton()
+  // Curated shelves have no label until their results come back, because the
+  // label and the curatorial line are defined beside the query that justifies
+  // them. The shell goes up with a placeholder so the page does not jump.
   rows.innerHTML = personal.map(function (r) { return _vRowShell(r.key, r.label, r.items.length) }).join('') +
-    wanted.map(function (r) { return _vRowShell(r.key, r.label, 0) }).join('')
+    wanted.map(function (r) { return _vRowShell(r.key, r.label, 0) }).join('') +
+    curated.map(function (r) { return _vRowShell(r.key, '', 0) }).join('')
 
   personal.forEach(function (r) { _fillRow(r.key, r.items) })
+
+  // Every title already on the page. A film that has earned its place on a
+  // specific shelf should not also pad out a general one — seeing the same
+  // poster three times on one page is what made the old rows feel like filler.
+  const seen = new Set()
+  const claim = function (items) {
+    return items.filter(function (it) {
+      const id = (it.type || 'movie') + ':' + it.id
+      if (seen.has(id)) return false
+      seen.add(id)
+      return true
+    })
+  }
+
+  // Curated shelves load in parallel with the rest and fill in as they arrive.
+  Promise.all(curated.map(async function (row) {
+    if (!window.api.videoShelf) return
+    const res = await window.api.videoShelf({ key: row.key })
+      .catch(function (e) { return { ok: false, error: String((e && e.message) || e) } })
+    if (_videoCatalogTicket !== ticket || state.currentPage !== 'video') return
+    if (!res.ok) return _rowError(row.key, res.error)
+    const items = claim(Array.isArray(res.results) ? res.results : [])
+    // A shelf that cannot be filled honestly is not shown at all rather than
+    // padded out with whatever else matched.
+    if (items.length < 4) return _dropRow(row.key)
+    _setRowHead(row.key, res.shelf)
+    _fillRow(row.key, items)
+  }))
 
   // Rows load in parallel and each owns its own failure, so one dead section
   // cannot wipe the ones that already arrived.
@@ -2628,10 +2697,13 @@ function _personalRows() {
   return out
 }
 
-function _vRowShell(key, label, count) {
+function _vRowShell(key, label, count, note) {
   return '<section class="vrow" data-row="' + esc(key) + '">' +
     '<div class="vrow-head"><h2 class="vrow-title">' + esc(label) + '</h2>' +
-      (count ? '<span class="vrow-count">' + count + '</span>' : '') + '</div>' +
+      (count ? '<span class="vrow-count">' + count + '</span>' : '') +
+      // A row called "Trending" explains nothing. A row called "New Hollywood"
+      // with a line under it is a recommendation from someone with a view.
+      (note ? '<p class="vrow-note">' + esc(note) + '</p>' : '') + '</div>' +
     '<div class="vrail-wrap">' +
       '<button class="vrail-nav vrail-prev" aria-label="Scroll left" hidden>' + _VICON.left + '</button>' +
       '<div class="vrail" data-rail="' + esc(key) + '">' + _vRailSkeleton() + '</div>' +
@@ -2665,6 +2737,29 @@ function _rowError(key, error) {
     '<div><button class="vbtn" data-retry="' + esc(key) + '">Try again</button></div>', true)
   const btn = document.querySelector('[data-retry="' + key + '"]')
   if (btn) btn.addEventListener('click', function () { _renderVideoTab(++_videoCatalogTicket) })
+}
+
+// The label and the line beneath it arrive with the results.
+function _setRowHead(key, shelf) {
+  if (!shelf) return
+  const row = document.querySelector('.vrow[data-row="' + key + '"]')
+  if (!row) return
+  const title = row.querySelector('.vrow-title')
+  if (title) title.textContent = shelf.label || ''
+  const head = row.querySelector('.vrow-head')
+  if (head && shelf.note && !head.querySelector('.vrow-note')) {
+    const p = document.createElement('p')
+    p.className = 'vrow-note'
+    p.textContent = shelf.note
+    head.appendChild(p)
+  }
+}
+
+// An empty shelf is worse than no shelf: it reads as a failure of the app
+// rather than as an absence of films.
+function _dropRow(key) {
+  const row = document.querySelector('.vrow[data-row="' + key + '"]')
+  if (row) row.remove()
 }
 
 function _fillRow(key, items) {
