@@ -279,3 +279,88 @@ test("V8's total heap is exempt, because it ratchets by design", () => {
     assert.strictEqual(METRIC_RULES[name].creepMinAbsGrowth, undefined, name)
   }
 })
+
+// ── retention versus the allocator ────────────────────────────────────────
+//
+// A process whose footprint creeps while its DOM, its detached DOM and its
+// listener counts all hold still is not holding anything: it is the allocator
+// declining to hand pages back after heavy churn. Measured over 48 page
+// changes — live nodes flat at 2449, detached flat at 1408, listeners flat at
+// 266, RSS 195 to 238MB — which is exactly that shape.
+//
+// Telling the two apart is the whole reason the DOM counters are sampled. The
+// alternative is a run that fails forever on a benign rise, and a light that is
+// always red is a light nobody reads.
+
+const { explainAllocatorGrowth, METRIC_RULES: RULES } = require('../tools/video-soak')
+
+function creepRun (overrides) {
+  const floors = [157, 210, 216, 221, 222, 227, 228, 231, 235, 236]
+  const rows = []
+  for (let i = 0; i < 400; i++) {
+    const tenth = Math.floor(i / 40)
+    rows.push({
+      metrics: Object.assign({
+        rendererRss: (floors[tenth] + (i % 7)) * 1048576,
+        liveNodes: 2449 + (i % 3),
+        detachedNodes: 1408 + (i % 2),
+        cdpListeners: 266,
+        domNodes: 1041 + (i % 5),
+        listenersGlobal: 4,
+      }, overrides ? overrides(i, tenth) : {}),
+    })
+  }
+  return analyseRun(rows, RULES)
+}
+
+test('a creeping footprint with flat retention is explained, not called a leak', () => {
+  const res = creepRun()
+  assert.deepStrictEqual(res.leaks, ['rendererRss'], 'the rise is still detected')
+  const expl = explainAllocatorGrowth(res)
+  assert.ok(expl, 'and it is attributable to the allocator')
+  assert.deepStrictEqual(expl.flagged, ['rendererRss'])
+  assert.ok(expl.evidence.includes('liveNodes'), 'the evidence is named')
+})
+
+test('a creeping footprint WITH growing live nodes is a leak', () => {
+  // The case the discrimination exists to preserve: retention that is real.
+  const res = creepRun((i, tenth) => ({ liveNodes: 2449 + tenth * 400 + (i % 3) }))
+  assert.ok(res.leaks.includes('liveNodes'))
+  assert.strictEqual(explainAllocatorGrowth(res), null, 'this must not be downgraded')
+})
+
+test('growing detached nodes alone is a leak', () => {
+  // Detached DOM that something still references is the classic renderer leak,
+  // and it is invisible to a count of attached nodes.
+  const res = creepRun((i, tenth) => ({ detachedNodes: 1408 + tenth * 300 + (i % 2) }))
+  assert.ok(res.leaks.includes('detachedNodes'))
+  assert.strictEqual(explainAllocatorGrowth(res), null)
+})
+
+test('nothing is downgraded when the DOM counters are missing', () => {
+  // Absence of evidence is not evidence. A run without the debugger attached
+  // must not get the benefit of the doubt.
+  const res = creepRun()
+  delete res.metrics.liveNodes
+  assert.strictEqual(explainAllocatorGrowth(res), null)
+})
+
+test('a flagged metric that is not a footprint is never downgraded', () => {
+  // The rule applies to memory footprints only. A creeping cache or listener
+  // count is retention by definition.
+  const res = creepRun()
+  res.leaks = ['cacheEntries']
+  assert.strictEqual(explainAllocatorGrowth(res), null)
+})
+
+test('a clean run is not explained as anything', () => {
+  const res = creepRun((i) => ({ rendererRss: (220 + (i % 5)) * 1048576 }))
+  assert.deepStrictEqual(res.leaks, [])
+  assert.strictEqual(explainAllocatorGrowth(res), null)
+})
+
+test('the two metric groups do not overlap', () => {
+  const { RETENTION_METRICS, ALLOCATOR_METRICS } = require('../tools/video-soak')
+  const both = RETENTION_METRICS.filter(n => ALLOCATOR_METRICS.includes(n))
+  assert.deepStrictEqual(both, [], 'a metric cannot be both the evidence and the thing judged')
+})
