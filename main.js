@@ -6807,7 +6807,12 @@ ipcMain.handle('video-play', async (_, { result }) => {
       if (!result.magnet) return { ok: false, error: 'This source has no magnet link' }
       const streamer = new TorrentStreamer({
         client: getTorrentClient(),
-        timeoutMs: 30000,
+        // First contact only, and only when nothing at all has been found:
+        // once peers are connected the streamer extends this itself rather
+        // than giving up on a torrent that is working. Discovery under
+        // Electron routinely takes ten seconds or more here before the first
+        // peer connects, so thirty was cutting off torrents that were fine.
+        timeoutMs: 45000,
         // No prebuffer gate: mpv starts the moment the local server is up and
         // buffers itself, which is how this behaved when it played well.
         //

@@ -2094,7 +2094,11 @@ function _handleVideoEvent(payload) {
     const pct = payload.percent != null ? Math.round(payload.percent * 100) : null
     const mbps = payload.speed ? (payload.speed / 125000).toFixed(1) + ' Mb/s' : null
     const peers = payload.peers != null ? payload.peers + ' peers' : null
-    const label = payload.phase === 'prebuffer' ? 'Buffering' : 'Downloading'
+    // 'connecting' means the first deadline passed while peers were connected —
+    // it is taking a while, not failing, and saying so beats a stuck spinner.
+    const label = payload.phase === 'connecting'
+      ? 'Still connecting'
+      : (payload.phase === 'prebuffer' ? 'Buffering' : 'Downloading')
     const detail = [mbps, peers].filter(Boolean).join(' · ')
     _player.setStageMessage('<div class="spin"></div><div>' +
       esc(label + (pct != null ? ' ' + pct + '%' : '…')) + '</div>' +
@@ -2431,6 +2435,10 @@ function _videoErrorText(message) {
   if (/401|api key/i.test(msg)) return 'TMDB API key missing or invalid — set it in Settings → Video.'
   if (/timed out|timeout|abort/i.test(msg)) return 'The source timed out. Check your connection and try again.'
   if (/fetch failed|ENOTFOUND|ECONNREFUSED|network/i.test(msg)) return 'Could not reach the service. Check your connection.'
+  // The streamer already words these for a person, and says which of the two
+  // happened: nobody sharing at all, or peers found but slow to start. Passing
+  // them through beats overwriting them with something vaguer.
+  if (/Nobody is sharing|did not start within/i.test(msg)) return msg + ' — try another source below.'
   return msg
 }
 

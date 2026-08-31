@@ -670,3 +670,64 @@ const { newStreamDir: _newStreamDir } = require('../torrent-stream')
     assert.match(main, /will-quit[\s\S]{0,400}_videoTeardown\(\)/)
     assert.match(main, /engineDown[\s\S]{0,300}streamer\.stop\(\)/)
   })
+
+// ── Giving up ──────────────────────────────────────────────────────────────
+// The deadline is for getting nowhere, not for taking a while. A fixed thirty
+// seconds failed torrents that were working: measured here, one season pack was
+// ready in 2.7s with the cache in memory and 13.3s with it on a mounted Windows
+// drive, peers connected throughout in both.
+function timeoutHarness ({ peers, downloaded = 0, timeoutMs = 20 }) {
+  const streamer = new TorrentStreamer({ client: { add() {} }, timeoutMs })
+  streamer._torrent = { numPeers: peers, downloaded, destroy(cb) { if (cb) cb() } }
+  streamer._settled = false
+  streamer._extensions = 0
+  return streamer
+}
+
+test('a torrent with peers is given more time instead of being failed', () => {
+  const s = timeoutHarness({ peers: 6 })
+  let rejected = null
+  s._onTimeout(e => { rejected = e })
+  assert.strictEqual(rejected, null, 'peers are connected, so it must not give up')
+  assert.strictEqual(s._extensions, 1)
+  s.stop()
+})
+
+test('the extensions are bounded, so it cannot wait forever', () => {
+  const s = timeoutHarness({ peers: 6 })
+  let rejected = null
+  for (let i = 0; i < 10; i++) s._onTimeout(e => { rejected = e })
+  assert.ok(rejected, 'it must eventually give up')
+  assert.strictEqual(rejected.code, 'SLOW_START')
+  s.stop()
+})
+
+// Reporting "no seeders" for a torrent with peers is what made a release with
+// 433 reported seeders read as having none.
+test('peers found but no start is reported as slow, not as no seeders', () => {
+  const s = timeoutHarness({ peers: 12 })
+  let rejected = null
+  for (let i = 0; i < 10; i++) s._onTimeout(e => { rejected = e })
+  assert.strictEqual(rejected.code, 'SLOW_START')
+  assert.match(rejected.message, /Found 12 peers/)
+  s.stop()
+})
+
+test('finding nobody at all is still reported as no seeders', () => {
+  const s = timeoutHarness({ peers: 0 })
+  let rejected = null
+  s._onTimeout(e => { rejected = e })
+  assert.ok(rejected, 'with no peers there is nothing to wait for')
+  assert.strictEqual(rejected.code, 'NO_SEEDERS')
+  assert.match(rejected.message, /Nobody is sharing this/)
+  s.stop()
+})
+
+// Bytes arriving is progress even before a peer count settles.
+test('bytes arriving also earn more time', () => {
+  const s = timeoutHarness({ peers: 0, downloaded: 4096 })
+  let rejected = null
+  s._onTimeout(e => { rejected = e })
+  assert.strictEqual(rejected, null)
+  s.stop()
+})

@@ -203,6 +203,11 @@ function headBytesReady(torrent, file) {
 
 // Removing the directory as well as destroying the store: destroyStore clears
 // the files, this clears what held them.
+// Each extension is one more timeoutMs, so the real ceiling is
+// timeoutMs * (MAX_TIMEOUT_EXTENSIONS + 1) — and only ever while peers are
+// connected or bytes are arriving.
+const MAX_TIMEOUT_EXTENSIONS = 3
+
 function removeDir(dir) {
   if (!dir) return
   try { fs.rmSync(dir, { recursive: true, force: true }) } catch (_) {}
@@ -226,6 +231,7 @@ class TorrentStreamer extends EventEmitter {
     this._torrent = null
     this._server = null
     this._timer = null
+    this._extensions = 0
     this._settled = false
     this._pendingReject = null
     this._onDownload = () => {
@@ -307,6 +313,7 @@ class TorrentStreamer extends EventEmitter {
     this._settled = false
     return new Promise((resolve, reject) => {
       this._pendingReject = reject
+      this._extensions = 0
       this._timer = setTimeout(() => this._onTimeout(reject), this.timeoutMs)
 
       let torrent
@@ -455,15 +462,47 @@ class TorrentStreamer extends EventEmitter {
     }
   }
 
+  // The deadline is for getting nowhere, not for taking a while. Giving up at a
+  // fixed thirty seconds failed torrents that were working perfectly: a large
+  // season pack routinely needs longer than that to find peers, fetch metadata
+  // and allocate ten multi-gigabyte files, and it needs longer still when the
+  // cache is on a mounted Windows drive. Measured here, the same pack was ready
+  // in 2.7s with the cache in memory and 13.3s on that drive, with peers
+  // connected the whole time in both.
+  //
+  // So while something is actually happening — peers connected, or bytes
+  // arriving — the deadline is extended rather than enforced. Only a torrent
+  // that has found nobody at all is a torrent with no seeders.
   _onTimeout(reject) {
     if (this._settled) return
     const torrent = this._torrent
+    const peers = (torrent && torrent.numPeers) || 0
+    const downloaded = (torrent && torrent.downloaded) || 0
+
+    if ((peers > 0 || downloaded > 0) && this._extensions < MAX_TIMEOUT_EXTENSIONS) {
+      this._extensions++
+      this.emit('progress', {
+        phase: 'connecting', peers, downloaded,
+        waitedMs: this.timeoutMs * this._extensions,
+      })
+      this._timer = setTimeout(() => this._onTimeout(reject), this.timeoutMs)
+      return
+    }
+
     this._torrent = null
     if (this._server) {
       try { this._server.close(() => {}) } catch {}
       this._server = null
     }
-    this._settle(reject, { code: 'NO_SEEDERS', message: `No seeders after ${this.timeoutMs}ms` })
+    // Two different failures, and telling them apart is the difference between
+    // "the release is dead, pick another" and "this is slow, it may still be
+    // worth waiting". Reporting the first when the second was true is what made
+    // a torrent with 433 reported seeders read as having none.
+    const waited = Math.round((this.timeoutMs * (this._extensions + 1)) / 1000)
+    const err = peers > 0
+      ? { code: 'SLOW_START', message: `Found ${peers} peer${peers === 1 ? '' : 's'} but the stream did not start within ${waited}s` }
+      : { code: 'NO_SEEDERS', message: `Nobody is sharing this right now (searched for ${waited}s)` }
+    this._settle(reject, err)
     if (torrent) {
       try { torrent.destroy(() => {}) } catch {}
     }
