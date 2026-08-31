@@ -178,6 +178,34 @@ function analyseSeries (raw, opts = {}) {
     }
   }
 
+  // A series that never moved is not a measurement of a stable thing; it is a
+  // measurement of nothing. Chromium's performance.memory is quantized for
+  // privacy and, without --enable-precise-memory-info, returns a flat
+  // placeholder — 10,000,000 for every one of 400 samples in the first
+  // hundred-minute run. Both renderer heap metrics therefore PASSED, because a
+  // constant series has no growth, and the run announced no drift while blind
+  // to the process where the UI actually lives.
+  //
+  // This is the same shape as the tool's own warning about a run that measured
+  // nothing, one level down: per metric rather than per run. A constant is
+  // reported as such and does not count towards the metrics that decided
+  // anything.
+  if (new Set(series).size === 1) {
+    return {
+      verdict: 'constant',
+      samples: series.length,
+      note: 'never varied (' + series[0] + ') — nothing happened, or nothing was measured',
+      growth: 0,
+      floorGrowth: 0,
+      slopePerSample: 0,
+      r2: 0,
+      monotonic: false,
+      drawdownRatio: 0,
+      overall: 0,
+      value: series[0],
+    }
+  }
+
   const cut = Math.min(series.length - 3, Math.floor(series.length * o.warmupFraction))
   const tail = series.slice(cut)
   const overall = decileDelta(series)
@@ -265,7 +293,7 @@ function analyseRun (samples, perMetric = {}) {
   // difference matters most in exactly the case where it is easiest to miss:
   // the harness failed to attach, every sample came back empty, and the tool
   // reported PASS. Silence is not evidence.
-  const decided = Object.values(metrics).filter(m => m.verdict !== 'insufficient')
+  const decided = Object.values(metrics).filter(m => m.verdict !== 'insufficient' && m.verdict !== 'constant')
   let verdict
   if (leaks.length) verdict = 'FAIL'
   else if (!decided.length) verdict = 'INCONCLUSIVE'
@@ -309,6 +337,9 @@ const METRIC_RULES = {
   mainHeapTotal: { leakRelGrowth: 0.20, minAbsGrowth: 16 * 1024 * 1024 },
   mainExternal: { leakRelGrowth: 0.25, minAbsGrowth: 16 * 1024 * 1024 },
   mainRss: { leakRelGrowth: 0.20, minAbsGrowth: 32 * 1024 * 1024 },
+  // The renderer holds the whole UI, so it is the process a leak shows up in
+  // first. Same shape of threshold as main's.
+  rendererRss: { leakRelGrowth: 0.20, minAbsGrowth: 32 * 1024 * 1024 },
   cacheEntries: { leakRelGrowth: 0.25, minAbsGrowth: 50 },
   ipcRttMs: { leakRelGrowth: 0.50, minAbsGrowth: 5 },
   // The stream cache is a disk cache that is meant to fill; only a monotonic
@@ -502,8 +533,12 @@ const SAMPLE_PROBE = `(async function () {
     // Not a metric -- a label. Reported alongside the number so a rise says
     // where it came from.
     _globalSites: ls.sites,
-    rendererHeapUsed: mem.usedJSHeapSize || 0,
-    rendererHeapTotal: mem.totalJSHeapSize || 0,
+    // Recorded, not judged. Chromium quantizes performance.memory for privacy
+    // and without --enable-precise-memory-info it returns a flat placeholder,
+    // so as metrics these two passed by never moving. rendererRss, taken from
+    // the main process, is the real figure.
+    _rendererHeapUsed: mem.usedJSHeapSize || 0,
+    _rendererHeapTotal: mem.totalJSHeapSize || 0,
     ipcRttMs: rtt,
   }
 })()`
@@ -614,6 +649,19 @@ async function runElectron (opt) {
   await wait(5000)
 
   const js = (src) => win.webContents.executeJavaScript(src, true)
+
+  // app.getAppMetrics() reports every child process with real numbers. The
+  // renderer is identified by its pid rather than by its type string, which
+  // differs across Electron versions.
+  const rendererPid = (() => { try { return win.webContents.getOSProcessId() } catch (_) { return null } })()
+  const rendererRss = () => {
+    if (!rendererPid) return 0
+    try {
+      const hit = app.getAppMetrics().find(x => x && x.pid === rendererPid)
+      // workingSetSize is in kilobytes.
+      return hit && hit.memory ? (hit.memory.workingSetSize || 0) * 1024 : 0
+    } catch (_) { return 0 }
+  }
   const probe = await js(LISTENER_PROBE).catch(e => 'THREW ' + e.message)
   if (String(probe).startsWith('THREW')) {
     // Aborted, not noted and carried on. A probe that failed to install reports
@@ -672,6 +720,12 @@ async function runElectron (opt) {
         mainHeapTotal: mem.heapTotal,
         mainExternal: mem.external,
         mainRss: mem.rss,
+        // The renderer's real memory, from the main process. The probe's own
+        // performance.memory numbers are quantized by Chromium for privacy and
+        // came back as a flat 10,000,000 for all 400 samples of the first
+        // hundred-minute run — so the process where the UI actually lives was
+        // the one process never measured, and it passed by being constant.
+        rendererRss: rendererRss(),
         cacheEntries,
         streamCacheBytes: torrent ? dirSizeBytes(torrent.streamRoot()) : 0,
       }, m),
@@ -681,7 +735,7 @@ async function runElectron (opt) {
     // must cost the last sample, not the run.
     stream.write(JSON.stringify(sample) + '\n')
     if (sampleNo % 10 === 0 || sampleNo <= 3) {
-      info(`sample ${sampleNo} (${action.name}) dom ${sample.metrics.domNodes} listeners ${sample.metrics.listeners}/${sample.metrics.listenersGlobal}g heap ${(sample.metrics.rendererHeapUsed / 1048576).toFixed(1)}MB rtt ${(sample.metrics.ipcRttMs || 0).toFixed(1)}ms`)
+      info(`sample ${sampleNo} (${action.name}) dom ${sample.metrics.domNodes} listeners ${sample.metrics.listeners}/${sample.metrics.listenersGlobal}g rss ${(sample.metrics.rendererRss / 1048576).toFixed(0)}MB main ${(sample.metrics.mainRss / 1048576).toFixed(0)}MB rtt ${(sample.metrics.ipcRttMs || 0).toFixed(1)}ms`)
       // Who holds the uncollectable ones. Printed rather than left in the file,
       // because the number on its own sends the reader back to a bisect.
       const sites = sample.metrics._globalSites

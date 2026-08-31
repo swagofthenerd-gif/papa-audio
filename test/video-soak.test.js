@@ -21,6 +21,14 @@ function flat (n = 60, value = 1000) {
   return Array.from({ length: n }, () => value)
 }
 
+// A metric that is stable but real: it jitters, because every real measurement
+// does. A perfectly repeated value means the probe is not measuring — see the
+// `constant` verdict — so a fixture of one repeated number cannot stand in for
+// "a metric that did not drift".
+function noisyFlat (n = 60, value = 1000) {
+  return Array.from({ length: n }, (_, i) => value + ((i * 7) % 5) - 2)
+}
+
 // Heap under a working garbage collector: climbs, is collected, climbs again.
 // The peaks are high and the troughs return to the same floor. This is the
 // shape most likely to be misread as a leak by a naive end-minus-start check.
@@ -54,9 +62,33 @@ function noisyFlat (n = 60, value = 500) {
 
 // ── The healthy shapes must not be reported as leaks ─────────────────────────
 
-test('a flat metric is flat', () => {
+test('a stable metric does not read as a leak', () => {
+  // The property, not the label. A real measurement that holds steady may be
+  // classified 'flat' or 'sawtooth' depending on how much it jitters, and both
+  // are correct answers to "did this drift?". Asserting the label made the test
+  // about the classifier's taxonomy rather than about drift.
+  const r = analyseSeries(noisyFlat())
+  assert.notStrictEqual(r.verdict, 'leak')
+  assert.notStrictEqual(r.verdict, 'constant', 'it did vary, so it was measured')
+  assert.ok(Math.abs(r.floorGrowth) < DEFAULTS.leakRelGrowth, 'the floor did not move')
+})
+
+// 'flat' turns out to mean "the floor never dipped" and 'sawtooth' "it dipped
+// and recovered" — both are non-leaks, and which one a real series gets depends
+// on jitter rather than on health. So there is no test here asserting that a
+// particular stable shape is labelled 'flat': that would be a test about the
+// taxonomy, which is what the test above was rewritten to stop doing.
+
+test('a metric that never moved at all is called constant, not flat', () => {
+  // Was asserting 'flat' against a perfectly repeated value. That is the shape
+  // a broken probe produces, and treating it as a pass is how the first
+  // hundred-minute run announced no drift while blind to the renderer's memory:
+  // Chromium's performance.memory returned exactly 10,000,000 for all 400
+  // samples, and a constant series has no growth to report.
   const r = analyseSeries(flat())
-  assert.strictEqual(r.verdict, 'flat')
+  assert.strictEqual(r.verdict, 'constant')
+  // Still not a leak. It is not evidence in either direction.
+  assert.notStrictEqual(r.verdict, 'leak')
 })
 
 test('garbage collection is not a leak', () => {

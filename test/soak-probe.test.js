@@ -423,3 +423,63 @@ test('no script is loaded into the renderer that the renderer never uses', () =>
     'loaded into the renderer and used by nothing there. Either wire it, or ' +
     'drop the script tag and let main require it.')
 })
+
+// ── a constant series is not a measurement ────────────────────────────────
+
+test('a series that never varied is reported as constant, not as a pass', () => {
+  // The first hundred-minute run returned exactly 10,000,000 for
+  // rendererHeapUsed and rendererHeapTotal in all 400 samples: Chromium
+  // quantizes performance.memory for privacy, so the process where the whole UI
+  // lives was the one process never measured — and both metrics PASSED, because
+  // a constant series has no growth. The run announced "no drift" while blind
+  // to the renderer.
+  const { analyseSeries } = require(path.join(__dirname, '..', 'tools', 'video-soak.js'))
+  const res = analyseSeries(new Array(400).fill(10000000))
+  assert.strictEqual(res.verdict, 'constant')
+  assert.match(res.note, /never varied/)
+  assert.strictEqual(res.value, 10000000, 'and it says what the value was')
+  // Still not a leak — it is simply not evidence either way.
+  assert.notStrictEqual(res.verdict, 'leak')
+})
+
+test('a constant metric does not count towards the metrics that decided anything', () => {
+  // The run-level check exists to catch a harness that attached to nothing.
+  // A constant metric is that failure one level down, so it must not prop the
+  // count up.
+  const { analyseRun } = require(path.join(__dirname, '..', 'tools', 'video-soak.js'))
+  const rows = []
+  for (let i = 0; i < 40; i++) rows.push({ metrics: { blind: 10000000, real: 100 + (i % 5) } })
+  const res = analyseRun(rows)
+  assert.strictEqual(res.metrics.blind.verdict, 'constant')
+  assert.notStrictEqual(res.metrics.real.verdict, 'constant')
+})
+
+test('a genuinely near-flat series is still analysed', () => {
+  // The rule must be "never moved at all", not "barely moved" — listenersGlobal
+  // legitimately sits at 4 for a whole run with a couple of samples at 0, and
+  // that IS a measurement.
+  const { analyseSeries } = require(path.join(__dirname, '..', 'tools', 'video-soak.js'))
+  const series = new Array(400).fill(4)
+  series[0] = 0
+  series[1] = 0
+  const res = analyseSeries(series)
+  assert.notStrictEqual(res.verdict, 'constant')
+  assert.notStrictEqual(res.verdict, 'leak', 'and a bounded step is not a leak')
+})
+
+test("the renderer's memory is taken from the main process, not from the page", () => {
+  const SOAK4 = fs.readFileSync(path.join(__dirname, '..', 'tools', 'video-soak.js'), 'utf8')
+  assert.match(SOAK4, /app\.getAppMetrics\(\)/)
+  assert.match(SOAK4, /getOSProcessId\(\)/, 'the renderer is found by pid, not by a type string')
+  assert.match(SOAK4, /rendererRss: rendererRss\(\)/)
+  assert.match(SOAK4, /workingSetSize \|\| 0\) \* 1024/, 'workingSetSize is in kilobytes')
+  // And it has a threshold, or it would fall back to the heap-sized defaults.
+  assert.match(SOAK4, /rendererRss: \{ leakRelGrowth/)
+})
+
+test('the quantized figures are recorded but no longer judged', () => {
+  const SOAK4 = fs.readFileSync(path.join(__dirname, '..', 'tools', 'video-soak.js'), 'utf8')
+  const probe = SOAK4.match(/const SAMPLE_PROBE = `([\s\S]*?)`\n/)[1]
+  assert.match(probe, /_rendererHeapUsed/, 'kept for the record, under the underscore convention')
+  assert.doesNotMatch(probe, /\n\s+rendererHeapUsed:/, 'and no longer a metric')
+})
