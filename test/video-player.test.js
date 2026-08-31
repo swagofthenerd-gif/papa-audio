@@ -852,3 +852,47 @@ test('a film renders its controls too', () => {
   assert.strictEqual((fn.match(/_renderVideoControls\(type\)/g) || []).length, 3,
     'tv, anime and film all render controls')
 })
+
+// ── Menus over a native video surface ───────────────────────────────────────
+// The picture is a native window composited ABOVE the page, so HTML cannot be
+// drawn on top of it. The Audio and Subtitles menus open upward from the deck,
+// and measured in the running app the menu sat at y 819-981 while the video
+// covered to y 949 — its top 130 pixels were simply swallowed. That is what
+// "the video overlaps the settings" was.
+//
+// This class of bug was invisible to the screenshots used to check the player,
+// because a window capture shows the page's own pixels without the video window
+// composited over them. The menu looked perfect in every one.
+test('the picture makes room for a menu instead of covering it', () => {
+  const src = require('fs').readFileSync(
+    require('path').join(__dirname, '..', 'src', 'video-player.js'), 'utf8')
+  const open = src.slice(src.indexOf('function openMenu'), src.indexOf('function openMenu') + 1400)
+  // Measured after placing, because the viewport clamps can move the menu.
+  assert.match(open, /const placed = m\.getBoundingClientRect\(\)/)
+  assert.match(open, /st\.bottom - placed\.top/)
+  assert.match(open, /setStageInset\(/)
+})
+
+test('closing a menu gives the picture its height back', () => {
+  const src = require('fs').readFileSync(
+    require('path').join(__dirname, '..', 'src', 'video-player.js'), 'utf8')
+  const close = src.slice(src.indexOf('function closeMenu'), src.indexOf('function openMenu'))
+  assert.match(close, /setStageInset\(0\)/)
+})
+
+// A menu that already clears the picture must cost the viewer nothing.
+test('a menu that does not reach the picture takes nothing from it', () => {
+  const src = require('fs').readFileSync(
+    require('path').join(__dirname, '..', 'src', 'video-player.js'), 'utf8')
+  const open = src.slice(src.indexOf('function openMenu'), src.indexOf('function openMenu') + 1400)
+  assert.match(open, /covered > 0 &&/, 'only when it actually overlaps')
+  assert.match(open, /placed\.right > st\.left && placed\.left < st\.right/, 'and only horizontally too')
+})
+
+// A menu taller than the stage would otherwise shrink the picture to nothing.
+test('the picture is never shrunk away entirely', () => {
+  const src = require('fs').readFileSync(
+    require('path').join(__dirname, '..', 'src', 'video-player.js'), 'utf8')
+  const fn = src.slice(src.indexOf('function reportBounds'), src.indexOf('function setStageInset'))
+  assert.match(fn, /Math\.max\(120, Math\.round\(r\.height\) - Math\.round\(stageInset\)\)/)
+})

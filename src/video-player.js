@@ -73,15 +73,37 @@
     // ── Stage geometry ──────────────────────────────────────────────────────
     // main positions the mpv window onto this rectangle. It has to be re-sent
     // on any resize, or the video and its frame drift apart.
+    // How much shorter the video is being drawn than its stage, so a menu can
+    // sit in the space. The picture is a native window composited ABOVE the
+    // page, so HTML cannot be drawn over it — an Audio or Subtitles menu opening
+    // upward from the deck had its top 130 pixels swallowed by the video, which
+    // is what "the video overlaps the settings" was. Giving the menu the room
+    // beats hiding the picture to read it.
+    let stageInset = 0
+
     function reportBounds() {
       const stage = $('vt-stage')
       if (!stage || !api || !api.videoSurfaceBounds) return Promise.resolve(false)
       const r = stage.getBoundingClientRect()
-      if (r.width < 2 || r.height < 2) return Promise.resolve(false)
+      // Never shrink the picture to nothing: a menu taller than the stage keeps
+      // a strip of video rather than blanking it, and the menu overlaps that
+      // strip, which is still better than no picture at all.
+      const height = Math.max(120, Math.round(r.height) - Math.round(stageInset))
+      if (r.width < 2 || height < 2) return Promise.resolve(false)
       return api.videoSurfaceBounds({
         x: Math.round(r.left), y: Math.round(r.top),
-        width: Math.round(r.width), height: Math.round(r.height),
+        width: Math.round(r.width), height: height,
       }).then(function () { return true }).catch(function () { return false })
+    }
+
+    // Called when a menu opens or closes. The inset is measured from the menu's
+    // own position rather than assumed, because the menus differ in height and
+    // the settings one grows as options are added.
+    function setStageInset(px) {
+      const next = Math.max(0, Math.round(px || 0))
+      if (next === stageInset) return
+      stageInset = next
+      reportBounds()
     }
 
     // Resolves once main has been told where the video belongs. The caller
@@ -455,6 +477,7 @@
     function closeMenu() {
       const m = $('vt-menu')
       if (m) { m.classList.add('hidden'); m.innerHTML = '' }
+      setStageInset(0)
     }
 
     function openMenu(anchorId, html, bind) {
@@ -468,6 +491,17 @@
       // Clamped to the viewport so a menu near the right edge stays on screen.
       m.style.left = Math.max(8, Math.min(r.left, (doc.documentElement.clientWidth || 0) - mr.width - 8)) + 'px'
       m.style.top = Math.max(8, r.top - mr.height - 8) + 'px'
+      // Measured after placing it, since the clamps above can move it.
+      const placed = m.getBoundingClientRect()
+      const stage = $('vt-stage')
+      if (stage) {
+        const st = stage.getBoundingClientRect()
+        const covered = st.bottom - placed.top
+        // Only when the menu actually reaches into the picture, and only by as
+        // much as it reaches, so a menu that already clears the video costs the
+        // viewer nothing.
+        setStageInset(covered > 0 && placed.right > st.left && placed.left < st.right ? covered + 8 : 0)
+      }
       if (bind) bind(m)
       const first = m.querySelector('.vt-menu-item')
       if (first) first.focus()
