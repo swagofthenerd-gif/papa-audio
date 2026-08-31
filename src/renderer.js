@@ -2256,15 +2256,39 @@ function _taste() {
 // walks the diary oldest-first so a later snapshot wins: the metadata for a
 // title improves as TMDB fills in, and the most recent sitting has the best
 // version of it.
+// Memoised, because the naive version was quadratic.
+//
+// _tasteLabelFor() calls this to turn one key into one title, and the panel
+// calls labelFor once per diary row and four times per favourite. Rebuilding
+// the whole map each time meant a diary of N entries did N walks of N entries
+// to render N rows: a thousand-film diary is a million iterations per render,
+// plus sixteen more full walks for the favourites.
+//
+// Invalidated two ways, deliberately. Explicitly on every mutation, since they
+// all pass through _onTasteChange — and by diary length as a backstop, so a
+// write that somehow bypassed that is still noticed. Length alone would miss an
+// edit that changes a note or a date without adding an entry, which is why both
+// are needed rather than either.
+var _tasteMetaCache = { map: null, len: -1 }
+
+function _invalidateTasteMeta() {
+  _tasteMetaCache = { map: null, len: -1 }
+}
+
 function _tasteMetaMap() {
   const store = window.PapaTasteStore
   if (!store) return {}
+  const diary = store.diary()
+  if (_tasteMetaCache.map && _tasteMetaCache.len === diary.length) return _tasteMetaCache.map
   const out = {}
-  const entries = store.diary().slice().reverse()
+  // Oldest first, so a later snapshot wins: the metadata for a title improves
+  // as TMDB fills in, and the most recent sitting has the best version of it.
+  const entries = diary.slice().reverse()
   for (const e of entries) {
     if (!e || !e.key || !e.meta) continue
     out[e.key] = Object.assign({}, out[e.key], e.meta)
   }
+  _tasteMetaCache = { map: out, len: diary.length }
   return out
 }
 
@@ -2325,6 +2349,8 @@ function _tasteKeyOfDetail() {
 }
 
 function _onTasteChange(event) {
+  // Before anything reads it: every mutation can change a title's metadata.
+  _invalidateTasteMeta()
   // The detail page and the diary page both show taste, and both are live.
   if (state.currentPage === 'diary') return _renderDiaryBody()
   if (state.currentPage === 'video-detail') return _renderTasteSection()

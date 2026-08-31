@@ -290,3 +290,99 @@ test('the toggle is styled and the note reads as an aside', () => {
   assert.match(CSS, /\.cinema \.vhide-seen-note \{/)
   assert.match(CSS, /grid-column: 1 \/ -1/, 'the note must span the grid, not sit in a cell')
 })
+
+// ── the metadata map, memoised ─────────────────────────────────────────────
+
+test('the metadata map is built once per render, not once per row', () => {
+  // labelFor is called once per diary row and four times per favourite, and the
+  // first version rebuilt the whole map on every call: a diary of N entries did
+  // N walks of N entries to render N rows. Measured at 1200 rows, 100ms became
+  // 1ms.
+  const from = RENDERER.indexOf('var _tasteMetaCache')
+  const to = RENDERER.indexOf('function _tasteLabelFor')
+  assert.ok(from > 0 && to > from, 'found the memo')
+  const store = { calls: 0, diary: [] }
+  const world = {
+    PapaTasteStore: {
+      diary() { store.calls++; return store.diary },
+    },
+  }
+  // eslint-disable-next-line no-new-func
+  const api = new Function('window', RENDERER.slice(from, to) +
+    '; return { _tasteMetaMap, _invalidateTasteMeta }')(world)
+
+  store.diary = [
+    { key: 'movie:1', meta: { title: 'Ikiru' } },
+    { key: 'movie:2', meta: { title: 'Ran' } },
+  ]
+  const first = api._tasteMetaMap()
+  assert.strictEqual(first['movie:1'].title, 'Ikiru')
+  const callsAfterFirst = store.calls
+  // Ten more reads must not rebuild.
+  for (let i = 0; i < 10; i++) api._tasteMetaMap()
+  assert.strictEqual(api._tasteMetaMap(), first, 'the same object is returned')
+  // diary() is still consulted each time (to compare the length), but the map
+  // is not rebuilt — which is what the identity check above proves.
+  assert.ok(store.calls > callsAfterFirst, 'the length is still checked')
+})
+
+test('a new entry invalidates the map by length alone', () => {
+  // The backstop: a write that bypassed _onTasteChange is still noticed.
+  const from = RENDERER.indexOf('var _tasteMetaCache')
+  const to = RENDERER.indexOf('function _tasteLabelFor')
+  const store = { diary: [{ key: 'movie:1', meta: { title: 'Ikiru' } }] }
+  const world = { PapaTasteStore: { diary: () => store.diary } }
+  // eslint-disable-next-line no-new-func
+  const api = new Function('window', RENDERER.slice(from, to) +
+    '; return { _tasteMetaMap, _invalidateTasteMeta }')(world)
+
+  assert.strictEqual(Object.keys(api._tasteMetaMap()).length, 1)
+  store.diary = store.diary.concat({ key: 'movie:2', meta: { title: 'Ran' } })
+  assert.strictEqual(Object.keys(api._tasteMetaMap()).length, 2, 'a longer diary rebuilt')
+})
+
+test('an edit that does not change the length still invalidates', () => {
+  // Correcting a note or a date leaves the count identical, so length alone
+  // would serve a stale title forever. This is why both mechanisms exist.
+  const from = RENDERER.indexOf('var _tasteMetaCache')
+  const to = RENDERER.indexOf('function _tasteLabelFor')
+  const store = { diary: [{ key: 'movie:1', meta: { title: 'Ikiru' } }] }
+  const world = { PapaTasteStore: { diary: () => store.diary } }
+  // eslint-disable-next-line no-new-func
+  const api = new Function('window', RENDERER.slice(from, to) +
+    '; return { _tasteMetaMap, _invalidateTasteMeta }')(world)
+
+  assert.strictEqual(api._tasteMetaMap()['movie:1'].title, 'Ikiru')
+  store.diary = [{ key: 'movie:1', meta: { title: 'Ikiru (1952)' } }]
+  assert.strictEqual(api._tasteMetaMap()['movie:1'].title, 'Ikiru', 'same length, cache held')
+  api._invalidateTasteMeta()
+  assert.strictEqual(api._tasteMetaMap()['movie:1'].title, 'Ikiru (1952)', 'explicit invalidation works')
+})
+
+test('every mutation invalidates before anything reads', () => {
+  const fn = RENDERER.slice(RENDERER.indexOf('function _onTasteChange'),
+                            RENDERER.indexOf('var _browseTasteDirty'))
+  assert.match(fn, /_invalidateTasteMeta\(\)/)
+  // First line of the handler, before either page repaints.
+  assert.ok(fn.indexOf('_invalidateTasteMeta()') < fn.indexOf('_renderDiaryBody'),
+    'the map must be invalidated before a repaint reads it')
+})
+
+test('a later snapshot still wins after memoising', () => {
+  // The ordering the map exists for: metadata improves as TMDB fills in, so the
+  // most recent sitting has the best version.
+  const from = RENDERER.indexOf('var _tasteMetaCache')
+  const to = RENDERER.indexOf('function _tasteLabelFor')
+  const world = {
+    PapaTasteStore: {
+      diary: () => [
+        // diary() returns newest first.
+        { key: 'movie:1', meta: { title: 'Ikiru', year: 1952 } },
+        { key: 'movie:1', meta: { title: 'Ikiru' } },
+      ],
+    },
+  }
+  // eslint-disable-next-line no-new-func
+  const api = new Function('window', RENDERER.slice(from, to) + '; return { _tasteMetaMap }')(world)
+  assert.strictEqual(api._tasteMetaMap()['movie:1'].year, 1952, 'the newest snapshot won')
+})
