@@ -7026,6 +7026,44 @@ ipcMain.handle('video-sub-open', async () => {
   }
 })
 
+// What a card needs beyond what a shelf listing gives it. The catalogue's list
+// endpoints return a title, a year, a poster and a score and nothing else, so
+// director, runtime, certificate and the outside ratings each cost a request —
+// which is why the renderer only asks for what is actually on screen.
+//
+// Deliberately narrow: a card does not need the overview, the cast, the
+// keywords or the artwork, and sending them would make every one of these
+// twenty times larger than it has to be.
+ipcMain.handle('video-enrich', async (_, { type, id } = {}) => {
+  try {
+    if (!type || id == null) return { ok: false, error: 'type and id are required' }
+    const detail = await _videoShowDetail(type, id)
+    if (!detail) return { ok: false, error: 'Not found' }
+    const ext = detail.external || {}
+    return {
+      ok: true,
+      meta: {
+        // Names, not credit records. The catalogue returns each director as an
+        // object with an id, a job and a portrait; a card wants two words.
+        directors: (Array.isArray(detail.directors) ? detail.directors : [])
+          .map(d => (typeof d === 'string' ? d : d && d.name))
+          .filter(Boolean)
+          .slice(0, 2),
+        runtime: detail.runtime || null,
+        certification: detail.certification || ext.rated || null,
+        imdb: ext.imdbRating != null ? ext.imdbRating : null,
+        rottenTomatoes: ext.rottenTomatoes != null ? ext.rottenTomatoes : null,
+        metacritic: ext.metascore != null ? ext.metascore : null,
+        // The single strongest signal on a card, and it fits in a badge.
+        oscars: ext.awards ? ext.awards.oscars : 0,
+        wins: ext.awards ? ext.awards.wins : 0,
+      },
+    }
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) }
+  }
+})
+
 ipcMain.handle('video-chapters', async () => {
   try {
     const chapters = await videoEngine().getChapters()

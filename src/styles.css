@@ -6656,3 +6656,444 @@ body.video-active .np-byline { font-size:10.5px; }
   .vt-seek-track, .vt-seek-knob, .vt-icon { transition:none; }
   .vt-stage-msg .spin { animation:none; }
 }
+
+/* ════════════════════════════════════════════════════
+   PAPA CINEMA  ·  the film identity
+   ────────────────────────────────────────────────────
+   Everything below is scoped to `.cinema` and nothing else. The music player
+   and the film section share markup class names (.vcard, .vhero, .vrow-*), so
+   scoping is not a style preference here — it is the only thing keeping the
+   two identities apart. Put `.cinema` on the view root and these rules take
+   over; take it off and the section falls back to the VOID styling above,
+   untouched.
+
+   Specificity note: every rule below carries the `.cinema` class in addition
+   to whatever the original rule used, so it out-weighs its counterpart by
+   exactly one class and wins predictably. Where the original rule was itself
+   a descendant selector (`.vcard:hover .vcard-art`) the rule below repeats
+   that shape rather than a shorter one, because a shorter selector would lose
+   despite coming later in the file. No `!important` is used anywhere.
+   ════════════════════════════════════════════════════ */
+
+/* ── Tokens ──────────────────────────────────────────
+   Scoped to the root class, not :root, so nothing leaks into the player.
+   Defined here unconditionally — never only inside a media query — so no
+   colour can go missing when a query does not match. */
+.cinema {
+  --cin-ground:  #0B0B0C;   /* page */
+  --cin-surface: #141416;   /* cards, panels */
+  --cin-raised:  #1B1B1E;   /* hover, menus */
+  --cin-line:    #26262A;   /* borders */
+  --cin-bone:    #EDE8E0;   /* primary text */
+  --cin-bone-2:  #B4ADA3;   /* secondary text */
+  --cin-muted:   #7C766D;   /* labels */
+  --cin-ember:   #E9A13B;   /* the single accent — projector light */
+  --cin-rec:     #D8453F;   /* live / destructive only */
+
+  --cin-display: 'Bodoni Moda', Georgia, 'Times New Roman', serif;
+  --cin-body:    'Archivo', 'Poppins', system-ui, sans-serif;
+  --cin-ease:    cubic-bezier(.16, 1, .3, 1);
+
+  background: var(--cin-ground);
+  color: var(--cin-bone);
+  font-family: var(--cin-body);
+  /* Rails and long metadata lines live inside; the page itself must never
+     gain a horizontal scrollbar because of them. */
+  overflow-x: hidden;
+}
+
+/* One focus treatment for the whole section: ember ring, offset so it clears
+   poster art. Applied to the element itself and, for cards, to the poster. */
+.cinema :focus-visible {
+  outline: 2px solid var(--cin-ember);
+  outline-offset: 2px;
+}
+
+/* ── Shelf ───────────────────────────────────────────
+   Rule 2 of the design: every shelf says why it exists. The heading is set in
+   Bodoni and the curatorial note sits directly beneath it in Archivo, so the
+   pair reads as one block rather than a title with stray text after it. */
+.cinema .vrows { gap: 40px; }
+.cinema .vrow-head {
+  display: block;              /* was a baseline flex row — the note needs its own line */
+  padding: 0 28px 12px;
+}
+.cinema .vrow-title {
+  font-family: var(--cin-display);
+  font-size: clamp(19px, 1.6vw, 25px);
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1.15;
+  color: var(--cin-bone);
+}
+.cinema .vrow-note {
+  margin-top: 4px;
+  max-width: 62ch;
+  font-family: var(--cin-body);
+  font-size: 12.5px;
+  font-weight: 400;
+  line-height: 1.45;
+  color: var(--cin-bone-2);
+}
+.cinema .vrow-count {
+  display: inline-block;
+  margin-left: 10px;
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--cin-muted);
+  vertical-align: middle;
+}
+
+.cinema .vrail {
+  grid-auto-columns: minmax(170px, 1fr);
+  gap: 22px;
+  padding: 6px 28px 10px;
+  /* Restated so the rail, not the page, is what scrolls sideways. */
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.cinema .vrail-prev { background: linear-gradient(90deg,  var(--cin-ground) 26%, transparent); }
+.cinema .vrail-next { background: linear-gradient(270deg, var(--cin-ground) 26%, transparent); }
+.cinema .vrail-nav { color: var(--cin-bone); }
+
+/* ── Card ────────────────────────────────────────────
+   Rule 1: the poster is the interface. The frame is a hairline rather than a
+   rounded panel, the art is square-cornered like a real one-sheet, and every
+   control stays off it until the card is hovered or focused. */
+.cinema .vcard { min-width: 0; }
+.cinema .vcard-art {
+  aspect-ratio: 2 / 3;
+  border-radius: 2px;
+  background: var(--cin-surface);
+  box-shadow: 0 0 0 1px var(--cin-line);
+  transition: transform .3s var(--cin-ease), box-shadow .3s var(--cin-ease);
+}
+/* Repeats the original's `.vcard:hover .vcard-art` shape so it out-specifies
+   it; a bare `.cinema .vcard-art` would lose the hover transform. */
+.cinema .vcard:hover .vcard-art,
+.cinema .vcard:focus-visible .vcard-art,
+.cinema .vcard:focus-within .vcard-art {
+  transform: translateY(-6px);
+  box-shadow: 0 0 0 1px var(--cin-ember), 0 18px 40px rgba(0, 0, 0, .62);
+}
+.cinema .vcard:focus-visible .vcard-art {
+  outline: 2px solid var(--cin-ember);
+  outline-offset: 3px;
+}
+.cinema .vcard-fallback {
+  background: var(--cin-surface);
+  color: var(--cin-muted);
+  font-family: var(--cin-display);
+  font-size: 15px;
+  font-weight: 500;
+}
+
+/* Chrome on the poster is reduced to what cannot be said below it: the
+   certificate and the resume bar. Score and type move to the metadata. */
+.cinema .vbadge {
+  border-radius: 2px;
+  background: rgba(11, 11, 12, .78);
+  color: var(--cin-bone);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+.cinema .vbadge-rating { color: var(--cin-ember); }
+.cinema .vbadge-new    { background: var(--cin-ember); color: var(--cin-ground); }
+.cinema .vbadge-type   { color: var(--cin-bone-2); }
+.cinema .vcard-progress { background: rgba(11, 11, 12, .72); }
+.cinema .vcard-progress i { background: var(--cin-ember); }
+
+/* Actions stay hidden until wanted, and are reachable by keyboard because the
+   reveal is bound to :focus-within as well as :hover. */
+.cinema .vcard-actions {
+  padding: 12px 10px 10px;
+  background: linear-gradient(0deg, rgba(11, 11, 12, .92), transparent);
+  transition: opacity .22s var(--cin-ease), transform .22s var(--cin-ease);
+}
+.cinema .vcard:hover .vcard-actions,
+.cinema .vcard:focus-within .vcard-actions { opacity: 1; transform: translateY(0); }
+.cinema .vcard-act {
+  border-radius: 2px;
+  background: rgba(237, 232, 224, .14);
+  color: var(--cin-bone);
+  transition: background .16s var(--cin-ease), color .16s var(--cin-ease);
+}
+.cinema .vcard-act:hover { background: rgba(237, 232, 224, .28); transform: none; }
+.cinema .vcard-act-play,
+.cinema .vcard-act.on { background: var(--cin-ember); color: var(--cin-ground); }
+.cinema .vcard-act-play:hover { background: #F0B45C; }
+
+/* ── Card metadata ───────────────────────────────────
+   Title in Bodoni, then one credit line (director · runtime · certificate) in
+   Archivo. Both clamp rather than wrap so card heights stay on a grid. */
+.cinema .vcard-title {
+  margin-top: 11px;
+  font-family: var(--cin-display);
+  font-size: 14.5px;
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1.25;
+  color: var(--cin-bone);
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.cinema .vcard-meta,
+.cinema .vcard-credit {
+  margin-top: 3px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--cin-bone-2);
+  /* Long director names must truncate, never widen the rail track. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cinema .vcard-credit .sep { margin: 0 5px; color: var(--cin-muted); }
+.cinema .vcard-cert {
+  display: inline-block;
+  padding: 0 4px;
+  border: 1px solid var(--cin-line);
+  border-radius: 2px;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: .08em;
+  color: var(--cin-muted);
+  vertical-align: 1px;
+}
+
+/* ── Ratings row ─────────────────────────────────────
+   Three sources on three different scales: IMDb /10, Rotten Tomatoes %,
+   Metacritic /100. Printing "8.7 · 97% · 100" side by side reads as three
+   unrelated numbers and forces the eye to do arithmetic at 170px wide.
+
+   So each score gets both encodings: the number in its own native scale (the
+   exact value, for anyone who cares which scale it is) sitting on a 2px meter
+   whose fill is that score normalised to 0–100 (the comparison, readable
+   without reading). Bar length answers "is this good"; the number answers
+   "how good, on what scale". Each source keeps its own hue so the row is
+   identifiable at a glance without a legend, and the source initials stay
+   visible so hue is never the only carrier of meaning.
+
+   The fill width is set inline by the renderer (style="width:87%"); the CSS
+   only owns the track, so a missing score simply renders no bar. */
+.cinema .vcard-rates {
+  display: flex;
+  gap: 8px;
+  margin-top: 7px;
+  min-width: 0;
+}
+.cinema .vrate {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.cinema .vrate-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px;
+  margin-bottom: 3px;
+}
+.cinema .vrate-src {
+  font-size: 8.5px;
+  font-weight: 600;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--cin-muted);
+}
+.cinema .vrate-val {
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--cin-bone);
+}
+.cinema .vrate-bar {
+  height: 2px;
+  border-radius: 1px;
+  background: var(--cin-line);
+  overflow: hidden;
+}
+.cinema .vrate-bar i {
+  display: block;
+  height: 100%;
+  background: var(--cin-bone-2);
+}
+.cinema .vrate-imdb .vrate-bar i { background: var(--cin-ember); }
+.cinema .vrate-rt   .vrate-bar i { background: var(--cin-rec); }
+.cinema .vrate-mc   .vrate-bar i { background: var(--cin-bone); }
+/* No score from a source: the slot is held so the three columns stay aligned
+   across a shelf, but reads as absent rather than as zero. */
+.cinema .vrate.is-empty .vrate-val { color: var(--cin-muted); }
+.cinema .vrate.is-empty .vrate-bar { background: rgba(38, 38, 42, .5); }
+
+/* ── Card skeleton ───────────────────────────────────
+   Mirrors the real card's rhythm — poster, two-line title, credit, ratings —
+   so nothing jumps when the data lands. */
+.cinema .vcard-skel { min-width: 0; pointer-events: none; }
+.cinema .vcard-skel .vskel {
+  background: var(--cin-surface);
+  border-radius: 2px;
+}
+.cinema .vcard-skel .vskel::after {
+  background: linear-gradient(90deg, transparent, rgba(237, 232, 224, .06), transparent);
+  background-size: 200% 100%;
+}
+.cinema .vcard-skel .vskel-card { aspect-ratio: 2 / 3; }
+.cinema .vcard-skel .vskel-line { height: 10px; margin-top: 11px; }
+.cinema .vcard-skel .vskel-line.short { width: 48%; margin-top: 7px; }
+.cinema .vcard-skel .vskel-rates { display: flex; gap: 8px; margin-top: 9px; }
+.cinema .vcard-skel .vskel-rates .vskel { flex: 1 1 0; height: 8px; }
+
+/* ── Hero ────────────────────────────────────────────
+   Rule 3: heroes use the film's own title art. The backdrop is full-bleed and
+   the scrim does the contrast work, so the image is never dimmed as a whole. */
+.cinema .vhero {
+  min-height: min(66vh, 560px);
+  margin: 0 0 12px;
+  padding: 28px 28px 34px;
+}
+.cinema .vhero-bg { object-position: center 20%; transition: opacity .8s var(--cin-ease); }
+.cinema .vhero-scrim {
+  background:
+    linear-gradient(90deg, var(--cin-ground) 0%, rgba(11, 11, 12, .86) 32%, rgba(11, 11, 12, .18) 66%, transparent 100%),
+    linear-gradient(0deg,  var(--cin-ground) 0%, rgba(11, 11, 12, .5) 24%, transparent 60%);
+}
+.cinema .vhero-body { max-width: min(660px, 66%); }
+.cinema .vhero-kicker {
+  color: var(--cin-ember);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .18em;
+}
+
+/* The logo image and the text title are siblings; the renderer keeps whichever
+   it has. `.vhero-logo` is capped in both axes so a wide wordmark cannot push
+   the layout sideways, and it is left-aligned to the same edge as the text so
+   the fallback lands in exactly the same place. */
+.cinema .vhero-logo {
+  display: block;
+  max-width: min(420px, 100%);
+  max-height: clamp(64px, 11vw, 132px);
+  width: auto;
+  height: auto;
+  margin-bottom: 14px;
+  object-fit: contain;
+  object-position: left bottom;
+  filter: drop-shadow(0 2px 18px rgba(0, 0, 0, .65));
+}
+/* Fallback: no logo available, so the title is set in Bodoni instead. Same
+   slot, same margin — the hero does not change shape either way. */
+.cinema .vhero-title {
+  font-family: var(--cin-display);
+  font-size: clamp(32px, 5vw, 64px);
+  font-weight: 600;
+  letter-spacing: -.01em;
+  line-height: 1.02;
+  color: var(--cin-bone);
+  margin-bottom: 14px;
+  text-shadow: 0 2px 26px rgba(0, 0, 0, .7);
+}
+.cinema .vhero-meta {
+  gap: 10px;
+  font-size: 12px;
+  color: var(--cin-bone-2);
+  margin-bottom: 14px;
+}
+.cinema .vhero-meta .sep { color: var(--cin-muted); }
+.cinema .vhero-overview {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--cin-bone-2);
+  margin-bottom: 22px;
+}
+.cinema .vhero-dot { border-radius: 1px; background: rgba(237, 232, 224, .22); }
+.cinema .vhero-dot:hover { background: rgba(237, 232, 224, .5); }
+.cinema .vhero-dot.active { background: var(--cin-ember); }
+
+/* ── Buttons ─────────────────────────────────────────
+   Square-shouldered rather than pill, to sit with the poster geometry. */
+.cinema .vbtn {
+  border-radius: 3px;
+  border: 1px solid var(--cin-line);
+  background: rgba(237, 232, 224, .07);
+  color: var(--cin-bone);
+  font-family: var(--cin-body);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: .01em;
+  transition: background .16s var(--cin-ease), border-color .16s var(--cin-ease), transform .14s var(--cin-ease);
+}
+.cinema .vbtn:hover { background: rgba(237, 232, 224, .14); border-color: var(--cin-muted); }
+.cinema .vbtn-primary { background: var(--cin-ember); border-color: transparent; color: var(--cin-ground); }
+.cinema .vbtn-primary:hover { background: #F0B45C; border-color: transparent; }
+
+/* ── Empty and error states ──────────────────────────
+   Designed, not broken: a rule, a Bodoni line, a sentence, an action. An
+   empty shelf should look like a decision rather than a failure — the plan is
+   explicit that a shelf which cannot be filled honestly is not padded. */
+.cinema .vempty {
+  padding: 72px 28px;
+  border-top: 1px solid var(--cin-line);
+}
+.cinema .vempty-icon { color: var(--cin-muted); opacity: .8; }
+.cinema .vempty-title {
+  font-family: var(--cin-display);
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--cin-bone);
+  margin-bottom: 8px;
+}
+.cinema .vempty-text { font-size: 13px; color: var(--cin-bone-2); }
+
+.cinema .vrow-msg {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+  padding: 18px 20px;
+  border: 1px solid var(--cin-line);
+  border-left: 2px solid var(--cin-muted);
+  border-radius: 2px;
+  background: var(--cin-surface);
+  font-size: 12.5px;
+  color: var(--cin-bone-2);
+}
+/* Error keeps the same shape as the empty message and changes only the rule
+   colour, so a failed shelf never restyles the page around it. */
+.cinema .vrow-msg.err { border-left-color: var(--cin-rec); }
+.cinema .vrow-msg .vbtn { margin-top: 0; margin-left: auto; }
+
+/* ── Reduced motion ──────────────────────────────────
+   Everything above that moves is listed here. Reveals still happen — the
+   actions must remain usable — they simply arrive without travel or fade. */
+@media (prefers-reduced-motion: reduce) {
+  .cinema .vcard-art,
+  .cinema .vcard-actions,
+  .cinema .vcard-act,
+  .cinema .vhero-bg,
+  .cinema .vbtn {
+    transition: none;
+  }
+  .cinema .vcard:hover .vcard-art,
+  .cinema .vcard:focus-visible .vcard-art,
+  .cinema .vcard:focus-within .vcard-art { transform: none; }
+  .cinema .vcard-actions { transform: none; }
+  .cinema .vrail { scroll-behavior: auto; }
+  .cinema .vcard-skel .vskel::after { animation: none; }
+}
+
+/* Narrow windows: the rail keeps scrolling sideways, the hero text stops
+   being squeezed into a column, and nothing widens the page. */
+@media (max-width: 720px) {
+  .cinema .vhero-body { max-width: 100%; }
+  .cinema .vrail { grid-auto-columns: minmax(140px, 1fr); gap: 16px; }
+  .cinema .vrow-head, .cinema .vrail { padding-left: 16px; padding-right: 16px; }
+  .cinema .vempty { padding-left: 16px; padding-right: 16px; }
+}

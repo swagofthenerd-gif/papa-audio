@@ -766,3 +766,35 @@ test('the second-opinion key is a setting, never a literal', () => {
   assert.match(MAIN, /_videoSettings\(\)\.omdbApiKey \|\| process\.env\.OMDB_API_KEY/)
   assert.ok(!/c2ec71cf/.test(MAIN), 'no key may appear in the source')
 })
+
+// ── Card enrichment ────────────────────────────────────────────────────────
+// A shelf listing gives a title, a year, a poster and a score. Director,
+// runtime, certificate and the outside ratings each cost a request, so this
+// exists to be called only for what is actually on screen.
+test('the card enrichment handler returns a narrow payload', () => {
+  const body = handlerBody('video-enrich')
+  // A card does not need the overview, the cast, the keywords or the artwork,
+  // and sending them would make every one of twenty responses far larger than
+  // it has to be.
+  for (const field of ['overview', 'cast', 'keywords', 'backdrop', 'similar']) {
+    assert.ok(!new RegExp('\\b' + field + ':').test(body), field + ' has no business on a card')
+  }
+  for (const field of ['directors', 'runtime', 'certification', 'imdb', 'rottenTomatoes', 'metacritic']) {
+    assert.ok(new RegExp('\\b' + field + ':').test(body), field + ' is what the card is for')
+  }
+})
+
+// The catalogue returns each director as a credit record with an id, a job and
+// a portrait. A card wants two words, and sending the object renders as
+// "[object Object]" — which is exactly what the first probe of this printed.
+test('directors reach the card as names', () => {
+  const body = handlerBody('video-enrich')
+  assert.match(body, /typeof d === 'string' \? d : d && d\.name/)
+  assert.match(body, /\.slice\(0, 2\)/, 'a card has room for two, not for an ensemble')
+})
+
+// It shares the detail cache, so a card that has already been opened costs
+// nothing, and opening a card the shelf enriched costs nothing either.
+test('enrichment goes through the cached detail path', () => {
+  assert.match(handlerBody('video-enrich'), /_videoShowDetail\(type, id\)/)
+})

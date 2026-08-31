@@ -3,10 +3,13 @@
 // CommonJS only; no runtime deps beyond the global `fetch`. Every I/O path
 // accepts an injectable `fetchFn` so tests run without the network.
 
-const { certification } = require('../src/video-format')
-
 const TMDB_BASE = 'https://api.themoviedb.org/3'
 const IMG_BASE = 'https://image.tmdb.org/t/p/w500'
+// Hero art is sized differently from a poster grid: a title logo is drawn at
+// roughly a third of the hero width, a hero backdrop fills it. w500 posters
+// are right for cards and wrong for both, so each gets its own base.
+const LOGO_BASE = 'https://image.tmdb.org/t/p/w500'
+const BACKDROP_BASE = 'https://image.tmdb.org/t/p/w1280'
 
 function _year(date) {
   return typeof date === 'string' && date.length >= 4 ? date.slice(0, 4) : null
@@ -150,6 +153,257 @@ function _extras(raw, type) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Hero art: title logos and textless backdrops (images append).
+// ---------------------------------------------------------------------------
+
+function _imageAt(base, path) {
+  return typeof path === 'string' && path.length ? `${base}${path}` : null
+}
+
+// The Godfather alone carries 84 logos, so "the first one" is not a choice, it
+// is a coin toss between a clean English wordmark and a Hungarian VHS scan.
+// The ranking below is deliberate, outermost key first:
+//
+// 1. Language. A logo in the language you asked for beats everything; English
+//    is the fallback because most title art is designed in it; `null` (no
+//    language) is next because those are usually the pure graphic marks. Any
+//    other language is last resort — a Japanese wordmark on an English hero is
+//    worse than a slightly small English one, so language outranks size.
+// 2. Format. PNG over SVG. TMDB's SVG logos routinely depend on embedded or
+//    referenced fonts and render blank or mis-kerned in Chromium, and they
+//    report width/height of 0, so the hero cannot reserve layout for them.
+//    A PNG is a known quantity at a known size. SVG is kept only as a last
+//    resort so a title whose only art is vector still gets a hero.
+// 3. Size. 800-1920px wide is the sweet spot: sharp on a 2x hero without being
+//    a 4000px poster rip full of scan artefacts. Under 400px goes soft when
+//    scaled up, so it ranks below the oversized ones.
+// 4. Then TMDB's own vote_average, then the wider file.
+const _LOGO_SVG = /\.svg$/i
+
+function _langBand(iso, lang) {
+  const want = typeof lang === 'string' && lang ? lang : 'en'
+  if (iso === want) return 0
+  if (iso === 'en') return 1
+  if (iso == null) return 2
+  return 3
+}
+
+function _sizeBand(width) {
+  const w = Number(width) || 0
+  if (w >= 800 && w <= 1920) return 0
+  if (w > 1920) return 1
+  if (w >= 400) return 2
+  return 3
+}
+
+function _artEntry(base, img) {
+  return {
+    url: _imageAt(base, img.file_path),
+    path: img.file_path,
+    lang: img.iso_639_1 ?? null,
+    width: img.width ?? null,
+    height: img.height ?? null,
+    voteAverage: img.vote_average ?? null,
+  }
+}
+
+function _usableImages(list) {
+  return (Array.isArray(list) ? list : []).filter(i => i && typeof i.file_path === 'string' && i.file_path.length)
+}
+
+// images: the whole `images` sub-object, or the logos array directly.
+// Returns null — never a half-built object — when there is nothing usable.
+function pickTitleLogo(images, lang) {
+  const list = _usableImages(Array.isArray(images) ? images : images && images.logos)
+  if (!list.length) return null
+  const scored = list.map(img => ({
+    img,
+    rank: [
+      _langBand(img.iso_639_1 ?? null, lang),
+      _LOGO_SVG.test(img.file_path) ? 1 : 0,
+      _sizeBand(img.width),
+    ],
+  }))
+  scored.sort((a, b) => {
+    for (let i = 0; i < a.rank.length; i++) {
+      if (a.rank[i] !== b.rank[i]) return a.rank[i] - b.rank[i]
+    }
+    const va = Number(a.img.vote_average) || 0, vb = Number(b.img.vote_average) || 0
+    if (va !== vb) return vb - va
+    return (Number(b.img.width) || 0) - (Number(a.img.width) || 0)
+  })
+  return _artEntry(LOGO_BASE, scored[0].img)
+}
+
+// The hero draws the title logo over the backdrop, so a backdrop that already
+// has the title burned into it collides with the art. TMDB marks those with a
+// language; the textless plates are the ones with `iso_639_1 === null`, and
+// they are what a hero wants even when they score lower than the titled one.
+function pickBackdrop(images, lang) {
+  const list = _usableImages(Array.isArray(images) ? images : images && images.backdrops)
+  if (!list.length) return null
+  const band = img => {
+    const iso = img.iso_639_1 ?? null
+    if (iso == null) return 0
+    if (typeof lang === 'string' && lang && iso === lang) return 1
+    if (iso === 'en') return 2
+    return 3
+  }
+  const sorted = list.slice().sort((a, b) => {
+    const ba = band(a), bb = band(b)
+    if (ba !== bb) return ba - bb
+    const va = Number(a.vote_average) || 0, vb = Number(b.vote_average) || 0
+    if (va !== vb) return vb - va
+    return (Number(b.width) || 0) - (Number(a.width) || 0)
+  })
+  return _artEntry(BACKDROP_BASE, sorted[0])
+}
+
+// ---------------------------------------------------------------------------
+// Crew
+// ---------------------------------------------------------------------------
+
+// Accepts the `credits` sub-object, a bare crew array, or a whole detail
+// response — callers hold all three shapes at different points.
+function _crewList(credits) {
+  if (Array.isArray(credits)) return credits
+  const crew = credits && (credits.crew || (credits.credits && credits.credits.crew))
+  return Array.isArray(crew) ? crew : []
+}
+
+function _person(c) {
+  return { id: c.id ?? null, name: c.name, job: c.job ?? null, profilePath: _image(c.profile_path) }
+}
+
+// De-duplicated by id, falling back to name when TMDB omits the id. Order is
+// the credit order TMDB returned, so a co-directed film keeps both names in
+// the order the billing block shows them — the Coens must not collapse to one.
+function _pickJobs(credits, jobs) {
+  const want = new Set(jobs)
+  const seen = new Set()
+  const out = []
+  for (const c of _crewList(credits)) {
+    if (!c || !c.name || !want.has(c.job)) continue
+    const key = c.id != null ? `id:${c.id}` : `name:${c.name}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(_person(c))
+  }
+  return out
+}
+
+const CREW_JOBS = {
+  directors: ['Director'],
+  writers: ['Writer', 'Screenplay', 'Story', 'Teleplay', 'Author'],
+  cinematographers: ['Director of Photography'],
+  composers: ['Original Music Composer', 'Music'],
+  editors: ['Editor'],
+}
+
+function directorsOf(credits) {
+  return _pickJobs(credits, CREW_JOBS.directors)
+}
+
+// A stable five-key shape: every key is always an array, so the detail page can
+// render its crew block without a null check per row.
+function keyCrewOf(credits) {
+  const out = {}
+  for (const [key, jobs] of Object.entries(CREW_JOBS)) out[key] = _pickJobs(credits, jobs)
+  return out
+}
+
+// ---------------------------------------------------------------------------
+// Certification
+// ---------------------------------------------------------------------------
+
+// Reads both TMDB shapes: movie `release_dates` ({results:[{iso_3166_1,
+// release_dates:[{certification,type}]}]}) and tv `content_ratings`
+// ({results:[{iso_3166_1,rating}]}).
+function _certOfEntry(entry) {
+  if (!entry) return null
+  if (typeof entry.rating === 'string' && entry.rating.trim()) return entry.rating.trim()
+  const list = Array.isArray(entry.release_dates) ? entry.release_dates : []
+  // Prefer the theatrical rating (type 3): a director's cut can carry a later
+  // re-rating that is not the one on the poster.
+  const theatrical = list.find(r => r && r.type === 3 && typeof r.certification === 'string' && r.certification.trim())
+  const any = list.find(r => r && typeof r.certification === 'string' && r.certification.trim())
+  const cert = (theatrical || any || {}).certification
+  return cert && cert.trim() ? cert.trim() : null
+}
+
+// Fallback chain: the region asked for, then US, then GB, then any region that
+// actually has one — a film with no US release should still show its BBFC or
+// its home certificate rather than nothing. An empty string is never returned:
+// TMDB fills unrated regions with "", and "" rendered as a certificate badge is
+// an empty box the user cannot explain.
+function certificationFor(releaseDates, region) {
+  const results = releaseDates && releaseDates.results
+  if (!Array.isArray(results) || !results.length) return null
+  const order = []
+  for (const code of [region, 'US', 'GB']) {
+    if (typeof code === 'string' && code && !order.includes(code)) order.push(code)
+  }
+  for (const code of order) {
+    const cert = _certOfEntry(results.find(r => r && r.iso_3166_1 === code))
+    if (cert) return cert
+  }
+  for (const entry of results) {
+    const cert = _certOfEntry(entry)
+    if (cert) return cert
+  }
+  return null
+}
+
+// ---------------------------------------------------------------------------
+// Keywords
+// ---------------------------------------------------------------------------
+
+// The two media types disagree: a movie's appended keywords land at
+// `keywords.keywords`, a series' at `keywords.results`. Both are read here so
+// one thematic-shelf path serves film and television.
+function keywordsOf(raw) {
+  const k = raw && raw.keywords
+  const list = Array.isArray(raw) ? raw
+    : Array.isArray(k) ? k
+      : Array.isArray(k && k.keywords) ? k.keywords
+        : Array.isArray(k && k.results) ? k.results
+          : Array.isArray(raw && raw.results) ? raw.results
+            : []
+  const seen = new Set()
+  const out = []
+  for (const item of list) {
+    const name = typeof item === 'string' ? item : item && item.name
+    if (!name) continue
+    const id = (item && typeof item === 'object' ? item.id : null) ?? null
+    const key = id != null ? `id:${id}` : `name:${name.toLowerCase()}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push({ id, name })
+  }
+  return out
+}
+
+// Fields that only exist when the richer append list was requested
+// (buildAppendedDetailUrl). They are added only when their sub-object is
+// actually present, so an entry built from a trending/search payload keeps the
+// exact shape it has always had rather than growing a row of empty keys.
+function _appended(raw, lang) {
+  const out = {}
+  if (raw && raw.images && typeof raw.images === 'object') {
+    out.logo = pickTitleLogo(raw.images, lang)
+    out.backdropTextless = pickBackdrop(raw.images, lang)
+  }
+  if (raw && raw.credits && Array.isArray(raw.credits.crew)) {
+    out.directors = directorsOf(raw.credits)
+    out.keyCrew = keyCrewOf(raw.credits)
+  }
+  if (raw && raw.keywords && typeof raw.keywords === 'object') {
+    out.keywords = keywordsOf(raw)
+  }
+  return out
+}
+
 function normalizeMovie(raw) {
   raw = raw || {}
   return {
@@ -170,8 +424,9 @@ function normalizeMovie(raw) {
     isAnime: _isAnime(raw),
     runtime: raw.runtime ?? null,
     tagline: raw.tagline ?? null,
-    certification: certification(raw.release_dates),
+    certification: certificationFor(raw.release_dates, 'US'),
     ..._extras(raw, 'movie'),
+    ..._appended(raw, raw.original_language),
   }
 }
 
@@ -233,8 +488,9 @@ function normalizeTv(raw) {
     tagline: raw.tagline ?? null,
     // TV certification comes from content_ratings, not release_dates; the
     // helper reads either shape (see video-format.certification).
-    certification: certification(raw.content_ratings),
+    certification: certificationFor(raw.content_ratings, 'US'),
     ..._extras(raw, 'tv'),
+    ..._appended(raw, raw.original_language),
   }
   if (Array.isArray(raw.seasons)) entry.seasons = raw.seasons.map(normalizeSeason)
   return entry
@@ -395,6 +651,24 @@ function buildDetailUrl(type, id) {
   return `${TMDB_BASE}/${type}/${id}?append_to_response=${append}`
 }
 
+// The cinephile detail request. `keywords` powers the thematic shelves,
+// `images` the logo hero, and both arrive in the same round-trip as the credits
+// — a second request per detail page would double the latency of every open.
+// include_image_language is not optional: without it TMDB returns only art in
+// the title's original language, so an English hero for a Japanese film gets no
+// logo at all. `null` asks for the textless plates the hero backdrop needs.
+const MOVIE_APPEND_FULL = `${MOVIE_APPEND},keywords,images`
+const TV_APPEND_FULL = `${TV_APPEND},keywords,images`
+
+function buildAppendedDetailUrl(type, id, opts = {}) {
+  const isTv = type === 'tv'
+  const lang = typeof opts.lang === 'string' && opts.lang ? opts.lang : 'en'
+  const langs = [lang, 'en', 'null'].filter((v, i, a) => a.indexOf(v) === i).join(',')
+  return `${TMDB_BASE}/${isTv ? 'tv' : 'movie'}/${id}` +
+    `?append_to_response=${isTv ? TV_APPEND_FULL : MOVIE_APPEND_FULL}` +
+    `&include_image_language=${langs}`
+}
+
 function buildSeasonUrl(tvId, n) {
   return `${TMDB_BASE}/tv/${tvId}/season/${n}`
 }
@@ -430,8 +704,8 @@ function createTmdbCatalog({ apiKey, fetchFn } = {}) {
       const data = await _fetch(buildSearchUrl(query, { page }))
       return (data.results || []).map(normalizeSearchResult).filter(Boolean)
     },
-    async detail(type, id) {
-      const data = await _fetch(buildDetailUrl(type, id))
+    async detail(type, id, opts) {
+      const data = await _fetch(buildAppendedDetailUrl(type, id, opts))
       return type === 'tv' ? normalizeTv(data) : normalizeMovie(data)
     },
     async discover(kind, opts) {
@@ -492,6 +766,16 @@ function createTmdbCatalog({ apiKey, fetchFn } = {}) {
 
 module.exports = {
   _trailers,
+  pickTitleLogo,
+  pickBackdrop,
+  directorsOf,
+  keyCrewOf,
+  CREW_JOBS,
+  certificationFor,
+  keywordsOf,
+  buildAppendedDetailUrl,
+  MOVIE_APPEND_FULL,
+  TV_APPEND_FULL,
   _isAnime,
   TMDB_ANIMATION_GENRE,
   SORTS,

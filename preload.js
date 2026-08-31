@@ -122,6 +122,7 @@ contextBridge.exposeInMainWorld('api', {
   videoControl:     (verb, args) => ipcRenderer.invoke('video-control', { verb, args }),
   videoTracks:      ()  => ipcRenderer.invoke('video-tracks'),
   videoChapters:    ()  => ipcRenderer.invoke('video-chapters'),
+  videoEnrich:      (p) => ipcRenderer.invoke('video-enrich', p),
   videoSubOpen:     ()  => ipcRenderer.invoke('video-sub-open'),
   videoSkipSegments:(req) => ipcRenderer.invoke('video-skip-segments', req),
   videoDetectIntro: (req) => ipcRenderer.invoke('video-detect-intro', req),
