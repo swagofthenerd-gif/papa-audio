@@ -364,3 +364,24 @@ test('the two metric groups do not overlap', () => {
   const both = RETENTION_METRICS.filter(n => ALLOCATOR_METRICS.includes(n))
   assert.deepStrictEqual(both, [], 'a metric cannot be both the evidence and the thing judged')
 })
+
+test('the DOM counters are read after a forced collection', () => {
+  // Without it they report garbage not yet collected rather than garbage that
+  // cannot be, and the difference is the whole question. A hundred-minute run
+  // flagged liveNodes, detachedNodes and cdpListeners as leaks with floors
+  // climbing 28%, 72% and 65%; a probe that forced a collection first showed all
+  // three dead flat over 180 navigations. What the soak had measured was
+  // collection becoming less frequent as the process settled, which lifts the
+  // minimum of each window and reads as a rising floor with nothing retained.
+  const SOAK = require('fs').readFileSync(
+    require('path').join(__dirname, '..', 'tools', 'video-soak.js'), 'utf8')
+  const fn = SOAK.slice(SOAK.indexOf('const domCounters = async () => {'),
+                        SOAK.indexOf('// Resolved on every read, not captured once.'))
+  assert.ok(fn.length > 100, 'found domCounters')
+  const gcAt = fn.indexOf("HeapProfiler.collectGarbage")
+  const readAt = fn.indexOf("Memory.getDOMCounters")
+  assert.ok(gcAt > 0, 'no forced collection')
+  assert.ok(gcAt < readAt, 'the collection must come before the reading')
+  // A refused collection must not lose the counters entirely.
+  assert.match(fn, /try \{ await win\.webContents\.debugger\.sendCommand\('HeapProfiler\.collectGarbage'\) \} catch \(_\) \{\}/)
+})

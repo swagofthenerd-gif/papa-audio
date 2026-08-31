@@ -765,9 +765,23 @@ async function runElectron (opt) {
   try { win.webContents.debugger.attach('1.3'); dbgOk = true } catch (e) {
     info('DOM counters unavailable (' + (e && e.message) + '); RSS creep will not be attributable')
   }
+  // Collected first, every time. Without this the counters report garbage that
+  // has not been collected YET rather than garbage that cannot be — and the
+  // difference is the whole question.
+  //
+  // This was got wrong once already, in the direction that matters: a
+  // hundred-minute run flagged liveNodes, detachedNodes and cdpListeners as
+  // leaks with floors climbing 28%, 72% and 65%. A probe that forced a
+  // collection before each reading showed all three dead flat over 180
+  // navigations. What the soak had measured was collection becoming less
+  // frequent as the process settled, which lifts the minimum of each window and
+  // reads as a rising floor with nothing being retained at all.
   const domCounters = async () => {
     if (!dbgOk) return null
     try {
+      // Best effort: if the collection is refused the counters are still worth
+      // having, they are simply noisier.
+      try { await win.webContents.debugger.sendCommand('HeapProfiler.collectGarbage') } catch (_) {}
       const c = await win.webContents.debugger.sendCommand('Memory.getDOMCounters')
       return { nodes: c.nodes || 0, documents: c.documents || 0, listeners: c.jsEventListeners || 0 }
     } catch (_) { return null }
