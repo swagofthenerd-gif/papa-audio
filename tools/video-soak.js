@@ -240,7 +240,17 @@ function analyseSeries (raw, opts = {}) {
 function analyseRun (samples, perMetric = {}) {
   const rows = Array.isArray(samples) ? samples : []
   const names = new Set()
-  for (const s of rows) for (const k of Object.keys(s.metrics || {})) names.add(k)
+  for (const s of rows) {
+    for (const k of Object.keys(s.metrics || {})) {
+      // An underscore prefix means "recorded, not judged": a label carried
+      // alongside a number so a rise can name its own cause. Without this it
+      // becomes a metric with no numbers and reports as "insufficient" forever,
+      // which also drags down the count of metrics that actually decided
+      // anything.
+      if (k.charAt(0) === '_') continue
+      names.add(k)
+    }
+  }
   const metrics = {}
   const leaks = []
   for (const name of names) {
@@ -422,9 +432,25 @@ const LISTENER_PROBE = `(function () {
   function isGlobal (t) {
     return t === window || t === document || t === document.documentElement || t === document.body
   }
+  // The call site of a surviving global listener, so a rise names its own
+  // culprit instead of sending the next person back to a bisect. Only computed
+  // for globals: building a stack for every element listener would change what
+  // is being measured.
+  function site () {
+    try {
+      var lines = ((new Error()).stack || '').split('\n').slice(2)
+      for (var i = 0; i < lines.length; i++) {
+        if (lines[i].indexOf('renderer.js') >= 0) return lines[i].trim().replace(/^at /, '')
+      }
+      return (lines[0] || '?').trim()
+    } catch (e) { return '?' }
+  }
   EventTarget.prototype.addEventListener = function (type, fn) {
     // Never allowed to break the app it is measuring.
-    try { reg.push({ ref: new WeakRef(this), type: type, fn: fn, g: isGlobal(this) }) } catch (e) {}
+    try {
+      var g = isGlobal(this)
+      reg.push({ ref: new WeakRef(this), type: type, fn: fn, g: g, s: g ? site() : null })
+    } catch (e) {}
     return add.apply(this, arguments)
   }
   EventTarget.prototype.removeEventListener = function (type, fn) {
@@ -439,7 +465,7 @@ const LISTENER_PROBE = `(function () {
   }
   window.__soakListeners = {
     read: function () {
-      var live = 0, glob = 0, kept = []
+      var live = 0, glob = 0, kept = [], by = {}
       for (var i = 0; i < reg.length; i++) {
         var r = reg[i]
         var t = r.ref.deref()
@@ -447,11 +473,13 @@ const LISTENER_PROBE = `(function () {
         if (!r.g && !t.isConnected) continue   // detached, so collectable
         kept.push(r)
         live++
-        if (r.g) glob++
+        if (r.g) { glob++; var k = r.s + ' :: ' + r.type; by[k] = (by[k] || 0) + 1 }
       }
       // Pruned on every read, or the registry becomes the leak.
       reg = kept
-      return { live: live, global: glob }
+      var sites = Object.keys(by).map(function (k) { return by[k] + ' x ' + k })
+      sites.sort()
+      return { live: live, global: glob, sites: sites }
     },
   }
   return 'installed'
@@ -471,6 +499,9 @@ const SAMPLE_PROBE = `(async function () {
     // Broken out because these are the ones nothing can collect. A rise here is
     // a leak with no ambiguity at all.
     listenersGlobal: ls.global,
+    // Not a metric -- a label. Reported alongside the number so a rise says
+    // where it came from.
+    _globalSites: ls.sites,
     rendererHeapUsed: mem.usedJSHeapSize || 0,
     rendererHeapTotal: mem.totalJSHeapSize || 0,
     ipcRttMs: rtt,
@@ -637,6 +668,12 @@ async function runElectron (opt) {
     stream.write(JSON.stringify(sample) + '\n')
     if (sampleNo % 10 === 0 || sampleNo <= 3) {
       info(`sample ${sampleNo} (${action.name}) dom ${sample.metrics.domNodes} listeners ${sample.metrics.listeners}/${sample.metrics.listenersGlobal}g heap ${(sample.metrics.rendererHeapUsed / 1048576).toFixed(1)}MB rtt ${(sample.metrics.ipcRttMs || 0).toFixed(1)}ms`)
+      // Who holds the uncollectable ones. Printed rather than left in the file,
+      // because the number on its own sends the reader back to a bisect.
+      const sites = sample.metrics._globalSites
+      if (Array.isArray(sites) && sites.length) {
+        for (const line of sites) info('    global: ' + line)
+      }
     }
 
     const remain = Math.max(0, opt.intervalSec * 1000 - 8000)

@@ -55,14 +55,19 @@ function runProbe() {
 
 test('the probe installs and starts at nothing', () => {
   const w = runProbe()
-  assert.deepStrictEqual(w.read(), { live: 0, global: 0 })
+  const r = w.read()
+  assert.strictEqual(r.live, 0)
+  assert.strictEqual(r.global, 0)
+  assert.deepStrictEqual(r.sites, [])
 })
 
 test('a listener on a live element counts', () => {
   const w = runProbe()
   const el = new w.FakeTarget('div')
   el.addEventListener('click', () => {})
-  assert.deepStrictEqual(w.read(), { live: 1, global: 0 })
+  const r = w.read()
+  assert.strictEqual(r.live, 1)
+  assert.strictEqual(r.global, 0)
 })
 
 test('a listener on a DETACHED element does not count', () => {
@@ -113,7 +118,10 @@ test('an explicit removal is reflected', () => {
   w.doc.addEventListener('keydown', fn)
   assert.strictEqual(w.read().global, 1)
   w.doc.removeEventListener('keydown', fn)
-  assert.deepStrictEqual(w.read(), { live: 0, global: 0 })
+  const r = w.read()
+  assert.strictEqual(r.live, 0)
+  assert.strictEqual(r.global, 0)
+  assert.deepStrictEqual(r.sites, [])
 })
 
 test('a removal only drops its own registration', () => {
@@ -257,4 +265,30 @@ test('the video UI init is guarded, because it registers three global listeners'
                             RENDERER.indexOf('function _initVideoUI()') + 400)
   assert.match(fn, /if \(_videoUiReady\) return/, 'the run-once guard is gone')
   assert.match(fn, /_videoUiReady = true/)
+})
+
+test('an underscore-prefixed sample key is recorded but never judged', () => {
+  // _globalSites carries the call sites of the surviving global listeners so a
+  // rise names its own cause. It is an array, so as a metric it would have no
+  // numbers, report "insufficient" forever, and drag down the count of metrics
+  // that actually decided something — which is the check that catches a run
+  // that measured nothing.
+  const { analyseRun } = require(path.join(__dirname, '..', 'tools', 'video-soak.js'))
+  const samples = []
+  for (let i = 0; i < 40; i++) {
+    samples.push({ metrics: { listenersGlobal: 4, _globalSites: ['1 x foo :: keydown'] } })
+  }
+  const res = analyseRun(samples)
+  assert.ok(res.metrics.listenersGlobal, 'the number is judged')
+  assert.strictEqual(res.metrics._globalSites, undefined, 'the label is not')
+})
+
+test('a rise in global listeners is reported with its call sites', () => {
+  const SOAK2 = fs.readFileSync(path.join(__dirname, '..', 'tools', 'video-soak.js'), 'utf8')
+  assert.match(SOAK2, /global: ' \+ line/, 'the sites are printed alongside the count')
+  const probe = SOAK2.match(/const LISTENER_PROBE = `([\s\S]*?)`\n/)[1]
+  assert.match(probe, /function site \(\)/)
+  // Only for globals: a stack per element listener would change what is being
+  // measured.
+  assert.match(probe, /s: g \? site\(\) : null/)
 })
