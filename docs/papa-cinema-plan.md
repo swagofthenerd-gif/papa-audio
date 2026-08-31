@@ -192,6 +192,37 @@ reproduction of six rounds of clicking showed the count flat, and it was flat,
 because the leak is driven by a timer and not by navigation. Four minutes of
 clicking is not four minutes of waiting.
 
+### Four metrics that measured the wrong thing
+
+Every one produced a confident verdict, and every one had to be caught by
+checking the instrument rather than by reading the result. This is the part of
+the soak work most worth carrying forward, because the failure is silent by
+construction: a metric that is wrong still prints a number.
+
+| Metric | What it actually measured | How it read |
+|---|---|---|
+| `listeners` | listeners *created*, not alive | false leak — could only ever rise on an innerHTML renderer |
+| `rendererHeapUsed` | Chromium's privacy placeholder | false pass — one constant value across 400 samples |
+| `liveNodes` / `detachedNodes` / `cdpListeners` | garbage not yet collected | false leak — GC slows as a process settles, lifting every window's floor |
+| `rendererRss` | real, but dominated by allocator behaviour | false leak over 100 min, resolved itself over the same run once trusted |
+
+Two produced false passes, two false failures. The three checks that now catch
+this class:
+
+1. **A constant series gets its own verdict.** A metric that never varied is
+   not a measurement of a stable thing; it is a measurement of nothing, and it
+   no longer counts towards the metrics that decided anything.
+2. **A failed probe install aborts the run.** Zero at every sample reads as
+   flat, and flat is a pass.
+3. **The DOM counters are read after a forced collection**, so they answer
+   "what cannot be collected" rather than "what has not been collected yet".
+
+And the discipline that found all four: before believing a verdict, check that
+each metric's series actually varied, and reproduce a flagged metric with an
+independent probe before touching its threshold. Both are cheap. A threshold
+raised to silence a red light is the one repair that can never be undone by
+evidence.
+
 ### On the soak (phase 7)
 
 Smoothness over hours is a different property from smoothness in a demo and cannot be promised, only measured. The run must:
