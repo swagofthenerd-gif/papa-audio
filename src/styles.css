@@ -2,7 +2,43 @@
    PAPA AUDIO  ·  VOID Edition
    Premium dark audiophile UI — complete stylesheet
    ════════════════════════════════════════════════════ */
-@import url('https://fonts.googleapis.com/css2?family=Poppins:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&display=swap');
+/* Bundled, not fetched. The Content-Security-Policy in index.html has no
+   https: in default-src, so the Google Fonts stylesheet this used to import was
+   refused outright — measured: "Poppins" rendered at exactly the same width as
+   monospace, meaning it never loaded once and the app has been running on a
+   fallback the whole time. Local faces also mean the typography survives being
+   offline, which a desktop player should. */
+@font-face {
+  font-family: 'Poppins'; font-style: normal; font-weight: 300; font-display: swap;
+  src: url('../assets/fonts/Poppins-300.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Poppins'; font-style: normal; font-weight: 400; font-display: swap;
+  src: url('../assets/fonts/Poppins-400.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Poppins'; font-style: normal; font-weight: 500; font-display: swap;
+  src: url('../assets/fonts/Poppins-500.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Poppins'; font-style: normal; font-weight: 600; font-display: swap;
+  src: url('../assets/fonts/Poppins-600.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Poppins'; font-style: normal; font-weight: 700; font-display: swap;
+  src: url('../assets/fonts/Poppins-700.woff2') format('woff2');
+}
+/* The film section's own faces. Bodoni is the typeface of poster art and title
+   cards and carries the whole identity; Archivo is what you read rather than
+   admire. Both are variable, so one file covers every weight. */
+@font-face {
+  font-family: 'Bodoni Moda'; font-style: normal; font-weight: 400 700; font-display: swap;
+  src: url('../assets/fonts/BodoniModa.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Archivo'; font-style: normal; font-weight: 400 700; font-display: swap;
+  src: url('../assets/fonts/Archivo.woff2') format('woff2');
+}
 
 @keyframes vinylSpin   { from { transform:rotate(0deg) } to { transform:rotate(360deg) } }
 @keyframes pulseGlow   { 0%,100% { opacity:.05 } 50% { opacity:.10 } }
