@@ -242,7 +242,7 @@
 
     function renderFavourites(currentKey) {
       const keys = store.favourites()
-      const inList = currentKey ? keys.indexOf(currentKey) >= 0 : -1
+      const already = currentKey ? keys.indexOf(currentKey) >= 0 : false
       let html = '<div class="tp-favs">' +
         '<h3 class="tp-h">Favourites</h3>' +
         '<p class="tp-sub">Four films, in your order. There is no fifth.</p>'
@@ -260,7 +260,7 @@
             '</li>').join('') + '</ol>'
         : '<p class="tp-empty">Nothing chosen yet.</p>'
 
-      if (currentKey && inList < 0) {
+      if (currentKey && !already) {
         if (replacing === currentKey) {
           html += '<div class="tp-replace" role="group" aria-label="Choose a favourite to replace">' +
             '<p class="tp-warn">Your four are full. ' + esc(label(currentKey)) +
