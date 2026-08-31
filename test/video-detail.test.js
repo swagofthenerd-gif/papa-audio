@@ -34,7 +34,13 @@ function harness() {
     _fillRow: () => {},
   }
   vm.createContext(ctx)
+  // The cast row is built from a shared person tile and a crew de-duplicator
+  // now, so the sandbox needs both or every cast assertion fails on a missing
+  // helper rather than on anything real.
+  vm.runInContext("var _CREW_ROLES = [['directors','Director'],['writers','Writer']," +
+    "['cinematographers','Cinematography'],['composers','Music'],['editors','Editor']]", ctx)
   for (const fn of ['_videoFactsHtml', '_fmtRuntime', '_animeStatus', '_videoCrewHtml',
+                    '_personTileHtml', '_keyCrewList', '_externalRatingsHtml',
                     '_renderCastRow', '_renderProviders', '_renderSimilar']) {
     vm.runInContext(extract(fn), ctx)
   }
@@ -97,11 +103,15 @@ test('no crew renders nothing', () => {
   assert.strictEqual(ctx._videoCrewHtml({ crew: [{ id: 1, name: 'X', job: 'Gaffer' }] }), '')
 })
 
+// The fixture used to say `profile`, which is not what the catalogue returns —
+// it returns `profilePath`. The code read the same wrong name, so the test
+// passed while every portrait on every film fell through to a grey circle with
+// a letter in it. A fixture that agrees with the bug cannot catch it.
 test('the cast rail shows names, roles and links to each person', () => {
   const { ctx, nodes } = harness()
   ctx._renderCastRow({ cast: [
-    { id: 1, name: 'Timothée Chalamet', character: 'Paul', profile: '/a.jpg' },
-    { id: 2, name: 'Zendaya', character: 'Chani', profile: null },
+    { id: 1, name: 'Timothée Chalamet', character: 'Paul', profilePath: 'https://img/a.jpg' },
+    { id: 2, name: 'Zendaya', character: 'Chani', profilePath: null },
   ] })
   assert.match(nodes.vcast.innerHTML, /Timothée Chalamet/)
   assert.match(nodes.vcast.innerHTML, /Paul/)
@@ -173,4 +183,73 @@ test('the person page heads itself from the credit that linked to it', () => {
   assert.match(SRC, /var _lastPerson = \{\}/)
   assert.match(SRC, /_lastPerson = \{/)
   assert.match(SRC, /function _personName\(id\)/)
+})
+
+// ── Made by ─────────────────────────────────────────────────────────────────
+// A cinephile follows a cinematographer the way other people follow an actor,
+// and the page had no way to tell you who shot a film.
+test('the crew a cinephile follows appears with the cast', () => {
+  const { ctx, nodes } = harness()
+  ctx._renderCastRow({
+    cast: [{ id: 9, name: 'Al Pacino', character: 'Michael', profilePath: 'https://img/p.jpg' }],
+    keyCrew: {
+      directors: [{ id: 1, name: 'Francis Ford Coppola', profilePath: 'https://img/c.jpg' }],
+      cinematographers: [{ id: 2, name: 'Gordon Willis', profilePath: null }],
+      composers: [{ id: 3, name: 'Nino Rota', profilePath: null }],
+    },
+  })
+  assert.match(nodes.vcast.innerHTML, /Made by/)
+  assert.match(nodes.vcast.innerHTML, /Gordon Willis/)
+  assert.match(nodes.vcast.innerHTML, /Cinematography/)
+  assert.match(nodes.vcast.innerHTML, /Nino Rota/)
+})
+
+// Coppola directed and wrote The Godfather. Listing him twice says less than
+// listing him once with both credits.
+test('one person who held two jobs appears once, with both', () => {
+  const { ctx } = harness()
+  const list = ctx._keyCrewList({ keyCrew: {
+    directors: [{ id: 1, name: 'Francis Ford Coppola' }],
+    writers: [{ id: 1, name: 'Francis Ford Coppola' }],
+  } })
+  assert.strictEqual(list.length, 1)
+  assert.match(list[0]._role, /Director/)
+  assert.match(list[0]._role, /Writer/)
+})
+
+test('no crew and no cast renders nothing at all', () => {
+  const { ctx, nodes } = harness()
+  ctx._renderCastRow({})
+  assert.strictEqual(nodes.vcast.innerHTML, '')
+})
+
+// ── The second opinion ──────────────────────────────────────────────────────
+test('the three outside scores, the awards and the box office are shown', () => {
+  const { ctx } = harness()
+  const html = ctx._externalRatingsHtml({ external: {
+    imdbRating: 9.2, rottenTomatoes: 97, metascore: 100,
+    awards: { text: 'Won 3 Oscars. 31 wins & 31 nominations total', oscars: 3 },
+    boxOffice: 136381073,
+  } })
+  assert.match(html, /IMDb/)
+  assert.match(html, /9\.2/)
+  assert.match(html, /97%/)
+  assert.match(html, /Metacritic/)
+  assert.match(html, /Won 3 Oscars/)
+  assert.match(html, /has-oscars/, 'an Oscar is the one award most people can place')
+  assert.match(html, /136,381,073/, 'a raw integer is not a box office figure')
+})
+
+// A film with no outside data must not leave an empty row of labels behind.
+test('no second opinion renders nothing rather than empty labels', () => {
+  const { ctx } = harness()
+  assert.strictEqual(ctx._externalRatingsHtml({}), '')
+  assert.strictEqual(ctx._externalRatingsHtml({ external: {} }), '')
+})
+
+test('a film with only one of the three scores shows only that one', () => {
+  const { ctx } = harness()
+  const html = ctx._externalRatingsHtml({ external: { imdbRating: 8.1 } })
+  assert.match(html, /IMDb/)
+  assert.ok(!/Metacritic/.test(html), 'a missing score is absent, not zero')
 })

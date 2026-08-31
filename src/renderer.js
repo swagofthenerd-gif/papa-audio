@@ -3342,6 +3342,7 @@ function _videoDetailShell(d) {
       '<h1 class="video-detail-title">' + esc(d.title || 'Untitled') + '</h1>' +
       '<div class="video-detail-meta">' + metaBits.join(' · ') + '</div>' +
       (d.tagline ? '<div class="vdet-tagline">' + esc(d.tagline) + '</div>' : '') +
+      _externalRatingsHtml(d) +
       _videoFactsHtml(d) +
       (genres.length ? '<div class="video-detail-genres">' + genres.map(function (g) {
         return '<button class="video-genre-chip" data-genre-jump="' + esc(g) + '" title="Browse ' + esc(g) + '">' + esc(g) + '</button>'
@@ -3496,22 +3497,99 @@ function _videoCrewHtml(d) {
   return bits.length ? '<div class="vdet-crew">' + bits.join(' · ') + '</div>' : ''
 }
 
+// The three outside scores, the awards line and the box office. One score
+// averaged from one site's users is a thin basis for choosing what to watch;
+// where the three disagree is itself information, and "Won 3 Oscars, 31 wins"
+// says more than any of them.
+function _externalRatingsHtml(d) {
+  const e = d && d.external
+  if (!e) return ''
+  const parts = []
+  const score = function (label, value, suffix) {
+    if (value == null) return
+    parts.push('<span class="vext"><span class="vext-src">' + label + '</span>' +
+      '<span class="vext-val">' + esc(String(value)) + (suffix || '') + '</span></span>')
+  }
+  score('IMDb', e.imdbRating)
+  score('Rotten Tomatoes', e.rottenTomatoes, '%')
+  score('Metacritic', e.metascore)
+  let html = ''
+  if (parts.length) html += '<div class="vext-row">' + parts.join('') + '</div>'
+  if (e.awards && e.awards.text) {
+    // The headline is kept whole because "Won 3 Oscars" reads better than any
+    // count of them, and the count is only there to earn the emphasis.
+    html += '<div class="vext-awards' + (e.awards.oscars ? ' has-oscars' : '') + '">' +
+      esc(e.awards.text) + '</div>'
+  }
+  if (e.boxOffice) {
+    html += '<div class="vext-box">Box office ' + esc('$' + e.boxOffice.toLocaleString('en-US')) + '</div>'
+  }
+  return html
+}
+
+// A person, with their face. The catalogue calls the field profilePath and this
+// read c.profile, so every portrait fell through to a grey circle with a letter
+// in it — for the whole life of the page, on every film.
+function _personTileHtml(p, sub) {
+  const photo = p.profilePath
+    ? '<img class="vcast-photo" src="' + esc(p.profilePath) + '" alt="" loading="lazy" decoding="async"' +
+      ' onerror="this.classList.add(\'is-missing\')">'
+    : '<div class="vcast-photo vcast-photo-fallback">' + esc(String(p.name || '?').charAt(0)) + '</div>'
+  return '<button class="vcast" data-person="' + esc(p.id) + '" aria-label="' + esc(p.name) + '">' +
+    photo +
+    '<div class="vcast-name">' + esc(p.name) + '</div>' +
+    (sub ? '<div class="vcast-role">' + esc(sub) + '</div>' : '') +
+  '</button>'
+}
+
 function _renderCastRow(d) {
   const box = document.getElementById('vcast')
   if (!box) return
   const cast = Array.isArray(d.cast) ? d.cast.filter(function (c) { return c && c.name }).slice(0, 20) : []
-  if (!cast.length) { box.innerHTML = ''; return }
-  box.innerHTML = '<div class="vsection"><div class="vsection-title">Cast</div>' +
-    '<div class="vcast-rail">' + cast.map(function (c) {
-      const photo = c.profile
-        ? '<img class="vcast-photo" src="' + esc(c.profile) + '" alt="" loading="lazy" onerror="this.style.visibility=\'hidden\'">'
-        : '<div class="vcast-photo vcast-photo-fallback">' + esc(String(c.name || '?').charAt(0)) + '</div>'
-      return '<button class="vcast" data-person="' + esc(c.id) + '" aria-label="' + esc(c.name) + '">' +
-        photo +
-        '<div class="vcast-name">' + esc(c.name) + '</div>' +
-        (c.character ? '<div class="vcast-role">' + esc(c.character) + '</div>' : '') +
-      '</button>'
-    }).join('') + '</div></div>'
+  const crew = _keyCrewList(d)
+  if (!cast.length && !crew.length) { box.innerHTML = ''; return }
+  let html = ''
+  // Crew first. A cinephile follows a cinematographer the way other people
+  // follow an actor, and the page had no way to tell you who shot a film.
+  if (crew.length) {
+    html += '<div class="vsection"><div class="vsection-title">Made by</div>' +
+      '<div class="vcast-rail">' + crew.map(function (p) { return _personTileHtml(p, p._role) }).join('') +
+      '</div></div>'
+  }
+  if (cast.length) {
+    html += '<div class="vsection"><div class="vsection-title">Cast</div>' +
+      '<div class="vcast-rail">' + cast.map(function (c) { return _personTileHtml(c, c.character) }).join('') +
+      '</div></div>'
+  }
+  box.innerHTML = html
+}
+
+// The five credits worth naming, in the order a person would read them. One
+// entry per person even when they held two jobs — Coppola directed and wrote
+// The Godfather, and listing him twice says less than listing him once with
+// both.
+var _CREW_ROLES = [
+  ['directors', 'Director'],
+  ['writers', 'Writer'],
+  ['cinematographers', 'Cinematography'],
+  ['composers', 'Music'],
+  ['editors', 'Editor'],
+]
+
+function _keyCrewList(d) {
+  const kc = d && d.keyCrew
+  if (!kc) return []
+  const byId = new Map()
+  for (const [key, role] of _CREW_ROLES) {
+    for (const p of (Array.isArray(kc[key]) ? kc[key] : [])) {
+      if (!p || !p.name) continue
+      const id = p.id != null ? String(p.id) : p.name
+      const seen = byId.get(id)
+      if (seen) { if (seen._role.indexOf(role) === -1) seen._role += ' · ' + role; continue }
+      byId.set(id, Object.assign({}, p, { _role: role }))
+    }
+  }
+  return [...byId.values()].slice(0, 12)
 }
 
 // Where a title can be streamed legitimately. Shown because knowing a film is
