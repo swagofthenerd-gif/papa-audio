@@ -156,6 +156,20 @@ test('badges report the real resolution and layout, and flag surround', () => {
   assert.ok(!/vt-badge-hi/.test(nodes['vt-badges'].innerHTML), 'stereo is not highlighted')
 })
 
+// mpv reports every alias a codec has ever had. Unfiltered, the badge read
+// "H.264 / AVC / MPEG-4 AVC / MPEG-4 PART 10" — wider than the title beside it.
+test('the codec badge shows one name, not every alias', () => {
+  const { p, nodes } = harness()
+  p._setState(stateAt(10, {
+    video: { width: 1920, height: 1080, codec: 'h264 / avc / MPEG-4 AVC / MPEG-4 part 10' },
+    audio: { layout: '5.1', channels: 6, codec: 'ac3' },
+  }))
+  const html = nodes['vt-badges'].innerHTML
+  assert.match(html, /H264/)
+  assert.ok(!/MPEG-4/i.test(html), 'the aliases must not be shown')
+  assert.ok(!/ \/ /.test(html), 'no alias separators should survive')
+})
+
 test('skippable regions are drawn on the seek bar', () => {
   const { p, nodes } = harness({
     segments: [{ kind: 'intro', start: 360, end: 720, origin: 'aniskip', confidence: 0.95 }],

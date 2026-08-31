@@ -177,6 +177,15 @@
       if (time) time.textContent = fmtTime(pos)
     }
 
+    // mpv reports every alias a codec has ever had, so the badge read
+    // "H.264 / AVC / MPEG-4 AVC / MPEG-4 PART 10" — a line of text wider than
+    // the title next to it. The first name is the one anybody uses.
+    function shortCodec(codec) {
+      const first = String(codec == null ? '' : codec).split('/')[0].trim()
+      if (!first) return ''
+      return first.length > 12 ? first.slice(0, 12).trim().toUpperCase() : first.toUpperCase()
+    }
+
     function paintBadges() {
       const box = $('vt-badges')
       if (!box || !state) return
@@ -187,8 +196,8 @@
       if (layout && layout !== 'unknown') {
         out.push('<span class="vt-badge' + (layout === '5.1' || layout === '7.1' ? ' vt-badge-hi' : '') + '">' + layout + '</span>')
       }
-      const codec = state.video && state.video.codec
-      if (codec) out.push('<span class="vt-badge">' + String(codec).toUpperCase() + '</span>')
+      const codec = shortCodec(state.video && state.video.codec)
+      if (codec) out.push('<span class="vt-badge">' + codec + '</span>')
       box.innerHTML = out.join('')
     }
 
