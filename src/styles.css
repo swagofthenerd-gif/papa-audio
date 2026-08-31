@@ -7442,7 +7442,8 @@ body.video-active .np-byline { font-size:10.5px; }
   align-items: start;
 }
 .cinema .tp-record-main { display: flex; flex-direction: column; gap: 14px; }
-.cinema .tp-record-diary, .cinema .tp-record-lists { margin-top: 26px; }
+.cinema .tp-record-diary { margin-top: 18px; }
+.cinema .tp-record-lists { margin-top: 26px; }
 @media (max-width: 900px) {
   .cinema .tp-record { grid-template-columns: minmax(0, 1fr); gap: 20px; }
 }

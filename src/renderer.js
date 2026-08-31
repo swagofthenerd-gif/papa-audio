@@ -2352,12 +2352,15 @@ function _renderTasteSection() {
         '<div class="tp-record-main">' +
           panel.renderRating(key) +
           panel.renderSeen(key) +
+          // This film's own viewings sit under the rating rather than below both
+          // columns: the rating and the seen state are short, the form beside
+          // them is tall, and the leftover space was simply blank.
+          (count ? '<div class="tp-record-diary">' + panel.renderDiary({ key: key }) + '</div>' : '') +
         '</div>' +
         '<div class="tp-record-side">' +
           panel.renderDiaryForm(key) +
         '</div>' +
       '</div>' +
-      (count ? '<div class="tp-record-diary">' + panel.renderDiary({ key: key }) + '</div>' : '') +
       '<div class="tp-record-lists">' + panel.renderLists({ key: key }) + '</div>' +
     '</section>'
   panel.mount(document.getElementById('vtaste-inner'))
