@@ -438,7 +438,7 @@ const LISTENER_PROBE = `(function () {
   // is being measured.
   function site () {
     try {
-      var lines = ((new Error()).stack || '').split('\n').slice(2)
+      var lines = ((new Error()).stack || '').split('\\n').slice(2)
       for (var i = 0; i < lines.length; i++) {
         if (lines[i].indexOf('renderer.js') >= 0) return lines[i].trim().replace(/^at /, '')
       }
@@ -615,8 +615,22 @@ async function runElectron (opt) {
 
   const js = (src) => win.webContents.executeJavaScript(src, true)
   const probe = await js(LISTENER_PROBE).catch(e => 'THREW ' + e.message)
-  if (String(probe).startsWith('THREW')) fail('listener probe installs', probe)
-  else pass('listener probe installs', String(probe))
+  if (String(probe).startsWith('THREW')) {
+    // Aborted, not noted and carried on. A probe that failed to install reports
+    // zero listeners at every sample, a constant series reads as "flat", and
+    // flat is a PASS — so the run would end by announcing that nothing drifted
+    // in the one metric it was blind to. This tool already says elsewhere that
+    // a run which measured nothing is not a run that found nothing wrong; this
+    // is that principle applied to itself.
+    //
+    // It has happened: an escaping slip put a real newline inside the probe
+    // source, the install threw, and the samples read 0/0g for the whole run.
+    fail('listener probe installs', probe)
+    fail('soak aborted', 'refusing to run blind on listeners')
+    app.exit(1)
+    return
+  }
+  pass('listener probe installs', String(probe))
 
   let torrent = null
   try { torrent = require(path.join(ROOT, 'torrent-stream.js')) } catch (_) {}

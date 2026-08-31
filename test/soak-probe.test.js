@@ -292,3 +292,43 @@ test('a rise in global listeners is reported with its call sites', () => {
   // measured.
   assert.match(probe, /s: g \? site\(\) : null/)
 })
+
+test('a failed probe install aborts the run instead of passing blind', () => {
+  // A probe that does not install reports zero at every sample; a constant
+  // series reads as "flat"; flat is a PASS. So the run would end by announcing
+  // that nothing drifted in the one metric it could not see. This happened: an
+  // escaping slip put a real newline inside the probe source and the samples
+  // read 0/0g for a whole run.
+  const SOAK3 = fs.readFileSync(path.join(__dirname, '..', 'tools', 'video-soak.js'), 'utf8')
+  const at = SOAK3.indexOf("const probe = await js(LISTENER_PROBE)")
+  assert.ok(at > 0)
+  const block = SOAK3.slice(at, at + 1200)
+  assert.match(block, /fail\('listener probe installs'/)
+  assert.match(block, /app\.exit\(1\)/, 'a blind run must not continue')
+})
+
+test('a constant-zero series really does read as a pass, which is why that matters', () => {
+  // The assertion behind the abort above. If this ever stops being true the
+  // abort could be relaxed — until then it is load-bearing.
+  const { analyseSeries } = require(path.join(__dirname, '..', 'tools', 'video-soak.js'))
+  const res = analyseSeries(new Array(40).fill(0))
+  assert.notStrictEqual(res.verdict, 'leak', 'a blind run would not be reported as a leak')
+})
+
+test('the probe source has no unescaped newline inside its template literal', () => {
+  // The exact slip: '\n' written into the template literal becomes a real
+  // newline in the injected source, which is an unterminated string.
+  const SOAK3 = fs.readFileSync(path.join(__dirname, '..', 'tools', 'video-soak.js'), 'utf8')
+  for (const name of ['LISTENER_PROBE', 'SAMPLE_PROBE']) {
+    const m = SOAK3.match(new RegExp('const ' + name + ' = `([\\s\\S]*?)`\\n'))
+    assert.ok(m, 'found ' + name)
+    // In the file, an intended newline inside browser JS must be written \\n.
+    // A single backslash-n would have been consumed by the template literal.
+    const lines = m[1].split('\n')
+    for (const line of lines) {
+      assert.doesNotMatch(line, /split\('\n/, name + ' has a raw newline in a string literal')
+    }
+    // And the source must at least parse.
+    assert.doesNotThrow(() => new Function('return ' + m[1]), name + ' does not parse')
+  }
+})
