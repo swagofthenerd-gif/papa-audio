@@ -64,7 +64,66 @@ test('every mapped sort is one Browse actually offers', () => {
 test('a described query becomes Browse filters', () => {
   const { _queryBrowseFilters } = lift()
   const f = _queryBrowseFilters(query.parse('1970s thrillers'))
+  // genres are NAMES at this stage; the ids come later, from the vocabulary.
   assert.deepStrictEqual(f, { yearFrom: 1970, yearTo: 1979, genres: ['Thriller'] })
+})
+
+test('a genre name is turned into the id TMDB needs, not passed through', () => {
+  // TMDB's with_genres takes numeric ids and the parser speaks in names, so
+  // putting "Thriller" straight into filters.genres sent
+  // `with_genres=Thriller` and the genre half of every parsed query was
+  // silently dropped. Caught by tracing the value to the wire rather than by
+  // any test — which is why this one traces it.
+  const from = RENDERER.indexOf('function _resolvePendingGenreNames')
+  const to = RENDERER.indexOf('async function _loadBrowseVocab')
+  assert.ok(from > 0 && to > from, 'found the resolver')
+  const world = {
+    _browse: { filters: { catalog: 'movie', genres: [] }, pendingGenreNames: ['Thriller', 'Drama'] },
+    _browseVocab: { genres: { movie: [{ id: 53, name: 'Thriller' }, { id: 18, name: 'Drama' }] } },
+    said: [],
+  }
+  // eslint-disable-next-line no-new-func
+  const run = new Function('_browse', '_browseVocab', 'showSnackbar',
+    RENDERER.slice(from, to) + '; return _resolvePendingGenreNames')
+  run(world._browse, world._browseVocab, m => world.said.push(m))()
+  assert.deepStrictEqual(world._browse.filters.genres, [53, 18])
+  assert.strictEqual(world._browse.pendingGenreNames, null, 'consumed, so it cannot apply twice')
+  assert.deepStrictEqual(world.said, [])
+})
+
+test('a genre the catalogue does not have is dropped and said out loud', () => {
+  // An unknown id returns an empty grid, and an empty grid for a query that was
+  // mostly understood is worse than the same query without its genre.
+  const from = RENDERER.indexOf('function _resolvePendingGenreNames')
+  const to = RENDERER.indexOf('async function _loadBrowseVocab')
+  const world = {
+    _browse: { filters: { catalog: 'movie', genres: [] }, pendingGenreNames: ['Thriller', 'Mumblecore'] },
+    _browseVocab: { genres: { movie: [{ id: 53, name: 'Thriller' }] } },
+    said: [],
+  }
+  // eslint-disable-next-line no-new-func
+  const run = new Function('_browse', '_browseVocab', 'showSnackbar',
+    RENDERER.slice(from, to) + '; return _resolvePendingGenreNames')
+  run(world._browse, world._browseVocab, m => world.said.push(m))()
+  assert.deepStrictEqual(world._browse.filters.genres, [53])
+  assert.match(world.said[0], /Could not filter by Mumblecore/)
+})
+
+test('the resolver is called after the vocabulary loads, not before', () => {
+  // The vocabulary is what turns a name into an id; running first would drop
+  // every genre.
+  const fn = RENDERER.slice(RENDERER.indexOf('async function renderBrowse'),
+                            RENDERER.indexOf('async function renderBrowse') + 1400)
+  const vocabAt = fn.indexOf('await _loadBrowseVocab')
+  const resolveAt = fn.indexOf('_resolvePendingGenreNames()')
+  assert.ok(vocabAt > 0 && resolveAt > vocabAt, 'the resolve must follow the load')
+})
+
+test('the parsed path stores names and never ids', () => {
+  const fn = RENDERER.slice(RENDERER.indexOf('function _actOnParsedQuery'),
+                            RENDERER.indexOf('async function _openPersonByName'))
+  assert.match(fn, /_browse\.pendingGenreNames = names/)
+  assert.match(fn, /delete filters\.genres/, 'the names must not reach filters.genres directly')
 })
 
 test('a national query carries its country and catalog', () => {

@@ -1417,6 +1417,9 @@ var _browse = {
   filters: _emptyFilters(),
   page: 1, results: [], total: 0, totalPages: 1,
   loading: false, ticket: 0, observer: null,
+  // Genre names from a parsed query, awaiting the vocabulary that turns them
+  // into the ids TMDB wants.
+  pendingGenreNames: null,
 }
 var _browseVocab = { genres: {}, tags: null, countries: null }
 
@@ -1536,6 +1539,7 @@ async function renderBrowse() {
   // The filters may already be set — arriving from a genre chip, or coming
   // back to a query that was left mid-scroll.
   await _loadBrowseVocab(_browse.filters.catalog)
+  _resolvePendingGenreNames()
   if (_videoCatalogTicket !== ticket) return
   _renderFilterRail()
   _runBrowse(true)
@@ -1543,6 +1547,31 @@ async function renderBrowse() {
 
 // Vocabularies are fetched once per catalog and cached in main for a week, so
 // switching tabs back and forth costs nothing.
+// Genre names to the ids TMDB's with_genres needs, using the vocabulary the
+// filter rail already fetched. A name that is not in the vocabulary is dropped
+// rather than passed through: an unknown genre id returns an empty grid, and an
+// empty grid for a query that was mostly understood is worse than the same
+// query without its genre.
+function _resolvePendingGenreNames() {
+  const names = _browse.pendingGenreNames
+  _browse.pendingGenreNames = null
+  if (!Array.isArray(names) || !names.length) return
+  const vocab = _browseVocab.genres[_browse.filters.catalog] || []
+  const ids = []
+  const missed = []
+  for (const name of names) {
+    const want = String(name).toLowerCase()
+    const hit = vocab.find(function (g) { return String(g.name || '').toLowerCase() === want })
+    if (hit) ids.push(hit.id)
+    else missed.push(name)
+  }
+  if (ids.length) _browse.filters.genres = ids
+  if (missed.length) {
+    // Said out loud, because the grid will not be the answer they asked for.
+    showSnackbar('Could not filter by ' + missed.join(', '), null, null, 4000)
+  }
+}
+
 async function _loadBrowseVocab(catalog) {
   if (!_browseVocab.genres[catalog]) {
     const res = await window.api.videoGenres({ catalog: catalog }).catch(function () { return { ok: false } })
@@ -3854,7 +3883,16 @@ function _actOnParsedQuery(parsed) {
 
   // Browse's own defaults for everything the query did not mention, so a
   // previous search's leftovers cannot leak into this one.
+  //
+  // The genres are carried as NAMES and resolved to ids by renderBrowse once the
+  // genre vocabulary has loaded. The parser speaks in names — "Thriller" — and
+  // TMDB's with_genres takes numeric ids, so putting the name straight into
+  // filters.genres sent `with_genres=Thriller` and the genre half of every
+  // parsed query was silently dropped.
+  const names = Array.isArray(filters.genres) ? filters.genres.slice() : []
+  delete filters.genres
   _browse.filters = Object.assign(_emptyFilters(), filters)
+  _browse.pendingGenreNames = names
   _browse.page = 1
   _browse.results = []
   _videoTab = 'browse'
