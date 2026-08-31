@@ -134,7 +134,7 @@ const { createNyaaProvider } = require('./providers/nyaa')
 const { createApibayProvider } = require('./providers/apibay')
 const { createMovieTvProvider, createVidsrcResolver } = require('./providers/movie-tv')
 const { createAnimeProvider } = require('./providers/anime')
-const { TorrentStreamer, purgeOrphanStreams } = require('./torrent-stream')
+const { TorrentStreamer, purgeOrphanStreams, setStreamRoot, streamRoot } = require('./torrent-stream')
 const { VideoEngine, purgeOrphanPlayers } = require('./video-engine')
 const { createYarrlistDirectory } = require('./yarrlist-directory')
 const { classify } = require('./src/surround-verify')
@@ -1085,6 +1085,15 @@ app.whenReady().then(() => {
   // can play at all. Sweep them at startup, skipping any still owned by a
   // running process.
   try {
+    // Settle the cache location before sweeping, so the sweep covers the place
+    // the cache is actually going as well as the one it used to.
+    const wanted = _videoSettings().streamCacheDir || ''
+    const active = setStreamRoot(wanted)
+    if (wanted && active !== wanted) {
+      console.warn(`[papa-video] stream cache ${wanted} is not writable; falling back to ${active}`)
+    } else if (wanted) {
+      console.log(`[papa-video] stream cache: ${active}`)
+    }
     const swept = purgeOrphanStreams()
     if (swept.removed) {
       console.log(`[papa-video] removed ${swept.removed} orphaned stream cache(s), ` +
@@ -6015,7 +6024,17 @@ ipcMain.handle('batch-transcode', async (_, { filePaths, format, outDir }) => {
 
 function _videoSettings() {
   return Object.assign(
-    { tmdbApiKey: '', preferSurround: true, preferredQuality: '1080p', torrentSources: true },
+    {
+      tmdbApiKey: '',
+      preferSurround: true,
+      preferredQuality: '1080p',
+      torrentSources: true,
+      // Where a stream is cached while it plays. Empty means the temporary
+      // directory, which on this machine is a tmpfs — the cache would sit in
+      // RAM and a season pack can approach the memory limit. A path on a real
+      // disk keeps it off memory entirely.
+      streamCacheDir: '',
+    },
     store.get('videoSettings')
   )
 }

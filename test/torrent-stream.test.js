@@ -500,16 +500,69 @@ test('stop() closes the server, destroys the torrent and removes the download li
   const fsx = require('node:fs')
   const osx = require('node:os')
   const pathx = require('node:path')
-  const { STREAM_ROOT, purgeOrphanStreams, newStreamDir } = require('../torrent-stream')
+  const { DEFAULT_STREAM_ROOT, streamRoot, setStreamRoot, purgeOrphanStreams, newStreamDir } =
+    require('../torrent-stream')
+  const STREAM_ROOT = streamRoot()
 
   test('each stream gets its own directory under one known root', () => {
     const a = newStreamDir()
     const b = newStreamDir()
     assert.notStrictEqual(a, b, 'two streams must not share a directory')
-    assert.ok(a.startsWith(STREAM_ROOT))
-    assert.ok(STREAM_ROOT.startsWith(osx.tmpdir()))
+    assert.ok(a.startsWith(streamRoot()))
+    assert.ok(DEFAULT_STREAM_ROOT.startsWith(osx.tmpdir()))
     // The owning pid is in the name so a sweep can tell live from orphaned.
     assert.match(pathx.basename(a), new RegExp('^s-' + process.pid + '-'))
+  })
+
+  // The temporary directory is a tmpfs here, so the default puts the cache in
+  // RAM. Pointing it at a disk has to actually move it.
+  test('the cache root can be moved to a disk', () => {
+    const target = fsx.mkdtempSync(pathx.join(osx.tmpdir(), 'papa-root-'))
+    try {
+      assert.strictEqual(setStreamRoot(target), target)
+      assert.ok(newStreamDir().startsWith(target))
+    } finally {
+      setStreamRoot('')
+      fsx.rmSync(target, { recursive: true, force: true })
+    }
+    assert.strictEqual(streamRoot(), DEFAULT_STREAM_ROOT, 'clearing it restores the default')
+  })
+
+  // An unmounted drive leaves an empty mountpoint that looks like a perfectly
+  // good directory until something writes to it. Falling back beats failing
+  // playback outright.
+  test('an unwritable location falls back instead of breaking playback', () => {
+    // A directory path whose parent is a regular file: creating it fails
+    // immediately with ENOTDIR, which is the fast, deterministic stand-in for
+    // a drive that is not mounted.
+    const file = pathx.join(osx.tmpdir(), 'papa-not-a-dir-' + process.pid)
+    fsx.writeFileSync(file, 'x')
+    try {
+      assert.strictEqual(setStreamRoot(pathx.join(file, 'cache')), DEFAULT_STREAM_ROOT)
+      assert.strictEqual(streamRoot(), DEFAULT_STREAM_ROOT)
+    } finally {
+      setStreamRoot('')
+      fsx.rmSync(file, { force: true })
+    }
+  })
+
+  // Moving the cache must not strand whatever the old location still holds —
+  // here that would be gigabytes sitting in RAM that nothing comes back for.
+  test('the sweep still cleans the old location after a move', () => {
+    const target = fsx.mkdtempSync(pathx.join(osx.tmpdir(), 'papa-root-'))
+    const strandedInOldRoot = pathx.join(DEFAULT_STREAM_ROOT, 's-999997-stranded')
+    fsx.mkdirSync(strandedInOldRoot, { recursive: true })
+    fsx.writeFileSync(pathx.join(strandedInOldRoot, 'old.bin'), Buffer.alloc(4096))
+    try {
+      setStreamRoot(target)
+      purgeOrphanStreams()
+      assert.strictEqual(fsx.existsSync(strandedInOldRoot), false,
+        'the previous cache location must still be swept')
+    } finally {
+      setStreamRoot('')
+      fsx.rmSync(target, { recursive: true, force: true })
+      fsx.rmSync(strandedInOldRoot, { recursive: true, force: true })
+    }
   })
 
   test('the torrent is added with an explicit path it owns', () => {

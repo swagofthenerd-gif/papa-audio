@@ -13,10 +13,42 @@ const crypto = require('node:crypto')
 //
 // Each stream therefore gets its own directory, and it is deleted when the
 // stream stops.
-const STREAM_ROOT = path.join(os.tmpdir(), 'papa-video-streams')
+// The default is the temporary directory because it is the one place that
+// always exists and is always writable. It is not a good default on this
+// machine: /tmp is a tmpfs, so the cache is held in RAM, and a season pack can
+// approach the memory limit while it is playing legitimately. Point
+// setStreamRoot at a real disk and it goes there instead.
+const DEFAULT_STREAM_ROOT = path.join(os.tmpdir(), 'papa-video-streams')
+let _streamRoot = DEFAULT_STREAM_ROOT
+
+function streamRoot() {
+  return _streamRoot
+}
+
+// Returns the root actually in use, which is not always the one asked for: a
+// drive that is not mounted leaves behind an empty mountpoint that looks like
+// a perfectly good directory until something tries to write to it. So the
+// location is proved by writing to it, not by checking that the path exists,
+// and anything unusable falls back to the default rather than failing playback.
+function setStreamRoot(dir) {
+  if (!dir) {
+    _streamRoot = DEFAULT_STREAM_ROOT
+    return _streamRoot
+  }
+  try {
+    fs.mkdirSync(dir, { recursive: true })
+    const probe = path.join(dir, '.papa-write-probe')
+    fs.writeFileSync(probe, 'papa')
+    fs.unlinkSync(probe)
+    _streamRoot = dir
+  } catch (_) {
+    _streamRoot = DEFAULT_STREAM_ROOT
+  }
+  return _streamRoot
+}
 
 function newStreamDir() {
-  return path.join(STREAM_ROOT, `s-${process.pid}-${crypto.randomBytes(4).toString('hex')}`)
+  return path.join(_streamRoot, `s-${process.pid}-${crypto.randomBytes(4).toString('hex')}`)
 }
 
 // Directories from streams that never got to clean up after themselves — a
@@ -25,22 +57,30 @@ function newStreamDir() {
 function purgeOrphanStreams({ keep = null } = {}) {
   let removed = 0
   let bytes = 0
-  let entries = []
-  try { entries = fs.readdirSync(STREAM_ROOT) } catch (_) { return { removed, bytes } }
-  for (const name of entries) {
-    const dir = path.join(STREAM_ROOT, name)
-    if (keep && dir === keep) continue
-    // A directory belonging to a process that is still running is in use.
-    const owner = /^s-(\d+)-/.exec(name)
-    if (owner) {
-      const pid = Number(owner[1])
-      if (pid !== process.pid && isProcessAlive(pid)) continue
+  // Both roots, always. Moving the cache to a disk must not strand whatever
+  // the previous location is still holding — on this machine that was gigabytes
+  // sitting in RAM, which nothing would ever have come back for.
+  const roots = _streamRoot === DEFAULT_STREAM_ROOT
+    ? [_streamRoot]
+    : [_streamRoot, DEFAULT_STREAM_ROOT]
+  for (const root of roots) {
+    let entries = []
+    try { entries = fs.readdirSync(root) } catch (_) { continue }
+    for (const name of entries) {
+      const dir = path.join(root, name)
+      if (keep && dir === keep) continue
+      // A directory belonging to a process that is still running is in use.
+      const owner = /^s-(\d+)-/.exec(name)
+      if (owner) {
+        const pid = Number(owner[1])
+        if (pid !== process.pid && isProcessAlive(pid)) continue
+      }
+      try {
+        bytes += dirSize(dir)
+        fs.rmSync(dir, { recursive: true, force: true })
+        removed++
+      } catch (_) { /* a directory we cannot remove is not worth failing over */ }
     }
-    try {
-      bytes += dirSize(dir)
-      fs.rmSync(dir, { recursive: true, force: true })
-      removed++
-    } catch (_) { /* a directory we cannot remove is not worth failing over */ }
   }
   return { removed, bytes }
 }
@@ -490,4 +530,4 @@ class TorrentStreamer extends EventEmitter {
   }
 }
 
-module.exports = { TorrentStreamer, buildFileUrl, pickVideoFile, matchesWantedEpisode, episodeNumberOf, STREAM_ROOT, purgeOrphanStreams, newStreamDir, headBytesReady, VIDEO_EXT }
+module.exports = { TorrentStreamer, buildFileUrl, pickVideoFile, matchesWantedEpisode, episodeNumberOf, DEFAULT_STREAM_ROOT, streamRoot, setStreamRoot, purgeOrphanStreams, newStreamDir, headBytesReady, VIDEO_EXT }
