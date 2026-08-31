@@ -565,3 +565,55 @@ test('stop() closes the server, destroys the torrent and removes the download li
     assert.ok(at > main.indexOf('app.whenReady'), 'the sweep runs on startup')
   })
 }
+
+const _fsx = require('node:fs')
+const _pathx = require('node:path')
+const { newStreamDir: _newStreamDir } = require('../torrent-stream')
+
+  // The tests above read the source. This one actually runs stop() against a
+  // real directory holding real bytes, because "the code says destroyStore" and
+  // "the disk is empty afterwards" are different claims — and on this machine
+  // the cache lives in RAM, so a leak costs memory, not just space.
+  test('stopping really deletes the cache directory off disk', () => {
+    const dir = _newStreamDir()
+    _fsx.mkdirSync(dir, { recursive: true })
+    _fsx.writeFileSync(_pathx.join(dir, 'episode.mkv'), Buffer.alloc(3 * 1024 * 1024))
+    assert.strictEqual(_fsx.existsSync(dir), true, 'the fixture must exist first')
+
+    const streamer = new TorrentStreamer({ client: { add() {} } })
+    let destroyed = null
+    streamer._storeDir = dir
+    streamer._torrent = {
+      removeListener() {},
+      destroy(opts, cb) { destroyed = opts; if (cb) cb() },
+    }
+    streamer.stop()
+
+    assert.deepStrictEqual(destroyed, { destroyStore: true }, 'the store must be destroyed too')
+    assert.strictEqual(_fsx.existsSync(dir), false, 'the cache directory must be gone')
+  })
+
+  // Closing the player is the common case, but a torrent that never produced a
+  // torrent object — a magnet that found no peers — still made a directory.
+  test('stopping before a torrent exists still deletes the directory', () => {
+    const dir = _newStreamDir()
+    _fsx.mkdirSync(dir, { recursive: true })
+    _fsx.writeFileSync(_pathx.join(dir, 'partial.bin'), Buffer.alloc(1024))
+    const streamer = new TorrentStreamer({ client: { add() {} } })
+    streamer._storeDir = dir
+    streamer.stop()
+    assert.strictEqual(_fsx.existsSync(dir), false)
+  })
+
+  // Every path that ends a video must go through stop(); a close that only hid
+  // the window would leave the pack on disk for the rest of the session.
+  test('every way of ending playback tears the streamer down', () => {
+    const main = _fsx.readFileSync(_pathx.join(__dirname, '..', 'main.js'), 'utf8')
+    const teardown = main.slice(main.indexOf('function _videoTeardown()'),
+      main.indexOf('function _videoTeardown()') + 400)
+    assert.match(teardown, /streamer\.stop\(\)/)
+    // The stop verb (the player's stop button), quitting, and mpv dying.
+    assert.match(main, /case 'stop':[\s\S]{0,200}_videoTeardown\(\)/)
+    assert.match(main, /will-quit[\s\S]{0,400}_videoTeardown\(\)/)
+    assert.match(main, /engineDown[\s\S]{0,300}streamer\.stop\(\)/)
+  })
