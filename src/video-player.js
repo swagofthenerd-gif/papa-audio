@@ -772,6 +772,10 @@
       const mini = $('vmini')
       if (mini) mini.classList.remove('hidden')
       minimised = true
+      // The video surface is a native child window: hiding the HTML behind it
+      // does not hide it, and it would sit over the app while the user tried
+      // to browse. Audio keeps playing.
+      setSurfaceVisible(false)
       // The state subscription stays open: the mini player shows the same
       // position and play state, and returning must not have to rebuild it.
       render()
@@ -784,6 +788,13 @@
       if (root) root.classList.remove('hidden')
       minimised = false
       render()
+      // Two frames so the stage has its size back before the surface is
+      // placed on it, then show it again.
+      ready().then(function () { setSurfaceVisible(true) })
+    }
+
+    function setSurfaceVisible(on) {
+      if (api && api.videoSurfaceVisible) api.videoSurfaceVisible(!!on).catch(function () {})
     }
 
     // Stopping for real: tears everything down and tells the caller.
@@ -803,6 +814,7 @@
       // Only on a real stop: minimising keeps playing, so the music bar stays
       // out of the way until the video is actually finished with.
       setVideoActive(false)
+      setSurfaceVisible(false)
       onExit()
     }
 

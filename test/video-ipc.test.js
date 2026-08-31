@@ -344,16 +344,40 @@ test('the preload surface exposes onVideoState and returns an unsubscribe fn', (
 // window the deck, the skip offer and the Up Next card all sit behind the
 // video attached to nothing — which is exactly the bug this removes. A stored
 // value must not be able to bring that back.
-// mpv opens and manages its own window. Embedding it into a child
-// BrowserWindow put a native surface on top of the app, covering the deck it
-// was meant to sit beside, and the window manager handles moving, resizing and
-// fullscreening it far better than positioning it by hand ever did.
-test('mpv owns its window; nothing is embedded', () => {
+// One window. mpv draws into a frameless child surface inside Papa Audio's own
+// content area, which carries no decorations and no taskbar or alt-tab entry.
+test('the video is embedded in the app window', () => {
   const body = handlerBody('video-play')
-  assert.match(body, /const wid = null/)
+  assert.match(body, /const wid = _videoWid\(\)/)
+  assert.match(body, /if \(wid\) _showVideoWindow\(\)/)
   const code = body.split('\n').filter(l => !/^\s*(\/\/|\*)/.test(l)).join('\n')
   assert.ok(!/_videoSettings\(\)\.embed/.test(code), 'no setting may gate this')
-  assert.ok(!/_showVideoWindow\(\)/.test(code), 'there is no window of ours to show')
+})
+
+// Where no window id can be obtained mpv opens its own window. That is a
+// fallback, not a choice, and it must say so rather than degrade silently.
+test('a failed embed is reported', () => {
+  assert.match(handlerBody('video-play'), /no X11 window id/)
+})
+
+// The surface is a native child window: hiding the HTML behind it does not
+// hide it, so minimising would leave the video sitting over the app.
+test('the surface can be hidden without stopping playback', () => {
+  const body = handlerBody('video-surface-visible')
+  assert.match(body, /win\.hide\(\)/)
+  assert.match(body, /win\.showInactive\(\)/)
+  assert.match(body, /_positionVideoWindow\(_videoSession\.bounds\)/)
+  assert.ok(!/videoEngine\(\)\.stop|streamer/.test(body), 'hiding must not touch playback')
+})
+
+test('minimising hides the surface and restoring brings it back', () => {
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'src', 'video-player.js'), 'utf8')
+  const min = src.slice(src.indexOf('function minimise()'), src.indexOf('function restore()'))
+  assert.match(min, /setSurfaceVisible\(false\)/)
+  const res = src.slice(src.indexOf('function restore()'), src.indexOf('function setSurfaceVisible'))
+  assert.match(res, /setSurfaceVisible\(true\)/)
+  // The stage has to have its size back before the surface is placed on it.
+  assert.match(res, /ready\(\)\.then/)
 })
 
 // The deck is in another window and cannot see keys pressed over the video.

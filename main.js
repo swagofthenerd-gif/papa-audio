@@ -6097,6 +6097,28 @@ function _positionVideoWindow(rect) {
   }
 }
 
+// Hiding and showing the embedded surface. Minimising the theatre has to take
+// the video with it: the surface is a native child window, so it does not
+// disappear just because the HTML behind it was hidden — it would sit over the
+// app while the user tried to browse. Audio keeps playing either way, which is
+// what "browse while it plays" means here.
+ipcMain.handle('video-surface-visible', (_, { visible } = {}) => {
+  try {
+    const win = _videoSession.win
+    if (!win || win.isDestroyed()) return { ok: true }
+    if (visible) {
+      if (_videoSession.bounds) _positionVideoWindow(_videoSession.bounds)
+      win.showInactive()
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.focus()
+    } else {
+      win.hide()
+    }
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) }
+  }
+})
+
 ipcMain.handle('video-surface-bounds', (_, rect) => {
   _videoSession.bounds = rect || null
   return { ok: _positionVideoWindow(rect) }
@@ -6684,7 +6706,21 @@ ipcMain.handle('video-play', async (_, { result }) => {
     // moving, resizing and fullscreening it far better than positioning it by
     // hand ever did. mpv carries its own on-screen controls, and the app's
     // own actions are bound inside it (see VideoEngine._bindAppKeys).
-    const wid = null
+    // Embedded, so there is one window: mpv draws into a frameless child
+    // surface positioned inside Papa Audio's own content area. A child window
+    // carries no decorations and no taskbar or alt-tab entry, so it reads as
+    // part of the app rather than a second window.
+    //
+    // The consequence, and the reason the deck sits beneath the picture rather
+    // than over it: a native child surface is composited above the page, so
+    // HTML cannot be drawn on top of it. Controls overlaying the video would
+    // need a second, transparent window — which is the thing being avoided.
+    //
+    // If no window id can be obtained, mpv opens its own window instead. That
+    // is a fallback, not a choice.
+    const wid = _videoWid()
+    if (wid) _showVideoWindow()
+    else console.warn('[papa-video] no X11 window id — mpv will open its own window')
     // Every async callback below is stamped with the play that created it, so
     // a torrent that becomes ready after the user already started something
     // else cannot hijack the engine or overwrite the newer status.
