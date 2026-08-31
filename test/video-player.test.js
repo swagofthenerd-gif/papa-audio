@@ -790,3 +790,62 @@ test('load failures are shown in human terms, with a way to retry', () => {
   // The API-key hint keys off the raw message, not the humanised one.
   assert.match(fn, /test\(raw\)/)
 })
+
+// ── The Dub filter ─────────────────────────────────────────────────────────
+// A dub is worth asking for whenever the original is not in English, and the
+// biggest case is anime — which TMDB files as ordinary television, so it comes
+// through the TV tab and through search as often as through Anime. The toggle
+// used to exist only in the anime branch, so a show opened any other way had no
+// way to ask for a dub, and a film never had one at all.
+function dubbable(detail) {
+  const m = /function _dubbable\(d\) \{([\s\S]*?)\n\}/.exec(_rend)
+  assert.ok(m, '_dubbable must exist')
+  // eslint-disable-next-line no-new-func
+  return new Function('d', m[1])(detail)
+}
+
+test('anime is dubbable however it was opened', () => {
+  assert.strictEqual(dubbable({ isAnime: true, originalLanguage: 'ja' }), true)
+  assert.strictEqual(dubbable({ isAnime: true }), true)
+})
+
+test('anything not originally in English is dubbable', () => {
+  assert.strictEqual(dubbable({ originalLanguage: 'ko' }), true)
+  assert.strictEqual(dubbable({ originalLanguage: 'ES' }), true)
+})
+
+// An English-language film has no dub to ask for, and a checkbox that changes
+// nothing is worse than no checkbox.
+test('an English original is not dubbable', () => {
+  assert.strictEqual(dubbable({ originalLanguage: 'en' }), false)
+  assert.strictEqual(dubbable({}), false)
+  assert.strictEqual(dubbable(null), false)
+})
+
+test('the toggle is offered on TV, on anime and on film', () => {
+  const fn = _rend.slice(_rend.indexOf('function _renderVideoControls'),
+    _rend.indexOf('function _refreshTvEpisodes'))
+  // TV: alongside the season picker. Anime: alongside the episode picker.
+  // Film: on its own, and only when there is something to ask for.
+  assert.strictEqual((fn.match(/_dubControl\(/g) || []).length, 3, 'all three branches')
+  assert.strictEqual((fn.match(/_bindDubControl\(\)/g) || []).length, 3, 'each one bound')
+})
+
+// The toggle and the request must agree on when a dub applies, or the checkbox
+// is shown and then silently ignored.
+test('the source request asks for a dub on the same terms the toggle appears', () => {
+  const fn = _rend.slice(_rend.indexOf('const base = { type: _videoDetail.type'),
+    _rend.indexOf('async function _loadVideoSources'))
+  assert.strictEqual((fn.match(/_dubbable\(d\) \? \{ sub: !wantDub, dub: wantDub \}/g) || []).length, 2,
+    'movie and tv both')
+  assert.ok(!/d\.isAnime \? \{ sub:/.test(fn), 'isAnime alone is too narrow')
+})
+
+// A film skipped the controls entirely, so making the toggle shared was not
+// enough on its own — an anime film still had nowhere to put it.
+test('a film renders its controls too', () => {
+  const fn = _rend.slice(_rend.indexOf("if (type === 'tv') {\n    const seasons"),
+    _rend.indexOf('function _videoDetailShell'))
+  assert.strictEqual((fn.match(/_renderVideoControls\(type\)/g) || []).length, 3,
+    'tv, anime and film all render controls')
+})

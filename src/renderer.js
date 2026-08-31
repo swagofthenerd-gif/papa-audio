@@ -2943,6 +2943,10 @@ async function renderVideoDetail(navId) {
     _renderVideoControls(type)
     await _loadVideoSources(ticket, ++_videoSeasonTicket)
   } else {
+    // A film reaches here. It was skipping the controls entirely, which is why
+    // an anime film — or any foreign film with a dub — had no way to ask for
+    // one even after the toggle was made shared.
+    _renderVideoControls(type)
     await _loadVideoSources(ticket, ++_videoSeasonTicket)
   }
 }
@@ -3248,6 +3252,34 @@ function _bindTrailerButton() {
   })
 }
 
+// A dub is worth asking for whenever the original is not in English, and the
+// biggest case by far is anime — which TMDB files as ordinary television, so it
+// arrives through the TV tab and through search as often as through Anime.
+// The toggle used to exist only on the Anime tab, which meant a show opened any
+// other way had no way to ask for a dub at all, and a film never had one.
+function _dubbable(d) {
+  if (!d) return false
+  if (d.isAnime === true) return true
+  const lang = String(d.originalLanguage || '').toLowerCase()
+  return lang !== '' && lang !== 'en'
+}
+
+function _dubControl(d) {
+  if (!_dubbable(d)) return ''
+  return '<label class="video-control">Dub <input type="checkbox" id="video-dub-toggle"' +
+    (_videoState.sub ? '' : ' checked') + '></label>'
+}
+
+function _bindDubControl() {
+  document.getElementById('video-dub-toggle')?.addEventListener('change', function (e) {
+    _videoState.sub = !e.target.checked
+    // A dubbed release the user picked by hand should not override the checkbox
+    // they just moved.
+    _playing.dub = null
+    _loadVideoSources(_videoDetailTicket, ++_videoSeasonTicket)
+  })
+}
+
 function _renderVideoControls(type) {
   const box = document.getElementById('video-controls')
   if (!box) return
@@ -3272,12 +3304,16 @@ function _renderVideoControls(type) {
           (s.name && !/^season\s*\d+$/i.test(String(s.name).trim()) ? ' — ' + esc(s.name) : '')
       return '<option value="' + s.seasonNumber + '"' + (s.seasonNumber === _videoState.season ? ' selected' : '') + '>' + label + '</option>'
     }).join('')
-    box.innerHTML = '<div class="video-controls-row"><label class="video-control">Season<select class="mcs-set-select video-season-select" id="video-season-select">' + opts + '</select></label><div class="video-episode-list" id="video-episode-list"></div></div>'
+    box.innerHTML = '<div class="video-controls-row">' +
+      '<label class="video-control">Season<select class="mcs-set-select video-season-select" id="video-season-select">' + opts + '</select></label>' +
+      _dubControl(d) +
+      '<div class="video-episode-list" id="video-episode-list"></div></div>'
     document.getElementById('video-season-select')?.addEventListener('change', function (e) {
       _videoState.season = Number(e.target.value) || 1
       _videoState.episode = 1
       _refreshTvEpisodes(_videoDetailTicket, ++_videoSeasonTicket)
     })
+    _bindDubControl()
     return
   }
   if (type === 'anime') {
@@ -3292,7 +3328,7 @@ function _renderVideoControls(type) {
     }
     box.innerHTML = '<div class="video-controls-row">' +
       '<label class="video-control">Episode ' + epControl + '</label>' +
-      '<label class="video-control">Dub <input type="checkbox" id="video-dub-toggle"' + (_videoState.sub ? '' : ' checked') + '></label>' +
+      _dubControl(_videoDetail.d) +
     '</div>'
     const setEp = function () {
       const sel = document.getElementById('video-episode-select')
@@ -3302,13 +3338,14 @@ function _renderVideoControls(type) {
     }
     document.getElementById('video-episode-select')?.addEventListener('change', setEp)
     document.getElementById('video-episode-input')?.addEventListener('change', setEp)
-    document.getElementById('video-dub-toggle')?.addEventListener('change', function (e) {
-      _videoState.sub = !e.target.checked
-      _loadVideoSources(_videoDetailTicket, ++_videoSeasonTicket)
-    })
+    _bindDubControl()
     return
   }
-  box.innerHTML = ''
+  // A film has nothing to choose but the language, so the row appears only when
+  // there is a dub worth asking for.
+  const dub = _dubControl(_videoDetail.d)
+  box.innerHTML = dub ? '<div class="video-controls-row">' + dub + '</div>' : ''
+  _bindDubControl()
 }
 
 // `seasonTicket` is what makes rapid season switching safe. The old code passed
@@ -3373,7 +3410,10 @@ function _videoStreamRequest() {
       tmdbId: d.id, imdbId: d.imdbId || null,
       isAnime: d.isAnime === true,
       titles: d.titles || null,
-      ...(d.isAnime ? { sub: !wantDub, dub: wantDub } : {}),
+      // Sent whenever a dub is worth asking for, which is the same test the
+      // toggle uses. Gating this on isAnime alone meant the toggle could be
+      // shown for a foreign film and then quietly ignored.
+      ...(_dubbable(d) ? { sub: !wantDub, dub: wantDub } : {}),
     })
   }
   if (_videoDetail.type === 'tv') {
@@ -3387,7 +3427,7 @@ function _videoStreamRequest() {
       season: _videoState.season, episode: _videoState.episode,
       isAnime: d.isAnime === true,
       titles: d.titles || null,
-      ...(d.isAnime ? { sub: !wantDub, dub: wantDub } : {}),
+      ...(_dubbable(d) ? { sub: !wantDub, dub: wantDub } : {}),
     })
   }
   // The torrent indexer needs the romaji title, not the English display one,
