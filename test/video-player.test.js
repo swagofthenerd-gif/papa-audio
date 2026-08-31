@@ -747,3 +747,23 @@ test('the delay nudges send milliseconds under the shared value key', () => {
   assert.match(fn, /send\(verb, \{ value: delayMs\[verb\] \}\)/)
   assert.ok(!/seconds:/.test(fn), 'main reads milliseconds')
 })
+
+// The card showed whenever playback neared the end, whether or not there was
+// anything to play next — so films and last episodes got an "Up next: Next
+// episode" countdown that led nowhere.
+test('the Up Next card needs an actual next episode', () => {
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'src', 'video-player.js'), 'utf8')
+  const fn = src.slice(src.indexOf('function paintUpNext'), src.indexOf('function stopUpNext'))
+  assert.match(fn, /if \(!upNextInfo \|\|/)
+})
+
+// Fullscreen means fullscreen. The theatre is seated below the app titlebar,
+// so without taking the titlebar out of the layout the picture sat underneath
+// it with the window controls still on screen.
+test('fullscreen removes the app titlebar and fills the space', () => {
+  assert.match(_css, /body\.video-fullscreen \.titlebar\s*\{[^}]*display\s*:\s*none/)
+  assert.match(_css, /body\.video-fullscreen \.vtheatre\s*\{[^}]*top\s*:\s*0/)
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'src', 'video-player.js'), 'utf8')
+  const fn = src.slice(src.indexOf('function toggleFullscreen'), src.indexOf('function toggleFullscreen') + 900)
+  assert.match(fn, /classList\.toggle\('video-fullscreen', isFullscreen\)/)
+})

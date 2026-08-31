@@ -307,7 +307,10 @@
     function paintUpNext(pos, dur) {
       const box = $('vt-upnext')
       if (!box) return
-      if (!upNextTrigger(pos, dur) || upNextDismissed) {
+      // No next episode means no card. Without this it appeared on films and on
+      // the last episode of a season too, offering "Next episode" with a
+      // countdown that led nowhere.
+      if (!upNextInfo || !upNextTrigger(pos, dur) || upNextDismissed) {
         if (!box.hidden) { box.hidden = true; box.innerHTML = ''; stopUpNext(); syncStrip() }
         return
       }
@@ -689,6 +692,10 @@
         isFullscreen = !!(res && res.fullscreen)
         const root = $('vtheatre')
         if (root) root.classList.toggle('fullscreen', isFullscreen)
+        // The app titlebar has no business on screen in fullscreen, and the
+        // theatre is seated below it, so it has to be taken out of the layout
+        // and the theatre moved up to fill the space it leaves.
+        if (doc.body) doc.body.classList.toggle('video-fullscreen', isFullscreen)
         const btn = $('vt-full')
         if (btn) btn.setAttribute('aria-label', isFullscreen ? 'Exit fullscreen' : 'Fullscreen')
         // The layout has changed, so the stage rectangle has too.

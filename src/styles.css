@@ -6297,6 +6297,12 @@ body.app-unfocused *::after {
 .vt-strip  { grid-row:4; }
 .vt-deck   { grid-row:5; }
 
+/* Fullscreen means fullscreen: the app titlebar goes, and the theatre moves up
+   into the space it leaves. Without this the picture sat below a visible
+   titlebar with the window controls still on screen. */
+body.video-fullscreen .titlebar { display:none !important; }
+body.video-fullscreen .vtheatre { top:0; }
+
 .vtheatre.fullscreen .vt-top { display:none; }
 .vtheatre.fullscreen .vt-deck { padding:8px 20px 12px; }
 .vtheatre.fullscreen .vt-strip { padding-bottom:8px; }
