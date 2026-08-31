@@ -223,9 +223,11 @@ test('every curated shelf the page asks for can be resolved', () => {
 test('the search box exists and is wired to videoSearch', () => {
   assert.match(RENDERER, /id="video-search-input"/, 'there must be a search input')
   assert.match(RENDERER, /window\.api\.videoSearch\(/, 'and it must call the search API')
-  const body = fnBody('_bindVideoSearch')
-  assert.match(body, /setTimeout\(run, 300\)/, 'typing must be debounced')
-  assert.match(body, /_videoSearchTicket !== ticket/, 'a slow earlier query must not win')
+  // The debounce lives with the listeners; the request and its stale-guard moved
+  // into _runVideoTitleSearch when the parsed path needed to fall back to it.
+  assert.match(fnBody('_bindVideoSearch'), /setTimeout\(run, 300\)/, 'typing must be debounced')
+  assert.match(fnBody('_runVideoTitleSearch'), /_videoSearchTicket !== ticket/,
+    'a slow earlier query must not win')
 })
 
 test('the search box is styled', () => {
@@ -274,7 +276,7 @@ test('the catalog degrades when the watch store is not loaded', () => {
 })
 
 test('search results are grouped by type and overlay the catalog', () => {
-  const body = fnBody('_bindVideoSearch')
+  const body = fnBody('_runVideoTitleSearch')
   assert.match(body, /Films/)
   assert.match(body, /Series/)
   assert.match(body, /Anime/)

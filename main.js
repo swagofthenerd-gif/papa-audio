@@ -1385,7 +1385,12 @@ function createWindow(hidden = false) {
     }
   })
   if (winState.maximized) mainWindow.maximize()
-  mainWindow.loadFile('src/index.html')
+  // Absolute, from this file. loadFile resolves a relative path against
+  // app.getAppPath(), which is the directory of whatever script Electron was
+  // launched with -- so running the soak harness (tools/video-soak.js) made
+  // this look for tools/src/index.html, the renderer never loaded, and every
+  // measurement the harness took was of a blank window.
+  mainWindow.loadFile(path.join(__dirname, 'src', 'index.html'))
   // Keep the embedded video window glued to its stage rectangle when the app
   // is moved, resized or fullscreened.
   _rebindVideoFollow()

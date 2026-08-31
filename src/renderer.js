@@ -3355,7 +3355,27 @@ function _bindVideoSearch() {
     const query = input.value.trim()
     if (clear) clear.hidden = !query
     if (!query) return reset()
+    _runVideoTitleSearch(query)
+  }
 
+  input.addEventListener('input', function () { clearTimeout(timer); timer = setTimeout(run, 300) })
+  input.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') {
+      clearTimeout(timer)
+      const query = input.value.trim()
+      // Enter is the commit. A query that describes a kind of film goes to
+      // Browse; anything else is a title and searches as it always did.
+      if (query && _actOnParsedQuery(_parseVideoQuery(query))) return
+      run()
+    }
+    if (e.key === 'Escape') { input.value = ''; reset(); input.blur() }
+  })
+  clear?.addEventListener('click', function () { input.value = ''; reset(); input.focus() })
+}
+
+// The title search, unchanged, lifted out so the parsed path can fall back to
+// it when a name turns out not to be a person.
+function _runVideoTitleSearch(query) {
     const box = document.getElementById('video-search-results')
     if (!box) return
     const ticket = ++_videoSearchTicket
@@ -3405,14 +3425,133 @@ function _bindVideoSearch() {
           if (items.length) _fillRow('search-' + g.key, items)
         }
       })
-  }
+}
 
-  input.addEventListener('input', function () { clearTimeout(timer); timer = setTimeout(run, 300) })
-  input.addEventListener('keydown', function (e) {
-    if (e.key === 'Enter') { clearTimeout(timer); run() }
-    if (e.key === 'Escape') { input.value = ''; reset(); input.blur() }
-  })
-  clear?.addEventListener('click', function () { input.value = ''; reset(); input.focus() })
+// ── Parsed search ───────────────────────────────────────────────────────────
+// video-query.js has been able to read "1970s thrillers" and "korean films from
+// the 90s" since phase 6 and nothing called it. The search box did one thing:
+// a title lookup. So a query describing a KIND of film — which is how a
+// cinephile actually looks — returned "No matches" for a perfectly good ask.
+//
+// The parse is offered, never imposed. Typing still runs the title search it
+// always did, and when the parse finds something the app says out loud what it
+// understood and lets you take it. A search box that silently redirects is
+// worse than one that does too little, because you cannot tell it what you
+// meant.
+
+// The parser speaks TMDB's sort vocabulary; Browse has its own keys.
+const _QUERY_SORTS = {
+  'rating.desc': 'rating',
+  'popularity.desc': 'popularity',
+  'release.desc': 'newest',
+  'release.asc': 'oldest',
+}
+
+function _parseVideoQuery(text) {
+  if (!window.PapaVideoQuery) return null
+  try { return window.PapaVideoQuery.parse(text) } catch (_) { return null }
+}
+
+// Below this the parse is a guess, and a guess that reroutes the page is worse
+// than no guess. Measured against the verified set in the plan: the shapes that
+// should act land at 0.85 and above, and every bare title lands at 0.
+const QUERY_MIN_CONFIDENCE = 0.6
+
+// What Browse can actually express. movement, keyword, similarTo and minVotes
+// are parsed and have nowhere to go yet; they are listed here so the next
+// person sees a decision rather than an omission.
+const _BROWSE_FILTER_KEYS = [
+  'yearFrom', 'yearTo', 'runtimeFrom', 'runtimeTo', 'minRating', 'country', 'genres',
+]
+
+function _queryBrowseFilters(parsed) {
+  if (!parsed) return null
+  const f = parsed.filters || {}
+  const out = {}
+  let any = false
+  for (const k of _BROWSE_FILTER_KEYS) {
+    const v = f[k]
+    if (v === null || v === undefined) continue
+    if (Array.isArray(v)) { if (!v.length) continue }
+    out[k] = Array.isArray(v) ? v.slice() : v
+    any = true
+  }
+  const sort = _QUERY_SORTS[f.sort]
+  if (sort) { out.sort = sort; any = true }
+  if (f.catalog) { out.catalog = f.catalog; any = true }
+  return any ? out : null
+}
+
+// A one-line statement of what was understood, in the words the app uses
+// elsewhere. Written from the intents rather than the filters so it reads in
+// the order the query was typed.
+function _querySummary(parsed) {
+  const f = parsed.filters || {}
+  const bits = []
+  if (f.catalog) bits.push(f.catalog === 'tv' ? 'series' : f.catalog === 'anime' ? 'anime' : 'films')
+  if (f.country) bits.push('from ' + esc(_countryName(f.country)))
+  if (Array.isArray(f.genres) && f.genres.length) bits.push(f.genres.map(esc).join(' + '))
+  if (f.yearFrom && f.yearTo && f.yearFrom !== f.yearTo) bits.push(f.yearFrom + '\u2013' + f.yearTo)
+  else if (f.yearFrom) bits.push(String(f.yearFrom))
+  if (f.runtimeTo) bits.push('under ' + f.runtimeTo + ' min')
+  if (f.runtimeFrom) bits.push('over ' + f.runtimeFrom + ' min')
+  if (f.minRating) bits.push(f.minRating + '+ rated')
+  if (_QUERY_SORTS[f.sort]) bits.push(_QUERY_SORTS[f.sort] === 'rating' ? 'best first' : 'newest first')
+  return bits.join(' \u00b7 ')
+}
+
+function _countryName(code) {
+  const list = (_browseVocab && _browseVocab.countries) || null
+  if (Array.isArray(list)) {
+    const hit = list.find(function (c) { return c && (c.code === code || c.iso_3166_1 === code) })
+    if (hit) return hit.name || hit.english_name || code
+  }
+  return code
+}
+
+// Returns true if it took the query somewhere. The caller falls back to the
+// title search when it did not.
+function _actOnParsedQuery(parsed) {
+  if (!parsed || parsed.confidence < QUERY_MIN_CONFIDENCE) return false
+  const f = parsed.filters || {}
+
+  // A named person is a page of its own, and it answers the question better
+  // than a filtered grid: a director's whole filmography, ranked.
+  if (f.personName) { _openPersonByName(f.personName, parsed); return true }
+
+  const filters = _queryBrowseFilters(parsed)
+  if (!filters) return false
+
+  // Browse's own defaults for everything the query did not mention, so a
+  // previous search's leftovers cannot leak into this one.
+  _browse.filters = Object.assign(_emptyFilters(), filters)
+  _browse.page = 1
+  _browse.results = []
+  _videoTab = 'browse'
+  navigate('browse')
+  // Said after the navigation, so it appears over the page it describes.
+  const summary = _querySummary(parsed)
+  if (summary) showSnackbar('Showing ' + summary, null, null, 4000)
+  return true
+}
+
+// The parser cannot tell a surname from a title -- "drive" is a film and
+// "kurosawa" is a person -- so a bare word stays residual on purpose. A cued
+// person ("films by kurosawa") is unambiguous and resolves here.
+async function _openPersonByName(name, parsed) {
+  const ticket = ++_videoSearchTicket
+  const res = await window.api.videoPerson({ query: name })
+    .catch(function () { return { ok: false } })
+  if (_videoSearchTicket !== ticket) return
+  const people = (res && res.ok && Array.isArray(res.people)) ? res.people : []
+  if (!people.length) {
+    // No such person: the words might still be a title, so hand them back to
+    // the search that was already running rather than showing nothing.
+    showSnackbar('No one called \u201c' + name + '\u201d \u2014 searching titles instead', null, null, 4000)
+    _runVideoTitleSearch(name)
+    return
+  }
+  navigate('person', String(people[0].id))
 }
 
 function _videoCard(item) {

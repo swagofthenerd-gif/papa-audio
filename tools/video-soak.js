@@ -625,8 +625,25 @@ function relaunchUnderElectron (opt, argv) {
   child.on('exit', code => process.exit(code == null ? 1 : code))
 }
 
-if (require.main === module) {
-  const argv = process.argv.slice(process.versions.electron ? 2 : 2)
+// Electron does not set require.main for the app's entry script, so
+// `require.main === module` is FALSE in the Electron child this file spawns for
+// itself. The child therefore loaded this module, defined every function in it,
+// and did nothing at all — no window, no samples, no output, and no exit. The
+// parent printed "starting Electron…" and waited forever.
+//
+// That is why this harness had never run. The pure analysis below the fold has
+// always been tested, which is exactly why the gap survived: the part with the
+// tests was fine and the part that runs it was never exercised end to end.
+function isEntryPoint () {
+  if (require.main === module) return true
+  if (!process.versions.electron) return false
+  const entry = process.argv[1]
+  if (!entry) return false
+  try { return path.resolve(entry) === path.resolve(__filename) } catch (_) { return false }
+}
+
+if (isEntryPoint()) {
+  const argv = process.argv.slice(2)
   const opt = parseArgs(argv)
   if (opt.analyse) {
     const rows = readSamples(opt.analyse)
