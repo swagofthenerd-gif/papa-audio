@@ -466,3 +466,129 @@ test('unmount takes its listeners with it', () => {
 test('the panel refuses to exist without a store', () => {
   assert.throws(() => createTastePanel({}), /needs a store/)
 })
+
+// ── the panel and the store, together, after the wiring ────────────────────
+//
+// The panel could record THAT something was watched and never WHAT: it logged
+// viewings with no metadata, so the diary would have shown raw keys like
+// "movie:238" and the taste profile — built entirely from directors, years,
+// countries, languages and runtime — would have come out empty however much
+// history existed. These test the join.
+
+function withMeta(metaByKey) {
+  let t = 1700000000000
+  const store = createTasteStore({ storage: _memoryStorage(), now: () => (t += 1000) })
+  const panel = createTastePanel({
+    store,
+    now: () => t,
+    metaFor: key => metaByKey[key] || null,
+    labelFor: key => (metaByKey[key] ? metaByKey[key].title : key),
+  })
+  return { store, panel }
+}
+
+const FILMS = {
+  'movie:346': { title: 'Seven Samurai', year: 1954, runtime: 207, directors: ['Akira Kurosawa'], languages: ['Japanese'], countries: ['Japan'] },
+  'movie:1': { title: 'Ikiru', year: 1952, runtime: 143, directors: ['Akira Kurosawa'], languages: ['Japanese'], countries: ['Japan'] },
+  'movie:3': { title: 'Tokyo Story', year: 1953, runtime: 136, directors: ['Yasujiro Ozu'], languages: ['Japanese'], countries: ['Japan'] },
+}
+
+test('a logged viewing carries the film with it', () => {
+  const { store, panel } = withMeta(FILMS)
+  panel.dispatch('diary-add', { key: 'movie:346', date: '2024-05-20' })
+  const entry = store.viewingsOf('movie:346')[0]
+  assert.ok(entry.meta, 'the viewing recorded no metadata, so the diary cannot name it')
+  assert.strictEqual(entry.meta.title, 'Seven Samurai')
+  assert.strictEqual(entry.meta.runtime, 207)
+})
+
+test('marking seen carries it too, not only the diary form', () => {
+  const { store, panel } = withMeta(FILMS)
+  panel.dispatch('seen', { key: 'movie:1' })
+  assert.strictEqual(store.viewingsOf('movie:1')[0].meta.title, 'Ikiru')
+})
+
+test('the profile is built from what the viewings recorded', () => {
+  // The whole point. Without metaFor this came out with no directors, no
+  // decades, no countries and zero hours.
+  const { store, panel } = withMeta(FILMS)
+  for (const key of Object.keys(FILMS)) panel.dispatch('diary-add', { key, date: '2024-01-01' })
+
+  // The map a caller builds from the diary's own snapshots.
+  const meta = {}
+  for (const e of store.diary()) if (e.meta) meta[e.key] = e.meta
+
+  const p = store.profile(meta)
+  assert.strictEqual(p.titles, 3)
+  assert.strictEqual(p.topDirectors[0].name, 'Akira Kurosawa', 'two films beats one')
+  assert.strictEqual(p.topDirectors[0].count, 2)
+  assert.strictEqual(p.decades[0].name, 1950)
+  assert.strictEqual(p.totalRuntime, 207 + 143 + 136)
+})
+
+test('a film with no metadata still logs, because the evening happened', () => {
+  // metaFor returning null must never stop a viewing being recorded: a diary
+  // entry is worth more than the facts attached to it.
+  const { store, panel } = withMeta({})
+  panel.dispatch('diary-add', { key: 'movie:999', date: '2024-01-01' })
+  assert.strictEqual(store.viewingsOf('movie:999').length, 1)
+  assert.strictEqual(store.viewingsOf('movie:999')[0].meta, null)
+})
+
+test('a metaFor that throws does not stop the log', () => {
+  let t = 1700000000000
+  const store = createTasteStore({ storage: _memoryStorage(), now: () => (t += 1000) })
+  const panel = createTastePanel({
+    store,
+    metaFor: () => { throw new Error('boom') },
+  })
+  assert.doesNotThrow(() => panel.dispatch('diary-add', { key: 'movie:1', date: '2024-01-01' }))
+  assert.strictEqual(store.viewingsOf('movie:1').length, 1)
+})
+
+test('a metaFor returning nonsense is ignored rather than stored', () => {
+  for (const bad of ['a string', 42, [], true]) {
+    let t = 1700000000000
+    const store = createTasteStore({ storage: _memoryStorage(), now: () => (t += 1000) })
+    const panel = createTastePanel({ store, metaFor: () => bad })
+    panel.dispatch('diary-add', { key: 'movie:1', date: '2024-01-01' })
+    assert.strictEqual(store.viewingsOf('movie:1')[0].meta, null, String(bad) + ' was stored')
+  }
+})
+
+test('the favourite reorder goes through the store, not through a whole array', () => {
+  // fav-move used to read the four, splice a copy and write the array back,
+  // which is the stale-array hazard moveInList exists to avoid.
+  const { store, panel } = withMeta(FILMS)
+  for (const k of ['a', 'b', 'c', 'd']) store.addFavourite(k)
+  panel.dispatch('fav-move', { key: 'd', to: 0 })
+  assert.deepStrictEqual(store.favourites(), ['d', 'a', 'b', 'c'])
+  // A move of something that is not a favourite changes nothing.
+  const before = store.favourites()
+  panel.dispatch('fav-move', { key: 'zzz', to: 0 })
+  assert.deepStrictEqual(store.favourites(), before)
+})
+
+test("the year view's average is the year's, and the panel prints it", () => {
+  const { store, panel } = withMeta(FILMS)
+  store.logViewing('movie:old', { date: '2023-01-01', meta: FILMS['movie:1'] })
+  store.rate('movie:old', 2)
+  store.logViewing('movie:346', { date: '2024-05-20', meta: FILMS['movie:346'] })
+  store.rate('movie:346', 5)
+
+  // Scoped to the stats block: the rating-distribution rows below it are
+  // labelled "3.5 stars" and so contain the lifetime figure as ordinary text.
+  const html = panel.renderYearInReview(2024, { 'movie:346': FILMS['movie:346'] })
+  // The average's own cell, not the whole stats block: Seven Samurai is 207
+  // minutes, which is 3.5 hours, and the Hours figure beside it therefore reads
+  // 3.5 — the same number as the lifetime average, by coincidence. Asserting on
+  // the block would have been asserting on that coincidence.
+  const cell = html.slice(html.indexOf('<dt>Average rating</dt>'))
+  const dd = cell.slice(cell.indexOf('<dd>'), cell.indexOf('</dd>'))
+  assert.match(dd, /^<dd>5</, 'the 2024 average is 5, not the lifetime 3.5')
+  assert.match(dd, /over 1 rated/, 'and it says how many it averaged')
+
+  // The store's own answer, so a change in either would be caught.
+  assert.strictEqual(store.yearInReview(2024, {}).averageRating, 5)
+  assert.strictEqual(store.profile({}).averageRating, 3.5)
+})
