@@ -6068,7 +6068,20 @@ function _videoWindow() {
   _videoSession.win = new BrowserWindow({
     width: 1280, height: 720,
     show: false, frame: false,
-    backgroundColor: '#000000',
+    // Transparent, and this is load-bearing rather than cosmetic. With an
+    // opaque background Chromium repaints the host window on every resize and
+    // that paint lands on top of mpv's output: the picture goes black and
+    // never comes back. Resizing the app did it, and so did going fullscreen,
+    // which is a resize.
+    //
+    // Measured with everything else held identical — opaque: 34525 colours
+    // before a resize, 1 after; transparent: 34567 before, 54863 after. It is
+    // not the renderer: every mpv backend (gpu, gpu-next, x11, xv, EGL and
+    // Vulkan alike) broke on an opaque host and none broke on a transparent
+    // one.
+    transparent: true,
+    backgroundColor: '#00000000',
+    hasShadow: false,
     parent: mainWindow,
     webPreferences: { contextIsolation: true, nodeIntegration: false },
   })
@@ -6882,23 +6895,30 @@ ipcMain.handle('video-control', async (_, { verb, args } = {}) => {
       case 'seek': await engine.seek(args?.seconds, args?.mode || 'relative'); break
       case 'pause': await engine.setPause(args?.paused !== false); break
       case 'play': await engine.setPause(false); break
-      case 'volume': await engine.setVolume(args?.volume); break
-      case 'mute': await engine.setMute(!!args?.muted); break
-      case 'speed': await engine.setSpeed(args?.speed); break
+      // These take a single argument, and the player sends it as `value` for
+      // all of them. Reading a different name per verb meant every one of
+      // these arrived as undefined: the volume slider, the mute button, the
+      // speed menu, the zoom and the night-mode filter all did nothing at all,
+      // while play, pause and seek — which happened to agree on their names —
+      // worked. The older names are still accepted so nothing that predates
+      // this breaks.
+      case 'volume': await engine.setVolume(args?.value ?? args?.volume); break
+      case 'mute': await engine.setMute(!!(args?.value ?? args?.muted)); break
+      case 'speed': await engine.setSpeed(args?.value ?? args?.speed); break
       case 'track': await engine.setTrack(args?.type, args?.id); break
       case 'subAdd': await engine.addSubtitle(args?.path, args?.select !== false); break
       case 'subDelay': await engine.setSubDelay(args?.ms); break
       case 'audioDelay': await engine.setAudioDelay(args?.ms); break
       case 'subStyle': await engine.setSubStyle(args); break
       case 'aspect': await engine.setAspect(args?.aspect); break
-      case 'zoom': await engine.setZoom(args?.zoom); break
-      case 'audioFilter': await engine.setAudioFilter(args?.af); break
+      case 'zoom': await engine.setZoom(args?.value ?? args?.zoom); break
+      case 'audioFilter': await engine.setAudioFilter(args?.value ?? args?.af); break
       case 'screenshot': {
         const filePath = _videoScreenshotPath()
         await engine.screenshot(filePath)
         return { ok: true, value: { path: filePath } }
       }
-      case 'frameStep': await engine.frameStep(args?.dir); break
+      case 'frameStep': await engine.frameStep(args?.frames ?? args?.dir); break
       case 'stop':
         _videoSession.token++
         _videoTeardown()

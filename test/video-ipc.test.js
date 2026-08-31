@@ -676,3 +676,54 @@ test('a negative offset cannot push the surface off the window', () => {
   assert.strictEqual(b.x, 1916)
   assert.strictEqual(b.y, 0)
 })
+
+// ── Control arguments ──────────────────────────────────────────────────────
+// The player sends every single-argument verb as `value`. main used to read a
+// different name for each one — args.volume, args.muted, args.speed — so they
+// all arrived undefined and did nothing: the volume slider, the mute button,
+// the speed menu, the zoom and the night filter were all dead, while play,
+// pause and seek worked because they happened to agree. Nothing surfaced it,
+// because a control that silently does nothing throws no error.
+//
+// This walks every send() in the player and checks main reads a name the
+// player actually sends, so the whole class cannot come back.
+test('main reads the argument names the player actually sends', () => {
+  const player = root('src/video-player.js')
+  const handler = MAIN.slice(MAIN.indexOf("ipcMain.handle('video-control'"), MAIN.indexOf("ipcMain.handle('video-control'") + 2600)
+
+  const sends = new Map()
+  for (const m of player.matchAll(/send\('([a-zA-Z]+)'(?:,\s*\{([^}]*)\})?\)/g)) {
+    const keys = (m[2] || '').split(',').map(s => s.split(':')[0].trim()).filter(Boolean)
+    const prev = sends.get(m[1]) || new Set()
+    for (const k of keys) prev.add(k)
+    sends.set(m[1], prev)
+  }
+  assert.ok(sends.size > 8, 'the player should send many verbs, found ' + sends.size)
+
+  const broken = []
+  for (const [verb, keys] of sends) {
+    if (!keys.size) continue
+    const line = new RegExp(`case '${verb}':([\\s\\S]*?)break`).exec(handler)
+    if (!line) continue
+    const reads = [...line[1].matchAll(/args\?\.([a-zA-Z]+)/g)].map(m => m[1])
+    if (!reads.length) continue
+    if (!reads.some(r => keys.has(r))) {
+      broken.push(`${verb}: player sends {${[...keys]}}, main reads {${reads}}`)
+    }
+  }
+  assert.deepStrictEqual(broken, [], 'these controls silently do nothing')
+})
+
+// With an opaque background Chromium repaints the host window on every resize,
+// and that paint lands on top of mpv's output: the picture goes black and never
+// returns. Resizing the app did it; so did going fullscreen, which is a resize.
+// Measured with everything else identical — opaque: 34525 colours before the
+// resize and 1 after; transparent: 34567 before and 54863 after. Not a renderer
+// problem: every mpv backend broke on an opaque host and none broke on a
+// transparent one.
+test('the video host window is transparent so a resize cannot black it out', () => {
+  const fn = MAIN.slice(MAIN.indexOf('function _videoWindow()'), MAIN.indexOf('function _videoWid()'))
+  assert.match(fn, /transparent:\s*true/)
+  assert.match(fn, /backgroundColor:\s*'#00000000'/)
+  assert.ok(!/backgroundColor:\s*'#000000'/.test(fn), 'an opaque background is the bug')
+})

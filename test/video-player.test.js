@@ -697,3 +697,18 @@ test('every video page sets the body class that hides it', () => {
   }
   assert.match(_rend, /classList\.toggle\('video-page', VIDEO_PAGES\.has\(page\)\)/)
 })
+
+// A display:none child is removed from the grid entirely and everything after
+// it moves up a row. Hiding the top bar in fullscreen did exactly that: the
+// stage slid into an auto row and collapsed to zero while the episode strip
+// inherited the 1fr and grew to 1259px. The stage is the rectangle the video is
+// positioned onto, so at zero height no bounds were sent and the picture
+// vanished the moment fullscreen was pressed.
+test('every theatre row has an explicit place, so hiding one moves nothing', () => {
+  for (const [cls, row] of [['vt-top', 1], ['vt-stage', 2], ['vt-pack', 3], ['vt-strip', 4], ['vt-deck', 5]]) {
+    assert.match(_css, new RegExp('\\.' + cls + '\\s*\\{\\s*grid-row:\\s*' + row + '\\s*;'),
+      cls + ' must be placed explicitly')
+  }
+  const rule = _css.slice(_css.indexOf('.vtheatre {'), _css.indexOf('.vtheatre.hidden'))
+  assert.match(rule, /grid-template-rows:\s*auto 1fr auto auto auto/)
+})

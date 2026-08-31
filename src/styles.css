@@ -6273,7 +6273,15 @@ body.app-unfocused *::after {
    Starting below it also keeps the window controls reachable while watching. */
 .vtheatre {
   position:fixed; top:var(--titlebar-h); left:0; right:0; bottom:0; z-index:2000;
-  display:grid; grid-template-rows:auto 1fr auto auto;
+  /* Rows are assigned explicitly, one per child, because a display:none child
+     is removed from the grid entirely and everything after it moves up a row.
+     Hiding the top bar in fullscreen did exactly that: the stage slid into the
+     auto row and collapsed to zero height while the episode strip inherited
+     the 1fr and grew to fill the screen. The stage is the rectangle the video
+     is positioned onto, so at zero height no bounds were ever sent and the
+     picture vanished on going fullscreen. Explicit placement makes hiding any
+     one row harmless. .vt-menu is position:fixed and not a grid item. */
+  display:grid; grid-template-rows:auto 1fr auto auto auto;
   background:#000; color:#fff;
   animation:fadeIn .18s var(--ease-out);
 }
@@ -6283,6 +6291,12 @@ body.app-unfocused *::after {
    when the video fills the screen, and every pixel it gave up goes to the
    stage. The deck stays — it is the only way to pause, skip or advance, and
    hiding it would recreate exactly the problem fullscreen used to cause. */
+.vt-top    { grid-row:1; }
+.vt-stage  { grid-row:2; }
+.vt-pack   { grid-row:3; }
+.vt-strip  { grid-row:4; }
+.vt-deck   { grid-row:5; }
+
 .vtheatre.fullscreen .vt-top { display:none; }
 .vtheatre.fullscreen .vt-deck { padding:8px 20px 12px; }
 .vtheatre.fullscreen .vt-strip { padding-bottom:8px; }
