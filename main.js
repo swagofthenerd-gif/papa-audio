@@ -6471,6 +6471,31 @@ ipcMain.handle('video-tags', async () => {
   }
 })
 
+// The country list, so Browse can filter by where a film was made. Fetched
+// rather than hardcoded because it is 251 entries and changes when the world
+// does; cached for a week because it changes about that often.
+const _countryCache = makeCache({ cap: 4, ttlMs: 1000 * 60 * 60 * 24 * 7 })
+ipcMain.handle('video-countries', async () => {
+  try {
+    const hit = _countryCache.get('countries')
+    if (hit) return { ok: true, countries: hit }
+    const apiKey = _videoSettings().tmdbApiKey || process.env.TMDB_API_KEY
+    if (!apiKey) return { ok: false, error: 'TMDB API key missing or invalid — set it in Settings → Video.', countries: [] }
+    const res = await fetchWithTimeout(15000)(
+      `https://api.themoviedb.org/3/configuration/countries?api_key=${encodeURIComponent(apiKey)}`)
+    if (!res || !res.ok) return { ok: false, error: 'Could not load the country list', countries: [] }
+    const raw = await res.json()
+    const countries = (Array.isArray(raw) ? raw : [])
+      .map(c => ({ code: c && c.iso_3166_1, name: (c && c.english_name) || (c && c.native_name) }))
+      .filter(c => c.code && c.name)
+      .sort((a, b) => a.name.localeCompare(b.name))
+    if (countries.length) _countryCache.set('countries', countries)
+    return { ok: true, countries }
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e), countries: [] }
+  }
+})
+
 ipcMain.handle('video-discover', async (_, req) => {
   try {
     req = req || {}

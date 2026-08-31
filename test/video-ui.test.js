@@ -431,3 +431,57 @@ test('the next page loads on approach rather than on a button press', () => {
   assert.match(fn.slice(0, 700), /new IntersectionObserver/)
   assert.match(fn.slice(0, 700), /rootMargin: '600px'/)
 })
+
+// ── Filtering by country ────────────────────────────────────────────────────
+// "Watch any film from any country" means the whole list, not a curated
+// shortlist — there are 251 and the interesting ones are not always the obvious
+// ones.
+test('browse can filter by where a film was made', () => {
+  assert.match(RENDERER, /id="vf-countries"/)
+  assert.match(RENDERER, /id="vf-countrysearch"/)
+  assert.match(RENDERER, /function _countryChipsHtml/)
+  const MAIN = require('fs').readFileSync(require('path').join(__dirname, '..', 'main.js'), 'utf8')
+  assert.match(MAIN, /ipcMain\.handle\('video-countries'/)
+})
+
+// Country of production is not the same question as language: a French-language
+// Canadian film is Canadian.
+test('the filter asks about origin, not language', () => {
+  const TMDB = require('fs').readFileSync(require('path').join(__dirname, '..', 'catalog', 'tmdb.js'), 'utf8')
+  assert.match(TMDB, /push\('with_origin_country', opts\.country\)/)
+  assert.match(RENDERER, /country: f\.country/)
+})
+
+// Someone who wants Iranian cinema should not have to know Iran is in the list
+// before they can find out.
+test('the major film countries are offered without typing', () => {
+  const list = /_COUNTRY_SHORTLIST = \[([\s\S]*?)\]/.exec(RENDERER)
+  assert.ok(list, 'a shortlist must exist')
+  for (const code of ['IR', 'JP', 'KR', 'FR', 'IT', 'IN', 'TW', 'HK']) {
+    assert.ok(list[1].includes("'" + code + "'"), code + ' belongs on the shortlist')
+  }
+})
+
+// The origin filter is an AND, so asking for two countries asks for films made
+// in both and returns almost nothing.
+test('one country at a time, and choosing it again clears it', () => {
+  const fn = RENDERER.slice(RENDERER.indexOf("getElementById('vf-countries')"),
+    RENDERER.indexOf("getElementById('vf-sort')"))
+  assert.match(fn, /f\.country === code \? null : code/)
+})
+
+// A country chosen and then not on the shortlist would otherwise have to be
+// searched for again before it could be cleared.
+test('a chosen country stays visible when the search is cleared', () => {
+  const fn = RENDERER.slice(RENDERER.indexOf('function _countryChipsHtml'),
+    RENDERER.indexOf('function _tagChipsHtml'))
+  assert.match(fn, /if \(chosen && !rank\[chosen\]\)/)
+})
+
+// AniList has no country of origin, so offering the filter there would be a
+// control that silently does nothing.
+test('the country list is not fetched for the catalog that cannot use it', () => {
+  const fn = RENDERER.slice(RENDERER.indexOf('async function _loadBrowseVocab'),
+    RENDERER.indexOf('function _renderFilterRail'))
+  assert.match(fn, /catalog !== 'anime' && !_browseVocab\.countries/)
+})

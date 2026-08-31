@@ -615,6 +615,9 @@ function buildDiscoverUrl(kind, opts = {}) {
   push(isTv ? 'first_air_date.lte' : 'primary_release_date.lte', opts.yearTo ? `${opts.yearTo}-12-31` : null)
   push('vote_average.gte', opts.minRating)
   push('with_original_language', opts.language)
+  // Where a film was made, which is not the same question as what language it
+  // is in: a French-language Canadian film is Canadian.
+  push('with_origin_country', opts.country)
   push('with_runtime.gte', opts.runtimeFrom)
   push('with_runtime.lte', opts.runtimeTo)
   push('with_watch_providers', opts.provider)

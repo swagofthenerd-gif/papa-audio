@@ -1385,6 +1385,7 @@ function _emptyFilters() {
     minRating: null, sort: 'popularity',
     runtimeFrom: null, runtimeTo: null,
     season: null, seasonYear: null, format: null, status: null,
+    country: null,
   }
 }
 
@@ -1393,7 +1394,7 @@ var _browse = {
   page: 1, results: [], total: 0, totalPages: 1,
   loading: false, ticket: 0, observer: null,
 }
-var _browseVocab = { genres: {}, tags: null }
+var _browseVocab = { genres: {}, tags: null, countries: null }
 
 // Presets worth shipping. "Hidden gems" is the one a streaming service could
 // never offer: well rated but not widely voted on, which is precisely what
@@ -1435,6 +1436,11 @@ function _activeFilterChips(f) {
     out.push({ key: 'years', label: (f.yearFrom || '…') + '–' + (f.yearTo || '…') })
   }
   if (f.minRating) out.push({ key: 'rating', label: '★ ' + f.minRating + '+' })
+  if (f.country) {
+    const list = _browseVocab.countries || []
+    const hit = list.find(function (c) { return c.code === f.country })
+    out.push({ key: 'country', label: hit ? hit.name : f.country })
+  }
   if (f.runtimeFrom || f.runtimeTo) {
     out.push({ key: 'runtime', label: (f.runtimeFrom || 0) + '–' + (f.runtimeTo || '…') + ' min' })
   }
@@ -1460,6 +1466,7 @@ function _clearFilterKey(f, key) {
   else if (kind === 'seasonYear') f.seasonYear = null
   else if (kind === 'format') f.format = null
   else if (kind === 'status') f.status = null
+  else if (kind === 'country') f.country = null
 }
 
 // The request the backend expects, with the anime vocabulary swapped in for
@@ -1478,6 +1485,7 @@ function _browseRequest(f, page) {
     genres: f.genres.slice(), excludeGenres: f.exclude.slice(),
     yearFrom: f.yearFrom, yearTo: f.yearTo, minRating: f.minRating,
     runtimeFrom: f.runtimeFrom, runtimeTo: f.runtimeTo,
+    country: f.country,
   })
 }
 
@@ -1514,6 +1522,12 @@ async function _loadBrowseVocab(catalog) {
   if (catalog === 'anime' && !_browseVocab.tags) {
     const res = await window.api.videoTags().catch(function () { return { ok: false } })
     _browseVocab.tags = (res && res.ok && res.tags) ? res.tags : []
+  }
+  // Anime is filtered by AniList, which has no country of origin, so the list
+  // is only fetched for the catalogs that can use it.
+  if (catalog !== 'anime' && !_browseVocab.countries && window.api.videoCountries) {
+    const res = await window.api.videoCountries().catch(function () { return { ok: false } })
+    _browseVocab.countries = (res && res.ok && res.countries) ? res.countries : []
   }
 }
 
@@ -1587,6 +1601,13 @@ function _renderFilterRail() {
     html += group('Themes', '<input class="vf-input vf-tagsearch" id="vf-tagsearch" type="search" placeholder="Search themes…">' +
       '<div class="vf-tags-scroll" id="vf-tags">' + _tagChipsHtml('') + '</div>')
   } else {
+    // 251 countries, so this is a search rather than a wall of chips. The
+    // handful of major film-producing countries are offered without typing,
+    // because someone who wants Iranian cinema should not have to know that
+    // Iran is in the list before they can find out.
+    html += group('Country',
+      '<input class="vf-input vf-tagsearch" id="vf-countrysearch" type="search" placeholder="Search countries…">' +
+      '<div class="vf-tags-scroll" id="vf-countries">' + _countryChipsHtml('') + '</div>')
     html += group('Year', '<div class="vf-row">' +
       '<input class="vf-input" id="vf-yearfrom" type="number" placeholder="From" min="1900" max="' + (thisYear + 2) + '" value="' + (f.yearFrom || '') + '">' +
       '<span class="vf-sep">–</span>' +
@@ -1605,6 +1626,39 @@ function _renderFilterRail() {
   html += '<button class="vf-clear" id="vf-clear">Clear all filters</button>'
   rail.innerHTML = html
   _bindFilterRail()
+}
+
+// Shown before anyone types: the countries with catalogues deep enough that
+// choosing one returns a shelf rather than a handful. Everything else is one
+// search away.
+var _COUNTRY_SHORTLIST = ['US', 'GB', 'FR', 'IT', 'JP', 'KR', 'IN', 'IR', 'CN', 'HK',
+  'TW', 'DE', 'ES', 'SE', 'DK', 'RU', 'MX', 'BR', 'AR', 'PL', 'TR', 'TH', 'AU', 'CA']
+
+function _countryChipsHtml(query) {
+  const all = _browseVocab.countries
+  if (!all) return '<div class="vf-value">Loading countries…</div>'
+  const q = String(query || '').trim().toLowerCase()
+  const chosen = _browse.filters.country
+  let list
+  if (q) {
+    list = all.filter(function (c) { return c.name.toLowerCase().includes(q) || c.code.toLowerCase() === q })
+  } else {
+    const rank = {}
+    _COUNTRY_SHORTLIST.forEach(function (c, i) { rank[c] = i })
+    list = all.filter(function (c) { return rank[c.code] !== undefined })
+      .sort(function (a, b) { return rank[a.code] - rank[b.code] })
+    // A country already chosen stays visible even when it is not on the
+    // shortlist, or clearing it means finding it again first.
+    if (chosen && !rank[chosen]) {
+      const c = all.find(function (x) { return x.code === chosen })
+      if (c) list = [c].concat(list)
+    }
+  }
+  if (!list.length) return '<div class="vf-value">No countries match</div>'
+  return '<div class="vf-chips">' + list.map(function (c) {
+    return '<button class="vf-chip' + (chosen === c.code ? ' on' : '') + '" data-country="' + esc(c.code) + '">' +
+      esc(c.name) + '</button>'
+  }).join('') + '</div>'
 }
 
 function _tagChipsHtml(query) {
@@ -1686,6 +1740,26 @@ function _bindFilterRail() {
   document.getElementById('vf-tagsearch')?.addEventListener('input', function (e) {
     const box = document.getElementById('vf-tags')
     if (box) box.innerHTML = _tagChipsHtml(e.target.value)
+  })
+
+  document.getElementById('vf-countries')?.addEventListener('click', function (e) {
+    const b = e.target.closest('[data-country]')
+    if (!b) return
+    // One country at a time: the catalogue's origin filter is an AND, so
+    // picking two would ask for films made in both and return almost nothing.
+    // Clicking the chosen one again clears it.
+    const code = b.dataset.country
+    f.country = f.country === code ? null : code
+    const box = document.getElementById('vf-countries')
+    const search = document.getElementById('vf-countrysearch')
+    if (box) box.innerHTML = _countryChipsHtml(search ? search.value : '')
+    _runBrowse(true)
+  })
+  // Filtering the list must not re-render the rail, or the search box would
+  // lose focus on every keystroke.
+  document.getElementById('vf-countrysearch')?.addEventListener('input', function (e) {
+    const box = document.getElementById('vf-countries')
+    if (box) box.innerHTML = _countryChipsHtml(e.target.value)
   })
 
   document.getElementById('vf-sort')?.addEventListener('change', function (e) {
