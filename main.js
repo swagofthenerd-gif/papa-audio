@@ -127,6 +127,7 @@ const lyrics = require('./lyrics')
 // or mpv spawn happens at import time.
 const { createTmdbCatalog } = require('./catalog/tmdb')
 const { createAnilistCatalog } = require('./catalog/anilist')
+const { createOmdbCatalog } = require('./catalog/omdb')
 const { resolveStream } = require('./providers/index')
 const { createYtsProvider } = require('./providers/yts')
 const { createEztvProvider } = require('./providers/eztv')
@@ -6026,6 +6027,10 @@ function _videoSettings() {
   return Object.assign(
     {
       tmdbApiKey: '',
+      // The second opinion: IMDb, Rotten Tomatoes and Metacritic in one
+      // request, plus the awards line and the certificate. Optional — every
+      // path that reads it works without it.
+      omdbApiKey: '',
       preferSurround: true,
       preferredQuality: '1080p',
       torrentSources: true,
@@ -6058,6 +6063,15 @@ const tmdb = _lazy(() => createTmdbCatalog({
   fetchFn: fetchWithTimeout(15000),
 }))
 const anilist = _lazy(() => createAnilistCatalog({ fetchFn: fetchWithTimeout(15000) }))
+// A shelf of twenty cards would be twenty requests to a free service with a
+// daily limit, and these values change about as often as a film's release date
+// does. A day is generous and still nowhere near the limit.
+const _omdbCache = makeCache({ cap: 800, ttlMs: 1000 * 60 * 60 * 24 })
+const omdb = _lazy(() => createOmdbCatalog({
+  apiKey: () => _videoSettings().omdbApiKey || process.env.OMDB_API_KEY,
+  fetchFn: fetchWithTimeout(12000),
+  cache: _omdbCache,
+}))
 const yts = _lazy(() => createYtsProvider({ fetchFn: fetchWithTimeout(15000) }))
 // EZTV covers TV episodes (YTS is movies-only) and Nyaa covers anime. Both are
 // keyless and magnet-based, so they ride the same torrent path as YTS.
@@ -6531,8 +6545,32 @@ async function _videoShowDetail(type, id) {
     // mattering: TMDB's detail, nyaa's sources.
     if (detail && detail.isAnime) detail = await _enrichAnimeDetail(detail)
   }
+  if (detail) detail = await _enrichExternalRatings(detail)
   if (detail) _videoDetailCache.set(key, detail)
   return detail
+}
+
+// One score averaged from one site's users is a thin basis for deciding what to
+// watch. IMDb's two million votes, the Rotten Tomatoes critics' figure and
+// Metacritic's weighted average disagree about the same film, and the
+// disagreement is the useful part — as is the awards line, which says more than
+// any of the three.
+//
+// Optional in every sense: no key, no IMDb id, or a failed request all leave
+// the detail exactly as it was. The title fallback exists because TMDB has no
+// IMDb id for a long tail of titles, and it is narrowed by year because remakes
+// share a title far more often than they share a year.
+async function _enrichExternalRatings(detail) {
+  try {
+    const client = omdb()
+    const external = detail.imdbId
+      ? await client.byImdbId(detail.imdbId)
+      : await client.byTitle(detail.title, detail.year)
+    if (!external) return detail
+    return { ...detail, external }
+  } catch (_) {
+    return detail
+  }
 }
 
 // Finds the AniList entry for a TMDB anime and copies across what the source

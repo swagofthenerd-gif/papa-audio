@@ -727,3 +727,42 @@ test('the video host window is transparent so a resize cannot black it out', () 
   assert.match(fn, /backgroundColor:\s*'#00000000'/)
   assert.ok(!/backgroundColor:\s*'#000000'/.test(fn), 'an opaque background is the bug')
 })
+
+// ── The second opinion ─────────────────────────────────────────────────────
+// One score averaged from one site's users is a thin basis for choosing what to
+// watch; IMDb, Rotten Tomatoes and Metacritic disagree about the same film and
+// the disagreement is the useful part.
+test('the detail is enriched with outside ratings', () => {
+  assert.match(MAIN, /async function _enrichExternalRatings\(detail\)/)
+  const fn = MAIN.slice(MAIN.indexOf('async function _enrichExternalRatings'),
+    MAIN.indexOf('async function _enrichExternalRatings') + 900)
+  // TMDB has no IMDb id for a long tail of titles, so a title fallback is the
+  // difference between "most films" and "the ones everyone has heard of".
+  assert.match(fn, /byImdbId\(detail\.imdbId\)/)
+  assert.match(fn, /byTitle\(detail\.title, detail\.year\)/)
+  // A missing key, a missing id or a failed request must leave the detail
+  // exactly as it was — this is extra information, never a dependency.
+  assert.match(fn, /if \(!external\) return detail/)
+  assert.match(fn, /catch \(_\) \{\s*return detail/)
+})
+
+test('the enrichment runs inside the cached detail path, not per request', () => {
+  const fn = MAIN.slice(MAIN.indexOf('async function _videoShowDetail'),
+    MAIN.indexOf('async function _enrichExternalRatings'))
+  const enrichAt = fn.indexOf('_enrichExternalRatings(detail)')
+  const cacheAt = fn.indexOf('_videoDetailCache.set(key, detail)')
+  assert.ok(enrichAt > 0 && cacheAt > enrichAt, 'enrich before caching, or every open re-fetches it')
+})
+
+// A free service with a daily limit, read once per card on a shelf of twenty.
+test('outside ratings are cached for a long time', () => {
+  assert.match(MAIN, /_omdbCache = makeCache\(\{ cap: \d+, ttlMs: [^}]*24 \}\)/)
+  assert.match(MAIN, /cache: _omdbCache/)
+})
+
+// The key belongs to the user and must never be committed.
+test('the second-opinion key is a setting, never a literal', () => {
+  assert.match(MAIN, /omdbApiKey: ''/)
+  assert.match(MAIN, /_videoSettings\(\)\.omdbApiKey \|\| process\.env\.OMDB_API_KEY/)
+  assert.ok(!/c2ec71cf/.test(MAIN), 'no key may appear in the source')
+})
