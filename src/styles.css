@@ -7113,3 +7113,78 @@ body.video-active .np-byline { font-size:10.5px; }
   .cinema .vrow-head, .cinema .vrail { padding-left: 16px; padding-right: 16px; }
   .cinema .vempty { padding-left: 16px; padding-right: 16px; }
 }
+
+/* ── An opened shelf ──────────────────────────────────────
+   A rail is a preview; the canon runs to a thousand films. Opening one out
+   keeps the identity of the shelf — its name and the line explaining it — at
+   the top, because a grid with no heading is just a wall of posters. */
+.cinema .vshelf-head {
+  padding: 34px 28px 20px;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-areas: "back title" ". note";
+  align-items: baseline;
+  gap: 4px 16px;
+}
+.cinema .vshelf-back {
+  grid-area: back;
+  background: none;
+  border: 1px solid var(--cin-line);
+  color: var(--cin-bone-2);
+  font-family: var(--cin-body);
+  font-size: 12.5px;
+  padding: 6px 12px;
+  border-radius: 2px;
+  cursor: pointer;
+}
+.cinema .vshelf-back:hover { color: var(--cin-bone); border-color: var(--cin-muted); }
+.cinema .vshelf-back:focus-visible { outline: 2px solid var(--cin-ember); outline-offset: 2px; }
+.cinema .vshelf-title {
+  grid-area: title;
+  font-family: var(--cin-display);
+  font-weight: 500;
+  font-size: 30px;
+  letter-spacing: -.01em;
+  color: var(--cin-bone);
+  margin: 0;
+}
+.cinema .vshelf-head .vrow-note { grid-area: note; margin: 0; }
+.cinema .vgrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+  gap: 26px 16px;
+  padding: 8px 28px 0;
+}
+/* The sentinel the next page loads against. It needs real height or it can sit
+   permanently intersecting at the bottom of a short grid and load every page at
+   once. */
+.cinema .vshelf-more {
+  min-height: 90px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 28px 60px;
+}
+.cinema .vshelf-end {
+  font-family: var(--cin-body);
+  font-size: 12.5px;
+  color: var(--cin-muted);
+  letter-spacing: .02em;
+}
+.cinema .vrow-all {
+  background: none;
+  border: 0;
+  color: var(--cin-muted);
+  font-family: var(--cin-body);
+  font-size: 12px;
+  letter-spacing: .04em;
+  cursor: pointer;
+  padding: 2px 0;
+  margin-left: 14px;
+  border-bottom: 1px solid transparent;
+}
+.cinema .vrow-all:hover { color: var(--cin-ember); border-bottom-color: var(--cin-ember); }
+.cinema .vrow-all:focus-visible { outline: 2px solid var(--cin-ember); outline-offset: 3px; }
+@media (prefers-reduced-motion: reduce) {
+  .cinema .vshelf-back, .cinema .vrow-all { transition: none; }
+}

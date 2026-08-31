@@ -381,3 +381,41 @@ test('the curatorial line arrives with the results', () => {
   assert.match(RENDERER, /_setRowHead\(row\.key, res\.shelf\)/)
   assert.match(RENDERER, /vrow-note/)
 })
+
+// ── Opening a shelf out ─────────────────────────────────────────────────────
+// A rail is a preview, not a ceiling: it shows twenty and the canon runs to a
+// thousand. The whole point of curating a shelf is that there is more behind it
+// than fits on one screen.
+test('a curated shelf can be opened out', () => {
+  assert.match(RENDERER, /data-shelf-all=/)
+  assert.match(RENDERER, /function renderShelf/)
+  assert.match(RENDERER, /page === 'shelf'\)\s*renderShelf/)
+})
+
+// The buttons appear as each shelf's results arrive, so binding them once per
+// page beats binding them per shelf and missing the ones that land late.
+test('the expanders are bound by delegation', () => {
+  const fn = RENDERER.slice(RENDERER.indexOf('function _bindShelfExpanders'),
+    RENDERER.indexOf('function _setRowHead'))
+  assert.match(fn, /closest\('\[data-shelf-all\]'\)/)
+  assert.match(fn, /shelfAllBound/, 'binding twice would navigate twice on one click')
+})
+
+// The catalogue repeats titles across page boundaries often enough that
+// appending blindly shows the same poster twice in one grid.
+test('paging in more films cannot repeat one already shown', () => {
+  const fn = RENDERER.slice(RENDERER.indexOf('async function _loadShelfPage'),
+    RENDERER.indexOf('function _bindShelfScroll'))
+  assert.match(fn, /const have = new Set/)
+  assert.match(fn, /!have\.has/)
+  // And a page that arrives after the user opened a different shelf must not
+  // append itself to whatever is on screen now.
+  assert.match(fn, /_shelfPage\.ticket !== ticket/)
+})
+
+test('the next page loads on approach rather than on a button press', () => {
+  assert.match(RENDERER, /function _bindShelfScroll/)
+  const fn = RENDERER.slice(RENDERER.indexOf('function _bindShelfScroll'))
+  assert.match(fn.slice(0, 700), /new IntersectionObserver/)
+  assert.match(fn.slice(0, 700), /rootMargin: '600px'/)
+})

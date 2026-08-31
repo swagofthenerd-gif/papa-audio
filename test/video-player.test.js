@@ -692,7 +692,10 @@ test('every video page sets the body class that hides it', () => {
   const set = /const VIDEO_PAGES = new Set\(\[([^\]]+)\]\)/.exec(_rend)
   assert.ok(set, 'VIDEO_PAGES must exist')
   const pages = set[1].split(',').map(s => s.trim().replace(/'/g, ''))
-  for (const p of ['video', 'browse', 'person', 'video-detail']) {
+  // Every page in the film section, including ones added later — an opened
+  // shelf is as much a video page as the one it was opened from, and forgetting
+  // it puts the music bar back across the bottom of a grid of posters.
+  for (const p of ['video', 'browse', 'person', 'video-detail', 'shelf']) {
     assert.ok(pages.includes(p), `${p} is a video page and must hide the music bar`)
   }
   assert.match(_rend, /classList\.toggle\('video-page', VIDEO_PAGES\.has\(page\)\)/)

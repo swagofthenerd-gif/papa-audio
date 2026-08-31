@@ -1105,7 +1105,7 @@ async function restorePlaybackState(opts) {
 }
 
 // ── Navigation ──────────────────────────────────────────────────────────────
-const VIDEO_PAGES = new Set(['video', 'browse', 'person', 'video-detail'])
+const VIDEO_PAGES = new Set(['video', 'browse', 'person', 'video-detail', 'shelf'])
 
 function navigate(page, navId, opts = {}) {
   // Save scroll position of page we're leaving
@@ -1167,6 +1167,7 @@ function navigate(page, navId, opts = {}) {
   else if (page === 'browse')      renderBrowse()
   else if (page === 'person')      renderPerson(navId)
   else if (page === 'video-detail') renderVideoDetail(navId)
+  else if (page === 'shelf')        renderShelf(navId)
   } catch (err) {
     _renderFailure(page, err)
   }
@@ -2561,6 +2562,81 @@ function _videoError(message) {
   })
 }
 
+// A shelf opened out. The rail shows twenty because a rail is a preview; the
+// canon runs to a thousand and the point of curation is that there is more
+// behind it than fits on one screen.
+var _shelfPage = { key: null, page: 1, items: [], loading: false, done: false, ticket: 0 }
+
+async function renderShelf(key) {
+  _initVideoUI()
+  const ticket = ++_shelfPage.ticket
+  _shelfPage = { key: key, page: 1, items: [], loading: false, done: false, ticket: ticket }
+  setContent('<div class="page vpage cinema">' +
+    '<div class="vshelf-head" id="vshelf-head">' +
+      '<button class="vshelf-back" id="vshelf-back">&larr; Back</button>' +
+      '<h1 class="vshelf-title" id="vshelf-title">Loading…</h1>' +
+      '<p class="vrow-note" id="vshelf-note"></p>' +
+    '</div>' +
+    '<div class="vgrid" id="vshelf-grid"></div>' +
+    '<div class="vshelf-more" id="vshelf-more"></div>' +
+  '</div>')
+  document.getElementById('vshelf-back')?.addEventListener('click', function () { navigate('video') })
+  await _loadShelfPage(ticket)
+  _bindShelfScroll(ticket)
+}
+
+async function _loadShelfPage(ticket) {
+  if (_shelfPage.loading || _shelfPage.done) return
+  _shelfPage.loading = true
+  const more = document.getElementById('vshelf-more')
+  if (more) more.innerHTML = '<div class="spin"></div>'
+  const res = await window.api.videoShelf({ key: _shelfPage.key, page: _shelfPage.page })
+    .catch(function (e) { return { ok: false, error: String((e && e.message) || e) } })
+  // A page that arrived after the user left, or after they opened a different
+  // shelf, must not append itself to whatever is on screen now.
+  if (_shelfPage.ticket !== ticket || state.currentPage !== 'shelf') return
+  _shelfPage.loading = false
+  if (!res.ok) {
+    if (more) more.innerHTML = '<div class="vrow-msg err">' + esc(_videoErrorText(res.error)) + '</div>'
+    return
+  }
+  if (_shelfPage.page === 1 && res.shelf) {
+    const t = document.getElementById('vshelf-title')
+    if (t) t.textContent = res.shelf.label || 'Shelf'
+    const n = document.getElementById('vshelf-note')
+    if (n) n.textContent = res.shelf.note || ''
+  }
+  const fresh = Array.isArray(res.results) ? res.results : []
+  // The catalogue repeats titles across page boundaries often enough that
+  // appending blindly shows the same poster twice in one grid.
+  const have = new Set(_shelfPage.items.map(function (i) { return (i.type || 'movie') + ':' + i.id }))
+  const added = fresh.filter(function (i) { return !have.has((i.type || 'movie') + ':' + i.id) })
+  _shelfPage.items = _shelfPage.items.concat(added)
+  const grid = document.getElementById('vshelf-grid')
+  if (grid) {
+    grid.insertAdjacentHTML('beforeend', added.map(_videoCard).join(''))
+    _bindVideoCards(grid)
+  }
+  // An empty page is the end of the shelf; TMDB keeps answering past it with
+  // nothing rather than with an error.
+  if (!fresh.length) _shelfPage.done = true
+  _shelfPage.page += 1
+  if (more) more.innerHTML = _shelfPage.done ? '<div class="vshelf-end">That is the whole shelf.</div>' : ''
+}
+
+// Loads the next page as the end of the grid comes into view, rather than
+// making the reader find and press a button.
+function _bindShelfScroll(ticket) {
+  const sentinel = document.getElementById('vshelf-more')
+  const root = document.getElementById('content')
+  if (!sentinel || !root || typeof IntersectionObserver === 'undefined') return
+  const io = new IntersectionObserver(function (entries) {
+    if (_shelfPage.ticket !== ticket) { io.disconnect(); return }
+    for (const e of entries) if (e.isIntersecting) _loadShelfPage(ticket)
+  }, { root: root, rootMargin: '600px' })
+  io.observe(sentinel)
+}
+
 async function renderVideo() {
   _initVideoUI()
   // Arriving here from Browse, the tab state still says 'browse'; the catalog
@@ -2636,8 +2712,9 @@ async function _renderVideoTab(ticket) {
   // them. The shell goes up with a placeholder so the page does not jump.
   rows.innerHTML = personal.map(function (r) { return _vRowShell(r.key, r.label, r.items.length) }).join('') +
     wanted.map(function (r) { return _vRowShell(r.key, r.label, 0) }).join('') +
-    curated.map(function (r) { return _vRowShell(r.key, '', 0) }).join('')
+    curated.map(function (r) { return _vRowShell(r.key, '', 0, '', true) }).join('')
 
+  _bindShelfExpanders(rows)
   personal.forEach(function (r) { _fillRow(r.key, r.items) })
 
   // Every title already on the page. A film that has earned its place on a
@@ -2697,10 +2774,13 @@ function _personalRows() {
   return out
 }
 
-function _vRowShell(key, label, count, note) {
+function _vRowShell(key, label, count, note, expandable) {
   return '<section class="vrow" data-row="' + esc(key) + '">' +
     '<div class="vrow-head"><h2 class="vrow-title">' + esc(label) + '</h2>' +
       (count ? '<span class="vrow-count">' + count + '</span>' : '') +
+      // A rail is a preview, not a ceiling. Twenty films is where a shelf
+      // starts; the canon alone runs to a thousand.
+      (expandable ? '<button class="vrow-all" data-shelf-all="' + esc(key) + '">See all</button>' : '') +
       // A row called "Trending" explains nothing. A row called "New Hollywood"
       // with a line under it is a recommendation from someone with a view.
       (note ? '<p class="vrow-note">' + esc(note) + '</p>' : '') + '</div>' +
@@ -2737,6 +2817,19 @@ function _rowError(key, error) {
     '<div><button class="vbtn" data-retry="' + esc(key) + '">Try again</button></div>', true)
   const btn = document.querySelector('[data-retry="' + key + '"]')
   if (btn) btn.addEventListener('click', function () { _renderVideoTab(++_videoCatalogTicket) })
+}
+
+// Delegated once per page rather than bound per shelf, because the buttons are
+// created as each shelf's results arrive rather than up front.
+function _bindShelfExpanders(root) {
+  if (!root || root.dataset.shelfAllBound === '1') return
+  root.dataset.shelfAllBound = '1'
+  root.addEventListener('click', function (ev) {
+    const btn = ev.target && ev.target.closest && ev.target.closest('[data-shelf-all]')
+    if (!btn) return
+    ev.preventDefault()
+    navigate('shelf', btn.getAttribute('data-shelf-all'))
+  })
 }
 
 // The label and the line beneath it arrive with the results.
