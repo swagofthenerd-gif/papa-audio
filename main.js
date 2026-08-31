@@ -77,6 +77,8 @@ const IPC_TIMEOUT_OVERRIDES = {
   'add-music-folder': 0,
   'library-pick-artwork': 0,
   'slsk-set-download-dir': 0,
+  // Opens a file picker, so it waits on the user, not on the machine.
+  'video-sub-open': 0,
   'save-lyrics': 0,
   'yt-auth-start': 0,
 }
@@ -6912,7 +6914,7 @@ ipcMain.handle('video-control', async (_, { verb, args } = {}) => {
       case 'subDelay': await engine.setSubDelay(args?.value ?? args?.ms); break
       case 'audioDelay': await engine.setAudioDelay(args?.value ?? args?.ms); break
       case 'subStyle': await engine.setSubStyle(args); break
-      case 'aspect': await engine.setAspect(args?.aspect); break
+      case 'aspect': await engine.setAspect(args?.value ?? args?.aspect); break
       case 'zoom': await engine.setZoom(args?.value ?? args?.zoom); break
       case 'audioFilter': await engine.setAudioFilter(args?.value ?? args?.af); break
       case 'screenshot': {
@@ -6941,6 +6943,24 @@ ipcMain.handle('video-tracks', async () => {
     return { ok: true, tracks }
   } catch (e) {
     return { ok: false, error: (e && e.message) || String(e), tracks: [] }
+  }
+})
+
+// Loading a subtitle file the release did not ship with. mpv can do this and
+// the engine already exposed it; nothing ever offered it, so a torrent with no
+// subtitles or the wrong language was a dead end.
+ipcMain.handle('video-sub-open', async () => {
+  try {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: 'Add a subtitle file',
+      properties: ['openFile'],
+      filters: [{ name: 'Subtitles', extensions: ['srt', 'ass', 'ssa', 'sub', 'vtt', 'idx'] }],
+    })
+    if (result.canceled || !result.filePaths.length) return { ok: false, canceled: true }
+    await videoEngine().addSubtitle(result.filePaths[0], true)
+    return { ok: true, path: result.filePaths[0] }
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) }
   }
 })
 

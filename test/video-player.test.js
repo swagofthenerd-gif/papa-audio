@@ -767,3 +767,14 @@ test('fullscreen removes the app titlebar and fills the space', () => {
   const fn = src.slice(src.indexOf('function toggleFullscreen'), src.indexOf('function toggleFullscreen') + 900)
   assert.match(fn, /classList\.toggle\('video-fullscreen', isFullscreen\)/)
 })
+
+// TMDB files specials, OVAs and recaps as season 0, and it sorted first — so
+// the picker opened on Specials, which nobody wants, and pushed Season 1 down.
+test('specials go last in the season picker and are named, not numbered', () => {
+  const fn = _rend.slice(_rend.indexOf('function _renderVideoControls'), _rend.indexOf('function _renderVideoControls') + 1800)
+  assert.match(fn, /a\.seasonNumber === 0 \? 1 : -1/)
+  assert.match(fn, /\?\s*\(s\.name \? esc\(s\.name\) : 'Specials'\)/)
+  // TMDB names most seasons literally "Season 3", which read as
+  // "Season 3 — Season 3".
+  assert.match(fn, /\^season\\s\*\\d\+\$/)
+})

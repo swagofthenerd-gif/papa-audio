@@ -533,6 +533,7 @@
     // Torrent releases desync constantly; nudging is the fix and it has to be
     // reachable while watching, not buried in settings.
     let delayMs = { subDelay: 0, audioDelay: 0 }
+    let subScale = 1
     function bindDelay(menu, selector, dataKey, verb, valueId) {
       menu.querySelectorAll(selector).forEach(function (b) {
         b.addEventListener('click', function () {
@@ -608,6 +609,21 @@
         '<div class="vt-menu-row">Night mode' +
           '<button class="vt-chip" data-af="night">On</button>' +
           '<button class="vt-chip" data-af="off">Off</button></div>' +
+        // Releases are routinely encoded with the wrong aspect flag, and
+        // anamorphic sources land stretched. mpv can override it and the
+        // engine already could; nothing offered it.
+        '<div class="vt-menu-row">Aspect' +
+          '<button class="vt-chip" data-aspect="-1">Auto</button>' +
+          '<button class="vt-chip" data-aspect="1.7778">16:9</button>' +
+          '<button class="vt-chip" data-aspect="1.3333">4:3</button>' +
+          '<button class="vt-chip" data-aspect="2.35">2.35</button></div>' +
+        '<div class="vt-menu-sep"></div>' +
+        '<div class="vt-menu-head">Subtitles</div>' +
+        '<div class="vt-menu-row">Size' +
+          '<button class="vt-chip" data-subscale="-0.1">Smaller</button>' +
+          '<button class="vt-chip" data-subscale="0.1">Bigger</button>' +
+          '<button class="vt-chip" data-subscale="reset">Reset</button></div>' +
+        menuItem('Add a subtitle file…') +
         '<div class="vt-menu-sep"></div>' +
         menuItem('Take screenshot')
       openMenu('vt-settings', html, function (m) {
@@ -623,7 +639,29 @@
             send('audioFilter', { value: b.dataset.af === 'night' ? 'dynaudnorm' : '' })
           })
         })
-        const shot = m.querySelector('.vt-menu-item')
+        m.querySelectorAll('[data-aspect]').forEach(function (b) {
+          b.addEventListener('click', function () {
+            send('aspect', { value: Number(b.dataset.aspect) })
+          })
+        })
+        // Burned-in styling cannot be changed, but for a real subtitle track
+        // the size is the one thing people actually reach for.
+        m.querySelectorAll('[data-subscale]').forEach(function (b) {
+          b.addEventListener('click', function () {
+            if (b.dataset.subscale === 'reset') subScale = 1
+            else subScale = Math.max(0.3, Math.min(3, subScale + Number(b.dataset.subscale)))
+            send('subStyle', { scale: subScale })
+          })
+        })
+        const items = m.querySelectorAll('.vt-menu-item')
+        const addSub = items[0]
+        if (addSub) {
+          addSub.addEventListener('click', function () {
+            closeMenu()
+            if (api && api.videoSubOpen) api.videoSubOpen().catch(function () {})
+          })
+        }
+        const shot = items[1]
         if (shot) shot.addEventListener('click', function () { send('screenshot'); closeMenu() })
       })
     }

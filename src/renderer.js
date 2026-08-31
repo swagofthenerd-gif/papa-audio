@@ -3233,9 +3233,24 @@ function _renderVideoControls(type) {
   if (!box) return
   if (type === 'tv') {
     const d = _videoDetail.d
-    const seasons = Array.isArray(d.seasons) ? d.seasons.filter(function (s) { return s.seasonNumber != null }) : []
+    // Season 0 is TMDB's bucket for specials, OVAs and recap episodes. It came
+    // first purely because it sorts first, so the picker opened on Specials —
+    // never what anyone wants — and pushed Season 1 down the list. It belongs
+    // at the end, named for what it is rather than as "Season 0".
+    const seasons = (Array.isArray(d.seasons) ? d.seasons.filter(function (s) { return s.seasonNumber != null }) : [])
+      .slice()
+      .sort(function (a, b) {
+        if ((a.seasonNumber === 0) !== (b.seasonNumber === 0)) return a.seasonNumber === 0 ? 1 : -1
+        return a.seasonNumber - b.seasonNumber
+      })
     const opts = seasons.map(function (s) {
-      return '<option value="' + s.seasonNumber + '"' + (s.seasonNumber === _videoState.season ? ' selected' : '') + '>Season ' + s.seasonNumber + (s.name ? ' — ' + esc(s.name) : '') + '</option>'
+      const label = s.seasonNumber === 0
+        ? (s.name ? esc(s.name) : 'Specials')
+        // TMDB names most seasons literally "Season 3", which read as
+        // "Season 3 — Season 3". Only a real name earns the suffix.
+        : 'Season ' + s.seasonNumber +
+          (s.name && !/^season\s*\d+$/i.test(String(s.name).trim()) ? ' — ' + esc(s.name) : '')
+      return '<option value="' + s.seasonNumber + '"' + (s.seasonNumber === _videoState.season ? ' selected' : '') + '>' + label + '</option>'
     }).join('')
     box.innerHTML = '<div class="video-controls-row"><label class="video-control">Season<select class="mcs-set-select video-season-select" id="video-season-select">' + opts + '</select></label><div class="video-episode-list" id="video-episode-list"></div></div>'
     document.getElementById('video-season-select')?.addEventListener('change', function (e) {
