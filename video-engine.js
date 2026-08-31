@@ -205,8 +205,13 @@ class VideoEngine extends EventEmitter {
       // bar, play/pause, volume, fullscreen, track selection — and its default
       // keybindings come with it. Stripping them left a bare picture with no
       // way to do anything, which is worse than any styling gained.
-      '--osc=yes',
-      '--osd-bar=yes',
+      // Only when mpv has its own window. Embedded, the app's deck sits
+      // directly beneath the picture and is fully reachable, so mpv's
+      // controller is a second transport stacked on the first — its own seek
+      // bar, filename and cache readout drawn over the bottom of the video,
+      // immediately above ours. One set of controls, and it should be the
+      // app's.
+      ...(wid ? ['--osc=no'] : ['--osc=yes', '--osd-bar=yes']),
       // Papa's own actions are bound on top in _bindAppKeys(); those bindings
       // override the defaults for the keys they claim.
       '--title=Papa Video',

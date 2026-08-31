@@ -650,3 +650,36 @@ test('a stage with no size reports nothing rather than a degenerate rectangle', 
     assert.match(css, /body\.video-active \.player-bar \.player-center,\s*\n?body\.video-active \.player-bar \.vol-section \{ display:none; \}/)
   })
 }
+
+// ── Theatre chrome ─────────────────────────────────────────────────────────
+const _css = require('fs').readFileSync(require('path').join(__dirname, '..', 'src', 'styles.css'), 'utf8')
+const _rend = require('fs').readFileSync(require('path').join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
+
+// inset:0 put the theatre's own top bar — the back button and the title —
+// behind the app titlebar, which wins the overlap despite the lower z-index
+// because the two are in different stacking contexts. The button measured as
+// present and visible the whole time; elementFromPoint at its centre returned
+// the titlebar. That was "no way to go back".
+test('the theatre is seated below the titlebar, not under it', () => {
+  const rule = _css.slice(_css.indexOf('.vtheatre {'), _css.indexOf('.vtheatre.hidden'))
+  assert.ok(!/inset\s*:\s*0/.test(rule), 'inset:0 hides the back button behind the titlebar')
+  assert.match(rule, /top\s*:\s*var\(--titlebar-h\)/)
+})
+
+// A music bar has no business on the video pages, and it ran across the bottom
+// of the episode list. Keyed on the page, not on playback, so it is gone as
+// soon as Movies is opened rather than only once something starts.
+test('the music bar is hidden on every video page', () => {
+  assert.match(_css, /body\.video-page \.player-bar\s*\{[^}]*display\s*:\s*none/)
+  assert.match(_css, /body\.video-page\s*\{[^}]*--player-h:\s*0/)
+})
+
+test('every video page sets the body class that hides it', () => {
+  const set = /const VIDEO_PAGES = new Set\(\[([^\]]+)\]\)/.exec(_rend)
+  assert.ok(set, 'VIDEO_PAGES must exist')
+  const pages = set[1].split(',').map(s => s.trim().replace(/'/g, ''))
+  for (const p of ['video', 'browse', 'person', 'video-detail']) {
+    assert.ok(pages.includes(p), `${p} is a video page and must hide the music bar`)
+  }
+  assert.match(_rend, /classList\.toggle\('video-page', VIDEO_PAGES\.has\(page\)\)/)
+})

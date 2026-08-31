@@ -6264,8 +6264,15 @@ body.app-unfocused *::after {
    video. So #vt-stage reserves the rectangle main.js positions that window
    onto, and every control lives outside it. Nothing overlaps the video.
 ══════════════════════════════════════════════════════ */
+/* Seated BELOW the titlebar, not under it. inset:0 put the theatre's own top
+   bar — the back button and the title — behind the app titlebar, which wins
+   the overlap despite the lower z-index because the two sit in different
+   stacking contexts. The button was there, sized and visible by every measure
+   the DOM reports, and simply could not be clicked or seen: elementFromPoint
+   at its centre returned the titlebar. That is the "no way to go back".
+   Starting below it also keeps the window controls reachable while watching. */
 .vtheatre {
-  position:fixed; inset:0; z-index:2000;
+  position:fixed; top:var(--titlebar-h); left:0; right:0; bottom:0; z-index:2000;
   display:grid; grid-template-rows:auto 1fr auto auto;
   background:#000; color:#fff;
   animation:fadeIn .18s var(--ease-out);
@@ -6316,6 +6323,14 @@ body.app-unfocused *::after {
 
    Bottom-LEFT deliberately: the video's own mini player is bottom-right, and
    the two must never land on top of each other. */
+/* On the video pages the music bar is gone outright — a different medium
+   owns the screen, and the bar was running across the bottom of the episode
+   list. Keyed on the page rather than on playback so it disappears as soon as
+   Movies is opened, not only once a video starts. The height variable goes
+   with it so the content reclaims the space instead of leaving a gap. */
+body.video-page { --player-h: 0px; }
+body.video-page .player-bar { display:none !important; }
+
 body.video-active { --player-h: 8px; }
 
 body.video-active .player-bar {

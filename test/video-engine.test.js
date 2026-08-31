@@ -565,3 +565,20 @@ test('a video engine still builds when the input.conf cannot be written', () => 
   assert.ok(!args.some(a => a.startsWith('--input-conf=')), 'a missing conf must not produce a broken flag')
   assert.ok(args.includes('--osc=yes'), 'and playback still has controls')
 })
+
+// Embedded, the app's deck sits directly beneath the picture and is fully
+// reachable, so mpv's own controller is a second transport stacked on the
+// first — its seek bar, filename and cache readout drawn over the bottom of
+// the video, immediately above ours. In its own window the deck is in another
+// window entirely and mpv needs controls of its own.
+test('mpv draws no controls of its own when embedded', () => {
+  const a = new VideoEngine({ config: {} })._args('/tmp/v.sock', { wid: '0x1' })
+  assert.ok(a.includes('--osc=no'))
+  assert.ok(!a.includes('--osc=yes'))
+})
+
+test('mpv keeps its controls when it owns the window', () => {
+  const a = new VideoEngine({ config: {} })._args('/tmp/v.sock')
+  assert.ok(a.includes('--osc=yes'))
+  assert.ok(a.includes('--osd-bar=yes'))
+})

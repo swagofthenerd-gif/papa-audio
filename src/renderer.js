@@ -1105,6 +1105,8 @@ async function restorePlaybackState(opts) {
 }
 
 // ── Navigation ──────────────────────────────────────────────────────────────
+const VIDEO_PAGES = new Set(['video', 'browse', 'person', 'video-detail'])
+
 function navigate(page, navId, opts = {}) {
   // Save scroll position of page we're leaving
   const contentEl = document.getElementById('content')
@@ -1129,6 +1131,11 @@ function navigate(page, navId, opts = {}) {
   })
 
   state.currentPage        = page
+  // The music bar has no business on the video pages: it is the wrong medium,
+  // and it sat across the bottom of the episode list. Driven by which page is
+  // open rather than by whether a video is playing, so it is gone the moment
+  // Movies is opened and not only once something starts.
+  document.body.classList.toggle('video-page', VIDEO_PAGES.has(page))
   state.currentAlbumId     = page === 'album'  ? navId : null
   state.currentArtistName  = page === 'artist' ? navId : ''
   state.currentSearchQuery = page === 'search' ? navId : ''
