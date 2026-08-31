@@ -280,7 +280,19 @@ function pct (x) {
 // it around for reasons that are not the app's fault.
 const METRIC_RULES = {
   domNodes: { leakRelGrowth: 0.08, minAbsGrowth: 200 },
-  listeners: { leakRelGrowth: 0.05, minAbsGrowth: 25 },
+  // Tuned for the live count, which sits in the tens rather than the hundreds.
+  // A one-time init on a page first visited late in a run moves it by 2, so the
+  // absolute floor is what stops that reading as a leak.
+  listeners: { leakRelGrowth: 0.15, minAbsGrowth: 8 },
+  // Nothing collects these, so a sustained rise matters — but the app registers
+  // a fixed set of them as pages are first visited, and on a short run those
+  // first visits fall AFTER the warm-up window and read as a step change. The
+  // floor is set above the app's whole global budget (twenty registrations, of
+  // which the measured live count is six) so a genuine repeat leak still trips
+  // it while one-time init does not. test/soak-probe.test.js guards the budget
+  // statically, which is the check that catches a new leak at commit time
+  // rather than two hours into a run.
+  listenersGlobal: { leakRelGrowth: 0.5, minAbsGrowth: 24 },
   rendererHeapUsed: { leakRelGrowth: 0.15, minAbsGrowth: 8 * 1024 * 1024 },
   rendererHeapTotal: { leakRelGrowth: 0.20, minAbsGrowth: 16 * 1024 * 1024 },
   mainHeapUsed: { leakRelGrowth: 0.15, minAbsGrowth: 8 * 1024 * 1024 },
@@ -382,18 +394,66 @@ function reportRun (samples) {
 
 // The renderer counts its own listeners, because there is no API that will tell
 // you from outside. Chromium exposes getEventListeners only in DevTools, so the
-// only honest count comes from wrapping the two functions that change it. This
-// is installed once, as early as possible, and undercounts by exactly the
-// listeners registered before it ran — which is fine, since the question is
-// whether the number grows, not what it is.
+// only honest count comes from wrapping the two functions that change it.
+//
+// The first version of this counted registrations: adds minus explicit removes.
+// On a renderer that builds pages by assigning innerHTML, that number can only
+// go up — every page render attaches listeners to fresh elements and then
+// discards those elements, and discarding an element takes its listeners with
+// it without any removeEventListener call. So the metric grew linearly forever
+// and the harness reported a leak on its first run: measured at 25, 42, 59,
+// 474, 793, 1014 across one three-minute soak.
+//
+// It was not a leak. Counting only LIVE listeners — a registration whose target
+// is still reachable and, for an element, still attached to the document — the
+// same navigation loop sits flat at 27 across six rounds. A metric that cannot
+// ever pass is worse than no metric, because a light that is always red is a
+// light nobody looks at.
+//
+// What survives is what actually leaks: listeners on window, document, the
+// documentElement and body, which nothing collects, plus anything still in the
+// tree. WeakRef is what makes the difference visible — if the target has been
+// collected, the listener went with it.
 const LISTENER_PROBE = `(function () {
   if (window.__soakListeners) return 'already'
-  var counts = { n: 0 }
-  var addFn = EventTarget.prototype.addEventListener
-  var remFn = EventTarget.prototype.removeEventListener
-  EventTarget.prototype.addEventListener = function () { counts.n++; return addFn.apply(this, arguments) }
-  EventTarget.prototype.removeEventListener = function () { counts.n--; return remFn.apply(this, arguments) }
-  window.__soakListeners = counts
+  var add = EventTarget.prototype.addEventListener
+  var rem = EventTarget.prototype.removeEventListener
+  var reg = []
+  function isGlobal (t) {
+    return t === window || t === document || t === document.documentElement || t === document.body
+  }
+  EventTarget.prototype.addEventListener = function (type, fn) {
+    // Never allowed to break the app it is measuring.
+    try { reg.push({ ref: new WeakRef(this), type: type, fn: fn, g: isGlobal(this) }) } catch (e) {}
+    return add.apply(this, arguments)
+  }
+  EventTarget.prototype.removeEventListener = function (type, fn) {
+    try {
+      for (var i = reg.length - 1; i >= 0; i--) {
+        var r = reg[i]
+        if (r.type !== type || r.fn !== fn) continue
+        if (r.ref.deref() === this) { reg.splice(i, 1); break }
+      }
+    } catch (e) {}
+    return rem.apply(this, arguments)
+  }
+  window.__soakListeners = {
+    read: function () {
+      var live = 0, glob = 0, kept = []
+      for (var i = 0; i < reg.length; i++) {
+        var r = reg[i]
+        var t = r.ref.deref()
+        if (!t) continue                       // collected with its element
+        if (!r.g && !t.isConnected) continue   // detached, so collectable
+        kept.push(r)
+        live++
+        if (r.g) glob++
+      }
+      // Pruned on every read, or the registry becomes the leak.
+      reg = kept
+      return { live: live, global: glob }
+    },
+  }
   return 'installed'
 })()`
 
@@ -402,9 +462,15 @@ const SAMPLE_PROBE = `(async function () {
   try { await window.api.getAppInfo() } catch (e) {}
   var rtt = performance.now() - t
   var mem = (performance && performance.memory) || {}
+  var ls = (window.__soakListeners && window.__soakListeners.read)
+    ? window.__soakListeners.read()
+    : { live: 0, global: 0 }
   return {
     domNodes: document.getElementsByTagName('*').length,
-    listeners: (window.__soakListeners || { n: 0 }).n,
+    listeners: ls.live,
+    // Broken out because these are the ones nothing can collect. A rise here is
+    // a leak with no ambiguity at all.
+    listenersGlobal: ls.global,
     rendererHeapUsed: mem.usedJSHeapSize || 0,
     rendererHeapTotal: mem.totalJSHeapSize || 0,
     ipcRttMs: rtt,
@@ -570,7 +636,7 @@ async function runElectron (opt) {
     // must cost the last sample, not the run.
     stream.write(JSON.stringify(sample) + '\n')
     if (sampleNo % 10 === 0 || sampleNo <= 3) {
-      info(`sample ${sampleNo} (${action.name}) dom ${sample.metrics.domNodes} listeners ${sample.metrics.listeners} heap ${(sample.metrics.rendererHeapUsed / 1048576).toFixed(1)}MB rtt ${(sample.metrics.ipcRttMs || 0).toFixed(1)}ms`)
+      info(`sample ${sampleNo} (${action.name}) dom ${sample.metrics.domNodes} listeners ${sample.metrics.listeners}/${sample.metrics.listenersGlobal}g heap ${(sample.metrics.rendererHeapUsed / 1048576).toFixed(1)}MB rtt ${(sample.metrics.ipcRttMs || 0).toFixed(1)}ms`)
     }
 
     const remain = Math.max(0, opt.intervalSec * 1000 - 8000)
