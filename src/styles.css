@@ -7379,5 +7379,92 @@ body.video-active .np-byline { font-size:10.5px; }
 .cinema .tp-month-l { font-size: 10.5px; color: var(--cin-muted); }
 
 @media (prefers-reduced-motion: reduce) {
-  .cinema .tp-btn, .cinema .tp-bar i, .cinema .tp-col i { transition: none; }
+  .cinema .tp-btn, .cinema .tp-bar i, .cinema .tp-col i,
+  .cinema .tp-year-btn { transition: none; }
+}
+
+/* ── The diary page and the detail page's record ─────────────────────────────
+   The panel styles above dress its own components. These are the two surfaces
+   that hold them: a two-column diary page, and the "Your record" block that
+   sits between the cast and the sources on a film's page. */
+.cinema .tp-page { padding: 0 28px 64px; }
+.cinema .tp-page-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 20px; flex-wrap: wrap;
+  padding: 26px 0 18px;
+  border-bottom: 1px solid var(--cin-line);
+  margin-bottom: 22px;
+}
+.cinema .tp-title {
+  font-family: var(--cin-display);
+  font-size: clamp(30px, 4vw, 44px);
+  font-weight: 400; letter-spacing: -.01em;
+  color: var(--cin-bone); margin: 0;
+}
+.cinema .tp-years { display: flex; gap: 6px; flex-wrap: wrap; }
+.cinema .tp-year-btn {
+  background: none; border: 1px solid var(--cin-line);
+  color: var(--cin-bone-2);
+  font-family: var(--cin-body); font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  padding: 5px 11px; border-radius: 2px; cursor: pointer;
+  transition: color .15s, border-color .15s, background .15s;
+}
+.cinema .tp-year-btn:hover { color: var(--cin-bone); border-color: var(--cin-bone-2); }
+.cinema .tp-year-btn.is-on {
+  color: var(--cin-ground); background: var(--cin-ember); border-color: var(--cin-ember);
+}
+
+/* Two columns on a wide window, one on a narrow one. The diary is the reading
+   column and keeps the width; favourites and lists are reference. */
+.cinema .tp-cols {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 40px;
+  align-items: start;
+}
+.cinema .tp-block + .tp-block { margin-top: 34px; }
+.cinema .tp-col-side { position: sticky; top: 18px; }
+@media (max-width: 1080px) {
+  .cinema .tp-cols { grid-template-columns: minmax(0, 1fr); gap: 30px; }
+  .cinema .tp-col-side { position: static; }
+}
+@media (max-width: 720px) {
+  .cinema .tp-page { padding-left: 16px; padding-right: 16px; }
+}
+
+/* The record on a film's page. The rating and the seen state read as one
+   statement on the left; the form to add an evening sits beside it. */
+.cinema .tp-record {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 320px);
+  gap: 28px;
+  align-items: start;
+}
+.cinema .tp-record-main { display: flex; flex-direction: column; gap: 14px; }
+.cinema .tp-record-diary, .cinema .tp-record-lists { margin-top: 26px; }
+@media (max-width: 900px) {
+  .cinema .tp-record { grid-template-columns: minmax(0, 1fr); gap: 20px; }
+}
+
+/* The tab bar is the most prominent control on every cinema page, and it was
+   still wearing the music accent: .vtab.active is defined outside the .cinema
+   scope, so All / Movies / TV / Anime / Browse / Diary / My List all lit up
+   Spotify green on a page whose entire palette is bone and ember. Phase 2 moved
+   the cards and the type across and left this behind.
+
+   Same specificity trick the rest of this file uses: the .cinema class plus the
+   selector, so it wins without !important. */
+.cinema .vtab.active {
+  color: var(--cin-ground);
+  background: var(--cin-ember);
+}
+.cinema .vtab:focus-visible { outline: 2px solid var(--cin-ember); }
+.cinema .vtab:hover:not(.active) { color: var(--cin-bone); background: var(--cin-raised); }
+
+/* A diary row's title goes to the film. It has to look like it does. */
+.cinema .tp-linked { cursor: pointer; }
+.cinema .tp-linked:hover { color: var(--cin-ember); text-decoration: underline; text-underline-offset: 2px; }
+.cinema .tp-linked:focus-visible {
+  outline: 2px solid var(--cin-ember); outline-offset: 2px; border-radius: 2px;
 }

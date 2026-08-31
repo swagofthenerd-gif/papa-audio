@@ -356,7 +356,10 @@ test('the profile prints breadth and devotion side by side, because they differ'
   assert.ok(/Kurosawa[\s\S]*?<b>2<\/b> films[\s\S]*?2 viewings/.test(html), 'Kurosawa: two films, two viewings')
   assert.ok(/Coppola[\s\S]*?<b>1<\/b> film[\s\S]*?3 viewings/.test(html), 'Coppola: one film watched three times')
   assert.ok(html.includes('<span class="tp-tally-name">Japan</span>'), 'countries are shown')
-  assert.ok(html.includes('<span class="tp-tally-name">1950</span>'), 'decades are shown by their first year')
+  // Was asserting "1950", which is what the store holds and reads on screen as
+  // a year rather than a decade. The store still holds the number; the panel
+  // formats it.
+  assert.ok(html.includes('<span class="tp-tally-name">1950s</span>'), 'decades read as decades')
 })
 
 test('the profile totals films, viewings and hours separately', () => {

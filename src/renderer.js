@@ -1105,7 +1105,7 @@ async function restorePlaybackState(opts) {
 }
 
 // ── Navigation ──────────────────────────────────────────────────────────────
-const VIDEO_PAGES = new Set(['video', 'browse', 'person', 'video-detail', 'shelf'])
+const VIDEO_PAGES = new Set(['video', 'browse', 'person', 'video-detail', 'shelf', 'diary'])
 
 function navigate(page, navId, opts = {}) {
   // Save scroll position of page we're leaving
@@ -1168,6 +1168,7 @@ function navigate(page, navId, opts = {}) {
   else if (page === 'person')      renderPerson(navId)
   else if (page === 'video-detail') renderVideoDetail(navId)
   else if (page === 'shelf')        renderShelf(navId)
+  else if (page === 'diary')        renderDiary(navId)
   } catch (err) {
     _renderFailure(page, err)
   }
@@ -1235,7 +1236,7 @@ function _bindBrowseKeys() {
   document.addEventListener('keydown', function (e) {
     if (e.ctrlKey || e.altKey || e.metaKey) return
     const page = state.currentPage
-    if (page !== 'video' && page !== 'browse' && page !== 'person' && page !== 'video-detail') return
+    if (page !== 'video' && page !== 'browse' && page !== 'person' && page !== 'video-detail' && page !== 'diary') return
     // The theatre is modal; while it is open its own keys apply.
     const theatre = document.getElementById('vtheatre')
     if (theatre && !theatre.classList.contains('hidden')) return
@@ -2067,6 +2068,7 @@ var _videoTabs = [
   { key: 'tv',    label: 'TV' },
   { key: 'anime', label: 'Anime' },
   { key: 'browse', label: 'Browse' },
+  { key: 'diary', label: 'Diary' },
   { key: 'list',  label: 'My List' },
 ]
 
@@ -2180,6 +2182,272 @@ function _initVideoUI() {
     _player.bind()
   }
   window.api.onVideoEvent(function (payload) { _handleVideoEvent(payload || {}) })
+}
+
+// ── The film diary ──────────────────────────────────────────────────────────
+// taste-store.js has held ratings, viewings, notes, favourites and lists since
+// phase 1, and taste-panel.js has been able to render all of it since phase 5.
+// Neither was reachable from the app: no script tag, no mount, no page. This is
+// the wiring, and nothing else — every decision about how a rating looks or what
+// a delete confirms lives in the panel.
+//
+// The keys are the same _watchKey() shapes the player already uses, so a film
+// marked seen here is the film the resume position belongs to.
+
+var _tasteP = null
+
+function _taste() {
+  if (_tasteP) return _tasteP
+  if (!window.PapaTasteStore || !window.PapaTastePanel) return null
+  _tasteP = window.PapaTastePanel.createTastePanel({
+    store: window.PapaTasteStore,
+    labelFor: _tasteLabelFor,
+    metaFor: _tasteMetaForKey,
+    // Every mutation lands here. Re-rendering the whole surface rather than
+    // patching it: the panels are interdependent -- rating a film changes the
+    // profile, the year in review and possibly the diary line above it -- and a
+    // partial repaint is how those drift apart.
+    onChange: function (event) { _onTasteChange(event) },
+  })
+  return _tasteP
+}
+
+// A diary entry carries a snapshot of the film's facts, so the diary can name
+// and summarise a viewing logged years ago with no network and no cache. This
+// walks the diary oldest-first so a later snapshot wins: the metadata for a
+// title improves as TMDB fills in, and the most recent sitting has the best
+// version of it.
+function _tasteMetaMap() {
+  const store = window.PapaTasteStore
+  if (!store) return {}
+  const out = {}
+  const entries = store.diary().slice().reverse()
+  for (const e of entries) {
+    if (!e || !e.key || !e.meta) continue
+    out[e.key] = Object.assign({}, out[e.key], e.meta)
+  }
+  return out
+}
+
+function _tasteLabelFor(key) {
+  const meta = _tasteMetaMap()[key]
+  if (meta && meta.title) {
+    return meta.year ? meta.title + ' (' + meta.year + ')' : meta.title
+  }
+  // Better the key than an empty row: a diary that hides what it recorded is
+  // worse than an ugly one.
+  return key
+}
+
+// The facts worth freezing into a viewing. Runtime is what makes "hours watched"
+// possible; directors, countries and languages are what the taste profile is
+// built from.
+function _tasteMetaOf(type, d) {
+  if (!d) return null
+  const crew = Array.isArray(d.crew) ? d.crew : []
+  const directors = crew
+    .filter(function (c) { return String(c.job || '').toLowerCase() === 'director' })
+    .map(function (c) { return c.name })
+    .filter(Boolean)
+  const meta = {
+    title: d.title || null,
+    year: d.year != null ? Number(d.year) : null,
+    type: type,
+    poster: d.poster || null,
+    runtime: Number(d.runtime) || 0,
+  }
+  if (directors.length) meta.directors = directors
+  else if (d.director) meta.directors = [d.director]
+  if (Array.isArray(d.countries) && d.countries.length) meta.countries = d.countries.slice()
+  if (Array.isArray(d.languages) && d.languages.length) meta.languages = d.languages.slice()
+  else if (d.language) meta.languages = [d.language]
+  return meta
+}
+
+// The key for whatever the detail page is currently showing. A series is keyed
+// per show rather than per episode here: a diary is about "I watched Andrei
+// Rublev", and per-episode rows would bury a film log under a season of TV.
+// Only the page currently open knows the facts about the film on it. Anything
+// else -- a key from the diary page, a stale key from a previous detail view --
+// gets whatever the diary already froze, which is the right answer: it must not
+// overwrite a good old snapshot with an empty new one.
+function _tasteMetaForKey(key) {
+  const open = _tasteKeyOfDetail()
+  if (open && open === key) {
+    const fresh = _tasteMetaOf(_videoDetail.type, _videoDetail.d)
+    if (fresh) return fresh
+  }
+  return _tasteMetaMap()[key] || null
+}
+
+function _tasteKeyOfDetail() {
+  if (!_videoDetail || !_videoDetail.d) return null
+  return _videoDetail.type + ':' + _videoDetail.d.id
+}
+
+function _onTasteChange(event) {
+  // The detail page and the diary page both show taste, and both are live.
+  if (state.currentPage === 'diary') return _renderDiaryBody()
+  if (state.currentPage === 'video-detail') return _renderTasteSection()
+  // A rating or a seen mark changes what the grids should hide, so a browse
+  // page left behind is stale the moment it is returned to. Cheap to mark.
+  _browseTasteDirty = true
+  if (event && event.type === 'unsee') _browseTasteDirty = true
+}
+
+var _browseTasteDirty = false
+
+// ── the detail page's own record of a film ─────────────────────────────────
+
+function _renderTasteSection() {
+  const mount = document.getElementById('vtaste')
+  const panel = _taste()
+  const key = _tasteKeyOfDetail()
+  if (!mount || !panel || !key) return
+  const store = window.PapaTasteStore
+  const count = store.watchCount(key)
+  mount.innerHTML =
+    '<section class="vsec tp-section" id="vtaste-inner">' +
+      '<h2 class="vsec-title">Your record</h2>' +
+      '<div class="tp-record">' +
+        '<div class="tp-record-main">' +
+          panel.renderRating(key) +
+          panel.renderSeen(key) +
+        '</div>' +
+        '<div class="tp-record-side">' +
+          panel.renderDiaryForm(key) +
+        '</div>' +
+      '</div>' +
+      (count ? '<div class="tp-record-diary">' + panel.renderDiary({ key: key }) + '</div>' : '') +
+      '<div class="tp-record-lists">' + panel.renderLists({ key: key }) + '</div>' +
+    '</section>'
+  panel.mount(document.getElementById('vtaste-inner'))
+}
+
+// ── the diary page ─────────────────────────────────────────────────────────
+// Everything the store holds, on one page: the profile, a year, the four
+// favourites, the lists and the whole diary. The panel builds all of it; this
+// decides the order and which year is showing.
+
+var _diaryYear = null
+var _diaryView = 'all'
+
+function renderDiary() {
+  _initVideoUI()
+  _videoTab = 'diary'
+  setContent('<div class="page vpage cinema">' + _vHeadHtml() +
+    '<div class="tp-page" id="tp-page">' +
+      '<div class="tp-page-head">' +
+        '<h1 class="tp-title">Diary</h1>' +
+        '<div class="tp-years" id="tp-years"></div>' +
+      '</div>' +
+      '<div class="tp-body" id="tp-body"></div>' +
+    '</div>' +
+  '</div>')
+  _bindVideoHead()
+  if (!window.PapaTasteStore || !window.PapaTastePanel) {
+    // Said out loud rather than rendering an empty page: this only happens if a
+    // script failed to load, and a blank diary looks identical to no history.
+    const body = document.getElementById('tp-body')
+    if (body) body.innerHTML = '<div class="tp-empty">The diary could not be loaded.</div>'
+    return
+  }
+  _renderDiaryBody()
+}
+
+function _renderDiaryYears() {
+  const box = document.getElementById('tp-years')
+  if (!box) return
+  const years = window.PapaTasteStore.diaryYears()
+  // Only offered when there is more than one: a single-year picker is a control
+  // that cannot do anything.
+  if (years.length < 2) { box.innerHTML = ''; return }
+  box.innerHTML = '<button class="tp-year-btn' + (_diaryView === 'all' ? ' is-on' : '') +
+      '" data-diary-year="all">All time</button>' +
+    years.map(function (y) {
+      return '<button class="tp-year-btn' + (_diaryView === 'year' && _diaryYear === y.year ? ' is-on' : '') +
+        '" data-diary-year="' + y.year + '" title="' + y.viewings +
+        (y.viewings === 1 ? ' viewing' : ' viewings') + '">' + y.year + '</button>'
+    }).join('')
+  box.querySelectorAll('[data-diary-year]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      const v = b.dataset.diaryYear
+      if (v === 'all') { _diaryView = 'all'; _diaryYear = null }
+      else { _diaryView = 'year'; _diaryYear = Number(v) }
+      _renderDiaryBody()
+    })
+  })
+}
+
+function _renderDiaryBody() {
+  const body = document.getElementById('tp-body')
+  const panel = _taste()
+  if (!body || !panel) return
+  const meta = _tasteMetaMap()
+  const store = window.PapaTasteStore
+
+  // A year that has since been emptied must not leave the page showing a year
+  // that no longer exists.
+  if (_diaryView === 'year') {
+    const years = store.diaryYears().map(function (y) { return y.year })
+    if (!years.includes(_diaryYear)) { _diaryView = 'all'; _diaryYear = null }
+  }
+
+  const summary = _diaryView === 'year'
+    ? panel.renderYearInReview(_diaryYear, meta)
+    : panel.renderProfile(meta)
+
+  body.innerHTML =
+    '<div class="tp-cols">' +
+      '<div class="tp-col-main">' +
+        '<section class="tp-block">' + summary + '</section>' +
+        '<section class="tp-block">' +
+          '<h3 class="tp-h">' + (_diaryView === 'year' ? esc(String(_diaryYear)) : 'Everything') + '</h3>' +
+          // One query, one renderer. The year view differs from all-time only in
+          // the filter it passes.
+          panel.renderDiary(_diaryView === 'year' ? { year: _diaryYear } : {}) +
+        '</section>' +
+      '</div>' +
+      '<aside class="tp-col-side">' +
+        '<section class="tp-block">' + panel.renderFavourites(null) + '</section>' +
+        '<section class="tp-block">' + panel.renderLists(null) + '</section>' +
+      '</aside>' +
+    '</div>'
+
+  panel.mount(body)
+  _renderDiaryYears()
+  _bindDiaryLinks()
+}
+
+// A diary row names a film; the name should take you to it. The row carries its
+// entry id and not its key, so the key comes from the store rather than from a
+// data attribute that does not exist.
+function _bindDiaryLinks() {
+  const store = window.PapaTasteStore
+  if (!store) return
+  const byId = new Map()
+  for (const e of store.diary()) byId.set(e.id, e.key)
+
+  document.querySelectorAll('.tp-entry[data-tp-id]').forEach(function (row) {
+    const title = row.querySelector('.tp-entry-title')
+    if (!title || title.dataset.diaryLinked === '1') return
+    const key = byId.get(row.dataset.tpId)
+    if (!key) return
+    title.dataset.diaryLinked = '1'
+    title.setAttribute('role', 'link')
+    title.setAttribute('tabindex', '0')
+    title.classList.add('tp-linked')
+    const go = function () {
+      const parts = String(key).split(':')
+      // Only the two shapes the detail page can open. An episode key
+      // ("tv:1396:s1e2") resolves to its show, which is where the episode is.
+      if (parts.length >= 2) navigate('video-detail', parts[0] + ':' + parts[1])
+    }
+    title.addEventListener('click', go)
+    title.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go() }
+    })
+  })
 }
 
 // The identity a position is stored against. An episode is keyed per episode,
@@ -2716,9 +2984,9 @@ function _bindShelfScroll(ticket) {
 
 async function renderVideo() {
   _initVideoUI()
-  // Arriving here from Browse, the tab state still says 'browse'; the catalog
-  // page has no such row set, so fall back to All.
-  if (_videoTab === 'browse') _videoTab = 'all'
+  // Arriving here from Browse or the Diary, the tab state still names that
+  // page; the catalog page has no such row set, so fall back to All.
+  if (_videoTab === 'browse' || _videoTab === 'diary') _videoTab = 'all'
   const ticket = ++_videoCatalogTicket
   setContent('<div class="page vpage cinema">' +
     _vHeadHtml() +
@@ -2751,9 +3019,10 @@ function _bindVideoHead() {
     b.addEventListener('click', function () {
       if (_videoTab === b.dataset.vtab && state.currentPage !== 'browse') return
       _videoTab = b.dataset.vtab
-      // Browse is a page of its own rather than a filtered set of rows.
+      // Browse and Diary are pages of their own rather than filtered sets of rows.
       if (_videoTab === 'browse') return navigate('browse')
-      if (state.currentPage === 'browse') return navigate('video')
+      if (_videoTab === 'diary') return navigate('diary')
+      if (state.currentPage === 'browse' || state.currentPage === 'diary') return navigate('video')
       document.querySelectorAll('.vtab').forEach(function (x) {
         const on = x.dataset.vtab === _videoTab
         x.classList.toggle('active', on)
@@ -3298,6 +3567,7 @@ async function renderVideoDetail(navId) {
 
   _bindTrailerButton()
   _renderCastRow(d)
+  _renderTasteSection()
   _renderProviders(d)
   _renderSimilar(d)
   _bindPersonLinks()
@@ -3356,6 +3626,7 @@ function _videoDetailShell(d) {
   return hero +
     '<div class="vseasons" id="vseasons" hidden></div>' +
     '<div id="vcast"></div>' +
+    '<div id="vtaste"></div>' +
     '<div id="vwatch"></div>' +
     '<div id="vsimilar"></div>' +
     '<div class="video-controls" id="video-controls"></div>' +

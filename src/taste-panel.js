@@ -93,6 +93,16 @@
     // it cannot say, the key itself is shown rather than an empty row, because a
     // diary that hides what it recorded is worse than an ugly one.
     const labelFor = typeof o.labelFor === 'function' ? o.labelFor : (k => k)
+    // The facts about a film, frozen into the viewing at the moment it is
+    // logged. Without this the panel could record THAT something was watched and
+    // never WHAT: the diary showed raw keys, and the taste profile -- which is
+    // built entirely from directors, years, countries, languages and runtime --
+    // had nothing to work with and came out empty however much history existed.
+    //
+    // A snapshot rather than a lookup, because a diary is a record of evenings
+    // that must still read correctly offline, years later, after the catalogue
+    // has moved on.
+    const metaFor = typeof o.metaFor === 'function' ? o.metaFor : (() => null)
 
     if (!store) throw new Error('createTastePanel needs a store')
 
@@ -105,6 +115,14 @@
       let out = null
       try { out = labelFor(key) } catch (_) { out = null }
       return out === null || out === undefined || out === '' ? String(key) : String(out)
+    }
+
+    // Never allowed to stop a viewing being recorded: a diary entry is worth
+    // more than the facts attached to it.
+    function meta(key) {
+      let out = null
+      try { out = metaFor(key) } catch (_) { out = null }
+      return out && typeof out === 'object' && !Array.isArray(out) ? out : null
     }
 
     // ── rating ─────────────────────────────────────────────────────────────
@@ -357,15 +375,24 @@
     // makes three directors look identical when the second number says plainly
     // that one of them is the answer, and printing only the second lets one
     // rewatched film outrank a whole filmography.
-    function renderTallies(title, rows, unit) {
+    // The store keeps a decade as the number 1950, which is right for data and
+    // wrong on screen: a decade is "1950s". The formatting belongs here, not in
+    // the store, so nothing has to parse it back.
+    function decadeLabel(value) {
+      const n = Number(value)
+      return Number.isFinite(n) ? n + 's' : String(value)
+    }
+
+    function renderTallies(title, rows, unit, formatName) {
       const noun = unit || 'films'
+      const fmt = typeof formatName === 'function' ? formatName : (v => v)
       if (!rows || !rows.length) return ''
       const max = rows.reduce((m, r) => Math.max(m, r.count), 0)
       return '' +
         '<section class="tp-tally"><h4 class="tp-h4">' + esc(title) + '</h4>' +
           '<ol class="tp-tally-rows">' + rows.map(r => '' +
             '<li class="tp-tally-row">' +
-              '<span class="tp-tally-name">' + esc(r.name) + '</span>' +
+              '<span class="tp-tally-name">' + esc(fmt(r.name)) + '</span>' +
               '<span class="tp-bar" aria-hidden="true"><i style="width:' + pct(r.count, max) + '%"></i></span>' +
               '<span class="tp-tally-n">' +
                 '<b>' + esc(r.count) + '</b> ' + esc(r.count === 1 ? noun.replace(/s$/, '') : noun) +
@@ -392,7 +419,7 @@
               '<span class="tp-dim"> over ' + esc(p.ratedTitles) + ' rated</span></dd></div>' +
           '</dl>' +
           renderTallies('Directors', p.topDirectors) +
-          renderTallies('Decades', p.decades) +
+          renderTallies('Decades', p.decades, 'films', decadeLabel) +
           renderTallies('Countries', p.topCountries) +
           renderTallies('Languages', p.topLanguages) +
           (p.viewings ? '' : '<p class="tp-empty">Nothing logged yet. This fills in as you watch.</p>') +
@@ -412,6 +439,12 @@
             '<div><dt>Films</dt><dd>' + esc(y.titles) + '</dd></div>' +
             '<div><dt>Viewings</dt><dd>' + esc(y.viewings) + '</dd></div>' +
             '<div><dt>Hours</dt><dd>' + esc(y.hours) + '</dd></div>' +
+            // Omitted until the store could scope it: profile() averaged the
+            // whole ratings map regardless of the year asked for, so this said
+            // "your average since forever" under a heading naming one year.
+            '<div><dt>Average rating</dt><dd>' +
+              (y.averageRating === null || y.averageRating === undefined ? '&mdash;' : esc(y.averageRating)) +
+              '<span class="tp-dim"> over ' + esc(y.ratedTitles || 0) + ' rated</span></dd></div>' +
           '</dl>' +
           '<section class="tp-tally"><h4 class="tp-h4">Across the year</h4>' +
             '<ol class="tp-months">' + y.perMonth.map((n, i) => '' +
@@ -430,6 +463,12 @@
               '</li>').join('') + '</ol>' +
           '</section>' +
           renderTallies('Directors of the year', y.topDirectors) +
+          // yearInReview has always returned these three and the view showed
+          // only directors. "The year I watched a lot of 1970s Italian films" is
+          // the kind of thing a year in review exists to tell you.
+          renderTallies('Decades you went to', y.decades, 'films', decadeLabel) +
+          renderTallies('Countries', y.topCountries) +
+          renderTallies('Languages', y.topLanguages) +
           (y.viewings ? '' : '<p class="tp-empty">Nothing logged in ' + esc(y.year) + '.</p>') +
         '</div>'
     }
@@ -471,7 +510,7 @@
         case 'seen': {
           // rewatch is left to the store, which knows the log and cannot
           // disagree with itself the way a checkbox in the UI can.
-          const entry = store.logViewing(d.key, { date: d.date, note: d.note })
+          const entry = store.logViewing(d.key, { date: d.date, note: d.note, meta: meta(d.key) })
           return done(action, entry ? 'ok' : 'noop', { key: d.key, entry })
         }
         case 'diary-add': {
@@ -479,6 +518,7 @@
             date: d.date,
             rewatch: typeof d.rewatch === 'boolean' ? d.rewatch : undefined,
             note: d.note ? String(d.note) : null,
+            meta: meta(d.key),
           })
           return done(action, entry ? 'ok' : 'noop', { key: d.key, entry })
         }
@@ -517,13 +557,13 @@
           return done(action, 'ok', { favourites: store.removeFavourite(d.key) })
         }
         case 'fav-move': {
-          const keys = store.favourites()
-          const from = keys.indexOf(d.key)
-          const to = Math.max(0, Math.min(keys.length - 1, Number(d.to)))
-          if (from < 0 || !Number.isFinite(to) || from === to) return done(action, 'noop', { favourites: keys })
-          keys.splice(to, 0, keys.splice(from, 1)[0])
-          const next = store.setFavourites(keys)
-          return done(action, next ? 'ok' : 'noop', { favourites: store.favourites() })
+          // Was: read the four, splice a copy, write the whole array back. That
+          // is the stale-array hazard moveInList was built to avoid, and it
+          // applied here for the same reason — the array this panel read a
+          // moment ago is not necessarily the array on disk. One key, one
+          // destination, and the store does the arithmetic.
+          const next = store.moveFavourite(d.key, d.to)
+          return done(action, next ? 'ok' : 'noop', { favourites: next || store.favourites() })
         }
         case 'list-create': {
           const list = store.createList(d.name)

@@ -127,3 +127,27 @@ test('ffprobe is not run synchronously inside the scan path', () => {
   assert.doesNotMatch(fn, /Sync\s*\(/)
   assert.match(CODE, /await ffprobeAudio\(/, 'the caller is already async')
 })
+
+// ── the screenshot harness must never ship ─────────────────────────────────
+
+test('no screenshot harness is left in main.js', () => {
+  // Screenshots are taken by temporarily inserting a block into main.js that
+  // drives the renderer and calls webContents.capturePage(). The convention was
+  // that a forgotten one gets caught by the execSync check above — but a
+  // capturePage harness needs no execSync at all, so nothing was watching. This
+  // is.
+  //
+  // Named markers rather than a general search: the point is to catch the
+  // specific block, and to say so plainly when it is still there.
+  assert.doesNotMatch(CODE, /SHOT-HARNESS/, 'the screenshot harness is still in main.js')
+  assert.doesNotMatch(CODE, /capturePage\s*\(/, 'capturePage belongs to the harness, not the app')
+  assert.doesNotMatch(CODE, /PAPA_SHOTS|PAPA_SHOT_SCRIPT|PAPA_SHOT_QUIT/,
+    'the harness environment variables are still read')
+})
+
+test('main.js drives the renderer only where it means to', () => {
+  // executeJavaScript is how the harness pokes the app. There is one legitimate
+  // use in the app and it is not this; if the count grows, say so.
+  const uses = [...CODE.matchAll(/executeJavaScript\s*\(/g)].length
+  assert.ok(uses <= 1, `executeJavaScript is used ${uses} times; a harness may have been left behind`)
+})

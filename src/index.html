@@ -766,6 +766,11 @@
 <script src="video-keymap.js"></script>
 <script src="skip-model.js"></script>
 <script src="video-player.js"></script>
+<!-- The film diary. taste-store.js is the data layer, taste-panel.js the
+     only thing that turns it into markup; both are UMD so the tests reach
+     them with require() and no DOM. -->
+<script src="taste-store.js"></script>
+<script src="taste-panel.js"></script>
 <script src="renderer.js"></script>
 </body>
 </html>

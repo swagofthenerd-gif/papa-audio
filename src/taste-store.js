@@ -244,6 +244,13 @@
       const o = _isPlainObject(opts) ? opts : {}
       let out = load().diary
       if (typeof o.key === 'string') out = _index().get(o.key) || []
+      // A year filter, so a year view can ask the diary for a year instead of
+      // fetching everything and slicing it -- which is what made the caller
+      // reach past the panel and rebuild rows by hand.
+      if (o.year !== undefined && o.year !== null) {
+        const y = String(o.year)
+        out = out.filter(e => String(e.date).slice(0, 4) === y)
+      }
       out = out.slice().sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : (Number(b.loggedAt) || 0) - (Number(a.loggedAt) || 0)))
       return typeof o.limit === 'number' && o.limit > 0 ? out.slice(0, o.limit) : out
     }
@@ -271,6 +278,11 @@
       if (idx < 0) return null
       const [gone] = state.diary.splice(idx, 1)
       invalidate()
+      // The seen flag is a shadow of the diary, and it used to outlive it: with
+      // every viewing of a title deleted, hasSeen() still said yes, so the title
+      // stayed hidden behind "hide watched" with nothing left to explain why and
+      // no way to take it back.
+      if (!(_index().get(gone.key) || []).length) delete state.seen[gone.key]
       save()
       return { ...gone }
     }
@@ -281,8 +293,111 @@
       if (state.diary.some(e => e.id === entry.id)) return null
       state.diary.push({ ...entry })
       invalidate()
+      // Restores the flag as well, or undoing the deletion of a last viewing
+      // gives back the entry without giving back the watched state.
+      state.seen[entry.key] = state.seen[entry.key] || { at: clock() }
       save()
       return { ...entry }
+    }
+
+    // Forgets a title completely: every viewing of it and the seen flag. The
+    // rating is deliberately left alone — a verdict on a film survives deciding
+    // you logged the evening by mistake.
+    //
+    // Returns what it removed so the caller can offer undo, which is the only
+    // recovery there is for hand-typed entries.
+    function unsee(key) {
+      if (typeof key !== 'string' || !key) return null
+      const state = load()
+      const removed = (_index().get(key) || []).map(e => ({ ...e }))
+      const hadFlag = !!state.seen[key]
+      if (!removed.length && !hadFlag) return null
+      state.diary = state.diary.filter(e => e.key !== key)
+      delete state.seen[key]
+      invalidate()
+      save()
+      return { key, viewings: removed, hadFlag }
+    }
+
+    // Hands back exactly what unsee() returned.
+    function resee(removal) {
+      if (!_isPlainObject(removal) || typeof removal.key !== 'string') return null
+      const state = load()
+      const list = Array.isArray(removal.viewings) ? removal.viewings : []
+      for (const e of list) {
+        if (!_isPlainObject(e) || state.diary.some(x => x.id === e.id)) continue
+        state.diary.push({ ...e })
+      }
+      if (list.length || removal.hadFlag) {
+        state.seen[removal.key] = state.seen[removal.key] || { at: clock() }
+      }
+      invalidate()
+      save()
+      return viewingsOf(removal.key)
+    }
+
+    // ---- correcting an entry ----------------------------------------------
+
+    // A misremembered date and a wrongly-flagged rewatch were the two fields
+    // that could not be corrected: only the note could move, so fixing either
+    // meant delete-and-re-log, which loses the id the UI holds and any undo
+    // token pointing at it.
+    //
+    // The id is deliberately preserved. Only the fields named in the patch move.
+    function editViewing(id, patch) {
+      const p = _isPlainObject(patch) ? patch : {}
+      const state = load()
+      const entry = state.diary.find(e => e.id === id)
+      if (!entry) return null
+      let touched = false
+      if (p.date !== undefined) {
+        const date = normalizeDate(p.date)
+        // An unparseable date is refused outright rather than falling back to
+        // today: silently moving a viewing to now is worse than not moving it.
+        if (!date) return null
+        if (date !== entry.date) { entry.date = date; touched = true }
+      }
+      if (p.rewatch !== undefined) {
+        const flag = !!p.rewatch
+        if (flag !== entry.rewatch) { entry.rewatch = flag; touched = true }
+      }
+      if (p.note !== undefined) {
+        const note = typeof p.note === 'string' ? p.note : null
+        if (note !== entry.note) { entry.note = note; touched = true }
+      }
+      if (p.rating !== undefined) {
+        const r = isValidRating(p.rating) ? Number(p.rating) : null
+        if (r !== entry.rating) { entry.rating = r; touched = true }
+        // Same rule as logViewing: a rating attached to a sitting is also the
+        // title's verdict.
+        if (r !== null) rate(entry.key, r)
+      }
+      if (!touched) return { ...entry }
+      entry.editedAt = clock()
+      // The diary is sorted by date on read, so a changed date needs no
+      // re-indexing — but byKey holds references into state.diary, and a date
+      // change must not be observed through a stale bucket.
+      invalidate()
+      save()
+      return { ...entry }
+    }
+
+    // ---- which years have anything in them --------------------------------
+
+    // A year picker had to scan the whole diary to know what to offer, which
+    // means every caller reimplements the same loop and gets the sort order to
+    // itself.
+    function diaryYears() {
+      const counts = new Map()
+      for (const e of load().diary) {
+        const y = Number(String(e.date).slice(0, 4))
+        if (!Number.isFinite(y)) continue
+        counts.set(y, (counts.get(y) || 0) + 1)
+      }
+      // Newest first: a year picker opens on the year you are living in.
+      return [...counts.entries()]
+        .map(([year, viewings]) => ({ year, viewings }))
+        .sort((a, b) => b.year - a.year)
     }
 
     // ---- query helpers ----------------------------------------------------
@@ -343,6 +458,24 @@
       return state.favourites.slice()
     }
 
+    // The same reasoning as moveInList, and it was missing here: the only way to
+    // reorder was setFavourites(wholeArray), so a UI holding a list read a
+    // moment ago would write back four keys and silently undo anything added
+    // since. One key, one destination.
+    function moveFavourite(key, toIndex) {
+      const state = load()
+      const from = state.favourites.indexOf(key)
+      if (from < 0) return null
+      const n = Number(toIndex)
+      if (!Number.isFinite(n)) return null
+      const to = Math.max(0, Math.min(state.favourites.length - 1, Math.round(n)))
+      if (to === from) return state.favourites.slice()
+      const [k] = state.favourites.splice(from, 1)
+      state.favourites.splice(to, 0, k)
+      save()
+      return state.favourites.slice()
+    }
+
     // ---- lists ------------------------------------------------------------
 
     function lists() {
@@ -375,6 +508,22 @@
       const l = load().lists.find(x => x.id === id)
       if (!l || typeof name !== 'string' || !name.trim()) return null
       l.name = name.trim()
+      l.updatedAt = clock()
+      save()
+      return getList(id)
+    }
+
+    // createList accepted a description and nothing could ever change it, so the
+    // one sentence explaining what a list is FOR was fixed at the moment of
+    // least knowledge — before a single title had been added to it.
+    //
+    // An empty string clears it, which is different from not passing one.
+    function describeList(id, description) {
+      const l = load().lists.find(x => x.id === id)
+      if (!l) return null
+      if (description !== null && typeof description !== 'string') return null
+      const next = description === null ? null : (description.trim() || null)
+      l.description = next
       l.updatedAt = clock()
       save()
       return getList(id)
@@ -505,7 +654,23 @@
       }
       // Averaged over titles, not viewings: rating is a verdict on the film, and
       // rewatching a favourite must not drag the average toward it.
-      const values = Object.values(load().ratings).map(r => r.value)
+      //
+      // And averaged over the titles IN SCOPE. This read the whole ratings map
+      // regardless of the `entries` filter, so yearInReview -- whose entire job
+      // is to describe one year -- reported a lifetime average as that year's.
+      // The panel omitted the number rather than print something false.
+      const ratings = load().ratings
+      const scoped = o.entries !== undefined && Array.isArray(o.entries)
+      let values
+      if (scoped) {
+        values = []
+        for (const key of new Set(entries.map(e => e.key))) {
+          const r = ratings[key]
+          if (r && isValidRating(r.value)) values.push(r.value)
+        }
+      } else {
+        values = Object.values(ratings).map(r => r.value)
+      }
       const averageRating = values.length
         ? Math.round((values.reduce((a, b) => a + b, 0) / values.length) * 100) / 100
         : null
@@ -543,6 +708,9 @@
         titles: base.titles,
         hours: Math.round((base.totalRuntime / 60) * 10) / 10,
         totalRuntime: base.totalRuntime,
+        // Now genuinely this year's, so the panel can show it.
+        averageRating: base.averageRating,
+        ratedTitles: base.ratedTitles,
         topDirectors: base.topDirectors,
         decades: base.decades,
         topCountries: base.topCountries,
@@ -565,9 +733,10 @@
     return {
       rate, unrate, ratingOf,
       logViewing, markSeen, diary, viewingsOf, setNote, removeViewing, restoreViewing,
+      editViewing, diaryYears, unsee, resee,
       hasSeen, isWatched, watchCount, unwatchedFilter,
-      favourites, setFavourites, addFavourite, removeFavourite,
-      lists, getList, createList, renameList, deleteList,
+      favourites, setFavourites, addFavourite, removeFavourite, moveFavourite,
+      lists, getList, createList, renameList, describeList, deleteList,
       addToList, annotateListEntry, removeFromList, moveInList,
       profile, yearInReview,
       _dump, _reset,
