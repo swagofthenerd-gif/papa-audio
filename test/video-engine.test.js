@@ -582,3 +582,27 @@ test('mpv keeps its controls when it owns the window', () => {
   assert.ok(a.includes('--osc=yes'))
   assert.ok(a.includes('--osd-bar=yes'))
 })
+
+// Double-click is the universal fullscreen gesture, and the click lands on mpv
+// rather than on the page, so the app never sees it. mpv's own default —
+// cycle fullscreen — would expand the embedded surface alone, burying the
+// deck, the skip offer and the episode list with no way to reach any of them.
+test('double-click is relayed to the app when embedded', () => {
+  const { inputConfBody } = require('../video-engine.js')
+  const body = inputConfBody(true)
+  assert.match(body, /MBTN_LEFT_DBL script-message papa fullscreen/)
+})
+
+test('double-click is left to mpv when it owns the window', () => {
+  const { inputConfBody } = require('../video-engine.js')
+  assert.ok(!/MBTN_LEFT_DBL/.test(inputConfBody(false)),
+    'in its own window mpv fullscreening itself is the correct behaviour')
+})
+
+test('the embedded and windowed configs are separate files', () => {
+  const a = new VideoEngine({ config: {} })._args('/tmp/v.sock', { wid: '0x1' })
+  const b = new VideoEngine({ config: {} })._args('/tmp/v.sock')
+  const conf = args => (args.find(x => x.startsWith('--input-conf=')) || '')
+  assert.notStrictEqual(conf(a), conf(b), 'one file cannot carry both bindings')
+  assert.match(conf(a), /embedded/)
+})

@@ -855,6 +855,9 @@
         if (seg) doSkip(seg)
       },
       setUpNext: setUpNext,
+      // Relayed from mpv when the picture is double-clicked: the click never
+      // reaches the page, so the gesture has to arrive this way.
+      toggleFullscreen: toggleFullscreen,
       setPack: setPack,
       minimise: minimise,
       restore: restore,

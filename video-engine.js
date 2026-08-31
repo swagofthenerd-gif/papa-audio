@@ -21,15 +21,29 @@ const APP_KEYS = [
   ['b', 'bookmark'],
 ]
 
-function inputConfBody() {
-  return APP_KEYS.map(([key, action]) => `${key} script-message papa ${action}`).join('\n') + '\n'
+// Double-click is the universal gesture for fullscreen, and the click lands on
+// mpv rather than on the page, so the app never sees it. mpv's own default for
+// it — cycle fullscreen — is wrong when embedded: it would fullscreen the
+// child surface alone, putting the picture over the deck, the skip offer and
+// the episode list with no way to reach any of them. Relaying it lets the app
+// expand instead, which is what its fullscreen already does.
+//
+// Only bound when embedded. When mpv owns its window, its own default is the
+// correct behaviour and is left alone.
+const EMBED_MOUSE = [
+  ['MBTN_LEFT_DBL', 'fullscreen'],
+]
+
+function inputConfBody(embedded) {
+  const rows = APP_KEYS.concat(embedded ? EMBED_MOUSE : [])
+  return rows.map(([key, action]) => `${key} script-message papa ${action}`).join('\n') + '\n'
 }
 
-function writeInputConf(dir) {
+function writeInputConf(dir, embedded) {
   try {
-    const file = path.join(dir, 'papa-input.conf')
+    const file = path.join(dir, embedded ? 'papa-input-embedded.conf' : 'papa-input.conf')
     fs.mkdirSync(dir, { recursive: true })
-    fs.writeFileSync(file, inputConfBody(), 'utf8')
+    fs.writeFileSync(file, inputConfBody(embedded), 'utf8')
     return file
   } catch (_) {
     // Losing a shortcut must never stop playback.
@@ -160,7 +174,11 @@ class VideoEngine extends EventEmitter {
     // be delivered to the mpv that replaced it.
     this._gen = 0
     this._socketPath = null
-    this._inputConf = opts.inputConf !== undefined ? opts.inputConf : writeInputConf(configDir())
+    // Whether mpv is embedded is not known until start(), and the mouse
+    // binding differs between the two, so the embedded config is resolved then
+    // rather than here. An explicit inputConf from the caller wins in both.
+    this._inputConfOverride = opts.inputConf
+    this._inputConf = opts.inputConf !== undefined ? opts.inputConf : writeInputConf(configDir(), false)
     // The live §4.2 payload, plus the raw lists the track/chapter endpoints read.
     this.state = emptyState()
     this._trackList = []
@@ -215,7 +233,12 @@ class VideoEngine extends EventEmitter {
       // Papa's own actions are bound on top in _bindAppKeys(); those bindings
       // override the defaults for the keys they claim.
       '--title=Papa Video',
-      ...(this._inputConf ? [`--input-conf=${this._inputConf}`] : []),
+      ...(() => {
+        const conf = this._inputConfOverride !== undefined
+          ? this._inputConfOverride
+          : (wid ? writeInputConf(configDir(), true) : this._inputConf)
+        return conf ? [`--input-conf=${conf}`] : []
+      })(),
       // Without this mpv writes mpv-shot0001.jpg into the process working
       // directory, which is the application folder.
       `--screenshot-directory=${screenshotDir()}`,

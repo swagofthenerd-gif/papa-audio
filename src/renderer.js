@@ -2083,6 +2083,10 @@ function _handleVideoEvent(payload) {
   if (payload.kind === 'key') {
     if (payload.action === 'skip') _player.skipNow()
     else if (payload.action === 'next') _playNextEpisode()
+    // Double-clicking the picture. The click lands on mpv, never on the page,
+    // so mpv relays it and the app expands — rather than mpv fullscreening the
+    // embedded surface alone and burying the deck under it.
+    else if (payload.action === 'fullscreen') _player.toggleFullscreen()
     return
   }
 
