@@ -7158,7 +7158,20 @@ ipcMain.handle('video-trailer', async (_, { youtubeId, title } = {}) => {
 ipcMain.handle('video-trailer-url', async (_, { type, id } = {}) => {
   try {
     if (!type || id == null) return { ok: false, error: 'Nothing to preview' }
-    const detail = await _videoShowDetail(type, id)
+    // The trailer list comes from TMDB's own detail response, so a preview must
+    // not go through _videoShowDetail: that also calls OMDb, and OMDb's free
+    // tier is a thousand requests a day. Hovering across a rail of twenty cards
+    // would have spent twenty of them on a number nobody asked to see.
+    //
+    // A warm detail cache is used when there is one — it is the same object and
+    // costs nothing — and otherwise this asks TMDB directly and caches nothing,
+    // so an unenriched detail can never end up in the cache the real detail
+    // page reads.
+    let detail = _videoDetailCache.get(`${type}:${id}`)
+    if (!detail) {
+      if (type === 'anime') return { ok: true, url: null }
+      detail = await tmdb().detail(type === 'tv' ? 'tv' : 'movie', id)
+    }
     if (!detail) return { ok: true, url: null }
     const list = Array.isArray(detail.trailers) ? detail.trailers : []
     let key = null

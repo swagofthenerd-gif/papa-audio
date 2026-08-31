@@ -20,26 +20,34 @@ const CSS = fs.readFileSync(path.join(ROOT, 'src', 'styles.css'), 'utf8')
 const hoverFns = () => RENDERER.slice(RENDERER.indexOf('const HOVER_DWELL_MS'),
                                       RENDERER.indexOf('function _bindVideoCards(root)'))
 
+// A test that greps source must not read the prose: the comment explaining why
+// a function is NOT called names that function, and a doesNotMatch against the
+// raw text then fails on the explanation.
+const codeOnly = (text) => text
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+  .split('\n').filter(l => !/^\s*\/\//.test(l)).join('\n')
+
+const previewHandler = () => codeOnly(
+  MAIN.slice(MAIN.indexOf("ipcMain.handle('video-trailer-url'"),
+             MAIN.indexOf('// Switch to another episode inside the pack')))
+
 test('the preview channel resolves a URL and never touches the player', () => {
   // video-trailer takes over the engine on purpose: pressing Trailer is a
   // decision to watch it. Hovering is not that decision, and a preview that
   // stopped what you were watching would be a bug of the worst kind.
-  const h = MAIN.slice(MAIN.indexOf("ipcMain.handle('video-trailer-url'"),
-                       MAIN.indexOf('// Switch to another episode inside the pack'))
+  const h = previewHandler()
   assert.ok(h.length > 200, 'found the handler')
   for (const forbidden of ['_videoTeardown', '_wireVideoEngine', 'videoEngine()', 'player.pause',
                            '_videoSession.token', 'safeSend']) {
     assert.ok(!h.includes(forbidden), 'the preview handler must not call ' + forbidden)
   }
   assert.match(h, /resolveYtUrl\(key, 'video'\)/)
-  assert.match(h, /_videoShowDetail\(type, id\)/, 'and it reuses the cached detail')
 })
 
 test('no trailer is a real answer, not an error', () => {
   // Most older films have none. An error would make the card flash a failure
   // because someone looked at it.
-  const h = MAIN.slice(MAIN.indexOf("ipcMain.handle('video-trailer-url'"),
-                       MAIN.indexOf('// Switch to another episode inside the pack'))
+  const h = previewHandler()
   assert.match(h, /if \(!key\) return \{ ok: true, url: null \}/)
   assert.match(h, /if \(!detail\) return \{ ok: true, url: null \}/)
 })
@@ -183,4 +191,24 @@ test('both animations honour reduced motion', () => {
     .map(m => m[1]).join('\n')
   assert.match(reduced, /\.cinema \.vcard-preview \{ transition: none/)
   assert.match(reduced, /is-preview-loading[\s\S]*animation: none/)
+})
+
+test('a hover never spends an OMDb request', () => {
+  // The trailer list comes from TMDB's own detail response. Going through
+  // _videoShowDetail would also call OMDb, whose free tier is a thousand
+  // requests a day — so hovering across a rail of twenty cards would have spent
+  // twenty of them on a number nobody asked to see.
+  const h = previewHandler()
+  assert.doesNotMatch(h, /_videoShowDetail/, 'that path enriches through OMDb')
+  assert.doesNotMatch(h, /_enrichExternalRatings/)
+  assert.match(h, /_videoDetailCache\.get\(/, 'a warm cache is free and is used')
+  assert.match(h, /tmdb\(\)\.detail\(/, 'and a cold one asks TMDB directly')
+})
+
+test('a cold preview fetch never poisons the detail cache', () => {
+  // The object it fetches has no external ratings on it. Caching that would
+  // make the real detail page show a film with no IMDb, RT or Metacritic line,
+  // and it would stay that way for the life of the cache.
+  const h = previewHandler()
+  assert.doesNotMatch(h, /_videoDetailCache\.set/, 'the preview path must not write the cache')
 })
