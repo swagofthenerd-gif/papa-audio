@@ -28,12 +28,18 @@
   font-family: 'Poppins'; font-style: normal; font-weight: 700; font-display: swap;
   src: url('../assets/fonts/Poppins-700.woff2') format('woff2');
 }
-/* The film section's own faces. Bodoni is the typeface of poster art and title
-   cards and carries the whole identity; Archivo is what you read rather than
-   admire. Both are variable, so one file covers every weight. */
+/* The film section's own faces. Newsreader carries the identity at display
+   sizes; Archivo is what you read rather than admire. Both are variable, so one
+   file covers every weight. */
+/* Newsreader rather than a Didone. A Didone is the typeface of film posters and
+   is beautiful at poster size, but its hairlines are razor thin: at a card
+   title's 14.5px on a near-black ground the thin strokes drop below the point
+   where the screen can render them and the word turns to mush. Newsreader was
+   drawn for screens and carries an optical-size axis, so the letterforms
+   thicken as the size comes down instead of thinning away. */
 @font-face {
-  font-family: 'Bodoni Moda'; font-style: normal; font-weight: 400 700; font-display: swap;
-  src: url('../assets/fonts/BodoniModa.woff2') format('woff2');
+  font-family: 'Newsreader'; font-style: normal; font-weight: 400 700; font-display: swap;
+  src: url('../assets/fonts/Newsreader.woff2') format('woff2');
 }
 @font-face {
   font-family: 'Archivo'; font-style: normal; font-weight: 400 700; font-display: swap;
@@ -6690,7 +6696,7 @@ body.video-active .np-byline { font-size:10.5px; }
   --cin-ember:   #E9A13B;   /* the single accent — projector light */
   --cin-rec:     #D8453F;   /* live / destructive only */
 
-  --cin-display: 'Bodoni Moda', Georgia, 'Times New Roman', serif;
+  --cin-display: 'Newsreader', Georgia, 'Times New Roman', serif;
   --cin-body:    'Archivo', 'Poppins', system-ui, sans-serif;
   --cin-ease:    cubic-bezier(.16, 1, .3, 1);
 
@@ -6711,7 +6717,7 @@ body.video-active .np-byline { font-size:10.5px; }
 
 /* ── Shelf ───────────────────────────────────────────
    Rule 2 of the design: every shelf says why it exists. The heading is set in
-   Bodoni and the curatorial note sits directly beneath it in Archivo, so the
+   the display serif and the curatorial note sits beneath it in Archivo, so the
    pair reads as one block rather than a title with stray text after it. */
 .cinema .vrows { gap: 40px; }
 .cinema .vrow-head {
@@ -6828,15 +6834,25 @@ body.video-active .np-byline { font-size:10.5px; }
 .cinema .vcard-act-play:hover { background: #F0B45C; }
 
 /* ── Card metadata ───────────────────────────────────
-   Title in Bodoni, then one credit line (director · runtime · certificate) in
+   Title in the sans, then one credit line (director · runtime · certificate) in
    Archivo. Both clamp rather than wrap so card heights stay on a grid. */
 .cinema .vcard-title {
   margin-top: 11px;
-  font-family: var(--cin-display);
+  /* The sans, not the display serif. A card title is the smallest text on the
+     page that has to be read rather than admired, and a serif at this size on
+     this ground is where legibility goes first. The serif still carries the
+     hero and the shelf headings, where it has the size to earn its keep. */
+  font-family: var(--cin-body);
+  font-weight: 600;
   font-size: 14.5px;
   font-weight: 600;
   letter-spacing: 0;
   line-height: 1.25;
+  /* Two lines are reserved whether or not the title needs them. Titles clamp at
+     two, so a card with a long one is a line taller than its neighbours and its
+     credit and ratings sit lower than theirs — a shelf of cards whose rows do
+     not line up reads as broken rather than as varied. */
+  min-height: calc(14.5px * 1.25 * 2);
   color: var(--cin-bone);
   white-space: normal;
   display: -webkit-box;
@@ -6988,7 +7004,7 @@ body.video-active .np-byline { font-size:10.5px; }
   object-position: left bottom;
   filter: drop-shadow(0 2px 18px rgba(0, 0, 0, .65));
 }
-/* Fallback: no logo available, so the title is set in Bodoni instead. Same
+/* Fallback: no logo available, so the title is set in the display serif. Same
    slot, same margin — the hero does not change shape either way. */
 .cinema .vhero-title {
   font-family: var(--cin-display);
@@ -7035,7 +7051,7 @@ body.video-active .np-byline { font-size:10.5px; }
 .cinema .vbtn-primary:hover { background: #F0B45C; border-color: transparent; }
 
 /* ── Empty and error states ──────────────────────────
-   Designed, not broken: a rule, a Bodoni line, a sentence, an action. An
+   Designed, not broken: a rule, a display line, a sentence, an action. An
    empty shelf should look like a decision rather than a failure — the plan is
    explicit that a shelf which cannot be filled honestly is not padded. */
 .cinema .vempty {

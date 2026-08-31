@@ -1315,7 +1315,7 @@ async function renderPerson(personId) {
   const ticket = ++_personTicket
   if (!personId) return navigate('video')
 
-  setContent('<div class="page vpage">' +
+  setContent('<div class="page vpage cinema">' +
     '<div class="vperson-head">' +
       '<div class="vskel vperson-photo"></div>' +
       '<div><div class="vskel vskel-line" style="width:220px;height:22px"></div>' +
@@ -1483,7 +1483,7 @@ function _browseRequest(f, page) {
 async function renderBrowse() {
   _initVideoUI()
   const ticket = ++_videoCatalogTicket
-  setContent('<div class="page vpage">' + _vHeadHtml() +
+  setContent('<div class="page vpage cinema">' + _vHeadHtml() +
     '<div class="vbrowse">' +
       '<aside class="vfilters" id="vfilters" aria-label="Filters"></aside>' +
       '<section class="vresults">' +
@@ -1992,6 +1992,63 @@ var _player = null
 // position against the previous title.
 var _watch = { key: null, meta: null, savedAt: 0, resumed: false }
 
+// Cards are enriched only when they reach the screen. Everything about this is
+// about not spending twenty requests on a shelf the user scrolls straight past:
+// see src/video-enrich.js for the queue itself.
+var _enricher = null
+function _videoEnricher() {
+  if (_enricher) return _enricher
+  if (typeof PapaVideoEnrich === 'undefined' || !window.api || !window.api.videoEnrich) return null
+  _enricher = PapaVideoEnrich.createEnricher({
+    // The module deliberately touches no DOM API, so the real observer is
+    // supplied here. Without one it observes nothing at all — which is exactly
+    // what happened first time: every card registered, the queue stayed empty,
+    // and not a single request was made.
+    observerFactory: function (cb, opts) {
+      return new IntersectionObserver(cb, {
+        // The page scrolls inside #content, not the window, so that is the
+        // frame a card is near or far from.
+        root: document.getElementById('content') || null,
+        rootMargin: (opts && opts.rootMargin) || '400px 600px',
+        threshold: 0,
+      })
+    },
+    fetchDetail: function (key) {
+      const at = key.indexOf(':')
+      const type = key.slice(0, at)
+      const id = key.slice(at + 1)
+      return window.api.videoEnrich({ type: type, id: id }).then(function (res) {
+        if (!res || !res.ok) throw new Error((res && res.error) || 'no metadata')
+        return res.meta
+      })
+    },
+  })
+  return _enricher
+}
+
+// Paints what arrived into the slots the card already reserved, so nothing
+// moves when metadata lands.
+function _applyCardMeta(el, meta) {
+  if (!el || !meta) return
+  const credit = el.querySelector('[data-credit]')
+  if (credit) credit.innerHTML = _vCreditHtml(meta)
+  const rates = el.querySelector('[data-rates]')
+  if (rates) rates.outerHTML = _vRatesHtml(meta)
+}
+
+// Every card that has just been added to the page joins the queue.
+function _observeCards(root) {
+  const e = _videoEnricher()
+  if (!e || !root) return
+  const cards = root.querySelectorAll ? root.querySelectorAll('.vcard[data-video]') : []
+  for (const card of cards) {
+    const key = card.getAttribute('data-video')
+    if (!key || card.dataset.enrichObserved === '1') continue
+    card.dataset.enrichObserved = '1'
+    e.observe(card, key, function (meta) { _applyCardMeta(card, meta) })
+  }
+}
+
 function _initVideoUI() {
   if (_videoUiReady) return
   _videoUiReady = true
@@ -2474,7 +2531,7 @@ async function renderVideo() {
   // page has no such row set, so fall back to All.
   if (_videoTab === 'browse') _videoTab = 'all'
   const ticket = ++_videoCatalogTicket
-  setContent('<div class="page vpage">' +
+  setContent('<div class="page vpage cinema">' +
     _vHeadHtml() +
     '<div id="vhero-mount"></div>' +
     '<div class="video-search-results" id="video-search-results"></div>' +
@@ -2874,10 +2931,69 @@ function _videoCard(item) {
     '</div>' +
     '<div class="vcard-title">' + esc(item.title || 'Untitled') + '</div>' +
     '<div class="vcard-meta">' + (metaBits.join(' · ') || kind) + '</div>' +
+    // Filled in later, only for cards that reach the screen. The slots exist
+    // from the start so a card does not change height when its metadata
+    // arrives — a shelf that reflows under the pointer is worse than one that
+    // never enriches at all.
+    '<div class="vcard-credit" data-credit></div>' +
+    _vRatesHtml(null) +
   '</article>'
 }
 
+// Three sources on three different scales — IMDb out of ten, Rotten Tomatoes a
+// percentage, Metacritic out of a hundred — read as unrelated numbers when they
+// sit side by side. Each keeps its own figure against a bar normalised to a
+// common scale: the bar answers "is this good" before you read anything, the
+// number answers "how good, on what scale". The source initials are always
+// drawn, so the colours distinguish the columns without ever being the only
+// thing that carries the meaning.
+const _VRATE_SOURCES = [
+  { key: 'imdb', cls: 'vrate-imdb', src: 'IMDb', max: 10, fmt: v => v.toFixed(1) },
+  { key: 'rottenTomatoes', cls: 'vrate-rt', src: 'RT', max: 100, fmt: v => Math.round(v) + '%' },
+  { key: 'metacritic', cls: 'vrate-mc', src: 'MC', max: 100, fmt: v => String(Math.round(v)) },
+]
+
+function _vRatesHtml(meta) {
+  const m = meta || {}
+  return '<div class="vcard-rates" data-rates>' + _VRATE_SOURCES.map(function (s) {
+    const raw = m[s.key]
+    const has = typeof raw === 'number' && isFinite(raw) && raw > 0
+    const pct = has ? Math.max(0, Math.min(100, (raw / s.max) * 100)) : 0
+    return '<div class="vrate ' + s.cls + (has ? '' : ' is-empty') + '">' +
+      '<div class="vrate-head">' +
+        '<span class="vrate-src">' + s.src + '</span>' +
+        '<span class="vrate-val">' + (has ? esc(s.fmt(raw)) : '—') + '</span>' +
+      '</div>' +
+      '<div class="vrate-bar"><i style="width:' + pct + '%"></i></div>' +
+    '</div>'
+  }).join('') + '</div>'
+}
+
+// The credit line a cinephile reads first: who made it, how long it is, and
+// what it is rated.
+function _vCreditHtml(meta) {
+  const m = meta || {}
+  const bits = []
+  if (Array.isArray(m.directors) && m.directors.length) bits.push(esc(m.directors.join(', ')))
+  if (m.runtime) bits.push(esc(_vRuntime(m.runtime)))
+  const cert = m.certification ? '<span class="vcard-cert">' + esc(m.certification) + '</span>' : ''
+  return bits.join('<span class="sep">·</span>') + (bits.length && cert ? '<span class="sep">·</span>' : '') + cert
+}
+
+// "1h 55m" rather than "115 min": the question a runtime answers is whether
+// tonight is long enough, and hours are how people think about that.
+function _vRuntime(mins) {
+  const n = Number(mins) || 0
+  if (n <= 0) return ''
+  const h = Math.floor(n / 60)
+  const m = n % 60
+  return h ? (m ? h + 'h ' + m + 'm' : h + 'h') : m + 'm'
+}
+
 function _bindVideoCards(root) {
+  // Binding is the one thing every card insertion has in common, so the queue
+  // is joined here rather than at each of the half-dozen call sites.
+  _observeCards(root)
   ;(root || document).querySelectorAll('.vcard').forEach(function (c) {
     const open = function () { navigate('video-detail', c.dataset.video) }
     c.addEventListener('click', function (e) {
@@ -2920,7 +3036,7 @@ async function renderVideoDetail(navId) {
   }
   _videoDetail = { type, id, d: res.detail }
   const d = res.detail
-  setContent('<div class="page video-detail-page">' + _videoDetailShell(d) + '</div>')
+  setContent('<div class="page video-detail-page cinema">' + _videoDetailShell(d) + '</div>')
 
   _bindTrailerButton()
   _renderCastRow(d)

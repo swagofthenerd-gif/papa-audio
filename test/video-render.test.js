@@ -35,7 +35,19 @@ function sandbox({ store = null, tab = 'all' } = {}) {
     console,
   }
   vm.createContext(ctx)
-  for (const fn of ['_videoCard', '_vHeadHtml', '_vRowShell', '_vRailSkeleton', '_stripTags']) {
+  // The three ratings columns and the credit line are part of the card now, so
+  // the sandbox needs them or every card assertion fails on a missing helper
+  // rather than on anything real.
+  vm.runInContext('const _VRATE_SOURCES = ' + JSON.stringify([
+    { key: 'imdb', cls: 'vrate-imdb', src: 'IMDb', max: 10 },
+    { key: 'rottenTomatoes', cls: 'vrate-rt', src: 'RT', max: 100 },
+    { key: 'metacritic', cls: 'vrate-mc', src: 'MC', max: 100 },
+  ]).replace(/}/g, '}') + ';', ctx)
+  vm.runInContext(`_VRATE_SOURCES[0].fmt = v => v.toFixed(1)
+    _VRATE_SOURCES[1].fmt = v => Math.round(v) + '%'
+    _VRATE_SOURCES[2].fmt = v => String(Math.round(v))`, ctx)
+  for (const fn of ['_videoCard', '_vHeadHtml', '_vRowShell', '_vRailSkeleton', '_stripTags',
+    '_vRatesHtml', '_vCreditHtml', '_vRuntime']) {
     vm.runInContext(extract(fn), ctx)
   }
   return ctx

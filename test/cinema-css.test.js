@@ -242,13 +242,13 @@ test('wide content scrolls inside the rail, not the page', () => {
   assert.match(meta.body, /min-width\s*:\s*0/, 'credit line can widen its grid track');
 });
 
-test('the hero title has a Bodoni fallback for films with no logo art', () => {
+test('the hero title falls back to the display serif when a film has no logo art', () => {
   // Rule 3 of the design is that heroes use the film's own title art, but
   // most titles have none. If .vhero-title were left unstyled the fallback
   // would render in the music player's Poppins and break the identity.
   const title = RULES.find(r => r.selector === `${SCOPE} .vhero-title`);
   assert.ok(title, 'no .cinema .vhero-title rule');
-  assert.match(title.body, /font-family\s*:\s*var\(--cin-display\)/, 'hero fallback title is not set in Bodoni');
+  assert.match(title.body, /font-family\s*:\s*var\(--cin-display\)/, 'hero fallback title is not set in the display serif');
   const logo = RULES.find(r => r.selector === `${SCOPE} .vhero-logo`);
   assert.ok(logo, 'no .cinema .vhero-logo rule');
   assert.match(logo.body, /max-width\s*:/, 'title logo is not width-capped and can overflow the hero');
