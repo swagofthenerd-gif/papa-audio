@@ -295,3 +295,35 @@ test('shelves with no rank sort last rather than throwing', () => {
   ])
   assert.deepStrictEqual(out.map(s => s.key), ['ranked'])
 })
+
+// ── Hidden gems, tuned against the live catalogue ───────────────────────────
+// The obvious thresholds do not work, and the failures were specific enough to
+// be worth pinning down. A floor of 300 votes is not a sample but noise, and
+// sorting by average over noise returned "Accidental Partners" and "Facing El
+// Chapo". Raising the floor alone then surfaced whatever was being hyped that
+// month, because a film's average peaks in its first weeks before the wider
+// audience arrives to pull it back down. The settle window is what turned the
+// shelf into Harakiri, Seven Samurai and Cinema Paradiso.
+test('a gem needs a sample large enough to trust', () => {
+  const { FLOOR } = require('../catalog/shelves')
+  assert.ok(FLOOR.gems >= 1000,
+    'below about a thousand votes the average is noise, not a verdict')
+})
+
+test('a gem must have had time to settle', () => {
+  const { hiddenGems, GEMS_SETTLE_YEARS } = require('../catalog/shelves')
+  assert.ok(GEMS_SETTLE_YEARS >= 2)
+  const url = hiddenGems().url
+  assert.match(url, /primary_release_date\.lte=\d{4}-12-31/,
+    'without this the shelf fills with whatever is being hyped this month')
+  const capped = Number(/primary_release_date\.lte=(\d{4})/.exec(url)[1])
+  assert.ok(capped <= new Date().getFullYear() - 2, 'the cap must actually exclude recent releases')
+})
+
+// Without the ceiling this is just the canon a second time, which is the other
+// way for the shelf to be worthless.
+test('a gem must still be under-seen', () => {
+  const { hiddenGems, GEMS_CEILING, FLOOR } = require('../catalog/shelves')
+  assert.ok(GEMS_CEILING > FLOOR.gems, 'the ceiling has to leave a band to select from')
+  assert.match(hiddenGems().url, new RegExp('vote_count\\.lte=' + GEMS_CEILING))
+})

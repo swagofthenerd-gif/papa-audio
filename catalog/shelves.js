@@ -26,13 +26,27 @@ const FLOOR = {
   country: 500,
   anniversary: 1000,
   runtime: 1000,
-  gems: 300,
+  gems: 1000,
 }
 
 // Hidden gems need a ceiling as well as a floor: the point is a film enough
 // people have seen to trust and few enough to still be a discovery.
-const GEMS_CEILING = 2000
+//
+// The numbers were tuned against the live catalogue rather than reasoned about,
+// because the obvious ones do not work. A floor of 300 votes is not a sample,
+// it is noise, and sorting by average rating over noise returned "Accidental
+// Partners" and "Facing El Chapo". Raising the floor alone then surfaced
+// whatever was being hyped that month — Demon Slayer, Project Hail Mary — because
+// a film's average peaks in its first weeks, before the wider audience arrives
+// to pull it back down.
+//
+// So a gem must also have had time to settle. Excluding the last few years is
+// what turned this shelf from junk into Harakiri, Seven Samurai and Cinema
+// Paradiso: films that are under-voted next to blockbusters precisely because
+// fewer people have found them.
+const GEMS_CEILING = 4500
 const GEMS_MIN_RATING = 7.5
+const GEMS_SETTLE_YEARS = 3
 
 const RATED = 'vote_average.desc'
 
@@ -322,6 +336,7 @@ function hiddenGems(opts) {
       'vote_average.gte': GEMS_MIN_RATING,
       'vote_count.gte': FLOOR.gems,
       'vote_count.lte': GEMS_CEILING,
+      'primary_release_date.lte': (new Date().getFullYear() - GEMS_SETTLE_YEARS) + '-12-31',
     },
     opts
   )
@@ -446,6 +461,9 @@ function dedupe(shelves) {
 module.exports = {
   TMDB_BASE,
   FLOOR,
+  GEMS_CEILING,
+  GEMS_MIN_RATING,
+  GEMS_SETTLE_YEARS,
   RANK,
   DECADES,
   MOVEMENTS,
