@@ -117,11 +117,15 @@ test('stopping a preview releases the buffer, not just the playback', () => {
 test('a page change stops the preview', () => {
   // setContent replaces the card the video lives in; the element would be
   // orphaned with its buffer still held.
-  const fn = RENDERER.slice(RENDERER.indexOf('function setContent(html)'),
-                            RENDERER.indexOf('function setContent(html)') + 400)
-  assert.match(fn, /_stopHoverTrailer\(\)/)
-  // Before the innerHTML that discards the card, not after.
-  assert.ok(fn.indexOf('_stopHoverTrailer()') < fn.indexOf('innerHTML = html'))
+  // Sliced to the innerHTML itself rather than a fixed number of characters: a
+  // fixed window silently stops containing what the assertion looks for the
+  // moment a comment is added above it, and indexOf then returns -1, which is
+  // less than everything.
+  const at = RENDERER.indexOf('function setContent(html)')
+  const innerAt = RENDERER.indexOf('innerHTML = html', at)
+  assert.ok(at > 0 && innerAt > at, 'found setContent and its innerHTML')
+  const fn = RENDERER.slice(at, innerAt)
+  assert.match(fn, /_stopHoverTrailer\(\)/, 'the stop must come before the innerHTML')
 })
 
 test('the preview is muted, looped, and not a click target', () => {

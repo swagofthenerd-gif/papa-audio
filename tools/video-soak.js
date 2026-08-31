@@ -38,6 +38,12 @@ const DEFAULTS = {
   // A metric must climb by at least this fraction of its own baseline before
   // it is worth calling a leak.
   leakRelGrowth: 0.10,
+  // The bar for a floor that NEVER falls. Lower, because never falling is
+  // itself the evidence and a slow leak is still a leak — five percent over a
+  // run is a floor with no reason to stop.
+  creepRelGrowth: 0.05,
+  // Overridable per metric; defaults to a quarter of minAbsGrowth.
+  creepMinAbsGrowth: null,
   // …and by at least this much in absolute units, so a DOM going 40 -> 45
   // nodes is not reported as a 12% leak.
   minAbsGrowth: 0,
@@ -226,6 +232,27 @@ function analyseSeries (raw, opts = {}) {
   // directions and no line fits it.
   const leak = bigEnough && (monotonic || floorTrend.r2 >= o.minR2)
 
+  // A monotonic floor gets a lower bar, because monotonicity is itself the
+  // evidence. This plan's own words are "fail on any monotonic rise", and a
+  // twenty-percent gate did not do that: a hundred-minute run measured the
+  // renderer's floor climbing 157, 210, 216, 221, 222, 227, 228, 231, 235, 236
+  // MB by tenths — never once falling, still rising in the last three — and it
+  // passed as warm-up at 9.2%.
+  //
+  // Slow is not the same as harmless. A floor that never comes down has no
+  // reason to stop, and the difference between a leak and warm-up is whether it
+  // levels off, not how fast it climbs.
+  // A quarter of the leak gate by default. The absolute floor exists to stop
+  // noise being called a trend, and a floor that never falls has no noise in
+  // the direction that matters — so it does not need as much room. This is what
+  // let the renderer's 20MB monotonic rise through: the gate was 32MB, tuned for
+  // a metric that wanders.
+  const creepAbs = o.creepMinAbsGrowth != null
+    ? o.creepMinAbsGrowth
+    : Math.round(o.minAbsGrowth / 4)
+  const creep = !leak && monotonic &&
+    floorGrowth >= o.creepRelGrowth && floorAbs >= creepAbs
+
   let verdict
   let note
   if (leak) {
@@ -233,6 +260,11 @@ function analyseSeries (raw, opts = {}) {
     note = monotonic
       ? 'floor never falls and climbs ' + pct(floorGrowth) + ' after warm-up'
       : 'floor climbs ' + pct(floorGrowth) + ' after warm-up, r2 ' + floorTrend.r2.toFixed(2)
+  } else if (creep) {
+    // Reported as a leak so the run fails, and named separately so the reader
+    // knows it is the slow kind.
+    verdict = 'leak'
+    note = 'floor never falls and creeps ' + pct(floorGrowth) + ' after warm-up — slow, but it never comes down'
   } else if (overall.growth >= o.leakRelGrowth && Math.abs(floorGrowth) < o.leakRelGrowth) {
     verdict = 'warmup'
     note = 'grew ' + pct(overall.growth) + ' overall but the floor is flat after warm-up'
@@ -334,7 +366,19 @@ const METRIC_RULES = {
   rendererHeapUsed: { leakRelGrowth: 0.15, minAbsGrowth: 8 * 1024 * 1024 },
   rendererHeapTotal: { leakRelGrowth: 0.20, minAbsGrowth: 16 * 1024 * 1024 },
   mainHeapUsed: { leakRelGrowth: 0.15, minAbsGrowth: 8 * 1024 * 1024 },
-  mainHeapTotal: { leakRelGrowth: 0.20, minAbsGrowth: 16 * 1024 * 1024 },
+  // V8's TOTAL allocated heap ratchets by design: it grows in steps and rarely
+  // hands memory back to the OS, so a monotonic floor here is expected rather
+  // than evidence. mainHeapUsed is the figure that says whether anything is
+  // actually being retained, and mainRss whether the process is growing.
+  //
+  // So the creep rule gets no relaxed absolute gate for this one. Without that,
+  // the real hundred-minute run flagged it at 24% floor growth on a heap whose
+  // used-floor was flat and whose absolute rise was under its own 16MB bar.
+  mainHeapTotal: {
+    leakRelGrowth: 0.20,
+    minAbsGrowth: 16 * 1024 * 1024,
+    creepMinAbsGrowth: 16 * 1024 * 1024,
+  },
   mainExternal: { leakRelGrowth: 0.25, minAbsGrowth: 16 * 1024 * 1024 },
   mainRss: { leakRelGrowth: 0.20, minAbsGrowth: 32 * 1024 * 1024 },
   // The renderer holds the whole UI, so it is the process a leak shows up in
@@ -653,10 +697,18 @@ async function runElectron (opt) {
   // app.getAppMetrics() reports every child process with real numbers. The
   // renderer is identified by its pid rather than by its type string, which
   // differs across Electron versions.
-  const rendererPid = (() => { try { return win.webContents.getOSProcessId() } catch (_) { return null } })()
+  // Resolved on every read, not captured once. getOSProcessId() returns 0
+  // before the renderer process exists, and a pid captured then would make this
+  // metric a constant zero for the whole run — which the `constant` verdict
+  // would now catch, but silently measuring nothing is not worth risking twice.
+  let rendererPid = null
   const rendererRss = () => {
-    if (!rendererPid) return 0
     try {
+      if (!rendererPid) {
+        const p = win.webContents.getOSProcessId()
+        if (p) rendererPid = p
+      }
+      if (!rendererPid) return 0
       const hit = app.getAppMetrics().find(x => x && x.pid === rendererPid)
       // workingSetSize is in kilobytes.
       return hit && hit.memory ? (hit.memory.workingSetSize || 0) * 1024 : 0

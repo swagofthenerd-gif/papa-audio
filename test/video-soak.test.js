@@ -211,3 +211,71 @@ test('a run too short to judge is inconclusive, not a pass', () => {
   const short = [1, 2, 3].map((v, i) => ({ t: i, metrics: { domNodes: v } }))
   assert.strictEqual(analyseRun(short).verdict, 'INCONCLUSIVE')
 })
+
+// ── a slow rise that never comes down ─────────────────────────────────────
+//
+// The plan's words are "fail on any monotonic rise", and a twenty-percent gate
+// did not do that. A real hundred-minute run measured the renderer's memory
+// floor by tenths as 157, 210, 216, 221, 222, 227, 228, 231, 235, 236 MB —
+// never once falling, still rising in the last three — and it passed as
+// warm-up at 9.2%.
+
+// The measured curve, reconstructed: ten flat-ish plateaus at the floors above.
+function measuredRendererCurve () {
+  const floors = [157, 210, 216, 221, 222, 227, 228, 231, 235, 236]
+  const out = []
+  for (const f of floors) for (let i = 0; i < 40; i++) out.push((f + (i % 7)) * 1048576)
+  return out
+}
+
+test('a monotonic floor that creeps is a leak, however slowly', () => {
+  const r = analyseSeries(measuredRendererCurve(), { minAbsGrowth: 32 * 1024 * 1024 })
+  assert.strictEqual(r.verdict, 'leak')
+  assert.match(r.note, /never falls and creeps/)
+  assert.match(r.note, /it never comes down/)
+})
+
+test('a curve that levels off after warm-up is still warm-up', () => {
+  // The distinction that matters: warm-up stops, a leak does not.
+  const series = []
+  for (let i = 0; i < 400; i++) series.push((i < 100 ? 150 + i * 0.6 : 210 + (i % 5)) * 1048576)
+  const r = analyseSeries(series, { minAbsGrowth: 32 * 1024 * 1024 })
+  assert.notStrictEqual(r.verdict, 'leak')
+})
+
+test('a floor that dips even once is not creep', () => {
+  // Monotonicity is the whole evidence, so one real fall disqualifies it.
+  const floors = [200, 210, 216, 221, 205, 227, 228, 231, 235, 236]
+  const series = []
+  for (const f of floors) for (let i = 0; i < 40; i++) series.push((f + (i % 7)) * 1048576)
+  const r = analyseSeries(series, { minAbsGrowth: 32 * 1024 * 1024 })
+  assert.notStrictEqual(r.verdict, 'leak')
+})
+
+test('the creep gate is a quarter of the leak gate unless overridden', () => {
+  // The absolute floor exists to stop noise being called a trend, and a floor
+  // that never falls has no noise in the direction that matters — so it does
+  // not need as much room. A 32MB gate is what let a 20MB monotonic rise pass.
+  const curve = measuredRendererCurve()
+  assert.strictEqual(analyseSeries(curve, { minAbsGrowth: 32 * 1024 * 1024 }).verdict, 'leak')
+  // Overridden back up to the leak gate, it is not creep.
+  const strict = analyseSeries(curve, {
+    minAbsGrowth: 32 * 1024 * 1024,
+    creepMinAbsGrowth: 32 * 1024 * 1024,
+  })
+  assert.notStrictEqual(strict.verdict, 'leak')
+})
+
+test("V8's total heap is exempt, because it ratchets by design", () => {
+  // heapTotal grows in steps and rarely hands memory back, so a monotonic floor
+  // there is expected rather than evidence. Without the exemption the real run
+  // flagged it at 24% on a heap whose USED floor was flat.
+  const { METRIC_RULES } = require('../tools/video-soak')
+  assert.strictEqual(METRIC_RULES.mainHeapTotal.creepMinAbsGrowth,
+    METRIC_RULES.mainHeapTotal.minAbsGrowth,
+    'the creep rule must not undercut this metric\'s own absolute gate')
+  // And the metrics that DO carry the signal have no such exemption.
+  for (const name of ['mainRss', 'rendererRss']) {
+    assert.strictEqual(METRIC_RULES[name].creepMinAbsGrowth, undefined, name)
+  }
+})

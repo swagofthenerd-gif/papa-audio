@@ -159,8 +159,23 @@ var _connCheckTimer = null
 var _waveformTimer = null
 
 var _playlistSorts = {}
+// Bounded. These only ever grow unless the user presses Back, so a long session
+// of browsing accumulates one entry per navigation for as long as the app is
+// open — and each holds a navId, which for a search page is the whole query
+// string. Found by the soak: the renderer's memory floor rose monotonically
+// across a hundred-minute run, and these were the only module-scope collections
+// with nothing bounding them.
+//
+// Two hundred is far more than anyone reaches for with a Back button, and the
+// oldest entry is the one nobody is going to want.
+const NAV_HISTORY_CAP = 200
 const navHistory = []
 const navFuture  = []
+
+function _pushNavHistory(entry) {
+  navHistory.push(entry)
+  if (navHistory.length > NAV_HISTORY_CAP) navHistory.shift()
+}
 let _playCountTimer = null
 let _shuffleHistory = []
 let _skipShortGuard = 0
@@ -1124,7 +1139,7 @@ function navigate(page, navId, opts = {}) {
     // The first navigate() of the session has no page to come back to, and
     // pushing that empty entry left Back permanently enabled (and a second
     // press navigating to an undefined page, which renders nothing).
-    if (state.currentPage) navHistory.push({ page: state.currentPage, navId: _currentNavId() })
+    if (state.currentPage) _pushNavHistory({ page: state.currentPage, navId: _currentNavId() })
     navFuture.length = 0
   }
 
@@ -1191,14 +1206,17 @@ function navigate(page, navId, opts = {}) {
 
 function navigateBack() {
   if (!navHistory.length) return
+  // Forward is capped for the same reason, and it is cleared on any new
+  // navigation anyway, so it only grows while someone holds Back down.
   navFuture.push({ page: state.currentPage, navId: _currentNavId() })
+  if (navFuture.length > NAV_HISTORY_CAP) navFuture.shift()
   const prev = navHistory.pop()
   navigate(prev.page, prev.navId, { skipHistory: true, restoreScroll: true })
 }
 
 function navigateForward() {
   if (!navFuture.length) return
-  navHistory.push({ page: state.currentPage, navId: _currentNavId() })
+  _pushNavHistory({ page: state.currentPage, navId: _currentNavId() })
   const next = navFuture.pop()
   navigate(next.page, next.navId, { skipHistory: true, restoreScroll: true })
 }
@@ -2218,6 +2236,22 @@ function _applyCardMeta(el, meta) {
   if (credit) credit.innerHTML = _vCreditHtml(meta)
   const rates = el.querySelector('[data-rates]')
   if (rates) rates.outerHTML = _vRatesHtml(meta)
+}
+
+// Releases the outgoing page's cards from the enrichment queue.
+//
+// unobserve() drops the element from the queue's own bookkeeping and from its
+// IntersectionObserver, and deliberately leaves the metadata cache alone — that
+// is keyed by title, not by element, so the same film on the next page still
+// paints instantly from it.
+function _releaseObservedCards() {
+  if (!_enricher) return
+  const root = document.getElementById('content')
+  if (!root) return
+  const cards = root.querySelectorAll('.vcard[data-enrich-observed="1"]')
+  for (const card of cards) {
+    try { _enricher.unobserve(card) } catch (_) { /* already gone */ }
+  }
 }
 
 // Every card that has just been added to the page joins the queue.
@@ -11150,6 +11184,17 @@ function setContent(html) {
   // Any page change removes the card a preview is playing in, and a <video>
   // whose element is gone keeps its buffer and its decoder. Stopped explicitly.
   if (typeof _stopHoverTrailer === 'function') _stopHoverTrailer()
+  // And every card on the outgoing page is released from the enrichment queue.
+  // Without this the queue's observer, and the callback closure each card is
+  // registered with, hold a reference to every card ever rendered — so the
+  // elements are detached but never collectable.
+  //
+  // This was invisible to the soak's domNodes metric, which counts attached
+  // nodes only, and to its listener count, since an observer is not a listener.
+  // What it did show was the renderer's memory floor rising monotonically and
+  // never coming down: measured at 0.6MB per navigation, 57.6MB over 96 page
+  // changes, against 2.4MB for the same wall-clock sitting idle.
+  if (typeof _releaseObservedCards === 'function') _releaseObservedCards()
   document.getElementById('content').innerHTML = html
   // Row indices are only meaningful for the rows currently on screen.
   if (typeof _sel !== 'undefined') {
