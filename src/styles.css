@@ -6346,6 +6346,20 @@ body.video-fullscreen .titlebar { display:none !important; }
 body.video-fullscreen .vtheatre { top:0; }
 
 .vtheatre.fullscreen .vt-top { display:none; }
+
+/* Five still seconds in fullscreen and the chrome steps aside, leaving nothing
+   but the film. display:none rather than an opacity fade, because the stage is
+   a reserved rectangle and not a backdrop: the video is a native window sized
+   to whatever #vt-stage measures, so a deck that is merely invisible still
+   occupies its grid row and the picture still stops short of the screen edge.
+   Taking the rows out is what actually hands the film the whole screen, and
+   that is safe only because every row is placed explicitly above.
+   The cursor goes too -- a pointer left sitting over a bare picture is the one
+   piece of chrome people notice most. */
+.vtheatre.fullscreen.idle .vt-pack,
+.vtheatre.fullscreen.idle .vt-strip,
+.vtheatre.fullscreen.idle .vt-deck { display:none; }
+.vtheatre.fullscreen.idle { cursor:none; }
 .vtheatre.fullscreen .vt-deck { padding:8px 20px 12px; }
 .vtheatre.fullscreen .vt-strip { padding-bottom:8px; }
 

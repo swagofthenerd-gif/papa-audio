@@ -502,6 +502,8 @@
       const m = $('vt-menu')
       if (m) { m.classList.add('hidden'); m.innerHTML = '' }
       setStageInset(0)
+      // The question is answered, so the idle clock can run again.
+      if (typeof noteActivity === 'function') noteActivity()
     }
 
     function openMenu(anchorId, html, bind) {
@@ -794,9 +796,80 @@
         if (doc.body) doc.body.classList.toggle('video-fullscreen', isFullscreen)
         const btn = $('vt-full')
         if (btn) btn.setAttribute('aria-label', isFullscreen ? 'Exit fullscreen' : 'Fullscreen')
+        // Leaving fullscreen must put the chrome back unconditionally, or the
+        // deck stays hidden in a window where nothing will ever hide it again.
+        if (isFullscreen) noteActivity()
+        else stopIdle()
         // The layout has changed, so the stage rectangle has too.
         scheduleBounds()
       }).catch(function () {})
+    }
+
+    // ── Idle chrome ─────────────────────────────────────────────────────────
+    // In fullscreen the deck and the episode list step aside after five still
+    // seconds and come back the moment anything happens.
+    //
+    // They are hidden with display:none rather than faded out, because the
+    // stage is a reserved rectangle rather than a backdrop: the video is a
+    // native window positioned onto whatever #vt-stage measures, so chrome that
+    // merely turns invisible still holds its grid row and the picture still
+    // stops short of the screen edge. Removing the rows is what actually gives
+    // the film the whole screen -- and it is safe to remove any one of them
+    // only because every row is placed explicitly (see the note on .vtheatre).
+    //
+    // The wake-up sources are deliberately wider than the document's own
+    // events. mpv's window sits above the page and swallows the pointer, so
+    // moving the mouse across the picture -- the most natural thing to do to
+    // bring the controls back -- produces no DOM event whatsoever. That path
+    // arrives through noteActivity() instead, relayed from the engine.
+    const IDLE_MS = 5000
+    let idleTimer = null
+    let isIdle = false
+
+    function _applyIdle(next) {
+      if (next === isIdle) return
+      isIdle = next
+      const root = $('vtheatre')
+      if (root) root.classList.toggle('idle', isIdle)
+      // Hiding or restoring the deck changes the height of the stage, and the
+      // stage is the rectangle mpv is positioned onto. Without this the chrome
+      // disappears and the picture keeps the old, smaller frame.
+      scheduleBounds()
+    }
+
+    function _idleEligible() {
+      if (!isFullscreen) return false
+      // A menu is an open question; taking the controls away mid-answer would
+      // dismiss it in the user's face.
+      const m = $('vt-menu')
+      if (m && !m.classList.contains('hidden')) return false
+      // Dragging the seek bar is continuous input even when the pointer is
+      // momentarily still.
+      return !dragging
+    }
+
+    function noteActivity() {
+      _applyIdle(false)
+      if (idleTimer) { clearTimeout(idleTimer); idleTimer = null }
+      if (!_idleEligible()) return
+      idleTimer = setTimeout(function () {
+        idleTimer = null
+        if (_idleEligible()) _applyIdle(true)
+      }, IDLE_MS)
+    }
+
+    function stopIdle() {
+      if (idleTimer) { clearTimeout(idleTimer); idleTimer = null }
+      _applyIdle(false)
+    }
+
+    function bindIdle() {
+      const wake = function () { noteActivity() }
+      // Capture phase: a click on a deck button must still count as presence
+      // even though the handler on the button stops the event going further.
+      ;['mousemove', 'mousedown', 'wheel', 'keydown', 'touchstart'].forEach(function (ev) {
+        doc.addEventListener(ev, wake, true)
+      })
     }
 
     // ── Seek interaction ────────────────────────────────────────────────────
@@ -868,6 +941,7 @@
       $('vt-settings')?.addEventListener('click', openSettingsMenu)
       $('vt-full')?.addEventListener('click', toggleFullscreen)
       bindSeek()
+      bindIdle()
       doc.addEventListener('keydown', onKey)
       // A click anywhere outside an open menu closes it.
       doc.addEventListener('pointerdown', function (e) {
@@ -960,6 +1034,7 @@
     function close() {
       cancelAutoSkip()
       stopUpNext()
+      stopIdle()
       closeMenu()
       if (isFullscreen) toggleFullscreen(false)
       const root = $('vtheatre')
@@ -1017,6 +1092,9 @@
       // Relayed from mpv when the picture is double-clicked: the click never
       // reaches the page, so the gesture has to arrive this way.
       toggleFullscreen: toggleFullscreen,
+      // Relayed from mpv: the pointer moved over the picture, which the page
+      // itself cannot see because the video window takes the event.
+      noteActivity: noteActivity,
       setPack: setPack,
       minimise: minimise,
       restore: restore,

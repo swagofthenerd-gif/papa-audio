@@ -129,6 +129,14 @@ const { classify } = require('./src/surround-verify')
 const OBSERVED_PROPS = [
   'time-pos', 'duration', 'pause', 'volume', 'mute', 'speed',
   'track-list', 'sid', 'aid', 'chapter-list', 'eof-reached',
+  // Whether the mouse is moving over the picture. The video is a native child
+  // window composited above the page, so it swallows every pointer event that
+  // lands on it -- the page sees no mousemove at all while the cursor is over
+  // the film. Anything that hides chrome after a period of stillness would
+  // therefore hide it and never bring it back, because moving the mouse across
+  // the one place the user is looking is invisible to the document. mpv does
+  // see it, and reports it here.
+  'mouse-pos',
   // cache-duration, not cache-time. cache-time is the ABSOLUTE timestamp of the
   // end of the cache; the UI wants seconds ahead of the playhead. Measured on a
   // 120-second file at position 32.96: cache-time 119.98, cache-duration 86.77.
@@ -251,6 +259,7 @@ class VideoEngine extends EventEmitter {
     this._trackList = []
     this._chapterList = []
     this._stateTimer = null
+    this._lastActivity = 0
     // Timing seam for tests; production uses STATE_THROTTLE_MS (~4/s).
     this._stateThrottleMs = opts.stateThrottleMs ?? STATE_THROTTLE_MS
   }
@@ -533,6 +542,20 @@ class VideoEngine extends EventEmitter {
 
   _onProp(name, data) {
     const s = this.state
+    // Handled before the switch and returned from deliberately: this is not
+    // playback state. It arrives at pointer rate, it would push the throttled
+    // state stream to its ceiling for the whole time a hand rests on the mouse,
+    // and nothing in the UI reads a cursor position. Only the fact of movement
+    // is wanted, so only that is emitted -- and at most five times a second,
+    // which is far more than a five-second idle timer needs.
+    if (name === 'mouse-pos') {
+      if (!data || data.hover !== true) return
+      const now = Date.now()
+      if (now - this._lastActivity < 200) return
+      this._lastActivity = now
+      this.emit('activity')
+      return
+    }
     switch (name) {
       case 'time-pos':
         if (data != null) s.position = data

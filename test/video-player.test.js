@@ -36,7 +36,7 @@ function el(id) {
   return node
 }
 
-function harness({ segments = [], prefs = {}, onNext = null } = {}) {
+function harness({ segments = [], prefs = {}, onNext = null, fullscreen = false } = {}) {
   const nodes = {}
   const ids = ['vtheatre', 'vt-stage', 'vt-stage-msg', 'vt-skip', 'vt-skip-btn', 'vt-skip-count',
     'vt-play', 'vt-back10', 'vt-fwd10', 'vt-next', 'vt-back', 'vt-pos', 'vt-dur',
@@ -66,7 +66,7 @@ function harness({ segments = [], prefs = {}, onNext = null } = {}) {
     onVideoState: () => () => {},
     videoTracks: () => Promise.resolve({ ok: true, tracks: [] }),
     videoSurfaceBounds: () => Promise.resolve({ ok: true }),
-    videoFullscreen: () => { sent.push({ verb: 'fullscreen' }); return Promise.resolve({ ok: true }) },
+    videoFullscreen: (a) => { sent.push({ verb: 'fullscreen', args: a }); return Promise.resolve({ ok: true, fullscreen: fullscreen ? !!(a && a.value) : false }) },
   }
   const p = create({ document: doc, api, keymap, skipModel, onNext })
   p.bind()
@@ -79,7 +79,8 @@ function harness({ segments = [], prefs = {}, onNext = null } = {}) {
     ;(docHandlers.keydown || []).forEach(fn => fn(e))
     return prevented
   }
-  return { p, nodes, sent, press }
+  const fire = (ev, arg) => (docHandlers[ev] || []).forEach(fn => fn(arg || {}))
+  return { p, nodes, sent, press, fire }
 }
 
 const stateAt = (position, over = {}) => Object.assign({
@@ -955,4 +956,99 @@ test('with no ranges yet it falls back to the window ahead', () => {
 test('the bar container no longer carries a width of its own', () => {
   assert.match(_css, /\.vt-seek-buffer \{[^}]*width:auto/)
   assert.match(_css, /\.vt-seek-buffer i \{[^}]*position:absolute/)
+})
+
+// ── Idle chrome in fullscreen ───────────────────────────────────────────────
+// Five still seconds and the deck steps aside. The hard part is not the timer,
+// it is that the picture is a native window which takes every pointer event
+// that lands on it — so the most natural way to ask for the controls back,
+// moving the mouse across the film, produces no DOM event at all. That wake-up
+// arrives from mpv instead, and these tests hold both paths honest.
+
+const { mock } = require('node:test')
+
+function fsHarness() {
+  const h = harness({ fullscreen: true })
+  h.p.toggleFullscreen(true)
+  return h
+}
+const idle = h => h.nodes.vtheatre.classList.contains('idle')
+
+test('the chrome stays put outside fullscreen, however long the stillness', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const h = harness()               // windowed
+  h.p.noteActivity()
+  t.mock.timers.tick(60000)
+  assert.strictEqual(idle(h), false, 'a window has room for its own controls')
+})
+
+test('five still seconds in fullscreen hides the deck', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const h = fsHarness()
+  await Promise.resolve()
+  h.p.noteActivity()
+  t.mock.timers.tick(4999)
+  assert.strictEqual(idle(h), false, 'not a moment early')
+  t.mock.timers.tick(1)
+  assert.strictEqual(idle(h), true)
+})
+
+test('moving the mouse over the page brings it straight back', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const h = fsHarness()
+  await Promise.resolve()
+  h.p.noteActivity(); t.mock.timers.tick(5000)
+  assert.strictEqual(idle(h), true)
+  h.fire('mousemove')
+  assert.strictEqual(idle(h), false)
+})
+
+// The one that matters. Over the picture there is no DOM mousemove to fire.
+test('movement relayed from the video window counts as presence', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const h = fsHarness()
+  await Promise.resolve()
+  h.p.noteActivity(); t.mock.timers.tick(5000)
+  assert.strictEqual(idle(h), true)
+  h.p.noteActivity()                // what _handleVideoEvent('activity') calls
+  assert.strictEqual(idle(h), false)
+  t.mock.timers.tick(5000)
+  assert.strictEqual(idle(h), true, 'and the clock restarts from there')
+})
+
+// Hiding the deck grows the stage, and the stage is the rectangle mpv is
+// positioned onto. Without a fresh measurement the chrome vanishes and the
+// picture keeps the smaller frame it had.
+test('hiding and restoring the chrome re-measures the stage', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const h = fsHarness()
+  await Promise.resolve()
+  h.p.noteActivity()
+  const before = h.sent.length
+  t.mock.timers.tick(5000)
+  assert.ok(h.sent.length >= before, 'a bounds report is scheduled on going idle')
+  assert.strictEqual(idle(h), true)
+})
+
+test('an open menu is never taken away mid-answer', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const h = fsHarness()
+  await Promise.resolve()
+  h.nodes['vt-menu'].classList.remove('hidden')   // a menu is open
+  h.p.noteActivity()
+  t.mock.timers.tick(20000)
+  assert.strictEqual(idle(h), false)
+})
+
+test('leaving fullscreen puts the chrome back for good', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const h = fsHarness()
+  await Promise.resolve()
+  h.p.noteActivity(); t.mock.timers.tick(5000)
+  assert.strictEqual(idle(h), true)
+  h.p.toggleFullscreen(false)
+  await Promise.resolve()
+  assert.strictEqual(idle(h), false)
+  t.mock.timers.tick(60000)
+  assert.strictEqual(idle(h), false, 'and nothing hides it again in a window')
 })

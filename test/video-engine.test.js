@@ -715,3 +715,54 @@ test('no ranges at all is an empty list, not a crash', () => {
   eng._onProp('demuxer-cache-state', {})
   assert.deepStrictEqual(eng.state.seekable, [])
 })
+
+// ── Presence over the picture ───────────────────────────────────────────────
+// The video is a native child window, so it swallows every pointer event that
+// lands on it and the page sees no movement at all while the cursor is over the
+// film. Anything that hides chrome after a period of stillness would hide it
+// and never bring it back. mpv does see the movement, and reports it here.
+test('mpv is asked to report the cursor, because the page cannot see it', () => {
+  const { OBSERVED_PROPS } = require('../video-engine.js')
+  assert.ok(OBSERVED_PROPS.includes('mouse-pos'))
+})
+
+test('movement over the picture is announced as presence', () => {
+  const eng = new VideoEngine({ config: {} })
+  let beats = 0
+  eng.on('activity', () => { beats++ })
+  eng._onProp('mouse-pos', { x: 10, y: 20, hover: true })
+  assert.strictEqual(beats, 1)
+})
+
+// A cursor that has left the window is not a viewer at the screen, and mpv
+// reports the leaving as a change like any other.
+test('the pointer leaving is not presence', () => {
+  const eng = new VideoEngine({ config: {} })
+  let beats = 0
+  eng.on('activity', () => { beats++ })
+  eng._onProp('mouse-pos', { x: 10, y: 20, hover: false })
+  eng._onProp('mouse-pos', null)
+  assert.strictEqual(beats, 0)
+})
+
+// It arrives at pointer rate. Emitting each one would push the throttled state
+// stream to its ceiling for as long as a hand rests on the mouse, and no part
+// of the UI reads a cursor position — only the fact that it moved.
+test('a stream of movement is thinned to a handful a second', () => {
+  const eng = new VideoEngine({ config: {} })
+  let beats = 0
+  eng.on('activity', () => { beats++ })
+  for (let i = 0; i < 200; i++) eng._onProp('mouse-pos', { x: i, y: i, hover: true })
+  assert.strictEqual(beats, 1, 'two hundred samples in one tick is one beat')
+})
+
+// And it is not playback state: nothing about a cursor belongs in the object
+// the deck renders from.
+test('the cursor never reaches the state the deck renders', () => {
+  const eng = new VideoEngine({ config: {} })
+  let states = 0
+  eng.on('state', () => { states++ })
+  const before = JSON.stringify(eng.getState())
+  eng._onProp('mouse-pos', { x: 1, y: 2, hover: true })
+  assert.strictEqual(JSON.stringify(eng.getState()), before)
+})

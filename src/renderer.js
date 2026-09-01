@@ -2642,6 +2642,10 @@ function _handleVideoEvent(payload) {
   if (!_player) return
   if (payload.kind === 'audio') return   // badges come from the state stream
 
+  // The mouse moved over the picture. Only the theatre cares, and only to know
+  // the viewer is still watching rather than gone.
+  if (payload.kind === 'activity') { _player.noteActivity(); return }
+
   // A key pressed inside the video window. mpv owns the keyboard while it has
   // focus, so it forwards the actions that belong to the app.
   // The episodes inside the season pack now streaming.

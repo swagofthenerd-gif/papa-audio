@@ -7038,6 +7038,11 @@ function _wireVideoEngine() {
   // individual property updates — the UI merges nothing (§4.2), so every emit
   // is a complete object.
   engine.on('state', s => safeSend('video-state', s))
+  // Movement over the picture, which the page cannot see for itself: the video
+  // window is native and takes the pointer events. Sent on the existing event
+  // channel rather than a new one -- it carries nothing but the fact that it
+  // happened, and the theatre only needs that to know the viewer is still there.
+  engine.on('activity', () => safeSend('video-event', { kind: 'activity' }))
 }
 
 // The stream list only carries what the indexer claimed about the audio. Once
