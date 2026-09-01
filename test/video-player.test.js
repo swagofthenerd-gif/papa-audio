@@ -111,8 +111,35 @@ test('the deck paints position, duration and progress from state', () => {
 test('the buffered bar shows cache ahead of the playhead, not total progress', () => {
   const { p, nodes } = harness()
   p._setState(stateAt(900, { buffered: 180 }))
-  // 900 + 180 of 3600 = 30%
-  assert.strictEqual(nodes['vt-seek-buffer'].style.width, '30%')
+  // 900 + 180 of 3600 = 30%. Drawn as a range inside the bar rather than as a
+  // width on it, since a torrent's cached regions are not one stretch from the
+  // left — but with no ranges reported yet this is still the honest fallback.
+  assert.match(nodes['vt-seek-buffer'].innerHTML, /left:0;width:30%/)
+})
+
+// The case the old bar got wrong: what is cached is not always at the start.
+test('a cached region partway through is drawn where it actually is', () => {
+  const { p, nodes } = harness()
+  p._setState(stateAt(900, { buffered: 30, seekable: [{ start: 1800, end: 2700 }] }))
+  const html = nodes['vt-seek-buffer'].innerHTML
+  assert.match(html, /left:50%/, 'half way in, not at the left edge')
+  assert.match(html, /width:25%/)
+})
+
+test('several cached regions are all drawn', () => {
+  const { p, nodes } = harness()
+  p._setState(stateAt(100, { seekable: [{ start: 0, end: 360 }, { start: 1800, end: 2160 }] }))
+  assert.strictEqual((nodes['vt-seek-buffer'].innerHTML.match(/<i /g) || []).length, 2)
+})
+
+// A range running past the end of the film would otherwise draw outside the bar.
+test('a range beyond the duration is clamped to the track', () => {
+  const { p, nodes } = harness()
+  p._setState(stateAt(100, { seekable: [{ start: 3400, end: 99999 }] }))
+  const html = nodes['vt-seek-buffer'].innerHTML
+  const width = Number(/width:([\d.]+)%/.exec(html)[1])
+  const left = Number(/left:([\d.]+)%/.exec(html)[1])
+  assert.ok(left + width <= 100.01, 'drawn ' + left + '% + ' + width + '%')
 })
 
 test('the play button reflects and toggles paused state', () => {
@@ -895,4 +922,37 @@ test('the picture is never shrunk away entirely', () => {
     require('path').join(__dirname, '..', 'src', 'video-player.js'), 'utf8')
   const fn = src.slice(src.indexOf('function reportBounds'), src.indexOf('function setStageInset'))
   assert.match(fn, /Math\.max\(120, Math\.round\(r\.height\) - Math\.round\(stageInset\)\)/)
+})
+
+// ── The buffered bar ────────────────────────────────────────────────────────
+// It draws the ranges mpv says it can seek within, not one bar growing from the
+// left. Measured on a real 1440-second torrent after twelve seconds of play:
+// seekable [[0, 2]] — two seconds of a twenty-four minute film. The old bar
+// showed that as full, which is why seeking anywhere bought a wait the bar had
+// promised was unnecessary.
+test('the buffered bar draws real ranges, not one growing width', () => {
+  const src = require('fs').readFileSync(
+    require('path').join(__dirname, '..', 'src', 'video-player.js'), 'utf8')
+  const fn = src.slice(src.indexOf('function paintBuffered'), src.indexOf('function paintSeek'))
+  assert.match(fn, /state\.seekable/)
+  assert.match(fn, /ranges\.map/)
+  // A range that starts partway through must be drawn where it starts.
+  assert.match(fn, /left:' \+ \(\(from \/ dur\) \* 100\)/)
+})
+
+// Before any range has been reported, saying "this much ahead" is still true,
+// where saying nothing would leave the bar blank on a local file.
+test('with no ranges yet it falls back to the window ahead', () => {
+  const src = require('fs').readFileSync(
+    require('path').join(__dirname, '..', 'src', 'video-player.js'), 'utf8')
+  const fn = src.slice(src.indexOf('function paintBuffered'), src.indexOf('function paintSeek'))
+  assert.match(fn, /if \(!ranges\.length\)/)
+  assert.match(fn, /pos \+ \(Number\(state && state\.buffered\)/)
+})
+
+// The container spans the whole track now and each range is a child, so a
+// leftover width on the container would draw a phantom range.
+test('the bar container no longer carries a width of its own', () => {
+  assert.match(_css, /\.vt-seek-buffer \{[^}]*width:auto/)
+  assert.match(_css, /\.vt-seek-buffer i \{[^}]*position:absolute/)
 })

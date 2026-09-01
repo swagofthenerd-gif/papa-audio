@@ -6564,7 +6564,11 @@ body.video-active .np-byline { font-size:10.5px; }
 .vt-seek:focus-visible { outline:2px solid var(--accent); outline-offset:4px; border-radius:4px; }
 .vt-seek-track { position:relative; height:4px; border-radius:2px; background:rgba(255,255,255,.18); transition:height .12s var(--ease); }
 .vt-seek:hover .vt-seek-track, .vt-seek:focus-visible .vt-seek-track { height:6px; }
-.vt-seek-buffer { position:absolute; inset:0 auto 0 0; width:0; background:rgba(255,255,255,.3); border-radius:2px; }
+/* The buffered bar is now a set of ranges rather than one width, because what
+   is seekable on a torrent is not a single stretch growing from the left. The
+   container spans the track; each <i> is one range mpv says it can seek within. */
+.vt-seek-buffer { position:absolute; inset:0; width:auto; background:none; border-radius:2px; pointer-events:none; }
+.vt-seek-buffer i { position:absolute; top:0; bottom:0; background:rgba(255,255,255,.3); border-radius:2px; }
 .vt-seek-fill   { position:absolute; inset:0 auto 0 0; width:0; background:var(--accent); border-radius:2px; }
 .vt-seek-knob {
   position:absolute; top:50%; left:0; width:13px; height:13px; margin:-6.5px 0 0 -6.5px;

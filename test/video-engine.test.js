@@ -310,7 +310,9 @@ test('property-change builds the §4.2 state and emits it throttled', async () =
   f.pushProp('volume', 80)
   f.pushProp('mute', false)
   f.pushProp('speed', 1.25)
-  f.pushProp('demuxer-cache-time', 30)
+  // Seconds ahead of the playhead, which is what the bar needs. The property
+  // this used to push, demuxer-cache-time, is an absolute timestamp.
+  f.pushProp('demuxer-cache-duration', 30)
   f.pushProp('video-params', { dw: 1920, dh: 1080, w: 1920, h: 1080 })
   f.pushProp('video-codec', 'h264')
   f.pushProp('audio-params', { 'channel-count': 6, channels: '6', samplerate: 48000 })
@@ -492,7 +494,9 @@ test('emptyState has the full §4.2 shape with safe defaults', () => {
   const s = emptyState()
   assert.deepStrictEqual(s, {
     position: 0, duration: 0, paused: true, volume: 0, muted: false, speed: 1,
-    buffered: 0, eof: false,
+    // buffered is seconds ahead of the playhead; seekable is where playback can
+    // actually jump to, which on a torrent is a very different answer.
+    buffered: 0, seekable: [], eof: false,
     video: { width: null, height: null, codec: null },
     audio: { layout: 'unknown', channels: 0, codec: null },
     tracks: { sub: null, audio: null },
@@ -661,4 +665,53 @@ test('an empty directory is not an error', async () => {
   const dir = socketDir([])
   assert.deepStrictEqual(await purgeOrphanPlayers({ dir }), { quit: 0, stale: 0 })
   _fs.rmSync(dir, { recursive: true, force: true })
+})
+
+// ── What the buffered bar is told ───────────────────────────────────────────
+// mpv has two cache properties and they are not interchangeable.
+// demuxer-cache-time is the ABSOLUTE timestamp of the end of the cache;
+// demuxer-cache-duration is seconds ahead of the playhead. Measured on a
+// 120-second file at position 32.96: cache-time 119.98, cache-duration 86.77.
+// The bar added the absolute value to the position, so it read 152s of a 120s
+// film, clamped to full, and sat there permanently.
+test('the cache is observed as a duration, not an absolute timestamp', () => {
+  const { OBSERVED_PROPS } = require('../video-engine.js')
+  assert.ok(OBSERVED_PROPS.includes('demuxer-cache-duration'))
+  assert.ok(!OBSERVED_PROPS.includes('demuxer-cache-time'),
+    'adding an absolute timestamp to a position is how the bar came to lie')
+})
+
+// A demuxer window says how far ahead mpv has read. It says nothing about
+// whether the bytes for somewhere else exist — on a torrent they usually do
+// not, which is why a full-looking bar still bought a wait on every seek.
+// Measured on a real 1440-second torrent after twelve seconds: seekable
+// [[0, 2]], two seconds of a twenty-four minute film.
+test('what is genuinely seekable is reported separately', () => {
+  const { OBSERVED_PROPS } = require('../video-engine.js')
+  assert.ok(OBSERVED_PROPS.includes('demuxer-cache-state'))
+})
+
+test('seekable ranges are normalised, and nonsense is dropped', () => {
+  const eng = new VideoEngine({ config: {} })
+  eng._onProp('demuxer-cache-state', {
+    'seekable-ranges': [
+      { start: 0, end: 12.5 },
+      { start: 400, end: 430 },
+      { start: 5, end: 5 },          // empty
+      { start: 90, end: 10 },        // backwards
+      { start: null, end: 3 },       // unusable
+    ],
+  })
+  assert.deepStrictEqual(eng.state.seekable, [
+    { start: 0, end: 12.5 },
+    { start: 400, end: 430 },
+  ])
+})
+
+test('no ranges at all is an empty list, not a crash', () => {
+  const eng = new VideoEngine({ config: {} })
+  eng._onProp('demuxer-cache-state', null)
+  assert.deepStrictEqual(eng.state.seekable, [])
+  eng._onProp('demuxer-cache-state', {})
+  assert.deepStrictEqual(eng.state.seekable, [])
 })

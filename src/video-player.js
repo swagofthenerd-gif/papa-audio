@@ -167,15 +167,39 @@
       paintUpNext(pos, dur)
     }
 
+    // What can actually be jumped to, drawn as the ranges mpv reports rather
+    // than as one bar growing from the left.
+    //
+    // The single bar was wrong twice over. It added an absolute timestamp to
+    // the position — mpv's demuxer-cache-time, not a duration — so it read past
+    // the end of the film and sat permanently full. And even corrected, a
+    // demuxer window only says how far ahead mpv has read: it says nothing
+    // about whether the bytes for somewhere else exist. On a torrent they
+    // usually do not, which is why a full-looking bar still bought a wait on
+    // every seek. Ranges answer the question the bar is actually asked.
+    function paintBuffered(pos, dur) {
+      const buf = $('vt-seek-buffer')
+      if (!buf || !(dur > 0)) return
+      const ranges = (state && Array.isArray(state.seekable)) ? state.seekable : []
+      if (!ranges.length) {
+        // No ranges reported yet: fall back to the window ahead of the playhead,
+        // which is at least true, rather than to nothing.
+        const ahead = Math.min(dur, pos + (Number(state && state.buffered) || 0))
+        buf.innerHTML = '<i style="left:0;width:' + Math.min(100, (ahead / dur) * 100) + '%"></i>'
+        return
+      }
+      buf.innerHTML = ranges.map(function (r) {
+        const from = Math.max(0, Math.min(dur, r.start))
+        const to = Math.max(from, Math.min(dur, r.end))
+        return '<i style="left:' + ((from / dur) * 100) + '%;width:' + (((to - from) / dur) * 100) + '%"></i>'
+      }).join('')
+    }
+
     function paintSeek(pos, dur) {
       const pct = dur > 0 ? Math.min(100, (pos / dur) * 100) : 0
       const fill = $('vt-seek-fill'); if (fill) fill.style.width = pct + '%'
       const knob = $('vt-seek-knob'); if (knob) knob.style.left = pct + '%'
-      const buf = $('vt-seek-buffer')
-      if (buf && dur > 0) {
-        const ahead = Math.min(dur, pos + (Number(state && state.buffered) || 0))
-        buf.style.width = Math.min(100, (ahead / dur) * 100) + '%'
-      }
+      paintBuffered(pos, dur)
       const seek = $('vt-seek')
       if (seek) {
         seek.setAttribute('aria-valuemax', String(Math.round(dur)))

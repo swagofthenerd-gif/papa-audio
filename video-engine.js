@@ -129,7 +129,18 @@ const { classify } = require('./src/surround-verify')
 const OBSERVED_PROPS = [
   'time-pos', 'duration', 'pause', 'volume', 'mute', 'speed',
   'track-list', 'sid', 'aid', 'chapter-list', 'eof-reached',
-  'demuxer-cache-time', 'video-params', 'video-codec',
+  // cache-duration, not cache-time. cache-time is the ABSOLUTE timestamp of the
+  // end of the cache; the UI wants seconds ahead of the playhead. Measured on a
+  // 120-second file at position 32.96: cache-time 119.98, cache-duration 86.77.
+  // The bar was adding the absolute value to the position, so it read 152s of a
+  // 120s film and sat permanently full.
+  'demuxer-cache-duration',
+  // What is genuinely seekable, which is a different question. A demuxer window
+  // says how far ahead mpv has read; it says nothing about whether the bytes
+  // for a position elsewhere exist. On a torrent they usually do not, which is
+  // why a bar that looked full still bought a wait on every seek.
+  'demuxer-cache-state',
+  'video-params', 'video-codec',
   'audio-params', 'audio-codec-name',
 ]
 
@@ -191,6 +202,7 @@ function emptyState() {
     muted: false,
     speed: 1,
     buffered: 0,
+    seekable: [],
     eof: false,
     video: { width: null, height: null, codec: null },
     audio: { layout: 'unknown', channels: 0, codec: null },
@@ -540,9 +552,24 @@ class VideoEngine extends EventEmitter {
       case 'speed':
         if (data != null) s.speed = data
         break
-      case 'demuxer-cache-time':
+      case 'demuxer-cache-duration':
         if (data != null) s.buffered = data
         break
+      case 'demuxer-cache-state': {
+        // Ranges mpv can seek within right now, in seconds. Everything outside
+        // them costs a refetch, and on a torrent that means waiting for pieces
+        // that may not have been asked for yet.
+        const ranges = data && Array.isArray(data['seekable-ranges']) ? data['seekable-ranges'] : []
+        // Number(null) is 0, so coercing first and checking isFinite after
+        // silently turns a missing start into the beginning of the film — the
+        // range would be drawn, and drawn wrong. The type is checked before the
+        // value.
+        const num = v => (typeof v === 'number' && isFinite(v) ? v : null)
+        s.seekable = ranges
+          .map(r => ({ start: num(r && r.start), end: num(r && r.end) }))
+          .filter(r => r.start !== null && r.end !== null && r.end > r.start)
+        break
+      }
       case 'eof-reached':
         s.eof = data === true
         break
