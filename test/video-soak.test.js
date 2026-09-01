@@ -24,7 +24,11 @@ function flat (n = 60, value = 1000) {
 // A metric that is stable but real: it jitters, because every real measurement
 // does. A perfectly repeated value means the probe is not measuring — see the
 // `constant` verdict — so a fixture of one repeated number cannot stand in for
-// "a metric that did not drift".
+// "a metric that did not drift". Deterministic, so the test cannot flake.
+//
+// There were two of these, declared under the same name. The later one won
+// silently, which meant this fixture — written for the constant-verdict work —
+// was never actually the one being tested.
 function noisyFlat (n = 60, value = 1000) {
   return Array.from({ length: n }, (_, i) => value + ((i * 7) % 5) - 2)
 }
@@ -54,11 +58,6 @@ function slowLeak (n = 60, floor = 100, perSample = 2) {
   })
 }
 
-// A metric that jitters either side of a level line. Measurement noise, not
-// movement. Deterministic so the test cannot flake.
-function noisyFlat (n = 60, value = 500) {
-  return Array.from({ length: n }, (_, i) => value + (i * 7919 % 23) - 11)
-}
 
 // ── The healthy shapes must not be reported as leaks ─────────────────────────
 
