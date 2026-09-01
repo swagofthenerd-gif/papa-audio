@@ -4726,26 +4726,37 @@ function _renderVideoControls(type) {
   }
   if (type === 'anime') {
     const n = Number(_videoDetail.d.episodeCount) || 0
-    let epControl
-    if (n > 0) {
-      let opts = ''
-      for (let i = 1; i <= Math.min(n, 2000); i++) opts += '<option value="' + i + '"' + (i === _videoState.episode ? ' selected' : '') + '>Episode ' + i + '</option>'
-      epControl = '<select class="mcs-set-select" id="video-episode-select">' + opts + '</select>'
-    } else {
-      epControl = '<input class="mcs-set-input" id="video-episode-input" type="number" min="1" value="' + _videoState.episode + '" style="width:90px">'
-    }
+    // A grid rather than the dropdown this used to be. The dropdown could say
+    // which episode was selected and nothing else -- not which you had already
+    // seen, not which you were part way through -- and for a long-running show
+    // it was a two-thousand-row list you had to scroll to find your place in.
+    // The same grid television uses carries all of that, and means one set of
+    // marks rather than two that drift.
+    const numbers = []
+    for (let i = 1; i <= Math.min(n, 2000); i++) numbers.push(i)
+    const prog = _epProgress('anime', _videoDetail.d.id, null, numbers)
+    const grid = n > 0
+      ? '<div class="video-episode-list" id="video-episode-list">' +
+          numbers.map(function (i) { return _epButton(i, null, prog) }).join('') + '</div>'
+      // Episode count unknown -- an airing show AniList has no total for, or a
+      // long-runner past the cap. A number still has to be typed.
+      : '<label class="video-control">Episode <input class="mcs-set-input" id="video-episode-input" type="number" min="1" value="' + _videoState.episode + '" style="width:90px"></label>'
     box.innerHTML = '<div class="video-controls-row">' +
-      '<label class="video-control">Episode ' + epControl + '</label>' +
-      _dubControl(_videoDetail.d) +
+      _epResumeHtml(prog, numbers.length) +
+      _dubControl(_videoDetail.d) + grid +
     '</div>'
-    const setEp = function () {
-      const sel = document.getElementById('video-episode-select')
-      const inp = document.getElementById('video-episode-input')
-      _videoState.episode = sel ? Number(sel.value) || 1 : (inp ? Number(inp.value) || 1 : 1)
+    const setEp = function (ep) {
+      _videoState.episode = ep
+      _syncEpisodeSelection(ep)
       _loadVideoSources(_videoDetailTicket, ++_videoSeasonTicket)
     }
-    document.getElementById('video-episode-select')?.addEventListener('change', setEp)
-    document.getElementById('video-episode-input')?.addEventListener('change', setEp)
+    box.querySelectorAll('.video-episode-btn').forEach(function (b) {
+      b.addEventListener('click', function () { setEp(Number(b.dataset.ep) || 1) })
+    })
+    document.getElementById('video-episode-input')?.addEventListener('change', function (e) {
+      setEp(Number(e.target.value) || 1)
+    })
+    _bindEpResume(box)
     _bindDubControl()
     return
   }
@@ -4754,6 +4765,131 @@ function _renderVideoControls(type) {
   const dub = _dubControl(_videoDetail.d)
   box.innerHTML = dub ? '<div class="video-controls-row">' + dub + '</div>' : ''
   _bindDubControl()
+}
+
+// ── Episode progress ────────────────────────────────────────────────────────
+// The store has recorded a position for every episode since the engine work,
+// and nothing has ever shown it. Opening a season looked identical whether you
+// had watched none of it or all but one, and finding your place meant
+// remembering the number yourself.
+//
+// Two things come out of the same read: a mark on each episode, and one
+// sentence saying where to pick up.
+
+// How far into an episode counts as "started". Below this it is almost always
+// a mis-click or a few seconds of buffering, and offering to resume from ten
+// seconds in is worse than offering nothing.
+var _EP_STARTED = 0.02
+
+function _epProgress(type, id, season, epNumbers) {
+  const store = _vStore()
+  const out = { items: {}, resume: null, next: null, watched: 0 }
+  if (!store || !Array.isArray(epNumbers) || !epNumbers.length) return out
+  let lastWatched = null
+  let started = null
+  for (const n of epNumbers) {
+    let item = null
+    try { item = store.get(_watchKey(type, id, season, n)) } catch (_) { item = null }
+    if (!item) continue
+    const dur = Number(item.duration) || 0
+    const pos = Number(item.position) || 0
+    const ratio = dur > 0 ? pos / dur : 0
+    const rec = { watched: item.watched === true, position: pos, duration: dur, ratio: ratio }
+    out.items[n] = rec
+    if (rec.watched) { out.watched++; if (lastWatched == null || n > lastWatched) lastWatched = n }
+    // The furthest episode genuinely mid-way through. Furthest rather than most
+    // recent: rewatching episode 2 of a season you are eight into should not
+    // move your place backwards.
+    else if (ratio >= _EP_STARTED && (started == null || n > started)) started = n
+  }
+  if (started != null) {
+    out.resume = { episode: started, position: out.items[started].position, duration: out.items[started].duration }
+  } else if (lastWatched != null) {
+    const after = epNumbers.filter(function (n) { return n > lastWatched && !(out.items[n] && out.items[n].watched) })
+    if (after.length) out.next = { episode: Math.min.apply(null, after) }
+  }
+  return out
+}
+
+// The class and tooltip for one episode button. Kept separate so the anime
+// grid and the television grid cannot drift apart.
+function _epMark(rec) {
+  if (!rec) return { cls: '', title: '' }
+  if (rec.watched) return { cls: ' seen', title: 'Watched' }
+  if (rec.ratio >= _EP_STARTED) {
+    const left = Math.max(0, (rec.duration || 0) - (rec.position || 0))
+    return { cls: ' partial', title: 'Started — ' + _vDurText(left) + ' left', pct: Math.round(rec.ratio * 100) }
+  }
+  return { cls: '', title: '' }
+}
+
+function _epButton(n, name, prog) {
+  const rec = prog && prog.items ? prog.items[n] : null
+  const mark = _epMark(rec)
+  const label = name ? esc(name) : ''
+  const tip = [label, mark.title].filter(Boolean).join(' — ')
+  return '<button class="video-episode-btn' + (n === _videoState.episode ? ' active' : '') + mark.cls +
+    '" data-ep="' + n + '"' + (tip ? ' title="' + tip + '"' : '') + '>' + n +
+    (mark.pct != null ? '<i class="video-ep-bar" style="width:' + mark.pct + '%"></i>' : '') +
+    '</button>'
+}
+
+// Seconds -> "42m" / "1h 05m". Short because it sits inside a tooltip and a
+// one-line banner, not a table.
+function _vDurText(sec) {
+  const s = Math.max(0, Math.round(Number(sec) || 0))
+  const h = Math.floor(s / 3600)
+  const m = Math.round((s % 3600) / 60)
+  if (h > 0) return h + 'h ' + String(m).padStart(2, '0') + 'm'
+  return m + 'm'
+}
+
+// One sentence above the grid: where you were, or what is next. Rendered only
+// when there is something to say -- an untouched season gets no banner at all
+// rather than an empty box saying so.
+function _epResumeHtml(prog, total) {
+  if (!prog) return ''
+  if (prog.resume) {
+    const left = Math.max(0, (prog.resume.duration || 0) - (prog.resume.position || 0))
+    return '<div class="video-resume" data-ep="' + prog.resume.episode + '">' +
+      '<div class="video-resume-text"><b>Continue episode ' + prog.resume.episode + '</b>' +
+      (left > 0 ? '<span>' + esc(_vDurText(left)) + ' left</span>' : '') + '</div>' +
+      '<button class="video-resume-go">Resume</button></div>'
+  }
+  if (prog.next) {
+    const done = prog.watched
+    return '<div class="video-resume" data-ep="' + prog.next.episode + '">' +
+      '<div class="video-resume-text"><b>Next up: episode ' + prog.next.episode + '</b>' +
+      (total ? '<span>' + done + ' of ' + total + ' watched</span>' : '') + '</div>' +
+      '<button class="video-resume-go">Play</button></div>'
+  }
+  return ''
+}
+
+// Clicking Resume selects that episode and starts it from where it stopped --
+// the position itself is already restored by the player's own resume offer, so
+// this only has to get the right episode playing.
+function _bindEpResume(root) {
+  const banner = (root || document).querySelector('.video-resume')
+  if (!banner) return
+  banner.querySelector('.video-resume-go')?.addEventListener('click', function () {
+    const n = Number(banner.dataset.ep) || 1
+    _videoState.episode = n
+    _syncEpisodeSelection(n)
+    _loadVideoSources(_videoDetailTicket, ++_videoSeasonTicket)
+  })
+}
+
+// The chosen episode has to be reflected in whichever control is on screen,
+// and the two catalogues use different ones.
+function _syncEpisodeSelection(n) {
+  document.querySelectorAll('.video-episode-btn').forEach(function (x) {
+    x.classList.toggle('active', Number(x.dataset.ep) === n)
+  })
+  const sel = document.getElementById('video-episode-select')
+  if (sel) sel.value = String(n)
+  const inp = document.getElementById('video-episode-input')
+  if (inp) inp.value = String(n)
 }
 
 // `seasonTicket` is what makes rapid season switching safe. The old code passed
@@ -4791,18 +4927,29 @@ async function _refreshTvEpisodes(ticket, seasonTicket) {
 
   const target = document.getElementById('video-episode-list')
   if (target) {
+    const numbers = episodes.map(function (ep) { return ep.episodeNumber })
+    const prog = _epProgress('tv', detail.id, season, numbers)
     target.innerHTML = episodes.length
-      ? episodes.map(function (ep) {
-          return '<button class="video-episode-btn' + (ep.episodeNumber === _videoState.episode ? ' active' : '') + '" data-ep="' + ep.episodeNumber + '" title="' + esc(ep.name || '') + '">' + ep.episodeNumber + '</button>'
-        }).join('')
+      ? episodes.map(function (ep) { return _epButton(ep.episodeNumber, ep.name, prog) }).join('')
       : '<div class="yt-status">No episodes</div>'
     target.querySelectorAll('.video-episode-btn').forEach(function (b) {
       b.addEventListener('click', function () {
         _videoState.episode = Number(b.dataset.ep) || 1
-        target.querySelectorAll('.video-episode-btn').forEach(function (x) { x.classList.toggle('active', Number(x.dataset.ep) === _videoState.episode) })
+        _syncEpisodeSelection(_videoState.episode)
         _loadVideoSources(_videoDetailTicket, ++_videoSeasonTicket)
       })
     })
+    // The banner sits above the grid, so it is placed on the row rather than
+    // inside the list it describes.
+    const row = target.closest('.video-controls-row')
+    if (row) {
+      row.querySelector('.video-resume')?.remove()
+      const html = _epResumeHtml(prog, numbers.length)
+      if (html) {
+        row.insertAdjacentHTML('afterbegin', html)
+        _bindEpResume(row)
+      }
+    }
   }
   await _loadVideoSources(ticket, seasonTicket)
 }

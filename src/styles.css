@@ -6068,6 +6068,44 @@ body.app-unfocused *::after {
 .video-episode-btn:hover { color:var(--text); background:var(--bg4); }
 .video-episode-btn.active { background:var(--accent-dim); border-color:var(--accent); color:var(--accent); }
 
+/* What you have already seen, and where you stopped. A watched episode recedes
+   rather than disappears -- it is still there to rewatch, it just stops
+   competing for attention with the one you have not reached yet. The dot is
+   what makes it readable at a glance across forty buttons; colour alone would
+   not survive a colour-blind eye or a dim screen. */
+.video-episode-btn { position:relative; overflow:hidden; }
+.video-episode-btn.seen { color:var(--text3); background:transparent; border-color:var(--glass-border); }
+.video-episode-btn.seen::after {
+  content:''; position:absolute; top:3px; right:3px;
+  width:4px; height:4px; border-radius:50%; background:var(--accent); opacity:.55;
+}
+.video-episode-btn.seen:hover { color:var(--text2); }
+/* Part way through: the bar is the fraction watched, pinned to the bottom edge
+   of the button so a row of them reads as a small progress chart. */
+.video-episode-btn.partial { color:var(--text); border-color:var(--accent-dim); }
+.video-ep-bar {
+  position:absolute; left:0; bottom:0; height:2px;
+  background:var(--accent); display:block;
+}
+
+/* One line above the grid saying where to pick up. It only ever appears when
+   there is something to say, so it never reads as an empty promise. */
+.video-resume {
+  flex:1 1 100%; display:flex; align-items:center; gap:14px;
+  padding:10px 14px; margin-bottom:4px;
+  background:var(--bg3); border:1px solid var(--accent-dim); border-radius:var(--r-md);
+}
+.video-resume-text { display:flex; flex-direction:column; gap:2px; min-width:0; }
+.video-resume-text b { font-size:13px; color:var(--text); font-weight:600; }
+.video-resume-text span { font-size:11px; color:var(--text3); }
+.video-resume-go {
+  margin-left:auto; white-space:nowrap;
+  padding:7px 18px; border-radius:var(--r-sm); cursor:pointer;
+  font-size:12px; font-weight:600; letter-spacing:.02em;
+  background:var(--accent); color:#0a0a0a; border:1px solid var(--accent);
+}
+.video-resume-go:hover { filter:brightness(1.1); }
+
 .video-sources { padding:8px 28px 16px; }
 .video-sources-header {
   display:flex; align-items:center; gap:12px;
