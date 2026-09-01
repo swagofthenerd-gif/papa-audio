@@ -4657,7 +4657,13 @@ function _bindTrailerButton() {
 // other way had no way to ask for a dub at all, and a film never had one.
 function _dubbable(d) {
   if (!d) return false
-  if (d.isAnime === true) return true
+  // A title from the anime catalogue is anime, whatever else it does or does
+  // not carry. AniList sets neither isAnime nor originalLanguage — both come
+  // back undefined — so a check written against the film catalogue's fields
+  // answered "no" for every anime opened from the Anime tab, which is the one
+  // place the toggle had always worked. Widening this control to television and
+  // film is what removed it from the catalogue it started on.
+  if (d.type === 'anime' || d.isAnime === true) return true
   const lang = String(d.originalLanguage || '').toLowerCase()
   return lang !== '' && lang !== 'en'
 }
