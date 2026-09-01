@@ -803,3 +803,82 @@ test('no stream at all is not an error', () => {
   const streamer = new TorrentStreamer({ client: { add() {} } })
   assert.strictEqual(streamer.seekToFraction(0.5), false)
 })
+
+// ── Prefetching the next episode ────────────────────────────────────────────
+// A season pack already holds every episode and the swarm is already connected,
+// so the next episode's opening can arrive quietly while the current one plays.
+// Without it, pressing Next drops the viewer onto an empty file and a spinner
+// on a torrent that had the bytes available the whole time.
+
+function packTorrent() {
+  const calls = { select: [], critical: [] }
+  const mk = (start, end, len) => ({
+    _startPiece: start, _endPiece: end, length: len, name: 'ep.mkv',
+    select () {}, deselect () {},
+  })
+  const torrent = {
+    pieceLength: 1 << 20,                       // 1 MiB pieces
+    files: [mk(0, 999, 1e9), mk(1000, 1999, 1e9), mk(2000, 2999, 1e9)],
+    select: (a, b, p) => calls.select.push([a, b, p]),
+    critical: (a, b) => calls.critical.push([a, b]),
+  }
+  const s = new TorrentStreamer({ client: { add () {} } })
+  s._torrent = torrent
+  s._file = torrent.files[0]
+  s._fileIndex = 0
+  return { s, calls, torrent }
+}
+
+test('the next episode’s opening is requested, and only its opening', () => {
+  const { s, calls } = packTorrent()
+  assert.strictEqual(s.prefetchFile(1), true)
+  assert.strictEqual(calls.select.length, 1)
+  const [from, to] = calls.select[0]
+  assert.strictEqual(from, 1000, 'from the start of that file')
+  const { PREFETCH_BYTES } = require('../torrent-stream')
+  assert.strictEqual(to, 1000 + Math.ceil(PREFETCH_BYTES / (1 << 20)) - 1,
+    'a window, not the whole episode')
+})
+
+// The episode being watched right now must not lose a single piece to this.
+test('a prefetch never outranks the episode playing', () => {
+  const { s, calls } = packTorrent()
+  s.prefetchFile(1)
+  assert.strictEqual(calls.select[0][2], 0, 'lowest priority')
+  assert.strictEqual(calls.critical.length, 0, 'and never marked critical')
+})
+
+test('asking twice does not ask the swarm twice', () => {
+  const { s, calls } = packTorrent()
+  s.prefetchFile(1)
+  s.prefetchFile(1)
+  s.prefetchFile(1)
+  assert.strictEqual(calls.select.length, 1)
+})
+
+test('the file being watched is never prefetched over itself', () => {
+  const { s, calls } = packTorrent()
+  assert.strictEqual(s.prefetchFile(0), false)
+  assert.strictEqual(calls.select.length, 0)
+})
+
+// Switching episodes makes the old bookkeeping wrong: what was "next" either is
+// now playing, or is no longer next.
+test('switching episode clears the prefetch marker', () => {
+  const { s, calls } = packTorrent()
+  s.prefetchFile(1)
+  s._fileIndex = 2
+  s._prefetched = null                       // what selectFile does
+  s.prefetchFile(1)
+  assert.strictEqual(calls.select.length, 2, 'it can be asked for again')
+})
+
+test('a torrent that cannot answer costs a wait, not playback', () => {
+  const s = new TorrentStreamer({ client: { add () {} } })
+  assert.strictEqual(s.prefetchFile(1), false, 'nothing playing')
+  s._torrent = { pieceLength: 0, files: [{}, {}] }
+  s._fileIndex = 0
+  assert.strictEqual(s.prefetchFile(1), false, 'no piece length')
+  s._torrent = { pieceLength: 1 << 20, files: [{}, { _startPiece: null }] }
+  assert.strictEqual(s.prefetchFile(1), false, 'no piece bounds')
+})

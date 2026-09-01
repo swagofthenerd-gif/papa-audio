@@ -7005,6 +7005,37 @@ function _prioritiseStreamAtPlayhead() {
   } catch (_) { /* an optimisation, never a reason to fail the seek */ }
 }
 
+// Once the viewer is halfway through an episode, quietly start pulling the
+// opening of the next one.
+//
+// Half way is chosen because by then the current episode's own lead is well
+// established, and there is still a whole half-episode for a modest window to
+// arrive in the background. Earlier would take bandwidth from a stream that has
+// not settled; later would not finish in time to be worth anything.
+//
+// Only within a season pack. A separate torrent per episode would mean
+// resolving and connecting a second swarm while one is already playing, which
+// is a much bigger thing to get wrong -- and the pack is the case that actually
+// comes up, because that is what the anime and television indexers return.
+const PREFETCH_AFTER = 0.5
+
+function _maybePrefetchNextEpisode() {
+  try {
+    const streamer = _videoSession.streamer
+    if (!streamer || typeof streamer.prefetchFile !== 'function') return
+    const state = videoEngine().state
+    const duration = Number(state && state.duration) || 0
+    const position = Number(state && state.position) || 0
+    if (duration <= 0 || position / duration < PREFETCH_AFTER) return
+
+    const files = typeof streamer.files === 'function' ? streamer.files() : []
+    if (files.length < 2) return
+    const at = files.findIndex(f => f.current)
+    if (at < 0 || at + 1 >= files.length) return       // nothing after this one
+    streamer.prefetchFile(files[at + 1].index)
+  } catch (_) { /* an optimisation, never a reason to disturb playback */ }
+}
+
 function _videoTeardown() {
   if (_videoSession.streamer) {
     try { _videoSession.streamer.stop() } catch (_) {}
@@ -7037,7 +7068,10 @@ function _wireVideoEngine() {
   // The theatre's control deck is driven by the throttled state stream, not by
   // individual property updates — the UI merges nothing (§4.2), so every emit
   // is a complete object.
-  engine.on('state', s => safeSend('video-state', s))
+  engine.on('state', s => {
+    safeSend('video-state', s)
+    _maybePrefetchNextEpisode()
+  })
   // Movement over the picture, which the page cannot see for itself: the video
   // window is native and takes the pointer events. Sent on the existing event
   // channel rather than a new one -- it carries nothing but the fact that it

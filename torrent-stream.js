@@ -188,6 +188,14 @@ function pickVideoFile(files, want) {
 // that the swarm is not asked for a minute of video before the first frame.
 const SEEK_URGENT_BYTES = 8 * 1024 * 1024
 
+// How much of the NEXT episode to fetch while the current one plays. Enough to
+// cover the opening -- titles and the first scene -- so pressing Next starts on
+// bytes that are already here instead of on a resolve and a cold swarm.
+// Deliberately modest: this is bandwidth taken from the episode being watched
+// right now, and a stall in the current one to save a wait on the next is a bad
+// trade in every direction.
+const PREFETCH_BYTES = 24 * 1024 * 1024
+
 const DEFAULT_PREBUFFER_BYTES = 12 * 1024 * 1024
 
 // Bytes of the file's leading pieces that are verified and present.
@@ -230,6 +238,8 @@ class TorrentStreamer extends EventEmitter {
     this.prebufferTimeoutMs = prebufferTimeoutMs
     this._fileIndex = 0
     this._file = null
+    // Which other file in the pack has already had its opening requested.
+    this._prefetched = null
     this._prebufferTimer = null
     this._storeDir = null
     this._want = null
@@ -306,6 +316,8 @@ class TorrentStreamer extends EventEmitter {
     } catch (_) { /* selection is an optimisation, never fatal */ }
     this._fileIndex = index
     this._file = file
+    // Whatever was prefetched is either the file now playing or no longer next.
+    this._prefetched = null
     this._prioritiseHead(torrent, file)
     return buildFileUrl(addr.port, index, file.name)
   }
@@ -355,6 +367,7 @@ class TorrentStreamer extends EventEmitter {
       this._settle(reject, { code: 'NO_FILE', message: `No file at index ${fileIndex}` })
       return
     }
+    this._prefetched = null
     this._fileIndex = index
     this._file = file
 
@@ -422,6 +435,44 @@ class TorrentStreamer extends EventEmitter {
       if (typeof torrent.select === 'function') torrent.select(start, file._endPiece, 1)
       if (typeof torrent.critical === 'function') torrent.critical(start, end)
     } catch (_) { /* prioritisation is an optimisation, never fatal */ }
+  }
+
+  // Fetch the opening of another file in the same torrent while this one plays.
+  //
+  // A season pack already holds every episode and the swarm is already
+  // connected, so the next episode's first minutes can arrive quietly in the
+  // background. Without it, pressing Next -- or letting up-next run -- drops
+  // the viewer onto an empty file and a spinner, on a torrent that had the
+  // bytes available the whole time.
+  //
+  // Two things keep this from hurting the episode actually being watched. The
+  // window is small, and the pieces are selected at the lowest priority with no
+  // critical marking at all: WebTorrent serves them only when nothing more
+  // urgent is outstanding. The current file's own selection is left exactly as
+  // it was, so this can only ever use bandwidth that was going spare.
+  prefetchFile(index) {
+    try {
+      const torrent = this._torrent
+      const files = (torrent && torrent.files) || []
+      const file = files[index]
+      if (!file || index === this._fileIndex) return false
+      if (this._prefetched === index) return false     // already asked for
+
+      const pieceLength = Number(torrent.pieceLength) || 0
+      const start = file._startPiece
+      const endPiece = file._endPiece
+      if (!pieceLength || typeof start !== 'number' || typeof endPiece !== 'number') return false
+
+      const wanted = Math.max(1, Math.ceil(PREFETCH_BYTES / pieceLength))
+      const end = Math.min(endPiece, start + wanted - 1)
+      // Priority 0, and no critical() call. Lowest possible claim on the swarm.
+      if (typeof torrent.select === 'function') torrent.select(start, end, 0)
+      this._prefetched = index
+      return true
+    } catch (_) {
+      // An optimisation. Failing here costs a wait, never playback.
+      return false
+    }
   }
 
   // Where the viewer just jumped to, as a fraction of the film.
@@ -618,4 +669,4 @@ class TorrentStreamer extends EventEmitter {
   }
 }
 
-module.exports = { TorrentStreamer, buildFileUrl, pickVideoFile, matchesWantedEpisode, episodeNumberOf, DEFAULT_STREAM_ROOT, streamRoot, setStreamRoot, purgeOrphanStreams, newStreamDir, headBytesReady, VIDEO_EXT }
+module.exports = { TorrentStreamer, PREFETCH_BYTES, buildFileUrl, pickVideoFile, matchesWantedEpisode, episodeNumberOf, DEFAULT_STREAM_ROOT, streamRoot, setStreamRoot, purgeOrphanStreams, newStreamDir, headBytesReady, VIDEO_EXT }
