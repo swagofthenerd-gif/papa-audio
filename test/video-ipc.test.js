@@ -798,3 +798,20 @@ test('directors reach the card as names', () => {
 test('enrichment goes through the cached detail path', () => {
   assert.match(handlerBody('video-enrich'), /_videoShowDetail\(type, id\)/)
 })
+
+// A jump is only useful to the swarm if something tells it. The head is
+// prioritised once when a stream starts and never again.
+test('seeking tells the torrent where the viewer went', () => {
+  const body = handlerBody('video-control')
+  assert.match(body, /_prioritiseStreamAtPlayhead\(\)/)
+  const fn = MAIN.slice(MAIN.indexOf('function _prioritiseStreamAtPlayhead'),
+    MAIN.indexOf('function _videoTeardown'))
+  // Read after the seek, not computed from the request: a relative seek, a
+  // chapter jump and a click on the bar all arrive differently, and mpv has
+  // already resolved every one of them into a single position.
+  assert.match(fn, /state\.position/)
+  assert.match(fn, /state\.duration/)
+  assert.match(fn, /seekToFraction\(position \/ duration\)/)
+  assert.match(fn, /if \(duration <= 0\) return/, 'a fraction of nothing is not a position')
+  assert.match(fn, /catch \(_\)/, 'a failed optimisation must not fail the seek')
+})

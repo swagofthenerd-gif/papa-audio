@@ -731,3 +731,75 @@ test('bytes arriving also earn more time', () => {
   assert.strictEqual(rejected, null)
   s.stop()
 })
+
+// ── Seeking ─────────────────────────────────────────────────────────────────
+// The head is prioritised once when a stream starts and never again, so a jump
+// to the middle was served at ordinary priority behind bytes nobody was going
+// to watch. This tells the swarm where the viewer actually went.
+function seekHarness (opts = {}) {
+  const calls = { select: [], critical: [] }
+  const streamer = new TorrentStreamer({ client: { add() {} } })
+  streamer._torrent = {
+    pieceLength: opts.pieceLength || 1024 * 1024,
+    select: (a, b, p) => calls.select.push([a, b, p]),
+    critical: (a, b) => calls.critical.push([a, b]),
+  }
+  streamer._file = {
+    length: opts.length || 1024 * 1024 * 1000,   // 1000 pieces
+    _startPiece: opts.startPiece != null ? opts.startPiece : 0,
+    _endPiece: opts.endPiece != null ? opts.endPiece : 999,
+  }
+  return { streamer, calls }
+}
+
+test('a jump asks the swarm for the place jumped to', () => {
+  const { streamer, calls } = seekHarness()
+  assert.strictEqual(streamer.seekToFraction(0.5), true)
+  // Halfway through a thousand-piece file.
+  assert.deepStrictEqual(calls.select[0], [500, 999, 1], 'everything from here on is what will be watched')
+  assert.strictEqual(calls.critical[0][0], 500, 'and the first of it is needed now')
+  assert.ok(calls.critical[0][1] > 500, 'a window, not a single piece')
+})
+
+// A file that does not begin at piece zero — the normal case inside a season
+// pack — must not be prioritised as though it did.
+test('the offset is measured from the file, not the torrent', () => {
+  const { streamer, calls } = seekHarness({ startPiece: 4000, endPiece: 4999 })
+  streamer.seekToFraction(0.25)
+  assert.deepStrictEqual(calls.select[0], [4250, 4999, 1])
+})
+
+test('the urgent window never runs past the end of the file', () => {
+  const { streamer, calls } = seekHarness()
+  streamer.seekToFraction(1)
+  assert.ok(calls.critical[0][1] <= 999, 'asked for piece ' + calls.critical[0][1] + ' of 999')
+})
+
+test('a fraction outside the film is clamped rather than refused', () => {
+  const { streamer, calls } = seekHarness()
+  streamer.seekToFraction(-5)
+  streamer.seekToFraction(50)
+  assert.strictEqual(calls.select[0][0], 0)
+  assert.strictEqual(calls.select[1][0], 999)
+})
+
+test('nonsense is refused rather than turned into piece zero', () => {
+  const { streamer, calls } = seekHarness()
+  assert.strictEqual(streamer.seekToFraction(NaN), false)
+  assert.strictEqual(streamer.seekToFraction(undefined), false)
+  assert.strictEqual(calls.select.length, 0, 'Number(undefined) is NaN, but Number(null) is 0')
+})
+
+// Prioritisation is an optimisation. A torrent that cannot do it must give a
+// slower seek, never a broken one.
+test('a client without prioritisation still seeks', () => {
+  const streamer = new TorrentStreamer({ client: { add() {} } })
+  streamer._torrent = { pieceLength: 1024 }
+  streamer._file = { length: 4096, _startPiece: 0, _endPiece: 3 }
+  assert.doesNotThrow(() => streamer.seekToFraction(0.5))
+})
+
+test('no stream at all is not an error', () => {
+  const streamer = new TorrentStreamer({ client: { add() {} } })
+  assert.strictEqual(streamer.seekToFraction(0.5), false)
+})

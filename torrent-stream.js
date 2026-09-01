@@ -183,6 +183,11 @@ function pickVideoFile(files, want) {
 // How much of the head of the file must be on disk before mpv is launched.
 // Starting mpv at zero bytes is what made playback look like it was "buffering
 // slowly": mpv opened, found nothing, and stalled on its own.
+// How much of the destination to demand immediately after a jump. Enough to
+// start playing and cover the error in the time-to-byte estimate, small enough
+// that the swarm is not asked for a minute of video before the first frame.
+const SEEK_URGENT_BYTES = 8 * 1024 * 1024
+
 const DEFAULT_PREBUFFER_BYTES = 12 * 1024 * 1024
 
 // Bytes of the file's leading pieces that are verified and present.
@@ -417,6 +422,50 @@ class TorrentStreamer extends EventEmitter {
       if (typeof torrent.select === 'function') torrent.select(start, file._endPiece, 1)
       if (typeof torrent.critical === 'function') torrent.critical(start, end)
     } catch (_) { /* prioritisation is an optimisation, never fatal */ }
+  }
+
+  // Where the viewer just jumped to, as a fraction of the film.
+  //
+  // Without this the swarm carries on filling in from wherever it had reached,
+  // and the player sits waiting for bytes nobody is asking for while the ones
+  // it needs are requested at ordinary priority behind them. The head is
+  // prioritised once when the stream starts and then never again, so every seek
+  // away from the beginning was served at the back of the queue.
+  //
+  // Time is mapped to bytes linearly. That is not exact on a variable-bitrate
+  // encode, but it is close enough to put the swarm within a few seconds of the
+  // right place, and the window covers the error.
+  seekToFraction(fraction) {
+    try {
+      const torrent = this._torrent
+      const file = this._file
+      if (!torrent || !file) return false
+      const pieceLength = Number(torrent.pieceLength) || 0
+      const startPiece = file._startPiece
+      const endPiece = file._endPiece
+      if (!pieceLength || typeof startPiece !== 'number' || typeof endPiece !== 'number') return false
+
+      const f = Number(fraction)
+      if (!isFinite(f)) return false
+      const clamped = Math.max(0, Math.min(1, f))
+      const offset = Math.floor((Number(file.length) || 0) * clamped)
+      const target = Math.min(endPiece, startPiece + Math.floor(offset / pieceLength))
+
+      // Everything from the jump onward is what the viewer is going to watch,
+      // so that is what the torrent should be asking for.
+      if (typeof torrent.select === 'function') torrent.select(target, endPiece, 1)
+      // And the first few seconds of it are needed now, not eventually.
+      const urgent = Math.max(1, Math.ceil(SEEK_URGENT_BYTES / pieceLength))
+      if (typeof torrent.critical === 'function') {
+        torrent.critical(target, Math.min(endPiece, target + urgent - 1))
+      }
+      this._lastSeekPiece = target
+      return true
+    } catch (_) {
+      // Prioritisation is an optimisation. A failure here means a slower seek,
+      // never a broken one.
+      return false
+    }
   }
 
   // Holds back the 'ready' event until enough of the head is on disk for mpv to

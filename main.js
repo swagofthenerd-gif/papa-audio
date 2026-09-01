@@ -6986,6 +6986,25 @@ ipcMain.handle('video-probe', async (_, { url }) => {
 // `VideoEngine.start()` overwrote its own `proc`, so nothing ever stopped. A
 // few plays into a session there were several mpv windows fighting for audio
 // and several torrents still downloading and seeding in the background.
+// After a jump, tell the torrent where the viewer actually went. The head is
+// prioritised once when a stream starts and never again, so without this every
+// seek away from the beginning waits behind bytes nobody is going to watch.
+//
+// Read after the seek rather than computed from the request, because a relative
+// seek, a chapter jump and a click on the bar all arrive differently and mpv
+// has already resolved all of them into one position.
+function _prioritiseStreamAtPlayhead() {
+  try {
+    const streamer = _videoSession.streamer
+    if (!streamer || typeof streamer.seekToFraction !== 'function') return
+    const state = videoEngine().state
+    const duration = Number(state && state.duration) || 0
+    const position = Number(state && state.position) || 0
+    if (duration <= 0) return
+    streamer.seekToFraction(position / duration)
+  } catch (_) { /* an optimisation, never a reason to fail the seek */ }
+}
+
 function _videoTeardown() {
   if (_videoSession.streamer) {
     try { _videoSession.streamer.stop() } catch (_) {}
@@ -7246,7 +7265,10 @@ ipcMain.handle('video-control', async (_, { verb, args } = {}) => {
   try {
     const engine = videoEngine()
     switch (verb) {
-      case 'seek': await engine.seek(args?.seconds, args?.mode || 'relative'); break
+      case 'seek':
+        await engine.seek(args?.seconds, args?.mode || 'relative')
+        _prioritiseStreamAtPlayhead()
+        break
       case 'pause': await engine.setPause(args?.paused !== false); break
       case 'play': await engine.setPause(false); break
       // These take a single argument, and the player sends it as `value` for
