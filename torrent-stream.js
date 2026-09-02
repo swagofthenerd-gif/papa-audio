@@ -124,7 +124,7 @@ const JUNK = /(^|[\/\\._-])(sample|trailer|extras?|featurette|behindthescenes)([
 function matchesWantedEpisode(name, want) {
   const n = Number(want && want.episode)
   if (!Number.isFinite(n) || n < 0) return false
-  const text = String(name || '')
+  const text = String(name || '').replace(NON_EPISODE_TOKEN, ' ')
   const s = Number(want && want.season)
   // SxxEyy is unambiguous, so when a season is known it has to agree.
   const sxe = /s(\d{1,3})[\s._-]?e(\d{1,4})/i.exec(text)
@@ -138,9 +138,15 @@ function matchesWantedEpisode(name, want) {
   return new RegExp(`(?:^|[\\s._\\-\\[(])(?:e|ep|episode\\s*)?0*${n}(?:v\\d)?(?:$|[\\s._\\-\\])])`, 'i').test(text)
 }
 
+// Non-credit openings/endings, specials and revision tags carry a digit of
+// their own -- "NCED1", "OP2", "Ver.2" -- that reads exactly like an episode
+// number to the regex below. Stripped before parsing so a batch pack's
+// ending-theme clip is never mistaken for the next episode.
+const NON_EPISODE_TOKEN = /\b(?:nc)?(?:op|ed)\d*\b|\bova\d*\b|\bver(?:sion)?\.?\s*\d+\b/gi
+
 // The episode number a filename states, or null.
 function episodeNumberOf(name) {
-  const t = String(name || '')
+  const t = String(name || '').replace(NON_EPISODE_TOKEN, ' ')
   const sxe = /s\d{1,3}[\s._-]?e(\d{1,4})/i.exec(t)
   if (sxe) return Number(sxe[1])
   const bare = /(?:^|[\s._\-\[(])(?:e|ep|episode\s*)?(\d{1,4})(?:v\d)?(?:$|[\s._\-\])])/i.exec(t)
@@ -374,11 +380,31 @@ class TorrentStreamer extends EventEmitter {
     // Everything else in the pack is dead weight. A season pack or a batch
     // release would otherwise download all of it in parallel with the episode
     // being watched, splitting the connection for no benefit.
+    //
+    // Deselecting each other file is not enough on its own: unless the caller
+    // passes WebTorrent a BEP53 `so` option (this class never does, since the
+    // file to play is picked only after metadata arrives), WebTorrent's own
+    // constructor already made a selection covering the WHOLE torrent at
+    // priority 0 -- "start off selecting the entire torrent with low
+    // priority" (webtorrent/lib/torrent.js). Per-file deselect() calls only
+    // remove a selection matching that exact file's own (from, to) range, so
+    // they never touch it. Left in place it does two things at once: quietly
+    // downloads the entire pack in the background regardless of what is
+    // playing, and -- because it was created first and priority ties keep
+    // insertion order -- sits ahead of prefetchFile()'s own low-priority
+    // selection, so the swarm works through the whole torrent from piece 0
+    // before ever reaching the next episode's window. Confirmed live: with
+    // the current episode fully downloaded and idle peers holding the next
+    // episode's data, prefetchFile() still pulled zero bytes in two minutes
+    // until this was cancelled.
     try {
       for (let i = 0; i < files.length; i++) {
         if (i !== index && typeof files[i].deselect === 'function') files[i].deselect()
       }
       if (typeof file.select === 'function') file.select()
+      if (typeof torrent.deselect === 'function' && torrent.pieces) {
+        torrent.deselect(0, torrent.pieces.length - 1, false)
+      }
     } catch (_) { /* selection is an optimisation, never fatal */ }
 
     // Streaming wants the front of the file first. WebTorrent's default is

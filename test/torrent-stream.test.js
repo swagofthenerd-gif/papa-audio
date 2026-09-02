@@ -243,6 +243,9 @@ test('stop() closes the server, destroys the torrent and removes the download li
     torrent.criticalCalls = []
     torrent.select = (s, e, p) => torrent.selectCalls.push([s, e, p])
     torrent.critical = (s, e) => torrent.criticalCalls.push([s, e])
+    torrent.deselectCalls = []
+    torrent.deselect = (s, e, p) => torrent.deselectCalls.push([s, e, p])
+    torrent.pieces = new Array(Math.max(1, Math.ceil(torrent.length / pieceLength)))
     torrent.createServer = () => http.createServer()
     torrent.destroy = cb => { torrent.destroyed = true; if (cb) cb() }
     return torrent
@@ -273,6 +276,37 @@ test('stop() closes the server, destroys the torrent and removes the download li
     assert.strictEqual(torrent.files[2].deselected, true)
     assert.strictEqual(torrent.files[1].selected, true)
     assert.ok(!torrent.files[1].deselected, 'the file being watched must stay selected')
+    streamer.stop()
+  })
+
+  // Found live: WebTorrent's own constructor -- unless given a BEP53 `so`
+  // option, which this client never passes -- makes its own selection
+  // covering the WHOLE torrent at priority 0 before this class ever runs
+  // (webtorrent/lib/torrent.js: "start off selecting the entire torrent with
+  // low priority", torrent.select(0, pieces.length - 1, false)). Deselecting
+  // individual files does not touch that entry -- it only matches an exact
+  // (from, to, priority) triple, and the default one spans the whole torrent,
+  // not any single file's range. Left alone, it does two things at once: (1)
+  // silently downloads the entire pack in the background regardless of what
+  // is playing, and (2) sits ahead of prefetchFile()'s own low-priority
+  // selection in the scheduler (same priority, pushed first), so the swarm
+  // works through the whole torrent from piece 0 before it ever reaches the
+  // next episode's window. Confirmed against a live season pack: with the
+  // current episode fully downloaded and idle peers holding the next
+  // episode's data, prefetchFile() still pulled zero bytes in two minutes.
+  test('the torrent-wide default selection is cancelled, not just per-file ones', async () => {
+    const torrent = packTorrent([
+      { name: 'E01.mkv', length: 100 },
+      { name: 'E02.mkv', length: 9000, _startPiece: 0, _endPiece: 8 },
+      { name: 'E03.mkv', length: 100 },
+    ])
+    const streamer = new TorrentStreamer({ client: readyClient(torrent), prebufferBytes: 0 })
+    await streamer.start({ magnet: 'magnet:?xt=urn:btih:A', fileIndex: 1 })
+    assert.deepStrictEqual(
+      torrent.deselectCalls,
+      [[0, torrent.pieces.length - 1, false]],
+      'must cancel WebTorrent\'s own whole-torrent low-priority selection by its exact (from, to, priority)'
+    )
     streamer.stop()
   })
 
@@ -405,6 +439,18 @@ test('stop() closes the server, destroys the torrent and removes the download li
     // A four-digit number in a filename is a year far more often than an episode.
     assert.strictEqual(episodeNumberOf('Movie 2009 1080p.mkv'), null)
     assert.strictEqual(episodeNumberOf('readme.mkv'), null)
+  })
+
+  // Found live: a batch pack's ending-theme clip named "...[NCED1 Ver.2]..."
+  // parsed as episode 2 — the "Ver.2" revision tag satisfied the bare digit
+  // regex — and outranked the real episode 2 file in files()'s sort, so
+  // prefetchFile() fetched the ending theme instead of the next episode.
+  test('non-credit openings/endings and version tags are never read as an episode number', () => {
+    assert.strictEqual(episodeNumberOf('[G] Show [NCED1 Ver.2][1080p].mkv'), null)
+    assert.strictEqual(episodeNumberOf('[G] Show [NCOP][1080p].mkv'), null)
+    assert.strictEqual(episodeNumberOf('[G] Show - 09 Ver.2 [1080p].mkv'), 9)
+    assert.strictEqual(episodeNumberOf('[G] Show [OVA][1080p].mkv'), null)
+    assert.strictEqual(matchesWantedEpisode('[G] Show [NCED1 Ver.2][1080p].mkv', { episode: 2 }), false)
   })
 
   test('the streamer is told which episode to look for', () => {
