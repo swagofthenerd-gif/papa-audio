@@ -4071,8 +4071,29 @@ async function _playPrevEpisode() {
   }
 }
 
+// The pack file for a given next-episode target, matched by episode number.
+// Pure: the caller passes the pack's file list and the target so the decision
+// ("is the next episode already inside the torrent we're streaming?") can be
+// tested without the renderer's globals. Returns the file, or null when the
+// pack is empty, the target is unknown, or the pack does not carry it (a
+// single-file torrent, or the season finale).
+function _packFileForEpisode(packFiles, next) {
+  if (!Array.isArray(packFiles) || !packFiles.length || !next) return null
+  return packFiles.find(function (f) {
+    return f && f.episode === next.episode && f.index != null
+  }) || null
+}
+
 // Resolves sources for the next episode and starts the best one. The source
 // list is already ranked, so "best" is simply the first entry.
+//
+// A season pack is the common case, and when it is streaming the next episode
+// is another file already inside the same torrent — the very file the pack
+// strip lets you click. Advancing must reuse that: switch within the torrent
+// (no new search, no second swarm, and the benefit of any background prefetch),
+// exactly as a strip click does. Only when the pack does NOT carry the next
+// episode — a single-file torrent, a season boundary — does it fall back to
+// resolving fresh sources from the indexers.
 async function _playNextEpisode() {
   if (!_videoDetail || !_videoDetail.d) return
   const next = _nextEpisodeOf(_videoDetail, _videoState)
@@ -4080,6 +4101,27 @@ async function _playNextEpisode() {
     showToast('That was the last episode')
     return
   }
+
+  // Prefer the file already in the pack. This is the fix for "up next discards
+  // the pack and plays from other sources": the pack strip data already knows
+  // the next episode's in-torrent index, so there is no reason to re-resolve.
+  //
+  // Only within the same season, though. A complete-series batch numbers every
+  // season from 01 again, so a bare episode match across a season boundary
+  // could land on the wrong season's episode 1. Anime entries are a single
+  // season (next.season is null); a TV advance stays in-season only while
+  // next.season still equals the season being watched. A boundary roll takes
+  // the resolve-from-scratch path below, which carries the new season.
+  const sameSeason = next.season == null || next.season === _videoState.season
+  const packFile = sameSeason ? _packFileForEpisode(_packFiles, next) : null
+  if (packFile) {
+    _persistPosition(true)
+    const store = _vStore()
+    try { if (store && _watch.key) store.markWatched(_watch.key) } catch (_) {}
+    await _switchPackEpisode(packFile.index, { fromAdvance: true })
+    return
+  }
+
   _persistPosition(true)
   const store = _vStore()
   // Finishing an episode by advancing counts as having watched it.
@@ -4198,7 +4240,13 @@ function _videoIsPlaying() {
 
 // Switching episode inside the pack that is already streaming. No new search,
 // no new torrent, no waiting on peers — the file is already being served.
-async function _switchPackEpisode(index) {
+//
+// opts.fromAdvance marks an auto-advance (Up Next / end-of-episode) as opposed
+// to a manual strip click. An advance plays the new episode from the start, so
+// the stale "Resume from…" offer for that episode key must not fire; a manual
+// pick may still be offered its saved position (wave-2 resume rule).
+async function _switchPackEpisode(index, opts) {
+  opts = opts || {}
   if (!_player) return
   _player.setStageMessage('<div class="spin"></div><div>Switching episode…</div>')
   const res = await window.api.videoPackSelect({ index: index })
@@ -4231,7 +4279,13 @@ async function _switchPackEpisode(index) {
           season: _videoDetail.type === 'tv' ? _videoState.season : null,
           episode: _videoState.episode,
         },
-        savedAt: 0, resumed: true,
+        // An advance plays from 0 and suppresses the stale resume prompt
+        // (autoAdvanced short-circuits _offerResume). A manual pick may resume:
+        // leave resumed false so _offerResume gets its chance on the next
+        // 'playing' event.
+        savedAt: 0,
+        resumed: opts.fromAdvance !== true ? false : true,
+        autoAdvanced: opts.fromAdvance === true,
         pick: carryPick || null,
         sourceCandidate: carryCandidate || null,
       }

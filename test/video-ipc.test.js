@@ -1055,6 +1055,33 @@ test('the predownload channels are reachable from the renderer', () => {
   assert.match(PRELOAD, /videoPredownloadProgress:/)
 })
 
+// ── Next-episode prefetch trigger (App §40) ──────────────────────────────────
+// The auto-prefetch that quietly pulls the next episode's opening while the
+// current one plays. It rides the state stream and arms once past the halfway
+// mark, only within a pack. This is what makes an Up Next / in-pack advance
+// near-instant, so its wiring is pinned here.
+test('the prefetch trigger arms at the halfway mark', () => {
+  assert.match(MAIN, /const PREFETCH_AFTER = 0\.5/)
+  const start = MAIN.indexOf('function _maybePrefetchNextEpisode()')
+  assert.ok(start > 0, '_maybePrefetchNextEpisode present')
+  const end = MAIN.indexOf('\nfunction ', start + 1)
+  const body = MAIN.slice(start, end)
+  // Below the threshold it does nothing.
+  assert.match(body, /position \/ duration < PREFETCH_AFTER\) return/)
+  // Only within a pack (more than one file), and it grabs the file AFTER the
+  // one playing.
+  assert.match(body, /if \(files\.length < 2\) return/)
+  assert.match(body, /const at = files\.findIndex\(f => f\.current\)/)
+  assert.match(body, /streamer\.prefetchFile\(files\[at \+ 1\]\.index\)/)
+  // The finale has nothing after it — armed only when there is a next file.
+  assert.match(body, /at \+ 1 >= files\.length\) return/)
+})
+
+test('the prefetch trigger rides the engine state stream', () => {
+  // It must be called from the throttled state handler, or it never fires.
+  assert.match(MAIN, /engine\.on\('state', s => \{[\s\S]*?_maybePrefetchNextEpisode\(\)/)
+})
+
 // ── Wave 6: the stalled event carries stallCount ─────────────────────────────
 // §player 27's auto-switch counts repeated stalls; the count must survive the
 // hop to the renderer or the cap can never be enforced.

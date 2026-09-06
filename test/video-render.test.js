@@ -630,6 +630,76 @@ test('predownload is built defensively against a missing IPC', () => {
   assert.match(start, /typeof window\.api\.videoPredownload !== 'function'/)
 })
 
+// ── Up Next plays the pack, not a fresh source (App §40) ────────────────────
+// The pure decision: given the pack's file list and the target episode, is the
+// next episode already inside the torrent being streamed?
+function packDecisionCtx() {
+  const ctx = { console }
+  vm.createContext(ctx)
+  vm.runInContext(extract('_packFileForEpisode'), ctx)
+  return ctx
+}
+
+test('pack contains the next episode → the in-torrent file is returned', () => {
+  const ctx = packDecisionCtx()
+  const files = [
+    { index: 0, episode: 1, current: true },
+    { index: 1, episode: 2 },
+    { index: 2, episode: 3 },
+  ]
+  const f = ctx._packFileForEpisode(files, { season: null, episode: 2 })
+  assert.ok(f)
+  assert.strictEqual(f.index, 1)
+  assert.strictEqual(f.episode, 2)
+})
+
+test('pack lacks the next episode → null, so the caller resolves from scratch', () => {
+  const ctx = packDecisionCtx()
+  // A single-file torrent, or the season finale: episode 4 is not in the pack.
+  assert.strictEqual(
+    ctx._packFileForEpisode([{ index: 0, episode: 3, current: true }], { season: null, episode: 4 }),
+    null
+  )
+  // No pack at all.
+  assert.strictEqual(ctx._packFileForEpisode([], { season: null, episode: 2 }), null)
+  // No target.
+  assert.strictEqual(ctx._packFileForEpisode([{ index: 0, episode: 1 }], null), null)
+})
+
+test('a pack file without an in-torrent index is not a switch target', () => {
+  const ctx = packDecisionCtx()
+  assert.strictEqual(
+    ctx._packFileForEpisode([{ episode: 2 }], { season: null, episode: 2 }),
+    null
+  )
+})
+
+test('Up Next advances within the pack instead of re-resolving sources', () => {
+  const next = extract('_playNextEpisode')
+  // Same-season next episode present in the pack → switch within the torrent.
+  assert.match(next, /_packFileForEpisode\(_packFiles, next\)/)
+  assert.match(next, /_switchPackEpisode\(packFile\.index, \{ fromAdvance: true \}\)/)
+  // In-season only: anime (season null) or a TV advance whose season still
+  // equals the one being watched. A boundary roll skips the pack and takes the
+  // resolve-from-scratch path, which carries the new season.
+  assert.match(next, /const sameSeason = next\.season == null \|\| next\.season === _videoState\.season/)
+  assert.match(next, /sameSeason \? _packFileForEpisode\(_packFiles, next\) : null/)
+  // The fallback still exists for when the pack does not carry the next episode.
+  assert.match(next, /window\.api\.videoStreams\(_videoStreamRequest\(\)\)/)
+})
+
+test('an in-pack advance plays from 0 and suppresses the stale resume prompt', () => {
+  const sw = extract('_switchPackEpisode')
+  // fromAdvance marks the play an advance: autoAdvanced short-circuits
+  // _offerResume, resumed stays true so no resume seek is queued.
+  assert.match(sw, /autoAdvanced: opts\.fromAdvance === true/)
+  assert.match(sw, /resumed: opts\.fromAdvance !== true \? false : true/)
+  // A manual strip click (no fromAdvance) leaves resumed false so the wave-2
+  // rule lets _offerResume make its offer.
+  const offer = extract('_offerResume')
+  assert.match(offer, /if \(_watch\.autoAdvanced\) return/)
+})
+
 test('a completed predownload shows a ready-offline state', () => {
   const paint = extract('_paintPredownloadControl')
   assert.match(paint, /ready offline/i)
