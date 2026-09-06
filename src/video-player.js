@@ -84,6 +84,121 @@
     }
   }
 
+  // ── Mini-player geometry (pure, testable) ─────────────────────────────────
+  // The mini player is a card whose top is a reserved video region the native
+  // mpv window is placed onto, and whose bottom is the control bar. Everything
+  // below is a pure function of a viewport and a chosen corner+size, so the same
+  // maths the live code uses can be unit-tested without a DOM.
+  //
+  // The two size steps match the CSS custom properties and main.js's MINI_W/H:
+  // the video region is 320×180 (compact) or 480×270 (large), and the bar is a
+  // fixed 46px tall beneath it.
+  const MINI = {
+    inset: 24,            // gap from the viewport edge on a snapped corner
+    barH: 46,             // control-bar height (must match --vmini-bar-h)
+    sizes: {
+      compact: { w: 320, h: 180 },
+      large:   { w: 480, h: 270 },
+    },
+    corners: ['tl', 'tr', 'bl', 'br'],
+    // The bottom snap corners must clear the music player bar so the mini card
+    // never covers its controls. Measured in CSS px; the caller passes the live
+    // --player-h so it tracks the responsive clamp.
+  }
+
+  function miniVideoDims(size) {
+    return MINI.sizes[size] || MINI.sizes.compact
+  }
+
+  // The full card size (video + bar) for a size step.
+  function miniCardSize(size) {
+    const v = miniVideoDims(size)
+    return { w: v.w, h: v.h + MINI.barH }
+  }
+
+  // Top-left page position of the CARD for a corner, clamped so the card is
+  // always fully on screen. `playerH` is the music bar's reserved height at the
+  // bottom, so the bottom corners sit above it rather than over its controls.
+  function miniCardTopLeft(corner, size, viewport, playerH) {
+    const c = miniCardSize(size)
+    const vw = Math.max(c.w, Number(viewport && viewport.width) || 0)
+    const vh = Math.max(c.h, Number(viewport && viewport.height) || 0)
+    const inset = MINI.inset
+    const bottomGap = inset + Math.max(0, Number(playerH) || 0)
+    const left = inset
+    const right = Math.max(inset, vw - c.w - inset)
+    const top = inset
+    const bottom = Math.max(inset, vh - c.h - bottomGap)
+    switch (corner) {
+      case 'tl': return { x: left,  y: top }
+      case 'tr': return { x: right, y: top }
+      case 'bl': return { x: left,  y: bottom }
+      case 'br':
+      default:   return { x: right, y: bottom }
+    }
+  }
+
+  // The VIDEO region's page rectangle for a corner+size — this is what gets sent
+  // to main as the mpv rect. It is the card's top-left plus the video's own box
+  // (the bar hangs below it, so the video shares the card's top edge).
+  function miniVideoRect(corner, size, viewport, playerH) {
+    const tl = miniCardTopLeft(corner, size, viewport, playerH)
+    const v = miniVideoDims(size)
+    return { x: Math.round(tl.x), y: Math.round(tl.y), width: v.w, height: v.h }
+  }
+
+  // Which corner a freely-dragged card is closest to. The card's centre is
+  // compared against the four corner anchor centres; nearest wins, so a release
+  // anywhere lands in a predictable spot.
+  function nearestCorner(cardRect, size, viewport, playerH) {
+    const cx = (Number(cardRect && cardRect.x) || 0) + miniCardSize(size).w / 2
+    const cy = (Number(cardRect && cardRect.y) || 0) + miniCardSize(size).h / 2
+    let best = 'br'
+    let bestD = Infinity
+    for (const corner of MINI.corners) {
+      const tl = miniCardTopLeft(corner, size, viewport, playerH)
+      const ax = tl.x + miniCardSize(size).w / 2
+      const ay = tl.y + miniCardSize(size).h / 2
+      const d = (ax - cx) * (ax - cx) + (ay - cy) * (ay - cy)
+      if (d < bestD) { bestD = d; best = corner }
+    }
+    return best
+  }
+
+  // Convert a page (CSS px, content-relative) rectangle to absolute SCREEN
+  // pixels. This mirrors the maths main.js applies (zoom factor, then the window
+  // content origin) and is here as a pure function so the conversion is covered
+  // by tests. The live path does NOT use this — main owns the real conversion,
+  // reading the true zoom and content bounds — but the numbers must agree.
+  function pageRectToScreen(rect, winX, winY, zoom) {
+    let z = Number(zoom)
+    if (!Number.isFinite(z) || z <= 0) z = 1
+    return {
+      x: Math.round((Number(winX) || 0) + (Number(rect && rect.x) || 0) * z),
+      y: Math.round((Number(winY) || 0) + (Number(rect && rect.y) || 0) * z),
+      width: Math.round((Number(rect && rect.width) || 0) * z),
+      height: Math.round((Number(rect && rect.height) || 0) * z),
+    }
+  }
+
+  // Validate a persisted {corner, size} blob before trusting it. A corrupt or
+  // partial store must never place the card off screen or at a nonsense size, so
+  // anything unrecognised falls back to the bottom-right / compact default.
+  function sanitizeMiniPos(raw) {
+    const corner = raw && MINI.corners.indexOf(raw.corner) !== -1 ? raw.corner : 'br'
+    const size = raw && MINI.sizes[raw.size] ? raw.size : 'compact'
+    return { corner, size }
+  }
+
+  // Clamped 0..1 fraction of a pointer's x within a track. Extracted so the mini
+  // seek bar and its tests share one definition. left/width are the track's
+  // bounding box in the same coordinate space as clientX.
+  function seekFractionAt(clientX, trackLeft, trackWidth) {
+    const w = Number(trackWidth) || 0
+    if (w <= 0) return 0
+    return Math.max(0, Math.min(1, ((Number(clientX) || 0) - (Number(trackLeft) || 0)) / w))
+  }
+
   function create(opts) {
     opts = opts || {}
     const doc = opts.document || (typeof document !== 'undefined' ? document : null)
@@ -122,6 +237,20 @@
     // True while mpv is in corner PiP mode (roadmap #27) rather than merely
     // surface-hidden, so restore() knows to bring it back out of the corner.
     let pipActive = false
+    // Mini-player card position + size. Read once from PapaLocal and written on
+    // every deliberate change (a corner snap, a size toggle). Persistence is a
+    // convenience — a read failure just uses the default bottom-right/compact.
+    let miniPos = { corner: 'br', size: 'compact' }
+    try {
+      if (local && typeof local.readObject === 'function') {
+        miniPos = sanitizeMiniPos(local.readObject('papa-vmini-pos'))
+      }
+    } catch (_) { /* storage is a convenience, never a blocker */ }
+    // The card's current top-left in page px while dragging, so a mid-drag rect
+    // send and the snap-on-release share one source of truth.
+    let miniDragTL = null
+    let miniRectTimer = 0        // throttle handle for live rect updates
+    let miniDragging = false     // true while the card or its seek is being dragged
     let upNextTimer = null
     let upNextLeft = 0
     let upNextInfo = null
@@ -346,10 +475,221 @@
         play.innerHTML = state.paused ? ICON.play : ICON.pause
         play.setAttribute('aria-label', state.paused ? 'Play' : 'Pause')
       }
-      const fill = $('vmini-fill')
-      if (fill) fill.style.width = (dur > 0 ? Math.min(100, (pos / dur) * 100) : 0) + '%'
+      // The seek bar is driven by the same position feed the theatre uses, so
+      // the two never disagree. Left frozen while the user scrubs the mini bar.
+      const pct = dur > 0 ? Math.min(100, (pos / dur) * 100) : 0
+      if (!miniDragging) {
+        const fill = $('vmini-fill'); if (fill) fill.style.width = pct + '%'
+        const knob = $('vmini-knob'); if (knob) knob.style.left = pct + '%'
+      }
+      const seek = $('vmini-seek')
+      if (seek) {
+        seek.setAttribute('aria-valuemax', String(Math.round(dur)))
+        seek.setAttribute('aria-valuenow', String(Math.round(pos)))
+        seek.setAttribute('aria-valuetext', fmtTime(pos) + ' of ' + fmtTime(dur))
+      }
+      // Time remaining, matching the theatre's remaining/total toggle so a
+      // glance answers "how much is left" the same way in both places.
       const time = $('vmini-time')
-      if (time) time.textContent = fmtTime(pos)
+      if (time) {
+        time.textContent = timeMode === 'remaining'
+          ? '−' + fmtTime(Math.max(0, dur - pos))
+          : fmtTime(pos)
+      }
+      const mute = $('vmini-mute')
+      if (mute) {
+        mute.innerHTML = state.muted || state.volume === 0 ? ICON.mute : ICON.vol
+        mute.setAttribute('aria-label', state.muted ? 'Unmute' : 'Mute')
+      }
+      // The next-episode button can only do something when there is a next; a
+      // control that does nothing is worse than no control (same rule as the
+      // theatre's Next). media.hasNext is set by the renderer.
+      const next = $('vmini-next')
+      if (next) next.hidden = !onNext || (media && media.hasNext === false)
+    }
+
+    // ── Mini-player positioning + drag ────────────────────────────────────────
+    // The card and the mpv rect are computed together: the card is placed at a
+    // page position (via transform), and the VIDEO region of that same card is
+    // handed to main as the mpv rectangle. Because main converts a page rect the
+    // same way #vt-stage's does (zoom + content origin), the picture lands
+    // exactly inside the reserved region — frame and video move as one.
+    function miniViewport() {
+      const de = doc && doc.documentElement
+      return {
+        width: (de && de.clientWidth) || 0,
+        height: (de && de.clientHeight) || 0,
+      }
+    }
+    // The music bar's reserved height, read from the live CSS var so the bottom
+    // corners always clear it. Falls back to a sane constant if unreadable.
+    function miniPlayerH() {
+      try {
+        if (typeof window !== 'undefined' && window.getComputedStyle && doc) {
+          const v = window.getComputedStyle(doc.documentElement)
+            .getPropertyValue('--player-h')
+          const n = parseFloat(v)
+          if (Number.isFinite(n)) return n
+        }
+      } catch (_) {}
+      return 130
+    }
+
+    // The video region's page rectangle for the current (or a given) corner+size.
+    function miniRectFor(corner, size) {
+      return miniVideoRect(corner, size, miniViewport(), miniPlayerH())
+    }
+
+    // Place the card at a page top-left and send main the matching video rect.
+    // A null top-left means "use the persisted corner". While dragging, tl is
+    // the live pointer position and the send is throttled by the caller.
+    function placeMiniCard(tl, sendRect) {
+      const mini = $('vmini')
+      if (!mini) return null
+      mini.classList.toggle('vmini-large', miniPos.size === 'large')
+      let rect
+      if (tl) {
+        mini.style.transform = 'translate(' + Math.round(tl.x) + 'px,' + Math.round(tl.y) + 'px)'
+        // The mpv rect follows the card's live top-left (the video shares the
+        // card's top edge), not a corner anchor, so the picture tracks the drag.
+        const v = miniVideoDims(miniPos.size)
+        rect = { x: Math.round(tl.x), y: Math.round(tl.y), width: v.w, height: v.h }
+      } else {
+        const anchor = miniCardTopLeft(miniPos.corner, miniPos.size, miniViewport(), miniPlayerH())
+        mini.style.transform = 'translate(' + Math.round(anchor.x) + 'px,' + Math.round(anchor.y) + 'px)'
+        rect = miniRectFor(miniPos.corner, miniPos.size)
+      }
+      if (sendRect !== false && pipActive && api && api.videoMiniMode) {
+        api.videoMiniMode({ on: true, rect: rect }).catch(function () {})
+      }
+      return rect
+    }
+
+    // Persist the chosen corner + size so the card reopens where it was left.
+    function saveMiniPos() {
+      try {
+        if (local && typeof local.write === 'function') local.write('papa-vmini-pos', miniPos)
+      } catch (_) { /* a lost preference must never stop playback */ }
+    }
+
+    function bindMiniDrag() {
+      const bar = $('vmini-bar')
+      const mini = $('vmini')
+      if (!bar || !mini) return
+      let startX = 0, startY = 0, baseTL = null, pointerId = null
+      bar.addEventListener('pointerdown', function (e) {
+        // Only a bare left-press on the bar itself starts a drag — a click on a
+        // control (play, seek, size…) must do its own thing, not drag the card.
+        if (e.button !== 0) return
+        if (e.target && typeof e.target.closest === 'function' &&
+            e.target.closest('button, .vmini-seek')) return
+        pointerId = e.pointerId
+        miniDragging = true
+        mini.classList.add('vmini-dragging')
+        startX = e.clientX; startY = e.clientY
+        baseTL = miniCardTopLeft(miniPos.corner, miniPos.size, miniViewport(), miniPlayerH())
+        miniDragTL = { x: baseTL.x, y: baseTL.y }
+        try { bar.setPointerCapture(e.pointerId) } catch (_) {}
+        if (typeof e.preventDefault === 'function') e.preventDefault()
+      })
+      bar.addEventListener('pointermove', function (e) {
+        if (!miniDragging || e.pointerId !== pointerId || !baseTL) return
+        const vp = miniViewport()
+        const cs = miniCardSize(miniPos.size)
+        // Keep the whole card on screen while dragging.
+        const x = Math.max(0, Math.min(vp.width - cs.w, baseTL.x + (e.clientX - startX)))
+        const y = Math.max(0, Math.min(vp.height - cs.h, baseTL.y + (e.clientY - startY)))
+        miniDragTL = { x: x, y: y }
+        placeMiniCard(miniDragTL, false)   // move the card now
+        // The native mpv window follows the drag, throttled so a sweep is not
+        // one setBounds per pixel (~50ms, matching the scrub throttle spirit).
+        if (!miniRectTimer) {
+          miniRectTimer = setTimeout(function () {
+            miniRectTimer = 0
+            if (miniDragging && miniDragTL && pipActive && api && api.videoMiniMode) {
+              const v = miniVideoDims(miniPos.size)
+              api.videoMiniMode({ on: true, rect: {
+                x: Math.round(miniDragTL.x), y: Math.round(miniDragTL.y),
+                width: v.w, height: v.h,
+              } }).catch(function () {})
+            }
+          }, 50)
+        }
+      })
+      const endDrag = function (e) {
+        if (!miniDragging || (pointerId != null && e.pointerId !== pointerId)) return
+        miniDragging = false
+        mini.classList.remove('vmini-dragging')
+        try { bar.releasePointerCapture(e.pointerId) } catch (_) {}
+        if (miniRectTimer) { clearTimeout(miniRectTimer); miniRectTimer = 0 }
+        // Snap to the nearest corner and lock the picture onto it.
+        if (miniDragTL) {
+          miniPos.corner = nearestCorner(miniDragTL, miniPos.size, miniViewport(), miniPlayerH())
+          saveMiniPos()
+        }
+        miniDragTL = null
+        pointerId = null
+        placeMiniCard(null, true)
+      }
+      bar.addEventListener('pointerup', endDrag)
+      bar.addEventListener('pointercancel', endDrag)
+    }
+
+    // Compact ⇄ large. The picture and card both change size, and the rect is
+    // re-sent so the native window resizes with them. Persisted like the corner.
+    function toggleMiniSize() {
+      miniPos.size = miniPos.size === 'large' ? 'compact' : 'large'
+      saveMiniPos()
+      placeMiniCard(null, true)
+      paintMini()
+    }
+
+    // A clickable seek on the mini bar, sharing the theatre's seek verbs. The
+    // fraction maths is the exported pure one so the bar and its tests agree.
+    function bindMiniSeek() {
+      const seek = $('vmini-seek')
+      if (!seek) return
+      const trackOf = function () { return seek.querySelector('.vmini-seek-track') || seek }
+      const fracAt = function (clientX) {
+        const t = trackOf()
+        const r = t.getBoundingClientRect()
+        return seekFractionAt(clientX, r.left, r.width)
+      }
+      let pid = null
+      const paint = function (f) {
+        const fill = $('vmini-fill'); if (fill) fill.style.width = (f * 100) + '%'
+        const knob = $('vmini-knob'); if (knob) knob.style.left = (f * 100) + '%'
+      }
+      seek.addEventListener('pointerdown', function (e) {
+        if (e.button !== 0) return
+        const dur = Number(state && state.duration) || 0
+        if (!dur) return
+        pid = e.pointerId
+        miniDragging = true      // freeze the state-driven repaint while scrubbing
+        try { seek.setPointerCapture(e.pointerId) } catch (_) {}
+        const f = fracAt(e.clientX); paint(f)
+        if (typeof e.preventDefault === 'function') e.preventDefault()
+      })
+      seek.addEventListener('pointermove', function (e) {
+        if (pid !== e.pointerId) return
+        const dur = Number(state && state.duration) || 0
+        if (!dur) return
+        const f = fracAt(e.clientX); paint(f); scrubSeek(dur * f)
+      })
+      const done = function (e) {
+        if (pid !== e.pointerId) return
+        pid = null
+        miniDragging = false
+        try { seek.releasePointerCapture(e.pointerId) } catch (_) {}
+        const dur = Number(state && state.duration) || 0
+        if (dur) { scrubEnd(); seekTo(dur * fracAt(e.clientX)) }
+      }
+      seek.addEventListener('pointerup', done)
+      seek.addEventListener('pointercancel', function () { pid = null; miniDragging = false; scrubEnd() })
+      seek.addEventListener('keydown', function (e) {
+        if (e.key === 'ArrowLeft') { seekBy(-10); e.preventDefault(); e.stopPropagation() }
+        if (e.key === 'ArrowRight') { seekBy(10); e.preventDefault(); e.stopPropagation() }
+      })
     }
 
     // mpv reports every alias a codec has ever had, so the badge read
@@ -1956,6 +2296,18 @@
       $('vmini-open')?.addEventListener('click', restore)
       $('vmini-stop')?.addEventListener('click', close)
       $('vmini-play')?.addEventListener('click', togglePlay)
+      $('vmini-next')?.addEventListener('click', function () { if (onNext) onNext() })
+      $('vmini-mute')?.addEventListener('click', function () { send('mute', { value: !(state && state.muted) }) })
+      $('vmini-size')?.addEventListener('click', toggleMiniSize)
+      // Clicking the mini time flips it to remaining and back, same as the deck.
+      $('vmini-time')?.addEventListener('click', toggleTimeMode)
+      // Double-clicking the picture restores the theatre. The click lands on the
+      // native mpv window (see the fullscreen relay below), but a double-click on
+      // the reserved region itself — when the picture is not covering it — is
+      // handled here as a reliable page-side path too.
+      $('vmini-video')?.addEventListener('dblclick', restore)
+      bindMiniDrag()
+      bindMiniSeek()
       $('vt-next')?.addEventListener('click', function () { if (onNext) onNext() })
       $('vt-prev')?.addEventListener('click', function () {
         if (media && typeof media.onPrev === 'function') media.onPrev()
@@ -1996,6 +2348,14 @@
         if (m && !m.classList.contains('hidden') && !m.contains(e.target) && !e.target.closest('.vt-chip, .vt-icon')) closeMenu()
       })
       if (typeof window !== 'undefined') window.addEventListener('resize', scheduleBounds)
+      // While minimised, a window resize or move must re-anchor the card to its
+      // corner (and re-send the rect) so it never drifts off screen or over the
+      // music bar. Skipped mid-drag so a resize event does not fight the pointer.
+      if (typeof window !== 'undefined') {
+        window.addEventListener('resize', function () {
+          if (minimised && !miniDragging) placeMiniCard(null, true)
+        })
+      }
     }
 
     function open(info) {
@@ -2089,14 +2449,23 @@
       let miniModeOn = false
       if (playing && api && api.videoMiniMode) {
         miniModeOn = true
-        api.videoMiniMode({ on: true }).catch(function () {})
+        pipActive = true
+        // Place the card at its persisted corner and hand main the matching
+        // video rectangle in one call, so the picture lands inside the card's
+        // reserved region rather than at a default corner of its own.
+        placeMiniCard(null, true)
       } else {
         // The video surface is a native child window: hiding the HTML behind it
         // does not hide it, and it would sit over the app while the user tried
-        // to browse. Audio keeps playing.
+        // to browse. Audio keeps playing. The card still shows its controls, so
+        // position it even though there is no picture to place.
+        pipActive = false
+        placeMiniCard(null, false)
         setSurfaceVisible(false)
       }
-      pipActive = miniModeOn
+      // pipActive was set inside each branch above (before placeMiniCard, which
+      // reads it to decide whether to send the rect); miniModeOn just mirrors it.
+      void miniModeOn
       // The state subscription stays open: the mini player shows the same
       // position and play state, and returning must not have to rebuild it.
       render()
@@ -2228,5 +2597,10 @@
 
   return { create: create, fmtTime: fmtTime, SPEEDS: SPEEDS, ICON: ICON,
     thumbBucketOf: thumbBucketOf, makeThumbCache: makeThumbCache,
-    THUMB_BUCKET_SEC: THUMB_BUCKET_SEC, THUMB_CACHE_CAP: THUMB_CACHE_CAP }
+    THUMB_BUCKET_SEC: THUMB_BUCKET_SEC, THUMB_CACHE_CAP: THUMB_CACHE_CAP,
+    // Mini-player geometry, exported for tests and the renderer's own use.
+    MINI: MINI, miniVideoDims: miniVideoDims, miniCardSize: miniCardSize,
+    miniCardTopLeft: miniCardTopLeft, miniVideoRect: miniVideoRect,
+    nearestCorner: nearestCorner, pageRectToScreen: pageRectToScreen,
+    sanitizeMiniPos: sanitizeMiniPos, seekFractionAt: seekFractionAt }
 })

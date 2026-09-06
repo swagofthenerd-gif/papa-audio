@@ -8169,40 +8169,96 @@ body.video-active .np-byline { font-size:10.5px; }
 }
 
 /* ── Mini player ─────────────────────────────────────
-   mpv plays in its own window, so leaving the theatre never has to stop
-   anything — the controls just move somewhere small. Sits above the music
-   player bar so the two never overlap. */
+   A floating CARD: the native mpv window is composited over #vmini-video (the
+   reserved region at the top), and #vmini-bar carries the controls attached
+   below it. The card is positioned by JS (top-left in page px, driven by the
+   persisted corner + size) so the video region's rectangle can be handed to
+   main as the mpv rect — the picture and its frame move as one thing. The card
+   sits above the music player bar so the two never overlap; the bottom snap
+   corners are computed in JS to clear var(--player-h). */
+:root {
+  /* Video-region sizes for the two size steps. The card width tracks the video
+     width; the bar height is fixed. Corner insets live in JS. */
+  --vmini-w-compact: 320px;
+  --vmini-h-compact: 180px;
+  --vmini-w-large:   480px;
+  --vmini-h-large:   270px;
+  --vmini-bar-h:     46px;
+}
 .vmini {
   position:fixed; z-index:1400;
-  right:20px; bottom:calc(var(--player-h) + 18px);
-  width:330px; max-width:calc(100vw - 40px);
-  display:flex; align-items:center; gap:10px;
-  padding:10px 12px; border-radius:var(--r-lg);
+  left:0; top:0;                 /* JS sets the real position via transform */
+  width:var(--vmini-w-compact);
+  border-radius:var(--r-lg); overflow:hidden;
   background:rgba(18,18,18,.96); border:1px solid var(--glass-border);
   box-shadow:0 16px 44px rgba(0,0,0,.6);
   backdrop-filter:blur(14px);
   animation:fadeIn .2s var(--ease-out);
 }
+.vmini.vmini-large { width:var(--vmini-w-large); }
 .vmini.hidden { display:none; }
+/* No transition while the card follows the pointer, or it lags the mpv window. */
+.vmini.vmini-dragging { transition:none; cursor:grabbing; }
+
+/* The reserved rectangle the native mpv window is placed onto. Black so any
+   sliver not yet covered by the picture reads as letterbox, not a hole. */
+.vmini-video {
+  width:var(--vmini-w-compact); height:var(--vmini-h-compact);
+  background:#000; position:relative;
+}
+.vmini.vmini-large .vmini-video { width:var(--vmini-w-large); height:var(--vmini-h-large); }
+
+.vmini-bar {
+  height:var(--vmini-bar-h);
+  display:flex; align-items:center; gap:8px;
+  padding:0 8px; cursor:grab;
+  background:rgba(12,12,12,.96); border-top:1px solid var(--glass-border);
+}
+.vmini-bar:active { cursor:grabbing; }
+/* Controls themselves are not drag handles — a click on a button must not start
+   a drag. JS also guards this, but the cursor should say so too. */
+.vmini-bar button, .vmini-bar .vmini-seek { cursor:pointer; }
+
 .vmini-open {
-  width:34px; height:34px; flex-shrink:0; border-radius:var(--r-sm);
+  width:32px; height:32px; flex-shrink:0; border-radius:var(--r-sm);
   background:var(--glass); border:1px solid var(--glass-border); color:var(--text);
   cursor:pointer; display:flex; align-items:center; justify-content:center;
 }
 .vmini-open svg { width:15px; height:15px; fill:currentColor; }
 .vmini-open:hover { background:var(--glass-hi); }
-.vmini-open:focus-visible, .vmini button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
-.vmini-play { width:34px; height:34px; background:var(--accent); color:#000; flex-shrink:0; }
+.vmini-open:focus-visible, .vmini button:focus-visible,
+.vmini-seek:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.vmini-play { width:32px; height:32px; background:var(--accent); color:#000; flex-shrink:0; }
 .vmini-play:hover { background:var(--accent-hover); }
-.vmini-play svg { width:16px; height:16px; }
-.vmini-body { flex:1; min-width:0; }
+.vmini-play svg { width:15px; height:15px; }
+.vmini-next[hidden] { display:none; }
+.vmini-body { flex:1; min-width:0; display:flex; flex-direction:column; gap:4px; }
 .vmini-title {
-  font-size:12px; font-weight:600; color:var(--text);
-  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; margin-bottom:5px;
+  font-size:11.5px; font-weight:600; color:var(--text);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
 }
-.vmini-bar { height:3px; border-radius:2px; background:rgba(255,255,255,.16); overflow:hidden; }
-.vmini-bar i { display:block; height:100%; width:0; background:var(--accent); }
-.vmini-time { font-size:11px; color:var(--text2); font-variant-numeric:tabular-nums; flex-shrink:0; }
+/* A real, clickable seek bar — not a passive fill. A little vertical padding
+   gives the pointer a bigger target than the 3px track. */
+.vmini-seek { padding:4px 0; touch-action:none; }
+.vmini-seek-track {
+  position:relative; height:3px; border-radius:2px;
+  background:rgba(255,255,255,.16);
+}
+.vmini-fill {
+  position:absolute; left:0; top:0; height:100%; width:0;
+  border-radius:2px; background:var(--accent);
+}
+.vmini-knob {
+  position:absolute; top:50%; left:0; width:9px; height:9px; border-radius:50%;
+  background:var(--accent); transform:translate(-50%, -50%);
+  opacity:0; transition:opacity .12s;
+}
+.vmini-seek:hover .vmini-knob, .vmini-seek:focus-visible .vmini-knob { opacity:1; }
+.vmini-time {
+  font-size:11px; color:var(--text2); font-variant-numeric:tabular-nums;
+  flex-shrink:0; cursor:pointer;
+}
+.vmini-size svg, .vmini-next svg { width:15px; height:15px; }
 
 @media (prefers-reduced-motion: reduce) { .vmini { animation:none; } }
 

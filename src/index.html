@@ -257,20 +257,48 @@
 
   <!-- Mini player. Shown when the theatre is minimised: mpv keeps playing in
        its own window, so leaving the theatre is only a matter of putting the
-       controls somewhere out of the way rather than stopping anything. -->
+       controls somewhere out of the way rather than stopping anything.
+
+       A floating CARD, not a detached strip: #vmini-video is a reserved empty
+       region the native mpv window is positioned onto (so the picture sits
+       inside the card, not floating apart from its controls), and #vmini-bar is
+       the attached control deck below it. The card and the mpv rect are computed
+       together — the video region's page rectangle is what gets sent to
+       videoMiniMode({rect}). Dragged by the bar; double-clicking the picture
+       restores to the theatre. -->
   <div id="vmini" class="vmini hidden" role="region" aria-label="Now playing">
-    <button class="vmini-open" id="vmini-open" aria-label="Back to the player">
-      <svg viewBox="0 0 24 24"><path d="M7 14H5v5h5v-2H7zm-2-4h2V7h3V5H5zm12 7h-3v2h5v-5h-2zM14 5v2h3v3h2V5z"/></svg>
-    </button>
-    <button class="vt-icon vmini-play" id="vmini-play" aria-label="Play or pause"></button>
-    <div class="vmini-body">
-      <div class="vmini-title" id="vmini-title">Playing</div>
-      <div class="vmini-bar"><i id="vmini-fill"></i></div>
+    <!-- The native mpv window is placed over this. It carries no children the
+         user could see — the picture covers it — but a double-click on it is
+         relayed by mpv (the click lands on the native window, never the page)
+         and restores the theatre. Kept for the layout rectangle only. -->
+    <div class="vmini-video" id="vmini-video" aria-label="Video — double-click to expand"></div>
+    <div class="vmini-bar" id="vmini-bar">
+      <button class="vt-icon vmini-play" id="vmini-play" aria-label="Play or pause"></button>
+      <div class="vmini-body">
+        <div class="vmini-title" id="vmini-title">Playing</div>
+        <div class="vmini-seek" id="vmini-seek" role="slider" tabindex="0"
+             aria-label="Seek" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0">
+          <div class="vmini-seek-track">
+            <div class="vmini-fill" id="vmini-fill"></div>
+            <div class="vmini-knob" id="vmini-knob"></div>
+          </div>
+        </div>
+      </div>
+      <div class="vmini-time" id="vmini-time">0:00</div>
+      <button class="vt-icon vmini-next" id="vmini-next" aria-label="Next episode" title="Next episode" hidden>
+        <svg viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6zM16 6h2v12h-2z"/></svg>
+      </button>
+      <button class="vt-icon" id="vmini-mute" aria-label="Mute" title="Mute"></button>
+      <button class="vt-icon vmini-size" id="vmini-size" aria-label="Resize" title="Bigger / smaller">
+        <svg viewBox="0 0 24 24"><path d="M4 4h6v2H6v4H4zm10 0h6v6h-2V6h-4zM4 14h2v4h4v2H4zm14 0h2v6h-6v-2h4z"/></svg>
+      </button>
+      <button class="vmini-open" id="vmini-open" aria-label="Back to the player" title="Back to the player">
+        <svg viewBox="0 0 24 24"><path d="M7 14H5v5h5v-2H7zm-2-4h2V7h3V5H5zm12 7h-3v2h5v-5h-2zM14 5v2h3v3h2V5z"/></svg>
+      </button>
+      <button class="vt-icon" id="vmini-stop" aria-label="Stop playback" title="Stop">
+        <svg viewBox="0 0 24 24"><path d="M6 6h12v12H6z"/></svg>
+      </button>
     </div>
-    <div class="vmini-time" id="vmini-time">0:00</div>
-    <button class="vt-icon" id="vmini-stop" aria-label="Stop playback" title="Stop">
-      <svg viewBox="0 0 24 24"><path d="M6 6h12v12H6z"/></svg>
-    </button>
   </div>
 
   <!-- Music Chat Sidebar -->

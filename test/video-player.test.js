@@ -47,12 +47,18 @@ function harness({ segments = [], prefs = {}, onNext = null, fullscreen = false,
     'vt-seek-bubble', 'vt-badges', 'vt-title', 'vt-sub', 'vt-menu', 'vt-stats',
     'vt-stat-pos', 'vt-stat-speed', 'vt-stat-vol', 'vt-stat-tracks',
     'vt-stat-down', 'vt-stat-peers', 'vt-stat-progress',
-    'vt-strip', 'vt-upnext', 'vt-upnext-go', 'vt-upnext-stay', 'vt-ring-fg', 'vt-ring-num']
+    'vt-strip', 'vt-upnext', 'vt-upnext-go', 'vt-upnext-stay', 'vt-ring-fg', 'vt-ring-num',
+    // The floating mini-player card and its controls.
+    'vmini', 'vmini-video', 'vmini-bar', 'vmini-play', 'vmini-title', 'vmini-seek',
+    'vmini-fill', 'vmini-knob', 'vmini-time', 'vmini-next', 'vmini-mute', 'vmini-size',
+    'vmini-open', 'vmini-stop']
   for (const id of ids) nodes[id] = el(id)
   nodes['vt-skip'].hidden = true
   nodes['vt-upnext'].hidden = true
   nodes['vt-strip'].hidden = true
   nodes['vt-menu'].classList.add('hidden')
+  // The card starts hidden until the theatre is minimised.
+  nodes['vmini'].classList.add('hidden')
 
   const sent = []
   // Captured so tests can fire real keydown events at the document handler,
@@ -64,7 +70,7 @@ function harness({ segments = [], prefs = {}, onNext = null, fullscreen = false,
     createElement: tag => el(tag),
     addEventListener (ev, fn) { (docHandlers[ev] = docHandlers[ev] || []).push(fn) },
     activeElement: null,
-    documentElement: { clientWidth: 1280 },
+    documentElement: { clientWidth: 1280, clientHeight: 800 },
   }
   const api = Object.assign({
     videoControl: (verb, args) => { sent.push({ verb, args }); return Promise.resolve({ ok: true }) },
@@ -699,30 +705,40 @@ test('a stage with no size reports nothing rather than a degenerate rectangle', 
       'vt-title', 'vt-sub', 'vt-next', 'vt-menu', 'vt-play', 'vt-pos', 'vt-dur', 'vt-badges',
       'vt-seek', 'vt-seek-fill', 'vt-seek-knob', 'vt-seek-buffer', 'vt-seek-marks', 'vt-mute',
       'vt-vol', 'vt-speed', 'vt-subs', 'vt-pack', 'vt-pack-list',
-      'vmini', 'vmini-open', 'vmini-stop', 'vmini-play', 'vmini-title', 'vmini-fill', 'vmini-time']) {
+      'vmini', 'vmini-video', 'vmini-bar', 'vmini-open', 'vmini-stop', 'vmini-play',
+      'vmini-title', 'vmini-seek', 'vmini-fill', 'vmini-knob', 'vmini-time',
+      'vmini-next', 'vmini-mute', 'vmini-size']) {
       nodes[id] = el(id)
     }
     nodes['vt-menu'].classList.add('hidden')
     nodes.vmini.classList.add('hidden')
     let exited = 0
     const sent = []
+    const miniCalls = []          // every videoMiniMode({on, rect}) call
+    const store = {}              // a tiny PapaLocal stand-in
+    const local = {
+      readObject: (k) => store[k] || {},
+      write: (k, v) => { store[k] = v; return true },
+      readRaw: () => null,
+    }
     const p = create({
       document: {
         getElementById: id => nodes[id] || null,
         querySelector: () => nodes['vt-seek'],
         addEventListener () {},
-        documentElement: { clientWidth: 1280 },
+        documentElement: { clientWidth: 1280, clientHeight: 800 },
       },
       api: {
         videoControl: (verb, args) => { sent.push({ verb, args }); return Promise.resolve({ ok: true }) },
         onVideoState: () => () => {},
         videoSurfaceBounds: () => Promise.resolve({ ok: true }),
+        videoMiniMode: (arg) => { miniCalls.push(arg); return Promise.resolve({ ok: true }) },
       },
-      keymap, skipModel,
+      keymap, skipModel, local,
       onExit: () => { exited++ },
     })
     p.bind()
-    return { p, nodes, sent, exited: () => exited }
+    return { p, nodes, sent, miniCalls, store, exited: () => exited }
   }
 
   test('minimising hides the theatre and shows the mini player', () => {
@@ -771,6 +787,94 @@ test('a stage with no size reports nothing rather than a degenerate rectangle', 
     p._setState(stateAt(900))          // 15:00 of 1:00:00
     assert.strictEqual(nodes['vmini-fill'].style.width, '25%')
     assert.strictEqual(nodes['vmini-time'].textContent, '15:00')
+  })
+
+  // The card and the mpv rect are one thing: minimising with the picture still
+  // playing must hand main a rectangle, not an on-only call, or the native
+  // window lands at a default corner disconnected from the card.
+  test('minimising sends main a video rectangle for the card', () => {
+    const { p, miniCalls } = miniHarness()
+    p.open({ title: 'Dune' })
+    p._setState(stateAt(10))           // playing (not paused)
+    p.minimise()
+    assert.ok(miniCalls.length, 'videoMiniMode was called')
+    const last = miniCalls[miniCalls.length - 1]
+    assert.strictEqual(last.on, true)
+    assert.ok(last.rect && typeof last.rect.x === 'number', 'a rect was supplied')
+    // Default compact video region is 320x180.
+    assert.strictEqual(last.rect.width, 320)
+    assert.strictEqual(last.rect.height, 180)
+  })
+
+  test('the size toggle grows the region and persists the choice', () => {
+    const { p, nodes, miniCalls, store } = miniHarness()
+    p.open({ title: 'Dune' })
+    p._setState(stateAt(10))
+    p.minimise()
+    nodes['vmini-size'].fire('click')
+    const last = miniCalls[miniCalls.length - 1]
+    assert.strictEqual(last.rect.width, 480, 'large region is 480 wide')
+    assert.strictEqual(last.rect.height, 270)
+    assert.ok(nodes.vmini.classList.contains('vmini-large'))
+    assert.strictEqual(store['papa-vmini-pos'].size, 'large', 'size was saved')
+  })
+
+  test('the persisted corner and size are restored on the next open', () => {
+    const { store } = miniHarness()
+    store['papa-vmini-pos'] = { corner: 'tl', size: 'large' }
+    // A fresh player reading that store should place the large card top-left.
+    const nodes = {}
+    for (const id of ['vtheatre', 'vt-stage', 'vt-stage-msg', 'vt-title', 'vt-sub',
+      'vt-next', 'vt-menu', 'vt-play', 'vt-pos', 'vt-dur', 'vt-mute', 'vt-seek',
+      'vt-seek-fill', 'vt-seek-knob', 'vt-seek-buffer', 'vt-seek-marks',
+      'vmini', 'vmini-video', 'vmini-bar', 'vmini-play', 'vmini-title', 'vmini-seek',
+      'vmini-fill', 'vmini-knob', 'vmini-time', 'vmini-next', 'vmini-mute', 'vmini-size',
+      'vmini-open', 'vmini-stop']) nodes[id] = el(id)
+    nodes['vt-menu'].classList.add('hidden'); nodes.vmini.classList.add('hidden')
+    const miniCalls = []
+    const p2 = create({
+      document: { getElementById: id => nodes[id] || null, querySelector: () => nodes['vt-seek'],
+        addEventListener () {}, documentElement: { clientWidth: 1280, clientHeight: 800 } },
+      api: { videoControl: () => Promise.resolve({ ok: true }), onVideoState: () => () => {},
+        videoSurfaceBounds: () => Promise.resolve({ ok: true }),
+        videoMiniMode: (a) => { miniCalls.push(a); return Promise.resolve({ ok: true }) } },
+      keymap, skipModel,
+      local: { readObject: () => ({ corner: 'tl', size: 'large' }), write: () => true, readRaw: () => null },
+    })
+    p2.bind(); p2.open({ title: 'Dune' }); p2._setState(stateAt(10)); p2.minimise()
+    const last = miniCalls[miniCalls.length - 1]
+    assert.strictEqual(last.rect.width, 480, 'large size restored')
+    // Top-left corner: the rect sits at the inset, not the bottom-right.
+    assert.ok(last.rect.x < 640 && last.rect.y < 400, 'placed top-left')
+  })
+
+  test('the mini next button hides when there is no next episode', () => {
+    const { p, nodes } = miniHarness()
+    // onNext is null in this harness, so next can never do anything.
+    p.open({ title: 'Dune' })
+    p._setState(stateAt(10))
+    p.minimise()
+    assert.strictEqual(nodes['vmini-next'].hidden, true)
+  })
+
+  test('the mini mute button toggles mute through the same verb', () => {
+    const { p, nodes, sent } = miniHarness()
+    p.open({ title: 'Dune' })
+    p._setState(stateAt(10, { muted: false }))
+    p.minimise()
+    nodes['vmini-mute'].fire('click')
+    const mute = sent.filter(s => s.verb === 'mute').pop()
+    assert.ok(mute && mute.args.value === true, 'unmuted → mute:true')
+  })
+
+  test('the mini video region restores the theatre on double-click', () => {
+    const { p, nodes } = miniHarness()
+    p.open({ title: 'Dune' })
+    p._setState(stateAt(10))
+    p.minimise()
+    assert.strictEqual(p.isMinimised(), true)
+    nodes['vmini-video'].fire('dblclick')
+    assert.strictEqual(p.isMinimised(), false, 'double-click on the picture restores')
   })
 
   // Back is the control people hit on the way out; it must not be the
@@ -855,12 +959,22 @@ test('a stage with no size reports nothing rather than a degenerate rectangle', 
     assert.doesNotThrow(() => { p.open({ title: 'X' }); p.close() })
   })
 
-  // The two corners must not collide: the video's mini player is bottom-right.
+  // The two corners must not collide: the collapsed music bar sits bottom-left,
+  // and the video mini card defaults to bottom-right (corner 'br', chosen in JS
+  // rather than a hardcoded CSS offset now that the card is draggable) and its
+  // bottom snap positions are computed to clear the player bar's height.
   test('the collapsed music bar sits in the opposite corner to the video mini player', () => {
     const css = require('node:fs').readFileSync(
       require('node:path').join(__dirname, '..', 'src', 'styles.css'), 'utf8')
     assert.match(css, /body\.video-active \.player-bar \{[^}]*left:16px;\s*right:auto/s)
-    assert.match(css, /\.vmini \{[^}]*right:20px/s)
+    // The card's default corner is bottom-right — the opposite corner.
+    assert.match(PLAYER_SRC, /miniPos = \{ corner: 'br'/)
+    // Pure-geometry proof the bottom corners clear the bar (see video-mini.test.js
+    // for the full coverage): a taller bar raises the card.
+    const { miniCardTopLeft, miniCardSize } = require('../src/video-player')
+    const vp = { width: 1600, height: 900 }
+    const br = miniCardTopLeft('br', 'compact', vp, 120)
+    assert.ok(br.y + miniCardSize('compact').h <= vp.height - 120, 'clears the bar')
     // And the content reclaims the height the strip gave up.
     assert.match(css, /body\.video-active \{ --player-h: 8px; \}/)
   })

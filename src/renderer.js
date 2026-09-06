@@ -3692,6 +3692,18 @@ function _handleVideoEvent(payload) {
   }
 
   if (payload.kind === 'key') {
+    // In the mini player the picture is a small corner card, not the theatre.
+    // mpv relays a double-click as one 'playPause' then one 'fullscreen' (its
+    // native two-click sequence). Fullscreening a corner card is meaningless —
+    // the user's actual intent double-clicking it is "put me back in the
+    // theatre" — so while minimised the double-click RESTORES, and the paired
+    // single 'playPause' is swallowed so the film is not paused on the way in.
+    // A lone single click on the corner picture is deliberately inert.
+    const mini = _player.isMinimised && _player.isMinimised()
+    if (mini) {
+      if (payload.action === 'fullscreen') { _player.restore(); return }
+      if (payload.action === 'playPause') return   // half of a restore double-click
+    }
     if (payload.action === 'skip') _player.skipNow()
     else if (payload.action === 'next') _playNextEpisode()
     // Single click on the picture. The click lands on mpv, never the page.
