@@ -16,6 +16,9 @@ const vm = require('vm')
 
 const ROOT = path.join(__dirname, '..')
 const RSRC = fs.readFileSync(path.join(ROOT, 'src', 'renderer.js'), 'utf8')
+// Roadmap #62 split: the Soulseek shop/explorer markup (incl. its close button)
+// moved to slsk-shop-ui.js. Fold it into the renderer source for markup checks.
+const SHOP = fs.readFileSync(path.join(ROOT, 'src', 'slsk-shop-ui.js'), 'utf8')
 const CSS = fs.readFileSync(path.join(ROOT, 'src', 'styles.css'), 'utf8')
 const HTML = fs.readFileSync(path.join(ROOT, 'src', 'index.html'), 'utf8')
 
@@ -319,7 +322,7 @@ test('the saved-libraries modal traps focus and closes on Escape, with clean tea
 test('icon-only buttons that had no accessible name now carry aria-label', () => {
   // Close buttons were bare "✕".
   assert.ok((HTML + RSRC).indexOf('modal-close-btn') > -1)
-  assert.match(RSRC, /id="slsk-lib-close" aria-label="Close"/)
+  assert.match(SHOP, /id="slsk-lib-close" aria-label="Close"/)
   assert.match(RSRC, /id="slsk-saved-close" aria-label="Close"/)
   assert.match(RSRC, /class="sticky-play-btn"[^>]*aria-label="Play album"/)
   // A representative ctrl-btn now names itself.

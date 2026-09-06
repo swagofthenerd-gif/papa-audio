@@ -117,9 +117,18 @@ test('the explorer is wired into the renderer', () => {
   const src = fs.readFileSync(path.join(__dirname, '../src/slsk-tree.js'), 'utf8')
   assert.ok(src.includes('window.PapaSlskTree'), 'renderer cannot require(), needs the global')
   const r = fs.readFileSync(path.join(__dirname, '../src/renderer.js'), 'utf8')
-  assert.ok(r.includes('showSlskUserExplorer'), 'explorer must exist')
+  assert.ok(r.includes('showSlskUserExplorer'), 'explorer entry point must exist')
+  // Roadmap #62 split: the explorer's DOM moved to slsk-shop-ui.js. renderer.js
+  // keeps the delegating showSlskUserExplorer stub; the controls live in the module.
+  const shop = fs.readFileSync(path.join(__dirname, '../src/slsk-shop-ui.js'), 'utf8')
+  // Match the actual <script> tags, not a bare substring — "renderer.js" is also
+  // mentioned in a load-order comment that sits above this tag.
+  assert.ok(
+    html.indexOf('<script src="slsk-shop-ui.js">') <
+      html.indexOf('<script src="renderer.js">'),
+    'slsk-shop-ui.js must load before renderer.js')
   for (const id of ['slskx-back', 'slskx-fwd', 'slskx-up', 'slskx-crumbs', 'slskx-search']) {
-    assert.ok(r.includes(id), 'missing control: ' + id)
+    assert.ok(shop.includes(id), 'missing control: ' + id)
   }
   // Every entry point must open the explorer, not the old flat list.
   assert.equal((r.match(/showSlskUserLibrary\((u|username)\)/g) || []).length, 0,

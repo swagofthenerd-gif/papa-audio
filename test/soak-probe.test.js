@@ -346,16 +346,23 @@ test('both listener metrics have thresholds', () => {
 // function it sits in can run twice.
 
 const RENDERER = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
+// Roadmap #62 split: the Soulseek shop/explorer moved to slsk-shop-ui.js, and it
+// carries one in-function global listener (the modal's onKey document keydown,
+// added on open and removed in its close()). The budget must still see it, so the
+// scan covers both files — nothing escapes measurement just because it moved.
+const SHOP = fs.readFileSync(path.join(__dirname, '..', 'src', 'slsk-shop-ui.js'), 'utf8')
 
 function globalListenerSites() {
   const out = { moduleScope: [], inFunction: [] }
-  RENDERER.split('\n').forEach((line, i) => {
+  const scan = (src, file) => src.split('\n').forEach((line, i) => {
     const m = /^(\s*)(document|window)\.addEventListener\(\s*'([a-z]+)'/.exec(line)
     if (!m) return
-    const site = { line: i + 1, target: m[2], type: m[3] }
+    const site = { line: i + 1, file, target: m[2], type: m[3] }
     if (m[1].length === 0) out.moduleScope.push(site)
     else out.inFunction.push(site)
   })
+  scan(RENDERER, 'renderer.js')
+  scan(SHOP, 'slsk-shop-ui.js')
   return out
 }
 
@@ -388,6 +395,11 @@ test('the number of global listener registrations is a deliberate budget', () =>
   //         close), removed in _closeSaved and on every exit path (App §60).
   //       • _runTour — a document keydown (_onTourKey, Escape-to-dismiss),
   //         removed in _endTour (App §61 first-run tour).
+  // Still 23 after the roadmap #62 split: the Soulseek shop/explorer's one
+  // in-function listener (the modal's onKey document keydown, added on open and
+  // removed in close()) moved to slsk-shop-ui.js, and globalListenerSites now
+  // scans that file too. The site count is unchanged — it just lives in a
+  // different file — so the number holds and coverage is complete.
   assert.strictEqual(sites.inFunction.length, 23,
     'a global listener was added inside a function. Nothing collects a listener ' +
     'on document or window, so make sure that function cannot run twice — this ' +

@@ -169,7 +169,8 @@ test('junk input yields no queries', () => {
 
 test('surround discovery is wired into search and the explorer', () => {
   const fs = require('fs'), path = require('path')
-  const r = fs.readFileSync(path.join(__dirname, '../src/renderer.js'), 'utf8')
-  assert.ok(r.includes('renderSurroundFolders'), 'explorer needs the surround scan')
-  assert.ok(r.includes('slskx-surround'), 'explorer needs the 5.1-only button')
+  // Roadmap #62 split: the explorer's surround finder moved to slsk-shop-ui.js.
+  const shop = fs.readFileSync(path.join(__dirname, '../src/slsk-shop-ui.js'), 'utf8')
+  assert.ok(shop.includes('renderSurroundFolders'), 'explorer needs the surround scan')
+  assert.ok(shop.includes('slskx-surround'), 'explorer needs the 5.1-only button')
 })

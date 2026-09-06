@@ -1,0 +1,242 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy"
+  content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:;">
+<title>Papa Video controls</title>
+<style>
+  :root {
+    --accent: #6c8cff;
+    --txt: #f2f4f8;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 100%; height: 100%;
+    background: transparent;
+    overflow: hidden;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    color: var(--txt);
+    user-select: none;
+    cursor: default;
+  }
+  /* The whole surface is transparent to the picture beneath. Only the two bars
+     paint, and only they are interactive (main toggles pass-through on hover). */
+  #wrap { position: absolute; inset: 0; }
+
+  /* Top title gradient — appears only when chrome is shown. */
+  #top {
+    position: absolute; top: 0; left: 0; right: 0;
+    padding: 14px 20px 40px;
+    background: linear-gradient(to bottom, rgba(0,0,0,.65), rgba(0,0,0,0));
+    font-size: 16px; font-weight: 600;
+    text-shadow: 0 1px 3px rgba(0,0,0,.8);
+    opacity: 0; transition: opacity .18s ease;
+    pointer-events: none;
+  }
+
+  /* Bottom control bar. */
+  #bar {
+    position: absolute; left: 0; right: 0; bottom: 0;
+    padding: 30px 18px 14px;
+    background: linear-gradient(to top, rgba(0,0,0,.72), rgba(0,0,0,0));
+    display: flex; flex-direction: column; gap: 8px;
+    opacity: 0; transition: opacity .18s ease;
+  }
+
+  #seekrow { display: flex; align-items: center; }
+  #seek {
+    position: relative; flex: 1; height: 5px; border-radius: 3px;
+    background: rgba(255,255,255,.28); cursor: pointer;
+  }
+  #seek:hover { height: 7px; }
+  #seekfill {
+    position: absolute; left: 0; top: 0; bottom: 0; width: 0;
+    background: var(--accent); border-radius: 3px;
+  }
+  #seekknob {
+    position: absolute; top: 50%; width: 13px; height: 13px; border-radius: 50%;
+    background: #fff; transform: translate(-50%, -50%); left: 0;
+    box-shadow: 0 1px 3px rgba(0,0,0,.6); opacity: 0; transition: opacity .12s;
+  }
+  #seek:hover #seekknob { opacity: 1; }
+
+  #controls { display: flex; align-items: center; gap: 14px; }
+  button.ic {
+    background: none; border: 0; padding: 4px; cursor: pointer;
+    color: var(--txt); display: inline-flex; align-items: center;
+    border-radius: 6px;
+  }
+  button.ic:hover { background: rgba(255,255,255,.14); }
+  button.ic svg { width: 24px; height: 24px; fill: currentColor; }
+  #time { font-variant-numeric: tabular-nums; font-size: 13px; opacity: .92; }
+  .spacer { flex: 1; }
+
+  #vol { display: flex; align-items: center; gap: 6px; }
+  #volbar {
+    position: relative; width: 78px; height: 5px; border-radius: 3px;
+    background: rgba(255,255,255,.28); cursor: pointer;
+  }
+  #volfill {
+    position: absolute; left: 0; top: 0; bottom: 0; width: 100%;
+    background: #fff; border-radius: 3px;
+  }
+
+  /* When chrome is visible, both bars fade in. */
+  body.show #top, body.show #bar { opacity: 1; }
+</style>
+</head>
+<body>
+  <div id="wrap">
+    <div id="top"><span id="title"></span></div>
+    <div id="bar" class="hot">
+      <div id="seekrow">
+        <div id="seek" class="hot">
+          <div id="seekfill"></div>
+          <div id="seekknob"></div>
+        </div>
+      </div>
+      <div id="controls">
+        <button class="ic hot" id="play" title="Play/Pause" aria-label="Play or pause">
+          <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+        </button>
+        <div id="vol" class="hot">
+          <button class="ic hot" id="mute" title="Mute" aria-label="Mute">
+            <svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9zm13.5 3A4.5 4.5 0 0 0 14 7.97v8.05A4.47 4.47 0 0 0 16.5 12z"/></svg>
+          </button>
+          <div id="volbar" class="hot"><div id="volfill"></div></div>
+        </div>
+        <div id="time" class="hot">0:00 / 0:00</div>
+        <div class="spacer"></div>
+        <button class="ic hot" id="full" title="Fullscreen" aria-label="Fullscreen">
+          <svg viewBox="0 0 24 24"><path d="M7 14H5v5h5v-2H7zm-2-4h2V7h3V5H5zm12 7h-3v2h5v-5h-2zM14 5v2h3v3h2V5z"/></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+
+<script>
+'use strict'
+;(function () {
+  var api = window.overlay || null
+  var $ = function (id) { return document.getElementById(id) }
+
+  var ICON_PLAY  = '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>'
+  var ICON_PAUSE = '<svg viewBox="0 0 24 24"><path d="M6 19h4V5H6zm8-14v14h4V5z"/></svg>'
+  var ICON_VOL   = '<svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9zm13.5 3A4.5 4.5 0 0 0 14 7.97v8.05A4.47 4.47 0 0 0 16.5 12z"/></svg>'
+  var ICON_MUTE  = '<svg viewBox="0 0 24 24"><path d="M16.5 12A4.5 4.5 0 0 0 14 7.97v2.21l2.45 2.45A5 5 0 0 0 16.5 12zM4.27 3 3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25a6.98 6.98 0 0 1-2.25 1.17v2.06a9 9 0 0 0 3.69-1.81L19.73 21 21 19.73z"/></svg>'
+
+  var state = null
+  var dragging = false
+
+  function fmt (sec) {
+    var n = Math.max(0, Math.floor(Number(sec) || 0))
+    var h = Math.floor(n / 3600), m = Math.floor((n % 3600) / 60), s = n % 60
+    var pad = function (v) { return String(v).padStart(2, '0') }
+    return h > 0 ? h + ':' + pad(m) + ':' + pad(s) : m + ':' + pad(s)
+  }
+
+  function send (verb, args) { if (api) api.control(verb, args || {}) }
+
+  // ── Auto-hide chrome after stillness ──────────────────────────────────────
+  var hideTimer = null
+  function showChrome () {
+    document.body.classList.add('show')
+    clearTimeout(hideTimer)
+    hideTimer = setTimeout(function () {
+      // Do not hide while the pointer is resting on a control.
+      if (!overCtl) document.body.classList.remove('show')
+    }, 3000)
+  }
+  function render () {
+    if (!state) return
+    var dur = Number(state.duration) || 0
+    var pos = Number(state.position) || 0
+    if (!dragging) {
+      var pct = dur > 0 ? Math.min(100, (pos / dur) * 100) : 0
+      $('seekfill').style.width = pct + '%'
+      $('seekknob').style.left = pct + '%'
+    }
+    $('time').textContent = fmt(pos) + ' / ' + fmt(dur)
+    $('play').innerHTML = state.paused ? ICON_PLAY : ICON_PAUSE
+    var vol = Math.max(0, Math.min(100, Number(state.volume) || 0))
+    $('volfill').style.width = (state.muted ? 0 : vol) + '%'
+    $('mute').innerHTML = (state.muted || vol === 0) ? ICON_MUTE : ICON_VOL
+  }
+
+  if (api) {
+    api.onState(function (s) { state = s; render() })
+    api.onTitle(function (t) {
+      var el = $('title')
+      if (el) el.textContent = t || ''
+      $('top').style.display = t ? '' : 'none'
+    })
+  }
+
+  // ── Pass-through toggling (the documented Electron forward pattern) ────────
+  // Default is pass-through ON (main set it). While the pointer is over any
+  // element tagged .hot the overlay claims clicks; when it leaves, it releases
+  // them back to the picture. forward:true keeps mousemove flowing either way,
+  // so the leave is always seen.
+  var overCtl = false
+  function underPointer (x, y) {
+    var el = document.elementFromPoint(x, y)
+    while (el) { if (el.classList && el.classList.contains('hot')) return true; el = el.parentElement }
+    return false
+  }
+  document.addEventListener('mousemove', function (e) {
+    showChrome()
+    var hot = underPointer(e.clientX, e.clientY)
+    if (hot !== overCtl) {
+      overCtl = hot
+      if (api) api.setIgnore(!hot)   // hot → capture (ignore=false)
+    }
+  })
+  // Any movement at all wakes the chrome, even the first frame.
+  showChrome()
+
+  // ── Controls ──────────────────────────────────────────────────────────────
+  $('play').addEventListener('click', function () {
+    if (state) send(state.paused ? 'play' : 'pause', { paused: !state.paused })
+  })
+  $('mute').addEventListener('click', function () {
+    if (state) send('mute', { value: !state.muted })
+  })
+  $('full').addEventListener('click', function () { send('__fullscreen__') })
+
+  function seekFromEvent (e) {
+    var r = $('seek').getBoundingClientRect()
+    var f = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width))
+    var dur = Number(state && state.duration) || 0
+    if (dur > 0) send('seek', { seconds: f * dur, mode: 'absolute' })
+    return f
+  }
+  $('seek').addEventListener('mousedown', function (e) {
+    dragging = true
+    var f = seekFromEvent(e)
+    $('seekfill').style.width = (f * 100) + '%'
+    $('seekknob').style.left = (f * 100) + '%'
+  })
+  document.addEventListener('mousemove', function (e) {
+    if (!dragging) return
+    var r = $('seek').getBoundingClientRect()
+    var f = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width))
+    $('seekfill').style.width = (f * 100) + '%'
+    $('seekknob').style.left = (f * 100) + '%'
+  })
+  document.addEventListener('mouseup', function (e) {
+    if (!dragging) return
+    dragging = false
+    seekFromEvent(e)
+  })
+
+  $('volbar').addEventListener('mousedown', function (e) {
+    var r = $('volbar').getBoundingClientRect()
+    var f = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width))
+    send('volume', { value: Math.round(f * 100) })
+    if (state && state.muted) send('mute', { value: false })
+  })
+})()
+</script>
+</body>
+</html>

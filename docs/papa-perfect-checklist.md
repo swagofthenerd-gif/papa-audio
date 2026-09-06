@@ -4,7 +4,13 @@ Tracking for the 30-item player list and the 100-item app list (2026-09-04).
 Status: [x] done · [~] partial · [ ] open · [!] needs user input / live session.
 
 ## Player (30)
-- [!] 1. Overlay controls window over the picture — needs live-screen iteration session
+- [~] 1. Overlay controls window over the picture — BUILT, shipped behind the
+  `Controls on the picture (overlay)` settings toggle (default OFF). Machinery
+  proven headlessly (transparent click-through child window, live state render,
+  control round-trips, 0 errors); the on-screen z-order of sibling XWayland
+  child windows could not be verified headlessly on this fractional-scaled
+  dual-monitor KDE Wayland box. Flip the toggle to confirm visually, then
+  promote the default. Full account: docs/learnings-overlay-attempt.md
 - [x] 2. Layout stability (held rows, no picture jumps, no dead bands)
 - [x] 3. Status messages on the picture via mpv OSD (stalls, volume)
 - [x] 4. Click picture to pause

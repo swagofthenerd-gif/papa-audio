@@ -11,14 +11,21 @@ const path = require('path')
 
 const SRC = path.join(__dirname, '..', 'src')
 const CODE = fs.readFileSync(path.join(SRC, 'renderer.js'), 'utf8')
+// Roadmap #62 split: the shop/explorer (with its cover-art prefetch and the
+// shelf/folder preview buttons) moved to slsk-shop-ui.js. The search-card
+// preview button and the YT-recents guard stay in renderer.js. So the shop-side
+// guards read SHOP; the renderer-side ones keep reading CODE.
+const SHOP = fs.readFileSync(path.join(SRC, 'slsk-shop-ui.js'), 'utf8')
 const HTML = fs.readFileSync(path.join(SRC, 'index.html'), 'utf8')
 
-function slice(from, toMarker) {
-  const s = CODE.indexOf(from)
+function sliceIn(code, from, toMarker) {
+  const s = code.indexOf(from)
   assert.ok(s > -1, `expected to find: ${from}`)
-  const e = CODE.indexOf(toMarker, s + from.length)
-  return CODE.slice(s, e > -1 ? e : CODE.length)
+  const e = code.indexOf(toMarker, s + from.length)
+  return code.slice(s, e > -1 ? e : code.length)
 }
+function slice(from, toMarker) { return sliceIn(CODE, from, toMarker) }
+function sliceShop(from, toMarker) { return sliceIn(SHOP, from, toMarker) }
 
 // ── The two helper modules are loaded and exported ────────────────────────────
 test('index.html loads the prefetch and racer modules before renderer.js', () => {
@@ -40,8 +47,8 @@ test('the helper modules publish their globals', () => {
 
 // ── Feature 1: cover art prefetch ─────────────────────────────────────────────
 test('the shop runs a background cover prefetch for cached/saved shoppers', () => {
-  assert.match(CODE, /const PF = window\.PapaSlskArtPrefetch/, 'aliases the pure planner')
-  const fn = slice('async function shArtPrefetch()', '\n  // One album card.')
+  assert.match(SHOP, /const PF = window\.PapaSlskArtPrefetch/, 'aliases the pure planner')
+  const fn = sliceShop('async function shArtPrefetch()', '\n  // One album card.')
   assert.match(fn, /PF\.planArtPrefetch/, 'plans the fetch order via the module')
   assert.match(fn, /shArtFetchIdentity/, 'fetches via the shared identity path')
   assert.match(fn, /shArtPrefetchAbort/, 'is abortable')
@@ -50,18 +57,18 @@ test('the shop runs a background cover prefetch for cached/saved shoppers', () =
 })
 
 test('the prefetch kicks off only for a cached browse or a saved friend', () => {
-  const fn = slice('shelves = SH ? SH.buildShelves', '\n      if (mode === \'shelves\'')
+  const fn = sliceShop('shelves = SH ? SH.buildShelves', '\n      if (mode === \'shelves\'')
   assert.match(fn, /shArtPrefetch\(\)/, 'the prefetch is started after shelves build')
   assert.match(fn, /shFromCache \|\|/, 'gated on the cached-browse flag')
   assert.match(fn, /PapaSavedUsers.*isSaved/, 'or the saved-friend check')
 })
 
 test('the prefetch aborts on modal close and dedupes with the observer', () => {
-  const closeFn = slice('const close = () => {', '\n  let tree = null')
+  const closeFn = sliceShop('const close = () => {', '\n  let tree = null')
   assert.match(closeFn, /shArtPrefetchAbort = true/, 'close aborts the prefetch')
   // Shared in-flight set so observer and prefetch never double-fetch an identity.
-  assert.match(CODE, /const shArtInProgress = new Set\(\)/)
-  const idFn = slice('async function shArtFetchIdentity(', '\n  // Swap the fetched')
+  assert.match(SHOP, /const shArtInProgress = new Set\(\)/)
+  const idFn = sliceShop('async function shArtFetchIdentity(', '\n  // Swap the fetched')
   assert.match(idFn, /shArtInProgress\.has\(key\)/, 'skips an in-flight identity')
   assert.match(idFn, /shArtCache\.has\(key\)/, 'honours the session cache/negative-cache')
 })
@@ -126,13 +133,13 @@ test('the pill badges which source is playing', () => {
 })
 
 test('a preview button is wired into all three remote-track surfaces', () => {
-  // Shop shelf cards.
-  assert.match(CODE, /class="slsh-card-act slsh-preview"/, 'shelf card has ⚡')
-  assert.match(CODE, /btn\.classList\.contains\('slsh-preview'\)/, 'and is handled')
-  // Folders-mode file rows.
-  assert.match(CODE, /data-act="preview"/, 'folder file row has ⚡')
-  assert.match(CODE, /btn\.dataset\.act === 'preview'/, 'and is handled')
-  // Search-card expanded track rows.
+  // Shop shelf cards (moved to slsk-shop-ui.js).
+  assert.match(SHOP, /class="slsh-card-act slsh-preview"/, 'shelf card has ⚡')
+  assert.match(SHOP, /btn\.classList\.contains\('slsh-preview'\)/, 'and is handled')
+  // Folders-mode file rows (moved to slsk-shop-ui.js).
+  assert.match(SHOP, /data-act="preview"/, 'folder file row has ⚡')
+  assert.match(SHOP, /btn\.dataset\.act === 'preview'/, 'and is handled')
+  // Search-card expanded track rows (still in renderer.js).
   assert.match(CODE, /class="slsk-track-preview"/, 'search track row has ⚡')
   assert.match(CODE, /querySelectorAll\('\.slsk-track-preview'\)/, 'and is bound')
 })

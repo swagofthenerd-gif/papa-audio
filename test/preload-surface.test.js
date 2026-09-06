@@ -80,7 +80,12 @@ test('nothing in main is registered twice', () => {
 // Anything genuinely main-only belongs in this map with a reason, so the next
 // person sees a decision rather than an oversight.
 const MAIN_ONLY = {
-  // (empty: every registration is currently reachable from the renderer)
+  // The overlay controls window (roadmap #26) speaks these on its OWN preload
+  // (src/overlay-preload.js), not through the renderer's window.api, so they are
+  // correctly absent from preload.js. Both are guarded in main to only accept
+  // messages from the overlay's webContents.
+  'overlay-control': 'spoken by src/overlay-preload.js (the overlay window), not the main renderer',
+  'overlay-set-ignore': 'spoken by src/overlay-preload.js (the overlay window), not the main renderer',
 }
 
 test('every channel main registers is reachable from the renderer', () => {

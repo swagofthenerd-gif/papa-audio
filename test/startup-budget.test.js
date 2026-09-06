@@ -53,6 +53,13 @@ function syncScriptBytes () {
 // loudness, thumbnailer glue and the light-theme/settings growth — deliberate
 // feature work, re-based with ~15% headroom over the new measured total.
 // Raised 2026-09-06: Wave-1 UI (crash restore, keep-going, waveform hover, long-track bookmarks, save-queue-as-playlist, undo audit) grew renderer.js — re-based ~15% above the new measured total.
+// 2026-09-06 (roadmap #62 structural split, half A): began carving renderer.js
+// into per-region <script> files. Wrapped moved to wrapped-ui.js and the Soulseek
+// shop moved to slsk-shop-ui.js. This shuffles bytes between files and adds a
+// little per-file wrapper/comment overhead, but the SYNCHRONOUS TOTAL is what the
+// budget measures and it stays under the ceiling (renderer.js shrinks by roughly
+// what the new files gain). The ceiling is unchanged — the split did not grow the
+// total past it, so there is nothing to re-base.
 const SCRIPT_BYTE_CEILING = 2160000
 
 test('the renderer loads its scripts and none is missing from disk', () => {

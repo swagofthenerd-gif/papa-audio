@@ -3156,6 +3156,14 @@ function _videoConfig() {
     // defaults. A plain object of the engine's friendly style keys; an empty
     // object means "mpv's defaults", which is the fresh-install state.
     subStyle: (saved.subStyle && typeof saved.subStyle === 'object') ? saved.subStyle : {},
+    // Overlay controls window (roadmap #26). A transparent, click-through,
+    // always-on-top child window layered over the mpv picture so play/seek/
+    // volume can be drawn ON the film like every normal player, replacing the
+    // "held rows" compromise where the deck sits below the picture. Default OFF:
+    // sibling transparent always-on-top child windows can misbehave on
+    // Wayland/KDE, so this ships opt-in until proven on the user's own screen.
+    // The held-rows deck stays as the always-available fallback either way.
+    overlayControls: saved.overlayControls === true,
   }
 }
 ipcMain.handle('video-config-get', () => _videoConfig())
@@ -3166,6 +3174,7 @@ ipcMain.handle('video-config-set', (_, patch) => {
   if (typeof p.airingNotifications === 'boolean') next.airingNotifications = p.airingNotifications
   if (typeof p.autoOrganizeDownloads === 'boolean') next.autoOrganizeDownloads = p.autoOrganizeDownloads
   if (p.subStyle && typeof p.subStyle === 'object') next.subStyle = p.subStyle
+  if (typeof p.overlayControls === 'boolean') next.overlayControls = p.overlayControls
   store.set('videoConfig', next)
   return _videoConfig()
 })
@@ -8460,7 +8469,7 @@ const movieTv = _lazy(() => createMovieTvProvider({ fetchFn: fetchWithTimeout(15
 const anime = _lazy(() => createAnimeProvider({ fetchFn: fetchWithTimeout(15000), resolvers: [] }))
 const videoEngine = _lazy(() => new VideoEngine())
 const yarrlist = _lazy(() => createYarrlistDirectory({ fetchFn: fetchWithTimeout(15000) }))
-const _videoSession = { streamer: null, thumbnailer: null, win: null, token: 0, bounds: null, mini: false, miniRect: null }
+const _videoSession = { streamer: null, thumbnailer: null, win: null, overlay: null, token: 0, bounds: null, mini: false, miniRect: null }
 
 // In-app embedding of the mpv video surface. mpv's `--wid` is an X11 concept:
 // on this XWayland session the native handle of a child BrowserWindow is the
@@ -8502,6 +8511,160 @@ function _videoWid() {
   } catch (_) { return null }
 }
 
+// ── Overlay controls window (roadmap #26) ────────────────────────────────────
+// The mpv picture is a native child window composited ABOVE the page, so HTML
+// controls drawn by the renderer sit BEHIND it and are invisible — which is why
+// the theatre has always used "held rows" beside/below the stage. This layers a
+// SECOND child window over the picture: transparent, frameless, click-through
+// except on its own control surfaces, and kept above the mpv surface. It loads
+// src/overlay-window.html through src/overlay-preload.js and drives playback
+// through the exact same `video-control` IPC the deck uses — it adds no new
+// engine channels. Opt-in (videoConfig.overlayControls); off by default because
+// sibling transparent always-on-top child windows can misbehave on Wayland/KDE.
+function _overlayEnabled() {
+  try { return _videoConfig().overlayControls === true } catch (_) { return false }
+}
+
+function _overlayWindow() {
+  if (_videoSession.overlay && !_videoSession.overlay.isDestroyed()) return _videoSession.overlay
+  const win = new BrowserWindow({
+    width: 1280, height: 720,
+    show: false, frame: false,
+    // Same transparency rationale as the mpv surface (see _videoWindow): an
+    // opaque host repaints over what is beneath it. Here it is doubly required —
+    // everything but the control bars must let the picture through.
+    transparent: true,
+    backgroundColor: '#00000000',
+    hasShadow: false,
+    // Never grabs the keyboard: the deck, shortcuts and skip buttons all live in
+    // the main window, and a focused overlay would starve them exactly as a
+    // focused mpv window would.
+    focusable: false,
+    parent: mainWindow,
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      preload: path.join(__dirname, 'src', 'overlay-preload.js'),
+    },
+  })
+  win.loadFile(path.join(__dirname, 'src', 'overlay-window.html'))
+  // Click-through by default; the page turns pass-through OFF (via the
+  // overlay-set-ignore IPC below) only while the pointer is over a live control
+  // surface, and back ON when it leaves — the documented Electron forward
+  // pattern.
+  try { win.setIgnoreMouseEvents(true, { forward: true }) } catch (_) {}
+  win.on('closed', () => { if (_videoSession.overlay === win) _videoSession.overlay = null })
+  _videoSession.overlay = win
+  return win
+}
+
+// Place the overlay on exactly the rectangle the mpv surface occupies and keep
+// it above. Called from every place the surface itself is (re)positioned, so the
+// two never drift. A no-op unless the feature is on and the overlay exists.
+function _positionOverlayWindow(rect) {
+  try {
+    if (!_overlayEnabled()) return false
+    const ov = _videoSession.overlay
+    if (!ov || ov.isDestroyed() || !rect || !mainWindow || mainWindow.isDestroyed()) return false
+    const content = mainWindow.getContentBounds()
+    const x = Math.min(Math.max(0, rect.x), Math.max(0, content.width - 2))
+    const y = Math.min(Math.max(0, rect.y), Math.max(0, content.height - 2))
+    const width = Math.max(2, Math.min(Math.round(rect.width), content.width - x))
+    const height = Math.max(2, Math.min(Math.round(rect.height), content.height - y))
+    ov.setBounds({
+      x: Math.round(content.x + x),
+      y: Math.round(content.y + y),
+      width, height,
+    })
+    // Above the mpv surface, which is itself a child of the same parent. Re-armed
+    // on every reposition because a sibling child showing/moving can re-order the
+    // stack on some compositors.
+    try { ov.setAlwaysOnTop(true, 'screen-saver') } catch (_) {}
+    try { ov.moveTop() } catch (_) {}
+    return true
+  } catch (_) { return false }
+}
+
+function _showOverlayWindow() {
+  if (!_overlayEnabled()) return
+  try {
+    const ov = _overlayWindow()
+    const rect = _videoSession.mini ? _miniStageBounds() : (_videoSession.bounds || _fallbackStageBounds())
+    if (rect) _positionOverlayWindow(rect)
+    ov.showInactive()
+    _positionOverlayWindow(rect)   // re-assert z-order after show
+  } catch (_) {}
+}
+
+function _hideOverlayWindow() {
+  try {
+    const ov = _videoSession.overlay
+    if (ov && !ov.isDestroyed()) ov.hide()
+  } catch (_) {}
+}
+
+function _closeOverlayWindow() {
+  try {
+    if (_videoSession.overlay && !_videoSession.overlay.isDestroyed()) _videoSession.overlay.destroy()
+  } catch (_) {}
+  _videoSession.overlay = null
+}
+
+// Push a payload to the overlay's webContents, guarded exactly like safeSend.
+// A missing or dead overlay is the common case (feature off) and is silent.
+function _overlaySend(channel, payload) {
+  try {
+    const ov = _videoSession.overlay
+    if (!ov || ov.isDestroyed()) return false
+    const wc = ov.webContents
+    if (!wc || wc.isDestroyed()) return false
+    wc.send(channel, payload)
+    return true
+  } catch (_) { return false }
+}
+
+// The overlay's own preload asks main to toggle pass-through as the pointer
+// enters/leaves a control surface: true = clicks fall through to the picture
+// (and to nothing else, since the surface is not interactive), false = the
+// overlay itself receives them so a button can be pressed. `forward:true` keeps
+// hover/move events flowing even while ignoring, so the page still sees the
+// pointer leave a control and can turn pass-through back on.
+ipcMain.on('overlay-set-ignore', (event, { ignore } = {}) => {
+  try {
+    const ov = _videoSession.overlay
+    if (!ov || ov.isDestroyed()) return
+    // Only honour messages from the overlay's own contents.
+    if (event.sender !== ov.webContents) return
+    ov.setIgnoreMouseEvents(ignore !== false, { forward: true })
+  } catch (_) {}
+})
+
+// Playback verbs coming FROM the overlay. Rather than duplicate the whole
+// video-control switch, the overlay forwards a verb+args and main replays it
+// through the same handler path. This keeps one source of truth for what each
+// verb does. Only accepted from the overlay's own webContents.
+ipcMain.handle('overlay-control', async (event, { verb, args } = {}) => {
+  try {
+    const ov = _videoSession.overlay
+    if (!ov || ov.isDestroyed() || event.sender !== ov.webContents) {
+      return { ok: false, error: 'not the overlay' }
+    }
+    // Two verbs the overlay owns that are not plain engine commands. Fullscreen
+    // expands the APP, not the mpv window (same reasoning as video-fullscreen),
+    // and it is relayed to the deck through the existing key channel so the
+    // theatre's own toggleFullscreen runs — the one that re-measures the stage
+    // and re-lays the surface. Back returns to browsing by relaying the deck's
+    // minimise, again through a channel the renderer already listens on.
+    if (verb === '__fullscreen__') {
+      safeSend('video-event', { kind: 'key', action: 'fullscreen' })
+      return { ok: true }
+    }
+    return await _invokeVideoControl(verb, args)
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) }
+  }
+})
+
 // The renderer owns the layout, so it measures the stage and tells main where
 // the video belongs. Converting from content-relative to screen coordinates is
 // main's job because only main knows where the window sits on the desktop.
@@ -8542,6 +8705,9 @@ function _positionVideoWindow(rect) {
       y: Math.round(content.y + y),
       width, height,
     })
+    // Keep the overlay controls window (roadmap #26) glued to the same rectangle
+    // and above the surface. No-op unless the feature is on and it exists.
+    _positionOverlayWindow(rect)
     return true
   } catch (_) {
     return false
@@ -8564,8 +8730,11 @@ ipcMain.handle('video-surface-visible', (_, { visible } = {}) => {
       else if (_videoSession.bounds) _positionVideoWindow(_videoSession.bounds)
       win.showInactive()
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.focus()
+      // The overlay tracks the surface's visibility one-for-one.
+      _showOverlayWindow()
     } else {
       win.hide()
+      _hideOverlayWindow()
     }
     return { ok: true }
   } catch (e) {
@@ -8628,6 +8797,7 @@ ipcMain.handle('video-mini-mode', (_, { on, rect } = {}) => {
       // visible in the corner, so show it without stealing focus from the deck.
       win.showInactive()
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.focus()
+      _showOverlayWindow()
       return { ok: true, mini: true, rect: r }
     }
     // Back to the theatre: re-apply the last full-stage rectangle.
@@ -8710,6 +8880,8 @@ function _showVideoWindow() {
     // the skip buttons all live there, and stealing focus into a blank mpv
     // window would make every one of them stop responding.
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.focus()
+    // Overlay controls (roadmap #26) go up with the surface when enabled.
+    _showOverlayWindow()
   } catch (_) {}
 }
 
@@ -8718,6 +8890,7 @@ function _closeVideoWindow() {
     if (_videoSession.win && !_videoSession.win.isDestroyed()) _videoSession.win.destroy()
   } catch (_) {}
   _videoSession.win = null
+  _closeOverlayWindow()
 }
 
 const _videoCatalogCache = makeCache({ cap: 50, ttlMs: 1000 * 60 * 60 * 24 })
@@ -9994,6 +10167,7 @@ function _wireVideoEngine() {
   // is a complete object.
   engine.on('state', s => {
     safeSend('video-state', s)
+    _overlaySend('video-state', s)
     _maybePrefetchNextEpisode()
   })
   // Movement over the picture, which the page cannot see for itself: the video
@@ -10207,6 +10381,12 @@ ipcMain.handle('video-play', async (_, { result }) => {
     const wid = _videoWid()
     if (wid) _showVideoWindow()
     else console.warn('[papa-video] no X11 window id — mpv will open its own window')
+    // Hand the overlay controls window (roadmap #26) a title for its top
+    // gradient. Best-effort and no-op when the overlay is off. The title is
+    // whatever the result carries; a missing one leaves the gradient empty.
+    _overlaySend('overlay-title', {
+      title: (result && (result.title || result.label || result.name)) || '',
+    })
     // Every async callback below is stamped with the play that created it, so
     // a torrent that becomes ready after the user already started something
     // else cannot hijack the engine or overwrite the newer status.
@@ -11166,6 +11346,15 @@ ipcMain.handle('video-sub-download', async (_, { fileId } = {}) => {
 // The theatre control deck. One channel for every verb (§4.1), so the overlay
 // does not need to know how a verb reaches mpv — only that it did.
 ipcMain.handle('video-control', async (_, { verb, args } = {}) => {
+  return _invokeVideoControl(verb, args)
+})
+
+// The body of the video-control handler, lifted out so the overlay controls
+// window (roadmap #26) can replay the identical verbs without a second copy of
+// the switch. Returns the same { ok, ... } shape the IPC handler returns. Kept
+// directly beneath the handler so the switch stays part of the video-control
+// region for the source-level wiring tests.
+async function _invokeVideoControl(verb, args) {
   try {
     const engine = videoEngine()
     switch (verb) {
@@ -11213,7 +11402,7 @@ ipcMain.handle('video-control', async (_, { verb, args } = {}) => {
   } catch (e) {
     return { ok: false, error: (e && e.message) || String(e) }
   }
-})
+}
 
 ipcMain.handle('video-tracks', async () => {
   try {

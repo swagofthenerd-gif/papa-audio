@@ -130,7 +130,9 @@ test('saved users are wired end to end', () => {
     assert.ok(main.includes(`ipcMain.handle('${ch}'`), 'main missing handler ' + ch)
   }
   const r = R('src/renderer.js')
-  assert.ok(r.includes('slskx-star'), 'explorer needs the save button')
+  // Roadmap #62 split: the explorer's save (☆) button moved to slsk-shop-ui.js;
+  // the saved-libraries dialog and the search-header entry point stay in renderer.
+  assert.ok(R('src/slsk-shop-ui.js').includes('slskx-star'), 'explorer needs the save button')
   assert.ok(r.includes('showSlskSavedUsers'), 'saved-libraries dialog must exist')
   assert.ok(r.includes('slsk-saved-btn'), 'search header needs an entry point')
 })

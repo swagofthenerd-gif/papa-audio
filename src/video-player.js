@@ -163,6 +163,21 @@
     let autoAdvances = 0
     let stillAsking = false
 
+    // Overlay controls window (roadmap #26): controls drawn ON the picture via a
+    // transparent always-on-top child window, instead of the held rows below the
+    // stage. Feature-detected — the toggle only appears when main exposes the
+    // config channel — and read once on creation so the settings row can show its
+    // current state. Default OFF (the held-rows deck is the proven fallback);
+    // main owns the actual window and honours this same config key at play time.
+    let overlayControls = false
+    if (api && api.videoConfigGet) {
+      try {
+        Promise.resolve(api.videoConfigGet()).then(function (cfg) {
+          overlayControls = !!(cfg && cfg.overlayControls)
+        }).catch(function () {})
+      } catch (_) { /* config is a convenience, never a blocker */ }
+    }
+
     // ── Stage geometry ──────────────────────────────────────────────────────
     // main positions the mpv window onto this rectangle. It has to be re-sent
     // on any resize, or the video and its frame drift apart.
@@ -1405,6 +1420,15 @@
         // #18: when on, the Up Next card counts down and rolls into the next
         // episode; when off, the card still appears but waits on Play now.
         menuItem('Play next episode automatically', autoNext) +
+        // #26: controls painted on the picture (a transparent overlay window)
+        // instead of the held rows below it. Only offered when main exposes the
+        // config channel; a live toggle so it can be tried and backed out of.
+        // The note flags that it takes effect on the next play — the overlay is
+        // built when playback starts, so flipping it mid-film does not retrofit
+        // the running window.
+        ((api && api.videoConfigGet && api.videoConfigSet)
+          ? menuItem('Controls on the picture (overlay)', overlayControls, 'applies next play')
+          : '') +
         '<div class="vt-menu-sep"></div>' +
         menuItem('Take screenshot')
       openMenu('vt-settings', html, function (m) {
@@ -1457,7 +1481,12 @@
             })
           })
         })
+        // The menu items in DOM order: Add-a-subtitle, Play-next-automatically,
+        // then the OPTIONAL overlay row (#26, only when main exposes the config
+        // channel), then Take-screenshot. Indices are computed so the overlay
+        // row's presence never shifts a handler onto the wrong item.
         const items = m.querySelectorAll('.vt-menu-item')
+        const hasOverlayRow = !!(api && api.videoConfigGet && api.videoConfigSet)
         const addSub = items[0]
         if (addSub) {
           addSub.addEventListener('click', function () {
@@ -1476,7 +1505,21 @@
             if (tick) tick.innerHTML = autoNext ? ICON.tick : ''
           })
         }
-        const shot = items[2]
+        // #26: flip the overlay-controls config and relight the tick. main reads
+        // the same key when the next play spins the overlay window up.
+        const overlay = hasOverlayRow ? items[2] : null
+        if (overlay) {
+          overlay.addEventListener('click', function () {
+            overlayControls = !overlayControls
+            if (api && api.videoConfigSet) {
+              api.videoConfigSet({ overlayControls: overlayControls }).catch(function () {})
+            }
+            overlay.classList.toggle('on', overlayControls)
+            const tick = overlay.querySelector('.vt-menu-tick')
+            if (tick) tick.innerHTML = overlayControls ? ICON.tick : ''
+          })
+        }
+        const shot = items[hasOverlayRow ? 3 : 2]
         if (shot) shot.addEventListener('click', function () { takeScreenshot(); closeMenu() })
       })
     }

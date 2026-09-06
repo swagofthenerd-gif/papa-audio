@@ -16,12 +16,20 @@ test('nothing pushes to the renderer except through the helper', () => {
   // that reached only the blanket uncaughtException handler. One of four call
   // sites was wrapped; the rest were not.
   assert.strictEqual([...CODE.matchAll(/webContents\.send\(/g)].length, 0,
-    'every send goes through safeSend, which resolves the webContents itself')
-  // The single real send lives inside the helper, after both liveness checks.
+    'every send goes through a guarded helper, which resolves the webContents itself')
+  // The real sends live inside the two guarded helpers, each after its own
+  // liveness checks: safeSend pushes to the main renderer, _overlaySend pushes
+  // to the overlay controls window (roadmap #26). Both resolve and check their
+  // own webContents; nothing else calls wc.send directly.
   const sends = [...CODE.matchAll(/\bwc\.send\(/g)]
-  assert.strictEqual(sends.length, 1)
+  assert.strictEqual(sends.length, 2)
   const helper = CODE.slice(CODE.indexOf('function safeSend('), CODE.indexOf('function resetChannelSeq('))
   assert.ok(helper.includes('wc.send(channel, payload,'), 'the send carries the sequence alongside the payload')
+  const overlayHelper = CODE.slice(CODE.indexOf('function _overlaySend('),
+    CODE.indexOf('function _overlaySend(') + 500)
+  assert.match(overlayHelper, /mainWindow|ov\.isDestroyed\(\)/)
+  assert.match(overlayHelper, /wc\.isDestroyed\(\)/, 'the overlay send checks its webContents too')
+  assert.ok(overlayHelper.includes('wc.send('), 'the overlay push goes through wc.send')
 })
 
 test('safeSend checks the window and the webContents, and never throws', () => {
