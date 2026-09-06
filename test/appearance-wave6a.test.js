@@ -328,3 +328,16 @@ test('icon-only buttons that had no accessible name now carry aria-label', () =>
   // A representative ctrl-btn now names itself.
   assert.match(RSRC, /id="album-shuffle-btn"[^>]*aria-label="Shuffle play"/)
 })
+
+
+test('deferred Home rows bind their album cards on injection (play buttons live)', () => {
+  // Regression: W6a's startup defer injected rows AFTER the generic card
+  // binder had run, leaving every album-card play button in deferred rows
+  // dead. Each injected slice must route through _bindAppendedAlbumCards.
+  const src = fs.readFileSync(path.join(ROOT, 'src', 'renderer.js'), 'utf8')
+  const i = src.indexOf('_injectHomeSlice')
+  assert.ok(i !== -1, '_injectHomeSlice exists')
+  const slice = src.slice(i, i + 2000)
+  assert.match(slice, /_bindAppendedAlbumCards\(/,
+    'injected home slices bind their appended album cards')
+})

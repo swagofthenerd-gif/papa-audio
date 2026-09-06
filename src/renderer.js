@@ -9047,6 +9047,14 @@ function renderHome() {
       }
       if (_homeIdle < _homeDeferredHtml.length) {
         _homeMount.insertAdjacentHTML('beforeend', _homeDeferredHtml[_homeIdle])
+        // Deferred rows land AFTER the page's generic card binder has run, so
+        // their album cards (and play buttons) would be dead without this —
+        // the exact appended-cards binder the lazy library grid uses.
+        var _lastRow = _homeMount.lastElementChild
+        if (_lastRow) {
+          var _newCards = [].slice.call(_lastRow.querySelectorAll('.album-card[data-album]'))
+          if (_newCards.length) _bindAppendedAlbumCards(_newCards)
+        }
         _homeIdle++
         if (window.requestIdleCallback) requestIdleCallback(_injectHomeSlice, { timeout: 500 })
         else setTimeout(_injectHomeSlice, 1)
