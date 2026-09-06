@@ -323,3 +323,81 @@ test('abandoning clears a file that is only pending, not in flight', () => {
   S.recordAbandoned(st, 'b')
   assert.deepEqual(st.pending.map(e => e.key), ['a'])
 })
+
+// ── Dispatch priority (roadmap #52) ──────────────────────────────────────────
+// The queue lives on our side, so ordering is ours to control. The W5 UI pinned
+// rows client-side; this is the real-dispatch half: planDispatch orders by
+// (priority DESC, addedAt ASC), a group can be restamped whole, and the stamp
+// survives persistence. Default 0 keeps every pre-existing state file ordering by
+// addedAt exactly as before.
+
+test('planDispatch orders by priority first, then addedAt within a band', () => {
+  const st = S.createState()
+  // Added oldest-to-newest; a single peer with one slot so only the head plans.
+  S.addItem(st, { filename: 'old-low',  size: 1, sources: [src('solo')], addedAt: 100 })
+  S.addItem(st, { filename: 'new-high', size: 1, sources: [src('solo')], addedAt: 300 }, { priority: 5 })
+  S.addItem(st, { filename: 'mid-low',  size: 1, sources: [src('solo')], addedAt: 200 })
+  const plan = S.planDispatch(st, { maxPerPeer: 3, maxGlobalInflight: 50 }, 5000)
+  // The high-priority newcomer jumps ahead of both older-but-lower items; the two
+  // low items keep addedAt order behind it.
+  assert.deepEqual(plan.map(p => p.key), ['new-high', 'old-low', 'mid-low'])
+})
+
+test('default priority is 0 and orders purely by addedAt', () => {
+  const st = seed(['a', 'b', 'c'], [src('solo')], 100)
+  assert.ok(st.pending.every(e => e.priority === 0), 'no opts means priority 0')
+  const plan = S.planDispatch(st, { maxPerPeer: 3, maxGlobalInflight: 50 }, 5000)
+  assert.deepEqual(plan.map(p => p.key), ['a', 'b', 'c'])
+})
+
+test('prioritizeGroup restamps every queued file of one album group', () => {
+  const st = S.createState()
+  // Two albums from user u1 plus an unrelated album from u2.
+  S.addItem(st, { filename: 'Music/DSOTM/01 Speak.flac', size: 1, sources: [src('u1')], addedAt: 1 })
+  S.addItem(st, { filename: 'Music/DSOTM/02 Time.flac',  size: 1, sources: [src('u1')], addedAt: 2 })
+  S.addItem(st, { filename: 'Music/Wall/01 In The Flesh.flac', size: 1, sources: [src('u1')], addedAt: 3 })
+  S.addItem(st, { filename: 'Shared/DSOTM/03 Money.flac', size: 1, sources: [src('u2')], addedAt: 4 })
+  const changed = S.prioritizeGroup(st, { username: 'u1', folderName: 'DSOTM' }, 10)
+  assert.equal(changed, 2, 'only u1s two DSOTM tracks match')
+  const byKey = {}
+  st.pending.forEach(e => { byKey[e.key] = e.priority })
+  assert.equal(byKey['Music/DSOTM/01 Speak.flac'], 10)
+  assert.equal(byKey['Music/DSOTM/02 Time.flac'], 10)
+  assert.equal(byKey['Music/Wall/01 In The Flesh.flac'], 0, 'different album untouched')
+  assert.equal(byKey['Shared/DSOTM/03 Money.flac'], 0, 'different peer untouched')
+})
+
+test('prioritizeGroup lifts the whole album ahead of everything else', () => {
+  const st = S.createState()
+  S.addItem(st, { filename: 'Music/Other/x.flac', size: 1, sources: [src('solo')], addedAt: 1 })
+  S.addItem(st, { filename: 'Music/DSOTM/01.flac', size: 1, sources: [src('solo')], addedAt: 2 })
+  S.addItem(st, { filename: 'Music/DSOTM/02.flac', size: 1, sources: [src('solo')], addedAt: 3 })
+  S.prioritizeGroup(st, { username: 'solo', folderName: 'DSOTM' }, 100)
+  const plan = S.planDispatch(st, { maxPerPeer: 3, maxGlobalInflight: 50 }, 5000)
+  assert.deepEqual(plan.map(p => p.key),
+    ['Music/DSOTM/01.flac', 'Music/DSOTM/02.flac', 'Music/Other/x.flac'])
+})
+
+test('prioritizeGroup restamps an in-flight file so its re-queue keeps the band', () => {
+  const st = S.createState()
+  S.addItem(st, { filename: 'Music/DSOTM/01.flac', size: 1, sources: [src('u1'), src('u2')], addedAt: 1 })
+  S.markDispatched(st, 'Music/DSOTM/01.flac', 'u1', 10, 'Music/DSOTM/01.flac')
+  const changed = S.prioritizeGroup(st, { username: 'u1', folderName: 'DSOTM' }, 7)
+  assert.equal(changed, 1)
+  assert.equal(st.inflight['Music/DSOTM/01.flac'].priority, 7)
+  // A failure re-queues it; the restamped priority must ride through.
+  S.recordFailure(st, 'Music/DSOTM/01.flac', 'u1', {}, 20)
+  assert.equal(st.pending[0].priority, 7, 'priority survives the failure round-trip')
+})
+
+test('a restored state without priority defaults to 0 (back-compat)', () => {
+  const st = S.createState()
+  // Simulate an old state file: an entry built with no priority field at all.
+  st.pending.push({ key: 'a', filename: 'a', size: 1, sources: [src('solo')],
+    tried: [], triedAt: {}, attempts: 0, addedAt: 1 })
+  st.pending.push({ key: 'b', filename: 'b', size: 1, sources: [src('solo')],
+    tried: [], triedAt: {}, attempts: 0, addedAt: 2 })
+  // planDispatch must not throw on the missing field and orders by addedAt.
+  const plan = S.planDispatch(st, { maxPerPeer: 3, maxGlobalInflight: 50 }, 5000)
+  assert.deepEqual(plan.map(p => p.key), ['a', 'b'])
+})

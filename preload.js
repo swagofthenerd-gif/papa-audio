@@ -256,7 +256,6 @@ contextBridge.exposeInMainWorld('api', {
   // A completed album group finished verification. Dedicated subscriber, returns
   // an unsubscribe function.
   onSlskVerifyDone:   (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('slsk-verify-done', h); return () => ipcRenderer.removeListener('slsk-verify-done', h) },
-  onSlskVerify:       (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('slsk-verify', h); return () => ipcRenderer.removeListener('slsk-verify', h) },
   slskShowInFolder:   (p) => ipcRenderer.invoke('slsk-show-in-folder', p),
   slskBrowseUser:     (p) => ipcRenderer.invoke('slsk-browse-user', p),
   // A background browse refresh finished for this user: the renderer re-reads via
@@ -304,6 +303,9 @@ contextBridge.exposeInMainWorld('api', {
   onSlskUploadActivity:  (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('slsk-upload-activity', h); return () => ipcRenderer.removeListener('slsk-upload-activity', h) },
   slskRespreadBacklog:   (p) => ipcRenderer.invoke('slsk-respread-backlog', p),
   slskUnbenchPeers:      ()  => ipcRenderer.invoke('slsk-unbench-peers'),
+  // Restamp a whole album group's dispatch priority (#52). { username, folderName,
+  // priority } — higher = sent sooner on the next tick.
+  slskPrioritizeGroup:   (p) => ipcRenderer.invoke('slsk-prioritize-group', p),
   slskWishlistRun:       ()  => ipcRenderer.invoke('slsk-wishlist-run'),
   slskFriendDiffs:       ()  => ipcRenderer.invoke('slsk-friend-diffs'),
   // A wishlist sweep found and enqueued an album. Dedicated subscriber (like the
@@ -379,6 +381,9 @@ contextBridge.exposeInMainWorld('api', {
   playerGetStatus:   ()  => ipcRenderer.invoke('player-get-status'),
   playerGetConfig:   ()  => ipcRenderer.invoke('player-get-config'),
   playerSetConfig:   (c) => ipcRenderer.invoke('player-set-config', c),
+  // Global crossfade (#24): { seconds }, 0 = off. Drives all track transitions
+  // except same-album gapless and a per-playlist override.
+  playerSetCrossfade:(c) => ipcRenderer.invoke('player-set-crossfade', c),
   playerListDevices: ()  => ipcRenderer.invoke('player-list-devices'),
   eqInfo:            ()  => ipcRenderer.invoke('eq-info'),
   eqPreset:          (n) => ipcRenderer.invoke('eq-preset', n),
@@ -415,7 +420,7 @@ contextBridge.exposeInMainWorld('api', {
       'media-key', 'media-playpause', 'media-next', 'media-previous', 'ext-cmd', 'slsk-progress', 'slskd-status-change', 'player-event', 'media-seek',
       'torrent-progress', 'torrent-done', 'torrent-started', 'do-lib-rescan',
       'yt-dl-progress', 'yt-auth-pending', 'yt-auth-done',
-      'slsk-verify', 'slsk-user-status', 'slsk-saved-users-changed', 'slsk-scheduler-stats',
+      'slsk-user-status', 'slsk-saved-users-changed', 'slsk-scheduler-stats',
       'library-updated', 'scan-progress', 'app-recovered-from-crash',
       'queue-analysis-progress',
       'video-event',

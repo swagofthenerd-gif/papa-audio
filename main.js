@@ -2077,6 +2077,14 @@ let player = null
 let mpvAvailable = false
 
 function getPlayerSettings() {
+  const saved = store.get('playerSettings', {})
+  // Global crossfade (roadmap #24), store key crossfadeSeconds, 0 = off (default).
+  // This is the single global control the UI exposes; it drives the engine's
+  // mode/crossfadeSecs pair below. A saved file that predates it has neither key,
+  // so it reads 0 (off) — the fresh-install and legacy state are the same: gapless.
+  // Kept in sync with mode/crossfadeSecs by playerSetCrossfade and player-set-config
+  // so any of the three can be read consistently.
+  const crossfadeSeconds = Number(saved.crossfadeSeconds) || 0
   return {
     outputMode: 'default', alsaDevice: null,
     mode: 'gapless', crossfadeSecs: 4, replaygain: 'no',
@@ -2085,7 +2093,14 @@ function getPlayerSettings() {
     replaygainApply: false,
     channels: 'auto', boost: false,
     eq: eqDefaults(),
-    ...store.get('playerSettings', {}),
+    ...saved,
+    // crossfadeSeconds is the authoritative global control; mode/crossfadeSecs are
+    // derived from it so the three are always consistent no matter what the saved
+    // blob happened to hold (a transient playlist-override push can leave a stale
+    // mode in the store — the global read must not surface that as the global).
+    crossfadeSeconds,
+    mode: crossfadeSeconds > 0 ? 'crossfade' : 'gapless',
+    crossfadeSecs: crossfadeSeconds > 0 ? crossfadeSeconds : 4,
   }
 }
 
@@ -2823,7 +2838,34 @@ ipcMain.handle('set-audio-device', async (_, deviceName) => {
   } catch (e) { return { ok: false, error: String(e && e.message || e) } }
 })
 
-ipcMain.handle('player-set-config', async (_, partial) => {
+// Global crossfade (roadmap #24). One knob — seconds, 0 = off — that the whole
+// app crosses tracks with. It writes the authoritative store key crossfadeSeconds
+// and routes through player-set-config's mode/crossfadeSecs machinery so the
+// engine rebuild, the mid-track resume and the renderer notification are all the
+// existing, tested path. crossfadeSeconds > 0 → the two-engine crossfade at that
+// length; 0 → plain gapless. This is the GLOBAL setting; a playlist's own
+// crossfade override (more specific) still wins while that playlist plays, applied
+// separately by the renderer via player-set-config. Same-album gapless also wins
+// over the global crossfade — that precedence is resolved before the transition,
+// in music-tools.resolveTransitionCrossfade, so the engine here only ever sees the
+// already-decided effective setting.
+ipcMain.handle('player-set-crossfade', async (_, arg) => {
+  // Accept { seconds } (the contract) or a bare number, for a forgiving surface.
+  const raw = arg && typeof arg === 'object' ? arg.seconds : arg
+  let seconds = Number(raw)
+  if (!Number.isFinite(seconds) || seconds < 0) seconds = 0
+  seconds = Math.floor(seconds)
+  const saved = store.get('playerSettings', {})
+  store.set('playerSettings', { ...saved, crossfadeSeconds: seconds })
+  // Delegate the live change to player-set-config with the derived mode/length, so
+  // there is exactly one engine-rebuild path.
+  return _applyPlayerConfig({
+    mode: seconds > 0 ? 'crossfade' : 'gapless',
+    crossfadeSecs: seconds > 0 ? seconds : 4,
+  })
+})
+
+async function _applyPlayerConfig(partial) {
   const cfg = { ...getPlayerSettings(), ...partial }
   store.set('playerSettings', cfg)
   if (!player) return { ok: false, error: 'engine unavailable' }
@@ -2867,7 +2909,9 @@ ipcMain.handle('player-set-config', async (_, partial) => {
     }
     return { ok: true }
   } catch (e) { return { ok: false, error: String(e.message || e) } }
-})
+}
+
+ipcMain.handle('player-set-config', (_, partial) => _applyPlayerConfig(partial || {}))
 
 // ── MPRIS (D-Bus) — proper desktop media integration ────────────────────────
 // Gives GNOME/KDE media controls, lock screen, playerctl, and Bluetooth
@@ -3058,6 +3102,10 @@ ipcMain.handle('get-general-settings', () => ({
   folderWatchEnabled: store.get('folderWatchEnabled', true),
   // Scheduled backup interval in days (App #23), 0 = off (the default).
   backupIntervalDays: store.get('backupIntervalDays', 0),
+  // Global crossfade length in seconds (roadmap #24), 0 = off (the default). Read
+  // from the authoritative playerSettings.crossfadeSeconds so the Settings panel
+  // and the player agree on one number. Set it via playerSetCrossfade, not here.
+  crossfadeSeconds: Number((store.get('playerSettings', {}) || {}).crossfadeSeconds) || 0,
 }))
 ipcMain.on('save-general-settings', (_, s) => {
   if (s && typeof s.closeToTray === 'boolean') store.set('closeToTray', s.closeToTray)
@@ -6101,13 +6149,15 @@ function dlPersist() {
       pending: dlState.pending.map(e => ({
         key: e.key, filename: e.filename, size: e.size, sources: e.sources,
         tried: e.tried, triedAt: e.triedAt, attempts: e.attempts, addedAt: e.addedAt,
+        priority: e.priority || 0,
       })),
       // In-flight entries go back to pending: on restart slskd is the authority
       // on what is really queued, and a duplicate request is harmless.
       inflight: Object.keys(dlState.inflight).map(k => {
         const v = dlState.inflight[k]
         return { key: k, filename: v.filename, size: v.size, sources: v.sources,
-                 tried: v.tried, triedAt: v.triedAt, attempts: v.attempts, addedAt: v.addedAt }
+                 tried: v.tried, triedAt: v.triedAt, attempts: v.attempts, addedAt: v.addedAt,
+                 priority: v.priority || 0 }
       }),
       peerFailures: dlState.peerFailures,
       // Cancelled/abandoned keys MUST survive a restart. Without this, quitting
@@ -6144,6 +6194,9 @@ function dlRestore() {
       entry.tried = e.tried || []
       entry.triedAt = e.triedAt || {}
       entry.attempts = e.attempts || 0
+      // Back-compat: a state file written before priority existed has none, and
+      // restores at the default 0 — pure addedAt ordering, exactly as before.
+      entry.priority = Number(e.priority) || 0
     }
   }
   for (const k of saved.abandoned || []) dlState.done[k] = 'abandoned'
@@ -7182,6 +7235,24 @@ ipcMain.handle('slsk-unbench-peers', () => {
   return { ok: true, cleared }
 })
 
+// Restamp the dispatch priority of a whole album group (roadmap #52). The W5 UI
+// pins rows to the top client-side (papa-dl-pin-order); this is the real-dispatch
+// half — the scheduler orders planDispatch by (priority DESC, addedAt ASC), so a
+// higher number here sends the group's remaining files before everything below it
+// on the next tick. Persisted with the scheduler state so a pin survives a
+// restart. A group is { username, folderName }; `priority` is any finite number,
+// higher = sooner (the UI uses a large value for "top").
+ipcMain.handle('slsk-prioritize-group', (_, { username, folderName, priority } = {}) => {
+  const p = Number(priority)
+  if (!Number.isFinite(p)) return { ok: false, error: 'priority must be a number' }
+  const changed = dlSched.prioritizeGroup(dlState, { username, folderName }, p)
+  dlPersist()
+  dlStart()
+  dlTick()
+  dlBroadcast()
+  return { ok: true, changed, stats: dlSched.stats(dlState) }
+})
+
 // ── Wishlist auto-download engine ────────────────────────────────────────────
 // The wishlist (store key downloadWishlist, [{query, addedAt}]) used to be a
 // list you looked at. A sweep now runs every entry as one search, scores the
@@ -7943,13 +8014,15 @@ ipcMain.handle('slsk-verify-file', async (_, { username, filename }) => {
   const resolved = slskCandidatePaths(filename, username, _downloadDir())
     .find(c => fs.existsSync(c)) || null
 
+  // No 'slsk-verify' push: this handler's invoke return IS the verification
+  // result, and the renderer reads it there (slskVerifyFile). The old push was a
+  // redundant second copy on a channel nothing in src/ ever subscribed to — dead
+  // on the sending side, like the dl-* pushes the poller superseded.
   if (!resolved) {
-    safeSend('slsk-verify', { ok: false, filename, error: 'File not found on disk' })
     return { ok: false, error: 'File not found on disk' }
   }
 
   const result = await verifyAudioFile(resolved)
-  safeSend('slsk-verify', { ...result, filename, filePath: resolved })
   return { ok: true, filePath: resolved, ...result }
 })
 

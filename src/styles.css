@@ -84,6 +84,11 @@
   --glass:         rgba(255,255,255,.05);
   --glass-hi:      rgba(255,255,255,.09);
   --glass-border:  rgba(255,255,255,.08);
+  /* One token for the many 1px hairlines on music surfaces (App #68). On the
+     dark ground the historic rgba(255,255,255,.05–.08) reads fine; the point of
+     the token is that body.theme-light can darken it in ONE place so those same
+     hairlines don't wash out on paper. */
+  --hairline:      rgba(255,255,255,.07);
   --sidebar-w:     220px;
   --titlebar-h:    44px;
   --player-h:      clamp(112px, calc(43.6px + 7.2vw), 130px);
@@ -141,6 +146,9 @@ body.theme-light {
   --glass:         rgba(0,0,0,.035);
   --glass-hi:      rgba(0,0,0,.06);
   --glass-border:  rgba(0,0,0,.10);
+  /* Darker than the dark-mode hairline so the music-surface borders that adopt
+     var(--hairline) stay visible on the warm paper ground (App #68). */
+  --hairline:      rgba(0,0,0,.11);
 }
 
 /* Migration status (App #87). The token-driven majority of the music side +
@@ -159,6 +167,24 @@ body.theme-light {
        (.np-art-wrap::after), modal/overlay scrims (rgba(0,0,0,.5–.92) — a dark
        scrim behind a dialog works in both themes), and everything under
        `.vt-*` / `.cinema` (the theatre is dark always). */
+
+/* ══════════════════════════════════════════════════════
+   DENSITY  (App #59)
+   Comfortable is the default (no class). body.density-compact tightens the
+   three list surfaces where vertical rhythm dominates — track rows, the album
+   grid, and the sidebar nav — so power users see more per screen without a
+   layout rewrite. Applied at startup from PapaLocal (papa-density), the same
+   way the theme class is set before first paint.
+   Scoped deliberately: only paddings/gaps/heights, nothing that changes what
+   an element IS, so a stray class can never break a page — only compress it.
+══════════════════════════════════════════════════════ */
+body.density-compact .track-row { contain-intrinsic-size:0 32px; }
+body.density-compact .track-list { padding:4px 20px 40px; }
+body.density-compact .track-list .track-row:not(.pl-track-row),
+body.density-compact .liked-track-row,
+body.density-compact .pl-track-row { min-height:32px; }
+body.density-compact .album-grid { gap:10px; padding:0 20px 20px; }
+body.density-compact .nav-item { padding:6px 10px; gap:10px; }
 
 /* ── Reset ──────────────────────────────────────────── */
 *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
@@ -189,7 +215,7 @@ img { display:block; }
   display:flex; align-items:center; justify-content:space-between;
   z-index:1000;
   -webkit-app-region:drag;
-  border-bottom:1px solid rgba(255,255,255,.05);
+  border-bottom:1px solid var(--hairline);   /* App #68 */
 }
 .titlebar-left {
   display:flex; align-items:center; gap:2px;
@@ -318,7 +344,7 @@ img { display:block; }
 .sidebar {
   width:var(--sidebar-w);
   background:var(--bg);
-  border-right:1px solid rgba(255,255,255,.04);
+  border-right:1px solid var(--hairline);   /* App #68 */
   display:flex; flex-direction:column;
   overflow:hidden; flex-shrink:0;
   padding-top:6px;
@@ -2133,7 +2159,7 @@ h2.section-title { font-size:18px; font-weight:700; }
 /* ══════════════════════════════════════════════════════
    AI AGENT — sidebar widget
 ══════════════════════════════════════════════════════ */
-.agent-section { border-top:1px solid rgba(255,255,255,.04); padding-top:10px; }
+.agent-section { border-top:1px solid var(--hairline); padding-top:10px; }   /* App #68 */
 
 .agent-status-dot {
   width:8px; height:8px; border-radius:50%;
@@ -2305,6 +2331,28 @@ h2.section-title { font-size:18px; font-weight:700; }
 .mcs-set-hint { font-size:10px; color:var(--text3); margin-top:2px; }
 .mcs-set-hint-ok { color:#7fe3a0; }
 .mcs-set-hint-warn { color:#f0b959; }
+
+/* Accent-colour picker (App #58). A stacked row: label on top, a wrapping row
+   of swatch chips below. Each swatch is a round button showing its colour; the
+   pinned one gets a ring. "From album" and "Reset" are text chips in the same
+   row. */
+.mcs-set-row-accent { flex-direction:column; align-items:stretch; gap:8px; }
+.accent-swatches { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+.accent-swatch {
+  width:26px; height:26px; border-radius:50%; border:2px solid transparent;
+  cursor:pointer; padding:0; position:relative; flex-shrink:0;
+  box-shadow:0 0 0 1px var(--glass-border) inset;
+}
+.accent-swatch.selected { border-color:var(--text); box-shadow:0 0 0 2px var(--bg3), 0 0 0 4px var(--text); }
+.accent-swatch:focus-visible { outline:2px solid var(--text); outline-offset:2px; }
+.accent-chip {
+  background:var(--glass); border:1px solid var(--glass-border); color:var(--text2);
+  border-radius:var(--radius-pill); font-size:11px; font-weight:600; padding:5px 12px;
+  cursor:pointer; height:26px; display:inline-flex; align-items:center; gap:5px;
+}
+.accent-chip:hover { background:var(--glass-hi); color:var(--text); }
+.accent-chip:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.accent-chip.selected { background:var(--accent-dim); border-color:var(--accent); color:var(--accent); }
 /* A minor heading inside a settings group (roadmap #40 debrid, #42 offline). */
 .mcs-set-subhead {
   font-size:11px; font-weight:700; color:var(--text2);
@@ -3206,6 +3254,19 @@ h2.section-title { font-size:18px; font-weight:700; }
   background: var(--glass-hi); border: 1px solid var(--border); border-radius: 7px;
   color: var(--text); font-family: inherit; font-size: 13px; padding: 7px 9px; width: 100%;
 }
+/* Keyboard focus rings on the Wave 3–5 surfaces (App #60). These were built
+   after the focus-visible sweep, so their interactive elements had no visible
+   ring for keyboard users. One consistent 2px accent ring, matching the rest of
+   the app. */
+.dl2-sched-input:focus-visible,
+.wishlist-search-btn:focus-visible,
+.wishlist-remove-btn:focus-visible,
+.slsk-wl-target:focus-visible,
+.video-keep-item:focus-visible,
+.video-keep-del:focus-visible,
+.vcal-cell:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
 .dl2-sched-mb { font-size: 10.5px; color: var(--text3); }
 .dl2-sublog-body { padding: 4px 0 12px; display: flex; flex-direction: column; gap: 5px; max-height: 320px; overflow-y: auto; }
 .dl2-sublog-row { display: flex; align-items: flex-start; gap: 8px; padding: 6px 8px; background: var(--glass); border-radius: 7px; }
@@ -3298,7 +3359,7 @@ h2.section-title { font-size:18px; font-weight:700; }
 .dl2-empty span { font-size: 12px; color: var(--text3); }
 
 /* Torrent rows */
-.torrent-row { padding: 12px 16px; border-bottom: 1px solid rgba(255,255,255,.05); }
+.torrent-row { padding: 12px 16px; border-bottom: 1px solid var(--hairline); }   /* App #68 */
 .torrent-name { font-size: 13px; font-weight: 500; color: var(--text); margin-bottom: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .torrent-progress-row { display: flex; align-items: center; gap: 10px; }
 .torrent-bar-wrap { flex: 1; height: 4px; background: rgba(255,255,255,.1); border-radius: 2px; overflow: hidden; }
@@ -4290,7 +4351,7 @@ kbd {
 .stats-hero span { font-size:32px; font-weight:700; color:var(--text); display:block; }
 .stats-section { margin-bottom:36px; }
 .stats-section h2 { font-size:13px; font-weight:600; color:var(--text3); text-transform:uppercase; letter-spacing:.08em; margin-bottom:14px; }
-.stats-rank-row { display:flex; align-items:center; gap:12px; padding:8px 0; border-bottom:1px solid rgba(255,255,255,.04); cursor:pointer; }
+.stats-rank-row { display:flex; align-items:center; gap:12px; padding:8px 0; border-bottom:1px solid var(--hairline); cursor:pointer; }   /* App #68 */
 .stats-rank-num { font-size:11px; color:var(--text3); min-width:20px; }
 .stats-rank-art { width:36px; height:36px; border-radius:4px; object-fit:cover; background:var(--bg3); flex-shrink:0; }
 .stats-rank-info { flex:1; min-width:0; }
@@ -4700,7 +4761,7 @@ textarea:focus:not(:focus-visible) { outline: none; }
   align-items: center;
   justify-content: space-between;
   padding: 10px 18px 6px;
-  border-bottom: 1px solid rgba(255,255,255,.06);
+  border-bottom: 1px solid var(--hairline);   /* App #68 */
   flex-shrink: 0;
 }
 .lyrics-drawer-track {
@@ -4777,7 +4838,7 @@ textarea:focus:not(:focus-visible) { outline: none; }
   padding: 24px 28px;
   background: var(--bg2);
   border-radius: var(--r-lg);
-  border: 1px solid rgba(255,255,255,.05);
+  border: 1px solid var(--hairline);   /* App #68 */
 }
 .credits-section-title {
   font-size: 11px;
@@ -4933,7 +4994,7 @@ textarea:focus:not(:focus-visible) { outline: none; }
   top: var(--titlebar-h);
   z-index: 90;
   background: var(--bg);
-  border-bottom: 1px solid rgba(255,255,255,.06);
+  border-bottom: 1px solid var(--hairline);   /* App #68 */
   display: flex;
   align-items: center;
   gap: 12px;
@@ -5270,7 +5331,7 @@ textarea:focus:not(:focus-visible) { outline: none; }
 .queue-autoplay-row {
   display: flex; align-items: center; justify-content: space-between;
   padding: 10px 16px; font-size: 12px; color: var(--text2);
-  border-bottom: 1px solid rgba(255,255,255,.06);
+  border-bottom: 1px solid var(--hairline);   /* App #68 */
 }
 .queue-autoplay-toggle {
   border: 1px solid var(--text3); background: transparent; color: var(--text3);
@@ -5280,7 +5341,7 @@ textarea:focus:not(:focus-visible) { outline: none; }
 
 /* Queue header: save-as-playlist action (App #14) */
 .queue-header-actions {
-  padding: 8px 16px; border-bottom: 1px solid rgba(255,255,255,.06);
+  padding: 8px 16px; border-bottom: 1px solid var(--hairline);   /* App #68 */
 }
 .queue-save-playlist-btn {
   width: 100%; border: 1px solid var(--glass-border); background: var(--glass);
@@ -8407,6 +8468,64 @@ body.theme-light .cinema {
   background: var(--cin-ground);
   color: var(--cin-bone);
 }
+
+/* ══════════════════════════════════════════════════════
+   ONBOARDING TOUR + WHAT'S NEW  (App #61)
+   The tour is a spotlight overlay: a dimming scrim with a hole punched over the
+   nav item being described (the punch is the tour-spot's giant box-shadow), plus
+   a floating card. Shown once, after the first-run wizard completes; "Skip tour"
+   is always visible. The what's-new panel is a compact dismissible card on Home,
+   shown once per version bump.
+   Placed ABOVE the cinema banner on purpose: the cinema section must stay the
+   last thing in the file (see test/cinema-css.test.js), and this UI is shared
+   chrome, not cinema.
+══════════════════════════════════════════════════════ */
+.tour-overlay { position:fixed; inset:0; z-index:3000; pointer-events:none; }
+.tour-scrim { position:fixed; inset:0; pointer-events:auto; }
+.tour-spot {
+  position:absolute; border-radius:10px; pointer-events:none;
+  box-shadow:0 0 0 9999px rgba(0,0,0,.72); transition:all .28s var(--ease);
+}
+.tour-card {
+  position:absolute; pointer-events:auto; z-index:3001;
+  width:min(300px, calc(100vw - 32px));
+  background:var(--bg4); border:1px solid var(--glass-border);
+  border-radius:var(--r); padding:16px 18px;
+  box-shadow:0 12px 40px rgba(0,0,0,.5); animation:fadeIn .2s var(--ease-out);
+}
+.tour-card-step { font-size:11px; font-weight:700; color:var(--accent); text-transform:uppercase; letter-spacing:.5px; }
+.tour-card-title { font-size:15px; font-weight:700; color:var(--text); margin:4px 0 6px; }
+.tour-card-body { font-size:12.5px; color:var(--text2); line-height:1.5; }
+.tour-card-actions { display:flex; align-items:center; justify-content:space-between; margin-top:14px; gap:10px; }
+.tour-skip { background:none; border:none; color:var(--text3); font-size:12px; cursor:pointer; padding:4px; }
+.tour-skip:hover { color:var(--text2); }
+.tour-next {
+  background:var(--accent); color:#000; border:none; border-radius:var(--radius-pill);
+  font-size:12px; font-weight:700; padding:6px 16px; cursor:pointer;
+}
+.tour-next:hover { background:var(--accent-hover); }
+.tour-skip:focus-visible, .tour-next:focus-visible { outline:2px solid var(--text); outline-offset:2px; }
+@media (prefers-reduced-motion: reduce) {
+  .tour-spot { transition:none; }
+  .tour-card { animation:none; }
+}
+
+.whatsnew-panel {
+  background:var(--bg3); border:1px solid var(--glass-border); border-radius:var(--r);
+  padding:16px 18px; margin:0 28px 20px; position:relative; animation:fadeIn .3s var(--ease-out);
+}
+.whatsnew-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; }
+.whatsnew-title { font-size:14px; font-weight:700; color:var(--text); }
+.whatsnew-title .whatsnew-badge { color:var(--accent); font-weight:700; margin-left:6px; font-size:12px; }
+.whatsnew-close {
+  background:none; border:none; color:var(--text3); font-size:16px; cursor:pointer;
+  width:24px; height:24px; border-radius:50%; display:flex; align-items:center; justify-content:center;
+}
+.whatsnew-close:hover { background:var(--glass); color:var(--text); }
+.whatsnew-close:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.whatsnew-body { font-size:12.5px; color:var(--text2); line-height:1.6; }
+.whatsnew-body ul { margin:0; padding-left:18px; }
+.whatsnew-body h2, .whatsnew-body h3 { font-size:12.5px; color:var(--text2); margin:6px 0 2px; }
 
 /* ════════════════════════════════════════════════════
    PAPA CINEMA  ·  the film identity

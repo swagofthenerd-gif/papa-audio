@@ -944,6 +944,53 @@
     return { mode: gMode, crossfadeSecs: gSecs }
   }
 
+  // ── Global crossfade vs same-album gapless: the per-transition decision (#24) ──
+  // The global crossfade (store key crossfadeSeconds, 0 = off) applies to ALL track
+  // transitions EXCEPT one: two adjacent tracks from the same album, which the
+  // gapless path plays seamlessly and must keep. So the precedence, most specific
+  // first, is:
+  //   1. An explicit playlist crossfade override wins outright (the user chose it
+  //      for this playlist — even inside an album).
+  //   2. Otherwise, a same-album adjacency stays gapless (album integrity wins over
+  //      the global crossfade).
+  //   3. Otherwise, the global crossfade applies when > 0, else gapless.
+  // Pure: the renderer feeds it the facts (the global seconds, the playlist's
+  // override, whether this transition is same-album-adjacent) and gets back the
+  // { mode, crossfadeSecs } to put in force for THIS transition. Returning the same
+  // shape as resolvePlaylistCrossfade keeps the apply/diff path unchanged.
+  function resolveTransitionCrossfade(opts) {
+    opts = opts || {}
+    var globalSecs = Number(opts.crossfadeSeconds)
+    if (!isFinite(globalSecs) || globalSecs <= 0) globalSecs = 0
+    var override = opts.playlistOverride
+    var sameAlbum = !!opts.sameAlbumAdjacent
+
+    // 1. An explicit playlist override ('off' or a positive number) is the user's
+    //    choice for this playlist and wins, same-album or not. 'inherit'/null falls
+    //    through to the album/global rules.
+    var hasOverride = override != null && override !== 'inherit'
+    if (hasOverride) {
+      if (override === 'off' || override === 0 || override === '0') {
+        return { mode: 'gapless', crossfadeSecs: globalSecs > 0 ? globalSecs : 4 }
+      }
+      var oSecs = Number(override)
+      if (isFinite(oSecs) && oSecs > 0) {
+        return { mode: 'crossfade', crossfadeSecs: oSecs }
+      }
+      // Unrecognised override: fall through to the album/global rules.
+    }
+
+    // 2. Same-album adjacency stays gapless — album playback keeps its seams even
+    //    when a global crossfade is set.
+    if (sameAlbum) {
+      return { mode: 'gapless', crossfadeSecs: globalSecs > 0 ? globalSecs : 4 }
+    }
+
+    // 3. The global setting decides everything else.
+    if (globalSecs > 0) return { mode: 'crossfade', crossfadeSecs: globalSecs }
+    return { mode: 'gapless', crossfadeSecs: 4 }
+  }
+
   // Does the resolved config actually differ from what is in force now? The
   // renderer only pushes a player-set-config (which rebuilds the engine, an
   // audible tear-down) when this says the effective setting really changed —
@@ -1634,6 +1681,7 @@
     parseLrc: parseLrc,
     activeLyricIndex: activeLyricIndex,
     resolvePlaylistCrossfade: resolvePlaylistCrossfade,
+    resolveTransitionCrossfade: resolveTransitionCrossfade,
     crossfadeConfigDiffers: crossfadeConfigDiffers,
     SLEEP_PRESETS: SLEEP_PRESETS,
     clearPlayedQueue: clearPlayedQueue,

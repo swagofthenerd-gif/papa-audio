@@ -381,7 +381,14 @@ test('the number of global listener registrations is a deliberate budget', () =>
   //         never standing listeners even though the source counts the sites.
   // 21: the clean-exit pagehide marker in setupListeners (App §1), which runs
   //     once from init() and only writes a localStorage flag on shutdown.
-  assert.strictEqual(sites.inFunction.length, 21,
+  // 23: wave-6a onboarding/a11y added two, both paired add-on-open/remove-on-
+  //     close (the same shape as _openVideoCardMenu above, which the budget
+  //     already counts as a site while it is not a standing listener):
+  //       • showSlskSavedUsers — a document keydown (_onSavedKey, Escape-to-
+  //         close), removed in _closeSaved and on every exit path (App §60).
+  //       • _runTour — a document keydown (_onTourKey, Escape-to-dismiss),
+  //         removed in _endTour (App §61 first-run tour).
+  assert.strictEqual(sites.inFunction.length, 23,
     'a global listener was added inside a function. Nothing collects a listener ' +
     'on document or window, so make sure that function cannot run twice — this ' +
     'app has shipped that exact leak three times (items 73, 74, 257) — then ' +
@@ -400,7 +407,11 @@ test('no function registers more than one global listener of the same type', () 
   // keydown legitimately has several, each for a different surface (the browse
   // grid, a modal, the shortcut handler). What must not happen is one of them
   // being registered twice, which the measurement above covers and this records.
-  assert.ok(seen.get('document:keydown') <= 8, 'document keydown registrations: ' + seen.get('document:keydown'))
+  // Cap raised 8→10 in wave-6a: two more keydown sites, each a paired
+  // add-on-open/remove-on-close modal handler (the saved-libraries modal's
+  // Escape close, App §60; the first-run tour's Escape dismiss, App §61) — not
+  // standing listeners.
+  assert.ok(seen.get('document:keydown') <= 10, 'document keydown registrations: ' + seen.get('document:keydown'))
   assert.ok((seen.get('window:online') || 0) <= 1)
   assert.ok((seen.get('window:offline') || 0) <= 1)
 })

@@ -64,7 +64,7 @@ test('nothing is allowlisted that main never sends', () => {
   const KNOWN_DYNAMIC = new Set([
     'dl-started', 'dl-progress', 'dl-complete', 'dl-cancelled', 'dl-failed',
     'media-key', 'media-playpause', 'media-next', 'media-previous', 'media-seek',
-    'slsk-progress', 'slsk-verify', 'slsk-user-status', 'slsk-saved-users-changed',
+    'slsk-progress', 'slsk-user-status', 'slsk-saved-users-changed',
     'slsk-scheduler-stats', 'slskd-status-change', 'update-tray-tooltip',
     'torrent-progress', 'torrent-done', 'torrent-started',
     'yt-dl-progress', 'yt-auth-pending', 'yt-auth-done', 'do-lib-rescan',
@@ -90,7 +90,6 @@ test('every channel main sends has something that actually listens', () => {
     ...(/onWindowFocus\(/.test(ALL_RENDERER) ? ['window-focus'] : []),
     ...(/onAppOnlineState\(/.test(ALL_RENDERER) ? ['app-online-state'] : []),
     ...(/onSlskdStatusChange\(/.test(ALL_RENDERER) ? ['slskd-status-change'] : []),
-    ...(/onSlskVerify\(/.test(ALL_RENDERER) ? ['slsk-verify'] : []),
     ...(/onSlskSchedulerStats\(/.test(ALL_RENDERER) ? ['slsk-scheduler-stats'] : []),
     ...(/onSlskUserStatus\(/.test(ALL_RENDERER) ? ['slsk-user-status'] : []),
     ...(/onSlskSavedUsersChange\(/.test(ALL_RENDERER) ? ['slsk-saved-users-changed'] : []),
@@ -114,9 +113,6 @@ test('every channel main sends has something that actually listens', () => {
     'scan-progress': 'no listener; scan feedback comes from the scan handler resolving',
     'slskd-status-change': 'no listener; slskStatus is fetched on demand',
     'yt-auth-pending': 'no listener',
-    // preload exposes onSlskVerify for it, and nothing in src/ ever calls that,
-    // so the verification feed has a bridge and no consumer.
-    'slsk-verify': 'preload exposes onSlskVerify; no renderer script calls it',
     'yt-auth-done': 'no listener',
     'video-event': 'preload exposes onVideoEvent; no renderer script calls it yet (Papa Video UI is a later task)',
     'video-state': 'preload exposes onVideoState; no renderer script calls it yet (Papa Video UI is a later task)',

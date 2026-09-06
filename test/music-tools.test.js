@@ -310,3 +310,52 @@ test('crossfadeConfigDiffers only fires when the effective setting really change
   // Length differs but both are gapless → irrelevant, no rebuild.
   assert.equal(T.crossfadeConfigDiffers({ mode: 'gapless', crossfadeSecs: 4 }, { mode: 'gapless', crossfadeSecs: 8 }), false)
 })
+
+// ── Global crossfade vs same-album gapless: resolveTransitionCrossfade (#24) ───
+
+test('global crossfade off means gapless for every transition', () => {
+  assert.deepEqual(T.resolveTransitionCrossfade({ crossfadeSeconds: 0 }),
+    { mode: 'gapless', crossfadeSecs: 4 })
+  assert.deepEqual(T.resolveTransitionCrossfade({ crossfadeSeconds: 0, sameAlbumAdjacent: true }),
+    { mode: 'gapless', crossfadeSecs: 4 })
+})
+
+test('a global crossfade applies to a normal (cross-album) transition', () => {
+  assert.deepEqual(T.resolveTransitionCrossfade({ crossfadeSeconds: 6 }),
+    { mode: 'crossfade', crossfadeSecs: 6 })
+})
+
+test('same-album adjacency stays gapless even with a global crossfade set', () => {
+  // The headline of #24: album integrity wins over the global crossfade.
+  assert.deepEqual(
+    T.resolveTransitionCrossfade({ crossfadeSeconds: 6, sameAlbumAdjacent: true }),
+    { mode: 'gapless', crossfadeSecs: 6 })
+})
+
+test('a playlist crossfade override wins over the global, even inside an album', () => {
+  // Most specific wins: an explicit playlist choice beats both the album rule and
+  // the global.
+  assert.deepEqual(
+    T.resolveTransitionCrossfade({ crossfadeSeconds: 0, playlistOverride: 8, sameAlbumAdjacent: true }),
+    { mode: 'crossfade', crossfadeSecs: 8 })
+  assert.deepEqual(
+    T.resolveTransitionCrossfade({ crossfadeSeconds: 6, playlistOverride: 3 }),
+    { mode: 'crossfade', crossfadeSecs: 3 })
+})
+
+test('a playlist off-override forces gapless over a global crossfade', () => {
+  assert.deepEqual(
+    T.resolveTransitionCrossfade({ crossfadeSeconds: 6, playlistOverride: 'off' }),
+    { mode: 'gapless', crossfadeSecs: 6 })
+})
+
+test('an inheriting playlist falls through to the album/global rules', () => {
+  // inherit is not an explicit choice: same-album still stays gapless, cross-album
+  // still takes the global.
+  assert.deepEqual(
+    T.resolveTransitionCrossfade({ crossfadeSeconds: 6, playlistOverride: 'inherit', sameAlbumAdjacent: true }),
+    { mode: 'gapless', crossfadeSecs: 6 })
+  assert.deepEqual(
+    T.resolveTransitionCrossfade({ crossfadeSeconds: 6, playlistOverride: 'inherit' }),
+    { mode: 'crossfade', crossfadeSecs: 6 })
+})

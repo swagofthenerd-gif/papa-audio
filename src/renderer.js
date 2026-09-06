@@ -496,6 +496,9 @@ var ALL_SHORTCUTS = [
   { category: 'Playback', keys: ['M'], desc: 'Mute/Unmute' },
   { category: 'Playback', keys: ['+ / -'], desc: 'Volume ±5%' },
   { category: 'Playback', keys: ['F'], desc: 'Fullscreen now playing' },
+  // A–B loop is Shift+L (plain L is lyrics). App #69 — it was bound but never
+  // listed in this cheat-sheet.
+  { category: 'Playback', keys: ['Shift+L'], desc: 'A–B loop (set A, set B, clear)' },
   { category: 'Navigation', keys: ['Ctrl+K'], desc: 'Focus search' },
   { category: 'Navigation', keys: ['Ctrl+Shift+P'], desc: 'Command palette' },
   { category: 'Navigation', keys: ['Alt+←'], desc: 'Go back' },
@@ -521,6 +524,15 @@ var ALL_SHORTCUTS = [
   { category: 'Mouse', keys: ['Middle click'], desc: 'Play track/album standalone' },
   { category: 'Mouse', keys: ['Right click vol'], desc: 'Exact volume input' },
   { category: 'Mouse', keys: ['Click time'], desc: 'Toggle elapsed/remaining/total' },
+  // Soulseek user-library ("the shop") keyboard nav (App §69). These live in the
+  // library-explorer modal's own delegated keydown handler, not the global map,
+  // so they are listed by hand here rather than derived.
+  { category: 'Soulseek library', keys: ['↑ ↓ ← →'], desc: 'Move between shelf cards' },
+  { category: 'Soulseek library', keys: ['Enter'], desc: 'Play the focused album' },
+  { category: 'Soulseek library', keys: ['D'], desc: 'Download the focused album' },
+  { category: 'Soulseek library', keys: ['Alt+← / Alt+→'], desc: 'Folders mode: back / forward' },
+  { category: 'Soulseek library', keys: ['Backspace'], desc: 'Folders mode: up a folder' },
+  { category: 'Soulseek library', keys: ['Esc'], desc: 'Clear search, then close' },
 ]
 
 // The theatre's keys live in one place — src/video-keymap.js — so the help
@@ -641,6 +653,9 @@ _colorImg.onload = () => {
 }
 
 function extractAlbumColor(artPath) {
+  // A pinned accent (App #58) wins over the album-follow colour: while one is
+  // set the cover must not repaint --accent on every track change.
+  if (typeof _accentPinned !== 'undefined' && _accentPinned) return
   if (!artPath) { setAccent('#1db954', '#1ed760'); return }
   const cached = _cacheGet(_colorCache, artPath)
   if (cached) { const [r,g,b] = cached; setAccent(`rgb(${r},${g},${b})`, `rgba(${r},${g},${b},0.85)`, `${r},${g},${b}`); return }
@@ -1127,6 +1142,11 @@ async function init() {
   // The authoritative value in the store is reconciled by _initThemeField when
   // the settings panel initialises; here we only need it to not flash.
   _applyThemeEarly()
+  // Same early-paint treatment for the pinned accent (App #58) and density
+  // (App #59): apply the persisted choice synchronously so the app opens in the
+  // right skin instead of correcting after first render.
+  _applyAccentEarly()
+  _applyDensityEarly()
   const [info, liked, savedQueues, playlists, likedTracks, playCounts, playHistory, followedArtists, ytLiked, ytFollowed, ytSavedAlbums, ytRecent] = await Promise.all([
     window.api.getAppInfo(), window.api.getLiked(),
     window.api.getSavedQueues(),
@@ -8903,20 +8923,28 @@ function renderHome() {
   var _homeEditing = !!_homeEditMode
   // In edit mode every row is shown (even hidden ones and empty ones) so the
   // user can un-hide them; a per-row control bar carries hide/show + up/down.
-  var _homeRowsHtml = (_homeEditing ? _homeResolved.order : _homeResolved.visible)
-    .map(function (id, i, arr) {
-      var body = _homeRowHtml[id] || ''
-      if (!_homeEditing) return body
-      var hidden = !!_homeResolved.hidden[id]
-      var controls = '<div class="home-row-controls">' +
-        '<span class="home-row-title">' + esc(_homeRowLabel[id] || id) + '</span>' +
-        '<button class="home-row-btn" data-home-move="up" data-home-id="' + esc(id) + '"' + (i === 0 ? ' disabled' : '') + ' title="Move up">▲</button>' +
-        '<button class="home-row-btn" data-home-move="down" data-home-id="' + esc(id) + '"' + (i === arr.length - 1 ? ' disabled' : '') + ' title="Move down">▼</button>' +
-        '<button class="home-row-btn" data-home-hide="' + esc(id) + '" title="' + (hidden ? 'Show' : 'Hide') + '">' + (hidden ? '🚫 Hidden' : '👁 Shown') + '</button>' +
-        '</div>'
-      return '<div class="home-row-edit' + (hidden ? ' home-row-hidden' : '') + '">' + controls +
-        '<div class="home-row-body">' + (body || '<div class="home-row-empty">(nothing to show right now)</div>') + '</div></div>'
-    }).join('')
+  // Build each row's HTML into an array (not joined) so the render can paint the
+  // first couple immediately and defer the rest (App #22).
+  var _homeRowIds = _homeEditing ? _homeResolved.order : _homeResolved.visible
+  var _homeRowsArr = _homeRowIds.map(function (id, i, arr) {
+    var body = _homeRowHtml[id] || ''
+    if (!_homeEditing) return body
+    var hidden = !!_homeResolved.hidden[id]
+    var controls = '<div class="home-row-controls">' +
+      '<span class="home-row-title">' + esc(_homeRowLabel[id] || id) + '</span>' +
+      '<button class="home-row-btn" data-home-move="up" data-home-id="' + esc(id) + '"' + (i === 0 ? ' disabled' : '') + ' title="Move up">▲</button>' +
+      '<button class="home-row-btn" data-home-move="down" data-home-id="' + esc(id) + '"' + (i === arr.length - 1 ? ' disabled' : '') + ' title="Move down">▼</button>' +
+      '<button class="home-row-btn" data-home-hide="' + esc(id) + '" title="' + (hidden ? 'Show' : 'Hide') + '">' + (hidden ? '🚫 Hidden' : '👁 Shown') + '</button>' +
+      '</div>'
+    return '<div class="home-row-edit' + (hidden ? ' home-row-hidden' : '') + '">' + controls +
+      '<div class="home-row-body">' + (body || '<div class="home-row-empty">(nothing to show right now)</div>') + '</div></div>'
+  })
+  // Startup speed (App #22): paint the first two rows now; the rest are injected
+  // during idle time so the first frame is not blocked by the whole list. In
+  // edit mode we render everything at once — reorder/hide needs every row live.
+  var _homeDeferRows = !_homeEditing && _homeRowsArr.length > 2
+  var _homeImmediateHtml = _homeDeferRows ? _homeRowsArr.slice(0, 2).join('') : _homeRowsArr.join('')
+  var _homeDeferredHtml = _homeDeferRows ? _homeRowsArr.slice(2) : []
 
   var _homeEditBtn = '<button class="home-edit-btn" id="home-edit-btn" title="Customize Home">' +
     (_homeEditing ? 'Done' : '<svg viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.488.488 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>') +
@@ -8924,7 +8952,10 @@ function renderHome() {
 
   setContent(`<div class="page${_homeEditing ? ' home-editing' : ''}">
     <div class="home-header"><div class="home-header-left"><canvas class="home-clock" id="home-clock" width="56" height="56"></canvas>${greetingHTML}${_homeEditBtn}</div>${_homeEditing ? '' : artBtnHTML}</div>
-    ${_homeRowsHtml}
+    ${_homeImmediateHtml}
+    <!-- Deferred Home rows (App #22): rows beyond the first two land here during
+         idle time; empty (and zero-height) until then. -->
+    <div id="home-deferred-rows"></div>
     <div id="yt-home"></div>
     <!-- Unified-home strips (App §70, §76). Placed after every music section on
          purpose: music is the heart of the app, so its content paints first and
@@ -8934,6 +8965,11 @@ function renderHome() {
     <div id="home-year-recap"></div>
   </div>`)
 
+  // The event wiring below must run only after every Home row is in the DOM —
+  // otherwise a button in a deferred row never gets its listener. So it lives in
+  // a function called once the deferred rows are injected (or immediately when
+  // nothing is deferred). App #22.
+  function _wireHome() {
   // Home edit-mode wiring: toggle, reorder, hide/show. Each action persists the
   // preference and re-renders Home so the change is immediate.
   document.getElementById('home-edit-btn')?.addEventListener('click', function () {
@@ -8990,6 +9026,37 @@ function renderHome() {
   loadMadeForYou()
   loadHomeContinueWatching()
   loadHomeYearRecap()
+  // What's-new panel (App #61): shown once per version bump, above the rows.
+  _maybeShowWhatsNew()
+  } // end _wireHome
+
+  // Inject any deferred rows during idle time, one slice per idle callback, then
+  // wire the whole page. Reuses the shop-parse idle pattern — crucially with the
+  // { timeout } OBJECT form (a prior bug passed a bare number, which
+  // requestIdleCallback ignores). If nothing is deferred, wire immediately.
+  if (!_homeDeferRows) {
+    _wireHome()
+  } else {
+    var _homeMount = document.getElementById('home-deferred-rows')
+    var _homeIdle = 0
+    var _injectHomeSlice = function () {
+      // A navigation away mid-defer must not inject into a stale page.
+      if (state.currentPage !== 'home' || !_homeMount || !_homeMount.isConnected) {
+        if (_homeIdle >= _homeDeferredHtml.length) _wireHome()
+        return
+      }
+      if (_homeIdle < _homeDeferredHtml.length) {
+        _homeMount.insertAdjacentHTML('beforeend', _homeDeferredHtml[_homeIdle])
+        _homeIdle++
+        if (window.requestIdleCallback) requestIdleCallback(_injectHomeSlice, { timeout: 500 })
+        else setTimeout(_injectHomeSlice, 1)
+      } else {
+        _wireHome()
+      }
+    }
+    if (window.requestIdleCallback) requestIdleCallback(_injectHomeSlice, { timeout: 500 })
+    else setTimeout(_injectHomeSlice, 1)
+  }
 }
 
 // "Continue watching" on the music home (App §70). Up to six in-progress films/
@@ -10455,7 +10522,7 @@ function renderAlbum(albumId) {
 
   setContent(`
     <div class="album-sticky-header" id="album-sticky-header">
-      <button class="sticky-play-btn" id="sticky-play-btn">
+      <button class="sticky-play-btn" id="sticky-play-btn" aria-label="Play album" title="Play album">
         <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
       </button>
       <div class="sticky-album-title">${esc(album.name)}</div>
@@ -10476,14 +10543,14 @@ function renderAlbum(albumId) {
       <button class="album-play-btn" id="album-play-btn" aria-label="Play this album">
         <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
       </button>
-      <button class="ctrl-btn album-shuffle-btn" id="album-shuffle-btn" title="Shuffle play">
+      <button class="ctrl-btn album-shuffle-btn" id="album-shuffle-btn" title="Shuffle play" aria-label="Shuffle play">
         <svg viewBox="0 0 24 24"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
       </button>
-      <button class="ctrl-btn album-like-btn like-btn ${isLiked ? 'liked' : ''}" id="album-like-btn" data-album="${esc(albumId)}" title="${isLiked ? 'Unlike' : 'Like'}">
+      <button class="ctrl-btn album-like-btn like-btn ${isLiked ? 'liked' : ''}" id="album-like-btn" data-album="${esc(albumId)}" title="${isLiked ? 'Unlike' : 'Like'}" aria-label="${isLiked ? 'Unlike album' : 'Like album'}">
         <svg class="heart-outline" viewBox="0 0 24 24"><path d="M16.5 3c-1.74 0-3.41.81-4.5 2.09A5.99 5.99 0 0 0 7.5 3C4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3zm-4.4 15.55-.1.1-.1-.1C7.14 14.24 4 11.39 4 8.5 4 6.5 5.5 5 7.5 5c1.54 0 3.04.99 3.57 2.36h1.87C13.46 5.99 14.96 5 16.5 5c2 0 3.5 1.5 3.5 3.5 0 2.89-3.14 5.74-7.9 10.05z"/></svg>
         <svg class="heart-filled" viewBox="0 0 24 24" style="display:none"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09A5.99 5.99 0 0 1 16.5 3C19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
       </button>
-      <button class="ctrl-btn album-addpl-btn" id="album-addpl-btn" title="Add album to playlist">
+      <button class="ctrl-btn album-addpl-btn" id="album-addpl-btn" title="Add album to playlist" aria-label="Add album to playlist">
         <svg viewBox="0 0 24 24"><path d="M14 10H2v2h12v-2zm0-4H2v2h12V6zM2 16h8v-2H2v2zm14-2v3h-3v2h3v3h2v-3h3v-2h-3v-3h-2z"/></svg>
       </button>
     </div>
@@ -11863,13 +11930,13 @@ function _paintYtAlbum(al) {
       <button class="album-play-btn" id="yt-album-play-btn" title="Play all">
         <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
       </button>
-      <button class="ctrl-btn yt-album-shuffle-btn" id="yt-album-shuffle-btn" title="Shuffle play">
+      <button class="ctrl-btn yt-album-shuffle-btn" id="yt-album-shuffle-btn" title="Shuffle play" aria-label="Shuffle play">
         <svg viewBox="0 0 24 24"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
       </button>
-      <button class="ctrl-btn yt-album-dl-btn" id="yt-album-dl-btn" title="Download album">
+      <button class="ctrl-btn yt-album-dl-btn" id="yt-album-dl-btn" title="Download album" aria-label="Download album">
         <svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
       </button>
-      <button class="ctrl-btn yt-album-save-btn${isYtAlbumSaved(al.browseId) ? ' saved' : ''}" id="yt-album-save-btn" title="${isYtAlbumSaved(al.browseId) ? 'Remove from library' : 'Save to library'}">${isYtAlbumSaved(al.browseId) ? '♥' : '♡'}</button>
+      <button class="ctrl-btn yt-album-save-btn${isYtAlbumSaved(al.browseId) ? ' saved' : ''}" id="yt-album-save-btn" title="${isYtAlbumSaved(al.browseId) ? 'Remove from library' : 'Save to library'}" aria-label="${isYtAlbumSaved(al.browseId) ? 'Remove album from library' : 'Save album to library'}">${isYtAlbumSaved(al.browseId) ? '♥' : '♡'}</button>
       <span class="yt-album-dl-note" id="yt-album-dl-note"></span>
     </div>
     <div class="track-list">
@@ -11971,14 +12038,14 @@ async function renderYtPlaylist(playlistId) {
       <button class="album-play-btn" id="yt-pl-play-btn" title="Play all" ${!pl.tracks.length ? 'disabled' : ''}>
         <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
       </button>
-      <button class="ctrl-btn" id="yt-pl-shuffle-btn" title="Shuffle">
+      <button class="ctrl-btn" id="yt-pl-shuffle-btn" title="Shuffle" aria-label="Shuffle">
         <svg viewBox="0 0 24 24"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
       </button>
       <button class="ctrl-btn" id="yt-pl-queue-btn" title="Add all to queue">+</button>
-      <button class="ctrl-btn" id="yt-pl-dl-btn" title="Download all">
+      <button class="ctrl-btn" id="yt-pl-dl-btn" title="Download all" aria-label="Download all">
         <svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
       </button>
-      <button class="ctrl-btn" id="yt-pl-save-btn" title="Save to your playlists">
+      <button class="ctrl-btn" id="yt-pl-save-btn" title="Save to your playlists" aria-label="Save to your playlists">
         <svg viewBox="0 0 24 24"><path d="M14 10H3v2h11v-2zm0-4H3v2h11V6zM3 16h7v-2H3v2zm18-4.5V22l-4-2-4 2V11.5c0-.83.67-1.5 1.5-1.5h5c.83 0 1.5.67 1.5 1.5z"/></svg>
       </button>
       <span class="yt-album-dl-note" id="yt-pl-note"></span>
@@ -13356,13 +13423,13 @@ function renderPlaylist(id, sortKey) {
       <button class="album-play-btn" id="pl-play-btn" aria-label="Play this playlist" ${!tracks.length ? 'disabled' : ''}>
         <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
       </button>
-      <button class="ctrl-btn" id="pl-rename-btn" title="Rename">
+      <button class="ctrl-btn" id="pl-rename-btn" title="Rename" aria-label="Rename playlist">
         <svg viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34a.9959.9959 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
       </button>
-      <button class="ctrl-btn" id="pl-delete-btn" title="Delete playlist">
+      <button class="ctrl-btn" id="pl-delete-btn" title="Delete playlist" aria-label="Delete playlist">
         <svg viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
       </button>
-      <button class="ctrl-btn${plLiked ? ' active' : ''}" id="pl-fav-btn" title="Favorite playlist">♥</button>
+      <button class="ctrl-btn${plLiked ? ' active' : ''}" id="pl-fav-btn" title="Favorite playlist" aria-label="Favorite playlist">♥</button>
       <button class="pl-action-btn" id="pl-export-btn">Export</button>
     </div>
     <div class="pl-sort-row">
@@ -20152,6 +20219,10 @@ function _initSetupWizard() {
     if (_finished) return
     _finished = true
     overlay.style.display = 'none'
+    // First-run tour (App #61): offered once, only after the wizard actually
+    // completes, so it never overlaps the wizard (and never fires in the e2e
+    // wizard check, which asserts the overlay flow before Finish is clicked).
+    try { _maybeStartTour() } catch (e) { console.error('[papa] tour start failed', e) }
     try {
       if ((state.musicFolders || []).length) {
         renderFolders()
@@ -20208,6 +20279,185 @@ async function _wizardRunChecks() {
   let diag = null
   try { diag = await window.api.videoDiagnostics() } catch (_) { diag = null }
   box.innerHTML = _wizardCheckRows(diag)
+}
+
+// ── First-run tour + What's new (App #61) ────────────────────────────────────
+// A five-step spotlight tour, shown once after the wizard completes, and a
+// compact "What's new" panel on Home shown once per version bump. Both use
+// localStorage flags (matching the app's other one-shot flags) so they persist
+// without an IPC round-trip, and both are entirely renderer-owned.
+const _TOUR_LS_KEY = 'papa-tour-done'
+const _WHATSNEW_LS_KEY = 'papa-last-seen-version'
+
+// The five steps, each anchored to a nav element by selector. Pure data so the
+// enumeration is testable; the runner reads .sel to find the element to spotlight
+// and positions the card beside it. Kept in nav order (top of the sidebar down).
+const _TOUR_STEPS = [
+  { sel: '.nav-item[data-page="library"]', title: 'Your Library', body: 'Every album and track on this machine lives here — sorted, searchable, and ready to play.' },
+  { sel: '#nav-search', title: 'Search', body: 'Find anything in your library instantly. Type an artist, album, or song.' },
+  { sel: '#nav-soulseek', title: 'Soulseek', body: 'The hub for finding and downloading new music from the Soulseek network — lossless first.' },
+  { sel: '.nav-item[data-page="video"]', title: 'Movies & TV', body: 'Yes, it does film and TV too — browse, stream, and pick up where you left off.' },
+  { sel: '#btn-agent-chat', title: 'Settings & Assistant', body: 'Open the assistant and Settings here — theme, accent colour, density, playback and more.' },
+]
+
+// Has the tour already run? (or been skipped). Guards the one-shot.
+function _tourDone() {
+  try { return localStorage.getItem(_TOUR_LS_KEY) === '1' } catch (_) { return true }
+}
+function _markTourDone() {
+  try { localStorage.setItem(_TOUR_LS_KEY, '1') } catch (_) {}
+}
+
+// Start the tour only if it has not run yet. Called from the wizard's finish().
+function _maybeStartTour() {
+  if (_tourDone()) return
+  // Defer one tick so the wizard overlay is fully gone and the sidebar is laid
+  // out (positions are read from getBoundingClientRect).
+  setTimeout(() => { try { _runTour(0) } catch (_) { _markTourDone() } }, 350)
+}
+
+// Tear down any live tour overlay.
+function _endTour() {
+  _markTourDone()
+  const el = document.getElementById('tour-overlay')
+  if (el) el.remove()
+  document.removeEventListener('keydown', _onTourKey)
+}
+function _onTourKey(e) {
+  if (e.key === 'Escape') { e.preventDefault(); _endTour() }
+}
+
+// Render one step. i is the zero-based step index. Positions a spotlight box over
+// the anchor element and a card beside it. A missing anchor skips to the next
+// step rather than stranding the tour.
+function _runTour(i) {
+  if (i < 0 || i >= _TOUR_STEPS.length) { _endTour(); return }
+  const stepDef = _TOUR_STEPS[i]
+  const anchor = document.querySelector(stepDef.sel)
+  if (!anchor) { _runTour(i + 1); return }   // element not on this build/layout
+
+  let overlay = document.getElementById('tour-overlay')
+  if (!overlay) {
+    overlay = document.createElement('div')
+    overlay.id = 'tour-overlay'
+    overlay.className = 'tour-overlay'
+    overlay.innerHTML = '<div class="tour-scrim"></div><div class="tour-spot"></div>' +
+      '<div class="tour-card" role="dialog" aria-label="Welcome tour"></div>'
+    document.body.appendChild(overlay)
+    // Clicking the dim scrim (not the card) skips the tour.
+    overlay.querySelector('.tour-scrim').addEventListener('click', _endTour)
+    document.addEventListener('keydown', _onTourKey)
+  }
+
+  const rect = anchor.getBoundingClientRect()
+  const pad = 6
+  const spot = overlay.querySelector('.tour-spot')
+  spot.style.left = (rect.left - pad) + 'px'
+  spot.style.top = (rect.top - pad) + 'px'
+  spot.style.width = (rect.width + pad * 2) + 'px'
+  spot.style.height = (rect.height + pad * 2) + 'px'
+
+  const last = i === _TOUR_STEPS.length - 1
+  const card = overlay.querySelector('.tour-card')
+  card.innerHTML =
+    '<div class="tour-card-step">Step ' + (i + 1) + ' of ' + _TOUR_STEPS.length + '</div>' +
+    '<div class="tour-card-title">' + esc(stepDef.title) + '</div>' +
+    '<div class="tour-card-body">' + esc(stepDef.body) + '</div>' +
+    '<div class="tour-card-actions">' +
+      '<button class="tour-skip" id="tour-skip">Skip tour</button>' +
+      '<button class="tour-next" id="tour-next">' + (last ? 'Done' : 'Next') + '</button>' +
+    '</div>'
+  // Position the card to the right of the anchor (the sidebar is on the left);
+  // clamp within the viewport so it never runs off-screen.
+  const cardW = 300, gap = 16
+  let cx = rect.right + gap
+  if (cx + cardW > window.innerWidth - 12) cx = Math.max(12, rect.left - cardW - gap)
+  let cy = rect.top
+  card.style.left = cx + 'px'
+  card.style.top = Math.min(cy, window.innerHeight - 180) + 'px'
+
+  card.querySelector('#tour-skip').addEventListener('click', _endTour)
+  card.querySelector('#tour-next').addEventListener('click', () => {
+    if (last) _endTour(); else _runTour(i + 1)
+  })
+}
+
+// ── What's new (App #61) ─────────────────────────────────────────────────────
+// Compare the running app version against the last one the user saw. On a bump,
+// render a compact dismissible panel on Home with the latest changelog entries,
+// fetched via the EXISTING app-changelog IPC (window.api.appChangelog) — no new
+// IPC is added; if the contract is absent the panel is simply not shown.
+
+// Should the what's-new panel show? Pure: true when the current version differs
+// from the stored last-seen and is a real version string. The very first run
+// (no stored version) does NOT show it — the tour covers first-run.
+function _whatsNewShouldShow(current, lastSeen) {
+  if (!current || typeof current !== 'string') return false
+  if (!lastSeen) return false           // first ever run → tour handles onboarding
+  return current !== lastSeen
+}
+
+// Keep the panel compact: the changelog is a long flat doc, so trim it to the
+// first `maxSections` `##` sections (plus any intro before the first heading).
+// Pure and testable. A doc with no `##` headings is returned as-is.
+function _whatsNewTrim(md, maxSections) {
+  const src = String(md == null ? '' : md)
+  const cap = maxSections > 0 ? maxSections : 2
+  const lines = src.split(/\r?\n/)
+  const out = []
+  let sections = 0
+  for (const line of lines) {
+    if (/^##\s+/.test(line)) {
+      sections++
+      if (sections > cap) break
+    }
+    // Drop the top-level h1 title — the panel supplies its own "What's new".
+    if (/^#\s+/.test(line)) continue
+    out.push(line)
+  }
+  return out.join('\n').trim()
+}
+
+let _whatsNewChecked = false
+async function _maybeShowWhatsNew() {
+  if (_whatsNewChecked) return          // once per app run
+  const cur = _appVersion
+  let lastSeen = null
+  try { lastSeen = localStorage.getItem(_WHATSNEW_LS_KEY) } catch (_) { lastSeen = null }
+  // Record the current version now, even if we decide not to show, so first-run
+  // seeds the baseline (and the panel then shows on the NEXT upgrade, not now).
+  if (cur) { try { localStorage.setItem(_WHATSNEW_LS_KEY, cur) } catch (_) {} }
+  _whatsNewChecked = true
+  if (!_whatsNewShouldShow(cur, lastSeen)) return
+  // Feature-detect the existing changelog IPC; hide the panel when it's absent.
+  if (!(window.api && typeof window.api.appChangelog === 'function')) return
+  let md = null
+  try {
+    const res = await window.api.appChangelog()
+    md = typeof res === 'string' ? res : (res && res.markdown) || (res && res.changelog) || null
+  } catch (_) { md = null }
+  if (!md) return
+  _renderWhatsNewPanel(cur, _whatsNewTrim(md, 2))
+}
+
+function _renderWhatsNewPanel(version, md) {
+  // Only mount on Home, above the rows, and only if the page is actually Home.
+  if (state.currentPage !== 'home') return
+  const page = document.querySelector('.page')
+  const header = page && page.querySelector('.home-header')
+  if (!header) return
+  if (document.getElementById('whatsnew-panel')) return
+  const panel = document.createElement('div')
+  panel.className = 'whatsnew-panel'
+  panel.id = 'whatsnew-panel'
+  panel.innerHTML =
+    '<div class="whatsnew-head">' +
+      '<div class="whatsnew-title">What’s new<span class="whatsnew-badge">' + esc(version || '') + '</span></div>' +
+      '<button class="whatsnew-close" id="whatsnew-close" aria-label="Dismiss" title="Dismiss">✕</button>' +
+    '</div>' +
+    '<div class="whatsnew-body">' + _changelogToHtml(md) + '</div>'
+  header.insertAdjacentElement('afterend', panel)
+  panel.querySelector('#whatsnew-close').addEventListener('click', () => panel.remove())
 }
 
 // ── Backup / restore (App #2, #3) ────────────────────────────────────────────
@@ -20491,6 +20741,231 @@ async function _initUiScaleField() {
   }
 }
 
+// ── Accent colour override (App #58) ─────────────────────────────────────────
+// The app's live accent normally tracks the current album cover (see
+// extractAlbumColor). This lets the user PIN one accent for the whole app
+// instead. Persisted in PapaLocal under papa-accent, applied at startup and
+// whenever the pin changes. When a pin is set, extractAlbumColor becomes a
+// no-op (see _accentPinned) so the cover no longer overrides it.
+//
+// A curated set of eight swatches plus the app's default green. Kept short and
+// tasteful rather than a full colour wheel — this is a pin, not a paint program.
+const _ACCENT_DEFAULT = '#1db954'   // Spotify green — the app's identity
+const _ACCENT_SWATCHES = [
+  '#1db954', // green (default)
+  '#3b82f6', // blue
+  '#8b5cf6', // violet
+  '#ec4899', // pink
+  '#ef4444', // red
+  '#f97316', // orange
+  '#eab308', // amber
+  '#14b8a6', // teal
+]
+const _ACCENT_LS_KEY = 'papa-accent'
+
+// Parse #rrggbb (or #rgb) to [r,g,b], or null if it is not a hex colour. Pure.
+function _accentHexToRgb(hex) {
+  const s = String(hex == null ? '' : hex).trim()
+  let m = /^#([0-9a-fA-F]{6})$/.exec(s)
+  if (m) {
+    const n = parseInt(m[1], 16)
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255]
+  }
+  m = /^#([0-9a-fA-F]{3})$/.exec(s)
+  if (m) {
+    const c = m[1]
+    return [parseInt(c[0] + c[0], 16), parseInt(c[1] + c[1], 16), parseInt(c[2] + c[2], 16)]
+  }
+  return null
+}
+
+// Relative luminance 0..1 (Rec. 601, matching palette.js). Pure. Used to decide
+// whether text sitting ON an accent chip should be dark or light — a light
+// accent (amber, teal) needs dark text to stay readable.
+function _accentLuma(rgb) {
+  return (0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]) / 255
+}
+
+// Dark text on a light accent, light text on a dark one. The 0.6 threshold is
+// where black text stops out-contrasting white on the mid greens/blues. Pure.
+function _accentTextColor(hex) {
+  const rgb = _accentHexToRgb(hex)
+  if (!rgb) return '#ffffff'
+  return _accentLuma(rgb) > 0.6 ? '#000000' : '#ffffff'
+}
+
+// A slightly-lighter hover tone for a hex accent: lift each channel toward white
+// by 15%. Pure, so the hover colour is deterministic for a given accent.
+function _accentHover(hex) {
+  const rgb = _accentHexToRgb(hex)
+  if (!rgb) return hex
+  const up = c => Math.round(c + (255 - c) * 0.15)
+  return '#' + rgb.map(c => up(c).toString(16).padStart(2, '0')).join('')
+}
+
+// The pinned accent, or '' when unset (cover-follows-album mode). Read from the
+// PapaLocal mirror. Kept in a module var so extractAlbumColor can consult it
+// without a storage read on every track change.
+let _accentPinned = ''
+
+// Apply a hex accent to the document root, or clear the override. Idempotent.
+// Sets --accent, --accent-hover and --accent-rgb — the same three properties
+// setAccent (the album-follow path) writes, so the two paths agree on shape.
+function _applyAccent(hex) {
+  const root = document.documentElement
+  const rgb = _accentHexToRgb(hex)
+  if (!rgb) {
+    // Clear the override: drop the inline props so the stylesheet's :root value
+    // (or the next album-follow write) takes over again.
+    try {
+      root.style.removeProperty('--accent')
+      root.style.removeProperty('--accent-hover')
+      root.style.removeProperty('--accent-rgb')
+    } catch (_) {}
+    return
+  }
+  try {
+    root.style.setProperty('--accent', hex)
+    root.style.setProperty('--accent-hover', _accentHover(hex))
+    root.style.setProperty('--accent-rgb', rgb.join(','))
+  } catch (_) {}
+}
+
+// Synchronous early-paint hook (mirrors _applyThemeEarly): read the pinned
+// accent from PapaLocal and apply it before the first frame, so the app never
+// flashes green then corrects. A missing/blank value leaves the default.
+function _applyAccentEarly() {
+  let pin = ''
+  try {
+    const o = window.PapaLocal ? window.PapaLocal.readObject(_ACCENT_LS_KEY) : {}
+    pin = (o && typeof o.accent === 'string') ? o.accent : ''
+  } catch (_) { pin = '' }
+  _accentPinned = _accentHexToRgb(pin) ? pin : ''
+  if (_accentPinned) _applyAccent(_accentPinned)
+  return _accentPinned
+}
+
+// Persist and apply a pin (hex) or clear it (''). Writes PapaLocal so the next
+// launch's early paint picks it up.
+function _setAccentPin(hex) {
+  _accentPinned = _accentHexToRgb(hex) ? hex : ''
+  try {
+    if (window.PapaLocal) {
+      if (_accentPinned) window.PapaLocal.write(_ACCENT_LS_KEY, { accent: _accentPinned })
+      else window.PapaLocal.remove(_ACCENT_LS_KEY)
+    }
+  } catch (_) {}
+  if (_accentPinned) _applyAccent(_accentPinned)
+  else {
+    // Cleared: fall back to the current track's cover colour if one is playing,
+    // else the stylesheet default.
+    _applyAccent('')
+    const cur = state.queue[state.queueIndex]
+    if (cur && cur.artPath && !/^https?:\/\//.test(cur.artPath)) extractAlbumColor(cur.artPath)
+  }
+}
+
+// The accent extracted from the CURRENT album's cover, as a hex string, for the
+// "From album" swatch. Uses the shared palette engine against the now-playing
+// art element if present, else the cached colour extractAlbumColor computed.
+// Returns '' when nothing is playing or extraction is not possible.
+function _currentAlbumAccentHex() {
+  const cur = state.queue[state.queueIndex]
+  if (!cur || !cur.artPath) return ''
+  const cached = _cacheGet(_colorCache, cur.artPath)
+  if (cached) {
+    const [r, g, b] = cached
+    return '#' + [r, g, b].map(c => Math.round(c).toString(16).padStart(2, '0')).join('')
+  }
+  return ''
+}
+
+// Build the swatch row. Each curated colour is a round button; the pinned one is
+// ringed. "From album" pins the current cover's accent; "Reset" clears the pin.
+function _initAccentField() {
+  const wrap = document.getElementById('gen-accent-swatches')
+  if (!wrap) return
+  const render = () => {
+    const albumHex = _currentAlbumAccentHex()
+    let html = _ACCENT_SWATCHES.map(hex => {
+      const sel = _accentPinned && _accentPinned.toLowerCase() === hex.toLowerCase()
+      const label = hex === _ACCENT_DEFAULT ? 'Default green' : 'Accent ' + hex
+      return '<button class="accent-swatch' + (sel ? ' selected' : '') + '"' +
+        ' style="background:' + esc(hex) + '"' +
+        ' data-accent="' + esc(hex) + '"' +
+        ' title="' + esc(label) + '" aria-label="' + esc(label) + '"' +
+        (sel ? ' aria-pressed="true"' : '') + '></button>'
+    }).join('')
+    // From-album chip: only offered when a cover accent is available.
+    if (albumHex) {
+      const sel = _accentPinned && _accentPinned.toLowerCase() === albumHex.toLowerCase()
+      html += '<button class="accent-chip' + (sel ? ' selected' : '') + '"' +
+        ' data-accent-album="' + esc(albumHex) + '"' +
+        ' title="Use the current album cover\'s colour"' +
+        ' aria-label="Accent from current album">From album</button>'
+    }
+    // Reset chip: shown whenever a pin is active.
+    if (_accentPinned) {
+      html += '<button class="accent-chip" id="accent-reset"' +
+        ' title="Back to the default green (and album-follow)"' +
+        ' aria-label="Reset accent to default">Reset</button>'
+    }
+    wrap.innerHTML = html
+  }
+  render()
+  wrap.addEventListener('click', e => {
+    const sw = e.target.closest('[data-accent]')
+    if (sw) { _setAccentPin(sw.dataset.accent); render(); return }
+    const al = e.target.closest('[data-accent-album]')
+    if (al) { _setAccentPin(al.dataset.accentAlbum); render(); return }
+    if (e.target.closest('#accent-reset')) { _setAccentPin(''); render(); return }
+  })
+}
+
+// ── Density (App #59) ────────────────────────────────────────────────────────
+// Comfortable (default) or Compact. Compact adds body.density-compact, which a
+// focused CSS block keys off to tighten track rows, the album grid and the nav.
+// Persisted in PapaLocal (papa-density) and applied synchronously at startup so
+// there is no comfortable→compact reflow on load.
+const _DENSITY_CHOICES = ['comfortable', 'compact']
+const _DENSITY_LS_KEY = 'papa-density'
+
+function _densityChoice(raw) {
+  const s = String(raw == null ? '' : raw).toLowerCase()
+  return _DENSITY_CHOICES.indexOf(s) > -1 ? s : 'comfortable'
+}
+
+function _applyDensity(mode) {
+  try { document.body.classList.toggle('density-compact', _densityChoice(mode) === 'compact') } catch (_) {}
+}
+
+function _applyDensityEarly() {
+  let pref = 'comfortable'
+  try {
+    const o = window.PapaLocal ? window.PapaLocal.readObject(_DENSITY_LS_KEY) : {}
+    pref = _densityChoice(o && o.density)
+  } catch (_) { pref = 'comfortable' }
+  _applyDensity(pref)
+  return pref
+}
+
+function _initDensityField() {
+  const sel = document.getElementById('gen-density')
+  if (!sel) return
+  let pref = 'comfortable'
+  try {
+    const o = window.PapaLocal ? window.PapaLocal.readObject(_DENSITY_LS_KEY) : {}
+    pref = _densityChoice(o && o.density)
+  } catch (_) { pref = 'comfortable' }
+  sel.value = pref
+  _applyDensity(pref)
+  sel.onchange = e => {
+    const v = _densityChoice(e.target.value)
+    try { if (window.PapaLocal) window.PapaLocal.write(_DENSITY_LS_KEY, { density: v }) } catch (_) {}
+    _applyDensity(v)
+  }
+}
+
 // ── Appearance / theme (App #87) ─────────────────────────────────────────────
 // The music side and shared chrome can run in a warm light palette; the cinema
 // stays dark always (see styles.css). Three choices: force dark, force light,
@@ -20603,6 +21078,10 @@ async function _initGeneralSettings() {
   // Appearance next — also before the early-return guards, so a missing
   // close-to-tray checkbox can't skip theme wiring.
   await _initThemeField()
+  // Accent pin (App #58) and density (App #59) — both local-only, both before
+  // the guards so a missing later control can't skip them.
+  _initAccentField()
+  _initDensityField()
 
   const el = document.getElementById('gen-close-to-tray')
   if (!el) return
@@ -24209,7 +24688,7 @@ async function showSlskUserExplorer(username) {
         <button class="slsh-mode-btn" data-mode="folders" role="tab" title="The raw file tree — breadcrumbs, subtree download, surround finder">Folders</button>
       </div>
       <button class="slskx-star" id="slskx-star" title="Save this library">☆</button>
-      <button class="modal-close-btn" id="slsk-lib-close">✕</button>
+      <button class="modal-close-btn" id="slsk-lib-close" aria-label="Close" title="Close">✕</button>
     </div>
     <div class="slskx-toolbar" id="slskx-toolbar">
       <button class="slskx-nav" id="slskx-back" title="Back (Alt+←)" disabled>←</button>
@@ -24345,7 +24824,7 @@ async function showSlskUserExplorer(username) {
         <span class="slskx-meta">${d.subdirCount ? d.subdirCount + ' folders · ' : ''}${d.fileCount} files</span>
         <span class="slskx-size">${fmtSize(d.totalSize)}</span>
         <span class="slskx-rowbtns">
-          <button class="slskx-mini-search slskx-dir-search" data-fsearch="${esc(d.name)}" title="Search everywhere for this folder name">⌕</button>
+          <button class="slskx-mini-search slskx-dir-search" data-fsearch="${esc(d.name)}" title="Search everywhere for this folder name" aria-label="Search everywhere for this folder name">⌕</button>
         </span>
       </div>`)
     }
@@ -24357,9 +24836,9 @@ async function showSlskUserExplorer(username) {
         <span class="slskx-meta">${f.bitDepth ? f.bitDepth + '-bit ' : ''}${f.sampleRate ? (f.sampleRate/1000).toFixed(1) + 'kHz' : ''}</span>
         <span class="slskx-size">${fmtSize(f.size)}</span>
         <span class="slskx-rowbtns">
-          ${isAudio ? `<button class="slskx-mini" data-act="preview" data-fi="${i}" title="Preview — hear it before you download">⚡</button>` : ''}
-          ${isAudio ? `<button class="slskx-mini" data-act="play" data-fi="${i}" title="Download &amp; play">▶</button>` : ''}
-          <button class="slskx-mini" data-act="dl" data-fi="${i}" title="Download">↓</button>
+          ${isAudio ? `<button class="slskx-mini" data-act="preview" data-fi="${i}" title="Preview — hear it before you download" aria-label="Preview track">⚡</button>` : ''}
+          ${isAudio ? `<button class="slskx-mini" data-act="play" data-fi="${i}" title="Download &amp; play" aria-label="Download and play">▶</button>` : ''}
+          <button class="slskx-mini" data-act="dl" data-fi="${i}" title="Download" aria-label="Download">↓</button>
         </span>
       </div>`)
     })
@@ -25571,8 +26050,8 @@ async function showSlskSavedUsers() {
         <span class="slskx-meta">${u.fileCount ? u.fileCount.toLocaleString() + ' files' : ''}${
           u.note ? ' · ' + esc(u.note) : ''}</span>
         <span class="slskx-rowbtns">
-          <button class="slskx-mini" data-note="${esc(u.username)}" data-cur="${esc(u.note || '')}" title="Edit note">✎</button>
-          <button class="slskx-mini" data-remove="${esc(u.username)}" title="Remove">✕</button>
+          <button class="slskx-mini" data-note="${esc(u.username)}" data-cur="${esc(u.note || '')}" title="Edit note" aria-label="Edit note">✎</button>
+          <button class="slskx-mini" data-remove="${esc(u.username)}" title="Remove" aria-label="Remove saved library">✕</button>
         </span>
       </div>`).join('')
     : `<div class="slsk-lib-empty">No saved libraries yet.<br>
@@ -25580,17 +26059,27 @@ async function showSlskSavedUsers() {
   dlg.innerHTML = `<div class="modal-box slsk-lib-box">
     <div class="modal-header-row">
       <div class="modal-title">Saved Libraries</div>
-      <button class="modal-close-btn" id="slsk-saved-close">✕</button>
+      <button class="modal-close-btn" id="slsk-saved-close" aria-label="Close" title="Close">✕</button>
     </div>
     <div class="slsk-lib-body">${rows}</div>
   </div>`
   document.body.appendChild(dlg)
-  dlg.querySelector('#slsk-saved-close').addEventListener('click', () => dlg.remove())
-  dlg.addEventListener('click', e => { if (e.target === dlg) dlg.remove() })
+  // Keyboard focus stays inside the modal and returns to the opener on close,
+  // and Escape closes it (App #60 — this modal had neither before).
+  const _release = _trapFocus(dlg, { initial: '#slsk-saved-close' })
+  const _closeSaved = () => {
+    document.removeEventListener('keydown', _onSavedKey)
+    try { _release() } catch (_) {}
+    dlg.remove()
+  }
+  const _onSavedKey = e => { if (e.key === 'Escape') { e.preventDefault(); _closeSaved() } }
+  document.addEventListener('keydown', _onSavedKey)
+  dlg.querySelector('#slsk-saved-close').addEventListener('click', _closeSaved)
+  dlg.addEventListener('click', e => { if (e.target === dlg) _closeSaved() })
   dlg.querySelectorAll('.slskx-saved-row').forEach(r => {
     r.addEventListener('click', e => {
       if (e.target.hasAttribute('data-remove') || e.target.hasAttribute('data-note')) return
-      dlg.remove()
+      _closeSaved()
       showSlskUserExplorer(r.dataset.user)
     })
   })
@@ -25606,7 +26095,7 @@ async function showSlskSavedUsers() {
         confirmLabel: 'Save note',
         onConfirm: async (val) => {
           await window.api.slskSaveUser({ username, note: String(val || '').trim() }).catch(() => {})
-          dlg.remove()
+          _closeSaved()
           showSlskSavedUsers()
           showSnackbar('Note saved')
         },
@@ -25621,7 +26110,7 @@ async function showSlskSavedUsers() {
       // re-save it through the existing slskSaveUser channel.
       var snap = (list || []).find(function (u) { return u.username === username }) || { username: username }
       await window.api.slskUnsaveUser({ username: username })
-      dlg.remove()
+      _closeSaved()
       showSlskSavedUsers()
       pushUndo('Removed ' + username, function () {
         window.api.slskSaveUser({ username: snap.username, note: snap.note || '' }).catch(function () {})
@@ -28345,7 +28834,7 @@ function showNoticeHistory() {
     : '<div class="mg-empty" style="padding:24px">Nothing has gone wrong yet.</div>'
   dlg.innerHTML = '<div class="modal-box">' +
     '<div class="modal-header-row"><div class="modal-title">Recent notices</div>' +
-    '<button class="modal-close-btn" id="notice-close">✕</button></div>' +
+    '<button class="modal-close-btn" id="notice-close" aria-label="Close" title="Close">✕</button></div>' +
     '<div class="notice-list">' + rows + '</div></div>'
   document.body.appendChild(dlg)
   const close = () => { document.removeEventListener('keydown', onKey); dlg.remove() }
@@ -29365,7 +29854,7 @@ function _mgConfirm(title, bodyHtml, confirmLabel, onConfirm) {
   dlg.innerHTML = '<div class="modal-box mg-confirm-box">' +
     '<div class="modal-header-row">' +
       '<div class="modal-title">' + esc(title) + '</div>' +
-      '<button class="modal-close-btn" id="mg-cf-x">✕</button>' +
+      '<button class="modal-close-btn" id="mg-cf-x" aria-label="Close" title="Close">✕</button>' +
     '</div>' +
     '<div class="mg-confirm-body">' + bodyHtml + '</div>' +
     '<div class="mg-confirm-actions">' +
@@ -29442,7 +29931,7 @@ function _mgPrompt(title, opts) {
   dlg.innerHTML = '<div class="modal-box mg-confirm-box">' +
     '<div class="modal-header-row">' +
       '<div class="modal-title">' + esc(title) + '</div>' +
-      '<button class="modal-close-btn" id="mg-cf-x">✕</button>' +
+      '<button class="modal-close-btn" id="mg-cf-x" aria-label="Close" title="Close">✕</button>' +
     '</div>' +
     '<div class="mg-confirm-body">' +
       (label ? '<label class="sq-label">' + esc(label) + '</label>' : '') + field +

@@ -377,6 +377,22 @@
               <option value="system">Follow system</option>
             </select>
           </label>
+          <!-- Accent colour picker (App #58). A curated row of swatches plus
+               "From album" (pins the currently-playing cover's extracted accent)
+               and "Reset". The swatch buttons are filled by _initAccentField at
+               runtime so the pinned one and the album option stay in sync. -->
+          <div class="mcs-set-row mcs-set-row-accent">
+            <span>Accent colour</span>
+            <div class="accent-swatches" id="gen-accent-swatches"></div>
+          </div>
+          <!-- Density (App #59). Comfortable is the default; Compact tightens
+               list paddings and row heights via body.density-compact. -->
+          <label class="mcs-set-row">Density
+            <select class="mcs-set-select" id="gen-density">
+              <option value="comfortable">Comfortable</option>
+              <option value="compact">Compact</option>
+            </select>
+          </label>
         </div>
         <div class="mcs-set-group" id="playback-settings">
           <div class="mcs-set-group-label">Playback</div>
@@ -1049,7 +1065,8 @@
   </div>
 </div>
 
-<div class="snackbar-container" id="snackbar-container"></div>
+<!-- aria-live so undo snackbars are announced to screen readers (App #60). -->
+<div class="snackbar-container" id="snackbar-container" role="status" aria-live="polite" aria-atomic="false"></div>
 
 <div class="cmd-palette-overlay" id="cmd-palette" style="display:none">
   <div class="cmd-palette-box">

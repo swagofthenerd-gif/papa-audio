@@ -234,6 +234,11 @@ function addItem(state, item, opts) {
     }
     return existing
   }
+  // Priority is a dispatch tie-breaker, not a queue-jump into a peer's remote
+  // line: planDispatch sorts by it, so a higher number is sent BEFORE a lower one
+  // this tick. Default 0 keeps every existing enqueue path — and every state file
+  // written before priority existed — ordering purely by addedAt, unchanged.
+  var priority = (opts && Number.isFinite(Number(opts.priority))) ? Number(opts.priority) : 0
   var entry = {
     key: key,
     filename: String(item.filename),
@@ -243,6 +248,7 @@ function addItem(state, item, opts) {
     triedAt: {},
     attempts: 0,
     addedAt: item.addedAt != null ? item.addedAt : Date.now(),
+    priority: priority,
   }
   state.pending.push(entry)
   return entry
@@ -304,8 +310,15 @@ function planDispatch(state, cfg, now) {
   var total = Object.keys(state.inflight).length
   var busy = inflightIdentities(state)
   var plan = []
-  // Oldest first, so a big album does not starve behind a later request.
-  var queue = state.pending.slice().sort(function (a, b) { return a.addedAt - b.addedAt })
+  // Highest priority first, then oldest first within a priority band, so a big
+  // album does not starve behind a later request. Priority is absent (0) on
+  // everything unless explicitly restamped, so the default order is pure addedAt.
+  var queue = state.pending.slice().sort(function (a, b) {
+    var pa = Number(a.priority) || 0
+    var pb = Number(b.priority) || 0
+    if (pa !== pb) return pb - pa
+    return a.addedAt - b.addedAt
+  })
   for (var i = 0; i < queue.length; i++) {
     if (total >= cfg.maxGlobalInflight) break
     var entry = queue[i]
@@ -355,6 +368,9 @@ function markDispatched(state, key, username, now, sentFilename) {
     triedAt: entry.triedAt,
     attempts: entry.attempts,
     addedAt: entry.addedAt,
+    // Carried through the round-trip so a re-queue after failure/stall keeps the
+    // priority the user restamped it with.
+    priority: Number(entry.priority) || 0,
     since: now == null ? Date.now() : now,
   }
   return state.inflight[key]
@@ -415,6 +431,7 @@ function recordFailure(state, key, username, cfg, now) {
     triedAt: live.triedAt || {},
     attempts: live.attempts,
     addedAt: live.addedAt,
+    priority: Number(live.priority) || 0,
   }
   // Nothing left to try: hold it, a later search may add a fresh source.
   state.pending.push(entry)
@@ -453,6 +470,55 @@ function addSources(state, key, sources, cfg) {
     if (!known) { target.sources.push(norm[j]); added++ }
   }
   return added
+}
+
+// Restamp the priority of every queued item belonging to one album group, so a
+// user pinning "Time - Pink Floyd" to the top moves the whole folder, not one
+// track. A group is identified the way a shelf is: the album folder (the parent
+// of each file, matched via _folderOf so peer-specific "Music/"/"Shared/" prefixes
+// never matter) plus the peer `username` that serves it. A missing username
+// matches on folder alone — the UI always has a username, but a folder-only call
+// stays useful. Restamps pending and inflight alike; an inflight item keeps its
+// slot but its next re-queue lands in the higher band. Persistence is the
+// caller's job (main writes state after). Returns how many entries were changed.
+function prioritizeGroup(state, opts, priority) {
+  opts = opts || {}
+  var p = Number(priority)
+  if (!Number.isFinite(p)) return 0
+  // folderName may arrive as a bare album name ("DSOTM") or a fuller path
+  // ("Shared/Rips/DSOTM"); reduce it to the last component, lowercased, exactly
+  // the shape _folderOf(filename) produces for a file that lives inside it.
+  var fn = String(opts.folderName || '')
+  var fi = Math.max(fn.lastIndexOf('/'), fn.lastIndexOf('\\'))
+  var wantFolder = (fi >= 0 ? fn.slice(fi + 1) : fn).toLowerCase()
+  var wantUser = opts.username ? String(opts.username) : null
+  var changed = 0
+  var matches = function (filename, sources, inflightUser) {
+    if (wantFolder && _folderOf(filename) !== wantFolder) return false
+    if (!wantUser) return true
+    if (inflightUser && inflightUser === wantUser) return true
+    var srcs = sources || []
+    for (var i = 0; i < srcs.length; i++) {
+      if (srcs[i] && srcs[i].username === wantUser) return true
+    }
+    return false
+  }
+  for (var i = 0; i < state.pending.length; i++) {
+    var e = state.pending[i]
+    if (matches(e.filename, e.sources, null)) {
+      if ((Number(e.priority) || 0) !== p) changed++
+      e.priority = p
+    }
+  }
+  var ik = Object.keys(state.inflight)
+  for (var j = 0; j < ik.length; j++) {
+    var v = state.inflight[ik[j]]
+    if (matches(v.filename || ik[j], v.sources, v.username)) {
+      if ((Number(v.priority) || 0) !== p) changed++
+      v.priority = p
+    }
+  }
+  return changed
 }
 
 // Files that ran out of untried sources — the caller can search for more.
@@ -517,6 +583,7 @@ function recordStall(state, key, username, cfg, now) {
     triedAt: live.triedAt || {},
     attempts: live.attempts,
     addedAt: live.addedAt,
+    priority: Number(live.priority) || 0,
   }
   state.pending.push(entry)
   return entry
@@ -657,6 +724,7 @@ var _PapaDownloadScheduler = {
   normalizeSource: normalizeSource,
   addItem: addItem,
   addSources: addSources,
+  prioritizeGroup: prioritizeGroup,
   rankSources: rankSources,
   planDispatch: planDispatch,
   markDispatched: markDispatched,
