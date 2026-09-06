@@ -6,6 +6,17 @@ rework and perfection pass. Everything below is a real, buildable gap between
 not speculation. Grouped by surface; roughly ordered by felt impact within
 each group. Items marked ◐ are partially built already.
 
+> **STATUS 2026-09-07 — campaign complete.** Waves 1-6 built, verified,
+> committed and pushed (commits 324e24c…60a940c; suite 3,110 → 3,493, green
+> at every commit). Done: items 1-16, 18-25, 27-39, 41-42, 44-56, 58-64, 66,
+> 68-70. Shipped-behind-toggle awaiting a 30-second visual check: 26 (overlay
+> controls — docs/learnings-overlay-attempt.md has the recipe). Partial: 62
+> (two clean extractions; Downloads-tab region honestly aborted at the
+> coupling threshold). Needs user/infrastructure: 17 (Last.fm data), 40 is
+> built but token-gated, 43 HDR (needs an HDR display), 57 auto-update
+> (hosting decision), 65 Android parity (its own project), 67 long-soak
+> (run overnight when convenient).
+
 ## Music player & library
 
 1. ◐ Session restore prompt after a crash: "Pick up where you left off?" —
