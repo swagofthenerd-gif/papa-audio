@@ -18,6 +18,7 @@ const PRELOAD_CODE = strip(PRELOAD)
 const HANDLERS = [
   'video-settings-get', 'video-settings-set', 'video-catalog-get',
   'video-search', 'video-detail', 'video-streams', 'video-probe',
+  'video-thumb',
   'video-play', 'video-stop',
   'video-control', 'video-tracks', 'video-chapters', 'video-skip-segments',
 ]
@@ -25,6 +26,7 @@ const HANDLERS = [
 const PRELOAD_METHODS = [
   'videoSettingsGet', 'videoSettingsSet', 'videoCatalogGet',
   'videoSearch', 'videoDetail', 'videoStreams', 'videoProbe',
+  'videoThumb',
   'videoPlay', 'videoStop', 'videoControl', 'videoTracks',
   'videoChapters', 'videoSkipSegments', 'onVideoEvent', 'onVideoState',
 ]
@@ -49,6 +51,30 @@ test('the preload surface exposes the video methods', () => {
 
 test('tmdb apiKey is wired as a per-request getter', () => {
   assert.match(MAIN, /apiKey:\s*\(\)\s*=>\s*_videoSettings\(\)\.tmdbApiKey/)
+})
+
+test('video-thumb returns a null path rather than throwing when nothing is playing', () => {
+  const start = MAIN.indexOf("ipcMain.handle('video-thumb'")
+  assert.ok(start > 0, 'video-thumb handler present')
+  const end = MAIN.indexOf('ipcMain.handle', start + 1)
+  const handler = MAIN.slice(start, end)
+  // Guarded on there being a thumbnailer at all, and it hands back { ok, path }.
+  assert.match(handler, /_videoSession\.thumbnailer/)
+  assert.match(handler, /path:\s*null/)
+})
+
+test('the hover thumbnailer is stood up on the stream ready path and torn down with the stream', () => {
+  // Built when the streamer signals ready, using the served URL as the source.
+  const readyStart = MAIN.indexOf("streamer.on('ready'")
+  assert.ok(readyStart > 0)
+  const readyEnd = MAIN.indexOf('onReady(url, streamer)', readyStart)
+  const readyBlock = MAIN.slice(readyStart, readyEnd)
+  assert.match(readyBlock, /createThumbnailer\(\{[^}]*source:\s*url/)
+  // Torn down in the same teardown the streamer is, and on an engine crash.
+  assert.match(MAIN, /_thumbnailerTeardown\(\)/)
+  const td = MAIN.slice(MAIN.indexOf('function _thumbnailerTeardown'),
+    MAIN.indexOf('function _videoTeardown'))
+  assert.match(td, /_videoSession\.thumbnailer\.cleanup\(\)/)
 })
 
 test('video-settings-set invalidates video caches when the key changes', () => {
@@ -255,10 +281,13 @@ test('the screenshot verb returns a path in the value field', () => {
   assert.match(body, /value: \{ path: filePath \}/)
 })
 
-test('_videoScreenshotPath writes under USER_DATA and does not clobber', () => {
+test('_videoScreenshotPath writes to the pictures folder and does not clobber', () => {
   const start = MAIN.indexOf('function _videoScreenshotPath()')
   const body = MAIN.slice(start, MAIN.indexOf('\n}', start))
-  assert.match(body, /path\.join\(USER_DATA, 'screenshots'\)/)
+  // Somewhere a person will actually find them (App #48), with USER_DATA as the
+  // headless / locked-down fallback so the verb never fails for want of a dir.
+  assert.match(body, /app\.getPath\('pictures'\), 'Papa Audio'/)
+  assert.match(body, /path\.join\(USER_DATA, 'screenshots'\)/, 'the fallback must still exist')
   assert.match(body, /toISOString\(\)/, 'a timestamp keeps one screenshot from clobbering the next')
 })
 
@@ -426,7 +455,9 @@ test('playback waits for the stage rectangle before starting', () => {
   const RENDERER = require('fs').readFileSync(require('path').join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
   const at = RENDERER.indexOf('function _videoPlayResult(')
   assert.ok(at > -1)
-  const body = RENDERER.slice(at, at + 2600)
+  // The window is generous: the open() payload has grown prefs and callbacks,
+  // and the point is the ORDER of ready vs play, not the function's size.
+  const body = RENDERER.slice(at, at + 5000)
   const ready = body.indexOf('_player.ready')
   const play = body.indexOf('api.videoPlay')
   assert.ok(ready > -1, 'the stage rectangle must be reported before playback')
@@ -814,4 +845,391 @@ test('seeking tells the torrent where the viewer went', () => {
   assert.match(fn, /seekToFraction\(position \/ duration\)/)
   assert.match(fn, /if \(duration <= 0\) return/, 'a fraction of nothing is not a position')
   assert.match(fn, /catch \(_\)/, 'a failed optimisation must not fail the seek')
+})
+
+// ── Wave 5: shared stream start, mid-play source switch ─────────────────────
+// The torrent-streamer setup was copied into a second handler once and drifted;
+// it now lives in one helper both video-play and video-switch-stream call, so
+// the streamer options and the token guard cannot fall out of step.
+test('the torrent-streamer setup lives in one shared helper', () => {
+  assert.ok(MAIN.includes('function _startTorrentStream('), 'the shared helper must exist')
+  // A destructured param list defeats the brace-matcher, so slice by text: from
+  // the helper up to the video-play handler that follows it.
+  const at = MAIN.indexOf('function _startTorrentStream(')
+  const body = MAIN.slice(at, MAIN.indexOf("ipcMain.handle('video-play'", at))
+  assert.match(body, /new TorrentStreamer\(/)
+  assert.match(body, /streamer\.on\('ready'/)
+  assert.match(body, /onReady\(url, streamer\)/, 'the caller decides what happens on ready')
+  assert.match(body, /_videoSession\.streamer = streamer/)
+  assert.match(body, /streamer\.start\(/)
+})
+
+// video-play no longer builds its own TorrentStreamer — it goes through the
+// helper — so the second copy that used to drift cannot come back.
+test('video-play starts its torrent through the shared helper', () => {
+  const body = handlerBody('video-play')
+  assert.match(body, /_startTorrentStream\(result, \{/)
+  assert.ok(!/new TorrentStreamer\(/.test(body), 'video-play must not build a streamer directly')
+})
+
+// §player 30: mpv is spun up in parallel with the torrent connecting, not after
+// the first playable bytes arrive. The idle mpv is loaded (not re-started) when
+// the stream is ready, or the parallel spin-up would be killed by a second
+// start().
+test('mpv spin-up overlaps the torrent stream start', () => {
+  const body = handlerBody('video-play')
+  assert.match(body, /videoEngine\(\)\.start\(undefined, \{ wid \}\)/,
+    'mpv must spawn idle, in parallel, before the URL exists')
+  // The ready stream is loaded into the running mpv (not started afresh), after
+  // the parallel spin-up settles. A stale-token re-check sits between spinUp and
+  // load so a rapid double-play cannot load the old URL into a newer engine.
+  assert.match(body, /spinUp\.then\(\(\) => \{/,
+    'the load waits on the parallel spin-up')
+  assert.match(body, /if \(!current\(\)\) return\s*\n\s*return videoEngine\(\)\.load\(url\)/,
+    'the ready stream is loaded into the running mpv only while still current')
+})
+
+// §player 26: switch the source under a playing title without losing the place.
+test('video-switch-stream keeps mpv alive and reuses only the streamer', () => {
+  const body = handlerBody('video-switch-stream')
+  // Position captured before the teardown, or the whole point is lost.
+  assert.match(body, /const resumeAt = Number\(state && state\.position\)/)
+  const teardownAt = body.indexOf('_videoSession.streamer.stop()')
+  const readAt = body.indexOf('resumeAt')
+  assert.ok(readAt > -1 && teardownAt > -1 && readAt < teardownAt,
+    'the position must be read before the streamer is stopped')
+  // Only the streamer is torn down — the engine is NOT stopped. Checked against
+  // the code with comments stripped, since the comment explains what it avoids.
+  const code = body.split('\n').filter(l => !/^\s*(\/\/|\*)/.test(l)).join('\n')
+  assert.ok(!/_videoTeardown\(\)/.test(code), 'switching must not stop mpv')
+  assert.ok(!/videoEngine\(\)\.stop\(\)/.test(code), 'switching must not stop mpv')
+  // The new stream is started through the shared helper, loaded into the
+  // running mpv, and seeked absolutely back to the saved position.
+  assert.match(body, /_startTorrentStream\(result, \{/)
+  assert.match(body, /videoEngine\(\)\.load\(url\)/)
+  assert.match(body, /videoEngine\(\)\.seek\(resumeAt, 'absolute'\)/)
+  assert.match(body, /_prioritiseStreamAtPlayhead\(\)/)
+})
+
+test('video-switch-stream stamps a fresh token so a stale ready cannot hijack it', () => {
+  const body = handlerBody('video-switch-stream')
+  assert.match(body, /const token = \+\+_videoSession\.token/)
+  assert.match(body, /const current = \(\) => _videoSession\.token === token/)
+})
+
+test('the switch-stream channel is reachable from the renderer', () => {
+  assert.match(PRELOAD, /videoSwitchStream:/)
+})
+
+// ── Wave 5: online subtitle search (§player 21) ─────────────────────────────
+test('video-sub-search forwards the needsKey marker', () => {
+  const body = handlerBody('video-sub-search')
+  assert.match(body, /opensubs\(\)\.search\(params/)
+  assert.match(body, /needsKey: results\.needsKey === true/,
+    'the UI must tell "no key" apart from "nothing found"')
+  assert.match(body, /ok: false[^\n]*results: \[\]/, 'a failed search still returns a list, not an exception')
+})
+
+test('video-sub-download mints a link and writes it under the stream cache', () => {
+  const body = handlerBody('video-sub-download')
+  assert.match(body, /opensubs\(\)\.download\(fileId\)/)
+  // The empty fileId is refused before spending quota.
+  assert.match(body, /if \(fileId == null \|\| fileId === ''\) return \{ ok: false/)
+  // No key is reported as such, not as a generic failure.
+  assert.match(body, /if \(minted\.needsKey\)/)
+  assert.match(body, /needsKey: true/)
+  // Written under the stream cache root, ready for subAdd.
+  assert.match(body, /streamRoot\(\)/)
+  assert.match(body, /fs\.writeFileSync\(dest/)
+  assert.match(body, /ok: true, path: dest/)
+})
+
+test('the OpenSubtitles instance reads its key fresh through a getter', () => {
+  assert.match(MAIN, /const opensubs = _lazy\(\(\) => createOpenSubtitles\(\{/)
+  assert.match(MAIN, /apiKey: \(\) => _videoSettings\(\)\.openSubtitlesApiKey/)
+})
+
+test('openSubtitlesApiKey is a video setting with an empty default', () => {
+  const start = MAIN.indexOf('function _videoSettings()')
+  const body = MAIN.slice(start, MAIN.indexOf('\n}', start))
+  assert.match(body, /openSubtitlesApiKey: ''/)
+})
+
+test('the subtitle-search channels are reachable from the renderer', () => {
+  assert.match(PRELOAD, /videoSubSearch:/)
+  assert.match(PRELOAD, /videoSubDownload:/)
+})
+
+// ── Wave 5: App §14/§19 — providers & recommendations already ride video-detail
+// tmdb's normalised movie/TV detail already carries `providers` and
+// `recommendations` as fields (catalog/tmdb.js _extras), and video-detail
+// returns the detail object untouched, so no passthrough handler is needed —
+// the fields survive IPC as they are. This pins that they are not stripped.
+test('video-detail passes the detail through without dropping fields', () => {
+  const body = handlerBody('video-detail')
+  // The whole detail object is returned, either bare or with a copied seasons
+  // list — never a hand-picked subset that could drop providers/recommendations.
+  assert.match(body, /return \{ ok: true, detail \}/)
+  assert.match(body, /detail: \{ \.\.\.detail, seasons \}/)
+  // And there is no separate passthrough calling methods tmdb does not export.
+  const registered = new Set([...MAIN_CODE.matchAll(/ipcMain\.handle\(\s*'([^']+)'/g)].map(m => m[1]))
+  assert.ok(!registered.has('video-recommendations'),
+    'recommendations ride video-detail; tmdb exports no recommendations() method')
+  assert.ok(!registered.has('video-watch-providers'),
+    'providers ride video-detail; tmdb exports no watchProviders() method')
+})
+
+// ── Wave 5: App §38 — do not cache a truncated season chain ─────────────────
+test('a truncated anime season chain is not cached', () => {
+  const body = handlerBody('video-seasons')
+  assert.match(body, /out\.truncated !== true/,
+    'a partial chain would pin the incomplete list for the whole TTL')
+  assert.match(body, /out\.seasons\.length && out\.truncated !== true/)
+})
+
+// ── Wave 6: bandwidth cap (App #41) & seed-back (App #42) settings ────────────
+test('the new bandwidth and seed settings are in the defaults', () => {
+  const start = MAIN.indexOf('function _videoSettings()')
+  const body = MAIN.slice(start, MAIN.indexOf('\n}', start))
+  assert.match(body, /downloadLimitMbps: null/)
+  assert.match(body, /seedWhileWatching: true/)
+  // The subtitle key was supposed to be here already; verify it still is.
+  assert.match(body, /openSubtitlesApiKey: ''/)
+})
+
+test('video-settings-set only writes whitelisted keys', () => {
+  assert.match(MAIN, /const VIDEO_SETTING_KEYS = new Set\(\[/)
+  const start = MAIN.indexOf('const VIDEO_SETTING_KEYS = new Set([')
+  const set = MAIN.slice(start, MAIN.indexOf('])', start))
+  for (const key of ['tmdbApiKey', 'omdbApiKey', 'openSubtitlesApiKey',
+                     'preferSurround', 'preferredQuality', 'torrentSources',
+                     'downloadLimitMbps', 'seedWhileWatching', 'streamCacheDir']) {
+    assert.match(set, new RegExp("'" + key + "'"), key + ' must be writable')
+  }
+  const body = handlerBody('video-settings-set')
+  assert.match(body, /VIDEO_SETTING_KEYS\.has\(k\)/, 'the whitelist must actually gate the merge')
+})
+
+test('a new streamer is built with the stored cap and seed setting', () => {
+  const at = MAIN.indexOf('function _startTorrentStream(')
+  const body = MAIN.slice(at, MAIN.indexOf("ipcMain.handle('video-play'", at))
+  // Mbps → bytes/s is ×125000, and null/0 leaves it uncapped.
+  assert.match(body, /\* 125000/)
+  assert.match(body, /downloadLimitBps,/)
+  assert.match(body, /seedWhileWatching: settings\.seedWhileWatching !== false/)
+})
+
+test('changing the cap or the seed switch applies to the live streamer', () => {
+  const body = handlerBody('video-settings-set')
+  assert.match(body, /streamer\.setDownloadLimit\(/, 'the live cap must be re-applied')
+  assert.match(body, /streamer\.setSeedWhileWatching\(/, 'the live seed switch must be re-applied')
+  // Only when the value actually changed, and against the running streamer.
+  assert.match(body, /next\.downloadLimitMbps !== current\.downloadLimitMbps/)
+  assert.match(body, /next\.seedWhileWatching !== current\.seedWhileWatching/)
+  assert.match(body, /const streamer = _videoSession\.streamer/)
+})
+
+// ── Wave 6: predownload IPC (App #40 UI) ─────────────────────────────────────
+test('video-predownload drives the streamer predownloadFile', () => {
+  const body = handlerBody('video-predownload')
+  assert.match(body, /if \(!streamer\) return \{ ok: false/, 'nothing streaming is refused')
+  assert.match(body, /streamer\.predownloadFile\(Number\(index\)\)/)
+})
+
+test('video-predownload-cancel withdraws the standing request', () => {
+  const body = handlerBody('video-predownload-cancel')
+  assert.match(body, /streamer\.cancelPredownload\(\)/)
+})
+
+test('video-predownload-progress returns the progress payload', () => {
+  const body = handlerBody('video-predownload-progress')
+  assert.match(body, /streamer\.predownloadProgress\(\)/)
+  assert.match(body, /ok: true, progress/)
+  // A read with nothing streaming is a null progress, not an exception.
+  assert.match(body, /progress: progress \|\| null/)
+})
+
+test('the predownload channels are reachable from the renderer', () => {
+  assert.match(PRELOAD, /videoPredownload:/)
+  assert.match(PRELOAD, /videoPredownloadCancel:/)
+  assert.match(PRELOAD, /videoPredownloadProgress:/)
+})
+
+// ── Wave 6: the stalled event carries stallCount ─────────────────────────────
+// §player 27's auto-switch counts repeated stalls; the count must survive the
+// hop to the renderer or the cap can never be enforced.
+test('the forwarded stalled event includes stallCount', () => {
+  const start = MAIN.indexOf('function _wireVideoEngine()')
+  const body = MAIN.slice(start, MAIN.indexOf('\n}\n', start))
+  const at = body.indexOf("engine.on('stalled'")
+  assert.ok(at > -1, 'the stalled handler must exist')
+  const handler = body.slice(at, body.indexOf("engine.on('unstalled'", at))
+  assert.match(handler, /kind: 'stalled'/)
+  assert.match(handler, /stallCount: payload && payload\.stallCount/)
+})
+
+// ── Wave 6: diagnostics page (App §2-12) ─────────────────────────────────────
+test('video-diagnostics probes each subsystem independently and never throws', () => {
+  const body = handlerBody('video-diagnostics')
+  // Each probe is wrapped so one failure cannot sink the whole call.
+  assert.match(body, /catch \(_\) \{ return false \}/)
+  // slskd reuses the /application login probe.
+  assert.match(body, /slskdFetch\('GET', '\/application'\)/)
+  assert.match(body, /isLoggedIn/)
+  // tmdb: a key must be set AND the service must answer, under a 5 s ceiling.
+  assert.match(body, /_videoSettings\(\)\.tmdbApiKey/)
+  assert.match(body, /AbortSignal\.timeout\(5000\)/)
+  // mpv: the binary is probed on PATH.
+  assert.match(body, /execFile\('mpv', \['--version'\]/)
+  // storeBridge: the crash-proof video store is readable.
+  assert.match(body, /sideStores\.videoStore\.get\(\)/)
+  // sources: defensive — an empty list when providers exports no health view.
+  assert.match(body, /require\('\.\/providers\/index'\)/)
+  assert.match(body, /return \[\]/)
+  // The shape the diagnostics page reads.
+  assert.match(body, /slskd,\s*\n\s*tmdb,\s*\n\s*mpv,\s*\n\s*storeBridge:/)
+  assert.match(body, /sources: probeSources/)
+})
+
+test('the diagnostics channel is reachable from the renderer', () => {
+  assert.match(PRELOAD, /videoDiagnostics:/)
+})
+
+// ── Wave 6: export / import everything (App §2-12) ────────────────────────────
+test('papa-export-all bundles every store and redacts secrets', () => {
+  const body = handlerBody('papa-export-all')
+  assert.match(body, /dialog\.showSaveDialog\(/, 'the path is chosen through a save dialog')
+  assert.match(body, /if \(r\.canceled \|\| !r\.filePath\) return \{ ok: false/)
+  // The bundling itself now lives in one shared routine, so the export handler
+  // and the auto-backup can never drift.
+  assert.match(body, /_buildBackupPayload\(\)/)
+  assert.match(body, /fs\.writeFileSync\(r\.filePath/)
+})
+
+test('the backup payload is built once, by the shared helper', () => {
+  const collect = MAIN.slice(MAIN.indexOf('function _collectBackupStores('),
+                             MAIN.indexOf('function _buildBackupPayload('))
+  // Every store in the map, read by its own name — the one place it happens.
+  assert.match(collect, /for \(const \[name, side\] of Object\.entries\(sideStores\)\)/)
+  assert.match(collect, /stores\[name\] = side\.get\(\)/)
+  const build = MAIN.slice(MAIN.indexOf('function _buildBackupPayload('),
+                           MAIN.indexOf("ipcMain.handle('papa-export-all'"))
+  assert.match(build, /_redactSecrets\(store\.store/, 'settings are stripped of secrets')
+  assert.match(build, /_collectBackupStores\(\)/)
+  assert.match(build, /schemaVersion: STORE_SCHEMA_VERSION/, 'the bundle carries its schema version (App §96)')
+})
+
+test('secrets are redacted by key name, not exported in the clear', () => {
+  assert.match(MAIN, /const _SECRET_KEY_RE = \/password\|token\|key\/i/)
+  const start = MAIN.indexOf('function _redactSecrets(')
+  const body = MAIN.slice(start, MAIN.indexOf('\n}', start))
+  assert.match(body, /_SECRET_KEY_RE\.test\(k\)/)
+  assert.match(body, /_redactSecrets\(v\)/, 'nested objects are redacted too')
+})
+
+test('papa-import-all validates the shape and never overwrites blind', () => {
+  const body = handlerBody('papa-import-all')
+  // Takes an optional path, falls back to a dialog.
+  assert.match(body, /if \(!filePath\)/)
+  assert.match(body, /dialog\.showOpenDialog\(/)
+  // Shape check: the marker and a stores object are both required.
+  assert.match(body, /parsed\.papaBackup == null/)
+  assert.match(body, /!parsed\.stores/)
+  // A timestamped .bak of the CURRENT value is written before each store is
+  // overwritten.
+  assert.match(body, /const bak = path\.join\(USER_DATA, `\$\{name\}\.\$\{stamp\}\.bak`\)/)
+  const bakAt = body.indexOf('.bak`)')
+  const setAt = body.indexOf('side.set(value)')
+  assert.ok(bakAt > -1 && setAt > -1 && bakAt < setAt,
+    'the backup must be written before the store is overwritten')
+  // Returns the names it actually wrote.
+  assert.match(body, /imported\.push\(name\)/)
+  assert.match(body, /return \{ ok: true, imported \}/)
+})
+
+test('the export/import channels are reachable from the renderer', () => {
+  assert.match(PRELOAD, /papaExportAll:/)
+  assert.match(PRELOAD, /papaImportAll:/)
+})
+
+// ── Wave 7: user-facing changelog (App §7) ────────────────────────────────────
+test('app-changelog returns the markdown and the app version', () => {
+  const body = handlerBody('app-changelog')
+  assert.match(body, /require\('\.\/package\.json'\)\.version/, 'version comes from package.json')
+  assert.match(body, /CHANGELOG-APP\.md/, 'the prose is read from the docs file')
+  assert.match(body, /return \{ ok: true, markdown, version \}/)
+})
+
+test('the changelog doc exists and is grouped as promised', () => {
+  const md = fs.readFileSync(path.join(__dirname, '..', 'docs', 'CHANGELOG-APP.md'), 'utf8')
+  for (const heading of ['Movies & Anime', 'Player', 'Sources', 'Music', 'Under the hood']) {
+    assert.ok(md.includes(`## ${heading}`), `missing section: ${heading}`)
+  }
+  const bullets = (md.match(/^- /gm) || []).length
+  assert.ok(bullets >= 15 && bullets <= 60, `expected a healthy set of bullets, found ${bullets}`)
+})
+
+test('the changelog channel is reachable from the renderer', () => {
+  assert.match(PRELOAD, /appChangelog:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('app-changelog'\)/)
+})
+
+// ── Wave 7: offline detection (App §11) ───────────────────────────────────────
+test('the online-state channel is reachable from the renderer as a subscription', () => {
+  assert.match(PRELOAD, /onAppOnlineState:/)
+  const line = PRELOAD.slice(PRELOAD.indexOf('onAppOnlineState:'),
+                             PRELOAD.indexOf('onAppOnlineState:') + 200)
+  assert.match(line, /ipcRenderer\.on\('app-online-state'/)
+  assert.match(line, /removeListener\('app-online-state'/, 'it returns an unsubscribe')
+})
+
+// ── Wave 9: MPRIS polish (App #68) ────────────────────────────────────────────
+// KDE's media widget is the consumer. These pin that the metadata the widget
+// reads is actually populated and every transport control forwards to the
+// renderer — the wiring is source-shape asserted the same way the video handlers
+// are, since main.js cannot be required outside Electron.
+test('MPRIS metadata carries title, album, artist, artwork and length', () => {
+  const start = MAIN.indexOf('function updateMpris(')
+  const body = MAIN.slice(start, MAIN.indexOf('\n}', start))
+  assert.match(body, /'mpris:length': Math\.round\(\(data\.duration \|\| 0\) \* 1e6\)/, 'duration must be reported')
+  assert.match(body, /'mpris:artUrl': _mprisArtUrl\(data\.artPath\)/, 'artwork must be sent')
+  assert.match(body, /'xesam:title'/)
+  assert.match(body, /'xesam:album'/)
+  assert.match(body, /'xesam:artist'/)
+})
+
+// A streamed track's cover is an http URL; prefixing file:// produced
+// "file://https://…" which KDE could not load. Local paths still get file://.
+test('a streamed http cover is sent as-is, a local path gets file://', () => {
+  const start = MAIN.indexOf('function _mprisArtUrl(')
+  const body = MAIN.slice(start, MAIN.indexOf('\n}', start))
+  assert.match(body, /if \(!artPath\) return ''/, 'no cover is an empty artUrl, not "file://"')
+  assert.match(body, /if \(\/\^https\?:\\\/\\\/\/\.test\(artPath\)\) return artPath/, 'an http cover passes through unchanged')
+  assert.match(body, /return 'file:\/\/' \+ encodeURI\(artPath\)/, 'a local path still gets the file scheme')
+  // The old bug: the http case being wrapped in file://.
+  assert.ok(!/'file:\/\/' \+ encodeURI\(data\.artPath\)/.test(MAIN),
+    'the old unconditional file:// prefix must be gone')
+})
+
+test('position and duration are reported to MPRIS with drift interpolation', () => {
+  // getPosition interpolates elapsed time since the last update so a widget
+  // scrubber advances smoothly between the once-a-second syncs.
+  const init = MAIN.slice(MAIN.indexOf('function initMpris('), MAIN.indexOf('function updateMpris('))
+  assert.match(init, /mprisPlayer\.getPosition = \(\) =>/, 'the position getter must exist')
+  assert.match(init, /_mprisPos\.playing \? \(Date\.now\(\) - _mprisPos\.at\) \/ 1000 : 0/, 'drift only while playing')
+  const upd = MAIN.slice(MAIN.indexOf('function updateMpris('), MAIN.indexOf('function updateMpris(') + 900)
+  assert.match(upd, /_mprisPos = \{ position: data\.position \|\| 0, at: Date\.now\(\), playing: !!data\.playing \}/)
+})
+
+test('every MPRIS transport control forwards to the renderer', () => {
+  const init = MAIN.slice(MAIN.indexOf('function initMpris('), MAIN.indexOf('function updateMpris('))
+  for (const [ev, cmd] of [['playpause', 'play-pause'], ['play', 'play'], ['pause', 'pause'],
+                           ['next', 'next'], ['previous', 'prev'], ['stop', 'stop']]) {
+    assert.match(init, new RegExp(`on\\('${ev}',\\s*\\(\\) => send\\('${cmd}'\\)`), `${ev} is not wired`)
+  }
+  // Seek and volume are wired too, not just the buttons.
+  assert.match(init, /on\('seek',\s*\(offsetUs\) =>/)
+  assert.match(init, /on\('position',\s*\(e\) =>/)
+  assert.match(init, /on\('volume',\s*\(v\) =>/)
+  // The service declares itself controllable so the widget enables its buttons.
+  assert.match(init, /mprisPlayer\.canControl = true/)
 })

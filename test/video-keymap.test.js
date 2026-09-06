@@ -45,6 +45,12 @@ test('single-letter commands map to their actions', () => {
   }
 })
 
+test('plain s skips, Shift+S screenshots', () => {
+  assert.deepStrictEqual(resolve(ev('s')), { action: ACTIONS.SKIP })
+  assert.deepStrictEqual(resolve(ev('S', { shiftKey: true })), { action: ACTIONS.SCREENSHOT })
+  assert.deepStrictEqual(resolve(ev('s', { shiftKey: true })), { action: ACTIONS.SCREENSHOT })
+})
+
 test('Escape exits', () => {
   assert.deepStrictEqual(resolve(ev('Escape')), { action: ACTIONS.EXIT })
 })

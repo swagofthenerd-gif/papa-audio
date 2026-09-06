@@ -363,6 +363,18 @@ const METRIC_RULES = {
   // statically, which is the check that catches a new leak at commit time
   // rather than two hours into a run.
   listenersGlobal: { leakRelGrowth: 0.5, minAbsGrowth: 24 },
+  // Active intervals. Nothing collects a running setInterval — it holds its
+  // callback, its closure and everything they reach, and it keeps firing —
+  // until clearInterval is called with its exact id. A video session stands up
+  // a fixed set of polling timers (stall watch, transfer polling, next-episode
+  // prefetch, the connection check) as pages are first visited, so like the
+  // global-listener count it steps up once during warm-up and then holds. The
+  // floor is set above that whole standing budget so a one-time init reads as a
+  // step change while a timer re-armed on every navigation — the thing that
+  // actually leaks — still trips it. Same shape of threshold as listeners: a
+  // handful live at once, so the absolute floor is what stops a move of one or
+  // two being called a leak.
+  activeIntervals: { leakRelGrowth: 0.5, minAbsGrowth: 8 },
   rendererHeapUsed: { leakRelGrowth: 0.15, minAbsGrowth: 8 * 1024 * 1024 },
   rendererHeapTotal: { leakRelGrowth: 0.20, minAbsGrowth: 16 * 1024 * 1024 },
   mainHeapUsed: { leakRelGrowth: 0.15, minAbsGrowth: 8 * 1024 * 1024 },
@@ -614,6 +626,62 @@ const LISTENER_PROBE = `(function () {
   return 'installed'
 })()`
 
+// The renderer's live setInterval count, measured the only honest way: by
+// wrapping the two functions that change it. There is no API that will tell you
+// from outside how many timers a page is running — Chromium exposes it nowhere —
+// so the same trick the listener probe uses on addEventListener/
+// removeEventListener is used here on setInterval/clearInterval.
+//
+// This mirrors the listener probe's correction exactly. Counting every
+// setInterval ever called would climb forever on a page that re-renders, because
+// a timer armed by a render and never cleared stays in the total even after the
+// page that armed it is gone. So the registry counts only LIVE intervals: an id
+// that has been set and not yet cleared. clearInterval prunes its entry; the
+// count is the set that is still firing right now.
+//
+// What survives is what actually leaks: a poll re-armed on every navigation
+// without clearing the previous one, which is the timer equivalent of the
+// modal-reopen listener leak this app has shipped three times. A fixed set of
+// session timers armed once and left running is not a leak; the same timer armed
+// again on the next page change, and the one before it never cleared, is.
+const INTERVAL_PROBE = `(function () {
+  if (window.__soakIntervals) return 'already'
+  var set = window.setInterval
+  var clr = window.clearInterval
+  // id -> the call site that armed it, so a rise can name its own culprit the
+  // way the global-listener probe does. Kept small: only the renderer.js frame.
+  var live = new Map()
+  function site () {
+    try {
+      var lines = ((new Error()).stack || '').split(String.fromCharCode(10)).slice(2)
+      for (var i = 0; i < lines.length; i++) {
+        if (lines[i].indexOf('renderer.js') >= 0) return lines[i].trim().replace(/^at /, '')
+      }
+      return (lines[0] || '?').trim()
+    } catch (e) { return '?' }
+  }
+  window.setInterval = function () {
+    var id = set.apply(this, arguments)
+    // Never allowed to break the app it is measuring.
+    try { live.set(id, site()) } catch (e) {}
+    return id
+  }
+  window.clearInterval = function (id) {
+    try { live.delete(id) } catch (e) {}
+    return clr.apply(this, arguments)
+  }
+  window.__soakIntervals = {
+    read: function () {
+      var by = {}
+      live.forEach(function (s) { by[s] = (by[s] || 0) + 1 })
+      var sites = Object.keys(by).map(function (k) { return by[k] + ' x ' + k })
+      sites.sort()
+      return { active: live.size, sites: sites }
+    },
+  }
+  return 'installed'
+})()`
+
 const SAMPLE_PROBE = `(async function () {
   var t = performance.now()
   try { await window.api.getAppInfo() } catch (e) {}
@@ -622,15 +690,24 @@ const SAMPLE_PROBE = `(async function () {
   var ls = (window.__soakListeners && window.__soakListeners.read)
     ? window.__soakListeners.read()
     : { live: 0, global: 0 }
+  var iv = (window.__soakIntervals && window.__soakIntervals.read)
+    ? window.__soakIntervals.read()
+    : { active: 0, sites: [] }
   return {
     domNodes: document.getElementsByTagName('*').length,
     listeners: ls.live,
     // Broken out because these are the ones nothing can collect. A rise here is
     // a leak with no ambiguity at all.
     listenersGlobal: ls.global,
+    // Live setInterval count. Nothing collects a running timer, so a sustained
+    // rise is a poll re-armed without clearing the previous one — the timer
+    // equivalent of the modal-reopen listener leak.
+    activeIntervals: iv.active,
     // Not a metric -- a label. Reported alongside the number so a rise says
     // where it came from.
     _globalSites: ls.sites,
+    // Same, for intervals: the call sites of the timers still firing.
+    _intervalSites: iv.sites,
     // Recorded, not judged. Chromium quantizes performance.memory for privacy
     // and without --enable-precise-memory-info it returns a flat placeholder,
     // so as metrics these two passed by never moving. rendererRss, taken from
@@ -822,6 +899,18 @@ async function runElectron (opt) {
   }
   pass('listener probe installs', String(probe))
 
+  const ivProbe = await js(INTERVAL_PROBE).catch(e => 'THREW ' + e.message)
+  if (String(ivProbe).startsWith('THREW')) {
+    // Same discipline as the listener probe: a probe that failed to install
+    // reports zero at every sample, a constant series reads as flat, and flat is
+    // a PASS — so the run would announce no drift in a metric it was blind to.
+    fail('interval probe installs', ivProbe)
+    fail('soak aborted', 'refusing to run blind on intervals')
+    app.exit(1)
+    return
+  }
+  pass('interval probe installs', String(ivProbe))
+
   let torrent = null
   try { torrent = require(path.join(ROOT, 'torrent-stream.js')) } catch (_) {}
 
@@ -884,12 +973,17 @@ async function runElectron (opt) {
     // must cost the last sample, not the run.
     stream.write(JSON.stringify(sample) + '\n')
     if (sampleNo % 10 === 0 || sampleNo <= 3) {
-      info(`sample ${sampleNo} (${action.name}) dom ${sample.metrics.domNodes} listeners ${sample.metrics.listeners}/${sample.metrics.listenersGlobal}g rss ${(sample.metrics.rendererRss / 1048576).toFixed(0)}MB main ${(sample.metrics.mainRss / 1048576).toFixed(0)}MB rtt ${(sample.metrics.ipcRttMs || 0).toFixed(1)}ms`)
+      info(`sample ${sampleNo} (${action.name}) dom ${sample.metrics.domNodes} listeners ${sample.metrics.listeners}/${sample.metrics.listenersGlobal}g intervals ${sample.metrics.activeIntervals} rss ${(sample.metrics.rendererRss / 1048576).toFixed(0)}MB main ${(sample.metrics.mainRss / 1048576).toFixed(0)}MB rtt ${(sample.metrics.ipcRttMs || 0).toFixed(1)}ms`)
       // Who holds the uncollectable ones. Printed rather than left in the file,
       // because the number on its own sends the reader back to a bisect.
       const sites = sample.metrics._globalSites
       if (Array.isArray(sites) && sites.length) {
         for (const line of sites) info('    global: ' + line)
+      }
+      // Who holds the live timers, same as the global listeners above.
+      const ivSites = sample.metrics._intervalSites
+      if (Array.isArray(ivSites) && ivSites.length) {
+        for (const line of ivSites) info('    interval: ' + line)
       }
     }
 

@@ -85,6 +85,26 @@
     try { window.localStorage.removeItem(key); return true } catch (_) { return false }
   }
 
+  // Raw text access, for the one caller (video-store.js) that needs to see a
+  // corrupt blob before parsing throws it away — readObject turns malformed
+  // JSON into {}, which is indistinguishable from an empty store, and that
+  // ambiguity is exactly what let a truncated blob get overwritten by the next
+  // save. writeRaw stores the text verbatim (no JSON.stringify) so a
+  // quarantined blob stays byte-for-byte recoverable.
+  function readRaw(key) {
+    return raw(key)
+  }
+
+  function writeRaw(key, text) {
+    try {
+      window.localStorage.setItem(key, String(text))
+      return true
+    } catch (e) {
+      try { console.error(`[papa][localStorage] could not save ${key}:`, e && e.message) } catch (_) {}
+      return false
+    }
+  }
+
   // Append to a capped list in one step: the like-history and search-history
   // call sites all did read, push, slice, write by hand, and two of them did the
   // read unguarded.
@@ -96,5 +116,5 @@
     return capped
   }
 
-  window.PapaLocal = { readArray, readObject, write, remove, push }
+  window.PapaLocal = { readArray, readObject, readRaw, write, writeRaw, remove, push }
 })()

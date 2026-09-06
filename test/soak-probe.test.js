@@ -180,6 +180,140 @@ test('the sample probe reports both counts', () => {
   assert.doesNotMatch(m[1], /\{ n: 0 \}/, 'the registration counter is gone')
 })
 
+// ── the active-interval probe ───────────────────────────────────────────────
+//
+// A running setInterval is nothing's to collect: it holds its callback and
+// everything the closure reaches, and it keeps firing, until clearInterval is
+// called with its exact id. This is the same shape of leak as the modal-reopen
+// listener leak — a poll re-armed on every navigation without clearing the last
+// one — and it was measured by nothing until this probe. It mirrors the listener
+// probe: wrap the two functions that change the count, and report only LIVE
+// timers (set and not yet cleared), because counting every setInterval ever
+// called would climb forever on a page that re-renders.
+
+function runIntervalProbe() {
+  const m = SOAK.match(/const INTERVAL_PROBE = `([\s\S]*?)`\n/)
+  assert.ok(m, 'found INTERVAL_PROBE')
+
+  // A stand-in window whose setInterval hands out incrementing ids, so the probe
+  // has real ids to track and clear — the only way to test what it does.
+  let next = 1
+  const cleared = []
+  const win = {
+    setInterval() { return next++ },
+    clearInterval(id) { cleared.push(id) },
+  }
+  // eslint-disable-next-line no-new-func
+  const fn = new Function('window', 'return ' + m[1])
+  const result = fn(win)
+  assert.strictEqual(result, 'installed')
+  return { win, cleared, read: () => win.__soakIntervals.read() }
+}
+
+test('the interval probe installs and starts at nothing', () => {
+  const w = runIntervalProbe()
+  const r = w.read()
+  assert.strictEqual(r.active, 0)
+  assert.deepStrictEqual(r.sites, [])
+})
+
+test('a live interval counts and a cleared one does not', () => {
+  const w = runIntervalProbe()
+  const id = w.win.setInterval(() => {}, 1000)
+  assert.strictEqual(w.read().active, 1)
+  w.win.clearInterval(id)
+  assert.strictEqual(w.read().active, 0, 'a cleared timer must not read as a leak')
+})
+
+test('the real clearInterval is still called, so the timer actually stops', () => {
+  // The probe must not swallow the clear — it wraps it, it does not replace it.
+  const w = runIntervalProbe()
+  const id = w.win.setInterval(() => {}, 1000)
+  w.win.clearInterval(id)
+  assert.deepStrictEqual(w.cleared, [id], 'the underlying clearInterval ran')
+})
+
+test('a hundred armed-and-cleared timers do not accumulate', () => {
+  // The healthy shape: a page arms a poll, tears it down, repeats. This is the
+  // interval equivalent of the "hundred renders do not accumulate" listener test.
+  const w = runIntervalProbe()
+  for (let i = 0; i < 100; i++) {
+    const id = w.win.setInterval(() => {}, 1000)
+    w.win.clearInterval(id)
+  }
+  assert.strictEqual(w.read().active, 0)
+})
+
+test('the re-armed-without-clear leak is caught', () => {
+  // The bug this metric exists for: a poll re-armed on every navigation whose
+  // previous id was never cleared. Twenty navigations, twenty orphaned timers.
+  const w = runIntervalProbe()
+  for (let i = 0; i < 20; i++) {
+    w.win.setInterval(() => {}, 1000)   // never cleared
+  }
+  assert.strictEqual(w.read().active, 20, 'twenty timers still firing')
+})
+
+test('a fixed set of session timers armed once holds flat', () => {
+  // The benign shape that must NOT read as a leak: arm the session's polls once
+  // and leave them running. The count steps up and stays put.
+  const w = runIntervalProbe()
+  w.win.setInterval(() => {}, 1000)   // stall watch
+  w.win.setInterval(() => {}, 1000)   // transfer poll
+  w.win.setInterval(() => {}, 1000)   // connection check
+  const a = w.read().active
+  // Reading again changes nothing; the set is stable.
+  assert.strictEqual(a, 3)
+  assert.strictEqual(w.read().active, 3)
+})
+
+test('clearing an id that was never set is harmless', () => {
+  const w = runIntervalProbe()
+  w.win.setInterval(() => {}, 1000)
+  assert.doesNotThrow(() => w.win.clearInterval(999999))
+  assert.strictEqual(w.read().active, 1, 'an unknown clear does not disturb the count')
+})
+
+test('the sample probe reports the active-interval count', () => {
+  const m = SOAK.match(/const SAMPLE_PROBE = `([\s\S]*?)`\n/)
+  assert.ok(m, 'found SAMPLE_PROBE')
+  assert.match(m[1], /activeIntervals: iv\.active/)
+})
+
+test('the active-interval metric has a threshold', () => {
+  // Without an entry it falls back to the heap-sized defaults, which would call
+  // a move of one or two timers a leak.
+  const from = SOAK.indexOf('activeIntervals: {')
+  assert.ok(from > 0, 'found the threshold entry')
+  const block = SOAK.slice(from, SOAK.indexOf('}', from) + 1)
+  assert.match(block, /activeIntervals: \{[^}]*minAbsGrowth: \d+/)
+})
+
+test('a failed interval-probe install aborts the run instead of passing blind', () => {
+  // Same load-bearing check as the listener probe: a probe that reports zero at
+  // every sample reads as flat, and flat is a PASS.
+  const at = SOAK.indexOf('const ivProbe = await js(INTERVAL_PROBE)')
+  assert.ok(at > 0)
+  const block = SOAK.slice(at, at + 800)
+  assert.match(block, /fail\('interval probe installs'/)
+  assert.match(block, /app\.exit\(1\)/, 'a blind run must not continue')
+})
+
+test('the interval sites are recorded as a label, not judged as a metric', () => {
+  // _intervalSites carries the call sites of the live timers so a rise names its
+  // cause, exactly like _globalSites. The underscore keeps it out of the metrics.
+  const m = SOAK.match(/const SAMPLE_PROBE = `([\s\S]*?)`\n/)
+  assert.match(m[1], /_intervalSites: iv\.sites/)
+  const { analyseRun } = require(path.join(__dirname, '..', 'tools', 'video-soak.js'))
+  const samples = []
+  for (let i = 0; i < 40; i++) {
+    samples.push({ metrics: { activeIntervals: 3, _intervalSites: ['3 x poll :: renderer.js'] } })
+  }
+  const res = analyseRun(samples)
+  assert.ok(res.metrics.activeIntervals, 'the number is judged')
+  assert.strictEqual(res.metrics._intervalSites, undefined, 'the label is not')
+})
+
 test('both listener metrics have thresholds', () => {
   // A metric with no entry falls back to the defaults, which are tuned for
   // heap-sized numbers and would call a move of 2 a leak.
@@ -234,7 +368,18 @@ test('the number of global listener registrations is a deliberate budget', () =>
     'but update the number so the change was seen')
   // These are the ones that need a run-once guard or a paired removal. If this
   // number grows, check that the new one cannot be registered twice.
-  assert.strictEqual(sites.inFunction.length, 15,
+  // 16: the pagehide position-save + store flush in _initVideoUI, which is
+  //     behind the _videoUiReady run-once guard.
+  // 20: wave-6 video work added four, all behind run-once guards or paired
+  //     removals:
+  //       • _bindGlobalGenreJumps — one document click, guarded by
+  //         _genreJumpsBound (delegated genre-chip jumps, App §30).
+  //       • _bindVideoCardContextMenu — one document contextmenu, guarded by
+  //         _vCtxBound (card context menus, App §83).
+  //       • _openVideoCardMenu — a document click and a window scroll, both
+  //         added on menu-open and removed in _closeVideoCardMenu, so they are
+  //         never standing listeners even though the source counts the sites.
+  assert.strictEqual(sites.inFunction.length, 20,
     'a global listener was added inside a function. Nothing collects a listener ' +
     'on document or window, so make sure that function cannot run twice — this ' +
     'app has shipped that exact leak three times (items 73, 74, 257) — then ' +

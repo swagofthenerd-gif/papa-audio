@@ -67,6 +67,22 @@ test('sorts put the best first', () => {
   assert.equal(applyFilterSort([G('one', [{}]), G('many', [{}, {}, {}])], { sort: 'tracks' })[0].folderName, 'many')
 })
 
+test('queue-position sort puts the shortest line first, free slots ahead of all', () => {
+  const deep    = G('deep',  [{}], { queueLength: 1700 })
+  const shallow = G('short', [{}], { queueLength: 12 })
+  const free    = G('free',  [{}], { queueLength: 999, hasFreeSlot: true })
+  const out = applyFilterSort([deep, shallow, free], { sort: 'queue' })
+  // A free upload slot counts as position 0, so it leads despite its queueLength;
+  // then the genuinely shorter queue; the 1700-deep peer sinks to the bottom.
+  assert.deepEqual(out.map(g => g.folderName), ['free', 'short', 'deep'])
+})
+
+test('queue sort treats a missing queueLength as zero, never NaN', () => {
+  const none = G('none', [{}])                       // no queueLength at all
+  const some = G('some', [{}], { queueLength: 40 })
+  assert.equal(applyFilterSort([some, none], { sort: 'queue' })[0].folderName, 'none')
+})
+
 test('filter and sort combine, and unknown names fall back safely', () => {
   const groups = [G('x 5.1', [{ sampleRate: 44100 }]), G('y 5.1', [{ sampleRate: 96000 }]), G('z stereo')]
   assert.deepEqual(applyFilterSort(groups, { filter: 'surround', sort: 'sampleRate' }).map(g => g.folderName),

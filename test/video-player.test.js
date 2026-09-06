@@ -23,6 +23,7 @@ function el(id) {
       contains (c) { return this._s.has(c) },
     },
     addEventListener (ev, fn) { (this.handlers[ev] = this.handlers[ev] || []).push(fn) },
+    appendChild (child) { this.children.push(child); return child },
     setAttribute (k, v) { this.attrs[k] = String(v) },
     getAttribute (k) { return this.attrs[k] },
     getBoundingClientRect () { return { left: 0, top: 0, width: 100, height: 4, right: 100, bottom: 4 } },
@@ -36,13 +37,16 @@ function el(id) {
   return node
 }
 
-function harness({ segments = [], prefs = {}, onNext = null, fullscreen = false } = {}) {
+function harness({ segments = [], prefs = {}, onNext = null, fullscreen = false, tracks = [],
+                   apiExtra = {}, local = null } = {}) {
   const nodes = {}
   const ids = ['vtheatre', 'vt-stage', 'vt-stage-msg', 'vt-skip', 'vt-skip-btn', 'vt-skip-count',
-    'vt-play', 'vt-back10', 'vt-fwd10', 'vt-next', 'vt-back', 'vt-pos', 'vt-dur',
-    'vt-mute', 'vt-vol', 'vt-speed', 'vt-subs', 'vt-audio', 'vt-settings', 'vt-full',
-    'vt-seek', 'vt-seek-fill', 'vt-seek-knob', 'vt-seek-buffer', 'vt-seek-marks',
-    'vt-seek-bubble', 'vt-badges', 'vt-title', 'vt-sub', 'vt-menu',
+    'vt-play', 'vt-back10', 'vt-fwd10', 'vt-next', 'vt-prev', 'vt-stop', 'vt-back', 'vt-pos', 'vt-dur',
+    'vt-mute', 'vt-vol', 'vt-speed', 'vt-subs', 'vt-audio', 'vt-shot', 'vt-settings', 'vt-full', 'vt-deck',
+    'vt-seek', 'vt-seek-fill', 'vt-seek-knob', 'vt-seek-buffer', 'vt-seek-marks', 'vt-seek-chapters',
+    'vt-seek-bubble', 'vt-badges', 'vt-title', 'vt-sub', 'vt-menu', 'vt-stats',
+    'vt-stat-pos', 'vt-stat-speed', 'vt-stat-vol', 'vt-stat-tracks',
+    'vt-stat-down', 'vt-stat-peers', 'vt-stat-progress',
     'vt-strip', 'vt-upnext', 'vt-upnext-go', 'vt-upnext-stay', 'vt-ring-fg', 'vt-ring-num']
   for (const id of ids) nodes[id] = el(id)
   nodes['vt-skip'].hidden = true
@@ -57,30 +61,33 @@ function harness({ segments = [], prefs = {}, onNext = null, fullscreen = false 
   const doc = {
     getElementById: id => nodes[id] || null,
     querySelector: () => nodes['vt-seek'],
+    createElement: tag => el(tag),
     addEventListener (ev, fn) { (docHandlers[ev] = docHandlers[ev] || []).push(fn) },
     activeElement: null,
     documentElement: { clientWidth: 1280 },
   }
-  const api = {
+  const api = Object.assign({
     videoControl: (verb, args) => { sent.push({ verb, args }); return Promise.resolve({ ok: true }) },
     onVideoState: () => () => {},
-    videoTracks: () => Promise.resolve({ ok: true, tracks: [] }),
+    videoTracks: () => Promise.resolve({ ok: true, tracks }),
     videoSurfaceBounds: () => Promise.resolve({ ok: true }),
     videoFullscreen: (a) => { sent.push({ verb: 'fullscreen', args: a }); return Promise.resolve({ ok: true, fullscreen: fullscreen ? !!(a && a.value) : false }) },
-  }
-  const p = create({ document: doc, api, keymap, skipModel, onNext })
+  }, apiExtra)
+  const toasts = []
+  const p = create({ document: doc, api, keymap, skipModel, onNext, local,
+                     onToast: msg => toasts.push(msg) })
   p.bind()
   p.setPrefs(prefs)
   p.setSegments(segments)
-  const press = (key, target = { tagName: 'DIV' }) => {
+  const press = (key, target = { tagName: 'DIV' }, mods = {}) => {
     let prevented = false
-    const e = { key, shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
-                target, preventDefault () { prevented = true } }
+    const e = { key, shiftKey: !!mods.shift, ctrlKey: !!mods.ctrl, altKey: !!mods.alt,
+                metaKey: !!mods.meta, target, preventDefault () { prevented = true } }
     ;(docHandlers.keydown || []).forEach(fn => fn(e))
     return prevented
   }
   const fire = (ev, arg) => (docHandlers[ev] || []).forEach(fn => fn(arg || {}))
-  return { p, nodes, sent, press, fire }
+  return { p, nodes, sent, press, fire, toasts }
 }
 
 const stateAt = (position, over = {}) => Object.assign({
@@ -263,14 +270,19 @@ test('mid-file credits seek rather than advancing', () => {
   assert.ok(true)
 })
 
-test('the keyboard drives the same commands as the buttons', () => {
+test('the keyboard drives the same commands as the buttons', t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
   const { p, sent, press } = harness()
   p.open({ title: 'X' })
   p._setState(stateAt(100))
   assert.strictEqual(press(' '), true, 'space is handled')
   assert.strictEqual(sent.pop().verb, 'pause')
+  // Arrows no longer fire a blind relative seek per press: the target
+  // accumulates while the key is held and commits once, absolutely.
   press('ArrowRight')
-  assert.deepStrictEqual(sent.pop(), { verb: 'seek', args: { seconds: 10, mode: 'relative' } })
+  assert.ok(!sent.some(s => s.verb === 'seek'), 'no seek until the key settles')
+  t.mock.timers.tick(300)
+  assert.deepStrictEqual(sent.pop(), { verb: 'seek', args: { seconds: 110, mode: 'absolute' } })
   press('m')
   assert.strictEqual(sent.pop().verb, 'mute')
 })
@@ -341,6 +353,93 @@ test('closing hides the theatre and drops state', () => {
   assert.strictEqual(exited, 1)
   assert.ok(nodes['vtheatre'].classList.contains('hidden'))
   assert.strictEqual(p2._state(), null)
+})
+
+// The renderer's exit handler persists the final watch position by reading
+// _state() — nulling the state before calling it meant pressing Stop threw
+// the position away every single time.
+test('onExit can still read the final state, and it is dropped afterwards', () => {
+  const { nodes } = harness()
+  let seen = 'unset'
+  const p2 = create({
+    document: { getElementById: id => nodes[id] || null, querySelector: () => null,
+                addEventListener () {}, documentElement: { clientWidth: 800 } },
+    api: { videoControl: () => Promise.resolve({ ok: true }), onVideoState: () => () => {} },
+    keymap, skipModel, onExit: () => { seen = p2._state() },
+  })
+  p2.open({ title: 'X' })
+  p2._setState(stateAt(1234))
+  p2.close()
+  assert.ok(seen && seen.position === 1234, 'the exit handler must see the position')
+  assert.strictEqual(p2._state(), null, 'and the state still ends up dropped')
+})
+
+test('an exit handler that closes again cannot re-run the teardown', () => {
+  const { nodes } = harness()
+  let exits = 0
+  const p2 = create({
+    document: { getElementById: id => nodes[id] || null, querySelector: () => null,
+                addEventListener () {}, documentElement: { clientWidth: 800 } },
+    api: { videoControl: () => Promise.resolve({ ok: true }), onVideoState: () => () => {} },
+    keymap, skipModel, onExit: () => { exits++; p2.close() },
+  })
+  p2.open({ title: 'X' })
+  p2._setState(stateAt(10))
+  p2.close()
+  assert.strictEqual(exits, 1, 'onExit must fire exactly once')
+  assert.strictEqual(p2._state(), null)
+})
+
+// The countdowns are intervals, and an interval is wall clock, not film clock.
+// Ticking through a pause meant pausing during the credits started the next
+// episode anyway — over a paused frame.
+test('the auto-skip countdown freezes while the film is paused', t => {
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
+  const { p, sent } = harness({
+    segments: [{ kind: 'intro', start: 60, end: 150, origin: 'chapters', confidence: 0.9 }],
+    prefs: { autoSkipIntro: true },
+  })
+  p._setState(stateAt(90))
+  p._setState(stateAt(90, { paused: true }))
+  t.mock.timers.tick(60000)
+  assert.ok(!sent.some(s => s.verb === 'seek'), 'a whole paused minute and no skip')
+  p._setState(stateAt(91, { paused: false }))
+  t.mock.timers.tick(4000)
+  assert.deepStrictEqual(sent.filter(s => s.verb === 'seek').pop(),
+    { verb: 'seek', args: { seconds: 150, mode: 'absolute' } },
+    'unpaused, the countdown resumes where it held')
+})
+
+test('a paused film never advances to the next episode', t => {
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
+  let advanced = 0
+  const { p } = harness({
+    segments: [{ kind: 'credits', start: 3400, end: 3600, origin: 'chapters', confidence: 0.9 }],
+    onNext: () => { advanced++ },
+  })
+  p.setUpNext({ title: 'Next' })
+  p._setState(stateAt(3450))
+  p._setState(stateAt(3450, { paused: true }))
+  t.mock.timers.tick(120000)
+  assert.strictEqual(advanced, 0, 'pausing during the credits must hold the countdown')
+  p._setState(stateAt(3451, { paused: false }))
+  t.mock.timers.tick(10000)
+  assert.strictEqual(advanced, 1)
+})
+
+// Cancelling used to hide the box but never call syncStrip(), leaving an empty
+// strip row holding space under the video for the rest of the film.
+test('cancelling an auto-skip clears the strip row it occupied', () => {
+  const { p, nodes } = harness({
+    segments: [{ kind: 'intro', start: 60, end: 150, origin: 'chapters', confidence: 0.9 }],
+    prefs: { autoSkipIntro: true },
+  })
+  p._setState(stateAt(90))
+  assert.strictEqual(nodes['vt-strip'].hidden, false)
+  nodes['vt-skip-btn'].fire('click')
+  assert.strictEqual(nodes['vt-skip'].hidden, true)
+  assert.strictEqual(nodes['vt-skip'].innerHTML, '')
+  assert.strictEqual(nodes['vt-strip'].hidden, true, 'an empty strip must not keep its space')
 })
 
 test('the stage message is escaped-safe and clearable', () => {
@@ -449,6 +548,86 @@ test('a hostile episode title cannot break out of the card', () => {
   assert.ok(!/'"><b>/.test(nodes['vt-upnext'].innerHTML))
 })
 
+
+// ── Language memory ─────────────────────────────────────────────────────────
+// The show remembers what it was listened to and read in. media.prefs carries
+// audioLang / subLang in; a manual pick from the menus reports its language
+// back out through media.onPrefChange. The renderer owns the storage; the deck
+// only honours the contract — and every missing piece must be a no-op.
+test('a remembered language is applied when the tracks first arrive', async () => {
+  const { p, sent } = harness({ tracks: [
+    { id: 1, type: 'audio', lang: 'eng' },
+    { id: 2, type: 'audio', lang: 'jpn' },
+    { id: 5, type: 'sub', lang: 'eng' },
+  ] })
+  // Case must not matter: the codes are compared as mpv reports them.
+  p.open({ title: 'X', prefs: { audioLang: 'JPN', subLang: 'eng' } })
+  p._setState(stateAt(5))
+  await new Promise(r => setImmediate(r))
+  assert.deepStrictEqual(sent.filter(s => s.verb === 'track'), [
+    { verb: 'track', args: { type: 'audio', id: 2 } },
+    { verb: 'track', args: { type: 'sub', id: 5 } },
+  ])
+  p._setState(stateAt(6))
+  await new Promise(r => setImmediate(r))
+  assert.strictEqual(sent.filter(s => s.verb === 'track').length, 2, 'applied once, not per tick')
+})
+
+test('picking an audio track with a language code reports it to the show', async () => {
+  const { p, nodes } = harness({ tracks: [{ id: 2, type: 'audio', lang: 'jpn', title: 'Japanese' }] })
+  const changes = []
+  p.open({ title: 'X', onPrefChange: c => changes.push(c) })
+  p._setState(stateAt(100))
+  const item = el('menu-item')
+  nodes['vt-menu'].querySelectorAll = sel => sel === '.vt-menu-item' ? [item] : []
+  nodes['vt-audio'].fire('click')
+  await new Promise(r => setImmediate(r))
+  item.fire('click')
+  assert.deepStrictEqual(changes, [{ audioLang: 'jpn' }], 'only what changed, nothing else')
+})
+
+// Off is an explicit choice too: it must silence the remembered language for
+// this file, and it carries no language code to report.
+test('choosing Off for subtitles blocks the remembered language and reports nothing', async () => {
+  const { p, nodes, sent } = harness({ tracks: [{ id: 5, type: 'sub', lang: 'eng' }] })
+  const changes = []
+  p.open({ title: 'X', prefs: { subLang: 'eng' }, onPrefChange: c => changes.push(c) })
+  const off = el('item-off'); const eng = el('item-eng')
+  nodes['vt-menu'].querySelectorAll = sel => sel === '.vt-menu-item' ? [off, eng] : []
+  nodes['vt-subs'].fire('click')
+  await new Promise(r => setImmediate(r))
+  off.fire('click')
+  p._setState(stateAt(5))
+  await new Promise(r => setImmediate(r))
+  assert.deepStrictEqual(sent.filter(s => s.verb === 'track'),
+    [{ verb: 'track', args: { type: 'sub', id: null } }],
+    'the explicit Off stands; the pref must not re-enable subtitles')
+  assert.deepStrictEqual(changes, [], 'Off has no language to remember')
+})
+
+test('language memory is a no-op without prefs, matching codes or a callback', async () => {
+  // No prefs stored: nothing is selected on the show's behalf.
+  const a = harness({ tracks: [{ id: 1, type: 'audio', lang: 'eng' }] })
+  a.p.open({ title: 'X' })
+  a.p._setState(stateAt(5))
+  await new Promise(r => setImmediate(r))
+  assert.ok(!a.sent.some(s => s.verb === 'track'))
+  // A remembered language no track carries: nothing is selected either.
+  const b = harness({ tracks: [{ id: 1, type: 'audio' }, { id: 5, type: 'sub', lang: 'eng' }] })
+  b.p.open({ title: 'X', prefs: { audioLang: 'jpn' } })
+  b.p._setState(stateAt(5))
+  await new Promise(r => setImmediate(r))
+  assert.ok(!b.sent.some(s => s.verb === 'track'))
+  // A callback that throws must never be able to stop playback.
+  const c = harness({ tracks: [{ id: 2, type: 'audio', lang: 'jpn' }] })
+  c.p.open({ title: 'X', onPrefChange: () => { throw new Error('broken store') } })
+  c.p._setState(stateAt(5))
+  const item = el('menu-item')
+  c.nodes['vt-menu'].querySelectorAll = sel => sel === '.vt-menu-item' ? [item] : []
+  c.nodes['vt-audio'].fire('click')
+  await new Promise(r => setImmediate(r))
+  assert.doesNotThrow(() => item.fire('click'))
+})
 
 // ── Stage bounds ────────────────────────────────────────────────────────────
 // Showing the mpv window before main knows where the video belongs puts it on
@@ -817,7 +996,10 @@ test('load failures are shown in human terms, with a way to retry', () => {
   const fn = _rend.slice(_rend.indexOf('function _videoError(message)'), _rend.indexOf('async function renderVideo()'))
   assert.match(fn, /const msg = _videoErrorText\(raw\)/)
   assert.match(fn, /id="video-error-retry"/)
-  assert.match(fn, /navigate\(state\.currentPage, _currentNavId\(\), \{ skipHistory: true \}\)/)
+  // With no id to retry with, retrying would only reproduce the same error --
+  // that case bails out to a page that works instead of looping forever.
+  assert.match(fn, /if \(!id\) return navigate\('video'\)/)
+  assert.match(fn, /navigate\(state\.currentPage, id, \{ skipHistory: true \}\)/)
   // The API-key hint keys off the raw message, not the humanised one.
   assert.match(fn, /test\(raw\)/)
 })
@@ -1051,4 +1233,741 @@ test('leaving fullscreen puts the chrome back for good', async t => {
   assert.strictEqual(idle(h), false)
   t.mock.timers.tick(60000)
   assert.strictEqual(idle(h), false, 'and nothing hides it again in a window')
+})
+
+// ── Layout stability ────────────────────────────────────────────────────────
+// The stage is the rectangle the native mpv window is positioned onto, so a
+// row between the stage and the deck that collapses when empty resizes the
+// stage — and the picture visibly jumped every time the episode strip or a
+// skip offer came or went. The rows now hold fixed heights and hide with
+// visibility, so the only stage resize left is fullscreen idle, which grows
+// the picture on purpose.
+test('a row that has appeared holds its space; one that never did costs nothing', () => {
+  // The refined contract: [hidden] alone collapses (a playback with no pack
+  // or skip content never shows a dead band), but once shown the vt-held
+  // class keeps the row occupying its space invisibly, so the picture never
+  // jumps mid-watch. Held rows are released when the theatre closes.
+  assert.match(_css, /\.vt-pack\[hidden\]\s*\{\s*display:none/)
+  assert.match(_css, /\.vt-strip\[hidden\]\s*\{\s*display:none/)
+  assert.match(_css, /\.vt-pack\.vt-held\[hidden\]\s*\{\s*display:flex;\s*visibility:hidden/)
+  assert.match(_css, /\.vt-strip\.vt-held\[hidden\]\s*\{\s*display:flex;\s*visibility:hidden/)
+  assert.match(PLAYER_SRC, /function syncHeld\(\)/)
+  assert.match(PLAYER_SRC, /releaseHeld\(\)/, 'close() must release the held rows')
+})
+
+test('the reserved rows have fixed heights, so appearing content moves nothing', () => {
+  assert.match(_css, /\.vt-pack \{[^}]*height:46px/s)
+  assert.match(_css, /\.vt-strip \{[^}]*height:96px/s)
+  // And the Up Next card is sized to fit inside the strip's row, not to grow it.
+  assert.match(_css, /\.vt-upnext \{[^}]*max-width/s)
+})
+
+test('fullscreen idle still removes the rows outright — that resize is deliberate', () => {
+  assert.match(_css,
+    /\.vtheatre\.fullscreen\.idle \.vt-pack,\s*\n?\.vtheatre\.fullscreen\.idle \.vt-strip,\s*\n?\.vtheatre\.fullscreen\.idle \.vt-deck \{ display:none; \}/)
+})
+
+// ── Stop in the deck ────────────────────────────────────────────────────────
+// The real stop only existed on the mini player, so finishing a film meant
+// minimising the theatre just to reach the control that ends it.
+test('the deck has its own stop, wired like the mini player one', () => {
+  assert.match(HTML_SRC, /id="vt-stop"/)
+  assert.match(PLAYER_SRC, /\$\('vt-stop'\)\?\.addEventListener\('click', close\)/)
+})
+
+test('stop in the deck stops for real', () => {
+  const nodes = {}
+  for (const id of ['vtheatre', 'vt-stage', 'vt-menu', 'vmini', 'vt-stop']) nodes[id] = el(id)
+  nodes['vt-menu'].classList.add('hidden')
+  let exited = 0
+  const p2 = create({
+    document: { getElementById: id => nodes[id] || null, querySelector: () => null,
+                addEventListener () {}, documentElement: { clientWidth: 800 } },
+    api: { videoControl: () => Promise.resolve({ ok: true }), onVideoState: () => () => {} },
+    keymap, skipModel, onExit: () => { exited++ },
+  })
+  p2.bind()
+  p2.open({ title: 'X' })
+  nodes['vt-stop'].fire('click')
+  assert.strictEqual(exited, 1)
+  assert.ok(nodes.vtheatre.classList.contains('hidden'))
+})
+
+// ── Previous episode ────────────────────────────────────────────────────────
+// Mirrors Next: the renderer passes media.onPrev only when there is an episode
+// before this one, so absence means the button hides rather than disables.
+test('previous appears only when the renderer provides it, and calls it', () => {
+  const { p, nodes, press } = harness()
+  let prev = 0
+  p.open({ title: 'X', onPrev: () => { prev++ } })
+  assert.strictEqual(nodes['vt-prev'].hidden, false)
+  nodes['vt-prev'].fire('click')
+  assert.strictEqual(prev, 1)
+  press('p')                    // the keymap already reserved P for this
+  assert.strictEqual(prev, 2)
+  p.open({ title: 'A film' })   // no onPrev: a film has no previous episode
+  assert.strictEqual(nodes['vt-prev'].hidden, true)
+  assert.doesNotThrow(() => nodes['vt-prev'].fire('click'))
+  assert.strictEqual(prev, 2)
+})
+
+// ── Time remaining ──────────────────────────────────────────────────────────
+// Clicking the duration answers "how much is left tonight" without arithmetic.
+test('clicking the duration flips to time remaining and persists the choice', () => {
+  const writes = []
+  const { p, nodes } = harness({ local: { write: (k, v) => { writes.push([k, v]); return true } } })
+  p._setState(stateAt(900))
+  assert.strictEqual(nodes['vt-dur'].textContent, '1:00:00')
+  nodes['vt-dur'].fire('click')
+  assert.strictEqual(nodes['vt-dur'].textContent, '−45:00')
+  assert.deepStrictEqual(writes, [['papaVtTimeMode', 'remaining']])
+  nodes['vt-dur'].fire('click')
+  assert.strictEqual(nodes['vt-dur'].textContent, '1:00:00')
+})
+
+test('a remembered remaining mode is honoured from the store', () => {
+  // The store JSON-encodes strings, so the raw text arrives quotes and all.
+  const { p, nodes } = harness({ local: { readRaw: k => (k === 'papaVtTimeMode' ? '"remaining"' : null) } })
+  p._setState(stateAt(900))
+  assert.strictEqual(nodes['vt-dur'].textContent, '−45:00')
+})
+
+test('a missing or broken store never blocks the toggle', () => {
+  const a = harness()   // no PapaLocal at all
+  a.p._setState(stateAt(900))
+  assert.doesNotThrow(() => a.nodes['vt-dur'].fire('click'))
+  assert.strictEqual(a.nodes['vt-dur'].textContent, '−45:00', 'the toggle still works for the session')
+  const b = harness({ local: { readRaw: () => { throw new Error('quota') }, write: () => { throw new Error('quota') } } })
+  b.p._setState(stateAt(900))
+  assert.doesNotThrow(() => b.nodes['vt-dur'].fire('click'))
+  assert.strictEqual(b.nodes['vt-dur'].textContent, '−45:00')
+})
+
+// ── Chapter ticks on the seek bar ───────────────────────────────────────────
+// The state stream only carries the chapter count; the start times come from
+// api.videoChapters(), the call the chapters menu already makes.
+test('chapter boundaries are drawn as ticks on the track', async () => {
+  const { p, nodes } = harness({ apiExtra: { videoChapters: () => Promise.resolve({ ok: true, chapters: [
+    { title: 'One', start: 0 }, { title: 'Two', start: 900 }, { title: 'Three', start: 1800 },
+  ] }) } })
+  p._setState(stateAt(10, { chapters: [{}, {}, {}] }))
+  await new Promise(r => setImmediate(r))
+  const html = nodes['vt-seek-chapters'].innerHTML
+  assert.match(html, /left:25%/)
+  assert.match(html, /left:50%/)
+  assert.ok(!/left:0%/.test(html), 'chapter one starts where the bar already does')
+})
+
+test('ticks are fetched once per signature, not four times a second', async () => {
+  let calls = 0
+  const { p } = harness({ apiExtra: { videoChapters: () => { calls++; return Promise.resolve({ ok: true, chapters: [] }) } } })
+  p._setState(stateAt(10, { chapters: [{}, {}] }))
+  p._setState(stateAt(11, { chapters: [{}, {}] }))
+  p._setState(stateAt(12, { chapters: [{}, {}] }))
+  await new Promise(r => setImmediate(r))
+  assert.strictEqual(calls, 1)
+})
+
+test('an api without videoChapters leaves the bar bare, not broken', () => {
+  const { p, nodes } = harness()   // default api has no videoChapters
+  assert.doesNotThrow(() => p._setState(stateAt(10, { chapters: [{}, {}] })))
+  assert.strictEqual(nodes['vt-seek-chapters'].innerHTML, '')
+})
+
+// ── Keyboard seeking through the bubble ─────────────────────────────────────
+// Holding an arrow used to fire ten blind relative seeks into a torrent that
+// could satisfy none of them. Held keys now accumulate one target, shown live
+// in the same bubble the pointer gets, and commit one absolute seek.
+test('held arrow keys aim with the bubble and seek once', t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const { p, sent, press, nodes } = harness()
+  p.open({ title: 'X' })
+  p._setState(stateAt(100))
+  press('ArrowRight'); press('ArrowRight'); press('ArrowRight')
+  assert.strictEqual(nodes['vt-seek-bubble'].hidden, false)
+  assert.strictEqual(nodes['vt-seek-bubble'].textContent, '2:10', 'the bubble shows where the seek will land')
+  assert.ok(!sent.some(s => s.verb === 'seek'), 'no seek while the key is still going')
+  t.mock.timers.tick(300)
+  assert.deepStrictEqual(sent.filter(s => s.verb === 'seek').pop(),
+    { verb: 'seek', args: { seconds: 130, mode: 'absolute' } })
+  assert.strictEqual(nodes['vt-seek-bubble'].hidden, true, 'the bubble leaves with the commit')
+})
+
+test('the target is clamped to the file, in both directions', t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const { p, sent, press } = harness()
+  p.open({ title: 'X' })
+  p._setState(stateAt(5))
+  press('ArrowLeft'); press('ArrowLeft')
+  t.mock.timers.tick(300)
+  assert.deepStrictEqual(sent.filter(s => s.verb === 'seek').pop(),
+    { verb: 'seek', args: { seconds: 0, mode: 'absolute' } })
+})
+
+test('with no duration yet the arrows fall back to a relative seek', () => {
+  const { p, sent, press } = harness()
+  p.open({ title: 'X' })
+  p._setState(stateAt(0, { duration: 0 }))
+  press('ArrowRight')
+  assert.deepStrictEqual(sent.pop(), { verb: 'seek', args: { seconds: 10, mode: 'relative' } })
+})
+
+// ── Volume ──────────────────────────────────────────────────────────────────
+test('the wheel over the deck steps volume by five and flashes it on the picture', () => {
+  const osd = []
+  const { p, nodes, sent } = harness({ apiExtra: {
+    videoOsd: (text, ms) => { osd.push([text, ms]); return Promise.resolve({ ok: true }) },
+  } })
+  p._setState(stateAt(10, { volume: 100 }))
+  nodes['vt-deck'].fire('wheel', { deltaY: -120 })
+  assert.strictEqual(sent.filter(s => s.verb === 'volume').pop().args.value, 105)
+  nodes['vt-deck'].fire('wheel', { deltaY: 120 })
+  assert.strictEqual(sent.filter(s => s.verb === 'volume').pop().args.value, 100)
+  // The OSD is the one text that CAN be drawn over the native window,
+  // because mpv draws it itself.
+  assert.deepStrictEqual(osd.map(o => o[0]), ['Volume 105%', 'Volume 100%'])
+})
+
+test('keyboard volume flashes too, and an api without videoOsd costs nothing', () => {
+  const { p, press, sent } = harness()   // no videoOsd on the default api
+  p.open({ title: 'X' })
+  p._setState(stateAt(10, { volume: 100 }))
+  assert.doesNotThrow(() => press('ArrowUp'))
+  assert.strictEqual(sent.filter(s => s.verb === 'volume').pop().args.value, 105)
+})
+
+test('the volume slider marks the honest 100% point on its 0-130 track', () => {
+  assert.match(_css, /\.vt-vol-range \{[^}]*76\.9%/s, 'the notch sits at 100/130 of the track')
+})
+
+// ── Up Next hover ───────────────────────────────────────────────────────────
+// The countdown already holds for a paused film; hovering the card is the same
+// thing said with the pointer — a card that advances while being read is a
+// card that cannot be declined.
+test('hovering the Up Next card holds the countdown; leaving resumes it', t => {
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
+  let advanced = 0
+  const { p, nodes } = harness({
+    segments: [{ kind: 'credits', start: 3400, end: 3600, origin: 'chapters', confidence: 0.9 }],
+    onNext: () => { advanced++ },
+  })
+  p.setUpNext({ title: 'Next' })
+  p._setState(stateAt(3450))
+  nodes['vt-upnext'].fire('pointerenter')
+  t.mock.timers.tick(120000)
+  assert.strictEqual(advanced, 0, 'a card being read must not advance')
+  nodes['vt-upnext'].fire('pointerleave')
+  t.mock.timers.tick(10000)
+  assert.strictEqual(advanced, 1, 'and it resumes where it held')
+})
+
+// ── Stats ───────────────────────────────────────────────────────────────────
+test('the stats chip opens a live panel and polls the stream every two seconds', async t => {
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
+  let polls = 0
+  const { p, nodes } = harness({ apiExtra: {
+    videoStreamStats: () => { polls++; return Promise.resolve({ ok: true, down: 1572864, peers: 12, progress: 0.4 }) },
+  } })
+  p._setState(stateAt(900))
+  nodes['vt-stats'].fire('click')
+  assert.match(nodes['vt-menu'].innerHTML, /vt-stat-pos/)
+  assert.match(nodes['vt-menu'].innerHTML, /vt-stat-down/, 'stream rows appear when the api exists')
+  assert.strictEqual(polls, 1, 'painted immediately on open')
+  t.mock.timers.tick(4000)
+  assert.strictEqual(polls, 3, 'then every two seconds')
+  await new Promise(r => setImmediate(r))
+  assert.strictEqual(nodes['vt-stat-pos'].textContent, '15:00 / 1:00:00')
+  assert.strictEqual(nodes['vt-stat-down'].textContent, '1.5 MB/s')
+  assert.strictEqual(nodes['vt-stat-peers'].textContent, '12')
+  assert.strictEqual(nodes['vt-stat-progress'].textContent, '40%')
+  nodes['vt-stats'].fire('click')   // the chip is a toggle, not a stack
+  t.mock.timers.tick(10000)
+  assert.strictEqual(polls, 3, 'the poll dies with the panel')
+})
+
+test('without videoStreamStats the panel shows player state only', () => {
+  const { p, nodes } = harness()
+  p._setState(stateAt(900))
+  nodes['vt-stats'].fire('click')
+  assert.match(nodes['vt-menu'].innerHTML, /vt-stat-pos/)
+  assert.match(nodes['vt-menu'].innerHTML, /vt-stat-tracks/)
+  assert.ok(!/vt-stat-down/.test(nodes['vt-menu'].innerHTML), 'no stream rows to sit empty')
+  // Close it again: the poll is a real interval here (no mocked timers), and
+  // left running it holds the test process open forever.
+  nodes['vt-stats'].fire('click')
+})
+
+// ── Subtitles from inside the torrent ───────────────────────────────────────
+// A pack routinely ships .srt files next to the video — the subtitles most
+// likely to match the release — but mpv only sees the file it was handed.
+test('the CC menu lists torrent subtitles and serves one on click', async () => {
+  const served = []
+  const { p, nodes, sent } = harness({ tracks: [], apiExtra: {
+    videoSubsInTorrent: () => Promise.resolve({ ok: true, subs: [{ index: 3, name: 'Movie.eng.srt' }] }),
+    videoSubServe: a => { served.push(a); return Promise.resolve({ ok: true, path: '/tmp/movie.srt' }) },
+  } })
+  p._setState(stateAt(100))
+  const off = el('off'); const row = el('row'); row.dataset.subfile = '0'
+  nodes['vt-menu'].querySelectorAll = sel =>
+    sel === '.vt-menu-item' ? [off]
+      : sel === '[data-subfile]' ? [row] : []
+  nodes['vt-subs'].fire('click')
+  await new Promise(r => setImmediate(r))
+  assert.match(nodes['vt-menu'].innerHTML, /Movie\.eng\.srt/)
+  assert.match(nodes['vt-menu'].innerHTML, /Add from file/)
+  row.fire('click')
+  await new Promise(r => setImmediate(r))
+  // Served first — the file is not on disk until videoSubServe extracts it —
+  // then loaded into mpv by path.
+  assert.deepStrictEqual(served, [{ index: 3 }])
+  assert.deepStrictEqual(sent.filter(s => s.verb === 'subAdd').pop(),
+    { verb: 'subAdd', args: { path: '/tmp/movie.srt' } })
+})
+
+// The regression this guards: binding the extra rows as track picks reads past
+// the end of the track list and sends a null track — silently switching
+// subtitles Off when "Add from file…" is clicked.
+test('the extra CC rows are never bound as track picks', async () => {
+  const { p, nodes, sent } = harness({ tracks: [{ id: 5, type: 'sub', lang: 'eng' }], apiExtra: {
+    videoSubsInTorrent: () => Promise.resolve({ ok: true, subs: [{ index: 0, name: 'a.srt' }] }),
+  } })
+  p._setState(stateAt(100))
+  const items = [el('i-off'), el('i-eng'), el('i-torrent'), el('i-addfile')]
+  nodes['vt-menu'].querySelectorAll = sel => sel === '.vt-menu-item' ? items : []
+  nodes['vt-subs'].fire('click')
+  await new Promise(r => setImmediate(r))
+  items[2].fire('click')
+  items[3].fire('click')
+  assert.ok(!sent.some(s => s.verb === 'track'), 'extra rows must not send track commands')
+})
+
+test('without the torrent-subtitle apis the CC menu is what it was', async () => {
+  const { p, nodes } = harness({ tracks: [] })
+  p._setState(stateAt(100))
+  nodes['vt-subs'].fire('click')
+  await new Promise(r => setImmediate(r))
+  assert.ok(!/In this torrent/.test(nodes['vt-menu'].innerHTML))
+  assert.match(nodes['vt-menu'].innerHTML, /Add from file/, 'the file picker row stays')
+})
+
+// ── Subtitle style controls (#23) ────────────────────────────────────────────
+// The CC/settings menu offers three fixed sizes and a background box, both sent
+// through the one `subStyle` verb the engine exposes: `scale` is a number,
+// `backColor` an mpv ARGB string (SUB_STYLE_PROPS in video-engine.js).
+{
+  // The settings menu wires [data-subsize]/[data-subback] buttons; the fake DOM
+  // returns nothing from querySelectorAll unless told to, so this stands them up.
+  function settingsHarness (opts = {}) {
+    const h = harness(opts)
+    const buckets = { '[data-subsize]': [], '[data-subback]': [], '[data-af]': [],
+      '[data-zoom]': [], '[data-aspect]': [], '.vt-menu-item': [] }
+    h.nodes['vt-menu'].querySelectorAll = sel => buckets[sel] || []
+    h.rows = buckets
+    return h
+  }
+
+  test('the size row sends discrete S/M/L scales through subStyle', () => {
+    const h = settingsHarness()
+    h.p._setState(stateAt(100))
+    const s = el('s'); s.dataset.subsize = '0.8'
+    const m = el('m'); m.dataset.subsize = '1'
+    const l = el('l'); l.dataset.subsize = '1.3'
+    h.rows['[data-subsize]'] = [s, m, l]
+    h.nodes['vt-settings'].fire('click')
+    l.fire('click')
+    assert.deepStrictEqual(h.sent.pop(), { verb: 'subStyle', args: { scale: 1.3 } })
+    s.fire('click')
+    assert.deepStrictEqual(h.sent.pop(), { verb: 'subStyle', args: { scale: 0.8 } })
+  })
+
+  test('the background row toggles a backing box through subStyle', () => {
+    const h = settingsHarness()
+    h.p._setState(stateAt(100))
+    const on = el('on'); on.dataset.subback = '1'
+    const off = el('off'); off.dataset.subback = '0'
+    h.rows['[data-subback]'] = [on, off]
+    h.nodes['vt-settings'].fire('click')
+    on.fire('click')
+    // ARGB, not a bare colour name: a semi-opaque black box, transparent off.
+    assert.strictEqual(h.sent.pop().args.backColor, '#80000000')
+    off.fire('click')
+    assert.strictEqual(h.sent.pop().args.backColor, '#00000000')
+  })
+
+  // The engine's SUB_STYLE_PROPS is the contract; the keys sent must be in it,
+  // or the style is silently dropped.
+  test('the subStyle keys the deck sends are ones the engine understands', () => {
+    const src = require('fs').readFileSync(
+      require('path').join(__dirname, '..', 'src', 'video-player.js'), 'utf8')
+    const fn = src.slice(src.indexOf('function openSettingsMenu'), src.indexOf('function onKey'))
+    // Both keys used here are members of SUB_STYLE_PROPS in video-engine.js.
+    assert.match(fn, /subStyle', \{ scale:/)
+    assert.match(fn, /subStyle', \{ backColor:/)
+  })
+}
+
+// ── Louder dialogue label (#25) ──────────────────────────────────────────────
+// The night-mode audio filter is what people look for under "make the quiet
+// parts audible", so it is named for what it does, not for a mode.
+test('the night-mode row is labelled for what it does', () => {
+  const src = require('fs').readFileSync(
+    require('path').join(__dirname, '..', 'src', 'video-player.js'), 'utf8')
+  assert.match(src, /Louder dialogue \(night mode\)/)
+  // Still the same dynaudnorm filter underneath.
+  assert.match(src, /audioFilter', \{ value: b\.dataset\.af === 'night' \? 'dynaudnorm'/)
+})
+
+// ── Per-show subtitle delay memory (#24) ─────────────────────────────────────
+// Subtitle desync is a property of the release, so it is remembered per show —
+// reported out through media.onPrefChange the same way audioLang/subLang are,
+// and read back as prefs.subDelayMs on the next open.
+test('nudging the subtitle delay reports it to the show', async () => {
+  const changes = []
+  const { p, nodes } = harness({ tracks: [] })
+  p.open({ title: 'X', onPrefChange: c => changes.push(c) })
+  p._setState(stateAt(100))
+  const plus = el('plus'); plus.dataset.delay = '50'
+  nodes['vt-subdelay'] = el('vt-subdelay')   // the readout the nudge writes to
+  nodes['vt-menu'].querySelectorAll = sel =>
+    sel === '[data-delay]' ? [plus] : []
+  nodes['vt-subs'].fire('click')
+  await new Promise(r => setImmediate(r))
+  plus.fire('click')
+  assert.deepStrictEqual(changes.pop(), { subDelayMs: 50 }, 'only the sub delay, reported as ms')
+})
+
+// Audio delay is nudged to match a specific file, not the show, so it is not
+// remembered — reporting it would poison the per-show store.
+test('nudging the audio delay reports nothing to the show', async () => {
+  const changes = []
+  const { p, nodes } = harness({ tracks: [] })
+  p.open({ title: 'X', onPrefChange: c => changes.push(c) })
+  p._setState(stateAt(100))
+  const plus = el('aplus'); plus.dataset.adelay = '50'
+  nodes['vt-menu'].querySelectorAll = sel => sel === '[data-adelay]' ? [plus] : []
+  nodes['vt-audio'].fire('click')
+  await new Promise(r => setImmediate(r))
+  nodes['vt-auddelay'] = el('av')
+  plus.fire('click')
+  assert.deepStrictEqual(changes, [], 'audio delay is per-file, never remembered')
+})
+
+test('a remembered subtitle delay is applied when the file starts playing', async () => {
+  const { p, sent } = harness({ tracks: [] })
+  p.open({ title: 'X', prefs: { subDelayMs: 120 } })
+  p._setState(stateAt(5))
+  await new Promise(r => setImmediate(r))
+  assert.deepStrictEqual(sent.filter(s => s.verb === 'subDelay'),
+    [{ verb: 'subDelay', args: { value: 120 } }], 'applied once from the pref')
+  p._setState(stateAt(6))
+  await new Promise(r => setImmediate(r))
+  assert.strictEqual(sent.filter(s => s.verb === 'subDelay').length, 1, 'once, not per tick')
+})
+
+test('no remembered delay sends nothing', async () => {
+  const { p, sent } = harness({ tracks: [] })
+  p.open({ title: 'X' })
+  p._setState(stateAt(5))
+  await new Promise(r => setImmediate(r))
+  assert.ok(!sent.some(s => s.verb === 'subDelay'))
+})
+
+// ── Auto-play-next toggle (#18) ──────────────────────────────────────────────
+// Default on; persisted under papaVtAutoNext. Off means the Up Next card still
+// appears but does not count down — only Play now moves it on.
+test('auto-play-next defaults on and shows a counting-down card', () => {
+  const { p, nodes } = harness({
+    segments: [{ kind: 'credits', start: 3400, end: 3600, origin: 'chapters', confidence: 0.9 }],
+    onNext: () => {},
+  })
+  p.setUpNext({ title: 'Next' })
+  p._setState(stateAt(3450))
+  assert.match(nodes['vt-upnext'].innerHTML, /vt-ring/, 'the ring is present when auto-play is on')
+})
+
+test('with auto-play off the card appears with Play now but no countdown ring', t => {
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
+  let advanced = 0
+  const { p, nodes } = harness({
+    segments: [{ kind: 'credits', start: 3400, end: 3600, origin: 'chapters', confidence: 0.9 }],
+    onNext: () => { advanced++ },
+    local: { readRaw: k => (k === 'papaVtAutoNext' ? 'false' : null) },
+  })
+  p.setUpNext({ title: 'Next' })
+  p._setState(stateAt(3450))
+  assert.strictEqual(nodes['vt-upnext'].hidden, false, 'the card still appears')
+  assert.match(nodes['vt-upnext'].innerHTML, /Play now/)
+  assert.ok(!/vt-ring/.test(nodes['vt-upnext'].innerHTML), 'no ring when auto-play is off')
+  t.mock.timers.tick(120000)
+  assert.strictEqual(advanced, 0, 'a card that does not count down never advances itself')
+})
+
+test('the settings menu carries the auto-play toggle, persisted to papaVtAutoNext', () => {
+  const writes = []
+  const { p, nodes } = harness({ local: { write: (k, v) => { writes.push([k, v]); return true } } })
+  p._setState(stateAt(100))
+  const items = [el('addsub'), el('auto'), el('shot')]
+  items[1].querySelector = () => el('tick')
+  nodes['vt-menu'].querySelectorAll = sel =>
+    sel === '.vt-menu-item' ? items
+      : sel === '[data-zoom]' || sel === '[data-af]' || sel === '[data-aspect]' ||
+        sel === '[data-subsize]' || sel === '[data-subback]' ? [] : []
+  nodes['vt-settings'].fire('click')
+  assert.match(nodes['vt-menu'].innerHTML, /Play next episode automatically/)
+  items[1].fire('click')
+  assert.deepStrictEqual(writes.pop(), ['papaVtAutoNext', false], 'toggling off is persisted')
+})
+
+// ── "Still watching?" (#20) ──────────────────────────────────────────────────
+// After three consecutive auto-advances with zero activity, the next countdown
+// holds at three seconds and asks. Any activity resets the count; noteActivity
+// is the single signal for "a person is here".
+// The credits segment the renderer sets per file — open() clears segments, so
+// each simulated episode re-sets it just as the renderer does.
+const CREDITS = () => [{ kind: 'credits', start: 3400, end: 3600, origin: 'chapters', confidence: 0.9 }]
+
+test('three untouched auto-advances raise Still watching on the next card', t => {
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
+  let advanced = 0
+  const { p, nodes } = harness({ segments: CREDITS(), onNext: () => { advanced++ } })
+  // Simulate three auto-advances: each card counts fully down on its own, and
+  // re-opening the player (what the renderer does on advance) keeps the count.
+  for (let i = 0; i < 3; i++) {
+    p.open({ title: 'Ep ' + i })
+    p.setSegments(CREDITS())
+    p.setUpNext({ title: 'Ep ' + (i + 1) })
+    p._setState(stateAt(3450))
+    t.mock.timers.tick(10000)   // the full countdown, untouched
+  }
+  assert.strictEqual(advanced, 3, 'three episodes rolled on their own')
+  // The fourth card must stop and ask rather than advancing a fourth time.
+  // showStillWatching rewrites the actions node in place; the fake box needs a
+  // querySelector that hands it back so the swap is observable.
+  const actions = el('actions')
+  nodes['vt-upnext'].querySelector = sel => sel === '.vt-upnext-actions' ? actions : null
+  p.open({ title: 'Ep 3' })
+  p.setSegments(CREDITS())
+  p.setUpNext({ title: 'Ep 4' })
+  p._setState(stateAt(3450))
+  t.mock.timers.tick(30000)
+  assert.match(actions.innerHTML, /Still watching/, 'the prompt appears')
+  assert.strictEqual(advanced, 3, 'and it does not advance while asking')
+})
+
+test('activity during the run resets the Still watching counter', t => {
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
+  let advanced = 0
+  const { p, nodes } = harness({ segments: CREDITS(), onNext: () => { advanced++ } })
+  for (let i = 0; i < 3; i++) {
+    p.open({ title: 'Ep ' + i })
+    p.setSegments(CREDITS())
+    p.setUpNext({ title: 'Ep ' + (i + 1) })
+    p._setState(stateAt(3450))
+    t.mock.timers.tick(10000)
+  }
+  // A person stirs: the count clears, so the next card counts all the way down
+  // and advances like any other rather than asking.
+  const before = advanced
+  p.open({ title: 'Ep 3' })
+  p.setSegments(CREDITS())
+  p.setUpNext({ title: 'Ep 4' })
+  p._setState(stateAt(3450))
+  // noteActivity is the single "a person is here" signal, relayed from mpv.
+  p.noteActivity()
+  t.mock.timers.tick(10000)
+  assert.ok(!/Still watching/.test(nodes['vt-upnext'].innerHTML), 'activity cleared the prompt')
+  assert.strictEqual(advanced, before + 1, 'and the card advanced normally')
+})
+
+// ── Verify: Up Next shows the episode still (#19) ─────────────────────────────
+test('the Up Next card renders the episode still when one is provided', () => {
+  const { p, nodes } = harness({
+    segments: [{ kind: 'credits', start: 3400, end: 3600, origin: 'chapters', confidence: 0.9 }],
+    onNext: () => {},
+  })
+  p.setUpNext({ title: 'Next', still: 'https://img.example/still.jpg' })
+  p._setState(stateAt(3450))
+  assert.match(nodes['vt-upnext'].innerHTML, /vt-upnext-still/)
+  assert.match(nodes['vt-upnext'].innerHTML, /still\.jpg/, 'the provided still image is used')
+})
+
+// ── Verify: volume/mute survives across episodes (#14) ────────────────────────
+// mpv is one long-lived process, so the deck must not reset the level when a
+// new file opens — it follows the state stream, which carries mpv's own volume.
+test('opening a new episode never resets volume or mute', () => {
+  const { p, sent } = harness()
+  p.open({ title: 'Ep 1' })
+  p._setState(stateAt(100, { volume: 60, muted: true }))
+  const before = sent.length
+  p.open({ title: 'Ep 2' })
+  assert.ok(!sent.slice(before).some(s => s.verb === 'volume' || s.verb === 'mute'),
+    'opening a file must not command a volume or mute reset')
+})
+
+// ── A11y: volume announces a percent (#29) ───────────────────────────────────
+test('the volume slider announces a percent, and flags the boosted range', () => {
+  const { p, nodes } = harness()
+  p._setState(stateAt(100, { volume: 84 }))
+  assert.strictEqual(nodes['vt-vol'].getAttribute('aria-valuetext'), '84%')
+  p._setState(stateAt(100, { volume: 120 }))
+  assert.match(nodes['vt-vol'].getAttribute('aria-valuetext'), /120% \(boosted\)/)
+  p._setState(stateAt(100, { volume: 50, muted: true }))
+  assert.match(nodes['vt-vol'].getAttribute('aria-valuetext'), /muted/)
+})
+
+test('the seek slider announces its position as a time of a total', () => {
+  const { p, nodes } = harness()
+  p._setState(stateAt(724, { duration: 2530 }))   // 12:04 of 42:10
+  assert.strictEqual(nodes['vt-seek'].getAttribute('aria-valuetext'), '12:04 of 42:10')
+})
+
+// The deck's focusable controls all carry a focus-visible ring, so keyboard
+// users can see where they are.
+test('every focusable deck control has a focus-visible ring', () => {
+  for (const sel of ['.vt-seek:focus-visible', '.vt-icon:focus-visible',
+    '.vt-chip:focus-visible', '.vt-vol-range:focus-visible', '.vt-menu-item:focus-visible']) {
+    assert.match(_css, new RegExp(sel.replace(/[-.]/g, '\\$&') + '\\s*\\{[^}]*outline'),
+      sel + ' must have a focus ring')
+  }
+})
+
+// ── Verify: the unbuffered seek region is visually distinct (#7) ──────────────
+// The track background is the unbuffered part of the film; it must read clearly
+// as "not here yet" against the solid buffered ranges laid over it.
+test('the unbuffered track is visually distinct from the buffered ranges', () => {
+  const track = _css.slice(_css.indexOf('.vt-seek-track {'), _css.indexOf('.vt-seek-track {') + 260)
+  assert.match(track, /repeating-linear-gradient/, 'the unbuffered region is hatched, not a flat fill')
+  // And the buffered ranges are a solid, brighter fill so they stand out.
+  assert.match(_css, /\.vt-seek-buffer i \{[^}]*rgba\(255,255,255,\.5\)/)
+})
+
+// ── §48: screenshot button, key and toast ────────────────────────────────────
+// The camera button sends the screenshot verb and reports where the file landed.
+test('the deck camera button sends the screenshot verb', () => {
+  // Default harness api records every videoControl call into `sent`.
+  const { nodes, sent } = harness()
+  nodes['vt-shot'].fire('click')
+  assert.ok(sent.some(s => s.verb === 'screenshot'), 'the camera button must send screenshot')
+})
+
+test('a saved screenshot toasts its path; a failure says so', async () => {
+  const ok = harness({ apiExtra: {
+    videoControl: () => Promise.resolve({ ok: true, value: { path: '/home/u/Pictures/Papa Audio/x.png' } }),
+  } })
+  ok.nodes['vt-shot'].fire('click')
+  await Promise.resolve(); await Promise.resolve()
+  assert.deepStrictEqual(ok.toasts, ['Screenshot saved to /home/u/Pictures/Papa Audio/x.png'])
+
+  const bad = harness({ apiExtra: { videoControl: () => Promise.resolve({ ok: false }) } })
+  bad.nodes['vt-shot'].fire('click')
+  await Promise.resolve(); await Promise.resolve()
+  assert.deepStrictEqual(bad.toasts, ['Could not save the screenshot'])
+})
+
+test('Shift+S grabs a screenshot while plain s still skips', () => {
+  const segs = [{ kind: 'intro', start: 10, end: 40, origin: 'manual', confidence: 1 }]
+  const { p, sent, press } = harness({ segments: segs })
+  p._setState(stateAt(20))   // inside the intro, so a plain s would skip
+  // Shift+S: a screenshot verb, and nothing seeked.
+  press('s', { tagName: 'DIV' }, { shift: true })
+  assert.ok(sent.some(s => s.verb === 'screenshot'), 'Shift+S must screenshot')
+  assert.ok(!sent.some(s => s.verb === 'seek'), 'Shift+S must not skip')
+  // Plain s: the skip fires (a seek to the segment end), no new screenshot.
+  const before = sent.filter(s => s.verb === 'screenshot').length
+  press('s')
+  assert.ok(sent.some(s => s.verb === 'seek'), 'plain s must skip the active segment')
+  assert.strictEqual(sent.filter(s => s.verb === 'screenshot').length, before)
+})
+
+// ── Seek-bar hover thumbnails (Player #5) ─────────────────────────────────────
+// A helper that fires a pointermove on the seek track at a fraction of its
+// width (the fake track rect is 100px wide).
+function hoverSeek(nodes, fraction) {
+  nodes['vt-seek'].fire('pointermove', { clientX: fraction * 100 })
+}
+
+test('hovering the seek bar shows the time even with no thumbnail API', () => {
+  const { p, nodes } = harness()          // no videoThumb on the api
+  p._setState(stateAt(1000))              // duration 3600
+  hoverSeek(nodes, 0.5)
+  // The bubble is a plain time-only node, exactly as before this feature.
+  assert.strictEqual(nodes['vt-seek-bubble'].hidden, false)
+  assert.strictEqual(nodes['vt-seek-bubble'].textContent, fmtTime(1800))
+  // No thumb scaffold was built.
+  assert.strictEqual(nodes['vt-seek-bubble'].children.length, 0)
+})
+
+test('a hover requests a thumbnail for the hovered position and paints it', async () => {
+  const asked = []
+  const { p, nodes } = harness({ apiExtra: {
+    videoThumb: (arg) => { asked.push(arg.position); return Promise.resolve({ ok: true, path: '/cache/thumb-1800.jpg' }) },
+  } })
+  p._setState(stateAt(1000))
+  hoverSeek(nodes, 0.5)                    // 0.5 * 3600 = 1800
+  assert.deepStrictEqual(asked, [1800], 'asked for the hovered position')
+  await Promise.resolve(); await Promise.resolve()
+  const bubble = nodes['vt-seek-bubble']
+  // The scaffold grew an <img> and a time span; the img points at the frame.
+  assert.strictEqual(bubble.children.length, 2)
+  const img = bubble.children[0]
+  assert.match(img.attrs.src, /^file:\/\//)
+  assert.match(img.attrs.src, /thumb-1800\.jpg$/)
+  assert.strictEqual(img.hidden, false)
+  assert.ok(bubble.classList.contains('has-thumb'))
+  // The time is still shown, now in its own span.
+  assert.strictEqual(bubble.children[1].textContent, fmtTime(1800))
+})
+
+test('a null thumbnail leaves the bubble time-only with no image', async () => {
+  const { p, nodes } = harness({ apiExtra: {
+    videoThumb: () => Promise.resolve({ ok: true, path: null }),   // still generating
+  } })
+  p._setState(stateAt(1000))
+  hoverSeek(nodes, 0.25)
+  await Promise.resolve(); await Promise.resolve()
+  const bubble = nodes['vt-seek-bubble']
+  // No frame ever arrived, so the plain-text bubble is untouched.
+  assert.strictEqual(bubble.children.length, 0)
+  assert.strictEqual(bubble.textContent, fmtTime(900))
+})
+
+test('leaving the seek bar hides the bubble and clears the thumb', async () => {
+  const { p, nodes } = harness({ apiExtra: {
+    videoThumb: () => Promise.resolve({ ok: true, path: '/cache/thumb-900.jpg' }),
+  } })
+  p._setState(stateAt(1000))
+  hoverSeek(nodes, 0.25)
+  await Promise.resolve(); await Promise.resolve()
+  assert.ok(nodes['vt-seek-bubble'].classList.contains('has-thumb'))
+  nodes['vt-seek'].fire('pointerleave')
+  assert.strictEqual(nodes['vt-seek-bubble'].hidden, true)
+  // The image is hidden again so the next hover does not flash the old frame.
+  const img = nodes['vt-seek-bubble'].children[0]
+  assert.strictEqual(img.hidden, true)
+  assert.ok(!nodes['vt-seek-bubble'].classList.contains('has-thumb'))
+})
+
+test('keyboard seek requests a thumbnail for the landing position too', async () => {
+  const asked = []
+  const { p, nodes, press } = harness({ apiExtra: {
+    videoThumb: (arg) => { asked.push(arg.position); return Promise.resolve({ ok: true, path: '/c/t.jpg' }) },
+  } })
+  p._setState(stateAt(1000))              // position 1000, duration 3600
+  press('ArrowRight')                     // +10 → landing at 1010
+  assert.ok(asked.length >= 1, 'keyboard seek asked for a thumbnail')
+  assert.strictEqual(asked[asked.length - 1], 1010)
+  await Promise.resolve(); await Promise.resolve()
+  assert.ok(nodes['vt-seek-bubble'].classList.contains('has-thumb'))
+})
+
+test('thumbnail requests are throttled across a fast pointer sweep', async () => {
+  let calls = 0
+  const { p, nodes } = harness({ apiExtra: {
+    videoThumb: () => { calls++; return Promise.resolve({ ok: true, path: null }) },
+  } })
+  p._setState(stateAt(0))
+  // Ten moves in a tight loop: the first fires immediately, the rest coalesce
+  // into at most one trailing request within the throttle window.
+  for (let i = 1; i <= 10; i++) hoverSeek(nodes, i / 20)
+  assert.ok(calls <= 2, 'a sweep of ten moves made at most two requests, got ' + calls)
 })

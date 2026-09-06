@@ -18,7 +18,9 @@
 
 const {
   parseQuality, parseAudioLayout, isLowQualitySource, magnetFromHash,
+  parseSizeBytes,
 } = require('./quality')
+const { raceMirrors } = require('./mirror-race')
 
 const DEFAULT_BASE_URLS = [
   'https://apibay.org',
@@ -54,8 +56,11 @@ function titleTokens(title) {
 function matchesTitle(name, title) {
   const tokens = titleTokens(title)
   if (!tokens.length) return false
+  // Space-bounded on both sides: normalizeText collapses punctuation to
+  // spaces, so every real token is space-delimited. A bare prefix match let
+  // "her" claim the tail of "another".
   const haystack = ` ${normalizeText(name)} `
-  return tokens.every(t => haystack.includes(` ${t} `) || haystack.includes(`${t} `))
+  return tokens.every(t => haystack.includes(` ${t} `))
 }
 
 function matchesYear(name, year) {
@@ -72,32 +77,96 @@ function matchesYear(name, year) {
   return !/\b(19|20)\d{2}\b/.test(text)
 }
 
+// The season pack regex: a release that names the season without pinning a
+// single episode ("Season 2", "S02") is treated as containing every episode of
+// it. Shared by the full SxxEyy check and the season-only fallback below.
+function _matchesSeasonPack(text, s) {
+  return new RegExp(`(season[\\s._-]*0*${s}|s0*${s})\\b(?![\\s._-]*e)`, 'i').test(text)
+}
+
 function matchesEpisode(name, season, episode) {
   if (season == null && episode == null) return true
-  const s = Number(season)
-  const e = Number(episode)
-  if (!Number.isFinite(s) || !Number.isFinite(e)) return true
+  // Number(null) and Number('') are both 0 — a finite value — so an absent
+  // season or episode has to be mapped to NaN explicitly, otherwise "no episode"
+  // would read as "episode 0" and skip the season-only path below.
+  const s = season == null || season === '' ? NaN : Number(season)
+  const e = episode == null || episode === '' ? NaN : Number(episode)
   const text = String(name || '')
+  // A season WITHOUT a usable episode number must not fall through to accept-all
+  // the way it used to: that flooded the sources list with every other season of
+  // the show. Filter by season alone instead — accept a release that names the
+  // requested season (an SxxEyy in it, an NxE form, or a whole-season pack), and
+  // reject the wrong season. A movie request (neither number known) still
+  // accepts everything, since the title/year filters carry it.
+  if (Number.isFinite(s) && !Number.isFinite(e)) {
+    if (new RegExp(`s0*${s}[\\s._-]?e\\d+\\b`, 'i').test(text)) return true
+    if (new RegExp(`\\b${s}x\\d+\\b`, 'i').test(text)) return true
+    return _matchesSeasonPack(text, s)
+  }
+  // Any other incomplete combination (movie request, or an episode with no
+  // season) keeps the previous accept-all: the title filters carry those.
+  if (!Number.isFinite(s) || !Number.isFinite(e)) return true
   if (new RegExp(`s0*${s}[\\s._-]?e0*${e}\\b`, 'i').test(text)) return true
   if (new RegExp(`\\b${s}x0*${e}\\b`, 'i').test(text)) return true
   // A complete-season pack contains the episode even though it does not name it.
-  if (new RegExp(`(season[\\s._-]*0*${s}|s0*${s})\\b(?![\\s._-]*e)`, 'i').test(text)) return true
+  if (_matchesSeasonPack(text, s)) return true
   return false
+}
+
+// A stated batch range in the title ("01-24", "1~24"), or null when there is
+// none. Only counts as a range when the upper bound is above the lower — a lone
+// "12-12" or a hyphenated date is not a batch span.
+const _RANGE_RE = /(\d{1,4})\s*[-~]\s*(\d{1,4})/
+
+function _statedRange(text) {
+  const m = _RANGE_RE.exec(text)
+  if (!m) return null
+  const from = Number(m[1]), to = Number(m[2])
+  return to > from ? { from, to } : null
+}
+
+function _rangeSpans(range, n) {
+  return Boolean(range && Number.isFinite(n) && n >= range.from && n <= range.to)
 }
 
 // Anime is numbered by a bare episode number far more often than by SxxEyy,
 // and batch packs ("01-24") legitimately contain the episode.
-function matchesAnimeEpisode(name, episode) {
+function _matchesAnimeNumber(text, n) {
+  if (new RegExp(`s\\d{1,3}[\\s._-]?e0*${n}\\b`, 'i').test(text)) return true
+  if (new RegExp(`(?:^|[\\s\\-_\\[(.])(?:e|ep|episode\\s*)?0*${n}(?:v\\d)?(?:$|[\\s\\-_\\])."'])`, 'i').test(text)) return true
+  // A range that spans the episode: "01-24", "1~24".
+  return _rangeSpans(_statedRange(text), n)
+}
+
+// Long-running shows are numbered absolutely at least as often as seasonally
+// ("One Piece - 1071", not "S20E10"), so when the caller knows the absolute
+// number a release naming either one is the requested episode.
+function matchesAnimeEpisode(name, episode, { season = null, absoluteEpisode = null } = {}) {
   if (episode == null || episode === '') return true
   const n = Number(episode)
   if (!Number.isFinite(n)) return true
   const text = String(name || '')
-  if (new RegExp(`s\\d{1,3}[\\s._-]?e0*${n}\\b`, 'i').test(text)) return true
-  if (new RegExp(`(?:^|[\\s\\-_\\[(.])(?:e|ep|episode\\s*)?0*${n}(?:v\\d)?(?:$|[\\s\\-_\\])."'])`, 'i').test(text)) return true
-  // A range that spans the episode: "01-24", "1~24", "Complete".
-  const range = /(\d{1,4})\s*[-~]\s*(\d{1,4})/.exec(text)
-  if (range && n >= Number(range[1]) && n <= Number(range[2])) return true
-  if (/\b(complete|batch|season\s*\d+)\b/i.test(text)) return true
+  if (_matchesAnimeNumber(text, n)) return true
+  const abs = Number(absoluteEpisode)
+  if (Number.isFinite(abs) && abs >= 1 && _matchesAnimeNumber(text, abs)) return true
+  // A stated range is authoritative in BOTH directions (nyaa's isPack logic):
+  // if the title states "01-12" it cannot be a source for episode 20 just
+  // because it also says "Batch". _matchesAnimeNumber above already accepted a
+  // range that spans, so reaching here with a stated range means it does not
+  // span — reject rather than falling through to the keyword check below.
+  const range = _statedRange(text)
+  if (range && !_rangeSpans(range, n) &&
+      !(Number.isFinite(abs) && abs >= 1 && _rangeSpans(range, abs))) {
+    return false
+  }
+  // An unlabelled "Complete"/"Batch" pack is trusted to span the episode, but
+  // a pack explicitly labelled some OTHER season cannot contain it.
+  // Number(null) is 0, so the missing-season case must be caught first.
+  const labelled = /\bseason\s*0*(\d{1,3})\b/i.exec(text)
+  const s = season == null || season === '' ? NaN : Number(season)
+  if (labelled && Number.isFinite(s) && Number(labelled[1]) !== s) return false
+  if (labelled) return true
+  if (/\b(complete|batch)\b/i.test(text)) return true
   return false
 }
 
@@ -135,15 +204,33 @@ function normalizeResult(raw) {
       `${audioLayout ? ` · ${audioLayout}` : ''}${sizeGb ? ` · ${sizeGb}` : ''}${seeds ? ` · ${seeds} seeds` : ''}`,
     audioLayout,
     seeds,
+    seeders: seeds,
+    sizeBytes: parseSizeBytes(raw.size),
     name,
     sub: null,
     dub: null,
   }
 }
 
-async function tryMirror(baseUrl, query, fetcher) {
+// The mirror that answered most recently leads the race on the next query.
+// Mirrors are raced in parallel now, so this is a tiebreak rather than a
+// timeout-saver: its request goes out first, which is what decides a race
+// between two healthy mirrors. Module-level on purpose: remembered for the
+// session, never persisted.
+let _lastGoodMirror = null
+
+function _orderMirrors(urls) {
+  if (!_lastGoodMirror || !urls.includes(_lastGoodMirror)) return urls
+  return [_lastGoodMirror, ...urls.filter(u => u !== _lastGoodMirror)]
+}
+
+function _resetMirrorHealth() {
+  _lastGoodMirror = null
+}
+
+async function tryMirror(baseUrl, query, fetcher, signal) {
   try {
-    const res = await fetcher(buildSearchUrl(baseUrl, query))
+    const res = await fetcher(buildSearchUrl(baseUrl, query), { signal })
     if (!res || !res.ok) return null
     const text = await res.text()
     let data
@@ -174,9 +261,12 @@ function buildQueries(request) {
     const names = requestTitles(request)
     if (!names.length) return []
     const e = Number(request.episode)
+    const abs = Number(request.absoluteEpisode)
     const out = []
     for (const name of names) {
       if (Number.isFinite(e) && e >= 1) out.push(`${name} ${String(e).padStart(2, '0')}`)
+      // Long-running shows are indexed by absolute number ("One Piece 1071").
+      if (Number.isFinite(abs) && abs >= 1 && abs !== e) out.push(`${name} ${String(abs).padStart(2, '0')}`)
       out.push(name)
     }
     return out
@@ -212,11 +302,12 @@ function createApibayProvider({ fetchFn, baseUrls = DEFAULT_BASE_URLS, maxResult
     const entries = []
 
     for (const query of queries) {
-      let rows = null
-      for (const baseUrl of urls) {
-        rows = await tryMirror(baseUrl, query, fetcher)
-        if (rows) break
-      }
+      // All mirrors race per query; the first usable answer wins and the rest
+      // are aborted.
+      const won = await raceMirrors(_orderMirrors(urls), (baseUrl, signal) =>
+        tryMirror(baseUrl, query, fetcher, signal))
+      if (won) _lastGoodMirror = won.baseUrl
+      const rows = won ? won.result : null
       if (!rows || !rows.length) continue
       for (const raw of rows) {
         const entry = normalizeResult(raw)
@@ -227,7 +318,9 @@ function createApibayProvider({ fetchFn, baseUrls = DEFAULT_BASE_URLS, maxResult
         if (!names.some(n => matchesTitle(entry.name, n))) continue
         if (request.type === 'movie' && !matchesYear(entry.name, request.year)) continue
         if (request.type === 'tv' && !matchesEpisode(entry.name, request.season, request.episode)) continue
-        if (request.type === 'anime' && !matchesAnimeEpisode(entry.name, request.episode)) continue
+        if (request.type === 'anime' && !matchesAnimeEpisode(entry.name, request.episode, {
+          season: request.season, absoluteEpisode: request.absoluteEpisode,
+        })) continue
         seen.add(entry.infoHash)
         entries.push(entry)
       }
@@ -263,4 +356,5 @@ module.exports = {
   isSentinel,
   normalizeResult,
   createApibayProvider,
+  _resetMirrorHealth,
 }

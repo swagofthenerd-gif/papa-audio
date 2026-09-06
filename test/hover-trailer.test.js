@@ -129,7 +129,11 @@ test('a page change stops the preview', () => {
 })
 
 test('the preview is muted, looped, and not a click target', () => {
-  const fn = RENDERER.slice(RENDERER.indexOf('async function _startHoverTrailer'),
+  // The element setup moved into the shared _makeTrailerVideo factory when the
+  // hero trailer arrived — one place now guarantees muted/loop/decoration for
+  // BOTH the card preview and the hero, which is stronger than the old
+  // per-call-site assertion, so the slice follows it there.
+  const fn = RENDERER.slice(RENDERER.indexOf('function _makeTrailerVideo'),
                             RENDERER.indexOf('function _bindVideoCards(root)'))
   assert.match(fn, /v\.muted = true/, 'sound on hover is never acceptable')
   assert.match(fn, /v\.loop = true/)
@@ -168,8 +172,11 @@ test('it can be turned off, and the choice persists', () => {
 test('there is a control for it', () => {
   assert.match(HTML, /id="gen-hover-trailers"/)
   assert.match(RENDERER, /getElementById\('gen-hover-trailers'\)/)
+  // The window covers the whole function: settings fields accreted above the
+  // hover-trailer block (UI scale, theme) and a fixed 900 chars kept slicing
+  // the assertion's target out of view.
   const fn = RENDERER.slice(RENDERER.indexOf('async function _initGeneralSettings'),
-                            RENDERER.indexOf('async function _initGeneralSettings') + 900)
+                            RENDERER.indexOf('async function _initGeneralSettings') + 4000)
   assert.match(fn, /hov\.checked = _hoverTrailersOn/, 'the box must show the real value')
   assert.match(fn, /setHoverTrailers\(!!e\.target\.checked\)/)
 })

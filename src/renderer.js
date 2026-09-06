@@ -23,6 +23,7 @@ const state = {
   modalOpen: false,
   playbackSpeed: 1,
   sleepTimerEnd: null,
+  sleepEndOfTrack: false,
   savedQueues: [],
    libTab: 'albums',
   libGenre: null,
@@ -37,6 +38,12 @@ const state = {
   playlistFolders: [],   // persisted to localStorage: papa-playlist-folders
   smartPlaylists: [],
   currentPlaylistId: null,
+  currentSmartListId: null,
+  // Which playlist's crossfade override is currently in force on the engine, and
+  // the global player config to fall back to when we leave it (App #51).
+  _activePlaylistCf: null,
+  _globalPlayerCfg: null,
+  _inForcePlayerCfg: null,
   playlistSort: 'alpha',
   likedTracks: [],
   playCounts: {},
@@ -75,6 +82,11 @@ const slsk = {
   filter: 'all',
   sort: 'relevance',
   error: null,
+  // Merge every sharer of one album into a single card by default; the escape
+  // toggle (persisted) restores the one-card-per-uploader view.
+  groupByUploader: (() => {
+    try { return localStorage.getItem('slsk_group_by_uploader') === '1' } catch (_) { return false }
+  })(),
 }
 // Repaint just the Soulseek section. Used by the failure paths, which
 // previously wrote into #slsk-results -- an element that does not exist.
@@ -140,6 +152,9 @@ function _slskResetThrottleRetry() {
 // The exact array the cards were rendered from. data-gi indexes THIS, so the
 // click handlers must read it too -- see the comment where it is assigned.
 var _slskRendered = []
+// True when _slskRendered holds MERGED album objects (people-per-album) rather
+// than raw folder-groups. The handlers branch on this to unwrap the best source.
+var _slskMergedMode = false
 // Every runSlskSearch takes a ticket. Its callbacks do nothing once a newer
 // search has taken one: without this, search A's variants kept merging into
 // search B's results, and A's finally() flipped B's spinner off and killed B's
@@ -192,6 +207,18 @@ let _suggCache = { trackFp: null, pool: [] }
 const SCROLL_MEMORY_CAP = 200
 const _scrollMemory = new Map()
 var _undoStack = []
+
+// Library album grid windowing. state.library can hold thousands of albums, and
+// rendering every card into #lib-grid at once builds a multi-megabyte string,
+// parses it, and lays it all out in one synchronous pass -- the jank item #89 is
+// about. Instead the full filtered/sorted set is held here and painted a chunk
+// at a time, appending the next chunk when a sentinel at the end of the grid
+// nears the viewport, exactly like _armBrowseObserver does for the browse grid.
+// Search/filter/sort still repaint from the whole set: renderLibrary() rebuilds
+// _libWindow.all from getSorted() on every call, so the window only ever slices
+// the already-filtered list.
+var LIB_WINDOW_CHUNK = 200
+var _libWindow = { all: [], rendered: 0, sort: null, observer: null, ticket: 0 }
 var _libPresets = []
 try {
   var _lp = window.PapaLocal.readArray('papa-lib-presets')
@@ -484,6 +511,52 @@ var ALL_SHORTCUTS = [
   { category: 'Mouse', keys: ['Click time'], desc: 'Toggle elapsed/remaining/total' },
 ]
 
+// The theatre's keys live in one place — src/video-keymap.js — so the help
+// overlay must read them from there rather than keep a second hand-typed copy
+// that drifts (App §84). This turns the keymap's action verbs into help rows;
+// the label map is the human-readable side of the same ACTIONS the player
+// already understands. Pure and export-friendly so the enumeration is testable.
+function _videoShortcutRows(keymap) {
+  const km = keymap || (typeof PapaVideoKeymap !== 'undefined' ? PapaVideoKeymap : null)
+  if (!km || !km.ACTIONS) return []
+  const A = km.ACTIONS
+  const long = km.SEEK_LONG || 60
+  const step = km.VOLUME_STEP || 5
+  // action → { keys, desc }. Only actions the keymap actually defines get a row;
+  // a verb with no entry here is skipped rather than shown as its raw id.
+  const rows = [
+    { a: A.PLAY_PAUSE, keys: ['Space / K'], desc: 'Play / pause' },
+    { a: A.SEEK,       keys: ['← / →', 'J / L'], desc: 'Seek ±10s (Shift ±' + long + 's) — L seeks here, not lyrics' },
+    { a: A.SEEK_TO,    keys: ['0–9'], desc: 'Jump to 0–90%' },
+    { a: A.VOLUME,     keys: ['↑ / ↓'], desc: 'Volume ±' + step + '%' },
+    { a: A.FRAME,      keys: [', / .'], desc: 'Frame step' },
+    { a: A.SPEED,      keys: ['[ / ]'], desc: 'Playback speed' },
+    { a: A.FULLSCREEN, keys: ['F'], desc: 'Fullscreen' },
+    { a: A.MUTE,       keys: ['M'], desc: 'Mute' },
+    { a: A.SUBTITLES,  keys: ['C'], desc: 'Subtitles' },
+    { a: A.AUDIO_TRACK,keys: ['V'], desc: 'Audio track' },
+    { a: A.SKIP,       keys: ['S'], desc: 'Skip intro / credits — not shuffle, in the theatre' },
+    { a: A.SCREENSHOT, keys: ['Shift+S'], desc: 'Take a screenshot' },
+    { a: A.NEXT,       keys: ['N'], desc: 'Next episode' },
+    { a: A.PREV,       keys: ['P'], desc: 'Previous episode' },
+    { a: A.THEATRE,    keys: ['T'], desc: 'Theatre mode' },
+    { a: A.STATS,      keys: ['I'], desc: 'Playback stats' },
+    { a: A.BOOKMARK,   keys: ['B'], desc: 'Bookmark this moment' },
+    { a: A.EXIT,       keys: ['Esc'], desc: 'Exit theatre' },
+    { a: A.FOCUS_SEARCH, keys: ['/'], desc: 'Focus search' },
+    { a: A.SHORTCUTS,  keys: ['? / Shift+/'], desc: 'This shortcut list' },
+  ]
+  return rows
+    .filter(r => r.a != null)
+    .map(r => ({ category: 'Video / Theatre', keys: r.keys, desc: r.desc }))
+}
+
+// Fold the theatre rows in once, at load. Guarded so a double-load (never
+// expected, but the array is module-global) cannot duplicate the section.
+if (!ALL_SHORTCUTS.some(s => s.category === 'Video / Theatre')) {
+  ALL_SHORTCUTS.push.apply(ALL_SHORTCUTS, _videoShortcutRows())
+}
+
 // ── Lyrics / Artist bio ────────────────────────────────────────────────────────
 let _lyrics = null
 let _dlPrevActiveCount = 0
@@ -585,24 +658,82 @@ let _sleepTimeout = null
 // The countdown in the tooltip/label is only true for the instant it is written,
 // so it has to be re-rendered while the timer runs.
 let _sleepTick = null
-function setSleepTimer(mins) {
+let _sleepFadeTimers = []
+// How long the volume fade takes when the timer fires, and how often it steps.
+const SLEEP_FADE_MS = 5000
+const SLEEP_FADE_STEP_MS = 250
+
+function _clearSleepTimers() {
   if (_sleepTimeout) { clearTimeout(_sleepTimeout); _sleepTimeout = null }
   if (_sleepTick) { clearInterval(_sleepTick); _sleepTick = null }
+  _sleepFadeTimers.forEach(function (t) { clearTimeout(t) })
+  _sleepFadeTimers = []
+}
+
+// Fade the volume down over a few seconds, then pause, then restore the volume
+// to where it was — so drifting off is not ended by a hard cut, and the next
+// session starts at the same level. Pure step curve comes from music-tools so
+// it can be tested without a clock.
+function _sleepFadeAndPause() {
+  var startVol = audio.volume
+  var tools = (typeof window !== 'undefined' && window.PapaMusicTools) || null
+  var steps = tools
+    ? tools.sleepFadeSteps(startVol, SLEEP_FADE_MS, SLEEP_FADE_STEP_MS)
+    : [0]
+  _sleepFadeTimers = []
+  steps.forEach(function (v, i) {
+    _sleepFadeTimers.push(setTimeout(function () {
+      audio.volume = v
+      setVolDisplay(v)
+    }, SLEEP_FADE_STEP_MS * (i + 1)))
+  })
+  // After the last fade step lands, pause and put the volume back.
+  _sleepFadeTimers.push(setTimeout(function () {
+    audio.pause(); state.isPlaying = false
+    audio.volume = startVol
+    setVolDisplay(startVol)
+    state.lastVolume = startVol
+    updatePlayBtn(); updateTrackHighlight()
+    if (state.modalOpen) syncModalPlayBtn()
+    state.sleepTimerEnd = null
+    state.sleepEndOfTrack = false
+    if (_sleepTick) { clearInterval(_sleepTick); _sleepTick = null }
+    updateSleepBtn()
+  }, SLEEP_FADE_MS + SLEEP_FADE_STEP_MS))
+}
+
+// Called from playNext() at a track boundary when "end of track" was armed.
+function _sleepAtTrackEnd() {
+  if (!state.sleepEndOfTrack) return false
+  state.sleepEndOfTrack = false
+  _clearSleepTimers()
   state.sleepTimerEnd = null
+  audio.pause(); state.isPlaying = false
+  updatePlayBtn(); updateStopAfterBtn()
+  syncExtension()
+  updateSleepBtn()
+  return true
+}
+
+// mins > 0 arms a countdown; mins === 0 arms "end of track"; anything else
+// cancels. Returning to a clean state each time keeps the two modes exclusive.
+function setSleepTimer(mins) {
+  _clearSleepTimers()
+  state.sleepTimerEnd = null
+  state.sleepEndOfTrack = false
+  if (mins === 0) {
+    // End of track: no clock, just a flag playNext() honours.
+    state.sleepEndOfTrack = true
+    updateSleepBtn()
+    return
+  }
   if (!Number.isFinite(mins) || mins <= 0) { updateSleepBtn(); return }
   _sleepTick = setInterval(function () {
     if (!state.sleepTimerEnd) { clearInterval(_sleepTick); _sleepTick = null; return }
     updateSleepBtn()
   }, 30000)
   state.sleepTimerEnd = Date.now() + mins * 60000
-  _sleepTimeout = setTimeout(() => {
-    audio.pause(); state.isPlaying = false
-    updatePlayBtn(); updateTrackHighlight()
-    if (state.modalOpen) syncModalPlayBtn()
-    state.sleepTimerEnd = null
-    if (_sleepTick) { clearInterval(_sleepTick); _sleepTick = null }
-    updateSleepBtn()
-  }, mins * 60000)
+  _sleepTimeout = setTimeout(_sleepFadeAndPause, mins * 60000)
   updateSleepBtn()
 }
 
@@ -629,22 +760,285 @@ function updateSleepBtn() {
   const btn = document.getElementById('btn-sleep')
   if (!btn) return
   const active = !!state.sleepTimerEnd
-  btn.classList.toggle('active', active)
+  const eot = !!state.sleepEndOfTrack
+  btn.classList.toggle('active', active || eot)
+  btn.setAttribute('aria-pressed', (active || eot) ? 'true' : 'false')
   var remaining = active ? Math.max(0, Math.round((state.sleepTimerEnd - Date.now()) / 60000)) : 0
-  btn.title = active
-    ? `Sleep timer: ${remaining}m remaining`
-    : 'Sleep timer'
+  btn.title = eot
+    ? 'Sleep timer: stops at end of track'
+    : active
+      ? `Sleep timer: ${remaining}m remaining`
+      : 'Sleep timer'
   var label = btn.querySelector('.sleep-label')
-  if (active) {
+  var text = eot ? 'EOT' : active ? remaining + 'm' : ''
+  if (text) {
     if (!label) {
       label = document.createElement('span')
       label.className = 'sleep-label'
       btn.appendChild(label)
     }
-    label.textContent = remaining + 'm'
+    label.textContent = text
   } else {
     if (label) label.remove()
   }
+}
+
+// ── Wake-me alarm (App #67) ───────────────────────────────────────────────────
+// A one-shot alarm: at a chosen wall-clock time, start a chosen playlist or
+// album and fade the volume up from silence over 30s so the wake-up is gentle.
+//
+// HONEST SCOPE: this is the renderer-side version and it only fires WHILE THE
+// APP IS RUNNING. A truly reliable alarm (surviving a closed app or a sleeping
+// machine) would need main-process/OS scheduling — deliberately out of scope
+// here per the task's "if it needs main-process scheduling, ship the
+// renderer-side version with an honest comment." The one alarm is persisted via
+// PapaLocal so it survives a reload, and is re-armed on startup by _loadAlarm.
+var _ALARM_KEY = 'papa-alarm'
+var _ALARM_FADE_MS = 30000
+var _ALARM_FADE_STEP_MS = 1000
+var _alarmTimeout = null
+var _alarmFadeTimers = []
+var _alarm = null // { time: 'HH:MM', source: {type:'playlist'|'album', id} }
+
+function _clearAlarmTimers() {
+  if (_alarmTimeout) { clearTimeout(_alarmTimeout); _alarmTimeout = null }
+  _alarmFadeTimers.forEach(function (t) { clearTimeout(t) })
+  _alarmFadeTimers = []
+}
+
+// Read the persisted alarm and arm it. Called once at startup.
+function _loadAlarm() {
+  var saved = window.PapaLocal ? window.PapaLocal.readObject(_ALARM_KEY) : null
+  if (saved && saved.time && /^\d{1,2}:\d{2}$/.test(saved.time)) {
+    _alarm = { time: saved.time, source: saved.source || null }
+    _armAlarm()
+  }
+  updateAlarmStatus()
+}
+
+function _saveAlarm() {
+  if (!window.PapaLocal) return
+  if (_alarm) window.PapaLocal.write(_ALARM_KEY, _alarm)
+  else window.PapaLocal.remove(_ALARM_KEY)
+}
+
+// Schedule the timeout for the next occurrence of _alarm.time. Time math is the
+// tested msUntilAlarm helper so it does not depend on the wall clock here.
+function _armAlarm() {
+  _clearAlarmTimers()
+  if (!_alarm || !_alarm.time) return
+  var tools = (typeof window !== 'undefined' && window.PapaMusicTools) || null
+  var ms = tools ? tools.msUntilAlarm(_alarm.time) : null
+  if (ms == null) { _alarm = null; return }
+  _alarmTimeout = setTimeout(_fireAlarm, ms)
+}
+
+function _fireAlarm() {
+  _clearAlarmTimers()
+  var src = _alarm && _alarm.source
+  // Re-arm for the same time tomorrow only if the user wants a repeat — this is
+  // a one-shot by design, so clear it after firing. (A daily alarm would be a
+  // natural follow-up but is not asked for here.)
+  var startedOk = _startAlarmPlayback(src)
+  _alarm = null
+  _saveAlarm()
+  updateAlarmStatus()
+  if (!startedOk) { showSnackbar('Alarm fired but its playlist/album was gone'); return }
+  showSnackbar('Good morning — waking you up gently')
+}
+
+// Start the chosen source at volume 0, then fade up over 30s using the tested
+// alarmFadeSteps curve and the player-shim volume API.
+function _startAlarmPlayback(src) {
+  var target = state.lastVolume || audio.volume || 0.8
+  if (!_playAlarmSource(src)) return false
+  var tools = (typeof window !== 'undefined' && window.PapaMusicTools) || null
+  var steps = tools ? tools.alarmFadeSteps(target, _ALARM_FADE_MS, _ALARM_FADE_STEP_MS) : [target]
+  audio.volume = 0
+  setVolDisplay(0)
+  _alarmFadeTimers = []
+  steps.forEach(function (v, i) {
+    _alarmFadeTimers.push(setTimeout(function () {
+      audio.volume = v
+      setVolDisplay(v)
+      if (i === steps.length - 1) { state.lastVolume = target }
+    }, _ALARM_FADE_STEP_MS * (i + 1)))
+  })
+  return true
+}
+
+// Resolve the persisted source id to something playable and start it. Returns
+// false if the source no longer exists.
+function _playAlarmSource(src) {
+  if (!src) {
+    // No source chosen: fall back to any album so the alarm still wakes.
+    if (!state.library.length) return false
+    playAlbum(state.library[0], 0)
+    return true
+  }
+  if (src.type === 'album') {
+    var album = state.library.find(function (a) { return a.id === src.id })
+    if (!album) return false
+    playAlbum(album, 0)
+    return true
+  }
+  if (src.type === 'playlist') {
+    var pl = (state.playlists || []).find(function (p) { return p.id === src.id })
+    if (!pl || !pl.tracks || !pl.tracks.length) return false
+    var byPath = new Map(_allLibraryTracks().map(function (t) { return [t.filePath, t] }))
+    var tracks = pl.tracks.map(function (fp) {
+      return byPath.get(typeof fp === 'string' ? fp : (fp && fp.filePath))
+    }).filter(Boolean)
+    if (!tracks.length) return false
+    _oldQueue = null
+    _radioEndIfActive()
+    state.queue = tracks
+    state.queueIndex = 0
+    _armPlaylistCf(pl) // App #51: an alarm starting a playlist honours its crossfade
+    playCurrentTrack()
+    return true
+  }
+  return false
+}
+
+// Populate the source <select> with albums + playlists, remembering the saved
+// choice. Called when the sleep panel opens.
+function populateAlarmSources() {
+  var sel = document.getElementById('alarm-source')
+  if (!sel) return
+  var cur = _alarm && _alarm.source
+  var opts = ['<option value="">First album (default)</option>']
+  ;(state.playlists || []).forEach(function (p) {
+    opts.push('<option value="playlist:' + esc(p.id) + '">Playlist: ' + esc(p.name || 'Untitled') + '</option>')
+  })
+  state.library.slice(0, 300).forEach(function (a) {
+    opts.push('<option value="album:' + esc(a.id) + '">' + esc((a.artist || '') + ' — ' + (a.name || '')) + '</option>')
+  })
+  sel.innerHTML = opts.join('')
+  if (cur) sel.value = cur.type + ':' + cur.id
+  var timeInput = document.getElementById('alarm-time')
+  if (timeInput && _alarm && _alarm.time) timeInput.value = _alarm.time
+}
+
+function setAlarmFromUI() {
+  var timeInput = document.getElementById('alarm-time')
+  var sel = document.getElementById('alarm-source')
+  var time = timeInput ? timeInput.value : ''
+  if (!/^\d{1,2}:\d{2}$/.test(time)) { showSnackbar('Pick a wake-up time first'); return }
+  var source = null
+  if (sel && sel.value) {
+    var parts = sel.value.split(':')
+    source = { type: parts[0], id: parts.slice(1).join(':') }
+  }
+  _alarm = { time: time, source: source }
+  _saveAlarm()
+  _armAlarm()
+  updateAlarmStatus()
+  showSnackbar('Alarm set for ' + time + ' (only while the app is open)')
+}
+
+function clearAlarm() {
+  _alarm = null
+  _clearAlarmTimers()
+  _saveAlarm()
+  updateAlarmStatus()
+  showSnackbar('Alarm cleared')
+}
+
+function updateAlarmStatus() {
+  var el = document.getElementById('alarm-status')
+  if (!el) return
+  if (_alarm && _alarm.time) {
+    var what = 'first album'
+    if (_alarm.source) {
+      if (_alarm.source.type === 'playlist') {
+        var pl = (state.playlists || []).find(function (p) { return p.id === _alarm.source.id })
+        what = pl ? 'playlist "' + pl.name + '"' : 'a playlist'
+      } else {
+        var al = state.library.find(function (a) { return a.id === _alarm.source.id })
+        what = al ? '"' + al.name + '"' : 'an album'
+      }
+    }
+    el.textContent = 'Wake at ' + _alarm.time + ' with ' + what + ' — app must stay open'
+    el.classList.add('set')
+  } else {
+    el.textContent = ''
+    el.classList.remove('set')
+  }
+}
+
+// ── Scrobble health (App #58) ─────────────────────────────────────────────────
+// The scrobble-track IPC resolves undefined on both success and network
+// failure (main.js logs failures but does not report them back, and adding a
+// new IPC is out of scope). So the strongest signal we can honestly track in
+// the renderer is: is Last.fm configured at all, and did the invoke *reject*
+// (the IPC bridge itself failing). We record the last few attempts and surface
+// a compact "Last.fm: OK / N failed recently / off" line in the stats page.
+//
+// "off" is authoritative — read from getLastfmConfig — so we never claim OK for
+// a user who never set Last.fm up.
+var _scrobbleHealth = {
+  configured: null,   // null = unknown until first checked; true/false after
+  attempts: [],       // recent { ts, ok } entries, capped
+  lastError: null,
+}
+var _SCROBBLE_HEALTH_CAP = 20
+
+function _refreshScrobbleConfig() {
+  if (!window.api || !window.api.getLastfmConfig) return Promise.resolve()
+  return window.api.getLastfmConfig().then(function (cfg) {
+    // A session key is what actually lets a scrobble through; without it the
+    // integration is effectively off even if a username is stored.
+    _scrobbleHealth.configured = !!(cfg && cfg.sessionKey)
+  }).catch(function () { /* leave configured as-is */ })
+}
+
+// Wrap every scrobbleTrack call. Records the outcome, then returns the promise
+// so callers are unchanged in behaviour. A rejected invoke is the one failure
+// mode the renderer can actually see.
+function scrobbleWithHealth(track) {
+  var p = (window.api && window.api.scrobbleTrack)
+    ? window.api.scrobbleTrack(track)
+    : Promise.resolve()
+  return p.then(function (r) {
+    _recordScrobble(true, null)
+    return r
+  }, function (err) {
+    _recordScrobble(false, (err && err.message) || String(err))
+    // Swallow: a scrobble failure must never break playback (the callers did
+    // not await or catch this before, and must keep not needing to).
+  })
+}
+
+function _recordScrobble(ok, errMsg) {
+  _scrobbleHealth.attempts.push({ ts: Date.now(), ok: !!ok })
+  if (_scrobbleHealth.attempts.length > _SCROBBLE_HEALTH_CAP) {
+    _scrobbleHealth.attempts = _scrobbleHealth.attempts.slice(-_SCROBBLE_HEALTH_CAP)
+  }
+  if (!ok) _scrobbleHealth.lastError = errMsg
+}
+
+// Summarise for the stats line. Pure over the health record so it is easy to
+// reason about: off > has-failures > ok > idle.
+function scrobbleHealthSummary() {
+  if (_scrobbleHealth.configured === false) {
+    return { state: 'off', text: 'Last.fm: off', title: 'Last.fm scrobbling is not set up' }
+  }
+  var recent = _scrobbleHealth.attempts
+  var failed = recent.filter(function (a) { return !a.ok }).length
+  if (failed > 0) {
+    return {
+      state: 'failing',
+      text: 'Last.fm: ' + failed + ' failed recently',
+      title: 'The last ' + recent.length + ' scrobble attempts included ' + failed +
+        ' failure' + (failed !== 1 ? 's' : '') + (_scrobbleHealth.lastError ? ' (' + _scrobbleHealth.lastError + ')' : ''),
+    }
+  }
+  if (recent.length > 0) {
+    return { state: 'ok', text: 'Last.fm: OK', title: 'Recent scrobbles are going through' }
+  }
+  // Configured (or unknown) but nothing scrobbled yet this session.
+  return { state: 'idle', text: 'Last.fm: ready', title: 'No scrobbles yet this session' }
 }
 
 function updateStopAfterBtn() {
@@ -705,6 +1099,12 @@ let ctxTarget = null  // { type: 'album'|'track', albumId, track, artist }
 
 // ── Init ───────────────────────────────────────────────────────────────────
 async function init() {
+  // Theme before first paint (App #87): read the synchronous localStorage
+  // mirror and set body.theme-light now, so the app opens straight into the
+  // chosen palette instead of flashing dark then correcting after IPC returns.
+  // The authoritative value in the store is reconciled by _initThemeField when
+  // the settings panel initialises; here we only need it to not flash.
+  _applyThemeEarly()
   const [info, liked, savedQueues, playlists, likedTracks, playCounts, playHistory, followedArtists, ytLiked, ytFollowed, ytSavedAlbums, ytRecent] = await Promise.all([
     window.api.getAppInfo(), window.api.getLiked(),
     window.api.getSavedQueues(),
@@ -741,7 +1141,15 @@ async function init() {
   renderFolders()
   renderSavedQueues()
   initChatSidebar()
+  // Apply the saved interface size before the settings modal is ever opened, so
+  // the whole window comes up at the user's chosen scale rather than snapping to
+  // it later. The field wiring in _initGeneralSettings handles later changes.
+  _applyUiScaleFromSettings()
   initPlaybackSettings()
+  // Learn whether Last.fm is configured so the stats health line can say "off"
+  // truthfully rather than defaulting to a hopeful "OK".
+  _refreshScrobbleConfig()
+  _loadAlarm()
   var formatEl = document.getElementById('np-format')
   if (formatEl && !document.getElementById('np-bitperfect')) {
     var bp = document.createElement('span')
@@ -842,6 +1250,17 @@ async function init() {
   // yet, so this starts slow and the first poll re-tunes it.
   retuneDownloadsPolling()
 
+  // App-chrome bindings. Behind a run-once guard. (The keyboard-help overlay —
+  // App §84 — reuses the app's existing global keydown handler rather than
+  // adding its own listener, so it needs no init here.)
+  _initOnlineBanner()
+
+  // Hydrate the watch store from the main-process bridge before anything can
+  // render Continue Watching. Early callers fall back safely, but awaiting is
+  // the supported flow — and it is what makes the localStorage→SideStore
+  // migration happen before the first read.
+  try { await (window.PapaVideoStore?.init?.() || null) } catch (_) { /* store degrades to localStorage */ }
+
   if (!state.musicFolders.length) {
     document.getElementById('setup-overlay').style.display = 'flex'
     return
@@ -852,7 +1271,15 @@ async function init() {
     state.library = cached
     checkFollowedArtistsForNew()
     var session = await window.api.getSessionState()
-    navigate(session && session.page ? session.page : 'home', session && session.page ? session.navId : null, { skipHistory: true, restoreScroll: true })
+    // A page that needs an id to render anything (an album, a show, a search)
+    // saved with no id is a dead end on restore -- it used to reopen straight
+    // into the same broken error state that got saved, with no way out short
+    // of leaving the page by hand. Land on Home instead.
+    var _needsNavId = ['album', 'artist', 'search', 'playlist', 'video-detail', 'person', 'shelf']
+    var _restorePage = session && session.page ? session.page : 'home'
+    var _restoreNavId = session && session.page ? session.navId : null
+    if (_needsNavId.indexOf(_restorePage) !== -1 && !_restoreNavId) _restorePage = 'home'
+    navigate(_restorePage, _restorePage === 'home' ? null : _restoreNavId, { skipHistory: true, restoreScroll: true })
     syncLibraryExt()
     setTimeout(backgroundSync, 800)
     setTimeout(restorePlaybackState, 1200)
@@ -1041,6 +1468,10 @@ function _currentNavId() {
   if (state.currentPage === 'artist') return state.currentArtistName
   if (state.currentPage === 'search') return state.currentSearchQuery
   if (state.currentPage === 'playlist') return state.currentPlaylistId
+  if (state.currentPage === 'smartlist') return state.currentSmartListId
+  if (state.currentPage === 'video-detail' || state.currentPage === 'person' || state.currentPage === 'shelf') {
+    return state.currentVideoNavId
+  }
   return null
 }
 
@@ -1122,7 +1553,7 @@ async function restorePlaybackState(opts) {
 }
 
 // ── Navigation ──────────────────────────────────────────────────────────────
-const VIDEO_PAGES = new Set(['video', 'browse', 'person', 'video-detail', 'shelf', 'diary'])
+const VIDEO_PAGES = new Set(['video', 'browse', 'person', 'video-detail', 'shelf', 'diary', 'calendar'])
 
 function navigate(page, navId, opts = {}) {
   // Save scroll position of page we're leaving
@@ -1157,6 +1588,8 @@ function navigate(page, navId, opts = {}) {
   state.currentArtistName  = page === 'artist' ? navId : ''
   state.currentSearchQuery = page === 'search' ? navId : ''
   state.currentPlaylistId  = page === 'playlist' ? navId : null
+  state.currentSmartListId = page === 'smartlist' ? navId : null
+  state.currentVideoNavId  = (page === 'video-detail' || page === 'person' || page === 'shelf') ? navId : null
   if (page !== 'playlist') state._plSearch = ''
 
   // Wrapped so one bad record cannot leave the app on a blank page with no way
@@ -1170,8 +1603,10 @@ function navigate(page, navId, opts = {}) {
   else if (page === 'artist')    renderArtist(navId)
   else if (page === 'search')    renderSearch(navId)
   else if (page === 'downloads') renderDownloads()
+  else if (page === 'soulseek')  renderSoulseekHub()
   else if (page === 'playlists') renderPlaylists()
   else if (page === 'playlist')  renderPlaylist(navId)
+  else if (page === 'smartlist') renderSmartList(navId)
   else if (page === 'manage')    renderManage()
   else if (page === 'stats')     renderStats()
   else if (page === 'liked')     renderLikedSongs()
@@ -1186,6 +1621,7 @@ function navigate(page, navId, opts = {}) {
   else if (page === 'video-detail') renderVideoDetail(navId)
   else if (page === 'shelf')        renderShelf(navId)
   else if (page === 'diary')        renderDiary(navId)
+  else if (page === 'calendar')     renderCalendar()
   } catch (err) {
     _renderFailure(page, err)
   }
@@ -1232,6 +1668,19 @@ function updateNavBtns() {
 var _videoDetailTicket = 0
 var _videoCatalogTicket = 0
 var _videoSearchTicket = 0
+// A query handed to the video tab from elsewhere (universal search's "See all
+// in Movies & TV", App §69). navigate('video') repaints the tab and rebinds the
+// search input synchronously, but the caller cannot run the search until that
+// input exists — so it parks the query here and _bindVideoSearch() picks it up
+// once, on the next render. One variable rather than a second search entry
+// point: the tab already knows how to search itself.
+var _videoSearchPending = null
+// The one hook the video-search code exposes for a cross-page handoff: park a
+// query, then navigate to the tab. Kept minimal on purpose (see the note above).
+function requestVideoSearch(query) {
+  const q = typeof query === 'string' ? query.trim() : ''
+  _videoSearchPending = q || null
+}
 // Bumped on every season/episode change so a slow response for the season the
 // user just left cannot overwrite the one they are now looking at.
 var _videoSeasonTicket = 0
@@ -1256,7 +1705,7 @@ function _bindBrowseKeys() {
   document.addEventListener('keydown', function (e) {
     if (e.ctrlKey || e.altKey || e.metaKey) return
     const page = state.currentPage
-    if (page !== 'video' && page !== 'browse' && page !== 'person' && page !== 'video-detail' && page !== 'diary') return
+    if (!VIDEO_PAGES.has(page)) return
     // The theatre is modal; while it is open its own keys apply.
     const theatre = document.getElementById('vtheatre')
     if (theatre && !theatre.classList.contains('hidden')) return
@@ -1337,10 +1786,19 @@ async function renderPerson(personId) {
   const ticket = ++_personTicket
   if (!personId) return navigate('video')
 
+  // The credit that led here already had a name and photo, so they paint
+  // before the request returns. It is only a hint: arriving by session
+  // restore there is no clicked credit, and the fetched person fills in.
+  const hint = _personName(personId)
   setContent('<div class="page vpage cinema">' +
     '<div class="vperson-head">' +
-      '<div class="vskel vperson-photo"></div>' +
-      '<div><div class="vskel vskel-line" style="width:220px;height:22px"></div>' +
+      (hint.photo
+        ? '<img class="vperson-photo" src="' + esc(hint.photo) + '" alt="" onerror="this.style.visibility=\'hidden\'">'
+        : '<div class="vskel vperson-photo"></div>') +
+      '<div>' +
+        (hint.name
+          ? '<div class="vperson-name">' + esc(hint.name) + '</div>'
+          : '<div class="vskel vskel-line" style="width:220px;height:22px"></div>') +
       '<div class="vskel vskel-line short" style="margin-top:8px"></div></div>' +
     '</div>' +
     '<div class="vrows" id="vperson-rows"></div>' +
@@ -1357,17 +1815,20 @@ async function renderPerson(personId) {
   }
   const credits = Array.isArray(res.credits) ? res.credits : []
 
-  // The person's own details are not a separate request: everything needed to
-  // head the page is already on the credit that led here.
+  // The catalog rides the person's own details on the credits array, so the
+  // header no longer depends on which tile was clicked this session. The
+  // hint only covers for an older cached array that carries no person.
+  const person = (credits.person && credits.person.name) ? credits.person : hint
   const head = document.querySelector('.vperson-head')
-  const name = _personName(personId)
   if (head) {
     head.innerHTML =
-      (name.photo
-        ? '<img class="vperson-photo" src="' + esc(name.photo) + '" alt="" onerror="this.style.visibility=\'hidden\'">'
-        : '<div class="vperson-photo vcast-photo-fallback">' + esc(String(name.name || '?').charAt(0)) + '</div>') +
-      '<div><div class="vperson-name">' + esc(name.name || 'Filmography') + '</div>' +
-      '<div class="vperson-role">' + credits.length + ' credit' + (credits.length === 1 ? '' : 's') + '</div></div>'
+      (person.photo
+        ? '<img class="vperson-photo" src="' + esc(person.photo) + '" alt="" onerror="this.style.visibility=\'hidden\'">'
+        : '<div class="vperson-photo vcast-photo-fallback">' + esc(String(person.name || '?').charAt(0)) + '</div>') +
+      '<div><div class="vperson-name">' + esc(person.name || 'Filmography') + '</div>' +
+      '<div class="vperson-role">' + credits.length + ' credit' + (credits.length === 1 ? '' : 's') + '</div>' +
+      (person.bio ? '<p class="vperson-bio">' + esc(person.bio) + '</p>' : '') +
+      '</div>'
   }
 
   if (!credits.length) {
@@ -1384,27 +1845,71 @@ async function renderPerson(personId) {
   // returns credits in its own order, which is neither chronological nor
   // ranked; the plan asks for ranked, so the control offers both and defaults
   // to newest, which is what someone looking up a director expects to see.
-  _person = { films: films, series: series, sort: 'newest' }
+  _person = { films: films, series: series, sort: 'newest', filter: '' }
   _paintPersonRows()
 }
 
-var _person = { films: [], series: [], sort: 'newest' }
+var _person = { films: [], series: [], sort: 'newest', filter: '' }
+
+// Narrows a credit list to titles containing the typed substring, case- and
+// accent-insensitively so "amelie" finds "Amélie" (App §20b). Pure: the filter
+// box re-runs it on every keystroke with no fetch.
+function _filterPersonCredits(items, needle) {
+  const q = _simplifyVideoQuery(needle).toLowerCase()
+  if (!q) return Array.isArray(items) ? items.slice() : []
+  return (Array.isArray(items) ? items : []).filter(function (c) {
+    const title = _simplifyVideoQuery((c && (c.title || c.name)) || '').toLowerCase()
+    return title.indexOf(q) !== -1
+  })
+}
+
+// Just the grids — the sort control and the filter box live above them and are
+// painted once by _paintPersonRows so they never lose focus or their value on
+// a keystroke.
+function _paintPersonGrids() {
+  const grids = document.getElementById('vperson-grids')
+  if (!grids) return
+  const films = _vSortItems(_filterPersonCredits(_person.films, _person.filter), _person.sort)
+  const series = _vSortItems(_filterPersonCredits(_person.series, _person.filter), _person.sort)
+  let html = ''
+  if (films.length) html += _vRowShell('person-movies', 'Films', films.length)
+  if (series.length) html += _vRowShell('person-tv', 'Television', series.length)
+  if (!films.length && !series.length) {
+    html = '<div class="vrow-msg">No credits match &ldquo;' + esc(_person.filter) + '&rdquo;</div>'
+  }
+  grids.innerHTML = html
+  if (films.length) _fillRow('person-movies', films)
+  if (series.length) _fillRow('person-tv', series)
+}
 
 function _paintPersonRows() {
   const rows = document.getElementById('vperson-rows')
   if (!rows) return
-  const films = _vSortItems(_person.films, _person.sort)
-  const series = _vSortItems(_person.series, _person.sort)
-  let html = '<div class="vperson-sort">' + _vSortControlHtml(_person.sort, 'vperson-sort-select') + '</div>'
-  if (films.length) html += _vRowShell('person-movies', 'Films', films.length)
-  if (series.length) html += _vRowShell('person-tv', 'Television', series.length)
-  rows.innerHTML = html
-  if (films.length) _fillRow('person-movies', films)
-  if (series.length) _fillRow('person-tv', series)
-  // Re-bound on every paint because innerHTML above discarded the old control.
+  // A filmography of a handful of credits does not need a filter box; it earns
+  // one once there is enough to scroll past.
+  const total = _person.films.length + _person.series.length
+  const filterHtml = total > 8
+    ? '<div class="vperson-filter"><input id="vperson-filter-input" type="search"' +
+        ' placeholder="Filter titles…" autocomplete="off" aria-label="Filter credits by title"' +
+        ' value="' + esc(_person.filter) + '"></div>'
+    : ''
+  rows.innerHTML =
+    '<div class="vperson-controls">' + filterHtml +
+      '<div class="vperson-sort">' + _vSortControlHtml(_person.sort, 'vperson-sort-select') + '</div>' +
+    '</div>' +
+    '<div id="vperson-grids"></div>'
+  _paintPersonGrids()
+  // Re-bound on every full paint because innerHTML above discarded the old
+  // controls. The sort triggers a full paint; the filter only repaints the
+  // grids, so the input keeps focus and its caret between keystrokes.
   document.getElementById('vperson-sort-select')?.addEventListener('change', function () {
     _person.sort = this.value || ''
     _paintPersonRows()
+  })
+  const input = document.getElementById('vperson-filter-input')
+  if (input) input.addEventListener('input', function () {
+    _person.filter = this.value || ''
+    _paintPersonGrids()
   })
 }
 
@@ -1542,6 +2047,7 @@ async function renderBrowse() {
       '<aside class="vfilters" id="vfilters" aria-label="Filters"></aside>' +
       '<section class="vresults">' +
         '<div class="vres-head"><div class="vres-count" id="vres-count">Loading…</div>' +
+          '<button class="vbtn vsurprise" id="vbrowse-surprise" title="Open one random title from these results">Surprise me</button>' +
           _hideSeenToggleHtml('vbrowse-hide-seen') + '</div>' +
         '<div class="vactive" id="vactive"></div>' +
         '<div class="vgrid" id="vgrid"></div>' +
@@ -1550,6 +2056,7 @@ async function renderBrowse() {
     '</div>' +
   '</div>')
   _bindVideoHead()
+  document.getElementById('vbrowse-surprise')?.addEventListener('click', _browseSurprise)
   document.getElementById('vbrowse-hide-seen')?.addEventListener('change', function () {
     setHideSeen(this.checked)
     _paintBrowseGrid()
@@ -1967,9 +2474,22 @@ async function _fetchBrowse(reset) {
   _browse.loading = false
 
   if (!res.ok) {
-    if (grid) grid.innerHTML = ''
-    if (count) count.innerHTML = ''
-    if (more) more.innerHTML = '<div class="vrow-msg err">' + esc(_videoErrorText(res.error)) + '</div>'
+    // A failed page-append must not throw away the pages already on screen:
+    // a wifi blip on page 6 used to wipe all five loaded pages and the count.
+    // Roll the page counter back so the retry (or the next scroll) asks for
+    // the page that actually failed instead of silently skipping it.
+    if (!reset && _browse.page > 1) _browse.page--
+    if (reset) {
+      if (grid) grid.innerHTML = ''
+      if (count) count.innerHTML = ''
+    }
+    if (more) {
+      more.innerHTML = '<div class="vrow-msg err">' + esc(_videoErrorText(res.error)) +
+        ' <button class="vbtn" id="vgrid-retry">Retry</button></div>'
+      document.getElementById('vgrid-retry')?.addEventListener('click', function () {
+        _fetchBrowse(reset)
+      })
+    }
     return
   }
 
@@ -2003,6 +2523,31 @@ function _paintBrowseGrid() {
   const vis = _hideSeenApply(_browse.results)
   grid.innerHTML = _hideSeenNote(vis.hidden) + vis.shown.map(_videoCard).join('')
   _bindVideoCards(grid)
+}
+
+// One random title from the current filtered set — the whole set, not just
+// the pages that happen to be loaded, or "random" would always mean "popular".
+// A page is drawn first, then a title within it, so a 400-page query is one
+// request rather than a walk. Rides the browse ticket: changing a filter while
+// the page is in flight orphans the pick rather than opening the wrong query's
+// title.
+async function _browseSurprise() {
+  const total = _browse.total || 0
+  if (!total && !_browse.results.length) return showToast('Nothing to pick from yet')
+  const ticket = _browse.ticket
+  const totalPages = Math.max(1, _browse.totalPages || 1)
+  const page = 1 + Math.floor(Math.random() * totalPages)
+  let pool = _browse.results
+  // Pages already on screen need no request; _browse.page is the last loaded.
+  if (page > Math.max(1, _browse.page)) {
+    const res = await window.api.videoDiscover(_browseRequest(_browse.filters, page))
+      .catch(function (e) { return { ok: false, error: String((e && e.message) || e) } })
+    if (_browse.ticket !== ticket || state.currentPage !== 'browse') return
+    if (res.ok && Array.isArray(res.results) && res.results.length) pool = res.results
+  }
+  if (!pool.length) return showToast('Nothing to pick from yet')
+  const pick = pool[Math.floor(Math.random() * pool.length)]
+  navigate('video-detail', _cardKey(pick))
 }
 
 function _vGridSkeleton() {
@@ -2159,7 +2704,7 @@ var _videoTabs = [
 ]
 
 var _videoTab = 'all'
-var _videoHero = { items: [], index: 0, timer: null }
+var _videoHero = { items: [], index: 0, timer: null, paused: false }
 
 // The watch store lands with the engine work. Until it does, every call has to
 // degrade to "nothing saved" rather than throwing — Continue Watching and My
@@ -2180,6 +2725,7 @@ var _VICON = {
   left:   '<svg viewBox="0 0 24 24"><path d="M15.4 7.4 14 6l-6 6 6 6 1.4-1.4L10.8 12z"/></svg>',
   right:  '<svg viewBox="0 0 24 24"><path d="M8.6 16.6 10 18l6-6-6-6-1.4 1.4 4.6 4.6z"/></svg>',
   search: '<svg viewBox="0 0 24 24"><path d="M15.5 14h-.8l-.3-.3a6.5 6.5 0 1 0-.7.7l.3.3v.8l5 5 1.5-1.5zm-6 0a4.5 4.5 0 1 1 0-9 4.5 4.5 0 0 1 0 9z"/></svg>',
+  note:   '<svg viewBox="0 0 24 24"><path d="M12 3v10.6A4 4 0 1 0 14 17V7h4V3z"/></svg>',
 }
 
 // Binds the theatre chrome and the one shared video-event channel
@@ -2276,14 +2822,28 @@ function _initVideoUI() {
       onExit: function () {
         _persistPosition(true)
         _watch = { key: null, meta: null, savedAt: 0, resumed: false }
+        _videoLastState = null
         window.api.videoStop().catch(function () {})
+        // Bring the album back if the film paused it and the user didn't move
+        // on to other music in the meantime (#72).
+        if (_handoff) _applyHandoff(_handoff.onVideoStop())
       },
       onNext: _playNextEpisode,
       onState: _onVideoStateTick,
+      onToast: function (msg) { showToast(msg) },
     })
     _player.bind()
   }
   window.api.onVideoEvent(function (payload) { _handleVideoEvent(payload || {}) })
+  // Closing the window mid-playback never went through the theatre's exit
+  // path, so the final position relied on the last 5-second throttled write.
+  // pagehide is the last moment this renderer can still speak.
+  window.addEventListener('pagehide', function () {
+    _persistPosition(true)
+    // Push the store's debounced write through the bridge before the window
+    // goes — main's flushSideStores can only persist what has been sent.
+    try { window.PapaVideoStore?.flush?.() } catch (_) {}
+  })
 }
 
 // ── The film diary ──────────────────────────────────────────────────────────
@@ -2538,6 +3098,9 @@ function _renderDiaryBody() {
           // the filter it passes.
           panel.renderDiary(_diaryView === 'year' ? { year: _diaryYear } : {}) +
         '</section>' +
+        // App #49+75: film viewings and first-listen album events, interleaved
+        // and grouped by month.
+        _diaryTimelineHtml(store) +
       '</div>' +
       '<aside class="tp-col-side">' +
         '<section class="tp-block">' + panel.renderFavourites(null) + '</section>' +
@@ -2548,6 +3111,78 @@ function _renderDiaryBody() {
   panel.mount(body)
   _renderDiaryYears()
   _bindDiaryLinks()
+  _bindTimelineLinks()
+}
+
+// The unified chronological timeline (App #49 + #75): film/TV viewings woven
+// together with the first time each album was heard, grouped by month. The
+// aggregation is the pure PapaDiaryTimeline module; this only turns its months
+// into markup. Films-only when there is no music play history — and it says so.
+function _diaryTimelineHtml(store) {
+  const model = window.PapaDiaryTimeline
+  if (!model || !store) return ''
+  let viewings = []
+  try { viewings = store.diary(_diaryView === 'year' ? { year: _diaryYear } : {}) || [] } catch (_) { viewings = [] }
+  const history = (state && Array.isArray(state.playHistory)) ? state.playHistory : []
+  const built = model.buildTimeline({
+    viewings: viewings,
+    history: history,
+    year: _diaryView === 'year' ? _diaryYear : null,
+  })
+  if (!built.months.length) return ''
+
+  const rows = built.months.map(function (m) {
+    const items = m.events.map(function (e) {
+      if (e.kind === 'album') {
+        const art = e.art ? '<img class="tl-art" src="' + esc(e.art) + '" alt="" onerror="this.style.display=\'none\'">' : '<span class="tl-art tl-art-fallback"></span>'
+        const who = e.artist ? '<span class="tl-sub">' + esc(e.artist) + '</span>' : ''
+        return '<li class="tl-item tl-album">' + art +
+          '<span class="tl-body"><span class="tl-title">First listen · ' + esc(e.album) + '</span>' + who + '</span>' +
+          '<time class="tl-date">' + esc(e.date) + '</time></li>'
+      }
+      const poster = e.poster ? '<img class="tl-art" src="' + esc(e.poster) + '" alt="" onerror="this.style.display=\'none\'">' : '<span class="tl-art tl-art-fallback"></span>'
+      const stars = e.rating != null ? '<span class="tl-sub">' + esc(_tlStars(e.rating)) + '</span>' : ''
+      const linked = e.key ? ' data-tl-key="' + esc(String(e.key)) + '"' : ''
+      return '<li class="tl-item tl-film"' + linked + '>' + poster +
+        '<span class="tl-body"><span class="tl-title tl-linkable">' + esc(e.title) + '</span>' + stars + '</span>' +
+        '<time class="tl-date">' + esc(e.date) + '</time></li>'
+    }).join('')
+    return '<div class="tl-month"><h4 class="tl-month-h">' + esc(m.label) + '</h4><ul class="tl-list">' + items + '</ul></div>'
+  }).join('')
+
+  const note = built.hasAlbums ? '' :
+    '<div class="tp-empty">Films and shows only — start playing music and your first listens will appear here too.</div>'
+  return '<section class="tp-block"><h3 class="tp-h">Timeline</h3>' + note + rows + '</section>'
+}
+
+// Half-star rating → a compact star string for the timeline row.
+function _tlStars(rating) {
+  const n = Math.max(0, Math.min(5, Number(rating) || 0))
+  const full = Math.floor(n)
+  const half = n - full >= 0.5
+  return '★'.repeat(full) + (half ? '½' : '')
+}
+
+// A timeline film row links to its detail page, the same jump the diary rows
+// make. Album rows are not linked — the music library page is keyed by id, and
+// the timeline only knows the album name.
+function _bindTimelineLinks() {
+  document.querySelectorAll('.tl-film[data-tl-key]').forEach(function (row) {
+    const title = row.querySelector('.tl-linkable')
+    if (!title || title.dataset.tlLinked === '1') return
+    title.dataset.tlLinked = '1'
+    title.classList.add('tp-linked')
+    title.setAttribute('role', 'link')
+    title.setAttribute('tabindex', '0')
+    const go = function () {
+      const parts = String(row.dataset.tlKey).split(':')
+      if (parts.length >= 2) navigate('video-detail', parts[0] + ':' + parts[1])
+    }
+    title.addEventListener('click', go)
+    title.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go() }
+    })
+  })
 }
 
 // A diary row names a film; the name should take you to it. The row carries its
@@ -2589,16 +3224,176 @@ function _watchKey(type, id, season, episode) {
   return 'anime:' + id + ':e' + episode
 }
 
+// The identity a per-title preference is stored against: the whole show, not a
+// single episode. Language and the preferred source (App #43) are remembered at
+// this level so one choice carries across every episode of a series.
+function _showKeyOf() {
+  const d = _videoDetail && _videoDetail.d
+  if (!d || _videoDetail.id == null) return null
+  return _videoDetail.type + ':' + d.id
+}
+
+// The identity a season's skip segments and its intro-training record are
+// stored against: the season for a series, the title itself for a film or a
+// single-entry anime. Matches the key _loadSkipSegments builds.
+function _seasonKeyOf() {
+  const d = _videoDetail && _videoDetail.d
+  if (!d) return null
+  return _videoDetail.type === 'tv'
+    ? 'tv:' + d.id + ':s' + _videoState.season
+    : _videoDetail.type + ':' + d.id
+}
+
+// The source the user settled on for this title, if one was remembered (App
+// #43). Shape { source, quality } — either field may be null. Absent → null.
+function _preferredSourceOf() {
+  const store = _vStore()
+  const key = _showKeyOf()
+  if (!store || !key) return null
+  let p = {}
+  try { p = store.prefs(key) || {} } catch (_) { return null }
+  if (!p.preferredSource && !p.preferredQuality) return null
+  return { source: p.preferredSource || null, quality: p.preferredQuality || null }
+}
+
+// How long a manually-chosen non-first source must actually play before it is
+// remembered as this title's preference (App #43): five minutes, so a quick
+// "this one is dead, try the next" does not get mistaken for a real choice.
+var _SOURCE_PREF_AFTER_S = 300
+
 // Called on every state tick (~4/s). Writing that often would thrash
-// localStorage for no benefit, so it is throttled to once every five seconds
-// and on stop.
+// localStorage for no benefit, so it is throttled to once every five seconds —
+// plus an immediate write on the moment of pausing, because a pause is the
+// single likeliest place for a session to end and the throttle used to cost
+// up to five seconds of place on exactly that path.
+// The most recent video tick, kept so the music side can ask "is a film
+// actually playing right now?" without a synchronous round-trip to mpv (#72).
+var _videoLastState = null
+
 function _onVideoStateTick(st) {
   if (!st || !_watch.key) return
-  if (!st.duration || st.paused) return
   const now = Date.now()
+  _videoLastState = st
+
+  if (st.duration && st.paused && !_watch.wasPaused) {
+    _watch.savedAt = now
+    _persistPosition(false, st)
+  }
+  // A pause/resume the user drove inside the theatre (not one the handoff
+  // referee issued) means they've taken ownership of the film — void any
+  // resume it owed the music (#72).
+  const _nowPaused = Boolean(st.paused)
+  const _wasPaused = Boolean(_watch.wasPaused)
+  if (st.duration && _nowPaused !== _wasPaused && !_handoffVideoActing) {
+    if (_handoff) _handoff.onVideoUserAction()
+  }
+  _watch.wasPaused = _nowPaused
+
+  if (!st.duration || st.paused) return
+
+  // The resume seek can only land once the file is actually loaded (mpv
+  // rejects absolute seeks before then), and the first attempt may still lose
+  // the race — so it is settled here, against ticks that prove the position.
+  if (_watch.pendingResume != null) {
+    if (st.position >= _watch.pendingResume - 10) {
+      _watch.pendingResume = null
+    } else if ((_watch.resumeTries || 0) >= 3) {
+      _watch.pendingResume = null
+    } else if (now - (_watch.resumeAt || 0) > 1500) {
+      _watch.resumeAt = now
+      _watch.resumeTries = (_watch.resumeTries || 0) + 1
+      window.api.videoControl('seek', { seconds: _watch.pendingResume, mode: 'absolute' }).catch(function () {})
+    }
+  }
+
+  // Skip segments were first requested on the 'playing' event, when the
+  // duration was still 0 — which silences the duration-based credits
+  // heuristics. Ask once more now that the real duration exists.
+  if (!_watch.segsRefreshed) {
+    _watch.segsRefreshed = true
+    _loadSkipSegments()
+  }
+
+  // Stall watchdog: position frozen while unpaused means the stream behind
+  // mpv has dried up (seeders gone, network lost). The HTML stage is
+  // composited under the native mpv surface, so the one place a message is
+  // actually visible is mpv's own OSD.
+  if (_watch.lastPos !== st.position) {
+    // A big forward jump inside the opening is a manual intro skip; feed it to
+    // the trainer before lastPos moves on (App #46). Only for episodes — a film
+    // has no "next episode" to apply a learned skip to.
+    if (_videoDetail && _videoDetail.type !== 'movie' && typeof _watch.lastPos === 'number') {
+      _noteSeekForTraining(_watch.lastPos, st.position)
+    }
+    _watch.lastPos = st.position
+    _watch.lastPosAt = now
+    _watch.stallNotified = false
+  } else if (!_watch.stallNotified && _watch.lastPosAt && now - _watch.lastPosAt > 10000) {
+    _watch.stallNotified = true
+    window.api.videoOsd?.('Buffering… the source has stalled. Waiting for data.', 6000).catch?.(function () {})
+    showToast('Video stalled — waiting for the source')
+  }
+
+  // App #43: a manually-chosen non-first source that has now played past the
+  // threshold has earned its keep — remember it as this title's preferred
+  // source so the next episode (and the next visit) starts there. Written once;
+  // the candidate is cleared whether or not the store accepted it, so it cannot
+  // fire twice.
+  if (_watch.sourceCandidate && st.position >= _SOURCE_PREF_AFTER_S) {
+    const cand = _watch.sourceCandidate
+    _watch.sourceCandidate = null
+    _rememberPreferredSource(cand)
+  }
+
   if (now - _watch.savedAt < 5000) return
   _watch.savedAt = now
   _persistPosition(false, st)
+}
+
+// Persist the preferred source for the current title and, if the sources panel
+// is on screen, surface the chip that now reflects it (App #43).
+function _rememberPreferredSource(cand) {
+  const store = _vStore()
+  const key = _showKeyOf()
+  if (!store || !key || !cand) return
+  try {
+    store.setPrefs(key, { preferredSource: cand.source || null, preferredQuality: cand.quality || null })
+  } catch (_) { return }
+  if (cand.source) showToast('Remembering ' + cand.source + ' for this title')
+  _renderPreferredSourceChip(document.getElementById('video-sources'))
+}
+
+// Clear the remembered preference for the current title (the chip's ✕).
+function _clearPreferredSource() {
+  const store = _vStore()
+  const key = _showKeyOf()
+  if (!store || !key) return
+  try { store.setPrefs(key, { preferredSource: null, preferredQuality: null }) } catch (_) {}
+  if (_watch) _watch.sourceCandidate = null
+  _renderPreferredSourceChip(document.getElementById('video-sources'))
+}
+
+// Paints (or removes) the "Preferred source: X ✕" chip inside the sources
+// panel. Idempotent — safe to call whenever the panel or the preference
+// changes. A no-op when the panel is not on screen.
+function _renderPreferredSourceChip(panel) {
+  if (!panel) return
+  const header = panel.querySelector('.video-sources-header')
+  if (!header) return
+  let chip = header.querySelector('.video-pref-source')
+  const pref = _preferredSourceOf()
+  if (!pref || !pref.source) {
+    if (chip) chip.remove()
+    return
+  }
+  if (!chip) {
+    chip = document.createElement('span')
+    chip.className = 'video-pref-source'
+    header.appendChild(chip)
+  }
+  chip.innerHTML = 'Preferred source: <b>' + esc(pref.source) + '</b>' +
+    '<button class="video-pref-clear" aria-label="Forget preferred source" title="Forget">&times;</button>'
+  chip.querySelector('.video-pref-clear')?.addEventListener('click', _clearPreferredSource)
 }
 
 function _persistPosition(final, st) {
@@ -2619,6 +3414,9 @@ function _offerResume(state) {
   const store = _vStore()
   if (!store || !_watch.key || _watch.resumed) return
   _watch.resumed = true
+  // An episode advance plays from the start; the saved position for this key is
+  // from an earlier viewing and the "Resume from…" offer would be stale/wrong.
+  if (_watch.autoAdvanced) return
   let saved = null
   try { saved = store.get(_watch.key) } catch (_) { return }
   if (!saved || saved.watched) return
@@ -2626,8 +3424,105 @@ function _offerResume(state) {
   const dur = Number(saved.duration) || Number(state && state.duration) || 0
   if (!dur || pos < 30 || pos / dur > 0.95) return
   const label = _player && _player.fmtTime ? _player.fmtTime(pos) : Math.round(pos) + 's'
-  showToast('Resuming from ' + label)
-  window.api.videoControl('seek', { seconds: pos, mode: 'absolute' }).catch(function () {})
+  // Auto-resume stays the default — the seek below is queued unconditionally.
+  // But silently dropping someone back into the middle is the wrong call as
+  // often as it is the right one (a film half-watched a week ago, a show you
+  // meant to restart), and there is no undo once mpv has seeked. So the toast
+  // now carries a way out: "Start over" cancels the pending resume and sends
+  // the picture back to 0:00, for the ~8s the offer is up.
+  showActionToast('Resuming from ' + label, 'Start over', function () { _startOver() })
+  // Not seeked here: the 'playing' event arrives on the loadfile ack, before
+  // mpv has a file to seek in, and a too-early absolute seek fails silently.
+  // The state tick handler owns the seek, fires it once the duration is real,
+  // and retries until the position proves it landed.
+  _watch.pendingResume = pos
+  _watch.resumeTries = 0
+  _watch.resumeAt = 0
+}
+
+// The escape hatch on the resume offer. Cancels the queued resume seek so the
+// state tick handler stops trying to land it, then sends the picture to the
+// start. Written to be safe to call whether or not the resume has already
+// fired: seeking to 0 is idempotent, and clearing pendingResume twice is fine.
+function _startOver() {
+  _watch.pendingResume = null
+  _watch.resumeTries = 0
+  window.api.videoControl?.('seek', { seconds: 0, mode: 'absolute' }).catch(function () {})
+}
+
+// Guards a single in-flight auto-switch: a second 'stalled' arriving during
+// the await must not launch a second switch on top of the first.
+var _autoSwitchInFlight = false
+
+// Swap the running stream for the next viable source without leaving the
+// theatre or losing the place. The switch handler keeps mpv alive, starts the
+// new torrent, and seeks back — from here it is one call and a toast.
+async function _autoSwitchSource() {
+  if (!window.api.videoSwitchStream) return
+  // One switch at a time. A stall storm (several 'stalled' events while the
+  // torrent is dying) used to fire concurrent switches that raced each other.
+  if (_autoSwitchInFlight) return
+  const cur = _watch.pick
+  const list = Array.isArray(_videoStreams) ? _videoStreams : []
+  const next = list.find(function (s) {
+    if (!s || s === cur) return false
+    const a = (s.magnet || s.url || '') + ''
+    const b = ((cur && (cur.magnet || cur.url)) || '') + ''
+    return a && a !== b
+  })
+  if (!next) return
+  // Pin the title/season we are switching for. If the user navigates to a
+  // different detail page or season while the switch is in flight, the result
+  // that lands would apply to the wrong show — bail instead.
+  const detailTicket = _videoDetailTicket
+  const seasonTicket = _videoSeasonTicket
+  _autoSwitchInFlight = true
+  _watch.autoSwitches = (_watch.autoSwitches || 0) + 1
+  // The request needs the same episode context _videoPlayResult attaches.
+  let result = next
+  if (_videoDetail && _videoDetail.type !== 'movie') {
+    result = Object.assign({}, next, {
+      season: _videoDetail.type === 'tv' ? _videoState.season : null,
+      episode: _videoState.episode,
+    })
+  }
+  showToast('Source stalled — switching to another…')
+  const res = await window.api.videoSwitchStream({ result })
+    .catch(function (e) { return { ok: false, error: String((e && e.message) || e) } })
+  _autoSwitchInFlight = false
+  // The world moved on while we awaited — a different show/season is on screen
+  // now, so applying this switch's state to _watch would corrupt it.
+  if (_videoDetailTicket !== detailTicket || _videoSeasonTicket !== seasonTicket) return
+  if (res && res.ok) {
+    // Rebuild the watch state coherently around the new pick rather than
+    // poking _watch.pick in place: fresh stall accounting for the new source,
+    // the new pick recorded so a later stall never re-picks the dead one, and
+    // the resume/candidate fields left as they were for this same episode.
+    _watch.pick = next
+    _watch.stallEvents = 0
+    _watch.stallNotified = false
+    _playing = { dub: next.dub === true, source: next.source || null, quality: next.quality || null }
+    _syncSourcesHighlight()
+    showToast('Switched to ' + (next.source || 'another source'))
+  }
+}
+
+// Mark the sources-list row that matches what is actually playing (_watch.pick)
+// so the panel reflects an auto-switch. Idempotent and defensive: the panel may
+// not be on screen, in which case there is nothing to mark.
+function _syncSourcesHighlight() {
+  const list = Array.isArray(_videoStreams) ? _videoStreams : []
+  const pick = _watch.pick
+  const pickKey = pick ? ((pick.magnet || pick.url || '') + '') : ''
+  document.querySelectorAll('.video-source-row').forEach(function (row) {
+    const i = Number(row.dataset.idx)
+    const s = list[i]
+    const key = s ? ((s.magnet || s.url || '') + '') : ''
+    const on = !!pickKey && key === pickKey
+    row.classList.toggle('video-source-active', on)
+    if (on) row.setAttribute('aria-current', 'true')
+    else row.removeAttribute('aria-current')
+  })
 }
 
 function _videoStopAndHide() {
@@ -2650,13 +3545,18 @@ function _handleVideoEvent(payload) {
   // focus, so it forwards the actions that belong to the app.
   // The episodes inside the season pack now streaming.
   if (payload.kind === 'pack') {
-    _player.setPack(payload.files || [], _switchPackEpisode)
+    _player.setPack(payload.files || [], _switchPackEpisode, _keepPackEpisode)
+    // The pack's file list — each carries an in-torrent index — is what the
+    // "Download next episode" affordance needs to know which file to fetch.
+    _setPackFiles(payload.files || [])
     return
   }
 
   if (payload.kind === 'key') {
     if (payload.action === 'skip') _player.skipNow()
     else if (payload.action === 'next') _playNextEpisode()
+    // Single click on the picture. The click lands on mpv, never the page.
+    else if (payload.action === 'playPause') _player.togglePlay?.()
     // Double-clicking the picture. The click lands on mpv, never on the page,
     // so mpv relays it and the app expands — rather than mpv fullscreening the
     // embedded surface alone and burying the deck under it.
@@ -2685,6 +3585,42 @@ function _handleVideoEvent(payload) {
     // Resolving the next episode's sources now means advancing later is
     // instant instead of a fresh round-trip to five indexers.
     _prefetchNextSources()
+    // Offer to pull the next episode to completion in the background, now that
+    // the pack is streaming and the next file is known.
+    _updatePredownloadControl()
+  } else if (payload.kind === 'ended') {
+    // mpv finished with the file. An error end (corrupt or truncated file)
+    // used to be a black screen with live controls and no explanation; a
+    // natural end left the last frame up and nothing marked as watched.
+    if (payload.error) {
+      _player.setStageMessage('<div style="color:var(--color-error)">' +
+        esc(_videoErrorText(payload.reason || 'The file could not be played — it may be corrupt or incomplete.')) +
+        '</div><div style="opacity:.6">Try another source from the list below.</div>')
+      return
+    }
+    try {
+      const store = _vStore()
+      if (store && _watch.key) store.markWatched(_watch.key)
+    } catch (_) {}
+    // Reaching the true end of a series episode means the Up Next card was
+    // dismissed or absent — auto-advancing here would override that choice.
+    showToast('Finished')
+    _videoStopAndHide()
+  } else if (payload.kind === 'stalled') {
+    // The engine noticed the stream drying up before the renderer's own
+    // watchdog would. The OSD message is painted from main; here the page
+    // says it too, for whoever is looking at the deck rather than the picture.
+    showToast('Video stalled — waiting for the source')
+    // A second stall on the same file means the source is dying, not
+    // hiccuping. With 40-odd candidates per title there is no reason to sit
+    // through it: swap to the next source in place, keeping the position.
+    // Capped at two swaps per episode so a bad night cannot cascade forever.
+    _watch.stallEvents = (_watch.stallEvents || 0) + 1
+    if (_watch.stallEvents >= 2 && (_watch.autoSwitches || 0) < 2) {
+      _autoSwitchSource()
+    }
+  } else if (payload.kind === 'unstalled') {
+    showToast('Resumed')
   } else if (payload.kind === 'error') {
     _player.setStageMessage('<div style="color:var(--color-error)">' +
       esc(_videoErrorText(payload.message || 'Playback error')) + '</div>')
@@ -2720,6 +3656,57 @@ async function _loadSkipSegments() {
     manual: manual,
   }).catch(function () { return { ok: false, segments: [] } })
   _player.setSegments(res && res.ok ? res.segments : [])
+}
+
+// ── Skip-intro training from manual seeks (App #46) ──────────────────────────
+// A per-session guard so the offer is made once per season per session even
+// though the persisted count keeps climbing. Keyed by season key.
+var _skipTrainOffered = Object.create(null)
+
+// A forward jump past an opening was observed. Fold it into the season's
+// training record (persisted in prefs), and once the pattern is clear, offer to
+// learn it — unless a manual skip for this season already exists, in which case
+// there is nothing left to teach.
+function _noteSeekForTraining(from, to) {
+  const model = window.PapaSkipModel
+  const store = _vStore()
+  const key = _seasonKeyOf()
+  if (!model || !store || !key) return
+  if (!model.isIntroSkipSeek(from, to)) return
+  let prefs = {}
+  try { prefs = store.prefs(key) || {} } catch (_) { return }
+  const rec = model.recordIntroSeek(prefs.introTraining, from, to)
+  try { store.setPrefs(key, { introTraining: rec }) } catch (_) { return }
+
+  if (_skipTrainOffered[key]) return
+  if (!model.shouldOfferSkipTraining(rec)) return
+  // If the season already has a manual skip, the lesson is already learned.
+  let existing = []
+  try { existing = store.skip(key) || [] } catch (_) { existing = [] }
+  if (existing.some(function (s) { return s && s.origin === model.MANUAL })) return
+  _skipTrainOffered[key] = true
+  _offerSkipTraining(key, rec)
+}
+
+// The toast-with-action. Accepting writes a manual intro segment averaged from
+// the seeks, then reloads the segments so the skip button appears immediately.
+function _offerSkipTraining(key, rec) {
+  const model = window.PapaSkipModel
+  if (typeof showActionToast !== 'function') return
+  showActionToast('Skip this intro automatically next time?', 'Skip it', function () {
+    const seg = model.skipSegmentFromTraining(rec)
+    if (!seg) return
+    const store = _vStore()
+    if (!store) return
+    let existing = []
+    try { existing = store.skip(key) || [] } catch (_) { existing = [] }
+    // Replace any prior learned intro; keep everything else the season had.
+    const kept = existing.filter(function (s) { return !(s && s.kind === 'intro' && s.origin === model.MANUAL) })
+    try { store.setSkip(key, kept.concat([seg])) } catch (_) { return }
+    // Only relevant if the season being trained is the one on screen.
+    if (_seasonKeyOf() === key) _loadSkipSegments()
+    showToast('The intro will be skipped automatically')
+  })
 }
 
 // Sources for the next episode, resolved while the current one plays so
@@ -2790,6 +3777,180 @@ function _setUpNextInfo() {
   })
 }
 
+// ── Predownload the next episode (App §44 / §40) ─────────────────────────────
+// When a season pack is streaming, the next episode is another file already
+// inside the same torrent — so it can be pulled to completion in the background
+// while the current one plays, and be instant (and offline) when reached. This
+// is the surface for that: a "Download next episode" affordance on the detail
+// controls, its progress polled while it runs, and a done state.
+//
+// It pairs with main's video-predownload IPC and is built defensively — if that
+// IPC is not present (an older main process), the whole thing no-ops and no
+// control is drawn, rather than throwing into a half-wired feature.
+var _packFiles = []
+var _predl = { index: null, timer: null, done: false }
+
+function _setPackFiles(files) {
+  _packFiles = Array.isArray(files) ? files : []
+  // A new pack means the previous episode's predownload is no longer the one
+  // being offered; the control re-reads state on the next render.
+  _updatePredownloadControl()
+}
+
+// The pack file for the episode after the one playing, matched by episode
+// number. Null when there is no pack, no next episode, or the next episode is
+// not one of the files this pack carries (a single-file torrent, or the season
+// finale).
+function _nextEpisodePackFile() {
+  if (!Array.isArray(_packFiles) || !_packFiles.length) return null
+  if (!_videoDetail || _videoDetail.type === 'movie') return null
+  const next = _nextEpisodeOf(_videoDetail, _videoState)
+  if (!next) return null
+  return _packFiles.find(function (f) { return f && f.episode === next.episode && f.index != null }) || null
+}
+
+// Whether the predownload surface can exist at all: the IPC has to be wired,
+// something has to be streaming as a pack, and there has to be a next file.
+function _predownloadAvailable() {
+  return !!(window.api && typeof window.api.videoPredownload === 'function' && _nextEpisodePackFile())
+}
+
+function _updatePredownloadControl() {
+  const host = document.getElementById('video-controls')
+  if (!host) return
+  let box = document.getElementById('video-predownload')
+  if (!_predownloadAvailable()) {
+    // Nothing to offer — drop the control and stop any polling rather than
+    // leaving a stale bar behind.
+    if (box) box.remove()
+    _stopPredownloadPoll()
+    return
+  }
+  if (!box) {
+    box = document.createElement('div')
+    box.id = 'video-predownload'
+    box.className = 'video-predownload'
+    host.appendChild(box)
+    box.addEventListener('click', function (e) {
+      const btn = e.target.closest('[data-predl-act]')
+      if (!btn) return
+      if (btn.dataset.predlAct === 'start') _startPredownloadNext()
+      else if (btn.dataset.predlAct === 'cancel') _cancelPredownloadNext()
+      else if (btn.dataset.predlAct === 'keep') _keepEpisode(Number(btn.dataset.predlIndex), btn)
+    })
+  }
+  _paintPredownloadControl(box)
+}
+
+// Copy a fully-downloaded episode out to ~/Videos/Papa Audio/<Show> (#44). The
+// button that triggered it goes into a working state so a double-tap can't fire
+// two copies, and the destination is toasted on success. Refuses (via the main
+// handler's message) if the file isn't complete.
+// Pack-strip entry point (#44): right-click an episode → keep it. No button to
+// disable, so it just runs and toasts. A busy toast tells the user it started,
+// since a several-GB copy is not instant and the pack strip gives no other cue.
+function _keepPackEpisode(index) {
+  showToast('Saving episode to Videos…')
+  _keepEpisode(index, null)
+}
+
+function _keepEpisode(index, btn) {
+  if (index == null || Number.isNaN(index)) return
+  if (!window.api || typeof window.api.videoKeepFile !== 'function') {
+    showToast('Keeping offline is not available in this build'); return
+  }
+  const show = (_videoDetail && _videoDetail.d && _videoDetail.d.title) || 'Videos'
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving…' }
+  window.api.videoKeepFile(index, show)
+    .then(function (res) {
+      if (res && res.ok) showToast('Saved to ' + res.path)
+      else showToast((res && res.error) || 'Could not save this episode')
+    })
+    .catch(function () { showToast('Could not save this episode') })
+    .then(function () { const b = document.getElementById('video-predownload'); if (b) _paintPredownloadControl(b) })
+}
+
+function _paintPredownloadControl(box, progress) {
+  const file = _nextEpisodePackFile()
+  if (!file) { box.remove(); return }
+  const running = _predl.index != null && _predl.index === file.index
+  if (running && progress && progress.total > 0 && progress.bytes >= progress.total) {
+    _predl.done = true
+  }
+  if (_predl.done && running) {
+    // Fully downloaded → offer to keep it out of the throwaway cache (#44).
+    box.innerHTML = '<span class="video-predownload-label">' + _VICON.check +
+      'Next episode ready offline</span>' +
+      '<button type="button" class="vbtn vbtn-sm" data-predl-act="keep" data-predl-index="' +
+      file.index + '">' + _VICON.plus + 'Save to Videos</button>'
+    return
+  }
+  if (running) {
+    const pct = progress && progress.total > 0
+      ? Math.min(100, Math.round(progress.bytes / progress.total * 100)) : 0
+    box.innerHTML =
+      '<span class="video-predownload-label">Downloading next episode… ' + pct + '%</span>' +
+      '<div class="video-predownload-bar"><i style="width:' + pct + '%"></i></div>' +
+      '<button type="button" class="vbtn vbtn-sm" data-predl-act="cancel">Cancel</button>'
+    return
+  }
+  box.innerHTML =
+    '<button type="button" class="vbtn vbtn-sm" data-predl-act="start">' + _VICON.plus +
+    'Download next episode</button>'
+}
+
+function _startPredownloadNext() {
+  const file = _nextEpisodePackFile()
+  if (!file || !window.api || typeof window.api.videoPredownload !== 'function') return
+  _predl = { index: file.index, timer: null, done: false }
+  window.api.videoPredownload(file.index)
+    .then(function (res) {
+      if (!res || !res.ok) {
+        _predl.index = null
+        showToast((res && res.error) || 'Could not start download')
+        _updatePredownloadControl()
+        return
+      }
+      _startPredownloadPoll()
+      const box = document.getElementById('video-predownload')
+      if (box) _paintPredownloadControl(box)
+    })
+    .catch(function () { _predl.index = null; _updatePredownloadControl() })
+}
+
+function _cancelPredownloadNext() {
+  _stopPredownloadPoll()
+  _predl = { index: null, timer: null, done: false }
+  if (window.api && typeof window.api.videoPredownloadCancel === 'function') {
+    window.api.videoPredownloadCancel().catch(function () {})
+  }
+  _updatePredownloadControl()
+}
+
+// Poll progress every 2s while a predownload runs, painting the bar. Stops
+// itself once the file is complete or the control is gone.
+function _startPredownloadPoll() {
+  _stopPredownloadPoll()
+  if (!window.api || typeof window.api.videoPredownloadProgress !== 'function') return
+  const tick = function () {
+    window.api.videoPredownloadProgress()
+      .then(function (res) {
+        const box = document.getElementById('video-predownload')
+        if (!box || _predl.index == null) { _stopPredownloadPoll(); return }
+        const p = res && res.ok ? res.progress : null
+        _paintPredownloadControl(box, p)
+        if (_predl.done) _stopPredownloadPoll()
+      })
+      .catch(function () {})
+  }
+  tick()
+  _predl.timer = setInterval(tick, 2000)
+}
+
+function _stopPredownloadPoll() {
+  if (_predl.timer) { clearInterval(_predl.timer); _predl.timer = null }
+}
+
 // Picks the next episode's source to match what is already playing, rather
 // than taking whatever ranked first. Language is the part a viewer notices
 // immediately, so it outranks quality and seeds; the indexer and quality are
@@ -2806,10 +3967,23 @@ function _qualityDistance(a, b) {
   return Math.abs(ia - ib)
 }
 
+// The stream to start when nothing is already playing to match: the remembered
+// preferred source for this title (App #43) if there is one, else the first —
+// which is the ranked best. Kept separate from _pickMatchingStream so the
+// binge/next-episode path, which matches what is *currently* playing, is
+// undisturbed.
+function _autoPickStream(streams) {
+  const list = Array.isArray(streams) ? streams : []
+  if (!list.length) return null
+  const pref = _preferredSourceOf()
+  if (pref && (pref.source || pref.quality)) return _pickMatchingStream(list, pref)
+  return list[0]
+}
+
 function _pickMatchingStream(streams, want) {
   const list = Array.isArray(streams) ? streams : []
   if (!list.length) return null
-  if (!want || (want.dub == null && !want.quality)) return list[0]
+  if (!want || (want.dub == null && !want.quality && !want.source)) return list[0]
   const scored = list.map(function (s, i) {
     let score = 0
     // Language is what a viewer notices in the first second, so it outranks
@@ -2847,6 +4021,54 @@ function _nextEpisodeOf(detail, stateNow) {
   const later = seasons.filter(function (x) { return x.seasonNumber > stateNow.season && x.seasonNumber >= 1 })
   if (!later.length) return null
   return { season: later[0].seasonNumber, episode: 1 }
+}
+
+// The mirror of _nextEpisodeOf: within the season, then the previous real
+// season's last episode. Episode 1 of an anime entry has no previous — each
+// AniList season is its own entry, and hopping the chain is a page change.
+function _prevEpisodeOf(detail, stateNow) {
+  if (!detail || !detail.d || detail.type === 'movie') return null
+  const prev = (Number(stateNow.episode) || 1) - 1
+  if (detail.type === 'anime') return prev >= 1 ? { season: null, episode: prev } : null
+  if (prev >= 1) return { season: stateNow.season, episode: prev }
+  const d = detail.d
+  const seasons = Array.isArray(d.seasons) ? d.seasons.filter(function (x) { return x.seasonNumber != null }) : []
+  const earlier = seasons.filter(function (x) { return x.seasonNumber < stateNow.season && x.seasonNumber >= 1 })
+  if (!earlier.length) return null
+  const back = earlier[earlier.length - 1]
+  const count = Number(back.episodeCount) || 0
+  return count ? { season: back.seasonNumber, episode: count } : null
+}
+
+// Steps back one episode. Same source flow as advancing, without the
+// watched-marking: going back is not finishing anything.
+async function _playPrevEpisode() {
+  if (!_videoDetail || !_videoDetail.d) return
+  const prev = _prevEpisodeOf(_videoDetail, _videoState)
+  if (!prev) {
+    showToast('This is the first episode')
+    return
+  }
+  _persistPosition(true)
+  if (prev.season != null) _videoState.season = prev.season
+  _videoState.episode = prev.episode
+  _player.setSegments([])
+  _player.setStageMessage('<div class="spin"></div><div>Finding sources for episode ' + prev.episode + '…</div>')
+  const res = await window.api.videoStreams(_videoStreamRequest())
+    .catch(function (e) { return { ok: false, error: String((e && e.message) || e) } })
+  if (!res.ok || !Array.isArray(res.streams) || !res.streams.length) {
+    _player.setStageMessage('<div style="color:var(--color-error)">' +
+      esc(res.ok ? 'No sources found for episode ' + prev.episode : _videoErrorText(res.error)) + '</div>')
+    return
+  }
+  _videoStreams = res.streams
+  _videoPlayResult(_pickMatchingStream(res.streams, _playing))
+  if (_videoDetail.type === 'tv') {
+    _renderVideoControls('tv')
+    _refreshTvEpisodes(_videoDetailTicket, ++_videoSeasonTicket)
+  } else {
+    _syncEpisodeSelection(_videoState.episode)
+  }
 }
 
 // Resolves sources for the next episode and starts the best one. The source
@@ -2899,9 +4121,18 @@ async function _playNextEpisode() {
     notes.push((pick.quality || 'unknown quality') + ' instead of ' + _playing.quality)
   }
   if (notes.length) showToast('Episode ' + next.episode + ': ' + notes.join(' · '))
-  _videoPlayResult(pick)
+  // Advancing to the next episode plays it from the start. The saved position
+  // for this episode key (if any) belongs to a much earlier viewing, so the
+  // stale "Resume from…" prompt must not fire here — flag the play as an
+  // advance so _offerResume skips it (App audit: auto-advance vs stale resume).
+  _videoPlayResult(pick, { fromAdvance: true })
   // The detail page behind the theatre should reflect where we now are.
-  if (_videoDetail.type === 'tv') _renderVideoControls('tv')
+  if (_videoDetail.type === 'tv') {
+    _renderVideoControls('tv')
+    _refreshTvEpisodes(_videoDetailTicket, ++_videoSeasonTicket)
+  } else {
+    _syncEpisodeSelection(_videoState.episode)
+  }
 }
 
 // The characteristics of the source actually playing. Picking the next
@@ -2909,6 +4140,61 @@ async function _playNextEpisode() {
 // the next episode in Japanese because that release happened to have more
 // seeds.
 var _playing = { dub: null, source: null, quality: null }
+
+// Media handoff (App #72). One referee between the two players so a film and an
+// album never talk over each other, and the interrupted one comes back only if
+// the user didn't move on. The machine is pure (src/media-handoff.js); this
+// renderer owns the actual player objects and carries out the intent it returns.
+var _handoff = (window.PapaMediaHandoff && window.PapaMediaHandoff.create)
+  ? window.PapaMediaHandoff.create()
+  : null
+
+// Carry out a { target, op } intent from the handoff machine. Music is the
+// shim (`audio`); video is the theatre player / mpv via IPC. Guarded so a
+// missing player can never throw into a playback path.
+// True while _applyHandoff is itself starting music, so the music-start hook
+// can tell an auto-resume from a fresh user play and not re-referee it (#72).
+var _handoffResuming = false
+// True briefly while _applyHandoff drives the video, so the reflected pause/
+// resume tick is not counted as a user action against the resume debt (#72).
+var _handoffVideoActing = false
+
+function _applyHandoff(intent) {
+  if (!intent) return
+  try {
+    if (intent.target === 'music') {
+      if (intent.op === 'pause') { if (audio && !audio.paused) { audio.pause(); state.isPlaying = false; updatePlayBtn() } }
+      else if (intent.op === 'resume') {
+        if (audio && state.queue.length) {
+          _handoffResuming = true
+          try { audio.play().catch(function () {}); state.isPlaying = true; updatePlayBtn() }
+          finally { _handoffResuming = false }
+        }
+      }
+    } else if (intent.target === 'video') {
+      // Mark our own video pause/resume so the tick that reflects it back is
+      // not mistaken for a user action that would void the resume debt (#72).
+      _handoffVideoActing = true
+      try {
+        if (intent.op === 'pause') { window.api.videoControl?.('pause').catch(function () {}) }
+        else if (intent.op === 'resume') { window.api.videoControl?.('play').catch(function () {}) }
+      } finally {
+        // Cleared on a microtask, not synchronously — the reflecting tick
+        // arrives later, so hold the flag until the paused-state change lands.
+        setTimeout(function () { _handoffVideoActing = false }, 400)
+      }
+    }
+  } catch (_) { /* a referee must never break the player it referees */ }
+}
+
+// True when a film is actually on screen and not paused — the fact the music
+// side needs before it decides to pause the video. Reads the last video state
+// tick (_watch/_videoLastState) rather than asking mpv synchronously.
+function _videoIsPlaying() {
+  const theatre = document.getElementById('vtheatre')
+  if (!theatre || theatre.classList.contains('hidden')) return false
+  return !!(_videoLastState && _videoLastState.duration && !_videoLastState.paused)
+}
 
 // Switching episode inside the pack that is already streaming. No new search,
 // no new torrent, no waiting on peers — the file is already being served.
@@ -2922,7 +4208,8 @@ async function _switchPackEpisode(index) {
     return
   }
   _player.setStageMessage('')
-  _player.setPack(res.files || [], _switchPackEpisode)
+  _player.setPack(res.files || [], _switchPackEpisode, _keepPackEpisode)
+  _setPackFiles(res.files || [])
 
   // Keep the rest of the app in step: the episode being watched drives the
   // watch store, the skip segments and what counts as next.
@@ -2931,6 +4218,12 @@ async function _switchPackEpisode(index) {
     _videoState.episode = chosen.episode
     const d = _videoDetail && _videoDetail.d
     if (d) {
+      // Carry the live pick and any pending source-candidate across the
+      // episode swap. Dropping them left _watch.pick undefined, so a later
+      // stall's auto-switch had no idea which source was already playing and
+      // could re-pick the very source that just stalled.
+      const carryPick = _watch.pick
+      const carryCandidate = _watch.sourceCandidate
       _watch = {
         key: _watchKey(_videoDetail.type, d.id, _videoState.season, _videoState.episode),
         meta: {
@@ -2939,6 +4232,8 @@ async function _switchPackEpisode(index) {
           episode: _videoState.episode,
         },
         savedAt: 0, resumed: true,
+        pick: carryPick || null,
+        sourceCandidate: carryCandidate || null,
       }
     }
     _player.setSegments([])
@@ -2946,9 +4241,16 @@ async function _switchPackEpisode(index) {
   }
 }
 
-function _videoPlayResult(result) {
+function _videoPlayResult(result, opts) {
   if (!result) return
+  opts = opts || {}
   _initVideoUI()
+  // Referee the two players (#72). Starting a film pauses the album and
+  // remembers to bring it back — but only if music was actually playing and
+  // the user doesn't move on to other music first. The intent (pause music) is
+  // carried out here rather than blindly in main.js's video-play handler, so
+  // the "was playing" truth is captured at the one moment it is still true.
+  if (_handoff) _applyHandoff(_handoff.onVideoStart(!!(audio && !audio.paused && state.queue.length)))
   // The source does not know which episode was asked for, and a season pack
   // contains them all — so the request's episode travels with it.
   if (_videoDetail && _videoDetail.type !== 'movie') {
@@ -2976,17 +4278,59 @@ function _videoPlayResult(result) {
         episode: isEpisode ? _videoState.episode : null,
       },
       savedAt: 0, resumed: false,
+      // Set when this play is an episode advance rather than an explicit
+      // (re-)open of an episode. _offerResume skips the stale "Resume from…"
+      // prompt for an advance — the viewer is moving forward, not picking up
+      // where a much older viewing of this same episode left off.
+      autoAdvanced: opts.fromAdvance === true,
+      // What is actually playing, so the auto-switch can avoid re-picking it.
+      pick: result,
+      // A manual, non-first pick that has not yet earned its keep (App #43).
+      // Set here, promoted to a stored preference once it has played past the
+      // threshold (in _onVideoStateTick); null once saved or never eligible.
+      sourceCandidate: (opts.manual === true && Number(opts.index) > 0 && (result.source || result.quality))
+        ? { source: result.source || null, quality: result.quality || null }
+        : null,
     }
   }
 
+  // The show's remembered languages ride in with the open, and choices made
+  // in the track menus ride back out to the store — so the next episode of a
+  // dub stays a dub without being asked every time.
+  const showKey = d ? _videoDetail.type + ':' + d.id : null
+  let langPrefs = {}
+  try {
+    const store = _vStore()
+    if (store && showKey) langPrefs = store.prefs(showKey) || {}
+  } catch (_) {}
+
   _player.open({
     hasNext: !!_nextEpisodeOf(_videoDetail, _videoState),
+    // Passed only when a previous episode exists; the deck hides the button
+    // otherwise.
+    onPrev: _prevEpisodeOf(_videoDetail, _videoState) ? _playPrevEpisode : null,
     title: d ? d.title : 'Video',
     subtitle: isEpisode
       ? (_videoDetail.type === 'tv'
           ? 'Season ' + _videoState.season + ' · Episode ' + _videoState.episode
           : 'Episode ' + _videoState.episode)
       : (d && d.year ? String(d.year) : ''),
+    // The identity the online-subtitle search needs. AniList ids mean nothing
+    // to OpenSubtitles, so anime searches by title and episode instead.
+    subMeta: d ? {
+      imdbId: d.imdbId || null,
+      tmdbId: _videoDetail.type !== 'anime' ? d.id : null,
+      query: d.title || null,
+      season: _videoDetail.type === 'tv' ? _videoState.season : null,
+      episode: isEpisode ? _videoState.episode : null,
+    } : null,
+    prefs: langPrefs,
+    onPrefChange: function (patch) {
+      try {
+        const store = _vStore()
+        if (store && showKey) store.setPrefs(showKey, patch)
+      } catch (_) { /* a full store must never interrupt playback */ }
+    },
   })
   _handleVideoEvent({ kind: 'buffering' })
   // Wait until main knows the stage rectangle. Starting playback first shows
@@ -3006,6 +4350,12 @@ function _videoPlayResult(result) {
 
 function _videoErrorText(message) {
   const msg = String(message || 'Something went wrong')
+  // The raw failure is "mpv socket not ready: /run/user/… (last error: ENOENT)"
+  // — which reads like the app is broken when the actual problem is that the
+  // player program is not installed.
+  if (/mpv socket not ready|spawn mpv/i.test(msg)) {
+    return 'The mpv player could not start. It may not be installed — run: sudo dnf install mpv'
+  }
   if (/401|api key/i.test(msg)) return 'TMDB API key missing or invalid — set it in Settings → Video.'
   if (/timed out|timeout|abort/i.test(msg)) return 'The source timed out. Check your connection and try again.'
   if (/fetch failed|ENOTFOUND|ECONNREFUSED|network/i.test(msg)) return 'Could not reach the service. Check your connection.'
@@ -3038,7 +4388,11 @@ function _videoError(message) {
   '</div></div>')
   document.getElementById('video-error-back')?.addEventListener('click', function () { navigate('video') })
   document.getElementById('video-error-retry')?.addEventListener('click', function () {
-    navigate(state.currentPage, _currentNavId(), { skipHistory: true })
+    // With no id to retry with, re-running the same navigate() would only
+    // reproduce this exact error again -- send them somewhere that works.
+    const id = _currentNavId()
+    if (!id) return navigate('video')
+    navigate(state.currentPage, id, { skipHistory: true })
   })
 }
 
@@ -3374,7 +4728,7 @@ async function renderVideo() {
   _initVideoUI()
   // Arriving here from Browse or the Diary, the tab state still names that
   // page; the catalog page has no such row set, so fall back to All.
-  if (_videoTab === 'browse' || _videoTab === 'diary') _videoTab = 'all'
+  if (_videoTab === 'browse' || _videoTab === 'diary' || _videoTab === 'calendar') _videoTab = 'all'
   const ticket = ++_videoCatalogTicket
   setContent('<div class="page vpage cinema">' +
     _vHeadHtml() +
@@ -3411,7 +4765,7 @@ function _bindVideoHead() {
       // Browse and Diary are pages of their own rather than filtered sets of rows.
       if (_videoTab === 'browse') return navigate('browse')
       if (_videoTab === 'diary') return navigate('diary')
-      if (state.currentPage === 'browse' || state.currentPage === 'diary') return navigate('video')
+      if (state.currentPage === 'browse' || state.currentPage === 'diary' || state.currentPage === 'calendar') return navigate('video')
       document.querySelectorAll('.vtab').forEach(function (x) {
         const on = x.dataset.vtab === _videoTab
         x.classList.toggle('active', on)
@@ -3428,6 +4782,19 @@ function _bindVideoHead() {
 async function _renderVideoTab(ticket) {
   const heroMount = document.getElementById('vhero-mount')
   const rows = document.getElementById('vrows')
+  // Switching tabs with search results showing used to repaint the new tab's
+  // rows behind display:none while the old query's results stayed on screen.
+  // A tab switch is a statement that the search is over.
+  const searchBox = document.getElementById('video-search-results')
+  if (searchBox) searchBox.innerHTML = ''
+  rows?.style.removeProperty('display')
+  heroMount?.style.removeProperty('display')
+  const searchInput = document.getElementById('video-search-input')
+  if (searchInput && searchInput.value) {
+    searchInput.value = ''
+    const clearBtn = document.getElementById('video-search-clear')
+    if (clearBtn) clearBtn.hidden = true
+  }
   if (!rows) return
   _stopVideoHero()
 
@@ -3453,12 +4820,30 @@ async function _renderVideoTab(ticket) {
   // Curated shelves have no label until their results come back, because the
   // label and the curatorial line are defined beside the query that justifies
   // them. The shell goes up with a placeholder so the page does not jump.
-  rows.innerHTML = personal.map(function (r) { return _vRowShell(r.key, r.label, r.items.length) }).join('') +
+  // The same toggle Browse and the shelf pages carry, applied to every row on
+  // the tab. It lives with the rows because that is what it filters.
+  rows.innerHTML = '<div class="vrows-tools">' + _hideSeenToggleHtml('vtab-hide-seen') + '</div>' +
+    // Continue Watching drops the standalone count: it rendered as a stray
+    // "9" floating under the title (audit #13), and the number of collapsed
+    // cards is already the shelf itself. My List keeps its count.
+    personal.map(function (r) {
+      return _vRowShell(r.key, r.label, r.key === 'continue' ? 0 : r.items.length)
+    }).join('') +
+    // Empty until the airing/recommendation fetches land; each is a shelf that
+    // is dropped rather than shown as a skeleton forever when it cannot fill.
+    '<div id="vairing-mount"></div>' +
+    '<div id="vbecause-mount"></div>' +
     wanted.map(function (r) { return _vRowShell(r.key, r.label, 0) }).join('') +
     curated.map(function (r) { return _vRowShell(r.key, '', 0, '', true) }).join('')
+  document.getElementById('vtab-hide-seen')?.addEventListener('change', function () {
+    setHideSeen(this.checked)
+    _renderVideoTab(++_videoCatalogTicket)
+  })
 
   _bindShelfExpanders(rows)
-  personal.forEach(function (r) { _fillRow(r.key, r.items) })
+  personal.forEach(function (r) { _fillRowHideSeen(r.key, r.items) })
+  _renderAiringRow(ticket)
+  _renderBecauseRow(ticket)
 
   // A film is not removed from one shelf because it appears on another. Seven
   // Samurai belongs in the canon, in Japanese cinema and in world cinema, and
@@ -3478,7 +4863,7 @@ async function _renderVideoTab(ticket) {
     // padded out with whatever else matched.
     if (items.length < 4) return _dropRow(row.key)
     _setRowHead(row.key, res.shelf)
-    _fillRow(row.key, items)
+    _fillRowHideSeen(row.key, items)
   }))
 
   // Rows load in parallel and each owns its own failure, so one dead section
@@ -3490,9 +4875,329 @@ async function _renderVideoTab(ticket) {
     if (!res.ok) return _rowError(row.key, res.error)
     const items = Array.isArray(res.results) ? res.results : []
     if (!items.length) return _rowEmpty(row.key, 'Nothing here right now')
-    _fillRow(row.key, items)
+    _fillRowHideSeen(row.key, items)
+    // The hero features from the full row: what you have seen is hidden from
+    // the shelf you scroll, not from the editorial spotlight.
     if (row.key === wanted[0].key) _startVideoHero(items, ticket)
   }))
+
+  // The hero is only ever replaced by the first row's success path. If that
+  // row failed (no TMDB key, offline), the animated skeleton would otherwise
+  // shimmer at the top of the page forever, promising work that isn't coming.
+  if (_videoCatalogTicket === ticket && heroMount && heroMount.querySelector('.vskel-hero')) {
+    heroMount.innerHTML = ''
+  }
+}
+
+// "Because you watched X": recommendations seeded from the most recent thing
+// actually finished or well underway. The detail responses already carry
+// normalized recommendation entries, so this is one (usually cached) detail
+// fetch — no new backend. Anime is skipped: AniList entries do not carry the
+// same recommendation shape. Watched titles are filtered out; a shelf that
+// cannot honestly fill to four cards is dropped entirely.
+async function _renderBecauseRow(ticket) {
+  if (_videoTab !== 'all' && _videoTab !== 'movie' && _videoTab !== 'tv') return
+  const mount = document.getElementById('vbecause-mount')
+  const store = _vStore()
+  if (!mount || !store) return
+  let seed = null
+  try {
+    const pool = (store.history(10) || []).concat(store.continueWatching(10) || [])
+    seed = pool.find(function (it) {
+      if (!it || it.id == null) return false
+      if (it.type !== 'movie' && it.type !== 'tv') return false
+      return _videoTab === 'all' || it.type === _videoTab
+    })
+  } catch (_) { return }
+  if (!seed) return
+  const res = await window.api.videoDetail({ type: seed.type, id: seed.id })
+    .catch(function () { return { ok: false } })
+  if (_videoCatalogTicket !== ticket || state.currentPage !== 'video') return
+  const d = res && res.ok && res.detail
+  if (!d) return
+  const recs = (Array.isArray(d.recommendations) && d.recommendations.length ? d.recommendations : d.similar) || []
+  let items = recs.filter(function (x) { return x && x.id && x.poster })
+  // Recommending something already watched defeats the shelf's whole point.
+  try {
+    if (window.PapaTasteStore && window.PapaTasteStore.hasSeen) {
+      items = items.filter(function (x) { return !window.PapaTasteStore.hasSeen(_cardKey(x)) })
+    }
+  } catch (_) { /* the diary being unavailable only costs the filter */ }
+  items = items.slice(0, 20)
+  if (items.length < 4) return
+  const target = document.getElementById('vbecause-mount')
+  if (!target) return
+  target.innerHTML = _vRowShell('because', 'Because you watched ' + (d.title || seed.title || ''), items.length)
+  _fillRowHideSeen('because', items)
+}
+
+// ── This-week airing shelf + calendar (App §25/§26) ─────────────────────────
+
+// The follow set that feeds the airing schedule: every anime or TV show the
+// viewer is watching (Continue Watching) or has saved (My List), de-duplicated
+// into the two id lists the video-airing IPC wants. Pure and store-shaped so it
+// is testable without a real store — it takes the two already-fetched lists.
+// Anime ids are AniList ids and TV ids are TMDB ids, which is exactly what the
+// two catalogs' airing lookups key on. Movies have no "next episode" and are
+// dropped; a missing id is dropped rather than sent as a blank.
+function _airingSeed(continueWatching, watchlist) {
+  const anilist = new Set()
+  const tmdb = new Set()
+  const take = it => {
+    if (!it || it.id == null || it.id === '') return
+    const id = Number(it.id)
+    if (!Number.isFinite(id) || id <= 0) return
+    if (it.type === 'anime') anilist.add(id)
+    else if (it.type === 'tv') tmdb.add(id)
+  }
+  ;(Array.isArray(continueWatching) ? continueWatching : []).forEach(take)
+  ;(Array.isArray(watchlist) ? watchlist : []).forEach(take)
+  return { anilistIds: [...anilist], tmdbIds: [...tmdb] }
+}
+
+// Reads the follow set straight off the store. Kept apart from _airingSeed so
+// the store access is the only impure part and the merge stays testable.
+function _airingSeedFromStore() {
+  const store = _vStore()
+  if (!store) return { anilistIds: [], tmdbIds: [] }
+  try {
+    return _airingSeed(store.continueWatching(50) || [], store.watchlist() || [])
+  } catch (_) { return { anilistIds: [], tmdbIds: [] } }
+}
+
+// "Ep 5 · Thursday", or "Ep 5 · Sep 12" once the airing is more than a week
+// out — a weekday name a fortnight ahead is ambiguous. `airsAt` is epoch ms;
+// `now` is injected so the boundary is testable. Pure: no DOM, no globals.
+function _airingWhenLabel(airsAt, now) {
+  const t = Number(airsAt)
+  if (!Number.isFinite(t)) return ''
+  const d = new Date(t)
+  const ms = t - Number(now)
+  const day = 24 * 60 * 60 * 1000
+  if (ms < 0) return 'Aired'
+  if (ms < 7 * day) return d.toLocaleDateString(undefined, { weekday: 'long' })
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+}
+
+// One airing sub-label: "Ep 5 · Thursday". Episode number is optional (a show
+// can announce an air date before numbering the episode); when it is missing
+// the row is just the date.
+function _airingSubLabel(entry, now) {
+  const when = _airingWhenLabel(entry && entry.airsAt, now)
+  const ep = entry && entry.episode != null ? 'Ep ' + entry.episode : ''
+  if (ep && when) return ep + ' · ' + when
+  return ep || when
+}
+
+// The "This week" shelf on the home tabs. Seeded from the follow set, filled
+// from the video-airing IPC, and — like every other personal shelf here —
+// dropped entirely when there is nothing to show rather than left as an empty
+// promise. Only the shows airing within the next seven days make the shelf; the
+// full 14-day view lives on the calendar page the header links to.
+async function _renderAiringRow(ticket) {
+  if (_videoTab !== 'all' && _videoTab !== 'tv' && _videoTab !== 'anime') return
+  const mount = document.getElementById('vairing-mount')
+  if (!mount) return
+  const seed = _airingSeedFromStore()
+  if (!seed.anilistIds.length && !seed.tmdbIds.length) return
+  if (!window.api || !window.api.videoAiring) return
+  const res = await window.api.videoAiring(seed).catch(function () { return { ok: false } })
+  if (_videoCatalogTicket !== ticket || state.currentPage !== 'video') return
+  if (!res || !res.ok) return
+  const now = Date.now()
+  const week = now + 7 * 24 * 60 * 60 * 1000
+  // Only this tab's medium, and only the next seven days.
+  const all = Array.isArray(res.airing) ? res.airing : []
+  const items = all.filter(function (e) {
+    if (!e || !e.airsAt) return false
+    if (e.airsAt < now || e.airsAt > week) return false
+    if (_videoTab === 'tv') return e.type === 'tv'
+    if (_videoTab === 'anime') return e.type === 'anime'
+    return true
+  })
+  const target = document.getElementById('vairing-mount')
+  if (!target) return
+  if (!items.length) { target.innerHTML = ''; return }
+  // The header links to the fuller calendar view (App §26).
+  target.innerHTML =
+    '<section class="vrow vairing-row" data-row="airing">' +
+      '<div class="vrow-head">' +
+        '<h2 class="vrow-title">This week</h2>' +
+        '<button class="vrow-all" id="vairing-calendar">Calendar</button>' +
+      '</div>' +
+      '<div class="vrail-wrap">' +
+        '<div class="vrail" data-rail="airing">' +
+          items.map(function (e) { return _airingCardHtml(e, now) }).join('') +
+        '</div>' +
+      '</div>' +
+    '</section>'
+  document.getElementById('vairing-calendar')?.addEventListener('click', function () { navigate('calendar') })
+  const rail = target.querySelector('.vrail[data-rail="airing"]')
+  if (rail) { _bindVideoCards(rail); _bindRail(rail) }
+}
+
+// An airing entry as a poster card that opens the show's detail page, with the
+// "Ep 5 · Thursday" line under it. The key is the same type:id the detail
+// router and the store use, so the card's own play/list actions work unchanged.
+function _airingCardHtml(entry, now) {
+  const e = entry || {}
+  const key = esc(e.key || '')
+  const sub = _airingSubLabel(e, now)
+  return '<article class="vcard vairing-card" data-video="' + key + '" tabindex="0" role="button"' +
+      ' aria-label="' + esc(e.title || 'Untitled') + '">' +
+    '<div class="vcard-art">' +
+      '<div class="vcard-fallback">' + esc(e.title || '') + '</div>' +
+      '<div class="vcard-badges"><span class="vbadge vbadge-air">' + esc(sub) + '</span></div>' +
+    '</div>' +
+    '<div class="vcard-title">' + esc(e.title || 'Untitled') + '</div>' +
+    '<div class="vcard-meta vairing-when">' + esc(sub) + '</div>' +
+  '</article>'
+}
+
+// Groups a flat airing list into the next `days` calendar days for the agenda
+// page (App §26). Pure so the day-bucketing is testable: it takes the list and
+// `now`, returns [{ dayMs, label, items }] with a bucket per day that has at
+// least one airing, soonest day first. A day with nothing airing is omitted,
+// which is what a vertical agenda wants — no empty rows to scroll past.
+function _airingByDay(airing, now, days) {
+  const span = Math.max(1, Number(days) || 14)
+  const list = (Array.isArray(airing) ? airing : []).filter(function (e) {
+    return e && Number.isFinite(Number(e.airsAt))
+  })
+  const midnight = function (ms) {
+    const d = new Date(Number(ms))
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
+  }
+  const today = midnight(now)
+  const end = today + span * 24 * 60 * 60 * 1000
+  const buckets = new Map()
+  for (const e of list) {
+    if (e.airsAt < today || e.airsAt >= end) continue
+    const dayMs = midnight(e.airsAt)
+    if (!buckets.has(dayMs)) buckets.set(dayMs, [])
+    buckets.get(dayMs).push(e)
+  }
+  return [...buckets.entries()]
+    .sort(function (a, b) { return a[0] - b[0] })
+    .map(function (entry) {
+      const dayMs = entry[0]
+      const items = entry[1].sort(function (a, b) { return a.airsAt - b.airsAt })
+      return { dayMs: dayMs, label: _calendarDayLabel(dayMs, today), items: items }
+    })
+}
+
+// A day heading: "Today", "Tomorrow", then "Thursday, Sep 12". Pure; `today` is
+// the caller's local-midnight epoch so the relative words are stable in tests.
+function _calendarDayLabel(dayMs, today) {
+  const day = 24 * 60 * 60 * 1000
+  const diff = Math.round((Number(dayMs) - Number(today)) / day)
+  if (diff === 0) return 'Today'
+  if (diff === 1) return 'Tomorrow'
+  return new Date(Number(dayMs)).toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' })
+}
+
+// The calendar page: a plain vertical agenda of the next 14 days of episodes
+// for the shows the viewer follows (App §26). No month grid — day-grouped
+// lists, soonest first. Empty state teaches how to fill it.
+async function renderCalendar() {
+  _initVideoUI()
+  _videoTab = 'calendar'
+  setContent('<div class="page vpage cinema">' + _vHeadHtml() +
+    '<div class="vcal-page" id="vcal-page">' +
+      '<div class="vcal-head"><h1 class="vcal-title">Coming up</h1>' +
+        '<p class="vcal-sub">The next 14 days for the shows you follow</p></div>' +
+      '<div class="vcal-body" id="vcal-body">' + _vRailSkeleton(3) + '</div>' +
+    '</div>' +
+  '</div>')
+  _bindVideoHead()
+  _renderCalendarBody()
+}
+
+async function _renderCalendarBody() {
+  const body = document.getElementById('vcal-body')
+  if (!body) return
+  const seed = _airingSeedFromStore()
+  if ((!seed.anilistIds.length && !seed.tmdbIds.length) || !window.api || !window.api.videoAiring) {
+    body.innerHTML = _calendarEmptyHtml()
+    return
+  }
+  const res = await window.api.videoAiring(seed).catch(function () { return { ok: false } })
+  if (state.currentPage !== 'calendar') return
+  const target = document.getElementById('vcal-body')
+  if (!target) return
+  if (!res || !res.ok) {
+    target.innerHTML = '<div class="vrow-msg err">' + esc(_videoErrorText(res && res.error)) + '</div>'
+    return
+  }
+  const groups = _airingByDay(res.airing, Date.now(), 14)
+  if (!groups.length) { target.innerHTML = _calendarEmptyHtml(); return }
+  target.innerHTML = groups.map(function (g) {
+    return '<section class="vcal-day">' +
+      '<h2 class="vcal-day-label">' + esc(g.label) + '</h2>' +
+      '<ul class="vcal-list">' + g.items.map(_calendarRowHtml).join('') + '</ul>' +
+    '</section>'
+  }).join('')
+  _bindVideoCards(target)
+}
+
+// One agenda row: the show title, its episode, and the air time. The whole row
+// carries the same data-video key the cards do, so the one delegated card
+// handler opens the detail page — no separate binding.
+function _calendarRowHtml(entry) {
+  const e = entry || {}
+  const ep = e.episode != null ? 'Ep ' + esc(e.episode) : ''
+  const time = new Date(Number(e.airsAt)).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+  const kind = e.type === 'anime' ? 'Anime' : 'TV'
+  return '<li class="vcal-row" data-video="' + esc(e.key || '') + '" tabindex="0" role="button"' +
+      ' aria-label="' + esc(e.title || 'Untitled') + '">' +
+    '<span class="vcal-kind vbadge vbadge-type">' + kind + '</span>' +
+    '<span class="vcal-name">' + esc(e.title || 'Untitled') + '</span>' +
+    (ep ? '<span class="vcal-ep">' + ep + '</span>' : '') +
+    '<span class="vcal-time">' + esc(time) + '</span>' +
+  '</li>'
+}
+
+function _calendarEmptyHtml() {
+  return '<div class="vcal-empty">' +
+    '<p class="vcal-empty-title">Nothing on the calendar yet</p>' +
+    '<p class="vcal-empty-hint">Follow shows by adding them to My List, or start watching a series — ' +
+      'their upcoming episodes show up here.</p>' +
+  '</div>'
+}
+
+// Is a Continue-Watching item stale — untouched for `days` or more? updatedAt
+// is epoch-ms; a missing/garbage stamp is never stale (we don't nag on data we
+// can't trust). Pure so the day-boundary is testable (App §18).
+function _cwIsStale(updatedAt, now, days) {
+  const t = Number(updatedAt)
+  if (!Number.isFinite(t) || t <= 0) return false
+  const cutoff = Math.max(0, Number(days) || 0) * 24 * 60 * 60 * 1000
+  return (Number(now) - t) >= cutoff
+}
+
+// Decide the once-per-session "shows waiting" nudge (App §18). Given the CW
+// items and now, returns the toast message when ANY item is `days`+ stale, else
+// null. The count in the message is the total CW backlog, not just the stale
+// ones — "3 titles in Continue Watching" is the honest number the viewer sees.
+// Pure and side-effect-free; the caller owns the once-per-session guard.
+function _cwStaleNudge(items, now, days) {
+  const list = Array.isArray(items) ? items : []
+  if (!list.length) return null
+  const anyStale = list.some(it => it && _cwIsStale(it.updatedAt, now, days))
+  if (!anyStale) return null
+  const n = list.length
+  return 'You have shows waiting — ' + n + ' title' + (n === 1 ? '' : 's') + ' in Continue Watching'
+}
+
+// Fires the stale-CW nudge at most once per app run. The guard lives here, not
+// in the pure helper, so the message logic stays testable.
+var _cwNudgeShown = false
+function _maybeNudgeStaleCw(items) {
+  if (_cwNudgeShown) return
+  const msg = _cwStaleNudge(items, Date.now(), 60)
+  if (!msg) return
+  _cwNudgeShown = true
+  showToast(msg)
 }
 
 // Continue Watching and My List come from the local store, which may not be
@@ -3503,7 +5208,11 @@ function _personalRows() {
   const out = []
   try {
     const cont = store.continueWatching(20) || []
-    if (cont.length) out.push({ key: 'continue', label: 'Continue Watching', items: cont })
+    if (cont.length) {
+      out.push({ key: 'continue', label: 'Continue Watching', items: cont })
+      // Gentle once-per-session reminder if any of these have gone cold.
+      _maybeNudgeStaleCw(cont)
+    }
     const list = store.watchlist() || []
     if (list.length && _videoTab === 'all') out.push({ key: 'mylist', label: 'My List', items: list.slice(0, 20) })
   } catch (_) { /* a broken store must not take the page down */ }
@@ -3599,6 +5308,18 @@ function _fillRow(key, items) {
   _bindRail(rail)
 }
 
+// _fillRow with the hide-what-I-have-seen filter applied. Only the catalog
+// tab's rows go through here: a person's filmography and search results must
+// never lose entries to it. A row filtered down to nothing says so, because a
+// silently empty shelf reads as a broken one.
+function _fillRowHideSeen(key, items) {
+  const vis = _hideSeenApply(items)
+  if (!vis.shown.length && vis.hidden) {
+    return _rowEmpty(key, 'All ' + vis.hidden + ' here are hidden — you have seen them')
+  }
+  _fillRow(key, vis.shown)
+}
+
 // Arrow visibility is driven by actual scroll position, so a rail that fits
 // on screen never shows a control that would do nothing.
 function _bindRail(rail) {
@@ -3628,17 +5349,127 @@ function _startVideoHero(items, ticket) {
   }
   _videoHero.items = pool.slice(0, 5)
   _videoHero.index = 0
+  _videoHero.paused = false
   _paintVideoHero()
+  _bindHeroPause()
   _stopVideoHero()
   _videoHero.timer = setInterval(function () {
     if (_videoCatalogTicket !== ticket || state.currentPage !== 'video') return _stopVideoHero()
+    // Rotating the feature out from under the pointer — or from under the
+    // keyboard focus that is about to press Play — yanks the page away mid-
+    // read. The timer keeps ticking; it just declines to advance.
+    if (_videoHero.paused) return
     _videoHero.index = (_videoHero.index + 1) % _videoHero.items.length
     _paintVideoHero()
   }, 9000)
 }
 
+// Bound on the mount, which survives every repaint, so once is enough.
+function _bindHeroPause() {
+  const mount = document.getElementById('vhero-mount')
+  if (!mount || mount.dataset.heroPauseBound === '1') return
+  mount.dataset.heroPauseBound = '1'
+  const pause = function () { _videoHero.paused = true }
+  const resume = function () { _videoHero.paused = false }
+  mount.addEventListener('pointerenter', function (e) {
+    pause()
+    // App §15: after a beat of uninterrupted hover, the same trailer pipeline
+    // the cards use fades a muted preview in over the backdrop. Mouse and pen
+    // only — a touch "hover" is a tap on its way to the detail page.
+    if (e.pointerType === 'touch') return
+    _armHeroTrailer()
+  })
+  mount.addEventListener('pointerleave', function () {
+    resume()
+    _stopHeroTrailer()
+  })
+  mount.addEventListener('focusin', pause)
+  mount.addEventListener('focusout', function (e) {
+    // Focus moving between the hero's own buttons is not leaving.
+    if (!mount.contains(e.relatedTarget)) resume()
+  })
+}
+
+// ── Hero trailer autoplay (App §15) ─────────────────────────────────────────
+// Reuses the card's trailer pipeline wholesale: the same videoTrailerUrl IPC,
+// the same muted <video> factory, the same hover-trailer pref gate. The hero
+// dwell is longer than the card's — you are more likely to rest a pointer over
+// a big hero while reading than over a thumbnail — and it fades in over the
+// backdrop rather than a poster.
+const HERO_TRAILER_DWELL_MS = 3000
+var _heroTrailerTimer = null
+var _heroTrailerTicket = 0
+
+// Same gate as the cards, minus the theatre/music checks the hero does not
+// need on the home page. The pref and reduced-motion are the ones that matter.
+function _heroTrailerAllowed() {
+  if (!_hoverTrailersOn) return false
+  if (_prefersReducedMotion()) return false
+  return true
+}
+
+function _armHeroTrailer() {
+  if (!_heroTrailerAllowed()) return
+  clearTimeout(_heroTrailerTimer)
+  _heroTrailerTimer = setTimeout(_startHeroTrailer, HERO_TRAILER_DWELL_MS)
+}
+
+function _stopHeroTrailer() {
+  clearTimeout(_heroTrailerTimer)
+  _heroTrailerTimer = null
+  _heroTrailerTicket++
+  const mount = document.getElementById('vhero-mount')
+  const v = mount && mount.querySelector('.vhero-trailer')
+  if (v) {
+    // Same teardown as the card preview: drop the source so a stopped trailer
+    // does not sit on a buffer.
+    try { v.pause() } catch (_) {}
+    v.removeAttribute('src')
+    try { v.load() } catch (_) {}
+    v.remove()
+  }
+  if (mount) mount.classList.remove('is-hero-previewing')
+}
+
+async function _startHeroTrailer() {
+  if (!_heroTrailerAllowed()) return
+  const mount = document.getElementById('vhero-mount')
+  const item = _videoHero.items[_videoHero.index]
+  const hero = mount && mount.querySelector('.vhero')
+  if (!mount || !item || !hero) return
+  const ticket = ++_heroTrailerTicket
+
+  const res = await window.api.videoTrailerUrl({
+    type: item.type || 'movie', id: item.id == null ? '' : String(item.id),
+  }).catch(function () { return { ok: false } })
+
+  // Everything that can have changed while yt-dlp was running: the pointer
+  // left (a new ticket), the pref went off, the feature rotated, or the page
+  // navigated away and remounted the hero.
+  if (_heroTrailerTicket !== ticket) return
+  if (!_heroTrailerAllowed()) return
+  const liveHero = document.getElementById('vhero-mount')?.querySelector('.vhero')
+  if (!liveHero || liveHero !== hero) return
+  if (!res || !res.ok || !res.url) return
+
+  const v = _makeTrailerVideo(res.url, 'vhero-trailer')
+  // Behind the scrim and text, over the backdrop — the still stays as the
+  // poster frame until the video is actually playing.
+  const scrim = hero.querySelector('.vhero-scrim')
+  hero.insertBefore(v, scrim || hero.firstChild)
+  v.play().then(function () {
+    if (_heroTrailerTicket === ticket) mount.classList.add('is-hero-previewing')
+    else _stopHeroTrailer()
+  }).catch(function () {
+    if (_heroTrailerTicket === ticket) _stopHeroTrailer()
+  })
+}
+
 function _stopVideoHero() {
   if (_videoHero.timer) { clearInterval(_videoHero.timer); _videoHero.timer = null }
+  // A rotation or a page change is exactly the "hero rotation / navigation"
+  // interruption App §15 asks the trailer to respect.
+  _stopHeroTrailer()
 }
 
 function _paintVideoHero() {
@@ -3646,6 +5477,21 @@ function _paintVideoHero() {
   const item = _videoHero.items[_videoHero.index]
   if (!mount || !item) return
   const key = (item.type || 'movie') + ':' + (item.id == null ? '' : item.id)
+  // The same item again — a one-feature pool, or the active dot re-clicked —
+  // is not worth tearing down: rebuilding the innerHTML restarts the image
+  // fade and destroys whatever the pointer was hovering. The DOM check guards
+  // against a mount someone else has since emptied back to a skeleton.
+  if (mount.dataset.heroKey === key && mount.querySelector('.vhero-title')) {
+    mount.querySelectorAll('.vhero-dot').forEach(function (d) {
+      d.classList.toggle('active', Number(d.dataset.hero) === _videoHero.index)
+    })
+    return
+  }
+  // Rotating to a new feature tears the old backdrop's innerHTML out; stop the
+  // trailer first so its ticket is invalidated and the mount's previewing class
+  // does not linger onto the new still (App §15: rotation stops the trailer).
+  _stopHeroTrailer()
+  mount.dataset.heroKey = key
   const kind = item.type === 'anime' ? 'Anime' : item.type === 'tv' ? 'Series' : 'Film'
   const bits = []
   if (item.year != null) bits.push(esc(String(item.year)))
@@ -3703,12 +5549,125 @@ function _toggleWatchlist(item) {
     const type = item.type || 'movie'
     // toggleWatchlist returns the new list, not a boolean, and an array is
     // always truthy — asking the store afterwards is the only honest answer.
-    store.toggleWatchlist({ type: type, id: item.id, title: item.title, poster: item.poster || null })
+    store.toggleWatchlist({
+      type: type, id: item.id, title: item.title, poster: item.poster || null,
+      collection: (item.collection && item.collection.id != null) ? item.collection : null,
+    })
     const added = store.inWatchlist(type, item.id)
     showToast(added ? 'Added to My List' : 'Removed from My List')
     document.querySelectorAll('.vcard-act-list[data-key="' + (item.type || 'movie') + ':' + item.id + '"]')
       .forEach(function (b) { b.classList.toggle('on', added); b.innerHTML = added ? _VICON.check : _VICON.plus })
   } catch (_) { showToast('Could not update My List') }
+}
+
+// ── My List page ────────────────────────────────────────────────────────────
+// A saved list of forty is a collection, not a preview, so it gets a grid like
+// Browse rather than one rail scrolled sideways. The sort and the watched
+// filter persist together under one key: they are one preference — how you
+// like looking at your list — not two.
+const _MYLIST_PREF_KEY = 'papaMyListSort'
+const _MYLIST_SORTS = [
+  { key: 'added', label: 'Added' },
+  { key: 'newest', label: 'Year' },
+  { key: 'title', label: 'Title' },
+  { key: 'rating', label: 'Rating' },
+]
+const _MYLIST_WATCHED = [
+  { key: 'all', label: 'All' },
+  { key: 'unwatched', label: 'Unwatched' },
+  { key: 'watched', label: 'Watched' },
+]
+
+function _myListPref() {
+  try {
+    const p = window.PapaLocal && window.PapaLocal.readObject
+      ? window.PapaLocal.readObject(_MYLIST_PREF_KEY) : {}
+    return {
+      sort: _MYLIST_SORTS.some(function (s) { return s.key === (p && p.sort) }) ? p.sort : 'added',
+      watched: _MYLIST_WATCHED.some(function (w) { return w.key === (p && p.watched) }) ? p.watched : 'all',
+    }
+  } catch (_) { return { sort: 'added', watched: 'all' } }
+}
+
+function _writeMyListPref(pref) {
+  try {
+    if (window.PapaLocal && window.PapaLocal.write) window.PapaLocal.write(_MYLIST_PREF_KEY, pref)
+  } catch (_) { /* a full store must not break the list */ }
+}
+
+// "Watched" means the same thing it means everywhere else: the diary's word,
+// via the same key shape hide-seen uses, so the two can never disagree.
+function _myListApply(list, pref) {
+  let items = Array.isArray(list) ? list.slice() : []
+  const hidden = items.length
+  if (pref.watched !== 'all' && window.PapaTasteStore) {
+    const wantSeen = pref.watched === 'watched'
+    items = items.filter(function (i) { return Boolean(window.PapaTasteStore.hasSeen(_cardKey(i))) === wantSeen })
+  }
+  if (pref.sort === 'added') {
+    // Newest addition first. addedAt is the one field every entry has;
+    // a stable tie-break on position keeps same-clock entries from swapping.
+    items = items
+      .map(function (item, i) { return { item: item, i: i } })
+      .sort(function (x, y) {
+        return ((Number(y.item.addedAt) || 0) - (Number(x.item.addedAt) || 0)) || x.i - y.i
+      })
+      .map(function (x) { return x.item })
+  } else {
+    items = _vSortItems(items, pref.sort)
+  }
+  return { shown: items, hidden: hidden - items.length }
+}
+
+function _myListChipsHtml(pref) {
+  const sorts = _MYLIST_SORTS.map(function (s) {
+    return '<button class="vlist-chip' + (pref.sort === s.key ? ' on' : '') +
+      '" data-mylist-sort="' + s.key + '" aria-pressed="' + (pref.sort === s.key) + '">' + esc(s.label) + '</button>'
+  }).join('')
+  const watched = _MYLIST_WATCHED.map(function (w) {
+    return '<button class="vlist-chip' + (pref.watched === w.key ? ' on' : '') +
+      '" data-mylist-watched="' + w.key + '" aria-pressed="' + (pref.watched === w.key) + '">' + esc(w.label) + '</button>'
+  }).join('')
+  return '<div class="vlist-chips" id="vmylist-chips">' +
+    '<span class="vlist-chips-label">Sort</span>' + sorts +
+    '<span class="vlist-chips-label">Show</span>' + watched +
+  '</div>'
+}
+
+// Which franchise/collection groups the user has unfolded this session. Folded
+// is the default — a group shows its first poster and a count until opened — so
+// a long list stays scannable (#22). Keyed by the group name; session-only,
+// because a fold state is a viewing choice, not data worth persisting.
+var _myListUnfolded = new Set()
+
+// Turn the visible (sorted, filtered) list into grid HTML, folding franchise
+// and collection groups. Falls back to a plain flat grid when the grouper is
+// absent or finds nothing to group, so the page never depends on the module.
+function _myListGridHtml(items) {
+  const grouper = window.PapaMyListGroup && window.PapaMyListGroup.groupMyList
+  if (!grouper) return '<div class="vgrid vmylist-grid" id="vmylist-grid">' + items.map(_videoCard).join('') + '</div>'
+  const groups = grouper(items)
+  const anyGrouped = groups.some(function (g) { return g.grouped && g.items.length > 1 })
+  if (!anyGrouped) {
+    return '<div class="vgrid vmylist-grid" id="vmylist-grid">' + items.map(_videoCard).join('') + '</div>'
+  }
+  const html = groups.map(function (g) {
+    if (!g.grouped || g.items.length < 2) {
+      return g.items.map(_videoCard).join('')
+    }
+    const open = _myListUnfolded.has(g.name)
+    const head = '<button type="button" class="vmylist-franchise-head" data-franchise="' + esc(g.name) + '"' +
+      ' aria-expanded="' + open + '">' +
+      '<span class="vmylist-franchise-caret">' + (open ? '▾' : '▸') + '</span>' +
+      '<span class="vmylist-franchise-name">' + esc(g.name) + '</span>' +
+      '<span class="vmylist-franchise-count">' + g.items.length + '</span></button>'
+    const body = open
+      ? '<div class="vgrid vmylist-grid">' + g.items.map(_videoCard).join('') + '</div>'
+      // Folded: show only the first poster as a peek so the row still reads.
+      : '<div class="vgrid vmylist-grid vmylist-franchise-peek">' + _videoCard(g.items[0]) + '</div>'
+    return '<div class="vmylist-franchise' + (open ? ' open' : '') + '">' + head + body + '</div>'
+  }).join('')
+  return '<div id="vmylist-grid">' + html + '</div>'
 }
 
 function _renderMyList(rows) {
@@ -3723,21 +5682,125 @@ function _renderMyList(rows) {
     '</div>'
     document.getElementById('vempty-browse')?.addEventListener('click', function () {
       _videoTab = 'all'
-      renderVideo()
+      // Through navigate(), not renderVideo() directly, so the session state
+      // and history record where this click actually took you.
+      navigate('video')
     })
     return
   }
-  rows.innerHTML = _vRowShell('mylist', 'My List', list.length)
-  _fillRow('mylist', list)
+
+  const pref = _myListPref()
+  const vis = _myListApply(list, pref)
+  rows.innerHTML = '<section class="vrow" data-row="mylist">' +
+    '<div class="vrow-head"><h2 class="vrow-title">My List</h2>' +
+      '<span class="vrow-count">' + list.length + '</span></div>' +
+    _myListChipsHtml(pref) +
+    (vis.shown.length
+      ? _myListGridHtml(vis.shown)
+      : '<div class="vrow-msg">' + (pref.watched === 'watched'
+          ? 'Nothing on your list is watched yet.'
+          : 'Everything on your list is watched. Well done.') + '</div>') +
+  '</section>'
+  const grid = document.getElementById('vmylist-grid')
+  if (grid) _bindVideoCards(grid)
+  // Fold / unfold a franchise group (#22). Session state, then a synchronous
+  // repaint from local data.
+  grid?.addEventListener('click', function (e) {
+    const head = e.target.closest('[data-franchise]')
+    if (!head) return
+    const name = head.getAttribute('data-franchise')
+    if (_myListUnfolded.has(name)) _myListUnfolded.delete(name)
+    else _myListUnfolded.add(name)
+    _renderMyList(rows)
+  })
+  document.getElementById('vmylist-chips')?.addEventListener('click', function (e) {
+    const b = e.target.closest('[data-mylist-sort],[data-mylist-watched]')
+    if (!b) return
+    const next = _myListPref()
+    if (b.dataset.mylistSort) next.sort = b.dataset.mylistSort
+    else next.watched = b.dataset.mylistWatched
+    _writeMyListPref(next)
+    // Synchronous repaint from local state: no request, so no ticket needed.
+    _renderMyList(rows)
+  })
 }
 
 // Search overlays the catalog instead of replacing it, groups results by type,
 // and is ticketed so a slow earlier query cannot overwrite a later one.
+// ── Search history ──────────────────────────────────────────────────────────
+// Queries that found something are worth keeping: a search box with no memory
+// makes the user retype "chainsaw man" every session. Most recent first,
+// deduplicated, capped — and only committed searches or ones that returned
+// results land here, so half-typed fragments never do.
+const _VSEARCH_HISTORY_KEY = 'papaVideoRecentSearches'
+const _VSEARCH_HISTORY_MAX = 12
+
+// Drop any entry that is a strict (case-insensitive) prefix of another entry —
+// the fingerprint of the old bug where every keystroke was recorded, so
+// "toky" / "tokyo r" / "tokyo re" all sat under "tokyo rev". Idempotent: on a
+// clean list nothing matches and it returns the input untouched.
+function _vSearchDropPrefixes(list) {
+  return list.filter(function (a, i) {
+    const la = a.toLowerCase()
+    return !list.some(function (b, j) {
+      if (i === j) return false
+      const lb = b.toLowerCase()
+      return lb.length > la.length && lb.slice(0, la.length) === la
+    })
+  })
+}
+
+function _vSearchHistory() {
+  try {
+    const raw = window.PapaLocal && window.PapaLocal.readArray
+      ? window.PapaLocal.readArray(_VSEARCH_HISTORY_KEY, function (q) { return typeof q === 'string' && q })
+      : []
+    const list = Array.isArray(raw) ? raw : []
+    // One-time self-heal for history polluted by the pre-commit-only bug: if the
+    // cleaned list differs, persist it so the cleanup only pays off once.
+    const cleaned = _vSearchDropPrefixes(list)
+    if (cleaned.length !== list.length) {
+      try {
+        if (window.PapaLocal && window.PapaLocal.write) {
+          window.PapaLocal.write(_VSEARCH_HISTORY_KEY, cleaned)
+        }
+      } catch (_) { /* a full store must not break history reads */ }
+    }
+    return cleaned
+  } catch (_) { return [] }
+}
+
+function _vSearchRemember(query) {
+  const q = String(query || '').trim()
+  if (!q) return
+  try {
+    const list = _vSearchHistory().filter(function (x) { return x.toLowerCase() !== q.toLowerCase() })
+    list.unshift(q)
+    if (window.PapaLocal && window.PapaLocal.write) {
+      window.PapaLocal.write(_VSEARCH_HISTORY_KEY, list.slice(0, _VSEARCH_HISTORY_MAX))
+    }
+  } catch (_) { /* a full store must not break searching */ }
+}
+
+function _vSearchHistoryHtml() {
+  const list = _vSearchHistory()
+  if (!list.length) return ''
+  return '<div class="vsearch-recent" id="vsearch-recent">' +
+    '<span class="vsearch-recent-label">Recent</span>' +
+    list.map(function (q) {
+      return '<button class="vsearch-chip" data-recent="' + esc(q) + '">' + esc(q) + '</button>'
+    }).join('') +
+    '<button class="vsearch-chip vsearch-chip-clear" id="vsearch-recent-clear">Clear history</button>' +
+  '</div>'
+}
+
 function _bindVideoSearch() {
   const input = document.getElementById('video-search-input')
   const clear = document.getElementById('video-search-clear')
   if (!input) return
   let timer = null
+
+  const hideRecent = function () { document.getElementById('vsearch-recent')?.remove() }
 
   const reset = function () {
     _videoSearchTicket++
@@ -3751,31 +5814,263 @@ function _bindVideoSearch() {
   const run = function () {
     const query = input.value.trim()
     if (clear) clear.hidden = !query
+    hideRecent()
     if (!query) return reset()
     _runVideoTitleSearch(query)
   }
 
+  const showRecent = function () {
+    if (input.value.trim()) return
+    const box = document.getElementById('video-search-results')
+    if (!box || document.getElementById('vsearch-recent')) return
+    const html = _vSearchHistoryHtml()
+    if (!html) return
+    box.insertAdjacentHTML('afterbegin', html)
+    // mousedown, not click: the input's blur would remove the strip before a
+    // click event could ever reach the chip.
+    document.getElementById('vsearch-recent')?.addEventListener('mousedown', function (ev) {
+      const chip = ev.target && ev.target.closest && ev.target.closest('[data-recent]')
+      if (chip) {
+        ev.preventDefault()
+        input.value = chip.dataset.recent
+        if (clear) clear.hidden = false
+        hideRecent()
+        _runVideoTitleSearch(chip.dataset.recent)
+        return
+      }
+      if (ev.target && ev.target.closest && ev.target.closest('#vsearch-recent-clear')) {
+        ev.preventDefault()
+        try { if (window.PapaLocal && window.PapaLocal.write) window.PapaLocal.write(_VSEARCH_HISTORY_KEY, []) } catch (_) {}
+        hideRecent()
+      }
+    })
+  }
+
+  // Clicking a result is a commit too (the other commit is Enter). Recorded in
+  // capture so it lands before the card's own navigation tears the strip down.
+  const resultsBox = document.getElementById('video-search-results')
+  if (resultsBox) {
+    resultsBox.addEventListener('click', function (ev) {
+      const card = ev.target && ev.target.closest && ev.target.closest('.vcard')
+      if (card && _vSearchFilter && _vSearchFilter.query) _vSearchRemember(_vSearchFilter.query)
+    }, true)
+  }
+
   input.addEventListener('input', function () { clearTimeout(timer); timer = setTimeout(run, 300) })
+  input.addEventListener('focus', showRecent)
+  input.addEventListener('blur', function () { setTimeout(hideRecent, 150) })
   input.addEventListener('keydown', function (e) {
     if (e.key === 'Enter') {
       clearTimeout(timer)
       const query = input.value.trim()
+      if (query) _vSearchRemember(query)
       // Enter is the commit. A query that describes a kind of film goes to
       // Browse; anything else is a title and searches as it always did.
       if (query && _actOnParsedQuery(_parseVideoQuery(query))) return
       run()
     }
-    if (e.key === 'Escape') { input.value = ''; reset(); input.blur() }
+    if (e.key === 'Escape') { input.value = ''; reset(); hideRecent(); input.blur() }
   })
   clear?.addEventListener('click', function () { input.value = ''; reset(); input.focus() })
+
+  // A query parked by requestVideoSearch() (from universal search's Movies & TV
+  // strip) runs now that the input exists and its listeners are bound. Consumed
+  // once: cleared before firing so a later plain navigate('video') does not
+  // silently re-run somebody else's old search.
+  if (_videoSearchPending) {
+    const parked = _videoSearchPending
+    _videoSearchPending = null
+    input.value = parked
+    if (clear) clear.hidden = false
+    _vSearchRemember(parked)
+    _runVideoTitleSearch(parked)
+  }
 }
 
-// The title search, unchanged, lifted out so the parsed path can fall back to
-// it when a name turns out not to be a person.
+// ── Search-result filters + typo tolerance ──────────────────────────────────
+// Two pure helpers the search UI leans on. They are pure so the tests can run
+// them for real rather than reading them off the source.
+
+// A search that returns nothing gets one more try with a simplified query
+// (App §21). No suggestion API — just the obvious normalisation: strip the
+// accents a peer omitted, drop the punctuation a title carries but a query
+// rarely does, and collapse the runs of whitespace a fat-fingered space leaves.
+// If the simplified form differs from the original it is worth a second fetch;
+// if it is identical there is nothing new to ask, so the caller skips it.
+function _simplifyVideoQuery(text) {
+  const raw = String(text == null ? '' : text)
+  return raw
+    // Diacritics: "Amélie" and "Amelie" are the same film to a fuzzy index.
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    // Punctuation, but not the spaces between words — "Spider-Man: Homecoming"
+    // becomes "Spider Man Homecoming", which most indexers still resolve.
+    .replace(/[^\p{L}\p{N}\s]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+// The decade a year belongs to, as the label a chip shows: 1994 → "1990s".
+// Null for anything that is not a real four-digit-ish year, so the dropdown is
+// built only from results that actually carry one.
+function _videoDecadeLabel(year) {
+  if (year === null || year === undefined || year === '') return null
+  const n = Number(String(year).slice(0, 4))
+  if (!Number.isFinite(n) || n < 1000) return null
+  return (Math.floor(n / 10) * 10) + 's'
+}
+
+// The decades present in a result set, newest first — the exact set the decade
+// dropdown offers, so a decade with no films never appears as a dead option.
+function _videoResultDecades(results) {
+  const seen = new Set()
+  for (const r of (Array.isArray(results) ? results : [])) {
+    const label = _videoDecadeLabel(r && r.year)
+    if (label) seen.add(label)
+  }
+  return Array.from(seen).sort(function (a, b) { return parseInt(b, 10) - parseInt(a, 10) })
+}
+
+// Client-side filtering of an already-fetched result set by type and decade.
+// 'all' / '' mean no constraint on that axis. Pure, so the chips can re-run it
+// on every click without another fetch (App §20).
+function _filterVideoResults(results, typeKey, decade) {
+  return (Array.isArray(results) ? results : []).filter(function (r) {
+    if (typeKey && typeKey !== 'all' && (r.type || 'movie') !== typeKey) return false
+    if (decade && decade !== 'all' && _videoDecadeLabel(r && r.year) !== decade) return false
+    return true
+  })
+}
+
+// The whole per-search filter state: the fetched results, and the two axes the
+// chips move. Reset on every new query so a stale decade cannot survive into an
+// unrelated result set (App §20).
+var _vSearchFilter = { results: [], type: 'all', decade: 'all' }
+
+var _VSEARCH_TYPE_CHIPS = [
+  { key: 'all',   label: 'All' },
+  { key: 'movie', label: 'Films' },
+  { key: 'tv',    label: 'Series' },
+  { key: 'anime', label: 'Anime' },
+]
+
+// The chip bar above the results: type chips (only the ones the results
+// actually contain, so "Anime" never dangles over a set with none) and a
+// decade dropdown built from the years present.
+function _vSearchFilterBarHtml(results) {
+  const present = new Set((Array.isArray(results) ? results : [])
+    .map(function (r) { return r.type || 'movie' }))
+  const types = _VSEARCH_TYPE_CHIPS.filter(function (t) {
+    return t.key === 'all' || present.has(t.key)
+  })
+  // A single kind of result makes the type chips a no-op — drop them, but keep
+  // the decade dropdown, which can still narrow a one-kind set.
+  const typeHtml = types.length > 2
+    ? '<div class="vsfilter-types" role="group" aria-label="Filter by type">' +
+        types.map(function (t) {
+          return '<button class="vsfilter-chip' + (t.key === _vSearchFilter.type ? ' active' : '') +
+            '" data-vsfilter-type="' + t.key + '"' +
+            (t.key === _vSearchFilter.type ? ' aria-pressed="true"' : ' aria-pressed="false"') +
+            '>' + esc(t.label) + '</button>'
+        }).join('') +
+      '</div>'
+    : ''
+  const decades = _videoResultDecades(results)
+  const decadeHtml = decades.length > 1
+    ? '<label class="vsfilter-decade"><span>Decade</span>' +
+        '<select id="vsfilter-decade-select" aria-label="Filter by decade">' +
+          '<option value="all"' + (_vSearchFilter.decade === 'all' ? ' selected' : '') + '>Any</option>' +
+          decades.map(function (d) {
+            return '<option value="' + esc(d) + '"' + (d === _vSearchFilter.decade ? ' selected' : '') + '>' + esc(d) + '</option>'
+          }).join('') +
+        '</select>' +
+      '</label>'
+    : ''
+  if (!typeHtml && !decadeHtml) return ''
+  return '<div class="vsfilter" id="vsfilter">' + typeHtml + decadeHtml + '</div>'
+}
+
+// The empty-state markup, shared by the first miss and the simplified retry's
+// miss, so the two paths read the same.
+function _vSearchEmptyHtml(query) {
+  return '<div class="vempty">' +
+    '<div class="vempty-icon">◎</div>' +
+    '<div class="vempty-title">No matches for &ldquo;' + esc(query) + '&rdquo;</div>' +
+    '<div class="vempty-text">Check the spelling, or try the original-language title — anime in particular is often indexed under its romaji name.</div>' +
+  '</div>'
+}
+
+// Paints a fetched result set into #video-search-results: the filter bar, then
+// the type-grouped rows, then the chips are wired. `note` is the optional
+// "Showing results for …" line the typo-tolerance retry passes in. Called on
+// the first paint and again on every chip click, so it must be idempotent.
+function _paintVideoSearchResults(note) {
+  const target = document.getElementById('video-search-results')
+  if (!target) return
+  const all = _vSearchFilter.results
+  const shown = _filterVideoResults(all, _vSearchFilter.type, _vSearchFilter.decade)
+
+  // Grouped, because a film, a series and an anime are different answers to the
+  // same query and a single flat grid hides that.
+  const groups = [
+    { key: 'movie', label: 'Films' },
+    { key: 'tv',    label: 'Series' },
+    { key: 'anime', label: 'Anime' },
+  ]
+  let html = ''
+  if (note) html += '<p class="vsearch-note">' + note + '</p>'
+  html += _vSearchFilterBarHtml(all)
+  const groupItems = {}
+  for (const g of groups) {
+    groupItems[g.key] = shown.filter(function (r) { return (r.type || 'movie') === g.key })
+  }
+  const anyShown = groups.some(function (g) { return groupItems[g.key].length })
+  if (!anyShown) {
+    // The fetch found things; the chips filtered them all out. Say that, rather
+    // than reading like the search itself failed.
+    html += '<div class="vrow-msg">Nothing in this result set matches the current filters.</div>'
+  } else {
+    for (const g of groups) {
+      if (groupItems[g.key].length) html += _vRowShell('search-' + g.key, g.label, groupItems[g.key].length)
+    }
+  }
+  target.innerHTML = html
+  if (anyShown) {
+    for (const g of groups) {
+      if (groupItems[g.key].length) _fillRow('search-' + g.key, groupItems[g.key])
+    }
+  }
+  _bindVideoSearchFilters()
+}
+
+// The chip bar's listeners. Delegated onto the bar itself, which is rebuilt on
+// every paint, so binding once per paint is correct — the old bar and its
+// listeners are gone with the innerHTML that replaced them.
+function _bindVideoSearchFilters() {
+  const bar = document.getElementById('vsfilter')
+  if (!bar) return
+  bar.addEventListener('click', function (ev) {
+    const chip = ev.target && ev.target.closest && ev.target.closest('[data-vsfilter-type]')
+    if (!chip) return
+    _vSearchFilter.type = chip.getAttribute('data-vsfilter-type') || 'all'
+    _paintVideoSearchResults()
+  })
+  const sel = document.getElementById('vsfilter-decade-select')
+  if (sel) sel.addEventListener('change', function () {
+    _vSearchFilter.decade = this.value || 'all'
+    _paintVideoSearchResults()
+  })
+}
+
+// The title search, unchanged in spirit, lifted out so the parsed path can fall
+// back to it when a name turns out not to be a person. Now it also owns the
+// result filters (App §20) and the typo-tolerance retry (App §21).
 function _runVideoTitleSearch(query) {
     const box = document.getElementById('video-search-results')
     if (!box) return
     const ticket = ++_videoSearchTicket
+    // Every new query starts the filters from scratch, so a decade picked on
+    // the last search cannot survive into this one.
+    _vSearchFilter = { results: [], type: 'all', decade: 'all', query: query }
     // Hide rather than unmount, so clearing the query restores the catalog
     // instantly without refetching every row.
     const rows = document.getElementById('vrows')
@@ -3795,33 +6090,46 @@ function _runVideoTitleSearch(query) {
           return
         }
         const results = Array.isArray(res.results) ? res.results : []
+        // Do NOT remember here: this runs on every debounced keystroke, which is
+        // what filled the history with prefixes ("toky","tokyo r",…). History is
+        // committed only on Enter (keydown handler) or when a result is clicked.
         if (!results.length) {
-          target.innerHTML = '<div class="vempty">' +
-            '<div class="vempty-icon">◎</div>' +
-            '<div class="vempty-title">No matches for &ldquo;' + esc(query) + '&rdquo;</div>' +
-            '<div class="vempty-text">Check the spelling, or try the original-language title — anime in particular is often indexed under its romaji name.</div>' +
-          '</div>'
+          // App §21: a zero-result title search gets exactly one retry with a
+          // simplified query, and only if simplifying actually changed it.
+          const simplified = _simplifyVideoQuery(query)
+          if (simplified && simplified !== query) {
+            return _retryVideoTitleSearch(query, simplified, ticket)
+          }
+          target.innerHTML = _vSearchEmptyHtml(query)
           return
         }
-        // Grouped, because a film, a series and an anime are different answers
-        // to the same query and a single flat grid hides that.
-        const groups = [
-          { key: 'movie', label: 'Films' },
-          { key: 'tv',    label: 'Series' },
-          { key: 'anime', label: 'Anime' },
-        ]
-        let html = ''
-        for (const g of groups) {
-          const items = results.filter(function (r) { return (r.type || 'movie') === g.key })
-          if (!items.length) continue
-          html += _vRowShell('search-' + g.key, g.label, items.length)
-        }
-        target.innerHTML = html
-        for (const g of groups) {
-          const items = results.filter(function (r) { return (r.type || 'movie') === g.key })
-          if (items.length) _fillRow('search-' + g.key, items)
-        }
+        _vSearchFilter.results = results
+        _paintVideoSearchResults()
       })
+}
+
+// The one retry App §21 allows: same fetch, simplified query. On a hit the
+// results paint under a gentle "Showing results for …" line so the swap is
+// never silent; on a second miss the original query's empty state stands.
+function _retryVideoTitleSearch(original, simplified, ticket) {
+  window.api.videoSearch({ query: simplified, type: 'all' })
+    .catch(function () { return { ok: false } })
+    .then(function (res) {
+      if (_videoSearchTicket !== ticket) return
+      const target = document.getElementById('video-search-results')
+      if (!target) return
+      const results = (res && res.ok && Array.isArray(res.results)) ? res.results : []
+      if (!results.length) {
+        target.innerHTML = _vSearchEmptyHtml(original)
+        return
+      }
+      // Commit-only: don't remember on this debounced retry. Update the pending
+      // commit query to the simplified form so a result click records what
+      // actually matched.
+      _vSearchFilter.query = simplified
+      _vSearchFilter.results = results
+      _paintVideoSearchResults('Showing results for &ldquo;' + esc(simplified) + '&rdquo;')
+    })
 }
 
 // ── Parsed search ───────────────────────────────────────────────────────────
@@ -3977,9 +6285,22 @@ function _videoCard(item) {
     badges.push('<span class="vbadge vbadge-rating">★ ' + esc(String(r > 10 ? Math.round(r / 10 * 10) / 10 : Math.round(r * 10) / 10)) + '</span>')
   }
   badges.push('<span class="vbadge vbadge-type">' + kind + '</span>')
+  // Continue-Watching staleness nudge (App §18). Only CW items carry updatedAt,
+  // so a "resume?" badge keyed on it appears on exactly the cards that have sat
+  // untouched — no separate "is this the CW row" flag needed.
+  if (_cwIsStale(item.updatedAt, Date.now(), 30)) {
+    badges.push('<span class="vbadge vbadge-resume" title="You haven\'t touched this in a while">resume?</span>')
+  }
 
   const pct = item.position && item.duration ? Math.min(100, Math.round(item.position / item.duration * 100)) : 0
   const progress = pct > 1 ? '<div class="vcard-progress"><i style="width:' + pct + '%"></i></div>' : ''
+
+  // A half-watched entry can be dismissed: marking it watched is exactly what
+  // removes it from Continue Watching, and there was no way to do that short
+  // of sitting through the rest of it.
+  const cwKey = pct > 1
+    ? _watchKey(item.type || 'movie', item.id, item.season, item.episode)
+    : null
 
   const inList = (function () {
     const store = _vStore()
@@ -3999,6 +6320,8 @@ function _videoCard(item) {
         '<button class="vcard-act vcard-act-play" data-act="play" aria-label="Play">' + _VICON.play + '</button>' +
         '<button class="vcard-act vcard-act-list' + (inList ? ' on' : '') + '" data-act="list" data-key="' + esc(key) + '"' +
           ' aria-label="' + (inList ? 'Remove from My List' : 'Add to My List') + '">' + (inList ? _VICON.check : _VICON.plus) + '</button>' +
+        (cwKey ? '<button class="vcard-act vcard-act-seen" data-act="seen" data-cwkey="' + esc(cwKey) + '"' +
+          ' aria-label="Mark watched and remove from Continue Watching">&#10005;</button>' : '') +
       '</div>' +
     '</div>' +
     '<div class="vcard-title">' + esc(item.title || 'Untitled') + '</div>' +
@@ -4042,14 +6365,36 @@ function _vRatesHtml(meta) {
 }
 
 // The credit line a cinephile reads first: who made it, how long it is, and
-// what it is rated.
+// what it is rated — plus, when enrichment supplied them, the genres as chips.
+//
+// The genre chips carry the same data-genre-jump attribute the detail page's
+// chips do, so the one delegated handler (_bindGlobalGenreJumps) takes both to
+// Browse via _jumpToGenre. Rendered defensively: if enrichment did not return
+// genres — an older main process, or a title with none — the row is simply
+// absent and the credit line reads exactly as before.
 function _vCreditHtml(meta) {
   const m = meta || {}
   const bits = []
   if (Array.isArray(m.directors) && m.directors.length) bits.push(esc(m.directors.join(', ')))
   if (m.runtime) bits.push(esc(_vRuntime(m.runtime)))
   const cert = m.certification ? '<span class="vcard-cert">' + esc(m.certification) + '</span>' : ''
-  return bits.join('<span class="sep">·</span>') + (bits.length && cert ? '<span class="sep">·</span>' : '') + cert
+  const line = bits.join('<span class="sep">·</span>') + (bits.length && cert ? '<span class="sep">·</span>' : '') + cert
+  return line + _vCardGenresHtml(m.genres)
+}
+
+// The genre chips for a card's credit area. Kept to three so a shelf card does
+// not grow a second title's worth of height; the detail page shows the full
+// list. Chips speak the display name — TMDB's genres are numeric ids but the
+// name is what _jumpToGenre resolves against, the same as on the detail page.
+function _vCardGenresHtml(genres) {
+  if (!Array.isArray(genres) || !genres.length) return ''
+  const chips = genres.slice(0, 3).map(function (g) {
+    const name = typeof g === 'string' ? g : (g && g.name)
+    if (!name) return ''
+    return '<button class="video-genre-chip vcard-genre-chip" data-genre-jump="' + esc(name) +
+      '" title="Browse ' + esc(name) + '">' + esc(name) + '</button>'
+  }).filter(Boolean).join('')
+  return chips ? '<div class="vcard-genres">' + chips + '</div>' : ''
 }
 
 // "1h 55m" rather than "115 min": the question a runtime answers is whether
@@ -4103,8 +6448,17 @@ function setHoverTrailers(on) {
   if (!_hoverTrailersOn) _stopHoverTrailer()
 }
 
+// A viewer who has asked the OS for less motion gets no autoplaying trailer at
+// all — the hero honours this (App §15), and there is no reason the cards
+// should not either.
+function _prefersReducedMotion() {
+  try { return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) }
+  catch (_) { return false }
+}
+
 function _hoverTrailerAllowed() {
   if (!_hoverTrailersOn) return false
+  if (_prefersReducedMotion()) return false
   // The theatre is modal and has its own audio; a preview behind it is noise.
   const theatre = document.getElementById('vtheatre')
   if (theatre && !theatre.classList.contains('hidden')) return false
@@ -4112,6 +6466,23 @@ function _hoverTrailerAllowed() {
   // what anyone meant, even muted, because the preview steals attention.
   if (state.isPlaying) return false
   return true
+}
+
+// The muted, looping, pointer-transparent <video> both the card preview and the
+// hero trailer build. Shared so the two stay identical: same autoplay-safe
+// attributes, same aria-hidden, same source. Only the class differs.
+function _makeTrailerVideo(url, className) {
+  const v = document.createElement('video')
+  v.className = className
+  v.muted = true
+  v.loop = true
+  v.playsInline = true
+  v.preload = 'auto'
+  // No controls and no pointer target: whatever is behind it stays the click
+  // surface.
+  v.setAttribute('aria-hidden', 'true')
+  v.src = url
+  return v
 }
 
 function _stopHoverTrailer() {
@@ -4177,15 +6548,7 @@ async function _startHoverTrailer(card) {
   }
 
   const art = card.querySelector('.vcard-art') || card
-  const v = document.createElement('video')
-  v.className = 'vcard-preview'
-  v.muted = true
-  v.loop = true
-  v.playsInline = true
-  v.preload = 'auto'
-  // No controls and no pointer target: the card is still the click surface.
-  v.setAttribute('aria-hidden', 'true')
-  v.src = res.url
+  const v = _makeTrailerVideo(res.url, 'vcard-preview')
   art.appendChild(v)
   card.classList.add('is-previewing')
   // A rejected play() is normal — an autoplay policy, or the pointer left
@@ -4200,12 +6563,31 @@ function _bindVideoCards(root) {
   // is joined here rather than at each of the half-dozen call sites.
   _observeCards(root)
   ;(root || document).querySelectorAll('.vcard').forEach(function (c) {
+    // Shelf pages re-bind the whole grid after every appended page; without
+    // this guard a page-1 card ends up with one listener per page loaded,
+    // and a single click navigates (and pushes history) that many times.
+    if (c.dataset.cardBound) return
+    c.dataset.cardBound = '1'
     const open = function () { navigate('video-detail', c.dataset.video) }
     c.addEventListener('click', function (e) {
+      // A genre chip in the enriched credit area jumps to Browse, handled by the
+      // delegated genre listener — the card must not also open its detail page.
+      if (e.target.closest && e.target.closest('[data-genre-jump]')) return
       const act = e.target.closest('[data-act]')
       if (!act) return open()
       e.stopPropagation()
       if (act.dataset.act === 'play') return open()
+      if (act.dataset.act === 'seen') {
+        try {
+          const store = _vStore()
+          if (store && act.dataset.cwkey) store.markWatched(act.dataset.cwkey)
+          showToast('Marked watched')
+          // Inside Continue Watching the card's reason to exist is gone.
+          if (c.closest('[data-rail="continue"]')) c.remove()
+          else c.querySelector('.vcard-progress')?.remove()
+        } catch (_) { showToast('Could not update') }
+        return
+      }
       const parts = String(c.dataset.video || '').split(':')
       _toggleWatchlist({
         type: parts[0], id: parts.slice(1).join(':'),
@@ -4216,9 +6598,172 @@ function _bindVideoCards(root) {
     // A card is a button, so it must answer to Enter and Space.
     c.addEventListener('keydown', function (e) {
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open() }
+      // The keyboard route to the context menu that the ContextMenu key's
+      // synthesised contextmenu event does not cover. Per-card, so it stays off
+      // the global listener budget.
+      else if (e.key === 'F10' && e.shiftKey) { e.preventDefault(); _openVideoCardMenuAtCard(c) }
     })
     _bindHoverTrailer(c)
   })
+  // Every grid that inserts cards routes through here, so the one delegated
+  // context-menu listener is installed from here too — once.
+  _bindVideoCardContextMenu()
+}
+
+// ── Video card context menu ─────────────────────────────────────────────────
+// Right-click (or the keyboard's ContextMenu key / Shift+F10) on any card opens
+// a small custom menu: Play, Go to details, Add/Remove My List, Mark watched.
+// It is a self-contained fixed-position div — not the music side's #ctx-menu,
+// which is built for tracks and albums — and it dismisses on any click, on
+// Escape, and on scroll.
+//
+// One delegated document listener does the whole thing, behind a run-once
+// guard: the same reasoning as the genre jumps and the soak probe's global
+// budget. Binding per-card would miss the cards a grid enriches after render,
+// and would register a listener per card on top of that.
+var _vCtxBound = false
+var _vCtxEl = null
+
+function _bindVideoCardContextMenu() {
+  if (_vCtxBound) return
+  _vCtxBound = true
+  // The gesture. Delegated, so enriched and future cards are covered with no
+  // re-binding. contextmenu also fires for the keyboard ContextMenu key, which
+  // lands on the focused element — so a focused card is covered for free.
+  document.addEventListener('contextmenu', function (e) {
+    const card = e.target.closest ? e.target.closest('.vcard') : null
+    if (!card) return
+    e.preventDefault()
+    _openVideoCardMenu(card, e.clientX, e.clientY)
+  })
+  // Shift+F10 and the ContextMenu key are the two keyboard routes to a context
+  // menu. The ContextMenu key already synthesises a contextmenu event on the
+  // focused element, so the delegated contextmenu listener above covers it for
+  // free. Shift+F10 does not, and is handled per-card in _bindVideoCards' own
+  // keydown handler — a per-element listener, so it adds nothing to the global
+  // listener budget. Escape-to-close is handled on the menu element itself, in
+  // _openVideoCardMenu, for the same reason.
+}
+
+// Opens the menu for a focused card at its top-left. Shared by the Shift+F10
+// keyboard path so it need not duplicate the placement maths.
+function _openVideoCardMenuAtCard(card) {
+  const r = card.getBoundingClientRect()
+  _openVideoCardMenu(card, r.left + 20, r.top + 20)
+}
+
+// The store answers "is this in My List" and "is this watched" so the menu can
+// label its two stateful rows correctly rather than guessing.
+function _vCardMenuState(type, id) {
+  const out = { inList: false, watched: false }
+  const vstore = _vStore()
+  try { if (vstore) out.inList = !!vstore.inWatchlist(type, id) } catch (_) {}
+  try {
+    if (window.PapaTasteStore && window.PapaTasteStore.hasSeen) {
+      out.watched = !!window.PapaTasteStore.hasSeen(type + ':' + id)
+    }
+  } catch (_) {}
+  return out
+}
+
+function _openVideoCardMenu(card, x, y) {
+  const key = String(card.dataset.video || '')
+  const parts = key.split(':')
+  const type = parts[0] || 'movie'
+  const id = parts.slice(1).join(':')
+  const title = card.querySelector('.vcard-title')?.textContent || ''
+  const poster = card.querySelector('.vcard-poster')?.getAttribute('src') || null
+  const st = _vCardMenuState(type, id)
+
+  const open = function () { navigate('video-detail', key) }
+  const items = [
+    { label: 'Play', icon: _VICON.play, run: open },
+    { label: 'Go to details', icon: _VICON.info, run: open },
+    {
+      label: st.inList ? 'Remove from My List' : 'Add to My List',
+      icon: st.inList ? _VICON.check : _VICON.plus,
+      run: function () { _toggleWatchlist({ type: type, id: id, title: title, poster: poster }) },
+    },
+    {
+      label: st.watched ? 'Watched' : 'Mark watched',
+      icon: _VICON.check,
+      disabled: st.watched,
+      run: function () {
+        try {
+          if (window.PapaTasteStore && window.PapaTasteStore.markSeen) {
+            window.PapaTasteStore.markSeen(type + ':' + id, { meta: { type: type, title: title, poster: poster } })
+            showToast('Marked watched')
+          }
+        } catch (_) { showToast('Could not update') }
+      },
+    },
+  ]
+
+  _closeVideoCardMenu()
+  const menu = document.createElement('div')
+  menu.className = 'vcard-ctx-menu'
+  menu.setAttribute('role', 'menu')
+  menu.innerHTML = items.map(function (it, i) {
+    return '<button type="button" class="ctx-item vcard-ctx-item' + (it.disabled ? ' is-disabled' : '') +
+      '" role="menuitem" data-ctx-i="' + i + '"' + (it.disabled ? ' aria-disabled="true"' : '') + '>' +
+      (it.icon || '') + '<span>' + esc(it.label) + '</span></button>'
+  }).join('')
+  document.body.appendChild(menu)
+  _vCtxEl = menu
+
+  // Position on-screen: measured, then clamped so it never spills past an edge.
+  menu.style.left = '-9999px'
+  menu.style.top = '-9999px'
+  const mw = menu.offsetWidth + 8
+  const mh = menu.offsetHeight + 8
+  menu.style.left = Math.max(8, Math.min(x, window.innerWidth - mw)) + 'px'
+  menu.style.top = Math.max(8, Math.min(y, window.innerHeight - mh)) + 'px'
+
+  menu.addEventListener('click', function (e) {
+    const btn = e.target.closest('[data-ctx-i]')
+    if (!btn) return
+    const it = items[Number(btn.dataset.ctxI)]
+    _closeVideoCardMenu()
+    if (it && !it.disabled && typeof it.run === 'function') it.run()
+  })
+  // Escape on the menu closes it. A per-element listener on the focused menu,
+  // not a global one — and focus is put inside the menu below, so the key lands.
+  menu.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') { e.preventDefault(); _closeVideoCardMenu() }
+  })
+  // Keyboard focus goes to the first actionable row, so the menu is operable
+  // without the mouse once opened by keyboard.
+  menu.querySelector('[data-ctx-i]:not(.is-disabled)')?.focus?.()
+
+  // Dismissers live only while the menu is open. Capture phase so they see the
+  // event before anything can stop it; a next-tick attach so the very click or
+  // keypress that opened the menu does not immediately close it.
+  setTimeout(function () {
+    if (!_vCtxEl) return
+    document.addEventListener('click', _vCtxDismiss, true)
+    window.addEventListener('scroll', _vCtxDismiss, true)
+  }, 0)
+}
+
+// Dismiss on any outside click, Escape, or scroll. These are attached only
+// while the menu is open and removed the moment it closes, so they are not
+// standing global listeners — but the source still counts each addEventListener
+// call site, which is why the soak-probe budget below is bumped for them.
+function _closeVideoCardMenu() {
+  if (!_vCtxEl) return
+  _vCtxEl.remove()
+  _vCtxEl = null
+  // Escape is handled by the permanent keydown (it checks _vCtxEl), so only the
+  // click and scroll dismissers need taking down here.
+  document.removeEventListener('click', _vCtxDismiss, true)
+  window.removeEventListener('scroll', _vCtxDismiss, true)
+}
+function _vCtxDismiss(e) {
+  // A click inside the menu is handled by the menu's own listener; only clicks
+  // elsewhere dismiss. Scroll always dismisses — a menu pinned to a page that
+  // moved under it is worse than one that closed.
+  if (e && e.type === 'click' && _vCtxEl && _vCtxEl.contains(e.target)) return
+  _closeVideoCardMenu()
 }
 
 async function renderVideoDetail(navId) {
@@ -4244,6 +6789,7 @@ async function renderVideoDetail(navId) {
   const d = res.detail
   setContent('<div class="page video-detail-page cinema">' + _videoDetailShell(d) + '</div>')
 
+  _bindDetailActions(d)
   _bindTrailerButton()
   _renderCastRow(d)
   _renderTasteSection()
@@ -4274,6 +6820,126 @@ async function renderVideoDetail(navId) {
   }
 }
 
+// Where this title legally streams. TMDB keys providers by country; US is
+// the sensible default and the first available country stands in when the US
+// has nothing. Subscription services lead; rent/buy is only named when there
+// is no subscription option at all.
+function _providersHtml(d) {
+  const byCountry = d && d.providers
+  if (!byCountry || typeof byCountry !== 'object') return ''
+  const entry = byCountry.US || byCountry[Object.keys(byCountry)[0]]
+  if (!entry) return ''
+  const names = function (list) { return (list || []).slice(0, 5).join(', ') }
+  if (entry.flatrate && entry.flatrate.length) {
+    return '<div class="vdet-providers">Streaming on <b>' + esc(names(entry.flatrate)) + '</b></div>'
+  }
+  const paid = (entry.rent || []).concat(entry.buy || [])
+  if (!paid.length) return ''
+  const unique = paid.filter(function (n, i) { return paid.indexOf(n) === i })
+  return '<div class="vdet-providers">Rent or buy on <b>' + esc(names(unique)) + '</b></div>'
+}
+
+function _detInList(d) {
+  const store = _vStore()
+  if (!store || !_videoDetail) return false
+  try { return !!store.inWatchlist(_videoDetail.type, d.id) } catch (_) { return false }
+}
+
+// Play pressed before the source lookup finished: remember the ask and honour
+// it the moment sources arrive, instead of making the button do nothing.
+var _autoPlayTicket = 0
+
+function _bindDetailActions(d) {
+  document.getElementById('vdet-play')?.addEventListener('click', function () {
+    if (_videoStreams && _videoStreams.length) {
+      _videoPlayResult(_autoPickStream(_videoStreams))
+      return
+    }
+    _autoPlayTicket = _videoDetailTicket
+    showToast('Finding sources…')
+    document.getElementById('video-sources')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  })
+  document.getElementById('vdet-list')?.addEventListener('click', function () {
+    // Carry the collection through so My List can group this by its real TMDB
+    // franchise, not a title guess (#22). movie details expose d.collection.
+    _toggleWatchlist({
+      type: _videoDetail.type, id: d.id, title: d.title, poster: d.poster || null,
+      collection: (d.collection && d.collection.id != null) ? d.collection : null,
+    })
+    const btn = document.getElementById('vdet-list')
+    if (btn) btn.innerHTML = _detInList(d) ? _VICON.check + 'In My List' : _VICON.plus + 'My List'
+  })
+  // Find soundtrack (App #71): hand the title to the music search, the same
+  // navigate('search', q) the toolbar and every other in-app search link use.
+  document.getElementById('vdet-soundtrack')?.addEventListener('click', function () {
+    const fmt = window.PapaVideoFormat
+    const q = fmt && typeof fmt.soundtrackQuery === 'function'
+      ? fmt.soundtrackQuery(d.title)
+      : (d.title ? d.title + ' soundtrack' : '')
+    if (q) navigate('search', q)
+  })
+}
+
+// A one-line reminder, right under the hero meta, that this title is already
+// in your record. The full "Your record" section lower down carries the form
+// and every viewing; this is the glance answer — "have I seen this, and what
+// did I think" — before you have scrolled to any of that. Read-only: it never
+// mutates the store, it only reports what logViewing/rate already put there.
+//
+// The store is optional (it ships with the engine work and a detail page must
+// render before it exists), so a missing store, a throw, or an empty record all
+// resolve to nothing rather than to a broken line.
+function _watchHistoryLineHtml(d) {
+  const store = window.PapaTasteStore
+  if (!store || !d) return ''
+  const key = (d.type || 'movie') + ':' + (d.id == null ? '' : d.id)
+  let viewings = []
+  let rating = null
+  try {
+    viewings = typeof store.viewingsOf === 'function' ? (store.viewingsOf(key) || []) : []
+    rating = typeof store.ratingOf === 'function' ? store.ratingOf(key) : null
+  } catch (_) { return '' }
+  // Nothing logged and nothing rated means no history to show. A title marked
+  // seen from a grid is still a viewing, so this catches those too.
+  const seen = (Array.isArray(viewings) && viewings.length) || (typeof store.hasSeen === 'function' && (function () {
+    try { return store.hasSeen(key) } catch (_) { return false }
+  })())
+  if (!seen && rating == null) return ''
+  const bits = []
+  // The most recent sitting drives the date. viewingsOf is not guaranteed
+  // sorted, so the latest date is picked rather than assumed to be first.
+  const dates = (Array.isArray(viewings) ? viewings : [])
+    .map(function (v) { return v && v.date }).filter(Boolean).sort()
+  const last = dates.length ? dates[dates.length - 1] : null
+  if (last) {
+    bits.push('You watched this on ' + esc(_watchDateLabel(last)))
+  } else if (seen) {
+    bits.push('You have watched this')
+  }
+  if (rating != null) {
+    // Half stars round to one place; a whole number shows without a decimal.
+    const r = Math.round(Number(rating) * 2) / 2
+    bits.push('rated ★' + esc(String(r % 1 === 0 ? r : r.toFixed(1))))
+  }
+  if (!bits.length) return ''
+  return '<div class="vdet-history">' + bits.join(' · ') + '</div>'
+}
+
+// "12 March 2024" from a "YYYY-MM-DD" diary date, falling back to the raw
+// string if it is not the shape we expect — a record must never print worse
+// than what it stored.
+function _watchDateLabel(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || ''))
+  if (!m) return String(iso || '')
+  const dt = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
+  if (isNaN(dt.getTime())) return String(iso)
+  try {
+    return dt.toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })
+  } catch (_) {
+    return String(iso)
+  }
+}
+
 function _videoDetailShell(d) {
   const backdrop = d.backdrop
   const poster = d.poster
@@ -4290,16 +6956,28 @@ function _videoDetailShell(d) {
     '<div class="video-detail-info">' +
       '<h1 class="video-detail-title">' + esc(d.title || 'Untitled') + '</h1>' +
       '<div class="video-detail-meta">' + metaBits.join(' · ') + '</div>' +
+      _watchHistoryLineHtml(d) +
       (d.tagline ? '<div class="vdet-tagline">' + esc(d.tagline) + '</div>' : '') +
       _externalRatingsHtml(d) +
       _videoFactsHtml(d) +
+      _providersHtml(d) +
       (genres.length ? '<div class="video-detail-genres">' + genres.map(function (g) {
         return '<button class="video-genre-chip" data-genre-jump="' + esc(g) + '" title="Browse ' + esc(g) + '">' + esc(g) + '</button>'
       }).join('') + '</div>' : '') +
       (d.overview ? '<p class="video-detail-overview">' + esc(d.overview) + '</p>' : '') +
       _videoCrewHtml(d) +
-      (_bestTrailer(d) ? '<div class="vhero-actions" style="margin-top:12px">' +
-        '<button class="vbtn" id="video-trailer-btn">' + _VICON.play + 'Trailer</button></div>' : '') +
+      // Playing used to mean scrolling to the sources list and picking a row;
+      // saving meant finding this title's poster somewhere else. The two
+      // things a person most often came here to do belong on the hero.
+      '<div class="vhero-actions" style="margin-top:12px">' +
+        '<button class="vbtn vbtn-primary" id="vdet-play">' + _VICON.play + 'Play</button>' +
+        '<button class="vbtn" id="vdet-list">' + (_detInList(d) ? _VICON.check + 'In My List' : _VICON.plus + 'My List') + '</button>' +
+        (_bestTrailer(d) ? '<button class="vbtn" id="video-trailer-btn">' + _VICON.play + 'Trailer</button>' : '') +
+        // Jumps to the music side, pre-filled to hunt this title's score (App
+        // #71). The same search the toolbar runs, so a found soundtrack downloads
+        // through the usual Soulseek path.
+        '<button class="vbtn" id="vdet-soundtrack">' + _VICON.note + 'Find soundtrack</button>' +
+      '</div>' +
     '</div>' +
   '</div>'
   return hero +
@@ -4571,12 +7249,35 @@ function _renderSimilar(d) {
 // A genre chip anywhere opens Browse already filtered to it. TMDB genres are
 // numeric ids and AniList's are names, so the chip carries the display name
 // and the id is looked up in whichever vocabulary applies.
-function _bindGenreJumps(root) {
-  ;(root || document).querySelectorAll('[data-genre-jump]').forEach(function (el) {
-    el.addEventListener('click', function (e) {
-      e.stopPropagation()
-      _jumpToGenre(el.dataset.genreJump, _videoDetail ? _videoDetail.type : 'movie')
-    })
+//
+// This used to bind every chip on render, which reached the detail-page chips
+// but never the ones a card grows when its metadata is enriched — those arrive
+// after the render that would have bound them. So the binding is delegated on
+// document once (below) and this function only makes sure that is installed.
+// Kept as a call so the detail render reads the same as before.
+function _bindGenreJumps() {
+  _bindGlobalGenreJumps()
+}
+
+// The one delegated genre-jump listener. A single document handler covers the
+// detail-page hero chips and the ones enriched onto card credit areas alike,
+// with no per-chip binding to miss the late arrivals. The catalog is taken from
+// the card the chip sits in (a TV chip must jump into the TV catalog, not the
+// movie one), falling back to the open detail page's type, then to movie.
+var _genreJumpsBound = false
+function _bindGlobalGenreJumps() {
+  if (_genreJumpsBound) return
+  _genreJumpsBound = true
+  document.addEventListener('click', function (e) {
+    const chip = e.target.closest ? e.target.closest('[data-genre-jump]') : null
+    if (!chip) return
+    // A chip on a card must not also open that card's detail page.
+    e.stopPropagation()
+    e.preventDefault()
+    const card = chip.closest('.vcard')
+    let type = _videoDetail ? _videoDetail.type : 'movie'
+    if (card && card.dataset.video) type = String(card.dataset.video).split(':')[0] || type
+    _jumpToGenre(chip.dataset.genreJump, type)
   })
 }
 
@@ -4584,7 +7285,12 @@ async function _jumpToGenre(name, type) {
   const catalog = type === 'anime' ? 'anime' : type === 'tv' ? 'tv' : 'movie'
   _browse.filters = _emptyFilters()
   _browse.filters.catalog = catalog
+  const fromPage = state.currentPage
+  const fromId = _currentNavId()
   await _loadBrowseVocab(catalog)
+  // A slow vocabulary fetch must not yank someone who has since moved on
+  // over to Browse seconds after they left.
+  if (state.currentPage !== fromPage || _currentNavId() !== fromId) return
   const list = _browseVocab.genres[catalog] || []
   const hit = list.find(function (g) { return String(g.name).toLowerCase() === String(name).toLowerCase() })
   // A genre the target catalog does not have is not an error: Browse opens
@@ -4732,12 +7438,16 @@ function _renderVideoControls(type) {
     // it was a two-thousand-row list you had to scroll to find your place in.
     // The same grid television uses carries all of that, and means one set of
     // marks rather than two that drift.
+    const total = Math.min(n, 2000)
     const numbers = []
-    for (let i = 1; i <= Math.min(n, 2000); i++) numbers.push(i)
+    for (let i = 1; i <= total; i++) numbers.push(i)
+    // Progress is read across the whole run — the resume banner and the
+    // watched count are questions about the show, not the visible window.
     const prog = _epProgress('anime', _videoDetail.d.id, null, numbers)
     const grid = n > 0
-      ? '<div class="video-episode-list" id="video-episode-list">' +
-          numbers.map(function (i) { return _epButton(i, null, prog) }).join('') + '</div>'
+      ? '<div class="video-episode-wrap">' +
+          _epRangeJumperHtml(total, _epWindowOf(total, _videoState.episode)) +
+          '<div class="video-episode-list" id="video-episode-list"></div></div>'
       // Episode count unknown -- an airing show AniList has no total for, or a
       // long-runner past the cap. A number still has to be typed.
       : '<label class="video-control">Episode <input class="mcs-set-input" id="video-episode-input" type="number" min="1" value="' + _videoState.episode + '" style="width:90px"></label>'
@@ -4750,8 +7460,28 @@ function _renderVideoControls(type) {
       _syncEpisodeSelection(ep)
       _loadVideoSources(_videoDetailTicket, ++_videoSeasonTicket)
     }
-    box.querySelectorAll('.video-episode-btn').forEach(function (b) {
-      b.addEventListener('click', function () { setEp(Number(b.dataset.ep) || 1) })
+    // One window of buttons at a time: two thousand in one innerHTML was a
+    // visible stall on every open of a long-runner's page.
+    const paintWindow = function (win) {
+      const list = document.getElementById('video-episode-list')
+      if (!list) return
+      let html = ''
+      for (let i = win.start; i <= win.end; i++) html += _epButton(i, null, prog)
+      list.innerHTML = html
+      list.querySelectorAll('.video-episode-btn').forEach(function (b) {
+        b.addEventListener('click', function () { setEp(Number(b.dataset.ep) || 1) })
+      })
+      const ranges = document.getElementById('vep-ranges')
+      if (ranges) ranges.outerHTML = _epRangeJumperHtml(total, win)
+    }
+    if (n > 0) paintWindow(_epWindowOf(total, _videoState.episode))
+    // Delegated on the row, so the jumper survives its own outerHTML repaint.
+    box.querySelector('.video-controls-row')?.addEventListener('click', function (e) {
+      const b = e.target.closest('[data-ep-start],[data-ep-all]')
+      if (!b) return
+      paintWindow(b.dataset.epAll
+        ? { start: 1, end: total }
+        : _epWindowOf(total, Number(b.dataset.epStart) || 1))
     })
     document.getElementById('video-episode-input')?.addEventListener('change', function (e) {
       setEp(Number(e.target.value) || 1)
@@ -4832,6 +7562,38 @@ function _epButton(n, name, prog) {
     '" data-ep="' + n + '"' + (tip ? ' title="' + tip + '"' : '') + '>' + n +
     (mark.pct != null ? '<i class="video-ep-bar" style="width:' + mark.pct + '%"></i>' : '') +
     '</button>'
+}
+
+// ── Episode grid windowing ──────────────────────────────────────────────────
+// A long-runner's grid used to be two thousand buttons in one innerHTML — a
+// visible stall on every open of the detail page. Episodes render one window
+// at a time, opened on the window holding the current episode, with a range
+// jumper and a "Show all" for anyone who really wants the wall.
+var _EP_WINDOW = 120
+
+function _epWindowOf(total, episode, size) {
+  const s = size || _EP_WINDOW
+  const t = Math.max(0, Number(total) || 0)
+  if (t <= s) return { start: 1, end: t }
+  const ep = Math.min(Math.max(1, Number(episode) || 1), t)
+  const start = Math.floor((ep - 1) / s) * s + 1
+  return { start: start, end: Math.min(t, start + s - 1) }
+}
+
+function _epRangeJumperHtml(total, win, size) {
+  const s = size || _EP_WINDOW
+  if (!(total > s)) return ''
+  const showingAll = win && win.start === 1 && win.end >= total
+  let chips = ''
+  for (let start = 1; start <= total; start += s) {
+    const end = Math.min(total, start + s - 1)
+    const on = !showingAll && win && win.start === start && win.end === end
+    chips += '<button class="vep-range' + (on ? ' on' : '') + '" data-ep-start="' + start + '"' +
+      ' aria-pressed="' + !!on + '">' + start + '–' + end + '</button>'
+  }
+  chips += '<button class="vep-range vep-range-all' + (showingAll ? ' on' : '') +
+    '" data-ep-all="1" aria-pressed="' + !!showingAll + '">Show all ' + total + '</button>'
+  return '<div class="vep-ranges" id="vep-ranges">' + chips + '</div>'
 }
 
 // Seconds -> "42m" / "1h 05m". Short because it sits inside a tooltip and a
@@ -4929,16 +7691,25 @@ async function _refreshTvEpisodes(ticket, seasonTicket) {
   if (target) {
     const numbers = episodes.map(function (ep) { return ep.episodeNumber })
     const prog = _epProgress('tv', detail.id, season, numbers)
-    target.innerHTML = episodes.length
-      ? episodes.map(function (ep) { return _epButton(ep.episodeNumber, ep.name, prog) }).join('')
-      : '<div class="yt-status">No episodes</div>'
-    target.querySelectorAll('.video-episode-btn').forEach(function (b) {
-      b.addEventListener('click', function () {
-        _videoState.episode = Number(b.dataset.ep) || 1
-        _syncEpisodeSelection(_videoState.episode)
-        _loadVideoSources(_videoDetailTicket, ++_videoSeasonTicket)
-      })
-    })
+    const setEp = function (ep) {
+      _videoState.episode = ep
+      _syncEpisodeSelection(ep)
+      _loadVideoSources(_videoDetailTicket, ++_videoSeasonTicket)
+    }
+    if (!episodes.length) {
+      target.innerHTML = '<div class="yt-status">No episodes</div>'
+    } else {
+      // Most seasons are a couple of dozen episodes and render whole. But a
+      // long-runner TMDB files as one giant season — a daily soap, or an anime
+      // like One Piece that reaches the TV path — can be many hundreds of
+      // buttons, the same stall the anime grid already solved. So past the
+      // window size it windows exactly as anime does: one range at a time, with
+      // a jumper and a Show-all. The jumper ranges are keyed on the episode
+      // numbers themselves, and each window shows the episodes whose number
+      // falls in it, so a sparsely-numbered season still lands correctly.
+      const top = numbers.length ? Math.max.apply(null, numbers) : 0
+      _tvEpRenderGrid(target, episodes, prog, top, setEp)
+    }
     // The banner sits above the grid, so it is placed on the row rather than
     // inside the list it describes.
     const row = target.closest('.video-controls-row')
@@ -4952,6 +7723,47 @@ async function _refreshTvEpisodes(ticket, seasonTicket) {
     }
   }
   await _loadVideoSources(ticket, seasonTicket)
+}
+
+// Paints the television episode grid, windowed when a single season is large
+// enough to stall. `top` is the highest episode number in the season, which is
+// what the range maths windows over — the anime grid does the same with its
+// episode count. Below the window size this is one paint and no jumper, exactly
+// as before the windowing was added.
+function _tvEpRenderGrid(target, episodes, prog, top, setEp) {
+  const byNum = episodes.slice()
+  const wrap = top > _EP_WINDOW
+    ? '<div class="video-episode-wrap">' +
+        _epRangeJumperHtml(top, _epWindowOf(top, _videoState.episode)) +
+        '<div class="video-episode-list-inner" id="video-episode-list-inner"></div></div>'
+    : '<div class="video-episode-list-inner" id="video-episode-list-inner"></div>'
+  target.innerHTML = wrap
+
+  const paintWindow = function (win) {
+    const list = document.getElementById('video-episode-list-inner')
+    if (!list) return
+    const shown = top > _EP_WINDOW
+      ? byNum.filter(function (ep) { return ep.episodeNumber >= win.start && ep.episodeNumber <= win.end })
+      : byNum
+    list.innerHTML = shown.map(function (ep) { return _epButton(ep.episodeNumber, ep.name, prog) }).join('')
+    list.querySelectorAll('.video-episode-btn').forEach(function (b) {
+      b.addEventListener('click', function () { setEp(Number(b.dataset.ep) || 1) })
+    })
+    const ranges = document.getElementById('vep-ranges')
+    if (ranges) ranges.outerHTML = _epRangeJumperHtml(top, win)
+  }
+
+  paintWindow(top > _EP_WINDOW ? _epWindowOf(top, _videoState.episode) : { start: 1, end: top })
+
+  // Delegated on the wrap, so the jumper survives its own outerHTML repaint —
+  // the same pattern the anime grid uses.
+  if (top > _EP_WINDOW) {
+    target.querySelector('.video-episode-wrap')?.addEventListener('click', function (e) {
+      const b = e.target.closest('[data-ep-start],[data-ep-all]')
+      if (!b) return
+      paintWindow(b.dataset.epAll ? { start: 1, end: top } : _epWindowOf(top, Number(b.dataset.epStart) || 1))
+    })
+  }
 }
 
 function _videoStreamRequest() {
@@ -4996,6 +7808,124 @@ function _videoStreamRequest() {
   })
 }
 
+// ── Sources sort (display only) ─────────────────────────────────────────────
+// The ranked order from main is the "Best" default and is what auto-pick and
+// the remembered-preference logic always use. These chips re-sort a COPY for
+// display only, carrying each stream's original index so the row's data-idx
+// still points into _videoStreams (the ranked array) — a click always plays
+// the right source no matter how the list is currently shown.
+const _VSOURCES_SORT_KEY = 'papaVideoSourcesSort'
+const _VSOURCES_SORTS = ['best', 'seeders', 'quality', 'size']
+
+function _vSourcesSort() {
+  try {
+    const v = window.PapaLocal && window.PapaLocal.readRaw
+      ? window.PapaLocal.readRaw(_VSOURCES_SORT_KEY)
+      : null
+    return _VSOURCES_SORTS.indexOf(v) >= 0 ? v : 'best'
+  } catch (_) { return 'best' }
+}
+
+function _vSourcesSortSet(sort) {
+  if (_VSOURCES_SORTS.indexOf(sort) < 0) sort = 'best'
+  try {
+    if (window.PapaLocal && window.PapaLocal.writeRaw) {
+      window.PapaLocal.writeRaw(_VSOURCES_SORT_KEY, sort)
+    }
+  } catch (_) { /* a full store must not break sorting */ }
+}
+
+// Resolution rank for the Quality sort: higher is better, unknown sorts last.
+function _vQualityRank(q) {
+  switch (q) {
+    case '2160p': return 4
+    case '1080p': return 3
+    case '720p': return 2
+    case '480p': return 1
+    default: return 0
+  }
+}
+
+// Returns [{ s, i }] pairs (i = index into the ranked _videoStreams) in the
+// order the chosen sort wants. 'best' keeps the ranked order untouched.
+function _vSortedStreams(streams, sort) {
+  const list = (Array.isArray(streams) ? streams : []).map(function (s, i) { return { s: s, i: i } })
+  if (sort === 'best') return list
+  if (sort === 'seeders') {
+    list.sort(function (a, b) {
+      return (Number(b.s.seeders) || 0) - (Number(a.s.seeders) || 0) || a.i - b.i
+    })
+  } else if (sort === 'quality') {
+    // Resolution first, seeders as the tie-break.
+    list.sort(function (a, b) {
+      const q = _vQualityRank(b.s.quality) - _vQualityRank(a.s.quality)
+      if (q) return q
+      return (Number(b.s.seeders) || 0) - (Number(a.s.seeders) || 0) || a.i - b.i
+    })
+  } else if (sort === 'size') {
+    // Largest first; unknown size always last, ranked order among unknowns.
+    list.sort(function (a, b) {
+      const sa = Number(a.s.sizeBytes)
+      const sb = Number(b.s.sizeBytes)
+      const ha = Number.isFinite(sa) && sa > 0
+      const hb = Number.isFinite(sb) && sb > 0
+      if (ha && hb) return sb - sa || a.i - b.i
+      if (ha !== hb) return ha ? -1 : 1
+      return a.i - b.i
+    })
+  }
+  return list
+}
+
+function _vSortChipsHtml(active) {
+  const labels = { best: 'Best', seeders: 'Seeders', quality: 'Quality', size: 'Size' }
+  return '<div class="video-sources-sort" role="group" aria-label="Sort sources">' +
+    _VSOURCES_SORTS.map(function (key) {
+      const on = key === active
+      return '<button class="vsort-chip" data-sort="' + key + '"' +
+        ' aria-pressed="' + (on ? 'true' : 'false') + '"' +
+        (on ? ' data-active="1"' : '') + '>' + labels[key] + '</button>'
+    }).join('') +
+  '</div>'
+}
+
+// Re-render just the source rows for the current sort, rewiring the play
+// buttons. Leaves the header (and its chips) in place.
+function _renderVideoSourceRows(target, sort) {
+  const listEl = target.querySelector('.video-source-list')
+  if (!listEl) return
+  const pairs = _vSortedStreams(_videoStreams, sort)
+  listEl.innerHTML = pairs.map(function (p) { return _videoStreamRow(p.s, p.i) }).join('')
+  listEl.querySelectorAll('.video-source-play').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      const idx = Number(btn.dataset.idx)
+      // A click in the sources list is a deliberate choice; the index tells a
+      // non-first pick (which can become a remembered preference, App #43) from
+      // the default first row.
+      _videoPlayResult(_videoStreams[idx], { manual: true, index: idx })
+    })
+  })
+  // Reflect what is actually playing (including after an auto-switch) on the
+  // freshly-rendered rows.
+  _syncSourcesHighlight()
+}
+
+function _wireVideoSortChips(target) {
+  target.querySelectorAll('.vsort-chip').forEach(function (chip) {
+    chip.addEventListener('click', function () {
+      const sort = chip.dataset.sort
+      _vSourcesSortSet(sort)
+      target.querySelectorAll('.vsort-chip').forEach(function (c) {
+        const on = c.dataset.sort === sort
+        c.setAttribute('aria-pressed', on ? 'true' : 'false')
+        if (on) c.setAttribute('data-active', '1')
+        else c.removeAttribute('data-active')
+      })
+      _renderVideoSourceRows(target, sort)
+    })
+  })
+}
+
 async function _loadVideoSources(ticket, seasonTicket) {
   const box = document.getElementById('video-sources')
   if (!box) return
@@ -5030,13 +7960,23 @@ async function _loadVideoSources(ticket, seasonTicket) {
   }
   // Playback status and stopping now live in the theatre, which owns the video
   // for as long as it is open. The sources list is only a picker again.
-  target.innerHTML = '<div class="video-sources-header"><span class="section-title">Sources</span></div><div class="video-source-list">' +
-    streams.map(_videoStreamRow).join('') + '</div>'
-  target.querySelectorAll('.video-source-play').forEach(function (btn) {
-    btn.addEventListener('click', function () {
-      _videoPlayResult(_videoStreams[Number(btn.dataset.idx)])
-    })
-  })
+  // The sort chips re-order the displayed rows only; the play buttons keep
+  // pointing into the ranked _videoStreams via each row's data-idx.
+  const sort = _vSourcesSort()
+  target.innerHTML = '<div class="video-sources-header"><span class="section-title">Sources</span>' +
+    _vSortChipsHtml(sort) + '</div><div class="video-source-list"></div>'
+  _renderVideoSourceRows(target, sort)
+  _wireVideoSortChips(target)
+  // Reflect any already-remembered preference for this title at the top of the
+  // list, with a way to clear it (App #43).
+  _renderPreferredSourceChip(target)
+  // The hero's Play was pressed while sources were still loading. Honour any
+  // remembered preferred source for this title (App #43) rather than always
+  // taking the ranked first.
+  if (_autoPlayTicket === _videoDetailTicket && streams.length) {
+    _autoPlayTicket = 0
+    _videoPlayResult(_autoPickStream(streams))
+  }
 }
 
 function _videoStreamRow(s, i) {
@@ -5045,10 +7985,23 @@ function _videoStreamRow(s, i) {
   const subDub = (s.sub != null && s.dub != null)
     ? '<span class="video-source-tag">' + (s.sub && !s.dub ? 'sub' : s.dub && !s.sub ? 'dub' : 'sub+dub') + '</span>'
     : ''
+  // Seeders and size sit between the badges and the label. Both dim gracefully
+  // when the indexer did not report them: an absent seeder count and an
+  // unparseable size are honest-unknown, shown as a muted dash rather than a
+  // fabricated zero.
+  const seeds = Number(s.seeders)
+  const seedStat = Number.isFinite(seeds)
+    ? '<span class="video-source-stat video-source-seeds" title="Seeders">↑ ' + seeds + '</span>'
+    : '<span class="video-source-stat video-source-seeds video-source-stat-unknown" title="Seeders unknown">↑ —</span>'
+  const sizeN = Number(s.sizeBytes)
+  const sizeStat = Number.isFinite(sizeN) && sizeN > 0
+    ? '<span class="video-source-stat video-source-size" title="Size">' + esc(_fmtBytes(sizeN)) + '</span>'
+    : '<span class="video-source-stat video-source-size video-source-stat-unknown" title="Size unknown">—</span>'
   const label = s.label || s.source || (s.kind === 'torrent' ? (s.magnet || '') : (s.url || '')) || ''
   return '<div class="video-source-row" data-idx="' + i + '">' +
     '<span class="video-source-badge">' + esc(badge) + '</span>' +
     torrent + subDub +
+    seedStat + sizeStat +
     '<span class="video-source-label">' + esc(label) + '</span>' +
     '<button class="video-source-play" data-idx="' + i + '" aria-label="Play ' + esc(badge) + '"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button>' +
   '</div>'
@@ -5173,6 +8126,52 @@ async function fetchMissingArtwork() {
   statusEl.style.display = 'none'
 }
 
+// Cover-art sweep for the stats/storage page (App #61). A politely-capped,
+// sequential run: up to 20 albums with no local cover, one fetchAlbumArt at a
+// time with 500ms between them so the iTunes source is not hammered. Progress
+// and a summary are shown as toasts; found covers are patched into any visible
+// cards and the library cache is saved. Distinct from fetchMissingArtwork (the
+// Settings-page full sweep with its own progress bar); this one is self-
+// contained so it can run from anywhere without that page's DOM.
+var _coverSweepRunning = false
+async function sweepMissingCovers(btn) {
+  if (_coverSweepRunning) return
+  var tools = (typeof window !== 'undefined' && window.PapaMusicTools) || null
+  var missing = tools && tools.albumsMissingArt ? tools.albumsMissingArt(state.library, 20) : []
+  if (!missing.length) { showToast('Every album already has a cover'); return }
+  _coverSweepRunning = true
+  if (btn) { btn.disabled = true; btn.textContent = 'Finding covers…' }
+  // A long-lived toast we update in place as the run progresses.
+  var prog = _pushToast('Finding covers… 0/' + missing.length, { ms: 6e5 })
+  var setProg = function (msg) {
+    if (prog && prog.el) { var s = prog.el.querySelector('.toast-msg'); if (s) s.textContent = msg }
+  }
+  var found = 0
+  try {
+    for (var i = 0; i < missing.length; i++) {
+      var album = missing[i]
+      setProg('Finding covers… ' + (i + 1) + '/' + missing.length + ' — ' + (album.name || ''))
+      var result = await window.api.fetchAlbumArt({ albumId: album.id, artist: album.artist, album: album.name })
+        .catch(function () { return null })
+      if (result && result.artPath) {
+        found++
+        album.artPath = result.artPath
+        patchAlbumArtInDOM(album.id, result.artPath)
+      }
+      // Polite spacing between requests. Skip the wait after the final one.
+      if (i < missing.length - 1) await sleep(500)
+    }
+  } finally {
+    _coverSweepRunning = false
+    if (prog) _dismissToast(prog)
+    if (found > 0) window.api.saveLibraryCache(state.library)
+    showToast('Cover sweep done — ' + found + ' of ' + missing.length + ' found')
+    // Repaint the stats page so the missing-count and any new thumbnails update.
+    if (state.currentPage === 'stats') renderStats()
+    else if (btn) { btn.disabled = false; btn.textContent = 'Find missing covers' }
+  }
+}
+
 function patchAlbumArtInDOM(albumId, artPath) {
   var src = `file://${artPath}`
   document.querySelectorAll(`.album-card[data-album="${esc(albumId)}"]`).forEach(card => {
@@ -5217,10 +8216,25 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)) }
 function showLoading() { setContent(`<div class="loading-wrap"><div class="spinner"></div><p>Scanning your library…</p></div>`) }
 
 // ── Pages ───────────────────────────────────────────────────────────────────
+// Time-of-day greeting with the listener's name (App §100). Pure so the hour
+// boundaries are testable: <12 morning, <18 afternoon, else evening — the same
+// split the rest of the app uses. A blank name degrades to a bare greeting
+// rather than a dangling comma.
+function _homeGreeting(hour, name) {
+  const h = Number(hour)
+  const part = !Number.isFinite(h) ? 'Hello'
+    : h < 12 ? 'Good morning'
+    : h < 18 ? 'Good afternoon'
+    : 'Good evening'
+  const who = String(name == null ? '' : name).trim()
+  return who ? part + ', ' + who : part
+}
 var _greetingAnimated = false
 function renderHome() {
   const hour = new Date().getHours()
-  const greeting = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening'
+  // Time-aware, name-carrying greeting (App §100). This is a personal app for
+  // one person, so the name is hardcoded rather than plumbed through settings.
+  const greeting = _homeGreeting(hour, 'Shaharyar')
   var subtitles = [
     'Ready to discover something new?',
     'Your library is waiting.',
@@ -5367,6 +8381,12 @@ function renderHome() {
     <div class="home-header"><div class="home-header-left"><canvas class="home-clock" id="home-clock" width="56" height="56"></canvas>${greetingHTML}</div>${artBtnHTML}</div>
     ${jumpBackHTML}${quickHTML}${followingHTML}${recentHTML}${addedHTML}${backHTML}${dailyMixHTML}${allHTML}
     <div id="yt-home"></div>
+    <!-- Unified-home strips (App §70, §76). Placed after every music section on
+         purpose: music is the heart of the app, so its content paints first and
+         the film/year figures sit tastefully below it. Both mounts stay empty
+         (and take no space) until their async loaders find something to show. -->
+    <div id="home-continue-watching"></div>
+    <div id="home-year-recap"></div>
   </div>`)
 
   document.querySelectorAll('.section-see-all').forEach(btn => {
@@ -5393,6 +8413,101 @@ function renderHome() {
     card.addEventListener('click', () => startSmartQueue(card.dataset.qMode))
   })
   loadMadeForYou()
+  loadHomeContinueWatching()
+  loadHomeYearRecap()
+}
+
+// "Continue watching" on the music home (App §70). Up to six in-progress films/
+// episodes from the video store, rendered as real video cards so a click opens
+// the detail page and the progress bar reads exactly as it does on the video
+// tab. Wholly defensive: the store being absent, empty, or throwing leaves the
+// mount empty and taking no space, so the music home is never harmed by the
+// video side being unavailable.
+function loadHomeContinueWatching() {
+  const mount = document.getElementById('home-continue-watching')
+  if (!mount) return
+  let items = []
+  try {
+    const store = _vStore()
+    if (store && typeof store.continueWatching === 'function') items = store.continueWatching(6) || []
+  } catch (_) { items = [] }
+  // A late store init or navigation away: only paint if we are still on Home.
+  if (state.currentPage !== 'home' || !Array.isArray(items) || !items.length) return
+  mount.innerHTML =
+    '<div class="section-header" style="margin-top:28px">' +
+      '<span class="section-title">Continue watching</span>' +
+      '<button class="section-see-all" id="home-cw-all">Go to Movies &amp; TV</button>' +
+    '</div>' +
+    '<div class="scroll-row home-cw-row" data-rail="continue">' + items.map(_videoCard).join('') + '</div>'
+  // Real video cards: reuse the standard binding for click-to-detail, My List,
+  // mark-watched and hover behaviour rather than re-implementing any of it.
+  _bindVideoCards(mount)
+  document.getElementById('home-cw-all')?.addEventListener('click', function () { navigate('video') })
+}
+
+// "Your year so far" (App §76). A single card of derivable figures — total
+// plays, top artist, films watched this year, hours streamed — built by the
+// pure PapaHomeRecap aggregator from data the renderer already holds. Only the
+// figures that can be derived honestly are drawn; the rest are omitted, and if
+// nothing is derivable the card is absent entirely.
+function loadHomeYearRecap() {
+  const mount = document.getElementById('home-year-recap')
+  if (!mount) return
+  if (!(window.PapaHomeRecap && typeof window.PapaHomeRecap.yearRecap === 'function')) return
+
+  // Duration and artist fallbacks over the library, for plays whose history row
+  // predates those fields being recorded (same fallback the Stats page uses).
+  const durByPath = {}
+  const artistByPath = {}
+  ;(state.library || []).forEach(function (a) {
+    ;(a.tracks || []).forEach(function (t) {
+      if (!t || !t.filePath) return
+      durByPath[t.filePath] = t.duration || 0
+      artistByPath[t.filePath] = t.albumArtist || t.artist || a.albumArtist || a.artist || ''
+    })
+  })
+
+  // This year's film viewings from the taste diary, and the video store's own
+  // watched-item history (the only place a real streamed duration lives).
+  let diary = []
+  let watched = []
+  try {
+    if (window.PapaTasteStore && typeof window.PapaTasteStore.diary === 'function') {
+      diary = window.PapaTasteStore.diary({ year: new Date().getFullYear() }) || []
+    }
+  } catch (_) { diary = [] }
+  try {
+    const store = _vStore()
+    if (store && typeof store.history === 'function') watched = store.history() || []
+  } catch (_) { watched = [] }
+
+  const recap = window.PapaHomeRecap.yearRecap({
+    year: new Date().getFullYear(),
+    playHistory: state.playHistory || [],
+    durationOf: function (fp) { return durByPath[fp] || 0 },
+    artistOf: function (fp) { return artistByPath[fp] || '' },
+    diary: diary,
+    watchedItems: watched,
+  })
+  if (state.currentPage !== 'home' || !recap.has) return
+
+  // One figure per derivable stat, each omitted when it says nothing.
+  const figs = []
+  if (recap.plays > 0) figs.push({ big: recap.plays.toLocaleString(), label: recap.plays === 1 ? 'track played' : 'tracks played' })
+  if (recap.topArtist) figs.push({ big: esc(recap.topArtist), label: 'most-played artist' })
+  if (recap.films > 0) figs.push({ big: String(recap.films), label: recap.films === 1 ? 'film or episode watched' : 'films & episodes watched' })
+  if (recap.hours != null && recap.hours > 0) figs.push({ big: String(recap.hours), label: recap.hours === 1 ? 'hour streamed' : 'hours streamed' })
+  if (!figs.length) return
+
+  mount.innerHTML =
+    '<div class="section-header" style="margin-top:28px"><span class="section-title">Your year so far</span></div>' +
+    '<div class="year-recap-card">' +
+      '<div class="year-recap-year">' + recap.year + '</div>' +
+      '<div class="year-recap-figs">' + figs.map(function (f) {
+        return '<div class="year-recap-fig"><span class="year-recap-big">' + f.big + '</span>' +
+          '<span class="year-recap-label">' + f.label + '</span></div>'
+      }).join('') + '</div>' +
+    '</div>'
 }
 
 // Mix cards need the library clustered first (real IPC work), so they are
@@ -5677,7 +8792,7 @@ function renderArtists() {
       <div class="artist-card" data-artist="${esc(ar.name)}" style="position:relative">
         <div class="artist-card-art">
           ${ar.artPath
-            ? `<img src="${esc('file://' + ar.artPath)}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
+            ? `<img src="${esc('file://' + ar.artPath)}" alt="" loading="lazy" decoding="async" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
             : ''}
           <div class="artist-card-art-fallback" ${ar.artPath ? 'style="display:none"' : ''}>
             <svg viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
@@ -5794,7 +8909,9 @@ function _saveLibPresetNamed(name) {
 function loadLibPreset(name) {
   var preset = _libPresets.find(function(p) { return p.name === name })
   if (!preset) return
-  state.libGenre = preset.genre
+  // Normalise a genre saved by an older preset (raw casing) to the canonical
+  // key the filter now compares against (audit #11).
+  state.libGenre = preset.genre ? _genreKey(preset.genre) : preset.genre
   state.libYear = preset.year
   state.libFormat = preset.format
   state.libDecade = preset.decade
@@ -5809,6 +8926,136 @@ function loadLibPreset(name) {
   renderLibrary()
 }
 
+// Binds the album-card behaviours for a set of freshly appended grid cards.
+// The initial chunk is bound by bindContentEvents() like any other page, but
+// cards appended by the windowing observer come in after that ran, so they need
+// the same click / play / artist / context-menu / selection wiring applied to
+// just those nodes. Local library cards only -- YT pseudo-cards keep their own
+// navigation and are left untouched, matching bindContentEvents().
+function _bindAppendedAlbumCards(nodes) {
+  nodes.forEach(function (el) {
+    if (el.getAttribute('data-lib-bound')) return
+    el.setAttribute('data-lib-bound', '1')
+    var id = el.dataset.album || ''
+    if (!el.hasAttribute('tabindex')) {
+      el.setAttribute('tabindex', '0')
+      el.setAttribute('role', 'button')
+    }
+    if (id.indexOf('yt_') !== 0 && typeof _selHandleClick === 'function') {
+      el.addEventListener('click', function (e) { _selHandleClick(e, el) }, true)
+    }
+    el.addEventListener('dblclick', function (e) {
+      e.preventDefault()
+      if (id.startsWith('yt_')) return
+      var album = state.library.find(function (a) { return a.id === id })
+      if (album) playAlbum(album, 0)
+    })
+    el.addEventListener('click', function (e) {
+      if (e.target.closest('.album-card-play') || e.target.closest('.album-card-artist')) return
+      if (id.startsWith('yt_')) { navigate('yt-album', id.slice(3)); return }
+      navigate('album', id)
+    })
+    if (id.indexOf('yt_') !== 0) {
+      el.addEventListener('contextmenu', function (e) {
+        showContextMenu(e, { type: 'album', kind: 'album', albumId: id,
+          artist: (state.library.find(function (a) { return a.id === id }) || {}).artist })
+      })
+    }
+    el.querySelectorAll('.album-card-play').forEach(function (btn) {
+      btn.addEventListener('click', function (e) {
+        e.stopPropagation()
+        var pid = btn.dataset.play
+        if (pid && pid.startsWith('yt_')) {
+          var saved = state.ytSavedAlbums.find(function (a) { return a.browseId === pid.slice(3) })
+          if (saved) {
+            state.queue = saved.tracks.map(function (t) { return _ytAlbumTrackItem(saved, t) })
+            state.queueIndex = 0
+            playCurrentTrack()
+          }
+          return
+        }
+        var album = state.library.find(function (a) { return a.id === pid })
+        if (album) playAlbum(album, 0)
+      })
+    })
+    el.querySelectorAll('.album-card-artist').forEach(function (a) {
+      a.addEventListener('click', function (e) {
+        e.stopPropagation()
+        navigate('artist', a.textContent)
+      })
+    })
+  })
+}
+
+// Appends the next slice of the windowed album grid. Rollback-on-failure like
+// _armBrowseObserver: if the DOM write throws, the rendered cursor is left where
+// it was so a later attempt retries the same slice rather than skipping it.
+function _libGridAppendChunk() {
+  var grid = document.getElementById('lib-grid')
+  if (!grid) return
+  var w = _libWindow
+  if (w.rendered >= w.all.length) return
+  var start = w.rendered
+  var slice = w.all.slice(start, start + LIB_WINDOW_CHUNK)
+  var html = slice.map(function (a, i) { return albumCard(a, start + i, w.sort) }).join('')
+  var before = grid.childElementCount
+  try {
+    grid.insertAdjacentHTML('beforeend', html)
+  } catch (err) {
+    // Leave w.rendered untouched so the observer retries this same slice.
+    return
+  }
+  w.rendered += slice.length
+  // Bind only the nodes that were just added.
+  var added = []
+  var kids = grid.children
+  for (var i = before; i < kids.length; i++) added.push(kids[i])
+  _bindAppendedAlbumCards(added)
+  _armLibGridObserver()
+}
+
+// Re-observes the end-of-grid sentinel after every append, because the sentinel
+// is moved to sit after the newly added cards. Mirrors _armBrowseObserver.
+function _armLibGridObserver() {
+  var more = document.getElementById('lib-grid-more')
+  var grid = document.getElementById('lib-grid')
+  if (_libWindow.observer) { _libWindow.observer.disconnect(); _libWindow.observer = null }
+  if (!more || !grid) return
+  if (_libWindow.rendered >= _libWindow.all.length) {
+    more.style.display = 'none'
+    return
+  }
+  // Keep the sentinel after the last card.
+  if (more.previousElementSibling !== grid.lastElementChild) grid.appendChild(more)
+  more.style.display = ''
+  if (typeof IntersectionObserver !== 'function') {
+    // No observer support: paint the rest in one go so nothing is unreachable.
+    while (_libWindow.rendered < _libWindow.all.length) _libGridAppendChunk()
+    return
+  }
+  var ticket = _libWindow.ticket
+  _libWindow.observer = new IntersectionObserver(function (entries) {
+    if (_libWindow.ticket !== ticket) { return }
+    if (!entries.some(function (e) { return e.isIntersecting })) return
+    _libGridAppendChunk()
+  }, { root: document.getElementById('content'), rootMargin: '600px' })
+  _libWindow.observer.observe(more)
+}
+
+// Canonical genre identity for the library facet (audit #11). Missing, null,
+// empty or the literal string "null"/"undefined" all collapse to "Unknown";
+// everything else is keyed case-insensitively so "rock" and "Rock" are one
+// chip rather than two. The key is what filtering compares; the label is what
+// the chip shows.
+function _genreKey(g) {
+  const s = (g == null ? '' : String(g)).trim()
+  if (s === '' || s.toLowerCase() === 'null' || s.toLowerCase() === 'undefined') return 'unknown'
+  return s.toLowerCase()
+}
+function _albumGenreKey(a) {
+  return _genreKey(a && a.genre)
+}
+
 function renderLibrary() {
   const getSorted = () => {
     // Saved YT albums are merged as pseudo-cards at render time — they never
@@ -5821,7 +9068,7 @@ function renderLibrary() {
     }))
     let albums = [...state.library, ...ytAlbums]
     if (state.libLikedOnly) albums = albums.filter(a => state.likedAlbums.includes(a.id) || a.isYt)
-    if (state.libGenre) albums = albums.filter(a => a.genre === state.libGenre)
+    if (state.libGenre) albums = albums.filter(a => _albumGenreKey(a) === state.libGenre)
     if (state.libYear) albums = albums.filter(a => String(a.year) === state.libYear)
     // Judge by ALL tracks, not tracks[0]. A mixed album (e.g. 18 tracks where
     // the first is mp3 and the rest flac) was classified by one file, so the
@@ -5880,6 +9127,29 @@ function renderLibrary() {
   }
 
   var sortedAlbums = getSorted()
+
+  // Prime the windowing state for this render. Every renderLibrary() call --
+  // including the ones triggered by search / filter / sort clicks -- rebuilds
+  // the full set here, so the window always slices the freshly filtered list.
+  // The ticket invalidates any observer left over from the previous paint.
+  _libWindow.all = sortedAlbums
+  _libWindow.rendered = 0
+  _libWindow.sort = state.libSort
+  _libWindow.ticket++
+  if (_libWindow.observer) { _libWindow.observer.disconnect(); _libWindow.observer = null }
+  // Builds the grid's initial chunk plus the sentinel the observer watches. Only
+  // the first LIB_WINDOW_CHUNK cards are in the string; the rest are appended as
+  // the reader scrolls, so a thousand-album library no longer serialises and
+  // lays out every card up front.
+  var _libGridInitial = function () {
+    var first = sortedAlbums.slice(0, LIB_WINDOW_CHUNK)
+    _libWindow.rendered = first.length
+    var cards = first.map(function (a, i) { return albumCard(a, i, state.libSort) }).join('')
+    var sentinel = sortedAlbums.length > LIB_WINDOW_CHUNK
+      ? '<div id="lib-grid-more" class="lib-grid-sentinel" aria-hidden="true"></div>' : ''
+    return '<div class="album-grid" id="lib-grid">' + cards + sentinel + '</div>'
+  }
+
   var fmtCounts = { flac: 0, mp3: 0, other: 0 }
   // Counted per album over ALL its tracks, so a mixed album is reported under
   // every format it actually contains rather than whichever happened to be
@@ -5907,13 +9177,33 @@ function renderLibrary() {
     { key: 'added', label: 'Recently added' },
   ].map(s => `<button class="sort-btn${state.libSort === s.key ? ' active' : ''}" data-sort="${s.key}">${s.label}</button>`).join('')
 
-  var viewToggle = `<button class="sort-btn${state.libView === 'folders' ? ' active' : ''}" id="lib-view-folders" title="${state.libView === 'folders' ? 'Back to the album grid' : 'Browse by folder'}" aria-pressed="${state.libView === 'folders'}">${state.libView === 'folders' ? '▦ Grid' : '📁 Folders'}</button>`
+  // Static label (audit #12): flipping the text to "▦ Grid" while in folder
+  // view read as the CURRENT state and confused people. The label stays
+  // "📁 Folders" and its pressed/active state carries whether folder view is on;
+  // the title explains the action, which is "back to the album grid" when active.
+  var viewToggle = `<button class="sort-btn${state.libView === 'folders' ? ' active' : ''}" id="lib-view-folders" title="${state.libView === 'folders' ? 'Back to the album grid' : 'Browse by folder'}" aria-pressed="${state.libView === 'folders'}">📁 Folders</button>`
   var likedBtn = `<button class="sort-btn${state.libLikedOnly ? ' active' : ''}" id="liked-filter-btn" style="margin-left:auto">♥ Liked only</button>`
 
-  const genres = [...new Set(state.library.map(a => a.genre).filter(Boolean))].sort()
+  // Case-insensitive genre buckets (audit #11): "rock"/"Rock" merge to one chip
+  // keyed by the lowercase identity, displayed in the casing that occurs most
+  // often; missing/"null" genres collapse into a single "Unknown" chip.
+  const genreBuckets = new Map()
+  state.library.forEach(function (a) {
+    const key = _albumGenreKey(a)
+    const raw = key === 'unknown' ? 'Unknown' : String(a.genre).trim()
+    let b = genreBuckets.get(key)
+    if (!b) { b = { key: key, count: 0, casings: new Map() }; genreBuckets.set(key, b) }
+    b.count++
+    b.casings.set(raw, (b.casings.get(raw) || 0) + 1)
+  })
+  const genres = [...genreBuckets.values()].map(function (b) {
+    let best = null, bestN = -1
+    b.casings.forEach(function (n, casing) { if (n > bestN) { bestN = n; best = casing } })
+    return { key: b.key, label: best, count: b.count }
+  }).sort(function (x, y) { return x.label.localeCompare(y.label) })
   const genreChips = genres.length ? `<div class="genre-chip-bar">
     <button class="genre-chip${!state.libGenre ? ' active' : ''}" data-genre="">All</button>
-    ${genres.map(g => `<button class="genre-chip${state.libGenre === g ? ' active' : ''}" data-genre="${esc(g)}" title="${state.library.filter(function(a){return a.genre===g}).length} albums in your library — Alt-click to play a random one">${esc(g)}</button>`).join('')}
+    ${genres.map(g => `<button class="genre-chip${state.libGenre === g.key ? ' active' : ''}" data-genre="${esc(g.key)}" title="${g.count} albums in your library — Alt-click to play a random one">${esc(g.label)}</button>`).join('')}
   </div>` : ''
 
   // This list and the Reset handler must stay in step. They had drifted:
@@ -5965,7 +9255,7 @@ function renderLibrary() {
     if (state.libFolder) {
       var folderBreadcrumb = '<div class="folder-breadcrumb" id="folder-back-btn" tabindex="0" role="button"><span class="folder-back-arrow">←</span> Back to folders</div>'
       return folderBreadcrumb + (sortedAlbums.length
-        ? '<div class="album-grid" id="lib-grid">' + sortedAlbums.map(function(a, i) { return albumCard(a, i, state.libSort) }).join('') + '</div>'
+        ? _libGridInitial()
         : '<div class="empty-wrap"><h2>Nothing here</h2><p>No albums in this folder match your filters.</p></div>')
     }
 
@@ -6075,9 +9365,28 @@ function renderLibrary() {
           '<button class="lib-reset-btn" id="lib-delete-preset" title="Delete the selected preset" aria-label="Delete the selected preset" style="display:none;margin-left:4px">✕</button>' : ''}
       </div>
     </div>
-    ${state.libView === 'folders' ? buildFolderTree() : (sortedAlbums.length ? `<div class="album-grid" id="lib-grid">${sortedAlbums.map(function(a, i) { return albumCard(a, i, state.libSort) }).join('')}</div>` : `<div class="empty-wrap"><svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg><h2>No albums match</h2><p>${activeFilterCount ? 'Try clearing a filter or two.' : 'Your library is empty. Add a music folder to get started.'}</p>${activeFilterCount ? '<button class="lib-reset-btn" id="lib-empty-reset">Clear all filters</button>' : ''}</div>`)}
+    ${state.libView === 'folders' ? buildFolderTree() : (sortedAlbums.length ? _libGridInitial() : `<div class="empty-wrap"><svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg><h2>No albums match</h2><p>${activeFilterCount ? 'Try clearing a filter or two.' : 'Your library is empty. Add a music folder to get started.'}</p>${activeFilterCount ? '<button class="lib-reset-btn" id="lib-empty-reset">Clear all filters</button>' : ''}</div>`)}
     ${summaryHTML}
   </div>`)
+
+  // The initial chunk was painted by setContent() and bound by
+  // bindContentEvents(); arm the sentinel so the rest of the grid streams in as
+  // the reader approaches the bottom. Deferred a frame so #content has laid out
+  // and the observer sees a real geometry. Restoring a deep scrollTop (Back into
+  // a library scrolled past the first chunk) fires the sentinel immediately and
+  // paints forward until the saved position has content under it.
+  requestAnimationFrame(function () {
+    if (state.currentPage !== 'library') return
+    _armLibGridObserver()
+    var content = document.getElementById('content')
+    if (!content) return
+    var target = content.scrollTop || 0
+    var guard = 0
+    while (target > 0 && content.scrollHeight < target + content.clientHeight &&
+           _libWindow.rendered < _libWindow.all.length && guard++ < 200) {
+      _libGridAppendChunk()
+    }
+  })
 
   // NOTE: there used to be a second, immediate `input` handler here that
   // rewrote #lib-grid directly. Its arrow function was mis-closed, so
@@ -6109,7 +9418,7 @@ function renderLibrary() {
       var genre = btn.dataset.genre
       if ((e.altKey || e.metaKey) && genre) {
         e.preventDefault()
-        var albums = state.library.filter(function(a) { return a.genre === genre })
+        var albums = state.library.filter(function(a) { return _albumGenreKey(a) === genre })
         if (!albums.length) return
         playAlbum(albums[Math.floor(Math.random() * albums.length)], 0)
         return
@@ -6273,6 +9582,22 @@ function renderAlbum(albumId) {
       </div>`
   }).join('')
 
+  // Hero subtitle segments, joined with " • " so a missing year (or any other
+  // missing slot) never leaves an empty separator like "Radiohead • • 10 songs"
+  // (audit #10). Each segment is only added when it has real content.
+  const heroSegments = [
+    '<span class="hero-artist clickable-meta" data-artist="' + esc(album.artist) + '">' + esc(album.artist) + '</span>',
+  ]
+  if (album.year) heroSegments.push('<span class="hero-year clickable-meta">' + esc(album.year) + '</span>')
+  heroSegments.push(album.tracks.length + ' songs, ' + fmtTime(totalDur))
+  if (album.isHiRes) heroSegments.push('<span class="hero-hires-badge">' + fmtSpec(album.maxBitsPerSample, album.maxSampleRate) + '</span>')
+  const heroSurround = formatBadgeHtml(album, 'hero-surround')
+  if (heroSurround) heroSegments.push(heroSurround)
+  if (album.genre) heroSegments.push('<span class="genre-badge">' + esc(album.genre) + '</span>')
+  const heroDr = drBadge(computeAlbumDR(album))
+  if (heroDr) heroSegments.push(heroDr)
+  const heroMeta = heroSegments.join(' &bull; ')
+
   setContent(`
     <div class="album-sticky-header" id="album-sticky-header">
       <button class="sticky-play-btn" id="sticky-play-btn">
@@ -6288,12 +9613,7 @@ function renderAlbum(albumId) {
         <div class="album-hero-type">Album</div>
         <div class="album-hero-title">${esc(album.name)}</div>
         <div class="album-hero-meta">
-          <span class="hero-artist clickable-meta" data-artist="${esc(album.artist)}">${esc(album.artist)}</span>
-          &bull; <span class="hero-year clickable-meta">${esc(album.year || '')}</span> &bull; ${album.tracks.length} songs, ${fmtTime(totalDur)}
-          ${album.isHiRes ? `&bull; <span class="hero-hires-badge">${fmtSpec(album.maxBitsPerSample, album.maxSampleRate)}</span>` : ''}
-          ${formatBadgeHtml(album, 'hero-surround') ? `&bull; ${formatBadgeHtml(album, 'hero-surround')}` : ''}
-          ${album.genre ? `&bull; <span class="genre-badge">${esc(album.genre)}</span>` : ''}
-          ${drBadge(computeAlbumDR(album)) ? `&bull; ${drBadge(computeAlbumDR(album))}` : ''}
+          ${heroMeta}
         </div>
       </div>
     </div>
@@ -6564,7 +9884,9 @@ function renderSearch(query) {
     const displayGenres = libGenres.length > 0 ? libGenres : Object.keys(GENRE_COLORS)
     const tiles = displayGenres.slice(0, 20).map(g => {
       const bg = GENRE_COLORS[g] || `linear-gradient(135deg,hsl(${Math.abs(g.charCodeAt(0)*7)%360},55%,28%),hsl(${Math.abs(g.charCodeAt(0)*7+40)%360},45%,18%))`
-      return `<div class="genre-tile" style="background:${bg}" data-genre="${esc(g)}">${esc(g)}</div>`
+      // data-genre carries the canonical key so a tile click filters the
+      // library by the same case-insensitive identity the chips use (audit #11).
+      return `<div class="genre-tile" style="background:${bg}" data-genre="${esc(_genreKey(g))}">${esc(g)}</div>`
     }).join('')
     var surpriseStyle = document.getElementById('surprise-style')
     if (!surpriseStyle) {
@@ -6816,10 +10138,18 @@ function renderSearch(query) {
     html += '<div class="empty-wrap" style="padding:60px 20px;text-align:center">' +
       '<svg viewBox="0 0 24 24" style="width:64px;height:64px;fill:var(--text3);margin-bottom:16px;opacity:.4"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>' +
       '<h2>No results for "' + esc(searchText || query) + '"</h2>' +
-      '<p>Try different keywords, check spelling, or use Soulseek search.</p>' +
+      '<p>Nothing in your library matched. Soulseek is already searching the P2P network below.</p>' +
+      '<button class="empty-cta-btn" id="search-empty-slsk-btn">Jump to Soulseek results</button>' +
       '<p style="font-size:11px;color:var(--text3);margin-top:8px">Try operators: artist:"name", year:2020, format:flac, is:liked, genre:rock</p>' +
       '</div>'
   }
+
+  // Movies & TV strip (App §69 universal search). A compact row of up to six
+  // posters, filled asynchronously by runVideoStrip() so it never delays the
+  // music results — the music side is the heart of the page and paints first.
+  // The section is a filter tab of its own ("Movies & TV") and is left out of
+  // the DOM entirely when there is no query worth a video search.
+  html += `<div class="search-section vsearch-strip-section" data-section="Movies & TV" id="video-strip-section" hidden></div>`
 
   // YouTube section (async — filled by runYtSearch)
   html += `<div class="search-section" data-section="YouTube" id="yt-section">
@@ -6866,6 +10196,12 @@ function renderSearch(query) {
 
   html += `</div>`
   setContent(html)   // already calls bindContentEvents() as its last statement
+
+  // From an empty library result, take the user to the P2P results that are
+  // already loading rather than leaving them to scroll for them.
+  document.getElementById('search-empty-slsk-btn')?.addEventListener('click', function() {
+    document.getElementById('slsk-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  })
 
   document.querySelectorAll('.related-chip').forEach(function(chip) {
     chip.addEventListener('click', function() {
@@ -6976,6 +10312,51 @@ function renderSearch(query) {
     if (section) { section.innerHTML = renderSoulseekRow(query); bindSlskSearchEvents(query) }
   }
   if (canSearchOnline) runYtSearch(onlineQuery, ytSearchState.scope)
+  if (canSearchOnline) runVideoStrip(onlineQuery)
+}
+
+// The Movies & TV strip under universal search (App §69). Ticketed like every
+// other async search render: a strip for an old query must never paint over the
+// page a newer query is building. Defensive throughout — a missing api.
+// videoSearch, an error, or an empty result all leave the strip simply absent,
+// exactly as it starts, so the music search is never degraded by the video side
+// being unavailable.
+var _videoStripRun = 0
+function runVideoStrip(query) {
+  const q = typeof query === 'string' ? query.trim() : ''
+  const section = document.getElementById('video-strip-section')
+  if (!section || q.length < 2) return
+  if (!(window.api && typeof window.api.videoSearch === 'function')) return
+  const ticket = ++_videoStripRun
+  window.api.videoSearch({ query: q, type: 'all' })
+    .catch(function () { return { ok: false } })
+    .then(function (res) {
+      // A newer strip search, or the user having left the search page, retires
+      // this one silently.
+      if (_videoStripRun !== ticket || state.currentPage !== 'search') return
+      const sec = document.getElementById('video-strip-section')
+      if (!sec) return
+      const results = (res && res.ok && Array.isArray(res.results)) ? res.results : []
+      if (!results.length) { sec.hidden = true; sec.innerHTML = ''; return }
+      const cards = results.slice(0, 6)
+      sec.innerHTML =
+        '<div class="section-header">' +
+          '<span class="section-title">Movies &amp; TV</span>' +
+          '<button class="section-see-all" id="video-strip-all">See all in Movies &amp; TV →</button>' +
+        '</div>' +
+        '<div class="scroll-row vsearch-strip">' + cards.map(_videoCard).join('') + '</div>'
+      sec.hidden = false
+      // The cards are real video cards: reuse their binding so a click opens the
+      // detail page and My-List/hover behave exactly as on the video tab.
+      _bindVideoCards(sec)
+      // The "See all" link is the clean handoff: park the query, then navigate.
+      // _bindVideoSearch() on the video tab consumes the parked query and runs
+      // the full search there — no duplicated search internals.
+      document.getElementById('video-strip-all')?.addEventListener('click', function () {
+        requestVideoSearch(q)
+        navigate('video')
+      })
+    })
 }
 
 // ── YouTube search section ──────────────────────────────────────────────────
@@ -7081,6 +10462,8 @@ function toggleYtSaveAlbum(album) {
 
 function recordYtRecent(qItem) {
   if (!qItem || !isHttpPath(qItem.filePath)) return
+  // A transient preview must not pollute the user's YouTube recents.
+  if (_papaPreview && _papaPreview.active) return
   state.ytRecent = [
     { albumId: qItem.albumId, name: qItem.albumName, artist: qItem.artist,
       artUrl: qItem.artPath, filePath: qItem.filePath, title: qItem.title, playedAt: Date.now() },
@@ -7947,7 +11330,7 @@ function renderArtist(artistName) {
   var heroHTML = '<div class="artist-hero">' +
     '<img class="artist-hero-photo" id="artist-hero-bg-img" alt="" style="display:none" onerror="this.style.display=\'none\'">' +
     '<img class="artist-portrait" id="artist-portrait-img" alt="" style="display:none" onerror="this.style.display=\'none\'">' +
-    '<div class="artist-hero-art">' + (artistAlbums[0] && artistAlbums[0].artPath ? '<img src="' + esc('file://' + artistAlbums[0].artPath) + '" alt="">' : '<div style="width:100%;height:100%;background:var(--bg4);display:flex;align-items:center;justify-content:center"><svg viewBox="0 0 24 24" style="width:48px;height:48px;fill:var(--text3)"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg></div>') + '</div><div class="artist-hero-info"><div class="artist-hero-name">' + esc(artistName) + '</div><div class="artist-hero-meta">' + artistAlbums.length + ' albums &middot; ' + totalTracks + ' tracks &middot; ' + artistHours + 'h ' + artistMins + 'm</div><button class="follow-btn' + (isFollowed ? ' following' : '') + '" id="artist-follow-btn">' + (isFollowed ? 'Following' : 'Follow') + '</button></div></div>'
+    '<div class="artist-hero-art">' + (artistAlbums[0] && artistAlbums[0].artPath ? '<img src="' + esc('file://' + artistAlbums[0].artPath) + '" alt="">' : '<div style="width:100%;height:100%;background:var(--bg4);display:flex;align-items:center;justify-content:center"><svg viewBox="0 0 24 24" style="width:48px;height:48px;fill:var(--text3)"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg></div>') + '</div><div class="artist-hero-info"><div class="artist-hero-name">' + esc(artistName) + '</div><div class="artist-hero-meta">' + artistAlbums.length + ' albums &middot; ' + totalTracks + ' tracks &middot; ' + artistHours + 'h ' + artistMins + 'm</div><button class="artist-radio-btn" id="artist-radio-btn" title="Start an endless radio mix from this artist"><span class="radio-dot"></span>Radio</button><button class="follow-btn' + (isFollowed ? ' following' : '') + '" id="artist-follow-btn">' + (isFollowed ? 'Following' : 'Follow') + '</button></div></div>'
 
   var albums = [], eps = [], singles = []
   // Newest first, then alphabetical. Unsorted, the discography reordered itself
@@ -7999,6 +11382,9 @@ function renderArtist(artistName) {
     var followed = toggleFollowArtist(artistName)
     this.textContent = followed ? 'Following' : 'Follow'
     this.classList.toggle('following', followed)
+  })
+  document.getElementById('artist-radio-btn')?.addEventListener('click', function() {
+    startArtistRadio(artistName)
   })
   // Scoped to the related cards. It used to be document-wide, so it also bound
   // a SECOND handler to every .album-card-artist[data-artist] inside the
@@ -8251,6 +11637,8 @@ function mediaStop() {
   // so it is reset here or it keeps showing where the track stopped.
   if (_dom.fill)  _dom.fill.style.width = '0%'
   if (_dom.thumb) _dom.thumb.style.left = '0%'
+  const _bar = _dom.playerBar || document.getElementById('player-bar')
+  if (_bar) _bar.style.setProperty('--np-bar-progress', '0')
   if (_dom.modalFill)  _dom.modalFill.style.width = '0%'
   if (_dom.modalThumb) _dom.modalThumb.style.left = '0%'
   if (_dom.timeCur) _dom.timeCur.textContent = _fmtTimeCur(0)
@@ -8327,14 +11715,90 @@ function hideEngineBlocker() {
   _engineBlockerReason = null
 }
 
-let _toastTimer = null
+// Toast stack (App §82). The old single #toast-notification element overwrote
+// itself, so a second toast arriving 200 ms after the first simply erased it —
+// the viewer never saw the first message. Now each toast is its own node in a
+// stack that shows at most _TOAST_MAX at once; a fourth arrival evicts the
+// oldest. The aria-live container announces each new toast to a screen reader.
+const _TOAST_MAX = 3
+// Live toast records: { el, timer }. Newest last, which is also visually
+// bottom-most (the stack grows upward from the player bar).
+const _toasts = []
+
+// Pure: given the current count and the cap, how many oldest toasts must go to
+// make room for one more. Lifted out so the eviction rule is testable without a
+// DOM — the off-by-one here (evict when count >= max, before appending) is
+// exactly the kind of thing that silently shows four toasts otherwise.
+function _toastEvictCount(current, max) {
+  const m = Math.max(1, max | 0)
+  const c = Math.max(0, current | 0)
+  return Math.max(0, c - (m - 1))
+}
+
+function _toastContainer() {
+  return document.getElementById('toast-stack')
+}
+
+// Drops a toast node with a short fade, and forgets its record. Idempotent: a
+// timeout firing after a manual dismiss must not double-remove.
+function _dismissToast(rec) {
+  const i = _toasts.indexOf(rec)
+  if (i === -1) return
+  _toasts.splice(i, 1)
+  clearTimeout(rec.timer)
+  rec.el.classList.remove('show')
+  setTimeout(function () { rec.el.remove() }, 250)
+}
+
+// Shared builder for plain and action toasts. Appends one node, evicts the
+// oldest past the cap, and arms the auto-dismiss timer.
+function _pushToast(msg, opts) {
+  const container = _toastContainer()
+  if (!container) return
+  opts = opts || {}
+  // Make room. Evict the oldest first so the newest is always visible.
+  const drop = _toastEvictCount(_toasts.length, _TOAST_MAX)
+  for (let k = 0; k < drop; k++) _dismissToast(_toasts[0])
+
+  const el = document.createElement('div')
+  el.className = 'toast'
+  const span = document.createElement('span')
+  span.className = 'toast-msg'
+  // textContent, never markup: toast text includes track and show titles.
+  span.textContent = String(msg == null ? '' : msg)
+  el.appendChild(span)
+
+  const rec = { el: el, timer: null }
+
+  if (opts.actionLabel && typeof opts.onAction === 'function') {
+    el.classList.add('has-action')
+    const btn = document.createElement('button')
+    btn.type = 'button'
+    btn.className = 'toast-action'
+    btn.textContent = String(opts.actionLabel)
+    btn.addEventListener('click', function () {
+      _dismissToast(rec)
+      try { opts.onAction() } catch (_) {}
+    })
+    el.appendChild(btn)
+  }
+
+  container.appendChild(el)
+  requestAnimationFrame(function () { el.classList.add('show') })
+  _toasts.push(rec)
+  rec.timer = setTimeout(function () { _dismissToast(rec) }, opts.ms || 3200)
+  return rec
+}
+
 function showToast(msg) {
-  const el = document.getElementById('toast-notification')
-  if (!el) return
-  el.textContent = msg
-  el.classList.add('show')
-  clearTimeout(_toastTimer)
-  _toastTimer = setTimeout(() => el.classList.remove('show'), 3200)
+  return _pushToast(msg, null)
+}
+
+// A toast that carries a single action. It lives longer than a plain toast and
+// leaves when clicked or timed out. Same stack as showToast; nothing about the
+// button changes the eviction rule.
+function showActionToast(msg, actionLabel, onAction, ms) {
+  return _pushToast(msg, { actionLabel: actionLabel, onAction: onAction, ms: ms || 8000 })
 }
 
 function startRadio(seedTrack, seedArtist, seedGenre) {
@@ -8533,6 +11997,28 @@ function renderPlaylists() {
     contentSections += _folderSection('Uncategorized', uncategorized)
   }
 
+  // Built-in smart lists: rule-based virtual playlists evaluated live. Rendered
+  // as their own row of cards above the saved playlists, each routing to the
+  // standard track-list view via navigate('smartlist', id).
+  var smartLists = _smartLists()
+  var smartSection = smartLists.length ? `
+    <div class="pl-smart-section" style="margin-bottom:24px">
+      <div class="pl-smart-header" style="display:flex;align-items:baseline;gap:10px;margin-bottom:12px">
+        <h2 class="section-title" style="font-size:18px">Smart lists</h2>
+        <span class="lib-count">Rule-based, always up to date</span>
+      </div>
+      <div class="pl-grid">
+        ${smartLists.map(function (s) {
+          var n = _evalBuiltinSmartList(s).length
+          return `<div class="pl-card pl-smart-card" data-smart="${esc(s.id)}">
+            <div class="pl-card-art pl-collage-empty" style="background:linear-gradient(135deg,#38607a,#3850a0);display:flex;align-items:center;justify-content:center;font-size:40px">${s.icon || '★'}</div>
+            <div class="pl-card-name">${esc(s.name)}</div>
+            <div class="pl-card-meta">${n} song${n !== 1 ? 's' : ''}</div>
+          </div>`
+        }).join('')}
+      </div>
+    </div>` : ''
+
   setContent(`<div class="page">
     <div class="page-header">
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;flex-wrap:wrap">
@@ -8550,10 +12036,12 @@ function renderPlaylists() {
           <svg viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
           + New Smart Playlist
         </button>
-        <button class="new-pl-btn" id="import-pl-btn">📥 Import</button>
+        <button class="new-pl-btn" id="import-pl-btn">📥 Import .m3u</button>
+        <button class="new-pl-btn" id="import-text-pl-btn">📋 Import list</button>
         <button class="sort-btn" id="pl-sort-btn">${state.playlistSort === 'recent' ? 'Sort: Recent' : 'Sort: A-Z'}</button>
       </div>
     </div>
+    ${smartSection}
     ${sorted.length
       ? (Object.keys(folders).length === 0 && uncategorized.length > 0
         ? `<div class="pl-grid">${uncategorized.map(_plCard).join('')}</div>`
@@ -8561,8 +12049,15 @@ function renderPlaylists() {
       : `<div class="pl-empty-state">
           <svg viewBox="0 0 24 24"><path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/></svg>
           <p>No playlists yet. Create one to get started.</p>
+          <button class="empty-cta-btn" id="pl-empty-new-btn">New playlist</button>
         </div>`}
   </div>`)
+
+  // The empty state teaches AND does: its button runs the same creation flow as
+  // the header's + so there is a way out of an empty page without hunting.
+  document.getElementById('pl-empty-new-btn')?.addEventListener('click', function() {
+    _showNewPlaylistWithFolder()
+  })
 
   document.getElementById('pl-new-folder-btn')?.addEventListener('click', function() {
     showNameInputModal('New folder', 'Folder name…', function(name) {
@@ -8574,6 +12069,16 @@ function renderPlaylists() {
 
   document.getElementById('pl-new-btn')?.addEventListener('click', function() {
     _showNewPlaylistWithFolder()
+  })
+
+  // Built-in smart-list cards open the standard track-list view.
+  document.querySelectorAll('.pl-smart-card[data-smart]').forEach(function (card) {
+    card.addEventListener('click', function () { navigate('smartlist', card.dataset.smart) })
+  })
+
+  // Text-paste playlist import (distinct from the .m3u file import above).
+  document.getElementById('import-text-pl-btn')?.addEventListener('click', function () {
+    showImportPlaylistDialog()
   })
 
   // Folder header collapse/expand
@@ -8868,12 +12373,14 @@ function renderPlaylist(id, sortKey) {
       <button class="pl-sort-btn${sortKey==='default'?' active':''}" data-sort="default">Default</button>
       <button class="pl-sort-btn${sortKey==='title'?' active':''}" data-sort="title">Title</button>
       <button class="pl-sort-btn${sortKey==='artist'?' active':''}" data-sort="artist">Artist</button>
+      <span class="pl-sort-label" style="margin-left:16px" title="Crossfade applied while this playlist plays; 'Follow settings' uses your global playback setting">Crossfade:</span>
+      ${_plCrossfadeSelectHTML(pl)}
     </div>
     <div class="pl-search-wrap"><input class="pl-search" id="pl-search" placeholder="Filter tracks..." value="${esc(state._plSearch || '')}"></div>
     <div class="track-list">
       ${tracks.length
         ? trackRows
-        : '<div class="pl-empty-state" style="padding:40px 0"><p>This playlist is empty. Add songs from albums or the context menu.</p></div>'}
+        : '<div class="pl-empty-state" style="padding:40px 0"><p>This playlist is empty. Add songs from albums or the context menu.</p><button class="empty-cta-btn" id="pl-empty-browse-btn">Browse your library</button></div>'}
     </div>
     ${recHTML}`)
 
@@ -8905,7 +12412,26 @@ function renderPlaylist(id, sortKey) {
     if (!tracks.length) return
     state.queue = tracks.map(t => ({ ...t }))
     state.queueIndex = 0
+    _armPlaylistCf(pl) // App #51: this queue starts from a playlist
     playCurrentTrack()
+  })
+
+  // Per-playlist crossfade override (App #51). Stored on the playlist object and
+  // persisted; 'inherit' clears it. If this playlist is the one currently
+  // playing, re-arm and re-apply so the change takes on the next track.
+  document.getElementById('pl-cf-select')?.addEventListener('change', function () {
+    var v = this.value
+    if (v === 'inherit') delete pl.crossfade
+    else pl.crossfade = v // 'off' or a numeric string
+    window.api.savePlaylist(pl)
+    var label = v === 'inherit' ? 'follow settings' : (v === 'off' ? 'off' : v + 's')
+    showToast('Crossfade for "' + pl.name + '": ' + label)
+    // Take effect immediately when this playlist is what is playing: re-arm and
+    // let the resolver decide whether the engine actually needs a rebuild.
+    if (state._activePlaylistCf === pl.id || _isPlayingThisPlaylist(pl)) {
+      _armPlaylistCf(pl)
+      _applyPlaylistCrossfade(_consumePlaylistCfArm()).catch(() => {})
+    }
   })
 
   document.getElementById('pl-rename-btn')?.addEventListener('click', () => {
@@ -8920,6 +12446,9 @@ function renderPlaylist(id, sortKey) {
     toggleLike('pl_' + id)
     renderPlaylist(id)
   })
+
+  // The empty playlist's one action: get to where the songs are.
+  document.getElementById('pl-empty-browse-btn')?.addEventListener('click', () => navigate('library'))
 
   document.getElementById('pl-delete-btn')?.addEventListener('click', () => {
     // Was a native confirm(). This action is already undoable from the snackbar
@@ -9021,6 +12550,188 @@ function renderPlaylist(id, sortKey) {
       renderPlaylist(id, sortKey)
     })
   })
+}
+
+// ── Smart lists: the four rule-based virtual playlists ────────────────────────
+// These are not stored track sets; each is a rule from PapaMusicTools evaluated
+// live against the library + play counts every time it is opened. renderSmartList
+// shows the result in a standard read-only track-list view (the same track-row
+// shape the rest of the app binds automatically via bindContentEvents()).
+function _smartLists() {
+  var _mt = (typeof window !== 'undefined' && window.PapaMusicTools) || null
+  return (_mt && _mt.SMART_PLAYLISTS) || []
+}
+
+function _smartListById(id) {
+  return _smartLists().find(function (s) { return s.id === id }) || null
+}
+
+// Evaluate a built-in smart list to enriched, playable track objects (carrying
+// albumArtist/artPath/albumName/albumId the way _allLibraryTracks does), so the
+// rows render with artist + cover and clicking one plays it.
+function _evalBuiltinSmartList(smart) {
+  var _mt = (typeof window !== 'undefined' && window.PapaMusicTools) || null
+  if (!_mt || !smart) return []
+  var raw = _mt.evaluateSmartPlaylist(smart.rule, state.library, state.playCounts)
+  // Enrich against the flattened library by filePath so the view matches the
+  // rest of the app; fall back to the raw track if it is not found (never drop).
+  var all = _allLibraryTracks()
+  var byPath = new Map(all.map(function (t) { return [t.filePath, t] }))
+  return raw.map(function (t) { return byPath.get(t.filePath) || t })
+}
+
+function renderSmartList(id) {
+  var smart = _smartListById(id)
+  if (!smart) { navigate('playlists', null, { skipHistory: true }); return }
+  var tracks = _evalBuiltinSmartList(smart)
+  var totalDur = tracks.reduce(function (s, t) { return s + (t.duration || 0) }, 0)
+  var count = tracks.length
+
+  var trackRows = tracks.map(function (t, i) {
+    var isPlaying = isCurrentTrack(t.filePath)
+    var plays = state.playCounts[t.filePath] || 0
+    return `
+      <div class="track-row ${isPlaying ? 'playing' : ''}" data-idx="${i}" data-file="${esc(t.filePath)}" data-album="${esc(t.albumId || '')}" data-no-album-nav="1">
+        <span class="track-num">${isPlaying
+          ? '<div class="playing-bars"><span></span><span></span><span></span></div>'
+          : (i + 1)}</span>
+        <div class="track-info">
+          <div class="track-title">${esc(t.title)}</div>
+          <div class="track-artist" data-artist="${esc(t.albumArtist || t.artist || '')}">${esc(t.albumArtist || t.artist || '')}</div>
+        </div>
+        ${plays > 0 ? `<span class="track-plays">${plays}</span>` : '<span class="track-plays"></span>'}
+        <div class="hover-actions">
+          <button class="hover-action-btn" data-action="playnext" data-file="${esc(t.filePath)}" data-album="${esc(t.albumId || '')}" title="Play next">&#9654;+</button>
+          <button class="hover-action-btn" data-action="queue" data-file="${esc(t.filePath)}" data-album="${esc(t.albumId || '')}" title="Add to queue">+</button>
+        </div>
+        <span class="track-dur">${fmtDur(t.duration)}</span>
+      </div>`
+  }).join('')
+
+  setContent(`
+    <div class="album-hero" style="background: linear-gradient(#38607acc, var(--bg) 100%)">
+      <div class="album-hero-art-fallback" style="display:flex;background:linear-gradient(135deg,#38607a,#3850a0);font-size:48px;align-items:center;justify-content:center">${smart.icon || '★'}</div>
+      <div class="album-hero-info">
+        <div class="album-hero-type">Smart list</div>
+        <div class="album-hero-title">${esc(smart.name)}</div>
+        <div class="album-hero-meta">${count} song${count !== 1 ? 's' : ''}${count ? `, ${fmtTime(totalDur)}` : ''} · updates automatically</div>
+      </div>
+    </div>
+    <div class="album-controls">
+      <button class="album-play-btn" id="smartlist-play-btn" aria-label="Play ${esc(smart.name)}" ${!count ? 'disabled' : ''}>
+        <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+      </button>
+    </div>
+    <div class="track-list">
+      ${count
+        ? trackRows
+        : '<div class="pl-empty-state" style="padding:40px 0"><p>Nothing matches this smart list yet.</p></div>'}
+    </div>`)
+
+  document.getElementById('smartlist-play-btn')?.addEventListener('click', function () {
+    if (!count) return
+    state.queue = tracks.map(function (t) { return Object.assign({}, t) })
+    state.queueIndex = 0
+    playCurrentTrack()
+  })
+}
+
+// ── Playlist import from pasted text ──────────────────────────────────────────
+// A textarea dialog: paste "Artist - Title" lines (or "Title - Artist" — both
+// are tried), we match each against the library reusing the dupe-finder
+// normalization, build a real playlist from the hits, and list the misses with a
+// one-click "Search on Soulseek" per miss (which routes into the existing search
+// page — the same reuse as the missing-track finder). URL fetching is out of
+// scope; the placeholder says so.
+function showImportPlaylistDialog() {
+  var _mt = (typeof window !== 'undefined' && window.PapaMusicTools) || null
+  if (!_mt) { showSnackbar('Import unavailable'); return }
+  var existing = document.getElementById('import-pl-modal')
+  if (existing) existing.remove()
+  var overlay = document.createElement('div')
+  overlay.id = 'import-pl-modal'
+  overlay.className = 'addpl-overlay'
+  overlay.innerHTML = `
+    <div class="addpl-card" style="max-width:520px;width:92%">
+      <div class="addpl-header">
+        <span>Import playlist from text</span>
+        <button class="addpl-close" id="imp-close">&#10005;</button>
+      </div>
+      <div style="padding:16px">
+        <input id="imp-name" class="sq-name-input" style="width:100%;box-sizing:border-box;margin-bottom:10px" type="text" placeholder="Playlist name" maxlength="80" value="Imported playlist">
+        <textarea id="imp-text" style="width:100%;box-sizing:border-box;height:180px;resize:vertical;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--bg2);color:var(--text);font-size:13px;font-family:inherit" placeholder="Paste one track per line, e.g.&#10;Radiohead - Karma Police&#10;Pixies - Debaser&#10;&#10;Text only — Spotify/YouTube links are not supported."></textarea>
+        <div id="imp-result" style="margin-top:12px;font-size:13px;color:var(--text2)"></div>
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px">
+          <button class="secondary" id="imp-cancel">Cancel</button>
+          <button id="imp-go">Match &amp; build</button>
+        </div>
+      </div>
+    </div>`
+  document.body.appendChild(overlay)
+  var close = function () { overlay.remove() }
+  overlay.querySelector('#imp-close')?.addEventListener('click', close)
+  overlay.querySelector('#imp-cancel')?.addEventListener('click', close)
+  overlay.addEventListener('click', function (e) { if (e.target === overlay) close() })
+
+  overlay.querySelector('#imp-go')?.addEventListener('click', function () {
+    var text = overlay.querySelector('#imp-text').value || ''
+    var parsed = _mt.parseImportLines(text)
+    if (!parsed.length) {
+      overlay.querySelector('#imp-result').innerHTML = '<span style="color:var(--text3)">Paste some lines first.</span>'
+      return
+    }
+    var index = _mt.buildLibraryIndex(state.library)
+    var res = _mt.matchImportedTracks(parsed, index)
+    // Enrich matched tracks the way the rest of the app expects (artist/cover).
+    var all = _allLibraryTracks()
+    var byPath = new Map(all.map(function (t) { return [t.filePath, t] }))
+    var enriched = res.matched.map(function (t) { return byPath.get(t.filePath) || t })
+
+    var name = (overlay.querySelector('#imp-name').value || '').trim() || 'Imported playlist'
+    var summary = '<div style="margin-bottom:8px"><strong>' + enriched.length +
+      '</strong> of <strong>' + parsed.length + '</strong> line' + (parsed.length !== 1 ? 's' : '') +
+      ' matched your library.</div>'
+
+    var missHTML = ''
+    if (res.misses.length) {
+      missHTML = '<div style="margin-top:6px;font-weight:600">Not in your library (' + res.misses.length + '):</div>' +
+        '<div style="max-height:150px;overflow:auto;margin-top:4px">' +
+        res.misses.map(function (m, i) {
+          return '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:4px 0">' +
+            '<span style="color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(m.raw) + '</span>' +
+            '<button class="secondary imp-miss-search" data-q="' + esc(m.raw) + '" style="flex:0 0 auto;padding:4px 10px;font-size:12px">Search on Soulseek</button>' +
+            '</div>'
+        }).join('') + '</div>'
+    }
+
+    var actionHTML = enriched.length
+      ? '<div style="margin-top:12px;text-align:right"><button id="imp-create" class="primary">Create playlist (' + enriched.length + ')</button></div>'
+      : '<div style="margin-top:8px;color:var(--text3)">No matches — nothing to create. Use the search buttons to find these on Soulseek.</div>'
+
+    overlay.querySelector('#imp-result').innerHTML = summary + missHTML + actionHTML
+
+    overlay.querySelectorAll('.imp-miss-search').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        close()
+        navigate('search', btn.dataset.q)
+      })
+    })
+    overlay.querySelector('#imp-create')?.addEventListener('click', function () {
+      var pl = {
+        id: 'import_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
+        name: name,
+        tracks: enriched.map(function (t) { return Object.assign({}, t) }),
+        createdAt: Date.now()
+      }
+      state.playlists.push(pl)
+      window.api.savePlaylist(pl)
+      close()
+      renderPlaylists()
+      showSnackbar('Created "' + name + '" with ' + enriched.length + ' track' + (enriched.length !== 1 ? 's' : ''))
+    })
+  })
+
+  setTimeout(function () { overlay.querySelector('#imp-text')?.focus() }, 50)
 }
 
 function _allLibraryTracks() {
@@ -9133,7 +12844,7 @@ function renderLikedSongs() {
     <div class="track-list">
       ${tracks.length
         ? trackRows
-        : (state.ytLiked.length ? '' : '<div class="pl-empty-state" style="padding:40px 0"><p>No liked songs yet. Tap the heart on any track.</p></div>')}
+        : (state.ytLiked.length ? '' : '<div class="pl-empty-state" style="padding:40px 0"><p>No liked songs yet. Tap the heart on any track.</p><button class="empty-cta-btn" id="liked-empty-find-btn">Find music</button></div>')}
       ${state.ytLiked.length ? `
         <div class="yt-sub-header" style="margin-top:20px">From YouTube</div>
         <div id="yt-liked-list">${state.ytLiked.map((t, i) => `
@@ -9156,6 +12867,9 @@ function renderLikedSongs() {
     state.queueIndex = 0
     playCurrentTrack()
   })
+  // Empty page, one way forward: send them somewhere they can hear something to
+  // like, rather than leaving a heart-tapping instruction with nothing to tap.
+  document.getElementById('liked-empty-find-btn')?.addEventListener('click', () => navigate('search'))
   const ytList = document.getElementById('yt-liked-list')
   if (ytList) {
     ytList.querySelectorAll('.yt-liked-row').forEach(row => {
@@ -9432,6 +13146,166 @@ function renderStats() {
   })
   heatmapHTML += '</div></div>'
 
+  // ── Wave-6 additions: total plays, top albums, plays-per-month, dupes ───────
+  var _mt = (typeof window !== 'undefined' && window.PapaMusicTools) || null
+  var totalPlays = Object.keys(state.playCounts || {}).reduce(function (s, k) { return s + (state.playCounts[k] || 0) }, 0)
+
+  // Top albums by play count (rolls track play-counts up to their album).
+  var topAlbums = _mt ? _mt.topAlbumsByPlays(state.library, state.playCounts, 10) : []
+  var albumRows = topAlbums.map(function (row, i) {
+    var a = row.album
+    return '<div class="stats-rank-row" data-stats-album="' + esc(a.id || '') + '">' +
+      '<span class="stats-rank-num">' + (i + 1) + '</span>' +
+      (a.artPath ? '<img class="stats-rank-art" src="' + esc('file://' + a.artPath) + '" alt="">' : '<div class="stats-rank-art"></div>') +
+      '<div class="stats-rank-info"><div class="stats-rank-name">' + esc(a.name || 'Unknown') + '</div>' +
+      '<div class="stats-rank-sub">' + esc(a.artist || '') + '</div></div>' +
+      '<span class="stats-rank-count">' + row.plays + ' play' + (row.plays !== 1 ? 's' : '') + '</span>' +
+      '</div>'
+  }).join('') || '<div class="stats-rank-sub" style="padding:8px 0">No albums played yet.</div>'
+
+  // Plays per month, last 6 months, as a simple CSS bar chart.
+  var months = _mt ? _mt.playsPerMonth(state.playHistory, 6) : []
+  var maxMonth = months.reduce(function (m, b) { return Math.max(m, b.plays) }, 0) || 1
+  var monthBars = months.map(function (b) {
+    var h = Math.max(2, Math.round((b.plays / maxMonth) * 100))
+    return '<div class="stats-month-col" title="' + esc(b.label + ' ' + b.year) + ': ' + b.plays + ' play' + (b.plays !== 1 ? 's' : '') + '">' +
+      '<div class="stats-month-barwrap"><div class="stats-month-bar" style="height:' + h + '%"></div></div>' +
+      '<div class="stats-month-ct">' + b.plays + '</div>' +
+      '<div class="stats-month-label">' + esc(b.label) + '</div>' +
+      '</div>'
+  }).join('')
+  var monthsHTML = '<div class="stats-section"><h2>Plays per Month <span class="stats-range-note">last 6 months</span></h2>' +
+    '<div class="stats-month-chart">' + monthBars + '</div></div>'
+
+  // ── Scrobble health line (App #58) ─────────────────────────────────────────
+  var _scrobHealth = scrobbleHealthSummary()
+
+  // ── Storage dashboard (App #62) ────────────────────────────────────────────
+  // Size by format, the largest albums, and the Downloads subset — all rolled
+  // up from state.library. Per-track size only exists where the scanner
+  // recorded it; storageByFormat flags `.partial` and we note it in the UI
+  // rather than under-report silently.
+  var storageHTML = ''
+  if (_mt && _mt.storageByFormat) {
+    var _stor = _mt.storageByFormat(state.library)
+    var _biggest = _mt.largestAlbums(state.library, 10)
+    var _dl = _mt.downloadsSubset(state.library)
+    var _fmtRows = _stor.formats.map(function (f) {
+      var pct = _stor.totalBytes > 0 ? Math.round(f.bytes / _stor.totalBytes * 100) : 0
+      return '<div class="stats-genre-bar">' +
+        '<span class="stats-genre-name">' + esc(f.format) + '</span>' +
+        '<div class="stats-genre-track"><div class="stats-genre-fill" style="width:' + pct + '%"></div></div>' +
+        '<span class="stats-genre-ct">' + _fmtBytes(f.bytes) + ' · ' + f.tracks + ' track' + (f.tracks !== 1 ? 's' : '') + '</span>' +
+        '</div>'
+    }).join('') || '<div class="stats-rank-sub">No library data yet.</div>'
+    var _albumStorRows = _biggest.filter(function (r) { return r.bytes > 0 }).map(function (r, i) {
+      var a = r.album
+      return '<div class="stats-rank-row" data-stats-album="' + esc(a.id || '') + '">' +
+        '<span class="stats-rank-num">' + (i + 1) + '</span>' +
+        (a.artPath ? '<img class="stats-rank-art" src="' + esc('file://' + a.artPath) + '" alt="">' : '<div class="stats-rank-art"></div>') +
+        '<div class="stats-rank-info"><div class="stats-rank-name">' + esc(a.name || 'Unknown') + '</div>' +
+        '<div class="stats-rank-sub">' + esc(a.artist || '') + '</div></div>' +
+        '<span class="stats-rank-count">' + _fmtBytes(r.bytes) + '</span>' +
+        '</div>'
+    }).join('') || '<div class="stats-rank-sub" style="padding:8px 0">No sized albums yet.</div>'
+    var _partialNote = _stor.partial
+      ? '<div class="stats-rank-sub" style="padding:4px 0;font-size:11px">Sizes are approximate — ' +
+        _stor.tracksMissingSize + ' track' + (_stor.tracksMissingSize !== 1 ? 's have' : ' has') +
+        ' no recorded size and count as 0 bytes.</div>'
+      : ''
+    // Cover-art sweep (App #61): how many albums have no local cover, and a
+    // button to fetch a politely-capped batch of them.
+    var _missingArt = (_mt.albumsMissingArt ? _mt.albumsMissingArt(state.library, 1e9) : []).length
+    var _coverHTML = _missingArt > 0
+      ? '<div class="stats-cover-sweep" style="margin:10px 0;display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
+        '<span style="color:var(--text3);font-size:13px">Missing covers: ' + _missingArt + ' album' + (_missingArt !== 1 ? 's' : '') + '</span>' +
+        '<button id="find-covers-btn" class="secondary" style="padding:6px 14px;font-size:12px">Find missing covers</button>' +
+        '<span class="stats-rank-sub" style="font-size:11px">Fetches up to 20 per run.</span>' +
+        '</div>'
+      : '<div class="stats-storage-downloads" style="margin:10px 0;color:var(--text3);font-size:13px">Every album has a cover.</div>'
+    storageHTML = '<div class="stats-section"><h2>Storage <span class="stats-range-note">' +
+      _fmtBytes(_stor.totalBytes) + ' total</span></h2>' +
+      _partialNote +
+      '<div class="stats-storage-formats">' + _fmtRows + '</div>' +
+      '<div class="stats-storage-downloads" style="margin:10px 0;color:var(--text3);font-size:13px">Downloads folder: ' +
+      _dl.count + ' track' + (_dl.count !== 1 ? 's' : '') + ' · ' + _fmtBytes(_dl.bytes) + '</div>' +
+      _coverHTML +
+      '<div class="stats-rank-sub" style="margin:12px 0 6px;font-weight:600">Largest albums</div>' +
+      _albumStorRows +
+      '</div>'
+  }
+
+  // ── Incomplete albums (App #54/#55) ────────────────────────────────────────
+  // Albums with gaps in their track numbering — has 1,2,3,5 → missing 4. Each
+  // row offers "Find missing", which fires the existing Soulseek search for
+  // "<artist> <album>" by navigating into the standard search results page.
+  var incompleteHTML = ''
+  if (_mt && _mt.incompleteAlbums) {
+    var _inc = _mt.incompleteAlbums(state.library)
+    if (_inc.length) {
+      var _incRows = _inc.slice(0, 30).map(function (row) {
+        var a = row.album
+        var q = ((a.albumArtist || a.artist || '') + ' ' + (a.name || '')).trim()
+        var missStr = row.missing.slice(0, 12).map(function (n) { return '#' + n }).join(', ') +
+          (row.missing.length > 12 ? ' …' : '')
+        return '<div class="stats-rank-row">' +
+          (a.artPath ? '<img class="stats-rank-art" src="' + esc('file://' + a.artPath) + '" alt="">' : '<div class="stats-rank-art"></div>') +
+          '<div class="stats-rank-info"><div class="stats-rank-name">' + esc(a.name || 'Unknown') + '</div>' +
+          '<div class="stats-rank-sub">' + esc(a.artist || '') + ' · missing ' +
+          row.missing.length + ' track' + (row.missing.length !== 1 ? 's' : '') + ': ' + esc(missStr) + '</div></div>' +
+          '<button class="secondary stats-find-missing" data-q="' + esc(q) + '" style="flex:0 0 auto;padding:6px 12px;font-size:12px">Find missing</button>' +
+          '</div>'
+      }).join('')
+      incompleteHTML = '<div class="stats-section"><h2>Incomplete albums ' +
+        '<span class="stats-range-note">' + _inc.length + ' with gaps</span></h2>' +
+        '<div class="stats-rank-sub" style="padding:2px 0 8px;font-size:11px">Albums missing tracks in their numbering (60%+ of the album present). "Find missing" searches Soulseek.</div>' +
+        _incRows + '</div>'
+    }
+  }
+
+  // ── Loudness / ReplayGain (App #59) ────────────────────────────────────────
+  // A scan button with progress, a scanned/total count, and the loudest/quietest
+  // albums — populated after loudnessRefreshPanel() fetches the stored map. The
+  // shell renders synchronously; the numbers fill in when the map arrives.
+  var loudnessHTML = '<div class="stats-section" id="loudness-section"><h2>Loudness ' +
+    '<span class="stats-range-note" id="loudness-count">—</span></h2>' +
+    '<div class="stats-rank-sub" style="padding:2px 0 8px;font-size:11px">Measures each track\'s loudness (non-destructive — nothing is written to your files) so quiet and loud albums can be evened out at playback. ' +
+    'Turn "Apply ReplayGain" on in Settings to hear it.</div>' +
+    '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px">' +
+    '<button id="loudness-scan-btn" class="secondary" style="padding:8px 16px;font-size:13px">Scan loudness</button>' +
+    '<span id="loudness-progress" class="stats-rank-sub" style="font-size:12px"></span>' +
+    '</div>' +
+    '<div id="loudness-spread"></div>' +
+    '</div>'
+
+  // ── Tag fixer (App #60) ────────────────────────────────────────────────────
+  // For albums that live under /Downloads (the unfiled set the storage dashboard
+  // already surfaces), a "Check tags" button per album queries MusicBrainz and
+  // shows a side-by-side diff of local vs. suggested. Apply is disabled this wave.
+  var tagFixerHTML = ''
+  var _dlAlbums = (state.library || []).filter(function (a) {
+    var tracks = (a && a.tracks) || []
+    for (var i = 0; i < tracks.length; i++) {
+      if (tracks[i] && tracks[i].filePath && /(^|\/)downloads(\/|$)/i.test(String(tracks[i].filePath))) return true
+    }
+    return false
+  })
+  if (_dlAlbums.length) {
+    var _tagRows = _dlAlbums.slice(0, 40).map(function (a) {
+      return '<div class="stats-rank-row" data-tagfix-album="' + esc(a.id || '') + '">' +
+        (a.artPath ? '<img class="stats-rank-art" src="' + esc('file://' + a.artPath) + '" alt="">' : '<div class="stats-rank-art"></div>') +
+        '<div class="stats-rank-info"><div class="stats-rank-name">' + esc(a.name || 'Unknown') + '</div>' +
+        '<div class="stats-rank-sub">' + esc(a.artist || '') + ' · ' + ((a.tracks || []).length) + ' track' + ((a.tracks || []).length !== 1 ? 's' : '') + '</div></div>' +
+        '<button class="secondary tagfix-check" data-artist="' + esc(a.albumArtist || a.artist || '') + '" data-album="' + esc(a.name || '') + '" data-album-id="' + esc(a.id || '') + '" style="flex:0 0 auto;padding:6px 12px;font-size:12px">Check tags</button>' +
+        '</div>' +
+        '<div class="tagfix-result" data-tagfix-result="' + esc(a.id || '') + '" style="display:none"></div>'
+    }).join('')
+    tagFixerHTML = '<div class="stats-section"><h2>Tag fixer ' +
+      '<span class="stats-range-note">' + _dlAlbums.length + ' download' + (_dlAlbums.length !== 1 ? 's' : '') + '</span></h2>' +
+      '<div class="stats-rank-sub" style="padding:2px 0 8px;font-size:11px">Compares your Downloads albums against MusicBrainz. Shows the differences only — applying fixes is coming soon.</div>' +
+      _tagRows + '</div>'
+  }
+
   setContent(`<div class="stats-page">
     <div class="stats-toolbar" style="display:flex;gap:8px;margin-bottom:16px;padding:0 28px;align-items:center;flex-wrap:wrap">
       <div class="stats-range-group" style="display:flex;gap:4px">
@@ -9446,7 +13320,12 @@ function renderStats() {
       <button id="export-json-btn" class="secondary" style="padding:6px 14px;font-size:12px">Export JSON</button>
       <button id="export-csv-btn" class="secondary" style="padding:6px 14px;font-size:12px">Export CSV</button>
     </div>
-    <div class="stats-hero">Listening time (${rangeLabel})<span>${hours}h ${mins}m</span><div style="font-size:12px;color:var(--text3);margin-top:4px">All time: ${totalAllTimeStr}</div><div style="font-size:11px;color:var(--text3);margin-top:4px">${rangeText}</div></div>
+    <div class="stats-hero">Listening time (${rangeLabel})<span>${hours}h ${mins}m</span><div style="font-size:12px;color:var(--text3);margin-top:4px">All time: ${totalAllTimeStr} · ${totalPlays.toLocaleString()} total plays</div><div style="font-size:11px;color:var(--text3);margin-top:4px">${rangeText}</div><div class="scrobble-health scrobble-${_scrobHealth.state}" title="${esc(_scrobHealth.title)}">${esc(_scrobHealth.text)}</div></div>
+    ${monthsHTML}
+    ${storageHTML}
+    ${loudnessHTML}
+    ${tagFixerHTML}
+    ${incompleteHTML}
     <div class="stats-section">
       <h2>This Week</h2>
       <div class="stats-hero" style="margin:0;padding:16px 20px;font-size:13px">Listening time<span>${weekHours}h ${weekMins}m</span></div>
@@ -9479,12 +13358,21 @@ function renderStats() {
       ${artistRows}
     </div>
     <div class="stats-section">
+      <h2>Top Albums <span class="stats-range-note">all time</span></h2>
+      ${albumRows}
+    </div>
+    <div class="stats-section">
       <h2>Top Tracks <span class="stats-range-note">all time</span></h2>
       ${trackRows}
     </div>
     <div class="stats-section">
       <h2>By Genre</h2>
       ${genreRows}
+    </div>
+    <div class="stats-section">
+      <h2>Tools</h2>
+      <button id="find-dupes-btn" class="secondary" style="padding:8px 16px;font-size:13px">Find duplicate tracks</button>
+      <div id="dupes-result" class="stats-dupes"></div>
     </div>
   </div>`)
 
@@ -9498,6 +13386,23 @@ function renderStats() {
   var exportCsvBtn = document.getElementById('export-csv-btn')
   if (exportJsonBtn) exportJsonBtn.addEventListener('click', function() { exportStats('json') })
   if (exportCsvBtn) exportCsvBtn.addEventListener('click', function() { exportStats('csv') })
+
+  var dupesBtn = document.getElementById('find-dupes-btn')
+  if (dupesBtn) dupesBtn.addEventListener('click', function () { renderDupeFinder() })
+
+  var coversBtn = document.getElementById('find-covers-btn')
+  if (coversBtn) coversBtn.addEventListener('click', function () { sweepMissingCovers(coversBtn) })
+
+  // "Find missing" on an incomplete album: reuse the existing search flow by
+  // navigating into the standard Soulseek results for "<artist> <album>".
+  document.querySelectorAll('.stats-find-missing').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var q = btn.dataset.q || ''
+      if (!q) return
+      showSnackbar('Searching Soulseek for "' + q + '" to fill the gaps')
+      navigate('search', q)
+    })
+  })
   document.querySelectorAll('.stats-range-btn').forEach(function (btn) {
     btn.addEventListener('click', function () {
       var r = btn.dataset.range
@@ -9508,6 +13413,173 @@ function renderStats() {
       renderStats()
     })
   })
+
+  // Loudness scan + spread (App #59).
+  var loudnessBtn = document.getElementById('loudness-scan-btn')
+  if (loudnessBtn) loudnessBtn.addEventListener('click', function () { scanLoudness(loudnessBtn) })
+  loudnessRefreshPanel()
+
+  // Tag fixer per Downloads album (App #60).
+  document.querySelectorAll('.tagfix-check').forEach(function (btn) {
+    btn.addEventListener('click', function () { checkAlbumTags(btn) })
+  })
+}
+
+// ── Loudness scan (App #59) ──────────────────────────────────────────────────
+// Fetch the stored loudness map, update the scanned/total count and the
+// loudest/quietest album lists. Called on every stats render and after a scan.
+async function loudnessRefreshPanel() {
+  var _lo = (typeof window !== 'undefined' && window.PapaLoudness) || null
+  if (!_lo) return
+  var res = await window.api.loudnessGetMap().catch(function () { return null })
+  var map = (res && res.map) || {}
+  var cov = _lo.scanCoverage(state.library, map)
+  var countEl = document.getElementById('loudness-count')
+  if (countEl) countEl.textContent = cov.total ? (cov.scanned + ' of ' + cov.total + ' scanned') : 'no local tracks'
+  var spread = _lo.loudnessSpread(state.library, map, 5)
+  var spreadEl = document.getElementById('loudness-spread')
+  if (!spreadEl) return
+  if (!spread.albumCount) {
+    spreadEl.innerHTML = '<div class="stats-rank-sub" style="padding:6px 0;font-size:12px">No albums measured yet. Run a scan to see the loudness spread.</div>'
+    return
+  }
+  var rowFor = function (r) {
+    var a = r.album
+    return '<div class="stats-rank-row">' +
+      (a.artPath ? '<img class="stats-rank-art" src="' + esc('file://' + a.artPath) + '" alt="">' : '<div class="stats-rank-art"></div>') +
+      '<div class="stats-rank-info"><div class="stats-rank-name">' + esc(a.name || 'Unknown') + '</div>' +
+      '<div class="stats-rank-sub">' + esc(a.artist || '') + ' · ' + r.measuredTracks + '/' + r.trackCount + ' measured</div></div>' +
+      '<span class="stats-rank-count">' + r.lufs.toFixed(1) + ' LUFS</span>' +
+      '</div>'
+  }
+  spreadEl.innerHTML =
+    '<div class="stats-rank-sub" style="margin:8px 0 4px;font-weight:600">Loudest albums <span style="font-weight:400">· spread ' + spread.spanLu.toFixed(1) + ' LU across ' + spread.albumCount + '</span></div>' +
+    spread.loudest.map(rowFor).join('') +
+    '<div class="stats-rank-sub" style="margin:12px 0 4px;font-weight:600">Quietest albums</div>' +
+    spread.quietest.map(rowFor).join('')
+}
+
+var _loudnessScanRunning = false
+async function scanLoudness(btn) {
+  if (_loudnessScanRunning) return
+  var _lo = (typeof window !== 'undefined' && window.PapaLoudness) || null
+  if (!_lo) { showToast('Loudness scanner unavailable'); return }
+  var res = await window.api.loudnessGetMap().catch(function () { return null })
+  var map = (res && res.map) || {}
+  var todo = _lo.tracksNeedingScan(state.library, map, 20)
+  if (!todo.length) { showToast('Every local track is already measured'); return }
+  _loudnessScanRunning = true
+  if (btn) { btn.disabled = true; btn.textContent = 'Scanning…' }
+  var prog = document.getElementById('loudness-progress')
+  if (prog) prog.textContent = 'Measuring ' + todo.length + ' track' + (todo.length !== 1 ? 's' : '') + '…'
+  try {
+    var out = await window.api.loudnessScan(todo).catch(function () { return null })
+    var ok = out && out.results ? out.results.filter(function (r) { return r.ok }).length : 0
+    if (prog) prog.textContent = 'Measured ' + ok + ' of ' + todo.length + ' this run.'
+    showToast('Loudness scan done — ' + ok + ' of ' + todo.length + ' measured')
+    await loudnessRefreshPanel()
+  } finally {
+    _loudnessScanRunning = false
+    if (btn) { btn.disabled = false; btn.textContent = 'Scan loudness' }
+  }
+}
+
+// ── Tag fixer (App #60) ──────────────────────────────────────────────────────
+// Query MusicBrainz for one Downloads album and render the local-vs-suggested
+// diff. Apply is disabled this wave (propose-only).
+async function checkAlbumTags(btn) {
+  var _mt = (typeof window !== 'undefined' && window.PapaMusicTools) || null
+  var albumId = btn.dataset.albumId || ''
+  var out = document.querySelector('.tagfix-result[data-tagfix-result="' + (window.CSS && CSS.escape ? CSS.escape(albumId) : albumId) + '"]')
+  if (!out || !_mt) { showToast('Tag fixer unavailable'); return }
+  var album = (state.library || []).find(function (a) { return (a.id || '') === albumId })
+  if (!album) { showToast('Album not found'); return }
+  btn.disabled = true; btn.textContent = 'Checking…'
+  out.style.display = 'block'
+  out.innerHTML = '<div class="stats-rank-sub" style="padding:6px 0;font-size:12px">Querying MusicBrainz…</div>'
+  try {
+    var res = await window.api.musicbrainzCheckAlbum({ artist: btn.dataset.artist || '', album: btn.dataset.album || '' })
+      .catch(function () { return null })
+    if (!res || !res.ok) {
+      out.innerHTML = '<div class="stats-rank-sub" style="padding:6px 0;font-size:12px">Lookup failed' + (res && res.error ? ': ' + esc(res.error) : '') + '.</div>'
+      return
+    }
+    if (!res.tracks || !res.tracks.length) {
+      out.innerHTML = '<div class="stats-rank-sub" style="padding:6px 0;font-size:12px">No matching release found on MusicBrainz.</div>'
+      return
+    }
+    var diff = _mt.buildTagDiff(album.tracks || [], res.tracks)
+    out.innerHTML = renderTagDiff(diff, res.release)
+  } finally {
+    btn.disabled = false; btn.textContent = 'Check tags'
+  }
+}
+
+function renderTagDiff(diff, release) {
+  var s = diff.summary
+  var head = '<div class="stats-rank-sub" style="padding:4px 0;font-size:12px;font-weight:600">' +
+    'Matched to “' + esc((release && release.title) || '') + '”' + (release && release.artist ? ' — ' + esc(release.artist) : '') +
+    (release && release.date ? ' (' + esc(String(release.date).slice(0, 4)) + ')' : '') + '</div>' +
+    '<div class="stats-rank-sub" style="padding:0 0 6px;font-size:11px">' +
+    s.differ + ' differ · ' + s.cosmetic + ' cosmetic · ' + s.clean + ' clean' +
+    (s.localOnly ? ' · ' + s.localOnly + ' only local' : '') +
+    (s.mbOnly ? ' · ' + s.mbOnly + ' only on release' : '') + '</div>'
+  var rows = diff.rows.map(function (r) {
+    var cls = r.kind === 'match'
+      ? (r.titleDiffers || r.numberDiffers ? 'tagfix-diff' : (r.titleCosmetic ? 'tagfix-cosmetic' : 'tagfix-clean'))
+      : (r.kind === 'local-only' ? 'tagfix-local-only' : 'tagfix-mb-only')
+    var localNo = r.localNo ? ('<span class="tagfix-no">' + r.localNo + '.</span> ') : ''
+    var mbNo = r.mbNo ? ('<span class="tagfix-no">' + r.mbNo + '.</span> ') : ''
+    var localCell = r.kind === 'mb-only'
+      ? '<span class="tagfix-empty">— not in your library —</span>'
+      : localNo + esc(r.localTitle || '')
+    var mbCell = r.kind === 'local-only'
+      ? '<span class="tagfix-empty">— not on the release —</span>'
+      : mbNo + esc(r.mbTitle || '')
+    return '<div class="tagfix-row ' + cls + '">' +
+      '<div class="tagfix-local">' + localCell + '</div>' +
+      '<div class="tagfix-arrow">' + ((r.titleDiffers || r.numberDiffers || r.kind !== 'match') ? '→' : '=') + '</div>' +
+      '<div class="tagfix-mb">' + mbCell + '</div>' +
+      '</div>'
+  }).join('')
+  return head +
+    '<div class="tagfix-table"><div class="tagfix-row tagfix-header">' +
+    '<div class="tagfix-local">Your tags</div><div class="tagfix-arrow"></div><div class="tagfix-mb">MusicBrainz</div></div>' +
+    rows + '</div>' +
+    '<div style="margin-top:8px"><button class="secondary" disabled title="Coming soon" style="padding:6px 14px;font-size:12px;opacity:.5;cursor:not-allowed">Apply fixes (coming soon)</button></div>'
+}
+
+// Duplicate finder (informational only, no deletion in this wave). Scans the
+// library for tracks that are the same song — same normalized artist+title —
+// across different files/formats, and lists each cluster with format and size.
+function renderDupeFinder() {
+  var out = document.getElementById('dupes-result')
+  if (!out) return
+  var _mt = (typeof window !== 'undefined' && window.PapaMusicTools) || null
+  if (!_mt) { out.innerHTML = '<div class="stats-rank-sub">Duplicate finder unavailable.</div>'; return }
+  var groups = _mt.findDuplicateTracks(state.library)
+  if (!groups.length) {
+    out.innerHTML = '<div class="stats-rank-sub" style="padding:8px 0">No duplicate tracks found.</div>'
+    return
+  }
+  var totalWasted = groups.reduce(function (s, g) { return s + (g.wastedBytes || 0) }, 0)
+  var html = '<div class="dupes-summary">' + groups.length + ' duplicated song' + (groups.length !== 1 ? 's' : '') +
+    ' · about ' + _fmtBytes(totalWasted) + ' reclaimable</div>'
+  html += groups.map(function (g) {
+    var rows = g.entries.map(function (e) {
+      var meta = [e.format, e.quality, e.channels >= 6 ? (e.channels === 8 ? '7.1' : '5.1') : '', _fmtBytes(e.size)]
+        .filter(Boolean).join(' · ')
+      return '<div class="dupe-file">' +
+        '<div class="dupe-file-path" title="' + esc(e.filePath) + '">' + esc(e.albumName || e.filePath.split('/').pop()) + '</div>' +
+        '<div class="dupe-file-meta">' + esc(meta) + '</div>' +
+        '</div>'
+    }).join('')
+    return '<div class="dupe-group">' +
+      '<div class="dupe-group-head">' + esc(g.artist || 'Unknown') + ' — ' + esc(g.title) +
+      ' <span class="dupe-count">' + g.entries.length + ' copies</span></div>' +
+      rows + '</div>'
+  }).join('')
+  out.innerHTML = html
 }
 
 function exportStats(format) {
@@ -9807,26 +13879,23 @@ function updateLikeBtn(albumId) {
   document.querySelectorAll('.album-like-btn').forEach(btn => {
     if (!albumId || btn.dataset.album === albumId) btn.classList.toggle('liked', liked)
   })
-  // Update player bar heart for currently playing album
-  const npAlbum = state.library.find(a => a.id === currentAlbumId)
-  if (npAlbum && state.queue.length && npAlbum.tracks.some(t => t.filePath === state.queue[state.queueIndex]?.filePath)) {
-    const likeBtn = document.getElementById('btn-like')
-    if (likeBtn) likeBtn.classList.toggle('liked', liked)
-  }
+  // The player-bar heart is TRACK-scoped now (Spotify convention), so album
+  // like/unlike must NOT flip it — updatePlayerLikeBtn owns the bar heart.
 }
 
 function updatePlayerLikeBtn() {
+  // The bar heart tracks the currently-playing TRACK's like state (Spotify
+  // convention), so it fills iff that track is in likedTracks. dataset.album is
+  // still stamped for callers that key off the playing album (updateLikeBtn).
   const likeBtn = document.getElementById('btn-like')
   const currentTrack = state.queue[state.queueIndex]
-  const album = currentTrack && state.library.find(a => a.tracks.some(t => t.filePath === currentTrack.filePath))
   if (!likeBtn) return
-  if (!album) {
-    likeBtn.classList.remove('liked')
-    delete likeBtn.dataset.album
-    return
-  }
-  likeBtn.classList.toggle('liked', state.likedAlbums.includes(album.id))
-  likeBtn.dataset.album = album.id
+  const album = currentTrack && state.library.find(a => a.tracks.some(t => t.filePath === currentTrack.filePath))
+  if (album) likeBtn.dataset.album = album.id
+  else delete likeBtn.dataset.album
+  const liked = !!(currentTrack && currentTrack.filePath &&
+    state.likedTracks.includes(currentTrack.filePath))
+  likeBtn.classList.toggle('liked', liked)
 }
 
 // ── Queue panel ─────────────────────────────────────────────────────────────
@@ -9882,7 +13951,7 @@ function renderQueuePanel() {
   list.innerHTML = fromHtml + '<div style="padding:12px;font-size:13px;font-weight:600;display:flex;justify-content:space-between"><span>Queue (' + state.queue.length + ')</span><span style="font-size:11px;color:var(--text3);font-weight:400">' + totalQDstr + '</span></div>' + state.queue.map((t, i) => {
     const isPlaying = i === state.queueIndex
     const art = t.artPath
-      ? `<img class="queue-row-art" src="${esc('file://' + t.artPath)}" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
+      ? `<img class="queue-row-art" src="${esc(_artSrc(t.artPath))}" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
       : ''
     const stereoBadge = (hasSurround && (t.channels || 0) < 6) ? '<span class="q-stereo-badge">STEREO</span>' : ''
     return `
@@ -9920,10 +13989,52 @@ function renderQueuePanel() {
     renderQueuePanel()
     pushUndo('Queue cleared', function() {
       state.queue = savedQueue; state.queueIndex = savedIdx
+      // Re-arm gapless prefetch and refresh the transport chrome the way the
+      // sibling undo paths do (~14004, ~23564) — without this the restored
+      // album silently stopped at the next track boundary and the play button
+      // read wrong.
+      updateNextPrefetch()
+      updatePlayBtn()
+      const restored = savedIdx >= 0 ? savedQueue[savedIdx] : null
+      if (restored) updateNowPlaying(restored)
       if (state.queuePanelOpen) renderQueuePanel()
     })
   })
-  list.appendChild(clearBtn)
+  // "Clear played": drop everything before the current track, so a long queue
+  // does not keep growing behind you. Only meaningful once something is playing
+  // and there is history to shed; hidden otherwise so it is never a dead button.
+  var clearPlayedBtn = null
+  if (state.queueIndex > 0) {
+    clearPlayedBtn = document.createElement('button')
+    clearPlayedBtn.className = 'queue-clear-btn queue-clear-played-btn'
+    clearPlayedBtn.textContent = 'Clear played'
+    clearPlayedBtn.addEventListener('click', () => {
+      if (state.queueIndex <= 0) return
+      var tools = (typeof window !== 'undefined' && window.PapaMusicTools) || null
+      var res = tools
+        ? tools.clearPlayedQueue(state.queue, state.queueIndex)
+        : { queue: state.queue.slice(state.queueIndex), queueIndex: 0 }
+      var savedQueue = state.queue.slice(), savedIdx = state.queueIndex
+      state.queue = res.queue
+      state.queueIndex = res.queueIndex
+      _pendingShuffle = null
+      updateNextPrefetch()
+      renderQueuePanel()
+      pushUndo('Cleared played tracks', function() {
+        state.queue = savedQueue; state.queueIndex = savedIdx
+        _pendingShuffle = null
+        updateNextPrefetch()
+        if (state.queuePanelOpen) renderQueuePanel()
+      })
+    })
+  }
+
+  // Both clear actions sit in one row so they read as a pair.
+  const clearRow = document.createElement('div')
+  clearRow.className = 'queue-clear-row'
+  clearRow.appendChild(clearBtn)
+  if (clearPlayedBtn) clearRow.appendChild(clearPlayedBtn)
+  list.appendChild(clearRow)
 
   // Autoplay toggle
   document.getElementById('queue-autoplay-toggle')?.addEventListener('click', () => {
@@ -10001,7 +14112,7 @@ function renderQueuePanel() {
         ghost.style.cssText = 'position:fixed;top:-200px;left:-200px;z-index:9999;display:flex;align-items:center;gap:8px;padding:6px 12px 6px 8px;background:rgba(22,22,22,.96);border:1px solid rgba(255,255,255,.14);border-radius:8px;font-size:12px;color:#fff;max-width:230px;pointer-events:none'
         if (t.artPath) {
           const img = document.createElement('img')
-          img.src = 'file://' + t.artPath
+          img.src = _artSrc(t.artPath)
           img.style.cssText = 'width:28px;height:28px;border-radius:4px;object-fit:cover;flex-shrink:0'
           ghost.appendChild(img)
         }
@@ -10113,7 +14224,7 @@ function renderQueuePanel() {
         suggs.map((t, i) => `
           <div class="queue-suggestion-row" data-sugg-idx="${i}">
             ${t.artPath
-              ? `<img class="queue-suggestion-art" src="${esc('file://' + t.artPath)}" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"><div class="queue-suggestion-art-fb" style="display:none"><svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg></div>`
+              ? `<img class="queue-suggestion-art" src="${esc(_artSrc(t.artPath))}" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"><div class="queue-suggestion-art-fb" style="display:none"><svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg></div>`
               : `<div class="queue-suggestion-art-fb"><svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg></div>`}
             <div class="queue-suggestion-info">
               <div class="queue-suggestion-title">${esc(t.title)}</div>
@@ -10163,107 +14274,411 @@ function addToQueue(album, tracksOverride) {
 }
 
 // ── Now Playing modal ───────────────────────────────────────────────────────
-let _npHideTimer = null
-function resetNpHide() {
+// Idle behaviour: after IDLE_MS without activity the chrome and deck fade out,
+// leaving the art, title, a clock and the Up Next chip. Any activity restores
+// them instantly. Timers are cleared on close so nothing keeps firing behind a
+// closed modal (the interval-leak probe would catch a stray one).
+const NP_IDLE_MS = 10000
+let _npIdleTimer = null
+let _npClockTimer = null
+
+// Pure so the idle logic is testable without the DOM (test/np-redesign):
+// given "now" and "last activity", decide whether the modal should be idle.
+function npShouldIdle(now, lastActivity, idleMs) {
+  return (now - lastActivity) >= (idleMs == null ? NP_IDLE_MS : idleMs)
+}
+
+// HH:MM in the user's locale-independent 24h-ish form, for the idle clock.
+function npClockText(d) {
+  const dt = d || new Date()
+  const hh = String(dt.getHours()).padStart(2, '0')
+  const mm = String(dt.getMinutes()).padStart(2, '0')
+  return hh + ':' + mm
+}
+
+function _npDrawClock() {
+  const el = document.getElementById('np-idle-clock')
+  if (el) el.textContent = npClockText()
+}
+
+// Re-arming the idle timer on EVERY mousemove is wasteful at 4K (clearTimeout +
+// setTimeout thousands of times a second contends with paint). Waking from idle
+// must stay instant, so the classList.remove is always honoured — but only when
+// the class is actually present — while the timer re-arm is throttled to once
+// per _NP_REARM_MS. Losing sub-quarter-second precision on a 10s idle window is
+// imperceptible.
+const _NP_REARM_MS = 250
+let _npLastRearm = 0
+function resetNpIdle() {
   const modal = document.getElementById('np-modal')
   if (!modal || !state.modalOpen) return
-  modal.classList.remove('controls-hidden')
-  clearTimeout(_npHideTimer)
-  _npHideTimer = setTimeout(() => modal.classList.add('controls-hidden'), 3000)
+  const wasIdle = modal.classList.contains('np-idle')
+  if (wasIdle) modal.classList.remove('np-idle')
+  const now = Date.now()
+  if (!wasIdle && (now - _npLastRearm) < _NP_REARM_MS) return
+  _npLastRearm = now
+  clearTimeout(_npIdleTimer)
+  _npIdleTimer = setTimeout(() => {
+    const m = document.getElementById('np-modal')
+    if (m && state.modalOpen) { _npDrawClock(); m.classList.add('np-idle') }
+  }, NP_IDLE_MS)
+}
+// Kept under its old name so any external caller still resets activity.
+function resetNpHide() { resetNpIdle() }
+
+// One focus manager for the app's own modals, so each one does not reinvent it
+// (and get it subtly wrong). On open it remembers what had focus, moves focus
+// to the first sensible target inside the modal, and keeps Tab from wandering
+// out of it. It returns a release function that unbinds the trap and puts focus
+// back where it was. The video theatre is deliberately untouched — it has its
+// own focus system. Escape is handled elsewhere (the global keydown cascade);
+// this only covers focus movement and Tab containment.
+function _focusables(container) {
+  if (!container) return []
+  const sel = 'a[href], button:not([disabled]), input:not([disabled]), ' +
+    'select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+  return Array.prototype.filter.call(container.querySelectorAll(sel), el => {
+    // Skip anything not actually laid out (display:none rows, hidden tabs).
+    return el.offsetWidth > 0 || el.offsetHeight > 0 || el === document.activeElement
+  })
+}
+
+function _trapFocus(container, opts) {
+  if (!container) return () => {}
+  const prev = document.activeElement
+  const onKey = e => {
+    if (e.key !== 'Tab') return
+    const items = _focusables(container)
+    if (!items.length) { e.preventDefault(); return }
+    const first = items[0]
+    const last = items[items.length - 1]
+    const active = document.activeElement
+    // Wrap at the ends, and pull a stray focus (somehow outside) back in.
+    if (e.shiftKey) {
+      if (active === first || !container.contains(active)) { e.preventDefault(); last.focus() }
+    } else {
+      if (active === last || !container.contains(active)) { e.preventDefault(); first.focus() }
+    }
+  }
+  container.addEventListener('keydown', onKey)
+  // Move focus in: a caller-named target, else the first focusable, else the
+  // container itself (so Tab has an anchor even in a modal with no controls).
+  const initial = (opts && opts.initial && container.querySelector(opts.initial)) ||
+    _focusables(container)[0] || container
+  try { initial.focus() } catch (_) {}
+  let released = false
+  return () => {
+    if (released) return
+    released = true
+    container.removeEventListener('keydown', onKey)
+    // Only restore if the opener still exists and nothing else deliberately
+    // took focus in the meantime.
+    if (prev && typeof prev.focus === 'function' && document.contains(prev)) {
+      try { prev.focus() } catch (_) {}
+    }
+  }
 }
 
 function showNowPlayingModal() {
+  // Re-entry guard (audit renderer P2): the fullscreen hotkey can fire while
+  // the modal is already open. Running the whole open path again installs a
+  // second _trapFocus (stacking focus-trap listeners that never get released).
+  // Already open → do nothing rather than stack.
+  if (state.modalOpen) return
   state.modalOpen = true
   const modal = document.getElementById('np-modal')
-  modal.style.display = 'flex'
-  modal.classList.remove('art-expanded')
-  if (!modal._autoHideWired) {
-    modal._autoHideWired = true
-    modal.addEventListener('mousemove', resetNpHide)
-    modal.addEventListener('click',     resetNpHide)
-  }
-  resetNpHide()
+  modal.style.display = 'grid'
+  modal.classList.remove('art-expanded', 'np-idle', 'queue-open')
+  _wireNpModalOnce(modal)
+  resetNpIdle()
+  // Drive the idle clock once a minute so it is right the moment it appears.
+  clearInterval(_npClockTimer)
+  _npDrawClock()
+  _npClockTimer = setInterval(_npDrawClock, 30000)
   updateNowPlayingModal()
   updateNpNext()
-  renderLyricsPanel()
-  if (!document.getElementById('np-next')?._clickWired) {
-    const nextEl = document.getElementById('np-next')
-    if (nextEl) {
-      nextEl._clickWired = true
-      nextEl.addEventListener('click', () => {
-        if (state.queueIndex + 1 < state.queue.length) {
-          state.queueIndex++
-          playCurrentTrack()
-          updateNowPlayingModal()
-          updateNpNext()
-        }
-      })
-    }
+  // The modal's volume slider is only updated by setVolDisplay while the modal
+  // is mounted, so seed it from the real volume the moment it opens — otherwise
+  // it shows whatever it last rendered (repro: 80% while volume was 0).
+  setVolDisplay(audio.volume)
+  // Lyrics only render when the lyrics stage is actually shown.
+  if (modal.classList.contains('lyrics-mode')) renderLyricsPanel()
+  // Keyboard focus stays inside the modal and returns to the opener on close.
+  modal._releaseFocus = _trapFocus(modal, { initial: '#np-modal-close' })
+}
+
+// Everything that must be bound exactly once, behind the modal element (never
+// document/window — the soak listener budget counts those, and a duplicate
+// would double-fire). Guarded by a flag so re-opening the modal never re-binds.
+function _wireNpModalOnce(modal) {
+  if (modal._npWired) return
+  modal._npWired = true
+
+  // Any activity restores chrome + deck immediately, then re-arms the idle timer.
+  modal.addEventListener('mousemove', resetNpIdle)
+  modal.addEventListener('keydown', resetNpIdle)
+
+  // Up Next chip → open the queue panel.
+  const nextEl = document.getElementById('np-next')
+  if (nextEl) nextEl.addEventListener('click', () => { openNpQueue(); resetNpIdle() })
+
+  // Queue panel controls.
+  document.getElementById('np-modal-queue')?.addEventListener('click', toggleNpQueue)
+  document.getElementById('np-queue-close')?.addEventListener('click', closeNpQueue)
+
+  // Draggable seek.
+  const modalTrack = document.getElementById('np-modal-track')
+  const modalFill  = document.getElementById('np-modal-fill')
+  const modalThumb = document.getElementById('np-modal-thumb')
+  if (modalTrack) {
+    makeDraggable(modalTrack, modalFill, modalThumb, ratio => {
+      if (audio.duration) audio.currentTime = ratio * audio.duration
+    })
+    // Keyboard seek on the slider itself.
+    modalTrack.addEventListener('keydown', e => {
+      if (!audio.duration) return
+      if (e.key === 'ArrowRight') { e.preventDefault(); audio.currentTime = Math.min(audio.duration, audio.currentTime + 5) }
+      else if (e.key === 'ArrowLeft') { e.preventDefault(); audio.currentTime = Math.max(0, audio.currentTime - 5) }
+    })
+    // Hover time bubble.
+    modalTrack.addEventListener('mousemove', function(e) {
+      if (!audio.duration) return
+      const rect = modalTrack.getBoundingClientRect()
+      const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
+      const tooltip = document.getElementById('progress-tooltip')
+      if (tooltip) {
+        tooltip.textContent = fmtDur(audio.duration * pct)
+        tooltip.style.position = 'fixed'
+        tooltip.style.transform = 'none'
+        tooltip.style.bottom = 'auto'
+        tooltip.style.display = 'block'
+        tooltip.style.left = (e.clientX - 50) + 'px'
+        tooltip.style.top  = (rect.top - 24) + 'px'
+      }
+    })
+    modalTrack.addEventListener('mouseleave', function() {
+      const tooltip = document.getElementById('progress-tooltip')
+      if (tooltip) {
+        tooltip.style.display = 'none'
+        tooltip.style.position = ''
+        tooltip.style.transform = ''
+        tooltip.style.bottom = ''
+        tooltip.style.top = ''
+        tooltip.style.left = ''
+      }
+    })
   }
 
-  if (!modal._draggableSetup) {
-    modal._draggableSetup = true
-    const modalTrack = document.getElementById('np-modal-track')
-    const modalFill  = document.getElementById('np-modal-fill')
-    const modalThumb = document.getElementById('np-modal-thumb')
-    if (modalTrack) {
-      makeDraggable(modalTrack, modalFill, modalThumb, ratio => {
-        if (audio.duration) audio.currentTime = ratio * audio.duration
-      })
-    }
+  // Volume slider inside the deck: drives the same audio.volume as the bar.
+  const volTrack = document.getElementById('np-modal-vol-track')
+  const volFill  = document.getElementById('np-modal-vol-fill')
+  const volThumb = document.getElementById('np-modal-vol-thumb')
+  if (volTrack) {
+    makeDraggable(volTrack, volFill, volThumb, ratio => {
+      audio.volume = Math.max(0, Math.min(1, ratio))
+      state.lastVolume = audio.volume
+      setVolDisplay(audio.volume)
+      clearTimeout(_volSaveTimer)
+      _volSaveTimer = setTimeout(() => window.api.saveVolume(audio.volume), 300)
+    })
+    volTrack.addEventListener('keydown', e => {
+      let v = audio.volume
+      if (e.key === 'ArrowRight' || e.key === 'ArrowUp') { e.preventDefault(); v = Math.min(1, v + 0.05) }
+      else if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') { e.preventDefault(); v = Math.max(0, v - 0.05) }
+      else return
+      audio.volume = v; state.lastVolume = v; setVolDisplay(v)
+      clearTimeout(_volSaveTimer)
+      _volSaveTimer = setTimeout(() => window.api.saveVolume(audio.volume), 300)
+    })
   }
 
-  if (!modal._tooltipWired) {
-    modal._tooltipWired = true
-    const modalTrack = document.getElementById('np-modal-track')
-    if (modalTrack) {
-      modalTrack.addEventListener('mousemove', function(e) {
-        if (!audio.duration) return
-        const rect = modalTrack.getBoundingClientRect()
-        const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
-        const tooltip = document.getElementById('progress-tooltip')
-        if (tooltip) {
-          // The one tooltip element is shared with the player bar, where it is
-          // absolutely positioned inside .progress-track and centred with a
-          // transform. Here it is positioned against the viewport, so the
-          // transform and the bar's `bottom` both have to be undone -- stated
-          // here rather than guessed at by an attribute-substring selector.
-          tooltip.textContent = fmtDur(audio.duration * pct)
-          tooltip.style.position = 'fixed'
-          tooltip.style.transform = 'none'
-          tooltip.style.bottom = 'auto'
-          tooltip.style.display = 'block'
-          tooltip.style.left = (e.clientX - 50) + 'px'
-          tooltip.style.top  = (rect.top - 24) + 'px'
-        }
-      })
-      modalTrack.addEventListener('mouseleave', function() {
-        const tooltip = document.getElementById('progress-tooltip')
-        if (tooltip) {
-          // Every inline override is cleared, or the player bar's tooltip
-          // inherits the modal's fixed positioning for the rest of the session.
-          tooltip.style.display = 'none'
-          tooltip.style.position = ''
-          tooltip.style.transform = ''
-          tooltip.style.bottom = ''
-          tooltip.style.top = ''
-          tooltip.style.left = ''
-        }
-      })
-    }
+  // Wheel anywhere in the modal = volume ±5 with a slim flash on the bar.
+  modal.addEventListener('wheel', e => {
+    // The lyrics list scrolls; don't hijack the wheel when it is over it.
+    if (e.target.closest('.lyrics-panel') || e.target.closest('.np-queue-list')) return
+    e.preventDefault()
+    const delta = e.deltaY < 0 ? 0.05 : -0.05
+    audio.volume = Math.max(0, Math.min(1, audio.volume + delta))
+    state.lastVolume = audio.volume
+    setVolDisplay(audio.volume)
+    _npVolFlash()
+    clearTimeout(_volSaveTimer)
+    _volSaveTimer = setTimeout(() => window.api.saveVolume(audio.volume), 300)
+  }, { passive: false })
+
+  // Art: single click = play/pause (with a pulse), double-click = full-art.
+  const artBox = document.getElementById('np-modal-art-box')
+  if (artBox) {
+    let _clickTimer = null
+    artBox.addEventListener('click', () => {
+      // Defer the single-click so a double-click doesn't also toggle playback.
+      clearTimeout(_clickTimer)
+      _clickTimer = setTimeout(() => { togglePlay(); _npArtPulse() }, 220)
+    })
+    artBox.addEventListener('dblclick', () => {
+      clearTimeout(_clickTimer)
+      // A double-click while collapsed enters full-art; while expanded, exits.
+      toggleNpFullArt()
+    })
+  }
+}
+
+// The slim volume flash: reuse the deck's volume fill; nothing extra to build.
+function _npVolFlash() {
+  const fill = document.getElementById('np-modal-vol-fill')
+  const thumb = document.getElementById('np-modal-vol-thumb')
+  const pct = Math.round((audio.volume || 0) * 100) + '%'
+  if (fill) fill.style.width = pct
+  if (thumb) thumb.style.left = pct
+  const vt = document.getElementById('np-modal-vol-track')
+  if (vt) vt.setAttribute('aria-valuenow', String(Math.round((audio.volume || 0) * 100)))
+}
+
+// The play/pause pulse over the art.
+function _npArtPulse() {
+  const pulse = document.getElementById('np-art-pulse')
+  if (!pulse) return
+  // Show the icon for the state we are entering.
+  const p = pulse.querySelector('.icon-play')
+  const u = pulse.querySelector('.icon-pause')
+  if (p) p.style.display = state.isPlaying ? 'none' : 'block'
+  if (u) u.style.display = state.isPlaying ? 'block' : 'none'
+  pulse.classList.remove('pulsing')
+  // Force reflow so re-adding the class restarts the animation.
+  void pulse.offsetWidth
+  pulse.classList.add('pulsing')
+}
+
+function toggleNpFullArt() {
+  const modal = document.getElementById('np-modal')
+  if (!modal) return
+  modal.classList.toggle('art-expanded')
+  const expanded = modal.classList.contains('art-expanded')
+  const btn = document.getElementById('np-modal-full-art')
+  if (btn) {
+    const icon = btn.querySelector('svg')
+    if (icon) icon.innerHTML = expanded
+      ? '<path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"/>'
+      : '<path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/>'
+  }
+}
+
+function toggleNpLyrics() {
+  const modal = document.getElementById('np-modal')
+  if (!modal) return
+  modal.classList.toggle('lyrics-mode')
+  const on = modal.classList.contains('lyrics-mode')
+  const btn = document.getElementById('np-modal-lyrics-toggle')
+  if (btn) btn.setAttribute('aria-pressed', on ? 'true' : 'false')
+  if (on) {
+    // Only fetch/render lyrics when the panel is actually visible.
+    const track = state.queue[state.queueIndex]
+    const titleEl = document.getElementById('np-modal-lyrics-title')
+    const artistEl = document.getElementById('np-modal-lyrics-artist')
+    if (track && titleEl) titleEl.textContent = track.title || '—'
+    if (track && artistEl) artistEl.textContent = track.albumArtist || track.artist || '—'
+    renderLyricsPanel()
   }
 }
 
 function hideNowPlayingModal() {
   state.modalOpen = false
-  clearTimeout(_npHideTimer)
+  clearTimeout(_npIdleTimer)
+  clearInterval(_npClockTimer)
+  _npClockTimer = null
   const modal = document.getElementById('np-modal')
-  modal.classList.remove('controls-hidden')
+  modal.classList.remove('np-idle', 'queue-open')
   modal.style.display = 'none'
+  if (modal._releaseFocus) { try { modal._releaseFocus() } catch (_) {} modal._releaseFocus = null }
   const artBg = document.getElementById('np-modal-art-bg')
   if (artBg) artBg.src = ''
   const artImg = document.getElementById('np-modal-art-img')
   if (artImg) artImg.src = ''
+}
+
+// ── The modal queue panel ──────────────────────────────────────────────────
+function openNpQueue() {
+  const modal = document.getElementById('np-modal')
+  if (!modal) return
+  modal.classList.add('queue-open')
+  document.getElementById('np-modal-queue')?.setAttribute('aria-expanded', 'true')
+  renderNpQueue()
+}
+function closeNpQueue() {
+  const modal = document.getElementById('np-modal')
+  if (!modal) return
+  modal.classList.remove('queue-open')
+  document.getElementById('np-modal-queue')?.setAttribute('aria-expanded', 'false')
+}
+function toggleNpQueue() {
+  const modal = document.getElementById('np-modal')
+  if (!modal) return
+  if (modal.classList.contains('queue-open')) closeNpQueue()
+  else openNpQueue()
+}
+function npQueueOpen() {
+  const modal = document.getElementById('np-modal')
+  return !!(modal && modal.classList.contains('queue-open'))
+}
+
+// Reuses the same queue data (state.queue / state.queueIndex) and jump path
+// (playCurrentTrack) as the main queue panel; click-to-jump, current row
+// highlighted. Kept deliberately lightweight — reorder/drag stays in the main
+// panel.
+function renderNpQueue() {
+  const list = document.getElementById('np-queue-list')
+  if (!list) return
+  if (!state.queue.length) {
+    list.innerHTML = '<div class="np-q-empty">Nothing in queue</div>'
+    return
+  }
+  list.innerHTML = state.queue.map((t, i) => {
+    const isPlaying = i === state.queueIndex
+    const art = t.artPath
+      ? `<img class="np-q-art" src="${esc(_artSrc(t.artPath))}" alt="" onerror="this.style.visibility='hidden'">`
+      : '<div class="np-q-art"></div>'
+    const eq = isPlaying ? '<span class="np-q-eq" aria-hidden="true">▶</span>' : ''
+    return `<div class="np-q-row ${isPlaying ? 'playing' : ''}" role="button" tabindex="0" data-np-q-idx="${i}"
+        aria-current="${isPlaying ? 'true' : 'false'}">
+        ${art}
+        <div class="np-q-info">
+          <div class="np-q-title">${esc(t.title || '—')}</div>
+          <div class="np-q-artist">${esc(t.albumArtist || t.artist || '')}</div>
+        </div>
+        ${eq}
+      </div>`
+  }).join('')
+  const jump = idx => {
+    if (!Number.isInteger(idx) || idx < 0 || idx >= state.queue.length) return
+    state.queueIndex = idx
+    playCurrentTrack()
+    renderNpQueue()
+    updateNowPlayingModal()
+    updateNpNext()
+  }
+  list.querySelectorAll('.np-q-row').forEach(row => {
+    row.addEventListener('click', () => jump(parseInt(row.dataset.npQIdx, 10)))
+    row.addEventListener('keydown', e => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); jump(parseInt(row.dataset.npQIdx, 10)) }
+    })
+  })
+}
+
+// Track the album whose palette is currently applied, so switching tracks
+// within an album does not re-extract, and switching albums does.
+let _npPaletteAlbumId = null
+
+// Set the fullscreen backdrop <img>. The full-res cover goes straight in and
+// styles.css applies a real blur(60px): this layer was briefly replaced with a
+// pre-baked 48px thumbnail on the theory that the blur caused the fullscreen
+// click lag, but A/B profiling cleared it (the stall was a root-level
+// --np-bar-progress write; see the timeupdate handler) and the baked version
+// visibly banded. '' clears the backdrop.
+function setNpArtBg(artBgEl, url) {
+  if (!artBgEl) return
+  if (!url) { artBgEl.src = ''; artBgEl.style.display = 'none'; return }
+  artBgEl.style.display = 'block'
+  artBgEl.src = url
 }
 
 function updateNowPlayingModal() {
@@ -10272,22 +14687,18 @@ function updateNowPlayingModal() {
   const artistEl = document.getElementById('np-modal-artist')
   const albumEl  = document.getElementById('np-modal-album')
   const artBgEl  = document.getElementById('np-modal-art-bg')
+  const artUrl = track?.artPath
+    ? (/^https?:\/\//.test(track.artPath) ? track.artPath : `file://${track.artPath}`)
+    : ''
   if (titleEl)  titleEl.textContent  = track?.title  || '—'
   if (artistEl) artistEl.textContent = track?.albumArtist || track?.artist || '—'
-  if (albumEl)  albumEl.textContent  = track?.albumName || ''
-  if (artBgEl) {
-    if (track?.artPath) {
-      artBgEl.src = /^https?:\/\//.test(track.artPath) ? track.artPath : `file://${track.artPath}`
-      artBgEl.style.display = 'block'
-    } else {
-      artBgEl.style.display = 'none'
-    }
-  }
+  if (albumEl)  albumEl.textContent  = track?.albumName || '—'
+  if (artBgEl) setNpArtBg(artBgEl, artUrl)
   const artImg = document.getElementById('np-modal-art-img')
   const artFb  = document.getElementById('np-modal-art-fb')
   if (artImg) {
-    if (track?.artPath) {
-      artImg.src = /^https?:\/\//.test(track.artPath) ? track.artPath : `file://${track.artPath}`
+    if (artUrl) {
+      artImg.src = artUrl
       artImg.style.display = 'block'
       if (artFb) artFb.style.display = 'none'
     } else {
@@ -10296,10 +14707,20 @@ function updateNowPlayingModal() {
       if (artFb) artFb.style.display = 'flex'
     }
   }
-  // Sync shuffle/repeat state
+  // Lyrics-mode mini art mirrors the cover.
+  const miniArt = document.getElementById('np-lyrics-mini-art')
+  if (miniArt) miniArt.style.backgroundImage = artUrl ? `url("${artUrl}")` : 'none'
+
+  // Palette → CSS custom properties on the modal. Falls back to the app accent
+  // on any failure (headless, tainted canvas, no art). Cached per album id.
+  _applyNpPalette(track, artImg, artUrl)
+
+  // Sync shuffle/repeat/like state.
   document.getElementById('np-modal-shuffle')?.classList.toggle('active', state.shuffle)
   updateRepeatBtns()
-  // Sync karaoke header
+  _syncNpLike(track)
+
+  // Karaoke header.
   if (track) {
     const lyrTitle = document.getElementById('np-modal-lyrics-title')
     const lyrArtist = document.getElementById('np-modal-lyrics-artist')
@@ -10308,22 +14729,106 @@ function updateNowPlayingModal() {
   }
   updateStatsRow(track)
   updateNpNext()
+
+  // Announce the track for screen readers while the modal is open.
+  if (state.modalOpen && track) {
+    const live = document.getElementById('np-live')
+    if (live) live.textContent = 'Now playing: ' + (track.title || 'Unknown') +
+      ' by ' + (track.albumArtist || track.artist || 'Unknown artist')
+  }
+  // Keep the modal queue panel in step if it is open.
+  if (npQueueOpen()) renderNpQueue()
 }
 
+// Mirror the bar's like state onto the modal heart, and colour it.
+function _syncNpLike(track) {
+  const btn = document.getElementById('np-modal-like')
+  if (!btn) return
+  const liked = !!(track && track.filePath && state.likedTracks &&
+    state.likedTracks.includes(track.filePath))
+  btn.classList.toggle('liked', liked)
+  btn.setAttribute('aria-pressed', liked ? 'true' : 'false')
+  const out = btn.querySelector('.heart-outline')
+  const fill = btn.querySelector('.heart-filled')
+  if (out) out.style.display = liked ? 'none' : 'block'
+  if (fill) fill.style.display = liked ? 'block' : 'none'
+}
+
+// Apply an extracted palette as CSS vars on the modal and drive the bar
+// hairline colour. Guarded end-to-end so a failure just leaves the fallback.
+function _applyNpPalette(track, artImg, artUrl) {
+  const modal = document.getElementById('np-modal')
+  const pal = (typeof window !== 'undefined' && window.PapaPalette) || null
+  const setVars = p => {
+    if (!modal) return
+    if (p && p.accent) {
+      modal.style.setProperty('--np-accent', p.accent)
+      modal.style.setProperty('--np-dominant', p.dominant)
+      modal.style.setProperty('--np-muted', p.muted)
+      // Same scoping rule as --np-bar-progress: the accent is only read by
+      // .player-bar::after, so write it on the bar, not the document root.
+      const bar = _dom.playerBar || document.getElementById('player-bar')
+      if (bar) bar.style.setProperty('--np-bar-accent', p.accent)
+    } else {
+      modal.style.removeProperty('--np-accent')
+      modal.style.removeProperty('--np-dominant')
+      modal.style.removeProperty('--np-muted')
+      const bar = _dom.playerBar || document.getElementById('player-bar')
+      if (bar) bar.style.removeProperty('--np-bar-accent')
+    }
+  }
+  if (!pal || !pal.extractPalette || !artUrl) { setVars(null); return }
+  const albumId = track && (track.albumId != null ? track.albumId : track.albumName)
+  if (albumId != null && albumId === _npPaletteAlbumId) return  // already applied
+  _npPaletteAlbumId = albumId
+  try {
+    pal.extractPalette(artImg || artUrl, albumId).then(p => {
+      // Guard against a late resolve after the track changed again.
+      if (_npPaletteAlbumId !== albumId) return
+      setVars(p)
+    }).catch(() => setVars(null))
+  } catch (_) { setVars(null) }
+}
+
+// The Up Next chip must agree with what will ACTUALLY play next, so it uses the
+// same authority as playback (computeNextIndex). Under repeat-one the "next"
+// track is the current one, which read as a duplicate row pretending to be a
+// different song; say "Repeats" instead.
 function updateNpNext() {
   const el = document.getElementById('np-next')
   if (!el || !state.modalOpen) return
-  const nextIdx = state.queueIndex + 1
-  if (nextIdx < state.queue.length) {
-    const next = state.queue[nextIdx]
+  const titleEl  = document.getElementById('np-next-title')
+  const artistEl = document.getElementById('np-next-artist')
+  const artEl    = document.getElementById('np-next-art')
+  const labelEl  = el.querySelector('.np-next-label')
+
+  if (state.repeat === 'one' && state.queue.length) {
+    // It repeats: don't pretend the current track is a different "next".
+    const cur = state.queue[state.queueIndex]
     el.style.display = 'flex'
-    document.getElementById('np-next-title').textContent = next.title || '—'
-    document.getElementById('np-next-artist').textContent = next.albumArtist || next.artist || ''
-    const artEl = document.getElementById('np-next-art')
-    if (next.artPath) { artEl.src = 'file://' + next.artPath; artEl.style.display = 'block' }
-    else { artEl.src = ''; artEl.style.display = 'none' }
-  } else {
+    if (labelEl) labelEl.textContent = 'Repeats'
+    if (titleEl)  titleEl.textContent  = cur ? (cur.title || '—') : '—'
+    if (artistEl) artistEl.textContent = cur ? (cur.albumArtist || cur.artist || '') : ''
+    if (artEl) {
+      if (cur && cur.artPath) { artEl.src = _artSrc(cur.artPath); artEl.style.display = 'block' }
+      else { artEl.src = ''; artEl.style.display = 'none' }
+    }
+    return
+  }
+
+  const nextIdx = computeNextIndex()
+  if (nextIdx == null || nextIdx < 0 || nextIdx >= state.queue.length) {
     el.style.display = 'none'
+    return
+  }
+  const next = state.queue[nextIdx]
+  el.style.display = 'flex'
+  if (labelEl) labelEl.textContent = 'Next'
+  if (titleEl)  titleEl.textContent  = next.title || '—'
+  if (artistEl) artistEl.textContent = next.albumArtist || next.artist || ''
+  if (artEl) {
+    if (next.artPath) { artEl.src = _artSrc(next.artPath); artEl.style.display = 'block' }
+    else { artEl.src = ''; artEl.style.display = 'none' }
   }
 }
 
@@ -10480,6 +14985,7 @@ function hideContextMenu() {
 // ── Player ──────────────────────────────────────────────────────────────────
 function playAlbum(album, startIndex) {
   _oldQueue = null
+  _radioEndIfActive()
   state.queue = album.tracks.map(t => ({ ...t, albumArtist: album.artist, artPath: album.artPath, albumName: album.name, albumId: album.id }))
   state.queueIndex = startIndex
   window.api.saveRecentlyPlayed(album.id)
@@ -10489,6 +14995,7 @@ function playAlbum(album, startIndex) {
 
 function playTrack(album, trackIdx) {
   _oldQueue = null
+  _radioEndIfActive()
   if (!album.tracks[trackIdx]) return
   state.queue = album.tracks.slice(trackIdx).map(t => ({
     ...t, albumArtist: album.artist, artPath: album.artPath, albumName: album.name, albumId: album.id,
@@ -10519,6 +15026,304 @@ function restoreOldQueue() {
   state.queueIndex = _oldQueue.index
   _oldQueue = null
   playCurrentTrack()
+}
+
+// ── Artist Radio (App #65) ──────────────────────────────────────────────────
+// An endless, self-refilling queue seeded from one artist. Distinct from the
+// main-process "radio" smart-queue below: this is mined purely in the renderer
+// from state.library + the play history, so it works offline and needs no IPC.
+//
+//  - Seed pool: the seed artist's own tracks, weighted by play count.
+//  - Mix pool (~30%): tracks by artists that co-occur with the seed in the
+//    user's listening sessions (adjacency mined from getPlayHistory).
+//  - No repeats within the last 50 played (a rolling window).
+//  - Refills when fewer than 5 tracks remain ahead of the current one.
+//
+// The pure composition/adjacency/no-repeat logic lives in music-tools.js so it
+// is tested on its own; this is the wiring.
+var _RADIO_REFILL_THRESHOLD = 5
+var _RADIO_BATCH = 20
+var _RADIO_RECENT_WINDOW = 50
+var _radio = {
+  active: false,
+  seedArtist: null,
+  seedPool: [],   // seed artist's tracks (queue-shaped)
+  mixPool: [],    // co-occurring artists' tracks (queue-shaped)
+  recent: [],     // rolling filePaths already served, no-repeat window
+}
+
+// Build the seed and mix pools for an artist. Returns false when the artist has
+// no playable tracks in the library.
+function _buildRadioPools(artistName) {
+  var _mt = (typeof window !== 'undefined' && window.PapaMusicTools) || null
+  if (!_mt) return false
+
+  // Seed pool: every track by this artist, with its play count attached so the
+  // weighting favours the songs the user actually returns to.
+  var seedPool = []
+  for (var i = 0; i < state.library.length; i++) {
+    var a = state.library[i]
+    if (a.artist !== artistName && a.albumArtist !== artistName) continue
+    ;(a.tracks || []).forEach(function (t) {
+      if (!t.filePath) return
+      seedPool.push(_radioQueueItem(a, t))
+    })
+  }
+  if (!seedPool.length) return false
+
+  // Mix pool: mine artist adjacency from the play history, take the strongest
+  // neighbours, and collect their library tracks.
+  var adj = _mt.buildArtistAdjacency(state.playHistory || [], 30 * 60 * 1000)
+  var neighbours = _mt.neighborsOf(adj, artistName, 12)
+  var neighbourNames = {}
+  neighbours.forEach(function (n) { neighbourNames[n.artist] = true })
+  var mixPool = []
+  if (neighbours.length) {
+    for (var j = 0; j < state.library.length; j++) {
+      var b = state.library[j]
+      var name = b.artist || b.albumArtist
+      if (!neighbourNames[name]) continue
+      ;(b.tracks || []).forEach(function (t) {
+        if (!t.filePath) return
+        mixPool.push(_radioQueueItem(b, t))
+      })
+    }
+  }
+
+  _radio.seedArtist = artistName
+  _radio.seedPool = seedPool
+  _radio.mixPool = mixPool
+  return true
+}
+
+// Queue-shaped track carrying the play count the weighting reads.
+function _radioQueueItem(album, t) {
+  return {
+    ...t,
+    albumArtist: album.artist,
+    artPath: album.artPath,
+    albumName: album.name,
+    albumId: album.id,
+    playCount: state.playCounts[t.filePath] || 0,
+  }
+}
+
+// Draw the next batch and record every served path in the no-repeat window.
+function _radioBatch(count) {
+  var _mt = (typeof window !== 'undefined' && window.PapaMusicTools) || null
+  if (!_mt) return []
+  var batch = _mt.composeRadioBatch({
+    seedTracks: _radio.seedPool,
+    mixTracks: _radio.mixPool,
+    count: count || _RADIO_BATCH,
+    mixRatio: 0.30,
+    recentPaths: _radio.recent,
+    rng: Math.random,
+  })
+  batch.forEach(function (t) {
+    _radio.recent = _mt.pushRecent(_radio.recent, t.filePath, _RADIO_RECENT_WINDOW)
+  })
+  return batch
+}
+
+// Start (or restart) artist radio from an artist name.
+function startArtistRadio(artistName) {
+  if (!artistName) return
+  _radio.active = false
+  _radio.recent = []
+  if (!_buildRadioPools(artistName)) {
+    showSnackbar('No tracks found for "' + artistName + '" to start radio')
+    return
+  }
+  var first = _radioBatch(_RADIO_BATCH)
+  if (!first.length) {
+    showSnackbar('Not enough tracks to start radio')
+    return
+  }
+  _oldQueue = null
+  _radio.active = true
+  state.queue = first
+  state.queueIndex = 0
+  playCurrentTrack()
+  updateRadioState()
+  if (state.queuePanelOpen) renderQueuePanel()
+  showSnackbar('Radio started — endless mix from ' + artistName)
+}
+
+// Called from playNext(): when the queue is running low, top it up so radio
+// never runs dry. Also trims the queue's already-played head periodically so
+// it does not grow without bound over a long session.
+function _radioMaybeRefill() {
+  if (!_radio.active) return
+  var ahead = state.queue.length - state.queueIndex - 1
+  if (ahead >= _RADIO_REFILL_THRESHOLD) return
+  var more = _radioBatch(_RADIO_BATCH)
+  if (!more.length) {
+    // Both pools exhausted against the no-repeat window: let the window decay
+    // by clearing it, so the radio can keep going by allowing older repeats
+    // rather than stopping dead.
+    _radio.recent = _radio.recent.slice(-10)
+    more = _radioBatch(_RADIO_BATCH)
+  }
+  if (more.length) {
+    state.queue = state.queue.concat(more)
+    if (state.queuePanelOpen) renderQueuePanel()
+  }
+}
+
+function stopArtistRadio() {
+  _radio.active = false
+  _radio.seedArtist = null
+  updateRadioState()
+  if (state.queuePanelOpen) renderQueuePanel()
+  showSnackbar('Radio stopped')
+}
+
+// Silent stop for when the user intentionally starts other playback (an album,
+// a track) — no "Radio stopped" toast, just clear the state and its badge.
+function _radioEndIfActive() {
+  if (!_radio.active) return
+  _radio.active = false
+  _radio.seedArtist = null
+  updateRadioState()
+}
+
+// ── Crossfade per playlist (App #51) ─────────────────────────────────────────
+// A playlist may carry an optional `crossfade` override ('inherit' | 'off' | a
+// number of seconds). When playback STARTS from that playlist we put the
+// effective setting in force; when we leave the playlist (an album, radio, a
+// different playlist, a single track) we put the global setting back.
+//
+// HONEST LIMITATION: changing the crossfade mode or length rebuilds the mpv
+// engine — an audible tear-down mid-track — because the two-engine crossfade
+// wrapper cannot be swapped in cheaply while a track is playing. So we only ever
+// push a change at the moment playback starts (a track load is happening anyway,
+// which is the natural next-track boundary), and only when the effective setting
+// has ACTUALLY changed. A playlist that inherits the global costs nothing.
+async function _refreshGlobalPlayerCfg() {
+  try {
+    var cfg = await window.api.playerGetConfig()
+    if (cfg) state._globalPlayerCfg = { mode: cfg.mode, crossfadeSecs: cfg.crossfadeSecs }
+  } catch (e) {
+    console.error('[papa] could not read player config for crossfade override:', String(e && e.message || e))
+  }
+  return state._globalPlayerCfg
+}
+
+// The one-shot "this play is starting from a playlist" flag. A playlist-play
+// handler calls _armPlaylistCf(pl) right before playCurrentTrack(); the very
+// next playCurrentTrack() consumes it. Any other playback path leaves it null,
+// which is read as "leaving the playlist" and reverts the crossfade to global.
+var _playlistCfArm = null
+function _armPlaylistCf(playlist) { _playlistCfArm = playlist || null }
+function _consumePlaylistCfArm() { var p = _playlistCfArm; _playlistCfArm = null; return p }
+// Is `pl` the playlist playback is currently coming from? Used so editing a
+// live playlist's crossfade takes effect at once.
+function _isPlayingThisPlaylist(pl) {
+  return !!(pl && state._playingPlaylistId && state._playingPlaylistId === pl.id)
+}
+
+// The per-playlist crossfade selector. The stored override is 'inherit'
+// (default), 'off', or a number of seconds; the option list mirrors the global
+// crossfade lengths so a playlist can pick any of them.
+var _PL_CF_OPTIONS = [
+  { value: 'inherit', label: 'Follow settings' },
+  { value: 'off', label: 'Off' },
+  { value: '2', label: '2s' },
+  { value: '4', label: '4s' },
+  { value: '6', label: '6s' },
+  { value: '8', label: '8s' },
+  { value: '12', label: '12s' }
+]
+function _plCrossfadeSelectHTML(pl) {
+  var cur = (pl && pl.crossfade != null) ? String(pl.crossfade) : 'inherit'
+  var opts = _PL_CF_OPTIONS.map(function (o) {
+    return '<option value="' + o.value + '"' + (o.value === cur ? ' selected' : '') + '>' + esc(o.label) + '</option>'
+  }).join('')
+  return '<select class="pl-cf-select" id="pl-cf-select" title="Crossfade for this playlist">' + opts + '</select>'
+}
+
+// A manual global crossfade change (from Settings) is the new baseline and the
+// new live state; it also cancels any playlist override we were tracking, since
+// the user has now chosen the engine's crossfade directly.
+function _syncGlobalCrossfadeCache(cfg) {
+  if (!cfg) return
+  var norm = { mode: cfg.mode === 'crossfade' ? 'crossfade' : 'gapless',
+    crossfadeSecs: Number(cfg.crossfadeSecs) || 4 }
+  state._globalPlayerCfg = { mode: norm.mode, crossfadeSecs: norm.crossfadeSecs }
+  state._inForcePlayerCfg = { mode: norm.mode, crossfadeSecs: norm.crossfadeSecs }
+  state._activePlaylistCf = null
+}
+
+// Apply a playlist's crossfade override (or clear it back to global when
+// `playlist` is null). Returns without touching the engine when the effective
+// config already matches what is in force, so an inheriting playlist — the
+// common case — never rebuilds anything.
+async function _applyPlaylistCrossfade(playlist) {
+  var tools = (typeof window !== 'undefined' && window.PapaMusicTools) || null
+  if (!tools || !tools.resolvePlaylistCrossfade) return
+  var global = state._globalPlayerCfg || await _refreshGlobalPlayerCfg()
+  if (!global) return
+
+  // Leaving a playlist: nothing to do unless one was actually in force.
+  if (!playlist) {
+    state._playingPlaylistId = null
+    if (!state._activePlaylistCf) return
+    state._activePlaylistCf = null
+    var target = { mode: global.mode === 'crossfade' ? 'crossfade' : 'gapless',
+      crossfadeSecs: Number(global.crossfadeSecs) || 4 }
+    await _pushCrossfadeIfChanged(target)
+    return
+  }
+
+  var resolved = tools.resolvePlaylistCrossfade(global, playlist.crossfade)
+  // An inheriting playlist means "act like global"; record no active override so
+  // the next non-playlist play does not needlessly try to revert. Either way we
+  // note which playlist is the playback source so a live override edit can tell.
+  var isOverride = playlist.crossfade != null && playlist.crossfade !== 'inherit'
+  state._activePlaylistCf = isOverride ? playlist.id : null
+  state._playingPlaylistId = playlist.id
+  await _pushCrossfadeIfChanged(resolved)
+}
+
+// Push a resolved { mode, crossfadeSecs } to the engine only if it differs from
+// the current in-force config. The global setting is left untouched in the store
+// by main's player-set-config only when we tell it to change; here we always ask
+// main to switch the LIVE engine, and we intentionally do not persist the
+// override as the new global — leaving the playlist restores what the user set.
+async function _pushCrossfadeIfChanged(target) {
+  var tools = (typeof window !== 'undefined' && window.PapaMusicTools) || null
+  // What is in force now: either the global, or whatever a prior override set.
+  var current = state._inForcePlayerCfg || state._globalPlayerCfg || {}
+  if (tools && tools.crossfadeConfigDiffers && !tools.crossfadeConfigDiffers(current, target)) return
+  try {
+    await window.api.playerSetConfig({ mode: target.mode, crossfadeSecs: target.crossfadeSecs })
+    state._inForcePlayerCfg = { mode: target.mode, crossfadeSecs: target.crossfadeSecs }
+  } catch (e) {
+    console.error('[papa] applying playlist crossfade failed:', String(e && e.message || e))
+  }
+}
+
+// Paint the "Radio" indicator + stop control in the player bar. The element is
+// created on demand next to the now-playing title area so it is visible without
+// opening the queue panel.
+function updateRadioState() {
+  var host = document.getElementById('np-title') || document.querySelector('.np-info') || document.querySelector('.now-playing')
+  var badge = document.getElementById('radio-badge')
+  if (!_radio.active) {
+    if (badge) badge.remove()
+    return
+  }
+  if (!badge && host && host.parentNode) {
+    badge = document.createElement('span')
+    badge.id = 'radio-badge'
+    badge.className = 'radio-badge'
+    badge.innerHTML = '<span class="radio-dot"></span>Radio<button class="radio-stop" id="radio-stop-btn" title="Stop radio" aria-label="Stop radio">✕</button>'
+    host.parentNode.insertBefore(badge, host.nextSibling)
+    var stopBtn = badge.querySelector('#radio-stop-btn')
+    if (stopBtn) stopBtn.addEventListener('click', function (e) { e.stopPropagation(); stopArtistRadio() })
+  }
+  if (badge) badge.title = 'Artist radio: ' + (_radio.seedArtist || '')
 }
 
 // ── Smart queues (radio / mix / surprise / rediscover) ──────────────────────
@@ -10600,6 +15405,305 @@ function updateNextPrefetch(isRetry) {
 // restore now watches this and abandons rather than overwrite.
 var _playbackIntent = 0
 
+// ── Preview Racer ("hear it before you download") ─────────────────────────────
+// One preview at a time, app-wide (search cards and the record shop both use
+// it). For a chosen remote track it races TWO sources and plays whichever is
+// audible first:
+//   • Soulseek — download the single file, poll until it lands on disk, play it.
+//   • YouTube  — search "<artist> <title>", stream the top hit through mpv; a
+//                real position update from mpv is the proof it's actually
+//                playing.
+// The first source that is genuinely playable wins; the loser is stood down (the
+// SLSK transfer is cancelled if YT won; a YT win just doesn't play). If neither
+// produces sound within the deadline, both are cancelled and a friendly toast
+// explains. Playback is TRANSIENT: the prior queue, index and position are
+// snapshotted and restored the moment the user taps "back to your music" on the
+// persistent pill, so a preview never permanently displaces the real queue.
+//
+// The race arbitration itself is the pure reducer in preview-racer.js
+// (window.PapaPreviewRacer); this controller wires the real async work to it.
+var _papaPreview = {
+  active: false,
+  token: 0,          // bumped per preview; stale async callbacks check it
+  state: null,       // racer reducer state
+  snapshot: null,    // { queue, queueIndex, position, wasPlaying }
+  slsk: null,        // { username, filename } of the transfer we started
+  ytStarted: false,  // did we hand a YouTube stream to the player?
+  deadlineTimer: null,
+  onTimeUpdate: null,
+  label: '',
+  source: '',        // 'slsk' | 'yt' — what's audible, for the pill badge
+}
+var PREVIEW_TIMEOUT_MS = 25000
+
+// Snapshot the live queue so a preview can be undone perfectly.
+function _previewSnapshot() {
+  var pos = 0
+  try { pos = Number(audio.currentTime) || 0 } catch (_) {}
+  return {
+    queue: state.queue.slice(),
+    queueIndex: state.queueIndex,
+    position: pos,
+    wasPlaying: !!state.isPlaying && !audio.paused,
+  }
+}
+
+// Kick off a preview. `spec` = { username, filename, size, artist, title }.
+// Guard: starting a new preview stops any running one (and cancels its loser)
+// first. Returns nothing; all feedback is via the pill and toasts.
+function startPreview(spec) {
+  if (!spec || !spec.filename) return
+  var R = window.PapaPreviewRacer
+  if (!R) { showSnackbar('Preview is unavailable right now'); return }
+  // One at a time: tear down the previous preview WITHOUT restoring the user's
+  // music (we're about to replace it with the new preview anyway).
+  if (_papaPreview.active) _stopPreview({ restore: false })
+
+  var token = ++_papaPreview.token
+  var title = R.cleanTrackTitle(spec.title || spec.filename) || 'this track'
+  _papaPreview.active = true
+  _papaPreview.state = R.racerInit()
+  _papaPreview.snapshot = _previewSnapshot()
+  _papaPreview.slsk = { username: spec.username, filename: spec.filename }
+  _papaPreview.ytStarted = false
+  _papaPreview.source = ''
+  _papaPreview.label = title
+  _renderPreviewPill('searching')
+
+  // Overall deadline: if nothing is AUDIBLE in time, give up and clean up both.
+  // The gate is _papaPreview.source (set only once mpv actually produced sound),
+  // not the reducer's "won" — a source can win the resolve/search race yet never
+  // play (a corrupt file, a dead stream), and that must still time out.
+  _papaPreview.deadlineTimer = setTimeout(function () {
+    if (_papaPreview.token !== token) return
+    if (_papaPreview.source) return   // already confirmed audible; the pill is live
+    showSnackbar('Couldn’t find a preview for “' + (_papaPreview.label || 'that track') + '”')
+    _stopPreview({ restore: true })
+  }, PREVIEW_TIMEOUT_MS)
+
+  _startSlskLeg(spec, token)
+  _startYtLeg(spec, token)
+}
+
+// Soulseek leg: resolve-if-present, else download and poll until on disk.
+async function _startSlskLeg(spec, token) {
+  try {
+    var existing = await window.api.slskResolveFile({ username: spec.username, filename: spec.filename }).catch(function () { return null })
+    if (_papaPreview.token !== token) return
+    if (existing && existing.path) { _previewSlskReady(existing.path, token); return }
+    await window.api.slskDownload({ username: spec.username, filename: spec.filename, size: spec.size || 0 })
+    if (_papaPreview.token !== token) return
+    var deadline = Date.now() + PREVIEW_TIMEOUT_MS
+    while (_papaPreview.token === token && Date.now() < deadline) {
+      await new Promise(function (r) { setTimeout(r, 1500) })
+      if (_papaPreview.token !== token) return
+      var res = await window.api.slskResolveFile({ username: spec.username, filename: spec.filename }).catch(function () { return null })
+      if (_papaPreview.token !== token) return
+      if (res && res.path) { _previewSlskReady(res.path, token); return }
+      var raw = await window.api.slskGetTransfers().catch(function () { return [] })
+      var hit = raw.flatMap(function (u) { return (u.directories || []).flatMap(function (d) { return d.files || [] }) })
+        .find(function (f) { return f.filename === spec.filename })
+      if (hit && hit.state && /Failed|Aborted|Cancelled|Rejected/.test(hit.state)) { _previewEvent('slskFailed', token); return }
+    }
+  } catch (_) { _previewEvent('slskFailed', token) }
+}
+
+// YouTube leg: search the derived query, stream the top hit. Because a stream's
+// playability is only known once mpv plays it, we start it speculatively and
+// treat the first real position update as the "ready" signal.
+async function _startYtLeg(spec, token) {
+  var R = window.PapaPreviewRacer
+  if (!window.api || !window.api.ytMusicSearch) { _previewEvent('ytFailed', token); return }
+  var query = R.derivePreviewQuery({ filename: spec.filename, title: spec.title }, spec.artist)
+  try {
+    var res = await window.api.ytMusicSearch({ query: query }).catch(function () { return { ok: false } })
+    if (_papaPreview.token !== token) return
+    if (!res || !res.ok || !res.results || !res.results.length) { _previewEvent('ytFailed', token); return }
+    // If SLSK already won while the search was in flight, don't start YT.
+    if (_papaPreview.state && _papaPreview.state.status !== 'racing') return
+    var r = res.results[0]
+    _papaPreview.ytStarted = true
+    _armPreviewAudioWatch(token, 'yt')
+    // Stream it as a transient one-item queue via the normal pipeline.
+    state.queue = [_ytQueueItem(r)]
+    state.queueIndex = 0
+    playCurrentTrack()
+  } catch (_) { _previewEvent('ytFailed', token) }
+}
+
+// SLSK produced a playable file. If it wins the race, play it.
+function _previewSlskReady(filePath, token) {
+  if (_papaPreview.token !== token) return
+  var next = window.PapaPreviewRacer.racerReduce(_papaPreview.state, { type: 'slskReady' })
+  _papaPreview.state = next
+  if (next.winner !== 'slsk') return   // YT already won; nothing to do
+  // Stand down the YT loser: it simply doesn't get played (or is replaced now).
+  _armPreviewAudioWatch(token, 'slsk')
+  var spec = _papaPreview.slsk
+  var title = window.PapaPreviewRacer.cleanTrackTitle(_papaPreview.label) || 'Preview'
+  state.queue = [{ filePath: filePath, title: title, artist: spec ? spec.username : '',
+    albumArtist: spec ? spec.username : '', artPath: null, albumName: 'Preview',
+    albumId: 'preview_slsk' }]
+  state.queueIndex = 0
+  playCurrentTrack()
+}
+
+// Watch for the first real position update from mpv after we hand it a preview
+// track: that's the proof this SOURCE is actually audible. Confirms the win and
+// flips the pill to "Previewing".
+function _armPreviewAudioWatch(token, source) {
+  _disarmPreviewAudioWatch()
+  var handler = function () {
+    if (_papaPreview.token !== token) { _disarmPreviewAudioWatch(); return }
+    var t = 0
+    try { t = Number(audio.currentTime) || 0 } catch (_) {}
+    if (t > 0.15) {
+      _disarmPreviewAudioWatch()
+      _previewConfirmedAudible(token, source)
+    }
+  }
+  _papaPreview.onTimeUpdate = handler
+  audio.addEventListener('timeupdate', handler)
+}
+function _disarmPreviewAudioWatch() {
+  if (_papaPreview.onTimeUpdate) {
+    try { audio.removeEventListener('timeupdate', _papaPreview.onTimeUpdate) } catch (_) {}
+    _papaPreview.onTimeUpdate = null
+  }
+}
+
+// A source is confirmed audible. Record which, cancel the loser, show the pill.
+function _previewConfirmedAudible(token, source) {
+  if (_papaPreview.token !== token) return
+  _papaPreview.source = source
+  // If YT is the one that became audible, mark it the winner in the reducer (it
+  // may not have been marked yet — YT wins the moment it actually plays).
+  if (source === 'yt' && _papaPreview.state && _papaPreview.state.status === 'racing') {
+    var next = window.PapaPreviewRacer.racerReduce(_papaPreview.state, { type: 'ytReady' })
+    _papaPreview.state = next
+  }
+  // Cancel the losing Soulseek transfer if YT won (nothing to cancel for a YT
+  // loser — no file was ever fetched).
+  if (source === 'yt') _cancelPreviewSlskTransfer()
+  // The deadline is satisfied; drop the give-up timer.
+  if (_papaPreview.deadlineTimer) { clearTimeout(_papaPreview.deadlineTimer); _papaPreview.deadlineTimer = null }
+  _renderPreviewPill('playing')
+}
+
+// Feed a lifecycle event into the reducer and act on the transition.
+function _previewEvent(type, token) {
+  if (!_papaPreview.active || _papaPreview.token !== token) return
+  var R = window.PapaPreviewRacer
+  var next = R.racerReduce(_papaPreview.state, { type: type })
+  _papaPreview.state = next
+  if (next.status === 'timedout') {
+    // Neither source produced sound (or the deadline elapsed). Give up cleanly.
+    showSnackbar('Couldn’t find a preview for “' + (_papaPreview.label || 'that track') + '”')
+    _stopPreview({ restore: true })
+  }
+}
+
+// Cancel the Soulseek transfer this preview started (best-effort): find its
+// transfer id from the live list, then cancel it so we're not downloading a file
+// the user only wanted to hear.
+async function _cancelPreviewSlskTransfer() {
+  var slsk = _papaPreview.slsk
+  if (!slsk || !slsk.username || !slsk.filename) return
+  try {
+    var raw = await window.api.slskGetTransfers().catch(function () { return [] })
+    for (var u of raw) {
+      if (u.username !== slsk.username) continue
+      for (var d of (u.directories || [])) {
+        for (var f of (d.files || [])) {
+          if (f.filename === slsk.filename) {
+            var done = f.state && /Completed|Succeeded/.test(f.state)
+            await window.api.slskCancelTransfer({ username: slsk.username, id: f.id, alreadyDone: !!done }).catch(function () {})
+            return
+          }
+        }
+      }
+    }
+  } catch (_) {}
+}
+
+// Stop the current preview. `opts.restore` puts the user's music back exactly as
+// it was (queue, index, position, play/pause). Always cancels a still-running
+// SLSK loser/transfer.
+function _stopPreview(opts) {
+  opts = opts || {}
+  if (!_papaPreview.active) { _removePreviewPill(); return }
+  _papaPreview.token++   // invalidate every in-flight async callback
+  _papaPreview.active = false
+  _disarmPreviewAudioWatch()
+  if (_papaPreview.deadlineTimer) { clearTimeout(_papaPreview.deadlineTimer); _papaPreview.deadlineTimer = null }
+  // Always stand down the Soulseek transfer — whether it lost the race, or the
+  // preview is being stopped before either source finished. A completed SLSK
+  // win leaves the file on disk (harmless); an in-flight transfer is cancelled.
+  _cancelPreviewSlskTransfer()
+  var snap = _papaPreview.snapshot
+  _papaPreview.snapshot = null
+  _papaPreview.slsk = null
+  _removePreviewPill()
+  if (opts.restore && snap) _restorePreviewSnapshot(snap)
+  else if (opts.restore) { try { audio.pause() } catch (_) {} }
+}
+
+// Put the user's music back the way it was before the preview.
+function _restorePreviewSnapshot(snap) {
+  state.queue = snap.queue
+  state.queueIndex = snap.queueIndex
+  var track = state.queue[state.queueIndex]
+  if (!track) { try { audio.pause() } catch (_) {} return }
+  if (!snap.wasPlaying) {
+    // They were paused: restore the track quietly without forcing playback.
+    updateNowPlaying(track)
+    updateTrackHighlight()
+    try { audio.pause() } catch (_) {}
+    return
+  }
+  playCurrentTrack()
+  // Seek back to where they were, once the track has loaded.
+  if (snap.position > 1) {
+    var want = snap.position
+    var seekOnce = function () {
+      audio.removeEventListener('loadedmetadata', seekOnce)
+      try { audio.currentTime = want } catch (_) {}
+    }
+    audio.addEventListener('loadedmetadata', seekOnce)
+    // Belt-and-braces: also try after a short delay for the stream fast-path.
+    setTimeout(function () { try { if (audio.currentTime < 1 && want > 1) audio.currentTime = want } catch (_) {} }, 1200)
+  }
+}
+
+// ── Preview pill (persistent, bottom of screen) ───────────────────────────────
+function _renderPreviewPill(phase) {
+  var pill = document.getElementById('papa-preview-pill')
+  if (!pill) {
+    pill = document.createElement('div')
+    pill.id = 'papa-preview-pill'
+    pill.className = 'preview-pill'
+    document.body.appendChild(pill)
+  }
+  var badge = ''
+  if (phase === 'playing') {
+    var src = _papaPreview.source === 'yt' ? 'YT' : 'FLAC'
+    badge = '<span class="preview-pill-badge preview-pill-' + esc(_papaPreview.source || 'slsk') + '">' + esc(src) + '</span>'
+  } else {
+    badge = '<span class="preview-pill-badge preview-pill-searching">…</span>'
+  }
+  var word = phase === 'playing' ? 'Previewing' : 'Finding a preview'
+  pill.innerHTML =
+    badge +
+    '<span class="preview-pill-label">' + esc(word) + ' — ' + esc(_papaPreview.label || '') + '</span>' +
+    '<button class="preview-pill-stop" id="papa-preview-stop" title="Stop preview and go back to your music">⏹ back to your music</button>'
+  var stop = pill.querySelector('#papa-preview-stop')
+  if (stop) stop.addEventListener('click', function () { _stopPreview({ restore: true }) })
+}
+function _removePreviewPill() {
+  var pill = document.getElementById('papa-preview-pill')
+  if (pill) pill.remove()
+}
+
 function playCurrentTrack() {
   const track = state.queue[state.queueIndex]
   if (!track) return
@@ -10607,9 +15711,20 @@ function playCurrentTrack() {
   if (isHttpPath(track.filePath)) recordYtRecent(track)
   const isStream = /^https?:\/\//.test(track.filePath)
 
+  // Crossfade per playlist (App #51): a playlist-play arms this with the
+  // playlist it started from; anything else (album, radio, single track, a
+  // different playlist) leaves it unarmed and we revert to the global setting.
+  // The apply is fire-and-forget: a rebuild is only ever triggered when the
+  // effective crossfade truly changed, and it must not block starting the track.
+  _applyPlaylistCrossfade(_consumePlaylistCfArm()).catch(() => {})
+
   function onStarted() {
     extractAlbumColor(/^https?:\/\//.test(track.artPath || '') ? null : (track.artPath || null))
     state.isPlaying = true
+    // Music is now genuinely playing. If a film is on screen, pause it and
+    // remember to resume it — unless this play is the handoff's own resume of
+    // music, which must not re-referee (#72).
+    if (_handoff && !_handoffResuming) _applyHandoff(_handoff.onMusicStart(_videoIsPlaying()))
     updatePlayBtn()
     updateNowPlaying(track)
     updateTrackHighlight()
@@ -10763,6 +15878,7 @@ function updateNowPlaying(track) {
   updateBitPerfectBadge()
   updateCrossfadeBadge()
   updateStatsRow(track)
+  updateRadioState()
 }
 
 function applyTicker(el) {
@@ -10882,8 +15998,14 @@ function togglePlay() {
   if (!state.queue.length) return
   if (audio.paused) {
     audio.play(); state.isPlaying = true
+    // A user-driven play. Pause any film on screen and take ownership so a
+    // later video-close does not resume music the user is already hearing (#72).
+    if (_handoff) _applyHandoff(_handoff.onMusicStart(_videoIsPlaying()))
   } else {
     audio.pause(); state.isPlaying = false
+    // A user-driven pause voids any resume the film owed the album, and — if a
+    // film is waiting behind the music it paused — brings that film back (#72).
+    if (_handoff) { _handoff.onMusicUserAction(); _applyHandoff(_handoff.onMusicStop()) }
   }
   updatePlayBtn()
   updateTrackHighlight()
@@ -10903,6 +16025,9 @@ function _isInterlude(track) {
 }
 
 function playNext() {
+  // "End of track" sleep: the track we were on just finished, so stop here
+  // rather than advancing. Checked before stop-after so an armed timer wins.
+  if (_sleepAtTrackEnd()) return
   if (state.stopAfterTrack) {
     state.stopAfterTrack = false
     state.isPlaying = false
@@ -10913,6 +16038,9 @@ function playNext() {
     return
   }
   if (!state.queue.length) return
+  // Artist radio: top the queue up before advancing so it never runs dry and
+  // never hits the wrap-to-0 "queue finished" stop below.
+  _radioMaybeRefill()
   if (state.repeat === 'one') { audio.currentTime = 0; audio.play(); return }
   if (state.shuffle) {
     // Use the pick already prefetched, or mpv played one file while we advance
@@ -10942,6 +16070,11 @@ function playNext() {
     }
   }
   if (state.skipInterludes && state.queue.length > 1 && _isInterlude(state.queue[state.queueIndex])) {
+    // Shares the short-skip recursion guard: a queue that is all interludes (or
+    // repeat-all with mostly interludes) would otherwise recurse into playNext
+    // forever. After enough consecutive skips, give up and just play what we're on.
+    _skipShortGuard++
+    if (_skipShortGuard > 20) { _skipShortGuard = 0; playCurrentTrack(); return }
     var interludeTrack = state.queue[state.queueIndex]
     showSnackbar('Skipped interlude: ' + (interludeTrack.title || interludeTrack.filePath))
     playNext()
@@ -11010,19 +16143,30 @@ async function fetchLyrics(track, force = false) {
 // user already skipped must never overwrite the current track's lyrics.
 function loadLyricsFor(track) {
   _lyrics = null
+  _lyricsError = false
   renderLyricsPanel()
   updateLyricsDrawer()
   fetchLyrics(track).then(lines => {
     if (state.queue[state.queueIndex]?.filePath !== track.filePath) return
     _lyrics = lines
+    _lyricsError = false
     renderLyricsPanel()
     updateLyricsDrawer()
   }).catch(e => {
-    // Not worth a notice — lyrics are optional — but an unhandled rejection
-    // here aborted the rest of the callback silently.
     console.error('[papa] lyrics lookup failed for', track.filePath, String(e && e.message || e))
+    // A failed lookup is not the same as a song that simply has no lyrics: the
+    // panel now says so and offers to try again, instead of the two cases being
+    // indistinguishable behind "No lyrics found".
+    if (state.queue[state.queueIndex]?.filePath !== track.filePath) return
+    _lyrics = null
+    _lyricsError = true
+    renderLyricsPanel()
+    updateLyricsDrawer()
   })
 }
+// A lyrics fetch that threw (network/service down), told apart from an honest
+// miss so the panel can name it and offer a retry rather than a dead end.
+let _lyricsError = false
 
 // Scroll only the lyrics container — scrollIntoView() also scrolls every
 // scrollable ancestor and yanks the whole page around during playback.
@@ -11046,6 +16190,17 @@ function renderLyricsPanel() {
   const panel = document.getElementById('lyrics-panel')
   if (!panel) return
   if (!_lyrics || !_lyrics.length) {
+    if (_lyricsError) {
+      panel.innerHTML = '<div class="lyrics-empty">' +
+        "<p>Couldn't fetch lyrics — the lyrics service didn't answer.</p>" +
+        '<button class="lyrics-retry-btn" id="lyrics-retry-btn">Try again</button></div>'
+      const btn = panel.querySelector('#lyrics-retry-btn')
+      if (btn) btn.addEventListener('click', () => {
+        const t = state.queue[state.queueIndex]
+        if (t) loadLyricsFor(t)
+      })
+      return
+    }
     panel.innerHTML = '<div class="lyrics-empty">No lyrics found</div>'
     return
   }
@@ -11059,11 +16214,12 @@ function renderLyricsPanel() {
 function updateLyricsHighlight() {
   const panel = document.getElementById('lyrics-panel')
   if (!panel || !_lyrics || !_lyrics.length) return
-  const t = audio.currentTime
-  let activeIdx = -1
-  for (let i = 0; i < _lyrics.length; i++) {
-    if (_lyrics[i].time <= t) activeIdx = i; else break
-  }
+  // The active-line selection is the shared, tested helper (App #57) so the
+  // panel and the drawer agree and the edge cases live in one place.
+  const tools = (typeof window !== 'undefined' && window.PapaMusicTools) || null
+  const activeIdx = tools && tools.activeLyricIndex
+    ? tools.activeLyricIndex(_lyrics, audio.currentTime)
+    : _lyricsActiveIdxFallback(audio.currentTime)
   const lines = panel.querySelectorAll('.lyrics-line')
   lines.forEach((el, i) => {
     const isActive = i === activeIdx
@@ -11116,6 +16272,16 @@ function updateLyricsDrawer() {
   if (trackLabel && track) trackLabel.textContent = track.title || '—'
 
   if (!_lyrics || !_lyrics.length) {
+    if (_lyricsError) {
+      body.innerHTML = '<div class="lyrics-drawer-empty">' +
+        "<p>Couldn't fetch lyrics — the lyrics service didn't answer.</p>" +
+        '<button class="lyrics-retry-btn" id="lyrics-drawer-retry">Try again</button></div>'
+      const btn = body.querySelector('#lyrics-drawer-retry')
+      if (btn) btn.addEventListener('click', () => {
+        if (track) loadLyricsFor(track)
+      })
+      return
+    }
     body.innerHTML = '<div class="lyrics-drawer-empty">No lyrics available</div>'
     return
   }
@@ -11126,15 +16292,25 @@ function updateLyricsDrawer() {
   updateLyricsDrawerHighlight()
 }
 
+// Fallback active-line search for when PapaMusicTools has not loaded (the
+// helper is normally present; this keeps the panel working if the <script> is
+// missing under a test harness).
+function _lyricsActiveIdxFallback(t) {
+  let idx = -1
+  for (let i = 0; i < _lyrics.length; i++) {
+    if (_lyrics[i].time <= t) idx = i; else break
+  }
+  return idx
+}
+
 function updateLyricsDrawerHighlight() {
   if (!_lyricsDrawerOpen) return
   const body = document.getElementById('lyrics-drawer-body')
   if (!body || !_lyrics || !_lyrics.length) return
-  const t = audio.currentTime
-  let activeIdx = -1
-  for (let i = 0; i < _lyrics.length; i++) {
-    if (_lyrics[i].time <= t) activeIdx = i; else break
-  }
+  const tools = (typeof window !== 'undefined' && window.PapaMusicTools) || null
+  const activeIdx = tools && tools.activeLyricIndex
+    ? tools.activeLyricIndex(_lyrics, audio.currentTime)
+    : _lyricsActiveIdxFallback(audio.currentTime)
   const lines = body.querySelectorAll('.lyrics-drawer-line')
   lines.forEach((el, i) => {
     const isActive = i === activeIdx
@@ -11244,6 +16420,11 @@ function reorderQueue(srcIdx, destIdx, insertBefore) {
   _pendingShuffle = null
   updateNextPrefetch()
   renderQueuePanel()
+  // The fullscreen modal has its own queue list; if it is open it must reflect
+  // the reorder too, or it keeps showing the old order until re-opened.
+  if (state.modalOpen && document.getElementById('np-modal')?.classList.contains('queue-open')) {
+    renderNpQueue()
+  }
 }
 
 function makeDraggable(trackEl, fillEl, thumbEl, onChange) {
@@ -11885,7 +17066,7 @@ function albumCard(album, idx, sortMode, query) {
   return `<div class="album-card" data-album="${esc(album.id)}">
     <div class="album-card-art-wrap">
       ${album.artPath
-        ? `<img class="album-card-art" src="${isHttpPath(album.artPath) ? esc(album.artPath) : esc(`file://${album.artPath}`)}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
+        ? `<img class="album-card-art" src="${isHttpPath(album.artPath) ? esc(album.artPath) : esc(`file://${album.artPath}`)}" alt="" loading="lazy" decoding="async" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
         : ''}
       <div class="album-card-art-fallback" ${album.artPath ? 'style="display:none"' : `style="${fallbackStyle}"`}>
         <svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>
@@ -11907,6 +17088,14 @@ function albumCard(album, idx, sortMode, query) {
 function fmtSpec(bd, sr) {
   const srLabel = sr >= 1000 ? `${sr % 1000 === 0 ? sr / 1000 : (sr / 1000).toFixed(1)}kHz` : `${sr}Hz`
   return bd ? `${bd}bit · ${srLabel}` : srLabel
+}
+
+// The src for a track/album art path, honouring the same http-vs-file rule the
+// main modal art uses: a streamed (YouTube) track carries an https thumbnail
+// URL that must be used as-is, while a local file path needs the file:// scheme.
+// Prepending 'file://' unconditionally broke art for streamed tracks (audit).
+function _artSrc(artPath) {
+  return /^https?:\/\//.test(artPath) ? artPath : 'file://' + artPath
 }
 
 function artImg(artPath, imgClass, fallbackClass) {
@@ -12013,6 +17202,16 @@ function setVolDisplay(vol) {
   const thumb = document.getElementById('vol-thumb')
   if (fill)  fill.style.width  = pct
   if (thumb) thumb.style.left  = pct
+  // The np-modal has its own volume slider; keep it in step with every volume
+  // change routed through here (bar drag, keyboard, mute) so it can't show a
+  // stale % (live repro: modal fill at 80% while volume was 0). Cheap no-op when
+  // the modal isn't mounted.
+  const npFill  = document.getElementById('np-modal-vol-fill')
+  const npThumb = document.getElementById('np-modal-vol-thumb')
+  const npTrack = document.getElementById('np-modal-vol-track')
+  if (npFill)  npFill.style.width  = pct
+  if (npThumb) npThumb.style.left  = pct
+  if (npTrack) npTrack.setAttribute('aria-valuenow', String(Math.round(vol * 100)))
   const icon = document.querySelector('#btn-vol .vol-icon')
   if (icon) {
     if (vol === 0) {
@@ -12784,6 +17983,9 @@ function _switchMcsTab(tab) {
   document.querySelectorAll('.mcs-tab-btn').forEach(b => b.classList.toggle('mcs-tab-active', b.dataset.tab === tab))
   document.querySelectorAll('.mcs-panel').forEach(p => p.classList.toggle('mcs-panel-hidden', !p.id.endsWith(tab)))
   if (tab === 'memory') _renderMemoryTab()
+  // Poll the storage-health chip only while Settings is on screen (App #5).
+  if (tab === 'settings') { _startStorageHealthPoll(); _refreshDiagnostics() }
+  else _stopStorageHealthPoll()
 }
 
 // ── Settings panel ───────────────────────────────────────────────────────────
@@ -12830,6 +18032,153 @@ async function _initSettingsPanel() {
 
   _refreshOllamaModels()
   await _initVideoSettings()
+  _initSettingsSearch()
+  _initBackupSettings()
+  _initBugReport()
+  await _initDiagnostics()
+  _initAboutGroup()
+}
+
+// Defaults for the video options the reset button restores. Kept in the
+// renderer only as the target of a "reset to defaults" click — main owns the
+// real defaults, but a user pressing reset expects the fields to snap back
+// without a round-trip, and these values mirror main's whitelist.
+const _VIDEO_SETTING_DEFAULTS = {
+  preferSurround: true,
+  preferredQuality: '1080p',
+  downloadLimitMbps: null,
+  seedWhileWatching: true,
+}
+
+// Does a settings row/group match the search box text? Case-insensitive
+// substring over the row's own visible label text. Pure so the search filter
+// is unit-testable without a DOM.
+function _settingsMatchesFilter(labelText, query) {
+  const q = String(query == null ? '' : query).trim().toLowerCase()
+  if (!q) return true
+  return String(labelText == null ? '' : labelText).toLowerCase().includes(q)
+}
+
+// A number field that only ever holds a positive integer of Mbps, or null for
+// "no limit". Empty, zero, negative and junk all collapse to null so the cap
+// never silently becomes 0 (which would throttle to nothing). Pure.
+function _parseDownloadLimit(raw) {
+  const v = String(raw == null ? '' : raw).trim()
+  if (!v) return null
+  const n = Number(v)
+  if (!Number.isFinite(n) || n <= 0) return null
+  return Math.round(n)
+}
+
+// Builds the Diagnostics rows from whatever api.videoDiagnostics returned.
+// Renders defensively: an absent or malformed payload becomes a single "not
+// available" line rather than throwing. Each check is a green/red dot with a
+// plain-English label. Pure (takes the diagnostics object, returns HTML).
+function _diagRowsHtml(diag) {
+  if (!diag || typeof diag !== 'object') {
+    return '<div class="mcs-set-hint">Diagnostics are not available in this version.</div>'
+  }
+  // A check is { ok:boolean, detail?:string }. Unknown checks render as amber
+  // ("unknown") rather than pretending they passed.
+  const row = (label, check) => {
+    const has = check && typeof check === 'object'
+    const state = !has ? 'unknown' : (check.ok ? 'ok' : 'bad')
+    const detail = has && check.detail ? ' — ' + esc(String(check.detail)) : ''
+    return '<div class="mcs-diag-row">'
+      + '<span class="mcs-diag-dot mcs-diag-' + state + '"></span>'
+      + '<span class="mcs-diag-label">' + esc(label) + detail + '</span>'
+      + '</div>'
+  }
+  const c = diag.checks && typeof diag.checks === 'object' ? diag.checks : diag
+  let html = ''
+  html += row('Music downloader (Soulseek)', c.slskd)
+  html += row('Movie database (TMDB)', c.tmdb)
+  html += row('Player program (mpv)', c.mpv)
+  html += row('Watch-history storage', c.storage)
+  // Per-source health rows, if the payload carries any. Each is
+  // { name, ok, detail? }.
+  const sources = Array.isArray(diag.sources) ? diag.sources
+    : (Array.isArray(c.sources) ? c.sources : [])
+  if (sources.length) {
+    html += '<div class="mcs-set-hint" style="margin-top:6px">Video sources</div>'
+    for (const s of sources) {
+      html += row(String((s && s.name) || 'source'), s)
+    }
+  }
+  return html
+}
+
+// The config-dir / stream-cache / version footer under the diagnostics list.
+// Any field the payload omits is simply skipped — nothing is invented. Pure.
+function _diagMetaHtml(diag) {
+  if (!diag || typeof diag !== 'object') return ''
+  const lines = []
+  if (diag.version) lines.push('Version ' + esc(String(diag.version)))
+  if (diag.configDir) lines.push('Config folder: ' + esc(String(diag.configDir)))
+  if (diag.streamCacheDir) lines.push('Stream cache: ' + esc(String(diag.streamCacheDir)))
+  if (!lines.length) return ''
+  return lines.map(l => '<div class="mcs-diag-meta-line">' + l + '</div>').join('')
+}
+
+// Tiny, deliberately-tiny markdown → HTML for the changelog (App §7). Handles
+// only headings (#..###) and bullet lists (- or *); everything else becomes a
+// paragraph. EVERY line is html-escaped first, so a changelog is data, never
+// markup — an accidental "<script>" in the notes renders as text. No links, no
+// inline formatting, no tables: the surface stays too small to smuggle anything
+// through. Kept out of the DOM (returns a string) so it is unit-testable.
+function _changelogToHtml(md) {
+  const src = String(md == null ? '' : md)
+  const out = []
+  let inList = false
+  const closeList = () => { if (inList) { out.push('</ul>'); inList = false } }
+  for (const raw of src.split(/\r?\n/)) {
+    const line = raw.trim()
+    if (!line) { closeList(); continue }
+    const safe = esc(line)
+    const h = /^(#{1,3})\s+(.*)$/.exec(line)
+    if (h) {
+      closeList()
+      const level = h[1].length + 1  // #→h2, ##→h3, ###→h4 (h1 is the panel's own)
+      out.push('<h' + level + ' class="mcs-cl-h">' + esc(h[2]) + '</h' + level + '>')
+      continue
+    }
+    if (/^[-*]\s+/.test(line)) {
+      if (!inList) { out.push('<ul class="mcs-cl-list">'); inList = true }
+      out.push('<li>' + esc(line.replace(/^[-*]\s+/, '')) + '</li>')
+      continue
+    }
+    closeList()
+    out.push('<p class="mcs-cl-p">' + safe + '</p>')
+  }
+  closeList()
+  return out.join('')
+}
+
+// Fills the About & what's new group: the app version line and the rendered
+// changelog. Both sources are defensive — the version may be null before the
+// session-id round-trip lands, and api.appChangelog is added by main (absent
+// here means "no notes yet", not an error).
+var _aboutInit = false
+async function _initAboutGroup() {
+  const verEl = document.getElementById('about-version')
+  if (verEl) verEl.textContent = 'Papa Audio' + (_appVersion ? ' — version ' + _appVersion : '')
+  const box = document.getElementById('about-changelog')
+  if (!box) return
+  // Only fetch the notes once per app run; they don't change mid-session.
+  if (_aboutInit) return
+  _aboutInit = true
+  let md = null
+  try {
+    if (window.api && typeof window.api.appChangelog === 'function') {
+      const res = await window.api.appChangelog()
+      md = typeof res === 'string' ? res : (res && res.markdown) || (res && res.changelog) || null
+    }
+  } catch (_) { md = null }
+  if (md) {
+    box.innerHTML = _changelogToHtml(md)
+  } else {
+    box.innerHTML = '<div class="mcs-set-hint">Release notes will appear here once they ship.</div>'
+  }
 }
 
 async function _initVideoSettings() {
@@ -12838,9 +18187,17 @@ async function _initVideoSettings() {
   if (!keyInput) return
   const res = await window.api.videoSettingsGet().catch(() => ({ ok: false }))
   const s = (res && res.settings) || {}
+  const subsInput = $('video-opensubs-key')
+  const limitInput = $('video-download-limit')
+  const seedInput = $('video-seed-watching')
   $('video-prefer-surround').checked = s.preferSurround !== false
   $('video-quality').value = s.preferredQuality || '1080p'
   if (s.tmdbApiKey) keyInput.placeholder = 'Key saved ✓ — paste new one to change'
+  if (subsInput && s.openSubtitlesApiKey) subsInput.placeholder = 'Key saved ✓ — paste new one to change'
+  // downloadLimitMbps is stored as a number or null; show the number, leave
+  // empty for null so the placeholder reads "Unlimited".
+  if (limitInput) limitInput.value = (s.downloadLimitMbps == null ? '' : String(s.downloadLimitMbps))
+  if (seedInput) seedInput.checked = s.seedWhileWatching !== false
   const save = patch => window.api.videoSettingsSet(patch).catch(() => {})
   const saveKey = function () {
     const v = keyInput.value.trim()
@@ -12854,13 +18211,451 @@ async function _initVideoSettings() {
   keyInput.addEventListener('keydown', function (e) {
     if (e.key === 'Enter') saveKey()
   })
+  if (subsInput) {
+    const saveSubs = function () {
+      const v = subsInput.value.trim()
+      if (!v) return
+      // Write defensively — whatever videoSettingsSet accepts. If the key is not
+      // on main's whitelist yet it is simply dropped, harmlessly.
+      save({ openSubtitlesApiKey: v })
+      subsInput.value = ''
+      subsInput.placeholder = 'Saved ✓'
+      setTimeout(function () { subsInput.placeholder = 'Key saved ✓ — paste new one to change' }, 1500)
+    }
+    subsInput.addEventListener('change', saveSubs)
+    subsInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') saveSubs() })
+  }
+  if (limitInput) {
+    limitInput.addEventListener('change', () => {
+      const n = _parseDownloadLimit(limitInput.value)
+      // Reflect the normalised value back so "0" or "-5" visibly become blank.
+      limitInput.value = (n == null ? '' : String(n))
+      save({ downloadLimitMbps: n })
+    })
+  }
+  if (seedInput) {
+    seedInput.addEventListener('change', e => save({ seedWhileWatching: !!e.target.checked }))
+  }
   $('video-prefer-surround').addEventListener('change', e => save({ preferSurround: !!e.target.checked }))
   $('video-quality').addEventListener('change', e => save({ preferredQuality: e.target.value }))
+
+  // Advanced: source mirrors (App #34). One text field per mirror-capable
+  // provider, holding a comma- or newline-separated list of base URLs. An empty
+  // field means "use the built-in defaults", which is what the stored [] also
+  // means, so a cleared field and a fresh install behave the same.
+  _initMirrorFields(s, save)
+
+  const resetBtn = $('video-reset-defaults')
+  if (resetBtn) {
+    resetBtn.addEventListener('click', () => {
+      const d = _VIDEO_SETTING_DEFAULTS
+      $('video-prefer-surround').checked = d.preferSurround
+      $('video-quality').value = d.preferredQuality
+      if (limitInput) limitInput.value = ''
+      if (seedInput) seedInput.checked = d.seedWhileWatching
+      // Keys are intentionally not wiped by a reset — losing a pasted API key on
+      // a mis-click is far more annoying than a stray preference.
+      save({
+        preferSurround: d.preferSurround,
+        preferredQuality: d.preferredQuality,
+        downloadLimitMbps: d.downloadLimitMbps,
+        seedWhileWatching: d.seedWhileWatching,
+      })
+      resetBtn.textContent = 'Reset ✓'
+      setTimeout(() => { resetBtn.textContent = 'Reset video options to defaults' }, 1500)
+    })
+  }
+}
+
+// The mirror-capable providers, in the order their fields appear. The key is
+// the id inside the stored `sourceMirrors` blob and the suffix of the field id.
+const _MIRROR_PROVIDERS = ['yts', 'eztv', 'nyaa', 'apibay']
+
+// Wire the "Advanced: source mirrors" fields (App #34). Reads the stored lists
+// into the fields, saves the parsed list on edit, and resets every field to
+// its built-in default (an empty list) on the reset button.
+function _initMirrorFields(s, save) {
+  const fmt = window.PapaVideoFormat
+  if (!fmt || typeof fmt.parseMirrorList !== 'function') return
+  const $ = id => document.getElementById(id)
+  const stored = (s && s.sourceMirrors && typeof s.sourceMirrors === 'object') ? s.sourceMirrors : {}
+
+  // The whole blob is written each time so main sees a complete map, never a
+  // partial one that could drop a provider the user had customised.
+  const collect = function () {
+    const next = {}
+    for (const name of _MIRROR_PROVIDERS) {
+      const input = $('video-mirror-' + name)
+      next[name] = input ? fmt.parseMirrorList(input.value) : []
+    }
+    return next
+  }
+
+  for (const name of _MIRROR_PROVIDERS) {
+    const input = $('video-mirror-' + name)
+    if (!input) continue
+    input.value = fmt.formatMirrorList(stored[name])
+    // Commit on change (blur/Enter) rather than per keystroke: a mirror list is
+    // pasted or typed in full, and a rebuild of the providers on every letter
+    // would be wasteful.
+    input.addEventListener('change', function () {
+      // Reflect the normalised list back so duplicates and junk visibly drop.
+      input.value = fmt.formatMirrorList(fmt.parseMirrorList(input.value))
+      save({ sourceMirrors: collect() })
+    })
+  }
+
+  const resetBtn = $('video-mirrors-reset')
+  if (resetBtn) {
+    resetBtn.addEventListener('click', function () {
+      const cleared = {}
+      for (const name of _MIRROR_PROVIDERS) {
+        cleared[name] = []
+        const input = $('video-mirror-' + name)
+        if (input) input.value = ''
+      }
+      save({ sourceMirrors: cleared })
+      resetBtn.textContent = 'Reset ✓'
+      setTimeout(function () { resetBtn.textContent = 'Reset mirrors to defaults' }, 1500)
+    })
+  }
+}
+
+// ── Storage-health chip (App #5) ─────────────────────────────────────────────
+// A quiet amber line in the Video group that appears only when the watch-history
+// store reports it cannot write. Polled while Settings is open, stopped when it
+// closes so nothing runs in the background.
+let _storageHealthTimer = null
+function _updateStorageHealthChip() {
+  const chip = document.getElementById('video-storage-health')
+  if (!chip) return
+  let healthy = true
+  try {
+    const store = window.PapaVideoStore
+    // Defensive: if the store or the method is absent, assume healthy rather
+    // than alarming the user over a missing API.
+    if (store && typeof store.storageHealthy === 'function') healthy = store.storageHealthy() !== false
+  } catch (_) { healthy = true }
+  chip.style.display = healthy ? 'none' : ''
+}
+function _startStorageHealthPoll() {
+  _stopStorageHealthPoll()
+  _updateStorageHealthChip()
+  _storageHealthTimer = setInterval(_updateStorageHealthChip, 4000)
+}
+function _stopStorageHealthPoll() {
+  if (_storageHealthTimer) { clearInterval(_storageHealthTimer); _storageHealthTimer = null }
+}
+
+// ── Diagnostics (App #12) ────────────────────────────────────────────────────
+async function _refreshDiagnostics() {
+  const list = document.getElementById('diag-list')
+  const meta = document.getElementById('diag-meta')
+  if (!list) return
+  // api.videoDiagnostics is being added by the main-process side; render
+  // defensively if it is not there yet.
+  if (!window.api || typeof window.api.videoDiagnostics !== 'function') {
+    list.innerHTML = _diagRowsHtml(null)
+    if (meta) meta.innerHTML = ''
+    return
+  }
+  list.innerHTML = '<div class="mcs-set-hint">Checking…</div>'
+  let diag = null
+  try { diag = await window.api.videoDiagnostics() } catch (_) { diag = null }
+  // The handler may answer { ok, diagnostics } or the bare object — accept both.
+  const payload = diag && diag.diagnostics ? diag.diagnostics : diag
+  list.innerHTML = _diagRowsHtml(payload)
+  if (meta) meta.innerHTML = _diagMetaHtml(payload)
+}
+
+async function _initDiagnostics() {
+  const btn = document.getElementById('diag-recheck-btn')
+  if (btn && !btn._wired) {
+    btn._wired = true
+    btn.addEventListener('click', async () => {
+      btn.disabled = true
+      await _refreshDiagnostics()
+      btn.disabled = false
+    })
+  }
+  await _refreshDiagnostics()
+}
+
+// ── First-run wizard (App #8) ────────────────────────────────────────────────
+// The setup overlay grew from a single "choose a folder" card into a three-step
+// wizard, shown only when no music folders are configured yet. Step 1 is the
+// existing music-folder picker (and choosing a folder auto-advances, so the old
+// single-folder fast path still works). Step 2 is the optional Movies & TV key.
+// Step 3 is an environment check. It is skippable throughout — finishing with
+// just a folder, or with nothing, is fine.
+const _WIZARD_MIN_STEP = 1
+const _WIZARD_MAX_STEP = 3
+
+// Clamp a step move to the valid range. Pure, so the navigation is testable
+// without a DOM: back from step 1 stays on 1, forward from step 3 stays on 3.
+function _wizardResolveStep(current, dir) {
+  const c = Number(current) || _WIZARD_MIN_STEP
+  const next = c + (dir === 'back' ? -1 : dir === 'forward' ? 1 : 0)
+  return Math.max(_WIZARD_MIN_STEP, Math.min(_WIZARD_MAX_STEP, next))
+}
+
+// Build the environment-check rows for step 3 from whatever videoDiagnostics
+// returned. Green ("ok") for a present/reachable tool, amber ("unknown"/bad)
+// otherwise — never a false green. Mirrors _diagRowsHtml's defensiveness: a
+// missing payload becomes a single amber "couldn't check" line. Pure (takes the
+// diagnostics object, returns HTML) so it is unit-testable without Electron.
+function _wizardCheckRows(diag) {
+  const d = diag && diag.diagnostics ? diag.diagnostics : diag
+  const row = (label, ok, note) => {
+    const state = ok === true ? 'ok' : (ok === false ? 'bad' : 'unknown')
+    const suffix = note ? ' — ' + esc(String(note)) : ''
+    return '<div class="setup-check-row">'
+      + '<span class="setup-check-dot setup-check-' + state + '"></span>'
+      + '<span>' + esc(label) + suffix + '</span>'
+      + '</div>'
+  }
+  if (!d || typeof d !== 'object') {
+    return row('Player program (mpv)', null, "couldn't check")
+      + row('Music downloader (Soulseek)', null, "couldn't check")
+  }
+  let html = ''
+  html += row('Player program (mpv)', d.mpv === true, d.mpv === true ? 'ready' : 'not found — install mpv to play')
+  html += row('Music downloader (Soulseek)', d.slskd === true, d.slskd === true ? 'connected' : 'not reachable yet')
+  // TMDB is only meaningful if a key was entered; show it as informational.
+  html += row('Movie database (TMDB)', d.tmdb === true, d.tmdb === true ? 'connected' : 'no key yet (optional)')
+  return html
+}
+
+// Wire the setup overlay's three steps. Idempotent (guarded), defensive about
+// every api it touches, and safe to call when the wizard markup is absent.
+function _initSetupWizard() {
+  const overlay = document.getElementById('setup-overlay')
+  if (!overlay || overlay._wizardWired) return
+  overlay._wizardWired = true
+  const $ = id => document.getElementById(id)
+
+  let step = 1
+  const dots = overlay.querySelectorAll('.setup-step-dot')
+
+  const show = (n) => {
+    step = Math.max(_WIZARD_MIN_STEP, Math.min(_WIZARD_MAX_STEP, n))
+    for (let i = _WIZARD_MIN_STEP; i <= _WIZARD_MAX_STEP; i++) {
+      const el = $('setup-step-' + i)
+      if (el) el.style.display = i === step ? '' : 'none'
+    }
+    dots.forEach(dot => dot.classList.toggle('active', Number(dot.dataset.step) === step))
+    if (step === 3) _wizardRunChecks()
+  }
+  const goto = (dir) => show(_wizardResolveStep(step, dir))
+
+  // Finishing closes the overlay and kicks off the library scan if a folder was
+  // chosen. Finishing with no folder just closes it — the app falls back to its
+  // empty-library state, and the wizard reappears next launch until a folder is
+  // set. Never throws past a log.
+  let _finished = false
+  const finish = async () => {
+    if (_finished) return
+    _finished = true
+    overlay.style.display = 'none'
+    try {
+      if ((state.musicFolders || []).length) {
+        renderFolders()
+        showLoading()
+        await fullScan()
+      }
+    } catch (e) { console.error('[papa] wizard finish scan failed', e) }
+  }
+
+  // Step 1 — the music-folder picker. Choosing a folder auto-advances to step 2
+  // (the old fast path: one folder is enough).
+  $('choose-folder-btn')?.addEventListener('click', async () => {
+    let folders = null
+    try { folders = await window.api.addMusicFolder() } catch (_) { folders = null }
+    if (folders && folders.length) {
+      state.musicFolders = folders
+      const chosen = $('setup-folder-chosen')
+      if (chosen) { chosen.textContent = 'Using: ' + folders[folders.length - 1]; chosen.style.display = '' }
+      show(2)
+    }
+  })
+  $('setup-skip-1')?.addEventListener('click', () => goto('forward'))
+
+  // Step 2 — the optional TMDB key. Save through videoSettingsSet; skip leaves
+  // it untouched. Either way we advance.
+  const saveKeyAndAdvance = async () => {
+    const raw = ($('setup-tmdb-key')?.value || '').trim()
+    if (raw && window.api && typeof window.api.videoSettingsSet === 'function') {
+      try { await window.api.videoSettingsSet({ tmdbApiKey: raw }) } catch (_) { /* non-fatal */ }
+    }
+    show(3)
+  }
+  $('setup-next-2')?.addEventListener('click', saveKeyAndAdvance)
+  $('setup-skip-2')?.addEventListener('click', () => show(3))
+  $('setup-back-2')?.addEventListener('click', () => goto('back'))
+
+  // Step 3 — the environment check plus Finish.
+  $('setup-back-3')?.addEventListener('click', () => goto('back'))
+  $('setup-finish')?.addEventListener('click', finish)
+
+  show(1)
+}
+
+// Fill step 3's checks from videoDiagnostics, defensively. A missing api or a
+// thrown call renders the "couldn't check" amber rows rather than throwing.
+async function _wizardRunChecks() {
+  const box = document.getElementById('setup-checks')
+  if (!box) return
+  if (!window.api || typeof window.api.videoDiagnostics !== 'function') {
+    box.innerHTML = _wizardCheckRows(null)
+    return
+  }
+  box.innerHTML = '<div class="mcs-set-hint">Checking…</div>'
+  let diag = null
+  try { diag = await window.api.videoDiagnostics() } catch (_) { diag = null }
+  box.innerHTML = _wizardCheckRows(diag)
+}
+
+// ── Backup / restore (App #2, #3) ────────────────────────────────────────────
+function _initBackupSettings() {
+  const exportBtn = document.getElementById('papa-export-btn')
+  const importBtn = document.getElementById('papa-import-btn')
+  const status = document.getElementById('backup-status')
+  const setStatus = (msg) => { if (status) status.textContent = msg || '' }
+
+  if (exportBtn && !exportBtn._wired) {
+    exportBtn._wired = true
+    exportBtn.addEventListener('click', async () => {
+      if (!window.api || typeof window.api.papaExportAll !== 'function') {
+        setStatus('Backup is not available in this version.')
+        return
+      }
+      exportBtn.disabled = true
+      setStatus('Backing up…')
+      try {
+        const res = await window.api.papaExportAll()
+        if (res && res.canceled) setStatus('')
+        else if (res && res.ok !== false) setStatus('Backed up' + (res && res.path ? ' to ' + res.path : '') + ' ✓')
+        else setStatus('Could not back up.' + (res && res.error ? ' ' + res.error : ''))
+      } catch (e) {
+        setStatus('Could not back up.')
+      }
+      exportBtn.disabled = false
+    })
+  }
+
+  if (importBtn && !importBtn._wired) {
+    importBtn._wired = true
+    importBtn.addEventListener('click', async () => {
+      if (!window.api || typeof window.api.papaImportAll !== 'function') {
+        setStatus('Restore is not available in this version.')
+        return
+      }
+      // Restoring replaces everything, so confirm first. The message names the
+      // automatic .bak so a mistaken restore is visibly recoverable.
+      const ok = window.confirm(
+        'Restore from a backup?\n\nThis replaces your current watch history, lists, '
+        + 'settings and keys with whatever is in the backup file. Your current data '
+        + 'is saved to a .bak file first, so this can be undone.')
+      if (!ok) return
+      importBtn.disabled = true
+      setStatus('Restoring…')
+      try {
+        const res = await window.api.papaImportAll()
+        if (res && res.canceled) setStatus('')
+        else if (res && res.ok !== false) setStatus('Restored ✓ — restart to see everything.')
+        else setStatus('Could not restore.' + (res && res.error ? ' ' + res.error : ''))
+      } catch (e) {
+        setStatus('Could not restore.')
+      }
+      importBtn.disabled = false
+    })
+  }
+}
+
+// ── Bug reporter (App #97) ───────────────────────────────────────────────────
+// One button: ask main to bundle the recent log, crash log, diagnostics,
+// version/platform info and a redacted settings dump into a folder and reveal
+// it. Main does the work and opens the folder; the renderer only shows a toast
+// and a plain-English confirmation line with the path — including the one thing
+// the user most needs to hear, that nothing in it holds their passwords.
+function _initBugReport() {
+  const btn = document.getElementById('bug-report-btn')
+  const status = document.getElementById('bug-report-status')
+  const setStatus = (msg) => { if (status) status.textContent = msg || '' }
+  if (!btn || btn._wired) return
+  btn._wired = true
+  btn.addEventListener('click', async () => {
+    if (!window.api || typeof window.api.papaBugReport !== 'function') {
+      setStatus('Reporting a problem is not available in this version.')
+      return
+    }
+    btn.disabled = true
+    setStatus('Gathering a report…')
+    try {
+      const res = await window.api.papaBugReport()
+      if (res && res.ok !== false && res.path) {
+        setStatus('Report saved to ' + res.path
+          + ' — it holds no passwords or keys, only what the app was doing. '
+          + 'Zip that folder and send it in.')
+        showToast('Bug report ready — the folder just opened')
+      } else {
+        setStatus('Could not build a report.' + (res && res.error ? ' ' + res.error : ''))
+      }
+    } catch (e) {
+      setStatus('Could not build a report.')
+    }
+    btn.disabled = false
+  })
+}
+
+// ── Settings search (App #9) ─────────────────────────────────────────────────
+// Client-side filter over the settings panel: as the user types, groups and
+// rows whose label text does not match are hidden. Nothing is fetched.
+function _initSettingsSearch() {
+  const input = document.getElementById('mcs-set-search')
+  const empty = document.getElementById('mcs-set-search-empty')
+  if (!input || input._wired) return
+  input._wired = true
+  const panel = document.getElementById('mcs-panel-settings')
+  if (!panel) return
+  const apply = () => {
+    const q = input.value
+    const groups = panel.querySelectorAll('.mcs-set-group')
+    let anyVisible = false
+    groups.forEach(group => {
+      const rows = group.querySelectorAll('.mcs-set-row')
+      const groupLabel = (group.querySelector('.mcs-set-group-label') || {}).textContent || ''
+      let groupHasMatch = false
+      if (rows.length) {
+        rows.forEach(row => {
+          // Match against the row's own text plus the group heading, so
+          // searching "video" keeps a whole group's rows visible.
+          const text = (row.textContent || '') + ' ' + groupLabel
+          const show = _settingsMatchesFilter(text, q)
+          row.style.display = show ? '' : 'none'
+          if (show) groupHasMatch = true
+        })
+      } else {
+        // A group with no rows (e.g. Diagnostics) matches on its heading alone.
+        groupHasMatch = _settingsMatchesFilter(groupLabel, q)
+      }
+      group.style.display = groupHasMatch ? '' : 'none'
+      if (groupHasMatch) anyVisible = true
+    })
+    if (empty) empty.style.display = (q.trim() && !anyVisible) ? '' : 'none'
+  }
+  input.addEventListener('input', apply)
 }
 
 async function initPlaybackSettings() {
   const cfg = await window.api.playerGetConfig()
   state._playerSettings = cfg
+  // Seed the cached global/in-force config the playlist-crossfade override reads
+  // (App #51). Only overwrite the in-force cache when no playlist override is
+  // live, so re-opening Settings mid-override does not think the override is now
+  // the baseline.
+  state._globalPlayerCfg = { mode: cfg.mode, crossfadeSecs: cfg.crossfadeSecs }
+  if (!state._activePlaylistCf) state._inForcePlayerCfg = { mode: cfg.mode, crossfadeSecs: cfg.crossfadeSecs }
   const $ = id => document.getElementById(id)
   $('pb-output-mode').value = cfg.outputMode
   $('pb-mode').value = cfg.mode
@@ -12869,6 +18664,7 @@ async function initPlaybackSettings() {
   $('pb-replaygain').value = cfg.replaygain
   $('pb-channels').value = cfg.channels
   $('pb-boost').checked = !!cfg.boost
+  if ($('pb-replaygain-apply')) $('pb-replaygain-apply').checked = !!cfg.replaygainApply
   $('pb-device-row').style.display = cfg.outputMode === 'exclusive' ? '' : 'none'
   $('pb-cf-row').style.display = cfg.mode === 'crossfade' ? '' : 'none'
 
@@ -12913,21 +18709,190 @@ async function initPlaybackSettings() {
     $('pb-cf-row').style.display = e.target.value === 'crossfade' ? '' : 'none'
     apply({ mode: e.target.value })
     var mode = e.target.value
+    // A manual global change becomes the new baseline AND the new in-force state,
+    // and clears any playlist override tracking — the user just chose directly.
+    _syncGlobalCrossfadeCache({ mode: mode, crossfadeSecs: Number($('pb-cf-secs').value) })
     showSnackbar('Playback mode: ' + (mode === 'gapless' ? 'Gapless' : 'Crossfade'))
   }
   $('pb-cf-secs').oninput = e => { $('pb-cf-label').textContent = `${e.target.value}s` }
-  $('pb-cf-secs').onchange = e => apply({ crossfadeSecs: Number(e.target.value) })
+  $('pb-cf-secs').onchange = e => {
+    apply({ crossfadeSecs: Number(e.target.value) })
+    _syncGlobalCrossfadeCache({ mode: $('pb-mode').value, crossfadeSecs: Number(e.target.value) })
+  }
   $('pb-replaygain').onchange = e => apply({ replaygain: e.target.value })
   $('pb-channels').onchange = e => apply({ channels: e.target.value })
   $('pb-boost').onchange = e => apply({ boost: e.target.checked })
+  if ($('pb-replaygain-apply')) $('pb-replaygain-apply').onchange = e => {
+    apply({ replaygainApply: e.target.checked })
+    showSnackbar(e.target.checked ? 'ReplayGain on — quiet and loud tracks will be evened out' : 'ReplayGain off')
+  }
 
   await _initGeneralSettings()
   await _initEqSettings(cfg, apply)
 }
 
+// The interface-size setting offers four steps. A stored value that is out of
+// range, missing, or nonsense (an old build, a hand-edited config) must resolve
+// to something sane rather than shrinking the window to nothing — so it snaps
+// to the nearest offered step, defaulting to 100%. Pure, so it is testable
+// without a webFrame.
+const _UI_SCALE_STEPS = [0.9, 1, 1.1, 1.25]
+function _uiScaleValue(raw) {
+  const n = Number(raw)
+  if (!isFinite(n) || n <= 0) return 1
+  let best = 1, bestGap = Infinity
+  for (const step of _UI_SCALE_STEPS) {
+    const gap = Math.abs(step - n)
+    if (gap < bestGap) { bestGap = gap; best = step }
+  }
+  return best
+}
+
+// Read the saved interface size and hand it to webFrame. Called once at startup
+// (before the modal exists) and again whenever the field changes.
+async function _applyUiScaleFromSettings() {
+  let scale = 1
+  try {
+    const gen = await window.api.getGeneralSettings()
+    scale = _uiScaleValue(gen && gen.uiScale)
+  } catch (_) { scale = 1 }
+  try { window.api.setZoomFactor(scale) } catch (_) {}
+  return scale
+}
+
+// The interface-size field: reflect the stored value, and on change persist it
+// and re-apply the zoom immediately. Its own function so a missing checkbox in
+// _initGeneralSettings cannot skip it, and so the general-settings body stays
+// small.
+async function _initUiScaleField() {
+  const scaleSel = document.getElementById('gen-ui-scale')
+  if (!scaleSel) return
+  let scale = 1
+  try {
+    const gen = await window.api.getGeneralSettings()
+    scale = _uiScaleValue(gen && gen.uiScale)
+  } catch (_) { scale = 1 }
+  scaleSel.value = String(scale)
+  scaleSel.onchange = e => {
+    const v = _uiScaleValue(e.target.value)
+    window.api.saveGeneralSettings({ uiScale: v })
+    try { window.api.setZoomFactor(v) } catch (_) {}
+  }
+}
+
+// ── Appearance / theme (App #87) ─────────────────────────────────────────────
+// The music side and shared chrome can run in a warm light palette; the cinema
+// stays dark always (see styles.css). Three choices: force dark, force light,
+// or follow the OS. Persisted in general settings (electron-store) so it
+// survives restarts, and mirrored into localStorage so the very first paint can
+// apply the class synchronously without waiting on an IPC round-trip.
+const _THEME_CHOICES = ['dark', 'light', 'system']
+const _THEME_LS_KEY = 'papa-theme'  // synchronous mirror for early paint
+
+// Normalise a stored/typed preference to one of the three choices. A missing,
+// stale, or hand-edited value falls back to 'dark' — the app's native identity.
+// Pure, so it is testable without a DOM or matchMedia.
+function _themeChoice(raw) {
+  const s = String(raw == null ? '' : raw).toLowerCase()
+  return _THEME_CHOICES.indexOf(s) > -1 ? s : 'dark'
+}
+
+// Resolve a preference to the concrete mode to paint: 'light' or 'dark'.
+// `systemPrefersLight` is what matchMedia('(prefers-color-scheme:light)')
+// reports — passed in rather than read here so the resolver stays pure and the
+// system-follow branch is unit-testable. 'system' with no signal (undefined)
+// resolves to dark, matching the app default.
+function _resolveTheme(pref, systemPrefersLight) {
+  const choice = _themeChoice(pref)
+  if (choice === 'light') return 'light'
+  if (choice === 'dark') return 'dark'
+  return systemPrefersLight ? 'light' : 'dark'  // 'system'
+}
+
+// Does the OS currently ask for a light UI? Guarded: matchMedia may be absent
+// (older webview, test harness) — treat that as "no signal" → dark.
+function _systemPrefersLight() {
+  try {
+    return !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches)
+  } catch (_) { return false }
+}
+
+// Flip the single body class the whole stylesheet keys off. Called on startup,
+// on change, and by the live system listener. Cheap and idempotent.
+function _applyThemeMode(mode) {
+  try { document.body.classList.toggle('theme-light', mode === 'light') } catch (_) {}
+}
+
+// Synchronous early-paint hook: read the localStorage mirror (not IPC) and set
+// the class before the first frame. If the mirror is missing we default to dark
+// and paint nothing extra, so a first-ever launch never flashes light.
+function _applyThemeEarly() {
+  let pref = 'dark'
+  try { pref = _themeChoice(window.localStorage.getItem(_THEME_LS_KEY)) } catch (_) { pref = 'dark' }
+  _applyThemeMode(_resolveTheme(pref, _systemPrefersLight()))
+  return pref
+}
+
+// The live 'system' listener. Only meaningful while the preference is 'system':
+// a single MediaQueryList listener is registered once and re-checks the stored
+// preference each time it fires, so switching the OS theme re-skins the app live
+// but flipping the app to explicit dark/light makes the listener a no-op. The
+// guard `_themeSystemListenerBound` prevents stacking duplicate listeners each
+// time the settings field is (re-)initialised.
+let _themeSystemListenerBound = false
+let _themePref = 'dark'  // the current stored choice, for the listener to consult
+function _bindThemeSystemListener() {
+  if (_themeSystemListenerBound) return
+  let mql
+  try { mql = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)') } catch (_) { mql = null }
+  if (!mql) return
+  const onChange = () => {
+    // Only follow the OS when the user asked to; explicit dark/light ignore it.
+    if (_themePref === 'system') _applyThemeMode(_resolveTheme('system', _systemPrefersLight()))
+  }
+  // addEventListener is the modern API; addListener is the deprecated fallback
+  // some engines still expose. Bind whichever exists.
+  if (mql.addEventListener) mql.addEventListener('change', onChange)
+  else if (mql.addListener) mql.addListener(onChange)
+  else return
+  _themeSystemListenerBound = true
+}
+
+// The Appearance field: reflect the stored value, and on change persist it (to
+// both the store and the localStorage early-paint mirror), re-apply, and make
+// sure the system listener is live. Its own function — mirrors _initUiScaleField
+// — so a missing control in _initGeneralSettings cannot skip it.
+async function _initThemeField() {
+  const sel = document.getElementById('gen-theme')
+  if (!sel) return
+  let pref = 'dark'
+  try {
+    const gen = await window.api.getGeneralSettings()
+    pref = _themeChoice(gen && gen.theme)
+  } catch (_) { pref = 'dark' }
+  _themePref = pref
+  sel.value = pref
+  _applyThemeMode(_resolveTheme(pref, _systemPrefersLight()))
+  _bindThemeSystemListener()
+  sel.onchange = e => {
+    const v = _themeChoice(e.target.value)
+    _themePref = v
+    window.api.saveGeneralSettings({ theme: v })
+    try { window.localStorage.setItem(_THEME_LS_KEY, v) } catch (_) {}
+    _applyThemeMode(_resolveTheme(v, _systemPrefersLight()))
+    _bindThemeSystemListener()
+  }
+}
+
 // Reads what main will actually consult, not a separate renderer copy — the
 // setting is stored once and honoured in main's close handler.
 async function _initGeneralSettings() {
+  // Interface size first, and before the early-return guards below.
+  await _initUiScaleField()
+  // Appearance next — also before the early-return guards, so a missing
+  // close-to-tray checkbox can't skip theme wiring.
+  await _initThemeField()
+
   const el = document.getElementById('gen-close-to-tray')
   if (!el) return
   try {
@@ -13075,14 +19040,25 @@ function toggleChatSidebar() {
   btn?.classList.toggle('active', chatState.open)
   layout?.classList.toggle('mcs-open', chatState.open)
   if (chatState.open) {
+    // Remember who opened it so focus can go home when it closes. It is a docked
+    // panel rather than a blocking modal, so Tab is not trapped inside it — but a
+    // keyboard user still should not be dumped at the top of the document.
+    _mcsOpener = (btn && document.contains(btn)) ? btn : document.activeElement
     document.getElementById('mcs-input')?.focus()
-  } else if (wasOpen && chatState.history.length >= 2) {
-    _saveCurrentConv()
-    _refreshProfile()
-    chatState.history = []
-    chatState.convStartedAt = null
+  } else {
+    if (_mcsOpener && typeof _mcsOpener.focus === 'function' && document.contains(_mcsOpener)) {
+      try { _mcsOpener.focus() } catch (_) {}
+    }
+    _mcsOpener = null
+    if (wasOpen && chatState.history.length >= 2) {
+      _saveCurrentConv()
+      _refreshProfile()
+      chatState.history = []
+      chatState.convStartedAt = null
+    }
   }
 }
+let _mcsOpener = null
 
 function _renderTastePills() {
   const artists = chatState.tasteProfile.topArtists || []
@@ -13101,7 +19077,9 @@ function _renderTastePills() {
 async function initChatSidebar() {
   document.getElementById('btn-agent-chat')?.addEventListener('click', toggleChatSidebar)
   document.getElementById('mcs-close-btn')?.addEventListener('click', toggleChatSidebar)
-  document.addEventListener('keydown', e => { if (e.ctrlKey && e.key === '/') { e.preventDefault(); toggleChatSidebar() } })
+  // Route through matchesShortcut so rebinding the 'toggleAgent' shortcut in
+  // the config dialog actually takes effect — the hardcoded Ctrl+/ ignored it.
+  document.addEventListener('keydown', e => { if (matchesShortcut('toggleAgent', e)) { e.preventDefault(); toggleChatSidebar() } })
 
   // Tab buttons
   document.querySelectorAll('.mcs-tab-btn').forEach(btn => {
@@ -13292,6 +19270,250 @@ function _slskQualLabel(files) {
   return parts.filter(Boolean).join(' · ')
 }
 
+// The card's headline quality line, in the compact "FLAC · 24/96" / "MP3 · 320"
+// shape the brief asks for. Depth/rate is written N/M kHz (16/44, 24/96) the way
+// audiophiles read it; MP3 (and any lossy) shows its bitrate instead, which is
+// the number that actually distinguishes one lossy rip from another. Falls back
+// to the fuller _slskQualLabel wording only when no numbers are present at all.
+function _slskCardQuality(files) {
+  const ref = (files || []).find(f => f.isFlac) || (files || [])[0]
+  if (!ref) return ''
+  const fmt = (ref.ext === 'flac' || ref.isFlac) ? 'FLAC' : String(ref.ext || '').toUpperCase()
+  const depth = Number(ref.bitDepth) || 0
+  const rate  = Number(ref.sampleRate) || 0
+  if (ref.isFlac || ref.ext === 'flac' || fmt === 'WAV' || fmt === 'AIFF' || fmt === 'ALAC') {
+    // Lossless: depth/rate is the informative pair (24/96 vs 16/44).
+    if (depth && rate) return `${fmt} · ${depth}/${Math.round(rate / 1000)}`
+    if (rate)          return `${fmt} · ${Math.round(rate / 1000)} kHz`
+    return fmt
+  }
+  // Lossy: bitrate is what matters. "MP3 · 320".
+  const kbps = Number(ref.bitRate) || 0
+  if (kbps) return `${fmt} · ${kbps}`
+  return fmt || _slskQualLabel(files)
+}
+
+// A human availability line for a source, built from the peer signals slskd
+// sends on every response: hasFreeUploadSlot, queueLength and uploadSpeed. No
+// raw numbers dumped at the user — just the one thing they want to know, which
+// is how soon this download actually starts. Returns { text, cls }.
+function _slskAvailability(g) {
+  if (g && g.hasFreeSlot) return { text: 'Ready now', cls: 'slsk-avail-ready' }
+  const q = Number(g && g.queueLength) || 0
+  if (q > 0) return { text: `~${q} in line`, cls: 'slsk-avail-queue' }
+  // No free slot and no queue reported: fall back on speed. A very slow uploader
+  // is worth flagging so the user does not pick it expecting a quick grab.
+  const spd = Number(g && g.uploadSpeed) || 0
+  if (spd > 0 && spd < 40 * 1024) return { text: 'Slow uploader', cls: 'slsk-avail-slow' }
+  return { text: 'Available', cls: 'slsk-avail-ok' }
+}
+
+// A one-line quality summary for an explorer directory node, e.g.
+// "mostly FLAC 16/44 · 2 surround". Looks only at the node's own audio files
+// (the ones shown when you open that folder), not the whole subtree. Returns ''
+// for a folder with no audio directly in it.
+function _slskDirQuality(node) {
+  const T = window.PapaSlskTree
+  const SF = window.PapaSlskFilters
+  if (!node || !Array.isArray(node.files)) return ''
+  const audio = node.files.filter(f => !T || T.AUDIO_RE.test(f.name || f.filename || ''))
+  if (!audio.length) return ''
+  // Majority format by extension.
+  const counts = {}
+  for (const f of audio) {
+    const nm = String(f.name || f.filename || '')
+    const ext = (nm.split('.').pop() || '').toLowerCase()
+    if (!ext) continue
+    counts[ext] = (counts[ext] || 0) + 1
+  }
+  let topExt = '', topN = 0
+  for (const k in counts) if (counts[k] > topN) { topN = counts[k]; topExt = k }
+  if (!topExt) return ''
+  const fmt = topExt === 'flac' ? 'FLAC' : topExt.toUpperCase()
+  // Depth/rate from a representative file of the majority format.
+  const ref = audio.find(f => String(f.name || f.filename || '').toLowerCase().endsWith('.' + topExt)) || audio[0]
+  const depth = Number(ref && ref.bitDepth) || 0
+  const rate  = Number(ref && ref.sampleRate) || 0
+  let dr = ''
+  if (depth && rate) dr = ' ' + depth + '/' + Math.round(rate / 1000)
+  else if (rate)     dr = ' ' + Math.round(rate / 1000) + 'k'
+  // Surround-labelled folders among this node's own subfolders (and itself).
+  let sur = 0
+  if (SF) {
+    if (SF.detectSurround(node.path || node.name || '')) sur++
+    if (node.dirs && typeof node.dirs.values === 'function') {
+      for (const c of node.dirs.values()) if (SF.detectSurround(c.path || c.name || '')) sur++
+    }
+  }
+  const majority = topN >= audio.length ? '' : 'mostly '
+  let out = majority + fmt + dr
+  if (sur > 0) out += ' · ' + sur + ' surround'
+  return out
+}
+
+// Folders the user pressed DL All on THIS session, keyed by "username::folder"
+// (lowercased). Value tracks how many files the card asked for, so the inline
+// progress strip can report "done / total" from the downloads poll data that is
+// already flowing — no new polling. Session-only: cleared on reload, as briefed.
+const _slskCardDownloads = new Map()
+function _slskCardKey(username, folder) {
+  return String(username || '').toLowerCase() + '::' + String(folder || '').toLowerCase()
+}
+// Match a downloads-poll file to a card by peer + album folder. _dlFolderName is
+// the same folder-basename extractor the Downloads page groups by, so the two
+// agree on what "the album" is.
+function _slskCardProgress(g) {
+  const rec = _slskCardDownloads.get(_slskCardKey(g.username, g.folderName))
+  if (!rec) return null
+  const files = _dlLastFiles || []
+  const folderL = String(g.folderName || '').toLowerCase()
+  let total = 0, done = 0
+  for (const f of files) {
+    if (String(f.username || '').toLowerCase() !== String(g.username || '').toLowerCase()) continue
+    if ((_dlFolderName(f.filename) || '').toLowerCase() !== folderL) continue
+    total++
+    if (_dlCategory(f.state) === 'completed') done++
+  }
+  // Before the poll has seen the transfers, fall back to the count we enqueued
+  // so the strip still shows 0% rather than vanishing.
+  if (!total) total = rec.total || 0
+  if (!total) return null
+  const pct = Math.round((done / total) * 100)
+  return { done, total, pct, complete: done >= total && total > 0 }
+}
+
+// One card, built the same way whether it renders under the Search page's
+// Soulseek section or inside the Soulseek hub. data-gi indexes _slskRendered,
+// the array bindSlskSearchEvents also reads, so both surfaces share one renderer
+// and one set of handlers rather than duplicating the card twice.
+function _slskCardHtml(g, gi, query) {
+  const qual    = _slskCardQuality(g.files)
+  const avail   = _slskAvailability(g)
+  const hasFlac = g.files.some(f => f.isFlac)
+  const hue     = Math.abs([...g.folderName].reduce((h, c) => (Math.imul(31, h) + c.charCodeAt(0)) | 0, 0)) % 360
+  var slskInLib = state.library.some(function(a) {
+    var fn = g.folderName.toLowerCase()
+    return a.name && (a.name.toLowerCase().includes(fn) || fn.includes(a.name.toLowerCase()))
+  })
+  var slskBadge = slskInLib ? '<span class="in-lib-badge" style="background:rgba(29,185,84,.15);color:#1db954;font-size:10px;padding:1px 6px;border-radius:8px;margin-left:6px">In Library</span>' : ''
+  // Inline progress for cards the user pressed DL All on this session. When the
+  // album is fully downloaded the action row is swapped for Play + In Library.
+  const prog = _slskCardProgress(g)
+  const sd = window.PapaSlskFilters && window.PapaSlskFilters.groupSurround(g)
+  let btns
+  if (prog && prog.complete) {
+    btns = `<div class="slsk-card-btns">
+      <button class="slsk-play-album-btn slsk-card-action" data-gi="${gi}" title="Play this album">
+        <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg> Play album
+      </button>
+      <span class="in-lib-badge slsk-card-inlib" style="background:rgba(29,185,84,.15);color:#1db954;font-size:11px;padding:2px 8px;border-radius:8px">In Library</span>
+    </div>`
+  } else {
+    btns = `<div class="slsk-card-btns">
+      <button class="slsk-play-btn slsk-card-action" data-gi="${gi}" title="Download &amp; play">
+        <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg> Play
+      </button>
+      <button class="slsk-dl-all-btn slsk-card-action" data-gi="${gi}" title="Download all files">
+        <svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg> ${g.files.length}
+      </button>
+      <button class="slsk-expand-btn slsk-card-action" data-gi="${gi}" title="Show tracks">
+        ${g.files.length} track${g.files.length !== 1 ? 's' : ''} ▾
+      </button>
+    </div>`
+  }
+  const progStrip = (prog && !prog.complete)
+    ? `<div class="slsk-card-progress" title="${prog.done} of ${prog.total} files downloaded">
+         <div class="slsk-card-progress-fill" style="width:${prog.pct}%"></div>
+         <span class="slsk-card-progress-label">${prog.pct}%</span>
+       </div>`
+    : ''
+  return `<div class="slsk-card" data-gi="${gi}">
+    <div class="slsk-card-art" style="background:linear-gradient(135deg,hsl(${hue},45%,16%),hsl(${(hue+40)%360},35%,10%))">
+      ${hasFlac ? '<span class="slsk-card-lossless">LOSSLESS</span>' : ''}
+      ${sd ? `<span class="slsk-card-surround" title="Labelled ${esc(sd.label)} by the uploader">${esc(sd.label)}</span>` : ''}
+      <svg class="slsk-card-note" viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>
+    </div>
+    <div class="slsk-card-body">
+      <div class="slsk-card-name" title="${esc(g.folderName)}">${highlightMatch(g.folderName, query)}${slskBadge} <span style="font-size:11px;color:var(--text3);font-weight:400">(${g.files.length} files)</span></div>
+      ${qual ? `<div class="slsk-card-qual">${esc(qual)}</div>` : ''}
+      <div class="slsk-card-avail ${avail.cls}">${esc(avail.text)}</div>
+      <div class="slsk-card-from">via <button class="slsk-user-link" data-gi="${gi}" data-username="${esc(g.username)}" title="Browse ${esc(g.username)}'s shared library">${esc(g.username)}</button></div>
+      ${progStrip}
+      ${btns}
+    </div>
+    <div class="slsk-track-list" id="slsk-tl-${gi}" style="display:none"></div>
+  </div>`
+}
+
+// Shared size formatter — the shelves module owns the one that rolls GB→TB and
+// never shows a four-digit unit. Local shim so search-card code reads cleanly.
+function _slskFmtSize(bytes) {
+  const SH = window.PapaSlskShelves
+  if (SH && SH.fmtSize) return SH.fmtSize(bytes)
+  const n = Number(bytes) || 0
+  return n >= 1073741824 ? (n / 1073741824).toFixed(1) + ' GB'
+    : n >= 1048576 ? (n / 1048576).toFixed(0) + ' MB' : Math.round(n / 1024) + ' KB'
+}
+
+// One MERGED card: every sharer of one album identity behind a single tile.
+// data-gi indexes _slskRendered (the merged-album list). The main DL/Play use
+// the album's best source; ▾ expands the per-source list (the individual cards'
+// content) for a manual pick. Mirrors _slskCardHtml's structure and classes so
+// the existing CSS and the inline progress strip apply unchanged — the progress
+// strip keys on the best source's folder, which is what the DL button enqueues.
+function _slskMergedCardHtml(m, gi, query) {
+  const best = m.best || (m.sources && m.sources[0]) || { files: [], username: '' }
+  const SH = window.PapaSlskShelves
+  const qual = SH ? SH.albumQualityLabel({
+    lossless: m.lossless, isHiRes: m.isHiRes, topExt: m.lossless ? 'flac' : 'mp3',
+    maxBitDepth: m.bestQuality.maxBitDepth, maxSampleRate: m.bestQuality.maxSampleRate,
+    files: best.files || [],
+  }) : ''
+  const avail = _slskAvailability(best)
+  const title = m.album || best.folderName || 'Unknown album'
+  const hue = Math.abs([...(title)].reduce((h, c) => (Math.imul(31, h) + c.charCodeAt(0)) | 0, 0)) % 360
+  const people = `${m.peopleCount} ${m.peopleCount === 1 ? 'person has' : 'people have'} this`
+  const prog = _slskCardProgress({ username: best.username, folderName: best.folderName })
+  let btns
+  if (prog && prog.complete) {
+    btns = `<div class="slsk-card-btns">
+      <button class="slsk-play-album-btn slsk-card-action" data-gi="${gi}" title="Play this album">
+        <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg> Play album</button>
+      <span class="in-lib-badge slsk-card-inlib" style="background:rgba(29,185,84,.15);color:#1db954;font-size:11px;padding:2px 8px;border-radius:8px">In Library</span>
+    </div>`
+  } else {
+    btns = `<div class="slsk-card-btns">
+      <button class="slsk-play-btn slsk-card-action" data-gi="${gi}" title="Download &amp; play the best copy">
+        <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg> Play</button>
+      <button class="slsk-dl-all-btn slsk-card-action" data-gi="${gi}" title="Download the best copy (${(best.files || []).length} files)">
+        <svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg> ${(best.files || []).length}</button>
+      <button class="slsk-sources-btn slsk-card-action" data-gi="${gi}" title="Show every source">
+        ${m.peopleCount} source${m.peopleCount !== 1 ? 's' : ''} ▾</button>
+    </div>`
+  }
+  const progStrip = (prog && !prog.complete)
+    ? `<div class="slsk-card-progress" title="${prog.done} of ${prog.total} files downloaded">
+         <div class="slsk-card-progress-fill" style="width:${prog.pct}%"></div>
+         <span class="slsk-card-progress-label">${prog.pct}%</span></div>`
+    : ''
+  return `<div class="slsk-card slsk-card-merged" data-gi="${gi}">
+    <div class="slsk-card-art" style="background:linear-gradient(135deg,hsl(${hue},45%,16%),hsl(${(hue+40)%360},35%,10%))">
+      ${m.lossless ? '<span class="slsk-card-lossless">LOSSLESS</span>' : ''}
+      ${m.surround ? '<span class="slsk-card-surround" title="A surround copy is available">5.1</span>' : ''}
+      <svg class="slsk-card-note" viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>
+    </div>
+    <div class="slsk-card-body">
+      <div class="slsk-card-name" title="${esc(title)}">${highlightMatch(title, query)}${m.artist ? ` <span style="font-size:11px;color:var(--text3);font-weight:400">${esc(m.artist)}${m.year ? ' · ' + m.year : ''}</span>` : ''}</div>
+      ${qual ? `<div class="slsk-card-qual">Best: ${esc(qual)}</div>` : ''}
+      <div class="slsk-card-avail ${avail.cls}">${esc(avail.text)} via ${esc(best.username)}</div>
+      <div class="slsk-card-from"><span class="slsk-people-count">${esc(people)}</span></div>
+      ${progStrip}
+      ${btns}
+    </div>
+    <div class="slsk-sources-list" id="slsk-src-${gi}" style="display:none"></div>
+  </div>`
+}
+
 function renderSoulseekRow(query) {
   const s = slsk.status
 
@@ -13400,6 +19622,15 @@ function renderSoulseekRow(query) {
         <button class="slsk-retry-btn" id="slsk-retry-btn" title="Search again">↺ Retry</button>
       </div>`
     }
+    // Pre-search: nothing has been asked for yet, so invite rather than report a
+    // failure. "Nothing found" here read as a dead end before the user had even
+    // typed anything.
+    if (!slsk.searched) {
+      return `<div class="osrc-row slsk-row slsk-row-invite" id="slsk-row">
+        <span class="osrc-name">Soulseek</span>
+        <span class="osrc-status" style="color:var(--text3)">Search the network for an album or artist…</span>
+      </div>`
+    }
     return `<div class="osrc-row slsk-row" id="slsk-row">
       <span class="osrc-name">Soulseek</span>
       <span class="osrc-status not-found">Nothing found</span>
@@ -13417,23 +19648,40 @@ function renderSoulseekRow(query) {
   // The cap keeps the grid usable, but with responseLimit 3000 across six
   // variants the discarded tail routinely contains better sources — and nothing
   // said it existed. The limit is now extensible and the count is stated.
-  const displayList   = filtered.slice(0, _slskShowLimit)
-  const hiddenCount   = Math.max(0, filtered.length - displayList.length)
-  // data-gi is an index into displayList, which is FLAC-partitioned,
-  // surround-sorted, filtered and capped at 60. bindSlskSearchEvents used to
-  // rebuild its own array from _slskGroupByFolder(), which has none of that --
-  // so every handler indexed a different folder from a different peer.
+  // Merge people-per-album by default: the same album from 30 sharers renders
+  // one card, not 30. The escape toggle restores one-card-per-uploader. When
+  // merged, the display unit is an album (with N sources behind it); counts in
+  // the summary and Show-more reflect ALBUMS, not sources.
+  const merged = !slsk.groupByUploader
+  const SHm = window.PapaSlskShelves
+  let mergedAlbums = null
+  if (merged && SHm && SHm.mergeSourcesByAlbum) {
+    const detect = SF ? SF.detectSurround : null
+    // Merge over the already filtered+sorted folder-groups so the active filter
+    // and sort still bite; the merge preserves the incoming (best-first) order
+    // per bucket and albums surface in first-source order.
+    mergedAlbums = SHm.mergeSourcesByAlbum(filtered, { detectSurround: detect })
+  }
+  const unitList     = merged && mergedAlbums ? mergedAlbums : filtered
+  const displayList   = unitList.slice(0, _slskShowLimit)
+  const hiddenCount   = Math.max(0, unitList.length - displayList.length)
+  // data-gi is an index into displayList (merged albums or, in uploader mode,
+  // folder-groups). bindSlskSearchEvents reads the same array via _slskRendered.
   _slskRendered = displayList
+  _slskMergedMode = merged && !!mergedAlbums
+  const unitWord      = _slskMergedMode ? 'album' : 'source'
   const filteredNote  = slsk.filter !== 'all'
-    ? ` · <span class="slsk-filter-note">${filtered.length} match${filtered.length !== 1 ? 'es' : ''}</span>` : ''
+    ? ` · <span class="slsk-filter-note">${unitList.length} match${unitList.length !== 1 ? 'es' : ''}</span>` : ''
   const cappedNote    = hiddenCount
-    ? ` · <span class="slsk-filter-note">showing ${displayList.length} of ${filtered.length}</span>` : ''
+    ? ` · <span class="slsk-filter-note">showing ${displayList.length} of ${unitList.length}</span>` : ''
   const isUpdating   = slsk.searching && slsk.results.length > 0
   const pending      = slsk.pendingSearches || 0
   const updateNote   = isUpdating ? ` <span class="slsk-updating">· scanning${pending > 0 ? ' ('+pending+' left)' : ''}${_slskElapsed > 0 ? ' ('+_slskElapsed+'s)' : ''}…</span>` : ''
-  const summary      = flacGroups.length
-    ? `${flacGroups.length} lossless${otherGroups.length > 0 ? ` · ${otherGroups.length} other` : ''} source${groups.length !== 1 ? 's' : ''}${filteredNote}${cappedNote}${updateNote}`
-    : `${groups.length} source${groups.length !== 1 ? 's' : ''}${cappedNote}${updateNote}`
+  const summary      = _slskMergedMode
+    ? `${unitList.length} album${unitList.length !== 1 ? 's' : ''}${flacGroups.length ? ` · ${flacGroups.length} lossless source${flacGroups.length !== 1 ? 's' : ''}` : ''}${filteredNote}${cappedNote}${updateNote}`
+    : (flacGroups.length
+        ? `${flacGroups.length} lossless${otherGroups.length > 0 ? ` · ${otherGroups.length} other` : ''} source${groups.length !== 1 ? 's' : ''}${filteredNote}${cappedNote}${updateNote}`
+        : `${groups.length} source${groups.length !== 1 ? 's' : ''}${cappedNote}${updateNote}`)
 
   return `<div class="slsk-container" id="slsk-row">
     <div class="slsk-header-row">
@@ -13452,51 +19700,20 @@ function renderSoulseekRow(query) {
               title="${n} source${n !== 1 ? 's' : ''}">${label}<span class="slsk-chip-n">${n}</span></button>`).join('')}
       <label class="slsk-sort-wrap">Sort
         <select class="slsk-sort" id="slsk-sort">
-          ${[['relevance', 'Best match'], ['sampleRate', 'Sample rate'], ['bitDepth', 'Bit depth'],
+          ${[['relevance', 'Best match'], ['queue', 'Queue position'], ['sampleRate', 'Sample rate'], ['bitDepth', 'Bit depth'],
              ['tracks', 'Track count'], ['speed', 'Upload speed'], ['size', 'File size']]
             .map(([k, l]) => `<option value="${k}"${slsk.sort === k ? ' selected' : ''}>${l}</option>`).join('')}
         </select>
       </label>
+      <label class="slsk-groupby-toggle" title="Show one card per uploader instead of merging people per album">
+        <input type="checkbox" id="slsk-groupby"${slsk.groupByUploader ? ' checked' : ''}> Group by uploader
+      </label>
     </div>
     <div class="slsk-grid">
-      ${displayList.map((g, gi) => {
-        const qual    = _slskQualLabel(g.files)
-        const hasFlac = g.files.some(f => f.isFlac)
-        const hue     = Math.abs([...g.folderName].reduce((h, c) => (Math.imul(31, h) + c.charCodeAt(0)) | 0, 0)) % 360
-        var slskInLib = state.library.some(function(a) {
-          var fn = g.folderName.toLowerCase()
-          return a.name && (a.name.toLowerCase().includes(fn) || fn.includes(a.name.toLowerCase()))
-        })
-        var slskBadge = slskInLib ? '<span class="in-lib-badge" style="background:rgba(29,185,84,.15);color:#1db954;font-size:10px;padding:1px 6px;border-radius:8px;margin-left:6px">In Library</span>' : ''
-        return `<div class="slsk-card" data-gi="${gi}">
-          <div class="slsk-card-art" style="background:linear-gradient(135deg,hsl(${hue},45%,16%),hsl(${(hue+40)%360},35%,10%))">
-            ${hasFlac ? '<span class="slsk-card-lossless">LOSSLESS</span>' : ''}
-            ${(() => { const sd = window.PapaSlskFilters && window.PapaSlskFilters.groupSurround(g)
-                       return sd ? `<span class="slsk-card-surround" title="Labelled ${esc(sd.label)} by the uploader">${esc(sd.label)}</span>` : '' })()}
-            <svg class="slsk-card-note" viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>
-          </div>
-          <div class="slsk-card-body">
-            <div class="slsk-card-name" title="${esc(g.folderName)}">${highlightMatch(g.folderName, query)}${slskBadge} <span style="font-size:11px;color:var(--text3);font-weight:400">(${g.files.length} files)</span></div>
-            ${qual ? `<div class="slsk-card-qual">${esc(qual)}</div>` : ''}
-            <div class="slsk-card-from">via <button class="slsk-user-link" data-gi="${gi}" data-username="${esc(g.username)}" title="Browse ${esc(g.username)}'s shared library">${esc(g.username)}</button></div>
-            <div class="slsk-card-btns">
-              <button class="slsk-play-btn slsk-card-action" data-gi="${gi}" title="Download &amp; play">
-                <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg> Play
-              </button>
-              <button class="slsk-dl-all-btn slsk-card-action" data-gi="${gi}" title="Download all files">
-                <svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg> ${g.files.length}
-              </button>
-              <button class="slsk-expand-btn slsk-card-action" data-gi="${gi}" title="Show tracks">
-                ${g.files.length} track${g.files.length !== 1 ? 's' : ''} ▾
-              </button>
-            </div>
-          </div>
-          <div class="slsk-track-list" id="slsk-tl-${gi}" style="display:none"></div>
-        </div>`
-      }).join('')}
+      ${displayList.map((g, gi) => _slskMergedMode ? _slskMergedCardHtml(g, gi, query) : _slskCardHtml(g, gi, query)).join('')}
     </div>
     ${hiddenCount ? `<div class="slsk-show-more-row">
-      <button class="slsk-retry-btn" id="slsk-show-more">Show ${Math.min(hiddenCount, SLSK_SHOW_STEP)} more of ${filtered.length}</button>
+      <button class="slsk-retry-btn" id="slsk-show-more">Show ${Math.min(hiddenCount, SLSK_SHOW_STEP)} more of ${unitList.length} ${unitWord}${unitList.length !== 1 ? 's' : ''}</button>
     </div>` : ''}
   </div>`
 }
@@ -13964,6 +20181,19 @@ async function _pollAndRenderDownloadsInner() {
   // cost, and a new one starting is when it becomes worth it again.
   retuneDownloadsPolling()
 
+  // Keep the inline progress strips on any Soulseek cards downloaded this
+  // session in step with the poll — reuses the data just fetched, no new poll.
+  // Only touches the DOM when a slsk-section is actually on screen (Search page
+  // or the hub) and something is being tracked.
+  if (_slskCardDownloads.size) {
+    const sec = document.getElementById('slsk-section')
+    if (sec && (state.currentPage === 'search' || state.currentPage === 'soulseek')) {
+      const q = state.currentPage === 'search' ? (state.currentSearchQuery || slsk.lastQuery) : slsk.lastQuery
+      sec.innerHTML = renderSoulseekRow(q)
+      bindSlskSearchEvents(q)
+    }
+  }
+
   // Detect transitions from active → succeeded and trigger a library sync
   const nowActive = new Set(files.filter(f => _dlCategory(f.state) === 'active').map(f => f.id))
   const prevActive = new Set(_dlPrevActiveIds)
@@ -13990,7 +20220,17 @@ async function _pollAndRenderDownloadsInner() {
     return t >= _todayMs
   }).length
   const badge = document.getElementById('nav-dl-badge')
-  if (badge) { badge.style.display = (activeCount > 0 || todayDone > 0) ? 'flex' : 'none'; badge.textContent = activeCount > 0 ? activeCount : todayDone; badge.title = activeCount + ' active, ' + todayDone + ' completed' }
+  if (badge) {
+    badge.style.display = (activeCount > 0 || todayDone > 0) ? 'flex' : 'none'
+    badge.textContent = activeCount > 0 ? activeCount : todayDone
+    // The number shown is active downloads (or, when none are active, today's
+    // completions) — a different metric from the Downloads page scheduler's
+    // "N waiting" (pending in the scheduler). Spell out exactly what the badge
+    // counts so the two figures no longer read as a contradiction (audit #15).
+    badge.title = activeCount > 0
+      ? activeCount + ' download' + (activeCount === 1 ? '' : 's') + ' in progress'
+      : todayDone + ' completed today'
+  }
 
   // Only what just finished this session, not slskd's entire memory.
   const completedNow = files.filter(f => _dlCategory(f.state) === 'completed' && _dlJustFinished.has(f.id))
@@ -14909,7 +21149,7 @@ function _renderFailedTab(files, container) {
             ${userBtnHtml}
           </div>
         </div>
-        <button class="dl2-icon-btn dl2-grp-btn dl2-retry-all-btn" data-gi="${gi}" data-user="${esc(firstUser)}" data-ids="${esc(groupIds)}" title="Retry all" aria-label="Retry all">
+        <button class="dl2-icon-btn dl2-grp-btn dl2-retry-all-btn" data-gi="${gi}" data-user="${esc(firstUser)}" data-ids="${esc(groupIds)}" title="Retry album" aria-label="Retry album">
           <svg viewBox="0 0 24 24"><path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
         </button>
         <button class="dl2-icon-btn dl2-grp-btn dl2-clear-group-btn" data-pairs="${esc(JSON.stringify(g.files.map(function (f) { return [f.username, f.id] })))}" title="Clear group" aria-label="Clear group">
@@ -15127,7 +21367,8 @@ function renderDownloads() {
       </div>
       <div class="dl2-topbar-right">
         <span class="dl2-sched" id="dl2-sched" role="status" aria-live="polite" title="Files metered out across peers by the download scheduler"></span>
-        <button class="dl2-action-btn" id="dl2-rebalance-btn" title="Pull deep per-peer queues back and spread them across sources">Rebalance</button>
+        <button class="dl2-action-btn" id="dl2-unbench-btn" title="Give sources that were skipped for being slow or full another chance to serve your queue">Unbench sources</button>
+        <button class="dl2-action-btn" id="dl2-rebalance-btn" title="Pull files out of a few deep per-peer queues and spread them across every source that has them">Re-spread queue</button>
         <button class="dl2-action-btn" id="dl2-action-btn" style="display:none">Clear All</button>
       </div>
     </div>
@@ -15201,13 +21442,44 @@ function renderDownloads() {
     if (!btn || btn.disabled) return
     btn.disabled = true
     const orig = btn.textContent
-    btn.textContent = 'Rebalancing…'
+    btn.textContent = 'Re-spreading…'
     const res = await window.api.slskRespreadBacklog({}).catch(function() { return null })
     if (res && res.ok) {
-      showSnackbar(`Re-spread ${res.respread} queued file${res.respread === 1 ? '' : 's'}, cleared ${res.purged} dead`)
-      _dlPaintSchedulerStats(res.stats)
+      // Older backends report respread/purged counts; the newer contract only
+      // guarantees {ok}. Say the specific thing when it is there, a plain
+      // confirmation when it is not.
+      if (typeof res.respread === 'number') {
+        showSnackbar(`Re-spread ${res.respread} queued file${res.respread === 1 ? '' : 's'}` +
+          (typeof res.purged === 'number' ? `, cleared ${res.purged} dead` : ''))
+      } else {
+        showSnackbar('Queue re-spread across sources')
+      }
+      if (res.stats) _dlPaintSchedulerStats(res.stats)
     } else {
-      showSnackbar('Rebalance failed: ' + ((res && res.error) || 'slskd unreachable'))
+      showSnackbar('Re-spread failed: ' + ((res && res.error) || 'slskd unreachable'))
+    }
+    btn.textContent = orig
+    btn.disabled = false
+  })
+
+  // Unbench sources: ask the backend to un-sideline peers that were skipped for
+  // being slow or full, so they can serve the queue again.
+  document.getElementById('dl2-unbench-btn')?.addEventListener('click', async () => {
+    const btn = document.getElementById('dl2-unbench-btn')
+    if (!btn || btn.disabled) return
+    if (!(window.api && window.api.slskUnbenchPeers)) {
+      showSnackbar('That is not available in this version'); return
+    }
+    btn.disabled = true
+    const orig = btn.textContent
+    btn.textContent = 'Unbenching…'
+    const res = await window.api.slskUnbenchPeers().catch(function() { return null })
+    if (res && res.ok) {
+      showSnackbar(typeof res.cleared === 'number'
+        ? `Gave ${res.cleared} source${res.cleared === 1 ? '' : 's'} another try`
+        : 'Benched sources cleared')
+    } else {
+      showSnackbar('Unbench failed: ' + ((res && res.error) || 'slskd unreachable'))
     }
     btn.textContent = orig
     btn.disabled = false
@@ -15405,10 +21677,35 @@ function bindSlskSearchEvents(query) {
     _rerenderSlskSection(query)
   })
 
+  // Group-by-uploader escape toggle: merged (people-per-album) is the default;
+  // ticking this restores one card per uploader. Persisted so a folder-diver
+  // keeps their preferred view across searches and sessions.
+  section.querySelector('#slsk-groupby')?.addEventListener('change', e => {
+    slsk.groupByUploader = !!e.target.checked
+    try { localStorage.setItem('slsk_group_by_uploader', slsk.groupByUploader ? '1' : '0') } catch (_) {}
+    _slskShowLimit = SLSK_SHOW_STEP
+    _rerenderSlskSection(query)
+  })
+
   // Must be the array the cards were rendered from, not a fresh regroup:
   // data-gi indexes displayList. This also avoids a second full regroup of
   // every response on every one-second flush.
   const groups = _slskRendered
+
+  // Resolve the effective folder-group a card acts on. In merged mode the unit
+  // is an album; its main DL/Play use the best source, so unwrap to that. In
+  // uploader mode the unit already IS a folder-group.
+  const _slskUnit = (gi) => {
+    const u = groups[parseInt(gi)]
+    if (!u) return null
+    if (_slskMergedMode && u.sources) return u.best || u.sources[0] || null
+    return u
+  }
+  // The whole album unit (for the sources ▾ list). Null in uploader mode.
+  const _slskAlbumUnit = (gi) => {
+    const u = groups[parseInt(gi)]
+    return (_slskMergedMode && u && u.sources) ? u : null
+  }
 
   // Download all files in a card
   // Shared helper: download ONE file and play it when ready
@@ -15449,8 +21746,12 @@ function bindSlskSearchEvents(query) {
   section.querySelectorAll('.slsk-dl-all-btn').forEach(btn => {
     btn.addEventListener('click', async e => {
       e.stopPropagation()
-      const g = groups[parseInt(btn.dataset.gi)]
+      const g = _slskUnit(btn.dataset.gi)
       if (!g) return
+      // In merged mode the album's OWN sources are the parallel pool; in
+      // uploader mode we scan the rendered folder-groups for same-folder copies.
+      const albumUnit = _slskAlbumUnit(btn.dataset.gi)
+      const spreadPool = albumUnit ? albumUnit.sources : groups
       const origHtml = btn.innerHTML
       btn.disabled = true
       btn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>'
@@ -15464,9 +21765,11 @@ function bindSlskSearchEvents(query) {
         const S = window.PapaSpread
         const SF2 = window.PapaSlskFilters
         const anchorSur = SF2 ? SF2.groupSurround(g) : null
-        const alternates = S ? groups.filter(o => {
+        const alternates = S ? spreadPool.filter(o => {
           if (!o.folderName || !g.folderName) return false
-          if (o.folderName.toLowerCase() !== g.folderName.toLowerCase()) return false
+          // Merged pool members are all the same album already; uploader-mode
+          // members must match on folder name to be the same release.
+          if (!albumUnit && o.folderName.toLowerCase() !== g.folderName.toLowerCase()) return false
           // If the chosen release is surround, every alternate must be too.
           // Size matching alone would let an unlabelled stereo rip through
           // whenever its tracks happened to land in the tolerance window.
@@ -15483,6 +21786,12 @@ function bindSlskSearchEvents(query) {
         await _slskEnqueue(plan)
         _scheduleLibRescan()
         if (anchorSur) _verifySurroundWhenDone(g, plan, anchorSur.label)
+        // Remember this card so the inline progress strip can track it against
+        // the downloads poll data already flowing. Keyed by peer + album folder;
+        // the strip and the completed swap both read _slskCardDownloads.
+        _slskCardDownloads.set(_slskCardKey(g.username, g.folderName), { total: g.files.length })
+        // Paint the strip immediately (0%) rather than leaving a stale button.
+        _rerenderSlskSection(query)
       } catch (_) { btn.disabled = false; btn.innerHTML = origHtml }
     })
   })
@@ -15491,7 +21800,7 @@ function bindSlskSearchEvents(query) {
   section.querySelectorAll('.slsk-play-btn').forEach(btn => {
     btn.addEventListener('click', async e => {
       e.stopPropagation()
-      const g = groups[parseInt(btn.dataset.gi)]
+      const g = _slskUnit(btn.dataset.gi)
       if (!g) return
       const sorted = [...g.files].sort((a, b) =>
         (b.isFlac ? 1 : 0) - (a.isFlac ? 1 : 0) || (a.filename||'').localeCompare(b.filename||''))
@@ -15529,6 +21838,9 @@ function bindSlskSearchEvents(query) {
             return `<div class="slsk-track-item">
               <span class="slsk-track-name" title="${esc(fname)}">${esc(fdisp)}</span>
               <span class="slsk-track-size">${sizeMb}</span>
+              <button class="slsk-track-preview" data-gi="${gi}" data-fi="${fi}" title="Preview — hear it before you download">
+                <svg viewBox="0 0 24 24"><path d="M7 2v11h3v9l7-12h-4l4-8z"/></svg>
+              </button>
               <button class="slsk-track-play" data-gi="${gi}" data-fi="${fi}" title="Play this track">
                 <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
               </button>
@@ -15548,6 +21860,23 @@ function bindSlskSearchEvents(query) {
               const f2 = sf[parseInt(tb.dataset.fi)]
               if (!g2 || !f2) return
               await _slskDownloadAndPlay(tb, g2, f2)
+            })
+          })
+          tl.querySelectorAll('.slsk-track-preview').forEach(tb => {
+            tb.addEventListener('click', ev => {
+              ev.stopPropagation()
+              const gi2 = parseInt(tb.dataset.gi)
+              const g2 = groups[gi2]
+              const sf = [...(g2?.files||[])].sort((a, b) =>
+                (b.isFlac ? 1 : 0) - (a.isFlac ? 1 : 0) || (a.filename||'').localeCompare(b.filename||''))
+              const f2 = sf[parseInt(tb.dataset.fi)]
+              if (!g2 || !f2) return
+              // The merged album unit carries the parsed artist; fall back to the
+              // uploader if there is none. The filename derives the track title.
+              const album = _slskAlbumUnit(gi2)
+              const artistHint = (album && album.artist) || g2.artist || ''
+              startPreview({ username: g2.username, filename: f2.filename,
+                size: f2.size || 0, artist: artistHint })
             })
           })
           tl.querySelectorAll('.slsk-track-dl').forEach(tb => {
@@ -15574,12 +21903,113 @@ function bindSlskSearchEvents(query) {
     })
   })
 
+  // Expand a merged card to its individual sources (the per-uploader cards'
+  // content) for a manual pick. Each row carries its OWN best-first quality,
+  // availability, a DL button that enqueues that source's files, a Play button,
+  // and a browse-library link. Built lazily on first open.
+  section.querySelectorAll('.slsk-sources-btn').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation()
+      const gi = parseInt(btn.dataset.gi)
+      const list = document.getElementById(`slsk-src-${gi}`)
+      const album = _slskAlbumUnit(gi)
+      if (!list || !album) return
+      const open = list.style.display !== 'none'
+      if (!open && !list.dataset.built) {
+        list.innerHTML = album.sources.map((src, si) => {
+          const q = _slskCardQuality(src.files)
+          const av = _slskAvailability(src)
+          const flac = src.files.filter(f => f.isFlac).length
+          return `<div class="slsk-source-row">
+            <span class="slsk-source-user" title="Browse ${esc(src.username)}'s library">
+              <button class="slsk-user-link" data-username="${esc(src.username)}">${esc(src.username)}</button></span>
+            <span class="slsk-source-qual">${esc(q)}${flac ? '' : ''}</span>
+            <span class="slsk-source-avail ${av.cls}">${esc(av.text)}</span>
+            <span class="slsk-source-meta">${src.files.length} · ${esc(_slskFmtSize(src.files.reduce((n, f) => n + (Number(f.size) || 0), 0)))}</span>
+            <button class="slsk-source-play" data-gi="${gi}" data-si="${si}" title="Download &amp; play from this source">
+              <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button>
+            <button class="slsk-source-dl" data-gi="${gi}" data-si="${si}" title="Download from this source">
+              <svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg></button>
+          </div>`
+        }).join('')
+        list.dataset.built = '1'
+        // Per-source browse links.
+        list.querySelectorAll('.slsk-user-link').forEach(u =>
+          u.addEventListener('click', ev => {
+            ev.stopPropagation()
+            if (u.dataset.username) showSlskUserExplorer(u.dataset.username)
+          }))
+        // Per-source download.
+        list.querySelectorAll('.slsk-source-dl').forEach(db =>
+          db.addEventListener('click', async ev => {
+            ev.stopPropagation()
+            const alb = _slskAlbumUnit(parseInt(db.dataset.gi))
+            const src = alb && alb.sources[parseInt(db.dataset.si)]
+            if (!src) return
+            const orig = db.innerHTML
+            db.disabled = true
+            db.innerHTML = '<svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>'
+            try {
+              await _slskEnqueue(src.files.map(f => ({ username: src.username, filename: f.filename, size: f.size })))
+              _scheduleLibRescan()
+              _slskCardDownloads.set(_slskCardKey(src.username, src.folderName), { total: src.files.length })
+            } catch (_) { db.disabled = false; db.innerHTML = orig }
+          }))
+        // Per-source play.
+        list.querySelectorAll('.slsk-source-play').forEach(pb =>
+          pb.addEventListener('click', async ev => {
+            ev.stopPropagation()
+            const alb = _slskAlbumUnit(parseInt(pb.dataset.gi))
+            const src = alb && alb.sources[parseInt(pb.dataset.si)]
+            if (!src) return
+            const sorted = [...src.files].sort((a, b) =>
+              (b.isFlac ? 1 : 0) - (a.isFlac ? 1 : 0) || (a.filename || '').localeCompare(b.filename || ''))
+            if (sorted[0]) {
+              await _slskDownloadAndPlay(pb, src, sorted[0])
+              _slskEnqueue(sorted.slice(1).map(f => ({ username: src.username, filename: f.filename, size: f.size })))
+            }
+          }))
+      }
+      list.style.display = open ? 'none' : 'block'
+      btn.classList.toggle('open', !open)
+    })
+  })
+
   // Browse user's shared library
   section.querySelectorAll('.slsk-user-link').forEach(btn => {
     btn.addEventListener('click', e => {
       e.stopPropagation()
       const username = btn.dataset.username
       if (username) showSlskUserExplorer(username)
+    })
+  })
+
+  // A card that reached 100% this session swaps DL All for "Play album". The
+  // files are on disk and, once the background sync ran, in the library — so
+  // prefer the library album, and fall back to resolving the peer's files.
+  section.querySelectorAll('.slsk-play-album-btn').forEach(btn => {
+    btn.addEventListener('click', async e => {
+      e.stopPropagation()
+      const g = _slskUnit(btn.dataset.gi)
+      if (!g) return
+      const fn = (g.folderName || '').toLowerCase()
+      const album = state.library.find(a => a.name &&
+        (a.name.toLowerCase().includes(fn) || fn.includes(a.name.toLowerCase())))
+      if (album && album.tracks && album.tracks.length && typeof playAlbum === 'function') { playAlbum(album, 0); return }
+      // No library match yet: play the first resolvable downloaded track.
+      const sorted = [...g.files].sort((a, b) =>
+        (b.isFlac ? 1 : 0) - (a.isFlac ? 1 : 0) || (a.filename || '').localeCompare(b.filename || ''))
+      for (const f of sorted) {
+        const res = await window.api.slskResolveFile({ username: g.username, filename: f.filename }).catch(() => null)
+        if (res && res.path) {
+          state.queue = [{ filePath: res.path, title: (f.filename || '').replace(/\\/g, '/').split('/').pop().replace(/\.[^.]+$/, ''),
+            artist: g.username, albumArtist: g.username, artPath: null, albumName: g.folderName, albumId: `slsk_${g.username}` }]
+          state.queueIndex = 0
+          playCurrentTrack()
+          return
+        }
+      }
+      showSnackbar('Those files are not on disk yet')
     })
   })
 
@@ -15603,16 +22033,27 @@ async function showSlskUserExplorer(username) {
   document.getElementById('slsk-user-lib-modal')?.remove()
 
   const T = window.PapaSlskTree
+  const SH = window.PapaSlskShelves
+  // Shelves ("the record shop") is the flagship default; Folders is the raw
+  // tree power mode. The choice is remembered so a folder-diver isn't dropped
+  // back into shelves every time.
+  let mode = 'shelves'
+  try { const m = localStorage.getItem('slsk_lib_mode'); if (m === 'folders' || m === 'shelves') mode = m } catch (_) {}
   const dlg = document.createElement('div')
   dlg.id = 'slsk-user-lib-modal'
-  dlg.className = 'modal-overlay'
-  dlg.innerHTML = `<div class="modal-box slsk-lib-box">
-    <div class="modal-header-row">
+  dlg.className = 'modal-overlay slsh-overlay'
+  dlg.innerHTML = `<div class="modal-box slsk-lib-box slsh-box">
+    <div class="modal-header-row slsh-header">
       <div class="modal-title">${esc(username)}</div>
+      <span class="slsh-presence" id="slsh-presence" title="Presence"></span>
+      <div class="slsh-modeswitch" id="slsh-modeswitch" role="tablist">
+        <button class="slsh-mode-btn" data-mode="shelves" role="tab" title="The record shop — albums, upgrades and shelves">Shelves</button>
+        <button class="slsh-mode-btn" data-mode="folders" role="tab" title="The raw file tree — breadcrumbs, subtree download, surround finder">Folders</button>
+      </div>
       <button class="slskx-star" id="slskx-star" title="Save this library">☆</button>
       <button class="modal-close-btn" id="slsk-lib-close">✕</button>
     </div>
-    <div class="slskx-toolbar">
+    <div class="slskx-toolbar" id="slskx-toolbar">
       <button class="slskx-nav" id="slskx-back" title="Back (Alt+←)" disabled>←</button>
       <button class="slskx-nav" id="slskx-fwd"  title="Forward (Alt+→)" disabled>→</button>
       <button class="slskx-nav" id="slskx-up"   title="Up one level (Backspace)" disabled>↑</button>
@@ -15627,12 +22068,13 @@ async function showSlskUserExplorer(username) {
         <input type="checkbox" id="slskx-audio-only" checked> Audio only
       </label>
       <button class="slskx-nav slskx-sur-btn" id="slskx-surround" style="width:auto;padding:0 8px"
-              title="List every surround-labelled folder in this library">5.1 only</button>
+              title="List every surround-labelled folder in this library">Surround finder</button>
     </div>
     <div class="slskx-actionbar" id="slskx-actionbar"></div>
     <div class="slsk-lib-body" id="slsk-lib-body">
       <div class="slsk-lib-loading">Loading ${esc(username)}'s library…</div>
     </div>
+    <div class="slsh-body" id="slsh-body" style="display:none"></div>
     <div class="slskx-statusbar" id="slskx-status"></div>
   </div>`
   document.body.appendChild(dlg)
@@ -15642,10 +22084,43 @@ async function showSlskUserExplorer(username) {
   const status  = dlg.querySelector('#slskx-status')
   const actions = dlg.querySelector('#slskx-actionbar')
   const search  = dlg.querySelector('#slskx-search')
+  const shBody  = dlg.querySelector('#slsh-body')
+  const toolbar = dlg.querySelector('#slskx-toolbar')
+  let shelves   = null   // parsed { upgrades, missing, surround, hires, everything, stats }
+  let peerAlbums = null  // raw parsed album list, for instant search
+
+  // Toggle between the record shop (shelves) and the raw folder tree.
+  function applyMode() {
+    const shelvesMode = mode === 'shelves'
+    shBody.style.display   = shelvesMode ? '' : 'none'
+    body.style.display     = shelvesMode ? 'none' : ''
+    toolbar.style.display  = shelvesMode ? 'none' : ''
+    actions.style.display  = shelvesMode ? 'none' : ''
+    status.style.display   = shelvesMode ? 'none' : ''
+    dlg.querySelectorAll('.slsh-mode-btn').forEach(b =>
+      b.classList.toggle('active', b.dataset.mode === mode))
+    if (shelvesMode) renderShelves()
+    else render()
+  }
+  dlg.querySelectorAll('.slsh-mode-btn').forEach(b =>
+    b.addEventListener('click', () => {
+      if (mode === b.dataset.mode) return
+      mode = b.dataset.mode
+      try { localStorage.setItem('slsk_lib_mode', mode) } catch (_) {}
+      applyMode()
+    }))
 
   const close = () => {
     if (_slskExplorerClose === close) _slskExplorerClose = null
     document.removeEventListener('keydown', onKey)
+    // Tear down the lazy-art observer so its callback can't fire into a removed
+    // DOM and its pending fetches are dropped on the floor.
+    try { if (shArtObserver) { shArtObserver.disconnect(); shArtObserver = null } } catch (_) {}
+    shArtQueue.length = 0
+    // Abort the background cover prefetch so its remaining fetches are dropped.
+    shArtPrefetchAbort = true
+    // Drop the background-refresh subscription so it can't rebuild a dead shop.
+    try { if (typeof _offBrowseRefreshed === 'function') _offBrowseRefreshed() } catch (_) {}
     dlg.remove()
   }
   _slskExplorerClose = close
@@ -15701,11 +22176,19 @@ async function showSlskUserExplorer(username) {
 
     const rows = []
     for (const d of l.dirs) {
+      // Per-folder quality summary, computed from the real tree node's audio
+      // files ("mostly FLAC 16/44 · 2 surround"). slsk-tree keeps the files, so
+      // pull the node back out rather than trying to carry them on the dir stub.
+      const dNode = T.getNode(tree, d.path)
+      const qSum  = dNode ? _slskDirQuality(dNode) : ''
       rows.push(`<div class="slskx-row slskx-dir" data-path="${esc(d.path)}">
         <span class="slskx-ico">📁</span>
-        <span class="slskx-name">${esc(d.name)}</span>
+        <span class="slskx-name">${esc(d.name)}${qSum ? `<span class="slskx-dir-qual">${esc(qSum)}</span>` : ''}</span>
         <span class="slskx-meta">${d.subdirCount ? d.subdirCount + ' folders · ' : ''}${d.fileCount} files</span>
         <span class="slskx-size">${fmtSize(d.totalSize)}</span>
+        <span class="slskx-rowbtns">
+          <button class="slskx-mini-search slskx-dir-search" data-fsearch="${esc(d.name)}" title="Search everywhere for this folder name">⌕</button>
+        </span>
       </div>`)
     }
     l.files.forEach((f, i) => {
@@ -15716,6 +22199,7 @@ async function showSlskUserExplorer(username) {
         <span class="slskx-meta">${f.bitDepth ? f.bitDepth + '-bit ' : ''}${f.sampleRate ? (f.sampleRate/1000).toFixed(1) + 'kHz' : ''}</span>
         <span class="slskx-size">${fmtSize(f.size)}</span>
         <span class="slskx-rowbtns">
+          ${isAudio ? `<button class="slskx-mini" data-act="preview" data-fi="${i}" title="Preview — hear it before you download">⚡</button>` : ''}
           ${isAudio ? `<button class="slskx-mini" data-act="play" data-fi="${i}" title="Download &amp; play">▶</button>` : ''}
           <button class="slskx-mini" data-act="dl" data-fi="${i}" title="Download">↓</button>
         </span>
@@ -15798,7 +22282,23 @@ async function showSlskUserExplorer(username) {
 
   function bindRows(l) {
     body.querySelectorAll('.slskx-dir').forEach(r =>
-      r.addEventListener('click', () => navTo(r.dataset.path)))
+      r.addEventListener('click', e => {
+        // The per-folder search button lives inside the row; a click on it must
+        // not also navigate into the folder.
+        if (e.target.closest && e.target.closest('.slskx-dir-search')) return
+        navTo(r.dataset.path)
+      }))
+
+    // Search the whole app for this uploader's folder name. Same handoff the
+    // search-card breadcrumb uses: close the modal, then navigate('search', q).
+    body.querySelectorAll('.slskx-dir-search').forEach(btn =>
+      btn.addEventListener('click', e => {
+        e.stopPropagation()
+        const q = btn.dataset.fsearch
+        if (!q) return
+        close()
+        navigate('search', q)
+      }))
 
     body.querySelectorAll('.slskx-mini').forEach(btn => {
       btn.addEventListener('click', async e => {
@@ -15806,6 +22306,14 @@ async function showSlskUserExplorer(username) {
         const f = l.files[parseInt(btn.dataset.fi)]
         if (!f) return
         if (btn.dataset.act === 'dl') return dlFile(btn, f)
+        if (btn.dataset.act === 'preview') {
+          // Raw tree has no parsed artist; the filename carries the track title.
+          // The containing folder name is the best artist/album hint, so pass it
+          // as the artist and let the racer derive "<folder> <track>".
+          const hint = (l.path || '').split(/[\\/]/).filter(Boolean).pop() || ''
+          startPreview({ username, filename: f.fullPath, size: f.size || 0, artist: hint })
+          return
+        }
         // play: queue the download, then poll for the finished file
         btn.disabled = true; btn.textContent = '…'
         try {
@@ -15884,9 +22392,73 @@ async function showSlskUserExplorer(username) {
     })
   }
 
+  // Grid-aware focus movement over the shop's album cards. Left/right step in
+  // DOM order (which flows rails then grid); up/down move a row, with the column
+  // count read from the cards' own geometry so it survives the responsive grid.
+  // Rails scroll horizontally, the grid wraps — treating them as one ordered
+  // list keeps a single mental model and one code path.
+  function shMoveCardFocus(e) {
+    const cards = Array.prototype.slice.call(shBody.querySelectorAll('.slsh-card:not(.slsh-skel)'))
+    if (!cards.length) return
+    const active = document.activeElement
+    let index = cards.indexOf(active)
+    if (index === -1) { cards[0].focus(); cards[0].scrollIntoView({ block: 'nearest', inline: 'nearest' }); e.preventDefault(); return }
+    let next = index
+    if (e.key === 'ArrowRight') next = Math.min(cards.length - 1, index + 1)
+    else if (e.key === 'ArrowLeft') next = Math.max(0, index - 1)
+    else {
+      const firstTop = cards[0].getBoundingClientRect().top
+      let perRow = cards.findIndex(c => c.getBoundingClientRect().top > firstTop + 4)
+      if (perRow <= 0) perRow = cards.length
+      next = e.key === 'ArrowDown'
+        ? Math.min(cards.length - 1, index + perRow)
+        : Math.max(0, index - perRow)
+    }
+    if (next !== index) { cards[next].focus(); cards[next].scrollIntoView({ block: 'nearest', inline: 'nearest' }) }
+    e.preventDefault()
+  }
+
+  // Click a card's primary/secondary action from the keyboard.
+  function shCardAction(card, sel) {
+    const b = card && card.querySelector(sel)
+    if (b) { b.click(); return true }
+    return false
+  }
+
   function onKey(e) {
     if (!document.getElementById('slsk-user-lib-modal')) return
-    if (e.key === 'Escape') return close()
+    // Don't fight text entry: while a field is focused, only Escape (blur/clear)
+    // is ours — mirrors the app's global keymap guard.
+    const tag = String(e.target && e.target.tagName || '').toUpperCase()
+    const typing = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' ||
+      (e.target && e.target.isContentEditable === true)
+    if (e.key === 'Escape') {
+      // Layered close: a focused field blurs first; then an active shelves
+      // search clears; then the modal closes.
+      if (typing) { try { e.target.blur() } catch (_) {} e.preventDefault(); return }
+      if (mode === 'shelves' && shSearchQuery) {
+        shSearchQuery = ''
+        renderShelves()
+        return
+      }
+      return close()
+    }
+    if (typing) return
+    // Never override the app's own chords (Ctrl/Alt/Meta combos).
+    if (e.ctrlKey || e.metaKey) return
+    // Shelves-mode card keyboard nav: one delegated handler, no per-card
+    // listeners. Enter plays, D downloads, arrows move the focus ring.
+    if (mode === 'shelves') {
+      if (e.key.startsWith('Arrow') && !e.altKey) { shMoveCardFocus(e); return }
+      const card = document.activeElement && document.activeElement.classList &&
+        document.activeElement.classList.contains('slsh-card') ? document.activeElement : null
+      if (!card) return
+      if (e.key === 'Enter') { if (shCardAction(card, '.slsh-play')) e.preventDefault(); return }
+      if (e.key === 'd' || e.key === 'D') { if (shCardAction(card, '.slsh-dl')) e.preventDefault(); return }
+      return
+    }
+    // Folder-tree keys apply only in Folders mode.
+    if (mode !== 'folders') return
     if (document.activeElement === search) return
     if (e.key === 'Backspace' && hist.current) { e.preventDefault(); navTo(T.parentPath(hist.current)) }
     if (e.altKey && e.key === 'ArrowLeft')  { e.preventDefault(); hist.back(); render() }
@@ -15910,6 +22482,718 @@ async function showSlskUserExplorer(username) {
     clearTimeout(_st)
     _st = setTimeout(() => { searching = search.value.trim(); render() }, 180)
   })
+
+  // ── The record shop (shelves mode) ─────────────────────────────────────────
+  // A shelf is a horizontal rail of album cards. The parsing that fills them is
+  // done in chunks (see the tail of this function) so a 100k-file tree never
+  // freezes the paint; until it finishes, skeleton rails stand in.
+  let shSearchQuery = ''
+  let shParsing = true
+  // Session-only shop sort/filter state for the Everything grid and the
+  // search-within-library results. Not persisted (briefed: session-only fine).
+  let shSort = 'az'
+  const shFilters = new Set()   // any of 'lossless' | 'hires' | 'surround'
+  let shDecade = ''             // decade start year as a string, '' = all
+  // Cache provenance from slskBrowseUser (engine may send fromCache/cachedAt).
+  // shJustRefreshed drives a brief "Updated just now" pulse after a background
+  // refresh lands.
+  let shFromCache = false
+  let shCachedAt = 0
+  let shJustRefreshed = false
+
+  // Prefer the module's TB-aware formatter so the shop hero never shows a
+  // four-digit unit ("6453.3 GB" → "6.3 TB"); fall back to the local one.
+  function shFmtSize(n) { return (SH && SH.fmtSize) ? SH.fmtSize(n) : fmtSize(n) }
+
+  // Local-library art for a peer album, matched by album-name similarity. Reuses
+  // the same file://-vs-http art helper and gradient fallback the library grid
+  // uses, so streamed art and local paths both render correctly.
+  function shAlbumArtHtml(a) {
+    let artPath = null
+    if (SH) {
+      const key = SH.normKey(a.album)
+      for (const lib of state.library) {
+        if (!lib.artPath) continue
+        if (SH.tokenScore(a.album, lib.name) >= 0.6 &&
+            (!a.artist || !lib.artist || SH.tokenScore(a.artist, lib.artist) >= 0.34)) {
+          artPath = lib.artPath; break
+        }
+      }
+    }
+    const hue = Math.abs([...(a.folderName || a.album || '')]
+      .reduce((h, c) => (Math.imul(31, h) + c.charCodeAt(0)) | 0, 0)) % 360
+    const grad = `background:linear-gradient(135deg,hsl(${hue},45%,18%),hsl(${(hue + 40) % 360},35%,11%))`
+    const badges =
+      (a.lossless ? '<span class="slsh-badge slsh-badge-lossless">LOSSLESS</span>' : '') +
+      (a.isHiRes ? '<span class="slsh-badge slsh-badge-hires">HI-RES</span>' : '')
+    if (artPath) {
+      const src = /^https?:\/\//.test(artPath) ? artPath : `file://${artPath}`
+      return `<div class="slsh-card-art">
+        <img src="${esc(src)}" alt="" loading="lazy" decoding="async"
+             onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+        <div class="slsh-card-art-fallback" style="display:none;${grad}">
+          <svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg></div>
+        ${badges}</div>`
+    }
+    // No local match: fetch a real cover lazily when the card scrolls into view.
+    // Carry the artist/album on the container for the IntersectionObserver; if
+    // the session cache already has it, paint immediately (no fetch).
+    const artKey = SH ? SH.normKey(`${a.artist} ${a.album}`) : `${a.artist} ${a.album}`.toLowerCase()
+    const cached = shArtCache.get(artKey)
+    const fetchable = ART_IPC && (a.album || a.artist)
+    if (cached) {
+      const src = /^https?:\/\//.test(cached) ? cached : `file://${cached}`
+      return `<div class="slsh-card-art">
+        <img src="${esc(src)}" alt="" loading="lazy" decoding="async"
+             onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+        <div class="slsh-card-art-fallback" style="display:none;${grad}">
+          <svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg></div>
+        ${badges}</div>`
+    }
+    return `<div class="slsh-card-art"${fetchable ? ` data-art-key="${esc(artKey)}" data-art-artist="${esc(a.artist || '')}" data-art-album="${esc(a.album || '')}"` : ''}>
+      <div class="slsh-card-art-fallback" style="${grad}">
+        <svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg></div>
+      ${badges}</div>`
+  }
+
+  // ── Lazy network cover art (art-by-name) ────────────────────────────────────
+  // fetchAlbumArt({albumId, artist, album}) exists in preload → iTunes search by
+  // artist+album, returns { artPath } (a cached jpg on disk). We reuse it for
+  // shop cards that have no local-library cover: only for cards actually on
+  // screen (IntersectionObserver), at small concurrency, with an in-memory
+  // per-session cache keyed by normalised artist+album so repeats are free and
+  // scrolling back never refetches. albumId is a stable synthetic key so the
+  // on-disk cache is shared across sessions too.
+  const ART_IPC = !!(window.api && window.api.fetchAlbumArt)
+  const shArtCache = new Map()   // artKey → artPath | '' (miss)
+  // Identities with a fetch in flight (via EITHER the on-screen observer or the
+  // background prefetch), so the two paths never ask iTunes for the same cover
+  // at once — the observer's visible-first job and the prefetch's shelf-order
+  // sweep dedupe against this shared set.
+  const shArtInProgress = new Set()
+  let shArtObserver = null
+  let shArtInflight = 0
+  const SH_ART_MAX = 3
+  const shArtQueue = []
+
+  function shArmArtObserver(container) {
+    if (!ART_IPC || typeof IntersectionObserver !== 'function') return
+    if (!shArtObserver) {
+      shArtObserver = new IntersectionObserver((ents) => {
+        for (const ent of ents) {
+          if (!ent.isIntersecting) continue
+          const el = ent.target
+          shArtObserver.unobserve(el)
+          shArtEnqueue(el)
+        }
+      }, { root: shBody, rootMargin: '300px' })
+    }
+    container.querySelectorAll('.slsh-card-art[data-art-key]').forEach(el => {
+      if (el.dataset.artArmed) return
+      el.dataset.artArmed = '1'
+      shArtObserver.observe(el)
+    })
+  }
+
+  function shArtEnqueue(el) {
+    shArtQueue.push(el)
+    shArtPump()
+  }
+  function shArtPump() {
+    while (shArtInflight < SH_ART_MAX && shArtQueue.length) {
+      const el = shArtQueue.shift()
+      if (!el || !el.isConnected) continue
+      shArtInflight++
+      shArtFetchFor(el).finally(() => { shArtInflight--; shArtPump() })
+    }
+  }
+  async function shArtFetchFor(el) {
+    const key = el.dataset.artKey
+    const artist = el.dataset.artArtist || ''
+    const album = el.dataset.artAlbum || ''
+    await shArtFetchIdentity(key, artist, album)
+  }
+  // Fetch one album-art identity and paint it. Shared by the on-screen observer
+  // and the background prefetch. Idempotent: a cached result (hit OR recorded
+  // miss) short-circuits, and an in-flight identity is not fetched twice.
+  async function shArtFetchIdentity(key, artist, album) {
+    if (!key) return
+    if (shArtCache.has(key)) { const c = shArtCache.get(key); if (c) shArtPaint(key, c); return }
+    if (shArtInProgress.has(key)) return
+    shArtInProgress.add(key)
+    // Stable synthetic albumId so the on-disk cache (keyed <albumId>.jpg) is
+    // reused across sessions and across every card with the same identity.
+    const albumId = 'slshart_' + key.replace(/[^a-z0-9]+/g, '_').slice(0, 60)
+    try {
+      const res = await window.api.fetchAlbumArt({ albumId, artist, album }).catch(() => null)
+      const artPath = res && res.artPath
+      shArtCache.set(key, artPath || '')
+      if (artPath) shArtPaint(key, artPath)
+    } catch (_) { shArtCache.set(key, '') }
+    finally { shArtInProgress.delete(key) }
+  }
+  // Swap the fetched cover into every on-screen card with this identity.
+  function shArtPaint(key, artPath) {
+    const src = /^https?:\/\//.test(artPath) ? artPath : `file://${artPath}`
+    shBody.querySelectorAll(`.slsh-card-art[data-art-key="${CSS.escape(key)}"]`).forEach(el => {
+      if (el.querySelector('img')) return
+      const fb = el.querySelector('.slsh-card-art-fallback')
+      const img = document.createElement('img')
+      img.alt = ''; img.loading = 'lazy'; img.decoding = 'async'
+      img.onerror = () => { img.remove(); if (fb) fb.style.display = 'flex' }
+      img.src = src
+      el.insertBefore(img, el.firstChild)
+      if (fb) fb.style.display = 'none'
+      // Once painted it is no longer a fetch target.
+      delete el.dataset.artKey
+    })
+  }
+
+  // ── Background cover prefetch (saved friends & cached browses) ───────────────
+  // When the shop opens from a cached browse OR the peer is in the saved list,
+  // the shopper is likely to keep scrolling, so we warm covers ahead of the
+  // scroll instead of only fetching what's on screen. Priority order (via the
+  // pure planner): Upgrades, then the first Missing rows, then everything in
+  // shelf order. Concurrency 2, gentle gaps so iTunes isn't hammered, abortable
+  // the instant the modal closes. Because fetchAlbumArt caches to disk under the
+  // stable synthetic albumId, a SECOND open of the same friend is face-rich
+  // immediately — the disk cache satisfies every fetch without a network hit.
+  const PF = window.PapaSlskArtPrefetch
+  let shArtPrefetchAbort = false
+  let shArtPrefetchRunning = false
+  const SH_ART_PREFETCH_MAX = 2
+  async function shArtPrefetch() {
+    if (!ART_IPC || !PF || !SH || shArtPrefetchRunning || shArtPrefetchAbort) return
+    if (!shelves) return
+    shArtPrefetchRunning = true
+    try {
+      // Local-library matches already show a cover — don't spend a fetch on them.
+      const hasLocalArt = (a) => {
+        if (!a || !a.album) return false
+        for (const lib of state.library) {
+          if (!lib.artPath) continue
+          if (SH.tokenScore(a.album, lib.name) >= 0.6 &&
+              (!a.artist || !lib.artist || SH.tokenScore(a.artist, lib.artist) >= 0.34)) return true
+        }
+        return false
+      }
+      const plan = PF.planArtPrefetch(shelves, {
+        normKey: SH.normKey,
+        hasLocalArt,
+        // Skip identities the session already resolved (hit or recorded miss);
+        // the disk cache still short-circuits the rest inside fetchAlbumArt.
+        alreadyCached: (k) => !PF.shouldFetchArt(shArtCache, k),
+      })
+      let cursor = 0
+      const worker = async () => {
+        while (!shArtPrefetchAbort && cursor < plan.length) {
+          const job = plan[cursor++]
+          if (!job) break
+          await shArtFetchIdentity(job.key, job.artist, job.album)
+          if (shArtPrefetchAbort) break
+          // Gentle spacing between requests (50-100ms jitter) so a long sweep
+          // stays a background trickle, not a burst.
+          await new Promise(r => setTimeout(r, 50 + Math.floor(Math.random() * 50)))
+        }
+      }
+      const workers = []
+      for (let i = 0; i < SH_ART_PREFETCH_MAX; i++) workers.push(worker())
+      await Promise.all(workers)
+    } catch (_) { /* prefetch is best-effort; never disrupt the shop */ }
+    finally { shArtPrefetchRunning = false }
+  }
+
+  // One album card. `variant` tweaks the badge line: 'upgrade' shows the
+  // yours/theirs quality pair, 'missing' shows a wishlist +.
+  function shCardHtml(a, idx, variant) {
+    const title = a.album || a.folderName || 'Unknown album'
+    const artist = a.artist || ''
+    const qual = SH ? SH.albumQualityLabel(a) : ''
+    const meta = `${a.trackCount} track${a.trackCount !== 1 ? 's' : ''} · ${shFmtSize(a.totalSize)}`
+    let badgeLine = ''
+    if (variant === 'upgrade' && a.upgrade) {
+      badgeLine = `<div class="slsh-card-upgrade">
+        <span class="slsh-q-yours">Yours: ${esc(a.upgrade.yours || '—')}</span>
+        <span class="slsh-q-arrow">→</span>
+        <span class="slsh-q-theirs">Theirs: ${esc(a.upgrade.theirs || qual)}</span></div>`
+    } else if (variant === 'missing') {
+      badgeLine = `<div class="slsh-card-qual">${esc(qual)}</div>`
+    } else {
+      badgeLine = `<div class="slsh-card-qual">${esc(qual)}${a.inLibrary ? ' · <span class="slsh-inlib">In Library</span>' : ''}</div>`
+    }
+    const wishBtn = variant === 'missing'
+      ? `<button class="slsh-card-act slsh-wish" data-idx="${idx}" title="Add to wishlist">＋</button>` : ''
+    return `<div class="slsh-card" data-idx="${idx}" data-folder="${esc(a.folderPath)}" tabindex="0">
+      ${shAlbumArtHtml(a)}
+      <div class="slsh-card-title" title="${esc(title)}">${esc(title)}</div>
+      <div class="slsh-card-artist" title="${esc(artist)}">${esc(artist)}${a.year ? ' · ' + a.year : ''}</div>
+      ${badgeLine}
+      <div class="slsh-card-meta">${esc(meta)}</div>
+      <div class="slsh-card-actions">
+        <button class="slsh-card-act slsh-preview" data-idx="${idx}" title="Preview — hear it before you download (races Soulseek vs YouTube)">⚡</button>
+        <button class="slsh-card-act slsh-play" data-idx="${idx}" title="Download the first track and play">▶</button>
+        <button class="slsh-card-act slsh-dl" data-idx="${idx}" title="Download this album (${a.trackCount})">⬇</button>
+        <button class="slsh-card-act slsh-find" data-idx="${idx}" title="Find other sources for this album">⌕</button>
+        ${wishBtn}
+      </div>
+      <div class="slsh-card-progress" data-folder="${esc(a.folderPath)}" style="display:none">
+        <div class="slsh-card-progress-fill"></div><span class="slsh-card-progress-label"></span></div>
+    </div>`
+  }
+
+  function shRailHtml(id, title, sub, albums, variant, headAction) {
+    // Empty shelves hide entirely rather than rendering an empty rail.
+    if (!albums || !albums.length) return ''
+    const cards = albums.slice(0, 40).map(a => shCardHtml(a, a._idx, variant)).join('')
+    return `<section class="slsh-rail" data-rail="${id}">
+      <div class="slsh-rail-head">
+        <span class="slsh-rail-title">${esc(title)}</span>
+        <span class="slsh-rail-sub">${esc(sub || '')}</span>
+        ${headAction || ''}
+      </div>
+      <div class="slsh-rail-track">${cards}</div>
+    </section>`
+  }
+
+  function shHeroHtml() {
+    const st = shelves ? shelves.stats : { albums: 0, tracks: 0, size: 0, losslessPct: 0, hiRes: 0, surround: 0 }
+    const bits = [
+      `${st.albums.toLocaleString()} album${st.albums !== 1 ? 's' : ''}`,
+      `${st.tracks.toLocaleString()} track${st.tracks !== 1 ? 's' : ''}`,
+      shFmtSize(st.size),
+      `${st.losslessPct}% lossless`,
+      st.hiRes ? `${st.hiRes} hi-res` : '',
+      st.surround ? `${st.surround} surround` : '',
+    ].filter(Boolean)
+    // Cache provenance line: only when the browse came from cache. "just now"
+    // pulse after a live background refresh replaces it.
+    let cacheLine = ''
+    if (shJustRefreshed) {
+      cacheLine = '<div class="slsh-hero-cache slsh-hero-pulse">Updated just now</div>'
+    } else if (shFromCache) {
+      cacheLine = `<div class="slsh-hero-cache">from cache${shCachedAt ? ' · updated ' + _shAgo(shCachedAt) : ''}</div>`
+    }
+    return `<div class="slsh-hero">
+      <div class="slsh-hero-stats">${bits.map(b => `<span class="slsh-stat">${esc(b)}</span>`).join('<span class="slsh-stat-sep">·</span>')}</div>
+      ${cacheLine}
+      <input class="slsh-search" id="slsh-search" placeholder="Search ${esc(username)}'s albums and files…" autocomplete="off">
+    </div>`
+  }
+
+  // "5m ago" / "just now" from a millisecond timestamp. Small and local — the
+  // hero is the only caller.
+  function _shAgo(ts) {
+    const secs = Math.max(0, Math.floor((Date.now() - Number(ts || 0)) / 1000))
+    if (secs < 45) return 'just now'
+    const mins = Math.round(secs / 60)
+    if (mins < 60) return `${mins}m ago`
+    const hrs = Math.round(mins / 60)
+    if (hrs < 24) return `${hrs}h ago`
+    return `${Math.round(hrs / 24)}d ago`
+  }
+
+  function shSkeletonHtml() {
+    const card = '<div class="slsh-card slsh-skel"><div class="slsh-card-art slsh-skel-art"></div><div class="slsh-skel-line"></div><div class="slsh-skel-line short"></div></div>'
+    const rail = (t) => `<section class="slsh-rail"><div class="slsh-rail-head"><span class="slsh-rail-title">${t}</span></div><div class="slsh-rail-track">${card.repeat(6)}</div></section>`
+    return rail('Upgrades for you') + rail('You don\'t have these') + rail('Hi-Res')
+  }
+
+  // Index every album once so cards can reference back into a flat array shared
+  // by all rails and the grid; the click handlers read data-idx.
+  let shFlat = []
+  function shReindex() {
+    shFlat = peerAlbums || []
+    shFlat.forEach((a, i) => { a._idx = i })
+  }
+
+  function renderShelves() {
+    if (shParsing || !shelves) {
+      shBody.innerHTML = shHeroHtml() + `<div class="slsh-rails">${shSkeletonHtml()}</div>`
+      bindShHero()
+      return
+    }
+    if (shSearchQuery) return renderShelvesSearch()
+
+    const grabAll = shelves.upgrades.length
+      ? `<button class="slsh-grab-all" id="slsh-grab-all" title="Download every upgrade in this shelf">⬇ Grab all ${shelves.upgrades.length} upgrade${shelves.upgrades.length !== 1 ? 's' : ''}</button>`
+      : ''
+    const rails =
+      shRailHtml('upgrades', 'Upgrades for you',
+        `${shelves.upgrades.length} better than your copies`, shelves.upgrades, 'upgrade', grabAll) +
+      shRailHtml('missing', 'You don\'t have these',
+        `${shelves.missing.length} not in your library`, shelves.missing, 'missing') +
+      shRailHtml('surround', 'Surround',
+        `${shelves.surround.length} multichannel`, shelves.surround, 'plain') +
+      shRailHtml('hires', 'Hi-Res',
+        `${shelves.hires.length} at 24-bit or 88.2kHz+`, shelves.hires, 'plain')
+
+    const emptyRails = !rails
+      ? '<div class="slsh-empty">No albums could be read from this library. Try Folders mode for the raw file tree.</div>'
+      : ''
+
+    shBody.innerHTML = shHeroHtml() +
+      `<div class="slsh-rails">${rails}${emptyRails}</div>` +
+      `<div class="slsh-grid-wrap" id="slsh-grid-wrap"></div>`
+    bindShHero()
+    shRenderGrid()
+    bindShCards(shBody)
+    shBindGrabAll()
+    shArmArtObserver(shBody)
+  }
+
+  // "Grab all N upgrades": confirm with the album list, then enqueue every
+  // upgrade album's files through the same per-card path (shAsGroup → _slskEnqueue
+  // → inline progress). One snackbar summary at the end.
+  function shBindGrabAll() {
+    const btn = dlg.querySelector('#slsh-grab-all')
+    if (!btn) return
+    btn.addEventListener('click', () => {
+      const ups = (shelves && shelves.upgrades) || []
+      if (!ups.length) return
+      const listHtml = '<ul class="slsh-grab-list">' + ups.slice(0, 40).map(a =>
+        `<li>${esc(a.artist ? a.artist + ' — ' : '')}${esc(a.album || a.folderName)}` +
+        `${a.upgrade ? ` <span class="slsh-grab-q">${esc(a.upgrade.yours || '—')} → ${esc(a.upgrade.theirs || '')}</span>` : ''}</li>`
+      ).join('') + (ups.length > 40 ? `<li>…and ${ups.length - 40} more</li>` : '') + '</ul>'
+      const totalFiles = ups.reduce((n, a) => n + ((a.files && a.files.length) || 0), 0)
+      _mgConfirm(
+        `Grab all ${ups.length} upgrade${ups.length !== 1 ? 's' : ''}?`,
+        `<p>This queues <strong>${totalFiles}</strong> file${totalFiles !== 1 ? 's' : ''} across ${ups.length} album${ups.length !== 1 ? 's' : ''} from ${esc(username)}. Each shows its own progress on its card.</p>${listHtml}`,
+        `Download ${ups.length}`,
+        async () => {
+          let queued = 0
+          for (const a of ups) {
+            const g = shAsGroup(a)
+            if (!g.files.length) continue
+            try {
+              await _slskEnqueue(g.files.map(f => ({ username, filename: f.filename, size: f.size })))
+              _slskCardDownloads.set(_slskCardKey(username, a.folderName), { total: g.files.length })
+              shTrackProgress(a)
+              queued++
+            } catch (_) { /* keep going; one bad album must not abort the batch */ }
+          }
+          _scheduleLibRescan()
+          showSnackbar(queued
+            ? `Queued ${queued} upgrade${queued !== 1 ? 's' : ''} from ${username}`
+            : 'Could not queue those upgrades')
+        }
+      )
+    })
+  }
+
+  function renderShelvesSearch() {
+    const q = shSearchQuery
+    // Album matches by parsed artist/album/folder, plus raw filename matches via
+    // the tree searcher (reused, not reimplemented).
+    const albumHits = shFlat.filter(a => {
+      const hay = `${a.artist} ${a.album} ${a.folderName}`.toLowerCase()
+      return hay.includes(q.toLowerCase())
+    })
+    // Raw filename hits → resolve to the album the file lives in, if any.
+    const fileHits = T.searchTree(tree, q, 120).filter(h => h.type === 'file')
+    const extraFolders = new Set(albumHits.map(a => a.folderPath.toLowerCase()))
+    for (const h of fileHits) {
+      const owner = shFlat.find(a => a.folderPath.toLowerCase() === String(h.path).toLowerCase())
+      if (owner && !extraFolders.has(owner.folderPath.toLowerCase())) {
+        albumHits.push(owner); extraFolders.add(owner.folderPath.toLowerCase())
+      }
+    }
+    // The same shop sort/filter chips apply to search results.
+    const SF = window.PapaSlskFilters
+    const shown = (SF && SF.applyShelfFilterSort)
+      ? SF.applyShelfFilterSort(albumHits, { filters: shFilters, decade: shDecade, sort: shSort })
+      : albumHits
+    const cards = shown.slice(0, 120).map(a => shCardHtml(a, a._idx, a.inLibrary ? 'plain' : 'missing')).join('')
+    shBody.innerHTML = shHeroHtml() +
+      `<div class="slsh-search-results">
+        <div class="slsh-rail-head"><span class="slsh-rail-title">Results for “${esc(q)}”</span>
+          <span class="slsh-rail-sub">${shown.length} album${shown.length !== 1 ? 's' : ''}</span></div>
+        ${shControlsHtml()}
+        <div class="slsh-grid">${cards || '<div class="slsh-empty">Nothing matching that.</div>'}</div>
+      </div>`
+    bindShHero()
+    bindShCards(shBody)
+    shBindShelfControls()
+    shArmArtObserver(shBody)
+  }
+
+  function bindShHero() {
+    const si = dlg.querySelector('#slsh-search')
+    if (!si) return
+    si.value = shSearchQuery
+    let t = null
+    si.addEventListener('input', () => {
+      clearTimeout(t)
+      t = setTimeout(() => { shSearchQuery = si.value.trim(); renderShelves() }, 160)
+    })
+    if (shSearchQuery) { si.focus(); si.setSelectionRange(si.value.length, si.value.length) }
+  }
+
+  // The Everything grid: alphabetical by artist with sticky letter headers,
+  // rendered in slices so a huge collection paints instantly. Mirrors the
+  // library grid's chunk-and-observe pattern.
+  const SLSH_CHUNK = 120
+  let shGridGroups = []
+  let shGridRendered = 0
+  let shGridObserver = null
+  // Is the grid in its plain, default A–Z / no-filter state? Only then do the
+  // sticky letter headers make sense; any active sort or filter flattens it.
+  function shGridIsPlain() {
+    return shSort === 'az' && shFilters.size === 0 && !shDecade
+  }
+
+  // The compact control row: sort dropdown + Lossless/Hi-Res/Surround chips +
+  // a Decade dropdown built from the years actually parsed. Applies to the
+  // Everything grid and to search-within-library.
+  function shControlsHtml() {
+    const SF = window.PapaSlskFilters
+    const decades = (SF && SF.shelfDecades) ? SF.shelfDecades(shelves.everything) : []
+    const chip = (k, label) =>
+      `<button class="slsh-chip${shFilters.has(k) ? ' active' : ''}" data-shfilter="${k}">${label}</button>`
+    return `<div class="slsh-controls" id="slsh-controls">
+      <label class="slsh-ctl-sort">Sort
+        <select id="slsh-sort">
+          ${[['quality', 'Quality'], ['year', 'Year'], ['size', 'Size'], ['az', 'A–Z']]
+            .map(([v, l]) => `<option value="${v}"${shSort === v ? ' selected' : ''}>${l}</option>`).join('')}
+        </select>
+      </label>
+      <div class="slsh-chips">
+        ${chip('lossless', 'Lossless')}${chip('hires', 'Hi-Res')}${chip('surround', 'Surround')}
+      </div>
+      ${decades.length ? `<label class="slsh-ctl-decade">Decade
+        <select id="slsh-decade">
+          <option value="">All</option>
+          ${decades.map(d => `<option value="${esc(d.value)}"${shDecade === d.value ? ' selected' : ''}>${esc(d.label)}</option>`).join('')}
+        </select>
+      </label>` : ''}
+    </div>`
+  }
+
+  function shRenderGrid() {
+    const wrap = dlg.querySelector('#slsh-grid-wrap')
+    if (!wrap || !SH) return
+    const SF = window.PapaSlskFilters
+    const plain = shGridIsPlain()
+    // Flatten to a render list of {header}|{album} for slicing. In plain mode we
+    // keep the sticky letter headers; once any control is active we show one
+    // flat, filtered+sorted grid (letters would be meaningless under Year/Size).
+    shGridFlat = []
+    let count
+    if (plain) {
+      shGridGroups = SH.groupByLetter(shelves.everything)
+      for (const g of shGridGroups) {
+        shGridFlat.push({ header: g.letter })
+        for (const a of g.albums) shGridFlat.push({ album: a })
+      }
+      count = shelves.everything.length
+    } else {
+      const filtered = (SF && SF.applyShelfFilterSort)
+        ? SF.applyShelfFilterSort(shelves.everything, { filters: shFilters, decade: shDecade, sort: shSort })
+        : shelves.everything
+      for (const a of filtered) shGridFlat.push({ album: a })
+      count = filtered.length
+    }
+    shGridRendered = 0
+    wrap.innerHTML = `<div class="slsh-rail-head slsh-grid-head"><span class="slsh-rail-title">Everything</span>
+      <span class="slsh-rail-sub">${count} album${count !== 1 ? 's' : ''}</span></div>
+      ${shControlsHtml()}
+      <div class="slsh-grid" id="slsh-grid"></div>
+      <div class="slsh-grid-sentinel" id="slsh-grid-more" aria-hidden="true"></div>`
+    shBindShelfControls()
+    if (!shGridFlat.length) {
+      const grid = dlg.querySelector('#slsh-grid')
+      if (grid) grid.innerHTML = '<div class="slsh-empty">No albums match those filters.</div>'
+      const more = dlg.querySelector('#slsh-grid-more'); if (more) more.style.display = 'none'
+      return
+    }
+    shGridAppend()
+  }
+
+  // Wire the shop control row. Rebuilds the grid (or the search view) in place.
+  function shBindShelfControls() {
+    const ctl = dlg.querySelector('#slsh-controls')
+    if (!ctl || ctl.dataset.bound) return
+    ctl.dataset.bound = '1'
+    ctl.querySelector('#slsh-sort')?.addEventListener('change', e => {
+      shSort = e.target.value; shReRenderResults()
+    })
+    ctl.querySelector('#slsh-decade')?.addEventListener('change', e => {
+      shDecade = e.target.value; shReRenderResults()
+    })
+    ctl.querySelectorAll('[data-shfilter]').forEach(b =>
+      b.addEventListener('click', () => {
+        const k = b.dataset.shfilter
+        if (shFilters.has(k)) shFilters.delete(k); else shFilters.add(k)
+        shReRenderResults()
+      }))
+  }
+
+  // Repaint whichever surface the controls belong to: the search view when a
+  // search is active, else the Everything grid.
+  function shReRenderResults() {
+    if (shSearchQuery) renderShelvesSearch()
+    else shRenderGrid()
+  }
+  let shGridFlat = []
+  function shGridAppend() {
+    const grid = dlg.querySelector('#slsh-grid')
+    if (!grid) return
+    const slice = shGridFlat.slice(shGridRendered, shGridRendered + SLSH_CHUNK)
+    const html = slice.map(item => item.header != null
+      ? `<div class="slsh-letter" data-letter="${esc(item.header)}">${esc(item.header)}</div>`
+      : shCardHtml(item.album, item.album._idx, item.album.inLibrary ? 'plain' : 'missing')).join('')
+    grid.insertAdjacentHTML('beforeend', html)
+    shGridRendered += slice.length
+    bindShCards(grid)
+    shArmArtObserver(grid)
+    shArmGridObserver()
+  }
+  function shArmGridObserver() {
+    const more = dlg.querySelector('#slsh-grid-more')
+    if (shGridObserver) { shGridObserver.disconnect(); shGridObserver = null }
+    if (!more) return
+    if (shGridRendered >= shGridFlat.length) { more.style.display = 'none'; return }
+    if (typeof IntersectionObserver !== 'function') { while (shGridRendered < shGridFlat.length) shGridAppend(); return }
+    shGridObserver = new IntersectionObserver(ents => {
+      if (ents.some(e => e.isIntersecting)) shGridAppend()
+    }, { root: shBody, rootMargin: '600px' })
+    shGridObserver.observe(more)
+  }
+
+  // Turn a parsed album into the {username, folderName, files} shape the shared
+  // download/play helpers expect. The peer's files carry `fullPath` (built by
+  // slsk-tree), which is what slskd needs to request the transfer.
+  function shAsGroup(a) {
+    return {
+      username,
+      folderName: a.folderName,
+      folderPath: a.folderPath,
+      files: a.files.map(f => ({
+        filename: f.fullPath || f.filename, size: f.size || 0,
+        isFlac: SH ? SH.isLosslessName(f.name || f.filename) : /\.flac$/i.test(f.name || f.filename),
+        bitDepth: f.bitDepth, sampleRate: f.sampleRate, bitRate: f.bitRate,
+      })),
+    }
+  }
+
+  // Download the chosen (best) track of an album, then play it once it lands on
+  // disk. Same shape as the explorer's own play-poll handler — filenames use the
+  // peer's fullPath, resolve is polled with a deadline, transfers are watched so
+  // a failed transfer aborts the wait instead of hanging for the full timeout.
+  async function shDownloadAndPlay(btn, g, targetFile, album) {
+    const orig = btn.textContent
+    btn.disabled = true; btn.textContent = '…'
+    const title = (targetFile.filename || '').replace(/\\/g, '/').split('/').pop().replace(/\.[^.]+$/, '')
+    const play = (filePath) => {
+      state.queue = [{ filePath, title, artist: (album && album.artist) || username,
+        albumArtist: (album && album.artist) || username, artPath: null,
+        albumName: (album && album.album) || g.folderName, albumId: `slsh_${username}_${g.folderName}` }]
+      state.queueIndex = 0
+      playCurrentTrack()
+    }
+    try {
+      const existing = await window.api.slskResolveFile({ username, filename: targetFile.filename }).catch(() => null)
+      if (existing && existing.path) { play(existing.path); btn.textContent = orig; btn.disabled = false; return }
+      await window.api.slskDownload({ username, filename: targetFile.filename, size: targetFile.size || 0 })
+      _scheduleLibRescan()
+      const deadline = Date.now() + 180000
+      while (Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 2000))
+        const res = await window.api.slskResolveFile({ username, filename: targetFile.filename }).catch(() => null)
+        if (res && res.path) { play(res.path); break }
+        const raw = await window.api.slskGetTransfers().catch(() => [])
+        const hit = raw.flatMap(u => (u.directories || []).flatMap(d => d.files || []))
+          .find(f => f.filename === targetFile.filename)
+        if (hit && hit.state && /Failed|Aborted|Cancelled/.test(hit.state)) break
+      }
+    } catch (_) {}
+    btn.textContent = orig; btn.disabled = false
+  }
+
+  // Delegated card handlers (one listener per container, not per card — soak
+  // listener budget). Reuses the existing enqueue, wishlist and folder-search
+  // code paths rather than duplicating them.
+  function bindShCards(container) {
+    if (container.dataset.shBound) return
+    container.dataset.shBound = '1'
+    container.addEventListener('click', async e => {
+      const btn = e.target.closest('.slsh-card-act')
+      if (!btn) return
+      e.stopPropagation()
+      const a = shFlat[parseInt(btn.dataset.idx, 10)]
+      if (!a) return
+      const g = shAsGroup(a)
+      if (btn.classList.contains('slsh-preview')) {
+        const sorted = [...g.files].sort((x, y) => (y.isFlac ? 1 : 0) - (x.isFlac ? 1 : 0))
+        if (sorted[0]) {
+          // No explicit title: the first track's filename is the real song, so
+          // let the racer derive "<artist> <track>" from it (better than the
+          // album name for a YouTube match and for the pill label).
+          startPreview({ username, filename: sorted[0].filename, size: sorted[0].size,
+            artist: a.artist || '' })
+        }
+      } else if (btn.classList.contains('slsh-play')) {
+        const sorted = [...g.files].sort((x, y) => (y.isFlac ? 1 : 0) - (x.isFlac ? 1 : 0))
+        if (sorted[0]) {
+          await shDownloadAndPlay(btn, g, sorted[0], a)
+          _slskEnqueue(sorted.slice(1).map(f => ({ username, filename: f.filename, size: f.size })))
+        }
+      } else if (btn.classList.contains('slsh-dl')) {
+        const orig = btn.textContent
+        btn.disabled = true; btn.textContent = '…'
+        try {
+          await _slskEnqueue(g.files.map(f => ({ username, filename: f.filename, size: f.size })))
+          _scheduleLibRescan()
+          _slskCardDownloads.set(_slskCardKey(username, a.folderName), { total: g.files.length })
+          btn.textContent = '✓'
+          shTrackProgress(a)
+        } catch (_) { btn.disabled = false; btn.textContent = orig }
+      } else if (btn.classList.contains('slsh-find')) {
+        close(); navigate('search', a.album || a.folderName)
+      } else if (btn.classList.contains('slsh-wish')) {
+        const q = `${a.artist} ${a.album}`.trim() || a.folderName
+        state.downloadWishlist.push({ query: q, addedAt: Date.now() })
+        window.api.saveDownloadWishlist(state.downloadWishlist)
+        btn.textContent = '✓'; btn.disabled = true
+        showSnackbar(`Added “${q}” to your wishlist`)
+      }
+    })
+    // Right-click a missing card to wishlist it, too.
+    container.addEventListener('contextmenu', e => {
+      const card = e.target.closest('.slsh-card')
+      if (!card) return
+      const a = shFlat[parseInt(card.dataset.idx, 10)]
+      if (!a || a.inLibrary) return
+      e.preventDefault()
+      const q = `${a.artist} ${a.album}`.trim() || a.folderName
+      state.downloadWishlist.push({ query: q, addedAt: Date.now() })
+      window.api.saveDownloadWishlist(state.downloadWishlist)
+      showSnackbar(`Added “${q}” to your wishlist`)
+    })
+  }
+
+  // Paint inline download progress on a card by reading the same downloads-poll
+  // data the search cards use (_slskCardProgress via _dlLastFiles). No new poll:
+  // just repaint on a short timer while the strip is visible.
+  const shProgTimers = new Set()
+  function shTrackProgress(a) {
+    const key = _slskCardKey(username, a.folderName)
+    if (shProgTimers.has(key)) return
+    shProgTimers.add(key)
+    const tick = () => {
+      if (!dlg.isConnected) { shProgTimers.delete(key); return }
+      const prog = _slskCardProgress(shAsGroup(a))
+      const strips = shBody.querySelectorAll(`.slsh-card-progress[data-folder="${CSS.escape(a.folderPath)}"]`)
+      strips.forEach(strip => {
+        if (!prog) { strip.style.display = 'none'; return }
+        strip.style.display = ''
+        strip.querySelector('.slsh-card-progress-fill').style.width = prog.pct + '%'
+        strip.querySelector('.slsh-card-progress-label').textContent = prog.complete ? 'Done' : prog.pct + '%'
+      })
+      if (prog && prog.complete) { shProgTimers.delete(key); return }
+      setTimeout(tick, 2000)
+    }
+    setTimeout(tick, 800)
+  }
 
   const starBtn = dlg.querySelector('#slskx-star')
   let savedList = await window.api.slskSavedUsers().catch(() => [])
@@ -15936,6 +23220,10 @@ async function showSlskUserExplorer(username) {
     body.innerHTML = `<div class="slsk-lib-empty">Could not load this library: ${esc(res.error || 'unknown error')}</div>`
     return
   }
+  // Engine may serve a cached browse and refresh in the background; feature-
+  // detect both fields so an engine without them behaves exactly as before.
+  shFromCache = !!res.fromCache
+  shCachedAt = Number(res.cachedAt) || 0
   tree = T.buildTree(res.directories || [])
   // Skip past a single wrapper folder so the first view is useful, not one row.
   let start = ''
@@ -15945,8 +23233,109 @@ async function showSlskUserExplorer(username) {
     else break
   }
   if (start) hist.go(start)
-  render()
-  search.focus()
+
+  // Paint immediately: shelves shows hero + skeleton rails, folders shows the
+  // tree. The album parse then runs in idle slices so a 100k-file tree never
+  // blocks the main thread. When it finishes, the real shelves swap in.
+  applyMode()
+  if (mode === 'folders') search.focus()
+
+  // Parse the current `tree` into albums+shelves off the paint thread, then swap
+  // the real shelves in. Named (not an inline IIFE) so a background refresh can
+  // re-run it against a freshly rebuilt tree. `opts.refresh` preserves the shop's
+  // scroll, mode and search when a background update lands.
+  async function buildFromTree(opts) {
+    const refresh = !!(opts && opts.refresh)
+    // Remember the scroll so a seamless refresh doesn't jump the user.
+    const prevScroll = refresh ? shBody.scrollTop : 0
+    try {
+      // extractAlbums itself is a single tree walk; on a very large tree we yield
+      // once before and once after so the skeleton is on screen first.
+      await new Promise(r => (window.requestIdleCallback ? requestIdleCallback(r, { timeout: 500 }) : setTimeout(r, 1)))
+      peerAlbums = SH ? SH.extractAlbums(tree, { minTracks: 2 }) : []
+      // Mark which parsed albums the user already owns (drives the "In Library"
+      // chip and keeps them out of wishlist-by-default).
+      if (SH) {
+        const libComp = state.library.map(SH.libAlbumToComparable)
+        for (const a of peerAlbums) {
+          a.inLibrary = libComp.some(lc => SH.albumsMatch(
+            { artist: a.artist, album: a.album }, lc))
+        }
+      }
+      shReindex()
+      await new Promise(r => (window.requestIdleCallback ? requestIdleCallback(r, { timeout: 500 }) : setTimeout(r, 1)))
+      const detectSurround = window.PapaSlskFilters && window.PapaSlskFilters.detectSurround
+      shelves = SH ? SH.buildShelves(peerAlbums, state.library, { detectSurround }) : null
+      shParsing = false
+      // Warm covers ahead of the scroll when this is a shopper likely to browse
+      // the whole library: a cached browse (they've been here) or a saved friend.
+      // Fire-and-forget; the observer still handles visible-first, and the two
+      // paths dedupe. A background refresh re-runs it so newly parsed albums also
+      // get warmed (the disk cache makes the re-run nearly free).
+      if (!shArtPrefetchAbort && dlg.isConnected &&
+          (shFromCache || (window.PapaSavedUsers && window.PapaSavedUsers.isSaved(savedList, username)))) {
+        shArtPrefetch()
+      }
+      if (mode === 'shelves' && dlg.isConnected) {
+        renderShelves()
+        if (refresh) {
+          // Preserve scroll + the tiny pulse; the pulse auto-clears so the hero
+          // settles back to the plain "from cache" line (or nothing).
+          shBody.scrollTop = prevScroll
+          setTimeout(() => { shJustRefreshed = false; if (dlg.isConnected && mode === 'shelves' && !shSearchQuery) {
+            const hero = shBody.querySelector('.slsh-hero-cache')
+            if (hero) { hero.classList.remove('slsh-hero-pulse'); hero.textContent = shFromCache && shCachedAt ? 'from cache · updated ' + _shAgo(shCachedAt) : '' }
+          } }, 4000)
+        }
+      }
+      if (refresh && mode === 'folders' && dlg.isConnected) render()
+    } catch (e) {
+      shParsing = false
+      // Never swallow the reason: shelves failing on a real library is a bug
+      // to report, and the console line is what makes it diagnosable.
+      console.error('[slsh] shelves parse failed', e)
+      window.__slshLastError = String((e && e.stack) || e)
+      if (!refresh && mode === 'shelves' && dlg.isConnected) {
+        shBody.innerHTML = `<div class="slsh-empty">Could not read albums from this library.<br>
+          <span style="color:var(--text3);font-size:11px">Switch to Folders mode to browse the raw file tree.</span></div>`
+      }
+    }
+  }
+  buildFromTree()
+
+  // Seamless background refresh (engine contract): when a fresh browse for THIS
+  // user lands, re-fetch and rebuild while preserving scroll, mode and search
+  // text, with an "Updated just now" pulse. Feature-detected — an engine without
+  // the event simply never fires this.
+  let _offBrowseRefreshed = null
+  if (window.api && typeof window.api.onSlskBrowseRefreshed === 'function') {
+    _offBrowseRefreshed = window.api.onSlskBrowseRefreshed(async (evt) => {
+      if (!dlg.isConnected) return
+      if (!evt || String(evt.username || '') !== String(username)) return
+      try {
+        const fresh = await window.api.slskBrowseUser({ username, noCache: true }).catch(() => null)
+        if (!fresh || !fresh.ok || !dlg.isConnected) return
+        shFromCache = !!fresh.fromCache
+        shCachedAt = Number(fresh.cachedAt) || Date.now()
+        shJustRefreshed = true
+        tree = T.buildTree(fresh.directories || [])
+        await buildFromTree({ refresh: true })
+      } catch (_) { /* a failed refresh must never disrupt the open shop */ }
+    })
+  }
+
+  // Presence dot, if the presence module is available (best-effort).
+  try {
+    const pres = dlg.querySelector('#slsh-presence')
+    if (pres && window.PapaSlskPresence && window.api.slskUserStatus) {
+      window.api.slskUserStatus({ username }).then(st => {
+        if (!pres.isConnected || !st) return
+        const online = st.online || st.presence === 'Online' || st.status === 'Online'
+        pres.classList.add(online ? 'online' : 'offline')
+        pres.title = online ? 'Online' : 'Offline'
+      }).catch(() => {})
+    }
+  } catch (_) {}
 
   // Keep a saved entry's counts and last-visited time current.
   if (window.PapaSavedUsers.isSaved(savedList, username)) {
@@ -15968,7 +23357,10 @@ async function showSlskSavedUsers() {
         <span class="slskx-name">${esc(u.username)}</span>
         <span class="slskx-meta">${u.fileCount ? u.fileCount.toLocaleString() + ' files' : ''}${
           u.note ? ' · ' + esc(u.note) : ''}</span>
-        <button class="slskx-mini" data-remove="${esc(u.username)}" title="Remove">✕</button>
+        <span class="slskx-rowbtns">
+          <button class="slskx-mini" data-note="${esc(u.username)}" data-cur="${esc(u.note || '')}" title="Edit note">✎</button>
+          <button class="slskx-mini" data-remove="${esc(u.username)}" title="Remove">✕</button>
+        </span>
       </div>`).join('')
     : `<div class="slsk-lib-empty">No saved libraries yet.<br>
          Open any user's library and click ☆ to keep it here.</div>`
@@ -15984,9 +23376,28 @@ async function showSlskSavedUsers() {
   dlg.addEventListener('click', e => { if (e.target === dlg) dlg.remove() })
   dlg.querySelectorAll('.slskx-saved-row').forEach(r => {
     r.addEventListener('click', e => {
-      if (e.target.hasAttribute('data-remove')) return
+      if (e.target.hasAttribute('data-remove') || e.target.hasAttribute('data-note')) return
       dlg.remove()
       showSlskUserExplorer(r.dataset.user)
+    })
+  })
+  // Edit the note attached to a saved library. Reuses _mgPrompt like every other
+  // free-text edit in the app; the note rides along on slskSaveUser's meta.
+  dlg.querySelectorAll('[data-note]').forEach(b => {
+    b.addEventListener('click', e => {
+      e.stopPropagation()
+      const username = b.dataset.note
+      _mgPrompt('Note for ' + username, {
+        label: 'A short reminder — “great 5.1 collection”, “slow but reliable”…',
+        value: b.dataset.cur || '',
+        confirmLabel: 'Save note',
+        onConfirm: async (val) => {
+          await window.api.slskSaveUser({ username, note: String(val || '').trim() }).catch(() => {})
+          dlg.remove()
+          showSlskSavedUsers()
+          showSnackbar('Note saved')
+        },
+      })
     })
   })
   dlg.querySelectorAll('[data-remove]').forEach(b => {
@@ -16658,17 +24069,8 @@ function setupListeners() {
   // Art fetch cancel
   document.getElementById('art-status-cancel')?.addEventListener('click', () => { artFetchCancelled = true })
 
-  // Setup overlay
-  document.getElementById('choose-folder-btn')?.addEventListener('click', async () => {
-    const folders = await window.api.addMusicFolder()
-    if (folders) {
-      state.musicFolders = folders
-      renderFolders()
-      document.getElementById('setup-overlay').style.display = 'none'
-      showLoading()
-      await fullScan()
-    }
-  })
+  // Setup overlay — the first-run wizard (App #8)
+  _initSetupWizard()
 
   // Quality sources sidebar buttons
 
@@ -16723,9 +24125,14 @@ function setupListeners() {
 
   // Like button (player bar)
   document.getElementById('btn-like')?.addEventListener('click', function() {
-    const albumId = this.dataset.album
-    if (albumId) {
-      toggleLike(albumId)
+    // Spotify convention: the bar heart likes the currently-playing TRACK, not
+    // its album (album-liking stays on album pages / context menus). Wiring it
+    // to the track keeps it consistent with Liked Songs, which lists track likes.
+    const currentTrack = state.queue[state.queueIndex]
+    if (currentTrack && currentTrack.filePath) {
+      toggleTrackLike(currentTrack.filePath)
+      updatePlayerLikeBtn()
+      _syncNpLike(currentTrack)
       this.classList.remove('heart-pulse'); void this.offsetWidth; this.classList.add('heart-pulse')
       this.addEventListener('animationend', () => this.classList.remove('heart-pulse'), { once: true })
     }
@@ -16905,19 +24312,26 @@ function setupListeners() {
     })
   })
 
-  // Karaoke lyrics toggle
-  document.getElementById('np-modal-lyrics-toggle')?.addEventListener('click', () => {
-    const modal = document.getElementById('np-modal')
-    if (!modal) return
-    modal.classList.toggle('lyrics-mode')
-    const isKaraoke = modal.classList.contains('lyrics-mode')
-    const track = state.queue[state.queueIndex]
-    if (isKaraoke && track) {
-      const titleEl = document.getElementById('np-modal-lyrics-title')
-      const artistEl = document.getElementById('np-modal-lyrics-artist')
-      if (titleEl) titleEl.textContent = track.title || '—'
-      if (artistEl) artistEl.textContent = track.albumArtist || track.artist || '—'
-    }
+  // Lyrics toggle. Rendering the lyrics list only happens when the lyrics stage
+  // is actually shown, so the empty "No lyrics found" state never leaks into ART
+  // mode.
+  document.getElementById('np-modal-lyrics-toggle')?.addEventListener('click', toggleNpLyrics)
+
+  // Like heart on the art stage — routes through the same like path as the bar.
+  document.getElementById('np-modal-like')?.addEventListener('click', () => {
+    document.getElementById('btn-like')?.click()
+    _syncNpLike(state.queue[state.queueIndex])
+  })
+
+  // Add-to-playlist on the deck — reuses the bar's add-to-playlist button.
+  document.getElementById('np-modal-addpl')?.addEventListener('click', () => {
+    document.getElementById('btn-addpl-bar')?.click()
+  })
+
+  // Mute button on the deck.
+  document.getElementById('np-modal-vol')?.addEventListener('click', () => {
+    document.getElementById('btn-vol')?.click()
+    _npVolFlash()
   })
 
   // Radio context menu — smart-queue radio when we have a seed file, falling
@@ -16949,6 +24363,9 @@ function setupListeners() {
   document.getElementById('btn-sleep')?.addEventListener('click', () => {
     const panel = document.getElementById('sleep-panel')
     panel?.classList.toggle('open')
+    // Fill the alarm's album/playlist list each time the panel opens so it
+    // reflects the current library and any saved alarm.
+    if (panel?.classList.contains('open')) { populateAlarmSources(); updateAlarmStatus() }
   })
   document.querySelectorAll('.sleep-option').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -16956,6 +24373,9 @@ function setupListeners() {
       document.getElementById('sleep-panel')?.classList.remove('open')
     })
   })
+  // Wake-me alarm controls (App #67)
+  document.getElementById('alarm-set-btn')?.addEventListener('click', setAlarmFromUI)
+  document.getElementById('alarm-clear-btn')?.addEventListener('click', clearAlarm)
   document.addEventListener('click', e => {
     if (!e.target.closest('#sleep-panel') && !e.target.closest('#btn-sleep'))
       document.getElementById('sleep-panel')?.classList.remove('open')
@@ -17057,6 +24477,10 @@ function setupListeners() {
   document.getElementById('np-modal-next')?.addEventListener('click', playNext)
   document.getElementById('np-modal-shuffle')?.addEventListener('click', function() {
     state.shuffle = !state.shuffle
+    // Clear the cached shuffle pick like the bar button does — a stale
+    // _pendingShuffle index would otherwise decide the next track after the
+    // toggle changed the intent.
+    _pendingShuffle = null
     this.classList.toggle('active', state.shuffle)
     document.getElementById('btn-shuffle')?.classList.toggle('active', state.shuffle)
     updateNextPrefetch()
@@ -17255,6 +24679,7 @@ function setupListeners() {
   // Browser nav
 
   // Cache persistent player-bar elements once — avoids getElementById on every tick
+  _dom.playerBar = document.getElementById('player-bar')
   _dom.fill     = document.getElementById('progress-fill')
   _dom.thumb    = document.getElementById('progress-thumb')
   _dom.timeCur  = document.getElementById('time-cur')
@@ -17286,6 +24711,14 @@ function setupListeners() {
     var pct = `${ratio * 100}%`
     if (_dom.fill)  _dom.fill.style.width = pct
     if (_dom.thumb) _dom.thumb.style.left = pct
+    // Drive the palette-tinted hairline on the bar's top edge (styles.css uses
+    // --np-bar-progress as a 0-100 number). Set on the bar element, NOT on
+    // documentElement: a root-level custom-property write invalidates style
+    // for the entire document, and at ~4 writes/second during playback that
+    // was a measured ~100ms recalc stall per tick on a full library page —
+    // the "everything responds a second late" fullscreen complaint. Scoped to
+    // the bar, the recalc touches only the bar's subtree.
+    if (_dom.playerBar) _dom.playerBar.style.setProperty('--np-bar-progress', String(ratio * 100))
     if (_dom.timeCur) { _dom.timeCur.textContent = _fmtTimeCur(ct); _dom.timeCur.title = _timeCurTitle() }
     if (state.modalOpen) {
       if (_dom.modalFill)  _dom.modalFill.style.width = pct
@@ -17308,7 +24741,7 @@ function setupListeners() {
     if (audio.duration) sampleHistoryPosition(audio.duration)
     flushPlayHistoryPosition()
     if (finishedTrack) {
-      window.api.scrobbleTrack({
+      scrobbleWithHealth({
         artist: finishedTrack.albumArtist || finishedTrack.artist || '',
         title: finishedTrack.title || '',
         album: finishedTrack.albumName || '',
@@ -17320,7 +24753,7 @@ function setupListeners() {
     // Scrobble the track that just finished before updating the index
     const finishedTrack = state.queue[state.queueIndex]
     if (finishedTrack) {
-      window.api.scrobbleTrack({
+      scrobbleWithHealth({
         artist: finishedTrack.albumArtist || finishedTrack.artist || '',
         title: finishedTrack.title || '',
         album: finishedTrack.albumName || '',
@@ -17926,6 +25359,16 @@ function setupListeners() {
 
   // Keyboard shortcuts
   document.addEventListener('keydown', e => {
+    // The theatre owns the keyboard while it is open (App #74). Its own handler
+    // (video-player.js) fires on the same document, so without this guard a bare
+    // key like Space, m, s or l would trigger BOTH the film's action and this
+    // music handler's — the double-fire the keyboard audit forbids. Modified
+    // combos (Ctrl/Shift/Alt) are still let through: the video keymap refuses
+    // modifiers, so app-wide chords like Ctrl+K stay live even in the theatre.
+    const _theatre = document.getElementById('vtheatre')
+    if (_theatre && !_theatre.classList.contains('hidden') &&
+        !e.ctrlKey && !e.altKey && !e.metaKey) return
+
     const inInput = e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA'
 
     // Every test below asks matchesShortcut, so rebinding in the dialog works.
@@ -18020,12 +25463,24 @@ function setupListeners() {
       }
       var cp = document.getElementById('cmd-palette')
       if (cp && cp.style.display === 'flex') { toggleCommandPalette(); return }
+      // The agent/settings panel is a top layer too; close it through its toggle
+      // (which returns focus to the opener) before falling through to page-level
+      // dismissals. Only when it is actually open, so Escape stays free otherwise.
+      if (chatState.open) { toggleChatSidebar(); return }
       const sm = document.getElementById('shortcuts-modal')
-      if (sm && sm.style.display !== 'none') { sm.style.display = 'none'; return }
+      // Through the toggle, not a raw hide, so focus returns to the opener.
+      if (sm && sm.style.display !== 'none') { toggleShortcutsModal(); return }
       const sc = document.getElementById('shortcuts-config-modal')
       if (sc && sc.style.display === 'flex') { toggleShortcutsConfig(); return }
       if (_lyricsDrawerOpen) { closeLyricsDrawer(); return }
-      if (state.modalOpen) { hideNowPlayingModal(); return }
+      // Layered dismissal inside the Now Playing modal: peel the queue panel,
+      // then full-art, then the modal itself — one Escape per layer.
+      if (state.modalOpen) {
+        const npm = document.getElementById('np-modal')
+        if (npm && npm.classList.contains('queue-open')) { closeNpQueue(); return }
+        if (npm && npm.classList.contains('art-expanded')) { toggleNpFullArt(); return }
+        hideNowPlayingModal(); return
+      }
       // Was `!el.style.display === 'none'` -- `!` binds tighter than `===`, so
       // this read `false === 'none'` and was ALWAYS false. Escape has never
       // closed the context menu.
@@ -18044,6 +25499,18 @@ function setupListeners() {
 
     if (inInput) return
 
+    // Modal-scoped keys: when the Now Playing modal is open, L / Q / F act on the
+    // modal (lyrics mode, its queue panel, full-art) rather than the bar-level
+    // drawer/panel. Returning here is what prevents the shared handlers below from
+    // ALSO firing — no double-toggle. Space/arrows/M/prev/next deliberately fall
+    // through: they already sync the modal, so a modal-specific copy would be a
+    // second fire, not a fix.
+    if (state.modalOpen) {
+      if (matchesShortcut('toggleLyrics', e)) { e.preventDefault(); toggleNpLyrics(); return }
+      if (matchesShortcut('toggleQueue', e))  { e.preventDefault(); toggleNpQueue();  return }
+      if (matchesShortcut('fullscreen', e))   { e.preventDefault(); toggleNpFullArt(); return }
+    }
+
     // App navigation
     if (e.key === 'ArrowLeft' && e.altKey)  { e.preventDefault(); navigateBack();    return }
     if (e.key === 'ArrowRight' && e.altKey) { e.preventDefault(); navigateForward(); return }
@@ -18054,13 +25521,22 @@ function setupListeners() {
     if (matchesShortcut('nextTrack', e)) { e.preventDefault(); playNext(); return }
     if (matchesShortcut('prevTrack', e)) { e.preventDefault(); playPrev(); return }
 
-    // Seek ±10s
+    // Seek ±10s. Bare arrows scrub music, but on a video page they belong to the
+    // grid's card navigation (the video keydown handler owns them there) — seeking
+    // the hidden music track while browsing the video grid is never wanted. Guard
+    // matches that handler's gate: video page active, theatre not open. (Alt+arrow
+    // navigation above already returned, so this only affects the scrub pair.)
+    const _onVideoGrid = VIDEO_PAGES.has(state.currentPage) &&
+      !(document.getElementById('vtheatre') &&
+        !document.getElementById('vtheatre').classList.contains('hidden'))
     if (matchesShortcut('seekForward', e)) {
+      if (_onVideoGrid) return
       e.preventDefault()
       audio.currentTime = Math.min(audio.duration || 0, audio.currentTime + 10)
       return
     }
     if (matchesShortcut('seekBackward', e)) {
+      if (_onVideoGrid) return
       e.preventDefault()
       audio.currentTime = Math.max(0, audio.currentTime - 10)
       return
@@ -18109,6 +25585,8 @@ function setupListeners() {
     // Shuffle
     if (matchesShortcut('toggleShuffle', e)) {
       state.shuffle = !state.shuffle
+      // Clear the cached shuffle pick like the bar button does.
+      _pendingShuffle = null
       document.getElementById('btn-shuffle')?.classList.toggle('active', state.shuffle)
       document.getElementById('np-modal-shuffle')?.classList.toggle('active', state.shuffle)
       updateNextPrefetch()
@@ -18137,8 +25615,10 @@ function setupListeners() {
     if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === ',') {
       e.preventDefault(); toggleShortcutsConfig(); return
     }
-    // Keyboard shortcuts modal
-    if (matchesShortcut('shortcuts', e) || e.key === '?') { e.preventDefault(); toggleShortcutsModal(); return }
+    // Keyboard shortcuts modal (App §84). "?" only opens it outside inputs, so
+    // typing a question mark into the search box never pops the overlay. F1
+    // (the bound `shortcuts` action) works from anywhere.
+    if (matchesShortcut('shortcuts', e) || (e.key === '?' && !inInput)) { e.preventDefault(); toggleShortcutsModal(); return }
   })
 
   // Dropping a file in is not a connection check; it is bound once here.
@@ -18380,8 +25860,14 @@ function toggleShortcutsModal() {
   const m = document.getElementById('shortcuts-modal')
   if (!m) return
   const isHidden = m.style.display === 'none' || !m.style.display
-  if (isHidden) renderShortcuts()
-  m.style.display = isHidden ? 'flex' : 'none'
+  if (isHidden) {
+    renderShortcuts()
+    m.style.display = 'flex'
+    m._releaseFocus = _trapFocus(m, { initial: '.shortcuts-close' })
+  } else {
+    m.style.display = 'none'
+    if (m._releaseFocus) { try { m._releaseFocus() } catch (_) {} m._releaseFocus = null }
+  }
 }
 
 // The rows used to be built from DEFAULT_SHORTCUTS -- not the user's bindings --
@@ -18622,6 +26108,9 @@ function showSnackbar(msg, actionLabel, actionCallback, duration) {
 // ── Command palette wrapper functions ─────────────────────────────────────
 function toggleShuffleWrap() {
   state.shuffle = !state.shuffle
+  // Clear the cached shuffle pick like the bar button does, so the command
+  // palette toggle can't leave a stale index deciding the next track.
+  _pendingShuffle = null
   document.getElementById('btn-shuffle')?.classList.toggle('active', state.shuffle)
   document.getElementById('np-modal-shuffle')?.classList.toggle('active', state.shuffle)
   showSnackbar(state.shuffle ? 'Shuffle on' : 'Shuffle off', '', function(){}, 1500)
@@ -18863,8 +26352,50 @@ function _evalSmartPlaylist(pl) {
 }
 
 // ── Online/offline detection ─────────────────────────────────────────────────
-window.addEventListener('online', () => { state.isOnline = true })
-window.addEventListener('offline', () => { state.isOnline = false })
+// The two module-scope listeners below already tracked state.isOnline; they now
+// also drive the offline banner (App §11). No new global listeners: the banner
+// piggybacks on these and on api.onAppOnlineState, so the soak budget is
+// unchanged.
+window.addEventListener('online', () => { _applyOnlineState(true) })
+window.addEventListener('offline', () => { _applyOnlineState(false) })
+
+// Shows/hides the slim offline banner and, on a genuine offline→online flip,
+// pops a brief "Back online" toast. Idempotent: repeated same-state calls (both
+// the browser events and api.onAppOnlineState can report the same thing) do not
+// re-toast, because the toast is gated on an actual transition.
+var _wasOffline = false
+function _applyOnlineState(online) {
+  const on = online !== false
+  state.isOnline = on
+  const banner = document.getElementById('offline-banner')
+  if (banner) banner.hidden = on
+  if (on && _wasOffline) showToast('Back online')
+  _wasOffline = !on
+}
+
+// Subscribe to the main-process online-state feed if it exists (main adds it;
+// defensive if absent) and paint the initial state from the browser. Behind a
+// run-once guard because the subscription must not stack per navigation.
+var _onlineBannerInit = false
+function _initOnlineBanner() {
+  if (_onlineBannerInit) return
+  _onlineBannerInit = true
+  // navigator.onLine is the ground truth at boot; default to online if unknown.
+  const initial = typeof navigator === 'undefined' || navigator.onLine !== false
+  _wasOffline = false
+  _applyOnlineState(initial)
+  // Keep the transition tracker honest after the initial paint.
+  _wasOffline = !initial
+  try {
+    if (window.api && typeof window.api.onAppOnlineState === 'function') {
+      window.api.onAppOnlineState(function (s) {
+        // Accept a bare boolean or an { online } payload.
+        const on = (s && typeof s === 'object') ? s.online !== false : s !== false
+        _applyOnlineState(on)
+      })
+    }
+  } catch (_) { /* the browser online/offline events still cover us */ }
+}
 
 // ── Library manager ─────────────────────────────────────────────────────────
 // Deleting music is irreversible from the user's point of view even when the
@@ -20330,6 +27861,282 @@ function initDownloadScheduler() {
   }
 }
 
+// ── Soulseek hub page ────────────────────────────────────────────────────────
+// One page that pulls together the Soulseek surfaces that used to be scattered:
+// a search bar (sharing the Search page's renderer and handlers), a friends row,
+// the wishlist and a strip of recent arrivals. It never adds its own polling —
+// friends presence and downloads are already pushed/polled elsewhere; this only
+// paints what those flows produce.
+
+// Friend-diff data from the backend, keyed by lowercased username. Refreshed on
+// hub open. Written defensively so a missing channel never crashes the row.
+var _slskFriendDiffs = {}
+
+// Relative "last browsed" wording. Reuses the same buckets the downloads page
+// uses (_fmtRelTime) but from an absolute timestamp that may be null.
+function _slskRelBrowsed(ts) {
+  if (!ts) return ''
+  var t = typeof ts === 'number' ? ts : new Date(ts).getTime()
+  if (!t || isNaN(t)) return ''
+  return _fmtRelTime(t)
+}
+
+function _slskRefreshFriendDiffs() {
+  if (!window.api || !window.api.slskFriendDiffs) return Promise.resolve()
+  return Promise.resolve(window.api.slskFriendDiffs())
+    .then(function (diffs) {
+      var map = {}
+      for (var i = 0; i < (diffs || []).length; i++) {
+        var d = diffs[i]
+        if (d && d.username) map[String(d.username).toLowerCase()] = d
+      }
+      _slskFriendDiffs = map
+      if (state.currentPage === 'soulseek') _renderHubFriends()
+    })
+    .catch(function () {})
+}
+
+function renderSoulseekHub() {
+  setContent('<div class="page slsk-hub">' +
+    '<div class="slsk-hub-head">' +
+      '<h1 class="page-title">Soulseek</h1>' +
+      '<button class="slsk-hub-manage" id="slsk-hub-saved" title="Manage saved libraries">★ Saved libraries</button>' +
+    '</div>' +
+    '<div class="slsk-hub-searchbar">' +
+      '<svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>' +
+      '<input type="text" class="slsk-hub-search-input" id="slsk-hub-search-input" placeholder="Search Soulseek for an album or artist…" autocomplete="off" value="' + esc(slsk.lastQuery || '') + '">' +
+      '<button class="slsk-hub-search-btn" id="slsk-hub-search-btn">Search</button>' +
+    '</div>' +
+    '<div class="slsk-hub-section">' +
+      '<div class="section-header"><span class="section-title">Friends</span></div>' +
+      '<div class="slsk-hub-friends" id="slsk-hub-friends"></div>' +
+    '</div>' +
+    '<div class="slsk-hub-section">' +
+      '<div class="section-header"><span class="section-title">Wishlist</span>' +
+        '<button class="slsk-hub-runall" id="slsk-hub-wishlist-runall" title="Search every wishlist entry now">Run all now</button>' +
+      '</div>' +
+      '<div class="slsk-hub-wishlist" id="slsk-hub-wishlist"></div>' +
+    '</div>' +
+    '<div class="slsk-hub-section">' +
+      '<div class="section-header"><span class="section-title">Recent arrivals</span></div>' +
+      '<div class="slsk-hub-recent" id="slsk-hub-recent"></div>' +
+    '</div>' +
+    '<div class="slsk-hub-section">' +
+      '<div class="section-header"><span class="section-title">Results</span></div>' +
+      '<div id="slsk-section">' + renderSoulseekRow(slsk.lastQuery || '') + '</div>' +
+    '</div>' +
+  '</div>')
+
+  // Search: reuse runSlskSearch and the shared card renderer. Enter or the
+  // button both run it; results paint into the same #slsk-section the Search
+  // page uses, so the card pipeline is shared, not duplicated.
+  var input = document.getElementById('slsk-hub-search-input')
+  var runHubSearch = function () {
+    var q = (input && input.value || '').trim()
+    if (q.length < 2) { showSnackbar('Type at least two characters to search'); return }
+    if (window.api && slsk.status && slsk.status.connected) runSlskSearch(q)
+    else { var sec = document.getElementById('slsk-section'); if (sec) { sec.innerHTML = renderSoulseekRow(q); bindSlskSearchEvents(q) } }
+  }
+  document.getElementById('slsk-hub-search-btn')?.addEventListener('click', runHubSearch)
+  input?.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); runHubSearch() } })
+
+  document.getElementById('slsk-hub-saved')?.addEventListener('click', function () { showSlskSavedUsers() })
+  document.getElementById('slsk-hub-wishlist-runall')?.addEventListener('click', _slskRunWishlistAll)
+
+  bindSlskSearchEvents(slsk.lastQuery || '')
+
+  _renderHubFriends()
+  _renderHubWishlist()
+  _renderHubRecent()
+
+  // Make sure friends data and diffs are current for the row.
+  if (typeof reloadSlskFriends === 'function') reloadSlskFriends()
+  if (typeof refreshSlskFriendStatuses === 'function') refreshSlskFriendStatuses()
+  _slskRefreshFriendDiffs()
+  _slskBindWishlistHits()
+
+  // The hub reuses the downloads poll data for its Recent strip — make sure a
+  // frame has run at least once so it is not empty on first open.
+  if ((_dlLastFiles || []).length === 0 && window.api && window.api.slskGetTransfers) {
+    _pollAndRenderDownloads().then(function () {
+      if (state.currentPage === 'soulseek') _renderHubRecent()
+    }).catch(function () {})
+  }
+}
+
+function _renderHubFriends() {
+  var box = document.getElementById('slsk-hub-friends')
+  if (!box) return
+  var rows = _slskFriendRows()
+  if (!rows.length) {
+    box.innerHTML = '<div class="slsk-hub-empty">No saved friends yet. Open any uploader’s library from a search result and tap the ☆ to keep them here — their new uploads will show up on this page.</div>'
+    return
+  }
+  var html = ''
+  for (var i = 0; i < rows.length; i++) {
+    var r = rows[i]
+    var diff = _slskFriendDiffs[String(r.username).toLowerCase()]
+    var newFiles = diff && diff.newFiles > 0 ? diff.newFiles : 0
+    var initial = esc((r.username || '?').charAt(0).toUpperCase())
+    var browsed = _slskRelBrowsed(r.lastBrowsedAt)
+    var hue = Math.abs(String(r.username).split('').reduce(function (h, c) { return (Math.imul(31, h) + c.charCodeAt(0)) | 0 }, 0)) % 360
+    html += '<button class="slsk-friend-card" data-user="' + esc(r.username) + '" data-presence="' + esc(r.presence) + '" title="' + esc(r.username + ' — ' + r.presenceText) + '">' +
+      '<span class="slsk-friend-avatar" style="background:hsl(' + hue + ',45%,30%)">' + initial +
+        '<span class="slsk-friend-dot slsk-dot-' + esc(r.presence) + '"></span>' +
+      '</span>' +
+      '<span class="slsk-friend-name">' + esc(r.username) + '</span>' +
+      '<span class="slsk-friend-meta">' + esc(r.presenceText + (browsed ? ' · ' + browsed : '')) + '</span>' +
+      (newFiles ? '<span class="slsk-friend-badge">' + newFiles + ' new file' + (newFiles === 1 ? '' : 's') + '</span>' : '') +
+    '</button>'
+  }
+  box.innerHTML = html
+  box.querySelectorAll('.slsk-friend-card').forEach(function (card) {
+    card.addEventListener('click', function () {
+      var u = card.getAttribute('data-user')
+      if (u) showSlskUserExplorer(u)
+    })
+  })
+}
+
+function _renderHubWishlist() {
+  var box = document.getElementById('slsk-hub-wishlist')
+  if (!box) return
+  var wl = state.downloadWishlist || []
+  if (!wl.length) {
+    box.innerHTML = '<div class="slsk-hub-empty">Your wishlist is empty. On any album that has no lossless source yet, choose “Add to wishlist” — the app keeps searching in the background and grabs it the moment a copy appears.</div>'
+    return
+  }
+  var html = ''
+  for (var i = 0; i < wl.length; i++) {
+    var w = wl[i]
+    var added = w.addedAt ? _slskRelBrowsed(w.addedAt) : ''
+    var hits = (_slskWishlistHits[String(w.query).toLowerCase()] || [])
+    var hitHtml = hits.length
+      ? '<div class="slsk-wl-hits">' + hits.slice(-3).map(function (h) {
+          return '<span class="slsk-wl-hit" title="' + esc((h.folderName || '') + ' from ' + (h.username || '')) + '">✓ ' + esc(h.folderName || h.username || 'found') + '</span>'
+        }).join('') + '</div>'
+      : ''
+    html += '<div class="slsk-wl-row" data-wl-idx="' + i + '">' +
+      '<div class="slsk-wl-main">' +
+        '<span class="slsk-wl-query">' + esc(w.query) + '</span>' +
+        (added ? '<span class="slsk-wl-added">added ' + esc(added) + '</span>' : '') +
+        hitHtml +
+      '</div>' +
+      '<button class="slsk-wl-btn slsk-wl-search" data-wl-idx="' + i + '" title="Search for this now">Search now</button>' +
+      '<button class="slsk-wl-btn slsk-wl-remove" data-wl-idx="' + i + '" title="Remove from wishlist">✕</button>' +
+    '</div>'
+  }
+  box.innerHTML = html
+  box.querySelectorAll('.slsk-wl-search').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var w = state.downloadWishlist[parseInt(btn.dataset.wlIdx, 10)]
+      if (!w) return
+      var input = document.getElementById('slsk-hub-search-input')
+      if (input) input.value = w.query
+      if (window.api && slsk.status && slsk.status.connected) runSlskSearch(w.query)
+    })
+  })
+  box.querySelectorAll('.slsk-wl-remove').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      state.downloadWishlist.splice(parseInt(btn.dataset.wlIdx, 10), 1)
+      window.api.saveDownloadWishlist(state.downloadWishlist)
+      _renderHubWishlist()
+      showSnackbar('Removed from wishlist')
+    })
+  })
+}
+
+// "Run all now" — asks the backend to search every wishlist entry. Defensive:
+// if the channel is missing, fall back to running the searches one at a time
+// through the existing runSlskSearch so the button still does something useful.
+function _slskRunWishlistAll() {
+  var btn = document.getElementById('slsk-hub-wishlist-runall')
+  if (!(state.downloadWishlist && state.downloadWishlist.length)) {
+    showSnackbar('Your wishlist is empty'); return
+  }
+  if (window.api && window.api.slskWishlistRun) {
+    if (btn) { btn.disabled = true; btn.textContent = 'Running…' }
+    Promise.resolve(window.api.slskWishlistRun())
+      .then(function (res) {
+        if (res && res.ok) {
+          var found = (res.results || []).reduce(function (n, r) { return n + (r.found || 0) }, 0)
+          showSnackbar('Wishlist run complete — ' + found + ' match' + (found === 1 ? '' : 'es') + ' found')
+        } else {
+          showSnackbar('Wishlist run failed')
+        }
+        _renderHubWishlist()
+      })
+      .catch(function () { showSnackbar('Wishlist run failed') })
+      .then(function () { if (btn) { btn.disabled = false; btn.textContent = 'Run all now' } })
+  } else {
+    // Fallback: run the first entry as a live search.
+    var first = state.downloadWishlist[0]
+    if (first) {
+      var input = document.getElementById('slsk-hub-search-input')
+      if (input) input.value = first.query
+      runSlskSearch(first.query)
+    }
+    showSnackbar('Searching your wishlist')
+  }
+}
+
+// Recent arrivals: the last ~10 completed downloads. Reuses _dlLastFiles, the
+// array the downloads poll already fills — no new polling. Grouped by album
+// folder so a 12-track album is one tile, not twelve.
+function _renderHubRecent() {
+  var box = document.getElementById('slsk-hub-recent')
+  if (!box) return
+  var files = (_dlLastFiles || []).filter(function (f) { return _dlCategory(f.state) === 'completed' })
+  if (!files.length) {
+    box.innerHTML = '<div class="slsk-hub-empty">Nothing has finished downloading yet. Grab an album from a search result and it will land here.</div>'
+    return
+  }
+  var byAlbum = new Map()
+  for (var i = 0; i < files.length; i++) {
+    var f = files[i]
+    var folder = _dlFolderName(f.filename) || 'Downloads'
+    if (!byAlbum.has(folder)) byAlbum.set(folder, { folder: folder, files: [], latest: 0, user: f.username || '' })
+    var e = byAlbum.get(folder)
+    e.files.push(f)
+    var t = new Date(f.endedAt || 0).getTime()
+    if (t > e.latest) e.latest = t
+  }
+  var groups = Array.from(byAlbum.values()).sort(function (a, b) { return b.latest - a.latest }).slice(0, 10)
+  var html = ''
+  for (var g = 0; g < groups.length; g++) {
+    var grp = groups[g]
+    var hue2 = Math.abs(grp.folder.split('').reduce(function (h, c) { return (Math.imul(31, h) + c.charCodeAt(0)) | 0 }, 0)) % 360
+    var art = _findAlbumArt(grp.folder)
+    var when = grp.latest ? _slskRelBrowsed(grp.latest) : ''
+    html += '<div class="slsk-recent-card" title="' + esc(grp.folder) + '">' +
+      '<div class="slsk-recent-art" style="background:linear-gradient(135deg,hsl(' + hue2 + ',45%,20%),hsl(' + ((hue2 + 40) % 360) + ',35%,12%))">' +
+        (art ? '<img src="' + esc('file://' + art) + '" alt="" loading="lazy" onerror="this.style.display=\'none\'">' : '') +
+      '</div>' +
+      '<div class="slsk-recent-name">' + esc(grp.folder) + '</div>' +
+      '<div class="slsk-recent-meta">' + esc(grp.files.length + ' track' + (grp.files.length === 1 ? '' : 's') + (when ? ' · ' + when : '')) + '</div>' +
+    '</div>'
+  }
+  box.innerHTML = html
+}
+
+// Wishlist hit history, keyed by lowercased query. Populated by the
+// onSlskWishlistHit push; the hub reads it to show per-entry hit history.
+var _slskWishlistHits = {}
+var _slskWishlistHitBound = false
+function _slskBindWishlistHits() {
+  if (_slskWishlistHitBound) return
+  if (!window.api || !window.api.onSlskWishlistHit) return
+  _slskWishlistHitBound = true
+  window.api.onSlskWishlistHit(function (hit) {
+    if (!hit || !hit.query) return
+    var key = String(hit.query).toLowerCase()
+    if (!_slskWishlistHits[key]) _slskWishlistHits[key] = []
+    _slskWishlistHits[key].push(hit)
+    showSnackbar('Wishlist: found ' + hit.query + ' — downloading')
+    if (state.currentPage === 'soulseek') _renderHubWishlist()
+  })
+}
+
 // ── Soulseek friends sidebar ────────────────────────────────────────────────
 // Saved peers, sorted with whoever is reachable right now on top. Presence is
 // pushed from the main process; this only paints what it is told.
@@ -20348,33 +28155,22 @@ function _slskFriendRows() {
 }
 
 function renderSlskFriends() {
-  var list = document.getElementById('slsk-friends-list')
-  if (!list) return
+  // The full friends list moved to the Soulseek hub. This now keeps the compact
+  // sidebar summary in step and, if the hub is open, repaints its friends row.
   var rows = _slskFriendRows()
+  var online = window.PapaSlskPresence ? window.PapaSlskPresence.countOnline(rows) : 0
   var countEl = document.getElementById('slskf-count')
   if (countEl) {
-    var online = window.PapaSlskPresence ? window.PapaSlskPresence.countOnline(rows) : 0
     countEl.textContent = rows.length ? online + '/' + rows.length : ''
     countEl.classList.toggle('live', online > 0)
   }
-  if (!rows.length) {
-    list.innerHTML = '<li class="slskf-empty">No saved peers yet. Open a Soulseek user’s library and tap ☆ to keep them here.</li>'
-    return
+  var sumText = document.getElementById('slsk-summary-text')
+  if (sumText) {
+    sumText.textContent = rows.length
+      ? 'Soulseek — ' + online + ' friend' + (online === 1 ? '' : 's') + ' online'
+      : 'Soulseek'
   }
-  var html = ''
-  for (var i = 0; i < rows.length; i++) {
-    var r = rows[i]
-    var meta = r.presenceText
-    if (r.fileCount) meta += ' · ' + r.fileCount.toLocaleString() + ' files'
-    if (r.note) meta += ' · ' + r.note
-    html += '<li class="slskf-row" data-presence="' + r.presence + '" data-user="' + esc(r.username) + '"' +
-      ' title="' + esc(r.username + ' — ' + meta) + '">' +
-      '<span class="slskf-dot"></span>' +
-      '<span class="slskf-name">' + esc(r.username) + '</span>' +
-      '<button class="slskf-remove" data-remove="' + esc(r.username) + '" title="Remove from saved">✕</button>' +
-      '</li>'
-  }
-  list.innerHTML = html
+  if (state.currentPage === 'soulseek') _renderHubFriends()
 }
 
 function _slskFriendsApplyStatuses(payload) {
@@ -20410,30 +28206,14 @@ function reloadSlskFriends() {
 
 function _slskFriendsBind() {
   if (_slskFriends.bound) return
-  var list = document.getElementById('slsk-friends-list')
-  if (!list) return
+  var link = document.getElementById('slsk-summary-link')
+  if (!link) return
   _slskFriends.bound = true
 
-  list.addEventListener('click', function(e) {
-    var rm = e.target.closest ? e.target.closest('[data-remove]') : null
-    if (rm) {
-      e.stopPropagation()
-      var gone = rm.getAttribute('data-remove')
-      window.api.slskUnsaveUser({ username: gone })
-        .then(function(users) { _slskFriends.users = users || []; renderSlskFriends() })
-        .catch(function() {})
-      if (typeof showSnackbar === 'function') showSnackbar('Removed ' + gone)
-      return
-    }
-    var row = e.target.closest ? e.target.closest('.slskf-row') : null
-    if (!row) return
-    var name = row.getAttribute('data-user')
-    if (name && typeof showSlskUserExplorer === 'function') showSlskUserExplorer(name)
-  })
-
-  document.getElementById('slskf-refresh-btn')?.addEventListener('click', function(e) {
+  // The compact sidebar summary opens the hub; the full list lives there.
+  link.addEventListener('click', function(e) {
     e.stopPropagation()
-    refreshSlskFriendStatuses()
+    navigate('soulseek')
   })
 }
 
@@ -20466,5 +28246,6 @@ function initSlskFriends() {
 // ── Start ───────────────────────────────────────────────────────────────────
 init()
 initSlskFriends()
+_slskBindWishlistHits()
 initDownloadScheduler()
 _selBindBar()

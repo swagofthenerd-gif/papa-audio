@@ -88,6 +88,7 @@ test('every channel main sends has something that actually listens', () => {
     ...[...ALL_RENDERER.matchAll(/window\.api\.on\(\s*'([^']+)'/g)].map(m => m[1]),
     // Dedicated preload subscribers are used by name, not by channel.
     ...(/onWindowFocus\(/.test(ALL_RENDERER) ? ['window-focus'] : []),
+    ...(/onAppOnlineState\(/.test(ALL_RENDERER) ? ['app-online-state'] : []),
     ...(/onSlskdStatusChange\(/.test(ALL_RENDERER) ? ['slskd-status-change'] : []),
     ...(/onSlskVerify\(/.test(ALL_RENDERER) ? ['slsk-verify'] : []),
     ...(/onSlskSchedulerStats\(/.test(ALL_RENDERER) ? ['slsk-scheduler-stats'] : []),
@@ -117,6 +118,12 @@ test('every channel main sends has something that actually listens', () => {
     'yt-auth-done': 'no listener',
     'video-event': 'preload exposes onVideoEvent; no renderer script calls it yet (Papa Video UI is a later task)',
     'video-state': 'preload exposes onVideoState; no renderer script calls it yet (Papa Video UI is a later task)',
+    // preload exposes onSlskWishlistHit; the Soulseek UX rework wires the
+    // renderer listener in parallel, so main + the bridge land first.
+    'slsk-wishlist-hit': 'preload exposes onSlskWishlistHit; renderer listener is landing in the parallel UI work',
+    // preload exposes onSlskBrowseRefreshed; the Soulseek UX rework wires the
+    // renderer listener in parallel, so main + the bridge land first.
+    'slsk-browse-refreshed': 'preload exposes onSlskBrowseRefreshed; renderer listener is landing in the parallel UI work',
   }
   const unheard = [...sentChannels]
     .filter(c => !heard.has(c) && !(c in NOT_FOR_THE_RENDERER) && !(c in DELIBERATELY_UNHANDLED))

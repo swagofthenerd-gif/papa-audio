@@ -66,7 +66,11 @@ test('the provider returns only the requested episode', async () => {
   const entries = await provider({ type: 'tv', imdbId: 'tt0903747', season: 1, episode: 2 })
   assert.strictEqual(entries.length, 1)
   assert.strictEqual(entries[0].infoHash, 'AAA')
-  assert.deepStrictEqual(calls, [`${DEFAULT_BASE_URLS[0]}/api/get-torrents?imdb_id=0903747&limit=100&page=1`])
+  // Mirrors race in parallel now, so every mirror is asked; the first-listed
+  // one is initiated first.
+  assert.deepStrictEqual(calls, DEFAULT_BASE_URLS.map(
+    base => `${base}/api/get-torrents?imdb_id=0903747&limit=100&page=1`
+  ))
 })
 
 // This is why the TV section had nothing to play: it must not be asked for
@@ -118,6 +122,26 @@ test('a torrent with blank season/episode fields falls back to its filename', ()
   assert.strictEqual(matchesEpisode({ season: '', episode: '', filename: 'Show.S03E07.1080p.mkv' }, 3, 8), false)
   // Nothing to go on at all must exclude, not match everything.
   assert.strictEqual(matchesEpisode({ season: '', episode: '', filename: 'Show.1080p.mkv' }, 3, 7), false)
+})
+
+// A dead first mirror otherwise burns its timeout on every single lookup.
+test('the mirror that answered last is tried first on the next query', async () => {
+  const { _resetMirrorHealth } = require('../providers/eztv')
+  _resetMirrorHealth()
+  const calls = []
+  const provider = createEztvProvider({
+    baseUrls: ['https://dead.example', 'https://live.example'],
+    fetchFn: async url => {
+      calls.push(new URL(url).origin)
+      if (url.startsWith('https://dead.example')) throw new Error('ENOTFOUND')
+      return jsonResponse(RAW)
+    },
+  })
+  await provider({ type: 'tv', imdbId: 'tt0903747', season: 1, episode: 2 })
+  assert.deepStrictEqual(calls, ['https://dead.example', 'https://live.example'])
+  await provider({ type: 'tv', imdbId: 'tt0903747', season: 1, episode: 2 })
+  assert.strictEqual(calls[2], 'https://live.example', 'the known-good mirror must lead')
+  _resetMirrorHealth()
 })
 
 test('quality is parsed from the filename, which carries it, not the prettified title', () => {

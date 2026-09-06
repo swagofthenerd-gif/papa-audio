@@ -236,8 +236,11 @@ test('the badge shows only what has not been read', () => {
 
 test('the results cap is extensible and states what it is hiding', () => {
   assert.match(CODE, /var _slskShowLimit = SLSK_SHOW_STEP/)
-  assert.match(CODE, /filtered\.slice\(0, _slskShowLimit\)/)
-  assert.match(CODE, /showing \$\{displayList\.length\} of \$\{filtered\.length\}/,
+  // unitList is the rendered unit list — merged albums by default, or folder-
+  // groups in group-by-uploader mode. Same extensible cap, just named for the
+  // fact that a display unit is no longer always a single folder-group.
+  assert.match(CODE, /unitList\.slice\(0, _slskShowLimit\)/)
+  assert.match(CODE, /showing \$\{displayList\.length\} of \$\{unitList\.length\}/,
     'a cap with no count is indistinguishable from there being nothing else')
   assert.match(CODE, /_slskShowLimit \+= SLSK_SHOW_STEP/)
 })

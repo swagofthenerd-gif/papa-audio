@@ -13,7 +13,8 @@
 // Mirrors rotate, so like yts.js this takes an ordered list of base URLs and
 // falls back across them. It never throws: a total failure returns [].
 
-const { parseQuality, parseAudioLayout, magnetFromHash } = require('./quality')
+const { parseQuality, parseAudioLayout, magnetFromHash, parseSizeBytes } = require('./quality')
+const { raceMirrors } = require('./mirror-race')
 
 const DEFAULT_BASE_URLS = [
   'https://eztvx.to',
@@ -83,14 +84,32 @@ function normalizeTorrent(raw) {
     title,
     audioLayout,
     seeds,
+    seeders: seeds,
+    sizeBytes: parseSizeBytes(raw.size_bytes),
     sub: null,
     dub: null,
   }
 }
 
-async function tryMirror(baseUrl, numericImdb, fetcher) {
+// The mirror that answered most recently leads the race on the next query.
+// Mirrors are raced in parallel now, so this is a tiebreak rather than a
+// timeout-saver: its request goes out first, which is what decides a race
+// between two healthy mirrors. Module-level on purpose: remembered for the
+// session, never persisted.
+let _lastGoodMirror = null
+
+function _orderMirrors(urls) {
+  if (!_lastGoodMirror || !urls.includes(_lastGoodMirror)) return urls
+  return [_lastGoodMirror, ...urls.filter(u => u !== _lastGoodMirror)]
+}
+
+function _resetMirrorHealth() {
+  _lastGoodMirror = null
+}
+
+async function tryMirror(baseUrl, numericImdb, fetcher, signal) {
   try {
-    const res = await fetcher(buildListUrl(baseUrl, numericImdb))
+    const res = await fetcher(buildListUrl(baseUrl, numericImdb), { signal })
     if (!res || !res.ok) return null
     const text = await res.text()
     let data
@@ -111,18 +130,18 @@ function createEztvProvider({ fetchFn, baseUrls = DEFAULT_BASE_URLS } = {}) {
     if (request.type !== 'tv') return []
     const numericImdb = toNumericImdb(request.imdbId)
     if (!numericImdb) return []
-    for (const baseUrl of urls) {
-      const torrents = await tryMirror(baseUrl, numericImdb, fetcher)
-      if (!torrents) continue
-      const entries = torrents
-        .filter(t => t && matchesEpisode(t, request.season, request.episode))
-        .map(normalizeTorrent)
-        .filter(Boolean)
-      // A mirror that answered but has no torrent for THIS episode is still a
-      // working mirror; trying the next one would only repeat the same answer.
-      return entries
-    }
-    return []
+    // All mirrors race; the first that answers with a torrent list wins and
+    // the rest are aborted.
+    const won = await raceMirrors(_orderMirrors(urls), (baseUrl, signal) =>
+      tryMirror(baseUrl, numericImdb, fetcher, signal))
+    if (!won) return []
+    _lastGoodMirror = won.baseUrl
+    // A mirror that answered but has no torrent for THIS episode is still a
+    // working mirror; asking another one would only repeat the same answer.
+    return won.result
+      .filter(t => t && matchesEpisode(t, request.season, request.episode))
+      .map(normalizeTorrent)
+      .filter(Boolean)
   }
 }
 
@@ -134,4 +153,5 @@ module.exports = {
   matchesEpisode,
   normalizeTorrent,
   createEztvProvider,
+  _resetMirrorHealth,
 }

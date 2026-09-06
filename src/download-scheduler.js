@@ -30,9 +30,102 @@ function createState() {
   return {
     pending: [],      // items waiting for a source
     inflight: {},     // key -> { username, filename, size, since }
-    done: {},         // key -> 'succeeded' | 'exhausted'
+    done: {},         // key -> 'succeeded' | 'exhausted' | 'abandoned'
     peerFailures: {}, // username -> { consecutive, benchedUntil }
+    // Two-level abandonment. `done[key]='abandoned'` catches the EXACT source
+    // (this user's copy under this path), but the field failure was a cancelled
+    // track coming back from a DIFFERENT user via discovery — a different key
+    // entirely. `abandonedIds` is the second, path-independent gate: the identity
+    // of the music itself (folder + normalized track title), so once a track is
+    // cancelled no peer's copy of it can be re-enqueued.
+    abandonedIds: {}, // identityKey -> true
+    // Substitution decisions, newest last, capped: the UI shows why an alternate
+    // was accepted or rejected. Purely a log; nothing reads it back for control.
+    subLog: [],
+    // The adaptive value the tuner has learned for maxGlobalInflight. Null until
+    // the tuner has run at least once; dlConfig folds it in over DEFAULTS.
+    learnedGlobalInflight: null,
   }
+}
+
+// The identity of a piece of music, independent of which peer serves it or what
+// they named the file. This is the key that makes a cancel stick across sources:
+// "01 - Intro.flac" from user A and "01. Intro.flac" from user B in the same
+// album folder are ONE track, so cancelling either abandons both — and blocks a
+// third copy discovery might turn up.
+//
+// Built from the remote folder (dozens of albums share "01 - Intro.flac", so the
+// folder is what disambiguates) plus a normalized track title. A missing folder
+// falls back to the bare title, which is coarser but never throws away identity.
+function _basename(s) {
+  var str = String(s == null ? '' : s)
+  var i = Math.max(str.lastIndexOf('/'), str.lastIndexOf('\\'))
+  return i >= 0 ? str.slice(i + 1) : str
+}
+function _folderOf(s) {
+  var str = String(s == null ? '' : s)
+  var i = Math.max(str.lastIndexOf('/'), str.lastIndexOf('\\'))
+  if (i < 0) return ''
+  var dir = str.slice(0, i)
+  // The immediate parent folder is the album; anything above it (the peer's
+  // "Music/", "Shared/") is noise that differs between users, so drop it.
+  var j = Math.max(dir.lastIndexOf('/'), dir.lastIndexOf('\\'))
+  return (j >= 0 ? dir.slice(j + 1) : dir).toLowerCase()
+}
+function _normTitle(base) {
+  return String(base || '')
+    .replace(/\.[a-z0-9]+$/i, '')        // extension
+    .toLowerCase()
+    .replace(/[\[\](){}_,'"`!?.\-]/g, ' ')
+    .replace(/\b(cd|disc|disk)\s*\d+\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+function identityKey(filename) {
+  var name = String(filename == null ? '' : filename)
+  var folder = _folderOf(name)
+  var title = _normTitle(_basename(name))
+  if (!title) return ''
+  return folder ? folder + '::' + title : title
+}
+
+// Is this identity already accounted for — pending, in flight, or done under a
+// DIFFERENT exact key? Used to reject a duplicate enqueue of the same track from
+// another user. Scoped to identity, not basename, so unrelated albums that share
+// a track name never collide.
+function _identityBusy(state, id, exceptKey) {
+  if (!id) return false
+  for (var i = 0; i < state.pending.length; i++) {
+    var e = state.pending[i]
+    if (e.key !== exceptKey && identityKey(e.filename) === id) return true
+  }
+  var ik = Object.keys(state.inflight)
+  for (var j = 0; j < ik.length; j++) {
+    if (ik[j] === exceptKey) continue
+    var v = state.inflight[ik[j]]
+    if (identityKey(v.filename || ik[j]) === id) return true
+  }
+  var dk = Object.keys(state.done)
+  for (var k = 0; k < dk.length; k++) {
+    if (dk[k] === exceptKey) continue
+    // Only a positive terminal (succeeded) blocks a duplicate; 'exhausted' means
+    // it failed and a fresh source is worth trying, and 'abandoned' is handled by
+    // the abandonment gate above (which force does not bypass into here).
+    if (state.done[dk[k]] === 'succeeded' && identityKey(dk[k]) === id) return true
+  }
+  return false
+}
+
+// Has this piece of music been abandoned, by exact key OR by identity? Every
+// enqueue path must call this before adding, so a cancelled track cannot return
+// from any source. Migrating states created before abandonedIds existed: an
+// `abandoned` entry in `done` still counts, keyed by its filename identity.
+function isAbandoned(state, filename, key) {
+  var k = key != null ? key : itemKey(filename)
+  if (state.done[k] === 'abandoned') return true
+  var id = identityKey(filename)
+  if (id && state.abandonedIds && state.abandonedIds[id]) return true
+  return false
 }
 
 // A file is identified by its remote path. The same path from two peers is the
@@ -92,6 +185,18 @@ function addItem(state, item, opts) {
   var key = itemKey(item.filename)
   if (!key) return null
   var force = !!(opts && opts.force)
+  var id = identityKey(item.filename)
+  // Abandonment is checked at BOTH levels before anything else. The exact-key
+  // case (`done[key]`) is handled just below; the identity case is the field
+  // fix: a cancelled track must not return from a different user via discovery,
+  // respread or a wishlist hit, and those arrive under a different exact key.
+  var idAbandoned = !force && id && state.abandonedIds && state.abandonedIds[id]
+  if (idAbandoned) {
+    // A user's explicit re-ask (force) overrides it; the scheduler acting on its
+    // own never may. Report it so the caller can log/surface rather than silently
+    // dropping — the old silent path is what made cancel look flaky either way.
+    return { refused: 'abandoned', key: key }
+  }
   var terminal = state.done[key]
   if (terminal && !force) {
     // Not silent any more: the caller decides whether to ask the user.
@@ -100,11 +205,22 @@ function addItem(state, item, opts) {
   // An explicit ask overrides a terminal state. The scheduler must not revive a
   // cancelled file by itself — that is what makes cancel look broken — but the
   // user asking again is new information, not the scheduler second-guessing them.
-  if (terminal && force) delete state.done[key]
+  if (terminal && force) {
+    delete state.done[key]
+    if (id && state.abandonedIds) delete state.abandonedIds[id]
+  }
   if (state.inflight[key]) return { refused: 'inflight', key: key }
   var existing = null
   for (var i = 0; i < state.pending.length; i++) {
     if (state.pending[i].key === key) { existing = state.pending[i]; break }
+  }
+  // Duplicate-proofing by identity: the same track from a second user is a
+  // no-op, whether that copy is already pending, in flight or done. Only when
+  // the identity is genuinely new (or the caller forces) does a differently-keyed
+  // copy get added. Without this, discovery adding "01.flac" from user B while
+  // user A's "01 - .flac" is already inflight raced two copies of one track.
+  if (!existing && id && !force && _identityBusy(state, id, key)) {
+    return { refused: 'duplicate', key: key }
   }
   var sources = (item.sources || []).map(normalizeSource).filter(Boolean)
   if (existing) {
@@ -248,6 +364,19 @@ function markDispatched(state, key, username, now, sentFilename) {
 // is terminal by design: reviving it is indistinguishable from ignoring the
 // user, which is exactly how cancel appeared to be broken.
 function recordAbandoned(state, key) {
+  // Record the identity BEFORE dropping the entry — that is what makes cancel
+  // stick across sources. The filename is read from whatever record still holds
+  // it (inflight, then pending), falling back to the key itself.
+  var filename = key
+  if (state.inflight[key] && state.inflight[key].filename) {
+    filename = state.inflight[key].filename
+  } else {
+    for (var i = 0; i < state.pending.length; i++) {
+      if (state.pending[i].key === key) { filename = state.pending[i].filename; break }
+    }
+  }
+  var id = identityKey(filename)
+  if (id) { state.abandonedIds = state.abandonedIds || {}; state.abandonedIds[id] = true }
   delete state.inflight[key]
   state.pending = state.pending.filter(function (e) { return e.key !== key })
   state.done[key] = 'abandoned'
@@ -305,7 +434,8 @@ function addSources(state, key, sources, cfg) {
   // search exists for, and it used to be the one case that could not benefit: it
   // was in `done`, so nothing would take a new source for it. A real new peer
   // resets the attempt count and puts it back in the queue.
-  if (!target && state.done[key] === 'exhausted' && norm.length) {
+  if (!target && state.done[key] === 'exhausted' && norm.length &&
+      !isAbandoned(state, key, key)) {
     delete state.done[key]
     target = {
       key: key, filename: key, size: 0, sources: [], tried: [], triedAt: {},
@@ -408,6 +538,82 @@ function stalledWithoutAlternate(state, cfg, now) {
   return out
 }
 
+// Record a substitution decision so the UI can explain it later. Bounded — this
+// is a log, not state anything reads back for control. `accepted` is the
+// decision, `reason` the human-readable why.
+var SUB_LOG_CAP = 200
+function logSubstitution(state, entry) {
+  state.subLog = state.subLog || []
+  state.subLog.push({
+    at: entry.at != null ? entry.at : Date.now(),
+    key: entry.key || null,
+    from: entry.from || null,     // original filename/identity
+    to: entry.to || null,         // candidate filename
+    candidate: entry.candidate || null, // candidate username
+    accepted: !!entry.accepted,
+    reason: entry.reason || '',
+  })
+  if (state.subLog.length > SUB_LOG_CAP) {
+    state.subLog.splice(0, state.subLog.length - SUB_LOG_CAP)
+  }
+  return state.subLog[state.subLog.length - 1]
+}
+
+// ── Adaptive tuning of the global in-flight cap ──────────────────────────────
+//
+// Deliberately boring. The cap governs how many files sit in remote queues at
+// once. Too low and we leave throughput on the table; too high and we flood
+// peers and pile up stalls. This nudges it one step at a time from measured
+// aggregate behaviour, never oscillates hard, and clamps to a safe band. A
+// static-but-safe value is a perfectly good outcome — the point is only to move
+// gently toward one, not to chase the throughput curve.
+//
+// Pure: given the current cap and a metrics window, return the next cap. No
+// state, no clock, no I/O — the caller feeds it measurements and persists the
+// result.
+var TUNE = {
+  step: 5,          // how far the cap moves in one adjustment
+  ceiling: 90,      // hard upper bound; never flood past this
+  floor: 20,        // hard lower bound; always keep some breadth
+  // A window is "healthy" (room to grow) only when it is nearly saturated AND
+  // throughput has been climbing: if we are not even filling the current cap,
+  // raising it does nothing. Expressed as a fraction of the cap.
+  saturationForGrow: 0.9,
+  // Trouble threshold: this many stalls+timeouts in the window means step down.
+  troubleForShrink: 3,
+}
+
+// metrics: {
+//   currentInflight,  // files actually in remote queues right now
+//   throughputRising, // aggregate bytes/s higher than the previous window
+//   troubleCount,     // stalls + timeouts observed in this window
+// }
+function nextGlobalInflight(currentCap, metrics, tune) {
+  tune = Object.assign({}, TUNE, tune || {})
+  var cap = Number(currentCap) || DEFAULTS.maxGlobalInflight
+  var m = metrics || {}
+  var inflight = Number(m.currentInflight) || 0
+  var trouble = Number(m.troubleCount) || 0
+
+  // Trouble wins over growth every time: back off first, ask questions later.
+  // Flooding peers is the failure that hurts the user (stalled downloads that
+  // look vanished), so shrinking is the safe direction and takes priority.
+  if (trouble >= tune.troubleForShrink) {
+    return Math.max(tune.floor, cap - tune.step)
+  }
+
+  // Grow only when there is evidence it would help: the current cap is nearly
+  // full (so more slots would actually be used) and throughput is climbing (so
+  // the peers we have are keeping up). Both, or we hold.
+  var nearlyFull = inflight >= cap * tune.saturationForGrow
+  if (m.throughputRising && nearlyFull) {
+    return Math.min(tune.ceiling, cap + tune.step)
+  }
+
+  // No clear signal: hold. Holding is the common, correct case.
+  return Math.max(tune.floor, Math.min(tune.ceiling, cap))
+}
+
 function stats(state) {
   var byPeer = inflightByPeer(state)
   var doneKeys = Object.keys(state.done)
@@ -426,6 +632,11 @@ function stats(state) {
     benched: Object.keys(state.peerFailures).filter(function (u) {
       return peerBenched(state, u, Date.now())
     }),
+    abandoned: Object.keys(state.done).filter(function (k) {
+      return state.done[k] === 'abandoned'
+    }).length,
+    substitutions: (state.subLog || []).length,
+    learnedGlobalInflight: state.learnedGlobalInflight != null ? state.learnedGlobalInflight : null,
   }
 }
 
@@ -436,8 +647,13 @@ var _PapaDownloadScheduler = {
   DEFAULTS: DEFAULTS,
   createState: createState,
   itemKey: itemKey,
+  identityKey: identityKey,
+  isAbandoned: isAbandoned,
   fileIdentity: fileIdentity,
   inflightIdentities: inflightIdentities,
+  logSubstitution: logSubstitution,
+  nextGlobalInflight: nextGlobalInflight,
+  TUNE: TUNE,
   normalizeSource: normalizeSource,
   addItem: addItem,
   addSources: addSources,

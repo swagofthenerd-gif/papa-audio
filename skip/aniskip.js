@@ -23,7 +23,10 @@ function buildUrl({ malId, episode, episodeLength = 0, baseUrl = DEFAULT_BASE_UR
   const ep = Number(episode)
   const mal = Number(malId)
   const length = Number(episodeLength) || 0
-  return `${baseUrl}/v2/skip-times/${mal}/${ep}?types=op&types=ed&episodeLength=${length}`
+  // Every type SKIP_KIND can map must be asked for: the API only returns the
+  // types named in the query, so leaving `recap` out meant the mapping for it
+  // below was dead code and recaps were never skippable.
+  return `${baseUrl}/v2/skip-times/${mal}/${ep}?types=op&types=ed&types=recap&episodeLength=${length}`
 }
 
 function normalizeResult(result) {

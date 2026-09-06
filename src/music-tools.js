@@ -1,0 +1,1144 @@
+// Pure helpers for the music side's Wave-6 features: the sleep-timer fade
+// curve, the stats-page aggregations (top albums, plays-per-month), and the
+// duplicate-track finder.
+//
+// These live here, apart from renderer.js, for one reason: they are the parts
+// worth testing on their own, and the renderer cannot be required() under
+// node. The renderer picks this up as window.PapaMusicTools via <script>; the
+// tests use the CommonJS export. One implementation either way, so the two
+// never drift.
+
+;(function () {
+
+  // ── Sleep timer: the fade curve ───────────────────────────────────────────
+  // When the timer fires we fade the volume down over a few seconds, then pause,
+  // then put the volume back where it was — so a person drifting off is not
+  // jolted awake by a hard cut, and wakes to the same volume they set.
+  //
+  // Pure so it can be tested without a clock or an audio engine: given the
+  // starting volume, the fade length and how often we can step, it returns the
+  // volume level for each tick. The last step is always 0 (silence before the
+  // pause), and the first step is always below the start (the fade has begun).
+  // No step is ever negative or above the start.
+  function sleepFadeSteps(fromVolume, durationMs, stepMs) {
+    var from = Number(fromVolume)
+    if (!isFinite(from) || from <= 0) return [0]
+    if (from > 1) from = 1
+    var dur = Number(durationMs)
+    var step = Number(stepMs)
+    if (!isFinite(dur) || dur <= 0 || !isFinite(step) || step <= 0) return [0]
+    var count = Math.max(1, Math.round(dur / step))
+    var out = []
+    for (var i = 1; i <= count; i++) {
+      // Linear ramp from `from` down to 0 across `count` steps. i/count at the
+      // last step is exactly 1, so the final value is exactly 0.
+      var v = from * (1 - i / count)
+      if (v < 0) v = 0
+      out.push(Math.round(v * 1000) / 1000)
+    }
+    return out
+  }
+
+  // The preset menu, in one place so the UI and the tests agree on what exists.
+  // `mins` of 0 is "end of track" (a mode, not a duration); a negative/absent
+  // mins on the cancel entry.
+  var SLEEP_PRESETS = [
+    { mins: 15,  label: '15 minutes' },
+    { mins: 30,  label: '30 minutes' },
+    { mins: 45,  label: '45 minutes' },
+    { mins: 60,  label: '1 hour' },
+    { mins: 90,  label: '1.5 hours' },
+    { mins: 120, label: '2 hours' },
+    { mins: 0,   label: 'End of track', endOfTrack: true }
+  ]
+
+  // ── Queue: clear played ────────────────────────────────────────────────────
+  // Drop every track before the current index. The playing track survives and
+  // becomes the new head, so playback is untouched. Returns the trimmed queue
+  // and its new index; out-of-range indices leave the queue as-is.
+  function clearPlayedQueue(queue, queueIndex) {
+    queue = queue || []
+    var idx = Number(queueIndex)
+    if (!isFinite(idx) || idx <= 0 || idx >= queue.length) {
+      return { queue: queue.slice(), queueIndex: idx < 0 ? -1 : idx }
+    }
+    return { queue: queue.slice(idx), queueIndex: 0 }
+  }
+
+  // ── Stats: top albums by play count ────────────────────────────────────────
+  // playCounts is keyed by track filePath. Roll those up to the album that owns
+  // each track and rank the albums. Returns up to `limit` entries, each with the
+  // album, its total plays, and how many of its tracks were played at all.
+  function topAlbumsByPlays(library, playCounts, limit) {
+    library = library || []
+    playCounts = playCounts || {}
+    limit = limit || 10
+    var byId = {}
+    for (var i = 0; i < library.length; i++) {
+      var a = library[i]
+      var tracks = a.tracks || []
+      var total = 0
+      var playedTracks = 0
+      for (var j = 0; j < tracks.length; j++) {
+        var c = playCounts[tracks[j].filePath] || 0
+        if (c > 0) { total += c; playedTracks++ }
+      }
+      if (total > 0) {
+        byId[a.id] = { album: a, plays: total, playedTracks: playedTracks }
+      }
+    }
+    return Object.keys(byId)
+      .map(function (id) { return byId[id] })
+      .sort(function (x, y) { return y.plays - x.plays })
+      .slice(0, limit)
+  }
+
+  // ── Stats: plays per month, last N months ──────────────────────────────────
+  // Buckets playHistory by calendar month for the last `monthsBack` months,
+  // oldest first, so a bar chart reads left-to-right in time. Each bucket knows
+  // its key ("2026-04"), a short label ("Apr"), and its play count. `now` is
+  // injectable so the test does not depend on the wall clock.
+  function playsPerMonth(playHistory, monthsBack, now) {
+    playHistory = playHistory || []
+    monthsBack = monthsBack || 6
+    var ref = now ? new Date(now) : new Date()
+    var MONTH = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+    // Build the ordered list of month buckets, oldest first.
+    var buckets = []
+    var index = {}
+    for (var i = monthsBack - 1; i >= 0; i--) {
+      var d = new Date(ref.getFullYear(), ref.getMonth() - i, 1)
+      var key = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0')
+      var b = { key: key, label: MONTH[d.getMonth()], year: d.getFullYear(), plays: 0 }
+      index[key] = b
+      buckets.push(b)
+    }
+    for (var k = 0; k < playHistory.length; k++) {
+      var ts = playHistory[k] && playHistory[k].ts
+      if (!ts) continue
+      var pd = new Date(ts)
+      var pk = pd.getFullYear() + '-' + String(pd.getMonth() + 1).padStart(2, '0')
+      if (index[pk]) index[pk].plays++
+    }
+    return buckets
+  }
+
+  // ── Duplicate finder ───────────────────────────────────────────────────────
+  // Two tracks are "the same song" when their normalized artist+title match.
+  // Normalization lowercases, strips bracketed junk (feat., remaster tags),
+  // punctuation and collapses whitespace — so "Song (Remastered)" and "song"
+  // by the same artist collapse together.
+  function normalizeForDupe(artist, title) {
+    var a = _normPart(artist)
+    var t = _normPart(title)
+    // A control-char separator (not a space) so "a b" + "c" and "a" + "b c"
+    // can never collapse into the same key.
+    return a + '\x1f' + t
+  }
+
+  function _normPart(v) {
+    return String(v == null ? '' : v)
+      .toLowerCase()
+      // Drop bracketed asides: (feat. X), [remastered], {live}.
+      .replace(/[([{][^)\]}]*[)\]}]/g, ' ')
+      // "feat"/"ft" runs to end once brackets are gone.
+      .replace(/\b(feat|ft|featuring)\b.*$/, ' ')
+      // Punctuation to spaces.
+      .replace(/[^a-z0-9]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+  }
+
+  function _extOf(filePath) {
+    var p = String(filePath || '')
+    var slash = p.lastIndexOf('/')
+    var base = slash >= 0 ? p.slice(slash + 1) : p
+    var dot = base.lastIndexOf('.')
+    return dot > 0 ? base.slice(dot + 1).toLowerCase() : ''
+  }
+
+  // Groups library tracks that are the same song. A group only counts as a
+  // duplicate when it holds two or more DISTINCT files (same file listed twice —
+  // e.g. one track that lives in two albums — is not a duplicate). Each entry
+  // carries the fields the UI shows: format, a rough quality string, size.
+  // Sorted so the biggest reclaimable groups surface first.
+  function findDuplicateTracks(library) {
+    library = library || []
+    var groups = {}
+    for (var i = 0; i < library.length; i++) {
+      var a = library[i]
+      var tracks = a.tracks || []
+      for (var j = 0; j < tracks.length; j++) {
+        var t = tracks[j]
+        if (!t.filePath) continue
+        var artist = t.albumArtist || t.artist || a.artist || ''
+        var title = t.title || ''
+        if (!title) continue
+        var key = normalizeForDupe(artist, title)
+        if (!groups[key]) {
+          groups[key] = { key: key, artist: artist, title: title, entries: [] }
+        }
+        groups[key].entries.push({
+          filePath: t.filePath,
+          albumName: a.name || t.albumName || '',
+          format: _extOf(t.filePath).toUpperCase() || 'UNKNOWN',
+          sampleRate: t.sampleRate || 0,
+          bitsPerSample: t.bitsPerSample || 0,
+          channels: t.channels || 0,
+          size: t.fileSize || t.size || 0,
+          duration: t.duration || 0,
+          quality: _qualityStr(t)
+        })
+      }
+    }
+    var out = []
+    Object.keys(groups).forEach(function (key) {
+      var g = groups[key]
+      // Distinct files only: dedupe by path so a track shared across two album
+      // records does not masquerade as a duplicate of itself.
+      var seen = {}
+      var distinct = []
+      for (var m = 0; m < g.entries.length; m++) {
+        var e = g.entries[m]
+        if (seen[e.filePath]) continue
+        seen[e.filePath] = true
+        distinct.push(e)
+      }
+      if (distinct.length >= 2) {
+        g.entries = distinct
+        g.wastedBytes = _wastedBytes(distinct)
+        out.push(g)
+      }
+    })
+    // Most files first, then most reclaimable size — the worst offenders lead.
+    return out.sort(function (x, y) {
+      if (y.entries.length !== x.entries.length) return y.entries.length - x.entries.length
+      return (y.wastedBytes || 0) - (x.wastedBytes || 0)
+    })
+  }
+
+  function _qualityStr(t) {
+    var bd = t.bitsPerSample || 0
+    var sr = t.sampleRate || 0
+    if (!bd && !sr) return ''
+    var parts = []
+    if (bd) parts.push(bd + '-bit')
+    if (sr) parts.push((Math.round(sr / 100) / 10) + 'kHz')
+    return parts.join('/')
+  }
+
+  // Everything but the single largest file in a group is "wasted" — a rough
+  // figure for how much a purge could reclaim if the best copy were kept.
+  function _wastedBytes(entries) {
+    if (entries.length < 2) return 0
+    var sizes = entries.map(function (e) { return e.size || 0 })
+    var total = sizes.reduce(function (s, x) { return s + x }, 0)
+    var max = Math.max.apply(null, sizes)
+    return Math.max(0, total - max)
+  }
+
+  // ── Radio: mining the play history for artist adjacency ────────────────────
+  // Two artists are "adjacent" when they get played close together in time —
+  // the same listening session. We slice the play history into sessions (a gap
+  // longer than `gapMs` starts a new one) and, within each session, count every
+  // ordered-agnostic pair of *distinct* artists that co-occur. The result is a
+  // map: for a given seed artist, which other artists sit next to it, and how
+  // strongly (how many sessions they shared).
+  //
+  // Pure and history-only so it can be tested without the library or a clock.
+  // `history` entries need a `ts` (ms) and an `artist`; anything missing either
+  // is skipped. Newest-or-oldest order does not matter — we sort by ts first.
+  function buildArtistAdjacency(history, gapMs) {
+    history = history || []
+    gapMs = Number(gapMs) > 0 ? Number(gapMs) : 30 * 60 * 1000 // 30 min default
+    // Keep only usable rows, then order by time so gaps mean what we think.
+    var rows = []
+    for (var i = 0; i < history.length; i++) {
+      var h = history[i]
+      var ts = h && Number(h.ts)
+      var artist = h && h.artist
+      if (!isFinite(ts) || !ts || !artist) continue
+      rows.push({ ts: ts, artist: String(artist) })
+    }
+    rows.sort(function (a, b) { return a.ts - b.ts })
+
+    // Split into sessions on a time gap.
+    var sessions = []
+    var cur = null
+    var lastTs = null
+    for (var j = 0; j < rows.length; j++) {
+      var r = rows[j]
+      if (cur === null || (r.ts - lastTs) > gapMs) {
+        cur = []
+        sessions.push(cur)
+      }
+      cur.push(r.artist)
+      lastTs = r.ts
+    }
+
+    // For each session, count each unordered pair of distinct artists once.
+    var adj = {}
+    function bump(a, b) {
+      if (!adj[a]) adj[a] = {}
+      adj[a][b] = (adj[a][b] || 0) + 1
+    }
+    for (var s = 0; s < sessions.length; s++) {
+      // Distinct artists in this session.
+      var seen = {}
+      var uniq = []
+      for (var k = 0; k < sessions[s].length; k++) {
+        var name = sessions[s][k]
+        if (!seen[name]) { seen[name] = true; uniq.push(name) }
+      }
+      for (var p = 0; p < uniq.length; p++) {
+        for (var q = p + 1; q < uniq.length; q++) {
+          bump(uniq[p], uniq[q])
+          bump(uniq[q], uniq[p])
+        }
+      }
+    }
+    return adj
+  }
+
+  // Given the adjacency map from buildArtistAdjacency, return the artists that
+  // co-occur most often with `seedArtist`, strongest first, up to `limit`.
+  // Returns [{ artist, weight }]. Empty when the seed has no neighbours.
+  function neighborsOf(adjacency, seedArtist, limit) {
+    adjacency = adjacency || {}
+    limit = limit || 20
+    var row = adjacency[seedArtist]
+    if (!row) return []
+    return Object.keys(row)
+      .map(function (a) { return { artist: a, weight: row[a] } })
+      .sort(function (x, y) { return y.weight - x.weight })
+      .slice(0, limit)
+  }
+
+  // ── Radio: weighted pick without repeats ───────────────────────────────────
+  // A track's weight is `1 + playCount` (so an unplayed track still has a
+  // chance, and a favourite is proportionally more likely). Deterministic when
+  // handed a `rng` returning [0,1); the app passes Math.random, the tests pass
+  // a stub. Returns the chosen index, or -1 when the pool is empty.
+  function weightedPickIndex(weights, rng) {
+    weights = weights || []
+    if (!weights.length) return -1
+    var total = 0
+    for (var i = 0; i < weights.length; i++) {
+      var w = Number(weights[i])
+      total += (isFinite(w) && w > 0) ? w : 0
+    }
+    if (total <= 0) {
+      // All-zero weights: fall back to a uniform pick so we never stall.
+      var r0 = (rng ? rng() : Math.random())
+      return Math.min(weights.length - 1, Math.floor(r0 * weights.length))
+    }
+    var r = (rng ? rng() : Math.random()) * total
+    for (var j = 0; j < weights.length; j++) {
+      var wj = Number(weights[j])
+      wj = (isFinite(wj) && wj > 0) ? wj : 0
+      r -= wj
+      if (r < 0) return j
+    }
+    return weights.length - 1
+  }
+
+  // ── Radio: composing the endless queue ─────────────────────────────────────
+  // Fills up to `count` tracks for artist radio. `seedTracks` are the seed
+  // artist's own tracks; `mixTracks` are tracks by co-occurring artists (the
+  // caller assembles those from the adjacency neighbours). About `mixRatio` of
+  // the picks come from the mix pool, the rest from the seed pool — but if one
+  // pool is exhausted we draw entirely from the other rather than stall.
+  //
+  // `recentPaths` is the no-repeat window (the last N filePaths played): no
+  // track whose filePath is in it, and no track already chosen in this batch,
+  // is picked twice. Each track object must carry `filePath`; `playCount` is
+  // optional and drives the weighting. `rng` is injectable for tests.
+  //
+  // Returns the array of chosen track objects (may be shorter than `count` if
+  // the pools run dry). Pure: it neither reads nor writes any global.
+  function composeRadioBatch(opts) {
+    opts = opts || {}
+    var seedTracks = opts.seedTracks || []
+    var mixTracks = opts.mixTracks || []
+    var count = opts.count || 20
+    var mixRatio = (opts.mixRatio != null) ? opts.mixRatio : 0.30
+    var recentPaths = opts.recentPaths || []
+    var rng = opts.rng || Math.random
+
+    // The exclusion set: recent window plus what we pick as we go.
+    var taken = {}
+    for (var i = 0; i < recentPaths.length; i++) taken[recentPaths[i]] = true
+
+    // Build a fresh pickable pool (filtered against `taken`) on demand — cheaper
+    // than rescanning the whole pool each pick for large libraries would be, but
+    // correctness first: we rebuild the candidate list each iteration because
+    // `taken` grows. Pools here are the artist's tracks + neighbours' tracks,
+    // which are small relative to the whole library, so this stays cheap.
+    function pickFrom(pool) {
+      var cand = []
+      for (var k = 0; k < pool.length; k++) {
+        var t = pool[k]
+        if (t && t.filePath && !taken[t.filePath]) cand.push(t)
+      }
+      if (!cand.length) return null
+      var weights = cand.map(function (t) { return 1 + (Number(t.playCount) || 0) })
+      var idx = weightedPickIndex(weights, rng)
+      if (idx < 0) return null
+      var chosen = cand[idx]
+      taken[chosen.filePath] = true
+      return chosen
+    }
+
+    var out = []
+    var guard = 0
+    while (out.length < count && guard < count * 8) {
+      guard++
+      var useMix = (rng() < mixRatio)
+      var pick = null
+      if (useMix) {
+        pick = pickFrom(mixTracks) || pickFrom(seedTracks)
+      } else {
+        pick = pickFrom(seedTracks) || pickFrom(mixTracks)
+      }
+      if (!pick) break // both pools exhausted
+      out.push(pick)
+    }
+    return out
+  }
+
+  // The rolling no-repeat window: append the newly played path and keep only the
+  // last `size`. Pure so the renderer's radio state and the tests share it.
+  function pushRecent(recentPaths, filePath, size) {
+    recentPaths = (recentPaths || []).slice()
+    size = size || 50
+    if (filePath) recentPaths.push(filePath)
+    if (recentPaths.length > size) recentPaths = recentPaths.slice(recentPaths.length - size)
+    return recentPaths
+  }
+
+  // ── Storage dashboard: aggregating library size ────────────────────────────
+  // Rolls the library up into a storage picture: total bytes by file format
+  // (FLAC/MP3/…), the largest albums, and the Downloads-folder subset.
+  //
+  // HONEST LIMITATION: per-track byte size only exists in the library cache when
+  // the scanner recorded it (`fileSize`/`size`). Where it is absent we count the
+  // track toward its format's *track count* but contribute 0 bytes, and we set
+  // `.partial` on the result so the UI can say "sizes are approximate — N tracks
+  // have no recorded size" rather than quietly under-reporting. We aggregate
+  // what IS there; we do not stat the disk (no fs access in the renderer, and
+  // this must stay a pure helper).
+  function storageByFormat(library) {
+    library = library || []
+    var byFmt = {}
+    var tracksWithSize = 0
+    var tracksMissingSize = 0
+    var totalBytes = 0
+    for (var i = 0; i < library.length; i++) {
+      var tracks = library[i].tracks || []
+      for (var j = 0; j < tracks.length; j++) {
+        var t = tracks[j]
+        var fmt = _extOf(t.filePath).toUpperCase() || 'UNKNOWN'
+        var size = Number(t.fileSize || t.size || 0)
+        if (!byFmt[fmt]) byFmt[fmt] = { format: fmt, bytes: 0, tracks: 0 }
+        byFmt[fmt].tracks++
+        if (isFinite(size) && size > 0) {
+          byFmt[fmt].bytes += size
+          totalBytes += size
+          tracksWithSize++
+        } else {
+          tracksMissingSize++
+        }
+      }
+    }
+    var rows = Object.keys(byFmt).map(function (f) { return byFmt[f] })
+      .sort(function (a, b) { return b.bytes - a.bytes || b.tracks - a.tracks })
+    return {
+      formats: rows,
+      totalBytes: totalBytes,
+      tracksWithSize: tracksWithSize,
+      tracksMissingSize: tracksMissingSize,
+      partial: tracksMissingSize > 0
+    }
+  }
+
+  // Largest albums by summed track size, up to `limit`. Albums with no recorded
+  // sizes fall to the bottom (0 bytes) rather than being dropped, so the list is
+  // never mysteriously short; each row also reports how many of its tracks had a
+  // known size, for the same honesty as storageByFormat.
+  function largestAlbums(library, limit) {
+    library = library || []
+    limit = limit || 10
+    var rows = []
+    for (var i = 0; i < library.length; i++) {
+      var a = library[i]
+      var tracks = a.tracks || []
+      var bytes = 0
+      var sized = 0
+      for (var j = 0; j < tracks.length; j++) {
+        var s = Number(tracks[j].fileSize || tracks[j].size || 0)
+        if (isFinite(s) && s > 0) { bytes += s; sized++ }
+      }
+      rows.push({ album: a, bytes: bytes, trackCount: tracks.length, sizedTracks: sized })
+    }
+    return rows
+      .sort(function (x, y) { return y.bytes - x.bytes })
+      .slice(0, limit)
+  }
+
+  // The Downloads-folder subset: tracks whose path sits under a "/Downloads/"
+  // segment (case-insensitive). Reports its count and summed size, so the
+  // dashboard can show how much of the library is un-filed downloads. Matching
+  // on the path segment, not a prefix, so it works regardless of where the music
+  // root is mounted.
+  function downloadsSubset(library) {
+    library = library || []
+    var count = 0
+    var bytes = 0
+    var re = /(^|\/)downloads(\/|$)/i
+    for (var i = 0; i < library.length; i++) {
+      var tracks = library[i].tracks || []
+      for (var j = 0; j < tracks.length; j++) {
+        var t = tracks[j]
+        if (!t.filePath || !re.test(t.filePath)) continue
+        count++
+        var s = Number(t.fileSize || t.size || 0)
+        if (isFinite(s) && s > 0) bytes += s
+      }
+    }
+    return { count: count, bytes: bytes }
+  }
+
+  // ── Alarm: time math ───────────────────────────────────────────────────────
+  // Given "HH:MM" and a reference `now`, return the ms until the next time the
+  // clock reads that — today if it is still ahead, else tomorrow. Pure and
+  // now-injectable so the tests do not wait on a wall clock. Returns null for a
+  // malformed time string.
+  function msUntilAlarm(hhmm, now) {
+    var m = /^(\d{1,2}):(\d{2})$/.exec(String(hhmm || '').trim())
+    if (!m) return null
+    var hh = Number(m[1]); var mm = Number(m[2])
+    if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return null
+    var ref = now != null ? new Date(now) : new Date()
+    var target = new Date(ref.getFullYear(), ref.getMonth(), ref.getDate(), hh, mm, 0, 0)
+    if (target.getTime() <= ref.getTime()) {
+      // Already passed (or exactly now) — schedule for tomorrow.
+      target = new Date(ref.getFullYear(), ref.getMonth(), ref.getDate() + 1, hh, mm, 0, 0)
+    }
+    return target.getTime() - ref.getTime()
+  }
+
+  // The fade-UP curve for the alarm: rise from 0 to `targetVolume` over
+  // `durationMs`, stepping every `stepMs`. Mirror image of sleepFadeSteps — the
+  // first step is above 0 (the fade has begun) and the last is exactly the
+  // target (fully faded in). Never exceeds the target, never negative.
+  function alarmFadeSteps(targetVolume, durationMs, stepMs) {
+    var target = Number(targetVolume)
+    if (!isFinite(target) || target <= 0) return [0]
+    if (target > 1) target = 1
+    var dur = Number(durationMs)
+    var step = Number(stepMs)
+    if (!isFinite(dur) || dur <= 0 || !isFinite(step) || step <= 0) return [target]
+    var count = Math.max(1, Math.round(dur / step))
+    var out = []
+    for (var i = 1; i <= count; i++) {
+      var v = target * (i / count)
+      if (v > target) v = target
+      out.push(Math.round(v * 1000) / 1000)
+    }
+    return out
+  }
+
+  // ── Smart playlists: a rule-based virtual-playlist engine ──────────────────
+  // A "smart list" is not a stored set of tracks; it is a rule evaluated live
+  // against the library and the play data every time it is opened. Each smart
+  // list is { id, name, rule } where `rule` is a small declarative object the
+  // engine below knows how to run. Keeping the rules declarative (data, not
+  // closures) means custom user-defined rules can be added later — and saved to
+  // disk — without changing the engine.
+  //
+  // A rule is one of:
+  //   { type: 'recentlyAdded', days: 30 }         — added within the last N days
+  //   { type: 'neverPlayed' }                     — zero plays
+  //   { type: 'mostPlayed', limit: 50 }           — top-N by play count
+  //   { type: 'lossless' }                        — FLAC/WAV/ALAC/AIFF only
+  //   { type: 'and', rules: [ ... ] }             — every child matches
+  //   { type: 'or',  rules: [ ... ] }             — any child matches
+  //
+  // The four built-ins are exported as SMART_PLAYLISTS so the UI and the tests
+  // agree on what ships.
+  var LOSSLESS_EXTS = { flac: 1, wav: 1, alac: 1, aiff: 1, aif: 1, ape: 1, wv: 1 }
+
+  var SMART_PLAYLISTS = [
+    { id: 'smart-recent',   name: 'Recently added', icon: '✨',
+      rule: { type: 'recentlyAdded', days: 30 } },
+    { id: 'smart-unplayed', name: 'Never played',   icon: '○',
+      rule: { type: 'neverPlayed' } },
+    { id: 'smart-top',      name: 'Most played',    icon: '★',
+      rule: { type: 'mostPlayed', limit: 50 } },
+    { id: 'smart-lossless', name: 'Lossless only',  icon: '◆',
+      rule: { type: 'lossless' } }
+  ]
+
+  // Flatten the library into a flat list of track rows, each carrying a back-
+  // pointer to its owning album plus the derived per-track facts the rules need
+  // (play count, added timestamp, format). The renderer's track objects and the
+  // album records both vary in which fields they carry, so we read defensively.
+  function _flattenTracks(library, playCounts) {
+    library = library || []
+    playCounts = playCounts || {}
+    var rows = []
+    for (var i = 0; i < library.length; i++) {
+      var a = library[i]
+      var tracks = a.tracks || []
+      for (var j = 0; j < tracks.length; j++) {
+        var t = tracks[j]
+        if (!t || !t.filePath) continue
+        rows.push({
+          track: t,
+          album: a,
+          filePath: t.filePath,
+          plays: Number(playCounts[t.filePath]) || 0,
+          // "Added" can live on the track or be inherited from the album scan.
+          addedAt: Number(t.addedAt || t.dateAdded || t.mtime ||
+            a.addedAt || a.dateAdded || 0) || 0,
+          format: _extOf(t.filePath)
+        })
+      }
+    }
+    return rows
+  }
+
+  // Does one flattened row satisfy a rule? `now` is injectable for the time-
+  // based rules so tests do not depend on the wall clock. Unknown rule types
+  // match nothing (fail closed) rather than everything.
+  function _rowMatchesRule(row, rule, now) {
+    if (!rule || !rule.type) return false
+    switch (rule.type) {
+      case 'lossless':
+        return !!LOSSLESS_EXTS[row.format]
+      case 'neverPlayed':
+        return row.plays <= 0
+      case 'recentlyAdded': {
+        var days = Number(rule.days) > 0 ? Number(rule.days) : 30
+        if (!row.addedAt) return false
+        var ref = now != null ? Number(now) : Date.now()
+        return (ref - row.addedAt) <= days * 24 * 60 * 60 * 1000 && row.addedAt <= ref
+      }
+      case 'mostPlayed':
+        // Ranking is handled after filtering (see evaluateSmartPlaylist); at the
+        // row level, only played tracks are eligible.
+        return row.plays > 0
+      case 'and': {
+        var ar = rule.rules || []
+        for (var i = 0; i < ar.length; i++) {
+          if (!_rowMatchesRule(row, ar[i], now)) return false
+        }
+        return ar.length > 0
+      }
+      case 'or': {
+        var or = rule.rules || []
+        for (var k = 0; k < or.length; k++) {
+          if (_rowMatchesRule(row, or[k], now)) return true
+        }
+        return false
+      }
+      default:
+        return false
+    }
+  }
+
+  // Run a smart-list rule against the library and play data, returning the
+  // matching track objects (the renderer's own track shape, ready to drop into a
+  // track-list view). `mostPlayed` is special: it ranks by play count and takes
+  // the top `limit`. `recentlyAdded` sorts newest first. Everything else keeps
+  // library order. Pure; `now` injectable.
+  function evaluateSmartPlaylist(rule, library, playCounts, now) {
+    var rows = _flattenTracks(library, playCounts)
+    var matched = []
+    for (var i = 0; i < rows.length; i++) {
+      if (_rowMatchesRule(rows[i], rule, now)) matched.push(rows[i])
+    }
+    if (rule && rule.type === 'mostPlayed') {
+      matched.sort(function (x, y) { return y.plays - x.plays })
+      var lim = Number(rule.limit) > 0 ? Number(rule.limit) : 50
+      matched = matched.slice(0, lim)
+    } else if (rule && rule.type === 'recentlyAdded') {
+      matched.sort(function (x, y) { return y.addedAt - x.addedAt })
+    }
+    return matched.map(function (r) { return r.track })
+  }
+
+  // ── Missing-track detector: gaps in album track numbering ──────────────────
+  // Scans an album's tracks for holes in the disc's track sequence: an album
+  // that has 1,2,3,5 is missing 4. We trust `trackNumber` metadata where it is
+  // present. To avoid crying "gap" on an album we barely have (a stray single
+  // dropped in a folder), we only call a gap when at least `minPresentRatio`
+  // (default 60%) of the run from 1..max is actually present.
+  //
+  // Returns { missing: [4], present: [1,2,3,5], max: 5, coverage: 0.8 } for an
+  // album that qualifies, or null when the album is too sparse to judge or has
+  // no usable track numbers.
+  function _trackNumberOf(t) {
+    if (t == null) return 0
+    var raw = t.trackNumber != null ? t.trackNumber
+      : (t.track != null ? t.track : (t.no != null ? t.no : null))
+    if (raw == null) return 0
+    // Accept "5", 5, or "5/12" (number-of-total) forms.
+    var m = /^\s*(\d+)/.exec(String(raw))
+    return m ? Number(m[1]) : 0
+  }
+
+  function albumGaps(album, minPresentRatio) {
+    if (!album || !album.tracks || !album.tracks.length) return null
+    var ratio = (minPresentRatio != null) ? Number(minPresentRatio) : 0.6
+    if (!isFinite(ratio) || ratio <= 0) ratio = 0.6
+    var nums = {}
+    var max = 0
+    var counted = 0
+    for (var i = 0; i < album.tracks.length; i++) {
+      var n = _trackNumberOf(album.tracks[i])
+      if (n > 0) {
+        if (!nums[n]) counted++
+        nums[n] = true
+        if (n > max) max = n
+      }
+    }
+    // Need real numbering to judge; a single-track "album" has no sequence.
+    if (max < 2 || counted < 2) return null
+    var present = []
+    var missing = []
+    for (var k = 1; k <= max; k++) {
+      if (nums[k]) present.push(k)
+      else missing.push(k)
+    }
+    var coverage = present.length / max
+    if (!missing.length) return null // complete, nothing to report
+    if (coverage < ratio) return null // too sparse to trust as "incomplete"
+    return { missing: missing, present: present, max: max, coverage: coverage }
+  }
+
+  // Sweep the whole library and return the incomplete albums, each with its
+  // album record and the gap detail, worst (most missing) first. `minPresentRatio`
+  // threads through to albumGaps.
+  function incompleteAlbums(library, minPresentRatio) {
+    library = library || []
+    var out = []
+    for (var i = 0; i < library.length; i++) {
+      var g = albumGaps(library[i], minPresentRatio)
+      if (g) out.push({ album: library[i], missing: g.missing, present: g.present,
+        max: g.max, coverage: g.coverage })
+    }
+    return out.sort(function (x, y) {
+      if (y.missing.length !== x.missing.length) return y.missing.length - x.missing.length
+      return y.max - x.max
+    })
+  }
+
+  // ── Playlist import: parsing pasted "Artist - Title" lines ─────────────────
+  // People paste track lists from all over — one per line, mostly
+  // "Artist - Title", but plenty come in "Title - Artist" too. We parse
+  // defensively: split each line on the first " - " (also tolerating an en/em
+  // dash), and keep BOTH interpretations as candidates so the matcher can try
+  // each against the library. Lines with no separator become a single free-text
+  // candidate (matched against title alone). Blank lines and obvious headers are
+  // skipped. Numeric "1." / "01)" leaders are stripped.
+  //
+  // Returns [{ raw, candidates: [{ artist, title }, ...] }]. Order preserved.
+  function parseImportLines(text) {
+    var lines = String(text == null ? '' : text).split(/\r?\n/)
+    var out = []
+    var SEP = /\s+[-–—]\s+/ // " - ", " – ", " — "
+    for (var i = 0; i < lines.length; i++) {
+      var raw = lines[i]
+      var line = raw.replace(/^\s*\d+\s*[.)\]]\s*/, '').trim() // strip "1." / "01)"
+      if (!line) continue
+      var parts = line.split(SEP)
+      var cands = []
+      if (parts.length >= 2) {
+        var left = parts[0].trim()
+        // Everything after the first separator is the "other" half (handles
+        // titles that themselves contain " - ").
+        var right = parts.slice(1).join(' - ').trim()
+        if (left && right) {
+          cands.push({ artist: left, title: right })  // "Artist - Title"
+          cands.push({ artist: right, title: left })  // "Title - Artist"
+        }
+      }
+      if (!cands.length) {
+        // No separator (or empty halves): treat the whole line as a title.
+        cands.push({ artist: '', title: line })
+      }
+      out.push({ raw: raw.trim(), candidates: cands })
+    }
+    return out
+  }
+
+  // Build a fast lookup of the library keyed by normalized "artist + title",
+  // reusing the dupe-finder normalization so import matching and dupe detection
+  // agree on what "the same song" means. The value is the renderer's track
+  // object (with its album back-reference attached under `_album`) so a matched
+  // line yields a playable track.
+  function buildLibraryIndex(library) {
+    library = library || []
+    var index = {}
+    var titleOnly = {}
+    for (var i = 0; i < library.length; i++) {
+      var a = library[i]
+      var tracks = a.tracks || []
+      for (var j = 0; j < tracks.length; j++) {
+        var t = tracks[j]
+        if (!t || !t.title) continue
+        var artist = t.albumArtist || t.artist || a.artist || ''
+        var key = normalizeForDupe(artist, t.title)
+        if (!index[key]) index[key] = t
+        // Title-only fallback for lines that gave us no artist.
+        var tk = _normPart(t.title)
+        if (tk && !titleOnly[tk]) titleOnly[tk] = t
+      }
+    }
+    return { byArtistTitle: index, byTitle: titleOnly }
+  }
+
+  // Match parsed import lines against a library index. For each line, try every
+  // candidate interpretation (both "Artist - Title" and "Title - Artist"); the
+  // first candidate that hits the library wins. An artist-less candidate falls
+  // back to a title-only match. Returns { matched, misses }:
+  //   matched — the library track objects, in input order, de-duplicated
+  //   misses  — the { raw } lines that found nothing, so the UI can offer a
+  //             one-click Soulseek search per miss.
+  function matchImportedTracks(parsedLines, index) {
+    parsedLines = parsedLines || []
+    index = index || { byArtistTitle: {}, byTitle: {} }
+    var byAT = index.byArtistTitle || {}
+    var byT = index.byTitle || {}
+    var matched = []
+    var misses = []
+    var seenPath = {}
+    for (var i = 0; i < parsedLines.length; i++) {
+      var line = parsedLines[i]
+      var cands = line.candidates || []
+      var hit = null
+      for (var c = 0; c < cands.length; c++) {
+        var cand = cands[c]
+        if (cand.artist) {
+          var key = normalizeForDupe(cand.artist, cand.title)
+          if (byAT[key]) { hit = byAT[key]; break }
+        } else {
+          var tk = _normPart(cand.title)
+          if (tk && byT[tk]) { hit = byT[tk]; break }
+        }
+      }
+      if (hit) {
+        var p = hit.filePath || (matched.length + ':' + (hit.title || ''))
+        if (!seenPath[p]) { seenPath[p] = true; matched.push(hit) }
+      } else {
+        misses.push({ raw: line.raw })
+      }
+    }
+    return { matched: matched, misses: misses }
+  }
+
+  // ── Cover-art sweep: which albums are missing art (App #61) ────────────────
+  // An album "needs art" when it carries no local artPath. We sweep the library
+  // for those and hand back up to `limit` of them (default 20) so a run stays
+  // polite — the caller fetches sequentially with a delay between requests.
+  //
+  // Streamed/YouTube "albums" have an http artPath (or none we can cache to a
+  // file), and an album with no id cannot be cached under one, so both are
+  // skipped: a fetch for them could never land in the on-disk cache anyway.
+  // Pure so the selection is testable without the library or the network.
+  function albumsMissingArt(library, limit) {
+    library = library || []
+    limit = (limit != null && Number(limit) > 0) ? Number(limit) : 20
+    var out = []
+    for (var i = 0; i < library.length && out.length < limit; i++) {
+      var a = library[i]
+      if (!a || !a.id) continue
+      var art = a.artPath
+      // A missing/empty artPath is the target. A remote (http) artPath is not a
+      // local cover and is treated as "has art" — we do not refetch it.
+      if (art && String(art).length) continue
+      out.push(a)
+    }
+    return out
+  }
+
+  // ── Synced lyrics: a pure LRC parser (App #57) ─────────────────────────────
+  // "[mm:ss.xx]text" lines → [{ time, text }] sorted by time; null when the
+  // text carries no timestamps at all (i.e. it is plain, not synced). Standard
+  // LRC stacks repeated timestamps on one line to repeat a chorus:
+  //   [00:10.00][01:20.00][02:30.00]the same words
+  // so every leading timestamp is consumed and yields its own entry. This
+  // mirrors the main-process parser in lyrics.js on purpose: the renderer can
+  // parse a saved/pasted LRC itself with the same rules, and the tests pin the
+  // behaviour in one place both sides agree on.
+  var _LRC_STAMP = /^\s*\[(\d+):(\d+(?:[.:]\d+)?)\]/
+  function parseLrc(lrc) {
+    if (!lrc) return null
+    var lines = []
+    var raw = String(lrc).split('\n')
+    for (var i = 0; i < raw.length; i++) {
+      var rest = raw[i]
+      var times = []
+      for (;;) {
+        var m = rest.match(_LRC_STAMP)
+        if (!m) break
+        // Some files write [mm:ss:cc] instead of [mm:ss.cc].
+        var secs = parseFloat(String(m[2]).replace(':', '.'))
+        var time = parseInt(m[1], 10) * 60 + secs
+        if (!isNaN(time)) times.push(time)
+        rest = rest.slice(m[0].length)
+      }
+      if (!times.length) continue // metadata ([ar:...]) and blank lines fall out
+      // Strip inline word timings <00:12.34> then trim.
+      var text = rest.replace(/<[^>]*>/g, '').trim()
+      for (var t = 0; t < times.length; t++) lines.push({ time: times[t], text: text })
+    }
+    if (!lines.length) return null
+    return lines.sort(function (a, b) { return a.time - b.time })
+  }
+
+  // Which synced line is active at playback position `t` (seconds): the last
+  // line whose timestamp has been reached. Returns -1 before the first line.
+  // Pure and side-effect-free; the panel uses the index to move the highlight.
+  function activeLyricIndex(lines, t) {
+    lines = lines || []
+    var pos = Number(t)
+    if (!isFinite(pos)) return -1
+    var idx = -1
+    for (var i = 0; i < lines.length; i++) {
+      if (lines[i] && lines[i].time <= pos) idx = i
+      else break
+    }
+    return idx
+  }
+
+  // ── Crossfade per playlist: resolving the effective setting (App #51) ──────
+  // A playlist may carry an optional `crossfade` override:
+  //   undefined | null | 'inherit'  → use the global setting unchanged
+  //   'off' | 0                      → gapless (no crossfade) for this playlist
+  //   a positive number (seconds)    → crossfade at that length
+  // Given the global player config { mode, crossfadeSecs } and a playlist's
+  // override, this returns the player config that SHOULD be in force while that
+  // playlist plays: { mode, crossfadeSecs }. Pure so the apply/revert logic in
+  // the renderer can be reasoned about and tested without the audio engine.
+  function resolvePlaylistCrossfade(globalCfg, override) {
+    globalCfg = globalCfg || {}
+    var gMode = globalCfg.mode === 'crossfade' ? 'crossfade' : 'gapless'
+    var gSecs = Number(globalCfg.crossfadeSecs)
+    if (!isFinite(gSecs) || gSecs <= 0) gSecs = 4
+    // Inherit: hand the global config straight back.
+    if (override == null || override === 'inherit') {
+      return { mode: gMode, crossfadeSecs: gSecs }
+    }
+    // Explicit off.
+    if (override === 'off' || override === 0 || override === '0') {
+      return { mode: 'gapless', crossfadeSecs: gSecs }
+    }
+    var secs = Number(override)
+    if (isFinite(secs) && secs > 0) {
+      return { mode: 'crossfade', crossfadeSecs: secs }
+    }
+    // Anything unrecognised falls back to inherit rather than guessing.
+    return { mode: gMode, crossfadeSecs: gSecs }
+  }
+
+  // Does the resolved config actually differ from what is in force now? The
+  // renderer only pushes a player-set-config (which rebuilds the engine, an
+  // audible tear-down) when this says the effective setting really changed —
+  // never on every play. Compares mode always, and the seconds only when the
+  // resolved mode is crossfade (the length is irrelevant while gapless).
+  function crossfadeConfigDiffers(current, resolved) {
+    current = current || {}
+    resolved = resolved || {}
+    var curMode = current.mode === 'crossfade' ? 'crossfade' : 'gapless'
+    if (curMode !== resolved.mode) return true
+    if (resolved.mode === 'crossfade') {
+      return Number(current.crossfadeSecs) !== Number(resolved.crossfadeSecs)
+    }
+    return false
+  }
+
+  // ── Tag fixer: comparing local metadata to MusicBrainz (App #60) ───────────
+  // Propose-only this wave: we fetch a release's track list from MusicBrainz and
+  // line it up against what the local files claim, so the user can SEE where a
+  // download's tags are wrong (misspelled titles, off-by-one track numbers, a
+  // "(Remastered)" the release does not have). Nothing is written to disk here —
+  // these helpers only build the side-by-side diff the UI shows with a disabled
+  // "Apply" button.
+  //
+  // Title comparison is deliberately fuzzy the same way the dupe finder is: a
+  // difference in bracketed asides or punctuation is noted (so the user can tidy
+  // it) but does not by itself count the pair as a mismatch — only a real
+  // difference in the core words does. We reuse _normPart so "same song" means
+  // the same thing across the whole music side.
+
+  // Normalise a track number to a plain integer, tolerating "5", 5, "05" and
+  // "5/12" forms. Returns 0 when there is no usable number.
+  function _tagTrackNo(t) {
+    if (t == null) return 0
+    var raw = t.trackNumber != null ? t.trackNumber
+      : (t.track != null ? t.track
+        : (t.no != null ? t.no
+          : (t.position != null ? t.position : null)))
+    if (raw == null) return 0
+    var m = /^\s*(\d+)/.exec(String(raw))
+    return m ? Number(m[1]) : 0
+  }
+
+  // Compare one local track to one MusicBrainz track. Returns the fields the diff
+  // row needs: the two titles, the two numbers, and flags for whether the core
+  // title words differ and whether the numbers differ. `titleExact` is true only
+  // when the raw titles match character-for-character; `titleDiffers` is the
+  // meaningful signal (core words differ after normalization).
+  function compareTrackTags(localTrack, mbTrack) {
+    localTrack = localTrack || {}
+    mbTrack = mbTrack || {}
+    var localTitle = String(localTrack.title == null ? '' : localTrack.title)
+    var mbTitle = String(mbTrack.title == null ? '' : mbTrack.title)
+    var localNo = _tagTrackNo(localTrack)
+    var mbNo = _tagTrackNo(mbTrack)
+    var normLocal = _normPart(localTitle)
+    var normMb = _normPart(mbTitle)
+    var titleExact = localTitle === mbTitle
+    var titleDiffers = normLocal !== normMb
+    // A "cosmetic" difference: the core words agree but the raw text does not —
+    // a bracketed tag or punctuation the user may want to match to the release.
+    var titleCosmetic = !titleExact && !titleDiffers
+    var numberDiffers = (localNo > 0 && mbNo > 0) ? (localNo !== mbNo) : false
+    return {
+      localTitle: localTitle,
+      mbTitle: mbTitle,
+      localNo: localNo,
+      mbNo: mbNo,
+      titleExact: titleExact,
+      titleDiffers: titleDiffers,
+      titleCosmetic: titleCosmetic,
+      numberDiffers: numberDiffers,
+      // A row is "clean" when nothing at all differs, not even cosmetically.
+      clean: titleExact && !numberDiffers,
+    }
+  }
+
+  // Line a local album's tracks up against a MusicBrainz release's track list and
+  // build the diff. We pair by track number where both sides have one (the
+  // reliable key for a download whose titles are the thing that is wrong); tracks
+  // with no number fall back to positional pairing in the order given. Extra
+  // local tracks (no MB counterpart) and extra MB tracks (present on the release,
+  // missing locally) are both reported so the user sees a too-long or too-short
+  // local album.
+  //
+  // Returns { rows, summary } where each row is { localTitle, mbTitle, ... } from
+  // compareTrackTags plus a `kind` of 'match' | 'local-only' | 'mb-only', and the
+  // summary counts differ/cosmetic/clean/localOnly/mbOnly for the header.
+  function buildTagDiff(localTracks, mbTracks) {
+    localTracks = localTracks || []
+    mbTracks = mbTracks || []
+    // Index MB tracks by number where present; keep the rest in order for the
+    // positional fallback.
+    var mbByNo = {}
+    var mbNoNumber = []
+    for (var i = 0; i < mbTracks.length; i++) {
+      var no = _tagTrackNo(mbTracks[i])
+      if (no > 0 && !mbByNo[no]) mbByNo[no] = mbTracks[i]
+      else mbNoNumber.push(mbTracks[i])
+    }
+    var usedMb = {} // identity of MB tracks already paired (by index into mbTracks)
+    function mbIndexOf(obj) { return mbTracks.indexOf(obj) }
+
+    var rows = []
+    var posFallback = 0
+    for (var k = 0; k < localTracks.length; k++) {
+      var lt = localTracks[k]
+      var ln = _tagTrackNo(lt)
+      var mt = null
+      if (ln > 0 && mbByNo[ln] && !usedMb[mbIndexOf(mbByNo[ln])]) {
+        mt = mbByNo[ln]
+      } else {
+        // Positional fallback: next not-yet-used MB-without-number, then any
+        // not-yet-used MB track at all, in order.
+        while (posFallback < mbNoNumber.length && usedMb[mbIndexOf(mbNoNumber[posFallback])]) posFallback++
+        if (posFallback < mbNoNumber.length) { mt = mbNoNumber[posFallback]; posFallback++ }
+      }
+      if (mt) {
+        usedMb[mbIndexOf(mt)] = true
+        var cmp = compareTrackTags(lt, mt)
+        cmp.kind = 'match'
+        rows.push(cmp)
+      } else {
+        rows.push({
+          kind: 'local-only',
+          localTitle: String(lt && lt.title || ''),
+          mbTitle: '',
+          localNo: ln,
+          mbNo: 0,
+          titleExact: false, titleDiffers: false, titleCosmetic: false,
+          numberDiffers: false, clean: false,
+        })
+      }
+    }
+    // MB tracks nobody paired with: present on the release, missing locally.
+    for (var m = 0; m < mbTracks.length; m++) {
+      if (usedMb[m]) continue
+      var extra = mbTracks[m]
+      rows.push({
+        kind: 'mb-only',
+        localTitle: '',
+        mbTitle: String(extra && extra.title || ''),
+        localNo: 0,
+        mbNo: _tagTrackNo(extra),
+        titleExact: false, titleDiffers: false, titleCosmetic: false,
+        numberDiffers: false, clean: false,
+      })
+    }
+    var summary = { total: rows.length, differ: 0, cosmetic: 0, clean: 0, localOnly: 0, mbOnly: 0 }
+    for (var r = 0; r < rows.length; r++) {
+      var row = rows[r]
+      if (row.kind === 'local-only') summary.localOnly++
+      else if (row.kind === 'mb-only') summary.mbOnly++
+      else if (row.titleDiffers || row.numberDiffers) summary.differ++
+      else if (row.titleCosmetic) summary.cosmetic++
+      else summary.clean++
+    }
+    return { rows: rows, summary: summary }
+  }
+
+  var api = {
+    sleepFadeSteps: sleepFadeSteps,
+    albumsMissingArt: albumsMissingArt,
+    parseLrc: parseLrc,
+    activeLyricIndex: activeLyricIndex,
+    resolvePlaylistCrossfade: resolvePlaylistCrossfade,
+    crossfadeConfigDiffers: crossfadeConfigDiffers,
+    SLEEP_PRESETS: SLEEP_PRESETS,
+    clearPlayedQueue: clearPlayedQueue,
+    topAlbumsByPlays: topAlbumsByPlays,
+    playsPerMonth: playsPerMonth,
+    normalizeForDupe: normalizeForDupe,
+    findDuplicateTracks: findDuplicateTracks,
+    buildArtistAdjacency: buildArtistAdjacency,
+    neighborsOf: neighborsOf,
+    weightedPickIndex: weightedPickIndex,
+    composeRadioBatch: composeRadioBatch,
+    pushRecent: pushRecent,
+    storageByFormat: storageByFormat,
+    largestAlbums: largestAlbums,
+    downloadsSubset: downloadsSubset,
+    msUntilAlarm: msUntilAlarm,
+    alarmFadeSteps: alarmFadeSteps,
+    SMART_PLAYLISTS: SMART_PLAYLISTS,
+    evaluateSmartPlaylist: evaluateSmartPlaylist,
+    albumGaps: albumGaps,
+    incompleteAlbums: incompleteAlbums,
+    parseImportLines: parseImportLines,
+    buildLibraryIndex: buildLibraryIndex,
+    matchImportedTracks: matchImportedTracks,
+    compareTrackTags: compareTrackTags,
+    buildTagDiff: buildTagDiff
+  }
+
+  if (typeof module !== 'undefined' && module.exports) module.exports = api
+  if (typeof window !== 'undefined') window.PapaMusicTools = api
+
+})()

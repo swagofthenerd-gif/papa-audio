@@ -93,4 +93,31 @@ function magnetFromHash(infoHash, displayName) {
   return magnet
 }
 
-module.exports = { parseQuality, parseAudioLayout, isLowQualitySource, parseDub, parseSub, magnetFromHash, PUBLIC_TRACKERS }
+// Normalise a torrent's size to bytes for the sources list. Indexers report it
+// two ways: a raw byte count (apibay, animetosho, knaben, solidtorrents, yts)
+// or a human string like "4.2 GiB" / "700 MB" (nyaa's RSS). Both binary (GiB,
+// 1024) and decimal (GB, 1000) suffixes appear in the wild; the suffix decides.
+// Returns null when unparseable so the row can dim gracefully rather than
+// invent a size.
+const _SIZE_UNITS = {
+  b: 1,
+  kb: 1e3, kib: 1024,
+  mb: 1e6, mib: 1024 ** 2,
+  gb: 1e9, gib: 1024 ** 3,
+  tb: 1e12, tib: 1024 ** 4,
+}
+
+function parseSizeBytes(raw) {
+  if (raw == null) return null
+  if (typeof raw === 'number') return Number.isFinite(raw) && raw > 0 ? raw : null
+  const m = String(raw).trim().match(/^([\d.,]+)\s*([a-z]+)?$/i)
+  if (!m) return null
+  const num = Number(m[1].replace(/,/g, ''))
+  if (!Number.isFinite(num) || num <= 0) return null
+  const unit = (m[2] || 'b').toLowerCase()
+  const mult = _SIZE_UNITS[unit]
+  if (!mult) return null
+  return Math.round(num * mult)
+}
+
+module.exports = { parseQuality, parseAudioLayout, isLowQualitySource, parseDub, parseSub, magnetFromHash, parseSizeBytes, PUBLIC_TRACKERS }

@@ -16,6 +16,9 @@
 // network error) is treated as failed and the next mirror is tried. If every
 // mirror fails the provider returns `[]` — it never throws.
 
+const { raceMirrors } = require('./mirror-race')
+const { parseSizeBytes } = require('./quality')
+
 const DEFAULT_BASE_URLS = [
   'https://movies-api.accel.li',
   'https://yts.gg',
@@ -82,11 +85,19 @@ function normalizeMovieResult(raw) {
         label: `YTS · ${quality}${audioLayout ? ` · ${audioLayout}` : ''}${seeds ? ` · ${seeds} seeds` : ''}`,
         audioLayout,
         seeds,
+        seeders: seeds,
+        sizeBytes: parseSizeBytes(t.size_bytes != null ? t.size_bytes : t.size),
         sub: null,
         dub: null,
       }
     })
 }
+
+// A trailing remainder that reads as an edition of the same film rather than
+// a different one: "extended", "directors cut", "remastered", a year. Without
+// this gate the prefix fallback picked sequels — "Alien" happily resolved to
+// "Alien Covenant".
+const EDITION_SUFFIX = /\b(extended|directors?|remaster(ed)?|edition|cut|uncut|unrated|imax|3d|redux)\b|\b(19|20)\d{2}\b/
 
 // Pick the best movie for a request: exact (case-insensitive, trimmed) title
 // match, then — when `request.year` is given — prefer the title match whose
@@ -96,13 +107,15 @@ function pickBestMovie(movies, request) {
   if (!title) return null
   const year = request.year != null && request.year !== '' ? String(request.year) : null
   // Exact (normalized) title first; only if nothing matches do we accept a
-  // title that merely contains the requested one, which catches YTS entries
-  // carrying an edition suffix ("Dune Part Two Extended").
+  // longer title, and only when the remainder looks like an edition suffix
+  // ("Dune Part Two Extended") rather than a different film's subtitle.
   let titleMatches = (movies || []).filter(m => m && normalizeTitle(m.title) === title)
   if (titleMatches.length === 0) {
     titleMatches = (movies || []).filter(m => {
       const t = normalizeTitle(m && m.title)
-      return t && (t.startsWith(title + ' ') || t === title)
+      if (!t) return false
+      if (t === title) return true
+      return t.startsWith(title + ' ') && EDITION_SUFFIX.test(t.slice(title.length + 1))
     })
   }
   if (titleMatches.length === 0) return null
@@ -113,12 +126,30 @@ function pickBestMovie(movies, request) {
   return titleMatches[0]
 }
 
+// The mirror that answered most recently leads the race on the next query.
+// Mirrors are raced in parallel now, so this is a tiebreak rather than a
+// timeout-saver: its request goes out first, which is what decides a race
+// between two healthy mirrors. Module-level on purpose: remembered for the
+// session, never persisted.
+let _lastGoodMirror = null
+
+function _orderMirrors(urls) {
+  if (!_lastGoodMirror || !urls.includes(_lastGoodMirror)) return urls
+  return [_lastGoodMirror, ...urls.filter(u => u !== _lastGoodMirror)]
+}
+
+function _resetMirrorHealth() {
+  _lastGoodMirror = null
+}
+
 // Try a single mirror. Returns the matched movie object, or `null` when the
 // mirror is dead (network error / non-OK status / non-JSON body / no match).
-async function tryMirror(baseUrl, term, request, fetcher) {
+// `signal` is the race's abort handle: when another mirror answers first this
+// one is cancelled instead of running out its timeout.
+async function tryMirror(baseUrl, term, request, fetcher, signal) {
   try {
     const url = buildListUrl(baseUrl, term)
-    const res = await fetcher(url)
+    const res = await fetcher(url, { signal })
     if (!res || !res.ok) return null
     const text = await res.text()
     let data
@@ -143,11 +174,12 @@ function createYtsProvider({ fetchFn, baseUrls = DEFAULT_BASE_URLS } = {}) {
     const title = (request.title || '').trim()
     if (!title) return []
     const term = request.year != null && request.year !== '' ? `${title} ${request.year}` : title
-    for (const baseUrl of urls) {
-      const movie = await tryMirror(baseUrl, term, request, fetcher)
-      if (movie) return normalizeMovieResult(movie)
-    }
-    return []
+    // All mirrors race; the first usable answer wins and the rest are aborted.
+    const won = await raceMirrors(_orderMirrors(urls), (baseUrl, signal) =>
+      tryMirror(baseUrl, term, request, fetcher, signal))
+    if (!won) return []
+    _lastGoodMirror = won.baseUrl
+    return normalizeMovieResult(won.result)
   }
 }
 
@@ -160,4 +192,5 @@ module.exports = {
   normalizeMovieResult,
   pickBestMovie,
   createYtsProvider,
+  _resetMirrorHealth,
 }

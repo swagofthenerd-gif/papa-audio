@@ -137,6 +137,36 @@ test('flushSync leaves no temp file behind', () => {
   s.set({ position: 7 })
   s.flushSync()
   assert.strictEqual(fs.existsSync(path.join(dir, 'playback-state.json.tmp')), false)
+  assert.strictEqual(fs.existsSync(path.join(dir, 'playback-state.json.sync')), false)
+})
+
+test('flushSync writes to its OWN tmp path, never the async writer\'s', () => {
+  // Two writers renaming on one tmp is how a shutdown save ends up holding
+  // neither value. flushSync must use a distinct tmp so it cannot interleave
+  // with an in-flight async write.
+  const { s } = store()
+  assert.notStrictEqual(s.tmp, s.tmpSync)
+  assert.match(s.tmpSync, /\.sync$/)
+  assert.match(s.tmp, /\.tmp$/)
+})
+
+test('flushSync during an in-flight async write keeps the newer value', async () => {
+  // The shutdown race: an async write is mid-flight when flushSync fires with a
+  // newer value. The completing async write must NOT rename its now-stale tmp
+  // over what flushSync just landed.
+  const { s, dir } = store()
+  s.set({ position: 1 })
+  const inflight = s._write()          // start the async write of position 1
+  s.set({ position: 2 })               // a newer value arrives
+  assert.strictEqual(s.flushSync(), true, 'the newer value is flushed synchronously')
+  await inflight                        // let the older async write finish
+  await s.flush()
+  const reader = new SideStore({ dir, name: 'playback-state' })
+  assert.deepStrictEqual(reader.get(), { position: 2 },
+    'the flushed-newer value must survive the completing async write')
+  // Neither tmp is left behind.
+  assert.strictEqual(fs.existsSync(path.join(dir, 'playback-state.json.tmp')), false)
+  assert.strictEqual(fs.existsSync(path.join(dir, 'playback-state.json.sync')), false)
 })
 
 // ── Migration out of the shared config ───────────────────────────────────────

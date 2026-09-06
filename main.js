@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, globalShortcut, Notification, shell, Menu, MenuItem, powerSaveBlocker, powerMonitor } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog, globalShortcut, Notification, shell, Menu, MenuItem, powerSaveBlocker, powerMonitor, session, screen } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
@@ -12,6 +12,7 @@ const { classifyChapters } = require('./skip/chapters')
 const { createAniSkip } = require('./skip/aniskip')
 const { detectIntro } = require('./skip/detect-intro')
 const dlState_ = require('./src/dl-state')
+const videoKeep = require('./src/video-keep')
 const https = require('https')
 // No sync child_process on the main thread: every shell-out goes through run().
 const { spawn, execFile } = require('child_process')
@@ -27,6 +28,10 @@ const { spawn, execFile } = require('child_process')
 // the bug being fixed. 0 means no deadline.
 const IPC_DEFAULT_TIMEOUT_MS = 60000
 const IPC_TIMEOUT_OVERRIDES = {
+  // Both open a system dialog and wait on a person. A deadline on a dialog
+  // does not protect against a wedged handler — it cancels the user.
+  'papa-export-all': 0,
+  'papa-import-all': 0,
   // Minutes on a large library, by design.
   'scan-library': 0,
   'library-scan-extras': 0,
@@ -49,6 +54,13 @@ const IPC_TIMEOUT_OVERRIDES = {
   // 25 s per variant, six variants, plus slskd's own latency.
   'slsk-search': 240000,
   'slsk-enqueue-downloads': 180000,
+  // A full wishlist sweep runs every entry as a sequential search with a 5 s gap
+  // between them, so a long wishlist legitimately takes many minutes. Deadlined,
+  // but generously, so a wedged sweep is still bounded.
+  'slsk-wishlist-run': 1800000,
+  // Pulls the whole /transfers/downloads list and re-issues DELETEs; minutes on
+  // a large backlog.
+  'slsk-respread-backlog': 300000,
   'yt-download': 0,
   'torrent-remove': 120000,
   // ffprobe over a remote URL: generous, but never unbounded.
@@ -81,6 +93,22 @@ const IPC_TIMEOUT_OVERRIDES = {
   'video-sub-open': 0,
   'save-lyrics': 0,
   'yt-auth-start': 0,
+  // Runs ffmpeg over up to 20 tracks sequentially; minutes on a cold cache.
+  'loudness-scan': 0,
+  // MusicBrainz at a 1 req/s ceiling, plus network latency for two lookups.
+  'musicbrainz-check-album': 120000,
+}
+
+// A tiny ring buffer of the last few IPC channels handled, so the crash
+// reporter (below) can say what the app was doing when it fell over — "last it
+// did was video-play" is far more useful to a user forwarding a crash log than a
+// bare stack trace. Kept deliberately small and cheap: pushing a string on every
+// invoke must cost nothing measurable.
+const CRASH_TRAIL_MAX = 5
+const _crashTrail = []
+function _noteChannel(channel) {
+  _crashTrail.push(channel)
+  if (_crashTrail.length > CRASH_TRAIL_MAX) _crashTrail.shift()
 }
 
 // Patched here, before any handler registers, so every one is covered. The
@@ -90,8 +118,10 @@ ipcMain.handle = function (channel, fn) {
   const budget = Object.prototype.hasOwnProperty.call(IPC_TIMEOUT_OVERRIDES, channel)
     ? IPC_TIMEOUT_OVERRIDES[channel]
     : IPC_DEFAULT_TIMEOUT_MS
-  if (!budget) return _ipcRawHandle(channel, fn)
+  const traced = (...args) => { _noteChannel(channel); return fn(...args) }
+  if (!budget) return _ipcRawHandle(channel, traced)
   return _ipcRawHandle(channel, async (...args) => {
+    _noteChannel(channel)
     let timer
     try {
       return await Promise.race([
@@ -118,7 +148,8 @@ const { formatDiagnostic } = require('./engine-diagnostics')
 const history = require('./history')
 const { defaultSettings: eqDefaults, BANDS: EQ_BANDS, GAIN_LIMIT: EQ_GAIN_LIMIT, PRESETS: EQ_PRESETS, presetSettings } = require('./eq')
 const { MpvCrossfade } = require('./mpv-crossfade')
-const { linearToMpv } = require('./volume-map')
+const { linearToMpv, MPV_MAX } = require('./volume-map')
+const loudness = require('./src/loudness')
 const ytSearch = require('./youtube-search')
 const ytDownloader = require('./youtube-download')
 const lyrics = require('./lyrics')
@@ -130,15 +161,20 @@ const { createTmdbCatalog } = tmdbCatalog
 const shelves = require('./catalog/shelves')
 const { createAnilistCatalog } = require('./catalog/anilist')
 const { createOmdbCatalog } = require('./catalog/omdb')
+const { createOpenSubtitles } = require('./subs/opensubtitles')
 const { resolveStream } = require('./providers/index')
 const { createYtsProvider } = require('./providers/yts')
 const { createEztvProvider } = require('./providers/eztv')
 const { createNyaaProvider } = require('./providers/nyaa')
+const { createAnimetoshoProvider } = require('./providers/animetosho')
 const { createApibayProvider } = require('./providers/apibay')
+const { createKnabenProvider } = require('./providers/knaben')
+const { createSolidTorrentsProvider } = require('./providers/solidtorrents')
 const { createMovieTvProvider, createVidsrcResolver } = require('./providers/movie-tv')
 const { createAnimeProvider } = require('./providers/anime')
 const { TorrentStreamer, purgeOrphanStreams, setStreamRoot, streamRoot } = require('./torrent-stream')
 const { VideoEngine, purgeOrphanPlayers } = require('./video-engine')
+const { createThumbnailer } = require('./src/thumbnailer')
 const { createYarrlistDirectory } = require('./yarrlist-directory')
 const { classify } = require('./src/surround-verify')
 
@@ -291,6 +327,36 @@ let natUpnp; try { natUpnp = require('nat-upnp') } catch (e) {
   console.error('[papa] nat-upnp unavailable; automatic port mapping is off:', e && e.message)
 }
 
+// A plain-English crash record the user can forward to the developer. It sits
+// in the app's data folder as crash-log.txt and gets one appended entry per
+// event: the date, what the app was last doing (the last IPC channel handled,
+// which is cheap to know), the error itself, and a line telling the user the
+// file is safe to send. Best-effort throughout — a failure to write the crash
+// log must never itself throw, least of all from inside an uncaughtException
+// handler. USER_DATA is resolved lazily because these handlers are installed
+// above the line that sets it.
+function _appendCrashLog(kind, err) {
+  try {
+    const dir = path.join(app.getPath('home'), '.config', 'papa-audio')
+    const file = path.join(dir, 'crash-log.txt')
+    const when = new Date().toISOString()
+    const doing = _crashTrail.length
+      ? `last things it did: ${_crashTrail.join(' → ')}`
+      : 'nothing had been asked of it yet'
+    const message = (err && (err.stack || err.message)) || String(err)
+    const entry =
+      `──────────────────────────────────────────\n` +
+      `When: ${when}\n` +
+      `What went wrong: ${kind}\n` +
+      `What the app was doing: ${doing}\n` +
+      `Details: ${message}\n` +
+      `You can send this file to the developer — it holds no passwords or ` +
+      `personal data, only what the app was doing when it stumbled.\n\n`
+    try { fs.mkdirSync(dir, { recursive: true }) } catch (_) { /* already there, or read-only */ }
+    fs.appendFileSync(file, entry, 'utf8')
+  } catch (_) { /* a crash reporter that crashes is worse than a missing line */ }
+}
+
 // Under Node 18+ an unhandled rejection TERMINATES the process by default, and
 // this file is full of un-awaited async IPC handlers and network calls
 // (youtubei.js, slskd, webtorrent). One rejected promise from a background
@@ -299,9 +365,11 @@ let natUpnp; try { natUpnp = require('nat-upnp') } catch (e) {
 // because a metadata fetch 404'd is never the right trade.
 process.on('unhandledRejection', (reason) => {
   console.error('[papa] unhandled rejection:', (reason && reason.stack) || reason)
+  _appendCrashLog('a background task failed unexpectedly', reason)
 })
 process.on('uncaughtException', (err) => {
   console.error('[papa] uncaught exception:', (err && err.stack) || err)
+  _appendCrashLog('the app hit an unexpected error', err)
 })
 
 // The GPU and utility processes die out of sight of every JavaScript handler,
@@ -337,6 +405,27 @@ app.commandLine.appendSwitch('num-raster-threads', '2')            // was 4 — 
 app.commandLine.appendSwitch('renderer-process-limit', '1')        // only one renderer process
 app.commandLine.appendSwitch('max-gum-fps', '60')                  // cap getUserMedia fps
 
+// ── Stable identity ──────────────────────────────────────────────────────────
+// Must run before requestSingleInstanceLock(): the lock is filed under
+// whatever userData path is current at the time it's requested. Asking for
+// it before setName/setPath meant every launch locked against Electron's
+// generic default identity instead of papa-audio's own, which could let two
+// full copies of the app run at once, silently racing over the same on-disk
+// state (Continue Watching among it).
+app.setName('Papa Audio')
+// PAPA_USER_DATA env override — used only by the E2E smoke harness
+// (tools/e2e-smoke.js) so it can launch a throwaway copy of the app in a fresh
+// profile directory. Set it and the app writes all its state there instead of
+// ~/.config/papa-audio. It must be applied BEFORE requestSingleInstanceLock()
+// below, so the single-instance lock scopes to that fresh directory and the
+// smoke test can run alongside the user's real, already-running instance
+// without the two racing for the same lock. Unset (the normal case) → the real
+// profile path, unchanged.
+const USER_DATA = process.env.PAPA_USER_DATA
+  ? path.resolve(process.env.PAPA_USER_DATA)
+  : path.join(app.getPath('home'), '.config', 'papa-audio')
+app.setPath('userData', USER_DATA)
+
 // ── Single instance lock ─────────────────────────────────────────────────────
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
@@ -350,14 +439,14 @@ if (!gotLock) {
   })
 }
 
-// ── Stable identity ──────────────────────────────────────────────────────────
-app.setName('Papa Audio')
-const USER_DATA = path.join(app.getPath('home'), '.config', 'papa-audio')
-app.setPath('userData', USER_DATA)
-
 // ── Migrate from old flac-player config ─────────────────────────────────────
 const OLD_DATA = path.join(app.getPath('home'), '.config', 'flac-player')
 ;(function migrate() {
+  // A PAPA_USER_DATA override means a deliberately throwaway profile (the E2E
+  // smoke harness). Migrating the user's real ~/.config/flac-player config into
+  // it would defeat the point — it must start genuinely empty so the first-run
+  // path is exercised. So skip the migration entirely under the override.
+  if (process.env.PAPA_USER_DATA) return
   if (!fs.existsSync(OLD_DATA)) return
   if (fs.existsSync(path.join(USER_DATA, 'config.json'))) return
   try {
@@ -387,7 +476,15 @@ function getTorrentClient() {
     // Streaming is latency-sensitive: the head of the file has to arrive now,
     // not eventually, and more peers is the single biggest lever on that.
     _torrentClient = new WebTorrent({ maxConns: 150 })
-    _torrentClient.on('error', err => console.error('[WebTorrent]', err.message))
+    _torrentClient.on('error', err => {
+      const message = (err && err.message) || String(err)
+      console.error('[WebTorrent]', message)
+      // A client-level error takes down every torrent on the shared client, so
+      // an active viewer would otherwise just see the stream wedge with no
+      // explanation. Surface it as a fatal video error, the same channel a
+      // per-stream failure uses.
+      safeSend('video-event', { kind: 'error', fatal: true, message })
+    })
   }
   return _torrentClient
 }
@@ -563,6 +660,34 @@ const sideStores = {
   // 344 KB of the old config at ~294 bytes per play, rewritten in full on every
   // save — the same defect as the others, and it grows with use.
   playHistory: new SideStore({ dir: USER_DATA, name: 'play-history', fallback: [], debounceMs: 700, onError: _sideErr }),
+  // The video watch history, migrated off the renderer's localStorage so it no
+  // longer depends on Chromium's delayed commit timer at quit. The value is
+  // the raw JSON string exactly as the renderer wrote it — main never parses
+  // it, so a main-side bug can never mangle the blob.
+  videoStore: new SideStore({ dir: USER_DATA, name: 'video-store', fallback: null, debounceMs: 300, onError: _sideErr }),
+  videoStoreBak: new SideStore({ dir: USER_DATA, name: 'video-store-bak', fallback: null, debounceMs: 1000, onError: _sideErr }),
+  // Non-destructive ReplayGain (App #59): { filePath: { lufs, gainDb, at } }. Set
+  // in batches by the loudness scan, read on every track load to fold the gain
+  // into mpv's volume. Never written to the files themselves.
+  loudnessMap: new SideStore({ dir: USER_DATA, name: 'loudness-map', fallback: {}, debounceMs: 500, onError: _sideErr }),
+  // Outage insurance for anime detail pages. AniList has gone globally dark
+  // before (HTTP 403, "temporarily disabled due to severe stability issues"),
+  // which turns every anime detail click into an error page. This is a
+  // write-through, on-disk mirror of the anime detail objects: any show opened
+  // at least once keeps opening across restarts and outages. Keyed
+  // `anime:<id>` → { detail, cachedAt } and `chain:<id>` → { chain, cachedAt }
+  // for the season-chain walk that anime pack playback depends on. Fresh-first:
+  // a live byId always wins and rewrites the entry; the cache is only read when
+  // the network fails. Capped (see _animeDetailCacheWrite) so it can't grow
+  // without bound.
+  animeDetailCache: new SideStore({ dir: USER_DATA, name: 'anime-detail-cache', fallback: {}, debounceMs: 1000, onError: _sideErr }),
+
+  // Peer-library browse cache. Browsing a big library refetches ~10k directories
+  // on every open — seconds, sometimes a timeout. Keyed `browse:<username>` ->
+  // { directories, cachedAt }, capped (see _browseCacheWrite) so it can't grow
+  // without bound. Serve-then-refresh: an open returns the cache immediately and
+  // kicks a background refresh whose fresh tree arrives via slsk-browse-refreshed.
+  browseCache: new SideStore({ dir: USER_DATA, name: 'browse-cache', fallback: {}, debounceMs: 1000, onError: _sideErr }),
 }
 
 // One-time move out of the shared config. adoptIfEmpty only takes the legacy
@@ -1192,6 +1317,18 @@ app.whenReady().then(() => {
     console.error('[papa][history] migration failed; history left exactly as it was:', e && e.message)
   }
 
+  // Store schema versioning (App §96). A marker file records the schema version
+  // this profile's on-disk stores were last written under. There are no
+  // migrations yet — this is just the scaffolding. The one thing it does today
+  // is detect a DOWNGRADE: if the marker holds a version NEWER than this build
+  // knows, the user has run a newer Papa Audio against this data and then gone
+  // back, and an older build silently mis-reading a newer store's shape is how
+  // data gets quietly corrupted. We do not refuse to run — we log loudly so the
+  // problem is on the record if something later looks wrong.
+  try { checkStoreSchemaVersion() } catch (e) {
+    console.error('[papa][schema] version check failed harmlessly:', e && e.message)
+  }
+
   // Crash recovery: detect if previous session ended ungracefully
   const wasCleanShutdown = store.get('cleanShutdown', true)
   store.set('cleanShutdown', false)
@@ -1251,50 +1388,124 @@ app.whenReady().then(() => {
     if (fs.existsSync(configPath)) fs.chmodSync(configPath, 0o600)
   } catch (_) {}
 
-  async function processWishlist() {
-    const wishlist = store.get('downloadWishlist', [])
-    if (!wishlist.length) return
-    console.log('[papa] wishlist: checking', wishlist.length, 'items')
-    for (const item of wishlist) {
-      try {
-        const search = await slskdFetch('POST', '/searches', {
-          searchText: item.query,
-          searchTimeout: 15000,
-          responseLimit: 50,
-          fileLimit: 10000,
-        })
-        const id = search?.id
-        if (!id) continue
+  // The wishlist auto-download engine (slskWishlistSweep, defined at module
+  // level alongside the scheduler) hunts each entry, scores the results the way
+  // the grid does and enqueues a clear album on its own. First sweep waits out
+  // the launch stampede AND slskd's own connect — a sweep against a daemon that
+  // has not logged in yet finds nothing — then it repeats on a slow cadence.
+  setTimeout(() => { slskWishlistSweep().catch(() => {}) }, WISHLIST_FIRST_SWEEP_MS)
+  slskWishlistTimer = setInterval(() => { slskWishlistSweep().catch(() => {}) }, WISHLIST_SWEEP_EVERY_MS)
+  if (slskWishlistTimer.unref) slskWishlistTimer.unref()
 
-        const start = Date.now()
-        let responses = []
-        for (let i = 0; i < 25; i++) {
-          await new Promise(r => setTimeout(r, 1000))
-          const st = await slskdFetch('GET', `/searches/${id}`)
-          responses = await slskdFetch('GET', `/searches/${id}/responses`) || []
-          if (st?.state?.includes('Completed') || responses.length > 0 || Date.now() - start > 20000) break
-        }
-
-        try { await slskdFetch('DELETE', `/searches/${id}`) } catch (_) {}
-
-        if (!responses.length) continue
-
-        const best = responses.find(f => /\.(flac|wav)$/i.test(f.filename)) || responses[0]
-        await slskdFetch('POST', `/transfers/downloads/${encodeURIComponent(best.username)}`,
-          [{ filename: best.filename, size: best.size }])
-
-        const updated = store.get('downloadWishlist', []).filter(w => w.query !== item.query)
-        store.set('downloadWishlist', updated)
-        console.log('[papa] wishlist: downloaded and removed', item.query)
-      } catch (e) {
-        console.error('[papa] wishlist error:', e.message || e)
-      }
-    }
-  }
-
-  setInterval(processWishlist, 30 * 60 * 1000)
-  setTimeout(processWishlist, 30000)
+  startConnectivityMonitor()
+  startAutoBackup()
 })
+
+// ── Offline detection (App §11) ──────────────────────────────────────────────
+// The main process cannot listen for the renderer's 'online'/'offline' events —
+// those live on window/navigator, not here — so instead it probes a reliable
+// endpoint on a slow cadence and tells the renderer when the answer changes.
+// Two guards keep it from flapping: a 5 s timeout so a slow probe is treated as
+// down, and a two-in-a-row rule so a single blip never flips the banner. The
+// renderer draws the banner; main only reports the transition.
+let _onlineState = null          // null until the first pair of probes settles it
+let _lastProbe = null            // the previous single result, for the "two in a row" rule
+const CONNECTIVITY_PROBE_HOST = 'www.gstatic.com'
+const CONNECTIVITY_PROBE_PATH = '/generate_204'  // 204, tiny, no body — a classic reachability check
+const CONNECTIVITY_PROBE_TIMEOUT_MS = 5000
+const CONNECTIVITY_PROBE_INTERVAL_MS = 60000
+
+function _probeOnce() {
+  return new Promise((resolve) => {
+    let settled = false
+    const done = (up) => { if (!settled) { settled = true; resolve(up) } }
+    try {
+      const req = https.request({
+        method: 'HEAD',
+        host: CONNECTIVITY_PROBE_HOST,
+        path: CONNECTIVITY_PROBE_PATH,
+        timeout: CONNECTIVITY_PROBE_TIMEOUT_MS,
+      }, (res) => {
+        res.resume()  // drain, so the socket is not held open
+        done(true)    // any response at all means the network answered
+      })
+      req.on('timeout', () => { req.destroy(); done(false) })
+      req.on('error', () => done(false))
+      req.end()
+    } catch (_) { done(false) }
+  })
+}
+
+async function _checkConnectivity() {
+  const up = await _probeOnce()
+  // Only a result that matches the previous one is allowed to flip the state,
+  // so a lone failed probe on an otherwise-fine connection is ignored.
+  if (_lastProbe === up && _onlineState !== up) {
+    _onlineState = up
+    safeSend('app-online-state', { online: up })
+    console.log(`[papa] connectivity: now ${up ? 'online' : 'offline'}`)
+  } else if (_onlineState === null && _lastProbe === up) {
+    // First settled reading: adopt it silently so the renderer starts in the
+    // right state without a spurious "transition".
+    _onlineState = up
+    safeSend('app-online-state', { online: up })
+  }
+  _lastProbe = up
+}
+
+function startConnectivityMonitor() {
+  // Fire the first probe shortly after startup settles, not during the launch
+  // stampede, then keep it on a slow interval.
+  setTimeout(() => { _checkConnectivity().catch(() => {}) }, 10000).unref?.()
+  setInterval(() => { _checkConnectivity().catch(() => {}) }, CONNECTIVITY_PROBE_INTERVAL_MS)
+}
+
+// ── Auto-backups (App §4) ────────────────────────────────────────────────────
+// Once per app launch, after startup has settled, write a full rotating backup
+// of every store to USER_DATA/backups/backup-<ISO date>/ and keep only the 7
+// newest. Reuses the same bundling routine the manual export uses, so the two
+// can never drift. Nothing here may throw or block startup: a failed backup
+// logs one line and is otherwise invisible.
+const AUTO_BACKUP_KEEP = 7
+const AUTO_BACKUP_DELAY_MS = 30000
+
+function _runAutoBackup() {
+  const root = path.join(USER_DATA, 'backups')
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+  const dir = path.join(root, `backup-${stamp}`)
+  fs.mkdirSync(dir, { recursive: true })
+
+  // One JSON blob with the whole bundle — same shape as a manual export, so it
+  // can be handed straight to papa-import-all if it is ever needed. The
+  // video-store blob is one of the sideStores, so it rides along in `stores`.
+  const payload = _buildBackupPayload()
+  fs.writeFileSync(path.join(dir, 'papa-backup.json'), JSON.stringify(payload), 'utf8')
+
+  // Rotate: keep the newest AUTO_BACKUP_KEEP backup directories, delete older.
+  let entries = []
+  try {
+    entries = fs.readdirSync(root, { withFileTypes: true })
+      .filter(e => e.isDirectory() && e.name.startsWith('backup-'))
+      .map(e => e.name)
+      .sort()  // ISO stamps sort chronologically as strings
+  } catch (_) { entries = [] }
+  const stale = entries.slice(0, Math.max(0, entries.length - AUTO_BACKUP_KEEP))
+  for (const name of stale) {
+    try { fs.rmSync(path.join(root, name), { recursive: true, force: true }) } catch (_) { /* best effort */ }
+  }
+  return { dir, kept: Math.min(entries.length, AUTO_BACKUP_KEEP) }
+}
+
+function startAutoBackup() {
+  setTimeout(() => {
+    try {
+      const r = _runAutoBackup()
+      console.log(`[papa] auto-backup written to ${r.dir} (${r.kept} kept)`)
+    } catch (e) {
+      console.error('[papa] auto-backup failed:', (e && e.message) || String(e))
+    }
+  }, AUTO_BACKUP_DELAY_MS).unref?.()
+}
 
 // mpv is spawned as a plain child, so it dies with a graceful quit (will-quit
 // calls player.stop()). It does NOT die if this process is killed abruptly --
@@ -1353,13 +1564,22 @@ function shutdownFromSignal() {
   // app.quit() is cancellable and can stall, which left the process alive
   // while mpv had already been stopped.
   try { player?.stop() } catch (_) {}
+  // will-quit tears the video side down for the same reason: without this, a
+  // signal shutdown mid-film left the video mpv playing on as an orphan and
+  // the torrent stream running until the next launch reaped them.
+  try { _videoTeardown() } catch (_) {}
   try { stopSlskd() } catch (_) {}
   try { store.set('cleanShutdown', true) } catch (_) {}
   flushSideStores()
   flushLogSync()
   try { if (fs.existsSync(NOW_PLAYING_PATH)) fs.unlinkSync(NOW_PLAYING_PATH) } catch (_) {}
   try { globalShortcut.unregisterAll() } catch (_) {}
-  try { app.exit(0) } catch (_) {}
+  // Continue Watching (video-store.js) lives in the renderer's localStorage,
+  // which Chromium commits to disk on its own delayed timer rather than
+  // synchronously on write. app.exit() below kills the process before that
+  // timer would normally fire, so force the flush and give it a moment.
+  try { session.defaultSession.flushStorageData() } catch (_) {}
+  setTimeout(() => { try { app.exit(0) } catch (_) {} }, 200)
   // Deliberately NOT unref'd: an unref'd timer will not fire if Electron's
   // main loop stops pumping Node timers, which is exactly the case here.
   setTimeout(() => process.exit(0), 500)
@@ -1379,6 +1599,10 @@ app.on('will-quit', () => {
   // player.stop(), so quitting used to leave both behind.
   try { _videoTeardown() } catch (_) {}
   stopSlskd()
+  // Continue Watching (video-store.js) lives in the renderer's localStorage,
+  // which Chromium commits to disk on its own delayed timer rather than
+  // synchronously on write; force that flush before the process goes away.
+  try { session.defaultSession.flushStorageData() } catch (_) {}
   flushSideStores()
   flushLogSync()
   // Before the unlink, or a write still in flight recreates the file.
@@ -1388,8 +1612,56 @@ app.on('will-quit', () => {
   globalShortcut.unregisterAll()
 })
 
+// Given a saved window rectangle and the list of display work areas, return a
+// rectangle that is actually reachable on one of them. A monitor unplugged
+// since last run leaves x/y pointing into a void; without this the window
+// restores off-screen with no way to drag it back. Pure so it can be tested
+// without Electron: pass the work areas in, get bounds out. Returns null when
+// there is nothing worth restoring (no saved size), so the caller falls back
+// to its defaults.
+function _clampWindowState(saved, workAreas, defaults) {
+  const def = defaults || { width: 1400, height: 900 }
+  const minW = (defaults && defaults.minWidth)  || 950
+  const minH = (defaults && defaults.minHeight) || 650
+  if (!saved || !saved.width || !saved.height) return null
+  const areas = Array.isArray(workAreas) ? workAreas.filter(Boolean) : []
+  // Never restore a window bigger than the largest display it might land on;
+  // and honour the app's own floor.
+  const maxW = areas.reduce((m, a) => Math.max(m, a.width), 0) || def.width
+  const maxH = areas.reduce((m, a) => Math.max(m, a.height), 0) || def.height
+  const width  = Math.max(minW, Math.min(saved.width,  maxW))
+  const height = Math.max(minH, Math.min(saved.height, maxH))
+  const out = { width, height, maximized: !!saved.maximized }
+  // No stored position (first run at a size, or size-only save): let the OS
+  // centre it. A position only counts if we have both coordinates.
+  if (typeof saved.x !== 'number' || typeof saved.y !== 'number') return out
+  // A position is visible if any part of the title-bar band would sit inside a
+  // display's work area. If none does, the display it was on is gone; drop the
+  // position and let the OS place it.
+  const BAND = 48   // enough of the top edge to grab with a cursor
+  const visibleOn = areas.find(a =>
+    saved.x + width  > a.x + 8 &&
+    saved.x < a.x + a.width - 8 &&
+    saved.y + BAND   > a.y &&
+    saved.y < a.y + a.height - 8)
+  if (!visibleOn) return out
+  // On its display but partly past an edge (a smaller monitor now): pull it
+  // fully back inside that display's work area.
+  const x = Math.max(visibleOn.x, Math.min(saved.x, visibleOn.x + visibleOn.width  - width))
+  const y = Math.max(visibleOn.y, Math.min(saved.y, visibleOn.y + visibleOn.height - height))
+  out.x = x
+  out.y = y
+  return out
+}
+
 function createWindow(hidden = false) {
-  const winState = sideStores.windowState.get() || {}
+  const savedWin = sideStores.windowState.get() || {}
+  const workAreas = (() => {
+    try { return screen.getAllDisplays().map(d => d.workArea) }
+    catch (_) { return [] }
+  })()
+  const winState = _clampWindowState(savedWin, workAreas,
+    { width: 1400, height: 900, minWidth: 950, minHeight: 650 }) || {}
   mainWindow = new BrowserWindow({
     width:  winState.width  || 1400,
     height: winState.height || 900,
@@ -1487,6 +1759,11 @@ function createWindow(hidden = false) {
     const reason = (details && details.reason) || 'unknown'
     console.error('[papa] renderer gone:', reason)
     if (reason === 'clean-exit') return
+    // Same plain-English record the main-process crash handlers write, so a
+    // renderer crash lands in the one file the user is told to send.
+    _appendCrashLog(`the window crashed (${reason})`,
+      new Error(`render-process-gone: ${reason}` +
+        (details && details.exitCode != null ? ` (exit ${details.exitCode})` : '')))
     const win = mainWindow
     const now = Date.now()
     _rendererCrashes = _rendererCrashes.filter(t => now - t < RENDERER_CRASH_WINDOW_MS)
@@ -1520,6 +1797,11 @@ function createWindow(hidden = false) {
 
   mainWindow.on('resize', () => { saveWinState() })
   mainWindow.on('move', saveWinState)
+  // Maximizing or restoring may not move or resize the frame in a way that
+  // fires 'resize' first (some WMs snap without an intermediate bounds change),
+  // so the maximized flag could otherwise never be recorded.
+  mainWindow.on('maximize', saveWinState)
+  mainWindow.on('unmaximize', saveWinState)
   mainWindow.on('close', async (e) => {
     saveWinStateNow()
     if (!app.isQuitting && store.get('closeToTray', true) && tray) {
@@ -1572,6 +1854,9 @@ function getPlayerSettings() {
   return {
     outputMode: 'default', alsaDevice: null,
     mode: 'gapless', crossfadeSecs: 4, replaygain: 'no',
+    // Non-destructive ReplayGain from the loudness map (App #59). OFF by default:
+    // it only takes effect once the user has scanned their library and opted in.
+    replaygainApply: false,
     channels: 'auto', boost: false,
     eq: eqDefaults(),
     ...store.get('playerSettings', {}),
@@ -1906,9 +2191,122 @@ ipcMain.handle('queue-build', async (_e, { mode = 'surprise', seedFilePath = nul
 })
 
 
+// ── Non-destructive ReplayGain (App #59) ──────────────────────────────────────
+// The mpv volume the slider produces, before any per-track ReplayGain. mpv's
+// softvol is cubic, so the linear 0–1 the renderer sends is mapped here the same
+// way player-set-volume maps it. Defaults to full when the slider has not moved
+// yet this session (linearToMpv(1) = 100, the neutral value).
+function _baseMpvVolume() {
+  var linear = (lastLinearVolume == null) ? 1 : lastLinearVolume
+  return linearToMpv(linear, getPlayerSettings().boost)
+}
+
+// The file mpv currently has open, tracked so that when the slider moves we can
+// re-apply that track's gain on top of the new base — otherwise moving the
+// volume would wipe the ReplayGain until the next track change.
+let _loudnessCurrentPath = null
+
+// Fold a track's stored ReplayGain into mpv's volume. Off unless the user turned
+// replaygainApply on. A track with no stored measurement (gainDb null) lands on
+// the base volume unchanged, so an un-scanned library plays exactly as before.
+function applyLoudnessGain(resolvedPath) {
+  _loudnessCurrentPath = resolvedPath || null
+  if (!player) return
+  var base = _baseMpvVolume()
+  var cfg = getPlayerSettings()
+  if (!cfg.replaygainApply) {
+    // Application is off: make sure the base volume (no gain) is what is in force,
+    // in case a previous track left a gained value on mpv's volume property.
+    return player.setVolume(base).catch(() => {})
+  }
+  var map = sideStores.loudnessMap.get() || {}
+  var entry = resolvedPath ? map[resolvedPath] : null
+  var gainDb = entry && typeof entry === 'object' ? entry.gainDb : null
+  var vol = loudness.applyGainToMpvVolume(base, gainDb, MPV_MAX)
+  return player.setVolume(vol).catch(() => {})
+}
+
+// Measure one file's integrated loudness with ffmpeg's ebur128 filter. Reads
+// nothing, writes nothing to the file — the number goes to the loudness map.
+// spawnFn is injectable for tests; the timeout stops one undecodable file from
+// wedging a whole scan run.
+function measureLoudness(filePath, { spawnFn = spawn, timeoutMs = 120000 } = {}) {
+  return new Promise(resolve => {
+    let done = false
+    const finish = r => { if (!done) { done = true; clearTimeout(timer); resolve(r) } }
+    let proc
+    try {
+      proc = spawnFn('ffmpeg', [
+        '-hide_banner', '-nostats', '-nostdin',
+        '-i', filePath,
+        '-map', '0:a:0',
+        '-af', 'ebur128=peak=true',
+        '-f', 'null', '-',
+      ], { stdio: ['ignore', 'ignore', 'pipe'] })
+    } catch (e) {
+      return finish({ ok: false, error: String(e && e.message || e) })
+    }
+    const timer = setTimeout(() => {
+      finish({ ok: false, error: `timed out after ${timeoutMs}ms` })
+      try { proc.kill('SIGKILL') } catch { /* already gone */ }
+    }, timeoutMs)
+    let buf = ''
+    proc.stderr.on('data', d => { buf += d.toString() })
+    proc.on('error', e => finish({ ok: false, error: String(e && e.message || e) }))
+    proc.on('close', code => {
+      const lufs = loudness.parseIntegratedLufs(buf)
+      if (lufs == null) return finish({ ok: false, error: code !== 0 ? `ffmpeg exit ${code}` : 'no loudness measured' })
+      finish({ ok: true, lufs: lufs, gainDb: loudness.gainForLufs(lufs) })
+    })
+  })
+}
+
+// Scan a batch of files sequentially, storing each measurement in the loudness
+// map. Bounded to `paths.length` files by the caller (20 per run). Emits nothing
+// mid-run; the renderer polls the map after and shows progress from its own
+// counter. Returns the per-file outcomes so the renderer can report scanned/total.
+async function runLoudnessScan(paths) {
+  var results = []
+  for (var i = 0; i < paths.length; i++) {
+    var fp = paths[i]
+    var r = await measureLoudness(fp)
+    if (r.ok) {
+      sideStores.loudnessMap.update(function (m) {
+        m = m || {}
+        m[fp] = { lufs: r.lufs, gainDb: r.gainDb, at: Date.now() }
+        return m
+      })
+    }
+    results.push({ filePath: fp, ok: r.ok, lufs: r.ok ? r.lufs : null, gainDb: r.ok ? r.gainDb : null, error: r.ok ? null : r.error })
+  }
+  return results
+}
+
+// Scan up to 20 not-yet-measured local tracks from the library subset the
+// renderer hands over. The renderer passes the file paths (it holds the library);
+// main measures and stores. Returns { results, scanned } for a progress readout.
+ipcMain.handle('loudness-scan', async (_, { paths } = {}) => {
+  if (!Array.isArray(paths) || !paths.length) return { ok: true, results: [] }
+  var batch = paths.slice(0, 20).filter(p => typeof p === 'string' && p && !/^https?:\/\//.test(p))
+  var results = await runLoudnessScan(batch)
+  return { ok: true, results: results }
+})
+
+// The stored loudness map, for the renderer to compute coverage and the album
+// spread. Returned whole; it is small (a few numbers per track).
+ipcMain.handle('loudness-get-map', () => ({ ok: true, map: sideStores.loudnessMap.get() || {} }))
+
 ipcMain.handle('player-load',       async (_, { path: p, play }) => {
   var resolved = await _resolvePlayerPath(p)
-  return wrap(() => player.load(resolved, { play }))()
+  var r = await wrap(() => player.load(resolved, { play }))()
+  // Non-destructive ReplayGain (App #59): after the file is open, fold its
+  // stored gain into mpv's volume. mpv keeps its `volume` property across a
+  // loadfile, so without this a per-track gain from a previous track would
+  // linger; with it, each track lands at the target loudness. Off by default —
+  // only runs when the user has turned replaygainApply on. A no-op for any track
+  // not yet scanned (gainDb null → base volume unchanged).
+  try { applyLoudnessGain(resolved) } catch (_) { /* cosmetic; never fails a load */ }
+  return r
 })
 ipcMain.handle('player-set-next',   async (_, p) => {
   // Pre-warm the cache for the next track so it plays instantly
@@ -1939,7 +2337,9 @@ ipcMain.handle('player-switch',     async (_, path) => {
     return { ok: false, error: `could not pause before switching: ${String(e && e.message || e)}` }
   }
   var resolved = await _resolvePlayerPath(path)
-  return wrap(() => player.load(resolved, { play: true }))()
+  var r = await wrap(() => player.load(resolved, { play: true }))()
+  try { applyLoudnessGain(resolved) } catch (_) { /* cosmetic; never fails a switch */ }
+  return r
 })
 ipcMain.handle('player-seek',       (_, s) => wrap(() => player.seek(s))())
 // Renderer sends linear 0–100 (HTMLAudioElement semantics); mpv softvol is
@@ -1947,7 +2347,18 @@ ipcMain.handle('player-seek',       (_, s) => wrap(() => player.seek(s))())
 let lastLinearVolume = null
 ipcMain.handle('player-set-volume', (_, v) => wrap(() => {
   lastLinearVolume = v / 100
-  return player.setVolume(linearToMpv(lastLinearVolume, getPlayerSettings().boost))
+  var cfg = getPlayerSettings()
+  var base = linearToMpv(lastLinearVolume, cfg.boost)
+  // With ReplayGain application on, the slider still means "how loud overall",
+  // but the current track's gain rides on top so moving the slider does not lose
+  // the per-track correction until the next track change.
+  if (cfg.replaygainApply && _loudnessCurrentPath) {
+    var map = sideStores.loudnessMap.get() || {}
+    var entry = map[_loudnessCurrentPath]
+    var gainDb = entry && typeof entry === 'object' ? entry.gainDb : null
+    return player.setVolume(loudness.applyGainToMpvVolume(base, gainDb, MPV_MAX))
+  }
+  return player.setVolume(base)
 })())
 ipcMain.handle('player-set-speed',  (_, x) => wrap(() => player.setSpeed(x))())
 ipcMain.handle('player-get-status', () => ({
@@ -2104,6 +2515,11 @@ ipcMain.handle('player-set-config', async (_, partial) => {
       if ('boost' in partial && lastLinearVolume != null) {
         await player.setVolume(linearToMpv(lastLinearVolume, cfg.boost))
       }
+      // Toggling ReplayGain application takes effect on the current track at once,
+      // not only on the next load — folding in (or clearing) the stored gain.
+      if ('replaygainApply' in partial) {
+        try { await applyLoudnessGain(_loudnessCurrentPath) } catch (_) {}
+      }
     }
     return { ok: true }
   } catch (e) { return { ok: false, error: String(e.message || e) } }
@@ -2156,6 +2572,16 @@ function initMpris() {
   }
 }
 
+// A cover can be a local file path or, for streamed (YouTube) tracks, an http
+// URL. Only a local path needs the file:// scheme + URI-encoding; an http URL is
+// already a valid artUrl and prefixing it produced "file://https://…", which
+// KDE's media widget could not load — so streamed tracks showed no artwork.
+function _mprisArtUrl(artPath) {
+  if (!artPath) return ''
+  if (/^https?:\/\//.test(artPath)) return artPath
+  return 'file://' + encodeURI(artPath).replace(/#/g, '%23')
+}
+
 function updateMpris(data) {
   if (!mprisPlayer) return
   try {
@@ -2163,7 +2589,7 @@ function updateMpris(data) {
       mprisPlayer.metadata = {
         'mpris:trackid': mprisPlayer.objectPath('track/' + (data.queueIndex ?? 0)),
         'mpris:length': Math.round((data.duration || 0) * 1e6),
-        'mpris:artUrl': data.artPath ? 'file://' + encodeURI(data.artPath).replace(/#/g, '%23') : '',
+        'mpris:artUrl': _mprisArtUrl(data.artPath),
         'xesam:title': data.title || '',
         'xesam:album': data.album || '',
         'xesam:artist': [data.artist || ''],
@@ -2240,9 +2666,24 @@ ipcMain.on('win-close',    () => {
 // anything. closeToTray is real: two places in main honour it.
 ipcMain.handle('get-general-settings', () => ({
   closeToTray: store.get('closeToTray', true),
+  uiScale: store.get('uiScale', 1),
+  // Appearance for the music side + shared chrome (App #87). The cinema stays
+  // dark regardless. 'dark' | 'light' | 'system'; defaults to dark, the app's
+  // native identity.
+  theme: store.get('theme', 'dark'),
 }))
 ipcMain.on('save-general-settings', (_, s) => {
   if (s && typeof s.closeToTray === 'boolean') store.set('closeToTray', s.closeToTray)
+  // The renderer sends one of the offered factors; guard the range so a stray
+  // value can't be stored and then re-applied on every launch.
+  if (s && typeof s.uiScale === 'number' && s.uiScale >= 0.5 && s.uiScale <= 2) {
+    store.set('uiScale', s.uiScale)
+  }
+  // Only the three known appearance choices are stored; anything else is
+  // dropped rather than persisted and re-applied on every launch.
+  if (s && (s.theme === 'dark' || s.theme === 'light' || s.theme === 'system')) {
+    store.set('theme', s.theme)
+  }
 })
 
 ipcMain.handle('get-streaming-volume-offset', () => store.get('streamingVolumeOffset', 0))
@@ -2328,6 +2769,22 @@ ipcMain.on('save-playback-state', (_, s) => sideStores.playbackState.set(s))
 
 ipcMain.handle('get-session-state', () => sideStores.sessionState.get())
 ipcMain.on('save-session-state', (_, s) => sideStores.sessionState.set(s))
+
+// The video-store bridge (src/video-store.js bridge mode). Values are opaque
+// strings; a write returning false tells the renderer to flip its health flag
+// and retry on the next save.
+ipcMain.handle('video-store-read', () => {
+  try { return sideStores.videoStore.get() } catch (_) { return null }
+})
+ipcMain.handle('video-store-write', (_, text) => {
+  try { sideStores.videoStore.set(String(text)); return true } catch (_) { return false }
+})
+ipcMain.handle('video-store-read-backup', () => {
+  try { return sideStores.videoStoreBak.get() } catch (_) { return null }
+})
+ipcMain.handle('video-store-write-backup', (_, text) => {
+  try { sideStores.videoStoreBak.set(String(text)); return true } catch (_) { return false }
+})
 
 // ── Liked albums ─────────────────────────────────────────────────────────────
 ipcMain.handle('get-liked', () => store.get('likedAlbums', []))
@@ -4498,6 +4955,107 @@ ipcMain.handle('fetch-album-art', async (_, { albumId, artist, album }) => {
   }
 })
 
+// ── Tag fixer: MusicBrainz lookup (App #60) ───────────────────────────────────
+// Propose-only this wave. We query MusicBrainz for a release matching a local
+// album's artist+album, fetch its track list, and hand it back for the renderer
+// to diff against local tags. No files are written.
+//
+// MusicBrainz asks two things of every client: a descriptive User-Agent with a
+// contact, and no more than one request per second. Both are enforced here — the
+// UA is fixed, and _mbThrottle serialises calls behind a 1.1 s spacing so a burst
+// of album checks cannot trip the rate limit and get us blocked.
+const MB_BASE = 'https://musicbrainz.org/ws/2'
+const MB_UA = `PapaAudio/${(() => { try { return require('./package.json').version || '1.0' } catch (_) { return '1.0' } })()} ( https://github.com/aaddrick/claude-desktop-debian )`
+const MB_MIN_INTERVAL_MS = 1100
+let _mbLastAt = 0
+let _mbChain = Promise.resolve()
+
+// Serialise every MusicBrainz request behind the 1 req/s ceiling: each call waits
+// for the previous one to finish AND for at least MB_MIN_INTERVAL_MS to have
+// elapsed since the last request actually went out.
+function _mbThrottle(fn) {
+  const run = _mbChain.then(async () => {
+    const wait = MB_MIN_INTERVAL_MS - (Date.now() - _mbLastAt)
+    if (wait > 0) await new Promise(r => setTimeout(r, wait))
+    _mbLastAt = Date.now()
+    return fn()
+  })
+  // Keep the chain alive even if this call rejects, so one failure does not wedge
+  // every later request.
+  _mbChain = run.then(() => {}, () => {})
+  return run
+}
+
+function _mbGetJson(pathAndQuery) {
+  return new Promise((resolve, reject) => {
+    const url = `${MB_BASE}${pathAndQuery}${pathAndQuery.includes('?') ? '&' : '?'}fmt=json`
+    const req = https.get(url, { headers: { 'User-Agent': MB_UA, 'Accept': 'application/json' } }, res => {
+      if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
+        res.resume()
+        return reject(new Error(`unexpected redirect ${res.statusCode}`))
+      }
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        res.resume()
+        return reject(new Error(`MusicBrainz HTTP ${res.statusCode}`))
+      }
+      const chunks = []
+      res.on('data', c => chunks.push(c))
+      res.on('end', () => {
+        try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))) }
+        catch (e) { reject(new Error(`bad JSON from MusicBrainz: ${e.message}`)) }
+      })
+      res.on('error', reject)
+    })
+    req.on('error', reject)
+    req.setTimeout(15000, () => { req.destroy(); reject(new Error('MusicBrainz timeout')) })
+  })
+}
+
+// Look up a release by artist+album and return its track titles/numbers. Returns
+// { ok, release, tracks } or { ok: false, error }. tracks is [{ title, position }]
+// ready for PapaMusicTools.buildTagDiff. Two throttled requests: a search, then
+// the chosen release's recordings.
+ipcMain.handle('musicbrainz-check-album', async (_, { artist, album } = {}) => {
+  const ar = String(artist || '').trim()
+  const al = String(album || '').trim()
+  if (!al) return { ok: false, error: 'no album name to look up' }
+  try {
+    // Lucene-escape the quotes-sensitive query. artist is optional — some
+    // downloads have only an album folder name.
+    const q = ar
+      ? `release:"${al.replace(/"/g, '\\"')}" AND artist:"${ar.replace(/"/g, '\\"')}"`
+      : `release:"${al.replace(/"/g, '\\"')}"`
+    const search = await _mbThrottle(() =>
+      _mbGetJson(`/release/?query=${encodeURIComponent(q)}&limit=5`))
+    const releases = (search && search.releases) || []
+    if (!releases.length) return { ok: true, release: null, tracks: [], reason: 'no-match' }
+    // Prefer the highest-scored release that actually has recordings we can read.
+    const chosen = releases[0]
+    const detail = await _mbThrottle(() =>
+      _mbGetJson(`/release/${encodeURIComponent(chosen.id)}?inc=recordings`))
+    const tracks = []
+    const media = (detail && detail.media) || []
+    for (const m of media) {
+      for (const tr of (m.tracks || [])) {
+        tracks.push({ title: tr.title || (tr.recording && tr.recording.title) || '', position: Number(tr.position) || 0 })
+      }
+    }
+    return {
+      ok: true,
+      release: {
+        id: chosen.id,
+        title: detail.title || chosen.title || al,
+        artist: (chosen['artist-credit'] && chosen['artist-credit'][0] && chosen['artist-credit'][0].name) || ar,
+        date: detail.date || chosen.date || '',
+        score: chosen.score || 0,
+      },
+      tracks: tracks,
+    }
+  } catch (e) {
+    return { ok: false, error: String(e && e.message || e) }
+  }
+})
+
 // ── Soulseek IPC ─────────────────────────────────────────────────────────────
 ipcMain.handle('slsk-status', async () => {
   const installed = fs.existsSync(SLSKD_BIN)
@@ -4600,7 +5158,45 @@ async function cancelSearchesExcept(keepGeneration) {
 ipcMain.handle('slsk-cancel-searches', async (_, { keepGeneration } = {}) =>
   ({ cancelled: await cancelSearchesExcept(keepGeneration == null ? -1 : keepGeneration) }))
 
-ipcMain.handle('slsk-search', async (_, { query, timeoutMs = 25000, noCache = false, generation = 0 }) => {
+// slskd's search responses are trusted downstream — the renderer scores by
+// hasFreeUploadSlot and queueLength, the scheduler ranks by them, the wishlist
+// hunter thresholds on file format. But which field slskd populates has drifted
+// between versions (freeUploadSlots vs hasFreeUploadSlot), so scoring "worked by
+// chance" wherever the wrong name was read. Normalize the shape ONCE, main-side,
+// so everything downstream can trust it. Existing field names the renderer
+// already reads are left exactly as they are; this only adds and canonicalizes.
+function normalizeSearchResponse(resp) {
+  if (!resp || typeof resp !== 'object') return resp
+  const out = { ...resp }
+  // hasFreeUploadSlot: prefer the boolean slskd sends now, fall back to the old
+  // numeric freeUploadSlots (> 0), so scoring is right whichever slskd set.
+  out.hasFreeUploadSlot = !!(resp.hasFreeUploadSlot || Number(resp.freeUploadSlots) > 0)
+  out.queueLength = Number(resp.queueLength) || 0
+  out.uploadSpeed = Number(resp.uploadSpeed) || 0
+  out.files = (resp.files || []).map(f => {
+    const nf = { ...f }
+    // Surface the audio quality fields slskd provides but that never made it to
+    // the UI. Only set when present, so a file without them is not stamped with
+    // zeros that would read as "0 kbps" / "0-bit".
+    if (f.bitRate != null) nf.bitRate = Number(f.bitRate)
+    if (f.bitDepth != null) nf.bitDepth = Number(f.bitDepth)
+    if (f.sampleRate != null) nf.sampleRate = Number(f.sampleRate)
+    return nf
+  })
+  return out
+}
+
+function normalizeSearchResponses(responses) {
+  return (responses || []).map(normalizeSearchResponse)
+}
+
+// A thin wrapper over slskRunSearch (defined just below). The core is factored
+// out so the wishlist hunter can run exactly the same search path — caching,
+// throttle handling, live-search registration, partial-result pushes and
+// cleanup — rather than a second, subtly-different copy.
+ipcMain.handle('slsk-search', (_, args) => slskRunSearch(args || {}))
+
+async function slskRunSearch({ query, timeoutMs = 25000, noCache = false, generation = 0 } = {}) {
   // Reconnect if needed
   if (!slskdReady) {
     try {
@@ -4658,7 +5254,7 @@ ipcMain.handle('slsk-search', async (_, { query, timeoutMs = 25000, noCache = fa
       lastPushTime = elapsed
       if (count !== lastCount) {
         lastCount = count
-        safeSend('slsk-progress', { query, results: partial || [], done: false })
+        safeSend('slsk-progress', { query, results: normalizeSearchResponses(partial), done: false })
       }
     }
 
@@ -4678,7 +5274,9 @@ ipcMain.handle('slsk-search', async (_, { query, timeoutMs = 25000, noCache = fa
   const responses = await slskdFetch('GET', `/searches/${id}/responses`)
   try { await slskdFetch('DELETE', `/searches/${id}`) } catch (e) { console.error('[papa] slsk-search-cleanup:', e.message || e) }
 
-  const results = responses || []
+  // Normalized once here so the cache, the renderer and the wishlist hunter all
+  // see the guaranteed shape (see normalizeSearchResponse).
+  const results = normalizeSearchResponses(responses)
   if (results.length) _searchCacheSet(cacheKey, results)
   safeSend('slsk-progress', { query, results, done: true })
   return { results }
@@ -4686,7 +5284,7 @@ ipcMain.handle('slsk-search', async (_, { query, timeoutMs = 25000, noCache = fa
     _liveSearches.delete(id)
     _cancelledSearches.delete(id)
   }
-})
+}
 
 ipcMain.handle('slsk-download', async (_, { username, filename, size }) => {
   try {
@@ -4705,6 +5303,11 @@ ipcMain.handle('slsk-download', async (_, { username, filename, size }) => {
 // intent against what slskd actually reports, so a peer that stalls or dies
 // costs one file's delay instead of the whole album.
 const dlSched = require('./src/download-scheduler')
+// The quality gate for alternate-source substitution. Nothing gets substituted
+// unless its fingerprint is `compatible` with the original — surround layout
+// first. See src/source-fingerprint.js for the contract and the field-failure
+// history it exists to prevent.
+const dlFingerprint = require('./src/source-fingerprint')
 
 const DL_TICK_MS = 4000
 let dlState = dlSched.createState()
@@ -4713,16 +5316,27 @@ let dlTicking = false
 
 function dlConfig() {
   const saved = store.get('slskSchedulerConfig', {})
-  return Object.assign({}, dlSched.DEFAULTS, saved)
+  const cfg = Object.assign({}, dlSched.DEFAULTS, saved)
+  // The tuner's learned cap wins over the default once it has run, unless the
+  // user has pinned maxGlobalInflight explicitly in the saved config.
+  if (dlState && dlState.learnedGlobalInflight != null && saved.maxGlobalInflight == null) {
+    cfg.maxGlobalInflight = dlState.learnedGlobalInflight
+  }
+  return cfg
 }
 
 // Finding "the same file" on another peer by basename alone is wrong: an
 // 08. Change.flac from a 5.1 rip and one from a stereo rip are indistinguishable
-// that way, so an album ends up half surround and half stereo. Matching would
-// have to compare channel count and size (see download-spread.js sizeCompatible)
-// before this can be trusted, so it stays off until it does.
+// that way, so an album ends up half surround and half stereo. That is exactly
+// the field failure that kept this off. It is on now because substitution is
+// gated by src/source-fingerprint.js `compatible()`: a candidate is only
+// accepted when its surround label matches EXACTLY (5.1 never accepts stereo),
+// it matches on lossless, and its bit depth / sample rate are equal-or-better.
+// The gate is unit-tested (test/source-fingerprint.test.js) including the exact
+// 5.1-vs-stereo case, so discovery defaults on. The off-switch remains: set
+// slskSchedulerConfig.discoverAlternates to false to disable it entirely.
 function dlDiscoveryEnabled() {
-  return store.get('slskSchedulerConfig', {}).discoverAlternates === true
+  return store.get('slskSchedulerConfig', {}).discoverAlternates !== false
 }
 
 // The queue now lives on our side, so it must survive a quit — previously
@@ -4747,6 +5361,13 @@ function dlPersist() {
       abandoned: Object.keys(dlState.done)   // capped below, and pruned on the tick
         .filter(k => dlState.done[k] === 'abandoned')
         .slice(-5000),
+      // The identity-level abandonment set: a cancelled track's album+title, so
+      // it cannot come back from a DIFFERENT user via discovery after a restart.
+      // This is the persistence half of field failure (b)'s fix. Capped the same.
+      abandonedIds: Object.keys(dlState.abandonedIds || {}).slice(-5000),
+      // The tuner's learned global-inflight cap, so it does not relearn from
+      // scratch every launch.
+      learnedGlobalInflight: dlState.learnedGlobalInflight != null ? dlState.learnedGlobalInflight : null,
       savedAt: Date.now(),
     })
   } catch (_) {}
@@ -4772,6 +5393,11 @@ function dlRestore() {
     }
   }
   for (const k of saved.abandoned || []) dlState.done[k] = 'abandoned'
+  // Restore the identity-level abandonment set. Without this a cancelled track
+  // could return from a different user's copy after a restart.
+  dlState.abandonedIds = {}
+  for (const id of saved.abandonedIds || []) dlState.abandonedIds[id] = true
+  if (saved.learnedGlobalInflight != null) dlState.learnedGlobalInflight = saved.learnedGlobalInflight
   dlState.peerFailures = saved.peerFailures || {}
   return items.length
 }
@@ -4810,6 +5436,8 @@ async function dlSnapshot() {
           kind: dlClassify(f.state),
           filename: String(f.filename),
           endedAt: f.endedAt || null,
+          // Carried for the adaptive tuner's aggregate-throughput measure.
+          averageSpeed: Number(f.averageSpeed) || 0,
         }
         out.set(rec.filename, rec)
         flat.push(rec)
@@ -4900,6 +5528,11 @@ async function dlFindAlternates(filename) {
           username: r.username,
           filename: f.filename,
           size: f.size,
+          // Carried so the fingerprint gate can compare lossless / bit depth /
+          // sample rate, not just the name. Without these an alternate is judged
+          // on surround-from-text and extension alone.
+          bitDepth: f.bitDepth,
+          sampleRate: f.sampleRate,
           hasFreeUploadSlot: !!r.hasFreeUploadSlot,
           queueLength: r.queueLength || 0,
           uploadSpeed: r.uploadSpeed || 0,
@@ -4913,6 +5546,123 @@ async function dlFindAlternates(filename) {
   } finally {
     if (id) { try { await slskdFetch('DELETE', `/searches/${id}`) } catch (_) {} }
   }
+}
+
+// One discovery search per album folder per 10 minutes. The disaster this
+// guards is throughput (storming slskd into a 429), not correctness — the
+// correctness gate is the fingerprint below. Keyed by the normalized album
+// folder so every file in an album shares one search budget.
+const DL_DISCOVERY_COOLDOWN_MS = 10 * 60 * 1000
+const _dlDiscoveryLastSearch = new Map()   // albumFolder -> timestamp
+
+function _dlAlbumFolderTerm(filename) {
+  const folder = dlFolderOf(filename)
+  if (!folder) return ''
+  return folder.replace(/[_\-\[\]()]+/g, ' ').replace(/\s+/g, ' ').trim()
+}
+
+// Search the network for the whole album folder, returning every file that
+// matches one of the wanted basenames, each with its metadata for fingerprinting.
+async function dlSearchAlbum(term, wantedBasenames) {
+  if (term.length < 4) return []
+  let id
+  try {
+    const search = await slskdFetch('POST', '/searches', { searchText: term, fileLimit: 400 })
+    id = search?.id
+    if (!id) return []
+    for (let i = 0; i < 15; i++) {
+      await new Promise(r => setTimeout(r, 1000))
+      const st = await slskdFetch('GET', `/searches/${id}`)
+      if (st?.state?.includes('Completed')) break
+    }
+    const responses = await slskdFetch('GET', `/searches/${id}/responses`) || []
+    const want = new Set(wantedBasenames)
+    const out = []
+    for (const r of responses) {
+      for (const f of r.files || []) {
+        const nm = dlBaseName(f.filename).toLowerCase()
+        if (!want.has(nm)) continue
+        out.push({
+          username: r.username,
+          filename: f.filename,
+          size: f.size,
+          bitDepth: f.bitDepth,
+          sampleRate: f.sampleRate,
+          hasFreeUploadSlot: !!r.hasFreeUploadSlot,
+          queueLength: r.queueLength || 0,
+          uploadSpeed: r.uploadSpeed || 0,
+        })
+      }
+    }
+    return out
+  } catch (_) {
+    return []
+  } finally {
+    if (id) { try { await slskdFetch('DELETE', `/searches/${id}`) } catch (_) {} }
+  }
+}
+
+// The fingerprint gate around discovery. For one starved/stalled item:
+//   - respect the per-album 10-minute rate limit,
+//   - search the album folder once,
+//   - and add ONLY those candidates whose fingerprint is `compatible` with the
+//     ORIGINAL requested file's fingerprint — surround label exact, lossless
+//     match, bit depth / sample rate equal-or-better.
+// Every accept/reject is logged to the scheduler state (subLog) so the UI can
+// show why an alternate was or was not taken. This is the code that makes it
+// safe to substitute at all: it is the direct answer to the 5.1-replaced-with-
+// stereo field failure.
+async function dlDiscoverForItem(item, now) {
+  if (!item || !item.filename) return
+  const albumFolder = dlFolderOf(item.filename).toLowerCase()
+  const last = _dlDiscoveryLastSearch.get(albumFolder) || 0
+  if (albumFolder && now - last < DL_DISCOVERY_COOLDOWN_MS) return
+  const term = _dlAlbumFolderTerm(item.filename)
+  if (!term) return
+  if (albumFolder) _dlDiscoveryLastSearch.set(albumFolder, now)
+  // Keep the map from growing forever across a long session.
+  if (_dlDiscoveryLastSearch.size > 500) {
+    for (const [k, t] of _dlDiscoveryLastSearch) {
+      if (now - t > DL_DISCOVERY_COOLDOWN_MS) _dlDiscoveryLastSearch.delete(k)
+    }
+  }
+
+  const wanted = dlBaseName(item.filename).toLowerCase()
+  const candidates = await dlSearchAlbum(term, [wanted])
+  if (!candidates.length) return
+
+  // The fingerprint of what the user actually asked for. Built from the item's
+  // own path text (surround label) plus whatever quality metadata the current
+  // source carries.
+  const orig = (item.sources && item.sources[0]) || {}
+  const originalFp = dlFingerprint.fingerprint({
+    filename: item.filename,
+    bitDepth: orig.bitDepth,
+    sampleRate: orig.sampleRate,
+  })
+  const key = item.key || dlSched.itemKey(item.filename)
+  const accepted = []
+  for (const c of candidates) {
+    const candFp = dlFingerprint.fingerprint(c)
+    if (dlFingerprint.compatible(originalFp, candFp)) {
+      accepted.push(c)
+      dlSched.logSubstitution(dlState, {
+        at: now, key, from: item.filename, to: c.filename, candidate: c.username,
+        accepted: true,
+        reason: `compatible (surround ${originalFp.surroundLabel || 'stereo'}, ` +
+          `${originalFp.lossless ? 'lossless' : 'lossy'})`,
+      })
+    } else {
+      dlSched.logSubstitution(dlState, {
+        at: now, key, from: item.filename, to: c.filename, candidate: c.username,
+        accepted: false,
+        reason: `rejected: original ${originalFp.surroundLabel || 'stereo'}/` +
+          `${originalFp.lossless ? 'lossless' : 'lossy'} vs candidate ` +
+          `${candFp.surroundLabel || 'stereo'}/${candFp.lossless ? 'lossless' : 'lossy'}`,
+      })
+    }
+  }
+  if (accepted.length) dlSched.addSources(dlState, key, accepted)
 }
 
 // slskd addresses transfers by its own id, which we do not keep; look it up.
@@ -4980,7 +5730,7 @@ async function dlTick() {
         live._lastState = seen.state
       }
       if (seen.kind === 'succeeded') dlSched.recordSuccess(dlState, key, seen.username)
-      else if (seen.kind === 'failed') dlSched.recordFailure(dlState, key, seen.username, cfg, now)
+      else if (seen.kind === 'failed') { dlSched.recordFailure(dlState, key, seen.username, cfg, now); _dlTickFailures++ }
       else if (seen.kind === 'cancelled') dlSched.recordAbandoned(dlState, key)
     }
 
@@ -5023,19 +5773,18 @@ async function dlTick() {
     }
 
     // Files with no usable source, and files wedged in a single peer's queue,
-    // both need the same thing: somewhere else to get them from.
+    // both need the same thing: somewhere else to get them from. Discovery is
+    // gated by the quality fingerprint (see dlDiscoverForItem) and rate-limited
+    // to one search per album per 10 minutes.
     const hunt = dlSched.starvedItems(dlState, cfg, now)
       .concat(dlSched.stalledWithoutAlternate(dlState, cfg, now)
         .map(h => dlState.inflight[h.key])
         .filter(Boolean))
       .slice(0, 2)
     for (const item of dlDiscoveryEnabled() ? hunt : []) {
-      if (!item || !item.filename) continue
-      if (item._searchedAt && now - item._searchedAt < 5 * 60 * 1000) continue
-      item._searchedAt = now
-      const alts = await dlFindAlternates(item.filename)
-      const key = item.key || dlSched.itemKey(item.filename)
-      if (alts.length) dlSched.addSources(dlState, key, alts)
+      // Sequential on purpose: one discovery search at a time, so slskd is never
+      // stormed and the rate limit is honoured per album.
+      await dlDiscoverForItem(item, now)
     }
 
     // The persisted `abandoned` subset was capped at 5000; the in-memory map had
@@ -5048,10 +5797,57 @@ async function dlTick() {
       console.error('[papa] transfer purge failed:', String(e && e.message || e))
     }
 
+    // Nudge the global in-flight cap from measured behaviour. The trouble count
+    // is this tick's stalls plus failures; the throughput trend is this tick's
+    // aggregate speed against the last. Deliberately gentle — see the tuner.
+    const trouble = stalled.length + _dlTickFailures
+    dlAdaptiveTune(now, trouble)
+    _dlTickFailures = 0
+
     dlPersist()
     dlBroadcast()
   } finally {
     dlTicking = false
+  }
+}
+
+// Aggregate throughput sampled once per tick, so the tuner can tell a rising
+// trend from a falling one. Only the previous sample is kept.
+let _dlLastThroughput = 0
+// Failures observed in the current tick (reset each tick), fed to the tuner as
+// part of the trouble signal alongside stalls.
+let _dlTickFailures = 0
+
+function _dlAggregateThroughput() {
+  let sum = 0
+  for (const f of _dlLastSnapshotFiles) {
+    if (f.kind === 'succeeded' || f.kind === 'failed' || f.kind === 'cancelled') continue
+    sum += Number(f.averageSpeed) || 0
+  }
+  return sum
+}
+
+// Adjust maxGlobalInflight one step, persist the learned value, and — because
+// the tuner owns it once it has run — feed it back into the config the next tick
+// reads. Pure decision lives in the scheduler (nextGlobalInflight); this is only
+// the measurement and the plumbing.
+function dlAdaptiveTune(now, troubleCount) {
+  const cfg = dlConfig()
+  const currentCap = dlState.learnedGlobalInflight != null
+    ? dlState.learnedGlobalInflight
+    : cfg.maxGlobalInflight
+  const throughput = _dlAggregateThroughput()
+  const inflight = Object.keys(dlState.inflight).length
+  const next = dlSched.nextGlobalInflight(currentCap, {
+    currentInflight: inflight,
+    throughputRising: throughput > _dlLastThroughput,
+    troubleCount: troubleCount || 0,
+  })
+  _dlLastThroughput = throughput
+  if (next !== dlState.learnedGlobalInflight) {
+    dlState.learnedGlobalInflight = next
+    console.log(`[papa][dl] adaptive cap: maxGlobalInflight -> ${next} ` +
+      `(inflight ${inflight}, throughput ${Math.round(throughput / 1024)} KB/s, trouble ${troubleCount || 0})`)
   }
 }
 
@@ -5109,18 +5905,57 @@ async function dlSeedFolderSources(items) {
       }
       const responses = await slskdFetch('GET', `/searches/${id}/responses`) || []
       const want = new Map()
-      for (const it of group) want.set(dlBaseName(it.filename).toLowerCase(), it)
+      // Precompute each wanted file's fingerprint once, from its own path text
+      // and whatever quality its chosen source carries.
+      for (const it of group) {
+        const src0 = (it.sources && it.sources[0]) || {}
+        want.set(dlBaseName(it.filename).toLowerCase(), {
+          it,
+          fp: dlFingerprint.fingerprint({
+            filename: it.filename, bitDepth: src0.bitDepth, sampleRate: src0.sampleRate,
+          }),
+        })
+      }
       let added = 0
       for (const r of responses) {
         for (const f of r.files || []) {
           const hit = want.get(dlBaseName(f.filename).toLowerCase())
           if (!hit) continue
-          added += dlSched.addSources(dlState, dlSched.itemKey(hit.filename), [{
+          // Same gate as discovery: only add a source whose quality fingerprint
+          // is compatible with the file the user actually chose. This closes the
+          // seed-folder path against the 5.1-replaced-by-stereo failure, which
+          // basename matching alone would walk straight into.
+          const candFp = dlFingerprint.fingerprint({
+            filename: f.filename, bitDepth: f.bitDepth, sampleRate: f.sampleRate,
+          })
+          if (!dlFingerprint.compatible(hit.fp, candFp)) {
+            dlSched.logSubstitution(dlState, {
+              at: Date.now(), key: dlSched.itemKey(hit.it.filename),
+              from: hit.it.filename, to: f.filename, candidate: r.username,
+              accepted: false,
+              reason: `seed rejected: original ${hit.fp.surroundLabel || 'stereo'}/` +
+                `${hit.fp.lossless ? 'lossless' : 'lossy'} vs candidate ` +
+                `${candFp.surroundLabel || 'stereo'}/${candFp.lossless ? 'lossless' : 'lossy'}`,
+            })
+            continue
+          }
+          const n = dlSched.addSources(dlState, dlSched.itemKey(hit.it.filename), [{
             username: r.username, filename: f.filename, size: f.size,
+            bitDepth: f.bitDepth, sampleRate: f.sampleRate,
             hasFreeUploadSlot: !!r.hasFreeUploadSlot,
             queueLength: r.queueLength || 0,
             uploadSpeed: r.uploadSpeed || 0,
           }])
+          if (n) {
+            dlSched.logSubstitution(dlState, {
+              at: Date.now(), key: dlSched.itemKey(hit.it.filename),
+              from: hit.it.filename, to: f.filename, candidate: r.username,
+              accepted: true,
+              reason: `seed compatible (surround ${hit.fp.surroundLabel || 'stereo'}, ` +
+                `${hit.fp.lossless ? 'lossless' : 'lossy'})`,
+            })
+          }
+          added += n
         }
       }
       if (added) { dlPersist(); dlBroadcast() }
@@ -5244,6 +6079,170 @@ ipcMain.handle('slsk-respread-backlog', async (_, opts) => {
   return { ok: true, purged: purge.length, respread: queued.length, stats: dlSched.stats(dlState) }
 })
 
+// Clear the scheduler's peer benches. A peer benched after five failures sits
+// out a ten-minute cooldown and nothing in the UI could shorten it, so a peer
+// that had a bad ten minutes stayed dead to us long after it recovered. This is
+// the escape hatch: forget the failure history and let those peers back in on
+// the next tick. Returns how many were actually on the bench.
+ipcMain.handle('slsk-unbench-peers', () => {
+  const now = Date.now()
+  let cleared = 0
+  for (const u of Object.keys(dlState.peerFailures)) {
+    if (dlSched.peerBenched(dlState, u, now)) cleared++
+  }
+  // Wipe the whole failure map, not just the benched subset: a peer at four
+  // failures is one away from the bench for no reason we can still see, so a
+  // manual unbench is also a clean slate.
+  dlState.peerFailures = {}
+  dlPersist()
+  dlStart()
+  dlTick()
+  dlBroadcast()
+  return { ok: true, cleared }
+})
+
+// ── Wishlist auto-download engine ────────────────────────────────────────────
+// The wishlist (store key downloadWishlist, [{query, addedAt}]) used to be a
+// list you looked at. A sweep now runs every entry as one search, scores the
+// results exactly the way the grid does (src/wishlist-hunter.js), and enqueues a
+// clear album on its own — dropping the entry and recording the hit so the same
+// query is never chased twice.
+const wishlistHunter = require('./src/wishlist-hunter')
+
+// 90s after start, not immediately: slskd needs to connect and log in first, and
+// a sweep against a daemon that has not is wasted. Then every six hours.
+const WISHLIST_FIRST_SWEEP_MS = 90 * 1000
+const WISHLIST_SWEEP_EVERY_MS = 6 * 60 * 60 * 1000
+// Between entries, so a wishlist of any size does not storm slskd into a 429.
+const WISHLIST_ENTRY_GAP_MS = 5000
+// On a 429 mid-sweep we abort and come back much later, rather than pushing into
+// a daemon that has just asked us to stop.
+const WISHLIST_THROTTLE_BACKOFF_MS = 30 * 60 * 1000
+// The hit history, capped, and the dedupe source: a query in here is never
+// hunted again. Kept small — it is a list of normalized queries plus a little
+// context, not payloads.
+const WISHLIST_HITS_CAP = 50
+
+let slskWishlistTimer = null
+let slskWishlistSweeping = false
+
+function wishlistHits() { return store.get('wishlistHits', []) }
+
+function recordWishlistHit(hit) {
+  const hits = wishlistHits()
+  // Newest first, deduped by normalized query, capped.
+  const norm = hit.normalized || wishlistHunter.normalizeQuery(hit.query)
+  const next = [{
+    query: hit.query,
+    normalized: norm,
+    folderName: hit.folderName,
+    username: hit.username,
+    fileCount: hit.fileCount,
+    at: hit.at || Date.now(),
+  }].concat(hits.filter(h => (h.normalized || wishlistHunter.normalizeQuery(h.query)) !== norm))
+  store.set('wishlistHits', next.slice(0, WISHLIST_HITS_CAP))
+}
+
+function wishlistAlreadyHunted(normQuery) {
+  return wishlistHits().some(h => (h.normalized || wishlistHunter.normalizeQuery(h.query)) === normQuery)
+}
+
+// One sweep. Guarded against overlap — a slow sweep must never have a second
+// started on top of it — and returns the per-entry outcome for the UI's manual
+// "Search now" button. Enqueued entries are removed from the wishlist store as
+// they land, so a crash mid-sweep loses no progress.
+async function slskWishlistSweep() {
+  if (slskWishlistSweeping) return { ok: false, error: 'A wishlist sweep is already running', results: [] }
+  slskWishlistSweeping = true
+  try {
+    const entries = store.get('downloadWishlist', [])
+    if (!entries.length) return { ok: true, results: [] }
+    console.log('[papa] wishlist: sweeping', entries.length, 'item(s)')
+
+    const sweep = await wishlistHunter.runSweep({
+      entries,
+      // noCache: the 5-min search cache must never serve the hunter a stale
+      // result. An entry that was empty an hour ago may be downloadable now, and
+      // a cached empty would keep it invisible until the cache expired on its own
+      // schedule, not the sweep's.
+      search: async (query) => {
+        const r = await slskRunSearch({ query, timeoutMs: 20000, noCache: true, generation: BACKGROUND_GENERATION })
+        return (r && r.results) || []
+      },
+      enqueue: async (items) => {
+        for (const it of items) {
+          dlSched.addItem(dlState, { filename: it.filename, size: it.size || 0, sources: it.sources })
+        }
+        dlStart()
+        dlTick()
+      },
+      alreadyHunted: wishlistAlreadyHunted,
+      onHit: (hit) => {
+        recordWishlistHit(hit)
+        // Drop the satisfied entry from the wishlist as it lands.
+        const remaining = store.get('downloadWishlist', [])
+          .filter(w => wishlistHunter.normalizeQuery(w.query) !== hit.normalized)
+        store.set('downloadWishlist', remaining)
+        safeSend('slsk-wishlist-hit', {
+          query: hit.query, folderName: hit.folderName,
+          username: hit.username, fileCount: hit.fileCount,
+        })
+        console.log('[papa] wishlist: enqueued', hit.fileCount, 'file(s) for', JSON.stringify(hit.query),
+          'from', hit.username)
+      },
+      sleep: (ms) => new Promise(r => setTimeout(r, ms)),
+      gapMs: WISHLIST_ENTRY_GAP_MS,
+      now: Date.now,
+    })
+
+    if (sweep.aborted && sweep.abortReason === 'throttled') {
+      // slskd rate-limited us mid-sweep: back off well beyond the normal cadence
+      // and try again then, rather than on the next six-hour tick.
+      console.log('[papa] wishlist: slskd throttled the sweep; retrying in',
+        Math.round(WISHLIST_THROTTLE_BACKOFF_MS / 60000), 'min')
+      setTimeout(() => { slskWishlistSweep().catch(() => {}) }, WISHLIST_THROTTLE_BACKOFF_MS)
+    }
+
+    return { ok: true, results: sweep.results }
+  } catch (e) {
+    console.error('[papa] wishlist sweep failed:', String((e && e.message) || e))
+    return { ok: false, error: String((e && e.message) || e), results: [] }
+  } finally {
+    slskWishlistSweeping = false
+  }
+}
+
+// Manually trigger one sweep now, for the UI's "Search now" button.
+ipcMain.handle('slsk-wishlist-run', () => slskWishlistSweep())
+
+// ── Friend diffs ─────────────────────────────────────────────────────────────
+// "New since last visit": each saved user carries fileCount from the last browse
+// and prevFileCount from the one before. The diff is what appeared between them.
+ipcMain.handle('slsk-friend-diffs', () => {
+  const list = savedUsers.sortUsers(store.get('slskSavedUsers', []))
+  return list.map(u => {
+    const key = String(u.username).toLowerCase()
+    const pres = presenceCache.get(key)
+    const fileCount = (u.fileCount == null) ? null : Number(u.fileCount)
+    const prevFileCount = (u.prevFileCount == null) ? null : Number(u.prevFileCount)
+    // newFiles only when both counts are known and the library grew. A shrink
+    // (files removed, or a partial browse) is not "new", so it reports null
+    // rather than a negative.
+    let newFiles = null
+    if (fileCount != null && prevFileCount != null && fileCount - prevFileCount > 0) {
+      newFiles = fileCount - prevFileCount
+    }
+    return {
+      username: u.username,
+      fileCount,
+      prevFileCount,
+      newFiles,
+      lastBrowsedAt: u.lastBrowsedAt || null,
+      presence: pres ? pres.presence : 'Unknown',
+    }
+  })
+})
+
 // Only the fields the renderer actually reads. slskd's transfer records carry a
 // great deal more, and the whole list was structured-cloned across the bridge in
 // both directions — the measured worst case was 1,020,307 bytes every 6 s. The
@@ -5301,9 +6300,11 @@ ipcMain.handle('slsk-cancel-transfer', async (_, { username, id, alreadyDone }) 
   // existing Cancel button works on them without knowing they are different.
   if (typeof id === 'string' && id.indexOf('sched:') === 0) {
     const key = id.slice(6)
-    dlState.pending = dlState.pending.filter(e => e.key !== key)
-    delete dlState.inflight[key]
-    dlState.done[key] = 'exhausted'
+    // A user cancel is ABANDONMENT, not exhaustion: it must register at the
+    // identity level so the track cannot come back from another user via
+    // discovery. Marking it 'exhausted' (the old behaviour) left discovery free
+    // to re-add it — one of the two field failures this pass fixes.
+    dlSched.recordAbandoned(dlState, key)
     dlPersist()
     dlBroadcast()
     return { ok: true }
@@ -5995,14 +6996,83 @@ ipcMain.handle('slsk-refresh-user-statuses', async () => {
   return { statuses: presenceSnapshot() }
 })
 
+// One browse fetch with a deadline. Returns the filtered directory list, or
+// throws. `timeoutMs` is a parameter so the no-cache retry can wait longer.
+async function _browseFetch(username, timeoutMs) {
+  const timeout = new Promise((_, rej) =>
+    setTimeout(() => rej(new Error('Browse timed out')), timeoutMs))
+  const fetch = slskdFetch('GET', `/users/${encodeURIComponent(username)}/browse`)
+  const data = await Promise.race([fetch, timeout])
+  return (data?.directories || data || []).filter(d => (d.files || []).length > 0)
+}
+
+// A completed browse of a SAVED user updates the diff record: the previous
+// fileCount rolls into prevFileCount, the fresh count and browse time land.
+// "new since last visit" is read from that pair by slsk-friend-diffs. Only saved
+// users are touched — recordBrowse is a no-op for the rest.
+function _browseRecordDiff(username, dirs) {
+  if (!savedUsers.isSaved(store.get('slskSavedUsers', []), username)) return
+  const fileCount = dirs.reduce((n, d) => n + (d.files || []).length, 0)
+  const list = savedUsers.recordBrowse(store.get('slskSavedUsers', []), username,
+    { fileCount, dirCount: dirs.length })
+  store.set('slskSavedUsers', list)
+  savedUsersChanged(list)
+}
+
+// Users with a background refresh already running, so an open that lands while
+// the refresh is in flight does not fire a second one.
+const _browseRefreshing = new Set()
+
+// Fetch fresh in the background, cache it, and tell the renderer to re-read.
+function _browseRefresh(username) {
+  if (_browseRefreshing.has(username)) return
+  _browseRefreshing.add(username)
+  ;(async () => {
+    try {
+      const dirs = await _browseFetch(username, 30000)
+      _browseCacheWrite(username, dirs)
+      _browseRecordDiff(username, dirs)
+      // The renderer re-reads via the normal call, which now serves the fresh
+      // cache. The UI agent subscribes to this via onSlskBrowseRefreshed.
+      safeSend('slsk-browse-refreshed', { username })
+    } catch (_) {
+      // A failed refresh leaves the cache in place — cache wins silently.
+    } finally {
+      _browseRefreshing.delete(username)
+    }
+  })()
+}
+
 ipcMain.handle('slsk-browse-user', async (_, { username }) => {
+  const cached = _browseCacheRead(username)
+
+  // Cache present: serve it instantly and refresh in the background. The open is
+  // immediate; the fresh tree arrives via slsk-browse-refreshed a moment later.
+  if (cached) {
+    _browseRefresh(username)
+    return { ok: true, directories: cached.directories || [], fromCache: true, cachedAt: cached.cachedAt }
+  }
+
+  // No cache: fetch synchronously so the first-ever open still returns a tree.
   try {
-    const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('Browse timed out')), 30000))
-    const fetch   = slskdFetch('GET', `/users/${encodeURIComponent(username)}/browse`)
-    const data    = await Promise.race([fetch, timeout])
-    const dirs    = (data?.directories || data || []).filter(d => (d.files || []).length > 0)
+    const dirs = await _browseFetch(username, 30000)
+    _browseCacheWrite(username, dirs)
+    _browseRecordDiff(username, dirs)
     return { ok: true, directories: dirs }
   } catch (e) {
+    // A timeout on the first open, with nothing cached, gets ONE automatic retry
+    // on a longer deadline before erroring — a big library often just needs more
+    // time than the first attempt allowed.
+    if (/timed out/i.test(String(e && e.message))) {
+      try {
+        const dirs = await _browseFetch(username, 60000)
+        _browseCacheWrite(username, dirs)
+        _browseRecordDiff(username, dirs)
+        return { ok: true, directories: dirs }
+      } catch (e2) {
+        return { ok: false, error: e2.message }
+      }
+    }
     return { ok: false, error: e.message }
   }
 })
@@ -6061,14 +7131,35 @@ function _videoSettings() {
       // request, plus the awards line and the certificate. Optional — every
       // path that reads it works without it.
       omdbApiKey: '',
+      // OpenSubtitles.com key for the online subtitle search in the CC menu
+      // (§player 21). Optional — no key means the search says "add a key in
+      // Settings" instead of failing, and every other path works without it.
+      openSubtitlesApiKey: '',
       preferSurround: true,
       preferredQuality: '1080p',
       torrentSources: true,
+      // Bandwidth cap for streaming, in megabits per second, or null for no
+      // cap (App #41). Applied to the WebTorrent client, which throttles
+      // client-wide — one cap governs every stream and background download.
+      // Stored in Mbps because that is what the settings slider speaks;
+      // converted to bytes/s (×125000) at the streamer boundary.
+      downloadLimitMbps: null,
+      // Whether the app shares back to the swarm while watching (App #42).
+      // Default on: seeding is neighbourly and keeps peers we still need to
+      // download from. Off chokes uploads to nothing without dropping the
+      // connections.
+      seedWhileWatching: true,
       // Where a stream is cached while it plays. Empty means the temporary
       // directory, which on this machine is a tmpfs — the cache would sit in
       // RAM and a season pack can approach the memory limit. A path on a real
       // disk keeps it off memory entirely.
       streamCacheDir: '',
+      // User-editable mirror lists per torrent provider (App #34). One key per
+      // mirror-capable provider; an empty array means "use the built-in
+      // defaults" — so a fresh install and a user who has cleared a field both
+      // land on the same shipped mirrors. Only these four providers fall back
+      // across a mirror list; the meta-indexers each have a single endpoint.
+      sourceMirrors: { yts: [], eztv: [], nyaa: [], apibay: [] },
     },
     store.get('videoSettings')
   )
@@ -6082,10 +7173,15 @@ function fetchWithTimeout(ms) {
 }
 
 // Lazy singletons: built on first use so nothing runs at import time, and the
-// TMDB key is read fresh when the catalog is first needed.
+// TMDB key is read fresh when the catalog is first needed. `reset()` drops the
+// memoised instance so the next call reconstructs it — used when a setting the
+// factory reads at construction time (a provider's mirror list, App #34)
+// changes and the singleton has to be rebuilt to pick it up.
 function _lazy(factory) {
   let value
-  return () => (value ??= factory())
+  const get = () => (value ??= factory())
+  get.reset = () => { value = undefined }
+  return get
 }
 
 const tmdb = _lazy(() => createTmdbCatalog({
@@ -6102,15 +7198,47 @@ const omdb = _lazy(() => createOmdbCatalog({
   fetchFn: fetchWithTimeout(12000),
   cache: _omdbCache,
 }))
-const yts = _lazy(() => createYtsProvider({ fetchFn: fetchWithTimeout(15000) }))
+// Online subtitle search for the CC menu (§player 21). The key is read fresh
+// per call through the getter — same trick omdb uses — so the singleton never
+// has to be rebuilt when the user pastes a key into Settings: no key means
+// search() returns an empty list carrying `needsKey`, and the UI says so.
+const opensubs = _lazy(() => createOpenSubtitles({
+  apiKey: () => _videoSettings().openSubtitlesApiKey || process.env.OPENSUBTITLES_API_KEY,
+  fetcher: fetchWithTimeout(15000),
+}))
+// The user-editable mirror list for a provider (App #34), or undefined when the
+// setting is empty — which each provider factory reads as "use my defaults". An
+// entry is only honoured when it is a non-empty array of strings; a blank field
+// in the settings UI stores [] and so falls back to the built-in mirrors.
+function _mirrorsFor(name) {
+  const all = _videoSettings().sourceMirrors
+  const list = all && typeof all === 'object' ? all[name] : null
+  if (!Array.isArray(list)) return undefined
+  const clean = list.filter(u => typeof u === 'string' && u.trim()).map(u => u.trim())
+  return clean.length ? clean : undefined
+}
+const yts = _lazy(() => createYtsProvider({ fetchFn: fetchWithTimeout(15000), baseUrls: _mirrorsFor('yts') }))
 // EZTV covers TV episodes (YTS is movies-only) and Nyaa covers anime. Both are
 // keyless and magnet-based, so they ride the same torrent path as YTS.
-const eztv = _lazy(() => createEztvProvider({ fetchFn: fetchWithTimeout(15000) }))
-const nyaa = _lazy(() => createNyaaProvider({ fetchFn: fetchWithTimeout(15000) }))
+const eztv = _lazy(() => createEztvProvider({ fetchFn: fetchWithTimeout(15000), baseUrls: _mirrorsFor('eztv') }))
+const nyaa = _lazy(() => createNyaaProvider({ fetchFn: fetchWithTimeout(15000), baseUrls: _mirrorsFor('nyaa') }))
+const animetosho = _lazy(() => createAnimetoshoProvider({ fetchFn: fetchWithTimeout(15000) }))
 // The broad-coverage indexer. YTS only carries its own encodes, so any film it
 // never released had no sources at all; apibay covers the whole public index
 // for both movies and TV.
-const apibay = _lazy(() => createApibayProvider({ fetchFn: fetchWithTimeout(15000) }))
+const apibay = _lazy(() => createApibayProvider({ fetchFn: fetchWithTimeout(15000), baseUrls: _mirrorsFor('apibay') }))
+// The four providers whose mirror list is user-editable (App #34). When
+// `sourceMirrors` changes, their memoised singletons are dropped so the next
+// use rebuilds them against the new list — the factory reads the mirrors once,
+// at construction, so nothing short of a rebuild picks up the change.
+const _mirrorProviders = [yts, eztv, nyaa, apibay]
+function _rebuildMirrorProviders() {
+  for (const p of _mirrorProviders) p.reset()
+}
+// The two meta-indexers: one query fans out across dozens of upstream
+// trackers, which is where most of the source count now comes from.
+const knaben = _lazy(() => createKnabenProvider({ fetchFn: fetchWithTimeout(15000) }))
+const solidtorrents = _lazy(() => createSolidTorrentsProvider({ fetchFn: fetchWithTimeout(15000) }))
 // The HTTP adapters ship with no resolvers. The former vidsrc resolver was
 // removed from the wiring because it returned an *embed page* URL: mpv runs
 // with --ytdl=no, so every one of those entries failed the moment it was
@@ -6121,7 +7249,7 @@ const movieTv = _lazy(() => createMovieTvProvider({ fetchFn: fetchWithTimeout(15
 const anime = _lazy(() => createAnimeProvider({ fetchFn: fetchWithTimeout(15000), resolvers: [] }))
 const videoEngine = _lazy(() => new VideoEngine())
 const yarrlist = _lazy(() => createYarrlistDirectory({ fetchFn: fetchWithTimeout(15000) }))
-const _videoSession = { streamer: null, win: null, token: 0, bounds: null }
+const _videoSession = { streamer: null, thumbnailer: null, win: null, token: 0, bounds: null }
 
 // In-app embedding of the mpv video surface. mpv's `--wid` is an X11 concept:
 // on this XWayland session the native handle of a child BrowserWindow is the
@@ -6322,6 +7450,90 @@ const _videoStreamCache = makeCache({ cap: 200, ttlMs: 1000 * 60 * 15 })
 // already viewed costs nothing.
 const _videoDetailCache = makeCache({ cap: 120, ttlMs: 1000 * 60 * 60 * 6 })
 const _videoSeasonCache = makeCache({ cap: 400, ttlMs: 1000 * 60 * 60 * 6 })
+// The merged airing schedule for the shows the viewer follows (App #25/#26).
+// Half an hour is short enough that a new episode's countdown stays roughly
+// right and long enough that flipping between the home tabs and the calendar
+// doesn't re-hit AniList and TMDB on every visit. Keyed by the sorted id sets
+// so a changed follow list is a cache miss rather than a stale answer.
+const _videoAiringCache = makeCache({ cap: 40, ttlMs: 1000 * 60 * 30 })
+
+// How many anime detail/chain entries the persistent outage cache keeps. Each
+// entry is a normalised detail object (a few KB), so 200 is generous and stays
+// well under a MB. Detail and chain entries share the map and the cap.
+const ANIME_DETAIL_CACHE_CAP = 200
+// When over the cap, drop this many of the oldest entries in one pass rather
+// than one-per-write, so eviction is amortised and the file isn't rewritten on
+// every single insert once it's full.
+const ANIME_DETAIL_CACHE_EVICT = 40
+
+// Write a value through to the persistent outage cache under `key`
+// (`anime:<id>` for a detail, `chain:<id>` for a season chain), stamped with the
+// current time. When the map grows past the cap, the oldest ~40 entries (by
+// cachedAt) are evicted in one pass — a simple LRU-ish trim, not a strict LRU,
+// which is all an outage fallback needs. Never throws: a cache write failing
+// must not take down the detail fetch that produced the value.
+function _animeDetailCacheWrite(key, value) {
+  try {
+    sideStores.animeDetailCache.update(prev => {
+      const map = prev && typeof prev === 'object' ? { ...prev } : {}
+      map[key] = { ...value, cachedAt: Date.now() }
+      const keys = Object.keys(map)
+      if (keys.length > ANIME_DETAIL_CACHE_CAP) {
+        // Oldest first, then delete the front slice.
+        keys.sort((a, b) => (map[a].cachedAt || 0) - (map[b].cachedAt || 0))
+        for (const k of keys.slice(0, ANIME_DETAIL_CACHE_EVICT)) delete map[k]
+      }
+      return map
+    })
+  } catch (e) {
+    try { console.warn('[papa][video] anime detail cache write failed:', e && e.message) } catch (_) {}
+  }
+}
+
+// Read an entry back out of the persistent outage cache. Returns the stored
+// object ({ detail | chain, cachedAt }) or null. Never throws.
+function _animeDetailCacheRead(key) {
+  try {
+    const map = sideStores.animeDetailCache.get()
+    const entry = map && map[key]
+    return entry || null
+  } catch (_) { return null }
+}
+
+// The browse cache mirrors the anime-detail cache: a bounded, LRU-ish side store
+// that lets an expensive fetch be served instantly from the last good result.
+const BROWSE_CACHE_CAP = 20            // users kept before the oldest are evicted
+const BROWSE_CACHE_EVICT = 4           // dropped per pass once at the cap
+
+// Write a fresh browse tree through under `browse:<username>`, stamped with the
+// time, evicting the oldest users when over the cap. Never throws — a cache
+// write failing must not take down the browse it came from.
+function _browseCacheWrite(username, directories) {
+  try {
+    const key = 'browse:' + String(username)
+    sideStores.browseCache.update(prev => {
+      const map = prev && typeof prev === 'object' ? { ...prev } : {}
+      map[key] = { directories, cachedAt: Date.now() }
+      const keys = Object.keys(map)
+      if (keys.length > BROWSE_CACHE_CAP) {
+        keys.sort((a, b) => (map[a].cachedAt || 0) - (map[b].cachedAt || 0))
+        for (const k of keys.slice(0, BROWSE_CACHE_EVICT)) delete map[k]
+      }
+      return map
+    })
+  } catch (e) {
+    try { console.warn('[papa] browse cache write failed:', e && e.message) } catch (_) {}
+  }
+}
+
+// Read a cached browse tree back. Returns { directories, cachedAt } or null.
+function _browseCacheRead(username) {
+  try {
+    const map = sideStores.browseCache.get()
+    const entry = map && map['browse:' + String(username)]
+    return entry || null
+  } catch (_) { return null }
+}
 
 function _currentAnimeSeasonTag() {
   const now = new Date()
@@ -6341,10 +7553,25 @@ ipcMain.handle('video-settings-get', () => {
   return { ok: true, settings: _videoSettings() }
 })
 
+// Only these keys may be written from the renderer. A patch is a merge, so
+// without a whitelist any renderer bug or bad payload could plant arbitrary
+// keys into the stored settings blob; every setting the UI actually owns is
+// listed here and nothing else is copied through.
+const VIDEO_SETTING_KEYS = new Set([
+  'tmdbApiKey', 'omdbApiKey', 'openSubtitlesApiKey',
+  'preferSurround', 'preferredQuality', 'torrentSources',
+  'downloadLimitMbps', 'seedWhileWatching', 'streamCacheDir',
+  'sourceMirrors',
+])
+
 ipcMain.handle('video-settings-set', (_, { patch }) => {
   try {
     const current = _videoSettings()
-    const next = { ...current, ...(patch || {}) }
+    const clean = {}
+    for (const [k, v] of Object.entries(patch || {})) {
+      if (VIDEO_SETTING_KEYS.has(k)) clean[k] = v
+    }
+    const next = { ...current, ...clean }
     store.set('videoSettings', next)
     // Clearing the key is as much a change as setting one, and the ranking and
     // source-filtering settings decide what a cached stream list contains, so
@@ -6354,6 +7581,31 @@ ipcMain.handle('video-settings-set', (_, { patch }) => {
              next.torrentSources !== current.torrentSources ||
              next.preferredQuality !== current.preferredQuality) {
       _videoStreamCache.clear()
+    }
+    // A changed mirror list means the provider singletons are pointed at the
+    // wrong hosts until they are rebuilt, and any stream list they produced is
+    // stale. Rebuild the singletons (they read the mirrors once, at
+    // construction) and drop the cached stream lists so the next lookup runs
+    // against the new mirrors. Compared by value — the blob is small.
+    if (JSON.stringify(next.sourceMirrors) !== JSON.stringify(current.sourceMirrors)) {
+      _rebuildMirrorProviders()
+      _videoStreamCache.clear()
+    }
+    // The bandwidth cap and the seed-back switch take effect immediately on the
+    // stream that is playing right now, not just the next one — WebTorrent
+    // throttles the live client, so there is nothing to wait for. Mbps→bytes/s
+    // is ×125000 (1 Mbit = 125000 bytes); null lifts the cap.
+    const streamer = _videoSession.streamer
+    if (streamer) {
+      if (next.downloadLimitMbps !== current.downloadLimitMbps) {
+        const mbps = Number(next.downloadLimitMbps)
+        const bps = (next.downloadLimitMbps == null || !isFinite(mbps) || mbps <= 0)
+          ? null : Math.floor(mbps * 125000)
+        try { streamer.setDownloadLimit(bps) } catch (_) {}
+      }
+      if (next.seedWhileWatching !== current.seedWhileWatching) {
+        try { streamer.setSeedWhileWatching(next.seedWhileWatching !== false) } catch (_) {}
+      }
     }
     return { ok: true }
   } catch (e) {
@@ -6674,8 +7926,36 @@ ipcMain.handle('video-seasons', async (_, { type, id } = {}) => {
     const key = `anime:${id}`
     const cached = _videoChainCache.get(key)
     if (cached) return { ok: true, ...cached }
-    const out = await anilist().seasonChain(id)
-    if (out.seasons.length) _videoChainCache.set(key, out)
+    let out
+    try {
+      out = await anilist().seasonChain(id)
+    } catch (err) {
+      // seasonChain normally degrades internally, but if it does throw during
+      // an outage, treat it exactly like an empty walk so the persistent
+      // fallback below has a chance to serve the last good chain.
+      out = { seasons: [], related: [], truncated: true }
+    }
+    // A truncated chain is a partial answer — the walk hit a fork or a depth
+    // limit and stopped short. Caching it would pin the incomplete list for the
+    // whole TTL, so a later, complete walk never replaces it. Only cache a
+    // chain that actually reached the end. A complete walk is also written
+    // through to the persistent outage cache so `_animeAbsoluteEpisode` can
+    // still resolve pack playback across restarts and while AniList is down.
+    if (out.seasons.length && out.truncated !== true) {
+      _videoChainCache.set(key, out)
+      _animeDetailCacheWrite(`chain:${id}`, { chain: out })
+      return { ok: true, ...out }
+    }
+    // The fresh walk came back empty or truncated. During an outage that is the
+    // norm — fall back to the last complete chain persisted on disk (a stale
+    // season list beats none, and pack playback needs it). Rehydrate the
+    // in-memory cache so the same session stops re-walking a dead API.
+    const persisted = _animeDetailCacheRead(`chain:${id}`)
+    if (persisted && persisted.chain && persisted.chain.seasons &&
+        persisted.chain.seasons.length) {
+      _videoChainCache.set(key, persisted.chain)
+      return { ok: true, ...persisted.chain }
+    }
     return { ok: true, ...out }
   } catch (e) {
     return { ok: false, error: e.message, seasons: [], related: [] }
@@ -6776,7 +8056,23 @@ async function _videoShowDetail(type, id) {
     // AniList *does* have a by-id field (`Media(id:)`). This used to run a text
     // search for the id — searching for the string "21" — which routinely
     // opened a completely unrelated show.
-    detail = await anilist().byId(id)
+    //
+    // Fresh-first, cache-on-failure. A live byId always wins and is written
+    // through to the persistent outage cache below. Only when byId THROWS (an
+    // outage — e.g. AniList's global 403) do we fall back to the on-disk copy:
+    // a stale detail page beats an error page during an outage. byId returning
+    // null (a genuinely unknown id) is not an error and is left to surface as
+    // "not found" — there is nothing to fall back to.
+    try {
+      detail = await anilist().byId(id)
+      if (detail) _animeDetailCacheWrite(`anime:${id}`, { detail })
+    } catch (err) {
+      const cached = _animeDetailCacheRead(`anime:${id}`)
+      if (cached && cached.detail) return cached.detail
+      // No cached copy: let the honest error (AniList's own message) through to
+      // the detail handler, which returns it to the renderer's error page.
+      throw err
+    }
   } else {
     detail = await tmdb().detail(type === 'tv' ? 'tv' : 'movie', id)
     // TMDB carries the better description, cast and artwork; AniList carries
@@ -6886,6 +8182,107 @@ ipcMain.handle('video-detail', async (_, { type, id, season }) => {
   }
 })
 
+// Merges the AniList airing rows and the TMDB next-episode rows into one flat,
+// time-sorted schedule for the airing shelf and the calendar (App #25/#26).
+// Pure so the merge and its date handling are testable without the network:
+//   anilistRows: [{ id, title, episode, airingAt }]  (airingAt = epoch SECONDS)
+//   tmdbRows:    [{ id, title, nextEpisode: { episodeNumber, airDate } }]
+// Every row becomes { key, title, episode, airsAt, type } where airsAt is
+// epoch MILLISECONDS. AniList's airingAt is a real timestamp; TMDB gives only a
+// day string, so it is anchored to local midnight of that day — a "Thursday"
+// with no clock time, which is exactly what the shelf and calendar show. Rows
+// with no usable time are dropped, and the whole list is sorted soonest-first.
+function _mergeAiring(anilistRows, tmdbRows) {
+  const out = []
+  for (const r of Array.isArray(anilistRows) ? anilistRows : []) {
+    if (!r || r.id == null) continue
+    const secs = Number(r.airingAt)
+    if (!Number.isFinite(secs) || secs <= 0) continue
+    out.push({
+      key: 'anime:' + r.id,
+      title: r.title || null,
+      episode: r.episode ?? null,
+      airsAt: secs * 1000,
+      type: 'anime',
+    })
+  }
+  for (const r of Array.isArray(tmdbRows) ? tmdbRows : []) {
+    if (!r || r.id == null) continue
+    const ne = r.nextEpisode
+    if (!ne || !ne.airDate) continue
+    // "YYYY-MM-DD" parsed as local midnight, not UTC: `new Date('2026-09-10')`
+    // is UTC midnight and shifts the day west of Greenwich, which would land a
+    // Thursday episode on Wednesday's calendar row for a US viewer.
+    const airsAt = _dayStringToLocalMs(ne.airDate)
+    if (airsAt == null) continue
+    out.push({
+      key: 'tv:' + r.id,
+      title: r.title || null,
+      episode: ne.episodeNumber ?? null,
+      airsAt,
+      type: 'tv',
+    })
+  }
+  out.sort((a, b) => a.airsAt - b.airsAt)
+  return out
+}
+
+// "YYYY-MM-DD" → epoch ms at LOCAL midnight of that day, or null if unparseable.
+// Kept apart from _mergeAiring so the date rule has its own test.
+function _dayStringToLocalMs(day) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(day || ''))
+  if (!m) return null
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
+  const t = d.getTime()
+  return Number.isFinite(t) ? t : null
+}
+
+ipcMain.handle('video-airing', async (_, { anilistIds, tmdbIds } = {}) => {
+  try {
+    const aIds = (Array.isArray(anilistIds) ? anilistIds : [])
+      .map(Number).filter(n => Number.isFinite(n) && n > 0)
+    const tIds = (Array.isArray(tmdbIds) ? tmdbIds : [])
+      .map(Number).filter(n => Number.isFinite(n) && n > 0)
+    if (!aIds.length && !tIds.length) return { ok: true, airing: [] }
+    // The id sets, sorted and de-duplicated, are the cache identity: the same
+    // follow list served the same schedule for the whole TTL regardless of the
+    // order the renderer happened to send the ids in.
+    const uniqSorted = list => [...new Set(list)].sort((a, b) => a - b)
+    const aKey = uniqSorted(aIds)
+    const tKey = uniqSorted(tIds)
+    const cacheKey = `airing:${aKey.join(',')}|${tKey.join(',')}`
+    const cached = _videoAiringCache.get(cacheKey)
+    if (cached) return { ok: true, airing: cached }
+
+    // Each source is optional: AniList and TMDB fail independently, and a dead
+    // TMDB key must not blank out the anime half of the schedule. Anything that
+    // throws contributes an empty list rather than failing the whole handler.
+    const anilistRows = aKey.length
+      ? await anilist().airingSchedule(aKey).catch(() => [])
+      : []
+    // TMDB has no batch next-episode endpoint, so each followed TV id is a
+    // detail fetch — but _videoShowDetail caches, so a followed show already
+    // opened this session costs nothing, and next_episode_to_air rides the
+    // detail response with no extra request of its own.
+    const tmdbRows = tKey.length
+      ? (await Promise.all(tKey.map(id =>
+          _videoShowDetail('tv', id)
+            .then(d => (d ? { id: d.id ?? id, title: d.title, nextEpisode: d.nextEpisode } : null))
+            .catch(() => null)
+        ))).filter(Boolean)
+      : []
+
+    const airing = _mergeAiring(anilistRows, tmdbRows)
+    // Only a non-empty schedule is cached: an empty result is almost always a
+    // transient upstream failure, and a 30-minute empty cache would hide the
+    // shelf long after the API recovered.
+    if (airing.length) _videoAiringCache.set(cacheKey, airing)
+    return { ok: true, airing }
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) }
+  }
+})
+
 // Only the backends that can actually answer for this media type are asked.
 // Previously every TV episode also queried YTS, which indexes movies only —
 // one guaranteed-empty network round-trip per episode click.
@@ -6894,13 +8291,13 @@ function _videoBackends(type, settings) {
   // `type` here is the *source* type, which is not always the catalog the
   // entry came from: a TMDB tv show flagged as anime is routed to nyaa, so a
   // show found by search gets the same sources as one found in the Anime tab.
-  if (type === 'anime') return torrents ? [nyaa(), apibay(), anime()] : [anime()]
+  if (type === 'anime') return torrents ? [nyaa(), animetosho(), apibay(), knaben(), solidtorrents(), anime()] : [anime()]
   // Every type gets the broad indexer alongside its specialist one. They run
   // in parallel and their results are merged and de-duplicated by info hash,
   // so the specialist's better metadata wins where both have the same torrent
   // and the broad one fills in everything the specialist never carried.
-  if (type === 'tv') return torrents ? [eztv(), apibay(), movieTv()] : [movieTv()]
-  return torrents ? [yts(), apibay(), movieTv()] : [movieTv()]
+  if (type === 'tv') return torrents ? [eztv(), apibay(), knaben(), solidtorrents(), movieTv()] : [movieTv()]
+  return torrents ? [yts(), apibay(), knaben(), solidtorrents(), movieTv()] : [movieTv()]
 }
 
 // The preferred-quality setting was stored and read by nothing. It is applied
@@ -6926,6 +8323,41 @@ function _applyQualityPreference(streams, preferred) {
   return within.concat(above, low)
 }
 
+// Fansub groups number continuing seasons absolutely — "Attack on Titan 64",
+// not "Final Season 05" — while AniList files each season as its own entry
+// starting from episode 1. Without the translation, later seasons either find
+// nothing on the indexers or match the wrong season's episode. The absolute
+// number is the sum of the episode counts of the TV entries that come before
+// this one in the season chain. Only the already-cached chain is consulted
+// (the detail page fetches it), so this never adds a network hop to a stream
+// lookup; any doubt — a gap in the counts, a non-TV entry asked about, a cold
+// cache — returns null and the seasonal query stands alone, where a wrong
+// guess would have cost nothing but a harmless extra query anyway.
+function _animeAbsoluteEpisode(anilistId, episode) {
+  try {
+    // In-memory first; fall back to the persistent outage cache so absolute
+    // episode numbering for multi-season packs still resolves after a restart
+    // or while AniList is down and the fresh walk returned nothing.
+    let chain = _videoChainCache.get(`anime:${anilistId}`)
+    if (!chain || !Array.isArray(chain.seasons) || !chain.seasons.length) {
+      const persisted = _animeDetailCacheRead(`chain:${anilistId}`)
+      if (persisted && persisted.chain) chain = persisted.chain
+    }
+    const seasons = chain && Array.isArray(chain.seasons) ? chain.seasons : []
+    if (!seasons.length) return null
+    const tv = seasons.filter(s => s && (s.format === 'TV' || s.format === 'TV_SHORT'))
+    const idx = tv.findIndex(s => String(s.id) === String(anilistId))
+    if (idx <= 0) return null   // first season's numbering is already absolute
+    let prior = 0
+    for (let i = 0; i < idx; i++) {
+      const n = Number(tv[i].episodeCount)
+      if (!n || n < 1) return null
+      prior += n
+    }
+    return prior + (Number(episode) || 0)
+  } catch (_) { return null }
+}
+
 ipcMain.handle('video-streams', async (_, req) => {
   const { type, tmdbId, anilistId, imdbId, title, titles, year, season, episode, sub, dub } = req || {}
   try {
@@ -6937,8 +8369,12 @@ ipcMain.handle('video-streams', async (_, req) => {
     // returned nothing at all. Films count too — restricting this to
     // television left Jujutsu Kaisen 0 on the film indexers, with no dub.
     const sourceType = (req.isAnime === true && type !== 'anime') ? 'anime' : type
+    const absoluteEpisode = (sourceType === 'anime' && anilistId && episode)
+      ? _animeAbsoluteEpisode(anilistId, episode)
+      : null
     const request = {
       type: sourceType, tmdbId, anilistId, imdbId, title, titles, year, season, episode, sub, dub,
+      absoluteEpisode,
     }
     // Key on the request plus the settings that change the answer, so a
     // settings change can never be masked by a cache hit.
@@ -6977,6 +8413,23 @@ ipcMain.handle('video-probe', async (_, { url }) => {
     return { ok: true, audioLayout: classify(channels), channels, codec: audio.codec_name || null }
   } catch (e) {
     return { ok: false, error: e.message }
+  }
+})
+
+// A hover thumbnail for the seek bar (Player #5). The renderer asks for a
+// position on the track; the answer is the jpg for that position's bucket, or
+// null while (or if) it is being generated. null is not an error — the bubble
+// simply shows the time alone, exactly as it did before this existed. Only
+// torrent streams have a thumbnailer; a direct URL play never built one, so it
+// returns null too. Never throws, so a hover can never surface an error dialog.
+ipcMain.handle('video-thumb', async (_, { position } = {}) => {
+  try {
+    const thumbnailer = _videoSession.thumbnailer
+    if (!thumbnailer || typeof thumbnailer.at !== 'function') return { ok: true, path: null }
+    const p = thumbnailer.at(Number(position) || 0)
+    return { ok: true, path: p || null }
+  } catch (_) {
+    return { ok: true, path: null }
   }
 })
 
@@ -7036,11 +8489,24 @@ function _maybePrefetchNextEpisode() {
   } catch (_) { /* an optimisation, never a reason to disturb playback */ }
 }
 
+// The hover-thumbnail cache (Player #5) belongs to one stream. It is torn down
+// with the streamer everywhere the streamer is: its cleanup() removes its own
+// directory, which is a no-op when the directory nested inside the stream's
+// cache dir has already gone with the streamer's own sweep, and the real work
+// when the thumbnailer made its own directory (a reused torrent).
+function _thumbnailerTeardown() {
+  if (_videoSession.thumbnailer) {
+    try { _videoSession.thumbnailer.cleanup() } catch (_) {}
+    _videoSession.thumbnailer = null
+  }
+}
+
 function _videoTeardown() {
   if (_videoSession.streamer) {
     try { _videoSession.streamer.stop() } catch (_) {}
     _videoSession.streamer = null
   }
+  _thumbnailerTeardown()
   try { videoEngine().stop() } catch (_) {}
 }
 
@@ -7062,6 +8528,7 @@ function _wireVideoEngine() {
       try { _videoSession.streamer.stop() } catch (_) {}
       _videoSession.streamer = null
     }
+    _thumbnailerTeardown()
     _closeVideoWindow()
     safeSend('video-event', { kind: 'error', message: 'Playback stopped unexpectedly (mpv exited).' })
   })
@@ -7077,18 +8544,53 @@ function _wireVideoEngine() {
   // channel rather than a new one -- it carries nothing but the fact that it
   // happened, and the theatre only needs that to know the viewer is still there.
   engine.on('activity', () => safeSend('video-event', { kind: 'activity' }))
+  // mpv finished with the file. An error end is a corrupt or unplayable
+  // source; a natural end is the film being over. Both used to be silent —
+  // black screen, live controls, nothing marked watched.
+  // The engine notices a stall before the renderer's own watchdog can (it
+  // rides the state ticks and a deadline timer). Paint it on the picture from
+  // here — the OSD is the only surface the viewer can actually see — and
+  // forward it so the page can offer a way out.
+  engine.on('stalled', payload => {
+    try { engine.osdMessage('Buffering… the source has stalled.', 5000) } catch (_) {}
+    // stallCount rides along so the renderer's auto-switch (§player 27, capped
+    // at 2/episode) can count repeated stalls without a watchdog of its own.
+    safeSend('video-event', {
+      kind: 'stalled',
+      position: payload && payload.position,
+      stallCount: payload && payload.stallCount,
+    })
+  })
+  engine.on('unstalled', () => {
+    try { engine.osdMessage('Resumed', 1200) } catch (_) {}
+    safeSend('video-event', { kind: 'unstalled' })
+  })
+  engine.on('ended', payload => {
+    safeSend('video-event', {
+      kind: 'ended',
+      // reason is 'eof' or 'error'; the error field is mpv's message when it
+      // has one. A message-less error end is still an error end.
+      error: !!(payload && payload.reason === 'error'),
+      reason: (payload && (payload.error || payload.reason)) || null,
+    })
+  })
 }
 
 // The stream list only carries what the indexer claimed about the audio. Once
 // mpv is actually playing we know the file's real layout, so probe it and tell
 // the UI. This is what the video-probe handler was built for and nothing called.
-function _probePlayingAudio(url) {
+function _probePlayingAudio(url, current) {
+  // The token that was current when the probe was launched. A source switch
+  // during the ~seconds ffprobe takes would otherwise report the OLD file's
+  // audio layout against the NEW playback, so a stale callback is dropped.
+  const stillCurrent = typeof current === 'function' ? current : () => true
   execFile('ffprobe', [
     '-v', 'error',
     '-show_entries', 'stream=codec_type,channels,codec_name',
     '-of', 'json', url
   ], { encoding: 'utf8', timeout: 20000, maxBuffer: 1 << 20 }, (err, out) => {
     if (err) return
+    if (!stillCurrent()) return
     try {
       const audio = (JSON.parse(out).streams || []).find(st => st.codec_type === 'audio')
       if (!audio) return
@@ -7100,12 +8602,86 @@ function _probePlayingAudio(url) {
   })
 }
 
+// The torrent half of starting a stream, extracted so video-play and
+// video-switch-stream share exactly one copy of it: the streamer options, the
+// error/progress wiring and the stamped-token guard were subtle enough the
+// first time that a second, drifting copy in the switch handler would be a bug
+// waiting to happen.
+//
+// `current()` is the caller's play-token guard; `onReady(url, streamer)` is the
+// only thing that differs between the two — a fresh play spins mpv up with
+// `start()`, a mid-play switch keeps the running mpv and only `load()`s the new
+// URL. The streamer is stored on the session and its `start()` fired here; the
+// caller does not await it, because `start()` resolves on 'ready' and awaiting
+// it would hang the handler on a slow torrent.
+function _startTorrentStream(result, { current, fail, onReady }) {
+  const settings = _videoSettings()
+  // The bandwidth cap (App #41) and seed-back switch (App #42) come from the
+  // stored video settings. Mbps→bytes/s is ×125000; null/0 means uncapped.
+  const mbps = Number(settings.downloadLimitMbps)
+  const downloadLimitBps = (settings.downloadLimitMbps == null || !isFinite(mbps) || mbps <= 0)
+    ? null : Math.floor(mbps * 125000)
+  const streamer = new TorrentStreamer({
+    client: getTorrentClient(),
+    downloadLimitBps,
+    seedWhileWatching: settings.seedWhileWatching !== false,
+    // First contact only, and only when nothing at all has been found: once
+    // peers are connected the streamer extends this itself rather than giving
+    // up on a torrent that is working. Discovery under Electron routinely takes
+    // ten seconds or more here before the first peer connects, so thirty was
+    // cutting off torrents that were fine.
+    timeoutMs: 45000,
+    // No prebuffer gate: mpv starts the moment the local server is up and
+    // buffers itself, which is how this behaved when it played well. Waiting on
+    // 12 MB here was a misdiagnosis of the original stutter — that was mpv's
+    // demuxer cache, now 256 MiB, which is the real fix.
+    prebufferBytes: 0,
+  })
+  streamer.on('error', err => { if (current()) fail(err) })
+  streamer.on('progress', p => { if (current()) safeSend('video-event', { kind: 'buffering', ...p }) })
+  streamer.on('ready', ({ url }) => {
+    if (!current()) { try { streamer.stop() } catch (_) {} ; return }
+    // Stand up the hover-thumbnail cache (Player #5) for this stream. ffmpeg
+    // reads the same local URL mpv plays; the frames land inside the stream's
+    // own cache directory when it has one (swept with the streamer), or a fresh
+    // directory under the stream root otherwise (a reused torrent), which
+    // _thumbnailerTeardown removes. Best-effort: a thumbnailer that cannot be
+    // built just leaves the bubble time-only, never blocking playback.
+    _thumbnailerTeardown()
+    try {
+      let base = null
+      try { base = typeof streamer.storeDir === 'function' ? streamer.storeDir() : null } catch (_) {}
+      const thumbDir = base
+        ? path.join(base, 'thumbs')
+        : path.join(streamRoot(), `thumbs-${process.pid}-${Date.now()}`)
+      _videoSession.thumbnailer = createThumbnailer({ dir: thumbDir, source: url })
+    } catch (_) { _videoSession.thumbnailer = null }
+    onReady(url, streamer)
+  })
+  _videoSession.streamer = streamer
+  // A season pack holds every episode, so the streamer is told which one is
+  // wanted; without it the largest file wins, which is an arbitrary episode.
+  streamer.start({
+    magnet: result.magnet,
+    fileIndex: result.fileIndex ?? 0,
+    season: result.season ?? null,
+    episode: result.episode ?? null,
+  })
+    .catch(e => { if (e && e.code === 'STOPPED') return; fail(e) })
+  return streamer
+}
+
 ipcMain.handle('video-play', async (_, { result }) => {
   try {
     if (!result || typeof result !== 'object') return { ok: false, error: 'No source selected' }
     _videoTeardown()
     _wireVideoEngine()
-    // The music engine must not keep talking over the video.
+    // The music engine must not keep talking over the video. The renderer's
+    // media-handoff referee (#72) is the source of truth for this now — it
+    // pauses music at the moment it starts the film and remembers to resume it
+    // — but a play triggered outside that path (session restore, a direct IPC)
+    // still needs the guard, so pause here too. Idempotent: pausing an already
+    // paused engine is a no-op, and the renderer owns the resume decision.
     if (player) { try { player.pause().catch(() => {}) } catch (_) {} }
     // When the user wants the in-app panel, obtain the X11 wid now and show the
     // host window; on failure (wid null) mpv opens its own window instead.
@@ -7139,57 +8715,50 @@ ipcMain.handle('video-play', async (_, { result }) => {
     const started = url => {
       if (!current()) return
       safeSend('video-event', { kind: 'playing' })
-      _probePlayingAudio(url)
+      _probePlayingAudio(url, current)
     }
 
     if (result.kind === 'torrent') {
       if (!result.magnet) return { ok: false, error: 'This source has no magnet link' }
-      const streamer = new TorrentStreamer({
-        client: getTorrentClient(),
-        // First contact only, and only when nothing at all has been found:
-        // once peers are connected the streamer extends this itself rather
-        // than giving up on a torrent that is working. Discovery under
-        // Electron routinely takes ten seconds or more here before the first
-        // peer connects, so thirty was cutting off torrents that were fine.
-        timeoutMs: 45000,
-        // No prebuffer gate: mpv starts the moment the local server is up and
-        // buffers itself, which is how this behaved when it played well.
-        //
-        // Waiting for 12 MB here was a misdiagnosis of the original stutter.
-        // The stutter was mpv's 64 MiB demuxer cache, which is now 256 MiB —
-        // that was the real fix, and the gate only added a wait on top of it.
-        // Worse, readiness is measured as contiguous bytes from the file's
-        // FIRST piece, so until that one piece verifies it reads exactly 0%
-        // however much is downloading, which is what looked like a freeze.
-        prebufferBytes: 0,
+      // Spin mpv up NOW, in parallel with connecting the torrent, rather than
+      // waiting for the first playable bytes to start the process. mpv spawns
+      // idle (--idle=yes) with no file, so it can connect its IPC socket, open
+      // its window into the wid and be ready to accept a loadfile while the
+      // swarm is still finding peers — which under Electron is the slow part,
+      // routinely ten seconds. When the stream is ready we only `load()` the
+      // URL into the already-running mpv instead of paying the spawn cost then.
+      //
+      // The window has already been shown against a known rectangle above, so
+      // this changes nothing about the bounds-before-show contract: it only
+      // moves the process spawn earlier in the same handler.
+      const spinUp = videoEngine().start(undefined, { wid }).catch(e => { fail(e); throw e })
+      _startTorrentStream(result, {
+        current, fail,
+        onReady: (url, streamer) => {
+          // Wait for the parallel spin-up to finish, then load into the running
+          // mpv. If the spin-up raced ahead and already failed, fail() has
+          // fired and there is nothing left to load into.
+          spinUp.then(() => {
+            // A rapid double-play can make a newer engine current while this
+            // older ready is still queued behind the spin-up. Re-check the play
+            // token immediately before load() so the old URL is never loaded
+            // into the newer engine — mirrors video-switch-stream's post-load
+            // guard.
+            if (!current()) return
+            return videoEngine().load(url)
+          }).then(() => {
+            if (!current()) return
+            started(url)
+            // A season pack already contains every episode. Telling the UI what
+            // is in it turns episode switching into a file change on a torrent
+            // that is already running — same peers, no new resolve, no wait.
+            try {
+              const files = streamer.files()
+              if (files.length > 1) safeSend('video-event', { kind: 'pack', files })
+            } catch (_) { /* the pack list is a convenience, never required */ }
+          }).catch(fail)
+        },
       })
-      streamer.on('error', err => { if (current()) fail(err) })
-      streamer.on('progress', p => { if (current()) safeSend('video-event', { kind: 'buffering', ...p }) })
-      streamer.on('ready', ({ url }) => {
-        if (!current()) { try { streamer.stop() } catch (_) {} ; return }
-        videoEngine().start(url, { wid }).then(() => {
-          started(url)
-          // A season pack already contains every episode. Telling the UI what
-          // is in it turns episode switching into a file change on a torrent
-          // that is already running — same peers, no new resolve, no wait.
-          try {
-            const files = streamer.files()
-            if (files.length > 1) safeSend('video-event', { kind: 'pack', files })
-          } catch (_) { /* the pack list is a convenience, never required */ }
-        }).catch(fail)
-      })
-      _videoSession.streamer = streamer
-      // Deliberately not awaited: start() resolves on 'ready', and awaiting it
-      // would hang this handler on a slow torrent — and on stop.
-      // A season pack holds every episode, so the streamer is told which one is
-      // wanted; without it the largest file wins, which is an arbitrary episode.
-      streamer.start({
-        magnet: result.magnet,
-        fileIndex: result.fileIndex ?? 0,
-        season: result.season ?? null,
-        episode: result.episode ?? null,
-      })
-        .catch(e => { if (e && e.code === 'STOPPED') return; fail(e) })
     } else {
       if (!result.url) return { ok: false, error: 'This source has no playable URL' }
       videoEngine().start(result.url, { wid }).then(() => started(result.url)).catch(fail)
@@ -7287,6 +8856,70 @@ ipcMain.handle('video-pack-select', async (_, { index } = {}) => {
   }
 })
 
+// Swap the source under a playing title without losing the viewer's place —
+// the mid-play "try a different source/quality" case (§player 26). The picture
+// is the same film; only where the bytes come from changes. So mpv is kept
+// alive across the swap and only the torrent streamer is replaced: the new
+// stream is started, and once it produces a URL the running mpv is pointed at
+// it and seeked straight back to where the viewer was.
+//
+// Position is read from the live engine state BEFORE the teardown, because the
+// point of the swap is not to lose it. The seek is absolute for the same reason
+// _prioritiseStreamAtPlayhead reads mpv's resolved position: it is the one true
+// place, not a number computed from the request.
+ipcMain.handle('video-switch-stream', async (_, { result } = {}) => {
+  try {
+    if (!result || typeof result !== 'object') return { ok: false, error: 'No source selected' }
+    if (result.kind !== 'torrent') return { ok: false, error: 'Only torrent sources can be switched' }
+    if (!result.magnet) return { ok: false, error: 'This source has no magnet link' }
+
+    // Where the viewer is, captured before anything is torn down.
+    const state = videoEngine().state
+    const resumeAt = Number(state && state.position) || 0
+
+    // Tear down ONLY the streamer — mpv stays alive so the window never blanks
+    // and the swap reads as a hiccup, not a restart. Deliberately not
+    // _videoTeardown(), which would also stop the engine.
+    if (_videoSession.streamer) {
+      try { _videoSession.streamer.stop() } catch (_) {}
+      _videoSession.streamer = null
+    }
+
+    // A fresh play token: a late 'ready' from the OLD streamer must not load
+    // itself over the new one, exactly as in video-play.
+    const token = ++_videoSession.token
+    const current = () => _videoSession.token === token
+    const fail = e => { if (current()) safeSend('video-event', { kind: 'error', message: (e && e.message) || String(e) }) }
+
+    _startTorrentStream(result, {
+      current, fail,
+      onReady: (url, streamer) => {
+        // mpv is already running; point it at the new file and seek back.
+        videoEngine().load(url).then(async () => {
+          if (!current()) return
+          // Absolute seek to the saved position. A source with a shorter file
+          // (a different cut) would reject the seek; that must not fail the
+          // swap, so it is caught.
+          if (resumeAt > 0) {
+            try { await videoEngine().seek(resumeAt, 'absolute') } catch (_) {}
+          }
+          // Tell the new swarm where the viewer actually is, so it fetches the
+          // bytes around the playhead first instead of the file head.
+          _prioritiseStreamAtPlayhead()
+          safeSend('video-event', { kind: 'playing' })
+          try {
+            const files = streamer.files()
+            if (files.length > 1) safeSend('video-event', { kind: 'pack', files })
+          } catch (_) { /* the pack list is a convenience, never required */ }
+        }).catch(fail)
+      },
+    })
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) }
+  }
+})
+
 ipcMain.handle('video-stop', async () => {
   try {
     _videoSession.token++
@@ -7295,6 +8928,585 @@ ipcMain.handle('video-stop', async () => {
     return { ok: true }
   } catch (e) {
     return { ok: false, error: e.message }
+  }
+})
+
+// The HTML stage renders UNDER the native mpv surface, so once video is
+// playing, mpv's own OSD is the only place a message is actually visible.
+// The stall watchdog in the renderer uses this.
+ipcMain.handle('video-osd', async (_, { text, durationMs } = {}) => {
+  try {
+    await videoEngine().osdMessage(String(text || ''), durationMs)
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) }
+  }
+})
+
+// Live torrent numbers for the theatre's Stats panel. Shaped to the deck's
+// contract ({down, peers, progress}), not the streamer's raw field names.
+ipcMain.handle('video-stream-stats', async () => {
+  try {
+    const s = _videoSession.streamer && _videoSession.streamer.stats()
+    if (!s) return { ok: false }
+    return { ok: true, down: s.speedBps || 0, peers: s.peers || 0, progress: s.progress || 0 }
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) }
+  }
+})
+
+// Pull a whole file down in the background while the current episode plays
+// (App #40). The pieces arrive at the lowest priority, so this only ever uses
+// bandwidth that was going spare; the episode being watched keeps every peer it
+// wants. One file at a time — a second call for a different index supersedes
+// the first inside the streamer.
+ipcMain.handle('video-predownload', async (_, { index } = {}) => {
+  try {
+    const streamer = _videoSession.streamer
+    if (!streamer) return { ok: false, error: 'Nothing is streaming' }
+    const ok = streamer.predownloadFile(Number(index))
+    return { ok: !!ok }
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) }
+  }
+})
+
+// Withdraw the standing whole-file request. Pieces already on disk stay — they
+// cost nothing to keep — only the request for the rest is dropped.
+ipcMain.handle('video-predownload-cancel', async () => {
+  try {
+    const streamer = _videoSession.streamer
+    if (!streamer) return { ok: false, error: 'Nothing is streaming' }
+    const cancelled = streamer.cancelPredownload()
+    return { ok: true, cancelled: !!cancelled }
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) }
+  }
+})
+
+// How far the whole-file predownload has got: { index, bytes, total }, or null
+// when nothing is predownloading. For a progress bar on the offline-download UI.
+ipcMain.handle('video-predownload-progress', async () => {
+  try {
+    const streamer = _videoSession.streamer
+    const progress = streamer ? streamer.predownloadProgress() : null
+    return { ok: true, progress: progress || null }
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e), progress: null }
+  }
+})
+
+// Keep this episode (App #44). Copies a fully-downloaded file out of the
+// throwaway stream cache into ~/Videos/Papa Audio/<Show>/<file>, where it
+// survives the session and the cache cleanup. Dialog-free: the destination is
+// derived from the show title and filename (both sanitized in video-keep.js so
+// remote metadata can never climb out of the folder). Refuses an incomplete
+// file with a plain message rather than saving a half-episode. No progress
+// stream — a local copy of a few GB is fast and the renderer just waits on the
+// promise, then toasts the path.
+ipcMain.handle('video-keep-file', async (_, { index, show } = {}) => {
+  try {
+    const streamer = _videoSession.streamer
+    if (!streamer || typeof streamer.fileInfo !== 'function') {
+      return { ok: false, error: 'Nothing is streaming to keep' }
+    }
+    const info = streamer.fileInfo(Number(index))
+    if (!info || !info.path) return { ok: false, error: 'That episode is not on disk yet' }
+    if (!videoKeep.isComplete({ bytes: info.downloaded, total: info.total })) {
+      return { ok: false, error: 'This episode has not finished downloading yet' }
+    }
+    if (!fs.existsSync(info.path)) {
+      return { ok: false, error: 'The downloaded file could not be found' }
+    }
+    const dest = videoKeep.destPath(_keepVideosRoot(), show, info.name)
+    try { fs.mkdirSync(path.dirname(dest), { recursive: true }) } catch (e) {
+      return { ok: false, error: 'Could not create the Videos folder: ' + ((e && e.message) || e) }
+    }
+    // copyFile replaces any earlier keep of the same episode rather than
+    // erroring — re-keeping is a no-op the user should not have to think about.
+    await fs.promises.copyFile(info.path, dest)
+    return { ok: true, path: dest }
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) }
+  }
+})
+
+// Where kept episodes live: ~/Videos/Papa Audio, mirroring the screenshot
+// folder's shape (App #48). Falls back to USER_DATA/Videos when the OS videos
+// path cannot be resolved, so a headless or locked-down box still has a home.
+function _keepVideosRoot() {
+  try {
+    return path.join(app.getPath('videos'), 'Papa Audio')
+  } catch (_) {
+    return path.join(USER_DATA, 'Videos')
+  }
+}
+
+// One health snapshot for the diagnostics page (App §2-12). Each probe is
+// independent and self-contained: a failure in any one is caught and reported
+// as `false` (or an empty list) rather than allowed to sink the whole call.
+// This function never throws. Factored out into _collectDiagnostics so the bug
+// reporter (App §97) can bundle the same snapshot without a renderer round-trip;
+// the handler is a thin delegate to it (kept adjacent so both read as one unit).
+ipcMain.handle('video-diagnostics', () => _collectDiagnostics())
+
+async function _collectDiagnostics() {
+  // slskd: the Soulseek daemon reports itself logged in. Reuses the same
+  // /application probe slsk-status uses, so this agrees with that surface.
+  const probeSlskd = (async () => {
+    try {
+      const data = await slskdFetch('GET', '/application')
+      return data?.server?.isLoggedIn ?? false
+    } catch (_) { return false }
+  })()
+
+  // tmdb: a key is set AND TMDB answers. A key that is present but rejected is
+  // worse than none, so this actually reaches out — with a hard 5 s ceiling so
+  // a hung network never wedges the diagnostics page.
+  const probeTmdb = (async () => {
+    try {
+      const key = _videoSettings().tmdbApiKey || process.env.TMDB_API_KEY
+      if (!key) return false
+      const res = await fetch(
+        `https://api.themoviedb.org/3/configuration?api_key=${encodeURIComponent(key)}`,
+        { signal: AbortSignal.timeout(5000) })
+      return !!(res && res.ok)
+    } catch (_) { return false }
+  })()
+
+  // mpv: the binary is on PATH. `mpv --version` exits 0 when it is; anything
+  // else (ENOENT, non-zero) reads as not installed.
+  const probeMpv = new Promise(resolve => {
+    try {
+      execFile('mpv', ['--version'], { timeout: 5000 }, err => resolve(!err))
+    } catch (_) { resolve(false) }
+  })
+
+  // storeBridge: the crash-proof video watch store is readable. get() returns
+  // the raw blob (or the null fallback) without throwing; a throw here means
+  // the side file is unreadable, which is the thing worth surfacing.
+  const probeStoreBridge = (() => {
+    try {
+      sideStores.videoStore.get()
+      return true
+    } catch (_) { return false }
+  })()
+
+  // sources: the per-source health record, if providers/index.js exposes one.
+  // It keeps a private streak map (checklist #39) but does not export a
+  // {name, healthy} view, so this stays defensive: use an export if a future
+  // version adds one, otherwise report an empty list rather than inventing data.
+  const probeSources = (() => {
+    try {
+      const providers = require('./providers/index')
+      const fn = providers.sourceHealth || providers.getSourceHealth
+      if (typeof fn !== 'function') return []
+      const list = fn()
+      if (!Array.isArray(list)) return []
+      return list
+        .filter(s => s && s.name)
+        .map(s => ({ name: String(s.name), healthy: s.healthy !== false }))
+    } catch (_) { return [] }
+  })()
+
+  const [slskd, tmdb, mpv] = await Promise.all([probeSlskd, probeTmdb, probeMpv])
+  return {
+    ok: true,
+    slskd,
+    tmdb,
+    mpv,
+    storeBridge: probeStoreBridge,
+    sources: probeSources,
+  }
+}
+
+// ── Backup: export / import everything (App §2-12, the foundation page) ───────
+// Anything with a value under a key whose NAME contains one of these is a
+// secret the user should not be handing around in a plaintext backup. Redacted
+// on export rather than dropped, so the shape survives and the user can see
+// that a value was there without the value itself leaving the machine.
+const _SECRET_KEY_RE = /password|token|key/i
+const _REDACTED = '__redacted__'
+
+function _redactSecrets(obj) {
+  if (!obj || typeof obj !== 'object') return obj
+  const out = Array.isArray(obj) ? [] : {}
+  for (const [k, v] of Object.entries(obj)) {
+    if (_SECRET_KEY_RE.test(k)) out[k] = _REDACTED
+    else if (v && typeof v === 'object') out[k] = _redactSecrets(v)
+    else out[k] = v
+  }
+  return out
+}
+
+// The one bundling routine, shared by the manual export handler and the
+// automatic startup backup below. It reads every SideStore by its own map key —
+// so both paths stay in step with the map with no second list to keep aligned —
+// and it never throws: a failed read of any one store leaves its slot null
+// rather than sinking the whole bundle.
+//
+// STORE_SCHEMA_VERSION is the contract number for this bundle's shape. It rides
+// on both the JSON payload and the on-disk marker file (see below). Bump it only
+// when the SHAPE of a store's contents changes in a way a future build would
+// need to migrate; adding or removing a store from the map does not count,
+// because import already skips names it does not recognise. There are no
+// migrations yet — this is the scaffolding so a future one has a number to key
+// off, and so a bundle written by a newer build can be recognised as newer.
+const STORE_SCHEMA_VERSION = 1
+
+// The on-disk marker for App §96. Writes STORE_SCHEMA_VERSION to
+// USER_DATA/store-schema-version if absent, and shouts if the file holds a
+// FUTURE number (this data was written by a newer build — a downgrade). The
+// contract: bump STORE_SCHEMA_VERSION when a store's contents SHAPE changes in a
+// way a future build would migrate, add the migration keyed off the old number,
+// then bump the marker. For now there are no migrations, only the number.
+function checkStoreSchemaVersion() {
+  const marker = path.join(USER_DATA, 'store-schema-version')
+  let onDisk = null
+  try {
+    if (fs.existsSync(marker)) {
+      onDisk = parseInt(fs.readFileSync(marker, 'utf8').trim(), 10)
+      if (!Number.isFinite(onDisk)) onDisk = null
+    }
+  } catch (_) { onDisk = null }
+
+  if (onDisk == null) {
+    // No marker (a fresh profile, or one predating this feature): stamp the
+    // current version so future launches have a baseline to compare against.
+    try { fs.writeFileSync(marker, String(STORE_SCHEMA_VERSION), 'utf8') } catch (_) { /* read-only is not fatal */ }
+    return
+  }
+
+  if (onDisk > STORE_SCHEMA_VERSION) {
+    // Loud on purpose. A newer build wrote this profile; running an older one
+    // against it risks quietly mis-reading a store whose shape has moved on.
+    console.error(
+      `[papa][schema] ⚠ this profile was last written by a NEWER build ` +
+      `(store schema v${onDisk}), and this build only understands v${STORE_SCHEMA_VERSION}. ` +
+      `No migrations run downward — if anything looks wrong, update Papa Audio to the newest version.`)
+    return
+  }
+
+  if (onDisk < STORE_SCHEMA_VERSION) {
+    // An upgrade. No migrations exist yet, so there is nothing to run; just move
+    // the marker forward so the state is truthful.
+    try { fs.writeFileSync(marker, String(STORE_SCHEMA_VERSION), 'utf8') } catch (_) { /* read-only is not fatal */ }
+  }
+}
+
+function _collectBackupStores() {
+  const stores = {}
+  for (const [name, side] of Object.entries(sideStores)) {
+    try { stores[name] = side.get() } catch (_) { stores[name] = null }
+  }
+  return stores
+}
+
+function _buildBackupPayload() {
+  // electron-store's full settings object, secrets stripped.
+  let settings = {}
+  try { settings = _redactSecrets(store.store || {}) } catch (_) { settings = {} }
+  return {
+    papaBackup: 1,
+    schemaVersion: STORE_SCHEMA_VERSION,
+    exportedAt: new Date().toISOString(),
+    stores: _collectBackupStores(),
+    settings,
+  }
+}
+
+// The whole state of the app in one JSON file: every SideStore by its own name,
+// plus the electron-store settings with secrets redacted. Written to a path the
+// user picks.
+ipcMain.handle('papa-export-all', async () => {
+  try {
+    const r = await dialog.showSaveDialog(mainWindow, {
+      title: 'Export Papa Audio backup',
+      defaultPath: `papa-audio-backup-${new Date().toISOString().slice(0, 10)}.json`,
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+    })
+    if (r.canceled || !r.filePath) return { ok: false, cancelled: true }
+
+    fs.writeFileSync(r.filePath, JSON.stringify(_buildBackupPayload(), null, 2), 'utf8')
+    return { ok: true, path: r.filePath }
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) }
+  }
+})
+
+// ── Bug reporter (App §97) ──────────────────────────────────────────────────
+// Everything a maintainer needs to diagnose a problem, gathered into one folder
+// the user can zip and send: the tail of the newest log, the crash log if there
+// is one, a health snapshot, version/platform info, and a redacted settings
+// dump. Every gather step is best-effort — a missing log or an unreadable store
+// leaves its own file with a "could not read" note rather than sinking the whole
+// report. Reuses the redaction (_redactSecrets) and diagnostics
+// (_collectDiagnostics) helpers so the report never diverges from what the
+// export and the diagnostics page produce. No dialog is opened — this reveals
+// the finished folder with shell.showItemInFolder, which is neither a dialog nor
+// a BrowserWindow, so no IPC timeout override is needed.
+
+// The last `n` lines of a text file, or null if it cannot be read. Reads the
+// whole file (logs are day-scoped and size-capped elsewhere) then keeps the
+// tail — simpler than a reverse-seek and the inputs here are small.
+function _tailLines(file, n) {
+  try {
+    const text = fs.readFileSync(file, 'utf8')
+    const lines = text.split(/\r?\n/)
+    return lines.slice(Math.max(0, lines.length - n)).join('\n')
+  } catch (_) { return null }
+}
+
+// The newest papa-<date>.log in the logs directory, by mtime. The day-stamped
+// name is local-day based (see localDayStamp), so "today's" file is normally
+// newest, but mtime is what actually decides — a clock change or a rotated
+// .1 never picks the wrong one.
+function _newestLogFile() {
+  try {
+    const dir = path.join(USER_DATA, 'logs')
+    const entries = fs.readdirSync(dir)
+      .filter(f => /^papa-.*\.log$/.test(f))
+      .map(f => {
+        const p = path.join(dir, f)
+        let mtime = 0
+        try { mtime = fs.statSync(p).mtimeMs } catch (_) { mtime = 0 }
+        return { p, mtime }
+      })
+      .sort((a, b) => b.mtime - a.mtime)
+    return entries.length ? entries[0].p : null
+  } catch (_) { return null }
+}
+
+ipcMain.handle('papa-bug-report', async () => {
+  try {
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const root = path.join(USER_DATA, 'bug-reports', `report-${stamp}`)
+    fs.mkdirSync(root, { recursive: true })
+
+    // 1. The tail of the newest app log.
+    const newestLog = _newestLogFile()
+    const logTail = newestLog ? _tailLines(newestLog, 200) : null
+    try {
+      fs.writeFileSync(
+        path.join(root, 'log-tail.txt'),
+        logTail != null
+          ? `Last 200 lines of ${path.basename(newestLog)}:\n\n${logTail}\n`
+          : 'No app log was found to include.\n',
+        'utf8')
+    } catch (_) { /* best-effort */ }
+
+    // 2. The crash log, if one exists.
+    const crashLog = path.join(USER_DATA, 'crash-log.txt')
+    try {
+      if (fs.existsSync(crashLog)) {
+        fs.copyFileSync(crashLog, path.join(root, 'crash-log.txt'))
+      }
+    } catch (_) { /* best-effort */ }
+
+    // 3. The diagnostics snapshot — the same one the Diagnostics page shows.
+    let diagnostics = null
+    try { diagnostics = await _collectDiagnostics() } catch (_) { diagnostics = null }
+    try {
+      fs.writeFileSync(
+        path.join(root, 'diagnostics.json'),
+        JSON.stringify(diagnostics || { ok: false, error: 'diagnostics could not be gathered' }, null, 2),
+        'utf8')
+    } catch (_) { /* best-effort */ }
+
+    // 4. App version + platform info.
+    let version = ''
+    try { version = require('./package.json').version || '' } catch (_) { version = '' }
+    const about = {
+      appVersion: version,
+      electron: process.versions.electron || null,
+      chrome: process.versions.chrome || null,
+      node: process.versions.node || null,
+      platform: process.platform,
+      arch: process.arch,
+      osRelease: (() => { try { return require('os').release() } catch (_) { return null } })(),
+      generatedAt: new Date().toISOString(),
+    }
+    try {
+      fs.writeFileSync(path.join(root, 'about.json'), JSON.stringify(about, null, 2), 'utf8')
+    } catch (_) { /* best-effort */ }
+
+    // 5. A redacted settings dump — the same redaction the backup export uses,
+    // so no password, token or key leaves the machine.
+    let settings = {}
+    try { settings = _redactSecrets(store.store || {}) } catch (_) { settings = {} }
+    try {
+      fs.writeFileSync(path.join(root, 'settings-redacted.json'), JSON.stringify(settings, null, 2), 'utf8')
+    } catch (_) { /* best-effort */ }
+
+    // A plain-English README so the user knows what they are sending.
+    const readme =
+      `Papa Audio bug report\n` +
+      `Generated: ${about.generatedAt}\n\n` +
+      `This folder contains what a developer needs to look into a problem:\n\n` +
+      `  log-tail.txt          The last 200 lines of the newest app log.\n` +
+      `  crash-log.txt         Any crashes that were recorded (only if present).\n` +
+      `  diagnostics.json      A quick health check (Soulseek, TMDB, mpv, storage).\n` +
+      `  about.json            The app version and your platform details.\n` +
+      `  settings-redacted.json  Your settings with all passwords and keys removed.\n\n` +
+      `None of these files contain your passwords or API keys — those are removed\n` +
+      `before anything is written. You can safely zip this folder and send it in.\n`
+    try {
+      fs.writeFileSync(path.join(root, 'README.txt'), readme, 'utf8')
+    } catch (_) { /* best-effort */ }
+
+    // Reveal the finished folder. Not a dialog and not a BrowserWindow, so this
+    // handler needs no IPC timeout override.
+    try { shell.showItemInFolder(root) } catch (_) { /* the path is returned regardless */ }
+
+    return { ok: true, path: root }
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) }
+  }
+})
+
+// The user-facing changelog (App §7). The prose lives in docs/CHANGELOG-APP.md
+// so it can be edited without touching code; this handler just reads it and
+// stamps the app version alongside it. No dialog, so no timeout override needed.
+ipcMain.handle('app-changelog', async () => {
+  try {
+    let version = ''
+    try { version = require('./package.json').version || '' } catch (_) { version = '' }
+    let markdown = ''
+    try {
+      markdown = fs.readFileSync(path.join(__dirname, 'docs', 'CHANGELOG-APP.md'), 'utf8')
+    } catch (_) {
+      return { ok: false, error: 'The changelog could not be read', version }
+    }
+    return { ok: true, markdown, version }
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) }
+  }
+})
+
+// Restore a backup file. The user's current data is never overwritten blind:
+// before writing any store back, its present value is snapshotted to a
+// timestamped .bak beside it, so a bad import is always recoverable. Only the
+// `stores` are written back — the redacted settings blob is deliberately not
+// restored, since it would clobber real keys with the redaction marker.
+ipcMain.handle('papa-import-all', async (_, { path: givenPath } = {}) => {
+  try {
+    let filePath = givenPath
+    if (!filePath) {
+      const r = await dialog.showOpenDialog(mainWindow, {
+        title: 'Import Papa Audio backup',
+        properties: ['openFile'],
+        filters: [{ name: 'JSON', extensions: ['json'] }],
+      })
+      if (r.canceled || !r.filePaths[0]) return { ok: false, cancelled: true }
+      filePath = r.filePaths[0]
+    }
+
+    let parsed
+    try {
+      parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'))
+    } catch (_) {
+      return { ok: false, error: 'That file is not a readable Papa Audio backup' }
+    }
+    // Shape validation: a backup this handler wrote carries the marker and a
+    // stores object. Anything else is refused rather than half-applied.
+    if (!parsed || typeof parsed !== 'object' || parsed.papaBackup == null ||
+        !parsed.stores || typeof parsed.stores !== 'object') {
+      return { ok: false, error: 'That file is not a Papa Audio backup' }
+    }
+
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const imported = []
+    for (const [name, value] of Object.entries(parsed.stores)) {
+      const side = sideStores[name]
+      // A backup can name a store this build no longer has; skip it rather than
+      // fail the whole restore.
+      if (!side) continue
+      // Snapshot the CURRENT value to a timestamped .bak before overwriting, so
+      // a mistaken import is always undoable.
+      try {
+        const current = side.get()
+        const bak = path.join(USER_DATA, `${name}.${stamp}.bak`)
+        fs.writeFileSync(bak, JSON.stringify(current), 'utf8')
+      } catch (_) { /* the backup of the backup is best-effort */ }
+      try {
+        side.set(value)
+        imported.push(name)
+      } catch (_) { /* one store failing must not fail the rest */ }
+    }
+    return { ok: true, imported }
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) }
+  }
+})
+
+// Subtitle files travelling inside the torrent, which the video-only file
+// list deliberately hides. Listed here, fetched on demand below.
+ipcMain.handle('video-subs-in-torrent', async () => {
+  try {
+    const streamer = _videoSession.streamer
+    const subs = streamer ? streamer.subtitleFiles() : []
+    return { ok: true, subs: subs.map(f => ({ index: f.index, name: f.name })) }
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e), subs: [] }
+  }
+})
+
+ipcMain.handle('video-sub-serve', async (_, { index } = {}) => {
+  try {
+    const streamer = _videoSession.streamer
+    if (!streamer) return { ok: false, error: 'Nothing is streaming' }
+    const path = await streamer.serveSubtitle(Number(index))
+    return { ok: true, path }
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) }
+  }
+})
+
+// Online subtitle search for the CC menu (§player 21), for anything the release
+// itself did not carry. The module does the normalising and never throws; the
+// only thing to add here is the search parameters and the `needsKey` marker it
+// hands back when no OpenSubtitles key is set, so the UI can say "add a key in
+// Settings" rather than "no subtitles found".
+ipcMain.handle('video-sub-search', async (_, params = {}) => {
+  try {
+    const results = await opensubs().search(params || {})
+    // The empty list carries `needsKey` as an own property; forward it so the
+    // renderer can tell "no key" apart from "genuinely nothing found".
+    return { ok: true, results, needsKey: results.needsKey === true }
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e), results: [] }
+  }
+})
+
+// Mint the download URL for a chosen subtitle and pull it down to a temp file,
+// ready to hand straight to videoControl('subAdd'). Downloaded under the stream
+// cache dir — the same disk the torrent cache uses, chosen in Settings to keep
+// this off a tmpfs — and swept with the rest of the stream cache, so nothing is
+// left behind. The minted link counts against the key's daily quota, so this is
+// only ever called for the one subtitle the viewer actually picked.
+ipcMain.handle('video-sub-download', async (_, { fileId } = {}) => {
+  try {
+    if (fileId == null || fileId === '') return { ok: false, error: 'No subtitle selected' }
+    const minted = await opensubs().download(fileId)
+    if (minted.needsKey) {
+      return { ok: false, error: 'Add an OpenSubtitles key in Settings → Video to download subtitles.', needsKey: true }
+    }
+    if (!minted.url) return { ok: false, error: 'Could not fetch that subtitle' }
+
+    const dir = path.join(streamRoot(), 'external-subs')
+    fs.mkdirSync(dir, { recursive: true })
+    // A stable-ish name keyed on the file id, so re-picking the same subtitle
+    // reuses the file rather than filling the cache with copies. The suffix is
+    // .srt because OpenSubtitles serves SubRip; mpv sniffs the content anyway.
+    const dest = path.join(dir, `opensubtitles-${String(fileId).replace(/[^\w.-]+/g, '_')}.srt`)
+
+    const res = await fetchWithTimeout(20000)(minted.url)
+    if (!res || !res.ok) return { ok: false, error: 'The subtitle download failed' }
+    const buf = Buffer.from(await res.arrayBuffer())
+    fs.writeFileSync(dest, buf)
+    return { ok: true, path: dest }
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) }
   }
 })
 
@@ -7402,6 +9614,12 @@ ipcMain.handle('video-enrich', async (_, { type, id } = {}) => {
           .slice(0, 2),
         runtime: detail.runtime || null,
         certification: detail.certification || ext.rated || null,
+        // Genre names, for the chips a card grows in its credit area. The
+        // renderer renders these only when present, so this is additive.
+        genres: (Array.isArray(detail.genres) ? detail.genres : [])
+          .map(g => (typeof g === 'string' ? g : g && g.name))
+          .filter(Boolean)
+          .slice(0, 3),
         imdb: ext.imdbRating != null ? ext.imdbRating : null,
         rottenTomatoes: ext.rottenTomatoes != null ? ext.rottenTomatoes : null,
         metacritic: ext.metascore != null ? ext.metascore : null,
@@ -7509,8 +9727,19 @@ ipcMain.handle('video-detect-intro', async (_, req) => {
 // findable from the settings gear. The timestamp keeps one from clobbering the
 // next on the same second.
 function _videoScreenshotPath() {
-  const dir = path.join(USER_DATA, 'screenshots')
-  try { fs.mkdirSync(dir, { recursive: true }) } catch (_) { /* read-only is not fatal */ }
+  // Screenshots belong where a person looks for them, not buried in the config
+  // directory (App #48): the pictures folder, in a "Papa Audio" subfolder so a
+  // burst of them does not litter the top level. If the pictures path cannot be
+  // resolved or made — a headless box, a locked-down home — fall back to
+  // USER_DATA/screenshots, which always exists.
+  let dir
+  try {
+    dir = path.join(app.getPath('pictures'), 'Papa Audio')
+    fs.mkdirSync(dir, { recursive: true })
+  } catch (_) {
+    dir = path.join(USER_DATA, 'screenshots')
+    try { fs.mkdirSync(dir, { recursive: true }) } catch (_) { /* read-only is not fatal */ }
+  }
   const stamp = new Date().toISOString().replace(/[:.]/g, '-')
   return path.join(dir, `papa-video-${stamp}.png`)
 }

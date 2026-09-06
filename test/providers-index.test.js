@@ -82,6 +82,26 @@ test('rankStreams sorts by score, then multichannel, then quality, then source',
   )
 })
 
+// Audit #5: aggregator seeder counts (Knaben, SolidTorrents) are unreliable — a
+// live pick advertising 370 seeders delivered one real peer. Their seeder signal
+// is discounted for ranking so a fictional count cannot leapfrog a genuine
+// first-party source of equal quality. The displayed number is never altered.
+test('rankStreams discounts aggregator seeders as a tiebreak, not first-party ones', () => {
+  // Same quality/audio, so the seeder tiebreak decides. TPB reports 100, the
+  // aggregator reports 150 — but scaled by 0.5 that is 75, so TPB should win.
+  const tpb = entry({ quality: '1080p', audioLayout: null, source: 'TPB', seeds: 100 })
+  const agg = entry({ quality: '1080p', audioLayout: null, source: 'SolidTorrents', seeds: 150 })
+  const ranked = rankStreams([agg, tpb])
+  assert.strictEqual(ranked[0].source, 'TPB', 'first-party 100 beats aggregator 150 (→75)')
+  // The displayed seeder count is untouched by the ranking discount.
+  assert.strictEqual(ranked.find(r => r.source === 'SolidTorrents').seeds, 150)
+
+  // A big enough aggregator lead still wins: 300 → 150 > 100.
+  const aggBig = entry({ quality: '1080p', audioLayout: null, source: 'Knaben', seeds: 300 })
+  const ranked2 = rankStreams([tpb, aggBig])
+  assert.strictEqual(ranked2[0].source, 'Knaben', 'aggregator 300 (→150) still beats first-party 100')
+})
+
 test('rankStreams does not mutate the input array', () => {
   const input = [
     entry({ quality: '480p', audioLayout: null, source: 'x' }),
@@ -223,4 +243,87 @@ test('a cam rip never outranks a real encode, whatever its resolution or seeds',
   ])
   assert.strictEqual(out[0].lowQuality, undefined)
   assert.strictEqual(out[1].lowQuality, true)
+})
+
+// --- source-health memory (checklist #39) --------------------------------
+// A session-level record of how each source has been behaving, so the router
+// consults healthy sources first — without ever dropping a source, because
+// coverage at the tail is the whole reason for running many indexers.
+const {
+  orderBackendsByHealth, recordSourceResult, _resetSourceHealth,
+} = require('../providers/index')
+
+test.beforeEach(() => _resetSourceHealth())
+
+const named = (name, fn) => Object.assign(fn, { sourceName: name })
+
+test('orderBackendsByHealth keeps caller order when all sources are healthy', () => {
+  const a = named('A', async () => [])
+  const b = named('B', async () => [])
+  const c = named('C', async () => [])
+  const order = orderBackendsByHealth([a, b, c]).map(x => x.name)
+  assert.deepStrictEqual(order, ['A', 'B', 'C'])
+})
+
+test('a failing source is demoted below a healthy one but never dropped', () => {
+  recordSourceResult('flaky', false)
+  recordSourceResult('flaky', false)
+  const good = named('good', async () => [])
+  const flaky = named('flaky', async () => [])
+  const ordered = orderBackendsByHealth([flaky, good])
+  assert.deepStrictEqual(ordered.map(x => x.name), ['good', 'flaky'])
+  assert.strictEqual(ordered.length, 2, 'the demoted source is still present')
+})
+
+test('a result clears the streak so a recovered source climbs back up', () => {
+  recordSourceResult('src', false)
+  recordSourceResult('src', false)
+  recordSourceResult('src', true) // recovered
+  const src = named('src', async () => [])
+  const other = named('other', async () => [])
+  // src is back to streak 0, so caller order (src first) stands.
+  assert.deepStrictEqual(orderBackendsByHealth([src, other]).map(x => x.name), ['src', 'other'])
+})
+
+test('resolveStream records health from each backend and re-orders next time', async () => {
+  const dead = named('dead', async () => { throw new Error('down') })
+  const alive = named('alive', async () => [
+    { kind: 'torrent', infoHash: 'F'.repeat(40), quality: '1080p', source: 'alive', seeds: 5 },
+  ])
+  // First run: dead throws, alive answers. Order is caller order (dead first).
+  const first = await resolveStream({}, [dead, alive], { timeoutMs: 500 })
+  assert.strictEqual(first.length, 1)
+  // Health now knows dead failed and alive worked, so the next ordering leads
+  // with alive.
+  assert.deepStrictEqual(orderBackendsByHealth([dead, alive]).map(x => x.name), ['alive', 'dead'])
+})
+
+test('an empty (but non-throwing) backend counts as unhealthy', async () => {
+  const empty = named('empty', async () => [])
+  const full = named('full', async () => [
+    { kind: 'torrent', infoHash: 'A'.repeat(40), quality: '720p', source: 'full', seeds: 1 },
+  ])
+  await resolveStream({}, [empty, full], { timeoutMs: 500 })
+  // empty produced nothing → demoted; full produced a result → healthy.
+  assert.deepStrictEqual(orderBackendsByHealth([empty, full]).map(x => x.name), ['full', 'empty'])
+})
+
+test('resolveStream still returns every source’s results despite health ordering', async () => {
+  const a = named('a', async () => [
+    { kind: 'torrent', infoHash: '1'.repeat(40), quality: '1080p', source: 'a', seeds: 3 },
+  ])
+  const b = named('b', async () => [
+    { kind: 'torrent', infoHash: '2'.repeat(40), quality: '720p', source: 'b', seeds: 3 },
+  ])
+  // Pre-demote a so b leads, then confirm a's result is still merged in.
+  recordSourceResult('a', false)
+  const out = await resolveStream({}, [a, b], { timeoutMs: 500 })
+  const hashes = out.map(e => e.infoHash).sort()
+  assert.deepStrictEqual(hashes, ['1'.repeat(40), '2'.repeat(40)])
+})
+
+test('a backend with no discernible name never crashes the ordering', () => {
+  const anon = async () => []
+  const ordered = orderBackendsByHealth([anon])
+  assert.strictEqual(ordered.length, 1)
 })

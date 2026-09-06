@@ -8,6 +8,13 @@
 </head>
 <body>
 
+<!-- Offline banner (App §11). Slim, non-blocking strip that only takes space
+     while offline; hidden by default so it never reserves layout when online.
+     role="status" + aria-live so the state change is announced. -->
+<div class="offline-banner" id="offline-banner" role="status" aria-live="polite" hidden>
+  You're offline — browsing and playback of downloaded content still work
+</div>
+
 <!-- Titlebar -->
 <div class="titlebar">
   <div class="titlebar-left">
@@ -67,6 +74,10 @@
         <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm2.19 12.19L6 18l3.81-8.19L18 6l-3.81 8.19zM12 10.9c-.61 0-1.1.49-1.1 1.1s.49 1.1 1.1 1.1 1.1-.49 1.1-1.1-.49-1.1-1.1-1.1z"/></svg>
         <span>Explore</span>
       </li>
+      <li class="nav-item" data-page="soulseek" id="nav-soulseek">
+        <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
+        <span>Soulseek</span>
+      </li>
       <li class="nav-item" data-page="video">
         <svg viewBox="0 0 24 24"><path d="M18 4l2 4h-3l-2-4h-2l2 4h-3l-2-4H8l2 4H7L5 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V4h-4z"/></svg>
         <span>Movies &amp; TV</span>
@@ -110,14 +121,16 @@
         <ul id="saved-queues-list" class="saved-queues-list"></ul>
       </div>
 
-      <div class="sidebar-section slsk-friends-section" id="slsk-friends-section">
-        <div class="sidebar-section-header">
-          <div class="sidebar-section-title">Soulseek Friends<span class="slskf-count" id="slskf-count"></span></div>
-          <button class="sq-save-btn slskf-refresh" id="slskf-refresh-btn" title="Refresh online status">
-            <svg viewBox="0 0 24 24"><path d="M17.65 6.35A7.96 7.96 0 0 0 12 4a8 8 0 1 0 7.73 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
-          </button>
-        </div>
-        <ul id="slsk-friends-list" class="slsk-friends-list"></ul>
+      <!-- Compact Soulseek summary. The full friends list, wishlist and recent
+           arrivals now live on the Soulseek hub page; this reclaims sidebar
+           space and just reports online friends and links across. The
+           #slskf-count element is kept so the presence code has a target. -->
+      <div class="sidebar-section slsk-summary-section" id="slsk-summary-section">
+        <button class="slsk-summary-link" id="slsk-summary-link" title="Open the Soulseek hub">
+          <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
+          <span class="slsk-summary-text" id="slsk-summary-text">Soulseek</span>
+          <span class="slskf-count" id="slskf-count"></span>
+        </button>
       </div>
 
       <div class="sidebar-section">
@@ -179,6 +192,10 @@
           <div class="vt-seek-buffer" id="vt-seek-buffer"></div>
           <div class="vt-seek-fill" id="vt-seek-fill"></div>
           <div class="vt-seek-marks" id="vt-seek-marks"></div>
+          <!-- Chapter tick marks, so a scene boundary can be aimed at rather
+               than guessed. Painted from api.videoChapters(), the same call
+               the chapters menu makes. -->
+          <div class="vt-seek-chapters" id="vt-seek-chapters"></div>
           <div class="vt-seek-knob" id="vt-seek-knob"></div>
         </div>
         <div class="vt-seek-bubble" id="vt-seek-bubble" hidden></div>
@@ -191,10 +208,21 @@
         <button class="vt-icon" id="vt-fwd10" aria-label="Forward 10 seconds" title="Forward 10s (&rarr;)">
           <svg viewBox="0 0 24 24"><path d="M12 5V1l5 5-5 5V7a6 6 0 1 0 6 6h2a8 8 0 1 1-8-8z"/></svg>
         </button>
+        <!-- Hidden unless the renderer passes media.onPrev — a control that
+             cannot do anything is worse than no control, same as Next. -->
+        <button class="vt-icon" id="vt-prev" aria-label="Previous episode" title="Previous episode (P)" hidden>
+          <svg viewBox="0 0 24 24"><path d="M18 18l-8.5-6L18 6zM6 6h2v12H6z"/></svg>
+        </button>
         <button class="vt-icon" id="vt-next" aria-label="Next episode" title="Next episode (N)" hidden>
           <svg viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6zM16 6h2v12h-2z"/></svg>
         </button>
-        <div class="vt-time"><span id="vt-pos">0:00</span><span class="vt-time-sep">/</span><span id="vt-dur">0:00</span></div>
+        <!-- The same real stop the mini player has. Back keeps playing; this
+             is the one control here that does not. -->
+        <button class="vt-icon" id="vt-stop" aria-label="Stop playback" title="Stop">
+          <svg viewBox="0 0 24 24"><path d="M6 6h12v12H6z"/></svg>
+        </button>
+        <div class="vt-time"><span id="vt-pos">0:00</span><span class="vt-time-sep">/</span><span
+             id="vt-dur" title="Click to show time remaining">0:00</span></div>
 
         <div class="vt-vol">
           <button class="vt-icon" id="vt-mute" aria-label="Mute" title="Mute (M)"></button>
@@ -211,6 +239,10 @@
         <button class="vt-chip" id="vt-subs" aria-label="Subtitles" title="Subtitles (C)">CC</button>
         <button class="vt-chip" id="vt-audio" aria-label="Audio track" title="Audio track (V)">Audio</button>
         <button class="vt-chip" id="vt-speed" aria-label="Playback speed" title="Speed">1&times;</button>
+        <button class="vt-chip" id="vt-stats" aria-label="Playback statistics" title="Stats (I)">Stats</button>
+        <button class="vt-icon" id="vt-shot" aria-label="Take a screenshot" title="Screenshot (Shift+S)">
+          <svg viewBox="0 0 24 24"><path d="M9 3 7.2 5H4a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-3.2L15 3zm3 14a4.5 4.5 0 1 1 0-9 4.5 4.5 0 0 1 0 9zm0-2a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
+        </button>
         <button class="vt-icon" id="vt-settings" aria-label="Settings" title="Settings">
           <svg viewBox="0 0 24 24"><path d="M12 15.5A3.5 3.5 0 1 1 15.5 12 3.5 3.5 0 0 1 12 15.5zm7.4-2.6.1-.9-.1-.9 1.9-1.5a.5.5 0 0 0 .1-.6l-1.8-3.1a.5.5 0 0 0-.6-.2l-2.2.9a7 7 0 0 0-1.6-.9l-.3-2.4a.5.5 0 0 0-.5-.4h-3.6a.5.5 0 0 0-.5.4l-.3 2.4a7 7 0 0 0-1.6.9l-2.2-.9a.5.5 0 0 0-.6.2L3.7 9a.5.5 0 0 0 .1.6l1.9 1.5-.1.9.1.9-1.9 1.5a.5.5 0 0 0-.1.6l1.8 3.1a.5.5 0 0 0 .6.2l2.2-.9a7 7 0 0 0 1.6.9l.3 2.4a.5.5 0 0 0 .5.4h3.6a.5.5 0 0 0 .5-.4l.3-2.4a7 7 0 0 0 1.6-.9l2.2.9a.5.5 0 0 0 .6-.2l1.8-3.1a.5.5 0 0 0-.1-.6z"/></svg>
         </button>
@@ -308,6 +340,10 @@
     <!-- SETTINGS TAB -->
     <div class="mcs-panel mcs-panel-hidden" id="mcs-panel-settings">
       <div class="mcs-mem-scroll">
+        <div class="mcs-set-search-wrap">
+          <input class="mcs-set-input mcs-set-search" id="mcs-set-search" type="text" placeholder="Search settings…" autocomplete="off">
+          <div class="mcs-set-search-empty" id="mcs-set-search-empty" style="display:none">No settings match that.</div>
+        </div>
         <div class="mcs-set-group" id="general-settings">
           <div class="mcs-set-group-label">General</div>
           <!-- main has always honoured closeToTray in two places; until now
@@ -320,6 +356,26 @@
                for them. -->
           <label class="mcs-set-row">Preview trailers on hover
             <input type="checkbox" id="gen-hover-trailers">
+          </label>
+          <!-- Whole-window zoom via webFrame.setZoomFactor. For readability on a
+               big monitor or a cramped laptop, without touching the layout. -->
+          <label class="mcs-set-row">Interface size
+            <select class="mcs-set-select" id="gen-ui-scale">
+              <option value="0.9">90%</option>
+              <option value="1">100%</option>
+              <option value="1.1">110%</option>
+              <option value="1.25">125%</option>
+            </select>
+          </label>
+          <!-- Light/dark for the music side and shared chrome. The cinema stays
+               dark always (a cinema is dark). "Follow system" tracks the OS
+               setting live via matchMedia. App #87. -->
+          <label class="mcs-set-row">Appearance
+            <select class="mcs-set-select" id="gen-theme">
+              <option value="dark">Dark</option>
+              <option value="light">Light</option>
+              <option value="system">Follow system</option>
+            </select>
           </label>
         </div>
         <div class="mcs-set-group" id="playback-settings">
@@ -366,12 +422,28 @@
           <label class="mcs-set-row">Volume boost (+30%)
             <input type="checkbox" id="pb-boost">
           </label>
+          <label class="mcs-set-row">Apply ReplayGain (even out album loudness)
+            <input type="checkbox" id="pb-replaygain-apply">
+          </label>
+          <div class="mcs-set-hint">Uses the loudness scan from the Stats page to level quiet and loud tracks at playback. Nothing is written to your files. Scan first, then turn this on.</div>
         </div>
         <div class="mcs-set-group" id="video-settings">
           <div class="mcs-set-group-label">Video</div>
           <label class="mcs-set-row">TMDB API key
             <input class="mcs-set-input" id="video-tmdb-key" type="password" placeholder="Paste TMDB v3 key…" autocomplete="off">
           </label>
+          <label class="mcs-set-row">Subtitle search key (OpenSubtitles)
+            <input class="mcs-set-input" id="video-opensubs-key" type="password" placeholder="Paste OpenSubtitles key…" autocomplete="off">
+          </label>
+          <div class="mcs-set-hint">Optional — get a free key at opensubtitles.com. Without one, online subtitle search stays off.</div>
+          <label class="mcs-set-row">Download speed limit (Mbps)
+            <input class="mcs-set-input mcs-set-input-num" id="video-download-limit" type="number" min="0" step="1" placeholder="Unlimited" autocomplete="off">
+          </label>
+          <div class="mcs-set-hint">Leave empty for no limit. This cap applies app-wide — to streaming and any background downloads at once.</div>
+          <label class="mcs-set-row">Share while watching
+            <input type="checkbox" id="video-seed-watching">
+          </label>
+          <div class="mcs-set-hint">Sharing (seeding) sends the parts you already have back to other people watching the same thing. It keeps things fast for everyone and is on by default.</div>
           <label class="mcs-set-row">Prefer surround
             <input type="checkbox" id="video-prefer-surround">
           </label>
@@ -383,6 +455,25 @@
               <option value="480p">480p</option>
             </select>
           </label>
+          <details class="mcs-set-details" id="video-mirrors">
+            <summary class="mcs-set-details-summary">Advanced: source mirrors</summary>
+            <div class="mcs-set-hint">One address per line, or comma-separated. Leave a field empty to use the built-in mirrors. Only change these if a source has stopped working.</div>
+            <label class="mcs-set-row mcs-set-row-stack">Movies (YTS)
+              <input class="mcs-set-input" id="video-mirror-yts" type="text" placeholder="https://yts.gg, https://…" autocomplete="off" spellcheck="false">
+            </label>
+            <label class="mcs-set-row mcs-set-row-stack">TV (EZTV)
+              <input class="mcs-set-input" id="video-mirror-eztv" type="text" placeholder="https://eztvx.to, https://…" autocomplete="off" spellcheck="false">
+            </label>
+            <label class="mcs-set-row mcs-set-row-stack">Anime (Nyaa)
+              <input class="mcs-set-input" id="video-mirror-nyaa" type="text" placeholder="https://nyaa.si, https://…" autocomplete="off" spellcheck="false">
+            </label>
+            <label class="mcs-set-row mcs-set-row-stack">General (apibay)
+              <input class="mcs-set-input" id="video-mirror-apibay" type="text" placeholder="https://apibay.org, https://…" autocomplete="off" spellcheck="false">
+            </label>
+            <button class="mcs-set-refresh mcs-set-reset" id="video-mirrors-reset">Reset mirrors to defaults</button>
+          </details>
+          <button class="mcs-set-refresh mcs-set-reset" id="video-reset-defaults">Reset video options to defaults</button>
+          <div class="mcs-set-chip mcs-set-chip-warn" id="video-storage-health" style="display:none">Your watch history may not be saving — check disk space</div>
         </div>
         <div class="mcs-set-group" id="eq-settings">
           <div class="mcs-set-group-label">Equalizer</div>
@@ -439,6 +530,40 @@
             <option value="gpt-4o">GPT-4o — smartest</option>
           </select>
           <div class="mcs-set-hint">Get key at platform.openai.com</div>
+        </div>
+        <div class="mcs-set-group" id="backup-settings">
+          <div class="mcs-set-group-label">Backup &amp; restore</div>
+          <div class="mcs-set-hint">Save everything — watch history, lists, settings and keys — to a single file, or bring it all back.</div>
+          <div class="mcs-set-btn-row">
+            <button class="mcs-set-refresh mcs-set-action" id="papa-export-btn">Back up everything…</button>
+            <button class="mcs-set-refresh mcs-set-action" id="papa-import-btn">Restore from backup…</button>
+          </div>
+          <div class="mcs-set-hint" id="backup-status"></div>
+        </div>
+        <div class="mcs-set-group" id="diagnostics-settings">
+          <div class="mcs-set-group-label">Diagnostics</div>
+          <div class="mcs-set-btn-row">
+            <button class="mcs-set-refresh mcs-set-action" id="diag-recheck-btn">Re-check</button>
+          </div>
+          <div class="mcs-diag-list" id="diag-list">
+            <div class="mcs-set-hint">Checking…</div>
+          </div>
+          <div class="mcs-diag-meta" id="diag-meta"></div>
+        </div>
+        <div class="mcs-set-group" id="bug-report-settings">
+          <div class="mcs-set-group-label">Report a problem</div>
+          <div class="mcs-set-hint">Gathers the app's recent activity, a quick health check and your settings (with all passwords and keys removed) into one folder you can send in.</div>
+          <div class="mcs-set-btn-row">
+            <button class="mcs-set-refresh mcs-set-action" id="bug-report-btn">Report a problem…</button>
+          </div>
+          <div class="mcs-set-hint" id="bug-report-status"></div>
+        </div>
+        <div class="mcs-set-group" id="about-settings">
+          <div class="mcs-set-group-label">About &amp; what's new</div>
+          <div class="mcs-set-hint" id="about-version">Papa Audio</div>
+          <div class="mcs-changelog" id="about-changelog">
+            <div class="mcs-set-hint">Loading release notes…</div>
+          </div>
         </div>
         <button class="mcs-set-save-btn" id="mcs-set-save-btn">Save Settings</button>
       </div>
@@ -575,76 +700,177 @@
   <div class="queue-list" id="queue-list"></div>
 </div>
 
-<!-- Now Playing fullscreen modal -->
-<div class="np-modal" id="np-modal" style="display:none">
+<!-- Now Playing fullscreen modal.
+
+     Rebuilt as four layers (see src/styles.css "NOW PLAYING (fullscreen)"):
+       1. Backdrop  — blurred cover art + palette-tinted gradient scrim.
+       2. Chrome     — the top bar: "PLAYING FROM <album>" eyebrow on the left,
+                       lyrics / full-art / close buttons on a scrim pill on the
+                       right. Sits below the app titlebar row.
+       3. Stage      — two crossfading modes: ART (monumental cover) and LYRICS
+                       (small cover + synced lyrics). Only one is in the flow at
+                       a time; .lyrics-mode on #np-modal switches them.
+       4. Deck       — full-width seek + transport + volume/queue/add cluster.
+     Plus a right-side queue panel (#np-queue-panel) and an idle clock/up-next
+     row that appear when the chrome/deck fade out after inactivity.
+
+     Every id the renderer feeds is preserved (np-modal-title, np-modal-fill,
+     np-modal-cur, lyrics-panel, np-next, np-stats-row, etc.). Colours come from
+     CSS custom properties --np-accent / --np-dominant / --np-muted set on the
+     modal by the palette code; each falls back to the app accent. -->
+<div class="np-modal" id="np-modal" style="display:none" role="dialog" aria-modal="true" aria-label="Now playing">
   <img class="np-modal-art-bg" id="np-modal-art-bg" src="" alt="">
   <div class="np-modal-bg" id="np-modal-bg"></div>
-  <button class="np-modal-close" id="np-modal-close" title="Close (Esc)" style="position:fixed;top:20px;right:20px;z-index:860;width:42px;height:42px;border-radius:50%;background:rgba(255,255,255,.2);border:none;display:flex;align-items:center;justify-content:center;cursor:pointer;color:#fff">
-    <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
-  </button>
-  <button class="np-modal-full-art" id="np-modal-full-art" title="Full screen art" style="position:fixed;top:20px;right:76px;z-index:860;width:42px;height:42px;border-radius:50%;background:rgba(255,255,255,.2);border:none;display:flex;align-items:center;justify-content:center;cursor:pointer;color:#fff">
-    <svg viewBox="0 0 24 24"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>
-  </button>
-  <button class="np-modal-lyrics-toggle" id="np-modal-lyrics-toggle" title="Lyrics view">
-    <svg viewBox="0 0 24 24"><path d="M9 17H5v-2h4v2zm0-4H5v-2h4v2zm0-4H5V7h4v2zm10.59 9L16 14.41 12.41 18 11 16.59l3.59-3.58L11 9.41 12.41 8l3.59 3.58L19.59 8 21 9.41l-3.58 3.59L21 16.59 19.59 18z"/></svg>
-  </button>
-  <div class="np-modal-content">
-    <div class="np-modal-lyrics-info">
-      <div class="np-modal-lyrics-title" id="np-modal-lyrics-title">—</div>
-      <div class="np-modal-lyrics-artist" id="np-modal-lyrics-artist">—</div>
+
+  <!-- aria-live region: announces the track on change while the modal is open.
+       Visually hidden; the visible title/artist carry the same text. -->
+  <div class="np-live" id="np-live" role="status" aria-live="polite" aria-atomic="true"></div>
+
+  <!-- Layer 2: top chrome bar -->
+  <div class="np-topbar" id="np-topbar">
+    <div class="np-eyebrow" id="np-eyebrow">
+      <span class="np-eyebrow-label">Playing from</span>
+      <span class="np-eyebrow-name" id="np-modal-album">—</span>
     </div>
-    <div class="np-modal-art-box" id="np-modal-art-box">
-      <img class="np-modal-art-img" id="np-modal-art-img" src="" alt="" onerror="this.style.display='none';document.getElementById('np-modal-art-fb').style.display='flex'">
-      <div class="np-modal-art-fb" id="np-modal-art-fb" style="display:none">
-        <svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>
+    <div class="np-chrome-actions">
+      <button class="np-chrome-btn" id="np-modal-lyrics-toggle" title="Lyrics (L)" aria-label="Toggle lyrics" aria-pressed="false">
+        <svg viewBox="0 0 24 24"><path d="M9 17H5v-2h4v2zm0-4H5v-2h4v2zm0-4H5V7h4v2zm10.59 9L16 14.41 12.41 18 11 16.59l3.59-3.58L11 9.41 12.41 8l3.59 3.58L19.59 8 21 9.41l-3.58 3.59L21 16.59 19.59 18z"/></svg>
+      </button>
+      <button class="np-chrome-btn" id="np-modal-full-art" title="Full-screen art (F)" aria-label="Full-screen art">
+        <svg viewBox="0 0 24 24"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>
+      </button>
+      <button class="np-chrome-btn" id="np-modal-close" title="Close (Esc)" aria-label="Close now playing">
+        <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <!-- Layer 3: the stage -->
+  <div class="np-stage" id="np-stage">
+    <!-- ART mode: monument -->
+    <div class="np-art-stage" id="np-art-stage">
+      <div class="np-modal-art-box" id="np-modal-art-box" title="Play / pause">
+        <img class="np-modal-art-img" id="np-modal-art-img" src="" alt="" onerror="this.style.display='none';document.getElementById('np-modal-art-fb').style.display='flex'">
+        <div class="np-modal-art-fb" id="np-modal-art-fb" style="display:none">
+          <svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>
+        </div>
+        <!-- Play/pause pulse that flashes over the art on a click. -->
+        <div class="np-art-pulse" id="np-art-pulse" aria-hidden="true">
+          <svg class="icon-play" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+          <svg class="icon-pause" viewBox="0 0 24 24" style="display:none"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+        </div>
+      </div>
+      <div class="np-modal-info">
+        <div class="np-title-row">
+          <div class="np-modal-title" id="np-modal-title">—</div>
+          <button class="np-like-btn" id="np-modal-like" title="Like" aria-label="Like this track" aria-pressed="false">
+            <svg class="heart-outline" viewBox="0 0 24 24"><path d="M16.5 3c-1.74 0-3.41.81-4.5 2.09A5.99 5.99 0 0 0 7.5 3C4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3zm-4.4 15.55-.1.1-.1-.1C7.14 14.24 4 11.39 4 8.5 4 6.5 5.5 5 7.5 5c1.54 0 3.04.99 3.57 2.36h1.87C13.46 5.99 14.96 5 16.5 5c2 0 3.5 1.5 3.5 3.5 0 2.89-3.14 5.74-7.9 10.05z"/></svg>
+            <svg class="heart-filled" viewBox="0 0 24 24" style="display:none"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09A5.99 5.99 0 0 1 16.5 3C19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+          </button>
+        </div>
+        <div class="np-modal-artist" id="np-modal-artist">—</div>
+        <div class="np-stats-row" id="np-stats-row"></div>
       </div>
     </div>
-    <div class="np-modal-info">
-      <div class="np-modal-album" id="np-modal-album"></div>
-      <div class="np-modal-title" id="np-modal-title">—</div>
-      <div class="np-modal-artist" id="np-modal-artist">—</div>
+
+    <!-- LYRICS mode: small art top-left + synced lyrics fill. Kept out of the
+         flow entirely (display:none) unless .lyrics-mode is set, so the empty
+         "No lyrics found" state never bleeds into ART mode. -->
+    <div class="np-lyrics-stage" id="np-lyrics-stage">
+      <div class="np-lyrics-head">
+        <div class="np-lyrics-mini-art" id="np-lyrics-mini-art"></div>
+        <div class="np-modal-lyrics-info">
+          <div class="np-modal-lyrics-title" id="np-modal-lyrics-title">—</div>
+          <div class="np-modal-lyrics-artist" id="np-modal-lyrics-artist">—</div>
+        </div>
+      </div>
+      <div class="lyrics-panel" id="lyrics-panel"></div>
     </div>
-    <div class="np-stats-row" id="np-stats-row"></div>
+  </div>
+
+  <!-- Layer 4: the deck -->
+  <div class="np-deck" id="np-deck">
     <div class="np-modal-progress-row">
       <span class="time-label" id="np-modal-cur">0:00</span>
-      <div class="progress-track np-modal-track" id="np-modal-track">
+      <div class="progress-track np-modal-track" id="np-modal-track" role="slider" tabindex="0"
+           aria-label="Seek" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
         <div class="progress-fill" id="np-modal-fill" style="width:0%"></div>
         <div class="progress-thumb" id="np-modal-thumb" style="left:0%"></div>
       </div>
       <span class="time-label" id="np-modal-total">0:00</span>
     </div>
-    <div class="ctrl-row np-modal-ctrl">
-      <button class="ctrl-btn" id="np-modal-shuffle">
-        <svg viewBox="0 0 24 24"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
-      </button>
-      <button class="ctrl-btn" id="np-modal-prev">
-        <svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
-      </button>
-      <button class="ctrl-btn play-pause-btn np-modal-play-btn" id="np-modal-play">
-        <svg class="icon-play" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
-        <svg class="icon-pause" viewBox="0 0 24 24" style="display:none"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
-      </button>
-      <button class="ctrl-btn" id="np-modal-next">
-        <svg viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
-      </button>
-      <button class="ctrl-btn" id="np-modal-repeat">
-        <svg viewBox="0 0 24 24"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>
-      </button>
+    <div class="np-deck-controls">
+      <div class="ctrl-row np-modal-ctrl">
+        <button class="ctrl-btn" id="np-modal-shuffle" title="Shuffle" aria-label="Shuffle" aria-pressed="false">
+          <svg viewBox="0 0 24 24"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
+        </button>
+        <button class="ctrl-btn" id="np-modal-prev" title="Previous" aria-label="Previous track">
+          <svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
+        </button>
+        <button class="ctrl-btn play-pause-btn np-modal-play-btn" id="np-modal-play" title="Play / pause" aria-label="Play">
+          <svg class="icon-play" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+          <svg class="icon-pause" viewBox="0 0 24 24" style="display:none"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+        </button>
+        <button class="ctrl-btn" id="np-modal-next" title="Next" aria-label="Next track">
+          <svg viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
+        </button>
+        <button class="ctrl-btn" id="np-modal-repeat" title="Repeat" aria-label="Repeat" aria-pressed="false">
+          <svg viewBox="0 0 24 24"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>
+        </button>
+      </div>
+      <div class="np-deck-right">
+        <button class="ctrl-btn vol-icon-btn" id="np-modal-vol" title="Mute (M)" aria-label="Mute" aria-pressed="false">
+          <svg class="vol-icon" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77 0-4.28-2.99-7.86-7-8.77z"/></svg>
+        </button>
+        <div class="vol-track np-modal-vol-track" id="np-modal-vol-track" role="slider" tabindex="0"
+             aria-label="Volume" aria-valuemin="0" aria-valuemax="100" aria-valuenow="80">
+          <div class="vol-fill" id="np-modal-vol-fill" style="width:80%"></div>
+          <div class="vol-thumb" id="np-modal-vol-thumb" style="left:80%"></div>
+        </div>
+        <button class="ctrl-btn" id="np-modal-queue" title="Queue (Q)" aria-label="Queue" aria-expanded="false">
+          <svg viewBox="0 0 24 24"><path d="M4 6h16v2H4zm4 5h12v2H8zm4 5h8v2h-8z"/></svg>
+        </button>
+        <button class="ctrl-btn" id="np-modal-addpl" title="Add to playlist" aria-label="Add to playlist">
+          <svg viewBox="0 0 24 24"><path d="M14 10H3v2h11v-2zm0-4H3v2h11V6zm4 8v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zM3 16h7v-2H3v2z"/></svg>
+        </button>
+      </div>
     </div>
-    <div class="lyrics-panel" id="lyrics-panel"></div>
   </div>
-  <div class="np-next" id="np-next" style="display:none">
+
+  <!-- Up Next chip → opens the queue panel. Doubles as the idle-mode
+       bottom-right label. -->
+  <button class="np-next" id="np-next" style="display:none" aria-label="Open queue">
     <img class="np-next-art" id="np-next-art" src="" alt="">
     <div class="np-next-info">
       <div class="np-next-label">Next</div>
       <div class="np-next-title" id="np-next-title">—</div>
       <div class="np-next-artist" id="np-next-artist"></div>
     </div>
+  </button>
+
+  <!-- Idle-mode clock, bottom-left. -->
+  <div class="np-idle-clock" id="np-idle-clock" aria-hidden="true"></div>
+
+  <!-- Right-side queue panel. Reuses the queue data; rendered by
+       renderNpQueue(). Escape closes this before it closes the modal. -->
+  <div class="np-queue-panel" id="np-queue-panel" aria-label="Queue" role="region">
+    <div class="np-queue-head">
+      <span class="np-queue-title">Queue</span>
+      <button class="np-chrome-btn" id="np-queue-close" title="Close queue" aria-label="Close queue">
+        <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+      </button>
+    </div>
+    <div class="np-queue-list" id="np-queue-list"></div>
   </div>
 </div>
 
-<!-- Toast notification -->
-<div class="toast-notification" id="toast-notification"></div>
+<!-- Toast notifications. A stack (up to 3 visible, oldest evicted) so a burst
+     never overlaps into one unreadable smear. aria-live="polite" so each new
+     toast is announced to a screen reader without stealing focus. The legacy
+     #toast-notification id is kept as an alias so any stray reference still
+     resolves to the container rather than null. -->
+<div class="toast-stack" id="toast-stack" role="status" aria-live="polite" aria-atomic="false"></div>
+<div class="toast-notification" id="toast-notification" hidden></div>
 
 <!-- Context menu -->
 <!-- Populated at open time from the context-menu model, so each surface only
@@ -675,11 +901,55 @@
 
 <!-- Setup overlay -->
 <div class="setup-overlay" id="setup-overlay" style="display:none">
-  <div class="setup-card">
-    <svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>
-    <h1>Welcome to Papa Audio</h1>
-    <p>Choose the folder where your music is stored to get started.</p>
-    <button class="choose-folder-btn" id="choose-folder-btn">Choose Music Folder</button>
+  <div class="setup-card setup-wizard">
+    <div class="setup-steps" id="setup-steps" aria-hidden="true">
+      <span class="setup-step-dot" data-step="1"></span>
+      <span class="setup-step-dot" data-step="2"></span>
+      <span class="setup-step-dot" data-step="3"></span>
+    </div>
+
+    <!-- Step 1: music folder -->
+    <div class="setup-step" id="setup-step-1">
+      <svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>
+      <h1>Welcome to Papa Audio</h1>
+      <p>Choose the folder where your music is stored to get started.</p>
+      <p class="setup-chosen" id="setup-folder-chosen" style="display:none"></p>
+      <button class="choose-folder-btn" id="choose-folder-btn">Choose Music Folder</button>
+      <div class="setup-nav">
+        <span></span>
+        <button class="setup-link" id="setup-skip-1">Skip for now</button>
+      </div>
+    </div>
+
+    <!-- Step 2: optional Movies & TV -->
+    <div class="setup-step" id="setup-step-2" style="display:none">
+      <svg viewBox="0 0 24 24"><path d="M18 4l2 4h-3l-2-4h-2l2 4h-3l-2-4H8l2 4H7L5 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V4h-4z"/></svg>
+      <h1>Movies &amp; TV (optional)</h1>
+      <p>To browse films, TV and anime, Papa Audio needs a free TMDB key. You can add it now or later in Settings.</p>
+      <input class="setup-input" id="setup-tmdb-key" type="password" placeholder="Paste TMDB v3 key…" autocomplete="off">
+      <p class="setup-hint"><a href="https://www.themoviedb.org/settings/api" target="_blank" rel="noopener noreferrer" class="setup-a">Get a free key at themoviedb.org →</a></p>
+      <div class="setup-nav">
+        <button class="setup-link" id="setup-back-2">Back</button>
+        <div class="setup-nav-right">
+          <button class="setup-link" id="setup-skip-2">Skip</button>
+          <button class="choose-folder-btn setup-next" id="setup-next-2">Save &amp; continue</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 3: environment check -->
+    <div class="setup-step" id="setup-step-3" style="display:none">
+      <svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+      <h1>You're set</h1>
+      <p>A quick check of the tools Papa Audio uses.</p>
+      <div class="setup-checks" id="setup-checks">
+        <div class="mcs-set-hint">Checking…</div>
+      </div>
+      <div class="setup-nav">
+        <button class="setup-link" id="setup-back-3">Back</button>
+        <button class="choose-folder-btn setup-next" id="setup-finish">Finish</button>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -689,8 +959,22 @@
   <button class="sleep-option" data-mins="30">30 minutes</button>
   <button class="sleep-option" data-mins="45">45 minutes</button>
   <button class="sleep-option" data-mins="60">1 hour</button>
+  <button class="sleep-option" data-mins="90">1.5 hours</button>
   <button class="sleep-option" data-mins="120">2 hours</button>
-  <button class="sleep-option sleep-cancel" data-mins="0">Cancel timer</button>
+  <button class="sleep-option" data-mins="0">End of track</button>
+  <button class="sleep-option sleep-cancel" data-mins="-1">Cancel timer</button>
+  <div class="alarm-block" id="alarm-block">
+    <div class="alarm-title">Wake me</div>
+    <div class="alarm-row">
+      <input type="time" id="alarm-time" class="alarm-time" aria-label="Alarm time">
+      <select id="alarm-source" class="alarm-source" aria-label="What to play"></select>
+    </div>
+    <div class="alarm-row">
+      <button class="alarm-set" id="alarm-set-btn">Set alarm</button>
+      <button class="alarm-clear" id="alarm-clear-btn">Clear</button>
+    </div>
+    <div class="alarm-status" id="alarm-status"></div>
+  </div>
 </div>
 
 <!-- Progress bar time tooltip -->
@@ -746,8 +1030,13 @@
 
 <script src="player-shim.js"></script>
 <script src="format-badges.js"></script>
+<script src="music-tools.js"></script>
+<script src="loudness.js"></script>
 <script src="slsk-filters.js"></script>
 <script src="slsk-tree.js"></script>
+<script src="slsk-shelves.js"></script>
+<script src="slsk-art-prefetch.js"></script>
+<script src="preview-racer.js"></script>
 <script src="slsk-presence.js"></script>
 <script src="library-sig.js"></script>
 <script src="queue-repair.js"></script>
@@ -771,6 +1060,8 @@
 <script src="video-store.js"></script>
 <script src="video-enrich.js"></script>
 <script src="video-keymap.js"></script>
+<script src="media-handoff.js"></script>
+<script src="mylist-group.js"></script>
 <script src="skip-model.js"></script>
 <script src="video-player.js"></script>
 <!-- The film diary. taste-store.js is the data layer, taste-panel.js the
@@ -779,6 +1070,13 @@
 <script src="video-query.js"></script>
 <script src="taste-store.js"></script>
 <script src="taste-panel.js"></script>
+<!-- Pure aggregation for the unified diary timeline (App #49+75). Loaded before
+     renderer.js, which reads window.PapaDiaryTimeline. -->
+<script src="diary-timeline.js"></script>
+<!-- Pure aggregation for the home "Your year so far" card (App §76). Loaded
+     before renderer.js, which reads window.PapaHomeRecap. -->
+<script src="home-recap.js"></script>
+<script src="palette.js"></script>
 <script src="renderer.js"></script>
 </body>
 </html>

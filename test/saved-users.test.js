@@ -1,6 +1,6 @@
 const test = require('node:test')
 const assert = require('node:assert')
-const { isSaved, saveUser, removeUser, toggleUser, touchUser, sortUsers } = require('../src/saved-users')
+const { isSaved, saveUser, removeUser, toggleUser, touchUser, recordBrowse, sortUsers } = require('../src/saved-users')
 
 test('saving, finding and removing', () => {
   let l = saveUser([], 'doperst13', { note: 'great 5.1 collection' })
@@ -69,6 +69,46 @@ test('operations never mutate the input array', () => {
   const orig = saveUser([], 'bob')
   const copy = JSON.parse(JSON.stringify(orig))
   saveUser(orig, 'jane'); removeUser(orig, 'bob'); sortUsers(orig)
+  assert.deepEqual(orig, copy)
+})
+
+// ── Friend diffs: recordBrowse rolls the last count into prevFileCount ───────
+
+test('recordBrowse only touches saved users', () => {
+  assert.deepEqual(recordBrowse([], 'ghost', { fileCount: 5 }), [],
+    'a user who is not saved has no diff to keep')
+})
+
+test('the first browse has no previous count to diff against', () => {
+  let l = saveUser([], 'bob')
+  l = recordBrowse(l, 'bob', { fileCount: 100, dirCount: 4 })
+  assert.equal(l[0].fileCount, 100)
+  assert.equal(l[0].prevFileCount, null, 'nothing came before the first browse')
+  assert.ok(l[0].lastBrowsedAt > 0)
+})
+
+test('a second browse rolls the old count into prevFileCount', () => {
+  let l = saveUser([], 'bob')
+  l = recordBrowse(l, 'bob', { fileCount: 100 })
+  l = recordBrowse(l, 'bob', { fileCount: 140 })
+  assert.equal(l[0].fileCount, 140, 'the fresh count is current')
+  assert.equal(l[0].prevFileCount, 100, 'the previous count is kept for the diff')
+})
+
+test('a note-only save does not disturb the diff record', () => {
+  let l = saveUser([], 'bob')
+  l = recordBrowse(l, 'bob', { fileCount: 100 })
+  l = recordBrowse(l, 'bob', { fileCount: 140 })
+  l = saveUser(l, 'bob', { note: 'nice collection' })
+  assert.equal(l[0].fileCount, 140)
+  assert.equal(l[0].prevFileCount, 100, 'editing a note must not lose the diff')
+  assert.equal(l[0].note, 'nice collection')
+})
+
+test('recordBrowse does not mutate the input array', () => {
+  const orig = saveUser([], 'bob', { fileCount: 10 })
+  const copy = JSON.parse(JSON.stringify(orig))
+  recordBrowse(orig, 'bob', { fileCount: 20 })
   assert.deepEqual(orig, copy)
 })
 

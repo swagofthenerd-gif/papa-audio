@@ -1,7 +1,20 @@
 'use strict'
 const test = require('node:test')
 const assert = require('node:assert')
-const { duration, size, bitrate, relativeDate, certification } = require('../src/video-format')
+const { duration, size, bitrate, relativeDate, certification, soundtrackQuery } = require('../src/video-format')
+
+test('soundtrackQuery appends the word and strips a trailing year (App #71)', () => {
+  assert.strictEqual(soundtrackQuery('Dune'), 'Dune soundtrack')
+  assert.strictEqual(soundtrackQuery('Dune (2021)'), 'Dune soundtrack')
+  assert.strictEqual(soundtrackQuery('Blade Runner 2049'), 'Blade Runner 2049 soundtrack')
+})
+
+test('soundtrackQuery does not double the word or search for it alone', () => {
+  assert.strictEqual(soundtrackQuery('Guardians of the Galaxy Soundtrack'), 'Guardians of the Galaxy Soundtrack')
+  assert.strictEqual(soundtrackQuery(''), '')
+  assert.strictEqual(soundtrackQuery(null), '')
+  assert.strictEqual(soundtrackQuery('   '), '')
+})
 
 test('duration renders m:ss under an hour and h:mm:ss above', () => {
   assert.strictEqual(duration(443), '7:23')

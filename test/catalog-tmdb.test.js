@@ -13,6 +13,7 @@ const {
   buildDetailUrl,
   buildSeasonUrl,
   createTmdbCatalog,
+  normalizeNextEpisode,
   MOVIE_APPEND,
   TV_APPEND,
 } = require('../catalog/tmdb')
@@ -326,4 +327,26 @@ test('a non-401 failure rejects with the generic status message', async () => {
   const fetchFn = async () => ({ ok: false, status: 500 })
   const cat = createTmdbCatalog({ apiKey: 'KEY', fetchFn })
   await assert.rejects(() => cat.search('x'), /TMDB request failed \(500\)/)
+})
+
+// ── Next episode to air (App §25/§26) ───────────────────────────────────────
+
+test('normalizeNextEpisode reads next_episode_to_air off a tv detail response', () => {
+  const raw = { next_episode_to_air: { season_number: 4, episode_number: 7, name: 'The Return', air_date: '2026-09-12' } }
+  assert.deepStrictEqual(normalizeNextEpisode(raw), {
+    seasonNumber: 4, episodeNumber: 7, name: 'The Return', airDate: '2026-09-12',
+  })
+})
+
+test('normalizeNextEpisode returns null for an ended show or missing air_date', () => {
+  assert.strictEqual(normalizeNextEpisode({}), null)
+  assert.strictEqual(normalizeNextEpisode({ next_episode_to_air: null }), null)
+  assert.strictEqual(normalizeNextEpisode({ next_episode_to_air: { episode_number: 7 } }), null)
+})
+
+test('normalizeTv carries nextEpisode from the detail response, null on search/trending payloads', () => {
+  const detail = normalizeTv({ id: 1, name: 'S', next_episode_to_air: { episode_number: 2, air_date: '2026-09-12' } })
+  assert.deepStrictEqual(detail.nextEpisode, { seasonNumber: null, episodeNumber: 2, name: null, airDate: '2026-09-12' })
+  const light = normalizeTv({ id: 1, name: 'S' })
+  assert.strictEqual(light.nextEpisode, null)
 })

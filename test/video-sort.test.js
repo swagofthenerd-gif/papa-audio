@@ -188,8 +188,11 @@ test('the filmography rebinds its own control after each repaint', () => {
   // after the first change — the classic one-shot dropdown.
   const fn = RENDERER.slice(RENDERER.indexOf('function _paintPersonRows'),
                             RENDERER.indexOf('// The name and photo of the person just clicked'))
-  assert.match(fn, /rows\.innerHTML = html/)
-  const after = fn.slice(fn.indexOf('rows.innerHTML = html'))
+  // The controls row (filter box + sort) is written into rows.innerHTML, then
+  // the sort is re-bound after it — the markup that holds the control has just
+  // been replaced, so a once-bound listener would be dead.
+  assert.match(fn, /rows\.innerHTML =/)
+  const after = fn.slice(fn.indexOf('rows.innerHTML ='))
   assert.match(after, /getElementById\('vperson-sort-select'\)\?\.addEventListener/,
     'the control must be re-bound after the markup that contains it is replaced')
 })

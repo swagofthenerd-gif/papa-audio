@@ -104,5 +104,58 @@
     return null
   }
 
-  return { duration, size, bitrate, relativeDate, certification }
+  // ── Source mirror lists (App #34) ─────────────────────────────────────────
+  // The Settings field is free text: a comma- or newline-separated list of base
+  // URLs for one torrent provider. `parseMirrorList` turns that text into the
+  // clean string array the setting stores (and an empty array means "use the
+  // built-in defaults"); `formatMirrorList` turns a stored array back into the
+  // one-per-line text the field shows. Pure and reversible so the field can be
+  // round-tripped without surprising the user.
+
+  // Split on commas and any newline, trim, drop blanks and obvious non-URLs, and
+  // de-duplicate while preserving order. A "URL" here is anything beginning with
+  // http:// or https:// — the providers only ever speak those, and rejecting the
+  // rest stops a stray word from silently becoming a dead mirror.
+  function parseMirrorList(text) {
+    if (text == null) return []
+    const parts = String(text).split(/[\n,]+/)
+    const out = []
+    const seen = new Set()
+    for (const raw of parts) {
+      const url = raw.trim().replace(/\/+$/, '')
+      if (!url || !/^https?:\/\//i.test(url)) continue
+      if (seen.has(url)) continue
+      seen.add(url)
+      out.push(url)
+    }
+    return out
+  }
+
+  // The stored array back to editable text, one URL per line. A missing or
+  // non-array value is an empty field, never the literal "null".
+  function formatMirrorList(list) {
+    if (!Array.isArray(list)) return ''
+    return list.filter(u => typeof u === 'string' && u.trim()).join('\n')
+  }
+
+  // ── Soundtrack search query (App #71) ─────────────────────────────────────
+  // The "Find soundtrack" button on a detail page hands the title to the music
+  // search. This builds the query: the bare title plus "soundtrack", with a
+  // trailing year in parentheses stripped (a search for 'Dune (2021) soundtrack'
+  // finds far less than 'Dune soundtrack') and the word "soundtrack" not doubled
+  // if the title already ends in it. Empty in, empty out — the caller then does
+  // nothing rather than searching for the word alone.
+  function soundtrackQuery(title) {
+    const base = String(title == null ? '' : title)
+      .replace(/\s*\((?:19|20)\d{2}\)\s*$/, '')
+      .trim()
+    if (!base) return ''
+    if (/soundtrack$/i.test(base)) return base
+    return base + ' soundtrack'
+  }
+
+  return {
+    duration, size, bitrate, relativeDate, certification,
+    parseMirrorList, formatMirrorList, soundtrackQuery,
+  }
 })

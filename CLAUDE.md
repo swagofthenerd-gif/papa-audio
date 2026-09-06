@@ -1,7 +1,16 @@
 # Papa Audio — Agent Instructions
 
 ## Primary mission
-Find and download the music the user asks for, however necessary. This is the only job that matters. If something blocks a download — a broken source, a missing codec, a daemon not running, a search returning nothing — diagnose and solve it autonomously without waiting for the user to ask.
+Find and download the music the user asks for, however necessary. This is the
+core job for the music side of the app. If something blocks a download — a
+broken source, a missing codec, a daemon not running, a search returning
+nothing — diagnose and solve it autonomously without waiting for the user to
+ask.
+
+The app also streams movies, TV and anime (see **Video / Movies & TV**
+below) — that side is just as real and just as much "the app," not a side
+experiment. On `feature/papa-video` (often the checked-out branch) it's
+active and actively used.
 
 ## Stack
 - Electron app at `/home/shaharyar/flac-player/`
@@ -42,3 +51,53 @@ Find and download the music the user asks for, however necessary. This is the on
 - Wants the search to be as comprehensive as possible — maximum peer coverage matters
 - UI should feel like Spotify but with P2P power underneath
 - See memory files for musical taste profile and learned preferences
+
+## Video / Movies & TV (anime, film, TV streaming)
+A second major feature living in the same app and the same `main.js`/`renderer.js`
+files as the music player — not a separate project. Lets the user browse and
+stream movies, TV shows and anime, torrent-backed, playing through the same
+mpv engine the music side uses (a second, separate mpv process — see
+`video-engine.js`).
+
+- Catalogs (metadata/browsing): `catalog/tmdb.js` (movies/TV, needs a TMDB API
+  key set in Settings → Video), `catalog/anilist.js` (anime), `catalog/omdb.js`
+  (IMDb/RT/Metacritic ratings enrichment, optional), `catalog/shelves.js`
+  (curated rows).
+- Sources (where the actual video comes from): `providers/yts.js` (movies),
+  `providers/eztv.js` (TV), `providers/nyaa.js` + `providers/apibay.js` +
+  `providers/anime.js` (anime), `providers/movie-tv.js` (a broad
+  fallback/vidsrc resolver). Picked per-type by `_videoBackends()` in `main.js`.
+- Streaming: `torrent-stream.js` (`TorrentStreamer` — turns a torrent into a
+  servable file, with pack/season handling and next-episode prefetch),
+  `video-engine.js` (`VideoEngine` — drives mpv for video the way
+  `mpv-engine.js` drives it for music).
+- Renderer: `src/video-player.js` (the theatre UI: controls, seek, skip-intro/
+  credits, subtitle/audio/quality menus, fullscreen), `src/video-store.js`
+  (watchlist, per-episode progress, "Continue Watching" — **note:** this is
+  backed by the renderer's `localStorage`, not by `electron-store` or the
+  `SideStore` system everything else in the app uses; `main.js`'s `will-quit`
+  and `shutdownFromSignal` both explicitly call
+  `session.defaultSession.flushStorageData()` to make sure it actually reaches
+  disk before the process exits — don't remove that call), `src/video-enrich.js`
+  (lazy shelf-card enrichment), `src/video-format.js`, `src/video-query.js`
+  (natural-language search parsing), `src/video-keymap.js`, `src/skip-model.js`
+  + `skip/aniskip.js` + `skip/detect-intro.js` + `skip/chapters.js` (opening/
+  credits skip detection).
+- Navigation: video pages (`video`, `browse`, `person`, `video-detail`,
+  `shelf`, `diary`) go through the same `navigate()`/`_currentNavId()` in
+  `src/renderer.js` as music pages. A page needs a real id to mean anything —
+  `state.currentVideoNavId` is where that id lives for `video-detail`/`person`/
+  `shelf`; startup session-restore refuses to reopen one of those pages with a
+  missing id (falls back to Home) rather than reopening into a dead error
+  state.
+- Main-process IPC handlers all start with `video-` (`video-detail`,
+  `video-streams`, `video-play`, `video-search`, `video-shelf`,
+  `video-skip-segments`, etc. — see `main.js`, search `ipcMain.handle('video-`).
+- Tests: `test/video-*.test.js` (~18 files). Run just these with
+  `node --test 'test/video-*.test.js'`.
+- Deeper background/history lives in `docs/` (`papa-video-plan.md` — the
+  original UX spec, `papa-video-handoff.md`, `papa-cinema-plan.md`,
+  `HANDOFF-video-playback.md`) — these are point-in-time planning/handoff
+  notes, not living docs, so treat them as historical context rather than
+  current truth; verify against the actual code before trusting a specific
+  claim in them.

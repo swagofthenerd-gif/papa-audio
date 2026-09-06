@@ -8,6 +8,12 @@
 
 const ANILIST_BASE = 'https://graphql.anilist.co'
 
+// Abort a hung request rather than letting a lookup wait forever. A dead socket
+// otherwise stalls a catalog row (or, worse, wedges a whole season-chain walk
+// behind one hop). Same 10s ceiling the other catalog modules use
+// (catalog/jikan.js) so the paths stay consistent.
+const REQUEST_TIMEOUT_MS = 10000
+
 // idMal is the MyAnimeList id AniSkip keys on, so it has to ride along on every
 // anime lookup — without it the skip-intro feature has nothing to ask AniSkip.
 const MEDIA_SELECTION = `id
@@ -44,6 +50,26 @@ function normalizeChainNode(n) {
     format: n.format ?? null,
     status: n.status ?? null,
     poster: n.coverImage?.large ?? null,
+  }
+}
+
+// One airing-schedule row: the show, its next unaired episode number, and when
+// that episode airs (epoch SECONDS, as AniList reports airingAt). A show whose
+// run has finished carries no nextAiringEpisode and is dropped — the schedule
+// only ever lists shows that still have an episode coming. Returns null for
+// those so a caller can filter in one pass.
+function normalizeAiring(raw) {
+  raw = raw || {}
+  const next = raw.nextAiringEpisode
+  if (!next || next.airingAt == null) return null
+  const title = raw.title || {}
+  return {
+    id: raw.id ?? null,
+    title: title.english || title.romaji || title.native || null,
+    episode: next.episode ?? null,
+    // airingAt is epoch seconds; the merge layer in main.js converts to ms once,
+    // so every downstream airsAt is milliseconds regardless of source.
+    airingAt: Number(next.airingAt),
   }
 }
 
@@ -172,6 +198,23 @@ function buildQuery(kind, options) {
     ${MEDIA_SELECTION}
   }
 }`
+    // The airing schedule for a batch of shows the viewer already follows (App
+    // #25/#26). One Page query with id_in fetches every show's next episode in a
+    // single round-trip — the airing shelf and the calendar must never fan out
+    // one request per followed title. Only the id, a display title and
+    // `nextAiringEpisode { airingAt episode }` are selected: this is a schedule
+    // lookup, not a detail fetch, so the heavy MEDIA_SELECTION is deliberately
+    // not pulled in. A finished show simply has `nextAiringEpisode: null`.
+    case 'airing':
+      return `query ($page: Int, $perPage: Int, $ids: [Int]) {
+  Page(page: $page, perPage: $perPage) {
+    media(id_in: $ids, type: ANIME) {
+      id
+      title { english romaji native }
+      nextAiringEpisode { airingAt episode }
+    }
+  }
+}`
     default:
       throw new Error(`Unknown AniList query kind: ${kind}`)
   }
@@ -213,6 +256,16 @@ function buildVariables(kind, opts = {}) {
   // The byId query takes only $id; sending page/perPage would be rejected as
   // unknown variables are not, but keeping it clean matches the query shape.
   if (kind === 'byId' || kind === 'relations') return { id: Number(id) }
+  if (kind === 'airing') {
+    // ids arrive as strings from the video store and as numbers from API
+    // objects; AniList's id_in is [Int], so each is coerced and anything that
+    // is not a finite id is dropped rather than sent as NaN.
+    const ids = (Array.isArray(opts.ids) ? opts.ids : [])
+      .map(Number).filter(n => Number.isFinite(n) && n > 0)
+    // perPage caps at 50 upstream; a follow list longer than that pages, but the
+    // caller batches in 50s so one page is the norm.
+    return { page: page ?? 1, perPage: perPage ?? 50, ids }
+  }
   const vars = {
     page: page ?? 1,
     perPage: perPage ?? 20,
@@ -250,20 +303,61 @@ function buildVariables(kind, opts = {}) {
   return vars
 }
 
-function createAnilistCatalog({ fetchFn } = {}) {
+// How long to wait before retrying a failed season-chain hop. One second is
+// enough for a blip; a 429 carries its own Retry-After, honoured up to three
+// times the base so a rate-limited walk waits out the window instead of
+// immediately failing again. Pure so the policy is testable without timers.
+function _retryDelayMs(err, base) {
+  if (err && Number(err.status) === 429) {
+    const ra = Number(err.retryAfter)
+    if (Number.isFinite(ra) && ra > 0) return Math.min(ra * 1000, base * 3)
+  }
+  return base
+}
+
+function _sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+// `retryDelayMs` is a test seam: production always uses the 1 s default.
+function createAnilistCatalog({ fetchFn, retryDelayMs = 1000,
+  timeoutMs = REQUEST_TIMEOUT_MS } = {}) {
   const fetcher = fetchFn || fetch
+
+  // Every AniList request is the same POST; this wraps it in an AbortController
+  // so a hung socket cannot wedge a lookup (or a season-chain hop). Not every
+  // injected fetcher honours `signal`, so the timer is cleared regardless. The
+  // response is returned untouched: callers decide what a non-OK status means.
+  async function _fetchGraphql(body) {
+    const controller = typeof AbortController === 'function' ? new AbortController() : null
+    const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null
+    try {
+      return await fetcher(ANILIST_BASE, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+        ...(controller ? { signal: controller.signal } : {}),
+      })
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
+  }
 
   async function _post(kind, opts) {
     const query = buildQuery(kind, opts)
     const variables = buildVariables(kind, opts)
-    const res = await fetcher(ANILIST_BASE, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query, variables }),
-    })
+    const res = await _fetchGraphql(JSON.stringify({ query, variables }))
     if (!res || !res.ok) {
       const status = res && res.status != null ? res.status : 'unknown'
-      throw new Error(`AniList request failed (${status})`)
+      const err = new Error(`AniList request failed (${status})`)
+      // The status and Retry-After ride along so the season-chain retry can
+      // treat a 429 differently from a dead network.
+      err.status = res ? res.status : null
+      const headers = res && res.headers
+      if (headers && typeof headers.get === 'function') {
+        err.retryAfter = headers.get('retry-after')
+      }
+      throw err
     }
     const data = await res.json()
     if (data && Array.isArray(data.errors) && data.errors.length) {
@@ -276,6 +370,10 @@ function createAnilistCatalog({ fetchFn } = {}) {
     if (kind === 'relations') {
       const edges = data?.data?.Media?.relations?.edges
       return Array.isArray(edges) ? edges : []
+    }
+    if (kind === 'airing') {
+      const list = data?.data?.Page?.media
+      return (Array.isArray(list) ? list : []).map(normalizeAiring).filter(Boolean)
     }
     const page = data?.data?.Page
     const media = (page?.media || []).map(normalizeMedia)
@@ -294,27 +392,67 @@ function createAnilistCatalog({ fetchFn } = {}) {
     return media
   }
 
+  // The browse/search/detail calls degrade quietly rather than rejecting, the
+  // same convention seasonChain and airingSchedule already follow: a dead or
+  // rate-limited AniList should leave a catalog row empty, not blow up the whole
+  // request. The error is logged once (so a real outage is still diagnosable)
+  // and a shape-appropriate empty value is returned — [] for a list, null for a
+  // single lookup, an empty page object for discover. `_post` itself still
+  // throws, because the season-chain walk relies on that to drive its retry and
+  // `truncated` flag; only these public entry points swallow.
+  const _degrade = async (fallback, fn) => {
+    try {
+      return await fn()
+    } catch (err) {
+      console.warn('[anilist] request degraded:', (err && err.message) || err)
+      return fallback
+    }
+  }
+  const _emptyDiscover = () => ({
+    results: [], page: 1, totalPages: 1, totalResults: 0, hasMore: false,
+  })
+
   return {
     trending(page) {
-      return _post('trending', { page })
+      return _degrade([], () => _post('trending', { page }))
     },
     popular(page) {
-      return _post('popular', { page })
+      return _degrade([], () => _post('popular', { page }))
     },
     season(page, { season, seasonYear } = {}) {
       return _post('season', { page, season, seasonYear })
     },
     search(query, page) {
-      return _post('search', { query, page })
+      return _degrade([], () => _post('search', { query, page }))
     },
+    // Unlike the browse/search calls, byId does NOT degrade. A list shelf can
+    // quietly render empty when AniList is down, but a detail page must be able
+    // to say *why* it failed — degrading to null erases the reason and forces a
+    // bare "Not found". `_post` throws an Error whose message carries AniList's
+    // own text (e.g. the API-disabled notice, or a request-failed status), and
+    // the video-detail handler in main.js surfaces `e.message` to the renderer's
+    // error page. So this rethrows and lets the caller decide (main.js falls
+    // back to its persistent detail cache before letting the error through).
+    // A genuinely unknown id still returns null here without throwing: `_post`
+    // maps a null `data.Media` to null, which is not an error.
     byId(id) {
       return _post('byId', { id })
     },
     discover(opts) {
-      return _post('discover', opts || {})
+      return _degrade(_emptyDiscover(), () => _post('discover', opts || {}))
     },
     relations(id) {
-      return _post('relations', { id })
+      return _degrade([], () => _post('relations', { id }))
+    },
+
+    // The next-episode schedule for a batch of followed shows (App #25/#26).
+    // One batched query for every id; a finished show is simply absent from the
+    // result. An empty or all-invalid id list never touches the network.
+    async airingSchedule(ids) {
+      const clean = (Array.isArray(ids) ? ids : [])
+        .map(Number).filter(n => Number.isFinite(n) && n > 0)
+      if (!clean.length) return []
+      return _post('airing', { ids: clean })
     },
 
     // The full run of a series, in watch order.
@@ -328,13 +466,34 @@ function createAnilistCatalog({ fetchFn } = {}) {
     // Only PREQUEL and SEQUEL build the spine; SIDE_STORY, SPIN_OFF and the
     // rest are collected separately as related titles rather than being
     // presented as seasons, because they are not part of the main story.
+    // Returns `{ seasons, related, truncated }`. `truncated: true` means a
+    // fetch failed even after the retry, so the walk stopped early and the
+    // list may be missing seasons — a caller that caches season chains should
+    // refuse to cache a truncated one. (The current caller caches on
+    // `seasons.length` alone, which is exactly why the retry lives here: a
+    // transient blip must not become a permanently cached half-chain.)
     async seasonChain(id, { maxHops = MAX_CHAIN_HOPS } = {}) {
+      // No id means no walk ran, so there is nothing to be truncated: the
+      // pre-walk shape stays exactly as it was.
       const start = Number(id)
       if (!start) return { seasons: [], related: [] }
 
       const nodes = new Map()      // id -> normalized entry
       const related = new Map()
       const seen = new Set()
+      let truncated = false
+
+      // One retry after a backoff before a hop is given up on. AniList's rate
+      // limiter answers a burst of hops with 429s, and giving up on the first
+      // one silently truncated the chain.
+      const _retryOnce = async fn => {
+        try {
+          return await fn()
+        } catch (err) {
+          await _sleep(_retryDelayMs(err, retryDelayMs))
+          return fn()
+        }
+      }
 
       const record = (edge) => {
         const n = edge && edge.node
@@ -354,7 +513,15 @@ function createAnilistCatalog({ fetchFn } = {}) {
           if (seen.has(current)) break
           seen.add(current)
           let edges = []
-          try { edges = await _post('relations', { id: current }) } catch (_) { break }
+          try {
+            edges = await _retryOnce(() => _post('relations', { id: current }))
+          } catch (_) {
+            // A failed hop after the retry ends this direction of the walk,
+            // but the result now says so instead of passing off the partial
+            // chain as complete.
+            truncated = true
+            break
+          }
           let next = null
           for (const edge of edges) {
             const entry = record(edge)
@@ -371,7 +538,13 @@ function createAnilistCatalog({ fetchFn } = {}) {
       // Guarded like every hop: a season list is an enhancement, and losing it
       // must never take the detail page down with it.
       let self = null
-      try { self = await _post('byId', { id: start }) } catch (_) { /* degrade to empty */ }
+      try {
+        self = await _retryOnce(() => _post('byId', { id: start }))
+      } catch (_) {
+        // Degrade to empty, but flagged: a chain missing its own starting
+        // entry is truncated by any definition.
+        truncated = true
+      }
       if (self) nodes.set(self.id, { id: self.id, title: self.title, titles: self.titles,
         year: self.year, episodeCount: self.episodeCount, format: self.format,
         status: self.status, poster: self.poster })
@@ -393,16 +566,12 @@ function createAnilistCatalog({ fetchFn } = {}) {
         return String(a.title || '').localeCompare(String(b.title || ''))
       })
       for (const s of seasons) related.delete(s.id)
-      return { seasons, related: [...related.values()] }
+      return { seasons, related: [...related.values()], truncated }
     },
     // The browse vocabularies. Both are static enough to cache for a week: 19
     // genres, and 361 tags that change when AniList's editors add one.
     async genres() {
-      const res = await fetcher(ANILIST_BASE, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: '{ GenreCollection }' }),
-      })
+      const res = await _fetchGraphql(JSON.stringify({ query: '{ GenreCollection }' }))
       if (!res || !res.ok) return []
       const data = await res.json()
       const list = data?.data?.GenreCollection
@@ -411,11 +580,8 @@ function createAnilistCatalog({ fetchFn } = {}) {
       return Array.isArray(list) ? list.filter(g => g && g !== 'Hentai') : []
     },
     async tags() {
-      const res = await fetcher(ANILIST_BASE, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: '{ MediaTagCollection { name category isAdult } }' }),
-      })
+      const res = await _fetchGraphql(
+        JSON.stringify({ query: '{ MediaTagCollection { name category isAdult } }' }))
       if (!res || !res.ok) return []
       const data = await res.json()
       const list = data?.data?.MediaTagCollection
@@ -439,10 +605,13 @@ module.exports = {
   SORTS,
   CHAIN_RELATIONS,
   MAX_CHAIN_HOPS,
+  REQUEST_TIMEOUT_MS,
   normalizeChainNode,
+  _retryDelayMs,
   scoreTo10,
   scoreTo100,
   normalizeMedia,
+  normalizeAiring,
   buildQuery,
   buildVariables,
   createAnilistCatalog,

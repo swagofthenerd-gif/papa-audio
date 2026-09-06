@@ -41,6 +41,8 @@ test('normalizeMovieResult maps torrents to torrent entries and drops hashless t
     // carries no audio_channels, so the honest answer is "unknown" (null).
     audioLayout: null,
     seeds: 10,
+    seeders: 10,
+    sizeBytes: 800000000,
     sub: null,
     dub: null,
   })
@@ -58,7 +60,7 @@ test('normalizeMovieResult maps unrecognized qualities to unknown', () => {
   assert.strictEqual(entries[0].audioLayout, null)
 })
 
-test('createYtsProvider builds the list URL against the first default mirror and resolves a matched title', async () => {
+test('createYtsProvider races every default mirror and resolves a matched title', async () => {
   const calls = []
   const fetchFn = async (url) => {
     calls.push(url)
@@ -69,9 +71,11 @@ test('createYtsProvider builds the list URL against the first default mirror and
   assert.strictEqual(entries.length, 3)
   assert.strictEqual(entries[0].source, 'YTS')
   assert.strictEqual(entries[0].audioLayout, null)
-  assert.deepStrictEqual(calls, [
-    `${DEFAULT_BASE_URLS[0]}/api/v2/list_movies.json?query_term=Inception%202010&limit=5`,
-  ])
+  // Mirrors race in parallel now, so every mirror is asked; the first-listed
+  // one is initiated first.
+  assert.deepStrictEqual(calls, DEFAULT_BASE_URLS.map(
+    base => `${base}/api/v2/list_movies.json?query_term=Inception%202010&limit=5`
+  ))
 })
 
 test('createYtsProvider omits year from query_term when request.year is absent', async () => {
@@ -206,4 +210,72 @@ test('pickBestMovie prefers the year match among same-title results', () => {
   const { pickBestMovie } = require('../providers/yts')
   const movies = [{ title: 'Dune', year: 1984 }, { title: 'Dune', year: 2021 }]
   assert.strictEqual(pickBestMovie(movies, { title: 'Dune', year: 2021 }).year, 2021)
+})
+
+// The prefix fallback used to accept any longer title, which is how a search
+// for "Alien" resolved to "Alien Covenant" — a different film, not an edition.
+test('pickBestMovie refuses a sequel offered as a prefix match', () => {
+  const { pickBestMovie } = require('../providers/yts')
+  assert.strictEqual(
+    pickBestMovie([{ title: 'Alien Covenant', year: 2017 }], { title: 'Alien', year: 1979 }),
+    null
+  )
+  assert.strictEqual(
+    pickBestMovie([{ title: 'Dune Messiah', year: 2026 }], { title: 'Dune', year: 2021 }),
+    null
+  )
+})
+
+test('pickBestMovie still accepts a longer title whose remainder is an edition suffix', () => {
+  const { pickBestMovie } = require('../providers/yts')
+  const extended = pickBestMovie(
+    [{ title: 'Dune Part Two Extended', year: 2024 }],
+    { title: 'Dune Part Two', year: 2024 }
+  )
+  assert.ok(extended, 'an edition of the same film must still match')
+  const yearTagged = pickBestMovie([{ title: 'Dune 2021', year: 2021 }], { title: 'Dune', year: 2021 })
+  assert.ok(yearTagged, 'a year in the remainder marks the same film, not a sequel')
+})
+
+// A dead first mirror otherwise burns its timeout on every single lookup.
+test('the mirror that answered last is tried first on the next query', async () => {
+  const { _resetMirrorHealth } = require('../providers/yts')
+  _resetMirrorHealth()
+  const calls = []
+  const fetchFn = async url => {
+    calls.push(new URL(url).origin)
+    if (url.startsWith('https://dead')) throw new Error('ENOTFOUND')
+    return jsonResponse({ data: { movies: [rawMovie] } })
+  }
+  const provider = createYtsProvider({ fetchFn, baseUrls: ['https://dead', 'https://live'] })
+  await provider({ type: 'movie', title: 'Inception', year: 2010 })
+  assert.deepStrictEqual(calls, ['https://dead', 'https://live'])
+  await provider({ type: 'movie', title: 'Inception', year: 2010 })
+  assert.strictEqual(calls[2], 'https://live', 'the known-good mirror must lead')
+  _resetMirrorHealth()
+})
+
+// Mirrors race in parallel: the first usable answer wins and the losers'
+// requests are aborted through the signal handed to the fetcher, so a dead
+// mirror costs nothing instead of a timeout.
+test('racing: the fast mirror wins and the slow request is aborted', async () => {
+  const { _resetMirrorHealth } = require('../providers/yts')
+  _resetMirrorHealth()
+  const aborted = []
+  const fetchFn = (url, opts) => new Promise((resolve, reject) => {
+    if (url.startsWith('https://slow')) {
+      // Pends forever unless the race aborts it.
+      opts.signal.addEventListener('abort', () => {
+        aborted.push('slow')
+        reject(new Error('aborted'))
+      })
+      return
+    }
+    setTimeout(() => resolve(jsonResponse({ data: { movies: [rawMovie] } })), 5)
+  })
+  const provider = createYtsProvider({ fetchFn, baseUrls: ['https://slow', 'https://fast'] })
+  const entries = await provider({ type: 'movie', title: 'Inception', year: 2010 })
+  assert.strictEqual(entries.length, 3, 'the fast mirror answer must win')
+  assert.deepStrictEqual(aborted, ['slow'], 'the losing request must be aborted')
+  _resetMirrorHealth()
 })

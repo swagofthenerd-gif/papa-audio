@@ -1,7 +1,10 @@
 'use strict'
 const test = require('node:test')
 const assert = require('node:assert')
-const { mergeSegments, activeSegment, buttonFor, creditsFallback } = require('../src/skip-model')
+const {
+  mergeSegments, activeSegment, buttonFor, creditsFallback,
+  isIntroSkipSeek, recordIntroSeek, shouldOfferSkipTraining, skipSegmentFromTraining,
+} = require('../src/skip-model')
 
 const intro = (start, end, extra = {}) => ({ kind: 'intro', start, end, origin: 'chapters', confidence: 0.8, ...extra })
 const recap = (start, end, extra = {}) => ({ kind: 'recap', start, end, origin: 'chapters', confidence: 0.8, ...extra })
@@ -102,6 +105,22 @@ test('buttonFor auto-skips when the matching pref is set', () => {
   assert.strictEqual(creditsBtn.action, 'offer')
 })
 
+// §9: the button auto-dismisses 5s after the segment, not the instant it ends.
+test('buttonFor lingers 5s past the segment end before dismissing', () => {
+  const segs = [intro(30, 90)]
+  assert.strictEqual(buttonFor(segs, 92).segment, segs[0])
+  assert.strictEqual(buttonFor(segs, 94.9).label, 'Skip Intro')
+  assert.strictEqual(buttonFor(segs, 95), null, 'gone at end + DISMISS_AFTER_S')
+  // activeSegment is untouched: only the button lingers, not the segment.
+  assert.strictEqual(activeSegment(segs, 92), null)
+})
+
+test('a segment that has begun beats one that is merely lingering', () => {
+  const segs = [recap(0, 25), intro(25, 90)]
+  const btn = buttonFor(segs, 26)
+  assert.strictEqual(btn.segment, segs[1], 'the intro is playing; the recap is history')
+})
+
 test('buttonFor prefers the active segment over an upcoming one', () => {
   const segs = [recap(0, 25), intro(25, 90)]
   const btn = buttonFor(segs, 24.5)
@@ -129,4 +148,47 @@ test('creditsFallback returns null for a short or invalid duration', () => {
   assert.strictEqual(creditsFallback(null), null)
   assert.strictEqual(creditsFallback(0), null)
   assert.strictEqual(creditsFallback(50), null, 'a 4s tail is not worth a button')
+})
+
+// ── Skip-intro training from manual seeks (App #46) ──────────────────────────
+
+test('isIntroSkipSeek accepts a 60-120s forward jump inside the first 5 minutes', () => {
+  assert.ok(isIntroSkipSeek(10, 100), 'a 90s jump from 0:10')
+  assert.ok(isIntroSkipSeek(0, 60), 'the minimum jump')
+  assert.ok(isIntroSkipSeek(295, 415), 'the maximum jump from near the window edge')
+})
+
+test('isIntroSkipSeek rejects the seeks that are not intro skips', () => {
+  assert.ok(!isIntroSkipSeek(10, 30), 'too small — a nudge, not an intro')
+  assert.ok(!isIntroSkipSeek(10, 200), 'too large — scrubbing')
+  assert.ok(!isIntroSkipSeek(100, 40), 'backward')
+  assert.ok(!isIntroSkipSeek(400, 480), 'starts past the opening window')
+  assert.ok(!isIntroSkipSeek(NaN, 60), 'a missing position is not a seek')
+})
+
+test('recordIntroSeek accumulates only qualifying seeks', () => {
+  let rec = recordIntroSeek(null, 10, 100)          // +1
+  assert.deepStrictEqual(rec, { count: 1, sumFrom: 10, sumTo: 100 })
+  rec = recordIntroSeek(rec, 20, 110)               // +1
+  assert.deepStrictEqual(rec, { count: 2, sumFrom: 30, sumTo: 210 })
+  rec = recordIntroSeek(rec, 10, 15)                // ignored (too small)
+  assert.deepStrictEqual(rec, { count: 2, sumFrom: 30, sumTo: 210 })
+})
+
+test('the offer is made at the second qualifying seek, not the first', () => {
+  assert.ok(!shouldOfferSkipTraining({ count: 1, sumFrom: 10, sumTo: 100 }))
+  assert.ok(shouldOfferSkipTraining({ count: 2, sumFrom: 30, sumTo: 210 }))
+  assert.ok(!shouldOfferSkipTraining(null))
+})
+
+test('skipSegmentFromTraining averages the seeks into a manual intro', () => {
+  const seg = skipSegmentFromTraining({ count: 2, sumFrom: 30, sumTo: 210 })
+  assert.deepStrictEqual(seg, { kind: 'intro', start: 15, end: 105, origin: 'manual', confidence: 1 })
+})
+
+test('skipSegmentFromTraining is null with nothing to average or no interval', () => {
+  assert.strictEqual(skipSegmentFromTraining(null), null)
+  assert.strictEqual(skipSegmentFromTraining({ count: 0, sumFrom: 0, sumTo: 0 }), null)
+  // Degenerate: a record whose averages do not form a forward interval.
+  assert.strictEqual(skipSegmentFromTraining({ count: 1, sumFrom: 100, sumTo: 100 }), null)
 })

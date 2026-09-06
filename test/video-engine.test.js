@@ -198,6 +198,143 @@ test('start kills the spawned mpv when the IPC connect fails', async () => {
   f.close()
 })
 
+// The connect-failure teardown had no generation check. Switch sources while
+// the old start() is still awaiting its socket and the newer start() has
+// already taken over this.proc — the stale catch then killed the NEW mpv and
+// nulled its handle, leaving the engine driving a corpse.
+test('a stale start() losing its connect must not kill the replacement mpv', async () => {
+  const f = await fakeMpv()
+  const { MpvIpcClient } = require('../mpv-ipc')
+  const originalConnect = MpvIpcClient.prototype.connect
+  let rejectConnect
+  MpvIpcClient.prototype.connect = function () {
+    return new Promise((_, rej) => { rejectConnect = rej })
+  }
+  const eng = new VideoEngine({ spawnFn: f.spawnFn, socketPath: f.sock })
+  const first = eng.start()
+  // The user switched sources: a newer start() owns the engine now — new
+  // generation, new process, new client.
+  eng._gen++
+  let newKilled = 0
+  const newProc = { kill: () => { newKilled++ } }
+  const newClient = { close() {}, on() {}, command: () => Promise.resolve() }
+  eng.proc = newProc
+  eng.client = newClient
+  try {
+    rejectConnect(new Error('socket never appeared'))
+    await assert.rejects(first, /socket never appeared/)
+  } finally {
+    MpvIpcClient.prototype.connect = originalConnect
+  }
+  assert.strictEqual(newKilled, 0, 'the replacement mpv must be left alone')
+  assert.strictEqual(eng.proc, newProc, 'and its handle must not be nulled')
+  assert.strictEqual(eng.client, newClient)
+  f.close()
+})
+
+// The OBSERVE_FAILED throw left mpv running idle with its socket open — alive
+// was never set, so nothing would ever reach that process again.
+test('a failed observe kills the idle mpv instead of leaking it', async () => {
+  const sock = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'papa-vid-obs-')), 'mpv.sock')
+  const conns = []
+  const server = net.createServer(c => {
+    conns.push(c)
+    let buf = ''
+    c.on('data', d => {
+      buf += d
+      let i
+      while ((i = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, i); buf = buf.slice(i + 1)
+        if (!line.trim()) continue
+        const msg = JSON.parse(line)
+        const error = msg.command[0] === 'observe_property' ? 'property not found' : 'success'
+        c.write(JSON.stringify({ error, data: null, request_id: msg.request_id }) + '\n')
+      }
+    })
+  })
+  await new Promise(r => server.listen(sock, r))
+  const proc = new EventEmitter()
+  let killed = 0
+  proc.kill = () => { killed++; proc.emit('exit', 0) }
+  const eng = new VideoEngine({ spawnFn: () => proc, socketPath: sock })
+  await assert.rejects(eng.start(), err => {
+    assert.strictEqual(err.code, 'OBSERVE_FAILED')
+    assert.match(err.message, /could not observe/)
+    return true
+  })
+  assert.strictEqual(killed, 1, 'the idle mpv must not be leaked')
+  assert.strictEqual(eng.proc, null)
+  assert.strictEqual(eng.client, null)
+  conns.forEach(c => c.destroy()); server.close()
+})
+
+// ── The fate of the file ────────────────────────────────────────────────────
+// mpv announces how every file ends. Without relaying it, a load that dies
+// inside mpv — dead URL, truncated download, unopenable container — is
+// silent: the engine stays alive and the app cannot tell a film that finished
+// from one that never began.
+test('a film that plays to its end announces it', () => {
+  const eng = new VideoEngine({ config: {} })
+  const ends = []
+  eng.on('ended', e => ends.push(e))
+  eng._onEvent({ event: 'end-file', reason: 'eof' })
+  assert.deepStrictEqual(ends, [{ reason: 'eof', error: null }])
+})
+
+test('a load that dies inside mpv is an error ending, not silence', () => {
+  const eng = new VideoEngine({ config: {} })
+  const ends = []
+  eng.on('ended', e => ends.push(e))
+  eng._onEvent({ event: 'end-file', reason: 'error', file_error: 'loading failed' })
+  assert.deepStrictEqual(ends, [{ reason: 'error', error: 'loading failed' }])
+})
+
+// 'stop' and 'redirect' are the engine's own doing (a new load() replacing
+// the file) and 'quit' already surfaces as engineDown; announcing those would
+// make every episode change look like a finished film.
+test('the engine replacing its own file is not an ending', () => {
+  const eng = new VideoEngine({ config: {} })
+  let ends = 0
+  eng.on('ended', () => { ends++ })
+  for (const reason of ['stop', 'redirect', 'quit', 'unknown']) {
+    eng._onEvent({ event: 'end-file', reason })
+  }
+  eng._onEvent({ event: 'end-file' })
+  assert.strictEqual(ends, 0)
+})
+
+test('mpv actually opening the file is announced, separate from the command', () => {
+  const eng = new VideoEngine({ config: {} })
+  let loads = 0
+  eng.on('fileLoaded', () => { loads++ })
+  eng._onEvent({ event: 'file-loaded' })
+  assert.strictEqual(loads, 1)
+})
+
+// ── Text on the picture ─────────────────────────────────────────────────────
+// The HTML UI is composited UNDER the native mpv surface, so a toast drawn by
+// the page is invisible while a film is playing. mpv's own OSD is the one
+// place the viewer can be told anything.
+test('osdMessage paints through mpv’s show-text with the duration in ms', async () => {
+  const f = await fakeMpv()
+  const eng = new VideoEngine({ spawnFn: f.spawnFn, socketPath: f.sock })
+  await eng.start()
+  f.commands.length = 0
+  await eng.osdMessage('Subtitles: English', 1500)
+  assert.deepStrictEqual(f.commands[0], ['show-text', 'Subtitles: English', 1500])
+  await eng.osdMessage('Saved')
+  assert.deepStrictEqual(f.commands[1], ['show-text', 'Saved'],
+    'without a duration mpv’s own --osd-duration applies')
+  eng.stop(); f.close()
+})
+
+// A message with nowhere to go is dropped, never an error: status text is
+// decoration, and decoration must not take down the caller.
+test('osdMessage is a no-op when nothing is playing', async () => {
+  const eng = new VideoEngine({ config: {} })
+  await assert.doesNotReject(() => eng.osdMessage('hello', 1000))
+})
+
 test('engine exposes core public API and config', () => {
   const config = { outputMode: 'exclusive', alsaDevice: 'alsa/hw:2,0', audioChannels: '5.1' }
   const eng = new VideoEngine({ config })
@@ -209,6 +346,7 @@ test('engine exposes core public API and config', () => {
   assert.strictEqual(typeof eng.stop, 'function')
   assert.strictEqual(typeof eng.load, 'function')
   assert.strictEqual(typeof eng.command, 'function')
+  assert.strictEqual(typeof eng.osdMessage, 'function')
 })
 
 // ── Restart discipline ──────────────────────────────────────────────────────
@@ -765,4 +903,259 @@ test('the cursor never reaches the state the deck renders', () => {
   const before = JSON.stringify(eng.getState())
   eng._onProp('mouse-pos', { x: 1, y: 2, hover: true })
   assert.strictEqual(JSON.stringify(eng.getState()), before)
+})
+
+// ── Single click on the picture ─────────────────────────────────────────────
+// A single click is the universal gesture for play/pause, and embedded it
+// lands on mpv, never on the page. mpv tells the two clicks apart natively:
+// the first press always fires MBTN_LEFT, and the second press inside the
+// double-click window fires MBTN_LEFT_DBL instead of a second MBTN_LEFT — so
+// a double-click delivers one 'playPause' then one 'fullscreen', the same
+// toggle-then-expand sequence YouTube and VLC produce.
+test('a single click is relayed as playPause when embedded', () => {
+  const { inputConfBody } = require('../video-engine.js')
+  assert.match(inputConfBody(true), /^MBTN_LEFT script-message papa playPause$/m)
+})
+
+test('single and double click carry distinct actions, one binding each', () => {
+  const { inputConfBody } = require('../video-engine.js')
+  const lines = inputConfBody(true).trim().split('\n')
+  const single = lines.filter(l => l.startsWith('MBTN_LEFT '))
+  const double = lines.filter(l => l.startsWith('MBTN_LEFT_DBL '))
+  assert.strictEqual(single.length, 1, 'exactly one single-click binding')
+  assert.strictEqual(double.length, 1, 'exactly one double-click binding')
+  assert.match(single[0], /playPause$/)
+  assert.match(double[0], /fullscreen$/)
+})
+
+test('a single click is left to mpv when it owns the window', () => {
+  const { inputConfBody } = require('../video-engine.js')
+  assert.ok(!/MBTN_LEFT/.test(inputConfBody(false)),
+    'in its own window mpv’s own click handling is the correct behaviour')
+})
+
+test('a relayed click surfaces as an appKey action', () => {
+  const eng = new VideoEngine({ config: {} })
+  const seen = []
+  eng.on('appKey', a => seen.push(a))
+  eng._onEvent({ event: 'client-message', args: ['papa', 'playPause'] })
+  eng._onEvent({ event: 'client-message', args: ['papa', 'fullscreen'] })
+  assert.deepStrictEqual(seen, [{ action: 'playPause' }, { action: 'fullscreen' }])
+})
+
+// ── Status flashes ──────────────────────────────────────────────────────────
+// The handful of statuses the app flashes constantly, formatted in one place
+// so every caller paints them identically. osdMessage stays the free-form
+// door underneath.
+test('osdFlash paints the house-style status lines through show-text', async () => {
+  const f = await fakeMpv()
+  const eng = new VideoEngine({ spawnFn: f.spawnFn, socketPath: f.sock })
+  await eng.start()
+  f.commands.length = 0
+  await eng.osdFlash('volume', 85)
+  await eng.osdFlash('seek', { position: 754, forward: true })
+  await eng.osdFlash('seek', { position: 730, forward: false })
+  await eng.osdFlash('pause', true)
+  await eng.osdFlash('pause', false)
+  assert.deepStrictEqual(f.commands.map(c => c[1]),
+    ['Volume 85%', '→ 12:34', '← 12:10', '⏸ Paused', '▶'])
+  assert.ok(f.commands.every(c => c[0] === 'show-text' && typeof c[2] === 'number'),
+    'every flash goes through show-text with a duration')
+  eng.stop(); f.close()
+})
+
+test('osdFlash drops an unknown kind rather than painting nonsense', async () => {
+  const f = await fakeMpv()
+  const eng = new VideoEngine({ spawnFn: f.spawnFn, socketPath: f.sock })
+  await eng.start()
+  f.commands.length = 0
+  await eng.osdFlash('confetti', 1)
+  assert.strictEqual(f.commands.length, 0)
+  eng.stop(); f.close()
+})
+
+// Like osdMessage, a flash with nowhere to go is dropped, never an error.
+test('osdFlash is a no-op when nothing is playing', async () => {
+  const eng = new VideoEngine({ config: {} })
+  await assert.doesNotReject(() => eng.osdFlash('volume', 50))
+})
+
+test('the flash clock grows an hour digit only when there is an hour', () => {
+  const { formatClock } = require('../video-engine.js')
+  assert.strictEqual(formatClock(754), '12:34')
+  assert.strictEqual(formatClock(5), '0:05')
+  assert.strictEqual(formatClock(3725), '1:02:05')
+  assert.strictEqual(formatClock(NaN), '0:00')
+  assert.strictEqual(formatClock(-3), '0:00')
+})
+
+// ── Stalls ──────────────────────────────────────────────────────────────────
+// The renderer has its own 10s watchdog, but it watches from across the
+// bridge. The engine sees the position itself: not advancing for 8s while
+// unpaused with a file loaded is a stall, announced with engine truth.
+function waitForEvent(eng, name, ms = 2000) {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(`no ${name} within ${ms}ms`)), ms)
+    eng.once(name, e => { clearTimeout(t); resolve(e) })
+  })
+}
+
+test('a position that stops moving while unpaused is announced as a stall', async () => {
+  const f = await fakeMpv2()
+  const eng = new VideoEngine({ spawnFn: f.spawnFn, socketPath: f.sock, stateThrottleMs: 5, stallMs: 60 })
+  await eng.start()
+  const stalled = waitForEvent(eng, 'stalled')
+  f.pushProp('duration', 1400)
+  f.pushProp('pause', false)
+  f.pushProp('time-pos', 12.5)
+  // Then silence: no further property changes at all. The stall must still
+  // fire, which is what the armed deadline check is for.
+  const e = await stalled
+  assert.strictEqual(e.position, 12.5)
+  assert.ok(e.sinceMs >= 60, `sinceMs must carry the real wait, got ${e.sinceMs}`)
+  // Recovery is the position moving again.
+  const un = waitForEvent(eng, 'unstalled')
+  f.pushProp('time-pos', 12.7)
+  await un
+  eng.stop(); f.close()
+})
+
+test('a paused film is never a stall', async () => {
+  const f = await fakeMpv2()
+  const eng = new VideoEngine({ spawnFn: f.spawnFn, socketPath: f.sock, stateThrottleMs: 5, stallMs: 40 })
+  await eng.start()
+  let stalls = 0
+  eng.on('stalled', () => { stalls++ })
+  f.pushProp('duration', 1400)
+  f.pushProp('pause', true)
+  f.pushProp('time-pos', 12.5)
+  await new Promise(r => setTimeout(r, 150))
+  assert.strictEqual(stalls, 0)
+  eng.stop(); f.close()
+})
+
+test('an engine with no file loaded is never a stall', async () => {
+  const f = await fakeMpv2()
+  const eng = new VideoEngine({ spawnFn: f.spawnFn, socketPath: f.sock, stateThrottleMs: 5, stallMs: 40 })
+  await eng.start()
+  let stalls = 0
+  eng.on('stalled', () => { stalls++ })
+  // Unpaused, but no duration: mpv idling with nothing loaded.
+  f.pushProp('pause', false)
+  await new Promise(r => setTimeout(r, 150))
+  assert.strictEqual(stalls, 0)
+  eng.stop(); f.close()
+})
+
+// A spinner keyed to 'stalled' must never be left spinning: leaving the
+// stalled state by any route announces the recovery.
+test('pausing mid-stall ends the stall', async () => {
+  const f = await fakeMpv2()
+  const eng = new VideoEngine({ spawnFn: f.spawnFn, socketPath: f.sock, stateThrottleMs: 5, stallMs: 40 })
+  await eng.start()
+  const stalled = waitForEvent(eng, 'stalled')
+  f.pushProp('duration', 1400)
+  f.pushProp('pause', false)
+  f.pushProp('time-pos', 3)
+  await stalled
+  const un = waitForEvent(eng, 'unstalled')
+  f.pushProp('pause', true)
+  await un
+  eng.stop(); f.close()
+})
+
+test('a stall is announced once, not once per tick', async () => {
+  const f = await fakeMpv2()
+  const eng = new VideoEngine({ spawnFn: f.spawnFn, socketPath: f.sock, stateThrottleMs: 5, stallMs: 40 })
+  await eng.start()
+  let stalls = 0
+  eng.on('stalled', () => { stalls++ })
+  f.pushProp('duration', 1400)
+  f.pushProp('pause', false)
+  f.pushProp('time-pos', 3)
+  await waitForEvent(eng, 'stalled')
+  // Keep the ticks coming with a property that is not the position.
+  for (let i = 0; i < 5; i++) {
+    f.pushProp('demuxer-cache-duration', i)
+    await new Promise(r => setTimeout(r, 20))
+  }
+  assert.strictEqual(stalls, 1)
+  eng.stop(); f.close()
+})
+
+// ── Stall count (Player #27) ────────────────────────────────────────────────
+// A single stall is a spinner; a run of them is grounds to offer another
+// source. The 'stalled' payload carries a running tally of distinct stalls this
+// file has suffered, so the UI can escalate on the number rather than guess.
+test('the stalled event carries a stall count starting at 1', async () => {
+  const f = await fakeMpv2()
+  const eng = new VideoEngine({ spawnFn: f.spawnFn, socketPath: f.sock, stateThrottleMs: 5, stallMs: 40 })
+  await eng.start()
+  const stalled = waitForEvent(eng, 'stalled')
+  f.pushProp('duration', 1400)
+  f.pushProp('pause', false)
+  f.pushProp('time-pos', 3)
+  const e = await stalled
+  assert.strictEqual(e.stallCount, 1, 'the first stall on a file is number one')
+  eng.stop(); f.close()
+})
+
+// Each distinct stall — a stall, a recovery, another stall — raises the tally.
+test('a second distinct stall on the same file counts as two', async () => {
+  const f = await fakeMpv2()
+  const eng = new VideoEngine({ spawnFn: f.spawnFn, socketPath: f.sock, stateThrottleMs: 5, stallMs: 40 })
+  await eng.start()
+  f.pushProp('duration', 1400)
+  f.pushProp('pause', false)
+  f.pushProp('time-pos', 3)
+  const first = await waitForEvent(eng, 'stalled')
+  assert.strictEqual(first.stallCount, 1)
+  // Recover, then stall again from a new position.
+  const un = waitForEvent(eng, 'unstalled')
+  f.pushProp('time-pos', 3.2)
+  await un
+  const second = waitForEvent(eng, 'stalled')
+  // No further movement from 3.2 — the deadline fires a fresh stall.
+  const e = await second
+  assert.strictEqual(e.stallCount, 2, 'the count rises with each distinct stall')
+  eng.stop(); f.close()
+})
+
+// A fresh file is a clean slate: a load() resets the tally so the previous
+// file's troubles never escalate the new one.
+test('load() resets the stall count', async () => {
+  const f = await fakeMpv2()
+  const eng = new VideoEngine({ spawnFn: f.spawnFn, socketPath: f.sock, stateThrottleMs: 5, stallMs: 40 })
+  await eng.start()
+  f.pushProp('duration', 1400)
+  f.pushProp('pause', false)
+  f.pushProp('time-pos', 3)
+  await waitForEvent(eng, 'stalled')
+  assert.strictEqual(eng._stallCount, 1)
+  await eng.load('http://127.0.0.1:1/next')
+  assert.strictEqual(eng._stallCount, 0, 'a new load starts the tally over')
+  // And the next stall on the new file is number one again.
+  const stalled = waitForEvent(eng, 'stalled')
+  f.pushProp('duration', 1400)
+  f.pushProp('pause', false)
+  f.pushProp('time-pos', 99)
+  const e = await stalled
+  assert.strictEqual(e.stallCount, 1)
+  eng.stop(); f.close()
+})
+
+// The 'file-loaded' event — mpv opening a file by any route, including up-next
+// — resets the tally the same way.
+test('a file-loaded event resets the stall count', async () => {
+  const f = await fakeMpv2()
+  const eng = new VideoEngine({ spawnFn: f.spawnFn, socketPath: f.sock, stateThrottleMs: 5, stallMs: 40 })
+  await eng.start()
+  f.pushProp('duration', 1400)
+  f.pushProp('pause', false)
+  f.pushProp('time-pos', 3)
+  await waitForEvent(eng, 'stalled')
+  assert.strictEqual(eng._stallCount, 1)
+  eng._onEvent({ event: 'file-loaded' })
+  assert.strictEqual(eng._stallCount, 0)
+  eng.stop(); f.close()
 })

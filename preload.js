@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require('electron')
+const { contextBridge, ipcRenderer, webFrame } = require('electron')
 
 // Per-channel sequence tracking. A gap means events were sent that this
 // renderer never received — during a reload, or while the window was going away
@@ -94,6 +94,14 @@ contextBridge.exposeInMainWorld('api', {
   notifyDownloadComplete: (d) => ipcRenderer.send('notify-download-complete', d),
   getGeneralSettings: () => ipcRenderer.invoke('get-general-settings'),
   saveGeneralSettings: (s) => ipcRenderer.send('save-general-settings', s),
+  // Interface scale. webFrame lives in the renderer's process, so the zoom is
+  // applied here rather than round-tripping through main. Clamped to the range
+  // the setting offers so a bad stored value can't shrink the app to nothing.
+  setZoomFactor: (f) => {
+    const z = Number(f)
+    if (!isFinite(z) || z <= 0) return
+    webFrame.setZoomFactor(Math.max(0.5, Math.min(2, z)))
+  },
   cancelDownload: (id) => ipcRenderer.send('cancel-download', id),
 
   // Torrents
@@ -116,16 +124,30 @@ contextBridge.exposeInMainWorld('api', {
   videoTasteShelf:  (p) => ipcRenderer.invoke('video-taste-shelf', p),
   videoTrailer:     (p) => ipcRenderer.invoke('video-trailer', p),
   videoPackSelect:  (p) => ipcRenderer.invoke('video-pack-select', p),
+  videoSwitchStream:(p) => ipcRenderer.invoke('video-switch-stream', p),
+  videoPredownload:         (index) => ipcRenderer.invoke('video-predownload', { index }),
+  videoPredownloadCancel:   ()      => ipcRenderer.invoke('video-predownload-cancel'),
+  videoPredownloadProgress: ()      => ipcRenderer.invoke('video-predownload-progress'),
+  videoKeepFile:            (index, show) => ipcRenderer.invoke('video-keep-file', { index, show }),
+  videoDiagnostics: ()  => ipcRenderer.invoke('video-diagnostics'),
   videoDetail:      (p) => ipcRenderer.invoke('video-detail', p),
   videoStreams:     (p) => ipcRenderer.invoke('video-streams', p),
   videoProbe:       (p) => ipcRenderer.invoke('video-probe', p),
+  videoThumb:       (p) => ipcRenderer.invoke('video-thumb', p),
   videoPlay:        (p) => ipcRenderer.invoke('video-play', p),
   videoStop:        ()  => ipcRenderer.invoke('video-stop'),
   videoControl:     (verb, args) => ipcRenderer.invoke('video-control', { verb, args }),
+  videoOsd:         (text, durationMs) => ipcRenderer.invoke('video-osd', { text, durationMs }),
+  videoStreamStats: ()  => ipcRenderer.invoke('video-stream-stats'),
+  videoSubsInTorrent: () => ipcRenderer.invoke('video-subs-in-torrent'),
+  videoSubServe:    (p) => ipcRenderer.invoke('video-sub-serve', p),
+  videoSubSearch:   (p) => ipcRenderer.invoke('video-sub-search', p),
+  videoSubDownload: (p) => ipcRenderer.invoke('video-sub-download', p),
   videoTracks:      ()  => ipcRenderer.invoke('video-tracks'),
   videoChapters:    ()  => ipcRenderer.invoke('video-chapters'),
   videoEnrich:      (p) => ipcRenderer.invoke('video-enrich', p),
   videoShelf:       (p) => ipcRenderer.invoke('video-shelf', p),
+  videoAiring:      (p) => ipcRenderer.invoke('video-airing', p),
   videoCountries:   ()  => ipcRenderer.invoke('video-countries'),
   videoSubOpen:     ()  => ipcRenderer.invoke('video-sub-open'),
   videoSkipSegments:(req) => ipcRenderer.invoke('video-skip-segments', req),
@@ -135,6 +157,21 @@ contextBridge.exposeInMainWorld('api', {
   videoFullscreen:  ()  => ipcRenderer.invoke('video-fullscreen'),
   onVideoEvent: (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('video-event', h); return () => ipcRenderer.removeListener('video-event', h) },
   onVideoState: (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('video-state', h); return () => ipcRenderer.removeListener('video-state', h) },
+
+  // Backup: export / import everything (App §2-12, the foundation page)
+  papaExportAll: ()  => ipcRenderer.invoke('papa-export-all'),
+  papaImportAll: (p) => ipcRenderer.invoke('papa-import-all', p),
+
+  // Changelog: user-facing "what's new" (App §7)
+  appChangelog: () => ipcRenderer.invoke('app-changelog'),
+
+  // Bug reporter: bundle logs + diagnostics + redacted settings into a folder
+  // and reveal it (App §97).
+  papaBugReport: () => ipcRenderer.invoke('papa-bug-report'),
+
+  // Offline detection (App §11). Main flips this on connectivity transitions;
+  // the renderer draws the banner. Returns an unsubscribe function.
+  onAppOnlineState: (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('app-online-state', h); return () => ipcRenderer.removeListener('app-online-state', h) },
 
   // Power management
   setPowerSave: (playing) => ipcRenderer.send('set-power-save', playing),
@@ -178,6 +215,10 @@ contextBridge.exposeInMainWorld('api', {
   onSlskVerify:       (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('slsk-verify', h); return () => ipcRenderer.removeListener('slsk-verify', h) },
   slskShowInFolder:   (p) => ipcRenderer.invoke('slsk-show-in-folder', p),
   slskBrowseUser:     (p) => ipcRenderer.invoke('slsk-browse-user', p),
+  // A background browse refresh finished for this user: the renderer re-reads via
+  // slskBrowseUser (which now serves the fresh cache). Dedicated subscriber like
+  // the user-status feed, returning an unsubscribe function.
+  onSlskBrowseRefreshed: (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('slsk-browse-refreshed', h); return () => ipcRenderer.removeListener('slsk-browse-refreshed', h) },
   onWindowFocus:      (cb) => ipcRenderer.on('window-focus', (_, on) => cb(on)),
   verifySurround:       (p) => ipcRenderer.invoke('verify-surround', p),
   verifySurroundFolder: (p) => ipcRenderer.invoke('verify-surround-folder', p),
@@ -208,6 +249,13 @@ contextBridge.exposeInMainWorld('api', {
   slskSchedulerQueue:    ()  => ipcRenderer.invoke('slsk-scheduler-queue'),
   slskSchedulerConfig:   (p) => ipcRenderer.invoke('slsk-scheduler-config', p),
   slskRespreadBacklog:   (p) => ipcRenderer.invoke('slsk-respread-backlog', p),
+  slskUnbenchPeers:      ()  => ipcRenderer.invoke('slsk-unbench-peers'),
+  slskWishlistRun:       ()  => ipcRenderer.invoke('slsk-wishlist-run'),
+  slskFriendDiffs:       ()  => ipcRenderer.invoke('slsk-friend-diffs'),
+  // A wishlist sweep found and enqueued an album. Dedicated subscriber (like the
+  // user-status feed) rather than the generic allowlist, and returns an
+  // unsubscribe function so a page teardown does not leave a dangling listener.
+  onSlskWishlistHit:     (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('slsk-wishlist-hit', h); return () => ipcRenderer.removeListener('slsk-wishlist-hit', h) },
   onSlskSchedulerStats:  (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('slsk-scheduler-stats', h); return () => ipcRenderer.removeListener('slsk-scheduler-stats', h) },
   slskRefreshUserStatuses: ()  => ipcRenderer.invoke('slsk-refresh-user-statuses'),
   onSlskUserStatus:      (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('slsk-user-status', h); return () => ipcRenderer.removeListener('slsk-user-status', h) },
@@ -259,6 +307,10 @@ contextBridge.exposeInMainWorld('api', {
   playerSetVolume:   (v) => ipcRenderer.invoke('player-set-volume', v),
   playerSetSpeed:    (x) => ipcRenderer.invoke('player-set-speed', x),
   playerSetNext:     (p) => ipcRenderer.invoke('player-set-next', p),
+  // ReplayGain scan (App #59) + tag fixer (App #60)
+  loudnessScan:      (paths) => ipcRenderer.invoke('loudness-scan', { paths }),
+  loudnessGetMap:    ()  => ipcRenderer.invoke('loudness-get-map'),
+  musicbrainzCheckAlbum: (p) => ipcRenderer.invoke('musicbrainz-check-album', p),
   playerGetStatus:   ()  => ipcRenderer.invoke('player-get-status'),
   playerGetConfig:   ()  => ipcRenderer.invoke('player-get-config'),
   playerSetConfig:   (c) => ipcRenderer.invoke('player-set-config', c),
@@ -324,4 +376,14 @@ contextBridge.exposeInMainWorld('api', {
     return () => ipcRenderer.removeListener(channel, h)
   },
   off: (channel) => ipcRenderer.removeAllListeners(channel),
+})
+
+// The video watch-store bridge (src/video-store.js bridge mode): raw-string
+// read/write against a main-process SideStore, so Continue Watching survives
+// crashes that Chromium's delayed localStorage commits never would.
+contextBridge.exposeInMainWorld('__papaVideoStoreBridge', {
+  read:        ()     => ipcRenderer.invoke('video-store-read'),
+  write:       (text) => ipcRenderer.invoke('video-store-write', text),
+  readBackup:  ()     => ipcRenderer.invoke('video-store-read-backup'),
+  writeBackup: (text) => ipcRenderer.invoke('video-store-write-backup', text),
 })

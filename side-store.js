@@ -28,6 +28,10 @@ class SideStore {
     this.name = opts.name
     this.file = path.join(opts.dir, `${opts.name}.json`)
     this.tmp = `${this.file}.tmp`
+    // flushSync writes to a DIFFERENT tmp path so it can never interleave with
+    // the async writer's rename on the shared tmp — two writers on one tmp is
+    // how a file ends up holding neither value.
+    this.tmpSync = `${this.file}.sync`
     this._fallback = opts.fallback === undefined ? null : opts.fallback
     this._debounceMs = opts.debounceMs ?? DEBOUNCE_MS
     this._maxDelayMs = opts.maxDelayMs ?? MAX_DELAY_MS
@@ -37,6 +41,12 @@ class SideStore {
     this._firstDirtyAt = 0
     this._writing = null             // the in-flight write, if any
     this._pendingAfterWrite = false
+    // A monotonic counter bumped every time the value is dirtied. The async
+    // writer captures the seq of the value it is about to persist; flushSync
+    // records the seq it lands under. A completing async write then refuses to
+    // rename stale content over a newer value that flushSync already wrote.
+    this._writeSeq = 0
+    this._flushedSeq = 0
     this.stats = { loads: 0, writes: 0, coalesced: 0, errors: 0 }
   }
 
@@ -85,6 +95,7 @@ class SideStore {
 
   _schedule() {
     const now = Date.now()
+    this._writeSeq++
     if (!this._firstDirtyAt) this._firstDirtyAt = now
     if (this._timer) {
       this.stats.coalesced++
@@ -105,10 +116,19 @@ class SideStore {
     // up holding neither value.
     if (this._writing) { this._pendingAfterWrite = true; return this._writing }
     const value = this._value
+    const seq = this._writeSeq
     this._writing = (async () => {
       try {
         await fs.promises.mkdir(this.dir, { recursive: true })
         await fs.promises.writeFile(this.tmp, JSON.stringify(value), 'utf8')
+        // A flushSync on the way out may have landed a newer value on the real
+        // file while this write was in flight. Renaming our now-stale tmp over
+        // it would undo the shutdown save — so drop it instead. The tmp is
+        // cleaned up rather than left behind.
+        if (this._flushedSeq >= seq) {
+          try { await fs.promises.unlink(this.tmp) } catch { /* nothing to clean up */ }
+          return
+        }
         await fs.promises.rename(this.tmp, this.file)
         this.stats.writes++
       } catch (e) {
@@ -135,16 +155,23 @@ class SideStore {
     clearTimeout(this._timer)
     this._timer = null
     this._firstDirtyAt = 0
+    // The value being flushed carries the current seq; recording it stops a
+    // still-in-flight async write from renaming its older tmp over this newer
+    // one after we return.
+    const seq = this._writeSeq
     try {
       fs.mkdirSync(this.dir, { recursive: true })
-      fs.writeFileSync(this.tmp, JSON.stringify(this._value), 'utf8')
-      fs.renameSync(this.tmp, this.file)
+      // A DIFFERENT tmp path from the async writer's (this.tmp), so a rename
+      // here can never collide with an async write mid-flight on the same file.
+      fs.writeFileSync(this.tmpSync, JSON.stringify(this._value), 'utf8')
+      fs.renameSync(this.tmpSync, this.file)
+      this._flushedSeq = seq
       this.stats.writes++
       return true
     } catch (e) {
       this.stats.errors++
       this._onError(new Error(`${this.name}: shutdown write failed (${(e && e.code) || (e && e.message)})`))
-      try { fs.unlinkSync(this.tmp) } catch { /* nothing to clean up */ }
+      try { fs.unlinkSync(this.tmpSync) } catch { /* nothing to clean up */ }
       return false
     }
   }

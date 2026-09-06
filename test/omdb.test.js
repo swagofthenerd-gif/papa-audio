@@ -116,6 +116,13 @@ test('the scores the card reads are hoisted to the top level', () => {
 })
 
 // ── URL building ────────────────────────────────────────────────────────────
+// The API key rides in the query string, so a plaintext request hands it to
+// every hop on the path. OMDb serves https, so there is no reason not to.
+test('requests go over https, never plaintext http', () => {
+  const url = buildUrl('KEY123', { i: 'tt0068646' })
+  assert.ok(url.startsWith('https://'), 'the key must not travel in the clear')
+})
+
 test('the key and query are encoded, and the long plot is never fetched', () => {
   const url = buildUrl('KEY123', { i: 'tt0068646' })
   assert.match(url, /apikey=KEY123/)
@@ -204,4 +211,112 @@ test('a miss is cached as well, so it is not asked for repeatedly', async () => 
   assert.strictEqual(await api.byImdbId('tt0000001'), null)
   assert.strictEqual(await api.byImdbId('tt0000001'), null)
   assert.strictEqual(hits, 1)
+})
+
+// "Request limit reached!" is the free tier's daily cap, not a fact about the
+// title. Caching that null would keep the answer wrong until restart, long
+// after the limit resets.
+test('a rate-limited miss is not cached, so the next lookup asks again', async () => {
+  const store = new Map()
+  const cache = { get: k => store.get(k), set: (k, v) => store.set(k, v) }
+  let hits = 0
+  const api = createOmdbCatalog({
+    apiKey: 'K',
+    cache,
+    fetchFn: async () => {
+      hits++
+      if (hits === 1) return { ok: true, json: async () => ({ Response: 'False', Error: 'Request limit reached!' }) }
+      return { ok: true, json: async () => GODFATHER }
+    },
+  })
+  assert.strictEqual(await api.byImdbId('tt0068646'), null, 'the limit still means no answer now')
+  const second = await api.byImdbId('tt0068646')
+  assert.strictEqual(hits, 2, 'the limited miss must not be served from the cache')
+  assert.strictEqual(second.title, 'The Godfather')
+})
+
+// ── The TMDB-down fallback ───────────────────────────────────────────────────
+// When TMDB is unreachable there is no base to enrich, so OMDb has to stand in
+// for the whole detail. detailFromOmdb reshapes OMDb's answer into the small
+// subset of the TMDB detail shape the hero reads — same key names and types, so
+// it drops in where a TMDB entry was expected.
+const GODFATHER_FULL = {
+  ...GODFATHER,
+  Plot: 'The aging patriarch of an organized crime dynasty transfers control…',
+  Poster: 'https://m.media-amazon.com/images/M/poster.jpg',
+}
+
+test('the fallback detail is shaped like the TMDB entry the hero reads', async () => {
+  const calls = []
+  const api = createOmdbCatalog({
+    apiKey: 'K',
+    fetchFn: async url => { calls.push(url); return { ok: true, json: async () => GODFATHER_FULL } },
+  })
+  const d = await api.detailFromOmdb('tt0068646')
+  assert.deepStrictEqual(d, {
+    title: 'The Godfather',
+    year: '1972',
+    overview: 'The aging patriarch of an organized crime dynasty transfers control…',
+    poster: 'https://m.media-amazon.com/images/M/poster.jpg',
+    rating: 9.2,
+    imdbId: 'tt0068646',
+    runtime: 175,
+  })
+})
+
+// The whole point of the fallback is the detail the hero shows; the short plot
+// the enrichment path uses would leave it with a truncated overview.
+test('the fallback asks for the full plot, not the short one', async () => {
+  const calls = []
+  const api = createOmdbCatalog({
+    apiKey: 'K',
+    fetchFn: async url => { calls.push(url); return { ok: true, json: async () => GODFATHER_FULL } },
+  })
+  await api.detailFromOmdb('tt0068646')
+  assert.match(calls[0], /plot=full/, 'the standalone detail wants the whole synopsis')
+  assert.match(calls[0], /i=tt0068646/, 'an id is looked up by id')
+})
+
+// A detail opened from a search may only have a name, not an id, so the same
+// call has to accept a title too — narrowed by year exactly as byTitle is.
+test('the fallback takes a title and year when there is no IMDb id', async () => {
+  const calls = []
+  const api = createOmdbCatalog({
+    apiKey: 'K',
+    fetchFn: async url => { calls.push(url); return { ok: true, json: async () => GODFATHER_FULL } },
+  })
+  await api.detailFromOmdb('Seven Samurai', 1954)
+  assert.match(calls[0], /t=Seven\+Samurai/, 'a non-id argument is a title search')
+  assert.match(calls[0], /y=1954/)
+  assert.ok(!/[?&]i=/.test(calls[0]), 'a title is not sent as an id')
+})
+
+// Missing fields come back as null, never as a half-object the caller has to
+// guard field by field.
+test('the fallback fills absent fields with null, not junk', async () => {
+  const api = createOmdbCatalog({
+    apiKey: 'K',
+    fetchFn: async () => ({ ok: true, json: async () => ({
+      Response: 'True', Title: 'Obscure Film', Year: '1980',
+      Plot: 'N/A', Poster: 'N/A', imdbRating: 'N/A', Runtime: 'N/A', imdbID: 'tt9999999',
+    }) }),
+  })
+  const d = await api.detailFromOmdb('tt9999999')
+  assert.strictEqual(d.title, 'Obscure Film')
+  assert.strictEqual(d.overview, null, 'N/A is nothing, not the text "N/A"')
+  assert.strictEqual(d.poster, null)
+  assert.strictEqual(d.rating, null)
+  assert.strictEqual(d.runtime, null)
+})
+
+test('the fallback is null when OMDb has nothing, and never even asks for nothing', async () => {
+  let hits = 0
+  const api = createOmdbCatalog({
+    apiKey: 'K',
+    fetchFn: async () => { hits++; return { ok: true, json: async () => ({ Response: 'False', Error: 'Movie not found!' }) } },
+  })
+  assert.strictEqual(await api.detailFromOmdb('tt0000001'), null)
+  assert.strictEqual(await api.detailFromOmdb(''), null, 'an empty argument is not a request')
+  assert.strictEqual(await api.detailFromOmdb(null), null)
+  assert.strictEqual(hits, 1, 'only the real lookup hit the network')
 })

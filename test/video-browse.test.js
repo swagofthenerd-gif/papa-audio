@@ -285,7 +285,9 @@ test('genre chips are buttons, not inert spans', () => {
 // into the app's search box.
 test('browsing keys are inert unless a video page is showing', () => {
   const bind = extract('_bindBrowseKeys')
-  assert.match(bind, /page !== 'video' && page !== 'browse' && page !== 'person' && page !== 'video-detail'/)
+  // Guarded on VIDEO_PAGES rather than a hand-kept list of page names, so a
+  // page added later is covered by the same set that hides the music bar.
+  assert.match(bind, /if \(!VIDEO_PAGES\.has\(page\)\) return/)
   assert.match(bind, /_videoKeysBound/, 'it must bind once, not per render')
 })
 
@@ -328,4 +330,77 @@ test('arrow movement stays inside the grid', () => {
 
 test('Enter opens the focused card', () => {
   assert.match(extract('_bindBrowseKeys'), /classList\.contains\('vcard'\)[\s\S]*?el\.click\(\)/)
+})
+
+// ── Surprise me ─────────────────────────────────────────────────────────────
+// One random title from the whole filtered set. Executed for real: the picker
+// is async and ticketed like every fetch on the page, so the guards get the
+// same treatment as the grid's.
+function surpriseCtx({ random = 0, discover } = {}) {
+  const calls = { navigate: [], toast: [], discover: [] }
+  const c = {
+    console,
+    Math: Object.assign(Object.create(Math), { random: () => random }),
+    state: { currentPage: 'browse' },
+    _browse: { filters: { catalog: 'movie' }, page: 1, results: [], total: 0, totalPages: 1, ticket: 7 },
+    _browseRequest: (f, page) => ({ catalog: f.catalog, page }),
+    _cardKey: i => (i.type || 'movie') + ':' + i.id,
+    navigate: (page, id) => calls.navigate.push([page, id]),
+    showToast: t => calls.toast.push(t),
+    window: { api: { videoDiscover: req => { calls.discover.push(req); return discover(req) } } },
+  }
+  vm.createContext(c)
+  // extract() slices from the `function` keyword, which drops the `async`
+  // in front of it; put it back or every await inside refuses to parse.
+  vm.runInContext('async ' + extract('_browseSurprise'), c)
+  return { ctx: c, calls }
+}
+
+test('with everything loaded it picks from what is on screen', async () => {
+  const { ctx, calls } = surpriseCtx({ random: 0 })
+  ctx._browse.results = [{ type: 'tv', id: 42 }, { type: 'movie', id: 9 }]
+  ctx._browse.total = 2
+  await ctx._browseSurprise()
+  assert.deepStrictEqual(calls.discover, [], 'no request for a page already loaded')
+  assert.deepStrictEqual(calls.navigate, [['video-detail', 'tv:42']])
+})
+
+test('a deep result set draws a random page within totalPages', async () => {
+  const { ctx, calls } = surpriseCtx({
+    random: 0.95,
+    discover: async () => ({ ok: true, results: [{ type: 'movie', id: 777 }] }),
+  })
+  ctx._browse.results = [{ type: 'movie', id: 1 }]
+  ctx._browse.total = 200
+  ctx._browse.totalPages = 10
+  await ctx._browseSurprise()
+  assert.strictEqual(calls.discover.length, 1)
+  assert.strictEqual(calls.discover[0].page, 10, 'page drawn inside totalPages')
+  assert.deepStrictEqual(calls.navigate, [['video-detail', 'movie:777']])
+})
+
+test('a pick that lands after the filters changed is orphaned', async () => {
+  const { ctx, calls } = surpriseCtx({
+    random: 0.95,
+    discover: async () => ({ ok: true, results: [{ type: 'movie', id: 777 }] }),
+  })
+  ctx._browse.results = [{ type: 'movie', id: 1 }]
+  ctx._browse.total = 200
+  ctx._browse.totalPages = 10
+  const inflight = ctx._browseSurprise()
+  ctx._browse.ticket++
+  await inflight
+  assert.deepStrictEqual(calls.navigate, [], 'the stale pick must not navigate')
+})
+
+test('an empty result set says so instead of navigating', async () => {
+  const { ctx, calls } = surpriseCtx({ random: 0 })
+  await ctx._browseSurprise()
+  assert.deepStrictEqual(calls.navigate, [])
+  assert.strictEqual(calls.toast.length, 1)
+})
+
+test('the button lives beside the count on Browse', () => {
+  assert.match(extract('renderBrowse'), /vbrowse-surprise/)
+  assert.match(extract('renderBrowse'), /addEventListener\('click', _browseSurprise\)/)
 })

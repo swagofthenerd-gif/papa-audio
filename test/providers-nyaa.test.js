@@ -3,7 +3,7 @@ const test = require('node:test')
 const assert = require('node:assert')
 const {
   DEFAULT_BASE_URLS, buildQuery, buildFeedUrl, parseFeed,
-  matchesEpisode, createNyaaProvider,
+  matchesEpisode, createNyaaProvider, _resetMirrorHealth,
 } = require('../providers/nyaa')
 
 const item = (title, hash, seeders) =>
@@ -76,6 +76,44 @@ test('a pack that does not span the episode is still rejected', () => {
   assert.strictEqual(matchesEpisode('[Batch] Frieren - 01~12 (1080p)', 20), false)
 })
 
+// A pack labelled some OTHER season cannot contain the episode, however
+// loudly it says "complete". Unlabelled packs stay accepted: the label is the
+// evidence, and dubs still live almost exclusively in packs.
+test('a pack labelled a different season is rejected when the season is known', () => {
+  assert.strictEqual(matchesEpisode('[G] Show Season 2 Complete', 5, { season: 1 }), false)
+  assert.strictEqual(matchesEpisode('[G] Show S2 Batch', 5, { season: 1 }), false)
+  assert.strictEqual(matchesEpisode('[G] Show Season 1 Complete', 5, { season: 1 }), true)
+  assert.strictEqual(matchesEpisode('[G] Show Complete', 5, { season: 1 }), true)
+  // Without a known season the label proves nothing either way.
+  assert.strictEqual(matchesEpisode('[G] Show Season 2 Complete', 5), true)
+})
+
+// Long-running shows are numbered absolutely on nyaa ("One Piece - 1071",
+// never "S20E10"), so a release naming either the seasonal or the absolute
+// number is the requested episode.
+test('matchesEpisode accepts the absolute number when the caller supplies it', () => {
+  assert.strictEqual(matchesEpisode('[SubsPlease] One Piece - 1071 (1080p)', 15, { absoluteEpisode: 1071 }), true)
+  assert.strictEqual(matchesEpisode('[SubsPlease] One Piece - 1071 (1080p)', 15), false)
+  assert.strictEqual(matchesEpisode('[G] Show - 15 (1080p)', 15, { absoluteEpisode: 1071 }), true)
+  assert.strictEqual(matchesEpisode('[G] Show - 1072 (1080p)', 15, { absoluteEpisode: 1071 }), false)
+  // A batch spanning the absolute number is a legitimate source too.
+  assert.strictEqual(matchesEpisode('[Batch] Show - 1000~1100', 15, { absoluteEpisode: 1071 }), true)
+})
+
+test('an absolute-number query variant is tried when one is supplied', async () => {
+  const queries = []
+  const provider = createNyaaProvider({
+    baseUrls: ['https://n'],
+    fetchFn: async url => {
+      queries.push(decodeURIComponent(new URL(url).searchParams.get('q')))
+      return feedResponse('<rss><channel></channel></rss>')
+    },
+  })
+  await provider({ type: 'anime', title: 'One Piece', episode: 15, absoluteEpisode: 1071 })
+  assert.ok(queries.includes('One Piece 15'), 'the seasonal query is still tried')
+  assert.ok(queries.includes('One Piece 1071'), 'the absolute query must be tried too')
+})
+
 test('a single named episode is never treated as a pack', () => {
   const { isPack } = require('../providers/nyaa')
   assert.strictEqual(isPack('[G] Show S01E09 Season 1', 9), false)
@@ -138,6 +176,25 @@ test('the default mirror list is used when none is injected', async () => {
   const provider = createNyaaProvider({ fetchFn: async url => { calls.push(url); return feedResponse(FEED) } })
   await provider({ type: 'anime', title: 'Frieren', episode: 9 })
   assert.ok(calls[0].startsWith(DEFAULT_BASE_URLS[0]))
+})
+
+// A dead first mirror otherwise burns its timeout on every single lookup.
+test('the mirror that answered last is tried first on the next query', async () => {
+  _resetMirrorHealth()
+  const calls = []
+  const provider = createNyaaProvider({
+    baseUrls: ['https://dead', 'https://live'],
+    fetchFn: async url => {
+      calls.push(new URL(url).origin)
+      if (url.startsWith('https://dead')) throw new Error('ENOTFOUND')
+      return feedResponse(FEED)
+    },
+  })
+  await provider({ type: 'anime', title: 'Frieren', episode: 9 })
+  assert.deepStrictEqual(calls, ['https://dead', 'https://live'])
+  await provider({ type: 'anime', title: 'Frieren', episode: 9 })
+  assert.strictEqual(calls[2], 'https://live', 'the known-good mirror must lead')
+  _resetMirrorHealth()
 })
 
 // ── Title fallback: the reason the anime section found nothing ──────────────

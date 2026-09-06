@@ -38,6 +38,15 @@
     return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`
   }
 
+  // For the stats panel's download rate. One decimal at MB scale because that
+  // is where a torrent's health actually reads; below that the digits are noise.
+  function fmtBytes(n) {
+    n = Math.max(0, Number(n) || 0)
+    if (n >= 1048576) return (n / 1048576).toFixed(1) + ' MB'
+    if (n >= 1024) return Math.round(n / 1024) + ' KB'
+    return Math.round(n) + ' B'
+  }
+
   function create(opts) {
     opts = opts || {}
     const doc = opts.document || (typeof document !== 'undefined' ? document : null)
@@ -46,6 +55,15 @@
     const skipModel = opts.skipModel || (typeof window !== 'undefined' ? window.PapaSkipModel : null)
     const onExit = opts.onExit || function () {}
     const onNext = opts.onNext || null
+    // A brief message to the app's toast stack, for things the deck does that
+    // finish out of view — a screenshot saved to disk (§48), say. Optional and
+    // guarded everywhere it is called, so the deck works in a test harness with
+    // no toast host.
+    const onToast = opts.onToast || function () {}
+    // localStorage through the app's validated reader. Injectable for tests,
+    // and optional everywhere it is touched: persistence is a convenience and
+    // must never be able to stop playback.
+    const local = opts.local || (typeof window !== 'undefined' ? window.PapaLocal : null)
     // The renderer persists progress from here rather than opening a second
     // subscription to the same throttled stream.
     const onState = opts.onState || null
@@ -68,7 +86,42 @@
     let upNextLeft = 0
     let upNextInfo = null
     let upNextDismissed = false
-    let media = null   // { title, sub, next }
+    let upNextHover = false
+    let media = null   // { title, sub, next, onPrev?, onPrefChange? }
+
+    // total ⇄ remaining on the duration readout. Read once at creation, written
+    // on every toggle. Compared with indexOf rather than equality because the
+    // store JSON-encodes strings — the raw text is '"remaining"', quotes and all.
+    let timeMode = 'total'
+    try {
+      if (local && typeof local.readRaw === 'function' &&
+          String(local.readRaw('papaVtTimeMode') || '').indexOf('remaining') !== -1) {
+        timeMode = 'remaining'
+      }
+    } catch (_) { /* storage is a convenience, never a blocker */ }
+
+    // Whether the Up Next countdown advances on its own. Default on — the
+    // point of episodic viewing is not having to press anything — but a viewer
+    // who wants to choose each time can turn it off, and the card then shows
+    // "Play now" with no ticking ring. Stored as a JSON boolean, so anything
+    // but an explicit 'false' leaves the default in place.
+    let autoNext = true
+    try {
+      if (local && typeof local.readRaw === 'function' &&
+          String(local.readRaw('papaVtAutoNext') || '').indexOf('false') !== -1) {
+        autoNext = false
+      }
+    } catch (_) { /* storage is a convenience, never a blocker */ }
+
+    // "Still watching?" guard. Each time the countdown advances an episode with
+    // no sign of a viewer, this climbs; any real activity zeroes it. Once three
+    // episodes have auto-advanced untouched, the next countdown holds at three
+    // seconds and asks, rather than playing on into an empty room. noteActivity
+    // is the single signal for "a person is here" — it is called on every wake
+    // source and on every deliberate menu action.
+    const STILL_WATCHING_AFTER = 3
+    let autoAdvances = 0
+    let stillAsking = false
 
     // ── Stage geometry ──────────────────────────────────────────────────────
     // main positions the mpv window onto this rectangle. It has to be re-sent
@@ -134,10 +187,18 @@
         play.setAttribute('aria-label', state.paused ? 'Play' : 'Pause')
       }
 
-      if (!dragging) paintSeek(pos, dur)
+      // Neither the pointer nor held arrow keys may be fought by the stream:
+      // while a keyboard target is pending the bar shows where the seek will
+      // land, not where playback still is.
+      if (!dragging && kbTarget == null) paintSeek(pos, dur)
 
       const posEl = $('vt-pos'); if (posEl) posEl.textContent = fmtTime(pos)
-      const durEl = $('vt-dur'); if (durEl) durEl.textContent = fmtTime(dur)
+      const durEl = $('vt-dur')
+      if (durEl) {
+        durEl.textContent = timeMode === 'remaining'
+          ? '−' + fmtTime(Math.max(0, dur - pos))
+          : fmtTime(dur)
+      }
 
       const mute = $('vt-mute')
       if (mute) {
@@ -145,7 +206,15 @@
         mute.setAttribute('aria-label', state.muted ? 'Unmute' : 'Mute')
       }
       const vol = $('vt-vol')
-      if (vol && doc.activeElement !== vol) vol.value = String(Math.round(state.volume || 0))
+      if (vol) {
+        const pct = Math.round(state.volume || 0)
+        // The slider runs 0–130, so a screen reader reading the raw value calls
+        // out "84" with no unit. aria-valuetext gives it the percent the number
+        // actually is, and says when the level is into mpv's amplified range.
+        vol.setAttribute('aria-valuetext', pct + '%' + (pct > 100 ? ' (boosted)' : '') +
+          (state.muted ? ', muted' : ''))
+        if (doc.activeElement !== vol) vol.value = String(pct)
+      }
 
       const speed = $('vt-speed')
       if (speed) {
@@ -163,8 +232,12 @@
       // still 0 and the marks cannot be positioned. Repaint whenever the
       // duration changes, or they would never appear at all.
       if (dur !== lastMarkDuration) { lastMarkDuration = dur; paintMarks() }
+      syncChapterTicks()
       paintSkip(pos)
       paintUpNext(pos, dur)
+      // Once state is flowing the file's tracks exist, so the remembered
+      // language can be applied. A once-only latch inside, not a repaint.
+      applyLangPrefs()
     }
 
     // What can actually be jumped to, drawn as the ranges mpv reports rather
@@ -261,15 +334,64 @@
       }).join('')
     }
 
+    // Chapter tick marks on the track, so a scene boundary can be aimed at
+    // rather than guessed. The state stream only carries the chapter COUNT;
+    // the start times come from api.videoChapters(), the same call the chapters
+    // menu makes — so the fetch is keyed on count-and-duration and re-done only
+    // when that signature changes, not four times a second.
+    let lastChapterSig = ''
+    function syncChapterTicks() {
+      const box = $('vt-seek-chapters')
+      if (!box) return
+      const dur = Number(state && state.duration) || 0
+      const n = (state && Array.isArray(state.chapters)) ? state.chapters.length : 0
+      const sig = n + '@' + Math.round(dur)
+      if (sig === lastChapterSig) return
+      lastChapterSig = sig
+      if (!dur || n < 2 || !api || !api.videoChapters) { box.innerHTML = ''; return }
+      api.videoChapters().then(function (res) {
+        const list = (res && res.ok && Array.isArray(res.chapters)) ? res.chapters : []
+        box.innerHTML = list.map(function (c) {
+          const start = Number(c.start) || 0
+          // A tick at either edge marks nothing: chapter one starts where the
+          // bar does, and one at the very end sits under the bar's rounding.
+          if (start < 1 || start >= dur - 1) return ''
+          return '<i class="vt-seek-tick" style="left:' + ((start / dur) * 100) + '%"></i>'
+        }).join('')
+      }).catch(function () {})
+    }
+
     // ── Skip ────────────────────────────────────────────────────────────────
-    // The strip only exists when something is in it, so it does not reserve
-    // empty space under the video for the whole film.
+    // `hidden` on the strip now means invisible, not gone: the row keeps its
+    // fixed height (see the .vt-strip CSS) because collapsing it resized the
+    // stage, and the stage is the rectangle the native mpv window is positioned
+    // onto — every skip offer made the picture visibly jump mid-watch. Only
+    // fullscreen idle actually removes the row, and entering or leaving idle is
+    // the one resize that is allowed.
     function syncStrip() {
       const strip = $('vt-strip')
       if (!strip) return
       const skip = $('vt-skip')
       const up = $('vt-upnext')
       strip.hidden = (!skip || skip.hidden) && (!up || up.hidden)
+      syncHeld()
+    }
+
+    // The no-jump contract, refined: a row that has appeared once this
+    // playback keeps its space when its content goes (vt-held: invisible, not
+    // gone), so the picture never moves mid-watch — but a playback that never
+    // needed the row never pays for it with a dead black band. The one resize
+    // this allows is the row's first appearance.
+    function syncHeld() {
+      const pack = $('vt-pack')
+      const strip = $('vt-strip')
+      if (pack && !pack.hidden) pack.classList.add('vt-held')
+      if (strip && !strip.hidden) strip.classList.add('vt-held')
+    }
+
+    function releaseHeld() {
+      $('vt-pack')?.classList.remove('vt-held')
+      $('vt-strip')?.classList.remove('vt-held')
     }
 
     function paintSkip(pos) {
@@ -302,7 +424,15 @@
       const b = $('vt-skip-btn')
       if (b) {
         b.addEventListener('click', function () {
-          if (autoSkipTimer) { cancelAutoSkip(); box.hidden = true; return }
+          // Hidden and emptied like every other dismissal, or the strip row
+          // keeps holding space for an offer that is no longer there.
+          if (autoSkipTimer) {
+            cancelAutoSkip()
+            box.hidden = true
+            box.innerHTML = ''
+            syncStrip()
+            return
+          }
           doSkip(btn.segment)
         })
       }
@@ -312,6 +442,9 @@
       cancelAutoSkip()
       autoSkipUntil = 4
       autoSkipTimer = setInterval(function () {
+        // Wall clock is not film clock: paused, the viewer is going nowhere,
+        // so the countdown holds where it is until playback resumes.
+        if (state && state.paused) return
         autoSkipUntil--
         const c = $('vt-skip-count')
         if (c) c.textContent = String(Math.max(0, autoSkipUntil))
@@ -362,12 +495,19 @@
       }
       if (!box.hidden) return   // already showing; the countdown owns it now
       box.hidden = false
+      // A freshly shown card has not asked anything yet.
+      stillAsking = false
       syncStrip()
       const n = upNextInfo || {}
       const still = n.still
         ? '<img class="vt-upnext-still" src="' + escapeHtml(n.still) + '" alt="" ' +
           'onerror="this.style.visibility=\'hidden\'">'
         : '<div class="vt-upnext-still"></div>'
+      // Whether this card counts down on its own at all. Off when the viewer
+      // has turned auto-play off (#18), and the card is then a plain "Play now"
+      // with no ring; still on for the still-watching case (#20), where the
+      // ring appears but freezes at three seconds behind the prompt.
+      const counts = autoNext
       box.innerHTML = still +
         '<div class="vt-upnext-body">' +
           '<div class="vt-upnext-kicker">Up next</div>' +
@@ -375,15 +515,17 @@
           (n.subtitle ? '<div class="vt-upnext-sub">' + escapeHtml(n.subtitle) + '</div>' : '') +
           '<div class="vt-upnext-actions">' +
             '<button type="button" class="vt-upnext-go" id="vt-upnext-go">Play now</button>' +
-            '<button type="button" id="vt-upnext-stay">Watch credits</button>' +
+            (counts ? '<button type="button" id="vt-upnext-stay">Watch credits</button>' : '') +
           '</div>' +
         '</div>' +
-        '<div class="vt-ring" id="vt-upnext-ring">' +
-          '<svg viewBox="0 0 34 34"><circle class="bg" cx="17" cy="17" r="14"></circle>' +
-          '<circle class="fg" cx="17" cy="17" r="14" id="vt-ring-fg"></circle></svg>' +
-          '<div class="vt-ring-num" id="vt-ring-num">' + UPNEXT_SECONDS + '</div>' +
-        '</div>'
-      $('vt-upnext-go')?.addEventListener('click', function () { stopUpNext(); onNext() })
+        (counts
+          ? '<div class="vt-ring" id="vt-upnext-ring">' +
+              '<svg viewBox="0 0 34 34"><circle class="bg" cx="17" cy="17" r="14"></circle>' +
+              '<circle class="fg" cx="17" cy="17" r="14" id="vt-ring-fg"></circle></svg>' +
+              '<div class="vt-ring-num" id="vt-ring-num">' + UPNEXT_SECONDS + '</div>' +
+            '</div>'
+          : '')
+      $('vt-upnext-go')?.addEventListener('click', function () { stopUpNext(); autoAdvances = 0; onNext() })
       $('vt-upnext-stay')?.addEventListener('click', function () {
         // Dismissed for this file only — it must not reappear thirty seconds
         // later having been explicitly declined.
@@ -393,7 +535,29 @@
         box.innerHTML = ''
         syncStrip()
       })
-      startUpNext()
+      // With auto-play off the card just waits: no interval, so it never
+      // advances by itself and "Play now" is the only way on.
+      if (counts) startUpNext()
+    }
+
+    // Swaps the card's actions for the "Still watching?" question. Done in
+    // place rather than by re-rendering the whole card, so the countdown ring
+    // it is frozen behind is left exactly where it stopped.
+    function showStillWatching(box) {
+      stillAsking = true
+      const actions = box.querySelector('.vt-upnext-actions')
+      if (!actions) return
+      actions.innerHTML =
+        '<span class="vt-still-q">Still watching?</span>' +
+        '<button type="button" class="vt-upnext-go" id="vt-upnext-continue">Continue</button>'
+      box.querySelector('#vt-upnext-continue')?.addEventListener('click', function () {
+        // Answering the question is itself the proof a person is here, so the
+        // count clears and the countdown that was held resumes toward the next
+        // episode. noteActivity does the clearing; resuming is just unfreezing.
+        noteActivity()
+        stillAsking = false
+        startUpNext()
+      })
     }
 
     function startUpNext() {
@@ -406,13 +570,35 @@
         ring.setAttribute('stroke-dashoffset', '0')
       }
       upNextTimer = setInterval(function () {
+        // Pausing during the credits means "I am staying here for now" — the
+        // next episode must never start itself over a paused frame. Hovering
+        // the card means the same thing said with the pointer: the user is
+        // reading it, deciding — and a card that advances while being read is
+        // a card that cannot be declined. Resumes the moment the pointer leaves.
+        if ((state && state.paused) || upNextHover) return
+        // Enough episodes have played to an empty room: hold at three seconds
+        // and ask, rather than starting yet another one. The interval keeps
+        // running but goes no lower, so answering Continue can resume it from
+        // exactly here. Any real activity clears autoAdvances and this branch
+        // is never reached.
+        if (autoAdvances >= STILL_WATCHING_AFTER && upNextLeft <= 3) {
+          if (!stillAsking) { showStillWatching($('vt-upnext')) }
+          return
+        }
         upNextLeft--
         const num = $('vt-ring-num')
         if (num) num.textContent = String(Math.max(0, upNextLeft))
         const fg = $('vt-ring-fg')
         if (fg) fg.setAttribute('stroke-dashoffset',
           String(circumference * (1 - Math.max(0, upNextLeft) / UPNEXT_SECONDS)))
-        if (upNextLeft <= 0) { stopUpNext(); if (onNext) onNext() }
+        if (upNextLeft <= 0) {
+          stopUpNext()
+          // This advance was unattended: count it, so three in a row raise the
+          // prompt on the next card. A deliberate Play now or any activity
+          // resets the count elsewhere.
+          autoAdvances++
+          if (onNext) onNext()
+        }
       }, 1000)
     }
 
@@ -425,20 +611,49 @@
     // a file change on a live torrent rather than a fresh search.
     let packFiles = []
 
-    function setPack(files, onSelect) {
+    function setPack(files, onSelect, onContext) {
       packFiles = Array.isArray(files) ? files : []
       const box = $('vt-pack')
       const list = $('vt-pack-list')
       if (!box || !list) return
-      if (packFiles.length < 2) { box.hidden = true; list.innerHTML = ''; return }
+      if (packFiles.length < 2) { box.hidden = true; list.innerHTML = ''; syncHeld(); return }
       box.hidden = false
+      syncHeld()
       const label = $('vt-pack-label')
       if (label) label.textContent = packFiles.length + ' episodes'
+      // A complete-series batch carries several seasons, each numbered from 01
+      // again — without the group dividers the strip reads as one long row of
+      // repeating numbers. The shared prefix ("Tokyo Revengers ") says nothing
+      // inside this pack, so it is stripped and only what differs is shown.
+      const groups = []
+      packFiles.forEach(function (f) {
+        const g = f.group || ''
+        if (groups.indexOf(g) === -1) groups.push(g)
+      })
+      const many = groups.length > 1
+      let common = ''
+      if (many) {
+        common = groups.reduce(function (a, b) {
+          let i = 0
+          while (i < a.length && i < b.length && a[i] === b[i]) i++
+          return a.slice(0, i)
+        })
+      }
+      const groupTag = function (g) {
+        const short = (g || '').slice(common.length).trim()
+        return short || 'Season 1'
+      }
+      let lastGroup = null
       list.innerHTML = packFiles.map(function (f, i) {
         // An unnumbered file still needs a handle; its position is the least
         // wrong thing to show.
         const name = f.episode != null ? String(f.episode) : String(i + 1)
-        return '<button class="vt-ep' + (f.current ? ' current' : '') + '"' +
+        let head = ''
+        if (many && (f.group || '') !== lastGroup) {
+          lastGroup = f.group || ''
+          head = '<span class="vt-pack-group">' + escapeHtml(groupTag(lastGroup)) + '</span>'
+        }
+        return head + '<button class="vt-ep' + (f.current ? ' current' : '') + '"' +
           ' data-file="' + f.index + '"' +
           ' title="' + escapeHtml(f.name) + '"' +
           (f.current ? ' aria-current="true"' : '') +
@@ -449,6 +664,14 @@
           if (b.classList.contains('current')) return
           if (onSelect) onSelect(Number(b.dataset.file))
         })
+        // Right-click an episode to keep it offline (#44). The renderer decides
+        // whether it is downloaded enough to save and toasts the outcome.
+        if (onContext) {
+          b.addEventListener('contextmenu', function (ev) {
+            ev.preventDefault()
+            onContext(Number(b.dataset.file))
+          })
+        }
       })
       const cur = list.querySelector('.vt-ep.current')
       if (cur && cur.scrollIntoView) cur.scrollIntoView({ block: 'nearest', inline: 'center' })
@@ -482,11 +705,82 @@
     function togglePlay() { send(state && state.paused ? 'play' : 'pause') }
     function seekBy(sec) { send('seek', { seconds: sec, mode: 'relative' }) }
     function seekTo(sec) { send('seek', { seconds: sec, mode: 'absolute' }) }
+    // While a scrub is in flight the picture should follow the pointer, not sit
+    // frozen until release. A keyframe (fast) seek lands on the nearest cached
+    // keyframe — cheap enough to fire repeatedly and, on a torrent, avoids
+    // waiting on bytes an exact seek would demand. The exact landing seek runs
+    // on pointerup. Throttled so a fast sweep is not one mpv command per pixel.
+    const SCRUB_SEEK_MS = 100
+    let scrubLastAt = 0
+    let scrubTimer = null
+    let scrubPending = null
+    function scrubSeek(sec) {
+      scrubPending = sec
+      const nowMs = (typeof Date !== 'undefined' ? Date.now() : 0)
+      const since = nowMs - scrubLastAt
+      const fire = function () {
+        scrubLastAt = (typeof Date !== 'undefined' ? Date.now() : 0)
+        send('seek', { seconds: scrubPending, mode: 'absolute+keyframes' })
+      }
+      if (since >= SCRUB_SEEK_MS) { fire(); return }
+      if (scrubTimer) return
+      scrubTimer = setTimeout(function () { scrubTimer = null; fire() }, SCRUB_SEEK_MS - since)
+    }
+    function scrubEnd() {
+      if (scrubTimer) { clearTimeout(scrubTimer); scrubTimer = null }
+      scrubPending = null
+    }
+
+    // §48: grab a frame. main writes the file and hands back its path; the deck
+    // only knows the screenshot happened once that path comes back, so the toast
+    // is raised here rather than optimistically. A failed grab says so instead
+    // of leaving the viewer wondering whether it saved.
+    function takeScreenshot() {
+      send('screenshot').then(function (res) {
+        if (res && res.ok && res.value && res.value.path) {
+          onToast('Screenshot saved to ' + res.value.path)
+        } else {
+          onToast('Could not save the screenshot')
+        }
+      })
+    }
 
     function setVolume(v) {
       const next = Math.max(0, Math.min(130, Math.round(v)))
       send('volume', { value: next })
       if (state) state.volume = next
+    }
+
+    // A wheel or keyboard volume change happens with the eyes on the picture,
+    // not on the deck — so the new level is flashed as an mpv OSD message,
+    // which is the one piece of text that CAN be drawn over the native window,
+    // because mpv draws it itself. Defensive: an api without videoOsd, or one
+    // whose stub returns no promise, must cost nothing.
+    function flashVolume() {
+      if (!api || !api.videoOsd) return
+      const v = Math.round(Number(state && state.volume) || 0)
+      try {
+        const p = api.videoOsd('Volume ' + v + '%', 800)
+        if (p && typeof p.catch === 'function') p.catch(function () {})
+      } catch (_) { /* the OSD is decoration, never a blocker */ }
+    }
+
+    function toggleTimeMode() {
+      timeMode = timeMode === 'total' ? 'remaining' : 'total'
+      try {
+        if (local && typeof local.write === 'function') local.write('papaVtTimeMode', timeMode)
+      } catch (_) { /* a failed save keeps the toggle for this session only */ }
+      render()
+    }
+
+    // #18: persisted the same way the time-mode toggle is, under its own key.
+    // A failed write keeps the choice for this session only — storage is a
+    // convenience, never a blocker.
+    function toggleAutoNext() {
+      autoNext = !autoNext
+      try {
+        if (local && typeof local.write === 'function') local.write('papaVtAutoNext', autoNext)
+      } catch (_) { /* the session still honours the choice */ }
     }
 
     function bumpSpeed(dir) {
@@ -501,6 +795,10 @@
     function closeMenu() {
       const m = $('vt-menu')
       if (m) { m.classList.add('hidden'); m.innerHTML = '' }
+      // The stats poll lives exactly as long as its panel. Stopped here, in the
+      // one place every dismissal funnels through — outside click, Escape,
+      // minimise, close — so it can never keep polling a closed panel.
+      stopStats()
       setStageInset(0)
       // The question is answered, so the idle clock can run again.
       if (typeof noteActivity === 'function') noteActivity()
@@ -541,12 +839,74 @@
       '</button>'
     }
 
+    // ── Language memory ─────────────────────────────────────────────────────
+    // The show remembers what it was listened to and read in. prefs.audioLang
+    // and prefs.subLang arrive with media.prefs; when the file's tracks first
+    // turn up they are matched against those, and picking a track by hand
+    // reports its language back through media.onPrefChange so the renderer can
+    // store it per show. Codes are compared exactly as mpv reports them
+    // ('eng', 'jpn'), which is also how they were stored — so a plain
+    // case-insensitive match is the whole comparison. Everything here is a
+    // no-op when the callback, the codes or the tracks are missing: memory is
+    // a convenience and must never be able to stop playback.
+    let langApplied = false
+    let langChosen = { sub: false, audio: false }
+
+    function notePrefChange(change) {
+      if (!media || typeof media.onPrefChange !== 'function') return
+      try { media.onPrefChange(change) } catch (_) { /* never let memory stop playback */ }
+    }
+
+    function sameLang(a, b) {
+      return String(a || '').toLowerCase() === String(b || '').toLowerCase()
+    }
+
+    function applyLangPrefs() {
+      if (langApplied || !state) return
+      // Marked applied before the fetch resolves, so a second state tick
+      // cannot start a second lookup; an explicit pick made while the lookup
+      // is in flight is honoured by the langChosen check inside it.
+      langApplied = true
+      // A remembered subtitle delay is applied once the file is playing, the
+      // same beat the remembered language is. It seeds the local accumulator
+      // too, so the CC menu's readout and further nudges start from the stored
+      // value rather than from zero. Guarded so a missing pref costs nothing.
+      if (typeof prefs.subDelayMs === 'number' && prefs.subDelayMs !== 0) {
+        delayMs.subDelay = prefs.subDelayMs
+        send('subDelay', { value: prefs.subDelayMs })
+      }
+      const wantAudio = !langChosen.audio && prefs.audioLang
+      const wantSub = !langChosen.sub && prefs.subLang
+      if ((!wantAudio && !wantSub) || !api || !api.videoTracks) return
+      api.videoTracks().then(function (res) {
+        const all = (res && res.ok && Array.isArray(res.tracks)) ? res.tracks : []
+        ;[['audio', wantAudio], ['sub', wantSub]].forEach(function (pair) {
+          const type = pair[0], want = pair[1]
+          if (!want || langChosen[type]) return
+          const hit = all.find(function (t) { return t && t.type === type && t.lang && sameLang(t.lang, want) })
+          if (!hit) return
+          send('track', { type: type, id: hit.id })
+          if (state && state.tracks) state.tracks[type] = hit.id
+        })
+      }).catch(function () {})
+    }
+
     async function openTrackMenu(type) {
       const res = api && api.videoTracks ? await api.videoTracks().catch(function () { return null }) : null
       const all = (res && res.ok && Array.isArray(res.tracks)) ? res.tracks : []
       tracks[type] = all.filter(function (t) { return t.type === type })
       const current = state && state.tracks ? state.tracks[type] : null
       const list = tracks[type]
+
+      // Subtitle files already inside the torrent. A pack routinely ships .srt
+      // files next to the video, and they are the subtitles most likely to
+      // actually match the release — but mpv only sees the one file it was
+      // handed. Both APIs are optional: without them the menu is what it was.
+      let torrentSubs = []
+      if (type === 'sub' && api && api.videoSubsInTorrent) {
+        const found = await api.videoSubsInTorrent().catch(function () { return null })
+        if (found && found.ok && Array.isArray(found.subs)) torrentSubs = found.subs
+      }
 
       let html = '<div class="vt-menu-head">' + (type === 'sub' ? 'Subtitles' : 'Audio') + '</div>'
       if (type === 'sub') html += menuItem('Off', current == null)
@@ -563,9 +923,34 @@
 
       if (type === 'sub') {
         html += '<div class="vt-menu-sep"></div>' +
-          '<div class="vt-menu-row">Delay<span class="vt-menu-val" id="vt-subdelay">0 ms</span>' +
+          '<div class="vt-menu-row">Delay<span class="vt-menu-val" id="vt-subdelay">' +
+            delayMs.subDelay + ' ms</span>' +
           '<button class="vt-chip" data-delay="-50">&minus;50</button>' +
           '<button class="vt-chip" data-delay="50">+50</button></div>'
+        if (torrentSubs.length) {
+          html += '<div class="vt-menu-sep"></div>' +
+            '<div class="vt-menu-head">In this torrent</div>' +
+            torrentSubs.map(function (s, i) {
+              return '<button class="vt-menu-item" role="menuitem" data-subfile="' + i + '">' +
+                '<span class="vt-menu-tick"></span>' +
+                '<span class="vt-menu-label">' + escapeHtml(s.name || ('Subtitle ' + (i + 1))) + '</span>' +
+              '</button>'
+            }).join('')
+        }
+        html += '<div class="vt-menu-sep"></div>' +
+          '<button class="vt-menu-item" role="menuitem" data-subact="open">' +
+            '<span class="vt-menu-tick"></span>' +
+            '<span class="vt-menu-label">Add from file…</span>' +
+          '</button>'
+        // Online search needs both the API and something to search for; the
+        // renderer supplies the title identity on open(). Absent either, the
+        // menu simply doesn't offer what it cannot do.
+        if (api && api.videoSubSearch && media && media.subMeta) {
+          html += '<button class="vt-menu-item" role="menuitem" data-subact="online">' +
+            '<span class="vt-menu-tick"></span>' +
+            '<span class="vt-menu-label">Search online…</span>' +
+          '</button>'
+        }
       } else {
         html += '<div class="vt-menu-sep"></div>' +
           '<div class="vt-menu-row">Delay<span class="vt-menu-val" id="vt-auddelay">0 ms</span>' +
@@ -575,11 +960,24 @@
 
       openMenu(type === 'sub' ? 'vt-subs' : 'vt-audio', html, function (m) {
         const items = Array.prototype.slice.call(m.querySelectorAll('.vt-menu-item'))
-        items.forEach(function (el, i) {
+        // Only the leading items are track picks. The torrent-subtitle rows and
+        // "Add from file…" share the class for their styling and keyboard focus,
+        // but binding them as track picks would read past the end of `list` and
+        // send a null track — silently switching subtitles Off.
+        const trackCount = (type === 'sub' ? 1 : 0) + list.length
+        items.slice(0, trackCount).forEach(function (el, i) {
           el.addEventListener('click', function () {
             const offset = type === 'sub' ? 1 : 0
-            const id = (type === 'sub' && i === 0) ? null : (list[i - offset] && list[i - offset].id)
+            const picked = (type === 'sub' && i === 0) ? null : list[i - offset]
+            const id = picked ? picked.id : null
             send('track', { type: type, id: id })
+            // An explicit pick — including Off — outranks the remembered
+            // language for the rest of this file, and a pick that carries a
+            // language code becomes the remembered language.
+            langChosen[type] = true
+            if (picked && picked.lang) {
+              notePrefChange(type === 'sub' ? { subLang: picked.lang } : { audioLang: picked.lang })
+            }
             if (state && state.tracks) state.tracks[type] = id
             closeMenu()
             render()
@@ -587,6 +985,66 @@
         })
         bindDelay(m, '[data-delay]', 'delay', 'subDelay', 'vt-subdelay')
         bindDelay(m, '[data-adelay]', 'adelay', 'audioDelay', 'vt-auddelay')
+        // A torrent subtitle is not on disk yet: videoSubServe extracts it and
+        // answers with a real path, and only then can mpv be told to load it.
+        m.querySelectorAll('[data-subfile]').forEach(function (b) {
+          b.addEventListener('click', function () {
+            const s = torrentSubs[Number(b.dataset.subfile)]
+            closeMenu()
+            if (!s || !api || !api.videoSubServe) return
+            api.videoSubServe({ index: s.index }).then(function (r) {
+              if (r && r.ok && r.path) send('subAdd', { path: r.path })
+            }).catch(function () {})
+          })
+        })
+        m.querySelectorAll('[data-subact]').forEach(function (b) {
+          b.addEventListener('click', function () {
+            const act = b.dataset.subact
+            closeMenu()
+            if (act === 'online') { openOnlineSubsMenu(); return }
+            if (api && api.videoSubOpen) api.videoSubOpen().catch(function () {})
+          })
+        })
+      })
+    }
+
+    // The online-subtitle picker: one search against the identity the renderer
+    // supplied, results listed newest-downloads-first as the service ranks
+    // them. Missing API key is a first-class answer, not an error — the
+    // service requires one and the row says where to put it.
+    async function openOnlineSubsMenu() {
+      if (!api || !api.videoSubSearch || !media || !media.subMeta) return
+      openMenu('vt-subs', '<div class="vt-menu-head">Online subtitles</div>' +
+        '<div class="vt-menu-row">Searching…</div>', function () {})
+      const res = await api.videoSubSearch(media.subMeta).catch(function () { return null })
+      let html = '<div class="vt-menu-head">Online subtitles</div>'
+      const results = res && res.ok && Array.isArray(res.results) ? res.results : []
+      if (res && res.needsKey) {
+        html += '<div class="vt-menu-row">Needs an OpenSubtitles API key — add one in Settings → Video.</div>'
+      } else if (!results.length) {
+        html += '<div class="vt-menu-row">Nothing found for this title.</div>'
+      } else {
+        html += results.slice(0, 8).map(function (r, i) {
+          const label = [(r.language || '??').toUpperCase(), r.release || ('Result ' + (i + 1))].join(' · ')
+          const note = r.downloadCount ? (r.downloadCount + ' downloads') : ''
+          return '<button class="vt-menu-item" role="menuitem" data-online-sub="' + i + '">' +
+            '<span class="vt-menu-tick"></span>' +
+            '<span class="vt-menu-label">' + escapeHtml(label) + '</span>' +
+            (note ? '<span class="vt-menu-note">' + escapeHtml(note) + '</span>' : '') +
+          '</button>'
+        }).join('')
+      }
+      openMenu('vt-subs', html, function (m) {
+        m.querySelectorAll('[data-online-sub]').forEach(function (b) {
+          b.addEventListener('click', function () {
+            const r = results[Number(b.dataset.onlineSub)]
+            closeMenu()
+            if (!r || !api.videoSubDownload) return
+            api.videoSubDownload({ fileId: r.fileId }).then(function (d) {
+              if (d && d.ok && d.path) send('subAdd', { path: d.path })
+            }).catch(function () {})
+          })
+        })
       })
     }
 
@@ -594,6 +1052,7 @@
     // reachable while watching, not buried in settings.
     let delayMs = { subDelay: 0, audioDelay: 0 }
     let subScale = 1
+    let subBack = false
     function bindDelay(menu, selector, dataKey, verb, valueId) {
       menu.querySelectorAll(selector).forEach(function (b) {
         b.addEventListener('click', function () {
@@ -605,6 +1064,14 @@
           send(verb, { value: delayMs[verb] })
           const el = doc.getElementById(valueId)
           if (el) el.textContent = delayMs[verb] + ' ms'
+          // Subtitle desync is a property of the release, so it is worth
+          // remembering per show: the next episode of the same encode is
+          // desynced by the same amount. Reported the same way audioLang and
+          // subLang are — through media.onPrefChange, which the renderer keys
+          // to the show — and read back as prefs.subDelayMs on the next open.
+          // Audio delay is not remembered: it is nudged to match a specific
+          // file's tracks, not the show's. A no-op without the callback.
+          if (verb === 'subDelay') notePrefChange({ subDelayMs: delayMs[verb] })
         })
       })
     }
@@ -661,12 +1128,78 @@
       })
     }
 
+    // ── Stats ───────────────────────────────────────────────────────────────
+    // What the player actually knows, in one small panel: the state stream's
+    // numbers always, and the torrent's health — download rate, peers, how much
+    // of the file exists — when main exposes api.videoStreamStats. The torrent
+    // rows are polled every two seconds only while the panel is open; the state
+    // rows ride the same poll rather than the 4/s stream, because a stats panel
+    // that flickers faster than it can be read is worse than a slow one.
+    let statsTimer = null
+
+    function stopStats() {
+      if (statsTimer) { clearInterval(statsTimer); statsTimer = null }
+    }
+
+    function paintStats() {
+      const put = function (id, text) { const n = $(id); if (n) n.textContent = text }
+      const dur = Number(state && state.duration) || 0
+      const pos = Number(state && state.position) || 0
+      put('vt-stat-pos', fmtTime(pos) + ' / ' + fmtTime(dur))
+      put('vt-stat-speed', (Number(state && state.speed) || 1) + '×')
+      put('vt-stat-vol', Math.round(Number(state && state.volume) || 0) + '%' +
+        (state && state.muted ? ' (muted)' : ''))
+      const tr = (state && state.tracks) || {}
+      put('vt-stat-tracks', 'audio ' + (tr.audio != null ? tr.audio : '–') +
+        ' · sub ' + (tr.sub != null ? tr.sub : 'off'))
+      if (!api || !api.videoStreamStats) return
+      let p = null
+      try { p = api.videoStreamStats() } catch (_) { return }
+      if (!p || typeof p.then !== 'function') return
+      p.then(function (res) {
+        if (!res || !res.ok) return
+        put('vt-stat-down', fmtBytes(res.down) + '/s')
+        put('vt-stat-peers', String(res.peers != null ? res.peers : '–'))
+        put('vt-stat-progress',
+          Math.round(Math.max(0, Math.min(1, Number(res.progress) || 0)) * 100) + '%')
+      }).catch(function () {})
+    }
+
+    function statsRow(label, id) {
+      return '<div class="vt-menu-row">' + label +
+        '<span class="vt-menu-val" id="' + id + '"></span></div>'
+    }
+
+    function toggleStatsMenu() {
+      // A live poll means the panel is open; the chip is a toggle, not a stack.
+      if (statsTimer) { closeMenu(); return }
+      let html = '<div class="vt-menu-head">Stats</div>' +
+        statsRow('Position', 'vt-stat-pos') +
+        statsRow('Speed', 'vt-stat-speed') +
+        statsRow('Volume', 'vt-stat-vol') +
+        statsRow('Tracks', 'vt-stat-tracks')
+      if (api && api.videoStreamStats) {
+        html += '<div class="vt-menu-sep"></div>' +
+          '<div class="vt-menu-head">Stream</div>' +
+          statsRow('Download', 'vt-stat-down') +
+          statsRow('Peers', 'vt-stat-peers') +
+          statsRow('Fetched', 'vt-stat-progress')
+      }
+      openMenu('vt-stats', html, function () {
+        paintStats()
+        statsTimer = setInterval(paintStats, 2000)
+      })
+    }
+
     function openSettingsMenu() {
       const html = '<div class="vt-menu-head">Picture &amp; sound</div>' +
         '<div class="vt-menu-row">Zoom to fill' +
           '<button class="vt-chip" data-zoom="fill">Fill</button>' +
           '<button class="vt-chip" data-zoom="reset">Reset</button></div>' +
-        '<div class="vt-menu-row">Night mode' +
+        // "Night mode" said nothing about what it does; the row levels a
+        // cinema mix so quiet dialogue is audible without the next explosion
+        // waking the house, and that is what people are looking for it under.
+        '<div class="vt-menu-row">Louder dialogue (night mode)' +
           '<button class="vt-chip" data-af="night">On</button>' +
           '<button class="vt-chip" data-af="off">Off</button></div>' +
         // Releases are routinely encoded with the wrong aspect flag, and
@@ -679,11 +1212,26 @@
           '<button class="vt-chip" data-aspect="2.35">2.35</button></div>' +
         '<div class="vt-menu-sep"></div>' +
         '<div class="vt-menu-head">Subtitles</div>' +
+        // Three fixed sizes rather than a nudge-by-a-tenth pair: people reach
+        // for "bigger" or "smaller", not for a precise scale, and a labelled
+        // S/M/L reads at a glance which one is on. Each is an absolute scale,
+        // so the current one lights up regardless of how it was reached.
         '<div class="vt-menu-row">Size' +
-          '<button class="vt-chip" data-subscale="-0.1">Smaller</button>' +
-          '<button class="vt-chip" data-subscale="0.1">Bigger</button>' +
-          '<button class="vt-chip" data-subscale="reset">Reset</button></div>' +
+          '<button class="vt-chip' + (subScale <= 0.85 ? ' on' : '') + '" data-subsize="0.8">S</button>' +
+          '<button class="vt-chip' + (subScale > 0.85 && subScale < 1.15 ? ' on' : '') + '" data-subsize="1">M</button>' +
+          '<button class="vt-chip' + (subScale >= 1.15 ? ' on' : '') + '" data-subsize="1.3">L</button></div>' +
+        // A translucent box behind the text, for a bright scene that washes out
+        // plain captions. backColor is an mpv ARGB string: semi-opaque black on,
+        // fully transparent off.
+        '<div class="vt-menu-row">Background' +
+          '<button class="vt-chip' + (subBack ? ' on' : '') + '" data-subback="1">On</button>' +
+          '<button class="vt-chip' + (subBack ? '' : ' on') + '" data-subback="0">Off</button></div>' +
         menuItem('Add a subtitle file…') +
+        '<div class="vt-menu-sep"></div>' +
+        '<div class="vt-menu-head">Playback</div>' +
+        // #18: when on, the Up Next card counts down and rolls into the next
+        // episode; when off, the card still appears but waits on Play now.
+        menuItem('Play next episode automatically', autoNext) +
         '<div class="vt-menu-sep"></div>' +
         menuItem('Take screenshot')
       openMenu('vt-settings', html, function (m) {
@@ -705,12 +1253,27 @@
           })
         })
         // Burned-in styling cannot be changed, but for a real subtitle track
-        // the size is the one thing people actually reach for.
-        m.querySelectorAll('[data-subscale]').forEach(function (b) {
+        // the size and a backing box are the two things people actually reach
+        // for. Both go through the one `subStyle` verb the engine exposes:
+        // `scale` is a number, `backColor` an mpv ARGB string.
+        m.querySelectorAll('[data-subsize]').forEach(function (b) {
           b.addEventListener('click', function () {
-            if (b.dataset.subscale === 'reset') subScale = 1
-            else subScale = Math.max(0.3, Math.min(3, subScale + Number(b.dataset.subscale)))
+            subScale = Number(b.dataset.subsize)
             send('subStyle', { scale: subScale })
+            // Relight the row without closing the menu, so a second size can be
+            // tried straight away.
+            m.querySelectorAll('[data-subsize]').forEach(function (o) {
+              o.classList.toggle('on', Number(o.dataset.subsize) === subScale)
+            })
+          })
+        })
+        m.querySelectorAll('[data-subback]').forEach(function (b) {
+          b.addEventListener('click', function () {
+            subBack = b.dataset.subback === '1'
+            send('subStyle', { backColor: subBack ? '#80000000' : '#00000000' })
+            m.querySelectorAll('[data-subback]').forEach(function (o) {
+              o.classList.toggle('on', (o.dataset.subback === '1') === subBack)
+            })
           })
         })
         const items = m.querySelectorAll('.vt-menu-item')
@@ -721,8 +1284,19 @@
             if (api && api.videoSubOpen) api.videoSubOpen().catch(function () {})
           })
         }
-        const shot = items[1]
-        if (shot) shot.addEventListener('click', function () { send('screenshot'); closeMenu() })
+        const auto = items[1]
+        if (auto) {
+          auto.addEventListener('click', function () {
+            toggleAutoNext()
+            // Relight the tick in place so the change is visible without
+            // reopening the menu.
+            auto.classList.toggle('on', autoNext)
+            const tick = auto.querySelector('.vt-menu-tick')
+            if (tick) tick.innerHTML = autoNext ? ICON.tick : ''
+          })
+        }
+        const shot = items[2]
+        if (shot) shot.addEventListener('click', function () { takeScreenshot(); closeMenu() })
       })
     }
 
@@ -751,21 +1325,29 @@
       const dur = Number(state && state.duration) || 0
       switch (hit.action) {
         case 'playPause': togglePlay(); break
-        case 'seek': seekBy(hit.arg); break
+        // Through the accumulator, not a blind relative jump: held arrows show
+        // the landing time in the seek bubble and commit one seek on release.
+        case 'seek': kbSeek(hit.arg); break
         case 'seekTo': if (dur) seekTo(dur * hit.arg); break
-        case 'volume': setVolume((Number(state && state.volume) || 0) + hit.arg); break
+        case 'volume':
+          setVolume((Number(state && state.volume) || 0) + hit.arg)
+          flashVolume()
+          break
         case 'mute': send('mute', { value: !(state && state.muted) }); break
         case 'speed': bumpSpeed(hit.arg); break
         case 'frameStep': send('frameStep', { frames: hit.arg }); break
         case 'fullscreen': toggleFullscreen(); break
         case 'subtitles': openTrackMenu('sub'); break
         case 'audioTrack': openTrackMenu('audio'); break
+        case 'stats': toggleStatsMenu(); break
         case 'next': if (onNext) onNext(); break
+        case 'prev': if (media && typeof media.onPrev === 'function') media.onPrev(); break
         case 'skip': {
           const seg = skipModel && skipModel.activeSegment(segments, Number(state && state.position) || 0)
           if (seg) doSkip(seg)
           break
         }
+        case 'screenshot': takeScreenshot(); break
         case 'exit':
           if (!$('vt-menu').classList.contains('hidden')) { closeMenu(); break }
           // Escape means "back out one level": leave fullscreen first, and only
@@ -849,6 +1431,10 @@
     }
 
     function noteActivity() {
+      // A person is here, so the "playing to an empty room" count starts over.
+      // This is the reset half of the #20 contract: three untouched
+      // auto-advances trigger the prompt, and any activity at all clears them.
+      autoAdvances = 0
       _applyIdle(false)
       if (idleTimer) { clearTimeout(idleTimer); idleTimer = null }
       if (!_idleEligible()) return
@@ -873,6 +1459,158 @@
     }
 
     // ── Seek interaction ────────────────────────────────────────────────────
+    // Keyboard seeking used to be a blind relative jump per keypress: holding
+    // an arrow fired ten seeks into a torrent that could satisfy none of them,
+    // with no indication of where playback would land. Held keys now accumulate
+    // one target, shown live in the same bubble the pointer gets, and the seek
+    // is sent once, a beat after the last press.
+    let kbTarget = null
+    let kbTimer = null
+    // Repeated arrow presses still batch into one seek, but the first press now
+    // commits after 150ms rather than 300ms — the batching window was the
+    // largest input latency on keyboard seeking, and 150ms still catches a
+    // normal key-repeat cadence.
+    const KB_COMMIT_MS = 150
+
+    // ── Seek-bar hover thumbnails (Player #5) ─────────────────────────────────
+    // The bubble already shows the landing time on hover and keyboard seek. When
+    // a preview frame is available for that position it goes above the time; when
+    // it is not — no API, a direct-URL play with no thumbnailer, or a frame still
+    // being generated — the bubble is exactly the time-only bubble it always was.
+    //
+    // Requests are throttled to ~4/s (the same rate the state stream and the
+    // torrent progress emit at): a pointer sweeping the track fires a request per
+    // pixel otherwise, and each is an IPC round-trip that may spawn an ffmpeg.
+    // The trailing edge always fires, so the frame under where the pointer
+    // stopped is the one asked for.
+    const THUMB_THROTTLE_MS = 250
+    let thumbLastAt = 0
+    let thumbTimer = null
+    let thumbPendingPos = null
+    // The bucket whose frame is currently painted, so an unchanged hover does not
+    // rebuild the <img> src every emit and flicker the picture.
+    let thumbShownKey = null
+
+    // The bubble's inner structure is built lazily the first time a thumb is
+    // shown, so a bubble that only ever shows time keeps its plain-text shape and
+    // the existing tests that read textContent keep working. Returns the time
+    // span the caller writes into, or null when the bubble is plain text.
+    function bubbleParts(bubble) {
+      if (!bubble) return null
+      if (bubble.__vtThumbImg) {
+        return { img: bubble.__vtThumbImg, time: bubble.__vtThumbTime }
+      }
+      return null
+    }
+
+    // Put a frame in the bubble, or clear it back to time-only. path is a
+    // filesystem path from main; it is shown via a file:// URL. A null/empty path
+    // hides the image and leaves the time alone.
+    function paintBubbleThumb(bubble, pathOrNull) {
+      if (!bubble) return
+      // Build the img+time scaffold once. Until a frame ever arrives the bubble
+      // stays a plain text node, which is what the time-only path and the
+      // pre-existing tests expect.
+      if (!bubble.__vtThumbImg && pathOrNull) {
+        const time = bubble.textContent
+        bubble.textContent = ''
+        const img = doc.createElement ? doc.createElement('img') : null
+        const span = doc.createElement ? doc.createElement('span') : null
+        if (!img || !span) return
+        img.className = 'vt-seek-thumb'
+        img.alt = ''
+        span.className = 'vt-seek-bubble-time'
+        span.textContent = time
+        bubble.classList && bubble.classList.add('has-thumb')
+        if (bubble.appendChild) { bubble.appendChild(img); bubble.appendChild(span) }
+        bubble.__vtThumbImg = img
+        bubble.__vtThumbTime = span
+      }
+      const parts = bubbleParts(bubble)
+      if (!parts) return
+      if (pathOrNull) {
+        // file:// so Chromium loads it off disk; the path is main's, not user
+        // input, but encode it so a space or bracket in the cache path is valid.
+        const url = 'file://' + String(pathOrNull).split('/').map(encodeURIComponent).join('/')
+        if (parts.img.getAttribute('src') !== url) parts.img.setAttribute('src', url)
+        parts.img.hidden = false
+        bubble.classList && bubble.classList.add('has-thumb')
+      } else {
+        parts.img.hidden = true
+        bubble.classList && bubble.classList.remove('has-thumb')
+      }
+    }
+
+    // Write the time into the bubble whether or not it has grown a thumb slot.
+    function setBubbleTime(bubble, text) {
+      if (!bubble) return
+      const parts = bubbleParts(bubble)
+      if (parts) parts.time.textContent = text
+      else bubble.textContent = text
+    }
+
+    // Ask main for the frame at a position, throttled. Guarded on the API being
+    // present at all, so the deck runs unchanged where videoThumb is not exposed
+    // (an older preload, a test harness that does not stub it).
+    function requestThumb(bubble, positionSec) {
+      if (!bubble) return
+      if (!api || typeof api.videoThumb !== 'function') return
+      thumbPendingPos = positionSec
+      const fire = function () {
+        thumbLastAt = (typeof Date !== 'undefined' ? Date.now() : 0)
+        const pos = thumbPendingPos
+        api.videoThumb({ position: pos }).then(function (res) {
+          // The bubble was hidden (pointer left) while this was in flight: drop
+          // the answer rather than painting into a bubble nobody is looking at.
+          if (thumbPendingPos == null) return
+          const p = res && res.ok ? res.path : null
+          // A null answer leaves whatever frame is already up in place — the
+          // previous bucket's frame is a better preview than none while the new
+          // one generates. A path repaints only when it names a new frame.
+          if (p && p !== thumbShownKey) { thumbShownKey = p; paintBubbleThumb(bubble, p) }
+        }).catch(function () { /* a hover must never surface an error */ })
+      }
+      const nowMs = (typeof Date !== 'undefined' ? Date.now() : 0)
+      const since = nowMs - thumbLastAt
+      if (since >= THUMB_THROTTLE_MS) { fire(); return }
+      if (thumbTimer) return
+      thumbTimer = setTimeout(function () { thumbTimer = null; fire() }, THUMB_THROTTLE_MS - since)
+    }
+
+    // Reset the thumb state when the bubble is hidden, so the next hover starts
+    // clean rather than flashing the last frame from the previous hover.
+    function clearThumbState(bubble) {
+      thumbPendingPos = null
+      thumbShownKey = null
+      if (thumbTimer) { clearTimeout(thumbTimer); thumbTimer = null }
+      if (bubble) paintBubbleThumb(bubble, null)
+    }
+
+    function kbSeek(delta) {
+      const dur = Number(state && state.duration) || 0
+      // No duration means no bar to aim on; the blind jump is all there is.
+      if (!dur) { seekBy(delta); return }
+      const from = kbTarget != null ? kbTarget : (Number(state && state.position) || 0)
+      kbTarget = Math.max(0, Math.min(dur, from + delta))
+      const bubble = $('vt-seek-bubble')
+      if (bubble) {
+        bubble.hidden = false
+        setBubbleTime(bubble, fmtTime(kbTarget))
+        bubble.style.left = ((kbTarget / dur) * 100) + '%'
+        // Keyboard seek gets the same preview the pointer does.
+        requestThumb(bubble, kbTarget)
+      }
+      paintSeek(kbTarget, dur)
+      clearTimeout(kbTimer)
+      kbTimer = setTimeout(function () {
+        kbTimer = null
+        const target = kbTarget
+        kbTarget = null
+        if (bubble) { bubble.hidden = true; clearThumbState(bubble) }
+        if (target != null) seekTo(target)
+      }, KB_COMMIT_MS)
+    }
+
     function seekFraction(clientX) {
       const track = doc.querySelector('#vt-seek .vt-seek-track')
       if (!track) return 0
@@ -889,12 +1627,23 @@
         const dur = Number(state && state.duration) || 0
         if (!dur || !bubble) return
         const f = seekFraction(e.clientX)
+        const at = dur * f
         bubble.hidden = false
-        bubble.textContent = fmtTime(dur * f)
+        setBubbleTime(bubble, fmtTime(at))
         bubble.style.left = (f * 100) + '%'
-        if (dragging) paintSeek(dur * f, dur)
+        // A preview frame for where the pointer is, throttled inside requestThumb.
+        requestThumb(bubble, at)
+        if (dragging) {
+          // The fill moves instantly (local paint); the picture follows via a
+          // throttled keyframe seek so the drag feels live instead of frozen
+          // until release.
+          paintSeek(at, dur)
+          scrubSeek(at)
+        }
       })
-      seek.addEventListener('pointerleave', function () { if (bubble) bubble.hidden = true })
+      seek.addEventListener('pointerleave', function () {
+        if (bubble) { bubble.hidden = true; clearThumbState(bubble) }
+      })
 
       seek.addEventListener('pointerdown', function (e) {
         const dur = Number(state && state.duration) || 0
@@ -906,15 +1655,17 @@
       seek.addEventListener('pointerup', function (e) {
         if (!dragging) return
         dragging = false
+        // Cancel any pending keyframe scrub, then land exactly where released.
+        scrubEnd()
         const dur = Number(state && state.duration) || 0
         if (dur) seekTo(dur * seekFraction(e.clientX))
       })
-      seek.addEventListener('pointercancel', function () { dragging = false })
+      seek.addEventListener('pointercancel', function () { dragging = false; scrubEnd() })
 
       // A slider must be operable from the keyboard, not only the pointer.
       seek.addEventListener('keydown', function (e) {
-        if (e.key === 'ArrowLeft') { seekBy(-10); e.preventDefault(); e.stopPropagation() }
-        if (e.key === 'ArrowRight') { seekBy(10); e.preventDefault(); e.stopPropagation() }
+        if (e.key === 'ArrowLeft') { kbSeek(-10); e.preventDefault(); e.stopPropagation() }
+        if (e.key === 'ArrowRight') { kbSeek(10); e.preventDefault(); e.stopPropagation() }
         if (e.key === 'Home') { seekTo(0); e.preventDefault(); e.stopPropagation() }
       })
     }
@@ -928,18 +1679,44 @@
       // control on the mini player, so the destructive action is never the
       // one you hit reflexively on the way out.
       $('vt-back')?.addEventListener('click', minimise)
+      // The same real stop the mini player has, now in the deck too: it was
+      // only reachable after minimising, so finishing a film meant leaving the
+      // theatre first just to stop it.
+      $('vt-stop')?.addEventListener('click', close)
       $('vmini-open')?.addEventListener('click', restore)
       $('vmini-stop')?.addEventListener('click', close)
       $('vmini-play')?.addEventListener('click', togglePlay)
       $('vt-next')?.addEventListener('click', function () { if (onNext) onNext() })
+      $('vt-prev')?.addEventListener('click', function () {
+        if (media && typeof media.onPrev === 'function') media.onPrev()
+      })
       $('vt-mute')?.addEventListener('click', function () { send('mute', { value: !(state && state.muted) }) })
       $('vt-vol')?.addEventListener('input', function (e) { setVolume(Number(e.target.value)) })
+      // Clicking the duration flips it to time-remaining and back — the glance
+      // that answers "how much is left tonight" without doing the arithmetic.
+      $('vt-dur')?.addEventListener('click', toggleTimeMode)
       $('vt-subs')?.addEventListener('click', function () { openTrackMenu('sub') })
       $('vt-audio')?.addEventListener('click', function () { openTrackMenu('audio') })
       $('vt-chapters')?.addEventListener('click', openChapterMenu)
       $('vt-speed')?.addEventListener('click', openSpeedMenu)
+      $('vt-stats')?.addEventListener('click', toggleStatsMenu)
+      $('vt-shot')?.addEventListener('click', takeScreenshot)
       $('vt-settings')?.addEventListener('click', openSettingsMenu)
       $('vt-full')?.addEventListener('click', toggleFullscreen)
+      // The wheel works anywhere over the deck, not only on the 88px slider:
+      // volume is the thing people reach for mid-scene, and the pointer is
+      // rarely parked on the one control that takes it.
+      $('vt-deck')?.addEventListener('wheel', function (e) {
+        if (typeof e.preventDefault === 'function') e.preventDefault()
+        const step = (Number(e.deltaY) || 0) > 0 ? -5 : 5
+        setVolume((Number(state && state.volume) || 0) + step)
+        flashVolume()
+        render()
+      })
+      // Hovering the Up Next card holds its countdown; leaving resumes it.
+      // Bound on the box, which survives every innerHTML repaint of the card.
+      $('vt-upnext')?.addEventListener('pointerenter', function () { upNextHover = true })
+      $('vt-upnext')?.addEventListener('pointerleave', function () { upNextHover = false })
       bindSeek()
       bindIdle()
       doc.addEventListener('keydown', onKey)
@@ -967,16 +1744,41 @@
       // Hidden for a film, or for the last episode of the last season — a
       // control that cannot do anything is worse than no control.
       const next = $('vt-next'); if (next) next.hidden = !onNext || media.hasNext === false
+      // Previous mirrors it: the renderer passes media.onPrev only when there
+      // is an episode before this one, so absence means hide, not disable.
+      const prev = $('vt-prev'); if (prev) prev.hidden = typeof media.onPrev !== 'function'
       segments = []
       prefs = media.prefs || {}
+      // A new file means a fresh chance to apply the remembered language, and
+      // no pick has been made in it yet.
+      langApplied = false
+      langChosen = { sub: false, audio: false }
       lastSkipShown = null
       upNextDismissed = false
+      upNextHover = false
+      // The still-watching prompt belongs to whatever card was on screen; a
+      // new file starts without it. The autoAdvances count is deliberately NOT
+      // reset here — an auto-advance re-opens the player through this very path,
+      // and zeroing it would mean the "playing to an empty room" streak could
+      // never reach three. Only real activity (noteActivity) or a deliberate
+      // Play now clears it.
+      stillAsking = false
+      // A new file has its own chapters and its own seek target.
+      lastChapterSig = ''
+      const ticks = $('vt-seek-chapters'); if (ticks) ticks.innerHTML = ''
+      kbTarget = null
+      clearTimeout(kbTimer)
+      cancelAutoSkip()
       stopUpNext()
       clearPack()
       const upBox = $('vt-upnext')
       if (upBox) { upBox.hidden = true; upBox.innerHTML = '' }
       syncStrip()
       delayMs = { subDelay: 0, audioDelay: 0 }
+      // Subtitle look is per-file too: a new release starts at the default
+      // size with no backing box until the viewer asks for one.
+      subScale = 1
+      subBack = false
       setVideoActive(true)
       setStageMessage('<div class="spin"></div><div>Starting…</div>')
       if (!unsubscribe && api && api.onVideoState) {
@@ -1031,11 +1833,23 @@
     }
 
     // Stopping for real: tears everything down and tells the caller.
+    //
+    // onExit fires while the state is still readable: the renderer's exit
+    // handler persists the final watch position by reading _state(), so
+    // nulling first silently threw the position away on every Stop. The guard
+    // keeps an exit handler that finds its way back into close() from running
+    // the teardown twice, and the finally nulls exactly once even if the
+    // handler throws.
+    let closing = false
     function close() {
+      if (closing) return
+      closing = true
       cancelAutoSkip()
       stopUpNext()
       stopIdle()
       closeMenu()
+      // The held rows belong to this playback; the next one starts flat.
+      releaseHeld()
       if (isFullscreen) toggleFullscreen(false)
       const root = $('vtheatre')
       if (root) root.classList.add('hidden')
@@ -1043,13 +1857,15 @@
       if (mini) mini.classList.add('hidden')
       minimised = false
       if (unsubscribe) { unsubscribe(); unsubscribe = null }
-      state = null
-      segments = []
       // Only on a real stop: minimising keeps playing, so the music bar stays
       // out of the way until the video is actually finished with.
       setVideoActive(false)
       setSurfaceVisible(false)
-      onExit()
+      try { onExit() } finally {
+        state = null
+        segments = []
+        closing = false
+      }
     }
 
     // Marks the app as having a video open, which collapses the music bar to a
@@ -1092,6 +1908,8 @@
       // Relayed from mpv when the picture is double-clicked: the click never
       // reaches the page, so the gesture has to arrive this way.
       toggleFullscreen: toggleFullscreen,
+      // Relayed from mpv when the picture is single-clicked, same reason.
+      togglePlay: togglePlay,
       // Relayed from mpv: the pointer moved over the picture, which the page
       // itself cannot see because the video window takes the event.
       noteActivity: noteActivity,

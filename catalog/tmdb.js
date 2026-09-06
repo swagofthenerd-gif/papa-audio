@@ -4,6 +4,11 @@
 // accepts an injectable `fetchFn` so tests run without the network.
 
 const TMDB_BASE = 'https://api.themoviedb.org/3'
+// Abort a hung request rather than letting a lookup wait forever. A dead socket
+// otherwise stalls the detail page (or a catalog row) indefinitely; the same
+// 10s ceiling the Jikan fallback uses (catalog/jikan.js) keeps the two catalog
+// paths consistent.
+const REQUEST_TIMEOUT_MS = 10000
 const IMG_BASE = 'https://image.tmdb.org/t/p/w500'
 // Hero art is sized differently from a poster grid: a title logo is drawn at
 // roughly a third of the hero width, a hero backdrop fills it. w500 posters
@@ -461,6 +466,23 @@ function normalizeSeason(raw) {
   }
 }
 
+// The next unaired episode, as TMDB reports it at the top level of a TV detail
+// response (`next_episode_to_air`). No append is needed — the field rides the
+// same detail request the show page already makes — so the airing shelf and
+// calendar (App #25/#26) read it off the normalised detail rather than from a
+// dedicated endpoint. air_date is a "YYYY-MM-DD" day string; the merge layer in
+// main.js turns it into an epoch. A show that has ended carries null here.
+function normalizeNextEpisode(raw) {
+  const n = raw && raw.next_episode_to_air
+  if (!n || !n.air_date) return null
+  return {
+    seasonNumber: n.season_number ?? null,
+    episodeNumber: n.episode_number ?? null,
+    name: n.name ?? null,
+    airDate: n.air_date ?? null,
+  }
+}
+
 function normalizeTv(raw) {
   raw = raw || {}
   const entry = {
@@ -489,6 +511,10 @@ function normalizeTv(raw) {
     // TV certification comes from content_ratings, not release_dates; the
     // helper reads either shape (see video-format.certification).
     certification: certificationFor(raw.content_ratings, 'US'),
+    // The next episode to air, when TMDB reports one (App #25/#26). Present on
+    // detail responses only; a trending/search payload has no such field and so
+    // this is simply null there, exactly as before.
+    nextEpisode: normalizeNextEpisode(raw),
     ..._extras(raw, 'tv'),
     ..._appended(raw, raw.original_language),
   }
@@ -645,6 +671,24 @@ function buildPersonCreditsUrl(personId) {
   return `${TMDB_BASE}/person/${personId}/combined_credits`
 }
 
+// The person and their credits in one round-trip. The filmography page needs a
+// name, a photo and a line of biography to head itself with — fetching
+// /person/{id} with the credits appended costs the same as the credits alone.
+function buildPersonUrl(personId) {
+  return `${TMDB_BASE}/person/${personId}?append_to_response=combined_credits`
+}
+
+// TMDB biographies run to many paragraphs; the header wants one line, not a
+// life story. First paragraph, cut at a sentence end once it is long enough.
+function shortBio(text) {
+  const para = String(text == null ? '' : text).split(/\n/)[0].trim()
+  if (!para) return null
+  if (para.length <= 360) return para
+  const cut = para.slice(0, 360)
+  const stop = cut.lastIndexOf('. ')
+  return stop > 80 ? cut.slice(0, stop + 1) : cut.trimEnd() + '…'
+}
+
 function buildCollectionUrl(collectionId) {
   return `${TMDB_BASE}/collection/${collectionId}`
 }
@@ -676,14 +720,24 @@ function buildSeasonUrl(tvId, n) {
   return `${TMDB_BASE}/tv/${tvId}/season/${n}`
 }
 
-function createTmdbCatalog({ apiKey, fetchFn } = {}) {
+function createTmdbCatalog({ apiKey, fetchFn, timeoutMs = REQUEST_TIMEOUT_MS } = {}) {
   const fetcher = fetchFn || fetch
 
   async function _fetch(url) {
     const sep = url.includes('?') ? '&' : '?'
     const key = typeof apiKey === 'function' ? apiKey() : apiKey
     const full = key ? `${url}${sep}api_key=${key}` : url
-    const res = await fetcher(full)
+    // AbortController bounds the request so a hung socket cannot wedge the
+    // catalog. Not every injected fetcher honours `signal`, so the timer is
+    // cleared regardless of how the request settles.
+    const controller = typeof AbortController === 'function' ? new AbortController() : null
+    const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null
+    let res
+    try {
+      res = await fetcher(full, controller ? { signal: controller.signal } : undefined)
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
     if (!res || !res.ok) {
       const status = res && res.status != null ? res.status : 'unknown'
       if (status === 401) throw new Error('Invalid or missing TMDB API key (401)')
@@ -731,9 +785,13 @@ function createTmdbCatalog({ apiKey, fetchFn } = {}) {
       return (data.results || []).map(normalizePerson).filter(Boolean)
     },
     async personCredits(personId) {
-      const data = await _fetch(buildPersonCreditsUrl(personId))
-      const cast = Array.isArray(data.cast) ? data.cast : []
-      const crew = Array.isArray(data.crew) ? data.crew : []
+      const data = await _fetch(buildPersonUrl(personId))
+      // /person/{id} nests the credits under combined_credits; the bare
+      // combined_credits endpoint (and anything cached from it) has cast and
+      // crew at the top level. Read either, so an old cache stays valid.
+      const cc = data.combined_credits || data
+      const cast = Array.isArray(cc.cast) ? cc.cast : []
+      const crew = Array.isArray(cc.crew) ? cc.crew : []
       // One person can appear many times on the same title (writer and
       // director, or a recurring role); the filmography wants each title once.
       const seen = new Set()
@@ -746,7 +804,19 @@ function createTmdbCatalog({ apiKey, fetchFn } = {}) {
         seen.add(key)
         out.push(type === 'tv' ? normalizeTv(raw) : normalizeMovie(raw))
       }
-      return out.sort((a, b) => (Number(b.year) || 0) - (Number(a.year) || 0))
+      out.sort((a, b) => (Number(b.year) || 0) - (Number(a.year) || 0))
+      // Carried on the array itself, so the IPC handler that caches and
+      // returns `credits` needs no change: structured clone keeps an array's
+      // own properties, and `credits.length` still gates the cache.
+      if (data.name) {
+        out.person = {
+          id: data.id ?? null,
+          name: data.name,
+          photo: _image(data.profile_path),
+          bio: shortBio(data.biography),
+        }
+      }
+      return out
     },
     async collection(collectionId) {
       const data = await _fetch(buildCollectionUrl(collectionId))
@@ -787,12 +857,15 @@ module.exports = {
   buildGenresUrl,
   buildPersonSearchUrl,
   buildPersonCreditsUrl,
+  buildPersonUrl,
+  shortBio,
   buildCollectionUrl,
   normalizePerson,
   normalizeMovie,
   normalizeTv,
   normalizeSeason,
   normalizeEpisode,
+  normalizeNextEpisode,
   normalizeSearchResult,
   buildTrendingUrl,
   buildPopularUrl,
@@ -802,4 +875,5 @@ module.exports = {
   createTmdbCatalog,
   MOVIE_APPEND,
   TV_APPEND,
+  REQUEST_TIMEOUT_MS,
 }

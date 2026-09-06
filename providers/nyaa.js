@@ -16,7 +16,8 @@
 // machine-generated, so that is safe here — but the parser is deliberately
 // defensive: anything without a hash is dropped.
 
-const { parseQuality, parseAudioLayout, parseDub, parseSub, magnetFromHash } = require('./quality')
+const { parseQuality, parseAudioLayout, parseDub, parseSub, magnetFromHash, parseSizeBytes } = require('./quality')
+const { raceMirrors } = require('./mirror-race')
 
 const DEFAULT_BASE_URLS = [
   'https://nyaa.si',
@@ -156,11 +157,7 @@ function isPack(title, episode) {
 // difference between finding a dub and hoping one turns up in a general search.
 const DUB_QUALIFIERS = ['Dual Audio', 'Dub']
 
-function matchesEpisode(title, episode) {
-  if (episode == null || episode === '') return true
-  const n = Number(episode)
-  if (!Number.isFinite(n)) return true
-  const t = String(title || '')
+function _matchesEpisodeNumber(t, n) {
   const pad = String(n).padStart(2, '0')
   // The SxxEyy form has a digit immediately before the E, so it can never
   // satisfy the separator-led pattern below and needs its own check.
@@ -169,12 +166,40 @@ function matchesEpisode(title, episode) {
   // never matches inside 109 or 190.
   const re = new RegExp(`(?:^|[\\s\\-_\\[(.])(?:e|ep|episode\\s*)?0*${n}(?:v\\d)?(?:$|[\\s\\-_\\])."'])`, 'i')
   if (re.test(t)) return true
-  if (t.includes(` ${pad} `)) return true
+  return t.includes(` ${pad} `)
+}
+
+// The season a pack explicitly claims to be, or null when it does not say.
+// SxxEyy titles are single episodes, not packs, and are excluded by isPack
+// before this is consulted.
+function _packSeason(title) {
+  const m = /\b(?:season[\s._-]*0*(\d{1,3})|s0*(\d{1,3}))\b(?![\s._-]*e)/i.exec(String(title || ''))
+  return m ? Number(m[1] || m[2]) : null
+}
+
+// Long-running anime is numbered absolutely at least as often as seasonally
+// ("One Piece - 1071", never "S20E10" on nyaa), so when the caller supplies
+// the absolute number a release naming either one is the requested episode.
+function matchesEpisode(title, episode, { season = null, absoluteEpisode = null } = {}) {
+  if (episode == null || episode === '') return true
+  const n = Number(episode)
+  if (!Number.isFinite(n)) return true
+  const t = String(title || '')
+  if (_matchesEpisodeNumber(t, n)) return true
+  const abs = Number(absoluteEpisode)
+  if (Number.isFinite(abs) && abs >= 1 && _matchesEpisodeNumber(t, abs)) return true
   // A pack spanning the episode is a legitimate source for it. Dubs are
   // released almost exclusively this way, so excluding packs excluded nearly
   // every dub there is. Safe now that the streamer selects the episode's file
   // by name and deletes the cache when the stream ends.
-  return isPack(t, n)
+  if (!isPack(t, n) && !(Number.isFinite(abs) && abs >= 1 && isPack(t, abs))) return false
+  // But a pack explicitly labelled some OTHER season cannot contain the
+  // episode. Unlabelled "Complete"/"Batch" packs stay accepted as before.
+  // Number(null) is 0, so the missing-season case must be caught first.
+  const s = season == null || season === '' ? NaN : Number(season)
+  const claimed = _packSeason(t)
+  if (claimed != null && Number.isFinite(s) && claimed !== s) return false
+  return true
 }
 
 function normalizeItem(raw, { preferDub = false, episode = null } = {}) {
@@ -200,6 +225,8 @@ function normalizeItem(raw, { preferDub = false, episode = null } = {}) {
     isPack: pack,
     audioLayout,
     seeds,
+    seeders: seeds,
+    sizeBytes: parseSizeBytes(raw.size),
     sub: !dub || parseSub(title),
     dub,
     // Not part of the entry contract the ranker reads — used only to order
@@ -208,9 +235,25 @@ function normalizeItem(raw, { preferDub = false, episode = null } = {}) {
   }
 }
 
-async function tryMirror(baseUrl, query, fetcher) {
+// The mirror that answered most recently leads the race on the next query.
+// Mirrors are raced in parallel now, so this is a tiebreak rather than a
+// timeout-saver: its request goes out first, which is what decides a race
+// between two healthy mirrors. Module-level on purpose: remembered for the
+// session, never persisted.
+let _lastGoodMirror = null
+
+function _orderMirrors(urls) {
+  if (!_lastGoodMirror || !urls.includes(_lastGoodMirror)) return urls
+  return [_lastGoodMirror, ...urls.filter(u => u !== _lastGoodMirror)]
+}
+
+function _resetMirrorHealth() {
+  _lastGoodMirror = null
+}
+
+async function tryMirror(baseUrl, query, fetcher, signal) {
   try {
-    const res = await fetcher(buildFeedUrl(baseUrl, query))
+    const res = await fetcher(buildFeedUrl(baseUrl, query), { signal })
     if (!res || !res.ok) return null
     const text = await res.text()
     if (typeof text !== 'string' || !text.includes('<item')) return null
@@ -237,7 +280,9 @@ function createNyaaProvider({ fetchFn, baseUrls = DEFAULT_BASE_URLS, maxResults 
       for (const i of items) {
         if (!i || !i.infoHash) continue
         if (seenHash.has(i.infoHash)) continue
-        if (!matchesEpisode(i.title, request.episode)) continue
+        if (!matchesEpisode(i.title, request.episode, {
+          season: request.season, absoluteEpisode: request.absoluteEpisode,
+        })) continue
         const entry = normalizeItem(i, { preferDub, episode: request.episode })
         if (!entry) continue
         seenHash.add(i.infoHash)
@@ -250,9 +295,15 @@ function createNyaaProvider({ fetchFn, baseUrls = DEFAULT_BASE_URLS, maxResults 
     // general search is dominated by subs, so without this a dub sits behind
     // twenty subbed releases even when one exists.
     const queries = []
+    const abs = Number(request.absoluteEpisode)
     for (const candidate of candidates) {
       if (preferDub) for (const q of DUB_QUALIFIERS) queries.push(`${candidate} ${q}`)
       queries.push(buildQuery(candidate, request.episode))
+      // Long-running shows are indexed by absolute number ("One Piece 1071"),
+      // so the absolute form is a distinct query, not a substitute.
+      if (Number.isFinite(abs) && abs >= 1 && abs !== Number(request.episode)) {
+        queries.push(buildQuery(candidate, abs))
+      }
     }
 
     // Each query is tried in turn and the first that yields anything wins.
@@ -260,11 +311,12 @@ function createNyaaProvider({ fetchFn, baseUrls = DEFAULT_BASE_URLS, maxResults 
     // while still rescuing the shows whose English title matches nothing.
     for (const query of queries) {
       if (!query) continue
-      let items = null
-      for (const baseUrl of urls) {
-        items = await tryMirror(baseUrl, query, fetcher)
-        if (items) break
-      }
+      // All mirrors race per query; the first usable feed wins and the rest
+      // are aborted.
+      const won = await raceMirrors(_orderMirrors(urls), (baseUrl, signal) =>
+        tryMirror(baseUrl, query, fetcher, signal))
+      if (won) _lastGoodMirror = won.baseUrl
+      const items = won ? won.result : null
       if (!items || !items.length) continue
       const entries = collect(items)
       if (!entries.length) continue
@@ -294,4 +346,5 @@ module.exports = {
   matchesEpisode,
   normalizeItem,
   createNyaaProvider,
+  _resetMirrorHealth,
 }

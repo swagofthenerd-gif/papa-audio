@@ -98,12 +98,15 @@ test('log lines are buffered, not appended synchronously one at a time', () => {
   // A burst — a failing loop, repeated 429s, a bad scan — became a burst of
   // blocking disk I/O on the main thread.
   assert.match(CODE, /fs\.promises\.appendFile/, 'the timed flush is the async one')
-  // The only synchronous append left is the one on the way out, where the
-  // process is exiting and there is no later chance to write.
+  // The only synchronous appends left are the ones with no later chance to
+  // write: the log flush on the way out, and the crash reporter — a crashing
+  // process may be gone before an async append lands, and losing the one note
+  // that explains the crash defeats the reporter's whole purpose.
   const syncAppends = [...CODE.matchAll(/fs\.appendFileSync/g)]
-  assert.strictEqual(syncAppends.length, 1, 'exactly one, in flushLogSync')
-  const around = CODE.slice(syncAppends[0].index - 400, syncAppends[0].index)
-  assert.match(around, /function flushLogSync/)
+  assert.strictEqual(syncAppends.length, 2, 'exactly two: flushLogSync and the crash reporter')
+  const contexts = syncAppends.map(m => CODE.slice(m.index - 900, m.index))
+  assert.ok(contexts.some(c => /function flushLogSync/.test(c)), 'one lives in flushLogSync')
+  assert.ok(contexts.some(c => /_appendCrashLog/.test(c)), 'one lives in the crash reporter')
 })
 
 test('the log has a size cap as well as an age cap', () => {

@@ -43,6 +43,7 @@
     SUBTITLES: 'subtitles',
     AUDIO_TRACK: 'audioTrack',
     SKIP: 'skip',
+    SCREENSHOT: 'screenshot',
     NEXT: 'next',
     PREV: 'prev',
     THEATRE: 'theatre',
@@ -97,7 +98,9 @@
       case 'm': return { action: ACTIONS.MUTE }
       case 'c': return { action: ACTIONS.SUBTITLES }
       case 'v': return { action: ACTIONS.AUDIO_TRACK }
-      case 's': return { action: ACTIONS.SKIP }
+      // Plain s skips the active segment; Shift+S grabs a screenshot (§48). The
+      // two never collide because one needs the modifier and the other refuses it.
+      case 's': return shift ? { action: ACTIONS.SCREENSHOT } : { action: ACTIONS.SKIP }
       case 'n': return { action: ACTIONS.NEXT }
       case 'p': return { action: ACTIONS.PREV }
       case 't': return { action: ACTIONS.THEATRE }

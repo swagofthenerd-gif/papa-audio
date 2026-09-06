@@ -114,6 +114,33 @@ test('a successful write round-trips', () => {
   assert.deepStrictEqual(L.readObject('k'), { a: [1, 2] })
 })
 
+// ── Raw text access, for video-store's corruption quarantine ─────────────────
+
+test('readRaw hands back the stored text verbatim, corrupt or not', () => {
+  const { L } = load({ data: { k: '{not json' } })
+  assert.strictEqual(L.readRaw('k'), '{not json')
+  assert.strictEqual(L.readRaw('missing'), null)
+})
+
+test('readRaw with storage disabled is null, not a throw', () => {
+  const { L } = load({ throwOnRead: true })
+  assert.strictEqual(L.readRaw('k'), null)
+})
+
+test('writeRaw stores text without JSON encoding', () => {
+  const { L, data } = load()
+  assert.strictEqual(L.writeRaw('k', '{truncated blob'), true)
+  // Byte-for-byte: no stringify wrapping, so a quarantined blob stays
+  // exactly what was on disk.
+  assert.strictEqual(data.get('k'), '{truncated blob')
+})
+
+test('a failed writeRaw is reported and returns false, not thrown', () => {
+  const { L, logged } = load({ throwOnWrite: true })
+  assert.strictEqual(L.writeRaw('k', 'text'), false)
+  assert.match(logged[0], /could not save k/)
+})
+
 // ── push, which replaces read-push-slice-write at four call sites ────────────
 
 test('push appends and caps, keeping the newest', () => {

@@ -4,7 +4,7 @@ const assert = require('node:assert')
 const {
   DEFAULT_BASE_URLS, buildSearchUrl, buildQueries, matchesTitle, matchesYear,
   matchesEpisode, matchesAnimeEpisode, requestTitles, isSentinel,
-  normalizeResult, createApibayProvider,
+  normalizeResult, createApibayProvider, _resetMirrorHealth,
 } = require('../providers/apibay')
 
 const HASH = i => String(i).padStart(40, 'a')
@@ -64,6 +64,38 @@ test('matchesAnimeEpisode handles bare numbers and batch ranges', () => {
   assert.strictEqual(matchesAnimeEpisode('[Group] Show - 19 (1080p)', 9), false)
   assert.strictEqual(matchesAnimeEpisode('[Group] Show 01-24 Batch', 9), true)
   assert.strictEqual(matchesAnimeEpisode('[Group] Show Complete', 9), true)
+})
+
+// Audit #3: a season known without a usable episode number must filter by
+// season, not fall through to accept-all. Before the fix, a non-numeric episode
+// accepted every result, flooding the sources list with other seasons.
+test('matchesEpisode filters by season alone when the episode is not numeric', () => {
+  // The requested season is accepted through any of its forms…
+  assert.strictEqual(matchesEpisode('Show.S02E05.1080p', 2, null), true, 'SxxEyy in season 2')
+  assert.strictEqual(matchesEpisode('Show 2x05 720p', 2, null), true, '2x05 in season 2')
+  assert.strictEqual(matchesEpisode('Show.Season.2.Complete', 2, null), true, 'season-2 pack')
+  // …and the wrong season is rejected rather than accepted wholesale.
+  assert.strictEqual(matchesEpisode('Show.S01E05.1080p', 2, ''), false, 'wrong season rejected')
+  assert.strictEqual(matchesEpisode('Show.Season.3.Complete', 2, undefined), false, 'wrong-season pack rejected')
+  // A movie request (neither number) still accepts everything.
+  assert.strictEqual(matchesEpisode('Some Movie 2020', null, null), true, 'movie request accepts all')
+})
+
+// Audit #4: a stated range is authoritative in both directions. A pack labelled
+// "Batch"/"Complete" whose stated range excludes the episode must be rejected —
+// the range decides, not the keyword. (Ported from nyaa's isPack logic.)
+test('matchesAnimeEpisode: a stated range excluding the episode is rejected despite Batch/Complete', () => {
+  // Range excludes 20 → reject even with the batch keyword present.
+  assert.strictEqual(matchesAnimeEpisode('[Group] Show 01-12 Batch', 20), false, 'range 01-12 excludes ep 20')
+  assert.strictEqual(matchesAnimeEpisode('[Group] Show 01~12 Complete', 20), false, 'range 01~12 excludes ep 20')
+  // Range spans 05 → accepted (the range decides in its favour).
+  assert.strictEqual(matchesAnimeEpisode('[Group] Show 01-12 Batch', 5), true, 'range 01-12 spans ep 5')
+  // No stated range → a bare Batch/Complete stays accepted (the label is the evidence).
+  assert.strictEqual(matchesAnimeEpisode('[Group] Show Batch', 20), true, 'bare batch, no range, accepted')
+  assert.strictEqual(matchesAnimeEpisode('[Group] Show Complete', 20), true, 'bare complete, no range, accepted')
+  // The absolute number rescues a range that spans it even if the plain one is out.
+  assert.strictEqual(matchesAnimeEpisode('[Group] Show 1001-1100 Batch', 12, { absoluteEpisode: 1050 }), true,
+    'absolute number 1050 lies inside the stated range')
 })
 
 test('requestTitles prefers romaji and de-duplicates', () => {
@@ -184,6 +216,64 @@ test('non-video requests and empty titles are declined without a request', async
   assert.deepStrictEqual(await provider({ type: 'music', title: 'X' }), [])
   assert.deepStrictEqual(await provider({ type: 'movie', title: '' }), [])
   assert.strictEqual(called, false)
+})
+
+// A bare prefix match let a token claim the tail of a longer word: searching
+// for "Her" matched "Another Movie" because "another " ends in "her ".
+test('matchesTitle requires whole words, not word tails', () => {
+  assert.strictEqual(matchesTitle('Another.Movie.2020.1080p', 'Her'), false)
+  assert.strictEqual(matchesTitle('Her.2013.1080p.BluRay', 'Her'), true)
+  assert.strictEqual(matchesTitle('Mother.2017.1080p', 'Her'), false)
+})
+
+// A pack labelled some OTHER season cannot contain the episode, however loudly
+// it says "batch". Unlabelled packs stay accepted: the label is the evidence.
+test('an anime pack labelled a different season is rejected when the season is known', () => {
+  assert.strictEqual(matchesAnimeEpisode('[G] Show Season 2 Batch', 5, { season: 1 }), false)
+  assert.strictEqual(matchesAnimeEpisode('[G] Show Season 1 Batch', 5, { season: 1 }), true)
+  assert.strictEqual(matchesAnimeEpisode('[G] Show Complete', 5, { season: 1 }), true)
+  // Without a known season the label proves nothing either way.
+  assert.strictEqual(matchesAnimeEpisode('[G] Show Season 2 Batch', 5), true)
+})
+
+// Long-running shows are indexed by absolute number ("One Piece 1071"), so a
+// release naming either the seasonal or the absolute number is the episode.
+test('matchesAnimeEpisode accepts the absolute number when the caller supplies it', () => {
+  assert.strictEqual(matchesAnimeEpisode('[G] Show - 64 (1080p)', 12, { absoluteEpisode: 64 }), true)
+  assert.strictEqual(matchesAnimeEpisode('[G] Show - 64 (1080p)', 12), false)
+  assert.strictEqual(matchesAnimeEpisode('[G] Show - 12 (1080p)', 12, { absoluteEpisode: 64 }), true)
+  assert.strictEqual(matchesAnimeEpisode('[G] Show - 65 (1080p)', 12, { absoluteEpisode: 64 }), false)
+})
+
+test('buildQueries adds an absolute-number variant for anime when one is supplied', () => {
+  assert.deepStrictEqual(
+    buildQueries({ type: 'anime', title: 'Show', episode: 12, absoluteEpisode: 64 }),
+    ['Show 12', 'Show 64', 'Show']
+  )
+  assert.deepStrictEqual(
+    buildQueries({ type: 'anime', title: 'Show', episode: 12 }),
+    ['Show 12', 'Show'],
+    'nothing changes when no absolute number is supplied'
+  )
+})
+
+// A dead first mirror otherwise burns its timeout on every single lookup.
+test('the mirror that answered last is tried first on the next query', async () => {
+  _resetMirrorHealth()
+  const calls = []
+  const provider = createApibayProvider({
+    baseUrls: ['https://dead', 'https://live'],
+    fetchFn: async url => {
+      calls.push(new URL(url).origin)
+      if (url.startsWith('https://dead')) throw new Error('ENOTFOUND')
+      return jsonResponse([row('Movie.2024.1080p', { info_hash: HASH(10) })])
+    },
+  })
+  await provider({ type: 'movie', title: 'Movie', year: 2024 })
+  assert.deepStrictEqual(calls, ['https://dead', 'https://live'])
+  await provider({ type: 'movie', title: 'Movie', year: 2024 })
+  assert.strictEqual(calls[2], 'https://live', 'the known-good mirror must lead')
+  _resetMirrorHealth()
 })
 
 test('the default mirror list is used when none is injected', async () => {

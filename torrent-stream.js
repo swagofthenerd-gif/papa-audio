@@ -70,7 +70,10 @@ function purgeOrphanStreams({ keep = null } = {}) {
       const dir = path.join(root, name)
       if (keep && dir === keep) continue
       // A directory belonging to a process that is still running is in use.
-      const owner = /^s-(\d+)-/.exec(name)
+      // Two shapes carry a pid: the stream cache (s-<pid>-…) and the hover
+      // thumbnail cache the video engine drops beside a reused torrent
+      // (thumbs-<pid>-<ts>); both accumulate across crashes without this.
+      const owner = /^s-(\d+)-/.exec(name) || /^thumbs-(\d+)-/.exec(name)
       if (owner) {
         const pid = Number(owner[1])
         if (pid !== process.pid && isProcessAlive(pid)) continue
@@ -106,6 +109,10 @@ function buildFileUrl(port, fileIndex, fileName) {
 }
 
 const VIDEO_EXT = /\.(mkv|mp4|avi|m4v|mov|webm|ts|m2ts|wmv|flv|ogv)$/i
+// Subtitles travelling inside the pack. The video list deliberately filters
+// these out, so they get a door of their own: listed by subtitleFiles(),
+// fetched by serveSubtitle().
+const SUBTITLE_EXT = /\.(srt|ass|ssa|vtt)$/i
 // Release packs carry samples, trailers and extras. A "sample" is a real video
 // file, just not the one anybody wants, and it is small enough to look like a
 // fast start while playing the wrong thing.
@@ -204,6 +211,14 @@ const PREFETCH_BYTES = 24 * 1024 * 1024
 
 const DEFAULT_PREBUFFER_BYTES = 12 * 1024 * 1024
 
+// 'download' fires once per received chunk — hundreds a second on a healthy
+// swarm — and every progress emit here crosses the IPC bridge to the renderer.
+// A progress readout needs ~4/s, the same rate the video engine's own state
+// stream runs at. Trailing-edge: the last chunk of a burst always produces an
+// emit, and the numbers are read fresh from the torrent at emit time, so what
+// is reported is exact even though most chunks report nothing.
+const PROGRESS_THROTTLE_MS = 250
+
 // Bytes of the file's leading pieces that are verified and present.
 function headBytesReady(torrent, file) {
   if (!torrent || !file || !torrent.bitfield) return 0
@@ -233,7 +248,7 @@ function removeDir(dir) {
 }
 
 class TorrentStreamer extends EventEmitter {
-  constructor({ client, timeoutMs = 20000, prebufferBytes = DEFAULT_PREBUFFER_BYTES, prebufferTimeoutMs = 45000 } = {}) {
+  constructor({ client, timeoutMs = 20000, prebufferBytes = DEFAULT_PREBUFFER_BYTES, prebufferTimeoutMs = 45000, progressThrottleMs = PROGRESS_THROTTLE_MS, downloadLimitBps = null, seedWhileWatching = true } = {}) {
     super()
     if (!client || typeof client.add !== 'function') {
       throw new TypeError('TorrentStreamer requires a webtorrent client with an add() method')
@@ -242,20 +257,48 @@ class TorrentStreamer extends EventEmitter {
     this.timeoutMs = timeoutMs
     this.prebufferBytes = prebufferBytes
     this.prebufferTimeoutMs = prebufferTimeoutMs
+    // The bandwidth cap and the seed-back switch are held here so they can be
+    // asked for before a stream even exists, and applied to the client as soon
+    // as one does. WebTorrent throttles the CLIENT, not a single torrent (one
+    // ThrottleGroup for all of down, one for all of up — webtorrent/index.js),
+    // so this class only owns the intent; getTorrentClient() is shared, and a
+    // cap set here caps every torrent the app is running. Honest about that in
+    // the docs on setDownloadLimit().
+    this._downloadLimitBps = null
+    this._seedWhileWatching = seedWhileWatching !== false
     this._fileIndex = 0
     this._file = null
     // Which other file in the pack has already had its opening requested.
     this._prefetched = null
+    // The index whose ENTIRE file is being pulled down in the background, and
+    // where that stood last time it was asked. Distinct from _prefetched, which
+    // only ever grabs the opening.
+    this._predownload = null
     this._prebufferTimer = null
     this._storeDir = null
+    // Where served subtitles land when this stream has no _storeDir of its
+    // own — a reused torrent's directory belongs to whoever added it.
+    this._subDir = null
     this._want = null
     this._torrent = null
+    // True only when THIS streamer created the torrent (the add() branch). A
+    // reused torrent belongs to whoever added it, so its data and store are
+    // never ours to destroy — we only remove our own listeners and close our
+    // server. Getting this wrong deletes another consumer's downloaded pieces.
+    this._ownsTorrent = false
+    // The 'ready' handler attached when reusing a not-yet-ready torrent, kept
+    // so stop() can remove it if we are torn down before ready fires.
+    this._reusedReady = null
     this._server = null
     this._timer = null
     this._extensions = 0
     this._settled = false
     this._pendingReject = null
-    this._onDownload = () => {
+    // Timing seam for tests; production uses PROGRESS_THROTTLE_MS (~4/s).
+    this._progressThrottleMs = progressThrottleMs
+    this._progressTimer = null
+    this._lastProgressAt = 0
+    const emitDownloadProgress = () => {
       const torrent = this._torrent
       if (!torrent) return
       const downloaded = torrent.downloaded ?? 0
@@ -269,10 +312,91 @@ class TorrentStreamer extends EventEmitter {
         peers: torrent.numPeers ?? 0,
       })
     }
+    this._onDownload = () => {
+      if (!this._torrent) return
+      const now = Date.now()
+      const since = now - this._lastProgressAt
+      if (since >= this._progressThrottleMs) {
+        this._lastProgressAt = now
+        emitDownloadProgress()
+        return
+      }
+      // Mid-burst: coalesce into one trailing emit. The byte counts are the
+      // torrent's own, read when the timer fires, so nothing is lost by
+      // swallowing the chunks in between.
+      if (this._progressTimer) return
+      this._progressTimer = setTimeout(() => {
+        this._progressTimer = null
+        this._lastProgressAt = Date.now()
+        emitDownloadProgress()
+      }, this._progressThrottleMs - since)
+      this._progressTimer.unref?.()
+    }
+    // A cap passed to the constructor is applied to the client immediately —
+    // the client is shared and long-lived, so it takes effect for whatever is
+    // already running and stays in force until changed.
+    if (downloadLimitBps != null) this.setDownloadLimit(downloadLimitBps)
+  }
+
+  // Cap the download rate, in bytes per second, or lift the cap with null / a
+  // negative number. Returns the limit now in force (null when uncapped).
+  //
+  // The mechanism is WebTorrent's own client.throttleDownload — a real
+  // token-bucket rate limiter on every peer connection, not piece-selection
+  // pacing. The one caveat worth stating plainly: it is CLIENT-wide. The app
+  // shares one WebTorrent client across every stream and background download
+  // (getTorrentClient in main.js), and WebTorrent keeps a single throttle group
+  // for all of them, so a cap set on one streamer caps the whole client. There
+  // is no per-torrent throttle in this version to offer instead.
+  setDownloadLimit(bps) {
+    const n = Number(bps)
+    const limit = (bps == null || !isFinite(n) || n < 0) ? null : Math.floor(n)
+    this._downloadLimitBps = limit
+    try {
+      if (typeof this.client.throttleDownload === 'function') {
+        // -1 is WebTorrent's "disabled" sentinel; a real cap is the byte rate.
+        this.client.throttleDownload(limit == null ? -1 : limit)
+      }
+    } catch (_) { /* throttling is best-effort; never fail playback over it */ }
+    return this._downloadLimitBps
+  }
+
+  downloadLimit() {
+    return this._downloadLimitBps
+  }
+
+  // Whether the app shares back to the swarm while watching. Off suppresses
+  // uploads via WebTorrent's client.throttleUpload(0) — the connections stay
+  // open (dropping them would cost peers we still need to download from), but
+  // nothing is sent out. Same client-wide caveat as the download cap: one
+  // WebTorrent client, one upload throttle group, so this governs every torrent
+  // the app is running, not this stream alone. Returns the state now in force.
+  setSeedWhileWatching(on) {
+    this._seedWhileWatching = on !== false
+    try {
+      if (typeof this.client.throttleUpload === 'function') {
+        // 0 chokes uploads to nothing; -1 lifts the choke entirely.
+        this.client.throttleUpload(this._seedWhileWatching ? -1 : 0)
+      }
+    } catch (_) { /* best-effort; never fail playback over a seed toggle */ }
+    return this._seedWhileWatching
+  }
+
+  seedWhileWatching() {
+    return this._seedWhileWatching
   }
 
   static buildFileUrl(port, fileIndex, fileName) {
     return buildFileUrl(port, fileIndex, fileName)
+  }
+
+  // The stream's own cache directory, or null when the torrent was reused from
+  // elsewhere and its directory belongs to whoever added it. Used by the
+  // thumbnailer (Player #5) to nest its frames inside the same directory the
+  // teardown sweep already removes; a null return means "make your own and clean
+  // it up yourself".
+  storeDir() {
+    return this._storeDir || null
   }
 
   // Every playable file in the torrent, with whatever episode number can be
@@ -284,18 +408,46 @@ class TorrentStreamer extends EventEmitter {
     const addr = this._server && this._server.address && this._server.address()
     if (!torrent || !Array.isArray(torrent.files) || !addr) return []
     const port = addr.port
+    // A complete-series batch holds every season in its own subfolder, each
+    // numbered from 01 again. Flattened by name alone the strip read
+    // "1 1 1 2 2 2…" — the seasons interleaved by episode number, with the
+    // Extras folder's credit-less openings mixed in as unnumbered entries.
+    // The folder IS the season: carry it as `group`, filter junk on the whole
+    // path (Extras/ lives in the path, not the filename), and order groups by
+    // their first appearance in the torrent, which is how packs list seasons.
+    const groupOrder = new Map()
+    const groupOf = (f) => {
+      const parts = String(f.path || f.name || '').split(/[/\\]/)
+      // parts = [torrent root, …folders…, filename]; the immediate parent
+      // names the season. A file at the root of the torrent's own folder
+      // belongs to no group.
+      return parts.length >= 3 ? parts[parts.length - 2] : ''
+    }
     return torrent.files
-      .map((f, index) => ({ index, name: f.name || '', length: Number(f.length) || 0 }))
-      .filter(f => VIDEO_EXT.test(f.name) && !JUNK.test(f.name))
-      .map(f => ({
-        index: f.index,
-        name: f.name,
-        length: f.length,
-        episode: episodeNumberOf(f.name),
-        url: buildFileUrl(port, f.index, f.name),
-        current: f.index === this._fileIndex,
+      .map((f, index) => ({
+        index,
+        name: f.name || '',
+        path: f.path || f.name || '',
+        length: Number(f.length) || 0,
       }))
+      .filter(f => VIDEO_EXT.test(f.name) && !JUNK.test(f.path) &&
+        !/\bnc(?:op|ed)\d*\b/i.test(f.name))
+      .map(f => {
+        const group = groupOf(f)
+        if (!groupOrder.has(group)) groupOrder.set(group, groupOrder.size)
+        return {
+          index: f.index,
+          name: f.name,
+          group,
+          length: f.length,
+          episode: episodeNumberOf(f.name),
+          url: buildFileUrl(port, f.index, f.name),
+          current: f.index === this._fileIndex,
+        }
+      })
       .sort((a, b) => {
+        const g = groupOrder.get(a.group) - groupOrder.get(b.group)
+        if (g) return g
         // Episode order where it is known; anything unnumbered goes last in
         // name order rather than being interleaved arbitrarily.
         if (a.episode == null && b.episode == null) return a.name.localeCompare(b.name)
@@ -324,8 +476,102 @@ class TorrentStreamer extends EventEmitter {
     this._file = file
     // Whatever was prefetched is either the file now playing or no longer next.
     this._prefetched = null
+    // A whole-file predownload survives an episode switch: it was an explicit
+    // "fetch that file" and the file it names has not changed. Only the
+    // per-index bookkeeping tied to what is *playing* (the prefetch marker)
+    // resets here.
     this._prioritiseHead(torrent, file)
     return buildFileUrl(addr.port, index, file.name)
+  }
+
+  // A live reading of the swarm, null when nothing is active. The 'progress'
+  // events push these same numbers; this is the pull side, for anything that
+  // asks on its own schedule instead of listening.
+  stats() {
+    const torrent = this._torrent
+    if (!torrent) return null
+    const downloadedBytes = Number(torrent.downloaded) || 0
+    const totalBytes = Number(torrent.length) || 0
+    const uploadedBytes = Number(torrent.uploaded) || 0
+    // WebTorrent's own ratio is uploaded / (received || length). Prefer it when
+    // present, but never trust a NaN or Infinity through to the UI — recompute
+    // from what is actually here. Zero downloaded means an undefined ratio, and
+    // 0 reads better on a panel than ∞.
+    const rawRatio = Number(torrent.ratio)
+    const ratio = isFinite(rawRatio)
+      ? rawRatio
+      : (downloadedBytes > 0 ? uploadedBytes / downloadedBytes : 0)
+    return {
+      speedBps: Number(torrent.downloadSpeed) || 0,
+      peers: Number(torrent.numPeers) || 0,
+      downloadedBytes,
+      totalBytes,
+      progress: totalBytes ? Math.min(1, downloadedBytes / totalBytes) : 0,
+      // Seed-back (App #42): what has gone back out to the swarm, how fast right
+      // now, and the share ratio.
+      uploadedBytes,
+      uploadSpeedBps: Number(torrent.uploadSpeed) || 0,
+      ratio: isFinite(ratio) ? ratio : 0,
+    }
+  }
+
+  // The subtitles riding inside the pack. files() filters to video on purpose,
+  // which made a pack's .srt/.ass/.vtt unreachable — the one subtitle that
+  // matches the release exactly was in the torrent and could never be handed
+  // to mpv. Indices are positions in the torrent's FULL file list, so they
+  // stay valid for serveSubtitle() no matter what files() filtered out.
+  subtitleFiles() {
+    const torrent = this._torrent
+    if (!torrent || !Array.isArray(torrent.files)) return []
+    return torrent.files
+      .map((f, index) => ({ index, name: (f && f.name) || '', size: Number(f && f.length) || 0 }))
+      .filter(f => SUBTITLE_EXT.test(f.name))
+  }
+
+  // Fetch one subtitle out of the torrent and put it on disk where mpv's
+  // sub-add can reach it — mpv reads the video over HTTP but a subtitle wants
+  // to be a file. Only that file's pieces are asked for, and urgently: the
+  // whole thing is kilobytes, wanted before the next line of dialogue, so it
+  // costs the stream nothing. The copy lands under the stream's own cache
+  // directory and is cleaned up with everything else. Resolves the absolute
+  // path once the bytes are verified and written.
+  async serveSubtitle(index) {
+    const torrent = this._torrent
+    const files = (torrent && torrent.files) || []
+    const file = files[index]
+    if (!file || !SUBTITLE_EXT.test(file.name || '')) {
+      throw { code: 'NO_SUBTITLE', message: `No subtitle file at index ${index}` }
+    }
+    // Deliberately NOT selectFile(): the video keeps playing, untouched; the
+    // subtitle's pieces are simply asked for alongside it.
+    try {
+      if (typeof file.select === 'function') file.select()
+      if (typeof torrent.critical === 'function' &&
+          typeof file._startPiece === 'number' && typeof file._endPiece === 'number') {
+        torrent.critical(file._startPiece, file._endPiece)
+      }
+    } catch (_) { /* prioritisation is an optimisation, never fatal */ }
+    const buf = await new Promise((resolve, reject) => {
+      // getBuffer waits for the pieces and verifies them; the stream fallback
+      // covers a torrent implementation without it.
+      if (typeof file.getBuffer === 'function') {
+        file.getBuffer((err, data) => (err ? reject(err) : resolve(data)))
+        return
+      }
+      const chunks = []
+      const rs = file.createReadStream()
+      rs.on('data', c => chunks.push(c))
+      rs.on('end', () => resolve(Buffer.concat(chunks)))
+      rs.on('error', reject)
+    })
+    if (!this._storeDir && !this._subDir) this._subDir = newStreamDir()
+    const dir = path.join(this._storeDir || this._subDir, 'subs')
+    fs.mkdirSync(dir, { recursive: true })
+    // The index keeps two same-named subtitles from different folders of the
+    // pack from overwriting each other.
+    const dest = path.join(dir, `${index}-${path.basename(file.name)}`)
+    fs.writeFileSync(dest, buf)
+    return dest
   }
 
   async start({ magnet, fileIndex = 0, season = null, episode = null } = {}) {
@@ -339,26 +585,75 @@ class TorrentStreamer extends EventEmitter {
       this._extensions = 0
       this._timer = setTimeout(() => this._onTimeout(reject), this.timeoutMs)
 
-      let torrent
+      const add = () => {
+        if (this._settled) return
+        let torrent
+        try {
+          // An explicit path, so the data lands somewhere this class owns and can
+          // delete. Without it WebTorrent picks its own directory and nothing
+          // ever cleans it up.
+          this._storeDir = newStreamDir()
+          // We created it, so its store and directory are ours to destroy.
+          this._ownsTorrent = true
+          try { fs.mkdirSync(this._storeDir, { recursive: true }) } catch (_) {}
+          torrent = this.client.add(magnet, { path: this._storeDir },
+            t => this._onReady(t, fileIndex, resolve, reject))
+        } catch (err) {
+          this._settle(reject, { code: 'CLIENT_ERROR', message: err.message })
+          return
+        }
+        if (torrent) this._torrent = torrent
+      }
+
+      // Adding a magnet the client already holds raises WebTorrent's duplicate
+      // error, which surfaces long after add() and dressed up as a torrent
+      // that found nobody. The usual way in: stop this stream and start the
+      // same one again while the previous destroy() is still in flight — a
+      // dying torrent stays in client.torrents until its 'close' fires. Same
+      // probe main.js's _torrentAdd runs before adding a download.
+      let existing = null
       try {
-        // An explicit path, so the data lands somewhere this class owns and can
-        // delete. Without it WebTorrent picks its own directory and nothing
-        // ever cleans it up.
-        this._storeDir = newStreamDir()
-        try { fs.mkdirSync(this._storeDir, { recursive: true }) } catch (_) {}
-        torrent = this.client.add(magnet, { path: this._storeDir },
-          t => this._onReady(t, fileIndex, resolve, reject))
-      } catch (err) {
-        this._settle(reject, { code: 'CLIENT_ERROR', message: err.message })
+        if (typeof this.client.get === 'function') existing = this.client.get(magnet)
+      } catch (_) { /* an unparsable magnet gets its real error from add() */ }
+      if (existing && existing.destroyed) {
+        // Mid-destroy: wait it out. The connect deadline above keeps running,
+        // so a close that never comes still fails cleanly instead of hanging.
+        existing.once('close', add)
         return
       }
-      if (torrent) this._torrent = torrent
+      if (existing) {
+        // Same magnet, alive — added by another part of the app. Reuse it: the
+        // swarm is already connected, so this is the fastest start there is.
+        // No _storeDir either; the directory belongs to whoever added it, and
+        // _ownsTorrent stays false so stop()/_onTimeout never destroy its data.
+        this._torrent = existing
+        if (existing.ready) this._onReady(existing, fileIndex, resolve, reject)
+        else {
+          // Kept on the instance so a stop() before 'ready' can remove it —
+          // otherwise the closure (and its reference to `existing`) leaks.
+          this._reusedReady = () => this._onReady(existing, fileIndex, resolve, reject)
+          existing.once('ready', this._reusedReady)
+        }
+        return
+      }
+      add()
     })
   }
 
   _onReady(torrent, fileIndex, resolve, reject) {
     if (this._settled) return
+    // The reused-ready handler (if any) has now fired; drop the ref so stop()
+    // does not try to remove a listener that is already gone.
+    this._reusedReady = null
     this._torrent = torrent
+    this._predownload = null
+
+    // Re-assert the bandwidth intent now that a torrent (and its client) is
+    // live: the switches can be set before anything is streaming, and a client
+    // that was fresh then would not have carried them. Idempotent — throttling
+    // the client twice with the same rate is a no-op.
+    if (this._downloadLimitBps != null) this.setDownloadLimit(this._downloadLimitBps)
+    if (!this._seedWhileWatching) this.setSeedWhileWatching(false)
 
     // The caller's fileIndex is only a hint, and it means nothing for a pack:
     // when a specific episode is wanted the file has to be found by name.
@@ -501,6 +796,127 @@ class TorrentStreamer extends EventEmitter {
     }
   }
 
+  // Pull an ENTIRE file down in the background, not just its opening.
+  //
+  // prefetchFile() grabs the first minutes so pressing Next starts instantly;
+  // this is the other half of App #40 — "get the whole next episode ready" —
+  // for the viewer who wants the file complete on disk before they reach it, or
+  // who is about to lose the connection. Every piece of the file is selected,
+  // still at the lowest priority and never critical, so the episode playing now
+  // keeps every peer it wants and this uses only the bandwidth going spare.
+  //
+  // One file at a time: a second call for a different index cancels the first,
+  // because two whole-file low-priority selections would split the spare
+  // bandwidth between them and neither would finish. Returns true if the
+  // selection was placed.
+  predownloadFile(index) {
+    try {
+      const torrent = this._torrent
+      const files = (torrent && torrent.files) || []
+      const file = files[index]
+      if (!file) return false
+      if (this._predownload && this._predownload.index === index) return true
+
+      const start = file._startPiece
+      const endPiece = file._endPiece
+      if (typeof start !== 'number' || typeof endPiece !== 'number') return false
+
+      // A previous whole-file predownload of a different file is abandoned, so
+      // the spare bandwidth is not split between two of them.
+      if (this._predownload && this._predownload.index !== index) this.cancelPredownload()
+
+      // The whole file, priority 0, no critical marking. Lowest possible claim.
+      if (typeof torrent.select === 'function') torrent.select(start, endPiece, 0)
+      this._predownload = { index, start, end: endPiece }
+      return true
+    } catch (_) {
+      // An optimisation. Failing here costs a wait, never playback.
+      return false
+    }
+  }
+
+  // Stop pulling the whole file down. The pieces already on disk stay — they
+  // cost nothing to keep and may be exactly what the viewer reaches next; only
+  // the standing request for the rest is withdrawn. Returns true if there was
+  // one to cancel.
+  cancelPredownload() {
+    const pd = this._predownload
+    this._predownload = null
+    if (!pd) return false
+    try {
+      const torrent = this._torrent
+      // deselect matches an exact (from, to, priority) triple, which is why the
+      // range and priority placed above are recorded and passed back verbatim.
+      if (torrent && typeof torrent.deselect === 'function') {
+        torrent.deselect(pd.start, pd.end, 0)
+      }
+    } catch (_) { /* withdrawing a selection is best-effort */ }
+    return true
+  }
+
+  // How far the whole-file predownload has got: the file index, bytes present,
+  // and the file's total. null when nothing is predownloading. Bytes are
+  // counted across the whole file, not just the contiguous head — a background
+  // fill has no reason to arrive in order, and the viewer wants to know how much
+  // of the episode is here, wherever it landed.
+  predownloadProgress() {
+    const pd = this._predownload
+    const torrent = this._torrent
+    if (!pd || !torrent) return null
+    const files = (torrent && torrent.files) || []
+    const file = files[pd.index]
+    if (!file) return null
+    const total = Number(file.length) || 0
+    let bytes = 0
+    const pieceLength = Number(torrent.pieceLength) || 0
+    if (pieceLength && torrent.bitfield && typeof torrent.bitfield.get === 'function' &&
+        typeof file._startPiece === 'number' && typeof file._endPiece === 'number') {
+      for (let i = file._startPiece; i <= file._endPiece; i++) {
+        if (torrent.bitfield.get(i)) bytes += pieceLength
+      }
+      // The last piece of the file is usually short, and the first may share a
+      // piece with the file before it; clamp so a whole-piece count never
+      // reports more bytes than the file actually has.
+      if (bytes > total) bytes = total
+    }
+    return { index: pd.index, bytes, total }
+  }
+
+  // Everything the "keep this episode" copy (#44) needs about one file: its
+  // display name, its absolute on-disk path in this stream's cache, its total
+  // length, and how many bytes are actually present. Works for ANY file index,
+  // not only the one predownloading — the currently-playing file is usually
+  // fully on disk with no predownload standing. Returns null when the file or
+  // store dir is unknown. Byte counting mirrors predownloadProgress so
+  // "complete" means the same thing in both places.
+  fileInfo(index) {
+    try {
+      const torrent = this._torrent
+      const files = (torrent && torrent.files) || []
+      const file = files[index]
+      if (!file) return null
+      const total = Number(file.length) || 0
+      let downloaded = 0
+      const pieceLength = Number(torrent.pieceLength) || 0
+      if (pieceLength && torrent.bitfield && typeof torrent.bitfield.get === 'function' &&
+          typeof file._startPiece === 'number' && typeof file._endPiece === 'number') {
+        for (let i = file._startPiece; i <= file._endPiece; i++) {
+          if (torrent.bitfield.get(i)) downloaded += pieceLength
+        }
+        if (downloaded > total) downloaded = total
+      }
+      // file.path is the torrent-relative path (may include a folder). The
+      // absolute path is that under this stream's store dir. When no store dir
+      // was created (an externally-added torrent), fall back to torrent.path.
+      const rel = file.path || file.name
+      const base = this._storeDir || (torrent && torrent.path) || null
+      const fullPath = base && rel ? path.join(base, rel) : null
+      return { index, name: file.name || null, path: fullPath, total, downloaded }
+    } catch (_) {
+      return null
+    }
+  }
+
   // Where the viewer just jumped to, as a fraction of the film.
   //
   // Without this the swarm carries on filling in from wherever it had reached,
@@ -588,6 +1004,13 @@ class TorrentStreamer extends EventEmitter {
     }
   }
 
+  _clearProgressTimer() {
+    if (this._progressTimer) {
+      clearTimeout(this._progressTimer)
+      this._progressTimer = null
+    }
+  }
+
   // The deadline is for getting nowhere, not for taking a while. Giving up at a
   // fixed thirty seconds failed torrents that were working perfectly: a large
   // season pack routinely needs longer than that to find peers, fetch metadata
@@ -629,8 +1052,32 @@ class TorrentStreamer extends EventEmitter {
       ? { code: 'SLOW_START', message: `Found ${peers} peer${peers === 1 ? '' : 's'} but the stream did not start within ${waited}s` }
       : { code: 'NO_SEEDERS', message: `Nobody is sharing this right now (searched for ${waited}s)` }
     this._settle(reject, err)
+    // The same teardown stop() does, for the same reason. Destroying without
+    // destroyStore left whatever pieces had arrived on disk, and nothing ever
+    // came back for the directory — the exact leak the per-stream directory
+    // exists to prevent, reopened on the give-up path.
+    const ownsTorrent = this._ownsTorrent
+    this._ownsTorrent = false
+    const reusedReady = this._reusedReady
+    this._reusedReady = null
+    const storeDir = this._storeDir
+    this._storeDir = null
     if (torrent) {
-      try { torrent.destroy(() => {}) } catch {}
+      // A pending reused 'ready' handler is detached so its closure does not
+      // outlive this give-up.
+      if (reusedReady) { try { torrent.removeListener('ready', reusedReady) } catch {} }
+      // A reused torrent belongs to another consumer: only ours is destroyed,
+      // and only ours has a store to remove.
+      if (!ownsTorrent) return
+      try {
+        torrent.destroy({ destroyStore: true }, () => removeDir(storeDir))
+      } catch (_) {
+        removeDir(storeDir)
+      }
+      removeDir(storeDir)
+      setTimeout(() => removeDir(storeDir), 1500).unref?.()
+    } else {
+      removeDir(storeDir)
     }
   }
 
@@ -640,6 +1087,7 @@ class TorrentStreamer extends EventEmitter {
     this._pendingReject = null
     this._clearTimer()
     this._clearPrebufferTimer()
+    this._clearProgressTimer()
     if (this.listenerCount('error') > 0) {
       this.emit('error', err)
     }
@@ -653,11 +1101,25 @@ class TorrentStreamer extends EventEmitter {
     }
   }
 
+  // A caller awaiting start() must not hang forever when stop() races the
+  // 'ready' callback. Settle the pending promise with a deliberate, distinct
+  // code so the caller can tell a stop apart from a real failure.
+  _settlePendingStop() {
+    const reject = this._pendingReject
+    this._pendingReject = null
+    if (reject) reject({ code: 'STOPPED', message: 'stopped before ready' })
+  }
+
   stop() {
     this._settled = true
     this._clearTimer()
     this._clearPrebufferTimer()
+    this._clearProgressTimer()
     this._file = null
+    // The torrent is about to be destroyed; the standing whole-file selection
+    // goes with it, so only the bookkeeping needs clearing.
+    this._predownload = null
+    this._prefetched = null
     const server = this._server
     this._server = null
     if (server) {
@@ -665,10 +1127,28 @@ class TorrentStreamer extends EventEmitter {
     }
     const torrent = this._torrent
     this._torrent = null
+    const ownsTorrent = this._ownsTorrent
+    this._ownsTorrent = false
+    const reusedReady = this._reusedReady
+    this._reusedReady = null
     const storeDir = this._storeDir
     this._storeDir = null
+    // Subtitles served off a reused torrent live in a directory of their own;
+    // it goes the same way the cache does.
+    const subDir = this._subDir
+    this._subDir = null
+    removeDir(subDir)
     if (torrent) {
       try { torrent.removeListener('download', this._onDownload) } catch {}
+      // A pending reused 'ready' handler is torn down too, or its closure (and
+      // the torrent it captures) outlives this streamer.
+      if (reusedReady) { try { torrent.removeListener('ready', reusedReady) } catch {} }
+      if (!ownsTorrent) {
+        // A reused torrent belongs to another consumer. Destroying it — let
+        // alone with destroyStore — would delete data still in use. We only
+        // detach; there is no store of ours to remove.
+        return this._settlePendingStop()
+      }
       // destroyStore is the whole point: without it the downloaded pieces stay
       // on disk after the torrent object is gone.
       try {
@@ -686,13 +1166,8 @@ class TorrentStreamer extends EventEmitter {
     } else {
       removeDir(storeDir)
     }
-    // A caller awaiting start() must not hang forever when stop() races the
-    // 'ready' callback. Settle the pending promise with a deliberate, distinct
-    // code so the caller can tell a stop apart from a real failure.
-    const reject = this._pendingReject
-    this._pendingReject = null
-    if (reject) reject({ code: 'STOPPED', message: 'stopped before ready' })
+    this._settlePendingStop()
   }
 }
 
-module.exports = { TorrentStreamer, PREFETCH_BYTES, buildFileUrl, pickVideoFile, matchesWantedEpisode, episodeNumberOf, DEFAULT_STREAM_ROOT, streamRoot, setStreamRoot, purgeOrphanStreams, newStreamDir, headBytesReady, VIDEO_EXT }
+module.exports = { TorrentStreamer, PREFETCH_BYTES, PROGRESS_THROTTLE_MS, buildFileUrl, pickVideoFile, matchesWantedEpisode, episodeNumberOf, DEFAULT_STREAM_ROOT, streamRoot, setStreamRoot, purgeOrphanStreams, newStreamDir, headBytesReady, VIDEO_EXT, SUBTITLE_EXT }

@@ -3,14 +3,17 @@ const test = require('node:test')
 const assert = require('node:assert')
 const { createAniSkip, buildUrl, normalizeResult, SKIP_KIND } = require('../skip/aniskip')
 
-test('buildUrl produces the AniSkip endpoint with op and ed types', () => {
+// The API only returns the types named in the query, so a type SKIP_KIND maps
+// but the URL omits is silently never delivered — which is exactly what
+// happened to recaps.
+test('buildUrl asks for every type SKIP_KIND can map', () => {
   assert.strictEqual(
     buildUrl({ malId: 21, episode: 1, episodeLength: 0 }),
-    'https://api.aniskip.com/v2/skip-times/21/1?types=op&types=ed&episodeLength=0'
+    'https://api.aniskip.com/v2/skip-times/21/1?types=op&types=ed&types=recap&episodeLength=0'
   )
   assert.strictEqual(
     buildUrl({ malId: 21, episode: 3, episodeLength: 1500 }),
-    'https://api.aniskip.com/v2/skip-times/21/3?types=op&types=ed&episodeLength=1500'
+    'https://api.aniskip.com/v2/skip-times/21/3?types=op&types=ed&types=recap&episodeLength=1500'
   )
 })
 
@@ -46,6 +49,21 @@ test('createAniSkip returns segments for a found result', async () => {
   assert.strictEqual(segments.length, 2)
   assert.strictEqual(segments[0].kind, 'intro')
   assert.strictEqual(segments[1].kind, 'credits')
+})
+
+test('a recap result flows through as a recap segment', async () => {
+  const fetchFn = async () => ({
+    ok: true,
+    json: async () => ({
+      statusCode: 200,
+      found: true,
+      results: [{ skipType: 'recap', interval: { startTime: 5, endTime: 65 } }],
+    }),
+  })
+  const aniskip = createAniSkip({ fetchFn })
+  const segments = await aniskip({ malId: 21, episode: 2 })
+  assert.deepStrictEqual(segments,
+    [{ kind: 'recap', start: 5, end: 65, origin: 'aniskip', confidence: 0.95 }])
 })
 
 test('createAniSkip returns [] when found is false, not an error', async () => {

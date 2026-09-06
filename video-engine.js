@@ -32,6 +32,17 @@ const APP_KEYS = [
 // Only bound when embedded. When mpv owns its window, its own default is the
 // correct behaviour and is left alone.
 const EMBED_MOUSE = [
+  // A single click on the picture is the universal gesture for play/pause —
+  // and, embedded, the click lands on mpv so the page never sees it. Relayed
+  // rather than handled inside mpv so the deck's own pause state stays the
+  // single source of truth.
+  //
+  // mpv tells the two clicks apart natively: the first press always fires
+  // MBTN_LEFT, and a second press inside the double-click window fires
+  // MBTN_LEFT_DBL instead of another MBTN_LEFT. So a double-click delivers one
+  // 'playPause' followed by one 'fullscreen' — the same toggle-then-expand
+  // sequence YouTube and VLC produce — never two fights over the same press.
+  ['MBTN_LEFT', 'playPause'],
   ['MBTN_LEFT_DBL', 'fullscreen'],
 ]
 
@@ -155,6 +166,26 @@ const OBSERVED_PROPS = [
 // A seek bar does not need 60fps. ~4/s is what the UI asked for (§4.2).
 const STATE_THROTTLE_MS = 250
 
+// How long the position may sit still — unpaused, with a file loaded — before
+// the engine calls it a stall. The renderer keeps its own 10s watchdog; this
+// fires earlier and carries engine truth rather than a guess from across the
+// bridge.
+const STALL_MS = 8000
+
+// Every status flash paints for the same beat, so volume, seeks and pauses
+// read as one vocabulary rather than three widgets.
+const OSD_FLASH_MS = 1200
+
+// 754 -> '12:34', 3725 -> '1:02:05'. The hour digit appears only when there is
+// an hour to show, which is how every player the user knows writes it.
+function formatClock(seconds) {
+  const total = Math.max(0, Math.floor(Number(seconds) || 0))
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  const s = String(total % 60).padStart(2, '0')
+  return h ? `${h}:${String(m).padStart(2, '0')}:${s}` : `${m}:${s}`
+}
+
 // The friendly names the `subStyle` verb accepts, mapped to the mpv properties
 // they set. Anything not in this table is ignored, so a UI sending a style key
 // the engine does not know cannot silently set an arbitrary mpv property.
@@ -260,8 +291,22 @@ class VideoEngine extends EventEmitter {
     this._chapterList = []
     this._stateTimer = null
     this._lastActivity = 0
-    // Timing seam for tests; production uses STATE_THROTTLE_MS (~4/s).
+    // Stall detection rides the state ticks: when the position last moved,
+    // what it last was, and whether the stall has already been announced.
+    this._stalled = false
+    this._lastPos = null
+    this._lastAdvanceAt = 0
+    this._stallTimer = null
+    // How many distinct stalls this file has suffered (Player #27). A stall is
+    // one event no matter how long it lasts; the count rises only when a fresh
+    // stall begins after a recovery. Reset whenever a new file loads or the
+    // engine (re)starts, so the UI can escalate — "switch source?" — on a file
+    // that keeps stalling without carrying a grudge from the last one.
+    this._stallCount = 0
+    // Timing seams for tests; production uses STATE_THROTTLE_MS (~4/s) and
+    // STALL_MS.
     this._stateThrottleMs = opts.stateThrottleMs ?? STATE_THROTTLE_MS
+    this._stallMs = opts.stallMs ?? STALL_MS
   }
 
   _args(socketPath, { wid } = {}) {
@@ -361,9 +406,21 @@ class VideoEngine extends EventEmitter {
     this._socketPath = socketPath
     this._stopping = false
     this._gen++
+    // Everything below belongs to THIS start(). If the user switches sources
+    // while the connect below is still awaiting, the newer start() bumps _gen
+    // and stop()s this generation's process itself — any teardown from here
+    // after that point would be aimed at the replacement's mpv, not ours.
+    const gen = this._gen
     this.state = emptyState()
     this._trackList = []
     this._chapterList = []
+    this._stalled = false
+    this._lastPos = null
+    this._lastAdvanceAt = 0
+    // A (re)start is a clean slate: the stall history belongs to the previous
+    // engine, not this one.
+    this._stallCount = 0
+    this._clearStallTimer()
     this.proc = this._spawnFn(this.binary, this._args(socketPath, { wid }), { stdio: ['ignore', 'ignore', 'pipe'] })
     // mpv is chatty on stderr; without a drain the pipe buffer fills and the
     // process blocks. The log content is not needed here. Optional: a test's
@@ -376,12 +433,20 @@ class VideoEngine extends EventEmitter {
       await this.client.connect()
     } catch (err) {
       // mpv spawned but its socket never became ready — do not leak an idle
-      // process. Tear down and surface the real connect error.
-      this.client = null
-      try { this.proc?.kill() } catch { /* already dead */ }
-      this.proc = null
+      // process. Tear down and surface the real connect error. Only while this
+      // start() is still the current one: a stale generation's proc and client
+      // were already dealt with by the start() that replaced it, and this.proc
+      // now names the replacement's process.
+      if (gen === this._gen) {
+        this.client = null
+        try { this.proc?.kill() } catch { /* already dead */ }
+        this.proc = null
+      }
       throw err
     }
+    // Replaced while connecting: this.client is the replacement's client now,
+    // and attaching our handlers to it would deliver every event twice.
+    if (gen !== this._gen) throw new EngineGone('start')
     this.client.on('event', e => this._onEvent(e))
     this.client.on('disconnected', () => this._onExit())
     // Report WHICH property failed, not a bare "observe failed" that names
@@ -394,6 +459,16 @@ class VideoEngine extends EventEmitter {
         const err = new Error(`could not observe ${prop}: ${(e && e.message) || e}`)
         err.code = 'OBSERVE_FAILED'
         err.property = prop
+        // The throw alone left mpv running idle with its socket open — a
+        // process nothing would ever reach again, since alive was never set.
+        // Same generation rule as the connect failure above: a stale start()
+        // must not touch the replacement's process.
+        if (gen === this._gen) {
+          this.client?.close()
+          this.client = null
+          try { this.proc?.kill() } catch { /* already dead */ }
+          this.proc = null
+        }
         throw err
       }
     }
@@ -403,6 +478,14 @@ class VideoEngine extends EventEmitter {
   }
 
   async load(url) {
+    // A new file is a fresh stall history (Player #27). Reset here as well as on
+    // the 'file-loaded' event: this fires the moment a new load is requested, so
+    // a stall count from the previous file cannot briefly leak into the new one
+    // in the window before mpv reports the file open.
+    this._stallCount = 0
+    this._stalled = false
+    this._lastPos = null
+    this._lastAdvanceAt = Date.now()
     await this._guard('load')('loadfile', url, 'replace')
     this.emit('loaded', url)
   }
@@ -503,10 +586,55 @@ class VideoEngine extends EventEmitter {
     await this._guard('frameStep')(dir < 0 ? 'frame-back-step' : 'frame-step')
   }
 
+  // Paint status text on the picture itself. The HTML UI is composited UNDER
+  // the native mpv surface, so a toast drawn by the page is invisible while a
+  // film is playing — mpv's own OSD is the only text the viewer can see.
+  // Deliberately a no-op when nothing is playing: the message has nowhere to
+  // go, and losing a status line must never become an error.
+  async osdMessage(text, durationMs) {
+    if (!this.alive || !this.client) return
+    const args = ['show-text', String(text ?? '')]
+    const ms = Number(durationMs)
+    // mpv takes the duration in milliseconds; omitted, --osd-duration applies.
+    if (Number.isFinite(ms) && ms > 0) args.push(Math.round(ms))
+    try {
+      await this._guard('osdMessage')(...args)
+    } catch (e) {
+      // A generation swap between the check above and the send is the same
+      // "nothing playing" case, not a failure.
+      if (!(e instanceof EngineGone)) throw e
+    }
+  }
+
+  // The handful of statuses the app flashes constantly, formatted once here so
+  // every caller paints them identically. osdMessage stays as the free-form
+  // door; this is the house style on top of it.
+  //   osdFlash('volume', 85)                             -> 'Volume 85%'
+  //   osdFlash('seek', { position: 754, forward: true }) -> '→ 12:34'
+  //   osdFlash('pause', true)                            -> '⏸ Paused'
+  //   osdFlash('pause', false)                           -> '▶'
+  // An unknown kind is dropped, mirroring osdMessage's own discipline: a
+  // status flash must never become an error.
+  async osdFlash(kind, value) {
+    let text = null
+    if (kind === 'volume') {
+      text = `Volume ${Math.round(Number(value) || 0)}%`
+    } else if (kind === 'seek') {
+      const forward = !!(value && value.forward)
+      text = `${forward ? '→' : '←'} ${formatClock(value && value.position)}`
+    } else if (kind === 'pause') {
+      text = value ? '⏸ Paused' : '▶'
+    }
+    if (text === null) return
+    await this.osdMessage(text, OSD_FLASH_MS)
+  }
+
   stop() {
     this._stopping = true
     this.alive = false
     this._clearStateTimer()
+    this._clearStallTimer()
+    this._stalled = false
     this.client?.close()
     this.client = null
     try { this.proc?.kill() } catch { /* already dead */ }
@@ -520,6 +648,8 @@ class VideoEngine extends EventEmitter {
     if (this._stopping || !this.alive) return
     this.alive = false
     this._clearStateTimer()
+    this._clearStallTimer()
+    this._stalled = false
     this.client?.close()
     this.client = null
     this.emit('engineDown', {})
@@ -530,6 +660,31 @@ class VideoEngine extends EventEmitter {
   _onEvent(e) {
     if (!e) return
     if (e.event === 'property-change') return this._onProp(e.name, e.data)
+    // The fate of the file. Without this a load that dies inside mpv — a dead
+    // URL, a truncated download, a container it cannot open — is silent: the
+    // engine stays alive, no state arrives, and the app cannot tell a film
+    // that ended from one that never began. Only the two endings a consumer
+    // must act on are emitted. 'stop' and 'redirect' are the engine's own
+    // doing (a new load() replacing the file), and 'quit' already surfaces as
+    // engineDown through the process exit; announcing those as endings would
+    // make every episode change look like a finished film.
+    if (e.event === 'end-file') {
+      const reason = e.reason || 'unknown'
+      if (reason === 'eof' || reason === 'error') {
+        this.emit('ended', { reason, error: e.file_error || null })
+      }
+      return
+    }
+    // The moment mpv has actually opened the file — distinct from 'loaded',
+    // which only says the loadfile command was sent and accepted.
+    if (e.event === 'file-loaded') {
+      // A fresh file starts a fresh stall clock and a fresh stall count.
+      this._stalled = false
+      this._lastPos = null
+      this._lastAdvanceAt = Date.now()
+      this._stallCount = 0
+      return this.emit('fileLoaded')
+    }
     // Keys bound in _bindAppKeys arrive as client messages. They are the only
     // way an action that lives in the app — skip intro, next episode — can be
     // triggered from the video window, which owns the keyboard while focused.
@@ -558,13 +713,30 @@ class VideoEngine extends EventEmitter {
     }
     switch (name) {
       case 'time-pos':
-        if (data != null) s.position = data
+        if (data != null) {
+          // The stall clock resets on any movement, including seeks: a jump is
+          // the viewer going somewhere, not the stream getting stuck. And the
+          // position moving again is what recovery IS, so 'unstalled' is
+          // announced from here rather than from a poll that might be late.
+          if (this._lastPos === null || data !== this._lastPos) {
+            this._lastPos = data
+            this._lastAdvanceAt = Date.now()
+            if (this._stalled) {
+              this._stalled = false
+              this.emit('unstalled')
+            }
+          }
+          s.position = data
+        }
         break
       case 'duration':
         if (data != null) s.duration = data
         break
       case 'pause':
         s.paused = data === true
+        // Unpausing restarts the stall clock from now: nothing advanced while
+        // paused, and that was nobody's fault.
+        if (!s.paused) this._lastAdvanceAt = Date.now()
         break
       case 'volume':
         if (data != null) s.volume = data
@@ -640,7 +812,10 @@ class VideoEngine extends EventEmitter {
     if (this._stateTimer) return
     this._stateTimer = setTimeout(() => {
       this._stateTimer = null
-      if (this.alive) this.emit('state', this.getState())
+      if (this.alive) {
+        this.emit('state', this.getState())
+        this._checkStall()
+      }
     }, this._stateThrottleMs)
     this._stateTimer.unref?.()
   }
@@ -649,6 +824,60 @@ class VideoEngine extends EventEmitter {
     if (this._stateTimer) {
       clearTimeout(this._stateTimer)
       this._stateTimer = null
+    }
+  }
+
+  // ── Stall detection ────────────────────────────────────────────────────────
+  // Rides the state ticks: every tick asks how long the position has sat still
+  // while unpaused with a file loaded. Ticks alone are not enough — a properly
+  // stuck mpv stops changing properties, so the ticks stop with it — hence the
+  // one-shot timer armed for the moment the deadline would pass. Recovery is
+  // announced by the position itself moving again (see time-pos above).
+  _checkStall() {
+    const s = this.state
+    if (!this.alive || s.paused || !(s.duration > 0)) {
+      // Not a stall candidate. Leaving the stalled state this way — a pause,
+      // an unload — still announces the recovery, so a spinner keyed to
+      // 'stalled' can never be left spinning.
+      this._clearStallTimer()
+      if (this._stalled) {
+        this._stalled = false
+        this.emit('unstalled')
+      }
+      return
+    }
+    // Eligible before any position ever arrived: the clock starts now, not at
+    // some zero that would read as an eight-second-old stall immediately.
+    if (!this._lastAdvanceAt) this._lastAdvanceAt = Date.now()
+    if (this._stalled) return
+    const sinceMs = Date.now() - this._lastAdvanceAt
+    if (sinceMs >= this._stallMs) {
+      this._clearStallTimer()
+      this._stalled = true
+      // Each distinct stall counts once. The UI escalates on the tally — a
+      // single stall is a spinner, a third is grounds to offer another source.
+      this._stallCount++
+      this.emit('stalled', { position: s.position, sinceMs, stallCount: this._stallCount })
+      return
+    }
+    // Not yet — but make sure a check happens when the deadline passes even if
+    // mpv goes completely silent between now and then.
+    this._armStallTimer(this._stallMs - sinceMs)
+  }
+
+  _armStallTimer(delayMs) {
+    this._clearStallTimer()
+    this._stallTimer = setTimeout(() => {
+      this._stallTimer = null
+      this._checkStall()
+    }, delayMs)
+    this._stallTimer.unref?.()
+  }
+
+  _clearStallTimer() {
+    if (this._stallTimer) {
+      clearTimeout(this._stallTimer)
+      this._stallTimer = null
     }
   }
 }
@@ -664,6 +893,9 @@ module.exports = {
   EngineGone,
   OBSERVED_PROPS,
   STATE_THROTTLE_MS,
+  STALL_MS,
+  OSD_FLASH_MS,
+  formatClock,
   SUB_STYLE_PROPS,
   normalizeTrack,
   normalizeChapter,

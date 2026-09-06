@@ -3,6 +3,7 @@ const test = require('node:test')
 const assert = require('node:assert')
 const {
   normalizeMedia,
+  normalizeAiring,
   buildQuery,
   buildVariables,
   createAnilistCatalog,
@@ -209,16 +210,19 @@ test('createAnilistCatalog.season passes injected season/seasonYear to fetchFn',
   assert.strictEqual(res[0].title, 'S')
 })
 
-test('createAnilistCatalog throws an Error containing AniList on non-OK response', async () => {
+test('createAnilistCatalog.trending degrades to [] on a non-OK response', async () => {
+  // Browse/search/detail calls degrade quietly rather than rejecting, matching
+  // seasonChain/airingSchedule: a dead AniList leaves a row empty, it does not
+  // blow up the whole request. (Previously these rejected; that was the bug.)
   const fetchFn = async () => ({ ok: false, status: 500 })
   const cat = createAnilistCatalog({ fetchFn })
-  await assert.rejects(() => cat.trending(1), /AniList/)
+  assert.deepStrictEqual(await cat.trending(1), [])
 })
 
-test('createAnilistCatalog throws on a GraphQL error response', async () => {
+test('createAnilistCatalog.popular degrades to [] on a GraphQL error response', async () => {
   const fetchFn = async () => ({ ok: true, json: async () => ({ errors: [{ message: 'Rate limited' }] }) })
   const cat = createAnilistCatalog({ fetchFn })
-  await assert.rejects(() => cat.popular(1), /Rate limited/)
+  assert.deepStrictEqual(await cat.popular(1), [])
 })
 
 // ── Detail by id ────────────────────────────────────────────────────────────
@@ -267,9 +271,100 @@ test('createAnilistCatalog throws on a GraphQL error response', async () => {
     assert.strictEqual(await cat.byId(999999999), null)
   })
 
-  test('byId surfaces a GraphQL error instead of silently returning nothing', async () => {
-    const fetchFn = async () => ({ ok: true, json: async () => ({ errors: [{ message: 'Not Found' }] }) })
+  test('byId RETHROWS a GraphQL error, carrying AniList\'s own message', async () => {
+    // Unlike the browse/search shelves, a detail lookup must NOT degrade to
+    // null: null erases the reason and forces a bare "Not found" on the detail
+    // page. byId rethrows so the caller (main.js) can fall back to its
+    // persistent cache and, failing that, show the real cause. The thrown
+    // message carries AniList's own text verbatim.
+    const fetchFn = async () => ({
+      ok: true,
+      json: async () => ({ errors: [{ message: 'The AniList API has been temporarily disabled due to severe stability issues.' }] }),
+    })
     const cat = createAnilistCatalog({ fetchFn })
-    await assert.rejects(() => cat.byId(1), /Not Found/)
+    await assert.rejects(() => cat.byId(1), /temporarily disabled due to severe stability issues/)
+  })
+
+  test('byId surfaces a transport failure (the real outage: HTTP 403)', async () => {
+    // The live outage returns HTTP 403, not a 200-with-errors body. _post turns
+    // a non-OK response into an Error whose message includes the status, and
+    // byId lets it through rather than swallowing it.
+    const fetchFn = async () => ({ ok: false, status: 403 })
+    const cat = createAnilistCatalog({ fetchFn })
+    await assert.rejects(() => cat.byId(1), /AniList request failed \(403\)/)
+  })
+
+  test('byId still returns null for a genuinely unknown id (no throw)', async () => {
+    // A null data.Media is "no such show", not an error — that must not become
+    // an exception, or every valid-but-missing id would look like an outage.
+    const fetchFn = async () => ({ ok: true, json: async () => ({ data: { Media: null } }) })
+    const cat = createAnilistCatalog({ fetchFn })
+    assert.strictEqual(await cat.byId(999999999), null)
   })
 }
+
+// ── Airing schedule (App §25/§26) ───────────────────────────────────────────
+
+test('normalizeAiring maps a media node with a next airing episode', () => {
+  const raw = {
+    id: 21,
+    title: { english: 'One Piece', romaji: 'One Piece' },
+    nextAiringEpisode: { airingAt: 1757000000, episode: 1089 },
+  }
+  assert.deepStrictEqual(normalizeAiring(raw), {
+    id: 21,
+    title: 'One Piece',
+    episode: 1089,
+    airingAt: 1757000000,
+  })
+})
+
+test('normalizeAiring falls back english → romaji → native for the title', () => {
+  const r = normalizeAiring({ id: 1, title: { romaji: 'R', native: 'N' }, nextAiringEpisode: { airingAt: 5, episode: 2 } })
+  assert.strictEqual(r.title, 'R')
+})
+
+test('normalizeAiring returns null for a finished show (no nextAiringEpisode)', () => {
+  assert.strictEqual(normalizeAiring({ id: 1, title: { english: 'Done' } }), null)
+  assert.strictEqual(normalizeAiring({ id: 1, nextAiringEpisode: null }), null)
+  assert.strictEqual(normalizeAiring({ id: 1, nextAiringEpisode: { episode: 3 } }), null)
+})
+
+test('buildQuery airing selects nextAiringEpisode and id_in', () => {
+  const q = buildQuery('airing')
+  assert.match(q, /nextAiringEpisode\s*\{\s*airingAt\s+episode\s*\}/)
+  assert.match(q, /id_in:\s*\$ids/)
+  assert.match(q, /type:\s*ANIME/)
+})
+
+test('buildVariables airing coerces ids to ints and drops junk', () => {
+  const v = buildVariables('airing', { ids: ['21', 44, 'x', 0, -3, null] })
+  assert.deepStrictEqual(v, { page: 1, perPage: 50, ids: [21, 44] })
+})
+
+test('createAnilistCatalog.airingSchedule batches ids and normalizes, dropping finished shows', async () => {
+  const media = [
+    { id: 21, title: { romaji: 'One Piece' }, nextAiringEpisode: { airingAt: 100, episode: 1089 } },
+    { id: 99, title: { romaji: 'Finished' }, nextAiringEpisode: null },
+  ]
+  let sentBody = null
+  const fetchFn = async (url, init) => {
+    sentBody = JSON.parse(init.body)
+    return { ok: true, json: async () => ({ data: { Page: { media } } }) }
+  }
+  const cat = createAnilistCatalog({ fetchFn })
+  const res = await cat.airingSchedule(['21', 99])
+  assert.deepStrictEqual(sentBody.variables.ids, [21, 99])
+  assert.strictEqual(res.length, 1)
+  assert.strictEqual(res[0].id, 21)
+  assert.strictEqual(res[0].episode, 1089)
+})
+
+test('createAnilistCatalog.airingSchedule never touches the network for an empty/invalid id list', async () => {
+  let called = false
+  const fetchFn = async () => { called = true; return { ok: true, json: async () => ({}) } }
+  const cat = createAnilistCatalog({ fetchFn })
+  assert.deepStrictEqual(await cat.airingSchedule([]), [])
+  assert.deepStrictEqual(await cat.airingSchedule(['x', 0, null]), [])
+  assert.strictEqual(called, false)
+})

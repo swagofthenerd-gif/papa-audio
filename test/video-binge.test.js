@@ -218,3 +218,47 @@ test('nothing known about the current source falls back to the ranked best', () 
   assert.strictEqual(pickMatching(STREAMS, { dub: null, quality: null }).label, '2160p sub')
   assert.strictEqual(pickMatching([], { dub: true }), null)
 })
+
+// A want that carries only a source (a remembered preference with no
+// resolution) must still steer the pick, not fall through to the ranked first.
+test('a source-only preference steers the pick', () => {
+  const only = [
+    { source: 'TPB', quality: '1080p', dub: false, label: 'ranked first' },
+    { source: 'Nyaa', quality: '720p', dub: false, label: 'preferred source' },
+  ]
+  assert.strictEqual(pickMatching(only, { source: 'Nyaa' }).label, 'preferred source')
+})
+
+// ── App #43: auto-pick honours a remembered preferred source ────────────────
+vm.runInContext(extract('_preferredSourceOf'), ctx)
+vm.runInContext(extract('_showKeyOf'), ctx)
+vm.runInContext(extract('_autoPickStream'), ctx)
+const autoPick = ctx._autoPickStream
+
+// Fakes the renderer globals the auto-pick reaches for. `pref` is what the
+// store returns for this title; null means nothing remembered.
+function withPref(pref) {
+  ctx._videoDetail = { type: 'tv', id: 1396, d: { id: 1396 } }
+  ctx._vStore = () => ({ prefs: () => (pref
+    ? { preferredSource: pref.source || null, preferredQuality: pref.quality || null }
+    : {}) })
+}
+
+test('auto-pick takes the ranked first when nothing is remembered', () => {
+  withPref(null)
+  assert.strictEqual(autoPick(STREAMS).label, '2160p sub')
+})
+
+test('auto-pick prefers the remembered source for the title', () => {
+  const mixed = [
+    { source: 'YTS', quality: '2160p', dub: false, label: 'ranked first' },
+    { source: 'TPB', quality: '1080p', dub: false, label: 'the one they settled on' },
+  ]
+  withPref({ source: 'TPB' })
+  assert.strictEqual(autoPick(mixed).label, 'the one they settled on')
+})
+
+test('auto-pick of an empty list is null', () => {
+  withPref({ source: 'TPB' })
+  assert.strictEqual(autoPick([]), null)
+})

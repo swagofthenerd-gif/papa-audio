@@ -91,16 +91,23 @@
     if (!Number.isFinite(time) || !Array.isArray(segments)) return null
 
     let active = null
+    let lingering = null
     let upcoming = null
     for (const seg of segments) {
       if (!seg) continue
       if (time >= seg.start && time < seg.end) {
         if (!active || _byPriority(seg, active) < 0) active = seg
+      } else if (time >= seg.end && time < seg.end + DISMISS_AFTER_S) {
+        // §9: the button auto-dismisses 5s after the segment ends, not the
+        // instant it does — a hand reaching for it must not find it gone.
+        // Kept below a truly active segment, so an intro that has begun is
+        // never shadowed by the recap that just finished.
+        if (!lingering || _byPriority(seg, lingering) < 0) lingering = seg
       } else if (time >= seg.start - APPEAR_BEFORE_S && time < seg.start) {
         if (!upcoming || seg.start < upcoming.start) upcoming = seg
       }
     }
-    const seg = active || upcoming
+    const seg = active || lingering || upcoming
     if (!seg) return null
 
     const autoPref = {
@@ -128,5 +135,78 @@ function creditsFallback(duration, { maxSeconds = 90, maxFraction = 0.08 } = {})
   return { kind: 'credits', start: dur - tail, end: dur, origin: 'detected', confidence: 0.3 }
 }
 
-  return { mergeSegments, activeSegment, buttonFor, creditsFallback, KIND_LABEL, MANUAL, APPEAR_BEFORE_S, DISMISS_AFTER_S }
+  // ── Skip-intro training from manual seeks (App #46) ───────────────────────
+  // When a viewer repeatedly jumps past the opening of a season's episodes, that
+  // is a manual intro skip waiting to be learned. These pure helpers hold the
+  // detection maths; the renderer feeds them raw position jumps and persists the
+  // attempt counts, and offers to write a manual skip segment once the pattern
+  // is clear. No I/O, no state — the caller owns both.
+
+  // The window a learned skip lives in: a jump only counts as "skipping the
+  // intro" when it starts inside the first FIVE minutes and lands 60–120 s
+  // later. A two-second nudge is not an intro; a ten-minute jump is scrubbing.
+  const TRAIN_MAX_FROM_S = 300
+  const TRAIN_MIN_JUMP_S = 60
+  const TRAIN_MAX_JUMP_S = 120
+  // Two matching jumps in a season is enough to offer to learn it — the first
+  // could be a one-off, the second is a habit.
+  const TRAIN_OFFER_AT = 2
+
+  // Is this position jump the kind that skips an opening? `from`/`to` are two
+  // playback positions (seconds); a forward jump of 60–120 s that begins in the
+  // first five minutes qualifies. Everything else — backward, too small, too
+  // large, or starting deep into the episode — does not.
+  function isIntroSkipSeek(from, to) {
+    const f = Number(from)
+    const t = Number(to)
+    if (!Number.isFinite(f) || !Number.isFinite(t)) return false
+    if (f < 0 || f > TRAIN_MAX_FROM_S) return false
+    const jump = t - f
+    return jump >= TRAIN_MIN_JUMP_S && jump <= TRAIN_MAX_JUMP_S
+  }
+
+  // Fold one qualifying seek into a running record for a season. The record is
+  // `{ count, sumFrom, sumTo }` (all zero to begin); this returns a new record
+  // rather than mutating, so the caller can persist it verbatim. A non-qualifying
+  // seek returns the record unchanged.
+  function recordIntroSeek(prev, from, to) {
+    const rec = _trainRec(prev)
+    if (!isIntroSkipSeek(from, to)) return rec
+    return { count: rec.count + 1, sumFrom: rec.sumFrom + Number(from), sumTo: rec.sumTo + Number(to) }
+  }
+
+  // Should the "learn this skip?" offer be made? True the moment the count
+  // reaches the threshold — the caller is expected to stop asking once it has
+  // acted, since accepting writes a manual segment that supersedes the training.
+  function shouldOfferSkipTraining(prev) {
+    return _trainRec(prev).count >= TRAIN_OFFER_AT
+  }
+
+  // The manual skip segment to write from an accumulated record: an intro from
+  // the average seek-from point to the average seek-to point. Returns null when
+  // there is nothing to average or the averages do not form a real interval.
+  function skipSegmentFromTraining(prev) {
+    const rec = _trainRec(prev)
+    if (rec.count <= 0) return null
+    const start = rec.sumFrom / rec.count
+    const end = rec.sumTo / rec.count
+    if (!(end > start)) return null
+    return { kind: 'intro', start: start, end: end, origin: MANUAL, confidence: 1 }
+  }
+
+  function _trainRec(prev) {
+    const p = prev && typeof prev === 'object' ? prev : {}
+    return {
+      count: Number(p.count) || 0,
+      sumFrom: Number(p.sumFrom) || 0,
+      sumTo: Number(p.sumTo) || 0,
+    }
+  }
+
+  return {
+    mergeSegments, activeSegment, buttonFor, creditsFallback,
+    isIntroSkipSeek, recordIntroSeek, shouldOfferSkipTraining, skipSegmentFromTraining,
+    KIND_LABEL, MANUAL, APPEAR_BEFORE_S, DISMISS_AFTER_S,
+    TRAIN_MAX_FROM_S, TRAIN_MIN_JUMP_S, TRAIN_MAX_JUMP_S, TRAIN_OFFER_AT,
+  }
 })

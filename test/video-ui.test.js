@@ -281,9 +281,13 @@ test('the catalog degrades when the watch store is not loaded', () => {
 
 test('search results are grouped by type and overlay the catalog', () => {
   const body = fnBody('_runVideoTitleSearch')
-  assert.match(body, /Films/)
-  assert.match(body, /Series/)
-  assert.match(body, /Anime/)
+  // The grouping moved into _paintVideoSearchResults when the result filters
+  // (App §20) landed, so the type labels live there now; the title search still
+  // owns the overlay behaviour and the fetch.
+  const paint = fnBody('_paintVideoSearchResults')
+  assert.match(paint, /Films/)
+  assert.match(paint, /Series/)
+  assert.match(paint, /Anime/)
   // Hidden, not unmounted, so clearing the query does not refetch every row.
   assert.match(body, /rows\.style\.display = 'none'/)
   assert.match(body, /_videoSearchTicket !== ticket/)

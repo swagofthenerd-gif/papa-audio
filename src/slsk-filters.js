@@ -100,6 +100,13 @@ function bestOf(g, key) {
 
 // Every comparator sorts descending (best first); relevance keeps input order,
 // which the caller has already scored.
+// Queue position sorts ASCENDING (shortest line first) — unlike every other
+// sort here, "best" is the smallest number. A peer with a free upload slot has
+// effectively no queue, so it is treated as position 0 and floats to the top.
+function _queuePos(g) {
+  if (g && g.hasFreeSlot) return 0
+  return Number(g && g.queueLength) || 0
+}
 const SORTS = {
   relevance:  null,
   sampleRate: (a, b) => bestOf(b, 'sampleRate') - bestOf(a, 'sampleRate'),
@@ -107,6 +114,7 @@ const SORTS = {
   tracks:     (a, b) => (b.files || []).length  - (a.files || []).length,
   speed:      (a, b) => (b.uploadSpeed || 0)    - (a.uploadSpeed || 0),
   size:       (a, b) => bestOf(b, 'size')       - bestOf(a, 'size'),
+  queue:      (a, b) => _queuePos(a)            - _queuePos(b),
 }
 
 function applyFilterSort(groups, { filter = 'all', sort = 'relevance' } = {}) {
@@ -116,8 +124,61 @@ function applyFilterSort(groups, { filter = 'all', sort = 'relevance' } = {}) {
   return cmp ? out.slice().sort(cmp) : out
 }
 
+// ── Record-shop shelf filtering & sorting ─────────────────────────────────────
+// The shop deals in PARSED albums ({artist, album, year, lossless, isHiRes,
+// totalSize, files}) rather than raw search folder-groups, so it needs its own
+// small predicate/comparator set. Session-only view state, applied to the
+// "Everything" grid and to search-within-library results. Surround is read from
+// the album's own `surround` flag when present, else re-derived from its text so
+// the same detector drives both.
+function albumIsSurround(a) {
+  if (a && typeof a.surround === 'boolean') return a.surround
+  const names = ((a && a.files) || []).map(f => f.name || f.filename || '').join(' ')
+  return !!detectSurround(`${(a && a.folderPath) || ''} ${(a && a.folderName) || ''} ${names}`)
+}
+
+const SHELF_FILTERS = {
+  lossless: a => !!(a && a.lossless),
+  hires:    a => !!(a && a.isHiRes),
+  surround: albumIsSurround,
+}
+
+// Build the decade dropdown options from the years actually present, newest
+// first. "2010s", "1990s"… Albums with no parsed year are excluded (they can't
+// be placed on a decade shelf). Returns [{ value:'2010', label:'2010s' }].
+function shelfDecades(albums) {
+  const decades = new Set()
+  for (const a of (albums || [])) {
+    const y = Number(a && a.year) || 0
+    if (y >= 1900) decades.add(Math.floor(y / 10) * 10)
+  }
+  return [...decades].sort((x, y) => y - x)
+    .map(d => ({ value: String(d), label: `${d}s` }))
+}
+
+// Apply the active shelf filters (a Set of filter keys) plus an optional decade
+// (the decade's start year as a string/number) and sort key. Pure — new array.
+function applyShelfFilterSort(albums, { filters = null, decade = null, sort = 'az' } = {}) {
+  const active = filters instanceof Set ? [...filters] : (Array.isArray(filters) ? filters : [])
+  let out = (albums || []).slice()
+  for (const key of active) {
+    const pred = SHELF_FILTERS[key]
+    if (pred) out = out.filter(pred)
+  }
+  if (decade != null && decade !== '') {
+    const start = Number(decade) || 0
+    out = out.filter(a => {
+      const y = Number(a && a.year) || 0
+      return y >= start && y < start + 10
+    })
+  }
+  const SH = (typeof window !== 'undefined' && window.PapaSlskShelves) ||
+    (typeof require === 'function' ? (() => { try { return require('./slsk-shelves') } catch (_) { return null } })() : null)
+  return SH && SH.sortMergedAlbums ? SH.sortMergedAlbums(out, sort) : out
+}
+
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { detectSurround, groupSurround, isHiResGroup, isLosslessGroup, applyFilterSort, surroundQueries, SURROUND_TERMS, FILTERS, SORTS }
+  module.exports = { detectSurround, groupSurround, isHiResGroup, isLosslessGroup, applyFilterSort, surroundQueries, SURROUND_TERMS, FILTERS, SORTS, SHELF_FILTERS, shelfDecades, applyShelfFilterSort, albumIsSurround }
 }
 if (typeof window !== 'undefined') {
   window.PapaSlskFilters = { detectSurround, groupSurround, isHiResGroup, isLosslessGroup, applyFilterSort }

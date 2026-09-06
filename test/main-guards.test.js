@@ -418,3 +418,124 @@ test('a helper process that dies leaves a record', () => {
   // second one registered earlier would shadow it.
   assert.strictEqual((MAIN.match(/app\.on\('render-process-gone'/g) || []).length, 0)
 })
+
+// ── Wave 7 · App §6: a crash reporter the user can forward ──────────────────
+
+test('the crash reporter appends a plain-English entry and never throws', () => {
+  const fn = CODE.slice(CODE.indexOf('function _appendCrashLog('),
+                        CODE.indexOf('process.on(\'unhandledRejection\''))
+  assert.match(fn, /crash-log\.txt/, 'it writes the one file the user is told to send')
+  assert.match(fn, /appendFileSync/, 'each event is appended, not clobbered')
+  // The four things the entry must carry.
+  assert.match(fn, /When:/)
+  assert.match(fn, /What the app was doing:/)
+  assert.match(fn, /_crashTrail/, 'it names the last thing the app did')
+  assert.match(fn, /send this file to the developer/)
+  // It is wrapped so a failing reporter cannot itself crash the crash handler:
+  // the body opens with a try and every path is swallowed by a bare catch.
+  assert.match(fn, /^function _appendCrashLog\(kind, err\) \{\s*\n\s*try \{/)
+  assert.match(fn, /catch \(_\) \{\s*\}\s*\n\}/, 'the outer catch swallows any failure')
+})
+
+test('both process crash handlers write the crash log', () => {
+  const rej = CODE.slice(CODE.indexOf("process.on('unhandledRejection'"),
+                         CODE.indexOf("process.on('uncaughtException'"))
+  assert.match(rej, /_appendCrashLog\(/)
+  const exc = CODE.slice(CODE.indexOf("process.on('uncaughtException'"),
+                         CODE.indexOf("process.on('uncaughtException'") + 300)
+  assert.match(exc, /_appendCrashLog\(/)
+})
+
+test('a renderer crash writes the same crash log', () => {
+  const h = CODE.slice(CODE.indexOf("webContents.on('render-process-gone'"),
+                       CODE.indexOf("webContents.on('render-process-gone'") + 900)
+  assert.match(h, /_appendCrashLog\(/, 'the renderer path lands in the same file')
+})
+
+test('the last few IPC channels are recorded for the crash trail', () => {
+  // A ring buffer, bounded, pushed to on every invoke through the one wrapper.
+  assert.match(CODE, /const CRASH_TRAIL_MAX = 5/)
+  const fn = CODE.slice(CODE.indexOf('function _noteChannel('),
+                        CODE.indexOf('function _noteChannel(') + 200)
+  assert.match(fn, /_crashTrail\.push\(channel\)/)
+  assert.match(fn, /_crashTrail\.shift\(\)/, 'it stays bounded')
+  // The wrapper feeds it on both the deadlined and un-deadlined paths.
+  const wrap = CODE.slice(CODE.indexOf('ipcMain.handle = function'),
+                          CODE.indexOf('const { MpvEngine }'))
+  assert.strictEqual((wrap.match(/_noteChannel\(channel\)/g) || []).length, 2,
+    'both the timed and untimed handler paths record the channel')
+})
+
+// ── Wave 7 · App §11: offline detection ─────────────────────────────────────
+
+test('connectivity is probed on a slow interval with a short timeout', () => {
+  assert.match(CODE, /const CONNECTIVITY_PROBE_TIMEOUT_MS = 5000/)
+  assert.match(CODE, /const CONNECTIVITY_PROBE_INTERVAL_MS = 60000/)
+  const probe = CODE.slice(CODE.indexOf('function _probeOnce()'),
+                           CODE.indexOf('async function _checkConnectivity()'))
+  assert.match(probe, /method: 'HEAD'/, 'a HEAD, so no body is pulled')
+  assert.match(probe, /timeout: CONNECTIVITY_PROBE_TIMEOUT_MS/)
+  assert.match(probe, /req\.on\('timeout'/, 'a slow probe counts as down')
+  assert.match(probe, /req\.on\('error'/)
+})
+
+test('a single blip never flips the online state — two in a row are required', () => {
+  const fn = CODE.slice(CODE.indexOf('async function _checkConnectivity()'),
+                        CODE.indexOf('function startConnectivityMonitor()'))
+  assert.match(fn, /_lastProbe === up && _onlineState !== up/,
+    'the current probe must match the previous one before the state moves')
+  assert.match(fn, /safeSend\('app-online-state', \{ online: up \}\)/)
+})
+
+test('the connectivity monitor is started after startup settles', () => {
+  assert.match(CODE, /startConnectivityMonitor\(\)/)
+  const fn = CODE.slice(CODE.indexOf('function startConnectivityMonitor()'),
+                        CODE.indexOf('function startConnectivityMonitor()') + 400)
+  assert.match(fn, /setInterval\(/)
+  assert.match(fn, /setTimeout\(/, 'the first probe waits out the launch stampede')
+})
+
+// ── Wave 7 · App §4: auto-backups ───────────────────────────────────────────
+
+test('the auto-backup reuses the shared bundling routine', () => {
+  const fn = CODE.slice(CODE.indexOf('function _runAutoBackup()'),
+                        CODE.indexOf('function startAutoBackup()'))
+  assert.match(fn, /_buildBackupPayload\(\)/, 'it must not re-implement export')
+  assert.match(fn, /backups/, 'it writes under a backups folder')
+  assert.match(fn, /papa-backup\.json/)
+})
+
+test('auto-backups rotate, keeping the seven newest', () => {
+  assert.match(CODE, /const AUTO_BACKUP_KEEP = 7/)
+  const fn = CODE.slice(CODE.indexOf('function _runAutoBackup()'),
+                        CODE.indexOf('function startAutoBackup()'))
+  assert.match(fn, /\.sort\(\)/, 'ISO stamps sort chronologically')
+  assert.match(fn, /entries\.length - AUTO_BACKUP_KEEP/)
+  assert.match(fn, /rmSync/, 'older backups are deleted')
+})
+
+test('the auto-backup never blocks startup and never throws past its log', () => {
+  const fn = CODE.slice(CODE.indexOf('function startAutoBackup()'),
+                        CODE.indexOf('function startAutoBackup()') + 400)
+  assert.match(fn, /setTimeout\(/, 'it runs on a timer after startup')
+  assert.match(fn, /catch \(e\)/, 'a failed backup logs, it does not crash')
+  assert.match(fn, /auto-backup failed/)
+})
+
+// ── Wave 7 · App §96: store schema versioning ───────────────────────────────
+
+test('a future schema version is detected loudly as a downgrade', () => {
+  assert.match(CODE, /const STORE_SCHEMA_VERSION = \d+/)
+  const fn = CODE.slice(CODE.indexOf('function checkStoreSchemaVersion()'),
+                        CODE.indexOf('function _collectBackupStores()'))
+  assert.match(fn, /store-schema-version/, 'the marker file is named')
+  assert.match(fn, /onDisk > STORE_SCHEMA_VERSION/, 'a newer-on-disk version is the downgrade case')
+  assert.match(fn, /console\.error/, 'and it is loud')
+  // A missing marker is stamped with the current version, not left absent.
+  assert.match(fn, /if \(onDisk == null\)/)
+  assert.match(fn, /writeFileSync\(marker, String\(STORE_SCHEMA_VERSION\)/)
+})
+
+test('the schema check runs at startup', () => {
+  assert.match(CODE, /checkStoreSchemaVersion\(\)/)
+})
