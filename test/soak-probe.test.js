@@ -379,7 +379,9 @@ test('the number of global listener registrations is a deliberate budget', () =>
   //       • _openVideoCardMenu — a document click and a window scroll, both
   //         added on menu-open and removed in _closeVideoCardMenu, so they are
   //         never standing listeners even though the source counts the sites.
-  assert.strictEqual(sites.inFunction.length, 20,
+  // 21: the clean-exit pagehide marker in setupListeners (App §1), which runs
+  //     once from init() and only writes a localStorage flag on shutdown.
+  assert.strictEqual(sites.inFunction.length, 21,
     'a global listener was added inside a function. Nothing collects a listener ' +
     'on document or window, so make sure that function cannot run twice — this ' +
     'app has shipped that exact leak three times (items 73, 74, 257) — then ' +

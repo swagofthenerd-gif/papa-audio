@@ -58,9 +58,28 @@ function _score(e, preferSurround) {
   return { quality, surround, score: quality + bonus }
 }
 
-function rankStreams(entries, { preferSurround = true } = {}) {
-  const ranked = entries.map(e => ({ entry: e, ..._score(e, preferSurround) }))
+// Learned dead-magnet memory (App roadmap #41). `isDead` is an injected
+// predicate — isDead(infoHash) → boolean — that the caller wires to the
+// persistent failure map (src/dead-magnet.js over a SideStore). A torrent whose
+// infohash has repeatedly failed to connect is DEMOTED beneath every live source
+// and flagged with `deadHint: true` for a future UI badge. It is never removed:
+// coverage at the tail is the point, and a dead swarm can revive. Kept pure and
+// optional — with no predicate (tests, and any non-torrent lookup) nothing is
+// demoted and no entry is flagged.
+function rankStreams(entries, { preferSurround = true, isDead = null } = {}) {
+  const deadFn = typeof isDead === 'function' ? isDead : null
+  const ranked = entries.map(e => {
+    // The flag rides on the entry the caller receives, so the UI can badge it
+    // without a second lookup. Only torrent entries carry an infohash to test;
+    // a fresh copy avoids mutating the provider's own object.
+    const dead = !!(deadFn && e && e.infoHash && deadFn(e.infoHash))
+    const entry = dead ? { ...e, deadHint: true } : e
+    return { entry, dead, ..._score(entry, preferSurround) }
+  })
   ranked.sort((a, b) => {
+    // A known-dead magnet sinks beneath everything live regardless of its
+    // quality or seeds — it is offered last, not hidden.
+    if (a.dead !== b.dead) return a.dead ? 1 : -1
     // Cam rips and telesyncs are a filmed cinema screen, not a source encode.
     // They stay in the list so a film with nothing else is still playable, but
     // they never outrank a real release regardless of resolution or seeds.
@@ -174,7 +193,7 @@ function orderBackendsByHealth(backends) {
   return list
 }
 
-async function resolveStream(request, backends, { preferSurround = true, timeoutMs = 8000 } = {}) {
+async function resolveStream(request, backends, { preferSurround = true, timeoutMs = 8000, isDead = null } = {}) {
   // Order by health first, but keep every backend — a demoted source still runs,
   // it just no longer leads. All run in parallel anyway; the ordering matters
   // for the caller's mental model and for any future first-hit-wins fast path.
@@ -207,7 +226,7 @@ async function resolveStream(request, backends, { preferSurround = true, timeout
     recordSourceResult(name, list.length > 0)
     void produced
   }
-  return rankStreams(merged, { preferSurround })
+  return rankStreams(merged, { preferSurround, isDead })
 }
 
 module.exports = {

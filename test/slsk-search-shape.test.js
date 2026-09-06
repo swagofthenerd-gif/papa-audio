@@ -91,8 +91,13 @@ test('the new channels are declared in main, preload and the timeout table', () 
 
 test('the search core is factored so the hunter shares it', () => {
   assert.match(MAIN, /async function slskRunSearch\(/, 'the core must be a named function')
-  assert.match(MAIN, /ipcMain\.handle\('slsk-search', \(_, args\) => slskRunSearch/,
-    'the handler is a thin wrapper over the core')
+  // App #53 inserted a serve-then-revalidate layer (slskServeSearch) between the
+  // handler and the core: it serves persisted results instantly, then falls
+  // through to the same slskRunSearch core the hunter shares.
+  assert.match(MAIN, /ipcMain\.handle\('slsk-search', \(_, args\) => slskServeSearch/,
+    'the handler is a thin wrapper over the serve layer')
+  assert.match(MAIN, /function slskServeSearch[\s\S]{0,800}slskRunSearch\(args\)/,
+    'the serve layer falls through to the shared core')
   // The hunter's search calls the core with noCache, so the 5-min cache never
   // serves it a stale empty.
   const sweep = MAIN.slice(MAIN.indexOf('async function slskWishlistSweep'),

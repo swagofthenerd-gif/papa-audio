@@ -5092,6 +5092,24 @@ textarea:focus:not(:focus-visible) { outline: none; }
 }
 .queue-autoplay-toggle.on { border-color: #1db954; color: #1db954; }
 
+/* Queue header: save-as-playlist action (App #14) */
+.queue-header-actions {
+  padding: 8px 16px; border-bottom: 1px solid rgba(255,255,255,.06);
+}
+.queue-save-playlist-btn {
+  width: 100%; border: 1px solid var(--glass-border); background: var(--glass);
+  color: var(--text2); border-radius: 8px; padding: 8px 12px; font-size: 12px;
+  font-weight: 600; cursor: pointer; transition: background .12s, color .12s;
+}
+.queue-save-playlist-btn:hover { background: var(--bg3); color: var(--text); }
+
+/* Long-track resume chip on track rows (App #4) */
+.track-bookmark-chip {
+  font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 3px;
+  background: rgba(29,185,84,.18); color: #1db954; margin-left: 6px;
+  vertical-align: middle; white-space: nowrap;
+}
+
 /* Lyrics: clickable lines seek */
 .lyrics-line, .lyrics-drawer-line { cursor: pointer; }
 .lyrics-line:hover, .lyrics-drawer-line:hover { opacity: .85; color: var(--text); }

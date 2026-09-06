@@ -52,7 +52,8 @@ function syncScriptBytes () {
 // Raised 2026-09-05: waves 6-10 added music-tools, home-recap, diary-timeline,
 // loudness, thumbnailer glue and the light-theme/settings growth — deliberate
 // feature work, re-based with ~15% headroom over the new measured total.
-const SCRIPT_BYTE_CEILING = 1864365
+// Raised 2026-09-06: Wave-1 UI (crash restore, keep-going, waveform hover, long-track bookmarks, save-queue-as-playlist, undo audit) grew renderer.js — re-based ~15% above the new measured total.
+const SCRIPT_BYTE_CEILING = 2160000
 
 test('the renderer loads its scripts and none is missing from disk', () => {
   const { count, missing } = syncScriptBytes()
@@ -103,8 +104,12 @@ function topLevelRequireCount () {
 }
 
 // Recorded 2026-09-04: 60 top-level requires in main.js. Ceiling ~15% above.
-// Same contract as the byte budget: raise it deliberately, not incidentally.
-const REQUIRE_CEILING = 69
+// Raised 2026-09-06 to 74: the Wave 1 backend added four tiny pure-logic
+// modules required at startup (dead-magnet, watch-debounce, backup-schedule,
+// search-history) — each is a handful of pure functions with no I/O at import,
+// so the startup cost is negligible, but the ceiling moves deliberately, not
+// incidentally, per the contract below.
+const REQUIRE_CEILING = 74
 
 test('main.js top-level require count stays under its recorded ceiling', () => {
   const n = topLevelRequireCount()

@@ -177,9 +177,14 @@ test('a stalled transfer is only re-queued once slskd has let go of it', () => {
 // ── Items 51 and 62, and a failed scan that read as an empty library ───────
 
 test('the watcher debounce cannot be postponed forever', () => {
+  // App #18 moved the ceiling into the pure watch-debounce policy (tested in
+  // watch-debounce.test.js). The watcher still enforces it: it computes the
+  // max-wait for the current conditions and asks shouldRunNow whether the first
+  // event in the burst has passed it.
   const fn = MAIN.slice(MAIN.indexOf('function setupLibraryWatcher'), MAIN.indexOf('function buildAlbums'))
-  assert.match(fn, /WATCH_MAX_WAIT_MS/)
-  assert.match(fn, /now - _watchFirstEventAt >= WATCH_MAX_WAIT_MS/,
+  assert.match(fn, /watchDebounce\.chooseMaxWait\(/,
+    'the ceiling window comes from the pure policy so downloads can widen it')
+  assert.match(fn, /watchDebounce\.shouldRunNow\(\{ firstEventAt: _watchFirstEventAt/,
     'copying an album in kept deferring the scan while burning CPU on debounce churn')
 })
 

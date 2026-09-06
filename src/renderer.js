@@ -172,6 +172,10 @@ var _slskShowLimit = SLSK_SHOW_STEP
 // superseded; several of these restarted without clearing the previous one.
 var _connCheckTimer = null
 var _waveformTimer = null
+// Set by init() from the papa-clean-exit flag: true when the previous session
+// did NOT shut down cleanly (App #1). Read once, then the crash-restore banner
+// consumes it.
+var _uncleanExit = false
 
 var _playlistSorts = {}
 // Bounded. These only ever grow unless the user presses Back, so a long session
@@ -1099,6 +1103,16 @@ let ctxTarget = null  // { type: 'album'|'track', albumId, track, artist }
 
 // ── Init ───────────────────────────────────────────────────────────────────
 async function init() {
+  // Crash-restore detection (App #1). Read the clean-exit flag BEFORE anything
+  // clears it: it is written on pagehide (a clean shutdown) and cleared here on
+  // every boot, so its ABSENCE at boot means the previous session died without
+  // a pagehide — a crash or a kill. Purely renderer-owned, so it holds even if
+  // main never sends its own app-recovered-from-crash event. The banner that
+  // uses this is offered after the library and session state load, once we know
+  // there was actually a playing queue to pick up.
+  _uncleanExit = localStorage.getItem('papa-clean-exit') !== '1'
+  try { localStorage.removeItem('papa-clean-exit') } catch (_) {}
+
   // Theme before first paint (App #87): read the synchronous localStorage
   // mirror and set body.theme-light now, so the app opens straight into the
   // chosen palette instead of flashing dark then correcting after IPC returns.
@@ -1282,7 +1296,12 @@ async function init() {
     navigate(_restorePage, _restorePage === 'home' ? null : _restoreNavId, { skipHistory: true, restoreScroll: true })
     syncLibraryExt()
     setTimeout(backgroundSync, 800)
-    setTimeout(restorePlaybackState, 1200)
+    // After a clean shutdown, quietly restore the previous queue as before. After
+    // an unclean one (App #1), do NOT auto-restore — offer a dismissible "Pick up
+    // where you left off?" banner instead, so a crash never silently reloads a
+    // queue the user may not want back.
+    if (_uncleanExit) setTimeout(_offerCrashRestore, 1200)
+    else setTimeout(restorePlaybackState, 1200)
   } else {
     showLoading()
     await fullScan()
@@ -1478,6 +1497,74 @@ function _currentNavId() {
 // ── Playback state restore ──────────────────────────────────────────────────
 // Picks up where an unclean shutdown left off. restorePlaybackState already
 // rebuilds the queue and seeks; this is that, plus actually playing.
+// Crash-restore banner (App #1). Offered at boot ONLY when the previous session
+// ended uncleanly (no pagehide flag — see init()) and there was a real playing
+// queue saved. A small dismissible snackbar, never a blocking prompt and never
+// an auto-play: pressing Resume rebuilds the exact queue, track and position the
+// session died on, paused, and returns to the view that was open. Anything else
+// the user does first supersedes it (the restore guards on an empty queue).
+async function _offerCrashRestore() {
+  if (!_uncleanExit) return
+  // Only worth offering if there was a queue mid-flight. The `_auto` saved queue
+  // is the same snapshot restorePlaybackState() reads, written on every track
+  // start; no queue means nothing to pick up.
+  var autoQueue = null
+  try {
+    var queues = await window.api.getSavedQueues()
+    autoQueue = (queues || []).find(function (q) { return q.id === '_auto' })
+  } catch (_) { autoQueue = null }
+  if (!autoQueue || !autoQueue.tracks || !autoQueue.tracks.length) return
+  // The user may have started playing something in the ~1.2s before this ran;
+  // if so, leave them be rather than yanking the queue out from under them.
+  if (state.queue.length || state.isPlaying) return
+
+  var count = autoQueue.tracks.length
+  showSnackbar('Pick up where you left off? (' + count + ' track' +
+    (count === 1 ? '' : 's') + ')', 'Resume', function () {
+    _resumeCrashSession()
+  }, 15000)
+}
+
+// Rebuilds queue + index + position (paused) and re-opens the saved view. Shares
+// restorePlaybackState's force path so it wins over the boot guards, then seeks
+// to the saved position without ever calling play().
+async function _resumeCrashSession() {
+  if (state.queue.length || state.isPlaying) {
+    showSnackbar('Already playing — leaving your current queue as is', '', function () {}, 4000)
+    return
+  }
+  await restorePlaybackState({ force: true })
+  if (!state.queue.length) {
+    showSnackbar('That session is no longer available', '', function () {}, 5000)
+    return
+  }
+  var saved = null
+  try { saved = await window.api.getPlaybackState() } catch (_) { saved = null }
+  var pos = Number(saved && saved.position) || 0
+  var cur = state.queue[state.queueIndex]
+  if (cur && cur.filePath) {
+    audio.src = 'file://' + cur.filePath
+    if (pos > 1) setTimeout(function () {
+      if (audio.src === 'file://' + cur.filePath) audio.currentTime = pos
+    }, 500)
+  }
+  // Paused, always. Never auto-play on restore.
+  state.isPlaying = false
+  updatePlayBtn()
+  updateNowPlaying(cur)
+  updateTrackHighlight()
+  if (state.queuePanelOpen) renderQueuePanel()
+  // Return to the view that was open when the crash happened.
+  try {
+    var session = await window.api.getSessionState()
+    var page = session && session.page ? session.page : null
+    var needsNavId = ['album', 'artist', 'search', 'playlist', 'video-detail', 'person', 'shelf']
+    if (page && !(needsNavId.indexOf(page) !== -1 && !session.navId) && page !== state.currentPage) {
+      navigate(page, page === 'home' ? null : session.navId, { skipHistory: true, restoreScroll: true })
+    }
+  } catch (_) { /* view restore is best-effort; playback already restored */ }
+}
+
 async function resumeFromSavedState(saved) {
   await restorePlaybackState({ force: true })
   const pos = Number(saved && saved.position) || 0
@@ -8747,6 +8834,131 @@ async function startYtRadio(seed) {
 function autoplayEnabled() { return localStorage.getItem('autoplay') !== '0' }
 function setAutoplay(on) { localStorage.setItem('autoplay', on ? '1' : '0') }
 
+// "Keep the music going" (App #2). Opt-in — default OFF, unlike the older YT
+// autoplay above which is on by default. When enabled, a queue that truly ends
+// (no repeat) is topped up with radio-style similar tracks from the SAME source
+// the now-playing Radio button uses (queueBuild mode:'radio'), rather than
+// falling silent. Persisted under its own key so the two toggles never collide.
+function keepGoingEnabled() { return localStorage.getItem('papa-keep-going') === '1' }
+function setKeepGoing(on) { localStorage.setItem('papa-keep-going', on ? '1' : '0') }
+
+// ── Long-track bookmarks (App #4) ────────────────────────────────────────────
+// DJ mixes, live sets and audiobooks over 20 minutes get their playback position
+// remembered per filePath, so re-opening one offers to resume where it was left.
+// Stored as a localStorage map { filePath: { pos, dur, at } }, LRU-capped at 200
+// entries by the `at` timestamp so it never grows without bound.
+var LONG_TRACK_SECS = 20 * 60
+var LONG_BOOKMARK_CAP = 200
+var LONG_BOOKMARK_KEY = 'papa-long-bookmarks'
+function _readLongBookmarks() {
+  // Through the validated reader (renderer-hygiene forbids a raw JSON.parse of
+  // localStorage): readObject returns {} for a missing or malformed blob.
+  return window.PapaLocal.readObject(LONG_BOOKMARK_KEY) || {}
+}
+function _writeLongBookmarks(map) {
+  var keys = Object.keys(map)
+  if (keys.length > LONG_BOOKMARK_CAP) {
+    // Evict the oldest by `at` until back under the cap (LRU).
+    keys.sort(function (a, b) { return (map[a].at || 0) - (map[b].at || 0) })
+    var drop = keys.length - LONG_BOOKMARK_CAP
+    for (var i = 0; i < drop; i++) delete map[keys[i]]
+  }
+  window.PapaLocal.write(LONG_BOOKMARK_KEY, map)
+}
+// Record/clear a bookmark. Near the very start or very end is not worth keeping.
+function saveLongBookmark(filePath, pos, dur) {
+  if (!filePath || !dur || dur < LONG_TRACK_SECS) return
+  var map = _readLongBookmarks()
+  if (pos <= 60 || pos >= dur - 15) { delete map[filePath] }
+  else { map[filePath] = { pos: Math.floor(pos), dur: Math.floor(dur), at: Date.now() } }
+  _writeLongBookmarks(map)
+}
+function getLongBookmark(filePath) {
+  if (!filePath) return null
+  var map = _readLongBookmarks()
+  return map[filePath] || null
+}
+function clearLongBookmark(filePath) {
+  if (!filePath) return
+  var map = _readLongBookmarks()
+  if (map[filePath]) { delete map[filePath]; _writeLongBookmarks(map) }
+}
+// A small chip on a long track's row showing it has a saved position. Empty
+// string for anything without one, so it costs nothing on ordinary rows.
+function _longBookmarkChip(t) {
+  if (!t || !t.filePath) return ''
+  var dur = Number(t.duration) || 0
+  if (dur && dur < LONG_TRACK_SECS) return ''
+  var bm = getLongBookmark(t.filePath)
+  if (!bm || !(bm.pos > 60)) return ''
+  return '<span class="track-bookmark-chip" title="Resume from ' + esc(fmtDur(bm.pos)) + '">&#9654; ' + esc(fmtDur(bm.pos)) + '</span>'
+}
+
+// Guards against re-offering the same bookmark within one play (onStarted can
+// fire more than once across the stream/local paths).
+var _longResumeOfferedFor = null
+// When a long track with a saved position > 60s starts, offer to jump to it —
+// the same unobtrusive action-toast the video side uses for its resume prompt,
+// never a blocking dialog and never an automatic seek.
+function _maybeOfferLongResume(track) {
+  if (!track || !track.filePath) return
+  var dur = Number(track.duration) || 0
+  if (dur && dur < LONG_TRACK_SECS) return
+  var bm = getLongBookmark(track.filePath)
+  if (!bm || !(bm.pos > 60)) return
+  if (_longResumeOfferedFor === track.filePath) return
+  _longResumeOfferedFor = track.filePath
+  showActionToast('Resume from ' + fmtDur(bm.pos) + '?', 'Resume', function () {
+    // Only seek if this is still the track playing.
+    var cur = state.queue[state.queueIndex]
+    if (cur && cur.filePath === track.filePath) {
+      try { audio.currentTime = bm.pos } catch (_) {}
+    }
+  }, 9000)
+}
+
+// Append similar tracks to the end of the queue when it runs out, reusing the
+// btn-np-radio machinery. Returns true if it managed to keep playback going.
+// Falls back to the YT autoplay path when the library radio has nothing to add,
+// so a YouTube-seeded queue still continues.
+let _keepGoingBusy = false
+async function _keepGoingContinue() {
+  if (_keepGoingBusy || !state.queue.length) return false
+  _keepGoingBusy = true
+  try {
+    var seed = state.queue[state.queueIndex] || state.queue[state.queue.length - 1]
+    var seedPath = seed && seed.filePath
+    // A remote/streaming seed has no local file for the analyser to work from;
+    // hand off to the YT continue path in that case.
+    if (seedPath && !/^https?:\/\//.test(seedPath)) {
+      var result = await window.api.queueBuild({ mode: 'radio', seedFilePath: seedPath, length: 40 }).catch(function () { return null })
+      if (result && result.tracks && result.tracks.length) {
+        var have = new Set(state.queue.map(function (t) { return t.filePath }))
+        var fresh = result.tracks.filter(function (t) { return t.filePath && !have.has(t.filePath) })
+        if (fresh.length) {
+          var at = state.queue.length
+          state.queue.push.apply(state.queue, fresh)
+          state.queueIndex = at
+          playCurrentTrack()
+          if (state.queuePanelOpen) renderQueuePanel()
+          showToast('Keeping the music going — added ' + fresh.length + ' similar track' + (fresh.length === 1 ? '' : 's'))
+          return true
+        }
+      }
+    }
+    // Nothing from the library radio: try the YouTube continue path.
+    _keepGoingBusy = false
+    var wasBusy = _autoplayBusy
+    await tryAutoplayContinue()
+    if (!wasBusy && state.isPlaying) { showToast('Keeping the music going'); return true }
+    return state.isPlaying
+  } catch (_) {
+    return false
+  } finally {
+    _keepGoingBusy = false
+  }
+}
+
 let _autoplayBusy = false
 async function tryAutoplayContinue() {
   if (_autoplayBusy || !state.queue.length) return
@@ -9622,7 +9834,7 @@ function renderAlbum(albumId) {
           ? '<div class="playing-bars"><span></span><span></span><span></span></div>'
           : (t.trackNumber || i + 1)}</span>
         <div class="track-info">
-          <div class="track-title">${esc(t.title)}${t.explicit ? '<span class="track-explicit">E</span>' : ''}${surroundBadge(t.channels)}</div>
+          <div class="track-title">${esc(t.title)}${t.explicit ? '<span class="track-explicit">E</span>' : ''}${surroundBadge(t.channels)}${_longBookmarkChip(t)}</div>
           <div class="track-artist" data-artist="${esc(t.artist || album.artist)}">${esc(t.artist || album.artist)}${t.bpm ? `<span class="track-bpm">${t.bpm} BPM</span>` : ''}</div>
         </div>
         ${plays > 0 ? `<span class="track-plays">${plays}</span>` : '<span class="track-plays"></span>'}
@@ -13963,6 +14175,58 @@ function toggleQueuePanel() {
   if (state.queuePanelOpen) renderQueuePanel()
 }
 
+// Wires the queue panel header controls, shared by both render paths (empty and
+// populated). Idempotent per render: the header is rebuilt on every
+// renderQueuePanel(), so fresh elements always need fresh listeners.
+function _wireQueueHeaderControls() {
+  document.getElementById('queue-autoplay-toggle')?.addEventListener('click', () => {
+    setAutoplay(!autoplayEnabled())
+    renderQueuePanel()
+  })
+  document.getElementById('queue-keepgoing-toggle')?.addEventListener('click', () => {
+    setKeepGoing(!keepGoingEnabled())
+    renderQueuePanel()
+  })
+  document.getElementById('queue-save-playlist')?.addEventListener('click', saveQueueAsPlaylist)
+}
+
+// Save queue as playlist (App #14). One click in the queue header → name prompt
+// (the shared _mgPrompt) → a new playlist built from the current queue via the
+// same create+persist path the add-to-playlist "New playlist" flow uses.
+function saveQueueAsPlaylist() {
+  if (!state.queue.length) { showSnackbar('The queue is empty'); return }
+  var curName = state.queue[state.queueIndex]?.albumName || ''
+  _mgPrompt('Save queue as playlist', {
+    label: 'Playlist name',
+    value: curName ? 'Queue — ' + curName : 'Queue ' + new Date().toLocaleDateString(),
+    confirmLabel: 'Save',
+    onConfirm: function (name) {
+      name = String(name || '').trim()
+      if (!name) { showSnackbar('Give the playlist a name'); return }
+      // Same slim shape and id scheme the add-to-playlist flow writes, so the
+      // saved playlist is indistinguishable from one made any other way.
+      var tracks = state.queue.map(function (t) {
+        return {
+          id: t.id, title: t.title, artist: t.artist, albumArtist: t.albumArtist || t.artist || '',
+          albumName: t.albumName || '', duration: t.duration || 0, filePath: t.filePath,
+          artPath: t.artPath || null, albumId: t.albumId || null,
+          videoId: t.videoId || null, albumBrowseId: t.albumBrowseId || null, channelId: t.channelId || null,
+          replayGainTrack: t.replayGainTrack ?? null, replayGainAlbum: t.replayGainAlbum ?? null,
+          sampleRate: t.sampleRate || 0, bitsPerSample: t.bitsPerSample || 0, channels: t.channels || 0,
+        }
+      })
+      var pl = {
+        id: 'pl_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
+        name: name, tracks: tracks, createdAt: Date.now(),
+      }
+      state.playlists.unshift(pl)
+      window.api.savePlaylist(pl)
+      if (state.currentPage === 'playlists') renderPlaylists()
+      showSnackbar('Saved "' + name + '" (' + tracks.length + ' track' + (tracks.length === 1 ? '' : 's') + ')')
+    },
+  })
+}
+
 function renderQueuePanel() {
   var qBtn = document.getElementById('btn-queue')
   if (qBtn) qBtn.title = state.queue.length + ' tracks in queue'
@@ -13973,6 +14237,13 @@ function renderQueuePanel() {
   var autoHtml = `<div class="queue-autoplay-row">
     <span>Autoplay similar when queue ends</span>
     <button class="queue-autoplay-toggle${autoplayEnabled() ? ' on' : ''}" id="queue-autoplay-toggle">${autoplayEnabled() ? 'On' : 'Off'}</button>
+  </div>
+  <div class="queue-autoplay-row">
+    <span>Keep the music going</span>
+    <button class="queue-autoplay-toggle${keepGoingEnabled() ? ' on' : ''}" id="queue-keepgoing-toggle">${keepGoingEnabled() ? 'On' : 'Off'}</button>
+  </div>
+  <div class="queue-header-actions">
+    <button class="queue-save-playlist-btn" id="queue-save-playlist">Save queue as playlist</button>
   </div>`
   var queueInfo = state._restoredFromQueue ? '<div style="padding:6px 12px;font-size:11px;color:var(--text3);text-align:center">Restored from previous session</div>' : ''
   const fromHtml = autoHtml + queueInfo + (fromName
@@ -13982,10 +14253,7 @@ function renderQueuePanel() {
   var st = qp ? qp.scrollTop : 0
   if (!state.queue.length) {
     list.innerHTML = fromHtml + `<div style="padding:20px 16px; color:var(--text3); font-size:13px;">Nothing in queue</div>`
-    document.getElementById('queue-autoplay-toggle')?.addEventListener('click', () => {
-      setAutoplay(!autoplayEnabled())
-      renderQueuePanel()
-    })
+    _wireQueueHeaderControls()
     var qp2 = document.getElementById('queue-panel')
     if (qp2) qp2.scrollTop = st
     return
@@ -14090,11 +14358,8 @@ function renderQueuePanel() {
   if (clearPlayedBtn) clearRow.appendChild(clearPlayedBtn)
   list.appendChild(clearRow)
 
-  // Autoplay toggle
-  document.getElementById('queue-autoplay-toggle')?.addEventListener('click', () => {
-    setAutoplay(!autoplayEnabled())
-    renderQueuePanel()
-  })
+  // Queue header controls (autoplay + keep-going + save-as-playlist).
+  _wireQueueHeaderControls()
 
   // Click to play
   // Queue rows had no context menu; "Remove from queue" belongs here, and must
@@ -15809,6 +16074,7 @@ function playCurrentTrack() {
     window.api.notifyTrack({ title: track.title, artist: track.albumArtist || track.artist || '', artPath: track.artPath || null })
     _shuffleHistory.push(state.queueIndex)
     if (_shuffleHistory.length > 10) _shuffleHistory.shift()
+    _maybeOfferLongResume(track)
     clearTimeout(_playCountTimer)
     _playCountTimer = setTimeout(() => {
       state.playCounts[track.filePath] = (state.playCounts[track.filePath] || 0) + 1
@@ -16109,6 +16375,10 @@ function playNext() {
   if (state.queueIndex === 0 && state.repeat === 'off') {
     // Queue finished — restore prior queue if standalone play was active
     if (_oldQueue) { restoreOldQueue(); return }
+    // "Keep the music going" (App #2): opt-in library radio continuation, using
+    // the same source the Radio button does. Takes precedence over the older YT
+    // autoplay and works while shuffling too, since it appends fresh tracks.
+    if (keepGoingEnabled()) { _keepGoingContinue(); return }
     // Spotify-style autoplay keeps going with similar tracks
     if (autoplayEnabled() && !state.shuffle) { tryAutoplayContinue(); return }
     audio.pause(); state.isPlaying = false; updatePlayBtn(); syncExtension(); return
@@ -16967,10 +17237,17 @@ function bindContentEvents() {
   })
   document.querySelectorAll('.wishlist-remove-btn').forEach(function(btn) {
     btn.addEventListener('click', function() {
-      state.downloadWishlist.splice(parseInt(btn.dataset.wlIdx), 1)
+      var idx = parseInt(btn.dataset.wlIdx)
+      // Undo audit (App #66): snapshot the removed entry and its position so the
+      // Undo toast can put it back exactly where it was.
+      var removed = state.downloadWishlist.splice(idx, 1)[0]
       renderDownloads()
       window.api.saveDownloadWishlist(state.downloadWishlist)
-      showSnackbar('Removed from wishlist')
+      pushUndo('Removed from wishlist', function () {
+        state.downloadWishlist.splice(idx, 0, removed)
+        window.api.saveDownloadWishlist(state.downloadWishlist)
+        renderDownloads()
+      })
     })
   })
 
@@ -21042,6 +21319,11 @@ function _renderCompletedTab(files, container) {
         // skips a FULL /transfers/downloads fetch (~1 MB) per item.
         await window.api.slskCancelTransfer({ username: btn.dataset.user, id: btn.dataset.id, alreadyDone: true }).catch(() => {})
         await _pollAndRenderDownloads()
+        // Undo audit (App #66): this clears a finished/failed record from slskd,
+        // which has no client-side reversal (the file on disk is untouched). We
+        // surface the action; a true Undo needs a backend "restore transfer
+        // record" IPC that does not exist. See report.
+        showSnackbar('Removed from the download list', '', function () {}, 3000)
       })
     })
   })
@@ -21310,6 +21592,9 @@ function _renderFailedTab(files, container) {
       _dlBtnAction(btn, async () => {
         await window.api.slskCancelTransfer({ username: btn.dataset.user, id: btn.dataset.id, alreadyDone: true }).catch(() => {})
         await _pollAndRenderDownloads()
+        // Undo audit (App #66): server-side record removal, no client-side
+        // reversal — surfaced, not undoable. See report on the backend gap.
+        showSnackbar('Removed from the download list', '', function () {}, 3000)
       })
     })
   })
@@ -23512,9 +23797,17 @@ async function showSlskSavedUsers() {
   dlg.querySelectorAll('[data-remove]').forEach(b => {
     b.addEventListener('click', async e => {
       e.stopPropagation()
-      await window.api.slskUnsaveUser({ username: b.dataset.remove })
+      var username = b.dataset.remove
+      // Undo audit (App #66): snapshot the saved user (with its note) so Undo can
+      // re-save it through the existing slskSaveUser channel.
+      var snap = (list || []).find(function (u) { return u.username === username }) || { username: username }
+      await window.api.slskUnsaveUser({ username: username })
       dlg.remove()
       showSlskSavedUsers()
+      pushUndo('Removed ' + username, function () {
+        window.api.slskSaveUser({ username: snap.username, note: snap.note || '' }).catch(function () {})
+        showSlskSavedUsers()
+      })
     })
   })
 }
@@ -24021,6 +24314,15 @@ function initResizableQueue() {
 }
 
 function setupListeners() {
+  // Clean-exit marker (App #1). pagehide is the last moment this renderer can
+  // still write synchronously; setting the flag here means a normal shutdown
+  // leaves it, and only a crash/kill leaves it absent for the next boot to
+  // notice. Kept separate from the video store's pagehide handler so it fires
+  // even when the video side was never touched this session.
+  window.addEventListener('pagehide', function () {
+    try { localStorage.setItem('papa-clean-exit', '1') } catch (_) {}
+  })
+
   // Make major UI regions focusable for keyboard navigation
   document.getElementById('content')?.setAttribute('tabindex', '0')
   document.getElementById('player-bar')?.setAttribute('tabindex', '0')
@@ -24812,6 +25114,11 @@ function setupListeners() {
       _lastSavedSec = intSec
       const track = state.queue[state.queueIndex]
       if (track) window.api.savePlaybackState({ filePath: track.filePath, position: ct })
+      // Long-track bookmark (App #4): only for tracks over 20 min, keyed on the
+      // local file path so a resume offer can find it next time it plays.
+      if (track && track.filePath && audio.duration >= LONG_TRACK_SECS) {
+        saveLongBookmark(track.filePath, ct, audio.duration)
+      }
     }
 
     // ── Skip all DOM updates when app is hidden ───────────────────────────
@@ -25941,6 +26248,40 @@ async function checkConnections() {
     clearInterval(_waveformTimer)
     _waveformTimer = setInterval(drawWaveform, 1000)
     drawWaveform()
+
+    // Waveform hover preview (App #3): the seek bar below already shows a
+    // time-at-cursor bubble on hover; extend the same tooltip to the waveform
+    // so hovering the wave reads out the time at that point too. Reuses the
+    // existing #progress-tooltip and its fmtDur/time-display convention.
+    canvas.style.cursor = 'pointer'
+    canvas.addEventListener('mousemove', function (e) {
+      if (!audio.duration) return
+      var tooltip = document.getElementById('progress-tooltip')
+      if (!tooltip) return
+      var rect = canvas.getBoundingClientRect()
+      var ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
+      var timeVal = timeDisplay === 'remaining'
+        ? audio.duration - (ratio * audio.duration)
+        : timeDisplay === 'total' ? _albumTotalDuration() : ratio * audio.duration
+      tooltip.textContent = fmtDur(Math.abs(timeVal))
+      tooltip.style.display = 'block'
+      // The tooltip lives inside .progress-track; place it under the cursor by
+      // its offset within that track, which spans the same width as the wave.
+      var track = document.getElementById('progress-track')
+      var tRect = track ? track.getBoundingClientRect() : rect
+      tooltip.style.left = (e.clientX - tRect.left) + 'px'
+    })
+    canvas.addEventListener('mouseleave', function () {
+      var tooltip = document.getElementById('progress-tooltip')
+      if (tooltip) tooltip.style.display = 'none'
+    })
+    // A click on the wave seeks, matching the seek bar it mirrors.
+    canvas.addEventListener('click', function (e) {
+      if (!audio.duration) return
+      var rect = canvas.getBoundingClientRect()
+      var ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
+      audio.currentTime = ratio * audio.duration
+    })
   }
 }
 

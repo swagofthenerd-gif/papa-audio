@@ -161,6 +161,10 @@ contextBridge.exposeInMainWorld('api', {
   // Backup: export / import everything (App §2-12, the foundation page)
   papaExportAll: ()  => ipcRenderer.invoke('papa-export-all'),
   papaImportAll: (p) => ipcRenderer.invoke('papa-import-all', p),
+  // Scheduled backup to ~/Documents/PapaAudioBackups/ (App #23): run one now, or
+  // read the schedule status (interval, last run, files on disk).
+  papaBackupNow:    () => ipcRenderer.invoke('papa-backup-now'),
+  papaBackupStatus: () => ipcRenderer.invoke('papa-backup-status'),
 
   // Changelog: user-facing "what's new" (App §7)
   appChangelog: () => ipcRenderer.invoke('app-changelog'),

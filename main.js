@@ -177,6 +177,10 @@ const { VideoEngine, purgeOrphanPlayers } = require('./video-engine')
 const { createThumbnailer } = require('./src/thumbnailer')
 const { createYarrlistDirectory } = require('./yarrlist-directory')
 const { classify } = require('./src/surround-verify')
+const deadMagnet = require('./src/dead-magnet')
+const watchDebounce = require('./src/watch-debounce')
+const backupSchedule = require('./src/backup-schedule')
+const searchHistory = require('./src/search-history')
 
 const LASTFM_API_KEY = 'PLACEHOLDER'
 const LASTFM_API_URL = 'https://ws.audioscrobbler.com/2.0/'
@@ -688,6 +692,20 @@ const sideStores = {
   // without bound. Serve-then-refresh: an open returns the cache immediately and
   // kicks a background refresh whose fresh tree arrives via slsk-browse-refreshed.
   browseCache: new SideStore({ dir: USER_DATA, name: 'browse-cache', fallback: {}, debounceMs: 1000, onError: _sideErr }),
+
+  // Learned dead-magnet memory (App #41). infohash -> { failures, lastFailAt }.
+  // Written on the video streamer's give-up/error paths, read (and decayed) when
+  // video sources are ranked so a repeatedly-dead torrent is demoted, never
+  // hidden. Small and infrequently written, so a lazy debounce is fine.
+  deadMagnets: new SideStore({ dir: USER_DATA, name: 'dead-magnets', fallback: {}, debounceMs: 1000, onError: _sideErr }),
+
+  // Soulseek search persistence (App #53). A capped list of recent searches —
+  // { key, query, results, at } newest-first — so a restart can serve the last
+  // results instantly (fromCache) while a live search revalidates in the
+  // background. The RAW normalized response list is stored, never DOM. Capped by
+  // total serialized size (see _searchPersistWrite) so it cannot grow without
+  // bound.
+  searchHistory: new SideStore({ dir: USER_DATA, name: 'search-history', fallback: [], debounceMs: 1000, onError: _sideErr }),
 }
 
 // One-time move out of the shared config. adoptIfEmpty only takes the legacy
@@ -701,6 +719,52 @@ for (const [key, side] of Object.entries(sideStores)) {
     }
   } catch (e) { _sideErr(new Error(`${key}: migration failed (${e && e.message})`)) }
 }
+
+// Learned dead-magnet memory (App #41): drop entries whose last failure has
+// decayed past the 14-day window, once at startup, so the file can never grow
+// without bound with hashes nobody will ever retry. Best-effort.
+try {
+  sideStores.deadMagnets.update(prev => deadMagnet.prune(prev || {}, Date.now()))
+} catch (_) { /* pruning is housekeeping; a failure just defers it */ }
+
+// Single-encode the video store (App #45). video-store.json used to hold a JSON
+// string INSIDE JSON — the renderer's blob, JSON.stringify'd, then the SideStore
+// JSON.stringify'd that string again. It works but is fragile for recovery
+// tooling. This migrates the stored value to a native object once: if the
+// SideStore currently holds a STRING that parses to JSON, the parsed OBJECT is
+// stored going forward and a one-time .pre-single-encode copy of the original
+// file is kept beside it. Idempotent — a value that is already an object (or a
+// string that is not JSON) is left untouched, so a second run does nothing.
+function _migrateVideoStoreSingleEncode(side) {
+  let value
+  try { value = side.get() } catch (_) { return false }
+  // Already single-encoded (object), empty, or an unparseable string: nothing
+  // to do. Only a string that round-trips through JSON.parse is the double-
+  // encoded shape this migration targets.
+  if (typeof value !== 'string') return false
+  let parsed
+  try { parsed = JSON.parse(value) } catch (_) { return false }
+  // A JSON string of a primitive (e.g. "null", a bare number) is not the blob;
+  // the video store is always an object.
+  if (!parsed || typeof parsed !== 'object') return false
+  // Keep the original file verbatim before rewriting it, once. If a backup is
+  // already there a prior migration ran — do not overwrite it.
+  try {
+    const bak = `${side.file}.pre-single-encode`
+    if (side.fileExists() && !fs.existsSync(bak)) fs.copyFileSync(side.file, bak)
+  } catch (_) { /* the copy is insurance; its absence must not block the migration */ }
+  try { side.set(parsed) } catch (_) { return false }
+  return true
+}
+
+try {
+  if (_migrateVideoStoreSingleEncode(sideStores.videoStore)) {
+    console.log('[papa][store] migrated video-store to single-encoded JSON')
+  }
+  // The rolling backup carries the same double-encoded shape; migrate it too so
+  // a recovery from it lands a clean object rather than re-introducing the wrap.
+  _migrateVideoStoreSingleEncode(sideStores.videoStoreBak)
+} catch (_) { /* a failed migration leaves the working double-encoded blob */ }
 
 // Nothing may be lost on the way out, and neither quit path can await.
 // featureStore is declared later in the file (it needs USER_DATA already set
@@ -1399,6 +1463,7 @@ app.whenReady().then(() => {
 
   startConnectivityMonitor()
   startAutoBackup()
+  startScheduledBackup()
 })
 
 // ── Offline detection (App §11) ──────────────────────────────────────────────
@@ -1505,6 +1570,67 @@ function startAutoBackup() {
       console.error('[papa] auto-backup failed:', (e && e.message) || String(e))
     }
   }, AUTO_BACKUP_DELAY_MS).unref?.()
+}
+
+// ── Scheduled backup to Documents (App #23) ──────────────────────────────────
+// Distinct from the in-app auto-backup above (which lives under USER_DATA and is
+// housekeeping the user never sees). This is the user-facing, opt-in schedule:
+// a full export dropped into ~/Documents/PapaAudioBackups/ every N days, keeping
+// the newest few, so a restore point exists outside the app profile. Off by
+// default (backupIntervalDays = 0). papaBackupNow() runs one on demand;
+// papaBackupStatus() reports the interval, the last run and what is on disk.
+function _scheduledBackupDir() {
+  return path.join(app.getPath('documents'), 'PapaAudioBackups')
+}
+
+// Write one dated backup file into the Documents folder and rotate to the newest
+// backupSchedule.KEEP. Returns { path, kept }. Throws on a real write failure so
+// callers can report it; the caller decides whether that is fatal.
+function _runScheduledBackup() {
+  const dir = _scheduledBackupDir()
+  fs.mkdirSync(dir, { recursive: true })
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+  const file = path.join(dir, `papa-backup-${stamp}.json`)
+  fs.writeFileSync(file, JSON.stringify(_buildBackupPayload(), null, 2), 'utf8')
+
+  // Rotate: keep the newest backupSchedule.KEEP files, delete the rest. The
+  // stale set is decided by the pure policy (oldest-first, ISO-name sort).
+  let names = []
+  try {
+    names = fs.readdirSync(dir, { withFileTypes: true })
+      .filter(e => e.isFile() && /^papa-backup-.*\.json$/.test(e.name))
+      .map(e => e.name)
+  } catch (_) { names = [] }
+  for (const name of backupSchedule.staleBackups(names, backupSchedule.KEEP)) {
+    try { fs.rmSync(path.join(dir, name), { force: true }) } catch (_) { /* best effort */ }
+  }
+  const kept = Math.min(names.length, backupSchedule.KEEP)
+  return { path: file, kept }
+}
+
+// Run a scheduled backup only if one is due, recording lastBackupAt on success.
+// Best-effort and silent on the not-due path. Returns a small status object.
+function _maybeRunScheduledBackup() {
+  const intervalDays = store.get('backupIntervalDays', 0)
+  const lastBackupAt = store.get('lastBackupAt', 0)
+  if (!backupSchedule.isBackupDue({ intervalDays, lastBackupAt, now: Date.now() })) {
+    return { ran: false }
+  }
+  try {
+    const r = _runScheduledBackup()
+    store.set('lastBackupAt', Date.now())
+    console.log(`[papa] scheduled backup written to ${r.path} (${r.kept} kept)`)
+    return { ran: true, path: r.path, kept: r.kept }
+  } catch (e) {
+    console.error('[papa] scheduled backup failed:', (e && e.message) || String(e))
+    return { ran: false, error: (e && e.message) || String(e) }
+  }
+}
+
+function startScheduledBackup() {
+  // On the same delayed startup tick as the auto-backup, so neither competes
+  // with the launch stampede. Only runs if the interval says it is due.
+  setTimeout(() => { _maybeRunScheduledBackup() }, AUTO_BACKUP_DELAY_MS).unref?.()
 }
 
 // mpv is spawned as a plain child, so it dies with a graceful quit (will-quit
@@ -2671,6 +2797,11 @@ ipcMain.handle('get-general-settings', () => ({
   // dark regardless. 'dark' | 'light' | 'system'; defaults to dark, the app's
   // native identity.
   theme: store.get('theme', 'dark'),
+  // Folder auto-watch (App #18), default ON. Off means the library only updates
+  // on a manual Rescan.
+  folderWatchEnabled: store.get('folderWatchEnabled', true),
+  // Scheduled backup interval in days (App #23), 0 = off (the default).
+  backupIntervalDays: store.get('backupIntervalDays', 0),
 }))
 ipcMain.on('save-general-settings', (_, s) => {
   if (s && typeof s.closeToTray === 'boolean') store.set('closeToTray', s.closeToTray)
@@ -2683,6 +2814,19 @@ ipcMain.on('save-general-settings', (_, s) => {
   // dropped rather than persisted and re-applied on every launch.
   if (s && (s.theme === 'dark' || s.theme === 'light' || s.theme === 'system')) {
     store.set('theme', s.theme)
+  }
+  // Folder auto-watch off-switch (App #18). Persisted, then applied at once by
+  // re-running the watcher setup — turning it off closes the watcher, turning it
+  // on stands it back up — so the change takes effect without a restart.
+  if (s && typeof s.folderWatchEnabled === 'boolean') {
+    store.set('folderWatchEnabled', s.folderWatchEnabled)
+    try { setupLibraryWatcher() } catch (_) { /* a failed re-setup leaves the prior watcher */ }
+  }
+  // Scheduled backup interval (App #23). A non-negative integer number of days;
+  // 0 turns the schedule off. Anything else is ignored rather than stored.
+  if (s && typeof s.backupIntervalDays === 'number' &&
+      Number.isFinite(s.backupIntervalDays) && s.backupIntervalDays >= 0) {
+    store.set('backupIntervalDays', Math.floor(s.backupIntervalDays))
   }
 })
 
@@ -2770,20 +2914,50 @@ ipcMain.on('save-playback-state', (_, s) => sideStores.playbackState.set(s))
 ipcMain.handle('get-session-state', () => sideStores.sessionState.get())
 ipcMain.on('save-session-state', (_, s) => sideStores.sessionState.set(s))
 
-// The video-store bridge (src/video-store.js bridge mode). Values are opaque
-// strings; a write returning false tells the renderer to flip its health flag
-// and retry on the next save.
+// The video-store bridge (src/video-store.js bridge mode).
+//
+// The bridge CONTRACT with the renderer is unchanged — read hands back a JSON
+// string, write takes one — because the renderer's PapaVideoStore speaks raw
+// text and must not need touching. What changed underneath (App #45) is that the
+// SideStore now holds the store as a NATIVE OBJECT rather than a JSON string
+// inside JSON. The file used to be double-encoded ("{\"items\":…}" as a quoted
+// string), which works but is fragile for recovery tooling; single-encoding it
+// makes video-store.json a plain, hand-editable object.
+//
+// So the two directions are mirror images:
+//   read  — return JSON.stringify(theStoredObject) (or the stored string as-is
+//           if a value predating the migration is still sitting there)
+//   write — JSON.parse(text) and store the OBJECT; if the text will not parse,
+//           store it verbatim rather than losing it.
+// A write returning false tells the renderer to flip its health flag and retry.
+
+// The bridge READ shape: whatever the SideStore holds, expressed as the JSON
+// string the renderer expects. An object is stringified; a legacy string is
+// already JSON and passed straight through; null stays null (no store yet).
+function _videoStoreReadText(value) {
+  if (value == null) return null
+  if (typeof value === 'string') return value
+  try { return JSON.stringify(value) } catch (_) { return null }
+}
+
+// The bridge WRITE shape: the object to persist natively. Parses the renderer's
+// JSON text; unparseable text is stored verbatim so nothing is silently dropped.
+function _videoStoreWriteValue(text) {
+  const s = String(text)
+  try { return JSON.parse(s) } catch (_) { return s }
+}
+
 ipcMain.handle('video-store-read', () => {
-  try { return sideStores.videoStore.get() } catch (_) { return null }
+  try { return _videoStoreReadText(sideStores.videoStore.get()) } catch (_) { return null }
 })
 ipcMain.handle('video-store-write', (_, text) => {
-  try { sideStores.videoStore.set(String(text)); return true } catch (_) { return false }
+  try { sideStores.videoStore.set(_videoStoreWriteValue(text)); return true } catch (_) { return false }
 })
 ipcMain.handle('video-store-read-backup', () => {
-  try { return sideStores.videoStoreBak.get() } catch (_) { return null }
+  try { return _videoStoreReadText(sideStores.videoStoreBak.get()) } catch (_) { return null }
 })
 ipcMain.handle('video-store-write-backup', (_, text) => {
-  try { sideStores.videoStoreBak.set(String(text)); return true } catch (_) { return false }
+  try { sideStores.videoStoreBak.set(_videoStoreWriteValue(text)); return true } catch (_) { return false }
 })
 
 // ── Liked albums ─────────────────────────────────────────────────────────────
@@ -4085,9 +4259,27 @@ let chokidar; try { chokidar = require('chokidar') } catch (e) {
 let _libWatcher = null
 let _watchDebounce = null
 
+// Whether a Soulseek/torrent download is currently writing to disk — the case
+// (App #18) that turns a download landing inside a watched root into an event
+// storm. dlState.inflight is the scheduler's in-flight set; activeDownloads is
+// the session-level torrent set. Either being non-empty counts.
+function _downloadsAreActive() {
+  try {
+    if (dlState && dlState.inflight && Object.keys(dlState.inflight).length > 0) return true
+  } catch (_) {}
+  try { if (activeDownloads && activeDownloads.size > 0) return true } catch (_) {}
+  return false
+}
+
 function setupLibraryWatcher() {
   if (!chokidar) return
   if (_libWatcher) { try { _libWatcher.close() } catch (_) {} _libWatcher = null }
+  // Config off-switch (App #18), default ON. A user who finds the watcher too
+  // aggressive on a network mount can turn it off; the manual Rescan still works.
+  if (store.get('folderWatchEnabled', true) === false) {
+    console.log('[papa] folder auto-watch is disabled in settings; skipping the watcher')
+    return
+  }
   const folders = store.get('musicFolders', [])
   if (!folders.length) return
   // The extension filter used to run in the handler, AFTER chokidar had already
@@ -4125,10 +4317,21 @@ function setupLibraryWatcher() {
     }
   })
   // The debounce cleared and reset on every event, so copying an album in kept
-  // deferring the scan indefinitely while burning CPU on debounce churn. This is
-  // the ceiling: once the first event is this old, the scan runs regardless.
-  const WATCH_DEBOUNCE_MS = 4000
-  const WATCH_MAX_WAIT_MS = 30000
+  // deferring the scan indefinitely while burning CPU on debounce churn. The
+  // ceiling (max-wait) is what stops that: once the first event in a burst is
+  // that old, the scan runs regardless. Both windows now come from the pure
+  // watch-debounce policy (App #18): a download landing inside a watched root
+  // produces an event storm, so while a download is active AND its directory is
+  // inside a watched root the windows widen hard (30 s / 120 s) rather than
+  // scanning every few seconds through the whole download.
+  const _downloadDirForWatch = (() => {
+    try { return _downloadDir() } catch (_) { return null }
+  })()
+  const _downloadsInsideWatched = watchDebounce.downloadsInsideWatched(_downloadDirForWatch, folders)
+  const _watchConditions = () => ({
+    activeDownloads: _downloadsAreActive(),
+    downloadsInsideWatchedRoot: _downloadsInsideWatched,
+  })
   let _watchFirstEventAt = 0
   let _watchEvents = 0
 
@@ -4158,14 +4361,18 @@ function setupLibraryWatcher() {
     _watchEvents++
     const now = Date.now()
     if (!_watchFirstEventAt) _watchFirstEventAt = now
-    if (now - _watchFirstEventAt >= WATCH_MAX_WAIT_MS) {
+    // The windows are recomputed per event: a download that starts mid-burst
+    // should widen the debounce from here on rather than the next watcher setup.
+    const cond = _watchConditions()
+    const maxWaitMs = watchDebounce.chooseMaxWait(cond)
+    if (watchDebounce.shouldRunNow({ firstEventAt: _watchFirstEventAt, now, maxWaitMs })) {
       // Past the ceiling: do not defer again, however many more events arrive.
       if (_watchDebounce) { clearTimeout(_watchDebounce); _watchDebounce = null }
       runWatchScan()
       return
     }
     clearTimeout(_watchDebounce)
-    _watchDebounce = setTimeout(runWatchScan, WATCH_DEBOUNCE_MS)
+    _watchDebounce = setTimeout(runWatchScan, watchDebounce.chooseDebounce(cond))
   }
   _libWatcher.on('add', onFsEvent).on('unlink', onFsEvent).on('change', onFsEvent)
 }
@@ -5119,6 +5326,43 @@ function _searchCacheSet(key, results) {
   _searchCache.set(key, results)
 }
 
+// ── Search persistence across restarts (App #53) ─────────────────────────────
+// The in-memory cache above dies with the process. This is its on-disk sibling:
+// the last ~20 searches, capped at ~2 MB total, so a repeat search after a
+// restart can serve its previous results instantly (fromCache) while a live one
+// revalidates — the same stale-while-revalidate the browse cache uses. The RAW
+// normalized response list is stored, never DOM. All reads/writes are best-
+// effort: the memory of a past search must never be able to break a new one.
+function _searchPersistGet(query) {
+  try { return searchHistory.get(sideStores.searchHistory.get() || [], query) }
+  catch (_) { return null }
+}
+function _searchPersistSet(query, results) {
+  try {
+    sideStores.searchHistory.update(prev =>
+      searchHistory.put(prev || [], query, results, Date.now()))
+  } catch (_) { /* a failed write just forgets this search */ }
+}
+
+// One background live search that revalidates a served-from-cache query and
+// pushes its fresh results through the normal slsk-progress channel the renderer
+// already consumes. Mirrors _browseRefresh: guarded so two overlapping serves of
+// the same query do not run two live searches, and a failure leaves the cached
+// copy in place silently.
+const _searchRevalidating = new Set()
+function _searchRevalidate(args) {
+  const key = (args.query || '').toLowerCase().trim()
+  if (!key || _searchRevalidating.has(key)) return
+  _searchRevalidating.add(key)
+  ;(async () => {
+    // noCache forces a live run past the in-memory hit; the progressive and
+    // final slsk-progress events inside slskRunSearch repaint the served list.
+    try { await slskRunSearch({ ...args, noCache: true }) }
+    catch (_) { /* the served cache stays; a failed refresh is invisible */ }
+    finally { _searchRevalidating.delete(key) }
+  })()
+}
+
 // Every search slskd is currently running for us, and why. Each search runs six
 // variants for up to 30 s; starting a new one left all six of the old ones going,
 // competing for the daemon's search slots and for the same peers' attention.
@@ -5194,7 +5438,30 @@ function normalizeSearchResponses(responses) {
 // out so the wishlist hunter can run exactly the same search path — caching,
 // throttle handling, live-search registration, partial-result pushes and
 // cleanup — rather than a second, subtly-different copy.
-ipcMain.handle('slsk-search', (_, args) => slskRunSearch(args || {}))
+ipcMain.handle('slsk-search', (_, args) => slskServeSearch(args || {}))
+
+// The handler entry point: serve persisted results instantly when we have them,
+// then revalidate live in the background (App #53, mirroring slsk-browse-user).
+// Falls through to a synchronous live search when nothing is remembered — a
+// first-ever search still returns a real answer. The in-memory hit inside
+// slskRunSearch still short-circuits an immediate repeat; this adds the layer
+// that survives a restart.
+function slskServeSearch(args = {}) {
+  const query = args.query
+  const key = (query || '').toLowerCase().trim()
+  if (key && !args.noCache) {
+    // The in-memory cache is checked first inside slskRunSearch anyway; here we
+    // only reach for the on-disk copy, which is what a fresh launch has.
+    const persisted = _searchPersistGet(query)
+    if (persisted && persisted.length) {
+      // Kick the live revalidation whose progressive slsk-progress events repaint
+      // the served list, exactly as a normal live search would.
+      _searchRevalidate({ ...args })
+      return Promise.resolve({ results: persisted, fromCache: true })
+    }
+  }
+  return slskRunSearch(args)
+}
 
 async function slskRunSearch({ query, timeoutMs = 25000, noCache = false, generation = 0 } = {}) {
   // Reconnect if needed
@@ -5277,7 +5544,12 @@ async function slskRunSearch({ query, timeoutMs = 25000, noCache = false, genera
   // Normalized once here so the cache, the renderer and the wishlist hunter all
   // see the guaranteed shape (see normalizeSearchResponse).
   const results = normalizeSearchResponses(responses)
-  if (results.length) _searchCacheSet(cacheKey, results)
+  if (results.length) {
+    _searchCacheSet(cacheKey, results)
+    // Persist across restarts too (App #53), so the next launch can serve this
+    // search instantly while revalidating.
+    _searchPersistSet(query, results)
+  }
   safeSend('slsk-progress', { query, results, done: true })
   return { results }
   } finally {
@@ -8385,6 +8657,9 @@ ipcMain.handle('video-streams', async (_, req) => {
     const ranked = await resolveStream(request, backends, {
       preferSurround: settings.preferSurround,
       timeoutMs: 20000,
+      // Learned dead-magnet memory (App #41): demote (never hide) torrents whose
+      // infohash has failed to connect repeatedly and recently.
+      isDead: _isDeadMagnet,
     })
     const streams = _applyQualityPreference(ranked, settings.preferredQuality)
     // An empty result is almost always a mirror being briefly unreachable.
@@ -8602,6 +8877,44 @@ function _probePlayingAudio(url, current) {
   })
 }
 
+// ── Learned dead-magnet memory (App #41) ─────────────────────────────────────
+// The infohash out of a magnet URI (xt=urn:btih:<hash>), lower-cased. Entries
+// from the providers already carry `infoHash`; this covers the fallback where
+// only the magnet string is to hand. Returns '' when there is no hash to read.
+function _infoHashFromMagnet(magnet) {
+  if (typeof magnet !== 'string') return ''
+  const m = magnet.match(/xt=urn:btih:([a-z0-9]+)/i)
+  return m ? m[1].toLowerCase() : ''
+}
+
+// The infohash a stream result is really about: the explicit field first, the
+// magnet second. Used both to record a failure and to test one for demotion.
+function _resultInfoHash(result) {
+  if (!result || typeof result !== 'object') return ''
+  if (result.infoHash) return String(result.infoHash).toLowerCase()
+  return _infoHashFromMagnet(result.magnet)
+}
+
+// Record that this torrent failed to connect / never started, folding it into
+// the persistent map with the 14-day decay applied. Called from the streamer's
+// give-up and error paths. Never throws — a bad write must not sink playback.
+function _recordDeadMagnet(result) {
+  const hash = _resultInfoHash(result)
+  if (!hash) return
+  try {
+    sideStores.deadMagnets.update(prev => deadMagnet.recordFailure(prev || {}, hash, Date.now()))
+  } catch (_) { /* the memory is best-effort; a failed write just forgets */ }
+}
+
+// The predicate handed to the ranker: is this infohash demoted right now? Reads
+// the current map and applies the decay against the wall clock. Cheap enough to
+// call per entry during a rank.
+function _isDeadMagnet(hash) {
+  try {
+    return deadMagnet.isDead(sideStores.deadMagnets.get() || {}, hash, Date.now())
+  } catch (_) { return false }
+}
+
 // The torrent half of starting a stream, extracted so video-play and
 // video-switch-stream share exactly one copy of it: the streamer options, the
 // error/progress wiring and the stamped-token guard were subtle enough the
@@ -8637,7 +8950,13 @@ function _startTorrentStream(result, { current, fail, onReady }) {
     // demuxer cache, now 256 MiB, which is the real fix.
     prebufferBytes: 0,
   })
-  streamer.on('error', err => { if (current()) fail(err) })
+  streamer.on('error', err => {
+    // A stream that never connected or never started is exactly the signal the
+    // dead-magnet memory (App #41) is for. Recorded before surfacing the error
+    // so the next lookup can demote this infohash.
+    _recordDeadMagnet(result)
+    if (current()) fail(err)
+  })
   streamer.on('progress', p => { if (current()) safeSend('video-event', { kind: 'buffering', ...p }) })
   streamer.on('ready', ({ url }) => {
     if (!current()) { try { streamer.stop() } catch (_) {} ; return }
@@ -9231,6 +9550,44 @@ ipcMain.handle('papa-export-all', async () => {
     return { ok: true, path: r.filePath }
   } catch (e) {
     return { ok: false, error: (e && e.message) || String(e) }
+  }
+})
+
+// Run a scheduled-style backup to ~/Documents/PapaAudioBackups/ right now, on
+// demand (App #23). No dialog — it writes to the fixed folder, rotates, records
+// lastBackupAt, and returns where it landed.
+ipcMain.handle('papa-backup-now', async () => {
+  try {
+    const r = _runScheduledBackup()
+    store.set('lastBackupAt', Date.now())
+    return { ok: true, path: r.path, kept: r.kept }
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) }
+  }
+})
+
+// The scheduled-backup status for the Settings surface (App #23): the configured
+// interval, when the last backup ran, whether one is currently due, the folder,
+// and the dated files on disk (newest first).
+ipcMain.handle('papa-backup-status', () => {
+  const intervalDays = store.get('backupIntervalDays', 0)
+  const lastBackupAt = store.get('lastBackupAt', 0)
+  const dir = _scheduledBackupDir()
+  let files = []
+  try {
+    files = fs.readdirSync(dir, { withFileTypes: true })
+      .filter(e => e.isFile() && /^papa-backup-.*\.json$/.test(e.name))
+      .map(e => e.name)
+      .sort()
+      .reverse() // newest first
+  } catch (_) { files = [] }
+  return {
+    intervalDays,
+    lastBackupAt: lastBackupAt || null,
+    due: backupSchedule.isBackupDue({ intervalDays, lastBackupAt, now: Date.now() }),
+    dir,
+    files,
+    keep: backupSchedule.KEEP,
   }
 })
 
