@@ -1065,10 +1065,14 @@
         usedMb[mbIndexOf(mt)] = true
         var cmp = compareTrackTags(lt, mt)
         cmp.kind = 'match'
+        // Back-reference to the local track this row came from, so the Apply
+        // step (App #9) can resolve the file to write without re-pairing.
+        cmp.localIndex = k
         rows.push(cmp)
       } else {
         rows.push({
           kind: 'local-only',
+          localIndex: k,
           localTitle: String(lt && lt.title || ''),
           mbTitle: '',
           localNo: ln,
@@ -1104,6 +1108,228 @@
     return { rows: rows, summary: summary }
   }
 
+  // ── Tag fixer: turning accepted diff rows into tag writes (App #9) ──────────
+  // The analysis pass (buildTagDiff) proposes MusicBrainz corrections; this
+  // turns the rows the user ACCEPTED into the { filePath, tags } write list that
+  // window.api.libraryWriteTags consumes. Only 'match' rows are applicable (a
+  // local-only track has nothing on the release to copy from, an mb-only track
+  // has no local file to write). For each accepted match we set the title to the
+  // MB title when the titles differ (cosmetically or in the core words) and the
+  // track number to the MB number when they differ. `localTracks` is the same
+  // album.tracks array passed to buildTagDiff, so localIndex resolves the file.
+  //
+  // `accepted` is a set-like: either an array of row indices (into diff.rows) or
+  // an object keyed by row index with truthy values. Pure and DOM-free so the
+  // rules are testable without libraryWriteTags.
+  function tagFixWrites(diffRows, localTracks, accepted) {
+    diffRows = diffRows || []
+    localTracks = localTracks || []
+    var isAccepted
+    if (Array.isArray(accepted)) {
+      var set = {}
+      for (var s = 0; s < accepted.length; s++) set[accepted[s]] = true
+      isAccepted = function (i) { return !!set[i] }
+    } else if (accepted && typeof accepted === 'object') {
+      isAccepted = function (i) { return !!accepted[i] }
+    } else {
+      isAccepted = function () { return true } // no selection = apply all applicable
+    }
+    var byPath = {}
+    var order = []
+    for (var i = 0; i < diffRows.length; i++) {
+      if (!isAccepted(i)) continue
+      var row = diffRows[i]
+      if (!row || row.kind !== 'match') continue
+      if (!row.titleDiffers && !row.numberDiffers && !row.titleCosmetic) continue
+      var lt = localTracks[row.localIndex]
+      if (!lt || !lt.filePath) continue
+      var tags = {}
+      if ((row.titleDiffers || row.titleCosmetic) && row.mbTitle) tags.title = String(row.mbTitle)
+      if (row.numberDiffers && row.mbNo > 0) tags.track = String(row.mbNo)
+      if (!Object.keys(tags).length) continue
+      if (!byPath[lt.filePath]) { byPath[lt.filePath] = { filePath: lt.filePath, tags: {} }; order.push(lt.filePath) }
+      for (var key in tags) {
+        if (Object.prototype.hasOwnProperty.call(tags, key)) byPath[lt.filePath].tags[key] = tags[key]
+      }
+    }
+    return order.map(function (p) { return byPath[p] })
+  }
+
+  // Which diff rows can be applied at all (a 'match' with a real difference),
+  // returned as row indices. The UI pre-checks exactly these.
+  function tagFixApplicableRows(diffRows) {
+    diffRows = diffRows || []
+    var out = []
+    for (var i = 0; i < diffRows.length; i++) {
+      var r = diffRows[i]
+      if (r && r.kind === 'match' && (r.titleDiffers || r.numberDiffers || r.titleCosmetic)) out.push(i)
+    }
+    return out
+  }
+
+  // ── Multi-disc grouping (App #10) ──────────────────────────────────────────
+  // The disc a track belongs to: its tagged discNumber when present, else parsed
+  // from a "Disc 2" / "CD2" / "/D2/" segment in its path, else disc 1. Pure so
+  // the album view and its test share one rule for what counts as a disc.
+  function discNumberOf(track) {
+    if (!track) return 1
+    var n = Number(track.discNumber)
+    if (isFinite(n) && n > 0) return n
+    var p = String(track.filePath || '')
+    // "Disc 2", "Disk 2", "CD 2", "CD2", "D2" as a path segment or filename lead.
+    var m = /(?:^|[\/\\\s\-_([])(?:dis[ck]|cd)\s*[-_ ]?(\d{1,2})\b/i.exec(p)
+    if (m) { var d = Number(m[1]); if (d > 0) return d }
+    return 1
+  }
+
+  // Does this album span more than one disc? True only when at least two
+  // distinct disc numbers appear across its tracks. A single untagged track
+  // (disc 1) is never multi-disc.
+  function albumHasMultipleDiscs(tracks) {
+    tracks = tracks || []
+    var seen = {}
+    var count = 0
+    for (var i = 0; i < tracks.length; i++) {
+      var d = discNumberOf(tracks[i])
+      if (!seen[d]) { seen[d] = true; count++ }
+      if (count > 1) return true
+    }
+    return false
+  }
+
+  // ── A–B loop: the cycle state machine (App #5) ─────────────────────────────
+  // Musicians want to loop a passage: press once to drop point A, again to drop
+  // point B and start looping, a third time to clear. This is the pure part —
+  // given the current loop state and the playback position now, return the next
+  // state. The renderer owns the audio engine; this owns only the rules, so the
+  // cycle can be tested without mpv or a clock.
+  //
+  // A loop is { a, b } in seconds. A pending loop (A set, waiting for B) is
+  // { a, b: null }. No loop is null. The transitions:
+  //   null            + press → { a: pos, b: null }      (A dropped)
+  //   { a, b: null }  + press → { a, b: pos }            (B dropped, loop on)
+  //                              — but only if pos > a; a B at or before A is
+  //                                nonsensical, so it re-drops A at pos instead.
+  //   { a, b }        + press → null                     (cleared)
+  // Returns { loop, action } where action is 'set-a' | 'set-b' | 'clear' |
+  // 're-set-a', so the caller can pick the right toast without re-deriving it.
+  function abLoopCycle(current, posSec) {
+    var pos = Number(posSec)
+    if (!isFinite(pos) || pos < 0) pos = 0
+    // No loop yet, or a stored shape we do not recognise → drop A.
+    if (!current || typeof current !== 'object' || !isFinite(Number(current.a))) {
+      return { loop: { a: pos, b: null }, action: 'set-a' }
+    }
+    var a = Number(current.a)
+    // A is set, B is not → this press sets B (if it is after A) and starts the
+    // loop. A B that is not strictly after A cannot loop, so treat the press as
+    // moving A to the new position instead of creating a zero/negative window.
+    if (current.b == null || !isFinite(Number(current.b))) {
+      if (pos > a) return { loop: { a: a, b: pos }, action: 'set-b' }
+      return { loop: { a: pos, b: null }, action: 're-set-a' }
+    }
+    // Both set → clear.
+    return { loop: null, action: 'clear' }
+  }
+
+  // Given an active loop and the position now, the position to jump back to when
+  // playback has run past B — or null when no jump is due. Kept tiny and pure so
+  // the timeupdate hook (and its test) share exactly one rule. A small epsilon
+  // catches the case where a tick lands a hair past B without overshooting a
+  // whole frame.
+  function abLoopJumpTarget(loop, posSec, epsilon) {
+    if (!loop || typeof loop !== 'object') return null
+    var a = Number(loop.a)
+    var b = Number(loop.b)
+    if (!isFinite(a) || !isFinite(b) || b <= a) return null
+    var pos = Number(posSec)
+    if (!isFinite(pos)) return null
+    var eps = isFinite(Number(epsilon)) ? Number(epsilon) : 0.25
+    return pos >= (b - eps) ? a : null
+  }
+
+  // ── Genre normalisation: grouping case/whitespace variants (App #8) ─────────
+  // The library accumulates "rock", "Rock", "Rock ", "ROCK" as if they were
+  // different genres. This folds them: a canonical key (lowercased, whitespace
+  // collapsed) groups the raw variants, and each group counts how many albums
+  // carry each variant so the fixer can suggest the most-used spelling as the
+  // merge target. Pure over the library so it is testable without the DOM.
+  //
+  // Returns { groups, ungenred } where:
+  //   groups   — [{ key, variants: [{ value, albumCount }], albumCount,
+  //               suggested }], sorted by total album count desc. `variants`
+  //               is sorted by album count desc so the popular spelling leads.
+  //               A group with a single variant is still returned (the UI can
+  //               show it as already-clean); the caller filters if it wants.
+  //   ungenred — the count of albums with no usable genre at all, so the tool
+  //              can offer to assign them.
+  function _normGenreKey(v) {
+    return String(v == null ? '' : v).toLowerCase().replace(/\s+/g, ' ').trim()
+  }
+
+  function _looksLikeNoGenre(v) {
+    var s = _normGenreKey(v)
+    return !s || s === 'null' || s === 'undefined' || s === 'unknown' ||
+      s === 'other' || s === 'genre' || s === 'none'
+  }
+
+  function analyzeGenres(library) {
+    library = library || []
+    var groups = {}
+    var ungenred = 0
+    for (var i = 0; i < library.length; i++) {
+      var a = library[i]
+      var raw = a && a.genre
+      if (_looksLikeNoGenre(raw)) { ungenred++; continue }
+      var key = _normGenreKey(raw)
+      var val = String(raw).replace(/\s+/g, ' ').trim() // trim padding, keep case
+      if (!groups[key]) groups[key] = { key: key, variants: {}, albumCount: 0 }
+      groups[key].variants[val] = (groups[key].variants[val] || 0) + 1
+      groups[key].albumCount++
+    }
+    var out = Object.keys(groups).map(function (k) {
+      var g = groups[k]
+      var variants = Object.keys(g.variants).map(function (v) {
+        return { value: v, albumCount: g.variants[v] }
+      }).sort(function (x, y) {
+        return y.albumCount - x.albumCount || (x.value < y.value ? -1 : 1)
+      })
+      return {
+        key: g.key,
+        variants: variants,
+        albumCount: g.albumCount,
+        suggested: variants[0] ? variants[0].value : g.key,
+      }
+    })
+    out.sort(function (x, y) {
+      return y.albumCount - x.albumCount || (x.key < y.key ? -1 : 1)
+    })
+    return { groups: out, ungenred: ungenred }
+  }
+
+  // Collect the track write-list for setting a genre on a set of albums to one
+  // canonical string. Reuses the tag-editor's write shape ({ filePath, tags })
+  // so it flows straight through window.api.libraryWriteTags. Only tracks whose
+  // genre actually differs from the target are emitted — writing a file its tag
+  // already has is pure churn (and a needless rescan). `albums` are library
+  // album records (each with a `tracks` array). Pure and DOM-free.
+  function genreWritesForAlbums(albums, targetGenre) {
+    albums = albums || []
+    var target = String(targetGenre == null ? '' : targetGenre)
+    var out = []
+    for (var i = 0; i < albums.length; i++) {
+      var tracks = (albums[i] && albums[i].tracks) || []
+      for (var j = 0; j < tracks.length; j++) {
+        var t = tracks[j]
+        if (!t || !t.filePath) continue
+        var cur = t.genre == null ? '' : String(t.genre)
+        if (cur === target) continue
+        out.push({ filePath: t.filePath, tags: { genre: target } })
+      }
+    }
+    return out
+  }
+
   var api = {
     sleepFadeSteps: sleepFadeSteps,
     albumsMissingArt: albumsMissingArt,
@@ -1135,7 +1361,15 @@
     buildLibraryIndex: buildLibraryIndex,
     matchImportedTracks: matchImportedTracks,
     compareTrackTags: compareTrackTags,
-    buildTagDiff: buildTagDiff
+    buildTagDiff: buildTagDiff,
+    abLoopCycle: abLoopCycle,
+    abLoopJumpTarget: abLoopJumpTarget,
+    analyzeGenres: analyzeGenres,
+    genreWritesForAlbums: genreWritesForAlbums,
+    tagFixWrites: tagFixWrites,
+    tagFixApplicableRows: tagFixApplicableRows,
+    discNumberOf: discNumberOf,
+    albumHasMultipleDiscs: albumHasMultipleDiscs
   }
 
   if (typeof module !== 'undefined' && module.exports) module.exports = api

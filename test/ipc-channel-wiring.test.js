@@ -124,6 +124,10 @@ test('every channel main sends has something that actually listens', () => {
     // preload exposes onSlskBrowseRefreshed; the Soulseek UX rework wires the
     // renderer listener in parallel, so main + the bridge land first.
     'slsk-browse-refreshed': 'preload exposes onSlskBrowseRefreshed; renderer listener is landing in the parallel UI work',
+    // preload exposes onSlskVerifyDone (roadmap #49); the Soulseek UI wiring for
+    // the "verified" badge lands in the parallel Wave-2 UI work, so main + the
+    // bridge land first.
+    'slsk-verify-done': 'preload exposes onSlskVerifyDone; renderer listener is landing in the parallel UI work',
   }
   const unheard = [...sentChannels]
     .filter(c => !heard.has(c) && !(c in NOT_FOR_THE_RENDERER) && !(c in DELIBERATELY_UNHANDLED))

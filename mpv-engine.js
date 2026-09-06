@@ -512,6 +512,28 @@ class MpvEngine extends EventEmitter {
     await this._guard('setReplaygain')('set_property', 'replaygain', mode)
   }
 
+  // A–B loop repeat (roadmap #5). mpv has native ab-loop-a / ab-loop-b
+  // properties: set both to loop that segment, set them to "no" to clear. The
+  // renderer passes seconds ({a, b}) or null to clear. Kept off `config` on
+  // purpose — an A–B loop is about the current file's timeline and must not
+  // survive a respawn onto a different track.
+  async setAbLoop(range) {
+    if (!range || range.a == null || range.b == null) {
+      await this._guard('clearAbLoopA')('set_property', 'ab-loop-a', 'no')
+      await this._guard('clearAbLoopB')('set_property', 'ab-loop-b', 'no')
+      return { ok: true, cleared: true }
+    }
+    const a = Number(range.a)
+    const b = Number(range.b)
+    // mpv wants A before B; a caller that hands them the wrong way round should
+    // still get a sane loop rather than an ignored command.
+    const lo = Math.min(a, b)
+    const hi = Math.max(a, b)
+    await this._guard('setAbLoopA')('set_property', 'ab-loop-a', lo)
+    await this._guard('setAbLoopB')('set_property', 'ab-loop-b', hi)
+    return { ok: true, a: lo, b: hi }
+  }
+
   async setChannels(layout) {
     this.config.audioChannels = layout
     await this._guard('setChannels')('set_property', 'audio-channels', channelsValue(layout))

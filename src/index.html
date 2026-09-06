@@ -490,7 +490,11 @@
             <input type="range" id="eq-preamp" min="-12" max="12" step="1" value="0">
             <span id="eq-preamp-label">0 dB</span>
           </label>
-          <button class="mcs-set-refresh eq-reset" id="eq-reset">Reset to flat</button>
+          <div class="eq-preset-actions">
+            <button class="mcs-set-refresh eq-reset" id="eq-reset">Reset to flat</button>
+            <button class="mcs-set-refresh" id="eq-save-preset">Save current as preset…</button>
+            <button class="mcs-set-refresh eq-delete-preset" id="eq-delete-preset" style="display:none">Delete this preset</button>
+          </div>
         </div>
         <div class="mcs-set-group">
           <div class="mcs-set-group-label">Provider</div>
@@ -657,6 +661,9 @@
       <span class="time-label" id="time-cur">0:00</span>
       <div class="progress-track" id="progress-track">
         <div class="progress-fill" id="progress-fill" style="width:0%"></div>
+        <!-- A–B loop markers (App #5): hidden until a loop point is set. -->
+        <div class="ab-marker ab-marker-a" id="ab-marker-a" style="display:none" title="Loop point A"></div>
+        <div class="ab-marker ab-marker-b" id="ab-marker-b" style="display:none" title="Loop point B"></div>
         <div class="progress-thumb" id="progress-thumb" style="left:0%"></div>
         <div class="progress-tooltip" id="progress-tooltip" style="display:none"></div>
       </div>

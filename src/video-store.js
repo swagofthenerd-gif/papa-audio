@@ -216,14 +216,38 @@
     const parts = String(k).split(':')
     return parts.length >= 2 ? parts[1] : ''
   }
+  // The type prefix of a key ("movie:27205" -> "movie", "tv:1396:s1e2" -> "tv").
+  function _keyType(k) {
+    const parts = String(k).split(':')
+    return parts.length ? parts[0] : ''
+  }
   function _hasRealId(k, meta) {
     const fromMeta = meta && meta.id != null ? String(meta.id) : ''
     const id = fromMeta || _idFromKey(k)
     return id !== '' && id !== 'undefined' && id !== 'null'
   }
 
+  // The 'YYYY-MM-DD' local-calendar day for a timestamp, matching how the taste
+  // store's diary keys its entries by date. Used by the auto-log dedupe so one
+  // finish per title per day yields one diary entry, not one per position tick.
+  function _dayOf(ts) {
+    const d = new Date(Number(ts))
+    if (!Number.isFinite(d.getTime())) return ''
+    const p = n => String(n).padStart(2, '0')
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate())
+  }
+
   function createVideoStore(opts = {}) {
-    const { storage, now, maxItems, debounceMs } = opts
+    const { storage, now, maxItems, debounceMs, onWatched } = opts
+    // Diary auto-log (roadmap #34). When an item flips to watched:true, this is
+    // called with { key, id, type, title, season, episode, watchedAt } so the
+    // renderer can append a diary entry (the diary lives in taste-store, which is
+    // renderer-side; main/tests inject their own or none). Fired only on the
+    // false→true transition, never on a re-save of an already-watched item, so a
+    // finished film logs once. The caller is responsible for the key+day dedupe
+    // against whatever the diary already holds — watchedLogKey/alreadyLogged
+    // below give it the same day-granularity the diary uses.
+    const watchedHook = typeof onWatched === 'function' ? onWatched : null
     const backend = storage || (typeof window !== 'undefined' ? _browserStorage() : _memoryStorage())
     const bridge = 'bridge' in opts ? (opts.bridge || null) : _defaultBridge()
     const legacy = 'legacy' in opts ? (opts.legacy || null) : _defaultLegacy()
@@ -582,6 +606,7 @@
       if (item.id != null) item.id = String(item.id)
       state.items[k] = item
       save()
+      _fireWatched(k, prev, item)
       return item
     }
 
@@ -592,7 +617,30 @@
       const item = { ...prev, watched: true, updatedAt: clock() }
       state.items[k] = item
       save()
+      _fireWatched(k, prev, item)
       return item
+    }
+
+    // Fire the diary auto-log hook on the watched false→true transition only.
+    // A re-save of an already-watched item, or an update that leaves watched
+    // false, must not re-log — that is the dedupe the roadmap asks for at the
+    // transition level; the day-granularity dedupe against the diary is the
+    // caller's, via alreadyLogged() below.
+    function _fireWatched(k, prev, item) {
+      if (!watchedHook) return
+      if (item.watched !== true) return
+      if (prev && prev.watched === true) return
+      try {
+        watchedHook({
+          key: k,
+          id: item.id != null ? String(item.id) : _idFromKey(k),
+          type: item.type || _keyType(k),
+          title: item.title != null ? item.title : null,
+          season: item.season != null ? item.season : null,
+          episode: item.episode != null ? item.episode : null,
+          watchedAt: Number(item.updatedAt) || clock(),
+        })
+      } catch (_) { /* the hook must never break a save */ }
     }
 
     function _inProgress(item) {
@@ -719,12 +767,42 @@
     }
   }
 
+  // ── Diary auto-log dedupe (roadmap #34) ──────────────────────────────────────
+  // Pure helpers the renderer uses to feed the same source the Diary tab reads
+  // (taste-store's diary, via logViewing). The dedupe granularity is key+day:
+  // finishing the same title twice on one day is one diary entry, matching how
+  // the diary keys entries by 'YYYY-MM-DD'.
+
+  // The dedupe identity for an auto-log: the item key plus the calendar day it
+  // was watched. `payload` is what the onWatched hook receives.
+  function watchedLogKey(payload) {
+    if (!payload || payload.key == null) return null
+    return String(payload.key) + '@' + _dayOf(payload.watchedAt)
+  }
+
+  // Is there already a diary entry for this title on this day? `diaryEntries` is
+  // whatever taste-store.diary() returns for the key — [{ key, date, ... }]. A
+  // match on the same day means the auto-log is a duplicate and must be skipped.
+  function alreadyLogged(payload, diaryEntries) {
+    if (!payload || payload.key == null) return false
+    const key = String(payload.key)
+    const day = _dayOf(payload.watchedAt)
+    for (const e of Array.isArray(diaryEntries) ? diaryEntries : []) {
+      if (!e || typeof e !== 'object') continue
+      if (String(e.key) === key && String(e.date) === day) return true
+    }
+    return false
+  }
+
   // The §4.4 surface: the default instance's methods, plus the factory and the
   // constants the tests and later phases reach for.
   const singleton = createVideoStore()
   const api = {
     ...singleton,
     createVideoStore,
+    watchedLogKey,
+    alreadyLogged,
+    _dayOf,
     _memoryStorage,
     _memoryBridge,
     WATCHED_AT,

@@ -48,6 +48,9 @@ const IPC_TIMEOUT_OVERRIDES = {
   'transcode-file': 0,
   'batch-transcode': 0,
   'library-write-tags': 0,
+  // Rewrites FLAC files one by one on the calling thread; a large batch is
+  // legitimately slow, so it is not deadlined (same reasoning as write-tags).
+  'tag-write-batch': 0,
   'library-set-artwork': 300000,
   // Downloads a release from GitHub and unzips it.
   'slsk-setup': 600000,
@@ -706,6 +709,20 @@ const sideStores = {
   // total serialized size (see _searchPersistWrite) so it cannot grow without
   // bound.
   searchHistory: new SideStore({ dir: USER_DATA, name: 'search-history', fallback: [], debounceMs: 1000, onError: _sideErr }),
+
+  // Air-date notifications (roadmap #35): the keys ('anime:ID#eN' / 'tv:ID#eN')
+  // of episodes we have already notified about, capped at 200 (see
+  // src/airing-notify.js), so a followed show's episode is announced once.
+  airingNotified: new SideStore({ dir: USER_DATA, name: 'airing-notified', fallback: [], debounceMs: 1000, onError: _sideErr }),
+
+  // Post-download verification verdicts (roadmap #49), keyed `username::folder` ->
+  // { ok, problems:[], at, folder, username, dir }. The UI reads a verdict via
+  // slskVerifyStatus; wiring comes next wave, this just makes the data exist.
+  slskVerify: new SideStore({ dir: USER_DATA, name: 'slsk-verify', fallback: {}, debounceMs: 1000, onError: _sideErr }),
+
+  // Auto-organize move log (roadmap #50): an append-only record of every file
+  // move so an opt-in reorganise is inspectable and never silent. Capped on write.
+  slskOrganizeLog: new SideStore({ dir: USER_DATA, name: 'slsk-organize-log', fallback: [], debounceMs: 1000, onError: _sideErr }),
 }
 
 // One-time move out of the shared config. adoptIfEmpty only takes the legacy
@@ -1464,6 +1481,13 @@ app.whenReady().then(() => {
   startConnectivityMonitor()
   startAutoBackup()
   startScheduledBackup()
+
+  // Air-date notifications (roadmap #35): first check after the launch stampede
+  // and after slskd/network settle, then every 6h. Fire-and-forget; a failed
+  // check just waits for the next tick.
+  setTimeout(() => { checkAiringNotifications().catch(() => {}) }, 20000).unref?.()
+  const airingTimer = setInterval(() => { checkAiringNotifications().catch(() => {}) }, AIRING_CHECK_EVERY_MS)
+  if (airingTimer.unref) airingTimer.unref()
 })
 
 // ── Offline detection (App §11) ──────────────────────────────────────────────
@@ -2503,6 +2527,28 @@ ipcMain.handle('player-recheck', async () => {
   return { available: mpvAvailable && !!player }
 })
 ipcMain.handle('player-get-config', () => getPlayerSettings())
+
+// W2-UI contract: mpvAbLoop({a,b}|null). A–B loop repeat (roadmap #5) on the
+// MUSIC engine. null clears the loop; {a,b} in seconds sets it. mpv's native
+// ab-loop-a/ab-loop-b properties do the work (see mpv-engine.setAbLoop).
+ipcMain.handle('mpv-ab-loop', async (_, range) => {
+  if (!playerReady()) return { ok: false, error: 'engine unavailable' }
+  try { return await player.setAbLoop(range || null) }
+  catch (e) { return { ok: false, error: String(e.message || e) } }
+})
+
+// W2-UI contract: mpvReplaygainMode('track'|'album'|'off'). Sets ReplayGain on
+// the MUSIC engine at runtime AND persists it into playerSettings so the next
+// spawn uses it (the engine folds config.replaygain into its spawn args). 'off'
+// maps to mpv's 'no'.
+ipcMain.handle('mpv-replaygain-mode', async (_, mode) => {
+  const mpvMode = mode === 'track' ? 'track' : mode === 'album' ? 'album' : 'no'
+  const cfg = { ...getPlayerSettings(), replaygain: mpvMode }
+  store.set('playerSettings', cfg)
+  if (!playerReady()) return { ok: false, error: 'engine unavailable', mode: mpvMode }
+  try { await player.setReplaygain(mpvMode); return { ok: true, mode: mpvMode } }
+  catch (e) { return { ok: false, error: String(e.message || e), mode: mpvMode } }
+})
 // Whether a queued track is genuinely gone, asked of the filesystem rather than
 // inferred from one load error. A transient demuxer or cache error on a large
 // FLAC used to be enough to delete a present file from the queue for good.
@@ -2828,6 +2874,31 @@ ipcMain.on('save-general-settings', (_, s) => {
       Number.isFinite(s.backupIntervalDays) && s.backupIntervalDays >= 0) {
     store.set('backupIntervalDays', Math.floor(s.backupIntervalDays))
   }
+})
+
+// Wave-2 feature toggles, all defaulting ON except auto-organize (roadmap #34,
+// #35, #50). One store key `videoConfig` holds them so the renderer reads/writes
+// them in one round-trip.
+//   diaryAutoLog          — auto-log finished films/episodes to the diary (#34)
+//   airingNotifications   — desktop notification when a followed show airs (#35)
+//   autoOrganizeDownloads — normalise completed download folders (#50), OFF
+function _videoConfig() {
+  const saved = store.get('videoConfig', {})
+  return {
+    diaryAutoLog: saved.diaryAutoLog !== false,
+    airingNotifications: saved.airingNotifications !== false,
+    autoOrganizeDownloads: saved.autoOrganizeDownloads === true,
+  }
+}
+ipcMain.handle('video-config-get', () => _videoConfig())
+ipcMain.handle('video-config-set', (_, patch) => {
+  const p = patch && typeof patch === 'object' ? patch : {}
+  const next = { ...store.get('videoConfig', {}) }
+  if (typeof p.diaryAutoLog === 'boolean') next.diaryAutoLog = p.diaryAutoLog
+  if (typeof p.airingNotifications === 'boolean') next.airingNotifications = p.airingNotifications
+  if (typeof p.autoOrganizeDownloads === 'boolean') next.autoOrganizeDownloads = p.autoOrganizeDownloads
+  store.set('videoConfig', next)
+  return _videoConfig()
 })
 
 ipcMain.handle('get-streaming-volume-offset', () => store.get('streamingVolumeOffset', 0))
@@ -4232,6 +4303,37 @@ ipcMain.handle('library-write-tags', async (_, { files }) => {
   return { results, written: ok, failed: results.length - ok }
 })
 
+// W2-UI contract: tagWriteBatch. A pure-node FLAC Vorbis-comment writer (no
+// ffmpeg spawn, no npm dependency — the library is 82% FLAC, and src/flac-tags.js
+// implements a spec-correct writer with .bak temp-write-rename discipline).
+// Each edit is { filePath, changes:{genre?,title?,artist?,album?,year?} }; FLAC
+// files are written, everything else is skipped with reason 'unsupported'.
+// Returns { written, skipped:[{filePath,reason}] } exactly as the contract
+// specifies. Paths outside the music/download roots are skipped ('refused'), and
+// mpv's open-file window is respected via _rewriting like library-write-tags.
+const flacTags = require('./src/flac-tags')
+ipcMain.handle('tag-write-batch', async (_, { edits } = {}) => {
+  const list = Array.isArray(edits) ? edits : []
+  const guarded = []
+  for (const e of list) {
+    const fp = e && e.filePath
+    if (fp && flacTags.isFlacPath(fp)) _rewriting.add(path.resolve(fp))
+    guarded.push(e)
+  }
+  try {
+    // The guard folds the folder allow-list into the writer so a write can never
+    // escape the music/download roots even if the renderer sends an odd path.
+    const result = flacTags.writeBatch(guarded, fp => libPathAllowed(fp) || pathIsOurs(fp))
+    if (result.written) _scheduleLibraryRescan()
+    return result
+  } finally {
+    for (const e of list) {
+      const fp = e && e.filePath
+      if (fp && flacTags.isFlacPath(fp)) _rewriting.delete(path.resolve(fp))
+    }
+  }
+})
+
 let _libRescanTimer = null
 function _scheduleLibraryRescan() {
   clearTimeout(_libRescanTimer)
@@ -5581,10 +5683,44 @@ const dlSched = require('./src/download-scheduler')
 // history it exists to prevent.
 const dlFingerprint = require('./src/source-fingerprint')
 
+// Post-download verification (#49) and auto-organize (#50): folder grouping,
+// verdict shapes and target-path building live in this pure module; main does
+// the ffprobe and the fs move.
+const dlOrganize = require('./src/download-organize')
+
 const DL_TICK_MS = 4000
 let dlState = dlSched.createState()
 let dlTimer = null
 let dlTicking = false
+
+// Album-group ledger for verification/organize (#49/#50). Keyed
+// `username::folderPath`. Populated on enqueue (the ONLY point we know the
+// intended track count), consulted after each tick's successes to detect when a
+// whole folder has finished. Groups that have been verified are marked so the
+// pass runs exactly once per folder, after completion — not on a timer, which is
+// the mistake the earlier _verifySurroundWhenDone made.
+let dlGroups = new Map()
+// The set of filenames the scheduler has recorded as succeeded, kept alongside
+// the ledger so completion is a cheap membership test per group.
+const dlSucceeded = new Set()
+// Group keys whose verification pass has already run, so it never repeats.
+const dlVerifiedGroups = new Set()
+
+// Fold a batch of just-enqueued items into the group ledger. Only files with a
+// real parent folder form a group; loose files are ignored (nothing to organize
+// or count). Merges into existing groups so a second enqueue for the same album
+// grows the expected count rather than replacing it.
+function dlTrackGroups(items) {
+  const fresh = dlOrganize.buildGroups(items)
+  for (const [key, g] of fresh) {
+    const existing = dlGroups.get(key)
+    if (!existing) { dlGroups.set(key, g); continue }
+    for (const f of g.files) {
+      if (!existing.files.has(f)) { existing.files.add(f); existing.expected++ }
+    }
+    if (!existing.surroundLabel && g.surroundLabel) existing.surroundLabel = g.surroundLabel
+  }
+}
 
 function dlConfig() {
   const saved = store.get('slskSchedulerConfig', {})
@@ -6001,10 +6137,21 @@ async function dlTick() {
         console.log(`[papa][dl] ${dlBaseName(live.filename)}: ${live._lastState || '(new)'} -> ${seen.state} (${seen.username})`)
         live._lastState = seen.state
       }
-      if (seen.kind === 'succeeded') dlSched.recordSuccess(dlState, key, seen.username)
+      if (seen.kind === 'succeeded') {
+        dlSched.recordSuccess(dlState, key, seen.username)
+        // Track completion for verification/organize (#49/#50): the remote path
+        // we sent is the group's file identity.
+        dlSucceeded.add(live.sentFilename || live.filename)
+        dlSucceeded.add(live.filename)
+      }
       else if (seen.kind === 'failed') { dlSched.recordFailure(dlState, key, seen.username, cfg, now); _dlTickFailures++ }
       else if (seen.kind === 'cancelled') dlSched.recordAbandoned(dlState, key)
     }
+
+    // After reconciling, check whether any tracked album group has just fully
+    // completed and, if so, run the verification pass once (#49) and, when it
+    // passes and the setting is on, auto-organize (#50).
+    await dlCheckCompletedGroups()
 
     const plan = dlSched.planDispatch(dlState, cfg, now)
     for (const item of plan) {
@@ -6082,6 +6229,147 @@ async function dlTick() {
     dlTicking = false
   }
 }
+
+// ── Post-download verification (#49) + auto-organize (#50) ───────────────────
+
+// Walk the group ledger; for any group that is now fully complete and not yet
+// verified, run the verification pass exactly once. Sequential so ffprobe is not
+// stormed. Runs AFTER completion (called from dlTick after reconcile), never on
+// a timer.
+async function dlCheckCompletedGroups() {
+  for (const [key, group] of dlGroups) {
+    if (dlVerifiedGroups.has(key)) continue
+    if (!dlOrganize.isGroupComplete(group, dlSucceeded)) continue
+    dlVerifiedGroups.add(key)
+    try { await dlVerifyGroup(group) } catch (e) {
+      console.error('[papa] post-download verify failed for', key, String(e && e.message || e))
+    }
+  }
+}
+
+// Verify one completed album group: resolve every enqueued file on disk, ffprobe
+// each for corruption + channel count, check the track count against the
+// enqueued count, and — if the folder was surround-labelled — check the real
+// channel count. Persists the verdict keyed username::folder, emits
+// 'slsk-verify-done', and, when the verdict is clean and auto-organize is on,
+// moves the files into a normalised folder (#50).
+async function dlVerifyGroup(group) {
+  const downloadDir = _downloadDir()
+  const probes = []
+  const resolvedPaths = []
+  for (const filename of group.files) {
+    const resolved = slskCandidatePaths(filename, group.username, downloadDir)
+      .find(c => fs.existsSync(c)) || null
+    if (!resolved) {
+      probes.push({ filename, filePath: null, ok: false, channels: 0 })
+      continue
+    }
+    resolvedPaths.push(resolved)
+    const probe = await verifyAudioFile(resolved)   // ffprobe: duration => readable
+    let channels = 0
+    if (probe.ok && group.surroundLabel) channels = await probeChannels(resolved)
+    probes.push({ filename, filePath: resolved, ok: probe.ok !== false, channels })
+  }
+
+  const verdict = dlOrganize.verdict(probes, group.expected, group.surroundLabel)
+  const record = {
+    ok: verdict.ok,
+    problems: verdict.problems,
+    username: group.username,
+    folder: group.folder,
+    dir: resolvedPaths.length ? path.dirname(resolvedPaths[0]) : null,
+    at: Date.now(),
+  }
+  try {
+    sideStores.slskVerify.update(prev => {
+      const next = prev && typeof prev === 'object' ? { ...prev } : {}
+      next[group.key] = record
+      return next
+    })
+  } catch (_) {}
+  safeSend('slsk-verify-done', { key: group.key, ...record })
+
+  // Auto-organize (#50): OPT-IN, and NEVER when verification failed. Only a
+  // clean verdict with the setting on triggers a move.
+  if (verdict.ok && _videoConfig().autoOrganizeDownloads && resolvedPaths.length) {
+    try { await dlOrganizeGroup(group, resolvedPaths, downloadDir) } catch (e) {
+      console.error('[papa] auto-organize failed for', group.key, String(e && e.message || e))
+    }
+  }
+}
+
+// Move a verified group's files into Downloads/Artist - Album/ (#50). Parses the
+// artist/album from the remote folder name via the shelves parser (required),
+// builds a collision-safe target, and moves each file — skipping any move whose
+// target already exists, never deleting anything, and logging every move.
+async function dlOrganizeGroup(group, filePaths, downloadDir) {
+  const shelves = require('./src/slsk-shelves')
+  const segs = String(group.folderPath || group.folder || '')
+    .replace(/\\/g, '/').split('/').filter(Boolean)
+  const parsed = shelves.parseAlbumFolder(segs.length ? segs : [group.folder || ''])
+  const targetName = dlOrganize.targetFolderName(parsed, group.folder)
+  if (!targetName) return
+  const { targetDir, moves } = dlOrganize.planMoves({
+    files: filePaths, downloadRoot: downloadDir, targetName,
+  })
+  if (!targetDir || !moves.length) return
+  // Never move into the very folder the files already live in.
+  if (moves.every(m => path.dirname(m.from) === targetDir)) return
+  try { fs.mkdirSync(targetDir, { recursive: true }) } catch (_) { return }
+
+  const logged = []
+  for (const m of moves) {
+    // Collision-safe: a target that already exists is skipped, never overwritten.
+    if (fs.existsSync(m.to)) { logged.push({ from: m.from, to: m.to, moved: false, reason: 'exists' }); continue }
+    try {
+      fs.renameSync(m.from, m.to)
+      logged.push({ from: m.from, to: m.to, moved: true })
+    } catch (e) {
+      // A cross-device rename (EXDEF) falls back to copy+unlink; but we NEVER
+      // delete on failure, so on any error the source is left in place.
+      if (e && e.code === 'EXDEV') {
+        try {
+          fs.copyFileSync(m.from, m.to)
+          fs.unlinkSync(m.from)
+          logged.push({ from: m.from, to: m.to, moved: true, crossDevice: true })
+        } catch (e2) {
+          try { if (fs.existsSync(m.to)) fs.unlinkSync(m.to) } catch (_) {}
+          logged.push({ from: m.from, to: m.to, moved: false, reason: String(e2 && e2.message || e2) })
+        }
+      } else {
+        logged.push({ from: m.from, to: m.to, moved: false, reason: String(e && e.message || e) })
+      }
+    }
+  }
+  const moved = logged.filter(l => l.moved).length
+  if (moved) {
+    try {
+      sideStores.slskOrganizeLog.update(prev => {
+        const list = Array.isArray(prev) ? prev.slice() : []
+        list.push({ key: group.key, targetDir, at: Date.now(), moves: logged })
+        return list.slice(-500)   // cap the log so it cannot grow without bound
+      })
+    } catch (_) {}
+    // The watcher picks up the moves and rescans; a nudge makes it prompt.
+    _scheduleLibraryRescan()
+  }
+}
+
+// W2-UI contract: slskVerifyStatus({username, folder}) — the persisted verdict
+// for one completed album group, or null if none exists yet.
+ipcMain.handle('slsk-verify-status', (_, { username, folder } = {}) => {
+  try {
+    const verdicts = sideStores.slskVerify.get() || {}
+    // The folder half of the key is the full folder PATH; a caller passing just a
+    // leaf folder name still matches on the folder field.
+    const direct = verdicts[dlOrganize.groupKey(username, (folder || '') + '/x')]
+    if (direct) return direct
+    for (const rec of Object.values(verdicts)) {
+      if (rec && rec.username === username && rec.folder === folder) return rec
+    }
+    return null
+  } catch (_) { return null }
+})
 
 // Aggregate throughput sampled once per tick, so the tuner can tell a rising
 // trend from a falling one. Only the previous sample is kept.
@@ -6242,6 +6530,15 @@ async function dlSeedFolderSources(items) {
 ipcMain.handle('slsk-enqueue-downloads', async (_, { items, force }) => {
   let added = 0
   const refused = []
+  // Record the album-group membership for verification/organize (#49/#50). The
+  // group username is the primary source's username (the one the folder came
+  // from); a file's own filename gives the folder path.
+  dlTrackGroups((items || [])
+    .filter(it => it && it.filename)
+    .map(it => ({
+      username: it.username || (it.sources && it.sources[0] && it.sources[0].username) || '',
+      filename: it.filename,
+    })))
   for (const it of items || []) {
     if (!it || !it.filename) continue
     const sources = (it.sources && it.sources.length)
@@ -8554,6 +8851,93 @@ ipcMain.handle('video-airing', async (_, { anilistIds, tmdbIds } = {}) => {
     return { ok: false, error: (e && e.message) || String(e) }
   }
 })
+
+// ── Air-date notifications (roadmap #35) ─────────────────────────────────────
+// On app start, and every 6h, compute the airing schedule for the shows the
+// user follows (their video-store watchlist) and fire a desktop Notification for
+// any episode airing in the next 24h that has not been notified yet. Notified
+// keys are persisted and capped at 200 (src/airing-notify.js). Respects the
+// airingNotifications toggle (default ON).
+const airingNotify = require('./src/airing-notify')
+const AIRING_CHECK_EVERY_MS = 6 * 60 * 60 * 1000
+
+// The followed anime (AniList) and TV (TMDB) ids from the video-store watchlist.
+// main can read the same bridged blob the renderer writes — it holds
+// watchlist: [{ type, id, ... }]. anime -> anilistIds, tv -> tmdbIds. Movies
+// have no airing schedule and are ignored.
+function _followedAiringIds() {
+  const anilistIds = []
+  const tmdbIds = []
+  try {
+    const raw = sideStores.videoStore.get()
+    const blob = typeof raw === 'string' ? JSON.parse(raw) : raw
+    const list = blob && Array.isArray(blob.watchlist) ? blob.watchlist : []
+    for (const w of list) {
+      if (!w || w.id == null) continue
+      const id = Number(w.id)
+      if (!Number.isFinite(id) || id <= 0) continue
+      if (w.type === 'anime') anilistIds.push(id)
+      else if (w.type === 'tv') tmdbIds.push(id)
+    }
+  } catch (_) { /* a missing or malformed blob just yields no follows */ }
+  return { anilistIds, tmdbIds }
+}
+
+// Compute the merged airing schedule for the followed shows. Reuses the same
+// AniList/TMDB fetch and _mergeAiring the airing shelf uses; each source fails
+// independently to an empty list.
+async function _followedAiringSchedule() {
+  const { anilistIds, tmdbIds } = _followedAiringIds()
+  const aIds = [...new Set(anilistIds)].sort((a, b) => a - b)
+  const tIds = [...new Set(tmdbIds)].sort((a, b) => a - b)
+  if (!aIds.length && !tIds.length) return []
+  const anilistRows = aIds.length
+    ? await anilist().airingSchedule(aIds).catch(() => [])
+    : []
+  const tmdbRows = tIds.length
+    ? (await Promise.all(tIds.map(id =>
+        _videoShowDetail('tv', id)
+          .then(d => (d ? { id: d.id ?? id, title: d.title, nextEpisode: d.nextEpisode } : null))
+          .catch(() => null)
+      ))).filter(Boolean)
+    : []
+  return _mergeAiring(anilistRows, tmdbRows)
+}
+
+let _airingChecking = false
+async function checkAiringNotifications() {
+  if (_airingChecking) return
+  if (!_videoConfig().airingNotifications) return
+  if (!Notification.isSupported()) return
+  _airingChecking = true
+  try {
+    const schedule = await _followedAiringSchedule()
+    if (!schedule.length) return
+    const notified = sideStores.airingNotified.get() || []
+    const due = airingNotify.dueNotifications(schedule, notified)
+    if (!due.length) return
+    const firedKeys = []
+    for (const row of due) {
+      const epText = row.episode != null ? ` — Episode ${row.episode}` : ''
+      try {
+        new Notification({
+          title: 'Airing soon',
+          body: (row.title || 'A followed show') + epText,
+          icon: ICON_PATH,
+          silent: false,
+        }).show()
+        firedKeys.push(row.notifyKey)
+      } catch (_) { /* a Notification that will not show must not lose the others */ }
+    }
+    if (firedKeys.length) {
+      sideStores.airingNotified.set(airingNotify.recordNotified(notified, firedKeys))
+    }
+  } catch (e) {
+    console.error('[papa] airing-notification check failed:', String(e && e.message || e))
+  } finally {
+    _airingChecking = false
+  }
+}
 
 // Only the backends that can actually answer for this media type are asked.
 // Previously every TV episode also queried YTS, which indexes movies only —

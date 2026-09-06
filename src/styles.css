@@ -1146,6 +1146,28 @@ h2.section-title { font-size:18px; font-weight:700; }
 }
 .progress-track:hover .progress-thumb { opacity:1; }
 
+/* ── A–B loop markers (App #5) ── */
+/* Thin flags pinned to the loop points; the strip between them is tinted so the
+   looping region reads at a glance. Non-interactive — the seek handler owns the
+   track's pointer events. */
+.ab-marker {
+  position:absolute; top:-3px; bottom:-3px; width:2px;
+  background:var(--accent); pointer-events:none; z-index:2;
+}
+.ab-marker::after {
+  content:''; position:absolute; top:-3px; left:-2px;
+  border-left:3px solid transparent; border-right:3px solid transparent;
+}
+.ab-marker-a::after { border-top:4px solid var(--accent); }
+.ab-marker-b::after { border-top:4px solid var(--accent); }
+.progress-track.ab-active {
+  background:linear-gradient(90deg,
+    rgba(255,255,255,.1) 0, rgba(255,255,255,.1) var(--ab-a, 0%),
+    var(--accent-glow, rgba(120,120,255,.25)) var(--ab-a, 0%),
+    var(--accent-glow, rgba(120,120,255,.25)) var(--ab-b, 0%),
+    rgba(255,255,255,.1) var(--ab-b, 0%), rgba(255,255,255,.1) 100%);
+}
+
 /* ── Volume & right controls ── */
 .vol-section {
   display:flex; flex-direction:column; align-items:flex-end; gap:5px;
@@ -4144,7 +4166,9 @@ kbd {
    status so real differences stand out from cosmetic and clean ones. */
 .tagfix-result { margin:2px 0 10px; padding:8px 10px; background:var(--bg2, rgba(255,255,255,.03)); border-radius:8px; }
 .tagfix-table { display:flex; flex-direction:column; gap:2px; }
-.tagfix-row { display:grid; grid-template-columns:1fr 20px 1fr; align-items:center; gap:8px; padding:4px 8px; border-radius:6px; font-size:12px; }
+.tagfix-row { display:grid; grid-template-columns:20px 1fr 20px 1fr; align-items:center; gap:8px; padding:4px 8px; border-radius:6px; font-size:12px; }
+.tagfix-check-cell { display:flex; align-items:center; justify-content:center; }
+.tagfix-row-check { cursor:pointer; }
 .tagfix-row.tagfix-header { font-weight:600; color:var(--text3); font-size:11px; padding-bottom:2px; }
 .tagfix-local, .tagfix-mb { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .tagfix-arrow { text-align:center; color:var(--text3); }
@@ -5967,6 +5991,23 @@ code { font-family:var(--font-mono,monospace);background:var(--bg4);padding:1px 
   width: 100%;
   margin-top: 8px;
 }
+/* Preset action row (App #7): reset / save / delete side by side, wrapping on a
+   narrow settings pane. Overrides the lone-button full width above. */
+.eq-preset-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+.eq-preset-actions .mcs-set-refresh {
+  flex: 1 1 auto;
+  width: auto;
+  margin-top: 0;
+}
+#eq-settings.eq-off .eq-preset-actions {
+  opacity: .4;
+  pointer-events: none;
+}
 
 /* Multichannel (5.1 / 7.1) indicator */
 .surround-badge {
@@ -6594,6 +6635,24 @@ body.app-unfocused .vt-menu {
 .mg-store-total .mg-store-val { color:var(--accent); }
 .mg-check-risky { accent-color:#e0a33e; }
 .mg-bar-warn { color:#e0a33e; font-size:11.5px; margin-left:8px; }
+
+/* ── Bulk genre fixer (App #8) ── */
+.mg-genre-assign {
+  background:var(--bg3); border-radius:var(--r-sm); padding:12px; margin-bottom:12px;
+}
+.mg-genre-assign-head { font-size:13px; color:var(--text2); margin-bottom:8px; }
+.mg-genre-assign-row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+.mg-genre-assign-input { flex:1 1 180px; min-width:0; }
+.mg-genre-variants { display:flex; flex-wrap:wrap; gap:6px; margin:6px 0 10px; }
+.mg-genre-variant {
+  background:var(--bg4); border-radius:12px; padding:3px 10px; font-size:12px; color:var(--text2);
+}
+.mg-genre-variant-count {
+  opacity:.6; font-variant-numeric:tabular-nums; margin-left:2px;
+}
+.mg-genre-merge-row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+.mg-genre-merge-label { font-size:12px; color:var(--text3); }
+.mg-genre-merge-select { flex:1 1 160px; min-width:0; }
 
 /* ── Tag editor ─────────────────────────────────────── */
 .tag-form { display:flex; flex-direction:column; gap:8px; margin:12px 0; }

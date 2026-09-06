@@ -271,6 +271,8 @@ var DEFAULT_SHORTCUTS = {
   'fullscreen': 'f',
   'toggleQueue': 'q',
   'toggleLyrics': 'l',
+  // Shift+L, not plain L: 'l' already toggles lyrics (see toggleLyrics above).
+  'abLoop': 'Shift+l',
   'focusSearch': 'Control+k',
   'commandPalette': 'Control+Shift+p',
   'likeTrack': 'Control+Shift+l',
@@ -302,6 +304,7 @@ var SHORTCUT_LABELS = {
   fullscreen: 'Full-screen now playing',
   toggleQueue: 'Show queue',
   toggleLyrics: 'Show lyrics',
+  abLoop: 'A–B loop (set A, set B, clear)',
   focusSearch: 'Search',
   commandPalette: 'Command palette',
   likeTrack: 'Like this track',
@@ -9816,14 +9819,24 @@ function renderAlbum(albumId) {
   const color = colors[parseInt(albumId.slice(0,2), 16) % colors.length]
   const isLiked = state.likedAlbums.includes(albumId)
 
-  const discs = new Set(album.tracks.map(t => t.discNumber))
-  const hasMultipleDiscs = discs.size > 1
+  // Disc grouping (App #10): use the shared rule (tagged discNumber, else parsed
+  // from the path, else disc 1) so a mixed album — some tracks tagged, some not —
+  // never sprouts a spurious "Disc undefined" band or reads as multi-disc when
+  // it is really single-disc.
+  const _mtDisc = (typeof window !== 'undefined' && window.PapaMusicTools) || null
+  const _discOf = t => _mtDisc && _mtDisc.discNumberOf
+    ? _mtDisc.discNumberOf(t)
+    : (Number(t.discNumber) > 0 ? Number(t.discNumber) : 1)
+  const hasMultipleDiscs = _mtDisc && _mtDisc.albumHasMultipleDiscs
+    ? _mtDisc.albumHasMultipleDiscs(album.tracks)
+    : new Set(album.tracks.map(_discOf)).size > 1
   let lastDisc = null
   const trackRows = album.tracks.map((t, i) => {
     let discHeader = ''
-    if (hasMultipleDiscs && t.discNumber !== lastDisc) {
-      lastDisc = t.discNumber
-      discHeader = `<div class="disc-separator">Disc ${t.discNumber}</div>`
+    const disc = _discOf(t)
+    if (hasMultipleDiscs && disc !== lastDisc) {
+      lastDisc = disc
+      discHeader = `<div class="disc-separator">Disc ${disc}</div>`
     }
     const isPlaying = isCurrentTrack(t.filePath)
     const plays = state.playCounts[t.filePath] || 0
@@ -13689,6 +13702,14 @@ function renderStats() {
   document.querySelectorAll('.tagfix-check').forEach(function (btn) {
     btn.addEventListener('click', function () { checkAlbumTags(btn) })
   })
+  // Apply button is injected into the result after a check, so bind it delegated
+  // on each album row (App #9) rather than at render time when it does not exist.
+  document.querySelectorAll('[data-tagfix-album]').forEach(function (row) {
+    row.addEventListener('click', function (e) {
+      var apply = e.target && e.target.closest && e.target.closest('[data-tagfix-apply]')
+      if (apply) applyTagFix(apply)
+    })
+  })
 }
 
 // ── Loudness scan (App #59) ──────────────────────────────────────────────────
@@ -13775,14 +13796,26 @@ async function checkAlbumTags(btn) {
       return
     }
     var diff = _mt.buildTagDiff(album.tracks || [], res.tracks)
-    out.innerHTML = renderTagDiff(diff, res.release)
+    // Stash the diff + album so the Apply step (App #9) can resolve files to
+    // write without re-querying MusicBrainz. Keyed by album id; the result
+    // element lives inside the same card.
+    _tagfixState[albumId] = { diff: diff, album: album, release: res.release }
+    out.innerHTML = renderTagDiff(diff, res.release, albumId)
   } finally {
     btn.disabled = false; btn.textContent = 'Check tags'
   }
 }
 
-function renderTagDiff(diff, release) {
+// Per-album tag-fixer state: the last diff + album the user checked, so Apply
+// (App #9) can turn accepted rows into tag writes.
+var _tagfixState = {}
+
+function renderTagDiff(diff, release, albumId) {
+  var _mt = (typeof window !== 'undefined' && window.PapaMusicTools) || null
   var s = diff.summary
+  var applicable = _mt && _mt.tagFixApplicableRows ? _mt.tagFixApplicableRows(diff.rows) : []
+  var applicableSet = {}
+  applicable.forEach(function (i) { applicableSet[i] = true })
   var head = '<div class="stats-rank-sub" style="padding:4px 0;font-size:12px;font-weight:600">' +
     'Matched to “' + esc((release && release.title) || '') + '”' + (release && release.artist ? ' — ' + esc(release.artist) : '') +
     (release && release.date ? ' (' + esc(String(release.date).slice(0, 4)) + ')' : '') + '</div>' +
@@ -13790,7 +13823,7 @@ function renderTagDiff(diff, release) {
     s.differ + ' differ · ' + s.cosmetic + ' cosmetic · ' + s.clean + ' clean' +
     (s.localOnly ? ' · ' + s.localOnly + ' only local' : '') +
     (s.mbOnly ? ' · ' + s.mbOnly + ' only on release' : '') + '</div>'
-  var rows = diff.rows.map(function (r) {
+  var rows = diff.rows.map(function (r, i) {
     var cls = r.kind === 'match'
       ? (r.titleDiffers || r.numberDiffers ? 'tagfix-diff' : (r.titleCosmetic ? 'tagfix-cosmetic' : 'tagfix-clean'))
       : (r.kind === 'local-only' ? 'tagfix-local-only' : 'tagfix-mb-only')
@@ -13802,17 +13835,83 @@ function renderTagDiff(diff, release) {
     var mbCell = r.kind === 'local-only'
       ? '<span class="tagfix-empty">— not on the release —</span>'
       : mbNo + esc(r.mbTitle || '')
+    // A checkbox only on rows that can actually be written; others get a spacer
+    // so the columns line up.
+    var check = applicableSet[i]
+      ? '<input type="checkbox" class="tagfix-row-check" data-tagfix-row="' + i + '" checked>'
+      : '<span class="tagfix-check-spacer"></span>'
     return '<div class="tagfix-row ' + cls + '">' +
+      '<div class="tagfix-check-cell">' + check + '</div>' +
       '<div class="tagfix-local">' + localCell + '</div>' +
       '<div class="tagfix-arrow">' + ((r.titleDiffers || r.numberDiffers || r.kind !== 'match') ? '→' : '=') + '</div>' +
       '<div class="tagfix-mb">' + mbCell + '</div>' +
       '</div>'
   }).join('')
+  var applyBtn = applicable.length
+    ? '<button class="secondary tagfix-apply-btn" data-tagfix-apply="' + esc(albumId || '') + '" ' +
+        'style="padding:6px 14px;font-size:12px">Apply ' + applicable.length +
+        ' change' + (applicable.length === 1 ? '' : 's') + '</button>' +
+      '<span class="stats-rank-sub" style="margin-left:10px;font-size:11px">Rewrites the tags in your files losslessly.</span>'
+    : '<span class="stats-rank-sub" style="font-size:12px">Nothing to apply — your tags already match.</span>'
   return head +
     '<div class="tagfix-table"><div class="tagfix-row tagfix-header">' +
+    '<div class="tagfix-check-cell"></div>' +
     '<div class="tagfix-local">Your tags</div><div class="tagfix-arrow"></div><div class="tagfix-mb">MusicBrainz</div></div>' +
     rows + '</div>' +
-    '<div style="margin-top:8px"><button class="secondary" disabled title="Coming soon" style="padding:6px 14px;font-size:12px;opacity:.5;cursor:not-allowed">Apply fixes (coming soon)</button></div>'
+    '<div class="tagfix-actions" style="margin-top:8px">' + applyBtn + '</div>'
+}
+
+// Apply the accepted MusicBrainz corrections (App #9). Reads the checkboxes,
+// turns them into tag writes via the pure helper, confirms, then writes through
+// the same libraryWriteTags path the tag editor uses.
+async function applyTagFix(btn) {
+  var _mt = (typeof window !== 'undefined' && window.PapaMusicTools) || null
+  var albumId = btn.getAttribute('data-tagfix-apply') || ''
+  var st = _tagfixState[albumId]
+  if (!_mt || !st) { showToast('Tag fixer state lost — run Check tags again'); return }
+  // Which rows are ticked, scoped to this card's result container.
+  var out = document.querySelector('.tagfix-result[data-tagfix-result="' + (window.CSS && CSS.escape ? CSS.escape(albumId) : albumId) + '"]')
+  var accepted = []
+  if (out) {
+    out.querySelectorAll('.tagfix-row-check:checked').forEach(function (c) {
+      accepted.push(Number(c.getAttribute('data-tagfix-row')))
+    })
+  }
+  if (!accepted.length) { showToast('Tick at least one change to apply'); return }
+  var writes = _mt.tagFixWrites(st.diff.rows, st.album.tracks || [], accepted)
+  if (!writes.length) { showToast('Nothing to write'); return }
+
+  _mgConfirm(
+    'Apply tag fixes',
+    '<p class="mg-confirm-sum" style="margin-top:0">' + esc(st.album.artist || '') + ' — ' + esc(st.album.name || '') + '</p>' +
+    '<p class="mg-confirm-note">' + writes.length + ' file' + (writes.length === 1 ? '' : 's') +
+      ' will have their title and/or track number rewritten to match MusicBrainz. ' +
+      'The change is lossless; the original is only replaced once the write succeeds.</p>',
+    'Write tags',
+    function () { _doApplyTagFix(writes, albumId, btn) }
+  )
+}
+
+async function _doApplyTagFix(writes, albumId, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = 'Writing…' }
+  var res = await window.api.libraryWriteTags({ files: writes }).catch(function () { return null })
+  // Whatever happened, the button gets a path back: a failure re-enables it to
+  // retry, a success leaves it enabled but relabelled (a re-apply is a no-op —
+  // tagFixWrites emits nothing once the tags already match).
+  if (btn) btn.disabled = false
+  if (!res) { showToast('Could not write tags'); if (btn) btn.textContent = 'Apply changes'; return }
+  if (!res.written) {
+    var err = (res.results || [])[0]
+    showToast('No tags written' + (err && err.error ? ' — ' + err.error : ''))
+    if (btn) btn.textContent = 'Apply changes'
+    return
+  }
+  showToast(res.written + ' file' + (res.written === 1 ? '' : 's') + ' updated' +
+    (res.failed ? ', ' + res.failed + ' failed' : ''))
+  // A tag rewrite schedules a rescan in main; refresh the diff after so the UI
+  // reflects the now-matching tags rather than the pre-write state.
+  if (typeof _scheduleLibRescan === 'function') _scheduleLibRescan()
+  if (btn) btn.textContent = 'Applied ✓'
 }
 
 // Duplicate finder (informational only, no deletion in this wave). Scans the
@@ -14724,6 +14823,103 @@ function showNowPlayingModal() {
   if (modal.classList.contains('lyrics-mode')) renderLyricsPanel()
   // Keyboard focus stays inside the modal and returns to the opener on close.
   modal._releaseFocus = _trapFocus(modal, { initial: '#np-modal-close' })
+}
+
+// ── A–B loop (App #5) ──────────────────────────────────────────────────────
+// Loop a passage of the current track: Shift+L drops A, then B (loop starts),
+// then a third press clears it. The pure cycle/jump rules live in music-tools
+// (abLoopCycle, abLoopJumpTarget) so they can be tested without the engine; this
+// owns only the wiring — markers on the seek bar, the timeupdate jump-back, and
+// the mpv native loop when the backend exposes it (mpvAbLoop), with a
+// renderer-side fallback when it does not.
+var _abLoop = null // { a, b } in seconds, b:null while pending, null when off
+
+// mpv can loop natively (ab-loop-a / ab-loop-b) with sample accuracy; the
+// renderer fallback jumps on the ~4Hz timeupdate tick, which is close enough for
+// practice but audibly looser. Prefer native when the backend added it this wave.
+function _abLoopNativeAvailable() {
+  return !!(window.api && typeof window.api.mpvAbLoop === 'function')
+}
+
+function _abLoopPushEngine() {
+  if (!_abLoopNativeAvailable()) return
+  // Only a complete { a, b } window is a real mpv loop; a pending A or a cleared
+  // loop both mean "no native loop" so playback runs normally until B lands.
+  var payload = (_abLoop && _abLoop.b != null) ? { a: _abLoop.a, b: _abLoop.b } : null
+  try { window.api.mpvAbLoop(payload) } catch (_) {}
+}
+
+function _abLoopPaintMarkers() {
+  var track = document.getElementById('progress-track')
+  var mA = document.getElementById('ab-marker-a')
+  var mB = document.getElementById('ab-marker-b')
+  if (!track || !mA || !mB) return
+  var dur = Number(audio.duration) || 0
+  if (!_abLoop || !dur) {
+    mA.style.display = 'none'
+    mB.style.display = 'none'
+    track.classList.remove('ab-active')
+    track.style.removeProperty('--ab-a')
+    track.style.removeProperty('--ab-b')
+    return
+  }
+  var aPct = Math.max(0, Math.min(100, (_abLoop.a / dur) * 100))
+  mA.style.left = aPct + '%'
+  mA.style.display = 'block'
+  track.style.setProperty('--ab-a', aPct + '%')
+  if (_abLoop.b != null) {
+    var bPct = Math.max(0, Math.min(100, (_abLoop.b / dur) * 100))
+    mB.style.left = bPct + '%'
+    mB.style.display = 'block'
+    track.style.setProperty('--ab-b', bPct + '%')
+    track.classList.add('ab-active')
+  } else {
+    mB.style.display = 'none'
+    track.classList.remove('ab-active')
+    track.style.setProperty('--ab-b', aPct + '%')
+  }
+}
+
+// Clear any loop — called when the track changes, since A/B points belong to the
+// file that was playing. Silent (no toast): a track change is not a user action
+// on the loop.
+function _abLoopClear() {
+  if (!_abLoop) return
+  _abLoop = null
+  _abLoopPushEngine()
+  _abLoopPaintMarkers()
+}
+
+// The Shift+L handler. Cycles A → B → clear against the position now.
+function _abLoopToggle() {
+  var tools = (typeof window !== 'undefined' && window.PapaMusicTools) || null
+  if (!tools || typeof tools.abLoopCycle !== 'function') return
+  if (!state.queue.length || !audio.duration) {
+    showSnackbar('Play something first to set a loop')
+    return
+  }
+  var res = tools.abLoopCycle(_abLoop, audio.currentTime)
+  _abLoop = res.loop
+  _abLoopPushEngine()
+  _abLoopPaintMarkers()
+  if (res.action === 'set-a' || res.action === 're-set-a') {
+    showSnackbar('Loop point A set — press Shift+L again to set B')
+  } else if (res.action === 'set-b') {
+    showSnackbar('A–B loop on — press Shift+L to clear')
+  } else if (res.action === 'clear') {
+    showSnackbar('A–B loop cleared')
+  }
+}
+
+// The renderer-side fallback, called on every timeupdate tick. A no-op when the
+// backend loops natively (mpv already jumped) or when there is no full loop.
+function _abLoopTick(posSec) {
+  if (_abLoopNativeAvailable()) return
+  var tools = (typeof window !== 'undefined' && window.PapaMusicTools) || null
+  if (!tools || typeof tools.abLoopJumpTarget !== 'function') return
+  var target = tools.abLoopJumpTarget(_abLoop, posSec)
+  if (target == null) return
+  try { audio.currentTime = target } catch (_) {}
 }
 
 // Everything that must be bound exactly once, behind the modal element (never
@@ -16027,6 +16223,10 @@ function playCurrentTrack() {
   const track = state.queue[state.queueIndex]
   if (!track) return
   _playbackIntent++
+  // An A–B loop belongs to the file it was set on; starting a (different) track
+  // via next/prev/select clears it. Repeat-one replays in place without calling
+  // here, so a loop survives a natural track repeat.
+  _abLoopClear()
   if (isHttpPath(track.filePath)) recordYtRecent(track)
   const isStream = /^https?:\/\//.test(track.filePath)
 
@@ -19050,7 +19250,23 @@ async function initPlaybackSettings() {
     apply({ crossfadeSecs: Number(e.target.value) })
     _syncGlobalCrossfadeCache({ mode: $('pb-mode').value, crossfadeSecs: Number(e.target.value) })
   }
-  $('pb-replaygain').onchange = e => apply({ replaygain: e.target.value })
+  // Volume leveling (App #6): prefer the dedicated mpvReplaygainMode IPC when the
+  // backend exposes it (it sets the property live AND persists to playerSettings
+  // for the next spawn); feature-detect and fall back to playerSetConfig on an
+  // older backend. The select offers Off / Track / Album; 'no' is mpv's "off".
+  if (!$('pb-replaygain')) {
+    // No control in this build — nothing to wire.
+  } else if (window.api && typeof window.api.mpvReplaygainMode === 'function') {
+    $('pb-replaygain').onchange = e => {
+      var v = e.target.value
+      window.api.mpvReplaygainMode(v === 'no' ? 'off' : v)
+      showSnackbar(v === 'no' ? 'Volume leveling off'
+        : v === 'album' ? 'Volume leveling: per album' : 'Volume leveling: per track')
+    }
+  } else {
+    // Fallback: the config path still reaches mpv's replaygain on older backends.
+    $('pb-replaygain').onchange = e => apply({ replaygain: e.target.value })
+  }
   $('pb-channels').onchange = e => apply({ channels: e.target.value })
   $('pb-boost').onchange = e => apply({ boost: e.target.checked })
   if ($('pb-replaygain-apply')) $('pb-replaygain-apply').onchange = e => {
@@ -19261,17 +19477,34 @@ async function _initEqSettings(cfg, apply) {
   // A stored curve from an older build may be short; pad rather than crash.
   eq.gains = bands.map((_, i) => Number(eq.gains?.[i]) || 0)
 
+  // User-saved presets (App #7), keyed by name in localStorage. Each is
+  // { name, gains: [...] }; the preamp is derived on apply the same way a built-
+  // in preset's is, so a saved curve behaves like a shipped one.
+  const customPresets = _eqLoadCustomPresets(bands.length)
+  const customKey = name => 'custom:' + name
+
   // Built from the preset table rather than hardcoded markup, so adding a
-  // preset in eq.js is all it takes to make it appear here.
-  const groups = {}
-  for (const [key, p] of Object.entries(presets)) {
-    (groups[p.group] = groups[p.group] || []).push([key, p])
+  // preset in eq.js is all it takes to make it appear here. Custom presets get
+  // their own optgroup at the top so the user's own curves are easy to find.
+  const renderPresetOptions = () => {
+    const groups = {}
+    for (const [key, p] of Object.entries(presets)) {
+      (groups[p.group] = groups[p.group] || []).push([key, p])
+    }
+    const customOpts = Object.keys(customPresets).length
+      ? '<optgroup label="My Presets">' +
+        Object.keys(customPresets).sort().map(name =>
+          `<option value="${esc(customKey(name))}">${esc(name)}</option>`).join('') +
+        '</optgroup>'
+      : ''
+    $('eq-preset').innerHTML = '<option value="custom">Custom</option>' +
+      customOpts +
+      Object.entries(groups).map(([group, items]) =>
+        `<optgroup label="${esc(group)}">` +
+        items.map(([key, p]) => `<option value="${esc(key)}">${esc(p.label)}</option>`).join('') +
+        '</optgroup>').join('')
   }
-  $('eq-preset').innerHTML = '<option value="custom">Custom</option>' +
-    Object.entries(groups).map(([group, items]) =>
-      `<optgroup label="${group}">` +
-      items.map(([key, p]) => `<option value="${key}">${p.label}</option>`).join('') +
-      '</optgroup>').join('')
+  renderPresetOptions()
 
   bandsEl.innerHTML = bands.map((hz, i) => `
     <div class="eq-band">
@@ -19289,10 +19522,17 @@ async function _initEqSettings(cfg, apply) {
       $(`eq-gain-${i}`).value = g
       $(`eq-gain-label-${i}`).textContent = g === 0 ? '' : `${g > 0 ? '+' : ''}${g}`
     })
-    // Any hand-edit stops matching a named preset; say so rather than lie.
-    const match = Object.keys(presets).find(n =>
-      presets[n].gains.every((g, i) => g === eq.gains[i]))
-    $('eq-preset').value = match || 'custom'
+    // Any hand-edit stops matching a named preset; say so rather than lie. A
+    // custom preset is checked first so a user's own curve is recognised as
+    // theirs rather than falling through to a built-in with the same shape.
+    const eqEq = arr => arr.every((g, i) => g === eq.gains[i])
+    const customMatch = Object.keys(customPresets).find(n => eqEq(customPresets[n].gains))
+    const builtinMatch = Object.keys(presets).find(n => eqEq(presets[n].gains))
+    const sel = customMatch ? customKey(customMatch) : (builtinMatch || 'custom')
+    $('eq-preset').value = sel
+    // The Delete button only makes sense on a selected custom preset.
+    const delBtn = $('eq-delete-preset')
+    if (delBtn) delBtn.style.display = customMatch ? '' : 'none'
   }
 
   const push = () => { state._playerSettings = { ...state._playerSettings, eq }; apply({ eq }) }
@@ -19315,11 +19555,25 @@ async function _initEqSettings(cfg, apply) {
   })
 
   $('eq-preset').onchange = async e => {
-    const preset = await window.api.eqPreset(e.target.value)
+    const val = e.target.value
+    if (val === 'custom') return // "Custom" is a state, not a preset to apply
+    // A user preset applies renderer-side (mpv/main only know the built-ins);
+    // it routes through the same paint()/push() EQ-set machinery as a built-in.
+    if (val.indexOf('custom:') === 0) {
+      const name = val.slice('custom:'.length)
+      const cp = customPresets[name]
+      if (!cp) return
+      const gains = bands.map((_, i) => Number(cp.gains[i]) || 0)
+      eq = { enabled: true, preamp: _eqSuggestedPreamp(gains, limit), gains }
+      paint(); push()
+      showSnackbar(`EQ preset: ${name}`)
+      return
+    }
+    const preset = await window.api.eqPreset(val)
     if (!preset) return
     eq = { ...preset, enabled: true }
     paint(); push()
-    showSnackbar(`EQ preset: ${presets[e.target.value]?.label || e.target.value}`)
+    showSnackbar(`EQ preset: ${presets[val]?.label || val}`)
   }
 
   $('eq-reset').onclick = () => {
@@ -19328,7 +19582,99 @@ async function _initEqSettings(cfg, apply) {
     showSnackbar('Equalizer reset to flat')
   }
 
+  // Save the current curve as a named preset (App #7). A blank name aborts; an
+  // existing name overwrites after a confirm so a typo cannot silently clobber.
+  $('eq-save-preset').onclick = () => {
+    _mgPrompt('Save EQ preset', {
+      label: 'Preset name',
+      value: '',
+      confirmLabel: 'Save',
+      onConfirm: name => {
+        name = String(name || '').trim()
+        if (!name) { showSnackbar('Give the preset a name'); return }
+        if (name.length > 40) name = name.slice(0, 40)
+        const doSave = () => {
+          customPresets[name] = { name, gains: eq.gains.slice() }
+          _eqSaveCustomPresets(customPresets)
+          renderPresetOptions()
+          $('eq-preset').value = customKey(name)
+          const delBtn = $('eq-delete-preset')
+          if (delBtn) delBtn.style.display = ''
+          showSnackbar(`Saved EQ preset “${name}”`)
+        }
+        if (customPresets[name]) {
+          _mgConfirm('Overwrite preset',
+            '<p class="mg-confirm-note" style="margin-top:0">A preset named “' + esc(name) +
+              '” already exists. Overwrite it with the current curve?</p>',
+            'Overwrite', doSave)
+        } else {
+          doSave()
+        }
+      },
+    })
+  }
+
+  // Delete the selected custom preset (App #7).
+  $('eq-delete-preset').onclick = () => {
+    const val = $('eq-preset').value
+    if (val.indexOf('custom:') !== 0) return
+    const name = val.slice('custom:'.length)
+    if (!customPresets[name]) return
+    _mgConfirm('Delete preset',
+      '<p class="mg-confirm-note" style="margin-top:0">Delete your EQ preset “' + esc(name) + '”? ' +
+        'The current EQ curve stays as it is.</p>',
+      'Delete', () => {
+        delete customPresets[name]
+        _eqSaveCustomPresets(customPresets)
+        renderPresetOptions()
+        paint() // re-selects Custom (or a matching built-in) and hides Delete
+        showSnackbar(`Deleted EQ preset “${name}”`)
+      })
+  }
+
   paint()
+}
+
+// Custom EQ presets live in localStorage (App #7): { name: { name, gains } }.
+// Read defensively — a hand-edit or an older shape must not throw and silence
+// the whole EQ panel. `bandCount` pads/truncates each curve to the live band
+// count so a preset saved on a different build still applies cleanly.
+function _eqLoadCustomPresets(bandCount) {
+  var out = {}
+  try {
+    var raw = window.PapaLocal ? window.PapaLocal.readObject('papa-eq-presets') : null
+    if (!raw || typeof raw !== 'object') return out
+    Object.keys(raw).forEach(function (name) {
+      var p = raw[name]
+      var gains = (p && Array.isArray(p.gains)) ? p.gains : []
+      out[name] = {
+        name: String(name),
+        gains: new Array(bandCount).fill(0).map(function (_, i) { return Number(gains[i]) || 0 }),
+      }
+    })
+  } catch (_) {}
+  return out
+}
+
+function _eqSaveCustomPresets(map) {
+  try {
+    if (window.PapaLocal) window.PapaLocal.write('papa-eq-presets', map)
+    else localStorage.setItem('papa-eq-presets', JSON.stringify(map))
+  } catch (_) {}
+}
+
+// The headroom a curve needs: mirror of eq.js's suggestedPreamp so a custom
+// preset attenuates before its boosts the same way a built-in does, without
+// reaching into main for it. `limit` clamps to the supported preamp range.
+function _eqSuggestedPreamp(gains, limit) {
+  var peak = 0
+  for (var i = 0; i < gains.length; i++) {
+    var g = Number(gains[i]) || 0
+    if (g > peak) peak = g
+  }
+  var pre = peak > 0 ? -Math.round(peak) : 0
+  var lim = Number(limit) || 12
+  return Math.max(-lim, Math.min(lim, pre))
 }
 
 function _updateProviderRows(provider) {
@@ -25107,6 +25453,11 @@ function setupListeners() {
     const ratio = ct / audio.duration
     sampleHistoryPosition(ct)
 
+    // A–B loop fallback (App #5): jump back at B. Runs in the background-safe
+    // block so a loop keeps looping while the window is hidden. A no-op when mpv
+    // loops natively or no loop is set.
+    _abLoopTick(ct)
+
     // ── Always-run (background-safe) ──────────────────────────────────────
     // Position autosave every 5s, but only once per second boundary
     const intSec = Math.floor(ct)
@@ -25145,6 +25496,9 @@ function setupListeners() {
     updateLyricsDrawerHighlight()
   })
   audio.addEventListener('loadedmetadata', () => {
+    // The duration the A/B markers are positioned against only exists now, so
+    // repaint (a pending loop set before metadata arrived would sit at 0%).
+    _abLoopPaintMarkers()
     document.getElementById('time-total').textContent = fmtDur(audio.duration)
     const mt = document.getElementById('np-modal-total')
     if (mt) mt.textContent = fmtDur(audio.duration)
@@ -26018,6 +26372,8 @@ function setupListeners() {
     if (matchesShortcut('cycleSpeed', e)) { cycleSpeed(); return }
     // Lyrics drawer toggle
     if (matchesShortcut('toggleLyrics', e)) { if (state.queue.length) { toggleLyricsDrawer(); return } }
+    // A–B loop cycle (App #5): Shift+L drops A, then B, then clears.
+    if (matchesShortcut('abLoop', e)) { e.preventDefault(); _abLoopToggle(); return }
     // Declared in the table and bound to nothing until now.
     if (matchesShortcut('stopAfter', e)) {
       e.preventDefault()
@@ -26920,6 +27276,7 @@ function _mgTabsHtml() {
   return '<div class="mg-tabs">' +
     '<button class="mg-tab' + (t === 'duplicates' ? ' active' : '') + '" data-mgtab="duplicates">Duplicates</button>' +
     '<button class="mg-tab' + (t === 'health' ? ' active' : '') + '" data-mgtab="health">Health</button>' +
+    '<button class="mg-tab' + (t === 'genres' ? ' active' : '') + '" data-mgtab="genres">Genres</button>' +
     '<button class="mg-tab' + (t === 'storage' ? ' active' : '') + '" data-mgtab="storage">Storage</button>' +
     '<button class="mg-tab' + (t === 'trash' ? ' active' : '') + '" data-mgtab="trash">Recently Deleted</button>' +
     '</div>'
@@ -26944,6 +27301,7 @@ function _mgBindTabs() {
 function renderManage() {
   if (_mgState.tab === 'trash') return renderManageTrash()
   if (_mgState.tab === 'health') return renderManageHealth()
+  if (_mgState.tab === 'genres') return renderManageGenres()
   if (_mgState.tab === 'storage') return renderManageStorage()
   return renderManageDuplicates()
 }
@@ -27024,6 +27382,183 @@ async function renderManageHealth() {
       if (f && f.fixAction) libraryMutate({ kind: 'trash', paths: f.fixAction.paths, label: f.title })
     })
   })
+}
+
+// ── Bulk genre fixer (App #8) ──────────────────────────────────────────────
+// Lists the distinct genres in the library, folding case/whitespace variants
+// ("rock" / "Rock " / "ROCK") into one group with per-variant album counts, and
+// lets the user (a) merge a group's variants into one canonical spelling, and
+// (b) assign a genre to albums that have none. Both write real genre tags to the
+// files via libraryWriteTags — the same lossless path the tag editor uses — so
+// the fix survives a rescan. The UI says so plainly.
+var _mgGenreState = { groups: [], ungenred: 0 }
+
+function renderManageGenres() {
+  var _mt = (typeof window !== 'undefined' && window.PapaMusicTools) || null
+  if (!_mt || typeof _mt.analyzeGenres !== 'function') {
+    setContent(_mgShell('<div class="mg-empty">Genre tools failed to load.</div>'))
+    _mgBindTabs()
+    return
+  }
+  var res = _mt.analyzeGenres(state.library || [])
+  _mgGenreState = res
+  var groups = res.groups
+  // Only groups with more than one spelling actually need merging; single-spelling
+  // groups are shown muted so the user can see the whole picture without noise.
+  var messy = groups.filter(function (g) { return g.variants.length > 1 })
+
+  var sub = groups.length + ' distinct genre' + (groups.length === 1 ? '' : 's') +
+    (messy.length ? ' · ' + messy.length + ' with spelling variants to merge' : ' · all tidy') +
+    (res.ungenred ? ' · ' + res.ungenred + ' album' + (res.ungenred === 1 ? '' : 's') + ' with no genre' : '')
+
+  var inner = '<div class="mg-note">Changes here rewrite the genre tag in your ' +
+    'files (lossless), then rescan — so they stick. Nothing is written until you ' +
+    'click a button below.</div>'
+
+  // Assign-to-ungenred control.
+  if (res.ungenred > 0) {
+    var genreOptions = groups.map(function (g) {
+      return '<option value="' + esc(g.suggested) + '">' + esc(g.suggested) + '</option>'
+    }).join('')
+    inner += '<div class="mg-genre-assign">' +
+      '<div class="mg-genre-assign-head">' + res.ungenred + ' album' + (res.ungenred === 1 ? '' : 's') +
+        ' have no genre</div>' +
+      '<div class="mg-genre-assign-row">' +
+        '<input class="sq-name-input mg-genre-assign-input" id="mg-genre-assign-input" ' +
+          'list="mg-genre-datalist" placeholder="Genre to assign" autocomplete="off">' +
+        '<datalist id="mg-genre-datalist">' + genreOptions + '</datalist>' +
+        '<button class="mg-btn" id="mg-genre-assign-btn">Assign to all un-genred</button>' +
+      '</div></div>'
+  }
+
+  if (!messy.length && res.ungenred === 0) {
+    inner += '<div class="mg-empty">Your genres are already consistent.</div>'
+  }
+
+  // One card per group with variants. The canonical picker defaults to the
+  // most-used spelling; the user can also type a fresh canonical name.
+  for (var i = 0; i < messy.length; i++) {
+    var g = messy[i]
+    var variantList = g.variants.map(function (v) {
+      return '<span class="mg-genre-variant">' + esc(v.value) +
+        ' <span class="mg-genre-variant-count">' + v.albumCount + '</span></span>'
+    }).join('')
+    var opts = g.variants.map(function (v) {
+      return '<option value="' + esc(v.value) + '">' + esc(v.value) +
+        ' (' + v.albumCount + ')</option>'
+    }).join('')
+    inner += '<div class="mg-group mg-genre-group" data-genre-key="' + esc(g.key) + '">' +
+      '<div class="mg-group-head">' +
+        '<span class="mg-group-title">' + esc(g.suggested) + '</span>' +
+        '<span class="mg-group-meta">' + g.albumCount + ' album' + (g.albumCount === 1 ? '' : 's') +
+          ' · ' + g.variants.length + ' spellings</span>' +
+      '</div>' +
+      '<div class="mg-genre-variants">' + variantList + '</div>' +
+      '<div class="mg-genre-merge-row">' +
+        '<span class="mg-genre-merge-label">Merge all into</span>' +
+        '<select class="mcs-set-select mg-genre-merge-select" data-genre-key="' + esc(g.key) + '">' + opts + '</select>' +
+        '<button class="mg-btn mg-genre-merge-btn" data-genre-key="' + esc(g.key) + '">Merge</button>' +
+      '</div></div>'
+  }
+
+  setContent(_mgShell(inner, sub))
+  _mgBindTabs()
+  _mgBindGenres()
+}
+
+function _mgBindGenres() {
+  var assignBtn = document.getElementById('mg-genre-assign-btn')
+  if (assignBtn) {
+    assignBtn.addEventListener('click', function () { _mgAssignUngenred() })
+  }
+  document.querySelectorAll('.mg-genre-merge-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () { _mgMergeGenre(btn.getAttribute('data-genre-key')) })
+  })
+}
+
+// Albums whose genre folds to the given normalised key.
+function _mgAlbumsForGenreKey(key) {
+  var norm = function (v) { return String(v == null ? '' : v).toLowerCase().replace(/\s+/g, ' ').trim() }
+  return (state.library || []).filter(function (a) { return norm(a.genre) === key })
+}
+
+function _mgMergeGenre(key) {
+  var _mt = (typeof window !== 'undefined' && window.PapaMusicTools) || null
+  if (!_mt || !key) return
+  var sel = document.querySelector('.mg-genre-merge-select[data-genre-key="' +
+    (window.CSS && CSS.escape ? CSS.escape(key) : key) + '"]')
+  var target = sel ? sel.value : ''
+  if (!target) { showToast('Pick a genre to merge into'); return }
+  var albums = _mgAlbumsForGenreKey(key)
+  var writes = _mt.genreWritesForAlbums(albums, target)
+  if (!writes.length) { showToast('Every track already has that genre'); return }
+  _mgConfirm('Merge genres',
+    '<p class="mg-confirm-note" style="margin-top:0">Set the genre to “' + esc(target) + '” on ' +
+      writes.length + ' track' + (writes.length === 1 ? '' : 's') + ' across ' +
+      albums.length + ' album' + (albums.length === 1 ? '' : 's') + '? ' +
+      'This rewrites the genre tag in those files.</p>',
+    'Merge', function () { _mgWriteGenres(writes) })
+}
+
+function _mgAssignUngenred() {
+  var _mt = (typeof window !== 'undefined' && window.PapaMusicTools) || null
+  if (!_mt) return
+  var input = document.getElementById('mg-genre-assign-input')
+  var target = input ? String(input.value || '').trim() : ''
+  if (!target) { showToast('Type a genre to assign'); return }
+  // Albums with no usable genre — the same test analyzeGenres used.
+  var noGenre = (state.library || []).filter(function (a) {
+    var s = String(a.genre == null ? '' : a.genre).toLowerCase().replace(/\s+/g, ' ').trim()
+    return !s || s === 'null' || s === 'undefined' || s === 'unknown' ||
+      s === 'other' || s === 'genre' || s === 'none'
+  })
+  var writes = _mt.genreWritesForAlbums(noGenre, target)
+  if (!writes.length) { showToast('No un-genred tracks to assign'); return }
+  _mgConfirm('Assign genre',
+    '<p class="mg-confirm-note" style="margin-top:0">Set the genre to “' + esc(target) + '” on ' +
+      writes.length + ' track' + (writes.length === 1 ? '' : 's') + ' across ' +
+      noGenre.length + ' un-genred album' + (noGenre.length === 1 ? '' : 's') + '?</p>',
+    'Assign', function () { _mgWriteGenres(writes) })
+}
+
+async function _mgWriteGenres(writes) {
+  var res = await window.api.libraryWriteTags({ files: writes }).catch(function () { return null })
+  if (!res) { showToast('Could not write genre tags'); return }
+  if (!res.written) {
+    var err = (res.results || [])[0]
+    showToast('No tags written' + (err && err.error ? ' — ' + err.error : ''))
+    return
+  }
+  showToast(res.written + ' track' + (res.written === 1 ? '' : 's') + ' updated' +
+    (res.failed ? ', ' + res.failed + ' failed' : ''))
+  // The write scheduled a rescan in main; a library-updated event will refresh
+  // state.library, after which re-render reflects the merge. Re-render now with
+  // the in-memory model so the UI is not stale until the rescan lands, mirroring
+  // the album genre onto the in-memory album records for immediate feedback.
+  _mgApplyGenreToModel(writes)
+  if (state.currentPage === 'manage' && _mgState.tab === 'genres') renderManageGenres()
+}
+
+// Mirror the just-written genre onto the in-memory album/track records so the UI
+// reflects the change before the disk rescan completes. Keyed by filePath.
+function _mgApplyGenreToModel(writes) {
+  var byPath = {}
+  for (var i = 0; i < writes.length; i++) byPath[writes[i].filePath] = writes[i].tags.genre
+  for (var a = 0; a < (state.library || []).length; a++) {
+    var alb = state.library[a]
+    var tracks = alb.tracks || []
+    var lastWritten = null
+    for (var t = 0; t < tracks.length; t++) {
+      if (Object.prototype.hasOwnProperty.call(byPath, tracks[t].filePath)) {
+        tracks[t].genre = byPath[tracks[t].filePath]
+        lastWritten = tracks[t].genre
+      }
+    }
+    // The album-level genre badge reads album.genre; keep it in step. A merge or
+    // assign writes one target across the album, so the last written value is
+    // the album's new genre.
+    if (lastWritten != null) alb.genre = lastWritten
+  }
 }
 
 async function renderManageStorage() {

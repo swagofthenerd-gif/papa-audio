@@ -216,6 +216,11 @@ contextBridge.exposeInMainWorld('api', {
   onSlskdStatusChange: (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('slskd-status-change', h); return () => ipcRenderer.removeListener('slskd-status-change', h) },
   slskResolveFile:    (p) => ipcRenderer.invoke('slsk-resolve-file', p),
   slskVerifyFile:     (p) => ipcRenderer.invoke('slsk-verify-file', p),
+  // Post-download verification verdict for one completed album group (#49).
+  slskVerifyStatus:   (p) => ipcRenderer.invoke('slsk-verify-status', p),
+  // A completed album group finished verification. Dedicated subscriber, returns
+  // an unsubscribe function.
+  onSlskVerifyDone:   (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('slsk-verify-done', h); return () => ipcRenderer.removeListener('slsk-verify-done', h) },
   onSlskVerify:       (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('slsk-verify', h); return () => ipcRenderer.removeListener('slsk-verify', h) },
   slskShowInFolder:   (p) => ipcRenderer.invoke('slsk-show-in-folder', p),
   slskBrowseUser:     (p) => ipcRenderer.invoke('slsk-browse-user', p),
@@ -311,6 +316,17 @@ contextBridge.exposeInMainWorld('api', {
   playerSetVolume:   (v) => ipcRenderer.invoke('player-set-volume', v),
   playerSetSpeed:    (x) => ipcRenderer.invoke('player-set-speed', x),
   playerSetNext:     (p) => ipcRenderer.invoke('player-set-next', p),
+  // W2-UI contract: A–B loop (#5) and runtime ReplayGain mode (#6) on the MUSIC
+  // engine.
+  mpvAbLoop:         (range) => ipcRenderer.invoke('mpv-ab-loop', range),
+  mpvReplaygainMode: (mode) => ipcRenderer.invoke('mpv-replaygain-mode', mode),
+  // W2-UI contract: batch tag write (#9). Pure-node FLAC Vorbis-comment writer;
+  // non-FLAC files come back in `skipped` with reason 'unsupported'.
+  tagWriteBatch:     (edits) => ipcRenderer.invoke('tag-write-batch', { edits }),
+  // Wave-2 feature toggles (#34 diary auto-log, #35 airing notifications,
+  // #50 auto-organize).
+  videoConfigGet:    () => ipcRenderer.invoke('video-config-get'),
+  videoConfigSet:    (patch) => ipcRenderer.invoke('video-config-set', patch),
   // ReplayGain scan (App #59) + tag fixer (App #60)
   loudnessScan:      (paths) => ipcRenderer.invoke('loudness-scan', { paths }),
   loudnessGetMap:    ()  => ipcRenderer.invoke('loudness-get-map'),
