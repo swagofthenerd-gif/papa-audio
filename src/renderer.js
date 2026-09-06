@@ -5305,18 +5305,43 @@ function _calendarDayLabel(dayMs, today) {
 // The calendar page: a plain vertical agenda of the next 14 days of episodes
 // for the shows the viewer follows (App §26). No month grid — day-grouped
 // lists, soonest first. Empty state teaches how to fill it.
+// Calendar view state (roadmap #36): 'agenda' is the 14-day list; 'month' is the
+// grid via videoAiringCalendar. The month pointer is what prev/next moves.
+var _vcalView = 'agenda'
+var _vcalMonth = null  // { year, month } (month is 1-12); null → set to now on open
+
 async function renderCalendar() {
   _initVideoUI()
   _videoTab = 'calendar'
+  if (!_vcalMonth) {
+    const now = new Date()
+    _vcalMonth = { year: now.getFullYear(), month: now.getMonth() + 1 }
+  }
+  const isMonth = _vcalView === 'month'
   setContent('<div class="page vpage cinema">' + _vHeadHtml() +
     '<div class="vcal-page" id="vcal-page">' +
-      '<div class="vcal-head"><h1 class="vcal-title">Coming up</h1>' +
-        '<p class="vcal-sub">The next 14 days for the shows you follow</p></div>' +
+      '<div class="vcal-head">' +
+        '<div class="vcal-head-main"><h1 class="vcal-title">Coming up</h1>' +
+          '<p class="vcal-sub">' + (isMonth ? 'A month at a glance for the shows you follow' : 'The next 14 days for the shows you follow') + '</p></div>' +
+        '<div class="vcal-viewtoggle" role="tablist" aria-label="Calendar view">' +
+          '<button class="vcal-viewbtn' + (!isMonth ? ' active' : '') + '" id="vcal-view-agenda" role="tab" aria-selected="' + String(!isMonth) + '">Agenda</button>' +
+          '<button class="vcal-viewbtn' + (isMonth ? ' active' : '') + '" id="vcal-view-month" role="tab" aria-selected="' + String(isMonth) + '">Calendar</button>' +
+        '</div>' +
+      '</div>' +
       '<div class="vcal-body" id="vcal-body">' + _vRailSkeleton(3) + '</div>' +
     '</div>' +
   '</div>')
   _bindVideoHead()
-  _renderCalendarBody()
+  document.getElementById('vcal-view-agenda')?.addEventListener('click', function () {
+    if (_vcalView === 'agenda') return
+    _vcalView = 'agenda'; renderCalendar()
+  })
+  document.getElementById('vcal-view-month')?.addEventListener('click', function () {
+    if (_vcalView === 'month') return
+    _vcalView = 'month'; renderCalendar()
+  })
+  if (isMonth) _renderCalendarMonth()
+  else _renderCalendarBody()
 }
 
 async function _renderCalendarBody() {
@@ -5344,6 +5369,92 @@ async function _renderCalendarBody() {
     '</section>'
   }).join('')
   _bindVideoCards(target)
+}
+
+// Month grid (roadmap #36). Reads videoAiringCalendar({year,month}), lays the
+// days out on a Sun-first 7-column grid with leading blanks for the first-of-
+// month weekday, and lists each day's entries in its cell. Followed shows are
+// highlighted. Prev/next step the month pointer and re-render.
+var _VCAL_MONTHS = ['January','February','March','April','May','June','July',
+  'August','September','October','November','December']
+var _VCAL_DOW = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat']
+async function _renderCalendarMonth() {
+  const body = document.getElementById('vcal-body')
+  if (!body) return
+  if (!window.api || !window.api.videoAiringCalendar) {
+    body.innerHTML = _calendarEmptyHtml()
+    return
+  }
+  const ptr = _vcalMonth
+  const res = await window.api.videoAiringCalendar({ year: ptr.year, month: ptr.month })
+    .catch(function () { return { ok: false } })
+  if (state.currentPage !== 'calendar' || _vcalView !== 'month') return
+  const target = document.getElementById('vcal-body')
+  if (!target) return
+  if (!res || !res.ok || !res.calendar) {
+    target.innerHTML = '<div class="vrow-msg err">' + esc(_videoErrorText(res && res.error)) + '</div>'
+    return
+  }
+  const cal = res.calendar
+  const days = Array.isArray(cal.days) ? cal.days : []
+  const monthName = _VCAL_MONTHS[(ptr.month - 1)] || ''
+  // Leading blanks: JS getDay() of the first day of the month (0=Sun).
+  const firstDow = new Date(ptr.year, ptr.month - 1, 1).getDay()
+  const todayKey = _vcalTodayKey()
+
+  let cells = ''
+  for (let i = 0; i < firstDow; i++) cells += '<div class="vcal-cell vcal-cell-blank"></div>'
+  for (const cell of days) {
+    const entries = Array.isArray(cell.entries) ? cell.entries : []
+    const isToday = cell.date === todayKey
+    let inner = '<div class="vcal-cell-day">' + cell.day + '</div>'
+    if (entries.length) {
+      inner += '<div class="vcal-cell-entries">' + entries.slice(0, 4).map(function (e) {
+        const cls = 'vcal-chip' + (e.isFollowed ? ' vcal-chip-followed' : '')
+        const tip = (e.title || 'Untitled') + (e.episode != null ? ' · Ep ' + e.episode : '')
+        return '<button class="' + cls + '" data-video="' + esc(e.key || '') + '" title="' + esc(tip) + '">' +
+          esc(e.title || 'Untitled') + '</button>'
+      }).join('') +
+        (entries.length > 4 ? '<div class="vcal-chip-more">+' + (entries.length - 4) + ' more</div>' : '') +
+      '</div>'
+    }
+    cells += '<div class="vcal-cell' + (isToday ? ' vcal-cell-today' : '') +
+      (entries.length ? '' : ' vcal-cell-empty') + '">' + inner + '</div>'
+  }
+
+  const followedNote = cal.followedTotal
+    ? cal.followedTotal + ' followed · ' + (cal.total || 0) + ' airing'
+    : ((cal.total || 0) + ' airing')
+  target.innerHTML =
+    '<div class="vcal-month">' +
+      '<div class="vcal-month-nav">' +
+        '<button class="vcal-month-btn" id="vcal-prev" aria-label="Previous month">‹</button>' +
+        '<div class="vcal-month-label"><span class="vcal-month-name">' + esc(monthName + ' ' + ptr.year) + '</span>' +
+          '<span class="vcal-month-count">' + esc(followedNote) + '</span></div>' +
+        '<button class="vcal-month-btn" id="vcal-next" aria-label="Next month">›</button>' +
+      '</div>' +
+      '<div class="vcal-grid">' +
+        _VCAL_DOW.map(function (d) { return '<div class="vcal-dow">' + d + '</div>' }).join('') +
+        cells +
+      '</div>' +
+    '</div>'
+  document.getElementById('vcal-prev')?.addEventListener('click', function () { _vcalStepMonth(-1) })
+  document.getElementById('vcal-next')?.addEventListener('click', function () { _vcalStepMonth(1) })
+  _bindVideoCards(target)
+}
+
+function _vcalTodayKey() {
+  const n = new Date()
+  return n.getFullYear() + '-' + String(n.getMonth() + 1).padStart(2, '0') + '-' + String(n.getDate()).padStart(2, '0')
+}
+
+function _vcalStepMonth(delta) {
+  let y = _vcalMonth.year
+  let m = _vcalMonth.month + delta
+  if (m < 1) { m = 12; y-- }
+  else if (m > 12) { m = 1; y++ }
+  _vcalMonth = { year: y, month: m }
+  _renderCalendarMonth()
 }
 
 // One agenda row: the show title, its episode, and the air time. The whole row
@@ -7261,7 +7372,8 @@ async function _renderSeasonChain(ticket) {
     items = parts.map(function (p) {
       return { id: p.id, title: p.title, year: p.year, poster: p.poster, format: null, episodeCount: null }
     })
-    label = detail.d.collection.name || 'Collection'
+    // "Part of <name>" reads as membership (roadmap #9/#37), not a bare title.
+    label = detail.d.collection.name ? 'Part of ' + detail.d.collection.name : 'Collection'
   }
 
   // One entry is just this title; a list of one is noise.
@@ -19666,6 +19778,188 @@ async function _initVideoSettings() {
       setTimeout(() => { resetBtn.textContent = 'Reset video options to defaults' }, 1500)
     })
   }
+
+  // Debrid settings (roadmap #40) and the offline-downloads keeps manager
+  // (roadmap #42). Both persist through the same videoSettingsSet `save`.
+  _initDebridSettings(s, save)
+  _initVideoKeepManager(s, save)
+}
+
+// Debrid provider + token + Test (roadmap #40). The token is write-only from the
+// UI's point of view: it is never read back into the field (the placeholder just
+// says one is saved), so a shoulder-surfer never sees it.
+//
+// NOTE: debridProvider/debridToken must be on main's VIDEO_SETTING_KEYS allowlist
+// for videoSettingsSet to persist them; if they are not yet, the writes are
+// silently dropped by main (harmless) and the Test button still works against
+// whatever main currently holds. See the wave report's backend note.
+function _initDebridSettings(s, save) {
+  const $ = id => document.getElementById(id)
+  const provSel = $('video-debrid-provider')
+  if (!provSel) return
+  const tokenRow = $('video-debrid-token-row')
+  const testRow = $('video-debrid-test-row')
+  const tokenInput = $('video-debrid-token')
+  const statusEl = $('video-debrid-status')
+  const testBtn = $('video-debrid-test')
+
+  const provider = s.debridProvider || ''
+  provSel.value = provider
+  if (tokenInput && s.debridToken) tokenInput.placeholder = 'Token saved ✓ — paste new one to change'
+  const syncRows = function () {
+    const on = provSel.value === 'realdebrid'
+    if (tokenRow) tokenRow.style.display = on ? '' : 'none'
+    if (testRow) testRow.style.display = on ? '' : 'none'
+  }
+  syncRows()
+
+  provSel.addEventListener('change', function () {
+    save({ debridProvider: provSel.value })
+    syncRows()
+    if (statusEl) statusEl.textContent = ''
+  })
+  if (tokenInput) {
+    const saveToken = function () {
+      const v = tokenInput.value.trim()
+      if (!v) return
+      save({ debridToken: v })
+      tokenInput.value = ''
+      tokenInput.placeholder = 'Saved ✓'
+      setTimeout(function () { tokenInput.placeholder = 'Token saved ✓ — paste new one to change' }, 1500)
+    }
+    tokenInput.addEventListener('change', saveToken)
+    tokenInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') saveToken() })
+  }
+  if (testBtn && statusEl && window.api && window.api.debridCheck) {
+    testBtn.addEventListener('click', function () {
+      testBtn.disabled = true
+      const prev = testBtn.textContent
+      testBtn.textContent = 'Testing…'
+      statusEl.textContent = ''
+      statusEl.className = 'mcs-set-hint'
+      window.api.debridCheck().then(function (r) {
+        if (!r || !r.configured) {
+          statusEl.textContent = 'Not configured — paste a token and try again'
+        } else if (r.ok) {
+          let until = ''
+          if (r.premiumUntil) {
+            const d = new Date(r.premiumUntil)
+            if (!isNaN(d.getTime())) until = ' — premium until ' + d.toLocaleDateString()
+          }
+          statusEl.textContent = 'Connected ✓' + until
+          statusEl.className = 'mcs-set-hint mcs-set-hint-ok'
+        } else {
+          statusEl.textContent = (r.error ? r.error : 'Account is not premium') + ' ✕'
+          statusEl.className = 'mcs-set-hint mcs-set-hint-warn'
+        }
+      }).catch(function () {
+        statusEl.textContent = 'Could not reach the debrid service'
+        statusEl.className = 'mcs-set-hint mcs-set-hint-warn'
+      }).then(function () {
+        testBtn.disabled = false
+        testBtn.textContent = prev
+      })
+    })
+  }
+}
+
+// The offline-downloads keeps manager (roadmap #42): quota input, usage-vs-quota
+// bar, and the list of kept files with a per-entry Delete. Deletion removes the
+// file from disk permanently — there is no undo for a file deletion — so it goes
+// behind an explicit confirm that says exactly that.
+//
+// NOTE: videoKeepQuotaGB must be on main's VIDEO_SETTING_KEYS allowlist for the
+// quota save to persist; see the wave report's backend note.
+function _initVideoKeepManager(s, save) {
+  const $ = id => document.getElementById(id)
+  const quotaInput = $('video-keep-quota')
+  if (!quotaInput) return
+  if (s.videoKeepQuotaGB != null) quotaInput.value = String(s.videoKeepQuotaGB)
+  quotaInput.addEventListener('change', function () {
+    let n = Number(quotaInput.value)
+    if (!isFinite(n) || n < 0) n = 0
+    quotaInput.value = String(n)
+    save({ videoKeepQuotaGB: n })
+  })
+  _refreshVideoKeepList()
+}
+
+// Repaint the keeps list + usage bar from videoKeepList(). Called on settings
+// open and after every delete.
+function _refreshVideoKeepList() {
+  const listEl = document.getElementById('video-keep-list')
+  const usageEl = document.getElementById('video-keep-usage')
+  if (!listEl) return
+  if (!window.api || !window.api.videoKeepList) {
+    listEl.innerHTML = '<div class="mcs-set-hint">Offline downloads are not available in this build.</div>'
+    return
+  }
+  window.api.videoKeepList().then(function (res) {
+    if (!res || !res.ok) { listEl.innerHTML = ''; if (usageEl) usageEl.style.display = 'none'; return }
+    const entries = res.entries || []
+    // Usage-vs-quota bar. A zero quota means "no limit", so the bar hides.
+    if (usageEl) {
+      const quotaBytes = Number(res.quotaBytes) || 0
+      const usedBytes = Number(res.usedBytes) || 0
+      if (quotaBytes > 0) {
+        const pct = Math.min(100, Math.round((usedBytes / quotaBytes) * 100))
+        const fill = document.getElementById('video-keep-bar-fill')
+        const label = document.getElementById('video-keep-usage-label')
+        if (fill) {
+          fill.style.width = pct + '%'
+          fill.classList.toggle('video-keep-bar-full', pct >= 90)
+        }
+        if (label) label.textContent = _fmtBytes(usedBytes) + ' of ' + _fmtBytes(quotaBytes) + ' used (' + pct + '%)'
+        usageEl.style.display = ''
+      } else {
+        const label = document.getElementById('video-keep-usage-label')
+        const fill = document.getElementById('video-keep-bar-fill')
+        if (fill) fill.style.width = '0%'
+        if (label) label.textContent = _fmtBytes(usedBytes) + ' used · no storage limit set'
+        usageEl.style.display = ''
+      }
+    }
+    if (!entries.length) {
+      listEl.innerHTML = '<div class="mcs-set-hint">Nothing saved for offline yet. In a show or film, choose “Keep offline” to save an episode here.</div>'
+      return
+    }
+    let html = ''
+    for (const e of entries) {
+      const when = e.keptAt ? _slskRelBrowsed(e.keptAt) : ''
+      html += '<div class="video-keep-item" data-id="' + esc(e.id) + '">' +
+        '<div class="video-keep-item-main">' +
+          '<div class="video-keep-item-title">' + esc(e.title || _dlFileName(e.path) || 'Saved file') + '</div>' +
+          '<div class="video-keep-item-meta">' + esc(_fmtBytes(e.sizeBytes) + (when ? ' · saved ' + when : '')) + '</div>' +
+        '</div>' +
+        '<button class="mcs-set-refresh video-keep-del" data-id="' + esc(e.id) + '" data-title="' + esc(e.title || 'this file') + '">Delete</button>' +
+      '</div>'
+    }
+    listEl.innerHTML = html
+    listEl.querySelectorAll('.video-keep-del').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        const id = btn.dataset.id
+        const title = btn.dataset.title || 'this file'
+        // File deletion is permanent — no undo. Say so plainly in the confirm.
+        _mgConfirm('Delete offline download',
+          '<p>Permanently delete <strong>' + esc(title) + '</strong> from your disk?</p>' +
+          '<p class="mg-confirm-warn">This removes the file for good. It cannot be undone — you would have to download it again.</p>',
+          'Delete permanently',
+          function () {
+            return window.api.videoKeepDelete(id).then(function (r) {
+              if (r && r.ok) showSnackbar('Deleted')
+              else showSnackbar((r && r.error) || 'Could not delete that file')
+              _refreshVideoKeepList()
+            }).catch(function () {
+              showSnackbar('Could not delete that file')
+              _refreshVideoKeepList()
+            })
+          })
+      })
+    })
+  }).catch(function () {
+    listEl.innerHTML = ''
+    if (usageEl) usageEl.style.display = 'none'
+  })
 }
 
 // The mirror-capable providers, in the order their fields appear. The key is
@@ -21585,6 +21879,105 @@ const _dlFailedOpenGroups = new Set() // folder names explicitly opened in faile
 let _dlFilter             = ''        // current text filter for completed tab
 let _dlCompletedGroups    = []        // flat group list from last completed render (for expand-all)
 
+// Active-downloads display order (roadmap #52). A user-chosen order of album
+// group keys ("username::folder"), pinned to the top in the sequence they were
+// dragged into; anything not in the list keeps its natural (scheduler) order
+// below. Persisted so a reorder survives a poll re-render and a restart.
+//
+// SCOPE NOTE: this reorders how groups are DISPLAYED and is an explicit "pin
+// this to the top so I can watch it fill" affordance. It does NOT re-stamp the
+// scheduler's dispatch order — the engine meters files out by their addedAt and
+// exposes no per-group priority/re-stamp IPC to drive from here. See the wave
+// report; true engine-priority reordering is deferred on that backend knob.
+let _dlPinOrder = []
+try { _dlPinOrder = (window.PapaLocal && window.PapaLocal.readArray('papa-dl-pin-order')) || [] } catch (_) { _dlPinOrder = [] }
+function _dlSavePinOrder() {
+  try { if (window.PapaLocal) window.PapaLocal.write('papa-dl-pin-order', _dlPinOrder) } catch (_) {}
+}
+// Order a list of {key} groups by the pin list first (in pin sequence), then the
+// rest in their given order. Prunes pin entries whose group has gone away.
+function _dlApplyPinOrder(groups) {
+  const present = new Set(groups.map(g => g.key))
+  const pinned = _dlPinOrder.filter(k => present.has(k))
+  if (pinned.length !== _dlPinOrder.length) { _dlPinOrder = pinned; _dlSavePinOrder() }
+  const rank = new Map(pinned.map((k, i) => [k, i]))
+  return groups.slice().sort((a, b) => {
+    const ra = rank.has(a.key) ? rank.get(a.key) : Infinity
+    const rb = rank.has(b.key) ? rank.get(b.key) : Infinity
+    return ra - rb
+  })
+}
+
+// Post-download verification verdicts (roadmap #49), keyed `username::folder`
+// (leaf folder name, matching what the completed groups and Recent arrivals key
+// on). Populated lazily by slskVerifyStatus and live by the slsk-verify-done
+// push. A record is { ok, problems:[], username, folder, ... } or null (not yet
+// verified — no badge).
+const _slskVerdicts = new Map()
+function _verdictKey(username, folder) { return String(username || '') + '::' + String(folder || '') }
+function _getVerdict(username, folder) {
+  return _slskVerdicts.get(_verdictKey(username, folder)) || null
+}
+// The badge for a completed album group. Clean → "verified ✓"; problems → a
+// warning with the count and the problem list in the tooltip. Nothing until the
+// verdict is known, so an un-verified album shows no badge rather than a false
+// "pending". `users` is the group's Set/array of peers; the first is the one the
+// verdict is keyed under.
+function _verifyBadgeHtml(folder, users) {
+  const first = (users && (Array.isArray(users) ? users[0] : [...users][0])) || ''
+  const v = _getVerdict(first, folder)
+  if (!v) return ''
+  if (v.ok) {
+    return '<span class="dl2-verify dl2-verify-ok" title="Passed the post-download check">verified ✓</span>'
+  }
+  const problems = Array.isArray(v.problems) ? v.problems : []
+  const n = problems.length || 1
+  const tip = problems.length ? problems.join('\n') : 'Verification found a problem'
+  return '<span class="dl2-verify dl2-verify-warn" title="' + esc(tip) + '">⚠ ' +
+    n + ' problem' + (n === 1 ? '' : 's') + '</span>'
+}
+// Fetch verdicts for a set of {folder, users} groups that we do not have cached
+// yet, then repaint the completed tab once so the badges appear. Best-effort:
+// a failed lookup just leaves that group badge-less.
+function _hydrateVerdicts(groups, repaint) {
+  if (!window.api || !window.api.slskVerifyStatus) return
+  const want = []
+  for (const g of groups || []) {
+    const first = (g.users && [...g.users][0]) || ''
+    if (!first) continue
+    if (_slskVerdicts.has(_verdictKey(first, g.folder))) continue
+    want.push({ username: first, folder: g.folder })
+  }
+  if (!want.length) return
+  let pending = want.length
+  let any = false
+  want.forEach(function (q) {
+    window.api.slskVerifyStatus(q).then(function (v) {
+      if (v) { _slskVerdicts.set(_verdictKey(q.username, q.folder), v); any = true }
+    }).catch(function () {}).then(function () {
+      pending--
+      if (pending === 0 && any && typeof repaint === 'function') repaint()
+    })
+  })
+}
+// The slsk-verify-done push: a completed album finished verification. Cache the
+// verdict and repaint whatever is showing it. Bind-once, app-lifetime, guarded
+// by the current page like the other hub subscribers.
+let _slskVerifyDoneBound = false
+function _slskBindVerifyDone() {
+  if (_slskVerifyDoneBound) return
+  if (!window.api || !window.api.onSlskVerifyDone) return
+  _slskVerifyDoneBound = true
+  window.api.onSlskVerifyDone(function (rec) {
+    if (!rec || !rec.folder) return
+    _slskVerdicts.set(_verdictKey(rec.username, rec.folder), rec)
+    if (state.currentPage === 'downloads' && _dlTab === 'completed') {
+      _pollAndRenderDownloads().catch(function () {})
+    }
+    if (state.currentPage === 'soulseek') _renderHubRecent()
+  })
+}
+
 // Keeps aria-selected in step with the .active class. Stale ARIA is worse than
 // none: it actively tells a screen-reader user the wrong tab is current.
 function _setActiveTab(selector, activeEl) {
@@ -22173,11 +22566,13 @@ function _renderActiveTab(files, container) {
   for (const f of files) {
     const folder = _dlFolderName(f.filename) || f.username
     var key    = `${f.username}::${folder}`
-    if (!byAlbum.has(key)) byAlbum.set(key, { folder, username: f.username, files: [] })
+    if (!byAlbum.has(key)) byAlbum.set(key, { key, folder, username: f.username, files: [] })
     byAlbum.get(key).files.push(f)
   }
 
-  for (const g of byAlbum.values()) {
+  // Pinned groups first, in the user's dragged order (roadmap #52).
+  const orderedGroups = _dlApplyPinOrder([...byAlbum.values()])
+  for (const g of orderedGroups) {
     const totalSz    = g.files.reduce((s, f) => s + (f.size || 0), 0)
     const doneSz     = g.files.reduce((s, f) => s + (f.percentComplete || 0) / 100 * (f.size || 0), 0)
     const albumPct   = totalSz ? Math.round(doneSz / totalSz * 100) : 0
@@ -22234,8 +22629,11 @@ function _renderActiveTab(files, container) {
       </div>`
     }).join('')
 
-    html += `<div class="dl2-group">
+    html += `<div class="dl2-group dl2-group-active" draggable="true" data-gkey="${esc(g.key)}">
       <div class="dla-hdr" data-user="${esc(g.username)}" data-folder="${esc(g.folder)}">
+        <span class="dl2-drag-handle" title="Drag to pin this album to the top" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M9 5h2v2H9V5zm4 0h2v2h-2V5zM9 9h2v2H9V9zm4 0h2v2h-2V9zm-4 4h2v2H9v-2zm4 0h2v2h-2v-2zm-4 4h2v2H9v-2zm4 0h2v2h-2v-2z"/></svg>
+        </span>
         <div class="dl2-group-album-art">${artHtml}</div>
         <div class="dla-meta">
           <div class="dla-title-row">
@@ -22305,6 +22703,54 @@ function _renderActiveTab(files, container) {
       _showDlCtxMenu(e, [{ action: 'cancel', label: 'Cancel download', cls: 'danger' }], {
         cancel: () => cancelBtn?.click(),
       })
+    })
+  })
+
+  _bindDlGroupDrag(container)
+}
+
+// Drag-to-reorder the active download groups (roadmap #52). Reorders the DISPLAY
+// (a pin-to-top affordance) and persists the order; see the scope note on
+// _dlPinOrder. The drop target is the group under the pointer; the dragged
+// group takes its place and the pin order is rewritten from the resulting DOM
+// sequence, then the tab re-renders so the next poll keeps the order.
+let _dlDragKey = null
+function _bindDlGroupDrag(container) {
+  container.querySelectorAll('.dl2-group-active').forEach(function (grp) {
+    grp.addEventListener('dragstart', function (e) {
+      _dlDragKey = grp.dataset.gkey || null
+      grp.classList.add('dl2-group-dragging')
+      if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; try { e.dataTransfer.setData('text/plain', _dlDragKey || '') } catch (_) {} }
+    })
+    grp.addEventListener('dragend', function () {
+      grp.classList.remove('dl2-group-dragging')
+      container.querySelectorAll('.dl2-group-dragover').forEach(function (el) { el.classList.remove('dl2-group-dragover') })
+      _dlDragKey = null
+    })
+    grp.addEventListener('dragover', function (e) {
+      if (!_dlDragKey || grp.dataset.gkey === _dlDragKey) return
+      e.preventDefault()
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+      grp.classList.add('dl2-group-dragover')
+    })
+    grp.addEventListener('dragleave', function () { grp.classList.remove('dl2-group-dragover') })
+    grp.addEventListener('drop', function (e) {
+      e.preventDefault()
+      grp.classList.remove('dl2-group-dragover')
+      const from = _dlDragKey
+      const to = grp.dataset.gkey
+      if (!from || !to || from === to) return
+      // Rebuild the pin order from the current DOM sequence, moving `from` to
+      // just before `to`. Every visible group ends up in the pin list, which is
+      // what "I arranged these" means.
+      const keys = [...container.querySelectorAll('.dl2-group-active')].map(function (el) { return el.dataset.gkey }).filter(Boolean)
+      const without = keys.filter(function (k) { return k !== from })
+      const idx = without.indexOf(to)
+      without.splice(idx < 0 ? without.length : idx, 0, from)
+      _dlPinOrder = without
+      _dlSavePinOrder()
+      _dlLastSig = ''   // force the next render to honour the new order
+      _renderActiveTab(files, container)
     })
   })
 }
@@ -22428,7 +22874,7 @@ function _renderCompletedTab(files, container) {
         <div class="dl2-group-header dl2-group-header-done dl2-group-toggle" data-gi="c-${gi}" data-folder="${esc(g.folder)}">
           <div class="dl2-group-album-art">${artHtml}</div>
           <div class="dl2-group-info">
-            <span class="dl2-group-name">${esc(g.folder)}</span>
+            <span class="dl2-group-name">${esc(g.folder)}${_verifyBadgeHtml(g.folder, g.users)}</span>
             <div class="dl2-group-sub-row">
               <span class="dl2-group-sub">${g.files.length} track${g.files.length !== 1 ? 's' : ''} · ${_fmtBytes(totalSize)}</span>
               ${userBtnHtml}
@@ -22594,6 +23040,16 @@ function _renderCompletedTab(files, container) {
         remove:        () => removeBtn?.click(),
       })
     })
+  })
+
+  // Verification badges (roadmap #49): fill in any verdicts we do not have yet,
+  // then repaint once so the badges appear. Live updates arrive via the
+  // slsk-verify-done listener bound below.
+  _slskBindVerifyDone()
+  _hydrateVerdicts(groups, function () {
+    if (state.currentPage === 'downloads' && _dlTab === 'completed') {
+      _renderCompletedTab(files, container)
+    }
   })
 }
 
@@ -22895,6 +23351,118 @@ function _renderYtDownloadRows(box) {
   })
 }
 
+// Bandwidth schedule UI (roadmap #51). Reads slskScheduleGet, writes each field
+// through slskScheduleSet on change. Kbps→MB/s hints update live so a number has
+// a felt meaning. A Soulseek-side change reports slskdNeedsRestart, surfaced once.
+function _initBandwidthSchedule() {
+  const $ = id => document.getElementById(id)
+  const enabled = $('dl2-sched-enabled')
+  if (!enabled) return
+  if (!window.api || !window.api.slskScheduleGet || !window.api.slskScheduleSet) {
+    const panel = $('dl2-sched-panel')
+    if (panel) panel.style.display = 'none'
+    return
+  }
+  const dayKbps = $('dl2-sched-day-kbps')
+  const nightKbps = $('dl2-sched-night-kbps')
+  const dayStart = $('dl2-sched-day-start')
+  const nightStart = $('dl2-sched-night-start')
+  const dayMb = $('dl2-sched-day-mb')
+  const nightMb = $('dl2-sched-night-mb')
+
+  // Kbps (kilobits/s) → MB/s hint. 1 MB/s = 8192 Kbps. 0/blank = no cap.
+  const mbHint = function (kbps) {
+    const n = Number(kbps)
+    if (!isFinite(n) || n <= 0) return 'no limit'
+    return '≈ ' + (n / 8192).toFixed(2) + ' MB/s'
+  }
+  const paintHints = function () {
+    if (dayMb) dayMb.textContent = mbHint(dayKbps.value)
+    if (nightMb) nightMb.textContent = mbHint(nightKbps.value)
+  }
+
+  window.api.slskScheduleGet().then(function (res) {
+    const s = (res && res.schedule) || {}
+    enabled.checked = !!s.enabled
+    if (dayKbps) dayKbps.value = s.dayLimitKbps ? String(s.dayLimitKbps) : ''
+    if (nightKbps) nightKbps.value = s.nightLimitKbps ? String(s.nightLimitKbps) : ''
+    if (dayStart) dayStart.value = String(s.dayStartHour != null ? s.dayStartHour : 8)
+    if (nightStart) nightStart.value = String(s.nightStartHour != null ? s.nightStartHour : 23)
+    paintHints()
+  }).catch(function () {})
+
+  let _warnedRestart = false
+  const save = function (patch) {
+    window.api.slskScheduleSet(patch).then(function (res) {
+      if (res && res.slskdNeedsRestart && !_warnedRestart) {
+        _warnedRestart = true
+        showSnackbar('Saved. The Soulseek-side limit takes effect after a restart.')
+      }
+    }).catch(function () {})
+  }
+  const num = function (el) {
+    let n = Number(el.value)
+    if (!isFinite(n) || n < 0) n = 0
+    return n
+  }
+  const hour = function (el, fallback) {
+    let n = Math.floor(Number(el.value))
+    if (!isFinite(n) || n < 0 || n > 23) n = fallback
+    el.value = String(n)
+    return n
+  }
+
+  enabled.addEventListener('change', function () { save({ enabled: enabled.checked }) })
+  if (dayKbps) dayKbps.addEventListener('change', function () { const v = num(dayKbps); dayKbps.value = v ? String(v) : ''; paintHints(); save({ dayLimitKbps: v }) })
+  if (nightKbps) nightKbps.addEventListener('change', function () { const v = num(nightKbps); nightKbps.value = v ? String(v) : ''; paintHints(); save({ nightLimitKbps: v }) })
+  if (dayKbps) dayKbps.addEventListener('input', paintHints)
+  if (nightKbps) nightKbps.addEventListener('input', paintHints)
+  if (dayStart) dayStart.addEventListener('change', function () { save({ dayStartHour: hour(dayStart, 8) }) })
+  if (nightStart) nightStart.addEventListener('change', function () { save({ nightStartHour: hour(nightStart, 23) }) })
+}
+
+// Substitution log surface (roadmap #56). The scheduler logs every alternate-
+// source accept/reject with a reason; showing it makes the trust inspectable.
+//
+// NOTE: reading the log needs an IPC that returns state.subLog entries. As of
+// this wave the scheduler exposes only the COUNT (slsk-scheduler-stats
+// .substitutions); there is no channel that returns the entries themselves. So
+// this reads a feature-detected window.api.slskSubLog() and, absent it, shows an
+// honest "not available yet" note rather than faking data. See the wave report's
+// one-line backend gap.
+function _renderSubLog() {
+  const body = document.getElementById('dl2-sublog-body')
+  if (!body) return
+  if (!window.api || typeof window.api.slskSubLog !== 'function') {
+    body.innerHTML = '<div class="dl2-sched-hint">Source-substitution decisions will show here once the app records them. Nothing to show yet.</div>'
+    return
+  }
+  window.api.slskSubLog().then(function (res) {
+    const entries = (res && Array.isArray(res.entries)) ? res.entries : (Array.isArray(res) ? res : [])
+    if (!entries.length) {
+      body.innerHTML = '<div class="dl2-sched-hint">No source substitutions yet. When the app swaps a stalled source for a better one, the decision shows here.</div>'
+      return
+    }
+    // Newest first.
+    const rows = entries.slice().reverse().map(function (e) {
+      const ok = !!e.accepted
+      const when = e.at ? _slskRelBrowsed(e.at) : ''
+      const from = _dlFileName(e.from || '') || (e.from || '')
+      const to = _dlFileName(e.to || '') || (e.to || '')
+      return '<div class="dl2-sublog-row">' +
+        '<span class="dl2-sublog-badge ' + (ok ? 'dl2-sublog-ok' : 'dl2-sublog-no') + '">' + (ok ? 'accepted' : 'rejected') + '</span>' +
+        '<div class="dl2-sublog-main">' +
+          '<div class="dl2-sublog-file">' + esc(from) + (to ? ' → ' + esc(to) : '') + '</div>' +
+          '<div class="dl2-sublog-reason">' + esc(e.reason || '') + (e.candidate ? ' · ' + esc(e.candidate) : '') + (when ? ' · ' + esc(when) : '') + '</div>' +
+        '</div>' +
+      '</div>'
+    }).join('')
+    body.innerHTML = rows
+  }).catch(function () {
+    body.innerHTML = '<div class="dl2-sched-hint">Could not read the source-decision log.</div>'
+  })
+}
+
 function renderDownloads() {
   var totalDl = 0, activeDl = 0, completedDl = 0, failedDl = 0
   // Reads the array the poll actually writes. state._dlFiles is never assigned
@@ -22930,6 +23498,37 @@ function renderDownloads() {
     ${dashHTML}
     ${batchBtns}
     ${wishlistHTML}
+    <details class="dl2-sched-panel" id="dl2-sched-panel">
+      <summary class="dl2-sched-summary">Bandwidth schedule</summary>
+      <div class="dl2-sched-body" id="dl2-sched-body">
+        <label class="dl2-sched-row">Throttle on a schedule
+          <input type="checkbox" id="dl2-sched-enabled">
+        </label>
+        <div class="dl2-sched-hint">Slow downloads during the day and open the pipe at night. Off by default. Applies to torrent downloads immediately; a Soulseek change needs a restart.</div>
+        <div class="dl2-sched-grid">
+          <label class="dl2-sched-field">Day limit (Kbps)
+            <input class="dl2-sched-input" id="dl2-sched-day-kbps" type="number" min="0" step="64" placeholder="Unlimited">
+            <span class="dl2-sched-mb" id="dl2-sched-day-mb"></span>
+          </label>
+          <label class="dl2-sched-field">Night limit (Kbps)
+            <input class="dl2-sched-input" id="dl2-sched-night-kbps" type="number" min="0" step="64" placeholder="Unlimited">
+            <span class="dl2-sched-mb" id="dl2-sched-night-mb"></span>
+          </label>
+          <label class="dl2-sched-field">Day starts (hour)
+            <input class="dl2-sched-input" id="dl2-sched-day-start" type="number" min="0" max="23" step="1">
+          </label>
+          <label class="dl2-sched-field">Night starts (hour)
+            <input class="dl2-sched-input" id="dl2-sched-night-start" type="number" min="0" max="23" step="1">
+          </label>
+        </div>
+      </div>
+    </details>
+    <details class="dl2-sublog-panel" id="dl2-sublog-panel">
+      <summary class="dl2-sublog-summary">Source decisions</summary>
+      <div class="dl2-sublog-body" id="dl2-sublog-body">
+        <div class="dl2-sched-hint">Loading…</div>
+      </div>
+    </details>
     <div class="dl2-tabs" id="dl2-tabs" role="tablist" aria-label="Download categories">
       <button class="dl2-tab active" role="tab" aria-selected="true" data-tab="active">
         <svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
@@ -22986,6 +23585,10 @@ function renderDownloads() {
       _renderDlTab(_dlLastFiles)
     })
   })
+
+  // Bandwidth schedule (roadmap #51) + substitution log (roadmap #56).
+  _initBandwidthSchedule()
+  _renderSubLog()
 
   // Scheduler: live spread readout + manual rebalance
   _dlPaintSchedulerStats()
@@ -26866,6 +27469,20 @@ function setupListeners() {
     }
   })
 
+  // Memory ceiling watchdog (roadmap #63): main sends this when the renderer's
+  // RSS crosses the ceiling twice in a row. We drop the cheap, purely-derived
+  // in-memory caches — every one of these is a recompute-on-next-read miss, not
+  // state anything depends on, so clearing them costs a little latency and never
+  // correctness. Bounded/active maps (download tracking) are left alone.
+  window.api.on('papa-memory-pressure', () => {
+    let cleared = 0
+    try { cleared += _colorCache.size; _colorCache.clear() } catch (_) {}
+    try { cleared += _artistInfoCache.size; _artistInfoCache.clear() } catch (_) {}
+    try { cleared += _bioCache.size; _bioCache.clear() } catch (_) {}
+    try { cleared += ytSearchState.cache.size; ytSearchState.cache.clear() } catch (_) {}
+    console.info('[papa] memory pressure: trimmed ' + cleared + ' cached entries')
+  })
+
   window.api.on('ext-cmd', cmd => {
     if (cmd === 'play-pause') { togglePlay(); return }
     if (cmd === 'next')       { playNext();   return }
@@ -29769,6 +30386,11 @@ function renderSoulseekHub() {
   setContent('<div class="page slsk-hub">' +
     '<div class="slsk-hub-head">' +
       '<h1 class="page-title">Soulseek</h1>' +
+      // Upload awareness (roadmap #54): a quiet line of what you are sharing back
+      // right now. Good citizenship on Soulseek buys queue priority, so it is
+      // worth seeing. Filled by _renderHubSharing() and kept live by the
+      // slsk-upload-activity listener.
+      '<span class="slsk-hub-sharing" id="slsk-hub-sharing" title="What you are sharing back on Soulseek"></span>' +
       '<button class="slsk-hub-manage" id="slsk-hub-saved" title="Manage saved libraries">★ Saved libraries</button>' +
     '</div>' +
     '<div class="slsk-hub-searchbar">' +
@@ -29823,6 +30445,8 @@ function renderSoulseekHub() {
   if (typeof refreshSlskFriendStatuses === 'function') refreshSlskFriendStatuses()
   _slskRefreshFriendDiffs()
   _slskBindWishlistHits()
+  _renderHubSharing()
+  _slskBindUploadActivity()
 
   // The hub reuses the downloads poll data for its Recent strip — make sure a
   // frame has run at least once so it is not empty on first open.
@@ -29885,12 +30509,29 @@ function _renderHubWishlist() {
           return '<span class="slsk-wl-hit" title="' + esc((h.folderName || '') + ' from ' + (h.username || '')) + '">✓ ' + esc(h.folderName || h.username || 'found') + '</span>'
         }).join('') + '</div>'
       : ''
+    // Per-entry quality target and notify-only mode (roadmap #48). Both are
+    // additive to the {query, addedAt} shape; an old entry with neither reads as
+    // 'any' + auto-download, exactly as before.
+    var target = w.target || 'any'
+    var notifyOnly = !!w.notifyOnly
+    var targetSel =
+      '<select class="slsk-wl-target" data-wl-idx="' + i + '" title="Only auto-grab a match at this quality">' +
+        '<option value="any"' + (target === 'any' ? ' selected' : '') + '>Any</option>' +
+        '<option value="lossless"' + (target === 'lossless' ? ' selected' : '') + '>Lossless</option>' +
+        '<option value="surround"' + (target === 'surround' ? ' selected' : '') + '>5.1</option>' +
+      '</select>'
+    var notifyToggle =
+      '<label class="slsk-wl-notify" title="Tell me when a match appears, but do not download it automatically">' +
+        '<input type="checkbox" class="slsk-wl-notify-cb" data-wl-idx="' + i + '"' + (notifyOnly ? ' checked' : '') + '>' +
+        '<span>Notify only</span>' +
+      '</label>'
     html += '<div class="slsk-wl-row" data-wl-idx="' + i + '">' +
       '<div class="slsk-wl-main">' +
         '<span class="slsk-wl-query">' + esc(w.query) + '</span>' +
         (added ? '<span class="slsk-wl-added">added ' + esc(added) + '</span>' : '') +
         hitHtml +
       '</div>' +
+      '<div class="slsk-wl-opts">' + targetSel + notifyToggle + '</div>' +
       '<button class="slsk-wl-btn slsk-wl-search" data-wl-idx="' + i + '" title="Search for this now">Search now</button>' +
       '<button class="slsk-wl-btn slsk-wl-remove" data-wl-idx="' + i + '" title="Remove from wishlist">✕</button>' +
     '</div>'
@@ -29911,6 +30552,26 @@ function _renderHubWishlist() {
       window.api.saveDownloadWishlist(state.downloadWishlist)
       _renderHubWishlist()
       showSnackbar('Removed from wishlist')
+    })
+  })
+  // Persist the per-entry quality target (roadmap #48). The hunter reads
+  // entry.target on the next sweep; the change is additive to the stored entry.
+  box.querySelectorAll('.slsk-wl-target').forEach(function (sel) {
+    sel.addEventListener('change', function () {
+      var w = state.downloadWishlist[parseInt(sel.dataset.wlIdx, 10)]
+      if (!w) return
+      w.target = sel.value
+      window.api.saveDownloadWishlist(state.downloadWishlist)
+    })
+  })
+  // Persist notify-only. When on, the hunter finds and tells but does not spend
+  // the user's slots.
+  box.querySelectorAll('.slsk-wl-notify-cb').forEach(function (cb) {
+    cb.addEventListener('change', function () {
+      var w = state.downloadWishlist[parseInt(cb.dataset.wlIdx, 10)]
+      if (!w) return
+      w.notifyOnly = cb.checked
+      window.api.saveDownloadWishlist(state.downloadWishlist)
     })
   })
 }
@@ -29983,9 +30644,19 @@ function _renderHubRecent() {
       '</div>' +
       '<div class="slsk-recent-name">' + esc(grp.folder) + '</div>' +
       '<div class="slsk-recent-meta">' + esc(grp.files.length + ' track' + (grp.files.length === 1 ? '' : 's') + (when ? ' · ' + when : '')) + '</div>' +
+      // Verification badge (roadmap #49): shows once the verdict is known.
+      _verifyBadgeHtml(grp.folder, [grp.user]) +
     '</div>'
   }
   box.innerHTML = html
+
+  // Fill in verdicts we do not have and repaint once so the badges show. Live
+  // updates come through the slsk-verify-done listener.
+  _slskBindVerifyDone()
+  _hydrateVerdicts(
+    groups.map(function (g) { return { folder: g.folder, users: new Set([g.user]) } }),
+    function () { if (state.currentPage === 'soulseek') _renderHubRecent() }
+  )
 }
 
 // Wishlist hit history, keyed by lowercased query. Populated by the
@@ -30003,6 +30674,42 @@ function _slskBindWishlistHits() {
     _slskWishlistHits[key].push(hit)
     showSnackbar('Wishlist: found ' + hit.query + ' — downloading')
     if (state.currentPage === 'soulseek') _renderHubWishlist()
+  })
+}
+
+// Upload awareness (roadmap #54): the "Sharing: N active · X uploaded today · M
+// peers" line in the hub header. Last-known stats are cached so a repaint has
+// something to show before the fetch returns.
+var _slskUploadStats = null
+function _paintHubSharing() {
+  var el = document.getElementById('slsk-hub-sharing')
+  if (!el) return
+  var s = _slskUploadStats
+  if (!s) { el.textContent = ''; return }
+  var active = Number(s.activeUploads) || 0
+  var peers = Number(s.distinctPeersToday) || 0
+  var up = _fmtBytes(Number(s.totalUploadedToday) || 0)
+  // Text, never markup — no user strings here, but keep the sink safe anyway.
+  el.textContent = 'Sharing: ' + active + ' active · ' + up + ' uploaded today · ' +
+    peers + ' peer' + (peers === 1 ? '' : 's')
+}
+function _renderHubSharing() {
+  if (!window.api || !window.api.slskUploadStats) return
+  window.api.slskUploadStats().then(function (s) {
+    if (!s || !s.ok) return
+    _slskUploadStats = s
+    if (state.currentPage === 'soulseek') _paintHubSharing()
+  }).catch(function () {})
+}
+var _slskUploadActivityBound = false
+function _slskBindUploadActivity() {
+  if (_slskUploadActivityBound) return
+  if (!window.api || !window.api.onSlskUploadActivity) return
+  _slskUploadActivityBound = true
+  window.api.onSlskUploadActivity(function (s) {
+    if (!s) return
+    _slskUploadStats = Object.assign({}, _slskUploadStats || {}, s)
+    if (state.currentPage === 'soulseek') _paintHubSharing()
   })
 }
 

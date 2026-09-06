@@ -168,9 +168,48 @@ function isExactishMatch(folderName, query) {
   return true
 }
 
-function crossesThreshold(group, query) {
+// Does a folder-group look like it carries a surround (5.1/7.1/Atmos/etc.) mix?
+// Text-based, the same signal a person reading the listing sees: surround is
+// labelled in folder and file names, never reported as a channel count by
+// slskd. Kept self-contained (the hunter is pure and browser-loadable) but the
+// markers mirror src/source-fingerprint.js so the two agree on what "surround"
+// means. Word-boundary anchored so "Symphony 5 1st Movement" and "Album 51" do
+// not read as 5.1.
+// The N.1 form requires a dot/underscore/dash between the digits, NOT a bare
+// space: "5 1st Movement" and "Symphony 5 1" are not surround claims, only
+// "5.1"/"5_1"/"5-1" (and the word forms) are.
+var SURROUND_RE = /\b(?:5[._-]1|7[._-]1|quad(?:raphonic)?|atmos|dts[ ._-]?(?:hd|x)?|dolby[ ._-]?(?:digital|surround)|multi[ ._-]?ch(?:annel)?|surround)\b/i
+function isSurround(group) {
   if (!group) return false
+  var parts = []
+  if (group.folderName) parts.push(String(group.folderName))
+  if (group.folderPath) parts.push(String(group.folderPath))
+  var files = group.files || []
+  for (var i = 0; i < files.length; i++) {
+    if (files[i] && files[i].filename) parts.push(String(files[i].filename))
+  }
+  return SURROUND_RE.test(parts.join(' '))
+}
+
+// The bar an entry has to clear, now honouring the entry's own quality target
+// (roadmap #48). `target` is one of:
+//   'any'      — the original behaviour: lossless-with-tracks OR near-exact match
+//   'lossless' — must be lossless with a real track count; a near-exact MP3 no
+//                longer qualifies, because the user explicitly asked for lossless
+//   'surround' — must be lossless AND carry a surround label; this is the
+//                "only 5.1" case, and stereo lossless does not satisfy it
+// An unknown/absent target falls back to 'any' so old {query, addedAt} entries
+// keep behaving exactly as before.
+function crossesThreshold(group, query, target) {
+  if (!group) return false
+  var t = target || 'any'
   var flac = losslessCount(group)
+  if (t === 'surround') {
+    return flac >= LOSSLESS_MIN_FILES && isSurround(group)
+  }
+  if (t === 'lossless') {
+    return flac >= LOSSLESS_MIN_FILES
+  }
   if (flac >= LOSSLESS_MIN_FILES) return true
   if (isExactishMatch(group.folderName, query)) return true
   return false
@@ -247,33 +286,50 @@ async function runSweep(opts) {
       continue
     }
 
+    // Per-entry quality target and notify-only mode (roadmap #48). Both are
+    // optional and additive to the {query, addedAt} shape; absent means the old
+    // behaviour (target 'any', auto-download).
+    var target = entry && entry.target ? entry.target : 'any'
+    var notifyOnly = !!(entry && entry.notifyOnly)
+
     var groups = groupResponses(responses)
     var best = pickBest(groups, query)
     var found = !!best
     var enqueued = false
+    var notified = false
 
-    if (best && crossesThreshold(best, query)) {
+    if (best && crossesThreshold(best, query, target)) {
       var payload = enqueuePayload(best)
       if (payload.length) {
-        try {
-          await enqueue(payload)
-          enqueued = true
-          var hit = {
-            query: query,
-            normalized: norm,
-            folderName: best.folderName,
-            username: best.username,
-            fileCount: payload.length,
-            at: now(),
-          }
+        var hit = {
+          query: query,
+          normalized: norm,
+          folderName: best.folderName,
+          username: best.username,
+          fileCount: payload.length,
+          target: target,
+          notifyOnly: notifyOnly,
+          at: now(),
+        }
+        if (notifyOnly) {
+          // Notify-only: tell the user a match crossed the bar, but do not spend
+          // their slots. The hit is still recorded so the entry is not re-hunted
+          // to death, and so the UI can surface "found — your call".
+          notified = true
           onHit(hit)
-        } catch (e2) {
-          results.push({ query: query, found: found, enqueued: false, error: String((e2 && e2.message) || e2) })
-          continue
+        } else {
+          try {
+            await enqueue(payload)
+            enqueued = true
+            onHit(hit)
+          } catch (e2) {
+            results.push({ query: query, found: found, enqueued: false, error: String((e2 && e2.message) || e2) })
+            continue
+          }
         }
       }
     }
-    results.push({ query: query, found: found, enqueued: enqueued })
+    results.push({ query: query, found: found, enqueued: enqueued, notified: notified })
   }
 
   return { results: results, aborted: aborted, abortReason: abortReason }
@@ -287,6 +343,7 @@ var _PapaWishlistHunter = {
   losslessCount: losslessCount,
   pickBest: pickBest,
   isExactishMatch: isExactishMatch,
+  isSurround: isSurround,
   crossesThreshold: crossesThreshold,
   enqueuePayload: enqueuePayload,
   runSweep: runSweep,

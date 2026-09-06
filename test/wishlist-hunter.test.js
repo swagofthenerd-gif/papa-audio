@@ -117,7 +117,7 @@ test('a sweep enqueues on a lossless hit and reports it', async () => {
     onHit: (h) => hits.push(h),
   })
   assert.equal(r.results.length, 1)
-  assert.deepEqual(r.results[0], { query: 'nirvana nevermind', found: true, enqueued: true })
+  assert.deepEqual(r.results[0], { query: 'nirvana nevermind', found: true, enqueued: true, notified: false })
   assert.equal(enqueued.length, 1)
   assert.equal(enqueued[0].length, 11, 'every track is handed to the scheduler')
   assert.ok(enqueued[0].every(it => it.sources.length === 1 && it.sources[0].username === 'a'))
@@ -241,6 +241,101 @@ test('an enqueue failure is recorded, not thrown, and does not record a hit', as
   assert.equal(r.results[0].enqueued, false)
   assert.ok(r.results[0].error)
   assert.equal(hits.length, 0, 'a failed enqueue must not be recorded as a satisfied wish')
+})
+
+// ── per-entry quality targets + notify-only (roadmap #48) ───────────────────
+
+function surroundFlacAlbum(n) {
+  const files = []
+  for (let i = 1; i <= n; i++) files.push({ name: `${String(i).padStart(2, '0')} Track (5.1).flac`, size: 5e6 })
+  return files
+}
+
+test('isSurround reads the label out of folder and file names', () => {
+  const s = H.groupResponses([resp('a', 'Dark Side 5.1 Remix', surroundFlacAlbum(4))])[0]
+  const stereo = H.groupResponses([resp('b', 'Dark Side', flacAlbum(4))])[0]
+  assert.equal(H.isSurround(s), true)
+  assert.equal(H.isSurround(stereo), false)
+})
+
+test('isSurround does not misread a plain number as 5.1', () => {
+  // "Symphony 5 1st Movement" and "Album 51" must not read as surround — the
+  // word-boundary anchoring is the whole point.
+  const g = H.groupResponses([resp('a', 'Symphony 5 1st Movement', flacAlbum(3))])[0]
+  const g2 = H.groupResponses([resp('b', 'Album 51', flacAlbum(3))])[0]
+  assert.equal(H.isSurround(g), false)
+  assert.equal(H.isSurround(g2), false)
+})
+
+test("target 'lossless' rejects a near-exact mp3 that 'any' would take", () => {
+  const g = H.groupResponses([resp('a', 'Radiohead OK Computer 1997',
+    [{ name: '01.mp3' }, { name: '02.mp3' }])])[0]
+  assert.equal(H.crossesThreshold(g, 'Radiohead OK Computer', 'any'), true)
+  assert.equal(H.crossesThreshold(g, 'Radiohead OK Computer', 'lossless'), false)
+})
+
+test("target 'lossless' still accepts a real lossless album", () => {
+  const g = H.groupResponses([resp('a', 'Some Album', flacAlbum(H.LOSSLESS_MIN_FILES))])[0]
+  assert.equal(H.crossesThreshold(g, 'anything', 'lossless'), true)
+})
+
+test("target 'surround' needs lossless AND a surround label", () => {
+  const stereo = H.groupResponses([resp('a', 'Some Album', flacAlbum(5))])[0]
+  const surr = H.groupResponses([resp('b', 'Some Album 5.1', surroundFlacAlbum(5))])[0]
+  const surrMp3 = H.groupResponses([resp('c', 'Some Album 5.1',
+    Array.from({ length: 5 }, (_, i) => ({ name: `${i} (5.1).mp3` })))])[0]
+  assert.equal(H.crossesThreshold(stereo, 'some album', 'surround'), false)
+  assert.equal(H.crossesThreshold(surr, 'some album', 'surround'), true)
+  assert.equal(H.crossesThreshold(surrMp3, 'some album', 'surround'), false, 'surround must be lossless too')
+})
+
+test('an absent target behaves exactly like "any"', () => {
+  const g = H.groupResponses([resp('a', 'Radiohead OK Computer 1997',
+    [{ name: '01.mp3' }, { name: '02.mp3' }])])[0]
+  assert.equal(H.crossesThreshold(g, 'Radiohead OK Computer'),
+    H.crossesThreshold(g, 'Radiohead OK Computer', 'any'))
+})
+
+test("a 'lossless' entry does not enqueue a near-exact mp3 hit", async () => {
+  const enqueued = []
+  const r = await H.runSweep({
+    entries: [{ query: 'Radiohead OK Computer', target: 'lossless' }],
+    search: async () => [resp('a', 'Radiohead OK Computer 1997',
+      [{ name: '01.mp3' }, { name: '02.mp3' }])],
+    enqueue: async (items) => { enqueued.push(items) },
+  })
+  assert.equal(enqueued.length, 0, 'the mp3 did not clear the lossless bar')
+  assert.equal(r.results[0].found, true)
+  assert.equal(r.results[0].enqueued, false)
+})
+
+test('notify-only records a hit but never enqueues', async () => {
+  const enqueued = []
+  const hits = []
+  const r = await H.runSweep({
+    entries: [{ query: 'nirvana nevermind', notifyOnly: true }],
+    search: async () => [resp('a', 'Nirvana Nevermind', flacAlbum(11), { hasFreeUploadSlot: true })],
+    enqueue: async (items) => { enqueued.push(items) },
+    onHit: (h) => hits.push(h),
+  })
+  assert.equal(enqueued.length, 0, 'notify-only must not spend the user\'s slots')
+  assert.equal(hits.length, 1, 'but it still records the find')
+  assert.equal(hits[0].notifyOnly, true)
+  assert.equal(r.results[0].found, true)
+  assert.equal(r.results[0].enqueued, false)
+  assert.equal(r.results[0].notified, true)
+})
+
+test('the hit payload carries the entry target', async () => {
+  const hits = []
+  await H.runSweep({
+    entries: [{ query: 'some album', target: 'surround' }],
+    search: async () => [resp('a', 'Some Album 5.1', surroundFlacAlbum(6), { hasFreeUploadSlot: true })],
+    enqueue: async () => {},
+    onHit: (h) => hits.push(h),
+  })
+  assert.equal(hits.length, 1)
+  assert.equal(hits[0].target, 'surround')
 })
 
 test('normalizeQuery folds case, punctuation and spacing', () => {

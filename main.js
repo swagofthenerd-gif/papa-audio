@@ -16,6 +16,7 @@ const videoKeep = require('./src/video-keep')
 const { createDebrid } = require('./src/debrid')
 const trackMemory = require('./src/track-memory')
 const { createWatchdog } = require('./src/memory-watchdog')
+const profilerCapture = require('./src/profiler-capture')
 const https = require('https')
 // No sync child_process on the main thread: every shell-out goes through run().
 const { spawn, execFile } = require('child_process')
@@ -1793,7 +1794,26 @@ function shutdownFromSignal() {
 
 for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.on(sig, shutdownFromSignal)
 
-app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
+// Whether a window close should hide to the tray rather than quit. Two keys feed
+// this: `minimizeToTray` (roadmap #21, default OFF, the tray-mode toggle) and the
+// legacy `closeToTray` (default ON, surfaced in Settings). Either being on hides;
+// both require a live tray to hide into. Kept in one place so the close IPC, the
+// window 'close' handler and window-all-closed all agree.
+function _shouldHideToTray() {
+  if (!tray) return false
+  return store.get('minimizeToTray', false) === true ||
+         store.get('closeToTray', true) !== false
+}
+
+// window-all-closed fires when the last window is actually destroyed. When
+// hide-to-tray is active the window is hidden, not closed, so this does not fire
+// in that case — but guard anyway: a stray path that closes the window while the
+// tray is meant to hold the app alive must not quit out from under it.
+app.on('window-all-closed', () => {
+  if (process.platform === 'darwin') return
+  if (!app.isQuitting && _shouldHideToTray()) return
+  app.quit()
+})
 app.on('before-quit', () => {
   app.isQuitting = true
   store.set('cleanShutdown', true)
@@ -2010,7 +2030,7 @@ function createWindow(hidden = false) {
   mainWindow.on('unmaximize', saveWinState)
   mainWindow.on('close', async (e) => {
     saveWinStateNow()
-    if (!app.isQuitting && store.get('closeToTray', true) && tray) {
+    if (!app.isQuitting && _shouldHideToTray()) {
       e.preventDefault()
       mainWindow.hide()
       return
@@ -2164,6 +2184,49 @@ ipcMain.handle('papa-memory-stats', () => {
   }
 })
 
+// ── Profiler capture (roadmap #70) ───────────────────────────────────────────
+// One-click "report what's slow": attach the CDP debugger to the main window,
+// run the V8 CPU profiler for a few seconds, and drop a .cpuprofile into the log
+// directory that Chrome DevTools / speedscope can open. No UI this wave — this
+// is the capture engine a future "report what's slow" button drives.
+//
+// Only one capture at a time: the debugger can be attached once, and a second
+// Profiler.start on the same session would step on the first. The flag is
+// released in a finally so a failure anywhere still frees the next attempt.
+let _profileInFlight = false
+ipcMain.handle('papa-profile-capture', async (_, opts) => {
+  if (_profileInFlight) {
+    return { ok: false, error: 'A profile capture is already running.' }
+  }
+  const wc = mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null
+  if (!wc) return { ok: false, error: 'No window to profile.' }
+
+  const seconds = profilerCapture.normalizeSeconds(opts)
+  _profileInFlight = true
+  let attached = false
+  try {
+    // A debugger attached by DevTools (F12) owns the session; do not fight it.
+    try { wc.debugger.attach('1.3'); attached = true } catch (e) {
+      return { ok: false, error: 'Could not attach the profiler: ' + (e.message || e) }
+    }
+    await wc.debugger.sendCommand('Profiler.enable')
+    await wc.debugger.sendCommand('Profiler.start')
+    await new Promise(r => setTimeout(r, seconds * 1000))
+    const { profile } = await wc.debugger.sendCommand('Profiler.stop')
+
+    const dir = path.join(USER_DATA, 'logs')
+    try { fs.mkdirSync(dir, { recursive: true }) } catch (_) { /* dir may exist */ }
+    const outPath = path.join(dir, profilerCapture.profileFilename())
+    await fs.promises.writeFile(outPath, JSON.stringify(profile), 'utf8')
+    return { ok: true, path: outPath, seconds }
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) }
+  } finally {
+    if (attached) { try { wc.debugger.detach() } catch (_) { /* already gone */ } }
+    _profileInFlight = false
+  }
+})
+
 function playerReady() {
   return !!(player && mpvAvailable && player.alive !== false)
 }
@@ -2192,17 +2255,17 @@ function buildPlayer(cfg) {
     : new MpvEngine({ config: engineConfig })
   p.on('position',     d => sendPlayerEvent('position', d))
   p.on('duration',     d => sendPlayerEvent('duration', d))
-  p.on('paused',       d => { sendPlayerEvent('paused', d); refreshTrayTooltip() })
+  p.on('paused',       d => { sendPlayerEvent('paused', d); refreshTrayTooltip(); updateTrayMenu(playerIsPlaying()) })
   p.on('audioParams',  d => sendPlayerEvent('audioParams', d))
   p.on('autoAdvanced', d => sendPlayerEvent('autoAdvanced', d))
-  p.on('trackChanged', d => sendPlayerEvent('trackChanged', d))
+  p.on('trackChanged', d => { sendPlayerEvent('trackChanged', d); updateTrayMenu(playerIsPlaying()) })
   p.on('ended',        () => sendPlayerEvent('ended'))
   p.on('loadError',    d => sendPlayerEvent('loadError', d))
   // These four carry a payload now. engineDown says whether recovery is coming,
   // stopped names the end-file reason, engineRecovered says where it resumed,
   // and engineFailed says what actually failed instead of blaming a missing mpv.
-  p.on('engineDown',      d => { sendPlayerEvent('engineDown', d); refreshTrayTooltip() })
-  p.on('stopped',         d => sendPlayerEvent('stopped', d))
+  p.on('engineDown',      d => { sendPlayerEvent('engineDown', d); refreshTrayTooltip(); updateTrayMenu(playerIsPlaying()) })
+  p.on('stopped',         d => { sendPlayerEvent('stopped', d); updateTrayMenu(playerIsPlaying()) })
   p.on('engineRecovered', d => { sendPlayerEvent('engineRecovered', d); refreshTrayTooltip() })
   // Position stopped advancing while mpv says it is not paused. mpv itself is
   // asked what it thinks before this fires, so it is a finding, not a guess.
@@ -2890,11 +2953,15 @@ let tray = null
 let _trayNow = { title: null, playing: false }
 
 function createTray() {
+  // The e2e smoke launches the real app; Tray creation must never crash it, and
+  // on a headless CI box the SNI host is absent, so this whole thing is
+  // best-effort. A missing tray leaves `tray` null and every caller already
+  // guards on it.
   try {
     const img = nativeImage.createFromPath(ICON_PATH).resize({ width: 22, height: 22 })
     tray = new Tray(img)
     tray.setToolTip('Papa Audio')
-    updateTrayMenu(false)
+    updateTrayMenu(playerIsPlaying())
     tray.on('click', () => {
       if (!mainWindow) return
       mainWindow.isVisible() ? mainWindow.hide() : (mainWindow.show(), mainWindow.focus())
@@ -2902,17 +2969,48 @@ function createTray() {
   } catch (e) { console.error('Tray unavailable:', e.message) }
 }
 
+// The context menu (roadmap #21): Play/Pause, Next, Previous, Show Papa Audio,
+// Quit. Kept pure so the shape is testable without Electron — pass whether the
+// player is playing, get the label template back. The click wiring is added in
+// updateTrayMenu, which is where the live handles (safeSend, mainWindow, app)
+// belong.
+function trayMenuTemplate(isPlaying) {
+  return [
+    { id: 'playpause', label: isPlaying ? 'Pause' : 'Play' },
+    { id: 'next', label: 'Next' },
+    { id: 'previous', label: 'Previous' },
+    { type: 'separator' },
+    { id: 'show', label: 'Show Papa Audio' },
+    { id: 'quit', label: 'Quit' },
+  ]
+}
+
+// Rebuild the menu in place on a play-state change. Unlike the desktop project's
+// tray, this is not a destroy + recreate — the Tray object is kept and only its
+// context menu is swapped, so the tray-rebuild-race learning does not apply. The
+// update is minimal: one setContextMenu call, no new icon, no re-registration.
 function updateTrayMenu(isPlaying) {
   if (!tray) return
-  tray.setContextMenu(Menu.buildFromTemplate([
-    { label: isPlaying ? 'Pause' : 'Play', click: () => safeSend('media-playpause') },
-    { label: 'Next', click: () => safeSend('media-next') },
-    { label: 'Previous', click: () => safeSend('media-previous') },
-    { type: 'separator' },
-    { label: 'Show', click: () => { if (mainWindow) { mainWindow.show(); mainWindow.focus() } } },
-    { label: 'Quit', click: () => app.quit() },
-  ]))
+  const clicks = {
+    playpause: () => safeSend('media-playpause'),
+    next: () => safeSend('media-next'),
+    previous: () => safeSend('media-previous'),
+    show: () => { if (mainWindow) { mainWindow.show(); mainWindow.focus() } },
+    quit: () => { app.isQuitting = true; app.quit() },
+  }
+  const template = trayMenuTemplate(isPlaying).map(item =>
+    item.type === 'separator' ? item : { label: item.label, click: clicks[item.id] })
+  try { tray.setContextMenu(Menu.buildFromTemplate(template)) } catch (_) { /* tray can be gone mid-quit */ }
 }
+
+// Tray-mode toggle (roadmap #21). Persist the choice and reflect the stored
+// state back. Turning it on with no tray (headless / SNI absent) still records
+// the preference; the hide-to-tray decision guards on `tray` at close time.
+ipcMain.handle('papa-tray-set', (_, opts) => {
+  const enabled = !!(opts && opts.enabled)
+  store.set('minimizeToTray', enabled)
+  return { ok: true, enabled: store.get('minimizeToTray', false), hasTray: !!tray }
+})
 
 // The renderer's idea of the track, kept only as the source of the NAME — main
 // has no titles, only paths.
@@ -2939,7 +3037,7 @@ function refreshTrayTooltip() {
 ipcMain.on('win-minimize', () => mainWindow?.minimize())
 ipcMain.on('win-maximize', () => mainWindow?.isMaximized() ? mainWindow.unmaximize() : mainWindow?.maximize())
 ipcMain.on('win-close',    () => {
-  if (store.get('closeToTray', true) && tray) mainWindow?.hide()
+  if (_shouldHideToTray()) mainWindow?.hide()
   else { player?.stop(); app.isQuitting = true; mainWindow?.close() }
 })
 // `theme` used to be here. It was stored and read by nothing -- the app is
@@ -2947,6 +3045,9 @@ ipcMain.on('win-close',    () => {
 // anything. closeToTray is real: two places in main honour it.
 ipcMain.handle('get-general-settings', () => ({
   closeToTray: store.get('closeToTray', true),
+  // Tray mode (roadmap #21), default OFF. When ON, closing the window hides it to
+  // the tray with playback controls instead of quitting.
+  minimizeToTray: store.get('minimizeToTray', false),
   uiScale: store.get('uiScale', 1),
   // Appearance for the music side + shared chrome (App #87). The cinema stays
   // dark regardless. 'dark' | 'light' | 'system'; defaults to dark, the app's
@@ -2960,6 +3061,10 @@ ipcMain.handle('get-general-settings', () => ({
 }))
 ipcMain.on('save-general-settings', (_, s) => {
   if (s && typeof s.closeToTray === 'boolean') store.set('closeToTray', s.closeToTray)
+  // Tray mode (roadmap #21). The dedicated papa-tray-set IPC is the primary
+  // path; accept it here too so a general-settings save carrying the flag stays
+  // consistent.
+  if (s && typeof s.minimizeToTray === 'boolean') store.set('minimizeToTray', s.minimizeToTray)
   // The renderer sends one of the offered factors; guard the range so a stray
   // value can't be stored and then re-applied on every launch.
   if (s && typeof s.uiScale === 'number' && s.uiScale >= 0.5 && s.uiScale <= 2) {
@@ -6932,6 +7037,15 @@ ipcMain.handle('slsk-scheduler-stats', () => {
   return dlSched.stats(dlState)
 })
 
+// Substitution log surface (roadmap #56): every alternate-source accept/reject
+// the scheduler logged, so the Downloads page can explain why a file came from
+// a different peer than asked. The log is capped at 200 in the scheduler; a copy
+// is returned so a caller cannot mutate the live state.
+ipcMain.handle('slsk-scheduler-sublog', () => {
+  dlStart()
+  return Array.isArray(dlState.subLog) ? dlState.subLog.slice() : []
+})
+
 ipcMain.handle('slsk-scheduler-config', (_, patch) => {
   if (patch && typeof patch === 'object') {
     store.set('slskSchedulerConfig', Object.assign({}, store.get('slskSchedulerConfig', {}), patch))
@@ -7153,6 +7267,9 @@ async function slskWishlistSweep() {
         safeSend('slsk-wishlist-hit', {
           query: hit.query, folderName: hit.folderName,
           username: hit.username, fileCount: hit.fileCount,
+          // notify-only entries found a copy but deliberately did not download
+          // it; the renderer words its toast accordingly.
+          notifyOnly: hit.notifyOnly === true,
         })
         console.log('[papa] wishlist: enqueued', hit.fileCount, 'file(s) for', JSON.stringify(hit.query),
           'from', hit.username)
@@ -8652,6 +8769,9 @@ const VIDEO_SETTING_KEYS = new Set([
   'downloadLimitMbps', 'seedWhileWatching', 'streamCacheDir',
   'sourceMirrors',
   'jackettUrl', 'jackettApiKey',
+  // W5 surfaces: the offline-keeps quota and debrid credentials save through
+  // the same settings path; missing keys here silently dropped their writes.
+  'videoKeepQuotaGB', 'debridProvider', 'debridToken',
 ])
 
 ipcMain.handle('video-settings-set', (_, { patch }) => {

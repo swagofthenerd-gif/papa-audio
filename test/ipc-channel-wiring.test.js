@@ -94,6 +94,8 @@ test('every channel main sends has something that actually listens', () => {
     ...(/onSlskSchedulerStats\(/.test(ALL_RENDERER) ? ['slsk-scheduler-stats'] : []),
     ...(/onSlskUserStatus\(/.test(ALL_RENDERER) ? ['slsk-user-status'] : []),
     ...(/onSlskSavedUsersChange\(/.test(ALL_RENDERER) ? ['slsk-saved-users-changed'] : []),
+    ...(/onSlskUploadActivity\(/.test(ALL_RENDERER) ? ['slsk-upload-activity'] : []),
+    ...(/onSlskVerifyDone\(/.test(ALL_RENDERER) ? ['slsk-verify-done'] : []),
   ])
   // Channels main sends that nothing listens for, on purpose or by history.
   // Listed rather than ignored: the point of this test is that a NEW dead
@@ -127,15 +129,6 @@ test('every channel main sends has something that actually listens', () => {
     // preload exposes onSlskVerifyDone (roadmap #49); the Soulseek UI wiring for
     // the "verified" badge lands in the parallel Wave-2 UI work, so main + the
     // bridge land first.
-    'slsk-verify-done': 'preload exposes onSlskVerifyDone; renderer listener is landing in the parallel UI work',
-    // preload exposes onSlskUploadActivity (roadmap #54); the "you're sharing N
-    // files" status chip is wired by the parallel Wave-3 UI work, so main + the
-    // bridge land first.
-    'slsk-upload-activity': 'preload exposes onSlskUploadActivity; renderer listener is landing in the parallel UI work',
-    // Memory ceiling watchdog (roadmap #63): main + the allowlist land here; the
-    // renderer reacts by trimming its caches in the parallel Wave-4 UI work, so
-    // the sending side and the bridge land first.
-    'papa-memory-pressure': 'allowlisted in preload; renderer cache-trim listener is landing in the parallel UI work',
   }
   const unheard = [...sentChannels]
     .filter(c => !heard.has(c) && !(c in NOT_FOR_THE_RENDERER) && !(c in DELIBERATELY_UNHANDLED))

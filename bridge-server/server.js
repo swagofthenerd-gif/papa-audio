@@ -15,9 +15,11 @@ const crypto   = require('crypto')
 const http     = require('http')
 const https    = require('https')
 const os       = require('os')
+const { spawn, spawnSync } = require('child_process')
 const { parseFile } = require('music-metadata')
 const Store = require('electron-store')
 const registerYouTube = require('./youtube')
+const mediaLib = require('./media-lib')
 
 // ── Config ────────────────────────────────────────────────────────────────────
 const PORT        = process.env.BRIDGE_PORT || 8765
@@ -31,6 +33,36 @@ fs.mkdirSync(USER_DATA,   { recursive: true })
 fs.mkdirSync(ARTWORK_DIR, { recursive: true })
 
 const BRIDGE_TOKEN = crypto.randomBytes(16).toString('hex')
+
+// The announced bridge version + what this build can do, so the Android app can
+// feature-detect instead of guessing. Bumped for the artwork + transcode work
+// (roadmap #64).
+const BRIDGE_VERSION = '1.1.0'
+
+// Is ffmpeg on PATH? Checked once at startup: the transcode endpoint refuses
+// politely when it is missing rather than spawning a command that is not there.
+const FFMPEG_AVAILABLE = (() => {
+  try {
+    const r = spawnSync('ffmpeg', ['-version'], { stdio: 'ignore' })
+    return !r.error && r.status === 0
+  } catch (_) { return false }
+})()
+
+// Optional transcode gate (roadmap #64), default ON. Off means the transcode
+// query param is refused even when ffmpeg is present.
+function bridgeTranscodeEnabled() {
+  return store.get('bridgeTranscode', true) !== false
+}
+
+function bridgeCapabilities() {
+  return {
+    artwork: true,
+    transcode: bridgeTranscodeEnabled() && FFMPEG_AVAILABLE,
+    transcodeFormats: (bridgeTranscodeEnabled() && FFMPEG_AVAILABLE)
+      ? Object.keys(mediaLib.TRANSCODE_FORMATS) : [],
+    ffmpeg: FFMPEG_AVAILABLE,
+  }
+}
 
 // Re-use the same electron-store data files the desktop app writes
 const store = new Store({ name: 'config', cwd: USER_DATA })
@@ -185,7 +217,12 @@ app.use(express.json({ limit: '10mb' }))
 // ── Auth middleware ─────────────────────────────────────────────────────────────
 app.use((req, res, next) => {
   if (req.path === '/api/health') return next()
-  if (!req.path.startsWith('/api/') && req.path !== '/stream' && req.path !== '/art') return next()
+  // /stream and /art gate both the query-string form (?path=) and the id-keyed
+  // form the Android bridge added (/stream/<trackId>, /art/<albumId>.jpg).
+  const guarded = req.path.startsWith('/api/') ||
+    req.path === '/stream' || req.path.startsWith('/stream/') ||
+    req.path === '/art' || req.path.startsWith('/art/')
+  if (!guarded) return next()
   const auth = req.headers.authorization
   if (!auth || auth !== `Bearer ${BRIDGE_TOKEN}`) {
     return res.status(401).json({ error: 'Unauthorized' })
@@ -230,7 +267,11 @@ app.get('/events', (req, res) => {
 })
 
 // ── Health ────────────────────────────────────────────────────────────────────
-app.get('/api/health', (_, res) => res.json({ ok: true, version: '1.0.0' }))
+app.get('/api/health', (_, res) => res.json({
+  ok: true,
+  version: BRIDGE_VERSION,
+  capabilities: bridgeCapabilities(),
+}))
 
 // ── App info ──────────────────────────────────────────────────────────────────
 app.get('/api/app-info', (_, res) => res.json({
@@ -240,10 +281,21 @@ app.get('/api/app-info', (_, res) => res.json({
   volume:         store.get('volume', 0.8),
 }))
 
+// Decorate each album with an `artUrl` (roadmap #64): the id-keyed artwork
+// endpoint the Android app can hit without knowing the on-disk artPath. Only
+// albums that actually have art on disk get a URL; the rest stay null so the
+// client falls back to its own placeholder rather than requesting a 404.
+function withArtUrls(albums) {
+  if (!Array.isArray(albums)) return albums
+  return albums.map(a => (a && a.id && a.artPath)
+    ? Object.assign({}, a, { artUrl: `/art/${a.id}.jpg` })
+    : a)
+}
+
 // ── Library ───────────────────────────────────────────────────────────────────
 app.get('/api/library', (_, res) => {
   const cached = store.get('libraryCache', null)
-  if (cached) return res.json({ albums: cached, cached: true })
+  if (cached) return res.json({ albums: withArtUrls(cached), cached: true })
   res.json({ albums: [], cached: false })
 })
 
@@ -282,7 +334,7 @@ app.post('/api/library/scan', async (_, res) => {
     }
     const albums = await buildAlbums(tracks)
     store.set('libraryCache', albums)
-    res.json({ albums })
+    res.json({ albums: withArtUrls(albums) })
   } catch (e) {
     res.status(500).json({ error: e.message })
   }
@@ -360,6 +412,115 @@ app.get('/art', async (req, res) => {
   res.setHeader('Cache-Control', 'public, max-age=86400')
   res.setHeader('ETag', '"' + artStat.mtimeMs.toString(36) + '-' + artStat.size.toString(36) + '"')
   fs.createReadStream(artPath).pipe(res)
+})
+
+// Whether a resolved path is inside the music folders or the shared artwork
+// cache — the same allow-list the two query-string routes enforce, factored out
+// so the id-keyed routes below reuse it.
+function pathAllowed(resolved) {
+  const folders = store.get('musicFolders', [])
+  return folders.some(function(f) { return resolved.startsWith(path.resolve(f)) }) ||
+    resolved.startsWith(path.resolve(os.homedir() + '/.config/papa-audio/artwork'))
+}
+
+// ── Album art by id (roadmap #64) ───────────────────────────────────────────
+// GET /art/<albumId>.jpg — serve the album's artPath resolved from the library
+// cache, so the Android app can request art without knowing the on-disk path.
+app.get('/art/:albumId.jpg', async (req, res) => {
+  const albums = store.get('libraryCache', null)
+  const { artById } = mediaLib.buildAlbumIndex(albums)
+  const artPath = artById.get(String(req.params.albumId))
+  if (!artPath) return res.status(404).send('Not found')
+
+  const resolved = path.resolve(artPath)
+  if (!pathAllowed(resolved)) return res.status(403).json({ error: 'Access denied' })
+
+  let artStat
+  try { artStat = await fs.promises.stat(artPath) } catch (_) { return res.status(404).send('Not found') }
+  const ext = path.extname(artPath).toLowerCase()
+  const mime = ext === '.png' ? 'image/png' : 'image/jpeg'
+  res.setHeader('Content-Type', mime)
+  res.setHeader('Cache-Control', 'public, max-age=86400')
+  res.setHeader('ETag', '"' + artStat.mtimeMs.toString(36) + '-' + artStat.size.toString(36) + '"')
+  fs.createReadStream(artPath).pipe(res)
+})
+
+// ── Transcoded stream by id (roadmap #64) ───────────────────────────────────
+// GET /stream/<trackId>?fmt=mp3 — resolve the track from the library cache and
+// stream it re-encoded to the requested format via ffmpeg. Without ?fmt it is a
+// plain re-encode-free passthrough of the original file (with range support).
+// The gate + ffmpeg presence are checked by mediaLib.transcodeDecision, which
+// returns a polite reason when the request cannot be honoured.
+app.get('/stream/:trackId', async (req, res) => {
+  const albums = store.get('libraryCache', null)
+  const { trackById } = mediaLib.buildAlbumIndex(albums)
+  const filePath = trackById.get(String(req.params.trackId))
+  if (!filePath) return res.status(404).json({ error: 'Track not found' })
+
+  const resolved = path.resolve(filePath)
+  const folders = store.get('musicFolders', [])
+  if (!folders.some(function(f) { return resolved.startsWith(path.resolve(f)) })) {
+    return res.status(403).json({ error: 'Access denied: path outside music folders' })
+  }
+  try { await fs.promises.stat(filePath) } catch (_) {
+    return res.status(404).json({ error: 'File not found' })
+  }
+
+  const fmt = req.query.fmt
+  // No fmt → the client wants the original bytes. Stream them with range support
+  // so a seek on the Android side works, mirroring the path-based /stream route.
+  if (!fmt) {
+    const stat = await fs.promises.stat(filePath)
+    const total = stat.size
+    const ext = path.extname(filePath).toLowerCase()
+    const mimeMap = {
+      '.flac': 'audio/flac', '.mp3': 'audio/mpeg', '.wav': 'audio/wav',
+      '.aiff': 'audio/aiff', '.aif': 'audio/aiff', '.m4a': 'audio/mp4',
+      '.aac': 'audio/aac', '.ogg': 'audio/ogg', '.opus': 'audio/ogg',
+      '.ape': 'audio/ape', '.wv': 'audio/x-wavpack', '.wma': 'audio/x-ms-wma',
+    }
+    const mime = mimeMap[ext] || 'audio/mpeg'
+    const etag = '"' + stat.mtimeMs.toString(36) + '-' + stat.size.toString(36) + '"'
+    const range = req.headers.range
+    if (range) {
+      const parts = range.replace(/bytes=/, '').split('-')
+      const start = parseInt(parts[0], 10)
+      const end = parts[1] ? parseInt(parts[1], 10) : total - 1
+      res.writeHead(206, {
+        'Content-Range': `bytes ${start}-${end}/${total}`,
+        'Accept-Ranges': 'bytes', 'Content-Length': end - start + 1,
+        'Content-Type': mime, 'Cache-Control': 'no-cache', 'ETag': etag,
+      })
+      return fs.createReadStream(filePath, { start, end }).pipe(res)
+    }
+    res.writeHead(200, { 'Content-Length': total, 'Content-Type': mime, 'Accept-Ranges': 'bytes', 'Cache-Control': 'no-cache', 'ETag': etag })
+    return fs.createReadStream(filePath).pipe(res)
+  }
+
+  const decision = mediaLib.transcodeDecision({
+    fmt,
+    bridgeTranscode: bridgeTranscodeEnabled(),
+    ffmpegAvailable: FFMPEG_AVAILABLE,
+  })
+  if (!decision.ok) return res.status(decision.status).json({ error: decision.reason })
+
+  const args = mediaLib.transcodeArgs(filePath, decision.spec)
+  const ff = spawn('ffmpeg', args)
+  res.setHeader('Content-Type', decision.spec.mime)
+  res.setHeader('Accept-Ranges', 'none')
+  res.setHeader('Cache-Control', 'no-cache')
+  ff.stdout.pipe(res)
+  ff.stderr.on('data', () => {}) // errors are surfaced by a non-zero exit below
+  ff.on('error', (e) => {
+    if (!res.headersSent) res.status(500).json({ error: 'Transcode failed: ' + e.message })
+    else res.destroy()
+  })
+  ff.on('close', (code) => {
+    if (code !== 0 && !res.headersSent) res.status(500).json({ error: 'Transcode exited ' + code })
+    else res.end()
+  })
+  // Client hung up mid-stream: stop wasting CPU on a transcode nobody is reading.
+  req.on('close', () => { try { ff.kill('SIGKILL') } catch (_) {} })
 })
 
 app.post('/api/fetch-album-art', async (req, res) => {
@@ -454,6 +615,12 @@ app.post('/api/settings/agent-keys',      (req, res) => { store.set('apiKeys', r
 
 app.get('/api/settings/agent-model',      (_, res) => res.json({ model: store.get('agentModel', '') }))
 app.post('/api/settings/agent-model',     (req, res) => { store.set('agentModel', req.body.model); res.json({ ok: true }) })
+
+// Transcode gate (roadmap #64): read/write the bridgeTranscode config the
+// id-keyed /stream endpoint honours. The read also reports whether ffmpeg is
+// present so a client can grey out the option when transcoding is impossible.
+app.get('/api/settings/transcode',        (_, res) => res.json({ enabled: bridgeTranscodeEnabled(), ffmpeg: FFMPEG_AVAILABLE }))
+app.post('/api/settings/transcode',       (req, res) => { store.set('bridgeTranscode', !!req.body.enabled); res.json({ enabled: bridgeTranscodeEnabled(), ffmpeg: FFMPEG_AVAILABLE }) })
 
 // ── Soulseek status ───────────────────────────────────────────────────────────
 app.get('/api/slsk/status', async (_, res) => {
@@ -628,7 +795,8 @@ app.listen(PORT, '0.0.0.0', () => {
       if (addr.family === 'IPv4' && !addr.internal) ips.push(addr.address)
     }
   }
-  console.log(`\n🎵 Papa Audio Bridge Server running on port ${PORT}`)
+  console.log(`\n🎵 Papa Audio Bridge Server v${BRIDGE_VERSION} running on port ${PORT}`)
+  console.log(`Transcode: ${bridgeTranscodeEnabled() && FFMPEG_AVAILABLE ? 'on (mp3)' : (FFMPEG_AVAILABLE ? 'disabled in settings' : 'unavailable — ffmpeg not found')}`)
   console.log(`Bridge token (add this to Android app): ${BRIDGE_TOKEN}`)
   console.log(`\nAndroid app should connect to one of:`)
   for (const ip of ips) console.log(`  http://${ip}:${PORT}`)

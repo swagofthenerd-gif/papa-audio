@@ -94,6 +94,9 @@ contextBridge.exposeInMainWorld('api', {
   notifyDownloadComplete: (d) => ipcRenderer.send('notify-download-complete', d),
   getGeneralSettings: () => ipcRenderer.invoke('get-general-settings'),
   saveGeneralSettings: (s) => ipcRenderer.send('save-general-settings', s),
+  // Tray mode (roadmap #21): turn minimize-to-tray on/off. Returns
+  // { ok, enabled, hasTray }.
+  papaTraySet: ({ enabled } = {}) => ipcRenderer.invoke('papa-tray-set', { enabled }),
   // Interface scale. webFrame lives in the renderer's process, so the zoom is
   // applied here rather than round-tripping through main. Clamped to the range
   // the setting offers so a bad stored value can't shrink the app to nothing.
@@ -192,6 +195,11 @@ contextBridge.exposeInMainWorld('api', {
   // Memory ceiling watchdog (roadmap #63): the last twelve samples + the ceiling.
   papaMemoryStats: () => ipcRenderer.invoke('papa-memory-stats'),
 
+  // Profiler capture (roadmap #70): run the V8 CPU profiler on the main window
+  // for a few seconds and write a .cpuprofile to the log dir. Powers a future
+  // "report what's slow" button; returns { ok, path, seconds } or { ok:false }.
+  papaProfileCapture: ({ seconds } = {}) => ipcRenderer.invoke('papa-profile-capture', { seconds }),
+
   // Bug reporter: bundle logs + diagnostics + redacted settings into a folder
   // and reveal it (App §97).
   papaBugReport: () => ipcRenderer.invoke('papa-bug-report'),
@@ -282,6 +290,10 @@ contextBridge.exposeInMainWorld('api', {
   slskUserStatuses:        ()  => ipcRenderer.invoke('slsk-user-statuses'),
   slskEnqueueDownloads:  (p) => ipcRenderer.invoke('slsk-enqueue-downloads', p),
   slskSchedulerStats:    ()  => ipcRenderer.invoke('slsk-scheduler-stats'),
+  // Substitution log surface (roadmap #56): the accept/reject decisions the
+  // scheduler logged, capped at 200, for the Downloads page to make trust
+  // inspectable.
+  slskSubLog:            ()  => ipcRenderer.invoke('slsk-scheduler-sublog'),
   slskSchedulerQueue:    ()  => ipcRenderer.invoke('slsk-scheduler-queue'),
   slskSchedulerConfig:   (p) => ipcRenderer.invoke('slsk-scheduler-config', p),
   // Bandwidth schedule (roadmap #51): day/night download throttle.

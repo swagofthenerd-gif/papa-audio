@@ -119,6 +119,9 @@
     let lastSkipShown = null
     let lastMarkDuration = -1
     let minimised = false
+    // True while mpv is in corner PiP mode (roadmap #27) rather than merely
+    // surface-hidden, so restore() knows to bring it back out of the corner.
+    let pipActive = false
     let upNextTimer = null
     let upNextLeft = 0
     let upNextInfo = null
@@ -2034,10 +2037,23 @@
       const mini = $('vmini')
       if (mini) mini.classList.remove('hidden')
       minimised = true
-      // The video surface is a native child window: hiding the HTML behind it
-      // does not hide it, and it would sit over the app while the user tried
-      // to browse. Audio keeps playing.
-      setSurfaceVisible(false)
+      // PiP (roadmap #27): when leaving the theatre with video still playing,
+      // shrink mpv into a corner so the picture rides along while browsing,
+      // instead of just blanking it. The .vmini bar below drives it. Feature-
+      // detected; if the corner mode is unavailable we fall back to the old
+      // hide-the-surface behavior so audio still keeps playing.
+      const playing = state && !state.paused
+      let miniModeOn = false
+      if (playing && api && api.videoMiniMode) {
+        miniModeOn = true
+        api.videoMiniMode({ on: true }).catch(function () {})
+      } else {
+        // The video surface is a native child window: hiding the HTML behind it
+        // does not hide it, and it would sit over the app while the user tried
+        // to browse. Audio keeps playing.
+        setSurfaceVisible(false)
+      }
+      pipActive = miniModeOn
       // The state subscription stays open: the mini player shows the same
       // position and play state, and returning must not have to rebuild it.
       render()
@@ -2050,9 +2066,15 @@
       if (root) root.classList.remove('hidden')
       minimised = false
       render()
-      // Two frames so the stage has its size back before the surface is
-      // placed on it, then show it again.
-      ready().then(function () { setSurfaceVisible(true) })
+      // Bring mpv back from the corner (roadmap #27) if it went there; otherwise
+      // just re-show the surface. Either way the stage needs its size back first,
+      // so wait two frames before placing the surface on it.
+      const wasPip = pipActive
+      pipActive = false
+      ready().then(function () {
+        if (wasPip && api && api.videoMiniMode) api.videoMiniMode({ on: false }).catch(function () {})
+        setSurfaceVisible(true)
+      })
     }
 
     function setSurfaceVisible(on) {
@@ -2083,6 +2105,10 @@
       const mini = $('vmini')
       if (mini) mini.classList.add('hidden')
       minimised = false
+      // If we were in corner PiP (roadmap #27), leave it before tearing down so
+      // mpv is not left shrunk into a corner for the next playback.
+      if (pipActive && api && api.videoMiniMode) api.videoMiniMode({ on: false }).catch(function () {})
+      pipActive = false
       if (unsubscribe) { unsubscribe(); unsubscribe = null }
       // Only on a real stop: minimising keeps playing, so the music bar stays
       // out of the way until the video is actually finished with.

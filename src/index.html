@@ -472,6 +472,37 @@
             </label>
             <button class="mcs-set-refresh mcs-set-reset" id="video-mirrors-reset">Reset mirrors to defaults</button>
           </details>
+          <!-- Debrid (roadmap #40): instant HTTP streams instead of P2P when the
+               user has a RealDebrid account. Off by default. -->
+          <div class="mcs-set-subhead">Debrid account</div>
+          <label class="mcs-set-row">Provider
+            <select class="mcs-set-select" id="video-debrid-provider">
+              <option value="">Off</option>
+              <option value="realdebrid">RealDebrid</option>
+            </select>
+          </label>
+          <label class="mcs-set-row" id="video-debrid-token-row" style="display:none">API token
+            <input class="mcs-set-input" id="video-debrid-token" type="password" placeholder="Paste RealDebrid API token…" autocomplete="off">
+          </label>
+          <div class="mcs-set-row mcs-set-row-inline" id="video-debrid-test-row" style="display:none">
+            <button class="mcs-set-refresh" id="video-debrid-test">Test</button>
+            <span class="mcs-set-hint" id="video-debrid-status"></span>
+          </div>
+          <div class="mcs-set-hint">With an account, matching torrents stream over plain HTTP instead of P2P — faster and no seeding. Get a token from your RealDebrid account page.</div>
+
+          <!-- Downloads for offline (roadmap #42): the keeps manager. Quota input
+               + usage bar + the list of kept files with per-entry delete. -->
+          <div class="mcs-set-subhead">Downloads for offline</div>
+          <label class="mcs-set-row">Storage limit (GB)
+            <input class="mcs-set-input mcs-set-input-num" id="video-keep-quota" type="number" min="0" step="1" placeholder="No limit" autocomplete="off">
+          </label>
+          <div class="mcs-set-hint">Kept episodes and films may grow to this size before a new keep is refused. 0 means no limit.</div>
+          <div class="video-keep-usage" id="video-keep-usage" style="display:none">
+            <div class="video-keep-bar"><i id="video-keep-bar-fill"></i></div>
+            <div class="mcs-set-hint" id="video-keep-usage-label"></div>
+          </div>
+          <div class="video-keep-list" id="video-keep-list"></div>
+
           <button class="mcs-set-refresh mcs-set-reset" id="video-reset-defaults">Reset video options to defaults</button>
           <div class="mcs-set-chip mcs-set-chip-warn" id="video-storage-health" style="display:none">Your watch history may not be saving — check disk space</div>
         </div>
