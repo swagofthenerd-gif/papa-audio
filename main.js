@@ -216,6 +216,12 @@ const airingCalendar = _lazyNs(() => require('./src/airing-calendar'))
 const bandwidthSchedule = _lazyNs(() => require('./src/bandwidth-schedule'))
 const uploadStats = _lazyNs(() => require('./src/upload-stats'))
 const artistInfo = _lazyNs(() => require('./src/artist-info'))
+// Three tiny pure-logic modules, lazy so they cost nothing at startup: the MPRIS
+// metadata/capability shaper (#20), the bit-perfect policy (#65) and the peer-chat
+// mapping/diff (#55). All are accessed only inside handlers/init, never at load.
+const mprisMeta = _lazyNs(() => require('./src/mpris-metadata'))
+const bitPerfect = _lazyNs(() => require('./src/bit-perfect'))
+const slskChat = _lazyNs(() => require('./src/slsk-chat'))
 const createJackettProvider =
   _lazyMod(() => require('./providers/jackett').createJackettProvider)
 
@@ -762,6 +768,12 @@ const sideStores = {
   // "uploaded today" survives a restart and reset at local midnight (rollover in
   // src/upload-stats.js). Shape: { day, totalUploadedToday, peers, seen }.
   slskUploadStats: new SideStore({ dir: USER_DATA, name: 'slsk-upload-stats', fallback: null, debounceMs: 1000, onError: _sideErr }),
+
+  // Peer chat last-seen watermark (roadmap #55): the highest slskd message id we
+  // have already surfaced per user, so the 30s conversations poll only fires the
+  // 'slsk-chat-message' event for genuinely-new incoming messages. Shape:
+  // { [username]: lastSeenId }.
+  slskChatSeen: new SideStore({ dir: USER_DATA, name: 'slsk-chat-seen', fallback: {}, debounceMs: 1000, onError: _sideErr }),
 
   // Artist bio cache (Wave 3 contract): keyless MusicBrainz→Wikipedia bios keyed
   // by folded artist name, capped at 100 with a 30-day TTL (src/artist-info.js).
@@ -2085,6 +2097,12 @@ function getPlayerSettings() {
   // Kept in sync with mode/crossfadeSecs by playerSetCrossfade and player-set-config
   // so any of the three can be read consistently.
   const crossfadeSeconds = Number(saved.crossfadeSeconds) || 0
+  // Bit-perfect output (roadmap #65), store key bitPerfect, default OFF. When on,
+  // it forces gapless: crossfade mixes two streams and can never be bit-perfect.
+  // The precedence lives in src/bit-perfect (forcesGapless), consulted here so the
+  // derived mode below can never come back 'crossfade' while bit-perfect is on.
+  const bitPerfectOn = saved.bitPerfect === true
+  const crossfadeAllowed = crossfadeSeconds > 0 && !bitPerfect.forcesGapless(bitPerfectOn)
   return {
     outputMode: 'default', alsaDevice: null,
     mode: 'gapless', crossfadeSecs: 4, replaygain: 'no',
@@ -2094,12 +2112,17 @@ function getPlayerSettings() {
     channels: 'auto', boost: false,
     eq: eqDefaults(),
     ...saved,
+    bitPerfect: bitPerfectOn,
+    // The human explanation of what bit-perfect disables, so the settings surface
+    // can show why EQ/ReplayGain/crossfade go quiet while it is on.
+    exclusivityNote: bitPerfect.EXCLUSIVITY_NOTE,
     // crossfadeSeconds is the authoritative global control; mode/crossfadeSecs are
     // derived from it so the three are always consistent no matter what the saved
     // blob happened to hold (a transient playlist-override push can leave a stale
     // mode in the store — the global read must not surface that as the global).
+    // Bit-perfect overrides the derived mode to gapless regardless of the seconds.
     crossfadeSeconds,
-    mode: crossfadeSeconds > 0 ? 'crossfade' : 'gapless',
+    mode: crossfadeAllowed ? 'crossfade' : 'gapless',
     crossfadeSecs: crossfadeSeconds > 0 ? crossfadeSeconds : 4,
   }
 }
@@ -2259,13 +2282,16 @@ function sendPlayerEvent(type, data) {
 }
 
 function buildPlayer(cfg) {
-  const engineConfig = {
-    outputMode: cfg.outputMode, alsaDevice: cfg.alsaDevice,
-    replaygain: cfg.replaygain, gapless: cfg.mode === 'gapless',
-    audioChannels: cfg.channels,
-    eq: cfg.eq,
-  }
-  const p = cfg.mode === 'crossfade'
+  // bit-perfect (roadmap #65) strips every sample-altering path from the engine
+  // config — exclusive device, no ReplayGain, no EQ, forced gapless, volume-max
+  // capped at 100 — in one tested place (src/bit-perfect). When off this is a
+  // straight pass-through of the audio fields.
+  const engineConfig = bitPerfect.resolveEngineConfig(cfg)
+  // Bit-perfect forces gapless, so a crossfade engine is never built while it is
+  // on (getPlayerSettings already collapses the mode, but this is the belt-and-
+  // braces: the two-engine crossfade would defeat bit-perfectness).
+  const useCrossfade = cfg.mode === 'crossfade' && !bitPerfect.forcesGapless(cfg.bitPerfect)
+  const p = useCrossfade
     ? new MpvCrossfade({ crossfadeSecs: cfg.crossfadeSecs, engineOpts: { config: engineConfig } })
     : new MpvEngine({ config: engineConfig })
   p.on('position',     d => sendPlayerEvent('position', d))
@@ -2869,7 +2895,10 @@ async function _applyPlayerConfig(partial) {
   const cfg = { ...getPlayerSettings(), ...partial }
   store.set('playerSettings', cfg)
   if (!player) return { ok: false, error: 'engine unavailable' }
-  const needsRebuild = ['outputMode', 'alsaDevice', 'mode', 'crossfadeSecs']
+  // bitPerfect toggling rebuilds the engine: it changes the spawn args (exclusive
+  // device, --volume-max, no --af) and the engine class (crossfade off), none of
+  // which can be applied live to a running mpv.
+  const needsRebuild = ['outputMode', 'alsaDevice', 'mode', 'crossfadeSecs', 'bitPerfect']
     .some(k => k in partial)
   try {
     if (needsRebuild) {
@@ -2878,7 +2907,7 @@ async function _applyPlayerConfig(partial) {
       // device or the crossfade mode tears the engine down mid-track, and that
       // used to happen with no warning at all.
       sendPlayerEvent('engineRebuilding', {
-        because: Object.keys(partial).filter(k => ['outputMode', 'alsaDevice', 'mode', 'crossfadeSecs'].includes(k)),
+        because: Object.keys(partial).filter(k => ['outputMode', 'alsaDevice', 'mode', 'crossfadeSecs', 'bitPerfect'].includes(k)),
         path: resume.path, position: resume.position,
       })
       player.stop()
@@ -2913,6 +2942,19 @@ async function _applyPlayerConfig(partial) {
 
 ipcMain.handle('player-set-config', (_, partial) => _applyPlayerConfig(partial || {}))
 
+// Bit-perfect output mode (roadmap #65). One knob — on/off, default off — that
+// routes through the same engine-rebuild path as every other spawn-affecting
+// setting. The store key is bitPerfect; getPlayerSettings folds it into the
+// derived mode (forcing gapless) and buildPlayer strips the sample-altering args.
+// A rebuild is unavoidable: exclusive device access, --volume-max and the --af
+// chain are all decided at spawn time. Returns the resolved settings so the UI
+// can reflect the enforced gapless/no-EQ state and the exclusivityNote at once.
+ipcMain.handle('player-set-bit-perfect', async (_, arg) => {
+  const on = !!(arg && typeof arg === 'object' ? arg.on : arg)
+  const res = await _applyPlayerConfig({ bitPerfect: on })
+  return { ...res, settings: getPlayerSettings() }
+})
+
 // ── MPRIS (D-Bus) — proper desktop media integration ────────────────────────
 // Gives GNOME/KDE media controls, lock screen, playerctl, and Bluetooth
 // buttons. The global media-key grab is only registered as a fallback.
@@ -2932,6 +2974,15 @@ function initMpris() {
     mprisPlayer.canQuit = true
     mprisPlayer.canRaise = true
     mprisPlayer.canControl = true
+    mprisPlayer.canPlay = true
+    mprisPlayer.canPause = true
+    // These three default to true in mpris-service; updateMpris now sets them per
+    // track (roadmap #20 (c)) so an applet greys out Next/Previous/scrub when they
+    // genuinely cannot work — but seed them true so controls are live before the
+    // first now-playing arrives.
+    mprisPlayer.canSeek = true
+    mprisPlayer.canGoNext = true
+    mprisPlayer.canGoPrevious = true
     mprisPlayer.loopStatus = 'None'
     const send = (cmd) => safeSend('media-key', cmd)
     mprisPlayer.on('playpause', () => send('play-pause'))
@@ -2960,34 +3011,39 @@ function initMpris() {
   }
 }
 
-// A cover can be a local file path or, for streamed (YouTube) tracks, an http
-// URL. Only a local path needs the file:// scheme + URI-encoding; an http URL is
-// already a valid artUrl and prefixing it produced "file://https://…", which
-// KDE's media widget could not load — so streamed tracks showed no artwork.
-function _mprisArtUrl(artPath) {
-  if (!artPath) return ''
-  if (/^https?:\/\//.test(artPath)) return artPath
-  return 'file://' + encodeURI(artPath).replace(/#/g, '%23')
-}
-
 function updateMpris(data) {
   if (!mprisPlayer) return
   try {
     if (data.title !== undefined) {
-      mprisPlayer.metadata = {
-        'mpris:trackid': mprisPlayer.objectPath('track/' + (data.queueIndex ?? 0)),
-        'mpris:length': Math.round((data.duration || 0) * 1e6),
-        'mpris:artUrl': _mprisArtUrl(data.artPath),
-        'xesam:title': data.title || '',
-        'xesam:album': data.album || '',
-        'xesam:artist': [data.artist || ''],
-      }
+      // The metadata shape (artUrl included, http vs file:// aware) and the
+      // capability flags are decided in the pure src/mpris-metadata module so they
+      // are tested without a session bus. objectPath comes off the live
+      // mpris-service object, which owns the D-Bus object-path helper.
+      mprisPlayer.metadata = mprisMeta.buildMetadata(data, {
+        objectPath: (p) => mprisPlayer.objectPath(p),
+      })
     }
+    // roadmap #20 (c): CanSeek/CanGoNext/CanGoPrevious reflect the real queue and
+    // track instead of mpris-service's always-true default, so an applet can grey
+    // out what cannot work (a stream has no scrubber; the queue end has no Next).
+    const caps = mprisMeta.capabilities(data)
+    mprisPlayer.canSeek = caps.canSeek
+    mprisPlayer.canGoNext = caps.canGoNext
+    mprisPlayer.canGoPrevious = caps.canGoPrevious
     mprisPlayer.playbackStatus = data.playing ? 'Playing' : (data.title ? 'Paused' : 'Stopped')
     mprisPlayer.shuffle = !!data.shuffle
     mprisPlayer.loopStatus = data.repeat === 'one' ? 'Track' : data.repeat === 'all' ? 'Playlist' : 'None'
     if (typeof data.volume === 'number') mprisPlayer.volume = data.volume
-    _mprisPos = { position: data.position || 0, at: Date.now(), playing: !!data.playing }
+    // roadmap #20 (b): raise the Seeked signal on a genuine seek so the Plasma
+    // applet's scrubber jumps to the new spot, rather than only on normal ticks.
+    // isSeek tells a real jump apart from playback drift, so this fires on a scrub
+    // and not on every position update.
+    const next = { position: data.position || 0, at: Date.now(), playing: !!data.playing }
+    if (typeof mprisPlayer.seeked === 'function' && mprisMeta.isSeek(_mprisPos, next)) {
+      try { mprisPlayer.seeked(Math.round(next.position * 1e6)) }
+      catch (e) { console.error('[papa] mpris-seeked:', e.message || e) }
+    }
+    _mprisPos = next
   } catch (e) { console.error('[papa] mpris-update:', e.message || e) }
 }
 
@@ -6842,6 +6898,9 @@ function dlStart() {
   dlTimer = setInterval(() => { dlTick() }, DL_TICK_MS)
   if (dlTimer.unref) dlTimer.unref()
   slskUploadPollStart()
+  // Peer chat poll (roadmap #55): every 30s, surface new incoming messages. Same
+  // lifecycle as the upload poll — both are Soulseek-awareness background work.
+  slskChatPollStart()
 }
 
 // ── Upload awareness (roadmap #54) ───────────────────────────────────────────
@@ -6928,6 +6987,114 @@ ipcMain.handle('slsk-upload-stats', async () => {
     distinctPeersToday: rolled.distinctPeersToday,
   }
 })
+
+// ── Peer chat (roadmap #55) ──────────────────────────────────────────────────
+// The renderer-facing chat contract over slskd's /conversations API. slskd owns
+// the messages; the shape-mapping and the new-incoming diff are pure in
+// src/slsk-chat.js so both are testable without a live daemon. main wires the
+// fetch, the 30s poll and the last-seen watermark side-store.
+//
+// slskd's live shapes (verified against the running daemon):
+//   GET  /conversations            -> [{ username, unAcknowledgedMessageCount, ... }]
+//   GET  /conversations/{username} -> { username, messages: [{ id, timestamp,
+//                                        direction:'In'|'Out', message, ... }] }
+//   POST /conversations/{username}   body: a JSON-encoded message STRING -> sends.
+const CHAT_POLL_MS = 30000
+let _chatTimer = null
+
+// slskChatList() -> [{ username, unreadCount, lastMessageAt }]. The list endpoint
+// carries no timestamp; lastMessageAt stays 0 here (the UI can order by unread and
+// fill recency from history on open). Degrades to [] when slskd is unreachable.
+ipcMain.handle('slsk-chat-list', async () => {
+  try {
+    const rows = await slskdFetch('GET', '/conversations')
+    return slskChat.normalizeList(rows)
+  } catch (e) {
+    console.error('[papa] slsk-chat-list:', String(e && e.message || e))
+    return []
+  }
+})
+
+// slskChatHistory({username}) -> [{ direction:'in'|'out', message, at }], oldest
+// first. Degrades to [] when slskd is unreachable or the user has no conversation.
+ipcMain.handle('slsk-chat-history', async (_, arg) => {
+  const username = String((arg && arg.username) || '').trim()
+  if (!username) return []
+  try {
+    const convo = await slskdFetch('GET', `/conversations/${encodeURIComponent(username)}`)
+    return slskChat.normalizeHistory(convo)
+  } catch (e) {
+    console.error('[papa] slsk-chat-history:', String(e && e.message || e))
+    return []
+  }
+})
+
+// slskChatSend({username, message}) -> { ok }. slskd wants the message as a bare
+// JSON string body (not an object), which slskdFetch's JSON.stringify produces
+// when handed a string. An empty message is rejected locally rather than sent.
+ipcMain.handle('slsk-chat-send', async (_, arg) => {
+  const username = String((arg && arg.username) || '').trim()
+  const message = String((arg && arg.message) || '')
+  if (!username) return { ok: false, error: 'no username' }
+  if (!message) return { ok: false, error: 'empty message' }
+  try {
+    await slskdFetch('POST', `/conversations/${encodeURIComponent(username)}`, message)
+    return { ok: true }
+  } catch (e) {
+    console.error('[papa] slsk-chat-send:', String(e && e.message || e))
+    return { ok: false, error: String(e && e.message || e) }
+  }
+})
+
+// One poll cycle: list the conversations, fetch each unread one's history, and
+// emit 'slsk-chat-message' for every genuinely-new incoming message. The last-seen
+// message id per user lives in a side-store so a restart does not re-announce old
+// messages; the very first sight of a user adopts the watermark silently (see
+// slskChat.diffIncoming). Skips entirely when slskd is down — silence is not a new
+// message. Only conversations slskd reports as having unread messages are fetched,
+// so a quiet peer list costs one request, not one-per-user.
+async function slskChatPollOnce() {
+  if (slskdIsThrottled()) return
+  let rows = null
+  try {
+    rows = await slskdFetch('GET', '/conversations')
+  } catch (_) {
+    return  // slskd unreachable: leave the watermarks untouched.
+  }
+  if (!Array.isArray(rows)) return
+  const seen = { ...(sideStores.slskChatSeen.get() || {}) }
+  let changed = false
+  for (const row of rows) {
+    const username = String((row && row.username) || '').trim()
+    if (!username) continue
+    const known = Object.prototype.hasOwnProperty.call(seen, username)
+    // A user we already track only needs a fetch when they have unread messages;
+    // a user we have never seen must be fetched once to establish the watermark.
+    const hasUnread = Number(row && row.unAcknowledgedMessageCount) > 0
+    if (known && !hasUnread) continue
+    let convo = null
+    try {
+      convo = await slskdFetch('GET', `/conversations/${encodeURIComponent(username)}`)
+    } catch (_) { continue }
+    const raw = convo && Array.isArray(convo.messages) ? convo.messages : []
+    const prev = known ? seen[username] : null
+    const { fresh, lastSeenId } = slskChat.diffIncoming(raw, prev)
+    if (seen[username] !== lastSeenId) { seen[username] = lastSeenId; changed = true }
+    for (const m of fresh) {
+      safeSend('slsk-chat-message', { username: m.username || username, message: m.message, at: m.at })
+    }
+  }
+  if (changed) sideStores.slskChatSeen.set(seen)
+}
+
+function slskChatPollStart() {
+  if (_chatTimer) return
+  _chatTimer = setInterval(() => { slskChatPollOnce().catch(() => {}) }, CHAT_POLL_MS)
+  if (_chatTimer.unref) _chatTimer.unref()
+  // Prime once so the first poll establishes watermarks without waiting 30s — but
+  // only to seed, since a fresh user emits nothing on first sight.
+  slskChatPollOnce().catch(() => {})
+}
 
 // Downloading a folder out of one user's library gives the scheduler exactly
 // one source per file, so it can never spread or recover — it is stuck with

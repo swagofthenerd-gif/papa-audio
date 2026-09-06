@@ -438,6 +438,10 @@
           <label class="mcs-set-row">Volume boost (+30%)
             <input type="checkbox" id="pb-boost">
           </label>
+          <label class="mcs-set-row" id="pb-bitperfect-row">Bit-perfect output
+            <input type="checkbox" id="pb-bitperfect">
+          </label>
+          <div class="mcs-set-hint" id="pb-bitperfect-hint">Disables EQ, volume leveling and crossfade — the file's samples reach your DAC untouched.</div>
           <label class="mcs-set-row">Apply ReplayGain (even out album loudness)
             <input type="checkbox" id="pb-replaygain-apply">
           </label>
@@ -1133,6 +1137,8 @@
 <script src="home-recap.js"></script>
 <script src="wrapped-ui.js"></script>
 <script src="slsk-shop-ui.js"></script>
+<script src="anime-numbering.js"></script>
+<script src="slsk-chat-model.js"></script>
 <script src="palette.js"></script>
 <script src="renderer.js"></script>
 </body>

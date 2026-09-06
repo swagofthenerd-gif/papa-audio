@@ -164,6 +164,25 @@ test('gapless off means gapless off', () => {
   assert.ok(args.includes('--gapless-audio=no'))
 })
 
+// ── Bit-perfect output (roadmap #65) ──────────────────────────────────────────
+test('bit-perfect caps volume-max at 100 and opens the device exclusively', () => {
+  const args = new MpvEngine({ config: { bitPerfect: true } })._args('/tmp/x.sock')
+  assert.ok(args.includes('--volume-max=100'), 'no software gain above unity')
+  assert.ok(!args.includes('--volume-max=130'), 'the 130% headroom is dropped')
+  assert.ok(args.includes('--audio-exclusive=yes'), 'exclusive even without a hand-picked device')
+})
+
+test('bit-perfect adds no --af filter chain (eq resolved to null upstream)', () => {
+  const args = new MpvEngine({ config: { bitPerfect: true, eq: null } })._args('/tmp/x.sock')
+  assert.ok(!args.some(a => a.startsWith('--af=')), 'the samples reach the DAC untouched')
+})
+
+test('bit-perfect off keeps the normal 130 ceiling and no exclusive flag', () => {
+  const args = new MpvEngine({ config: { bitPerfect: false } })._args('/tmp/x.sock')
+  assert.ok(args.includes('--volume-max=130'))
+  assert.ok(!args.includes('--audio-exclusive=yes'))
+})
+
 // mpv rejects seeks between start-file and playback-restart, so the engine
 // must defer them until the file is seekable.
 test('seek after load is deferred until playback-restart', async () => {

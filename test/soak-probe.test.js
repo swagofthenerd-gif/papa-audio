@@ -400,7 +400,13 @@ test('the number of global listener registrations is a deliberate budget', () =>
   // removed in close()) moved to slsk-shop-ui.js, and globalListenerSites now
   // scans that file too. The site count is unchanged — it just lives in a
   // different file — so the number holds and coverage is complete.
-  assert.strictEqual(sites.inFunction.length, 23,
+  // 24: W7 (roadmap #44) added the anime absolute-numbering override dialog's
+  //     one document keydown (_openAnimeNumberingDialog's onKey, Escape-to-close,
+  //     removed in its close()) — the same paired add-on-open/remove-on-close
+  //     shape as the saved-libraries and tour modals above, not a standing
+  //     listener. The chat panel (roadmap #55) adds none: it closes via its own
+  //     button, not a document-level key handler.
+  assert.strictEqual(sites.inFunction.length, 24,
     'a global listener was added inside a function. Nothing collects a listener ' +
     'on document or window, so make sure that function cannot run twice — this ' +
     'app has shipped that exact leak three times (items 73, 74, 257) — then ' +
@@ -423,7 +429,9 @@ test('no function registers more than one global listener of the same type', () 
   // add-on-open/remove-on-close modal handler (the saved-libraries modal's
   // Escape close, App §60; the first-run tour's Escape dismiss, App §61) — not
   // standing listeners.
-  assert.ok(seen.get('document:keydown') <= 10, 'document keydown registrations: ' + seen.get('document:keydown'))
+  // Cap raised 10→11 in W7: the anime numbering override dialog's Escape-close
+  // keydown (roadmap #44), the same paired add-on-open/remove-on-close shape.
+  assert.ok(seen.get('document:keydown') <= 11, 'document keydown registrations: ' + seen.get('document:keydown'))
   assert.ok((seen.get('window:online') || 0) <= 1)
   assert.ok((seen.get('window:offline') || 0) <= 1)
 })

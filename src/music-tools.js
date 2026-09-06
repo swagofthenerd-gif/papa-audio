@@ -965,6 +965,15 @@
     var override = opts.playlistOverride
     var sameAlbum = !!opts.sameAlbumAdjacent
 
+    // 0. Bit-perfect (roadmap #65) wins over everything — even an explicit playlist
+    //    crossfade override. Crossfade mixes two streams, which can never be
+    //    bit-perfect, so while the mode is on every transition is gapless. This is
+    //    the highest-precedence rule; the audiophile path is not something a
+    //    per-playlist setting gets to defeat.
+    if (opts.bitPerfect === true) {
+      return { mode: 'gapless', crossfadeSecs: globalSecs > 0 ? globalSecs : 4 }
+    }
+
     // 1. An explicit playlist override ('off' or a positive number) is the user's
     //    choice for this playlist and wins, same-album or not. 'inherit'/null falls
     //    through to the album/global rules.

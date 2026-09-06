@@ -301,6 +301,13 @@ contextBridge.exposeInMainWorld('api', {
   // Upload awareness (roadmap #54): what you're sharing back right now.
   slskUploadStats:       ()  => ipcRenderer.invoke('slsk-upload-stats'),
   onSlskUploadActivity:  (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('slsk-upload-activity', h); return () => ipcRenderer.removeListener('slsk-upload-activity', h) },
+  // Peer chat (roadmap #55). List/history/send over slskd's /conversations API,
+  // and a dedicated subscriber for the 30s poll's new-incoming-message event. The
+  // renderer chat UI (parallel work) consumes these.
+  slskChatList:          ()  => ipcRenderer.invoke('slsk-chat-list'),
+  slskChatHistory:       (p) => ipcRenderer.invoke('slsk-chat-history', p),
+  slskChatSend:          (p) => ipcRenderer.invoke('slsk-chat-send', p),
+  onSlskChatMessage:     (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('slsk-chat-message', h); return () => ipcRenderer.removeListener('slsk-chat-message', h) },
   slskRespreadBacklog:   (p) => ipcRenderer.invoke('slsk-respread-backlog', p),
   slskUnbenchPeers:      ()  => ipcRenderer.invoke('slsk-unbench-peers'),
   // Restamp a whole album group's dispatch priority (#52). { username, folderName,
@@ -384,6 +391,10 @@ contextBridge.exposeInMainWorld('api', {
   // Global crossfade (#24): { seconds }, 0 = off. Drives all track transitions
   // except same-album gapless and a per-playlist override.
   playerSetCrossfade:(c) => ipcRenderer.invoke('player-set-crossfade', c),
+  // Bit-perfect output (#65): { on }, default off. Rebuilds the engine with
+  // exclusive device access and no ReplayGain/EQ/crossfade; returns the resolved
+  // settings so the UI can reflect the enforced gapless/no-EQ state + note.
+  playerSetBitPerfect:(a) => ipcRenderer.invoke('player-set-bit-perfect', a),
   playerListDevices: ()  => ipcRenderer.invoke('player-list-devices'),
   eqInfo:            ()  => ipcRenderer.invoke('eq-info'),
   eqPreset:          (n) => ipcRenderer.invoke('eq-preset', n),

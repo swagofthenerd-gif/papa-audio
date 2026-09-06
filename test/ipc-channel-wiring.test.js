@@ -95,6 +95,10 @@ test('every channel main sends has something that actually listens', () => {
     ...(/onSlskSavedUsersChange\(/.test(ALL_RENDERER) ? ['slsk-saved-users-changed'] : []),
     ...(/onSlskUploadActivity\(/.test(ALL_RENDERER) ? ['slsk-upload-activity'] : []),
     ...(/onSlskVerifyDone\(/.test(ALL_RENDERER) ? ['slsk-verify-done'] : []),
+    // Peer messaging (roadmap #55): the renderer subscribes by the dedicated
+    // preload name onSlskChatMessage, not window.api.on, so it is matched by
+    // name like the other dedicated Soulseek subscribers.
+    ...(/onSlskChatMessage\(/.test(ALL_RENDERER) ? ['slsk-chat-message'] : []),
   ])
   // Channels main sends that nothing listens for, on purpose or by history.
   // Listed rather than ignored: the point of this test is that a NEW dead
@@ -125,6 +129,9 @@ test('every channel main sends has something that actually listens', () => {
     // preload exposes onSlskVerifyDone (roadmap #49); the Soulseek UI wiring for
     // the "verified" badge lands in the parallel Wave-2 UI work, so main + the
     // bridge land first.
+    // NOTE: slsk-chat-message (roadmap #55) is NOT listed here any more — the W7
+    // peer-chat UI wired the renderer listener (onSlskChatMessage, added to the
+    // `heard` set above), so the channel is genuinely handled end to end.
   }
   const unheard = [...sentChannels]
     .filter(c => !heard.has(c) && !(c in NOT_FOR_THE_RENDERER) && !(c in DELIBERATELY_UNHANDLED))

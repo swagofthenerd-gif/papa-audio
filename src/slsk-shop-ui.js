@@ -38,6 +38,7 @@
     const esc                = deps.esc
     const hideContextMenu    = deps.hideContextMenu
     const navigate           = deps.navigate
+    const openSlskChat       = deps.openSlskChat
     const playCurrentTrack   = deps.playCurrentTrack
     const showSnackbar       = deps.showSnackbar
     const slsk               = deps.slsk
@@ -66,6 +67,7 @@
         <button class="slsh-mode-btn" data-mode="shelves" role="tab" title="The record shop — albums, upgrades and shelves">Shelves</button>
         <button class="slsh-mode-btn" data-mode="folders" role="tab" title="The raw file tree — breadcrumbs, subtree download, surround finder">Folders</button>
       </div>
+      <button class="slskx-msg" id="slskx-msg" title="Message this user">✉</button>
       <button class="slskx-star" id="slskx-star" title="Save this library">☆</button>
       <button class="modal-close-btn" id="slsk-lib-close" aria-label="Close" title="Close">✕</button>
     </div>
@@ -1264,6 +1266,19 @@
       setTimeout(tick, 2000)
     }
     setTimeout(tick, 800)
+  }
+
+  // Message this user (roadmap #55): opens the renderer's chat panel straight
+  // into this peer's thread. Feature-detected — hidden when the build has no
+  // chat contract (openSlskChat only wired when window.api.slskChatSend exists),
+  // so the explorer never shows a dead button.
+  const msgBtn = dlg.querySelector('#slskx-msg')
+  if (msgBtn) {
+    if (typeof openSlskChat === 'function') {
+      msgBtn.addEventListener('click', () => { try { openSlskChat(username) } catch (_) {} })
+    } else {
+      msgBtn.style.display = 'none'
+    }
   }
 
   const starBtn = dlg.querySelector('#slskx-star')

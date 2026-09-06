@@ -1215,27 +1215,26 @@ test('the online-state channel is reachable from the renderer as a subscription'
 // reads is actually populated and every transport control forwards to the
 // renderer — the wiring is source-shape asserted the same way the video handlers
 // are, since main.js cannot be required outside Electron.
-test('MPRIS metadata carries title, album, artist, artwork and length', () => {
+// The metadata shape now lives in the pure src/mpris-metadata module (buildMetadata),
+// which updateMpris calls. The wiring test pins that main delegates to it; the
+// shape itself is asserted against the module in test/mpris-metadata.test.js.
+test('MPRIS metadata is built by the pure module with the applet objectPath', () => {
   const start = MAIN.indexOf('function updateMpris(')
-  const body = MAIN.slice(start, MAIN.indexOf('\n}', start))
-  assert.match(body, /'mpris:length': Math\.round\(\(data\.duration \|\| 0\) \* 1e6\)/, 'duration must be reported')
-  assert.match(body, /'mpris:artUrl': _mprisArtUrl\(data\.artPath\)/, 'artwork must be sent')
-  assert.match(body, /'xesam:title'/)
-  assert.match(body, /'xesam:album'/)
-  assert.match(body, /'xesam:artist'/)
+  const body = MAIN.slice(start, MAIN.indexOf('\n}\n', start))
+  assert.match(body, /mprisPlayer\.metadata = mprisMeta\.buildMetadata\(data, \{/, 'metadata comes from the pure builder')
+  assert.match(body, /objectPath: \(p\) => mprisPlayer\.objectPath\(p\)/, 'the live D-Bus object-path helper is injected')
 })
+
+const meta = require('../src/mpris-metadata')
 
 // A streamed track's cover is an http URL; prefixing file:// produced
 // "file://https://…" which KDE could not load. Local paths still get file://.
 test('a streamed http cover is sent as-is, a local path gets file://', () => {
-  const start = MAIN.indexOf('function _mprisArtUrl(')
-  const body = MAIN.slice(start, MAIN.indexOf('\n}', start))
-  assert.match(body, /if \(!artPath\) return ''/, 'no cover is an empty artUrl, not "file://"')
-  assert.match(body, /if \(\/\^https\?:\\\/\\\/\/\.test\(artPath\)\) return artPath/, 'an http cover passes through unchanged')
-  assert.match(body, /return 'file:\/\/' \+ encodeURI\(artPath\)/, 'a local path still gets the file scheme')
-  // The old bug: the http case being wrapped in file://.
-  assert.ok(!/'file:\/\/' \+ encodeURI\(data\.artPath\)/.test(MAIN),
-    'the old unconditional file:// prefix must be gone')
+  assert.strictEqual(meta.artUrl(''), '', 'no cover is an empty artUrl, not "file://"')
+  assert.strictEqual(meta.artUrl('https://img.example/a.jpg'), 'https://img.example/a.jpg',
+    'an http cover passes through unchanged')
+  assert.strictEqual(meta.artUrl('/mnt/data/MUSIC/a b.jpg'), 'file:///mnt/data/MUSIC/a%20b.jpg',
+    'a local path still gets the file scheme and is URI-encoded')
 })
 
 test('position and duration are reported to MPRIS with drift interpolation', () => {
@@ -1244,8 +1243,26 @@ test('position and duration are reported to MPRIS with drift interpolation', () 
   const init = MAIN.slice(MAIN.indexOf('function initMpris('), MAIN.indexOf('function updateMpris('))
   assert.match(init, /mprisPlayer\.getPosition = \(\) =>/, 'the position getter must exist')
   assert.match(init, /_mprisPos\.playing \? \(Date\.now\(\) - _mprisPos\.at\) \/ 1000 : 0/, 'drift only while playing')
-  const upd = MAIN.slice(MAIN.indexOf('function updateMpris('), MAIN.indexOf('function updateMpris(') + 900)
-  assert.match(upd, /_mprisPos = \{ position: data\.position \|\| 0, at: Date\.now\(\), playing: !!data\.playing \}/)
+  const upd = MAIN.slice(MAIN.indexOf('function updateMpris('), MAIN.indexOf('\n}\n', MAIN.indexOf('function updateMpris(')))
+  assert.match(upd, /const next = \{ position: data\.position \|\| 0, at: Date\.now\(\), playing: !!data\.playing \}/)
+  assert.match(upd, /_mprisPos = next/)
+})
+
+// roadmap #20 (b): a real seek raises the Seeked D-Bus signal so the applet
+// scrubber jumps; a normal position tick does not.
+test('MPRIS raises Seeked on a genuine seek, delegating the discontinuity test', () => {
+  const upd = MAIN.slice(MAIN.indexOf('function updateMpris('), MAIN.indexOf('\n}\n', MAIN.indexOf('function updateMpris(')))
+  assert.match(upd, /mprisMeta\.isSeek\(_mprisPos, next\)/, 'a jump is told apart from playback drift')
+  assert.match(upd, /mprisPlayer\.seeked\(Math\.round\(next\.position \* 1e6\)\)/, 'the signal carries the new position in microseconds')
+})
+
+// roadmap #20 (c): capability flags are set from the queue/track, not left true.
+test('MPRIS capability flags are derived per track, not left always-true', () => {
+  const upd = MAIN.slice(MAIN.indexOf('function updateMpris('), MAIN.indexOf('\n}\n', MAIN.indexOf('function updateMpris(')))
+  assert.match(upd, /const caps = mprisMeta\.capabilities\(data\)/)
+  assert.match(upd, /mprisPlayer\.canSeek = caps\.canSeek/)
+  assert.match(upd, /mprisPlayer\.canGoNext = caps\.canGoNext/)
+  assert.match(upd, /mprisPlayer\.canGoPrevious = caps\.canGoPrevious/)
 })
 
 test('every MPRIS transport control forwards to the renderer', () => {

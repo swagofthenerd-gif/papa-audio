@@ -359,3 +359,14 @@ test('an inheriting playlist falls through to the album/global rules', () => {
     T.resolveTransitionCrossfade({ crossfadeSeconds: 6, playlistOverride: 'inherit' }),
     { mode: 'crossfade', crossfadeSecs: 6 })
 })
+
+test('bit-perfect forces gapless over everything, even a playlist crossfade override (#65)', () => {
+  // Highest precedence: the audiophile path is not something a per-playlist
+  // crossfade gets to defeat — crossfade mixes two streams, never bit-perfect.
+  assert.deepEqual(
+    T.resolveTransitionCrossfade({ crossfadeSeconds: 6, playlistOverride: 8, bitPerfect: true }),
+    { mode: 'gapless', crossfadeSecs: 6 })
+  assert.deepEqual(
+    T.resolveTransitionCrossfade({ crossfadeSeconds: 0, bitPerfect: true }),
+    { mode: 'gapless', crossfadeSecs: 4 })
+})

@@ -86,6 +86,11 @@ class MpvEngine extends EventEmitter {
       gapless: true,
       audioChannels: 'auto',
       eq: defaultSettings(),
+      // Bit-perfect output (roadmap #65). When true the spawn args drop every
+      // sample-altering path — see _args. Off by default; main resolves the store
+      // key and the incompatible-feature precedence in src/bit-perfect.js before
+      // it ever reaches here.
+      bitPerfect: false,
       ...opts.config,
     }
     this._spawnFn = opts.spawnFn || spawn
@@ -142,7 +147,10 @@ class MpvEngine extends EventEmitter {
       // gapless-audio is set to. This is the flag that actually removes the gap.
       '--prefetch-playlist=yes',
       `--audio-channels=${channelsValue(this.config.audioChannels)}`,
-      '--volume-max=130',
+      // Bit-perfect caps the ceiling at unity (100): any software gain above 100%
+      // scales samples, which the mode exists to avoid. The normal path keeps the
+      // 130% headroom the volume map relies on.
+      this.config.bitPerfect ? '--volume-max=100' : '--volume-max=130',
       '--ytdl-format=bestaudio',
       '--cache=yes', '--cache-secs=30', '--demuxer-max-bytes=32MiB', '--demuxer-readahead-secs=30',
     ]
@@ -151,9 +159,17 @@ class MpvEngine extends EventEmitter {
     // burns all three respawns inside a couple of seconds.
     if (this.config.outputMode === 'exclusive' && this.config.alsaDevice && !this._deviceFallback) {
       a.push(`--audio-device=${this.config.alsaDevice}`, '--audio-exclusive=yes')
+    } else if (this.config.bitPerfect && !this._deviceFallback) {
+      // Bit-perfect still wants exclusive access even without a hand-picked device,
+      // so the OS mixer does not resample to a shared rate. The default device is
+      // opened exclusively. (A device fault falls back to shared, since exclusive
+      // on a vanished device only burns respawns.)
+      a.push('--audio-exclusive=yes')
     }
     // Passing the EQ at spawn time keeps it applied across the respawn and
     // restart paths, which rebuild the process rather than reusing the socket.
+    // Bit-perfect resolves eq to null upstream, so buildAfGraph returns '' and no
+    // --af filter chain is added — the samples reach the DAC untouched.
     const af = buildAfGraph(this.config.eq)
     if (af) a.push(`--af=${af}`)
     return a

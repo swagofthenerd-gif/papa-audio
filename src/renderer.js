@@ -7773,6 +7773,103 @@ function _bindDubControl() {
   })
 }
 
+// Anime absolute-numbering override affordance (roadmap #44). A small button in
+// the anime controls row, next to Dub, opening the compact dialog below. It
+// exists only for anime entries and only when the storage module loaded; when an
+// override is already set the button shows the start number so it reads as
+// "active" rather than hiding a setting that is silently changing the request.
+function _numberingControl(d) {
+  const N = (typeof window !== 'undefined' && window.PapaAnimeNumbering) || null
+  if (!N || !d || d.id == null) return ''
+  const startAbs = N.get(window.PapaLocal, d.id)
+  const label = startAbs != null ? 'Numbering · from ' + startAbs : 'Numbering…'
+  const title = startAbs != null
+    ? 'This entry’s episode 1 is treated as absolute episode ' + startAbs
+    : 'Fix absolute episode numbering for this anime'
+  return '<button class="mcs-set-btn video-numbering-btn" id="video-numbering-btn" type="button"' +
+    (startAbs != null ? ' data-active="1"' : '') +
+    ' title="' + esc(title) + '">' + esc(label) + '</button>'
+}
+
+function _bindNumberingControl(d) {
+  document.getElementById('video-numbering-btn')?.addEventListener('click', function () {
+    _openAnimeNumberingDialog(d)
+  })
+}
+
+// The compact override dialog: one start-number input plus Save / Clear. Matches
+// the mg-confirm modal shell used elsewhere (escape, backdrop-click and Enter
+// all close/submit). Persists per anilistId through PapaAnimeNumbering, then
+// re-renders the controls so the button label and any in-flight source list
+// reflect the new numbering immediately.
+function _openAnimeNumberingDialog(d) {
+  const N = (typeof window !== 'undefined' && window.PapaAnimeNumbering) || null
+  if (!N || !d || d.id == null) return
+  document.getElementById('anime-numbering-modal')?.remove()
+  const current = N.get(window.PapaLocal, d.id)
+  const dlg = document.createElement('div')
+  dlg.id = 'anime-numbering-modal'
+  dlg.className = 'modal-overlay'
+  dlg.innerHTML = '<div class="modal-box mg-confirm-box">' +
+    '<div class="modal-header-row">' +
+      '<div class="modal-title">Episode numbering</div>' +
+      '<button class="modal-close-btn" id="anm-x" aria-label="Close" title="Close">✕</button>' +
+    '</div>' +
+    '<div class="mg-confirm-body">' +
+      '<label class="sq-label" for="anm-input">This entry’s episode 1 is actually absolute episode</label>' +
+      '<input id="anm-input" class="sq-name-input" type="number" min="1" step="1" ' +
+        'placeholder="e.g. 65" value="' + (current != null ? esc(current) : '') + '">' +
+      '<div class="mcs-set-hint" style="margin-top:8px">Fansub groups often number a continuing season absolutely. Set the real episode number this entry starts at, and every episode here is shifted to match the releases.</div>' +
+    '</div>' +
+    '<div class="mg-confirm-actions">' +
+      '<button class="mg-btn" id="anm-clear">Clear</button>' +
+      '<button class="mg-btn" id="anm-save">Save</button>' +
+    '</div></div>'
+  document.body.appendChild(dlg)
+  const input = dlg.querySelector('#anm-input')
+
+  function close() {
+    dlg.remove()
+    document.removeEventListener('keydown', onKey)
+  }
+  function onKey(e) { if (e.key === 'Escape') close() }
+  document.addEventListener('keydown', onKey)
+
+  function refresh() {
+    // Repaint the controls so the button reflects the change, then reload
+    // sources so the next fetch uses the new number. Guarded to the still-open
+    // detail page for this same entry.
+    if (_videoDetail && _videoDetail.type === 'anime' && _videoDetail.d && String(_videoDetail.d.id) === String(d.id)) {
+      _renderVideoControls('anime')
+      _loadVideoSources(_videoDetailTicket, ++_videoSeasonTicket)
+    }
+  }
+  function save() {
+    const stored = N.set(window.PapaLocal, d.id, input.value)
+    close()
+    showSnackbar(stored != null
+      ? 'Numbering set — episode 1 is absolute ' + stored
+      : 'Numbering cleared')
+    refresh()
+  }
+  function clearIt() {
+    N.clear(window.PapaLocal, d.id)
+    close()
+    showSnackbar('Numbering cleared')
+    refresh()
+  }
+
+  dlg.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { e.preventDefault(); save() }
+  })
+  dlg.addEventListener('click', function (e) { if (e.target === dlg) close() })
+  dlg.querySelector('#anm-x').addEventListener('click', close)
+  dlg.querySelector('#anm-clear').addEventListener('click', clearIt)
+  dlg.querySelector('#anm-save').addEventListener('click', save)
+  input.focus()
+  input.select()
+}
+
 // Apply a show's remembered dub/sub preference to the detail page (roadmap #32).
 // Reads the Wave-4 track-memory contract when present; a remembered 'dub' checks
 // the toggle and switches the default source language, 'sub' the opposite. The
@@ -7951,8 +8048,9 @@ function _renderVideoControls(type) {
       : '<label class="video-control">Episode <input class="mcs-set-input" id="video-episode-input" type="number" min="1" value="' + _videoState.episode + '" style="width:90px"></label>'
     box.innerHTML = '<div class="video-controls-row">' +
       _epResumeHtml(prog, numbers.length) +
-      _dubControl(_videoDetail.d) + grid +
+      _dubControl(_videoDetail.d) + _numberingControl(_videoDetail.d) + grid +
     '</div>'
+    _bindNumberingControl(_videoDetail.d)
     const setEp = function (ep) {
       _videoState.episode = ep
       _syncEpisodeSelection(ep)
@@ -8300,10 +8398,28 @@ function _videoStreamRequest() {
   // Once something is playing, its language is the better signal: a dubbed
   // source picked straight from the list never touches the Dub checkbox.
   const wantDub = _playing.dub != null ? _playing.dub : !_videoState.sub
-  return Object.assign(base, {
+  const req = Object.assign(base, {
     anilistId: d.id, titles: d.titles || null, episode: _videoState.episode,
     sub: !wantDub, dub: wantDub,
   })
+  // Anime absolute-numbering override (roadmap #44). When the viewer has stated
+  // "episode 1 is really absolute N" for this entry, PapaAnimeNumbering rewrites
+  // the request: it shifts the episode to the absolute number and drops
+  // anilistId so main's automatic chain walk cannot overwrite it. Feature-
+  // detected and a no-op when there is no override, so the automatic path (or
+  // the plain seasonal number) is unchanged for every other title.
+  return _applyAnimeNumbering(req)
+}
+
+// Rewrite a stream request through the numbering override if one is stored for
+// its anilistId. Thin, feature-detected wrapper so _videoStreamRequest stays
+// readable and the same apply is reused anywhere a request is built.
+function _applyAnimeNumbering(req) {
+  const N = (typeof window !== 'undefined' && window.PapaAnimeNumbering) || null
+  if (!N || !req || req.type !== 'anime' || req.anilistId == null) return req
+  const startAbs = N.get(window.PapaLocal, req.anilistId)
+  if (startAbs == null) return req
+  return N.applyToRequest(req, startAbs)
 }
 
 // ── Sources sort (display only) ─────────────────────────────────────────────
@@ -20488,6 +20604,17 @@ async function initPlaybackSettings() {
   $('pb-replaygain').value = cfg.replaygain
   $('pb-channels').value = cfg.channels
   $('pb-boost').checked = !!cfg.boost
+  // Bit-perfect output (roadmap #3 W7): the checkbox reflects the saved state
+  // when the backend reports one (cfg.bitPerfect / cfg.bitperfect), and the row
+  // only exists when the backend can honour it. On an older backend without the
+  // playerSetBitPerfect IPC the row is hidden rather than shown as a dead toggle.
+  if ($('pb-bitperfect')) {
+    const bpSupported = !!(window.api && typeof window.api.playerSetBitPerfect === 'function')
+    const bpRow = $('pb-bitperfect-row'), bpHint = $('pb-bitperfect-hint')
+    if (bpRow) bpRow.style.display = bpSupported ? '' : 'none'
+    if (bpHint) bpHint.style.display = bpSupported ? '' : 'none'
+    $('pb-bitperfect').checked = !!(cfg.bitPerfect != null ? cfg.bitPerfect : cfg.bitperfect)
+  }
   if ($('pb-replaygain-apply')) $('pb-replaygain-apply').checked = !!cfg.replaygainApply
   $('pb-device-row').style.display = cfg.outputMode === 'exclusive' ? '' : 'none'
   $('pb-cf-row').style.display = cfg.mode === 'crossfade' ? '' : 'none'
@@ -20562,6 +20689,18 @@ async function initPlaybackSettings() {
   }
   $('pb-channels').onchange = e => apply({ channels: e.target.value })
   $('pb-boost').onchange = e => apply({ boost: e.target.checked })
+  // Bit-perfect goes through its dedicated IPC (it also disables EQ / leveling /
+  // crossfade engine-side), feature-detected so an older backend simply has no
+  // control. The honest sublabel already warns those three go quiet.
+  if ($('pb-bitperfect') && window.api && typeof window.api.playerSetBitPerfect === 'function') {
+    $('pb-bitperfect').onchange = e => {
+      const on = e.target.checked
+      window.api.playerSetBitPerfect({ on })
+      showSnackbar(on
+        ? 'Bit-perfect on — EQ, volume leveling and crossfade are off'
+        : 'Bit-perfect off')
+    }
+  }
   if ($('pb-replaygain-apply')) $('pb-replaygain-apply').onchange = e => {
     apply({ replaygainApply: e.target.checked })
     showSnackbar(e.target.checked ? 'ReplayGain on — quiet and loud tracks will be evened out' : 'ReplayGain off')
@@ -24545,6 +24684,11 @@ async function showSlskUserExplorer(username) {
     _mgConfirm, _scheduleLibRescan, _slskCardDownloads, _slskCardKey,
     _slskCardProgress, _slskDirQuality, _slskEnqueue, esc, hideContextMenu,
     navigate, playCurrentTrack, showSnackbar, slsk, startPreview, state,
+    // Peer messaging (roadmap #55): only threaded through when the build can
+    // actually message, so the explorer's ✉ hides itself otherwise.
+    openSlskChat: (window.api && typeof window.api.slskChatSend === 'function')
+      ? function (u) { if (state.currentPage !== 'soulseek') navigate('soulseek'); _openSlskChatPanel(u) }
+      : undefined,
   })
 }
 
@@ -29393,6 +29537,10 @@ function renderSoulseekHub() {
       // slsk-upload-activity listener.
       '<span class="slsk-hub-sharing" id="slsk-hub-sharing" title="What you are sharing back on Soulseek"></span>' +
       '<button class="slsk-hub-manage" id="slsk-hub-saved" title="Manage saved libraries">★ Saved libraries</button>' +
+      // Peer messaging (roadmap #55). Opens the chat panel; the badge shows the
+      // total unread across every conversation and is kept live by the
+      // onSlskChatMessage listener. Feature-detected in _renderHubMessagesBtn.
+      '<button class="slsk-hub-manage slsk-hub-messages" id="slsk-hub-messages" title="Messages from other Soulseek users">✉ Messages<span class="slsk-msg-badge" id="slsk-hub-msg-badge" hidden></span></button>' +
     '</div>' +
     '<div class="slsk-hub-searchbar">' +
       '<svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>' +
@@ -29433,7 +29581,9 @@ function renderSoulseekHub() {
   input?.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); runHubSearch() } })
 
   document.getElementById('slsk-hub-saved')?.addEventListener('click', function () { showSlskSavedUsers() })
+  document.getElementById('slsk-hub-messages')?.addEventListener('click', function () { _openSlskChatPanel() })
   document.getElementById('slsk-hub-wishlist-runall')?.addEventListener('click', _slskRunWishlistAll)
+  _renderHubMessagesBtn()
 
   bindSlskSearchEvents(slsk.lastQuery || '')
 
@@ -29714,6 +29864,283 @@ function _slskBindUploadActivity() {
   })
 }
 
+// ── Soulseek peer messaging (roadmap #55) ───────────────────────────────────
+// A slide-panel (the queue-panel pattern) with a conversation list, a thread
+// view of in/out bubbles, and a send box. All ordering, unread counts and
+// de-duplication are decided by PapaSlskChatModel; this half is the painter, the
+// IPC wiring, the toast and the read-mark persistence.
+//
+// Messages live only in memory for the session (the daemon is the store of
+// record); read-marks — the newest `at` the user has seen per peer — persist in
+// PapaLocal so a reopened app does not re-badge everything already read.
+var _slskChat = {
+  messages: [],            // flat { username, message, at, direction } list
+  bound: false,
+  open: false,
+  active: null,            // username of the open thread, or null on the list
+  loadedHistory: {},       // usernames whose history has been fetched this session
+}
+var _SLSK_CHAT_READ_KEY = 'papa-slsk-chat-read'
+
+function _slskChatReadMap() {
+  try {
+    return (window.PapaLocal && window.PapaLocal.readObject)
+      ? window.PapaLocal.readObject(_SLSK_CHAT_READ_KEY) : {}
+  } catch (_) { return {} }
+}
+function _slskChatMarkRead(username, thread) {
+  var M = window.PapaSlskChatModel
+  if (!M || username == null) return
+  var map = _slskChatReadMap()
+  var key = String(username).toLowerCase()
+  map[key] = M.readMarkFor(thread, map[key])
+  try { if (window.PapaLocal && window.PapaLocal.write) window.PapaLocal.write(_SLSK_CHAT_READ_KEY, map) } catch (_) {}
+}
+
+function _slskChatThreads() {
+  var M = window.PapaSlskChatModel
+  if (!M) return []
+  return M.threads(_slskChat.messages, _slskChatReadMap())
+}
+function _slskChatUnread() {
+  var M = window.PapaSlskChatModel
+  if (!M) return 0
+  return M.totalUnread(_slskChat.messages, _slskChatReadMap())
+}
+
+// The hub's Messages button: only shown when the backend exposes the chat
+// contract, with a live unread badge. A build without slskChatSend has no way to
+// message, so the button hides rather than opening a dead panel.
+function _renderHubMessagesBtn() {
+  var btn = document.getElementById('slsk-hub-messages')
+  if (!btn) return
+  var supported = !!(window.api && typeof window.api.slskChatSend === 'function')
+  btn.style.display = supported ? '' : 'none'
+  if (supported) { _slskBindChat(); _paintChatBadge() }
+}
+
+function _paintChatBadge() {
+  var n = _slskChatUnread()
+  var badge = document.getElementById('slsk-hub-msg-badge')
+  if (badge) {
+    if (n > 0) { badge.textContent = n > 99 ? '99+' : String(n); badge.hidden = false }
+    else { badge.textContent = ''; badge.hidden = true }
+  }
+  // Also reflect on the panel's own list header if it is open.
+  var panelBadge = document.getElementById('slsk-chat-total-unread')
+  if (panelBadge) {
+    if (n > 0) { panelBadge.textContent = n > 99 ? '99+' : String(n); panelBadge.hidden = false }
+    else panelBadge.hidden = true
+  }
+}
+
+// Subscribe once to incoming messages. New messages fold into the flat list
+// (de-duplicating a local echo), repaint whatever is on screen, and — when the
+// panel is closed — raise a click-to-open toast. Feature-detected on
+// onSlskChatMessage so an older backend simply never wires this.
+function _slskBindChat() {
+  if (_slskChat.bound) return
+  if (!window.api || typeof window.api.onSlskChatMessage !== 'function') return
+  _slskChat.bound = true
+  window.api.onSlskChatMessage(function (msg) {
+    var M = window.PapaSlskChatModel
+    if (!M || !msg || msg.username == null) return
+    if (msg.direction == null) msg.direction = 'in'
+    _slskChat.messages = M.ingest(_slskChat.messages, msg)
+    if (_slskChat.open) {
+      if (_slskChat.active && String(_slskChat.active).toLowerCase() === String(msg.username).toLowerCase()) {
+        _renderChatThread(_slskChat.active)
+      } else {
+        _renderChatList()
+      }
+    } else if (msg.direction === 'in') {
+      // Panel closed: a click-to-open toast, not a silent badge bump alone.
+      var who = msg.username
+      showSnackbar(M.toastFor(msg), 'Open', function () {
+        if (state.currentPage !== 'soulseek') navigate('soulseek')
+        _openSlskChatPanel(who)
+      }, 6000)
+    }
+    _paintChatBadge()
+  })
+}
+
+// Open the chat panel, optionally straight into a peer's thread. Builds the
+// panel DOM once (queue-panel styling) and reuses it thereafter.
+function _openSlskChatPanel(username) {
+  if (!(window.api && typeof window.api.slskChatSend === 'function')) {
+    showSnackbar('Messaging is not available in this build'); return
+  }
+  _slskBindChat()
+  var panel = document.getElementById('slsk-chat-panel')
+  if (!panel) {
+    panel = document.createElement('div')
+    panel.id = 'slsk-chat-panel'
+    panel.className = 'queue-panel slsk-chat-panel'
+    document.body.appendChild(panel)
+  }
+  _slskChat.open = true
+  panel.classList.add('open')
+  if (username != null) _renderChatThread(username)
+  else _renderChatList()
+  _paintChatBadge()
+}
+
+function _closeSlskChatPanel() {
+  _slskChat.open = false
+  _slskChat.active = null
+  document.getElementById('slsk-chat-panel')?.classList.remove('open')
+}
+
+function _chatPanelHeader(titleHtml, withBack) {
+  return '<div class="queue-header slsk-chat-header">' +
+    (withBack
+      ? '<button class="slsk-chat-back" id="slsk-chat-back" title="All conversations" aria-label="Back">‹</button>'
+      : '') +
+    '<span class="queue-title">' + titleHtml + '</span>' +
+    '<button class="queue-close-btn" id="slsk-chat-close" aria-label="Close" title="Close">' +
+      '<svg viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>' +
+    '</button></div>'
+}
+
+// The conversation list: one row per peer, newest first, with an unread badge.
+function _renderChatList() {
+  var panel = document.getElementById('slsk-chat-panel')
+  if (!panel) return
+  _slskChat.active = null
+  var threads = _slskChatThreads()
+  var rows
+  if (!threads.length) {
+    rows = '<div class="slsk-hub-empty slsk-chat-empty">No conversations yet. ' +
+      'Open a message from an uploader, or use the ✉ button in someone’s library to say hello.</div>'
+  } else {
+    rows = threads.map(function (t) {
+      var last = t.last || {}
+      var preview = esc(String(last.message || '')).slice(0, 80)
+      return '<button class="queue-item slsk-chat-row" data-user="' + esc(t.username) + '">' +
+        '<span class="slsk-chat-row-main">' +
+          '<span class="qi-title slsk-chat-row-name">' + esc(t.username) + '</span>' +
+          '<span class="slsk-chat-row-preview">' + (last.direction === 'out' ? 'You: ' : '') + preview + '</span>' +
+        '</span>' +
+        (t.unread ? '<span class="slsk-msg-badge slsk-chat-row-badge">' + (t.unread > 99 ? '99+' : t.unread) + '</span>' : '') +
+      '</button>'
+    }).join('')
+  }
+  panel.innerHTML =
+    _chatPanelHeader('Messages<span class="slsk-msg-badge slsk-chat-total" id="slsk-chat-total-unread" hidden></span>', false) +
+    '<div class="queue-list slsk-chat-list">' + rows + '</div>'
+  panel.querySelector('#slsk-chat-close')?.addEventListener('click', _closeSlskChatPanel)
+  panel.querySelectorAll('.slsk-chat-row').forEach(function (r) {
+    r.addEventListener('click', function () { _renderChatThread(r.getAttribute('data-user')) })
+  })
+  _paintChatBadge()
+}
+
+// One conversation: in/out bubbles with timestamps and a send box. Opening it
+// marks the thread read (up to its newest message) and, once per session,
+// fetches the peer's history from the daemon so a reopened app is not blank.
+function _renderChatThread(username) {
+  var panel = document.getElementById('slsk-chat-panel')
+  if (!panel || username == null) return
+  _slskChat.active = username
+  var M = window.PapaSlskChatModel
+  var thread = M ? M.threads(_slskChat.messages, {}).find(function (t) {
+    return String(t.username).toLowerCase() === String(username).toLowerCase()
+  }) : null
+  _slskChatMarkRead(username, thread)
+
+  var bubbles = thread && thread.messages.length
+    ? thread.messages.map(function (m) {
+        var out = m.direction === 'out'
+        return '<div class="slsk-bubble ' + (out ? 'slsk-bubble-out' : 'slsk-bubble-in') + '">' +
+          '<span class="slsk-bubble-text">' + esc(String(m.message || '')) + '</span>' +
+          '<span class="slsk-bubble-time">' + esc(_fmtChatTime(m.at)) + '</span>' +
+        '</div>'
+      }).join('')
+    : '<div class="slsk-hub-empty slsk-chat-empty">No messages yet. Say hello.</div>'
+
+  panel.innerHTML =
+    _chatPanelHeader(esc(username), true) +
+    '<div class="queue-list slsk-chat-thread" id="slsk-chat-thread">' + bubbles + '</div>' +
+    '<form class="slsk-chat-send" id="slsk-chat-send">' +
+      '<input type="text" class="slsk-chat-input" id="slsk-chat-input" placeholder="Message ' + esc(username) + '…" autocomplete="off">' +
+      '<button type="submit" class="slsk-chat-send-btn" title="Send">Send</button>' +
+    '</form>'
+  panel.querySelector('#slsk-chat-close')?.addEventListener('click', _closeSlskChatPanel)
+  panel.querySelector('#slsk-chat-back')?.addEventListener('click', _renderChatList)
+  var form = panel.querySelector('#slsk-chat-send')
+  var input = panel.querySelector('#slsk-chat-input')
+  form?.addEventListener('submit', function (e) {
+    e.preventDefault()
+    _sendSlskChat(username, input.value)
+    input.value = ''
+    input.focus()
+  })
+  // Scroll to the newest message and focus the box, the way a chat should open.
+  var thr = panel.querySelector('#slsk-chat-thread')
+  if (thr) thr.scrollTop = thr.scrollHeight
+  input?.focus()
+
+  // Lazy history load, once per peer per session. Feature-detected; a build
+  // without slskChatHistory just shows the in-memory session.
+  if (!_slskChat.loadedHistory[String(username).toLowerCase()] &&
+      window.api && typeof window.api.slskChatHistory === 'function') {
+    _slskChat.loadedHistory[String(username).toLowerCase()] = true
+    window.api.slskChatHistory({ username: username }).then(function (res) {
+      var hist = Array.isArray(res) ? res : (res && Array.isArray(res.messages) ? res.messages : null)
+      if (!hist || !hist.length || !M) return
+      for (var i = 0; i < hist.length; i++) {
+        var h = hist[i]
+        if (h && h.direction == null) h.direction = 'in'
+        _slskChat.messages = M.ingest(_slskChat.messages, h)
+      }
+      _slskChatMarkRead(username, null)
+      if (_slskChat.open && String(_slskChat.active).toLowerCase() === String(username).toLowerCase()) {
+        _renderChatThread(username)
+      }
+      _paintChatBadge()
+    }).catch(function () { /* history is a convenience, never a blocker */ })
+  }
+}
+
+// Send, echoing the outgoing line locally so the thread updates immediately;
+// the daemon may also echo it back, which PapaSlskChatModel.ingest de-dupes.
+function _sendSlskChat(username, text) {
+  var body = String(text == null ? '' : text).trim()
+  if (!body || username == null) return
+  var M = window.PapaSlskChatModel
+  if (!(window.api && typeof window.api.slskChatSend === 'function')) {
+    showSnackbar('Messaging is not available in this build'); return
+  }
+  var echo = { username: username, message: body, at: Date.now(), direction: 'out' }
+  if (M) _slskChat.messages = M.ingest(_slskChat.messages, echo)
+  _slskChatMarkRead(username, null)
+  if (_slskChat.open && _slskChat.active != null &&
+      String(_slskChat.active).toLowerCase() === String(username).toLowerCase()) {
+    _renderChatThread(username)
+  }
+  _paintChatBadge()
+  window.api.slskChatSend({ username: username, message: body }).then(function (res) {
+    if (res && res.ok === false) showSnackbar('Could not send: ' + (res.error || 'unknown error'))
+  }).catch(function (e) {
+    showSnackbar('Could not send: ' + String((e && e.message) || e))
+  })
+}
+
+function _fmtChatTime(at) {
+  var n = Number(at)
+  if (!isFinite(n) || n <= 0) return ''
+  try {
+    var d = new Date(n)
+    var now = new Date()
+    var sameDay = d.toDateString() === now.toDateString()
+    return sameDay
+      ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      : d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' +
+        d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  } catch (_) { return '' }
+}
+
 // ── Soulseek friends sidebar ────────────────────────────────────────────────
 // Saved peers, sorted with whoever is reachable right now on top. Presence is
 // pushed from the main process; this only paints what it is told.
@@ -29824,5 +30251,9 @@ function initSlskFriends() {
 init()
 initSlskFriends()
 _slskBindWishlistHits()
+// Peer messaging (roadmap #55): subscribe at startup so an incoming message
+// raises its click-to-open toast even before the Soulseek hub has been opened.
+// Feature-detected — a build without the chat contract wires nothing.
+_slskBindChat()
 initDownloadScheduler()
 _selBindBar()
