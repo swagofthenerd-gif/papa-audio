@@ -2828,6 +2828,14 @@ h2.section-title { font-size:18px; font-weight:700; }
   background: var(--bg3, #202020); border-radius: 8px; padding: 10px;
   cursor: default; display: flex; flex-direction: column;
   transition: background .15s;
+  /* Huge libraries render thousands of image-rich cards; letting the
+     browser skip layout/paint for offscreen ones took a 7k-album scroll
+     from ~10fps to smooth (measured live vs Substrata's 438-album shop:
+     158ms avg frames → 31ms with this + the scroll-quiet art gate in
+     renderer.js). intrinsic-size ≈ card box so the scrollbar stays honest. */
+  content-visibility: auto;
+  contain-intrinsic-size: 172px 236px;
+  contain: layout paint style;
 }
 .slsh-rail-track .slsh-card { width: 168px; }
 .slsh-card:hover { background: #2a2a2a; }

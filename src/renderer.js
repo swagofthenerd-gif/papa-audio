@@ -22600,6 +22600,7 @@ async function showSlskUserExplorer(username) {
     shArtPump()
   }
   function shArtPump() {
+    if (shScrolling) return   // resume on the scroll lull (see the gate below)
     while (shArtInflight < SH_ART_MAX && shArtQueue.length) {
       const el = shArtQueue.shift()
       if (!el || !el.isConnected) continue
@@ -22632,20 +22633,69 @@ async function showSlskUserExplorer(username) {
     } catch (_) { shArtCache.set(key, '') }
     finally { shArtInProgress.delete(key) }
   }
-  // Swap the fetched cover into every on-screen card with this identity.
+  // Scroll-quiet gate. Fetching and painting covers WHILE the shopper scrolls
+  // is what made huge libraries lag: every landing ran a body-wide query and a
+  // layout-forcing insert mid-frame (measured: 158ms avg frames on a 438-album
+  // shop; 38ms with art off). All art work now waits for a 160ms scroll lull
+  // and paints drain in small rAF batches with the bitmap pre-decoded.
+  let shScrolling = false
+  let shScrollSettle = null
+  const shArtPaintQueue = []
+  shBody.addEventListener('scroll', () => {
+    shScrolling = true
+    clearTimeout(shScrollSettle)
+    shScrollSettle = setTimeout(() => {
+      shScrolling = false
+      shArtDrainPaints()
+      shArtPump()
+      if (shGridAppendPending) { shGridAppendPending = false; shGridAppend() }
+    }, 160)
+  }, { passive: true })
+  function shArtDrainPaints() {
+    if (shScrolling || !shArtPaintQueue.length) return
+    requestAnimationFrame(() => {
+      let n = 0
+      while (shArtPaintQueue.length && n < 4) {
+        const q = shArtPaintQueue.shift()
+        shArtPaintNow(q.key, q.artPath)
+        n++
+      }
+      if (shArtPaintQueue.length) shArtDrainPaints()
+    })
+  }
+  // Queue a paint; it lands immediately when idle, after the lull when not.
   function shArtPaint(key, artPath) {
+    shArtPaintQueue.push({ key, artPath })
+    shArtDrainPaints()
+  }
+  // Swap the fetched cover into every on-screen card with this identity.
+  function shArtPaintNow(key, artPath) {
     const src = /^https?:\/\//.test(artPath) ? artPath : `file://${artPath}`
     shBody.querySelectorAll(`.slsh-card-art[data-art-key="${CSS.escape(key)}"]`).forEach(el => {
       if (el.querySelector('img')) return
       const fb = el.querySelector('.slsh-card-art-fallback')
       const img = document.createElement('img')
-      img.alt = ''; img.loading = 'lazy'; img.decoding = 'async'
+      // NOT loading='lazy': lazy defers the browser's own load/decode until
+      // the card scrolls into view — putting decode cost back inside the
+      // scroll. We already viewport-gate via the observer and pre-decode
+      // below, so eager + pre-decoded is the smooth path.
+      img.alt = ''; img.decoding = 'async'
       img.onerror = () => { img.remove(); if (fb) fb.style.display = 'flex' }
       img.src = src
-      el.insertBefore(img, el.firstChild)
-      if (fb) fb.style.display = 'none'
-      // Once painted it is no longer a fetch target.
-      delete el.dataset.artKey
+      // decode() rasterises off the main thread so the insert below is
+      // paint-ready — no mid-scroll decode stall, no layout flash. If the
+      // shopper starts scrolling between decode and insert, requeue the
+      // paint for the next lull instead of mutating mid-frame.
+      const place = () => {
+        if (!el.isConnected || el.querySelector('img')) return
+        if (shScrolling) { el.dataset.artKey = key; shArtPaint(key, artPath); return }
+        el.insertBefore(img, el.firstChild)
+        if (fb) fb.style.display = 'none'
+        // Once painted it is no longer a fetch target.
+        delete el.dataset.artKey
+      }
+      if (img.decode) img.decode().then(place, () => {}) 
+      else place()
     })
   }
 
@@ -23034,9 +23084,14 @@ async function showSlskUserExplorer(username) {
     else shRenderGrid()
   }
   let shGridFlat = []
+  let shGridAppendPending = false
   function shGridAppend() {
     const grid = dlg.querySelector('#slsh-grid')
     if (!grid) return
+    // Parsing 120 cards of HTML mid-scroll is a frame-killer; wait for the
+    // lull (the scroll gate above re-calls us). The 600px sentinel margin
+    // means the shopper still never sees the bottom edge.
+    if (shScrolling) { shGridAppendPending = true; return }
     const slice = shGridFlat.slice(shGridRendered, shGridRendered + SLSH_CHUNK)
     const html = slice.map(item => item.header != null
       ? `<div class="slsh-letter" data-letter="${esc(item.header)}">${esc(item.header)}</div>`
