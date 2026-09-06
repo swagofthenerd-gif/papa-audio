@@ -54,5 +54,44 @@
     return total > 0 && bytes >= total
   }
 
-  return { sanitizeName, destPath, isComplete }
+  // Total bytes currently held by the kept-file list. A missing or non-numeric
+  // sizeBytes counts as zero rather than poisoning the sum with NaN — a stale
+  // entry whose file has gone should not make the quota check throw.
+  function usageBytes(entries) {
+    const list = Array.isArray(entries) ? entries : []
+    let sum = 0
+    for (const e of list) {
+      const n = Number(e && e.sizeBytes)
+      if (Number.isFinite(n) && n > 0) sum += n
+    }
+    return sum
+  }
+
+  // Gigabytes as the settings slider speaks them → bytes. 1 GB = 1e9 bytes here
+  // (decimal, matching how disk sizes are advertised), not 2^30 — the number the
+  // user typed should mean the number they expect on the drive label.
+  function quotaBytes(quotaGB) {
+    const gb = Number(quotaGB)
+    if (!Number.isFinite(gb) || gb <= 0) return 0
+    return Math.floor(gb * 1e9)
+  }
+
+  // Would keeping a file of `addBytes` push the list past its quota? Returns a
+  // verdict the handler turns straight into an answer: `ok` to proceed, plus the
+  // numbers a "you're using X of Y" message needs. A quota of 0 (unset or
+  // cleared) means no ceiling, so it always fits — the feature is opt-in on a
+  // real number, not a silent block at zero.
+  function quotaCheck(entries, quotaGB, addBytes) {
+    const limit = quotaBytes(quotaGB)
+    const used = usageBytes(entries)
+    const add = Math.max(0, Number(addBytes) || 0)
+    if (limit <= 0) return { ok: true, used, limit: 0, add, after: used + add }
+    const after = used + add
+    return { ok: after <= limit, used, limit, add, after }
+  }
+
+  return {
+    sanitizeName, destPath, isComplete,
+    usageBytes, quotaBytes, quotaCheck,
+  }
 })

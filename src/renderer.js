@@ -3320,6 +3320,29 @@ function _watchKey(type, id, season, episode) {
   return 'anime:' + id + ':e' + episode
 }
 
+// Which episodes of a season still need marking watched, and how to undo it
+// (roadmap #33). Pure so it is testable without a store or a DOM: given the
+// season's episode numbers and a reader that returns the stored item for a key
+// (or null), it returns the list of { key, episode, wasWatched } for episodes
+// that are not already watched. An already-watched episode is skipped so Undo
+// only ever un-marks what this action actually changed, and the count shown to
+// the viewer is the honest number of episodes it will affect.
+function _seasonEpisodesToMark(type, id, season, epNumbers, readItem) {
+  var out = []
+  var seen = {}
+  ;(Array.isArray(epNumbers) ? epNumbers : []).forEach(function (n) {
+    if (n == null) return
+    var key = _watchKey(type, id, season, n)
+    if (seen[key]) return
+    seen[key] = true
+    var item = null
+    try { item = typeof readItem === 'function' ? readItem(key) : null } catch (_) { item = null }
+    if (item && item.watched === true) return
+    out.push({ key: key, episode: n, wasWatched: false })
+  })
+  return out
+}
+
 // The identity a per-title preference is stored against: the whole show, not a
 // single episode. Language and the preferred source (App #43) are remembered at
 // this level so one choice carries across every episode of a series.
@@ -4453,6 +4476,20 @@ function _videoPlayResult(result, opts) {
     const store = _vStore()
     if (store && showKey) langPrefs = store.prefs(showKey) || {}
   } catch (_) {}
+  // Wave-4 (#31/#32): when main exposes the per-show track-memory contract,
+  // prefer it and merge whatever it holds over the local store's copy. It is
+  // async, so a slow or missing backend never delays the open — the local
+  // prefs are handed over now and the remembered languages get applied when
+  // the file's tracks first arrive (applyLangPrefs runs off the state stream,
+  // well after this). Feature-detected: absent, the store path is unchanged.
+  if (showKey && window.api && typeof window.api.videoTrackMemoryGet === 'function') {
+    window.api.videoTrackMemoryGet({ showKey: showKey }).then(function (res) {
+      const mem = res && res.ok ? (res.memory || res.prefs || res.value) : (res && typeof res === 'object' ? res : null)
+      if (mem && typeof mem === 'object' && _player && typeof _player.setPrefs === 'function') {
+        _player.setPrefs(Object.assign({}, langPrefs, mem))
+      }
+    }).catch(function () { /* memory is a convenience, never a blocker */ })
+  }
 
   _player.open({
     hasNext: !!_nextEpisodeOf(_videoDetail, _videoState),
@@ -4480,6 +4517,25 @@ function _videoPlayResult(result, opts) {
         const store = _vStore()
         if (store && showKey) store.setPrefs(showKey, patch)
       } catch (_) { /* a full store must never interrupt playback */ }
+      // Wave-4 (#31/#32): mirror the choice into main's per-show memory when the
+      // contract is exposed, so the two stay in step. The contract takes flat
+      // named fields (audioLang / subLang / dubPref) and patches only the ones
+      // present, so a pick of one track never wipes a remembered other. The
+      // sub-delay is per-show but not part of that contract — it stays in the
+      // local store only. Fire-and-forget; a failed write leaves the local
+      // store as the source of truth for this session.
+      try {
+        if (showKey && patch && typeof patch === 'object' &&
+            window.api && typeof window.api.videoTrackMemorySet === 'function' &&
+            (patch.audioLang !== undefined || patch.subLang !== undefined || patch.dubPref !== undefined)) {
+          const call = { showKey: showKey }
+          if (patch.audioLang !== undefined) call.audioLang = patch.audioLang
+          if (patch.subLang !== undefined) call.subLang = patch.subLang
+          if (patch.dubPref !== undefined) call.dubPref = patch.dubPref
+          const p = window.api.videoTrackMemorySet(call)
+          if (p && typeof p.catch === 'function') p.catch(function () {})
+        }
+      } catch (_) { /* memory is a convenience, never a blocker */ }
     },
   })
   _handleVideoEvent({ kind: 'buffering' })
@@ -6418,6 +6474,43 @@ async function _openPersonByName(name, parsed) {
   navigate('person', String(people[0].id))
 }
 
+// Remove a single entry from Continue Watching (roadmap #33), undoably. The
+// store's remove() hands back the deleted item, which is exactly what Undo needs
+// to put it back verbatim — same key, same position — so a mis-tap is free to
+// reverse. The card is hidden rather than torn out so Undo can bring it straight
+// back with no re-render: an in-rail card whose reason to exist is gone is
+// hidden outright; on any other surface only its progress bar hides, since the
+// card itself is still a valid way into the title.
+function _removeFromContinueWatching(cwKey, cardEl) {
+  if (!cwKey) return
+  var store = _vStore()
+  var removed = null
+  try {
+    if (store && typeof store.remove === 'function') removed = store.remove(cwKey)
+    else if (store) { store.markWatched(cwKey); removed = null }  // older store fallback
+  } catch (_) { removed = null }
+  var inRail = !!(cardEl && cardEl.closest('[data-rail="continue"]'))
+  var progress = cardEl ? cardEl.querySelector('.vcard-progress') : null
+  if (inRail && cardEl) cardEl.style.display = 'none'
+  else if (progress) progress.style.display = 'none'
+  // No remove() on this store means no verbatim entry to restore — the fallback
+  // marked it watched, which is not undoable in the same way, so just confirm.
+  if (!removed) { showToast('Removed from Continue Watching'); return }
+  pushUndo('Removed from Continue Watching', function () {
+    try {
+      var s = _vStore()
+      if (s && typeof s.restore === 'function') s.restore(cwKey, removed)
+      else if (s && typeof s.setPosition === 'function') {
+        s.setPosition(cwKey, removed, removed.position, removed.duration)
+      }
+    } catch (_) { /* the restore is best-effort */ }
+    // The card was only hidden, so bringing it back is a display reset — no
+    // re-render, and it lands exactly where it was.
+    if (inRail && cardEl) cardEl.style.display = ''
+    else if (progress) progress.style.display = ''
+  })
+}
+
 function _videoCard(item) {
   item = item || {}
   const key = (item.type || 'movie') + ':' + (item.id == null ? '' : item.id)
@@ -6445,9 +6538,11 @@ function _videoCard(item) {
   const pct = item.position && item.duration ? Math.min(100, Math.round(item.position / item.duration * 100)) : 0
   const progress = pct > 1 ? '<div class="vcard-progress"><i style="width:' + pct + '%"></i></div>' : ''
 
-  // A half-watched entry can be dismissed: marking it watched is exactly what
-  // removes it from Continue Watching, and there was no way to do that short
-  // of sitting through the rest of it.
+  // A half-watched entry can be dismissed from Continue Watching outright
+  // (roadmap #33). This removes the store entry rather than marking it watched:
+  // an abandoned show the viewer is not going to finish should leave no trace,
+  // not turn up in History or the diary as though they had. The removal is
+  // undoable (Snackbar + Undo), so a mis-tap costs nothing.
   const cwKey = pct > 1
     ? _watchKey(item.type || 'movie', item.id, item.season, item.episode)
     : null
@@ -6470,8 +6565,8 @@ function _videoCard(item) {
         '<button class="vcard-act vcard-act-play" data-act="play" aria-label="Play">' + _VICON.play + '</button>' +
         '<button class="vcard-act vcard-act-list' + (inList ? ' on' : '') + '" data-act="list" data-key="' + esc(key) + '"' +
           ' aria-label="' + (inList ? 'Remove from My List' : 'Add to My List') + '">' + (inList ? _VICON.check : _VICON.plus) + '</button>' +
-        (cwKey ? '<button class="vcard-act vcard-act-seen" data-act="seen" data-cwkey="' + esc(cwKey) + '"' +
-          ' aria-label="Mark watched and remove from Continue Watching">&#10005;</button>' : '') +
+        (cwKey ? '<button class="vcard-act vcard-act-seen" data-act="cwremove" data-cwkey="' + esc(cwKey) + '"' +
+          ' aria-label="Remove from Continue Watching">&#10005;</button>' : '') +
       '</div>' +
     '</div>' +
     '<div class="vcard-title">' + esc(item.title || 'Untitled') + '</div>' +
@@ -6727,15 +6822,8 @@ function _bindVideoCards(root) {
       if (!act) return open()
       e.stopPropagation()
       if (act.dataset.act === 'play') return open()
-      if (act.dataset.act === 'seen') {
-        try {
-          const store = _vStore()
-          if (store && act.dataset.cwkey) store.markWatched(act.dataset.cwkey)
-          showToast('Marked watched')
-          // Inside Continue Watching the card's reason to exist is gone.
-          if (c.closest('[data-rail="continue"]')) c.remove()
-          else c.querySelector('.vcard-progress')?.remove()
-        } catch (_) { showToast('Could not update') }
+      if (act.dataset.act === 'cwremove') {
+        _removeFromContinueWatching(act.dataset.cwkey, c)
         return
       }
       const parts = String(c.dataset.video || '').split(':')
@@ -6937,6 +7025,11 @@ async function renderVideoDetail(navId) {
   }
   _videoDetail = { type, id, d: res.detail }
   const d = res.detail
+  // Seed the dub/sub default from the show's remembered preference (roadmap
+  // #32), feature-detected on the Wave-4 track-memory contract. Async and
+  // non-blocking: the page renders now with the default, and if a remembered
+  // dubPref differs it flips _videoState.sub and re-ticks the checkbox in place.
+  _seedDubPref(type, id, ticket)
   setContent('<div class="page video-detail-page cinema">' + _videoDetailShell(d) + '</div>')
 
   _bindDetailActions(d)
@@ -7540,7 +7633,122 @@ function _bindDubControl() {
     // A dubbed release the user picked by hand should not override the checkbox
     // they just moved.
     _playing.dub = null
+    // Per-series dub/sub memory (roadmap #32): remember the choice for this show
+    // so the next visit and the next episode default to it. Feature-detected on
+    // the Wave-4 track-memory contract; a missing backend just skips the save.
+    _rememberDubPref(e.target.checked ? 'dub' : 'sub')
     _loadVideoSources(_videoDetailTicket, ++_videoSeasonTicket)
+  })
+}
+
+// Apply a show's remembered dub/sub preference to the detail page (roadmap #32).
+// Reads the Wave-4 track-memory contract when present; a remembered 'dub' checks
+// the toggle and switches the default source language, 'sub' the opposite. The
+// ticket guards against a slow read landing after the user navigated away.
+function _seedDubPref(type, id, ticket) {
+  if (!window.api || typeof window.api.videoTrackMemoryGet !== 'function') return
+  var showKey = type + ':' + id
+  window.api.videoTrackMemoryGet({ showKey: showKey }).then(function (res) {
+    if (_videoDetailTicket !== ticket) return
+    var mem = res && res.ok ? (res.memory || null) : (res && typeof res === 'object' ? res : null)
+    var dubPref = mem && mem.dubPref
+    if (dubPref !== 'dub' && dubPref !== 'sub') return
+    var wantSub = dubPref === 'sub'
+    if (_videoState.sub === wantSub) return
+    _videoState.sub = wantSub
+    var box = document.getElementById('video-dub-toggle')
+    if (box) box.checked = !wantSub
+  }).catch(function () { /* memory is a convenience, never a blocker */ })
+}
+
+// Persist the show's dub/sub preference through the Wave-4 track-memory contract
+// (roadmap #32). Best-effort and guarded: memory is a convenience, never a
+// blocker, and an older backend without the method is a no-op.
+function _rememberDubPref(dubPref) {
+  var showKey = _showKeyOf()
+  try {
+    if (showKey && window.api && typeof window.api.videoTrackMemorySet === 'function') {
+      var p = window.api.videoTrackMemorySet({ showKey: showKey, dubPref: dubPref })
+      if (p && typeof p.catch === 'function') p.catch(function () {})
+    }
+  } catch (_) { /* never let memory stop playback */ }
+}
+
+// The episode numbers of a TV season, from whatever the detail object already
+// knows. Prefers the fetched episode list; falls back to the buttons currently
+// on screen so a season whose payload has not been stored back still yields its
+// numbers. Returns [] when neither is available — the caller then says so
+// rather than marking nothing silently.
+function _seasonEpisodeNumbers(season) {
+  var d = _videoDetail && _videoDetail.d
+  var nums = []
+  var s = (d && Array.isArray(d.seasons))
+    ? d.seasons.find(function (x) { return x.seasonNumber === season })
+    : null
+  if (s && Array.isArray(s.episodes) && s.episodes.length) {
+    nums = s.episodes.map(function (ep) { return ep.episodeNumber }).filter(function (n) { return n != null })
+  }
+  if (!nums.length) {
+    document.querySelectorAll('#video-episode-list .video-episode-btn, #video-episode-list-inner .video-episode-btn')
+      .forEach(function (b) { var n = Number(b.dataset.ep); if (n) nums.push(n) })
+  }
+  return nums
+}
+
+// Mark every episode of a season watched (roadmap #33), behind a confirm and
+// with Undo. Only episodes not already watched are touched, so the count is
+// honest and Undo un-marks exactly what changed — an episode that was already
+// watched before this stays watched after an Undo.
+function _confirmMarkSeasonWatched(season) {
+  var d = _videoDetail && _videoDetail.d
+  if (!d || !_videoDetail || _videoDetail.type !== 'tv') return
+  var store = _vStore()
+  if (!store || typeof store.markWatched !== 'function') { showToast('Could not update'); return }
+  var nums = _seasonEpisodeNumbers(season)
+  if (!nums.length) { showToast('No episodes to mark for this season'); return }
+  var toMark = _seasonEpisodesToMark('tv', d.id, season, nums, function (key) {
+    try { return store.get(key) } catch (_) { return null }
+  })
+  if (!toMark.length) { showToast('Every episode of this season is already watched'); return }
+
+  var n = toMark.length
+  var body = '<p class="mg-confirm-sum" style="margin-top:0">' + esc(d.title || 'This show') +
+      ' — Season ' + esc(String(season)) + '</p>' +
+    '<p class="mg-confirm-warn">' + n + ' episode' + (n === 1 ? '' : 's') +
+      ' will be marked watched and drop out of Continue Watching.</p>' +
+    '<p class="mg-confirm-note">You can undo this.</p>'
+
+  _mgConfirm('Mark season watched?', body, 'Mark watched', function () {
+    // Capture the meta each episode needs so a card can render if it never had
+    // a store entry before. markWatched only flips the flag, so seed identity.
+    toMark.forEach(function (e) {
+      try {
+        var existing = store.get(e.key)
+        if (!existing) {
+          // Seed a minimal watched entry so History/marks reflect it. setPosition
+          // guards empty ids; a real episode id always passes.
+          store.setPosition(e.key, {
+            type: 'tv', id: d.id, title: d.title, poster: d.poster || null,
+            season: season, episode: e.episode,
+          }, 0, 0)
+        }
+        store.markWatched(e.key)
+      } catch (_) { /* one bad episode must not abort the rest */ }
+    })
+    // Reflect it on the open detail page: the episode marks read from the store.
+    try { _refreshTvEpisodes(_videoDetailTicket, ++_videoSeasonTicket) } catch (_) {}
+    pushUndo('Marked ' + n + ' episode' + (n === 1 ? '' : 's') + ' watched', function () {
+      var s = _vStore()
+      if (!s) return
+      toMark.forEach(function (e) {
+        try {
+          // These were unwatched before, so undo removes the entry entirely when
+          // the store can, restoring the pre-action state; otherwise best-effort.
+          if (typeof s.remove === 'function') s.remove(e.key)
+        } catch (_) {}
+      })
+      try { _refreshTvEpisodes(_videoDetailTicket, ++_videoSeasonTicket) } catch (_) {}
+    })
   })
 }
 
@@ -7570,12 +7778,20 @@ function _renderVideoControls(type) {
     }).join('')
     box.innerHTML = '<div class="video-controls-row">' +
       '<label class="video-control">Season<select class="mcs-set-select video-season-select" id="video-season-select">' + opts + '</select></label>' +
+      // Mark the whole season watched in one action (roadmap #33) — the manual
+      // counterpart to auto-marking as you advance, for a season watched
+      // elsewhere. Confirmed and undoable; bound below.
+      '<button class="mcs-set-btn video-season-seen" id="video-season-seen" type="button"' +
+        ' title="Mark every episode of this season as watched">Mark season watched</button>' +
       _dubControl(d) +
       '<div class="video-episode-list" id="video-episode-list"></div></div>'
     document.getElementById('video-season-select')?.addEventListener('change', function (e) {
       _videoState.season = Number(e.target.value) || 1
       _videoState.episode = 1
       _refreshTvEpisodes(_videoDetailTicket, ++_videoSeasonTicket)
+    })
+    document.getElementById('video-season-seen')?.addEventListener('click', function () {
+      _confirmMarkSeasonWatched(_videoState.season)
     })
     _bindDubControl()
     return

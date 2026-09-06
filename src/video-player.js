@@ -47,6 +47,43 @@
     return Math.round(n) + ' B'
   }
 
+  // Seek-bar thumbnail cache (roadmap #28). A pure, testable bucket cache: the
+  // preview frame does not need to be per-second, so a hovered position is
+  // snapped to a 10-second bucket and the frame for that bucket is remembered
+  // for the session. A hover that stays inside a bucket, or comes back to one
+  // already seen, costs no IPC and no ffmpeg. Capped so a long scrub across a
+  // three-hour film cannot grow the map without bound — oldest bucket evicted
+  // first, insertion order being Map's own iteration order.
+  const THUMB_BUCKET_SEC = 10
+  const THUMB_CACHE_CAP = 100
+
+  function thumbBucketOf(sec) {
+    const n = Math.max(0, Math.floor(Number(sec) || 0))
+    return Math.floor(n / THUMB_BUCKET_SEC)
+  }
+
+  function makeThumbCache(cap) {
+    const limit = Number(cap) > 0 ? Math.floor(cap) : THUMB_CACHE_CAP
+    const map = new Map()
+    return {
+      // The path known for a position's bucket, or undefined if never fetched.
+      // A cached null means "asked, none available yet" — a real answer, not a
+      // miss — so callers distinguish it from undefined with `has`.
+      get (sec) { return map.get(thumbBucketOf(sec)) },
+      has (sec) { return map.has(thumbBucketOf(sec)) },
+      set (sec, path) {
+        const key = thumbBucketOf(sec)
+        // Re-insert so a refreshed bucket counts as most-recent for eviction.
+        if (map.has(key)) map.delete(key)
+        map.set(key, path)
+        while (map.size > limit) map.delete(map.keys().next().value)
+        return path
+      },
+      clear () { map.clear() },
+      size () { return map.size },
+    }
+  }
+
   function create(opts) {
     opts = opts || {}
     const doc = opts.document || (typeof document !== 'undefined' ? document : null)
@@ -867,6 +904,14 @@
       // cannot start a second lookup; an explicit pick made while the lookup
       // is in flight is honoured by the langChosen check inside it.
       langApplied = true
+      // The remembered subtitle look is applied the same beat the language is —
+      // once the file is playing and a subtitle track exists to style. Only when
+      // it differs from mpv's defaults, so a viewer who never touched the style
+      // spends no commands on it (roadmap #30).
+      if (subStyle.size !== 'M' || subStyle.color !== 'white' ||
+          subStyle.background !== 'none' || subStyle.position !== 'low') {
+        applySubStyle()
+      }
       // A remembered subtitle delay is applied once the file is playing, the
       // same beat the remembered language is. It seeds the local accumulator
       // too, so the CC menu's readout and further nudges start from the stored
@@ -938,6 +983,12 @@
             }).join('')
         }
         html += '<div class="vt-menu-sep"></div>' +
+          // Size, colour, background and vertical position, one tap away in a
+          // submenu so the CC menu itself stays a track list (roadmap #30).
+          '<button class="vt-menu-item" role="menuitem" data-subact="style">' +
+            '<span class="vt-menu-tick"></span>' +
+            '<span class="vt-menu-label">Style…</span>' +
+          '</button>' +
           '<button class="vt-menu-item" role="menuitem" data-subact="open">' +
             '<span class="vt-menu-tick"></span>' +
             '<span class="vt-menu-label">Add from file…</span>' +
@@ -1001,6 +1052,7 @@
           b.addEventListener('click', function () {
             const act = b.dataset.subact
             closeMenu()
+            if (act === 'style') { openSubStyleMenu(); return }
             if (act === 'online') { openOnlineSubsMenu(); return }
             if (api && api.videoSubOpen) api.videoSubOpen().catch(function () {})
           })
@@ -1048,11 +1100,129 @@
       })
     }
 
+    // The subtitle-style submenu (roadmap #30): the four choices a viewer
+    // actually reaches for — size, colour, background box and vertical position
+    // — each a labelled row of chips that light the current pick. Every change
+    // applies to mpv at once (through the same subStyle verb the settings rows
+    // use) and is persisted app-wide, so the look carries to the next film. The
+    // menu stays open after a pick so several can be tried in one sitting.
+    function openSubStyleMenu() {
+      const row = function (label, dataKey, options, current) {
+        return '<div class="vt-menu-row">' + escapeHtml(label) +
+          options.map(function (o) {
+            return '<button class="vt-chip' + (o.value === current ? ' on' : '') + '" ' +
+              'data-' + dataKey + '="' + escapeHtml(o.value) + '">' + escapeHtml(o.label) + '</button>'
+          }).join('') + '</div>'
+      }
+      const html = '<div class="vt-menu-head">Subtitle style</div>' +
+        row('Size', 'substyle-size',
+          [{ value: 'S', label: 'S' }, { value: 'M', label: 'M' },
+           { value: 'L', label: 'L' }, { value: 'XL', label: 'XL' }], subStyle.size) +
+        row('Colour', 'substyle-color',
+          [{ value: 'white', label: 'White' }, { value: 'yellow', label: 'Yellow' },
+           { value: 'cyan', label: 'Cyan' }], subStyle.color) +
+        row('Background', 'substyle-bg',
+          [{ value: 'none', label: 'None' }, { value: 'soft', label: 'Soft' },
+           { value: 'solid', label: 'Solid' }], subStyle.background) +
+        row('Position', 'substyle-pos',
+          [{ value: 'low', label: 'Low' }, { value: 'mid', label: 'Mid' }], subStyle.position)
+
+      openMenu('vt-subs', html, function (m) {
+        // One handler per control. Each writes the named state, persists, pushes
+        // the mapped mpv value, then relights its own row's chips in place.
+        const wire = function (attr, field, apply) {
+          m.querySelectorAll('[data-' + attr + ']').forEach(function (b) {
+            b.addEventListener('click', function () {
+              subStyle[field] = b.dataset[attr.replace(/-([a-z])/g, function (_, c) { return c.toUpperCase() })]
+              persistSubStyle()
+              apply()
+              m.querySelectorAll('[data-' + attr + ']').forEach(function (o) {
+                o.classList.toggle('on', o.dataset[attr.replace(/-([a-z])/g, function (_, c) { return c.toUpperCase() })] === subStyle[field])
+              })
+            })
+          })
+        }
+        wire('substyle-size', 'size', function () { sendSubStyle({ scale: subScaleValue() }) })
+        wire('substyle-color', 'color', function () { sendSubStyle({ color: SUB_COLORS[subStyle.color] || '#FFFFFF' }) })
+        wire('substyle-bg', 'background', function () { sendSubStyle({ backColor: subBackValue() }) })
+        wire('substyle-pos', 'position', function () { sendSubStyle({ pos: SUB_POS[subStyle.position] || 100 }) })
+      })
+    }
+
     // Torrent releases desync constantly; nudging is the fix and it has to be
     // reachable while watching, not buried in settings.
     let delayMs = { subDelay: 0, audioDelay: 0 }
-    let subScale = 1
-    let subBack = false
+
+    // ── Subtitle styling (roadmap #30) ────────────────────────────────────────
+    // Size, colour, background box and vertical position, each a named choice
+    // mapped to the mpv value the `subStyle` verb sets (SUB_STYLE_PROPS in
+    // video-engine.js). Persisted app-wide — a viewer's caption preference is
+    // theirs, not a property of one release — so unlike the per-show delay these
+    // survive across every film. Read once at creation from PapaLocal under one
+    // key; a missing or broken store leaves the defaults, since styling is a
+    // convenience and must never block playback.
+    const SUB_SIZES = { S: 0.8, M: 1, L: 1.3, XL: 1.6 }
+    const SUB_COLORS = { white: '#FFFFFF', yellow: '#FFFF00', cyan: '#00FFFF' }
+    const SUB_BACKS = { none: '#00000000', soft: '#80000000', solid: '#FF000000' }
+    // mpv sub-pos runs 0 (top) to 100 (bottom); low sits at the default bottom,
+    // mid lifts the line clear of a burned-in credit or a busy lower third.
+    const SUB_POS = { low: 100, mid: 85 }
+
+    let subStyle = { size: 'M', color: 'white', background: 'none', position: 'low' }
+    try {
+      if (local && typeof local.read === 'function') {
+        const saved = local.read('papaVtSubStyle')
+        if (saved && typeof saved === 'object') {
+          if (SUB_SIZES[saved.size]) subStyle.size = saved.size
+          if (SUB_COLORS[saved.color]) subStyle.color = saved.color
+          if (SUB_BACKS[saved.background]) subStyle.background = saved.background
+          if (SUB_POS[saved.position]) subStyle.position = saved.position
+        }
+      }
+    } catch (_) { /* styling is a convenience, never a blocker */ }
+
+    // Legacy aliases the settings-menu rows and their tests still read: the
+    // numeric scale and the on/off backing box, derived from the named state so
+    // there is one source of truth rather than two that drift.
+    function subScaleValue() { return SUB_SIZES[subStyle.size] || 1 }
+    function subBackValue() { return SUB_BACKS[subStyle.background] || '#00000000' }
+
+    function persistSubStyle() {
+      try {
+        if (local && typeof local.write === 'function') local.write('papaVtSubStyle', subStyle)
+      } catch (_) { /* the session still honours the choice */ }
+    }
+
+    // Push one or more style keys to mpv. Everything routes through the proven
+    // `subStyle` control verb (its keys are members of SUB_STYLE_PROPS); when the
+    // Wave-4 videoSubStyle passthrough is also exposed it is called in addition,
+    // feature-detected, so a backend that maps friendly names itself stays in
+    // step. Neither call is allowed to throw into the caller.
+    function sendSubStyle(patch) {
+      send('subStyle', patch)
+      if (api && typeof api.videoSubStyle === 'function') {
+        try {
+          const p = api.videoSubStyle({
+            size: subStyle.size, color: subStyle.color,
+            background: subStyle.background, position: subStyle.position,
+          })
+          if (p && typeof p.catch === 'function') p.catch(function () {})
+        } catch (_) { /* the passthrough is optional decoration */ }
+      }
+    }
+
+    // Applies the whole remembered look to the file now playing. Called once the
+    // file is up (from applyLangPrefs, the same beat the language is applied), so
+    // a viewer's caption preference is in force from the first subtitle on.
+    function applySubStyle() {
+      sendSubStyle({
+        scale: subScaleValue(),
+        color: SUB_COLORS[subStyle.color] || '#FFFFFF',
+        backColor: subBackValue(),
+        pos: SUB_POS[subStyle.position] || 100,
+      })
+    }
+
     function bindDelay(menu, selector, dataKey, verb, valueId) {
       menu.querySelectorAll(selector).forEach(function (b) {
         b.addEventListener('click', function () {
@@ -1217,15 +1387,15 @@
         // S/M/L reads at a glance which one is on. Each is an absolute scale,
         // so the current one lights up regardless of how it was reached.
         '<div class="vt-menu-row">Size' +
-          '<button class="vt-chip' + (subScale <= 0.85 ? ' on' : '') + '" data-subsize="0.8">S</button>' +
-          '<button class="vt-chip' + (subScale > 0.85 && subScale < 1.15 ? ' on' : '') + '" data-subsize="1">M</button>' +
-          '<button class="vt-chip' + (subScale >= 1.15 ? ' on' : '') + '" data-subsize="1.3">L</button></div>' +
+          '<button class="vt-chip' + (subScaleValue() <= 0.85 ? ' on' : '') + '" data-subsize="0.8">S</button>' +
+          '<button class="vt-chip' + (subScaleValue() > 0.85 && subScaleValue() < 1.15 ? ' on' : '') + '" data-subsize="1">M</button>' +
+          '<button class="vt-chip' + (subScaleValue() >= 1.15 ? ' on' : '') + '" data-subsize="1.3">L</button></div>' +
         // A translucent box behind the text, for a bright scene that washes out
         // plain captions. backColor is an mpv ARGB string: semi-opaque black on,
         // fully transparent off.
         '<div class="vt-menu-row">Background' +
-          '<button class="vt-chip' + (subBack ? ' on' : '') + '" data-subback="1">On</button>' +
-          '<button class="vt-chip' + (subBack ? '' : ' on') + '" data-subback="0">Off</button></div>' +
+          '<button class="vt-chip' + (subStyle.background !== 'none' ? ' on' : '') + '" data-subback="1">On</button>' +
+          '<button class="vt-chip' + (subStyle.background === 'none' ? ' on' : '') + '" data-subback="0">Off</button></div>' +
         menuItem('Add a subtitle file…') +
         '<div class="vt-menu-sep"></div>' +
         '<div class="vt-menu-head">Playback</div>' +
@@ -1258,21 +1428,29 @@
         // `scale` is a number, `backColor` an mpv ARGB string.
         m.querySelectorAll('[data-subsize]').forEach(function (b) {
           b.addEventListener('click', function () {
-            subScale = Number(b.dataset.subsize)
-            send('subStyle', { scale: subScale })
+            const scale = Number(b.dataset.subsize)
+            // Map the numeric scale back onto a named size so the one persisted
+            // style stays in step with this quick S/M/L row (roadmap #30).
+            subStyle.size = scale <= 0.85 ? 'S' : scale >= 1.45 ? 'XL' : scale >= 1.15 ? 'L' : 'M'
+            persistSubStyle()
+            send('subStyle', { scale: scale })
             // Relight the row without closing the menu, so a second size can be
             // tried straight away.
             m.querySelectorAll('[data-subsize]').forEach(function (o) {
-              o.classList.toggle('on', Number(o.dataset.subsize) === subScale)
+              o.classList.toggle('on', Number(o.dataset.subsize) === scale)
             })
           })
         })
         m.querySelectorAll('[data-subback]').forEach(function (b) {
           b.addEventListener('click', function () {
-            subBack = b.dataset.subback === '1'
-            send('subStyle', { backColor: subBack ? '#80000000' : '#00000000' })
+            const on = b.dataset.subback === '1'
+            // On keeps whatever box the full menu last chose (soft/solid), so the
+            // two surfaces agree; a fresh On defaults to the soft box.
+            subStyle.background = on ? (subStyle.background !== 'none' ? subStyle.background : 'soft') : 'none'
+            persistSubStyle()
+            send('subStyle', { backColor: subBackValue() })
             m.querySelectorAll('[data-subback]').forEach(function (o) {
-              o.classList.toggle('on', (o.dataset.subback === '1') === subBack)
+              o.classList.toggle('on', (o.dataset.subback === '1') === on)
             })
           })
         })
@@ -1483,13 +1661,20 @@
     // pixel otherwise, and each is an IPC round-trip that may spawn an ffmpeg.
     // The trailing edge always fires, so the frame under where the pointer
     // stopped is the one asked for.
-    const THUMB_THROTTLE_MS = 250
+    // Debounced to ~200ms (roadmap #28): a pointer sweeping the track fires a
+    // request per pixel otherwise, and each is an IPC round-trip that may spawn
+    // an ffmpeg. The trailing edge always fires, so the frame under where the
+    // pointer stopped is the one asked for.
+    const THUMB_THROTTLE_MS = 200
     let thumbLastAt = 0
     let thumbTimer = null
     let thumbPendingPos = null
     // The bucket whose frame is currently painted, so an unchanged hover does not
     // rebuild the <img> src every emit and flicker the picture.
     let thumbShownKey = null
+    // Per-position-bucket cache, session-scoped, capped (roadmap #28). Rebuilt
+    // per file in open() so one film's frames never show under another's.
+    let thumbCache = makeThumbCache(THUMB_CACHE_CAP)
 
     // The bubble's inner structure is built lazily the first time a thumb is
     // shown, so a bubble that only ever shows time keeps its plain-text shape and
@@ -1549,21 +1734,60 @@
       else bubble.textContent = text
     }
 
-    // Ask main for the frame at a position, throttled. Guarded on the API being
-    // present at all, so the deck runs unchanged where videoThumb is not exposed
-    // (an older preload, a test harness that does not stub it).
+    // The thumbnail backend, feature-detected. The prompt's Wave-4 contract is
+    // videoThumbAt({sec}) → {path|null}; the pre-existing handler is
+    // videoThumb({position}) → {ok,path}. Prefer the new name, fall back to the
+    // old, and return null when neither is exposed (an older preload, a
+    // direct-URL play with no thumbnailer, a test harness that stubs neither) —
+    // in which case the bubble stays the time-only bubble it always was.
+    function thumbBackend() {
+      if (api && typeof api.videoThumbAt === 'function') {
+        return function (sec) {
+          return api.videoThumbAt({ sec: sec }).then(function (res) {
+            // {path|null}; tolerate an {ok,path} shape too so either backend fits.
+            if (!res) return null
+            return res.path != null ? res.path : (res.ok ? (res.path || null) : null)
+          })
+        }
+      }
+      if (api && typeof api.videoThumb === 'function') {
+        return function (sec) {
+          return api.videoThumb({ position: sec }).then(function (res) {
+            return res && res.ok ? (res.path || null) : null
+          })
+        }
+      }
+      return null
+    }
+
+    // Ask for the frame at a position, debounced and bucket-cached. Guarded on a
+    // backend being present at all, so the deck runs unchanged where neither
+    // thumbnail API is exposed. Never blocks the hover time text: the time is
+    // painted by the caller before this is even called.
     function requestThumb(bubble, positionSec) {
       if (!bubble) return
-      if (!api || typeof api.videoThumb !== 'function') return
+      const fetchThumb = thumbBackend()
+      if (!fetchThumb) return
       thumbPendingPos = positionSec
+      // A bucket already in the cache is painted straight away — no IPC, no
+      // ffmpeg — including a cached null (asked, none yet), which correctly
+      // leaves the previous frame alone. Only a genuinely unseen bucket falls
+      // through to a network request.
+      if (thumbCache.has(positionSec)) {
+        const cached = thumbCache.get(positionSec)
+        if (cached && cached !== thumbShownKey) { thumbShownKey = cached; paintBubbleThumb(bubble, cached) }
+        return
+      }
       const fire = function () {
         thumbLastAt = (typeof Date !== 'undefined' ? Date.now() : 0)
         const pos = thumbPendingPos
-        api.videoThumb({ position: pos }).then(function (res) {
+        fetchThumb(pos).then(function (p) {
+          // Cache the answer for the bucket even when null, so a still-generating
+          // frame is not re-requested on every pass through the same ten seconds.
+          thumbCache.set(pos, p || null)
           // The bubble was hidden (pointer left) while this was in flight: drop
           // the answer rather than painting into a bubble nobody is looking at.
           if (thumbPendingPos == null) return
-          const p = res && res.ok ? res.path : null
           // A null answer leaves whatever frame is already up in place — the
           // previous bucket's frame is a better preview than none while the new
           // one generates. A path repaints only when it names a new frame.
@@ -1768,6 +1992,10 @@
       const ticks = $('vt-seek-chapters'); if (ticks) ticks.innerHTML = ''
       kbTarget = null
       clearTimeout(kbTimer)
+      // A new file's frames are its own: drop the previous film's cached buckets
+      // so a hover never shows a frame from what was playing before (roadmap #28).
+      thumbCache.clear()
+      thumbShownKey = null
       cancelAutoSkip()
       stopUpNext()
       clearPack()
@@ -1775,10 +2003,9 @@
       if (upBox) { upBox.hidden = true; upBox.innerHTML = '' }
       syncStrip()
       delayMs = { subDelay: 0, audioDelay: 0 }
-      // Subtitle look is per-file too: a new release starts at the default
-      // size with no backing box until the viewer asks for one.
-      subScale = 1
-      subBack = false
+      // Subtitle style is a viewer preference, not a property of the release, so
+      // it deliberately survives across files (roadmap #30) — it is re-applied
+      // to the new file by applyLangPrefs once its tracks turn up, not reset here.
       setVideoActive(true)
       setStageMessage('<div class="spin"></div><div>Starting…</div>')
       if (!unsubscribe && api && api.onVideoState) {
@@ -1930,5 +2157,7 @@
     }
   }
 
-  return { create: create, fmtTime: fmtTime, SPEEDS: SPEEDS, ICON: ICON }
+  return { create: create, fmtTime: fmtTime, SPEEDS: SPEEDS, ICON: ICON,
+    thumbBucketOf: thumbBucketOf, makeThumbCache: makeThumbCache,
+    THUMB_BUCKET_SEC: THUMB_BUCKET_SEC, THUMB_CACHE_CAP: THUMB_CACHE_CAP }
 })

@@ -129,11 +129,16 @@ contextBridge.exposeInMainWorld('api', {
   videoPredownloadCancel:   ()      => ipcRenderer.invoke('video-predownload-cancel'),
   videoPredownloadProgress: ()      => ipcRenderer.invoke('video-predownload-progress'),
   videoKeepFile:            (index, show) => ipcRenderer.invoke('video-keep-file', { index, show }),
+  // Offline downloads manager (roadmap #42): list kept files, delete one.
+  videoKeepList:            ()   => ipcRenderer.invoke('video-keep-list'),
+  videoKeepDelete:          (id) => ipcRenderer.invoke('video-keep-delete', { id }),
   videoDiagnostics: ()  => ipcRenderer.invoke('video-diagnostics'),
   videoDetail:      (p) => ipcRenderer.invoke('video-detail', p),
   videoStreams:     (p) => ipcRenderer.invoke('video-streams', p),
   videoProbe:       (p) => ipcRenderer.invoke('video-probe', p),
   videoThumb:       (p) => ipcRenderer.invoke('video-thumb', p),
+  // W4-UI contract name: a frame at a time on the current stream (roadmap #28).
+  videoThumbAt:     ({ sec } = {}) => ipcRenderer.invoke('video-thumb', { sec }),
   videoPlay:        (p) => ipcRenderer.invoke('video-play', p),
   videoStop:        ()  => ipcRenderer.invoke('video-stop'),
   videoControl:     (verb, args) => ipcRenderer.invoke('video-control', { verb, args }),
@@ -157,6 +162,19 @@ contextBridge.exposeInMainWorld('api', {
   videoSurfaceBounds:(rect) => ipcRenderer.invoke('video-surface-bounds', rect),
   videoSurfaceVisible:(visible) => ipcRenderer.invoke('video-surface-visible', { visible }),
   videoFullscreen:  ()  => ipcRenderer.invoke('video-fullscreen'),
+  // Picture-in-picture mini player (roadmap #27): move the mpv surface into a
+  // corner while browsing, or return it to the theatre stage.
+  videoMiniMode:    ({ on, rect } = {}) => ipcRenderer.invoke('video-mini-mode', { on, rect }),
+  // Subtitle styling (roadmap #30): size/color/position/background → mpv props,
+  // persisted so a new engine spawn re-applies the look.
+  videoSubStyle:    ({ size, color, position, background } = {}) =>
+    ipcRenderer.invoke('video-sub-style', { size, color, position, background }),
+  // Per-show track memory (roadmap #31/#32): remembered audio/subtitle/dub picks.
+  videoTrackMemoryGet: ({ showKey } = {}) => ipcRenderer.invoke('video-track-memory-get', { showKey }),
+  videoTrackMemorySet: ({ showKey, audioLang, subLang, dubPref } = {}) =>
+    ipcRenderer.invoke('video-track-memory-set', { showKey, audioLang, subLang, dubPref }),
+  // Debrid status for a future settings surface (roadmap #40).
+  debridCheck:      ()  => ipcRenderer.invoke('debrid-check'),
   onVideoEvent: (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('video-event', h); return () => ipcRenderer.removeListener('video-event', h) },
   onVideoState: (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('video-state', h); return () => ipcRenderer.removeListener('video-state', h) },
 
@@ -170,6 +188,9 @@ contextBridge.exposeInMainWorld('api', {
 
   // Changelog: user-facing "what's new" (App §7)
   appChangelog: () => ipcRenderer.invoke('app-changelog'),
+
+  // Memory ceiling watchdog (roadmap #63): the last twelve samples + the ceiling.
+  papaMemoryStats: () => ipcRenderer.invoke('papa-memory-stats'),
 
   // Bug reporter: bundle logs + diagnostics + redacted settings into a folder
   // and reveal it (App §97).
@@ -395,6 +416,9 @@ contextBridge.exposeInMainWorld('api', {
       'media-playpause', 'media-next', 'media-previous',
       'media-volume', 'media-shuffle', 'media-loop-status',
       'system-suspend', 'system-resume',
+      // Memory ceiling watchdog (roadmap #63): main asks the renderer to trim its
+      // caches when the renderer RSS crosses the ceiling twice in a row.
+      'papa-memory-pressure',
     ]
     if (!allowed.includes(channel)) return () => {}
     const h = (_, data, meta) => {

@@ -132,6 +132,10 @@ test('every channel main sends has something that actually listens', () => {
     // files" status chip is wired by the parallel Wave-3 UI work, so main + the
     // bridge land first.
     'slsk-upload-activity': 'preload exposes onSlskUploadActivity; renderer listener is landing in the parallel UI work',
+    // Memory ceiling watchdog (roadmap #63): main + the allowlist land here; the
+    // renderer reacts by trimming its caches in the parallel Wave-4 UI work, so
+    // the sending side and the bridge land first.
+    'papa-memory-pressure': 'allowlisted in preload; renderer cache-trim listener is landing in the parallel UI work',
   }
   const unheard = [...sentChannels]
     .filter(c => !heard.has(c) && !(c in NOT_FOR_THE_RENDERER) && !(c in DELIBERATELY_UNHANDLED))

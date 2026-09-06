@@ -641,3 +641,47 @@ test('a bridge that cannot read parks the session on the storage adapter', async
   assert.deepStrictEqual(storage._dump().prefs['tv:1'], { a: 1, b: 2 })
   assert.strictEqual(store.storageHealthy(), true)
 })
+
+// ── remove / restore (roadmap #33) ────────────────────────────────────────────
+// Continue Watching's "✕ Remove" deletes the entry outright — distinct from
+// markWatched, which keeps it as history and can auto-log the diary. remove()
+// hands the deleted item back so a Snackbar Undo can restore it verbatim.
+test('remove deletes an item and returns it for undo', () => {
+  const { store, storage } = makeStore()
+  store.setPosition('tv:1396:s1e2', { type: 'tv', id: 1396, season: 1, episode: 2, title: 'BB' }, 500, 1000)
+  const removed = store.remove('tv:1396:s1e2')
+  assert.ok(removed, 'the removed item is returned')
+  assert.strictEqual(removed.title, 'BB')
+  assert.strictEqual(store.get('tv:1396:s1e2'), null, 'the entry is gone')
+  assert.ok(!('tv:1396:s1e2' in storage._dump().items), 'and gone from disk')
+})
+
+test('remove of an absent key is a harmless null', () => {
+  const { store } = makeStore()
+  assert.strictEqual(store.remove('tv:404:s1e1'), null)
+})
+
+test('remove does not mark watched — it leaves no history at all', () => {
+  const { store } = makeStore()
+  store.setPosition('movie:1', { type: 'movie', id: 1, title: 'X' }, 300, 1000)
+  store.remove('movie:1')
+  // Neither in progress nor watched — it simply does not exist.
+  assert.strictEqual(store.history().length, 0)
+  assert.strictEqual(store.continueWatching().length, 0)
+})
+
+test('restore puts a removed item back verbatim', () => {
+  const { store } = makeStore()
+  store.setPosition('tv:1396:s1e2', { type: 'tv', id: 1396, season: 1, episode: 2, title: 'BB' }, 500, 1000)
+  const removed = store.remove('tv:1396:s1e2')
+  const back = store.restore('tv:1396:s1e2', removed)
+  assert.ok(back)
+  assert.strictEqual(store.get('tv:1396:s1e2').position, 500, 'position restored')
+  assert.strictEqual(store.get('tv:1396:s1e2').title, 'BB')
+})
+
+test('restore refuses an entry with no real id', () => {
+  const { store } = makeStore()
+  assert.strictEqual(store.restore('movie:', { type: 'movie' }), null)
+  assert.strictEqual(store.restore('movie:', null), null)
+})

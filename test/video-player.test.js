@@ -1971,3 +1971,204 @@ test('thumbnail requests are throttled across a fast pointer sweep', async () =>
   for (let i = 1; i <= 10; i++) hoverSeek(nodes, i / 20)
   assert.ok(calls <= 2, 'a sweep of ten moves made at most two requests, got ' + calls)
 })
+
+// ── Thumb bucket cache (roadmap #28, pure) ────────────────────────────────────
+// A hovered position is snapped to a 10-second bucket and the frame remembered
+// for the session, capped so a long scrub cannot grow the map without bound.
+const VP = require('../src/video-player')
+
+test('thumbBucketOf snaps a position to its 10-second bucket', () => {
+  assert.strictEqual(VP.thumbBucketOf(0), 0)
+  assert.strictEqual(VP.thumbBucketOf(9), 0)
+  assert.strictEqual(VP.thumbBucketOf(10), 1)
+  assert.strictEqual(VP.thumbBucketOf(19), 1)
+  assert.strictEqual(VP.thumbBucketOf(1805), 180)
+  // Never negative, and a garbage input falls to bucket 0 rather than NaN.
+  assert.strictEqual(VP.thumbBucketOf(-4), 0)
+  assert.strictEqual(VP.thumbBucketOf(null), 0)
+})
+
+test('the thumb cache dedupes within a bucket and distinguishes a cached null', () => {
+  const c = VP.makeThumbCache(100)
+  assert.strictEqual(c.has(15), false, 'nothing cached yet')
+  c.set(15, '/f/thumb-10.jpg')
+  // Any position in the same 10s bucket is a hit.
+  assert.strictEqual(c.has(11), true)
+  assert.strictEqual(c.get(19), '/f/thumb-10.jpg')
+  // A cached null is a real answer ("asked, none yet"), not a miss.
+  c.set(25, null)
+  assert.strictEqual(c.has(25), true)
+  assert.strictEqual(c.get(25), null)
+})
+
+test('the thumb cache evicts the oldest bucket past its cap', () => {
+  const c = VP.makeThumbCache(3)
+  c.set(0, 'a')      // bucket 0
+  c.set(10, 'b')     // bucket 1
+  c.set(20, 'c')     // bucket 2
+  assert.strictEqual(c.size(), 3)
+  c.set(30, 'd')     // bucket 3 — pushes bucket 0 out
+  assert.strictEqual(c.size(), 3)
+  assert.strictEqual(c.has(0), false, 'the oldest bucket was evicted')
+  assert.strictEqual(c.get(30), 'd')
+  // Re-setting a bucket refreshes its recency, so it survives the next eviction.
+  c.set(10, 'b2')    // bucket 1 becomes most-recent
+  c.set(40, 'e')     // bucket 4 — should evict bucket 2, not the refreshed 1
+  assert.strictEqual(c.has(10), true, 'a refreshed bucket is not the one evicted')
+  assert.strictEqual(c.has(20), false)
+})
+
+// ── videoThumbAt feature-detect (roadmap #28) ─────────────────────────────────
+// The Wave-4 contract is videoThumbAt({sec}) → {path|null}; the deck prefers it
+// over the older videoThumb({position}) when main exposes it.
+test('a hover prefers videoThumbAt({sec}) when it is exposed', async () => {
+  const askedAt = []; const askedOld = []
+  const { p, nodes } = harness({ apiExtra: {
+    videoThumbAt: (arg) => { askedAt.push(arg.sec); return Promise.resolve({ path: '/c/at-1800.jpg' }) },
+    videoThumb: (arg) => { askedOld.push(arg.position); return Promise.resolve({ ok: true, path: '/c/old.jpg' }) },
+  } })
+  p._setState(stateAt(1000))
+  hoverSeek(nodes, 0.5)                 // 1800
+  assert.deepStrictEqual(askedAt, [1800], 'the new contract was called with sec')
+  assert.deepStrictEqual(askedOld, [], 'the old one is not called when the new exists')
+  await Promise.resolve(); await Promise.resolve()
+  const img = nodes['vt-seek-bubble'].children[0]
+  assert.match(img.attrs.src, /at-1800\.jpg$/)
+})
+
+test('the bucket cache spares a second request in the same bucket', async () => {
+  let calls = 0
+  const { p, nodes } = harness({ apiExtra: {
+    videoThumbAt: (arg) => { calls++; return Promise.resolve({ path: '/c/t.jpg' }) },
+  } })
+  p._setState(stateAt(0))
+  hoverSeek(nodes, 12 / 3600)           // ~12s → bucket 1
+  await Promise.resolve(); await Promise.resolve()
+  assert.strictEqual(calls, 1)
+  // Move within the same bucket and away and back: the cached frame is reused,
+  // no new IPC.
+  hoverSeek(nodes, 15 / 3600)           // ~15s → still bucket 1
+  await Promise.resolve(); await Promise.resolve()
+  assert.strictEqual(calls, 1, 'a second hover in the same bucket must not re-request')
+})
+
+test('opening a new file clears the thumb cache', async () => {
+  let calls = 0
+  const { p, nodes } = harness({ apiExtra: {
+    videoThumbAt: () => { calls++; return Promise.resolve({ path: '/c/t.jpg' }) },
+  } })
+  p.open({ title: 'A' })
+  p._setState(stateAt(0))
+  hoverSeek(nodes, 12 / 3600)
+  await Promise.resolve(); await Promise.resolve()
+  assert.strictEqual(calls, 1)
+  p.open({ title: 'B' })                // a new film: its frames are its own
+  p._setState(stateAt(0))
+  // A real wait past the throttle window so the second hover fires straight
+  // away rather than coalescing with the first — this test is about the cache
+  // being cleared, not about the debounce.
+  await new Promise(r => setTimeout(r, 260))
+  hoverSeek(nodes, 12 / 3600)           // same bucket, but a different file
+  await Promise.resolve(); await Promise.resolve()
+  assert.strictEqual(calls, 2, 'the previous file’s cache must not answer for the new one')
+})
+
+// ── Subtitle style menu (roadmap #30) ─────────────────────────────────────────
+// The CC menu offers a "Style…" row that opens a submenu of size / colour /
+// background / vertical position, each applied through the subStyle verb and
+// persisted app-wide.
+function subStyleHarness (opts = {}) {
+  const h = harness(opts)
+  const buckets = {
+    '[data-substyle-size]': [], '[data-substyle-color]': [],
+    '[data-substyle-bg]': [], '[data-substyle-pos]': [],
+    '[data-subact]': [], '.vt-menu-item': [], '[data-subfile]': [],
+    '[data-delay]': [], '[data-online-sub]': [],
+  }
+  h.nodes['vt-menu'].querySelectorAll = sel => buckets[sel] || []
+  h.rows = buckets
+  return h
+}
+
+test('the CC menu offers a Style… row that opens the style submenu', async () => {
+  const h = subStyleHarness({ tracks: [] })
+  h.p._setState(stateAt(100))
+  const styleRow = el('style'); styleRow.dataset.subact = 'style'
+  h.rows['[data-subact]'] = [styleRow]
+  h.nodes['vt-subs'].fire('click')
+  await new Promise(r => setImmediate(r))
+  assert.match(h.nodes['vt-menu'].innerHTML, /Style…/, 'the CC menu carries a Style entry')
+  styleRow.fire('click')
+  // The submenu is now open with all four controls.
+  assert.match(h.nodes['vt-menu'].innerHTML, /Subtitle style/)
+  assert.match(h.nodes['vt-menu'].innerHTML, /data-substyle-color/)
+  assert.match(h.nodes['vt-menu'].innerHTML, /data-substyle-pos/)
+})
+
+test('picking a colour and a position sends the mapped mpv values and persists', async () => {
+  const writes = []
+  const h = subStyleHarness({ tracks: [], local: { read: () => null, write: (k, v) => { writes.push([k, v]); return true } } })
+  h.p._setState(stateAt(100))
+  const styleRow = el('style'); styleRow.dataset.subact = 'style'
+  h.rows['[data-subact]'] = [styleRow]
+  const yellow = el('y'); yellow.dataset.substyleColor = 'yellow'
+  const mid = el('m'); mid.dataset.substylePos = 'mid'
+  h.rows['[data-substyle-color]'] = [yellow]
+  h.rows['[data-substyle-pos]'] = [mid]
+  h.nodes['vt-subs'].fire('click')
+  await new Promise(r => setImmediate(r))
+  styleRow.fire('click')
+  yellow.fire('click')
+  assert.deepStrictEqual(h.sent.filter(s => s.verb === 'subStyle').pop(),
+    { verb: 'subStyle', args: { color: '#FFFF00' } }, 'yellow maps to its hex')
+  mid.fire('click')
+  assert.deepStrictEqual(h.sent.filter(s => s.verb === 'subStyle').pop(),
+    { verb: 'subStyle', args: { pos: 85 } }, 'mid lifts the line off the bottom')
+  // Both choices were persisted under the one style key.
+  const last = writes.filter(w => w[0] === 'papaVtSubStyle').pop()
+  assert.ok(last, 'the style was persisted')
+  assert.strictEqual(last[1].color, 'yellow')
+  assert.strictEqual(last[1].position, 'mid')
+})
+
+test('a remembered subtitle style is applied when the file starts', async () => {
+  const { p, sent } = harness({ tracks: [], local: {
+    read: k => (k === 'papaVtSubStyle' ? { size: 'L', color: 'cyan', background: 'soft', position: 'mid' } : null),
+  } })
+  p.open({ title: 'X' })
+  p._setState(stateAt(5))
+  await new Promise(r => setImmediate(r))
+  const styled = sent.filter(s => s.verb === 'subStyle')
+  assert.ok(styled.length, 'the remembered look was pushed on start')
+  const args = styled[0].args
+  assert.strictEqual(args.scale, 1.3, 'L')
+  assert.strictEqual(args.color, '#00FFFF', 'cyan')
+  assert.strictEqual(args.backColor, '#80000000', 'soft box')
+  assert.strictEqual(args.pos, 85, 'mid')
+})
+
+test('the default subtitle style spends no commands on start', async () => {
+  const { p, sent } = harness({ tracks: [], local: { read: () => null } })
+  p.open({ title: 'X' })
+  p._setState(stateAt(5))
+  await new Promise(r => setImmediate(r))
+  assert.ok(!sent.some(s => s.verb === 'subStyle'), 'an untouched style costs nothing')
+})
+
+test('videoSubStyle passthrough is called alongside subStyle when exposed', async () => {
+  const passed = []
+  const h = subStyleHarness({ tracks: [], apiExtra: {
+    videoSubStyle: (arg) => { passed.push(arg); return Promise.resolve({ ok: true }) },
+  } })
+  h.p._setState(stateAt(100))
+  const styleRow = el('style'); styleRow.dataset.subact = 'style'
+  h.rows['[data-subact]'] = [styleRow]
+  const cyan = el('c'); cyan.dataset.substyleColor = 'cyan'
+  h.rows['[data-substyle-color]'] = [cyan]
+  h.nodes['vt-subs'].fire('click')
+  await new Promise(r => setImmediate(r))
+  styleRow.fire('click')
+  cyan.fire('click')
+  assert.ok(passed.length, 'the passthrough was called')
+  assert.strictEqual(passed[passed.length - 1].color, 'cyan', 'with the friendly names')
+})

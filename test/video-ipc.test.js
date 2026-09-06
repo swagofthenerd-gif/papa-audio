@@ -456,8 +456,9 @@ test('playback waits for the stage rectangle before starting', () => {
   const at = RENDERER.indexOf('function _videoPlayResult(')
   assert.ok(at > -1)
   // The window is generous: the open() payload has grown prefs and callbacks,
-  // and the point is the ORDER of ready vs play, not the function's size.
-  const body = RENDERER.slice(at, at + 5000)
+  // and now the Wave-4 per-show track-memory feature-detect (#31/#32), and the
+  // point is the ORDER of ready vs play, not the function's size.
+  const body = RENDERER.slice(at, at + 8000)
   const ready = body.indexOf('_player.ready')
   const play = body.indexOf('api.videoPlay')
   assert.ok(ready > -1, 'the stage rectangle must be reported before playback')

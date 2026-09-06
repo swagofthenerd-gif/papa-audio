@@ -109,7 +109,10 @@ function topLevelRequireCount () {
 // search-history) — each is a handful of pure functions with no I/O at import,
 // so the startup cost is negligible, but the ceiling moves deliberately, not
 // incidentally, per the contract below.
-const REQUIRE_CEILING = 74
+// Raised 2026-09-06 to 78: the Wave 4 backend added three more pure-logic
+// modules required at startup (debrid, track-memory, memory-watchdog) — same
+// shape, no I/O at import, negligible startup cost — plus a little headroom.
+const REQUIRE_CEILING = 78
 
 test('main.js top-level require count stays under its recorded ceiling', () => {
   const n = topLevelRequireCount()

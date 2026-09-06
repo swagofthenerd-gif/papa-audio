@@ -621,6 +621,36 @@
       return item
     }
 
+    // Deletes an item outright (roadmap #33: the Continue Watching "✕ Remove").
+    // Distinct from markWatched: that keeps the entry as history and can auto-log
+    // the diary; this erases it, so a mistaken or abandoned entry leaves no trace.
+    // Returns the removed item so a caller can offer Undo by re-writing it.
+    // Goes through the same save() bridge write path everything else uses, so a
+    // remove reaches disk exactly as a position update does.
+    function remove(key) {
+      const state = load()
+      const k = String(key)
+      const prev = state.items[k]
+      if (!prev) return null
+      delete state.items[k]
+      save()
+      return prev
+    }
+
+    // Re-writes a previously-removed item verbatim (roadmap #33 / #66: the Undo
+    // for remove()). No watched hook and no recompute — it is a literal restore
+    // of what remove() handed back, so an accidental dismissal is fully
+    // reversible. Ignores an entry with no real id, matching setPosition's guard.
+    function restore(key, item) {
+      if (!item || typeof item !== 'object') return null
+      const k = String(key)
+      if (!_hasRealId(k, item)) return null
+      const state = load()
+      state.items[k] = { ...item }
+      save()
+      return state.items[k]
+    }
+
     // Fire the diary auto-log hook on the watched false→true transition only.
     // A re-save of an already-watched item, or an update that leaves watched
     // false, must not re-log — that is the dedupe the roadmap asks for at the
@@ -759,7 +789,7 @@
 
     return {
       init, flush,
-      get, setPosition, markWatched,
+      get, setPosition, markWatched, remove, restore,
       continueWatching, watchlist, toggleWatchlist, inWatchlist, history,
       prefs, setPrefs, skip, setSkip,
       storageHealthy,

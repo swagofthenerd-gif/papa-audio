@@ -13,6 +13,9 @@ const { createAniSkip } = require('./skip/aniskip')
 const { detectIntro } = require('./skip/detect-intro')
 const dlState_ = require('./src/dl-state')
 const videoKeep = require('./src/video-keep')
+const { createDebrid } = require('./src/debrid')
+const trackMemory = require('./src/track-memory')
+const { createWatchdog } = require('./src/memory-watchdog')
 const https = require('https')
 // No sync child_process on the main thread: every shell-out goes through run().
 const { spawn, execFile } = require('child_process')
@@ -762,6 +765,16 @@ const sideStores = {
   // Artist bio cache (Wave 3 contract): keyless MusicBrainz→Wikipedia bios keyed
   // by folded artist name, capped at 100 with a 30-day TTL (src/artist-info.js).
   artistInfoCache: new SideStore({ dir: USER_DATA, name: 'artist-info-cache', fallback: {}, debounceMs: 1000, onError: _sideErr }),
+
+  // Per-show track memory (roadmap #31/#32): the audio/subtitle language and
+  // dub/sub choice last used for a show, keyed by the renderer's showKey, capped
+  // at 200 shows (src/track-memory.js).
+  trackMemory: new SideStore({ dir: USER_DATA, name: 'track-memory', fallback: {}, debounceMs: 1000, onError: _sideErr }),
+
+  // Kept-offline file index (roadmap #42): one entry per file copied out of the
+  // stream cache, so the downloads manager can list, size and delete them
+  // without re-walking the disk. { id, title, path, sizeBytes, keptAt }[].
+  videoKeepIndex: new SideStore({ dir: USER_DATA, name: 'video-keep-index', fallback: [], debounceMs: 800, onError: _sideErr }),
 }
 
 // One-time move out of the shared config. adoptIfEmpty only takes the legacy
@@ -1459,6 +1472,10 @@ app.whenReady().then(() => {
       safeSend('app-recovered-from-crash')
     })
   }
+  // Memory ceiling watchdog (roadmap #63): sample every five minutes from here
+  // on. Started after the window exists so the first sample can read the
+  // renderer's process, not before it is up.
+  _startMemoryWatchdog()
   initMpris()          // MPRIS D-Bus first; media-key grab only as fallback
   initPlayer()
   createTray()
@@ -2093,6 +2110,59 @@ function safeSend(channel, payload) {
 // A reload starts a fresh renderer with no idea what it missed, so the counters
 // restart with it and the first event of each channel is seq 1 again.
 function resetChannelSeq() { _channelSeq.clear() }
+
+// ── Memory ceiling watchdog (roadmap #63) ───────────────────────────────────
+// A long session slowly grows the renderer's heap. This samples main and the
+// renderer every five minutes, keeps a ring of the last twelve samples for
+// papaMemoryStats(), and — when the renderer's RSS crosses 1.5 GB on two
+// consecutive samples — emits 'papa-memory-pressure' once so the renderer can
+// trim its caches. The decision logic (the ring, the two-in-a-row latch) lives
+// in src/memory-watchdog.js so it is testable without a five-minute wait; this
+// is only the sampling and the wiring. No user-facing behaviour beyond the event.
+const MEMORY_SAMPLE_MS = 5 * 60 * 1000
+const _memoryWatchdog = createWatchdog({})
+let _memoryTimer = null
+
+// One sample: main's own RSS from process.memoryUsage, and the renderer's RSS
+// from its webContents. getProcessMemoryInfo is async and returns kilobytes;
+// residentSet is the field that matches process.memoryUsage().rss (bytes), so it
+// is scaled ×1024 to keep both sides in one unit. A renderer that is gone or
+// unreachable contributes 0, which can never trip the ceiling — silence is not
+// pressure.
+async function _sampleMemory() {
+  let mainRss = 0
+  try { mainRss = process.memoryUsage().rss } catch (_) {}
+  let rendererRss = 0
+  try {
+    const wc = mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null
+    if (wc && !wc.isDestroyed() && typeof wc.getProcessMemoryInfo === 'function') {
+      const info = await wc.getProcessMemoryInfo()
+      rendererRss = (Number(info && info.residentSet) || 0) * 1024
+    }
+  } catch (_) { /* an unreachable renderer samples as 0 */ }
+  const sample = { at: Date.now(), mainRss, rendererRss }
+  const verdict = _memoryWatchdog.observe(sample)
+  if (verdict.pressure) {
+    console.warn(`[papa][memory] renderer RSS over ceiling (${Math.round(rendererRss / 1e6)} MB) ` +
+      `on ${verdict.run} consecutive samples — asking the renderer to trim caches`)
+    safeSend('papa-memory-pressure', { rendererRss, mainRss, at: sample.at })
+  }
+}
+
+function _startMemoryWatchdog() {
+  if (_memoryTimer) return
+  _memoryTimer = setInterval(() => { _sampleMemory().catch(() => {}) }, MEMORY_SAMPLE_MS)
+  _memoryTimer.unref?.()
+}
+
+// The last twelve samples plus the current ceiling, for a diagnostics surface.
+ipcMain.handle('papa-memory-stats', () => {
+  return {
+    ok: true,
+    thresholdBytes: _memoryWatchdog.thresholdBytes,
+    samples: _memoryWatchdog.samples(),
+  }
+})
 
 function playerReady() {
   return !!(player && mpvAvailable && player.alive !== false)
@@ -2927,6 +2997,12 @@ function _videoConfig() {
     diaryAutoLog: saved.diaryAutoLog !== false,
     airingNotifications: saved.airingNotifications !== false,
     autoOrganizeDownloads: saved.autoOrganizeDownloads === true,
+    // Subtitle look (roadmap #30), persisted so a new mpv spawn re-applies it —
+    // subtitle styling in mpv is per-process, so without this every episode
+    // switch (a fresh load, sometimes a fresh engine) would drop back to the
+    // defaults. A plain object of the engine's friendly style keys; an empty
+    // object means "mpv's defaults", which is the fresh-install state.
+    subStyle: (saved.subStyle && typeof saved.subStyle === 'object') ? saved.subStyle : {},
   }
 }
 ipcMain.handle('video-config-get', () => _videoConfig())
@@ -2936,8 +3012,78 @@ ipcMain.handle('video-config-set', (_, patch) => {
   if (typeof p.diaryAutoLog === 'boolean') next.diaryAutoLog = p.diaryAutoLog
   if (typeof p.airingNotifications === 'boolean') next.airingNotifications = p.airingNotifications
   if (typeof p.autoOrganizeDownloads === 'boolean') next.autoOrganizeDownloads = p.autoOrganizeDownloads
+  if (p.subStyle && typeof p.subStyle === 'object') next.subStyle = p.subStyle
   store.set('videoConfig', next)
   return _videoConfig()
+})
+
+// Map a UI subtitle-style request (size/color/position/background) onto the
+// engine's friendly style keys, persist it in videoConfig so a new engine spawn
+// re-applies it, and push it to the live engine now (roadmap #30). The contract
+// speaks size/color/position/background; the engine's SUB_STYLE_PROPS speaks
+// fontSize/color/pos/backColor — this is the one place the two vocabularies meet.
+//
+// Each field is optional: a patch that carries only `size` leaves the colour and
+// position as they were. Values are passed to mpv as-is (mpv validates them), so
+// an out-of-range size is mpv's problem to clamp, not a crash here.
+function _mapSubStyle(patch) {
+  const p = patch && typeof patch === 'object' ? patch : {}
+  const out = {}
+  if (p.size != null) out.fontSize = p.size
+  if (p.color != null) out.color = p.color
+  if (p.position != null) out.pos = p.position
+  // A backing box: a truthy `background` becomes an opaque back colour, false
+  // clears it back to transparent. A string is taken as an explicit colour.
+  if (p.background != null) {
+    out.backColor = (p.background === true) ? '#80000000'
+      : (p.background === false ? '#00000000' : p.background)
+  }
+  return out
+}
+ipcMain.handle('video-sub-style', async (_, patch = {}) => {
+  try {
+    const mapped = _mapSubStyle(patch)
+    // Persist the merged style so the next spawn re-applies the whole look, not
+    // just the last field touched.
+    const cfg = { ...store.get('videoConfig', {}) }
+    cfg.subStyle = { ...(cfg.subStyle && typeof cfg.subStyle === 'object' ? cfg.subStyle : {}), ...mapped }
+    store.set('videoConfig', cfg)
+    // Apply to the running engine when there is one. Best-effort: nothing playing
+    // means nothing to style, which is not an error.
+    try { await videoEngine().setSubStyle(mapped) } catch (_) {}
+    return { ok: true, subStyle: cfg.subStyle }
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) }
+  }
+})
+
+// Per-show track memory (roadmap #31/#32). The renderer asks, when a show opens,
+// what audio/subtitle/dub choices it remembers for that show; and writes them
+// back when the viewer makes a pick. Keyed by the renderer's own showKey, capped
+// at 200 shows with an LRU trim (src/track-memory.js). A Get for an unknown show
+// returns null, which the renderer reads as "no memory, use the defaults".
+ipcMain.handle('video-track-memory-get', (_, { showKey } = {}) => {
+  try {
+    return { ok: true, memory: trackMemory.get(sideStores.trackMemory.get() || {}, showKey) }
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e), memory: null }
+  }
+})
+ipcMain.handle('video-track-memory-set', (_, { showKey, audioLang, subLang, dubPref } = {}) => {
+  try {
+    // Only the fields actually present in the call are patched; track-memory.set
+    // merges against what is stored, so setting just the audio track does not
+    // wipe a remembered subtitle choice. hasOwnProperty is respected by set().
+    const patch = {}
+    if (audioLang !== undefined) patch.audioLang = audioLang
+    if (subLang !== undefined) patch.subLang = subLang
+    if (dubPref !== undefined) patch.dubPref = dubPref
+    sideStores.trackMemory.update(prev =>
+      trackMemory.set(prev || {}, showKey, patch, Date.now(), trackMemory.DEFAULT_CAP))
+    return { ok: true, memory: trackMemory.get(sideStores.trackMemory.get() || {}, showKey) }
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) }
+  }
 })
 
 ipcMain.handle('get-streaming-volume-offset', () => store.get('streamingVolumeOffset', 0))
@@ -7987,9 +8133,36 @@ function _videoSettings() {
       // (same Torznab results endpoint).
       jackettUrl: '',
       jackettApiKey: '',
+      // Debrid (roadmap #40), off by default. 'realdebrid' or '' — an empty
+      // provider means the whole feature is dormant: the debrid singleton is
+      // never constructed and video-play never tries it, so a user with no
+      // account pays nothing. The token is the RealDebrid API token from the
+      // user's account page.
+      debridProvider: '',
+      debridToken: '',
+      // Where kept-offline files may grow to before a new keep is refused
+      // (roadmap #42), in gigabytes. 0 means no ceiling.
+      videoKeepQuotaGB: 20,
     },
     store.get('videoSettings')
   )
+}
+
+// The debrid client (roadmap #40), built lazily and only when configured. The
+// token is read through a getter so a token changed in Settings is picked up
+// without rebuilding, and reset() drops the instance so switching provider (or
+// clearing it) rebuilds cleanly.
+const debrid = _lazy(() => createDebrid({
+  provider: _videoSettings().debridProvider || 'realdebrid',
+  token: () => _videoSettings().debridToken || '',
+  fetchFn: (url, opts) => fetch(url, { ...(opts || {}), signal: AbortSignal.timeout(15000) }),
+}))
+
+// Whether debrid is switched on: a provider AND a token. The check every
+// video-play consults before spending any of its budget on RealDebrid.
+function _debridConfigured() {
+  const s = _videoSettings()
+  return s.debridProvider === 'realdebrid' && !!s.debridToken
 }
 
 // A hung backend must never hang the app: every catalog/provider fetch goes
@@ -8097,7 +8270,7 @@ const movieTv = _lazy(() => createMovieTvProvider({ fetchFn: fetchWithTimeout(15
 const anime = _lazy(() => createAnimeProvider({ fetchFn: fetchWithTimeout(15000), resolvers: [] }))
 const videoEngine = _lazy(() => new VideoEngine())
 const yarrlist = _lazy(() => createYarrlistDirectory({ fetchFn: fetchWithTimeout(15000) }))
-const _videoSession = { streamer: null, thumbnailer: null, win: null, token: 0, bounds: null }
+const _videoSession = { streamer: null, thumbnailer: null, win: null, token: 0, bounds: null, mini: false, miniRect: null }
 
 // In-app embedding of the mpv video surface. mpv's `--wid` is an X11 concept:
 // on this XWayland session the native handle of a child BrowserWindow is the
@@ -8195,7 +8368,10 @@ ipcMain.handle('video-surface-visible', (_, { visible } = {}) => {
     const win = _videoSession.win
     if (!win || win.isDestroyed()) return { ok: true }
     if (visible) {
-      if (_videoSession.bounds) _positionVideoWindow(_videoSession.bounds)
+      // In mini mode the surface returns to its corner rectangle; otherwise to
+      // the full theatre stage.
+      if (_videoSession.mini) { const r = _miniStageBounds(); if (r) _positionVideoWindow(r) }
+      else if (_videoSession.bounds) _positionVideoWindow(_videoSession.bounds)
       win.showInactive()
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.focus()
     } else {
@@ -8211,7 +8387,65 @@ ipcMain.handle('video-surface-bounds', (_, rect) => {
   // Converted on arrival, so everything downstream — the move/resize follower,
   // the fullscreen backstop, restoring after a minimise — works in one unit.
   _videoSession.bounds = _cssToDip(rect)
+  // In mini mode the theatre's stage rectangle is ignored: the surface lives in
+  // the corner, not over #vt-stage. The full-stage rectangle is still recorded
+  // above so returning to the theatre restores it, but it is not applied now.
+  if (_videoSession.mini) return { ok: _positionVideoWindow(_miniStageBounds()) }
   return { ok: _positionVideoWindow(_videoSession.bounds) }
+})
+
+// The corner rectangle the picture-in-picture surface occupies (roadmap #27), in
+// DIP relative to the content area. ~480×270 (16:9) tucked into the bottom-right
+// with a small inset, clamped so it can never be wider or taller than the
+// content — a tiny window makes it degrade gracefully rather than overflow. An
+// explicit rect from the renderer (a corner the user dragged the mini player to)
+// wins over the default; it is converted from CSS px like every other incoming
+// rectangle.
+const MINI_W = 480, MINI_H = 270, MINI_INSET = 16
+function _miniStageBounds() {
+  if (_videoSession.miniRect) return _videoSession.miniRect
+  try {
+    if (!mainWindow || mainWindow.isDestroyed()) return null
+    const c = mainWindow.getContentBounds()
+    const w = Math.min(MINI_W, Math.max(2, c.width - MINI_INSET * 2))
+    const h = Math.min(MINI_H, Math.max(2, c.height - MINI_INSET * 2))
+    return {
+      x: Math.max(0, c.width - w - MINI_INSET),
+      y: Math.max(0, c.height - h - MINI_INSET),
+      width: w, height: h,
+    }
+  } catch (_) { return null }
+}
+
+// Picture-in-picture (roadmap #27). Leaving the theatre while a film plays used
+// to hide the native surface entirely and fall back to an audio-only mini bar;
+// this keeps the picture on screen, shrunk into a corner, so "browse while it
+// plays" shows the video too. `on:false` returns the surface to the theatre
+// stage. An optional `rect` (CSS px, content-relative) pins the mini surface to
+// a specific corner the renderer chose; omitting it uses the default bottom-right
+// rectangle. The renderer still owns showing/hiding its own HTML chrome; this
+// only moves and sizes the mpv window.
+ipcMain.handle('video-mini-mode', (_, { on, rect } = {}) => {
+  try {
+    const win = _videoSession.win
+    _videoSession.mini = !!on
+    _videoSession.miniRect = (on && rect) ? _cssToDip(rect) : null
+    if (!win || win.isDestroyed()) return { ok: true, mini: _videoSession.mini, rect: null }
+    if (on) {
+      const r = _miniStageBounds()
+      if (r) _positionVideoWindow(r)
+      // The surface may have been hidden by a prior minimise; mini mode wants it
+      // visible in the corner, so show it without stealing focus from the deck.
+      win.showInactive()
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.focus()
+      return { ok: true, mini: true, rect: r }
+    }
+    // Back to the theatre: re-apply the last full-stage rectangle.
+    if (_videoSession.bounds) _positionVideoWindow(_videoSession.bounds)
+    return { ok: true, mini: false, rect: _videoSession.bounds || null }
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) }
+  }
 })
 
 // Fullscreen means the video window alone goes fullscreen; the deck is not
@@ -8243,9 +8477,16 @@ ipcMain.handle('video-fullscreen', (_, opts) => {
 function _rebindVideoFollow() {
   if (!mainWindow || mainWindow.isDestroyed()) return
   const follow = () => {
-    if (_videoSession.bounds && _videoSession.win && !_videoSession.win.isDestroyed()) {
-      _positionVideoWindow(_videoSession.bounds)
+    if (!_videoSession.win || _videoSession.win.isDestroyed()) return
+    // In mini mode the corner rectangle is recomputed from the (possibly moved
+    // or resized) content area, so the picture-in-picture surface stays tucked
+    // in its corner rather than drifting with the old numbers.
+    if (_videoSession.mini) {
+      const r = _miniStageBounds()
+      if (r) _positionVideoWindow(r)
+      return
     }
+    if (_videoSession.bounds) _positionVideoWindow(_videoSession.bounds)
   }
   mainWindow.on('move', follow)
   mainWindow.on('resize', follow)
@@ -9408,11 +9649,33 @@ ipcMain.handle('video-probe', async (_, { url }) => {
 // simply shows the time alone, exactly as it did before this existed. Only
 // torrent streams have a thumbnailer; a direct URL play never built one, so it
 // returns null too. Never throws, so a hover can never surface an error dialog.
-ipcMain.handle('video-thumb', async (_, { position } = {}) => {
+// The W4-UI contract names this videoThumbAt({sec}); the older seek-bar hover
+// (Player #5) called it videoThumb({position}). Both mean the same request — a
+// frame at a time on the current stream — and both land here, so `sec` and
+// `position` are accepted interchangeably. The thumbnailer already throttles to
+// one extraction per bucket at a time (in-flight dedupe) and returns null fast
+// when busy, which is exactly the "one at a time, skip if busy" the contract
+// asks for.
+// Debrid status for a future settings surface (roadmap #40). Returns the
+// contract shape { configured, ok, premiumUntil? } directly — here `ok` means
+// "the token works and the account is premium", which is what a settings badge
+// wants, not the usual IPC success flag. Never throws: an unconfigured or
+// failing debrid reports { configured:false, ok:false } rather than an error.
+ipcMain.handle('debrid-check', async () => {
+  try {
+    if (!_debridConfigured()) return { configured: false, ok: false }
+    return await debrid().check()
+  } catch (e) {
+    return { configured: true, ok: false, error: (e && e.message) || String(e) }
+  }
+})
+
+ipcMain.handle('video-thumb', async (_, arg = {}) => {
   try {
     const thumbnailer = _videoSession.thumbnailer
     if (!thumbnailer || typeof thumbnailer.at !== 'function') return { ok: true, path: null }
-    const p = thumbnailer.at(Number(position) || 0)
+    const sec = Number(arg && (arg.sec != null ? arg.sec : arg.position)) || 0
+    const p = thumbnailer.at(sec)
     return { ok: true, path: p || null }
   } catch (_) {
     return { ok: true, path: null }
@@ -9493,6 +9756,10 @@ function _videoTeardown() {
     _videoSession.streamer = null
   }
   _thumbnailerTeardown()
+  // A stopped stream leaves mini mode: the next play opens in the theatre, not
+  // whatever corner the last one was tucked into.
+  _videoSession.mini = false
+  _videoSession.miniRect = null
   try { videoEngine().stop() } catch (_) {}
 }
 
@@ -9517,6 +9784,17 @@ function _wireVideoEngine() {
     _thumbnailerTeardown()
     _closeVideoWindow()
     safeSend('video-event', { kind: 'error', message: 'Playback stopped unexpectedly (mpv exited).' })
+  })
+  // Subtitle styling is per-process in mpv, so a freshly-loaded file starts at
+  // the defaults. Re-apply the persisted look (roadmap #30) the moment mpv has
+  // the file open, so an episode switch or a new engine spawn keeps whatever the
+  // viewer set. Best-effort: an empty style is a no-op and a dead engine throws
+  // harmlessly into the catch.
+  engine.on('fileLoaded', () => {
+    try {
+      const style = _videoConfig().subStyle
+      if (style && Object.keys(style).length) engine.setSubStyle(style).catch(() => {})
+    } catch (_) {}
   })
   // The theatre's control deck is driven by the throttled state stream, not by
   // individual property updates — the UI merges nothing (§4.2), so every emit
@@ -9762,6 +10040,39 @@ ipcMain.handle('video-play', async (_, { result }) => {
       // this changes nothing about the bounds-before-show contract: it only
       // moves the process spawn earlier in the same handler.
       const spinUp = videoEngine().start(undefined, { wid }).catch(e => { fail(e); throw e })
+      // Debrid fast path (roadmap #40). When configured, try to turn the magnet
+      // into a direct HTTPS URL before touching the swarm — a cached magnet comes
+      // back in a second or two and plays with no peers. It is given a strict
+      // budget (10s); if RealDebrid does not answer in time, or the magnet is not
+      // cached, or anything else goes wrong, playback falls back to the P2P path
+      // below transparently — the viewer never sees the attempt. The HTTPS URL
+      // goes through the exact same engine.load() the torrent path uses (mpv
+      // plays a URL and a local server URL identically), so nothing downstream
+      // changes.
+      if (_debridConfigured()) {
+        const DEBRID_BUDGET_MS = 10000
+        const budget = new Promise((_r, rej) => setTimeout(() => rej(new Error('debrid budget')), DEBRID_BUDGET_MS))
+        Promise.race([debrid().resolveMagnet(result.magnet), budget])
+          .then(async directUrl => {
+            if (!current() || !directUrl) throw new Error('debrid unusable')
+            await spinUp
+            if (!current()) throw new Error('superseded')
+            await videoEngine().load(directUrl)
+            if (!current()) return
+            started(directUrl)
+            safeSend('video-event', { kind: 'debrid', ok: true })
+          })
+          .catch(() => {
+            // Debrid did not deliver in time (or at all). Only start the torrent
+            // if this play is still the current one and nothing has loaded yet —
+            // guarded by the token, exactly like every other async callback here.
+            if (!current()) return
+            _startDebridFallbackTorrent()
+          })
+      } else {
+        _startDebridFallbackTorrent()
+      }
+      function _startDebridFallbackTorrent() {
       _startTorrentStream(result, {
         current, fail,
         onReady: (url, streamer) => {
@@ -9789,6 +10100,7 @@ ipcMain.handle('video-play', async (_, { result }) => {
           }).catch(fail)
         },
       })
+      } // _startDebridFallbackTorrent
     } else {
       if (!result.url) return { ok: false, error: 'This source has no playable URL' }
       videoEngine().start(result.url, { wid }).then(() => started(result.url)).catch(fail)
@@ -10048,14 +10360,94 @@ ipcMain.handle('video-keep-file', async (_, { index, show } = {}) => {
     if (!fs.existsSync(info.path)) {
       return { ok: false, error: 'The downloaded file could not be found' }
     }
+    // Quota gate (roadmap #42): refuse a keep that would push the kept-file total
+    // past the configured ceiling, and hand back the numbers a "you're using X of
+    // Y" message needs. A quota of 0 (unset) never blocks. Re-keeping the same
+    // episode replaces an existing copy rather than adding to the total, so its
+    // current size is discounted from usage before the check.
+    const quotaGB = _videoSettings().videoKeepQuotaGB
     const dest = videoKeep.destPath(_keepVideosRoot(), show, info.name)
+    const index = (sideStores.videoKeepIndex.get() || []).filter(e => e && e.path !== dest)
+    const verdict = videoKeep.quotaCheck(index, quotaGB, info.total)
+    if (!verdict.ok) {
+      return {
+        ok: false, error: 'quota',
+        usedBytes: verdict.used, limitBytes: verdict.limit,
+        addBytes: verdict.add, afterBytes: verdict.after,
+      }
+    }
     try { fs.mkdirSync(path.dirname(dest), { recursive: true }) } catch (e) {
       return { ok: false, error: 'Could not create the Videos folder: ' + ((e && e.message) || e) }
     }
     // copyFile replaces any earlier keep of the same episode rather than
     // erroring — re-keeping is a no-op the user should not have to think about.
     await fs.promises.copyFile(info.path, dest)
+    // Record it in the index so the downloads manager (#42) can list and delete
+    // it without walking the disk. Keyed by path so a re-keep updates in place
+    // rather than duplicating. Best-effort: a failed index write does not undo a
+    // successful copy — the file is kept either way.
+    try {
+      let size = info.total
+      try { size = fs.statSync(dest).size } catch (_) {}
+      const entry = {
+        id: crypto.randomBytes(8).toString('hex'),
+        title: (show && String(show).trim()) || info.name || 'video',
+        path: dest, sizeBytes: size, keptAt: Date.now(),
+      }
+      sideStores.videoKeepIndex.update(prev => {
+        const list = (Array.isArray(prev) ? prev : []).filter(e => e && e.path !== dest)
+        list.push(entry)
+        return list
+      })
+    } catch (_) { /* the index is a convenience, never a reason to fail the keep */ }
     return { ok: true, path: dest }
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) }
+  }
+})
+
+// The offline downloads manager's data (roadmap #42). Lists every kept file with
+// its size and when it was kept; the renderer draws the manager. Stale entries
+// whose file has since been removed on disk are pruned from the answer (and from
+// the index) so a list never shows a file that is not there.
+ipcMain.handle('video-keep-list', () => {
+  try {
+    const raw = sideStores.videoKeepIndex.get() || []
+    const alive = raw.filter(e => {
+      if (!e || !e.path) return false
+      try { return fs.statSync(e.path).isFile() } catch (_) { return false }
+    })
+    // Rewrite the index only when pruning actually removed something, so a plain
+    // list does not churn the store on every call.
+    if (alive.length !== raw.length) sideStores.videoKeepIndex.set(alive)
+    const entries = alive.map(e => ({
+      id: e.id, title: e.title, path: e.path,
+      sizeBytes: Number(e.sizeBytes) || 0, keptAt: Number(e.keptAt) || 0,
+    }))
+    const quotaGB = _videoSettings().videoKeepQuotaGB
+    return {
+      ok: true, entries,
+      usedBytes: videoKeep.usageBytes(entries),
+      quotaBytes: videoKeep.quotaBytes(quotaGB),
+      quotaGB: Number(quotaGB) || 0,
+    }
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e), entries: [] }
+  }
+})
+
+// Delete one kept file — removes the file on disk AND its index entry (roadmap
+// #42). A missing file is not an error: the entry is dropped either way, so a
+// file the user removed by hand can still be cleared from the list. An unknown
+// id is reported so the UI does not silently think it worked.
+ipcMain.handle('video-keep-delete', async (_, { id } = {}) => {
+  try {
+    const raw = sideStores.videoKeepIndex.get() || []
+    const entry = raw.find(e => e && e.id === id)
+    if (!entry) return { ok: false, error: 'That download is not in the list' }
+    try { await fs.promises.rm(entry.path, { force: true }) } catch (_) { /* already gone */ }
+    sideStores.videoKeepIndex.set(raw.filter(e => e && e.id !== id))
+    return { ok: true, id }
   } catch (e) {
     return { ok: false, error: (e && e.message) || String(e) }
   }
