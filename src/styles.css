@@ -551,6 +551,35 @@ h2.section-title { font-size:18px; font-weight:700; }
 .find-art-btn svg { width:14px; height:14px; fill:currentColor; }
 .find-art-btn:hover { background:var(--glass-hi); color:var(--text); border-color:rgba(255,255,255,.14); }
 
+/* Home personalization (App #15): the ⚙ edit toggle by the greeting, and the
+   per-row control bar shown in edit mode. */
+.home-edit-btn {
+  display:inline-flex; align-items:center; justify-content:center; gap:6px;
+  background:var(--glass); border:1px solid var(--glass-border);
+  border-radius:100px; color:var(--text3); font-size:12px; font-weight:600;
+  padding:6px 12px; cursor:pointer; margin-left:8px; flex-shrink:0;
+  transition:background .15s, color .15s;
+}
+.home-edit-btn svg { width:15px; height:15px; fill:currentColor; }
+.home-edit-btn:hover { background:var(--glass-hi); color:var(--text); }
+.home-editing .home-row-edit {
+  border:1px dashed var(--glass-border); border-radius:var(--r-sm);
+  margin:0 20px 14px; padding:6px 10px 10px;
+}
+.home-editing .home-row-hidden { opacity:.5; }
+.home-row-controls {
+  display:flex; align-items:center; gap:8px; margin-bottom:6px;
+  padding-bottom:6px; border-bottom:1px solid var(--glass-border);
+}
+.home-row-title { font-size:12px; font-weight:700; color:var(--text2); flex:1; }
+.home-row-btn {
+  background:var(--bg3); border:1px solid var(--glass-border); cursor:pointer;
+  color:var(--text2); font-size:11px; border-radius:var(--r-sm); padding:3px 8px;
+}
+.home-row-btn:hover:not([disabled]) { background:var(--glass); color:var(--text); }
+.home-row-btn[disabled] { opacity:.3; cursor:default; }
+.home-row-empty { color:var(--text3); font-size:12px; padding:10px 0; }
+
 /* Quick grid — recently played row of pills */
 .quick-grid {
   display:grid;
@@ -3983,6 +4012,27 @@ kbd {
 .pl-folder-body.pl-folder-collapsed { display:none; }
 .pl-folder-badge {; }
 
+/* Playlist folder drag-and-drop (App #12): a card lifts while dragging, drop
+   targets (folder headers + the un-file strip) light up when a card is over. */
+.pl-card[draggable="true"] { cursor:grab; }
+.pl-card.pl-card-dragging { opacity:.45; }
+.pl-folder-header.pl-drop-over,
+.pl-drop-zone.pl-drop-over {
+  background:var(--accent-glass, rgba(90,150,255,.18));
+  outline:2px dashed var(--accent, #5a96ff); outline-offset:-2px;
+}
+.pl-drop-zone {
+  padding:10px 14px; margin-bottom:12px; border-radius:var(--r-sm);
+  border:1px dashed var(--border); color:var(--text3);
+  font-size:12px; text-align:center; transition:background .12s var(--ease);
+}
+
+/* Smart-playlist rule-builder live preview (App #11). */
+.sp-preview {
+  padding:8px 10px; border-radius:var(--r-sm);
+  background:var(--bg2); border:1px solid var(--border);
+}
+
 .pl-empty-state {
   display:flex; flex-direction:column; align-items:center; justify-content:center;
   gap:14px; padding:60px 0; color:var(--text3); text-align:center;
@@ -4104,6 +4154,23 @@ kbd {
   background-size:200% 100%; animation:plShimmer 1.4s linear infinite;
 }
 @keyframes plShimmer { 0% { background-position:200% 0; } 100% { background-position:-200% 0; } }
+
+/* Similar-artist chips from the optional native provider (App #19). Hidden by
+   default; the loader unhides only when the provider returns names. */
+.artist-similar { margin-bottom:28px; }
+.artist-similar-heading {
+  font-size:10px; font-weight:700; letter-spacing:1.2px; text-transform:uppercase;
+  color:var(--text3); margin-bottom:10px;
+}
+.artist-similar-chips { display:flex; flex-wrap:wrap; gap:8px; }
+.artist-similar-chip {
+  padding:6px 14px; border-radius:999px; cursor:pointer; font-size:13px;
+  background:var(--glass); border:1px solid var(--glass-border); color:var(--text2);
+  transition:background .15s, color .15s, border-color .15s;
+}
+.artist-similar-chip:hover {
+  background:var(--glass-hi); color:var(--text); border-color:var(--accent);
+}
 
 /* ── Stats for nerds ──────────────────────────────────────────────────────── */
 /* QA CSS-rot: removed duplicate .np-stats-row/.np-stats-pill that overrode the
@@ -5280,6 +5347,88 @@ textarea:focus:not(:focus-visible) { outline: none; }
 .library-search-wrap { margin-bottom:12px }
 .library-search { width:100%;background:var(--bg3);border:1px solid var(--glass-border);border-radius:var(--r-sm);padding:8px 12px;color:var(--text);font-size:13px;outline:none }
 .library-search:focus { border-color:var(--accent) }
+
+/* App #13: search filter chips, fuzzy note and recent-search dropdown. */
+.lib-chips-row {
+  display:flex; align-items:center; gap:6px; flex-wrap:wrap;
+  padding:0 28px 10px; font-size:12px;
+}
+.lib-chip-label { color:var(--text3); font-weight:600; }
+.lib-chip-select {
+  padding:4px 8px; border-radius:var(--r-sm);
+  background:var(--bg3); color:var(--text);
+  border:1px solid var(--glass-border); font-size:12px;
+}
+.lib-fmt-chip {
+  padding:4px 12px; border-radius:999px; cursor:pointer;
+  background:var(--bg3); color:var(--text2);
+  border:1px solid var(--glass-border); font-size:12px;
+  transition:background .12s var(--ease), color .12s var(--ease);
+}
+.lib-fmt-chip:hover { background:var(--glass); }
+.lib-fmt-chip-on {
+  background:var(--accent, #5a96ff); color:#fff; border-color:transparent;
+}
+.lib-fuzzy-note {
+  padding:0 28px 8px; font-size:12px; color:var(--text3); font-style:italic;
+}
+.lib-recent-searches {
+  position:absolute; left:0; right:0; top:calc(100% + 4px); z-index:40;
+  background:var(--bg2); border:1px solid var(--glass-border);
+  border-radius:var(--r-sm); box-shadow:0 8px 24px rgba(0,0,0,.4);
+  padding:6px; max-height:280px; overflow:auto;
+}
+.lib-recent-head {
+  font-size:11px; color:var(--text3); font-weight:600;
+  text-transform:uppercase; letter-spacing:.4px; padding:4px 8px;
+}
+.lib-recent-item {
+  display:flex; align-items:center; gap:8px; width:100%; text-align:left;
+  padding:7px 8px; border-radius:var(--r-sm); border:none; cursor:pointer;
+  background:none; color:var(--text); font-size:13px;
+}
+.lib-recent-item:hover { background:var(--glass); }
+
+/* Year-end Wrapped (App #16). */
+.wrapped-cta {
+  background:linear-gradient(135deg,#7c3aed,#db2777); color:#fff;
+  border:none; border-radius:100px; cursor:pointer; font-weight:600;
+}
+.wrapped-cta:hover { filter:brightness(1.1); }
+.wrapped-page { padding-bottom:40px; }
+.wrapped-header {
+  display:flex; align-items:center; gap:12px;
+  padding:20px 28px 8px; flex-wrap:wrap;
+}
+.wrapped-title { flex:1; font-size:26px; font-weight:800; margin:0; }
+.wrapped-back, .wrapped-copy {
+  background:var(--glass); border:1px solid var(--glass-border);
+  color:var(--text2); border-radius:100px; padding:6px 14px; cursor:pointer;
+  font-size:12px; font-weight:600;
+}
+.wrapped-back:hover, .wrapped-copy:hover { background:var(--glass-hi); color:var(--text); }
+.wrapped-hero-grid {
+  display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr));
+  gap:14px; padding:16px 28px 8px;
+}
+.wrapped-hero-card {
+  border-radius:16px; padding:24px 20px; color:#fff;
+  box-shadow:0 6px 20px rgba(0,0,0,.35); min-height:120px;
+  display:flex; flex-direction:column; justify-content:flex-end;
+}
+.wrapped-hero-value { font-size:32px; font-weight:800; line-height:1; }
+.wrapped-hero-label { font-size:13px; opacity:.85; margin-top:8px; font-weight:600; }
+.wrapped-hero-sub { font-size:11px; opacity:.7; margin-top:2px; }
+.wrapped-section { padding:16px 28px 4px; }
+.wrapped-section h2 { font-size:16px; font-weight:700; margin:0 0 10px; }
+.wrapped-rank-row {
+  display:flex; align-items:center; gap:12px; padding:8px 0;
+  border-bottom:1px solid var(--glass-border);
+}
+.wrapped-rank-num { width:22px; text-align:center; color:var(--text3); font-weight:700; font-size:13px; }
+.wrapped-rank-art { width:34px; height:34px; border-radius:6px; object-fit:cover; flex-shrink:0; }
+.wrapped-rank-name { flex:1; font-size:14px; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.wrapped-rank-meta { font-size:12px; color:var(--text3); flex-shrink:0; }
 
 /* ── Artist page additions ─────────────────────────── */
 .artist-hero { display:flex;align-items:center;gap:20px;padding:32px 28px;margin-bottom:24px;background:linear-gradient(180deg,var(--bg3),var(--bg2)) }

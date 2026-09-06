@@ -32,6 +32,11 @@ const state = {
   libFormat: '',
   libDecade: '',
   libSurround: '',
+  // App #13 search-chips: a year RANGE and a format CLASS that combine with the
+  // text search and the existing single-value filters above.
+  libYearMin: '',
+  libYearMax: '',
+  libFormatClass: '', // '' | 'lossless' | 'hires' | 'lossy'
   libView: 'grid',
   libFolder: null,
   playlists: [],
@@ -1699,6 +1704,7 @@ function navigate(page, navId, opts = {}) {
   else if (page === 'smartlist') renderSmartList(navId)
   else if (page === 'manage')    renderManage()
   else if (page === 'stats')     renderStats()
+  else if (page === 'wrapped')   renderWrapped(navId)
   else if (page === 'liked')     renderLikedSongs()
   else if (page === 'yt-album')  renderYtAlbum(navId)
   else if (page === 'yt-artist') renderYtArtist(navId)
@@ -8374,6 +8380,28 @@ function _homeGreeting(hour, name) {
   return who ? part + ', ' + who : part
 }
 var _greetingAnimated = false
+
+// Home personalization (App #15): the built-in row order (source of truth for
+// which rows exist), the persisted-preference key, and small load/save/resolve
+// helpers over the tested pure logic in music-tools.js. `_homeEditMode` is the
+// transient toggle for the on-page editor.
+var _HOME_DEFAULT_ROWS = ['jumpback', 'quick', 'following', 'recent', 'added', 'back', 'madeforyou', 'library']
+var _HOME_ROWS_KEY = 'papa-home-rows'
+var _homeEditMode = false
+function _loadHomeRowPref() {
+  var v = window.PapaLocal ? window.PapaLocal.readObject(_HOME_ROWS_KEY) : {}
+  return { order: Array.isArray(v.order) ? v.order : [], hidden: Array.isArray(v.hidden) ? v.hidden : [] }
+}
+function _saveHomeRowPref(pref) {
+  if (window.PapaLocal) window.PapaLocal.write(_HOME_ROWS_KEY, { order: pref.order || [], hidden: pref.hidden || [] })
+}
+function _resolveHomeRows() {
+  var _mt = (typeof window !== 'undefined' && window.PapaMusicTools) || null
+  if (_mt && _mt.resolveHomeRows) return _mt.resolveHomeRows(_HOME_DEFAULT_ROWS, _loadHomeRowPref())
+  // Defensive fallback: default order, nothing hidden.
+  return { order: _HOME_DEFAULT_ROWS.slice(), hidden: {}, visible: _HOME_DEFAULT_ROWS.slice() }
+}
+
 function renderHome() {
   const hour = new Date().getHours()
   // Time-aware, name-carrying greeting (App §100). This is a personal app for
@@ -8521,9 +8549,54 @@ function renderHome() {
       <h2>No music found</h2><p>Add FLAC files to your music folder.</p>
     </div>`
 
-  setContent(`<div class="page">
-    <div class="home-header"><div class="home-header-left"><canvas class="home-clock" id="home-clock" width="56" height="56"></canvas>${greetingHTML}</div>${artBtnHTML}</div>
-    ${jumpBackHTML}${quickHTML}${followingHTML}${recentHTML}${addedHTML}${backHTML}${dailyMixHTML}${allHTML}
+  // ── Home personalization (App #15) ─────────────────────────────────────────
+  // Each reorderable/hideable row is keyed by a stable id; the built-in default
+  // order below is the source of truth for which rows exist. The user's saved
+  // order+hidden set (papa-home-rows) is reconciled against it by the tested
+  // pure helper, so a new row always appears rather than vanishing, and a hidden
+  // row is simply not rendered. Rows keep their own internal logic — we only
+  // reorder and skip.
+  var _homeRowHtml = {
+    jumpback: jumpBackHTML,
+    quick: quickHTML,
+    following: followingHTML,
+    recent: recentHTML,
+    added: addedHTML,
+    back: backHTML,
+    madeforyou: dailyMixHTML,
+    library: allHTML,
+  }
+  var _homeRowLabel = {
+    jumpback: 'Continue listening', quick: 'Quick picks', following: 'Following',
+    recent: 'Recently Played', added: 'Recently Added', back: 'Back in rotation',
+    madeforyou: 'Made for you', library: 'Your Library',
+  }
+  var _homeResolved = _resolveHomeRows()
+  var _homeEditing = !!_homeEditMode
+  // In edit mode every row is shown (even hidden ones and empty ones) so the
+  // user can un-hide them; a per-row control bar carries hide/show + up/down.
+  var _homeRowsHtml = (_homeEditing ? _homeResolved.order : _homeResolved.visible)
+    .map(function (id, i, arr) {
+      var body = _homeRowHtml[id] || ''
+      if (!_homeEditing) return body
+      var hidden = !!_homeResolved.hidden[id]
+      var controls = '<div class="home-row-controls">' +
+        '<span class="home-row-title">' + esc(_homeRowLabel[id] || id) + '</span>' +
+        '<button class="home-row-btn" data-home-move="up" data-home-id="' + esc(id) + '"' + (i === 0 ? ' disabled' : '') + ' title="Move up">▲</button>' +
+        '<button class="home-row-btn" data-home-move="down" data-home-id="' + esc(id) + '"' + (i === arr.length - 1 ? ' disabled' : '') + ' title="Move down">▼</button>' +
+        '<button class="home-row-btn" data-home-hide="' + esc(id) + '" title="' + (hidden ? 'Show' : 'Hide') + '">' + (hidden ? '🚫 Hidden' : '👁 Shown') + '</button>' +
+        '</div>'
+      return '<div class="home-row-edit' + (hidden ? ' home-row-hidden' : '') + '">' + controls +
+        '<div class="home-row-body">' + (body || '<div class="home-row-empty">(nothing to show right now)</div>') + '</div></div>'
+    }).join('')
+
+  var _homeEditBtn = '<button class="home-edit-btn" id="home-edit-btn" title="Customize Home">' +
+    (_homeEditing ? 'Done' : '<svg viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.488.488 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>') +
+    '</button>'
+
+  setContent(`<div class="page${_homeEditing ? ' home-editing' : ''}">
+    <div class="home-header"><div class="home-header-left"><canvas class="home-clock" id="home-clock" width="56" height="56"></canvas>${greetingHTML}${_homeEditBtn}</div>${_homeEditing ? '' : artBtnHTML}</div>
+    ${_homeRowsHtml}
     <div id="yt-home"></div>
     <!-- Unified-home strips (App §70, §76). Placed after every music section on
          purpose: music is the heart of the app, so its content paints first and
@@ -8532,6 +8605,36 @@ function renderHome() {
     <div id="home-continue-watching"></div>
     <div id="home-year-recap"></div>
   </div>`)
+
+  // Home edit-mode wiring: toggle, reorder, hide/show. Each action persists the
+  // preference and re-renders Home so the change is immediate.
+  document.getElementById('home-edit-btn')?.addEventListener('click', function () {
+    _homeEditMode = !_homeEditMode
+    renderHome()
+  })
+  document.querySelectorAll('[data-home-move]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var _mt = window.PapaMusicTools
+      var pref = _loadHomeRowPref()
+      var order = (_mt && _mt.resolveHomeRows) ? _mt.resolveHomeRows(_HOME_DEFAULT_ROWS, pref).order : _HOME_DEFAULT_ROWS.slice()
+      var idx = order.indexOf(btn.dataset.homeId)
+      if (idx === -1) return
+      order = (_mt && _mt.moveHomeRow) ? _mt.moveHomeRow(order, idx, btn.dataset.homeMove === 'up' ? -1 : 1) : order
+      _saveHomeRowPref({ order: order, hidden: pref.hidden || [] })
+      renderHome()
+    })
+  })
+  document.querySelectorAll('[data-home-hide]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var _mt = window.PapaMusicTools
+      var pref = _loadHomeRowPref()
+      // Persist the resolved order so a toggle never resets a custom order.
+      var resolved = (_mt && _mt.resolveHomeRows) ? _mt.resolveHomeRows(_HOME_DEFAULT_ROWS, pref) : { order: _HOME_DEFAULT_ROWS.slice() }
+      var next = (_mt && _mt.toggleHomeRow) ? _mt.toggleHomeRow({ order: resolved.order, hidden: pref.hidden || [] }, btn.dataset.homeHide) : pref
+      _saveHomeRowPref(next)
+      renderHome()
+    })
+  })
 
   document.querySelectorAll('.section-see-all').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -9325,6 +9428,23 @@ function _albumGenreKey(a) {
   return _genreKey(a && a.genre)
 }
 
+// Classify one track's file into a format class (App #13 chips): 'lossless',
+// 'hires' (lossless AND >16-bit or >48kHz) or 'lossy'. Mirrors the smart-
+// playlist evaluator's classification so both search surfaces agree.
+var _LOSSLESS_EXTS = { flac: 1, wav: 1, alac: 1, aiff: 1, aif: 1, ape: 1, wv: 1 }
+function _albumTrackFormatClass(t) {
+  var ext = (t.filePath || '').split('.').pop().toLowerCase()
+  if (!_LOSSLESS_EXTS[ext]) return 'lossy'
+  var bd = Number(t.bitsPerSample) || 0
+  var sr = Number(t.sampleRate) || 0
+  if (bd > 16 || sr > 48000) return 'hires'
+  return 'lossless'
+}
+
+// Set by getSorted() when the text search fell back to fuzzy matching, read by
+// the render pass to show the "showing close matches" note.
+var _libFuzzyActive = false
+
 function renderLibrary() {
   const getSorted = () => {
     // Saved YT albums are merged as pseudo-cards at render time — they never
@@ -9366,8 +9486,38 @@ function renderLibrary() {
         }
       })
     }
+    // App #13 chips: a year range (either bound optional) and a format class
+    // that reads the actual track extensions/bit depth, all AND-combined with
+    // the text search and the single-value filters above.
+    if (state.libYearMin) { var ymin = parseInt(state.libYearMin, 10); if (isFinite(ymin)) albums = albums.filter(function(a) { return Number(a.year) >= ymin }) }
+    if (state.libYearMax) { var ymax = parseInt(state.libYearMax, 10); if (isFinite(ymax)) albums = albums.filter(function(a) { return Number(a.year) <= ymax }) }
+    if (state.libFormatClass) {
+      albums = albums.filter(function(a) {
+        return (a.tracks || []).some(function(t) { return _albumTrackFormatClass(t) === state.libFormatClass })
+      })
+    }
+    // Text search: exact case-insensitive substring first. When that yields
+    // nothing, fall back to the tested fuzzy matcher (edit distance ≤2 per word)
+    // so a typo still surfaces close matches. _libFuzzyActive tells the render
+    // pass to show the "showing close matches" note.
+    _libFuzzyActive = false
     var searchQ = state.libSearch || ''
-    if (searchQ) { var sq = searchQ.toLowerCase(); albums = albums.filter(function(a) { return (a.name && a.name.toLowerCase().indexOf(sq) !== -1) || (a.artist && a.artist.toLowerCase().indexOf(sq) !== -1) }) }
+    if (searchQ) {
+      var sq = searchQ.toLowerCase()
+      var exact = albums.filter(function(a) { return (a.name && a.name.toLowerCase().indexOf(sq) !== -1) || (a.artist && a.artist.toLowerCase().indexOf(sq) !== -1) })
+      if (exact.length) {
+        albums = exact
+      } else {
+        var _mt = (typeof window !== 'undefined' && window.PapaMusicTools) || null
+        if (_mt && _mt.fuzzyFilter) {
+          var fuzzy = _mt.fuzzyFilter(albums, searchQ, function(a) { return (a.name || '') + ' ' + (a.artist || '') })
+          if (fuzzy.length) { albums = fuzzy; _libFuzzyActive = true }
+          else albums = exact // nothing at all — keep the empty exact result
+        } else {
+          albums = exact
+        }
+      }
+    }
     if (state.libSort === 'alpha')  return albums.sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')))
     if (state.libSort === 'artist') return albums.sort((a, b) => String(a.artist || '').localeCompare(String(b.artist || '')))
     if (state.libSort === 'year')   return albums.sort((a, b) => (b.year || 0) - (a.year || 0))
@@ -9488,6 +9638,9 @@ function renderLibrary() {
   if (state.libFolder) activeFilterCount++
   if (state.libLikedOnly) activeFilterCount++
   if (state.libSearch) activeFilterCount++
+  if (state.libYearMin) activeFilterCount++
+  if (state.libYearMax) activeFilterCount++
+  if (state.libFormatClass) activeFilterCount++
   var filterBadge = activeFilterCount > 0 ? '<span style="display:inline-block;margin-left:8px;padding:2px 8px;background:var(--accent);color:#000;border-radius:100px;font-size:11px;font-weight:600">' + activeFilterCount + ' filter' + (activeFilterCount > 1 ? 's' : '') + ' active</span>' : ''
 
   var filterIndicator = ''
@@ -9598,8 +9751,21 @@ function renderLibrary() {
           Rescan
         </button>
       </div>
-      <div class="library-search-wrap">
-        <input class="library-search" id="lib-search" type="text" placeholder="Search albums or artists…" value="${esc(state.libSearch || '')}">
+      <div class="library-search-wrap" style="position:relative">
+        <input class="library-search" id="lib-search" type="text" autocomplete="off" placeholder="Search albums or artists…" value="${esc(state.libSearch || '')}">
+        <div id="lib-recent-searches" class="lib-recent-searches" hidden></div>
+      </div>
+      ${state.libSearch && _libFuzzyActive ? '<div class="lib-fuzzy-note">No exact match — showing close matches for “' + esc(state.libSearch) + '”</div>' : ''}
+      <div class="lib-chips-row">
+        <span class="lib-chip-label">Year</span>
+        <select class="lib-chip-select" id="lib-chip-year-min"><option value="">from</option>${(()=>{var y=[...new Set(state.library.map(function(a){return a.year}).filter(Boolean))].sort(function(a,b){return a-b});return y.map(function(v){return '<option value="'+esc(v)+'"'+(String(state.libYearMin)===String(v)?' selected':'')+'>'+esc(v)+'</option>'}).join('')})()}</select>
+        <span style="color:var(--text3)">–</span>
+        <select class="lib-chip-select" id="lib-chip-year-max"><option value="">to</option>${(()=>{var y=[...new Set(state.library.map(function(a){return a.year}).filter(Boolean))].sort(function(a,b){return a-b});return y.map(function(v){return '<option value="'+esc(v)+'"'+(String(state.libYearMax)===String(v)?' selected':'')+'>'+esc(v)+'</option>'}).join('')})()}</select>
+        <span class="lib-chip-label" style="margin-left:12px">Format</span>
+        <button class="lib-fmt-chip${state.libFormatClass===''?' lib-fmt-chip-on':''}" data-fmtclass="">All</button>
+        <button class="lib-fmt-chip${state.libFormatClass==='lossless'?' lib-fmt-chip-on':''}" data-fmtclass="lossless">Lossless</button>
+        <button class="lib-fmt-chip${state.libFormatClass==='hires'?' lib-fmt-chip-on':''}" data-fmtclass="hires">Hi-Res</button>
+        <button class="lib-fmt-chip${state.libFormatClass==='lossy'?' lib-fmt-chip-on':''}" data-fmtclass="lossy">MP3</button>
       </div>
       <div class="sort-bar">${sortBtns}${viewToggle}${likedBtn}</div>
       ${genreChips}
@@ -9740,11 +9906,13 @@ function renderLibrary() {
   document.getElementById('lib-empty-reset')?.addEventListener('click', function() {
     state.libYear = ''; state.libFormat = ''; state.libDecade = ''; state.libSurround = ''
     state.libGenre = null; state.libFolder = null; state.libLikedOnly = false; state.libSearch = ''
+    state.libYearMin = ''; state.libYearMax = ''; state.libFormatClass = ''
     renderLibrary()
   })
   document.getElementById('lib-reset-filters')?.addEventListener('click', function() {
     state.libYear = ''; state.libFormat = ''; state.libDecade = ''; state.libSurround = ''
     state.libGenre = null; state.libFolder = null; state.libLikedOnly = false; state.libSearch = ''
+    state.libYearMin = ''; state.libYearMax = ''; state.libFormatClass = ''
     renderLibrary()
   })
   document.getElementById('lib-save-preset')?.addEventListener('click', function() { saveLibPreset() })
@@ -9780,6 +9948,7 @@ function renderLibrary() {
     var searchTimeout
     libSearch.addEventListener('input', function() {
       state.libSearch = this.value
+      _hideLibRecentSearches()
       clearTimeout(searchTimeout)
       searchTimeout = setTimeout(function () {
         // setContent() replaces the input, so carry focus and caret across or
@@ -9795,7 +9964,86 @@ function renderLibrary() {
         if (caret != null) { try { now.setSelectionRange(caret, caret) } catch (_) {} }
       }, 150)
     })
+    // Enter commits the query to the recent-searches history (App #13); the
+    // filtering itself already happened live on input.
+    libSearch.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') {
+        var q = (this.value || '').trim()
+        if (q) _rememberLibSearch(q)
+        _hideLibRecentSearches()
+      } else if (e.key === 'Escape') {
+        _hideLibRecentSearches()
+      }
+    })
+    // On focus, if the box is empty, show recent searches like the video side.
+    libSearch.addEventListener('focus', function () {
+      if (!this.value.trim()) _showLibRecentSearches()
+    })
+    // A blur that is not into the dropdown itself closes it (deferred so a click
+    // on a recent item registers first).
+    libSearch.addEventListener('blur', function () {
+      setTimeout(_hideLibRecentSearches, 150)
+    })
   }
+
+  // Year-range chips: change either bound and re-filter.
+  document.getElementById('lib-chip-year-min')?.addEventListener('change', function () {
+    state.libYearMin = this.value; renderLibrary()
+  })
+  document.getElementById('lib-chip-year-max')?.addEventListener('change', function () {
+    state.libYearMax = this.value; renderLibrary()
+  })
+  // Format-class chips: single-select toggle.
+  document.querySelectorAll('.lib-fmt-chip[data-fmtclass]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      state.libFormatClass = this.dataset.fmtclass || ''
+      renderLibrary()
+    })
+  })
+}
+
+// ── Recent library searches (App #13) ─────────────────────────────────────────
+// A bounded MRU list of query strings, persisted so the box can offer them on
+// focus. The list algebra (dedupe, cap, newest-first) is the tested pure helper
+// in music-tools.js; here we only read/write localStorage and paint the dropdown.
+var _LIB_RECENT_KEY = 'papa-lib-recent-searches'
+function _libRecentSearches() {
+  return window.PapaLocal ? window.PapaLocal.readArray(_LIB_RECENT_KEY) : []
+}
+function _rememberLibSearch(q) {
+  var _mt = (typeof window !== 'undefined' && window.PapaMusicTools) || null
+  var next = _mt && _mt.pushRecentSearch
+    ? _mt.pushRecentSearch(_libRecentSearches(), q, 10)
+    : [q].concat(_libRecentSearches().filter(function (s) { return s !== q })).slice(0, 10)
+  if (window.PapaLocal) window.PapaLocal.write(_LIB_RECENT_KEY, next)
+}
+function _hideLibRecentSearches() {
+  var box = document.getElementById('lib-recent-searches')
+  if (box) box.hidden = true
+}
+function _showLibRecentSearches() {
+  var box = document.getElementById('lib-recent-searches')
+  if (!box) return
+  var recent = _libRecentSearches()
+  if (!recent.length) { box.hidden = true; return }
+  box.innerHTML = '<div class="lib-recent-head">Recent searches</div>' +
+    recent.map(function (q) {
+      return '<button class="lib-recent-item" data-recent-q="' + esc(q) + '">' +
+        '<svg viewBox="0 0 24 24" width="14" height="14" style="opacity:.5"><path fill="currentColor" d="M13 3a9 9 0 0 0-9 9H1l4 4 4-4H6a7 7 0 1 1 2 5l-1.5 1.3A9 9 0 1 0 13 3zm-1 5v5l4 2 .7-1.2-3.2-1.9V8z"/></svg>' +
+        esc(q) + '</button>'
+    }).join('')
+  box.hidden = false
+  box.querySelectorAll('.lib-recent-item[data-recent-q]').forEach(function (item) {
+    item.addEventListener('mousedown', function (e) {
+      // mousedown (not click) so it fires before the input's blur.
+      e.preventDefault()
+      var q = item.dataset.recentQ
+      state.libSearch = q
+      _rememberLibSearch(q)
+      _hideLibRecentSearches()
+      renderLibrary()
+    })
+  })
 }
 
 function editField(field, currentValue, callback) {
@@ -10499,12 +10747,11 @@ function renderSearch(query) {
     var sp = {
       id: 'sp_' + Date.now(),
       name: 'Search: ' + query.slice(0, 40),
+      type: 'smart',
       rules: rules.length ? rules : [{ field: 'title', op: 'contains', value: query }],
     }
     state.smartPlaylists.unshift(sp)
-    try {
-      localStorage.setItem('papa-smart-playlists', JSON.stringify(state.smartPlaylists))
-    } catch (_) {}
+    _persistSmartPlaylists()
     showSnackbar('Smart playlist saved: ' + sp.name)
   })
 
@@ -11653,6 +11900,7 @@ function renderArtist(artistName) {
 
   setContent(`${heroHTML}<div class="page" style="padding-top:16px">
       <div class="artist-bio" id="artist-bio"><div class="artist-bio-skeleton"></div></div>
+      <div id="artist-similar" class="artist-similar" hidden></div>
       ${discogHTML}
       ${relatedHTML}
     </div>`)
@@ -11673,6 +11921,7 @@ function renderArtist(artistName) {
     card.addEventListener('click', () => navigate('artist', card.dataset.artist))
   })
   loadArtistBio(artistName)
+  loadArtistExtras(artistName)
 }
 
 function toggleFollowArtist(artistName) {
@@ -12188,6 +12437,70 @@ async function loadArtistBio(artistName) {
   }
 }
 
+// Artist bio + similar-artist chips from the optional native provider (App #19).
+// Feature-detected: with no window.api.artistInfo the row simply never appears,
+// so the page is unchanged on builds that don't ship the provider. A returned
+// bio only fills in when Wikipedia gave us nothing; the similar names become
+// chips that route into the library artist page when we own that artist, and
+// otherwise into a search for the name.
+const _artistInfoCache = new Map()
+async function loadArtistExtras(artistName) {
+  if (!window.api || typeof window.api.artistInfo !== 'function') return
+  const box = document.getElementById('artist-similar')
+  if (!box) return
+
+  const render = (info) => {
+    // A late response for a different artist must not paint this page.
+    if (state.currentPage !== 'artist' || state.currentArtistName !== artistName) return
+    const target = document.getElementById('artist-similar')
+    if (!target) return
+    const similar = (info && Array.isArray(info.similar)) ? info.similar.filter(Boolean) : []
+
+    // Bio fallback: only when the Wikipedia bio above rendered nothing, so we
+    // never fight it or show two "About" blocks.
+    if (info && info.bio) {
+      const bioEl = document.getElementById('artist-bio')
+      if (bioEl && (bioEl.style.display === 'none' || bioEl.querySelector('.artist-bio-skeleton'))) {
+        bioEl.style.display = ''
+        bioEl.innerHTML = '<div class="artist-bio-text">' +
+          '<div class="artist-bio-heading">About</div>' +
+          '<p class="artist-bio-preview">' + esc(info.bio) + '</p></div>'
+      }
+    }
+
+    if (!similar.length) { target.hidden = true; return }
+    target.innerHTML = '<div class="artist-similar-heading">Similar artists</div>' +
+      '<div class="artist-similar-chips">' +
+      similar.map(function (name) {
+        // A name we already own routes into its artist page; anything else falls
+        // back to a search for it.
+        const known = _artistAlbumCount(name) > 0
+        return '<button class="artist-similar-chip" data-similar="' + esc(name) +
+          '" data-known="' + (known ? '1' : '0') + '">' + esc(name) + '</button>'
+      }).join('') + '</div>'
+    target.hidden = false
+    target.querySelectorAll('.artist-similar-chip[data-similar]').forEach(function (chip) {
+      chip.addEventListener('click', function () {
+        const name = chip.dataset.similar
+        if (chip.dataset.known === '1') navigate('artist', name)
+        else navigate('search', name)
+      })
+    })
+  }
+
+  const cached = _cacheGet(_artistInfoCache, artistName)
+  if (cached !== undefined) { render(cached); return }
+  try {
+    const info = await window.api.artistInfo(artistName)
+    _cacheSet(_artistInfoCache, artistName, info || null, _BIO_CACHE_CAP)
+    render(info)
+  } catch (_) {
+    // A provider error is not a permanent verdict; don't poison the cache while
+    // offline, matching loadArtistBio's recovery behaviour.
+    if (state.isOnline !== false) _cacheSet(_artistInfoCache, artistName, null, _BIO_CACHE_CAP)
+  }
+}
+
 // ── Playlists ────────────────────────────────────────────────────────────────
 function _plArtPaths(pl) {
   const paths = []
@@ -12242,7 +12555,7 @@ function renderPlaylists() {
   })
 
   function _plCard(pl) {
-    return `<div class="pl-card" data-pl="${esc(pl.id)}">
+    return `<div class="pl-card" data-pl="${esc(pl.id)}" draggable="true">
       <button class="pl-rename-btn" data-pl-id="${esc(pl.id)}" title="Rename" style="position:absolute;top:4px;right:4px;background:none;border:none;color:var(--text3);cursor:pointer;font-size:12px">&#9998;</button>
       <button class="pl-dup-btn" data-pl-id="${esc(pl.id)}" title="Duplicate" style="position:absolute;top:4px;right:28px;background:none;border:none;color:var(--text3);cursor:pointer;font-size:12px">&#128203;</button>
       <span class="pl-folder-badge" title="Folder: ${esc(pl.folder || '')}" style="position:absolute;top:4px;right:52px;font-size:10px;color:var(--text3);opacity:.6">${pl.folder ? '📁' : ''}</span>
@@ -12321,6 +12634,7 @@ function renderPlaylists() {
       </div>
     </div>
     ${smartSection}
+    ${Object.keys(folders).length > 0 ? `<div id="pl-uncat-dropzone" class="pl-drop-zone">Drag a playlist here to remove it from its folder</div>` : ''}
     ${sorted.length
       ? (Object.keys(folders).length === 0 && uncategorized.length > 0
         ? `<div class="pl-grid">${uncategorized.map(_plCard).join('')}</div>`
@@ -12381,13 +12695,18 @@ function renderPlaylists() {
       e.preventDefault()
       e.stopPropagation()
       var plId = card.dataset.pl
-      var pl = state.playlists.find(function(p) { return p.id === plId })
+      // Resolve against both stores: a smart playlist lives in state.smartPlaylists,
+      // not state.playlists, so the menu (and its Move-to-folder fallback) must
+      // find it there too, and persist through _persistPlaylist (App #12).
+      var pl = state.playlists.find(function(p) { return p.id === plId }) ||
+        state.smartPlaylists.find(function(p) { return p.id === plId })
       if (!pl) return
       var items = [
         { label: 'Rename', action: 'rename' },
         { label: 'Duplicate', action: 'dup' },
         { label: pl.folder ? 'Move out of folder' : 'Move to folder…', action: 'move' },
       ]
+      if (pl.type === 'smart') items.push({ label: 'Edit rules…', action: 'editrules' })
       if (pl.folder) items.push({ label: 'Remove from folder', action: 'unfolder' })
       var existingFolders = [].concat(Object.keys(folders), state.playlistFolders).filter(function(v, i, a) { return a.indexOf(v) === i })
       var folderItems = existingFolders.map(function(f, fi) { return { label: '▸ ' + f, action: 'movefolder:' + fi } })
@@ -12396,16 +12715,18 @@ function renderPlaylists() {
       if (action === 'rename') {
         showNameInputModal('Rename playlist', pl.name, function(newName) {
           pl.name = newName
-          window.api.savePlaylist(pl)
+          _persistPlaylist(pl)
           renderPlaylists()
         })
+      } else if (action === 'editrules') {
+        showSmartPlaylistDialog(pl)
       } else if (action === 'dup') {
         var dup = JSON.parse(JSON.stringify(pl))
-        dup.id = 'dup_' + Date.now()
+        dup.id = (pl.type === 'smart' ? 'sp_' : 'dup_') + Date.now() + '_' + Math.random().toString(36).slice(2, 8)
         dup.name = pl.name + ' (copy)'
         dup.createdAt = Date.now()
-        state.playlists.push(dup)
-        window.api.savePlaylist(dup)
+        if (pl.type === 'smart') { state.smartPlaylists.push(dup); _persistSmartPlaylists() }
+        else { state.playlists.push(dup); window.api.savePlaylist(dup) }
         renderPlaylists()
         showSnackbar('Playlist duplicated')
       } else if (action === 'move') {
@@ -12415,7 +12736,7 @@ function renderPlaylists() {
           showNameInputModal('New folder', 'Folder name…', function(folderName) {
             if (state.playlistFolders.indexOf(folderName) === -1) { state.playlistFolders.push(folderName); _persistPlaylistFolders() }
             pl.folder = folderName
-            window.api.savePlaylist(pl)
+            _persistPlaylist(pl)
             renderPlaylists()
             showSnackbar('Moved to "' + folderName + '"')
           })
@@ -12423,18 +12744,87 @@ function renderPlaylists() {
           var targetFolder = existingFolders[parseInt(subAction.slice(11), 10)]
           if (!targetFolder) return
           pl.folder = targetFolder
-          window.api.savePlaylist(pl)
+          _persistPlaylist(pl)
           renderPlaylists()
           showSnackbar('Moved to "' + targetFolder + '"')
         }
       } else if (action === 'unfolder') {
         pl.folder = null
-        window.api.savePlaylist(pl)
+        _persistPlaylist(pl)
         renderPlaylists()
         showSnackbar('Removed from folder')
       }
     })
   })
+
+  // ── Drag-and-drop into and out of folders (App #12) ────────────────────────
+  // The keyboard/right-click "Move to folder…" path above still works; this adds
+  // the direct-manipulation path: drag a playlist card onto a folder header to
+  // file it there, or onto the uncategorized area to pull it back out. Smart
+  // playlists live in a different store than regular ones, so the move resolves
+  // the card against both and persists through _persistPlaylist.
+  var _dragPlId = null
+  document.querySelectorAll('#content .pl-card[data-pl]').forEach(function (card) {
+    card.addEventListener('dragstart', function (e) {
+      _dragPlId = card.dataset.pl
+      card.classList.add('pl-card-dragging')
+      try { e.dataTransfer.setData('text/plain', card.dataset.pl); e.dataTransfer.effectAllowed = 'move' } catch (_) {}
+    })
+    card.addEventListener('dragend', function () {
+      _dragPlId = null
+      card.classList.remove('pl-card-dragging')
+      document.querySelectorAll('.pl-folder-header.pl-drop-over,.pl-drop-zone.pl-drop-over')
+        .forEach(function (el) { el.classList.remove('pl-drop-over') })
+    })
+  })
+
+  function _movePlaylistTo(plId, folderOrNull) {
+    var pl = state.playlists.find(function (p) { return p.id === plId }) ||
+      state.smartPlaylists.find(function (p) { return p.id === plId })
+    if (!pl) return
+    if ((pl.folder || null) === (folderOrNull || null)) return
+    pl.folder = folderOrNull || null
+    _persistPlaylist(pl)
+    renderPlaylists()
+    showSnackbar(folderOrNull ? 'Moved to "' + folderOrNull + '"' : 'Removed from folder')
+  }
+
+  // Folder headers accept a drop → file the card into that folder.
+  document.querySelectorAll('#content .pl-folder-header[data-folder]').forEach(function (hdr) {
+    hdr.addEventListener('dragover', function (e) {
+      if (!_dragPlId) return
+      e.preventDefault()
+      try { e.dataTransfer.dropEffect = 'move' } catch (_) {}
+      hdr.classList.add('pl-drop-over')
+    })
+    hdr.addEventListener('dragleave', function () { hdr.classList.remove('pl-drop-over') })
+    hdr.addEventListener('drop', function (e) {
+      e.preventDefault()
+      e.stopPropagation()
+      hdr.classList.remove('pl-drop-over')
+      var folder = hdr.dataset.folder
+      if (folder === 'Uncategorized') folder = null
+      _movePlaylistTo(_dragPlId, folder)
+    })
+  })
+
+  // The top-of-page drop strip pulls a card back out of any folder. Only shown
+  // (styled) when folders exist, but harmless if not.
+  var dropZone = document.getElementById('pl-uncat-dropzone')
+  if (dropZone) {
+    dropZone.addEventListener('dragover', function (e) {
+      if (!_dragPlId) return
+      e.preventDefault()
+      try { e.dataTransfer.dropEffect = 'move' } catch (_) {}
+      dropZone.classList.add('pl-drop-over')
+    })
+    dropZone.addEventListener('dragleave', function () { dropZone.classList.remove('pl-drop-over') })
+    dropZone.addEventListener('drop', function (e) {
+      e.preventDefault()
+      dropZone.classList.remove('pl-drop-over')
+      _movePlaylistTo(_dragPlId, null)
+    })
+  }
 }
 
 function _showNewPlaylistWithFolder() {
@@ -13019,7 +13409,7 @@ function _allLibraryTracks() {
   const out = []
   for (const a of state.library) {
     for (const t of (a.tracks || [])) {
-      out.push({ ...t, albumArtist: a.artist, artPath: a.artPath, albumName: a.name, albumId: a.id })
+      out.push({ ...t, albumArtist: a.artist, artPath: a.artPath, albumName: a.name, albumId: a.id, addedAt: t.addedAt || t.dateAdded || t.mtime || a.addedAt || a.dateAdded || 0 })
     }
   }
   _allTracksCache = out
@@ -13596,6 +13986,7 @@ function renderStats() {
         }).join('')}
       </div>
       <div style="flex:1"></div>
+      <button id="wrapped-btn" class="wrapped-cta" style="padding:6px 16px;font-size:12px">✨ Your ${new Date().getFullYear()} Wrapped</button>
       <button id="export-json-btn" class="secondary" style="padding:6px 14px;font-size:12px">Export JSON</button>
       <button id="export-csv-btn" class="secondary" style="padding:6px 14px;font-size:12px">Export CSV</button>
     </div>
@@ -13691,6 +14082,9 @@ function renderStats() {
       try { localStorage.setItem('papa_stats_range', r) } catch (_) {}
       renderStats()
     })
+  })
+  document.getElementById('wrapped-btn')?.addEventListener('click', function () {
+    navigate('wrapped', String(new Date().getFullYear()))
   })
 
   // Loudness scan + spread (App #59).
@@ -13804,6 +14198,160 @@ async function checkAlbumTags(btn) {
   } finally {
     btn.disabled = false; btn.textContent = 'Check tags'
   }
+}
+
+// ── Year-end Wrapped (App #16) ────────────────────────────────────────────────
+// A full year-in-review computed from the same stats/history stores the Stats
+// page uses (state.playHistory, state.playCounts, state.library) plus the video
+// diary/watch history — all through the tested pure aggregator in home-recap.js.
+// Rich, palette-tinted cards; a "Copy as text" button puts a shareable summary
+// on the clipboard (no image export by design).
+function renderWrapped(yearArg) {
+  var year = parseInt(yearArg, 10)
+  if (!isFinite(year)) year = new Date().getFullYear()
+
+  var _rc = (typeof window !== 'undefined' && window.PapaHomeRecap) || null
+  if (!_rc || !_rc.wrappedRecap) {
+    setContent('<div class="page"><div class="empty-wrap"><h2>Wrapped unavailable</h2><p>The recap module did not load.</p></div></div>')
+    return
+  }
+
+  // Resolvers over the library, keyed by filePath, so history rows written
+  // before durations/genres were stored still contribute.
+  var durByPath = {}, artistByPath = {}, albumByPath = {}, genreByPath = {}, titleByPath = {}
+  state.library.forEach(function (a) {
+    ;(a.tracks || []).forEach(function (t) {
+      if (!t.filePath) return
+      durByPath[t.filePath] = t.duration || 0
+      artistByPath[t.filePath] = t.albumArtist || t.artist || a.artist || ''
+      albumByPath[t.filePath] = a.name || t.albumName || ''
+      genreByPath[t.filePath] = t.genre || a.genre || ''
+      titleByPath[t.filePath] = t.title || ''
+    })
+  })
+
+  var w = _rc.wrappedRecap(state.playHistory || [], {
+    year: year,
+    durationOf: function (fp) { return durByPath[fp] || 0 },
+    artistOf: function (fp) { return artistByPath[fp] || '' },
+    albumOf: function (fp) { return albumByPath[fp] || '' },
+    genreOf: function (fp) { return genreByPath[fp] || '' },
+    titleOf: function (fp) { return titleByPath[fp] || '' },
+  })
+
+  if (!w.has) {
+    setContent('<div class="page">' +
+      '<div class="wrapped-header"><button class="wrapped-back" id="wrapped-back">‹ Back</button></div>' +
+      '<div class="empty-wrap"><svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>' +
+      '<h2>No ' + year + ' Wrapped yet</h2><p>Play some music this year and your recap will appear here.</p></div></div>')
+    document.getElementById('wrapped-back')?.addEventListener('click', function () { navigate('stats') })
+    return
+  }
+
+  var artFor = function (name) {
+    var al = state.library.find(function (a) { return a.artist === name || a.albumArtist === name })
+    return al && al.artPath ? al.artPath : null
+  }
+
+  // A few palette hues so each hero card reads distinct.
+  var tint = function (i) {
+    var hues = [265, 200, 330, 150, 30, 190]
+    var h = hues[i % hues.length]
+    return 'linear-gradient(135deg,hsl(' + h + ',60%,32%),hsl(' + ((h + 40) % 360) + ',55%,18%))'
+  }
+
+  var bigCards = [
+    { label: 'Tracks played', value: w.plays.toLocaleString() },
+    { label: 'Hours listened', value: (w.hours || 0) + 'h' },
+    { label: 'Longest session', value: w.longestSessionMins + ' min' },
+    { label: 'New discoveries', value: w.discoveries.toLocaleString() },
+  ]
+  if (w.topGenre) bigCards.push({ label: 'Top genre', value: w.topGenre })
+  if (w.biggestDay) bigCards.push({
+    label: 'Biggest day',
+    value: new Date(w.biggestDay.date + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
+    sub: w.biggestDay.plays + ' plays',
+  })
+
+  var heroHTML = '<div class="wrapped-hero-grid">' + bigCards.map(function (c, i) {
+    return '<div class="wrapped-hero-card" style="background:' + tint(i) + '">' +
+      '<div class="wrapped-hero-value">' + esc(c.value) + '</div>' +
+      '<div class="wrapped-hero-label">' + esc(c.label) + '</div>' +
+      (c.sub ? '<div class="wrapped-hero-sub">' + esc(c.sub) + '</div>' : '') +
+      '</div>'
+  }).join('') + '</div>'
+
+  var rankList = function (title, rows, nameKey) {
+    if (!rows || !rows.length) return ''
+    return '<div class="wrapped-section"><h2>' + esc(title) + '</h2>' +
+      rows.map(function (r, i) {
+        var name = r[nameKey] || r.name || r.title || 'Unknown'
+        var ap = nameKey === 'name' && title.indexOf('Artist') !== -1 ? artFor(name) : null
+        var mins = Math.round((r.seconds || 0) / 60)
+        return '<div class="wrapped-rank-row">' +
+          '<span class="wrapped-rank-num">' + (i + 1) + '</span>' +
+          (ap ? '<img class="wrapped-rank-art" src="' + esc('file://' + ap) + '" alt="" onerror="this.style.display=\'none\'">' : '') +
+          '<span class="wrapped-rank-name">' + esc(name) + '</span>' +
+          '<span class="wrapped-rank-meta">' + (r.plays || 0) + ' play' + ((r.plays || 0) === 1 ? '' : 's') +
+          (mins > 0 ? ' · ' + mins + ' min' : '') + '</span>' +
+          '</div>'
+      }).join('') + '</div>'
+  }
+
+  var topArtistsHTML = rankList('Top artists', w.topArtists, 'name')
+  var topAlbumsHTML = rankList('Top albums', w.topAlbums, 'name')
+  var topTracksHTML = (w.topTracks && w.topTracks.length)
+    ? '<div class="wrapped-section"><h2>Top tracks</h2>' + w.topTracks.map(function (t, i) {
+        return '<div class="wrapped-rank-row">' +
+          '<span class="wrapped-rank-num">' + (i + 1) + '</span>' +
+          '<span class="wrapped-rank-name">' + esc(t.title || t.filePath) +
+          (t.artist ? ' <span style="color:var(--text3)">— ' + esc(t.artist) + '</span>' : '') + '</span>' +
+          '<span class="wrapped-rank-meta">' + t.plays + ' play' + (t.plays === 1 ? '' : 's') + '</span>' +
+          '</div>'
+      }).join('') + '</div>'
+    : ''
+
+  setContent('<div class="page wrapped-page">' +
+    '<div class="wrapped-header">' +
+      '<button class="wrapped-back" id="wrapped-back">‹ Back</button>' +
+      '<h1 class="wrapped-title">Your ' + year + ' Wrapped</h1>' +
+      '<button class="wrapped-copy" id="wrapped-copy">Copy as text</button>' +
+    '</div>' +
+    heroHTML + topArtistsHTML + topAlbumsHTML + topTracksHTML +
+    '</div>')
+
+  document.getElementById('wrapped-back')?.addEventListener('click', function () { navigate('stats') })
+  document.getElementById('wrapped-copy')?.addEventListener('click', function () {
+    var text = _wrappedSummaryText(w)
+    navigator.clipboard.writeText(text).then(function () {
+      showSnackbar('Wrapped summary copied to clipboard')
+    }).catch(function () { showSnackbar('Could not copy to clipboard') })
+  })
+}
+
+// The shareable plain-text summary of a Wrapped result (App #16). Kept next to
+// the renderer so the clipboard text and the on-screen cards stay in step.
+function _wrappedSummaryText(w) {
+  var lines = []
+  lines.push('🎵 My ' + w.year + ' Papa Audio Wrapped')
+  lines.push('')
+  lines.push('• ' + w.plays.toLocaleString() + ' tracks played')
+  if (w.hours > 0) lines.push('• ' + w.hours + ' hours of listening')
+  if (w.longestSessionMins > 0) lines.push('• Longest session: ' + w.longestSessionMins + ' min')
+  if (w.discoveries > 0) lines.push('• ' + w.discoveries + ' new discoveries')
+  if (w.topGenre) lines.push('• Top genre: ' + w.topGenre)
+  if (w.biggestDay) lines.push('• Biggest day: ' + w.biggestDay.date + ' (' + w.biggestDay.plays + ' plays)')
+  if (w.topArtists && w.topArtists.length) {
+    lines.push('')
+    lines.push('Top artists:')
+    w.topArtists.forEach(function (a, i) { lines.push('  ' + (i + 1) + '. ' + a.name + ' (' + a.plays + ' plays)') })
+  }
+  if (w.topTracks && w.topTracks.length) {
+    lines.push('')
+    lines.push('Top tracks:')
+    w.topTracks.forEach(function (t, i) { lines.push('  ' + (i + 1) + '. ' + (t.title || t.filePath) + (t.artist ? ' — ' + t.artist : '')) })
+  }
+  return lines.join('\n')
 }
 
 // Per-album tag-fixer state: the last diff + album the user checked, so Apply
@@ -14058,22 +14606,98 @@ function showNameInputModal(title, placeholder, onConfirm, confirmLabel) {
   setTimeout(() => input.focus(), 50)
 }
 
+// The smart-playlist rule builder (App #11). Conditions on genre / year range /
+// format class (lossless/hi-res/mp3) / play count (≥/≤) / liked / added-within-
+// days, all AND-combined, with a live preview count. Rules persist as the flat
+// { field, op, value } shape _evalSmartPlaylist (and the tested pure evaluator)
+// consume; the value control adapts to the chosen field so the user picks from
+// real options rather than typing magic strings.
+var _SP_FIELDS = [
+  { field: 'genre',       label: 'Genre' },
+  { field: 'year',        label: 'Year' },
+  { field: 'formatClass', label: 'Format' },
+  { field: 'playCount',   label: 'Play count' },
+  { field: 'liked',       label: 'Liked' },
+  { field: 'addedWithin', label: 'Added within' },
+  { field: 'artist',      label: 'Artist' },
+  { field: 'album',       label: 'Album' },
+]
+
+// The ops each field offers, and the kind of value control it needs.
+function _spFieldSpec(field) {
+  switch (field) {
+    case 'year':        return { ops: [['gte','≥'],['lte','≤'],['is','=']], kind: 'number' }
+    case 'playCount':   return { ops: [['gte','≥'],['lte','≤'],['is','=']], kind: 'number' }
+    case 'formatClass': return { ops: [['is','is']], kind: 'formatClass' }
+    case 'liked':       return { ops: [['is','is']], kind: 'liked' }
+    case 'addedWithin': return { ops: [['is','']], kind: 'days' }
+    default:            return { ops: [['is','is'],['contains','contains']], kind: 'text' }
+  }
+}
+
+function _spGenreOptions() {
+  var seen = {}
+  ;(state.library || []).forEach(function (a) { if (a.genre) seen[a.genre] = true })
+  return Object.keys(seen).sort()
+}
+
+// Render the op <select> and value control for a given field + current row.
+function _spRuleControls(field, op, value) {
+  var spec = _spFieldSpec(field)
+  var opHtml = '<select class="sp-op" style="padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg2);color:var(--text);font-size:13px">' +
+    spec.ops.map(function (o) { return '<option value="' + o[0] + '"' + (op === o[0] ? ' selected' : '') + '>' + esc(o[1]) + '</option>' }).join('') +
+    '</select>'
+  // Some kinds have no meaningful op label; keep the select for a uniform shape
+  // but it carries a single value.
+  var valHtml
+  var inputStyle = 'flex:1;min-width:80px;padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg2);color:var(--text);font-size:13px'
+  if (spec.kind === 'formatClass') {
+    valHtml = '<select class="sp-val" style="' + inputStyle + '">' +
+      [['lossless','Lossless'],['hires','Hi-Res'],['lossy','MP3 / lossy']]
+        .map(function (o) { return '<option value="' + o[0] + '"' + (value === o[0] ? ' selected' : '') + '>' + o[1] + '</option>' }).join('') +
+      '</select>'
+  } else if (spec.kind === 'liked') {
+    valHtml = '<select class="sp-val" style="' + inputStyle + '">' +
+      [['true','Liked'],['false','Not liked']]
+        .map(function (o) { return '<option value="' + o[0] + '"' + (String(value) === o[0] ? ' selected' : '') + '>' + o[1] + '</option>' }).join('') +
+      '</select>'
+  } else if (spec.kind === 'days') {
+    valHtml = '<input class="sp-val" type="number" min="1" value="' + esc(value || '30') + '" style="' + inputStyle + '"><span style="font-size:12px;color:var(--text3);align-self:center">days</span>'
+  } else if (spec.kind === 'number') {
+    valHtml = '<input class="sp-val" type="number" value="' + esc(value) + '" style="' + inputStyle + '">'
+  } else if (field === 'genre') {
+    var opts = _spGenreOptions()
+    valHtml = '<input class="sp-val" list="sp-genre-list" value="' + esc(value) + '" style="' + inputStyle + '">' +
+      '<datalist id="sp-genre-list">' + opts.map(function (g) { return '<option value="' + esc(g) + '">' }).join('') + '</datalist>'
+  } else {
+    valHtml = '<input class="sp-val" value="' + esc(value) + '" style="' + inputStyle + '">'
+  }
+  return opHtml + valHtml
+}
+
+function _spRuleRowHtml(r) {
+  r = r || { field: 'genre', op: 'is', value: '' }
+  var fieldHtml = '<select class="sp-field" style="padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg2);color:var(--text);font-size:13px">' +
+    _SP_FIELDS.map(function (f) { return '<option value="' + f.field + '"' + (r.field === f.field ? ' selected' : '') + '>' + esc(f.label) + '</option>' }).join('') +
+    '</select>'
+  return '<div class="sp-rule" style="display:flex;gap:6px;align-items:center">' +
+    fieldHtml +
+    '<span class="sp-rule-controls" style="display:flex;gap:6px;flex:1;align-items:center">' + _spRuleControls(r.field, r.op, r.value) + '</span>' +
+    '<button class="sp-remove-rule" title="Remove rule" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:16px;padding:2px 6px">&times;</button></div>'
+}
+
 function showSmartPlaylistDialog(existing) {
-  var fields = ['artist', 'album', 'genre', 'year', 'format', 'playCount']
-  var ops = ['is', 'contains', 'gt', 'lt', 'gte', 'lte']
+  var initialRules = (existing && existing.rules && existing.rules.length)
+    ? existing.rules : [{ field: 'genre', op: 'is', value: '' }]
 
   var html = '<div class="modal-overlay" id="smart-pl-modal"><div class="modal-box">' +
     '<h3 style="margin:0 0 12px">' + (existing ? 'Edit' : 'New') + ' Smart Playlist</h3>' +
     '<input id="sp-name" placeholder="Playlist name" value="' + esc((existing && existing.name) || '') + '" style="width:100%;box-sizing:border-box;margin-bottom:12px;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg2);color:var(--text);font-size:14px">' +
+    '<div style="font-size:12px;color:var(--text3);margin-bottom:6px">Tracks matching all of these rules:</div>' +
     '<div id="sp-rules" style="display:flex;flex-direction:column;gap:6px">' +
-    ((existing && existing.rules) || [{field:'genre',op:'is',value:''}]).map(function(r, i) {
-      return '<div class="sp-rule" style="display:flex;gap:6px;align-items:center">' +
-        '<select class="sp-field" style="padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg2);color:var(--text);font-size:13px">' + fields.map(function(f) { return '<option' + (r.field===f?' selected':'') + '>' + f + '</option>' }).join('') + '</select>' +
-        '<select class="sp-op" style="padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg2);color:var(--text);font-size:13px">' + ops.map(function(o) { return '<option' + (r.op===o?' selected':'') + '>' + o + '</option>' }).join('') + '</select>' +
-        '<input class="sp-val" value="' + esc(r.value) + '" style="flex:1;padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg2);color:var(--text);font-size:13px">' +
-        '<button class="sp-remove-rule" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:16px;padding:2px 6px">&times;</button></div>'
-    }).join('') + '</div>' +
+    initialRules.map(_spRuleRowHtml).join('') + '</div>' +
     '<button id="sp-add-rule" style="margin-top:8px;background:none;border:1px dashed var(--border);color:var(--text2);cursor:pointer;padding:6px 12px;border-radius:8px;font-size:13px;width:100%">+ Add rule</button>' +
+    '<div class="sp-preview" id="sp-preview" style="margin-top:12px;font-size:13px;color:var(--text2)">…</div>' +
     '<div style="margin-top:16px;display:flex;gap:8px;justify-content:flex-end">' +
     '<button id="sp-cancel">Cancel</button>' +
     '<button id="sp-save" class="primary">Save</button></div></div></div>'
@@ -14082,40 +14706,67 @@ function showSmartPlaylistDialog(existing) {
   overlay.innerHTML = html
   document.body.appendChild(overlay)
 
+  // Gather the current rules straight from the DOM — the single source of truth
+  // for both the preview and the save.
+  function _collectRules() {
+    var rules = []
+    document.querySelectorAll('#sp-rules .sp-rule').forEach(function (row) {
+      var val = row.querySelector('.sp-val')
+      rules.push({
+        field: row.querySelector('.sp-field').value,
+        op: (row.querySelector('.sp-op') || {}).value || 'is',
+        value: (val ? String(val.value) : '').trim(),
+      })
+    })
+    return rules
+  }
+
+  // Live preview: how many library tracks match right now. Cheap enough to run on
+  // every change (the pure evaluator is a single filter pass).
+  function _updatePreview() {
+    var n = _evalSmartPlaylist({ rules: _collectRules() }).length
+    var el = document.getElementById('sp-preview')
+    if (el) el.textContent = n + ' track' + (n === 1 ? '' : 's') + ' match'
+  }
+
+  var container = document.getElementById('sp-rules')
+
+  // Delegated change handler: when the field changes, swap in the right op+value
+  // controls; any change refreshes the preview.
+  container.addEventListener('change', function (e) {
+    if (e.target.classList.contains('sp-field')) {
+      var row = e.target.closest('.sp-rule')
+      var spec = _spFieldSpec(e.target.value)
+      row.querySelector('.sp-rule-controls').innerHTML =
+        _spRuleControls(e.target.value, spec.ops[0][0], '')
+    }
+    _updatePreview()
+  })
+  container.addEventListener('input', _updatePreview)
+
   document.getElementById('sp-add-rule').addEventListener('click', function() {
-    var container = document.getElementById('sp-rules')
     var div = document.createElement('div')
-    div.className = 'sp-rule'
-    div.style.cssText = 'display:flex;gap:6px;align-items:center'
-    div.innerHTML = '<select class="sp-field" style="padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg2);color:var(--text);font-size:13px">' + fields.map(function(f) { return '<option>' + f + '</option>' }).join('') + '</select>' +
-      '<select class="sp-op" style="padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg2);color:var(--text);font-size:13px">' + ops.map(function(o) { return '<option>' + o + '</option>' }).join('') + '</select>' +
-      '<input class="sp-val" style="flex:1;padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg2);color:var(--text);font-size:13px">' +
-      '<button class="sp-remove-rule" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:16px;padding:2px 6px">&times;</button>'
-    container.appendChild(div)
+    div.innerHTML = _spRuleRowHtml({ field: 'genre', op: 'is', value: '' })
+    container.appendChild(div.firstChild)
+    _updatePreview()
   })
 
   document.getElementById('sp-save').addEventListener('click', function() {
     var name = document.getElementById('sp-name').value.trim()
     if (!name) { document.getElementById('sp-name').focus(); return }
-    var rules = []
-    document.querySelectorAll('.sp-rule').forEach(function(row) {
-      rules.push({
-        field: row.querySelector('.sp-field').value,
-        op: row.querySelector('.sp-op').value,
-        value: row.querySelector('.sp-val').value.trim()
-      })
-    })
+    var rules = _collectRules()
     if (existing) {
       var idx = state.smartPlaylists.indexOf(existing)
       if (idx !== -1) {
         existing.name = name
         existing.rules = rules
+        existing.type = 'smart'
         state.smartPlaylists[idx] = existing
       }
     } else {
       state.smartPlaylists.push({ id: 'sp_' + Date.now(), name: name, type: 'smart', rules: rules, createdAt: Date.now() })
     }
-    localStorage.setItem('papa-smart-playlists', JSON.stringify(state.smartPlaylists))
+    _persistSmartPlaylists()
     renderPlaylists()
     document.getElementById('smart-pl-modal').remove()
   })
@@ -14124,9 +14775,10 @@ function showSmartPlaylistDialog(existing) {
     document.getElementById('smart-pl-modal').remove()
   })
 
-  document.getElementById('sp-rules').addEventListener('click', function(e) {
+  container.addEventListener('click', function(e) {
     if (e.target.classList.contains('sp-remove-rule')) {
       e.target.closest('.sp-rule').remove()
+      _updatePreview()
     }
   })
 
@@ -14135,6 +14787,8 @@ function showSmartPlaylistDialog(existing) {
       overlay.remove()
     }
   })
+
+  _updatePreview()
 }
 
 function showAddToPlaylistModal(tracks) {
@@ -27131,11 +27785,25 @@ function _persistPlaylist(pl) {
   else window.api.savePlaylist(pl)
 }
 
+// Evaluate a user smart playlist. The field/op/value matching (including the
+// new formatClass / liked / addedWithin fields the rule editor gained in Wave 3)
+// lives in the tested pure evaluator in music-tools.js; the renderer only wires
+// in the side data those rules need (play counts, liked-set membership) so the
+// same logic is exercised by tests and the running app.
 function _evalSmartPlaylist(pl) {
   var all = _allLibraryTracks()
-  // A rule set that is empty, or whose every rule has a blank value, used to
-  // match the WHOLE library ('' is a substring of everything). An
-  // unconfigured smart playlist is empty, not everything.
+  var _mt = (typeof window !== 'undefined' && window.PapaMusicTools) || null
+  var likedSet = new Set(state.likedTracks || [])
+  var ctx = {
+    playCounts: state.playCounts,
+    isLiked: function (t) { return likedSet.has(t.filePath) },
+    now: Date.now(),
+  }
+  if (_mt && _mt.evaluateFieldRules) {
+    return _mt.evaluateFieldRules(all, pl.rules || [], ctx)
+  }
+  // Defensive fallback (music-tools always loads before the renderer): the
+  // original inline matcher, minus the newer fields.
   var rules = (pl.rules || []).filter(function (r) {
     return r && r.field && String(r.value == null ? '' : r.value).trim() !== ''
   })

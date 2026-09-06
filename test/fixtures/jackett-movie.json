@@ -1,0 +1,46 @@
+{
+  "Results": [
+    {
+      "Title": "Oppenheimer 2023 1080p BluRay DDP5.1 x264-GalaxyRG",
+      "MagnetUri": "magnet:?xt=urn:btih:491AA0E19CBDB03B100961DB82315C08643A6139&dn=Oppenheimer",
+      "InfoHash": "491AA0E19CBDB03B100961DB82315C08643A6139",
+      "Seeders": 1087,
+      "Peers": 319,
+      "Size": 2166271375,
+      "Tracker": "1337x",
+      "CategoryDesc": "Movies/HD",
+      "Link": "https://jackett.example/dl/1337x/oppenheimer.torrent"
+    },
+    {
+      "Title": "Oppenheimer 2023 2160p UHD BluRay TrueHD 7.1 x265-TERMINAL",
+      "InfoHash": "A1B2C3D4E5F60718293A4B5C6D7E8F9012345678",
+      "Seeders": 214,
+      "Peers": 55,
+      "Size": 48318382080,
+      "Tracker": "TorrentGalaxy"
+    },
+    {
+      "Title": "Oppenheimer 2023 720p WEBRip AAC2.0 x264-LinkOnly",
+      "Seeders": 40,
+      "Size": 1288490188,
+      "Tracker": "SomeIndexer",
+      "Link": "https://jackett.example/dl/some/oppenheimer720.torrent"
+    },
+    {
+      "Title": "Oppenheimer 2019 CAM x264-BADCAM",
+      "MagnetUri": "magnet:?xt=urn:btih:FFEEDDCCBBAA00112233445566778899AABBCCDD",
+      "InfoHash": "FFEEDDCCBBAA00112233445566778899AABBCCDD",
+      "Seeders": 3,
+      "Size": 900000000,
+      "Tracker": "Junk"
+    },
+    {
+      "Title": "Completely Unrelated Film 2021 1080p BluRay x264",
+      "MagnetUri": "magnet:?xt=urn:btih:0011223344556677889900112233445566778899",
+      "InfoHash": "0011223344556677889900112233445566778899",
+      "Seeders": 500,
+      "Size": 2000000000,
+      "Tracker": "1337x"
+    }
+  ]
+}

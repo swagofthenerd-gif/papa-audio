@@ -128,6 +128,10 @@ test('every channel main sends has something that actually listens', () => {
     // the "verified" badge lands in the parallel Wave-2 UI work, so main + the
     // bridge land first.
     'slsk-verify-done': 'preload exposes onSlskVerifyDone; renderer listener is landing in the parallel UI work',
+    // preload exposes onSlskUploadActivity (roadmap #54); the "you're sharing N
+    // files" status chip is wired by the parallel Wave-3 UI work, so main + the
+    // bridge land first.
+    'slsk-upload-activity': 'preload exposes onSlskUploadActivity; renderer listener is landing in the parallel UI work',
   }
   const unheard = [...sentChannels]
     .filter(c => !heard.has(c) && !(c in NOT_FOR_THE_RENDERER) && !(c in DELIBERATELY_UNHANDLED))

@@ -148,6 +148,8 @@ contextBridge.exposeInMainWorld('api', {
   videoEnrich:      (p) => ipcRenderer.invoke('video-enrich', p),
   videoShelf:       (p) => ipcRenderer.invoke('video-shelf', p),
   videoAiring:      (p) => ipcRenderer.invoke('video-airing', p),
+  // Airing calendar month view + my-shows filter (roadmap #36).
+  videoAiringCalendar: (p) => ipcRenderer.invoke('video-airing-calendar', p),
   videoCountries:   ()  => ipcRenderer.invoke('video-countries'),
   videoSubOpen:     ()  => ipcRenderer.invoke('video-sub-open'),
   videoSkipSegments:(req) => ipcRenderer.invoke('video-skip-segments', req),
@@ -184,6 +186,10 @@ contextBridge.exposeInMainWorld('api', {
   getLastfmConfig:  ()  => ipcRenderer.invoke('get-lastfm-config'),
   setLastfmConfig:  (c) => ipcRenderer.invoke('set-lastfm-config', c),
   scrobbleTrack:    (t) => ipcRenderer.invoke('scrobble-track', t),
+
+  // Artist page: keyless bio (MusicBrainz→Wikipedia) + a similar slot the UI
+  // fills from its own library-derived "Fans also like" row (Wave 3 contract).
+  artistInfo:       (p) => ipcRenderer.invoke('artist-info', p),
 
   // Start on boot
   getStartOnBoot: () => ipcRenderer.invoke('get-start-on-boot'),
@@ -257,6 +263,12 @@ contextBridge.exposeInMainWorld('api', {
   slskSchedulerStats:    ()  => ipcRenderer.invoke('slsk-scheduler-stats'),
   slskSchedulerQueue:    ()  => ipcRenderer.invoke('slsk-scheduler-queue'),
   slskSchedulerConfig:   (p) => ipcRenderer.invoke('slsk-scheduler-config', p),
+  // Bandwidth schedule (roadmap #51): day/night download throttle.
+  slskScheduleGet:       ()  => ipcRenderer.invoke('slsk-schedule-get'),
+  slskScheduleSet:       (p) => ipcRenderer.invoke('slsk-schedule-set', p),
+  // Upload awareness (roadmap #54): what you're sharing back right now.
+  slskUploadStats:       ()  => ipcRenderer.invoke('slsk-upload-stats'),
+  onSlskUploadActivity:  (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('slsk-upload-activity', h); return () => ipcRenderer.removeListener('slsk-upload-activity', h) },
   slskRespreadBacklog:   (p) => ipcRenderer.invoke('slsk-respread-backlog', p),
   slskUnbenchPeers:      ()  => ipcRenderer.invoke('slsk-unbench-peers'),
   slskWishlistRun:       ()  => ipcRenderer.invoke('slsk-wishlist-run'),

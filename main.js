@@ -184,6 +184,36 @@ const deadMagnet = require('./src/dead-magnet')
 const watchDebounce = require('./src/watch-debounce')
 const backupSchedule = require('./src/backup-schedule')
 const searchHistory = require('./src/search-history')
+// Wave 3 pure-logic modules are required lazily on first use rather than at top
+// level: each is only touched from a single handler, so keeping the require out
+// of the startup path avoids charging every cold start for code that most
+// sessions never invoke. See test/startup-budget.test.js for the ceiling
+// contract — the arrow (`=>`) in each declaration keeps these lines out of the
+// column-zero require count that budget measures.
+//
+// _lazyNs returns a Proxy that requires the module on first property access and
+// memoizes it, so call sites read as ordinary namespaces (artistInfo.resolve,
+// bandwidthSchedule.currentLimitKbps) with no visible plumbing. _lazyMod is the
+// callable variant, used where the export is a factory that is itself invoked
+// (createJackettProvider).
+function _lazyNs(factory) {
+  let mod
+  const load = () => (mod ??= factory())
+  return new Proxy({}, {
+    get: (_t, prop) => load()[prop],
+    has: (_t, prop) => prop in load(),
+  })
+}
+function _lazyMod(factory) {
+  let mod
+  return () => (mod ??= factory())
+}
+const airingCalendar = _lazyNs(() => require('./src/airing-calendar'))
+const bandwidthSchedule = _lazyNs(() => require('./src/bandwidth-schedule'))
+const uploadStats = _lazyNs(() => require('./src/upload-stats'))
+const artistInfo = _lazyNs(() => require('./src/artist-info'))
+const createJackettProvider =
+  _lazyMod(() => require('./providers/jackett').createJackettProvider)
 
 const LASTFM_API_KEY = 'PLACEHOLDER'
 const LASTFM_API_URL = 'https://ws.audioscrobbler.com/2.0/'
@@ -723,6 +753,15 @@ const sideStores = {
   // Auto-organize move log (roadmap #50): an append-only record of every file
   // move so an opt-in reorganise is inspectable and never silent. Capped on write.
   slskOrganizeLog: new SideStore({ dir: USER_DATA, name: 'slsk-organize-log', fallback: [], debounceMs: 1000, onError: _sideErr }),
+
+  // Upload awareness (roadmap #54): the daily upload counters, persisted so
+  // "uploaded today" survives a restart and reset at local midnight (rollover in
+  // src/upload-stats.js). Shape: { day, totalUploadedToday, peers, seen }.
+  slskUploadStats: new SideStore({ dir: USER_DATA, name: 'slsk-upload-stats', fallback: null, debounceMs: 1000, onError: _sideErr }),
+
+  // Artist bio cache (Wave 3 contract): keyless MusicBrainz→Wikipedia bios keyed
+  // by folded artist name, capped at 100 with a 30-day TTL (src/artist-info.js).
+  artistInfoCache: new SideStore({ dir: USER_DATA, name: 'artist-info-cache', fallback: {}, debounceMs: 1000, onError: _sideErr }),
 }
 
 // One-time move out of the shared config. adoptIfEmpty only takes the legacy
@@ -2906,6 +2945,62 @@ ipcMain.on('set-streaming-volume-offset', (_, offset) => store.set('streamingVol
 
 ipcMain.handle('get-lastfm-config', () => store.get('lastfmConfig', {}))
 ipcMain.handle('set-lastfm-config', (_, cfg) => { store.set('lastfmConfig', cfg) })
+
+// Artist info for the artist page (Wave 3 contract): a keyless bio via
+// MusicBrainz→Wikipedia, plus a `similar` slot the UI fills from its own
+// library-derived "Fans also like" row (so this returns similar:[] by design —
+// see src/artist-info.js for the source rationale). Cached in a side-store
+// (cap 100, 30-day TTL), every fetch timeout-guarded (10s AbortController), and
+// degrading to { bio:null, similar:[] } on any failure.
+//
+//   artistInfo({ artist }) -> { bio: string|null, similar: string[] }
+async function _artistInfoFetchJson(url) {
+  // MusicBrainz asks every client for a descriptive User-Agent; Wikipedia is
+  // happy without one but it does no harm. AbortController bounds each request so
+  // a hung endpoint cannot wedge the lookup.
+  const controller = typeof AbortController === 'function' ? new AbortController() : null
+  const timer = controller
+    ? setTimeout(() => controller.abort(), artistInfo.REQUEST_TIMEOUT_MS) : null
+  try {
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'PapaAudio/1.0 (https://github.com/)' },
+      signal: controller ? controller.signal : undefined,
+    })
+    if (!res || !res.ok) return null
+    return await res.json()
+  } catch (_) {
+    return null   // a dead endpoint contributes nothing, never throws
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+ipcMain.handle('artist-info', async (_, { artist } = {}) => {
+  const name = String(artist == null ? '' : artist).trim()
+  if (!name) return artistInfo.degraded()
+  const key = artistInfo.cacheKey(name)
+  try {
+    const store = sideStores.artistInfoCache.get() || {}
+    const hit = artistInfo.cacheGet(store, key)
+    if (hit) return artistInfo.normalize(hit)
+    const info = await artistInfo.resolve(name, {
+      mb: _artistInfoFetchJson,
+      wd: _artistInfoFetchJson,
+      wiki: _artistInfoFetchJson,
+    })
+    const normalized = artistInfo.normalize(info)
+    // Only cache a real answer: a degraded {bio:null} is almost always a
+    // transient network failure, and a 30-day empty cache would pin "no bio" long
+    // after the source recovered.
+    if (normalized.bio) {
+      sideStores.artistInfoCache.update(prev =>
+        artistInfo.cacheSet(prev || {}, key, normalized))
+    }
+    return normalized
+  } catch (_) {
+    return artistInfo.degraded()
+  }
+})
 ipcMain.handle('scrobble-track', async (_, track) => {
   if (!track) return
   await scrobbleTrack(track, Date.now())
@@ -6114,6 +6209,10 @@ async function dlTick() {
   try {
     const cfg = dlConfig()
     const now = Date.now()
+    // Bandwidth schedule (#51): re-apply the day/night torrent throttle each tick
+    // so a day→night boundary takes hold within a tick. No-op when the schedule is
+    // disabled, and self-skipping when the limit has not changed since last tick.
+    _applyBandwidthSchedule(now)
     const snap = await dlSnapshot()
     // slskd unreachable — do nothing rather than double-request on recovery.
     if (!snap) return
@@ -6429,7 +6528,93 @@ function dlStart() {
   if (dlTimer) return
   dlTimer = setInterval(() => { dlTick() }, DL_TICK_MS)
   if (dlTimer.unref) dlTimer.unref()
+  slskUploadPollStart()
 }
+
+// ── Upload awareness (roadmap #54) ───────────────────────────────────────────
+// Poll slskd's /transfers/uploads and keep daily counters of what we are sharing
+// back. Fast cadence (60s) while any upload is active, slow (5min) when idle, so
+// a busy share updates promptly without hammering slskd all day. The pure
+// accounting (byte deltas, distinct peers, midnight rollover) is in
+// src/upload-stats.js; this is the poll + persistence + activity event around it.
+// A transition idle↔active fires 'slsk-upload-activity' so the renderer can wire
+// a "you're sharing N files" chip later.
+const UPLOAD_POLL_ACTIVE_MS = 60 * 1000
+const UPLOAD_POLL_IDLE_MS = 5 * 60 * 1000
+let _uploadTimer = null
+let _uploadPollMs = UPLOAD_POLL_IDLE_MS
+let _uploadActive = false   // last-seen active/idle, for the transition event
+
+async function slskUploadPollOnce() {
+  let uploads = null
+  try {
+    uploads = await slskdFetch('GET', '/transfers/uploads')
+  } catch (_) {
+    // slskd unreachable: do NOT guess. Leave the counters as they are and keep
+    // the current cadence; a real snapshot will resume them.
+    return null
+  }
+  const now = Date.now()
+  const prev = sideStores.slskUploadStats.get()
+  const result = uploadStats.ingest(prev, uploads, now)
+  sideStores.slskUploadStats.set(result.state)
+  const nowActive = result.activeUploads > 0
+  // Retune the cadence to match activity, and fire the transition event once when
+  // the active/idle state actually flips.
+  if (nowActive !== _uploadActive) {
+    _uploadActive = nowActive
+    safeSend('slsk-upload-activity', {
+      active: nowActive,
+      activeUploads: result.activeUploads,
+      totalUploadedToday: result.totalUploadedToday,
+      distinctPeersToday: result.distinctPeersToday,
+    })
+    const wantMs = nowActive ? UPLOAD_POLL_ACTIVE_MS : UPLOAD_POLL_IDLE_MS
+    if (wantMs !== _uploadPollMs) {
+      _uploadPollMs = wantMs
+      if (_uploadTimer) {
+        clearInterval(_uploadTimer)
+        _uploadTimer = setInterval(() => { slskUploadPollOnce() }, _uploadPollMs)
+        if (_uploadTimer.unref) _uploadTimer.unref()
+      }
+    }
+  }
+  return result
+}
+
+function slskUploadPollStart() {
+  if (_uploadTimer) return
+  _uploadTimer = setInterval(() => { slskUploadPollOnce() }, _uploadPollMs)
+  if (_uploadTimer.unref) _uploadTimer.unref()
+  // Prime it once so "uploaded today" is populated without waiting a full cycle.
+  slskUploadPollOnce().catch(() => {})
+}
+
+// The current share status for the UI (roadmap #54). Reads the persisted daily
+// counters (rolled over to today by ingest on the next poll) and the live active
+// count from a fresh poll when slskd answers, degrading to the stored totals when
+// it does not — so the number is never blank just because slskd blinked.
+ipcMain.handle('slsk-upload-stats', async () => {
+  const result = await slskUploadPollOnce()
+  if (result) {
+    return {
+      ok: true,
+      activeUploads: result.activeUploads,
+      totalUploadedToday: result.totalUploadedToday,
+      distinctPeersToday: result.distinctPeersToday,
+    }
+  }
+  // slskd unreachable: serve the last persisted counters, rolled to today so a
+  // stale day never leaks yesterday's number.
+  const rolled = uploadStats.ingest(sideStores.slskUploadStats.get(), [], Date.now())
+  sideStores.slskUploadStats.set(rolled.state)
+  return {
+    ok: true,
+    activeUploads: 0,
+    totalUploadedToday: rolled.totalUploadedToday,
+    distinctPeersToday: rolled.distinctPeersToday,
+  }
+})
 
 // Downloading a folder out of one user's library gives the scheduler exactly
 // one source per file, so it can never spread or recover — it is stuck with
@@ -6606,6 +6791,73 @@ ipcMain.handle('slsk-scheduler-config', (_, patch) => {
     store.set('slskSchedulerConfig', Object.assign({}, store.get('slskSchedulerConfig', {}), patch))
   }
   return dlConfig()
+})
+
+// ── Bandwidth schedule (roadmap #51) ─────────────────────────────────────────
+// Throttle downloads during the day, open the pipe at night. The schedule lives
+// under slskSchedulerConfig.schedule; the pure day/night decision is in
+// src/bandwidth-schedule.js (currentLimitKbps). It is APPLIED to the WebTorrent
+// client, whose throttle is client-wide (torrent-stream.js setDownloadLimit /
+// client.throttleDownload) and so caps every torrent download and stream.
+//
+// slskd is the OTHER downloader, and it has no live speed-limit API wired here:
+// its only speed control is the generated slskd.yml, read once at startup. So the
+// slskd side of the schedule cannot be applied live without a config-reload path
+// that does not exist yet; slskScheduleSet reports `slskdNeedsRestart: true` to
+// say so, and the yml edit is deliberately NOT attempted (per the contract, only
+// when a reload is already handled). This is honest partial coverage: torrent
+// downloads are throttled on schedule now; Soulseek throttling waits on a slskd
+// config-reload path.
+function _scheduleConfig() {
+  const saved = store.get('slskSchedulerConfig', {})
+  return Object.assign({}, bandwidthSchedule.DEFAULTS, (saved && saved.schedule) || {})
+}
+
+// Apply the schedule's current limit to the WebTorrent client, if one exists.
+// Called on set and on every dl tick, so a day→night boundary takes effect
+// within a tick rather than only on the next settings change. Returns the cap now
+// in force (bytes/sec) or null when uncapped, so callers can log/surface it.
+let _lastScheduleBps = undefined
+function _applyBandwidthSchedule(now) {
+  const schedule = _scheduleConfig()
+  const kbps = bandwidthSchedule.currentLimitKbps(schedule, now)
+  const bps = bandwidthSchedule.limitToBytesPerSec(kbps)
+  // The live video streamer takes precedence via its own downloadLimitMbps
+  // setting when it is playing; the schedule only governs the shared client when
+  // no explicit stream cap is in force. Applying both would have them fight.
+  const streamerCap = _videoSession.streamer ? _videoSession.streamer.downloadLimit() : null
+  const effective = streamerCap != null ? streamerCap : bps
+  if (effective === _lastScheduleBps) return effective
+  _lastScheduleBps = effective
+  try {
+    if (_torrentClient && typeof _torrentClient.throttleDownload === 'function') {
+      _torrentClient.throttleDownload(effective == null ? -1 : effective)
+    }
+  } catch (_) { /* throttling is best-effort; never fail over it */ }
+  return effective
+}
+
+ipcMain.handle('slsk-schedule-get', () => {
+  return { ok: true, schedule: _scheduleConfig() }
+})
+
+ipcMain.handle('slsk-schedule-set', (_, patch) => {
+  try {
+    const saved = store.get('slskSchedulerConfig', {})
+    const nextSchedule = Object.assign({}, bandwidthSchedule.DEFAULTS,
+      (saved && saved.schedule) || {}, (patch && typeof patch === 'object') ? patch : {})
+    store.set('slskSchedulerConfig', Object.assign({}, saved, { schedule: nextSchedule }))
+    // Apply the torrent-side cap immediately so a change to "night" takes effect
+    // now, not on the next tick.
+    _lastScheduleBps = undefined
+    _applyBandwidthSchedule(Date.now())
+    // slskd's speed cap is baked into slskd.yml at startup; there is no live
+    // reload, so a Soulseek-side change needs a restart to take hold. Say so
+    // rather than silently applying only half the schedule.
+    return { ok: true, schedule: nextSchedule, slskdNeedsRestart: true }
+  } catch (e) {
+    return { ok: false, error: e.message }
+  }
 })
 
 // Pull deep per-peer queues back into the local scheduler so they can be
@@ -7729,6 +7981,12 @@ function _videoSettings() {
       // land on the same shipped mirrors. Only these four providers fall back
       // across a mirror list; the meta-indexers each have a single endpoint.
       sourceMirrors: { yts: [], eztv: [], nyaa: [], apibay: [] },
+      // Jackett/Prowlarr second-tier sources (App #39). Both empty = disabled,
+      // which is the default: the provider is not even constructed until the user
+      // pastes their instance URL and api key. Works for a Prowlarr instance too
+      // (same Torznab results endpoint).
+      jackettUrl: '',
+      jackettApiKey: '',
     },
     store.get('videoSettings')
   )
@@ -7808,6 +8066,27 @@ function _rebuildMirrorProviders() {
 // trackers, which is where most of the source count now comes from.
 const knaben = _lazy(() => createKnabenProvider({ fetchFn: fetchWithTimeout(15000) }))
 const solidtorrents = _lazy(() => createSolidTorrentsProvider({ fetchFn: fetchWithTimeout(15000) }))
+// Jackett/Prowlarr (roadmap #39): a user-hosted second tier of torrent sources,
+// config-gated and OFF by default. Built against the user's own base URL + api
+// key (videoSettings.jackettUrl / jackettApiKey); rebuilt whenever either
+// changes so a settings edit takes effect without a restart. When unconfigured
+// the getter returns null and _videoBackends never adds it.
+let _jackettProvider = null
+let _jackettSig = ''
+function jackett() {
+  const s = _videoSettings()
+  const url = String(s.jackettUrl || '').trim()
+  const key = String(s.jackettApiKey || '').trim()
+  if (!url || !key) { _jackettProvider = null; _jackettSig = ''; return null }
+  const sig = url + ' ' + key
+  if (!_jackettProvider || _jackettSig !== sig) {
+    _jackettProvider = createJackettProvider()({
+      fetchFn: fetchWithTimeout(15000), baseUrl: url, apiKey: key,
+    })
+    _jackettSig = sig
+  }
+  return _jackettProvider
+}
 // The HTTP adapters ship with no resolvers. The former vidsrc resolver was
 // removed from the wiring because it returned an *embed page* URL: mpv runs
 // with --ytdl=no, so every one of those entries failed the moment it was
@@ -8131,6 +8410,7 @@ const VIDEO_SETTING_KEYS = new Set([
   'preferSurround', 'preferredQuality', 'torrentSources',
   'downloadLimitMbps', 'seedWhileWatching', 'streamCacheDir',
   'sourceMirrors',
+  'jackettUrl', 'jackettApiKey',
 ])
 
 ipcMain.handle('video-settings-set', (_, { patch }) => {
@@ -8158,6 +8438,13 @@ ipcMain.handle('video-settings-set', (_, { patch }) => {
     // against the new mirrors. Compared by value — the blob is small.
     if (JSON.stringify(next.sourceMirrors) !== JSON.stringify(current.sourceMirrors)) {
       _rebuildMirrorProviders()
+      _videoStreamCache.clear()
+    }
+    // Jackett config change (App #39): the provider is rebuilt lazily by jackett()
+    // on the next lookup (it compares the url+key signature), but any cached
+    // stream list was produced without — or with the old — Jackett tier and is
+    // now stale, so drop the stream cache.
+    if (next.jackettUrl !== current.jackettUrl || next.jackettApiKey !== current.jackettApiKey) {
       _videoStreamCache.clear()
     }
     // The bandwidth cap and the seed-back switch take effect immediately on the
@@ -8852,6 +9139,40 @@ ipcMain.handle('video-airing', async (_, { anilistIds, tmdbIds } = {}) => {
   }
 })
 
+// The followed shows as the merged-airing key set ("anime:<id>" / "tv:<id>"), so
+// the calendar can tag each entry with whether it is on My List. Reuses the same
+// watchlist read the notifier uses, mapped to the exact keys _mergeAiring stamps.
+function _followedAiringKeys() {
+  const { anilistIds, tmdbIds } = _followedAiringIds()
+  const set = new Set()
+  for (const id of anilistIds) set.add('anime:' + id)
+  for (const id of tmdbIds) set.add('tv:' + id)
+  return set
+}
+
+// Airing calendar month view (roadmap #36). Fetches the same merged AniList+TMDB
+// schedule the airing shelf uses (from every followed show), then buckets it into
+// the days of one month with a per-entry `isFollowed` flag. Since the schedule is
+// computed from the follow list, every entry here is followed — but the flag is
+// carried explicitly so a future "show everything airing" mode drops in without a
+// shape change. Pure bucketing lives in src/airing-calendar.js; this is only the
+// fetch + assemble around it. The renderer builds the grid later.
+ipcMain.handle('video-airing-calendar', async (_, { year, month } = {}) => {
+  try {
+    const y = Number(year)
+    const m = Number(month)
+    if (!Number.isFinite(y) || !Number.isFinite(m) || m < 1 || m > 12) {
+      return { ok: false, error: 'A valid year and month (1-12) are required' }
+    }
+    const schedule = await _followedAiringSchedule()
+    const followed = _followedAiringKeys()
+    const calendar = airingCalendar.bucketMonth(schedule, y, m, { followed })
+    return { ok: true, calendar }
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) }
+  }
+})
+
 // ── Air-date notifications (roadmap #35) ─────────────────────────────────────
 // On app start, and every 6h, compute the airing schedule for the shows the
 // user follows (their video-store watchlist) and fire a desktop Notification for
@@ -8944,16 +9265,22 @@ async function checkAiringNotifications() {
 // one guaranteed-empty network round-trip per episode click.
 function _videoBackends(type, settings) {
   const torrents = settings.torrentSources !== false
+  // Jackett/Prowlarr (roadmap #39) rides the torrent tier when the user has
+  // configured an instance — otherwise jackett() is null and it is filtered out.
+  // Appended AFTER the built-ins so it is a second tier, and the router's health
+  // machinery reorders anyway; it serves movie/tv/anime alike.
+  const jk = torrents ? jackett() : null
+  const withJackett = list => (jk ? list.concat([jk]) : list)
   // `type` here is the *source* type, which is not always the catalog the
   // entry came from: a TMDB tv show flagged as anime is routed to nyaa, so a
   // show found by search gets the same sources as one found in the Anime tab.
-  if (type === 'anime') return torrents ? [nyaa(), animetosho(), apibay(), knaben(), solidtorrents(), anime()] : [anime()]
+  if (type === 'anime') return torrents ? withJackett([nyaa(), animetosho(), apibay(), knaben(), solidtorrents(), anime()]) : [anime()]
   // Every type gets the broad indexer alongside its specialist one. They run
   // in parallel and their results are merged and de-duplicated by info hash,
   // so the specialist's better metadata wins where both have the same torrent
   // and the broad one fills in everything the specialist never carried.
-  if (type === 'tv') return torrents ? [eztv(), apibay(), knaben(), solidtorrents(), movieTv()] : [movieTv()]
-  return torrents ? [yts(), apibay(), knaben(), solidtorrents(), movieTv()] : [movieTv()]
+  if (type === 'tv') return torrents ? withJackett([eztv(), apibay(), knaben(), solidtorrents(), movieTv()]) : [movieTv()]
+  return torrents ? withJackett([yts(), apibay(), knaben(), solidtorrents(), movieTv()]) : [movieTv()]
 }
 
 // The preferred-quality setting was stored and read by nothing. It is applied

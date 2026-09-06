@@ -1330,8 +1330,306 @@
     return out
   }
 
+  // ── Smart playlist: the field/op/value rule evaluator (App #11) ─────────────
+  // The renderer's smart playlists are AND-combined lists of { field, op, value }
+  // rules. This is the pure evaluator behind them (the renderer's
+  // _evalSmartPlaylist delegates here), so the matching rules — including the new
+  // format-class, liked and added-within-days conditions the rule editor gained —
+  // are tested in one place without the DOM or a clock.
+  //
+  // A track row is the renderer's flattened track object. `ctx` supplies the
+  // side data a rule may need without reaching into globals:
+  //   ctx.playCounts — { filePath: count }
+  //   ctx.isLiked    — fn(track) → bool
+  //   ctx.now        — epoch ms (injectable for the added-within test)
+  //
+  // Supported fields:
+  //   artist, album, genre, year            — text/number, ops below
+  //   format                                — file extension (flac/mp3/…)
+  //   formatClass                           — 'lossless' | 'hires' | 'lossy'
+  //   playCount                             — number, ops below
+  //   liked                                 — value 'true'/'false' (is)
+  //   addedWithin                           — value = days; matches added ≤ N days
+  // Ops: is, contains, gt, lt, gte, lte. An unknown field/op fails closed (the
+  // whole rule matches nothing) so a malformed rule never silently matches all.
+  function _extLower(filePath) {
+    return _extOf(filePath) // reuse the dupe-finder's extension parse
+  }
+
+  function _formatClassOf(track) {
+    var ext = _extLower(track.filePath)
+    if (!LOSSLESS_EXTS[ext]) return 'lossy'
+    // Hi-res = lossless AND (>16-bit OR >48kHz). We only know that for tracks the
+    // scanner tagged with bitsPerSample/sampleRate; untagged lossless is treated
+    // as plain lossless (fails the 'hires' test, passes 'lossless').
+    var bd = Number(track.bitsPerSample) || 0
+    var sr = Number(track.sampleRate) || 0
+    if (bd > 16 || sr > 48000) return 'hires'
+    return 'lossless'
+  }
+
+  function _numCompare(op, a, b) {
+    var x = Number(a); var y = Number(b)
+    if (!isFinite(x) || !isFinite(y)) return false
+    switch (op) {
+      case 'gt':  return x > y
+      case 'lt':  return x < y
+      case 'gte': return x >= y
+      case 'lte': return x <= y
+      case 'is':  return x === y
+      default:    return false
+    }
+  }
+
+  function _ruleFieldValue(track, field, ctx) {
+    switch (field) {
+      case 'album':     return track.albumName != null ? track.albumName : track.album
+      case 'artist':    return track.albumArtist || track.artist
+      case 'format':    return _extLower(track.filePath)
+      case 'formatClass': return _formatClassOf(track)
+      case 'playCount': return (ctx.playCounts && ctx.playCounts[track.filePath]) || 0
+      default:          return track[field]
+    }
+  }
+
+  function _matchOneRule(track, rule, ctx) {
+    if (!rule || !rule.field) return false
+    var field = rule.field
+    var op = rule.op || 'is'
+    var want = rule.value
+
+    // Fields that ignore the op and read as a predicate.
+    if (field === 'liked') {
+      var isLiked = ctx.isLiked ? !!ctx.isLiked(track) : false
+      var wantLiked = String(want).toLowerCase() !== 'false' // default: want liked
+      return isLiked === wantLiked
+    }
+    if (field === 'addedWithin') {
+      var days = Number(want)
+      if (!isFinite(days) || days <= 0) return false
+      var added = Number(track.addedAt || track.dateAdded || track.mtime || 0) || 0
+      if (!added) return false
+      var now = isFinite(Number(ctx.now)) ? Number(ctx.now) : Date.now()
+      return (now - added) <= days * 24 * 60 * 60 * 1000 && added <= now
+    }
+
+    var val = _ruleFieldValue(track, field, ctx)
+    if (val === undefined || val === null) return false
+
+    // Numeric fields compare numerically for the ordering ops.
+    if (field === 'playCount' || field === 'year') {
+      if (op === 'is') return _numCompare('is', val, want)
+      if (op === 'gt' || op === 'lt' || op === 'gte' || op === 'lte') {
+        return _numCompare(op, val, want)
+      }
+      // contains on a number: substring of its string form.
+      return String(val).indexOf(String(want)) !== -1
+    }
+
+    switch (op) {
+      case 'is':       return String(val).toLowerCase() === String(want).toLowerCase()
+      case 'contains': return String(val).toLowerCase().indexOf(String(want).toLowerCase()) !== -1
+      case 'gt':       return _numCompare('gt', val, want)
+      case 'lt':       return _numCompare('lt', val, want)
+      case 'gte':      return _numCompare('gte', val, want)
+      case 'lte':      return _numCompare('lte', val, want)
+      default:         return false
+    }
+  }
+
+  // A rule is "configured" when it names a field and either carries a value or is
+  // one of the valueless predicates (liked). An all-blank rule set matches
+  // nothing (an unconfigured smart playlist is empty, not everything).
+  function _ruleConfigured(rule) {
+    if (!rule || !rule.field) return false
+    if (rule.field === 'liked') return true
+    return String(rule.value == null ? '' : rule.value).trim() !== ''
+  }
+
+  // Run the AND-combined field rules against a flat track list. Returns the
+  // matching tracks in input order. `tracks` are flattened track objects;
+  // `ctx` as documented above.
+  function evaluateFieldRules(tracks, rules, ctx) {
+    tracks = tracks || []
+    ctx = ctx || {}
+    var active = (rules || []).filter(_ruleConfigured)
+    if (!active.length) return []
+    return tracks.filter(function (t) {
+      return active.every(function (r) { return _matchOneRule(t, r, ctx) })
+    })
+  }
+
+  // ── Fuzzy library search: typo-tolerant matching (App #13) ──────────────────
+  // The library search does an exact case-insensitive substring match first;
+  // when that yields nothing we fall back to this, so a mistyped "raidohead"
+  // still finds "Radiohead". The rule, per the roadmap: every word of the query
+  // must match some word of the candidate within an edit distance of ≤ maxDist
+  // (default 2). Short query words (≤2 chars) demand an exact prefix instead of
+  // a distance match, because at that length almost anything is within 2 edits.
+  //
+  // Pure and DOM-free: the renderer passes it album name+artist strings; the
+  // test pins the behaviour. `levenshtein` is the standard DP distance, kept
+  // here so the pure module is self-contained (the renderer has its own copy for
+  // the search-suggestion path; this one is the tested one for library search).
+  function levenshtein(a, b) {
+    a = String(a == null ? '' : a)
+    b = String(b == null ? '' : b)
+    if (a === b) return 0
+    if (!a.length) return b.length
+    if (!b.length) return a.length
+    var prev = []
+    for (var j = 0; j <= b.length; j++) prev[j] = j
+    for (var i = 1; i <= a.length; i++) {
+      var cur = [i]
+      for (var k = 1; k <= b.length; k++) {
+        var cost = a.charAt(i - 1) === b.charAt(k - 1) ? 0 : 1
+        cur[k] = Math.min(prev[k] + 1, cur[k - 1] + 1, prev[k - 1] + cost)
+      }
+      prev = cur
+    }
+    return prev[b.length]
+  }
+
+  // Split a string into lowercased word tokens, punctuation dropped.
+  function _searchWords(s) {
+    return String(s == null ? '' : s).toLowerCase()
+      .replace(/[^a-z0-9]+/g, ' ').trim().split(/\s+/).filter(Boolean)
+  }
+
+  // Does `text` fuzzily match `query`? Every query word must find a text word
+  // within `maxDist` edits (or, for very short query words, be a prefix of one).
+  // An empty query matches nothing (the caller only reaches here on a real,
+  // non-empty query that got zero exact hits).
+  function fuzzyMatches(text, query, maxDist) {
+    var md = (maxDist != null && isFinite(Number(maxDist))) ? Number(maxDist) : 2
+    var qWords = _searchWords(query)
+    if (!qWords.length) return false
+    var tWords = _searchWords(text)
+    if (!tWords.length) return false
+    for (var i = 0; i < qWords.length; i++) {
+      var q = qWords[i]
+      var hit = false
+      for (var j = 0; j < tWords.length; j++) {
+        var t = tWords[j]
+        if (t.indexOf(q) !== -1) { hit = true; break } // substring is always fine
+        if (q.length <= 2) {
+          if (t.indexOf(q) === 0) { hit = true; break } // short words: prefix only
+          continue
+        }
+        if (levenshtein(q, t) <= md) { hit = true; break }
+      }
+      if (!hit) return false
+    }
+    return true
+  }
+
+  // Filter a list of items to those fuzzily matching the query, each item's
+  // searchable text produced by `textOf`. Returns the matching items in input
+  // order — the renderer uses this only after an exact search returned empty, to
+  // surface "close matches".
+  function fuzzyFilter(items, query, textOf, maxDist) {
+    items = items || []
+    var get = typeof textOf === 'function' ? textOf : function (x) { return String(x) }
+    var out = []
+    for (var i = 0; i < items.length; i++) {
+      if (fuzzyMatches(get(items[i]), query, maxDist)) out.push(items[i])
+    }
+    return out
+  }
+
+  // ── Recent searches: a bounded MRU list of query strings (App #13) ──────────
+  // Mirrors the video side's recent-search behaviour for the library search box.
+  // Pure list logic over the persisted array so the newest-first order and the
+  // cap are testable with no localStorage. The stored shape is a plain array of
+  // strings, newest first; a repeat search moves to the front (no duplicate),
+  // blanks are ignored, and the list is capped at `cap` (default 10).
+  function pushRecentSearch(list, query, cap) {
+    var max = (cap != null && Number(cap) > 0) ? Number(cap) : 10
+    var q = String(query == null ? '' : query).trim()
+    var out = (Array.isArray(list) ? list : [])
+      .filter(function (s) { return typeof s === 'string' && s.trim() })
+      .map(function (s) { return s.trim() })
+    if (!q) return out.slice(0, max)
+    // Drop any case-insensitive duplicate, then unshift the fresh query.
+    var lower = q.toLowerCase()
+    out = out.filter(function (s) { return s.toLowerCase() !== lower })
+    out.unshift(q)
+    return out.slice(0, max)
+  }
+
+  // ── Home personalization: row order + hidden set (App #15) ──────────────────
+  // Home is a fixed set of rows, each with a stable id. The user can reorder and
+  // hide them; the preference persists as { order: [ids...], hidden: [ids...] }.
+  // These pure helpers own the list algebra so the renderer only reorders/skips
+  // render calls and the logic is testable without the DOM.
+  //
+  // `defaultOrder` is the app's built-in row order (the source of truth for
+  // which rows EXIST). A saved order may be stale — missing rows that shipped
+  // since it was saved, or naming rows that no longer exist. resolveHomeRows
+  // reconciles the two: saved order first (in its saved sequence, minus unknown
+  // ids), then any new default rows the save never saw, appended in default
+  // order — so a new row always appears (at the bottom) rather than vanishing.
+  function resolveHomeRows(defaultOrder, pref) {
+    defaultOrder = (defaultOrder || []).filter(function (id) { return !!id })
+    var known = {}
+    defaultOrder.forEach(function (id) { known[id] = true })
+    var p = pref && typeof pref === 'object' ? pref : {}
+    var savedOrder = Array.isArray(p.order) ? p.order : []
+    var hiddenArr = Array.isArray(p.hidden) ? p.hidden : []
+    var hidden = {}
+    hiddenArr.forEach(function (id) { if (known[id]) hidden[id] = true })
+
+    var order = []
+    var placed = {}
+    savedOrder.forEach(function (id) {
+      if (known[id] && !placed[id]) { order.push(id); placed[id] = true }
+    })
+    defaultOrder.forEach(function (id) {
+      if (!placed[id]) { order.push(id); placed[id] = true }
+    })
+    return {
+      order: order,
+      hidden: hidden,
+      // The rows to actually render, in order, hidden ones removed.
+      visible: order.filter(function (id) { return !hidden[id] }),
+    }
+  }
+
+  // Move the row at `index` one slot up (dir -1) or down (dir +1), returning a
+  // NEW order array. Out-of-range moves (top row up, bottom row down) are no-ops
+  // that return an equal-content array, so the caller can persist unconditionally.
+  function moveHomeRow(order, index, dir) {
+    var out = (Array.isArray(order) ? order : []).slice()
+    var i = Number(index)
+    var to = i + (dir < 0 ? -1 : 1)
+    if (i < 0 || i >= out.length || to < 0 || to >= out.length) return out
+    var tmp = out[i]; out[i] = out[to]; out[to] = tmp
+    return out
+  }
+
+  // Toggle a row id in the hidden set, returning a NEW { order, hidden } pref
+  // ready to persist. `order` is carried through unchanged so the two halves of
+  // the preference always travel together.
+  function toggleHomeRow(pref, id) {
+    var p = pref && typeof pref === 'object' ? pref : {}
+    var order = Array.isArray(p.order) ? p.order.slice() : []
+    var hidden = Array.isArray(p.hidden) ? p.hidden.slice() : []
+    var at = hidden.indexOf(id)
+    if (at === -1) hidden.push(id)
+    else hidden.splice(at, 1)
+    return { order: order, hidden: hidden }
+  }
+
   var api = {
     sleepFadeSteps: sleepFadeSteps,
+    evaluateFieldRules: evaluateFieldRules,
+    levenshtein: levenshtein,
+    fuzzyMatches: fuzzyMatches,
+    fuzzyFilter: fuzzyFilter,
+    pushRecentSearch: pushRecentSearch,
+    resolveHomeRows: resolveHomeRows,
+    moveHomeRow: moveHomeRow,
+    toggleHomeRow: toggleHomeRow,
     albumsMissingArt: albumsMissingArt,
     parseLrc: parseLrc,
     activeLyricIndex: activeLyricIndex,
