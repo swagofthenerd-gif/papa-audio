@@ -638,6 +638,18 @@
             <button class="mcs-set-refresh mcs-set-action" id="ytdlp-update-btn">Update now</button>
           </div>
         </div>
+        <div class="mcs-set-group" id="maintenance-settings">
+          <div class="mcs-set-group-label">Maintenance</div>
+          <div class="mcs-set-hint">Keeps the app's moving parts current on their own — the YouTube engine, the Soulseek daemon, the tracker list, the video sources and the system tools. Turn this off to keep everything the way it is and update each item by hand.</div>
+          <label class="mcs-set-row">Keep everything up to date automatically
+            <input type="checkbox" id="maint-auto">
+          </label>
+          <!-- One row per item, rendered by _initMaintenanceSettings(): status
+               dot, version/last-check line, and per-item action buttons. -->
+          <div class="mcs-maint-list" id="maint-list">
+            <div class="mcs-set-hint">Checking…</div>
+          </div>
+        </div>
         <div class="mcs-set-group" id="diagnostics-settings">
           <div class="mcs-set-group-label">Diagnostics</div>
           <div class="mcs-set-btn-row">

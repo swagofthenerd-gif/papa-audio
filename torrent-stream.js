@@ -248,12 +248,18 @@ function removeDir(dir) {
 }
 
 class TorrentStreamer extends EventEmitter {
-  constructor({ client, timeoutMs = 20000, prebufferBytes = DEFAULT_PREBUFFER_BYTES, prebufferTimeoutMs = 45000, progressThrottleMs = PROGRESS_THROTTLE_MS, downloadLimitBps = null, seedWhileWatching = true } = {}) {
+  constructor({ client, timeoutMs = 20000, prebufferBytes = DEFAULT_PREBUFFER_BYTES, prebufferTimeoutMs = 45000, progressThrottleMs = PROGRESS_THROTTLE_MS, downloadLimitBps = null, seedWhileWatching = true, announceFn = null } = {}) {
     super()
     if (!client || typeof client.add !== 'function') {
       throw new TypeError('TorrentStreamer requires a webtorrent client with an add() method')
     }
     this.client = client
+    // Optional curated-tracker merge: given the magnet's own announce list (null
+    // here — the magnet carries its own), return the announce array to add. Kept
+    // as an injected seam so the streamer stays decoupled from the tracker-list
+    // module and is testable without it. When absent, no announce override is set
+    // and WebTorrent uses only the magnet's own trackers.
+    this._announceFn = typeof announceFn === 'function' ? announceFn : null
     this.timeoutMs = timeoutMs
     this.prebufferBytes = prebufferBytes
     this.prebufferTimeoutMs = prebufferTimeoutMs
@@ -596,7 +602,17 @@ class TorrentStreamer extends EventEmitter {
           // We created it, so its store and directory are ours to destroy.
           this._ownsTorrent = true
           try { fs.mkdirSync(this._storeDir, { recursive: true }) } catch (_) {}
-          torrent = this.client.add(magnet, { path: this._storeDir },
+          // Merge the curated tracker list into the announce list so a fresh
+          // stream finds peers fast. A throwing/absent announceFn leaves the
+          // magnet's own trackers untouched — this must never block a stream.
+          const addOpts = { path: this._storeDir }
+          if (this._announceFn) {
+            try {
+              const announce = this._announceFn(null)
+              if (Array.isArray(announce) && announce.length) addOpts.announce = announce
+            } catch (_) { /* fall back to the magnet's own trackers */ }
+          }
+          torrent = this.client.add(magnet, addOpts,
             t => this._onReady(t, fileIndex, resolve, reject))
         } catch (err) {
           this._settle(reject, { code: 'CLIENT_ERROR', message: err.message })

@@ -181,33 +181,61 @@ function getSourceHealth() {
   }))
 }
 
+// The persisted-health tiebreak key for a source, read from a cross-restart
+// health map ({ name: { ok, failStreak } }, produced by src/source-health.js).
+// Lower is healthier: an unknown or currently-ok source is 0 (neutral, never
+// demoted); a failing one is its persisted failStreak. This only ever breaks a
+// tie beneath the live session streak — a source the session has already seen
+// answer or fail this run is ordered by that first.
+function _persistedKey(persistedHealth, name) {
+  const rec = persistedHealth && persistedHealth[name]
+  if (!rec || typeof rec !== 'object') return 0
+  if (rec.ok) return 0
+  return Number(rec.failStreak) || 1
+}
+
 // Healthiest (lowest streak) first, stable within a tie so the caller's own
 // ordering is respected among equally-healthy sources. Never drops anything.
-function orderBackendsByHealth(backends) {
+// When a persisted-health map is passed, durable health breaks the tie BENEATH
+// the live session streak: session health stays primary, persisted health only
+// orders sources the session has no opinion on yet this run, and the caller's
+// own order is the final tiebreak so the result is fully deterministic.
+function orderBackendsByHealth(backends, persistedHealth = null) {
   const list = (backends || []).map((b, i) => ({ b, i, name: _backendName(b, i) }))
   list.sort((a, b) => {
     const d = _healthStreak(a.name) - _healthStreak(b.name)
     if (d !== 0) return d
+    if (persistedHealth) {
+      const pd = _persistedKey(persistedHealth, a.name) - _persistedKey(persistedHealth, b.name)
+      if (pd !== 0) return pd
+    }
     return a.i - b.i
   })
   return list
 }
 
-async function resolveStream(request, backends, { preferSurround = true, timeoutMs = 8000, isDead = null } = {}) {
+async function resolveStream(request, backends, { preferSurround = true, timeoutMs = 8000, isDead = null, persistedHealth = null, onSweep = null } = {}) {
   // Order by health first, but keep every backend — a demoted source still runs,
   // it just no longer leads. All run in parallel anyway; the ordering matters
   // for the caller's mental model and for any future first-hit-wins fast path.
-  const ordered = orderBackendsByHealth(backends)
+  // A persisted-health map (cross-restart, from src/source-health.js) breaks the
+  // tie beneath the live session streak.
+  const ordered = orderBackendsByHealth(backends, persistedHealth)
   const settled = await Promise.allSettled(
     ordered.map(({ b }) => _withTimeout(Promise.resolve().then(() => b(request)), timeoutMs))
   )
   const seen = new Set()
   const merged = []
+  // Per-source answered/failed for this sweep, handed to onSweep so a caller can
+  // persist durable health and notice an all-backends-zero run. Keyed by source
+  // name; a backend that ran twice in one list keeps its last verdict.
+  const sweep = {}
   for (let i = 0; i < settled.length; i++) {
     const result = settled[i]
     const name = ordered[i].name
     if (result.status !== 'fulfilled' || !Array.isArray(result.value)) {
       recordSourceResult(name, false)
+      sweep[name] = false
       continue
     }
     const list = result.value
@@ -224,7 +252,18 @@ async function resolveStream(request, backends, { preferSurround = true, timeout
     // results survived cross-source dedupe — so a non-empty raw list counts as
     // healthy even if every entry was a duplicate of another source's.
     recordSourceResult(name, list.length > 0)
+    sweep[name] = list.length > 0
     void produced
+  }
+  // Best-effort durable-health hook: a caller (main.js) records the sweep and,
+  // when every backend came back empty, can kick the source-health canary. A
+  // throwing callback must never break a search, so it is guarded.
+  if (typeof onSweep === 'function') {
+    try {
+      const names = Object.keys(sweep)
+      const allZero = names.length > 0 && names.every(n => !sweep[n])
+      onSweep({ results: sweep, allZero })
+    } catch (_) { /* health bookkeeping must not fail a search */ }
   }
   return rankStreams(merged, { preferSurround, isDead })
 }

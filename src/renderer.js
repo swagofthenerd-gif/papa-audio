@@ -1234,6 +1234,22 @@ async function init() {
   window.api.on('ytdlp-recovered', () => {
     showToast('YouTube support was updated — try again')
   })
+  // Self-maintenance suite toasts. The slskd swap is verified before this fires;
+  // the app-update notice offers a button to open the release page (no silent
+  // self-update — the download stays a human step).
+  window.api.on('slskd-updated', ({ to } = {}) => {
+    showToast('Soulseek engine was updated' + (to ? ' to ' + to : '') + ' ✓')
+  })
+  window.api.on('app-update-available', ({ latest, url } = {}) => {
+    const msg = 'A newer Papa Audio' + (latest ? ' (' + latest + ')' : '') + ' is available'
+    if (typeof showActionToast === 'function') {
+      showActionToast(msg, 'Get it', () => {
+        if (url && window.api && window.api.openExternal) window.api.openExternal(url)
+      })
+    } else {
+      showToast(msg)
+    }
+  })
   const playerStatus = await window.api.playerGetStatus()
   // "Unavailable" covers both a missing mpv and an mpv that would not start.
   // Telling the user to install what they already have is the bug in item 7.
@@ -19686,6 +19702,7 @@ async function _initSettingsPanel() {
   _initSettingsSearch()
   _initBackupSettings()
   _initYtdlpSettings()
+  _initMaintenanceSettings()
   _initBugReport()
   await _initDiagnostics()
   _initAboutGroup()
@@ -20664,6 +20681,218 @@ async function _initYtdlpSettings() {
       } finally {
         // refresh() re-reads pip availability and sets the button's enabled
         // state accordingly, so the disable above always has a path back.
+        await refresh()
+      }
+    })
+  }
+
+  await refresh()
+}
+
+// ── Maintenance panel ────────────────────────────────────────────────────────
+// The Settings "Maintenance" section: a master toggle plus one row per
+// self-maintenance item (yt-dlp, slskd, tracker list, source mirrors, mpv,
+// ffmpeg, app version), each showing a status dot, a version/last-check line, and
+// a per-item action button where one applies. Everything degrades honestly: a
+// component main could not read shows "unavailable" rather than a blank or a
+// crash. All state comes from one maintenance-status read; the action buttons
+// invoke the per-item handlers and then re-read.
+async function _initMaintenanceSettings() {
+  const auto = document.getElementById('maint-auto')
+  const list = document.getElementById('maint-list')
+  if (!list) return
+  const has = fn => window.api && typeof window.api[fn] === 'function'
+
+  // status ∈ 'green' | 'amber' | 'red' | 'unknown' → a coloured dot.
+  const dot = status => '<span class="mcs-maint-dot mcs-maint-dot-' + esc(status || 'unknown') + '"></span>'
+
+  // One row: a dot, a label, a detail line, and an optional action button. The
+  // button is wired by a data-action attribute the delegated click handler reads.
+  function row({ id, status, label, detail, action, actionLabel, disabled }) {
+    const btn = action
+      ? '<button class="mcs-set-refresh mcs-set-action mcs-maint-btn" data-maint-action="' + esc(action) + '"' +
+        (disabled ? ' disabled' : '') + '>' + esc(actionLabel || 'Check now') + '</button>'
+      : ''
+    return '<div class="mcs-maint-row" id="maint-row-' + esc(id) + '">' +
+      '<div class="mcs-maint-head">' + dot(status) + '<span class="mcs-maint-label">' + esc(label) + '</span></div>' +
+      '<div class="mcs-maint-detail">' + esc(detail || '') + '</div>' +
+      (btn ? '<div class="mcs-maint-actions">' + btn + '</div>' : '') +
+      '</div>'
+  }
+
+  function render(s) {
+    if (!s || s.ok === false) { list.innerHTML = '<div class="mcs-set-hint">Could not read the maintenance status.</div>'; return }
+    if (auto) auto.checked = s.autoMaintenance !== false
+    const rows = []
+
+    // yt-dlp (the YouTube engine).
+    if (s.ytdlp && !s.ytdlp.error) {
+      const y = s.ytdlp
+      const ok = y.resolves && y.pipAvailable
+      rows.push(row({
+        id: 'ytdlp', status: y.resolves ? (y.pipAvailable ? 'green' : 'amber') : 'red',
+        label: 'YouTube engine (yt-dlp)',
+        detail: (y.version ? y.version : 'version unknown') +
+          (y.pipAvailable ? '' : ' · automatic updates need pip') +
+          ' · checked ' + _ytdlpRelTime(y.lastCheckAt),
+        action: 'ytdlp', actionLabel: 'Update now', disabled: !y.pipAvailable,
+      }))
+    } else {
+      rows.push(row({ id: 'ytdlp', status: 'unknown', label: 'YouTube engine (yt-dlp)', detail: 'unavailable' }))
+    }
+
+    // slskd daemon.
+    if (s.slskd && !s.slskd.error) {
+      const d = s.slskd
+      if (!d.installed) {
+        rows.push(row({ id: 'slskd', status: 'unknown', label: 'Soulseek engine (slskd)', detail: 'not installed' }))
+      } else {
+        rows.push(row({
+          id: 'slskd', status: d.version ? 'green' : 'amber',
+          label: 'Soulseek engine (slskd)',
+          detail: (d.version ? d.version : 'version unknown') +
+            (d.autoUpdate ? '' : ' · auto-update off') +
+            (d.transfersActive ? ' · a download is in progress' : '') +
+            ' · checked ' + _ytdlpRelTime(d.lastCheckAt),
+          action: 'slskd', actionLabel: 'Update now', disabled: d.transfersActive,
+        }))
+      }
+    } else {
+      rows.push(row({ id: 'slskd', status: 'unknown', label: 'Soulseek engine (slskd)', detail: 'unavailable' }))
+    }
+
+    // Tracker list.
+    if (s.trackers && !s.trackers.error) {
+      const t = s.trackers
+      rows.push(row({
+        id: 'trackers', status: 'green', label: 'Tracker list',
+        detail: t.count + ' trackers · refreshed ' + _ytdlpRelTime(t.lastRefreshAt),
+        action: 'trackers', actionLabel: 'Refresh now',
+      }))
+    } else {
+      rows.push(row({ id: 'trackers', status: 'unknown', label: 'Tracker list', detail: 'unavailable' }))
+    }
+
+    // Source mirrors: one aggregate row with a per-mirror dot line beneath.
+    if (s.sources && !s.sources.error) {
+      const rowsData = Array.isArray(s.sources.rows) ? s.sources.rows : []
+      const anyRed = rowsData.some(r => r.status === 'red')
+      const anyAmber = rowsData.some(r => r.status === 'amber')
+      const agg = rowsData.length ? (anyRed ? 'red' : (anyAmber ? 'amber' : 'green')) : 'unknown'
+      const mirrorDots = rowsData.map(r =>
+        '<span class="mcs-maint-mirror" title="' + esc(r.name + ' — ' + r.status) + '">' +
+        dot(r.status) + esc(r.name) + '</span>').join('')
+      rows.push(row({
+        id: 'sources', status: agg, label: 'Video sources',
+        detail: (rowsData.length ? rowsData.length + ' mirrors' : 'not checked yet') +
+          ' · last checked ' + _ytdlpRelTime(s.sources.lastRunAt),
+        action: 'sources', actionLabel: 'Check now',
+      }))
+      if (mirrorDots) rows.push('<div class="mcs-maint-mirrors" id="maint-mirrors">' + mirrorDots + '</div>')
+    } else {
+      rows.push(row({ id: 'sources', status: 'unknown', label: 'Video sources', detail: 'unavailable' }))
+    }
+
+    // System deps: mpv and ffmpeg, one row each, advisory only.
+    const sd = s.sysdeps
+    for (const name of ['mpv', 'ffmpeg']) {
+      const v = sd && sd[name]
+      if (v && typeof v === 'object') {
+        const st = v.ok ? 'green' : (v.reason === 'missing' ? 'red' : 'amber')
+        rows.push(row({
+          id: name, status: st, label: name,
+          detail: v.ok
+            ? (v.version || 'installed') + ' ✓'
+            : (v.reason === 'missing' ? 'not installed' : (v.version || 'unknown') + ' — below ' + (v.floor || 'the recommended version')) +
+              (v.advice ? ' · ' + v.advice : ''),
+        }))
+      } else {
+        rows.push(row({ id: name, status: 'unknown', label: name, detail: 'not checked yet' }))
+      }
+    }
+    // One "re-check the system tools" button for the mpv/ffmpeg pair.
+    rows.push('<div class="mcs-maint-actions"><button class="mcs-set-refresh mcs-set-action mcs-maint-btn" data-maint-action="sysdeps">Re-check mpv &amp; ffmpeg</button></div>')
+
+    // App version / update notifier.
+    if (s.app && !s.app.error) {
+      const a = s.app
+      let st = 'green', detail
+      if (a.available && a.latest) { st = 'amber'; detail = (a.current || '') + ' installed · ' + a.latest + ' available' }
+      else if (a.noReleaseChannel) { st = 'unknown'; detail = (a.current || '') + ' · no release channel yet — the app is not published for updates. Updates stay a manual step; there is no silent self-update.' }
+      else if (a.ok === false) { st = 'unknown'; detail = 'could not check for updates' }
+      else { detail = (a.current || 'this version') + ' · up to date' }
+      rows.push(row({ id: 'app', status: st, label: 'Papa Audio', detail, action: 'app', actionLabel: 'Check now' }))
+    } else {
+      rows.push(row({ id: 'app', status: 'unknown', label: 'Papa Audio', detail: 'unavailable' }))
+    }
+
+    list.innerHTML = rows.join('')
+  }
+
+  async function refresh() {
+    if (!has('maintenanceStatus')) { list.innerHTML = '<div class="mcs-set-hint">Maintenance is not available in this version.</div>'; return }
+    try { render(await window.api.maintenanceStatus()) }
+    catch (e) { list.innerHTML = '<div class="mcs-set-hint">Could not read the maintenance status.</div>' }
+  }
+
+  // Master toggle.
+  if (auto && !auto._wired) {
+    auto._wired = true
+    auto.addEventListener('change', async () => {
+      if (has('maintenanceSetAuto')) {
+        try { await window.api.maintenanceSetAuto(auto.checked) } catch (_) {}
+      }
+    })
+  }
+
+  // Delegated action handler: one listener for every per-item button.
+  if (!list._wired) {
+    list._wired = true
+    list.addEventListener('click', async ev => {
+      const btn = ev.target && ev.target.closest ? ev.target.closest('[data-maint-action]') : null
+      if (!btn) return
+      const action = btn.getAttribute('data-maint-action')
+      const map = {
+        ytdlp: 'ytdlpUpdateNow',
+        slskd: 'slskdUpdateNow',
+        trackers: 'trackersRefreshNow',
+        sources: 'sourcesCanaryNow',
+        sysdeps: 'sysdepsCheckNow',
+        app: 'appUpdateCheckNow',
+      }
+      const fn = map[action]
+      if (!fn || !has(fn)) return
+      const label = btn.textContent
+      btn.disabled = true
+      btn.textContent = 'Working…'
+      let toastMsg = null
+      try {
+        const r = await window.api[fn]()
+        if (action === 'ytdlp') {
+          toastMsg = (r && r.updated && r.to) ? 'YouTube engine updated to ' + r.to
+            : (r && r.ok) ? 'YouTube engine is up to date' : 'Could not update the YouTube engine'
+        } else if (action === 'slskd') {
+          toastMsg = (r && r.ok && r.to && r.from !== r.to) ? 'Soulseek engine updated to ' + r.to
+            : (r && r.skipped === 'transfers-active') ? 'A download is in progress — try again later'
+            : (r && r.rolledBack) ? 'Update failed and was rolled back safely'
+            : (r && r.ok) ? 'Soulseek engine is up to date' : 'Could not update the Soulseek engine'
+        } else if (action === 'trackers') {
+          toastMsg = (r && r.ok) ? 'Tracker list refreshed (' + (r.count || 0) + ')' : 'Could not refresh the tracker list'
+        } else if (action === 'sources') {
+          toastMsg = (r && r.ok) ? 'Video sources checked' : 'Could not check the video sources'
+        } else if (action === 'sysdeps') {
+          toastMsg = (r && r.ok) ? 'System tools re-checked' : 'Could not check the system tools'
+        } else if (action === 'app') {
+          toastMsg = (r && r.available) ? 'A newer version is available'
+            : (r && r.noReleaseChannel) ? 'No release channel yet'
+            : (r && r.ok) ? 'You are on the latest version' : 'Could not check for updates'
+        }
+      } catch (_) {
+        toastMsg = 'That could not be completed'
+      } finally {
+        btn.disabled = false
+        btn.textContent = label
+        if (toastMsg && typeof showToast === 'function') showToast(toastMsg)
         await refresh()
       }
     })

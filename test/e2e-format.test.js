@@ -28,6 +28,7 @@ test('buildChildEnv: forces PAPA_USER_DATA, keeps base env', () => {
 	const base = { PATH: '/usr/bin', FOO: 'bar' }
 	const env = smoke.buildChildEnv(base, '/tmp/papa-e2e-xyz')
 	assert.strictEqual(env.PAPA_USER_DATA, '/tmp/papa-e2e-xyz', 'profile dir forced')
+	assert.strictEqual(env.PAPA_E2E, '1', 'the smoke profile flags itself so maintenance schedulers no-op')
 	assert.strictEqual(env.PATH, '/usr/bin', 'inherited PATH preserved')
 	assert.strictEqual(env.FOO, 'bar', 'other inherited vars preserved')
 })

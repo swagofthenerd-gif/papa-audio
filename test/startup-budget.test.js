@@ -119,7 +119,12 @@ function topLevelRequireCount () {
 // Raised 2026-09-06 to 78: the Wave 4 backend added three more pure-logic
 // modules required at startup (debrid, track-memory, memory-watchdog) — same
 // shape, no I/O at import, negligible startup cost — plus a little headroom.
-const REQUIRE_CEILING = 78
+// Raised 2026-09-07 to 94: the self-maintenance suite added five pure-logic
+// modules required at startup (slskd-updater, tracker-list, source-health,
+// sysdeps-advisor, app-update-check). Each is pure policy + an exec layer that
+// only runs later behind a throttled scheduler, so nothing does I/O at import;
+// the startup cost is negligible. Re-based ~15% above the new measured total (82).
+const REQUIRE_CEILING = 94
 
 test('main.js top-level require count stays under its recorded ceiling', () => {
   const n = topLevelRequireCount()

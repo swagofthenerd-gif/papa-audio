@@ -193,6 +193,19 @@ contextBridge.exposeInMainWorld('api', {
   ytdlpStatus:    () => ipcRenderer.invoke('ytdlp-status'),
   ytdlpUpdateNow: () => ipcRenderer.invoke('ytdlp-update-now'),
 
+  // Self-maintenance suite (Maintenance settings panel): one aggregate status
+  // read, the master toggle, and per-item check/update actions. Honest degrades
+  // are in the payloads, never thrown.
+  maintenanceStatus:  () => ipcRenderer.invoke('maintenance-status'),
+  maintenanceGetAuto: () => ipcRenderer.invoke('maintenance-get-auto'),
+  maintenanceSetAuto: (enabled) => ipcRenderer.invoke('maintenance-set-auto', { enabled }),
+  slskdUpdateNow:     () => ipcRenderer.invoke('slskd-update-now'),
+  slskdSetAutoUpdate: (enabled) => ipcRenderer.invoke('slskd-set-auto-update', { enabled }),
+  trackersRefreshNow: () => ipcRenderer.invoke('trackers-refresh-now'),
+  sourcesCanaryNow:   () => ipcRenderer.invoke('sources-canary-now'),
+  sysdepsCheckNow:    () => ipcRenderer.invoke('sysdeps-check-now'),
+  appUpdateCheckNow:  () => ipcRenderer.invoke('app-update-check-now'),
+
   // Changelog: user-facing "what's new" (App §7)
   appChangelog: () => ipcRenderer.invoke('app-changelog'),
 
@@ -455,6 +468,10 @@ contextBridge.exposeInMainWorld('api', {
       // playback-error recovery so the renderer can toast "YouTube support was
       // updated — try again".
       'ytdlp-updated', 'ytdlp-recovered',
+      // Self-maintenance suite: main pushes these after a verified slskd swap or
+      // when a newer app release is found, so the renderer can toast. No
+      // apostrophes inside this array — the wiring test parses it by quote pairs.
+      'slskd-updated', 'app-update-available',
     ]
     if (!allowed.includes(channel)) return () => {}
     const h = (_, data, meta) => {

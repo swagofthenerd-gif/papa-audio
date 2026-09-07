@@ -51,7 +51,11 @@ function buildElectronArgs(port, entry) {
 // profile dir. Returned as a plain object so the test can assert PAPA_USER_DATA
 // is set without reading process.env.
 function buildChildEnv(baseEnv, userDataDir) {
-	return Object.assign({}, baseEnv, { PAPA_USER_DATA: userDataDir })
+	// PAPA_E2E=1 tells the app it is under the smoke harness: the self-maintenance
+	// schedulers (slskd update, tracker refresh, source canary, sysdeps, app
+	// update) arm but never fire, so the smoke run sees a quiet app that makes no
+	// background network calls or subprocess spawns of its own.
+	return Object.assign({}, baseEnv, { PAPA_USER_DATA: userDataDir, PAPA_E2E: '1' })
 }
 
 // Format a single check result line. `ok === true` → PASS, anything else FAIL.

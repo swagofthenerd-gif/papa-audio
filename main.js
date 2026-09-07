@@ -152,6 +152,11 @@ ipcMain.handle = function (channel, fn) {
 }
 const { MpvEngine } = require('./mpv-engine')
 const { YtdlpManager } = require('./src/ytdlp-manager')
+const { SlskdUpdater } = require('./src/slskd-updater')
+const { TrackerList } = require('./src/tracker-list')
+const { SourceHealthStore } = require('./src/source-health')
+const { SysDepsAdvisor } = require('./src/sysdeps-advisor')
+const { AppUpdateCheck } = require('./src/app-update-check')
 const { formatDiagnostic } = require('./engine-diagnostics')
 const history = require('./history')
 const { defaultSettings: eqDefaults, BANDS: EQ_BANDS, GAIN_LIMIT: EQ_GAIN_LIMIT, PRESETS: EQ_PRESETS, presetSettings } = require('./eq')
@@ -636,7 +641,11 @@ function _torrentAdd(uri) {
   const dlDir = _downloadDir()
   const client = getTorrentClient()
   if (client.get(uri)) return
-  client.add(uri, { path: dlDir }, torrent => {
+  // Merge the curated, weekly-refreshed tracker list into the announce list so a
+  // fresh magnet finds peers before DHT/PEX warm up. WebTorrent merges these
+  // with any trackers already in the magnet URI. Best-effort: a broken tracker
+  // store falls back to whatever the magnet carried.
+  client.add(uri, { path: dlDir, announce: _mergedAnnounce(null) }, torrent => {
     _activeTorrents.set(torrent.infoHash, { infoHash: torrent.infoHash, name: torrent.name, progress: 0, speed: 0, downloaded: 0, total: torrent.length, eta: 0 })
     safeSend('torrent-progress', { infoHash: torrent.infoHash, name: torrent.name, progress: 0, speed: 0, eta: 0 })
     torrent.on('download', () => {
@@ -893,6 +902,14 @@ const sideStores = {
   // stream cache, so the downloads manager can list, size and delete them
   // without re-walking the disk. { id, title, path, sizeBytes, keptAt }[].
   videoKeepIndex: new SideStore({ dir: USER_DATA, name: 'video-keep-index', fallback: [], debounceMs: 800, onError: _sideErr }),
+
+  // Self-maintenance suite. Two small, infrequently-written stores:
+  //   trackerList  — { trackers, lastRefreshAt }, the weekly-refreshed curated
+  //                  BitTorrent announce list (src/tracker-list.js).
+  //   sourceHealth — { sources: { name: record }, lastRunAt }, the cross-restart
+  //                  source-mirror health record (src/source-health.js).
+  trackerList: new SideStore({ dir: USER_DATA, name: 'tracker-list', fallback: null, debounceMs: 1000, onError: _sideErr }),
+  sourceHealth: new SideStore({ dir: USER_DATA, name: 'source-health', fallback: null, debounceMs: 1000, onError: _sideErr }),
 }
 
 // One-time move out of the shared config. adoptIfEmpty only takes the legacy
@@ -1297,6 +1314,240 @@ async function downloadSlskd(progressCb) {
   await fs.promises.chmod(SLSKD_BIN, 0o755)
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// Self-maintenance suite
+// ─────────────────────────────────────────────────────────────────────────────
+// Six components that keep the app's moving parts current without the user ever
+// having to think about it — the same shape as the yt-dlp self-maintenance above:
+// a pure policy module per concern (in src/), throttled schedulers armed once at
+// startup, honest degradation, and a Settings "Maintenance" panel. Every
+// scheduler is gated by the autoMaintenance master toggle (default ON) so a user
+// who wants nothing touched automatically can switch the whole suite off and
+// still drive each item by hand.
+//   1. slskd daemon auto-update   (src/slskd-updater.js)
+//   2. tracker-list refresh       (src/tracker-list.js)
+//   3. source-mirror health       (src/source-health.js)
+//   4. system-deps advisor        (src/sysdeps-advisor.js)
+//   5. app-update notifier        (src/app-update-check.js)
+//   6. the panel + master toggle
+// The e2e profile sets PAPA_E2E=1; in it every scheduler no-ops cleanly (armed
+// but never fires) so the harness sees a quiet app.
+const _maintE2E = process.env.PAPA_E2E === '1'
+
+// The master toggle. Default ON. A false here means "do nothing automatically" —
+// the schedulers still arm but each checks this and skips, and the manual
+// Settings buttons still work.
+function _autoMaintenanceOn() {
+  return store.get('autoMaintenance', true) !== false
+}
+
+// ── 2. Tracker list ──────────────────────────────────────────────────────────
+// The curated announce list, refreshed weekly, merged into every torrent add.
+const trackerList = new TrackerList({ store: sideStores.trackerList })
+
+// The single merge point every torrent add funnels through: given a magnet's own
+// announce list (or none), return the merged curated announce array. Never
+// throws — a broken tracker store must never stop a torrent from being added.
+function _mergedAnnounce(magnetAnnounce) {
+  try { return trackerList.announceFor(magnetAnnounce) } catch (_) { return magnetAnnounce || [] }
+}
+
+// ── 3. Source-mirror health ──────────────────────────────────────────────────
+// Cross-restart health per mirror, used as a tiebreak in the router's ordering
+// and refreshed by an in-app canary every 3 days (and on an all-backends-zero
+// search). The canary reuses the real providers so "reachable" means exactly
+// what a real search would see.
+const sourceHealthStore = new SourceHealthStore({ store: sideStores.sourceHealth })
+
+// The persisted-health map threaded into resolveStream as its tiebreak input.
+function _persistedSourceHealth() {
+  try { return sourceHealthStore.health() } catch (_) { return {} }
+}
+
+// The in-app canary: one lightweight query per backend family, adapted from
+// tools/source-canary.js to run in-process against the live providers. "ok" is
+// the same verdict the CLI canary uses — the provider ran and returned an array
+// (empty is still reachable). Results are recorded as one batch (stamps
+// lastRunAt). Best-effort: any failure leaves the last-good record in place.
+let _canaryRunning = false
+async function _runSourceCanary({ force = false } = {}) {
+  if (_canaryRunning) return { ok: false, error: 'a canary run is already in progress' }
+  if (!force && !sourceHealthStore.due()) return { ok: true, skipped: 'throttled' }
+  _canaryRunning = true
+  try {
+    // One representative request per family, mirroring the CLI canary's probes.
+    const probes = [
+      { type: 'movie', request: { type: 'movie', title: 'Inception', year: 2010 } },
+      { type: 'tv', request: { type: 'tv', imdbId: 'tt0944947', season: 1, episode: 1 } },
+      { type: 'anime', request: { type: 'anime', title: 'Cowboy Bebop', episode: 1 } },
+    ]
+    const results = {}
+    for (const p of probes) {
+      const backends = _videoBackends(p.type, { torrentSources: true })
+      await Promise.allSettled(backends.map(async b => {
+        const name = (b && (b.sourceName || (b.name && b.name !== 'bound ' && b.name))) || null
+        if (!name) return
+        try {
+          const out = await b(p.request)
+          // Reachable if it returned an array at all; a prior true wins so a
+          // source that answers for movies is not marked dead by an empty anime
+          // query.
+          if (Array.isArray(out)) results[name] = results[name] || out.length >= 0
+          else results[name] = results[name] || false
+        } catch (_) {
+          if (results[name] === undefined) results[name] = false
+        }
+      }))
+    }
+    // Array-returning providers all read as reachable; only an outright throw is
+    // a fail. Normalise undefined → false defensively.
+    for (const k of Object.keys(results)) results[k] = results[k] !== false
+    sourceHealthStore.recordBatch(results)
+    return { ok: true, ran: true, count: Object.keys(results).length }
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) }
+  } finally {
+    _canaryRunning = false
+  }
+}
+
+// Called from resolveStream's onSweep hook: persist each source's live verdict
+// and, when every backend came back empty, kick an out-of-band canary (a real
+// all-zero is the strongest possible signal a mirror set has gone dark). The
+// canary is itself throttled, so a run of empty searches cannot spawn a storm.
+function _onSearchSweep({ results, allZero } = {}) {
+  try {
+    if (results && Object.keys(results).length) sourceHealthStore.recordBatch(results)
+  } catch (_) {}
+  if (allZero && _autoMaintenanceOn() && !_maintE2E) {
+    _runSourceCanary().catch(() => {})
+  }
+}
+
+// ── 1. slskd daemon auto-update ──────────────────────────────────────────────
+// Keeps the bundled slskd current, never while a transfer is active, keeping the
+// old binary and rolling back on any failure. Wired to the existing daemon
+// machinery: the transfers gate reads _downloadsAreActive(), the version probe
+// hits GET /application through slskdFetch, and the restart uses stopSlskd /
+// startSlskd — the same path first-install and the health monitor use.
+const slskdUpdater = new SlskdUpdater({
+  binPath: SLSKD_BIN,
+  dir: SLSKD_DIR,
+  transfersActiveFn: () => _downloadsAreActive(),
+  applicationFn: async () => {
+    try { return await slskdFetch('GET', '/application') } catch (_) { return null }
+  },
+  stopFn: async () => { stopSlskd() },
+  startFn: async () => { await startSlskd() },
+})
+
+let _slskdUpdating = false
+// The shared update run: the scheduled check and the manual "Update now" button
+// both land here. slskdAutoUpdate defaults ON. Emits 'slskd-updated' {from,to} on
+// a verified swap so the renderer can toast.
+async function _slskdRunUpdate({ force = false } = {}) {
+  if (_slskdUpdating) return { ok: false, error: 'an update is already running' }
+  if (!fs.existsSync(SLSKD_BIN)) return { ok: false, error: 'slskd is not installed' }
+  _slskdUpdating = true
+  try {
+    const res = await slskdUpdater.performUpdate({ force })
+    if (res.ok && res.to && res.from !== res.to) {
+      console.log(`[papa][slskd] updated ${res.from || 'unknown'} -> ${res.to}`)
+      safeSend('slskd-updated', { from: res.from || null, to: res.to })
+    } else if (res.rolledBack) {
+      console.error('[papa][slskd] update failed and was rolled back:', res.error)
+    }
+    return res
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) }
+  } finally {
+    _slskdUpdating = false
+  }
+}
+
+// The scheduled slskd check: throttled weekly by slskdUpdateLastCheckAt. Off when
+// slskdAutoUpdate is disabled or slskd is not installed. force bypasses the
+// throttle (the manual button).
+async function _slskdAutoCheck({ force = false } = {}) {
+  const now = Date.now()
+  if (store.get('slskdAutoUpdate', true) === false) return { ok: true, skipped: 'disabled' }
+  if (!fs.existsSync(SLSKD_BIN)) return { ok: true, skipped: 'not-installed' }
+  const {
+    shouldAutoCheck: _slskdShouldAutoCheck,
+  } = require('./src/slskd-updater')
+  if (!force && !_slskdShouldAutoCheck({ lastCheckAt: store.get('slskdUpdateLastCheckAt', 0), now })) {
+    return { ok: true, skipped: 'throttled' }
+  }
+  store.set('slskdUpdateLastCheckAt', now)
+  return _slskdRunUpdate({ force })
+}
+
+// ── 4. System-deps advisor ───────────────────────────────────────────────────
+const sysDepsAdvisor = new SysDepsAdvisor()
+
+// The advisory check: monthly, throttled by sysDepsLastCheckAt. Never spawns a
+// package manager — it only reads mpv/ffmpeg versions and returns advice. The
+// result is cached in the store for the panel to read without re-spawning.
+async function _sysDepsCheck({ force = false } = {}) {
+  const now = Date.now()
+  const { isCheckDue: _sysDepsDue } = require('./src/sysdeps-advisor')
+  if (!force && !_sysDepsDue({ lastCheckAt: store.get('sysDepsLastCheckAt', 0), now })) {
+    return store.get('sysDepsLast', null) || { ok: true, skipped: 'throttled' }
+  }
+  store.set('sysDepsLastCheckAt', now)
+  const verdicts = await sysDepsAdvisor.check()
+  const out = { ok: true, checkedAt: now, ...verdicts }
+  store.set('sysDepsLast', out)
+  return out
+}
+
+// ── 5. App-update notifier ───────────────────────────────────────────────────
+const appUpdateCheck = new AppUpdateCheck({ currentVersion: app.getVersion() })
+
+// Weekly notifier check, throttled by appUpdateLastCheckAt. Notifier only: a
+// newer release surfaces a panel row + a toast with an "open the release page"
+// button; there is NO silent self-update. Caches the last result for the panel.
+async function _appUpdateCheck({ force = false } = {}) {
+  const now = Date.now()
+  const { isCheckDue: _appUpdateDue } = require('./src/app-update-check')
+  if (!force && !_appUpdateDue({ lastCheckAt: store.get('appUpdateLastCheckAt', 0), now })) {
+    return store.get('appUpdateLast', null) || { ok: true, skipped: 'throttled' }
+  }
+  store.set('appUpdateLastCheckAt', now)
+  const res = await appUpdateCheck.check()
+  const out = { ...res, checkedAt: now, current: appUpdateCheck.currentVersion(), pageUrl: appUpdateCheck.releasePageUrl() }
+  store.set('appUpdateLast', out)
+  if (res.ok && res.available && res.latest) {
+    safeSend('app-update-available', { latest: res.latest, url: res.url || appUpdateCheck.releasePageUrl() })
+  }
+  return out
+}
+
+// ── The scheduler ────────────────────────────────────────────────────────────
+// Armed once, after the app has settled. Every branch is gated by the master
+// toggle and no-ops in the e2e profile. Fire-and-forget: a slow or failed check
+// must never delay startup or block anything, and the per-module throttles make
+// arming on every launch safe.
+function _armMaintenanceSchedulers() {
+  if (_maintE2E) return   // e2e: armed conceptually, but never fires
+  const {
+    STARTUP_CHECK_DELAY_MS: SLSKD_STARTUP_DELAY_MS,
+  } = require('./src/slskd-updater')
+  // Each check reads _autoMaintenanceOn() at fire time, so toggling the master
+  // switch at runtime takes effect without re-arming.
+  const guard = fn => () => { if (_autoMaintenanceOn()) fn().catch(e => console.error('[papa][maint]', e && e.message)) }
+  // Tracker list: weekly, ~45s after startup.
+  setTimeout(guard(() => trackerList.refresh()), 45 * 1000).unref?.()
+  // Source canary: every 3 days, ~75s after startup.
+  setTimeout(guard(() => _runSourceCanary()), 75 * 1000).unref?.()
+  // slskd daemon: weekly, ~90s after startup.
+  setTimeout(guard(() => _slskdAutoCheck()), SLSKD_STARTUP_DELAY_MS).unref?.()
+  // System-deps advisor: monthly, ~30s after startup.
+  setTimeout(guard(() => _sysDepsCheck()), 30 * 1000).unref?.()
+  // App-update notifier: weekly, ~50s after startup.
+  setTimeout(guard(() => _appUpdateCheck()), 50 * 1000).unref?.()
+}
+
 // execFile with a timeout, as a promise. Rejects with something that names the
 // command, because "Command failed" on its own is not a diagnosis.
 function run(cmd, args, timeout) {
@@ -1523,6 +1774,10 @@ app.whenReady().then(() => {
   setTimeout(() => {
     _ytdlpAutoCheck().catch(e => console.error('[papa][ytdlp] auto-check failed:', e && e.message))
   }, YTDLP_STARTUP_DELAY_MS).unref?.()
+  // The rest of the self-maintenance suite: slskd, tracker list, source canary,
+  // system-deps advisor, app-update notifier. Each is throttled and gated by the
+  // autoMaintenance master toggle; all no-op in the e2e profile.
+  _armMaintenanceSchedulers()
   const hidden = process.argv.includes('--hidden')
   artworkDir = path.join(USER_DATA, 'artwork')
   fs.mkdirSync(artworkDir, { recursive: true })
@@ -8025,6 +8280,88 @@ ipcMain.handle('ytdlp-update-now', async () => {
   })
 })
 
+// ── Maintenance panel IPC ────────────────────────────────────────────────────
+// One aggregate status read for the whole panel, the master toggle get/set, and
+// per-item "check/update now" handlers. Every handler degrades honestly: a
+// component that cannot report simply returns what it knows and never throws.
+
+// The master toggle. Reading returns the effective state (default ON); setting
+// persists it. Turning it off stops the schedulers from firing (they check it at
+// fire time) but leaves the manual buttons working.
+ipcMain.handle('maintenance-get-auto', () => ({ ok: true, enabled: _autoMaintenanceOn() }))
+ipcMain.handle('maintenance-set-auto', (_e, { enabled } = {}) => {
+  store.set('autoMaintenance', enabled !== false)
+  return { ok: true, enabled: enabled !== false }
+})
+
+// The whole panel in one call. Each block is guarded so a single failing probe
+// (a down daemon, an unreadable store) never blanks the others.
+ipcMain.handle('maintenance-status', async () => {
+  const out = { ok: true, autoMaintenance: _autoMaintenanceOn() }
+  // yt-dlp (reuse the existing status handler's shape).
+  try {
+    const pip = await ytdlp.pipAvailable()
+    const v = await ytdlp.readVersion()
+    out.ytdlp = {
+      version: v.version, resolves: v.ok, pipAvailable: !!pip,
+      lastCheckAt: store.get('ytdlpLastCheckAt', 0) || null,
+    }
+  } catch (e) { out.ytdlp = { error: String((e && e.message) || e) } }
+  // slskd daemon.
+  try {
+    const installed = fs.existsSync(SLSKD_BIN)
+    out.slskd = {
+      installed,
+      autoUpdate: store.get('slskdAutoUpdate', true) !== false,
+      version: installed ? await slskdUpdater.currentVersion() : null,
+      lastCheckAt: store.get('slskdUpdateLastCheckAt', 0) || null,
+      transfersActive: _downloadsAreActive(),
+    }
+  } catch (e) { out.slskd = { error: String((e && e.message) || e) } }
+  // Tracker list.
+  try {
+    out.trackers = {
+      count: trackerList.current().length,
+      lastRefreshAt: trackerList.lastRefreshAt() || null,
+    }
+  } catch (e) { out.trackers = { error: String((e && e.message) || e) } }
+  // Source-mirror health rows.
+  try {
+    out.sources = { rows: sourceHealthStore.rows(), lastRunAt: sourceHealthStore.lastRunAt() || null }
+  } catch (e) { out.sources = { error: String((e && e.message) || e) } }
+  // System-deps advisor: the cached verdicts (do not re-spawn on every panel open).
+  try { out.sysdeps = store.get('sysDepsLast', null) } catch (e) { out.sysdeps = { error: String((e && e.message) || e) } }
+  // App-update notifier: the cached result.
+  try { out.app = store.get('appUpdateLast', null) || { current: app.getVersion() } } catch (e) { out.app = { error: String((e && e.message) || e) } }
+  return out
+})
+
+// slskd: toggle auto-update, and force a check/update now.
+ipcMain.handle('slskd-set-auto-update', (_e, { enabled } = {}) => {
+  store.set('slskdAutoUpdate', enabled !== false)
+  return { ok: true, enabled: enabled !== false }
+})
+ipcMain.handle('slskd-update-now', async () => {
+  if (!fs.existsSync(SLSKD_BIN)) return { ok: false, error: 'slskd is not installed' }
+  if (_downloadsAreActive()) return { ok: false, skipped: 'transfers-active', error: 'a download is in progress' }
+  return _slskdAutoCheck({ force: true })
+})
+
+// Tracker list: force a refresh now.
+ipcMain.handle('trackers-refresh-now', async () => {
+  try { return await trackerList.refresh({ force: true }) }
+  catch (e) { return { ok: false, error: String((e && e.message) || e) } }
+})
+
+// Source mirrors: run the canary now.
+ipcMain.handle('sources-canary-now', async () => _runSourceCanary({ force: true }))
+
+// System-deps: re-probe mpv/ffmpeg now (never spawns a package manager).
+ipcMain.handle('sysdeps-check-now', async () => _sysDepsCheck({ force: true }))
+
+// App update: force a release check now.
+ipcMain.handle('app-update-check-now', async () => _appUpdateCheck({ force: true }))
+
 ipcMain.handle('get-lyrics', async (_, params) => {
   try { return { ok: true, ...(await lyrics.fetchLyrics(params || {})) } }
   catch (e) { return { ok: false, error: summariseYtError(e) } }
@@ -10444,6 +10781,11 @@ ipcMain.handle('video-streams', async (_, req) => {
       // Learned dead-magnet memory (App #41): demote (never hide) torrents whose
       // infohash has failed to connect repeatedly and recently.
       isDead: _isDeadMagnet,
+      // Cross-restart source-mirror health as a tiebreak beneath the live session
+      // streak, and a sweep hook that persists each source's verdict and kicks the
+      // canary when every backend came back empty.
+      persistedHealth: _persistedSourceHealth(),
+      onSweep: _onSearchSweep,
     })
     const streams = _applyQualityPreference(ranked, settings.preferredQuality)
     // An empty result is almost always a mirror being briefly unreachable.
@@ -10759,6 +11101,8 @@ function _startTorrentStream(result, { current, fail, onReady }) {
   const streamer = new TorrentStreamer({
     client: getTorrentClient(),
     downloadLimitBps,
+    // Merge the curated tracker list into every streamed magnet's announce list.
+    announceFn: _mergedAnnounce,
     seedWhileWatching: settings.seedWhileWatching !== false,
     // First contact only, and only when nothing at all has been found: once
     // peers are connected the streamer extends this itself rather than giving

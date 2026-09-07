@@ -786,8 +786,13 @@ test('stop() closes the server, destroys the torrent and removes the download li
 
   test('the torrent is added with an explicit path it owns', () => {
     const src = fsx.readFileSync(pathx.join(__dirname, '..', 'torrent-stream.js'), 'utf8')
-    assert.match(src, /this\.client\.add\(magnet, \{ path: this\._storeDir \}/,
-      'without a path WebTorrent picks its own directory and nothing cleans it')
+    // The add options are now built into addOpts (so the curated tracker list can
+    // be merged into the announce list) but must still carry the explicit path —
+    // without a path WebTorrent picks its own directory and nothing cleans it.
+    assert.match(src, /const addOpts = \{ path: this\._storeDir \}/,
+      'the stream store path must still be set explicitly')
+    assert.match(src, /this\.client\.add\(magnet, addOpts/,
+      'the torrent is added with the owned-path options')
   })
 
   // destroyStore is the whole point: without it the pieces stay on disk after
