@@ -190,3 +190,152 @@ test('a genuinely unknown id returns null without throwing or caching', async ()
   await animeDetailCache.flush()
   assert.ok(!('anime:424242' in animeDetailCache.get()), 'nothing was cached for a missing show')
 })
+
+// ── The anime BROWSE cache: keeping the shelves through an AniList outage ─────
+// The row sibling of the detail cache above. These run the REAL
+// video-catalog-get / video-discover handlers extracted from main.js in a
+// sandbox with a real SideStore and a fake AniList, so the write-through and the
+// serve-on-failure fallback are exercised for real.
+
+// Capture an ipcMain.handle('<name>', fn) call by balanced parens, so the real
+// handler arrow can be run directly against a controlled sandbox.
+function extractHandler(name) {
+  const marker = "ipcMain.handle('" + name + "'"
+  const start = MAIN.indexOf(marker)
+  assert.ok(start > -1, name + ' handler not found in main.js')
+  let depth = 0
+  for (let j = MAIN.indexOf('(', start); j < MAIN.length; j++) {
+    if (MAIN[j] === '(') depth++
+    else if (MAIN[j] === ')') { depth--; if (!depth) return MAIN.slice(start, j + 1) }
+  }
+  throw new Error('unbalanced ' + name)
+}
+
+// A sandbox holding the real anime-browse-cache helpers, the real
+// _anilistListWithOutage, and the two real handlers, wired to a real SideStore
+// and a fake AniList whose list results (and lastFailure) each test controls.
+function browseHarness({ list, lastFailure, discover } = {}) {
+  const dir = tmpdir()
+  const errors = []
+  const animeBrowseCache = new SideStore({
+    dir, name: 'anime-browse-cache', fallback: {}, debounceMs: 5, onError: e => errors.push(e),
+  })
+  const handlers = {}
+  const ctx = {
+    console, Date, Object, Array, JSON, Number, String, Math,
+    ANIME_BROWSE_CACHE_CAP: constInt('ANIME_BROWSE_CACHE_CAP'),
+    ANIME_BROWSE_CACHE_EVICT: constInt('ANIME_BROWSE_CACHE_EVICT'),
+    sideStores: { animeBrowseCache },
+    _videoCatalogCache: memCache(),
+    _videoDiscoverCache: memCache(),
+    ipcMain: { handle: (name, fn) => { handlers[name] = fn } },
+    _currentAnimeSeasonTag: () => 'FALL-2026',
+    tmdb: () => ({ trending: async () => [], popular: async () => [], discover: async () => ({ results: [] }) }),
+    anilist: () => ({
+      lastFailure: () => (lastFailure || null),
+      trending: async () => { if (typeof list === 'function') return list('trending'); return list || [] },
+      popular: async () => { if (typeof list === 'function') return list('popular'); return list || [] },
+      // season() throws on failure rather than degrading — a test can make it do so.
+      season: async () => {
+        if (lastFailure && lastFailure._throw) throw Object.assign(new Error(lastFailure.message), { status: lastFailure.status })
+        if (typeof list === 'function') return list('season')
+        return list || []
+      },
+      discover: async () => discover || { results: [], page: 1, totalPages: 1, totalResults: 0, hasMore: false },
+    }),
+  }
+  vm.createContext(ctx)
+  for (const fn of ['_animeBrowseCacheWrite', '_animeBrowseCacheRead', '_anilistListWithOutage']) {
+    vm.runInContext(extract(fn), ctx)
+  }
+  vm.runInContext(extractHandler('video-catalog-get'), ctx)
+  vm.runInContext(extractHandler('video-discover'), ctx)
+  return { ctx, dir, errors, animeBrowseCache, handlers }
+}
+
+const ANIME_ROWS = [
+  { id: 1, title: 'Frieren' }, { id: 2, title: 'Dandadan' },
+  { id: 3, title: 'One Piece' }, { id: 4, title: 'Bleach' },
+]
+
+test('a good anime row is written through to the persistent browse cache', async () => {
+  const h = browseHarness({ list: ANIME_ROWS })
+  const res = await h.handlers['video-catalog-get'](null, { section: 'trending-anime', page: 1 })
+  assert.strictEqual(res.ok, true)
+  assert.strictEqual(res.results.length, 4)
+  assert.ok(!res.fromCache && !res.outage, 'a live result carries no outage flags')
+  await h.animeBrowseCache.flush()
+  const entry = h.animeBrowseCache.get()['list:trending-anime:1']
+  assert.ok(entry, 'the row was saved for a future outage')
+  assert.strictEqual(entry.value.length, 4)
+})
+
+test('an outage-empty row serves the last saved list, marked fromCache', async () => {
+  // Seed with a good result, then re-open with AniList down.
+  const seed = browseHarness({ list: ANIME_ROWS })
+  await seed.handlers['video-catalog-get'](null, { section: 'trending-anime', page: 1 })
+  await seed.animeBrowseCache.flush()
+
+  // A new sandbox over the SAME file, degrading to empty with a recorded failure.
+  const down = browseHarness({
+    list: [], lastFailure: { at: Date.now(), message: 'AniList request failed (403)', status: 403 },
+  })
+  // Point the new store at the seeded dir by re-reading it.
+  const animeBrowseCache = new SideStore({ dir: seed.dir, name: 'anime-browse-cache', fallback: {}, debounceMs: 5, onError: () => {} })
+  down.ctx.sideStores.animeBrowseCache = animeBrowseCache
+  const res = await down.handlers['video-catalog-get'](null, { section: 'trending-anime', page: 1 })
+  assert.strictEqual(res.ok, true)
+  assert.strictEqual(res.fromCache, true, 'the saved list was served')
+  assert.strictEqual(res.results.length, 4, 'the real content is shown, not an empty shelf')
+  assert.match(res.outage, /403/, "AniList's own reason rides along")
+})
+
+test('an outage with NO saved list returns empty + the outage reason (never a lie)', async () => {
+  const h = browseHarness({
+    list: [], lastFailure: { at: Date.now(), message: 'AniList request failed (403)', status: 403 },
+  })
+  const res = await h.handlers['video-catalog-get'](null, { section: 'popular-anime', page: 1 })
+  assert.strictEqual(res.ok, true)
+  assert.strictEqual(res.results.length, 0)
+  assert.ok(!res.fromCache, 'there was nothing saved to serve')
+  assert.match(res.outage, /403/, 'the row is empty BECAUSE of the outage, and says so')
+})
+
+test('a healthy-but-empty row carries no outage flag (plain empty stays plain)', async () => {
+  // AniList is up and honestly returned nothing: lastFailure is null.
+  const h = browseHarness({ list: [], lastFailure: null })
+  const res = await h.handlers['video-catalog-get'](null, { section: 'trending-anime', page: 1 })
+  assert.strictEqual(res.ok, true)
+  assert.strictEqual(res.results.length, 0)
+  assert.ok(!res.outage, 'no outage flag — the renderer still shows "nothing here"')
+  assert.ok(!res.fromCache)
+})
+
+test('season-anime throwing is treated exactly like a degraded outage', async () => {
+  const h = browseHarness({
+    list: [], lastFailure: { _throw: true, message: 'The AniList API has been temporarily disabled', status: 403 },
+  })
+  const res = await h.handlers['video-catalog-get'](null, { section: 'season-anime', page: 1 })
+  assert.strictEqual(res.ok, true)
+  assert.strictEqual(res.results.length, 0)
+  assert.match(res.outage, /temporarily disabled/, 'a thrown season() is an outage, not an error page')
+})
+
+test('video-discover serves the saved anime grid through an outage', async () => {
+  const good = { results: ANIME_ROWS, page: 1, totalPages: 3, totalResults: 60, hasMore: true }
+  const seed = browseHarness({ discover: good })
+  const req = { catalog: 'anime', page: 1, genres: ['Action'] }
+  await seed.handlers['video-discover'](null, req)
+  await seed.animeBrowseCache.flush()
+
+  const down = browseHarness({
+    discover: { results: [], page: 1, totalPages: 1, totalResults: 0, hasMore: false },
+    lastFailure: { at: Date.now(), message: 'AniList request failed (403)', status: 403 },
+  })
+  down.ctx.sideStores.animeBrowseCache = new SideStore({ dir: seed.dir, name: 'anime-browse-cache', fallback: {}, debounceMs: 5, onError: () => {} })
+  const res = await down.handlers['video-discover'](null, req)
+  assert.strictEqual(res.ok, true)
+  assert.strictEqual(res.fromCache, true, 'the saved Browse page was served')
+  assert.strictEqual(res.results.length, 4)
+  assert.match(res.outage, /403/)
+})

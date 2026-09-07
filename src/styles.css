@@ -7914,6 +7914,9 @@ body.app-unfocused .vt-menu {
 .vres-head { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:14px; }
 .vres-count { font-size:13px; color:var(--text2); font-variant-numeric:tabular-nums; }
 .vres-count b { color:var(--text); font-weight:700; }
+/* Shown beside the count when a Browse grid is serving its last saved result
+   because AniList is down — the content is real, this only admits it is stale. */
+.vres-cache-note { font-size:12px; color:var(--color-warning, #e0a92b); font-style:italic; }
 .vactive { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:14px; }
 .vactive-chip {
   display:inline-flex; align-items:center; gap:6px;
@@ -8183,6 +8186,7 @@ body.video-active .np-byline { font-size:10.5px; }
   --vmini-h-compact: 180px;
   --vmini-w-large:   480px;
   --vmini-h-large:   270px;
+  --vmini-handle-h:  26px;
   --vmini-bar-h:     46px;
 }
 .vmini {
@@ -8197,8 +8201,31 @@ body.video-active .np-byline { font-size:10.5px; }
 }
 .vmini.vmini-large { width:var(--vmini-w-large); }
 .vmini.hidden { display:none; }
-/* No transition while the card follows the pointer, or it lags the mpv window. */
-.vmini.vmini-dragging { transition:none; cursor:grabbing; }
+/* No transition while the card follows the pointer, or it lags the mpv window.
+   The whole card shows the grabbing cursor while a drag is in flight, since the
+   pointer is captured and may leave the handle. */
+.vmini.vmini-dragging,
+.vmini.vmini-dragging .vmini-handle,
+.vmini.vmini-dragging .vmini-bar { transition:none; cursor:grabbing; }
+
+/* The drag-handle strip across the top of the card. The picture region below is
+   a native window the page cannot receive events over, so this is the reliable
+   grab target for a real mouse. cursor:grab announces it; the whole card flips
+   to grabbing while a drag is in flight (.vmini-dragging, below). */
+.vmini-handle {
+  height:var(--vmini-handle-h);
+  display:flex; align-items:center; gap:6px;
+  padding:0 10px; cursor:grab; user-select:none;
+  background:rgba(12,12,12,.96); border-bottom:1px solid var(--glass-border);
+}
+.vmini-handle:active { cursor:grabbing; }
+.vmini-grip { color:var(--text2); font-size:13px; line-height:1; flex-shrink:0; }
+/* The title moved up into the handle: one line, ellipsized, never wrapping into
+   the picture. */
+.vmini-title {
+  font-size:11.5px; font-weight:600; color:var(--text);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; min-width:0;
+}
 
 /* The reserved rectangle the native mpv window is placed onto. Black so any
    sliver not yet covered by the picture reads as letterbox, not a hole. */
@@ -8232,11 +8259,8 @@ body.video-active .np-byline { font-size:10.5px; }
 .vmini-play:hover { background:var(--accent-hover); }
 .vmini-play svg { width:15px; height:15px; }
 .vmini-next[hidden] { display:none; }
-.vmini-body { flex:1; min-width:0; display:flex; flex-direction:column; gap:4px; }
-.vmini-title {
-  font-size:11.5px; font-weight:600; color:var(--text);
-  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
-}
+/* The title moved up to .vmini-handle, so the bar body is just the seek now. */
+.vmini-body { flex:1; min-width:0; display:flex; flex-direction:column; justify-content:center; }
 /* A real, clickable seek bar — not a passive fill. A little vertical padding
    gives the pointer a bigger target than the 3px track. */
 .vmini-seek { padding:4px 0; touch-action:none; }

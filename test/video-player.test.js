@@ -49,7 +49,8 @@ function harness({ segments = [], prefs = {}, onNext = null, fullscreen = false,
     'vt-stat-down', 'vt-stat-peers', 'vt-stat-progress',
     'vt-strip', 'vt-upnext', 'vt-upnext-go', 'vt-upnext-stay', 'vt-ring-fg', 'vt-ring-num',
     // The floating mini-player card and its controls.
-    'vmini', 'vmini-video', 'vmini-bar', 'vmini-play', 'vmini-title', 'vmini-seek',
+    'vmini', 'vmini-handle', 'vmini-grip', 'vmini-video', 'vmini-bar', 'vmini-play',
+    'vmini-title', 'vmini-seek',
     'vmini-fill', 'vmini-knob', 'vmini-time', 'vmini-next', 'vmini-mute', 'vmini-size',
     'vmini-open', 'vmini-stop']
   for (const id of ids) nodes[id] = el(id)
@@ -705,7 +706,8 @@ test('a stage with no size reports nothing rather than a degenerate rectangle', 
       'vt-title', 'vt-sub', 'vt-next', 'vt-menu', 'vt-play', 'vt-pos', 'vt-dur', 'vt-badges',
       'vt-seek', 'vt-seek-fill', 'vt-seek-knob', 'vt-seek-buffer', 'vt-seek-marks', 'vt-mute',
       'vt-vol', 'vt-speed', 'vt-subs', 'vt-pack', 'vt-pack-list',
-      'vmini', 'vmini-video', 'vmini-bar', 'vmini-open', 'vmini-stop', 'vmini-play',
+      'vmini', 'vmini-handle', 'vmini-grip', 'vmini-video', 'vmini-bar', 'vmini-open',
+      'vmini-stop', 'vmini-play',
       'vmini-title', 'vmini-seek', 'vmini-fill', 'vmini-knob', 'vmini-time',
       'vmini-next', 'vmini-mute', 'vmini-size']) {
       nodes[id] = el(id)
@@ -877,6 +879,70 @@ test('a stage with no size reports nothing rather than a degenerate rectangle', 
     assert.strictEqual(p.isMinimised(), false, 'double-click on the picture restores')
   })
 
+  // The whole point of Fix 2: a real mouse can grab the handle strip on top of
+  // the card and move it. The picture region is a native window the page never
+  // sees events over, so the handle is the reliable grab target. These fire a
+  // full pointerdown → move → up sequence at #vmini-handle.
+  test('the drag handle carries the same drag logic as the bar', () => {
+    const { p, nodes } = miniHarness()
+    assert.ok((nodes['vmini-handle'].handlers.pointerdown || []).length,
+      'pointerdown is bound to the handle')
+    assert.ok((nodes['vmini-handle'].handlers.pointermove || []).length,
+      'pointermove is bound to the handle')
+    assert.ok((nodes['vmini-handle'].handlers.pointerup || []).length,
+      'pointerup is bound to the handle')
+    // The bar's free space is still a drag surface too (not only the handle).
+    assert.ok((nodes['vmini-bar'].handlers.pointerdown || []).length,
+      'pointerdown is still bound to the bar')
+  })
+
+  test('dragging the handle moves the card and sends a rect below the handle', () => {
+    const { p, nodes, miniCalls } = miniHarness()
+    p.open({ title: 'Dune' })
+    p._setState(stateAt(10))
+    p.minimise()
+    const h = nodes['vmini-handle']
+    // Default corner is 'br'; drag toward the top-left of the 1280x800 viewport.
+    h.fire('pointerdown', { button: 0, pointerId: 1, clientX: 900, clientY: 700, preventDefault () {} })
+    h.fire('pointermove', { pointerId: 1, clientX: 200, clientY: 100 })
+    // The card was repositioned (a transform was written) during the move.
+    assert.match(nodes.vmini.style.transform || '', /translate\(/, 'the card followed the pointer')
+    h.fire('pointerup', { pointerId: 1 })
+    // A rect was sent to main, and its y sits at/below the card top by the handle
+    // height — the native window never covers the handle.
+    const withRect = miniCalls.filter(c => c && c.rect)
+    assert.ok(withRect.length, 'main was handed a video rectangle during/after the drag')
+  })
+
+  test('a drag that ends near the top-left snaps and persists that corner', () => {
+    const { p, nodes, store } = miniHarness()
+    p.open({ title: 'Dune' })
+    p._setState(stateAt(10))
+    p.minimise()
+    const h = nodes['vmini-handle']
+    h.fire('pointerdown', { button: 0, pointerId: 2, clientX: 900, clientY: 700, preventDefault () {} })
+    // Drag hard toward the origin so the nearest corner is top-left.
+    h.fire('pointermove', { pointerId: 2, clientX: -2000, clientY: -2000 })
+    h.fire('pointerup', { pointerId: 2 })
+    assert.strictEqual(store['papa-vmini-pos'].corner, 'tl', 'the release snapped to top-left')
+  })
+
+  test('a press on a bar control does not start a drag', () => {
+    const { p, nodes } = miniHarness()
+    p.open({ title: 'Dune' })
+    p._setState(stateAt(10))
+    p.minimise()
+    const before = nodes.vmini.style.transform
+    // A pointerdown whose target closest() matches a button must be ignored by
+    // the drag handler (the control does its own thing instead).
+    nodes['vmini-bar'].fire('pointerdown', {
+      button: 0, pointerId: 3, clientX: 10, clientY: 10, preventDefault () {},
+      target: { closest: sel => (/button/.test(sel) ? {} : null) },
+    })
+    assert.ok(!nodes.vmini.classList.contains('vmini-dragging'),
+      'a control press never enters drag mode')
+  })
+
   // Back is the control people hit on the way out; it must not be the
   // destructive one.
   test('back minimises while stop is a separate control', () => {
@@ -895,6 +961,41 @@ test('a stage with no size reports nothing rather than a degenerate rectangle', 
     p.open({ title: 'B' })
     assert.ok(nodes.vmini.classList.contains('hidden'))
     assert.strictEqual(p.isMinimised(), false)
+  })
+
+  // Fix 2: the card must declare a drag handle, above the picture region, that
+  // the title lives in and that announces itself for a real mouse.
+  test('the card has a drag handle above the picture with the title in it', () => {
+    // The handle element exists and carries the drag aria-label.
+    assert.match(HTML_SRC, /id="vmini-handle"[^>]*aria-label="Drag to move"/,
+      'the handle is present and labelled for discoverability')
+    // The title moved up into the handle.
+    const handle = HTML_SRC.slice(HTML_SRC.indexOf('id="vmini-handle"'),
+      HTML_SRC.indexOf('id="vmini-video"'))
+    assert.match(handle, /id="vmini-title"/, 'the title rides in the handle')
+    assert.match(handle, /vmini-grip/, 'a grip affordance is shown')
+    // The handle is declared BEFORE the video region in source order (it sits on
+    // top of the card).
+    assert.ok(HTML_SRC.indexOf('id="vmini-handle"') < HTML_SRC.indexOf('id="vmini-video"'),
+      'the handle is above the picture')
+  })
+
+  test('the handle and bar free space show grab/grabbing cursors', () => {
+    assert.match(_css, /\.vmini-handle \{[^}]*cursor:grab/s, 'the handle invites a grab')
+    assert.match(_css, /\.vmini-handle:active \{[^}]*cursor:grabbing/, 'and shows grabbing on press')
+    assert.match(_css, /\.vmini-bar \{[^}]*cursor:grab/s, 'the bar free space still drags')
+    assert.match(_css, /\.vmini\.vmini-dragging[^{]*\{[^}]*cursor:grabbing/s,
+      'the whole card shows grabbing while a drag is in flight')
+  })
+
+  test('the handle height is a shared CSS var matching the geometry constant', () => {
+    // The CSS var and the JS MINI.handleH must agree, or the picture and its
+    // reserved region would disagree by the handle height.
+    const cssVar = /--vmini-handle-h:\s*(\d+)px/.exec(_css)
+    assert.ok(cssVar, 'the CSS declares --vmini-handle-h')
+    const jsConst = /handleH:\s*(\d+)/.exec(PLAYER_SRC)
+    assert.ok(jsConst, 'the JS declares MINI.handleH')
+    assert.strictEqual(cssVar[1], jsConst[1], 'the CSS var and JS constant match')
   })
 }
 

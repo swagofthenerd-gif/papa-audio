@@ -392,6 +392,12 @@ function createAnilistCatalog({ fetchFn, retryDelayMs = 1000,
     return media
   }
 
+  // The last time a degraded call swallowed a failure, kept so a caller can tell
+  // "AniList is down" apart from "AniList healthily returned nothing". Cleared on
+  // the next successful degraded call, so a recovered API stops reporting an
+  // outage. Shape: { at, message, status } or null.
+  let _lastFailure = null
+
   // The browse/search/detail calls degrade quietly rather than rejecting, the
   // same convention seasonChain and airingSchedule already follow: a dead or
   // rate-limited AniList should leave a catalog row empty, not blow up the whole
@@ -400,11 +406,21 @@ function createAnilistCatalog({ fetchFn, retryDelayMs = 1000,
   // single lookup, an empty page object for discover. `_post` itself still
   // throws, because the season-chain walk relies on that to drive its retry and
   // `truncated` flag; only these public entry points swallow.
+  //
+  // On failure the reason is recorded in `_lastFailure` (and read back via the
+  // exported `lastFailure()`), so the shelf handlers in main.js can serve the
+  // persistent browse cache and tell the renderer the row is empty *because*
+  // AniList is down — not because there was nothing to show. A success clears
+  // it, so the flag never outlives the outage that set it.
   const _degrade = async (fallback, fn) => {
     try {
-      return await fn()
+      const out = await fn()
+      _lastFailure = null
+      return out
     } catch (err) {
-      console.warn('[anilist] request degraded:', (err && err.message) || err)
+      const message = (err && err.message) || String(err)
+      console.warn('[anilist] request degraded:', message)
+      _lastFailure = { at: Date.now(), message, status: (err && err.status) ?? null }
       return fallback
     }
   }
@@ -413,6 +429,14 @@ function createAnilistCatalog({ fetchFn, retryDelayMs = 1000,
   })
 
   return {
+    // Why the most recent degraded list came back empty: a { at, message, status }
+    // set by `_degrade` on a swallowed failure and cleared on the next success,
+    // or null when the last degraded call succeeded (or none has run). The shelf
+    // handlers read this immediately after a list call to distinguish an outage
+    // from a healthy-but-empty result.
+    lastFailure() {
+      return _lastFailure
+    },
     trending(page) {
       return _degrade([], () => _post('trending', { page }))
     },

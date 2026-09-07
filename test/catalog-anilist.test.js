@@ -225,6 +225,53 @@ test('createAnilistCatalog.popular degrades to [] on a GraphQL error response', 
   assert.deepStrictEqual(await cat.popular(1), [])
 })
 
+// ── lastFailure(): why a degraded list came back empty ───────────────────────
+// The shelf handlers in main.js need to tell "AniList is down" apart from
+// "AniList healthily returned nothing" so an outage-empty row serves the browse
+// cache and shows an honest message instead of "Nothing here right now".
+test('lastFailure is null before any call and after a healthy success', async () => {
+  const media = { data: { Page: { media: [{ id: 1, title: { romaji: 'X' } }] } } }
+  const fetchFn = async () => ({ ok: true, json: async () => media })
+  const cat = createAnilistCatalog({ fetchFn })
+  assert.strictEqual(cat.lastFailure(), null, 'no failure recorded before any call')
+  await cat.trending(1)
+  assert.strictEqual(cat.lastFailure(), null, 'a success leaves no failure behind')
+})
+
+test('lastFailure records the message and status when a degraded call fails', async () => {
+  const fetchFn = async () => ({ ok: false, status: 403 })
+  const cat = createAnilistCatalog({ fetchFn })
+  assert.deepStrictEqual(await cat.trending(1), [], 'the row still degrades to empty')
+  const lf = cat.lastFailure()
+  assert.ok(lf, 'a failure was recorded')
+  assert.match(lf.message, /AniList request failed \(403\)/, 'the failure carries the reason')
+  assert.strictEqual(lf.status, 403, 'the HTTP status rides along for the caller')
+  assert.ok(lf.at > 0, 'the failure is time-stamped')
+})
+
+test('a healthy empty result is NOT an outage (lastFailure stays cleared)', async () => {
+  // AniList returned a valid, empty page — nothing to show, but not down.
+  const empty = { data: { Page: { media: [] } } }
+  const fetchFn = async () => ({ ok: true, json: async () => empty })
+  const cat = createAnilistCatalog({ fetchFn })
+  assert.deepStrictEqual(await cat.trending(1), [], 'an empty page is empty')
+  assert.strictEqual(cat.lastFailure(), null, 'a healthy-but-empty page is not an outage')
+})
+
+test('lastFailure is cleared once AniList recovers', async () => {
+  let ok = false
+  const media = { data: { Page: { media: [{ id: 1, title: { romaji: 'X' } }] } } }
+  const fetchFn = async () => ok
+    ? ({ ok: true, json: async () => media })
+    : ({ ok: false, status: 403 })
+  const cat = createAnilistCatalog({ fetchFn })
+  await cat.trending(1)
+  assert.ok(cat.lastFailure(), 'down: a failure is recorded')
+  ok = true
+  await cat.trending(1)
+  assert.strictEqual(cat.lastFailure(), null, 'recovered: the flag never outlives the outage')
+})
+
 // ── Detail by id ────────────────────────────────────────────────────────────
 // The detail handler used to run a TEXT search for the numeric id — searching
 // AniList for the string "21" — which routinely opened an unrelated show.

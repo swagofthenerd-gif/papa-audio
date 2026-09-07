@@ -267,15 +267,23 @@
        videoMiniMode({rect}). Dragged by the bar; double-clicking the picture
        restores to the theatre. -->
   <div id="vmini" class="vmini hidden" role="region" aria-label="Now playing">
-    <!-- The native mpv window is placed over this. It carries no children the
-         user could see — the picture covers it — but a double-click on it is
-         relayed by mpv (the click lands on the native window, never the page)
-         and restores the theatre. Kept for the layout rectangle only. -->
+    <!-- The drag handle. The picture region below is the native mpv window, which
+         the page never sees pointer events over, so this strip is the reliable
+         grab target: a real mouse can press here and move the card anywhere. The
+         title rides here, ellipsized, so the space is not wasted. -->
+    <div class="vmini-handle" id="vmini-handle" aria-label="Drag to move">
+      <span class="vmini-grip" aria-hidden="true">⠿</span>
+      <div class="vmini-title" id="vmini-title">Playing</div>
+    </div>
+    <!-- The native mpv window is placed over this, offset below the handle so it
+         never covers the grab strip. It carries no children the user could see —
+         the picture covers it — but a double-click on it is relayed by mpv (the
+         click lands on the native window, never the page) and restores the
+         theatre. Kept for the layout rectangle only. -->
     <div class="vmini-video" id="vmini-video" aria-label="Video — double-click to expand"></div>
     <div class="vmini-bar" id="vmini-bar">
       <button class="vt-icon vmini-play" id="vmini-play" aria-label="Play or pause"></button>
       <div class="vmini-body">
-        <div class="vmini-title" id="vmini-title">Playing</div>
         <div class="vmini-seek" id="vmini-seek" role="slider" tabindex="0"
              aria-label="Seek" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0">
           <div class="vmini-seek-track">

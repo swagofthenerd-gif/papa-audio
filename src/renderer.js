@@ -2621,9 +2621,28 @@ async function _fetchBrowse(reset) {
 
   if (!_browse.results.length) {
     if (grid) grid.innerHTML = ''
+    // An AniList outage is not a too-narrow filter: say the API is down (with its
+    // own message) and offer a retry, rather than "nothing matches all of that".
+    if (res.outage) {
+      if (more) {
+        more.innerHTML = '<div class="vrow-msg err">' +
+          esc('AniList is temporarily down (' + res.outage + ') — Try again') +
+          ' <button class="vbtn" id="vgrid-retry">Try again</button></div>'
+        document.getElementById('vgrid-retry')?.addEventListener('click', function () {
+          _fetchBrowse(reset)
+        })
+      }
+      return
+    }
     if (more) more.innerHTML = _browseEmptyHtml()
     _bindBrowseEmpty()
     return
+  }
+
+  // Saved results served through an outage render normally, with a small note.
+  if (res.fromCache && count) {
+    count.innerHTML = (count.innerHTML || '') +
+      ' <span class="vres-cache-note">showing saved list — AniList is down</span>'
   }
 
   _paintBrowseGrid()
@@ -5112,8 +5131,16 @@ async function _renderVideoTab(ticket) {
     if (_videoCatalogTicket !== ticket || state.currentPage !== 'video') return
     if (!res.ok) return _rowError(row.key, res.error)
     const items = Array.isArray(res.results) ? res.results : []
-    if (!items.length) return _rowEmpty(row.key, 'Nothing here right now')
+    // An empty anime row during an AniList outage says so honestly, with a retry —
+    // never the "nothing here" lie for what is really an API being down.
+    if (!items.length) {
+      if (res.outage) return _rowOutage(row.key, res.outage)
+      return _rowEmpty(row.key, 'Nothing here right now')
+    }
     _fillRowHideSeen(row.key, items)
+    // Saved-list content is real, so the row fills normally — a small note just
+    // admits it may be stale while AniList recovers.
+    if (res.fromCache) _rowCacheNote(row.key)
     // The hero features from the full row: what you have seen is hidden from
     // the shelf you scroll, not from the editorial spotlight.
     if (row.key === wanted[0].key) _startVideoHero(items, ticket)
@@ -5611,6 +5638,34 @@ function _rowError(key, error) {
     '<div><button class="vbtn" data-retry="' + esc(key) + '">Try again</button></div>', true)
   const btn = document.querySelector('[data-retry="' + key + '"]')
   if (btn) btn.addEventListener('click', function () { _renderVideoTab(++_videoCatalogTicket) })
+}
+
+// An empty shelf during an AniList outage. Unlike _rowEmpty's "Nothing here",
+// this says *why* it is empty — carrying AniList's own message — and offers the
+// same Try-again the This-Season error path already had, so an empty anime row
+// never lies about a healthy-but-empty result when the truth is the API is down.
+function _rowOutage(key, message) {
+  const note = message
+    ? 'AniList is temporarily down (' + message + ') — Try again'
+    : 'AniList is temporarily down — Try again'
+  _rowMsg(key, esc(note) +
+    '<div><button class="vbtn" data-retry="' + esc(key) + '">Try again</button></div>', true)
+  const btn = document.querySelector('[data-retry="' + key + '"]')
+  if (btn) btn.addEventListener('click', function () { _renderVideoTab(++_videoCatalogTicket) })
+}
+
+// A small note pinned under a shelf that is showing its last SAVED list because
+// AniList is currently down. The content is real (the last good result), so the
+// row renders normally; this only tells the user it may be stale.
+function _rowCacheNote(key) {
+  const row = document.querySelector('.vrow[data-row="' + key + '"]')
+  if (!row) return
+  const head = row.querySelector('.vrow-head')
+  if (!head || head.querySelector('.vrow-cache-note')) return
+  const p = document.createElement('p')
+  p.className = 'vrow-note vrow-cache-note'
+  p.textContent = 'showing saved list — AniList is down'
+  head.appendChild(p)
 }
 
 // Delegated once per page rather than bound per shelf, because the buttons are

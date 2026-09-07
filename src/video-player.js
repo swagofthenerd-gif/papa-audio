@@ -95,6 +95,7 @@
   // fixed 46px tall beneath it.
   const MINI = {
     inset: 24,            // gap from the viewport edge on a snapped corner
+    handleH: 26,          // top drag-handle strip (must match --vmini-handle-h)
     barH: 46,             // control-bar height (must match --vmini-bar-h)
     sizes: {
       compact: { w: 320, h: 180 },
@@ -110,10 +111,12 @@
     return MINI.sizes[size] || MINI.sizes.compact
   }
 
-  // The full card size (video + bar) for a size step.
+  // The full card size for a size step: the drag-handle strip on top, then the
+  // video, then the control bar. The handle and bar heights are fixed; only the
+  // video region changes between the two size steps.
   function miniCardSize(size) {
     const v = miniVideoDims(size)
-    return { w: v.w, h: v.h + MINI.barH }
+    return { w: v.w, h: MINI.handleH + v.h + MINI.barH }
   }
 
   // Top-left page position of the CARD for a corner, clamped so the card is
@@ -139,12 +142,14 @@
   }
 
   // The VIDEO region's page rectangle for a corner+size — this is what gets sent
-  // to main as the mpv rect. It is the card's top-left plus the video's own box
-  // (the bar hangs below it, so the video shares the card's top edge).
+  // to main as the mpv rect. The drag-handle strip sits on the card's top edge,
+  // so the video (and the native mpv window over it) is offset DOWN by the handle
+  // height — the mpv window must never cover the handle, or it would be
+  // undraggable again. The bar hangs below the video.
   function miniVideoRect(corner, size, viewport, playerH) {
     const tl = miniCardTopLeft(corner, size, viewport, playerH)
     const v = miniVideoDims(size)
-    return { x: Math.round(tl.x), y: Math.round(tl.y), width: v.w, height: v.h }
+    return { x: Math.round(tl.x), y: Math.round(tl.y + MINI.handleH), width: v.w, height: v.h }
   }
 
   // Which corner a freely-dragged card is closest to. The card's centre is
@@ -550,10 +555,12 @@
       let rect
       if (tl) {
         mini.style.transform = 'translate(' + Math.round(tl.x) + 'px,' + Math.round(tl.y) + 'px)'
-        // The mpv rect follows the card's live top-left (the video shares the
-        // card's top edge), not a corner anchor, so the picture tracks the drag.
+        // The mpv rect follows the card's live top-left, offset DOWN by the drag
+        // handle so the picture sits below the handle strip (same offset the pure
+        // miniVideoRect applies), not over it — otherwise the handle would be
+        // buried under the native window and undraggable again.
         const v = miniVideoDims(miniPos.size)
-        rect = { x: Math.round(tl.x), y: Math.round(tl.y), width: v.w, height: v.h }
+        rect = { x: Math.round(tl.x), y: Math.round(tl.y + MINI.handleH), width: v.w, height: v.h }
       } else {
         const anchor = miniCardTopLeft(miniPos.corner, miniPos.size, miniViewport(), miniPlayerH())
         mini.style.transform = 'translate(' + Math.round(anchor.x) + 'px,' + Math.round(anchor.y) + 'px)'
@@ -572,27 +579,39 @@
       } catch (_) { /* a lost preference must never stop playback */ }
     }
 
+    // Drag is bound to two surfaces: the dedicated handle strip across the top of
+    // the card, and the bar's free space (a bar press that is not on a button or
+    // the seek still drags). The picture region can't be a drag surface — it is
+    // the native mpv window and the page never sees pointer events over it — which
+    // is exactly why the handle exists. The handler is written once here and bound
+    // to each surface, so the two paths can never drift apart.
     function bindMiniDrag() {
+      const handle = $('vmini-handle')
       const bar = $('vmini-bar')
       const mini = $('vmini')
-      if (!bar || !mini) return
-      let startX = 0, startY = 0, baseTL = null, pointerId = null
-      bar.addEventListener('pointerdown', function (e) {
-        // Only a bare left-press on the bar itself starts a drag — a click on a
-        // control (play, seek, size…) must do its own thing, not drag the card.
-        if (e.button !== 0) return
-        if (e.target && typeof e.target.closest === 'function' &&
-            e.target.closest('button, .vmini-seek')) return
-        pointerId = e.pointerId
-        miniDragging = true
-        mini.classList.add('vmini-dragging')
-        startX = e.clientX; startY = e.clientY
-        baseTL = miniCardTopLeft(miniPos.corner, miniPos.size, miniViewport(), miniPlayerH())
-        miniDragTL = { x: baseTL.x, y: baseTL.y }
-        try { bar.setPointerCapture(e.pointerId) } catch (_) {}
-        if (typeof e.preventDefault === 'function') e.preventDefault()
-      })
-      bar.addEventListener('pointermove', function (e) {
+      if (!mini || (!handle && !bar)) return
+      let startX = 0, startY = 0, baseTL = null, pointerId = null, captureEl = null
+
+      const onDown = function (el) {
+        return function (e) {
+          // Only a bare left-press starts a drag. On the bar a press on a control
+          // (play, seek, size…) must do its own thing, not drag; the handle has no
+          // controls so nothing to exclude there.
+          if (e.button !== 0) return
+          if (e.target && typeof e.target.closest === 'function' &&
+              e.target.closest('button, .vmini-seek')) return
+          pointerId = e.pointerId
+          captureEl = el
+          miniDragging = true
+          mini.classList.add('vmini-dragging')
+          startX = e.clientX; startY = e.clientY
+          baseTL = miniCardTopLeft(miniPos.corner, miniPos.size, miniViewport(), miniPlayerH())
+          miniDragTL = { x: baseTL.x, y: baseTL.y }
+          try { el.setPointerCapture(e.pointerId) } catch (_) {}
+          if (typeof e.preventDefault === 'function') e.preventDefault()
+        }
+      }
+      const onMove = function (e) {
         if (!miniDragging || e.pointerId !== pointerId || !baseTL) return
         const vp = miniViewport()
         const cs = miniCardSize(miniPos.size)
@@ -609,18 +628,18 @@
             if (miniDragging && miniDragTL && pipActive && api && api.videoMiniMode) {
               const v = miniVideoDims(miniPos.size)
               api.videoMiniMode({ on: true, rect: {
-                x: Math.round(miniDragTL.x), y: Math.round(miniDragTL.y),
+                x: Math.round(miniDragTL.x), y: Math.round(miniDragTL.y + MINI.handleH),
                 width: v.w, height: v.h,
               } }).catch(function () {})
             }
           }, 50)
         }
-      })
+      }
       const endDrag = function (e) {
         if (!miniDragging || (pointerId != null && e.pointerId !== pointerId)) return
         miniDragging = false
         mini.classList.remove('vmini-dragging')
-        try { bar.releasePointerCapture(e.pointerId) } catch (_) {}
+        try { if (captureEl) captureEl.releasePointerCapture(e.pointerId) } catch (_) {}
         if (miniRectTimer) { clearTimeout(miniRectTimer); miniRectTimer = 0 }
         // Snap to the nearest corner and lock the picture onto it.
         if (miniDragTL) {
@@ -629,10 +648,17 @@
         }
         miniDragTL = null
         pointerId = null
+        captureEl = null
         placeMiniCard(null, true)
       }
-      bar.addEventListener('pointerup', endDrag)
-      bar.addEventListener('pointercancel', endDrag)
+
+      for (const el of [handle, bar]) {
+        if (!el) continue
+        el.addEventListener('pointerdown', onDown(el))
+        el.addEventListener('pointermove', onMove)
+        el.addEventListener('pointerup', endDrag)
+        el.addEventListener('pointercancel', endDrag)
+      }
     }
 
     // Compact ⇄ large. The picture and card both change size, and the rect is

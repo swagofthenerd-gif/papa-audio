@@ -189,8 +189,14 @@ test('the catalog rows load in parallel rather than one after another', () => {
 test('every catalog row the backend serves is used', () => {
   const MAIN = require('fs').readFileSync(require('path').join(__dirname, '..', 'main.js'), 'utf8')
   const handler = MAIN.slice(MAIN.indexOf("ipcMain.handle('video-catalog-get'"))
-  const served = [...handler.slice(0, handler.indexOf('ipcMain.handle', 10))
-    .matchAll(/case '([a-z-]+)':/g)].map(m => m[1])
+  const body = handler.slice(0, handler.indexOf('ipcMain.handle', 10))
+  // The TMDB rows are a switch (case labels); the anime rows moved into an
+  // `anilistFns` map so they can share the outage-cache path, so the served set
+  // is the union of both — every section the backend can build.
+  const served = [
+    ...[...body.matchAll(/case '([a-z-]+)':/g)].map(m => m[1]),
+    ...[...body.matchAll(/'([a-z-]+anime)':\s*c =>/g)].map(m => m[1]),
+  ]
   assert.ok(served.length >= 5, 'expected the catalog sections, found ' + served.length)
   const block = RENDERER.slice(RENDERER.indexOf('var _videoRows = ['), RENDERER.indexOf('function _curatedRows'))
   for (const key of served) {
@@ -494,4 +500,50 @@ test('the country list is not fetched for the catalog that cannot use it', () =>
   const fn = RENDERER.slice(RENDERER.indexOf('async function _loadBrowseVocab'),
     RENDERER.indexOf('function _renderFilterRail'))
   assert.match(fn, /catalog !== 'anime' && !_browseVocab\.countries/)
+})
+
+// ── Fix 1b: honest empty-state during an AniList outage ──────────────────────
+// An anime shelf that comes back empty BECAUSE AniList is down must say so and
+// offer a retry — never "Nothing here right now", which is a lie about a
+// healthy-but-empty result. These pin the renderer's outage branch.
+
+test('the catalog-row loader distinguishes an outage-empty from a plain empty', () => {
+  // The empty branch must check res.outage before falling through to "Nothing
+  // here right now", so an outage never reads as a healthy empty shelf. Anchored
+  // on the catalog-row loader specifically (its "Nothing here right now" copy).
+  const nh = RENDERER.indexOf("_rowEmpty(row.key, 'Nothing here right now')")
+  assert.ok(nh > -1, 'the catalog-row empty copy must exist')
+  const at = RENDERER.lastIndexOf('if (!items.length) {', nh)
+  assert.ok(at > -1, 'the empty-row branch must exist')
+  const branch = RENDERER.slice(at, nh + 60)
+  assert.match(branch, /if \(res\.outage\) return _rowOutage\(row\.key, res\.outage\)/,
+    'an outage takes the honest _rowOutage path')
+  assert.match(branch, /_rowEmpty\(row\.key, 'Nothing here right now'\)/,
+    '"Nothing here" survives only for a genuine healthy-but-empty result')
+})
+
+test('a fromCache row renders content and pins the saved-list note', () => {
+  assert.match(RENDERER, /if \(res\.fromCache\) _rowCacheNote\(row\.key\)/,
+    'saved content renders normally, with a note that it may be stale')
+})
+
+test('_rowOutage says AniList is down, carries its message, and offers a retry', () => {
+  const fn = fnBody('_rowOutage')
+  assert.match(fn, /AniList is temporarily down/, 'the message names the real cause')
+  assert.match(fn, /data-retry="/, 'a retry button is offered, like the This-Season path')
+  assert.match(fn, /_renderVideoTab\(\+\+_videoCatalogTicket\)/, 'retry re-runs the tab')
+})
+
+test('_rowCacheNote admits the shelf is showing a saved list', () => {
+  const fn = fnBody('_rowCacheNote')
+  assert.match(fn, /showing saved list — AniList is down/)
+  assert.match(fn, /vrow-cache-note/, 'the note is de-duplicated by its own class')
+})
+
+test('the Browse grid treats an outage as down, not as a too-narrow filter', () => {
+  const at = RENDERER.indexOf('if (!_browse.results.length) {')
+  assert.ok(at > -1, 'the empty-grid branch must exist')
+  const branch = RENDERER.slice(at, at + 700)
+  assert.match(branch, /if \(res\.outage\) \{/, 'an outage is handled before _browseEmptyHtml')
+  assert.match(branch, /AniList is temporarily down/, 'and says AniList is down, not "nothing matches"')
 })

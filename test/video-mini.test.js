@@ -24,9 +24,13 @@ test('the video region is 320x180 compact and 480x270 large', () => {
   assert.deepStrictEqual(miniVideoDims('bogus'), { w: 320, h: 180 })
 })
 
-test('the card is the video plus the bar height', () => {
-  assert.deepStrictEqual(miniCardSize('compact'), { w: 320, h: 180 + MINI.barH })
-  assert.deepStrictEqual(miniCardSize('large'), { w: 480, h: 270 + MINI.barH })
+test('the card is the handle plus the video plus the bar height', () => {
+  // A drag-handle strip now sits on top of the card, so the card is taller than
+  // the video-plus-bar by the handle height. The handle is where a real mouse
+  // grabs to move the card (the picture region is a native window the page can't
+  // receive events over).
+  assert.deepStrictEqual(miniCardSize('compact'), { w: 320, h: MINI.handleH + 180 + MINI.barH })
+  assert.deepStrictEqual(miniCardSize('large'), { w: 480, h: MINI.handleH + 270 + MINI.barH })
 })
 
 test('each corner places the card inside the viewport with the inset', () => {
@@ -56,10 +60,25 @@ test('the bottom corners clear the music player bar', () => {
   assert.ok(withBar < noBar, 'a bar present raises the card')
 })
 
-test('the mpv rect is the video box at the card top-left', () => {
+test('the mpv rect is the video box offset below the drag handle', () => {
+  // The native mpv window must sit BELOW the handle strip, never over it — or the
+  // handle would be buried under the picture and undraggable again. So the rect's
+  // y is the card top-left plus the handle height; x and the video dimensions are
+  // unchanged.
   const tl = miniCardTopLeft('br', 'large', VP, PLAYER_H)
   const rect = miniVideoRect('br', 'large', VP, PLAYER_H)
-  assert.deepStrictEqual(rect, { x: tl.x, y: tl.y, width: 480, height: 270 })
+  assert.deepStrictEqual(rect, { x: tl.x, y: tl.y + MINI.handleH, width: 480, height: 270 })
+})
+
+test('the mpv rect never covers the drag handle at any corner or size', () => {
+  for (const corner of MINI.corners) {
+    for (const size of ['compact', 'large']) {
+      const tl = miniCardTopLeft(corner, size, VP, PLAYER_H)
+      const rect = miniVideoRect(corner, size, VP, PLAYER_H)
+      assert.ok(rect.y >= tl.y + MINI.handleH,
+        corner + '/' + size + ': the video starts at or below the handle bottom')
+    }
+  }
 })
 
 test('a card is placed fully on screen even in a tiny viewport', () => {

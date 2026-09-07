@@ -729,6 +729,19 @@ const sideStores = {
   // without bound.
   animeDetailCache: new SideStore({ dir: USER_DATA, name: 'anime-detail-cache', fallback: {}, debounceMs: 1000, onError: _sideErr }),
 
+  // Outage insurance for the anime BROWSE shelves (trending / popular / season /
+  // discover), the row-level sibling of animeDetailCache. AniList's list rows
+  // degrade to [] when the API is down (HTTP 403 "temporarily disabled"), which
+  // used to leave "Nothing here right now" on shelves that were actually empty
+  // only because the API was dark. This is a write-through mirror of the last
+  // GOOD (non-empty) result per list+page — keyed `list:<section>:<page>` and
+  // `discover:<hash>` — so a shelf keeps showing its last real content across an
+  // outage (and a restart). Stale is fine: the note tells the user it is saved.
+  // Fresh-first: a live non-empty result always rewrites the entry; the cache is
+  // only read when a call comes back empty *because* of a failure. Capped (see
+  // _animeBrowseCacheWrite) so it can't grow without bound.
+  animeBrowseCache: new SideStore({ dir: USER_DATA, name: 'anime-browse-cache', fallback: {}, debounceMs: 1000, onError: _sideErr }),
+
   // Peer-library browse cache. Browsing a big library refetches ~10k directories
   // on every open — seconds, sometimes a timeout. Keyed `browse:<username>` ->
   // { directories, cachedAt }, capped (see _browseCacheWrite) so it can't grow
@@ -9154,6 +9167,44 @@ function _browseCacheRead(username) {
   } catch (_) { return null }
 }
 
+// The anime browse cache mirrors the anime-detail cache exactly (bounded,
+// LRU-ish side store), but for the list ROWS the Anime tab scrolls. Its whole
+// job is to keep the last good shelves visible through an AniList outage. The
+// caller keys by `list:<section>:<page>` for the fixed rows and `discover:<hash>`
+// for a Browse query.
+const ANIME_BROWSE_CACHE_CAP = 30      // list+page entries before the oldest go
+const ANIME_BROWSE_CACHE_EVICT = 6     // dropped per pass once at the cap
+
+// Write the last GOOD (non-empty) list result through under `key`, stamped with
+// the time, evicting the oldest keys when over the cap. `value` is the shape the
+// shelf returns — an array for the fixed rows, a discover page object for Browse.
+// Never throws: a cache write failing must not take down the shelf it came from.
+function _animeBrowseCacheWrite(key, value) {
+  try {
+    sideStores.animeBrowseCache.update(prev => {
+      const map = prev && typeof prev === 'object' ? { ...prev } : {}
+      map[key] = { value, cachedAt: Date.now() }
+      const keys = Object.keys(map)
+      if (keys.length > ANIME_BROWSE_CACHE_CAP) {
+        keys.sort((a, b) => (map[a].cachedAt || 0) - (map[b].cachedAt || 0))
+        for (const k of keys.slice(0, ANIME_BROWSE_CACHE_EVICT)) delete map[k]
+      }
+      return map
+    })
+  } catch (e) {
+    try { console.warn('[papa][video] anime browse cache write failed:', e && e.message) } catch (_) {}
+  }
+}
+
+// Read a cached shelf back. Returns { value, cachedAt } or null. Never throws.
+function _animeBrowseCacheRead(key) {
+  try {
+    const map = sideStores.animeBrowseCache.get()
+    const entry = map && map[key]
+    return entry || null
+  } catch (_) { return null }
+}
+
 function _currentAnimeSeasonTag() {
   const now = new Date()
   const m = now.getMonth() + 1
@@ -9432,6 +9483,27 @@ function _shelfDefinition(key) {
   return null
 }
 
+// Run an AniList list call and report *why* it came back empty. The degrading
+// calls (trending/popular) swallow the error and set anilist().lastFailure();
+// season throws instead, so a throw is normalised here to the same shape. Return
+// { results, failure } — failure is { message, status } when the emptiness is an
+// outage, or null for a genuine (or non-empty) result. Never throws.
+async function _anilistListWithOutage(fn) {
+  const cat = anilist()
+  try {
+    const results = await fn(cat)
+    const list = Array.isArray(results) ? results : []
+    // A degrading call marks its failure; only trust it when the list is empty,
+    // so a partially-recovered API that returned rows is never called an outage.
+    const lf = list.length ? null : (typeof cat.lastFailure === 'function' ? cat.lastFailure() : null)
+    return { results: list, failure: lf ? { message: lf.message, status: lf.status } : null }
+  } catch (e) {
+    // season() rejects rather than degrading — treat it exactly like a degraded
+    // empty so the cache-fallback and honest empty-state paths are identical.
+    return { results: [], failure: { message: (e && e.message) || String(e), status: (e && e.status) ?? null } }
+  }
+}
+
 ipcMain.handle('video-catalog-get', async (_, { section, page = 1 }) => {
   try {
     // The season-anime section resolves "current season" at call time, so its
@@ -9442,14 +9514,40 @@ ipcMain.handle('video-catalog-get', async (_, { section, page = 1 }) => {
       : `${section}:${page}`
     const cached = _videoCatalogCache.get(key)
     if (cached) return { ok: true, results: cached }
+    // The anime rows get outage insurance the TMDB rows do not need: AniList has
+    // gone globally dark, and a swallowed 403 must not read as "nothing here".
+    const anilistFns = {
+      'trending-anime': c => c.trending(page),
+      'popular-anime': c => c.popular(page),
+      'season-anime': c => c.season(page),
+    }
+    if (anilistFns[section]) {
+      const { results, failure } = await _anilistListWithOutage(anilistFns[section])
+      // A live, non-empty result is the good case: memo-cache it and mirror it to
+      // the persistent browse cache so a later outage can serve it.
+      if (results.length) {
+        _videoCatalogCache.set(key, results)
+        _animeBrowseCacheWrite('list:' + key, results)
+        return { ok: true, results }
+      }
+      // Empty. If AniList is down, serve the last saved list (marked fromCache) or,
+      // failing that, tell the renderer honestly that it is an outage — never the
+      // "nothing here" lie. A genuine healthy-but-empty result falls through to a
+      // plain empty list, which the renderer still shows as "nothing here".
+      if (failure) {
+        const saved = _animeBrowseCacheRead('list:' + key)
+        if (saved && Array.isArray(saved.value) && saved.value.length) {
+          return { ok: true, results: saved.value, fromCache: true, outage: failure.message }
+        }
+        return { ok: true, results: [], outage: failure.message }
+      }
+      return { ok: true, results: [] }
+    }
     let results
     switch (section) {
       case 'trending-movies': results = await tmdb().trending('movie', page); break
       case 'trending-tv': results = await tmdb().trending('tv', page); break
       case 'popular-tv': results = await tmdb().popular('tv', page); break
-      case 'trending-anime': results = await anilist().trending(page); break
-      case 'popular-anime': results = await anilist().popular(page); break
-      case 'season-anime': results = await anilist().season(page); break
       default: return { ok: false, error: `Unknown catalog section: ${section}` }
     }
     // An empty list is almost always a transient upstream failure dressed up as
@@ -9535,9 +9633,32 @@ ipcMain.handle('video-discover', async (_, req) => {
     const key = JSON.stringify([catalog, req])
     const cached = _videoDiscoverCache.get(key)
     if (cached) return { ok: true, ...cached }
-    const out = catalog === 'anime'
-      ? await anilist().discover(req)
-      : await tmdb().discover(catalog, req)
+    if (catalog === 'anime') {
+      // Same outage insurance as the fixed anime rows: discover() degrades to an
+      // empty page and marks anilist().lastFailure(), so an empty page during an
+      // outage must serve the last saved Browse result (fromCache) or say the API
+      // is down — never a bare empty grid the user reads as "no matches".
+      const cat = anilist()
+      const out = await cat.discover(req)
+      const list = Array.isArray(out && out.results) ? out.results : []
+      if (list.length) {
+        _videoDiscoverCache.set(key, out)
+        _animeBrowseCacheWrite('discover:' + key, out)
+        return { ok: true, ...out }
+      }
+      const lf = typeof cat.lastFailure === 'function' ? cat.lastFailure() : null
+      if (lf) {
+        const saved = _animeBrowseCacheRead('discover:' + key)
+        if (saved && saved.value && Array.isArray(saved.value.results) && saved.value.results.length) {
+          return { ok: true, ...saved.value, fromCache: true, outage: lf.message }
+        }
+        return { ok: true, ...out, outage: lf.message }
+      }
+      // A genuinely narrow filter: cache the empty page like a normal result.
+      _videoDiscoverCache.set(key, out)
+      return { ok: true, ...out }
+    }
+    const out = await tmdb().discover(catalog, req)
     // An empty page is usually a genuinely narrow filter rather than a
     // transient failure, so unlike the catalog rows this is worth caching —
     // paging to the end of a result set would otherwise re-query every time.
