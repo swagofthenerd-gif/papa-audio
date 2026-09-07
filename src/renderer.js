@@ -22575,7 +22575,11 @@ async function _slskCorrectQuery(query) {
     var suggestions = (res && res.suggestions) || []
     for (var i = 0; i < suggestions.length; i++) {
       var cand = suggestions[i]
-      if (window.PapaSmartQuery.isSpellingFix(query, cand)) {
+      // The library vocabulary vetoes corrections: a query made of words the
+      // user's own collection contains ("camel" the band) is never rewritten
+      // into a more popular search ("camelot" — the field bug).
+      var vocab = _searchIndex && _searchIndex.vocabulary
+      if (window.PapaSmartQuery.isSpellingFix(query, cand, vocab)) {
         return { query: cand, correction: { from: query, to: cand } }
       }
     }

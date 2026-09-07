@@ -299,14 +299,29 @@ var _PapaSmartQuery = (function () {
   var SLSK_PER_TOKEN = 2
   var SLSK_TOTAL = 4
 
-  function isSpellingFix(query, candidate) {
+  // vocab is optional: when given, a query whose every token is already a real
+  // word in the user's library is NEVER "corrected" — the user searched for a
+  // thing they own ("camel" the band), not a typo of something more popular.
+  function isSpellingFix(query, candidate, vocab) {
     var a = tokenize(query)
     var b = tokenize(candidate)
     if (!a.length || a.length !== b.length) return false
+    if (vocab) {
+      var allReal = true
+      for (var v = 0; v < a.length; v++) {
+        if (!Object.prototype.hasOwnProperty.call(vocab, a[v])) { allReal = false; break }
+      }
+      if (allReal) return false
+    }
     var total = 0
     var anyDiff = false
     for (var i = 0; i < a.length; i++) {
       if (a[i] !== b[i]) anyDiff = true
+      // Growing a word by appending ("camel" -> "camelot") is AUTOCOMPLETE,
+      // not a spelling repair — the field bug that turned a real band into a
+      // musical. Same for the reverse (truncation). A repair changes letters
+      // within a word; a strict prefix relationship never qualifies.
+      if (a[i] !== b[i] && (b[i].indexOf(a[i]) === 0 || a[i].indexOf(b[i]) === 0)) return false
       var d = editDistance(a[i], b[i], SLSK_PER_TOKEN)
       if (d > SLSK_PER_TOKEN) return false
       total += d

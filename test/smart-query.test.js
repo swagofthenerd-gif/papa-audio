@@ -189,3 +189,17 @@ test('isSpellingFix caps total drift across many tokens', () => {
   // budget, so this is not one clean correction.
   assert.equal(SQ.isSpellingFix('aa bb cc', 'xx yy zz'), false)
 })
+
+
+test('FIELD BUG: "camel" is never corrected to "camelot" — prefix growth is autocomplete, not repair', () => {
+  const vocab = SQ.buildVocabulary(['Camel Stationary Traveller'])
+  assert.strictEqual(SQ.isSpellingFix('camel', 'camelot', vocab), false)
+  assert.strictEqual(SQ.isSpellingFix('camel', 'camelot'), false, 'prefix rule holds even without vocab')
+  assert.strictEqual(SQ.isSpellingFix('camelot', 'camel'), false, 'truncation refused too')
+})
+
+test('library vocabulary vetoes correction of real owned terms', () => {
+  const vocab = SQ.buildVocabulary(['Camel Stationary Traveller'])
+  assert.strictEqual(SQ.isSpellingFix('camel', 'gamel', vocab), false, 'owned word never rewritten')
+  assert.strictEqual(SQ.isSpellingFix('radiohaed creep', 'radiohead creep', vocab), true, 'genuine typos still repair')
+})
