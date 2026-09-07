@@ -1225,6 +1225,15 @@ async function init() {
     if (type === 'mpvMissing') showEngineBlocker('mpvMissing', null)
     else if (type === 'engineFailed') showEngineBlocker('engineFailed', data)
   })
+  // yt-dlp self-maintenance: main updated the YouTube engine (either on its own
+  // schedule, or in response to a track that would not resolve). Either way, tell
+  // the user in plain English that they can try again.
+  window.api.on('ytdlp-updated', ({ from, to } = {}) => {
+    showToast('YouTube support was updated' + (to ? ' to ' + to : '') + ' — try again')
+  })
+  window.api.on('ytdlp-recovered', () => {
+    showToast('YouTube support was updated — try again')
+  })
   const playerStatus = await window.api.playerGetStatus()
   // "Unavailable" covers both a missing mpv and an mpv that would not start.
   // Telling the user to install what they already have is the bug in item 7.
@@ -19676,6 +19685,7 @@ async function _initSettingsPanel() {
   await _initVideoSettings()
   _initSettingsSearch()
   _initBackupSettings()
+  _initYtdlpSettings()
   _initBugReport()
   await _initDiagnostics()
   _initAboutGroup()
@@ -20577,6 +20587,89 @@ function _initBackupSettings() {
       importBtn.disabled = false
     })
   }
+}
+
+// ── YouTube engine (yt-dlp self-maintenance) ─────────────────────────────────
+// One row: shows the installed yt-dlp version and when it was last updated, with
+// an "Update now" button. Honest about degradation — if pip is missing, the row
+// says automatic updates are unavailable and the button is disabled, never
+// spawning anything. Mirrors _initBackupSettings' shape (idempotent _wired
+// guard, plain-English status line).
+function _ytdlpRelTime(ts) {
+  if (!ts) return 'never'
+  const diff = Date.now() - ts
+  if (diff < 60000) return 'just now'
+  if (diff < 3600000) return Math.floor(diff / 60000) + 'm ago'
+  if (diff < 86400000) return Math.floor(diff / 3600000) + 'h ago'
+  if (diff < 172800000) return 'yesterday'
+  return Math.floor(diff / 86400000) + 'd ago'
+}
+
+async function _initYtdlpSettings() {
+  const status = document.getElementById('ytdlp-status')
+  const btn = document.getElementById('ytdlp-update-btn')
+  const setStatus = (msg) => { if (status) status.textContent = msg || '' }
+  // One assignment for the button's enabled state, so the disable always has a
+  // matching re-enable path (the update button is only ever disabled when there
+  // is nothing it can usefully do — no API, or no pip).
+  const setEnabled = (on) => { if (btn) btn.disabled = !on }
+
+  async function refresh() {
+    if (!window.api || typeof window.api.ytdlpStatus !== 'function') {
+      setStatus('The YouTube engine status is not available in this version.')
+      setEnabled(false)
+      return
+    }
+    try {
+      const s = await window.api.ytdlpStatus()
+      if (!s || s.ok === false) { setStatus('Could not read the YouTube engine status.'); return }
+      const ver = s.version ? 'yt-dlp ' + s.version : 'yt-dlp (version unknown)'
+      const when = 'updated ' + _ytdlpRelTime(s.lastUpdateAt)
+      if (!s.pipAvailable) {
+        // No pip → automatic updates impossible. Say so plainly, disable the
+        // button. Nothing is ever spawned in this state.
+        setStatus(ver + ' · ' + when + ' — automatic updates unavailable, install pip to enable them')
+      } else {
+        setStatus(ver + ' · ' + when)
+      }
+      setEnabled(!!s.pipAvailable)
+    } catch (e) {
+      setStatus('Could not read the YouTube engine status.')
+    }
+  }
+
+  if (btn && !btn._wired) {
+    btn._wired = true
+    btn.addEventListener('click', async () => {
+      if (!window.api || typeof window.api.ytdlpUpdateNow !== 'function') {
+        setStatus('Updating is not available in this version.')
+        return
+      }
+      setEnabled(false)
+      setStatus('Checking for a newer yt-dlp…')
+      try {
+        const r = await window.api.ytdlpUpdateNow()
+        if (r && r.unavailable) {
+          setStatus('Automatic updates unavailable — install pip to enable them.')
+        } else if (r && r.ok && r.updated && r.to) {
+          setStatus('Updated to yt-dlp ' + r.to + ' ✓')
+          if (typeof showToast === 'function') showToast('YouTube support was updated — try again')
+        } else if (r && r.ok) {
+          setStatus('Already up to date ✓')
+        } else {
+          setStatus('Could not update.' + (r && r.error ? ' ' + r.error : ''))
+        }
+      } catch (e) {
+        setStatus('Could not update.')
+      } finally {
+        // refresh() re-reads pip availability and sets the button's enabled
+        // state accordingly, so the disable above always has a path back.
+        await refresh()
+      }
+    })
+  }
+
+  await refresh()
 }
 
 // ── Bug reporter (App #97) ───────────────────────────────────────────────────

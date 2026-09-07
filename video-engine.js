@@ -133,6 +133,7 @@ function screenshotDir() { return _dataDir('screenshots') }
 function configDir() { return _dataDir('config') }
 const { channelsValue } = require('./mpv-engine')
 const { classify } = require('./src/surround-verify')
+const { ytdlPathArg } = require('./src/ytdlp-manager')
 
 // The properties mpv must push back. Observation mirrors mpv-engine.js:52 so the
 // two engines stay the same shape; the video engine adds everything the theatre
@@ -268,6 +269,11 @@ class VideoEngine extends EventEmitter {
       outputMode: 'default',
       alsaDevice: null,
       audioChannels: 'auto',
+      // The yt-dlp mpv's ytdl_hook should use, same discovery as the music
+      // engine. The video path runs with --ytdl=no for torrent streaming, so
+      // this only bites when a caller flips ytdl back on (e.g. a YouTube-backed
+      // stream); pinning it there too keeps both engines off PATH-order luck.
+      ytdlPath: null,
       ...opts.config,
     }
     this._spawnFn = opts.spawnFn || spawn
@@ -365,6 +371,11 @@ class VideoEngine extends EventEmitter {
       `--screenshot-directory=${screenshotDir()}`,
       '--ytdl=no',
     ]
+    // Pin ytdl_hook's yt-dlp when a path was discovered. -append so it never
+    // clobbers another script-opt; harmless alongside --ytdl=no and correct the
+    // moment a caller re-enables ytdl for a YouTube-backed stream.
+    const ytdlArg = ytdlPathArg(this.config.ytdlPath)
+    if (ytdlArg) a.push(ytdlArg)
     if (wid) {
       // --gpu-context is not optional when embedding. Left to choose for
       // itself under XWayland, mpv picks a context that renders nothing into a

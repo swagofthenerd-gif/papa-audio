@@ -7,6 +7,7 @@ const fs = require('fs')
 const crypto = require('crypto')
 const { MpvIpcClient } = require('./mpv-ipc')
 const { buildAfGraph, defaultSettings } = require('./eq')
+const { ytdlPathArg } = require('./src/ytdlp-manager')
 
 const POSITION_THROTTLE_MS = 250
 const RESPAWN_WINDOW_MS = 60000
@@ -91,6 +92,12 @@ class MpvEngine extends EventEmitter {
       // key and the incompatible-feature precedence in src/bit-perfect.js before
       // it ever reaches here.
       bitPerfect: false,
+      // The exact yt-dlp mpv's bundled ytdl_hook should use. Pinning it stops
+      // mpv from picking whatever is first on PATH — which is how a stale
+      // /usr/bin/yt-dlp got selected and hung a resolve. Resolved by
+      // src/ytdlp-manager.js's discovery order and passed in by main.js. Null
+      // leaves mpv's own PATH search in place.
+      ytdlPath: null,
       ...opts.config,
     }
     this._spawnFn = opts.spawnFn || spawn
@@ -154,6 +161,11 @@ class MpvEngine extends EventEmitter {
       '--ytdl-format=bestaudio',
       '--cache=yes', '--cache-secs=30', '--demuxer-max-bytes=32MiB', '--demuxer-readahead-secs=30',
     ]
+    // Pin mpv's ytdl_hook to the discovered yt-dlp so playback never depends on
+    // PATH order (a stale /usr/bin/yt-dlp first on PATH is what hung a resolve).
+    // -append, not the plain --script-opts, so any future script-opt survives.
+    const ytdlArg = ytdlPathArg(this.config.ytdlPath)
+    if (ytdlArg) a.push(ytdlArg)
     // After a device-related respawn failure, stop asking for the device that is
     // not there. Exclusive mode on a vanished device fails instantly, which
     // burns all three respawns inside a couple of seconds.

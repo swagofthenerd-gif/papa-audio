@@ -189,6 +189,10 @@ contextBridge.exposeInMainWorld('api', {
   papaBackupNow:    () => ipcRenderer.invoke('papa-backup-now'),
   papaBackupStatus: () => ipcRenderer.invoke('papa-backup-status'),
 
+  // yt-dlp self-maintenance: Settings row reads status and can force an update.
+  ytdlpStatus:    () => ipcRenderer.invoke('ytdlp-status'),
+  ytdlpUpdateNow: () => ipcRenderer.invoke('ytdlp-update-now'),
+
   // Changelog: user-facing "what's new" (App §7)
   appChangelog: () => ipcRenderer.invoke('app-changelog'),
 
@@ -447,6 +451,10 @@ contextBridge.exposeInMainWorld('api', {
       // Memory ceiling watchdog (roadmap #63): main asks the renderer to trim its
       // caches when the renderer RSS crosses the ceiling twice in a row.
       'papa-memory-pressure',
+      // yt-dlp self-maintenance: main pushes these after an automatic update or a
+      // playback-error recovery so the renderer can toast "YouTube support was
+      // updated — try again".
+      'ytdlp-updated', 'ytdlp-recovered',
     ]
     if (!allowed.includes(channel)) return () => {}
     const h = (_, data, meta) => {

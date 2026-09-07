@@ -287,9 +287,10 @@ test('the same music is never fetched from two peers at once', () => {
 test('two different tracks that share a filename do not block each other', () => {
   // "01 - Intro.flac" is a name dozens of albums share. Basename-only identity
   // meant one album in flight blocked every other album's first track for good.
+  // Identity is now parsed artist+album+title, so two real albums never collide.
   const st = S.createState()
-  S.addItem(st, { filename: '/AlbumA/01 - Intro.flac', size: 100, sources: [src('A')], addedAt: 1 })
-  S.addItem(st, { filename: '/AlbumB/01 - Intro.flac', size: 200, sources: [src('B')], addedAt: 2 })
+  S.addItem(st, { filename: '/Artist One - Album A/01 - Intro.flac', size: 100, sources: [src('A')], addedAt: 1 })
+  S.addItem(st, { filename: '/Artist Two - Album B/01 - Intro.flac', size: 200, sources: [src('B')], addedAt: 2 })
   assert.equal(S.planDispatch(st, {}, 10).length, 2)
   const first = S.planDispatch(st, {}, 10)[0]
   S.markDispatched(st, first.key, first.username, 10, first.filename)

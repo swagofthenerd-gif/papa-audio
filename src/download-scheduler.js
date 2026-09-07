@@ -49,14 +49,69 @@ function createState() {
 }
 
 // The identity of a piece of music, independent of which peer serves it or what
-// they named the file. This is the key that makes a cancel stick across sources:
-// "01 - Intro.flac" from user A and "01. Intro.flac" from user B in the same
-// album folder are ONE track, so cancelling either abandons both — and blocks a
-// third copy discovery might turn up.
+// they named the file. This is the key that makes a cancel stick across sources
+// and stops the same song downloading three times over.
 //
-// Built from the remote folder (dozens of albums share "01 - Intro.flac", so the
-// folder is what disambiguates) plus a normalized track title. A missing folder
-// falls back to the bare title, which is coarser but never throws away identity.
+// FIELD LESSON (the second occurrence of this failure class): the old identity
+// was the album FOLDER name plus the track title. Peers never share folder names
+// — "witzmankid_stuff/", "jzdoot shares/", "Sleety/" are three peers' copies of
+// ONE loose track — so a folder-based key never collapsed them, cross-peer dedupe
+// never fired, and the song downloaded from every peer at once (one of them an
+// MP3 riding alongside the FLACs).
+//
+// So identity is now TRACK-CENTRIC: parsed artist + parsed album + normalized
+// title. The folder is run through parseAlbumFolder (the same parser the shelves
+// use), which strips the peer's "Music/"/"Shared/" shelving and quality tags and
+// yields the real artist/album — which two peers of the same release DO share,
+// even when their raw folder strings do not.
+//
+// When folder parsing yields nothing usable — a loose single dumped in a peer's
+// share folder, where "album" comes back as the peer's junk folder name and
+// artist is empty — we fall back to the normalized title ALONE plus a size-band
+// (rounded to 5 MB). Tradeoff, deliberately chosen: title-alone would false-merge
+// two genuinely different songs that happen to share a title across albums; the
+// size-band makes that far less likely (different songs are different sizes)
+// while still collapsing the same loose single offered by several peers (the same
+// release circulates at the same byte count). It is coarser than the parsed key
+// but never throws identity away, and a lossy copy lands in a different band from
+// its lossless twin — which is correct, they are not interchangeable anyway.
+// Resolved lazily on first use, NOT at load time: in the renderer eight scripts
+// share one scope and load order is not guaranteed, so a top-level lookup of
+// window.PapaSlskShelves can run before that file has set the global. Under Node
+// require works either way. Cached once resolved.
+var _parseAlbumFolder = null
+function _getParseAlbumFolder() {
+  if (_parseAlbumFolder) return _parseAlbumFolder
+  try {
+    if (typeof require !== 'undefined') _parseAlbumFolder = require('./slsk-shelves').parseAlbumFolder
+  } catch (_) {}
+  try {
+    if (!_parseAlbumFolder && typeof window !== 'undefined' && window.PapaSlskShelves) {
+      _parseAlbumFolder = window.PapaSlskShelves.parseAlbumFolder
+    }
+  } catch (_) {}
+  return _parseAlbumFolder
+}
+
+// The quality gate for folding a second peer's copy in as an ALTERNATE SOURCE of
+// one item (rule 2 of the field fix). Reused, never re-derived: the same
+// compatible()/fingerprint() that guards discovery and seed substitution decides
+// whether an MP3 may ride alongside a FLAC (it may not). Lazy for the same
+// load-order reason as above.
+var _fp = null
+function _getFp() {
+  if (_fp) return _fp
+  try {
+    if (typeof require !== 'undefined') _fp = require('./source-fingerprint')
+  } catch (_) {}
+  try {
+    if (!_fp && typeof window !== 'undefined' && window.PapaSourceFingerprint) {
+      _fp = window.PapaSourceFingerprint
+    }
+  } catch (_) {}
+  return _fp
+}
+
 function _basename(s) {
   var str = String(s == null ? '' : s)
   var i = Math.max(str.lastIndexOf('/'), str.lastIndexOf('\\'))
@@ -72,21 +127,97 @@ function _folderOf(s) {
   var j = Math.max(dir.lastIndexOf('/'), dir.lastIndexOf('\\'))
   return (j >= 0 ? dir.slice(j + 1) : dir).toLowerCase()
 }
+// Path segments for parseAlbumFolder: the folder chain above the file, so the
+// parser can read artist from the parent when the leaf is just the album.
+function _folderSegs(s) {
+  var str = String(s == null ? '' : s).replace(/\\/g, '/')
+  var parts = str.split('/')
+  parts.pop() // drop the filename; the rest is the folder chain
+  return parts.filter(function (p) { return p !== '' })
+}
+// Normalize a track title: drop the extension, any leading disc/track number
+// (incl. the "1-04" disc-track form and bare "04"/"04."), bracketed quality
+// tags, then collapse everything non-alphanumeric. This is the extension the
+// field fix called for — the old normalizer left leading track numbers in place,
+// which is exactly why "19 - ItsNot…" and "21 - ItsNot…" did not match.
 function _normTitle(base) {
   return String(base || '')
     .replace(/\.[a-z0-9]+$/i, '')        // extension
     .toLowerCase()
+    // bracketed quality/format tags: [flac], (24-96), {2xcd}, etc.
+    .replace(/[\[\({][^\])}]*[\]\)}]/g, ' ')
+    // leading disc-track ("1-04", "1.04", "1_04") or plain track ("04", "04.")
+    .replace(/^\s*\d{1,3}\s*[-_.]\s*\d{1,3}\b/, ' ')
+    .replace(/^\s*\d{1,3}\s*[-_.)\s]/, ' ')
     .replace(/[\[\](){}_,'"`!?.\-]/g, ' ')
     .replace(/\b(cd|disc|disk)\s*\d+\b/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
 }
-function identityKey(filename) {
+// A parsed album is "usable" only when it gives us a real disambiguator: an
+// artist, or an album that is not merely the peer's junk share folder. Without
+// one we cannot trust the folder to identify the release, and fall back to the
+// size-banded title.
+function _bandSize(size) {
+  var n = Number(size)
+  if (!Number.isFinite(n) || n <= 0) return null
+  // 5 MB bands. Round to nearest so a 1-byte difference across peers does not
+  // straddle a boundary; the same release circulates at effectively one size.
+  return Math.round(n / (5 * 1024 * 1024))
+}
+function identityKey(filename, size) {
   var name = String(filename == null ? '' : filename)
-  var folder = _folderOf(name)
   var title = _normTitle(_basename(name))
   if (!title) return ''
-  return folder ? folder + '::' + title : title
+  var artist = ''
+  var album = ''
+  var parseFn = _getParseAlbumFolder()
+  if (typeof parseFn === 'function') {
+    try {
+      var p = parseFn(_folderSegs(name)) || {}
+      artist = String(p.artist || '').toLowerCase().trim()
+      album = String(p.album || '').toLowerCase().trim()
+    } catch (_) { artist = ''; album = '' }
+  }
+  // Usable when we have an artist (the strongest signal a real release shares
+  // across peers). Album alone is not enough: parseAlbumFolder happily returns
+  // the peer's junk folder name as "album" for a loose single, and those differ
+  // per peer — the whole reason the old key failed.
+  if (artist) return 'a:' + artist + '|' + album + '|' + title
+  // Fallback: title + size-band. Comment the tradeoff at the top of this block.
+  var band = _bandSize(size)
+  return band != null ? 't:' + title + '|~' + band : 't:' + title
+}
+
+// The band-INDEPENDENT identity of a song, for ABANDONMENT only. identityKey
+// separates loose singles by size band so different songs sharing a title do not
+// false-merge on enqueue — but a cancel must be coarser than that: the field
+// failure ("Lights Out", "Sleety" mp3) was a cancel on one peer's FLAC that did
+// not stop the same song arriving as an MP3, which sits in a different band. So a
+// cancel records BOTH the exact identity (precise) and this song key (so no
+// re-encode, no other-band copy, no lossy twin comes back). It is only consulted
+// for abandonment; a coarser cancel is the safe direction (worst case, a user
+// who cancels one loose single also blocks a different same-titled single — rare,
+// and re-asking with force overrides it), whereas a coarser DEDUP would drop
+// wanted music, which is not.
+function songKey(filename) {
+  var name = String(filename == null ? '' : filename)
+  var title = _normTitle(_basename(name))
+  if (!title) return ''
+  var artist = ''
+  var album = ''
+  var parseFn = _getParseAlbumFolder()
+  if (typeof parseFn === 'function') {
+    try {
+      var p = parseFn(_folderSegs(name)) || {}
+      artist = String(p.artist || '').toLowerCase().trim()
+      album = String(p.album || '').toLowerCase().trim()
+    } catch (_) { artist = ''; album = '' }
+  }
+  // With an artist the identity is already band-independent, so it IS the song
+  // key. Only the loose-single fallback needs the band stripped.
+  if (artist) return 'a:' + artist + '|' + album + '|' + title
+  return 't:' + title
 }
 
 // Is this identity already accounted for — pending, in flight, or done under a
@@ -97,20 +228,23 @@ function _identityBusy(state, id, exceptKey) {
   if (!id) return false
   for (var i = 0; i < state.pending.length; i++) {
     var e = state.pending[i]
-    if (e.key !== exceptKey && identityKey(e.filename) === id) return true
+    if (e.key !== exceptKey && identityKey(e.filename, e.size) === id) return true
   }
   var ik = Object.keys(state.inflight)
   for (var j = 0; j < ik.length; j++) {
     if (ik[j] === exceptKey) continue
     var v = state.inflight[ik[j]]
-    if (identityKey(v.filename || ik[j]) === id) return true
+    if (identityKey(v.filename || ik[j], v.size) === id) return true
   }
   var dk = Object.keys(state.done)
   for (var k = 0; k < dk.length; k++) {
     if (dk[k] === exceptKey) continue
     // Only a positive terminal (succeeded) blocks a duplicate; 'exhausted' means
     // it failed and a fresh source is worth trying, and 'abandoned' is handled by
-    // the abandonment gate above (which force does not bypass into here).
+    // the abandonment gate above (which force does not bypass into here). The done
+    // key is a bare filename with no recorded size, so its identity is computed
+    // without one — it still matches an artist-keyed identity exactly, and falls
+    // to the sizeless title band for loose singles, which is the safe direction.
     if (state.done[dk[k]] === 'succeeded' && identityKey(dk[k]) === id) return true
   }
   return false
@@ -120,11 +254,16 @@ function _identityBusy(state, id, exceptKey) {
 // enqueue path must call this before adding, so a cancelled track cannot return
 // from any source. Migrating states created before abandonedIds existed: an
 // `abandoned` entry in `done` still counts, keyed by its filename identity.
-function isAbandoned(state, filename, key) {
+function isAbandoned(state, filename, key, size) {
   var k = key != null ? key : itemKey(filename)
   if (state.done[k] === 'abandoned') return true
-  var id = identityKey(filename)
-  if (id && state.abandonedIds && state.abandonedIds[id]) return true
+  if (!state.abandonedIds) return false
+  var id = identityKey(filename, size)
+  if (id && state.abandonedIds[id]) return true
+  // Band-independent song key: a cancel on one band (a FLAC) also blocks the same
+  // song in another band (its MP3) and any re-encode — the field failure.
+  var sk = songKey(filename)
+  if (sk && state.abandonedIds[sk]) return true
   return false
 }
 
@@ -185,13 +324,15 @@ function addItem(state, item, opts) {
   var key = itemKey(item.filename)
   if (!key) return null
   var force = !!(opts && opts.force)
-  var id = identityKey(item.filename)
+  var id = identityKey(item.filename, item.size)
   // Abandonment is checked at BOTH levels before anything else. The exact-key
   // case (`done[key]`) is handled just below; the identity case is the field
   // fix: a cancelled track must not return from a different user via discovery,
   // respread or a wishlist hit, and those arrive under a different exact key.
-  var idAbandoned = !force && id && state.abandonedIds && state.abandonedIds[id]
-  if (idAbandoned) {
+  // isAbandoned checks the exact identity AND the band-independent song key, so a
+  // cancelled FLAC also blocks the same song's MP3/re-encode arriving in another
+  // size band.
+  if (!force && isAbandoned(state, item.filename, key, item.size)) {
     // A user's explicit re-ask (force) overrides it; the scheduler acting on its
     // own never may. Report it so the caller can log/surface rather than silently
     // dropping — the old silent path is what made cancel look flaky either way.
@@ -207,7 +348,11 @@ function addItem(state, item, opts) {
   // user asking again is new information, not the scheduler second-guessing them.
   if (terminal && force) {
     delete state.done[key]
-    if (id && state.abandonedIds) delete state.abandonedIds[id]
+    if (state.abandonedIds) {
+      if (id) delete state.abandonedIds[id]
+      var sk = songKey(item.filename)
+      if (sk) delete state.abandonedIds[sk]
+    }
   }
   if (state.inflight[key]) return { refused: 'inflight', key: key }
   var existing = null
@@ -252,6 +397,149 @@ function addItem(state, item, opts) {
   }
   state.pending.push(entry)
   return entry
+}
+
+// A quality fingerprint for one item/source, from whatever the caller passed on
+// it — filename plus any bitDepth/sampleRate a source carries. When the
+// fingerprint module is unavailable (it should never be) fall back to a coarse
+// lossless-by-extension check so an MP3 still cannot join a FLAC.
+var _LOSSLESS_RE = /\.(flac|wav|alac|ape|wv|aiff?|aif)$/i
+function _itemFp(x) {
+  var fp = _getFp()
+  if (fp && fp.fingerprint) {
+    return fp.fingerprint({
+      filename: x.filename,
+      bitDepth: x.bitDepth, sampleRate: x.sampleRate,
+      files: x.files,
+    })
+  }
+  return { lossless: _LOSSLESS_RE.test(String(x.filename || '')), surroundLabel: null }
+}
+function _fpCompatible(orig, cand) {
+  var fp = _getFp()
+  if (fp && fp.compatible) return fp.compatible(orig, cand)
+  // Degraded gate: at least never let lossy stand in for lossless.
+  return !!orig.lossless === !!cand.lossless
+}
+
+// Enqueue a batch of files, collapsing multiple peers of the SAME track into ONE
+// item with ranked alternate sources — the definitive fix for the field failure
+// where "DL All" (and discovery, and respread) enqueued the same song from three
+// peers as three separate items, one of them an MP3 alongside the FLACs.
+//
+// The mechanism: group the incoming files by identityKey. The FIRST admissible
+// file for an identity becomes the item (its fingerprint is the item's ORIGINAL
+// request). Every later file of that identity is offered as an alternate SOURCE,
+// and admitted only if compatible() with the original — so a FLAC item never
+// gains an MP3 source, and a 5.1 item never gains a stereo one. Incompatible
+// same-identity copies are dropped (logged), NOT enqueued as their own item:
+// that is the whole point — the user asked for one track, they get one.
+//
+// Each incoming item is { filename, size, sources:[{username,filename,size,...}] }
+// exactly as addItem takes; opts is passed through to addItem (force, priority).
+// Returns { added, refused:[{filename,reason}], merged } for the caller to report.
+function addItems(state, items, opts) {
+  var out = { added: 0, refused: [], merged: 0, dropped: 0 }
+  var list = (items || []).filter(function (it) { return it && it.filename })
+  // Stable grouping by identity, preserving first-seen order so the file the user
+  // actually clicked (first in the list) anchors the item.
+  var order = []
+  var groups = {}
+  for (var i = 0; i < list.length; i++) {
+    var it = list[i]
+    var id = identityKey(it.filename, it.size)
+    // No identity (unnameable) — cannot be collapsed; pass straight through.
+    var gk = id || ('#raw:' + itemKey(it.filename))
+    if (!groups[gk]) { groups[gk] = []; order.push(gk) }
+    groups[gk].push(it)
+  }
+  // Batch-local lossy suppression. The field row was two FLACs and an MP3 of one
+  // loose single; the two FLACs collapse by identity (same title, same size band)
+  // but the MP3 lands in a DIFFERENT band, so it would survive as its own item —
+  // the exact "an MP3 rode alongside the FLACs" failure. identity cannot link
+  // them (different sizes are how we keep genuinely-different loose singles
+  // apart), so this rule is deliberately scoped to THIS batch only: if any group
+  // for a normalized title is lossless, every lossy group of that same title is
+  // dropped. It never touches persistent identity or cross-batch state, so it
+  // cannot false-merge two different songs enqueued at different times.
+  var titleHasLossless = {}
+  for (var t = 0; t < order.length; t++) {
+    var gm = groups[order[t]]
+    var tt = _normTitle(_basename(gm[0].filename))
+    if (!tt) continue
+    if (_itemFp(gm[0]).lossless) titleHasLossless[tt] = true
+  }
+  for (var g = 0; g < order.length; g++) {
+    var members = groups[order[g]]
+    var anchor = members[0]
+    var atitle = _normTitle(_basename(anchor.filename))
+    if (atitle && titleHasLossless[atitle] && !_itemFp(anchor).lossless) {
+      // A lossy group whose title also came in lossless this batch: drop it whole.
+      for (var d = 0; d < members.length; d++) {
+        out.dropped++
+        logSubstitution(state, {
+          at: Date.now(), key: itemKey(members[d].filename),
+          from: null, to: members[d].filename,
+          candidate: (members[d].sources && members[d].sources[0] && members[d].sources[0].username) ||
+            members[d].username || null,
+          accepted: false,
+          reason: 'same title arrived lossless this batch — lossy copy dropped, not enqueued',
+        })
+      }
+      continue
+    }
+    var r = addItem(state, anchor, opts)
+    if (r && r.refused) {
+      out.refused.push({ filename: anchor.filename, reason: r.refused })
+      // The identity is already accounted for (busy/abandoned/done). An abandoned
+      // identity must stay dead — never widen its sources. For a plain duplicate
+      // (a live item under a different key), widening is pointless from here (the
+      // sources belong to the OTHER key), so we simply skip: the extra peers are
+      // dropped, which is correct — the track is already queued.
+      continue
+    }
+    if (!r) { out.refused.push({ filename: anchor.filename, reason: 'invalid' }); continue }
+    out.added++
+    if (members.length > 1) _foldSources(state, members, out)
+  }
+  return out
+}
+
+// Fold the peers of a same-identity group in as alternate sources of the item the
+// group's anchor created (or of whatever item already holds the identity). The
+// anchor's fingerprint is the original request; a peer is admitted only if its
+// own file is compatible().
+function _foldSources(state, members, out) {
+  var anchor = members[0]
+  var key = itemKey(anchor.filename)
+  var origFp = _itemFp(anchor)
+  for (var i = 1; i < members.length; i++) {
+    var m = members[i]
+    var candFp = _itemFp(m)
+    var srcs = (m.sources && m.sources.length)
+      ? m.sources
+      : [{ username: (m.username || ''), filename: m.filename, size: m.size }]
+    if (!_fpCompatible(origFp, candFp)) {
+      logSubstitution(state, {
+        at: Date.now(), key: key, from: anchor.filename, to: m.filename,
+        candidate: (srcs[0] && srcs[0].username) || null, accepted: false,
+        reason: 'same track, incompatible quality: original ' +
+          (origFp.surroundLabel || 'stereo') + '/' + (origFp.lossless ? 'lossless' : 'lossy') +
+          ' vs ' + (candFp.surroundLabel || 'stereo') + '/' + (candFp.lossless ? 'lossless' : 'lossy') +
+          ' — dropped, not enqueued as a separate item',
+      })
+      continue
+    }
+    var n = addSources(state, key, srcs)
+    if (n) {
+      out.merged += n
+      logSubstitution(state, {
+        at: Date.now(), key: key, from: anchor.filename, to: m.filename,
+        candidate: (srcs[0] && srcs[0].username) || null, accepted: true,
+        reason: 'same track from another peer folded in as an alternate source',
+      })
+    }
+  }
 }
 
 function peerBenched(state, username, now) {
@@ -384,15 +672,26 @@ function recordAbandoned(state, key) {
   // stick across sources. The filename is read from whatever record still holds
   // it (inflight, then pending), falling back to the key itself.
   var filename = key
+  var size = 0
   if (state.inflight[key] && state.inflight[key].filename) {
     filename = state.inflight[key].filename
+    size = state.inflight[key].size || 0
   } else {
     for (var i = 0; i < state.pending.length; i++) {
-      if (state.pending[i].key === key) { filename = state.pending[i].filename; break }
+      if (state.pending[i].key === key) {
+        filename = state.pending[i].filename
+        size = state.pending[i].size || 0
+        break
+      }
     }
   }
-  var id = identityKey(filename)
-  if (id) { state.abandonedIds = state.abandonedIds || {}; state.abandonedIds[id] = true }
+  var id = identityKey(filename, size)
+  state.abandonedIds = state.abandonedIds || {}
+  if (id) state.abandonedIds[id] = true
+  // Also the band-independent song key, so a cancel of one copy blocks the same
+  // song in every other band (a lossy twin, a re-encode) and from every peer.
+  var sk = songKey(filename)
+  if (sk) state.abandonedIds[sk] = true
   delete state.inflight[key]
   state.pending = state.pending.filter(function (e) { return e.key !== key })
   state.done[key] = 'abandoned'
@@ -715,6 +1014,7 @@ var _PapaDownloadScheduler = {
   createState: createState,
   itemKey: itemKey,
   identityKey: identityKey,
+  songKey: songKey,
   isAbandoned: isAbandoned,
   fileIdentity: fileIdentity,
   inflightIdentities: inflightIdentities,
@@ -723,6 +1023,7 @@ var _PapaDownloadScheduler = {
   TUNE: TUNE,
   normalizeSource: normalizeSource,
   addItem: addItem,
+  addItems: addItems,
   addSources: addSources,
   prioritizeGroup: prioritizeGroup,
   rankSources: rankSources,

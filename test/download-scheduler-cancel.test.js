@@ -9,20 +9,21 @@ const test = require('node:test')
 const assert = require('node:assert')
 const S = require('../src/download-scheduler')
 
-// Two peers' copies of the SAME track: same album folder, same track title,
-// different peer path above the album and different naming inside it.
-// identityKey keys on the album folder + normalized title, so these are one.
-const A_PATH = 'Music\\DSOTM\\08 - Time.flac'
-const B_PATH = 'Shared\\Rips\\DSOTM\\08. Time.flac'
+// Two peers' copies of the SAME release: the folder carries the real artist and
+// album, which two peers of one release DO share even when the shelving above
+// differs. identityKey parses artist+album+title, so these are one identity.
+const A_PATH = 'Pink Floyd - Dark Side of the Moon\\08 - Time.flac'
+const B_PATH = 'Shared\\Pink Floyd - Dark Side of the Moon\\08. Time.flac'
 
 test('identityKey collapses two peers copies of the same track', () => {
   assert.strictEqual(S.identityKey(A_PATH), S.identityKey(B_PATH),
-    'same album folder + same track title = one identity, whatever the peer path')
+    'same parsed artist + album + track title = one identity, whatever the peer path')
 })
 
 test('identityKey keeps same-named tracks in different albums apart', () => {
-  const x = S.identityKey('Album One\\01 - Intro.flac')
-  const y = S.identityKey('Album Two\\01 - Intro.flac')
+  // Real artist folders: album is the disambiguator even at identical size.
+  const x = S.identityKey('Pink Floyd - Animals\\01 - Intro.flac', 5e6)
+  const y = S.identityKey('Radiohead - OK Computer\\01 - Intro.flac', 5e6)
   assert.notStrictEqual(x, y, '"01 - Intro" is a name dozens of albums share')
 })
 
@@ -53,9 +54,10 @@ test('a canceled file never re-enqueues via discovery/respread/duplicate', () =>
   })
   assert.ok(viaRespread.refused, 'respread must not re-add a cancelled file')
 
-  // 3. A duplicate enqueue of the same identity from yet another user.
+  // 3. A duplicate enqueue of the same identity from yet another user, renamed
+  //    (a different track-number prefix and separators) but the same release.
   const dup = S.addItem(st, {
-    filename: 'Elsewhere\\DSOTM\\08_Time.flac', size: 100,
+    filename: 'FLACs\\Pink Floyd - Dark Side of the Moon\\8. Time.flac', size: 100,
     sources: [{ username: 'carol', filename: 'x', size: 100 }],
   })
   assert.ok(dup.refused, 'a cancelled identity is refused however it is renamed')
@@ -137,6 +139,109 @@ test('abandonment survives a persist/restore round trip via abandonedIds', () =>
   restored.abandonedIds = Object.assign({}, st.abandonedIds)
   assert.strictEqual(S.isAbandoned(restored, B_PATH), true,
     'a different peer copy is still blocked after a restart')
+})
+
+// ── Adversarial fixtures FROM THE FIELD (the second occurrence) ───────────────
+//
+// These are the exact shapes that got past the previous folder-based identity:
+// the same loose single, offered by three peers in three DIFFERENT share folders,
+// with DIFFERENT leading track numbers, one of them an MP3. The old key was the
+// album folder + title, so three folders = three identities = three downloads.
+// The old tests used lookalike folders that shared a name and proved nothing;
+// these use the real thing.
+//
+// "ItsNotREEAALLLLLLLL": witzmankid "19 - …flac", jzdoot "21 - …flac",
+// Sleety "…mp3" — different folders, different track numbers, one lossy.
+const F_WITZ = 'witzmankid_stuff\\19 - ItsNotREEAALLLLLLLL.flac'
+const F_JZ   = 'music\\jzdoot shares\\21 - ItsNotREEAALLLLLLLL.flac'
+const F_SLEE = 'Sleety\\ItsNotREEAALLLLLLLL.mp3'
+// The two FLACs are the same release and so effectively one size; the MP3 is far
+// smaller (lossy). Sizes are in the same 5 MB band for the FLACs, a lower one for
+// the MP3 — which is correct, they are not interchangeable.
+const FLAC_SIZE = 31 * 1024 * 1024
+const MP3_SIZE = 8 * 1024 * 1024
+
+test('the same track from three peers with different folders becomes one item', () => {
+  const st = S.createState()
+  const res = S.addItems(st, [
+    { filename: F_WITZ, size: FLAC_SIZE, sources: [{ username: 'witzmankid', filename: F_WITZ, size: FLAC_SIZE }] },
+    { filename: F_JZ, size: FLAC_SIZE, sources: [{ username: 'jzdoot', filename: F_JZ, size: FLAC_SIZE }] },
+  ])
+  assert.strictEqual(res.added, 1, 'one track = one item, not one-per-peer')
+  assert.strictEqual(st.pending.length, 1, 'exactly one pending entry')
+  // The second peer is folded in as an ALTERNATE SOURCE, not lost.
+  assert.strictEqual(st.pending[0].sources.length, 2, 'both peers are sources of the one item')
+  const users = st.pending[0].sources.map(s => s.username).sort()
+  assert.deepStrictEqual(users, ['jzdoot', 'witzmankid'])
+})
+
+test('an mp3 never joins a flac item\'s sources', () => {
+  const st = S.createState()
+  const res = S.addItems(st, [
+    { filename: F_WITZ, size: FLAC_SIZE, sources: [{ username: 'witzmankid', filename: F_WITZ, size: FLAC_SIZE }] },
+    { filename: F_SLEE, size: MP3_SIZE, sources: [{ username: 'Sleety', filename: F_SLEE, size: MP3_SIZE }] },
+  ])
+  // One FLAC item, and the MP3 is DROPPED — not folded in, not enqueued as its
+  // own item. The user asked for the track; a lossy copy is not the track.
+  assert.strictEqual(res.added, 1, 'the lossy copy does not become a second item')
+  assert.strictEqual(st.pending.length, 1)
+  const users = st.pending[0].sources.map(s => s.username)
+  assert.ok(!users.includes('Sleety'), 'the mp3 peer is not a source of the flac item')
+  // And the rejection is logged so the UI can explain it.
+  const rej = (st.subLog || []).find(e => e.candidate === 'Sleety' && !e.accepted)
+  assert.ok(rej, 'the mp3 rejection is logged')
+  assert.match(rej.reason, /lossy/, 'the log says why')
+})
+
+test('a cancel on one peer blocks the identity from every peer', () => {
+  const st = S.createState()
+  // The user downloads it from one peer, then cancels.
+  S.addItems(st, [
+    { filename: F_WITZ, size: FLAC_SIZE, sources: [{ username: 'witzmankid', filename: F_WITZ, size: FLAC_SIZE }] },
+  ])
+  S.markDispatched(st, S.itemKey(F_WITZ), 'witzmankid', 1000, F_WITZ)
+  S.recordAbandoned(st, S.itemKey(F_WITZ))
+  assert.strictEqual(S.isAbandoned(st, F_WITZ, null, FLAC_SIZE), true,
+    'the cancel registers at the identity level')
+
+  // Now the SAME track shows up from the OTHER two peers (discovery / a fresh
+  // DL All / respread). Neither may come back — the field failure was "Lights
+  // Out": a cancel on one peer that did not stop the same track elsewhere.
+  const res = S.addItems(st, [
+    { filename: F_JZ, size: FLAC_SIZE, sources: [{ username: 'jzdoot', filename: F_JZ, size: FLAC_SIZE }] },
+    { filename: F_SLEE, size: MP3_SIZE, sources: [{ username: 'Sleety', filename: F_SLEE, size: MP3_SIZE }] },
+  ])
+  assert.strictEqual(res.added, 0, 'not one peer\'s copy comes back after the cancel')
+  assert.strictEqual(st.pending.length, 0)
+  assert.strictEqual(Object.keys(st.inflight).length, 0)
+})
+
+test('different songs sharing a title on different albums do NOT merge', () => {
+  const st = S.createState()
+  // Two genuinely different "Intro" tracks: different real albums, and different
+  // sizes (different songs are different sizes — what the size-band relies on).
+  const a = 'Pink Floyd - Animals\\01 - Intro.flac'
+  const b = 'Radiohead - OK Computer\\01 - Intro.flac'
+  const res = S.addItems(st, [
+    { filename: a, size: 4 * 1024 * 1024, sources: [{ username: 'u1', filename: a, size: 4 * 1024 * 1024 }] },
+    { filename: b, size: 9 * 1024 * 1024, sources: [{ username: 'u2', filename: b, size: 9 * 1024 * 1024 }] },
+  ])
+  assert.strictEqual(res.added, 2, 'two different songs, two items')
+  assert.strictEqual(st.pending.length, 2)
+})
+
+test('field: three peers via addItems collapse to one, mp3 dropped', () => {
+  // The whole field row at once, exactly as a DL All would deliver it.
+  const st = S.createState()
+  const res = S.addItems(st, [
+    { filename: F_WITZ, size: FLAC_SIZE, sources: [{ username: 'witzmankid', filename: F_WITZ, size: FLAC_SIZE }] },
+    { filename: F_JZ, size: FLAC_SIZE, sources: [{ username: 'jzdoot', filename: F_JZ, size: FLAC_SIZE }] },
+    { filename: F_SLEE, size: MP3_SIZE, sources: [{ username: 'Sleety', filename: F_SLEE, size: MP3_SIZE }] },
+  ])
+  assert.strictEqual(res.added, 1, 'three peers, one track, one item')
+  assert.strictEqual(st.pending.length, 1)
+  const users = st.pending[0].sources.map(s => s.username).sort()
+  assert.deepStrictEqual(users, ['jzdoot', 'witzmankid'], 'the two FLAC peers, not the mp3')
 })
 
 // ── Substitution logging ─────────────────────────────────────────────────────

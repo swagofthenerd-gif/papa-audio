@@ -151,6 +151,7 @@ ipcMain.handle = function (channel, fn) {
   })
 }
 const { MpvEngine } = require('./mpv-engine')
+const { YtdlpManager } = require('./src/ytdlp-manager')
 const { formatDiagnostic } = require('./engine-diagnostics')
 const history = require('./history')
 const { defaultSettings: eqDefaults, BANDS: EQ_BANDS, GAIN_LIMIT: EQ_GAIN_LIMIT, PRESETS: EQ_PRESETS, presetSettings } = require('./eq')
@@ -285,6 +286,95 @@ function ytUrlExpiresAt(url) {
   return Math.min(ceiling, stated - YT_URL_EXPIRY_MARGIN_MS)
 }
 
+// ── yt-dlp self-maintenance ───────────────────────────────────────────────────
+// YouTube playback broke silently once because the system yt-dlp went stale
+// enough that a fresh resolve hung. This manager finds the best yt-dlp on the
+// machine (~/.local/bin first, then /usr/bin, then PATH), decides when it is due
+// for an update, runs `pip install --user --upgrade yt-dlp`, and probes that
+// resolving actually works. The pure policy lives in src/ytdlp-manager.js; the
+// scheduling, event emission and store throttling are wired below.
+const ytdlp = new YtdlpManager()
+const {
+  isUpdateDue: _ytdlpUpdateDue,
+  shouldAutoCheck: _ytdlpShouldAutoCheck,
+  canImmediateUpdate: _ytdlpCanImmediate,
+  STARTUP_CHECK_DELAY_MS: YTDLP_STARTUP_DELAY_MS,
+  CHECK_INTERVAL_MS: YTDLP_CHECK_INTERVAL_MS,
+} = require('./src/ytdlp-manager')
+
+// Prevents two update runs (a scheduled check and a playback-error trigger) from
+// spawning pip at the same moment.
+let _ytdlpUpdating = false
+
+// A single update run, shared by the scheduled check, the manual "Update now"
+// button and the playback-recovery trigger. Reads the version before and after
+// so the 'ytdlp-updated' event and the toast can name what changed. Best-effort:
+// a failure here must never throw into a caller.
+async function _ytdlpRunUpdate(trigger) {
+  if (_ytdlpUpdating) return { ok: false, error: 'an update is already running' }
+  _ytdlpUpdating = true
+  try {
+    const before = await ytdlp.readVersion()
+    const res = await ytdlp.update()
+    store.set('ytdlpLastUpdateAt', Date.now())
+    if (res.unavailable) {
+      return { ok: false, unavailable: true, error: 'pip is not installed' }
+    }
+    if (!res.ok) {
+      // The tail of pip's output is the useful part of a failure.
+      return { ok: false, error: (res.out || '').split('\n').slice(-3).join(' ').trim() || 'update failed' }
+    }
+    const after = await ytdlp.readVersion()
+    const from = before.version || null
+    const to = after.version || null
+    if (to && from !== to) {
+      console.log(`[papa][ytdlp] updated ${from || 'unknown'} -> ${to} (${trigger})`)
+      safeSend('ytdlp-updated', { from, to })
+    }
+    return { ok: true, from, to }
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) }
+  } finally {
+    _ytdlpUpdating = false
+  }
+}
+
+// The scheduled auto-check: throttled to CHECK_INTERVAL_MS by the stored
+// ytdlpLastCheckAt. Reads the version, runs the health probe, and updates if the
+// staleness policy says so. force=true bypasses the throttle (the manual button).
+async function _ytdlpAutoCheck({ force = false } = {}) {
+  const now = Date.now()
+  if (!force && !_ytdlpShouldAutoCheck({ lastCheckAt: store.get('ytdlpLastCheckAt', 0), now, intervalMs: YTDLP_CHECK_INTERVAL_MS })) {
+    return { ok: true, skipped: 'throttled' }
+  }
+  store.set('ytdlpLastCheckAt', now)
+  // pip absent means automatic updates are impossible; do not probe-then-fail.
+  const pip = await ytdlp.pipAvailable()
+  if (!pip) return { ok: false, unavailable: true }
+  const { versionDate } = await ytdlp.readVersion()
+  const probe = await ytdlp.probe()
+  const due = _ytdlpUpdateDue({ versionDate, probeOk: probe.ok, now })
+  if (!due.due) return { ok: true, updated: false, reason: due.reason }
+  const res = await _ytdlpRunUpdate('auto-check:' + due.reason)
+  return { ...res, updated: !!res.ok, reason: due.reason }
+}
+
+// A playback-error trigger: a YouTube track failed to resolve/play. Run the
+// probe; if it fails, take ONE update attempt, capped to one per day by the
+// stored ytdlpLastUpdateAt. Returns { attempted, ok } so the caller can toast.
+async function _ytdlpRecoverFromPlaybackError() {
+  const now = Date.now()
+  if (!_ytdlpCanImmediate({ lastUpdateAt: store.get('ytdlpLastUpdateAt', 0), now })) {
+    return { attempted: false, reason: 'capped' }
+  }
+  const pip = await ytdlp.pipAvailable()
+  if (!pip) return { attempted: false, reason: 'no-pip' }
+  const probe = await ytdlp.probe()
+  if (probe.ok) return { attempted: false, reason: 'probe-ok' }
+  const res = await _ytdlpRunUpdate('playback-error')
+  return { attempted: true, ok: !!res.ok, ...res }
+}
+
 // `kind` picks the yt-dlp format. This function was written for music, where
 // bestaudio is exactly right — but a trailer resolved that way plays with no
 // picture at all. Video asks for a single muxed stream so mpv gets one URL
@@ -306,7 +396,9 @@ function resolveYtUrl(videoId, kind = 'audio') {
     var proc, out = '', err = ''
     var timer = setTimeout(() => { try { proc.kill() } catch (_) {} reject(new Error('yt-dlp timed out')) }, 15000)
     try {
-      proc = spawn('yt-dlp', ['-f', format, '-g', '--no-playlist', '--', videoId], { stdio: ['ignore', 'pipe', 'pipe'] })
+      // The discovered yt-dlp, not a bare PATH lookup — the stale /usr/bin one
+      // first on PATH is exactly what hung a resolve before self-maintenance.
+      proc = spawn(ytdlp.binaryPath(), ['-f', format, '-g', '--no-playlist', '--', videoId], { stdio: ['ignore', 'pipe', 'pipe'] })
     } catch (e) { clearTimeout(timer); reject(e); return }
     proc.stdout.on('data', d => out += d.toString())
     proc.stderr.on('data', d => err = (err + d.toString()).slice(-500))
@@ -1423,6 +1515,14 @@ app.whenReady().then(() => {
     console.error('[papa-video] stream cache sweep failed:', e && e.message)
   }
   setTimeout(() => reapOrphanedMpv().catch(() => {}), 30000).unref?.()
+  // yt-dlp self-maintenance: once the app has settled (startup + 60s), run a
+  // throttled check that updates yt-dlp when it is stale or fails a resolve
+  // probe. Fire and forget — a slow or failed check must never delay startup or
+  // block anything. The throttle inside skips the actual work if it ran within
+  // the interval, so this is safe to arm on every launch.
+  setTimeout(() => {
+    _ytdlpAutoCheck().catch(e => console.error('[papa][ytdlp] auto-check failed:', e && e.message))
+  }, YTDLP_STARTUP_DELAY_MS).unref?.()
   const hidden = process.argv.includes('--hidden')
   artworkDir = path.join(USER_DATA, 'artwork')
   fs.mkdirSync(artworkDir, { recursive: true })
@@ -2300,6 +2400,9 @@ function buildPlayer(cfg) {
   // capped at 100 — in one tested place (src/bit-perfect). When off this is a
   // straight pass-through of the audio fields.
   const engineConfig = bitPerfect.resolveEngineConfig(cfg)
+  // Pin mpv's ytdl_hook to the discovered yt-dlp so a YouTube stream never falls
+  // back to a stale binary first on PATH.
+  engineConfig.ytdlPath = ytdlp.binaryPath()
   // Bit-perfect forces gapless, so a crossfade engine is never built while it is
   // on (getPlayerSettings already collapses the mode, but this is the belt-and-
   // braces: the two-engine crossfade would defeat bit-perfectness).
@@ -2396,6 +2499,14 @@ async function _resolvePlayerPath(p) {
     if (url) { console.log('[papa] yt-resolved:', vid, '->', url.slice(0, 80)); return url }
   } catch (_) {
     console.log('[papa] yt-resolve-fail, falling back to raw URL:', vid)
+    // A resolve failure during real playback is the exact signature of a stale
+    // yt-dlp. Take one capped update attempt (see _ytdlpRecoverFromPlaybackError,
+    // once per day) and, if it actually updated, tell the user to try again.
+    // Fire and forget: mpv still gets the raw URL below so this track is not
+    // blocked waiting on a pip install.
+    _ytdlpRecoverFromPlaybackError()
+      .then(r => { if (r.attempted && r.ok) safeSend('ytdlp-recovered', {}) })
+      .catch(e => console.error('[papa][ytdlp] recovery failed:', e && e.message))
   }
   return p // fallback: let mpv handle it
 }
@@ -6280,8 +6391,24 @@ function dlRestore() {
   for (const k of saved.abandoned || []) dlState.done[k] = 'abandoned'
   // Restore the identity-level abandonment set. Without this a cancelled track
   // could return from a different user's copy after a restart.
+  //
+  // MIGRATION: identityKey changed shape (folder+title -> parsed artist/album +
+  // normalized title, or a size-banded title fallback). Persisted abandonedIds
+  // from an older build are in the OLD shape and will not match new lookups, so
+  // we RECOMPUTE the identity from the abandoned FILENAMES (which are persisted
+  // in `saved.abandoned` as the done-keys, i.e. the itemKey = filename). Old-shape
+  // ids are also kept so any still-in-flight entry keyed the old way keeps working
+  // through this session; they are harmless dead weight otherwise.
   dlState.abandonedIds = {}
   for (const id of saved.abandonedIds || []) dlState.abandonedIds[id] = true
+  for (const fn of saved.abandoned || []) {
+    const id = dlSched.identityKey(fn)
+    if (id) dlState.abandonedIds[id] = true
+    // The band-independent song key too, so a cancel recorded before a restart
+    // still blocks a lossy/other-band copy of the same song afterward.
+    const sk = dlSched.songKey(fn)
+    if (sk) dlState.abandonedIds[sk] = true
+  }
   if (saved.learnedGlobalInflight != null) dlState.learnedGlobalInflight = saved.learnedGlobalInflight
   dlState.peerFailures = saved.peerFailures || {}
   return items.length
@@ -7217,19 +7344,26 @@ ipcMain.handle('slsk-enqueue-downloads', async (_, { items, force }) => {
       username: it.username || (it.sources && it.sources[0] && it.sources[0].username) || '',
       filename: it.filename,
     })))
+  // Collapse by track identity BEFORE enqueuing. "DL All" on a merged card can
+  // hand the same song from several peers (with different track numbers and
+  // folders — the field failure), and each would otherwise become its own item
+  // and download in parallel, one of them a lossy copy alongside the FLACs.
+  // addItems groups by identityKey, makes ONE item per track, and folds the
+  // other peers in as quality-gated alternate sources.
+  const payload = []
   for (const it of items || []) {
     if (!it || !it.filename) continue
     const sources = (it.sources && it.sources.length)
       ? it.sources
       : (it.username ? [{ username: it.username, filename: it.filename, size: it.size }] : [])
     if (!sources.length) continue
-    const r = dlSched.addItem(dlState, { filename: it.filename, size: it.size || 0, sources },
-      { force: !!force })
-    // A refusal used to be a silent null the caller discarded, so asking again
-    // for something you had cancelled looked like a button that did nothing.
-    if (r && r.refused) refused.push({ filename: it.filename, reason: r.refused })
-    else if (r) added++
+    payload.push({ filename: it.filename, size: it.size || 0, sources })
   }
+  const res = dlSched.addItems(dlState, payload, { force: !!force })
+  added = res.added
+  // A refusal used to be a silent null the caller discarded, so asking again
+  // for something you had cancelled looked like a button that did nothing.
+  for (const rf of res.refused) refused.push(rf)
   dlStart()
   dlTick()
   // Runs behind the response: the files are already queued, this only widens
@@ -7387,16 +7521,23 @@ ipcMain.handle('slsk-respread-backlog', async (_, opts) => {
   for (const p of purge) {
     try { await slskdFetch('DELETE', `/transfers/downloads/${encodeURIComponent(p.username)}/${encodeURIComponent(p.id)}?remove=true`) } catch (_) {}
   }
+  // Delete each pulled-back transfer at the daemon first (the side effect), then
+  // hand the whole set to the scheduler in one collapsing batch: the old bug
+  // spread ONE track across several peers' queues, so respread can see the same
+  // track from several peers here — addItems folds those into one item with the
+  // peers as alternate sources instead of re-adding N copies.
+  const respreadPayload = []
   for (const q of queued) {
     try { await slskdFetch('DELETE', `/transfers/downloads/${encodeURIComponent(q.username)}/${encodeURIComponent(q.id)}?remove=true`) } catch (_) {}
-    // force: this path has just deleted the transfer at the daemon and means to
-    // re-source it. Without it a file that had been cancelled once could never
-    // be respread.
-    dlSched.addItem(dlState, {
+    respreadPayload.push({
       filename: q.filename, size: q.size,
       sources: [{ username: q.username, filename: q.filename, size: q.size }],
-    }, { force: true })
+    })
   }
+  // force: this path has just deleted the transfers at the daemon and means to
+  // re-source them. Without it a file that had been cancelled once could never
+  // be respread.
+  dlSched.addItems(dlState, respreadPayload, { force: true })
   dlStart()
   dlTick()
   return { ok: true, purged: purge.length, respread: queued.length, stats: dlSched.stats(dlState) }
@@ -7511,9 +7652,11 @@ async function slskWishlistSweep() {
         return (r && r.results) || []
       },
       enqueue: async (items) => {
-        for (const it of items) {
-          dlSched.addItem(dlState, { filename: it.filename, size: it.size || 0, sources: it.sources })
-        }
+        // addItems, not per-file addItem: collapses any same-track duplicates and
+        // dedupes by identity against what is already queued, exactly like the
+        // interactive enqueue path.
+        dlSched.addItems(dlState,
+          (items || []).map(it => ({ filename: it.filename, size: it.size || 0, sources: it.sources })))
         dlStart()
         dlTick()
       },
@@ -7845,6 +7988,41 @@ ipcMain.handle('yt-radio', async (_, { videoId }) => {
 ipcMain.handle('yt-find-video', async (_, { artist, title }) => {
   try { return { ok: true, videoId: await withRetry(() => ytSearch.findVideoId(artist, title), 2, 'yt-find-video') } }
   catch (e) { return { ok: false, error: summariseYtError(e) } }
+})
+
+// ── yt-dlp self-maintenance IPC ────────────────────────────────────────────
+// The Settings surface reads status (version + when last checked/updated + pip
+// availability) and can force an update. Honest results throughout: pip absent
+// degrades to unavailable rather than pretending, and never spawns a pip.
+ipcMain.handle('ytdlp-status', async () => {
+  try {
+    const pip = await ytdlp.pipAvailable()
+    const v = await ytdlp.readVersion()
+    return {
+      ok: true,
+      path: v.path,
+      version: v.version,             // e.g. "2026.08.19", or null if unreadable
+      resolves: v.ok,                 // did --version even run?
+      pipAvailable: !!pip,            // false → automatic updates unavailable
+      lastCheckAt: store.get('ytdlpLastCheckAt', 0) || null,
+      lastUpdateAt: store.get('ytdlpLastUpdateAt', 0) || null,
+    }
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) }
+  }
+})
+
+ipcMain.handle('ytdlp-update-now', async () => {
+  const pip = await ytdlp.pipAvailable()
+  if (!pip) return { ok: false, unavailable: true, error: 'pip is not installed' }
+  // force through the throttle — the user asked for it explicitly.
+  return _ytdlpAutoCheck({ force: true }).then(r => {
+    // The button wants to know if a newer version landed, not just that the
+    // check ran; _ytdlpAutoCheck only updates when the policy says due, so a
+    // fresh binary reports ok:true, updated:false, which the UI phrases as
+    // "already up to date".
+    return r
+  })
 })
 
 ipcMain.handle('get-lyrics', async (_, params) => {
@@ -8647,7 +8825,7 @@ function jackett() {
 // router, the engine, or the UI.
 const movieTv = _lazy(() => createMovieTvProvider({ fetchFn: fetchWithTimeout(15000), resolvers: [] }))
 const anime = _lazy(() => createAnimeProvider({ fetchFn: fetchWithTimeout(15000), resolvers: [] }))
-const videoEngine = _lazy(() => new VideoEngine())
+const videoEngine = _lazy(() => new VideoEngine({ config: { ytdlPath: ytdlp.binaryPath() } }))
 const yarrlist = _lazy(() => createYarrlistDirectory({ fetchFn: fetchWithTimeout(15000) }))
 const _videoSession = { streamer: null, thumbnailer: null, win: null, overlay: null, token: 0, bounds: null, mini: false, miniRect: null }
 
