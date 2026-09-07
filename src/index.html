@@ -1153,6 +1153,11 @@
 <script src="preview-racer.js"></script>
 <script src="slsk-presence.js"></script>
 <script src="library-sig.js"></script>
+<!-- smart-query must load before library-index: the index reads the shared
+     PapaSmartQuery global for its tokenizer/scorer/vocabulary. -->
+<script src="smart-query.js"></script>
+<script src="library-index.js"></script>
+<script src="yt-suggest-model.js"></script>
 <script src="queue-repair.js"></script>
 <script src="load-error-policy.js"></script>
 <script src="local-store.js"></script>

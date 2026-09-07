@@ -1,7 +1,7 @@
 'use strict'
 const test = require('node:test')
 const assert = require('node:assert')
-const { mapMusicItem, mapVideoItem, searchMusic, searchAll, _setClientForTest } = require('../youtube-search')
+const { mapMusicItem, mapVideoItem, searchMusic, searchAll, getSearchSuggestions, clearSearchCache, _setClientForTest } = require('../youtube-search')
 
 // Fixture shaped like a youtubei.js MusicResponsiveListItem (song)
 const songItem = {
@@ -279,6 +279,52 @@ test('searchPage video kind uses main search', async () => {
   assert.ok(usedMain)
   assert.strictEqual(p.items.length, 1)
   assert.strictEqual(p.hasMore, false)
+  _setClientForTest(null)
+})
+
+// ── Search suggestions ────────────────────────────────────────────────────────
+test('getSearchSuggestions returns the string list from the MAIN client', async () => {
+  clearSearchCache()
+  let calledWith = null
+  _setClientForTest(Promise.resolve({
+    getSearchSuggestions: async (q) => { calledWith = q; return ['radiohead creep', 'radiohead karma police'] },
+    music: { getSearchSuggestions: async () => { throw new Error('wrong client') } },
+  }))
+  const out = await getSearchSuggestions('radiohead')
+  assert.strictEqual(calledWith, 'radiohead')
+  assert.deepStrictEqual(out, ['radiohead creep', 'radiohead karma police'])
+  _setClientForTest(null)
+})
+
+test('getSearchSuggestions caches so a repeat prefix does not refetch', async () => {
+  clearSearchCache()
+  let calls = 0
+  _setClientForTest(Promise.resolve({
+    getSearchSuggestions: async () => { calls++; return ['creep'] },
+  }))
+  await getSearchSuggestions('creep')
+  await getSearchSuggestions('creep')
+  assert.strictEqual(calls, 1, 'the second identical query is served from cache')
+  _setClientForTest(null)
+})
+
+test('getSearchSuggestions swallows errors and returns []', async () => {
+  clearSearchCache()
+  _setClientForTest(Promise.resolve({
+    getSearchSuggestions: async () => { throw new Error('network down') },
+  }))
+  const out = await getSearchSuggestions('anything')
+  assert.deepStrictEqual(out, [], 'a suggestion failure is a non-event, not a throw')
+  _setClientForTest(null)
+})
+
+test('getSearchSuggestions returns [] for an empty query without calling the client', async () => {
+  clearSearchCache()
+  let called = false
+  _setClientForTest(Promise.resolve({ getSearchSuggestions: async () => { called = true; return ['x'] } }))
+  const out = await getSearchSuggestions('   ')
+  assert.deepStrictEqual(out, [])
+  assert.strictEqual(called, false)
   _setClientForTest(null)
 })
 

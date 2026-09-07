@@ -80,6 +80,7 @@ const IPC_TIMEOUT_OVERRIDES = {
   'yt-search': 120000,
   'yt-music-search': 120000,
   'yt-music-search-full': 120000,
+  'yt-suggest': 15000,
   'yt-search-page': 120000,
   'yt-album': 120000,
   'yt-artist': 120000,
@@ -8398,6 +8399,13 @@ ipcMain.handle('yt-search', async (_, { query }) => {
 ipcMain.handle('yt-music-search-full', async (_, { query }) => {
   try { return { ok: true, results: await withRetry(() => withTimeout(ytSearch.searchMusicFull(query), 20000, 'YouTube full search'), 2, 'yt-music-search-full') } }
   catch (e) { return { ok: false, error: summariseYtError(e) } }
+})
+
+// Autocomplete suggestions. No retry (a suggestion that misses is a non-event)
+// and a tight timeout so it never holds up the dropdown.
+ipcMain.handle('yt-suggest', async (_, { q }) => {
+  try { return { ok: true, suggestions: await withTimeout(ytSearch.getSearchSuggestions(q), 6000, 'YouTube suggestions') } }
+  catch (e) { return { ok: false, suggestions: [], error: summariseYtError(e) } }
 })
 
 ipcMain.handle('yt-album', async (_, { browseId }) => {

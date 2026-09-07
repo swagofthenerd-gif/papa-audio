@@ -347,6 +347,7 @@ contextBridge.exposeInMainWorld('api', {
   // YouTube
   ytMusicSearch:      (p) => ipcRenderer.invoke('yt-music-search', p),
   ytMusicSearchFull:  (p) => ipcRenderer.invoke('yt-music-search-full', p),
+  ytSuggest:          (p) => ipcRenderer.invoke('yt-suggest', p),
   ytAlbum:            (p) => ipcRenderer.invoke('yt-album', p),
   ytArtist:           (p) => ipcRenderer.invoke('yt-artist', p),
   ytSearch:       (p) => ipcRenderer.invoke('yt-search', p),

@@ -60,7 +60,13 @@ function syncScriptBytes () {
 // budget measures and it stays under the ceiling (renderer.js shrinks by roughly
 // what the new files gain). The ceiling is unchanged — the split did not grow the
 // total past it, so there is nothing to re-base.
-const SCRIPT_BYTE_CEILING = 2160000
+// Raised 2026-09-07 (search overhaul): added three shared pure modules —
+// smart-query.js (tokenizer/scorer/vocabulary corrector), library-index.js (the
+// in-memory instant-search index) and yt-suggest-model.js (suggestion debounce +
+// speculative-prefetch logic) — plus the renderer wiring for instant library
+// search, YouTube autocomplete and Soulseek spelling correction. Deliberate
+// feature work; re-based ~15% above the new measured total.
+const SCRIPT_BYTE_CEILING = 2530000
 
 test('the renderer loads its scripts and none is missing from disk', () => {
   const { count, missing } = syncScriptBytes()

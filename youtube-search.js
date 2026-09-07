@@ -20,6 +20,7 @@ function setCookie(cookie) {
   _clientPromise = null
   _pageSessions.clear()
   _searchCache.clear()
+  _suggestCache.clear()
 }
 
 function _client() {
@@ -139,9 +140,45 @@ function _cacheSet(key, items) {
   }
 }
 
-function clearSearchCache() { _searchCache.clear() }
+function clearSearchCache() { _searchCache.clear(); _suggestCache.clear() }
 
 const MAX_RESULTS = 25
+
+// Autocomplete suggestions. Innertube exposes getSearchSuggestions on the MAIN
+// client (not the .music one) — it hits the shared google suggest endpoint and
+// returns a flat array of strings, which is exactly what the renderer's dropdown
+// wants. Short-TTL cached so holding a key or backspacing doesn't refetch the
+// same prefix. Returns [] on any failure — suggestions are a nicety, never a
+// blocker.
+const _suggestCache = new Map()
+const SUGGEST_TTL = 3 * 60 * 1000
+const SUGGEST_MAX = 10
+
+async function getSearchSuggestions(query) {
+  const q = String(query || '').trim()
+  if (!q) return []
+  const key = 'sugg:' + q.toLowerCase()
+  const hit = _suggestCache.get(key)
+  if (hit && Date.now() - hit.ts < SUGGEST_TTL) return hit.items
+  const yt = await _client()
+  let list = []
+  try {
+    const raw = await yt.getSearchSuggestions(q)
+    list = (Array.isArray(raw) ? raw : [])
+      .map(s => (typeof s === 'string' ? s : _text(s)))
+      .filter(Boolean)
+      .slice(0, SUGGEST_MAX)
+  } catch (e) {
+    console.error('[papa] yt-suggest-failed:', String(e && e.message || e).slice(0, 120))
+    list = []
+  }
+  _suggestCache.set(key, { items: list, ts: Date.now() })
+  if (_suggestCache.size > 200) {
+    const cutoff = Date.now() - SUGGEST_TTL
+    for (const [k, v] of _suggestCache) if (v.ts < cutoff) _suggestCache.delete(k)
+  }
+  return list
+}
 
 async function searchMusic(query) {
   const key = 'music:' + query.toLowerCase()
@@ -390,6 +427,7 @@ function _clientForLyrics() { return _client() }
 
 module.exports = {
   searchMusic, searchAll, searchMusicFull, searchPage, getAlbum, getArtist, getPlaylist, getHomeFeed,
+  getSearchSuggestions,
   _clientForLyrics,
   getRadio, findVideoId, mapUpNextItem,
   setCacheDir, setCookie, isSignedIn, purgeStaleOauth, clearSearchCache,
