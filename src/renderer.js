@@ -5163,9 +5163,13 @@ async function _renderVideoTab(ticket) {
       return _rowEmpty(row.key, 'Nothing here right now')
     }
     _fillRowHideSeen(row.key, items)
+    // Live MyAnimeList content served because AniList is down: real cards, a
+    // small note says where they came from. Checked before fromCache because a
+    // fresh Jikan hit is not a stale saved list.
+    if (res.viaMal) _rowViaMalNote(row.key)
     // Saved-list content is real, so the row fills normally — a small note just
     // admits it may be stale while AniList recovers.
-    if (res.fromCache) _rowCacheNote(row.key)
+    else if (res.fromCache) _rowCacheNote(row.key)
     // The hero features from the full row: what you have seen is hidden from
     // the shelf you scroll, not from the editorial spotlight.
     if (row.key === wanted[0].key) _startVideoHero(items, ticket)
@@ -5690,6 +5694,21 @@ function _rowCacheNote(key) {
   const p = document.createElement('p')
   p.className = 'vrow-note vrow-cache-note'
   p.textContent = 'showing saved list — AniList is down'
+  head.appendChild(p)
+}
+
+// A small note pinned under a shelf that is showing LIVE MyAnimeList content
+// because AniList is currently down. Unlike _rowCacheNote, this content is fresh
+// (just fetched from Jikan), not a stale saved list — so it says where it came
+// from rather than warning it may be old.
+function _rowViaMalNote(key) {
+  const row = document.querySelector('.vrow[data-row="' + key + '"]')
+  if (!row) return
+  const head = row.querySelector('.vrow-head')
+  if (!head || head.querySelector('.vrow-mal-note')) return
+  const p = document.createElement('p')
+  p.className = 'vrow-note vrow-mal-note'
+  p.textContent = 'via MyAnimeList — AniList is down'
   head.appendChild(p)
 }
 
@@ -22756,7 +22775,19 @@ function _dlWaitLabel(f) {
   if (f.attempts > 0) bits.push('retry ' + f.attempts)
   return bits.length ? 'Waiting \u00b7 ' + bits.join(' \u00b7 ') : 'Waiting for a slot'
 }
+let _dlExplain          = {}        // filename -> scheduler explain view (attempts, nextRetryInMs)
 let _dlLastSig          = ''        // tracks current rendered structure to avoid full re-renders
+
+// The one honest line for why a waiting/queued row is not moving: "In line at
+// <peer> (position N)", "Peer not responding", or "Retrying via another source
+// in Ns (attempt X/4)". Combines slskd's own transfer state (position, error)
+// with the scheduler's retry view for the same file. Returns '' when the row is
+// actively downloading or nothing is known. Pure logic lives in dl-explain.js.
+function _dlExplainReason(f) {
+  if (!window.PapaDlExplain || !f) return ''
+  var sched = _dlExplain[f.filename] || null
+  try { return window.PapaDlExplain.waitingReason(f, sched, Date.now()) } catch (_) { return '' }
+}
 let _dlDownloadDir      = ''        // local download directory, loaded once on page open
 let _dlPrevActiveIds    = new Set() // IDs of files that were active on last poll
 let _dlSyncTimer        = null      // debounce handle for post-download library sync
@@ -22992,6 +23023,7 @@ async function _pollAndRenderDownloadsInner() {
 
   // Files the scheduler is holding are real, pending work — show them here or
   // they read as lost. slskd only knows about what has actually been sent.
+  _dlExplain = {}
   if (window.api.slskSchedulerQueue) {
     const sched = await window.api.slskSchedulerQueue().catch(() => null)
     if (sched) {
@@ -23000,6 +23032,9 @@ async function _pollAndRenderDownloadsInner() {
         if (!known.has(f.filename)) files.push(f)
       }
       _dlPaintSchedulerStats(sched.stats)
+      // Per-filename scheduler view (attempts, retry countdown), used by
+      // _dlExplainReason to say WHY a row is not moving.
+      if (sched.explain && typeof sched.explain === 'object') _dlExplain = sched.explain
     }
   }
   _dlLastFiles = files
@@ -23388,6 +23423,16 @@ function _updateActiveDlInPlace(files, container) {
     const { label, cls } = _dlStateLabel(f.state)
     const tagEl  = row.querySelector('.dl2-tag')
     if (tagEl) { tagEl.textContent = label; tagEl.className = `dl2-tag ${cls}` }
+    // The "why it is waiting" line ticks down (retry countdown) without changing
+    // the row set, so patch it here too — otherwise it would freeze until a
+    // structural change forced a full repaint.
+    const waitEl = row.querySelector('.dl2-meta-wait')
+    if (waitEl) {
+      const isDl = (f.state || '').includes('InProgress')
+      const reason = !isDl ? (_dlExplainReason(f) || _dlWaitLabel(f)) : ''
+      waitEl.textContent = reason
+      waitEl.style.display = reason ? '' : 'none'
+    }
     const iconEl = row.querySelector('.dl2-file-icon')
     if (iconEl) {
       const isDownloading = (f.state || '').includes('InProgress')
@@ -23471,6 +23516,11 @@ function _renderActiveTab(files, container) {
     // JSON, not a comma join: slskd ids are file paths and file paths contain
     // commas, so splitting on one tore an id in half and cancelled nothing.
     const groupIds   = JSON.stringify(g.files.map(f => f.id))
+    // Retry payload for the whole group: only the stuck files (not the ones
+    // actively downloading), each carrying what the re-enqueue needs.
+    const stuckFiles = g.files.filter(f => !(f.state || '').includes('InProgress'))
+    const groupRetry = JSON.stringify(stuckFiles.map(f =>
+      ({ id: f.id, username: f.username, filename: f.filename, size: f.size || 0 })))
 
     const artHtml = artPath
       ? `<img src="${esc('file://' + artPath)}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"><div class="dl2-group-album-art-fallback" style="display:none"><svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V5h4V3h-6z"/></svg></div>`
@@ -23484,6 +23534,15 @@ function _renderActiveTab(files, container) {
       const eta            = isDownloading ? _fmtEta(f.remainingTime) : ''
       const speed          = isDownloading && f.averageSpeed ? _fmtSpeed(f.averageSpeed) : ''
       const sizeStr        = f.size ? _fmtBytes(f.size) : ''
+      // Why this row is not moving — position in line, peer not responding, or a
+      // retry countdown. Only shown while it is genuinely waiting (not actively
+      // downloading), where it replaces the terser _dlWaitLabel.
+      const reason         = !isDownloading ? _dlExplainReason(f) : ''
+      const waitBit        = reason || (!isDownloading ? _dlWaitLabel(f) : '')
+      // Retry makes sense only for a stuck row (waiting/failed), never one that is
+      // actively downloading. size/filename ride along so the re-enqueue can
+      // identify the music even when the daemon has dropped the transfer.
+      const canRetry       = !isDownloading
       return `<div class="dl2-file" data-dl-id="${esc(f.id)}">
         <div class="dl2-file-row1">
           <div class="dl2-file-icon ${isDownloading ? 'dl2-icon-spin' : ''}">
@@ -23498,11 +23557,14 @@ function _renderActiveTab(files, container) {
               ${speed ? `<span class="dl2-meta-speed">${esc(speed)}</span>` : ''}
               ${sizeStr ? `<span class="dl2-meta-size">${esc(sizeStr)}</span>` : ''}
               ${eta ? `<span class="dl2-meta-eta">ETA ${esc(eta)}</span>` : ''}
-              ${_dlWaitLabel(f) ? `<span class="dl2-meta-wait">${esc(_dlWaitLabel(f))}</span>` : ''}
+              ${waitBit ? `<span class="dl2-meta-wait">${esc(waitBit)}</span>` : ''}
             </div>
           </div>
           <div class="dl2-file-end">
             <span class="dl2-tag ${cls}">${label}</span>
+            ${canRetry ? `<button class="dl2-icon-btn dl2-retry-btn" data-id="${esc(f.id)}" data-user="${esc(f.username)}" data-file="${esc(f.filename)}" data-size="${esc(String(f.size || 0))}" title="Retry this file" aria-label="Retry this file">
+              <svg viewBox="0 0 24 24"><path d="M17.65 6.35A7.958 7.958 0 0 0 12 4a8 8 0 1 0 7.73 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+            </button>` : ''}
             <button class="dl2-icon-btn dl2-cancel-btn" data-id="${esc(f.id)}" data-user="${esc(f.username)}" title="Cancel" aria-label="Cancel">
               <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
             </button>
@@ -23539,6 +23601,9 @@ function _renderActiveTab(files, container) {
             ${maxEta2 ? `<span class="dla-grp-eta">ETA ${_fmtSecs(maxEta2)}</span>` : ''}
           </div>
         </div>
+        ${stuckFiles.length ? `<button class="dl2-icon-btn dl2-grp-btn dl2-retry-group-btn" data-retry='${esc(groupRetry)}' title="Retry stuck files in group" aria-label="Retry stuck files in group">
+          <svg viewBox="0 0 24 24"><path d="M17.65 6.35A7.958 7.958 0 0 0 12 4a8 8 0 1 0 7.73 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+        </button>` : ''}
         <button class="dl2-icon-btn dl2-grp-btn dl2-cancel-btn dl2-cancel-group-btn" data-user="${esc(g.username)}" data-ids="${esc(groupIds)}" title="Cancel all in group" aria-label="Cancel all in group">
           <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
         </button>
@@ -23570,6 +23635,41 @@ function _renderActiveTab(files, container) {
         window.api.slskCancelTransfer({ username: btn.dataset.user, id }).catch(() => {})
       ))
       await _pollAndRenderDownloads()
+    })
+  })
+
+  // Retry a single stuck file: re-request from the same peer AND hunt a fresh
+  // source. Routed through _dlBtnAction so the button is re-enabled on failure
+  // (a daemon-down re-render would not replace it) rather than sticking disabled.
+  container.querySelectorAll('.dl2-retry-btn').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation()
+      if (!window.api.slskRetryTransfer) return
+      _dlBtnAction(btn, async () => {
+        const r = await window.api.slskRetryTransfer({
+          username: btn.dataset.user, id: btn.dataset.id,
+          filename: btn.dataset.file, size: Number(btn.dataset.size) || 0,
+        })
+        showToast(r && r.ok ? 'Retrying…' : 'Could not retry that file')
+        await _pollAndRenderDownloads()
+      })
+    })
+  })
+
+  // Retry every stuck file in a group. Same wrapper, same guarantee.
+  container.querySelectorAll('.dl2-retry-group-btn').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation()
+      if (!window.api.slskRetryTransfer) return
+      _dlBtnAction(btn, async () => {
+        let items = []
+        try { items = JSON.parse(btn.dataset.retry || '[]') } catch (_) { items = [] }
+        items = (Array.isArray(items) ? items : []).filter(Boolean)
+        if (!items.length) return
+        await Promise.all(items.map(it => window.api.slskRetryTransfer(it).catch(() => {})))
+        showToast('Retrying ' + items.length + ' file' + (items.length === 1 ? '' : 's') + '…')
+        await _pollAndRenderDownloads()
+      })
     })
   })
 

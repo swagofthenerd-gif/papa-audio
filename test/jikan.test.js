@@ -7,7 +7,8 @@ const test = require('node:test')
 const assert = require('node:assert')
 
 const {
-  scoreTo10, normalizeMedia, buildSearchUrl, buildByIdUrl, createJikanCatalog,
+  scoreTo10, normalizeMedia, buildSearchUrl, buildByIdUrl,
+  buildTopUrl, buildSeasonNowUrl, _malIdOf, createJikanCatalog,
 } = require('../catalog/jikan')
 
 // Trimmed from a live api.jikan.moe/v4/anime/52991 (Frieren) response.
@@ -36,8 +37,10 @@ const FRIEREN = {
 test('a MAL anime is reshaped into the AniList entry shape', () => {
   const e = normalizeMedia(FRIEREN)
   assert.strictEqual(e.type, 'anime')
-  // No AniList id from MAL; idMal is the one that matters (AniSkip keys on it).
-  assert.strictEqual(e.id, null)
+  // A fallback card carries no AniList id; its `id` is the routable `mal-<id>`
+  // card key the detail router recognises, and idMal is the one AniSkip keys on.
+  assert.strictEqual(e.id, 'mal-52991')
+  assert.strictEqual(e.source, 'mal', 'the card is marked as a MAL fallback')
   assert.strictEqual(e.idMal, 52991)
   // Display pick mirrors AniList: english, then romaji, then native.
   assert.strictEqual(e.title, 'Frieren: Beyond Journey\'s End')
@@ -128,6 +131,39 @@ test('byId targets the anime detail endpoint', () => {
   assert.strictEqual(buildByIdUrl(52991), 'https://api.jikan.moe/v4/anime/52991')
 })
 
+// The shelf endpoints are deliberately spare: MAL's upstream 504s on `limit` and
+// `sfw` for /top and /seasons (observed live during an AniList outage), and those
+// lists do not surface adult titles at the top by default, so only `page`/`filter`
+// are sent. This pins that — a regression that re-adds limit/sfw would break the
+// fallback exactly when it is needed.
+test('the trending/popular shelf URL sends only page and filter — never limit or sfw', () => {
+  assert.strictEqual(buildTopUrl(), 'https://api.jikan.moe/v4/top/anime')
+  assert.strictEqual(buildTopUrl({ page: 2 }), 'https://api.jikan.moe/v4/top/anime?page=2')
+  const pop = buildTopUrl({ page: 1, filter: 'bypopularity' })
+  assert.match(pop, /filter=bypopularity/)
+  assert.match(pop, /page=1/)
+  assert.doesNotMatch(buildTopUrl({ page: 1 }), /limit=/, 'limit 504s on MAL upstream today')
+  assert.doesNotMatch(buildTopUrl({ page: 1 }), /sfw=/, 'sfw 504s on MAL upstream today')
+})
+
+test('the season-now shelf URL sends only page — never limit or sfw', () => {
+  assert.strictEqual(buildSeasonNowUrl(), 'https://api.jikan.moe/v4/seasons/now')
+  assert.strictEqual(buildSeasonNowUrl({ page: 3 }), 'https://api.jikan.moe/v4/seasons/now?page=3')
+  assert.doesNotMatch(buildSeasonNowUrl({ page: 1 }), /limit=|sfw=/)
+})
+
+// The detail router hands byId either a raw MAL id or the card's own `mal-<id>`
+// key. Both must resolve to the numeric id; anything else is null (no request).
+test('_malIdOf accepts a raw id or a mal- card key, and rejects the rest', () => {
+  assert.strictEqual(_malIdOf(52991), 52991)
+  assert.strictEqual(_malIdOf('52991'), 52991)
+  assert.strictEqual(_malIdOf('mal-52991'), 52991)
+  assert.strictEqual(_malIdOf('mal-0'), null, 'a zero id is not a real MAL id')
+  assert.strictEqual(_malIdOf('anime'), null)
+  assert.strictEqual(_malIdOf(null), null)
+  assert.strictEqual(_malIdOf(''), null)
+})
+
 // ── The client ───────────────────────────────────────────────────────────────
 function client(opts = {}) {
   const calls = []
@@ -152,6 +188,51 @@ test('byId returns one normalized entry', async () => {
   const { api } = client({ byId: true })
   const one = await api.byId(52991)
   assert.strictEqual(one.idMal, 52991)
+  // The card the shelf renders carries a routable id and its MAL source mark.
+  assert.strictEqual(one.id, 'mal-52991')
+  assert.strictEqual(one.source, 'mal')
+})
+
+// byId is what the detail router calls with the card's OWN id ("mal-52991"), not
+// a bare number — so it must strip the prefix and still hit /anime/52991.
+test('byId accepts the card\'s mal- key and requests the numeric detail endpoint', async () => {
+  const { calls, api } = client({ byId: true })
+  const one = await api.byId('mal-52991')
+  assert.strictEqual(one.idMal, 52991)
+  assert.strictEqual(calls[0].url, 'https://api.jikan.moe/v4/anime/52991')
+})
+
+// The three shelves reshape MAL's list endpoints into the same marked cards, so a
+// shelf can drop them where AniList entries were expected. This is the mapping the
+// fallback depends on.
+test('top/popular/seasonNow return marked, AniList-shaped cards', async () => {
+  const { calls, api } = client()  // default fetch returns { data: [FRIEREN] } for lists
+  const anilistKeys = ['id', 'type', 'idMal', 'title', 'titles', 'year', 'poster',
+    'backdrop', 'overview', 'rating', 'scoreRaw', 'format', 'trailer', 'genres',
+    'episodeCount', 'status']
+  for (const [method, path] of [['top', '/top/anime'], ['popular', '/top/anime'], ['seasonNow', '/seasons/now']]) {
+    calls.length = 0
+    const list = await api[method](1)
+    assert.strictEqual(list.length, 1, `${method} returns cards`)
+    assert.strictEqual(list[0].source, 'mal', `${method} cards are MAL-marked`)
+    assert.strictEqual(list[0].id, 'mal-52991', `${method} cards carry a routable id`)
+    assert.ok(anilistKeys.every(k => k in list[0]), `${method} card has full AniList key parity`)
+    assert.match(calls[0].url, new RegExp(path.replace(/\//g, '\\/')), `${method} hits ${path}`)
+  }
+  // popular carries the bypopularity filter; top does not.
+  calls.length = 0; await api.popular(1)
+  assert.match(calls[0].url, /filter=bypopularity/)
+  calls.length = 0; await api.top(1)
+  assert.doesNotMatch(calls[0].url, /filter=/)
+})
+
+// A dead or rate-limited Jikan must leave a shelf empty, never throw — it is the
+// second source behind AniList, and the caller falls through to the saved cache.
+test('a shelf degrades to an empty list on failure, never throws', async () => {
+  const down = createJikanCatalog({ fetchFn: async () => ({ ok: false, status: 504, json: async () => ({}) }), minIntervalMs: 0 })
+  assert.deepStrictEqual(await down.top(1), [])
+  assert.deepStrictEqual(await down.popular(1), [])
+  assert.deepStrictEqual(await down.seasonNow(1), [])
 })
 
 test('an empty query or id makes no request', async () => {

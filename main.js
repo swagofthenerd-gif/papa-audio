@@ -12,6 +12,7 @@ const { classifyChapters } = require('./skip/chapters')
 const { createAniSkip } = require('./skip/aniskip')
 const { detectIntro } = require('./skip/detect-intro')
 const dlState_ = require('./src/dl-state')
+const dlExplain = require('./src/dl-explain')
 const videoKeep = require('./src/video-keep')
 const { createDebrid } = require('./src/debrid')
 const trackMemory = require('./src/track-memory')
@@ -173,6 +174,8 @@ const tmdbCatalog = require('./catalog/tmdb')
 const { createTmdbCatalog } = tmdbCatalog
 const shelves = require('./catalog/shelves')
 const { createAnilistCatalog } = require('./catalog/anilist')
+const { createJikanCatalog } = require('./catalog/jikan')
+const { resolveAnimeShelf } = require('./catalog/anime-shelf')
 const { createOmdbCatalog } = require('./catalog/omdb')
 const { createOpenSubtitles } = require('./subs/opensubtitles')
 const { resolveStream } = require('./providers/index')
@@ -6705,6 +6708,10 @@ async function dlSnapshot() {
           endedAt: f.endedAt || null,
           // Carried for the adaptive tuner's aggregate-throughput measure.
           averageSpeed: Number(f.averageSpeed) || 0,
+          // Carried for the auto-nudge: a file inflight for minutes with zero
+          // bytes moved, while its peer is online, is the wedged case worth
+          // re-sourcing early rather than waiting out the 20-minute stall timer.
+          bytesTransferred: Number(f.bytesTransferred) || 0,
         }
         out.set(rec.filename, rec)
         flat.push(rec)
@@ -6932,6 +6939,66 @@ async function dlDiscoverForItem(item, now) {
   if (accepted.length) dlSched.addSources(dlState, key, accepted)
 }
 
+// The auto-nudge (Part B §3). A file that has been inflight for minutes without a
+// single byte moving, while the peer serving it reports online, is wedged: the
+// peer accepted the request and then never sent, which no failure logic sees
+// (it never errors). Rather than leave it for the 20-minute stall timer, this
+// re-sources it — the same fingerprint-gated discovery a stalled file gets — at
+// most once per file per 30 minutes, and logs the attempt to the subLog so the
+// Source-decisions panel shows the app acted. The decision itself (5-min zero-
+// progress + peer-online + 30-min throttle) is dlExplain.shouldNudge, kept pure
+// and tested; this is only the wiring that feeds it live snapshot/presence data.
+const _dlNudgeLastAt = new Map()   // itemKey -> timestamp of last auto-nudge
+
+// Is this peer online? Prefer the warm presence cache; fall back to a bounded
+// on-demand status fetch (the nudge is throttled to once per 30 min per file, so
+// this cannot storm). 'Unknown' is treated as NOT online: nudging blind would
+// re-source files whose peers may be perfectly healthy.
+async function _dlPeerOnline(username) {
+  if (!username || /^searching/i.test(String(username))) return false
+  const cached = presenceCache.get(String(username).toLowerCase())
+  if (cached && cached.presence) return cached.presence === 'Online'
+  const live = await fetchUserPresence(username)
+  return !!live && live.presence === 'Online'
+}
+
+async function dlAutoNudge(snap, now) {
+  if (!dlDiscoveryEnabled()) return
+  const keys = Object.keys(dlState.inflight)
+  let nudged = 0
+  for (const key of keys) {
+    if (nudged >= 2) break   // at most a couple per tick, like the stall hunt
+    const live = dlState.inflight[key]
+    if (!live) continue
+    const seen = snap.get(live.sentFilename || live.filename)
+    const bytes = seen ? Number(seen.bytesTransferred) || 0 : 0
+    // The pure gate: 0 bytes, inflight >= 5 min, throttle not yet cleared.
+    if (!dlExplain.shouldNudge(
+      { since: live.since, bytesTransferred: bytes },
+      { now, peerOnline: true, lastNudgeAt: _dlNudgeLastAt.get(key) || 0 })) {
+      continue
+    }
+    // Only now — after the cheap checks passed — pay for the presence lookup.
+    const online = await _dlPeerOnline(live.username)
+    if (!online) continue
+    _dlNudgeLastAt.set(key, now)
+    dlSched.logSubstitution(dlState, {
+      at: now, key, from: live.filename, to: null, candidate: live.username,
+      accepted: false,
+      reason: `auto-nudge: no bytes from ${live.username} in ` +
+        `${Math.round((now - live.since) / 60000)} min while online — hunting a fresh source`,
+    })
+    await dlDiscoverForItem(live, now)
+    nudged++
+  }
+  // Keep the throttle map from growing across a long session: drop entries for
+  // files no longer inflight.
+  if (_dlNudgeLastAt.size > 500) {
+    const liveKeys = new Set(keys)
+    for (const k of _dlNudgeLastAt.keys()) if (!liveKeys.has(k)) _dlNudgeLastAt.delete(k)
+  }
+}
+
 // slskd addresses transfers by its own id, which we do not keep; look it up.
 async function dlTransferId(username, filename) {
   try {
@@ -7067,6 +7134,13 @@ async function dlTick() {
       // Sequential on purpose: one discovery search at a time, so slskd is never
       // stormed and the rate limit is honoured per album.
       await dlDiscoverForItem(item, now)
+    }
+
+    // Auto-nudge: inflight files stuck at zero bytes while their peer is online
+    // get an early re-source rather than waiting out the 20-minute stall timer.
+    // Throttled per file and logged to the subLog. See dlAutoNudge.
+    try { await dlAutoNudge(snap, now) } catch (e) {
+      console.error('[papa] auto-nudge failed:', String(e && e.message || e))
     }
 
     // The persisted `abandoned` subset was capped at 5000; the in-memory map had
@@ -7660,12 +7734,80 @@ function dlQueueFiles() {
 
 ipcMain.handle('slsk-scheduler-queue', () => {
   dlStart()
-  return { files: dlQueueFiles(), stats: dlSched.stats(dlState) }
+  // explain: per-filename scheduler view (attempts, retry countdown, source
+  // count) so the renderer can turn a bare "Waiting" row into an honest reason,
+  // for inflight transfers slskd owns as well as pending ones the scheduler
+  // holds. See src/dl-explain.js waitingReason.
+  return {
+    files: dlQueueFiles(),
+    stats: dlSched.stats(dlState),
+    explain: dlSched.explainState(dlState, dlConfig(), Date.now()),
+  }
 })
 
 ipcMain.handle('slsk-scheduler-stats', () => {
   dlStart()
   return dlSched.stats(dlState)
+})
+
+// Retry one stalled/failed file: re-request it from the same peer AND kick off a
+// fresh-source hunt for the same music. The user is explicitly asking for this
+// file again, so the force is scoped to THIS item's identity only — addItem's
+// force path unblocks just this key/identity (and clears only its abandoned/done
+// marks), never widening to any OTHER item the user may have abandoned. Every
+// other queued or abandoned file is left exactly as it was.
+//
+//   { username, id, filename, size } — id is slskd's transfer id when the file is
+//   live at the daemon; filename/size identify the music for re-enqueue. A
+//   scheduler-held (not-yet-sent) file carries a 'sched:' id and only needs the
+//   re-enqueue.
+ipcMain.handle('slsk-retry-transfer', async (_, { username, id, filename, size } = {}) => {
+  dlStart()
+  try {
+    // 1. Let go of the current, stuck attempt at the daemon, if there is one. A
+    //    scheduler-only file ('sched:') was never sent, so there is nothing to
+    //    cancel — skip straight to re-enqueue. We must NOT route through
+    //    slsk-cancel-transfer here: that records ABANDONMENT, which is the exact
+    //    opposite of a retry. So the DELETE is issued directly and the scheduler
+    //    intent is preserved.
+    let name = filename || null
+    if (id && String(id).indexOf('sched:') !== 0) {
+      if (!name) { try { name = await dlFilenameForTransfer(username, id) } catch (_) {} }
+      try {
+        await slskdFetch('DELETE',
+          `/transfers/downloads/${encodeURIComponent(username)}/${encodeURIComponent(id)}?remove=true`)
+      } catch (_) { /* already gone is fine — the re-enqueue is what matters */ }
+    } else if (id && String(id).indexOf('sched:') === 0 && !name) {
+      name = String(id).slice(6)
+    }
+    if (!name) return { ok: false, error: 'nothing to retry' }
+
+    // 2. Re-enqueue the same music, forced past its own terminal/abandoned mark so
+    //    the retry actually takes. Force is scoped to this one item.
+    const sources = username && !/^searching/i.test(String(username))
+      ? [{ username, filename: name, size: size || 0 }]
+      : []
+    const res = dlSched.addItems(dlState, [{ filename: name, size: size || 0, sources }],
+      { force: true })
+
+    // 3. Kick a fingerprint-gated fresh-source hunt for this identity, so the
+    //    retry is not limited to the one peer that just stalled. Behind the
+    //    response; discovery is rate-limited per album inside dlDiscoverForItem.
+    if (dlDiscoveryEnabled()) {
+      const key = dlSched.itemKey(name)
+      const item = dlState.inflight[key] ||
+        dlState.pending.find(e => e.key === key) ||
+        { key, filename: name, size: size || 0, sources }
+      dlDiscoverForItem(item, Date.now()).catch(() => {})
+    }
+
+    dlPersist()
+    dlTick()
+    dlBroadcast()
+    return { ok: true, added: res.added, refused: res.refused }
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) }
+  }
 })
 
 // Substitution log surface (roadmap #56): every alternate-source accept/reject
@@ -7993,6 +8135,12 @@ const TRANSFER_FIELDS = [
   'id', 'filename', 'state', 'size', 'bytesTransferred', 'bytesRemaining',
   'percentComplete', 'averageSpeed', 'remainingTime', 'startedAt', 'endedAt',
   'requestedAt', 'enqueuedAt', 'direction', 'exception',
+  // placeInQueue is why a queued row is not moving — the position in the peer's
+  // line. slskd only populates it while a transfer is actually queued; the
+  // per-transfer position poll (dlPlaceInQueue) backfills it where the list
+  // omits it. stateDescription carries slskd's own words for the state, useful
+  // when a bare state code is ambiguous.
+  'placeInQueue', 'stateDescription',
 ]
 
 function slimTransfer(f) {
@@ -8016,6 +8164,47 @@ function warnIfLarge(channel, payload) {
   } catch (_) { return 0 }
 }
 
+// slskd populates a transfer's `placeInQueue` in the list only while it is
+// actually queued, and even then not always — but it exposes a per-transfer
+// position endpoint that returns the live number. This backfills it for queued
+// files the list left blank, so a "In line at <peer> (position N)" row can show
+// the N. Best-effort and bounded: a failed poll just leaves the position
+// unknown, and only a few are polled per pass so a long queue never storms slskd.
+// Verified against the live daemon: GET /transfers/downloads/{user}/{id}/position
+// (a bogus user/id returns 400, a real one the integer position).
+const DL_POSITION_POLL_CAP = 8
+async function dlPlaceInQueue(username, id) {
+  try {
+    const res = await slskdFetch('GET',
+      `/transfers/downloads/${encodeURIComponent(username)}/${encodeURIComponent(id)}/position`)
+    // The endpoint returns the bare integer position (or an object carrying it,
+    // across slskd versions); accept either.
+    const n = Number(res && typeof res === 'object' ? (res.placeInQueue ?? res.position) : res)
+    return Number.isFinite(n) && n > 0 ? n : null
+  } catch (_) {
+    return null
+  }
+}
+
+// Fill in placeInQueue for the queued files that the list omitted it on, in
+// place, capped. Mutates the slim tree's file objects. Never throws.
+async function dlBackfillPositions(slim) {
+  const need = []
+  for (const u of slim || []) {
+    for (const dir of u.directories || []) {
+      for (const f of dir.files || []) {
+        if (f.placeInQueue != null && Number(f.placeInQueue) > 0) continue
+        if (String(f.state || '').indexOf('Queued') !== 0) continue
+        need.push({ f, username: u.username, id: f.id })
+      }
+    }
+  }
+  for (const item of need.slice(0, DL_POSITION_POLL_CAP)) {
+    const pos = await dlPlaceInQueue(item.username, item.id)
+    if (pos != null) item.f.placeInQueue = pos
+  }
+}
+
 ipcMain.handle('slsk-get-transfers', async () => {
   // Was `catch (_) { return [] }`. The renderer detects an unreachable daemon by
   // this promise REJECTING, so swallowing made that impossible: a dead slskd
@@ -8033,6 +8222,9 @@ ipcMain.handle('slsk-get-transfers', async () => {
       files: (dir.files || []).map(slimTransfer),
     })),
   }))
+  // Backfill queue positions the list left blank, so a waiting row can show WHERE
+  // in the peer's line it sits. Bounded and best-effort — see dlBackfillPositions.
+  await dlBackfillPositions(slim)
   warnIfLarge('slsk-get-transfers', slim)
   return slim
 })
@@ -9083,6 +9275,13 @@ const tmdb = _lazy(() => createTmdbCatalog({
   fetchFn: fetchWithTimeout(15000),
 }))
 const anilist = _lazy(() => createAnilistCatalog({ fetchFn: fetchWithTimeout(15000) }))
+// The AniList stand-in. When AniList goes globally dark (its 403 outages are the
+// whole reason this exists), the anime shelves fall through to Jikan/MyAnimeList,
+// which answers the same trending/popular/season rows and reshapes them into the
+// exact card shape AniList's normalizeMedia produces (catalog/jikan.js). Its own
+// 350ms single-lane throttle keeps a shelf's worth of requests under Jikan's
+// 3 req/s ceiling, so no extra rate-limiting is needed here.
+const jikan = _lazy(() => createJikanCatalog({ fetchFn: fetchWithTimeout(15000) }))
 // A shelf of twenty cards would be twenty requests to a free service with a
 // daily limit, and these values change about as often as a film's release date
 // does. A day is generous and still nowhere near the limit.
@@ -10019,6 +10218,23 @@ async function _anilistListWithOutage(fn) {
   }
 }
 
+// The Jikan/MyAnimeList fallback for one of the three fixed anime shelves. Maps
+// a shelf section onto the matching Jikan endpoint (catalog/jikan.js) and returns
+// a (possibly empty) array of source:'mal'-marked cards. Never throws: Jikan is a
+// best-effort second source behind AniList, so a dead or rate-limited Jikan just
+// yields an empty list and the caller falls through to the saved cache.
+async function _jikanShelf(section, page) {
+  try {
+    const cat = jikan()
+    if (section === 'trending-anime') return await cat.top(page)
+    if (section === 'popular-anime') return await cat.popular(page)
+    if (section === 'season-anime') return await cat.seasonNow(page)
+    return []
+  } catch (_) {
+    return []
+  }
+}
+
 ipcMain.handle('video-catalog-get', async (_, { section, page = 1 }) => {
   try {
     // The season-anime section resolves "current season" at call time, so its
@@ -10037,26 +10253,18 @@ ipcMain.handle('video-catalog-get', async (_, { section, page = 1 }) => {
       'season-anime': c => c.season(page),
     }
     if (anilistFns[section]) {
-      const { results, failure } = await _anilistListWithOutage(anilistFns[section])
-      // A live, non-empty result is the good case: memo-cache it and mirror it to
-      // the persistent browse cache so a later outage can serve it.
-      if (results.length) {
-        _videoCatalogCache.set(key, results)
-        _animeBrowseCacheWrite('list:' + key, results)
-        return { ok: true, results }
-      }
-      // Empty. If AniList is down, serve the last saved list (marked fromCache) or,
-      // failing that, tell the renderer honestly that it is an outage — never the
-      // "nothing here" lie. A genuine healthy-but-empty result falls through to a
-      // plain empty list, which the renderer still shows as "nothing here".
-      if (failure) {
-        const saved = _animeBrowseCacheRead('list:' + key)
-        if (saved && Array.isArray(saved.value) && saved.value.length) {
-          return { ok: true, results: saved.value, fromCache: true, outage: failure.message }
-        }
-        return { ok: true, results: [], outage: failure.message }
-      }
-      return { ok: true, results: [] }
+      // The whole four-step fallback chain (live AniList → live Jikan → saved
+      // list → honest outage) is the pure resolveAnimeShelf; this wires the real
+      // catalogs and the persistent browse cache to it. Everything shelf-specific
+      // — the source mark riding through the cache, the jikan-fails→cache branch —
+      // lives there and is tested there.
+      const anilist = await _anilistListWithOutage(anilistFns[section])
+      return await resolveAnimeShelf(anilist, {
+        fetchJikan: () => _jikanShelf(section, page),
+        readCache: () => _animeBrowseCacheRead('list:' + key),
+        writeCache: (results) => _animeBrowseCacheWrite('list:' + key, results),
+        memoWrite: (results) => _videoCatalogCache.set(key, results),
+      })
     }
     let results
     switch (section) {
@@ -10318,7 +10526,30 @@ async function _videoShowDetail(type, id) {
   const cached = _videoDetailCache.get(key)
   if (cached) return cached
   let detail
-  if (type === 'anime') {
+  if (type === 'anime' && /^mal-\d+$/.test(String(id))) {
+    // A MAL-sourced card (from the Jikan fallback, keyed `mal-<idMal>`). AniList
+    // is the show's home, but this card exists precisely because AniList was down
+    // when the shelf loaded, and its id is not an AniList id — asking AniList by
+    // it would be wrong even if AniList had recovered. So route straight to
+    // Jikan's byId, which returns a full detail (synopsis, poster, genres, score,
+    // trailer) plus the romaji title and MAL id the source router and skip
+    // service key on — a real, source-capable detail page with no AniList
+    // dependency. It is written through to the same outage cache so a later Jikan
+    // blip still opens the page. Only when Jikan is also unreachable do we fall
+    // back to any cached copy, then to an honest error.
+    try {
+      detail = await jikan().byId(id)
+      if (detail) _animeDetailCacheWrite(`anime:${id}`, { detail })
+      else {
+        const cachedMal = _animeDetailCacheRead(`anime:${id}`)
+        if (cachedMal && cachedMal.detail) return cachedMal.detail
+      }
+    } catch (err) {
+      const cachedMal = _animeDetailCacheRead(`anime:${id}`)
+      if (cachedMal && cachedMal.detail) return cachedMal.detail
+      throw err
+    }
+  } else if (type === 'anime') {
     // AniList *does* have a by-id field (`Media(id:)`). This used to run a text
     // search for the id — searching for the string "21" — which routinely
     // opened a completely unrelated show.
@@ -10329,6 +10560,10 @@ async function _videoShowDetail(type, id) {
     // a stale detail page beats an error page during an outage. byId returning
     // null (a genuinely unknown id) is not an error and is left to surface as
     // "not found" — there is nothing to fall back to.
+    //
+    // If AniList is down and we have no cached copy, Jikan is the last resort —
+    // a title search on the show's own name opens a real (MAL-backed) detail
+    // rather than an error page, matching the shelf-level fallback.
     try {
       detail = await anilist().byId(id)
       if (detail) _animeDetailCacheWrite(`anime:${id}`, { detail })

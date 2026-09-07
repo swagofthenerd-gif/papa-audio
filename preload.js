@@ -263,6 +263,8 @@ contextBridge.exposeInMainWorld('api', {
   slskDownload:       (p) => ipcRenderer.invoke('slsk-download', p),
   slskGetTransfers:   ()  => ipcRenderer.invoke('slsk-get-transfers'),
   slskCancelTransfer: (p) => ipcRenderer.invoke('slsk-cancel-transfer', p),
+  // Retry one stuck file: re-request from the same peer AND hunt a fresh source.
+  slskRetryTransfer:  (p) => ipcRenderer.invoke('slsk-retry-transfer', p),
   slskGetDownloadDir: ()  => ipcRenderer.invoke('slsk-get-download-dir'),
   slskSetDownloadDir: ()  => ipcRenderer.invoke('slsk-set-download-dir'),
   onSlskdStatusChange: (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('slskd-status-change', h); return () => ipcRenderer.removeListener('slskd-status-change', h) },

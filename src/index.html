@@ -1161,6 +1161,10 @@
      renderer never touched it, so a script tag would be one more file parsed
      at startup for nothing. -->
 <script src="dl-state.js"></script>
+<!-- dl-explain.js turns a stalled transfer's slskd + scheduler state into the one
+     honest line a waiting row shows ("In line at <peer> (position N)", "Peer not
+     responding", "Retrying…"). Depends on PapaDlState, so it loads after it. -->
+<script src="dl-explain.js"></script>
 <script src="library-prune.js"></script>
 <script src="ctx-menu-model.js"></script>
 <script src="multi-select.js"></script>

@@ -3659,6 +3659,7 @@ h2.section-title { font-size:18px; font-weight:700; }
 .dl2-group-header:hover .dl2-grp-btn { opacity: 1; }
 .dl2-grp-btn.dl2-cancel-btn:hover { background: rgba(255,60,60,.12) !important; color: #f06060 !important; }
 .dl2-grp-btn.dl2-play-btn:hover   { background: rgba(29,185,84,.12)  !important; color: var(--accent) !important; }
+.dl2-grp-btn.dl2-retry-group-btn:hover { background: rgba(29,185,84,.12) !important; color: var(--accent) !important; }
 
 /* ── Active tab album header (dla-*) ── */
 .dla-hdr {

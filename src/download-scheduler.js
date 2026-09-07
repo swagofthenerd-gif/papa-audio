@@ -980,6 +980,73 @@ function nextGlobalInflight(currentCap, metrics, tune) {
   return Math.max(tune.floor, Math.min(tune.ceiling, cap))
 }
 
+// Per-file explain data for the Downloads UI: for every pending and inflight
+// item, keyed by its filename (what the renderer correlates an slskd transfer
+// on), the scheduler's view of WHY it is waiting — attempts made, the cap, how
+// many sources it has, and how many ms until the next retry may fire. This is
+// what turns a bare "Waiting" row into "Retrying via another source in Ns
+// (attempt X/4)". Pure: given state/cfg/now it derives the timing, no clock or
+// I/O of its own.
+//
+// nextRetryInMs is only meaningful for a PENDING item that has already tried
+// every source it knows and is now waiting out the per-peer backoff before
+// re-asking the soonest-eligible one (eligibleSource's `retry` path). An item
+// with an untried source is dispatched on the next tick, not "retrying", so it
+// carries no countdown. An inflight item is actively in a peer's queue, so it
+// too has no pending-retry countdown — its explanation comes from slskd's own
+// state (position / not responding).
+function explainState(state, cfg, now) {
+  cfg = Object.assign({}, DEFAULTS, cfg || {})
+  now = now == null ? Date.now() : now
+  var byFile = {}
+  var i
+  for (i = 0; i < state.pending.length; i++) {
+    var e = state.pending[i]
+    byFile[e.filename] = {
+      attempts: e.attempts || 0,
+      maxAttempts: cfg.maxAttempts,
+      sourceCount: (e.sources || []).length,
+      nextRetryInMs: _nextRetryInMs(state, e, cfg, now),
+      inflight: false,
+    }
+  }
+  var ik = Object.keys(state.inflight)
+  for (i = 0; i < ik.length; i++) {
+    var v = state.inflight[ik[i]]
+    byFile[v.filename] = {
+      attempts: v.attempts || 0,
+      maxAttempts: cfg.maxAttempts,
+      sourceCount: (v.sources || []).length,
+      // Inflight: no queued retry countdown; slskd's state explains it instead.
+      nextRetryInMs: null,
+      inflight: true,
+    }
+  }
+  return byFile
+}
+
+// ms until a pending item's soonest source becomes eligible again, or null when
+// it has an untried source (dispatched next tick, not "retrying") or no source
+// at all. Mirrors eligibleSource's retry gate: the shortest wait across sources
+// whose last-tried time has not yet cleared retryPeerAfterMs.
+function _nextRetryInMs(state, entry, cfg, now) {
+  var ranked = rankSources(entry.sources)
+  if (!ranked.length) return null
+  var triedAt = entry.triedAt || {}
+  var soonest = null
+  for (var i = 0; i < ranked.length; i++) {
+    var s = ranked[i]
+    if (peerBenched(state, s.username, now)) continue
+    // An untried source is ready now — nothing to count down to.
+    if ((entry.tried || []).indexOf(s.username) === -1) return null
+    var last = triedAt[s.username] || 0
+    var wait = cfg.retryPeerAfterMs - (now - last)
+    if (wait < 0) return null   // already eligible: ready now, not a countdown
+    if (soonest == null || wait < soonest) soonest = wait
+  }
+  return soonest
+}
+
 function stats(state) {
   var byPeer = inflightByPeer(state)
   var doneKeys = Object.keys(state.done)
@@ -1038,6 +1105,7 @@ var _PapaDownloadScheduler = {
   recordStall: recordStall,
   peerBenched: peerBenched,
   inflightByPeer: inflightByPeer,
+  explainState: explainState,
   stats: stats,
 }
 

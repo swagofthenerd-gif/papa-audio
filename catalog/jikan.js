@@ -124,13 +124,19 @@ function _trailer(raw) {
 function normalizeMedia(raw) {
   raw = raw || {}
   const titles = _titles(raw)
+  const malId = Number.isFinite(Number(raw.mal_id)) ? Number(raw.mal_id) : null
   return {
-    // The AniList entry keys on the AniList id; Jikan has no AniList id, so this
-    // is null. idMal is the id that matters here — it is what AniSkip keys on,
-    // and the whole reason this fallback can still feed skip-intro at all.
-    id: null,
+    // A fallback card carries no AniList id — the whole point is that AniList is
+    // unreachable. `id` still has to be a routable card key, so it is the MAL id
+    // under a `mal-` prefix: _cardKey renders `anime:mal-<idMal>`, and
+    // _videoShowDetail routes any `mal-`-prefixed anime id back to Jikan's byId
+    // rather than AniList's (which would 403 during the outage this exists for).
+    // `source: 'mal'` marks the card so the renderer can note where it came from
+    // and the detail router knows not to trust it as an AniList id.
+    id: malId != null ? 'mal-' + malId : null,
+    source: 'mal',
     type: 'anime',
-    idMal: Number.isFinite(Number(raw.mal_id)) ? Number(raw.mal_id) : null,
+    idMal: malId,
     title: titles.english || titles.romaji || titles.native || null,
     titles,
     // `year` is a top-level field on a full entry; older/partial payloads only
@@ -176,6 +182,39 @@ function buildSearchUrl(query, opts = {}) {
 
 function buildByIdUrl(malId) {
   return `${JIKAN_BASE}/anime/${encodeURIComponent(malId)}`
+}
+
+// The three shelf endpoints, mapped onto AniList's trending/popular/season rows:
+//   trending -> /top/anime            (MAL's default "top", which tracks the
+//                                       currently-hot titles the same way
+//                                       AniList's TRENDING_DESC does)
+//   popular  -> /top/anime?filter=bypopularity (all-time members count, the
+//                                       direct analogue of POPULARITY_DESC)
+//   season   -> /seasons/now          (the currently-airing season)
+// The /top and /seasons endpoints are DELIBERATELY spare on query params. MAL's
+// upstream (which Jikan proxies) intermittently 504s on the `limit` and `sfw`
+// filters for these curated lists — observed live, reliably, during the very
+// AniList outage this fallback is for — while a bare request or one carrying only
+// `page` answers fine. Those two knobs are also unnecessary here: /top and
+// /seasons/now are curated mainstream lists that do not surface adult titles at
+// the top by default (unlike a free-text search, where sfw genuinely matters and
+// buildSearchUrl keeps it), and MAL's default page size is a fine shelf length.
+// So only `page` and `filter` are sent — the minimum that both works today and
+// stays robust to MAL's flakier filter paths. The shelf slices to its own length
+// downstream regardless.
+function buildTopUrl(opts = {}) {
+  const q = new URLSearchParams()
+  if (opts.page != null) q.set('page', String(opts.page))
+  if (opts.filter) q.set('filter', String(opts.filter))
+  const qs = q.toString()
+  return `${JIKAN_BASE}/top/anime${qs ? '?' + qs : ''}`
+}
+
+function buildSeasonNowUrl(opts = {}) {
+  const q = new URLSearchParams()
+  if (opts.page != null) q.set('page', String(opts.page))
+  const qs = q.toString()
+  return `${JIKAN_BASE}/seasons/now${qs ? '?' + qs : ''}`
 }
 
 function createJikanCatalog({ fetchFn, minIntervalMs = MIN_INTERVAL_MS,
@@ -238,14 +277,53 @@ function createJikanCatalog({ fetchFn, minIntervalMs = MIN_INTERVAL_MS,
     },
 
     // Detail lookup by MyAnimeList id. Returns one normalized entry, or null
-    // when Jikan has nothing or is unreachable.
+    // when Jikan has nothing or is unreachable. A `mal-`-prefixed id (the card
+    // key this module stamps) is accepted as-is: the prefix is stripped so a
+    // caller can pass either the raw MAL id or the card's own id back in.
     async byId(malId) {
-      if (!malId) return null
-      const data = await _schedule(() => _get(buildByIdUrl(malId)))
+      const id = _malIdOf(malId)
+      if (!id) return null
+      const data = await _schedule(() => _get(buildByIdUrl(id)))
       const one = data && data.data
       return one && typeof one === 'object' ? normalizeMedia(one) : null
     },
+
+    // The trending shelf: MAL's default /top/anime. Returns a (possibly empty)
+    // array of normalized entries; never throws, never null.
+    async top(page) {
+      const data = await _schedule(() => _get(buildTopUrl({ page })))
+      const list = data && data.data
+      if (!Array.isArray(list)) return []
+      return list.map(normalizeMedia)
+    },
+
+    // The popular shelf: /top/anime?filter=bypopularity (all-time members).
+    async popular(page) {
+      const data = await _schedule(() => _get(buildTopUrl({ page, filter: 'bypopularity' })))
+      const list = data && data.data
+      if (!Array.isArray(list)) return []
+      return list.map(normalizeMedia)
+    },
+
+    // The this-season shelf: /seasons/now (the currently-airing season).
+    async seasonNow(page) {
+      const data = await _schedule(() => _get(buildSeasonNowUrl({ page })))
+      const list = data && data.data
+      if (!Array.isArray(list)) return []
+      return list.map(normalizeMedia)
+    },
   }
+}
+
+// Accept either a raw MAL id (number/string) or this module's own `mal-<id>`
+// card key, returning the numeric id or null. The card key is what _cardKey
+// produces from a fallback card, and the detail router hands it straight back.
+function _malIdOf(value) {
+  if (value == null) return null
+  const s = String(value)
+  const m = /^mal-(\d+)$/.exec(s)
+  const n = Number(m ? m[1] : s)
+  return Number.isFinite(n) && n > 0 ? n : null
 }
 
 function _sleep(ms) {
@@ -262,5 +340,8 @@ module.exports = {
   normalizeMedia,
   buildSearchUrl,
   buildByIdUrl,
+  buildTopUrl,
+  buildSeasonNowUrl,
+  _malIdOf,
   createJikanCatalog,
 }

@@ -214,7 +214,7 @@ function extractHandler(name) {
 // A sandbox holding the real anime-browse-cache helpers, the real
 // _anilistListWithOutage, and the two real handlers, wired to a real SideStore
 // and a fake AniList whose list results (and lastFailure) each test controls.
-function browseHarness({ list, lastFailure, discover } = {}) {
+function browseHarness({ list, lastFailure, discover, jikan } = {}) {
   const dir = tmpdir()
   const errors = []
   const animeBrowseCache = new SideStore({
@@ -230,7 +230,18 @@ function browseHarness({ list, lastFailure, discover } = {}) {
     _videoDiscoverCache: memCache(),
     ipcMain: { handle: (name, fn) => { handlers[name] = fn } },
     _currentAnimeSeasonTag: () => 'FALL-2026',
+    // The real shelf fallback decision (live AniList → live Jikan → saved cache →
+    // outage), so the handler exercises the same chain main.js runs.
+    resolveAnimeShelf: require('../catalog/anime-shelf').resolveAnimeShelf,
     tmdb: () => ({ trending: async () => [], popular: async () => [], discover: async () => ({ results: [] }) }),
+    // The Jikan fallback. Off by default (returns nothing) so the existing outage
+    // tests see the AniList→cache→outage path unchanged; a test can pass a `jikan`
+    // map/function to exercise the live-MAL branch.
+    jikan: () => ({
+      top: async () => (typeof jikan === 'function' ? jikan('trending') : (jikan && jikan.trending) || []),
+      popular: async () => (typeof jikan === 'function' ? jikan('popular') : (jikan && jikan.popular) || []),
+      seasonNow: async () => (typeof jikan === 'function' ? jikan('season') : (jikan && jikan.season) || []),
+    }),
     anilist: () => ({
       lastFailure: () => (lastFailure || null),
       trending: async () => { if (typeof list === 'function') return list('trending'); return list || [] },
@@ -245,7 +256,7 @@ function browseHarness({ list, lastFailure, discover } = {}) {
     }),
   }
   vm.createContext(ctx)
-  for (const fn of ['_animeBrowseCacheWrite', '_animeBrowseCacheRead', '_anilistListWithOutage']) {
+  for (const fn of ['_animeBrowseCacheWrite', '_animeBrowseCacheRead', '_anilistListWithOutage', '_jikanShelf']) {
     vm.runInContext(extract(fn), ctx)
   }
   vm.runInContext(extractHandler('video-catalog-get'), ctx)
@@ -299,6 +310,47 @@ test('an outage with NO saved list returns empty + the outage reason (never a li
   assert.strictEqual(res.results.length, 0)
   assert.ok(!res.fromCache, 'there was nothing saved to serve')
   assert.match(res.outage, /403/, 'the row is empty BECAUSE of the outage, and says so')
+})
+
+test('an AniList outage falls through to live Jikan, marked viaMal, and caches it', async () => {
+  const MAL_ROWS = [
+    { id: 'mal-52991', source: 'mal', title: 'Frieren' },
+    { id: 'mal-1', source: 'mal', title: 'Cowboy Bebop' },
+  ]
+  const h = browseHarness({
+    list: [], lastFailure: { at: Date.now(), message: 'AniList request failed (403)', status: 403 },
+    jikan: (section) => (section === 'trending' ? MAL_ROWS : []),
+  })
+  const res = await h.handlers['video-catalog-get'](null, { section: 'trending-anime', page: 1 })
+  assert.strictEqual(res.ok, true)
+  assert.strictEqual(res.viaMal, true, 'the row is served via MyAnimeList')
+  assert.strictEqual(res.results.length, 2)
+  assert.strictEqual(res.results[0].source, 'mal', 'the MAL source mark survives to the renderer')
+  assert.match(res.outage, /403/, "AniList's reason still rides along so the note is honest")
+  assert.ok(!res.fromCache, 'a fresh Jikan hit is not a stale saved list')
+  // A live Jikan hit is cached like an AniList one, source mark and all, so a
+  // later total outage can still serve it.
+  await h.animeBrowseCache.flush()
+  const entry = h.animeBrowseCache.get()['list:trending-anime:1']
+  assert.ok(entry && entry.value.length === 2, 'the Jikan result was saved for a future outage')
+  assert.strictEqual(entry.value[0].source, 'mal')
+})
+
+test('when AniList AND Jikan are both down, the saved list still wins over an error', async () => {
+  // Seed a good AniList result, then re-open with both sources down.
+  const seed = browseHarness({ list: ANIME_ROWS })
+  await seed.handlers['video-catalog-get'](null, { section: 'trending-anime', page: 1 })
+  await seed.animeBrowseCache.flush()
+
+  const down = browseHarness({
+    list: [], lastFailure: { at: Date.now(), message: 'AniList request failed (403)', status: 403 },
+    jikan: () => [],   // Jikan is down too
+  })
+  down.ctx.sideStores.animeBrowseCache = new SideStore({ dir: seed.dir, name: 'anime-browse-cache', fallback: {}, debounceMs: 5, onError: () => {} })
+  const res = await down.handlers['video-catalog-get'](null, { section: 'trending-anime', page: 1 })
+  assert.strictEqual(res.fromCache, true, 'the saved list is served when both live sources fail')
+  assert.ok(!res.viaMal, 'a saved list is not a live MAL hit')
+  assert.match(res.outage, /403/)
 })
 
 test('a healthy-but-empty row carries no outage flag (plain empty stays plain)', async () => {
