@@ -51,6 +51,7 @@
 
   const T = window.PapaSlskTree
   const SH = window.PapaSlskShelves
+  const AV = window.PapaSlskAlbumView   // the shared album view (slide-over)
   // Shelves ("the record shop") is the flagship default; Folders is the raw
   // tree power mode. The choice is remembered so a folder-diver isn't dropped
   // back into shelves every time.
@@ -128,7 +129,27 @@
       applyMode()
     }))
 
+  // The live album-view slide-over, when one is open over the shop. Its Esc is
+  // layered ABOVE the shop's own Esc chain (see onKey): closing the panel first,
+  // then the shop. Opened by a card-body click / Enter and by folder rows.
+  let _slavPanel = null
+  function openAlbumView(album, sourceIndex) {
+    if (!AV || !AV.open || !album) return
+    if (_slavPanel) { try { _slavPanel.close() } catch (_) {} _slavPanel = null }
+    _slavPanel = AV.open({
+      album, sourceIndex,
+      host: dlg.querySelector('.slsh-box') || dlg,
+      deps: {
+        esc, showSnackbar, startPreview, playCurrentTrack, state,
+        _slskEnqueue, _scheduleLibRescan, navigate, openSlskChat,
+        showSlskUserExplorer: (u) => { close(); if (typeof window.showSlskUserExplorer === 'function') window.showSlskUserExplorer(u) },
+        onClose: () => { _slavPanel = null },
+      },
+    })
+  }
+
   const close = () => {
+    if (_slavPanel) { try { _slavPanel.close() } catch (_) {} _slavPanel = null }
     if (_slskExplorerClose === close) _slskExplorerClose = null
     document.removeEventListener('keydown', onKey)
     // Tear down the lazy-art observer so its callback can't fire into a removed
@@ -151,6 +172,10 @@
   let audioOnly = true
   let searching = ''
   let surroundOnly = false
+  // Folder-mode track selection: file indices (into the current listing) ticked
+  // for a "Download selected" batch. Cleared on every navigation.
+  const folderSel = new Set()
+  let folderSelLast = -1
 
   function fmtSize(n) {
     n = Number(n) || 0
@@ -185,10 +210,13 @@
     const l = T.listDir(tree, path, { sort, audioOnly })
     if (!l) { body.innerHTML = `<div class="slsk-lib-empty">Folder not found.</div>`; return }
 
+    // A fresh folder view starts with nothing selected.
+    folderSel.clear()
     const audioHere = l.files.filter(f => T.AUDIO_RE.test(f.name))
     actions.innerHTML = audioHere.length
       ? `<button class="slskx-act" id="slskx-dl-folder">Download folder (${audioHere.length})</button>
-         <button class="slskx-act" id="slskx-play-first">Play first track</button>`
+         <button class="slskx-act" id="slskx-play-first">Play first track</button>
+         <button class="slskx-act" id="slskx-dl-selected" disabled>Download selected</button>`
       : (l.node.fileCount
           ? `<button class="slskx-act" id="slskx-dl-tree">Download everything below (${l.node.fileCount})</button>` : '')
 
@@ -212,6 +240,7 @@
     l.files.forEach((f, i) => {
       const isAudio = T.AUDIO_RE.test(f.name)
       rows.push(`<div class="slskx-row slskx-file${isAudio ? '' : ' dim'}" data-fi="${i}">
+        ${isAudio ? `<label class="slskx-selbox"><input type="checkbox" class="slskx-file-cb" data-fi="${i}"></label>` : '<span class="slskx-selbox"></span>'}
         <span class="slskx-ico">${isAudio ? '🎵' : '📄'}</span>
         <span class="slskx-name">${esc(f.name)}</span>
         <span class="slskx-meta">${f.bitDepth ? f.bitDepth + '-bit ' : ''}${f.sampleRate ? (f.sampleRate/1000).toFixed(1) + 'kHz' : ''}</span>
@@ -386,6 +415,58 @@
       if (first) first.click()
     })
 
+    // Per-track checkboxes with shift-click range select, and the matching
+    // "Download selected (N)" batch button — the same selection affordance the
+    // album view offers, brought to the raw folder file list.
+    const selBtn = dlg.querySelector('#slskx-dl-selected')
+    const updateFolderSelUi = () => {
+      if (selBtn) {
+        const n = folderSel.size
+        selBtn.textContent = n ? `Download selected (${n})` : 'Download selected'
+        selBtn.disabled = !n
+      }
+      body.querySelectorAll('.slskx-file-cb').forEach(cb => {
+        const i = parseInt(cb.dataset.fi, 10)
+        cb.checked = folderSel.has(i)
+        cb.closest('.slskx-row')?.classList.toggle('sel', folderSel.has(i))
+      })
+    }
+    body.querySelectorAll('.slskx-file-cb').forEach(cb => {
+      cb.addEventListener('click', e => {
+        e.stopPropagation()
+        const i = parseInt(cb.dataset.fi, 10)
+        if (e.shiftKey && folderSelLast >= 0) {
+          const [lo, hi] = [Math.min(i, folderSelLast), Math.max(i, folderSelLast)]
+          for (let k = lo; k <= hi; k++) {
+            // Only audio rows have checkboxes; guard on the file being audio.
+            if (l.files[k] && T.AUDIO_RE.test(l.files[k].name)) {
+              if (cb.checked) folderSel.add(k); else folderSel.delete(k)
+            }
+          }
+        } else {
+          if (cb.checked) folderSel.add(i); else folderSel.delete(i)
+        }
+        folderSelLast = i
+        updateFolderSelUi()
+      })
+    })
+    selBtn?.addEventListener('click', async ev => {
+      const picks = [...folderSel].sort((x, y) => x - y).map(i => l.files[i]).filter(Boolean)
+      if (!picks.length) return
+      const btn = ev.currentTarget
+      const label = btn.textContent
+      btn.disabled = true; btn.textContent = `Queuing ${picks.length}…`
+      try {
+        await _slskEnqueue(picks.map(f => ({ username, filename: f.fullPath, size: f.size || 0 })))
+        _scheduleLibRescan()
+        btn.textContent = `${picks.length} queued`
+        setTimeout(() => { folderSel.clear(); folderSelLast = -1; updateFolderSelUi() }, 1200)
+      } catch (e) {
+        btn.disabled = false; btn.textContent = label
+        showSnackbar('Could not queue those tracks: ' + String(e && e.message || e), null, null, 6000)
+      }
+    })
+
     dlg.querySelector('#slskx-dl-tree')?.addEventListener('click', async ev => {
       // Walk every descendant folder, not just this one.
       const collect = (n, out = []) => {
@@ -445,6 +526,10 @@
 
   function onKey(e) {
     if (!document.getElementById('slsk-user-lib-modal')) return
+    // An open album-view slide-over owns the keyboard: it runs a capture-phase
+    // handler that stops propagation, so this rarely even fires while it is up —
+    // but guard explicitly so nothing leaks through to the shop underneath.
+    if (_slavPanel) return
     // Don't fight text entry: while a field is focused, only Escape (blur/clear)
     // is ours — mirrors the app's global keymap guard.
     const tag = String(e.target && e.target.tagName || '').toUpperCase()
@@ -471,7 +556,13 @@
       const card = document.activeElement && document.activeElement.classList &&
         document.activeElement.classList.contains('slsh-card') ? document.activeElement : null
       if (!card) return
-      if (e.key === 'Enter') { if (shCardAction(card, '.slsh-play')) e.preventDefault(); return }
+      // Enter OPENS the album view (per the album-functionality brief); the DL/
+      // Play/preview buttons still act via mouse/focus. D keeps the quick grab.
+      if (e.key === 'Enter') {
+        const a = shFlat[parseInt(card.dataset.idx, 10)]
+        if (a) { openAlbumView(a); e.preventDefault() }
+        return
+      }
       if (e.key === 'd' || e.key === 'D') { if (shCardAction(card, '.slsh-dl')) e.preventDefault(); return }
       return
     }
@@ -595,6 +686,8 @@
   const shArtQueue = []
 
   function shArmArtObserver(container) {
+    // New cards just rendered → the key→els paint index is stale.
+    shArtIndexInvalidate()
     if (!ART_IPC || typeof IntersectionObserver !== 'function') return
     if (!shArtObserver) {
       shArtObserver = new IntersectionObserver((ents) => {
@@ -673,7 +766,12 @@
     if (shScrolling || !shArtPaintQueue.length) return
     requestAnimationFrame(() => {
       let n = 0
-      while (shArtPaintQueue.length && n < 4) {
+      // Time-budgeted: disk-cached covers resolve instantly, so hundreds can
+      // queue at open — a fixed per-frame count still froze the page for ~10s
+      // (measured: 47 long tasks, 10.6s blocked). 3ms of paint work per frame
+      // keeps the open buttery no matter how full the cache is.
+      const t0 = performance.now()
+      while (shArtPaintQueue.length && (performance.now() - t0) < 3) {
         const q = shArtPaintQueue.shift()
         shArtPaintNow(q.key, q.artPath)
         n++
@@ -687,9 +785,28 @@
     shArtDrainPaints()
   }
   // Swap the fetched cover into every on-screen card with this identity.
+  // key → [els] index, rebuilt lazily whenever the shelves re-render (the
+  // rebuild marker is cleared by shArtIndexInvalidate below). A body-wide
+  // querySelectorAll PER LANDED COVER was the open-freeze: with a warm disk
+  // cache every cover lands instantly and each paint walked thousands of
+  // nodes.
+  let shArtElIndex = null
+  function shArtIndexInvalidate() { shArtElIndex = null }
+  function shArtElsFor(key) {
+    if (!shArtElIndex) {
+      shArtElIndex = new Map()
+      shBody.querySelectorAll('.slsh-card-art[data-art-key]').forEach(el => {
+        const k = el.dataset.artKey
+        if (!shArtElIndex.has(k)) shArtElIndex.set(k, [])
+        shArtElIndex.get(k).push(el)
+      })
+    }
+    return shArtElIndex.get(key) || []
+  }
   function shArtPaintNow(key, artPath) {
     const src = /^https?:\/\//.test(artPath) ? artPath : `file://${artPath}`
-    shBody.querySelectorAll(`.slsh-card-art[data-art-key="${CSS.escape(key)}"]`).forEach(el => {
+    shArtElsFor(key).forEach(el => {
+      if (!el.isConnected) return
       if (el.querySelector('img')) return
       const fb = el.querySelector('.slsh-card-art-fallback')
       const img = document.createElement('img')
@@ -1190,7 +1307,16 @@
     container.dataset.shBound = '1'
     container.addEventListener('click', async e => {
       const btn = e.target.closest('.slsh-card-act')
-      if (!btn) return
+      if (!btn) {
+        // A click on the card BODY (not an action button) opens the album view —
+        // the card becomes a first-class, openable album.
+        const card = e.target.closest('.slsh-card:not(.slsh-skel)')
+        if (card) {
+          const a = shFlat[parseInt(card.dataset.idx, 10)]
+          if (a) openAlbumView(a)
+        }
+        return
+      }
       e.stopPropagation()
       const a = shFlat[parseInt(btn.dataset.idx, 10)]
       if (!a) return
@@ -1340,12 +1466,23 @@
       await new Promise(r => (window.requestIdleCallback ? requestIdleCallback(r, { timeout: 500 }) : setTimeout(r, 1)))
       peerAlbums = SH ? SH.extractAlbums(tree, { minTracks: 2 }) : []
       // Mark which parsed albums the user already owns (drives the "In Library"
-      // chip and keeps them out of wishlist-by-default).
+      // chip and keeps them out of wishlist-by-default). Uses the bucketed
+      // library index so this is a per-album handful of comparisons, not a full
+      // O(peerAlbums × libraryAlbums) sweep — the same fix as buildShelves.
       if (SH) {
-        const libComp = state.library.map(SH.libAlbumToComparable)
-        for (const a of peerAlbums) {
-          a.inLibrary = libComp.some(lc => SH.albumsMatch(
-            { artist: a.artist, album: a.album }, lc))
+        const libIndex = SH.buildLibraryIndex
+          ? SH.buildLibraryIndex(state.library)
+          : null
+        if (libIndex) {
+          for (const a of peerAlbums) {
+            a.inLibrary = !!libIndex.findMatch({ artist: a.artist, album: a.album })
+          }
+        } else {
+          const libComp = state.library.map(SH.libAlbumToComparable)
+          for (const a of peerAlbums) {
+            a.inLibrary = libComp.some(lc => SH.albumsMatch(
+              { artist: a.artist, album: a.album }, lc))
+          }
         }
       }
       shReindex()

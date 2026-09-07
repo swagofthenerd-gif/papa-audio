@@ -178,7 +178,18 @@ function isGenericContainer(name) {
 // Normalise a title/artist to a comparison key: lowercase, strip punctuation and
 // leading articles, collapse whitespace. "The Beatles" and "beatles" match;
 // "Sgt. Pepper's" and "sgt peppers" match.
-function normKey(s) {
+//
+// MEMOISED. This is the hottest function in the shop: opening a 438-album shop on
+// a 7k-album library ran normKey millions of times (once per album × library
+// pair, both sides, twice over — see buildLibraryIndex/matchComparable). The
+// profiler put 4.5s of self-time here alone. The results are pure functions of
+// the input string, so a capped Map cache turns every repeat into a lookup. The
+// cap keeps a pathological tree (100k unique folder names) from growing the map
+// without bound; when full it clears wholesale rather than doing LRU bookkeeping
+// (simpler, and the working set of a single shop open is far under the cap).
+const _NORMKEY_CACHE = new Map()
+const _NORMKEY_CAP = 20000
+function _normKeyRaw(s) {
   return String(s || '')
     .toLowerCase()
     .replace(/&/g, ' and ')
@@ -188,40 +199,158 @@ function normKey(s) {
     .replace(/\s+/g, ' ')
     .trim()
 }
+function normKey(s) {
+  const key = typeof s === 'string' ? s : String(s || '')
+  const hit = _NORMKEY_CACHE.get(key)
+  if (hit !== undefined) return hit
+  const val = _normKeyRaw(key)
+  if (_NORMKEY_CACHE.size >= _NORMKEY_CAP) _NORMKEY_CACHE.clear()
+  _NORMKEY_CACHE.set(key, val)
+  return val
+}
+
+// Tokenise a normalised key into a Set once. Used to build the pre-tokenised
+// comparables so token-set overlap never re-splits a raw string per comparison.
+const _TOKENSET_CACHE = new Map()
+const _TOKENSET_CAP = 20000
+function normTokenSet(s) {
+  // Memoised like normKey: tokenScore(a,b) call sites that still pass raw
+  // strings (profiled at 700ms/open on a 438-album shop) hit the cache
+  // instead of re-splitting per comparison.
+  const key = String(s || '')
+  const hit = _TOKENSET_CACHE.get(key)
+  if (hit !== undefined) return hit
+  const set = new Set()
+  const k = normKey(key)
+  if (k) for (const t of k.split(' ')) if (t) set.add(t)
+  if (_TOKENSET_CACHE.size >= _TOKENSET_CAP) _TOKENSET_CACHE.clear()
+  _TOKENSET_CACHE.set(key, set)
+  return set
+}
 
 // Token-set overlap ratio (Jaccard-ish) — robust to word order and to one side
-// carrying an extra tag word. Returns 0..1.
-function tokenScore(a, b) {
-  const ta = new Set(normKey(a).split(' ').filter(Boolean))
-  const tb = new Set(normKey(b).split(' ').filter(Boolean))
-  if (!ta.size || !tb.size) return 0
+// carrying an extra tag word. Returns 0..1. The Set-vs-Set core is factored out
+// so the pre-tokenised matcher can share it without re-normalising.
+function tokenScoreSets(ta, tb) {
+  if (!ta || !tb || !ta.size || !tb.size) return 0
+  // Iterate the smaller set for the intersection.
+  const [small, large] = ta.size <= tb.size ? [ta, tb] : [tb, ta]
   let inter = 0
-  for (const t of ta) if (tb.has(t)) inter++
+  for (const t of small) if (large.has(t)) inter++
   const union = ta.size + tb.size - inter
   return union ? inter / union : 0
+}
+function tokenScore(a, b) {
+  return tokenScoreSets(normTokenSet(a), normTokenSet(b))
+}
+
+// A pre-tokenised comparable: parsed identity with its album/artist token Sets
+// (and token counts) computed ONCE. albumsMatchComparable and the library index
+// operate on these so a raw {artist,album} pair is normalised a single time no
+// matter how many candidates it is compared against.
+function albumComparable(x) {
+  if (!x) return { artist: '', album: '', albumTokens: new Set(), artistTokens: new Set(), albumTokenCount: 0 }
+  // Already a comparable? (idempotent — lets callers pass either shape.)
+  if (x.albumTokens instanceof Set && x.artistTokens instanceof Set) return x
+  const albumTokens = normTokenSet(x.album)
+  const artistTokens = normTokenSet(x.artist)
+  return {
+    artist: x.artist || '',
+    album: x.album || '',
+    albumTokens,
+    artistTokens,
+    albumTokenCount: albumTokens.size,
+    lossless: x.lossless,
+    maxBitDepth: x.maxBitDepth,
+    maxSampleRate: x.maxSampleRate,
+    ref: x.ref,
+  }
+}
+
+// The confident-match test over two pre-tokenised comparables. Identical logic
+// to albumsMatch below, but reads the cached token Sets rather than re-splitting
+// raw strings — this is what the O(peer × library) loop calls now.
+function albumsMatchComparable(a, b, albumMin, artistMin) {
+  const albumS = tokenScoreSets(a.albumTokens, b.albumTokens)
+  if (albumS < albumMin) return false
+  const distinctive = a.albumTokenCount >= 3
+  const aHasArtist = a.artistTokens.size > 0
+  const bHasArtist = b.artistTokens.size > 0
+  if (!aHasArtist || !bHasArtist) return albumS >= 0.8 && distinctive
+  const artistS = tokenScoreSets(a.artistTokens, b.artistTokens)
+  return artistS >= artistMin || (albumS >= 0.9 && distinctive)
 }
 
 // A confident album match needs both the album titles and the artists to line
 // up. Album carries the weight (people file the same album under slightly
 // different artist spellings), but the artist is a strong tiebreaker/guard so
 // "Live" by two different bands don't collapse together.
+//
+// Public entry point, unchanged in behaviour: it tokenises both sides on the fly
+// (via the memoised normKey) and delegates to the pre-tokenised core. Callers in
+// a hot loop should build comparables once and use the index / matchComparable
+// instead of paying the per-call tokenisation.
 function albumsMatch(a, b, { albumMin = 0.6, artistMin = 0.34 } = {}) {
-  const albumS = tokenScore(a.album, b.album)
-  if (albumS < albumMin) return false
-  // A distinctive album title is one with several words — "Selected Ambient
-  // Works 85-92" identifies a release on its own; "Live" or "Hits" does not.
-  const albumTokens = normKey(a.album).split(' ').filter(Boolean).length
-  const distinctive = albumTokens >= 3
-  // If either side has no usable artist, accept only on a strong AND distinctive
-  // album match, so a one-word "Live" with a missing artist can't collide.
-  const aArtist = normKey(a.artist)
-  const bArtist = normKey(b.artist)
-  if (!aArtist || !bArtist) return albumS >= 0.8 && distinctive
-  const artistS = tokenScore(a.artist, b.artist)
-  // Artist agreement is the primary key; a near-perfect distinctive album title
-  // can carry the match past a slight artist-spelling gap, but a generic short
-  // title always needs the artist to agree.
-  return artistS >= artistMin || (albumS >= 0.9 && distinctive)
+  return albumsMatchComparable(albumComparable(a), albumComparable(b), albumMin, artistMin)
+}
+
+// ── Library index (bucketed matcher) ──────────────────────────────────────────
+// The upgrade/missing classification and the shop's "In Library" marking both
+// ask, for every peer album, "is this album already in the library?" — an
+// O(peerAlbums × libraryAlbums) sweep. On a 7k-album library × a 438-album shop
+// that is ~3M albumsMatch calls, each of which used to re-normalise both sides.
+//
+// This precomputes the library ONCE into comparables and buckets them by album
+// TOKEN. A confident match needs the album titles to share ≥60% of their tokens
+// (albumMin), so any library album that could match a peer album shares at least
+// one album token with it — meaning it lives in a bucket the peer's own tokens
+// point at. Each library comparable is therefore indexed under EVERY one of its
+// album tokens (not just the first): that makes the bucketed scan find exactly
+// the same matches a full scan would, even when the tokens are reordered
+// ("Kind of Blue" vs "Blue, Kind of"), which is the property the snapshot-
+// equality test locks in. A peer album unions the buckets for its own tokens,
+// dedupes, and scans them in library order (so "first match wins" is preserved).
+//
+// The empty-album fallback bucket holds library albums with no usable album
+// token; a peer album can still match one on the artist-carried distinctive
+// path, so it is always scanned.
+function buildLibraryIndex(library, { albumMin = 0.6, artistMin = 0.34 } = {}) {
+  const buckets = new Map()     // albumToken → [{ comp, order }]
+  const noKey = []              // comparables with no usable album token
+  let order = 0
+  for (const a of (library || [])) {
+    const comp = albumComparable(a && a.albumTokens instanceof Set ? a : libAlbumToComparable(a))
+    const entry = { comp, order: order++ }
+    if (!comp.albumTokens.size) { noKey.push(entry); continue }
+    for (const tok of comp.albumTokens) {
+      let arr = buckets.get(tok)
+      if (!arr) { arr = []; buckets.set(tok, arr) }
+      arr.push(entry)
+    }
+  }
+  // Find the first (library-order) library comparable that confidently matches a
+  // peer comparable. Only buckets the peer's album tokens point at are scanned —
+  // a handful of candidates instead of the whole library.
+  const findMatch = (peerComp) => {
+    const pc = albumComparable(peerComp)
+    let match = null
+    let matchOrder = Infinity
+    const seen = new Set()
+    const consider = (entry) => {
+      if (entry.order >= matchOrder || seen.has(entry.order)) return
+      seen.add(entry.order)
+      if (albumsMatchComparable(pc, entry.comp, albumMin, artistMin)) {
+        match = entry.comp; matchOrder = entry.order
+      }
+    }
+    for (const tok of pc.albumTokens) {
+      const arr = buckets.get(tok)
+      if (arr) for (const entry of arr) consider(entry)
+    }
+    for (const entry of noKey) consider(entry)
+    return match
+  }
+  return { findMatch, buckets, noKey }
 }
 
 // ── Album extraction from the tree ────────────────────────────────────────────
@@ -435,24 +564,26 @@ function qualityString(x) {
 // module's window binding.
 function buildShelves(peerAlbums, library, { detectSurround = null } = {}) {
   const albums = peerAlbums || []
-  const libComparables = (library || []).map(libAlbumToComparable)
+  // Precompute the library ONCE into a bucketed index of pre-tokenised
+  // comparables. Every peer album then compares only against its own first-token
+  // bucket instead of the whole library — the fix for the open-freeze.
+  const libIndex = buildLibraryIndex(library)
 
   const upgrades = []
   const missing = []
 
   for (const pa of albums) {
-    const peerComp = {
+    // Pre-tokenise the peer side once (its Sets are reused by findMatch and
+    // upgradeReason reads the quality fields off the same object).
+    const peerComp = albumComparable({
       artist: pa.artist,
       album: pa.album,
       lossless: pa.lossless,
       maxBitDepth: pa.maxBitDepth,
       maxSampleRate: pa.maxSampleRate,
-    }
-    // Find the best library match.
-    let match = null
-    for (const lc of libComparables) {
-      if (albumsMatch(peerComp, lc)) { match = lc; break }
-    }
+    })
+    // Find the best library match through the bucketed index.
+    const match = libIndex.findMatch(peerComp)
     if (match) {
       const reason = upgradeReason(peerComp, match)
       if (reason) upgrades.push({ ...pa, upgrade: reason, matchedLibId: match.ref && match.ref.id })
@@ -609,22 +740,43 @@ function mergeSourcesByAlbum(groups, { detectSurround = null, parse = null } = {
     return parseAlbumFolder(segs.length ? segs : [g.folderName || ''])
   })
 
-  const buckets = []
+  // Buckets indexed by album token, mirroring buildLibraryIndex: a group can only
+  // merge into a bucket sharing an album token with it (a match needs ≥60% token
+  // overlap), so we scan only those buckets — the earliest-created matching bucket
+  // wins, preserving the old "merge into the first matching bucket" behaviour even
+  // when tokens are reordered. `order` keeps first-seen bucket order for a stable
+  // output. Turns the merge from O(n²) to roughly O(n).
+  const byToken = new Map()   // albumToken → [bucket]
+  const order = []
   for (const g of (groups || [])) {
     const p = doParse(g)
     const ident = { artist: p.artist || '', album: p.album || g.folderName || '', year: p.year || null }
+    const identComp = albumComparable(ident)
     // A parsed album is required to merge; when parsing yields nothing usable we
     // fall back to the folder name as the album so the group still forms a
     // (singleton) bucket rather than vanishing.
     let placed = null
-    for (const b of buckets) {
-      // Same album identity: album+artist agree. Reuse the shelf matcher so the
-      // same fuzzy rules ("The Beatles" == "beatles") apply here.
-      if (albumsMatch(ident, b.ident)) { placed = b; break }
+    let placedSeq = Infinity
+    const seen = new Set()
+    for (const tok of identComp.albumTokens) {
+      const candidates = byToken.get(tok)
+      if (!candidates) continue
+      for (const b of candidates) {
+        if (b.seq >= placedSeq || seen.has(b.seq)) continue
+        seen.add(b.seq)
+        // Same album identity: album+artist agree. Reuse the shelf matcher so the
+        // same fuzzy rules ("The Beatles" == "beatles") apply here.
+        if (albumsMatchComparable(identComp, b.identComp, 0.6, 0.34)) { placed = b; placedSeq = b.seq }
+      }
     }
     if (!placed) {
-      placed = { ident, sources: [] }
-      buckets.push(placed)
+      placed = { ident, identComp, sources: [], seq: order.length }
+      order.push(placed)
+      for (const tok of identComp.albumTokens) {
+        let arr = byToken.get(tok)
+        if (!arr) { arr = []; byToken.set(tok, arr) }
+        arr.push(placed)
+      }
     }
     placed.sources.push(g)
     // Prefer the richest identity as the bucket label: keep a year/artist when a
@@ -632,6 +784,7 @@ function mergeSourcesByAlbum(groups, { detectSurround = null, parse = null } = {
     if (!placed.ident.artist && ident.artist) placed.ident.artist = ident.artist
     if (!placed.ident.year && ident.year) placed.ident.year = ident.year
   }
+  const buckets = order
 
   return buckets.map(b => finalizeMergedAlbum(b, detectSurround))
 }
@@ -720,7 +873,9 @@ function sortMergedAlbums(albums, key) {
 
 const shApi = {
   extractAlbums, parseAlbumFolder, buildAlbum, buildShelves, computeStats,
-  upgradeReason, albumsMatch, tokenScore, normKey, cleanSegment, extractYear,
+  upgradeReason, albumsMatch, albumsMatchComparable, albumComparable,
+  buildLibraryIndex, tokenScore, tokenScoreSets, normKey, normTokenSet,
+  cleanSegment, extractYear,
   isDiscFolder, groupByLetter, albumQualityLabel, libAlbumToComparable,
   isAudioName, isLosslessName, qualityString, SH_AUDIO_RE, SH_LOSSLESS_EXT,
   fmtSize, sourceScore, sourceQuality, qualityRankTuple, mergeSourcesByAlbum,

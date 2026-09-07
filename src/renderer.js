@@ -22255,7 +22255,7 @@ function _slskMergedCardHtml(m, gi, query) {
     <div class="slsk-card-body">
       <div class="slsk-card-name" title="${esc(title)}">${highlightMatch(title, query)}${m.artist ? ` <span style="font-size:11px;color:var(--text3);font-weight:400">${esc(m.artist)}${m.year ? ' · ' + m.year : ''}</span>` : ''}</div>
       ${qual ? `<div class="slsk-card-qual">Best: ${esc(qual)}</div>` : ''}
-      <div class="slsk-card-avail ${avail.cls}">${esc(avail.text)} via ${esc(best.username)}</div>
+      <div class="slsk-card-avail ${avail.cls}">${esc(avail.text)} via <button class="slsk-user-link" data-username="${esc(best.username)}" title="Browse ${esc(best.username)}'s shared library">${esc(best.username)}</button></div>
       <div class="slsk-card-from"><span class="slsk-people-count">${esc(people)}</span></div>
       ${progStrip}
       ${btns}
@@ -25149,6 +25149,15 @@ function bindSlskSearchEvents(query) {
           </div>`
         }).join('')
         list.dataset.built = '1'
+        // A click on a source ROW body (not its play/dl/browse buttons) opens the
+        // album view fed by THAT specific source's files.
+        list.querySelectorAll('.slsk-source-row').forEach((row, si) => {
+          row.addEventListener('click', ev => {
+            if (ev.target.closest('button, a, .slsk-user-link')) return
+            const alb = _slskAlbumUnit(gi)
+            if (alb) _openSlskAlbumView(alb, si)
+          })
+        })
         // Per-source browse links.
         list.querySelectorAll('.slsk-user-link').forEach(u =>
           u.addEventListener('click', ev => {
@@ -25197,6 +25206,28 @@ function bindSlskSearchEvents(query) {
       e.stopPropagation()
       const username = btn.dataset.username
       if (username) showSlskUserExplorer(username)
+    })
+  })
+
+  // A click on a merged card's BODY (not any of its buttons/links) opens the
+  // shared album view, fed by the album's best source. The ▾ sources list still
+  // lets the shopper pick a different person; opening from a specific source row
+  // (below) feeds THAT source's files. Only merged cards are openable — a raw
+  // per-uploader card is already a single source with its own inline track list.
+  section.querySelectorAll('.slsk-card-merged').forEach(card => {
+    card.addEventListener('click', e => {
+      // Ignore clicks that landed on an interactive element inside the card.
+      if (e.target.closest('button, a, input, select, .slsk-user-link, .slsk-sources-list')) return
+      const album = _slskAlbumUnit(card.dataset.gi)
+      if (album) _openSlskAlbumView(album)
+    })
+    // Enter on a focused merged card opens it too.
+    card.setAttribute('tabindex', '0')
+    card.addEventListener('keydown', e => {
+      if (e.key !== 'Enter') return
+      if (e.target !== card) return
+      const album = _slskAlbumUnit(card.dataset.gi)
+      if (album) { e.preventDefault(); _openSlskAlbumView(album) }
     })
   })
 
@@ -25250,6 +25281,25 @@ async function showSlskUserExplorer(username) {
     openSlskChat: (window.api && typeof window.api.slskChatSend === 'function')
       ? function (u) { if (state.currentPage !== 'soulseek') navigate('soulseek'); _openSlskChatPanel(u) }
       : undefined,
+  })
+}
+
+// Open the shared album view over the SEARCH RESULTS surface. Fed by a merged
+// album (best source) or a specific source of it; standalone overlay (no shop
+// modal to slide into on the search page). Threads the same renderer globals the
+// shop threads so every action is wired identically.
+function _openSlskAlbumView(album, sourceIndex) {
+  const AV = (typeof window !== 'undefined' && window.PapaSlskAlbumView) || null
+  if (!AV || !AV.open || !album) { showSnackbar('The album view did not load'); return }
+  return AV.open({
+    album, sourceIndex,
+    deps: {
+      esc, showSnackbar, startPreview, playCurrentTrack, state,
+      _slskEnqueue, _scheduleLibRescan, navigate, showSlskUserExplorer,
+      openSlskChat: (window.api && typeof window.api.slskChatSend === 'function')
+        ? function (u) { if (state.currentPage !== 'soulseek') navigate('soulseek'); _openSlskChatPanel(u) }
+        : undefined,
+    },
   })
 }
 

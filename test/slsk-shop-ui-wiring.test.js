@@ -82,7 +82,9 @@ test('shop keyboard nav is a single delegated keydown, grid-aware', () => {
   assert.match(fn, /getBoundingClientRect/, 'up/down are grid-aware via geometry')
   const onkey = sliceShop('function onKey(e) {', '\n  document.addEventListener')
   assert.match(onkey, /shMoveCardFocus\(e\)/, 'arrows move the focus ring')
-  assert.match(onkey, /shCardAction\(card, '\.slsh-play'\)/, 'Enter = play')
+  // Enter now OPENS the shared album view (the album-functionality brief made
+  // remote albums first-class openable objects); D keeps the quick album grab.
+  assert.match(onkey, /e\.key === 'Enter'[\s\S]*openAlbumView\(a\)/, 'Enter opens the album view')
   assert.match(onkey, /shCardAction\(card, '\.slsh-dl'\)/, 'D = download')
   assert.match(onkey, /e\.ctrlKey \|\| e\.metaKey.*return/s,
     'must not fight the app global chords')

@@ -3099,6 +3099,132 @@ h2.section-title { font-size:18px; font-weight:700; }
 }
 .slsh-grab-q { color: var(--text3, #888); font-size: 11px; }
 
+/* ── Shared album view (slsk-album-view.js) ───────────────────────────────────
+   The slide-over panel that opens from a shop card, a search merged card, or a
+   folder row. Two mount modes share one look: slid over the shop modal (.slav-
+   panel inside .slsh-box) or as a standalone overlay on the search page
+   (.slav-overlay > .slav-panel.slav-standalone). */
+.slav-overlay { display: flex; align-items: center; justify-content: center; }
+.slav-panel {
+  display: flex; flex-direction: column;
+  background: var(--bg2, #181818); color: #fff;
+  z-index: 30;
+}
+/* Slide-over inside the shop: absolute over the box, animates in from the right. */
+.slsh-box { position: relative; }
+.slsh-box > .slav-panel {
+  position: absolute; top: 0; right: 0; bottom: 0;
+  width: min(560px, 100%);
+  box-shadow: -16px 0 40px rgba(0,0,0,.5);
+  border-left: 1px solid rgba(255,255,255,.08);
+  transform: translateX(100%); transition: transform .2s ease;
+}
+.slsh-box > .slav-panel.open { transform: translateX(0); }
+/* Standalone overlay on the search page: a centred card. */
+.slav-panel.slav-standalone {
+  width: min(720px, 94vw); max-height: 88vh;
+  border-radius: 12px; overflow: hidden;
+  box-shadow: 0 24px 64px rgba(0,0,0,.55);
+  border: 1px solid rgba(255,255,255,.08);
+}
+
+.slav-head {
+  display: grid; grid-template-columns: 96px 1fr auto; gap: 14px;
+  padding: 18px 18px 14px; border-bottom: 1px solid rgba(255,255,255,.07);
+}
+.slav-cover {
+  width: 96px; height: 96px; border-radius: 8px; overflow: hidden;
+  background: var(--bg3, #202020); flex-shrink: 0;
+}
+.slav-cover-img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.slav-cover-fb { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
+.slav-cover-fb svg { width: 42%; height: 42%; fill: rgba(255,255,255,.2); }
+.slav-headmeta { min-width: 0; display: flex; flex-direction: column; }
+.slav-title {
+  font-size: 18px; font-weight: 700; line-height: 1.2;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.slav-artist { font-size: 13px; color: var(--text2, #bbb); margin-top: 2px; }
+.slav-sub { font-size: 12px; color: var(--text3, #888); margin-top: 6px; }
+.slav-dot { margin: 0 5px; }
+.slav-qual { color: #e8e8e8; font-weight: 600; }
+.slav-from { font-size: 12px; color: var(--text3, #888); margin-top: 4px; position: relative; }
+.slav-user-link {
+  background: none; border: none; color: var(--accent, #1db954);
+  cursor: pointer; font-size: 12px; padding: 0 2px; font-weight: 600;
+}
+.slav-other-sources {
+  background: rgba(255,255,255,.06); border: none; color: var(--text2, #bbb);
+  cursor: pointer; font-size: 11px; padding: 2px 8px; border-radius: 6px; margin-left: 8px;
+}
+.slav-other-sources:hover { color: #fff; }
+.slav-source-menu {
+  position: absolute; left: 0; top: 100%; margin-top: 6px; z-index: 5;
+  background: var(--bg3, #222); border: 1px solid rgba(255,255,255,.1);
+  border-radius: 8px; padding: 4px; min-width: 260px; max-height: 260px; overflow-y: auto;
+  box-shadow: 0 10px 30px rgba(0,0,0,.5);
+}
+.slav-source-opt {
+  display: block; width: 100%; text-align: left; background: none; border: none;
+  color: #fff; font-size: 12px; padding: 7px 9px; border-radius: 6px; cursor: pointer;
+}
+.slav-source-opt:hover { background: rgba(255,255,255,.08); }
+.slav-source-opt.current { color: var(--accent, #1db954); }
+.slav-source-q { color: var(--text3, #888); font-size: 11px; margin-left: 6px; }
+.slav-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.slav-actions button {
+  background: rgba(255,255,255,.08); border: none; color: #fff;
+  font-size: 12px; font-weight: 600; padding: 7px 12px; border-radius: 8px; cursor: pointer;
+  transition: background .15s;
+}
+.slav-actions button:hover:not(:disabled) { background: rgba(255,255,255,.16); }
+.slav-actions .slav-dl-album { background: var(--accent, #1db954); color: #000; }
+.slav-actions .slav-dl-album:hover:not(:disabled) { background: #1ed760; }
+.slav-actions button:disabled { opacity: .4; cursor: default; }
+.slav-close {
+  align-self: start; background: none; border: none; color: var(--text2, #bbb);
+  font-size: 18px; cursor: pointer; line-height: 1; padding: 2px 6px;
+}
+.slav-close:hover { color: #fff; }
+
+.slav-tracks-head {
+  display: grid; grid-template-columns: 48px 28px 1fr auto auto 96px;
+  align-items: center; gap: 8px; padding: 8px 18px;
+  font-size: 11px; color: var(--text3, #777); text-transform: uppercase; letter-spacing: .04em;
+  border-bottom: 1px solid rgba(255,255,255,.05);
+}
+.slav-selall { display: flex; align-items: center; gap: 4px; cursor: pointer; text-transform: none; }
+.slav-tracks { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 8px 12px; }
+.slav-track {
+  display: grid; grid-template-columns: 48px 28px 1fr auto auto 96px;
+  align-items: center; gap: 8px; padding: 7px 10px; border-radius: 6px;
+  font-size: 13px;
+}
+.slav-track:hover { background: rgba(255,255,255,.05); }
+.slav-track.sel { background: rgba(29,185,84,.12); }
+.slav-track.kfocus { outline: 2px solid var(--accent, #1db954); outline-offset: -2px; }
+.slav-track-sel { display: flex; align-items: center; justify-content: center; cursor: pointer; }
+.slav-track-num { color: var(--text3, #777); text-align: right; font-variant-numeric: tabular-nums; }
+.slav-track-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slav-track-qual { color: var(--text3, #888); font-size: 11px; white-space: nowrap; }
+.slav-track-size { color: var(--text3, #888); font-size: 11px; white-space: nowrap; text-align: right; }
+.slav-track-actions { display: flex; gap: 4px; justify-content: flex-end; }
+.slav-track-btn {
+  background: rgba(255,255,255,.07); border: none; color: #fff;
+  width: 26px; height: 26px; border-radius: 6px; cursor: pointer; font-size: 12px;
+  display: flex; align-items: center; justify-content: center;
+}
+.slav-track-btn:hover:not(:disabled) { background: var(--accent, #1db954); color: #000; }
+.slav-track-btn:disabled { opacity: .5; cursor: default; }
+
+/* Folder-mode selection extras (checkbox column + selected-row tint). */
+.slskx-selbox { display: inline-flex; align-items: center; justify-content: center; width: 20px; }
+.slskx-row.sel { background: rgba(29,185,84,.1); }
+
+@media (prefers-reduced-motion: reduce) {
+  .slsh-box > .slav-panel { transition: none; }
+}
+
 /* Skeletons while the tree parses. */
 .slsh-skel { pointer-events: none; }
 .slsh-skel-art, .slsh-skel-line {
