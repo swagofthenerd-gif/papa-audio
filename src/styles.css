@@ -7191,6 +7191,81 @@ body.app-unfocused .vt-menu {
 .mg-genre-merge-label { font-size:12px; color:var(--text3); }
 .mg-genre-merge-select { flex:1 1 160px; min-width:0; }
 
+/* ── Dashboard / overview (Manage overhaul) ─────────── */
+.mg-cards {
+  display:grid; grid-template-columns:repeat(auto-fill, minmax(230px, 1fr));
+  gap:12px; margin-top:4px;
+}
+.mg-card {
+  text-align:left; background:var(--bg2); border:1px solid var(--glass-border);
+  border-radius:var(--r); padding:16px; cursor:pointer; color:var(--text);
+  display:flex; flex-direction:column; gap:8px; min-height:118px;
+  transition:border-color .12s var(--ease), transform .12s var(--ease), background .12s var(--ease);
+}
+.mg-card:hover { border-color:var(--accent); transform:translateY(-2px); background:var(--bg3); }
+.mg-card-title { font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:var(--text3); }
+.mg-card-body { flex:1; }
+.mg-card-sub { font-size:12px; color:var(--text3); margin-top:4px; line-height:1.5; }
+.mg-card-go { font-size:11.5px; color:var(--accent); font-weight:600; opacity:0; transition:opacity .12s var(--ease); }
+.mg-card:hover .mg-card-go { opacity:1; }
+/* Accent-tinted left edge per card, consistent with the app palette. */
+.mg-card-health  { box-shadow:inset 3px 0 0 var(--accent); }
+.mg-card-storage { box-shadow:inset 3px 0 0 #4a9fd4; }
+.mg-card-dupes   { box-shadow:inset 3px 0 0 #e0a33e; }
+.mg-card-genres  { box-shadow:inset 3px 0 0 #a97fd4; }
+.mg-card-trash   { box-shadow:inset 3px 0 0 var(--text3); }
+.mg-stat { font-size:30px; font-weight:700; line-height:1.1; font-variant-numeric:tabular-nums; }
+.mg-stat-unit { font-size:13px; font-weight:600; color:var(--text3); }
+.mg-health-score.mg-hs-good { color:var(--accent); }
+.mg-health-score.mg-hs-ok   { color:#4a9fd4; }
+.mg-health-score.mg-hs-warn { color:#e0a33e; }
+.mg-health-score.mg-hs-bad  { color:#e05555; }
+
+/* Per-format storage mini-bar. */
+.mg-fmtbar { display:flex; height:8px; border-radius:100px; overflow:hidden; background:var(--glass); margin:8px 0 6px; }
+.mg-fmtbar-seg { height:100%; }
+.mg-fmt-flac, .mg-fmt-alac, .mg-fmt-wav, .mg-fmt-ape, .mg-fmt-dsf, .mg-fmt-dff { background:var(--accent); }
+.mg-fmt-mp3, .mg-fmt-m4a, .mg-fmt-aac, .mg-fmt-opus, .mg-fmt-ogg { background:#e0a33e; }
+.mg-fmt-unknown, .mg-fmt-other { background:var(--text3); }
+.mg-fmt-legends { display:flex; flex-wrap:wrap; gap:10px; font-size:10.5px; color:var(--text3); }
+.mg-fmt-legend { display:flex; align-items:center; gap:4px; }
+.mg-fmt-dot { width:8px; height:8px; border-radius:2px; display:inline-block; }
+
+/* Duplicates 2.0: rule bar, compare rows, quality badges, play. */
+.mg-rule-bar { display:flex; gap:8px; flex-wrap:wrap; margin:6px 0 16px; }
+.mg-btn-ghost { background:none; color:var(--text3); }
+.mg-btn-ghost:hover { background:var(--glass); color:var(--text); }
+.mg-compare { display:flex; flex-direction:column; gap:8px; }
+.mg-folder-badges { display:flex; flex-wrap:wrap; gap:5px; margin-top:5px; }
+.mg-badge {
+  font-size:9.5px; font-weight:700; letter-spacing:.03em; padding:1px 6px;
+  border-radius:100px; background:var(--glass-hi); color:var(--text2);
+}
+.mg-badge-hires { background:var(--accent-dim); color:var(--accent); }
+.mg-badge-dsd   { background:var(--accent-dim); color:var(--accent); }
+.mg-badge-atmos { background:rgba(169,127,212,.18); color:#a97fd4; }
+.mg-badge-surround { background:rgba(74,159,212,.16); color:#4a9fd4; }
+.mg-badge-lossy { background:rgba(224,163,62,.14); color:#e0a33e; }
+.mg-folder-actions { flex:0 0 auto; display:flex; gap:4px; align-items:flex-start; }
+.mg-play {
+  background:none; border:none; color:var(--accent); cursor:pointer;
+  font-size:13px; padding:2px 6px; border-radius:4px; opacity:.85;
+}
+.mg-play:hover { color:#fff; background:var(--accent); opacity:1; }
+
+/* Storage 2.0: sections and the redundant-lossy list. */
+.mg-store-section { margin-bottom:18px; }
+.mg-store-h {
+  font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.04em;
+  color:var(--text3); margin:0 0 8px;
+}
+.mg-store-sub { font-size:11px; color:var(--text3); font-weight:400; }
+.mg-store-inline { padding:14px; }
+.mg-album-row { cursor:pointer; transition:background .12s var(--ease); }
+.mg-album-row:hover { background:var(--bg4); }
+.mg-redundant-row { align-items:center; }
+.mg-red-check { width:16px; height:16px; accent-color:#e05555; cursor:pointer; margin-right:2px; }
+
 /* ── Tag editor ─────────────────────────────────────── */
 .tag-form { display:flex; flex-direction:column; gap:8px; margin:12px 0; }
 .tag-row { display:flex; align-items:center; gap:12px; }

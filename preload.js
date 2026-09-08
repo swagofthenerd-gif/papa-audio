@@ -301,6 +301,8 @@ contextBridge.exposeInMainWorld('api', {
   libraryScanExtras:   ()  => ipcRenderer.invoke('library-scan-extras'),
   libraryStorageReport:()  => ipcRenderer.invoke('library-storage-report'),
   libraryFreeSpace:    (p) => ipcRenderer.invoke('library-free-space', p),
+  manageCacheGet:      ()  => ipcRenderer.invoke('manage-cache-get'),
+  manageCacheSet:      (p) => ipcRenderer.invoke('manage-cache-set', p),
   libraryMigrateAlbumId: (p) => ipcRenderer.invoke('library-migrate-album-id', p),
   libraryPickArtwork:  ()  => ipcRenderer.invoke('library-pick-artwork'),
   librarySetArtwork:   (p) => ipcRenderer.invoke('library-set-artwork', p),

@@ -28636,8 +28636,59 @@ function _initOnlineBanner() {
 // a copy is or is not safe to remove, and always names the exact files and
 // total size before it touches the disk.
 
-var _mgState = { groups: [], picked: {}, busy: false, tab: 'duplicates', trash: null }
+// The active tool is remembered across visits (session), defaulting to the
+// dashboard overview. Restored from localStorage so a revisit lands where you
+// left off rather than always on Duplicates.
+var _MG_TAB_KEY = 'papa.manageTab'
+var _MG_VALID_TABS = { dashboard: 1, duplicates: 1, health: 1, genres: 1, storage: 1, trash: 1 }
+function _mgInitialTab() {
+  try {
+    var t = (window.PapaLocal && window.PapaLocal.readObject(_MG_TAB_KEY)) || {}
+    if (t && _MG_VALID_TABS[t.tab]) return t.tab
+  } catch (_) {}
+  return 'dashboard'
+}
+var _mgState = { groups: [], picked: {}, busy: false, tab: _mgInitialTab(), trash: null, dupRule: 'best' }
 var _queueAnalysis = { analysed: 0, total: 0, running: false, halted: false }
+
+// Per-tool result cache (instant revisits) — a thin wrapper over the main-process
+// manage-cache SideStore, keyed by a library signature so it self-invalidates
+// when the library changes. Hydrated once at first use.
+var _mgCache = (window.PapaManageCache && window.PapaManageCache.createStore) ? window.PapaManageCache.createStore({}) : null
+var _mgCacheReady = false
+function _mgCacheLoad() {
+  if (_mgCacheReady || !_mgCache) return Promise.resolve()
+  return _mgCache.load().then(function () { _mgCacheReady = true }).catch(function () { _mgCacheReady = true })
+}
+// The current library signature — the cache key. Changes when tracks are added
+// or removed, so cached tool results only survive while they are still true.
+function _mgSig() {
+  try {
+    return (window.PapaLibrarySig && window.PapaLibrarySig.librarySignature)
+      ? window.PapaLibrarySig.librarySignature(state.library || [])
+      : String((state.library || []).length)
+  } catch (_) { return String((state.library || []).length) }
+}
+function _mgCacheGet(key) { return _mgCache ? _mgCache.get(key, _mgSig()) : null }
+function _mgCachePut(key, value) { if (_mgCache) _mgCache.put(key, value, _mgSig()) }
+
+// Remember the active tool, and restore the per-tool scroll position so a
+// revisit feels continuous instead of jumping to the top.
+function _mgScrollKey(tab) { return 'papa.manageScroll.' + tab }
+function _mgSaveState() {
+  try {
+    if (window.PapaLocal) window.PapaLocal.write(_MG_TAB_KEY, { tab: _mgState.tab })
+    var el = document.getElementById('content')
+    if (el && window.PapaLocal) window.PapaLocal.write(_mgScrollKey(_mgState.tab), { top: el.scrollTop })
+  } catch (_) {}
+}
+function _mgRestoreScroll() {
+  try {
+    var el = document.getElementById('content')
+    var s = window.PapaLocal && window.PapaLocal.readObject(_mgScrollKey(_mgState.tab))
+    if (el && s && typeof s.top === 'number') el.scrollTop = s.top
+  } catch (_) {}
+}
 
 function _mgAnalysisLabel() {
   var a = _queueAnalysis
@@ -28652,11 +28703,11 @@ function _mgAnalysisLabel() {
 }
 
 function _mgAnalysisProgressHtml() {
-  var a = _queueAnalysis
-  var btn = (!a.running && !a.halted && a.analysed < a.total)
-    ? '<button class="mg-btn mg-btn-sm" id="q-analysis-start-btn">' + (a.analysed > 0 ? 'Resume analysis' : 'Start analysis') + '</button>'
-    : ''
-  return '<div class="q-analysis-progress"><span class="q-analysis-progress-label">' + esc(_mgAnalysisLabel()) + '</span>' + btn + '</div>'
+  // The analysis now runs UNATTENDED: it starts itself at launch and auto-resumes
+  // 30s after playback stops (main.js). There is nothing for the user to click,
+  // so the manual Start/Resume button is gone — this is a status line only.
+  return '<div class="q-analysis-progress"><span class="q-analysis-progress-label">' +
+    esc(_mgAnalysisLabel()) + '</span></div>'
 }
 
 function _mgTracksFromLibrary() {
@@ -28701,6 +28752,7 @@ function _mgPickedPaths() {
 function _mgTabsHtml() {
   var t = _mgState.tab
   return '<div class="mg-tabs">' +
+    '<button class="mg-tab' + (t === 'dashboard' ? ' active' : '') + '" data-mgtab="dashboard">Overview</button>' +
     '<button class="mg-tab' + (t === 'duplicates' ? ' active' : '') + '" data-mgtab="duplicates">Duplicates</button>' +
     '<button class="mg-tab' + (t === 'health' ? ' active' : '') + '" data-mgtab="health">Health</button>' +
     '<button class="mg-tab' + (t === 'genres' ? ' active' : '') + '" data-mgtab="genres">Genres</button>' +
@@ -28712,25 +28764,27 @@ function _mgTabsHtml() {
 function _mgBindTabs() {
   document.querySelectorAll('[data-mgtab]').forEach(function (b) {
     b.addEventListener('click', function () {
+      _mgSaveState()               // remember the scroll of the tab we are leaving
       _mgState.tab = b.dataset.mgtab
+      try { if (window.PapaLocal) window.PapaLocal.write(_MG_TAB_KEY, { tab: _mgState.tab }) } catch (_) {}
       renderManage()
     })
-  })
-  document.getElementById('q-analysis-start-btn')?.addEventListener('click', function () {
-    _queueAnalysis.running = true
-    var label = document.querySelector('.q-analysis-progress-label')
-    if (label) label.textContent = 'Smart queues: starting analysis…'
-    document.getElementById('q-analysis-start-btn')?.remove()
-    window.api.queueAnalysisStart().catch(function () {})
   })
 }
 
 function renderManage() {
+  // Hydrate the result cache once; when it lands, repaint so a cached tool shows
+  // instantly next time. The first paint uses whatever the synchronous
+  // localStorage snapshot had, so it is never blank waiting on the IPC.
+  if (!_mgCacheReady && _mgCache) {
+    _mgCacheLoad().then(function () { if (state.currentPage === 'manage') renderManage() })
+  }
   if (_mgState.tab === 'trash') return renderManageTrash()
   if (_mgState.tab === 'health') return renderManageHealth()
   if (_mgState.tab === 'genres') return renderManageGenres()
   if (_mgState.tab === 'storage') return renderManageStorage()
-  return renderManageDuplicates()
+  if (_mgState.tab === 'duplicates') return renderManageDuplicates()
+  return renderManageDashboard()
 }
 
 function _mgShell(inner, sub) {
@@ -28739,6 +28793,174 @@ function _mgShell(inner, sub) {
     (sub ? '<div class="mg-sub">' + sub + '</div>' : '') + '</div>' +
     _mgAnalysisProgressHtml() +
     _mgTabsHtml() + inner + '</div>'
+}
+
+// ── Dashboard / overview (Manage overhaul) ──────────────────────────────────
+// The landing view: one card per tool, each showing its headline number and
+// clicking through to the tool. Cards paint instantly from the per-tool cache
+// and refresh in the background, so opening Manage is never a blank "measuring…".
+
+function _mgFmt(n) {
+  // Prefer the app-wide byte formatter; _mgFmtBytes is the older MB/GB one.
+  return typeof _fmtBytes === 'function' ? _fmtBytes(n) : _mgFmtBytes(n)
+}
+
+// A stacked mini-bar of the per-format storage split.
+function _mgFormatBar(formats, total) {
+  if (!formats || !formats.length || !total) return ''
+  var segs = formats.slice(0, 6).map(function (f) {
+    var pct = Math.max(1, Math.round((f.bytes / total) * 100))
+    return '<span class="mg-fmtbar-seg mg-fmt-' + esc(String(f.format || 'other').toLowerCase()) +
+      '" style="width:' + pct + '%" title="' + esc(f.format) + ' · ' + _mgFmt(f.bytes) + '"></span>'
+  }).join('')
+  var legend = formats.slice(0, 4).map(function (f) {
+    return '<span class="mg-fmt-legend"><span class="mg-fmt-dot mg-fmt-' +
+      esc(String(f.format || 'other').toLowerCase()) + '"></span>' + esc(f.format) + '</span>'
+  }).join('')
+  return '<div class="mg-fmtbar">' + segs + '</div><div class="mg-fmt-legends">' + legend + '</div>'
+}
+
+function _mgCard(tab, title, bodyHtml, accentClass) {
+  return '<button class="mg-card ' + (accentClass || '') + '" data-mgcard="' + esc(tab) + '">' +
+    '<div class="mg-card-title">' + esc(title) + '</div>' +
+    '<div class="mg-card-body">' + bodyHtml + '</div>' +
+    '<div class="mg-card-go">Open →</div>' +
+    '</button>'
+}
+
+function _mgDashboardModel() {
+  var mt = window.PapaMusicTools
+  var L = window.PapaLibraryManage
+  var reclaimApi = window.PapaManageReclaim
+  var dashApi = window.PapaManageDashboard
+
+  // Storage: cached measurement is the IPC report; the per-format split is cheap
+  // and computed from the in-memory library so it is always current.
+  var storageRep = _mgCacheGet('storage')
+  var byFmt = mt ? mt.storageByFormat(state.library || []) : null
+  var storage = byFmt
+    ? { totalBytes: (storageRep && storageRep.roots)
+          ? storageRep.roots.reduce(function (n, r) { return n + (r.bytes || 0) }, 0)
+          : byFmt.totalBytes,
+        formats: byFmt.formats }
+    : null
+
+  // Duplicates: computed in-memory (fast); the reclaimable number uses the FIXED
+  // keep-best rule, not the old conservative-only sum.
+  var duplicates = null
+  if (L) {
+    var groups = L.findDuplicates(_mgTracksFromLibrary())
+    var reclaim = reclaimApi ? reclaimApi.reclaimableAcross(groups, _mgState.dupRule) : 0
+    duplicates = { groups: groups, reclaimBytes: reclaim }
+  }
+
+  // Health: the findings the Health tab computes; cached so the score is instant.
+  var health = _mgCacheGet('health') || null
+
+  // Genres: in-memory (cheap).
+  var genres = mt ? mt.analyzeGenres(state.library || []) : null
+
+  // Trash: cached (the IPC that lists it is slow).
+  var trash = _mgCacheGet('trash') || null
+
+  var model = dashApi ? dashApi.buildDashboard({
+    storage: storage, duplicates: duplicates, health: health, genres: genres, trash: trash,
+  }) : null
+  return { model: model, storage: storage, duplicates: duplicates, genres: genres }
+}
+
+function renderManageDashboard() {
+  var built = _mgDashboardModel()
+  var m = built.model
+  if (!m) { setContent(_mgShell('<div class="mg-empty">Dashboard tools failed to load.</div>')); _mgBindTabs(); return }
+
+  // Health card.
+  var hBody = m.health.available
+    ? '<div class="mg-stat mg-health-score mg-hs-' +
+        (m.health.score >= 90 ? 'good' : m.health.score >= 70 ? 'ok' : m.health.score >= 40 ? 'warn' : 'bad') +
+        '">' + m.health.score + '<span class="mg-stat-unit">/100</span></div>' +
+      '<div class="mg-card-sub">' + esc(m.health.label) +
+        (m.health.findingCount ? ' · ' + m.health.findingCount + ' finding' + (m.health.findingCount === 1 ? '' : 's') : '') + '</div>'
+    : '<div class="mg-card-sub">Not analysed yet — running in the background.</div>'
+
+  // Storage card.
+  var sBody = m.storage.available
+    ? '<div class="mg-stat">' + _mgFmt(m.storage.totalBytes) + '</div>' +
+      _mgFormatBar(m.storage.formats, m.storage.totalBytes)
+    : '<div class="mg-card-sub">Measuring…</div>'
+
+  // Duplicates card.
+  var dBody = m.duplicates.available
+    ? '<div class="mg-stat">' + m.duplicates.groupCount + '<span class="mg-stat-unit"> album' + (m.duplicates.groupCount === 1 ? '' : 's') + '</span></div>' +
+      '<div class="mg-card-sub">' + (m.duplicates.reclaimBytes
+        ? 'up to ' + _mgFmt(m.duplicates.reclaimBytes) + ' reclaimable'
+        : 'no space to reclaim') + '</div>'
+    : '<div class="mg-card-sub">…</div>'
+
+  // Genres card.
+  var gBody = m.genres.available
+    ? '<div class="mg-stat">' + m.genres.variantCount + '<span class="mg-stat-unit"> to merge</span></div>' +
+      '<div class="mg-card-sub">' + (m.genres.missingCount
+        ? m.genres.missingCount + ' album' + (m.genres.missingCount === 1 ? '' : 's') + ' with no genre'
+        : 'all albums have a genre') + '</div>'
+    : '<div class="mg-card-sub">…</div>'
+
+  // Trash card.
+  var tBody = m.trash.available
+    ? '<div class="mg-stat">' + m.trash.itemCount + '<span class="mg-stat-unit"> item' + (m.trash.itemCount === 1 ? '' : 's') + '</span></div>' +
+      '<div class="mg-card-sub">' + (m.trash.bytes ? _mgFmt(m.trash.bytes) + ' recoverable' : 'empty') + '</div>'
+    : '<div class="mg-card-sub">Reading…</div>'
+
+  var cards = '<div class="mg-cards">' +
+    _mgCard('health', 'Health', hBody, 'mg-card-health') +
+    _mgCard('storage', 'Storage', sBody, 'mg-card-storage') +
+    _mgCard('duplicates', 'Duplicates', dBody, 'mg-card-dupes') +
+    _mgCard('genres', 'Genres', gBody, 'mg-card-genres') +
+    _mgCard('trash', 'Recently Deleted', tBody, 'mg-card-trash') +
+    '</div>'
+
+  setContent(_mgShell(cards, 'An overview of your library — click any card to dig in.'))
+  _mgBindTabs()
+  _mgRestoreScroll()
+  document.querySelectorAll('[data-mgcard]').forEach(function (c) {
+    c.addEventListener('click', function () {
+      _mgSaveState()
+      _mgState.tab = c.dataset.mgcard
+      try { if (window.PapaLocal) window.PapaLocal.write(_MG_TAB_KEY, { tab: _mgState.tab }) } catch (_) {}
+      renderManage()
+    })
+  })
+
+  // Background refresh of the cached-only cards (storage + trash), so the numbers
+  // are current without blocking the paint. Results are cached for next time.
+  _mgRefreshDashboardCaches()
+}
+
+// Fetch storage + trash + health in the background and cache them, then repaint
+// the dashboard if it is still on screen. Never blocks the initial paint.
+function _mgRefreshDashboardCaches() {
+  var sig = _mgSig()
+  var jobs = []
+  if (!_mgCacheGet('storage')) {
+    jobs.push(window.api.libraryStorageReport().then(function (rep) {
+      if (rep) _mgCachePut('storage', rep)
+    }).catch(function () {}))
+  }
+  if (!_mgCacheGet('trash')) {
+    jobs.push(window.api.libraryTrashList().then(function (data) {
+      if (data) _mgCachePut('trash', { items: data.items || [], totalBytes: data.totalBytes || 0 })
+    }).catch(function () {}))
+  }
+  if (!_mgCacheGet('health')) {
+    jobs.push(window.api.libraryScanExtras().then(function (extras) {
+      var H = window.PapaLibraryHealth
+      if (H && extras) _mgCachePut('health', { findings: H.assessLibrary(state.library, extras) })
+    }).catch(function () {}))
+  }
+  if (!jobs.length) return
+  Promise.all(jobs).then(function () {
+    if (state.currentPage === 'manage' && _mgState.tab === 'dashboard') renderManageDashboard()
+  })
 }
 
 // Everything here reports what it found and hands the fix to the same delete
@@ -28765,6 +28987,7 @@ async function renderManageHealth() {
   }
   var findings = H.assessLibrary(state.library, extras)
   _mgState.findings = findings
+  _mgCachePut('health', { findings: findings })   // feed the dashboard health card
   var reclaim = H.reclaimable(findings)
 
   if (!findings.length) {
@@ -28988,33 +29211,128 @@ function _mgApplyGenreToModel(writes) {
   }
 }
 
+function _mgStorageHtml(rep) {
+  var mt = window.PapaMusicTools
+  var byFmt = mt ? mt.storageByFormat(state.library || []) : { formats: [], totalBytes: 0 }
+
+  // Per-format totals bar (from the in-memory library — always current).
+  var bar = _mgFormatBar(byFmt.formats, byFmt.totalBytes)
+  var fmtRows = (byFmt.formats || []).map(function (f) {
+    return '<div class="mg-store-row"><span class="mg-store-label">' + esc(f.format) +
+      ' <span class="mg-store-sub">' + f.tracks + ' track' + (f.tracks === 1 ? '' : 's') + '</span></span>' +
+      '<span class="mg-store-val">' + _mgFmt(f.bytes) + '</span></div>'
+  }).join('')
+
+  // Top-20 biggest albums.
+  var big = mt ? mt.largestAlbums(state.library || [], 20) : []
+  var bigRows = big.map(function (row) {
+    var a = row.album
+    return '<div class="mg-store-row mg-album-row" data-album="' + esc(a.id) + '">' +
+      '<span class="mg-store-label">' + esc((a.artist || 'Unknown') + ' — ' + (a.name || 'Unknown')) + '</span>' +
+      '<span class="mg-store-val">' + _mgFmt(row.bytes) + '</span></div>'
+  }).join('')
+
+  // Per-folder (music root) split, from the cached IPC report.
+  var rootRows = rep ? (rep.roots || []).map(function (r) {
+    return '<div class="mg-store-row"><span class="mg-store-label">' + esc(r.path) + '</span>' +
+      '<span class="mg-store-val">' + _mgFmt(r.bytes) + '</span></div>'
+  }).join('') : '<div class="mg-empty mg-store-inline">Measuring folders…</div>'
+  if (rep) {
+    rootRows += '<div class="mg-store-row"><span class="mg-store-label">Cached artwork</span>' +
+      '<span class="mg-store-val">' + _mgFmt(rep.artworkBytes) + '</span></div>'
+    rootRows += '<div class="mg-store-row"><span class="mg-store-label">Trash (recoverable, still using space)</span>' +
+      '<span class="mg-store-val">' + _mgFmt(rep.trashBytes) + '</span></div>'
+    if (rep.free != null) {
+      rootRows += '<div class="mg-store-row mg-store-total"><span class="mg-store-label">Free on drive</span>' +
+        '<span class="mg-store-val">' + _mgFmt(rep.free) + (rep.total ? ' of ' + _mgFmt(rep.total) : '') + '</span></div>'
+    }
+  }
+
+  // Redundant-lossy finder: albums where a lossless AND a lossy copy of the same
+  // identity both exist. The lossy copy is pure waste.
+  var redundant = (window.PapaManageRedundant && window.PapaSlskShelves)
+    ? window.PapaManageRedundant.findRedundantLossy(state.library || [], window.PapaSlskShelves)
+    : { pairs: [], totalReclaimBytes: 0 }
+  _mgState.redundant = redundant
+  var redHtml = ''
+  if (redundant.pairs.length) {
+    var redRows = redundant.pairs.map(function (p, idx) {
+      var la = p.lossyAlbum, ll = p.losslessAlbum
+      return '<div class="mg-store-row mg-redundant-row">' +
+        '<label class="mg-pick"><input type="checkbox" class="mg-red-check" data-idx="' + idx + '" checked></label>' +
+        '<span class="mg-store-label">' + esc((la.artist || 'Unknown') + ' — ' + (la.name || 'Unknown')) +
+          ' <span class="mg-store-sub">lossy copy · lossless kept' + (ll ? ': ' + esc(ll.name || '') : '') + '</span></span>' +
+        '<span class="mg-store-val">' + _mgFmt(p.lossyBytes) + '</span></div>'
+    }).join('')
+    redHtml = '<div class="mg-store-section"><div class="mg-store-h">Redundant lossy copies</div>' +
+      '<div class="mg-note">These albums have BOTH a lossless and a lossy copy — the lossy one is just wasting space. ' +
+      'Up to <strong>' + _mgFmt(redundant.totalReclaimBytes) + '</strong> reclaimable.</div>' +
+      redRows +
+      '<div class="mg-rule-bar"><button class="mg-btn mg-btn-danger mg-btn-sm" id="mg-red-trash">Move selected to Trash…</button></div>' +
+      '</div>'
+  }
+
+  return '<div class="mg-store">' +
+    '<div class="mg-store-section"><div class="mg-store-h">By format</div>' + bar + fmtRows + '</div>' +
+    (bigRows ? '<div class="mg-store-section"><div class="mg-store-h">Biggest albums</div>' + bigRows + '</div>' : '') +
+    '<div class="mg-store-section"><div class="mg-store-h">By folder</div>' + rootRows + '</div>' +
+    redHtml +
+    '</div>' +
+    '<div class="mg-note">Trash counts against your free space until it is emptied — see Recently Deleted.</div>'
+}
+
 async function renderManageStorage() {
   var _tabAtStart = _mgState.tab
-  setContent(_mgShell('<div class="mg-empty">Measuring…</div>'))
+  // Paint instantly: the per-format bar, biggest albums and redundant-lossy
+  // finder are all in-memory, and the folder split uses the cached report if we
+  // have a fresh one. Only the folder split waits on the slow IPC.
+  var cached = _mgCacheGet('storage')
+  setContent(_mgShell(_mgStorageHtml(cached)))
   _mgBindTabs()
-  var rep = await window.api.libraryStorageReport().catch(function () { return null })
-  // Measuring walks every music root and every trash root, so it takes seconds.
-  // Without this the late result repainted over whatever you had switched to —
-  // the same bug renderManageHealth already fixed and documented.
-  if (_mgState.tab !== _tabAtStart || state.currentPage !== 'manage') return
-  if (!rep) { setContent(_mgShell('<div class="mg-empty">Could not read storage.</div>')); _mgBindTabs(); return }
+  _mgBindStorage()
+  _mgRestoreScroll()
 
-  var rows = (rep.roots || []).map(function (r) {
-    return '<div class="mg-store-row"><span class="mg-store-label">' + esc(r.path) + '</span>' +
-      '<span class="mg-store-val">' + _mgFmtBytes(r.bytes) + '</span></div>'
-  }).join('')
-  rows += '<div class="mg-store-row"><span class="mg-store-label">Cached artwork</span>' +
-    '<span class="mg-store-val">' + _mgFmtBytes(rep.artworkBytes) + '</span></div>'
-  rows += '<div class="mg-store-row"><span class="mg-store-label">Trash (recoverable, still using space)</span>' +
-    '<span class="mg-store-val">' + _mgFmtBytes(rep.trashBytes) + '</span></div>'
-  if (rep.free != null) {
-    rows += '<div class="mg-store-row mg-store-total"><span class="mg-store-label">Free on drive</span>' +
-      '<span class="mg-store-val">' + _mgFmtBytes(rep.free) +
-      (rep.total ? ' of ' + _mgFmtBytes(rep.total) : '') + '</span></div>'
-  }
-  setContent(_mgShell('<div class="mg-store">' + rows + '</div>' +
-    '<div class="mg-note">Trash counts against your free space until it is emptied — see Recently Deleted.</div>'))
+  if (cached) return   // fresh cache — no need to re-measure
+
+  var rep = await window.api.libraryStorageReport().catch(function () { return null })
+  if (_mgState.tab !== _tabAtStart || state.currentPage !== 'manage') return
+  if (rep) _mgCachePut('storage', rep)
+  setContent(_mgShell(_mgStorageHtml(rep || null)))
   _mgBindTabs()
+  _mgBindStorage()
+  _mgRestoreScroll()
+}
+
+function _mgBindStorage() {
+  document.querySelectorAll('.mg-album-row[data-album]').forEach(function (row) {
+    row.addEventListener('click', function () {
+      var id = row.dataset.album
+      if (id) navigate('album', id)
+    })
+  })
+  document.getElementById('mg-red-trash')?.addEventListener('click', _mgTrashRedundant)
+}
+
+// Batch-trash the selected redundant lossy copies through the normal funnel.
+async function _mgTrashRedundant() {
+  var red = _mgState.redundant
+  if (!red || !red.pairs.length) return
+  var chosen = []
+  document.querySelectorAll('.mg-red-check:checked').forEach(function (cb) {
+    var p = red.pairs[Number(cb.dataset.idx)]
+    if (p) chosen.push(p)
+  })
+  if (!chosen.length) { showToast('Select at least one to remove'); return }
+  var paths = window.PapaManageRedundant.lossyPathsOf(chosen)
+  if (!paths.length) { showToast('Nothing to remove'); return }
+  var bytes = chosen.reduce(function (n, p) { return n + p.lossyBytes }, 0)
+  await libraryMutate({
+    kind: 'trash',
+    paths: paths,
+    label: chosen.length + ' redundant lossy album' + (chosen.length === 1 ? '' : 's') + ' (' + _mgFmt(bytes) + ')',
+  })
+  // The library will rescan; invalidate storage cache so the numbers refresh.
+  _mgCachePut('storage', null)
 }
 
 // Files here have left the library but not the drive. Because the Trash sits on
@@ -29158,44 +29476,97 @@ function _mgBindTrash() {
   })
 }
 
+// Find the full library track object for a filePath, so a compare-view play
+// button can start playback with real metadata (title, art, album identity).
+function _mgTrackByPath(filePath) {
+  var lib = state.library || []
+  for (var i = 0; i < lib.length; i++) {
+    var tracks = lib[i].tracks || []
+    for (var j = 0; j < tracks.length; j++) {
+      if (tracks[j].filePath === filePath) {
+        return Object.assign({}, tracks[j], {
+          albumArtist: lib[i].artist, albumName: lib[i].name,
+          albumId: lib[i].id, artPath: lib[i].artPath,
+        })
+      }
+    }
+  }
+  return null
+}
+
+// Quality badges for one folder copy, built from what buildFolders recorded.
+// Reuses window.PapaFormat.formatBadges (the same badges albums/tracks show).
+function _mgFolderBadges(fo) {
+  var codec = null
+  for (var c in (fo.codecs || {})) { codec = c; break } // representative codec
+  var badges = (window.PapaFormat && window.PapaFormat.formatBadges)
+    ? window.PapaFormat.formatBadges({
+        codec: codec, channels: fo.maxChannels,
+        bitsPerSample: fo.maxBitDepth, sampleRate: fo.maxSampleRate,
+      })
+    : []
+  return badges.map(function (b) {
+    return '<span class="mg-badge mg-badge-' + esc(b.kind) + '" title="' + esc(b.title || '') + '">' + esc(b.label) + '</span>'
+  }).join('')
+}
+
 function renderManageDuplicates() {
   var L = window.PapaLibraryManage
+  var reclaimApi = window.PapaManageReclaim
   if (!L) { setContent('<div class="page"><p>Library tools failed to load.</p></div>'); return }
   _mgState.groups = L.findDuplicates(_mgTracksFromLibrary())
   _mgState.picked = {}
 
   var groups = _mgState.groups
-  var reclaimable = groups.reduce(function (n, g) { return n + g.deletableBytes }, 0)
+  // THE FIX: the header used to sum group.deletableBytes, which is 0 for the
+  // common "two same-quality copies" case (library-manage marks those groups
+  // unreliable, so nothing is "safely" deletable). That read "up to 0 MB" next
+  // to a dozen duplicates. The honest number is what a stated keep rule would
+  // reclaim — computed by manage-reclaim, defaulting to "keep the best copy".
+  var reclaimable = reclaimApi ? reclaimApi.reclaimableAcross(groups, _mgState.dupRule) : 0
 
   var html = '<div class="page mg-page">' +
     '<div class="mg-head">' +
       '<h2 class="mg-title">Manage Library</h2>' +
       '<div class="mg-sub">' + groups.length + ' album' + (groups.length === 1 ? '' : 's') +
-        ' with more than one copy · up to ' + _mgFmtBytes(reclaimable) + ' safely reclaimable</div>' +
+        ' with more than one copy · up to ' + _mgFmt(reclaimable) + ' reclaimable</div>' +
     '</div>' +
-    _mgTabsHtml() +
-    '<div class="mg-note">Nothing is selected for you. Removed files go to your drive\'s Trash, so a wrong call is recoverable — see Recently Deleted to restore or free the space.</div>'
+    _mgTabsHtml()
 
   if (!groups.length) {
     html += '<div class="mg-empty">No duplicate albums found.</div></div>'
     setContent(html)
     _mgBindTabs()
+    _mgRestoreScroll()
     return
   }
+
+  // Auto-pick rule buttons: mark the losers of a stated rule for review. Nothing
+  // is deleted — they only tick the checkboxes so you review before trashing.
+  html += '<div class="mg-note">Nothing is selected for you. Removed files go to your drive\'s Trash, so a wrong call is recoverable — see Recently Deleted. ' +
+    'Or let a rule pick the losers to review:</div>' +
+    '<div class="mg-rule-bar">' +
+      '<button class="mg-btn mg-btn-sm" id="mg-rule-best">Keep best quality everywhere</button>' +
+      '<button class="mg-btn mg-btn-sm" id="mg-rule-largest">Keep largest everywhere</button>' +
+      '<button class="mg-btn mg-btn-sm mg-btn-ghost" id="mg-rule-clear">Clear selection</button>' +
+    '</div>'
 
   for (var i = 0; i < groups.length; i++) {
     var g = groups[i]
     html += '<div class="mg-group' + (g.reliable ? '' : ' mg-group-unsafe') + '">' +
       '<div class="mg-group-head">' +
         '<span class="mg-group-title">' + esc(g.artist || 'Unknown artist') + ' — ' + esc(g.album || 'Unknown album') + '</span>' +
-        '<span class="mg-group-meta">' + g.folders.length + ' copies · ' + _mgFmtBytes(g.totalBytes) + '</span>' +
+        '<span class="mg-group-meta">' + g.folders.length + ' copies · ' + _mgFmt(g.totalBytes) + '</span>' +
       '</div>'
     for (var w = 0; w < g.warnings.length; w++) {
       html += '<div class="mg-warn">' + esc(g.warnings[w]) + '</div>'
     }
+    // Side-by-side compare row per copy: badges, size, path, play.
+    html += '<div class="mg-compare">'
     for (var f = 0; f < g.folders.length; f++) {
       var fo = g.folders[f]
       var name = L.baseOf(fo.dir) || fo.dir
+      var firstFile = fo.files[0] || ''
       html += '<div class="mg-folder' + (fo.safeToDelete ? '' : ' mg-folder-keep') + '">' +
         '<label class="mg-pick">' +
           '<input type="checkbox" class="mg-check' + (fo.safeToDelete ? '' : ' mg-check-risky') +
@@ -29204,21 +29575,27 @@ function renderManageDuplicates() {
         '</label>' +
         '<div class="mg-folder-body">' +
           '<div class="mg-folder-name" title="' + esc(fo.dir) + '">' + esc(name) + '</div>' +
-          '<div class="mg-folder-meta">' +
+          '<div class="mg-folder-badges">' + _mgFolderBadges(fo) +
             '<span class="mg-chip mg-ch-' + (fo.maxChannels >= 6 ? 'sur' : 'st') + '">' + esc(fo.channelLabel) + '</span>' +
+          '</div>' +
+          '<div class="mg-folder-meta">' +
             '<span>' + fo.trackCount + ' track' + (fo.trackCount === 1 ? '' : 's') + '</span>' +
-            '<span>' + _mgFmtBytes(fo.bytes) + '</span>' +
+            '<span>' + _mgFmt(fo.bytes) + '</span>' +
             (fo.partCount > 1 ? '<span>' + fo.partCount + ' discs</span>' : '') +
             (fo.maxBitDepth ? '<span>' + fo.maxBitDepth + '-bit</span>' : '') +
+            (fo.maxSampleRate ? '<span>' + (Math.round(fo.maxSampleRate / 100) / 10) + ' kHz</span>' : '') +
           '</div>' +
           (fo.safeToDelete
             ? '<div class="mg-verdict mg-ok">Fully covered by ' + esc(L.baseOf(fo.supersededBy)) + '</div>'
             : '<div class="mg-verdict mg-keep">Keep — ' + esc(fo.blockers.join('; ')) + '</div>') +
         '</div>' +
-        '<button class="mg-reveal" data-reveal="' + esc(fo.files[0] || '') + '" title="Show in file manager">⤢</button>' +
+        '<div class="mg-folder-actions">' +
+          (firstFile ? '<button class="mg-play" data-play="' + esc(firstFile) + '" title="Play this copy">▶</button>' : '') +
+          '<button class="mg-reveal" data-reveal="' + esc(firstFile) + '" title="Show in file manager">⤢</button>' +
+        '</div>' +
       '</div>'
     }
-    html += '</div>'
+    html += '</div></div>'
   }
   html += '</div>' +
     '<div class="mg-bar" id="mg-bar" style="display:none">' +
@@ -29228,6 +29605,35 @@ function renderManageDuplicates() {
   setContent(html)
   _mgBindTabs()
   _mgBind()
+  _mgRestoreScroll()
+}
+
+// Apply an auto-pick rule across every group: tick the checkboxes of the copies
+// the rule would drop (its losers), leave the keepers and the protected copies
+// alone, then refresh the action bar. Reviewed, never auto-deleted.
+function _mgApplyRule(rule) {
+  var reclaimApi = window.PapaManageReclaim
+  if (!reclaimApi) return
+  var pick = rule === 'largest' ? reclaimApi.pickKeepLargest : reclaimApi.pickKeepBest
+  _mgState.dupRule = rule
+  var dropSet = {}
+  for (var i = 0; i < _mgState.groups.length; i++) {
+    var r = pick(_mgState.groups[i])
+    for (var d = 0; d < r.drop.length; d++) dropSet[r.drop[d]] = true
+  }
+  _mgState.picked = {}
+  document.querySelectorAll('.mg-check').forEach(function (cb) {
+    var on = !!dropSet[cb.dataset.path]
+    cb.checked = on
+    _mgState.picked[cb.dataset.path] = on
+  })
+  _mgUpdateBar()
+}
+
+function _mgClearRuleSelection() {
+  _mgState.picked = {}
+  document.querySelectorAll('.mg-check').forEach(function (cb) { cb.checked = false })
+  _mgUpdateBar()
 }
 
 function _mgBind() {
@@ -29242,6 +29648,16 @@ function _mgBind() {
       if (b.dataset.reveal) window.api.slskShowInFolder(b.dataset.reveal)
     })
   })
+  document.querySelectorAll('[data-play]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var t = _mgTrackByPath(b.dataset.play)
+      if (t) playItemStandalone(t)
+      else showToast('Could not find that track to play')
+    })
+  })
+  document.getElementById('mg-rule-best')?.addEventListener('click', function () { _mgApplyRule('best') })
+  document.getElementById('mg-rule-largest')?.addEventListener('click', function () { _mgApplyRule('largest') })
+  document.getElementById('mg-rule-clear')?.addEventListener('click', _mgClearRuleSelection)
   document.getElementById('mg-delete-btn')?.addEventListener('click', _mgConfirmDelete)
 }
 

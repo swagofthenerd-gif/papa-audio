@@ -822,6 +822,13 @@ const sideStores = {
   // in batches by the loudness scan, read on every track load to fold the gain
   // into mpv's volume. Never written to the files themselves.
   loudnessMap: new SideStore({ dir: USER_DATA, name: 'loudness-map', fallback: {}, debounceMs: 500, onError: _sideErr }),
+  // Manage-tab result cache (Manage overhaul). A { key: { sig, at, value } } map
+  // holding the last computed result of each Manage tool (storage, duplicates,
+  // health, genres, dashboard) keyed by a library signature, so a revisit paints
+  // instantly and the tab only recomputes when the library actually changed. The
+  // renderer owns the shape and the staleness rule (src/manage-cache.js); main
+  // just persists the blob so it survives a restart.
+  manageCache: new SideStore({ dir: USER_DATA, name: 'manage-cache', fallback: {}, debounceMs: 800, onError: _sideErr }),
   // Outage insurance for anime detail pages. AniList has gone globally dark
   // before (HTTP 403, "temporarily disabled due to severe stability issues"),
   // which turns every anime detail click into an error page. This is a
@@ -1865,6 +1872,16 @@ app.whenReady().then(() => {
   initPlayer()
   createTray()
   setupLibraryWatcher()
+  // Health/Smart-queues analysis runs UNATTENDED. It used to sit at zero until
+  // the user opened Manage and clicked "Resume analysis" — babysitting the app
+  // had to do itself. Kick the first pass off automatically once startup has
+  // settled (delayed so it never competes with the window coming up), and let
+  // the existing pause-on-playback + 30s auto-resume machinery carry it the rest
+  // of the way. featureStore persists per-file, so a restart continues where it
+  // left off rather than starting over.
+  setTimeout(() => {
+    try { if (!app.isQuitting) startAnalysisRun() } catch (_) {}
+  }, 20000).unref?.()
   // Item 56: a startup failure used to be discarded entirely, so a daemon that
   // never came up looked identical to one that was never installed.
   if (fs.existsSync(SLSKD_BIN)) {
@@ -4787,6 +4804,20 @@ function freeSpaceAt(target) {
 }
 
 ipcMain.handle('library-free-space', (_, { at }) => ({ free: freeSpaceAt(at || app.getPath('home')) }))
+
+// Manage-tab result cache (Manage overhaul). Read/write the whole blob; the
+// renderer keys entries by library signature and decides freshness itself.
+ipcMain.handle('manage-cache-get', () => {
+  try { return sideStores.manageCache.get() || {} } catch (_) { return {} }
+})
+ipcMain.handle('manage-cache-set', (_, blob) => {
+  // Only accept a plain object; a bad payload must never poison the store.
+  if (blob && typeof blob === 'object' && !Array.isArray(blob)) {
+    sideStores.manageCache.set(blob)
+    return { ok: true }
+  }
+  return { ok: false }
+})
 
 ipcMain.handle('library-trash-list', async () => {
   const roots = trashRootsAll()
