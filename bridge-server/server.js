@@ -32,7 +32,19 @@ const MUSIC_EXT   = /\.(flac|mp3|wav|aiff?|m4a|aac|ogg|opus|ape|wv|wma|dsf|dff)$
 fs.mkdirSync(USER_DATA,   { recursive: true })
 fs.mkdirSync(ARTWORK_DIR, { recursive: true })
 
-const BRIDGE_TOKEN = crypto.randomBytes(16).toString('hex')
+// The pairing token PERSISTS across restarts (a per-boot random token made
+// pairing impossible — the phone's saved token died with every bridge restart).
+// Generated once, kept in userData; delete the file to rotate it.
+const TOKEN_FILE = path.join(USER_DATA, 'bridge-token')
+const BRIDGE_TOKEN = (() => {
+  try {
+    const t = fs.readFileSync(TOKEN_FILE, 'utf8').trim()
+    if (/^[0-9a-f]{32}$/.test(t)) return t
+  } catch (_) {}
+  const t = crypto.randomBytes(16).toString('hex')
+  try { fs.writeFileSync(TOKEN_FILE, t, 'utf8') } catch (_) {}
+  return t
+})()
 
 // The announced bridge version + what this build can do, so the Android app can
 // feature-detect instead of guessing. Bumped for the artwork + transcode work
@@ -224,10 +236,13 @@ app.use((req, res, next) => {
     req.path === '/art' || req.path.startsWith('/art/')
   if (!guarded) return next()
   const auth = req.headers.authorization
-  if (!auth || auth !== `Bearer ${BRIDGE_TOKEN}`) {
-    return res.status(401).json({ error: 'Unauthorized' })
-  }
-  next()
+  // Media routes (/stream*, /art*) also accept ?token= — the phone's player
+  // and image components consume plain URLs and cannot attach headers.
+  const isMedia = req.path === '/stream' || req.path.startsWith('/stream/') ||
+    req.path === '/art' || req.path.startsWith('/art/')
+  const queryTok = isMedia ? req.query.token : undefined
+  if (auth === `Bearer ${BRIDGE_TOKEN}` || queryTok === BRIDGE_TOKEN) return next()
+  return res.status(401).json({ error: 'Unauthorized' })
 })
 
 // ── Rate limiter ──────────────────────────────────────────────────────────────
