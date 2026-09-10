@@ -262,6 +262,34 @@ test('a response missing its data array is an empty list, not a crash', async ()
   assert.strictEqual(await api.byId(1), null)
 })
 
+// ── lastFailure ──────────────────────────────────────────────────────────────
+// The search fallback chain has to tell "Jikan is down" apart from "Jikan
+// healthily found nothing" to report an honest outage instead of a misleading
+// "no results". Same convention as catalog/anilist.js.
+test('a swallowed failure is recorded in lastFailure and cleared by a success', async () => {
+  let fail = true
+  const api = createJikanCatalog({
+    fetchFn: async () => fail
+      ? { ok: false, status: 504, json: async () => ({}) }
+      : { ok: true, json: async () => ({ data: [] }) },
+    minIntervalMs: 0,
+  })
+  assert.strictEqual(api.lastFailure(), null)
+  await api.search('frieren')
+  assert.strictEqual(api.lastFailure().status, 504)
+  assert.strictEqual(api.lastFailure().message, 'HTTP 504')
+  fail = false
+  await api.search('frieren')
+  assert.strictEqual(api.lastFailure(), null)
+})
+
+test('a thrown network error records lastFailure with its message', async () => {
+  const api = createJikanCatalog({ fetchFn: async () => { throw new Error('offline') }, minIntervalMs: 0 })
+  await api.search('x')
+  assert.strictEqual(api.lastFailure().message, 'offline')
+  assert.strictEqual(api.lastFailure().status, null)
+})
+
 // ── Rate-limit serialisation ─────────────────────────────────────────────────
 // Jikan allows ~3 req/s. Several lookups fired without awaiting between them
 // must not go out closer together than the interval — a burst earns a 429 and a

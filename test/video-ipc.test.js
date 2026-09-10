@@ -579,14 +579,35 @@ test('an unfiltered search asks both catalogs', () => {
   const body = handlerBody('video-search')
   assert.match(body, /Promise\.all\(\[/)
   assert.match(body, /tmdb\(\)\.search\(query\)/)
-  assert.match(body, /anilist\(\)\.search\(query\)/)
+  assert.match(body, /_animeSearch\(query\)/)
 })
 
 // A dead catalog should still return the other one's results.
 test('neither catalog can fail the whole search', () => {
   const body = handlerBody('video-search')
   assert.match(body, /tmdb\(\)\.search\(query\)\.catch\(\(\) => \[\]\)/)
-  assert.match(body, /anilist\(\)\.search\(query\)\.catch\(\(\) => \[\]\)/)
+  assert.match(body, /_animeSearch\(query\)\.catch\(\(\) => \[\]\)/)
+})
+
+// ── AniList outage fallback (2026-09) ───────────────────────────────────────
+// The shelves fell through to Jikan during the outage but search never did, so
+// "tokyo revengers" found nothing while AniList was dark. The fallback is
+// outage-gated: a healthy empty answer from AniList must not spend a
+// rate-limited Jikan request.
+test('anime search falls through to Jikan only when AniList flags an outage', () => {
+  const start = MAIN.indexOf('async function _animeSearch(')
+  assert.ok(start > -1)
+  const body = MAIN.slice(start, MAIN.indexOf('\n}', start))
+  assert.match(body, /if \(viaAnilist\.length \|\| !anilist\(\)\.lastFailure\(\)\) return viaAnilist/)
+  assert.match(body, /return jikan\(\)\.search\(query\)/)
+})
+
+// Nothing found while BOTH databases are flagged down is an outage, not a
+// miss — the renderer's error panel must say so instead of "no results".
+test('an anime search with both databases down reports the outage', () => {
+  const body = handlerBody('video-search')
+  assert.match(body, /anilist\(\)\.lastFailure\(\) && jikan\(\)\.lastFailure\(\)/)
+  assert.match(body, /return \{ ok: false, error: 'The anime databases are unreachable right now/)
 })
 
 test('a tv entry that is really anime is dropped when AniList has it too', () => {
@@ -609,7 +630,7 @@ test('the duplicate test compares every title both catalogs know', () => {
 // A single-catalog search must stay single-catalog.
 test('a filtered search does not merge', () => {
   const body = handlerBody('video-search')
-  assert.match(body, /if \(type === 'anime'\) return \{ ok: true, results: await anilist\(\)\.search\(query\) \}/)
+  assert.match(body, /if \(type === 'anime'\) \{\s*\n\s*const results = await _animeSearch\(query\)/)
   assert.match(body, /if \(type === 'movie' \|\| type === 'tv'\)/)
 })
 

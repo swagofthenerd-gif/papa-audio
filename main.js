@@ -10504,6 +10504,19 @@ ipcMain.handle('video-person', async (_, { id, query } = {}) => {
   }
 })
 
+// Anime text search with the same AniList → Jikan fallback the shelves have
+// (the 2026-09 AniList outage is the whole reason the Jikan catalog exists).
+// AniList's search degrades to [] and flags lastFailure(); only a flagged
+// outage falls through to Jikan, so a healthy "no matches" stays an honest
+// empty list instead of costing a rate-limited Jikan request. Found live
+// during the outage: searching "tokyo revengers" returned nothing because
+// the shelves had the fallback but search never did.
+async function _animeSearch(query) {
+  const viaAnilist = await anilist().search(query)
+  if (viaAnilist.length || !anilist().lastFailure()) return viaAnilist
+  return jikan().search(query)
+}
+
 // Searching every catalog at once, and collapsing the duplicate an anime
 // title produces.
 //
@@ -10516,7 +10529,15 @@ ipcMain.handle('video-person', async (_, { id, query } = {}) => {
 // Anime tab opens and its sources are the reason this was reported.
 ipcMain.handle('video-search', async (_, { query, type }) => {
   try {
-    if (type === 'anime') return { ok: true, results: await anilist().search(query) }
+    if (type === 'anime') {
+      const results = await _animeSearch(query)
+      // Nothing found while BOTH databases are flagged down is an outage, not
+      // a miss — say so instead of painting a misleading "no results".
+      if (!results.length && anilist().lastFailure() && jikan().lastFailure()) {
+        return { ok: false, error: 'The anime databases are unreachable right now (AniList is down and the MyAnimeList backup could not answer). This is on their side — try again in a little while.' }
+      }
+      return { ok: true, results }
+    }
 
     if (type === 'movie' || type === 'tv') {
       const results = (await tmdb().search(query)).filter(r => r.type === type)
@@ -10524,10 +10545,12 @@ ipcMain.handle('video-search', async (_, { query, type }) => {
     }
 
     // Both catalogs, in parallel. Neither is allowed to fail the search: a
-    // dead AniList should still return films, and vice versa.
+    // dead AniList should still return films, and vice versa. The anime side
+    // rides the AniList → Jikan fallback so an AniList outage still surfaces
+    // anime entries (with their nyaa-backed sources) in the merged list.
     const [tmdbRes, animeRes] = await Promise.all([
       tmdb().search(query).catch(() => []),
-      anilist().search(query).catch(() => []),
+      _animeSearch(query).catch(() => []),
     ])
 
     const merged = []

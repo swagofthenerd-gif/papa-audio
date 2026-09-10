@@ -246,6 +246,14 @@ function createJikanCatalog({ fetchFn, minIntervalMs = MIN_INTERVAL_MS,
     return run
   }
 
+  // Why the last request came back empty-handed, mirroring the convention
+  // catalog/anilist.js established: { at, message, status } after a swallowed
+  // failure, cleared by the next success. Callers use it to tell "Jikan is
+  // down" apart from "Jikan healthily found nothing" — the search fallback
+  // chain needs that distinction to report an honest outage instead of a
+  // misleading "no results".
+  let _lastFailure = null
+
   async function _get(url) {
     // AbortController bounds the request so a hung socket cannot wedge the lane
     // and starve every queued lookup behind it. Not every injected fetcher
@@ -254,11 +262,17 @@ function createJikanCatalog({ fetchFn, minIntervalMs = MIN_INTERVAL_MS,
     const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null
     try {
       const res = await fetcher(url, controller ? { signal: controller.signal } : undefined)
-      if (!res || !res.ok) return null
-      return await res.json()
-    } catch (_) {
+      if (!res || !res.ok) {
+        _lastFailure = { at: Date.now(), message: res ? `HTTP ${res.status}` : 'no response', status: res ? res.status : null }
+        return null
+      }
+      const body = await res.json()
+      _lastFailure = null
+      return body
+    } catch (err) {
       // A 429, a timeout, a dead network — all the same to the caller: the
       // fallback has nothing to add right now, and the app carries on.
+      _lastFailure = { at: Date.now(), message: (err && err.message) || String(err), status: null }
       return null
     } finally {
       if (timer) clearTimeout(timer)
@@ -266,6 +280,12 @@ function createJikanCatalog({ fetchFn, minIntervalMs = MIN_INTERVAL_MS,
   }
 
   return {
+    // Why the most recent call returned nothing: set by `_get` on a swallowed
+    // failure, cleared on the next success, or null when nothing has failed.
+    lastFailure() {
+      return _lastFailure
+    },
+
     // Text search. Returns a (possibly empty) array of normalized entries;
     // never throws, never null.
     async search(query, page) {
