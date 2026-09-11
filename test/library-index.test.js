@@ -177,3 +177,104 @@ test('micro-bench: index lookup stays under 20ms/query at 10k tracks', () => {
   console.log(`[bench] build ${buildMs}ms for 10k tracks; ${perQueryMs.toFixed(3)}ms/query`)
   assert.ok(perQueryMs < 20, `index lookup must stay under 20ms/query, got ${perQueryMs.toFixed(3)}ms`)
 })
+
+// ── J3: the library grid uses the same brain ─────────────────────────────────
+function progLib() {
+  return [
+    { id: 'c1', name: 'Mirage', artist: 'Camel', year: 1974, tracks: [{ title: 'Lady Fantasy', filePath: '/c/1.flac' }] },
+    { id: 'c2', name: 'Moonmadness', artist: 'Camel', year: 1976, tracks: [{ title: 'Song Within a Song', filePath: '/c/2.flac' }] },
+    { id: 'k1', name: 'Discipline', artist: 'King Crimson', year: 1981, tracks: [{ title: 'Elephant Talk', filePath: '/k/1.flac' }] },
+    { id: 's1', name: 'Crime of the Century', artist: 'Supertramp', year: 1974, tracks: [{ title: 'School', filePath: '/s/1.flac' }, { title: 'Dreamer', filePath: '/s/2.flac' }] },
+  ]
+}
+
+test('filterAlbums: "camel mirage" (artist + album together) finds the album — the verified zero-result case', () => {
+  const idx = LI.build(progLib())
+  const r = LI.filterAlbums(idx, 'camel mirage')
+  assert.deepEqual(r.ids, ['c1'])
+  assert.equal(r.corrected, null)
+  assert.equal(r.viaTracks, false)
+})
+
+test('filterAlbums: "king crimson discipline" — the most natural query form — works', () => {
+  const idx = LI.build(progLib())
+  assert.deepEqual(LI.filterAlbums(idx, 'king crimson discipline').ids, ['k1'])
+  assert.deepEqual(LI.filterAlbums(idx, 'discipline crimson').ids, ['k1'], 'order-blind')
+})
+
+test('filterAlbums: an artist-only query returns that artist\'s albums in relevance order', () => {
+  const idx = LI.build(progLib())
+  const r = LI.filterAlbums(idx, 'camel')
+  assert.deepEqual(r.ids.sort(), ['c1', 'c2'])
+})
+
+test('filterAlbums falls back to song titles only when artist/album find nothing', () => {
+  const idx = LI.build(progLib())
+  const r = LI.filterAlbums(idx, 'supertramp school')
+  assert.deepEqual(r.ids, ['s1'])
+  assert.equal(r.viaTracks, true, 'the caller can say "matched a song on this album"')
+  // But a query that already matches on artist/album never widens.
+  assert.equal(LI.filterAlbums(idx, 'supertramp').viaTracks, false)
+})
+
+test('filterAlbums corrects a heavy typo and reports it, or returns empty honestly', () => {
+  const idx = LI.build(progLib())
+  const r = LI.filterAlbums(idx, 'camel mirraagge')
+  assert.deepEqual(r.ids, ['c1'])
+  assert.ok(r.corrected && r.corrected.to === 'camel mirage' && r.corrected.from === 'camel mirraagge', JSON.stringify(r))
+  const none = LI.filterAlbums(idx, 'zzzz qqqq')
+  assert.deepEqual(none.ids, [])
+  assert.equal(none.corrected, null)
+  assert.deepEqual(LI.filterAlbums(idx, 'camel mirraagge', { correct: false }).ids, [], 'correction can be refused (the undo path)')
+  assert.deepEqual(LI.filterAlbums(idx, '   ').ids, [])
+  assert.deepEqual(LI.filterAlbums(null, 'camel').ids, [])
+})
+
+test('the wide album field carries every song word once', () => {
+  const idx = LI.build(progLib())
+  const s = idx.albums.find(a => a.id === 's1')
+  assert.ok(s.allTokens.indexOf('school') !== -1 && s.allTokens.indexOf('dreamer') !== -1)
+  assert.ok(s.tokens.indexOf('school') === -1, 'the narrow field stays artist + album')
+})
+
+// ── J3: did-you-mean that can be acted on ────────────────────────────────────
+
+test('suggest returns runnable queries with human labels for a query the search missed', () => {
+  const idx = LI.build(progLib())
+  const s = LI.suggest(idx, 'camle mirge', 3)
+  assert.ok(s.length >= 1)
+  assert.equal(s[0].query, 'camel mirage', 'a real tokenized query, not an "Artist — Album" string')
+  assert.equal(s[0].label, 'Camel — Mirage')
+  // And the suggested query really works when run.
+  assert.deepEqual(LI.filterAlbums(idx, s[0].query).ids, ['c1'])
+})
+
+test('suggest offers alternatives when the automatic correction was ambiguous', () => {
+  // "dreamr" is one edit from "dreamer" and nothing else; "camel" is real.
+  const idx = LI.build(progLib())
+  const s = LI.suggest(idx, 'supertramp dreamr', 3)
+  assert.ok(s.some(x => x.query === 'supertramp dreamer'))
+  assert.ok(s.every(x => x.query && x.label))
+})
+
+test('suggest is empty when every word is already real (nothing to suggest) or nothing is near', () => {
+  const idx = LI.build(progLib())
+  assert.deepEqual(LI.suggest(idx, 'camel mirage'), [])
+  assert.deepEqual(LI.suggest(idx, 'xxxxxxxx yyyyyyyy'), [])
+  assert.deepEqual(LI.suggest(idx, ''), [])
+  assert.deepEqual(LI.suggest(null, 'camel'), [])
+})
+
+test('suggest never returns two suggestions that mean the same thing', () => {
+  const idx = LI.build(progLib())
+  const s = LI.suggest(idx, 'camle', 5)
+  const labels = s.map(x => x.label)
+  assert.equal(new Set(labels).size, labels.length)
+})
+
+test('suggest never offers a record that merely typo-scores against the suggestion', () => {
+  const idx = LI.build(progLib().concat([{ id: 'l1', name: 'All My Rage', artist: 'Laura Marling', tracks: [] }]))
+  const s = LI.suggest(idx, 'camle mirraagge', 5)
+  assert.ok(s.every(x => x.label !== 'Laura Marling — All My Rage'), JSON.stringify(s))
+  assert.equal(s[0].query, 'camel mirage')
+})

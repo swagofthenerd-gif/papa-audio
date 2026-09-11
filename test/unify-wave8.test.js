@@ -159,6 +159,8 @@ function rendererSandbox(extra) {
     _videoCard: item => '<article class="vcard" data-video="' + (item.type || 'movie') + ':' + item.id + '"></article>',
     _bindVideoCards: () => { ctx._bindCalls++ },
     _vSearchRemember: () => {},
+    _attachRecents: () => null,
+    _rememberOpen: () => {},
     _runVideoTitleSearch: q => { ctx._titleSearchCalls.push(q) },
     _navCalls: [],
     _bindCalls: 0,

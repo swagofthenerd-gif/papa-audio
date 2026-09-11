@@ -269,6 +269,28 @@ var _PapaSmartQuery = (function () {
     return { token: q, corrected: false, ambiguous: true }
   }
 
+  // The nearest real words to a token, for building "did you mean" alternatives
+  // when correctToken refuses (ambiguous tie) or when several plausible fixes
+  // deserve to be offered side by side. Sorted by distance, then frequency.
+  // A token that is itself a real word returns only itself at distance 0.
+  function nearestTokens(token, vocab, maxDist, limit) {
+    var q = tokenize(token)[0] || _fold(token)
+    if (!q || !vocab) return []
+    if (Object.prototype.hasOwnProperty.call(vocab, q)) return [{ word: q, dist: 0, freq: vocab[q] }]
+    var cap = typeof maxDist === 'number' && maxDist > 0 ? maxDist : CORRECT_MAX
+    var budget = Math.min(cap, Math.floor(q.length / 3) + 1)
+    if (budget < 1) budget = 1
+    var out = []
+    for (var w in vocab) {
+      if (Math.abs(w.length - q.length) > budget) continue
+      var d = editDistance(q, w, budget)
+      if (d > budget) continue
+      out.push({ word: w, dist: d, freq: vocab[w] })
+    }
+    out.sort(function (a, b) { return a.dist - b.dist || b.freq - a.freq || (a.word < b.word ? -1 : 1) })
+    return out.slice(0, limit > 0 ? limit : 3)
+  }
+
   // Correct a whole query token-by-token against the vocab. Returns the possibly-
   // corrected string plus whether anything changed, so the caller can show a
   // "did you mean" note only when a real fix happened.
@@ -339,6 +361,7 @@ var _PapaSmartQuery = (function () {
     scoreQuery: scoreQuery,
     buildVocabulary: buildVocabulary,
     correctToken: correctToken,
+    nearestTokens: nearestTokens,
     correctQuery: correctQuery,
     isSpellingFix: isSpellingFix,
     _tokenScore: _tokenScore,

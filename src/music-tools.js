@@ -1515,104 +1515,6 @@
     })
   }
 
-  // ── Fuzzy library search: typo-tolerant matching (App #13) ──────────────────
-  // The library search does an exact case-insensitive substring match first;
-  // when that yields nothing we fall back to this, so a mistyped "raidohead"
-  // still finds "Radiohead". The rule, per the roadmap: every word of the query
-  // must match some word of the candidate within an edit distance of ≤ maxDist
-  // (default 2). Short query words (≤2 chars) demand an exact prefix instead of
-  // a distance match, because at that length almost anything is within 2 edits.
-  //
-  // Pure and DOM-free: the renderer passes it album name+artist strings; the
-  // test pins the behaviour. `levenshtein` is the standard DP distance, kept
-  // here so the pure module is self-contained (the renderer has its own copy for
-  // the search-suggestion path; this one is the tested one for library search).
-  function levenshtein(a, b) {
-    a = String(a == null ? '' : a)
-    b = String(b == null ? '' : b)
-    if (a === b) return 0
-    if (!a.length) return b.length
-    if (!b.length) return a.length
-    var prev = []
-    for (var j = 0; j <= b.length; j++) prev[j] = j
-    for (var i = 1; i <= a.length; i++) {
-      var cur = [i]
-      for (var k = 1; k <= b.length; k++) {
-        var cost = a.charAt(i - 1) === b.charAt(k - 1) ? 0 : 1
-        cur[k] = Math.min(prev[k] + 1, cur[k - 1] + 1, prev[k - 1] + cost)
-      }
-      prev = cur
-    }
-    return prev[b.length]
-  }
-
-  // Split a string into lowercased word tokens, punctuation dropped.
-  function _searchWords(s) {
-    return String(s == null ? '' : s).toLowerCase()
-      .replace(/[^a-z0-9]+/g, ' ').trim().split(/\s+/).filter(Boolean)
-  }
-
-  // Does `text` fuzzily match `query`? Every query word must find a text word
-  // within `maxDist` edits (or, for very short query words, be a prefix of one).
-  // An empty query matches nothing (the caller only reaches here on a real,
-  // non-empty query that got zero exact hits).
-  function fuzzyMatches(text, query, maxDist) {
-    var md = (maxDist != null && isFinite(Number(maxDist))) ? Number(maxDist) : 2
-    var qWords = _searchWords(query)
-    if (!qWords.length) return false
-    var tWords = _searchWords(text)
-    if (!tWords.length) return false
-    for (var i = 0; i < qWords.length; i++) {
-      var q = qWords[i]
-      var hit = false
-      for (var j = 0; j < tWords.length; j++) {
-        var t = tWords[j]
-        if (t.indexOf(q) !== -1) { hit = true; break } // substring is always fine
-        if (q.length <= 2) {
-          if (t.indexOf(q) === 0) { hit = true; break } // short words: prefix only
-          continue
-        }
-        if (levenshtein(q, t) <= md) { hit = true; break }
-      }
-      if (!hit) return false
-    }
-    return true
-  }
-
-  // Filter a list of items to those fuzzily matching the query, each item's
-  // searchable text produced by `textOf`. Returns the matching items in input
-  // order — the renderer uses this only after an exact search returned empty, to
-  // surface "close matches".
-  function fuzzyFilter(items, query, textOf, maxDist) {
-    items = items || []
-    var get = typeof textOf === 'function' ? textOf : function (x) { return String(x) }
-    var out = []
-    for (var i = 0; i < items.length; i++) {
-      if (fuzzyMatches(get(items[i]), query, maxDist)) out.push(items[i])
-    }
-    return out
-  }
-
-  // ── Recent searches: a bounded MRU list of query strings (App #13) ──────────
-  // Mirrors the video side's recent-search behaviour for the library search box.
-  // Pure list logic over the persisted array so the newest-first order and the
-  // cap are testable with no localStorage. The stored shape is a plain array of
-  // strings, newest first; a repeat search moves to the front (no duplicate),
-  // blanks are ignored, and the list is capped at `cap` (default 10).
-  function pushRecentSearch(list, query, cap) {
-    var max = (cap != null && Number(cap) > 0) ? Number(cap) : 10
-    var q = String(query == null ? '' : query).trim()
-    var out = (Array.isArray(list) ? list : [])
-      .filter(function (s) { return typeof s === 'string' && s.trim() })
-      .map(function (s) { return s.trim() })
-    if (!q) return out.slice(0, max)
-    // Drop any case-insensitive duplicate, then unshift the fresh query.
-    var lower = q.toLowerCase()
-    out = out.filter(function (s) { return s.toLowerCase() !== lower })
-    out.unshift(q)
-    return out.slice(0, max)
-  }
-
   // ── Home personalization: row order + hidden set (App #15) ──────────────────
   // Home is a fixed set of rows, each with a stable id. The user can reorder and
   // hide them; the preference persists as { order: [ids...], hidden: [ids...] }.
@@ -1679,10 +1581,6 @@
   var api = {
     sleepFadeSteps: sleepFadeSteps,
     evaluateFieldRules: evaluateFieldRules,
-    levenshtein: levenshtein,
-    fuzzyMatches: fuzzyMatches,
-    fuzzyFilter: fuzzyFilter,
-    pushRecentSearch: pushRecentSearch,
     resolveHomeRows: resolveHomeRows,
     moveHomeRow: moveHomeRow,
     toggleHomeRow: toggleHomeRow,

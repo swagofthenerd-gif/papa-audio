@@ -195,7 +195,8 @@ test('the parse is offered on Enter and never on every keystroke', () => {
   // redirects while you are still typing cannot be told what you meant.
   const body = RENDERER.slice(RENDERER.indexOf('function _bindVideoSearch'),
                               RENDERER.indexOf('function _runVideoTitleSearch'))
-  assert.match(body, /setTimeout\(run, 300\)/)
+  // The wait is the shared remote-search budget every box reads (J3).
+  assert.match(body, /setTimeout\(run, window\.PapaSearchMemory \? window\.PapaSearchMemory\.DEBOUNCE\.remote : 300\)/)
   const enter = body.slice(body.indexOf("e.key === 'Enter'"))
   assert.match(enter, /_actOnParsedQuery\(_parseVideoQuery\(query\)\)/)
   // The debounced path must not consult the parser at all.

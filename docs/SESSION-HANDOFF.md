@@ -151,9 +151,25 @@ Part III 8 speed items, Part IV truth & polish, Part V delivery + honest debt.
 `_scrollMemory` keyed `page:navId`, `_NEEDS_NAV_ID`, `_backOr`,
 `_restoreVideoSearch` with a 5-minute cache, nav-dismiss registry).
 
+### J2 + J3 shipped (2026-09-11, Fable 5.1)
+
+One search memory (`src/search-memory.js`, localStorage key
+`papa-search-memory`, migrates + retires the three legacy keys at startup)
+and one dropdown (`src/search-recents-ui.js`) behind the music bar, the
+library box, the Movies & TV box and the Soulseek hub box. One brain:
+`PapaLibraryIndex.query` runs the committed search page, `filterAlbums` runs
+the library grid (artist+album → +song titles → +correction), `suggest` gives
+runnable did-you-mean; the renderer's private `_fuzzyFind`/`_levenshtein` and
+music-tools' `fuzzyFilter`/`pushRecentSearch` are deleted. Correction undo is
+pinned per query (`state._searchNoCorrect`, `state._libNoCorrect`,
+`slsk.noCorrectFor`). "Opened from this search" is recorded
+(`_openedItemOf`, capture click on #content; video cards) — the J4 seed.
+Verified live on a QA twin: "camel mirage" found everywhere; row ✕ keeps the
+list open (the outside-click rule now reads `composedPath`). Tests 4,036.
+
 ### The queue, in order
 
-1. **J2 + J3 — one search memory, one typo brain.** *Start here.* This is his
+1. ~~J2 + J3~~ done — see above. This is his
    original complaint. Today there are **three disjoint recent-search stores**
    (`pa_search_history`, `papa-lib-recent-searches`, `papaVideoRecentSearches`)
    and **three separate typo engines** (`smart-query.js`,

@@ -237,7 +237,7 @@ test('the search box exists and is wired to videoSearch', () => {
   assert.match(RENDERER, /window\.api\.videoSearch\(/, 'and it must call the search API')
   // The debounce lives with the listeners; the request and its stale-guard moved
   // into _runVideoTitleSearch when the parsed path needed to fall back to it.
-  assert.match(fnBody('_bindVideoSearch'), /setTimeout\(run, 300\)/, 'typing must be debounced')
+  assert.match(fnBody('_bindVideoSearch'), /setTimeout\(run, window\.PapaSearchMemory \? window\.PapaSearchMemory\.DEBOUNCE\.remote : 300\)/, 'typing must be debounced by the shared budget')
   assert.match(fnBody('_runVideoTitleSearch'), /_videoSearchTicket !== ticket/,
     'a slow earlier query must not win')
 })

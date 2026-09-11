@@ -93,6 +93,8 @@ const slsk = {
   // { from, to } so the header can show "searching for <to>" with an undo that
   // re-runs the verbatim term. Cleared on every fresh query.
   correction: null,
+  // The verbatim query an undo pinned: never auto-corrected again this session.
+  noCorrectFor: null,
   filter: 'all',
   sort: 'relevance',
   error: null,
@@ -5152,6 +5154,7 @@ function _vHeadHtml() {
       '<div class="vsearch-field">' + _VICON.search +
         '<input id="video-search-input" type="search" placeholder="Search movies, TV &amp; anime…" autocomplete="off" aria-label="Search">' +
         '<button class="vsearch-clear" id="video-search-clear" hidden aria-label="Clear search">&#10005;</button>' +
+        '<div id="video-recents" class="recents-dd" hidden></div>' +
       '</div>' +
     '</div>' +
   '</div>'
@@ -6314,70 +6317,13 @@ function _renderMyList(rows) {
 // Search overlays the catalog instead of replacing it, groups results by type,
 // and is ticketed so a slow earlier query cannot overwrite a later one.
 // ── Search history ──────────────────────────────────────────────────────────
-// Queries that found something are worth keeping: a search box with no memory
-// makes the user retype "chainsaw man" every session. Most recent first,
-// deduplicated, capped — and only committed searches or ones that returned
-// results land here, so half-typed fragments never do.
-const _VSEARCH_HISTORY_KEY = 'papaVideoRecentSearches'
-const _VSEARCH_HISTORY_MAX = 12
-
-// Drop any entry that is a strict (case-insensitive) prefix of another entry —
-// the fingerprint of the old bug where every keystroke was recorded, so
-// "toky" / "tokyo r" / "tokyo re" all sat under "tokyo rev". Idempotent: on a
-// clean list nothing matches and it returns the input untouched.
-function _vSearchDropPrefixes(list) {
-  return list.filter(function (a, i) {
-    const la = a.toLowerCase()
-    return !list.some(function (b, j) {
-      if (i === j) return false
-      const lb = b.toLowerCase()
-      return lb.length > la.length && lb.slice(0, la.length) === la
-    })
-  })
-}
-
-function _vSearchHistory() {
-  try {
-    const raw = window.PapaLocal && window.PapaLocal.readArray
-      ? window.PapaLocal.readArray(_VSEARCH_HISTORY_KEY, function (q) { return typeof q === 'string' && q })
-      : []
-    const list = Array.isArray(raw) ? raw : []
-    // One-time self-heal for history polluted by the pre-commit-only bug: if the
-    // cleaned list differs, persist it so the cleanup only pays off once.
-    const cleaned = _vSearchDropPrefixes(list)
-    if (cleaned.length !== list.length) {
-      try {
-        if (window.PapaLocal && window.PapaLocal.write) {
-          window.PapaLocal.write(_VSEARCH_HISTORY_KEY, cleaned)
-        }
-      } catch (_) { /* a full store must not break history reads */ }
-    }
-    return cleaned
-  } catch (_) { return [] }
-}
-
+// Committed searches live in the one shared memory (search-memory.js, J2) —
+// the same list the music bar, the library and Soulseek read. Kept as a named
+// seam so the commit rule stays greppable: remembered on Enter and on a result
+// click, never on a debounced keystroke.
 function _vSearchRemember(query) {
   const q = String(query || '').trim()
-  if (!q) return
-  try {
-    const list = _vSearchHistory().filter(function (x) { return x.toLowerCase() !== q.toLowerCase() })
-    list.unshift(q)
-    if (window.PapaLocal && window.PapaLocal.write) {
-      window.PapaLocal.write(_VSEARCH_HISTORY_KEY, list.slice(0, _VSEARCH_HISTORY_MAX))
-    }
-  } catch (_) { /* a full store must not break searching */ }
-}
-
-function _vSearchHistoryHtml() {
-  const list = _vSearchHistory()
-  if (!list.length) return ''
-  return '<div class="vsearch-recent" id="vsearch-recent">' +
-    '<span class="vsearch-recent-label">Recent</span>' +
-    list.map(function (q) {
-      return '<button class="vsearch-chip" data-recent="' + esc(q) + '">' + esc(q) + '</button>'
-    }).join('') +
-    '<button class="vsearch-chip vsearch-chip-clear" id="vsearch-recent-clear">Clear history</button>' +
-  '</div>'
+  if (q) _rememberSearch(q, 'video')
 }
 
 function _bindVideoSearch() {
@@ -6385,8 +6331,6 @@ function _bindVideoSearch() {
   const clear = document.getElementById('video-search-clear')
   if (!input) return
   let timer = null
-
-  const hideRecent = function () { document.getElementById('vsearch-recent')?.remove() }
 
   const reset = function () {
     _videoSearchTicket++
@@ -6404,37 +6348,20 @@ function _bindVideoSearch() {
   const run = function () {
     const query = input.value.trim()
     if (clear) clear.hidden = !query
-    hideRecent()
     if (!query) return reset()
     _runVideoTitleSearch(query)
   }
 
-  const showRecent = function () {
-    if (input.value.trim()) return
-    const box = document.getElementById('video-search-results')
-    if (!box || document.getElementById('vsearch-recent')) return
-    const html = _vSearchHistoryHtml()
-    if (!html) return
-    box.insertAdjacentHTML('afterbegin', html)
-    // mousedown, not click: the input's blur would remove the strip before a
-    // click event could ever reach the chip.
-    document.getElementById('vsearch-recent')?.addEventListener('mousedown', function (ev) {
-      const chip = ev.target && ev.target.closest && ev.target.closest('[data-recent]')
-      if (chip) {
-        ev.preventDefault()
-        input.value = chip.dataset.recent
-        if (clear) clear.hidden = false
-        hideRecent()
-        _runVideoTitleSearch(chip.dataset.recent)
-        return
-      }
-      if (ev.target && ev.target.closest && ev.target.closest('#vsearch-recent-clear')) {
-        ev.preventDefault()
-        try { if (window.PapaLocal && window.PapaLocal.write) window.PapaLocal.write(_VSEARCH_HISTORY_KEY, []) } catch (_) {}
-        hideRecent()
-      }
-    })
-  }
+  // Recents (J2): the shared dropdown under the box; a pick commits and runs
+  // exactly as Enter does, including the "kind of film" route to Browse.
+  _attachRecents(input, document.getElementById('video-recents'), 'video', function (q) {
+    input.value = q
+    if (clear) clear.hidden = false
+    clearTimeout(timer)
+    _vSearchRemember(q)
+    if (_actOnParsedQuery(_parseVideoQuery(q))) return
+    _runVideoTitleSearch(q)
+  }, { filterWhileTyping: true })
 
   // Clicking a result is a commit too (the other commit is Enter). Recorded in
   // capture so it lands before the card's own navigation tears the strip down.
@@ -6442,13 +6369,18 @@ function _bindVideoSearch() {
   if (resultsBox) {
     resultsBox.addEventListener('click', function (ev) {
       const card = ev.target && ev.target.closest && ev.target.closest('.vcard')
-      if (card && _vSearchFilter && _vSearchFilter.query) _vSearchRemember(_vSearchFilter.query)
+      if (card && _vSearchFilter && _vSearchFilter.query) {
+        _vSearchRemember(_vSearchFilter.query)
+        const titleEl = card.querySelector('.vcard-title')
+        _rememberOpen(_vSearchFilter.query, 'video', { kind: 'video', id: card.dataset.video || null, label: titleEl ? titleEl.textContent : '' })
+      }
     }, true)
   }
 
-  input.addEventListener('input', function () { clearTimeout(timer); timer = setTimeout(run, 300) })
-  input.addEventListener('focus', showRecent)
-  input.addEventListener('blur', function () { setTimeout(hideRecent, 150) })
+  input.addEventListener('input', function () {
+    clearTimeout(timer)
+    timer = setTimeout(run, window.PapaSearchMemory ? window.PapaSearchMemory.DEBOUNCE.remote : 300)
+  })
   input.addEventListener('keydown', function (e) {
     if (e.key === 'Enter') {
       clearTimeout(timer)
@@ -6459,7 +6391,7 @@ function _bindVideoSearch() {
       if (query && _actOnParsedQuery(_parseVideoQuery(query))) return
       run()
     }
-    if (e.key === 'Escape') { input.value = ''; reset(); hideRecent(); input.blur() }
+    if (e.key === 'Escape') { input.value = ''; reset(); input.blur() }
   })
   clear?.addEventListener('click', function () { input.value = ''; reset(); input.focus() })
 
@@ -10265,7 +10197,20 @@ function _albumTrackFormatClass(t) {
 
 // Set by getSorted() when the text search fell back to fuzzy matching, read by
 // the render pass to show the "showing close matches" note.
-var _libFuzzyActive = false
+// What the grid's search had to do to find anything, for the note above it:
+// { corrected: { from, to } | null, viaTracks } or null when it matched plainly.
+var _libSearchNote = null
+function _libSearchNoteHtml() {
+  if (!state.libSearch || !_libSearchNote) return ''
+  var n = _libSearchNote
+  var html = ''
+  if (n.corrected) html += _correctionChipHtml(n.corrected.to, n.corrected.from, 'lib-correction-undo')
+  if (n.viaTracks) {
+    var shown = n.corrected ? n.corrected.to : state.libSearch
+    html += '<div class="lib-fuzzy-note">No album or artist is called \u201c' + esc(shown) + '\u201d \u2014 showing albums with a matching song</div>'
+  }
+  return html
+}
 
 function renderLibrary() {
   const getSorted = () => {
@@ -10318,27 +10263,24 @@ function renderLibrary() {
         return (a.tracks || []).some(function(t) { return _albumTrackFormatClass(t) === state.libFormatClass })
       })
     }
-    // Text search: exact case-insensitive substring first. When that yields
-    // nothing, fall back to the tested fuzzy matcher (edit distance ≤2 per word)
-    // so a typo still surfaces close matches. _libFuzzyActive tells the render
-    // pass to show the "showing close matches" note.
-    _libFuzzyActive = false
+    // Text search — one brain (J3): the grid ranks with the same index the
+    // search bar and the search page use, so "camel mirage" (artist + album)
+    // works here too. Artist + album first; then song titles ("supertramp
+    // school"); then a spelling fix — each pass only when the narrower one
+    // found nothing, and each one said out loud above the grid.
+    _libSearchNote = null
     var searchQ = state.libSearch || ''
     if (searchQ) {
-      var sq = searchQ.toLowerCase()
-      var exact = albums.filter(function(a) { return (a.name && a.name.toLowerCase().indexOf(sq) !== -1) || (a.artist && a.artist.toLowerCase().indexOf(sq) !== -1) })
-      if (exact.length) {
-        albums = exact
-      } else {
-        var _mt = (typeof window !== 'undefined' && window.PapaMusicTools) || null
-        if (_mt && _mt.fuzzyFilter) {
-          var fuzzy = _mt.fuzzyFilter(albums, searchQ, function(a) { return (a.name || '') + ' ' + (a.artist || '') })
-          if (fuzzy.length) { albums = fuzzy; _libFuzzyActive = true }
-          else albums = exact // nothing at all — keep the empty exact result
-        } else {
-          albums = exact
-        }
-      }
+      if (!_searchIndex) rebuildSearchIndex(true)
+      var lf = (_searchIndex && window.PapaLibraryIndex)
+        ? window.PapaLibraryIndex.filterAlbums(_searchIndex, searchQ, { correct: state._libNoCorrect !== searchQ })
+        : { ids: [], corrected: null, viaTracks: false }
+      var rank = {}
+      lf.ids.forEach(function (id, i) { rank[id] = i })
+      albums = albums.filter(function (a) { return rank[a.id] != null })
+      if (lf.corrected || lf.viaTracks) _libSearchNote = { corrected: lf.corrected, viaTracks: lf.viaTracks }
+      // A search is a ranking: best match first, whatever the grid's sort is.
+      return albums.sort(function (a, b) { return rank[a.id] - rank[b.id] })
     }
     if (state.libSort === 'alpha')  return albums.sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')))
     if (state.libSort === 'artist') return albums.sort((a, b) => String(a.artist || '').localeCompare(String(b.artist || '')))
@@ -10575,9 +10517,9 @@ function renderLibrary() {
       </div>
       <div class="library-search-wrap" style="position:relative">
         <input class="library-search" id="lib-search" type="text" autocomplete="off" placeholder="Search albums or artists…" value="${esc(state.libSearch || '')}">
-        <div id="lib-recent-searches" class="lib-recent-searches" hidden></div>
+        <div id="lib-recent-searches" class="recents-dd" hidden></div>
       </div>
-      ${state.libSearch && _libFuzzyActive ? '<div class="lib-fuzzy-note">No exact match — showing close matches for “' + esc(state.libSearch) + '”</div>' : ''}
+      ${_libSearchNoteHtml()}
       <div class="lib-chips-row">
         <span class="lib-chip-label">Year</span>
         <select class="lib-chip-select" id="lib-chip-year-min"><option value="">from</option>${(()=>{var y=[...new Set(state.library.map(function(a){return a.year}).filter(Boolean))].sort(function(a,b){return a-b});return y.map(function(v){return '<option value="'+esc(v)+'"'+(String(state.libYearMin)===String(v)?' selected':'')+'>'+esc(v)+'</option>'}).join('')})()}</select>
@@ -10768,9 +10710,16 @@ function renderLibrary() {
   var libSearch = document.getElementById('lib-search')
   if (libSearch) {
     var searchTimeout
+    // Recents (J2): the shared dropdown, this box's own searches first.
+    _attachRecents(libSearch, document.getElementById('lib-recent-searches'), 'library', function (q) {
+      state.libSearch = q
+      state._libNoCorrect = null
+      _rememberSearch(q, 'library')
+      renderLibrary()
+    })
     libSearch.addEventListener('input', function() {
       state.libSearch = this.value
-      _hideLibRecentSearches()
+      state._libNoCorrect = null
       clearTimeout(searchTimeout)
       searchTimeout = setTimeout(function () {
         // setContent() replaces the input, so carry focus and caret across or
@@ -10784,29 +10733,30 @@ function renderLibrary() {
         if (!now) return
         now.focus()
         if (caret != null) { try { now.setSelectionRange(caret, caret) } catch (_) {} }
-      }, 150)
+      }, window.PapaSearchMemory ? window.PapaSearchMemory.DEBOUNCE.local : 150)
     })
-    // Enter commits the query to the recent-searches history (App #13); the
-    // filtering itself already happened live on input.
+    // Enter commits the query to the shared memory (the filtering itself
+    // already happened live on input). Escape clears the box — the same rule
+    // every search box follows.
     libSearch.addEventListener('keydown', function (e) {
       if (e.key === 'Enter') {
         var q = (this.value || '').trim()
-        if (q) _rememberLibSearch(q)
-        _hideLibRecentSearches()
+        if (q) _rememberSearch(q, 'library')
       } else if (e.key === 'Escape') {
-        _hideLibRecentSearches()
+        if (!this.value) { this.blur(); return }
+        this.value = ''
+        state.libSearch = ''
+        state._libNoCorrect = null
+        clearTimeout(searchTimeout)
+        renderLibrary()
       }
     })
-    // On focus, if the box is empty, show recent searches like the video side.
-    libSearch.addEventListener('focus', function () {
-      if (!this.value.trim()) _showLibRecentSearches()
-    })
-    // A blur that is not into the dropdown itself closes it (deferred so a click
-    // on a recent item registers first).
-    libSearch.addEventListener('blur', function () {
-      setTimeout(_hideLibRecentSearches, 150)
-    })
   }
+  document.querySelector('.lib-correction-undo')?.addEventListener('click', function (e) {
+    e.preventDefault()
+    state._libNoCorrect = state.libSearch
+    renderLibrary()
+  })
 
   // Year-range chips: change either bound and re-filter.
   document.getElementById('lib-chip-year-min')?.addEventListener('change', function () {
@@ -10819,50 +10769,6 @@ function renderLibrary() {
   document.querySelectorAll('.lib-fmt-chip[data-fmtclass]').forEach(function (btn) {
     btn.addEventListener('click', function () {
       state.libFormatClass = this.dataset.fmtclass || ''
-      renderLibrary()
-    })
-  })
-}
-
-// ── Recent library searches (App #13) ─────────────────────────────────────────
-// A bounded MRU list of query strings, persisted so the box can offer them on
-// focus. The list algebra (dedupe, cap, newest-first) is the tested pure helper
-// in music-tools.js; here we only read/write localStorage and paint the dropdown.
-var _LIB_RECENT_KEY = 'papa-lib-recent-searches'
-function _libRecentSearches() {
-  return window.PapaLocal ? window.PapaLocal.readArray(_LIB_RECENT_KEY) : []
-}
-function _rememberLibSearch(q) {
-  var _mt = (typeof window !== 'undefined' && window.PapaMusicTools) || null
-  var next = _mt && _mt.pushRecentSearch
-    ? _mt.pushRecentSearch(_libRecentSearches(), q, 10)
-    : [q].concat(_libRecentSearches().filter(function (s) { return s !== q })).slice(0, 10)
-  if (window.PapaLocal) window.PapaLocal.write(_LIB_RECENT_KEY, next)
-}
-function _hideLibRecentSearches() {
-  var box = document.getElementById('lib-recent-searches')
-  if (box) box.hidden = true
-}
-function _showLibRecentSearches() {
-  var box = document.getElementById('lib-recent-searches')
-  if (!box) return
-  var recent = _libRecentSearches()
-  if (!recent.length) { box.hidden = true; return }
-  box.innerHTML = '<div class="lib-recent-head">Recent searches</div>' +
-    recent.map(function (q) {
-      return '<button class="lib-recent-item" data-recent-q="' + esc(q) + '">' +
-        '<svg viewBox="0 0 24 24" width="14" height="14" style="opacity:.5"><path fill="currentColor" d="M13 3a9 9 0 0 0-9 9H1l4 4 4-4H6a7 7 0 1 1 2 5l-1.5 1.3A9 9 0 1 0 13 3zm-1 5v5l4 2 .7-1.2-3.2-1.9V8z"/></svg>' +
-        esc(q) + '</button>'
-    }).join('')
-  box.hidden = false
-  box.querySelectorAll('.lib-recent-item[data-recent-q]').forEach(function (item) {
-    item.addEventListener('mousedown', function (e) {
-      // mousedown (not click) so it fires before the input's blur.
-      e.preventDefault()
-      var q = item.dataset.recentQ
-      state.libSearch = q
-      _rememberLibSearch(q)
-      _hideLibRecentSearches()
       renderLibrary()
     })
   })
@@ -11244,11 +11150,14 @@ function renderSearch(query) {
       surpriseStyle.textContent = '.surprise-btn{padding:12px 32px;border-radius:100px;background:linear-gradient(135deg,var(--accent),#1db954);border:none;color:#000;font-size:16px;font-weight:600;cursor:pointer;transition:transform .15s,box-shadow .15s}.surprise-btn:hover{transform:scale(1.05);box-shadow:0 4px 16px rgba(29,185,84,.3)}'
       document.head.appendChild(surpriseStyle)
     }
+    // The shared memory (J2). The old reader kept only string entries, and
+    // the bar had been writing { query, ts } objects for a long time — so
+    // this row had been silently empty for real searches.
     var recentSearches = []
-  try {
-    var _hist = window.PapaLocal.readArray('pa_search_history')
-    if (Array.isArray(_hist)) recentSearches = _hist.filter(function (h) { return typeof h === 'string' && h }).slice(0, 6)
-  } catch (_) {}
+    try {
+      var _mem = _searchMemory()
+      if (_mem) recentSearches = _mem.recent('music', { limit: 6, elsewhereLimit: 0 }).own.map(function (e) { return e.q })
+    } catch (_) {}
     var recentHTML = ''
     if (recentSearches.length) {
       var css = '.recent-search-card{flex:0 0 140px;height:100px;border-radius:var(--r);cursor:pointer;transition:transform .15s}.recent-search-card:hover{transform:scale(1.03)}'
@@ -11307,8 +11216,10 @@ function renderSearch(query) {
   var filters = _parseSearchOperators(query)
   var hasOperators = filters.operators.length > 0
   var searchText = filters.text
-  const q = searchText.normalize('NFC').toLowerCase()
-  var matchAlbums, matchTracks, artistSet, matchArtists, didYouMean
+  var matchAlbums, matchTracks, artistSet, matchArtists, didYouMean, correction
+  // "search X instead" pins the verbatim query for THIS query only; a new
+  // query gets corrected afresh.
+  if (state._searchNoCorrect && state._searchNoCorrect !== query) state._searchNoCorrect = null
 
   var useCache = false
   if (state._lastSearch && state._lastSearch.query === query &&
@@ -11320,19 +11231,46 @@ function renderSearch(query) {
     matchArtists = state._lastSearch.localResults.artists
     matchTracks = state._lastSearch.localResults.tracks
     didYouMean = state._lastSearch.didYouMean
+    correction = state._lastSearch.correction || null
   }
 
   if (!useCache) {
-    matchAlbums = state.library.filter(a =>
-      (a.name || '').normalize('NFC').toLowerCase().includes(q) || (a.artist || '').normalize('NFC').toLowerCase().includes(q)
-    )
-    artistSet = new Set()
-    state.library.forEach(a => { if ((a.artist || '').normalize('NFC').toLowerCase().includes(q)) artistSet.add(a.artist) })
+    // One brain (J3): the same index the live dropdown ranks with, so a query
+    // that spans fields — "camel mirage", "king crimson discipline" — lands
+    // here exactly as it does there. The old substring scan matched the album
+    // name OR the artist name, each alone, and could never match both at once.
+    var albumById = {}
+    state.library.forEach(function (a) { albumById[a.id] = a })
+    var idxRes = null
+    if (searchText) {
+      if (!_searchIndex) rebuildSearchIndex(true)
+      if (_searchIndex && window.PapaLibraryIndex) {
+        idxRes = window.PapaLibraryIndex.query(_searchIndex, searchText, {
+          limits: { tracks: 400, albums: 200, artists: 60 },
+          correct: state._searchNoCorrect !== query,
+        })
+      }
+    }
+    if (idxRes) {
+      correction = idxRes.corrected || null
+      matchAlbums = idxRes.albums.map(function (e) { return albumById[e.id] }).filter(Boolean)
+      artistSet = new Set(idxRes.artists.map(function (e) { return e.name }))
+      matchTracks = idxRes.tracks.map(function (e) {
+        var alb = albumById[e.albumId]
+        var t = alb && (alb.tracks || []).find(function (x) { return x.filePath === e.filePath })
+        return t ? { ...t, albumId: alb.id, albumArtist: alb.artist, artPath: alb.artPath } : null
+      }).filter(Boolean)
+    } else {
+      // No free text (an operator-only query like `is:liked year:1970`):
+      // start from everything and let the operators below narrow it.
+      correction = null
+      matchAlbums = state.library.slice()
+      artistSet = new Set(state.library.map(function (a) { return a.artist }).filter(Boolean))
+      matchTracks = state.library.flatMap(a =>
+        (a.tracks || []).map(t => ({ ...t, albumId: a.id, albumArtist: a.artist, artPath: a.artPath }))
+      )
+    }
     matchArtists = [...artistSet]
-    matchTracks = state.library.flatMap(a =>
-      a.tracks.filter(t => (t.title || '').normalize('NFC').toLowerCase().includes(q))
-        .map(t => ({ ...t, albumId: a.id, albumArtist: a.artist, artPath: a.artPath }))
-    )
 
   if (filters.artist) {
     matchAlbums = matchAlbums.filter(function(a) { return (a.artist || '').normalize('NFC').toLowerCase().indexOf(filters.artist.normalize('NFC').toLowerCase()) !== -1 })
@@ -11356,9 +11294,11 @@ function renderSearch(query) {
   if (filters.durMin) matchTracks = matchTracks.filter(function(t) { return (t.duration || 0) > filters.durMin })
 
   didYouMean = null
-  if (!matchAlbums.length && !matchTracks.length && !artistSet.size && searchText.length > 2) {
-    var candidates = state.library.map(function(a) { return a.artist + ' \u2014 ' + a.name })
-    didYouMean = _fuzzyFind(searchText, candidates, 3)
+  if (!matchAlbums.length && !matchTracks.length && !artistSet.size && searchText.length > 2 && _searchIndex && window.PapaLibraryIndex) {
+    // Actionable did-you-mean (J3): every suggestion is a real query the brain
+    // has already checked finds something — never the old "Artist — Album"
+    // string that could not itself be searched for.
+    didYouMean = window.PapaLibraryIndex.suggest(_searchIndex, searchText, 3)
   }
 
   state._lastSearch = {
@@ -11366,6 +11306,7 @@ function renderSearch(query) {
     libRef: state.library,
     localResults: { albums: matchAlbums, artists: [...artistSet], tracks: matchTracks },
     didYouMean: didYouMean,
+    correction: correction,
     timestamp: Date.now()
   }
   }
@@ -11384,7 +11325,9 @@ function renderSearch(query) {
   var matchTracksTotal = matchTracks.length
   if (matchTracks.length > 20) matchTracks = matchTracks.slice(0, 20)
 
-  var dymHTML = didYouMean && didYouMean.length ? '<div class="did-you-mean">Did you mean: ' + didYouMean.map(function(d, i) { return '<span class="dym-link" data-dym-idx="' + i + '">' + esc(d) + '</span>' + (i < didYouMean.length - 1 ? ', ' : '') }).join('') + '?</div>' : ''
+  var dymHTML = ''
+  if (correction) dymHTML += _correctionChipHtml(correction.to, correction.from, 'search-page-undo')
+  if (didYouMean && didYouMean.length) dymHTML += '<div class="did-you-mean">Did you mean: ' + didYouMean.map(function(d, i) { return '<span class="dym-link" data-dym-idx="' + i + '" title="Search: ' + esc(d.query) + '">' + esc(d.label) + '</span>' + (i < didYouMean.length - 1 ? ', ' : '') }).join('') + '?</div>'
 
   const hasLocal = matchAlbums.length || matchArtists.length || matchTracks.length
   ytSearchState.showTopResult = !hasLocal
@@ -11601,8 +11544,19 @@ function renderSearch(query) {
   document.querySelectorAll('.dym-link').forEach(function(link) {
     link.addEventListener('click', function() {
       var idx = parseInt(link.dataset.dymIdx)
-      if (didYouMean && didYouMean[idx]) { navigate('search', didYouMean[idx]) }
+      if (didYouMean && didYouMean[idx]) commitSearchQuery(didYouMean[idx].query)
     })
+  })
+
+  // Undo an auto-correction: show the verbatim query's own results (locally
+  // none — that is why it was corrected) and take the verbatim term online.
+  // Pinned per query, so this search is never re-corrected behind the user.
+  document.querySelector('.search-page-undo')?.addEventListener('click', function (e) {
+    e.preventDefault()
+    if (!correction) return
+    state._searchNoCorrect = query
+    state._lastSearch = null
+    renderSearch(query)
   })
 
   document.getElementById('search-sort-select')?.addEventListener('change', function() {
@@ -11641,7 +11595,8 @@ function renderSearch(query) {
   // YouTube meant `artist:"Miles Davis" year:1970 bitches brew` was matched
   // against filenames as a literal string, which returns nothing -- so using an
   // operator silently killed online search entirely.
-  const onlineQuery = (searchText || '').trim()
+  // A corrected query goes online corrected: the chip already says so.
+  const onlineQuery = ((correction && correction.to) || searchText || '').trim()
   const canSearchOnline = onlineQuery.length >= 2
   const sameQuery  = slsk.lastQuery === onlineQuery
   const hasResults = slsk.results.length > 0
@@ -22475,9 +22430,7 @@ function _slskMergedCardHtml(m, gi, query) {
 // term. Rendered only when a correction was applied for the current search.
 function _slskCorrectionChip() {
   if (!slsk.correction) return ''
-  return `<div class="slsk-correction-chip" style="padding:4px 14px;font-size:12px;color:var(--text3)">` +
-    `Searching for <b style="color:var(--text)">${esc(slsk.correction.to)}</b> ` +
-    `<a class="slsk-correction-undo" href="#" style="color:var(--accent)">search "${esc(slsk.correction.from)}" instead</a></div>`
+  return _correctionChipHtml(slsk.correction.to, slsk.correction.from, 'slsk-correction-undo')
 }
 
 function renderSoulseekRow(query) {
@@ -22808,7 +22761,10 @@ async function runSlskSearch(query) {
   // Spelling correction runs once per fresh query (not on retries or the undo
   // re-run). If a clear fix is found, search the corrected string and remember
   // the pair so the header can offer an undo.
-  if (!opts.skipCorrect && slsk.lastQuery !== query) {
+  // A query the user has undone a correction on stays verbatim for the whole
+  // session — the undo used to be re-corrected by the next re-render, which
+  // was the verified dead end.
+  if (!opts.skipCorrect && slsk.lastQuery !== query && slsk.noCorrectFor !== query) {
     slsk.correction = null
     var fix = await _slskCorrectQuery(query)
     if (!current()) return // superseded while awaiting the suggestion
@@ -25037,6 +24993,7 @@ function bindSlskSearchEvents(query) {
     e.preventDefault()
     const verbatim = slsk.correction ? slsk.correction.from : query
     slsk.correction = null
+    slsk.noCorrectFor = verbatim
     slsk.lastQuery = ''  // force a fresh run
     runSlskSearch(verbatim, { skipCorrect: true })
   })
@@ -25683,23 +25640,13 @@ function saveCurrentQueue(name) {
 // SEARCH HISTORY
 // ══════════════════════════════════════════════════════════════════════════════
 function initSearchHistory() {
-  const HISTORY_KEY = 'pa_search_history'
-  const MAX_ITEMS   = 30
   const input       = document.getElementById('tb-search')
   const dropdown    = document.getElementById('search-history-dropdown')
   if (!input || !dropdown) return
 
-  // This one mattered most. initSearchHistory() is called synchronously from
-  // setupListeners(), so an unguarded throw here aborted the rest of the wiring:
-  // queue panel, sleep timer, sidebar resize, drag and drop and every keyboard
-  // shortcut went unbound for the whole session, with nothing shown.
-  let history       = window.PapaLocal.readArray(HISTORY_KEY)
-    .map(function(h) { return typeof h === 'string' ? { query: h, ts: Date.now() - 86400000 } : h })
-    .filter(function(h) { return h && typeof h.query === 'string' && h.query })
-  let activeIdx     = -1   // which row is highlighted by keyboard
-  let blurTimer     = null
   var _searchTimeout = null
   var _liveResultsVisible = false
+  var _liveActive = -1   // keyboard row inside the live-results dropdown
 
   // YouTube autocomplete + speculative prefetch controllers (pure logic in
   // yt-suggest-model.js). The debouncer enforces 250ms + cancel-on-newer; the
@@ -25709,99 +25656,28 @@ function initSearchHistory() {
   var _sugg = window.PapaYtSuggestModel ? window.PapaYtSuggestModel.createDebouncer(250) : null
   var _prefetch = window.PapaYtSuggestModel ? window.PapaYtSuggestModel.createPrefetcher() : null
 
-  function saveHistory() {
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(history))
+  // Recents (J2): the one shared memory — this box's own searches first, then
+  // what was searched on Movies & TV, Soulseek or the library. Offered on an
+  // empty box; while typing, the live dropdown carries the matching recents.
+  var recents = _attachRecents(input, dropdown, 'music', function (q) { commitSearch(q) })
+
+  function addToHistory(query) { _rememberSearch(query, 'music') }
+  function hideDropdown() { if (recents) recents.hide() }
+
+  // ↑ ↓ over the live results; Enter on a highlighted row takes the same
+  // mousedown path a click does, so every row kind (play, open, search) works.
+  function _liveRows() {
+    var dd = document.getElementById('live-search-dd')
+    return dd ? Array.prototype.slice.call(dd.querySelectorAll('.live-item')) : []
   }
-
-  function addToHistory(query) {
-    history = history.filter(function(h) { return (typeof h === 'string' ? h : h.query).toLowerCase() !== query.toLowerCase() })
-    history.unshift({ query: query, ts: Date.now() })
-    if (history.length > MAX_ITEMS) history.pop()
-    saveHistory()
-  }
-
-  function removeFromHistory(query) {
-    history = history.filter(function(h) { return (typeof h === 'string' ? h : h.query) !== query })
-    saveHistory()
-    renderDropdown(input.value)
-  }
-
-  function relativeTime(ts) {
-    if (!ts) return ''
-    var diff = Date.now() - ts
-    if (diff < 60000) return 'just now'
-    if (diff < 3600000) return Math.floor(diff / 60000) + 'm ago'
-    if (diff < 86400000) return Math.floor(diff / 3600000) + 'h ago'
-    if (diff < 172800000) return 'yesterday'
-    return Math.floor(diff / 86400000) + 'd ago'
-  }
-
-  function highlight(text, filter) {
-    if (!filter) return esc(text)
-    const idx = text.toLowerCase().indexOf(filter.toLowerCase())
-    if (idx < 0) return esc(text)
-    return esc(text.slice(0, idx))
-      + `<mark>${esc(text.slice(idx, idx + filter.length))}</mark>`
-      + esc(text.slice(idx + filter.length))
-  }
-
-  function renderDropdown(filter) {
-    const q = (filter || '').trim().toLowerCase()
-    const matches = q
-      ? history.filter(function(h) { var t = typeof h === 'string' ? h : h.query; return t.toLowerCase().includes(q) })
-      : history
-
-    if (!matches.length) { hideDropdown(); return }
-
-    var filtered = matches.slice(0, 10)
-    dropdown.innerHTML = filtered.map(function(h, i) {
-      var qtext = typeof h === 'string' ? h : h.query
-      var ts = h.ts ? relativeTime(h.ts) : ''
-      return '<div class="sh-item' + (i === activeIdx ? ' active' : '') + '" data-idx="' + i + '" data-query="' + esc(qtext) + '">' +
-        '<svg class="sh-icon" viewBox="0 0 24 24"><path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/></svg>' +
-        '<span class="sh-text">' + highlight(qtext, filter) + '</span>' +
-        (ts ? '<span class="sh-time">' + ts + '</span>' : '') +
-        '<button class="sh-item-del" data-query="' + esc(qtext) + '" title="Remove">&#10005;</button></div>'
-    }).join('')
-
-    // Bind remove buttons
-    dropdown.querySelectorAll('.sh-item-del').forEach(btn => {
-      btn.addEventListener('mousedown', e => {
-        e.preventDefault() // prevent blur on input
-        removeFromHistory(btn.dataset.query)
-      })
-    })
-
-    // Bind item clicks
-    dropdown.querySelectorAll('.sh-item').forEach(row => {
-      row.addEventListener('mousedown', e => {
-        if (e.target.closest('.sh-item-del')) return
-        e.preventDefault()
-        const q = row.dataset.query
-        input.value = q
-        hideDropdown()
-        commitSearch(q)
-      })
-    })
-
-    activeIdx = -1
-    dropdown.classList.add('open')
-  }
-
-  function hideDropdown() {
-    dropdown.classList.remove('open')
-    dropdown.innerHTML = ''
-    activeIdx = -1
-  }
-
-  function setActive(idx) {
-    const rows = dropdown.querySelectorAll('.sh-item')
-    rows.forEach(r => r.classList.remove('active'))
-    activeIdx = Math.max(-1, Math.min(idx, rows.length - 1))
-    if (activeIdx >= 0) {
-      rows[activeIdx].classList.add('active')
-      input.value = rows[activeIdx].dataset.query
-    }
+  function _setLiveActive(idx) {
+    var rows = _liveRows()
+    if (!rows.length) { _liveActive = -1; return }
+    if (idx < -1) idx = rows.length - 1
+    if (idx >= rows.length) idx = -1
+    _liveActive = idx
+    rows.forEach(function (r, i) { r.classList.toggle('active', i === idx); r.style.background = i === idx ? 'var(--glass)' : '' })
+    if (idx >= 0) { try { rows[idx].scrollIntoView({ block: 'nearest' }) } catch (_) {} }
   }
 
   function commitSearch(q) {
@@ -25816,11 +25692,6 @@ function initSearchHistory() {
   // blurs the input, so the dropdown used to float over the next page until
   // the next real click. Registered once — a no-op while closed.
   _registerNavDismiss(function () { hideDropdown(); hideLiveResults() })
-
-  input.addEventListener('focus', () => {
-    clearTimeout(blurTimer)
-    renderDropdown(input.value)
-  })
 
   input.addEventListener('input', () => {
     var val = input.value
@@ -25845,8 +25716,7 @@ function initSearchHistory() {
       if (chip) { chip.style.display = 'none'; input.style.paddingLeft = '' }
     }
 
-    activeIdx = -1
-    renderDropdown(input.value)
+    _liveActive = -1
     clearTimeout(_searchTimeout)
     var q = input.value.trim()
     if (!q) { hideLiveResults(); return }
@@ -25856,15 +25726,23 @@ function initSearchHistory() {
   })
 
   input.addEventListener('keydown', e => {
-    const rows = dropdown.querySelectorAll('.sh-item')
-    if (e.key === 'ArrowDown') {
+    // The recents dropdown claims ↑ ↓ Enter first (capture) while it is open;
+    // here the same keys drive the live results.
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      if (!_liveResultsVisible) return
       e.preventDefault()
-      setActive(activeIdx + 1)
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault()
-      if (activeIdx <= 0) { activeIdx = -1; input.value = input.dataset.typed || input.value }
-      else setActive(activeIdx - 1)
-    } else if (e.key === 'Enter') {
+      _setLiveActive(_liveActive + (e.key === 'ArrowDown' ? 1 : -1))
+      return
+    }
+    if (e.key === 'Enter' && _liveResultsVisible && _liveActive >= 0) {
+      var activeRow = _liveRows()[_liveActive]
+      if (activeRow) {
+        e.preventDefault()
+        activeRow.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }))
+        return
+      }
+    }
+    if (e.key === 'Enter') {
       const q = input.value.trim()
       var sourceMatch = q.match(/^source:(\S+)/i)
       if (sourceMatch) {
@@ -25884,19 +25762,25 @@ function initSearchHistory() {
     } else if (e.key === 'Escape') {
       input.value = ''
       hideDropdown()
+      hideLiveResults()
       input.blur()
-    } else {
-      input.dataset.typed = input.value
     }
   })
 
   input.addEventListener('blur', () => {
-    blurTimer = setTimeout(function() { hideDropdown(); hideLiveResults() }, 150)
+    setTimeout(function() { hideLiveResults() }, 150)
   })
 
-  // Close on click outside
+  // Close on click outside. Judged by the event's path, not the target: a
+  // ✕ in the recents list re-paints the list (detaching the very button that
+  // was pressed) before this handler runs, and a detached target has no
+  // ancestors — it read as "outside" and closed the list, which was the
+  // verified collapse-on-delete bug.
   document.addEventListener('mousedown', e => {
-    if (!e.target.closest('#tb-search-wrap')) { hideDropdown(); hideLiveResults() }
+    var inside = typeof e.composedPath === 'function'
+      ? e.composedPath().some(function (el) { return el && el.id === 'tb-search-wrap' })
+      : !!(e.target.closest && e.target.closest('#tb-search-wrap'))
+    if (!inside) { hideDropdown(); hideLiveResults() }
   })
 
   // Clear-search button
@@ -26058,6 +25942,20 @@ function initSearchHistory() {
     }
 
     var html = ''
+    // Matching recents ride along at the top while typing (J2): the shared
+    // memory filtered by what has been typed, this box first, elsewhere after.
+    var mem = _searchMemory()
+    var rec = mem ? mem.recent('music', { filter: q, limit: 3, elsewhereLimit: 1 }) : { own: [], elsewhere: [] }
+    var recRows = rec.own.concat(rec.elsewhere)
+    if (recRows.length) {
+      html += '<div style="padding:6px 12px;font-size:11px;color:var(--text3);text-transform:uppercase">Recent</div>'
+      recRows.forEach(function(e) {
+        html += '<div class="live-item live-recent-item" data-query="' + esc(e.q) + '" style="padding:6px 12px;cursor:pointer;font-size:13px;display:flex;gap:8px;align-items:center">' +
+          '<span style="opacity:.5">&#8635;</span><span>' + esc(e.q) +
+          (e.fromLabel ? '<span style="color:var(--text3);font-size:11px"> — ' + esc(e.fromLabel) + '</span>' : '') +
+          '</span></div>'
+      })
+    }
     // "Did you mean" — the corrected query was auto-applied; say so, with an undo
     // that re-runs the verbatim term (never silently swap what the user asked).
     if (correction) {
@@ -26205,6 +26103,7 @@ function initSearchHistory() {
     var dd = document.getElementById('live-search-dd')
     if (dd) { dd.style.display = 'none'; dd.innerHTML = '' }
     _liveResultsVisible = false
+    _liveActive = -1
   }
 }
 
@@ -26260,6 +26159,21 @@ function setupListeners() {
   // Make major UI regions focusable for keyboard navigation
   document.getElementById('content')?.setAttribute('tabindex', '0')
   document.getElementById('player-bar')?.setAttribute('tabindex', '0')
+
+  // Every recents dropdown closes when the page changes (J2), registered once.
+  _registerNavDismiss(function () { if (window.PapaSearchRecentsUI) window.PapaSearchRecentsUI.hideAll() })
+
+  // What was opened from a search (J2 → J4): on the search page and on a
+  // filtered library grid, a click on an album, track or artist is written to
+  // the query's memory before the page's own handlers navigate away.
+  document.getElementById('content')?.addEventListener('click', e => {
+    var q = null, surface = null
+    if (state.currentPage === 'search' && state.currentSearchQuery) { q = state.currentSearchQuery; surface = 'music' }
+    else if (state.currentPage === 'library' && state.libSearch) { q = state.libSearch; surface = 'library' }
+    if (!q) return
+    var item = _openedItemOf(e.target)
+    if (item) _rememberOpen(q, surface, item)
+  }, true)
 
   // Global delegation: track artist name → navigate to artist page
   document.getElementById('content')?.addEventListener('click', e => {
@@ -28431,7 +28345,10 @@ function syncLibraryExt() {
 // slice it into an idle callback so a rescan never janks the main thread.
 var _searchIndex = null
 
-function rebuildSearchIndex() {
+// `sync` forces the build right now: the committed search page and the
+// library grid rank with this index, so a first paint before the idle build
+// landed must not fall back to nothing.
+function rebuildSearchIndex(sync) {
   if (!window.PapaLibraryIndex) return
   var lib = state.library || []
   var doBuild = function () {
@@ -28440,11 +28357,79 @@ function rebuildSearchIndex() {
   }
   // Big libraries: defer to idle so the build lands between frames. The object
   // form of the timeout guarantees it still runs even on a busy main thread.
-  if (lib.length > 2000 && typeof requestIdleCallback === 'function') {
+  if (!sync && lib.length > 2000 && typeof requestIdleCallback === 'function') {
     requestIdleCallback(doBuild, { timeout: 2000 })
   } else {
     doBuild()
   }
+}
+
+// ── One search memory (J2) ────────────────────────────────────────────────────
+// Every search box commits to and reads from this one store (search-memory.js)
+// through window.PapaLocal. Lazy: local-store.js is loaded before renderer.js,
+// but the store is only needed once a box exists.
+var _searchMemoryStore = null
+function _searchMemory() {
+  if (_searchMemoryStore) return _searchMemoryStore
+  if (!window.PapaSearchMemory || !window.PapaLocal) return null
+  _searchMemoryStore = window.PapaSearchMemory.createStore({
+    getRaw: function (k) { return window.PapaLocal.readRaw(k) },
+    readArray: function (k) { return window.PapaLocal.readArray(k) },
+    write: function (k, v) { return window.PapaLocal.write(k, v) },
+    remove: function (k) { return window.PapaLocal.remove(k) },
+  })
+  return _searchMemoryStore
+}
+// A search is remembered when it is ACTED ON — Enter, a button, a result
+// click — never on a debounce tick. Surfaces: 'music' | 'library' | 'video' |
+// 'soulseek'.
+function _rememberSearch(query, surface) {
+  var q = String(query == null ? '' : query).trim()
+  if (!q) return
+  var mem = _searchMemory()
+  if (mem) mem.commit(q, surface)
+}
+// What the user opened from a search — the album, track, film — so the
+// recents can say "→ Mirage" and the trail (J4) has its spine.
+function _rememberOpen(query, surface, item) {
+  var q = String(query == null ? '' : query).trim()
+  if (!q || !item || !item.label) return
+  var mem = _searchMemory()
+  if (mem) mem.recordOpen(q, surface, item)
+}
+// The shared recents dropdown under a box (search-recents-ui.js). Null when
+// either half is missing, so a box still works with no history at all.
+function _attachRecents(input, container, surface, onPick, extra) {
+  var mem = _searchMemory()
+  if (!mem || !input || !container || !window.PapaSearchRecentsUI) return null
+  return window.PapaSearchRecentsUI.attach(Object.assign({
+    input: input, container: container, surface: surface, store: mem, onPick: onPick,
+  }, extra || {}))
+}
+// One chip for every auto-correction (J3): says what was searched, offers the
+// verbatim term back. `undoClass` is the per-surface hook the caller binds.
+function _correctionChipHtml(to, from, undoClass) {
+  return '<div class="search-correction-chip">Showing results for <b>' + esc(to) + '</b> ' +
+    '<a class="search-correction-undo ' + esc(undoClass || '') + '" href="#">search \u201c' + esc(from) + '\u201d instead</a></div>'
+}
+// The thing a click on a search result opened, or null. Shared by the search
+// page and the library grid, which paint the same card/row shapes.
+function _openedItemOf(target) {
+  if (!target || !target.closest) return null
+  var row = target.closest('.track-row[data-file]')
+  if (row) {
+    var alb = state.library.find(function (a) { return a.id === row.dataset.album })
+    var tr = alb && (alb.tracks || []).find(function (t) { return t.filePath === row.dataset.file })
+    return tr ? { kind: 'track', id: tr.filePath, label: tr.title || tr.filePath } : null
+  }
+  var card = target.closest('.album-card[data-album], .search-top-result[data-album]')
+  if (card) {
+    var a2 = state.library.find(function (a) { return a.id === card.dataset.album })
+    return a2 ? { kind: 'album', id: a2.id, label: a2.name || a2.id } : null
+  }
+  var pill = target.closest('.artist-pill[data-artist], .track-artist[data-artist]')
+  if (pill && pill.dataset.artist) return { kind: 'artist', id: pill.dataset.artist, label: pill.dataset.artist }
+  return null
 }
 
 // Sync position every second while playing
@@ -28699,37 +28684,6 @@ function _parseSearchOperators(query) {
   result.operators = operators
   result.text = text
   return result
-}
-
-// ── Fuzzy matching ───────────────────────────────────────────────────────────
-function _fuzzyFind(text, candidates, limit) {
-  limit = limit || 3
-  var lower = text.toLowerCase()
-  var scored = candidates.map(function(c) {
-    var dist = _levenshtein(lower, c.toLowerCase())
-    if (c.toLowerCase().indexOf(lower) !== -1) dist = Math.max(0, dist - 100)
-    return { text: c, dist: dist }
-  })
-  scored.sort(function(a, b) { return a.dist - b.dist })
-  return scored.slice(0, limit).filter(function(s) { return s.dist < Math.max(5, s.text.length / 2) }).map(function(s) { return s.text })
-}
-
-function _levenshtein(a, b) {
-  if (a.length === 0) return b.length
-  if (b.length === 0) return a.length
-  var matrix = []
-  for (var i = 0; i <= b.length; i++) { matrix[i] = [i] }
-  for (var j = 0; j <= a.length; j++) { matrix[0][j] = j }
-  for (var i = 1; i <= b.length; i++) {
-    for (var j = 1; j <= a.length; j++) {
-      if (b.charAt(i - 1) === a.charAt(j - 1)) {
-        matrix[i][j] = matrix[i - 1][j - 1]
-      } else {
-        matrix[i][j] = Math.min(matrix[i - 1][j - 1] + 1, Math.min(matrix[i][j - 1] + 1, matrix[i - 1][j] + 1))
-      }
-    }
-  }
-  return matrix[b.length][a.length]
 }
 
 // The rule editor offers artist/album/genre/year/format/playCount, but track
@@ -30964,6 +30918,7 @@ function renderSoulseekHub() {
       '<svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>' +
       '<input type="text" class="slsk-hub-search-input" id="slsk-hub-search-input" placeholder="Search Soulseek for an album or artist…" autocomplete="off" value="' + esc(slsk.lastQuery || '') + '">' +
       '<button class="slsk-hub-search-btn" id="slsk-hub-search-btn">Search</button>' +
+      '<div id="slsk-hub-recents" class="recents-dd" hidden></div>' +
     '</div>' +
     '<div class="slsk-hub-section">' +
       '<div class="section-header"><span class="section-title">Friends</span></div>' +
@@ -30992,11 +30947,21 @@ function renderSoulseekHub() {
   var runHubSearch = function () {
     var q = (input && input.value || '').trim()
     if (q.length < 2) { showSnackbar('Type at least two characters to search'); return }
+    _rememberSearch(q, 'soulseek')
     if (window.api && slsk.status && slsk.status.connected) runSlskSearch(q)
     else { var sec = document.getElementById('slsk-section'); if (sec) { sec.innerHTML = renderSoulseekRow(q); bindSlskSearchEvents(q) } }
   }
+  // Recents (J2): the shared dropdown — what was searched here, then what was
+  // searched on the music bar, the library and Movies & TV.
+  _attachRecents(input, document.getElementById('slsk-hub-recents'), 'soulseek', function (q) {
+    if (input) input.value = q
+    runHubSearch()
+  }, { filterWhileTyping: true })
   document.getElementById('slsk-hub-search-btn')?.addEventListener('click', runHubSearch)
-  input?.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); runHubSearch() } })
+  input?.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { e.preventDefault(); runHubSearch() }
+    else if (e.key === 'Escape') { if (input.value) input.value = ''; else input.blur() }
+  })
 
   document.getElementById('slsk-hub-saved')?.addEventListener('click', function () { showSlskSavedUsers() })
   document.getElementById('slsk-hub-messages')?.addEventListener('click', function () { _openSlskChatPanel() })

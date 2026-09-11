@@ -203,3 +203,15 @@ test('library vocabulary vetoes correction of real owned terms', () => {
   assert.strictEqual(SQ.isSpellingFix('camel', 'gamel', vocab), false, 'owned word never rewritten')
   assert.strictEqual(SQ.isSpellingFix('radiohaed creep', 'radiohead creep', vocab), true, 'genuine typos still repair')
 })
+
+// ── nearestTokens (the raw material for actionable did-you-mean) ─────────────
+test('nearestTokens lists the closest real words by distance then frequency', () => {
+  const vocab = SQ.buildVocabulary(['camel mirage', 'camel moonmadness', 'caravan', 'cave in'])
+  const near = SQ.nearestTokens('camle', vocab, 3, 3)
+  assert.equal(near[0].word, 'camel')
+  assert.ok(near.every(n => n.dist >= 1))
+  assert.deepEqual(SQ.nearestTokens('camel', vocab, 3, 3), [{ word: 'camel', dist: 0, freq: 2 }], 'a real word is only itself')
+  assert.deepEqual(SQ.nearestTokens('zzzzzzzz', vocab, 3, 3), [])
+  assert.deepEqual(SQ.nearestTokens('', vocab), [])
+  assert.deepEqual(SQ.nearestTokens('camle', null), [])
+})

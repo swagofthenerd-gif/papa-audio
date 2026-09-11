@@ -1,7 +1,7 @@
 'use strict'
 // Pure-function tests for the Wave-3 UI features:
 //   #11 smart-playlist field/op/value evaluator (evaluateFieldRules)
-//   #13 fuzzy library search (fuzzyMatches / fuzzyFilter) + recent searches
+//   #13 fuzzy library search + recent searches (retired → shared brain/memory)
 //   #15 home row order + hidden persistence logic
 //   #16 year-end Wrapped aggregations
 // Same house style as music-tools.test.js: real assertions over the pure
@@ -107,64 +107,15 @@ test('a malformed rule (unknown op) fails closed', () => {
   assert.deepEqual(out, [])
 })
 
-// ── #13 Fuzzy search ──────────────────────────────────────────────────────────
-
-test('levenshtein is the standard edit distance', () => {
-  assert.equal(T.levenshtein('kitten', 'sitting'), 3)
-  assert.equal(T.levenshtein('', 'abc'), 3)
-  assert.equal(T.levenshtein('abc', 'abc'), 0)
-})
-
-test('a one-typo query still matches within edit distance 2', () => {
-  assert.ok(T.fuzzyMatches('Radiohead', 'raidohead'), 'a transposition matches')
-  assert.ok(T.fuzzyMatches('Radiohead', 'radiohed'), 'a dropped letter matches')
-})
-
-test('a far-off query does not fuzzily match', () => {
-  assert.ok(!T.fuzzyMatches('Radiohead', 'metallica'))
-})
-
-test('every query word must match some candidate word', () => {
-  assert.ok(T.fuzzyMatches('Miles Davis Kind of Blue', 'davis blue'))
-  assert.ok(!T.fuzzyMatches('Miles Davis Kind of Blue', 'davis zeppelin'))
-})
-
-test('short query words demand a prefix, not a loose distance match', () => {
-  // "of" (2 chars) is within 2 edits of almost anything, so it must be a prefix.
-  assert.ok(!T.fuzzyMatches('Radiohead', 'ok'), '"ok" is not a prefix of any word')
-  assert.ok(T.fuzzyMatches('OK Computer', 'ok'), '"ok" prefixes the album word')
-})
-
-test('fuzzyFilter keeps matches in input order via a textOf accessor', () => {
-  const items = [
-    { name: 'Radiohead' }, { name: 'Metallica' }, { name: 'Radioactive' },
-  ]
-  const out = T.fuzzyFilter(items, 'raidohead', it => it.name)
-  assert.deepEqual(out.map(i => i.name), ['Radiohead'])
-})
-
-// ── #13 Recent searches ───────────────────────────────────────────────────────
-
-test('pushRecentSearch moves a repeat to the front without duplicating', () => {
-  let list = T.pushRecentSearch([], 'jazz')
-  list = T.pushRecentSearch(list, 'rock')
-  list = T.pushRecentSearch(list, 'jazz') // repeat
-  assert.deepEqual(list, ['jazz', 'rock'])
-})
-
-test('recent searches ignore blanks and are case-insensitively de-duped', () => {
-  let list = T.pushRecentSearch(['Jazz'], '  ')
-  assert.deepEqual(list, ['Jazz'])
-  list = T.pushRecentSearch(['Jazz'], 'jazz')
-  assert.deepEqual(list, ['jazz'], 'the newer casing wins, no duplicate')
-})
-
-test('recent searches are capped, newest kept', () => {
-  let list = []
-  for (let i = 0; i < 15; i++) list = T.pushRecentSearch(list, 'q' + i)
-  assert.equal(list.length, 10)
-  assert.equal(list[0], 'q14')
-  assert.equal(list.indexOf('q0'), -1)
+// ── #13 Fuzzy search + recent searches ───────────────────────────────────────
+// Retired: the grid now ranks with the shared brain (library-index.js
+// filterAlbums, tested there) and recents live in the one shared memory
+// (search-memory.js, tested there). music-tools must not grow them back.
+test('the private fuzzy matcher and recents list are gone from music-tools', () => {
+  assert.equal(T.fuzzyFilter, undefined)
+  assert.equal(T.fuzzyMatches, undefined)
+  assert.equal(T.levenshtein, undefined)
+  assert.equal(T.pushRecentSearch, undefined)
 })
 
 // ── #15 Home personalization ──────────────────────────────────────────────────

@@ -134,13 +134,15 @@ test('history is remembered on Enter and on result click', () => {
     'clicking a result must commit the query to history')
 })
 
-test('history self-heals by dropping strict prefixes on read', () => {
-  const at = CODE.indexOf('function _vSearchDropPrefixes')
-  assert.ok(at !== -1, 'prefix cleanup helper missing')
-  const heal = CODE.indexOf('function _vSearchHistory')
-  const body = CODE.slice(heal, heal + 700)
-  assert.ok(/_vSearchDropPrefixes\(/.test(body),
-    '_vSearchHistory must run the prefix cleanup')
+test('the legacy per-keystroke history is prefix-cleaned once, in the migration', () => {
+  // The self-heal used to run on every read of the video list. That list is
+  // gone: the one shared memory folds it in exactly once (search-memory.js),
+  // and dropPrefixes is applied to the video list on the way in.
+  const SM = fs.readFileSync(path.join(SRC, 'search-memory.js'), 'utf8')
+  const mig = SM.slice(SM.indexOf('function migrate('), SM.indexOf('function relativeTime('))
+  assert.ok(/dropPrefixes\(Array\.isArray\(legacy\.video\)/.test(mig), 'migrate must prefix-clean the legacy video list')
+  assert.ok(!/_vSearchDropPrefixes|_vSearchHistory\b|papaVideoRecentSearches/.test(CODE.replace(/PapaSearchMemory[^\n]*/g, '')),
+    'renderer no longer owns a private video history')
 })
 
 // ── Audit #7: np-modal volume slider stays in sync ──────────────────────────
