@@ -3160,16 +3160,38 @@ function _observeCards(root) {
   }
 }
 
+// The smooth player's engine (V1). Created once; the theatre controller is
+// built on its API proxy, so every call routes to the in-page <video> while a
+// web session is active and to mpv otherwise.
+var _webPlayer = null
+function _webEngine() {
+  if (_webPlayer || !window.PapaWebPlayer) return _webPlayer
+  _webPlayer = window.PapaWebPlayer.create({
+    api: window.api,
+    onEvent: function (ev) {
+      if (ev.kind === 'restore') { if (_player) _player.restore(); return }
+      _handleVideoEvent(ev)
+    },
+  })
+  return _webPlayer
+}
+
 function _initVideoUI() {
   if (_videoUiReady) return
   _videoUiReady = true
   _bindBrowseKeys()
   if (window.PapaVideoPlayer) {
+    var eng = _webEngine()
     _player = window.PapaVideoPlayer.create({
+      api: eng ? eng.wrapApi(window.api) : window.api,
       onExit: function () {
         _persistPosition(true)
         _watch = { key: null, meta: null, savedAt: 0, resumed: false }
         _videoLastState = null
+        // The exit path talks to the real API, not the deck's proxy, so the
+        // in-page engine is closed here explicitly (V1): the picture leaves the
+        // page and the stream session ends with the stop.
+        if (_webPlayer && _webPlayer.active()) _webPlayer.close()
         window.api.videoStop().catch(function () {})
         // Bring the album back if the film paused it and the user didn't move
         // on to other music in the meantime (#72).
@@ -3959,6 +3981,16 @@ function _handleVideoEvent(payload) {
     _player.setStageMessage('<div class="spin"></div><div>' +
       esc(label + (pct != null ? ' ' + pct + '%' : '…')) + '</div>' +
       (detail ? '<div style="opacity:.6">' + esc(detail) + '</div>' : ''))
+  } else if (payload.kind === 'web-ready') {
+    // The stream server has a session for this play (V1): play it in the
+    // page. Badges say what the planner did ("converted", "HDR shown as SDR").
+    var eng2 = _webEngine()
+    if (!eng2) return
+    eng2.open(payload.session, 0)
+    if (payload.session && payload.session.plan && payload.session.plan.badges && payload.session.plan.badges.length) {
+      showToast(payload.session.plan.badges.join(' · '))
+    }
+    return
   } else if (payload.kind === 'playing') {
     _player.setStageMessage('')
     _loadSkipSegments()
@@ -20369,6 +20401,11 @@ async function _initVideoSettings() {
   const seedInput = $('video-seed-watching')
   $('video-prefer-surround').checked = s.preferSurround !== false
   $('video-quality').value = s.preferredQuality || '1080p'
+  const modeSel = $('video-player-mode')
+  if (modeSel) {
+    modeSel.value = s.playerMode === 'purist' ? 'purist' : 'smooth'
+    modeSel.addEventListener('change', function () { save({ playerMode: modeSel.value }) })
+  }
   if (s.tmdbApiKey) keyInput.placeholder = 'Key saved ✓ — paste new one to change'
   if (subsInput && s.openSubtitlesApiKey) subsInput.placeholder = 'Key saved ✓ — paste new one to change'
   // downloadLimitMbps is stored as a number or null; show the number, leave

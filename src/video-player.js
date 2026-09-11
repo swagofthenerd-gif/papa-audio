@@ -652,7 +652,11 @@
         placeMiniCard(null, true)
       }
 
-      for (const el of [handle, bar]) {
+      // The picture region joins the drag surfaces (V1): with the smooth
+      // player the <video> lives inside it and receives the pointer, so the
+      // whole card drags. Under mpv the native window still eats the events
+      // here, exactly as before — binding costs nothing.
+      for (const el of [handle, bar, $('vmini-video')]) {
         if (!el) continue
         el.addEventListener('pointerdown', onDown(el))
         el.addEventListener('pointermove', onMove)

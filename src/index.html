@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self' file: data: 'unsafe-inline'; media-src file: blob:; img-src 'self' file: data: https:;">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' file: data: 'unsafe-inline' http://127.0.0.1:*; media-src file: blob: http://127.0.0.1:*; img-src 'self' file: data: https:;">
   <title>Papa Audio</title>
   <link rel="stylesheet" href="styles.css">
 </head>
@@ -508,6 +508,12 @@
           <div class="mcs-set-hint">Sharing (seeding) sends the parts you already have back to other people watching the same thing. It keeps things fast for everyone and is on by default.</div>
           <label class="mcs-set-row">Prefer surround
             <input type="checkbox" id="video-prefer-surround">
+          </label>
+          <label class="mcs-set-row">Video player
+            <select class="mcs-set-select" id="video-player-mode" title="Smooth plays inside the app window: draggable picture, animations, one player. Purist plays through mpv bit-exact with HDR and TrueHD pass-through.">
+              <option value="smooth">Smooth (in-page, converts when needed)</option>
+              <option value="purist">Purist (mpv, bit-exact)</option>
+            </select>
           </label>
           <label class="mcs-set-row">Preferred quality
             <select class="mcs-set-select" id="video-quality">
@@ -1206,6 +1212,7 @@
 <script src="media-handoff.js"></script>
 <script src="mylist-group.js"></script>
 <script src="skip-model.js"></script>
+<script src="web-player.js"></script>
 <script src="video-player.js"></script>
 <!-- The film diary. taste-store.js is the data layer, taste-panel.js the
      only thing that turns it into markup; both are UMD so the tests reach

@@ -68,6 +68,25 @@ kept as the fallback for anything Chromium refuses.
 
 Everything in §2 assumes the page owns the pixels.
 
+### V0 measurements (2026-09-11, this machine: Fedora 44, RTX 3070, Electron 28 / Chromium 120, ffmpeg 8.1 with CUDA/NVENC)
+
+What this Electron build's `<video>` can decode: **H.264, AV1 (8- and 10-bit), VP9, AAC, Opus, FLAC — yes. HEVC (any), AC-3, E-AC-3, TrueHD — no.** libmpv headers are not installed, so V0a could not be prototyped without `sudo dnf install mpv-libs-devel`.
+
+| File (the user's own) | Path to a browser-playable stream | Speed | Playback in Electron |
+|---|---|---|---|
+| Mononoke (1080p HEVC 10-bit, AAC 5.1) | GPU decode → H.264 (NVENC, CQ 19) + audio copy | **5.45× real time** | 0 dropped frames; drag bench: 240 frames, 1 over 20 ms, 0 video frames dropped |
+| A Clockwork Orange (1080p AV1 10-bit, Opus 5.1) | **remux only** (`-c copy` to fragmented MP4) | 228× real time | 0 dropped frames; drag bench: 240 frames, 1 over 20 ms, 0 dropped |
+| Fantastic 4 (4K HEVC 10-bit HDR10+/DV, TrueHD 7.1 / E-AC-3) | GPU decode → CPU tone-map → H.264 SDR (NVENC) + E-AC-3 → Opus 5.1 | **~1.0× real time** (20 s took 21 s) | not benched |
+
+The RTX 3070 (Ampere) has **no AV1 encoder**, so 4K HDR cannot stay 10-bit on the GPU path; it becomes H.264 SDR with tone-mapping, at about real time. TrueHD is never passed through: it becomes Opus 5.1.
+
+**Decision (V0): the page owns the pixels, ffmpeg feeds it, mpv stays as the purist fallback.**
+- Remux when the codecs allow (H.264/AV1/VP9 + AAC/Opus/FLAC; SRT → WebVTT).
+- GPU-transcode when they do not (HEVC → H.264 at a high, near-transparent bitrate; AC-3/E-AC-3/TrueHD → Opus 5.1; ASS/PGS subtitles burned in on that path so fansub styling survives).
+- HDR is shown tone-mapped, with an honest "HDR shown as SDR" badge; 4K HDR gets a pre-roll buffer because it converts at ~1×.
+- **Purist mode** (a setting, and automatic for anything the pipeline refuses) plays through mpv in the native window exactly as today: bit-exact, HDR and TrueHD pass-through, and the old mini player. V0a (libmpv → texture) remains the way to get both at once; it needs the devel package and a native addon, and is parked until the user wants it.
+
+
 ## 2. The mini player, YouTube-grade and beyond (V1)
 
 - **Drag by the picture.** Any press on the card (picture included) starts a

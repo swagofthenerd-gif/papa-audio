@@ -46,6 +46,7 @@
       "side-store.js",
       "torrent-stream.js",
       "video-engine.js",
+    "web-stream.js",
       "yarrlist-directory.js",
       "volume-map.js",
       "youtube-download.js",

@@ -8382,6 +8382,10 @@ body.video-fullscreen .vtheatre { top:0; }
 
 /* ── Stage: the rectangle mpv is positioned onto ─────── */
 .vt-stage { position:relative; background:#000; min-height:0; }
+/* The smooth player's picture (V1): fills whichever host it is mounted in. */
+.vt-web-video { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; background:#000; display:block; }
+.vmini-video .vt-web-video { border-radius:0; cursor:grab; }
+.vmini.vmini-dragging .vmini-video .vt-web-video { cursor:grabbing; }
 .vt-stage-msg {
   position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
   flex-direction:column; gap:10px; text-align:center; padding:24px;

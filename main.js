@@ -179,6 +179,7 @@ const { createJikanCatalog } = require('./catalog/jikan')
 const { createKitsuCatalog } = require('./catalog/kitsu')
 const { resolveAnimeShelf } = require('./catalog/anime-shelf')
 const { createOmdbCatalog, plausibleMatch: omdbPlausibleMatch, omdbTypeFor } = require('./catalog/omdb')
+const { createWebStreamServer } = require('./web-stream')
 const { sortJunkLast } = require('./catalog/search-rank')
 const { createOpenSubtitles } = require('./subs/opensubtitles')
 const { resolveStream } = require('./providers/index')
@@ -9291,9 +9292,39 @@ ipcMain.handle('batch-transcode', async (_, { filePaths, format, outDir }) => {
 
 // ── Papa Video: settings, catalogs, providers, streaming ─────────────────────
 
+// The smooth player's feed (video plan V1): one lazily-started localhost
+// server, one session per playing title. Closed with the session.
+let _webStreamServer = null
+function _webStream() {
+  if (!_webStreamServer) _webStreamServer = createWebStreamServer({ log: (...a) => console.log(...a) })
+  return _webStreamServer
+}
+let _webSessionId = null
+function _webClose() {
+  if (_webSessionId && _webStreamServer) { try { _webStreamServer.close(_webSessionId) } catch (_) {} }
+  _webSessionId = null
+}
+// Open a web session for a ready URL and hand it to the renderer, or say the
+// planner refused (so the caller falls back to mpv). Token-guarded like every
+// other async step of a play.
+async function _webOpenAndAnnounce(url, current, title) {
+  const sess = await _webStream().open(url).catch(e => ({ refused: true, reason: (e && e.message) || String(e) }))
+  if (!current()) return { superseded: true }
+  if (sess.refused) return sess
+  _webClose()
+  _webSessionId = sess.id
+  safeSend('video-event', { kind: 'web-ready', session: sess, title: title || '' })
+  return sess
+}
+
 function _videoSettings() {
   return Object.assign(
     {
+      // 'smooth' plays inside the page through the stream server (V1);
+      // 'purist' plays through mpv in the native window, bit-exact, with HDR
+      // and TrueHD pass-through. Anything the planner refuses falls back to
+      // purist automatically.
+      playerMode: 'smooth',
       tmdbApiKey: '',
       // The second opinion: IMDb, Rotten Tomatoes and Metacritic in one
       // request, plus the awards line and the certificate. Optional — every
@@ -11606,6 +11637,50 @@ ipcMain.handle('video-play', async (_, { result }) => {
     // still needs the guard, so pause here too. Idempotent: pausing an already
     // paused engine is a no-op, and the renderer owns the resume decision.
     if (player) { try { player.pause().catch(() => {}) } catch (_) {} }
+    const smooth = _videoSettings().playerMode !== 'purist'
+    _webClose()
+    // Smooth (V1): the page owns the pixels. No native window is shown and no
+    // mpv is spun up unless the planner refuses the source, in which case the
+    // purist path below runs exactly as it always did.
+    if (smooth) {
+      const token = ++_videoSession.token
+      const current = () => _videoSession.token === token
+      const fail = e => { if (current()) safeSend('video-event', { kind: 'error', message: (e && e.message) || String(e) }) }
+      const title = (result && (result.title || result.label || result.name)) || ''
+      const purist = async (url) => {
+        // Fallback: the old path, on the same token.
+        const wid = _videoWid()
+        if (wid) _showVideoWindow()
+        _wireVideoEngine()
+        await videoEngine().start(url, { wid })
+        if (!current()) return
+        safeSend('video-event', { kind: 'playing' })
+        _probePlayingAudio(url, current)
+      }
+      const serve = async (url) => {
+        const sess = await _webOpenAndAnnounce(url, current, title)
+        if (sess.superseded) return
+        if (sess.refused) { console.warn('[papa-video] smooth player refused (' + sess.reason + '); falling back to mpv'); await purist(url) }
+      }
+      if (result.kind === 'torrent') {
+        if (!result.magnet) return { ok: false, error: 'This source has no magnet link' }
+        const startTorrent = () => _startTorrentStream(result, { current, fail, onReady: (url, streamer) => {
+          serve(url).then(() => {
+            try { const files = streamer.files(); if (files.length > 1 && current()) safeSend('video-event', { kind: 'pack', files }) } catch (_) {}
+          }).catch(fail)
+        } })
+        if (_debridConfigured()) {
+          const budget = new Promise((_r, rej) => setTimeout(() => rej(new Error('debrid budget')), 10000))
+          Promise.race([debrid().resolveMagnet(result.magnet), budget])
+            .then(directUrl => { if (!current() || !directUrl) throw new Error('debrid unusable'); return serve(directUrl).then(() => safeSend('video-event', { kind: 'debrid', ok: true })) })
+            .catch(() => { if (current()) startTorrent() })
+        } else startTorrent()
+        return { ok: true, smooth: true }
+      }
+      if (!result.url) return { ok: false, error: 'This source has no playable URL' }
+      serve(result.url).catch(fail)
+      return { ok: true, smooth: true }
+    }
     // When the user wants the in-app panel, obtain the X11 wid now and show the
     // host window; on failure (wid null) mpv opens its own window instead.
     // mpv opens and manages its own window. Embedding it into a child
@@ -11886,6 +11961,7 @@ ipcMain.handle('video-switch-stream', async (_, { result } = {}) => {
 ipcMain.handle('video-stop', async () => {
   try {
     _videoSession.token++
+    _webClose()
     _videoTeardown()
     _closeVideoWindow()
     return { ok: true }
