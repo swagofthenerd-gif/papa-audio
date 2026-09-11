@@ -3941,8 +3941,13 @@ function _handleVideoEvent(payload) {
   } else if (payload.kind === 'unstalled') {
     showToast('Resumed')
   } else if (payload.kind === 'error') {
-    _player.setStageMessage('<div style="color:var(--color-error)">' +
-      esc(_videoErrorText(payload.message || 'Playback error')) + '</div>')
+    const text = _videoErrorText(payload.message || 'Playback error')
+    _player.setStageMessage('<div style="color:var(--color-error)">' + esc(text) + '</div>')
+    // The stage is hidden while the player is minimised, so a failure there
+    // was a silent black frame stuck at 0:00 (R12). A toast reaches both
+    // modes, and an extractor failure carries its fix.
+    if (_isExtractorError(payload.message)) showSnackbar(text, 'Update yt-dlp', _updateYtdlpFromError, 12000)
+    else showToast(text)
   }
 }
 
@@ -4763,6 +4768,10 @@ function _videoErrorText(message) {
     return 'The mpv player could not start. It may not be installed — run: sudo dnf install mpv'
   }
   if (/401|api key/i.test(msg)) return 'TMDB API key missing or invalid — set it in Settings → Video.'
+  // The YouTube extractor's failures were reported as "the source timed out —
+  // check your connection", which was a lie: the network was fine and the
+  // extractor was stale (R12). Name the real cause and the real fix.
+  if (_isExtractorError(msg)) return 'The trailer could not be extracted from YouTube. This is usually a stale yt-dlp — update it and try again.'
   if (/timed out|timeout|abort/i.test(msg)) return 'The source timed out. Check your connection and try again.'
   if (/fetch failed|ENOTFOUND|ECONNREFUSED|network/i.test(msg)) return 'Could not reach the service. Check your connection.'
   // The streamer already words these for a person, and says which of the two
@@ -4770,6 +4779,26 @@ function _videoErrorText(message) {
   // them through beats overwriting them with something vaguer.
   if (/Nobody is sharing|did not start within/i.test(msg)) return msg + ' — try another source below.'
   return msg
+}
+
+// yt-dlp failures, in every wording the app and yt-dlp itself use.
+function _isExtractorError(message) {
+  return /yt-dlp|Could not load this trailer|unable to extract|Sign in to confirm|extractor|Video unavailable|HTTP Error 4\d\d.*youtube/i.test(String(message || ''))
+}
+
+// The fix for an extractor failure, offered where the failure is seen: run
+// the self-maintenance update and say what happened. Same call the Settings
+// page uses.
+async function _updateYtdlpFromError() {
+  if (!window.api || typeof window.api.ytdlpUpdateNow !== 'function') { showToast('Updating is not available in this version'); return }
+  showToast('Checking for a newer yt-dlp…')
+  try {
+    const r = await window.api.ytdlpUpdateNow()
+    if (r && r.unavailable) showToast('Automatic updates unavailable — install pip to enable them')
+    else if (r && r.ok && r.updated && r.to) showToast('Updated to yt-dlp ' + r.to + ' — try the trailer again')
+    else if (r && r.ok) showToast('yt-dlp is already up to date — the trailer itself may be unavailable')
+    else showToast('Could not update yt-dlp' + (r && r.error ? ': ' + r.error : ''))
+  } catch (_) { showToast('Could not update yt-dlp') }
 }
 
 function _videoError(message) {
@@ -6386,6 +6415,15 @@ function _bindVideoSearch() {
   // capture so it lands before the card's own navigation tears the strip down.
   const resultsBox = document.getElementById('video-search-results')
   if (resultsBox) {
+    // The Browse chip (R11): one delegated listener, because the results
+    // box is repainted on every chip click and every retry.
+    resultsBox.addEventListener('click', function (ev) {
+      const go = ev.target && ev.target.closest && ev.target.closest('#vsearch-intent-go')
+      if (!go || !_vSearchFilter.intent) return
+      ev.preventDefault()
+      ev.stopPropagation()
+      _actOnParsedQuery(_vSearchFilter.intent.parsed)
+    })
     resultsBox.addEventListener('click', function (ev) {
       const card = ev.target && ev.target.closest && ev.target.closest('.vcard')
       if (card && _vSearchFilter && _vSearchFilter.query) {
@@ -6563,7 +6601,10 @@ function _vSearchFilterBarHtml(results) {
 // The empty-state markup, shared by the first miss and the simplified retry's
 // miss, so the two paths read the same.
 function _vSearchEmptyHtml(query) {
-  return '<div class="vempty">' +
+  // No title matched, but the words parsed as a description: offer Browse
+  // (R11) before the spelling advice.
+  const intent = _vSearchFilter && _vSearchFilter.query === query ? _vSearchFilter.intent : null
+  return (intent ? _vSearchIntentHtml(intent, false) : '') + '<div class="vempty">' +
     '<div class="vempty-icon">◎</div>' +
     '<div class="vempty-title">No matches for &ldquo;' + esc(query) + '&rdquo;</div>' +
     '<div class="vempty-text">Check the spelling, or try the original-language title — anime in particular is often indexed under its romaji name.</div>' +
@@ -6589,24 +6630,31 @@ function _paintVideoSearchResults(note) {
   ]
   let html = ''
   if (note) html += '<p class="vsearch-note">' + note + '</p>'
+  // A description of a kind of film gets its Browse chip above the title
+  // matches, and — when nothing was left over as a title — loses the fuzzy
+  // anime hits that were never what was asked for (R11).
+  const intent = _vSearchFilter.intent || null
+  const hideAnime = !!(intent && intent.describesKind && !(intent.parsed.filters && intent.parsed.filters.catalog === 'anime'))
+  if (intent) html += _vSearchIntentHtml(intent, hideAnime)
   html += _vSearchFilterBarHtml(all)
+  const groupsShown = hideAnime ? groups.filter(function (g) { return g.key !== 'anime' }) : groups
   const groupItems = {}
-  for (const g of groups) {
+  for (const g of groupsShown) {
     groupItems[g.key] = shown.filter(function (r) { return (r.type || 'movie') === g.key })
   }
-  const anyShown = groups.some(function (g) { return groupItems[g.key].length })
+  const anyShown = groupsShown.some(function (g) { return groupItems[g.key].length })
   if (!anyShown) {
     // The fetch found things; the chips filtered them all out. Say that, rather
     // than reading like the search itself failed.
-    html += '<div class="vrow-msg">Nothing in this result set matches the current filters.</div>'
+    html += '<div class="vrow-msg">' + (intent ? 'Nothing matched this as a title \u2014 try Browse above.' : 'Nothing in this result set matches the current filters.') + '</div>'
   } else {
-    for (const g of groups) {
+    for (const g of groupsShown) {
       if (groupItems[g.key].length) html += _vRowShell('search-' + g.key, g.label, groupItems[g.key].length)
     }
   }
   target.innerHTML = html
   if (anyShown) {
-    for (const g of groups) {
+    for (const g of groupsShown) {
       if (groupItems[g.key].length) _fillRow('search-' + g.key, groupItems[g.key])
     }
   }
@@ -6645,7 +6693,7 @@ function _runVideoTitleSearch(query) {
     state.currentVideoQuery = query
     // Every new query starts the filters from scratch, so a decade picked on
     // the last search cannot survive into this one.
-    _vSearchFilter = { results: [], type: 'all', decade: 'all', query: query }
+    _vSearchFilter = { results: [], type: 'all', decade: 'all', query: query, intent: _searchIntent(query) }
     // Hide rather than unmount, so clearing the query restores the catalog
     // instantly without refetching every row. All THREE catalog surfaces go:
     // the taste row is a sibling of the rows container, not a child, so hiding
@@ -6717,6 +6765,37 @@ function _retryVideoTitleSearch(original, simplified, ticket) {
       _lastVideoSearch = { filter: _vSearchFilter, timestamp: Date.now() }
       _paintVideoSearchResults('Showing results for &ldquo;' + esc(simplified) + '&rdquo;')
     })
+}
+
+// The parsed intent behind a live query, when it clearly describes a KIND of
+// film rather than naming one (R11): "90s korean thrillers" parses at high
+// confidence with nothing left over as a title. The title search still runs
+// — a description can coincide with a real title — but the results carry a
+// Browse chip for what was understood, and when nothing was left over as a
+// title the fuzzy anime hits (the only thing a title search finds for a
+// description) are hidden.
+function _searchIntent(query) {
+  const parsed = _parseVideoQuery(query)
+  if (!parsed || parsed.confidence < QUERY_MIN_CONFIDENCE) return null
+  const f = parsed.filters || {}
+  if (!f.personName && !_queryBrowseFilters(parsed)) return null
+  const residual = String(parsed.text || '').trim()
+  return { parsed: parsed, summary: _querySummary(parsed), describesKind: residual.length < 3 }
+}
+
+function _vSearchIntentHtml(intent, hideAnime) {
+  if (!intent) return ''
+  const f = intent.parsed.filters || {}
+  const kind = f.personName ? 'person' : (f.catalog === 'tv' ? 'series' : f.catalog === 'anime' ? 'anime' : 'film')
+  const lead = f.personName
+    ? 'Looks like you named a person.'
+    : 'Looks like you described a kind of ' + kind + '.'
+  const label = f.personName ? 'Open ' + esc(f.personName) + ' \u2192' : 'Browse: ' + (intent.summary || 'what you described') + ' \u2192'
+  return '<div class="vsearch-intent">' +
+    '<span class="vsearch-intent-lead">' + lead + '</span>' +
+    '<button class="vsearch-intent-btn" id="vsearch-intent-go" type="button">' + label + '</button>' +
+    (hideAnime ? '<span class="vsearch-intent-note">Fuzzy anime title matches hidden \u2014 they were not what you described.</span>' : '') +
+  '</div>'
 }
 
 // ── Parsed search ───────────────────────────────────────────────────────────
@@ -6792,13 +6871,26 @@ function _querySummary(parsed) {
   return bits.join(' \u00b7 ')
 }
 
+// The Browse vocabulary loads only on the Browse page, so a chip painted on
+// the search results ("from KR") needs its own names for the countries
+// people actually type (R11).
+const _COUNTRY_FALLBACK = {
+  KR: 'South Korea', JP: 'Japan', US: 'United States', GB: 'United Kingdom', FR: 'France',
+  DE: 'Germany', IT: 'Italy', ES: 'Spain', IN: 'India', CN: 'China', HK: 'Hong Kong',
+  TW: 'Taiwan', BR: 'Brazil', MX: 'Mexico', RU: 'Russia', SE: 'Sweden', DK: 'Denmark',
+  NO: 'Norway', FI: 'Finland', TR: 'Turkey', IR: 'Iran', AR: 'Argentina', AU: 'Australia',
+  CA: 'Canada', NL: 'Netherlands', PL: 'Poland', TH: 'Thailand', PK: 'Pakistan', NG: 'Nigeria',
+  IE: 'Ireland', NZ: 'New Zealand', BE: 'Belgium', AT: 'Austria', CH: 'Switzerland', PT: 'Portugal',
+  GR: 'Greece', CZ: 'Czechia', HU: 'Hungary', RO: 'Romania', IL: 'Israel', EG: 'Egypt', ZA: 'South Africa',
+  ID: 'Indonesia', PH: 'Philippines', VN: 'Vietnam', MY: 'Malaysia', SG: 'Singapore', CO: 'Colombia', CL: 'Chile',
+}
 function _countryName(code) {
   const list = (_browseVocab && _browseVocab.countries) || null
   if (Array.isArray(list)) {
     const hit = list.find(function (c) { return c && (c.code === code || c.iso_3166_1 === code) })
     if (hit) return hit.name || hit.english_name || code
   }
-  return code
+  return _COUNTRY_FALLBACK[String(code || '').toUpperCase()] || code
 }
 
 // Returns true if it took the query somewhere. The caller falls back to the
@@ -7056,6 +7148,9 @@ function _vRuntime(mins) {
 const HOVER_DWELL_MS = 650
 const HOVER_TRAILER_KEY = 'papa_hover_trailers'
 var _hoverTrailersOn = true
+// How long a hover preview may take to show its first frame before it gives
+// the poster back (R12).
+const HOVER_START_TIMEOUT_MS = 8000
 var _hoverTimer = null
 var _hoverCard = null
 var _hoverTicket = 0
@@ -7177,6 +7272,14 @@ async function _startHoverTrailer(card) {
   const v = _makeTrailerVideo(res.url, 'vcard-preview')
   art.appendChild(v)
   card.classList.add('is-previewing')
+  // A preview that never starts — a dead stream URL, a stalled fetch — used to
+  // sit over the poster as a black frame for as long as the pointer stayed
+  // (R12). Errors and a start deadline both fall back to the poster; a hover
+  // still never surfaces an error message.
+  let started = false
+  v.addEventListener('playing', function () { started = true })
+  v.addEventListener('error', function () { if (_hoverTicket === ticket) _stopHoverTrailer() })
+  setTimeout(function () { if (_hoverTicket === ticket && !started) _stopHoverTrailer() }, HOVER_START_TIMEOUT_MS)
   // A rejected play() is normal — an autoplay policy, or the pointer left
   // between appending and playing.
   v.play().catch(function () {

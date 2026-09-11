@@ -9825,6 +9825,20 @@ body.theme-light .cinema {
   padding: 4px 28px 0; margin: 0;
   color: var(--cin-muted); font-size: 13px; font-style: italic;
 }
+/* A description of a kind of film, understood: the chip that takes it to
+   Browse sits above whatever the title search found (R11). */
+.cinema .vsearch-intent {
+  display:flex; align-items:center; flex-wrap:wrap; gap:10px;
+  padding: 8px 28px 4px; color: var(--text2); font-size: 13px;
+}
+.cinema .vsearch-intent-lead { color: var(--text3); }
+.cinema .vsearch-intent-btn {
+  background: var(--accent); color: #000; border: none; border-radius: 100px;
+  padding: 6px 14px; font-family: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+  transition: transform .15s var(--ease), box-shadow .15s var(--ease);
+}
+.cinema .vsearch-intent-btn:hover { transform: translateY(-1px); box-shadow: 0 6px 18px rgba(0,0,0,.35); }
+.cinema .vsearch-intent-note { color: var(--text3); font-size: 12px; font-style: italic; }
 
 /* ── Trailer on hover ────────────────────────────────────────────────────────
    The preview sits over the poster inside the card's own art box, so the card's
@@ -9855,6 +9869,7 @@ body.theme-light .cinema {
 }
 @media (prefers-reduced-motion: reduce) {
   .cinema .vcard-preview { transition: none; }
+  .cinema .vsearch-intent-btn { transition: none; }
   .cinema .vcard.is-preview-loading .vcard-art::after { animation: none; }
   .cinema .vsfilter-chip { transition: none; }
 }

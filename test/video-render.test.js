@@ -872,7 +872,8 @@ test('the title search resets the filter state on every new query', () => {
   const src = extract('_runVideoTitleSearch')
   // query is carried so a later result click can commit it to history
   // (audit #3: history is committed on click, not per keystroke).
-  assert.match(src, /_vSearchFilter = \{ results: \[\], type: 'all', decade: 'all', query: query \}/)
+  // …and the parsed intent behind the query (R11), computed fresh each time.
+  assert.match(src, /_vSearchFilter = \{ results: \[\], type: 'all', decade: 'all', query: query, intent: _searchIntent\(query\) \}/)
 })
 
 test('a zero-result search retries once with a simplified query, only if it differs', () => {
