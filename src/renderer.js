@@ -5170,7 +5170,7 @@ async function _renderVideoTab(ticket) {
     // Live MyAnimeList content served because AniList is down: real cards, a
     // small note says where they came from. Checked before fromCache because a
     // fresh Jikan hit is not a stale saved list.
-    if (res.viaMal) _rowViaMalNote(row.key)
+    if (res.viaMal) _rowViaMalNote(row.key, items)
     // Saved-list content is real, so the row fills normally — a small note just
     // admits it may be stale while AniList recovers.
     else if (res.fromCache) _rowCacheNote(row.key)
@@ -5701,18 +5701,21 @@ function _rowCacheNote(key) {
   head.appendChild(p)
 }
 
-// A small note pinned under a shelf that is showing LIVE MyAnimeList content
-// because AniList is currently down. Unlike _rowCacheNote, this content is fresh
-// (just fetched from Jikan), not a stale saved list — so it says where it came
-// from rather than warning it may be old.
-function _rowViaMalNote(key) {
+// A small note pinned under a shelf that is showing LIVE backup-database
+// content because AniList is currently down. Unlike _rowCacheNote, this content
+// is fresh (just fetched from Jikan or Kitsu), not a stale saved list — so it
+// says where it came from rather than warning it may be old. The cards carry
+// their provenance (`source: 'mal' | 'kitsu'`), so the note names the database
+// that actually answered instead of guessing.
+function _rowViaMalNote(key, items) {
   const row = document.querySelector('.vrow[data-row="' + key + '"]')
   if (!row) return
   const head = row.querySelector('.vrow-head')
   if (!head || head.querySelector('.vrow-mal-note')) return
+  const src = items && items[0] && items[0].source === 'kitsu' ? 'Kitsu' : 'MyAnimeList'
   const p = document.createElement('p')
   p.className = 'vrow-note vrow-mal-note'
-  p.textContent = 'via MyAnimeList — AniList is down'
+  p.textContent = 'via ' + src + ' — AniList is down'
   head.appendChild(p)
 }
 

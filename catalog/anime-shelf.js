@@ -8,8 +8,14 @@
 //   1. live AniList          — the home source; a non-empty result always wins
 //   2. live Jikan/MyAnimeList — same rows, different source, only tried when
 //                               AniList is actually DOWN (not healthy-but-empty)
-//   3. the last saved list   — a stale-but-real shelf beats an error page
-//   4. an honest outage       — never the "nothing here" lie for a downed API
+//   3. live Kitsu             — the third source, only tried when Jikan came back
+//                               empty too (the 2026-09-11 double outage: AniList
+//                               403 AND MyAnimeList 504 at once). Kitsu serves
+//                               only the sections it has a cheap keyless endpoint
+//                               for (trending); a section it cannot serve yields
+//                               nothing and the chain moves on to the saved list.
+//   4. the last saved list   — a stale-but-real shelf beats an error page
+//   5. an honest outage       — never the "nothing here" lie for a downed API
 //
 // This function owns only the CHOICE between those four. It performs no I/O
 // itself: the caller passes in the already-fetched AniList result, a Jikan
@@ -25,6 +31,9 @@
 //              { message, status } when the empty is an outage, else null.
 //   deps     : {
 //     fetchJikan : async () => [cards]   — live Jikan shelf, [] on any failure
+//     fetchKitsu : async () => [cards]   — live Kitsu shelf, [] on any failure or
+//                                          for a section Kitsu cannot serve
+//                                          (optional: absent means no third rung)
 //     readCache  : () => ({ value:[] }|null) — the last saved shelf, or null
 //     writeCache : (results) => void     — mirror a fresh good result through
 //     memoWrite  : (results) => void     — memo-cache a fresh good result
@@ -60,7 +69,22 @@ async function resolveAnimeShelf(anilist, deps) {
     return { ok: true, results: jikanResults, viaMal: true, outage: failure.message }
   }
 
-  // 3. The last saved list. It may itself be Jikan cards from a previous
+  // 3. Live Kitsu. Reached only when Jikan came back empty too — the 2026-09-11
+  //    double outage (AniList 403 and MyAnimeList 504 at once). Its cards are
+  //    marked source:'kitsu' and route by their own `kitsu-` id, so a fresh hit
+  //    is cached and memo'd exactly like a Jikan or AniList hit. `viaMal` marks
+  //    it as a non-AniList fallback so the renderer notes where it came from
+  //    (the note is generic across MAL/Kitsu); `outage` carries AniList's own
+  //    message. Kitsu only serves the sections it has a cheap keyless endpoint
+  //    for, so for the others fetchKitsu returns [] and the chain moves on.
+  const kitsuResults = deps.fetchKitsu ? await deps.fetchKitsu() : []
+  if (Array.isArray(kitsuResults) && kitsuResults.length) {
+    if (deps.memoWrite) deps.memoWrite(kitsuResults)
+    if (deps.writeCache) deps.writeCache(kitsuResults)
+    return { ok: true, results: kitsuResults, viaMal: true, outage: failure.message }
+  }
+
+  // 4. The last saved list. It may itself be Jikan or Kitsu cards from a previous
   //    fallback; that is fine, they route the same. Marked fromCache so the
   //    renderer admits it may be stale.
   const saved = deps.readCache ? deps.readCache() : null
@@ -68,7 +92,7 @@ async function resolveAnimeShelf(anilist, deps) {
     return { ok: true, results: saved.value, fromCache: true, outage: failure.message }
   }
 
-  // 4. Nothing anywhere. Say so honestly.
+  // 5. Nothing anywhere. Say so honestly.
   return { ok: true, results: [], outage: failure.message }
 }
 

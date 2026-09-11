@@ -14,16 +14,19 @@ const { resolveAnimeShelf } = require('../catalog/anime-shelf')
 // fallback cards are marked source:'mal' with a mal- id.
 const anilistCard = { id: 21, type: 'anime', title: 'One Piece', source: undefined }
 const malCard = { id: 'mal-21', type: 'anime', title: 'One Piece', source: 'mal' }
+const kitsuCard = { id: 'kitsu-12', type: 'anime', title: 'One Piece', source: 'kitsu' }
 
 // A dependency bag with recording stubs, so a test can assert both the returned
-// shape and the side effects (what was cached, whether Jikan was even asked).
+// shape and the side effects (what was cached, whether Jikan/Kitsu were even
+// asked).
 function deps(over = {}) {
-  const calls = { fetchJikan: 0, writeCache: 0, memoWrite: 0 }
+  const calls = { fetchJikan: 0, fetchKitsu: 0, writeCache: 0, memoWrite: 0 }
   const wrote = []
   return {
     calls, wrote,
     bag: {
       fetchJikan: async () => { calls.fetchJikan++; return over.jikan || [] },
+      fetchKitsu: async () => { calls.fetchKitsu++; return over.kitsu || [] },
       readCache: over.readCache || (() => over.saved || null),
       writeCache: (r) => { calls.writeCache++; wrote.push(r) },
       memoWrite: () => { calls.memoWrite++ },
@@ -67,25 +70,72 @@ test('an AniList outage falls to live Jikan, marked viaMal and carrying the outa
   assert.strictEqual(d.wrote[0][0].source, 'mal', 'the MAL source mark rides through the cache write')
 })
 
-// ── Step 3: Jikan fails too → the saved list, NOT an error ───────────────────
-test('when both AniList and Jikan are down, the last saved list is served (fromCache)', async () => {
-  const d = deps({ jikan: [], saved: { value: [malCard] } })
+// ── Step 3: Jikan empty too → live Kitsu (the double outage) ─────────────────
+// The 2026-09-11 double outage: AniList 403 AND MyAnimeList 504 at once. When
+// Jikan comes back empty, Kitsu is the third rung — a fresh Kitsu hit is marked
+// viaMal (the renderer note is generic across non-AniList fallbacks) and cached
+// like any other live hit.
+test('when AniList AND Jikan are down, live Kitsu is the third rung, marked viaMal', async () => {
+  const d = deps({ jikan: [], kitsu: [kitsuCard] })
+  const out = await resolveAnimeShelf(
+    { results: [], failure: { message: 'AniList request failed (403)', status: 403 } }, d.bag)
+  assert.strictEqual(d.calls.fetchJikan, 1, 'Jikan was tried before Kitsu')
+  assert.strictEqual(d.calls.fetchKitsu, 1, 'the double outage reached Kitsu')
+  assert.deepStrictEqual(out.results, [kitsuCard])
+  assert.strictEqual(out.viaMal, true, 'a non-AniList fallback carries the note flag')
+  assert.strictEqual(out.outage, 'AniList request failed (403)')
+  assert.strictEqual(out.fromCache, undefined, 'a fresh Kitsu hit is not a stale saved list')
+  assert.strictEqual(d.calls.writeCache, 1)
+  assert.strictEqual(d.wrote[0][0].source, 'kitsu', 'the Kitsu source mark rides through the cache write')
+})
+
+// A live Jikan hit must stop the chain before Kitsu is ever asked — no wasted
+// third-rung request when the second rung answered.
+test('a live Jikan hit stops the chain — Kitsu is never asked', async () => {
+  const d = deps({ jikan: [malCard], kitsu: [kitsuCard] })
+  const out = await resolveAnimeShelf(
+    { results: [], failure: { message: 'down', status: 403 } }, d.bag)
+  assert.deepStrictEqual(out.results, [malCard])
+  assert.strictEqual(d.calls.fetchKitsu, 0, 'the second rung answered, so the third is never reached')
+})
+
+// ── Step 4: all three fail → the saved list, NOT an error ────────────────────
+test('when AniList, Jikan and Kitsu are all down, the last saved list is served (fromCache)', async () => {
+  const d = deps({ jikan: [], kitsu: [], saved: { value: [malCard] } })
   const out = await resolveAnimeShelf(
     { results: [], failure: { message: 'AniList request failed (403)', status: 403 } }, d.bag)
   assert.strictEqual(d.calls.fetchJikan, 1, 'Jikan was tried before the cache')
+  assert.strictEqual(d.calls.fetchKitsu, 1, 'Kitsu was tried before the cache')
   assert.deepStrictEqual(out.results, [malCard])
   assert.strictEqual(out.fromCache, true)
-  assert.strictEqual(out.viaMal, undefined, 'a saved list is not a live MAL hit')
+  assert.strictEqual(out.viaMal, undefined, 'a saved list is not a live fallback hit')
   assert.strictEqual(out.outage, 'AniList request failed (403)')
   assert.strictEqual(d.calls.writeCache, 0, 'a served-from-cache result is not re-cached')
 })
 
-// ── Step 4: nothing anywhere → an honest outage, never "nothing here" ────────
-test('with AniList down, Jikan empty and no cache, the result is an honest outage', async () => {
-  const d = deps({ jikan: [], saved: null })
+// ── Step 5: nothing anywhere → an honest outage, never "nothing here" ────────
+test('with all three sources down and no cache, the result is an honest outage', async () => {
+  const d = deps({ jikan: [], kitsu: [], saved: null })
   const out = await resolveAnimeShelf(
     { results: [], failure: { message: 'AniList request failed (403)', status: 403 } }, d.bag)
   assert.deepStrictEqual(out, { ok: true, results: [], outage: 'AniList request failed (403)' })
+})
+
+// The third rung is optional: a caller that wires no fetchKitsu (backward
+// compatibility) still falls through cleanly from Jikan to the saved list.
+test('a missing fetchKitsu is skipped, falling straight from Jikan to the cache', async () => {
+  const calls = { fetchJikan: 0 }
+  const out = await resolveAnimeShelf(
+    { results: [], failure: { message: 'down', status: 403 } },
+    {
+      fetchJikan: async () => { calls.fetchJikan++; return [] },
+      readCache: () => ({ value: [malCard] }),
+      writeCache: () => {},
+      memoWrite: () => {},
+    })
+  assert.strictEqual(calls.fetchJikan, 1)
+  assert.deepStrictEqual(out.results, [malCard])
+  assert.strictEqual(out.fromCache, true)
 })
 
 // An empty saved list is not a usable fallback — it must read as an outage, not a

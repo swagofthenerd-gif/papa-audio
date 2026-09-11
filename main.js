@@ -176,6 +176,7 @@ const { createTmdbCatalog } = tmdbCatalog
 const shelves = require('./catalog/shelves')
 const { createAnilistCatalog } = require('./catalog/anilist')
 const { createJikanCatalog } = require('./catalog/jikan')
+const { createKitsuCatalog } = require('./catalog/kitsu')
 const { resolveAnimeShelf } = require('./catalog/anime-shelf')
 const { createOmdbCatalog } = require('./catalog/omdb')
 const { createOpenSubtitles } = require('./subs/opensubtitles')
@@ -9321,6 +9322,15 @@ const anilist = _lazy(() => createAnilistCatalog({ fetchFn: fetchWithTimeout(150
 // 350ms single-lane throttle keeps a shelf's worth of requests under Jikan's
 // 3 req/s ceiling, so no extra rate-limiting is needed here.
 const jikan = _lazy(() => createJikanCatalog({ fetchFn: fetchWithTimeout(15000) }))
+// The third rung. When AniList is down AND MyAnimeList is unreachable at the same
+// time — which actually happened 2026-09-11: AniList in a multi-day global 403
+// while Jikan's upstream returned 504 "failed to connect to MyAnimeList" on every
+// request — Kitsu (kitsu.io, its own community anime database) is the last
+// independent source that can still answer. It reshapes into the exact card shape
+// AniList's normalizeMedia produces (catalog/kitsu.js), so a Kitsu card drops in
+// where an AniList or Jikan card was expected. Its own 250ms single-lane throttle
+// keeps a shelf's worth of requests courteous, so no extra rate-limiting here.
+const kitsu = _lazy(() => createKitsuCatalog({ fetchFn: fetchWithTimeout(15000) }))
 // A shelf of twenty cards would be twenty requests to a free service with a
 // daily limit, and these values change about as often as a film's release date
 // does. A day is generous and still nowhere near the limit.
@@ -10274,6 +10284,22 @@ async function _jikanShelf(section, page) {
   }
 }
 
+// The Kitsu fallback for the anime shelves — the third rung, reached only when
+// both AniList and Jikan came back empty (the 2026-09-11 double outage). Kitsu's
+// keyless edge API has a cheap curated /trending/anime, but no equally cheap
+// keyless popular or current-season list, so only the trending shelf is served;
+// the other two sections return [] and the chain falls through to the saved
+// cache rather than faking popular/season rows from the trending list. Never
+// throws, for the same best-effort reason _jikanShelf does not.
+async function _kitsuShelf(section) {
+  try {
+    if (section === 'trending-anime') return await kitsu().trending()
+    return []
+  } catch (_) {
+    return []
+  }
+}
+
 ipcMain.handle('video-catalog-get', async (_, { section, page = 1 }) => {
   try {
     // The season-anime section resolves "current season" at call time, so its
@@ -10300,6 +10326,7 @@ ipcMain.handle('video-catalog-get', async (_, { section, page = 1 }) => {
       const anilist = await _anilistListWithOutage(anilistFns[section])
       return await resolveAnimeShelf(anilist, {
         fetchJikan: () => _jikanShelf(section, page),
+        fetchKitsu: () => _kitsuShelf(section),
         readCache: () => _animeBrowseCacheRead('list:' + key),
         writeCache: (results) => _animeBrowseCacheWrite('list:' + key, results),
         memoWrite: (results) => _videoCatalogCache.set(key, results),
@@ -10504,17 +10531,22 @@ ipcMain.handle('video-person', async (_, { id, query } = {}) => {
   }
 })
 
-// Anime text search with the same AniList → Jikan fallback the shelves have
-// (the 2026-09 AniList outage is the whole reason the Jikan catalog exists).
-// AniList's search degrades to [] and flags lastFailure(); only a flagged
-// outage falls through to Jikan, so a healthy "no matches" stays an honest
-// empty list instead of costing a rate-limited Jikan request. Found live
-// during the outage: searching "tokyo revengers" returned nothing because
-// the shelves had the fallback but search never did.
+// Anime text search with the same AniList → Jikan → Kitsu fallback the shelves
+// have (the 2026-09 outages are the whole reason the Jikan and Kitsu catalogs
+// exist). Each rung is outage-gated: a rung's answer is trusted the moment it is
+// either non-empty OR a healthy empty (its lastFailure() is clear), so a genuine
+// "no matches" from a live source stops the chain and never costs a wasted
+// request down-rung. Only a FLAGGED outage falls through to the next source —
+// AniList down → try Jikan; Jikan also down → try Kitsu. Found live during the
+// outage: searching "tokyo revengers" returned nothing because the shelves had
+// the fallback but search never did; then both AniList and MyAnimeList went dark
+// at once (2026-09-11), which is why the Kitsu rung exists.
 async function _animeSearch(query) {
   const viaAnilist = await anilist().search(query)
   if (viaAnilist.length || !anilist().lastFailure()) return viaAnilist
-  return jikan().search(query)
+  const viaJikan = await jikan().search(query)
+  if (viaJikan.length || !jikan().lastFailure()) return viaJikan
+  return kitsu().search(query)
 }
 
 // Searching every catalog at once, and collapsing the duplicate an anime
@@ -10531,10 +10563,12 @@ ipcMain.handle('video-search', async (_, { query, type }) => {
   try {
     if (type === 'anime') {
       const results = await _animeSearch(query)
-      // Nothing found while BOTH databases are flagged down is an outage, not
-      // a miss — say so instead of painting a misleading "no results".
-      if (!results.length && anilist().lastFailure() && jikan().lastFailure()) {
-        return { ok: false, error: 'The anime databases are unreachable right now (AniList is down and the MyAnimeList backup could not answer). This is on their side — try again in a little while.' }
+      // Nothing found while ALL THREE databases are flagged down is an outage,
+      // not a miss — say so instead of painting a misleading "no results". Any
+      // one of them answering healthily (even with an empty list) means the
+      // search genuinely found nothing, which is a different, honest state.
+      if (!results.length && anilist().lastFailure() && jikan().lastFailure() && kitsu().lastFailure()) {
+        return { ok: false, error: 'The anime databases are unreachable right now (AniList, MyAnimeList and Kitsu all failed to answer). This is on their side — try again in a little while.' }
       }
       return { ok: true, results }
     }
@@ -10609,6 +10643,30 @@ async function _videoShowDetail(type, id) {
     } catch (err) {
       const cachedMal = _animeDetailCacheRead(`anime:${id}`)
       if (cachedMal && cachedMal.detail) return cachedMal.detail
+      throw err
+    }
+  } else if (type === 'anime' && /^kitsu-\d+$/.test(String(id))) {
+    // A Kitsu-sourced card (from the third rung of the fallback, keyed
+    // `kitsu-<id>`). Exactly parallel to the `mal-` branch above: this card
+    // exists because BOTH AniList and MyAnimeList were down when the shelf or
+    // search loaded (the 2026-09-11 double outage Kitsu is here for), and its id
+    // is neither an AniList nor a MAL id — asking either by it would be wrong. So
+    // route straight to Kitsu's byId, which returns a full detail (synopsis,
+    // poster, cover backdrop, score, trailer) plus the romaji title the source
+    // router keys on — a real, source-capable detail page with no AniList or MAL
+    // dependency. It is written through to the same outage cache so a later Kitsu
+    // blip still opens the page. Only when Kitsu is also unreachable do we fall
+    // back to any cached copy, then to an honest error.
+    try {
+      detail = await kitsu().byId(id)
+      if (detail) _animeDetailCacheWrite(`anime:${id}`, { detail })
+      else {
+        const cachedKitsu = _animeDetailCacheRead(`anime:${id}`)
+        if (cachedKitsu && cachedKitsu.detail) return cachedKitsu.detail
+      }
+    } catch (err) {
+      const cachedKitsu = _animeDetailCacheRead(`anime:${id}`)
+      if (cachedKitsu && cachedKitsu.detail) return cachedKitsu.detail
       throw err
     }
   } else if (type === 'anime') {

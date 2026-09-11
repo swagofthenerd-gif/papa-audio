@@ -214,7 +214,7 @@ function extractHandler(name) {
 // A sandbox holding the real anime-browse-cache helpers, the real
 // _anilistListWithOutage, and the two real handlers, wired to a real SideStore
 // and a fake AniList whose list results (and lastFailure) each test controls.
-function browseHarness({ list, lastFailure, discover, jikan } = {}) {
+function browseHarness({ list, lastFailure, discover, jikan, kitsu } = {}) {
   const dir = tmpdir()
   const errors = []
   const animeBrowseCache = new SideStore({
@@ -242,6 +242,13 @@ function browseHarness({ list, lastFailure, discover, jikan } = {}) {
       popular: async () => (typeof jikan === 'function' ? jikan('popular') : (jikan && jikan.popular) || []),
       seasonNow: async () => (typeof jikan === 'function' ? jikan('season') : (jikan && jikan.season) || []),
     }),
+    // The Kitsu fallback — the third rung. Off by default (returns nothing) so
+    // the existing AniList→Jikan→cache→outage tests are unchanged; a test can
+    // pass a `kitsu` map/function to exercise the live-Kitsu branch. Kitsu only
+    // serves the trending section (see _kitsuShelf), matching main.js.
+    kitsu: () => ({
+      trending: async () => (typeof kitsu === 'function' ? kitsu('trending') : (kitsu && kitsu.trending) || []),
+    }),
     anilist: () => ({
       lastFailure: () => (lastFailure || null),
       trending: async () => { if (typeof list === 'function') return list('trending'); return list || [] },
@@ -256,7 +263,7 @@ function browseHarness({ list, lastFailure, discover, jikan } = {}) {
     }),
   }
   vm.createContext(ctx)
-  for (const fn of ['_animeBrowseCacheWrite', '_animeBrowseCacheRead', '_anilistListWithOutage', '_jikanShelf']) {
+  for (const fn of ['_animeBrowseCacheWrite', '_animeBrowseCacheRead', '_anilistListWithOutage', '_jikanShelf', '_kitsuShelf']) {
     vm.runInContext(extract(fn), ctx)
   }
   vm.runInContext(extractHandler('video-catalog-get'), ctx)
@@ -336,6 +343,47 @@ test('an AniList outage falls through to live Jikan, marked viaMal, and caches i
   assert.strictEqual(entry.value[0].source, 'mal')
 })
 
+// The 2026-09-11 double outage: AniList 403 AND MyAnimeList 504 at once. With
+// both dark and nothing saved, the trending row falls through to live Kitsu,
+// marked viaMal (the renderer note is generic across non-AniList fallbacks), and
+// the Kitsu cards are cached with their own source mark.
+test('an AniList + Jikan outage falls through to live Kitsu on the trending row', async () => {
+  const KITSU_ROWS = [
+    { id: 'kitsu-7442', source: 'kitsu', title: 'Attack on Titan' },
+    { id: 'kitsu-47278', source: 'kitsu', title: 'Tokyo Revengers: Tenjiku' },
+  ]
+  const h = browseHarness({
+    list: [], lastFailure: { at: Date.now(), message: 'AniList request failed (403)', status: 403 },
+    jikan: () => [],                                   // MyAnimeList is down too
+    kitsu: (section) => (section === 'trending' ? KITSU_ROWS : []),
+  })
+  const res = await h.handlers['video-catalog-get'](null, { section: 'trending-anime', page: 1 })
+  assert.strictEqual(res.ok, true)
+  assert.strictEqual(res.viaMal, true, 'a non-AniList fallback carries the note flag')
+  assert.strictEqual(res.results.length, 2)
+  assert.strictEqual(res.results[0].source, 'kitsu', 'the Kitsu source mark survives to the renderer')
+  assert.match(res.outage, /403/, "AniList's reason still rides along so the note is honest")
+  assert.ok(!res.fromCache, 'a fresh Kitsu hit is not a stale saved list')
+  await h.animeBrowseCache.flush()
+  const entry = h.animeBrowseCache.get()['list:trending-anime:1']
+  assert.ok(entry && entry.value.length === 2, 'the Kitsu result was saved for a future outage')
+  assert.strictEqual(entry.value[0].source, 'kitsu')
+})
+
+// Kitsu only serves the trending section: the popular row with all live sources
+// dark and nothing saved is an honest outage, not a faked list.
+test('the popular row stays an honest outage when Kitsu cannot serve it', async () => {
+  const h = browseHarness({
+    list: [], lastFailure: { at: Date.now(), message: 'AniList request failed (403)', status: 403 },
+    jikan: () => [],
+    kitsu: (section) => (section === 'trending' ? [{ id: 'kitsu-1', source: 'kitsu' }] : []),
+  })
+  const res = await h.handlers['video-catalog-get'](null, { section: 'popular-anime', page: 1 })
+  assert.strictEqual(res.ok, true)
+  assert.strictEqual(res.results.length, 0, 'Kitsu has no cheap popular list, so the row stays empty')
+  assert.match(res.outage, /403/, 'and says why, rather than faking a popular list from trending')
+})
+
 test('when AniList AND Jikan are both down, the saved list still wins over an error', async () => {
   // Seed a good AniList result, then re-open with both sources down.
   const seed = browseHarness({ list: ANIME_ROWS })
@@ -390,4 +438,18 @@ test('video-discover serves the saved anime grid through an outage', async () =>
   assert.strictEqual(res.fromCache, true, 'the saved Browse page was served')
   assert.strictEqual(res.results.length, 4)
   assert.match(res.outage, /403/)
+})
+
+// The shelf note must name the database that actually answered. Kitsu rows ride
+// the same viaMal flag as Jikan rows (one renderer path), so the note reads the
+// cards' own `source` provenance — "via MyAnimeList" over Kitsu content would be
+// a small lie during the double outage the Kitsu rung exists for.
+test('the backup-content shelf note names the database that answered', () => {
+  const RENDERER = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
+  const at = RENDERER.indexOf('function _rowViaMalNote(key, items)')
+  assert.ok(at > -1, 'the note function takes the row items')
+  const body = RENDERER.slice(at, at + 700)
+  assert.match(body, /items\[0\]\.source === 'kitsu' \? 'Kitsu' : 'MyAnimeList'/)
+  assert.match(body, /'via ' \+ src \+ ' — AniList is down'/)
+  assert.match(RENDERER, /_rowViaMalNote\(row\.key, items\)/)
 })

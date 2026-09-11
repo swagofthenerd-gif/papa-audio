@@ -212,6 +212,20 @@ test('anime detail uses the AniList by-id field, not a text search for the id', 
     'searching for the numeric id opened unrelated shows')
 })
 
+// A card from the third rung is keyed `kitsu-<id>` and is neither an AniList nor
+// a MAL id — the detail router must route it to Kitsu's byId, exactly parallel to
+// the mal- branch, and write it through to the same outage cache.
+test('a kitsu- card detail routes to Kitsu byId, parallel to the mal- branch', () => {
+  const start = MAIN.indexOf('async function _videoShowDetail(')
+  const body = MAIN.slice(start, MAIN.indexOf('\n  if (detail) detail = await _enrichExternalRatings', start))
+  // Both fallback branches are gated on their own id shape.
+  assert.match(body, /type === 'anime' && \/\^mal-\\d\+\$\/\.test\(String\(id\)\)/)
+  assert.match(body, /type === 'anime' && \/\^kitsu-\\d\+\$\/\.test\(String\(id\)\)/)
+  // The kitsu- branch calls Kitsu's byId and caches the result like the mal- one.
+  assert.match(body, /detail = await kitsu\(\)\.byId\(id\)/)
+  assert.match(body, /if \(detail\) _animeDetailCacheWrite\(`anime:\$\{id\}`, \{ detail \}\)/)
+})
+
 test('season payloads are cached separately from the show', () => {
   assert.ok(MAIN.includes('async function _videoSeasonDetail('), 'season fetches must be cached')
   const start = MAIN.indexOf('async function _videoSeasonDetail(')
@@ -599,15 +613,26 @@ test('anime search falls through to Jikan only when AniList flags an outage', ()
   assert.ok(start > -1)
   const body = MAIN.slice(start, MAIN.indexOf('\n}', start))
   assert.match(body, /if \(viaAnilist\.length \|\| !anilist\(\)\.lastFailure\(\)\) return viaAnilist/)
-  assert.match(body, /return jikan\(\)\.search\(query\)/)
+  assert.match(body, /const viaJikan = await jikan\(\)\.search\(query\)/)
 })
 
-// Nothing found while BOTH databases are flagged down is an outage, not a
+// The third rung: Jikan also coming back empty AND flagging an outage falls
+// through to Kitsu. Same outage-gating principle — a healthy empty answer at the
+// Jikan rung stops the chain rather than spending a Kitsu request.
+test('anime search falls through to Kitsu only when Jikan also flags an outage', () => {
+  const start = MAIN.indexOf('async function _animeSearch(')
+  const body = MAIN.slice(start, MAIN.indexOf('\n}', start))
+  assert.match(body, /if \(viaJikan\.length \|\| !jikan\(\)\.lastFailure\(\)\) return viaJikan/)
+  assert.match(body, /return kitsu\(\)\.search\(query\)/)
+})
+
+// Nothing found while ALL THREE databases are flagged down is an outage, not a
 // miss — the renderer's error panel must say so instead of "no results".
-test('an anime search with both databases down reports the outage', () => {
+test('an anime search with all three databases down reports the outage', () => {
   const body = handlerBody('video-search')
-  assert.match(body, /anilist\(\)\.lastFailure\(\) && jikan\(\)\.lastFailure\(\)/)
+  assert.match(body, /anilist\(\)\.lastFailure\(\) && jikan\(\)\.lastFailure\(\) && kitsu\(\)\.lastFailure\(\)/)
   assert.match(body, /return \{ ok: false, error: 'The anime databases are unreachable right now/)
+  assert.match(body, /AniList, MyAnimeList and Kitsu all failed to answer/)
 })
 
 test('a tv entry that is really anime is dropped when AniList has it too', () => {
