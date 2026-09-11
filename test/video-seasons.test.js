@@ -74,8 +74,11 @@ test('the current entry is labelled rather than hidden', async () => {
     seasons: [season(1, 'First', 2015), season(2, 'Second', 2018)],
   })
   await ctx._renderSeasonChain(1)
-  const labels = [...box.innerHTML.matchAll(/vseason-n">([^<]+)</g)].map(m => m[1])
-  assert.deepStrictEqual(labels, ['Part 1', 'Watching'])
+  // "Part N" is the fact on every entry; the current one adds "this page"
+  // instead of claiming "Watching" (V2.5).
+  const labels = [...box.innerHTML.matchAll(/vseason-n">([^<]+)</g)].map(m => m[1].trim())
+  assert.deepStrictEqual(labels, ['Part 1', 'Part 2'])
+  assert.match(box.innerHTML, /vseason current[^>]*>[\s\S]*?vseason-here">this page</)
 })
 
 // A list of one is just the title you are already looking at.

@@ -8377,6 +8377,7 @@ body.app-unfocused .vt-menu {
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
 }
 .vseason-meta { font-size:11px; color:var(--text3); }
+.vseason-here { font-weight:500; text-transform:none; letter-spacing:0; color:var(--accent); margin-left:4px; }
 .vseason-watched { font-size:10px; color:var(--accent); }
 
 /* ══════════════════════════════════════════════════════

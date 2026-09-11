@@ -3283,7 +3283,7 @@ function _taste() {
     // patching it: the panels are interdependent -- rating a film changes the
     // profile, the year in review and possibly the diary line above it -- and a
     // partial repaint is how those drift apart.
-    onChange: function (event) { _onTasteChange(event) },
+    onChange: function (action, result) { _onTasteChange(action, result) },
   })
   return _tasteP
 }
@@ -3385,16 +3385,24 @@ function _tasteKeyOfDetail() {
   return _videoDetail.type + ':' + _videoDetail.d.id
 }
 
-function _onTasteChange(event) {
+function _onTasteChange(action, result) {
   // Before anything reads it: every mutation can change a title's metadata.
   _invalidateTasteMeta()
+  // A deleted diary entry can be taken back (V2.5): the store hands the entry
+  // out, and restoreViewing puts it (and the seen flag) back as it was.
+  if (action === 'diary-delete' && result && result.entry) {
+    const gone = result.entry
+    showSnackbar('Viewing removed from your diary', 'Undo', function () {
+      try { window.PapaTasteStore.restoreViewing(gone) } catch (_) { return }
+      _onTasteChange('diary-restore', { entry: gone })
+    })
+  }
   // The detail page and the diary page both show taste, and both are live.
   if (state.currentPage === 'diary') return _renderDiaryBody()
   if (state.currentPage === 'video-detail') return _renderTasteSection()
   // A rating or a seen mark changes what the grids should hide, so a browse
   // page left behind is stale the moment it is returned to. Cheap to mark.
   _browseTasteDirty = true
-  if (event && event.type === 'unsee') _browseTasteDirty = true
 }
 
 var _browseTasteDirty = false
@@ -5650,7 +5658,9 @@ async function _renderAiringRow(ticket) {
   })
   const target = document.getElementById('vairing-mount')
   if (!target) return
-  if (!items.length) { target.innerHTML = ''; return }
+  // An entry without a title cannot be a card ("Untitled" on Home, V2.5).
+  const shown = items.filter(function (e) { return e && e.title })
+  if (!shown.length) { target.innerHTML = ''; return }
   // The header links to the fuller calendar view (App §26).
   target.innerHTML =
     '<section class="vrow vairing-row" data-row="airing">' +
@@ -5660,7 +5670,7 @@ async function _renderAiringRow(ticket) {
       '</div>' +
       '<div class="vrail-wrap">' +
         '<div class="vrail" data-rail="airing">' +
-          items.map(function (e) { return _airingCardHtml(e, now) }).join('') +
+          shown.map(function (e) { return _airingCardHtml(e, now) }).join('') +
         '</div>' +
       '</div>' +
     '</section>'
@@ -7243,7 +7253,9 @@ function _vRatesHtml(meta) {
     return '<div class="vrate ' + s.cls + (has ? '' : ' is-empty') + '">' +
       '<div class="vrate-head">' +
         '<span class="vrate-src">' + s.src + '</span>' +
-        '<span class="vrate-val">' + (has ? esc(s.fmt(raw)) : '—') + '</span>' +
+        // Blank until the number arrives (cards below the fold are enriched
+        // as they scroll in): a row of dashes read as "no ratings exist".
+        '<span class="vrate-val">' + (has ? esc(s.fmt(raw)) : '&nbsp;') + '</span>' +
       '</div>' +
       '<div class="vrate-bar"><i style="width:' + pct + '%"></i></div>' +
     '</div>'
@@ -7910,9 +7922,11 @@ async function _renderSeasonChain(ticket) {
     if (_videoDetailTicket !== ticket) return
     const parts = res && res.ok && res.collection && Array.isArray(res.collection.parts)
       ? res.collection.parts : []
+    // TMDB lists a collection's parts in no particular order; "Part 1" must
+    // be the first film, so they are sorted by year (then title) here (V2.5).
     items = parts.map(function (p) {
       return { id: p.id, title: p.title, year: p.year, poster: p.poster, format: null, episodeCount: null }
-    })
+    }).sort(function (a, b) { return (Number(a.year) || 9999) - (Number(b.year) || 9999) || String(a.title || '').localeCompare(String(b.title || '')) })
     // "Part of <name>" reads as membership (roadmap #9/#37), not a bare title.
     label = detail.d.collection.name ? 'Part of ' + detail.d.collection.name : 'Collection'
   }
@@ -7947,7 +7961,10 @@ async function _renderSeasonChain(ticket) {
           ' aria-label="' + esc(item.title || '') + (isCurrent ? ' (current)' : '') + '">' +
         art +
         '<div class="vseason-body">' +
-          '<div class="vseason-n">' + (isCurrent ? 'Watching' : 'Part ' + (i + 1)) + '</div>' +
+          // "Part N" stays on the current one too — it is the fact; the
+          // highlight says it is this page. "Watching" was a claim the page
+          // could not back (you are reading about it, not watching it).
+          '<div class="vseason-n">' + 'Part ' + (i + 1) + (isCurrent ? ' <span class="vseason-here">this page</span>' : '') + '</div>' +
           '<div class="vseason-name">' + esc(item.title || 'Untitled') + '</div>' +
           '<div class="vseason-meta">' + bits.join(' · ') +
             (watched ? ' <span class="vseason-watched">' + watched + '</span>' : '') + '</div>' +

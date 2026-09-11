@@ -88,3 +88,16 @@ test('the detail page is keyboard-complete and the music shortcuts stand down fo
   assert.match(RENDERER, /state\.currentPage === 'video-detail' && !e\.ctrlKey && !e\.altKey && !e\.metaKey && !e\.shiftKey &&\n\s+_DETAIL_KEYS\.test\(e\.key\) && e\.key !== 'Escape' && !inInputNow\(e\)\) return/)
   for (const k of ["keys: \\['P'\\]", "keys: \\['S'\\]", "keys: \\['T'\\]", "keys: \\['1–9'\\]"]) assert.match(RENDERER, new RegExp("category: 'Movies & TV page', " + k))
 })
+
+test('V2.5 small repairs: collections sort by year and never claim Watching; untitled airing entries are skipped; rating slots are blank, not dashed; a diary delete has Undo', () => {
+  assert.match(RENDERER, /\.sort\(function \(a, b\) \{ return \(Number\(a\.year\) \|\| 9999\) - \(Number\(b\.year\) \|\| 9999\)/)
+  assert.match(RENDERER, /'Part ' \+ \(i \+ 1\) \+ \(isCurrent \? ' <span class="vseason-here">this page<\/span>' : ''\)/)
+  assert.doesNotMatch(RENDERER, /isCurrent \? 'Watching'/)
+  assert.match(RENDERER, /const shown = items\.filter\(function \(e\) \{ return e && e\.title \}\)/)
+  assert.match(fn('_vRatesHtml'), /\(has \? esc\(s\.fmt\(raw\)\) : '&nbsp;'\)/)
+  const change = fn('_onTasteChange')
+  assert.match(change, /if \(action === 'diary-delete' && result && result\.entry\)/)
+  assert.match(change, /showSnackbar\('Viewing removed from your diary', 'Undo'/)
+  assert.match(change, /window\.PapaTasteStore\.restoreViewing\(gone\)/)
+  assert.match(RENDERER, /onChange: function \(action, result\) \{ _onTasteChange\(action, result\) \}/)
+})
