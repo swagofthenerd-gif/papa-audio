@@ -8007,6 +8007,61 @@ body.app-unfocused .vt-menu {
   background:var(--accent); display:block;
 }
 
+/* ── Episode rows (V2.1) ─────────────────────────────
+   Television seasons list as rows: still, number, title, date, synopsis, a
+   watched tick, the bar where you stopped and the one that is up next. The
+   anime grid keeps its numbered buttons (no per-episode metadata there). */
+.video-episode-list.vep-rows, .video-episode-list-inner.vep-rows { display:flex; flex-direction:column; gap:6px; width:100%; }
+.vep-row {
+  display:grid; grid-template-columns:160px 1fr auto; gap:14px; align-items:center;
+  padding:8px; border-radius:var(--r-md); border:1px solid transparent;
+  background:var(--bg3); cursor:pointer; text-align:left;
+  transition:background .15s var(--ease), border-color .15s var(--ease), transform .15s var(--ease);
+}
+.vep-row:hover { background:var(--bg4); }
+.vep-row:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.vep-row.active { border-color:var(--accent); background:var(--accent-dim); }
+.vep-row.seen { opacity:.72; }
+.vep-row.seen:hover { opacity:1; }
+.vep-row.unaired { opacity:.55; }
+.vep-still-wrap { position:relative; width:160px; height:90px; border-radius:var(--r-sm); overflow:hidden; background:#000; flex-shrink:0; }
+.vep-still { display:block; width:100%; height:100%; object-fit:cover; }
+.vep-still-empty { background:linear-gradient(135deg, var(--bg4), var(--bg3)); }
+.vep-num {
+  position:absolute; left:6px; top:6px; padding:1px 6px; border-radius:4px;
+  font-size:11px; font-weight:700; color:#fff; background:rgba(0,0,0,.6); backdrop-filter:blur(4px);
+}
+.vep-bar { position:absolute; left:0; bottom:0; height:3px; background:var(--accent); display:block; }
+.vep-body { min-width:0; }
+.vep-head { display:flex; align-items:center; gap:8px; min-width:0; }
+.vep-title { font-size:14px; font-weight:600; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.vep-kicker { font-size:10.5px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--accent); flex-shrink:0; }
+.vep-mark { font-size:11px; color:var(--text2); flex-shrink:0; }
+.vep-mark-seen { color:var(--accent); font-weight:700; }
+.vep-meta { font-size:12px; color:var(--text2); margin-top:2px; font-variant-numeric:tabular-nums; }
+.vep-synopsis {
+  font-size:12.5px; color:var(--text2); margin-top:4px; line-height:1.4;
+  display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;
+}
+.vep-play {
+  width:34px; height:34px; border-radius:50%; display:flex; align-items:center; justify-content:center;
+  background:var(--glass); border:1px solid var(--glass-border); color:var(--text); opacity:0;
+  transition:opacity .15s var(--ease);
+}
+.vep-play svg { width:16px; height:16px; fill:currentColor; }
+.vep-row:hover .vep-play, .vep-row.active .vep-play, .vep-row:focus-visible .vep-play { opacity:1; }
+@media (max-width: 900px) { .vep-row { grid-template-columns:120px 1fr auto; } .vep-still-wrap { width:120px; height:68px; } }
+/* The foot of the sources list: how many results were hidden as unlikely. */
+.video-sources-unlikely { font-size:12px; color:var(--text2); padding:8px 4px; }
+.video-sources-unlikely .link-btn { background:none; border:0; color:var(--accent); cursor:pointer; font-size:12px; padding:0; text-decoration:underline; }
+.video-source-unlikely { color:var(--warn, #e0a442); border-color:currentColor; }
+/* Release group badge on a source row (V2.2). */
+.video-source-group {
+  font-size:11px; font-weight:600; padding:2px 7px; border-radius:999px;
+  background:var(--accent-dim); color:var(--accent); flex-shrink:0; max-width:140px;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+
 /* One line above the grid saying where to pick up. It only ever appears when
    there is something to say, so it never reads as an empty promise. */
 .video-resume {

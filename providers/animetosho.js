@@ -68,6 +68,7 @@ function normalizeItem(raw, { preferDub = false, episode = null } = {}) {
     fileIndex: 0,
     source: 'AnimeTosho',
     quality,
+    title: title,
     label: `AnimeTosho · ${quality}${dub ? ' · dub' : ' · sub'}${pack ? ' · season pack' : ''}` +
       `${sizeGb ? ` · ${sizeGb}` : ''}${seeds ? ` · ${seeds} seeds` : ''}`,
     // The streamer needs to know it must find one episode inside many files.

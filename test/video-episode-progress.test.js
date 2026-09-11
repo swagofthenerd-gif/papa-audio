@@ -35,7 +35,7 @@ const SETUP = lift(['_watchKey', '_epProgress', '_epMark', '_vDurText'])
 function build(items) {
   const store = { get: k => items[k] || null }
   const fn = new Function('store', `
-    var _EP_STARTED = 0.02
+    var _EP_STARTED = 0.05
     function _vStore() { return store }
     ${SETUP}
     return { _epProgress: _epProgress, _epMark: _epMark, _vDurText: _vDurText, _watchKey: _watchKey }
@@ -144,7 +144,7 @@ test('time remaining reads as a person would say it', () => {
 // down with it.
 test('a store that is absent or throwing costs the marks, not the page', () => {
   const noStore = new Function(`
-    var _EP_STARTED = 0.02
+    var _EP_STARTED = 0.05
     function _vStore() { return null }
     ${SETUP}
     return _epProgress
@@ -152,7 +152,7 @@ test('a store that is absent or throwing costs the marks, not the page', () => {
   assert.deepStrictEqual(noStore('tv', 1, 1, [1, 2]).items, {})
 
   const angry = new Function(`
-    var _EP_STARTED = 0.02
+    var _EP_STARTED = 0.05
     function _vStore() { return { get: function () { throw new Error('corrupt') } } }
     ${SETUP}
     return _epProgress

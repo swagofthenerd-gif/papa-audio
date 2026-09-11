@@ -81,6 +81,7 @@ function normalizeMovieResult(raw) {
         infoHash: t.hash,
         fileIndex: 0,
         source: 'YTS',
+        title: typeof t.title_long === 'string' ? t.title_long : null,
         quality,
         label: `YTS · ${quality}${audioLayout ? ` · ${audioLayout}` : ''}${seeds ? ` · ${seeds} seeds` : ''}`,
         audioLayout,

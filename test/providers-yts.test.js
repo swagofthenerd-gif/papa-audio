@@ -35,6 +35,7 @@ test('normalizeMovieResult maps torrents to torrent entries and drops hashless t
     infoHash: 'AAA1',
     fileIndex: 0,
     source: 'YTS',
+    title: null,
     quality: '720p',
     label: 'YTS · 720p · 10 seeds',
     // The layout is whatever YTS reported, not a hardcoded '5.1'. This fixture

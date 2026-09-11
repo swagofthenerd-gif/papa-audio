@@ -24,6 +24,7 @@ function normalizeHttpEntry(raw) {
     url: typeof raw.url === 'string' && raw.url.length > 0 ? raw.url : null,
     source: typeof raw.source === 'string' && raw.source.length > 0 ? raw.source : 'http',
     quality: raw.quality != null ? raw.quality : null,
+    title: typeof raw.title === 'string' ? raw.title : null,
     label: raw.label != null ? raw.label : (typeof raw.title === 'string' ? raw.title : null),
     audioLayout: raw.audioLayout != null ? raw.audioLayout : null,
     sub: raw.sub != null ? raw.sub : null,

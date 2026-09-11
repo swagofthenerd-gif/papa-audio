@@ -141,6 +141,7 @@ function normalizeResult(raw, { type = 'movie', episode = null } = {}) {
     source: 'Jackett',
     quality,
     lowQuality,
+    title: name,
     label: `Jackett · ${lowQuality ? 'CAM/TS (poor quality)' : quality}` +
       `${audioLayout ? ` · ${audioLayout}` : ''}` +
       `${type === 'anime' ? (dub ? ' · dub' : ' · sub') : ''}` +

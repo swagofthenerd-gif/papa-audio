@@ -219,6 +219,7 @@ function normalizeItem(raw, { preferDub = false, episode = null } = {}) {
     infoHash: raw.infoHash,
     fileIndex: 0,
     source: 'Nyaa',
+    title,
     quality,
     label: `Nyaa · ${quality}${dub ? ' · dub' : ' · sub'}${pack ? ' · season pack' : ''}${seeds ? ` · ${seeds} seeds` : ''}`,
     // The streamer needs to know it must find one episode inside many files.

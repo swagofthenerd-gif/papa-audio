@@ -52,12 +52,12 @@ test('the candidate is promoted only after the threshold, and fires once', () =>
 test('remembering writes both source and quality to the show prefs', () => {
   const remember = fn('_rememberPreferredSource')
   assert.match(remember, /_showKeyOf\(\)/)
-  assert.match(remember, /setPrefs\(key, \{ preferredSource: cand\.source \|\| null, preferredQuality: cand\.quality \|\| null \}\)/)
+  assert.match(remember, /setPrefs\(key, \{ preferredSource: cand\.source \|\| null, preferredQuality: cand\.quality \|\| null, preferredGroup: cand\.group \|\| null \}\)/)
 })
 
 test('the clear chip removes the stored preference', () => {
   const clear = fn('_clearPreferredSource')
-  assert.match(clear, /setPrefs\(key, \{ preferredSource: null, preferredQuality: null \}\)/)
+  assert.match(clear, /setPrefs\(key, \{ preferredSource: null, preferredQuality: null, preferredGroup: null \}\)/)
 })
 
 test('the preferred-source chip renders and binds its clear button', () => {
@@ -66,7 +66,7 @@ test('the preferred-source chip renders and binds its clear button', () => {
   assert.match(chip, /video-pref-clear/)
   assert.match(chip, /addEventListener\('click', _clearPreferredSource\)/)
   // No preference → the chip is removed rather than shown empty.
-  assert.match(chip, /if \(!pref \|\| !pref\.source\)/)
+  assert.match(chip, /if \(!pref \|\| \(!pref\.source && !pref\.group\)\)/)
 })
 
 test('the hero Play and the loading auto-play both honour the remembered source', () => {

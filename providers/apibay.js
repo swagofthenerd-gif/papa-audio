@@ -200,6 +200,7 @@ function normalizeResult(raw) {
     // Flagged rather than dropped: a film with nothing but a cam rip should
     // still be playable, just never chosen ahead of a real encode.
     lowQuality,
+    title: name,
     label: `TPB · ${lowQuality ? 'CAM/TS (poor quality)' : quality}` +
       `${audioLayout ? ` · ${audioLayout}` : ''}${sizeGb ? ` · ${sizeGb}` : ''}${seeds ? ` · ${seeds} seeds` : ''}`,
     audioLayout,

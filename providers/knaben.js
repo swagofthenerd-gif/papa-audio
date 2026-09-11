@@ -166,6 +166,7 @@ function normalizeResult(raw, { type = 'movie', episode = null } = {}) {
     // Kept but flagged, exactly like apibay: a cam is playable but never chosen
     // ahead of a real encode.
     lowQuality,
+    title: name,
     label: `Knaben · ${lowQuality ? 'CAM/TS (poor quality)' : quality}` +
       `${audioLayout ? ` · ${audioLayout}` : ''}` +
       `${type === 'anime' ? (dub ? ' · dub' : ' · sub') : ''}` +

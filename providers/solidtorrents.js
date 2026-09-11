@@ -117,6 +117,7 @@ function normalizeResult(raw, { type = 'movie', episode = null } = {}) {
     source: 'SolidTorrents',
     quality,
     lowQuality,
+    title: name,
     label: `SolidTorrents · ${lowQuality ? 'CAM/TS (poor quality)' : quality}` +
       `${audioLayout ? ` · ${audioLayout}` : ''}` +
       `${type === 'anime' ? (dub ? ' · dub' : ' · sub') : ''}` +

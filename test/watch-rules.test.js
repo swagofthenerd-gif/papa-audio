@@ -1,0 +1,30 @@
+'use strict'
+// V2.3: one set of numbers for resume, watched, bars and marks.
+const test = require('node:test')
+const assert = require('node:assert')
+const R = require('../src/watch-rules')
+
+test('the thresholds are the stated ones', () => {
+  assert.equal(R.STARTED_AT, 0.05); assert.equal(R.WATCHED_AT, 0.92); assert.equal(R.MIN_SECONDS, 30)
+})
+
+test('status: fresh under 5 % or 30 s, partial between, watched at 92 %', () => {
+  assert.equal(R.status(0, 3600), 'fresh')
+  assert.equal(R.status(100, 3600), 'fresh', '2.8 % is fresh')
+  assert.equal(R.status(180, 3600), 'partial', '5 % is partial')
+  assert.equal(R.status(20, 300), 'fresh', '6.7 % but under 30 s is fresh')
+  assert.equal(R.status(3311, 3600), 'partial', '91.97 %')
+  assert.equal(R.status(3312, 3600), 'watched', '92 %')
+  assert.equal(R.status(3600, 0), 'fresh', 'no duration, no claim')
+  assert.equal(R.status(NaN, 3600), 'fresh')
+})
+
+test('progress bars and resume offers exist only for partial titles', () => {
+  assert.equal(R.progressPct(1800, 3600), 50)
+  assert.equal(R.progressPct(100, 3600), 0)
+  assert.equal(R.progressPct(3500, 3600), 0, 'watched shows no bar')
+  assert.equal(R.progressPct(181, 3600), 5)
+  assert.deepEqual(R.resumeOffer(1800, 3600), { position: 1800, left: 1800 })
+  assert.equal(R.resumeOffer(10, 3600), null)
+  assert.equal(R.resumeOffer(3550, 3600), null)
+})

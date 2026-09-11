@@ -67,8 +67,11 @@
   const CORRUPT_KEY = KEY + '.corrupt'
   const MIGRATED_KEY = KEY + '.migrated'
 
-  const WATCHED_AT = 0.9
-  const MIN_PROGRESS = 0.02
+  // One set of numbers for the whole app (V2.3): src/watch-rules.js.
+  const rules = (typeof PapaWatchRules !== 'undefined' && PapaWatchRules) ||
+    (typeof require === 'function' ? require('./watch-rules') : null)
+  const WATCHED_AT = rules ? rules.WATCHED_AT : 0.92
+  const MIN_PROGRESS = rules ? rules.STARTED_AT : 0.05
 
   // A duration mpv reports can be a lie: a season pack sometimes serves a
   // short NC/OP extra, or a pre-load value of a few seconds, before the real
@@ -677,7 +680,8 @@
       if (!item || item.watched) return false
       const dur = Number(item.duration) || 0
       if (dur <= 0) return false
-      return ratio(item) >= MIN_PROGRESS
+      // Same rule as the resume offer and the cards: 5 % in AND 30 s in.
+      return rules ? rules.isPartial(item.position, dur) : ratio(item) >= MIN_PROGRESS
     }
 
     function _newest(list, limit) {

@@ -3647,8 +3647,13 @@ function _preferredSourceOf() {
   if (!store || !key) return null
   let p = {}
   try { p = store.prefs(key) || {} } catch (_) { return null }
-  if (!p.preferredSource && !p.preferredQuality) return null
-  return { source: p.preferredSource || null, quality: p.preferredQuality || null }
+  if (!p.preferredSource && !p.preferredQuality && !p.preferredGroup) return null
+  return { source: p.preferredSource || null, quality: p.preferredQuality || null, group: p.preferredGroup || null }
+}
+
+// The release group a stream came from, read off its release name (V2.2).
+function _releaseGroupOf(s) {
+  try { return (window.PapaReleaseName && s && s.title) ? window.PapaReleaseName.group(s.title) : '' } catch (_) { return '' }
 }
 
 // How long a manually-chosen non-first source must actually play before it is
@@ -3752,9 +3757,10 @@ function _rememberPreferredSource(cand) {
   const key = _showKeyOf()
   if (!store || !key || !cand) return
   try {
-    store.setPrefs(key, { preferredSource: cand.source || null, preferredQuality: cand.quality || null })
+    store.setPrefs(key, { preferredSource: cand.source || null, preferredQuality: cand.quality || null, preferredGroup: cand.group || null })
   } catch (_) { return }
-  if (cand.source) showToast('Remembering ' + cand.source + ' for this title')
+  if (cand.group) showToast('Remembering ' + cand.group + ' releases for this title')
+  else if (cand.source) showToast('Remembering ' + cand.source + ' for this title')
   _renderPreferredSourceChip(document.getElementById('video-sources'))
 }
 
@@ -3763,7 +3769,7 @@ function _clearPreferredSource() {
   const store = _vStore()
   const key = _showKeyOf()
   if (!store || !key) return
-  try { store.setPrefs(key, { preferredSource: null, preferredQuality: null }) } catch (_) {}
+  try { store.setPrefs(key, { preferredSource: null, preferredQuality: null, preferredGroup: null }) } catch (_) {}
   if (_watch) _watch.sourceCandidate = null
   _renderPreferredSourceChip(document.getElementById('video-sources'))
 }
@@ -3777,7 +3783,7 @@ function _renderPreferredSourceChip(panel) {
   if (!header) return
   let chip = header.querySelector('.video-pref-source')
   const pref = _preferredSourceOf()
-  if (!pref || !pref.source) {
+  if (!pref || (!pref.source && !pref.group)) {
     if (chip) chip.remove()
     return
   }
@@ -3786,7 +3792,9 @@ function _renderPreferredSourceChip(panel) {
     chip.className = 'video-pref-source'
     header.appendChild(chip)
   }
-  chip.innerHTML = 'Preferred source: <b>' + esc(pref.source) + '</b>' +
+  // The group is what a viewer chose ("SubsPlease"); the indexer is where it
+  // was found. Say the group when there is one.
+  chip.innerHTML = (pref.group ? 'Preferred releases: <b>' + esc(pref.group) + '</b>' : 'Preferred source: <b>' + esc(pref.source) + '</b>') +
     '<button class="video-pref-clear" aria-label="Forget preferred source" title="Forget">&times;</button>'
   chip.querySelector('.video-pref-clear')?.addEventListener('click', _clearPreferredSource)
 }
@@ -3817,7 +3825,9 @@ function _offerResume(state) {
   if (!saved || saved.watched) return
   const pos = Number(saved.position) || 0
   const dur = Number(saved.duration) || Number(state && state.duration) || 0
-  if (!dur || pos < 30 || pos / dur > 0.95) return
+  // The one resume rule (V2.3): 5 %–92 % in and at least 30 s.
+  const offer = window.PapaWatchRules ? window.PapaWatchRules.resumeOffer(pos, dur) : (dur && pos >= 30 && pos / dur < 0.92 ? { position: pos } : null)
+  if (!offer) return
   const label = _player && _player.fmtTime ? _player.fmtTime(pos) : Math.round(pos) + 's'
   // Auto-resume stays the default — the seek below is queued unconditionally.
   // But silently dropping someone back into the middle is the wrong call as
@@ -4405,12 +4415,15 @@ function _autoPickStream(streams) {
 function _pickMatchingStream(streams, want) {
   const list = Array.isArray(streams) ? streams : []
   if (!list.length) return null
-  if (!want || (want.dub == null && !want.quality && !want.source)) return list[0]
+  if (!want || (want.dub == null && !want.quality && !want.source && !want.group)) return list[0]
   const scored = list.map(function (s, i) {
     let score = 0
     // Language is what a viewer notices in the first second, so it outranks
     // everything else and can never be outvoted by resolution or seeds.
     if (want.dub != null && (s.dub === true) === want.dub) score += 1000
+    // The release group they chose last time (V2.2): the same subs, the same
+    // encode, so the second episode does not ask again. Above resolution.
+    if (want.group && _releaseGroupOf(s) === want.group) score += 200
     // Resolution is the next thing they notice. Scored by closeness rather
     // than exact match, so 1080p -> 720p beats 1080p -> unlabelled.
     if (want.quality) score += Math.max(0, 100 - _qualityDistance(want.quality, s.quality) * 25)
@@ -4765,7 +4778,7 @@ function _videoPlayResult(result, opts) {
       // Set here, promoted to a stored preference once it has played past the
       // threshold (in _onVideoStateTick); null once saved or never eligible.
       sourceCandidate: (opts.manual === true && Number(opts.index) > 0 && (result.source || result.quality))
-        ? { source: result.source || null, quality: result.quality || null }
+        ? { source: result.source || null, quality: result.quality || null, group: _releaseGroupOf(result) }
         : null,
     }
   }
@@ -7119,7 +7132,9 @@ function _videoCard(item) {
     badges.push('<span class="vbadge vbadge-resume" title="You haven\'t touched this in a while">resume?</span>')
   }
 
-  const pct = item.position && item.duration ? Math.min(100, Math.round(item.position / item.duration * 100)) : 0
+  // The bar follows the one rule (V2.3): only a partial title shows one.
+  const pct = window.PapaWatchRules ? window.PapaWatchRules.progressPct(item.position, item.duration)
+    : (item.position && item.duration ? Math.min(100, Math.round(item.position / item.duration * 100)) : 0)
   const progress = pct > 1 ? '<div class="vcard-progress"><i style="width:' + pct + '%"></i></div>' : ''
 
   // A half-watched entry can be dismissed from Continue Watching outright
@@ -8576,7 +8591,7 @@ function _renderVideoControls(type) {
 // How far into an episode counts as "started". Below this it is almost always
 // a mis-click or a few seconds of buffering, and offering to resume from ten
 // seconds in is worse than offering nothing.
-var _EP_STARTED = 0.02
+var _EP_STARTED = (window.PapaWatchRules && window.PapaWatchRules.STARTED_AT) || 0.05
 
 function _epProgress(type, id, season, epNumbers) {
   const store = _vStore()
@@ -8712,7 +8727,7 @@ function _bindEpResume(root) {
 // The chosen episode has to be reflected in whichever control is on screen,
 // and the two catalogues use different ones.
 function _syncEpisodeSelection(n) {
-  document.querySelectorAll('.video-episode-btn').forEach(function (x) {
+  document.querySelectorAll('.video-episode-btn, .vep-row').forEach(function (x) {
     x.classList.toggle('active', Number(x.dataset.ep) === n)
   })
   const sel = document.getElementById('video-episode-select')
@@ -8792,6 +8807,31 @@ async function _refreshTvEpisodes(ticket, seasonTicket) {
   await _loadVideoSources(ticket, seasonTicket)
 }
 
+// One television episode row (V2.1). The still is lazy so a 24-row season
+// does not fetch 24 images before the first paint; a missing still keeps the
+// slot so the rows line up.
+function _epRowHtml(r) {
+  const cls = 'vep-row' + (r.current ? ' active' : '') + (r.watched ? ' seen' : '') + (r.pct ? ' partial' : '') + (r.upNext ? ' upnext' : '') + (r.unaired ? ' unaired' : '')
+  const still = r.still
+    ? '<img class="vep-still" src="' + esc(r.still) + '" alt="" loading="lazy" decoding="async">'
+    : '<span class="vep-still vep-still-empty"></span>'
+  const meta = [r.date, r.runtime].filter(Boolean).map(esc).join(' · ')
+  const mark = r.watched
+    ? '<span class="vep-mark vep-mark-seen" title="Watched">✓</span>'
+    : (r.pct ? '<span class="vep-mark vep-mark-left" title="Started">' + esc(_vDurText(r.left)) + ' left</span>' : '')
+  const kicker = r.upNext ? '<span class="vep-kicker">' + (r.pct ? 'Continue' : 'Up next') + '</span>' : ''
+  return '<div class="' + cls + '" data-ep="' + r.n + '" role="button" tabindex="0" aria-label="Episode ' + r.n + ': ' + esc(r.title) + '">' +
+    '<div class="vep-still-wrap">' + still + '<span class="vep-num">' + r.n + '</span>' +
+      (r.pct ? '<i class="vep-bar" style="width:' + r.pct + '%"></i>' : '') + '</div>' +
+    '<div class="vep-body">' +
+      '<div class="vep-head">' + kicker + '<span class="vep-title">' + esc(r.title) + '</span>' + mark + '</div>' +
+      (meta ? '<div class="vep-meta">' + meta + '</div>' : '') +
+      (r.synopsis ? '<div class="vep-synopsis">' + esc(r.synopsis) + '</div>' : '') +
+    '</div>' +
+    '<span class="vep-play" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></span>' +
+  '</div>'
+}
+
 // Paints the television episode grid, windowed when a single season is large
 // enough to stall. `top` is the highest episode number in the season, which is
 // what the range maths windows over — the anime grid does the same with its
@@ -8812,9 +8852,19 @@ function _tvEpRenderGrid(target, episodes, prog, top, setEp) {
     const shown = top > _EP_WINDOW
       ? byNum.filter(function (ep) { return ep.episodeNumber >= win.start && ep.episodeNumber <= win.end })
       : byNum
-    list.innerHTML = shown.map(function (ep) { return _epButton(ep.episodeNumber, ep.name, prog) }).join('')
-    list.querySelectorAll('.video-episode-btn').forEach(function (b) {
+    // Rows, not numbers (V2.1): the still, the title, the date, the synopsis,
+    // a watched tick, the bar where you stopped, and the one that is up next.
+    // Falls back to the numbered buttons if the list module is missing.
+    const EL = typeof PapaEpisodeList !== 'undefined' ? PapaEpisodeList : null
+    if (EL) {
+      list.classList.add('vep-rows')
+      list.innerHTML = EL.rows(shown, prog, _videoState.episode, Date.now()).map(_epRowHtml).join('')
+    } else {
+      list.innerHTML = shown.map(function (ep) { return _epButton(ep.episodeNumber, ep.name, prog) }).join('')
+    }
+    list.querySelectorAll('.video-episode-btn, .vep-row').forEach(function (b) {
       b.addEventListener('click', function () { setEp(Number(b.dataset.ep) || 1) })
+      b.addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setEp(Number(b.dataset.ep) || 1) } })
     })
     const ranges = document.getElementById('vep-ranges')
     if (ranges) ranges.outerHTML = _epRangeJumperHtml(top, win)
@@ -9032,15 +9082,25 @@ async function _loadVideoSources(ticket, seasonTicket) {
     })
     return
   }
-  const streams = Array.isArray(res.streams) ? res.streams : []
+  const all = Array.isArray(res.streams) ? res.streams : []
+  // Only sources whose release name carries the title are shown (V2/V4): a
+  // one-letter title used to list audio plugins and unrelated hentai. The
+  // rest are counted, not lost — a line at the foot of the list shows them.
+  const split = _splitPlausibleStreams(all)
+  const streams = split.likely
   _videoStreams = streams
+  _videoStreamsHidden = split.unlikely
   if (!streams.length) {
     target.innerHTML = '<div class="video-sources-header"><span class="section-title">Sources</span></div>' +
-      '<div class="yt-status">No sources found for this ' + (_videoDetail.type === 'movie' ? 'film' : 'episode') + '.</div>' +
-      '<button class="secondary" id="video-sources-retry">Try again</button>'
+      '<div class="yt-status">' + (split.unlikely.length
+        ? 'No sources look like this ' + (_videoDetail.type === 'movie' ? 'film' : 'episode') + '. ' + _plural(split.unlikely.length, 'result') + ' came back that do not carry its name.'
+        : 'No sources found for this ' + (_videoDetail.type === 'movie' ? 'film' : 'episode') + '.') + '</div>' +
+      '<button class="secondary" id="video-sources-retry">Try again</button>' +
+      (split.unlikely.length ? ' <button class="secondary" id="video-sources-show-unlikely">Show them anyway</button>' : '')
     document.getElementById('video-sources-retry')?.addEventListener('click', function () {
       _loadVideoSources(_videoDetailTicket, ++_videoSeasonTicket)
     })
+    document.getElementById('video-sources-show-unlikely')?.addEventListener('click', function () { _showUnlikelyStreams(target) })
     return
   }
   // Playback status and stopping now live in the theatre, which owns the video
@@ -9052,6 +9112,7 @@ async function _loadVideoSources(ticket, seasonTicket) {
     _vSortChipsHtml(sort) + '</div><div class="video-source-list"></div>'
   _renderVideoSourceRows(target, sort)
   _wireVideoSortChips(target)
+  _renderUnlikelyFoot(target)
   // Reflect any already-remembered preference for this title at the top of the
   // list, with a way to clear it (App #43).
   _renderPreferredSourceChip(target)
@@ -9062,6 +9123,42 @@ async function _loadVideoSources(ticket, seasonTicket) {
     _autoPlayTicket = 0
     _videoPlayResult(_autoPickStream(streams))
   }
+}
+
+// Sources whose release name does not carry the title (V2/V4). Kept, counted
+// and shown on request; never silently dropped.
+var _videoStreamsHidden = []
+function _splitPlausibleStreams(streams) {
+  const list = Array.isArray(streams) ? streams : []
+  const RN = typeof PapaReleaseName !== 'undefined' ? PapaReleaseName : null
+  if (!RN || !_videoDetail || !_videoDetail.d) return { likely: list, unlikely: [] }
+  const d = _videoDetail.d
+  const req = { type: _videoDetail.type, title: d.title, originalName: d.originalName || null, titles: d.titles || null }
+  const likely = [], unlikely = []
+  for (const s of list) (RN.plausible(req, s && s.title) ? likely : unlikely).push(s)
+  return { likely: likely, unlikely: unlikely }
+}
+function _renderUnlikelyFoot(target) {
+  target.querySelector('.video-sources-unlikely')?.remove()
+  const n = _videoStreamsHidden.length
+  if (!n) return
+  const foot = document.createElement('div')
+  foot.className = 'video-sources-unlikely'
+  foot.innerHTML = esc(_plural(n, 'result')) + ' hidden because the release name does not carry this title. ' +
+    '<button class="link-btn" id="video-sources-show-unlikely">Show them</button>'
+  target.appendChild(foot)
+  foot.querySelector('#video-sources-show-unlikely')?.addEventListener('click', function () { _showUnlikelyStreams(target) })
+}
+function _showUnlikelyStreams(target) {
+  if (!_videoStreamsHidden.length) return
+  _videoStreams = _videoStreams.concat(_videoStreamsHidden)
+  _videoStreamsHidden = []
+  const sort = _vSourcesSort()
+  target.innerHTML = '<div class="video-sources-header"><span class="section-title">Sources</span>' +
+    _vSortChipsHtml(sort) + '</div><div class="video-source-list"></div>'
+  _renderVideoSourceRows(target, sort)
+  _wireVideoSortChips(target)
+  _renderPreferredSourceChip(target)
 }
 
 function _videoStreamRow(s, i) {
@@ -9083,9 +9180,17 @@ function _videoStreamRow(s, i) {
     ? '<span class="video-source-stat video-source-size" title="Size">' + esc(_fmtBytes(sizeN)) + '</span>'
     : '<span class="video-source-stat video-source-size video-source-stat-unknown" title="Size unknown">—</span>'
   const label = s.label || s.source || (s.kind === 'torrent' ? (s.magnet || '') : (s.url || '')) || ''
-  return '<div class="video-source-row" data-idx="' + i + '">' +
+  // The release name says who made the file (V2.2): the group as a badge, the
+  // full name on hover, and a "batch" tag when it is a whole-season file.
+  const rel = (window.PapaReleaseName && s.title) ? window.PapaReleaseName.parse(s.title) : null
+  const d = _videoDetail && _videoDetail.d
+  const unlikely = !!(window.PapaReleaseName && d && s.title && !window.PapaReleaseName.plausible({ type: _videoDetail.type, title: d.title, originalName: d.originalName || null, titles: d.titles || null }, s.title))
+  const unlikelyTag = unlikely ? '<span class="video-source-tag video-source-unlikely" title="The release name does not carry this title">unlikely</span>' : ''
+  const groupTag = rel && rel.group ? '<span class="video-source-group" title="Release group">' + esc(rel.group) + '</span>' : ''
+  const batchTag = rel && rel.batch && !s.isPack ? '<span class="video-source-tag">batch</span>' : ''
+  return '<div class="video-source-row" data-idx="' + i + '"' + (s.title ? ' title="' + esc(s.title) + '"' : '') + '>' +
     '<span class="video-source-badge">' + esc(badge) + '</span>' +
-    torrent + subDub +
+    groupTag + torrent + subDub + batchTag + unlikelyTag +
     seedStat + sizeStat +
     '<span class="video-source-label">' + esc(label) + '</span>' +
     '<button class="video-source-play" data-idx="' + i + '" aria-label="Play ' + esc(badge) + '"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button>' +

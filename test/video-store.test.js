@@ -17,9 +17,9 @@ test('get returns null for an unknown key', () => {
 
 test('setPosition upserts and recomputes watched from the ratio', () => {
   const { store } = makeStore()
-  const item = store.setPosition('movie:27205', { type: 'movie', id: 27205, title: 'Inception' }, 900, 1000)
-  assert.strictEqual(item.watched, true, '900/1000 ≥ 90%')
-  assert.strictEqual(item.position, 900)
+  const item = store.setPosition('movie:27205', { type: 'movie', id: 27205, title: 'Inception' }, 930, 1000)
+  assert.strictEqual(item.watched, true, '930/1000 ≥ 92%')
+  assert.strictEqual(item.position, 930)
   assert.strictEqual(item.duration, 1000)
   assert.strictEqual(item.type, 'movie')
   assert.strictEqual(item.title, 'Inception')
@@ -249,8 +249,8 @@ test('a corrupt or wrong-shaped blob is sanitised to defaults', () => {
 })
 
 test('WATCHED_AT and MIN_PROGRESS are the documented thresholds', () => {
-  assert.strictEqual(WATCHED_AT, 0.9)
-  assert.strictEqual(MIN_PROGRESS, 0.02)
+  assert.strictEqual(WATCHED_AT, 0.92)
+  assert.strictEqual(MIN_PROGRESS, 0.05)
   assert.strictEqual(MAX_ITEMS, 1000)
 })
 

@@ -80,6 +80,7 @@ function normalizeTorrent(raw) {
     fileIndex: 0,
     source: 'EZTV',
     quality,
+    title: title,
     label: `EZTV · ${quality}${audioLayout ? ` · ${audioLayout}` : ''}${seeds ? ` · ${seeds} seeds` : ''}`,
     title,
     audioLayout,
