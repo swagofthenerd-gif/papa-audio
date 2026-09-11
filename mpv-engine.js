@@ -7,7 +7,7 @@ const fs = require('fs')
 const crypto = require('crypto')
 const { MpvIpcClient } = require('./mpv-ipc')
 const { buildAfGraph, defaultSettings } = require('./eq')
-const { ytdlPathArg } = require('./src/ytdlp-manager')
+const { ytdlPathArg, ytdlJsRuntimeArg } = require('./src/ytdlp-manager')
 
 const POSITION_THROTTLE_MS = 250
 const RESPAWN_WINDOW_MS = 60000
@@ -107,6 +107,9 @@ class MpvEngine extends EventEmitter {
       // src/ytdlp-manager.js's discovery order and passed in by main.js. Null
       // leaves mpv's own PATH search in place.
       ytdlPath: null,
+      // The node binary yt-dlp uses as its JavaScript runtime (YouTube needs
+      // one since late 2025); null leaves yt-dlp's own default (deno only).
+      ytdlJsRuntime: null,
       ...opts.config,
     }
     this._spawnFn = opts.spawnFn || spawn
@@ -184,6 +187,8 @@ class MpvEngine extends EventEmitter {
     // -append, not the plain --script-opts, so any future script-opt survives.
     const ytdlArg = ytdlPathArg(this.config.ytdlPath)
     if (ytdlArg) a.push(ytdlArg)
+    const jsArg = ytdlJsRuntimeArg(this.config.ytdlJsRuntime)
+    if (jsArg) a.push(jsArg)
     // After a device-related respawn failure, stop asking for the device that is
     // not there. Exclusive mode on a vanished device fails instantly, which
     // burns all three respawns inside a couple of seconds.

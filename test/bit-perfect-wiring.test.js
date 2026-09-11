@@ -29,7 +29,7 @@ test('getPlayerSettings reads the bitPerfect store key and reports the note', ()
 
 test('buildPlayer routes the engine config through the pure resolver', () => {
   const start = MAIN.indexOf('function buildPlayer(')
-  const body = MAIN.slice(start, start + 900)
+  const body = MAIN.slice(start, start + 1200)
   assert.match(body, /bitPerfect\.resolveEngineConfig\(cfg\)/)
   // and never builds a crossfade engine while bit-perfect is on.
   assert.match(body, /!bitPerfect\.forcesGapless\(cfg\.bitPerfect\)/)

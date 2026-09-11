@@ -65,3 +65,26 @@ test('sources that do not carry the title are hidden behind a count, never dropp
   assert.match(fn('_showUnlikelyStreams'), /_videoStreams = _videoStreams\.concat\(_videoStreamsHidden\)/)
   assert.match(fn('_videoStreamRow'), /video-source-unlikely/)
 })
+
+test('the trailer plays inline in the hero with sound and close; the theatre is only the fallback', () => {
+  const play = fn('_playInlineTrailer')
+  assert.match(play, /window\.api\.videoTrailerUrl\(\{ type: _videoDetail\.type \|\| 'movie', id:/)
+  assert.match(play, /_makeTrailerVideo\(res\.url, 'vdet-trailer'\)/)
+  assert.match(play, /if \(!res \|\| !res\.ok \|\| !res\.url\) return _playTrailerInTheatre\(\)/)
+  assert.match(play, /if \(!v\.muted && state\.isPlaying\) \{ _inlineTrailer\.pausedMusic = true; togglePlay\(\) \}/, 'sound on pauses the music')
+  assert.match(fn('_stopInlineTrailer'), /if \(!state\.isPlaying\) togglePlay\(\)/, 'and the music comes back')
+  assert.match(fn('_bindTrailerButton'), /addEventListener\('click', _playInlineTrailer\)/)
+  assert.match(RENDERER, /if \(typeof _stopInlineTrailer === 'function'\) _stopInlineTrailer\(\)/, 'navigation ends it')
+  assert.match(CSS, /\.video-detail-hero\.is-trailer-playing \.vdet-trailer \{ opacity:1; \}/)
+})
+
+test('the detail page is keyboard-complete and the music shortcuts stand down for its keys', () => {
+  assert.match(RENDERER, /var _DETAIL_KEYS = \/\^\(\?:\[pstPST1-9\]\|Escape\)\$\//)
+  const grid = RENDERER.slice(RENDERER.indexOf('if (!VIDEO_PAGES.has(page)) return'), RENDERER.indexOf('function _moveCardFocus('))
+  assert.match(grid, /if \(k === 'p'\) document\.getElementById\('vdet-play'\)\?\.click\(\)/)
+  assert.match(grid, /if \(k === 's'\) document\.getElementById\('vdet-list'\)\?\.click\(\)/)
+  assert.match(grid, /if \(k === 't'\) document\.getElementById\('video-trailer-btn'\)\?\.click\(\)/)
+  assert.match(grid, /sel\.dispatchEvent\(new Event\('change', \{ bubbles: true \}\)\)/)
+  assert.match(RENDERER, /state\.currentPage === 'video-detail' && !e\.ctrlKey && !e\.altKey && !e\.metaKey && !e\.shiftKey &&\n\s+_DETAIL_KEYS\.test\(e\.key\) && e\.key !== 'Escape' && !inInputNow\(e\)\) return/)
+  for (const k of ["keys: \\['P'\\]", "keys: \\['S'\\]", "keys: \\['T'\\]", "keys: \\['1–9'\\]"]) assert.match(RENDERER, new RegExp("category: 'Movies & TV page', " + k))
+})

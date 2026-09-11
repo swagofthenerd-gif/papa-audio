@@ -489,7 +489,8 @@ test('trailers resolve as video, not audio', () => {
   const table = MAIN.slice(start, MAIN.indexOf('}', start))
   assert.match(table, /audio: 'bestaudio'/)
   assert.match(table, /video: 'best\[height<=1080\]/)
-  assert.match(handlerBody('video-trailer'), /resolveYtUrl\(youtubeId, 'video'\)/)
+  assert.match(handlerBody('video-trailer'), /resolveTrailerStream\(youtubeId\)/)
+  assert.match(MAIN.slice(MAIN.indexOf('async function resolveTrailerStream('), MAIN.indexOf('function extractVideoId(')), /resolveYtUrl\(videoId, 'video'\)/, 'the muxed file is still tried first')
 })
 
 // The same id resolves to a different URL for audio and for video; serving one

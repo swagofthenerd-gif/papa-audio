@@ -384,6 +384,16 @@ function _timeCurTitle() {
 // described the opposite of the behaviour -- the plain arrows seek, they have
 // never changed track -- and nextTrack, prevTrack and stopAfter had no binding
 // at all. Every test in the handler now goes through matchesShortcut().
+// The detail page's keys (V2.8), shared by its handler and the music
+// handler's stand-down so the two can never disagree.
+var _DETAIL_KEYS = /^(?:[pstPST1-9]|Escape)$/
+function inInputNow(e) {
+  const t = e && e.target
+  if (!t) return false
+  const tag = String(t.tagName || '').toUpperCase()
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || t.isContentEditable === true
+}
+
 var DEFAULT_SHORTCUTS = {
   'playPause': 'Space',
   'nextTrack': 'Shift+ArrowRight',
@@ -656,6 +666,13 @@ var ALL_SHORTCUTS = [
   { category: 'Soulseek library', keys: ['Alt+← / Alt+→'], desc: 'Folders mode: back / forward' },
   { category: 'Soulseek library', keys: ['Backspace'], desc: 'Folders mode: up a folder' },
   { category: 'Soulseek library', keys: ['Esc'], desc: 'Clear search, then close' },
+  { category: 'Movies & TV page', keys: ['P'], desc: 'Play (the remembered source, or the best one)' },
+  { category: 'Movies & TV page', keys: ['S'], desc: 'Add to / remove from My List' },
+  { category: 'Movies & TV page', keys: ['T'], desc: 'Play the trailer in the hero (muted; Sound turns it up)' },
+  { category: 'Movies & TV page', keys: ['1–9'], desc: 'Pick a season' },
+  { category: 'Movies & TV page', keys: ['Esc'], desc: 'Stop the trailer' },
+  { category: 'Movies & TV page', keys: ['/'], desc: 'Search films and shows' },
+  { category: 'Movies & TV page', keys: ['B'], desc: 'Browse' },
 ]
 
 // The theatre's keys live in one place — src/video-keymap.js — so the help
@@ -1894,6 +1911,8 @@ function navigate(page, navId, opts = {}) {
   state.currentPlaylistId  = page === 'playlist' ? navId : null
   state.currentSmartListId = page === 'smartlist' ? navId : null
   state.currentVideoNavId  = (page === 'video-detail' || page === 'person' || page === 'shelf') ? navId : null
+  // Leaving (or re-entering) a detail page ends its inline trailer (V2.7).
+  if (typeof _stopInlineTrailer === 'function') _stopInlineTrailer()
   if (page !== 'playlist') state._plSearch = ''
 
   // Wrapped so one bad record cannot leave the app on a blank page with no way
@@ -2050,6 +2069,26 @@ function _bindBrowseKeys() {
     if (e.key === '/') {
       const input = document.getElementById('video-search-input')
       if (input) { input.focus(); input.select?.(); e.preventDefault() }
+      return
+    }
+    // The detail page is keyboard-complete (V2.8): P plays, S toggles My
+    // List, T plays the trailer, 1–9 pick a season, Esc stops the trailer.
+    // The music shortcuts stand down for these keys on this page (below).
+    if (page === 'video-detail' && !e.shiftKey && _DETAIL_KEYS.test(e.key)) {
+      const k = e.key.toLowerCase()
+      if (k === 'p') document.getElementById('vdet-play')?.click()
+      else if (k === 's') document.getElementById('vdet-list')?.click()
+      else if (k === 't') document.getElementById('video-trailer-btn')?.click()
+      else if (k === 'escape') { if (_inlineTrailer.video) _stopInlineTrailer(); else return }
+      else {
+        const sel = document.getElementById('video-season-select')
+        if (!sel) return
+        const has = Array.prototype.some.call(sel.options, function (o) { return o.value === k })
+        if (!has) return
+        sel.value = k
+        sel.dispatchEvent(new Event('change', { bubbles: true }))
+      }
+      e.preventDefault()
       return
     }
     if (e.key === 'b' || e.key === 'B') {
@@ -3069,6 +3108,9 @@ function _vFmt() {
 // SVG is inlined rather than loaded, matching the rest of the renderer.
 var _VICON = {
   play:   '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>',
+  stop:   '<svg viewBox="0 0 24 24"><path d="M6 6h12v12H6z"/></svg>',
+  mute:   '<svg viewBox="0 0 24 24"><path d="M16.5 12A4.5 4.5 0 0 0 14 8v2.2l2.5 2.5V12zM19 12c0 .9-.2 1.8-.5 2.6l1.5 1.5A8.8 8.8 0 0 0 21 12a9 9 0 0 0-7-8.8v2.1A7 7 0 0 1 19 12zM4.3 3 3 4.3 7.7 9H3v6h4l5 5v-6.7l4.3 4.3a7 7 0 0 1-2.3 1.2v2.1a9 9 0 0 0 3.7-1.8l2 2 1.3-1.3zM12 4 9.9 6.1 12 8.2z"/></svg>',
+  sound:  '<svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9zm13.5 3A4.5 4.5 0 0 0 14 8v8a4.5 4.5 0 0 0 2.5-4zM14 3.2v2.1a7 7 0 0 1 0 13.4v2.1a9 9 0 0 0 0-17.6z"/></svg>',
   plus:   '<svg viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>',
   check:  '<svg viewBox="0 0 24 24"><path d="M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"/></svg>',
   info:   '<svg viewBox="0 0 24 24"><path d="M11 7h2v2h-2zm0 4h2v6h-2zm1-9a10 10 0 1 0 0 20 10 10 0 0 0 0-20z"/></svg>',
@@ -8187,10 +8229,83 @@ function _bestTrailer(d) {
   return null
 }
 
+// The trailer plays inline in the hero (V2.7): muted, with a sound button
+// and a close, over the backdrop — a trailer is not a decision to watch, so
+// it must not take over the theatre. The theatre path stays as the fallback
+// when no direct stream can be had for it.
+var _inlineTrailer = { ticket: 0, video: null, pausedMusic: false }
+function _stopInlineTrailer() {
+  _inlineTrailer.ticket++
+  const v = _inlineTrailer.video
+  _inlineTrailer.video = null
+  if (v) {
+    try { v.pause() } catch (_) {}
+    v.removeAttribute('src')
+    try { v.load() } catch (_) {}
+    v.remove()
+  }
+  document.querySelector('.vdet-trailer-bar')?.remove()
+  document.querySelector('.video-detail-hero')?.classList.remove('is-trailer-playing', 'is-trailer-loading')
+  const btn = document.getElementById('video-trailer-btn')
+  if (btn) btn.innerHTML = _VICON.play + 'Trailer'
+  // Music paused for the trailer's sound comes back when the trailer goes.
+  if (_inlineTrailer.pausedMusic) {
+    _inlineTrailer.pausedMusic = false
+    try { if (!state.isPlaying) togglePlay() } catch (_) {}
+  }
+}
+async function _playInlineTrailer() {
+  const d = _videoDetail && _videoDetail.d
+  const hero = document.querySelector('.video-detail-hero')
+  const t = _bestTrailer(d)
+  if (!t) return showToast('No trailer available')
+  if (_inlineTrailer.video) { _stopInlineTrailer(); return }
+  if (!hero || !window.api.videoTrailerUrl) return _playTrailerInTheatre()
+  const ticket = ++_inlineTrailer.ticket
+  hero.classList.add('is-trailer-loading')
+  const res = await window.api.videoTrailerUrl({ type: _videoDetail.type || 'movie', id: d.id == null ? '' : String(d.id) })
+    .catch(function () { return { ok: false } })
+  if (_inlineTrailer.ticket !== ticket) return
+  hero.classList.remove('is-trailer-loading')
+  if (!res || !res.ok || !res.url) return _playTrailerInTheatre()
+  const v = _makeTrailerVideo(res.url, 'vdet-trailer')
+  v.loop = false
+  _inlineTrailer.video = v
+  hero.insertBefore(v, hero.querySelector('.video-detail-overlay') || hero.firstChild)
+  const bar = document.createElement('div')
+  bar.className = 'vdet-trailer-bar'
+  bar.innerHTML = '<button class="vdet-trailer-sound" aria-label="Sound on">' + _VICON.mute + 'Sound</button>' +
+    '<button class="vdet-trailer-close" aria-label="Stop trailer">✕</button>'
+  hero.appendChild(bar)
+  const sound = bar.querySelector('.vdet-trailer-sound')
+  sound.addEventListener('click', function () {
+    v.muted = !v.muted
+    sound.innerHTML = (v.muted ? _VICON.mute : _VICON.sound) + (v.muted ? 'Sound' : 'Mute')
+    sound.setAttribute('aria-label', v.muted ? 'Sound on' : 'Mute')
+    // Sound on means the music steps aside; it comes back when the trailer ends.
+    if (!v.muted && state.isPlaying) { _inlineTrailer.pausedMusic = true; togglePlay() }
+  })
+  bar.querySelector('.vdet-trailer-close').addEventListener('click', _stopInlineTrailer)
+  v.addEventListener('ended', _stopInlineTrailer)
+  v.addEventListener('error', function () { if (_inlineTrailer.video === v) { _stopInlineTrailer(); showToast('The trailer could not be played') } })
+  const btn = document.getElementById('video-trailer-btn')
+  if (btn) btn.innerHTML = _VICON.stop + 'Stop trailer'
+  v.play().then(function () {
+    if (_inlineTrailer.video === v) hero.classList.add('is-trailer-playing')
+  }).catch(function () { if (_inlineTrailer.video === v) _playTrailerInTheatre() })
+}
+
 function _bindTrailerButton() {
   const btn = document.getElementById('video-trailer-btn')
   if (!btn) return
-  btn.addEventListener('click', async function () {
+  btn.addEventListener('click', _playInlineTrailer)
+}
+
+// The theatre path: used only when the inline trailer has no stream to play.
+async function _playTrailerInTheatre() {
+  _stopInlineTrailer()
+  const btn = document.getElementById('video-trailer-btn')
+  {
     const d = _videoDetail && _videoDetail.d
     const t = _bestTrailer(d)
     if (!t) return showToast('No trailer available')
@@ -8206,12 +8321,12 @@ function _bindTrailerButton() {
       subtitle: t.name || 'Trailer',
     })
     _handleVideoEvent({ kind: 'buffering' })
-    btn.disabled = true
+    if (btn) btn.disabled = true
     const res = await window.api.videoTrailer({ youtubeId: t.youtubeId, title: d && d.title })
       .catch(function (e) { return { ok: false, error: String((e && e.message) || e) } })
-    btn.disabled = false
+    if (btn) btn.disabled = false
     if (res && res.ok === false) _handleVideoEvent({ kind: 'error', message: res.error })
-  })
+  }
 }
 
 // A dub is worth asking for whenever the original is not in English, and the
@@ -28210,6 +28325,10 @@ function setupListeners() {
     // Same double-fire rule as the theatre, same modifier exception.
     if (e.target && typeof e.target.closest === 'function' && e.target.closest('#vmini') &&
         !e.ctrlKey && !e.altKey && !e.metaKey) return
+    // The detail page's own keys (V2.8): P, S, T and 1–9 belong to the page
+    // there, not to shuffle or the queue — one key, one action.
+    if (state.currentPage === 'video-detail' && !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey &&
+        _DETAIL_KEYS.test(e.key) && e.key !== 'Escape' && !inInputNow(e)) return
 
     const inInput = e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA'
 

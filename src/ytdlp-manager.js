@@ -182,6 +182,37 @@ function ytdlPathArg(ytdlPath) {
   return `--script-opts-append=ytdl_hook-ytdl_path=${ytdlPath}`
 }
 
+// yt-dlp (2025.11+) refuses YouTube without a JavaScript runtime: "No
+// supported JavaScript runtime could be found... Requested format is not
+// available". Only deno is on by default; node is enabled with
+// --js-runtimes node:<path>. Every trailer in the app (hero, hover, detail,
+// theatre) and YouTube music playback through mpv died of this on 2026-09-11.
+// The candidates, best first; the caller passes an exists check.
+function nodeCandidatePaths(homeDir) {
+  const home = homeDir || ''
+  return [
+    process.env.PAPA_NODE_PATH || null,
+    '/usr/bin/node', '/usr/local/bin/node', '/opt/homebrew/bin/node',
+    home ? path.join(home, '.local', 'bin', 'node') : null,
+    home ? path.join(home, '.volta', 'bin', 'node') : null,
+  ].filter(Boolean)
+}
+function pickNode(candidates, existsFn) {
+  for (const c of candidates) { try { if (existsFn(c)) return c } catch (_) {} }
+  return null
+}
+// The yt-dlp argv fragment: [] when no node was found (yt-dlp then does what
+// it can, and the error it prints is honest).
+function jsRuntimeArgs(nodePath) {
+  return nodePath ? ['--js-runtimes', 'node:' + nodePath] : []
+}
+// The same for mpv's ytdl_hook, which forwards raw options to yt-dlp.
+//   nodePath => '--ytdl-raw-options-append=js-runtimes=node:/usr/bin/node'
+function ytdlJsRuntimeArg(nodePath) {
+  if (!nodePath) return null
+  return `--ytdl-raw-options-append=js-runtimes=node:${nodePath}`
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 // Exec layer — the thin shell that binds the pure decisions above to
 // child_process and fs. Everything below takes its seams (spawnFn, existsFn,
@@ -253,6 +284,13 @@ class YtdlpManager {
     return pickBinary(candidatePaths(this._homeDir), this._existsFn)
   }
 
+  // The node binary yt-dlp may use as its JavaScript runtime, or null.
+  nodePath() {
+    return pickNode(nodeCandidatePaths(this._homeDir), this._existsFn)
+  }
+  // The yt-dlp argv fragment enabling it (empty when there is none).
+  jsRuntimeArgs() { return jsRuntimeArgs(this.nodePath()) }
+
   // Feature-detect pip. Returns the pip binary name, or null. Cached after the
   // first call. Injected pipBinary (including an explicit null) wins outright so
   // tests never spawn.
@@ -301,6 +339,7 @@ class YtdlpManager {
 
 module.exports = {
   YtdlpManager,
+  nodeCandidatePaths, pickNode, jsRuntimeArgs, ytdlJsRuntimeArg,
   // Pure functions (exported for tests and for main.js's scheduling code).
   candidatePaths,
   pickBinary,

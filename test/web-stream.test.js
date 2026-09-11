@@ -104,3 +104,22 @@ test('a source with no video is refused so the caller can fall back to mpv; clos
   assert.equal(srv2.close(s.id), false)
   srv2.shutdown()
 })
+
+test('a paired session copies a remote video URL and a remote audio URL into one stream; seeks restart both', async () => {
+  const spawned = []
+  const srv = createWebStreamServer({ spawnFn: makeSpawn(spawned), execFileFn: fakeExecFile })
+  const s = await srv.openPair('https://v.example/video', 'https://a.example/audio')
+  assert.ok(s.paired && /\/s\/[a-f0-9]+\.mp4$/.test(s.streamUrl))
+  assert.deepEqual(s.subtitles, [])
+  const p = get(s.streamUrl + '?t=12')
+  await new Promise(r => setTimeout(r, 30))
+  const a = spawned[0].args
+  assert.deepEqual(a.filter((x, i) => a[i - 1] === '-i'), ['https://v.example/video', 'https://a.example/audio'])
+  assert.equal(a.filter(x => x === '-ss').length, 2, 'both inputs seek')
+  assert.deepEqual(a.slice(a.indexOf('-map'), a.indexOf('-map') + 6), ['-map', '0:v:0', '-map', '1:a:0', '-c', 'copy'])
+  assert.ok(a.includes('-reconnect'))
+  spawned[0].proc.stdout.end(); spawned[0].proc.emit('close', 0)
+  await p
+  await assert.rejects(() => srv.openPair('https://v.example/video', null))
+  srv.shutdown()
+})

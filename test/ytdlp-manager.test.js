@@ -335,5 +335,45 @@ test('main registers the two IPC handlers and schedules the startup check', () =
 test('main pins both engines to the discovered yt-dlp', () => {
   const main = root('main.js')
   assert.match(main, /engineConfig\.ytdlPath\s*=\s*ytdlp\.binaryPath\(\)/)
-  assert.match(main, /new VideoEngine\(\{ config: \{ ytdlPath: ytdlp\.binaryPath\(\) \} \}\)/)
+  assert.match(main, /new VideoEngine\(\{ config: \{ ytdlPath: ytdlp\.binaryPath\(\), ytdlJsRuntime: ytdlp\.nodePath\(\) \} \}\)/)
+  assert.match(main, /engineConfig\.ytdlJsRuntime = ytdlp\.nodePath\(\)/)
+  assert.match(main, /ytdlp\.jsRuntimeArgs\(\)\.concat\(\['-f', format, '-g'/, 'the trailer resolver passes the runtime too')
+})
+
+// ── The JavaScript runtime yt-dlp now needs for YouTube ─────────────────────
+
+test('nodeCandidatePaths prefers PAPA_NODE_PATH, then the system node, then user installs', () => {
+  const old = process.env.PAPA_NODE_PATH
+  process.env.PAPA_NODE_PATH = '/custom/node'
+  try {
+    const c = m.nodeCandidatePaths('/home/u')
+    assert.strictEqual(c[0], '/custom/node')
+    assert.strictEqual(c[1], '/usr/bin/node')
+    assert.ok(c.includes(path.join('/home/u', '.local', 'bin', 'node')))
+  } finally { if (old === undefined) delete process.env.PAPA_NODE_PATH; else process.env.PAPA_NODE_PATH = old }
+})
+
+test('pickNode returns the first candidate that exists, or null', () => {
+  assert.strictEqual(m.pickNode(['/a/node', '/usr/bin/node'], p => p === '/usr/bin/node'), '/usr/bin/node')
+  assert.strictEqual(m.pickNode(['/a/node'], () => false), null)
+  assert.strictEqual(m.pickNode(['/a/node'], () => { throw new Error('x') }), null)
+})
+
+test('jsRuntimeArgs and ytdlJsRuntimeArg produce the documented flags, and nothing without node', () => {
+  assert.deepStrictEqual(m.jsRuntimeArgs('/usr/bin/node'), ['--js-runtimes', 'node:/usr/bin/node'])
+  assert.deepStrictEqual(m.jsRuntimeArgs(null), [])
+  assert.strictEqual(m.ytdlJsRuntimeArg('/usr/bin/node'), '--ytdl-raw-options-append=js-runtimes=node:/usr/bin/node')
+  assert.strictEqual(m.ytdlJsRuntimeArg(null), null)
+})
+
+test('the manager finds node with its exists check and both engines pass the runtime to mpv', () => {
+  const mgr = new m.YtdlpManager({ homeDir: '/home/u', existsFn: p => p === '/usr/bin/node' || p === '/usr/bin/yt-dlp' })
+  assert.strictEqual(mgr.nodePath(), '/usr/bin/node')
+  assert.deepStrictEqual(mgr.jsRuntimeArgs(), ['--js-runtimes', 'node:/usr/bin/node'])
+  const none = new m.YtdlpManager({ homeDir: '/home/u', existsFn: () => false })
+  assert.deepStrictEqual(none.jsRuntimeArgs(), [])
+  const music = new MpvEngine({ config: { ytdlJsRuntime: '/usr/bin/node' }, spawnFn: () => { throw new Error('no spawn') } })
+  assert.ok(music._args().includes('--ytdl-raw-options-append=js-runtimes=node:/usr/bin/node'))
+  const video = new VideoEngine({ config: { ytdlJsRuntime: '/usr/bin/node' }, spawnFn: () => { throw new Error('no spawn') } })
+  assert.ok(video._args().includes('--ytdl-raw-options-append=js-runtimes=node:/usr/bin/node'))
 })

@@ -133,7 +133,7 @@ function screenshotDir() { return _dataDir('screenshots') }
 function configDir() { return _dataDir('config') }
 const { channelsValue } = require('./mpv-engine')
 const { classify } = require('./src/surround-verify')
-const { ytdlPathArg } = require('./src/ytdlp-manager')
+const { ytdlPathArg, ytdlJsRuntimeArg } = require('./src/ytdlp-manager')
 
 // The properties mpv must push back. Observation mirrors mpv-engine.js:52 so the
 // two engines stay the same shape; the video engine adds everything the theatre
@@ -274,6 +274,7 @@ class VideoEngine extends EventEmitter {
       // this only bites when a caller flips ytdl back on (e.g. a YouTube-backed
       // stream); pinning it there too keeps both engines off PATH-order luck.
       ytdlPath: null,
+      ytdlJsRuntime: null,
       ...opts.config,
     }
     this._spawnFn = opts.spawnFn || spawn
@@ -376,6 +377,8 @@ class VideoEngine extends EventEmitter {
     // moment a caller re-enables ytdl for a YouTube-backed stream.
     const ytdlArg = ytdlPathArg(this.config.ytdlPath)
     if (ytdlArg) a.push(ytdlArg)
+    const jsArg = ytdlJsRuntimeArg(this.config.ytdlJsRuntime)
+    if (jsArg) a.push(jsArg)
     if (wid) {
       // --gpu-context is not optional when embedding. Left to choose for
       // itself under XWayland, mpv picks a context that renders nothing into a

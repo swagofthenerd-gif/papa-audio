@@ -64,6 +64,18 @@ function createWebStreamServer(opts) {
     res.writeHead(404); res.end()
   }
 
+  // Two remote streams (YouTube's separate video and audio files) become one
+  // fragmented MP4: copy both, no re-encode. Seeking restarts both inputs at t.
+  function _pairArgs(s, t) {
+    const seek = t > 0 ? ['-ss', String(t)] : []
+    const net = ['-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '4']
+    return ['-hide_banner', '-loglevel', 'error', '-nostdin']
+      .concat(net, seek, ['-i', s.pair.video])
+      .concat(net, seek, ['-i', s.pair.audio])
+      .concat(['-map', '0:v:0', '-map', '1:a:0', '-c', 'copy', '-sn',
+        '-movflags', 'frag_keyframe+empty_moov+default_base_moof', '-frag_duration', '1000000', '-f', 'mp4', 'pipe:1'])
+  }
+
   function _serveStream(s, u, res) {
     if (!s) { res.writeHead(404); res.end(); return }
     const t = Math.max(0, Number(u.searchParams.get('t')) || 0)
@@ -80,7 +92,7 @@ function createWebStreamServer(opts) {
       if (ordinal >= 0) extra = { burnIndex: burn, burnSubOrdinal: ordinal }
     }
     _killProc(s)
-    const args = planner.ffmpegArgs(plan, s.input, t, extra)
+    const args = s.pair ? _pairArgs(s, t) : planner.ffmpegArgs(plan, s.input, t, extra)
     log('[web-stream] ffmpeg', args.join(' '))
     const proc = spawnFn(ffmpegBin, args, { stdio: ['ignore', 'pipe', 'pipe'] })
     s.proc = proc
@@ -137,6 +149,22 @@ function createWebStreamServer(opts) {
     }
   }
 
+  // A session for a video URL plus an audio URL (a YouTube trailer, now that
+  // YouTube serves no single file with both). Nothing to probe: the caller
+  // asked yt-dlp for H.264 + AAC, which the browser plays as-is.
+  async function openPair(videoUrl, audioUrl, opts) {
+    if (!videoUrl || !audioUrl) throw new Error('a paired session needs both a video and an audio URL')
+    await _listen()
+    const id = crypto.randomBytes(8).toString('hex')
+    const plan = { mode: 'remux', reason: 'paired streams copied', badges: [], prerollSec: 0, video: { copy: true }, audio: { copy: true } }
+    sessions.set(id, { id, input: videoUrl, pair: { video: videoUrl, audio: audioUrl }, streams: [], plan, duration: Number(opts && opts.duration) || 0, proc: null, subs: new Map(), startedAt: 0 })
+    return {
+      id, duration: Number(opts && opts.duration) || 0,
+      streamUrl: `http://127.0.0.1:${port}/s/${id}.mp4`,
+      subtitles: [], burnable: [], audios: [], plan, paired: true,
+    }
+  }
+
   function close(id) {
     const s = sessions.get(id)
     if (!s) return false
@@ -152,7 +180,7 @@ function createWebStreamServer(opts) {
     if (server) { try { server.close() } catch (_) {} server = null; port = 0 }
   }
 
-  return { open, close, closeAll, shutdown, _sessions: sessions, _port: () => port, _handle }
+  return { open, openPair, close, closeAll, shutdown, _sessions: sessions, _port: () => port, _handle }
 }
 
 module.exports = { createWebStreamServer, probeStreams }

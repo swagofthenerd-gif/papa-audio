@@ -394,6 +394,10 @@ async function _ytdlpRecoverFromPlaybackError() {
 const YT_FORMATS = {
   audio: 'bestaudio',
   video: 'best[height<=1080][ext=mp4]/best[ext=mp4]/best',
+  // YouTube stopped serving a single file with both picture and sound
+  // (2026-09): the pair is H.264 video plus AAC audio, two URLs, which the
+  // stream server copies into one fragmented MP4 (web-stream.js openPair).
+  pair: 'bestvideo[height<=1080][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio',
 }
 
 function resolveYtUrl(videoId, kind = 'audio') {
@@ -410,15 +414,21 @@ function resolveYtUrl(videoId, kind = 'audio') {
     try {
       // The discovered yt-dlp, not a bare PATH lookup — the stale /usr/bin one
       // first on PATH is exactly what hung a resolve before self-maintenance.
-      proc = spawn(ytdlp.binaryPath(), ['-f', format, '-g', '--no-playlist', '--', videoId], { stdio: ['ignore', 'pipe', 'pipe'] })
+      // The JS runtime first: without it yt-dlp refuses YouTube outright now.
+      proc = spawn(ytdlp.binaryPath(), ytdlp.jsRuntimeArgs().concat(['-f', format, '-g', '--no-playlist', '--', videoId]), { stdio: ['ignore', 'pipe', 'pipe'] })
     } catch (e) { clearTimeout(timer); reject(e); return }
     proc.stdout.on('data', d => out += d.toString())
     proc.stderr.on('data', d => err = (err + d.toString()).slice(-500))
     proc.on('error', e => { clearTimeout(timer); reject(e) })
     proc.on('close', code => {
       clearTimeout(timer)
-      var url = out.trim().split('\n')[0]
-      if (code === 0 && url && url.startsWith('http')) {
+      var lines = out.trim().split('\n').map(l => l.trim()).filter(l => l.startsWith('http'))
+      var url = lines[0]
+      if (code === 0 && kind === 'pair' && lines.length >= 2) {
+        // Two URLs: the video, then the audio. Cached as a pair.
+        _ytUrlCache.set(cacheKey, lines.slice(0, 2), { expiresAt: ytUrlExpiresAt(url) })
+        resolve(lines.slice(0, 2))
+      } else if (code === 0 && url && kind !== 'pair') {
         _ytUrlCache.set(cacheKey, url, { expiresAt: ytUrlExpiresAt(url) })
         resolve(url)
       } else {
@@ -426,6 +436,23 @@ function resolveYtUrl(videoId, kind = 'audio') {
       }
     })
   })
+}
+
+// A trailer as ONE playable URL: the muxed file when YouTube still has one,
+// else the video+audio pair copied into one local stream by the stream
+// server. `{ url, session }` — session is set on the paired path so a caller
+// that owns sessions (the theatre) can adopt it; the hero and hover previews
+// just play the URL.
+async function resolveTrailerStream(videoId) {
+  try {
+    const url = await resolveYtUrl(videoId, 'video')
+    if (url) return { url, session: null }
+  } catch (e) {
+    if (!/Requested format is not available/i.test(String(e && e.message))) throw e
+  }
+  const pair = await resolveYtUrl(videoId, 'pair')
+  const sess = await _webStream().openPair(pair[0], pair[1])
+  return { url: sess.streamUrl, session: sess }
 }
 
 function extractVideoId(path) {
@@ -2690,6 +2717,7 @@ function buildPlayer(cfg) {
   // Pin mpv's ytdl_hook to the discovered yt-dlp so a YouTube stream never falls
   // back to a stale binary first on PATH.
   engineConfig.ytdlPath = ytdlp.binaryPath()
+  engineConfig.ytdlJsRuntime = ytdlp.nodePath()
   // Bit-perfect forces gapless, so a crossfade engine is never built while it is
   // on (getPlayerSettings already collapses the mode, but this is the belt-and-
   // braces: the two-engine crossfade would defeat bit-perfectness).
@@ -9295,6 +9323,13 @@ ipcMain.handle('batch-transcode', async (_, { filePaths, format, outDir }) => {
 // The smooth player's feed (video plan V1): one lazily-started localhost
 // server, one session per playing title. Closed with the session.
 let _webStreamServer = null
+// Preview sessions (hero / hover / inline trailers) are closed when a newer
+// one arrives, keeping the map from growing across a browsing session.
+const _previewSessions = []
+function _notePreviewSession(id) {
+  _previewSessions.push(id)
+  while (_previewSessions.length > 4) { const old = _previewSessions.shift(); try { _webStream().close(old) } catch (_) {} }
+}
 function _webStream() {
   if (!_webStreamServer) _webStreamServer = createWebStreamServer({ log: (...a) => console.log(...a) })
   return _webStreamServer
@@ -9516,7 +9551,7 @@ function jackett() {
 // router, the engine, or the UI.
 const movieTv = _lazy(() => createMovieTvProvider({ fetchFn: fetchWithTimeout(15000), resolvers: [] }))
 const anime = _lazy(() => createAnimeProvider({ fetchFn: fetchWithTimeout(15000), resolvers: [] }))
-const videoEngine = _lazy(() => new VideoEngine({ config: { ytdlPath: ytdlp.binaryPath() } }))
+const videoEngine = _lazy(() => new VideoEngine({ config: { ytdlPath: ytdlp.binaryPath(), ytdlJsRuntime: ytdlp.nodePath() } }))
 const yarrlist = _lazy(() => createYarrlistDirectory({ fetchFn: fetchWithTimeout(15000) }))
 const _videoSession = { streamer: null, thumbnailer: null, win: null, overlay: null, token: 0, bounds: null, mini: false, miniRect: null }
 
@@ -11821,10 +11856,17 @@ ipcMain.handle('video-trailer', async (_, { youtubeId, title } = {}) => {
     _wireVideoEngine()
     if (player) { try { player.pause().catch(() => {}) } catch (_) {} }
     const token = ++_videoSession.token
-    const url = await resolveYtUrl(youtubeId, 'video')
-    if (!url) return { ok: false, error: 'Could not load this trailer' }
-    if (_videoSession.token !== token) return { ok: true, cancelled: true }
-    await videoEngine().start(url, { wid: null })
+    const got = await resolveTrailerStream(youtubeId)
+    if (!got || !got.url) return { ok: false, error: 'Could not load this trailer' }
+    if (_videoSession.token !== token) { if (got.session) _webStream().close(got.session.id); return { ok: true, cancelled: true } }
+    if (got.session && _videoSettings().playerMode !== 'purist') {
+      // Smooth mode: the page plays the paired stream, as it does a film.
+      _webClose()
+      _webSessionId = got.session.id
+      safeSend('video-event', { kind: 'web-ready', session: got.session, title: title || '', trailer: true })
+      return { ok: true, title: title || null, smooth: true }
+    }
+    await videoEngine().start(got.url, { wid: null })
     if (_videoSession.token === token) safeSend('video-event', { kind: 'playing', trailer: true })
     return { ok: true, title: title || null }
   } catch (e) {
@@ -11872,8 +11914,13 @@ ipcMain.handle('video-trailer-url', async (_, { type, id } = {}) => {
     }
     // No trailer is a real answer, not a failure — most older films have none.
     if (!key) return { ok: true, url: null }
-    const url = await resolveYtUrl(key, 'video')
-    return { ok: true, url: url || null }
+    const got = await resolveTrailerStream(key)
+    // A paired preview session is short-lived; the stream server keeps at
+    // most one converter per session and closes it when the page drops the
+    // request, so the hero, the hover cards and the detail page can all use
+    // this without leaking. Old preview sessions are swept below.
+    if (got.session) _notePreviewSession(got.session.id)
+    return { ok: true, url: got.url || null }
   } catch (e) {
     return { ok: false, error: (e && e.message) || String(e) }
   }

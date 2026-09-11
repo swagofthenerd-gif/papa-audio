@@ -41,7 +41,8 @@ test('the preview channel resolves a URL and never touches the player', () => {
                            '_videoSession.token', 'safeSend']) {
     assert.ok(!h.includes(forbidden), 'the preview handler must not call ' + forbidden)
   }
-  assert.match(h, /resolveYtUrl\(key, 'video'\)/)
+  // Through the pair-aware resolver now: YouTube serves no muxed file any more.
+  assert.match(h, /resolveTrailerStream\(key\)/)
 })
 
 test('no trailer is a real answer, not an error', () => {
