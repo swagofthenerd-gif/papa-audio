@@ -193,12 +193,12 @@ so the twin sends no requests and cancels nothing. Tests 4,060.
 | `1d9121d` | J5: `src/omnibox-model.js` + renderer `_omni*`; Ctrl+K = Omnibox, Ctrl+Shift+P = command mode; exact page/tab/command name outranks library typo hits |
 | `27de94c` | J4/J6: `src/trail-model.js` + `renderTrail`, Home row `trail`, nav item; `src/journey-model.js` + `_crumbFor`/`_journeyCrumbUpdate` return strip (`#journey-crumb`) on cross-surface jumps |
 
-Suite: **4,123 green**. Twin traps learned: `pkill -f "<port>"` kills your own shell (use `pgrep -f 'electron [.] --remote-debugging-port=NNNN'`); pin the twin's `slskSchedulerConfig` to `{ maxGlobalInflight: 0, discoverAlternates: false, stallAfterMs: 86400000 }` so it can only observe the shared slskd; `.focus()` fires no focus event without window focus → dispatch `new FocusEvent('focus')`.
+Later the same day: `3ffe22e` (R8 R14 R15 R17 + plural sweep), `a7370cd` (R18 R19 S7: analysis progress truth, AniList circuit breaker, outage wording, shelf dedupe). Suite: **4,136 green**. The video plan the user asked for is `docs/video-experience-plan.md` — its §0 diagnosis (native `--wid` window under the HTML) is the reason the mini player can never feel like YouTube until the pixels are rendered in-page (V0). Twin traps learned: `pkill -f "<port>"` kills your own shell (use `pgrep -f 'electron [.] --remote-debugging-port=NNNN'`); pin the twin's `slskSchedulerConfig` to `{ maxGlobalInflight: 0, discoverAlternates: false, stallAfterMs: 86400000 }` so it can only observe the shared slskd; `.focus()` fires no focus event without window focus → dispatch `new FocusEvent('focus')`.
 
 ### The queue, in order
 
 1. ~~J2 + J3, R5, R3/R4, R6, R7, R9, R10, R11, R12, J5, J4, J6~~ done — see above.
-2. Remaining: R8 overlay rules, R13–R15, R17–R19, Speed lane S1–S8, Truth lane (pluralisation, empty states, IPC validation, episode lists, release names…), then the **video-player overhaul plan** the user asked for (mini-player smoothness/drag, workflows) — see `docs/video-experience-plan.md` once written.
+2. Remaining: Speed lane S1–S6, S8; Truth lane (empty states, IPC validation, queue centring, in-progress downloads flagged as broken); then execute `docs/video-experience-plan.md` starting with **V0** (the render-path prototype and decision).
 2. ~~R5~~ done — see above.
 3. ~~R3 / R4 / R16~~ done (2026-09-11): `runSlskSearch` never bails on a missing
    `#slsk-section` (background job; pages paint from `slsk` state);
