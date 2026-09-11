@@ -1441,6 +1441,10 @@
     switch (field) {
       case 'album':     return track.albumName != null ? track.albumName : track.album
       case 'artist':    return track.albumArtist || track.artist
+      // The whole record: what a saved free-text search means ("camel mirage"
+      // is an artist AND an album, so no single field can hold it).
+      case 'any':       return [track.albumArtist, track.artist, track.albumName != null ? track.albumName : track.album, track.title]
+                          .filter(function (x) { return x != null && x !== '' }).join(' | ')
       case 'format':    return _extLower(track.filePath)
       case 'formatClass': return _formatClassOf(track)
       case 'playCount': return (ctx.playCounts && ctx.playCounts[track.filePath]) || 0
@@ -1472,6 +1476,17 @@
     var val = _ruleFieldValue(track, field, ctx)
     if (val === undefined || val === null) return false
 
+    // 'matches': every word of the value appears somewhere in the field,
+    // order-blind, accent- and case-insensitive — the same all-words rule the
+    // search brain applies, minus typo tolerance. Used by "Save search".
+    if (op === 'matches') {
+      var hay = _foldText(val)
+      var words = _foldText(want).split(' ').filter(Boolean)
+      if (!words.length) return false
+      for (var wi = 0; wi < words.length; wi++) if (hay.indexOf(words[wi]) === -1) return false
+      return true
+    }
+
     // Numeric fields compare numerically for the ordering ops.
     if (field === 'playCount' || field === 'year') {
       if (op === 'is') return _numCompare('is', val, want)
@@ -1493,6 +1508,49 @@
     }
   }
 
+  function _foldText(s) {
+    var t = String(s == null ? '' : s).toLowerCase()
+    if (typeof t.normalize === 'function') t = t.normalize('NFD').replace(/[̀-ͯ]/g, '')
+    return t.replace(/[^a-z0-9]+/g, ' ').trim()
+  }
+
+  // Bring any rule shape the app has ever written into the shape the
+  // evaluator speaks (R7). "Save search" used to copy the search box's
+  // operators verbatim — `plays > 5`, `year range 1970-1975`, `is: liked` —
+  // none of which the evaluator knew, so the saved playlist opened empty and
+  // stayed empty forever. Unknown shapes are dropped rather than left to
+  // fail closed and blank the whole playlist.
+  var _OP_ALIASES = { '>': 'gt', '<': 'lt', '>=': 'gte', '<=': 'lte', '=': 'is', '==': 'is', 'equals': 'is', 'has': 'contains' }
+  var _KNOWN_OPS = { is: 1, contains: 1, gt: 1, lt: 1, gte: 1, lte: 1, matches: 1 }
+  function normalizeSmartRules(rules) {
+    var out = []
+    var list = Array.isArray(rules) ? rules : []
+    for (var i = 0; i < list.length; i++) {
+      var r = list[i]
+      if (!r || !r.field) continue
+      var field = String(r.field)
+      var op = _OP_ALIASES[r.op] || (r.op ? String(r.op) : 'is')
+      var value = r.value
+      if (field === 'is') {
+        var v = String(value == null ? '' : value).toLowerCase()
+        if (v === 'liked') out.push({ field: 'liked', op: 'is', value: 'true' })
+        else if (v === 'flac') out.push({ field: 'format', op: 'is', value: 'flac' })
+        else if (v === 'lossy') out.push({ field: 'formatClass', op: 'is', value: 'lossy' })
+        continue // 'downloaded' and anything else has no smart-rule meaning
+      }
+      if (field === 'plays') field = 'playCount'
+      if (field === 'year' && op === 'range') {
+        var m = String(value == null ? '' : value).match(/^\s*(\d{4})\s*-\s*(\d{4})\s*$/)
+        if (m) { out.push({ field: 'year', op: 'gte', value: m[1] }); out.push({ field: 'year', op: 'lte', value: m[2] }) }
+        continue
+      }
+      if (!_KNOWN_OPS[op]) continue
+      if (field === 'liked') { out.push({ field: 'liked', op: 'is', value: value == null ? 'true' : value }); continue }
+      out.push({ field: field, op: op, value: value })
+    }
+    return out
+  }
+
   // A rule is "configured" when it names a field and either carries a value or is
   // one of the valueless predicates (liked). An all-blank rule set matches
   // nothing (an unconfigured smart playlist is empty, not everything).
@@ -1508,7 +1566,7 @@
   function evaluateFieldRules(tracks, rules, ctx) {
     tracks = tracks || []
     ctx = ctx || {}
-    var active = (rules || []).filter(_ruleConfigured)
+    var active = normalizeSmartRules(rules).filter(_ruleConfigured)
     if (!active.length) return []
     return tracks.filter(function (t) {
       return active.every(function (r) { return _matchOneRule(t, r, ctx) })
@@ -1581,6 +1639,7 @@
   var api = {
     sleepFadeSteps: sleepFadeSteps,
     evaluateFieldRules: evaluateFieldRules,
+    normalizeSmartRules: normalizeSmartRules,
     resolveHomeRows: resolveHomeRows,
     moveHomeRow: moveHomeRow,
     toggleHomeRow: toggleHomeRow,

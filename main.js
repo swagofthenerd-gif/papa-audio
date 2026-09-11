@@ -2823,6 +2823,11 @@ function featureMap() {
   return new Map(Object.entries(raw))
 }
 
+// The analysed feature vectors, for the renderer's mood engine (R6): moods
+// are scored from the audio analysis relative to the library, so a library
+// with no genre tags still has moods.
+ipcMain.handle('audio-features-all', () => ({ features: (featureStore.get() || {}).features || {} }))
+
 // The library cache is an array of albums, each with a tracks array. Flatten
 // it and carry the album's identity down onto each track. The cache records
 // fileSize but no mtime, so change detection is by size plus FEATURE_VERSION

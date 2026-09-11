@@ -5807,6 +5807,10 @@ textarea:focus:not(:focus-visible) { outline: none; }
 .mood-card-emoji { font-size:32px;margin-bottom:8px;position:relative;z-index:1 }
 .mood-card-label { font-size:12px;font-weight:600;color:#fff;position:relative;z-index:1 }
 .mood-card-overlay { position:absolute;inset:0;background:rgba(0,0,0,.3);z-index:0 }
+.mood-card-count { position:absolute;top:8px;right:10px;font-size:11px;font-weight:600;color:rgba(255,255,255,.85);background:rgba(0,0,0,.35);padding:2px 8px;border-radius:100px;z-index:1;min-width:1.6em;text-align:center }
+.mood-card-count:empty { display:none }
+.mood-card.mood-card-dim { opacity:.45 }
+.mood-card.mood-card-dim:hover { opacity:.7 }
 .discovery-swipe { position:relative;width:300px;height:300px;margin:20px auto;touch-action:none }
 .discovery-swipe-card { position:absolute;inset:0;border-radius:var(--r-lg);overflow:hidden;cursor:grab;transition:transform .3s var(--ease-out),opacity .3s }
 .discovery-swipe-card.swipe-left { transform:translateX(-120%) rotate(-15deg);opacity:0 }

@@ -32,6 +32,8 @@ const state = {
   savedQueues: [],
    libTab: 'albums',
   libGenre: null,
+  // Explore's "How are you feeling?" filter (R6): a mood id from mood-map.js.
+  libMood: null,
   statsRange: 'month',
   libYear: '',
   libFormat: '',
@@ -1233,6 +1235,20 @@ async function init() {
   // which was there because the parse could yield null — is now always true and
   // says nothing. state.smartPlaylists starts as [] anyway.
   state.smartPlaylists = window.PapaLocal.readArray('papa-smart-playlists')
+  // Migration sweep (R7): a saved search written in the old rule shapes is a
+  // zombie that always evaluates empty. Bring every rule into the
+  // evaluator's language once, and persist only if something changed.
+  if (window.PapaMusicTools && window.PapaMusicTools.normalizeSmartRules) {
+    var _spChanged = false
+    state.smartPlaylists = state.smartPlaylists.map(function (p) {
+      if (!p || p.type !== 'smart') return p
+      var fixed = window.PapaMusicTools.normalizeSmartRules(p.rules)
+      if (JSON.stringify(fixed) === JSON.stringify(p.rules || [])) return p
+      _spChanged = true
+      return Object.assign({}, p, { rules: fixed })
+    })
+    if (_spChanged) _persistSmartPlaylists()
+  }
   state.playlistFolders = window.PapaLocal.readArray('papa-playlist-folders',
     function (f) { return typeof f === 'string' && f })
   state.savedQueues = savedQueues || []
@@ -9585,17 +9601,25 @@ function _bindExploreSections(root, sections) {
 
 async function renderExplore() {
   setContent(`<div class="page">${Array(3).fill(0).map(() => '<div class="skeleton skeleton-card"></div>').join('')}</div>`)
-  var moods = [
-    { name:'Energetic', emoji:'⚡', color:'#e8484a' },
-    { name:'Chill', emoji:'🌊', color:'#3850a0' },
-    { name:'Focus', emoji:'🎯', color:'#2d7a4a' },
-    { name:'Happy', emoji:'😊', color:'#a07038' },
-    { name:'Melancholy', emoji:'🌧️', color:'#5038a0' },
-    { name:'Romantic', emoji:'💝', color:'#a0405a' },
-    { name:'Dark', emoji:'🌑', color:'#1a1a2a' },
-    { name:'Epic', emoji:'🏔️', color:'#6b38a0' },
-  ]
-  var moodHTML = '<div class="section-header" style="margin-top:0"><span class="section-title">How are you feeling?</span></div><div class="mood-grid">' + moods.map(function(m) { return '<div class="mood-card" style="background:' + m.color + '" data-mood="' + m.name.toLowerCase() + '"><div class="mood-card-emoji">' + m.emoji + '</div><div class="mood-card-label">' + m.name + '</div></div>' }).join('') + '</div>'
+  // Moods (R6) come from mood-map.js: scored from the audio analysis relative
+  // to this library, plus genre tags when there are any. Each card carries a
+  // count filled in once the features arrive; a mood with nothing behind it
+  // is dimmed rather than hidden, so the grid never shifts.
+  var moods = window.PapaMoodMap ? window.PapaMoodMap.MOODS : []
+  var moodHTML = '<div class="section-header" style="margin-top:0"><span class="section-title">How are you feeling?</span></div><div class="mood-grid" id="mood-grid">' + moods.map(function(m) { return '<div class="mood-card" style="background:' + m.color + '" data-mood="' + m.id + '" title="' + esc(m.name) + '"><span class="mood-card-count" data-mood-count="' + m.id + '"></span><div class="mood-card-emoji">' + m.emoji + '</div><div class="mood-card-label">' + m.name + '</div></div>' }).join('') + '</div>'
+  // Painted AFTER the page's own setContent below (the features usually
+  // arrive before the cards exist; painting into the skeleton did nothing).
+  var _paintMoodCounts = function (features) {
+    if (state.currentPage !== 'explore' || !window.PapaMoodMap) return
+    var counts = window.PapaMoodMap.moodCounts(state.library, features)
+    document.querySelectorAll('.mood-card[data-mood]').forEach(function (card) {
+      var n = counts[card.dataset.mood] || 0
+      var badge = card.querySelector('.mood-card-count')
+      if (badge) badge.textContent = n ? String(n) : ''
+      card.classList.toggle('mood-card-dim', !n)
+      card.title = n ? n + ' album' + (n === 1 ? '' : 's') + ' feel this way' : 'Nothing in your library feels this way yet'
+    })
+  }
   const status = await window.api.ytAuthStatus().catch(() => ({ ok: false }))
   if (state.currentPage !== 'explore') return
   const signedIn = !!(status.ok && status.signedIn)
@@ -9621,6 +9645,7 @@ async function renderExplore() {
     <div id="explore-feed"><div class="yt-status">Loading recommendations…</div></div>
     ${discoveryHTML}
   </div>`)
+  _moodFeatures().then(_paintMoodCounts)
 
   document.getElementById('explore-refresh-btn')?.addEventListener('click', () => {
     _ytHomeCache = null
@@ -10182,7 +10207,56 @@ function _genreKey(g) {
   return s.toLowerCase()
 }
 function _albumGenreKey(a) {
-  return _genreKey(a && a.genre)
+  return _albumGenreKeys(a)[0]
+}
+// Every genre an album files under: a compound tag split into its parts,
+// junk folded into 'unknown' (mood-map.js splitGenres, R6).
+function _albumGenreKeys(a) {
+  if (window.PapaMoodMap) return window.PapaMoodMap.genreKeysOf(a)
+  return [_genreKey(a && a.genre)]
+}
+// The casing the user wrote for one part of a compound tag ("Progressive
+// Rock" for key 'progressive rock'), so the chip shows their spelling.
+function _genreCasing(raw, key) {
+  var parts = String(raw == null ? '' : raw).split(/[,;/|]+/)
+  for (var i = 0; i < parts.length; i++) {
+    var p = parts[i].replace(/\s+/g, ' ').trim()
+    if (p.toLowerCase() === key) return p
+  }
+  return key
+}
+
+// ── Moods (R6): the audio analysis, fetched once and cached ─────────────────
+var _audioFeaturesCache = null
+var _audioFeaturesAt = 0
+function _moodFeatures() {
+  if (_audioFeaturesCache && Date.now() - _audioFeaturesAt < 60000) return Promise.resolve(_audioFeaturesCache)
+  if (!window.api || !window.api.audioFeaturesAll) return Promise.resolve(_audioFeaturesCache || {})
+  return window.api.audioFeaturesAll().then(function (f) {
+    _audioFeaturesCache = (f && f.features) ? f.features : (f || {})
+    _audioFeaturesAt = Date.now()
+    return _audioFeaturesCache
+  }).catch(function () { return _audioFeaturesCache || {} })
+}
+// { albumId: rank } for the active mood, best first. Memoised on the
+// (mood, library, features) triple so a grid repaint never re-scores.
+var _libMoodRankMemo = { key: null, rank: null }
+function _libMoodRank() {
+  var key = state.libMood + '|' + (state.library ? state.library.length : 0) + '|' + _audioFeaturesAt
+  if (_libMoodRankMemo.key === key && _libMoodRankMemo.rank) return _libMoodRankMemo.rank
+  var rank = {}
+  if (window.PapaMoodMap && state.libMood) {
+    window.PapaMoodMap.albumsForMood(state.library, _audioFeaturesCache, state.libMood).forEach(function (x, i) { rank[x.album.id] = i })
+  }
+  _libMoodRankMemo = { key: key, rank: rank }
+  return rank
+}
+function _libMoodEmptyHint() {
+  if (!window.PapaMoodMap) return ''
+  var p = window.PapaMoodMap.profile(state.library, _audioFeaturesCache)
+  if (!p.total) return 'Your library is empty. Add a music folder to get started.'
+  if (!p.analysed) return 'Moods come from the audio analysis and genre tags. Nothing here has been analysed yet — it runs in the background while the app is open.'
+  return 'Scored from the audio analysis (' + p.analysed + ' of ' + p.total + ' albums measured) and genre tags. Try another mood, or add genre tags to your files.'
 }
 
 // Classify one track's file into a format class (App #13 chips): 'lossless',
@@ -10227,7 +10301,13 @@ function renderLibrary() {
     }))
     let albums = [...state.library, ...ytAlbums]
     if (state.libLikedOnly) albums = albums.filter(a => state.likedAlbums.includes(a.id) || a.isYt)
-    if (state.libGenre) albums = albums.filter(a => _albumGenreKey(a) === state.libGenre)
+    // A compound tag files under every one of its parts (R6): "Rock,
+    // Progressive Rock" answers both chips.
+    if (state.libGenre) albums = albums.filter(a => _albumGenreKeys(a).indexOf(state.libGenre) !== -1)
+    if (state.libMood) {
+      var moodRank = _libMoodRank()
+      albums = albums.filter(a => moodRank[a.id] != null)
+    }
     if (state.libYear) albums = albums.filter(a => String(a.year) === state.libYear)
     // Judge by ALL tracks, not tracks[0]. A mixed album (e.g. 18 tracks where
     // the first is mp3 and the rest flac) was classified by one file, so the
@@ -10284,6 +10364,11 @@ function renderLibrary() {
       if (lf.corrected || lf.viaTracks) _libSearchNote = { corrected: lf.corrected, viaTracks: lf.viaTracks }
       // A search is a ranking: best match first, whatever the grid's sort is.
       return albums.sort(function (a, b) { return rank[a.id] - rank[b.id] })
+    }
+    // So is a mood: the album that feels most Energetic comes first.
+    if (state.libMood) {
+      var mr = _libMoodRank()
+      return albums.sort(function (a, b) { return mr[a.id] - mr[b.id] })
     }
     if (state.libSort === 'alpha')  return albums.sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')))
     if (state.libSort === 'artist') return albums.sort((a, b) => String(a.artist || '').localeCompare(String(b.artist || '')))
@@ -10375,12 +10460,16 @@ function renderLibrary() {
   // often; missing/"null" genres collapse into a single "Unknown" chip.
   const genreBuckets = new Map()
   state.library.forEach(function (a) {
-    const key = _albumGenreKey(a)
-    const raw = key === 'unknown' ? 'Unknown' : String(a.genre).trim()
-    let b = genreBuckets.get(key)
-    if (!b) { b = { key: key, count: 0, casings: new Map() }; genreBuckets.set(key, b) }
-    b.count++
-    b.casings.set(raw, (b.casings.get(raw) || 0) + 1)
+    // One chip per PART of a compound tag, junk ("Library", "Music") folded
+    // into Unknown (R6 / truth lane): 59 raw chips for 267 albums became a
+    // handful that mean something.
+    _albumGenreKeys(a).forEach(function (key) {
+      const raw = key === 'unknown' ? 'Unknown' : _genreCasing(a.genre, key)
+      let b = genreBuckets.get(key)
+      if (!b) { b = { key: key, count: 0, casings: new Map() }; genreBuckets.set(key, b) }
+      b.count++
+      b.casings.set(raw, (b.casings.get(raw) || 0) + 1)
+    })
   })
   const genres = [...genreBuckets.values()].map(function (b) {
     let best = null, bestN = -1
@@ -10398,6 +10487,7 @@ function renderLibrary() {
   // counted (an active surround filter showed no badge at all).
   var activeFilterCount = 0
   if (state.libGenre) activeFilterCount++
+  if (state.libMood) activeFilterCount++
   if (state.libYear) activeFilterCount++
   if (state.libFormat) activeFilterCount++
   if (state.libDecade) activeFilterCount++
@@ -10412,6 +10502,8 @@ function renderLibrary() {
 
   var filterIndicator = ''
   if (state.libDecade) filterIndicator = '<div style="display:inline-flex;align-items:center;gap:6px;margin-left:12px;padding:3px 10px;background:var(--accent);color:#000;border-radius:100px;font-size:11px;font-weight:600">' + state.libDecade + 's<button style="background:none;border:none;color:#000;cursor:pointer;font-size:14px;line-height:1" id="clear-decade-filter">&times;</button></div>'
+  var _moodDef = state.libMood && window.PapaMoodMap ? window.PapaMoodMap.moodById(state.libMood) : null
+  if (_moodDef) filterIndicator += '<div style="display:inline-flex;align-items:center;gap:6px;margin-left:12px;padding:3px 10px;background:' + _moodDef.color + ';color:#fff;border-radius:100px;font-size:11px;font-weight:600" title="Albums that feel ' + esc(_moodDef.name) + ', scored from the audio analysis and genre tags">' + _moodDef.emoji + ' ' + esc(_moodDef.name) + '<button style="background:none;border:none;color:#fff;cursor:pointer;font-size:14px;line-height:1" id="clear-mood-filter" aria-label="Clear mood">&times;</button></div>'
 
   // Folder membership: an album belongs to every directory that holds ANY of
   // its tracks, so a multi-disc album stored as Album/CD1 + Album/CD2 is no
@@ -10567,7 +10659,7 @@ function renderLibrary() {
           '<button class="lib-reset-btn" id="lib-delete-preset" title="Delete the selected preset" aria-label="Delete the selected preset" style="display:none;margin-left:4px">✕</button>' : ''}
       </div>
     </div>
-    ${state.libView === 'folders' ? buildFolderTree() : (sortedAlbums.length ? _libGridInitial() : `<div class="empty-wrap"><svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg><h2>No albums match</h2><p>${activeFilterCount ? 'Try clearing a filter or two.' : 'Your library is empty. Add a music folder to get started.'}</p>${activeFilterCount ? '<button class="lib-reset-btn" id="lib-empty-reset">Clear all filters</button>' : ''}</div>`)}
+    ${state.libView === 'folders' ? buildFolderTree() : (sortedAlbums.length ? _libGridInitial() : `<div class="empty-wrap"><svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg><h2>${_moodDef ? 'Nothing feels ' + _moodDef.emoji + ' ' + esc(_moodDef.name) + ' yet' : 'No albums match'}</h2><p>${_moodDef ? _libMoodEmptyHint() : (activeFilterCount ? 'Try clearing a filter or two.' : 'Your library is empty. Add a music folder to get started.')}</p>${activeFilterCount ? '<button class="lib-reset-btn" id="lib-empty-reset">Clear all filters</button>' : ''}</div>`)}
     ${summaryHTML}
   </div>`)
 
@@ -10620,7 +10712,7 @@ function renderLibrary() {
       var genre = btn.dataset.genre
       if ((e.altKey || e.metaKey) && genre) {
         e.preventDefault()
-        var albums = state.library.filter(function(a) { return _albumGenreKey(a) === genre })
+        var albums = state.library.filter(function(a) { return _albumGenreKeys(a).indexOf(genre) !== -1 })
         if (!albums.length) return
         playAlbum(albums[Math.floor(Math.random() * albums.length)], 0)
         return
@@ -10672,13 +10764,13 @@ function renderLibrary() {
   document.getElementById('lib-surround-filter')?.addEventListener('change', function() { state.libSurround = this.value; renderLibrary() })
   document.getElementById('lib-empty-reset')?.addEventListener('click', function() {
     state.libYear = ''; state.libFormat = ''; state.libDecade = ''; state.libSurround = ''
-    state.libGenre = null; state.libFolder = null; state.libLikedOnly = false; state.libSearch = ''
+    state.libGenre = null; state.libMood = null; state.libFolder = null; state.libLikedOnly = false; state.libSearch = ''
     state.libYearMin = ''; state.libYearMax = ''; state.libFormatClass = ''
     renderLibrary()
   })
   document.getElementById('lib-reset-filters')?.addEventListener('click', function() {
     state.libYear = ''; state.libFormat = ''; state.libDecade = ''; state.libSurround = ''
-    state.libGenre = null; state.libFolder = null; state.libLikedOnly = false; state.libSearch = ''
+    state.libGenre = null; state.libMood = null; state.libFolder = null; state.libLikedOnly = false; state.libSearch = ''
     state.libYearMin = ''; state.libYearMax = ''; state.libFormatClass = ''
     renderLibrary()
   })
@@ -11505,22 +11597,37 @@ function renderSearch(query) {
   })
 
   document.getElementById('save-search-btn')?.addEventListener('click', function() {
+    // Rules in the evaluator's own language (R7). The old version copied the
+    // search box's operators verbatim (`plays > 5`, `year range`, `is:liked`)
+    // and matched free text against the TITLE only, so "camel mirage" saved
+    // as a playlist that could never contain anything.
     var ops = _parseSearchOperators(query)
-    var cleanQuery = ops.text || query
     var rules = []
-    if (cleanQuery && cleanQuery !== query) rules.push({ field: 'title', op: 'contains', value: cleanQuery })
-    ops.operators.forEach(function(op) {
-      rules.push({ field: op.field, op: op.op || 'is', value: op.value })
-    })
+    if (ops.text) rules.push({ field: 'any', op: 'matches', value: ops.text })
+    if (ops.artist) rules.push({ field: 'artist', op: 'contains', value: ops.artist })
+    if (ops.album) rules.push({ field: 'album', op: 'contains', value: ops.album })
+    if (ops.genre) rules.push({ field: 'genre', op: 'is', value: ops.genre })
+    if (ops.yearMin) rules.push({ field: 'year', op: 'gte', value: String(ops.yearMin) })
+    if (ops.yearMax) rules.push({ field: 'year', op: 'lte', value: String(ops.yearMax) })
+    if (ops.format) rules.push({ field: 'format', op: 'is', value: ops.format })
+    if (ops.is === 'liked') rules.push({ field: 'liked', op: 'is', value: 'true' })
+    if (ops.is === 'flac') rules.push({ field: 'format', op: 'is', value: 'flac' })
+    if (ops.is === 'lossy') rules.push({ field: 'formatClass', op: 'is', value: 'lossy' })
+    if (ops.playsMin) rules.push({ field: 'playCount', op: 'gt', value: String(ops.playsMin) })
+    if (ops.durMax) rules.push({ field: 'duration', op: 'lt', value: String(ops.durMax) })
+    if (ops.durMin) rules.push({ field: 'duration', op: 'gt', value: String(ops.durMin) })
+    if (!rules.length) rules.push({ field: 'any', op: 'matches', value: query })
     var sp = {
       id: 'sp_' + Date.now(),
       name: 'Search: ' + query.slice(0, 40),
       type: 'smart',
-      rules: rules.length ? rules : [{ field: 'title', op: 'contains', value: query }],
+      rules: rules,
+      createdAt: Date.now(),
     }
     state.smartPlaylists.unshift(sp)
     _persistSmartPlaylists()
-    showSnackbar('Smart playlist saved: ' + sp.name)
+    var found = _evalSmartPlaylist(sp).length
+    showSnackbar('Smart playlist saved: ' + sp.name + ' (' + found + ' track' + (found === 1 ? '' : 's') + ')', 'Open', function () { navigate('playlist', sp.id) })
   })
 
   document.getElementById('clear-filters-btn')?.addEventListener('click', function() {
@@ -13908,12 +14015,21 @@ function renderPlaylist(id, sortKey) {
     // below and the tracks themselves are untouched, so the blocking prompt
     // bought nothing.
     var deletedPl = JSON.parse(JSON.stringify(pl))
-    state.playlists = state.playlists.filter(p => p.id !== id)
-    window.api.deletePlaylist(id)
+    // A smart playlist lives in state.smartPlaylists (localStorage), a regular
+    // one in the electron store. Deleting always went to the regular store,
+    // so a saved search could never be deleted — the zombie (R7).
+    var isSmart = pl.type === 'smart'
+    if (isSmart) {
+      state.smartPlaylists = state.smartPlaylists.filter(p => p.id !== id)
+      _persistSmartPlaylists()
+    } else {
+      state.playlists = state.playlists.filter(p => p.id !== id)
+      window.api.deletePlaylist(id)
+    }
     navigate('playlists', null, { skipHistory: true })
-    showSnackbar('Playlist deleted', 'Undo', function() {
-      state.playlists.push(deletedPl)
-      window.api.savePlaylist(deletedPl)
+    showSnackbar(isSmart ? 'Smart playlist deleted' : 'Playlist deleted', 'Undo', function() {
+      if (isSmart) { state.smartPlaylists.push(deletedPl); _persistSmartPlaylists() }
+      else { state.playlists.push(deletedPl); window.api.savePlaylist(deletedPl) }
       renderPlaylists()
     })
   })
@@ -18727,22 +18843,20 @@ function bindContentEvents() {
   })
 
   document.getElementById('clear-decade-filter')?.addEventListener('click', function() { state.libDecade = ''; renderLibrary() })
+  document.getElementById('clear-mood-filter')?.addEventListener('click', function() { state.libMood = null; renderLibrary() })
 
   document.querySelectorAll('.mood-card').forEach(function(card) {
     card.addEventListener('click', function() {
+      // One destination, always (R6): the Library filtered by this mood. The
+      // features load first so the grid can rank on its first paint.
       var mood = card.dataset.mood
-      var genreMap = { energetic:'rock', chill:'ambient', focus:'classical', happy:'pop', melancholy:'blues', romantic:'jazz', dark:'metal', epic:'soundtrack' }
-      var genre = genreMap[mood] || mood
-      var known = state.library.find(function (a) {
-        return a.genre && a.genre.toLowerCase() === genre.toLowerCase()
-      })
-      if (known) {
-        state.libGenre = known.genre
+      _moodFeatures().then(function () {
+        state.libMood = mood
+        state.libGenre = null
         state.libSearch = ''
+        state.libFolder = null
         navigate('library')
-      } else {
-        navigate('search', genre)
-      }
+      })
     })
   })
 

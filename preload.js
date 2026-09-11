@@ -249,6 +249,7 @@ contextBridge.exposeInMainWorld('api', {
   getApiKeys:      ()  => ipcRenderer.invoke('get-api-keys'),
   saveApiKeys:     (p) => ipcRenderer.invoke('save-api-keys', p),
   tasteRecordPlay: (d) => ipcRenderer.invoke('taste-record-play', d),
+  audioFeaturesAll: () => ipcRenderer.invoke('audio-features-all'),
   tasteGetProfile: ()  => ipcRenderer.invoke('taste-get-profile'),
 
   getDownloadWishlist:  () => ipcRenderer.invoke('get-download-wishlist'),

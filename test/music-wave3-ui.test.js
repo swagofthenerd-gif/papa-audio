@@ -262,3 +262,53 @@ test('wrappedRecap honours an explicit firstListenBefore signal', () => {
   })
   assert.equal(w.discoveries, 1)
 })
+
+// ── R7: rules in the evaluator's own language ───────────────────────────────
+test('normalizeSmartRules translates every shape "Save search" ever wrote', () => {
+  const out = T.normalizeSmartRules([
+    { field: 'title', op: 'contains', value: 'blue' },
+    { field: 'plays', op: '>', value: 5 },
+    { field: 'year', op: 'range', value: '1970-1975' },
+    { field: 'year', op: '<', value: 1980 },
+    { field: 'is', op: 'is', value: 'liked' },
+    { field: 'is', op: 'is', value: 'flac' },
+    { field: 'is', op: 'is', value: 'lossy' },
+    { field: 'is', op: 'is', value: 'downloaded' },
+    { field: 'duration', op: '<', value: 300 },
+    { field: 'genre', op: 'wat', value: 'Rock' },
+    null, { field: '' },
+  ])
+  assert.deepEqual(out, [
+    { field: 'title', op: 'contains', value: 'blue' },
+    { field: 'playCount', op: 'gt', value: 5 },
+    { field: 'year', op: 'gte', value: '1970' },
+    { field: 'year', op: 'lte', value: '1975' },
+    { field: 'year', op: 'lt', value: 1980 },
+    { field: 'liked', op: 'is', value: 'true' },
+    { field: 'format', op: 'is', value: 'flac' },
+    { field: 'formatClass', op: 'is', value: 'lossy' },
+    { field: 'duration', op: 'lt', value: 300 },
+  ])
+  assert.deepEqual(T.normalizeSmartRules(null), [])
+})
+
+test('a saved free-text search matches across artist, album and title, order-blind and accent-blind', () => {
+  const tracks = [
+    trk({ title: 'Lady Fantasy', artist: 'Camel', albumName: 'Mirage', filePath: '/1.flac' }),
+    trk({ title: 'Song Within a Song', artist: 'Camel', albumName: 'Moonmadness', filePath: '/2.flac' }),
+    trk({ title: 'Jóga', artist: 'Björk', albumName: 'Homogenic', filePath: '/3.flac' }),
+  ]
+  const hit = (v) => T.evaluateFieldRules(tracks, [{ field: 'any', op: 'matches', value: v }], {}).map(t => t.filePath)
+  assert.deepEqual(hit('camel mirage'), ['/1.flac'])
+  assert.deepEqual(hit('mirage camel'), ['/1.flac'])
+  assert.deepEqual(hit('bjork joga'), ['/3.flac'])
+  assert.deepEqual(hit('camel'), ['/1.flac', '/2.flac'])
+  assert.deepEqual(hit('camel zeppelin'), [])
+  assert.deepEqual(hit('   '), [])
+})
+
+test('the evaluator itself tolerates a legacy rule shape (a zombie evaluates correctly before the sweep)', () => {
+  const tracks = [trk({ title: 'A', filePath: '/a', year: 1972 }), trk({ title: 'B', filePath: '/b', year: 1990 })]
+  const out = T.evaluateFieldRules(tracks, [{ field: 'year', op: 'range', value: '1970-1975' }], {})
+  assert.deepEqual(out.map(t => t.filePath), ['/a'])
+})

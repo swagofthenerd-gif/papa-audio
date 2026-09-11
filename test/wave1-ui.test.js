@@ -198,7 +198,8 @@ test('the destructive actions that already had Undo still do', () => {
   // Guard against a regression removing the Undo that the audit relies on being
   // present at these sites.
   assert.match(code, /pushUndo\('Removed from ' \+ pl\.name/, 'remove from playlist')
-  assert.match(code, /showSnackbar\('Playlist deleted', 'Undo'/, 'delete playlist')
+  // Wording depends on the store the playlist lived in (R7), the Undo does not.
+  assert.match(code, /showSnackbar\(isSmart \? 'Smart playlist deleted' : 'Playlist deleted', 'Undo'/, 'delete playlist')
   assert.match(code, /pushUndo\('Queue cleared'/, 'clear queue')
   assert.match(code, /pushUndo\('Cleared played tracks'/, 'clear played')
   assert.match(code, /pushUndo\('Removed from queue'/, 'remove from queue')
