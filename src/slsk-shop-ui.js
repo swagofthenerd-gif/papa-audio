@@ -292,7 +292,11 @@
   }
 
   function renderSearch() {
-    const hits = T.searchTree(tree, searching)
+    // Folders-mode search: same 300-hit contract, served from the precomputed
+    // index once it lands (a raw searchTree walk re-lowercases every name).
+    const hits = (shTreeSearchIndex && SH && SH.searchTreeIndex)
+      ? SH.searchTreeIndex(shTreeSearchIndex, searching, 300)
+      : T.searchTree(tree, searching)
     actions.innerHTML = ''
     body.innerHTML = hits.length
       ? hits.map(h => h.type === 'dir'
@@ -609,10 +613,75 @@
   let shFromCache = false
   let shCachedAt = 0
   let shJustRefreshed = false
+  // Fingerprint of the browse payload the current tree/shelves were built from.
+  // A background refresh whose payload fingerprints identically is content-
+  // unchanged and skips the whole rebuild (the old path paid the full multi-
+  // second build a second time for nothing).
+  let shBrowseFp = null
+  // Precomputed search indexes (lowercased once per library load) so a search
+  // keystroke is a linear scan over ready strings, not a fresh toLowerCase walk
+  // of the whole tree. Null until the background build lands; the render paths
+  // fall back to the old direct scans while null.
+  let shTreeSearchIndex = null
+  let shAlbumHays = null
+  let shAlbumByFolder = null
+  // Build generation: bumped at every (re)build so chunked slices belonging to
+  // a superseded build abort instead of racing the fresh one.
+  let _buildGen = 0
 
   // Prefer the module's TB-aware formatter so the shop hero never shows a
   // four-digit unit ("6453.3 GB" → "6.3 TB"); fall back to the local one.
   function shFmtSize(n) { return (SH && SH.fmtSize) ? SH.fmtSize(n) : fmtSize(n) }
+
+  // Token-bucketed index over the library albums that HAVE cover art, so the
+  // "does the local library already supply this cover?" test is a handful of
+  // candidate comparisons instead of a full library scan. A tokenScore ≥ 0.6
+  // match requires at least one shared album token, so scanning only the
+  // buckets the peer album's own tokens point at finds exactly the matches the
+  // old full scan did; candidates keep their library order so first-match-wins
+  // is preserved. Built lazily once per library snapshot: the per-card render
+  // AND the prefetch planner used to each pay the O(library) loop per album,
+  // which on an 11k-album peer was a ~820ms single block.
+  let _shLibArtIdx = null
+  function shLibArtIndex() {
+    const lib = state.library
+    if (_shLibArtIdx && _shLibArtIdx.ref === lib && _shLibArtIdx.len === lib.length) return _shLibArtIdx
+    const buckets = new Map()
+    if (SH) {
+      lib.forEach((l, order) => {
+        if (!l.artPath) return
+        for (const t of SH.normTokenSet(l.name)) {
+          let arr = buckets.get(t)
+          if (!arr) { arr = []; buckets.set(t, arr) }
+          arr.push({ l, order })
+        }
+      })
+    }
+    _shLibArtIdx = { ref: lib, len: lib.length, buckets }
+    return _shLibArtIdx
+  }
+  // The exact predicate the old scans used, over the bucketed candidates only.
+  // Returns the first (library-order) matching album with art, or null.
+  function shFindLocalArt(a) {
+    if (!SH || !a || !a.album) return null
+    const idx = shLibArtIndex()
+    let best = null
+    let bestOrder = Infinity
+    const seen = new Set()
+    for (const t of SH.normTokenSet(a.album)) {
+      const arr = idx.buckets.get(t)
+      if (!arr) continue
+      for (const c of arr) {
+        if (c.order >= bestOrder || seen.has(c.order)) continue
+        seen.add(c.order)
+        if (SH.tokenScore(a.album, c.l.name) >= 0.6 &&
+            (!a.artist || !c.l.artist || SH.tokenScore(a.artist, c.l.artist) >= 0.34)) {
+          best = c.l; bestOrder = c.order
+        }
+      }
+    }
+    return best
+  }
 
   // Local-library art for a peer album, matched by album-name similarity. Reuses
   // the same file://-vs-http art helper and gradient fallback the library grid
@@ -620,14 +689,8 @@
   function shAlbumArtHtml(a) {
     let artPath = null
     if (SH) {
-      const key = SH.normKey(a.album)
-      for (const lib of state.library) {
-        if (!lib.artPath) continue
-        if (SH.tokenScore(a.album, lib.name) >= 0.6 &&
-            (!a.artist || !lib.artist || SH.tokenScore(a.artist, lib.artist) >= 0.34)) {
-          artPath = lib.artPath; break
-        }
-      }
+      const m = shFindLocalArt(a)
+      if (m) artPath = m.artPath
     }
     const hue = Math.abs([...(a.folderName || a.album || '')]
       .reduce((h, c) => (Math.imul(31, h) + c.charCodeAt(0)) | 0, 0)) % 360
@@ -852,16 +915,13 @@
     if (!shelves) return
     shArtPrefetchRunning = true
     try {
-      // Local-library matches already show a cover — don't spend a fetch on them.
-      const hasLocalArt = (a) => {
-        if (!a || !a.album) return false
-        for (const lib of state.library) {
-          if (!lib.artPath) continue
-          if (SH.tokenScore(a.album, lib.name) >= 0.6 &&
-              (!a.artist || !lib.artist || SH.tokenScore(a.artist, lib.artist) >= 0.34)) return true
-        }
-        return false
-      }
+      // Let the shelves paint before the planner's one synchronous pass runs.
+      await new Promise(r => setTimeout(r, 0))
+      if (shArtPrefetchAbort || !dlg.isConnected) return
+      // Local-library matches already show a cover — don't spend a fetch on
+      // them. Served by the bucketed index (see shFindLocalArt): the old
+      // per-album library scan made planning an ~820ms block on a big peer.
+      const hasLocalArt = (a) => !!shFindLocalArt(a)
       const plan = PF.planArtPrefetch(shelves, {
         normKey: SH.normKey,
         hasLocalArt,
@@ -1067,17 +1127,33 @@
 
   function renderShelvesSearch() {
     const q = shSearchQuery
-    // Album matches by parsed artist/album/folder, plus raw filename matches via
-    // the tree searcher (reused, not reimplemented).
-    const albumHits = shFlat.filter(a => {
-      const hay = `${a.artist} ${a.album} ${a.folderName}`.toLowerCase()
-      return hay.includes(q.toLowerCase())
-    })
-    // Raw filename hits → resolve to the album the file lives in, if any.
-    const fileHits = T.searchTree(tree, q, 120).filter(h => h.type === 'file')
+    const ql = q.toLowerCase()
+    // Album matches by parsed artist/album/folder. The precomputed haystacks
+    // (lowercased once per library load) make a keystroke pass a linear scan;
+    // until they land, fall back to the on-the-fly filter.
+    let albumHits
+    if (shAlbumHays && shAlbumHays.length === shFlat.length) {
+      albumHits = []
+      for (let i = 0; i < shFlat.length; i++) {
+        if (shAlbumHays[i].includes(ql)) albumHits.push(shFlat[i])
+      }
+    } else {
+      albumHits = shFlat.filter(a => {
+        const hay = `${a.artist} ${a.album} ${a.folderName}`.toLowerCase()
+        return hay.includes(ql)
+      })
+    }
+    // Raw filename hits → resolve to the album the file lives in, if any. Same
+    // searchTree contract, served from the precomputed index when it is ready
+    // (the per-keystroke toLowerCase walk of 140k names was the 2.4s freeze).
+    const fileHits = (shTreeSearchIndex && SH && SH.searchTreeIndex)
+      ? SH.searchTreeIndex(shTreeSearchIndex, q, 120).filter(h => h.type === 'file')
+      : T.searchTree(tree, q, 120).filter(h => h.type === 'file')
     const extraFolders = new Set(albumHits.map(a => a.folderPath.toLowerCase()))
     for (const h of fileHits) {
-      const owner = shFlat.find(a => a.folderPath.toLowerCase() === String(h.path).toLowerCase())
+      const owner = shAlbumByFolder
+        ? shAlbumByFolder.get(String(h.path).toLowerCase())
+        : shFlat.find(a => a.folderPath.toLowerCase() === String(h.path).toLowerCase())
       if (owner && !extraFolders.has(owner.folderPath.toLowerCase())) {
         albumHits.push(owner); extraFolders.add(owner.folderPath.toLowerCase())
       }
@@ -1436,7 +1512,31 @@
   // detect both fields so an engine without them behaves exactly as before.
   shFromCache = !!res.fromCache
   shCachedAt = Number(res.cachedAt) || 0
-  tree = T.buildTree(res.directories || [])
+  // Chunked, time-sliced build (SH.buildTreeChunked) so a 140k-file library
+  // never blocks the main thread; the existing loading line doubles as the
+  // progress affordance. Falls back to the sync build if the module is old.
+  if (SH && SH.buildTreeChunked) {
+    const loadingEl = body.querySelector('.slsk-lib-loading')
+    tree = await SH.buildTreeChunked(res.directories || [], {
+      shouldAbort: () => !dlg.isConnected,
+      onProgress: (done, total) => {
+        if (loadingEl && loadingEl.isConnected && total) {
+          loadingEl.textContent =
+            `Loading ${username}'s library… ${Math.round((done / total) * 100)}%`
+        }
+      },
+    })
+    if (!tree || !dlg.isConnected) return
+  } else {
+    tree = T.buildTree(res.directories || [])
+  }
+  // Fingerprint the payload in the background so the refresh handler can skip
+  // an unchanged rebuild. Best-effort: a null fingerprint just means "rebuild".
+  if (SH && SH.fingerprintBrowseChunked) {
+    SH.fingerprintBrowseChunked(res.directories || [], { shouldAbort: () => !dlg.isConnected })
+      .then(fp => { if (fp && dlg.isConnected) shBrowseFp = fp })
+      .catch(() => {})
+  }
   // Skip past a single wrapper folder so the first view is useful, not one row.
   let start = ''
   for (let i = 0; i < 3; i++) {
@@ -1458,38 +1558,74 @@
   // scroll, mode and search when a background update lands.
   async function buildFromTree(opts) {
     const refresh = !!(opts && opts.refresh)
+    // Every build claims a generation; slices of a superseded build (a newer
+    // refresh landed, or the modal closed) abort instead of racing it.
+    const gen = ++_buildGen
+    const dead = () => gen !== _buildGen || !dlg.isConnected
     // Remember the scroll so a seamless refresh doesn't jump the user.
     const prevScroll = refresh ? shBody.scrollTop : 0
+    // The search indexes describe the OLD tree from here on — drop them so the
+    // search paths fall back to direct scans until the fresh ones land.
+    shTreeSearchIndex = null; shAlbumHays = null; shAlbumByFolder = null
     try {
-      // extractAlbums itself is a single tree walk; on a very large tree we yield
-      // once before and once after so the skeleton is on screen first.
+      // Yield once before starting so the skeleton is on screen first.
       await new Promise(r => (window.requestIdleCallback ? requestIdleCallback(r, { timeout: 500 }) : setTimeout(r, 1)))
-      peerAlbums = SH ? SH.extractAlbums(tree, { minTracks: 2 }) : []
-      // Mark which parsed albums the user already owns (drives the "In Library"
-      // chip and keeps them out of wishlist-by-default). Uses the bucketed
-      // library index so this is a per-album handful of comparisons, not a full
-      // O(peerAlbums × libraryAlbums) sweep — the same fix as buildShelves.
-      if (SH) {
-        const libIndex = SH.buildLibraryIndex
-          ? SH.buildLibraryIndex(state.library)
-          : null
-        if (libIndex) {
-          for (const a of peerAlbums) {
-            a.inLibrary = !!libIndex.findMatch({ artist: a.artist, album: a.album })
-          }
-        } else {
-          const libComp = state.library.map(SH.libAlbumToComparable)
-          for (const a of peerAlbums) {
-            a.inLibrary = libComp.some(lc => SH.albumsMatch(
-              { artist: a.artist, album: a.album }, lc))
+      if (dead()) return
+      // Chunked, time-sliced album parse (falls back to the sync walk on an old
+      // shelves module).
+      peerAlbums = (SH && SH.extractAlbumsChunked)
+        ? await SH.extractAlbumsChunked(tree, { minTracks: 2, shouldAbort: dead })
+        : (SH ? SH.extractAlbums(tree, { minTracks: 2 }) : [])
+      if (dead() || !peerAlbums) return
+      const detectSurround = window.PapaSlskFilters && window.PapaSlskFilters.detectSurround
+      if (SH && SH.buildShelvesChunked) {
+        // Chunked classification. markInLibrary stamps a.inLibrary from the
+        // same index lookup (drives the "In Library" chip and keeps owned
+        // albums out of wishlist-by-default) — the old path paid a second full
+        // sweep just for that.
+        shReindex()
+        shelves = await SH.buildShelvesChunked(peerAlbums, state.library,
+          { detectSurround, shouldAbort: dead, markInLibrary: true })
+        if (dead() || !shelves) return
+      } else {
+        // Legacy sync path, kept verbatim for an old shelves module.
+        if (SH) {
+          const libIndex = SH.buildLibraryIndex
+            ? SH.buildLibraryIndex(state.library)
+            : null
+          if (libIndex) {
+            for (const a of peerAlbums) {
+              a.inLibrary = !!libIndex.findMatch({ artist: a.artist, album: a.album })
+            }
+          } else {
+            const libComp = state.library.map(SH.libAlbumToComparable)
+            for (const a of peerAlbums) {
+              a.inLibrary = libComp.some(lc => SH.albumsMatch(
+                { artist: a.artist, album: a.album }, lc))
+            }
           }
         }
+        shReindex()
+        await new Promise(r => (window.requestIdleCallback ? requestIdleCallback(r, { timeout: 500 }) : setTimeout(r, 1)))
+        if (dead()) return
+        shelves = SH ? SH.buildShelves(peerAlbums, state.library, { detectSurround }) : null
       }
-      shReindex()
-      await new Promise(r => (window.requestIdleCallback ? requestIdleCallback(r, { timeout: 500 }) : setTimeout(r, 1)))
-      const detectSurround = window.PapaSlskFilters && window.PapaSlskFilters.detectSurround
-      shelves = SH ? SH.buildShelves(peerAlbums, state.library, { detectSurround }) : null
       shParsing = false
+      // Precompute the search indexes in the background (chunked): the per-
+      // keystroke pass then scans ready lowercase strings instead of re-walking
+      // 140k names. Fire-and-forget; search falls back until they land.
+      if (SH && SH.buildTreeSearchIndexChunked) {
+        const idxTree = tree
+        const idxAlbums = peerAlbums
+        ;(async () => {
+          try {
+            const ti = await SH.buildTreeSearchIndexChunked(idxTree, { shouldAbort: dead })
+            if (ti && !dead()) shTreeSearchIndex = ti
+            const ai = await SH.buildAlbumSearchIndexChunked(idxAlbums, { shouldAbort: dead })
+            if (ai && !dead()) { shAlbumHays = ai.hays; shAlbumByFolder = ai.byFolderLower }
+          } catch (_) { /* search simply keeps its fallback path */ }
+        })()
+      }
       // Warm covers ahead of the scroll when this is a shopper likely to browse
       // the whole library: a cached browse (they've been here) or a saved friend.
       // Fire-and-forget; the observer still handles visible-first, and the two
@@ -1538,10 +1674,34 @@
       try {
         const fresh = await window.api.slskBrowseUser({ username, noCache: true }).catch(() => null)
         if (!fresh || !fresh.ok || !dlg.isConnected) return
+        // W-S2: fingerprint the fresh payload first. Identical content means
+        // the multi-second rebuild would reproduce exactly what is on screen —
+        // skip it entirely and only freshen the provenance line in place.
+        let freshFp = null
+        if (SH && SH.fingerprintBrowseChunked) {
+          freshFp = await SH.fingerprintBrowseChunked(fresh.directories || [],
+            { shouldAbort: () => !dlg.isConnected }).catch(() => null)
+        }
+        if (!dlg.isConnected) return
+        if (freshFp && shBrowseFp && freshFp === shBrowseFp) {
+          shFromCache = !!fresh.fromCache
+          shCachedAt = Number(fresh.cachedAt) || Date.now()
+          const hero = shBody.querySelector('.slsh-hero-cache')
+          if (hero) {
+            hero.classList.remove('slsh-hero-pulse')
+            hero.textContent = shFromCache && shCachedAt
+              ? 'from cache · updated ' + _shAgo(shCachedAt) : ''
+          }
+          return
+        }
+        shBrowseFp = freshFp
         shFromCache = !!fresh.fromCache
         shCachedAt = Number(fresh.cachedAt) || Date.now()
         shJustRefreshed = true
-        tree = T.buildTree(fresh.directories || [])
+        tree = (SH && SH.buildTreeChunked)
+          ? await SH.buildTreeChunked(fresh.directories || [], { shouldAbort: () => !dlg.isConnected })
+          : T.buildTree(fresh.directories || [])
+        if (!tree || !dlg.isConnected) return
         await buildFromTree({ refresh: true })
       } catch (_) { /* a failed refresh must never disrupt the open shop */ }
     })

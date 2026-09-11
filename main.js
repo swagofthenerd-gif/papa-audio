@@ -5135,7 +5135,24 @@ ipcMain.handle('library-migrate-album-id', (_, { oldKey, newKey }) => {
     sideStores.recentlyPlayed.set(recent.map(x => (x === oldId ? newId : x)).filter((x, i, a) => a.indexOf(x) === i))
   }
   const session = sideStores.sessionState.get()
-  if (session && session.navId === oldId) sideStores.sessionState.set({ ...session, navId: newId })
+  if (session) {
+    // The persisted Back/Forward stacks carry album navIds too — an entry left
+    // pointing at the old id would restore into a dead album page.
+    const mapStack = (list) => Array.isArray(list)
+      ? list.map(e => (e && e.navId === oldId ? { ...e, navId: newId } : e))
+      : list
+    const touched = session.navId === oldId ||
+      (Array.isArray(session.history) && session.history.some(e => e && e.navId === oldId)) ||
+      (Array.isArray(session.future) && session.future.some(e => e && e.navId === oldId))
+    if (touched) {
+      sideStores.sessionState.set({
+        ...session,
+        navId: session.navId === oldId ? newId : session.navId,
+        history: mapStack(session.history),
+        future: mapStack(session.future),
+      })
+    }
+  }
 
   // The cached cover is named by album id.
   for (const ext of ['jpg', 'png']) {

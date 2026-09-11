@@ -74,7 +74,9 @@ test('renderer.js defines the catalog and detail renders', () => {
 })
 
 test('renderer.js wires the router to the video pages', () => {
-  assert.match(RENDERER, /page === 'video'\)\s*renderVideo\(\)/)
+  // J1: the video page takes a navId — a search query being retraced — so the
+  // router hands it through rather than calling renderVideo() bare.
+  assert.match(RENDERER, /page === 'video'\)\s*renderVideo\(navId\)/)
   assert.match(RENDERER, /page === 'video-detail'\)\s*renderVideoDetail\(navId\)/)
 })
 

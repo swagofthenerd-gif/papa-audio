@@ -20,10 +20,38 @@ var DEFAULTS = {
   maxGlobalInflight: 60,   // files sitting in remote queues across all peers
   maxPerPeer: 12,          // files sitting in any ONE peer's queue
   maxAttempts: 4,          // distinct sources tried per file before giving up
+  // The hard ceiling on TOTAL dispatches for one file, however few sources it
+  // has. `maxAttempts` counts DISTINCT SOURCES (that is what the name has always
+  // meant); gating dispatch on the raw attempt count instead meant a file with a
+  // single known source died after four tries at that one peer — permanently,
+  // even while the peer was online and browsable. Retries against the same peer
+  // are paced by the escalating backoff below and stopped for real by peer
+  // benching, so this ceiling only has to catch the genuinely hopeless.
+  maxTotalAttempts: 24,
   peerFailureLimit: 5,     // consecutive failures before a peer is benched
   peerFailureCooldownMs: 10 * 60 * 1000,
   retryPeerAfterMs: 60 * 1000, // before re-asking a peer that already failed us
+  // Each further attempt at the SAME peer doubles the wait (60s, 2m, 4m…) up to
+  // this ceiling, so a one-source file keeps trying — Soulseek queues are
+  // measured in hours — without ever hammering.
+  maxRetryBackoffMs: 30 * 60 * 1000,
   stallAfterMs: 20 * 60 * 1000, // remotely queued this long counts as stalled
+}
+
+// How many distinct sources this file has actually been sent to. The cap that
+// means "stop looking for new peers" — as opposed to the total-attempt ceiling,
+// which means "give up on this file entirely".
+function distinctTried(entry) {
+  return ((entry && entry.tried) || []).length
+}
+
+// The wait before the same peer may be asked again: the base retry gap doubled
+// once per attempt already spent, capped. An entry with no attempt history
+// (the pseudo-entries stalledItems builds) gets the plain base gap.
+function retryGapMs(entry, cfg) {
+  var spent = Math.max(0, (Number(entry && entry.attempts) || 1) - 1)
+  var gap = cfg.retryPeerAfterMs * Math.pow(2, Math.min(spent, 10))
+  return Math.min(gap, cfg.maxRetryBackoffMs)
 }
 
 function createState() {
@@ -585,7 +613,7 @@ function eligibleSource(state, entry, cfg, byPeer, now) {
     if ((byPeer[s.username] || 0) >= cfg.maxPerPeer) continue
     if (entry.tried.indexOf(s.username) === -1) return s
     var last = triedAt[s.username] || 0
-    if (!retry && (now - last) >= cfg.retryPeerAfterMs) retry = s
+    if (!retry && (now - last) >= retryGapMs(entry, cfg)) retry = s
   }
   return retry
 }
@@ -610,7 +638,14 @@ function planDispatch(state, cfg, now) {
   for (var i = 0; i < queue.length; i++) {
     if (total >= cfg.maxGlobalInflight) break
     var entry = queue[i]
-    if (entry.attempts >= cfg.maxAttempts) continue
+    // Out of SOURCES (every allowance spent on distinct peers) or out of road
+    // entirely. Gating this on the raw attempt count was the stall: a file with
+    // one source burned all four "attempts" re-asking that peer and was then
+    // skipped forever — and starvedItems skipped it too, so no alternate-source
+    // search ever ran for it. 108 files in the field sat in exactly that state,
+    // every one of them with a reachable peer.
+    if (distinctTried(entry) >= cfg.maxAttempts) continue
+    if ((entry.attempts || 0) >= cfg.maxTotalAttempts) continue
     // Already coming from someone — never race a second copy of it.
     if (busy[fileIdentity(entry.filename, entry.size)]) continue
     var src = eligibleSource(state, entry, cfg, byPeer, now)
@@ -719,7 +754,15 @@ function recordFailure(state, key, username, cfg, now) {
     state.peerFailures[username] = f
   }
   if (!live) return null
-  if (live.attempts >= cfg.maxAttempts) { state.done[key] = 'exhausted'; return null }
+  // Terminal only when the file has genuinely run out of road: every allowed
+  // distinct source tried, or the total-attempt ceiling reached. A single-source
+  // file is NOT terminal after four tries — it goes back to pending and retries
+  // on the escalating backoff, which is what a Soulseek queue actually needs.
+  if (distinctTried(live) >= cfg.maxAttempts ||
+      (live.attempts || 0) >= cfg.maxTotalAttempts) {
+    state.done[key] = 'exhausted'
+    return null
+  }
 
   var entry = {
     key: key,
@@ -828,7 +871,11 @@ function starvedItems(state, cfg, now) {
   var out = []
   for (var i = 0; i < state.pending.length; i++) {
     var e = state.pending[i]
-    if (e.attempts >= cfg.maxAttempts) continue
+    // Same gate as planDispatch, for the same reason: a file skipped here never
+    // gets an alternate-source search, which is precisely what a file whose one
+    // peer keeps failing needs most.
+    if (distinctTried(e) >= cfg.maxAttempts) continue
+    if ((e.attempts || 0) >= cfg.maxTotalAttempts) continue
     if (!eligibleSource(state, e, cfg, byPeer, now)) out.push(e)
   }
   return out
@@ -869,7 +916,8 @@ function recordStall(state, key, username, cfg, now) {
   // attempts, starvedItems skips it too so no fresh-source search ever runs, it
   // is never written to done, and it is persisted — so it showed in the UI as a
   // download waiting forever, across restarts.
-  if (live.attempts >= cfg.maxAttempts) {
+  if (distinctTried(live) >= cfg.maxAttempts ||
+      (live.attempts || 0) >= cfg.maxTotalAttempts) {
     state.done[key] = 'exhausted'
     return null
   }
@@ -1107,6 +1155,8 @@ var _PapaDownloadScheduler = {
   inflightByPeer: inflightByPeer,
   explainState: explainState,
   stats: stats,
+  distinctTried: distinctTried,
+  retryGapMs: retryGapMs,
 }
 
 if (typeof module !== 'undefined' && module.exports) module.exports = _PapaDownloadScheduler

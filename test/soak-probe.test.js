@@ -406,7 +406,13 @@ test('the number of global listener registrations is a deliberate budget', () =>
   //     shape as the saved-libraries and tour modals above, not a standing
   //     listener. The chat panel (roadmap #55) adds none: it closes via its own
   //     button, not a document-level key handler.
-  assert.strictEqual(sites.inFunction.length, 24,
+  // 25: J1 (one navigation truth) gave the smart-playlist modal the Escape
+  //     close it was missing — one document keydown (_onSmartPlKey), added on
+  //     open and removed in _closeSmartPl, which every exit path (Save,
+  //     Cancel, Escape, backdrop, navigation dismissal) funnels through. The
+  //     same paired add-on-open/remove-on-close shape as the saved-libraries
+  //     and numbering modals above, not a standing listener.
+  assert.strictEqual(sites.inFunction.length, 25,
     'a global listener was added inside a function. Nothing collects a listener ' +
     'on document or window, so make sure that function cannot run twice — this ' +
     'app has shipped that exact leak three times (items 73, 74, 257) — then ' +
@@ -431,7 +437,9 @@ test('no function registers more than one global listener of the same type', () 
   // standing listeners.
   // Cap raised 10→11 in W7: the anime numbering override dialog's Escape-close
   // keydown (roadmap #44), the same paired add-on-open/remove-on-close shape.
-  assert.ok(seen.get('document:keydown') <= 11, 'document keydown registrations: ' + seen.get('document:keydown'))
+  // Cap raised 11→12 in J1: the smart-playlist modal's Escape-close keydown
+  // (_onSmartPlKey), paired add-on-open/remove-on-close through _closeSmartPl.
+  assert.ok(seen.get('document:keydown') <= 12, 'document keydown registrations: ' + seen.get('document:keydown'))
   assert.ok((seen.get('window:online') || 0) <= 1)
   assert.ok((seen.get('window:offline') || 0) <= 1)
 })

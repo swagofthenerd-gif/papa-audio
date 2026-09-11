@@ -319,15 +319,27 @@ function buildLibraryIndex(library, { albumMin = 0.6, artistMin = 0.34 } = {}) {
   const noKey = []              // comparables with no usable album token
   let order = 0
   for (const a of (library || [])) {
-    const comp = albumComparable(a && a.albumTokens instanceof Set ? a : libAlbumToComparable(a))
-    const entry = { comp, order: order++ }
-    if (!comp.albumTokens.size) { noKey.push(entry); continue }
-    for (const tok of comp.albumTokens) {
-      let arr = buckets.get(tok)
-      if (!arr) { arr = []; buckets.set(tok, arr) }
-      arr.push(entry)
-    }
+    _libIndexInsert(buckets, noKey, a, order++)
   }
+  return { findMatch: _libIndexFinder(buckets, noKey, albumMin, artistMin), buckets, noKey }
+}
+
+// One library album into the token buckets. Shared by the sync builder above and
+// the chunked builder below so the two can never drift.
+function _libIndexInsert(buckets, noKey, a, order) {
+  const comp = albumComparable(a && a.albumTokens instanceof Set ? a : libAlbumToComparable(a))
+  const entry = { comp, order }
+  if (!comp.albumTokens.size) { noKey.push(entry); return }
+  for (const tok of comp.albumTokens) {
+    let arr = buckets.get(tok)
+    if (!arr) { arr = []; buckets.set(tok, arr) }
+    arr.push(entry)
+  }
+}
+
+// The finder over a finished bucket index — factored out of buildLibraryIndex so
+// buildLibraryIndexChunked returns the identical closure.
+function _libIndexFinder(buckets, noKey, albumMin, artistMin) {
   // Find the first (library-order) library comparable that confidently matches a
   // peer comparable. Only buckets the peer's album tokens point at are scanned —
   // a handful of candidates instead of the whole library.
@@ -350,7 +362,7 @@ function buildLibraryIndex(library, { albumMin = 0.6, artistMin = 0.34 } = {}) {
     for (const entry of noKey) consider(entry)
     return match
   }
-  return { findMatch, buckets, noKey }
+  return findMatch
 }
 
 // ── Album extraction from the tree ────────────────────────────────────────────
@@ -871,6 +883,415 @@ function sortMergedAlbums(albums, key) {
   }
 }
 
+// ── Big-library cooperative building (the peer-library speed wave) ────────────
+// A 140k-file peer library made every build step a single multi-second
+// main-thread block: buildTree ~2.8s on open, paid AGAIN by the background
+// refresh, and every keystroke in the in-library search re-lowercased the whole
+// tree (~2.4s per debounce pass). The fixes, all pure and Node-testable here:
+//
+//   1. *Chunked* variants of the tree/album/shelf builders. Each does the same
+//      work as its sync twin (golden-tested to identical output) but checks a
+//      time budget (default 24ms) as it goes and yields the main thread between
+//      slices, so the UI stays interactive for the whole build.
+//   2. A cheap browse-payload fingerprint so an unchanged background refresh
+//      can skip the rebuild entirely instead of paying it twice.
+//   3. Precomputed search indexes (lowercased once per library load) so a
+//      keystroke pass is a linear scan over ready strings, not a fresh
+//      toLowerCase walk of 140k names.
+//
+// A Web Worker was considered and rejected: the tree/album structures would
+// have to cross the worker boundary by structured clone (itself seconds at this
+// size), and worker wiring lives in renderer/preload territory. Cooperative
+// chunking keeps everything in this module.
+
+function _now() {
+  return (typeof performance !== 'undefined' && performance.now)
+    ? performance.now() : Date.now()
+}
+
+// Yield the main thread between slices. scheduler.yield() where the runtime has
+// it (Chromium's purpose-built primitive: resumes promptly, still lets input
+// and paint through), else setImmediate (Node), else setTimeout(0).
+function _coopYield() {
+  const g = typeof globalThis !== 'undefined' ? globalThis : {}
+  if (g.scheduler && typeof g.scheduler.yield === 'function') return g.scheduler.yield()
+  if (typeof setImmediate === 'function') return new Promise(r => setImmediate(r))
+  return new Promise(r => setTimeout(r, 0))
+}
+
+// Per-run budget state. `tick` is awaited inside the hot loop: it is a no-op
+// until the slice budget is spent, then yields and restarts the clock. `opts.
+// yieldFn` lets tests inject a recorder (to measure real slice lengths) and
+// `opts.shouldAbort` lets the caller drop a build that no longer matters (modal
+// closed, newer build started) — an aborted run resolves null.
+function _budget(opts) {
+  const budgetMs = (opts && opts.budgetMs > 0) ? opts.budgetMs : 24
+  const yieldFn = (opts && opts.yieldFn) || _coopYield
+  const shouldAbort = (opts && opts.shouldAbort) || null
+  let sliceStart = _now()
+  return {
+    aborted: () => !!(shouldAbort && shouldAbort()),
+    tick: async () => {
+      if (_now() - sliceStart < budgetMs) return false
+      await yieldFn()
+      sliceStart = _now()
+      return true
+    },
+  }
+}
+
+// ── Browse-payload fingerprint ────────────────────────────────────────────────
+// FNV-1a over every directory name, file name and file size. Linear, no
+// allocation, order-sensitive (slskd returns a stable listing, so identical
+// content means an identical payload). Two payloads with the same fingerprint
+// are treated as unchanged and the refresh rebuild is skipped.
+function _fnvStr(h, s) {
+  const str = String(s || '')
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i)
+    h = Math.imul(h, 16777619)
+  }
+  return h
+}
+function _fnvNum(h, n) {
+  const v = Number(n) || 0
+  h ^= v & 0xffff
+  h = Math.imul(h, 16777619)
+  h ^= (v / 65536) & 0xffffffff
+  h = Math.imul(h, 16777619)
+  return h
+}
+function _fingerprintDir(h, d, counts) {
+  h = _fnvStr(h, d && d.name)
+  const files = (d && d.files) || []
+  h = _fnvNum(h, files.length)
+  for (const f of files) {
+    h = _fnvStr(h, f.filename || f.name)
+    h = _fnvNum(h, f.size)
+    counts.files++
+  }
+  return h
+}
+function fingerprintBrowse(directories) {
+  const dirs = directories || []
+  const counts = { files: 0 }
+  let h = 0x811c9dc5 | 0
+  for (const d of dirs) h = _fingerprintDir(h, d, counts)
+  return (h >>> 0).toString(36) + ':' + dirs.length + ':' + counts.files
+}
+async function fingerprintBrowseChunked(directories, opts) {
+  const b = _budget(opts)
+  const dirs = directories || []
+  const counts = { files: 0 }
+  let h = 0x811c9dc5 | 0
+  for (const d of dirs) {
+    h = _fingerprintDir(h, d, counts)
+    if (await b.tick() && b.aborted()) return null
+  }
+  return (h >>> 0).toString(36) + ':' + dirs.length + ':' + counts.files
+}
+
+// ── Chunked tree build ────────────────────────────────────────────────────────
+// Mirrors slsk-tree's buildTree deliberately (same node shape, same casing
+// rules) rather than importing its window binding, so this module still stands
+// alone in a test process — and the golden test asserts the two stay
+// byte-identical in output. The per-directory insertion is the natural chunk
+// unit; the count/size rollup at the end is a cheap arithmetic walk done in one
+// final slice.
+const TREE_SEP = '\\'
+function _treeSplitPath(p) {
+  return String(p || '').replace(/\//g, TREE_SEP).split(TREE_SEP).filter(Boolean)
+}
+function _treeMakeNode(name, path) {
+  return { name, path, dirs: new Map(), files: [], fileCount: 0, totalSize: 0 }
+}
+async function buildTreeChunked(directories, opts) {
+  const b = _budget(opts)
+  const onProgress = (opts && opts.onProgress) || null
+  const dirs = directories || []
+  const root = _treeMakeNode('', '')
+  for (let i = 0; i < dirs.length; i++) {
+    const d = dirs[i]
+    const parts = _treeSplitPath(d.name)
+    let node = root
+    const acc = []
+    for (const part of parts) {
+      acc.push(part)
+      const key = part.toLowerCase()
+      if (!node.dirs.has(key)) node.dirs.set(key, _treeMakeNode(part, acc.join(TREE_SEP)))
+      node = node.dirs.get(key)
+      // Walk on using the casing we first saw, so node.path stays self-consistent.
+      acc[acc.length - 1] = node.name
+    }
+    for (const f of d.files || []) {
+      const base = _treeSplitPath(f.filename).pop() || f.filename || ''
+      // fullPath must use the peer's own casing for this entry — it is what we
+      // send back to request the download — not the merged display casing.
+      node.files.push({ ...f, name: base, fullPath: (d.name ? d.name + TREE_SEP : '') + base })
+    }
+    if (await b.tick()) {
+      if (b.aborted()) return null
+      if (onProgress) { try { onProgress(i + 1, dirs.length) } catch (_) {} }
+    }
+  }
+  // Roll counts and sizes up so a folder can show what it contains without the
+  // UI having to walk it.
+  const roll = (n) => {
+    let count = n.files.length
+    let size = 0
+    for (const f of n.files) size += Number(f.size) || 0
+    for (const c of n.dirs.values()) { const r = roll(c); count += r.count; size += r.size }
+    n.fileCount = count; n.totalSize = size
+    return { count, size }
+  }
+  roll(root)
+  return root
+}
+
+// ── Chunked album extraction ──────────────────────────────────────────────────
+// The same walk extractAlbums does, but with an explicit stack so the budget
+// check can interleave anywhere in the traversal. Emission order is preserved
+// exactly (children in Map order, a mixed node's own album AFTER its children,
+// root loose files last) — the golden test locks deep equality against
+// extractAlbums.
+async function extractAlbumsChunked(root, opts) {
+  const b = _budget(opts)
+  const minTracks = (opts && opts.minTracks != null) ? opts.minTracks : 2
+  if (!root) return []
+  const albums = []
+
+  const gatherWithDiscs = (node) => {
+    const files = node.files.filter(f => isAudioName(f.name || f.filename))
+    let discCount = 0
+    if (node.dirs && node.dirs.size) {
+      for (const child of node.dirs.values()) {
+        if (isDiscFolder(child.name)) {
+          discCount++
+          const inner = gatherWithDiscs(child)
+          for (const f of inner.files) files.push(f)
+        }
+      }
+    }
+    return { files, discCount }
+  }
+
+  // Stack of { node, segs } visits and { post } emissions. LIFO with children
+  // pushed reversed reproduces the recursive order.
+  const stack = []
+  if (root.dirs && root.dirs.size) {
+    const kids = [...root.dirs.values()]
+    for (let i = kids.length - 1; i >= 0; i--) {
+      stack.push({ node: kids[i], segs: [kids[i].name] })
+    }
+  }
+  while (stack.length) {
+    const it = stack.pop()
+    if (it.post) {
+      // The mixed-node case: a shelf with real subfolders AND enough of its own
+      // loose audio to be an album in its own right — emitted after its children,
+      // exactly as the recursive walk does.
+      const { node, segs } = it.post
+      albums.push(buildAlbum(node, segs, {
+        files: node.files.filter(f => isAudioName(f.name || f.filename)), discCount: 0,
+      }))
+    } else {
+      const node = it.node
+      const segs = it.segs
+      const realSubdirs = []
+      if (node.dirs && node.dirs.size) {
+        for (const child of node.dirs.values()) {
+          if (!isDiscFolder(child.name)) realSubdirs.push(child)
+        }
+      }
+      const gathered = gatherWithDiscs(node)
+      const isAlbumLeaf = realSubdirs.length === 0 && gathered.files.length >= minTracks
+      if (isAlbumLeaf && node.path) {
+        albums.push(buildAlbum(node, segs, gathered))
+      } else {
+        // Mixed node: real subfolders plus enough gathered audio to also be an
+        // album in its own right. Pushed first so it pops (emits) AFTER the
+        // children — the recursive walk's exact order. Note it is gated on the
+        // GATHERED count but built from the node's OWN audio, faithfully
+        // mirroring extractAlbums.
+        if (realSubdirs.length && node.path && gathered.files.length >= minTracks) {
+          stack.push({ post: { node, segs } })
+        }
+        for (let i = realSubdirs.length - 1; i >= 0; i--) {
+          stack.push({ node: realSubdirs[i], segs: segs.concat(realSubdirs[i].name) })
+        }
+      }
+    }
+    if (await b.tick() && b.aborted()) return null
+  }
+  const rootAudio = (root.files || []).filter(f => isAudioName(f.name || f.filename))
+  if (rootAudio.length >= minTracks) {
+    albums.push(buildAlbum(root, [root.name || ''], { files: rootAudio, discCount: 0 }))
+  }
+  return albums
+}
+
+// ── Chunked library index + shelves ───────────────────────────────────────────
+async function buildLibraryIndexChunked(library, opts) {
+  const b = _budget(opts)
+  const albumMin = (opts && opts.albumMin) || 0.6
+  const artistMin = (opts && opts.artistMin) || 0.34
+  const buckets = new Map()
+  const noKey = []
+  let order = 0
+  for (const a of (library || [])) {
+    _libIndexInsert(buckets, noKey, a, order++)
+    if (await b.tick() && b.aborted()) return null
+  }
+  return { findMatch: _libIndexFinder(buckets, noKey, albumMin, artistMin), buckets, noKey }
+}
+
+// Chunked buildShelves. Identical output to buildShelves (golden-tested); two
+// extras for the shop: `markInLibrary` also stamps a.inLibrary on every peer
+// album from the SAME index lookup (the shop used to pay a second full
+// findMatch sweep just for that), and every loop, including the surround file-
+// name joins and the sort-key precompute, runs under the slice budget. The
+// Everything sort itself uses a cached Intl.Collator over precomputed
+// lowercase keys — same ordering as localeCompare, a fraction of the cost.
+const _shelfCollator = (typeof Intl !== 'undefined' && Intl.Collator) ? new Intl.Collator() : null
+async function buildShelvesChunked(peerAlbums, library, opts) {
+  const b = _budget(opts)
+  const detectSurround = (opts && opts.detectSurround) || null
+  const markInLibrary = !!(opts && opts.markInLibrary)
+  const albums = peerAlbums || []
+  const libIndex = await buildLibraryIndexChunked(library, opts)
+  if (!libIndex) return null
+
+  const upgrades = []
+  const missing = []
+  for (const pa of albums) {
+    const peerComp = albumComparable({
+      artist: pa.artist,
+      album: pa.album,
+      lossless: pa.lossless,
+      maxBitDepth: pa.maxBitDepth,
+      maxSampleRate: pa.maxSampleRate,
+    })
+    const match = libIndex.findMatch(peerComp)
+    if (markInLibrary) pa.inLibrary = !!match
+    if (match) {
+      const reason = upgradeReason(peerComp, match)
+      if (reason) upgrades.push({ ...pa, upgrade: reason, matchedLibId: match.ref && match.ref.id })
+    } else {
+      missing.push(pa)
+    }
+    if (await b.tick() && b.aborted()) return null
+  }
+
+  // Surround detection joins every file name per album — the heaviest string
+  // work in here, so it sits inside the budget loop too. The sort keys for the
+  // Everything grid are precomputed in the same pass.
+  const surround = []
+  const hires = []
+  const decorated = []
+  for (const pa of albums) {
+    if (detectSurround) {
+      const names = pa.files.map(f => f.name || f.filename || '').join(' ')
+      if (detectSurround(`${pa.folderPath} ${pa.folderName} ${names}`)) surround.push(pa)
+    }
+    if (pa.isHiRes) hires.push(pa)
+    decorated.push({
+      a: pa,
+      k1: (pa.artist || pa.album || '').toLowerCase(),
+      k2: (pa.album || '').toLowerCase(),
+    })
+    if (await b.tick() && b.aborted()) return null
+  }
+
+  const qualRank = (a) => (a.lossless ? (a.isHiRes ? 3 : 2) : 1)
+  const byQualThenSize = (a, b2) => qualRank(b2) - qualRank(a) || (b2.totalSize - a.totalSize)
+  missing.sort(byQualThenSize)
+  surround.sort(byQualThenSize)
+  hires.sort(byQualThenSize)
+  const cmpKeys = _shelfCollator
+    ? (x, y) => _shelfCollator.compare(x.k1, y.k1) || _shelfCollator.compare(x.k2, y.k2)
+    : (x, y) => x.k1.localeCompare(y.k1) || x.k2.localeCompare(y.k2)
+  decorated.sort(cmpKeys)
+  const everything = decorated.map(d => d.a)
+
+  return {
+    upgrades,
+    missing,
+    surround,
+    hires,
+    everything,
+    stats: computeStats(albums, { surroundCount: surround.length }),
+  }
+}
+
+// ── Precomputed search indexes ────────────────────────────────────────────────
+// searchTree lowercases every directory path and file name on EVERY call — that
+// is the whole per-keystroke freeze. This walks the tree once (chunked), stores
+// the lowercase haystacks flat in traversal order, and a query is then a single
+// linear scan with the same early-stop semantics searchTree has. The result
+// objects are shaped identically to searchTree's, golden-tested against it.
+async function buildTreeSearchIndexChunked(root, opts) {
+  const b = _budget(opts)
+  const entries = []
+  if (!root) return { entries }
+  // Emission order must equal searchTree's: for each dir — the dir itself, then
+  // its whole subtree, then (after all subdirs) the node's own files.
+  const stack = [{ node: root, emitSelf: false }]
+  while (stack.length) {
+    const it = stack.pop()
+    if (it.files) {
+      const n = it.files
+      for (const f of n.files) {
+        entries.push({ type: 'file', name: f.name, path: n.path, file: f, hay: f.name.toLowerCase() })
+      }
+    } else {
+      const n = it.node
+      if (it.emitSelf) {
+        entries.push({ type: 'dir', name: n.name, path: n.path, fileCount: n.fileCount, hay: n.path.toLowerCase() })
+      }
+      stack.push({ files: n })
+      const kids = [...n.dirs.values()]
+      for (let i = kids.length - 1; i >= 0; i--) stack.push({ node: kids[i], emitSelf: true })
+    }
+    if (await b.tick() && b.aborted()) return null
+  }
+  return { entries }
+}
+
+// Query the index. Same contract as searchTree(root, query, limit): the first
+// `limit` matches in traversal order, same object shapes (no hay leaks out).
+function searchTreeIndex(index, query, limit = 300) {
+  const q = String(query || '').trim().toLowerCase()
+  if (!q || !index || !index.entries) return []
+  const out = []
+  for (const e of index.entries) {
+    if (!e.hay.includes(q)) continue
+    out.push(e.type === 'dir'
+      ? { type: 'dir', name: e.name, path: e.path, fileCount: e.fileCount }
+      : { type: 'file', name: e.name, path: e.path, file: e.file })
+    if (out.length >= limit) break
+  }
+  return out
+}
+
+// Per-album search haystacks for the shop's search-within-library, plus a
+// folderPath(lowercase) → album map so a filename hit resolves to its owning
+// album in O(1) instead of an O(albums) scan per hit.
+async function buildAlbumSearchIndexChunked(albums, opts) {
+  const b = _budget(opts)
+  const list = albums || []
+  const hays = new Array(list.length)
+  const byFolderLower = new Map()
+  for (let i = 0; i < list.length; i++) {
+    const a = list[i]
+    hays[i] = `${a.artist} ${a.album} ${a.folderName}`.toLowerCase()
+    const fp = String(a.folderPath || '').toLowerCase()
+    // First album wins, matching the old shFlat.find semantics.
+    if (!byFolderLower.has(fp)) byFolderLower.set(fp, a)
+    if (await b.tick() && b.aborted()) return null
+  }
+  return { hays, byFolderLower }
+}
+
 const shApi = {
   extractAlbums, parseAlbumFolder, buildAlbum, buildShelves, computeStats,
   upgradeReason, albumsMatch, albumsMatchComparable, albumComparable,
@@ -880,6 +1301,10 @@ const shApi = {
   isAudioName, isLosslessName, qualityString, SH_AUDIO_RE, SH_LOSSLESS_EXT,
   fmtSize, sourceScore, sourceQuality, qualityRankTuple, mergeSourcesByAlbum,
   finalizeMergedAlbum, sortMergedAlbums,
+  // Big-library cooperative building (peer-library speed wave)
+  fingerprintBrowse, fingerprintBrowseChunked, buildTreeChunked,
+  extractAlbumsChunked, buildLibraryIndexChunked, buildShelvesChunked,
+  buildTreeSearchIndexChunked, searchTreeIndex, buildAlbumSearchIndexChunked,
 }
 
 if (typeof module !== 'undefined' && module.exports) module.exports = shApi

@@ -157,16 +157,38 @@ test('a genuinely new source revives an exhausted file', () => {
   assert.equal(st.pending[0].attempts, 0, 'a new peer earns a fresh attempt count')
 })
 
-test('a stall at the attempt limit is exhausted, not re-queued forever', () => {
+test('a stall with every distinct source spent is exhausted, not re-queued forever', () => {
   // Re-queueing made a zombie: planDispatch skips it on attempts, starvedItems
   // skips it so no fresh-source search runs, it is never written to done, and it
   // is persisted — a download waiting forever, across restarts.
-  const st = seed(['a'], [src('x')])
+  //
+  // The limit that means "exhausted" is DISTINCT SOURCES TRIED, which is what
+  // maxAttempts has always been documented as. Four spent on four peers is a
+  // real dead end; four spent re-asking ONE peer is not — see the companion
+  // test below and download-scheduler-single-source-stall.test.js.
+  const st = seed(['a'], [src('w'), src('x'), src('y'), src('z')])
   S.markDispatched(st, 'a', 'x', 1)
   st.inflight['a'].attempts = 4
+  st.inflight['a'].tried = ['w', 'x', 'y', 'z']
   assert.equal(S.recordStall(st, 'a', 'x', { maxAttempts: 4 }, 99999), null)
   assert.equal(st.pending.length, 0)
   assert.equal(st.done['a'], 'exhausted')
+})
+
+test('a re-queued one-source file is never a zombie: it stays dispatchable', () => {
+  // The anti-zombie invariant restated for the single-source case. The entry is
+  // allowed back into pending carrying a high attempt count; what must never
+  // happen is that it sits there permanently UNABLE to dispatch, which is the
+  // state 108 real downloads were found in.
+  const st = seed(['a'], [src('x')])
+  S.markDispatched(st, 'a', 'x', 1)
+  st.inflight['a'].attempts = 4
+  const back = S.recordStall(st, 'a', 'x', { maxAttempts: 4 }, 99999)
+  assert.ok(back, 'a lone source is not a dead end')
+  assert.equal(st.done['a'], undefined)
+  // Once the backoff has passed it must actually be offered again.
+  const later = 99999 + 24 * 3600 * 1000
+  assert.equal(S.planDispatch(st, { maxAttempts: 4 }, later).length, 1)
 })
 
 test('no entry in pending may sit at or above the attempt limit', () => {

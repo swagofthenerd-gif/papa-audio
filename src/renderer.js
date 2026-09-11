@@ -8,6 +8,11 @@ const state = {
   currentAlbumId: null,
   currentArtistName: '',
   currentSearchQuery: '',
+  // The video tab's committed search query, when one is showing. It is the
+  // page's navId (exactly like currentSearchQuery is for the music search), so
+  // Back from a detail page can restore the query, the results and the scroll
+  // instead of dumping the user on the clean catalog (J1).
+  currentVideoQuery: '',
   queue: [],
   queueIndex: -1,
   ytDownloads: new Map(),  // id → { id, videoId, title, artist, percent, state, error }
@@ -203,6 +208,56 @@ const navFuture  = []
 function _pushNavHistory(entry) {
   navHistory.push(entry)
   if (navHistory.length > NAV_HISTORY_CAP) navHistory.shift()
+}
+
+// How much of the stacks rides along in the persisted session state. Far less
+// than the in-memory cap: nobody relaunches the app and presses Back sixty
+// times, and the session file is rewritten on every navigation.
+const NAV_SESSION_CAP = 60
+
+// Pages that cannot render anything without an id. A history entry for one of
+// these with no id is a dead end, so restores drop it rather than keep it.
+// (Two boot paths and the stack restore all consult this one list.)
+const _NEEDS_NAV_ID = ['album', 'artist', 'search', 'playlist', 'video-detail', 'person', 'shelf']
+
+function _navEntrySlim(e) { return { page: e.page, navId: e.navId ?? null } }
+
+// Rebuild the in-memory Back/Forward stacks from a persisted session, so the
+// Back arrow works immediately after a relaunch. Entries that fail the
+// needs-a-navId rule are dropped, not forced to home: a restored stack with a
+// dead entry in it turns Back into a lottery.
+function _restoreNavStacks(session) {
+  const ok = function (e) {
+    return e && typeof e.page === 'string' && e.page &&
+      !(_NEEDS_NAV_ID.indexOf(e.page) !== -1 && !e.navId)
+  }
+  navHistory.length = 0
+  navFuture.length = 0
+  ;(Array.isArray(session && session.history) ? session.history : [])
+    .filter(ok).slice(-NAV_HISTORY_CAP).forEach(function (e) { navHistory.push(_navEntrySlim(e)) })
+  ;(Array.isArray(session && session.future) ? session.future : [])
+    .filter(ok).slice(-NAV_HISTORY_CAP).forEach(function (e) { navFuture.push(_navEntrySlim(e)) })
+}
+
+// ── Overlay dismissal on navigation ─────────────────────────────────────────
+// An overlay is page furniture, not a destination: a modal left open across a
+// navigation floats over a page it has nothing to do with (the saved-libraries
+// modal survived a sidebar click; the sleep panel outlived the player page).
+// Each overlay registers its close function here when it opens — or once, for
+// the always-bound panels — and navigate() dismisses the lot before the page
+// changes. Persistent-by-design drawers (the queue panel, the chat drawer) do
+// NOT register; they belong to the shell, not the page.
+const _navDismiss = new Set()
+function _registerNavDismiss(fn) {
+  if (typeof fn === 'function') _navDismiss.add(fn)
+  return fn
+}
+function _unregisterNavDismiss(fn) { _navDismiss.delete(fn) }
+function _runNavDismiss() {
+  // Iterate a copy: a one-shot modal's close function unregisters itself.
+  Array.from(_navDismiss).forEach(function (fn) {
+    try { fn() } catch (_) { /* one stuck overlay must not block navigation */ }
+  })
 }
 let _playCountTimer = null
 let _shuffleHistory = []
@@ -1342,14 +1397,22 @@ async function init() {
     state.library = cached
     checkFollowedArtistsForNew()
     var session = await window.api.getSessionState()
+    // The journey survives the restart: rebuild Back/Forward from the session
+    // before the first navigate(), so the Back arrow is live immediately.
+    _restoreNavStacks(session)
     // A page that needs an id to render anything (an album, a show, a search)
     // saved with no id is a dead end on restore -- it used to reopen straight
     // into the same broken error state that got saved, with no way out short
-    // of leaving the page by hand. Land on Home instead.
-    var _needsNavId = ['album', 'artist', 'search', 'playlist', 'video-detail', 'person', 'shelf']
+    // of leaving the page by hand. Land on Home instead. A page WITH its id
+    // restores there, ids and all -- deep pages are not forced home.
     var _restorePage = session && session.page ? session.page : 'home'
     var _restoreNavId = session && session.page ? session.navId : null
-    if (_needsNavId.indexOf(_restorePage) !== -1 && !_restoreNavId) _restorePage = 'home'
+    if (_NEEDS_NAV_ID.indexOf(_restorePage) !== -1 && !_restoreNavId) _restorePage = 'home'
+    // Seed the scroll memory with the persisted offset so the restoreScroll
+    // below actually has something to restore -- the memory starts empty.
+    if (session && session.page && typeof session.scrollTop === 'number') {
+      _scrollMemory.set(session.page + ':' + (session.navId ?? ''), session.scrollTop)
+    }
     navigate(_restorePage, _restorePage === 'home' ? null : _restoreNavId, { skipHistory: true, restoreScroll: true })
     syncLibraryExt()
     setTimeout(backgroundSync, 800)
@@ -1543,6 +1606,10 @@ function _currentNavId() {
   if (state.currentPage === 'album')  return state.currentAlbumId
   if (state.currentPage === 'artist') return state.currentArtistName
   if (state.currentPage === 'search') return state.currentSearchQuery
+  // The video tab with a search showing IS a place — "video, searching for
+  // tokyo revengers" — so the query is its id. With no search it is the plain
+  // catalog and stays anonymous (null), like every other front page.
+  if (state.currentPage === 'video') return state.currentVideoQuery || null
   if (state.currentPage === 'playlist') return state.currentPlaylistId
   if (state.currentPage === 'smartlist') return state.currentSmartListId
   if (state.currentPage === 'video-detail' || state.currentPage === 'person' || state.currentPage === 'shelf') {
@@ -1615,8 +1682,7 @@ async function _resumeCrashSession() {
   try {
     var session = await window.api.getSessionState()
     var page = session && session.page ? session.page : null
-    var needsNavId = ['album', 'artist', 'search', 'playlist', 'video-detail', 'person', 'shelf']
-    if (page && !(needsNavId.indexOf(page) !== -1 && !session.navId) && page !== state.currentPage) {
+    if (page && !(_NEEDS_NAV_ID.indexOf(page) !== -1 && !session.navId) && page !== state.currentPage) {
       navigate(page, page === 'home' ? null : session.navId, { skipHistory: true, restoreScroll: true })
     }
   } catch (_) { /* view restore is best-effort; playback already restored */ }
@@ -1700,6 +1766,9 @@ async function restorePlaybackState(opts) {
 const VIDEO_PAGES = new Set(['video', 'browse', 'person', 'video-detail', 'shelf', 'diary', 'calendar'])
 
 function navigate(page, navId, opts = {}) {
+  // Leaving a page closes what was floating over it. The rule, not per-modal
+  // patches: every overlay that registered a dismisser gets closed here.
+  _runNavDismiss()
   // Save scroll position of page we're leaving
   const contentEl = document.getElementById('content')
   if (contentEl && state.currentPage) {
@@ -1731,6 +1800,10 @@ function navigate(page, navId, opts = {}) {
   state.currentAlbumId     = page === 'album'  ? navId : null
   state.currentArtistName  = page === 'artist' ? navId : ''
   state.currentSearchQuery = page === 'search' ? navId : ''
+  // A string navId on the video page is a search being retraced; a plain
+  // navigate('video') (sidebar click) is the clean catalog. The search code
+  // updates this in place as queries run without any navigation.
+  state.currentVideoQuery  = page === 'video' ? (navId || '') : ''
   state.currentPlaylistId  = page === 'playlist' ? navId : null
   state.currentSmartListId = page === 'smartlist' ? navId : null
   state.currentVideoNavId  = (page === 'video-detail' || page === 'person' || page === 'shelf') ? navId : null
@@ -1760,7 +1833,7 @@ function navigate(page, navId, opts = {}) {
   else if (page === 'yt-see-all')  renderYtSeeAll(navId)
   else if (page === 'yt-playlist') renderYtPlaylist(navId)
   else if (page === 'explore')     renderExplore()
-  else if (page === 'video')       renderVideo()
+  else if (page === 'video')       renderVideo(navId)
   else if (page === 'browse')      renderBrowse()
   else if (page === 'person')      renderPerson(navId)
   else if (page === 'video-detail') renderVideoDetail(navId)
@@ -1782,7 +1855,15 @@ function navigate(page, navId, opts = {}) {
     requestAnimationFrame(() => { contentEl.scrollTop = savedScroll })
   }
 
-  window.api.saveSessionState({ page: page, navId: navId || null, scrollTop: contentEl ? contentEl.scrollTop || 0 : 0 })
+  window.api.saveSessionState({
+    page: page, navId: navId || null,
+    scrollTop: contentEl ? contentEl.scrollTop || 0 : 0,
+    // The stacks ride along, trimmed, so Back works across a restart. Slimmed
+    // to {page, navId}: per-page scroll lives in _scrollMemory and is a
+    // nicety the restart forgoes for everything but the current page.
+    history: navHistory.slice(-NAV_SESSION_CAP).map(_navEntrySlim),
+    future: navFuture.slice(-NAV_SESSION_CAP).map(_navEntrySlim),
+  })
 }
 
 function navigateBack() {
@@ -1800,6 +1881,15 @@ function navigateForward() {
   _pushNavHistory({ page: state.currentPage, navId: _currentNavId() })
   const next = navFuture.pop()
   navigate(next.page, next.navId, { skipHistory: true, restoreScroll: true })
+}
+
+// In-page "back" affordances route through the history stack: a detail page's
+// escape hatch means "return to where I was", never "go to the tab's front
+// page". Only when there is nowhere to return to (a deep link, a fresh boot)
+// does the caller's stated fallback page apply.
+function _backOr(page, navId) {
+  if (navHistory.length) return navigateBack()
+  navigate(page, navId || null)
 }
 
 function updateNavBtns() {
@@ -4672,7 +4762,7 @@ function _videoError(message) {
       '<button class="secondary" id="video-error-back">Back to Movies &amp; TV</button>' +
     '</div>' +
   '</div></div>')
-  document.getElementById('video-error-back')?.addEventListener('click', function () { navigate('video') })
+  document.getElementById('video-error-back')?.addEventListener('click', function () { _backOr('video') })
   document.getElementById('video-error-retry')?.addEventListener('click', function () {
     // With no id to retry with, re-running the same navigate() would only
     // reproduce this exact error again -- send them somewhere that works.
@@ -4921,7 +5011,7 @@ async function renderShelf(key) {
     '<div class="vgrid" id="vshelf-grid"></div>' +
     '<div class="vshelf-more" id="vshelf-more"></div>' +
   '</div>')
-  document.getElementById('vshelf-back')?.addEventListener('click', function () { navigate('video') })
+  document.getElementById('vshelf-back')?.addEventListener('click', function () { _backOr('video') })
   document.getElementById('vshelf-sort')?.addEventListener('change', function () {
     _shelfPage.sort = this.value || ''
     _repaintShelfGrid()
@@ -5010,7 +5100,7 @@ function _bindShelfScroll(ticket) {
   io.observe(sentinel)
 }
 
-async function renderVideo() {
+async function renderVideo(navId) {
   _initVideoUI()
   // Arriving here from Browse or the Diary, the tab state still names that
   // page; the catalog page has no such row set, so fall back to All.
@@ -5024,7 +5114,22 @@ async function renderVideo() {
     '<div class="vrows" id="vrows"></div>' +
   '</div>')
   _bindVideoHead()
-  _renderVideoTab(ticket)
+  // A string navId is a search being retraced — Back from a detail page, a
+  // history jump, a restart restore. Put the query back in the box and replay
+  // the results instead of wiping to the clean catalog. A plain
+  // navigate('video') (sidebar click) has no navId and lands on the catalog
+  // exactly as before.
+  const restoreQuery = typeof navId === 'string' && navId.trim() ? navId.trim() : null
+  if (restoreQuery) {
+    const input = document.getElementById('video-search-input')
+    if (input) input.value = restoreQuery
+    const clearBtn = document.getElementById('video-search-clear')
+    if (clearBtn) clearBtn.hidden = false
+    _renderVideoTab(ticket, { preserveSearch: true })
+    _restoreVideoSearch(restoreQuery)
+  } else {
+    _renderVideoTab(ticket)
+  }
 }
 
 function _vHeadHtml() {
@@ -5065,18 +5170,35 @@ function _bindVideoHead() {
 
 // One tab render: the hero (skipped for My List, which has no editorial
 // content to feature) plus the rows that belong to this tab.
-async function _renderVideoTab(ticket) {
+async function _renderVideoTab(ticket, opts) {
   const heroMount = document.getElementById('vhero-mount')
   const rows = document.getElementById('vrows')
+  // Restoring a search journey (Back into "video, searching for X") must NOT
+  // wipe the query and results this render is about to replay — the catalog
+  // rows still paint underneath, hidden, ready for the search to be cleared.
+  const preserve = !!(opts && opts.preserveSearch)
   // Switching tabs with search results showing used to repaint the new tab's
   // rows behind display:none while the old query's results stayed on screen.
   // A tab switch is a statement that the search is over.
   const searchBox = document.getElementById('video-search-results')
-  if (searchBox) searchBox.innerHTML = ''
-  rows?.style.removeProperty('display')
-  heroMount?.style.removeProperty('display')
+  if (searchBox && !preserve) searchBox.innerHTML = ''
+  // The taste row is a sibling of the rows container, so it needs hiding and
+  // showing alongside them — never inherited from either.
+  const tasteMount = document.getElementById('vtaste-row')
+  if (preserve) {
+    if (rows) rows.style.display = 'none'
+    if (heroMount) heroMount.style.display = 'none'
+    if (tasteMount) tasteMount.style.display = 'none'
+  } else {
+    rows?.style.removeProperty('display')
+    heroMount?.style.removeProperty('display')
+    tasteMount?.style.removeProperty('display')
+    // The search is over, so the page is anonymous again — its navId (the
+    // query) goes with the results it described.
+    state.currentVideoQuery = ''
+  }
   const searchInput = document.getElementById('video-search-input')
-  if (searchInput && searchInput.value) {
+  if (!preserve && searchInput && searchInput.value) {
     searchInput.value = ''
     const clearBtn = document.getElementById('video-search-clear')
     if (clearBtn) clearBtn.hidden = true
@@ -6259,10 +6381,14 @@ function _bindVideoSearch() {
 
   const reset = function () {
     _videoSearchTicket++
+    // Clearing the box ends the journey: the page is the anonymous catalog
+    // again, so its navId (the query) is dropped with the results.
+    state.currentVideoQuery = ''
     const box = document.getElementById('video-search-results')
     if (box) box.innerHTML = ''
     document.getElementById('vrows')?.style.removeProperty('display')
     document.getElementById('vhero-mount')?.style.removeProperty('display')
+    document.getElementById('vtaste-row')?.style.removeProperty('display')
     if (clear) clear.hidden = true
   }
 
@@ -6401,6 +6527,36 @@ function _filterVideoResults(results, typeKey, decade) {
 // unrelated result set (App §20).
 var _vSearchFilter = { results: [], type: 'all', decade: 'all' }
 
+// Replay cache for Back-into-a-search (J1) — the video twin of the music
+// side's state._lastSearch. It holds a REFERENCE to the live _vSearchFilter,
+// so chip clicks and the decade dropdown stay captured for free: restoring
+// replays exactly the filter state the user left, not just the raw results.
+// The TTL is minutes, not seconds, because these results come from a remote
+// catalog that does not shift under the user the way a rescanned library can;
+// past it, the restore re-runs the search with the restored query instead.
+var VSEARCH_CACHE_TTL = 5 * 60 * 1000
+var _lastVideoSearch = null   // { filter: <_vSearchFilter reference>, timestamp }
+
+// Rebuilds the search surface for a query navId: box filled by the caller
+// (renderVideo), results replayed from the cache when it still speaks for this
+// query, refetched when it has gone stale. Scroll restore comes free from
+// navigate()'s restoreScroll, because the page's scroll key carries the query.
+function _restoreVideoSearch(query) {
+  state.currentVideoQuery = query
+  const c = _lastVideoSearch
+  if (c && c.filter && c.filter.query === query &&
+      (Date.now() - c.timestamp) < VSEARCH_CACHE_TTL &&
+      Array.isArray(c.filter.results) && c.filter.results.length) {
+    // Invalidate anything in flight: a slow older fetch must not overwrite
+    // the replay it lost the race to.
+    _videoSearchTicket++
+    _vSearchFilter = c.filter
+    _paintVideoSearchResults()
+    return
+  }
+  _runVideoTitleSearch(query)
+}
+
 var _VSEARCH_TYPE_CHIPS = [
   { key: 'all',   label: 'All' },
   { key: 'movie', label: 'Films' },
@@ -6523,15 +6679,24 @@ function _runVideoTitleSearch(query) {
     const box = document.getElementById('video-search-results')
     if (!box) return
     const ticket = ++_videoSearchTicket
+    // The query is the page's navId from this moment: navigating away (into a
+    // detail page, another tab) records "video, searching for X" in history,
+    // which is what lets Back return HERE rather than to the clean catalog.
+    state.currentVideoQuery = query
     // Every new query starts the filters from scratch, so a decade picked on
     // the last search cannot survive into this one.
     _vSearchFilter = { results: [], type: 'all', decade: 'all', query: query }
     // Hide rather than unmount, so clearing the query restores the catalog
-    // instantly without refetching every row.
+    // instantly without refetching every row. All THREE catalog surfaces go:
+    // the taste row is a sibling of the rows container, not a child, so hiding
+    // only vrows left "From your diary" stranded above the results (visible
+    // only once the diary has an entry, which is why it went unnoticed).
     const rows = document.getElementById('vrows')
     const hero = document.getElementById('vhero-mount')
+    const taste = document.getElementById('vtaste-row')
     if (rows) rows.style.display = 'none'
     if (hero) hero.style.display = 'none'
+    if (taste) taste.style.display = 'none'
     box.innerHTML = _vRowShell('search', 'Searching…', 0)
 
     window.api.videoSearch({ query: query, type: 'all' })
@@ -6559,6 +6724,9 @@ function _runVideoTitleSearch(query) {
           return
         }
         _vSearchFilter.results = results
+        // Cache by reference: later chip clicks mutate this same object, so a
+        // restored journey replays the filters as-left, not as-fetched.
+        _lastVideoSearch = { filter: _vSearchFilter, timestamp: Date.now() }
         _paintVideoSearchResults()
       })
 }
@@ -6583,6 +6751,10 @@ function _retryVideoTitleSearch(original, simplified, ticket) {
       // actually matched.
       _vSearchFilter.query = simplified
       _vSearchFilter.results = results
+      // The page's navId follows what actually matched, so Back replays the
+      // simplified search that produced these results, not the typo.
+      state.currentVideoQuery = simplified
+      _lastVideoSearch = { filter: _vSearchFilter, timestamp: Date.now() }
       _paintVideoSearchResults('Showing results for &ldquo;' + esc(simplified) + '&rdquo;')
     })
 }
@@ -7947,11 +8119,15 @@ function _openAnimeNumberingDialog(d) {
   const input = dlg.querySelector('#anm-input')
 
   function close() {
+    _unregisterNavDismiss(close)
     dlg.remove()
     document.removeEventListener('keydown', onKey)
   }
   function onKey(e) { if (e.key === 'Escape') close() }
   document.addEventListener('keydown', onKey)
+  // Navigating away (Back, a sidebar click) closes the dialog with the page
+  // it was opened over.
+  _registerNavDismiss(close)
 
   function refresh() {
     // Repaint the controls so the button reflects the change, then reload
@@ -15210,9 +15386,28 @@ function showSmartPlaylistDialog(existing) {
     '<button id="sp-cancel">Cancel</button>' +
     '<button id="sp-save" class="primary">Save</button></div></div></div>'
 
-  var overlay = document.createElement('div')
-  overlay.innerHTML = html
+  // The overlay itself goes into the body — NOT wrapped in a bare <div>. The
+  // old wrapper was the bug that killed backdrop-click close: clicks landed on
+  // the inner .modal-overlay, the listener sat on the classless wrapper, and
+  // the (e.target === overlay && className === 'modal-overlay') check could
+  // never be true of either element.
+  var _spHost = document.createElement('div')
+  _spHost.innerHTML = html
+  var overlay = _spHost.firstElementChild
   document.body.appendChild(overlay)
+
+  // One close path for every exit — Save, Cancel, Escape, backdrop, and a
+  // navigation away — so the Escape listener can never leak.
+  function _closeSmartPl() {
+    _unregisterNavDismiss(_closeSmartPl)
+    document.removeEventListener('keydown', _onSmartPlKey)
+    overlay.remove()
+  }
+  function _onSmartPlKey(e) {
+    if (e.key === 'Escape') { e.preventDefault(); _closeSmartPl() }
+  }
+  document.addEventListener('keydown', _onSmartPlKey)
+  _registerNavDismiss(_closeSmartPl)
 
   // Gather the current rules straight from the DOM — the single source of truth
   // for both the preview and the save.
@@ -15275,13 +15470,13 @@ function showSmartPlaylistDialog(existing) {
       state.smartPlaylists.push({ id: 'sp_' + Date.now(), name: name, type: 'smart', rules: rules, createdAt: Date.now() })
     }
     _persistSmartPlaylists()
+    // Close BEFORE renderPlaylists: renderPlaylists is not a navigation, but
+    // closing first keeps the modal from flashing over the refreshed page.
+    _closeSmartPl()
     renderPlaylists()
-    document.getElementById('smart-pl-modal').remove()
   })
 
-  document.getElementById('sp-cancel').addEventListener('click', function() {
-    document.getElementById('smart-pl-modal').remove()
-  })
+  document.getElementById('sp-cancel').addEventListener('click', _closeSmartPl)
 
   container.addEventListener('click', function(e) {
     if (e.target.classList.contains('sp-remove-rule')) {
@@ -15291,9 +15486,9 @@ function showSmartPlaylistDialog(existing) {
   })
 
   overlay.addEventListener('click', function(e) {
-    if (e.target === overlay && e.target.className === 'modal-overlay') {
-      overlay.remove()
-    }
+    // The overlay IS the backdrop now; a click that reaches it directly landed
+    // outside the modal box.
+    if (e.target === overlay) _closeSmartPl()
   })
 
   _updatePreview()
@@ -25338,12 +25533,15 @@ async function showSlskSavedUsers() {
   // and Escape closes it (App #60 — this modal had neither before).
   const _release = _trapFocus(dlg, { initial: '#slsk-saved-close' })
   const _closeSaved = () => {
+    _unregisterNavDismiss(_closeSaved)
     document.removeEventListener('keydown', _onSavedKey)
     try { _release() } catch (_) {}
     dlg.remove()
   }
   const _onSavedKey = e => { if (e.key === 'Escape') { e.preventDefault(); _closeSaved() } }
   document.addEventListener('keydown', _onSavedKey)
+  // Sidebar navigation used to leave this floating over the next page.
+  _registerNavDismiss(_closeSaved)
   dlg.querySelector('#slsk-saved-close').addEventListener('click', _closeSaved)
   dlg.addEventListener('click', e => { if (e.target === dlg) _closeSaved() })
   dlg.querySelectorAll('.slskx-saved-row').forEach(r => {
@@ -25604,6 +25802,11 @@ function initSearchHistory() {
     input.blur()
   }
   input._commitSearch = commitSearch
+
+  // A programmatic navigate() (Back, a home card, a keyboard shortcut) never
+  // blurs the input, so the dropdown used to float over the next page until
+  // the next real click. Registered once — a no-op while closed.
+  _registerNavDismiss(function () { hideDropdown(); hideLiveResults() })
 
   input.addEventListener('focus', () => {
     clearTimeout(blurTimer)
@@ -26512,6 +26715,12 @@ function setupListeners() {
   document.addEventListener('click', e => {
     if (!e.target.closest('#sleep-panel') && !e.target.closest('#btn-sleep'))
       document.getElementById('sleep-panel')?.classList.remove('open')
+  })
+  // The panel is bound once and toggled by class, so it registers once: a
+  // no-op when closed, a dismissal when a navigation would otherwise leave it
+  // floating over the next page.
+  _registerNavDismiss(function () {
+    document.getElementById('sleep-panel')?.classList.remove('open')
   })
 
   // Queue panel
