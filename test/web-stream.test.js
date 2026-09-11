@@ -292,3 +292,36 @@ test('open reports chapters and a coverage URL; coverage lists the converted spa
   assert.deepEqual(cov.ranges, [[0, 4], [100, 104]], 'each run covers up to the start of its last fragment')
   srv.shutdown()
 })
+
+test('a streamed source is probed up to three times before the smooth player gives up on it, with the probe\'s own error in the reason', async () => {
+  let calls = 0
+  const flaky = (_b, args, _o, cb) => { calls++; if (calls < 3) return cb(new Error('boom'), '', 'Server returned 404 Not Found'); cb(null, JSON.stringify({ streams: STREAMS, format: { duration: '10' } })) }
+  const srv = createWebStreamServer({ spawnFn: makeSpawn([]), execFileFn: flaky, cacheDir: tmpDir() })
+  const s = await srv.open('http://127.0.0.1:1/film.mkv')
+  assert.equal(calls, 3); assert.ok(s.id)
+  let local = 0
+  const failing = (_b, args, _o, cb) => { local++; assert.ok(!args.includes('-rw_timeout'), 'no network timeout for a file'); cb(new Error('x'), '', 'Invalid data found when processing input') }
+  const srv2 = createWebStreamServer({ spawnFn: makeSpawn([]), execFileFn: failing, cacheDir: tmpDir() })
+  await assert.rejects(() => srv2.open('/x/film.mkv'), /ffprobe could not read the source: Invalid data/)
+  assert.equal(local, 1, 'a local file is probed once')
+  srv.shutdown(); srv2.shutdown()
+})
+
+test('a copied-picture run starts on the keyframe at or before the asked second and says so', async () => {
+  const spawned = []
+  const probes = []
+  const exec = (_b, args, _o, cb) => {
+    if (args.includes('-skip_frame')) { probes.push(args); return cb(null, '16.000000\n18.000000\n20.000000\n') }
+    cb(null, JSON.stringify({ streams: STREAMS, format: { duration: '123.4' } }))
+  }
+  const srv = createWebStreamServer({ spawnFn: makeSpawn(spawned), execFileFn: exec, cacheDir: tmpDir() })
+  const s = await srv.open('/x/film.mkv')   // AV1 + Opus: a remux, picture copied
+  const p = get(s.streamUrl + '?t=21')
+  await new Promise(r => setTimeout(r, 40))
+  assert.equal(probes.length, 1); assert.ok(probes[0].includes('1%21'))
+  assert.equal(spawned[0].args[spawned[0].args.indexOf('-ss') + 1], '20', 'the run starts on the keyframe')
+  spawned[0].proc.stdout.end(); spawned[0].proc.emit('close', 0)
+  const r = await p
+  assert.equal(r.headers['x-papa-start'], '20')
+  srv.shutdown()
+})

@@ -15,11 +15,13 @@ function full(type, version, flags, payload) {
 function mdhd(timescale) {
   const p = Buffer.alloc(20); p.writeUInt32BE(timescale, 8); return full('mdhd', 0, 0, p)
 }
-function moov(timescale) { return box('moov', Buffer.concat([box('mvhd', Buffer.alloc(100)), box('trak', box('mdia', mdhd(timescale)))])) }
-function moof(tfdt, v1) {
+function tkhd(id) { const p = Buffer.alloc(80); p.writeUInt32BE(id, 8); return full('tkhd', 0, 0, p) }
+function moov(timescale) { return box('moov', Buffer.concat([box('mvhd', Buffer.alloc(100)), box('trak', Buffer.concat([tkhd(1), box('mdia', mdhd(timescale))])), box('trak', Buffer.concat([tkhd(2), box('mdia', mdhd(48000))]))])) }
+function tfhd(id) { const p = Buffer.alloc(4); p.writeUInt32BE(id, 0); return full('tfhd', 0, 0, p) }
+function moof(tfdt, v1, trackId) {
   const p = v1 ? Buffer.alloc(8) : Buffer.alloc(4)
   if (v1) p.writeBigUInt64BE(BigInt(tfdt), 0); else p.writeUInt32BE(tfdt, 0)
-  return box('moof', Buffer.concat([box('mfhd', Buffer.alloc(8)), box('traf', Buffer.concat([box('tfhd', Buffer.alloc(8)), full('tfdt', v1 ? 1 : 0, 0, p)]))]))
+  return box('moof', Buffer.concat([box('mfhd', Buffer.alloc(8)), box('traf', Buffer.concat([tfhd(trackId || 1), full('tfdt', v1 ? 1 : 0, 0, p)]))]))
 }
 function mdat(n) { return box('mdat', Buffer.alloc(n, 7)) }
 
@@ -47,4 +49,11 @@ test('push reports the fragments found in that call', () => {
   const got = ix.push(Buffer.concat([moof(500), mdat(3), moof(1500), mdat(3)]))
   assert.deepEqual(got.map(f => f.time), [0.5, 1.5])
   assert.deepEqual(ix.push(null), [])
+})
+
+test('only the video track\'s fragments are indexed: an audio-only moof on another clock is skipped', () => {
+  const ix = create()
+  ix.push(Buffer.concat([box('ftyp', Buffer.alloc(8)), moov(1000), moof(0, false, 1), mdat(3), moof(48000 * 7, false, 2), mdat(3), moof(2000, false, 1), mdat(3)]))
+  assert.equal(ix.state.trackId, 1)
+  assert.deepEqual(ix.state.fragments.map(f => f.time), [0, 2], 'the audio fragment at "7 s" on its 48 kHz clock is not a video fragment')
 })

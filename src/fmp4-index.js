@@ -13,7 +13,7 @@
     let pending = []        // buffered bytes not yet consumed
     let pendingLen = 0
     let pos = 0             // absolute offset of pending[0]
-    const st = { initLength: 0, timescale: 0, fragments: [], bytes: 0, ready: false }
+    const st = { initLength: 0, timescale: 0, trackId: 0, fragments: [], bytes: 0, ready: false }
 
     function _peek(n) {
       if (pendingLen < n) return null
@@ -32,8 +32,35 @@
     }
     function _drop(n) { _take(n) }
 
+    // moov → trak → tkhd: the id of the first track (the video, mapped first).
+    // Fragments of other tracks (ffmpeg writes audio-only moofs too) are on a
+    // different clock and must not be indexed.
+    function _trackIdOf(moov) {
+      let off = 8
+      while (off + 8 <= moov.length) {
+        const size = moov.readUInt32BE(off), type = moov.toString('latin1', off + 4, off + 8)
+        if (size < 8) break
+        if (type === 'trak') {
+          const trak = moov.subarray(off, off + size)
+          let o2 = 8
+          while (o2 + 8 <= trak.length) {
+            const s2 = trak.readUInt32BE(o2), t2 = trak.toString('latin1', o2 + 4, o2 + 8)
+            if (s2 < 8) break
+            if (t2 === 'tkhd') {
+              const v = trak[o2 + 8]
+              // version 0: flags(3) ctime(4) mtime(4) track_ID; version 1: 8-byte times.
+              return v === 1 ? trak.readUInt32BE(o2 + 8 + 4 + 8 + 8) : trak.readUInt32BE(o2 + 8 + 4 + 4 + 4)
+            }
+            o2 += s2
+          }
+          return 0
+        }
+        off += size
+      }
+      return 0
+    }
     // moov → trak → mdia → mdhd: the timescale of the first track (the video,
-    // which is mapped first). tfdt in the first traf is on the same clock.
+    // which is mapped first). tfdt in its traf is on the same clock.
     function _timescaleOf(moov) {
       let off = 8
       while (off + 8 <= moov.length) {
@@ -67,7 +94,9 @@
       return 0
     }
 
-    // moof → traf → tfdt: the fragment's base decode time on the first track.
+    // moof → traf (of the indexed track, by tfhd track_ID) → tfdt: the
+    // fragment's base decode time. null when this moof carries no fragment
+    // of that track.
     function _tfdtOf(moof) {
       let off = 8
       while (off + 8 <= moof.length) {
@@ -76,16 +105,18 @@
         if (type === 'traf') {
           let o2 = off + 8
           const end = off + size
+          let trackId = null, tfdt = null
           while (o2 + 8 <= end) {
             const s2 = moof.readUInt32BE(o2), t2 = moof.toString('latin1', o2 + 4, o2 + 8)
             if (s2 < 8) break
+            if (t2 === 'tfhd') trackId = moof.readUInt32BE(o2 + 12)
             if (t2 === 'tfdt') {
               const v = moof[o2 + 8]
-              return v === 1 ? Number(moof.readBigUInt64BE(o2 + 12)) : moof.readUInt32BE(o2 + 12)
+              tfdt = v === 1 ? Number(moof.readBigUInt64BE(o2 + 12)) : moof.readUInt32BE(o2 + 12)
             }
             o2 += s2
           }
-          return null
+          if (tfdt != null && (!st.trackId || trackId === st.trackId)) return tfdt
         }
         off += size
       }
@@ -124,6 +155,7 @@
           if (pendingLen < size) break
           const moov = _take(size)
           st.timescale = _timescaleOf(moov) || st.timescale
+          st.trackId = _trackIdOf(moov) || st.trackId
           st.initLength = pos
           st.ready = true
           continue

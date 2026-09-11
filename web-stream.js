@@ -30,12 +30,24 @@ const fmp4 = require('./src/fmp4-index')
 const READ_CHUNK = 1 << 20          // 1 MiB per read when following a file
 const NEAR_LIVE_SEC = 3             // a run this close behind the target is worth waiting for
 
-function probeStreams(input, execFileFn, timeoutMs) {
+// A torrent-backed source may not have its head yet when playback begins:
+// the probe is tried a few times before the smooth player gives up on it.
+const PROBE_ATTEMPTS = 3
+const PROBE_RETRY_MS = 1500
+function probeStreams(input, execFileFn, timeoutMs, attempt) {
+  const isRemote = /^https?:\/\//i.test(String(input || ''))
   return new Promise((resolve, reject) => {
     execFileFn('ffprobe', [
-      '-v', 'error', '-show_streams', '-show_format', '-show_chapters', '-of', 'json', input,
-    ], { encoding: 'utf8', timeout: timeoutMs || 25000, maxBuffer: 4 << 20 }, (err, out) => {
-      if (err) return reject(err)
+      '-v', 'error',
+    ].concat(isRemote ? ['-rw_timeout', '15000000'] : []).concat([
+      '-show_streams', '-show_format', '-show_chapters', '-of', 'json', input,
+    ]), { encoding: 'utf8', timeout: timeoutMs || 25000, maxBuffer: 4 << 20 }, (err, out, stderr) => {
+      if (err) {
+        const n = (attempt || 1)
+        if (isRemote && n < PROBE_ATTEMPTS) return setTimeout(() => probeStreams(input, execFileFn, timeoutMs, n + 1).then(resolve, reject), PROBE_RETRY_MS)
+        const detail = String(stderr || '').trim().split('\n').slice(-2).join(' | ')
+        return reject(new Error('ffprobe could not read the source' + (detail ? ': ' + detail : '') + (isRemote ? ' (after ' + n + ' attempts)' : '')))
+      }
       try {
         const j = JSON.parse(out)
         // Chapters in the shape the theatre already reads from mpv.
@@ -139,6 +151,20 @@ function createWebStreamServer(opts) {
       if (!r.done && local - covered <= NEAR_LIVE_SEC) return { run: r, frag }
     }
     return null
+  }
+
+  // A copied picture can only start on a keyframe. Asked for t, the run
+  // starts on the keyframe at or before it, and says so (X-Papa-Start), so
+  // the page's timeline stays exact and both tracks share one origin.
+  function _alignedStart(s, plan, t) {
+    if (t <= 0 || s.pair || !(plan.video && plan.video.copy)) return Promise.resolve(t)
+    return new Promise(resolve => {
+      execFileFn('ffprobe', planner.keyframeProbeArgs(s.input, t, 20), { encoding: 'utf8', timeout: 15000, maxBuffer: 1 << 20 }, (err, out) => {
+        if (err) return resolve(t)
+        const k = planner.keyframeAtOrBefore(out, t)
+        resolve(k == null ? t : k)
+      })
+    })
   }
 
   function _startRun(s, variant, plan, extra, t) {
@@ -263,7 +289,7 @@ function createWebStreamServer(opts) {
     res.end(JSON.stringify({ ranges: coverage(s) }))
   }
 
-  function _serveStream(s, u, res) {
+  async function _serveStream(s, u, res) {
     if (!s) { res.writeHead(404); res.end(); return }
     const t = Math.max(0, Number(u.searchParams.get('t')) || 0)
     const variant = _variantOf(s, u)
@@ -275,7 +301,9 @@ function createWebStreamServer(opts) {
       run = hit.run; offset = hit.frag.offset
       log('[web-stream] cache hit run ' + run.id + ' for ' + t + 's (fragment at ' + (run.start + hit.frag.time).toFixed(1) + 's)')
     } else {
-      run = _startRun(s, variant.key, variant.plan, variant.extra, t)
+      const start = await _alignedStart(s, variant.plan, t)
+      if (!sessions.has(s.id)) { res.writeHead(410); res.end(); return }
+      run = _startRun(s, variant.key, variant.plan, variant.extra, start)
       offset = 0
     }
     res.writeHead(200, {

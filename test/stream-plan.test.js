@@ -162,3 +162,14 @@ test('an image subtitle (PGS) burns in through an overlay graph with frames in s
   const text = P.ffmpegArgs(p, '/x/film.mkv', 0, { burnIndex: 3, burnSubOrdinal: 0, burnImage: false })
   assert.ok(text.includes('-vf') && /subtitles='\/x\/film\.mkv':si=0/.test(text[text.indexOf('-vf') + 1]))
 })
+
+test('a copied picture keeps the muxer from writing a sound gap on seek, and the keyframe probe finds where such a run must start', () => {
+  const a = P.ffmpegArgs(P.plan(clockwork), '/x/film.mkv', 21)
+  assert.deepEqual(a.slice(a.indexOf('-avoid_negative_ts'), a.indexOf('-avoid_negative_ts') + 2), ['-avoid_negative_ts', 'make_non_negative'])
+  assert.ok(!P.ffmpegArgs(P.plan(clockwork), '/x/film.mkv', 0).includes('-avoid_negative_ts'), 'not at the start')
+  assert.ok(!P.ffmpegArgs(P.plan(mononoke), '/x/film.mkv', 21).includes('-avoid_negative_ts'), 'a re-encode uses the split seek instead')
+  assert.deepEqual(P.keyframeProbeArgs('/x/film.mkv', 21, 20), ['-v', 'error', '-select_streams', 'v:0', '-skip_frame', 'nokey', '-read_intervals', '1%21', '-show_entries', 'frame=pts_time', '-of', 'csv=p=0', '/x/film.mkv'])
+  assert.equal(P.keyframeAtOrBefore('16.000000\n18.000000\n20.000000\n22.000000\n', 21), 20)
+  assert.equal(P.keyframeAtOrBefore('20.000000\n', 20), 20)
+  assert.equal(P.keyframeAtOrBefore('', 21), null)
+})

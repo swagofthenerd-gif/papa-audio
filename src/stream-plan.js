@@ -229,6 +229,12 @@ function ffmpegArgs(p, input, startSec, extra) {
     .concat(inputSeek > 0 ? ['-ss', String(inputSeek)] : [])
     .concat(['-i', input])
     .concat(outputSeek > 0 ? ['-ss', String(outputSeek)] : [])
+    // A copied picture starts on a keyframe; the muxer's default timestamp
+    // policy then wrote a first sound packet followed by a jump the size of
+    // the seek — the copy-picture lip-sync bug. make_non_negative keeps the
+    // sound contiguous. The caller starts such a run on the keyframe itself
+    // (keyframeAtOrBefore), so both tracks share one origin.
+    .concat(!reencode && start > 0 ? ['-avoid_negative_ts', 'make_non_negative'] : [])
     .concat(['-map', '0:' + p.video.index])
     .concat(p.audio ? ['-map', '0:' + p.audio.index] : [])
     .concat(filters.length ? ['-vf', filters.join(',')] : [])
@@ -277,9 +283,30 @@ function mergeVtt(cueLists) {
   return 'WEBVTT\n\n' + cues.map(c => _ts(c.start) + ' --> ' + _ts(c.end) + (c.settings ? ' ' + c.settings : '') + '\n' + c.text).join('\n\n') + (cues.length ? '\n' : '')
 }
 
+// The ffprobe argv that lists keyframe times in the window before `sec`, so
+// a copied-picture run can start exactly on a keyframe.
+function keyframeProbeArgs(input, sec, windowSec) {
+  const to = Math.max(0, _n(sec))
+  const from = Math.max(0, to - (windowSec || 20))
+  return ['-v', 'error', '-select_streams', 'v:0', '-skip_frame', 'nokey', '-read_intervals', from + '%' + to,
+    '-show_entries', 'frame=pts_time', '-of', 'csv=p=0', input]
+}
+// The last keyframe time at or before `sec` in ffprobe's output, or null.
+function keyframeAtOrBefore(probeOut, sec) {
+  const to = _n(sec)
+  let best = null
+  for (const line of String(probeOut || '').split('\n')) {
+    const cell = line.trim().split(',')[0]
+    if (!cell) continue
+    const t = Number(cell)
+    if (Number.isFinite(t) && t <= to + 0.001 && (best == null || t > best)) best = t
+  }
+  return best
+}
+
 // WebVTT sidecar extraction for one text subtitle stream.
 function subtitleArgs(input, streamIndex) {
   return ['-hide_banner', '-loglevel', 'error', '-nostdin', '-i', input, '-map', '0:' + streamIndex, '-f', 'webvtt', 'pipe:1']
 }
 
-module.exports = { plan, pickStreams, isHdr, ffmpegArgs, subtitleArgs, parseVtt, mergeVtt, mimeFor, videoCodecString, audioCodecString, BROWSER_VIDEO, BROWSER_AUDIO }
+module.exports = { plan, pickStreams, isHdr, ffmpegArgs, subtitleArgs, keyframeProbeArgs, keyframeAtOrBefore, parseVtt, mergeVtt, mimeFor, videoCodecString, audioCodecString, BROWSER_VIDEO, BROWSER_AUDIO }
