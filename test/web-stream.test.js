@@ -123,3 +123,29 @@ test('a paired session copies a remote video URL and a remote audio URL into one
   await assert.rejects(() => srv.openPair('https://v.example/video', null))
   srv.shutdown()
 })
+
+test('parallel requests for one subtitle track share a single extraction; close kills a running one', async () => {
+  const spawned = []
+  // A slow extractor: does not finish until told.
+  const spawnSlow = function (bin, args) {
+    const p = new EventEmitter(); p.stdout = new PassThrough(); p.stderr = new PassThrough(); p.killed = false
+    p.kill = () => { p.killed = true; setImmediate(() => { p.stdout.end(); p.emit('close', 255) }) }
+    spawned.push({ bin, args, proc: p }); return p
+  }
+  const srv = createWebStreamServer({ spawnFn: spawnSlow, execFileFn: fakeExecFile })
+  const s = await srv.open('/x/film.mkv')
+  const a = get(s.subtitles[0].url); const b = get(s.subtitles[0].url); const c = get(s.subtitles[0].url)
+  await new Promise(r => setTimeout(r, 40))
+  assert.equal(spawned.filter(x => x.args.includes('webvtt')).length, 1, 'three requests, one ffmpeg')
+  spawned[0].proc.stdout.write('WEBVTT\n\n00:00.000 --> 00:01.000\nhi\n'); spawned[0].proc.stdout.end(); spawned[0].proc.emit('close', 0)
+  const [ra, rb, rc] = await Promise.all([a, b, c])
+  assert.ok(ra.body === rb.body && rb.body === rc.body && /hi/.test(ra.body))
+  const s2 = await srv.open('/x/film2.mkv')
+  const p2 = get(s2.subtitles[0].url)
+  await new Promise(r => setTimeout(r, 30))
+  const running = spawned[spawned.length - 1].proc
+  srv.close(s2.id)
+  assert.ok(running.killed, 'closing the session stops the extraction')
+  await p2.catch(() => {})
+  srv.shutdown()
+})

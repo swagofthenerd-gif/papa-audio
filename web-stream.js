@@ -55,6 +55,10 @@ function createWebStreamServer(opts) {
       s.proc = null
     }
   }
+  // Closing a session also stops any subtitle extraction still reading.
+  function _killSubs(s) {
+    if (s && s.subProcs) for (const p of Array.from(s.subProcs)) { try { p.kill('SIGKILL') } catch (_) {} }
+  }
 
   function _handle(req, res) {
     const u = new URL(req.url, 'http://127.0.0.1')
@@ -114,18 +118,39 @@ function createWebStreamServer(opts) {
     res.on('close', () => { if (s.proc === proc) _killProc(s) })
   }
 
+  // One extraction per subtitle track per session, however many requests
+  // arrive while it runs: a 4K torrent-backed film showed three ffmpegs
+  // reading the same 20 GB file seconds apart. Requests that land mid-flight
+  // wait on the same promise. (An extraction still reads the whole input —
+  // subtitles are interleaved through it — which on a torrent stream means
+  // the whole file; a progressive extractor is a planned follow-up.)
+  function _extractSub(s, index) {
+    const cached = s.subs.get(index)
+    if (cached) return Promise.resolve(cached)
+    if (!s.subJobs) s.subJobs = new Map()
+    if (s.subJobs.has(index)) return s.subJobs.get(index)
+    const job = new Promise(resolve => {
+      const proc = spawnFn(ffmpegBin, planner.subtitleArgs(s.input, index), { stdio: ['ignore', 'pipe', 'ignore'] })
+      s.subProcs = s.subProcs || new Set()
+      s.subProcs.add(proc)
+      const chunks = []
+      proc.stdout.on('data', d => chunks.push(d))
+      proc.on('close', () => {
+        s.subProcs.delete(proc)
+        s.subJobs.delete(index)
+        const text = Buffer.concat(chunks).toString('utf8')
+        if (text.length > 10) s.subs.set(index, text)
+        resolve(text || 'WEBVTT\n\n')
+      })
+    })
+    s.subJobs.set(index, job)
+    return job
+  }
   function _serveSub(s, index, res) {
     if (!s) { res.writeHead(404); res.end(); return }
-    const cached = s.subs.get(index)
-    if (cached) { res.writeHead(200, { 'Content-Type': 'text/vtt; charset=utf-8', 'Access-Control-Allow-Origin': '*' }); res.end(cached); return }
-    const proc = spawnFn(ffmpegBin, planner.subtitleArgs(s.input, index), { stdio: ['ignore', 'pipe', 'ignore'] })
-    const chunks = []
-    proc.stdout.on('data', d => chunks.push(d))
-    proc.on('close', () => {
-      const text = Buffer.concat(chunks).toString('utf8')
-      if (text.length > 10) s.subs.set(index, text)
+    _extractSub(s, index).then(text => {
       res.writeHead(200, { 'Content-Type': 'text/vtt; charset=utf-8', 'Access-Control-Allow-Origin': '*' })
-      res.end(text || 'WEBVTT\n\n')
+      res.end(text)
     })
   }
 
@@ -169,6 +194,7 @@ function createWebStreamServer(opts) {
     const s = sessions.get(id)
     if (!s) return false
     _killProc(s)
+    _killSubs(s)
     sessions.delete(id)
     return true
   }
