@@ -320,3 +320,34 @@ test('the fallback is null when OMDb has nothing, and never even asks for nothin
   assert.strictEqual(await api.detailFromOmdb(null), null)
   assert.strictEqual(hits, 1, 'only the real lookup hit the network')
 })
+
+// ── R10: a title lookup is a guess; check it before wearing its numbers ─────
+const { plausibleMatch, omdbTypeFor } = require('../catalog/omdb')
+test('plausibleMatch: refuses when our entry has no year, accepts a year that agrees, rejects one that does not', () => {
+  const real = normalize({ ...GODFATHER })
+  assert.equal(plausibleMatch(real, { title: 'The Godfather', year: null }), false, 'no year → nothing to check → refuse')
+  assert.equal(plausibleMatch(real, { title: 'The Godfather', year: '' }), false)
+  assert.equal(plausibleMatch(real, { title: 'The Godfather', year: '1972' }), true)
+  assert.equal(plausibleMatch(real, { title: 'The Godfather', year: 1972 }), true)
+  assert.equal(plausibleMatch(real, { title: 'The Godfather', year: '2006' }), false, 'a remake year is a different film')
+  const running = normalize({ ...GODFATHER, Year: '2022–', Title: 'Reacher' })
+  assert.equal(plausibleMatch(running, { title: 'Reacher', year: '2022' }), true, 'a running series year "2022–" agrees with 2022')
+  assert.equal(plausibleMatch(null, { year: '2022' }), false)
+})
+
+test('omdbTypeFor maps the app\'s kinds onto OMDb\'s', () => {
+  assert.equal(omdbTypeFor('tv'), 'series')
+  assert.equal(omdbTypeFor('movie'), 'movie')
+  assert.equal(omdbTypeFor('anime'), undefined)
+})
+
+test('byTitle sends the year and OMDb type, so a film and a same-named series cannot answer for each other', async () => {
+  const urls = []
+  const cat = createOmdbCatalog({ apiKey: 'k', fetchFn: async (url) => { urls.push(url); return { ok: true, json: async () => GODFATHER } } })
+  await cat.byTitle('Reacher', '2022', 'series')
+  assert.match(urls[0], /t=Reacher/)
+  assert.match(urls[0], /y=2022/)
+  assert.match(urls[0], /type=series/)
+  await cat.byTitle('Reacher', '2022')
+  assert.doesNotMatch(urls[1], /type=/)
+})

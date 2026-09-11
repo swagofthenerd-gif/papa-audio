@@ -178,7 +178,8 @@ const { createAnilistCatalog } = require('./catalog/anilist')
 const { createJikanCatalog } = require('./catalog/jikan')
 const { createKitsuCatalog } = require('./catalog/kitsu')
 const { resolveAnimeShelf } = require('./catalog/anime-shelf')
-const { createOmdbCatalog } = require('./catalog/omdb')
+const { createOmdbCatalog, plausibleMatch: omdbPlausibleMatch, omdbTypeFor } = require('./catalog/omdb')
+const { sortJunkLast } = require('./catalog/search-rank')
 const { createOpenSubtitles } = require('./subs/opensubtitles')
 const { resolveStream } = require('./providers/index')
 const { createYtsProvider } = require('./providers/yts')
@@ -10640,7 +10641,7 @@ ipcMain.handle('video-search', async (_, { query, type }) => {
     }
 
     if (type === 'movie' || type === 'tv') {
-      const results = (await tmdb().search(query)).filter(r => r.type === type)
+      const results = sortJunkLast((await tmdb().search(query)).filter(r => r.type === type))
       return { ok: true, results }
     }
 
@@ -10662,7 +10663,9 @@ ipcMain.handle('video-search', async (_, { query, type }) => {
       if (r.isAnime && animeRes.some(a => _sameShow(a, r))) continue
       merged.push(r)
     }
-    return { ok: true, results: merged.concat(animeRes) }
+    // Entries with no year and no poster are strays sharing a title with
+    // the real thing; they go last (R10).
+    return { ok: true, results: sortJunkLast(merged.concat(animeRes)) }
   } catch (e) {
     return { ok: false, error: e.message }
   }
@@ -10789,9 +10792,15 @@ async function _videoShowDetail(type, id) {
 async function _enrichExternalRatings(detail) {
   try {
     const client = omdb()
-    const external = detail.imdbId
-      ? await client.byImdbId(detail.imdbId)
-      : await client.byTitle(detail.title, detail.year)
+    // By id: exact. By title: only with a year to check against and OMDb's
+    // own type, and the answer must agree on the year — a junk entry with no
+    // year used to wear the real show's rating and awards (R10).
+    let external = null
+    if (detail.imdbId) external = await client.byImdbId(detail.imdbId)
+    else if (detail.year) {
+      external = await client.byTitle(detail.title, detail.year, omdbTypeFor(detail.type))
+      if (external && !omdbPlausibleMatch(external, detail)) external = null
+    }
     if (!external) return detail
     return { ...detail, external }
   } catch (_) {

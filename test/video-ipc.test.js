@@ -817,7 +817,9 @@ test('the detail is enriched with outside ratings', () => {
   // TMDB has no IMDb id for a long tail of titles, so a title fallback is the
   // difference between "most films" and "the ones everyone has heard of".
   assert.match(fn, /byImdbId\(detail\.imdbId\)/)
-  assert.match(fn, /byTitle\(detail\.title, detail\.year\)/)
+  // The title fallback now carries OMDb's type and is gated by year (R10):
+  // a junk entry with no year used to wear the real show's rating.
+  assert.match(fn, /byTitle\(detail\.title, detail\.year, omdbTypeFor\(detail\.type\)\)/)
   // A missing key, a missing id or a failed request must leave the detail
   // exactly as it was — this is extra information, never a dependency.
   assert.match(fn, /if \(!external\) return detail/)

@@ -117,3 +117,26 @@ test('an entirely healthy library reports nothing', () => {
   ]})], { nonAudio: [{ path: '/m/cover.jpg', bytes: 500 }] })
   assert.deepEqual(f, [])
 })
+
+// ── R9: album findings say what the ids mean ─────────────────────────────────
+test('album findings carry name, folder and id for each album, so the page can show and open them', () => {
+  const f = H.assessLibrary([album('a1', { artist: 'Unknown Artist', name: 'Mirage', tracks: [
+    { filePath: '/mnt/data/MUSIC/Mirage - Camel/01 - Freefall.flac', fileSize: 30e6, channels: 2, duration: 300, trackNumber: 1 },
+  ]})], {})
+  const u = find(f, 'untagged')
+  assert.deepEqual(u.paths, ['a1'], 'ids stay for the fix machinery')
+  assert.equal(u.items.length, 1)
+  assert.equal(u.items[0].id, 'a1')
+  assert.equal(u.items[0].label, 'Unknown Artist — Mirage')
+  assert.equal(u.items[0].path, '/mnt/data/MUSIC/Mirage - Camel')
+  assert.equal(u.items[0].tracks, 1)
+})
+
+test('file findings carry no items (their paths ARE the meaning)', () => {
+  const f = H.assessLibrary([album('a', { tracks: [
+    { filePath: '/m/zero.flac', fileSize: 0, channels: 2, duration: 0, trackNumber: 1 },
+  ]})], {})
+  const b = find(f, 'broken')
+  assert.ok(b)
+  assert.equal(b.items, null)
+})

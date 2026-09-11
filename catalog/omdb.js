@@ -212,9 +212,11 @@ function createOmdbCatalog({ apiKey, fetchFn, cache = null,
     },
     // The fallback, for titles TMDB has no IMDb id for. Year narrows it because
     // remakes share a title far more often than they share a year.
-    byTitle(title, year) {
+    // `type` is OMDb's own vocabulary: 'movie' | 'series'. Passing it stops a
+    // film and a same-named series from answering for each other.
+    byTitle(title, year, type) {
       if (!title) return Promise.resolve(null)
-      return _get({ t: title, ...(year ? { y: year } : {}) })
+      return _get({ t: title, ...(year ? { y: year } : {}), ...(type ? { type } : {}) })
     },
 
     // TMDB down: OMDb standing in for the detail page.
@@ -267,9 +269,32 @@ function createOmdbCatalog({ apiKey, fetchFn, cache = null,
   }
 }
 
+// Does an OMDb answer plausibly describe the entry we asked about? A title
+// lookup is a guess, and OMDb answers the most famous match: asked for a
+// junk "Reacher" entry with no year, it returned the real show's 8.1 and
+// awards, and the card wore them (R10). With no year on our side there is
+// nothing to check against, so the answer is refused outright; with one, the
+// OMDb Year ("2022–" for a running series, "1972" for a film) must start
+// with it. An IMDb-id lookup is exact and never comes through here.
+function plausibleMatch(external, entry) {
+  if (!external || !entry) return false
+  const want = String(entry.year == null ? '' : entry.year).trim().slice(0, 4)
+  if (!/^\d{4}$/.test(want)) return false
+  const got = String(external.year == null ? '' : external.year).trim()
+  return got.slice(0, 4) === want
+}
+
+function omdbTypeFor(entryType) {
+  if (entryType === 'tv' || entryType === 'series') return 'series'
+  if (entryType === 'movie') return 'movie'
+  return undefined
+}
+
 module.exports = {
   BASE,
   REQUEST_TIMEOUT_MS,
+  plausibleMatch,
+  omdbTypeFor,
   isFailure,
   isRateLimited,
   normalizeRatings,

@@ -40,11 +40,30 @@
     return !s || s === 'unknown artist' || s === 'unknown album' || s === 'unknown' || s === 'various'
   }
 
-  function finding(id, title, severity, detail, paths, bytes, fixAction) {
+  function finding(id, title, severity, detail, paths, bytes, fixAction, items) {
     return {
       id: id, title: title, severity: severity, detail: detail,
       paths: paths || [], count: (paths || []).length, bytes: bytes || 0,
       fixAction: fixAction || null,
+      // Album findings: what the ids MEAN — a name and a folder for each,
+      // so the page can show "Unknown Artist — Mirage · /mnt/…" and open
+      // it, instead of a 32-character hash (R9).
+      items: items || null,
+    }
+  }
+
+  function albumItem(a) {
+    var tr = (a && a.tracks) || []
+    var fp = ''
+    for (var i = 0; i < tr.length; i++) if (tr[i] && tr[i].filePath) { fp = tr[i].filePath; break }
+    var cut = Math.max(fp.lastIndexOf('/'), fp.lastIndexOf('\\'))
+    return {
+      id: a.id,
+      artist: a.artist || 'Unknown artist',
+      name: a.name || 'Unknown album',
+      label: (a.artist || 'Unknown artist') + ' \u2014 ' + (a.name || 'Unknown album'),
+      path: cut > 0 ? fp.slice(0, cut) : fp,
+      tracks: tr.length,
     }
   }
 
@@ -126,12 +145,12 @@
     }
 
     // — problems worth SHOWING but never auto-fixing —
-    var untagged = []
-    var mixed = []
-    var gaps = []
+    var untagged = [], untaggedItems = []
+    var mixed = [], mixedItems = []
+    var gaps = [], gapItems = []
     for (i = 0; i < albums.length; i++) {
       var a = albums[i]
-      if (isUnknownTag(a.artist) || isUnknownTag(a.name)) untagged.push(a.id)
+      if (isUnknownTag(a.artist) || isUnknownTag(a.name)) { untagged.push(a.id); untaggedItems.push(albumItem(a)) }
 
       var chans = {}
       var nums = []
@@ -140,28 +159,28 @@
         if (tr[j].channels > 0) chans[tr[j].channels] = true
         if (tr[j].trackNumber > 0) nums.push(tr[j].trackNumber)
       }
-      if (Object.keys(chans).length > 1) mixed.push(a.id)
+      if (Object.keys(chans).length > 1) { mixed.push(a.id); mixedItems.push(albumItem(a)) }
       if (nums.length > 1) {
         nums.sort(function (x, y) { return x - y })
         var expected = nums[nums.length - 1] - nums[0] + 1
-        if (expected > nums.length) gaps.push(a.id)
+        if (expected > nums.length) { gaps.push(a.id); gapItems.push(albumItem(a)) }
       }
     }
     if (untagged.length) {
       out.push(finding('untagged', 'Albums with missing tags', 'medium',
         'Unknown artist or album. These collide with each other when looking for duplicates, so fixing ' +
         'the tags is what makes duplicate detection trustworthy.',
-        untagged, 0, null))
+        untagged, 0, null, untaggedItems))
     }
     if (mixed.length) {
       out.push(finding('mixed-channels', 'Albums mixing stereo and surround', 'low',
         'Different channel layouts under one album. Usually two separate rips sharing tags — see Duplicates.',
-        mixed, 0, null))
+        mixed, 0, null, mixedItems))
     }
     if (gaps.length) {
       out.push(finding('missing-tracks', 'Albums with missing track numbers', 'low',
         'Gaps in the numbering, so the album is probably incomplete.',
-        gaps, 0, null))
+        gaps, 0, null, gapItems))
     }
 
     var order = { high: 0, medium: 1, low: 2 }

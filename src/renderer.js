@@ -29366,9 +29366,18 @@ async function renderManageHealth() {
   var html = ''
   for (var i = 0; i < findings.length; i++) {
     var f = findings[i]
-    var sample = f.paths.slice(0, 6).map(function (p) {
-      return '<div class="mg-health-path">' + esc(_mgBaseName(p) || p) + '</div>'
-    }).join('')
+    // Album findings show real albums — name, folder, a click-through — not
+    // the 32-character ids they are keyed by (R9). File findings keep paths.
+    var sample = f.items
+      ? f.items.slice(0, 6).map(function (it) {
+          return '<button class="mg-health-path mg-health-item" data-album-open="' + esc(it.id) + '" title="' + esc(it.path || '') + '">' +
+            '<span class="mg-health-item-name">' + esc(it.label) + '</span>' +
+            (it.path ? '<span class="mg-health-item-path">' + esc(it.path) + '</span>' : '') +
+            '<span class="mg-health-item-go">Open \u203a</span></button>'
+        }).join('')
+      : f.paths.slice(0, 6).map(function (p) {
+          return '<div class="mg-health-path">' + esc(_mgBaseName(p) || p) + '</div>'
+        }).join('')
     html += '<div class="mg-group mg-sev-' + f.severity + '">' +
       '<div class="mg-group-head">' +
         '<span class="mg-group-title">' + esc(f.title) + '</span>' +
@@ -29380,7 +29389,9 @@ async function renderManageHealth() {
       (f.paths.length > 6 ? '<div class="mg-health-path">…and ' + (f.paths.length - 6) + ' more</div>' : '') +
       (f.fixAction
         ? '<div class="mg-health-actions"><button class="mg-btn mg-btn-danger mg-btn-sm" data-fix="' + esc(f.id) + '">Review &amp; remove…</button></div>'
-        : '<div class="mg-health-actions"><span class="mg-health-note">Nothing is removed for this — it needs a decision from you.</span></div>') +
+        : (f.items
+          ? '<div class="mg-health-actions"><span class="mg-health-note">Nothing is removed for this. Open an album to fix its tags from its page.</span></div>'
+          : '<div class="mg-health-actions"><span class="mg-health-note">Nothing is removed for this — it needs a decision from you.</span></div>')) +
       '</div>'
   }
 
@@ -29392,6 +29403,9 @@ async function renderManageHealth() {
   setContent(_mgShell(html, findings.length + ' finding' + (findings.length === 1 ? '' : 's') +
     (reclaim ? ' · up to ' + _mgFmtBytes(reclaim) + ' reclaimable' : '')))
   _mgBindTabs()
+  document.querySelectorAll('[data-album-open]').forEach(function (b) {
+    b.addEventListener('click', function () { navigate('album', b.dataset.albumOpen) })
+  })
   document.querySelectorAll('[data-fix]').forEach(function (b) {
     b.addEventListener('click', function () {
       var f = (_mgState.findings || []).filter(function (x) { return x.id === b.dataset.fix })[0]
