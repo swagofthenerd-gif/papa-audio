@@ -181,9 +181,24 @@ twin recipe: pin `slskSchedulerConfig` in the twin's config.json to
 `{ maxGlobalInflight: 0, discoverAlternates: false, stallAfterMs: 86400000 }`
 so the twin sends no requests and cancels nothing. Tests 4,060.
 
+### Shipped after J2 + J3 (2026-09-11, Fable 5.1) — all committed + pushed
+
+| Commit | What |
+|---|---|
+| `2822c67` | R5: `src/dl-numbers.js` one model behind every Downloads number; scheduler **adopts** files slskd already has (`adoptLive`, dlTick adopt pass) — 40 of 44 "waiting" were live at the peer |
+| `e826a99` | R3/R4/R16: search survives navigation (no bail on missing section); `_setSlskStatus` one connection truth + `_onSlskConnected` runs the waiting search; throttled-empty says "Rate-limited" |
+| `1538cac` | R6/R7: `src/mood-map.js` moods from audio-analysis z-scores (library has NO genre tags; `audio-features-all` IPC); `state.libMood`; genre chips split compounds; Save-search rules in evaluator language (`normalizeSmartRules`, `any/matches`), load sweep, delete hits the right store |
+| `9678460` | R9/R10: Health findings carry `items` (name/folder/id, Open ›); OMDb title fallback gated by year+type (`plausibleMatch`, `omdbTypeFor`); `catalog/search-rank.js` junk last |
+| `74ea6e7` | R11/R12: `_searchIntent` Browse chip in live video search, fuzzy anime hidden for descriptions, `_COUNTRY_FALLBACK`; extractor errors honest + "Update yt-dlp" action, toast reaches mini mode, hover-preview watchdog |
+| `1d9121d` | J5: `src/omnibox-model.js` + renderer `_omni*`; Ctrl+K = Omnibox, Ctrl+Shift+P = command mode; exact page/tab/command name outranks library typo hits |
+| `27de94c` | J4/J6: `src/trail-model.js` + `renderTrail`, Home row `trail`, nav item; `src/journey-model.js` + `_crumbFor`/`_journeyCrumbUpdate` return strip (`#journey-crumb`) on cross-surface jumps |
+
+Suite: **4,123 green**. Twin traps learned: `pkill -f "<port>"` kills your own shell (use `pgrep -f 'electron [.] --remote-debugging-port=NNNN'`); pin the twin's `slskSchedulerConfig` to `{ maxGlobalInflight: 0, discoverAlternates: false, stallAfterMs: 86400000 }` so it can only observe the shared slskd; `.focus()` fires no focus event without window focus → dispatch `new FocusEvent('focus')`.
+
 ### The queue, in order
 
-1. ~~J2 + J3~~ done — see above.
+1. ~~J2 + J3, R5, R3/R4, R6, R7, R9, R10, R11, R12, J5, J4, J6~~ done — see above.
+2. Remaining: R8 overlay rules, R13–R15, R17–R19, Speed lane S1–S8, Truth lane (pluralisation, empty states, IPC validation, episode lists, release names…), then the **video-player overhaul plan** the user asked for (mini-player smoothness/drag, workflows) — see `docs/video-experience-plan.md` once written.
 2. ~~R5~~ done — see above.
 3. ~~R3 / R4 / R16~~ done (2026-09-11): `runSlskSearch` never bails on a missing
    `#slsk-section` (background job; pages paint from `slsk` state);
