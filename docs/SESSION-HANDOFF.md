@@ -198,7 +198,9 @@ Later the same day: `3ffe22e` (R8 R14 R15 R17 + plural sweep), `a7370cd` (R18 R1
 ### The queue, in order
 
 1. ~~J2 + J3, R5, R3/R4, R6, R7, R9, R10, R11, R12, J5, J4, J6~~ done — see above.
-2. Remaining: Speed lane S1–S6, S8; Truth lane (empty states, IPC validation, queue centring, in-progress downloads flagged as broken); then execute `docs/video-experience-plan.md` starting with **V0** (the render-path prototype and decision).
+2. **V0 decided + V1 foundation shipped** (`src/stream-plan.js`, `web-stream.js`, `src/web-player.js`; `playerMode` setting, default `smooth`; CSP admits `http://127.0.0.1:*`). Live-measured: full-res HEVC→H.264 playback with 0 dropped frames; 705-frame picture drag, none > 20 ms; far seek first frame in 0.6 s. Twin trick for video: `_initVideoUI(); _player.open({title}); window.api.videoPlay({ result: { kind: 'file', url: '/path.mkv' } })` then `_webPlayer.seekTo()`; `pkill -f` on a pattern in your own command line kills the shell — kill by env/port instead.
+3. Remaining V1: fling + spring on release, corner-drag resize, theatre↔corner FLIP animation, hover chrome, one keymap, PiP option. Then V2–V4 per the plan; Speed lane S1–S6/S8; Truth lane leftovers.
+4. Open question: the user's own app was not running at 16:15Z on 2026-09-11 with no quit line in its log; nothing in this session targeted it, but tell him.
 2. ~~R5~~ done — see above.
 3. ~~R3 / R4 / R16~~ done (2026-09-11): `runSlskSearch` never bails on a missing
    `#slsk-section` (background job; pages paint from `slsk` state);
