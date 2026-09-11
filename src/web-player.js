@@ -8,9 +8,15 @@
 // engine while a web session is active and to mpv otherwise, so the theatre,
 // the mini card, the Up Next card and every menu work unchanged.
 //
-// Seeking: inside the buffered range it is a currentTime change; outside it
-// the stream restarts at the target second (`?t=`) and `offset` carries the
-// start, so `position = offset + video.currentTime` stays true.
+// Playback goes through Media Source Extensions: the page fetches the
+// server's fragmented MP4 and appends it to a SourceBuffer, which keeps what
+// it has been given. The timeline is the film's own (the server says which
+// second a response starts at, and that becomes the timestamp offset), so a
+// seek into anything already appended is a currentTime change — instant,
+// no network — and a seek elsewhere fetches `?t=` again, which the server
+// answers from its disk cache when it has converted that span before.
+// Browsers that refuse the MIME string fall back to a plain <video src>
+// with the old restart-at-`?t=` behaviour (`offset` carries the start).
 //
 // Pure-ish: everything DOM is behind `document`/`api` injection for tests.
 ;(function () {
@@ -22,9 +28,16 @@
     var api = opts.api || (typeof window !== 'undefined' ? window.api : null)
     var onEvent = opts.onEvent || function () {}
     var listeners = []
-    var session = null      // { id, streamUrl, duration, subtitles[], audios[], plan }
+    var session = null      // { id, streamUrl, duration, subtitles[], audios[], plan, mime }
     var video = null
-    var offset = 0
+    var offset = 0          // plain-src mode only: the second the stream started at
+    var mse = null          // { ms, sb, url, abort, queue, appending, offset, gen, fetching }
+    var MediaSourceCtor = opts.MediaSource || (typeof MediaSource !== 'undefined' ? MediaSource : null)
+    var fetchFn = opts.fetch || (typeof fetch !== 'undefined' ? fetch : null)
+    var URLApi = opts.URL || (typeof URL !== 'undefined' ? URL : null)
+    var AbortCtor = opts.AbortController || (typeof AbortController !== 'undefined' ? AbortController : null)
+    var BACK_KEEP_SEC = 300    // when the browser runs out of buffer room, drop what is more than this far behind
+    var AHEAD_PAUSE_SEC = 90   // stop pulling from the server this far ahead of the playhead
     var tickTimer = null
     var mounted = null      // 'stage' | 'mini' | null
     var state = _empty()
@@ -44,11 +57,18 @@
       for (var i = 0; i < listeners.length; i++) { try { listeners[i](s) } catch (_) {} }
     }
 
+    function _pos() { return (mse ? 0 : offset) + ((video && video.currentTime) || 0) }
     function _snapshot() {
       if (!video || !session) return _empty()
-      var pos = offset + (video.currentTime || 0)
+      var pos = _pos()
       var bufEnd = 0
-      try { if (video.buffered && video.buffered.length) bufEnd = offset + video.buffered.end(video.buffered.length - 1) } catch (_) {}
+      try {
+        // The buffered range the playhead is in (MSE keeps several).
+        var base = mse ? 0 : offset
+        for (var i = 0; i < video.buffered.length; i++) {
+          if (video.buffered.start(i) - 0.5 <= video.currentTime && video.currentTime <= video.buffered.end(i)) { bufEnd = base + video.buffered.end(i); break }
+        }
+      } catch (_) {}
       var layout = session.plan && session.plan.audio ? (session.plan.audio.channels >= 6 ? 'surround' : session.plan.audio.channels === 2 ? 'stereo' : 'unknown') : 'unknown'
       return {
         position: pos, duration: session.duration || video.duration || 0, paused: !!video.paused, volume: Math.round((video.volume || 0) * 100), muted: !!video.muted,
@@ -97,21 +117,206 @@
 
     function _src(t, extra) {
       var u = session.streamUrl + '?t=' + Math.max(0, Math.floor(t || 0))
+      // A plain <video src> needs a stream whose clock starts at 0: ask for a
+      // fresh run rather than a cached span whose fragments carry later times.
+      if (!mse) u += '&fresh=1'
       if (tracks.audio != null) u += '&a=' + encodeURIComponent(tracks.audio)
       if (extra && extra.burn != null) u += '&burn=' + encodeURIComponent(extra.burn)
       return u
+    }
+
+    // Can this session go through Media Source Extensions?
+    function _mseUsable() {
+      if (!MediaSourceCtor || !fetchFn || !URLApi || !session) return false
+      var mime = session.mime || (session.plan && session.plan.mime)
+      if (!mime) return false
+      try { return !!MediaSourceCtor.isTypeSupported(mime) } catch (_) { return false }
     }
 
     // Start (or restart at `t`) the stream.
     function _load(t, autoplay) {
       var v = _ensureVideo()
       if (!v || !session) return
+      if (_mseUsable()) { _mseStart(t, autoplay); return }
+      _mseTeardown()
       offset = Math.max(0, t || 0)
       v.src = _src(offset)
       v.load()
       _syncSubtitles()
       if (autoplay !== false) { var p = v.play(); if (p && p.catch) p.catch(function () {}) }
       _emit()
+    }
+
+    // ── Media Source Extensions ─────────────────────────────────────────
+    function _mseTeardown() {
+      if (!mse) return
+      _mseAbortFetch()
+      try { if (mse.ms.readyState === 'open') mse.ms.endOfStream() } catch (_) {}
+      try { if (mse.url && URLApi.revokeObjectURL) URLApi.revokeObjectURL(mse.url) } catch (_) {}
+      mse = null
+    }
+    function _mseAbortFetch() {
+      if (!mse) return
+      mse.gen++
+      if (mse.abort) { try { mse.abort.abort() } catch (_) {} mse.abort = null }
+      mse.queue = []
+      mse.fetching = false
+      // abort() also resets the segment parser: a fetch may have stopped
+      // mid-fragment, and the next response begins with a fresh init
+      // segment that must not land inside a half-parsed one.
+      try { if (mse.sb && mse.ms.readyState === 'open') mse.sb.abort() } catch (_) {}
+    }
+    // The element has hit a media error (a bad append leaves MSE dead for
+    // good): rebuild the media source at `t` and carry on.
+    function _mseRebuild(t, playing) {
+      try { console.warn('[web-player] rebuilding the media source after a media error at ' + Math.round(t) + 's') } catch (_) {}
+      _mseTeardown()
+      try { video.removeAttribute('src'); video.load() } catch (_) {}
+      _mseStart(t, playing)
+    }
+    // Open the media source once per session; every later seek reuses the
+    // SourceBuffer so what it holds stays.
+    function _mseStart(t, autoplay) {
+      var v = video
+      var start = Math.max(0, t || 0)
+      offset = 0
+      if (!mse) {
+        var ms = new MediaSourceCtor()
+        mse = { ms: ms, sb: null, url: null, abort: null, queue: [], appending: false, offset: 0, gen: 0, fetching: false, pending: null }
+        mse.url = URLApi.createObjectURL(ms)
+        v.src = mse.url
+        ms.addEventListener('sourceopen', function () {
+          if (!mse || mse.ms !== ms) return
+          // Chromium can fire sourceopen again on the same MediaSource; a
+          // second SourceBuffer would throw and must not read as a refusal.
+          if (mse.sb) return
+          try {
+            mse.sb = ms.addSourceBuffer(session.mime || session.plan.mime)
+            mse.sb.mode = 'segments'
+            mse.sb.addEventListener('updateend', _mseDrain)
+            mse.sb.addEventListener('error', function () { onEvent({ kind: 'error', web: true, message: 'The smooth player could not append the stream' }) })
+            if (session.duration) { try { ms.duration = session.duration } catch (_) {} }
+          } catch (e) {
+            // The browser refused this MIME after all: plain src, old behaviour.
+            try { console.warn('[web-player] MSE refused ' + (session.mime || ''), e && e.message) } catch (_) {}
+            _mseTeardown(); MediaSourceCtor = null; _load(start, autoplay); return
+          }
+          if (mse.pending) { var p = mse.pending; mse.pending = null; _mseFetch(p.t) }
+        })
+        _syncSubtitles()
+        mse.pending = { t: start }
+      } else {
+        _mseFetch(start)
+      }
+      try { v.currentTime = start } catch (_) {}
+      // play() before the first bytes can settle as paused; the first append
+      // that makes the element ready plays again if that was the intent.
+      mse.wantPlay = autoplay !== false
+      if (autoplay !== false) { var pr = v.play(); if (pr && pr.catch) pr.catch(function () {}) }
+      _emit()
+    }
+    // Fetch the stream from second `t` and append it. The server's
+    // X-Papa-Start header is the second its response starts at (a cached
+    // run may start earlier than asked); that is the timestamp offset.
+    function _mseFetch(t) {
+      if (!mse || !mse.sb) return
+      _mseAbortFetch()
+      var gen = mse.gen
+      var ctrl = AbortCtor ? new AbortCtor() : null
+      mse.abort = ctrl
+      mse.fetching = true
+      var u = _src(t)
+      fetchFn(u, ctrl ? { signal: ctrl.signal } : undefined).then(function (res) {
+        if (!mse || mse.gen !== gen) return
+        var startHdr = Number(res.headers && res.headers.get ? res.headers.get('X-Papa-Start') : NaN)
+        mse.offset = isFinite(startHdr) ? startHdr : t
+        // A new span begins: reset the parser (abort) so the offset can be
+        // set — it is refused while a segment is half-parsed — and so the
+        // response's own init segment starts clean.
+        try { if (mse.ms.readyState === 'open') mse.sb.abort() } catch (_) {}
+        try { mse.sb.timestampOffset = mse.offset } catch (e) { try { console.warn('[web-player] timestampOffset refused', e && e.message) } catch (_) {} }
+        var reader = res.body.getReader()
+        var pump = function () {
+          if (!mse || mse.gen !== gen) { try { reader.cancel() } catch (_) {} return }
+          // Backpressure: far enough ahead, wait for the playhead.
+          // Far enough ahead of the playhead: let the server run on to its
+          // cache while the page waits (paused or not, the cap is the cap).
+          if (_bufferedAheadOf(video.currentTime) > AHEAD_PAUSE_SEC) { setTimeout(pump, 500); return }
+          reader.read().then(function (r) {
+            if (!mse || mse.gen !== gen) return
+            if (r.done) { mse.fetching = false; _mseDrain(); return }
+            mse.queue.push(r.value)
+            _mseDrain()
+            pump()
+          }).catch(function () { if (mse && mse.gen === gen) mse.fetching = false })
+        }
+        pump()
+      }).catch(function () { if (mse && mse.gen === gen) mse.fetching = false })
+    }
+    function _bufferedAheadOf(cur) {
+      try {
+        for (var i = 0; i < video.buffered.length; i++) {
+          if (video.buffered.start(i) - 0.5 <= cur && cur <= video.buffered.end(i)) return video.buffered.end(i) - cur
+        }
+      } catch (_) {}
+      return 0
+    }
+    // Append queued chunks one at a time. Out of room: drop what is far
+    // behind the playhead and try again.
+    function _mseDrain() {
+      if (!mse || !mse.sb || mse.sb.updating) return
+      if (!mse.queue.length) {
+        // The stream ended and everything is appended: tell the element,
+        // unless the server cut the run short (a size cap), in which case
+        // the next fetch continues from where the data stops.
+        if (!mse.fetching && mse.endPending) { mse.endPending = false }
+        return
+      }
+      var chunk = mse.queue[0]
+      if (video.error) {
+        // Dead element: nothing appends any more. Start over where we are.
+        var was = !video.paused, at = video.currentTime || (mse.offset || 0)
+        _mseRebuild(at, was)
+        return
+      }
+      try {
+        mse.sb.appendBuffer(chunk)
+        mse.queue.shift()
+        if (mse.wantPlay && video.paused && video.readyState >= 2) { mse.wantPlay = false; var pp = video.play(); if (pp && pp.catch) pp.catch(function () {}) }
+      } catch (e) {
+        if (e && (e.name === 'QuotaExceededError' || /quota/i.test(String(e.message)))) {
+          var cur = video.currentTime || 0
+          try {
+            if (cur - BACK_KEEP_SEC > 0) { mse.sb.remove(0, cur - BACK_KEEP_SEC); return }
+            // Nothing far behind to drop: drop what is far ahead instead.
+            var far = _bufferedAheadOf(cur)
+            if (far > AHEAD_PAUSE_SEC) { mse.sb.remove(cur + AHEAD_PAUSE_SEC, Infinity); return }
+          } catch (_) {}
+          setTimeout(_mseDrain, 500)
+        } else {
+          // Any other refusal is not going to succeed on retry: drop this
+          // fetch rather than spin, and let the starvation check refetch.
+          try { console.warn('[web-player] append refused', e && e.name, e && e.message) } catch (_) {}
+          _mseAbortFetch()
+        }
+      }
+    }
+    // Is second `t` already in the SourceBuffer (with a little slack)?
+    function _mseHas(t) {
+      try {
+        for (var i = 0; i < video.buffered.length; i++) { if (t >= video.buffered.start(i) - 0.25 && t <= video.buffered.end(i) - 0.1) return true }
+      } catch (_) {}
+      return false
+    }
+    // When a run ends short of the film's end (a capped run), keep going:
+    // called from the tick when the playhead nears the end of what it has
+    // and nothing is being fetched.
+    function _mseContinueIfStarved() {
+      if (!mse || !mse.sb || mse.fetching || !video || video.paused) return
+      var ahead = _bufferedAheadOf(video.currentTime)
+      var end = session.duration || video.duration || 0
+      if (end && video.currentTime + ahead >= end - 0.5) return
+      if (ahead < 5) _mseFetch(video.currentTime + ahead)
     }
 
     function _syncSubtitles() {
@@ -127,6 +332,19 @@
         tr.dataset.index = String(s.index)
         v.appendChild(tr)
       })
+      _applySubTrack()
+    }
+
+    function _refreshSubTrack() {
+      var v = video
+      if (!v || !session) return
+      var els = v.querySelectorAll('track')
+      for (var i = 0; i < els.length; i++) {
+        var el = els[i]
+        if (!el.dataset || Number(el.dataset.index) !== Number(tracks.sub)) continue
+        var base = String(el.src || '').split('?')[0]
+        if (base) el.src = base + '?v=' + Date.now()
+      }
       _applySubTrack()
     }
 
@@ -148,7 +366,15 @@
       mount('stage')
       _load(startAt || 0, true)
       clearInterval(tickTimer)
-      tickTimer = setInterval(function () { if (session) _emit() }, TICK_MS)
+      var ticks = 0
+      tickTimer = setInterval(function () {
+        if (!session) return
+        _mseContinueIfStarved()
+        // A streamed source's subtitles grow with the conversion: re-fetch
+        // the showing track every 15 s so new cues appear.
+        if (mse && tracks.sub != null && (++ticks % 60) === 0) _refreshSubTrack()
+        _emit()
+      }, TICK_MS)
       // In Node (tests) a live interval keeps the process up; the browser
       // returns a number and ignores this.
       if (tickTimer && typeof tickTimer.unref === 'function') tickTimer.unref()
@@ -156,6 +382,7 @@
 
     function close() {
       clearInterval(tickTimer); tickTimer = null
+      _mseTeardown()
       if (video) {
         try { video.pause() } catch (_) {}
         video.removeAttribute('src')
@@ -175,9 +402,9 @@
       if (!v || !session) return Promise.resolve({ ok: false })
       switch (verb) {
         case 'play': { var p = v.play(); if (p && p.catch) p.catch(function () {}); break }
-        case 'pause': if (args.paused === false) { var p2 = v.play(); if (p2 && p2.catch) p2.catch(function () {}) } else v.pause(); break
+        case 'pause': if (args.paused === false) { var p2 = v.play(); if (p2 && p2.catch) p2.catch(function () {}) } else { if (mse) mse.wantPlay = false; v.pause() } break
         case 'seek': {
-          var target = args.mode === 'relative' ? offset + v.currentTime + (Number(args.seconds) || 0) : (Number(args.seconds) || 0)
+          var target = args.mode === 'relative' ? _pos() + (Number(args.seconds) || 0) : (Number(args.seconds) || 0)
           seekTo(target); break
         }
         case 'volume': { var vol = Number(args.value != null ? args.value : args.volume); if (isFinite(vol)) v.volume = Math.max(0, Math.min(1, vol / 100)); break }
@@ -185,7 +412,15 @@
         case 'speed': { var sp = Number(args.value != null ? args.value : args.speed); if (isFinite(sp) && sp > 0) { speed = sp; v.playbackRate = sp } break }
         case 'track':
           if (args.type === 'sub') { tracks.sub = args.id == null || args.id === 'no' ? null : args.id; _applySubTrack() }
-          else if (args.type === 'audio') { if (tracks.audio !== args.id) { tracks.audio = args.id; _load(offset + v.currentTime, !v.paused) } }
+          else if (args.type === 'audio') {
+            if (tracks.audio !== args.id) {
+              tracks.audio = args.id
+              // A different audio track is a different stream: what is
+              // buffered no longer applies, so the source starts over.
+              var at = _pos(); var playing = !v.paused
+              _mseTeardown(); _load(at, playing)
+            }
+          }
           break
         case 'frameStep': v.pause(); v.currentTime = Math.max(0, v.currentTime + (Number(args.frames != null ? args.frames : args.dir) || 1) / 24); break
         case 'stop': close(); break
@@ -195,11 +430,20 @@
       return Promise.resolve({ ok: true })
     }
 
-    // Inside the buffer: instant. Outside: restart the converter there.
+    // Already appended: instant. Otherwise fetch from there (the server
+    // answers from its cache when it has that span). Plain-src mode keeps
+    // the old restart.
     function seekTo(target) {
       var v = video
       if (!v || !session) return
       var t = Math.max(0, Math.min(Number(target) || 0, session.duration || Infinity))
+      if (mse) {
+        if (_mseHas(t)) { v.currentTime = t; _emit(); return }
+        _mseFetch(t)
+        try { v.currentTime = t } catch (_) {}
+        _emit()
+        return
+      }
       var local = t - offset
       var inBuffer = false
       try {
@@ -257,7 +501,7 @@
       return proxy
     }
 
-    return { create: create, open: open, close: close, active: active, control: control, seekTo: seekTo, mount: mount, trackList: trackList, wrapApi: wrapApi, state: _snapshot, _video: function () { return video }, _session: function () { return session } }
+    return { create: create, open: open, close: close, active: active, control: control, seekTo: seekTo, mount: mount, trackList: trackList, wrapApi: wrapApi, state: _snapshot, _video: function () { return video }, _session: function () { return session }, _mse: function () { return mse } }
   }
 
   var api = { create: create, TICK_MS: TICK_MS }

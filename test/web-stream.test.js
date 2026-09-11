@@ -6,7 +6,11 @@ const assert = require('node:assert')
 const http = require('http')
 const { EventEmitter } = require('events')
 const { PassThrough } = require('stream')
+const fs = require('fs')
+const os = require('os')
+const path = require('path')
 const { createWebStreamServer } = require('../web-stream')
+function tmpDir() { return fs.mkdtempSync(path.join(os.tmpdir(), 'papa-ws-')) }
 
 const STREAMS = [
   { index: 0, codec_type: 'video', codec_name: 'av1', pix_fmt: 'yuv420p10le', width: 1788, height: 1080 },
@@ -32,7 +36,7 @@ function get(url) {
 
 test('open probes, plans, and returns a session with a stream URL and subtitle sidecars', async () => {
   const spawned = []
-  const srv = createWebStreamServer({ spawnFn: makeSpawn(spawned), execFileFn: fakeExecFile })
+  const srv = createWebStreamServer({ spawnFn: makeSpawn(spawned), execFileFn: fakeExecFile, cacheDir: tmpDir() })
   const s = await srv.open('/x/film.mkv')
   assert.ok(s.id && /^http:\/\/127\.0\.0\.1:\d+\/s\/[a-f0-9]+\.mp4$/.test(s.streamUrl))
   assert.equal(s.duration, 123.4)
@@ -44,7 +48,7 @@ test('open probes, plans, and returns a session with a stream URL and subtitle s
 
 test('a stream request spawns ffmpeg at the requested second; a second request kills the first', async () => {
   const spawned = []
-  const srv = createWebStreamServer({ spawnFn: makeSpawn(spawned), execFileFn: fakeExecFile })
+  const srv = createWebStreamServer({ spawnFn: makeSpawn(spawned), execFileFn: fakeExecFile, cacheDir: tmpDir() })
   const s = await srv.open('/x/film.mkv')
   const a = get(s.streamUrl + '?t=0')
   await new Promise(r => setTimeout(r, 30))
@@ -64,7 +68,7 @@ test('a stream request spawns ffmpeg at the requested second; a second request k
 
 test('an audio-track switch re-plans the session; a burn-in request adds the subtitle filter', async () => {
   const spawned = []
-  const srv = createWebStreamServer({ spawnFn: makeSpawn(spawned), execFileFn: fakeExecFile })
+  const srv = createWebStreamServer({ spawnFn: makeSpawn(spawned), execFileFn: fakeExecFile, cacheDir: tmpDir() })
   const s = await srv.open('/x/film.mkv')
   const p = get(s.streamUrl + '?t=0&a=1&burn=3')
   await new Promise(r => setTimeout(r, 30))
@@ -77,7 +81,7 @@ test('an audio-track switch re-plans the session; a burn-in request adds the sub
 
 test('subtitle sidecars are extracted once and cached; unknown sessions are 404', async () => {
   const spawned = []
-  const srv = createWebStreamServer({ spawnFn: makeSpawn(spawned), execFileFn: fakeExecFile })
+  const srv = createWebStreamServer({ spawnFn: makeSpawn(spawned), execFileFn: fakeExecFile, cacheDir: tmpDir() })
   const s = await srv.open('/x/film.mkv')
   const r1 = await get(s.subtitles[0].url)
   assert.equal(r1.status, 200); assert.match(r1.body, /^WEBVTT/)
@@ -91,10 +95,10 @@ test('subtitle sidecars are extracted once and cached; unknown sessions are 404'
 
 test('a source with no video is refused so the caller can fall back to mpv; close kills the converter', async () => {
   const spawned = []
-  const srv = createWebStreamServer({ spawnFn: makeSpawn(spawned), execFileFn: (_b, _a, _o, cb) => cb(null, JSON.stringify({ streams: [{ index: 0, codec_type: 'audio', codec_name: 'aac' }], format: {} })) })
+  const srv = createWebStreamServer({ spawnFn: makeSpawn(spawned), execFileFn: (_b, _a, _o, cb) => cb(null, JSON.stringify({ streams: [{ index: 0, codec_type: 'audio', codec_name: 'aac' }], format: {} })), cacheDir: tmpDir() })
   const r = await srv.open('/x/audio-only.mkv')
   assert.equal(r.refused, true)
-  const srv2 = createWebStreamServer({ spawnFn: makeSpawn(spawned), execFileFn: fakeExecFile })
+  const srv2 = createWebStreamServer({ spawnFn: makeSpawn(spawned), execFileFn: fakeExecFile, cacheDir: tmpDir() })
   const s = await srv2.open('/x/film.mkv')
   const p = get(s.streamUrl)
   await new Promise(r => setTimeout(r, 30))
@@ -107,7 +111,7 @@ test('a source with no video is refused so the caller can fall back to mpv; clos
 
 test('a paired session copies a remote video URL and a remote audio URL into one stream; seeks restart both', async () => {
   const spawned = []
-  const srv = createWebStreamServer({ spawnFn: makeSpawn(spawned), execFileFn: fakeExecFile })
+  const srv = createWebStreamServer({ spawnFn: makeSpawn(spawned), execFileFn: fakeExecFile, cacheDir: tmpDir() })
   const s = await srv.openPair('https://v.example/video', 'https://a.example/audio')
   assert.ok(s.paired && /\/s\/[a-f0-9]+\.mp4$/.test(s.streamUrl))
   assert.deepEqual(s.subtitles, [])
@@ -132,7 +136,7 @@ test('parallel requests for one subtitle track share a single extraction; close 
     p.kill = () => { p.killed = true; setImmediate(() => { p.stdout.end(); p.emit('close', 255) }) }
     spawned.push({ bin, args, proc: p }); return p
   }
-  const srv = createWebStreamServer({ spawnFn: spawnSlow, execFileFn: fakeExecFile })
+  const srv = createWebStreamServer({ spawnFn: spawnSlow, execFileFn: fakeExecFile, cacheDir: tmpDir() })
   const s = await srv.open('/x/film.mkv')
   const a = get(s.subtitles[0].url); const b = get(s.subtitles[0].url); const c = get(s.subtitles[0].url)
   await new Promise(r => setTimeout(r, 40))
@@ -147,5 +151,129 @@ test('parallel requests for one subtitle track share a single extraction; close 
   srv.close(s2.id)
   assert.ok(running.killed, 'closing the session stops the extraction')
   await p2.catch(() => {})
+  srv.shutdown()
+})
+
+// ── the disk cache ──────────────────────────────────────────────────────────
+function box(type, payload) { const b = Buffer.alloc(8 + payload.length); b.writeUInt32BE(8 + payload.length, 0); b.write(type, 4, 'latin1'); payload.copy(b, 8); return b }
+function full(type, version, payload) { const h = Buffer.alloc(4); h[0] = version; return box(type, Buffer.concat([h, payload])) }
+function mdhd(ts) { const p = Buffer.alloc(20); p.writeUInt32BE(ts, 8); return full('mdhd', 0, p) }
+function moovBox(ts) { return box('moov', Buffer.concat([box('mvhd', Buffer.alloc(100)), box('trak', box('mdia', mdhd(ts)))])) }
+function moofBox(tfdt) { const p = Buffer.alloc(4); p.writeUInt32BE(tfdt, 0); return box('moof', Buffer.concat([box('mfhd', Buffer.alloc(8)), box('traf', Buffer.concat([box('tfhd', Buffer.alloc(8)), full('tfdt', 0, p)]))])) }
+function mdatBox(n, fill) { return box('mdat', Buffer.alloc(n, fill)) }
+// A converter that emits a real fragmented MP4: init, then one fragment per
+// second for `secs` seconds, then exits.
+function makeFmp4Spawn(record, secs) {
+  return function (bin, args) {
+    const p = new EventEmitter(); p.stdout = new PassThrough(); p.stderr = new PassThrough(); p.killed = false
+    p.kill = () => { p.killed = true; setImmediate(() => { p.stdout.end(); p.emit('close', 255) }) }
+    record.push({ bin, args, proc: p })
+    if (args.includes('webvtt')) { setImmediate(() => { p.stdout.end(); p.emit('close', 0) }); return p }
+    setImmediate(() => {
+      p.stdout.write(Buffer.concat([box('ftyp', Buffer.alloc(16)), moovBox(1000)]))
+      for (let i = 0; i < secs; i++) p.stdout.write(Buffer.concat([moofBox(i * 1000), mdatBox(100, i)]))
+      p.stdout.end(); p.emit('close', 0)
+    })
+    return p
+  }
+}
+function getBuf(url) {
+  return new Promise((resolve, reject) => {
+    http.get(url, res => { const chunks = []; res.on('data', c => chunks.push(c)); res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) })); res.on('error', reject) }).on('error', reject)
+  })
+}
+
+test('a second inside a converted span is served from the run file: no new ffmpeg, the init segment then the fragment', async () => {
+  const spawned = []
+  const dir = tmpDir()
+  const srv = createWebStreamServer({ spawnFn: makeFmp4Spawn(spawned, 10), execFileFn: fakeExecFile, cacheDir: dir })
+  const s = await srv.open('/x/film.mkv')
+  const first = await getBuf(s.streamUrl + '?t=0')
+  assert.equal(first.headers['x-papa-cached'], '0')
+  assert.equal(spawned.length, 1)
+  const initLen = 24 + moovBox(1000).length
+  assert.equal(first.body.length, initLen + 10 * (moofBox(0).length + 108))
+  // Seek back to 4 s: a file read.
+  const back = await getBuf(s.streamUrl + '?t=4.3')
+  assert.equal(spawned.length, 1, 'no second converter')
+  assert.equal(back.headers['x-papa-cached'], '1')
+  assert.equal(back.headers['x-papa-start'], '0', 'the run starts at 0; timestamps inside are on that clock')
+  assert.ok(back.body.subarray(0, initLen).equals(first.body.subarray(0, initLen)), 'init segment first')
+  const fragLen = moofBox(0).length + 108
+  assert.equal(back.body.length, initLen + 6 * fragLen, 'fragments 4..9')
+  assert.equal(back.body[initLen + moofBox(0).length + 8], 4, 'the first served fragment is the one for 4 s')
+  // Beyond the span: a new run at 50 s, the old file kept.
+  const far = await getBuf(s.streamUrl + '?t=50')
+  assert.equal(spawned.length, 2)
+  assert.equal(spawned[1].args[spawned[1].args.indexOf('-ss') + 1], '50')
+  assert.equal(far.headers['x-papa-start'], '50')
+  assert.equal(fs.readdirSync(path.join(dir, s.id)).length, 2, 'both run files on disk')
+  // Back into the first span again: still no converter.
+  await getBuf(s.streamUrl + '?t=2')
+  assert.equal(spawned.length, 2)
+  assert.equal(srv.close(s.id), true)
+  assert.ok(!fs.existsSync(path.join(dir, s.id)), 'close removes the title\'s cache')
+  srv.shutdown()
+})
+
+test('a live run stops when a request lands outside its span, and its file stays for later seeks', async () => {
+  const spawned = []
+  const srv = createWebStreamServer({ spawnFn: makeSpawn(spawned), execFileFn: fakeExecFile, cacheDir: tmpDir() })
+  const s = await srv.open('/x/film.mkv')
+  const a = get(s.streamUrl + '?t=0')
+  await new Promise(r => setTimeout(r, 30))
+  const b = get(s.streamUrl + '?t=600')
+  await new Promise(r => setTimeout(r, 30))
+  assert.equal(spawned.length, 2)
+  assert.ok(spawned[0].proc.killed, 'only one converter is live per title')
+  spawned[1].proc.stdout.end(); spawned[1].proc.emit('close', 0)
+  await a; await b
+  assert.equal(srv._sessions.get(s.id).runs.length, 2, 'the stopped run keeps its file')
+  srv.shutdown()
+})
+
+test('the cache directory is wiped of leftovers on start and a session cap drops the oldest finished run', async () => {
+  const dir = tmpDir()
+  fs.mkdirSync(path.join(dir, 'stale')); fs.writeFileSync(path.join(dir, 'stale', 'run-0.mp4'), 'x')
+  const spawned = []
+  const srv = createWebStreamServer({ spawnFn: makeFmp4Spawn(spawned, 3), execFileFn: fakeExecFile, cacheDir: dir, maxSessionBytes: 1000 })
+  assert.ok(!fs.existsSync(path.join(dir, 'stale')))
+  const s = await srv.open('/x/film.mkv')
+  await getBuf(s.streamUrl + '?t=0')
+  await getBuf(s.streamUrl + '?t=100')
+  await new Promise(r => setTimeout(r, 30))
+  const runs = srv._sessions.get(s.id).runs
+  assert.equal(runs.length, 1, 'the older finished run was dropped to stay under the cap')
+  assert.equal(runs[0].start, 100)
+  srv.shutdown()
+})
+
+test('a streamed input gets its subtitles from the run itself: no separate whole-file extractor, and the sidecar is the merge of what runs have written', async () => {
+  const spawned = []
+  const dir = tmpDir()
+  const spawnWithSubs = function (bin, args) {
+    const p = makeFmp4Spawn(spawned, 2)(bin, args)
+    const at = args.indexOf('-f', args.indexOf('pipe:1'))
+    // Write the VTT file the run was asked for, as ffmpeg would.
+    const file = args[args.length - 1]
+    if (/\.vtt$/.test(file)) {
+      const ss = args.indexOf('-ss') !== -1 ? Number(args[args.indexOf('-ss') + 1]) : 0
+      fs.writeFileSync(file, 'WEBVTT\n\n00:00:01.000 --> 00:00:02.000\ncue from run at ' + ss + '\n')
+    }
+    void at
+    return p
+  }
+  const srv = createWebStreamServer({ spawnFn: spawnWithSubs, execFileFn: fakeExecFile, cacheDir: dir })
+  const s = await srv.open('http://127.0.0.1:1/film.mkv')
+  await getBuf(s.streamUrl + '?t=0')
+  const runArgs = spawned[0].args
+  assert.ok(runArgs.includes('webvtt') && /run-0-sub-3\.vtt$/.test(runArgs[runArgs.length - 1]), 'the run carries the subtitle output')
+  const r1 = await get(s.subtitles[0].url)
+  assert.equal(spawned.filter(x => x.args[0] === '-hide_banner' && x.args.includes('webvtt') && !x.args.includes('pipe:1')).length, 0, 'no standalone extractor for a streamed input')
+  assert.match(r1.body, /00:00:01\.000 --> 00:00:02\.000\ncue from run at 0/)
+  await getBuf(s.streamUrl + '?t=600')
+  const r2 = await get(s.subtitles[0].url)
+  assert.match(r2.body, /00:00:01\.000 --> 00:00:02\.000\ncue from run at 0/)
+  assert.match(r2.body, /00:10:01\.000 --> 00:10:02\.000\ncue from run at 600/, 'the later run\'s cues are shifted by its start')
   srv.shutdown()
 })

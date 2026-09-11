@@ -6144,6 +6144,9 @@ function _bindRail(rail) {
     const max = rail.scrollWidth - rail.clientWidth
     if (prev) prev.hidden = rail.scrollLeft <= 4
     if (next) next.hidden = rail.scrollLeft >= max - 4
+    // The edge fades (V3) go with the arrows: none at a hard edge.
+    wrap.classList.toggle('at-start', rail.scrollLeft <= 4)
+    wrap.classList.toggle('at-end', rail.scrollLeft >= max - 4)
   }
   const page = function (dir) { rail.scrollBy({ left: dir * Math.max(rail.clientWidth - 120, 200) }) }
   prev?.addEventListener('click', function () { page(-1) })
@@ -6304,6 +6307,10 @@ function _paintVideoHero() {
   // trailer first so its ticket is invalidated and the mount's previewing class
   // does not linger onto the new still (App §15: rotation stops the trailer).
   _stopHeroTrailer()
+  // The outgoing backdrop stays under the incoming one and fades (V3): a
+  // rotation is a cross-fade, never a cut.
+  const prevBg = mount.querySelector('.vhero-bg')
+  const prevSrc = prevBg && prevBg.classList.contains('ready') ? prevBg.getAttribute('src') : null
   mount.dataset.heroKey = key
   const kind = item.type === 'anime' ? 'Anime' : item.type === 'tv' ? 'Series' : 'Film'
   const bits = []
@@ -6337,6 +6344,14 @@ function _paintVideoHero() {
     if (img.complete) img.classList.add('ready')
     else img.addEventListener('load', function () { img.classList.add('ready') })
     img.addEventListener('error', function () { img.remove() })
+    if (prevSrc && prevSrc !== item.backdrop && !_prefersReducedMotion()) {
+      const ghost = document.createElement('img')
+      ghost.className = 'vhero-bg vhero-bg-prev ready'
+      ghost.alt = ''
+      ghost.src = prevSrc
+      img.parentNode.insertBefore(ghost, img.nextSibling)
+      setTimeout(function () { try { ghost.remove() } catch (_) {} }, 700)
+    }
   }
   const go = function () { navigate('video-detail', key) }
   document.getElementById('vhero-play')?.addEventListener('click', go)
@@ -7164,7 +7179,7 @@ function _videoCard(item) {
   item = item || {}
   const key = (item.type || 'movie') + ':' + (item.id == null ? '' : item.id)
   const img = item.poster
-    ? '<img class="vcard-poster" src="' + esc(item.poster) + '" alt="" loading="lazy" decoding="async"' +
+    ? '<img class="vcard-poster" data-blurup="1" onload="this.classList.add(\'is-loaded\')" src="' + esc(item.poster) + '" alt="" loading="lazy" decoding="async"' +
       ' onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\'">'
     : ''
   const fb = '<div class="vcard-fallback"' + (item.poster ? ' style="display:none"' : '') + '>' + esc(item.title || '') + '</div>'
@@ -7698,6 +7713,7 @@ async function renderVideoDetail(navId) {
 
   _bindDetailActions(d)
   _bindTrailerButton()
+  _bindDetailMotion(d)
   _renderCastRow(d)
   _renderTasteSection()
   _renderProviders(d)
@@ -7755,6 +7771,36 @@ function _detInList(d) {
 // Play pressed before the source lookup finished: remember the ask and honour
 // it the moment sources arrive, instead of making the button do nothing.
 var _autoPlayTicket = 0
+
+// The hero backdrop drifts at a quarter of the scroll (V3 parallax), and the
+// poster's dominant colour tints the top of the hero (palette.js, the same
+// extractor the music side uses). Both are decoration: a missing poster, a
+// reduced-motion setting or a throw leave the page exactly as it was.
+function _bindDetailMotion(d) {
+  const hero = document.querySelector('.video-detail-hero')
+  const content = document.getElementById('content')
+  if (!hero || !content) return
+  if (!_prefersReducedMotion()) {
+    let raf = 0
+    const onScroll = function () {
+      if (raf) return
+      raf = requestAnimationFrame(function () {
+        raf = 0
+        if (!hero.isConnected) { content.removeEventListener('scroll', onScroll); return }
+        hero.style.setProperty('--vdet-shift', Math.round(content.scrollTop * 0.25) + 'px')
+      })
+    }
+    content.addEventListener('scroll', onScroll, { passive: true })
+  }
+  const poster = hero.querySelector('img.video-detail-poster')
+  if (poster && window.PapaPalette && typeof window.PapaPalette.extractPalette === 'function') {
+    try {
+      window.PapaPalette.extractPalette(poster, 'vdet:' + (d && d.id != null ? d.id : '')).then(function (pal) {
+        if (pal && pal.accent && hero.isConnected) hero.style.setProperty('--vdet-tint', pal.accent)
+      }).catch(function () {})
+    } catch (_) {}
+  }
+}
 
 function _bindDetailActions(d) {
   document.getElementById('vdet-play')?.addEventListener('click', function () {

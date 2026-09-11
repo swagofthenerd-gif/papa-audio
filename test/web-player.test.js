@@ -37,7 +37,7 @@ test('open mounts the picture on the stage, loads the stream from 0, and reports
   e.open(session, 0)
   const v = e._video()
   assert.equal(v.parentNode.id, 'vt-stage')
-  assert.equal(v.src, 'http://127.0.0.1:5/s/ab.mp4?t=0&a=1')
+  assert.equal(v.src, 'http://127.0.0.1:5/s/ab.mp4?t=0&fresh=1&a=1')
   assert.equal(v.children.filter(c => c.tag === 'track').length, 1, 'one WebVTT sidecar')
   const s = e.state()
   assert.equal(s.duration, 1200); assert.equal(s.paused, false); assert.equal(s.audio.channels, 6); assert.equal(s.audio.layout, 'surround'); assert.equal(s.video.codec, 'h264')
@@ -55,7 +55,7 @@ test('seek inside the buffer moves currentTime; outside it restarts the stream a
   e.control('seek', { seconds: 12, mode: 'absolute' })
   assert.equal(v.currentTime, 12); assert.equal(v.loaded, 1, 'no reload')
   e.control('seek', { seconds: 600, mode: 'absolute' })
-  assert.equal(v.src, 'http://127.0.0.1:5/s/ab.mp4?t=600&a=1'); assert.equal(v.loaded, 2)
+  assert.equal(v.src, 'http://127.0.0.1:5/s/ab.mp4?t=600&fresh=1&a=1'); assert.equal(v.loaded, 2)
   v.currentTime = 5
   assert.equal(e.state().position, 605, 'offset + currentTime')
   e.control('seek', { seconds: -10, mode: 'relative' })
@@ -75,7 +75,7 @@ test('verbs: pause/play, volume in percent, mute, speed, audio track switch rest
   e.control('speed', { value: 1.5 }); assert.equal(v.playbackRate, 1.5); assert.equal(e.state().speed, 1.5)
   v.currentTime = 33
   e.control('track', { type: 'audio', id: 2 })
-  assert.equal(v.src, 'http://127.0.0.1:5/s/ab.mp4?t=33&a=2')
+  assert.equal(v.src, 'http://127.0.0.1:5/s/ab.mp4?t=33&fresh=1&a=2')
   assert.ok(e.trackList().find(t => t.type === 'audio' && t.id === 2).selected)
   e.control('track', { type: 'sub', id: 3 })
   assert.ok(e.trackList().find(t => t.type === 'sub' && t.id === 3).selected)

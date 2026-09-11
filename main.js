@@ -9330,8 +9330,23 @@ function _notePreviewSession(id) {
   _previewSessions.push(id)
   while (_previewSessions.length > 4) { const old = _previewSessions.shift(); try { _webStream().close(old) } catch (_) {} }
 }
+// Can this ffmpeg tone-map on the GPU through OpenCL? Probed once at startup
+// with a tiny synthetic frame; the planner reads the answer at plan time.
+const _ffmpegCaps = { opencl: false }
+function _probeOpenclTonemap() {
+  const { execFile } = require('child_process')
+  execFile('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-nostdin', '-init_hw_device', 'opencl=ocl', '-filter_hw_device', 'ocl',
+    '-f', 'lavfi', '-i', 'color=c=gray:s=64x64:d=0.1,format=p010,setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc', '-vf', 'hwupload,tonemap_opencl=tonemap=hable:format=nv12,hwdownload,format=nv12', '-f', 'null', '-'],
+  { timeout: 15000 }, (err) => {
+    _ffmpegCaps.opencl = !err
+    console.log('[web-stream] OpenCL tone-mapping ' + (err ? 'unavailable (CPU fallback): ' + String(err.message || err).split('\n')[0].slice(0, 120) : 'available'))
+  })
+}
+try { _probeOpenclTonemap() } catch (_) {}
 function _webStream() {
-  if (!_webStreamServer) _webStreamServer = createWebStreamServer({ log: (...a) => console.log(...a) })
+  // The converter cache lives under the app's own data folder (on disk, not
+  // tmpfs), so a QA twin with its own PAPA_USER_DATA never wipes the real one.
+  if (!_webStreamServer) _webStreamServer = createWebStreamServer({ log: (...a) => console.log(...a), cacheDir: path.join(app.getPath('userData'), 'web-stream-cache'), caps: _ffmpegCaps })
   return _webStreamServer
 }
 let _webSessionId = null

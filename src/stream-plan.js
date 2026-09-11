@@ -11,16 +11,20 @@
 //   refuse     nothing sensible can be done; the caller falls back to mpv.
 //
 // Measured on the user's machine (RTX 3070, ffmpeg 8.1): 1080p HEVC → H.264
-// runs at ~5.5× real time; 4K HDR with CPU tone-mapping at ~1×, which is why
-// that case asks for a pre-roll. Pure and DOM-free; tested in
+// runs at ~5.5× real time; 4K HDR tone-mapped on the GPU through OpenCL at
+// ~2.9× (the CPU chain, kept as the fallback, manages ~0.9×, which is why
+// that case asks for a longer pre-roll). Pure and DOM-free; tested in
 // test/stream-plan.test.js. Loaded by main via require.
 
 const BROWSER_VIDEO = new Set(['h264', 'av1', 'vp9', 'vp8'])
-const BROWSER_AUDIO = new Set(['aac', 'opus', 'flac', 'vorbis', 'mp3'])
+// Vorbis is left out on purpose: the browser decodes it, but not inside MP4
+// through Media Source Extensions, which is how the page now plays.
+const BROWSER_AUDIO = new Set(['aac', 'opus', 'flac', 'mp3'])
 // Text subtitles ffmpeg can turn into WebVTT sidecars; everything else is
 // image-based or styled and is burned in on a transcode.
 const TEXT_SUBS = new Set(['subrip', 'srt', 'webvtt', 'mov_text', 'text'])
 const STYLED_SUBS = new Set(['ass', 'ssa'])
+const SPLIT_SEEK_SEC = 2   // re-encode seeks: this much decoded and discarded after the input seek
 
 function _s(v) { return typeof v === 'string' ? v.toLowerCase() : '' }
 function _n(v) { const x = Number(v); return Number.isFinite(x) ? x : 0 }
@@ -53,9 +57,58 @@ function pickStreams(streams, prefs) {
 
 // The plan. `caps` overrides the browser capability table (tests, or a future
 // build that can do HEVC). `opts.gpu` says NVENC/NVDEC are available.
+// The MIME type with codec parameters that Media Source Extensions need to
+// open a SourceBuffer for this plan's output. Copied streams describe the
+// source (H.264 profile/level, AV1 profile/level/tier/depth, VP9 profile/
+// level/depth); re-encoded ones are what ffmpeg is told to produce (H.264
+// High, Opus). A string the browser rejects makes the page fall back to a
+// plain <video src>, so an approximation is safe, just slower to seek back.
+const H264_PROFILES = { baseline: '42', 'constrained baseline': '42', main: '4d', extended: '58', high: '64', 'high 10': '6e', 'high 4:2:2': '7a', 'high 4:4:4': 'f4', 'high 4:4:4 predictive': 'f4' }
+function _hex2(n) { const h = Math.max(0, Math.min(255, Math.round(n))).toString(16); return h.length < 2 ? '0' + h : h }
+function videoCodecString(v, copy) {
+  if (!copy) return 'avc1.640028'
+  const c = _s(v && v.codec_name)
+  const level = _n(v && v.level)
+  if (c === 'h264') {
+    const prof = H264_PROFILES[_s(v.profile)] || '64'
+    return 'avc1.' + prof + '00' + _hex2(level > 0 ? level : 40)
+  }
+  if (c === 'av1') {
+    const prof = /high/.test(_s(v.profile)) ? '1' : /professional/.test(_s(v.profile)) ? '2' : '0'
+    // ffprobe reports -99 / 0 when the level is unknown: assume 4.0 (index 8).
+    const lv = level > 0 && level < 32 ? level : 8
+    const depth = _bitDepth(v)
+    // av01.P.LLT.DD — the level index is two decimal digits, the tier M.
+    return 'av01.' + prof + '.' + (lv < 10 ? '0' + lv : String(lv)) + 'M.' + (depth === 12 ? '12' : depth === 10 ? '10' : '08')
+  }
+  if (c === 'vp9') {
+    const prof = /profile ?([0-3])/.exec(_s(v.profile))
+    const depth = _bitDepth(v)
+    return 'vp09.0' + (prof ? prof[1] : '0') + '.' + _hex2(level > 0 ? level : 40) + '.' + (depth === 12 ? '12' : depth === 10 ? '10' : '08')
+  }
+  if (c === 'vp8') return 'vp8'
+  return 'avc1.640028'
+}
+function audioCodecString(a, copy) {
+  if (!a) return null
+  if (!copy) return 'opus'
+  const c = _s(a.codec_name)
+  if (c === 'aac') return 'mp4a.40.2'
+  if (c === 'mp3') return 'mp4a.40.34'
+  if (c === 'opus') return 'opus'
+  if (c === 'flac') return 'flac'
+  return 'opus'
+}
+function mimeFor(video, audio, videoCopy, audioCopy) {
+  const parts = [videoCodecString(video, videoCopy)]
+  const ac = audioCodecString(audio, audioCopy)
+  if (ac) parts.push(ac)
+  return 'video/mp4; codecs="' + parts.join(',') + '"'
+}
+
 function plan(streams, opts) {
   opts = opts || {}
-  const caps = Object.assign({ video: BROWSER_VIDEO, audio: BROWSER_AUDIO, gpu: true }, opts.caps || {})
+  const caps = Object.assign({ video: BROWSER_VIDEO, audio: BROWSER_AUDIO, gpu: true, opencl: true }, opts.caps || {})
   const { video, audio, audios, subs } = pickStreams(streams, opts.prefs)
   if (!video) return { mode: 'refuse', reason: 'no video stream' }
 
@@ -74,14 +127,22 @@ function plan(streams, opts) {
     ? ['-c:v', 'copy']
     : (caps.gpu
       ? (hdr
-        // GPU decode, CPU tone-map (ffmpeg here has no tonemap_cuda), GPU encode.
-        ? ['-vf', 'zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p',
-           '-c:v', 'h264_nvenc', '-preset', 'p4', '-rc', 'vbr', '-cq', '21', '-b:v', '0', '-maxrate', width > 2000 ? '45M' : '25M', '-bufsize', width > 2000 ? '90M' : '50M', '-profile:v', 'high']
+        ? (caps.opencl
+          // GPU decode, OpenCL tone-map on the GPU, GPU encode: ~2.9× at 4K.
+          ? ['-vf', 'hwupload,tonemap_opencl=tonemap=hable:format=nv12:desat=0,hwdownload,format=nv12',
+             '-c:v', 'h264_nvenc', '-preset', 'p4', '-rc', 'vbr', '-cq', '21', '-b:v', '0', '-maxrate', width > 2000 ? '45M' : '25M', '-bufsize', width > 2000 ? '90M' : '50M', '-profile:v', 'high']
+          // No OpenCL: CPU tone-map, ~0.9× at 4K.
+          : ['-vf', 'zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p',
+             '-c:v', 'h264_nvenc', '-preset', 'p4', '-rc', 'vbr', '-cq', '21', '-b:v', '0', '-maxrate', width > 2000 ? '45M' : '25M', '-bufsize', width > 2000 ? '90M' : '50M', '-profile:v', 'high'])
         : ['-vf', 'scale_cuda=format=nv12', '-c:v', 'h264_nvenc', '-preset', 'p4', '-rc', 'vbr', '-cq', '19', '-b:v', '0', '-maxrate', width > 2000 ? '45M' : '25M', '-bufsize', width > 2000 ? '90M' : '50M', '-profile:v', 'high'])
       : ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18', '-pix_fmt', 'yuv420p'])
   // Input-side flags: hardware decode only when the frames stay on the GPU
   // (no tone-map) — the tone-map filter chain needs them in system memory.
-  const inputArgs = (!videoCopy && caps.gpu) ? (hdr ? ['-hwaccel', 'cuda'] : ['-hwaccel', 'cuda', '-hwaccel_output_format', 'cuda']) : []
+  const inputArgs = (!videoCopy && caps.gpu)
+    ? (hdr
+      ? (caps.opencl ? ['-init_hw_device', 'opencl=ocl', '-filter_hw_device', 'ocl', '-hwaccel', 'cuda'] : ['-hwaccel', 'cuda'])
+      : ['-hwaccel', 'cuda', '-hwaccel_output_format', 'cuda'])
+    : []
 
   // Audio: copy when the browser decodes it; else Opus at a bitrate that
   // keeps 5.1/7.1 honest (512k for surround, 192k stereo). Layouts above 5.1
@@ -97,8 +158,9 @@ function plan(streams, opts) {
   const burnable = subs.filter(s => STYLED_SUBS.has(_s(s.codec_name)) || /pgs|dvd_subtitle|dvb/.test(_s(s.codec_name))).map(s => ({ index: s.index, lang: (s.tags && s.tags.language) || '', title: (s.tags && s.tags.title) || '', styled: STYLED_SUBS.has(_s(s.codec_name)) }))
 
   const mode = (videoCopy && (!audio || caps.audio.has(acodec))) ? 'remux' : 'transcode'
-  // 4K HDR converts at about real time on this machine: buffer before playing.
-  const prerollSec = (!videoCopy && width > 2000) ? 8 : (!videoCopy ? 2 : 0)
+  // 4K converts slower than 1080p: buffer before playing. HDR without a GPU
+  // tone-map runs at about real time and needs the most.
+  const prerollSec = (!videoCopy && width > 2000) ? ((hdr && !caps.opencl) ? 8 : 4) : (!videoCopy ? 2 : 0)
 
   return {
     mode,
@@ -109,6 +171,7 @@ function plan(streams, opts) {
     subtitles: { sidecars, burnable },
     inputArgs, videoArgs, audioArgs,
     prerollSec,
+    mime: mimeFor(video, audio, videoCopy, !!(audio && caps.audio.has(acodec))),
     badges: [hdr ? 'HDR shown as SDR' : null, !videoCopy ? 'converted' : null].filter(Boolean),
   }
 }
@@ -131,17 +194,66 @@ function ffmpegArgs(p, input, startSec, extra) {
   if (vfIdx !== -1) filters.push(videoArgs[vfIdx + 1])
   if (extra.burnIndex != null) filters.push("subtitles='" + String(input).replace(/'/g, "'\\''") + "':si=" + extra.burnSubOrdinal)
   const vArgs = vfIdx !== -1 ? videoArgs.filter((_, i) => i !== vfIdx && i !== vfIdx + 1) : videoArgs.slice()
+  // Seeking a re-encode: a single input -ss left the picture stamped from
+  // the keyframe before the target while the copied sound was rebased to
+  // the target — 2.3 s of lip-sync error on every seek and every resume
+  // (measured). Seeking to two seconds before the target on the input and
+  // the last two seconds on the output gives both tracks one clock. A copied
+  // video stream cannot be cut inside a GOP, so it keeps the input seek.
+  const reencode = !(videoArgs[0] === '-c:v' && videoArgs[1] === 'copy')
+  const inputSeek = start > 0 ? (reencode ? Math.max(0, start - SPLIT_SEEK_SEC) : start) : 0
+  const outputSeek = start > 0 && reencode ? start - inputSeek : 0
   const args = ['-hide_banner', '-loglevel', 'error', '-nostdin']
     .concat(inputArgs)
-    .concat(start > 0 ? ['-ss', String(start)] : [])
+    .concat(inputSeek > 0 ? ['-ss', String(inputSeek)] : [])
     .concat(['-i', input])
+    .concat(outputSeek > 0 ? ['-ss', String(outputSeek)] : [])
     .concat(['-map', '0:' + p.video.index])
     .concat(p.audio ? ['-map', '0:' + p.audio.index] : [])
     .concat(filters.length ? ['-vf', filters.join(',')] : [])
     .concat(vArgs)
     .concat(p.audioArgs)
     .concat(['-sn', '-movflags', 'frag_keyframe+empty_moov+default_base_moof', '-frag_duration', '1000000', '-f', 'mp4', 'pipe:1'])
+  // Text subtitles ride along as extra WebVTT outputs of the same run (one
+  // read of the input, which on a torrent-backed source is the whole point):
+  // extra.subOutputs = [{ index, file }].
+  // -flush_packets: the muxer writes each cue as it comes instead of holding
+  // a 32 KiB buffer, so a sidecar read mid-run already has the recent cues.
+  for (const o of (extra.subOutputs || [])) args.push('-map', '0:' + o.index, '-c:s', 'webvtt', '-f', 'webvtt', '-flush_packets', '1', '-y', o.file)
   return args
+}
+
+// Cues in a WebVTT text, shifted by `shiftSec` (a run started at -ss t has
+// cues from 0). Returns [{ start, end, text }].
+function parseVtt(text, shiftSec) {
+  const out = []
+  const shift = Number(shiftSec) || 0
+  const blocks = String(text || '').replace(/\r/g, '').split(/\n\n+/)
+  for (const b of blocks) {
+    const lines = b.split('\n')
+    const at = lines.findIndex(l => /-->/.test(l))
+    if (at === -1) continue
+    const m = /(\d+:)?(\d{1,2}):(\d{2})\.(\d{3})\s*-->\s*(\d+:)?(\d{1,2}):(\d{2})\.(\d{3})(.*)/.exec(lines[at])
+    if (!m) continue
+    const sec = (h, mi, s, ms) => (Number(String(h || '0').replace(':', '')) * 3600) + Number(mi) * 60 + Number(s) + Number(ms) / 1000
+    const start = sec(m[1], m[2], m[3], m[4]) + shift
+    const end = sec(m[5], m[6], m[7], m[8]) + shift
+    out.push({ start, end, settings: (m[9] || '').trim(), text: lines.slice(at + 1).join('\n').replace(/\n+$/, '') })
+  }
+  return out
+}
+function _ts(sec) {
+  const s = Math.max(0, sec)
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = Math.floor(s % 60), ms = Math.round((s - Math.floor(s)) * 1000)
+  const p2 = n => String(n).padStart(2, '0')
+  return p2(h) + ':' + p2(m) + ':' + p2(x) + '.' + String(ms).padStart(3, '0')
+}
+// Merge cue lists (later runs win on the same start) into one WebVTT text.
+function mergeVtt(cueLists) {
+  const byStart = new Map()
+  for (const list of cueLists) for (const c of list) byStart.set(c.start.toFixed(3), c)
+  const cues = Array.from(byStart.values()).sort((a, b) => a.start - b.start)
+  return 'WEBVTT\n\n' + cues.map(c => _ts(c.start) + ' --> ' + _ts(c.end) + (c.settings ? ' ' + c.settings : '') + '\n' + c.text).join('\n\n') + (cues.length ? '\n' : '')
 }
 
 // WebVTT sidecar extraction for one text subtitle stream.
@@ -149,4 +261,4 @@ function subtitleArgs(input, streamIndex) {
   return ['-hide_banner', '-loglevel', 'error', '-nostdin', '-i', input, '-map', '0:' + streamIndex, '-f', 'webvtt', 'pipe:1']
 }
 
-module.exports = { plan, pickStreams, isHdr, ffmpegArgs, subtitleArgs, BROWSER_VIDEO, BROWSER_AUDIO }
+module.exports = { plan, pickStreams, isHdr, ffmpegArgs, subtitleArgs, parseVtt, mergeVtt, mimeFor, videoCodecString, audioCodecString, BROWSER_VIDEO, BROWSER_AUDIO }

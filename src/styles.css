@@ -7963,8 +7963,16 @@ body.app-unfocused .vt-menu {
 @media (prefers-reduced-motion: reduce) { .vdet-trailer { transition:none; } }
 .video-detail-overlay {
   position:absolute; inset:0;
-  background:linear-gradient(180deg, rgba(8,8,8,.55) 0%, rgba(8,8,8,.25) 45%, var(--bg) 100%);
+  /* The poster's dominant colour warms the top of the hero (V3); without a
+     palette the mix collapses to the plain dark. */
+  background:linear-gradient(180deg, color-mix(in srgb, var(--vdet-tint, #080808) 30%, rgba(8,8,8,.55)) 0%, rgba(8,8,8,.25) 45%, var(--bg) 100%);
 }
+/* The hero drift and the rotation cross-fade (V3); the rules that use them
+   live in the cinema section, whose scope test cannot hold @keyframes. */
+@keyframes cin-drift { from { transform: scale(1); } to { transform: scale(1.04); } }
+@keyframes cin-fade-out { to { opacity: 0; } }
+/* Parallax (V3): the backdrop drifts down at a quarter of the scroll. */
+.video-detail-hero { background-position:center calc(50% + var(--vdet-shift, 0px)); }
 .video-detail-poster {
   position:relative; z-index:1;
   width:180px; aspect-ratio:2 / 3; object-fit:cover;
@@ -9130,6 +9138,11 @@ body.theme-light .cinema {
   --cin-display: 'Newsreader', Georgia, 'Times New Roman', serif;
   --cin-body:    'Archivo', 'Poppins', system-ui, sans-serif;
   --cin-ease:    cubic-bezier(.16, 1, .3, 1);
+  /* One motion vocabulary (V3): micro for hover and reveal, travel for
+     things that move, scene for a page or backdrop change. */
+  --cin-micro:   150ms;
+  --cin-travel:  250ms;
+  --cin-scene:   400ms;
 
   background: var(--cin-ground);
   color: var(--cin-bone);
@@ -9213,7 +9226,7 @@ body.theme-light .cinema {
 .cinema .vcard:hover .vcard-art,
 .cinema .vcard:focus-visible .vcard-art,
 .cinema .vcard:focus-within .vcard-art {
-  transform: translateY(-6px);
+  transform: perspective(700px) rotateX(2deg) translateY(-6px);
   box-shadow: 0 0 0 1px var(--cin-ember), 0 18px 40px rgba(0, 0, 0, .62);
 }
 .cinema .vcard:focus-visible .vcard-art {
@@ -10314,4 +10327,40 @@ body.theme-light .cinema {
   .cinema .vcal-viewbtn { transition: none; }
   .cinema .vcal-month-btn { transition: none; }
   .cinema .vcal-chip { transition: none; }
+}
+
+/* ── Motion (V3) ──────────────────────────────────────
+   Rails fade at their edges (none at a hard edge, so the first poster is
+   never dimmed), poster art loads with a blur-up, and the hero backdrop
+   drifts slowly and cross-fades on rotation. Every transition here is reset
+   under reduced motion below, as the section's test requires. */
+.cinema .vrail-wrap::before,
+.cinema .vrail-wrap::after {
+  content: "";
+  position: absolute; top: 0; bottom: 16px; width: 36px; z-index: 1;
+  pointer-events: none;
+  transition: opacity var(--cin-micro) var(--cin-ease);
+}
+.cinema .vrail-wrap::before { left: 0; background: linear-gradient(90deg, var(--cin-ground), transparent); }
+.cinema .vrail-wrap::after { right: 0; background: linear-gradient(270deg, var(--cin-ground), transparent); }
+.cinema .vrail-wrap.at-start::before,
+.cinema .vrail-wrap.at-end::after { opacity: 0; }
+
+.cinema .vcard-poster[data-blurup] {
+  opacity: 0;
+  filter: blur(12px);
+  transform: scale(1.04);
+  transition: opacity var(--cin-travel) var(--cin-ease), filter var(--cin-scene) var(--cin-ease), transform var(--cin-scene) var(--cin-ease);
+}
+.cinema .vcard-poster[data-blurup].is-loaded { opacity: 1; filter: none; transform: none; }
+
+.cinema .vhero-bg.ready { animation: cin-drift 10s linear forwards; }
+.cinema .vhero-bg.vhero-bg-prev { z-index: -1; animation: cin-fade-out var(--cin-scene) var(--cin-ease) forwards; }
+
+@media (prefers-reduced-motion: reduce) {
+  .cinema .vrail-wrap::before,
+  .cinema .vrail-wrap::after { transition: none; }
+  .cinema .vcard-poster[data-blurup] { transition: none; opacity: 1; filter: none; transform: none; }
+  .cinema .vhero-bg.ready { animation: none; }
+  .cinema .vhero-bg.vhero-bg-prev { animation: none; display: none; }
 }
