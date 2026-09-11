@@ -1505,7 +1505,17 @@
 
   const res = await window.api.slskBrowseUser({ username })
   if (!res.ok) {
-    body.innerHTML = `<div class="slsk-lib-empty">Could not load this library: ${esc(res.error || 'unknown error')}</div>`
+    // Say what actually happened (R15). A peer who is offline cannot be
+    // browsed, and the raw "slskd 404 on GET …" said nothing about that; the
+    // presence lookup the card already makes answers it.
+    let online = null
+    try {
+      if (window.api.slskUserStatus) {
+        const st = await window.api.slskUserStatus({ username })
+        if (st) online = !!(st.online || st.presence === 'Online' || st.status === 'Online')
+      }
+    } catch (_) { online = null }
+    body.innerHTML = `<div class="slsk-lib-empty">${esc(browseFailureText(username, res.error, online))}</div>`
     return
   }
   // Engine may serve a cached browse and refresh in the background; feature-
@@ -1729,6 +1739,18 @@
 
   var api = { show: show }
 
+  // The wording for a library that could not be loaded (R15). `online` is
+  // true/false when the presence lookup answered, null when it did not.
+  function browseFailureText(username, error, online) {
+    const msg = String(error || '')
+    if (online === false) return username + ' is offline, so their library cannot be browsed right now. Try again when they are back.'
+    if (/\b404\b/.test(msg)) return 'slskd has no record of ' + username + ' right now — they may be offline or have changed their name.'
+    if (/\b401\b|unauthor/i.test(msg)) return 'slskd rejected our login — check its username and password in Settings.'
+    if (/ECONNREFUSED|fetch failed|ENOTFOUND/i.test(msg)) return 'Could not reach the slskd daemon.'
+    if (/timed out|timeout|abort/i.test(msg)) return username + ' did not answer in time. They may be busy or on a slow link — try again in a moment.'
+    return 'Could not load this library: ' + (msg || 'unknown error')
+  }
+  api.browseFailureText = browseFailureText
   if (typeof window !== 'undefined') window.PapaSlskShopUI = api
   if (typeof module !== 'undefined' && module.exports) module.exports = api
 

@@ -1531,7 +1531,7 @@ async function fullScan() {
   navigate('home', null, { skipHistory: true })
   setTimeout(fetchMissingArtwork, 1200)
   syncLibraryExt()
-  showSnackbar('Library scan complete: ' + state.library.length + ' albums found')
+  showSnackbar('Library scan complete: ' + _plural(state.library.length, 'album') + ' found')
 }
 
 // Album ids alone missed per-track deletes inside a surviving album, so a
@@ -2134,7 +2134,11 @@ async function renderPerson(personId) {
 
   const rows = document.getElementById('vperson-rows')
   if (!res.ok) {
-    if (rows) rows.innerHTML = '<div class="vrow-msg err">' + esc(_videoErrorText(res.error)) + '</div>'
+    // A flaky fetch is exactly the case a Retry exists for: the second visit
+    // used to work while the first sat on an error with no way out (R14).
+    if (rows) rows.innerHTML = '<div class="vrow-msg err">' + esc(_videoErrorText(res.error)) +
+      ' <button class="vbtn vbtn-retry" id="vperson-retry">Try again</button></div>'
+    document.getElementById('vperson-retry')?.addEventListener('click', function () { renderPerson(personId) })
     return
   }
   const credits = Array.isArray(res.credits) ? res.credits : []
@@ -8239,6 +8243,9 @@ function _openAnimeNumberingDialog(d) {
     '</div></div>'
   document.body.appendChild(dlg)
   const input = dlg.querySelector('#anm-input')
+  // Backdrop closes, like every other overlay (R8: one rule — Esc, backdrop,
+  // navigation — unless the thing is a drawer by design).
+  dlg.addEventListener('click', function (e) { if (e.target === dlg) close() })
 
   function close() {
     _unregisterNavDismiss(close)
@@ -10710,7 +10717,7 @@ function renderLibrary() {
     return '<div class="folder-tree">' + folders.map(function(f) {
       var name = f.split('/').pop() || f
       var count = scope.filter(function(a) { return _inFolder(a, f) }).length
-      return '<div class="folder-tree-item" data-folder="' + esc(f) + '"><span class="folder-icon">📁</span><span class="folder-name">' + esc(name) + '</span><span class="folder-count">' + count + ' albums</span></div>'
+      return '<div class="folder-tree-item" data-folder="' + esc(f) + '"><span class="folder-icon">📁</span><span class="folder-name">' + esc(name) + '</span><span class="folder-count">' + _plural(count, 'album') + '</span></div>'
     }).join('') + '</div>'
   }
 
@@ -10766,8 +10773,8 @@ function renderLibrary() {
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
         <h1 class="section-title">Your Library</h1>
         <span class="lib-count">${sortedAlbums.length === (state.library.length + state.ytSavedAlbums.length)
-          ? sortedAlbums.length + ' albums'
-          : sortedAlbums.length + ' of ' + (state.library.length + state.ytSavedAlbums.length) + ' albums'}</span><span class="lib-count" style="margin-left:8px">${_fmtBytes(filteredSize)}</span>${filterBadge}${fmtBreak}${filterIndicator}
+          ? _plural(sortedAlbums.length, 'album')
+          : sortedAlbums.length + ' of ' + _plural(state.library.length + state.ytSavedAlbums.length, 'album')}</span><span class="lib-count" style="margin-left:8px">${_fmtBytes(filteredSize)}</span>${filterBadge}${fmtBreak}${filterIndicator}
         <button class="rescan-btn" id="lib-rescan-btn" title="Rescan music folders">
           <svg viewBox="0 0 24 24"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/></svg>
           Rescan
@@ -10910,7 +10917,7 @@ function renderLibrary() {
       // Don't yank the user back to Library if they navigated away mid-scan.
       if (state.currentPage === 'library') renderLibrary()
       syncLibraryExt()
-      showSnackbar('Library scan complete: ' + state.library.length + ' albums found')
+      showSnackbar('Library scan complete: ' + _plural(state.library.length, 'album') + ' found')
     } catch (err) {
       // Unguarded, a failed scan (unplugged drive, permission error) left the
       // button disabled and spinning with no message and no way to retry.
@@ -12910,7 +12917,7 @@ function renderArtist(artistName) {
   var heroHTML = '<div class="artist-hero">' +
     '<img class="artist-hero-photo" id="artist-hero-bg-img" alt="" style="display:none" onerror="this.style.display=\'none\'">' +
     '<img class="artist-portrait" id="artist-portrait-img" alt="" style="display:none" onerror="this.style.display=\'none\'">' +
-    '<div class="artist-hero-art">' + (artistAlbums[0] && artistAlbums[0].artPath ? '<img src="' + esc('file://' + artistAlbums[0].artPath) + '" alt="">' : '<div style="width:100%;height:100%;background:var(--bg4);display:flex;align-items:center;justify-content:center"><svg viewBox="0 0 24 24" style="width:48px;height:48px;fill:var(--text3)"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg></div>') + '</div><div class="artist-hero-info"><div class="artist-hero-name">' + esc(artistName) + '</div><div class="artist-hero-meta">' + artistAlbums.length + ' albums &middot; ' + totalTracks + ' tracks &middot; ' + artistHours + 'h ' + artistMins + 'm</div><button class="artist-radio-btn" id="artist-radio-btn" title="Start an endless radio mix from this artist"><span class="radio-dot"></span>Radio</button><button class="follow-btn' + (isFollowed ? ' following' : '') + '" id="artist-follow-btn">' + (isFollowed ? 'Following' : 'Follow') + '</button></div></div>'
+    '<div class="artist-hero-art">' + (artistAlbums[0] && artistAlbums[0].artPath ? '<img src="' + esc('file://' + artistAlbums[0].artPath) + '" alt="">' : '<div style="width:100%;height:100%;background:var(--bg4);display:flex;align-items:center;justify-content:center"><svg viewBox="0 0 24 24" style="width:48px;height:48px;fill:var(--text3)"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg></div>') + '</div><div class="artist-hero-info"><div class="artist-hero-name">' + esc(artistName) + '</div><div class="artist-hero-meta">' + _plural(artistAlbums.length, 'album') + ' &middot; ' + _plural(totalTracks, 'track') + ' &middot; ' + artistHours + 'h ' + artistMins + 'm</div><button class="artist-radio-btn" id="artist-radio-btn" title="Start an endless radio mix from this artist"><span class="radio-dot"></span>Radio</button><button class="follow-btn' + (isFollowed ? ' following' : '') + '" id="artist-follow-btn">' + (isFollowed ? 'Following' : 'Follow') + '</button></div></div>'
 
   var albums = [], eps = [], singles = []
   // Newest first, then alphabetical. Unsorted, the discography reordered itself
@@ -13598,6 +13605,9 @@ function renderPlaylists() {
 
   var folders = {}
   var uncategorized = []
+  // A folder the user created but has not filled yet is still a folder (R17):
+  // it used to vanish, with no feedback and no way to delete it.
+  ;(state.playlistFolders || []).forEach(function (f) { if (f && !folders[f]) folders[f] = [] })
   sorted.forEach(function(pl) {
     var f = pl.folder || null
     if (f) {
@@ -13628,7 +13638,9 @@ function renderPlaylists() {
         <span class="pl-folder-count">${pls.length} playlist${pls.length !== 1 ? 's' : ''}</span>
       </div>
       <div class="pl-folder-body${collapsed ? ' pl-folder-collapsed' : ''}">
-        <div class="pl-grid">${pls.map(_plCard).join('')}</div>
+        ${pls.length
+          ? `<div class="pl-grid">${pls.map(_plCard).join('')}</div>`
+          : `<div class="pl-folder-empty">Empty folder — move a playlist here from its ⋯ menu, or <button class="pl-folder-delete" data-folder="${esc(folderName)}">delete the folder</button>.</div>`}
       </div>
     </div>`
   }
@@ -13729,6 +13741,19 @@ function renderPlaylists() {
   })
 
   // Folder header collapse/expand
+  document.querySelectorAll('.pl-folder-delete').forEach(function (b) {
+    b.addEventListener('click', function (e) {
+      e.stopPropagation()
+      var name = b.dataset.folder
+      state.playlistFolders = (state.playlistFolders || []).filter(function (f) { return f !== name })
+      _persistPlaylistFolders()
+      renderPlaylists()
+      showSnackbar('Folder "' + name + '" deleted', 'Undo', function () {
+        if (state.playlistFolders.indexOf(name) === -1) { state.playlistFolders.push(name); _persistPlaylistFolders() }
+        renderPlaylists()
+      })
+    })
+  })
   document.querySelectorAll('.pl-folder-header').forEach(function(hdr) {
     hdr.addEventListener('click', function() {
       var body = hdr.nextElementSibling
@@ -28717,6 +28742,14 @@ function rebuildSearchIndex(sync) {
   } else {
     doBuild()
   }
+}
+
+// One pluralisation rule (truth lane): "1 album", "2 albums", never "1 albums".
+function _plural(n, word, pluralWord) {
+  var mt = window.PapaMusicTools
+  if (mt && mt.plural) return mt.plural(n, word, pluralWord)
+  var k = Number(n) || 0
+  return k + ' ' + (k === 1 ? word : (pluralWord || word + 's'))
 }
 
 // ── One search memory (J2) ────────────────────────────────────────────────────

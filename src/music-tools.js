@@ -1573,6 +1573,15 @@
     })
   }
 
+  // ── Pluralisation: one rule, used everywhere a count is shown ────────────────
+  // "1 albums" appeared in the folder tree and the artist hero while the
+  // playlist folder count got it right; one helper ends the drift. Irregulars
+  // are passed as the plural form: plural(2, 'copy', 'copies').
+  function plural(n, word, pluralWord) {
+    var k = Number(n) || 0
+    return k + ' ' + (k === 1 ? word : (pluralWord || word + 's'))
+  }
+
   // ── Home personalization: row order + hidden set (App #15) ──────────────────
   // Home is a fixed set of rows, each with a stable id. The user can reorder and
   // hide them; the preference persists as { order: [ids...], hidden: [ids...] }.
@@ -1640,6 +1649,7 @@
     sleepFadeSteps: sleepFadeSteps,
     evaluateFieldRules: evaluateFieldRules,
     normalizeSmartRules: normalizeSmartRules,
+    plural: plural,
     resolveHomeRows: resolveHomeRows,
     moveHomeRow: moveHomeRow,
     toggleHomeRow: toggleHomeRow,

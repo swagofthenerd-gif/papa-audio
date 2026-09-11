@@ -312,3 +312,12 @@ test('the evaluator itself tolerates a legacy rule shape (a zombie evaluates cor
   const out = T.evaluateFieldRules(tracks, [{ field: 'year', op: 'range', value: '1970-1975' }], {})
   assert.deepEqual(out.map(t => t.filePath), ['/a'])
 })
+
+// ── Truth lane: one plural rule ──────────────────────────────────────────────
+test('plural: "1 album", "2 albums", irregulars passed explicitly', () => {
+  assert.equal(T.plural(1, 'album'), '1 album')
+  assert.equal(T.plural(2, 'album'), '2 albums')
+  assert.equal(T.plural(0, 'track'), '0 tracks')
+  assert.equal(T.plural(2, 'copy', 'copies'), '2 copies')
+  assert.equal(T.plural('x', 'album'), '0 albums')
+})

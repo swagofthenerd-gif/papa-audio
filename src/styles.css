@@ -4324,6 +4324,8 @@ kbd {
 .pl-folder-chevron { font-size:12px; color:var(--text3); width:14px; text-align:center; }
 .pl-folder-name { font-size:13px; font-weight:600; color:var(--text); }
 .pl-folder-count { font-size:11px; color:var(--text3); margin-left:4px; }
+.pl-folder-empty { padding:10px 4px 14px; font-size:12.5px; color:var(--text3); }
+.pl-folder-delete { background:none; border:none; padding:0; color:var(--accent); font:inherit; cursor:pointer; text-decoration:underline; }
 .pl-folder-body { overflow:hidden; transition:max-height .2s var(--ease); }
 .pl-folder-body.pl-folder-collapsed { display:none; }
 .pl-folder-badge {; }
@@ -9881,6 +9883,7 @@ body.theme-light .cinema {
 }
 .cinema .vsearch-intent-btn:hover { transform: translateY(-1px); box-shadow: 0 6px 18px rgba(0,0,0,.35); }
 .cinema .vsearch-intent-note { color: var(--text3); font-size: 12px; font-style: italic; }
+.cinema .vbtn-retry { margin-left: 10px; padding: 4px 12px; font-size: 12px; }
 
 /* ── Trailer on hover ────────────────────────────────────────────────────────
    The preview sits over the poster inside the card's own art box, so the card's
