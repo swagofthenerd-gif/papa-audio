@@ -40,6 +40,7 @@ var _PapaOmnibox = (function () {
     { page: 'liked',     label: 'Liked Songs',    words: 'favourites hearts' },
     { page: 'manage',    label: 'Manage',         words: 'tools maintenance' },
     { page: 'stats',     label: 'Stats',          words: 'listening history numbers wrapped' },
+    { page: 'trail',     label: 'Your Trail',     words: 'journey sessions timeline history recent' },
   ]
   var MANAGE_TABS = [
     { tab: 'settings',   label: 'Settings',        words: 'preferences options api keys folders theme' },

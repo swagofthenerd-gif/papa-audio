@@ -213,8 +213,65 @@ const navHistory = []
 const navFuture  = []
 
 function _pushNavHistory(entry) {
+  // The return-strip wording is captured NOW, while the page being left is
+  // still live and its counts are real (J6).
+  if (entry && !entry.crumb) entry.crumb = _crumbFor(entry)
   navHistory.push(entry)
   if (navHistory.length > NAV_HISTORY_CAP) navHistory.shift()
+}
+
+// What a history entry should be called if the app has to say "back to …".
+// Front pages (Home, the plain catalog) get nothing: a strip pointing at Home
+// would be noise. Results pages carry their query and count; detail pages
+// their title.
+function _crumbFor(entry) {
+  var J = window.PapaJourney
+  if (!J || !entry) return null
+  var snap = null
+  try {
+    switch (entry.page) {
+      case 'search':
+        if (entry.navId) {
+          var ls = state._lastSearch && state._lastSearch.query === entry.navId ? state._lastSearch.localResults : null
+          var n = ls ? (ls.albums.length + ls.tracks.length + ls.artists.length) : 0
+          snap = { kind: 'search', query: entry.navId, count: n, unit: 'local result' }
+        }
+        break
+      case 'soulseek':
+        if (slsk.lastQuery) snap = { kind: 'soulseek', query: slsk.lastQuery, count: (slsk.results || []).length, unit: 'source' }
+        break
+      case 'video':
+        if (entry.navId) snap = { kind: 'video-search', query: entry.navId, count: (_vSearchFilter && _vSearchFilter.query === entry.navId && _vSearchFilter.results || []).length, unit: 'title' }
+        break
+      case 'library':
+        if (state.libSearch) snap = { kind: 'library-search', query: state.libSearch }
+        break
+      case 'album': { var a = state.library.find(function (x) { return x.id === entry.navId }); if (a) snap = { kind: 'detail', title: a.name }; break }
+      case 'artist': if (entry.navId) snap = { kind: 'detail', title: entry.navId }; break
+      case 'playlist': { var p = (state.playlists || []).concat(state.smartPlaylists || []).find(function (x) { return x.id === entry.navId }); if (p) snap = { kind: 'detail', title: p.name }; break }
+      case 'video-detail': if (_videoDetail && _videoDetail.d && _videoDetail.d.title) snap = { kind: 'detail', title: _videoDetail.d.title }; break
+      case 'downloads': snap = { kind: 'page', title: 'Downloads' }; break
+      case 'trail': snap = { kind: 'page', title: 'your Trail' }; break
+      default: snap = null
+    }
+  } catch (_) { snap = null }
+  var text = snap ? J.label(snap) : ''
+  return text ? { label: text } : null
+}
+
+// The return strip under the title bar (J6): shown after a jump to another
+// surface, naming the page just left; one click goes back to it, scroll and
+// all. Hidden the moment a same-surface move or Back makes it redundant.
+function _journeyCrumbUpdate() {
+  var el = document.getElementById('journey-crumb')
+  var J = window.PapaJourney
+  if (!el || !J) return
+  var prev = navHistory.length ? navHistory[navHistory.length - 1] : null
+  var show = J.shouldShow(prev, { page: state.currentPage })
+  if (!show) { el.hidden = true; el.innerHTML = ''; return }
+  el.innerHTML = '<button class="journey-crumb-btn" id="journey-crumb-btn"><span class="journey-crumb-arrow">&larr;</span> Back to ' + esc(prev.crumb.label) + '</button>'
+  el.hidden = false
+  document.getElementById('journey-crumb-btn')?.addEventListener('click', function () { navigateBack() })
 }
 
 // How much of the stacks rides along in the persisted session state. Far less
@@ -1856,6 +1913,7 @@ function navigate(page, navId, opts = {}) {
   else if (page === 'smartlist') renderSmartList(navId)
   else if (page === 'manage')    renderManage()
   else if (page === 'stats')     renderStats()
+  else if (page === 'trail')     renderTrail()
   else if (page === 'wrapped')   renderWrapped(navId)
   else if (page === 'liked')     renderLikedSongs()
   else if (page === 'yt-album')  renderYtAlbum(navId)
@@ -1878,6 +1936,7 @@ function navigate(page, navId, opts = {}) {
   retuneDownloadsPolling()
 
   updateNavBtns()
+  _journeyCrumbUpdate()
   hideContextMenu()
 
   if (opts.restoreScroll && contentEl) {
@@ -9206,7 +9265,7 @@ var _greetingAnimated = false
 // which rows exist), the persisted-preference key, and small load/save/resolve
 // helpers over the tested pure logic in music-tools.js. `_homeEditMode` is the
 // transient toggle for the on-page editor.
-var _HOME_DEFAULT_ROWS = ['jumpback', 'quick', 'following', 'recent', 'added', 'back', 'madeforyou', 'library']
+var _HOME_DEFAULT_ROWS = ['jumpback', 'trail', 'quick', 'following', 'recent', 'added', 'back', 'madeforyou', 'library']
 var _HOME_ROWS_KEY = 'papa-home-rows'
 var _homeEditMode = false
 function _loadHomeRowPref() {
@@ -9379,6 +9438,7 @@ function renderHome() {
   // reorder and skip.
   var _homeRowHtml = {
     jumpback: jumpBackHTML,
+    trail: _homeTrailHtml(),
     quick: quickHTML,
     following: followingHTML,
     recent: recentHTML,
@@ -9388,7 +9448,7 @@ function renderHome() {
     library: allHTML,
   }
   var _homeRowLabel = {
-    jumpback: 'Continue listening', quick: 'Quick picks', following: 'Following',
+    jumpback: 'Continue listening', trail: 'Pick up where you left off', quick: 'Quick picks', following: 'Following',
     recent: 'Recently Played', added: 'Recently Added', back: 'Back in rotation',
     madeforyou: 'Made for you', library: 'Your Library',
   }
@@ -18734,6 +18794,7 @@ function bindContentEvents() {
     if (t && audio.src && audio.src.indexOf(t.filePath) !== -1) { togglePlay(); return }
     playCurrentTrack()
   })
+  _bindHomeTrail()
   document.getElementById('jumpback-card')?.addEventListener('click', function(e) {
     if (!e.target.closest('.jumpback-play')) playCurrentTrack()
   })
@@ -28849,6 +28910,7 @@ var _commands = [
   { id:'nav-downloads', label:'Go to Downloads', action:function() { navigate('downloads') } },
   { id:'nav-liked', label:'Go to Liked Songs', action:function() { navigate('liked') } },
   { id:'nav-stats', label:'Go to Stats', action:function() { navigate('stats') } },
+  { id:'nav-trail', label:'Go to your Trail', action:function() { navigate('trail') } },
   { id:'nav-explore', label:'Go to Explore', action:function() { navigate('explore') } },
   { id:'nav-artists', label:'Go to Artists', action:function() { navigate('artists') } },
   { id:'nav-playlists', label:'Go to Playlists', action:function() { navigate('playlists') } },
@@ -28859,6 +28921,138 @@ var _commands = [
   { id:'player-repeat', label:'Cycle Repeat', keys:'R', action:cycleRepeatWrap },
 ]
 var _cpIdx = 0
+
+// ── The Trail (J4) ──────────────────────────────────────────────────────────
+// Your history of doing, as sessions: searches, what you opened from them,
+// what you listened to, what you watched — read from the stores that already
+// hold them (trail-model.js). Click a moment to go back to it. Local only;
+// exportable; the search half is erasable here (plays and watches have their
+// own homes in Stats and the Diary).
+function _trailSources() {
+  var mem = _searchMemory()
+  var store = _vStore()
+  var watches = []
+  try { if (store && typeof store.history === 'function') watches = store.history(200) || [] } catch (_) {}
+  try { if (store && typeof store.continueWatching === 'function') watches = watches.concat(store.continueWatching(50) || []) } catch (_) {}
+  return { searches: mem ? mem.list() : [], plays: state.playHistory || [], watches: watches }
+}
+
+function _trailEpisodes() {
+  if (!window.PapaTrail) return []
+  return window.PapaTrail.build(_trailSources())
+}
+
+function _trailIcon(kind) {
+  return { search: '&#9906;', open: '&#8594;', album: '&#9636;', track: '&#9834;', artist: '&#9835;', video: '&#9654;', listen: '&#9835;', watch: '&#9654;' }[kind] || '&#8226;'
+}
+
+function _trailMomentHtml(m, idx, epIdx) {
+  var art = m.art ? '<img class="trail-art" src="' + esc(/^https?:/.test(m.art) ? m.art : 'file://' + m.art) + '" alt="">' : '<span class="trail-ico">' + _trailIcon(m.icon || m.kind) + '</span>'
+  return '<button class="trail-moment trail-' + esc(m.kind) + '" data-trail-ep="' + epIdx + '" data-trail-i="' + idx + '" title="Go back to this">' +
+    art + '<span class="trail-text"><span class="trail-label">' + esc(m.label) + '</span>' +
+    (m.sub ? '<span class="trail-sub">' + esc(m.sub) + '</span>' : '') + '</span>' +
+    '<span class="trail-time">' + esc(window.PapaTrail.timeLabel(m.ts)) + '</span></button>'
+}
+
+var _trailCache = []
+function renderTrail() {
+  var T = window.PapaTrail
+  var eps = T ? _trailEpisodes() : []
+  _trailCache = eps
+  var html = '<div class="page trail-page"><div class="section-header" style="margin-top:0"><span class="section-title">Your trail</span>' +
+    '<span class="trail-tools">' +
+      '<button class="trail-tool" id="trail-export" title="Copy the whole trail as JSON">Export</button>' +
+      '<button class="trail-tool trail-tool-danger" id="trail-erase" title="Forget every remembered search. Listening and watching history stay in Stats and the Diary.">Erase searches</button>' +
+    '</span></div>' +
+    '<p class="trail-lead">Sessions as stories: what you searched, opened, listened to and watched. Click anything to go back to it. Kept on this computer only.</p>'
+  if (!eps.length) {
+    html += '<div class="empty-wrap"><svg viewBox="0 0 24 24"><path d="M13 3a9 9 0 0 0-9 9H1l4 4 4-4H6a7 7 0 1 1 2 5l-1.5 1.3A9 9 0 1 0 13 3zm-1 5v5l4 2 .7-1.2-3.2-1.9V8z"/></svg><h2>Nothing on the trail yet</h2><p>Search, open, listen and watch — your journeys will collect here.</p></div></div>'
+    setContent(html); return
+  }
+  var lastDay = null
+  for (var e = 0; e < eps.length; e++) {
+    var ep = eps[e]
+    if (ep.day !== lastDay) { html += '<h3 class="trail-day">' + esc(ep.day) + '</h3>'; lastDay = ep.day }
+    html += '<section class="trail-episode"><div class="trail-episode-head"><span class="trail-episode-title">' + esc(ep.title) + '</span>' +
+      '<span class="trail-episode-meta">' + esc(T.timeLabel(ep.start)) + (ep.end - ep.start > 60000 ? ' – ' + esc(T.timeLabel(ep.end)) : '') + ' · ' + ep.count + ' moment' + (ep.count === 1 ? '' : 's') + '</span></div>' +
+      '<div class="trail-moments">' + ep.moments.map(function (m, i) { return _trailMomentHtml(m, i, e) }).join('') + '</div></section>'
+  }
+  html += '</div>'
+  setContent(html)
+  document.querySelectorAll('.trail-moment').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var ep = _trailCache[parseInt(b.dataset.trailEp, 10)]
+      var m = ep && ep.moments[parseInt(b.dataset.trailI, 10)]
+      if (m) _restoreMoment(m.restore)
+    })
+  })
+  document.getElementById('trail-export')?.addEventListener('click', function () {
+    var json = T.exportJson(eps)
+    try { navigator.clipboard.writeText(json).then(function () { showSnackbar('Trail copied as JSON (' + eps.length + ' sessions)') }) }
+    catch (_) { showSnackbar('Could not copy the trail') }
+  })
+  document.getElementById('trail-erase')?.addEventListener('click', function () {
+    _mgConfirm('Forget every remembered search?', '<p>Listening and watching history are not touched — they live in Stats and the Diary.</p>', 'Erase', function () {
+      var mem = _searchMemory()
+      if (mem) window.PapaSearchMemory.SURFACES.forEach(function (s) { mem.clear(s) })
+      showSnackbar('Search memory erased')
+      renderTrail()
+    })
+  })
+}
+
+// Go back to a moment: the same journeys the Omnibox and the recents take.
+function _restoreMoment(r) {
+  if (!r) return
+  switch (r.type) {
+    case 'search':
+      if (r.surface === 'video') { _rememberSearch(r.q, 'video'); requestVideoSearch(r.q); navigate('video') }
+      else if (r.surface === 'soulseek') { _rememberSearch(r.q, 'soulseek'); navigate('soulseek'); setTimeout(function () { runSlskSearch(r.q) }, 50) }
+      else if (r.surface === 'library') { _rememberSearch(r.q, 'library'); state.libSearch = r.q; state._libNoCorrect = null; navigate('library') }
+      else commitSearchQuery(r.q)
+      return
+    case 'album': navigate('album', r.id); return
+    case 'artist': navigate('artist', r.id); return
+    case 'track': {
+      var found = null, alb = null
+      for (var i = 0; i < state.library.length && !found; i++) {
+        var t = (state.library[i].tracks || []).find(function (x) { return x.filePath === r.id })
+        if (t) { found = t; alb = state.library[i] }
+      }
+      if (found) playItemStandalone({ ...found, albumArtist: alb.artist, artPath: alb.artPath, albumName: alb.name, albumId: alb.id })
+      else showSnackbar('That track is no longer in your library')
+      return
+    }
+    case 'video': navigate('video-detail', r.key); return
+    default: if (r.q) commitSearchQuery(r.q)
+  }
+}
+
+// Home's "Pick up where you left off" row: the latest session's searches and
+// opens as cards (Continue Listening already owns the plays).
+function _homeTrailHtml() {
+  if (!window.PapaTrail) return ''
+  var picks = window.PapaTrail.pickUp(_trailEpisodes(), 3)
+  if (!picks.length) return ''
+  return '<div class="section-header"><span class="section-title">Pick up where you left off</span>' +
+    '<button class="section-see-all" data-page="trail">See the trail</button></div>' +
+    '<div class="trail-cards">' + picks.map(function (m, i) {
+      return '<button class="trail-card" data-trail-pick="' + i + '"><span class="trail-ico">' + _trailIcon(m.icon || m.kind) + '</span>' +
+        '<span class="trail-text"><span class="trail-label">' + esc(m.label) + '</span>' + (m.sub ? '<span class="trail-sub">' + esc(m.sub) + '</span>' : '') + '</span>' +
+        '<span class="trail-time">' + esc(window.PapaTrail.dayLabel(m.ts) + ' ' + window.PapaTrail.timeLabel(m.ts)) + '</span></button>'
+    }).join('') + '</div>'
+}
+var _homeTrailPicks = []
+function _bindHomeTrail() {
+  if (!window.PapaTrail) return
+  _homeTrailPicks = window.PapaTrail.pickUp(_trailEpisodes(), 3)
+  document.querySelectorAll('.trail-card[data-trail-pick]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var m = _homeTrailPicks[parseInt(b.dataset.trailPick, 10)]
+      if (m) _restoreMoment(m.restore)
+    })
+  })
+}
 
 // ── The Omnibox (J5) ────────────────────────────────────────────────────────
 // Ctrl+K. One box for everything the app can reach: the library (through the
