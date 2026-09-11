@@ -9363,6 +9363,11 @@ async function _webOpenAndAnnounce(url, current, title) {
   if (sess.refused) return sess
   _webClose()
   _webSessionId = sess.id
+  // Hover thumbnails for a local or http source: the torrent path builds its
+  // thumbnailer in _startTorrentStream; the others need one here.
+  if (!_videoSession.thumbnailer) {
+    try { _videoSession.thumbnailer = createThumbnailer({ dir: path.join(streamRoot(), `thumbs-${process.pid}-${Date.now()}`), source: url }) } catch (_) { _videoSession.thumbnailer = null }
+  }
   safeSend('video-event', { kind: 'web-ready', session: sess, title: title || '' })
   return sess
 }
@@ -12856,6 +12861,26 @@ ipcMain.handle('video-enrich', async (_, { type, id } = {}) => {
         wins: ext.awards ? ext.awards.wins : 0,
       },
     }
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) }
+  }
+})
+
+// A frame the page drew onto a canvas (the smooth player's screenshot),
+// saved as PNG where mpv puts its own screenshots.
+ipcMain.handle('video-save-frame', async (_, { dataUrl, position } = {}) => {
+  try {
+    const m = /^data:image\/png;base64,(.+)$/.exec(String(dataUrl || ''))
+    if (!m) return { ok: false, error: 'not a PNG' }
+    const { screenshotDir } = require('./video-engine')
+    const dir = screenshotDir()
+    fs.mkdirSync(dir, { recursive: true })
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const at = Number(position) || 0
+    const name = `papa-${stamp}-${Math.floor(at / 60)}m${String(Math.floor(at % 60)).padStart(2, '0')}s.png`
+    const file = path.join(dir, name)
+    fs.writeFileSync(file, Buffer.from(m[1], 'base64'))
+    return { ok: true, path: file }
   } catch (e) {
     return { ok: false, error: (e && e.message) || String(e) }
   }

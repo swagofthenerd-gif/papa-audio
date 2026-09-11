@@ -41,8 +41,10 @@
     var tickTimer = null
     var mounted = null      // 'stage' | 'mini' | null
     var state = _empty()
-    var tracks = { sub: null, audio: null }
+    var tracks = { sub: null, audio: null, burn: null }
     var speed = 1
+    var coverage = []       // server-converted ranges, polled while a session is live
+    var coverageTimer = null
     var subEl = null
 
     function _empty() {
@@ -72,12 +74,38 @@
       var layout = session.plan && session.plan.audio ? (session.plan.audio.channels >= 6 ? 'surround' : session.plan.audio.channels === 2 ? 'stereo' : 'unknown') : 'unknown'
       return {
         position: pos, duration: session.duration || video.duration || 0, paused: !!video.paused, volume: Math.round((video.volume || 0) * 100), muted: !!video.muted,
-        speed: speed, buffered: Math.max(0, bufEnd - pos), seekable: [[0, session.duration || 0]], eof: !!video.ended,
+        speed: speed, buffered: Math.max(0, bufEnd - pos), seekable: _seekableRanges(), eof: !!video.ended,
         video: { width: video.videoWidth || (session.plan && session.plan.video && session.plan.video.width) || null, height: video.videoHeight || null, codec: session.plan && session.plan.video ? (session.plan.video.copy ? session.plan.video.codec : 'h264') : null },
         audio: { layout: layout, channels: session.plan && session.plan.audio ? session.plan.audio.channels : 0, codec: session.plan && session.plan.audio ? (session.plan.audio.copy ? session.plan.audio.codec : 'opus') : null },
-        tracks: { sub: tracks.sub, audio: tracks.audio }, chapters: [],
+        tracks: { sub: tracks.sub, audio: tracks.audio }, chapters: session.chapters || [],
         web: true, badges: session.plan ? session.plan.badges : [],
       }
+    }
+
+    // What the seek bar paints as ready: the browser's own buffer (film
+    // seconds) plus what the server has converted to disk. Both are places a
+    // seek lands without a converter start.
+    function _seekableRanges() {
+      var out = []
+      try {
+        var base = mse ? 0 : offset
+        for (var i = 0; i < video.buffered.length; i++) out.push({ start: base + video.buffered.start(i), end: base + video.buffered.end(i) })
+      } catch (_) {}
+      for (var j = 0; j < coverage.length; j++) out.push({ start: coverage[j][0], end: coverage[j][1] })
+      out.sort(function (a, b) { return a.start - b.start })
+      var merged = []
+      for (var k = 0; k < out.length; k++) {
+        var last = merged[merged.length - 1]
+        if (last && out[k].start <= last.end + 0.5) last.end = Math.max(last.end, out[k].end)
+        else merged.push({ start: out[k].start, end: out[k].end })
+      }
+      return merged
+    }
+    function _pollCoverage() {
+      if (!session || !session.coverageUrl || !fetchFn) return
+      fetchFn(session.coverageUrl).then(function (r) { return r.json() }).then(function (j) {
+        if (session && j && Array.isArray(j.ranges)) coverage = j.ranges
+      }).catch(function () {})
     }
 
     function _ensureVideo() {
@@ -97,7 +125,6 @@
         var e = video.error
         onEvent({ kind: 'error', web: true, message: 'The smooth player could not play this stream' + (e && e.message ? ' (' + e.message + ')' : '') })
       })
-      video.addEventListener('dblclick', function () { onEvent({ kind: 'restore', web: true }) })
       video.addEventListener('loadedmetadata', _emit)
       video.addEventListener('volumechange', _emit)
       return video
@@ -121,7 +148,8 @@
       // fresh run rather than a cached span whose fragments carry later times.
       if (!mse) u += '&fresh=1'
       if (tracks.audio != null) u += '&a=' + encodeURIComponent(tracks.audio)
-      if (extra && extra.burn != null) u += '&burn=' + encodeURIComponent(extra.burn)
+      var burn = extra && extra.burn != null ? extra.burn : tracks.burn
+      if (burn != null) u += '&burn=' + encodeURIComponent(burn)
       return u
     }
 
@@ -236,6 +264,7 @@
         try { if (mse.ms.readyState === 'open') mse.sb.abort() } catch (_) {}
         try { mse.sb.timestampOffset = mse.offset } catch (e) { try { console.warn('[web-player] timestampOffset refused', e && e.message) } catch (_) {} }
         var reader = res.body.getReader()
+        var got = 0
         var pump = function () {
           if (!mse || mse.gen !== gen) { try { reader.cancel() } catch (_) {} return }
           // Backpressure: far enough ahead, wait for the playhead.
@@ -244,7 +273,16 @@
           if (_bufferedAheadOf(video.currentTime) > AHEAD_PAUSE_SEC) { setTimeout(pump, 500); return }
           reader.read().then(function (r) {
             if (!mse || mse.gen !== gen) return
-            if (r.done) { mse.fetching = false; _mseDrain(); return }
+            if (r.done) {
+              mse.fetching = false
+              // A response that carried nothing is a converter that died at
+              // once. Three in a row and the engine stops asking: a storm of
+              // converter starts helps nobody, and the deck gets an error.
+              if (got === 0) { mse.failures = (mse.failures || 0) + 1; if (mse.failures >= 3) { mse.dead = true; onEvent({ kind: 'error', web: true, message: 'The converter keeps failing on this file' }) } }
+              else mse.failures = 0
+              _mseDrain(); return
+            }
+            got += r.value ? r.value.length || 0 : 0
             mse.queue.push(r.value)
             _mseDrain()
             pump()
@@ -253,11 +291,17 @@
         pump()
       }).catch(function () { if (mse && mse.gen === gen) mse.fetching = false })
     }
+    // Seconds of buffer ahead of `cur`, walking across ranges that touch
+    // (gaps under half a second): one span, not the first piece of it.
     function _bufferedAheadOf(cur) {
       try {
-        for (var i = 0; i < video.buffered.length; i++) {
-          if (video.buffered.start(i) - 0.5 <= cur && cur <= video.buffered.end(i)) return video.buffered.end(i) - cur
+        var b = video.buffered
+        var end = null
+        for (var i = 0; i < b.length; i++) {
+          if (end == null) { if (b.start(i) - 0.5 <= cur && cur <= b.end(i)) end = b.end(i) }
+          else if (b.start(i) <= end + 0.5) end = Math.max(end, b.end(i))
         }
+        return end == null ? 0 : end - cur
       } catch (_) {}
       return 0
     }
@@ -312,7 +356,7 @@
     // called from the tick when the playhead nears the end of what it has
     // and nothing is being fetched.
     function _mseContinueIfStarved() {
-      if (!mse || !mse.sb || mse.fetching || !video || video.paused) return
+      if (!mse || !mse.sb || mse.fetching || mse.dead || seekTimer || !video || video.paused) return
       var ahead = _bufferedAheadOf(video.currentTime)
       var end = session.duration || video.duration || 0
       if (end && video.currentTime + ahead >= end - 0.5) return
@@ -361,8 +405,12 @@
 
     function open(sess, startAt) {
       session = sess
-      tracks = { sub: null, audio: sess.plan && sess.plan.audio ? sess.plan.audio.index : null }
+      tracks = { sub: null, audio: sess.plan && sess.plan.audio ? sess.plan.audio.index : null, burn: null }
       speed = 1
+      coverage = []
+      clearInterval(coverageTimer)
+      coverageTimer = setInterval(_pollCoverage, 2000)
+      if (coverageTimer && typeof coverageTimer.unref === 'function') coverageTimer.unref()
       mount('stage')
       _load(startAt || 0, true)
       clearInterval(tickTimer)
@@ -382,6 +430,9 @@
 
     function close() {
       clearInterval(tickTimer); tickTimer = null
+      clearInterval(coverageTimer); coverageTimer = null
+      clearTimeout(seekTimer); seekTimer = null
+      coverage = []
       _mseTeardown()
       if (video) {
         try { video.pause() } catch (_) {}
@@ -405,13 +456,23 @@
         case 'pause': if (args.paused === false) { var p2 = v.play(); if (p2 && p2.catch) p2.catch(function () {}) } else { if (mse) mse.wantPlay = false; v.pause() } break
         case 'seek': {
           var target = args.mode === 'relative' ? _pos() + (Number(args.seconds) || 0) : (Number(args.seconds) || 0)
-          seekTo(target); break
+          seekTo(target, { preview: /keyframes/.test(String(args.mode || '')) }); break
         }
         case 'volume': { var vol = Number(args.value != null ? args.value : args.volume); if (isFinite(vol)) v.volume = Math.max(0, Math.min(1, vol / 100)); break }
         case 'mute': v.muted = !!(args.value != null ? args.value : args.muted); break
         case 'speed': { var sp = Number(args.value != null ? args.value : args.speed); if (isFinite(sp) && sp > 0) { speed = sp; v.playbackRate = sp } break }
         case 'track':
-          if (args.type === 'sub') { tracks.sub = args.id == null || args.id === 'no' ? null : args.id; _applySubTrack() }
+          if (args.type === 'sub') {
+            var id = args.id == null || args.id === 'no' ? null : args.id
+            var burnable = (session.burnable || []).some(function (b) { return b.index === Number(id) })
+            var wasBurn = tracks.burn
+            tracks.sub = id
+            // A styled or image subtitle (ASS, PGS) can only be drawn into the
+            // picture: a different stream, so the source starts over here.
+            tracks.burn = burnable ? Number(id) : null
+            if (tracks.burn !== wasBurn) { var atB = _pos(); var playingB = !v.paused; _mseTeardown(); _load(atB, playingB) }
+            _applySubTrack()
+          }
           else if (args.type === 'audio') {
             if (tracks.audio !== args.id) {
               tracks.audio = args.id
@@ -423,6 +484,7 @@
           }
           break
         case 'frameStep': v.pause(); v.currentTime = Math.max(0, v.currentTime + (Number(args.frames != null ? args.frames : args.dir) || 1) / 24); break
+        case 'screenshot': return _screenshot()
         case 'stop': close(); break
         default: return Promise.resolve({ ok: false, unsupported: verb })
       }
@@ -432,18 +494,31 @@
 
     // Already appended: instant. Otherwise fetch from there (the server
     // answers from its cache when it has that span). Plain-src mode keeps
-    // the old restart.
-    function seekTo(target) {
+    // the old restart. A scrub preview (`preview`) only ever moves inside
+    // what is appended: a converter start per pointer move was the lag.
+    // Fetches for real seeks are coalesced (SEEK_SETTLE_MS) so a run of
+    // arrow presses becomes one converter start, not ten.
+    var SEEK_SETTLE_MS = 180
+    var seekTimer = null
+    function _mseFetchSoon(t) {
+      clearTimeout(seekTimer)
+      seekTimer = setTimeout(function () { seekTimer = null; if (mse && session) _mseFetch(t) }, SEEK_SETTLE_MS)
+      if (seekTimer && typeof seekTimer.unref === 'function') seekTimer.unref()
+    }
+    function seekTo(target, opts) {
       var v = video
       if (!v || !session) return
       var t = Math.max(0, Math.min(Number(target) || 0, session.duration || Infinity))
+      var preview = !!(opts && opts.preview)
       if (mse) {
-        if (_mseHas(t)) { v.currentTime = t; _emit(); return }
-        _mseFetch(t)
+        if (_mseHas(t)) { clearTimeout(seekTimer); seekTimer = null; v.currentTime = t; _emit(); return }
+        if (preview) return
+        _mseFetchSoon(t)
         try { v.currentTime = t } catch (_) {}
         _emit()
         return
       }
+      if (preview) return
       var local = t - offset
       var inBuffer = false
       try {
@@ -453,13 +528,31 @@
       else _load(t, !v.paused)
     }
 
+    // A frame of the picture as a PNG, saved by main next to mpv's own
+    // screenshots. The <video> is drawn onto a canvas at its native size.
+    function _screenshot() {
+      var v = video
+      if (!v || !doc || !api || typeof api.videoSaveFrame !== 'function') return Promise.resolve({ ok: false })
+      try {
+        var c = doc.createElement('canvas')
+        c.width = v.videoWidth || 1920; c.height = v.videoHeight || 1080
+        c.getContext('2d').drawImage(v, 0, 0, c.width, c.height)
+        var dataUrl = c.toDataURL('image/png')
+        return api.videoSaveFrame({ dataUrl: dataUrl, position: _pos() }).then(function (r) {
+          return r && r.ok && r.path ? { ok: true, value: { path: r.path } } : { ok: false }
+        }).catch(function () { return { ok: false } })
+      } catch (_) { return Promise.resolve({ ok: false }) }
+    }
+
     // The tracks list in the shape the controller expects from videoTracks():
-    // { id, type, lang, title, selected }.
+    // { id, type, lang, title, selected }. Styled and image subtitles are
+    // offered too; picking one burns it into the picture.
     function trackList() {
       if (!session) return []
       var out = []
       ;(session.audios || []).forEach(function (a) { out.push({ id: a.index, type: 'audio', lang: a.lang || '', title: (a.title || (a.channels >= 6 ? a.channels === 8 ? '7.1' : '5.1' : a.channels === 2 ? 'Stereo' : '') ) + (a.codec ? ' · ' + a.codec.toUpperCase() : ''), selected: tracks.audio === a.index }) })
       ;(session.subtitles || []).forEach(function (s) { out.push({ id: s.index, type: 'sub', lang: s.lang || '', title: s.title || s.lang || 'Subtitles', selected: tracks.sub === s.index }) })
+      ;(session.burnable || []).forEach(function (s) { out.push({ id: s.index, type: 'sub', lang: s.lang || '', title: (s.title || s.lang || 'Subtitles') + (s.styled ? ' · styled' : ' · image') + ' (drawn in)', selected: tracks.sub === s.index, burn: true }) })
       return out
     }
 
@@ -476,7 +569,7 @@
         return function () { listeners = listeners.filter(function (f) { return f !== cb }); if (offNative) offNative() }
       }
       proxy.videoTracks = function () { return active() ? Promise.resolve({ ok: true, tracks: trackList() }) : real.videoTracks() }
-      proxy.videoChapters = function () { return active() ? Promise.resolve({ ok: true, chapters: [] }) : real.videoChapters() }
+      proxy.videoChapters = function () { return active() ? Promise.resolve({ ok: true, chapters: (session && session.chapters) || [] }) : real.videoChapters() }
       proxy.videoSurfaceBounds = function (rect) { return active() ? Promise.resolve({ ok: true }) : real.videoSurfaceBounds(rect) }
       proxy.videoSurfaceVisible = function (on) { return active() ? Promise.resolve({ ok: true }) : real.videoSurfaceVisible(on) }
       proxy.videoMiniMode = function (p) {
@@ -485,8 +578,10 @@
         return Promise.resolve({ ok: true })
       }
       proxy.videoOsd = function (text, ms) { return active() ? Promise.resolve({ ok: true }) : real.videoOsd(text, ms) }
-      proxy.videoThumbAt = function (p) { return active() ? Promise.resolve(null) : real.videoThumbAt(p) }
-      proxy.videoThumb = function (p) { return active() ? Promise.resolve(null) : real.videoThumb(p) }
+      // Hover thumbnails come from main's own thumbnailer on the source file,
+      // which does not need mpv: the real call serves both players.
+      proxy.videoThumbAt = function (p) { return real.videoThumbAt(p) }
+      proxy.videoThumb = function (p) { return real.videoThumb(p) }
       proxy.videoStreamStats = function () {
         if (!active()) return real.videoStreamStats()
         var q = null
@@ -501,7 +596,7 @@
       return proxy
     }
 
-    return { create: create, open: open, close: close, active: active, control: control, seekTo: seekTo, mount: mount, trackList: trackList, wrapApi: wrapApi, state: _snapshot, _video: function () { return video }, _session: function () { return session }, _mse: function () { return mse } }
+    return { create: create, open: open, close: close, active: active, control: control, seekTo: seekTo, mount: mount, trackList: trackList, wrapApi: wrapApi, state: _snapshot, _video: function () { return video }, _session: function () { return session }, _mse: function () { return mse }, _pollCoverageNow: _pollCoverage }
   }
 
   var api = { create: create, TICK_MS: TICK_MS }

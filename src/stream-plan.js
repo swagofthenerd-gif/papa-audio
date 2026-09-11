@@ -189,11 +189,6 @@ function ffmpegArgs(p, input, startSec, extra) {
     videoArgs = ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18', '-pix_fmt', 'yuv420p']
     inputArgs = []
   }
-  const filters = []
-  const vfIdx = videoArgs.indexOf('-vf')
-  if (vfIdx !== -1) filters.push(videoArgs[vfIdx + 1])
-  if (extra.burnIndex != null) filters.push("subtitles='" + String(input).replace(/'/g, "'\\''") + "':si=" + extra.burnSubOrdinal)
-  const vArgs = vfIdx !== -1 ? videoArgs.filter((_, i) => i !== vfIdx && i !== vfIdx + 1) : videoArgs.slice()
   // Seeking a re-encode: a single input -ss left the picture stamped from
   // the keyframe before the target while the copied sound was rebased to
   // the target — 2.3 s of lip-sync error on every seek and every resume
@@ -203,6 +198,32 @@ function ffmpegArgs(p, input, startSec, extra) {
   const reencode = !(videoArgs[0] === '-c:v' && videoArgs[1] === 'copy')
   const inputSeek = start > 0 ? (reencode ? Math.max(0, start - SPLIT_SEEK_SEC) : start) : 0
   const outputSeek = start > 0 && reencode ? start - inputSeek : 0
+  const filters = []
+  const vfIdx = videoArgs.indexOf('-vf')
+  if (vfIdx !== -1) filters.push(videoArgs[vfIdx + 1])
+  // Text/styled subtitles (ASS, SRT) are drawn by the subtitles filter;
+  // image subtitles (PGS, DVD, DVB) are bitmaps and must be overlaid from
+  // the subtitle stream itself — the subtitles filter cannot read them.
+  const imageBurn = extra.burnIndex != null && !!extra.burnImage
+  if (extra.burnIndex != null && !imageBurn) filters.push("subtitles='" + String(input).replace(/'/g, "'\\''") + "':si=" + extra.burnSubOrdinal)
+  const vArgs = vfIdx !== -1 ? videoArgs.filter((_, i) => i !== vfIdx && i !== vfIdx + 1) : videoArgs.slice()
+  if (imageBurn) {
+    // Frames must be in system memory for the overlay: the CUDA-only chain
+    // (frames kept on the GPU) drops its output-format flag and scale_cuda.
+    if (inputArgs.indexOf('-hwaccel_output_format') !== -1) inputArgs = inputArgs.filter(x => x !== '-hwaccel_output_format' && x !== 'cuda').concat(['-hwaccel', 'cuda'])
+    const chain = filters.filter(f => !/^scale_cuda/.test(f)).join(',')
+    const graph = '[0:' + p.video.index + ']' + (chain ? chain + ',' : '') + 'format=nv12[v];[v][0:' + extra.burnIndex + ']overlay=eof_action=pass:format=auto,format=nv12[out]'
+    return ['-hide_banner', '-loglevel', 'error', '-nostdin']
+      .concat(inputArgs)
+      .concat(inputSeek > 0 ? ['-ss', String(inputSeek)] : [])
+      .concat(['-i', input])
+      .concat(outputSeek > 0 ? ['-ss', String(outputSeek)] : [])
+      .concat(['-filter_complex', graph, '-map', '[out]'])
+      .concat(p.audio ? ['-map', '0:' + p.audio.index] : [])
+      .concat(vArgs)
+      .concat(p.audioArgs)
+      .concat(['-sn', '-movflags', 'frag_keyframe+empty_moov+default_base_moof', '-frag_duration', '1000000', '-f', 'mp4', 'pipe:1'])
+  }
   const args = ['-hide_banner', '-loglevel', 'error', '-nostdin']
     .concat(inputArgs)
     .concat(inputSeek > 0 ? ['-ss', String(inputSeek)] : [])

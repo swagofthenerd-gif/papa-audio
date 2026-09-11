@@ -78,3 +78,28 @@ test('hover chrome on the picture and keys that reach a minimised card', () => {
   assert.match(grid, /e\.target\.closest\('#vmini'\)\) return/, 'the poster-grid arrows stand down too')
   assert.match(key, /if \(hit\.action === 'fullscreen'\) restore\(\)/)
 })
+
+test('the picture handles the pointer in the page: click toggles with a burst, double-click fullscreens, wheel is volume, the mini card taps to pause', () => {
+  const bind = DECK.slice(DECK.indexOf("const stageEl = $('vt-stage')"), DECK.indexOf("$('vt-upnext')?.addEventListener('pointerenter'"))
+  assert.match(bind, /stageEl\.addEventListener\('click'/); assert.match(bind, /togglePlay\(\)\n\s+burst\(state\.paused \? ICON\.play : ICON\.pause\)/)
+  assert.match(bind, /stageEl\.addEventListener\('dblclick'[\s\S]*toggleFullscreen\(\)/)
+  assert.match(bind, /stageEl\.addEventListener\('wheel'[\s\S]*setVolume\(/)
+  assert.match(bind, /closest\('button, \.vt-upnext, \.vt-pack, \.vt-skip, \.vt-menu, \.vt-stage-msg, \.vt-strip'\)/, 'controls over the picture are not the picture')
+  assert.match(DECK, /function osd\(text, ms\) \{\n\s+if \(pictureInPage\(\)\) \{/, 'the OSD is drawn in the page when the picture is')
+  assert.match(DECK, /if \(!moved && pressEl && pressEl\.id === 'vmini-video' && nowMs\(\) - pressAt < 400 && state\)/)
+  assert.match(HTML, /id="vt-osd"/); assert.match(HTML, /id="vt-burst"/)
+  assert.match(CSS, /\.vt-burst\.on \{ animation:vt-burst/)
+  const ENGINE = fs.readFileSync(path.join(SRC, 'web-player.js'), 'utf8')
+  assert.doesNotMatch(ENGINE, /video\.addEventListener\('dblclick'/, 'the deck owns double-click now')
+  assert.match(ENGINE, /seekTo\(target, \{ preview: \/keyframes\/\.test\(String\(args\.mode \|\| ''\)\) \}\)/)
+})
+
+test('main saves a frame the page drew; the deck caps volume at 100 in the page; the smooth path builds a thumbnailer', () => {
+  const MAIN = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
+  const PRELOAD = fs.readFileSync(path.join(__dirname, '..', 'preload.js'), 'utf8')
+  assert.match(MAIN, /ipcMain\.handle\('video-save-frame'/)
+  assert.match(PRELOAD, /videoSaveFrame:\s+\(p\) => ipcRenderer\.invoke\('video-save-frame', p\)/)
+  assert.match(DECK, /function setVolume\(v\) \{\n[^\n]*\n\s+if \(pictureInPage\(\)\) v = Math\.min\(100, Number\(v\) \|\| 0\)/)
+  const announce = MAIN.slice(MAIN.indexOf('async function _webOpenAndAnnounce('), MAIN.indexOf('function _videoSettings('))
+  assert.match(announce, /if \(!_videoSession\.thumbnailer\) \{\n\s+try \{ _videoSession\.thumbnailer = createThumbnailer\(/)
+})

@@ -147,3 +147,18 @@ test('subtitle outputs ride along the run; VTT cues parse, shift by the run star
   assert.equal(merged, 'WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nA2\n\n00:00:05.000 --> 00:00:06.000\nB\n')
   assert.equal(P.mergeVtt([]), 'WEBVTT\n\n')
 })
+
+test('an image subtitle (PGS) burns in through an overlay graph with frames in system memory; a text one keeps the subtitles filter', () => {
+  const p = P.plan(mononoke)
+  const a = P.ffmpegArgs(p, '/x/film.mkv', 600, { burnIndex: 4, burnSubOrdinal: 1, burnImage: true })
+  const fc = a[a.indexOf('-filter_complex') + 1]
+  assert.equal(fc, '[0:0]format=nv12[v];[v][0:4]overlay=eof_action=pass:format=auto,format=nv12[out]')
+  assert.deepEqual(a.slice(a.indexOf('-map'), a.indexOf('-map') + 4), ['-map', '[out]', '-map', '0:1'])
+  assert.ok(!a.includes('-hwaccel_output_format') && a.includes('-hwaccel'), 'decoded to system memory for the overlay')
+  assert.ok(!a.join(' ').includes('scale_cuda'), 'no GPU-frame filter on system-memory frames')
+  assert.ok(a.includes('h264_nvenc'))
+  const hdr = P.ffmpegArgs(P.plan(f4), '/x/f4.mkv', 0, { burnIndex: 5, burnSubOrdinal: 0, burnImage: true })
+  assert.match(hdr[hdr.indexOf('-filter_complex') + 1], /^\[0:0\]hwupload,tonemap_opencl=[^;]*hwdownload,format=nv12,format=nv12\[v\];\[v\]\[0:5\]overlay/)
+  const text = P.ffmpegArgs(p, '/x/film.mkv', 0, { burnIndex: 3, burnSubOrdinal: 0, burnImage: false })
+  assert.ok(text.includes('-vf') && /subtitles='\/x\/film\.mkv':si=0/.test(text[text.indexOf('-vf') + 1]))
+})

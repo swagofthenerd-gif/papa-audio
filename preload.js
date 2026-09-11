@@ -153,6 +153,8 @@ contextBridge.exposeInMainWorld('api', {
   videoSubDownload: (p) => ipcRenderer.invoke('video-sub-download', p),
   videoTracks:      ()  => ipcRenderer.invoke('video-tracks'),
   videoChapters:    ()  => ipcRenderer.invoke('video-chapters'),
+  // The smooth player's screenshot: a PNG the page drew, saved by main.
+  videoSaveFrame:   (p) => ipcRenderer.invoke('video-save-frame', p),
   videoEnrich:      (p) => ipcRenderer.invoke('video-enrich', p),
   videoShelf:       (p) => ipcRenderer.invoke('video-shelf', p),
   videoAiring:      (p) => ipcRenderer.invoke('video-airing', p),

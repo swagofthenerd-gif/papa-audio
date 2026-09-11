@@ -101,7 +101,7 @@ test('the API proxy routes to the engine while a session is active and to the re
   await p.videoMiniMode({ on: false }); assert.equal(e._video().parentNode.id, 'vt-stage')
   assert.deepEqual((await p.videoTracks()).tracks.map(t => t.type), ['audio', 'audio', 'sub'])
   assert.deepEqual((await p.videoChapters()).chapters, [])
-  assert.equal(await p.videoThumbAt({ sec: 1 }), null)
+  assert.equal(await p.videoThumbAt({ sec: 1 }), 'thumb', 'thumbnails come from the real thumbnailer in both players')
   const before = seen.length
   real._cb({}); assert.equal(seen.filter(x => x === 'native').length, 1, 'native state is muted while web is active')
   assert.ok(seen.length >= before && seen.slice(1).every(x => x === 'web'), 'only the engine speaks while a session is active')

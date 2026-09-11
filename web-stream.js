@@ -33,12 +33,16 @@ const NEAR_LIVE_SEC = 3             // a run this close behind the target is wor
 function probeStreams(input, execFileFn, timeoutMs) {
   return new Promise((resolve, reject) => {
     execFileFn('ffprobe', [
-      '-v', 'error', '-show_streams', '-show_format', '-of', 'json', input,
+      '-v', 'error', '-show_streams', '-show_format', '-show_chapters', '-of', 'json', input,
     ], { encoding: 'utf8', timeout: timeoutMs || 25000, maxBuffer: 4 << 20 }, (err, out) => {
       if (err) return reject(err)
       try {
         const j = JSON.parse(out)
-        resolve({ streams: j.streams || [], duration: Number(j.format && j.format.duration) || 0 })
+        // Chapters in the shape the theatre already reads from mpv.
+        const chapters = (Array.isArray(j.chapters) ? j.chapters : []).map((c, i) => ({
+          index: i, title: (c.tags && (c.tags.title || c.tags.TITLE)) || null, start: Number(c.start_time) || 0,
+        })).filter(c => Number.isFinite(c.start))
+        resolve({ streams: j.streams || [], duration: Number(j.format && j.format.duration) || 0, chapters })
       } catch (e) { reject(e) }
     })
   })
@@ -75,6 +79,7 @@ function createWebStreamServer(opts) {
     let m
     if ((m = /^\/s\/([a-f0-9]+)\.mp4$/.exec(u.pathname))) return _serveStream(sessions.get(m[1]), u, res)
     if ((m = /^\/s\/([a-f0-9]+)\/sub\/(\d+)\.vtt$/.exec(u.pathname))) return _serveSub(sessions.get(m[1]), Number(m[2]), res)
+    if ((m = /^\/s\/([a-f0-9]+)\/coverage$/.exec(u.pathname))) return _serveCoverage(sessions.get(m[1]), res)
     res.writeHead(404); res.end()
   }
 
@@ -89,8 +94,12 @@ function createWebStreamServer(opts) {
     }
     let extra = {}
     if (burn != null && !s.pair) {
-      const ordinal = s.streams.filter(x => x.codec_type === 'subtitle').findIndex(x => x.index === burn)
-      if (ordinal >= 0) extra = { burnIndex: burn, burnSubOrdinal: ordinal }
+      const subs = s.streams.filter(x => x.codec_type === 'subtitle')
+      const ordinal = subs.findIndex(x => x.index === burn)
+      if (ordinal >= 0) {
+        const codec = String(subs[ordinal].codec_name || '').toLowerCase()
+        extra = { burnIndex: burn, burnSubOrdinal: ordinal, burnImage: /pgs|dvd_subtitle|dvb/.test(codec) }
+      }
     }
     return { key: 'a:' + (plan.audio ? plan.audio.index : '-') + '|b:' + (extra.burnIndex != null ? extra.burnIndex : '-'), plan, extra }
   }
@@ -230,6 +239,30 @@ function createWebStreamServer(opts) {
   }
   function _wait(run) { return new Promise(resolve => { const t = setTimeout(done, 250); function done() { clearTimeout(t); run.removeListener('grow', done); resolve() } run.once('grow', done) }) }
 
+  // The seconds already converted to disk, as ranges — what the seek bar
+  // shows as buffered beyond the browser's own buffer, and where a seek is
+  // a file read.
+  function coverage(s) {
+    const out = []
+    for (const r of s.runs) {
+      if (!r.index.state.ready) continue
+      const end = r.start + r.index.coveredSec()
+      if (end > r.start) out.push([r.start, end])
+    }
+    out.sort((a, b) => a[0] - b[0])
+    const merged = []
+    for (const r of out) {
+      const last = merged[merged.length - 1]
+      if (last && r[0] <= last[1] + 0.5) last[1] = Math.max(last[1], r[1]); else merged.push([r[0], r[1]])
+    }
+    return merged
+  }
+  function _serveCoverage(s, res) {
+    if (!s) { res.writeHead(404); res.end(); return }
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' })
+    res.end(JSON.stringify({ ranges: coverage(s) }))
+  }
+
   function _serveStream(s, u, res) {
     if (!s) { res.writeHead(404); res.end(); return }
     const t = Math.max(0, Number(u.searchParams.get('t')) || 0)
@@ -324,7 +357,7 @@ function createWebStreamServer(opts) {
   // Probe, plan, register. Resolves the session the renderer needs, or
   // { refused, reason } when the planner cannot serve this source.
   async function open(input, prefs) {
-    const { streams, duration } = await probeStreams(input, execFileFn, opts.probeTimeoutMs)
+    const { streams, duration, chapters } = await probeStreams(input, execFileFn, opts.probeTimeoutMs)
     const plan = planner.plan(streams, { prefs: prefs || {}, caps: opts.caps })
     if (plan.mode === 'refuse') return { refused: true, reason: plan.reason }
     await _listen()
@@ -332,7 +365,9 @@ function createWebStreamServer(opts) {
     return {
       id: s.id,
       duration,
+      chapters: chapters || [],
       streamUrl: `http://127.0.0.1:${port}/s/${s.id}.mp4`,
+      coverageUrl: `http://127.0.0.1:${port}/s/${s.id}/coverage`,
       mime: plan.mime,
       subtitles: plan.subtitles.sidecars.map(sub => ({ index: sub.index, lang: sub.lang, title: sub.title, url: `http://127.0.0.1:${port}/s/${s.id}/sub/${sub.index}.vtt` })),
       burnable: plan.subtitles.burnable,
@@ -374,7 +409,7 @@ function createWebStreamServer(opts) {
     if (server) { try { server.close() } catch (_) {} server = null; port = 0 }
   }
 
-  return { open, openPair, close, closeAll, shutdown, _sessions: sessions, _port: () => port, _handle, _cacheDir: cacheDir }
+  return { open, openPair, close, closeAll, shutdown, coverage, _sessions: sessions, _port: () => port, _handle, _cacheDir: cacheDir }
 }
 
 module.exports = { createWebStreamServer, probeStreams }

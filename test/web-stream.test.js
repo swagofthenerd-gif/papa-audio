@@ -277,3 +277,18 @@ test('a streamed input gets its subtitles from the run itself: no separate whole
   assert.match(r2.body, /00:10:01\.000 --> 00:10:02\.000\ncue from run at 600/, 'the later run\'s cues are shifted by its start')
   srv.shutdown()
 })
+
+test('open reports chapters and a coverage URL; coverage lists the converted spans, merged', async () => {
+  const spawned = []
+  const probe = (_b, _a, _o, cb) => cb(null, JSON.stringify({ streams: STREAMS, format: { duration: '123.4' }, chapters: [{ start_time: '0.000', tags: { title: 'Opening' } }, { start_time: '60.5', tags: { TITLE: 'Act 2' } }] }))
+  const srv = createWebStreamServer({ spawnFn: makeFmp4Spawn(spawned, 5), execFileFn: probe, cacheDir: tmpDir() })
+  const s = await srv.open('/x/film.mkv')
+  assert.deepEqual(s.chapters, [{ index: 0, title: 'Opening', start: 0 }, { index: 1, title: 'Act 2', start: 60.5 }])
+  assert.match(s.coverageUrl, /\/coverage$/)
+  await getBuf(s.streamUrl + '?t=0')
+  await getBuf(s.streamUrl + '?t=100')
+  await new Promise(r => setTimeout(r, 30))
+  const cov = JSON.parse((await get(s.coverageUrl)).body)
+  assert.deepEqual(cov.ranges, [[0, 4], [100, 104]], 'each run covers up to the start of its last fragment')
+  srv.shutdown()
+})

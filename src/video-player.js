@@ -742,6 +742,7 @@
       if (!mini || (!handle && !bar)) return
       let startX = 0, startY = 0, baseTL = null, pointerId = null, captureEl = null
       let samples = []   // recent pointer positions, for the release velocity
+      let pressAt = 0, moved = false, pressEl = null
 
       const onDown = function (el) {
         return function (e) {
@@ -765,6 +766,7 @@
           baseTL = live || miniAnchor(miniPos.corner, miniPos.size)
           miniDragTL = { x: baseTL.x, y: baseTL.y }
           samples = [{ t: nowMs(), x: e.clientX, y: e.clientY }]
+          pressAt = nowMs(); moved = false; pressEl = el
           try { el.setPointerCapture(e.pointerId) } catch (_) {}
           if (typeof e.preventDefault === 'function') e.preventDefault()
         }
@@ -774,6 +776,8 @@
         const vp = miniViewport()
         const cs = miniCardSize(miniPos.size)
         // Keep the whole card on screen while dragging.
+        if (Math.abs(e.clientX - startX) > 4 || Math.abs(e.clientY - startY) > 4) moved = true
+        if (!moved) return   // a press that has not moved is not a drag yet
         const x = Math.max(0, Math.min(vp.width - cs.w, baseTL.x + (e.clientX - startX)))
         const y = Math.max(miniTopInset(), Math.min(vp.height - cs.h, baseTL.y + (e.clientY - startY)))
         miniDragTL = { x: x, y: y }
@@ -788,6 +792,15 @@
         mini.classList.remove('vmini-dragging')
         try { if (captureEl) captureEl.releasePointerCapture(e.pointerId) } catch (_) {}
         if (miniRectTimer) { clearTimeout(miniRectTimer); miniRectTimer = 0 }
+        // A press on the picture that never moved is a tap: play/pause, as a
+        // click on the theatre's picture does (V4). The handle and bar stay
+        // pure drag surfaces.
+        if (!moved && pressEl && pressEl.id === 'vmini-video' && nowMs() - pressAt < 400 && state) {
+          miniDragTL = null; pointerId = null; captureEl = null; samples = []
+          togglePlay()
+          return
+        }
+        if (!moved) { miniDragTL = null; pointerId = null; captureEl = null; samples = []; return }
         // The corner a flick was heading for, not just the one nearest the
         // drop: the release velocity projects the drop point forward first.
         // Then the card settles there on a spring that continues the hand's
@@ -1333,6 +1346,8 @@
     }
 
     function setVolume(v) {
+      // The page's <video> stops at 100 %; only mpv has the 130 % headroom.
+      if (pictureInPage()) v = Math.min(100, Number(v) || 0)
       const next = Math.max(0, Math.min(130, Math.round(v)))
       send('volume', { value: next })
       if (state) state.volume = next
@@ -1343,13 +1358,36 @@
     // which is the one piece of text that CAN be drawn over the native window,
     // because mpv draws it itself. Defensive: an api without videoOsd, or one
     // whose stub returns no promise, must cost nothing.
-    function flashVolume() {
+    function flashVolume() { osd('Volume ' + Math.round(Number(state && state.volume) || 0) + '%', 800) }
+
+    // A line of on-screen text. mpv draws its own; with the picture in the
+    // page the deck draws it on the stage (V4).
+    let osdTimer = null
+    function osd(text, ms) {
+      if (pictureInPage()) {
+        const el = $('vt-osd')
+        if (!el) return
+        el.textContent = text
+        el.classList.add('on')
+        clearTimeout(osdTimer)
+        osdTimer = setTimeout(function () { el.classList.remove('on') }, ms || 800)
+        return
+      }
       if (!api || !api.videoOsd) return
-      const v = Math.round(Number(state && state.volume) || 0)
       try {
-        const p = api.videoOsd('Volume ' + v + '%', 800)
+        const p = api.videoOsd(text, ms || 800)
         if (p && typeof p.catch === 'function') p.catch(function () {})
       } catch (_) { /* the OSD is decoration, never a blocker */ }
+    }
+    // The YouTube-style burst on a click: the icon of what just happened,
+    // blooming out of the centre of the picture and fading.
+    function burst(icon) {
+      const el = $('vt-burst')
+      if (!el) return
+      el.innerHTML = icon
+      el.classList.remove('on')
+      void el.offsetWidth
+      el.classList.add('on')
     }
 
     function toggleTimeMode() {
@@ -2557,6 +2595,40 @@
         flashVolume()
         render()
       })
+      // The picture itself (V4): with the smooth player the <video> lives in
+      // the page and takes the pointer, so the stage handles what mpv's own
+      // window used to — click to play/pause (with a burst), double-click for
+      // fullscreen (the second click undoes the first's toggle, as YouTube's
+      // does), wheel for volume, Shift+wheel to seek. Under mpv the native
+      // window swallows these and relays them itself; nothing fires here.
+      const stageEl = $('vt-stage')
+      if (stageEl) {
+        const onPicture = function (e) {
+          const t = e.target
+          if (!t || typeof t.closest !== 'function') return true
+          return !t.closest('button, .vt-upnext, .vt-pack, .vt-skip, .vt-menu, .vt-stage-msg, .vt-strip')
+        }
+        stageEl.addEventListener('click', function (e) {
+          if (!onPicture(e) || !state) return
+          togglePlay()
+          burst(state.paused ? ICON.play : ICON.pause)
+          noteActivity()
+        })
+        stageEl.addEventListener('dblclick', function (e) {
+          if (!onPicture(e)) return
+          if (typeof e.preventDefault === 'function') e.preventDefault()
+          toggleFullscreen()
+        })
+        stageEl.addEventListener('wheel', function (e) {
+          if (!onPicture(e) || !state) return
+          if (typeof e.preventDefault === 'function') e.preventDefault()
+          if (e.shiftKey) { seekBy((Number(e.deltaY) || 0) > 0 ? -10 : 10); osd(((Number(e.deltaY) || 0) > 0 ? '−' : '+') + '10 s', 600); return }
+          const step = (Number(e.deltaY) || 0) > 0 ? -5 : 5
+          setVolume((Number(state && state.volume) || 0) + step)
+          flashVolume()
+          render()
+        }, { passive: false })
+      }
       // Hovering the Up Next card holds its countdown; leaving resumes it.
       // Bound on the box, which survives every innerHTML repaint of the card.
       $('vt-upnext')?.addEventListener('pointerenter', function () { upNextHover = true })
