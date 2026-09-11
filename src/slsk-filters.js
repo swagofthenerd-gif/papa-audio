@@ -177,11 +177,33 @@ function applyShelfFilterSort(albums, { filters = null, decade = null, sort = 'a
   return SH && SH.sortMergedAlbums ? SH.sortMergedAlbums(out, sort) : out
 }
 
+// The results header, in one voice with every unit named (R5). The merged
+// view shows ALBUMS (one card per album, several sharers behind it) while the
+// filter chips and the uploader view count SOURCES (one sharer's folder), and
+// the two numbers used to sit side by side with no unit on either — "3779"
+// next to "4267" reading as a contradiction. Now: "12 albums from 40 sources
+// · 30 lossless · 5 match the filter · showing 20 of 40".
+function summaryLine(p) {
+  p = p || {}
+  const n = (v) => Number(v) || 0
+  const plural = (k, w) => k + ' ' + w + (k === 1 ? '' : 's')
+  const parts = []
+  if (p.merged) {
+    parts.push(plural(n(p.albums), 'album') + ' from ' + plural(n(p.sources), 'source'))
+  } else {
+    parts.push(plural(n(p.sources), 'source'))
+  }
+  if (n(p.lossless)) parts.push(n(p.lossless) + ' lossless')
+  if (p.filter && p.filter !== 'all') parts.push(n(p.filterMatches) + ' match' + (n(p.filterMatches) === 1 ? '' : 'es') + ' the filter')
+  if (n(p.total) > n(p.shown)) parts.push('showing ' + n(p.shown) + ' of ' + n(p.total) + ' ' + (p.merged ? 'album' : 'source') + (n(p.total) === 1 ? '' : 's'))
+  return parts.join(' · ')
+}
+
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { detectSurround, groupSurround, isHiResGroup, isLosslessGroup, applyFilterSort, surroundQueries, SURROUND_TERMS, FILTERS, SORTS, SHELF_FILTERS, shelfDecades, applyShelfFilterSort, albumIsSurround }
+  module.exports = { detectSurround, groupSurround, isHiResGroup, isLosslessGroup, applyFilterSort, surroundQueries, SURROUND_TERMS, FILTERS, SORTS, SHELF_FILTERS, shelfDecades, applyShelfFilterSort, albumIsSurround, summaryLine }
 }
 if (typeof window !== 'undefined') {
-  window.PapaSlskFilters = { detectSurround, groupSurround, isHiResGroup, isLosslessGroup, applyFilterSort }
+  window.PapaSlskFilters = { detectSurround, groupSurround, isHiResGroup, isLosslessGroup, applyFilterSort, summaryLine }
   // The same detector serves YouTube titles: both are uploader-written text,
   // and the failure modes ("Album 51", stereo SACD rips) are identical.
   window.PapaSurround = { detectSurround, surroundQueries }

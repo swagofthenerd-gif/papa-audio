@@ -22590,18 +22590,22 @@ function renderSoulseekRow(query) {
   _slskRendered = displayList
   _slskMergedMode = merged && !!mergedAlbums
   const unitWord      = _slskMergedMode ? 'album' : 'source'
-  const filteredNote  = slsk.filter !== 'all'
-    ? ` · <span class="slsk-filter-note">${unitList.length} match${unitList.length !== 1 ? 'es' : ''}</span>` : ''
-  const cappedNote    = hiddenCount
-    ? ` · <span class="slsk-filter-note">showing ${displayList.length} of ${unitList.length}</span>` : ''
   const isUpdating   = slsk.searching && slsk.results.length > 0
   const pending      = slsk.pendingSearches || 0
   const updateNote   = isUpdating ? ` <span class="slsk-updating">· scanning${pending > 0 ? ' ('+pending+' left)' : ''}${_slskElapsed > 0 ? ' ('+_slskElapsed+'s)' : ''}…</span>` : ''
-  const summary      = _slskMergedMode
-    ? `${unitList.length} album${unitList.length !== 1 ? 's' : ''}${flacGroups.length ? ` · ${flacGroups.length} lossless source${flacGroups.length !== 1 ? 's' : ''}` : ''}${filteredNote}${cappedNote}${updateNote}`
-    : (flacGroups.length
-        ? `${flacGroups.length} lossless${otherGroups.length > 0 ? ` · ${otherGroups.length} other` : ''} source${groups.length !== 1 ? 's' : ''}${filteredNote}${cappedNote}${updateNote}`
-        : `${groups.length} source${groups.length !== 1 ? 's' : ''}${cappedNote}${updateNote}`)
+  // One voice, every unit named (R5): albums vs sources can no longer sit
+  // side by side as two bare numbers. The chips count sources; the merged
+  // header says "N albums from M sources".
+  const summary      = (SF && SF.summaryLine ? esc(SF.summaryLine({
+    merged: _slskMergedMode,
+    albums: _slskMergedMode ? unitList.length : 0,
+    sources: ordered.length,
+    lossless: flacGroups.length,
+    filter: slsk.filter,
+    filterMatches: filtered.length,
+    shown: displayList.length,
+    total: unitList.length,
+  })) : `${unitList.length} ${unitWord}${unitList.length !== 1 ? 's' : ''}`) + updateNote
 
   return `<div class="slsk-container" id="slsk-row">
     <div class="slsk-header-row">
@@ -23237,7 +23241,7 @@ async function _pollAndRenderDownloadsInner() {
     return
   }
   _dlClearDaemonBanner()
-  const files = []
+  let files = []
   for (const user of (raw || [])) {
     for (const dir of (user.directories || [])) {
       for (const f of (dir.files || [])) {
@@ -23252,10 +23256,10 @@ async function _pollAndRenderDownloadsInner() {
   if (window.api.slskSchedulerQueue) {
     const sched = await window.api.slskSchedulerQueue().catch(() => null)
     if (sched) {
-      const known = new Set(files.map(f => f.filename))
-      for (const f of (sched.files || [])) {
-        if (!known.has(f.filename)) files.push(f)
-      }
+      // One merge rule (dl-numbers.js): a held file replaces its own FAILED
+      // earlier attempt — the scheduler is retrying it, so it is waiting, not
+      // failed — and never doubles one slskd is moving or has delivered.
+      files = window.PapaDlNumbers ? window.PapaDlNumbers.mergeHeld(files, sched.files) : files
       _dlPaintSchedulerStats(sched.stats)
       // Per-filename scheduler view (attempts, retry countdown), used by
       // _dlExplainReason to say WHY a row is not moving.
@@ -23263,6 +23267,8 @@ async function _pollAndRenderDownloadsInner() {
     }
   }
   _dlLastFiles = files
+  // Every number the page shows comes from this one model (R5).
+  _dlModel = window.PapaDlNumbers ? window.PapaDlNumbers.reconcile(files, _dlSchedStats) : null
   // A transfer finishing is exactly when the fast poll stops being worth its
   // cost, and a new one starting is when it becomes worth it again.
   retuneDownloadsPolling()
@@ -23306,16 +23312,13 @@ async function _pollAndRenderDownloadsInner() {
     return t >= _todayMs
   }).length
   const badge = document.getElementById('nav-dl-badge')
-  if (badge) {
-    badge.style.display = (activeCount > 0 || todayDone > 0) ? 'flex' : 'none'
-    badge.textContent = activeCount > 0 ? activeCount : todayDone
-    // The number shown is active downloads (or, when none are active, today's
-    // completions) — a different metric from the Downloads page scheduler's
-    // "N waiting" (pending in the scheduler). Spell out exactly what the badge
-    // counts so the two figures no longer read as a contradiction (audit #15).
-    badge.title = activeCount > 0
-      ? activeCount + ' download' + (activeCount === 1 ? '' : 's') + ' in progress'
-      : todayDone + ' completed today'
+  if (badge && _dlModel) {
+    // The queue while there is one, today's finishes otherwise; the tooltip
+    // names the unit so it never reads as a contradiction of the page (R5).
+    const nb = window.PapaDlNumbers.navBadge(_dlModel, todayDone)
+    badge.style.display = nb.show ? 'flex' : 'none'
+    badge.textContent = nb.text
+    badge.title = nb.title
   }
 
   // Only what just finished this session, not slskd's entire memory.
@@ -23329,8 +23332,74 @@ async function _pollAndRenderDownloadsInner() {
   _dlPrevActiveCount = activeCount
 
   if (state.currentPage !== 'downloads') return
+  _dlPaintDashboard()
   _updateDlTabCounts(files)
   _renderDlTab(files)
+}
+
+// ── The Downloads page's numbers, all from one model (R5) ───────────────────
+var _dlModel = null
+
+function _dlDashboardHtml() {
+  const N = window.PapaDlNumbers
+  const model = _dlModel || (N ? N.reconcile(_dlLastFiles || [], _dlSchedStats) : null)
+  if (!model) return ''
+  return '<div class="dl-dashboard" id="dl-dashboard" data-cards="' + N.dashboardCards(model).map(c => c.key).join(',') + '">' +
+    N.dashboardCards(model).map(c =>
+      '<div class="dl-stat-card" data-card="' + c.key + '">' +
+        '<div class="dl-stat-value">' + c.value + '</div>' +
+        '<div class="dl-stat-label">' + esc(c.label) + '</div>' +
+        '<div class="dl-stat-sub">' + esc(c.sub) + '</div>' +
+      '</div>').join('') +
+  '</div>'
+}
+
+// The cards used to be painted once, at page open, and never again — a
+// download finishing changed the tab badge below them and left the card
+// above it frozen. Now every poll patches them; a change in the card SET
+// (a Cancelled card appearing) repaints the row.
+function _dlPaintDashboard() {
+  const N = window.PapaDlNumbers
+  const box = document.getElementById('dl-dashboard')
+  if (!box || !N || !_dlModel) return
+  const cards = N.dashboardCards(_dlModel)
+  if (box.dataset.cards !== cards.map(c => c.key).join(',')) {
+    box.outerHTML = _dlDashboardHtml()
+    return
+  }
+  for (const c of cards) {
+    const el = box.querySelector('.dl-stat-card[data-card="' + c.key + '"]')
+    if (!el) continue
+    const v = el.querySelector('.dl-stat-value'); if (v && v.textContent !== String(c.value)) v.textContent = c.value
+    const sub = el.querySelector('.dl-stat-sub'); if (sub && sub.textContent !== c.sub) sub.textContent = c.sub
+  }
+}
+
+// The strip above the queue: each state of the queue with its own label, so
+// "active" can never mean two different things on one page.
+function _dlStripHtml(model) {
+  const N = window.PapaDlNumbers
+  const parts = N.queueStrip(model).map(x =>
+    '<div class="dl2-stat" data-strip="' + x.key + '"><span class="dl2-stat-val">' + x.value + '</span><span class="dl2-stat-lbl">' + esc(x.label) + '</span></div>')
+  parts.push('<div class="dl2-stat dl2-stat-speed"><span class="dl2-stat-val" id="dl2-stat-speed">' + (_fmtSpeed(model.speed) || '—') + '</span><span class="dl2-stat-lbl">total speed</span></div>')
+  parts.push('<div class="dl2-stat"><span class="dl2-stat-val" id="dl2-stat-rem">' + _fmtBytes(model.remaining) + '</span><span class="dl2-stat-lbl">remaining</span></div>')
+  if (model.etaSecs) parts.push('<div class="dl2-stat" data-strip="eta"><span class="dl2-stat-val">' + _fmtSecs(model.etaSecs) + '</span><span class="dl2-stat-lbl">ETA</span></div>')
+  return '<div class="dl2-stats-bar" id="dl2-stats-bar" data-strip-keys="' + N.queueStrip(model).map(x => x.key).join(',') + (model.etaSecs ? ',eta' : '') + '">' + parts.join('') + '</div>'
+}
+
+function _dlPaintStrip(model) {
+  const N = window.PapaDlNumbers
+  const bar = document.getElementById('dl2-stats-bar')
+  if (!bar || !N || !model) return
+  const keys = N.queueStrip(model).map(x => x.key).join(',') + (model.etaSecs ? ',eta' : '')
+  if (bar.dataset.stripKeys !== keys) { bar.outerHTML = _dlStripHtml(model); return }
+  for (const x of N.queueStrip(model)) {
+    const el = bar.querySelector('.dl2-stat[data-strip="' + x.key + '"] .dl2-stat-val')
+    if (el) el.textContent = x.value
+  }
+  const sp = document.getElementById('dl2-stat-speed'); if (sp) sp.textContent = _fmtSpeed(model.speed) || '—'
+  const rm = document.getElementById('dl2-stat-rem');   if (rm) rm.textContent = _fmtBytes(model.remaining)
+  const eta = bar.querySelector('.dl2-stat[data-strip="eta"] .dl2-stat-val'); if (eta) eta.textContent = _fmtSecs(model.etaSecs)
 }
 
 // One classifier, shared with main (src/dl-state.js). This one filed
@@ -23481,8 +23550,8 @@ function _truncUser(u) {
 }
 
 function _updateDlTabCounts(files) {
-  const counts = { active: 0, completed: 0, failed: 0 }
-  for (const f of files) counts[_dlCategory(f.state)]++
+  const N = window.PapaDlNumbers
+  const counts = N ? N.tabCounts(_dlModel || N.reconcile(files, _dlSchedStats)) : { active: 0, completed: 0, failed: 0 }
   for (const tab of ['active', 'completed', 'failed']) {
     const el = document.getElementById(`dl2-tab-count-${tab}`)
     if (el) { el.textContent = counts[tab]; el.style.display = counts[tab] > 0 ? 'inline-flex' : 'none' }
@@ -23622,13 +23691,8 @@ function _renderDlTab(files) {
 }
 
 function _updateActiveDlInPlace(files, container) {
-  // Global stats bar
-  const totalSpeed     = files.reduce((s, f) => s + (f.averageSpeed || 0), 0)
-  const totalRemaining = files.reduce((s, f) => s + (f.bytesRemaining || 0), 0)
-  const inProgress     = files.filter(f => (f.state || '').includes('InProgress')).length
-  const elDl    = document.getElementById('dl2-stat-dl');    if (elDl)    elDl.textContent = inProgress
-  const elSpeed = document.getElementById('dl2-stat-speed'); if (elSpeed) elSpeed.textContent = _fmtSpeed(totalSpeed)
-  const elRem   = document.getElementById('dl2-stat-rem');   if (elRem)   elRem.textContent = _fmtBytes(totalRemaining)
+  // Global stats bar — same model as the cards and the badges.
+  _dlPaintStrip(_dlModel)
 
   // Per-file rows
   for (const f of files) {
@@ -23690,32 +23754,10 @@ function _updateActiveDlInPlace(files, container) {
 }
 
 function _renderActiveTab(files, container) {
-  const totalSpeed     = files.reduce((s, f) => s + (f.averageSpeed || 0), 0)
-  const totalRemaining = files.reduce((s, f) => s + (f.bytesRemaining || 0), 0)
-  const inProgress     = files.filter(f => (f.state || '').includes('InProgress')).length
-  const queued         = files.length - inProgress
-
-  // Total queue ETA (max remaining time across all active files)
-  const maxEtaSecs = files
-    .filter(f => (f.state || '').includes('InProgress'))
-    .reduce((mx, f) => Math.max(mx, _hmsToSecs(f.remainingTime || '0')), 0)
-
-  var html = `<div class="dl2-stats-bar">
-    <div class="dl2-stat">
-      <span class="dl2-stat-val" id="dl2-stat-dl">${inProgress}</span>
-      <span class="dl2-stat-lbl">active</span>
-    </div>
-    ${queued > 0 ? `<div class="dl2-stat"><span class="dl2-stat-val">${queued}</span><span class="dl2-stat-lbl">queued</span></div>` : ''}
-    <div class="dl2-stat dl2-stat-speed">
-      <span class="dl2-stat-val" id="dl2-stat-speed">${_fmtSpeed(totalSpeed) || '—'}</span>
-      <span class="dl2-stat-lbl">total speed</span>
-    </div>
-    <div class="dl2-stat">
-      <span class="dl2-stat-val" id="dl2-stat-rem">${_fmtBytes(totalRemaining)}</span>
-      <span class="dl2-stat-lbl">remaining</span>
-    </div>
-    ${maxEtaSecs ? `<div class="dl2-stat"><span class="dl2-stat-val">${_fmtSecs(maxEtaSecs)}</span><span class="dl2-stat-lbl">ETA</span></div>` : ''}
-  </div>`
+  // The strip reads the same model as the cards above it (R5): "downloading"
+  // here is the same number as the Downloading card, always.
+  const model = _dlModel || (window.PapaDlNumbers ? window.PapaDlNumbers.reconcile(files, _dlSchedStats) : null)
+  var html = model ? _dlStripHtml(model) : ''
 
   // Group by album folder per user
   const byAlbum = new Map()
@@ -24675,18 +24717,9 @@ function _renderSubLog() {
 }
 
 function renderDownloads() {
-  var totalDl = 0, activeDl = 0, completedDl = 0, failedDl = 0
-  // Reads the array the poll actually writes. state._dlFiles is never assigned
-  // anywhere, so these four headline numbers were permanently 0/0/0/0 while the
-  // tab counts right below them showed the real values.
-  ;(_dlLastFiles || []).forEach(function(f) {
-    totalDl++
-    var cat = _dlCategory(f.state || '')
-    if (cat === 'active') activeDl++
-    else if (cat === 'completed') completedDl++
-    else if (cat === 'failed') failedDl++
-  })
-  var dashHTML = '<div class="dl-dashboard"><div class="dl-stat-card"><div class="dl-stat-value">' + activeDl + '</div><div class="dl-stat-label">Active</div></div><div class="dl-stat-card"><div class="dl-stat-value">' + completedDl + '</div><div class="dl-stat-label">Completed</div></div><div class="dl-stat-card"><div class="dl-stat-value">' + failedDl + '</div><div class="dl-stat-label">Failed</div></div><div class="dl-stat-card"><div class="dl-stat-value">' + totalDl + '</div><div class="dl-stat-label">Total</div></div></div>'
+  // The headline cards come from the one reconciled model (R5) and are
+  // patched on every poll by _dlPaintDashboard.
+  var dashHTML = _dlDashboardHtml()
   var batchBtns = '<div style="display:flex;gap:8px;padding:12px 28px"><button class="dl-action-btn" id="dl-pause-all">\u23f8 Pause All</button><button class="dl-action-btn" id="dl-resume-all">\u25b6 Resume All</button></div>'
   var wishlistHTML = state.downloadWishlist && state.downloadWishlist.length ? '<div class="section-header"><span class="section-title">Wishlist</span></div>' + state.downloadWishlist.map(function(w, i) { return '<div class="wishlist-row"><span>' + esc(w.query) + '</span><button class="wishlist-search-btn" data-wl-idx="' + i + '">Search</button><button class="wishlist-remove-btn" data-wl-idx="' + i + '">Remove</button></div>' }).join('') : '<div class="section-header"><span class="section-title">Wishlist</span></div><div style="padding:8px 28px;color:var(--text3);font-size:12px">Add albums to wishlist from any search result to auto-download them when available.</div>'
 
@@ -30846,14 +30879,10 @@ function _dlPaintSchedulerStats(stats) {
   if (stats) _dlSchedStats = stats
   var el = document.getElementById('dl2-sched')
   if (!el) return
-  var s = _dlSchedStats
-  // Blanking made "scheduler idle" and "stats never arrived / scheduler
-  // broken" look identical.
-  if (!s || (!s.pending && !s.inflight)) { el.textContent = 'Scheduler idle'; return }
-  var txt = s.inflight + ' active across ' + s.peers + ' peer' + (s.peers === 1 ? '' : 's')
-  if (s.pending) txt += ' · ' + s.pending + ' waiting'
-  if (s.benched && s.benched.length) txt += ' · ' + s.benched.length + ' benched'
-  el.textContent = txt
+  // Scheduler units (entries), worded so they cannot be read as the file
+  // counts below (R5). "unavailable" and "idle" stay distinguishable.
+  var N = window.PapaDlNumbers
+  el.textContent = N ? N.schedulerLine(N.reconcile([], _dlSchedStats)) : ''
 }
 
 function initDownloadScheduler() {

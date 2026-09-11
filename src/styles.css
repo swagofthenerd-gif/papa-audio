@@ -5744,6 +5744,7 @@ textarea:focus:not(:focus-visible) { outline: none; }
 .dl-stat-card { flex:1;background:var(--glass);border:1px solid var(--glass-border);border-radius:var(--r);padding:14px;text-align:center }
 .dl-stat-value { font-size:22px;font-weight:700;color:var(--accent) }
 .dl-stat-label { font-size:11px;color:var(--text3);margin-top:4px }
+.dl-stat-sub { font-size:10.5px;color:var(--text3);opacity:.75;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis }
 .dl-wishlist-btn { background:var(--accent);border:none;color:#000;font-weight:600;font-size:11px;padding:6px 14px;border-radius:100px;cursor:pointer }
 .playlist-folder { margin-bottom:8px }
 .playlist-folder-header { display:flex;align-items:center;gap:8px;padding:8px 28px;cursor:pointer;font-size:13px;color:var(--text2) }

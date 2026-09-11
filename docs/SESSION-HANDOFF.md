@@ -167,9 +167,24 @@ pinned per query (`state._searchNoCorrect`, `state._libNoCorrect`,
 Verified live on a QA twin: "camel mirage" found everywhere; row ✕ keeps the
 list open (the outside-click rule now reads `composedPath`). Tests 4,036.
 
+### R5 shipped (2026-09-11, Fable 5.1)
+
+`src/dl-numbers.js` is the one model behind every Downloads number (cards,
+strip, tab badges, scheduler line, nav badge); `mergeHeld` replaces a FAILED
+earlier attempt with the scheduler's retry; cards patch live via
+`_dlPaintDashboard`. Root cause found on the real queue: after a restart the
+scheduler re-requested files slskd still had queued (refused → counted as a
+failed attempt, 40 of 44 "waiting" were this). Fix: `adoptLive` in the
+scheduler + an adopt pass at the top of `dlTick` (before reconcile/dispatch).
+Soulseek header via `PapaSlskFilters.summaryLine` (units named). Observe-only
+twin recipe: pin `slskSchedulerConfig` in the twin's config.json to
+`{ maxGlobalInflight: 0, discoverAlternates: false, stallAfterMs: 86400000 }`
+so the twin sends no requests and cancels nothing. Tests 4,060.
+
 ### The queue, in order
 
-1. ~~J2 + J3~~ done — see above. This is his
+1. ~~J2 + J3~~ done — see above.
+2. ~~R5~~ done — see above. This is his
    original complaint. Today there are **three disjoint recent-search stores**
    (`pa_search_history`, `papa-lib-recent-searches`, `papaVideoRecentSearches`)
    and **three separate typo engines** (`smart-query.js`,

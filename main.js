@@ -6660,7 +6660,8 @@ function dlPersist() {
         priority: e.priority || 0,
       })),
       // In-flight entries go back to pending: on restart slskd is the authority
-      // on what is really queued, and a duplicate request is harmless.
+      // on what is really queued, and the tick's adopt pass takes anything it
+      // still has as in flight again without re-requesting it.
       inflight: Object.keys(dlState.inflight).map(k => {
         const v = dlState.inflight[k]
         return { key: k, filename: v.filename, size: v.size, sources: v.sources,
@@ -7108,6 +7109,27 @@ async function dlTick() {
     const snap = await dlSnapshot()
     // slskd unreachable — do nothing rather than double-request on recovery.
     if (!snap) return
+
+    // Adopt before dispatching: a pending entry slskd is ALREADY moving or
+    // queueing — a restart wrote it back to pending, slskd kept the transfer —
+    // is taken as in flight with no new request. A duplicate request is not
+    // harmless: the daemon refuses it and the refusal counted as a failed
+    // attempt, so restored files burned their retry budget while sitting in
+    // the peer's queue (R5: 40 of 44 "waiting" entries were exactly this).
+    // A copy the daemon has already delivered is a success.
+    for (const entry of dlState.pending.slice()) {
+      const names = [entry.filename].concat((entry.sources || []).map(x => x && x.filename).filter(Boolean))
+      let seen = null
+      for (const n of names) {
+        const r = snap.get(n)
+        if (r && (r.kind === 'active' || r.kind === 'succeeded')) { seen = r; break }
+      }
+      if (!seen) continue
+      const adopted = dlSched.adoptLive(dlState, entry.key, seen.username, now, seen.filename)
+      if (!adopted) continue
+      if (seen.kind === 'succeeded') dlSched.recordSuccess(dlState, entry.key, seen.username)
+      else console.log(`[papa][dl] ${dlBaseName(entry.filename)}: adopted — already ${seen.state} at ${seen.username}`)
+    }
 
     // Reconcile: anything we dispatched that slskd has finished with.
     for (const key of Object.keys(dlState.inflight)) {

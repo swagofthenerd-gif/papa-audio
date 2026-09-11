@@ -174,3 +174,22 @@ test('surround discovery is wired into search and the explorer', () => {
   assert.ok(shop.includes('renderSurroundFolders'), 'explorer needs the surround scan')
   assert.ok(shop.includes('slskx-surround'), 'explorer needs the 5.1-only button')
 })
+
+// ── R5: the results header names its units ──────────────────────────────────
+const { summaryLine } = require('../src/slsk-filters')
+test('summaryLine: merged view says albums FROM sources; uploader view says sources', () => {
+  assert.equal(summaryLine({ merged: true, albums: 12, sources: 40, lossless: 30, filter: 'all', shown: 12, total: 12 }),
+    '12 albums from 40 sources · 30 lossless')
+  assert.equal(summaryLine({ merged: false, sources: 40, lossless: 30, filter: 'all', shown: 40, total: 40 }),
+    '40 sources · 30 lossless')
+  assert.equal(summaryLine({ merged: false, sources: 1, lossless: 0, filter: 'all', shown: 1, total: 1 }), '1 source')
+})
+test('summaryLine: a filter and a display cap are stated in the same unit as the count', () => {
+  assert.equal(summaryLine({ merged: true, albums: 5, sources: 40, lossless: 30, filter: 'surround', filterMatches: 7, shown: 5, total: 5 }),
+    '5 albums from 40 sources · 30 lossless · 7 matches the filter')
+  assert.equal(summaryLine({ merged: true, albums: 3779, sources: 4267, lossless: 100, filter: 'all', shown: 60, total: 3779 }),
+    '3779 albums from 4267 sources · 100 lossless · showing 60 of 3779 albums')
+  assert.equal(summaryLine({ merged: false, sources: 4267, lossless: 0, filter: 'all', shown: 60, total: 4267 }),
+    '4267 sources · showing 60 of 4267 sources')
+  assert.equal(summaryLine(null), '0 sources')
+})

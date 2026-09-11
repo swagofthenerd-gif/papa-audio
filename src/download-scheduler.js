@@ -699,6 +699,41 @@ function markDispatched(state, key, username, now, sentFilename) {
   return state.inflight[key]
 }
 
+// Take a pending entry as in flight WITHOUT sending a request, because slskd
+// already has that file moving or queued (a restart wrote in-flight entries
+// back to pending; slskd kept the transfer). Re-requesting a queued file is
+// refused by the daemon and used to be counted as a failed attempt — five
+// times over on the reported install, while the file sat happily in the
+// peer's queue. Adoption is not an attempt: the count stays; the peer is
+// recorded as tried so the source accounting stays honest.
+function adoptLive(state, key, username, now, sentFilename) {
+  var idx = -1
+  for (var i = 0; i < state.pending.length; i++) {
+    if (state.pending[i].key === key) { idx = i; break }
+  }
+  if (idx < 0) return null
+  var entry = state.pending[idx]
+  state.pending.splice(idx, 1)
+  if (entry.tried.indexOf(username) === -1) entry.tried.push(username)
+  entry.triedAt = entry.triedAt || {}
+  if (!entry.triedAt[username]) entry.triedAt[username] = now == null ? Date.now() : now
+  state.inflight[key] = {
+    username: username,
+    filename: entry.filename,
+    sentFilename: sentFilename || entry.filename,
+    size: entry.size,
+    sources: entry.sources,
+    tried: entry.tried,
+    triedAt: entry.triedAt,
+    attempts: entry.attempts,
+    addedAt: entry.addedAt,
+    priority: Number(entry.priority) || 0,
+    since: now == null ? Date.now() : now,
+    adopted: true,
+  }
+  return state.inflight[key]
+}
+
 // A file the user cancelled, or that we removed, must never come back. This
 // is terminal by design: reviving it is indistinguishable from ignoring the
 // user, which is exactly how cancel appeared to be broken.
@@ -1144,6 +1179,7 @@ var _PapaDownloadScheduler = {
   rankSources: rankSources,
   planDispatch: planDispatch,
   markDispatched: markDispatched,
+  adoptLive: adoptLive,
   recordSuccess: recordSuccess,
   recordAbandoned: recordAbandoned,
   recordFailure: recordFailure,
