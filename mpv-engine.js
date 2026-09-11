@@ -12,6 +12,15 @@ const { ytdlPathArg } = require('./src/ytdlp-manager')
 const POSITION_THROTTLE_MS = 250
 const RESPAWN_WINDOW_MS = 60000
 const MAX_RESPAWNS = 3
+// Deaths on the SAME path before the file — not the engine — is declared the
+// culprit and skipped. Two, not one: a single death can be a genuine engine
+// hiccup that the resume recovers from cleanly, and a track should get that
+// second chance before being written off.
+const POISON_DEATHS = 2
+// How soon after opening a file a death still counts as the FILE's fault. The
+// field crash killed mpv 1.2-2.7s after playback-restart; a track that had
+// been playing for minutes and then died is an engine fault, not a bad file.
+const POISON_WINDOW_MS = 45000
 
 // Nothing queued behind this file, so eof really is the end of the queue.
 const EOF_GRACE_MS = 150
@@ -115,6 +124,15 @@ class MpvEngine extends EventEmitter {
     this.alive = false
     this._stopping = false
     this._respawns = []
+    // Poison-track quarantine. mpv can be killed by the FILE rather than by
+    // anything wrong with the engine — a DSD stream the output chain segfaults
+    // on, a truncated download, an exotic codec. The respawn path resumed the
+    // very file that had just killed mpv, so one bad track burned every
+    // respawn and took the whole player down with it: the field report was 17
+    // SIGSEGVs in a row on one SACD DSD64 rip, ending in a dead engine.
+    // Counting deaths per path lets the engine skip the offender instead.
+    this._poisonPath = null
+    this._poisonCount = 0
     this._lastPosEmit = 0
     this._nextPath = null
     this._eofTimer = null
@@ -450,6 +468,10 @@ class MpvEngine extends EventEmitter {
     this.state.path = filePath
     this.state.position = 0
     this._lastPosChangeAt = Date.now()
+    // When this path was opened. Poison is specifically an EARLY death — the
+    // file kills mpv as it starts decoding it. A track that played happily for
+    // an hour before an unrelated engine fault must never be blamed for it.
+    this._pathOpenedAt = Date.now()
     this._stallReported = false
   }
 
@@ -858,6 +880,21 @@ class MpvEngine extends EventEmitter {
     const resume = { ...this.state }
     const now = Date.now()
     this._respawns = this._respawns.filter(t => now - t < RESPAWN_WINDOW_MS)
+    // Blame the file before blaming the engine. A second EARLY death on the
+    // same path is the signal: the engine is fine, this track kills it.
+    // Resuming it again would only spend the remaining respawns reproducing
+    // the crash. Late deaths (a track that had been playing for a while) are
+    // not the file's fault and never count toward poisoning.
+    const earlyDeath = this._pathOpenedAt != null &&
+      (now - this._pathOpenedAt) <= POISON_WINDOW_MS
+    if (resume.path && earlyDeath) {
+      if (resume.path === this._poisonPath) this._poisonCount++
+      else { this._poisonPath = resume.path; this._poisonCount = 1 }
+    } else {
+      this._poisonPath = null
+      this._poisonCount = 0
+    }
+    const poisoned = !!(resume.path && this._poisonCount >= POISON_DEATHS)
     const willRecover = this._respawns.length < MAX_RESPAWNS
     // A device fault means respawning with the same arguments cannot work.
     // Falling back to the default device is the difference between recovering
@@ -879,6 +916,31 @@ class MpvEngine extends EventEmitter {
       path: resume.path, position: resume.position, willRecover,
       deviceFault: deviceFault ? deviceFault.text : null,
     })
+    // A poisoned track is not an engine failure, so it must not reach _fail()
+    // and blocker the UI — the engine comes back empty and the renderer skips
+    // to the next track. Checked BEFORE the respawn budget: a file that kills
+    // mpv should never be able to exhaust it.
+    if (poisoned && !deviceFault) {
+      this._rec('track-poisoned', { path: resume.path, deaths: this._poisonCount })
+      this._respawns.push(now)
+      try {
+        await this.start()
+        this._poisonPath = null
+        this._poisonCount = 0
+        // Honest and specific: the renderer names the file and moves on. The
+        // engine is alive and idle, ready for whatever plays next.
+        this.emit('trackUnplayable', {
+          path: resume.path,
+          deaths: POISON_DEATHS,
+          reason: 'the audio engine crashed on this file every time it was opened',
+        })
+        this._emitDiagnostic('track-poisoned', { path: resume.path })
+        return
+      } catch (e) {
+        this._fail('respawn-error', String((e && e.message) || e))
+        return
+      }
+    }
     if (!willRecover) {
       this._fail(deviceFault ? 'audio-device-lost' : 'respawn-limit',
         deviceFault

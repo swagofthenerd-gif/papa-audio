@@ -1283,6 +1283,15 @@ async function init() {
   window.api.on('player-event', ({ type, data }) => {
     if (type === 'mpvMissing') showEngineBlocker('mpvMissing', null)
     else if (type === 'engineFailed') showEngineBlocker('engineFailed', data)
+    // One file crashed the audio engine every time it was opened, so the
+    // engine skipped it instead of dying with it. This is NOT an engine
+    // blocker — playback is fine; this one track is not. Name it and move on,
+    // which is what the user would have done by hand.
+    else if (type === 'trackUnplayable') {
+      const name = String((data && data.path) || '').split('/').pop() || 'That track'
+      showToast(name + ' could not be played — it crashes the audio engine. Skipping it.')
+      playNext()
+    }
   })
   // yt-dlp self-maintenance: main updated the YouTube engine (either on its own
   // schedule, or in response to a track that would not resolve). Either way, tell

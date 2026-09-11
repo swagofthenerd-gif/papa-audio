@@ -2707,6 +2707,13 @@ function buildPlayer(cfg) {
   // The output device, specifically, as opposed to any other mpv complaint.
   p.on('audioDeviceLost', d => sendPlayerEvent('audioDeviceLost', d))
   p.on('audioDeviceFallback', d => sendPlayerEvent('audioDeviceFallback', d))
+  // One file kept killing mpv, so the engine skipped it instead of spending
+  // its respawn budget reproducing the crash. The engine is alive and idle;
+  // the renderer names the file and moves the queue on.
+  p.on('trackUnplayable', d => {
+    console.error(`[papa][engine] skipped an unplayable file after ${d.deaths} crashes: ${d.path}`)
+    sendPlayerEvent('trackUnplayable', d)
+  })
   p.on('engineFailed',    d => { sendPlayerEvent('engineFailed', d); refreshTrayTooltip(); onEngineFailed(d) })
   // The whole reason this exists: mpv's own diagnosis and the timeline around
   // it, on disk, at the moment it happens. console.error is already tee'd to

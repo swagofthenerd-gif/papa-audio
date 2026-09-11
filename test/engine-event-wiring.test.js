@@ -35,6 +35,7 @@ const STOPS_AT_MAIN = {
 // An event main sends that the shim deliberately does not translate.
 const STOPS_AT_SHIM = {
   mpvMissing: 'the renderer subscribes to player-event directly for the blocker; there is no audio-element analogue',
+  trackUnplayable: 'a queue decision (skip this file, say why) rather than a playback state change — the renderer takes it straight off player-event; an audio element has no analogue for "this file kills the engine"',
 }
 
 test('every engine event is either forwarded to the renderer or documented as stopping at main', () => {
