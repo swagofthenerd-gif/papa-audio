@@ -531,7 +531,8 @@ test('a fromCache row renders content and pins the saved-list note', () => {
 
 test('_rowOutage says AniList is down, carries its message, and offers a retry', () => {
   const fn = fnBody('_rowOutage')
-  assert.match(fn, /AniList is temporarily down/, 'the message names the real cause')
+  // The wording lives in _anilistOutageText (R19): per status, in words.
+  assert.match(fn, /const note = _anilistOutageText\(message\)/, 'the message names the real cause, in words')
   assert.match(fn, /data-retry="/, 'a retry button is offered, like the This-Season path')
   assert.match(fn, /_renderVideoTab\(\+\+_videoCatalogTicket\)/, 'retry re-runs the tab')
 })

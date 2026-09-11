@@ -147,3 +147,22 @@ test('an empty saved list is treated as no cache — an honest outage, not a bla
   assert.strictEqual(out.outage, 'down')
   assert.deepStrictEqual(out.results, [])
 })
+
+// ── R19: one card per show ───────────────────────────────────────────────────
+const { dedupeCards } = require('../catalog/anime-shelf')
+test('dedupeCards drops a repeated id and a same-title-same-year twin from another source', () => {
+  const out = dedupeCards([
+    { type: 'anime', id: 1, title: 'Tokyo Revengers', year: 2021 },
+    { type: 'anime', id: 1, title: 'Tokyo Revengers', year: 2021 },
+    { type: 'anime', id: 'mal-9', title: 'Tokyo Revengers', year: 2021 },
+    { type: 'anime', id: 2, title: 'Tokyo Revengers', year: 2023 },
+    null,
+  ])
+  assert.deepEqual(out.map(r => r.id), [1, 2], 'the 2023 sequel with the same title is a different show')
+  assert.deepEqual(dedupeCards(null), [])
+})
+
+test('the live path returns a de-duplicated list', async () => {
+  const res = await resolveAnimeShelf({ results: [{ id: 5, title: 'A' }, { id: 5, title: 'A' }], failure: null }, {})
+  assert.equal(res.results.length, 1)
+})

@@ -5923,13 +5923,26 @@ function _rowError(key, error) {
 // same Try-again the This-Season error path already had, so an empty anime row
 // never lies about a healthy-but-empty result when the truth is the API is down.
 function _rowOutage(key, message) {
-  const note = message
-    ? 'AniList is temporarily down (' + message + ') — Try again'
-    : 'AniList is temporarily down — Try again'
+  // "AniList request failed (403)" is a log line, not a sentence. Say what
+  // it means and who it is on (R19).
+  const note = _anilistOutageText(message)
   _rowMsg(key, esc(note) +
     '<div><button class="vbtn" data-retry="' + esc(key) + '">Try again</button></div>', true)
   const btn = document.querySelector('[data-retry="' + key + '"]')
   if (btn) btn.addEventListener('click', function () { _renderVideoTab(++_videoCatalogTicket) })
+}
+
+// The outage line, in words. The status code is the whole story: 403/429 is
+// AniList refusing or rate-limiting, 5xx is AniList broken, nothing is a
+// dead network. Each says whose problem it is, so nobody restarts the app.
+function _anilistOutageText(message) {
+  const m = String(message || '')
+  const code = (m.match(/\((\d{3})\)/) || [])[1] || (m.match(/HTTP (\d{3})/) || [])[1] || ''
+  if (code === '403' || code === '429') return 'AniList is refusing requests right now (' + code + ') — this is on their side and usually clears within minutes. Showing the backup database where it can.'
+  if (/^5/.test(code)) return 'AniList is having trouble (' + code + ') — their servers, not this app. Try again in a little while.'
+  if (/fetch failed|ENOTFOUND|ECONNREFUSED|network/i.test(m)) return 'AniList could not be reached — check your connection.'
+  if (/timed out|timeout|abort/i.test(m)) return 'AniList did not answer in time — try again.'
+  return m ? 'AniList is temporarily down (' + m + ') — try again shortly.' : 'AniList is temporarily down — try again shortly.'
 }
 
 // A small note pinned under a shelf that is showing its last SAVED list because

@@ -41,8 +41,28 @@
 //
 // Returns the exact object the handler returns to the renderer:
 //   { ok:true, results, viaMal?, fromCache?, outage? }
+// One card per show (R19). A season list can carry the same show twice — a
+// split cour listed under two ids, or the same title from two databases when
+// a fallback mixes sources — and "This Season" painted both. Identity is the
+// catalogue id when the source matches, else the normalised title + year.
+function dedupeCards(list) {
+  const seen = new Set()
+  const out = []
+  for (const r of (Array.isArray(list) ? list : [])) {
+    if (!r) continue
+    const idKey = (r.type || 'anime') + ':' + String(r.id == null ? '' : r.id)
+    const title = String(r.title || r.name || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+    const titleKey = title ? 'title:' + title + ':' + (r.year || '') : null
+    if (seen.has(idKey) || (titleKey && seen.has(titleKey))) continue
+    seen.add(idKey)
+    if (titleKey) seen.add(titleKey)
+    out.push(r)
+  }
+  return out
+}
+
 async function resolveAnimeShelf(anilist, deps) {
-  const results = Array.isArray(anilist && anilist.results) ? anilist.results : []
+  const results = dedupeCards(Array.isArray(anilist && anilist.results) ? anilist.results : [])
   const failure = anilist && anilist.failure
 
   // 1. Live AniList, non-empty: the good case. Memo it and mirror to the saved
@@ -66,7 +86,7 @@ async function resolveAnimeShelf(anilist, deps) {
   if (Array.isArray(jikanResults) && jikanResults.length) {
     if (deps.memoWrite) deps.memoWrite(jikanResults)
     if (deps.writeCache) deps.writeCache(jikanResults)
-    return { ok: true, results: jikanResults, viaMal: true, outage: failure.message }
+    return { ok: true, results: dedupeCards(jikanResults), viaMal: true, outage: failure.message }
   }
 
   // 3. Live Kitsu. Reached only when Jikan came back empty too — the 2026-09-11
@@ -81,7 +101,7 @@ async function resolveAnimeShelf(anilist, deps) {
   if (Array.isArray(kitsuResults) && kitsuResults.length) {
     if (deps.memoWrite) deps.memoWrite(kitsuResults)
     if (deps.writeCache) deps.writeCache(kitsuResults)
-    return { ok: true, results: kitsuResults, viaMal: true, outage: failure.message }
+    return { ok: true, results: dedupeCards(kitsuResults), viaMal: true, outage: failure.message }
   }
 
   // 4. The last saved list. It may itself be Jikan or Kitsu cards from a previous
@@ -89,11 +109,11 @@ async function resolveAnimeShelf(anilist, deps) {
   //    renderer admits it may be stale.
   const saved = deps.readCache ? deps.readCache() : null
   if (saved && Array.isArray(saved.value) && saved.value.length) {
-    return { ok: true, results: saved.value, fromCache: true, outage: failure.message }
+    return { ok: true, results: dedupeCards(saved.value), fromCache: true, outage: failure.message }
   }
 
   // 5. Nothing anywhere. Say so honestly.
   return { ok: true, results: [], outage: failure.message }
 }
 
-module.exports = { resolveAnimeShelf }
+module.exports = { resolveAnimeShelf, dedupeCards }

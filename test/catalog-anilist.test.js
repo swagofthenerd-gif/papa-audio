@@ -268,6 +268,11 @@ test('lastFailure is cleared once AniList recovers', async () => {
   await cat.trending(1)
   assert.ok(cat.lastFailure(), 'down: a failure is recorded')
   ok = true
+  // The breaker (S7) holds calls for a window after a failure; a recovery is
+  // observed on the first call after the window. Tests close it by hand.
+  await cat.trending(1)
+  assert.ok(cat.lastFailure(), 'inside the window the outage still stands — no call was made')
+  cat._resetBreaker()
   await cat.trending(1)
   assert.strictEqual(cat.lastFailure(), null, 'recovered: the flag never outlives the outage')
 })

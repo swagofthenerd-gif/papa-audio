@@ -397,6 +397,26 @@ function createAnilistCatalog({ fetchFn, retryDelayMs = 1000,
   // the next successful degraded call, so a recovered API stops reporting an
   // outage. Shape: { at, message, status } or null.
   let _lastFailure = null
+  // Circuit breaker (S7). During an outage every shelf, hero rotation and
+  // search kept asking AniList again on its own timer — a degraded request
+  // every ~30 s for as long as the outage lasted. After a failure the next
+  // calls are answered with the fallback immediately, for a window that
+  // doubles on each further failure up to a ceiling, and resets on success.
+  // 429s honour Retry-After when it is longer than the window.
+  const BREAKER_BASE_MS = 30 * 1000
+  const BREAKER_CEILING_MS = 10 * 60 * 1000
+  let _breakerUntil = 0
+  let _breakerStrikes = 0
+  const _breakerOpen = () => Date.now() < _breakerUntil
+  const _breakerTrip = (err) => {
+    _breakerStrikes = Math.min(_breakerStrikes + 1, 20)
+    let wait = Math.min(BREAKER_CEILING_MS, BREAKER_BASE_MS * Math.pow(2, _breakerStrikes - 1))
+    const ra = err && Number(err.retryAfter)
+    if (Number.isFinite(ra) && ra > 0) wait = Math.max(wait, Math.min(ra * 1000, BREAKER_CEILING_MS))
+    _breakerUntil = Date.now() + wait
+    return wait
+  }
+  const _breakerReset = () => { _breakerUntil = 0; _breakerStrikes = 0 }
 
   // The browse/search/detail calls degrade quietly rather than rejecting, the
   // same convention seasonChain and airingSchedule already follow: a dead or
@@ -413,13 +433,18 @@ function createAnilistCatalog({ fetchFn, retryDelayMs = 1000,
   // AniList is down — not because there was nothing to show. A success clears
   // it, so the flag never outlives the outage that set it.
   const _degrade = async (fallback, fn) => {
+    // Breaker open: the outage is known and recent. Answer with the fallback
+    // now; _lastFailure still says why, so the shelves keep telling the truth.
+    if (_breakerOpen()) return fallback
     try {
       const out = await fn()
       _lastFailure = null
+      _breakerReset()
       return out
     } catch (err) {
       const message = (err && err.message) || String(err)
-      console.warn('[anilist] request degraded:', message)
+      const wait = _breakerTrip(err)
+      console.warn('[anilist] request degraded:', message, '— pausing AniList calls for', Math.round(wait / 1000) + 's')
       _lastFailure = { at: Date.now(), message, status: (err && err.status) ?? null }
       return fallback
     }
@@ -437,6 +462,11 @@ function createAnilistCatalog({ fetchFn, retryDelayMs = 1000,
     lastFailure() {
       return _lastFailure
     },
+    // For tests and the doctor surface: is the breaker currently holding calls?
+    breaker() {
+      return { open: _breakerOpen(), until: _breakerUntil, strikes: _breakerStrikes }
+    },
+    _resetBreaker() { _breakerReset() },
     trending(page) {
       return _degrade([], () => _post('trending', { page }))
     },

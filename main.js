@@ -794,7 +794,7 @@ const store = new Store()
 // the thread that drives mpv's IPC. Each of these now owns a small file, written
 // asynchronously and coalesced. See side-store.js.
 const { SideStore } = require('./side-store')
-const { runAnalysis, analyseOne } = require('./analysis-runner')
+const { runAnalysis, analyseOne, needsAnalysis: runnerNeedsAnalysis } = require('./analysis-runner')
 const { buildQueue } = require('./src/queue-engine')
 const { clusterLibrary } = require('./src/queue-clusters')
 const { buildAffinity, buildColdSet } = require('./src/taste-model')
@@ -2883,6 +2883,14 @@ function startAnalysisRun() {
   if (analysisRunning) return
   analysisRunning = true
   const tracks = allLibraryTracks()
+  // The runner reports only what THIS pass analysed, over only what this pass
+  // had to do. On a library that was already analysed that read as "0 of
+  // 2376 (0%)" while claiming to be analysing — the whole library was done
+  // (R18). Report against the whole library, counting what was already
+  // measured, so the banner says what is true.
+  const existingNow = featureMap()
+  const already = tracks.filter(t => t && t.filePath && !runnerNeedsAnalysis(t, existingNow.get(t.filePath))).length
+  const wholeLibrary = p => ({ ...p, done: already + (Number(p && p.done) || 0), total: tracks.length })
   const trackByPath = new Map(tracks.map(t => [t.filePath, t]))
   // A 2,300-track library can take a long time end to end, and queue-analysis-
   // status reads straight off featureStore. Without persisting as each file
@@ -2910,7 +2918,7 @@ function startAnalysisRun() {
       if (r && r.ok) persistOne(filePath, r)
       return r
     },
-    onProgress: p => safeSend('queue-analysis-progress', p),
+    onProgress: p => safeSend('queue-analysis-progress', wholeLibrary(p)),
   }).then(r => {
     featureStore.update(v => {
       const features = { ...((v || {}).features || {}) }
@@ -2918,7 +2926,7 @@ function startAnalysisRun() {
       return { features }
     })
     analysisRunning = false
-    safeSend('queue-analysis-progress', { done: r.analysed, total: tracks.length, finished: !r.halted, halted: r.halted })
+    safeSend('queue-analysis-progress', { done: already + r.analysed, total: tracks.length, finished: !r.halted, halted: r.halted })
     if (r.halted && !app.isQuitting && !analysisResumeTimer) {
       analysisResumeTimer = setTimeout(() => {
         analysisResumeTimer = null
