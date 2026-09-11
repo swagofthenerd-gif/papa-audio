@@ -66,7 +66,7 @@ function _score(e, preferSurround) {
 // coverage at the tail is the point, and a dead swarm can revive. Kept pure and
 // optional — with no predicate (tests, and any non-torrent lookup) nothing is
 // demoted and no entry is flagged.
-function rankStreams(entries, { preferSurround = true, isDead = null } = {}) {
+function rankStreams(entries, { preferSurround = true, isDead = null, preferDub = false } = {}) {
   const deadFn = typeof isDead === 'function' ? isDead : null
   const ranked = entries.map(e => {
     // The flag rides on the entry the caller receives, so the UI can badge it
@@ -86,6 +86,18 @@ function rankStreams(entries, { preferSurround = true, isDead = null } = {}) {
     const lowA = a.entry.lowQuality === true
     const lowB = b.entry.lowQuality === true
     if (lowA !== lowB) return lowA ? 1 : -1
+    // When the caller asked for a dub, dubbed releases lead the whole list.
+    // Individual providers (nyaa) already order their OWN results dub-first,
+    // but this merged ranking was dub-blind — so dubs, which usually seed
+    // lower than subs, sank to the bottom the moment sources were combined
+    // (found live: the Dub checkbox appeared to do nothing to the order).
+    // Below dead/cam only: a dead dub must not beat a live one, but a dub
+    // the user asked for beats any sub regardless of quality or seeds.
+    if (preferDub) {
+      const dubA = a.entry.dub === true
+      const dubB = b.entry.dub === true
+      if (dubA !== dubB) return dubA ? -1 : 1
+    }
     if (b.score !== a.score) return b.score - a.score
     if (b.surround !== a.surround) return b.surround ? 1 : -1
     if (b.quality !== a.quality) return b.quality - a.quality
@@ -265,7 +277,9 @@ async function resolveStream(request, backends, { preferSurround = true, timeout
       onSweep({ results: sweep, allZero })
     } catch (_) { /* health bookkeeping must not fail a search */ }
   }
-  return rankStreams(merged, { preferSurround, isDead })
+  // The request's own dub flag drives the merged ranking, so the Dub toggle
+  // reorders the final list — not just each provider's slice of it.
+  return rankStreams(merged, { preferSurround, isDead, preferDub: request && request.dub === true })
 }
 
 module.exports = {

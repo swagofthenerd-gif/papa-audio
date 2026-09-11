@@ -327,3 +327,31 @@ test('a backend with no discernible name never crashes the ordering', () => {
   const ordered = orderBackendsByHealth([anon])
   assert.strictEqual(ordered.length, 1)
 })
+
+// ── Dub-aware ranking ────────────────────────────────────────────────────────
+// Providers (nyaa) order their own slice dub-first, but the merged ranking was
+// dub-blind — dubs seed lower than subs, so the Dub toggle appeared to do
+// nothing to the final order (found live). A requested dub now leads the whole
+// merged list, beneath only the dead-magnet and cam-rip demotions.
+test('rankStreams: a requested dub beats a better-seeded, higher-quality sub', () => {
+  const sub = entry({ quality: '1080p', seeds: 500, sub: true, dub: false, source: 'a' })
+  const dub = entry({ quality: '720p', seeds: 12, sub: false, dub: true, source: 'b' })
+  const ranked = rankStreams([sub, dub], { preferDub: true })
+  assert.strictEqual(ranked[0], dub)
+  assert.strictEqual(ranked[1], sub)
+})
+
+test('rankStreams: without preferDub the order is unchanged by dub flags', () => {
+  const sub = entry({ quality: '1080p', seeds: 500, sub: true, dub: false, source: 'a' })
+  const dub = entry({ quality: '720p', seeds: 12, sub: false, dub: true, source: 'b' })
+  const ranked = rankStreams([sub, dub], {})
+  assert.strictEqual(ranked[0], sub)
+})
+
+test('rankStreams: a dead dub still sinks beneath a live sub even when dubs are preferred', () => {
+  const sub = entry({ quality: '1080p', seeds: 500, sub: true, dub: false, source: 'a', kind: 'torrent', infoHash: 'live1' })
+  const dub = entry({ quality: '1080p', seeds: 400, sub: false, dub: true, source: 'b', kind: 'torrent', infoHash: 'dead1' })
+  const ranked = rankStreams([dub, sub], { preferDub: true, isDead: h => h === 'dead1' })
+  assert.strictEqual(ranked[0].infoHash, 'live1')
+  assert.strictEqual(ranked[1].deadHint, true)
+})
