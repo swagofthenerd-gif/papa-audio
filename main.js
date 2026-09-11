@@ -6014,7 +6014,11 @@ ipcMain.handle('save-api-keys', (_, { provider, claudeKey, openaiKey }) => {
   return { ok: true }
 })
 
-ipcMain.on('taste-record-play', (_, data) => {
+// handle, not on: the renderer awaits this (it chains .catch and then refreshes
+// the taste pills), and the old fire-and-forget send() returned undefined —
+// making that .catch() the app's only recurring uncaught TypeError, once per
+// qualifying track. Recording itself always worked; the refresh never ran.
+ipcMain.handle('taste-record-play', (_, data) => {
   try {
     const profile = store.get('tasteProfile', { plays: [] })
     profile.plays.push({ artist: data.artist || '', album: data.album || '', title: data.title || '', ts: Date.now() })

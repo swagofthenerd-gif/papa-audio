@@ -248,7 +248,7 @@ contextBridge.exposeInMainWorld('api', {
   agentChat:       (p) => ipcRenderer.invoke('agent-chat', p),
   getApiKeys:      ()  => ipcRenderer.invoke('get-api-keys'),
   saveApiKeys:     (p) => ipcRenderer.invoke('save-api-keys', p),
-  tasteRecordPlay: (d) => ipcRenderer.send('taste-record-play', d),
+  tasteRecordPlay: (d) => ipcRenderer.invoke('taste-record-play', d),
   tasteGetProfile: ()  => ipcRenderer.invoke('taste-get-profile'),
 
   getDownloadWishlist:  () => ipcRenderer.invoke('get-download-wishlist'),
