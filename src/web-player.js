@@ -250,6 +250,9 @@
         return Promise.resolve({ ok: true, web: true, dropped: q ? q.droppedVideoFrames : 0, decoded: q ? q.totalVideoFrames : 0, plan: session ? session.plan : null })
       }
       proxy.videoStop = function () { if (active()) close(); return real.videoStop() }
+      // Lets the deck know whether the picture is in the page (it can fly and
+      // be hovered) or in mpv's native window (it cannot).
+      proxy.videoRenderPath = function () { return active() ? 'web' : 'native' }
       void eng
       return proxy
     }

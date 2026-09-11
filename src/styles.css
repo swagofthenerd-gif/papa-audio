@@ -8459,15 +8459,40 @@ body.video-active .np-byline { font-size:10.5px; }
 .vmini {
   position:fixed; z-index:1400;
   left:0; top:0;                 /* JS sets the real position via transform */
-  width:var(--vmini-w-compact);
+  /* JS writes --vmini-w/--vmini-h for the live size (a named step or a free
+     width from the corner grip); the compact step is the fallback. */
+  width:var(--vmini-w, var(--vmini-w-compact));
   border-radius:var(--r-lg); overflow:hidden;
   background:rgba(18,18,18,.96); border:1px solid var(--glass-border);
   box-shadow:0 16px 44px rgba(0,0,0,.6);
   backdrop-filter:blur(14px);
   animation:fadeIn .2s var(--ease-out);
+  /* The flight between the stage and the corner scales from the top-left, the
+     same origin the position transform uses. */
+  transform-origin:0 0;
+  will-change:transform;
+  transition:box-shadow .2s var(--ease);
 }
-.vmini.vmini-large { width:var(--vmini-w-large); }
+.vmini.vmini-large { width:var(--vmini-w, var(--vmini-w-large)); }
 .vmini.hidden { display:none; }
+/* Lifted while it moves: a deeper shadow while dragged or settling, back to
+   rest when it lands. */
+.vmini.vmini-dragging, .vmini.vmini-settling, .vmini.vmini-resizing { box-shadow:0 28px 64px rgba(0,0,0,.7); }
+/* No entry fade on top of the flight, and none while the card is mid-air. */
+.vmini.vmini-flying { animation:none; visibility:hidden; }
+/* The reveal on landing: the card fades in over the ghost's last frame. */
+.vmini.vmini-landed { animation:fadeIn .14s var(--ease-out); }
+/* The ghost that flies between the stage and the card: one frame of the
+   picture in a box the size of the card's video region, scaled from its
+   top-left like the card. */
+.vmini-ghost {
+  position:fixed; left:0; top:0; z-index:1401; pointer-events:none;
+  background:#000; overflow:hidden; transform-origin:0 0; will-change:transform;
+  /* No shadow: a rounded shadow rasterised at 3x scale cost a 100 ms frame
+     (measured); the card's own shadow appears on landing. */
+  border-radius:12px;
+}
+.vmini-ghost canvas { display:block; width:100%; height:100%; }
 /* No transition while the card follows the pointer, or it lags the mpv window.
    The whole card shows the grabbing cursor while a drag is in flight, since the
    pointer is captured and may leave the handle. */
@@ -8497,10 +8522,61 @@ body.video-active .np-byline { font-size:10.5px; }
 /* The reserved rectangle the native mpv window is placed onto. Black so any
    sliver not yet covered by the picture reads as letterbox, not a hole. */
 .vmini-video {
-  width:var(--vmini-w-compact); height:var(--vmini-h-compact);
+  width:var(--vmini-w, var(--vmini-w-compact)); height:var(--vmini-h, var(--vmini-h-compact));
   background:#000; position:relative;
 }
-.vmini.vmini-large .vmini-video { width:var(--vmini-w-large); height:var(--vmini-h-large); }
+.vmini.vmini-large .vmini-video { width:var(--vmini-w, var(--vmini-w-large)); height:var(--vmini-h, var(--vmini-h-large)); }
+
+/* Hover chrome over the picture (smooth player only — under mpv the native
+   window covers it). Hidden until the pointer is over the card, and never
+   while the card is being dragged or resized, so it cannot flicker under the
+   hand. */
+.vmini-overlay {
+  position:absolute; inset:0; z-index:2; opacity:0; pointer-events:none;  /* above the <video>, which is appended after it */
+  transition:opacity .16s var(--ease);
+  background:linear-gradient(to bottom, rgba(0,0,0,.45), transparent 30%, transparent 70%, rgba(0,0,0,.25));
+}
+.vmini:hover .vmini-overlay, .vmini:focus-within .vmini-overlay { opacity:1; pointer-events:auto; }
+.vmini.vmini-dragging .vmini-overlay, .vmini.vmini-resizing .vmini-overlay,
+.vmini.vmini-settling .vmini-overlay, .vmini.vmini-flying .vmini-overlay { opacity:0; pointer-events:none; }
+.vmini-ov {
+  position:absolute; display:flex; align-items:center; justify-content:center;
+  border:0; border-radius:50%; color:#fff; cursor:pointer;
+  background:rgba(0,0,0,.55); backdrop-filter:blur(6px);
+  transition:background .12s var(--ease), transform .12s var(--ease);
+}
+.vmini-ov:hover { background:rgba(0,0,0,.75); transform:scale(1.06); }
+.vmini-ov:active { transform:scale(.96); }
+.vmini-ov svg { fill:currentColor; }
+.vmini-ov-open, .vmini-ov-close { top:8px; width:28px; height:28px; }
+.vmini-ov-open { left:8px; } .vmini-ov-open svg { width:14px; height:14px; }
+.vmini-ov-close { right:8px; } .vmini-ov-close svg { width:14px; height:14px; }
+.vmini-ov-play { left:50%; top:50%; width:48px; height:48px; transform:translate(-50%,-50%); }
+.vmini-ov-play:hover { transform:translate(-50%,-50%) scale(1.06); }
+.vmini-ov-play:active { transform:translate(-50%,-50%) scale(.96); }
+.vmini-ov-play svg { width:22px; height:22px; }
+.vmini-ov:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+
+/* The corner grip. It sits on the corner OPPOSITE the anchored one (the deck
+   writes data-corner), so pulling it grows the card into free space, and its
+   cursor matches the diagonal it lives on. A small target that grows on hover. */
+.vmini-resize {
+  position:absolute; width:18px; height:18px; z-index:2;
+  opacity:0; transition:opacity .16s var(--ease);
+  touch-action:none;
+}
+.vmini-resize::after {
+  content:""; position:absolute; inset:5px; border-radius:3px;
+  border:2px solid rgba(255,255,255,.7); border-top:0; border-left:0;
+}
+.vmini:hover .vmini-resize, .vmini.vmini-resizing .vmini-resize { opacity:.9; }
+.vmini[data-corner="br"] .vmini-resize { left:0; top:0; cursor:nwse-resize; }
+.vmini[data-corner="br"] .vmini-resize::after { transform:rotate(180deg); }
+.vmini[data-corner="bl"] .vmini-resize { right:0; top:0; cursor:nesw-resize; }
+.vmini[data-corner="bl"] .vmini-resize::after { transform:rotate(-90deg); }
+.vmini[data-corner="tr"] .vmini-resize { left:0; bottom:0; cursor:nesw-resize; }
+.vmini[data-corner="tr"] .vmini-resize::after { transform:rotate(90deg); }
+.vmini[data-corner="tl"] .vmini-resize { right:0; bottom:0; cursor:nwse-resize; }
 
 .vmini-bar {
   height:var(--vmini-bar-h);

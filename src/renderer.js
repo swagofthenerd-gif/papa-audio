@@ -2033,6 +2033,9 @@ function _bindBrowseKeys() {
     // The theatre is modal; while it is open its own keys apply.
     const theatre = document.getElementById('vtheatre')
     if (theatre && !theatre.classList.contains('hidden')) return
+    // The minimised card owns the keys while it has focus (V1): its arrows
+    // seek, they do not walk the poster grid.
+    if (e.target && typeof e.target.closest === 'function' && e.target.closest('#vmini')) return
 
     const tag = String(e.target && e.target.tagName || '').toUpperCase()
     const typing = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' ||
@@ -28096,6 +28099,11 @@ function setupListeners() {
     // modifiers, so app-wide chords like Ctrl+K stay live even in the theatre.
     const _theatre = document.getElementById('vtheatre')
     if (_theatre && !_theatre.classList.contains('hidden') &&
+        !e.ctrlKey && !e.altKey && !e.metaKey) return
+    // The minimised video card owns the keyboard while it has focus (V1): a
+    // click on the card hands it Space, arrows, m, f; Escape hands them back.
+    // Same double-fire rule as the theatre, same modifier exception.
+    if (e.target && typeof e.target.closest === 'function' && e.target.closest('#vmini') &&
         !e.ctrlKey && !e.altKey && !e.metaKey) return
 
     const inInput = e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA'

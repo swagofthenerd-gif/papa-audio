@@ -272,7 +272,7 @@
        together — the video region's page rectangle is what gets sent to
        videoMiniMode({rect}). Dragged by the bar; double-clicking the picture
        restores to the theatre. -->
-  <div id="vmini" class="vmini hidden" role="region" aria-label="Now playing">
+  <div id="vmini" class="vmini hidden" role="region" aria-label="Now playing" tabindex="-1">
     <!-- The drag handle. The picture region below is the native mpv window, which
          the page never sees pointer events over, so this strip is the reliable
          grab target: a real mouse can press here and move the card anywhere. The
@@ -286,7 +286,22 @@
          the picture covers it — but a double-click on it is relayed by mpv (the
          click lands on the native window, never the page) and restores the
          theatre. Kept for the layout rectangle only. -->
-    <div class="vmini-video" id="vmini-video" aria-label="Video — double-click to expand"></div>
+    <div class="vmini-video" id="vmini-video" aria-label="Video — double-click to expand">
+      <!-- Hover chrome over the picture. Only reachable with the smooth player
+           (the picture is in the page); under mpv the native window covers it. -->
+      <div class="vmini-overlay" aria-hidden="false">
+        <button class="vmini-ov vmini-ov-open" id="vmini-ov-open" aria-label="Back to the player" title="Back to the player">
+          <svg viewBox="0 0 24 24"><path d="M7 14H5v5h5v-2H7zm-2-4h2V7h3V5H5zm12 7h-3v2h5v-5h-2zM14 5v2h3v3h2V5z"/></svg>
+        </button>
+        <button class="vmini-ov vmini-ov-close" id="vmini-ov-close" aria-label="Stop playback" title="Stop">
+          <svg viewBox="0 0 24 24"><path d="M18.3 5.7L12 12l6.3 6.3-1.4 1.4L12 13.4l-6.3 6.3-1.4-1.4L10.6 12 4.3 5.7l1.4-1.4L12 10.6l6.3-6.3z"/></svg>
+        </button>
+        <button class="vmini-ov vmini-ov-play" id="vmini-ov-play" aria-label="Play or pause"></button>
+      </div>
+    </div>
+    <!-- The corner grip: sits on the corner opposite the anchored one (CSS reads
+         data-corner), so pulling it grows the card into free space. -->
+    <div class="vmini-resize" id="vmini-resize" aria-label="Drag to resize" title="Drag to resize"></div>
     <div class="vmini-bar" id="vmini-bar">
       <button class="vt-icon vmini-play" id="vmini-play" aria-label="Play or pause"></button>
       <div class="vmini-body">
@@ -1212,6 +1227,7 @@
 <script src="media-handoff.js"></script>
 <script src="mylist-group.js"></script>
 <script src="skip-model.js"></script>
+<script src="mini-motion.js"></script>
 <script src="web-player.js"></script>
 <script src="video-player.js"></script>
 <!-- The film diary. taste-store.js is the data layer, taste-panel.js the

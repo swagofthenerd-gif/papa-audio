@@ -155,3 +155,18 @@ test('seekFractionAt clamps a pointer to 0..1 across the track', () => {
   // A zero-width track (never measured) is a defined 0, not a divide-by-zero.
   assert.strictEqual(seekFractionAt(300, 100, 0), 0)
 })
+
+test('the top corners sit below the title bar, never behind it (V1)', () => {
+  // The app title bar is a fixed 44px drag region across the top; a card
+  // placed at the bare inset had its handle under it, so a click on the handle
+  // moved the window instead of the card.
+  const tl = miniCardTopLeft('tl', 'compact', VP, PLAYER_H, 44)
+  assert.deepStrictEqual(tl, { x: MINI.inset, y: MINI.inset + 44 })
+  assert.strictEqual(miniCardTopLeft('tr', 'compact', VP, PLAYER_H, 44).y, MINI.inset + 44)
+  // The bottom corners are unaffected; without a bar the old numbers hold.
+  assert.deepStrictEqual(miniCardTopLeft('br', 'compact', VP, PLAYER_H, 44), miniCardTopLeft('br', 'compact', VP, PLAYER_H))
+  assert.deepStrictEqual(miniCardTopLeft('tl', 'compact', VP, PLAYER_H, 0), miniCardTopLeft('tl', 'compact', VP, PLAYER_H))
+  // The video rect and the corner chooser carry the same inset.
+  assert.strictEqual(miniVideoRect('tl', 'compact', VP, PLAYER_H, 44).y, MINI.inset + 44 + MINI.handleH)
+  assert.strictEqual(nearestCorner({ x: 30, y: 60 }, 'compact', VP, PLAYER_H, 44), 'tl')
+})
