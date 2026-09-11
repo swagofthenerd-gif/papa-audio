@@ -376,8 +376,8 @@ var SHORTCUT_LABELS = {
   toggleQueue: 'Show queue',
   toggleLyrics: 'Show lyrics',
   abLoop: 'A–B loop (set A, set B, clear)',
-  focusSearch: 'Search',
-  commandPalette: 'Command palette',
+  focusSearch: 'Search everything (Omnibox)',
+  commandPalette: 'Commands (Omnibox in command mode)',
   likeTrack: 'Like this track',
   sleepTimer: 'Sleep timer (30 min)',
   saveQueue: 'Save the queue',
@@ -27971,13 +27971,13 @@ function setupListeners() {
       return
     }
 
+    // Ctrl+K is the Omnibox (J5): one box for everything, not just the
+    // music bar. Ctrl+Shift+P is the same box in command mode.
     if (matchesShortcut('focusSearch', e)) {
-      e.preventDefault()
-      document.getElementById('tb-search')?.focus()
-      return
+      e.preventDefault(); toggleCommandPalette(); return
     }
     if (matchesShortcut('commandPalette', e)) {
-      e.preventDefault(); toggleCommandPalette(); return
+      e.preventDefault(); toggleCommandPalette('commands'); return
     }
     if (matchesShortcut('likeTrack', e)) {
       e.preventDefault()
@@ -28860,55 +28860,195 @@ var _commands = [
 ]
 var _cpIdx = 0
 
-function toggleCommandPalette() {
+// ── The Omnibox (J5) ────────────────────────────────────────────────────────
+// Ctrl+K. One box for everything the app can reach: the library (through the
+// one brain), playlists, Movies & TV, pages, Manage tabs, commands, and the
+// shared search memory — grouped and ranked by omnibox-model.js, painted and
+// performed here. Ctrl+Shift+P opens the same box in command mode ("> ").
+// Every search it runs is committed to the shared memory on the surface it
+// ran on, and every thing it opens from a query is recorded as opened from
+// that query, so the Omnibox is part of the journey, not a detour from it.
+var _omniVideo = { q: '', results: null, ticket: 0, timer: null }
+var _omniLastQ = null
+
+function toggleCommandPalette(mode) {
   var el = document.getElementById('cmd-palette')
   if (!el) return
   var showing = el.style.display === 'flex'
+  if (showing && mode === 'commands') {
+    // Already open: switch into command mode rather than closing.
+    var inp0 = document.getElementById('cmd-palette-input')
+    if (inp0) { inp0.value = '> '; _cpIdx = 0; _omniRender(); inp0.focus() }
+    return
+  }
   el.style.display = showing ? 'none' : 'flex'
   if (!showing) {
     var input = document.getElementById('cmd-palette-input')
-    if (input) { input.value = ''; _cpIdx = 0; _filterCP(''); input.focus() }
-  }
-}
-function _filterCP(q) {
-  q = (q || '').toLowerCase()
-  var results = _commands.filter(function(c) { return c.label.toLowerCase().indexOf(q) !== -1 })
-  var c = document.getElementById('cmd-palette-results')
-  if (!c) return
-  _cpIdx = Math.min(_cpIdx, Math.max(0, results.length - 1))
-  if (results.length) {
-    c.innerHTML = results.map(function(x, i) {
-      return '<div class="cmd-item' + (i === _cpIdx ? ' active' : '') + '" data-idx="' + i + '"><span>' + x.label + '</span></div>'
-    }).join('')
+    if (input) {
+      input.value = mode === 'commands' ? '> ' : ''
+      _cpIdx = 0
+      _omniLastQ = null
+      _omniRender()
+      input.focus()
+    }
   } else {
-    c.innerHTML = '<div class="cmd-empty">No matching commands</div>'
+    _omniVideo.ticket++
+    clearTimeout(_omniVideo.timer)
   }
 }
-function _execCP(idx) {
-  var el = document.querySelector('.cmd-item[data-idx="' + idx + '"]')
-  if (!el) return
-  var cmd = _commands[parseInt(idx)]
-  if (!cmd) return
-  toggleCommandPalette()
-  cmd.action()
+
+// What the model needs from the app, gathered fresh on every paint.
+function _omniSources(q) {
+  var mem = _searchMemory()
+  var recents = mem ? mem.recent('music', { filter: q, limit: 8, elsewhereLimit: 3 }) : { own: [], elsewhere: [] }
+  var playlists = (state.playlists || []).map(function (p) { return { id: p.id, name: p.name, type: 'regular', count: (p.tracks || []).length } })
+    .concat((state.smartPlaylists || []).map(function (p) { return { id: p.id, name: p.name, type: 'smart' } }))
+  if (!_searchIndex) rebuildSearchIndex(true)
+  var video = (_omniVideo.q === q) ? _omniVideo.results : null
+  return { index: _searchIndex, commands: _commands, playlists: playlists, recents: recents, video: video, videoLoading: !!q && !window.PapaOmnibox.isCommandMode(q) && _omniVideo.q !== q }
 }
+
+// Movies & TV answers arrive after a debounce and a network round trip; the
+// box repaints when they land, if the query has not moved on.
+function _omniFetchVideo(q) {
+  clearTimeout(_omniVideo.timer)
+  if (!q || window.PapaOmnibox.isCommandMode(q) || !window.api || !window.api.videoSearch) return
+  if (_omniVideo.q === q && _omniVideo.results) return
+  var ticket = ++_omniVideo.ticket
+  _omniVideo.timer = setTimeout(function () {
+    window.api.videoSearch({ query: q, type: 'all' })
+      .catch(function () { return { ok: false } })
+      .then(function (res) {
+        if (_omniVideo.ticket !== ticket) return
+        _omniVideo.q = q
+        _omniVideo.results = (res && res.ok && Array.isArray(res.results)) ? res.results : []
+        var inp = document.getElementById('cmd-palette-input')
+        if (inp && inp.value.trim() === q) _omniRender()
+      })
+  }, window.PapaSearchMemory ? window.PapaSearchMemory.DEBOUNCE.remote : 300)
+}
+
+function _omniRows() {
+  var inp = document.getElementById('cmd-palette-input')
+  var q = inp ? inp.value.trim() : ''
+  return window.PapaOmnibox.flatten(window.PapaOmnibox.buildSections(q, _omniSources(q)))
+}
+
+function _omniRender() {
+  var inp = document.getElementById('cmd-palette-input')
+  var c = document.getElementById('cmd-palette-results')
+  if (!inp || !c || !window.PapaOmnibox) return
+  var q = inp.value.trim()
+  if (q !== _omniLastQ) { _cpIdx = 0; _omniLastQ = q }
+  var sections = window.PapaOmnibox.buildSections(q, _omniSources(q))
+  var rows = window.PapaOmnibox.flatten(sections)
+  _cpIdx = Math.min(_cpIdx, Math.max(0, rows.length - 1))
+  var idx = 0
+  var html = ''
+  for (var i = 0; i < sections.length; i++) {
+    var sec = sections[i]
+    if (!sec.items.length) continue
+    html += '<div class="cmd-group">' + esc(sec.title) + '</div>'
+    for (var j = 0; j < sec.items.length; j++) {
+      var it = sec.items[j]
+      if (it.kind === 'hint') { html += '<div class="cmd-hint">' + esc(it.label) + '</div>'; continue }
+      var art = it.art
+        ? '<div class="cmd-item-art"><img src="' + esc(/^https?:/.test(it.art) ? it.art : 'file://' + it.art) + '" alt=""></div>'
+        : '<div class="cmd-item-art cmd-item-art-' + esc(it.kind) + '">' + _omniIcon(it.kind) + '</div>'
+      html += '<div class="cmd-item' + (idx === _cpIdx ? ' active' : '') + '" data-idx="' + idx + '" role="option">' +
+        art +
+        '<div class="cmd-item-text"><div class="cmd-item-label">' + esc(it.label) + '</div>' +
+        (it.sub ? '<div class="cmd-item-sub">' + esc(it.sub) + '</div>' : '') + '</div>' +
+        (it.kind === 'command' && it.cmd && it.cmd.keys ? '<kbd class="cmd-kbd">' + esc(it.cmd.keys) + '</kbd>' : '') +
+      '</div>'
+      idx++
+    }
+  }
+  if (!rows.length && !html) html = '<div class="cmd-empty">Nothing matches</div>'
+  c.innerHTML = html
+  var active = c.querySelector('.cmd-item.active')
+  if (active && active.scrollIntoView) { try { active.scrollIntoView({ block: 'nearest' }) } catch (_) {} }
+  _omniFetchVideo(q)
+}
+
+function _omniIcon(kind) {
+  var glyph = { recent: '&#8635;', artist: '&#9835;', album: '&#9636;', track: '&#9834;', playlist: '&#9776;', video: '&#9654;', page: '&#8594;', tab: '&#9881;', command: '&#8984;', 'search-music': '&#9906;', 'search-video': '&#9906;', 'search-slsk': '&#9906;' }
+  return '<span>' + (glyph[kind] || '&#8226;') + '</span>'
+}
+
+// Perform a row. Searches commit to the shared memory on their surface;
+// things opened from a typed query are recorded as opened from it.
+function _omniExec(row) {
+  if (!row) return
+  var inp = document.getElementById('cmd-palette-input')
+  var typed = inp ? inp.value.trim() : ''
+  toggleCommandPalette()
+  switch (row.kind) {
+    case 'recent':
+      if (row.surface === 'video') { _rememberSearch(row.q, 'video'); requestVideoSearch(row.q); navigate('video') }
+      else if (row.surface === 'soulseek') { _rememberSearch(row.q, 'soulseek'); navigate('soulseek'); setTimeout(function () { runSlskSearch(row.q) }, 50) }
+      else if (row.surface === 'library') { _rememberSearch(row.q, 'library'); state.libSearch = row.q; state._libNoCorrect = null; navigate('library') }
+      else commitSearchQuery(row.q)
+      return
+    case 'artist':
+      if (typed) _rememberOpen(typed, 'music', { kind: 'artist', id: row.id, label: row.label })
+      navigate('artist', row.id); return
+    case 'album':
+      if (typed) _rememberOpen(typed, 'music', { kind: 'album', id: row.id, label: row.label })
+      navigate('album', row.id); return
+    case 'track': {
+      var album = state.library.find(function (a) { return a.id === row.albumId })
+      var track = album && (album.tracks || []).find(function (t) { return t.filePath === row.id })
+      if (typed) _rememberOpen(typed, 'music', { kind: 'track', id: row.id, label: row.label })
+      if (track) playItemStandalone({ ...track, albumArtist: album.artist, artPath: album.artPath, albumName: album.name, albumId: album.id })
+      return
+    }
+    case 'playlist': navigate('playlist', row.id); return
+    case 'video':
+      if (typed) { _rememberSearch(typed, 'video'); _rememberOpen(typed, 'video', { kind: 'video', id: row.key, label: row.label }) }
+      navigate('video-detail', row.key); return
+    case 'page': navigate(row.page); return
+    case 'tab': _mgState.tab = row.tab; navigate('manage'); return
+    case 'command': if (row.cmd && typeof row.cmd.action === 'function') row.cmd.action(); return
+    case 'search-music': commitSearchQuery(row.q); return
+    case 'search-video': _rememberSearch(row.q, 'video'); requestVideoSearch(row.q); navigate('video'); return
+    case 'search-slsk': _rememberSearch(row.q, 'soulseek'); navigate('soulseek'); setTimeout(function () { runSlskSearch(row.q) }, 50); return
+  }
+}
+
 function _setupCP() {
   var cp = document.getElementById('cmd-palette')
   if (!cp) return
   cp.addEventListener('click', function(e) { if (e.target === cp) toggleCommandPalette() })
   var inp = document.getElementById('cmd-palette-input')
   if (inp) {
-    inp.addEventListener('input', function(e) { _filterCP(e.target.value) })
+    inp.addEventListener('input', function() { _omniRender() })
     inp.addEventListener('keydown', function(e) {
-      var results = document.querySelectorAll('.cmd-item')
-      if (e.key === 'ArrowDown') { e.preventDefault(); _cpIdx = Math.min(_cpIdx + 1, results.length - 1); _filterCP(inp.value) }
-      else if (e.key === 'ArrowUp') { e.preventDefault(); _cpIdx = Math.max(_cpIdx - 1, 0); _filterCP(inp.value) }
-      else if (e.key === 'Enter') { e.preventDefault(); _execCP(_cpIdx) }
+      if (e.key === 'ArrowDown') { e.preventDefault(); _cpIdx = Math.min(_cpIdx + 1, Math.max(0, _omniRows().length - 1)); _omniRender() }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); _cpIdx = Math.max(_cpIdx - 1, 0); _omniRender() }
+      else if (e.key === 'Enter') {
+        e.preventDefault()
+        var rows = _omniRows()
+        var row = rows[_cpIdx]
+        // Enter on a bare query with nothing highlighted is a plain search.
+        if (!row && inp.value.trim()) { toggleCommandPalette(); commitSearchQuery(inp.value.trim()); return }
+        _omniExec(row)
+      }
       else if (e.key === 'Escape') toggleCommandPalette()
     })
   }
   var results = document.getElementById('cmd-palette-results')
-  if (results) results.addEventListener('click', function(e) { var item = e.target.closest('.cmd-item'); if (item) _execCP(parseInt(item.dataset.idx)) })
+  if (results) results.addEventListener('click', function(e) {
+    var item = e.target.closest('.cmd-item')
+    if (!item) return
+    _omniExec(_omniRows()[parseInt(item.dataset.idx, 10)])
+  })
+  results?.addEventListener('mousemove', function (e) {
+    var item = e.target.closest && e.target.closest('.cmd-item')
+    if (!item) return
+    var i = parseInt(item.dataset.idx, 10)
+    if (i !== _cpIdx) { _cpIdx = i; results.querySelectorAll('.cmd-item').forEach(function (el) { el.classList.toggle('active', parseInt(el.dataset.idx, 10) === i) }) }
+  })
 }
 
 // ── Search operator parser ──────────────────────────────────────────────────

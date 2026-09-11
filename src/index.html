@@ -1131,10 +1131,10 @@
   <div class="cmd-palette-box">
     <div class="cmd-palette-input-row">
       <svg class="cmd-palette-search-icon" viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
-      <input class="cmd-palette-input" id="cmd-palette-input" placeholder="Type a command..." autocomplete="off">
+      <input class="cmd-palette-input" id="cmd-palette-input" placeholder="Search everything… albums, films, playlists, pages. Type &gt; for commands" autocomplete="off" role="combobox" aria-expanded="true" aria-controls="cmd-palette-results">
     </div>
-    <div class="cmd-palette-results" id="cmd-palette-results"></div>
-    <div class="cmd-palette-footer"><span><kbd>Tab</kbd> navigate</span><span><kbd>Enter</kbd> execute</span><span><kbd>Esc</kbd> close</span></div>
+    <div class="cmd-palette-results" id="cmd-palette-results" role="listbox"></div>
+    <div class="cmd-palette-footer"><span><kbd>↑</kbd><kbd>↓</kbd> move</span><span><kbd>Enter</kbd> open</span><span><kbd>&gt;</kbd> commands</span><span><kbd>Esc</kbd> close</span></div>
   </div>
 </div>
 
@@ -1159,6 +1159,7 @@
      PapaSmartQuery global for its tokenizer/scorer/vocabulary. -->
 <script src="smart-query.js"></script>
 <script src="library-index.js"></script>
+<script src="omnibox-model.js"></script>
 <script src="yt-suggest-model.js"></script>
 <script src="queue-repair.js"></script>
 <script src="load-error-policy.js"></script>
