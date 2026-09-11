@@ -95,6 +95,9 @@ const slsk = {
   correction: null,
   // The verbatim query an undo pinned: never auto-corrected again this session.
   noCorrectFor: null,
+  // Set when any variant of the current search ran under a daemon 429, so an
+  // empty result is reported as rate-limited rather than "No results" (R16).
+  throttledRecently: false,
   filter: 'all',
   sort: 'relevance',
   error: null,
@@ -1382,7 +1385,7 @@ async function init() {
   restoreHoverTrailerPref()
   restoreHideSeenPref()
 
-  window.api.slskStatus().then(s => { slsk.status = s }).catch(() => {})
+  window.api.slskStatus().then(s => { _setSlskStatus(s) }).catch(() => {})
   // The rate is decided in one place; at startup nothing is known to be active
   // yet, so this starts slow and the first poll re-tunes it.
   retuneDownloadsPolling()
@@ -11601,7 +11604,11 @@ function renderSearch(query) {
   const sameQuery  = slsk.lastQuery === onlineQuery
   const hasResults = slsk.results.length > 0
   bindSlskSearchEvents(query)
-  if (slsk.status.connected && canSearchOnline) {
+  // No gate on slsk.status here: at launch it can still be the stale
+  // "not connected" from a poll that has not returned, and gating on it
+  // painted a dead "Connecting…" row nothing ever retried. runSlskSearch
+  // refreshes the status itself and paints the right row either way.
+  if (canSearchOnline) {
     if (!sameQuery || !slsk.searched || (!slsk.searching && !hasResults)) {
       runSlskSearch(onlineQuery)
     } else {
@@ -22518,16 +22525,21 @@ function renderSoulseekRow(query) {
     // search against a daemon that is down or unauthenticated fails forever,
     // and the old copy actively encouraged exactly that.
     const failed = !!slsk.error
+    // A search that came back empty while the daemon was rate-limiting is not
+    // "No results" (R16): the network was never really asked.
+    const throttled = !failed && !!slsk.throttledRecently
     return `<div class="slsk-container" id="slsk-row">
       <div class="slsk-header-row">
         <span class="osrc-name">Soulseek</span>
-        <span class="osrc-status ${failed ? 'error' : 'not-found'}">${failed ? esc(slsk.error) : 'No results'}</span>
+        <span class="osrc-status ${failed ? 'error' : (throttled ? 'searching' : 'not-found')}">${failed ? esc(slsk.error) : (throttled ? 'Rate-limited' : 'No results')}</span>
         <button class="slsk-retry-btn" id="slsk-retry-btn">↺ Retry</button>
       </div>
       <div class="slsk-nat-hint">
         ${failed
           ? 'Nothing was searched — the error above needs fixing first. Check that slskd is running and connected.'
-          : 'Nothing found on the P2P network. The Soulseek network may still be warming up — click <strong>Retry</strong> to search again.'}
+          : (throttled
+            ? 'slskd was rate-limiting searches, so this one never really reached the network. Wait a minute or two, then click <strong>Retry</strong>.'
+            : 'Nothing found on the P2P network. The Soulseek network may still be warming up — click <strong>Retry</strong> to search again.')}
       </div>
     </div>`
   }
@@ -22804,6 +22816,7 @@ async function runSlskSearch(query) {
   // Show "Searching…" immediately — avoids flash while status is fetched
   slsk.searching = true
   slsk.searched  = false
+  slsk.throttledRecently = false
   slsk.results   = []
   slsk.pendingSearches = 0
   slsk.searchStart = Date.now()
@@ -22812,24 +22825,24 @@ async function runSlskSearch(query) {
 
   await refreshSlskStatus()
 
-  const section = document.getElementById('slsk-section')
-  if (!section) {
-    // Bailing out here used to leave slsk.searching === true forever, with no
-    // timer running. Coming back to the search page then showed a frozen
-    // "Searching P2P network… (0s)" that nothing could ever clear.
-    slsk.searching = false
-    slsk.searched = false
-    return
-  }
+  // No bail when the results section is off screen (R3). The search is a
+  // background job that writes to `slsk`; whichever page carries a
+  // #slsk-section paints from that state when it renders, and the flush tick
+  // below already tolerates a missing section. Bailing here is what turned
+  // "navigate away two seconds into a search, come back" into a false
+  // "No results" — the search had quietly never happened.
+  if (!current()) return
 
   if (!slsk.status.connected) {
+    // Not a search that found nothing: a search that could not start. Left
+    // un-searched on purpose, so the connection coming up runs it (R4).
     slsk.searching = false
     if (_slskTimer) { clearInterval(_slskTimer); _slskTimer = null }
-    section.innerHTML = renderSoulseekRow(query)
+    _slskRepaint(query)
     return
   }
 
-  section.innerHTML = renderSoulseekRow(query)
+  _slskRepaint(query)
 
   const variants = _buildSearchVariants(query)
   slsk.pendingSearches = variants.length
@@ -22890,8 +22903,9 @@ async function runSlskSearch(query) {
   // Run all variants in parallel; each returns after 25s max (or earlier with enough results)
   const TIMEOUT = 25000
   await Promise.all(variants.map(q =>
-    window.api.slskSearch({ query: q, timeoutMs: TIMEOUT, noCache: _nocacheQueries.has(q.toLowerCase()), generation: myRun }).then(({ results, cancelled }) => {
+    window.api.slskSearch({ query: q, timeoutMs: TIMEOUT, noCache: _nocacheQueries.has(q.toLowerCase()), generation: myRun }).then(({ results, cancelled, throttled }) => {
       if (!current() || cancelled) return
+      if (throttled) slsk.throttledRecently = true
       _mergeResults(results)
     }).catch((e) => {
       if (!current()) return
@@ -22903,7 +22917,7 @@ async function runSlskSearch(query) {
       // yet. main already backs off internally; by the time it reaches here it
       // has given up, so the retry belongs at this level — once, per search,
       // with the wait visible rather than the results just never arriving.
-      if (_slskIsThrottleError(e)) _slskScheduleThrottleRetry(query)
+      if (_slskIsThrottleError(e)) { slsk.throttledRecently = true; _slskScheduleThrottleRetry(query) }
     }).finally(() => {
       if (!current()) return
       slsk.pendingSearches = Math.max(0, slsk.pendingSearches - 1)
@@ -22932,7 +22946,44 @@ async function runSlskSearch(query) {
 }
 
 async function refreshSlskStatus() {
-  try { slsk.status = await window.api.slskStatus() } catch (_) {}
+  try { _setSlskStatus(await window.api.slskStatus()) } catch (_) {}
+}
+
+// ── One Soulseek connection truth (R4) ─────────────────────────────────────
+// `slsk.status` (the Soulseek pages) and `state.connectionStatus.slskd` (the
+// footer dot) were filled by two different pollers at two different times,
+// so the hub could say "Connecting…" forever while the footer dot was green.
+// Every status fetch now lands here, both readers are written together, the
+// footer repaints at once, and a disconnected→connected edge runs the search
+// that was waiting for the connection.
+function _setSlskStatus(s) {
+  var prev = slsk.status || {}
+  slsk.status = (s && typeof s === 'object')
+    ? s
+    : { installed: !!prev.installed, running: !!prev.running, connected: false, configured: !!prev.configured }
+  state.connectionStatus.slskd = slsk.status.connected ? 'connected' : 'disconnected'
+  _paintSlskConnDot()
+  if (!prev.connected && slsk.status.connected) _onSlskConnected()
+}
+
+function _paintSlskConnDot() {
+  var slskdEl = document.getElementById('conn-slskd')
+  if (!slskdEl) return
+  var dot = slskdEl.querySelector('.conn-dot')
+  var isConnected = state.connectionStatus.slskd === 'connected'
+  if (dot) dot.style.cssText = 'width:7px;height:7px;border-radius:50%;display:inline-block;background:' + (isConnected ? '#1db954' : '#e74c3c')
+  slskdEl.style.color = isConnected ? 'var(--text1)' : 'var(--text3)'
+  var last = slskdEl.childNodes[slskdEl.childNodes.length - 1]
+  if (last) last.textContent = isConnected ? ' Soulseek' : ' Soulseek offline'
+}
+
+// The connection just came up. A search asked for while the daemon was still
+// connecting was painted as "Connecting…" with nothing to retry it — the
+// launch race. Run it now, on whichever page is showing the results section.
+function _onSlskConnected() {
+  if (!slsk.lastQuery || slsk.searching || slsk.searched) return
+  if (!document.getElementById('slsk-section')) return
+  runSlskSearch(slsk.lastQuery)
 }
 
 // Was three bare setTimeout calls with no stored handles, from 19 call sites. A
@@ -28108,25 +28159,18 @@ function _bindFileDrop() {
 }
 
 async function checkConnections() {
+  // The footer's Soulseek dot and the Soulseek pages read ONE status (R4).
   try {
     var s = await window.api.slskStatus().catch(function() { return null })
-    state.connectionStatus.slskd = (s && s.connected) ? 'connected' : 'disconnected'
-  } catch (_) { state.connectionStatus.slskd = 'disconnected' }
+    _setSlskStatus(s)
+  } catch (_) { _setSlskStatus(null) }
 
   try {
     var y = await window.api.ytAuthStatus().catch(function() { return null })
     state.connectionStatus.youtube = (y && y.ok) ? 'connected' : 'disconnected'
   } catch (_) { state.connectionStatus.youtube = 'disconnected' }
 
-  var slskdEl = document.getElementById('conn-slskd')
   var ytEl = document.getElementById('conn-yt')
-  if (slskdEl) {
-    var dot = slskdEl.querySelector('.conn-dot')
-    var isConnected = state.connectionStatus.slskd === 'connected'
-    dot.style.cssText = 'width:7px;height:7px;border-radius:50%;display:inline-block;background:' + (isConnected ? '#1db954' : '#e74c3c')
-    slskdEl.style.color = isConnected ? 'var(--text1)' : 'var(--text3)'
-    slskdEl.childNodes[slskdEl.childNodes.length - 1].textContent = isConnected ? ' Soulseek' : ' Soulseek offline'
-  }
   if (ytEl) {
     var dot2 = ytEl.querySelector('.conn-dot')
     var isConnected2 = state.connectionStatus.youtube === 'connected'
@@ -30977,8 +31021,7 @@ function renderSoulseekHub() {
     var q = (input && input.value || '').trim()
     if (q.length < 2) { showSnackbar('Type at least two characters to search'); return }
     _rememberSearch(q, 'soulseek')
-    if (window.api && slsk.status && slsk.status.connected) runSlskSearch(q)
-    else { var sec = document.getElementById('slsk-section'); if (sec) { sec.innerHTML = renderSoulseekRow(q); bindSlskSearchEvents(q) } }
+    runSlskSearch(q) // refreshes the status itself; paints the offline row when it must
   }
   // Recents (J2): the shared dropdown — what was searched here, then what was
   // searched on the music bar, the library and Movies & TV.
@@ -31106,7 +31149,7 @@ function _renderHubWishlist() {
       if (!w) return
       var input = document.getElementById('slsk-hub-search-input')
       if (input) input.value = w.query
-      if (window.api && slsk.status && slsk.status.connected) runSlskSearch(w.query)
+      runSlskSearch(w.query)
     })
   })
   box.querySelectorAll('.slsk-wl-remove').forEach(function (btn) {

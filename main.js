@@ -1161,8 +1161,14 @@ async function slskdAcquireToken() {
 // transfer and then hammers it again from a cold start.
 const SLSKD_THROTTLE_BACKOFF_MS = [500, 1500, 4000]
 let _slskdThrottledUntil = 0
+// When the daemon last sent a 429. A search that ran while this is recent
+// and found nothing is a throttled search, not an empty one (R16): the
+// renderer says so instead of "No results".
+let _slskdLastThrottleAt = 0
+const SLSKD_THROTTLE_MEMORY_MS = 90 * 1000
 
 function slskdIsThrottled() { return Date.now() < _slskdThrottledUntil }
+function slskdThrottledRecently() { return Date.now() - _slskdLastThrottleAt < SLSKD_THROTTLE_MEMORY_MS }
 
 async function slskdFetch(method, endpoint, body) {
   if (!slskdToken || Date.now() > slskdTokenExpiry) await slskdAcquireToken()
@@ -1183,12 +1189,14 @@ async function slskdFetch(method, endpoint, body) {
     const hinted = Number(res.headers.get('retry-after')) * 1000
     const wait = Number.isFinite(hinted) && hinted > 0 ? Math.min(hinted, 10000) : SLSKD_THROTTLE_BACKOFF_MS[attempt]
     _slskdThrottledUntil = Date.now() + wait
+    _slskdLastThrottleAt = Date.now()
     console.log(`[papa] slskd throttled us on ${method} ${endpoint}; waiting ${wait}ms (attempt ${attempt + 1})`)
     await new Promise(r => setTimeout(r, wait))
     res = await fetch(`${SLSKD_BASE}${endpoint}`, { ...opts, signal: AbortSignal.timeout(15000) })
   }
   if (res.status === 429) {
     _slskdThrottledUntil = Date.now() + 15000
+    _slskdLastThrottleAt = Date.now()
     const err = new Error(`slskd is rate-limiting requests (429) on ${method} ${endpoint}`)
     // Tagged so the health monitor can tell throttling from the daemon being
     // unhealthy, which are opposite problems: one needs patience, the other a
@@ -6555,7 +6563,10 @@ async function slskRunSearch({ query, timeoutMs = 25000, noCache = false, genera
     _searchPersistSet(query, results)
   }
   safeSend('slsk-progress', { query, results, done: true })
-  return { results }
+  // An empty search that ran under a recent 429 is reported as throttled, so
+  // the renderer can say "rate-limited, try again shortly" instead of "No
+  // results" (R16). Non-empty results speak for themselves.
+  return { results, throttled: !results.length && slskdThrottledRecently() }
   } finally {
     _liveSearches.delete(id)
     _cancelledSearches.delete(id)

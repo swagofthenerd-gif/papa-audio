@@ -37,11 +37,19 @@ test('completion paints the final state before tearing down the timer', () => {
     'paint must happen BEFORE the repaint timer is cleared, or the last batch of results never renders')
 })
 
-test('bailing out early does not leave the spinner running', () => {
-  const i = fn.indexOf("if (!section)")
-  assert.ok(i > -1)
-  assert.ok(/slsk\.searching = false/.test(fn.slice(i, i + 400)),
-    'an early return must clear searching, or the spinner sticks forever')
+test('a results section that is off screen never stops the search (R3)', () => {
+  // The search is a background job that writes to `slsk`; the page that
+  // carries #slsk-section paints from that state when it renders. Bailing
+  // when the section was missing is what turned "navigate away two seconds
+  // into a search, come back" into a false "No results".
+  assert.ok(!/if \(!section\)/.test(fn), 'no early return on a missing section')
+  assert.ok(!/section\.innerHTML = renderSoulseekRow/.test(fn), 'painting goes through _slskRepaint, which tolerates a missing section')
+  const off = fn.indexOf('if (!slsk.status.connected)')
+  assert.ok(off > -1)
+  const branch = fn.slice(off, off + 400)
+  assert.ok(/slsk\.searching = false/.test(branch), 'not-connected must clear searching, or the spinner sticks forever')
+  assert.ok(!/slsk\.searched = true/.test(branch), 'not-connected is NOT a finished search: the connection coming up must be able to run it')
+  assert.ok(/_slskRepaint\(query\)/.test(branch))
 })
 
 test('a partial failure keeps the results that did arrive', () => {

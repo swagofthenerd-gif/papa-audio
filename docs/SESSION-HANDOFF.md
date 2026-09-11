@@ -184,7 +184,15 @@ so the twin sends no requests and cancels nothing. Tests 4,060.
 ### The queue, in order
 
 1. ~~J2 + J3~~ done — see above.
-2. ~~R5~~ done — see above. This is his
+2. ~~R5~~ done — see above.
+3. ~~R3 / R4 / R16~~ done (2026-09-11): `runSlskSearch` never bails on a missing
+   `#slsk-section` (background job; pages paint from `slsk` state);
+   `_setSlskStatus` is the one status writer (fills `slsk.status` AND
+   `state.connectionStatus.slskd`, paints the footer dot, runs a waiting search
+   on the connect edge); no entry point gates on `slsk.status.connected`;
+   main returns `throttled` on an empty search under a recent 429 and the row
+   says "Rate-limited". Live: mechanism verified; result cards not seen because
+   the shared daemon was throttling the twin (user's app live at the same time). This is his
    original complaint. Today there are **three disjoint recent-search stores**
    (`pa_search_history`, `papa-lib-recent-searches`, `papaVideoRecentSearches`)
    and **three separate typo engines** (`smart-query.js`,
