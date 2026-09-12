@@ -335,7 +335,7 @@ test('main registers the two IPC handlers and schedules the startup check', () =
 test('main pins both engines to the discovered yt-dlp', () => {
   const main = root('main.js')
   assert.match(main, /engineConfig\.ytdlPath\s*=\s*ytdlp\.binaryPath\(\)/)
-  assert.match(main, /new VideoEngine\(\{ config: \{ ytdlPath: ytdlp\.binaryPath\(\), ytdlJsRuntime: ytdlp\.nodePath\(\) \} \}\)/)
+  assert.match(main, /new VideoEngine\(\{ config: \{ ytdlPath: ytdlp\.binaryPath\(\), ytdlJsRuntime: ytdlp\.nodePath\(\)(, ao: process\.env\.PAPA_VIDEO_AO \|\| undefined)? \} \}\)/)
   assert.match(main, /engineConfig\.ytdlJsRuntime = ytdlp\.nodePath\(\)/)
   assert.match(main, /ytdlp\.jsRuntimeArgs\(\)\.concat\(\['-f', format, '-g'/, 'the trailer resolver passes the runtime too')
 })

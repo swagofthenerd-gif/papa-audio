@@ -24,9 +24,14 @@ test('the render side publishes exactly what it rendered', () => {
 })
 
 test('the bind side reads that array and does not regroup', () => {
-  assert.ok(/const groups = _slskRendered/.test(bindBody),
+  // The card handlers moved to _bindSlskCards (roadmap S3, so "Show more"
+  // can bind only the cards it appends); they still index the rendered array.
+  assert.ok(/_bindSlskCards\(section, query, _slskRendered\)/.test(bindBody),
     'handlers must index the rendered array')
-  assert.ok(!/_slskGroupByFolder\(/.test(bindBody),
+  const cardsStart = src.indexOf('function _bindSlskCards(')
+  const cardsBody = src.slice(cardsStart, src.indexOf('\nfunction ', cardsStart + 10))
+  assert.ok(/function _bindSlskCards\(section, query, groups\)/.test(cardsBody))
+  assert.ok(!/_slskGroupByFolder\(/.test(cardsBody) && !/_slskGroupByFolder\(/.test(bindBody),
     'a fresh regroup here has no filter, no sort and no 60-cap — it is the bug')
 })
 

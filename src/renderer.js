@@ -189,6 +189,7 @@ var _slskProgressOff = null
 // for every new search, so one long list does not make the next one enormous.
 const SLSK_SHOW_STEP = 60
 var _slskShowLimit = SLSK_SHOW_STEP
+var _slskPipeline = null   // the last renderSoulseekRow's unit list and summary inputs (S3)
 // Interval handles. An interval with no handle can never be stopped or
 // superseded; several of these restarted without clearing the previous one.
 var _connCheckTimer = null
@@ -23330,6 +23331,15 @@ function renderSoulseekRow(query) {
     shown: displayList.length,
     total: unitList.length,
   })) : `${unitList.length} ${unitWord}${unitList.length !== 1 ? 's' : ''}`) + updateNote
+  // What "Show more" needs to append the next page without redoing the
+  // grouping, scoring, sorting, filtering and merging above (roadmap S3):
+  // the unit list and the summary's inputs, keyed on everything that would
+  // change them. A key mismatch means a full render.
+  _slskPipeline = {
+    query, unitList, merged: _slskMergedMode, unitWord, updateNote,
+    summaryArgs: { merged: _slskMergedMode, albums: _slskMergedMode ? unitList.length : 0, sources: ordered.length, lossless: flacGroups.length, filter: slsk.filter, filterMatches: filtered.length, total: unitList.length },
+    resultsN: slsk.results.length, filter: slsk.filter, sort: slsk.sort, groupBy: slsk.groupByUploader,
+  }
 
   return `<div class="slsk-container" id="slsk-row">
     <div class="slsk-header-row">
@@ -25827,12 +25837,7 @@ function bindSlskSearchEvents(query) {
 
   section.querySelector('#slsk-saved-btn')?.addEventListener('click', () => showSlskSavedUsers())
 
-  section.querySelector('#slsk-show-more')?.addEventListener('click', () => {
-    // Extend rather than replace: the discarded tail routinely contains better
-    // sources, and nothing used to say it existed.
-    _slskShowLimit += SLSK_SHOW_STEP
-    _rerenderSlskSection(query)
-  })
+  section.querySelector('#slsk-show-more')?.addEventListener('click', () => _slskShowMore(query))
 
   section.querySelector('#slsk-retry-btn')?.addEventListener('click', () => {
     _searchCache_invalidate(query)  // force-fresh on manual retry
@@ -25863,10 +25868,18 @@ function bindSlskSearchEvents(query) {
     _rerenderSlskSection(query)
   })
 
-  // Must be the array the cards were rendered from, not a fresh regroup:
-  // data-gi indexes displayList. This also avoids a second full regroup of
-  // every response on every one-second flush.
-  const groups = _slskRendered
+  // The per-card bindings live in _bindSlskCards so "Show more" can bind
+  // only the cards it appends (roadmap S3).
+  _bindSlskCards(section, query, _slskRendered)
+
+}
+
+// Bind the buttons and links of the Soulseek cards under `section` (the whole
+// section, or a fragment of freshly appended cards). `groups` must be the
+// array the cards were rendered from, not a fresh regroup: data-gi indexes
+// it. This also avoids a second full regroup of every response on every
+// one-second flush.
+function _bindSlskCards(section, query, groups) {
 
   // Resolve the effective folder-group a card acts on. In merged mode the unit
   // is an album; its main DL/Play use the best source, so unwrap to that. In
@@ -26219,7 +26232,55 @@ function bindSlskSearchEvents(query) {
       showSnackbar('Those files are not on disk yet')
     })
   })
+}
 
+// "Show N more" appends the next page of cards instead of rebuilding the
+// whole section (roadmap S3: 112 → 249 ms and growing per click, and the
+// grouping/sorting/merging of a thousand sources was the bulk of it). Only
+// the new cards are rendered, from the unit list the last render left in
+// _slskPipeline; they are bound on a fragment and appended, and the summary
+// and the button are refreshed in place. Returns false when the list would
+// differ (new results, filter, sort, grouping) or the section is not in the
+// expected shape, and the caller falls back to the full re-render.
+function _appendSlskUnits(query) {
+  const sec = document.getElementById('slsk-section')
+  const grid = sec && sec.querySelector('.slsk-grid')
+  const P = _slskPipeline
+  if (!grid || !P) return false
+  // Anything that would change the list means a full render.
+  if (P.query !== query || P.resultsN !== slsk.results.length || P.filter !== slsk.filter || P.sort !== slsk.sort || P.groupBy !== slsk.groupByUploader) return false
+  const before = grid.children.length
+  const displayList = P.unitList.slice(0, _slskShowLimit)
+  if (before > displayList.length) return false
+  const add = displayList.slice(before)
+  const tpl = document.createElement('template')
+  tpl.innerHTML = add.map((g, i) => P.merged ? _slskMergedCardHtml(g, before + i, query) : _slskCardHtml(g, before + i, query)).join('')
+  _slskRendered = displayList
+  const frag = tpl.content
+  _bindSlskCards(frag, query, _slskRendered)
+  grid.appendChild(frag)
+  const SF = window.PapaSlskFilters
+  const status = sec.querySelector('.osrc-status')
+  if (status) {
+    status.innerHTML = (SF && SF.summaryLine
+      ? esc(SF.summaryLine(Object.assign({}, P.summaryArgs, { shown: displayList.length })))
+      : `${P.unitList.length} ${P.unitWord}${P.unitList.length !== 1 ? 's' : ''}`) + P.updateNote
+  }
+  const hidden = Math.max(0, P.unitList.length - displayList.length)
+  const row = sec.querySelector('.slsk-show-more-row')
+  if (row) {
+    if (hidden) {
+      const btn = row.querySelector('#slsk-show-more')
+      if (btn) btn.textContent = `Show ${Math.min(hidden, SLSK_SHOW_STEP)} more of ${P.unitList.length} ${P.unitWord}${P.unitList.length !== 1 ? 's' : ''}`
+    } else row.remove()
+  }
+  return true
+}
+function _slskShowMore(query) {
+  // Extend rather than replace: the discarded tail routinely contains better
+  // sources, and nothing used to say it existed.
+  _slskShowLimit += SLSK_SHOW_STEP
+  if (!_appendSlskUnits(query)) _rerenderSlskSection(query)
 }
 
 

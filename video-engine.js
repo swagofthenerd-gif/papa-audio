@@ -322,6 +322,9 @@ class VideoEngine extends EventEmitter {
       '--idle=yes',
       `--input-ipc-server=${socketPath}`,
       `--audio-channels=${channelsValue(this.config.audioChannels)}`,
+      // QA twins run with PAPA_VIDEO_AO=null: mpv's audio output is the
+      // null device, so a playback test can never reach the speakers.
+      ...(this.config.ao ? [`--ao=${this.config.ao}`] : []),
       '--cache=yes',
       // 64MiB is only a few seconds of a 1080p stream, so mpv kept draining its
       // buffer and stalling on a torrent that was actually keeping up. A larger

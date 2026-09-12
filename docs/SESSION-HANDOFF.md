@@ -353,6 +353,35 @@ Later the same day: `3ffe22e` (R8 R14 R15 R17 + plural sweep), `a7370cd` (R18 R1
   position seeks under the measurement. Chromium's `performance.memory` is
   bucketed.
 
+### 15. mpv-path soak, silent twins, and roadmap S3 (2026-09-12, Fable 5.1)
+
+- **Silent twins:** `PAPA_VIDEO_AO=null` makes the video mpv use the null
+  audio output (`video-engine.js` `_args`, `main.js` engine config). Use it
+  on every QA twin: mpv starts at the audio server's remembered stream
+  volume before any mute command lands, and a test tone reached the
+  speakers once this session.
+- **mpv-path soak** (6 min, 23 rounds of seek → minimise → two card drags →
+  pause/play → restore, a fresh open every 4th round): zero errors, zero
+  stage words, muted throughout, but 8 long tasks, worst 107 ms, all on the
+  reopen rounds (`_videoStopAndHide` + `_videoPlayResult` + deck open with
+  mpv). Over the 100 ms budget by a hair; not profiled yet.
+- **Harness quirk:** `_videoStopAndHide()` before anything has ever played
+  makes the play that follows in the same tick do nothing on a fresh page;
+  guard with `if (_player._state())`. `_videoLastState` is only set once
+  `_watch.key` exists; the context-bridge `api` object is frozen, so a
+  traced `window.api.videoPlay` never installs.
+- **Roadmap S3 shipped:** "Show N more" on Soulseek results appends the next
+  page of cards (`_appendSlskUnits`, `_slskShowMore`) instead of rebuilding
+  the section; the per-card bindings moved to `_bindSlskCards(root, query,
+  groups)` and are applied to a fragment of just the new cards. The first cut
+  (render the whole row into a template, move the new cards) still cost
+  70 ms: the grouping/scoring/sorting/merging of ~1,000 sources was the
+  bulk, not the DOM. So `renderSoulseekRow` leaves its unit list and summary
+  inputs in `_slskPipeline` (keyed on query, result count, filter, sort,
+  grouping) and the fast path renders only the new cards from it. Measured
+  on the twin with a 312-album search: 83 ms (rebuild) → 4 ms per click,
+  no long task, three pages in a row, appended cards' buttons live.
+
 ## 7. Open debt and outstanding items
 
 - **Peer-library speed is bench-only.** Re-measure live against a real

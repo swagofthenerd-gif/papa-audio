@@ -9607,7 +9607,7 @@ function jackett() {
 // router, the engine, or the UI.
 const movieTv = _lazy(() => createMovieTvProvider({ fetchFn: fetchWithTimeout(15000), resolvers: [] }))
 const anime = _lazy(() => createAnimeProvider({ fetchFn: fetchWithTimeout(15000), resolvers: [] }))
-const videoEngine = _lazy(() => new VideoEngine({ config: { ytdlPath: ytdlp.binaryPath(), ytdlJsRuntime: ytdlp.nodePath() } }))
+const videoEngine = _lazy(() => new VideoEngine({ config: { ytdlPath: ytdlp.binaryPath(), ytdlJsRuntime: ytdlp.nodePath(), ao: process.env.PAPA_VIDEO_AO || undefined } }))
 const yarrlist = _lazy(() => createYarrlistDirectory({ fetchFn: fetchWithTimeout(15000) }))
 const _videoSession = { streamer: null, thumbnailer: null, win: null, overlay: null, token: 0, bounds: null, mini: false, miniRect: null }
 
