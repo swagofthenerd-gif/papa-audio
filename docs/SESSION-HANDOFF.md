@@ -561,6 +561,35 @@ His decision: **"lets keep it as is."** Do not reopen the libmpv-in-page
 or native-rewrite ideas unless he raises them. Purist (mpv) stays the
 default player; smooth mode stays an option.
 
+### 25. "Buffering so slow" and "episodes don't play" (2026-09-12 evening, Fable 5.1)
+
+Reproduced on a twin (purist default, silent) by pressing a Silo episode row:
+
+- **Rows only selected the episode** (`setEp`); the Play button played. Now
+  a row press sets `_autoPlayTicket` and selects, so the play fires when
+  that episode's own sources land — pressing Play straight after selecting
+  used the previous episode's list (E01 picked for E02, seen live).
+- **A torrent that connected to peers but received nothing sat there**:
+  9 peers, 0 % for 90 s. Now: identical buffering reports are not "words",
+  20 s of no progress at start swaps to the next untried source
+  (`_nextUntriedSource`, `_watch.tried`), a "nobody sharing"/"did not
+  start" failure retries the next untried source up to three times before
+  the failure is shown, repeated identical errors are one message, and the
+  torrent's deadline is only extended while bytes grow (one grace
+  extension; 40 s to SLOW_START instead of 80).
+- **The switch was being undone**: mpv on the torn-down old stream hit
+  end-of-file, main forwarded it as `ended`, the renderer treated it as a
+  finished film and stopped everything. `_videoSession.switching` now
+  drops that event until the new load lands.
+- Live after the fixes: row 4 → "Silo S01E04 … 2160p DV HDR" picked in
+  0.9 s; 20 s of nothing → switch; three untried sources tried; every one
+  of that episode's sources reported "nobody sharing" tonight. The network
+  itself answered (4 of 7 trackers, one DHT bootstrap, TCP fine), so those
+  swarms were simply empty — indexer seeder counts are not trustworthy.
+  `_applyQualityPreference` puts his preferred 1080p first only when the
+  release's quality parsed; check what the 2160p ones parsed as if 4K keeps
+  coming first.
+
 ## 7. Open debt and outstanding items
 
 - **Peer-library speed** measured live on a 65k-file peer (§16): one 58 ms
