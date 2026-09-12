@@ -364,7 +364,10 @@ Later the same day: `3ffe22e` (R8 R14 R15 R17 + plural sweep), `a7370cd` (R18 R1
   pause/play → restore, a fresh open every 4th round): zero errors, zero
   stage words, muted throughout, but 8 long tasks, worst 107 ms, all on the
   reopen rounds (`_videoStopAndHide` + `_videoPlayResult` + deck open with
-  mpv). Over the 100 ms budget by a hair; not profiled yet.
+  mpv). Over the 100 ms budget by a hair. A profiled stop-and-reopen on a
+  fresh twin showed no long task and under 5 ms of JS (render 3 ms, ready
+  1 ms; the rest native), so the soak's hitch was not the reopen's JS —
+  possibly a GC or the drags before it. Left as is.
 - **Harness quirk:** `_videoStopAndHide()` before anything has ever played
   makes the play that follows in the same tick do nothing on a fresh page;
   guard with `if (_player._state())`. `_videoLastState` is only set once
@@ -382,10 +385,28 @@ Later the same day: `3ffe22e` (R8 R14 R15 R17 + plural sweep), `a7370cd` (R18 R1
   on the twin with a 312-album search: 83 ms (rebuild) → 4 ms per click,
   no long task, three pages in a row, appended cards' buttons live.
 
+### 16. Peer-library speed measured live (2026-09-12, Fable 5.1) — S1/S2 closed
+
+The "bench-only" debt is paid. On a twin (silent, scheduler pinned off,
+browse only), opening real peers from a Radiohead search:
+
+| Peer | Library | First tree on screen | Page blocked |
+|---|---|---|---|
+| n0h0pe | 1,323 folders · 65,615 files | 2.5–3.4 s wall (network + chunked build) | one 58 ms task |
+| cloudberry | 1 folder · 5 files | 4.6 s wall | one 96 ms task (odd for 5 files; not chased) |
+| Deliberata | never answered in 90 s | — | 0 ms (nothing blocks while waiting) |
+
+Typing "radiohead ok computer" (21 keystrokes) into the 65k-file library's
+own search box: zero long tasks, at most 1 ms of synchronous work per
+keystroke (the roadmap had 2.4 s per pass). The chunked tree and index
+builds (`buildTreeChunked`, `buildTreeSearchIndexChunked`) hold up on a
+real library. Trap: `input[placeholder*=earch]` matches the top bar first —
+use `#slskx-search`.
+
 ## 7. Open debt and outstanding items
 
-- **Peer-library speed is bench-only.** Re-measure live against a real
-  ~140k-file peer.
+- **Peer-library speed** measured live on a 65k-file peer (§16): one 58 ms
+  block on open, none while typing. A ~140k-file peer is still unmeasured.
 - **Android Wave A2** not started: multi-server switch UI, download-to-PC
   mode, network-switch download UX.
 - **Phone pairing unconfirmed by him.** IP `192.168.18.4`, port `8765`,
