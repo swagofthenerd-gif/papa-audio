@@ -15,7 +15,8 @@ const CODE = MAIN
   .split('\n').filter(l => !/^\s*\/\//.test(l)).join('\n')
 
 test('the slsk-search handler goes through the serve-then-revalidate entry point', () => {
-  assert.match(CODE, /ipcMain\.handle\('slsk-search',\s*\(_,\s*args\)\s*=>\s*slskServeSearch\(/,
+  // The handler guards its input first (W-T), then goes through the entry point.
+  assert.match(CODE, /ipcMain\.handle\('slsk-search',\s*\(_,\s*args\)\s*=>\s*\{[\s\S]{0,400}return slskServeSearch\(args\)/,
     'the handler must route through slskServeSearch, not straight to slskRunSearch')
 })
 

@@ -64,6 +64,18 @@
     for (const t of out.slice()) { const m = /^(.{3,}?)\s*[:\u2013\u2014-]\s+.+$/.exec(t); if (m) push(m[1]) }
     return Array.from(new Set(out))
   }
+  // The sequel token right after the title in a release name ("Steins;Gate
+  // 0 - 01", "Dune.Part.Two.2024", "Frieren II"): a request whose own title
+  // variants do not carry it is a different show. "Part One"/"1"/"I" is not a
+  // sequel (a first film is often released under that name), and an
+  // episode number after " - " is not a token at all.
+  const SEQUEL = '(0|zero|[2-9]|ii|iii|iv|part[\\s._]+(?:[2-9]|two|three|four|ii|iii|iv))'
+  function _sequelAfter(name, w) {
+    const body = w.map(function (x) { return x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') }).join('[^\\p{L}\\p{N}]+')
+    let m = null
+    try { m = new RegExp('(?:^|[^\\p{L}\\p{N}])' + body + '[\\s._]+' + SEQUEL + '(?![\\p{L}\\p{N}])', 'iu').exec(name) } catch (_) { return null }
+    return m ? m[1].toLowerCase() : null
+  }
   function plausible(req, releaseName) {
     const name = String(releaseName || '')
     if (!name.trim()) return true
@@ -71,7 +83,17 @@
     const relSet = new Set(rel)
     const relJoined = ' ' + rel.join(' ') + ' '
     const isFilm = req && req.type === 'movie'
-    for (const v of _variants(req)) {
+    // A film request with a year: a release that names only other years is
+    // another film ("Dune.Part.Two.2024" for Dune 2021). One year of slack
+    // for festival/home-release dates. Resolutions ("2160p") are not years.
+    const reqYear = req && req.year != null ? Number(req.year) : null
+    if (isFilm && reqYear && reqYear > 1800) {
+      const ys = name.match(/\b(?:19|20)\d{2}\b/g)
+      if (ys && ys.length && ys.every(function (y) { return Math.abs(Number(y) - reqYear) > 1 })) return false
+    }
+    const variants = _variants(req)
+    const reqWords = new Set([].concat.apply([], variants.map(_words)))
+    for (const v of variants) {
       const w = _words(v)
       if (!w.length) continue
       const short = w.length === 1 && w[0].length <= 2
@@ -79,6 +101,8 @@
       // order somewhere in the name (so "Two Dune" is not "Dune Part Two").
       const need = w.filter(function (x) { return x.length >= 2 || w.length === 1 })
       if (!need.length) continue
+      const tok = _sequelAfter(name, w)
+      if (tok && !reqWords.has(tok.replace(/^part[\s._]+/, '')) && !reqWords.has(tok)) continue
       if (need.length > 1) {
         if (relJoined.indexOf(' ' + need.join(' ') + ' ') !== -1) return true
         if (need.every(function (x) { return relSet.has(x) })) return true

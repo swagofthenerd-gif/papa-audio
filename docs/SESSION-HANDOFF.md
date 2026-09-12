@@ -209,7 +209,7 @@ Later the same day: `3ffe22e` (R8 R14 R15 R17 + plural sweep), `a7370cd` (R18 R1
 8. **4K HDR:** this ffmpeg has `tonemap_opencl`; measured 15 s of 4K HDR in 5.2 s (~2.9×) vs 16.9 s for the CPU zscale chain. The planner uses OpenCL when `caps.opencl` (probed at startup in main with a tagged synthetic frame) and falls back to the CPU chain otherwise; pre-roll 4 s with OpenCL, 8 s without.
 9. **Subtitles on streamed inputs:** no more whole-file extractor — text tracks come out of the converter run as extra WebVTT outputs (`-flush_packets 1`), cues shifted by the run's start and merged across runs; the engine re-fetches the showing track every 15 s. Local files keep the direct extractor (complete in seconds).
 10. Seen live in the user's own app (his PID 6496 running the branch): a 4K HDR DV torrent through the smooth player spawned three subtitle extractors seconds apart — fixed (one in-flight job per track per session, killed on close). **Follow-up:** sidecar extraction from an http/torrent input reads the whole file (subtitles are interleaved); design a progressive extractor (second output of the main ffmpeg, streamed VTT) or limit sidecars to local files.
-11. **V2.5 done:** collections sorted by year ("Part 1" is the first film), current entry says "Part N · this page" not "Watching"; airing entries without a title are skipped (the "Untitled" Home card); rating slots are blank until enriched (no dash rows); diary delete has Undo (`restoreViewing` via `_onTasteChange(action, result)` — the host callback used to receive the action string as an "event"). Checked, not bugs: the global-search Movies strip already uses `_videoCard` + `_bindVideoCards` (which observes for enrichment); the video-search decade dropdown is derived from the results present, so "stops at 1990s" is the result set, not a filter cap. Remaining: 2.6 "Approved" chip (reproduce with the crews' exact query). Then V3 polish, V4 stability. Seen but not fixed: sequel bleed (Steins;Gate 0 sources listed for Steins;Gate). One dropped video frame per reparent (minimise/restore) is measured and accepted.
+11. **V2.5 done:** collections sorted by year ("Part 1" is the first film), current entry says "Part N · this page" not "Watching"; airing entries without a title are skipped (the "Untitled" Home card); rating slots are blank until enriched (no dash rows); diary delete has Undo (`restoreViewing` via `_onTasteChange(action, result)` — the host callback used to receive the action string as an "event"). Checked, not bugs: the global-search Movies strip already uses `_videoCard` + `_bindVideoCards` (which observes for enrichment); the video-search decade dropdown is derived from the results present, so "stops at 1990s" is the result set, not a filter cap. Remaining: 2.6 "Approved" chip (reproduce with the crews' exact query). Then V3 polish, V4 stability. Sequel bleed (Steins;Gate 0 sources listed for Steins;Gate) fixed in §19. One dropped video frame per reparent (minimise/restore) is measured and accepted.
 12. Open question: the user's own app (was back up with its SingletonLock by 17:20Z) was not running at 16:15Z on 2026-09-11 with no quit line in its log; nothing in this session targeted it, but tell him.
 2. ~~R5~~ done — see above.
 3. ~~R3 / R4 / R16~~ done (2026-09-11): `runSlskSearch` never bails on a missing
@@ -451,6 +451,22 @@ AV1 and keeps playing. Test: web-player-mse "switching a burned subtitle…".
 Note the burn still costs a full software encode (libx264 at ~980 % CPU on
 this 1080p file) — the price of an image subtitle in the page; mpv (purist)
 draws PGS natively.
+
+### 19. Sequel bleed in sources fixed; Soulseek search edge guarded (2026-09-12, Fable 5.1)
+
+- `release-name.plausible` now rejects a release whose name carries a
+  sequel token right after the title that the request's own variants do
+  not ("Steins;Gate 0 - 01", "Steins.Gate.Zero", "Dune.Part.Two",
+  "Sousou no Frieren 2 - 05"); "Part One"/"1"/"I" is not a sequel and an
+  episode number after " - " is not a token. A film request with a year
+  rejects a release naming only other years (±1) — "Dune.1984" and
+  "Dune.Part.Two.2024" for Dune 2021; resolutions ("2160p") are not years.
+  The requests now carry `year`. Live on a twin: Steins;Gate lists 26
+  sources and hides 24, every Steins;Gate 0 release among the hidden; the
+  real batches ("Steins;Gate 01-25") stay. Tests in release-name.test.js.
+- `slsk-search` IPC: no/blank query answers `{ results: [], error: 'No
+  search text' }` instead of a raw TypeError (roadmap W-T input validation;
+  `test/ipc-input-guard.test.js`). Other edges were not swept.
 
 ## 7. Open debt and outstanding items
 

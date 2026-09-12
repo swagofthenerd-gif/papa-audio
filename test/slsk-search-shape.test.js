@@ -94,7 +94,7 @@ test('the search core is factored so the hunter shares it', () => {
   // App #53 inserted a serve-then-revalidate layer (slskServeSearch) between the
   // handler and the core: it serves persisted results instantly, then falls
   // through to the same slskRunSearch core the hunter shares.
-  assert.match(MAIN, /ipcMain\.handle\('slsk-search', \(_, args\) => slskServeSearch/,
+  assert.match(MAIN, /ipcMain\.handle\('slsk-search', \(_, args\) => \{[\s\S]{0,400}return slskServeSearch\(args\)/,
     'the handler is a thin wrapper over the serve layer')
   assert.match(MAIN, /function slskServeSearch[\s\S]{0,800}slskRunSearch\(args\)/,
     'the serve layer falls through to the shared core')

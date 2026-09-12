@@ -6507,7 +6507,13 @@ function normalizeSearchResponses(responses) {
 // out so the wishlist hunter can run exactly the same search path — caching,
 // throttle handling, live-search registration, partial-result pushes and
 // cleanup — rather than a second, subtly-different copy.
-ipcMain.handle('slsk-search', (_, args) => slskServeSearch(args || {}))
+ipcMain.handle('slsk-search', (_, args) => {
+  // Guard the edge (roadmap W-T): a call with no search text used to throw a
+  // raw TypeError out of main. An empty answer with a reason is the contract.
+  const q = args && args.query
+  if (typeof q !== 'string' || !q.trim()) return Promise.resolve({ results: [], error: 'No search text' })
+  return slskServeSearch(args)
+})
 
 // The handler entry point: serve persisted results instantly when we have them,
 // then revalidate live in the background (App #53, mirroring slsk-browse-user).

@@ -53,3 +53,26 @@ test('plausible: multi-word titles and known variants', () => {
   assert.ok(RN.plausible(frieren, ''), 'no name, no judgement')
   assert.ok(RN.plausible(frieren, null))
 })
+
+// Sequel bleed (V2.5 "seen but not fixed"): Steins;Gate 0 sources listed for
+// Steins;Gate, Dune: Part Two sources for Dune (2021).
+test('plausible: a sequel token after the title, or another year on a film, is a different title', () => {
+  const plausible = RN.plausible
+  const sg = { type: 'anime', title: 'Steins;Gate', titles: { romaji: 'Steins;Gate', english: 'Steins;Gate' } }
+  assert.equal(plausible(sg, '[Judas] Steins;Gate - 01 (1080p)'), true, 'the episode number after " - " is not a token')
+  assert.equal(plausible(sg, '[Judas] Steins;Gate 0 - 01 (1080p)'), false, 'the 0 right after the title is Steins;Gate 0')
+  assert.equal(plausible(sg, 'Steins.Gate.Zero.S01.1080p'), false)
+  assert.equal(plausible(sg, 'Steins.Gate.S01.Complete.1080p'), true)
+  const sg0 = { type: 'anime', title: 'Steins;Gate 0', titles: { romaji: 'Steins;Gate 0' } }
+  assert.equal(plausible(sg0, '[Judas] Steins;Gate 0 - 01 (1080p)'), true, 'the request that carries the token keeps it')
+  const dune = { type: 'movie', title: 'Dune', year: 2021 }
+  assert.equal(plausible(dune, 'Dune.2021.2160p.UHD.BluRay.x265-GROUP'), true)
+  assert.equal(plausible(dune, 'Dune.Part.One.2021.1080p.WEB'), true, 'Part One is the first film')
+  assert.equal(plausible(dune, 'Dune.Part.Two.2024.2160p.WEB-DL'), false, 'another year and a sequel token')
+  assert.equal(plausible(dune, 'Dune Part Two 1080p WEB'), false, 'the token alone is enough')
+  assert.equal(plausible(dune, 'Dune.1984.1080p.BluRay'), false, 'the 1984 film')
+  assert.equal(plausible({ type: 'movie', title: 'Dune: Part Two', year: 2024 }, 'Dune.Part.Two.2024.2160p.WEB-DL'), true)
+  const fr = { type: 'anime', title: 'Frieren: Beyond Journey\'s End', titles: { romaji: 'Sousou no Frieren' } }
+  assert.equal(plausible(fr, '[SubsPlease] Sousou no Frieren - 05 (1080p)'), true)
+  assert.equal(plausible(fr, '[SubsPlease] Sousou no Frieren 2 - 05 (1080p)'), false, 'a second season sold as a sequel')
+})
