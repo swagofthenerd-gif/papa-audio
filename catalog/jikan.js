@@ -183,6 +183,12 @@ function buildSearchUrl(query, opts = {}) {
 function buildByIdUrl(malId) {
   return `${JIKAN_BASE}/anime/${encodeURIComponent(malId)}`
 }
+function buildRelationsUrl(malId) {
+  return `${JIKAN_BASE}/anime/${encodeURIComponent(malId)}/relations`
+}
+// MAL's relation names → AniList's vocabulary, so one renderer reads both.
+const JIKAN_RELATION = { 'Sequel': 'SEQUEL', 'Prequel': 'PREQUEL', 'Side story': 'SIDE_STORY', 'Spin-off': 'SPIN_OFF', 'Alternative version': 'ALTERNATIVE', 'Alternative setting': 'ALTERNATIVE', 'Summary': 'SUMMARY', 'Parent story': 'PARENT', 'Full story': 'PARENT', 'Character': 'CHARACTER', 'Other': 'OTHER', 'Adaptation': 'ADAPTATION' }
+const JIKAN_CHAIN_HOPS = 8
 
 // The three shelf endpoints, mapped onto AniList's trending/popular/season rows:
 //   trending -> /top/anime            (MAL's default "top", which tracks the
@@ -296,6 +302,79 @@ function createJikanCatalog({ fetchFn, minIntervalMs = MIN_INTERVAL_MS,
       return list.map(normalizeMedia)
     },
 
+    // The season chain from MAL's own relation graph, for when AniList is
+    // down (the same shape anilist.seasonChain returns; ids are `mal-<id>`
+    // card keys so navigation routes back here). Prequel/Sequel is the
+    // spine; every other anime relation is kept under `related` with its
+    // relation named in AniList's vocabulary. Each hop is one relations
+    // request plus one detail request (year, poster), through the rate
+    // limiter, with a hop budget against a cycle in MAL's data.
+    async seasonChain(malId) {
+      const start = _malIdOf(malId)
+      if (!start) return { seasons: [], related: [] }
+      const nodes = new Map(), related = new Map()
+      let truncated = false
+      const detail = async (id, name) => {
+        const d = await this.byId(id)
+        return d ? { id: 'mal-' + id, title: d.title || name || null, titles: d.titles, year: d.year, episodeCount: d.episodeCount ?? null, format: d.format ?? null, status: d.status ?? null, poster: d.poster } : { id: 'mal-' + id, title: name || null, titles: { english: name || null, romaji: null, native: null }, year: null, episodeCount: null, format: null, status: null, poster: null }
+      }
+      const edgesOf = async (id) => {
+        const data = await _schedule(() => _get(buildRelationsUrl(id)))
+        const list = data && Array.isArray(data.data) ? data.data : null
+        if (!list) { truncated = true; return [] }
+        const out = []
+        for (const group of list) {
+          const rel = JIKAN_RELATION[group && group.relation] || (group && group.relation ? String(group.relation).toUpperCase().replace(/\s+/g, '_') : null)
+          for (const e of (group && group.entry) || []) {
+            if (!e || e.type !== 'anime' || !Number.isFinite(Number(e.mal_id))) continue
+            out.push({ relation: rel, malId: Number(e.mal_id), name: e.name || null })
+          }
+        }
+        return out
+      }
+      const EXPAND = new Set(['PREQUEL', 'SEQUEL', 'SIDE_STORY', 'SPIN_OFF', 'ALTERNATIVE', 'PARENT', 'SUMMARY'])
+      const SPINE = new Set(['PREQUEL', 'SEQUEL', 'PARENT', 'ALTERNATIVE', 'SUMMARY'])
+      const self = await detail(start)
+      nodes.set(self.id, Object.assign({ relation: null, spine: true }, self))
+      // Breadth-first over the franchise (see anilist.seasonChain): every
+      // franchise edge is followed under a request budget; Other/Character
+      // links are related without being expanded. Television entries are the
+      // seasons, everything else is related.
+      const queue = [start]
+      const visited = new Set()
+      let requests = 0
+      let capped = false
+      while (queue.length) {
+        const current = queue.shift()
+        if (visited.has(current)) continue
+        if (requests >= JIKAN_CHAIN_HOPS) { capped = true; break }
+        visited.add(current)
+        requests++
+        const edges = await edgesOf(current)
+        for (const e of edges) {
+          const key = 'mal-' + e.malId
+          const from = nodes.get('mal-' + current)
+          const spine = !!(from && from.spine !== false) && SPINE.has(e.relation)
+          if (EXPAND.has(e.relation)) {
+            if (!nodes.has(key)) { nodes.set(key, Object.assign({ relation: e.relation, spine }, await detail(e.malId, e.name))); queue.push(e.malId) }
+            else if (spine && nodes.get(key).spine === false) nodes.get(key).spine = true
+          } else if (!nodes.has(key) && !related.has(key)) {
+            related.set(key, { id: key, relation: e.relation, title: e.name, titles: { english: e.name, romaji: null, native: null }, year: null, episodeCount: null, format: null, status: null, poster: null })
+          }
+        }
+      }
+      const byYear = (a, b) => {
+        const ay = Number(a.year) || Infinity, by = Number(b.year) || Infinity
+        if (ay !== by) return ay - by
+        return String(a.title || '').localeCompare(String(b.title || ''))
+      }
+      const isSeries = e => e.id === 'mal-' + start || (e.spine !== false && /^TV/i.test(String(e.format || '')))
+      const seasons = [...nodes.values()].filter(isSeries).sort(byYear)
+      for (const r of [...nodes.values()].filter(e => !isSeries(e))) if (!related.has(r.id)) related.set(r.id, r)
+      for (const x of seasons) related.delete(x.id)
+      return { seasons, related: [...related.values()].sort(byYear), truncated, capped }
+    },
+
     // Detail lookup by MyAnimeList id. Returns one normalized entry, or null
     // when Jikan has nothing or is unreachable. A `mal-`-prefixed id (the card
     // key this module stamps) is accepted as-is: the prefix is stripped so a
@@ -351,6 +430,7 @@ function _sleep(ms) {
 }
 
 module.exports = {
+  buildRelationsUrl,
   JIKAN_BASE,
   MIN_INTERVAL_MS,
   REQUEST_TIMEOUT_MS,

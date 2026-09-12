@@ -10666,7 +10666,7 @@ ipcMain.handle('video-discover', async (_, req) => {
 
 // The other entries in a series. Anime chains are walked from AniList
 // relations; a film's equivalent is the franchise it belongs to.
-ipcMain.handle('video-seasons', async (_, { type, id } = {}) => {
+ipcMain.handle('video-seasons', async (_, { type, id, idMal, title } = {}) => {
   try {
     if (type !== 'anime' || !id) return { ok: true, seasons: [], related: [] }
     const key = `anime:${id}`
@@ -10674,7 +10674,18 @@ ipcMain.handle('video-seasons', async (_, { type, id } = {}) => {
     if (cached) return { ok: true, ...cached }
     let out
     try {
-      out = await anilist().seasonChain(id)
+      // A MAL- or Kitsu-sourced card is resolved to its AniList entry inside
+      // seasonChain (by MAL id, else by title); when AniList cannot answer,
+      // MAL's own relation graph is walked instead, so a show opened during
+      // an AniList outage still lists its seasons.
+      out = await anilist().seasonChain(id, { idMal: idMal || null, title: title || null })
+      const mal = Number(idMal) || (/^mal-(\d+)$/.test(String(id)) ? Number(String(id).slice(4)) : 0)
+      if ((!out.seasons.length || out.truncated) && mal) {
+        try {
+          const viaMal = await jikan().seasonChain(mal)
+          if (viaMal.seasons.length > out.seasons.length || (out.truncated && !viaMal.truncated && viaMal.seasons.length)) out = viaMal
+        } catch (_) { /* the AniList answer stands */ }
+      }
     } catch (err) {
       // seasonChain normally degrades internally, but if it does throw during
       // an outage, treat it exactly like an empty walk so the persistent

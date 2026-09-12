@@ -44,7 +44,10 @@ function harness({ detail, seasons = [], collection = null, store = null } = {})
     } },
   }
   vm.createContext(ctx)
-  vm.runInContext(extract('_renderSeasonChain'), ctx)
+  // The Related rail helpers live beside the renderer; load them with it.
+  const relStart = SRC.indexOf('const _RELATION_WORDS')
+  const relEnd = SRC.indexOf('\n}\n', SRC.indexOf('function _relatedRailHtml')) + 3
+  vm.runInContext(SRC.slice(relStart, relEnd) + '\n' + extract('_renderSeasonChain'), ctx)
   return { ctx, box, nav }
 }
 

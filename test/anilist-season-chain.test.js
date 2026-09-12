@@ -138,3 +138,34 @@ test('the 429 Retry-After header rides along on the thrown _post error', async (
     `the retry honoured Retry-After (waited ${elapsed}ms, expected ~150ms) — ` +
     'only possible if the thrown error carried status:429 and retryAfter')
 })
+
+// A card from the Jikan fallback carries a "mal-<id>" key and no AniList id;
+// the chain resolves it by MyAnimeList id (else by title) and walks from
+// there. Everything off the spine is kept under `related`, relation named.
+test('a mal- id is resolved through idMal, and side stories come back as related with their relation', async () => {
+  const graph = {
+    1: { self: node(1, 'S1', 2011), relations: [['SEQUEL', node(2, 'S2', 2018)], ['SIDE_STORY', node(3, 'Film', 2013, { format: 'MOVIE' })]] },
+    2: { self: node(2, 'S2', 2018), relations: [['PREQUEL', node(1, 'S1', 2011)]] },
+  }
+  const calls = []
+  const fetchFn = async (_url, opts) => {
+    const body = JSON.parse(opts.body)
+    calls.push(body.query.includes('idMal:') ? 'byMal:' + body.variables.idMal : (/relations \{/.test(body.query) ? 'rel:' + body.variables.id : 'byId:' + body.variables.id))
+    if (body.query.includes('idMal:')) return { ok: true, json: async () => ({ data: { Media: body.variables.idMal === 9253 ? node(1, 'S1', 2011) : null } }) }
+    const id = body.variables.id
+    const entry = graph[id] || {}
+    if (/relations \{/.test(body.query)) return { ok: true, json: async () => ({ data: { Media: { id, relations: { edges: (entry.relations || []).map(([relationType, n]) => ({ relationType, node: n })) } } } }) }
+    return { ok: true, json: async () => ({ data: { Media: entry.self || null } }) }
+  }
+  const cat = createAnilistCatalog({ fetchFn, retryDelayMs: 1 })
+  const out = await cat.seasonChain('mal-9253')
+  assert.equal(calls[0], 'byMal:9253', 'resolved by MAL id first')
+  assert.deepStrictEqual(out.seasons.map(s => s.id), [1, 2])
+  assert.equal(out.related.length, 1)
+  assert.equal(out.related[0].relation, 'SIDE_STORY')
+  assert.equal(out.related[0].format, 'MOVIE')
+  const viaOpt = await cat.seasonChain('kitsu-77', { idMal: 9253 })
+  assert.deepStrictEqual(viaOpt.seasons.map(s => s.id), [1, 2], 'an explicit idMal resolves a kitsu card too')
+  const none = await cat.seasonChain('kitsu-77')
+  assert.deepStrictEqual(none, { seasons: [], related: [] }, 'nothing to resolve by means no walk')
+})

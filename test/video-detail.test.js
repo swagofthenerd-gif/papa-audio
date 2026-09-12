@@ -39,6 +39,9 @@ function harness() {
   // helper rather than on anything real.
   vm.runInContext("var _CREW_ROLES = [['directors','Director'],['writers','Writer']," +
     "['cinematographers','Cinematography'],['composers','Music'],['editors','Editor']]", ctx)
+  // The certificate label (V2.6): a word-style certificate is prefixed.
+  const certAt = SRC.indexOf('const _CERT_CODES')
+  vm.runInContext(SRC.slice(certAt, SRC.indexOf('\n}\n', SRC.indexOf('function _certLabel')) + 3), ctx)
   for (const fn of ['_videoFactsHtml', '_fmtRuntime', '_animeStatus', '_videoCrewHtml',
                     '_personTileHtml', '_keyCrewList', '_externalRatingsHtml',
                     '_renderCastRow', '_renderProviders', '_renderSimilar']) {
@@ -60,7 +63,7 @@ test('runtime reads as hours and minutes', () => {
 test('facts show the certification, runtime and studio', () => {
   const { ctx } = harness()
   const html = ctx._videoFactsHtml({ certification: 'PG-13', runtime: 167, studios: ['Legendary'], languages: ['English'] })
-  assert.match(html, /vfact-cert">PG-13/)
+  assert.match(html, /vfact-cert" title="Age rating">PG-13/)
   assert.match(html, /2h 47m/)
   assert.match(html, /Legendary/)
 })

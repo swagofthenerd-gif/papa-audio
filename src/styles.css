@@ -8367,6 +8367,8 @@ body.app-unfocused .vt-menu {
    hide how many there are and lose the artwork that makes them recognisable. */
 .vseasons { padding:14px 28px 0; }
 .vseasons-head { display:flex; align-items:baseline; gap:10px; margin-bottom:10px; }
+.vseason-rail + .vrelated-head { margin-top:18px; }
+.vseason.vrelated .vseason-n { color:var(--text3); }
 .vseasons-title { font-size:14px; font-weight:700; color:var(--text); }
 .vseasons-count { font-size:11px; color:var(--text3); }
 .vseason-rail {

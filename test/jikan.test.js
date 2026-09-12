@@ -322,3 +322,27 @@ test('one failed request does not wedge the queue behind it', async () => {
   assert.deepStrictEqual(first, [], 'the failed one degraded to empty')
   assert.strictEqual(second.length, 1, 'the one behind it still ran')
 })
+
+// When AniList is down, MAL's own relation graph gives the seasons: Prequel/
+// Sequel is the spine, every other anime relation is related, ids are the
+// `mal-<id>` card keys so navigation routes back to Jikan.
+test('seasonChain walks Prequel/Sequel through /relations and keeps the rest as related', async () => {
+  const { createJikanCatalog, buildRelationsUrl } = require('../catalog/jikan')
+  assert.equal(buildRelationsUrl(9253), 'https://api.jikan.moe/v4/anime/9253/relations')
+  const rels = {
+    9253: [{ relation: 'Sequel', entry: [{ mal_id: 30484, type: 'anime', name: 'Steins;Gate 0' }] }, { relation: 'Side story', entry: [{ mal_id: 11577, type: 'anime', name: 'Steins;Gate Movie' }, { mal_id: 1, type: 'manga', name: 'ignored' }] }],
+    30484: [{ relation: 'Prequel', entry: [{ mal_id: 9253, type: 'anime', name: 'Steins;Gate' }] }],
+  }
+  const details = { 9253: { mal_id: 9253, title: 'Steins;Gate', year: 2011, episodes: 24, type: 'TV' }, 30484: { mal_id: 30484, title: 'Steins;Gate 0', year: 2018, episodes: 23, type: 'TV' } }
+  const fetchFn = async (url) => {
+    const m = /anime\/(\d+)(\/relations)?$/.exec(url)
+    if (!m) return { ok: false, status: 404 }
+    if (m[2]) return { ok: true, json: async () => ({ data: rels[m[1]] || [] }) }
+    return { ok: true, json: async () => ({ data: details[m[1]] || null }) }
+  }
+  const cat = createJikanCatalog({ fetchFn })
+  const out = await cat.seasonChain('mal-9253')
+  assert.deepStrictEqual(out.seasons.map(s => [s.id, s.title, s.year]), [['mal-9253', 'Steins;Gate', 2011], ['mal-30484', 'Steins;Gate 0', 2018]])
+  assert.deepStrictEqual(out.related.map(r => [r.id, r.relation, r.title]), [['mal-11577', 'SIDE_STORY', 'Steins;Gate Movie']])
+  assert.equal(out.truncated, false)
+})

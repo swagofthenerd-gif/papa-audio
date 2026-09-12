@@ -198,6 +198,15 @@ function buildQuery(kind, options) {
     ${MEDIA_SELECTION}
   }
 }`
+    // The same entry looked up by its MyAnimeList id: a card that came from
+    // the Jikan fallback ("mal-<id>") has no AniList id of its own, and the
+    // season chain needs one to walk from.
+    case 'byMal':
+      return `query ($idMal: Int) {
+  Media(idMal: $idMal, type: ANIME) {
+    ${MEDIA_SELECTION}
+  }
+}`
     // The airing schedule for a batch of shows the viewer already follows (App
     // #25/#26). One Page query with id_in fetches every show's next episode in a
     // single round-trip — the airing shelf and the calendar must never fan out
@@ -256,6 +265,7 @@ function buildVariables(kind, opts = {}) {
   // The byId query takes only $id; sending page/perPage would be rejected as
   // unknown variables are not, but keeping it clean matches the query shape.
   if (kind === 'byId' || kind === 'relations') return { id: Number(id) }
+  if (kind === 'byMal') return { idMal: Number(opts.idMal) }
   if (kind === 'airing') {
     // ids arrive as strings from the video store and as numbers from API
     // objects; AniList's id_in is [Int], so each is coerced and anything that
@@ -363,7 +373,7 @@ function createAnilistCatalog({ fetchFn, retryDelayMs = 1000,
     if (data && Array.isArray(data.errors) && data.errors.length) {
       throw new Error(`AniList GraphQL error: ${data.errors[0].message}`)
     }
-    if (kind === 'byId') {
+    if (kind === 'byId' || kind === 'byMal') {
       const one = data?.data?.Media
       return one ? normalizeMedia(one) : null
     }
@@ -526,16 +536,51 @@ function createAnilistCatalog({ fetchFn, retryDelayMs = 1000,
     // refuse to cache a truncated one. (The current caller caches on
     // `seasons.length` alone, which is exactly why the retry lives here: a
     // transient blip must not become a permanently cached half-chain.)
-    async seasonChain(id, { maxHops = MAX_CHAIN_HOPS } = {}) {
+    async seasonChain(id, { maxHops = MAX_CHAIN_HOPS, idMal = null, title = null } = {}) {
       // No id means no walk ran, so there is nothing to be truncated: the
-      // pre-walk shape stays exactly as it was.
-      const start = Number(id)
+      // pre-walk shape stays exactly as it was. A card from the Jikan or
+      // Kitsu fallback ("mal-9253", "kitsu-…") carries no AniList id: it is
+      // resolved here — by MyAnimeList id, else by title — so the chain
+      // walks for every show, whichever database the card came from.
+      // (Steins;Gate opened from a MAL card listed no seasons at all.)
+      let start = Number(id)
+      if (!start) {
+        const malMatch = /^mal-(\d+)$/.exec(String(id || ''))
+        const mal = Number(idMal) || (malMatch ? Number(malMatch[1]) : 0)
+        try {
+          if (mal) { const byMal = await _post('byMal', { idMal: mal }); if (byMal && byMal.id) start = Number(byMal.id) }
+          if (!start && title) {
+            const hits = await _post('search', { query: title, page: 1, perPage: 5 })
+            const list = Array.isArray(hits) ? hits : (hits && hits.items) || []
+            const want = String(title).toLowerCase().trim()
+            const exact = list.find(m => m && m.titles && [m.titles.english, m.titles.romaji, m.titles.native].some(t => t && String(t).toLowerCase().trim() === want))
+            const pick = exact || list[0]
+            if (pick && pick.id) start = Number(pick.id)
+          }
+        } catch (_) { /* resolution is best-effort; no id means no walk */ }
+      }
       if (!start) return { seasons: [], related: [] }
 
-      const nodes = new Map()      // id -> normalized entry
+      // The whole franchise, not just the prequel/sequel spine: AniList links
+      // Steins;Gate to Steins;Gate 0 only through an ALTERNATIVE OVA, so a
+      // spine-only walk never found the second series. Every franchise edge
+      // (prequel, sequel, side story, spin-off, alternative, parent, summary)
+      // is followed, breadth-first, under a request budget against a cycle or
+      // a Gundam-sized graph; OTHER and CHARACTER links (the wider universe,
+      // a crossover) are kept as related without being expanded. Television
+      // entries of the franchise are the seasons; everything else — films,
+      // OVAs, specials, the wider universe — is related, relation named.
+      const EXPAND = new Set(['PREQUEL', 'SEQUEL', 'SIDE_STORY', 'SPIN_OFF', 'ALTERNATIVE', 'PARENT', 'SUMMARY', 'COMPILATION', 'CONTAINS'])
+      // A season is a television entry on the story's own line: reached from
+      // the start through prequel/sequel/parent/alternative/summary edges
+      // only. A side story or spin-off — even a television one — and
+      // everything reached through it is related, not a season.
+      const SPINE = new Set(['PREQUEL', 'SEQUEL', 'PARENT', 'ALTERNATIVE', 'SUMMARY', 'COMPILATION', 'CONTAINS'])
+      const MAX_REQUESTS = Math.max(4, maxHops)
+      const franchise = new Map()   // id -> entry (+ relation by which it was reached)
       const related = new Map()
-      const seen = new Set()
       let truncated = false
+      let capped = false
 
       // One retry after a backoff before a hop is given up on. AniList's rate
       // limiter answers a burst of hops with 429s, and giving up on the first
@@ -546,45 +591,6 @@ function createAnilistCatalog({ fetchFn, retryDelayMs = 1000,
         } catch (err) {
           await _sleep(_retryDelayMs(err, retryDelayMs))
           return fn()
-        }
-      }
-
-      const record = (edge) => {
-        const n = edge && edge.node
-        if (!n || n.type !== 'ANIME' || n.id == null) return null
-        const entry = normalizeChainNode(n)
-        if (CHAIN_RELATIONS.has(edge.relationType)) return entry
-        if (!nodes.has(entry.id)) related.set(entry.id, entry)
-        return null
-      }
-
-      // Walk one direction until the chain ends or the hop budget runs out.
-      // The budget is a guard against a cycle in AniList's own data, which
-      // does happen — a bad edge would otherwise loop forever.
-      const walk = async (fromId, relation, out) => {
-        let current = fromId
-        for (let hop = 0; hop < maxHops; hop++) {
-          if (seen.has(current)) break
-          seen.add(current)
-          let edges = []
-          try {
-            edges = await _retryOnce(() => _post('relations', { id: current }))
-          } catch (_) {
-            // A failed hop after the retry ends this direction of the walk,
-            // but the result now says so instead of passing off the partial
-            // chain as complete.
-            truncated = true
-            break
-          }
-          let next = null
-          for (const edge of edges) {
-            const entry = record(edge)
-            if (!entry) continue
-            if (edge.relationType === relation && !seen.has(entry.id)) next = entry
-            if (!nodes.has(entry.id)) nodes.set(entry.id, entry)
-          }
-          if (!next) break
-          current = next.id
         }
       }
 
@@ -599,28 +605,56 @@ function createAnilistCatalog({ fetchFn, retryDelayMs = 1000,
         // entry is truncated by any definition.
         truncated = true
       }
-      if (self) nodes.set(self.id, { id: self.id, title: self.title, titles: self.titles,
+      if (self) franchise.set(self.id, { id: self.id, title: self.title, titles: self.titles,
         year: self.year, episodeCount: self.episodeCount, format: self.format,
-        status: self.status, poster: self.poster })
+        status: self.status, poster: self.poster, relation: null, spine: true })
 
-      // The visited set is per direction. Sharing it meant the sequel walk saw
-      // the start id already marked and stopped on its first iteration, so a
-      // series only ever gained the one sequel picked up incidentally while
-      // walking backwards — Baki ended at 2020 with Baki Hanma missing.
-      await walk(start, 'PREQUEL', nodes)
-      seen.clear()
-      await walk(start, 'SEQUEL', nodes)
+      const queue = [start]
+      const visited = new Set()
+      let requests = 0
+      while (queue.length) {
+        const current = queue.shift()
+        if (visited.has(current)) continue
+        if (requests >= MAX_REQUESTS) { capped = true; break }
+        visited.add(current)
+        let edges = []
+        try {
+          requests++
+          edges = await _retryOnce(() => _post('relations', { id: current }))
+        } catch (_) {
+          // A failed hop after the retry is skipped, but the result says so
+          // instead of passing off the partial graph as complete.
+          truncated = true
+          continue
+        }
+        for (const edge of edges) {
+          const n = edge && edge.node
+          if (!n || n.type !== 'ANIME' || n.id == null) continue
+          const from = franchise.get(current)
+          const entry = Object.assign({ relation: edge.relationType || null, spine: !!(from && from.spine !== false) && SPINE.has(edge.relationType) }, normalizeChainNode(n))
+          if (EXPAND.has(edge.relationType)) {
+            if (!franchise.has(entry.id)) { franchise.set(entry.id, entry); queue.push(entry.id) }
+            else if (entry.spine && franchise.get(entry.id).spine === false) franchise.get(entry.id).spine = true
+          } else if (!franchise.has(entry.id) && !related.has(entry.id)) {
+            related.set(entry.id, entry)
+          }
+        }
+      }
 
-      // Chronological, which for a prequel/sequel chain is watch order. Entries
-      // with no year sort last rather than to 1970.
-      const seasons = [...nodes.values()].sort((a, b) => {
+      const byYear = (a, b) => {
         const ay = Number(a.year) || Infinity
         const by = Number(b.year) || Infinity
         if (ay !== by) return ay - by
         return String(a.title || '').localeCompare(String(b.title || ''))
-      })
+      }
+      const isSeries = e => e.id === start || (e.spine !== false && /^TV/i.test(String(e.format || '')))
+      // Chronological, which for a franchise is watch order. Entries with no
+      // year sort last rather than to 1970.
+      const seasons = [...franchise.values()].filter(isSeries).sort(byYear)
+      const rest = [...franchise.values()].filter(e => !isSeries(e))
+      for (const r of rest) if (!related.has(r.id)) related.set(r.id, r)
       for (const s of seasons) related.delete(s.id)
-      return { seasons, related: [...related.values()], truncated }
+      return { seasons, related: [...related.values()].sort(byYear), truncated, capped }
     },
     // The browse vocabularies. Both are static enough to cache for a week: 19
     // genres, and 361 tags that change when AniList's editors add one.

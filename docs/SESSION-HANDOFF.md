@@ -496,6 +496,38 @@ and the assistant's "Nothing found…" replies (Soulseek, library, YouTube
 could not be located — there is no settings filter input by any of the
 names tried; treat that line as stale. Test: empty-state-echo.test.js.
 
+### 22. Every season, sequel, prequel and side story on an anime's page (2026-09-12, Fable 5.1)
+
+He opened an anime and saw no seasons at all. Two causes, both fixed:
+
+- **The card came from the Jikan fallback** (`mal-9253`, source `mal`), and
+  `anilist.seasonChain(Number('mal-9253'))` was a walk from NaN — empty.
+  The chain now resolves a MAL/Kitsu card first: AniList `Media(idMal:)`
+  (new `byMal` query), else a title search picking the exact-title hit.
+  The request carries `idMal` and `title` from the renderer. When AniList
+  gives nothing, `jikan.seasonChain(mal)` walks MAL's own `/relations`
+  graph (ids stay `mal-<id>` so navigation routes back to Jikan).
+- **Only PREQUEL/SEQUEL were walked.** AniList links Steins;Gate to
+  Steins;Gate 0 only through an ALTERNATIVE OVA, so the second series was
+  never reached. Both chains now walk the whole franchise breadth-first
+  (prequel, sequel, side story, spin-off, alternative, parent, summary…)
+  under a request budget (`capped`, cacheable; `truncated` only on a failed
+  hop). Seasons = television entries on the story's own line (reached
+  through prequel/sequel/parent/alternative/summary edges); a side story or
+  spin-off, even a TV one, and everything else (films, OVAs, ONAs, the
+  wider universe via OTHER/CHARACTER) is `related`, each with its relation.
+- **The page shows a Related rail** under Seasons (`_relatedRailHtml`,
+  `_relationWord`: "Side story · film", "Alternative · OVA", "Shares
+  characters"), shown even when there is only one season.
+- Live on a twin (AniList reachable): Steins;Gate → Seasons: Steins;Gate
+  2011 · 24 ep, Steins;Gate 0 2018 · 23 ep; Related: the film, Egoistic
+  Poriomania OVA, Cognitive Computing ONA, 23β, Valentine's OVA, Sonico,
+  ChäoS;HEAd, Robotics;Notes, Occultic;Nine. The Jikan path is unit-tested
+  (jikan.test.js), not seen live (AniList was up).
+- V2.6 "Approved" chip: it is the certificate — "Approved" is a real
+  pre-1968 MPAA rating. `_certLabel` prefixes word-style certificates
+  ("Rated Approved") and both chips carry `title="Age rating"`.
+
 ## 7. Open debt and outstanding items
 
 - **Peer-library speed** measured live on a 65k-file peer (§16): one 58 ms

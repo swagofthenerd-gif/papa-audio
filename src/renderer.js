@@ -4997,6 +4997,17 @@ function _shortQ(q, max) {
   return t.length > n ? t.slice(0, n - 1).trimEnd() + '…' : t
 }
 
+// A certificate the way people read it. Modern codes stand alone ("PG-13",
+// "R", "15"); the old US words ("Approved", "Passed") and the no-rating
+// forms read as a genre tag on a chip (the crews' "Approved" chip), so they
+// are prefixed. Every certificate chip also says what it is on hover.
+const _CERT_CODES = /^(G|PG|PG-13|R|NC-17|TV-(Y|Y7|G|PG|14|MA)|U|PG12|12|12A|15|18|R18|R15\+|R18\+|M|MA15\+|E|X|0|6|16|7|13|14|A|B|C|T|Uc|K-\d+|\d{1,2}\+)$/i
+function _certLabel(c) {
+  const t = String(c || '').trim()
+  if (!t) return ''
+  return _CERT_CODES.test(t) ? t : 'Rated ' + t
+}
+
 function _videoErrorText(message) {
   const msg = String(message || 'Something went wrong')
   // V4: the one table of start-up failures and their next steps
@@ -7423,7 +7434,7 @@ function _vCreditHtml(meta) {
   const bits = []
   if (Array.isArray(m.directors) && m.directors.length) bits.push(esc(m.directors.join(', ')))
   if (m.runtime) bits.push(esc(_vRuntime(m.runtime)))
-  const cert = m.certification ? '<span class="vcard-cert">' + esc(m.certification) + '</span>' : ''
+  const cert = m.certification ? '<span class="vcard-cert" title="Age rating">' + esc(_certLabel(m.certification)) + '</span>' : ''
   const line = bits.join('<span class="sep">·</span>') + (bits.length && cert ? '<span class="sep">·</span>' : '') + cert
   return line + _vCardGenresHtml(m.genres)
 }
@@ -8086,14 +8097,18 @@ async function _renderSeasonChain(ticket) {
   if (!box || !detail || !detail.d) return
 
   let items = []
+  let related = []
   let label = ''
   let currentId = detail.d.id
 
   if (detail.type === 'anime') {
-    const res = await window.api.videoSeasons({ type: 'anime', id: detail.d.id })
+    // The MAL id and the title let main resolve a card that came from the
+    // Jikan or Kitsu fallback to its AniList entry (or walk MAL's graph).
+    const res = await window.api.videoSeasons({ type: 'anime', id: detail.d.id, idMal: detail.d.idMal || null, title: detail.d.title || null })
       .catch(function () { return { ok: false } })
     if (_videoDetailTicket !== ticket) return
     items = (res && res.ok && Array.isArray(res.seasons)) ? res.seasons : []
+    related = (res && res.ok && Array.isArray(res.related)) ? res.related : []
     label = 'Seasons'
   } else if (detail.type === 'movie' && detail.d.collection && detail.d.collection.id) {
     const res = await window.api.videoCollection({ id: detail.d.collection.id })
@@ -8110,12 +8125,13 @@ async function _renderSeasonChain(ticket) {
     label = detail.d.collection.name ? 'Part of ' + detail.d.collection.name : 'Collection'
   }
 
-  // One entry is just this title; a list of one is noise.
-  if (items.length < 2) { box.hidden = true; box.innerHTML = ''; return }
+  // One entry is just this title; a list of one is noise — unless there are
+  // related titles (a film, a side story, a spin-off) to show instead.
+  if (items.length < 2 && !related.length) { box.hidden = true; box.innerHTML = ''; return }
 
   const store = _vStore()
   box.hidden = false
-  box.innerHTML = '<div class="vseasons-head">' +
+  box.innerHTML = (items.length < 2 ? '' : '<div class="vseasons-head">' +
       '<span class="vseasons-title">' + esc(label) + '</span>' +
       '<span class="vseasons-count">' + items.length + '</span>' +
     '</div>' +
@@ -8149,7 +8165,8 @@ async function _renderSeasonChain(ticket) {
             (watched ? ' <span class="vseason-watched">' + watched + '</span>' : '') + '</div>' +
         '</div>' +
       '</button>'
-    }).join('') + '</div>'
+    }).join('') + '</div>') +
+    _relatedRailHtml(related)
 
   box.querySelectorAll('.vseason').forEach(function (b) {
     b.addEventListener('click', function () {
@@ -8164,11 +8181,47 @@ async function _renderSeasonChain(ticket) {
   if (cur && cur.scrollIntoView) cur.scrollIntoView({ block: 'nearest', inline: 'center' })
 }
 
+// Everything around a show that is not one of its seasons: films, side
+// stories, spin-offs, alternative versions, summaries — each named by its
+// relation, so "Steins;Gate: Load Region of Déjà Vu" reads as the film it is.
+const _RELATION_WORDS = { SIDE_STORY: 'Side story', SPIN_OFF: 'Spin-off', ALTERNATIVE: 'Alternative', SUMMARY: 'Summary', PARENT: 'Parent story', CHARACTER: 'Shares characters', OTHER: 'Related', ADAPTATION: 'Adaptation', SOURCE: 'Source', COMPILATION: 'Compilation', CONTAINS: 'Contains', PREQUEL: 'Prequel', SEQUEL: 'Sequel' }
+function _relationWord(rel, format) {
+  const base = _RELATION_WORDS[String(rel || '').toUpperCase()] || 'Related'
+  const f = String(format || '').toUpperCase()
+  if (f === 'MOVIE') return base === 'Related' ? 'Film' : base + ' · film'
+  if (f === 'OVA' || f === 'ONA' || f === 'SPECIAL') return base + ' · ' + f
+  return base
+}
+function _relatedRailHtml(related) {
+  if (!related || !related.length) return ''
+  const sorted = related.slice().sort(function (a, b) { return (Number(a.year) || 9999) - (Number(b.year) || 9999) || String(a.title || '').localeCompare(String(b.title || '')) })
+  return '<div class="vseasons-head vrelated-head">' +
+      '<span class="vseasons-title">Related</span>' +
+      '<span class="vseasons-count">' + sorted.length + '</span>' +
+    '</div>' +
+    '<div class="vseason-rail vrelated-rail">' + sorted.map(function (item) {
+      const bits = []
+      if (item.year) bits.push(esc(String(item.year)))
+      if (item.episodeCount) bits.push(item.episodeCount + ' ep')
+      const art = item.poster
+        ? '<img class="vseason-art" src="' + esc(item.poster) + '" alt="" loading="lazy" onerror="this.style.visibility=\'hidden\'">'
+        : '<div class="vseason-art"></div>'
+      return '<button type="button" class="vseason vrelated" data-season-id="' + esc(item.id) + '" aria-label="' + esc(item.title || '') + '">' +
+        art +
+        '<div class="vseason-body">' +
+          '<div class="vseason-n">' + esc(_relationWord(item.relation, item.format)) + '</div>' +
+          '<div class="vseason-name">' + esc(item.title || 'Untitled') + '</div>' +
+          '<div class="vseason-meta">' + bits.join(' · ') + '</div>' +
+        '</div>' +
+      '</button>'
+    }).join('') + '</div>'
+}
+
 // Runtime, certification, studio and language — all fetched with the detail
 // and none of it previously shown.
 function _videoFactsHtml(d) {
   const facts = []
-  if (d.certification) facts.push('<span class="vfact vfact-cert">' + esc(d.certification) + '</span>')
+  if (d.certification) facts.push('<span class="vfact vfact-cert" title="Age rating">' + esc(_certLabel(d.certification)) + '</span>')
   if (d.runtime) facts.push('<span class="vfact">' + _fmtRuntime(d.runtime) + '</span>')
   if (d.episodeCount) facts.push('<span class="vfact">' + d.episodeCount + ' episodes</span>')
   if (d.status && d.type === 'anime') facts.push('<span class="vfact">' + esc(_animeStatus(d.status)) + '</span>')
