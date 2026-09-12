@@ -4988,6 +4988,15 @@ function _videoPlayResult(result, opts) {
 }
 
 
+// An empty state that echoes what was typed must not echo a 10,000-character
+// paste (roadmap W-T empty-state sweep): the first 60 characters and an
+// ellipsis say enough to recognise the search.
+function _shortQ(q, max) {
+  const t = String(q == null ? '' : q).replace(/\s+/g, ' ').trim()
+  const n = max || 60
+  return t.length > n ? t.slice(0, n - 1).trimEnd() + '…' : t
+}
+
 function _videoErrorText(message) {
   const msg = String(message || 'Something went wrong')
   // V4: the one table of start-up failures and their next steps
@@ -6921,7 +6930,7 @@ function _vSearchEmptyHtml(query) {
   const intent = _vSearchFilter && _vSearchFilter.query === query ? _vSearchFilter.intent : null
   return (intent ? _vSearchIntentHtml(intent, false) : '') + '<div class="vempty">' +
     '<div class="vempty-icon">◎</div>' +
-    '<div class="vempty-title">No matches for &ldquo;' + esc(query) + '&rdquo;</div>' +
+    '<div class="vempty-title">No matches for &ldquo;' + esc(_shortQ(query)) + '&rdquo;</div>' +
     '<div class="vempty-text">Check the spelling, or try the original-language title — anime in particular is often indexed under its romaji name.</div>' +
   '</div>'
 }
@@ -12149,7 +12158,7 @@ function renderSearch(query) {
   } else {
     html += '<div class="empty-wrap" style="padding:60px 20px;text-align:center">' +
       '<svg viewBox="0 0 24 24" style="width:64px;height:64px;fill:var(--text3);margin-bottom:16px;opacity:.4"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>' +
-      '<h2>No results for "' + esc(searchText || query) + '"</h2>' +
+      '<h2>No results for "' + esc(_shortQ(searchText || query)) + '"</h2>' +
       '<p>Nothing in your library matched. Soulseek is already searching the P2P network below.</p>' +
       '<button class="empty-cta-btn" id="search-empty-slsk-btn">Jump to Soulseek results</button>' +
       '<p style="font-size:11px;color:var(--text3);margin-top:8px">Try operators: artist:"name", year:2020, format:flac, is:liked, genre:rock</p>' +
@@ -13356,7 +13365,7 @@ function renderArtist(artistName) {
     // unfollow the now-unreachable entry.
     const wasFollowed = state.followedArtists.indexOf(artistName) !== -1
     navigate('home', null, { skipHistory: true })
-    showSnackbar('No albums found for "' + artistName + '"',
+    showSnackbar('No albums found for "' + _shortQ(artistName) + '"',
       wasFollowed ? 'Unfollow' : '',
       wasFollowed ? function () { toggleFollowArtist(artistName) } : function () {})
     return
@@ -17754,7 +17763,7 @@ function startArtistRadio(artistName) {
   _radio.active = false
   _radio.recent = []
   if (!_buildRadioPools(artistName)) {
-    showSnackbar('No tracks found for "' + artistName + '" to start radio')
+    showSnackbar('No tracks found for "' + _shortQ(artistName) + '" to start radio')
     return
   }
   var first = _radioBatch(_RADIO_BATCH)
@@ -20109,7 +20118,7 @@ async function _executeTool(name, input) {
       ))
       const saved = slsk.results; slsk.results = allResults
       const groups = _slskGroupByFolder(); slsk.results = saved
-      if (!groups.length) return `Nothing found for "${q}" on Soulseek.`
+      if (!groups.length) return `Nothing found for "${_shortQ(q)}" on Soulseek.`
       const best = groups.find(g => g.files.some(f => f.isFlac)) || groups[0]
       const isFlac = best.files.some(f => f.isFlac)
       let downloaded = 0
@@ -20147,7 +20156,7 @@ async function _executeTool(name, input) {
       }
 
       if (!albumHits.length && !trackHits.length)
-        return `Nothing matching "${input.query}" in library (${state.library.length} albums). It may need to be downloaded.`
+        return `Nothing matching "${_shortQ(input.query)}" in library (${state.library.length} albums). It may need to be downloaded.`
 
       const parts = []
       if (albumHits.length) parts.push(`Albums/artists: ` + albumHits.map(a => `"${a.name}" by ${a.artist}`).join('; '))
@@ -20326,7 +20335,7 @@ async function _executeTool(name, input) {
       const call = scope === 'all' ? window.api.ytSearch : window.api.ytMusicSearch
       const res = await call({ query: input.query })
       if (!res.ok) return `YouTube search failed: ${res.error}`
-      if (!res.results.length) return `Nothing found on YouTube for "${input.query}"`
+      if (!res.results.length) return `Nothing found on YouTube for "${_shortQ(input.query)}"`
       return 'Top YouTube results:\n' + res.results.slice(0, 5).map((r, i) =>
         `${i + 1}. ${r.title} — ${r.artist} (${r.duration ? fmtDur(r.duration) : '?'}) [videoId: ${r.videoId}]`).join('\n')
     }
@@ -20335,7 +20344,7 @@ async function _executeTool(name, input) {
       const res = await window.api.ytMusicSearch({ query: input.query })
       if (!res.ok) return `YouTube search failed: ${res.error}`
       const r = res.results[0]
-      if (!r) return `Nothing found on YouTube for "${input.query}"`
+      if (!r) return `Nothing found on YouTube for "${_shortQ(input.query)}"`
       state.queue = [_ytQueueItem(r)]
       state.queueIndex = 0
       playCurrentTrack()
@@ -20346,7 +20355,7 @@ async function _executeTool(name, input) {
       const res = await window.api.ytMusicSearch({ query: input.query })
       if (!res.ok) return `YouTube search failed: ${res.error}`
       const r = res.results[0]
-      if (!r) return `Nothing found on YouTube for "${input.query}"`
+      if (!r) return `Nothing found on YouTube for "${_shortQ(input.query)}"`
       await window.api.ytDownload({ videoId: r.videoId, title: r.title, artist: r.artist })
       return `Downloading "${r.title}" by ${r.artist} from YouTube (check Downloads page)`
     }

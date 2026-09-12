@@ -486,6 +486,16 @@ draws PGS natively.
   row in view and centred — but his 14-track queue fits the panel without
   scrolling, so the centring itself is only unit-pinned, not proven live.
 
+### 21. Empty-state echo clamp (2026-09-12, Fable 5.1)
+
+`_shortQ(q, max = 60)` clamps what an empty state echoes back (whitespace
+collapsed, 60 characters and an ellipsis): the video search "No matches
+for…", the library search "No results for…", the two artist snackbars,
+and the assistant's "Nothing found…" replies (Soulseek, library, YouTube
+×3). The roadmap's "settings filter with no matches shows a blank panel"
+could not be located — there is no settings filter input by any of the
+names tried; treat that line as stale. Test: empty-state-echo.test.js.
+
 ## 7. Open debt and outstanding items
 
 - **Peer-library speed** measured live on a 65k-file peer (§16): one 58 ms
