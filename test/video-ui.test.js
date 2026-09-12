@@ -257,8 +257,8 @@ test('the rails scroll horizontally instead of wrapping into a grid', () => {
 
 test('rail arrows are hidden when there is nothing to scroll to', () => {
   const body = fnBody('_bindRail')
-  assert.match(body, /prev\.hidden = rail\.scrollLeft <= 4/)
-  assert.match(body, /next\.hidden = rail\.scrollLeft >= max - 4/)
+  assert.match(body, /prev\.hidden = m\.left <= START_SLACK/)
+  assert.match(body, /next\.hidden = m\.left >= m\.max - 4/)
 })
 
 test('cards carry rating, type and resume progress, not just a title', () => {

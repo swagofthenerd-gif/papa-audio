@@ -7791,6 +7791,10 @@ body.app-unfocused .vt-menu {
 
 /* ── Rails ───────────────────────────────────────────── */
 .vrows { display:flex; flex-direction:column; gap:26px; padding-bottom:32px; }
+/* Rows below the fold are neither laid out nor painted until they scroll
+   near (roadmap S5: the Movies tab switch laid out every rail of cards at
+   once). The intrinsic size keeps the scrollbar honest before they do. */
+.vrow { content-visibility:auto; contain-intrinsic-size:auto 340px; }
 .vrow-head { display:flex; align-items:baseline; gap:12px; padding:0 28px 10px; }
 .vrow-title { font-size:17px; font-weight:700; letter-spacing:-.3px; color:var(--text); }
 .vrow-count { font-size:11px; color:var(--text3); }

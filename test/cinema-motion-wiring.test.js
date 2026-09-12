@@ -23,8 +23,8 @@ test('one motion vocabulary: micro 150, travel 250, scene 400, one easing', () =
 })
 
 test('rails: the edge fades follow the scroll position and vanish at a hard edge', () => {
-  assert.match(fn('_bindRail'), /wrap\.classList\.toggle\('at-start', rail\.scrollLeft <= 4\)/)
-  assert.match(fn('_bindRail'), /wrap\.classList\.toggle\('at-end', rail\.scrollLeft >= max - 4\)/)
+  assert.match(fn('_bindRail'), /wrap\.classList\.toggle\('at-start', m\.left <= START_SLACK\)/)
+  assert.match(fn('_bindRail'), /wrap\.classList\.toggle\('at-end', m\.left >= m\.max - 4\)/)
   assert.match(CSS, /\.cinema \.vrail-wrap\.at-start::before,\n\.cinema \.vrail-wrap\.at-end::after \{ opacity: 0; \}/)
 })
 

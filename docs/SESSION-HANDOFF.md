@@ -403,6 +403,37 @@ builds (`buildTreeChunked`, `buildTreeSearchIndexChunked`) hold up on a
 real library. Trap: `input[placeholder*=earch]` matches the top bar first —
 use `#slskx-search`.
 
+### 17. Roadmap S4 (stats) and S5 (tab switches) (2026-09-12, Fable 5.1)
+
+Measured on a silent twin with his profile (long tasks via
+PerformanceObserver, CPU profile via `drive.js profile`):
+
+- **Stats page (S4):** open 296 ms, each range chip ~240 ms — all of it
+  eight achievement `check`s that rescanned every album's every track for
+  every play in the window (Century, Completionist, Variety, Throwback,
+  Globetrotter, Genre Explorer, Long Haul, Quick Hit). `renderStats` now
+  builds one `filePath → {album, index, track}` map (`_where`/`_hit`) and
+  the checks read it. After: open with no long task, chips 28 ms of work,
+  no long task. Wrapped already had none. Pin: `test/stats-speed.test.js`.
+- **Movies tab switch (S5):** 185–205 ms. Two causes. (1) `_bindRail`'s
+  first sync read `scrollWidth` right after the previous rail's class
+  toggle: a forced layout per rail. Now reads and writes are split, pending
+  rails are checked in one frame after a fill and on any scroll, only rails
+  whose row is near the screen are measured, all reads before all writes
+  (`_scheduleRailSync`/`_railSyncPass`). (2) `.vrow { content-visibility:
+  auto; contain-intrinsic-size: auto 340px }` so rows below the fold are
+  neither laid out nor painted until near. After: cold visit 139 ms (TMDB
+  rows arriving), warm 60–65 ms, then none; scrolling pays 50–65 ms per
+  batch of rows entering. Also: a rail that has not been scrolled sits at
+  27.6 px (the 28 px padding the cards snap to), so "at the start" now
+  allows 32 px — the left arrow and fade no longer show over the first card.
+  Home tab: 60–120 ms, almost all native layout (JS under 20 ms); left.
+- **Add to playlist (S6):** 0.5 ms with one playlist of one track — the
+  roadmap's 1 s is not reproducible on his current data.
+- Trap: `location.reload()` on the twin can serve the old renderer.js from
+  the Code Cache — check `_fn.toString()` for the new code or relaunch with
+  the profile's `Code Cache` removed.
+
 ## 7. Open debt and outstanding items
 
 - **Peer-library speed** measured live on a 65k-file peer (§16): one 58 ms

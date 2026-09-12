@@ -6214,20 +6214,70 @@ function _bindRail(rail) {
   if (!wrap) return
   const prev = wrap.querySelector('.vrail-prev')
   const next = wrap.querySelector('.vrail-next')
-  const sync = function () {
-    const max = rail.scrollWidth - rail.clientWidth
-    if (prev) prev.hidden = rail.scrollLeft <= 4
-    if (next) next.hidden = rail.scrollLeft >= max - 4
-    // The edge fades (V3) go with the arrows: none at a hard edge.
-    wrap.classList.toggle('at-start', rail.scrollLeft <= 4)
-    wrap.classList.toggle('at-end', rail.scrollLeft >= max - 4)
+  // Read and write are separate so the first sync of every rail on a page can
+  // be batched: a dozen rails each reading scrollWidth right after the last
+  // one toggled a class forced a dozen full layouts of a page of fresh cards
+  // (130 ms on the Movies tab, measured — roadmap S5).
+  const read = function () {
+    return { left: rail.scrollLeft, max: rail.scrollWidth - rail.clientWidth }
   }
+  // "At the start" allows the padding offset the cards snap to (about 28 px):
+  // a rail that has not been scrolled sat at 27.6 px and showed a left arrow
+  // and a left fade over its first card.
+  const START_SLACK = 32
+  const write = function (m) {
+    if (prev) prev.hidden = m.left <= START_SLACK
+    if (next) next.hidden = m.left >= m.max - 4
+    // The edge fades (V3) go with the arrows: none at a hard edge.
+    wrap.classList.toggle('at-start', m.left <= START_SLACK)
+    wrap.classList.toggle('at-end', m.left >= m.max - 4)
+  }
+  const sync = function () { write(read()) }
   const page = function (dir) { rail.scrollBy({ left: dir * Math.max(rail.clientWidth - 120, 200) }) }
   prev?.addEventListener('click', function () { page(-1) })
   next?.addEventListener('click', function () { page(1) })
   rail.addEventListener('scroll', sync, { passive: true })
-  requestAnimationFrame(sync)
+  _scheduleRailSync({ rail: rail, read: read, write: write })
 }
+
+// A rail's first arrow/fade sync waits until its row is near the screen:
+// measuring a rail below the fold lays out its cards for nothing (and, with
+// the rows content-visibility:auto, would undo the skip). Pending rails are
+// checked in one frame after a fill and on every scroll of any scroller; the
+// due ones are measured together — every read, then every write — so the
+// page is laid out once however many were just filled. The row's own box is
+// what is tested for nearness: it has a size even while its contents are
+// skipped, and reading it does not force them to render.
+var _railPending = []
+var _railSyncRaf = 0
+function _scheduleRailSync(job) {
+  _railPending.push(job)
+  _railSyncSoon()
+}
+function _railSyncSoon() {
+  if (_railSyncRaf || !_railPending.length) return
+  _railSyncRaf = requestAnimationFrame(_railSyncPass)
+}
+function _railSyncPass() {
+  _railSyncRaf = 0
+  if (!_railPending.length) return
+  const vh = window.innerHeight || 0
+  const due = []
+  _railPending = _railPending.filter(function (j) {
+    const rail = j.rail
+    if (rail && !rail.isConnected) return false
+    const box = rail ? (rail.closest('.vrow') || rail) : null
+    if (box) {
+      const r = box.getBoundingClientRect()
+      if (r.bottom < -300 || r.top > vh + 300) return true
+    }
+    due.push(j)
+    return false
+  })
+  const measured = due.map(function (j) { try { return j.read() } catch (_) { return null } })
+  due.forEach(function (j, i) { if (measured[i]) { try { j.write(measured[i]) } catch (_) {} } })
+}
+if (typeof document !== 'undefined') document.addEventListener('scroll', _railSyncSoon, { capture: true, passive: true })
 
 // ── Hero spotlight ──────────────────────────────────────────────────────────
 function _startVideoHero(items, ticket) {
@@ -15192,20 +15242,34 @@ function renderStats() {
   if (!daysSet[checkDay.toDateString()]) checkDay.setDate(checkDay.getDate() - 1)
   while (daysSet[checkDay.toDateString()]) { currentStreak++; checkDay.setDate(checkDay.getDate() - 1) }
 
+  // Where each played file lives in the library, built once per render.
+  // Eight of the checks below used to rescan every album's every track for
+  // every play in the window (roadmap S4: ~32 ms each, ~240 ms per range
+  // chip click); with the lookup they are a few milliseconds together.
+  var _where = new Map()
+  for (var _ai = 0; _ai < state.library.length; _ai++) {
+    var _al = state.library[_ai]
+    if (!_al.tracks) continue
+    for (var _tj = 0; _tj < _al.tracks.length; _tj++) {
+      var _fp = _al.tracks[_tj].filePath
+      if (_fp && !_where.has(_fp)) _where.set(_fp, { a: _al, j: _tj, t: _al.tracks[_tj] })
+    }
+  }
+  var _hit = function (p) { return _where.get(p.filePath) || null }
   var achievements = [
-    { id:'century', icon:'💯', name:'Century', desc:'100 albums played', check:function() { var ids = {}; recent.forEach(function(p) { for (var i = 0; i < state.library.length; i++) { var a = state.library[i]; if (a.tracks) for (var j = 0; j < a.tracks.length; j++) { if (a.tracks[j].filePath === p.filePath) { ids[a.id] = true } } } }); return Object.keys(ids).length >= 100 } },
+    { id:'century', icon:'💯', name:'Century', desc:'100 albums played', check:function() { var ids = {}; recent.forEach(function(p) { var w = _hit(p); if (w) ids[w.a.id] = true }); return Object.keys(ids).length >= 100 } },
     { id:'marathon', icon:'🏃', name:'Marathon', desc:'5+ hours in one day', check:function() { var byDay = {}; recent.forEach(function(p) { var d = new Date(p.ts).toDateString(); byDay[d] = (byDay[d] || 0) + (p.duration || 0) }); return Object.values(byDay).some(function(s) { return s >= 18000 }) } },
     { id:'explorer', icon:'🌍', name:'Explorer', desc:'50 different artists', check:function() { var artists = {}; recent.forEach(function(p) { artists[p.artist || 'Unknown'] = true }); return Object.keys(artists).length >= 50 } },
     { id:'nightowl', icon:'🦉', name:'Night Owl', desc:'Most listening after midnight', check:function() { var night = 0, day = 0; recent.forEach(function(p) { var h = new Date(p.ts).getHours(); if (h >= 0 && h < 6) night++; else day++ }); return night > day && recent.length > 10 } },
-    { id:'completist', icon:'✅', name:'Completionist', desc:'Finished 20 albums', check:function() { var byAlbum = {}; recent.forEach(function(p) { for (var i = 0; i < state.library.length; i++) { var a = state.library[i]; if (a.tracks) { var ti = -1; for (var j = 0; j < a.tracks.length; j++) { if (a.tracks[j].filePath === p.filePath) { ti = j; break } } if (ti >= 0) byAlbum[a.id] = Math.max(byAlbum[a.id] || 0, ti + 1) } } }); var count = 0; Object.keys(byAlbum).forEach(function(id) { var a = state.library.find(function(x) { return x.id === id }); if (a && a.tracks && byAlbum[id] >= a.tracks.length) count++ }); return count >= 20 } },
+    { id:'completist', icon:'✅', name:'Completionist', desc:'Finished 20 albums', check:function() { var byAlbum = {}, albums = {}; recent.forEach(function(p) { var w = _hit(p); if (w) { byAlbum[w.a.id] = Math.max(byAlbum[w.a.id] || 0, w.j + 1); albums[w.a.id] = w.a } }); var count = 0; Object.keys(byAlbum).forEach(function(id) { var a = albums[id]; if (a && a.tracks && byAlbum[id] >= a.tracks.length) count++ }); return count >= 20 } },
     { id:'firstplay', icon:'🎵', name:'First Play', desc:'Played your first track', check:function() { return recent.length > 0 } },
     { id:'collector', icon:'📚', name:'Collector', desc:'200+ albums in library', check:function() { return state.library.length >= 200 } },
     { id:'dedicated', icon:'🔥', name:'Dedicated', desc:'7-day listening streak', check:function() { return currentStreak >= 7 } },
     { id:'earlybird', icon:'🌅', name:'Early Bird', desc:'Most listening before 9 AM', check:function() { var am=0,pm=0; recent.forEach(function(p){var h=new Date(p.ts).getHours();if(h>=5&&h<9)am++;else pm++});return am>pm&&recent.length>10} },
     { id:'binger', icon:'📺', name:'Binge Listener', desc:'10+ hours in one day', check:function() { var byDay={};recent.forEach(function(p){var d=new Date(p.ts).toDateString();byDay[d]=(byDay[d]||0)+_histDur(p)});return Object.values(byDay).some(function(s){return s>=36000})} },
-    { id:'variety', icon:'🎨', name:'Variety Listener', desc:'20+ genres explored', check:function() { var genres={};recent.forEach(function(p){for(var i=0;i<state.library.length;i++){var a=state.library[i];if(!a.tracks)continue;for(var j=0;j<a.tracks.length;j++){if(a.tracks[j].filePath===p.filePath&&a.genre){genres[a.genre]=true}}} });return Object.keys(genres).length>=20} },
-    { id:'throwback', icon:'📼', name:'Throwback', desc:'Most listening is pre-2000', check:function() { var old=0,nu=0;recent.forEach(function(p){for(var i=0;i<state.library.length;i++){var a=state.library[i];if(!a.tracks)continue;for(var j=0;j<a.tracks.length;j++){if(a.tracks[j].filePath===p.filePath){if((a.year||0)>0&&a.year<2000)old++;else nu++;break}}}});return old>nu&&recent.length>10} },
-    { id:'globetrotter', icon:'🗺️', name:'Globetrotter', desc:'Music from 10+ countries', check:function() { var countries={};recent.forEach(function(p){for(var i=0;i<state.library.length;i++){var a=state.library[i];if(!a.tracks)continue;for(var j=0;j<a.tracks.length;j++){if(a.tracks[j].filePath===p.filePath){var parts=(a.tracks[j].filePath||'').split('/');countries[parts[3]||parts[2]||'']=true;break}}}});return Object.keys(countries).length>=10} },
+    { id:'variety', icon:'🎨', name:'Variety Listener', desc:'20+ genres explored', check:function() { var genres={};recent.forEach(function(p){var w=_hit(p);if(w&&w.a.genre)genres[w.a.genre]=true});return Object.keys(genres).length>=20} },
+    { id:'throwback', icon:'📼', name:'Throwback', desc:'Most listening is pre-2000', check:function() { var old=0,nu=0;recent.forEach(function(p){var w=_hit(p);if(!w)return;if((w.a.year||0)>0&&w.a.year<2000)old++;else nu++});return old>nu&&recent.length>10} },
+    { id:'globetrotter', icon:'🗺️', name:'Globetrotter', desc:'Music from 10+ countries', check:function() { var countries={};recent.forEach(function(p){var w=_hit(p);if(!w)return;var parts=(w.t.filePath||'').split('/');countries[parts[3]||parts[2]||'']=true});return Object.keys(countries).length>=10} },
     { id:'newbie', icon:'👋', name:'Newbie', desc:'First day listening', check:function() { return recent.length > 0 && state.playHistory.length <= 50 } },
     { id:'hundred', icon:'💯', name:'Century+', desc:'1000+ tracks played', check:function() { return state.playHistory.length >= 1000 } },
     { id:'library50', icon:'📀', name:'Growing Library', desc:'50+ albums', check:function() { return state.library.length >= 50 } },
@@ -15219,9 +15283,9 @@ function renderStats() {
     { id:'insomniac', icon:'😴', name:'Insomniac', desc:'Listening at 3-5 AM', check:function() { var late=0,total=0;recent.forEach(function(p){var h=new Date(p.ts).getHours();if(h>=3&&h<5)late++;total++});return total>0&&(late/total)>.1} },
     { id:'weekend', icon:'🎉', name:'Weekend Warrior', desc:'Most listening on Fri/Sat', check:function() { var wknd=0,wkdy=0;recent.forEach(function(p){var d=new Date(p.ts).getDay();if(d===5||d===6)wknd++;else wkdy++});return wknd>wkdy&&recent.length>20} },
     { id:'lunchbreak', icon:'🍽️', name:'Lunch Break', desc:'Most listening at noon', check:function() { var noon=0,other=0;recent.forEach(function(p){var h=new Date(p.ts).getHours();if(h===12)noon++;else other++});return noon>other&&recent.length>10} },
-    { id:'diversegenre', icon:'🌈', name:'Genre Explorer', desc:'5+ different genres this week', check:function() { var weekAgo=Date.now()-604800000;var genres={};recent.filter(function(p){return p.ts>weekAgo}).forEach(function(p){for(var i=0;i<state.library.length;i++){var a=state.library[i];if(!a.tracks)continue;for(var j=0;j<a.tracks.length;j++){if(a.tracks[j].filePath===p.filePath&&a.genre){genres[a.genre]=true}}}});return Object.keys(genres).length>=5} },
-    { id:'longesttrack', icon:'📏', name:'Long Haul', desc:'Played a track >15 min', check:function() { return recent.some(function(p){for(var i=0;i<state.library.length;i++){var a=state.library[i];if(!a.tracks)continue;for(var j=0;j<a.tracks.length;j++){if(a.tracks[j].filePath===p.filePath&&(a.tracks[j].duration||0)>900)return true}};return false})} },
-    { id:'shortesttrack', icon:'⚡', name:'Quick Hit', desc:'Played a track <30 sec', check:function() { return recent.some(function(p){for(var i=0;i<state.library.length;i++){var a=state.library[i];if(!a.tracks)continue;for(var j=0;j<a.tracks.length;j++){if(a.tracks[j].filePath===p.filePath&&(a.tracks[j].duration||0)>0&&(a.tracks[j].duration||0)<30)return true}};return false})} },
+    { id:'diversegenre', icon:'🌈', name:'Genre Explorer', desc:'5+ different genres this week', check:function() { var weekAgo=Date.now()-604800000;var genres={};recent.filter(function(p){return p.ts>weekAgo}).forEach(function(p){var w=_hit(p);if(w&&w.a.genre)genres[w.a.genre]=true});return Object.keys(genres).length>=5} },
+    { id:'longesttrack', icon:'📏', name:'Long Haul', desc:'Played a track >15 min', check:function() { return recent.some(function(p){var w=_hit(p);return !!(w&&(w.t.duration||0)>900)})} },
+    { id:'shortesttrack', icon:'⚡', name:'Quick Hit', desc:'Played a track <30 sec', check:function() { return recent.some(function(p){var w=_hit(p);return !!(w&&(w.t.duration||0)>0&&(w.t.duration||0)<30)})} },
     { id:'repeatlistener', icon:'🔂', name:'On Repeat', desc:'Same track 3+ times in one day', check:function() { var byDay={};recent.forEach(function(p){var d=new Date(p.ts).toDateString();byDay[d]=byDay[d]||{};byDay[d][p.filePath]=(byDay[d][p.filePath]||0)+1});return Object.values(byDay).some(function(day){return Object.values(day).some(function(c){return c>=3})})} },
     // Both divided by p.duration while guarding on _histDur(p), the library
     // fallback -- so every entry written before the duration field existed
