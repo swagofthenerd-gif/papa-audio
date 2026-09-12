@@ -57,3 +57,42 @@ test('only the video track\'s fragments are indexed: an audio-only moof on anoth
   assert.equal(ix.state.trackId, 1)
   assert.deepEqual(ix.state.fragments.map(f => f.time), [0, 2], 'the audio fragment at "7 s" on its 48 kHz clock is not a video fragment')
 })
+
+// Chromium reads mvhd.duration = 0 (what ffmpeg's empty_moov streaming
+// writes) as a live stream and decodes it single-threaded; stamping the real
+// duration into the init segment gives a 4K picture its decoder threads.
+const { stampDuration } = require('../src/fmp4-index')
+function sbox(type, payload) { const b = Buffer.alloc(8 + payload.length); b.writeUInt32BE(b.length, 0); b.write(type, 4, 'ascii'); payload.copy(b, 8); return b }
+function sfull(type, version, body) { const p = Buffer.alloc(4 + body.length); p[0] = version; body.copy(p, 4); return sbox(type, p) }
+test('stampDuration writes the duration into mvhd and mehd, versions 0 and 1, and touches nothing else', () => {
+  // v0: creation, modification, timescale 1000, duration 0, then rate/volume etc.
+  const mvhd0 = sfull('mvhd', 0, Buffer.concat([Buffer.alloc(8), Buffer.from([0, 0, 3, 232]), Buffer.alloc(4), Buffer.alloc(80, 7)]))
+  const mehd0 = sfull('mehd', 0, Buffer.alloc(4))
+  const trex = sbox('trex', Buffer.alloc(24, 1))
+  const trak = sbox('trak', Buffer.alloc(30, 9))
+  const init0 = Buffer.concat([sbox('ftyp', Buffer.from('isom\0\0\0\0iso6mp41', 'ascii')), sbox('moov', Buffer.concat([mvhd0, trak, sbox('mvex', Buffer.concat([mehd0, trex]))]))])
+  const out0 = Buffer.from(stampDuration(init0, 6882.144))
+  assert.equal(out0.length, init0.length)
+  const mv = out0.indexOf('mvhd') + 4
+  assert.equal(out0.readUInt32BE(mv + 12), 1000, 'timescale untouched')
+  assert.equal(out0.readUInt32BE(mv + 16), 6882144, 'mvhd duration in timescale units')
+  const me = out0.indexOf('mehd') + 4
+  assert.equal(out0.readUInt32BE(me + 4), 6882144, 'mehd fragment_duration too')
+  // Everything else is byte-identical (the trak, the trex, the ftyp).
+  assert.ok(out0.subarray(0, mv + 12).equals(init0.subarray(0, mv + 12)))
+  assert.ok(out0.subarray(mv + 20, me + 4).equals(init0.subarray(mv + 20, me + 4)))
+  assert.ok(out0.subarray(me + 8).equals(init0.subarray(me + 8)))
+  assert.ok(init0.readUInt32BE(mv + 16) === 0, 'the input was left alone')
+  // v1: 64-bit fields (creation 8, modification 8, timescale 4, duration 8)
+  const mvhd1 = sfull('mvhd', 1, Buffer.concat([Buffer.alloc(16), Buffer.from([0, 0, 0, 90]), Buffer.alloc(8), Buffer.alloc(80, 7)]))
+  const mehd1 = sfull('mehd', 1, Buffer.alloc(8))
+  const init1 = Buffer.concat([sbox('moov', Buffer.concat([mvhd1, sbox('mvex', Buffer.concat([mehd1, trex]))]))])
+  const out1 = Buffer.from(stampDuration(init1, 100))
+  const mv1 = out1.indexOf('mvhd') + 4
+  assert.equal(out1.readUInt32BE(mv1 + 24), 0); assert.equal(out1.readUInt32BE(mv1 + 28), 9000, '100 s × 90')
+  const me1 = out1.indexOf('mehd') + 4
+  assert.equal(out1.readUInt32BE(me1 + 8), 9000)
+  // No duration, or no moov: a copy, unchanged.
+  assert.ok(Buffer.from(stampDuration(init0, 0)).equals(init0))
+  assert.ok(Buffer.from(stampDuration(Buffer.from('not mp4 at all'), 5)).equals(Buffer.from('not mp4 at all')))
+})

@@ -296,6 +296,60 @@ Later the same day: `3ffe22e` (R8 R14 R15 R17 + plural sweep), `a7370cd` (R18 R1
   it. Worth a look if he reports a black mini card after clicking around a
   detail page.
 
+### 14. V4 stability, part 2 — the in-page player's memory fault, 4K, and purist back as the default (2026-09-12, Fable 5.1)
+
+- **He asked for the old behaviour back** ("smooth as butter, not reducing
+  the quality, just like before"; also "local films need buffering every
+  time I seek"). "Before" is the mpv path, now called Purist mode. The
+  default is purist again (`main.js` `_videoSettings` +
+  `_migratePlayerModeOnce`: a stored 'smooth' without `playerModeByUser`
+  migrates once, stamped `playerModeMigrated`; the Settings selector sets
+  `playerModeByUser`). Verified on a twin: stored smooth → purist on launch,
+  mpv plays a local file, seek 100 s lands in 1.5 s. Smooth stays a choice.
+- **The quota storm (why "Buffering…" kept flashing, even at 1080p):**
+  Chromium holds ~150 MB of video in a SourceBuffer — forty seconds of 4K,
+  two and a half minutes of 1080p. The engine kept 300 s behind and 90 s
+  ahead, so the browser refused appends; the old handler retried in a tight
+  loop (14,000 refused appends a second, measured) while the reader piled
+  the whole file into a queue (12,800 chunks). `web-player.js` now: keeps
+  5 s behind (the disk cache covers seek-back), caps the read-ahead queue
+  at 16 MB, and on a refusal frees behind first, then halves the look-ahead
+  (`aheadCap`, floor 10 s), cuts beyond it and stops the stream; the
+  starvation check refetches from the edge (a cache hit). A hole the
+  browser evicted right after the playhead is refetched at the edge. A span
+  starting behind the playhead nudges `currentTime` once (Chromium sat at
+  readyState 2 with 16 s buffered otherwise). Media-error rebuilds capped at
+  3 per session (an AV1 + PGS-burn run refetched the same second 1,012
+  times). Tests in `test/web-player-mse.test.js`.
+- **4K at 0.86× with nothing dropped — the real cause:** ffmpeg's streaming
+  fMP4 (`empty_moov`) writes mvhd.duration = 0; Chromium reads that as a
+  *live* stream and decodes in low-delay mode, one thread, no frame
+  threading. `fmp4.stampDuration` (src/fmp4-index.js) writes the title's
+  duration into mvhd/mehd of the served init segment (`_followRun`). After
+  it: four Media decode threads, 4K H.264 at 28 Mbit/s at real time (rates
+  1.0/1.0/1.0 before the quota cut that led to the nudge fix). VA-API
+  hardware decode (libva-nvidia-driver is installed and decodes the 4K
+  HEVC at 1.95× in ffmpeg) crashed Electron's GPU process (exit 133) with
+  `--enable-features=VaapiVideoDecoder,VaapiVideoDecodeLinuxGL` +
+  `--ignore-gpu-blocklist`; left behind env gates `PAPA_HW_DECODE=1`
+  (`PAPA_HW_DECODE_FEATURES`, `PAPA_HW_DECODE_BLOCKLIST=ignore`) and
+  `PAPA_NO_GPU_SAVERS=1` (skips disable-gpu-rasterization/zero-copy; made
+  no difference) for the next attempt. Not enabled by default.
+- **"Buffering…" honesty:** the engine reports a wait only after 400 ms
+  with readyState < 3, and `canplay` sends `ready`, which clears the stage
+  even when paused.
+- **Open:** the AV1 (Clockwork Orange) file with a PGS track burned in gave
+  "The smooth player could not decode this stream" (now one error, not a
+  storm) — cause not found; the burn re-encodes a zero-cost remux through
+  libx264 at 981 % CPU because the remembered subtitle preference picked
+  the PGS track. `_videoPlayResult` from a fresh twin page in purist mode
+  once did nothing while a direct `videoPlay` worked — not chased.
+- Measuring tips: `requestVideoFrameCallback` gives the true presented fps
+  and media rate; `currentTime` alone lied under the retry storm. Front the
+  twin (`drive.js front`) and leave the film's detail page first, or a saved
+  position seeks under the measurement. Chromium's `performance.memory` is
+  bucketed.
+
 ## 7. Open debt and outstanding items
 
 - **Peer-library speed is bench-only.** Re-measure live against a real

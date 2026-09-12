@@ -83,6 +83,10 @@ test('the engine reports a frozen picture and the page says which side is stuck'
   const h = fn('_handleVideoEvent')
   assert.match(h, /kind === 'stuck'\) \{[\s\S]*?PapaStartHonesty\.stuck\(payload\)[\s\S]*?showToast\(w\.text\)/)
   assert.match(h, /kind === 'unstuck'\) \{\n\s+_player\.setStageMessage\(''\)/)
+  // A wait is reported only once it has lasted 400 ms, and 'ready' clears it.
+  assert.match(ENGINE, /waitTimer = setTimeout\(function \(\) \{ waitTimer = null; if \(video && video\.readyState < 3\) onEvent\(\{ kind: 'buffering', web: true \}\) \}, 400\)/)
+  assert.match(ENGINE, /video\.addEventListener\('canplay', function \(\) \{ clearTimeout\(waitTimer\); waitTimer = null; onEvent\(\{ kind: 'ready', web: true \}\) \}\)/)
+  assert.match(h, /kind === 'ready'\) \{[\s\S]*?_player\.setStageMessage\(''\)/)
   // The in-page engine's own buffering says "Buffering", not "Downloading".
   assert.match(h, /payload\.phase === 'prebuffer' \|\| payload\.web \? 'Buffering' : 'Downloading'/)
 })

@@ -36,8 +36,16 @@
     var fetchFn = opts.fetch || (typeof fetch !== 'undefined' ? fetch : null)
     var URLApi = opts.URL || (typeof URL !== 'undefined' ? URL : null)
     var AbortCtor = opts.AbortController || (typeof AbortController !== 'undefined' ? AbortController : null)
-    var BACK_KEEP_SEC = 300    // when the browser runs out of buffer room, drop what is more than this far behind
-    var AHEAD_PAUSE_SEC = 90   // stop pulling from the server this far ahead of the playhead
+    // The browser holds roughly 150 MB of video (Chromium's SourceBuffer
+    // limit): four minutes of 1080p, forty seconds of 4K at 28 Mbit/s. So
+    // the look-ahead is a ceiling that tightens itself the first time an
+    // append is refused, the queue between the reader and the buffer is
+    // capped in bytes, and only a little is kept behind the playhead — the
+    // disk cache on the server makes any seek-back a file read anyway.
+    var BACK_KEEP_SEC = 5      // when the browser is full, keep only this much behind the playhead
+    var AHEAD_PAUSE_SEC = 90   // stop pulling from the server this far ahead of the playhead (ceiling)
+    var AHEAD_MIN_SEC = 10     // the look-ahead never tightens below this
+    var QUEUE_MAX_BYTES = 16 * 1048576   // bytes read but not yet appended
     var tickTimer = null
     var mounted = null      // 'stage' | 'mini' | null
     var state = _empty()
@@ -124,7 +132,16 @@
       video.addEventListener('pause', _emit)
       video.addEventListener('play', _emit)
       video.addEventListener('ended', function () { onEvent({ kind: 'ended', web: true }); _emit() })
-      video.addEventListener('waiting', function () { onEvent({ kind: 'buffering', web: true }) })
+      // 'waiting' fires on every seek inside the buffer and on sub-second
+      // hiccups; the stage only hears about a wait that lasts. 'canplay'
+      // says the wait is over even when the film is paused (no 'playing'
+      // comes then), so the words never outlive the wait.
+      var waitTimer = null
+      video.addEventListener('waiting', function () {
+        clearTimeout(waitTimer)
+        waitTimer = setTimeout(function () { waitTimer = null; if (video && video.readyState < 3) onEvent({ kind: 'buffering', web: true }) }, 400)
+      })
+      video.addEventListener('canplay', function () { clearTimeout(waitTimer); waitTimer = null; onEvent({ kind: 'ready', web: true }) })
       video.addEventListener('error', function () {
         var e = video.error
         onEvent({ kind: 'error', web: true, message: 'The smooth player could not play this stream' + (e && e.message ? ' (' + e.message + ')' : '') })
@@ -192,6 +209,8 @@
       mse.gen++
       if (mse.abort) { try { mse.abort.abort() } catch (_) {} mse.abort = null }
       mse.queue = []
+      mse.queuedBytes = 0
+      mse.resume = null
       mse.fetching = false
       // abort() also resets the segment parser: a fetch may have stopped
       // mid-fragment, and the next response begins with a fresh init
@@ -200,7 +219,22 @@
     }
     // The element has hit a media error (a bad append leaves MSE dead for
     // good): rebuild the media source at `t` and carry on.
+    var REBUILD_MAX = 3        // media errors survived per session before the stream is given up
+    var rebuilds = 0
     function _mseRebuild(t, playing) {
+      // A stream the browser cannot decode fails on every rebuild: three in
+      // a session and the engine stops (a thousand refetches of the same
+      // second was the alternative, seen live on an AV1 + burned-subtitle
+      // run). The deck hears one error, with the browser's own words.
+      rebuilds++
+      if (rebuilds > REBUILD_MAX) {
+        var err = video && video.error
+        try { console.warn('[web-player] giving up after ' + REBUILD_MAX + ' media errors' + (err ? ': ' + err.message : '')) } catch (_) {}
+        _mseAbortFetch()
+        if (mse) mse.dead = true
+        onEvent({ kind: 'error', web: true, message: 'The smooth player could not play this stream' + (err && err.message ? ' (' + err.message + ')' : '') })
+        return
+      }
       try { console.warn('[web-player] rebuilding the media source after a media error at ' + Math.round(t) + 's') } catch (_) {}
       _mseTeardown()
       try { video.removeAttribute('src'); video.load() } catch (_) {}
@@ -214,7 +248,7 @@
       offset = 0
       if (!mse) {
         var ms = new MediaSourceCtor()
-        mse = { ms: ms, sb: null, url: null, abort: null, queue: [], appending: false, offset: 0, gen: 0, fetching: false, pending: null }
+        mse = { ms: ms, sb: null, url: null, abort: null, queue: [], queuedBytes: 0, appending: false, offset: 0, gen: 0, fetching: false, pending: null, aheadCap: AHEAD_PAUSE_SEC, quotaHits: 0, lastRefetchAt: 0 }
         mse.url = URLApi.createObjectURL(ms)
         v.src = mse.url
         ms.addEventListener('sourceopen', function () {
@@ -262,6 +296,12 @@
         if (!mse || mse.gen !== gen) return
         var startHdr = Number(res.headers && res.headers.get ? res.headers.get('X-Papa-Start') : NaN)
         mse.offset = isFinite(startHdr) ? startHdr : t
+        // A span that begins behind the playhead (the server starts at the
+        // keyframe before the asked second) overwrites the pictures the
+        // decoder is standing on; Chromium then sits at readyState 2 with
+        // seconds buffered ahead (seen live at 4K after a quota cut). A
+        // seek to the same second after the first append re-arms it.
+        mse.nudge = !video.paused && mse.offset < (video.currentTime || 0) - 0.05 && t >= (video.currentTime || 0) - 0.05
         // A new span begins: reset the parser (abort) so the offset can be
         // set — it is refused while a segment is half-parsed — and so the
         // response's own init segment starts clean.
@@ -274,7 +314,13 @@
           // Backpressure: far enough ahead, wait for the playhead.
           // Far enough ahead of the playhead: let the server run on to its
           // cache while the page waits (paused or not, the cap is the cap).
-          if (_bufferedAheadOf(video.currentTime) > AHEAD_PAUSE_SEC) { setTimeout(pump, 500); return }
+          if (_bufferedAheadOf(video.currentTime) >= mse.aheadCap || mse.queuedBytes > QUEUE_MAX_BYTES) {
+            // Wait: the drain wakes the reader as soon as an append makes
+            // room; the timer covers the playhead moving past the look-ahead.
+            mse.resume = pump
+            setTimeout(function () { if (mse && mse.gen === gen && mse.resume === pump) { mse.resume = null; pump() } }, 500)
+            return
+          }
           reader.read().then(function (r) {
             if (!mse || mse.gen !== gen) return
             if (r.done) {
@@ -288,6 +334,7 @@
             }
             got += r.value ? r.value.length || 0 : 0
             mse.queue.push(r.value)
+            mse.queuedBytes += (r.value && (r.value.byteLength || r.value.length)) || 0
             _mseDrain()
             pump()
           }).catch(function () { if (mse && mse.gen === gen) mse.fetching = false })
@@ -330,15 +377,40 @@
       try {
         mse.sb.appendBuffer(chunk)
         mse.queue.shift()
+        mse.queuedBytes = Math.max(0, mse.queuedBytes - ((chunk && (chunk.byteLength || chunk.length)) || 0))
+        if (mse.nudge) { mse.nudge = false; try { video.currentTime = video.currentTime } catch (_) {} }
+        if (mse.resume && mse.queuedBytes <= QUEUE_MAX_BYTES && _bufferedAheadOf(video.currentTime) < mse.aheadCap) { var go = mse.resume; mse.resume = null; go() }
         if (mse.wantPlay && video.paused && video.readyState >= 2) { mse.wantPlay = false; var pp = video.play(); if (pp && pp.catch) pp.catch(function () {}) }
       } catch (e) {
         if (e && (e.name === 'QuotaExceededError' || /quota/i.test(String(e.message)))) {
+          // The browser is full. Free what is behind the playhead first (the
+          // server's disk cache makes a seek-back a file read, so little
+          // needs keeping); only when nothing is behind does the look-ahead
+          // tighten, to half of what the browser held when it refused. Each
+          // remove() ends with updateend, which drains again; a remove is
+          // only issued when it frees something, so a full buffer that
+          // cannot shrink waits instead of spinning (the 4K quota storm:
+          // 14,000 refused appends a second).
+          mse.quotaHits++
           var cur = video.currentTime || 0
+          var ahead = _bufferedAheadOf(cur)
+          var first = null, last = null
+          try { if (video.buffered.length) { first = video.buffered.start(0); last = video.buffered.end(video.buffered.length - 1) } } catch (_) {}
           try {
-            if (cur - BACK_KEEP_SEC > 0) { mse.sb.remove(0, cur - BACK_KEEP_SEC); return }
-            // Nothing far behind to drop: drop what is far ahead instead.
-            var far = _bufferedAheadOf(cur)
-            if (far > AHEAD_PAUSE_SEC) { mse.sb.remove(cur + AHEAD_PAUSE_SEC, Infinity); return }
+            if (first != null && first < cur - BACK_KEEP_SEC - 0.5) { mse.sb.remove(0, cur - BACK_KEEP_SEC); return }
+            mse.aheadCap = Math.max(AHEAD_MIN_SEC, Math.min(mse.aheadCap, Math.floor(ahead / 2)))
+            if (last != null && last > cur + mse.aheadCap + 1) {
+              // Cut beyond the look-ahead and stop reading: the stream is
+              // sequential, so anything more it delivered would land past
+              // the cut and fill the browser again. The starvation check
+              // fetches from the edge when the playhead nears it (a cache
+              // hit on the server). abort() must come before remove():
+              // the parser cannot be aborted while a removal runs.
+              var edge = cur + mse.aheadCap
+              _mseAbortFetch()
+              mse.sb.remove(edge, Infinity)
+              return
+            }
           } catch (_) {}
           setTimeout(_mseDrain, 500)
         } else {
@@ -360,11 +432,31 @@
     // called from the tick when the playhead nears the end of what it has
     // and nothing is being fetched.
     function _mseContinueIfStarved() {
-      if (!mse || !mse.sb || mse.fetching || mse.dead || seekTimer || !video || video.paused) return
-      var ahead = _bufferedAheadOf(video.currentTime)
+      if (!mse || !mse.sb || mse.dead || seekTimer || !video || video.paused) return
+      var cur = video.currentTime
+      var ahead = _bufferedAheadOf(cur)
       var end = session.duration || video.duration || 0
-      if (end && video.currentTime + ahead >= end - 0.5) return
-      if (ahead < 5) _mseFetch(video.currentTime + ahead)
+      if (end && cur + ahead >= end - 0.5) return
+      if (mse.fetching) {
+        // A hole: the browser evicted a stretch right after the playhead
+        // while the fetch ran on ahead of it, so the picture sits at the
+        // edge with data further on and nothing arriving for the gap. The
+        // signature is a later buffered range; the cure is a fetch at the
+        // edge (a cache hit on the server, so no new converter).
+        if (ahead < 5 && watch && Date.now() - watch.movedAt > 3000 && _rangeStartAfter(cur + ahead + 0.5) != null &&
+            Date.now() - mse.lastRefetchAt > 5000) {
+          mse.lastRefetchAt = Date.now()
+          _mseFetch(cur + ahead)
+        }
+        return
+      }
+      if (ahead < 5) _mseFetch(cur + ahead)
+    }
+    function _rangeStartAfter(t) {
+      try {
+        for (var i = 0; i < video.buffered.length; i++) { if (video.buffered.start(i) > t) return video.buffered.start(i) }
+      } catch (_) {}
+      return null
     }
 
     // ── Stuck watchdog ─────────────────────────────────────────────────
@@ -437,6 +529,7 @@
 
     function open(sess, startAt) {
       session = sess
+      rebuilds = 0
       tracks = { sub: null, audio: sess.plan && sess.plan.audio ? sess.plan.audio.index : null, burn: null }
       speed = 1
       coverage = []
@@ -631,7 +724,7 @@
       return proxy
     }
 
-    return { create: create, open: open, close: close, active: active, control: control, seekTo: seekTo, mount: mount, trackList: trackList, wrapApi: wrapApi, state: _snapshot, _video: function () { return video }, _session: function () { return session }, _mse: function () { return mse }, _pollCoverageNow: _pollCoverage, _watchdogNow: _watchdog }
+    return { create: create, open: open, close: close, active: active, control: control, seekTo: seekTo, mount: mount, trackList: trackList, wrapApi: wrapApi, state: _snapshot, _video: function () { return video }, _session: function () { return session }, _mse: function () { return mse }, _pollCoverageNow: _pollCoverage, _watchdogNow: _watchdog, _starveNow: _mseContinueIfStarved }
   }
 
   var api = { create: create, TICK_MS: TICK_MS }

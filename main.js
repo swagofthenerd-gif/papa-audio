@@ -576,9 +576,23 @@ app.commandLine.appendSwitch('disable-blink-features', 'AutomationControlled')
 // rather than losing it with the process.
 app.commandLine.appendSwitch('disable-gpu-process-crash-limit')
 
-// GPU memory optimisations
-app.commandLine.appendSwitch('disable-gpu-rasterization')         // CPU rasterise tiles — less VRAM
-app.commandLine.appendSwitch('disable-zero-copy')                  // don't DMA textures directly to GPU
+// Hardware video decode in the page (video plan V4, 4K without downscaling).
+// Chromium on Linux decodes H.264 in software unless VA-API decode is
+// switched on; at 4K that is a single busy core and a picture that plays at
+// three-quarter speed. With the NVIDIA VA-API driver present the GPU's
+// decoder takes it. Experimental gate: PAPA_HW_DECODE=1 turns it on.
+if (process.env.PAPA_HW_DECODE === '1') {
+  app.commandLine.appendSwitch('enable-features', process.env.PAPA_HW_DECODE_FEATURES || 'VaapiVideoDecoder,VaapiVideoDecodeLinuxGL')
+  app.commandLine.appendSwitch('disable-features', 'UseChromeOSDirectVideoDecoder')
+  if (process.env.PAPA_HW_DECODE_BLOCKLIST === 'ignore') app.commandLine.appendSwitch('ignore-gpu-blocklist')
+}
+
+// GPU memory optimisations. PAPA_NO_GPU_SAVERS=1 skips the two that touch
+// the picture path, to measure what they cost 4K playback in the page (V4).
+if (process.env.PAPA_NO_GPU_SAVERS !== '1') {
+  app.commandLine.appendSwitch('disable-gpu-rasterization')         // CPU rasterise tiles — less VRAM
+  app.commandLine.appendSwitch('disable-zero-copy')                  // don't DMA textures directly to GPU
+}
 app.commandLine.appendSwitch('num-raster-threads', '2')            // was 4 — fewer raster threads
 app.commandLine.appendSwitch('renderer-process-limit', '1')        // only one renderer process
 app.commandLine.appendSwitch('max-gum-fps', '60')                  // cap getUserMedia fps
@@ -9372,14 +9386,35 @@ async function _webOpenAndAnnounce(url, current, title) {
   return sess
 }
 
+// The stored default of 'smooth' (what every profile carried from V1) is
+// migrated to purist once; a mode he chose in Settings carries
+// playerModeByUser and is kept. Persisted with a stamp so it runs once.
+let _playerModeMigrated = false
+function _migratePlayerModeOnce() {
+  if (_playerModeMigrated) return
+  _playerModeMigrated = true
+  try {
+    const stored = store.get('videoSettings', {}) || {}
+    if (stored.playerMode === 'smooth' && !stored.playerModeByUser && !stored.playerModeMigrated) {
+      store.set('videoSettings', Object.assign({}, stored, { playerMode: 'purist', playerModeMigrated: '2026-09-12' }))
+      console.log('[papa-video] player mode migrated to purist (the mpv path); Settings → Video switches it back')
+    }
+  } catch (_) {}
+}
+
 function _videoSettings() {
+  _migratePlayerModeOnce()
   return Object.assign(
     {
-      // 'smooth' plays inside the page through the stream server (V1);
-      // 'purist' plays through mpv in the native window, bit-exact, with HDR
-      // and TrueHD pass-through. Anything the planner refuses falls back to
-      // purist automatically.
-      playerMode: 'smooth',
+      // 'purist' plays through mpv in the native window, bit-exact, with
+      // HDR and TrueHD pass-through and instant seeks — the way the app
+      // played before the in-page player existed, and what he asked for
+      // back ("smooth as butter, not reducing the quality, just like
+      // before", 2026-09-12). 'smooth' plays inside the page through the
+      // stream server (V1): converted, with the floating card. A mode he
+      // picked himself in Settings is kept (playerModeByUser); the old
+      // stored default of 'smooth' is migrated to purist once.
+      playerMode: 'purist',
       tmdbApiKey: '',
       // The second opinion: IMDb, Rotten Tomatoes and Metacritic in one
       // request, plus the awards line and the certificate. Optional — every
@@ -9434,6 +9469,7 @@ function _videoSettings() {
     store.get('videoSettings')
   )
 }
+
 
 // The debrid client (roadmap #40), built lazily and only when configured. The
 // token is read through a getter so a token changed in Settings is picked up
@@ -10169,6 +10205,9 @@ ipcMain.handle('video-settings-set', (_, { patch }) => {
     for (const [k, v] of Object.entries(patch || {})) {
       if (VIDEO_SETTING_KEYS.has(k)) clean[k] = v
     }
+    // A mode chosen in Settings is the user's; the one-time migration to
+    // purist (below) leaves it alone.
+    if (clean.playerMode) clean.playerModeByUser = true
     const next = { ...current, ...clean }
     store.set('videoSettings', next)
     // Clearing the key is as much a change as setting one, and the ranking and

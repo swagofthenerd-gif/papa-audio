@@ -20,8 +20,11 @@ function fn(src, name) {
   return src.slice(at, next === -1 ? undefined : next)
 }
 
-test('main: smooth is the default; a play opens a web session and announces it; the planner refusing falls back to mpv; stop closes the session', () => {
-  assert.match(MAIN, /playerMode: 'smooth',/)
+test('main: purist (mpv) is the default again, the stored smooth default is migrated once and a chosen mode is kept; a play opens a web session and announces it; the planner refusing falls back to mpv; stop closes the session', () => {
+  assert.match(MAIN, /playerMode: 'purist',/)
+  assert.match(MAIN, /if \(stored\.playerMode === 'smooth' && !stored\.playerModeByUser && !stored\.playerModeMigrated\) \{/)
+  assert.match(MAIN, /if \(clean\.playerMode\) clean\.playerModeByUser = true/)
+  assert.match(CODE, /modeSel\.value = s\.playerMode === 'smooth' \? 'smooth' : 'purist'/)
   const play = MAIN.slice(MAIN.indexOf("ipcMain.handle('video-play'"), MAIN.indexOf("ipcMain.handle('video-trailer'"))
   assert.match(play, /const smooth = _videoSettings\(\)\.playerMode !== 'purist'/)
   assert.match(play, /const sess = await _webOpenAndAnnounce\(url, current, title\)/)

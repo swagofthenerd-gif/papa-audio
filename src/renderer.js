@@ -4156,6 +4156,10 @@ function _handleVideoEvent(payload) {
     _player.setStageMessage('<div class="spin"></div><div>' + esc(w.text) + '</div>' +
       '<div style="opacity:.6">' + esc(w.next) + '</div>')
     showToast(w.text)
+  } else if (payload.kind === 'ready') {
+    // The in-page engine has enough to play again: the wait is over, even
+    // if the film is paused and no 'playing' follows.
+    _player.setStageMessage('')
   } else if (payload.kind === 'unstuck') {
     _player.setStageMessage('')
     showToast('Resumed')
@@ -20758,7 +20762,7 @@ async function _initVideoSettings() {
   $('video-quality').value = s.preferredQuality || '1080p'
   const modeSel = $('video-player-mode')
   if (modeSel) {
-    modeSel.value = s.playerMode === 'purist' ? 'purist' : 'smooth'
+    modeSel.value = s.playerMode === 'smooth' ? 'smooth' : 'purist'
     modeSel.addEventListener('change', function () { save({ playerMode: modeSel.value }) })
   }
   if (s.tmdbApiKey) keyInput.placeholder = 'Key saved ✓ — paste new one to change'

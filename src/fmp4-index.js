@@ -203,5 +203,50 @@
 
     return { push: pushChunk, fragmentAt, coveredSec, state: st }
   }
-  return { create }
+
+  // Stamp a duration into an init segment (a copy). ffmpeg's streaming
+  // fragmented MP4 (empty_moov) writes mvhd.duration = 0 and no usable mehd;
+  // Chromium reads 0 as "live" and decodes a live stream in low-delay mode —
+  // one thread, no frame threading — which at 4K is a picture that plays at
+  // 0.86 of real time. With a real duration the decoder gets its threads.
+  function stampDuration(buf, durationSec) {
+    var out = new Uint8Array(buf.length); out.set(buf)
+    var dv = new DataView(out.buffer, out.byteOffset, out.byteLength)
+    var sec = Number(durationSec)
+    if (!(sec > 0)) return out
+    var moov = _find(dv, 0, dv.byteLength, 'moov')
+    if (!moov) return out
+    var mvhd = _find(dv, moov.body, moov.end, 'mvhd')
+    var timescale = 0
+    if (mvhd) {
+      var v = dv.getUint8(mvhd.body)
+      if (v === 1) { timescale = dv.getUint32(mvhd.body + 20); _setU64(dv, mvhd.body + 24, Math.round(sec * timescale)) }
+      else { timescale = dv.getUint32(mvhd.body + 12); dv.setUint32(mvhd.body + 16, Math.min(0xffffffff, Math.round(sec * timescale))) }
+    }
+    var mvex = _find(dv, moov.body, moov.end, 'mvex')
+    var mehd = mvex ? _find(dv, mvex.body, mvex.end, 'mehd') : null
+    if (mehd && timescale) {
+      var mv = dv.getUint8(mehd.body)
+      if (mv === 1) _setU64(dv, mehd.body + 4, Math.round(sec * timescale))
+      else dv.setUint32(mehd.body + 4, Math.min(0xffffffff, Math.round(sec * timescale)))
+    }
+    return out
+  }
+  function _find(dv, from, to, type) {
+    var pos = from
+    while (pos + 8 <= to) {
+      var size = dv.getUint32(pos)
+      var t = String.fromCharCode(dv.getUint8(pos + 4), dv.getUint8(pos + 5), dv.getUint8(pos + 6), dv.getUint8(pos + 7))
+      var hdr = 8
+      if (size === 1) { size = dv.getUint32(pos + 12) + dv.getUint32(pos + 8) * 4294967296; hdr = 16 }
+      else if (size === 0) size = to - pos
+      if (size < hdr) return null
+      if (t === type) return { start: pos, body: pos + hdr, end: Math.min(to, pos + size) }
+      pos += size
+    }
+    return null
+  }
+  function _setU64(dv, at, value) { dv.setUint32(at, Math.floor(value / 4294967296)); dv.setUint32(at + 4, value >>> 0) }
+
+  return { create, stampDuration }
 })

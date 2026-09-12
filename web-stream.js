@@ -232,7 +232,7 @@ function createWebStreamServer(opts) {
 
   // Stream a run's file to a response: the init segment, then from `offset`
   // to the end, following the file while the run is live.
-  function _followRun(run, offset, res) {
+  function _followRun(run, offset, res, durationSec) {
     run.readers++
     let closed = false
     res.on('close', () => { closed = true; run.emit('grow') })
@@ -250,7 +250,14 @@ function createWebStreamServer(opts) {
           const initLen = run.index.state.initLength
           if (phase === 'init') {
             if (!run.index.state.ready) { if (run.done) break; await _wait(run); continue }
-            if (pos < initLen) { const c = await readAt(pos, Math.min(READ_CHUNK, initLen - pos)); if (!c) { await _wait(run); continue } pos += c.length; await write(c); continue }
+            if (pos < initLen) {
+              let c = await readAt(pos, Math.min(READ_CHUNK, initLen - pos)); if (!c) { await _wait(run); continue }
+              // The init segment carries the title's duration (see
+              // fmp4.stampDuration): the browser must not take a
+              // streamed conversion for a live broadcast.
+              if (pos === 0 && c.length === initLen && durationSec > 0) c = Buffer.from(fmp4.stampDuration(c, durationSec))
+              pos += c.length; await write(c); continue
+            }
             phase = 'body'; pos = Math.max(offset, initLen)
           }
           if (pos < run.bytes) { const c = await readAt(pos, Math.min(READ_CHUNK, run.bytes - pos)); if (!c) { await _wait(run); continue } pos += c.length; await write(c); continue }
@@ -314,7 +321,7 @@ function createWebStreamServer(opts) {
       'X-Papa-Start': String(run.start),
       'X-Papa-Cached': hit ? '1' : '0',
     })
-    _followRun(run, offset, res)
+    _followRun(run, offset, res, s.duration)
   }
 
   // ── subtitles ─────────────────────────────────────────────────────────────
