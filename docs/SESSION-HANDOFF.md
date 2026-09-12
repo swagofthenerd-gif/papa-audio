@@ -528,6 +528,30 @@ He opened an anime and saw no seasons at all. Two causes, both fixed:
   pre-1968 MPAA rating. `_certLabel` prefixes word-style certificates
   ("Rated Approved") and both chips carry `title="Age rating"`.
 
+### 23. Hardware decode in the page — three attempts, not viable here (2026-09-12, Fable 5.1)
+
+Electron 28 (Chromium 120), NVIDIA 610.57.04, libva-nvidia-driver 0.0.18
+(which decodes the 4K HEVC at 1.95× in ffmpeg, so the driver itself works):
+
+| Variant | Switches | Result |
+|---|---|---|
+| A | `--enable-features=VaapiVideoDecoder,VaapiVideoDecodeLinuxGL`, blocklist honoured, `NVD_LOG=1` | GPU process stayed up, the NVIDIA VA-API driver initialised inside it (nv-driver log lines), but `videoDecoding: []` — the blocklist keeps VA-API decode off on NVIDIA; the whole app then exited while starting the 4K play (renderer frame disposed; no crash line) |
+| B | as A + `--ignore-gpu-blocklist --use-gl=egl` | `FATAL gpu_init.cc: Passthrough is not supported, GL is egl` — this Electron only runs ANGLE passthrough; GPU crash loop |
+| earlier | as A + `--ignore-gpu-blocklist` + `VaapiIgnoreDriverChecks` | GPU process exit 133 at start, decode stayed software |
+
+Conclusion: not shippable without deeper Chromium work (an ANGLE/GL
+backend the VA-API path accepts, or a newer Electron). The env gates stay
+(`PAPA_HW_DECODE=1`, `PAPA_HW_DECODE_FEATURES`, `PAPA_HW_DECODE_BLOCKLIST=ignore`,
+`PAPA_HW_DECODE_GL`, `PAPA_HW_DECODE_ANGLE`, `PAPA_NO_GPU_SAVERS=1`), all
+off by default. In practice 4K in the page already plays at real time on
+software decode since §14 (duration stamp → frame threads).
+
+Also this stretch: no peer above 65k files was online to measure (21k was
+the largest found; several "1 folder · 84 files" listings are partial
+shares). DSD: 352.8 kHz PCM plays fine (the engine outputs at 96 kHz), so
+the crash is DSD-specific; there is no DSD file on disk any more (the
+Camel SACD folder is empty) and downloading a sample needs his say-so.
+
 ## 7. Open debt and outstanding items
 
 - **Peer-library speed** measured live on a 65k-file peer (§16): one 58 ms
@@ -540,7 +564,7 @@ He opened an anime and saw no seasons at all. Two causes, both fixed:
   `node server.js`, which is wrong; the bridge starts with the app.
 - **He must restart the desktop app** to pick up everything in §4.
 - **DSD playback** still can't actually play — it only skips politely now.
-  He was offered a transcode-to-a-supported-rate fix and hasn't answered.
+  No DSD file is left on disk to reproduce with (§23); a sample is needed.
 - A safety classifier once blocked grepping `slskd.yml` for credentials.
   Don't work around it; use the scheduler state file and source instead.
 

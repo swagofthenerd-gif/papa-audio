@@ -585,6 +585,8 @@ if (process.env.PAPA_HW_DECODE === '1') {
   app.commandLine.appendSwitch('enable-features', process.env.PAPA_HW_DECODE_FEATURES || 'VaapiVideoDecoder,VaapiVideoDecodeLinuxGL')
   app.commandLine.appendSwitch('disable-features', 'UseChromeOSDirectVideoDecoder')
   if (process.env.PAPA_HW_DECODE_BLOCKLIST === 'ignore') app.commandLine.appendSwitch('ignore-gpu-blocklist')
+  if (process.env.PAPA_HW_DECODE_GL) app.commandLine.appendSwitch('use-gl', process.env.PAPA_HW_DECODE_GL)
+  if (process.env.PAPA_HW_DECODE_ANGLE) app.commandLine.appendSwitch('use-angle', process.env.PAPA_HW_DECODE_ANGLE)
 }
 
 // GPU memory optimisations. PAPA_NO_GPU_SAVERS=1 skips the two that touch
