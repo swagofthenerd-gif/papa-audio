@@ -552,6 +552,15 @@ shares). DSD: 352.8 kHz PCM plays fine (the engine outputs at 96 kHz), so
 the crash is DSD-specific; there is no DSD file on disk any more (the
 Camel SACD folder is empty) and downloading a sample needs his say-so.
 
+### 24. Decision: the app stays Electron + mpv (2026-09-12)
+
+He asked what going native would take (answer given: Electron bump; libmpv
+frames into the page, ~a week, needs `mpv-libs-devel`; or a Qt rewrite,
+months) and how much option 2 would cost and whether it would be smooth.
+His decision: **"lets keep it as is."** Do not reopen the libmpv-in-page
+or native-rewrite ideas unless he raises them. Purist (mpv) stays the
+default player; smooth mode stays an option.
+
 ## 7. Open debt and outstanding items
 
 - **Peer-library speed** measured live on a 65k-file peer (§16): one 58 ms
