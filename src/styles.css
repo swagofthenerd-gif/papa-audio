@@ -4169,11 +4169,20 @@ h2.section-title { font-size:18px; font-weight:700; }
   margin-bottom: 12px;
   flex-shrink: 0;
 }
+/* The silhouette is the placeholder: it shows until the photo has loaded
+   and the photo fades in over it (roadmap S8: following-row art painted as
+   blank circles before filling). A photo that fails simply leaves it. */
+.artist-card-art { position: relative; }
 .artist-card-art img {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
   object-fit: cover;
+  opacity: 0;
+  transition: opacity .35s ease;
 }
+.artist-card-art img.is-loaded { opacity: 1; }
 .artist-card-art-fallback {
   width: 100%;
   height: 100%;

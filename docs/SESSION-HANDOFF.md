@@ -468,6 +468,24 @@ draws PGS natively.
   search text' }` instead of a raw TypeError (roadmap W-T input validation;
   `test/ipc-input-guard.test.js`). Other edges were not swept.
 
+### 20. Roadmap S8 and the queue panel (2026-09-12, Fable 5.1)
+
+- **S8, following-row art:** the circle painted blank until the photo
+  arrived because the silhouette fallback was `display:none` whenever an
+  art path existed. The silhouette now stays as the placeholder and the
+  photo (absolute, opacity 0) fades in over it on `load`; a failed photo
+  removes itself. Both templates (library artists, YouTube artists).
+  Test: following-art-placeholder.test.js.
+- **Queue panel reopen centres the playing track:** `renderQueuePanel`
+  nudged the row with `block:'nearest'` and then restored the panel's old
+  scrollTop, so on open the row sat just below the fold. `toggleQueuePanel`
+  sets `state._queueJustOpened`; that render skips the restore and scrolls
+  the playing row to `block:'center'`; live re-renders keep their position.
+  Live on a twin: the following row's five photos fade in over their
+  silhouettes (no blank circles); the queue panel opened with the playing
+  row in view and centred — but his 14-track queue fits the panel without
+  scrolling, so the centring itself is only unit-pinned, not proven live.
+
 ## 7. Open debt and outstanding items
 
 - **Peer-library speed** measured live on a 65k-file peer (§16): one 58 ms

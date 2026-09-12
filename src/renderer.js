@@ -9821,8 +9821,8 @@ function renderHome() {
   const ytFollowingCards = state.ytFollowed.map(a => `
     <div class="artist-card following-card yt-artist-card" data-channel="${esc(a.channelId)}">
       <div class="artist-card-art">
-        ${a.thumbnailUrl ? `<img src="${esc(a.thumbnailUrl)}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">` : ''}
-        <div class="artist-card-art-fallback" ${a.thumbnailUrl ? 'style="display:none"' : ''}>
+        ${a.thumbnailUrl ? `<img src="${esc(a.thumbnailUrl)}" alt="" loading="lazy" onload="this.classList.add('is-loaded')" onerror="this.remove()">` : ''}
+        <div class="artist-card-art-fallback">
           <svg viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
         </div>
       </div>
@@ -9839,8 +9839,8 @@ function renderHome() {
       const ct = _artistAlbumCount(name)
       return `<div class="artist-card following-card" data-follow-artist="${esc(name)}">
         <div class="artist-card-art">
-          ${ap ? `<img src="${esc('file://' + ap)}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">` : ''}
-          <div class="artist-card-art-fallback" ${ap ? 'style="display:none"' : ''}>
+          ${ap ? `<img src="${esc('file://' + ap)}" alt="" loading="lazy" onload="this.classList.add('is-loaded')" onerror="this.remove()">` : ''}
+          <div class="artist-card-art-fallback">
             <svg viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
           </div>
         </div>
@@ -16372,7 +16372,10 @@ function toggleQueuePanel() {
   const btn   = document.getElementById('btn-queue')
   panel.classList.toggle('open', state.queuePanelOpen)
   if (btn) btn.classList.toggle('active', state.queuePanelOpen)
-  if (state.queuePanelOpen) renderQueuePanel()
+  // Opening centres the playing track (roadmap W-T: it landed just below
+  // the fold, because the render restored the panel's old scroll position
+  // after nudging the row into view). Live re-renders keep their position.
+  if (state.queuePanelOpen) { state._queueJustOpened = true; renderQueuePanel() }
 }
 
 // Wires the queue panel header controls, shared by both render paths (empty and
@@ -16716,7 +16719,9 @@ function renderQueuePanel() {
   })
 
   const playingEl = list.querySelector('.queue-row.playing')
-  if (playingEl) playingEl.scrollIntoView({ block: 'nearest' })
+  const justOpened = !!state._queueJustOpened
+  state._queueJustOpened = false
+  if (playingEl && !justOpened) playingEl.scrollIntoView({ block: 'nearest' })
 
   // Smart suggestions based on current track — cached per-track, O(1) on re-renders
   if (curTrack) {
@@ -16774,7 +16779,8 @@ function renderQueuePanel() {
     }
   }
   var qp3 = document.getElementById('queue-panel')
-  if (qp3) qp3.scrollTop = st
+  if (qp3 && !justOpened) qp3.scrollTop = st
+  if (playingEl && justOpened) { try { playingEl.scrollIntoView({ block: 'center' }) } catch (_) {} }
 }
 
 function addToQueue(album, tracksOverride) {
