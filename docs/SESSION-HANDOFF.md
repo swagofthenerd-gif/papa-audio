@@ -342,8 +342,11 @@ Later the same day: `3ffe22e` (R8 R14 R15 R17 + plural sweep), `a7370cd` (R18 R1
   "The smooth player could not decode this stream" (now one error, not a
   storm) — cause not found; the burn re-encodes a zero-cost remux through
   libx264 at 981 % CPU because the remembered subtitle preference picked
-  the PGS track. `_videoPlayResult` from a fresh twin page in purist mode
-  once did nothing while a direct `videoPlay` worked — not chased.
+  the PGS track. (`_videoPlayResult` in purist mode was re-checked with the
+  deck's open/ready traced: open → ready resolved → mpv up, position moving
+  — the earlier "did nothing" was the harness: the context-bridge `api`
+  object is frozen, so a traced `window.api.videoPlay` never installed, and
+  `_videoLastState` is only set once `_watch.key` exists.)
 - Measuring tips: `requestVideoFrameCallback` gives the true presented fps
   and media rate; `currentTime` alone lied under the retry storm. Front the
   twin (`drive.js front`) and leave the film's detail page first, or a saved
