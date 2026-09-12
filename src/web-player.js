@@ -175,9 +175,16 @@
     }
 
     // Can this session go through Media Source Extensions?
+    // The SourceBuffer's type: the plan's, or the burn variant's when a
+    // subtitle is drawn in (that run re-encodes the picture to H.264).
+    function _currentMime() {
+      if (!session) return null
+      if (tracks.burn != null && session.burnMime) return session.burnMime
+      return session.mime || (session.plan && session.plan.mime) || null
+    }
     function _mseUsable() {
       if (!MediaSourceCtor || !fetchFn || !URLApi || !session) return false
-      var mime = session.mime || (session.plan && session.plan.mime)
+      var mime = _currentMime()
       if (!mime) return false
       try { return !!MediaSourceCtor.isTypeSupported(mime) } catch (_) { return false }
     }
@@ -257,7 +264,7 @@
           // second SourceBuffer would throw and must not read as a refusal.
           if (mse.sb) return
           try {
-            mse.sb = ms.addSourceBuffer(session.mime || session.plan.mime)
+            mse.sb = ms.addSourceBuffer(_currentMime())
             mse.sb.mode = 'segments'
             mse.sb.addEventListener('updateend', _mseDrain)
             mse.sb.addEventListener('error', function () { onEvent({ kind: 'error', web: true, message: 'The smooth player could not append the stream' }) })

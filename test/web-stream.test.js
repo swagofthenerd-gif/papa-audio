@@ -43,6 +43,9 @@ test('open probes, plans, and returns a session with a stream URL and subtitle s
   assert.equal(s.plan.mode, 'remux')
   assert.equal(s.subtitles.length, 1)
   assert.match(s.subtitles[0].url, /\/sub\/3\.vtt$/)
+  // A burned subtitle's run re-encodes the picture to H.264 whatever the
+  // source codec; the page types its SourceBuffer with this for that run.
+  assert.match(s.burnMime, /^video\/mp4; codecs="avc1\.[0-9a-f]{6},/)
   srv.shutdown()
 })
 

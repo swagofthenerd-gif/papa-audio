@@ -307,7 +307,7 @@ function quotaMSE(video, limitSec) {
     constructor() { this.readyState = 'closed'; this.l = {}; this.sb = null; sources.push(this) }
     static isTypeSupported() { return true }
     addEventListener(e, fn) { (this.l[e] = this.l[e] || []).push(fn) }
-    addSourceBuffer() { this.sb = new SB(); return this.sb }
+    addSourceBuffer(mime) { this.mime = mime; this.sb = new SB(); return this.sb }
     endOfStream() { this.readyState = 'ended' }
     open() { this.readyState = 'open'; (this.l.sourceopen || []).forEach(fn => fn()) }
   }
@@ -453,5 +453,39 @@ test('a refetch that starts behind the playhead nudges the element once', async 
     assert.equal(sets, 1, 'one nudge after the first append')
     await settle(20)
     assert.equal(sets, 1, 'not repeated')
+  } finally { engine.close() }
+})
+
+// A burned subtitle is drawn in on an H.264 re-encode whatever the source
+// codec, so the SourceBuffer for that run is typed for H.264 (an AV1 film with
+// a PGS track burned in was refused: "codec h264 doesn't match SourceBuffer").
+test('switching a burned subtitle on rebuilds the media source with the burn MIME, and off with the plan MIME', async () => {
+  const holder = { video: null }
+  const doc2 = fakeDoc(); const origCreate = doc2.createElement
+  doc2.createElement = function (tag) { const el = origCreate.call(this, tag); if (tag === 'video') holder.video = el; return el }
+  Object.defineProperty(holder, 'ranges', { get() { return holder.video.ranges }, set(v) { holder.video.ranges = v } })
+  const F = quotaMSE(holder, 1000)
+  F.MS.isTypeSupported = m => /av01|avc1/.test(m)
+  const log = []
+  const engine = W.create({ document: doc2, api: {}, onEvent() {}, MediaSource: F.MS, fetch: endlessFetch(log, 1024), URL: URLApi, AbortController: FakeAbort })
+  const av1 = Object.assign({}, session, {
+    mime: 'video/mp4; codecs="av01.0.08M.10,opus"', burnMime: 'video/mp4; codecs="avc1.640028,opus"',
+    plan: { mode: 'remux', badges: [], video: { index: 0, codec: 'av1', copy: true }, audio: { index: 1, codec: 'opus', copy: true, channels: 6 }, mime: 'video/mp4; codecs="av01.0.08M.10,opus"' },
+    burnable: [{ index: 4, lang: 'eng', title: 'English', styled: false }],
+  })
+  try {
+    engine.open(av1, 0)
+    F.sources[0].open(); await settle(10)
+    assert.match(F.sources[0].mime, /av01/, 'the copied AV1 to begin with')
+    await engine.control('track', { type: 'sub', id: 4 })
+    F.sources[F.sources.length - 1].open(); await settle(10)
+    assert.equal(F.sources.length, 2, 'a new media source for the burn run')
+    assert.match(F.sources[1].mime, /avc1\.640028,opus/, 'typed for the H.264 the burn run produces')
+    assert.match(log[log.length - 1].url, /burn=4/)
+    await engine.control('track', { type: 'sub', id: 'no' })
+    F.sources[F.sources.length - 1].open(); await settle(10)
+    assert.equal(F.sources.length, 3)
+    assert.match(F.sources[2].mime, /av01/, 'back to the copied original')
+    assert.doesNotMatch(log[log.length - 1].url, /burn=/)
   } finally { engine.close() }
 })

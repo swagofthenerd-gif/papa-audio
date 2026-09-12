@@ -406,6 +406,11 @@ function createWebStreamServer(opts) {
       mime: plan.mime,
       subtitles: plan.subtitles.sidecars.map(sub => ({ index: sub.index, lang: sub.lang, title: sub.title, url: `http://127.0.0.1:${port}/s/${s.id}/sub/${sub.index}.vtt` })),
       burnable: plan.subtitles.burnable,
+      // A burned subtitle is drawn in on a re-encode to H.264, whatever the
+      // source codec: the page's SourceBuffer must be typed for that, not
+      // for the copied original (an AV1 film with a PGS track burned in was
+      // refused by the browser: "codec h264 doesn't match SourceBuffer").
+      burnMime: planner.mimeFor(plan.video, plan.audio, false, !!(plan.audio && plan.audio.copy)),
       audios: plan.audios,
       plan: { mode: plan.mode, reason: plan.reason, badges: plan.badges, prerollSec: plan.prerollSec, video: plan.video, audio: plan.audio, mime: plan.mime },
     }

@@ -338,9 +338,10 @@ Later the same day: `3ffe22e` (R8 R14 R15 R17 + plural sweep), `a7370cd` (R18 R1
 - **"Buffering…" honesty:** the engine reports a wait only after 400 ms
   with readyState < 3, and `canplay` sends `ready`, which clears the stage
   even when paused.
-- **Open:** the AV1 (Clockwork Orange) file with a PGS track burned in gave
-  "The smooth player could not decode this stream" (now one error, not a
-  storm) — cause not found; the burn re-encodes a zero-cost remux through
+- **Open (fixed in §18):** the AV1 (Clockwork Orange) file with a PGS track
+  burned in gave "The smooth player could not decode this stream" (now one
+  error, not a storm) — the SourceBuffer was typed for AV1 while the burn
+  run produces H.264; the burn re-encodes a zero-cost remux through
   libx264 at 981 % CPU because the remembered subtitle preference picked
   the PGS track. (`_videoPlayResult` in purist mode was re-checked with the
   deck's open/ready traced: open → ready resolved → mpv up, position moving
@@ -433,6 +434,23 @@ PerformanceObserver, CPU profile via `drive.js profile`):
 - Trap: `location.reload()` on the twin can serve the old renderer.js from
   the Code Cache — check `_fn.toString()` for the new code or relaunch with
   the profile's `Code Cache` removed.
+
+### 18. AV1 + burned subtitle in smooth mode — fixed (2026-09-12, Fable 5.1)
+
+The "could not decode" on the AV1 Clockwork Orange file (§14, open) was
+`CHUNK_DEMUXER_ERROR_APPEND_FAILED: Video stream codec h264 doesn't match
+SourceBuffer codecs`: his remembered subtitle preference picked the English
+PGS track, the burn run re-encodes the picture to H.264 through libx264,
+but the SourceBuffer had been created for the plan's copied AV1 MIME.
+`web-stream.open` now returns `burnMime` (the plan with the picture
+re-encoded: `avc1.640028,opus` here) and the engine's `_currentMime()` types
+the SourceBuffer with it whenever a burned track is on (each burn switch
+already rebuilt the media source). Live on a twin: plays with the English
+image subtitle drawn in at 3 s; switching it off returns to the copied
+AV1 and keeps playing. Test: web-player-mse "switching a burned subtitle…".
+Note the burn still costs a full software encode (libx264 at ~980 % CPU on
+this 1080p file) — the price of an image subtitle in the page; mpv (purist)
+draws PGS natively.
 
 ## 7. Open debt and outstanding items
 
