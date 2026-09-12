@@ -45,7 +45,8 @@ test('a quiet start says how long it has waited, on the stage and once as a toas
   const src = fn('_armStartWatch') + fn('_disarmStartWatch') + fn('_startWatchWords') + fn('_startWatchTick')
   const msgs = []; const toasts = []
   const ctx = vm.createContext({
-    _startWatch: null, _startWatchTimer: null, START_WATCH_QUIET_MS: 15000,
+    _startWatch: null, _startWatchTimer: null, START_WATCH_QUIET_MS: 15000, START_SWITCH_QUIET_MS: 20000, _startWatchLastSig: '',
+    _watch: { pick: null }, _autoSwitchSource() {},
     setInterval: () => 1, clearInterval() {}, Date: { now: () => 100000 },
     _player: { setStageMessage: m => msgs.push(m) }, showToast: t => toasts.push(t),
     esc: s => s, PapaStartHonesty: require('../src/start-honesty'),
@@ -75,6 +76,16 @@ test('the stage words paint above the in-page video', () => {
   const block = CSS.slice(CSS.indexOf('.vt-stage-msg {'), CSS.indexOf('.vt-stage-msg .spin'))
   assert.match(block, /z-index:4/)
   assert.match(block, /\.vt-stage-msg > div:not\(\.spin\) \{\n\s+background:rgba\(0,0,0,\.55\)/)
+})
+
+test('a torrent showing no progress at start is swapped after 20 s; repeated identical reports are not progress', () => {
+  const h = fn('_handleVideoEvent')
+  assert.match(h, /const sig = label \+ '\|' \+ \(pct != null \? pct : ''\)/)
+  assert.match(h, /if \(sig !== _startWatchLastSig\) \{ _startWatchLastSig = sig; _startWatchWords\(\) \}/)
+  const tick = fn('_startWatchTick')
+  assert.match(tick, /now - _startWatch\.wordsAt >= START_SWITCH_QUIET_MS/)
+  assert.match(tick, /_watch\.pick\.kind === 'torrent' && \(_watch\.autoSwitches \|\| 0\) < 2/)
+  assert.match(tick, /_startWatch\.switched = true\n\s+_autoSwitchSource\(\)/)
 })
 
 test('the engine reports a frozen picture and the page says which side is stuck', () => {

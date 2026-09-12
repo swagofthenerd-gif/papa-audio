@@ -74,7 +74,7 @@ test('R12: extractor failures are named as such, not as the network', () => {
 
 test('R12: a player error reaches mini mode as a toast, and an extractor error offers Update yt-dlp', () => {
   const ev = fn('_handleVideoEvent')
-  const branch = ev.slice(ev.indexOf("payload.kind === 'error'"), ev.indexOf("payload.kind === 'error'") + 700)
+  const branch = ev.slice(ev.indexOf("payload.kind === 'error'"), ev.indexOf("payload.kind === 'error'") + 1800)
   assert.match(branch, /_player\.setStageMessage/)
   assert.match(branch, /showSnackbar\(text, 'Update yt-dlp', _updateYtdlpFromError, 12000\)/)
   assert.match(branch, /else showToast\(text\)/)

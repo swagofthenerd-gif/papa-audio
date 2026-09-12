@@ -1044,7 +1044,12 @@ class TorrentStreamer extends EventEmitter {
     const peers = (torrent && torrent.numPeers) || 0
     const downloaded = (torrent && torrent.downloaded) || 0
 
-    if ((peers > 0 || downloaded > 0) && this._extensions < MAX_TIMEOUT_EXTENSIONS) {
+    // Peers that send nothing are not "something happening": after one
+    // grace extension, the deadline is only extended while bytes keep
+    // arriving (nine connected peers and 0 bytes for 80 s, seen live).
+    const grew = downloaded > (this._lastTimeoutDownloaded || 0)
+    this._lastTimeoutDownloaded = downloaded
+    if ((peers > 0 || downloaded > 0) && this._extensions < MAX_TIMEOUT_EXTENSIONS && (grew || this._extensions < 1)) {
       this._extensions++
       this.emit('progress', {
         phase: 'connecting', peers, downloaded,

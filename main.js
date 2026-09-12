@@ -11587,6 +11587,11 @@ function _wireVideoEngine() {
     safeSend('video-event', { kind: 'unstalled' })
   })
   engine.on('ended', payload => {
+    // While a source switch is in flight mpv is still on the OLD stream,
+    // whose server has just been torn down: its end-of-file is the switch's
+    // own doing, not a finished film. Announcing it stopped the new play
+    // (seen live: "Switched to TPB", then 'ended' four seconds later).
+    if (_videoSession.switching) { console.log('[papa-video] end of the old stream during a switch, ignored'); return }
     safeSend('video-event', {
       kind: 'ended',
       // reason is 'eof' or 'error'; the error field is mpv's message when it
@@ -12059,13 +12064,15 @@ ipcMain.handle('video-switch-stream', async (_, { result } = {}) => {
     // itself over the new one, exactly as in video-play.
     const token = ++_videoSession.token
     const current = () => _videoSession.token === token
-    const fail = e => { if (current()) safeSend('video-event', { kind: 'error', message: (e && e.message) || String(e) }) }
+    _videoSession.switching = true
+    const fail = e => { _videoSession.switching = false; if (current()) safeSend('video-event', { kind: 'error', message: (e && e.message) || String(e) }) }
 
     _startTorrentStream(result, {
       current, fail,
       onReady: (url, streamer) => {
         // mpv is already running; point it at the new file and seek back.
         videoEngine().load(url).then(async () => {
+          _videoSession.switching = false
           if (!current()) return
           // Absolute seek to the saved position. A source with a shorter file
           // (a different cut) would reject the seek; that must not fail the
@@ -12093,6 +12100,7 @@ ipcMain.handle('video-switch-stream', async (_, { result } = {}) => {
 ipcMain.handle('video-stop', async () => {
   try {
     _videoSession.token++
+    _videoSession.switching = false
     _webClose()
     _videoTeardown()
     _closeVideoWindow()

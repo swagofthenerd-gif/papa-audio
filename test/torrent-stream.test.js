@@ -1568,3 +1568,27 @@ test('stats() survives a torrent with missing counters', () => {
     streamer.stop()
   })
 }
+
+// Connected peers that send nothing are not "something happening": after one
+// grace extension the deadline is only extended while bytes keep arriving
+// (nine peers and 0 bytes for 80 seconds, seen live).
+test('peers with no bytes get one extension; growing bytes keep the extensions coming', () => {
+  const s = timeoutHarness({ peers: 9 })
+  let rejected = null
+  s._onTimeout(e => { rejected = e })
+  assert.strictEqual(rejected, null, 'one grace extension')
+  s._onTimeout(e => { rejected = e })
+  assert.ok(rejected, 'no bytes after the grace period: give up')
+  assert.strictEqual(rejected.code, 'SLOW_START')
+  s.stop()
+  const g = timeoutHarness({ peers: 9 })
+  let r2 = null
+  let bytes = 0
+  Object.defineProperty(g._torrent, 'downloaded', { get: () => bytes, configurable: true })
+  bytes = 1000; g._onTimeout(e => { r2 = e })
+  bytes = 2000; g._onTimeout(e => { r2 = e })
+  bytes = 3000; g._onTimeout(e => { r2 = e })
+  assert.strictEqual(r2, null, 'bytes kept arriving: still extending')
+  assert.strictEqual(g._extensions, 3)
+  g.stop()
+})

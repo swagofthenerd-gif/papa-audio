@@ -3913,6 +3913,24 @@ function _startOver() {
 // Guards a single in-flight auto-switch: a second 'stalled' arriving during
 // the await must not launch a second switch on top of the first.
 var _autoSwitchInFlight = false
+var _lastVideoErrorMsg = ''
+var _lastVideoErrorAt = 0
+function _sourceKey(s) { return ((s && (s.magnet || s.url)) || '') + '' }
+// The next source not yet tried for this episode, or null. Every source
+// tried is remembered on the watch state, so a second switch never lands
+// back on the first dead one. Synchronous, so a caller can decide before
+// starting the (async) switch.
+function _nextUntriedSource() {
+  const cur = _watch.pick
+  const list = Array.isArray(_videoStreams) ? _videoStreams : []
+  _watch.tried = _watch.tried || {}
+  if (cur) _watch.tried[_sourceKey(cur)] = true
+  return list.find(function (s) {
+    if (!s || s === cur) return false
+    const a = _sourceKey(s)
+    return a && !_watch.tried[a]
+  }) || null
+}
 
 // Swap the running stream for the next viable source without leaving the
 // theatre or losing the place. The switch handler keeps mpv alive, starts the
@@ -3922,15 +3940,8 @@ async function _autoSwitchSource() {
   // One switch at a time. A stall storm (several 'stalled' events while the
   // torrent is dying) used to fire concurrent switches that raced each other.
   if (_autoSwitchInFlight) return
-  const cur = _watch.pick
-  const list = Array.isArray(_videoStreams) ? _videoStreams : []
-  const next = list.find(function (s) {
-    if (!s || s === cur) return false
-    const a = (s.magnet || s.url || '') + ''
-    const b = ((cur && (cur.magnet || cur.url)) || '') + ''
-    return a && a !== b
-  })
-  if (!next) return
+  const next = _nextUntriedSource()
+  if (!next) return false
   // Pin the title/season we are switching for. If the user navigates to a
   // different detail page or season while the switch is in flight, the result
   // that lands would apply to the wrong show — bail instead.
@@ -3938,6 +3949,7 @@ async function _autoSwitchSource() {
   const seasonTicket = _videoSeasonTicket
   _autoSwitchInFlight = true
   _watch.autoSwitches = (_watch.autoSwitches || 0) + 1
+  _watch.tried[_sourceKey(next)] = true
   // The request needs the same episode context _videoPlayResult attaches.
   let result = next
   if (_videoDetail && _videoDetail.type !== 'movie') {
@@ -3999,11 +4011,17 @@ function _videoStopAndHide() {
 // (web-player.js); mpv's stalled events cover purist mode.
 var _startWatch = null
 var _startWatchTimer = null
+var _startWatchLastSig = ''
 const START_WATCH_QUIET_MS = 15000
+// A torrent that has shown no progress for this long at start is swapped for
+// the next source, the way a stalled one is mid-play (he watched a 4K
+// episode sit at 0 % with nine peers for 90 seconds).
+const START_SWITCH_QUIET_MS = 20000
 function _armStartWatch() {
   _disarmStartWatch()
   const now = Date.now()
-  _startWatch = { at: now, wordsAt: now, warned: false }
+  _startWatchLastSig = ''
+  _startWatch = { at: now, wordsAt: now, warned: false, switched: false }
   _startWatchTimer = setInterval(_startWatchTick, 5000)
 }
 function _disarmStartWatch() {
@@ -4023,6 +4041,14 @@ function _startWatchTick(nowMs) {
   _player.setStageMessage('<div class="spin"></div><div>' + esc(w.text) + '</div>' +
     '<div style="opacity:.6">' + esc(w.next) + '</div>')
   if (!_startWatch.warned) { _startWatch.warned = true; showToast(w.text) }
+  // Nothing for 20 s on a torrent with other sources to hand: take the next
+  // one rather than leave him staring. Once per start; the mid-play rule
+  // (two stalls) takes over after the first frame.
+  if (!_startWatch.switched && now - _startWatch.wordsAt >= START_SWITCH_QUIET_MS &&
+      _watch && _watch.pick && _watch.pick.kind === 'torrent' && (_watch.autoSwitches || 0) < 2) {
+    _startWatch.switched = true
+    _autoSwitchSource()
+  }
 }
 
 // The theatre shows lifecycle on the stage, because until mpv is actually
@@ -4081,7 +4107,10 @@ function _handleVideoEvent(payload) {
       ? 'Still connecting'
       : (payload.phase === 'prebuffer' || payload.web ? 'Buffering' : 'Downloading')
     const detail = [mbps, peers].filter(Boolean).join(' · ')
-    _startWatchWords()
+    // A report that says the same thing as the last one (0 %, nine peers,
+    // again) is not news: only progress resets the start-up watchdog.
+    const sig = label + '|' + (pct != null ? pct : '') + '|' + (payload.web ? 'w' : '')
+    if (sig !== _startWatchLastSig) { _startWatchLastSig = sig; _startWatchWords() }
     _player.setStageMessage('<div class="spin"></div><div>' +
       esc(label + (pct != null ? ' ' + pct + '%' : '…')) + '</div>' +
       (detail ? '<div style="opacity:.6">' + esc(detail) + '</div>' : ''))
@@ -4166,6 +4195,24 @@ function _handleVideoEvent(payload) {
     showToast('Resumed')
   } else if (payload.kind === 'error') {
     _disarmStartWatch()
+    // The same failure arrives twice from two paths (the torrent's own error
+    // and the switch's); one message is enough.
+    const nowE = Date.now()
+    if (payload.message && payload.message === _lastVideoErrorMsg && nowE - _lastVideoErrorAt < 3000) return
+    _lastVideoErrorMsg = payload.message || ''
+    _lastVideoErrorAt = nowE
+    // A source that never started (nobody sharing, or peers that sent
+    // nothing) is not the end of the road while other sources are listed:
+    // take the next untried one, up to three, before showing the failure.
+    if (/Nobody is sharing|did not start within/i.test(payload.message || '') &&
+        _watch && _watch.pick && _watch.pick.kind === 'torrent' && (_watch.autoSwitches || 0) < 3) {
+      if (_nextUntriedSource()) {
+        _armStartWatch()
+        showToast('That source is dead — trying another…')
+        _autoSwitchSource()
+        return
+      }
+    }
     const text = _videoErrorText(payload.message || 'Playback error')
     _player.setStageMessage('<div style="color:var(--color-error)">' + esc(text) + '</div>')
     // The stage is hidden while the player is minimised, so a failure there
@@ -9226,9 +9273,21 @@ function _tvEpRenderGrid(target, episodes, prog, top, setEp) {
     } else {
       list.innerHTML = shown.map(function (ep) { return _epButton(ep.episodeNumber, ep.name, prog) }).join('')
     }
+    // A row with a still, a title and a synopsis reads as something you
+    // press to watch; it used to only select the episode for the Play
+    // button, which he read as "they don't play anything". Now it selects
+    // and plays, through the same path the Play button takes (an unaired
+    // episode only selects — there is nothing to play yet).
     list.querySelectorAll('.video-episode-btn, .vep-row').forEach(function (b) {
-      b.addEventListener('click', function () { setEp(Number(b.dataset.ep) || 1) })
-      b.addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setEp(Number(b.dataset.ep) || 1) } })
+      const go = function () {
+        // Selecting refetches this episode's sources; playing straight away
+        // would use the previous episode's list (it picked E01 for E02).
+        // The autoplay ticket plays as soon as the new list lands.
+        if (!b.classList.contains('unaired')) _autoPlayTicket = _videoDetailTicket
+        setEp(Number(b.dataset.ep) || 1)
+      }
+      b.addEventListener('click', go)
+      b.addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go() } })
     })
     const ranges = document.getElementById('vep-ranges')
     if (ranges) ranges.outerHTML = _epRangeJumperHtml(top, win)
