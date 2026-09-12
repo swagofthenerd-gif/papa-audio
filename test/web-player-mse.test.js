@@ -223,3 +223,46 @@ test('three empty responses in a row stop the engine asking again and raise an e
   assert.ok(events.includes('error'))
   engine.close()
 })
+
+// V4: never a black frame with no words. The engine watches the position
+// while unpaused and, frozen for 12 s, says which side is stuck — once per
+// freeze, cleared the moment the picture moves.
+test('a frozen picture is reported once with which side is stuck, and cleared when it moves', async () => {
+  const holder = { video: null }; const F = fakeMSE(holder)
+  const doc2 = fakeDoc(); const origCreate = doc2.createElement
+  doc2.createElement = function (tag) { const el = origCreate.call(this, tag); if (tag === 'video') holder.video = el; return el }
+  Object.defineProperty(holder, 'ranges', { get() { return holder.video.ranges } })
+  const events = []; const log = []
+  const inner = fakeFetch(log)
+  const fetchFn = (url, init) => /coverage/.test(url) ? Promise.resolve({ json: () => Promise.resolve({ ranges: [[0, 60]] }) }) : inner(url, init)
+  const engine = W.create({ document: doc2, api: {}, onEvent(e) { events.push(e) }, MediaSource: F.MS, fetch: fetchFn, URL: URLApi, AbortController: FakeAbort })
+  engine.open(Object.assign({}, session, { coverageUrl: 'http://127.0.0.1:5/s/ab/coverage' }), 0)
+  F.sources[0].open(); await tick(); await tick(); await tick()
+  const v = holder.video; v.paused = false
+  const t0 = 1000
+  engine._watchdogNow(t0)
+  engine._watchdogNow(t0 + 11000)
+  assert.ok(!events.some(e => e.kind === 'stuck'), 'under the limit: silence')
+  engine._watchdogNow(t0 + 12500)
+  let stuck = events.filter(e => e.kind === 'stuck')
+  assert.equal(stuck.length, 1)
+  assert.equal(stuck[0].phase, 'start', 'no first frame yet')
+  assert.ok(stuck[0].waited >= 12)
+  engine._watchdogNow(t0 + 30000)
+  assert.equal(events.filter(e => e.kind === 'stuck').length, 1, 'not repeated while still frozen')
+  v.currentTime = 3; engine._watchdogNow(t0 + 31000)
+  assert.ok(events.some(e => e.kind === 'unstuck'), 'movement clears it')
+  // Playing, then frozen again with the converter far ahead: the page is the slow part.
+  v.listeners.playing.forEach(fn => fn())
+  engine._pollCoverageNow(); await tick(); await tick()
+  engine._watchdogNow(t0 + 44000)
+  stuck = events.filter(e => e.kind === 'stuck')
+  assert.equal(stuck.length, 2)
+  assert.equal(stuck[1].phase, 'play')
+  assert.equal(Math.round(stuck[1].converted), 57, 'seconds the converter has ahead of the playhead')
+  // Paused is not stuck.
+  v.currentTime = 4; engine._watchdogNow(t0 + 45000); v.paused = true
+  engine._watchdogNow(t0 + 70000)
+  assert.equal(events.filter(e => e.kind === 'stuck').length, 2)
+  engine.close()
+})

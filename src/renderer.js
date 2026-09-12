@@ -3230,6 +3230,7 @@ function _initVideoUI() {
     _player = window.PapaVideoPlayer.create({
       api: eng ? eng.wrapApi(window.api) : window.api,
       onExit: function () {
+        _disarmStartWatch()
         _persistPosition(true)
         _watch = { key: null, meta: null, savedAt: 0, resumed: false }
         _videoLastState = null
@@ -3721,6 +3722,9 @@ var _SOURCE_PREF_AFTER_S = 300
 var _videoLastState = null
 
 function _onVideoStateTick(st) {
+  // The first frame, for the start-up watchdog: a moving position, or a
+  // loaded file the viewer paused (a paused film is not a stuck one).
+  if (_startWatch && st && (st.position > 0.05 || (st.paused && st.duration > 0))) _disarmStartWatch()
   if (!st || !_watch.key) return
   const now = Date.now()
   _videoLastState = st
@@ -3981,8 +3985,43 @@ function _syncSourcesHighlight() {
 }
 
 function _videoStopAndHide() {
+  _disarmStartWatch()
   window.api.videoStop().catch(function () {})
   if (_player) _player.close()
+}
+
+// Never a black frame with no words (V4), the start-up half: from the play
+// click until 'playing', if nothing has been said for 15 s the stage says how
+// long it has waited and what to do, and the mini card hears it as a toast.
+// Every buffering report and every engine 'stuck' report counts as words.
+// The in-page engine has its own watchdog for after the first frame
+// (web-player.js); mpv's stalled events cover purist mode.
+var _startWatch = null
+var _startWatchTimer = null
+const START_WATCH_QUIET_MS = 15000
+function _armStartWatch() {
+  _disarmStartWatch()
+  const now = Date.now()
+  _startWatch = { at: now, wordsAt: now, warned: false }
+  _startWatchTimer = setInterval(_startWatchTick, 5000)
+}
+function _disarmStartWatch() {
+  if (_startWatchTimer) clearInterval(_startWatchTimer)
+  _startWatchTimer = null
+  _startWatch = null
+}
+function _startWatchWords() { if (_startWatch) _startWatch.wordsAt = Date.now() }
+function _startWatchTick(nowMs) {
+  if (!_startWatch || !_player) return _disarmStartWatch()
+  const now = typeof nowMs === 'number' ? nowMs : Date.now()
+  if (now - _startWatch.wordsAt < START_WATCH_QUIET_MS) return
+  const waited = Math.round((now - _startWatch.at) / 1000)
+  const w = (typeof PapaStartHonesty !== 'undefined' && PapaStartHonesty)
+    ? PapaStartHonesty.stuck({ phase: 'start', waited: waited, converted: null })
+    : { text: 'Still no picture after ' + waited + ' s.', next: 'Try another source below.' }
+  _player.setStageMessage('<div class="spin"></div><div>' + esc(w.text) + '</div>' +
+    '<div style="opacity:.6">' + esc(w.next) + '</div>')
+  if (!_startWatch.warned) { _startWatch.warned = true; showToast(w.text) }
 }
 
 // The theatre shows lifecycle on the stage, because until mpv is actually
@@ -4039,8 +4078,9 @@ function _handleVideoEvent(payload) {
     // it is taking a while, not failing, and saying so beats a stuck spinner.
     const label = payload.phase === 'connecting'
       ? 'Still connecting'
-      : (payload.phase === 'prebuffer' ? 'Buffering' : 'Downloading')
+      : (payload.phase === 'prebuffer' || payload.web ? 'Buffering' : 'Downloading')
     const detail = [mbps, peers].filter(Boolean).join(' · ')
+    _startWatchWords()
     _player.setStageMessage('<div class="spin"></div><div>' +
       esc(label + (pct != null ? ' ' + pct + '%' : '…')) + '</div>' +
       (detail ? '<div style="opacity:.6">' + esc(detail) + '</div>' : ''))
@@ -4055,6 +4095,10 @@ function _handleVideoEvent(payload) {
     }
     return
   } else if (payload.kind === 'playing') {
+    // The in-page engine says 'playing' on the first frame; mpv says it when
+    // the process is up, before any frame — so in purist mode the start-up
+    // watchdog stays armed until the state stream shows the position moving.
+    if (payload.web) _disarmStartWatch()
     _player.setStageMessage('')
     _loadSkipSegments()
     _offerResume(_player._state())
@@ -4066,6 +4110,7 @@ function _handleVideoEvent(payload) {
     // the pack is streaming and the next file is known.
     _updatePredownloadControl()
   } else if (payload.kind === 'ended') {
+    _disarmStartWatch()
     // mpv finished with the file. An error end (corrupt or truncated file)
     // used to be a black screen with live controls and no explanation; a
     // natural end left the last frame up and nothing marked as watched.
@@ -4084,6 +4129,7 @@ function _handleVideoEvent(payload) {
     showToast('Finished')
     _videoStopAndHide()
   } else if (payload.kind === 'stalled') {
+    _startWatchWords()
     // The engine noticed the stream drying up before the renderer's own
     // watchdog would. The OSD message is painted from main; here the page
     // says it too, for whoever is looking at the deck rather than the picture.
@@ -4098,7 +4144,23 @@ function _handleVideoEvent(payload) {
     }
   } else if (payload.kind === 'unstalled') {
     showToast('Resumed')
+  } else if (payload.kind === 'stuck') {
+    // The in-page engine watched the position freeze (V4). Say which side is
+    // stuck — nothing converted yet, or converted but the page cannot keep up
+    // — on the stage and, for the mini card where the stage is hidden, as a
+    // toast. The engine says 'unstuck' the moment the picture moves.
+    _startWatchWords()
+    const w = (typeof PapaStartHonesty !== 'undefined' && PapaStartHonesty)
+      ? PapaStartHonesty.stuck(payload)
+      : { text: 'The picture is not moving.', next: 'Try another source below.' }
+    _player.setStageMessage('<div class="spin"></div><div>' + esc(w.text) + '</div>' +
+      '<div style="opacity:.6">' + esc(w.next) + '</div>')
+    showToast(w.text)
+  } else if (payload.kind === 'unstuck') {
+    _player.setStageMessage('')
+    showToast('Resumed')
   } else if (payload.kind === 'error') {
+    _disarmStartWatch()
     const text = _videoErrorText(payload.message || 'Playback error')
     _player.setStageMessage('<div style="color:var(--color-error)">' + esc(text) + '</div>')
     // The stage is hidden while the player is minimised, so a failure there
@@ -4905,6 +4967,7 @@ function _videoPlayResult(result, opts) {
     },
   })
   _handleVideoEvent({ kind: 'buffering' })
+  _armStartWatch()
   // Wait until main knows the stage rectangle. Starting playback first shows
   // the mpv window at its creation size, floating over the app as a separate
   // window before any bounds arrive.
@@ -4922,6 +4985,12 @@ function _videoPlayResult(result, opts) {
 
 function _videoErrorText(message) {
   const msg = String(message || 'Something went wrong')
+  // V4: the one table of start-up failures and their next steps
+  // (src/start-honesty.js). The cases below remain as the fallback when the
+  // module is not loaded (tests evaluate this function on its own).
+  if (typeof PapaStartHonesty !== 'undefined' && PapaStartHonesty && typeof PapaStartHonesty.sentence === 'function') {
+    return PapaStartHonesty.sentence(msg)
+  }
   // The raw failure is "mpv socket not ready: /run/user/… (last error: ENOENT)"
   // — which reads like the app is broken when the actual problem is that the
   // player program is not installed.

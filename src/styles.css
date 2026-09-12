@@ -8496,6 +8496,15 @@ body.video-fullscreen .vtheatre { top:0; }
   position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
   flex-direction:column; gap:10px; text-align:center; padding:24px;
   font-size:13px; color:var(--text2); pointer-events:none;
+  /* Above the in-page <video>, which is appended after it (V4): a stuck
+     picture's words were painted underneath the frozen frame. */
+  z-index:4;
+}
+/* Over a picture the words need their own ground; over the black stage the
+   pill is invisible anyway. */
+.vt-stage-msg > div:not(.spin) {
+  background:rgba(0,0,0,.55); padding:6px 12px; border-radius:8px; color:#fff;
+  backdrop-filter:blur(8px);
 }
 .vt-stage-msg .spin {
   width:26px; height:26px; border-radius:50%;

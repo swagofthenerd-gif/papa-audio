@@ -25,7 +25,8 @@ test('main: smooth is the default; a play opens a web session and announces it; 
   const play = MAIN.slice(MAIN.indexOf("ipcMain.handle('video-play'"), MAIN.indexOf("ipcMain.handle('video-trailer'"))
   assert.match(play, /const smooth = _videoSettings\(\)\.playerMode !== 'purist'/)
   assert.match(play, /const sess = await _webOpenAndAnnounce\(url, current, title\)/)
-  assert.match(play, /if \(sess\.refused\) \{[^}]*await purist\(url\) \}/)
+  // A planner refusal goes to mpv; a probe failure is reported instead (V4).
+  assert.match(play, /if \(sess\.refused\) \{[\s\S]*?throw new Error\(sess\.reason\)[\s\S]*?await purist\(url\)/)
   assert.match(play, /return \{ ok: true, smooth: true \}/)
   assert.match(fn(MAIN, '_webOpenAndAnnounce'), /safeSend\('video-event', \{ kind: 'web-ready', session: sess, title: title \|\| '' \}\)/)
   const stop = MAIN.slice(MAIN.indexOf("ipcMain.handle('video-stop'"), MAIN.indexOf("ipcMain.handle('video-stop'") + 300)

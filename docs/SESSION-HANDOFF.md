@@ -238,6 +238,64 @@ Later the same day: `3ffe22e` (R8 R14 R15 R17 + plural sweep), `a7370cd` (R18 R1
     timeline — the genuinely novel piece), then J6 journey-aware cross-jumps
 11. Remaining Speed and Truth lanes
 
+### 13. V4 stability, part 1 (2026-09-12, Fable 5.1)
+
+- **Stream-start honesty**: `src/start-honesty.js` is the one table of
+  failures between "click Play" and the first frame (mpv missing, ffmpeg
+  missing, unreadable/unreachable source, nobody sharing, slow start,
+  converter failing, page cannot decode, mpv quit, no magnet/URL, timeout,
+  offline, TMDB key). `_videoErrorText` delegates to it; `sentence()` joins
+  the words to the next step. Tests: `test/start-honesty.test.js`.
+- **Never a black frame with no words**: two watchdogs.
+  - Renderer start-up watchdog (`_armStartWatch` on play; disarmed by the
+    page engine's `playing`, by a moving position on the state stream, by
+    `ended`/`error`/stop). Quiet for 15 s → "Still no picture after N s.
+    Nothing has arrived from the source yet." on the stage, once as a toast
+    (the mini card hides the stage). mpv's `playing` fires before any frame,
+    so in purist mode only the state stream disarms it.
+  - Engine stuck watchdog (`web-player.js` `_watchdog`): position frozen
+    12 s while unpaused → `stuck` event with `phase` (start/play) and
+    `converted` (seconds the converter has on disk ahead of the playhead);
+    `unstuck` when it moves. Words say which side is stuck (converter has
+    nothing → source; converter ahead → the page cannot decode fast enough →
+    Purist mode).
+- **Probe failures no longer fall through to mpv** (`main.js` smooth
+  branch): an unreadable/unreachable source used to be handed to mpv, which
+  hung silently after the stage had said "playing" (found live on the twin
+  with a TCP black hole on :9599). Now it is reported.
+- **Stage words above the picture**: `.vt-stage-msg` gets `z-index:4` and a
+  dark pill; the in-page `<video>` is appended after it and was painting over
+  the words.
+- Live proof (twin, port 9505, muted): no-magnet → "This source has no magnet
+  link — Pick another source…"; black-hole URL → start words at 15 s, then
+  the honest probe error at 49 s and no mpv; HEVC test file, seek + SIGSTOP
+  the converter → stuck words at 12 s over the frozen frame, SIGCONT →
+  "Resumed", words cleared. Screenshots in the scratchpad
+  (`v4-start-watchdog.png`, `v4-unreadable.png`, `v4-stuck2.png`).
+- Twin trap: killing by `ps | grep <port>` matched the shell's own cmdline
+  (exit 144) — filter on `comm=="electron"` with awk instead. A stale
+  port refuses the DevTools bind: move to the next port.
+- Soak (12 min, twin, HEVC 720p test file, muted): 75 rounds of seek →
+  minimise → two card drags → pause/play → restore, a fresh open every 4th
+  round. JS heap sample identical every round (18.4 MB, Chromium's bucketed
+  `performance.memory`, so "same bucket", not a precise flat line), zero
+  long tasks (>50 ms) over the whole run, zero page errors, at most 3
+  dropped frames after a seek, never a stage message. Script:
+  scratchpad `soak.js` (rebuild it; the scratchpad vanishes).
+- Crash isolation (live): SIGKILL of the converter mid-play at 63.6 s → the
+  page kept playing, a new run started at 68 s where the buffer ran out,
+  10 s later the position was 73.7 s with no words on the stage. The
+  existing starvation refetch (`_mseContinueIfStarved`) plus the server's
+  "dead run is not covering" rule is the isolation; no new code needed.
+- **Open observation (not reproduced):** once, after a stray drag release
+  over the detail page behind the mini card, the twin ended up with a new
+  session (an extra `run 0 @0s`), the deck minimised, the `<video>` still
+  parented to `#vt-stage` (so the card would be black) and paused at 2:24
+  with nobody driving it. Re-opening a play while minimised (deck restores,
+  picture on stage — fine) and clicking the collection row did not reproduce
+  it. Worth a look if he reports a black mini card after clicking around a
+  detail page.
+
 ## 7. Open debt and outstanding items
 
 - **Peer-library speed is bench-only.** Re-measure live against a real

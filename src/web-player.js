@@ -44,6 +44,10 @@
     var tracks = { sub: null, audio: null, burn: null }
     var speed = 1
     var coverage = []       // server-converted ranges, polled while a session is live
+    // Never a black frame with no words (V4): the position is watched while
+    // unpaused; frozen for STUCK_MS it reports which side is stuck.
+    var STUCK_MS = 12000
+    var watch = null        // { pos, movedAt, hadFrame, warned }
     var coverageTimer = null
     var subEl = null
 
@@ -116,7 +120,7 @@
       video.playsInline = true
       video.preload = 'auto'
       video.setAttribute('aria-hidden', 'true')
-      video.addEventListener('playing', function () { onEvent({ kind: 'playing', web: true }); _emit() })
+      video.addEventListener('playing', function () { if (watch) watch.hadFrame = true; onEvent({ kind: 'playing', web: true }); _emit() })
       video.addEventListener('pause', _emit)
       video.addEventListener('play', _emit)
       video.addEventListener('ended', function () { onEvent({ kind: 'ended', web: true }); _emit() })
@@ -363,6 +367,34 @@
       if (ahead < 5) _mseFetch(video.currentTime + ahead)
     }
 
+    // ── Stuck watchdog ─────────────────────────────────────────────────
+    function _watchReset(now) { watch = { pos: -1, movedAt: now, hadFrame: false, warned: false } }
+    // Seconds the converter has on disk ahead of `pos` (0 when it has not
+    // reached this position at all).
+    function _coveredAheadOf(pos) {
+      var best = 0
+      for (var i = 0; i < coverage.length; i++) {
+        var r = coverage[i]
+        if (r[0] - 0.5 <= pos && pos <= r[1]) best = Math.max(best, r[1] - pos)
+      }
+      return best
+    }
+    function _watchdog(now) {
+      if (!watch || !video || !session) return
+      var pos = _pos()
+      if (pos !== watch.pos) {
+        watch.pos = pos
+        watch.movedAt = now
+        if (watch.warned) { watch.warned = false; onEvent({ kind: 'unstuck', web: true }) }
+        return
+      }
+      if (video.paused || video.ended || watch.warned) return
+      var waited = now - watch.movedAt
+      if (waited < STUCK_MS) return
+      watch.warned = true
+      onEvent({ kind: 'stuck', web: true, phase: watch.hadFrame ? 'play' : 'start', waited: waited / 1000, converted: _coveredAheadOf(pos) })
+    }
+
     function _syncSubtitles() {
       var v = video
       if (!v || !session) return
@@ -412,12 +444,14 @@
       coverageTimer = setInterval(_pollCoverage, 2000)
       if (coverageTimer && typeof coverageTimer.unref === 'function') coverageTimer.unref()
       mount('stage')
+      _watchReset(Date.now())
       _load(startAt || 0, true)
       clearInterval(tickTimer)
       var ticks = 0
       tickTimer = setInterval(function () {
         if (!session) return
         _mseContinueIfStarved()
+        _watchdog(Date.now())
         // A streamed source's subtitles grow with the conversion: re-fetch
         // the showing track every 15 s so new cues appear.
         if (mse && tracks.sub != null && (++ticks % 60) === 0) _refreshSubTrack()
@@ -433,6 +467,7 @@
       clearInterval(coverageTimer); coverageTimer = null
       clearTimeout(seekTimer); seekTimer = null
       coverage = []
+      watch = null
       _mseTeardown()
       if (video) {
         try { video.pause() } catch (_) {}
@@ -596,7 +631,7 @@
       return proxy
     }
 
-    return { create: create, open: open, close: close, active: active, control: control, seekTo: seekTo, mount: mount, trackList: trackList, wrapApi: wrapApi, state: _snapshot, _video: function () { return video }, _session: function () { return session }, _mse: function () { return mse }, _pollCoverageNow: _pollCoverage }
+    return { create: create, open: open, close: close, active: active, control: control, seekTo: seekTo, mount: mount, trackList: trackList, wrapApi: wrapApi, state: _snapshot, _video: function () { return video }, _session: function () { return session }, _mse: function () { return mse }, _pollCoverageNow: _pollCoverage, _watchdogNow: _watchdog }
   }
 
   var api = { create: create, TICK_MS: TICK_MS }

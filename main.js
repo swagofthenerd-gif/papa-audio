@@ -11715,7 +11715,14 @@ ipcMain.handle('video-play', async (_, { result }) => {
       const serve = async (url) => {
         const sess = await _webOpenAndAnnounce(url, current, title)
         if (sess.superseded) return
-        if (sess.refused) { console.warn('[papa-video] smooth player refused (' + sess.reason + '); falling back to mpv'); await purist(url) }
+        if (sess.refused) {
+          // The planner refusing (no video stream, a codec only mpv can play)
+          // is mpv's cue. A probe failure is not: an unreadable or unreachable
+          // source fails the same way in mpv, only silently, after the stage
+          // has already said "playing" (V4). Say what happened instead.
+          if (/ffprobe could not read the source/i.test(sess.reason)) throw new Error(sess.reason)
+          console.warn('[papa-video] smooth player refused (' + sess.reason + '); falling back to mpv'); await purist(url)
+        }
       }
       if (result.kind === 'torrent') {
         if (!result.magnet) return { ok: false, error: 'This source has no magnet link' }

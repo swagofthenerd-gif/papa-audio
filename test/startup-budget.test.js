@@ -66,7 +66,14 @@ function syncScriptBytes () {
 // speculative-prefetch logic) — plus the renderer wiring for instant library
 // search, YouTube autocomplete and Soulseek spelling correction. Deliberate
 // feature work; re-based ~15% above the new measured total.
-const SCRIPT_BYTE_CEILING = 2530000
+// Raised 2026-09-12 (video plan V1–V4): the smooth player and its pure modules
+// — web-player.js (Media Source engine), mini-motion.js, watch-rules.js,
+// release-name.js, episode-list.js and start-honesty.js (the start-up failure
+// table and stuck-picture words) — plus the theatre and mini-card wiring in
+// renderer.js and video-player.js. Deliberate feature work; the old ceiling had
+// been reached to within 0.4 % before the last file. Re-based ~15% above the
+// new measured total (2,539,444).
+const SCRIPT_BYTE_CEILING = 2920000
 
 test('the renderer loads its scripts and none is missing from disk', () => {
   const { count, missing } = syncScriptBytes()
