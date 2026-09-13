@@ -174,7 +174,7 @@ const lyrics = require('./lyrics')
 const tmdbCatalog = require('./catalog/tmdb')
 const { createTmdbCatalog } = tmdbCatalog
 const shelves = require('./catalog/shelves')
-const { createAnilistCatalog } = require('./catalog/anilist')
+const { createAnilistCatalog, GENRES_FALLBACK, MIN_GAP_MS: ANILIST_MIN_GAP_MS, RATE_LIMIT_WAIT_CAP_MS: ANILIST_RATE_WAIT_CAP_MS } = require('./catalog/anilist')
 const { createJikanCatalog } = require('./catalog/jikan')
 const { createKitsuCatalog } = require('./catalog/kitsu')
 const { resolveAnimeShelf } = require('./catalog/anime-shelf')
@@ -9519,7 +9519,9 @@ const tmdb = _lazy(() => createTmdbCatalog({
   apiKey: () => _videoSettings().tmdbApiKey || process.env.TMDB_API_KEY,
   fetchFn: fetchWithTimeout(15000),
 }))
-const anilist = _lazy(() => createAnilistCatalog({ fetchFn: fetchWithTimeout(15000) }))
+// The fetcher is injected (for the timeout), so the production pacing has to
+// be asked for explicitly: without it the lane would send with no gap.
+const anilist = _lazy(() => createAnilistCatalog({ fetchFn: fetchWithTimeout(15000), minGapMs: ANILIST_MIN_GAP_MS, rateLimitWaitCapMs: ANILIST_RATE_WAIT_CAP_MS }))
 // The AniList stand-in. When AniList goes globally dark (its 403 outages are the
 // whole reason this exists), the anime shelves fall through to Jikan/MyAnimeList,
 // which answers the same trending/popular/season rows and reshapes them into the
@@ -10575,7 +10577,17 @@ ipcMain.handle('video-genres', async (_, { catalog } = {}) => {
       // AniList genres are plain strings; TMDB's are {id,name}. The shape is
       // unified here so the filter rail does not need to know which catalog
       // it is rendering.
+      // A refused vocabulary request used to leave Browse with "Genres
+      // (unavailable)". The live list is kept on disk once seen; failing
+      // that, the built-in list stands in — the chips must always be there.
       genres = (await anilist().genres()).map(name => ({ id: name, name }))
+      if (genres.length) _animeBrowseCacheWrite('vocab:genres', genres)
+      else {
+        const saved = _animeBrowseCacheRead('vocab:genres')
+        genres = saved && Array.isArray(saved.value) && saved.value.length
+          ? saved.value
+          : GENRES_FALLBACK.map(name => ({ id: name, name }))
+      }
     } else {
       genres = await tmdb().genres(catalog === 'tv' ? 'tv' : 'movie')
     }
@@ -10590,7 +10602,12 @@ ipcMain.handle('video-tags', async () => {
   try {
     const cached = _videoVocabCache.get('tags')
     if (cached) return { ok: true, tags: cached }
-    const tags = await anilist().tags()
+    let tags = await anilist().tags()
+    if (tags.length) _animeBrowseCacheWrite('vocab:tags', tags)
+    else {
+      const saved = _animeBrowseCacheRead('vocab:tags')
+      if (saved && Array.isArray(saved.value) && saved.value.length) tags = saved.value
+    }
     if (tags.length) _videoVocabCache.set('tags', tags)
     return { ok: true, tags }
   } catch (e) {

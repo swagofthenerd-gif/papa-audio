@@ -30,6 +30,29 @@ const MEDIA_SELECTION = `id
           format
           trailer { id site }`
 
+// What a season-chain hop needs of each entry: enough for the rail card and
+// the walk itself, nothing heavier.
+const CHAIN_NODE_SELECTION = `id type format status seasonYear episodes
+          title { english romaji native }
+          coverImage { large }`
+
+// AniList allows 90 requests a minute (it has run at 30 during incidents).
+// Every request from this process goes through one lane with this much space
+// between sends, so a home page, a hero, a search and a detail page opening
+// at once queue up instead of bursting and being refused.
+const MIN_GAP_MS = 700
+// A refused request (429) is retried once after the wait AniList asks for,
+// up to this ceiling; a longer wait is treated as an outage instead.
+const RATE_LIMIT_WAIT_CAP_MS = 30 * 1000
+const RATE_LIMIT_WAIT_DEFAULT_MS = 2000
+
+// AniList's genre vocabulary as of 2026, kept so the Browse rail always has
+// chips even when the vocabulary request itself is refused. The live list
+// replaces it whenever it can be fetched.
+const GENRES_FALLBACK = ['Action', 'Adventure', 'Comedy', 'Drama', 'Ecchi', 'Fantasy',
+  'Horror', 'Mahou Shoujo', 'Mecha', 'Music', 'Mystery', 'Psychological', 'Romance',
+  'Sci-Fi', 'Slice of Life', 'Sports', 'Supernatural', 'Thriller']
+
 // PREQUEL and SEQUEL are the story spine. SIDE_STORY, SPIN_OFF, ALTERNATIVE,
 // SUMMARY, CHARACTER and the rest are related works, not seasons, and putting
 // them in a season list would misrepresent the watch order.
@@ -173,6 +196,11 @@ function buildQuery(kind, options) {
     // separate entries linked by PREQUEL/SEQUEL edges, unlike TMDB where
     // seasons nest inside one show — so "the other seasons of Baki" has to be
     // walked, one request per hop.
+    //
+    // Two levels in one request: each related entry comes with its own
+    // relations, so the walk expands two hops per round-trip. A franchise
+    // that used to cost twelve requests (and drew AniList's rate limiter
+    // every time a detail page opened) now costs three or four.
     case 'relations':
       return `query ($id: Int) {
   Media(id: $id, type: ANIME) {
@@ -181,9 +209,15 @@ function buildQuery(kind, options) {
       edges {
         relationType
         node {
-          id type format status seasonYear episodes
-          title { english romaji native }
-          coverImage { large }
+          ${CHAIN_NODE_SELECTION}
+          relations {
+            edges {
+              relationType
+              node {
+                ${CHAIN_NODE_SELECTION}
+              }
+            }
+          }
         }
       }
     }
@@ -330,15 +364,20 @@ function _sleep(ms) {
 }
 
 // `retryDelayMs` is a test seam: production always uses the 1 s default.
+// `minGapMs` and `rateLimitWaitCapMs` default to the production pacing only
+// when the real network is used; an injected fetcher (the tests) gets no
+// pacing and no internal 429 retry unless it asks for them.
 function createAnilistCatalog({ fetchFn, retryDelayMs = 1000,
-  timeoutMs = REQUEST_TIMEOUT_MS } = {}) {
+  timeoutMs = REQUEST_TIMEOUT_MS,
+  minGapMs = fetchFn ? 0 : MIN_GAP_MS,
+  rateLimitWaitCapMs = fetchFn ? 0 : RATE_LIMIT_WAIT_CAP_MS } = {}) {
   const fetcher = fetchFn || fetch
 
   // Every AniList request is the same POST; this wraps it in an AbortController
   // so a hung socket cannot wedge a lookup (or a season-chain hop). Not every
   // injected fetcher honours `signal`, so the timer is cleared regardless. The
   // response is returned untouched: callers decide what a non-OK status means.
-  async function _fetchGraphql(body) {
+  async function _fetchOnce(body) {
     const controller = typeof AbortController === 'function' ? new AbortController() : null
     const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null
     try {
@@ -353,10 +392,56 @@ function createAnilistCatalog({ fetchFn, retryDelayMs = 1000,
     }
   }
 
-  async function _post(kind, opts) {
+  // The one lane every request goes down. Requests are sent `minGapMs`
+  // apart; a 429 is retried once after the wait AniList asks for (capped),
+  // and the lane stays blocked meanwhile, because anything sent during that
+  // wait would be refused too. A rejection never breaks the lane.
+  let _lane = Promise.resolve()
+  let _lastSentAt = 0
+  let _rateLimitedUntil = 0
+  const _rateLimitWait = res => {
+    const headers = res && res.headers
+    const ra = headers && typeof headers.get === 'function' ? Number(headers.get('retry-after')) : NaN
+    const asked = Number.isFinite(ra) && ra > 0 ? ra * 1000 : RATE_LIMIT_WAIT_DEFAULT_MS
+    return asked <= rateLimitWaitCapMs ? asked : null
+  }
+  function _fetchGraphql(body) {
+    const run = _lane.then(async () => {
+      const wait = Math.max(minGapMs - (Date.now() - _lastSentAt), _rateLimitedUntil - Date.now())
+      if (wait > 0) await _sleep(wait)
+      _lastSentAt = Date.now()
+      let res = await _fetchOnce(body)
+      if (res && res.status === 429) {
+        const ms = _rateLimitWait(res)
+        if (ms != null) {
+          _rateLimitedUntil = Date.now() + ms
+          await _sleep(ms)
+          _lastSentAt = Date.now()
+          res = await _fetchOnce(body)
+        }
+      }
+      return res
+    })
+    _lane = run.then(() => undefined, () => undefined)
+    return run
+  }
+
+  // Identical requests in flight at the same moment share one round-trip:
+  // the hero and a shelf asking for the same page, or two detail lookups of
+  // one show, must not each spend a slot in the lane.
+  const _inflight = new Map()
+  function _post(kind, opts) {
     const query = buildQuery(kind, opts)
     const variables = buildVariables(kind, opts)
-    const res = await _fetchGraphql(JSON.stringify({ query, variables }))
+    const body = JSON.stringify({ query, variables })
+    if (_inflight.has(body)) return _inflight.get(body)
+    const p = _postBody(kind, body).finally(() => { _inflight.delete(body) })
+    _inflight.set(body, p)
+    return p
+  }
+
+  async function _postBody(kind, body) {
+    const res = await _fetchGraphql(body)
     if (!res || !res.ok) {
       const status = res && res.status != null ? res.status : 'unknown'
       const err = new Error(`AniList request failed (${status})`)
@@ -627,14 +712,27 @@ function createAnilistCatalog({ fetchFn, retryDelayMs = 1000,
           truncated = true
           continue
         }
-        for (const edge of edges) {
+        absorb(current, edges)
+      }
+
+      // Files one entry's edges into the franchise. An expanded entry that
+      // arrived with its own relations (the second level of the query) is
+      // filed the same way at once and marked visited, so the walk never
+      // spends a request on what it already holds.
+      function absorb(fromId, list) {
+        for (const edge of list) {
           const n = edge && edge.node
           if (!n || n.type !== 'ANIME' || n.id == null) continue
-          const from = franchise.get(current)
+          const from = franchise.get(fromId)
           const entry = Object.assign({ relation: edge.relationType || null, spine: !!(from && from.spine !== false) && SPINE.has(edge.relationType) }, normalizeChainNode(n))
           if (EXPAND.has(edge.relationType)) {
             if (!franchise.has(entry.id)) { franchise.set(entry.id, entry); queue.push(entry.id) }
             else if (entry.spine && franchise.get(entry.id).spine === false) franchise.get(entry.id).spine = true
+            const nested = n.relations && Array.isArray(n.relations.edges) ? n.relations.edges : null
+            if (nested && !visited.has(entry.id)) {
+              visited.add(entry.id)
+              absorb(entry.id, nested)
+            }
           } else if (!franchise.has(entry.id) && !related.has(entry.id)) {
             related.set(entry.id, entry)
           }
@@ -694,6 +792,9 @@ module.exports = {
   CHAIN_RELATIONS,
   MAX_CHAIN_HOPS,
   REQUEST_TIMEOUT_MS,
+  MIN_GAP_MS,
+  RATE_LIMIT_WAIT_CAP_MS,
+  GENRES_FALLBACK,
   normalizeChainNode,
   _retryDelayMs,
   scoreTo10,
