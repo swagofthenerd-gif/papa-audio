@@ -10044,6 +10044,8 @@ function _closeVideoWindow() {
 }
 
 const _videoCatalogCache = makeCache({ cap: 50, ttlMs: 1000 * 60 * 60 * 24 })
+// The anime home bundle (seven shelves + schedule): half an hour, the schedule moves.
+const _animeHomeCache = makeCache({ cap: 2, ttlMs: 1000 * 60 * 30 })
 const _videoStreamCache = makeCache({ cap: 200, ttlMs: 1000 * 60 * 15 })
 // Season browsing re-asked for the same show detail on every season switch —
 // two TMDB calls per click, forever, because nothing cached the detail. Shows
@@ -10531,6 +10533,19 @@ ipcMain.handle('video-catalog-get', async (_, { section, page = 1 }) => {
       'trending-anime': c => c.trending(page),
       'popular-anime': c => c.popular(page),
       'season-anime': c => c.season(page),
+      // The home-bundle rows, page by page for their "See all" grids. The
+      // same lists the bundle shows first (same status/sort/floor).
+      'top-airing-anime': c => c.discover({ status: 'RELEASING', sort: 'popularity', page }).then(o => o.results),
+      'upcoming-anime': c => c.discover({ status: 'NOT_YET_RELEASED', sort: 'popularity', page }).then(o => o.results),
+      'top-rated-anime': c => c.discover({ sort: 'rating', minPopularity: 20000, page }).then(o => o.results),
+    }
+    // The schedule rows are one bundle each — nothing past the first page.
+    if (section === 'new-episodes-anime' || section === 'today-anime') {
+      if (Number(page) > 1) return { ok: true, results: [] }
+      const memo = _animeHomeCache.get('home') || (_animeBrowseCacheRead('home') || {}).value
+      const list = memo ? (section === 'today-anime' ? memo.today : memo.newEpisodes) : null
+      if (!Array.isArray(list)) return { ok: true, results: [] }
+      return { ok: true, results: list }
     }
     if (anilistFns[section]) {
       // The whole four-step fallback chain (live AniList → live Jikan → saved
@@ -10811,7 +10826,6 @@ ipcMain.handle('video-anime-episodes', async (_, { idMal, start = 1, end = 20 } 
 // seven shelves plus the airing schedule. Memoised for half an hour — the
 // schedule moves — and kept on disk as outage insurance, the same way the
 // per-shelf rows are.
-const _animeHomeCache = makeCache({ cap: 2, ttlMs: 1000 * 60 * 30 })
 ipcMain.handle('video-anime-home', async () => {
   try {
     const memo = _animeHomeCache.get('home')

@@ -5393,13 +5393,38 @@ async function renderShelf(key) {
   _bindShelfScroll(ticket)
 }
 
+// A catalogue row (Trending, Top airing, New episodes…) opens into the same
+// grid the curated shelves use, paged through video-catalog-get. The label
+// is the row's own; the schedule rows are one page and say so.
+var _SECTION_LABELS = { 'today-anime': 'Airing today', 'continue': 'Continue Watching' }
+function _sectionLabel(key) {
+  const row = _videoRows.find(function (r) { return r.key === key })
+  return row ? row.label : (_SECTION_LABELS[key] || '')
+}
+function _isCatalogSection(key) {
+  return !!_sectionLabel(key) && key !== 'continue'
+}
+async function _fetchShelfPage(key, page) {
+  if (_isCatalogSection(key)) {
+    const res = await window.api.videoCatalogGet({ section: key, page: page })
+      .catch(function (e) { return { ok: false, error: String((e && e.message) || e) } })
+    if (!res || !res.ok) return res || { ok: false, error: 'No answer' }
+    const items = Array.isArray(res.results) ? res.results : []
+    if (!items.length && res.outage && page === 1) return { ok: false, error: res.outage }
+    return { ok: true, shelf: { label: _sectionLabel(key), note: '' },
+      results: key === 'new-episodes-anime' ? items.map(_newEpisodeCard)
+        : key === 'today-anime' ? items.map(_todayCard) : items }
+  }
+  return window.api.videoShelf({ key: key, page: page })
+    .catch(function (e) { return { ok: false, error: String((e && e.message) || e) } })
+}
+
 async function _loadShelfPage(ticket) {
   if (_shelfPage.loading || _shelfPage.done) return
   _shelfPage.loading = true
   const more = document.getElementById('vshelf-more')
   if (more) more.innerHTML = '<div class="spin"></div>'
-  const res = await window.api.videoShelf({ key: _shelfPage.key, page: _shelfPage.page })
-    .catch(function (e) { return { ok: false, error: String((e && e.message) || e) } })
+  const res = await _fetchShelfPage(_shelfPage.key, _shelfPage.page)
   // A page that arrived after the user left, or after they opened a different
   // shelf, must not append itself to whatever is on screen now.
   if (_shelfPage.ticket !== ticket || state.currentPage !== 'shelf') return
@@ -5615,7 +5640,8 @@ async function _renderVideoTab(ticket, opts) {
     '<div id="vairing-mount"></div>' +
     '<div id="vbecause-mount"></div>' +
     (_videoTab === 'anime' ? '<div id="vtoday-mount"></div>' : '') +
-    wanted.map(function (r) { return _vRowShell(r.key, r.label, 0) }).join('') +
+    // Every catalogue row opens into a full grid ("See all"), page after page.
+    wanted.map(function (r) { return _vRowShell(r.key, r.label, 0, '', true) }).join('') +
     curated.map(function (r) { return _vRowShell(r.key, '', 0, '', true) }).join('')
   document.getElementById('vtab-hide-seen')?.addEventListener('change', function () {
     setHideSeen(this.checked)
@@ -5771,11 +5797,15 @@ function _renderTodayRow(list) {
   if (!mount) return
   const items = (Array.isArray(list) ? list : []).filter(function (e) { return e && e.title && e.aired && e.aired.airingAt })
   if (!items.length) { mount.innerHTML = ''; return }
-  mount.innerHTML = _vRowShell('today-anime', 'Airing today', 0)
-  _fillRow('today-anime', items.map(function (e) {
-    const t = new Date(e.aired.airingAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
-    return Object.assign({}, e, { badge: (e.aired.episode ? 'Ep ' + e.aired.episode + ' · ' : '') + t })
-  }))
+  mount.innerHTML = _vRowShell('today-anime', 'Airing today', 0, '', true)
+  _fillRow('today-anime', items.map(_todayCard))
+}
+// A card for a show airing today: the episode and its local time, as a badge.
+function _todayCard(e) {
+  const a = e && e.aired
+  if (!a || !a.airingAt) return e
+  const t = new Date(a.airingAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+  return Object.assign({}, e, { badge: (a.episode ? 'Ep ' + a.episode + ' · ' : '') + t })
 }
 
 // "Because you watched X": recommendations seeded from the most recent thing

@@ -249,12 +249,14 @@ function buildQuery(kind, options) {
     case 'discover':
       return `query ($page: Int, $perPage: Int, $genre: [String], $tag: [String],
                      $season: MediaSeason, $seasonYear: Int, $format: [MediaFormat],
-                     $status: MediaStatus, $score: Int, $sort: [MediaSort], $isAdult: Boolean) {
+                     $status: MediaStatus, $score: Int, $sort: [MediaSort], $isAdult: Boolean,
+                     $minPopularity: Int) {
   Page(page: $page, perPage: $perPage) {
     pageInfo { total currentPage lastPage hasNextPage }
     media(type: ANIME, genre_in: $genre, tag_in: $tag, season: $season,
           seasonYear: $seasonYear, format_in: $format, status: $status,
-          averageScore_greater: $score, sort: $sort, isAdult: $isAdult) {
+          averageScore_greater: $score, sort: $sort, isAdult: $isAdult,
+          popularity_greater: $minPopularity) {
       ${MEDIA_SELECTION}
     }
   }
@@ -461,6 +463,9 @@ function buildVariables(kind, opts = {}) {
     if (opts.minRating != null && opts.minRating !== '') vars.score = scoreTo100(opts.minRating)
     vars.sort = SORTS[opts.sort] || SORTS.popularity
     vars.isAdult = opts.includeAdult === true
+    // "Top rated" without a popularity floor is a list of shows nobody has
+    // heard of with ten perfect votes each.
+    if (opts.minPopularity) vars.minPopularity = Number(opts.minPopularity)
     return vars
   }
   if (kind === 'search') {
