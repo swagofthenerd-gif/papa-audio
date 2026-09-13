@@ -52,6 +52,11 @@ test('normalizeMedia maps a raw AniList media node to an anime catalog entry', (
     genres: ['Action', 'Adventure', 'Fantasy'],
     episodeCount: 64,
     status: 'FINISHED',
+    // The detail-page facts, present on every entry and null/empty when the
+    // (lighter) list query did not ask for them.
+    duration: null, season: null, nextAiring: null, startDate: null, endDate: null,
+    studios: [], country: null, siteUrl: null, popularity: null, favourites: null,
+    source: null, synonyms: [], characters: [], recommendations: [],
   })
 })
 

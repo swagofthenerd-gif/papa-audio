@@ -176,7 +176,7 @@ const { createTmdbCatalog } = tmdbCatalog
 const shelves = require('./catalog/shelves')
 const { createAnilistCatalog, GENRES_FALLBACK, MIN_GAP_MS: ANILIST_MIN_GAP_MS, RATE_LIMIT_WAIT_CAP_MS: ANILIST_RATE_WAIT_CAP_MS } = require('./catalog/anilist')
 const { createJikanCatalog } = require('./catalog/jikan')
-const { createKitsuCatalog } = require('./catalog/kitsu')
+const { createKitsuCatalog, EPISODE_PAGE: KITSU_EPISODE_PAGE } = require('./catalog/kitsu')
 const { resolveAnimeShelf } = require('./catalog/anime-shelf')
 const { createOmdbCatalog, plausibleMatch: omdbPlausibleMatch, omdbTypeFor } = require('./catalog/omdb')
 const { createWebStreamServer } = require('./web-stream')
@@ -10735,6 +10735,63 @@ ipcMain.handle('video-seasons', async (_, { type, id, idMal, title } = {}) => {
     return { ok: true, ...out }
   } catch (e) {
     return { ok: false, error: e.message, seasons: [], related: [] }
+  }
+})
+
+// An anime's episode list — titles, air dates, synopses and thumbnails — from
+// Kitsu, keyed by the show's MyAnimeList id (every AniList entry carries one).
+// The MAL→Kitsu mapping and each page of twenty are kept in the persistent
+// anime cache: a long-runner's list is hundreds of rows and must not be
+// refetched on every open. Only the pages covering [start, end] are asked
+// for, so One Piece's 1,177 episodes cost six requests for the window on
+// screen, not sixty. Never throws: no list is an empty list, and the grid
+// falls back to numbered buttons.
+const _animeEpisodesCache = makeCache({ cap: 64, ttlMs: 1000 * 60 * 60 * 6 })
+ipcMain.handle('video-anime-episodes', async (_, { idMal, start = 1, end = 20 } = {}) => {
+  try {
+    const mal = Number(idMal)
+    if (!Number.isFinite(mal) || mal <= 0) return { ok: true, episodes: [], total: null }
+    const cat = kitsu()
+    let kitsuId = null
+    const mapKey = `kitsumap:${mal}`
+    const memo = _animeEpisodesCache.get(mapKey)
+    const saved = memo != null ? { value: memo } : _animeDetailCacheRead(mapKey)
+    if (saved && saved.value != null) kitsuId = saved.value
+    else {
+      kitsuId = await cat.idForMal(mal)
+      if (kitsuId) { _animeEpisodesCache.set(mapKey, kitsuId); _animeDetailCacheWrite(mapKey, { value: kitsuId }) }
+    }
+    if (!kitsuId) return { ok: true, episodes: [], total: null }
+    const PAGE = KITSU_EPISODE_PAGE
+    const first = Math.max(1, Number(start) || 1)
+    const last = Math.max(first, Number(end) || first)
+    const out = []
+    let total = null
+    for (let offset = Math.floor((first - 1) / PAGE) * PAGE; offset < last; offset += PAGE) {
+      const pageKey = `eps:${kitsuId}:${offset}`
+      let page = _animeEpisodesCache.get(pageKey)
+      if (!page) {
+        const stored = _animeDetailCacheRead(pageKey)
+        // A stored page that was full is final; a short one (the run's end,
+        // or an airing show) is refetched after a day so new episodes land.
+        if (stored && Array.isArray(stored.episodes) &&
+            (stored.episodes.length >= PAGE || Date.now() - (stored.cachedAt || 0) < 86400000)) {
+          page = { episodes: stored.episodes, total: stored.total ?? null }
+        }
+      }
+      if (!page) {
+        page = await cat.episodes(kitsuId, offset)
+        if (page.episodes.length) _animeDetailCacheWrite(pageKey, { episodes: page.episodes, total: page.total })
+      }
+      _animeEpisodesCache.set(pageKey, page)
+      if (page.total != null) total = page.total
+      for (const ep of page.episodes) if (ep.episodeNumber >= first && ep.episodeNumber <= last) out.push(ep)
+      // A short page is the end of what Kitsu has.
+      if (page.episodes.length < PAGE) break
+    }
+    return { ok: true, episodes: out, total }
+  } catch (e) {
+    return { ok: true, episodes: [], total: null, error: e && e.message }
   }
 })
 

@@ -7998,6 +7998,27 @@ body.app-unfocused .vt-menu {
   background:var(--bg3); color:var(--text2); font-size:13px; font-weight:600;
 }
 .video-detail-info { position:relative; z-index:1; flex:1; min-width:0; padding-bottom:8px; }
+/* A bright banner made the grey meta line, the fact chips and the genre chips
+   unreadable (One Piece, Attack on Titan). A scrim behind the text column,
+   strongest at the left where the words are, and the small type lifted from
+   the dim grey to the reading tone. */
+.video-detail-hero::after {
+  content:''; position:absolute; inset:0; pointer-events:none;
+  background:linear-gradient(90deg, rgba(8,8,8,.78) 0%, rgba(8,8,8,.55) 40%, rgba(8,8,8,.15) 75%, rgba(8,8,8,0) 100%);
+}
+.video-detail-hero .video-detail-meta,
+.video-detail-hero .video-genre-chip,
+.video-detail-hero .vfact { color:rgba(237,232,224,.86); }
+.video-detail-hero .video-genre-chip, .video-detail-hero .vfact { background:rgba(0,0,0,.35); border-color:rgba(255,255,255,.18); }
+/* The romaji and native names under the title. */
+.vdet-alt { font-size:13px; color:rgba(237,232,224,.72); margin:-2px 0 8px; letter-spacing:.01em; }
+.vdet-alt-sep { opacity:.5; margin:0 2px; }
+/* "Episode 1178 airs Sun 13 Sep, 19:15 · in 10h" */
+.vdet-next { font-size:12.5px; color:var(--text); margin:-4px 0 10px; font-weight:600; }
+.vdet-next-in { color:var(--accent, #1db954); margin-left:6px; font-weight:700; }
+/* A character tile opens nothing. */
+.vcast-static { cursor:default; }
+.vcast-static:hover { transform:none; }
 .video-detail-title { font-size:28px; font-weight:800; letter-spacing:-.5px; color:var(--text); margin-bottom:6px; }
 .video-detail-meta { font-size:13px; color:var(--text2); margin-bottom:10px; }
 /* Your own record, one line under the meta: seen-on date and star rating. */

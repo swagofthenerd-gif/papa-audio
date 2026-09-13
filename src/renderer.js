@@ -8099,16 +8099,18 @@ function _videoDetailShell(d) {
     (poster ? '<img class="video-detail-poster" src="' + esc(poster) + '" alt="" onerror="this.style.display=\'none\'">' : '<div class="video-detail-poster video-detail-poster-fallback">' + esc(d.title || '') + '</div>') +
     '<div class="video-detail-info">' +
       '<h1 class="video-detail-title">' + esc(d.title || 'Untitled') + '</h1>' +
+      _altTitlesHtml(d) +
       '<div class="video-detail-meta">' + metaBits.join(' · ') + '</div>' +
       _watchHistoryLineHtml(d) +
       (d.tagline ? '<div class="vdet-tagline">' + esc(d.tagline) + '</div>' : '') +
       _externalRatingsHtml(d) +
       _videoFactsHtml(d) +
+      _nextAiringHtml(d) +
       _providersHtml(d) +
       (genres.length ? '<div class="video-detail-genres">' + genres.map(function (g) {
         return '<button class="video-genre-chip" data-genre-jump="' + esc(g) + '" title="Browse ' + esc(g) + '">' + esc(g) + '</button>'
       }).join('') + '</div>' : '') +
-      (d.overview ? '<p class="video-detail-overview">' + esc(d.overview) + '</p>' : '') +
+      (d.overview ? '<p class="video-detail-overview">' + esc(d.type === 'anime' ? _stripTags(d.overview) : d.overview) + '</p>' : '') +
       _videoCrewHtml(d) +
       // Playing used to mean scrolling to the sources list and picking a row;
       // saving meant finding this title's poster somewhere else. The two
@@ -8272,6 +8274,21 @@ function _videoFactsHtml(d) {
   if (d.runtime) facts.push('<span class="vfact">' + _fmtRuntime(d.runtime) + '</span>')
   if (d.episodeCount) facts.push('<span class="vfact">' + d.episodeCount + ' episodes</span>')
   if (d.status && d.type === 'anime') facts.push('<span class="vfact">' + esc(_animeStatus(d.status)) + '</span>')
+  if (d.type === 'anime') {
+    // The facts an anime page is read for: what kind of thing it is, how
+    // long an episode runs, when it aired, where it comes from.
+    const fmt = _animeFormat(d.format)
+    if (fmt) facts.push('<span class="vfact">' + esc(fmt) + '</span>')
+    if (d.duration) facts.push('<span class="vfact">' + esc(String(d.format).toUpperCase() === 'MOVIE' ? _fmtRuntime(d.duration) : d.duration + ' min / ep') + '</span>')
+    const when = _animeSeasonLabel(d.season, d.year)
+    if (when) facts.push('<span class="vfact">' + esc(when) + '</span>')
+    const dates = _animeDatesLabel(d.startDate, d.endDate, d.status)
+    if (dates) facts.push('<span class="vfact" title="Aired">' + esc(dates) + '</span>')
+    const country = _countryName(d.country)
+    if (country) facts.push('<span class="vfact">' + esc(country) + '</span>')
+    const src = _animeSource(d.source)
+    if (src) facts.push('<span class="vfact">' + esc(src) + '</span>')
+  }
   const studios = Array.isArray(d.studios) ? d.studios.slice(0, 2) : []
   for (const st of studios) facts.push('<span class="vfact">' + esc(st) + '</span>')
   const langs = Array.isArray(d.languages) ? d.languages.slice(0, 1) : []
@@ -8291,6 +8308,79 @@ function _fmtRuntime(mins) {
 function _animeStatus(status) {
   const map = { RELEASING: 'Airing', FINISHED: 'Finished', NOT_YET_RELEASED: 'Upcoming', CANCELLED: 'Cancelled', HIATUS: 'On hiatus' }
   return map[status] || String(status || '').toLowerCase()
+}
+
+// AniList's format enum in words. TV stays "TV series" rather than "TV" so it
+// does not read as the tab name.
+function _animeFormat(format) {
+  const map = { TV: 'TV series', TV_SHORT: 'TV short', MOVIE: 'Film', OVA: 'OVA', ONA: 'Web series', SPECIAL: 'Special', MUSIC: 'Music video' }
+  return map[String(format || '').toUpperCase()] || ''
+}
+function _animeSeasonLabel(season, year) {
+  const map = { WINTER: 'Winter', SPRING: 'Spring', SUMMER: 'Summer', FALL: 'Fall' }
+  const s = map[String(season || '').toUpperCase()]
+  if (!s && !year) return ''
+  return [s, year].filter(Boolean).join(' ')
+}
+// "20 Oct 1999 – ongoing", "3 Oct 2023 – 27 Dec 2023", or the one date a
+// film has.
+function _animeDatesLabel(start, end, status) {
+  const a = _shortDate(start)
+  if (!a) return ''
+  const b = _shortDate(end)
+  if (b && b !== a) return a + ' \u2013 ' + b
+  if (!b && String(status || '').toUpperCase() === 'RELEASING') return a + ' \u2013 ongoing'
+  return a
+}
+// "1999-10-20" → "20 Oct 1999"; "1999-10" → "Oct 1999"; "1999" → "1999".
+function _shortDate(iso) {
+  const m = /^(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?/.exec(String(iso || ''))
+  if (!m) return ''
+  const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+  const month = m[2] ? MONTHS[Number(m[2]) - 1] : ''
+  return [m[3] ? String(Number(m[3])) : '', month, m[1]].filter(Boolean).join(' ')
+}
+function _animeSource(source) {
+  const map = { MANGA: 'From a manga', LIGHT_NOVEL: 'From a light novel', NOVEL: 'From a novel', VISUAL_NOVEL: 'From a visual novel', VIDEO_GAME: 'From a video game', WEB_NOVEL: 'From a web novel', WEB_MANGA: 'From a web manga', ORIGINAL: 'Original story', ANIME: 'From an anime', OTHER: '', DOUJINSHI: 'From a doujinshi', COMIC: 'From a comic', LIVE_ACTION: 'From live action', GAME: 'From a game', MULTIMEDIA_PROJECT: 'Multimedia project', PICTURE_BOOK: 'From a picture book' }
+  return map[String(source || '').toUpperCase()] || ''
+}
+
+// The romaji and native names under the title, for anyone who knows the show
+// by its Japanese name (and for matching a release group's naming).
+function _altTitlesHtml(d) {
+  if (!d || d.type !== 'anime' || !d.titles) return ''
+  const shown = String(d.title || '').trim().toLowerCase()
+  const bits = []
+  for (const t of [d.titles.romaji, d.titles.native]) {
+    if (t && String(t).trim().toLowerCase() !== shown && bits.indexOf(t) === -1) bits.push(t)
+  }
+  if (!bits.length) return ''
+  return '<div class="vdet-alt">' + bits.map(esc).join(' <span class="vdet-alt-sep">·</span> ') + '</div>'
+}
+
+// "Episode 1178 airs Sun 13 Sep, 19:15 · in 10h", for a show still running.
+function _nextAiringHtml(d) {
+  const na = d && d.nextAiring
+  if (!na || !na.airingAt) return ''
+  const at = Number(na.airingAt)
+  if (!Number.isFinite(at) || at <= 0) return ''
+  const when = new Date(at)
+  const day = when.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })
+  const time = when.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+  const left = _untilLabel(at - Date.now())
+  return '<div class="vdet-next">' +
+    (na.episode ? 'Episode ' + esc(String(na.episode)) + ' airs ' : 'Next episode airs ') +
+    esc(day + ', ' + time) + (left ? ' <span class="vdet-next-in">' + esc(left) + '</span>' : '') +
+  '</div>'
+}
+// "in 6d 14h", "in 10h", "in 25m", or '' once it is due.
+function _untilLabel(ms) {
+  const s = Math.floor(Number(ms) / 1000)
+  if (!Number.isFinite(s) || s <= 0) return ''
+  const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60)
+  if (d > 0) return 'in ' + d + 'd ' + h + 'h'
+  if (h > 0) return 'in ' + h + 'h ' + m + 'm'
+  return 'in ' + Math.max(1, m) + 'm'
 }
 
 // Director and writers. Not a full crew list: those are the two credits a
@@ -8347,6 +8437,21 @@ function _externalRatingsHtml(d) {
   return html
 }
 
+// A character tile: the portrait, the name, and the voice actor underneath.
+// Not a button — there is no character page to open.
+function _characterTileHtml(c) {
+  const photo = c.image
+    ? '<img class="vcast-photo" src="' + esc(c.image) + '" alt="" loading="lazy" decoding="async"' +
+      ' onerror="this.classList.add(\'is-missing\')">'
+    : '<div class="vcast-photo vcast-photo-fallback">' + esc(String(c.name || '?').charAt(0)) + '</div>'
+  const sub = c.voiceActor ? c.voiceActor : (c.role === 'MAIN' ? 'Main character' : '')
+  return '<div class="vcast vcast-static" aria-label="' + esc(c.name) + '">' +
+    photo +
+    '<div class="vcast-name">' + esc(c.name) + '</div>' +
+    (sub ? '<div class="vcast-role">' + esc(sub) + '</div>' : '') +
+  '</div>'
+}
+
 // A person, with their face. The catalogue calls the field profilePath and this
 // read c.profile, so every portrait fell through to a grey circle with a letter
 // in it — for the whole life of the page, on every film.
@@ -8367,8 +8472,15 @@ function _renderCastRow(d) {
   if (!box) return
   const cast = Array.isArray(d.cast) ? d.cast.filter(function (c) { return c && c.name }).slice(0, 20) : []
   const crew = _keyCrewList(d)
-  if (!cast.length && !crew.length) { box.innerHTML = ''; return }
+  const characters = Array.isArray(d.characters) ? d.characters.filter(function (c) { return c && c.name }).slice(0, 12) : []
+  if (!cast.length && !crew.length && !characters.length) { box.innerHTML = ''; return }
   let html = ''
+  // An anime's people are its characters, each with the voice behind them.
+  if (characters.length && !cast.length) {
+    html += '<div class="vsection"><div class="vsection-title">Characters</div>' +
+      '<div class="vcast-rail">' + characters.map(_characterTileHtml).join('') +
+      '</div></div>'
+  }
   // Crew first. A cinephile follows a cinematographer the way other people
   // follow an actor, and the page had no way to tell you who shot a film.
   if (crew.length) {
@@ -8923,7 +9035,10 @@ function _renderVideoControls(type) {
     return
   }
   if (type === 'anime') {
-    const n = Number(_videoDetail.d.episodeCount) || 0
+    // An airing show has no total on AniList; the episodes aired so far
+    // (one less than the next to air) make the grid instead of a bare input.
+    const na = _videoDetail.d.nextAiring
+    const n = Number(_videoDetail.d.episodeCount) || (na && Number(na.episode) > 1 ? Number(na.episode) - 1 : 0)
     // A grid rather than the dropdown this used to be. The dropdown could say
     // which episode was selected and nothing else -- not which you had already
     // seen, not which you were part way through -- and for a long-running show
@@ -8955,17 +9070,51 @@ function _renderVideoControls(type) {
     }
     // One window of buttons at a time: two thousand in one innerHTML was a
     // visible stall on every open of a long-runner's page.
+    // The numbered buttons paint at once; the rows with titles, dates,
+    // synopses and thumbnails replace them when the episode list arrives
+    // (Kitsu, keyed by the show's MyAnimeList id — see video-anime-episodes).
+    // A row is pressed to play, as on television; a button only selects.
+    let paintToken = 0
+    const enrichWindow = async function (win, token) {
+      const idMal = _videoDetail.d && _videoDetail.d.idMal
+      if (!idMal || !window.api || !window.api.videoAnimeEpisodes) return
+      const res = await window.api.videoAnimeEpisodes({ idMal: idMal, start: win.start, end: win.end })
+        .catch(function () { return null })
+      if (token !== paintToken || _videoDetailTicket !== ticketAtPaint) return
+      const eps = res && res.ok && Array.isArray(res.episodes) ? res.episodes : []
+      if (!eps.length) return
+      const list = document.getElementById('video-episode-list')
+      const EL = typeof PapaEpisodeList !== 'undefined' ? PapaEpisodeList : null
+      if (!list || !EL) return
+      const byN = {}
+      for (const ep of eps) byN[ep.episodeNumber] = ep
+      const shown = []
+      for (let i = win.start; i <= win.end; i++) shown.push(byN[i] || { episodeNumber: i })
+      list.classList.add('vep-rows')
+      list.innerHTML = EL.rows(shown, prog, _videoState.episode, Date.now()).map(_epRowHtml).join('')
+      list.querySelectorAll('.vep-row').forEach(function (b) {
+        const go = function () {
+          if (!b.classList.contains('unaired')) _autoPlayTicket = _videoDetailTicket
+          setEp(Number(b.dataset.ep) || 1)
+        }
+        b.addEventListener('click', go)
+        b.addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go() } })
+      })
+    }
+    const ticketAtPaint = _videoDetailTicket
     const paintWindow = function (win) {
       const list = document.getElementById('video-episode-list')
       if (!list) return
       let html = ''
       for (let i = win.start; i <= win.end; i++) html += _epButton(i, null, prog)
+      list.classList.remove('vep-rows')
       list.innerHTML = html
       list.querySelectorAll('.video-episode-btn').forEach(function (b) {
         b.addEventListener('click', function () { setEp(Number(b.dataset.ep) || 1) })
       })
       const ranges = document.getElementById('vep-ranges')
       if (ranges) ranges.outerHTML = _epRangeJumperHtml(total, win)
+      enrichWindow(win, ++paintToken)
     }
     if (n > 0) paintWindow(_epWindowOf(total, _videoState.episode))
     // Delegated on the row, so the jumper survives its own outerHTML repaint.

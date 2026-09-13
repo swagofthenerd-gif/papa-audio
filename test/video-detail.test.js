@@ -37,6 +37,8 @@ function harness() {
   // The cast row is built from a shared person tile and a crew de-duplicator
   // now, so the sandbox needs both or every cast assertion fails on a missing
   // helper rather than on anything real.
+  // The anime facts name the country through the Browse vocabulary's helper.
+  vm.runInContext("var _browseVocab = {}; var _COUNTRY_FALLBACK = { JP: 'Japan' }", ctx)
   vm.runInContext("var _CREW_ROLES = [['directors','Director'],['writers','Writer']," +
     "['cinematographers','Cinematography'],['composers','Music'],['editors','Editor']]", ctx)
   // The certificate label (V2.6): a word-style certificate is prefixed.
@@ -44,7 +46,10 @@ function harness() {
   vm.runInContext(SRC.slice(certAt, SRC.indexOf('\n}\n', SRC.indexOf('function _certLabel')) + 3), ctx)
   for (const fn of ['_videoFactsHtml', '_fmtRuntime', '_animeStatus', '_videoCrewHtml',
                     '_personTileHtml', '_keyCrewList', '_externalRatingsHtml',
-                    '_renderCastRow', '_renderProviders', '_renderSimilar']) {
+                    '_renderCastRow', '_renderProviders', '_renderSimilar',
+                    '_animeFormat', '_animeSeasonLabel', '_animeDatesLabel', '_shortDate',
+                    '_countryName', '_animeSource', '_altTitlesHtml', '_nextAiringHtml',
+                    '_untilLabel', '_characterTileHtml']) {
     vm.runInContext(extract(fn), ctx)
   }
   return { ctx, nodes }
@@ -255,4 +260,47 @@ test('a film with only one of the three scores shows only that one', () => {
   const html = ctx._externalRatingsHtml({ external: { imdbRating: 8.1 } })
   assert.match(html, /IMDb/)
   assert.ok(!/Metacritic/.test(html), 'a missing score is absent, not zero')
+})
+
+// ── The anime facts panel (the Miruro comparison, 2026-09-13) ───────────────
+test('an anime page states format, episode length, season, dates, country and source', () => {
+  const { ctx } = harness()
+  const html = ctx._videoFactsHtml({ type: 'anime', status: 'RELEASING', format: 'TV', duration: 24, season: 'FALL', year: 1999,
+    startDate: '1999-10-20', endDate: null, country: 'JP', source: 'MANGA', studios: ['Toei Animation'] })
+  for (const word of ['Airing', 'TV series', '24 min / ep', 'Fall 1999', '20 Oct 1999 – ongoing', 'Japan', 'From a manga', 'Toei Animation']) {
+    assert.ok(html.includes(word), 'missing ' + word + ' in ' + html)
+  }
+  // A film's length reads as a runtime, and a finished run shows both dates.
+  const film = ctx._videoFactsHtml({ type: 'anime', format: 'MOVIE', duration: 106, startDate: '2016-08-26', endDate: '2016-08-26', status: 'FINISHED' })
+  assert.ok(film.includes('1h 46m') && film.includes('26 Aug 2016') && !film.includes('–'))
+  assert.strictEqual(ctx._animeDatesLabel('2023-10-03', '2023-12-27', 'FINISHED'), '3 Oct 2023 – 27 Dec 2023')
+  assert.strictEqual(ctx._shortDate('1999-10'), 'Oct 1999')
+  assert.strictEqual(ctx._shortDate(null), '')
+})
+
+test('the romaji and native names appear under the title only when they differ from it', () => {
+  const { ctx } = harness()
+  const html = ctx._altTitlesHtml({ type: 'anime', title: 'Frieren: Beyond Journey\'s End', titles: { english: 'Frieren: Beyond Journey\'s End', romaji: 'Sousou no Frieren', native: '葬送のフリーレン' } })
+  assert.ok(html.includes('Sousou no Frieren') && html.includes('葬送のフリーレン'))
+  assert.strictEqual(ctx._altTitlesHtml({ type: 'anime', title: 'ONE PIECE', titles: { romaji: 'ONE PIECE', native: 'ONE PIECE' } }), '')
+  assert.strictEqual(ctx._altTitlesHtml({ type: 'movie', title: 'Heat' }), '')
+})
+
+test('a running show says when its next episode airs and how long that is away', () => {
+  const { ctx } = harness()
+  const html = ctx._nextAiringHtml({ nextAiring: { airingAt: Date.now() + 10 * 3600 * 1000 + 41 * 60 * 1000, episode: 1178 } })
+  assert.ok(html.includes('Episode 1178 airs') && /in 10h 4[01]m/.test(html), html)
+  assert.strictEqual(ctx._nextAiringHtml({ nextAiring: null }), '')
+  assert.strictEqual(ctx._untilLabel(6 * 86400000 + 14 * 3600000), 'in 6d 14h')
+  assert.strictEqual(ctx._untilLabel(-5), '')
+})
+
+test('characters render as tiles with the voice actor and open nothing; they yield to a real cast list', () => {
+  const { ctx, nodes } = harness()
+  const tile = ctx._characterTileHtml({ name: 'Usopp', image: 'https://x/u.jpg', role: 'MAIN', voiceActor: 'Kappei Yamaguchi' })
+  assert.ok(tile.includes('vcast-static') && tile.includes('Kappei Yamaguchi') && !tile.includes('data-person'))
+  ctx._renderCastRow({ characters: [{ name: 'Usopp' }, { name: 'Nami' }] })
+  assert.ok(nodes.vcast.innerHTML.includes('Characters') && nodes.vcast.innerHTML.includes('Nami'))
+  ctx._renderCastRow({ characters: [{ name: 'Usopp' }], cast: [{ name: 'Al Pacino', character: 'Vincent' }] })
+  assert.ok(!nodes.vcast.innerHTML.includes('Characters'), 'a real cast list wins')
 })

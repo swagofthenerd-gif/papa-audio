@@ -121,6 +121,7 @@ contextBridge.exposeInMainWorld('api', {
   videoGenres:      (p) => ipcRenderer.invoke('video-genres', p),
   videoTags:        ()  => ipcRenderer.invoke('video-tags'),
   videoSeasons:     (p) => ipcRenderer.invoke('video-seasons', p),
+  videoAnimeEpisodes: (p) => ipcRenderer.invoke('video-anime-episodes', p),
   videoCollection:  (p) => ipcRenderer.invoke('video-collection', p),
   videoPerson:      (p) => ipcRenderer.invoke('video-person', p),
   videoTrailerUrl:  (p) => ipcRenderer.invoke('video-trailer-url', p),

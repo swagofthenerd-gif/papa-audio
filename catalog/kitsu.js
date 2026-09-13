@@ -248,6 +248,55 @@ function buildTrendingUrl(opts = {}) {
   return `${KITSU_BASE}/trending/anime?${q.toString()}`
 }
 
+// The episode list. Kitsu is the one keyless source with per-episode titles,
+// air dates, synopses AND thumbnails, and it maps a MyAnimeList id to its own
+// entry in one request — so an AniList show (which carries idMal) gets a real
+// episode list without a fourth database in the picture.
+// The mapping is its own resource: /mappings filtered by site and id, with
+// the item relationship naming the Kitsu anime. (Filtering /anime by mapping
+// fields is refused with "Filter not allowed".)
+function buildMalMappingUrl(malId) {
+  const q = new URLSearchParams()
+  q.set('filter[externalSite]', 'myanimelist/anime')
+  q.set('filter[externalId]', String(malId))
+  // Without include=item the relationship comes back as links only, no id.
+  q.set('include', 'item')
+  q.set('fields[anime]', 'id')
+  return `${KITSU_BASE}/mappings?${q.toString()}`
+}
+
+// Kitsu caps page[limit] for episodes at 20.
+const EPISODE_PAGE = 20
+function buildEpisodesUrl(kitsuId, offset) {
+  const q = new URLSearchParams()
+  q.set('page[limit]', String(EPISODE_PAGE))
+  q.set('page[offset]', String(Math.max(0, Number(offset) || 0)))
+  q.set('sort', 'number')
+  return `${KITSU_BASE}/anime/${encodeURIComponent(kitsuId)}/episodes?${q.toString()}`
+}
+
+// One episode in the shape the television episode list already renders
+// ({episodeNumber, name, overview, still, airDate, runtime}), so the anime
+// grid can reuse the same rows.
+function normalizeEpisode(resource) {
+  const attr = (resource && resource.attributes) || {}
+  const n = Number(attr.number)
+  if (!Number.isFinite(n) || n <= 0) return null
+  const t = attr.titles || {}
+  const name = _str(t.en) || _str(t.en_us) || _str(attr.canonicalTitle) || _str(t.en_jp) || null
+  const thumb = attr.thumbnail && (attr.thumbnail.original || attr.thumbnail.large || attr.thumbnail.small)
+  return {
+    episodeNumber: n,
+    // A Kitsu placeholder title ("Episode 12") adds nothing; the row makes
+    // its own.
+    name: name && !/^episode \d+$/i.test(name) ? name : null,
+    overview: _str(attr.synopsis) || _str(attr.description) || null,
+    still: _str(thumb) || null,
+    airDate: _str(attr.airdate) || null,
+    runtime: Number.isFinite(Number(attr.length)) && attr.length != null ? Number(attr.length) : null,
+  }
+}
+
 function createKitsuCatalog({ fetchFn, minIntervalMs = MIN_INTERVAL_MS,
   timeoutMs = REQUEST_TIMEOUT_MS } = {}) {
   const fetcher = fetchFn || fetch
@@ -350,6 +399,33 @@ function createKitsuCatalog({ fetchFn, minIntervalMs = MIN_INTERVAL_MS,
         ? normalizeMedia(one) : null
     },
 
+    // The Kitsu id for a MyAnimeList id, or null. One request.
+    async idForMal(malId) {
+      const id = Number(malId)
+      if (!Number.isFinite(id) || id <= 0) return null
+      const data = await _schedule(() => _get(buildMalMappingUrl(id)))
+      const rows = data && Array.isArray(data.data) ? data.data : []
+      for (const row of rows) {
+        const item = row && row.relationships && row.relationships.item && row.relationships.item.data
+        if (!item || item.type !== 'anime') continue
+        const kid = Number(item.id)
+        if (Number.isFinite(kid) && kid > 0) return kid
+      }
+      return null
+    },
+
+    // One page of episodes (20) from `offset`, TMDB-shaped. Returns
+    // { episodes, total } — total is Kitsu's count when it says, else null.
+    // Never throws; an unreachable Kitsu is an empty page.
+    async episodes(kitsuId, offset) {
+      const id = _kitsuIdOf(kitsuId)
+      if (!id) return { episodes: [], total: null }
+      const data = await _schedule(() => _get(buildEpisodesUrl(id, offset)))
+      const list = data && Array.isArray(data.data) ? data.data : []
+      const total = data && data.meta && Number.isFinite(Number(data.meta.count)) ? Number(data.meta.count) : null
+      return { episodes: list.map(normalizeEpisode).filter(Boolean), total }
+    },
+
     // The trending shelf: Kitsu's /trending/anime. Returns a (possibly empty)
     // array of normalized entries; never throws, never null. This is the only
     // shelf section Kitsu serves in the third rung — see buildTrendingUrl.
@@ -379,6 +455,10 @@ function _sleep(ms) {
 }
 
 module.exports = {
+  EPISODE_PAGE,
+  buildMalMappingUrl,
+  buildEpisodesUrl,
+  normalizeEpisode,
   KITSU_BASE,
   KITSU_ACCEPT,
   MIN_INTERVAL_MS,

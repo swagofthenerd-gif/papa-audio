@@ -28,7 +28,42 @@ const MEDIA_SELECTION = `id
           episodes
           status
           format
-          trailer { id site }`
+          trailer { id site }
+          duration
+          season
+          nextAiringEpisode { airingAt episode }`
+
+// What only a detail page needs, on top of MEDIA_SELECTION: the facts panel,
+// the characters rail and the recommendations rail. Fetched in the same
+// request as the entry itself, so opening a show costs one round-trip for
+// all of it.
+const DETAIL_SELECTION = `startDate { year month day }
+          endDate { year month day }
+          studios(isMain: true) { nodes { name } }
+          countryOfOrigin
+          siteUrl
+          popularity
+          favourites
+          source
+          synonyms
+          characters(sort: [ROLE, RELEVANCE], perPage: 12) {
+            edges {
+              role
+              node { id name { full } image { large } }
+              voiceActors(language: JAPANESE, sort: RELEVANCE) { name { full } }
+            }
+          }
+          recommendations(sort: RATING_DESC, perPage: 12) {
+            nodes {
+              mediaRecommendation {
+                id idMal seasonYear format averageScore episodes status
+                title { english romaji native }
+                coverImage { large extraLarge }
+                bannerImage
+                genres
+              }
+            }
+          }`
 
 // What a season-chain hop needs of each entry: enough for the rail card and
 // the walk itself, nothing heavier.
@@ -128,7 +163,51 @@ function normalizeMedia(raw) {
     genres: Array.isArray(raw.genres) ? raw.genres : [],
     episodeCount: raw.episodes ?? null,
     status: raw.status ?? null,
+    // Minutes per episode (or the film's length).
+    duration: raw.duration ?? null,
+    // WINTER / SPRING / SUMMER / FALL, paired with `year` for "Fall 1999".
+    season: raw.season ?? null,
+    // The next unaired episode, for a countdown; null once a run is over.
+    nextAiring: raw.nextAiringEpisode && raw.nextAiringEpisode.airingAt != null
+      ? { airingAt: Number(raw.nextAiringEpisode.airingAt) * 1000, episode: raw.nextAiringEpisode.episode ?? null }
+      : null,
+    // The detail-only facts. A list entry has none of these and reads null.
+    startDate: _fuzzyDate(raw.startDate),
+    endDate: _fuzzyDate(raw.endDate),
+    studios: raw.studios && Array.isArray(raw.studios.nodes)
+      ? raw.studios.nodes.map(n => n && n.name).filter(Boolean) : [],
+    country: raw.countryOfOrigin ?? null,
+    siteUrl: raw.siteUrl ?? null,
+    popularity: raw.popularity ?? null,
+    favourites: raw.favourites ?? null,
+    source: raw.source ?? null,
+    synonyms: Array.isArray(raw.synonyms) ? raw.synonyms.filter(Boolean) : [],
+    characters: raw.characters && Array.isArray(raw.characters.edges)
+      ? raw.characters.edges.map(_character).filter(Boolean) : [],
+    recommendations: raw.recommendations && Array.isArray(raw.recommendations.nodes)
+      ? raw.recommendations.nodes.map(n => n && n.mediaRecommendation).filter(m => m && m.id != null).map(normalizeMedia)
+      : [],
   }
+}
+
+// AniList's FuzzyDate → "YYYY-MM-DD" (or just "YYYY" / "YYYY-MM" when that is
+// all it knows); null when even the year is missing.
+function _fuzzyDate(d) {
+  if (!d || !d.year) return null
+  const pad = n => String(n).padStart(2, '0')
+  if (!d.month) return String(d.year)
+  if (!d.day) return d.year + '-' + pad(d.month)
+  return d.year + '-' + pad(d.month) + '-' + pad(d.day)
+}
+
+// One character on the rail: the name, the portrait, MAIN/SUPPORTING and the
+// Japanese voice actor.
+function _character(edge) {
+  const n = edge && edge.node
+  if (!n || !n.name || !n.name.full) return null
+  const va = Array.isArray(edge.voiceActors) && edge.voiceActors[0] && edge.voiceActors[0].name
+    ? edge.voiceActors[0].name.full : null
+  return { id: n.id ?? null, name: n.name.full, image: (n.image && n.image.large) || null, role: edge.role || null, voiceActor: va }
 }
 
 // Pure GraphQL query builders. `buildQuery` returns the query string for a
@@ -230,6 +309,7 @@ function buildQuery(kind, options) {
       return `query ($id: Int) {
   Media(id: $id, type: ANIME) {
     ${MEDIA_SELECTION}
+    ${DETAIL_SELECTION}
   }
 }`
     // The same entry looked up by its MyAnimeList id: a card that came from
@@ -239,6 +319,7 @@ function buildQuery(kind, options) {
       return `query ($idMal: Int) {
   Media(idMal: $idMal, type: ANIME) {
     ${MEDIA_SELECTION}
+    ${DETAIL_SELECTION}
   }
 }`
     // The airing schedule for a batch of shows the viewer already follows (App
