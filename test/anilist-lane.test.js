@@ -88,3 +88,20 @@ test('a nested second level is filed without a request of its own', async () => 
   assert.deepStrictEqual(out.seasons.map(s => s.title), ['S1', 'S2', 'S3'])
   assert.ok(!relationCalls.includes(2), 'entry 2 came with its edges, so it was never requested: ' + relationCalls.join(','))
 })
+
+test('after a refusal the lane sends at a third of its pace for a minute', async () => {
+  const sentAt = []
+  let n = 0
+  const fetchFn = async () => {
+    sentAt.push(Date.now())
+    n++
+    if (n === 1) return { ok: false, status: 429, headers: { get: () => '0.01' } }
+    return okPage([])
+  }
+  const cat = createAnilistCatalog({ fetchFn, minGapMs: 20, rateLimitWaitCapMs: 1000 })
+  assert.strictEqual(cat._slowed(), false)
+  await cat.trending(1)          // refused once, retried once
+  assert.strictEqual(cat._slowed(), true)
+  await cat.popular(1)
+  assert.ok(sentAt[2] - sentAt[1] >= 55, 'three times the gap after a refusal: ' + (sentAt[2] - sentAt[1]))
+})

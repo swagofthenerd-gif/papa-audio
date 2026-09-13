@@ -223,6 +223,49 @@ function buildSeasonNowUrl(opts = {}) {
   return `${JIKAN_BASE}/seasons/now${qs ? '?' + qs : ''}`
 }
 
+// Browse, when AniList refuses: MAL's /anime search takes the same filters
+// under other names. Genres are MAL ids, resolved from names through
+// /genres/anime (fetched once, kept in the module); sorts map onto
+// order_by + sort; formats and statuses onto MAL's lowercase enums. A season
+// filter goes to /seasons/{year}/{season} instead, which takes no other
+// filter but the page.
+const JIKAN_SORT = {
+  popularity: ['popularity', 'asc'],   // MAL's popularity is a rank: 1 is the top
+  rating: ['score', 'desc'],
+  newest: ['start_date', 'desc'],
+  oldest: ['start_date', 'asc'],
+  title: ['title', 'asc'],
+  trending: ['popularity', 'asc'],
+}
+const JIKAN_FORMAT = { TV: 'tv', MOVIE: 'movie', OVA: 'ova', ONA: 'ona', SPECIAL: 'special', MUSIC: 'music' }
+const JIKAN_STATUS = { RELEASING: 'airing', FINISHED: 'complete', NOT_YET_RELEASED: 'upcoming' }
+function buildGenresUrl() {
+  return `${JIKAN_BASE}/genres/anime`
+}
+function buildDiscoverUrl(opts = {}, genreIds = []) {
+  const season = opts.season && opts.seasonYear
+  if (season) {
+    const q = new URLSearchParams()
+    if (opts.page != null) q.set('page', String(opts.page))
+    const qs = q.toString()
+    return `${JIKAN_BASE}/seasons/${encodeURIComponent(opts.seasonYear)}/${String(opts.season).toLowerCase()}${qs ? '?' + qs : ''}`
+  }
+  const q = new URLSearchParams()
+  q.set('sfw', 'true')
+  q.set('limit', String(opts.perPage || 20))
+  if (opts.page != null) q.set('page', String(opts.page))
+  if (genreIds.length) q.set('genres', genreIds.join(','))
+  const formats = (Array.isArray(opts.formats) ? opts.formats : []).map(f => JIKAN_FORMAT[String(f).toUpperCase()]).filter(Boolean)
+  if (formats.length === 1) q.set('type', formats[0])
+  if (opts.status && JIKAN_STATUS[opts.status]) q.set('status', JIKAN_STATUS[opts.status])
+  if (opts.minRating != null && opts.minRating !== '' && Number(opts.minRating) > 0) q.set('min_score', String(Number(opts.minRating)))
+  if (opts.seasonYear && !opts.season) { q.set('start_date', opts.seasonYear + '-01-01'); q.set('end_date', opts.seasonYear + '-12-31') }
+  const [orderBy, sort] = JIKAN_SORT[opts.sort] || JIKAN_SORT.popularity
+  q.set('order_by', orderBy)
+  q.set('sort', sort)
+  return `${JIKAN_BASE}/anime?${q.toString()}`
+}
+
 function createJikanCatalog({ fetchFn, minIntervalMs = MIN_INTERVAL_MS,
   timeoutMs = REQUEST_TIMEOUT_MS } = {}) {
   const fetcher = fetchFn || fetch
@@ -259,6 +302,7 @@ function createJikanCatalog({ fetchFn, minIntervalMs = MIN_INTERVAL_MS,
   // chain needs that distinction to report an honest outage instead of a
   // misleading "no results".
   let _lastFailure = null
+  let _genreMap = null
 
   async function _get(url) {
     // AbortController bounds the request so a hung socket cannot wedge the lane
@@ -387,6 +431,46 @@ function createJikanCatalog({ fetchFn, minIntervalMs = MIN_INTERVAL_MS,
       return one && typeof one === 'object' ? normalizeMedia(one) : null
     },
 
+    // Genre name → MAL id, fetched once. Names are matched case-insensitively
+    // and AniList's few spellings that differ from MAL's are bridged.
+    async genreMap() {
+      if (_genreMap) return _genreMap
+      const data = await _schedule(() => _get(buildGenresUrl()))
+      const list = data && Array.isArray(data.data) ? data.data : []
+      if (!list.length) return {}
+      const map = {}
+      for (const g of list) if (g && g.name && g.mal_id != null) map[String(g.name).toLowerCase()] = Number(g.mal_id)
+      const alias = { 'mahou shoujo': 'magical sex shift', 'sci-fi': 'sci-fi', 'slice of life': 'slice of life', 'psychological': 'psychological', 'mecha': 'mecha' }
+      for (const [a, b] of Object.entries(alias)) if (map[b] != null && map[a] == null) map[a] = map[b]
+      _genreMap = map
+      return map
+    },
+
+    // Browse through MAL. Same result shape as AniList's discover, so the
+    // handler can hand it to the renderer unchanged. Never throws.
+    async discover(opts) {
+      opts = opts || {}
+      const names = Array.isArray(opts.genres) ? opts.genres : []
+      let ids = []
+      if (names.length) {
+        const map = await this.genreMap()
+        ids = names.map(n => map[String(n).toLowerCase()]).filter(n => n != null)
+        // A genre MAL does not know cannot be matched: no results is honest,
+        // a list ignoring the filter is not.
+        if (ids.length !== names.length) return { results: [], page: 1, totalPages: 1, totalResults: 0, hasMore: false }
+      }
+      const data = await _schedule(() => _get(buildDiscoverUrl(opts, ids)))
+      const list = data && Array.isArray(data.data) ? data.data : []
+      const pg = (data && data.pagination) || {}
+      return {
+        results: list.map(normalizeMedia),
+        page: pg.current_page || opts.page || 1,
+        totalPages: pg.last_visible_page || 1,
+        totalResults: (pg.items && pg.items.total) || list.length,
+        hasMore: pg.has_next_page === true,
+      }
+    },
+
     // The trending shelf: MAL's default /top/anime. Returns a (possibly empty)
     // array of normalized entries; never throws, never null.
     async top(page) {
@@ -430,6 +514,9 @@ function _sleep(ms) {
 }
 
 module.exports = {
+  buildGenresUrl,
+  buildDiscoverUrl,
+  JIKAN_SORT,
   buildRelationsUrl,
   JIKAN_BASE,
   MIN_INTERVAL_MS,

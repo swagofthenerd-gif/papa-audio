@@ -31,7 +31,8 @@ const MEDIA_SELECTION = `id
           trailer { id site }
           duration
           season
-          nextAiringEpisode { airingAt episode }`
+          nextAiringEpisode { airingAt episode }
+          popularity`
 
 // What only a detail page needs, on top of MEDIA_SELECTION: the facts panel,
 // the characters rail and the recommendations rail. Fetched in the same
@@ -129,6 +130,29 @@ function normalizeAiring(raw) {
     // so every downstream airsAt is milliseconds regardless of source.
     airingAt: Number(next.airingAt),
   }
+}
+
+// One airing-schedule entry with its show: the normalized media plus which
+// episode and when (epoch ms). Hentai and shows with no title are dropped.
+function normalizeScheduleEntry(raw) {
+  if (!raw || !raw.media || raw.media.isAdult) return null
+  const media = normalizeMedia(raw.media)
+  if (!media.id || !media.title) return null
+  return Object.assign(media, {
+    aired: { episode: raw.episode ?? null, airingAt: Number(raw.airingAt) * 1000 },
+  })
+}
+// The day's schedule without the shorts nobody follows — unless that would
+// leave the strip near-empty, in which case everything stays.
+const TODAY_POPULARITY_FLOOR = 2000
+function _worthListing(list) {
+  const kept = list.filter(e => (e.popularity || 0) >= TODAY_POPULARITY_FLOOR)
+  return kept.length >= 4 ? kept : list
+}
+// A show that aired two episodes this week appears once, with the latest.
+function _uniqueShows(list) {
+  const seen = new Set()
+  return list.filter(e => { if (seen.has(e.id)) return false; seen.add(e.id); return true })
 }
 
 function normalizeMedia(raw) {
@@ -339,6 +363,22 @@ function buildQuery(kind, options) {
     }
   }
 }`
+    // The whole anime home page in one request: seven shelves as aliases of
+    // Page, plus the airing schedule behind "New episodes" (the last three
+    // days, newest first) and "Airing today" (the next 24 hours, soonest
+    // first). Seven separate requests through the lane would take five
+    // seconds to fill the last row; one takes a second.
+    case 'animeHome':
+      return `query ($season: MediaSeason, $seasonYear: Int, $now: Int, $recent: Int, $tomorrow: Int) {
+  trending: Page(page: 1, perPage: 20) { media(type: ANIME, sort: TRENDING_DESC) { ${MEDIA_SELECTION} } }
+  popular: Page(page: 1, perPage: 20) { media(type: ANIME, sort: POPULARITY_DESC) { ${MEDIA_SELECTION} } }
+  season: Page(page: 1, perPage: 20) { media(type: ANIME, season: $season, seasonYear: $seasonYear, sort: POPULARITY_DESC) { ${MEDIA_SELECTION} } }
+  topAiring: Page(page: 1, perPage: 20) { media(type: ANIME, status: RELEASING, sort: POPULARITY_DESC) { ${MEDIA_SELECTION} } }
+  upcoming: Page(page: 1, perPage: 20) { media(type: ANIME, status: NOT_YET_RELEASED, sort: POPULARITY_DESC) { ${MEDIA_SELECTION} } }
+  topRated: Page(page: 1, perPage: 20) { media(type: ANIME, sort: SCORE_DESC, popularity_greater: 20000) { ${MEDIA_SELECTION} } }
+  newEpisodes: Page(page: 1, perPage: 40) { airingSchedules(airingAt_greater: $recent, airingAt_lesser: $now, sort: TIME_DESC) { airingAt episode media { ${MEDIA_SELECTION} } } }
+  today: Page(page: 1, perPage: 50) { airingSchedules(airingAt_greater: $now, airingAt_lesser: $tomorrow, sort: TIME) { airingAt episode media { ${MEDIA_SELECTION} } } }
+}`
     default:
       throw new Error(`Unknown AniList query kind: ${kind}`)
   }
@@ -380,6 +420,18 @@ function buildVariables(kind, opts = {}) {
   // The byId query takes only $id; sending page/perPage would be rejected as
   // unknown variables are not, but keeping it clean matches the query shape.
   if (kind === 'byId' || kind === 'relations') return { id: Number(id) }
+  if (kind === 'animeHome') {
+    const now = Math.floor((opts.now != null ? Number(opts.now) : Date.now()) / 1000)
+    const d = new Date(now * 1000)
+    const month = d.getMonth() + 1
+    return {
+      season: season ?? (month <= 3 ? 'WINTER' : month <= 6 ? 'SPRING' : month <= 9 ? 'SUMMER' : 'FALL'),
+      seasonYear: seasonYear ?? d.getFullYear(),
+      now,
+      recent: now - 3 * 86400,
+      tomorrow: now + 86400,
+    }
+  }
   if (kind === 'byMal') return { idMal: Number(opts.idMal) }
   if (kind === 'airing') {
     // ids arrive as strings from the video store and as numbers from API
@@ -480,6 +532,12 @@ function createAnilistCatalog({ fetchFn, retryDelayMs = 1000,
   let _lane = Promise.resolve()
   let _lastSentAt = 0
   let _rateLimitedUntil = 0
+  // After a refusal the lane sends at a third of its pace for a minute:
+  // AniList's limit drops during incidents, and a second burst into a
+  // limiter that has already said no only earns a longer hold.
+  let _slowUntil = 0
+  const SLOW_FOR_MS = 60 * 1000
+  const _gap = () => (Date.now() < _slowUntil ? minGapMs * 3 : minGapMs)
   const _rateLimitWait = res => {
     const headers = res && res.headers
     const ra = headers && typeof headers.get === 'function' ? Number(headers.get('retry-after')) : NaN
@@ -488,11 +546,12 @@ function createAnilistCatalog({ fetchFn, retryDelayMs = 1000,
   }
   function _fetchGraphql(body) {
     const run = _lane.then(async () => {
-      const wait = Math.max(minGapMs - (Date.now() - _lastSentAt), _rateLimitedUntil - Date.now())
+      const wait = Math.max(_gap() - (Date.now() - _lastSentAt), _rateLimitedUntil - Date.now())
       if (wait > 0) await _sleep(wait)
       _lastSentAt = Date.now()
       let res = await _fetchOnce(body)
       if (res && res.status === 429) {
+        _slowUntil = Date.now() + SLOW_FOR_MS
         const ms = _rateLimitWait(res)
         if (ms != null) {
           _rateLimitedUntil = Date.now() + ms
@@ -546,6 +605,19 @@ function createAnilistCatalog({ fetchFn, retryDelayMs = 1000,
     if (kind === 'relations') {
       const edges = data?.data?.Media?.relations?.edges
       return Array.isArray(edges) ? edges : []
+    }
+    if (kind === 'animeHome') {
+      const d = data?.data || {}
+      const list = key => ((d[key] && d[key].media) || []).map(normalizeMedia)
+      const sched = key => ((d[key] && d[key].airingSchedules) || []).map(normalizeScheduleEntry).filter(Boolean)
+      return {
+        trending: list('trending'), popular: list('popular'), season: list('season'),
+        topAiring: list('topAiring'), upcoming: list('upcoming'), topRated: list('topRated'),
+        // The schedule is full of shorts nobody follows; the shows people
+        // actually watch come first, and the day's strip keeps its clock order.
+        newEpisodes: _uniqueShows(sched('newEpisodes')).sort((a, b) => (b.popularity || 0) - (a.popularity || 0)).slice(0, 20),
+        today: _worthListing(sched('today')),
+      }
     }
     if (kind === 'airing') {
       const list = data?.data?.Page?.media
@@ -643,6 +715,12 @@ function createAnilistCatalog({ fetchFn, retryDelayMs = 1000,
       return { open: _breakerOpen(), until: _breakerUntil, strikes: _breakerStrikes }
     },
     _resetBreaker() { _breakerReset() },
+    // For tests: is the lane in its slowed-down minute after a refusal?
+    _slowed() { return Date.now() < _slowUntil },
+    // The anime home bundle, or null when AniList cannot answer.
+    home(opts) {
+      return _degrade(null, () => _post('animeHome', opts || {}))
+    },
     trending(page) {
       return _degrade([], () => _post('trending', { page }))
     },
@@ -882,6 +960,7 @@ module.exports = {
   scoreTo100,
   normalizeMedia,
   normalizeAiring,
+  normalizeScheduleEntry,
   buildQuery,
   buildVariables,
   createAnilistCatalog,

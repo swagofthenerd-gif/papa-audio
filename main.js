@@ -10477,6 +10477,11 @@ async function _anilistListWithOutage(fn) {
   }
 }
 
+// Browse through MyAnimeList when AniList refuses. Never throws.
+async function _jikanDiscover(req) {
+  try { return await jikan().discover(req) } catch (_) { return null }
+}
+
 // The Jikan/MyAnimeList fallback for one of the three fixed anime shelves. Maps
 // a shelf section onto the matching Jikan endpoint (catalog/jikan.js) and returns
 // a (possibly empty) array of source:'mal'-marked cards. Never throws: Jikan is a
@@ -10662,6 +10667,13 @@ ipcMain.handle('video-discover', async (_, req) => {
       }
       const lf = typeof cat.lastFailure === 'function' ? cat.lastFailure() : null
       if (lf) {
+        // AniList refused: MyAnimeList answers the same filters. Live results
+        // beat a saved page, and both beat "temporarily down".
+        const viaMal = await _jikanDiscover(req)
+        if (viaMal && viaMal.results.length) {
+          _videoDiscoverCache.set(key, viaMal)
+          return { ok: true, ...viaMal, viaMal: true, outage: lf.message }
+        }
         const saved = _animeBrowseCacheRead('discover:' + key)
         if (saved && saved.value && Array.isArray(saved.value.results) && saved.value.results.length) {
           return { ok: true, ...saved.value, fromCache: true, outage: lf.message }
@@ -10792,6 +10804,33 @@ ipcMain.handle('video-anime-episodes', async (_, { idMal, start = 1, end = 20 } 
     return { ok: true, episodes: out, total }
   } catch (e) {
     return { ok: true, episodes: [], total: null, error: e && e.message }
+  }
+})
+
+// The anime home page in one request (catalog/anilist.js 'animeHome'):
+// seven shelves plus the airing schedule. Memoised for half an hour — the
+// schedule moves — and kept on disk as outage insurance, the same way the
+// per-shelf rows are.
+const _animeHomeCache = makeCache({ cap: 2, ttlMs: 1000 * 60 * 30 })
+ipcMain.handle('video-anime-home', async () => {
+  try {
+    const memo = _animeHomeCache.get('home')
+    if (memo) return { ok: true, home: memo }
+    const cat = anilist()
+    const home = await cat.home()
+    if (home && home.trending && home.trending.length) {
+      _animeHomeCache.set('home', home)
+      _animeBrowseCacheWrite('home', home)
+      return { ok: true, home }
+    }
+    const lf = typeof cat.lastFailure === 'function' ? cat.lastFailure() : null
+    const saved = _animeBrowseCacheRead('home')
+    if (saved && saved.value && saved.value.trending && saved.value.trending.length) {
+      return { ok: true, home: saved.value, fromCache: true, outage: lf ? lf.message : null }
+    }
+    return { ok: false, error: lf ? lf.message : 'AniList returned nothing', outage: lf ? lf.message : null }
+  } catch (e) {
+    return { ok: false, error: e.message }
   }
 })
 

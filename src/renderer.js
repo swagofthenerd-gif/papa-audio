@@ -3042,8 +3042,16 @@ var _videoRows = [
   // so dropping this one would leave TV with a single row.
   { key: 'popular-tv',      label: 'Popular TV',       tabs: ['tv'] },
   { key: 'trending-anime',  label: 'Trending Anime',   tabs: ['all', 'anime'] },
-  { key: 'popular-anime',   label: 'Popular Anime',    tabs: ['anime'] },
-  { key: 'season-anime',    label: 'This Season',      tabs: ['anime'] },
+  // The anime tab's other rows arrive together in one request (the home
+  // bundle, `home` below): what is airing, what just aired, what is coming,
+  // and the all-time best. Each is filled from the bundle by _fillAnimeHome;
+  // only when the bundle cannot be had do they fall back to a request each.
+  { key: 'top-airing-anime', label: 'Top airing',      tabs: ['anime'], home: 'topAiring' },
+  { key: 'new-episodes-anime', label: 'New episodes',  tabs: ['anime'], home: 'newEpisodes' },
+  { key: 'season-anime',    label: 'This Season',      tabs: ['anime'], home: 'season' },
+  { key: 'popular-anime',   label: 'Popular Anime',    tabs: ['anime'], home: 'popular' },
+  { key: 'top-rated-anime', label: 'Top rated',        tabs: ['anime'], home: 'topRated' },
+  { key: 'upcoming-anime',  label: 'Upcoming',         tabs: ['anime'], home: 'upcoming' },
 ]
 
 // The curated shelves, which is where cinema older than this year finally
@@ -5593,6 +5601,9 @@ async function _renderVideoTab(ticket, opts) {
   // The same toggle Browse and the shelf pages carry, applied to every row on
   // the tab. It lives with the rows because that is what it filters.
   rows.innerHTML = '<div class="vrows-tools">' + _hideSeenToggleHtml('vtab-hide-seen') + '</div>' +
+    // The genre strip sits right under the spotlight, above everything
+    // personal: it is the way into the catalogue, not one more shelf.
+    (_videoTab === 'anime' ? _animeGenreStripHtml() : '') +
     // Continue Watching drops the standalone count: it rendered as a stray
     // "9" floating under the title (audit #13), and the number of collapsed
     // cards is already the shelf itself. My List keeps its count.
@@ -5603,6 +5614,7 @@ async function _renderVideoTab(ticket, opts) {
     // is dropped rather than shown as a skeleton forever when it cannot fill.
     '<div id="vairing-mount"></div>' +
     '<div id="vbecause-mount"></div>' +
+    (_videoTab === 'anime' ? '<div id="vtoday-mount"></div>' : '') +
     wanted.map(function (r) { return _vRowShell(r.key, r.label, 0) }).join('') +
     curated.map(function (r) { return _vRowShell(r.key, '', 0, '', true) }).join('')
   document.getElementById('vtab-hide-seen')?.addEventListener('change', function () {
@@ -5636,9 +5648,19 @@ async function _renderVideoTab(ticket, opts) {
     _fillRowHideSeen(row.key, items)
   }))
 
+  // The anime tab: one request fills every row, the day's schedule and the
+  // spotlight. Rows the bundle covered are taken out of the per-row loop.
+  let pending = wanted
+  if (_videoTab === 'anime') {
+    _bindAnimeGenreStrip()
+    const served = await _fillAnimeHome(ticket, wanted)
+    if (_videoCatalogTicket !== ticket || state.currentPage !== 'video') return
+    pending = wanted.filter(function (r) { return served.indexOf(r.key) === -1 })
+  }
+
   // Rows load in parallel and each owns its own failure, so one dead section
   // cannot wipe the ones that already arrived.
-  await Promise.all(wanted.map(async function (row) {
+  await Promise.all(pending.map(async function (row) {
     const res = await window.api.videoCatalogGet({ section: row.key, page: 1 })
       .catch(function (e) { return { ok: false, error: String((e && e.message) || e) } })
     if (_videoCatalogTicket !== ticket || state.currentPage !== 'video') return
@@ -5660,7 +5682,7 @@ async function _renderVideoTab(ticket, opts) {
     else if (res.fromCache) _rowCacheNote(row.key)
     // The hero features from the full row: what you have seen is hidden from
     // the shelf you scroll, not from the editorial spotlight.
-    if (row.key === wanted[0].key) _startVideoHero(items, ticket)
+    if (row.key === wanted[0].key && !(_videoTab === 'anime' && pending !== wanted)) _startVideoHero(items, ticket)
   }))
 
   // The hero is only ever replaced by the first row's success path. If that
@@ -5669,6 +5691,91 @@ async function _renderVideoTab(ticket, opts) {
   if (_videoCatalogTicket === ticket && heroMount && heroMount.querySelector('.vskel-hero')) {
     heroMount.innerHTML = ''
   }
+}
+
+// ── The anime home page (measured against miruro.to, 2026-09-13) ─────────────
+// A strip of genre chips under the tabs: each opens Browse already filtered
+// to that genre in the anime catalogue.
+var _ANIME_GENRE_STRIP = ['Action', 'Adventure', 'Comedy', 'Drama', 'Fantasy', 'Horror', 'Mecha', 'Mystery',
+  'Psychological', 'Romance', 'Sci-Fi', 'Slice of Life', 'Sports', 'Supernatural', 'Thriller']
+function _animeGenreStripHtml() {
+  return '<div class="vgenre-strip" id="vgenre-strip" role="list">' + _ANIME_GENRE_STRIP.map(function (g) {
+    return '<button class="vgenre-pill" data-anime-genre="' + esc(g) + '" role="listitem">' + esc(g) + '</button>'
+  }).join('') + '</div>'
+}
+function _bindAnimeGenreStrip() {
+  const strip = document.getElementById('vgenre-strip')
+  if (!strip || strip.dataset.bound) return
+  strip.dataset.bound = '1'
+  strip.addEventListener('click', function (e) {
+    const b = e.target.closest ? e.target.closest('[data-anime-genre]') : null
+    if (!b) return
+    _openAnimeGenre(b.dataset.animeGenre)
+  })
+}
+// Browse, anime catalogue, one genre. Names are carried as names; renderBrowse
+// resolves them once the vocabulary is in.
+function _openAnimeGenre(genre) {
+  _browse.filters = Object.assign(_emptyFilters(), { catalog: 'anime' })
+  _browse.pendingGenreNames = genre ? [genre] : []
+  _browse.page = 1
+  _browse.results = []
+  _videoTab = 'browse'
+  navigate('browse')
+}
+
+// Fills every anime row from the one home bundle, paints the day's schedule
+// and starts the spotlight from the trending list. Returns the keys of the
+// rows it served, so the caller requests only what is left. A bundle that
+// cannot be had serves nothing and every row falls back to its own request.
+async function _fillAnimeHome(ticket, wanted) {
+  if (!window.api || !window.api.videoAnimeHome) return []
+  const res = await window.api.videoAnimeHome().catch(function () { return { ok: false } })
+  if (_videoCatalogTicket !== ticket || state.currentPage !== 'video') return []
+  const home = res && res.ok && res.home
+  if (!home) return []
+  const served = []
+  wanted.forEach(function (row) {
+    const list = row.key === 'trending-anime' ? home.trending : (row.home ? home[row.home] : null)
+    if (!Array.isArray(list)) return
+    served.push(row.key)
+    if (!list.length) return _dropRow(row.key)
+    const items = row.home === 'newEpisodes' ? list.map(_newEpisodeCard) : list
+    _fillRowHideSeen(row.key, items)
+    if (res.fromCache) _rowCacheNote(row.key)
+    if (row.key === 'trending-anime') _startVideoHero(list, ticket)
+  })
+  _renderTodayRow(home.today)
+  return served
+}
+
+// A card for a show that just aired: the episode and how long ago, as a badge.
+function _newEpisodeCard(item) {
+  const a = item && item.aired
+  if (!a || !a.airingAt) return item
+  return Object.assign({}, item, { badge: (a.episode ? 'Ep ' + a.episode + ' · ' : '') + _agoLabel(Date.now() - a.airingAt) })
+}
+function _agoLabel(ms) {
+  const s = Math.floor(Number(ms) / 1000)
+  if (!Number.isFinite(s) || s < 60) return 'just now'
+  const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60)
+  if (d > 0) return d + 'd ago'
+  if (h > 0) return h + 'h ago'
+  return m + 'm ago'
+}
+
+// "Airing today": the next 24 hours in clock order, each card badged with
+// the episode and its local time. Dropped when there is nothing to show.
+function _renderTodayRow(list) {
+  const mount = document.getElementById('vtoday-mount')
+  if (!mount) return
+  const items = (Array.isArray(list) ? list : []).filter(function (e) { return e && e.title && e.aired && e.aired.airingAt })
+  if (!items.length) { mount.innerHTML = ''; return }
+  mount.innerHTML = _vRowShell('today-anime', 'Airing today', 0)
+  _fillRow('today-anime', items.map(function (e) {
+    const t = new Date(e.aired.airingAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+    return Object.assign({}, e, { badge: (e.aired.episode ? 'Ep ' + e.aired.episode + ' · ' : '') + t })
+  }))
 }
 
 // "Because you watched X": recommendations seeded from the most recent thing
@@ -6508,6 +6615,10 @@ function _paintVideoHero() {
   if (item.year != null) bits.push(esc(String(item.year)))
   bits.push(kind)
   if (item.rating != null) bits.push('★ ' + esc(String(Math.round(item.rating * 10) / 10)))
+  // A running anime says when its next episode is due, right in the spotlight.
+  const na = item.nextAiring
+  const until = na && na.airingAt ? _untilLabel(Number(na.airingAt) - Date.now()) : ''
+  if (until) bits.push('<span class="vhero-chip">' + (na.episode ? 'Ep ' + esc(String(na.episode)) + ' ' : 'Next episode ') + esc(until) + '</span>')
   const dots = _videoHero.items.map(function (_, i) {
     return '<button class="vhero-dot' + (i === _videoHero.index ? ' active' : '') +
       '" data-hero="' + i + '" aria-label="Feature ' + (i + 1) + '"></button>'
@@ -7382,6 +7493,8 @@ function _videoCard(item) {
     // AniList scores 0-100, TMDB 0-10. Normalise so one badge means one thing.
     badges.push('<span class="vbadge vbadge-rating">★ ' + esc(String(r > 10 ? Math.round(r / 10 * 10) / 10 : Math.round(r * 10) / 10)) + '</span>')
   }
+  // A row can say something about the card ("Ep 12 · 3h ago", "Ep 5 · 19:15").
+  if (item.badge) badges.push('<span class="vbadge vbadge-ep">' + esc(String(item.badge)) + '</span>')
   badges.push('<span class="vbadge vbadge-type">' + kind + '</span>')
   // Continue-Watching staleness nudge (App §18). Only CW items carry updatedAt,
   // so a "resume?" badge keyed on it appears on exactly the cards that have sat

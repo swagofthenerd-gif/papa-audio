@@ -263,7 +263,7 @@ function browseHarness({ list, lastFailure, discover, jikan, kitsu } = {}) {
     }),
   }
   vm.createContext(ctx)
-  for (const fn of ['_animeBrowseCacheWrite', '_animeBrowseCacheRead', '_anilistListWithOutage', '_jikanShelf', '_kitsuShelf']) {
+  for (const fn of ['_animeBrowseCacheWrite', '_animeBrowseCacheRead', '_anilistListWithOutage', '_jikanShelf', '_kitsuShelf', '_jikanDiscover']) {
     vm.runInContext(extract(fn), ctx)
   }
   vm.runInContext(extractHandler('video-catalog-get'), ctx)
