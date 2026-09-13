@@ -633,6 +633,13 @@ and pushed: `ffb5f04`, `86c7df7`, `2fcb493`. Suite 4,289 green.
   mapped; MAL popularity is a RANK so "popular" = asc) tried before the
   saved page when AniList refuses. **Not seen live: MAL was 504 all
   afternoon** — pinned by tests only.
+- **Every row expandable (same day):** catalogue rows carry `data-shelf-all`;
+  `renderShelf` → `_fetchShelfPage` routes a catalogue key (`_isCatalogSection`)
+  to `videoCatalogGet({section, page})`; `video-catalog-get` pages
+  `top-airing-anime` / `upcoming-anime` / `top-rated-anime` via discover
+  (`minPopularity` floor), and serves `new-episodes-anime` / `today-anime`
+  from the home bundle as one page. The twin restores the last page late:
+  navigate, wait ~5 s, then act, or the restore overrides you.
 - Twin notes: the shell resets cwd between commands — `cd ~/flac-player`
   in the SAME command as `npx electron .` or the twin launches from the
   wrong directory. A top-level `const x` in a CDP eval persists; wrap
