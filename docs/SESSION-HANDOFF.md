@@ -590,6 +590,55 @@ Reproduced on a twin (purist default, silent) by pressing a Silo episode row:
   release's quality parsed; check what the 2160p ones parsed as if 4K keeps
   coming first.
 
+### 26. "Ours is nothing compared to miruro.to" — the anime overhaul (2026-09-13, Fable 5.1)
+
+He compared the app to miruro.to (every anime, trending, exploration,
+browsability). Measured side by side on a twin; three waves, each committed
+and pushed: `ffb5f04`, `86c7df7`, `2fcb493`. Suite 4,289 green.
+
+- **Wave 1 — the root cause was AniList refusing us (429).** One Anime tab
+  visit + one detail page fired 15+ requests in a burst; the breaker then
+  held every anime call for 30 s+, so Browse read "temporarily down" with
+  no genre chips and the seasons/related rails were missing. Now
+  `catalog/anilist.js` has ONE paced lane (`MIN_GAP_MS` 700), in-flight
+  dedupe of identical bodies, one retry after Retry-After (cap 30 s), and a
+  slowed lane (3× gap) for a minute after any refusal. The relations query
+  is two levels deep (`CHAIN_NODE_SELECTION`), so a franchise walk costs
+  3–4 requests, not 12. Genres/tags are kept on disk (`vocab:genres`,
+  `vocab:tags`) with `GENRES_FALLBACK` built in. **main.js injects the
+  fetcher, so it must pass `minGapMs`/`rateLimitWaitCapMs` explicitly** —
+  an injected fetcher gets no pacing by default (tests).
+- **Wave 2 — the detail page.** `DETAIL_SELECTION` rides on byId/byMal:
+  dates, studios, country, siteUrl, source, synonyms, 12 characters (+JP
+  voice actor), 12 recommendations; `MEDIA_SELECTION` gained duration,
+  season, nextAiringEpisode, popularity. Renderer: `_videoFactsHtml` anime
+  facts, `_altTitlesHtml`, `_nextAiringHtml`/`_untilLabel`,
+  `_characterTileHtml` (static tiles), synopsis via `_stripTags`, a scrim
+  (`.video-detail-hero::after`) for legibility. **Episode rows for anime**:
+  Kitsu `idForMal` (the `/mappings` resource with `include=item`; filtering
+  `/anime` by mapping fields is refused) + `episodes(kitsuId, offset)`
+  (20/page, `sort=number`), IPC `video-anime-episodes` {idMal,start,end}
+  caching `kitsumap:<mal>` and `eps:<kitsu>:<offset>` in the anime detail
+  cache (full pages final; short pages refetched after a day); the grid's
+  `enrichWindow` swaps the buttons for `_epRowHtml` rows (press = play). An
+  airing show with no total gets a grid of `nextAiring.episode - 1`.
+- **Wave 3 — the home page.** `buildQuery('animeHome')`: seven Page aliases
+  + two `airingSchedules` windows in one document; `cat.home()`; IPC
+  `video-anime-home` (30 min memo, disk copy for outages). Renderer:
+  `_videoRows` anime rows carry `home: '<list>'`; `_fillAnimeHome` fills
+  them all, `_renderTodayRow`, `_newEpisodeCard` badges (`item.badge` →
+  `.vbadge-ep`), hero `.vhero-chip` countdown, `_animeGenreStripHtml` under
+  the spotlight → `_openAnimeGenre` (Browse, anime, that genre). Browse:
+  `jikan().discover()` (genre names → MAL ids via `/genres/anime`, sorts
+  mapped; MAL popularity is a RANK so "popular" = asc) tried before the
+  saved page when AniList refuses. **Not seen live: MAL was 504 all
+  afternoon** — pinned by tests only.
+- Twin notes: the shell resets cwd between commands — `cd ~/flac-player`
+  in the SAME command as `npx electron .` or the twin launches from the
+  wrong directory. A top-level `const x` in a CDP eval persists; wrap
+  evals in an IIFE. His running app on the same IP shares AniList's quota
+  with the twin — refusals seen on the twin were partly his old code.
+
 ## 7. Open debt and outstanding items
 
 - **Peer-library speed** measured live on a 65k-file peer (§16): one 58 ms
