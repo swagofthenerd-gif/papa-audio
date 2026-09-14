@@ -12246,13 +12246,9 @@ ipcMain.handle('video-play', async (_, { result }) => {
             try { const files = streamer.files(); if (files.length > 1 && current()) safeSend('video-event', { kind: 'pack', files }) } catch (_) {}
           }).catch(fail)
         } })
-        const readyLink = _debridLinkNow(result.magnet)
-        if (readyLink) {
-          // Resolved while the page was open: straight to the direct link.
-          serve(readyLink).then(() => safeSend('video-event', { kind: 'debrid', ok: true })).catch(() => { if (current()) startTorrent() })
-        } else if (_debridConfigured()) {
+        if (_debridConfigured()) {
           const budget = new Promise((_r, rej) => setTimeout(() => rej(new Error('debrid budget')), DEBRID_BUDGET_MS))
-          Promise.race([debrid().prewarm(result.magnet).then(u => { if (!u) throw new Error('debrid miss'); return u }), budget])
+          Promise.race([debrid().linkFor(result.magnet), budget])
             .then(directUrl => { if (!current() || !directUrl) throw new Error('debrid unusable'); return serve(directUrl).then(() => safeSend('video-event', { kind: 'debrid', ok: true })) })
             .catch(() => { if (current()) startTorrent() })
         } else startTorrent()
@@ -12326,16 +12322,16 @@ ipcMain.handle('video-play', async (_, { result }) => {
       // goes through the exact same engine.load() the torrent path uses (mpv
       // plays a URL and a local server URL identically), so nothing downstream
       // changes.
-      const readyLink = _debridLinkNow(result.magnet)
       if (_debridConfigured()) {
         // A link resolved during the page visit is used at once; only an
         // unresolved magnet is raced against the budget.
-        const attempt = readyLink
-          ? Promise.resolve(readyLink)
-          : Promise.race([
-              debrid().prewarm(result.magnet).then(u => { if (!u) throw new Error('debrid miss'); return u }),
-              new Promise((_r, rej) => setTimeout(() => rej(new Error('debrid budget')), DEBRID_BUDGET_MS)),
-            ])
+        // linkFor proves the link before handing it over and re-mints a stale
+        // one, because a dead link looks exactly like debrid not working
+        // (2026-09-15). The budget still bounds the whole attempt.
+        const attempt = Promise.race([
+          debrid().linkFor(result.magnet),
+          new Promise((_r, rej) => setTimeout(() => rej(new Error('debrid budget')), DEBRID_BUDGET_MS)),
+        ])
         attempt
           .then(async directUrl => {
             if (!current() || !directUrl) throw new Error('debrid unusable')
@@ -12963,16 +12959,12 @@ ipcMain.handle('video-download-start', async (_, { result, meta } = {}) => {
 ipcMain.handle('video-download-cancel', async (_, { id } = {}) => ({ ok: _downloadStop(id) }))
 ipcMain.handle('video-download-list', async () => ({ ok: true, downloads: _downloadSnapshot() }))
 
-// How long a play waits on debrid before giving up and using the swarm.
-// A link resolved during the page visit costs nothing and is used at once;
-// only an unresolved magnet is waited for, and not for long — ten seconds of
-// waiting with nothing on screen was worse than never having tried, because
-// the swarm had not even been contacted yet.
+// How long a play waits on debrid before giving up and using the swarm. A
+// link resolved during the page visit is proved and reused in one round trip;
+// only an unresolved magnet costs the full flow, and not for long — ten
+// seconds of waiting with nothing on screen was worse than never having
+// tried, because the swarm had not even been contacted yet.
 const DEBRID_BUDGET_MS = 5000
-function _debridLinkNow(magnet) {
-  try { return _debridConfigured() ? debrid().cachedLink(magnet) : null } catch (_) { return null }
-}
-
 // The rewatch cache, read side. get: one key, touching lastUsedAt so the
 // eviction clock follows watching, not saving. list/delete serve the
 // on-device view. Missing files self-heal out of the index.

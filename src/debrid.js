@@ -33,6 +33,16 @@ const VIDEO_EXT = /\.(mkv|mp4|avi|mov|m4v|webm|ts|wmv|flv|mpg|mpeg)$/i
 // take minutes RD spends fetching it, which is longer than the streaming budget
 // the caller allows — so this is a ceiling, and the caller's own budget (10s in
 // main.js) usually trips first and falls back to P2P.
+// An unrestricted RealDebrid link does NOT last. Measured 2026-09-15: a link
+// resolved minutes earlier answered 503 Service Unavailable to both curl and
+// mpv, while one minted seconds before streamed at 2.2 MB/s. The old cache
+// held links forever, so a play handed mpv a dead URL, mpv failed, and the
+// app fell back to peers — which is exactly why paying for debrid changed
+// nothing. Links are now short-lived and proved before use.
+const LINK_TTL_MS = 10 * 60 * 1000
+// How long to wait when proving a link is still alive (one byte).
+const VERIFY_TIMEOUT_MS = 4000
+
 const DEFAULT_POLL_TIMEOUT_MS = 30000
 // How often to re-ask for the torrent's status while polling.
 const DEFAULT_POLL_INTERVAL_MS = 1500
@@ -149,7 +159,13 @@ function createDebrid(opts = {}) {
       throw new DebridError('no magnet to resolve', 'NO_MAGNET')
     }
     const hash = infoHashOf(magnet)
-    if (hash && linkCache.has(hash)) return linkCache.get(hash)
+    // A magnet already registered here only needs a new unrestricted link:
+    // two round trips instead of the whole add/select/poll flow.
+    const held = hash ? linkCache.get(hash) : null
+    if (held && held.restricted) {
+      const fresh = await _unrestrict(held.restricted)
+      if (fresh) { linkCache.set(hash, { url: fresh, restricted: held.restricted, at: now(), ok: false }); return fresh }
+    }
 
     // 1. Register the magnet.
     const added = await rd('POST', '/torrents/addMagnet',
@@ -194,8 +210,63 @@ function createDebrid(opts = {}) {
     const url = un && un.download
     if (!url) throw new DebridError('RealDebrid did not return a direct link', 'NO_DOWNLOAD')
 
-    if (hash) linkCache.set(hash, url)
+    // ok:false until something has actually fetched a byte from it — an
+    // unproved link must never be offered as instant (found by test, and it
+    // is the same class of bug as the stale link that started all this).
+    if (hash) linkCache.set(hash, { url, restricted, at: now(), ok: false })
     return url
+  }
+
+  // Turn a restricted /d/ link into a playable one. Returns null rather than
+  // throwing: every caller has a fallback.
+  async function _unrestrict(restricted) {
+    try {
+      const un = await rd('POST', '/unrestrict/link', 'link=' + encodeURIComponent(restricted))
+      return (un && un.download) || null
+    } catch (_) { return null }
+  }
+
+  // Prove a link still serves bytes. RealDebrid answers 503 on a link that has
+  // gone stale, and handing that to the player looks exactly like debrid not
+  // working at all. One byte is enough to tell.
+  async function _alive(url) {
+    const ctrl = typeof AbortController === 'function' ? new AbortController() : null
+    const timer = ctrl ? setTimeout(() => ctrl.abort(), VERIFY_TIMEOUT_MS) : null
+    try {
+      const res = await fetchFn(url, Object.assign(
+        { method: 'GET', headers: { Range: 'bytes=0-0' } },
+        ctrl ? { signal: ctrl.signal } : {}))
+      return !!(res && (res.status === 206 || res.status === 200))
+    } catch (_) {
+      return false
+    } finally { if (timer) clearTimeout(timer) }
+  }
+
+  // The link to actually play: a held one when it is young AND still alive,
+  // otherwise a freshly minted one. This is what the play path must use —
+  // cachedLink() below is only for deciding whether to show a badge.
+  async function linkFor(magnet) {
+    const hash = infoHashOf(magnet)
+    const held = hash ? linkCache.get(hash) : null
+    const bless = url => {
+      if (hash) {
+        const e = linkCache.get(hash)
+        if (e) e.ok = true
+        else linkCache.set(hash, { url, restricted: null, at: now(), ok: true })
+      }
+      return url
+    }
+    if (held && held.url && (now() - held.at) < LINK_TTL_MS && await _alive(held.url)) return bless(held.url)
+    // Stale, or dead: resolveMagnet re-mints from the restricted link it kept.
+    const fresh = await resolveMagnet(magnet)
+    if (fresh && await _alive(fresh)) return bless(fresh)
+    // Nothing usable. Drop the url but keep `restricted`, which still lets a
+    // later attempt re-mint in two round trips instead of the whole flow.
+    if (hash) {
+      const e = linkCache.get(hash)
+      if (e) { e.url = null; e.ok = false }
+    }
+    throw new DebridError('RealDebrid link would not serve', 'DEAD_LINK')
   }
 
   // The already-resolved direct link for a magnet, or null. Lets a caller
@@ -203,7 +274,10 @@ function createDebrid(opts = {}) {
   // of resolving while the viewer is still reading the page.
   function cachedLink(magnet) {
     const hash = infoHashOf(magnet)
-    return hash && linkCache.has(hash) ? linkCache.get(hash) : null
+    const held = hash ? linkCache.get(hash) : null
+    // Only a young link counts: an expired one is a promise the play path
+    // would have to re-mint anyway.
+    return held && held.url && held.ok === true && (now() - held.at) < LINK_TTL_MS ? held.url : null
   }
 
   // Resolve in the background and keep the answer. Never throws and never
@@ -212,9 +286,10 @@ function createDebrid(opts = {}) {
   const inflight = new Map()
   function prewarm(magnet) {
     const hash = infoHashOf(magnet)
-    if (!hash || linkCache.has(hash)) return Promise.resolve(cachedLink(magnet))
+    const ready = cachedLink(magnet)
+    if (!hash || ready) return Promise.resolve(ready)
     if (inflight.has(hash)) return inflight.get(hash)
-    const p = resolveMagnet(magnet)
+    const p = linkFor(magnet)
       .catch(() => null)
       .finally(() => { inflight.delete(hash) })
     inflight.set(hash, p)
@@ -224,6 +299,7 @@ function createDebrid(opts = {}) {
   return {
     provider,
     resolveMagnet,
+    linkFor,
     cachedLink,
     prewarm,
     check,
@@ -240,6 +316,7 @@ module.exports = {
   DebridError,
   VIDEO_EXT,
   DEFAULT_POLL_TIMEOUT_MS,
+  LINK_TTL_MS,
   DEFAULT_POLL_INTERVAL_MS,
   RD_TERMINAL_FAIL,
 }
