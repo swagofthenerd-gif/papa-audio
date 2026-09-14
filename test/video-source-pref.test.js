@@ -70,8 +70,14 @@ test('the preferred-source chip renders and binds its clear button', () => {
 })
 
 test('the hero Play and the loading auto-play both honour the remembered source', () => {
+  // Play now goes through _pickForPlay, which honours an explicitly chosen
+  // quality first (2026-09-15) and otherwise delegates to the remembered
+  // source pick — so the preference still decides whenever the viewer has not
+  // asked for a particular quality.
   const bind = fn('_bindDetailActions')
-  assert.match(bind, /_videoPlayResult\(_autoPickStream\(_videoStreams\)\)/)
+  assert.match(bind, /_videoPlayResult\(_pickForPlay\(_videoStreams\)\)/)
+  const pick = fn('_pickForPlay')
+  assert.match(pick, /return _autoPickStream\(list\)/, 'no chosen quality: the remembered source decides')
   const load = fn('_loadVideoSources')
   assert.match(load, /_videoPlayResult\(_autoPickStream\(streams\)\)/)
 })

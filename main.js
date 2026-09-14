@@ -11430,7 +11430,7 @@ function _startsReliably(s) {
   return rankingSeeds(s) >= HEALTHY_SEEDS
 }
 
-function _applyQualityPreference(streams, preferred) {
+function _applyQualityPreference(streams, preferred, debridOn) {
   const rank = { '2160p': 4, '1080p': 3, '720p': 2, '480p': 1 }
   const want = rank[preferred]
   const within = []
@@ -11452,6 +11452,24 @@ function _applyQualityPreference(streams, preferred) {
   // still beats a thin one at it, because "plays now at 4K" serves better
   // than "might play at 1080p". Thin sources keep their order below, and
   // nothing is hidden.
+  // With debrid configured the swarm's size stops deciding anything for a
+  // title RealDebrid already holds: it serves the file over plain HTTPS
+  // whether the torrent has three sharers or three hundred. So the health
+  // split is dropped and the best picture wins, which is the whole reason to
+  // pay for debrid (2026-09-15, "it should go directly for the debrid link in
+  // the highest quality"). Cams and known-dead magnets still sink, because
+  // those are wrong or unfetchable regardless of who serves them.
+  if (debridOn) {
+    const rank2 = s => rank[s && s.quality] || 0
+    const live = [], dead = []
+    for (const s of within.concat(above)) (s && s.deadHint === true ? dead : live).push(s)
+    // Stable: equal qualities keep the order the ranking already gave them.
+    const byQuality = list => list
+      .map((s, i) => ({ s, i }))
+      .sort((x, y) => (rank2(y.s) - rank2(x.s)) || (x.i - y.i))
+      .map(e => e.s)
+    return byQuality(live).concat(byQuality(dead), low)
+  }
   const split = list => {
     const fine = [], thin = []
     for (const s of list) (_startsReliably(s) ? fine : thin).push(s)
@@ -11533,7 +11551,7 @@ ipcMain.handle('video-streams', async (_, req) => {
       persistedHealth: _persistedSourceHealth(),
       onSweep: _onSearchSweep,
     })
-    const streams = _applyQualityPreference(ranked, settings.preferredQuality)
+    const streams = _applyQualityPreference(ranked, settings.preferredQuality, _debridConfigured())
     // An empty result is almost always a mirror being briefly unreachable.
     // Caching it pinned "No sources found" on that title for the full 15-minute
     // TTL even after the indexer came back.

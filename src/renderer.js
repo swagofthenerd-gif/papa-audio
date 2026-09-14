@@ -4585,6 +4585,56 @@ function _qualityDistance(a, b) {
 // which is the ranked best. Kept separate from _pickMatchingStream so the
 // binge/next-episode path, which matches what is *currently* playing, is
 // undisturbed.
+// Which quality the Play button should aim for. '' means "the best there
+// is". Held for the session only: it is a decision about this sitting, not a
+// setting, and Settings already owns the standing preference.
+var _playQuality = ''
+var _QUALITY_ORDER = ['2160p', '1080p', '720p', '480p']
+
+// The sources that actually offer a quality, best first, for the picker.
+function _availableQualities(streams) {
+  const seen = {}
+  for (const s of (Array.isArray(streams) ? streams : [])) {
+    if (s && s.quality && !s.lowQuality) seen[s.quality] = true
+  }
+  return _QUALITY_ORDER.filter(function (q) { return seen[q] })
+}
+
+// Fills the hero picker from what this title actually has. Hidden entirely
+// when there is nothing to choose between — a dropdown with one option is a
+// decision the viewer does not have.
+function _renderQualityPicker(streams) {
+  const wrap = document.getElementById('vdet-quality-wrap')
+  const sel = document.getElementById('vdet-quality')
+  if (!wrap || !sel) return
+  const qualities = _availableQualities(streams)
+  if (qualities.length < 2) { wrap.hidden = true; return }
+  // A quality that is no longer on offer must not stay selected.
+  if (_playQuality && qualities.indexOf(_playQuality) === -1) _playQuality = ''
+  wrap.hidden = false
+  sel.innerHTML = ['<option value="">Best available</option>']
+    .concat(qualities.map(function (q) {
+      return '<option value="' + esc(q) + '"' + (q === _playQuality ? ' selected' : '') + '>' + esc(q) + '</option>'
+    })).join('')
+  if (!sel.dataset.bound) {
+    sel.dataset.bound = '1'
+    sel.addEventListener('change', function () { _playQuality = sel.value || '' })
+  }
+}
+
+// What Play starts. The picker wins when the viewer set one; otherwise this
+// is the ordinary automatic pick, which main has already ordered (quality
+// first when debrid is configured, swarm health first when it is not).
+function _pickForPlay(streams) {
+  const list = Array.isArray(streams) ? streams : []
+  if (!list.length) return null
+  if (_playQuality) {
+    const match = list.filter(function (s) { return s && s.quality === _playQuality && !s.lowQuality })
+    if (match.length) return match[0]
+  }
+  return _autoPickStream(list)
+}
+
 function _autoPickStream(streams) {
   const list = Array.isArray(streams) ? streams : []
   if (!list.length) return null
@@ -8532,7 +8582,7 @@ function _bindDetailMotion(d) {
 function _bindDetailActions(d) {
   document.getElementById('vdet-play')?.addEventListener('click', function () {
     if (_videoStreams && _videoStreams.length) {
-      _videoPlayResult(_autoPickStream(_videoStreams))
+      _videoPlayResult(_pickForPlay(_videoStreams))
       return
     }
     _autoPlayTicket = _videoDetailTicket
@@ -8657,6 +8707,10 @@ function _videoDetailShell(d) {
       '<div class="vhero-actions" style="margin-top:12px">' +
         '<button class="vbtn vbtn-primary" id="vdet-play">' + _VICON.play + 'Play</button>' +
         '<button class="vbtn" id="vdet-list">' + (_detInList(d) ? _VICON.check + 'In My List' : _VICON.plus + 'My List') + '</button>' +
+        '<span class="vbtn-quality" id="vdet-quality-wrap" hidden>' +
+          '<label class="sr-only" for="vdet-quality">Quality to play</label>' +
+          '<select id="vdet-quality" title="Which quality to play"></select>' +
+        '</span>' +
         '<button class="vbtn" id="vdet-download" title="Save to this device for offline watching">' + _VICON.down + 'Download</button>' +
         (_bestTrailer(d) ? '<button class="vbtn" id="video-trailer-btn">' + _VICON.play + 'Trailer</button>' : '') +
         // Jumps to the music side, pre-filled to hunt this title's score (App
@@ -10208,6 +10262,9 @@ async function _loadVideoSources(ticket, seasonTicket) {
   const streams = split.likely
   _videoStreams = streams
   _videoStreamsHidden = split.unlikely
+  // The hero's quality picker is built from what this title actually offers,
+  // so it appears with the sources and never promises a quality nobody has.
+  _renderQualityPicker(streams)
   if (!streams.length) {
     target.innerHTML = '<div class="video-sources-header"><span class="section-title">Sources</span></div>' +
       '<div class="yt-status">' + (split.unlikely.length
