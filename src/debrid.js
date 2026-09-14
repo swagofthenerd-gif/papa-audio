@@ -198,9 +198,34 @@ function createDebrid(opts = {}) {
     return url
   }
 
+  // The already-resolved direct link for a magnet, or null. Lets a caller
+  // spend no budget at all on a magnet it resolved earlier — the whole point
+  // of resolving while the viewer is still reading the page.
+  function cachedLink(magnet) {
+    const hash = infoHashOf(magnet)
+    return hash && linkCache.has(hash) ? linkCache.get(hash) : null
+  }
+
+  // Resolve in the background and keep the answer. Never throws and never
+  // reports: it is a head start, and a failure just means the play path does
+  // the work itself. Concurrent calls for the same magnet share one attempt.
+  const inflight = new Map()
+  function prewarm(magnet) {
+    const hash = infoHashOf(magnet)
+    if (!hash || linkCache.has(hash)) return Promise.resolve(cachedLink(magnet))
+    if (inflight.has(hash)) return inflight.get(hash)
+    const p = resolveMagnet(magnet)
+      .catch(() => null)
+      .finally(() => { inflight.delete(hash) })
+    inflight.set(hash, p)
+    return p
+  }
+
   return {
     provider,
     resolveMagnet,
+    cachedLink,
+    prewarm,
     check,
     // Test/inspection surface, not part of the caller contract.
     _pickVideoFile: pickVideoFile,
