@@ -99,6 +99,9 @@ test('every channel main sends has something that actually listens', () => {
     // preload name onSlskChatMessage, not window.api.on, so it is matched by
     // name like the other dedicated Soulseek subscribers.
     ...(/onSlskChatMessage\(/.test(ALL_RENDERER) ? ['slsk-chat-message'] : []),
+    // Download progress/done/error (2026-09-14): the On-device tab subscribes
+    // by the dedicated preload name, like the Soulseek subscribers above.
+    ...(/onVideoDownloadEvent\(/.test(ALL_RENDERER) ? ['video-download-event'] : []),
   ])
   // Channels main sends that nothing listens for, on purpose or by history.
   // Listed rather than ignored: the point of this test is that a NEW dead

@@ -911,8 +911,10 @@ const { newStreamDir: _newStreamDir } = require('../torrent-stream')
   // the window would leave the pack on disk for the rest of the session.
   test('every way of ending playback tears the streamer down', () => {
     const main = _fsx.readFileSync(_pathx.join(__dirname, '..', 'main.js'), 'utf8')
+    // The window covers the rewatch-cache save and the adopted-warm sweep
+    // that now sit above the stop (2026-09-14).
     const teardown = main.slice(main.indexOf('function _videoTeardown()'),
-      main.indexOf('function _videoTeardown()') + 400)
+      main.indexOf('function _videoTeardown()') + 1600)
     assert.match(teardown, /streamer\.stop\(\)/)
     // The stop verb (the player's stop button), quitting, and mpv dying.
     assert.match(main, /case 'stop':[\s\S]{0,200}_videoTeardown\(\)/)

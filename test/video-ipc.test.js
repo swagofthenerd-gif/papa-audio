@@ -272,7 +272,38 @@ test('cam rips stay last even through the quality preference', () => {
   const start = MAIN.indexOf('function _applyQualityPreference(')
   const body = MAIN.slice(start, MAIN.indexOf('\n}', start))
   assert.match(body, /lowQuality === true/)
-  assert.match(body, /within\.concat\(above, low\)/)
+  assert.match(body, /w\.fine\.concat\(a\.fine, w\.thin, a\.thin, low\)/)
+})
+
+// Reliability outranks resolution at the top (2026-09-14): a thin swarm never
+// holds the top slot, whatever the preferred quality says. Behavioural — the
+// function is extracted and run, not just grepped.
+test('a starving 4K swarm loses the top slot to a healthy source; nothing is hidden', () => {
+  const vm = require('node:vm')
+  const start = MAIN.indexOf('const HEALTHY_SEEDS')
+  const end = MAIN.indexOf('\n}', MAIN.indexOf('function _applyQualityPreference(')) + 2
+  const ctx = { rankingSeeds: e => Number(e && e.seeds) || 0 }
+  vm.createContext(ctx)
+  vm.runInContext(MAIN.slice(start, end), ctx)
+  const t = (q, seeds, extra) => Object.assign({ kind: 'torrent', quality: q, seeds }, extra)
+  const thin4k = t('2160p', 3)
+  const healthy1080 = t('1080p', 150)
+  const healthy4k = t('2160p', 80)
+  const dead1080 = t('1080p', 500, { deadHint: true })
+  const cam = t('2160p', 999, { lowQuality: true })
+  // Preference 2160p (his setting): everything is within, health decides the top.
+  const out = ctx._applyQualityPreference([thin4k, healthy4k, dead1080, healthy1080, cam], '2160p')
+  assert.deepStrictEqual([...out], [healthy4k, healthy1080, thin4k, dead1080, cam])
+  // Preference 1080p: a healthy 4K still beats a thin 1080p, and cams stay last.
+  const thin1080 = t('1080p', 2)
+  const out2 = ctx._applyQualityPreference([thin1080, healthy4k, cam, healthy1080], '1080p')
+  assert.deepStrictEqual([...out2], [healthy1080, healthy4k, thin1080, cam])
+  // No preference set: health still leads, nothing dropped.
+  const out3 = ctx._applyQualityPreference([thin4k, healthy1080], null)
+  assert.deepStrictEqual([...out3], [healthy1080, thin4k])
+  // Direct HTTP sources have no swarm to starve and count as healthy.
+  const http = { kind: 'http', quality: '1080p', url: 'x' }
+  assert.deepStrictEqual([...ctx._applyQualityPreference([thin4k, http], '2160p')], [http, thin4k])
 })
 
 // ── Phase 1: the theatre control surface ────────────────────────────────────
@@ -470,9 +501,10 @@ test('playback waits for the stage rectangle before starting', () => {
   const at = RENDERER.indexOf('function _videoPlayResult(')
   assert.ok(at > -1)
   // The window is generous: the open() payload has grown prefs and callbacks,
-  // and now the Wave-4 per-show track-memory feature-detect (#31/#32), and the
+  // the Wave-4 per-show track-memory feature-detect (#31/#32), and now the
+  // watch identity + hedge alternates + rewatch-cache probe (2026-09-14). The
   // point is the ORDER of ready vs play, not the function's size.
-  const body = RENDERER.slice(at, at + 8000)
+  const body = RENDERER.slice(at, at + 16000)
   const ready = body.indexOf('_player.ready')
   const play = body.indexOf('api.videoPlay')
   assert.ok(ready > -1, 'the stage rectangle must be reported before playback')
@@ -916,10 +948,31 @@ test('the torrent-streamer setup lives in one shared helper', () => {
 
 // video-play no longer builds its own TorrentStreamer — it goes through the
 // helper — so the second copy that used to drift cannot come back.
-test('video-play starts its torrent through the shared helper', () => {
+test('video-play starts its torrent through the hedged race, smooth and purist alike', () => {
   const body = handlerBody('video-play')
-  assert.match(body, /_startTorrentStream\(result, \{/)
+  assert.strictEqual((body.match(/_startTorrentRace\(result, result\.alternates, \{/g) || []).length, 2)
   assert.ok(!/new TorrentStreamer\(/.test(body), 'video-play must not build a streamer directly')
+})
+
+// The hedge (2026-09-14): a silent lead swarm gets a challenger after ten
+// seconds; the first servable stream wins, losers are stopped, only the lead
+// lane reports buffering, and only the winner takes the session slot.
+test('the torrent race hedges silence, promotes one winner, and fails only when every lane died', () => {
+  const start = MAIN.indexOf('const HEDGE_AFTER_MS')
+  const body = MAIN.slice(start, MAIN.indexOf('\nfunction _startTorrentStream', start))
+  assert.match(body, /HEDGE_AFTER_MS = 10000/)
+  assert.match(body, /\.slice\(0, 2\)/)
+  assert.match(body, /setTimeout\(\(\) => \{ if \(!winner && current\(\)\) startNext\(\) \}, HEDGE_AFTER_MS\)/)
+  assert.match(body, /if \(started < contenders\.length\) startNext\(\)\n        else if \(failed >= started && current\(\)\) fail\(err \|\| lastErr\)/)
+  assert.match(body, /winner = s\n        _videoSession\.streamer = s\n        stopLosers\(\)/)
+  assert.match(body, /quiet: i > 0/)
+  // The quiet flag really gates the buffering reports and the session slot.
+  assert.ok(/if \(current\(\) && !quiet\) safeSend\('video-event', \{ kind: 'buffering'/.test(MAIN))
+  assert.ok(/if \(!quiet\) _videoSession\.streamer = streamer/.test(MAIN))
+  // The renderer sends the two next-ranked torrent sources as hedge lanes.
+  const R = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
+  assert.ok(/result = Object\.assign\(\{\}, result, \{ alternates: alts \}\)/.test(R))
+  assert.ok(/_sourceKey\(s\) !== pickedKey/.test(R))
 })
 
 // §player 30: mpv is spun up in parallel with the torrent connecting, not after

@@ -182,7 +182,7 @@ const { createOmdbCatalog, plausibleMatch: omdbPlausibleMatch, omdbTypeFor } = r
 const { createWebStreamServer } = require('./web-stream')
 const { sortJunkLast } = require('./catalog/search-rank')
 const { createOpenSubtitles } = require('./subs/opensubtitles')
-const { resolveStream } = require('./providers/index')
+const { resolveStream, rankingSeeds } = require('./providers/index')
 const { createYtsProvider } = require('./providers/yts')
 const { createEztvProvider } = require('./providers/eztv')
 const { createNyaaProvider } = require('./providers/nyaa')
@@ -959,6 +959,9 @@ const sideStores = {
   // stream cache, so the downloads manager can list, size and delete them
   // without re-walking the disk. { id, title, path, sizeBytes, keptAt }[].
   videoKeepIndex: new SideStore({ dir: USER_DATA, name: 'video-keep-index', fallback: [], debounceMs: 800, onError: _sideErr }),
+  // The rewatch cache's ledger (2026-09-14): [{key, path, sizeBytes, savedAt,
+  // lastUsedAt, title, meta}], bounded by videoCacheGB through evictPlan.
+  videoCacheIndex: new SideStore({ dir: USER_DATA, name: 'video-cache-index', fallback: [], debounceMs: 800, onError: _sideErr }),
 
   // Self-maintenance suite. Two small, infrequently-written stores:
   //   trackerList  — { trackers, lastRefreshAt }, the weekly-refreshed curated
@@ -9435,6 +9438,10 @@ function _videoSettings() {
       preferSurround: true,
       preferredQuality: '1080p',
       torrentSources: true,
+      // The rewatch cache's size, in gigabytes; 0 turns it off. Separate from
+      // the keep quota: keeps are a library the user curates, this is a cache
+      // the app manages.
+      videoCacheGB: 15,
       // Bandwidth cap for streaming, in megabits per second, or null for no
       // cap (App #41). Applied to the WebTorrent client, which throttles
       // client-wide — one cap governs every stream and background download.
@@ -10207,7 +10214,7 @@ const VIDEO_SETTING_KEYS = new Set([
   'jackettUrl', 'jackettApiKey',
   // W5 surfaces: the offline-keeps quota and debrid credentials save through
   // the same settings path; missing keys here silently dropped their writes.
-  'videoKeepQuotaGB', 'debridProvider', 'debridToken',
+  'videoKeepQuotaGB', 'videoCacheGB', 'debridProvider', 'debridToken',
 ])
 
 ipcMain.handle('video-settings-set', (_, { patch }) => {
@@ -11407,10 +11414,20 @@ function _videoBackends(type, settings) {
 // quality come first (best first), and anything higher is kept but pushed
 // below, so the user still sees a 2160p option without it hijacking the top
 // slot on a connection chosen for 1080p.
+// A torrent this thin routinely connects to peers and receives nothing —
+// the "9 peers, 0 % for 90 s" start. Six discounted seeders is where that
+// stops being the common case. Non-torrent sources have no swarm to starve.
+const HEALTHY_SEEDS = 6
+function _startsReliably(s) {
+  if (!s) return false
+  if (s.deadHint === true) return false
+  if (s.kind !== 'torrent') return true
+  return rankingSeeds(s) >= HEALTHY_SEEDS
+}
+
 function _applyQualityPreference(streams, preferred) {
   const rank = { '2160p': 4, '1080p': 3, '720p': 2, '480p': 1 }
   const want = rank[preferred]
-  if (!want) return streams
   const within = []
   const above = []
   // Cam rips stay at the very bottom whatever the preference says. Without
@@ -11420,9 +11437,24 @@ function _applyQualityPreference(streams, preferred) {
   for (const s of streams) {
     if (s && s.lowQuality === true) { low.push(s); continue }
     const r = rank[s && s.quality] || 0
-    ;(r > want ? above : within).push(s)
+    ;(want && r > want ? above : within).push(s)
   }
-  return within.concat(above, low)
+  // Reliability outranks resolution at the top of the list (2026-09-14, "WHY
+  // IS THE BUFFERING SO SLOW"): a starving swarm never holds the top slot.
+  // With his preference at 2160p every source is `within`, so the partition
+  // alone did nothing while three-seeder 4K releases led the list. A healthy
+  // source of the preferred quality leads; a healthy one above the preference
+  // still beats a thin one at it, because "plays now at 4K" serves better
+  // than "might play at 1080p". Thin sources keep their order below, and
+  // nothing is hidden.
+  const split = list => {
+    const fine = [], thin = []
+    for (const s of list) (_startsReliably(s) ? fine : thin).push(s)
+    return { fine, thin }
+  }
+  const w = split(within)
+  const a = split(above)
+  return w.fine.concat(a.fine, w.thin, a.thin, low)
 }
 
 // Fansub groups number continuing seasons absolutely — "Attack on Titan 64",
@@ -11621,6 +11653,51 @@ function _maybePrefetchNextEpisode() {
   } catch (_) { /* an optimisation, never a reason to disturb playback */ }
 }
 
+// The other half of caching a pack chronologically ("the next episode should
+// be cached after this one is done", 2026-09-14): once the episode being
+// watched is COMPLETE on disk, the connection sits idle while the viewer
+// watches bytes that already arrived. Spend that idle time pulling the next
+// episode after the current one IN FULL — then, when that one lands, the one
+// after it — always in pack order, always at the lowest priority, so a seek
+// in the current episode still outranks everything.
+//
+// Runs on a timer rather than the engine's state ticks because the in-page
+// player has no mpv state stream; complete-on-disk is a torrent fact, not a
+// playback fact, so no position is needed.
+const PACK_CHAIN_TICK_MS = 15000
+function _maybeChainPackDownloads() {
+  try {
+    const streamer = _videoSession.streamer
+    if (!streamer || typeof streamer.predownloadFile !== 'function' ||
+        typeof streamer.fileInfo !== 'function') return
+    // The rewatch copy rides this tick for films too — before the pack-only
+    // guard, or a single-file torrent would never reach it.
+    _maybeCacheCurrentFile(streamer)
+    const files = typeof streamer.files === 'function' ? streamer.files() : []
+    if (files.length < 2) return
+    const at = files.findIndex(f => f.current)
+    if (at < 0) return
+    const done = i => {
+      const info = streamer.fileInfo(files[i].index)
+      return !!(info && info.total > 0 && info.downloaded >= info.total)
+    }
+    // The episode being watched comes first, whole, before any chaining —
+    // and the moment it IS whole, it goes to the rewatch cache in the
+    // background, while the connection moves on to the next episode.
+    if (!done(at)) return
+    // A whole-file pull the viewer asked for themselves (the offline-download
+    // button) is never overridden while it is still running.
+    const pd = typeof streamer.predownloadProgress === 'function' ? streamer.predownloadProgress() : null
+    if (pd && pd.total > 0 && pd.bytes < pd.total) return
+    // The first not-yet-complete episode AFTER the one playing, in pack order.
+    for (let i = at + 1; i < files.length; i++) {
+      if (done(i)) continue
+      streamer.predownloadFile(files[i].index)
+      return
+    }
+  } catch (_) { /* an optimisation, never a reason to disturb playback */ }
+}
+
 // The hover-thumbnail cache (Player #5) belongs to one stream. It is torn down
 // with the streamer everywhere the streamer is: its cleanup() removes its own
 // directory, which is a no-op when the directory nested inside the stream's
@@ -11633,7 +11710,118 @@ function _thumbnailerTeardown() {
   }
 }
 
+// The rewatch cache (2026-09-14). A finished file leaves through a rename —
+// instant on the same filesystem — the moment its stream is torn down, so
+// the next press of Play on this exact episode is a local open. Owned
+// streams only: a reused torrent's store belongs to whoever added it, and
+// renaming a file out of it would break that owner.
+const videoCache = require('./src/video-cache')
+function _videoCacheRoot() {
+  return path.join(USER_DATA, 'video-cache')
+}
+function _videoCacheEntries() {
+  const raw = sideStores.videoCacheIndex.get()
+  return Array.isArray(raw) ? raw.filter(e => e && e.key && e.path) : []
+}
+function _cacheEntryFor(key, meta, info, dest, size) {
+  const now = Date.now()
+  return { key, path: dest, sizeBytes: size, savedAt: now, lastUsedAt: now,
+    title: (meta && meta.title) || info.name, meta: meta || null }
+}
+function _videoCacheIndexAdd(entry) {
+  const entries = _videoCacheEntries().filter(e => e.key !== entry.key)
+  const capBytes = (Number(_videoSettings().videoCacheGB) || 0) * videoCache.GB
+  const plan = videoCache.evictPlan(entries, capBytes, entry.sizeBytes)
+  if (!plan.ok) return false
+  for (const gone of plan.evict) { try { fs.unlinkSync(gone.path) } catch (_) {} }
+  const kept = entries.filter(e => !plan.evict.includes(e))
+  kept.push(entry)
+  sideStores.videoCacheIndex.set(kept)
+  safeSend('video-event', { kind: 'cached', key: entry.key, title: entry.title })
+  return true
+}
+function _currentFileInfo(streamer) {
+  const files = typeof streamer.files === 'function' ? streamer.files() : []
+  const at = files.findIndex(f => f && f.current)
+  return streamer.fileInfo(at >= 0 ? files[at].index : 0)
+}
+// The main path: the moment the playing file is complete on disk, it is
+// copied into the cache IN THE BACKGROUND, while the viewer is still
+// watching. A copy, not a rename, because the stream store and the cache are
+// routinely on different disks (the stream cache setting points at the big
+// drive); it runs off the pack-chain tick, so by the time the credits roll
+// the copy has long finished. `.part` until whole, so a crash mid-copy can
+// never leave a truncated file posing as a cached one.
+function _maybeCacheCurrentFile(streamer) {
+  const s = _videoSession
+  if (!s.cacheKey || s.cacheSaved || s.cacheSaving) return
+  if ((Number(_videoSettings().videoCacheGB) || 0) <= 0) return
+  let info = null
+  try { info = _currentFileInfo(streamer) } catch (_) { return }
+  if (!info || !info.path || !(info.total > 0) || info.downloaded < info.total) return
+  const key = s.cacheKey
+  const meta = s.cacheMeta
+  s.cacheSaving = true
+  const root = _videoCacheRoot()
+  const dest = path.join(root, videoCache.fileNameFor(key, info.name))
+  const part = dest + '.part'
+  fs.promises.mkdir(root, { recursive: true })
+    .then(() => fs.promises.copyFile(info.path, part))
+    .then(() => fs.promises.rename(part, dest))
+    .then(() => {
+      s.cacheSaving = false
+      // The play may have moved on to another episode of the pack meanwhile;
+      // the copy is still the file the key named when it started.
+      if (_videoCacheIndexAdd(_cacheEntryFor(key, meta, info, dest, info.total))) s.cacheSaved = true
+      else { try { fs.unlinkSync(dest) } catch (_) {} }
+    })
+    .catch(() => {
+      s.cacheSaving = false
+      try { fs.unlinkSync(part) } catch (_) {}
+    })
+}
+// The last chance, at teardown: a watch stopped just as the download
+// finished, before any tick could copy it. Synchronous, so only the
+// same-filesystem rename is attempted — cross-device here would mean a
+// gigabytes-long copy inside teardown, and losing this rare race is better.
+function _maybeCacheFinishedFile() {
+  try {
+    const s = _videoSession
+    const streamer = s.streamer
+    if (!streamer || !s.cacheKey || s.cacheSaved || s.cacheSaving ||
+        typeof streamer.fileInfo !== 'function') return
+    const owned = (typeof streamer.storeDir === 'function' && streamer.storeDir()) ||
+      (s.warmAdopted && s.warmAdopted.dir)
+    if (!owned) return
+    const info = _currentFileInfo(streamer)
+    if (!info || !info.path || !(info.total > 0) || info.downloaded < info.total) return
+    if ((Number(_videoSettings().videoCacheGB) || 0) <= 0) return
+    const root = _videoCacheRoot()
+    fs.mkdirSync(root, { recursive: true })
+    const dest = path.join(root, videoCache.fileNameFor(s.cacheKey, info.name))
+    fs.renameSync(info.path, dest)   // EXDEV lands in the catch: skip, never block
+    _videoCacheIndexAdd(_cacheEntryFor(s.cacheKey, s.cacheMeta, info, dest, info.total))
+  } catch (_) { /* a cache is a bonus; teardown must never fail over it */ }
+}
+
 function _videoTeardown() {
+  _maybeCacheFinishedFile()
+  _videoSession.cacheKey = null
+  _videoSession.cacheMeta = null
+  _videoSession.cacheSaved = false
+  _videoSession.cacheSaving = false
+  // An adopted warm torrent is not owned by the streamer (it was on the
+  // client first), so its sweep is this teardown's job.
+  if (_videoSession.warmAdopted) {
+    const a = _videoSession.warmAdopted
+    _videoSession.warmAdopted = null
+    try { getTorrentClient().remove(a.infoHash, { destroyStore: true }) } catch (_) {}
+    if (a.dir) { try { fs.rmSync(a.dir, { recursive: true, force: true }) } catch (_) {} }
+  }
+  if (_videoSession.packChainTimer) {
+    clearInterval(_videoSession.packChainTimer)
+    _videoSession.packChainTimer = null
+  }
   if (_videoSession.streamer) {
     try { _videoSession.streamer.stop() } catch (_) {}
     _videoSession.streamer = null
@@ -11805,7 +11993,68 @@ function _isDeadMagnet(hash) {
 // URL. The streamer is stored on the session and its `start()` fired here; the
 // caller does not await it, because `start()` resolves on 'ready' and awaiting
 // it would hang the handler on a slow torrent.
-function _startTorrentStream(result, { current, fail, onReady }) {
+// Hedged start (2026-09-14, "WHY IS THE BUFFERING SO SLOW"): a swarm that
+// looks healthy can still deliver nothing, and the old shape waited 20 s,
+// tore down, and started the next source from zero. Instead the next-ranked
+// untried source joins the race after HEDGE_AFTER_MS of silence — both swarms
+// connect in parallel, the first stream that becomes servable wins, the loser
+// is stopped before it has cost more than a connection. A contender that
+// errors outright starts the next immediately. The UI sees one stream: only
+// the leading contender's buffering reports pass through, and only the
+// winner reaches onReady.
+const HEDGE_AFTER_MS = 10000
+function _startTorrentRace(result, alternates, { current, fail, onReady }) {
+  const contenders = [result].concat(
+    (Array.isArray(alternates) ? alternates : [])
+      .filter(a => a && a.kind === 'torrent' && a.magnet)
+      .slice(0, 2))
+  let winner = null
+  let started = 0
+  let failed = 0
+  let lastErr = null
+  const racers = []
+  const timers = []
+  const stopLosers = () => {
+    for (const r of racers) {
+      if (r === winner) continue
+      try { r.stop() } catch (_) {}
+    }
+    for (const t of timers) clearTimeout(t)
+  }
+  const startNext = () => {
+    const i = started
+    if (winner || i >= contenders.length || !current()) return
+    started++
+    const mine = contenders[i]
+    const streamer = _startTorrentStream(mine, {
+      current: () => current() && (!winner || winner === streamer),
+      fail: err => {
+        lastErr = err
+        failed++
+        if (winner) return
+        // This lane is dead; open the next now rather than at the timer.
+        if (started < contenders.length) startNext()
+        else if (failed >= started && current()) fail(err || lastErr)
+      },
+      onReady: (url, s) => {
+        if (winner || !current()) { try { s.stop() } catch (_) {} ; return }
+        winner = s
+        _videoSession.streamer = s
+        stopLosers()
+        onReady(url, s)
+      },
+      // Buffering words from two swarms would flicker; the lead lane speaks.
+      quiet: i > 0,
+    })
+    racers.push(streamer)
+    if (started < contenders.length) {
+      timers.push(setTimeout(() => { if (!winner && current()) startNext() }, HEDGE_AFTER_MS))
+    }
+  }
+  startNext()
+}
+
+function _startTorrentStream(result, { current, fail, onReady, quiet }) {
   const settings = _videoSettings()
   // The bandwidth cap (App #41) and seed-back switch (App #42) come from the
   // stored video settings. Mbps→bytes/s is ×125000; null/0 means uncapped.
@@ -11837,7 +12086,7 @@ function _startTorrentStream(result, { current, fail, onReady }) {
     _recordDeadMagnet(result)
     if (current()) fail(err)
   })
-  streamer.on('progress', p => { if (current()) safeSend('video-event', { kind: 'buffering', ...p }) })
+  streamer.on('progress', p => { if (current() && !quiet) safeSend('video-event', { kind: 'buffering', ...p }) })
   streamer.on('ready', ({ url }) => {
     if (!current()) { try { streamer.stop() } catch (_) {} ; return }
     // Stand up the hover-thumbnail cache (Player #5) for this stream. ffmpeg
@@ -11857,7 +12106,13 @@ function _startTorrentStream(result, { current, fail, onReady }) {
     } catch (_) { _videoSession.thumbnailer = null }
     onReady(url, streamer)
   })
-  _videoSession.streamer = streamer
+  // A hedge challenger must not clobber the session while the lead is live;
+  // the race promotes the winner itself.
+  if (!quiet) _videoSession.streamer = streamer
+  // The pack-chain tick lives exactly as long as a streamer does. One timer,
+  // replaced on every new stream, cleared in _videoTeardown.
+  if (_videoSession.packChainTimer) clearInterval(_videoSession.packChainTimer)
+  _videoSession.packChainTimer = setInterval(_maybeChainPackDownloads, PACK_CHAIN_TICK_MS)
   // A season pack holds every episode, so the streamer is told which one is
   // wanted; without it the largest file wins, which is an arbitrary episode.
   streamer.start({
@@ -11875,6 +12130,25 @@ ipcMain.handle('video-play', async (_, { result }) => {
     if (!result || typeof result !== 'object') return { ok: false, error: 'No source selected' }
     _videoTeardown()
     _wireVideoEngine()
+    // Which shelf entry this play IS, so a fully-downloaded file can be kept
+    // for the next watch (the rewatch cache). Absent on plays without an
+    // identity (a kept file, a direct URL test) — those are never cached.
+    _videoSession.cacheKey = typeof result.cacheKey === 'string' && result.cacheKey ? result.cacheKey : null
+    _videoSession.cacheMeta = result.cacheMeta && typeof result.cacheMeta === 'object' ? result.cacheMeta : null
+    _videoSession.cacheSaved = false
+    _videoSession.cacheSaving = false
+    // Playing the warmed title adopts its torrent: the streamer will find it
+    // on the client and reuse the connected swarm (its fastest path). The
+    // torrent stops being the warm slot's to sweep and becomes this play's —
+    // torn down with the session. Warming anything else stops now: the
+    // stream gets every peer.
+    if (result.kind === 'torrent' && result.magnet && _warm.magnet === result.magnet && _warm.torrent) {
+      _videoSession.warmAdopted = { infoHash: _warm.torrent.infoHash, dir: _warm.dir }
+      if (_warm.timer) clearTimeout(_warm.timer)
+      _warm.torrent = null; _warm.magnet = null; _warm.dir = null; _warm.timer = null
+    } else {
+      _warmSweep()
+    }
     // The music engine must not keep talking over the video. The renderer's
     // media-handoff referee (#72) is the source of truth for this now — it
     // pauses music at the moment it starts the film and remembers to resume it
@@ -11916,7 +12190,7 @@ ipcMain.handle('video-play', async (_, { result }) => {
       }
       if (result.kind === 'torrent') {
         if (!result.magnet) return { ok: false, error: 'This source has no magnet link' }
-        const startTorrent = () => _startTorrentStream(result, { current, fail, onReady: (url, streamer) => {
+        const startTorrent = () => _startTorrentRace(result, result.alternates, { current, fail, onReady: (url, streamer) => {
           serve(url).then(() => {
             try { const files = streamer.files(); if (files.length > 1 && current()) safeSend('video-event', { kind: 'pack', files }) } catch (_) {}
           }).catch(fail)
@@ -12021,7 +12295,7 @@ ipcMain.handle('video-play', async (_, { result }) => {
         _startDebridFallbackTorrent()
       }
       function _startDebridFallbackTorrent() {
-      _startTorrentStream(result, {
+      _startTorrentRace(result, result.alternates, {
         current, fail,
         onReady: (url, streamer) => {
           // Wait for the parallel spin-up to finish, then load into the running
@@ -12387,6 +12661,11 @@ ipcMain.handle('video-keep-list', () => {
     const entries = alive.map(e => ({
       id: e.id, title: e.title, path: e.path,
       sizeBytes: Number(e.sizeBytes) || 0, keptAt: Number(e.keptAt) || 0,
+      show: e.show || null, season: e.season != null ? e.season : null,
+      episode: e.episode != null ? e.episode : null,
+      quality: e.quality || null, source: e.source || null,
+      poster: e.poster || null, fileName: e.fileName || null,
+      meta: e.meta || null,
     }))
     const quotaGB = _videoSettings().videoKeepQuotaGB
     return {
@@ -12404,6 +12683,249 @@ ipcMain.handle('video-keep-list', () => {
 // #42). A missing file is not an error: the entry is dropped either way, so a
 // file the user removed by hand can still be cleared from the list. An unknown
 // id is reported so the UI does not silently think it worked.
+// Warm-on-open (2026-09-14, the free near-instant): the moment a title's
+// page shows its sources, the top torrent's swarm is joined quietly — DHT
+// lookup, peer handshakes and the file's opening pieces all happen while the
+// viewer is still reading the synopsis. Pressing Play then reuses the
+// already-connected torrent (TorrentStreamer's same-magnet path) and the
+// picture is up in a couple of seconds instead of ten to thirty.
+//
+// Kept deliberately small and single: one warm torrent at a time, only the
+// head of the file, never while something is already playing, and swept
+// after a few minutes so browsing ten pages does not leave ten swarms
+// running. The warm directory lives under the stream root, where the orphan
+// sweeper already knows to clean.
+const WARM_TTL_MS = 6 * 60 * 1000
+const WARM_HEAD_BYTES = 8 * 1024 * 1024
+const _warm = { torrent: null, magnet: null, dir: null, timer: null }
+function _warmSweep() {
+  if (_warm.timer) { clearTimeout(_warm.timer); _warm.timer = null }
+  const t = _warm.torrent
+  const dir = _warm.dir
+  _warm.torrent = null; _warm.magnet = null; _warm.dir = null
+  if (t) {
+    try { getTorrentClient().remove(t.infoHash, { destroyStore: true }) } catch (_) {
+      try { t.destroy() } catch (_) {}
+    }
+  } else if (dir) {
+    try { fs.rmSync(dir, { recursive: true, force: true }) } catch (_) {}
+  }
+}
+ipcMain.handle('video-warm', async (_, { magnet } = {}) => {
+  try {
+    if (!magnet || typeof magnet !== 'string') return { ok: false }
+    // Never compete with an actual stream, and never re-warm the same magnet.
+    if (_videoSession.streamer) return { ok: true, skipped: 'playing' }
+    if (_warm.magnet === magnet) return { ok: true, skipped: 'already' }
+    _warmSweep()
+    const client = getTorrentClient()
+    if (client.get(magnet)) return { ok: true, skipped: 'active' }   // someone else owns it
+    const dir = path.join(streamRoot(), `warm-${process.pid}-${Date.now()}`)
+    const torrent = client.add(magnet, { path: dir, announce: _mergedAnnounce(null) }, t => {
+      try {
+        // Everything off, then the opening of the largest video file on — the
+        // pieces a play would need first. Low stakes: a wrong pick still
+        // warmed the swarm, which is most of the win.
+        if (typeof t.deselect === 'function') t.deselect(0, t.pieces.length - 1, false)
+        const vids = t.files.filter(f => /\.(mkv|mp4|avi|webm|m4v|ts)$/i.test(f.name))
+        const file = (vids.length ? vids : t.files).sort((a, b) => b.length - a.length)[0]
+        if (file && typeof t.select === 'function' && typeof file._startPiece === 'number') {
+          const pieces = Math.max(1, Math.ceil(WARM_HEAD_BYTES / (t.pieceLength || 1)))
+          t.select(file._startPiece, Math.min(file._endPiece, file._startPiece + pieces - 1), 1)
+        }
+      } catch (_) { /* warming is best-effort */ }
+    })
+    torrent.on('error', () => { if (_warm.torrent === torrent) _warmSweep() })
+    _warm.torrent = torrent; _warm.magnet = magnet; _warm.dir = dir
+    _warm.timer = setTimeout(_warmSweep, WARM_TTL_MS)
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) }
+  }
+})
+ipcMain.handle('video-warm-cancel', async () => { try { _warmSweep() } catch (_) {} ; return { ok: true } })
+
+// Downloads without watching (2026-09-14): "Download" on a title's page
+// pulls the picked source's file in full through its own streamer — no
+// engine, no window — and files the finished result in the keep library
+// (~/Videos/Papa Audio), where the on-device view lists it. Two at a time;
+// a third is refused rather than queued, because two full-rate torrents
+// already saturate most lines and a silent queue reads as a hang.
+const VIDEO_DOWNLOAD_MAX = 2
+const _videoDownloads = new Map()   // id -> { streamer, meta, bytes, total, status, timer }
+function _downloadStats(d) {
+  try {
+    const st = typeof d.streamer.stats === 'function' ? d.streamer.stats() : null
+    return { speedBps: (st && st.speedBps) || 0, peers: (st && st.peers) || 0 }
+  } catch (_) { return { speedBps: 0, peers: 0 } }
+}
+// Everything the On-device view shows about one running download. `eta` is
+// seconds and null while there is no speed to divide by — a made-up "0s left"
+// reads as finished.
+function _downloadRow(id, d) {
+  const st = _downloadStats(d)
+  const left = d.total > 0 ? Math.max(0, d.total - d.bytes) : 0
+  return {
+    id, title: d.meta.title || '', show: d.meta.show || '', poster: d.meta.poster || null,
+    quality: d.meta.quality || null, source: d.meta.source || null,
+    season: d.meta.season != null ? d.meta.season : null,
+    episode: d.meta.episode != null ? d.meta.episode : null,
+    bytes: d.bytes, total: d.total, status: d.status,
+    speedBps: st.speedBps, peers: st.peers,
+    eta: st.speedBps > 0 && left > 0 ? Math.round(left / st.speedBps) : null,
+  }
+}
+function _downloadSnapshot() {
+  return [..._videoDownloads.entries()].map(([id, d]) => _downloadRow(id, d))
+}
+function _downloadStop(id) {
+  const d = _videoDownloads.get(id)
+  if (!d) return false
+  if (d.timer) clearInterval(d.timer)
+  try { d.streamer.stop() } catch (_) {}
+  _videoDownloads.delete(id)
+  return true
+}
+async function _downloadFinish(id, d, info) {
+  if (d.timer) { clearInterval(d.timer); d.timer = null }
+  d.status = 'saving'
+  try {
+    const dest = videoKeep.destPath(_keepVideosRoot(), d.meta.show || d.meta.title, info.name)
+    const index = (sideStores.videoKeepIndex.get() || []).filter(e => e && e.path !== dest)
+    const verdict = videoKeep.quotaCheck(index, _videoSettings().videoKeepQuotaGB, info.total)
+    if (!verdict.ok) throw new Error('The downloads folder is full — raise the limit in Settings → Video')
+    await fs.promises.mkdir(path.dirname(dest), { recursive: true })
+    await fs.promises.copyFile(info.path, dest)
+    let size = info.total
+    try { size = fs.statSync(dest).size } catch (_) {}
+    index.push({
+      id: crypto.randomBytes(8).toString('hex'),
+      title: d.meta.title || info.name,
+      path: dest, sizeBytes: size, keptAt: Date.now(),
+      // The facts the On-device view groups and labels by. Kept flat beside
+      // the nested `meta` the detail route needs, so the list never has to
+      // reach into a sub-object that older entries do not have.
+      show: d.meta.show || null,
+      season: d.meta.season != null ? d.meta.season : null,
+      episode: d.meta.episode != null ? d.meta.episode : null,
+      quality: d.meta.quality || null,
+      source: d.meta.source || null,
+      poster: d.meta.poster || null,
+      fileName: info.name || null,
+      meta: d.meta.detail || null,
+    })
+    sideStores.videoKeepIndex.set(index)
+    safeSend('video-download-event', { kind: 'done', id, title: d.meta.title })
+    if (Notification.isSupported()) new Notification({ title: 'Download finished', body: d.meta.title || info.name, silent: false }).show()
+  } catch (e) {
+    safeSend('video-download-event', { kind: 'error', id, message: (e && e.message) || String(e) })
+  }
+  _downloadStop(id)
+}
+ipcMain.handle('video-download-start', async (_, { result, meta } = {}) => {
+  try {
+    if (!result || result.kind !== 'torrent' || !result.magnet) {
+      return { ok: false, error: 'Only torrent sources can be downloaded' }
+    }
+    const id = (meta && meta.key) || result.magnet.slice(0, 60)
+    if (_videoDownloads.has(id)) return { ok: true, id, already: true }
+    if (_videoDownloads.size >= VIDEO_DOWNLOAD_MAX) {
+      return { ok: false, error: 'Two downloads are already running — let one finish first' }
+    }
+    const settings = _videoSettings()
+    const mbps = Number(settings.downloadLimitMbps)
+    const streamer = new TorrentStreamer({
+      client: getTorrentClient(),
+      downloadLimitBps: (settings.downloadLimitMbps == null || !isFinite(mbps) || mbps <= 0) ? null : Math.floor(mbps * 125000),
+      announceFn: _mergedAnnounce,
+      seedWhileWatching: settings.seedWhileWatching !== false,
+      timeoutMs: 60000,
+      prebufferBytes: 0,
+    })
+    const d = { streamer, meta: meta || {}, bytes: 0, total: 0, status: 'connecting', timer: null }
+    _videoDownloads.set(id, d)
+    streamer.on('error', err => {
+      safeSend('video-download-event', { kind: 'error', id, message: (err && err.message) || String(err) })
+      _recordDeadMagnet(result)
+      _downloadStop(id)
+    })
+    streamer.on('ready', () => {
+      d.status = 'downloading'
+      // Poll the bitfield: a download has no playback ticks to ride.
+      d.timer = setInterval(() => {
+        try {
+          const files = typeof streamer.files === 'function' ? streamer.files() : []
+          const at = files.findIndex(f => f && f.current)
+          const info = streamer.fileInfo(at >= 0 ? files[at].index : 0)
+          if (!info) return
+          d.bytes = info.downloaded; d.total = info.total
+          safeSend('video-download-event', Object.assign({ kind: 'progress' }, _downloadRow(id, d)))
+          if (info.total > 0 && info.downloaded >= info.total) _downloadFinish(id, d, info)
+        } catch (_) { /* one bad tick is nothing */ }
+      }, 2000)
+    })
+    streamer.start({
+      magnet: result.magnet,
+      fileIndex: result.fileIndex ?? 0,
+      season: result.season ?? null,
+      episode: result.episode ?? null,
+    }).catch(e => {
+      if (e && e.code === 'STOPPED') return
+      safeSend('video-download-event', { kind: 'error', id, message: (e && e.message) || String(e) })
+      _downloadStop(id)
+    })
+    return { ok: true, id }
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) }
+  }
+})
+ipcMain.handle('video-download-cancel', async (_, { id } = {}) => ({ ok: _downloadStop(id) }))
+ipcMain.handle('video-download-list', async () => ({ ok: true, downloads: _downloadSnapshot() }))
+
+// The rewatch cache, read side. get: one key, touching lastUsedAt so the
+// eviction clock follows watching, not saving. list/delete serve the
+// on-device view. Missing files self-heal out of the index.
+ipcMain.handle('video-cache-get', async (_, { key } = {}) => {
+  try {
+    if (!key) return { ok: true, hit: null }
+    const entries = _videoCacheEntries()
+    const e = entries.find(x => x.key === key)
+    if (!e) return { ok: true, hit: null }
+    if (!fs.existsSync(e.path)) {
+      sideStores.videoCacheIndex.set(entries.filter(x => x.key !== key))
+      return { ok: true, hit: null }
+    }
+    e.lastUsedAt = Date.now()
+    sideStores.videoCacheIndex.set(entries)
+    return { ok: true, hit: { key: e.key, path: e.path, title: e.title, sizeBytes: e.sizeBytes, meta: e.meta || null } }
+  } catch (e) {
+    return { ok: true, hit: null, error: (e && e.message) || String(e) }
+  }
+})
+
+ipcMain.handle('video-cache-list', async () => {
+  try {
+    const entries = _videoCacheEntries()
+    const alive = entries.filter(e => { try { return fs.statSync(e.path).isFile() } catch (_) { return false } })
+    if (alive.length !== entries.length) sideStores.videoCacheIndex.set(alive)
+    return { ok: true, entries: alive, capGB: Number(_videoSettings().videoCacheGB) || 0 }
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e), entries: [] }
+  }
+})
+
+ipcMain.handle('video-cache-delete', async (_, { key } = {}) => {
+  try {
+    const entries = _videoCacheEntries()
+    const e = entries.find(x => x.key === key)
+    if (e) { try { fs.unlinkSync(e.path) } catch (_) {} }
+    sideStores.videoCacheIndex.set(entries.filter(x => x.key !== key))
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) }
+  }
+})
+
 ipcMain.handle('video-keep-delete', async (_, { id } = {}) => {
   try {
     const raw = sideStores.videoKeepIndex.get() || []

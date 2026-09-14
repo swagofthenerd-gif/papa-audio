@@ -8030,6 +8030,37 @@ body.app-unfocused .vt-menu {
 /* "Episode 1178 airs Sun 13 Sep, 19:15 · in 10h" */
 .vdet-next { font-size:12.5px; color:var(--text); margin:-4px 0 10px; font-weight:600; }
 .vdet-next-in { color:var(--accent, #1db954); margin-left:6px; font-weight:700; }
+/* ── On device ───────────────────────────────────────
+   What is arriving, what was kept, and what recent watching left behind. */
+.vdevice-page { padding:0 28px 40px; }
+.vdevice-storage {
+  display:flex; flex-wrap:wrap; gap:28px;
+  padding:16px 18px; margin:4px 0 6px;
+  background:var(--glass); border:1px solid var(--glass-border); border-radius:var(--r);
+}
+.vdevice-meter { flex:1 1 240px; min-width:200px; }
+.vdevice-meter-top {
+  display:flex; justify-content:space-between; gap:12px;
+  font-size:12.5px; color:var(--text2); margin-bottom:7px;
+}
+.vdevice-meter-top span:first-child { font-weight:600; color:var(--text); }
+.vdevice-bar { height:5px; border-radius:999px; background:var(--bg4); overflow:hidden; }
+.vdevice-bar i { display:block; height:100%; background:var(--accent); border-radius:999px; }
+.vdevice-section { margin-top:26px; }
+.vdevice-head {
+  display:flex; align-items:baseline; gap:10px; flex-wrap:wrap;
+  font-size:15px; font-weight:700; color:var(--text); margin:0 0 12px;
+}
+.vdevice-note { font-size:12px; font-weight:500; color:var(--text3); }
+.vdevice-group {
+  display:flex; align-items:baseline; gap:10px; flex-wrap:wrap;
+  font-size:13px; font-weight:600; color:var(--text2); margin:14px 0 8px;
+}
+.vdevice-section .vgrid { margin-bottom:4px; }
+.vdevice-ep { color:var(--text2); font-weight:600; }
+.vdevice-facts, .vdevice-src { color:var(--text3); }
+.vdevice-src { font-size:11px; }
+.vbadge-quality { background:rgba(0,0,0,.72); color:var(--text); font-weight:700; }
 /* A character tile opens nothing. */
 .vcast-static { cursor:default; }
 .vcast-static:hover { transform:none; }
@@ -8244,6 +8275,18 @@ body.app-unfocused .vt-menu {
 }
 .video-source-play svg { width:15px; height:15px; fill:#000; }
 .video-source-play:hover { opacity:1; transform:scale(1.08); }
+/* Download, beside Play on every torrent row (2026-09-14). Quieter than Play:
+   it is the second thing you do with a source, not the first. */
+.video-source-dl {
+  flex-shrink:0; width:34px; height:34px; border-radius:50%;
+  background:var(--glass); border:1px solid var(--glass-border); cursor:pointer;
+  display:flex; align-items:center; justify-content:center;
+  transition:background .15s, transform .12s;
+}
+.video-source-dl svg { width:15px; height:15px; fill:var(--text2); }
+.video-source-dl:hover { background:var(--glass-hi); transform:scale(1.08); }
+.video-source-dl:hover svg { fill:var(--text); }
+.video-source-dl:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 
 /* ── Browse ──────────────────────────────────────────
    A real query builder. The services this competes with offer a genre and

@@ -283,6 +283,7 @@ async function resolveStream(request, backends, { preferSurround = true, timeout
 }
 
 module.exports = {
+  rankingSeeds: _rankingSeeds,
   qualityRank,
   isMultichannel,
   rankStreams,

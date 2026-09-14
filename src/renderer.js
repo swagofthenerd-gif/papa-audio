@@ -1874,6 +1874,13 @@ function navigate(page, navId, opts = {}) {
   // Leaving a page closes what was floating over it. The rule, not per-modal
   // patches: every overlay that registered a dismisser gets closed here.
   _runNavDismiss()
+  // Leaving a title's page stops warming its swarm (2026-09-14). Play keeps
+  // it — adoption happens in main before this navigate can run — and going
+  // detail→detail warms the new page's top source over this cancel anyway.
+  if (state.currentPage === 'video-detail' && page !== 'video-detail' &&
+      window.api && window.api.videoWarmCancel) {
+    window.api.videoWarmCancel().catch(function () {})
+  }
   // Save scroll position of page we're leaving
   const contentEl = document.getElementById('content')
   if (contentEl && state.currentPage) {
@@ -3099,6 +3106,7 @@ var _videoTabs = [
   { key: 'browse', label: 'Browse' },
   { key: 'diary', label: 'Diary' },
   { key: 'list',  label: 'My List' },
+  { key: 'device', label: 'On device' },
 ]
 
 var _videoTab = 'all'
@@ -3127,6 +3135,7 @@ var _VICON = {
   right:  '<svg viewBox="0 0 24 24"><path d="M8.6 16.6 10 18l6-6-6-6-1.4 1.4 4.6 4.6z"/></svg>',
   search: '<svg viewBox="0 0 24 24"><path d="M15.5 14h-.8l-.3-.3a6.5 6.5 0 1 0-.7.7l.3.3v.8l5 5 1.5-1.5zm-6 0a4.5 4.5 0 1 1 0-9 4.5 4.5 0 0 1 0 9z"/></svg>',
   note:   '<svg viewBox="0 0 24 24"><path d="M12 3v10.6A4 4 0 1 0 14 17V7h4V3z"/></svg>',
+  down:   '<svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2z"/></svg>',
 }
 
 // Binds the theatre chrome and the one shared video-event channel
@@ -4920,6 +4929,22 @@ function _videoPlayResult(result, opts) {
       episode: _videoState.episode,
     })
   }
+  // The two next-ranked sources ride along as hedge lanes: if the picked
+  // swarm is silent for ten seconds, main opens the next in parallel and the
+  // first stream to become servable wins (2026-09-14). Torrents only — a
+  // direct URL has nothing to hedge — and never the pick itself.
+  if (result.kind === 'torrent') {
+    const pickedKey = _sourceKey(result)
+    const alts = (_videoStreams || []).filter(function (s) {
+      return s && s.kind === 'torrent' && s.magnet && _sourceKey(s) !== pickedKey
+    }).slice(0, 2).map(function (s) {
+      return Object.assign({}, s, {
+        season: result.season != null ? result.season : null,
+        episode: result.episode != null ? result.episode : null,
+      })
+    })
+    if (alts.length) result = Object.assign({}, result, { alternates: alts })
+  }
   _playing = {
     dub: result.dub === true,
     source: result.source || null,
@@ -4927,6 +4952,23 @@ function _videoPlayResult(result, opts) {
   }
   const d = _videoDetail && _videoDetail.d
   const isEpisode = _videoDetail && _videoDetail.type !== 'movie'
+
+  // The identity of what is being watched rides with the play, so a file
+  // that finishes downloading can be kept for next time (the rewatch cache),
+  // and a saved copy of this exact title plays instead of any swarm at all.
+  // MUST sit below `d`: reading it above its own declaration threw a
+  // ReferenceError out of every play (found live, 2026-09-14 — "the episodes
+  // are not playing"), which is what the regression test below now forbids.
+  if (d) {
+    result = Object.assign({}, result, {
+      cacheKey: _watchKey(_videoDetail.type, d.id, _videoState.season, _videoState.episode),
+      cacheMeta: {
+        type: _videoDetail.type, id: d.id, title: d.title, poster: d.poster || null,
+        season: _videoDetail.type === 'tv' ? _videoState.season : null,
+        episode: isEpisode ? _videoState.episode : null,
+      },
+    })
+  }
 
   // Identify the title for the watch store before anything starts, so the very
   // first state tick already has somewhere to write.
@@ -5031,13 +5073,26 @@ function _videoPlayResult(result, opts) {
   // Wait until main knows the stage rectangle. Starting playback first shows
   // the mpv window at its creation size, floating over the app as a separate
   // window before any bounds arrive.
+  // A saved copy of this exact episode beats every swarm: swap the source
+  // for the local file (2026-09-14). Only on the default pick — a source row
+  // the viewer chose by hand plays exactly what they chose.
+  const cacheProbe = (!opts.manual && result.cacheKey && window.api.videoCacheGet)
+    ? window.api.videoCacheGet({ key: result.cacheKey }).catch(function () { return null })
+    : Promise.resolve(null)
   Promise.resolve(_player.ready ? _player.ready() : null).then(function () {
+  cacheProbe.then(function (res) {
+    const hit = res && res.ok && res.hit
+    if (hit && hit.path) {
+      result = Object.assign({}, result, { kind: 'cached', url: hit.path, magnet: null, alternates: null })
+      showSnackbar('Playing from this device — no download needed', null, null, 4000)
+    }
   window.api.videoPlay({ result }).then(function (res) {
     // The handler rejects unplayable sources (no magnet, no URL) with ok:false
     // rather than throwing, so this has to be checked, not just caught.
     if (res && res.ok === false) _handleVideoEvent({ kind: 'error', message: res.error })
   }).catch(function (e) {
     _handleVideoEvent({ kind: 'error', message: String((e && e.message) || e) })
+  })
   })
   })
 }
@@ -5606,6 +5661,13 @@ async function _renderVideoTab(ticket, opts) {
     if (heroMount) heroMount.innerHTML = ''
     if (tasteRow) tasteRow.innerHTML = ''
     _renderMyList(rows)
+    return
+  }
+  if (_videoTab === 'device') {
+    if (heroMount) heroMount.innerHTML = ''
+    if (tasteRow) tasteRow.innerHTML = ''
+    _bindDeviceEvents()
+    _renderDeviceTab(rows, ticket)
     return
   }
   // Only on All and Movies: the recommendation is built from a film diary, and
@@ -6828,6 +6890,309 @@ function _myListGridHtml(items) {
     return '<div class="vmylist-franchise' + (open ? ' open' : '') + '">' + head + body + '</div>'
   }).join('')
   return '<div id="vmylist-grid">' + html + '</div>'
+}
+
+// "Download" on a title's page (2026-09-14): the same source Play would
+// pick, pulled in full in the background and filed in ~/Videos/Papa Audio.
+// For a series it downloads the episode currently selected.
+function _downloadCurrentPick() {
+  if (!_videoStreams || !_videoStreams.length) {
+    showToast('Still finding sources — try again in a moment')
+    return
+  }
+  _downloadStream(_autoPickStream(_videoStreams))
+}
+
+// Download one particular source — the hero button hands it the pick Play
+// would make, a source row hands it that row. The episode currently selected
+// travels with it, so a season pack fetches the right file.
+function _downloadStream(pick) {
+  const d = _videoDetail && _videoDetail.d
+  if (!d) return
+  if (!pick || pick.kind !== 'torrent' || !pick.magnet) {
+    showToast('This source cannot be downloaded — only torrent sources can')
+    return
+  }
+  const isEpisode = _videoDetail.type !== 'movie'
+  const result = Object.assign({}, pick, {
+    season: _videoDetail.type === 'tv' ? _videoState.season : null,
+    episode: isEpisode ? _videoState.episode : null,
+  })
+  const label = isEpisode
+    ? d.title + (_videoDetail.type === 'tv' ? ' S' + _videoState.season + 'E' + _videoState.episode : ' — Episode ' + _videoState.episode)
+    : d.title
+  window.api.videoDownloadStart({ result: result, meta: {
+    // Keyed on the SOURCE, not just the episode: downloading the 1080p and
+    // the 4K of one episode is two downloads, and the second must not be
+    // dropped as "already downloading".
+    key: _watchKey(_videoDetail.type, d.id, _videoState.season, _videoState.episode) + '|' + _sourceKey(pick),
+    title: label, show: d.title, poster: d.poster || null,
+    // The facts the On-device view labels and groups by.
+    quality: pick.quality || null,
+    source: (window.PapaReleaseName && pick.title && window.PapaReleaseName.parse(pick.title).group) || pick.source || null,
+    season: _videoDetail.type === 'tv' ? _videoState.season : null,
+    episode: isEpisode ? _videoState.episode : null,
+    detail: { type: _videoDetail.type, id: d.id,
+      season: _videoDetail.type === 'tv' ? _videoState.season : null,
+      episode: isEpisode ? _videoState.episode : null },
+  } }).then(function (res) {
+    if (res && res.ok) showSnackbar(res.already ? 'Already downloading' : 'Downloading \u201c' + label + '\u201d \u2014 watch it in On device', null, null, 5000)
+    else showSnackbar((res && res.error) || 'Could not start the download', null, null, 5000)
+  }).catch(function (e) { showSnackbar(String((e && e.message) || e), null, null, 5000) })
+}
+
+// ── On device (2026-09-14): everything watchable with the network off ──────
+// Three shelves: what is downloading now (with progress), what was
+// downloaded on purpose (the keep library), and what the rewatch cache is
+// holding from recent viewing. Entries with a known identity open their
+// title's page — where Play uses the local copy automatically.
+// One line of facts under a title: quality, size, where it came from, when.
+// Every part is dropped when it is not known rather than shown as a blank or
+// a zero, so a sparse entry reads as short, not broken.
+function _deviceFactsHtml(e, kind) {
+  const bits = []
+  if (kind === 'download') {
+    const pct = e.total > 0 ? Math.min(100, Math.round(e.bytes / e.total * 100)) : null
+    if (e.status === 'saving') bits.push('Saving to your library\u2026')
+    else if (pct != null) bits.push(pct + '%')
+    else bits.push('Connecting\u2026')
+    if (e.total > 0) bits.push(_fmtBytes(e.bytes) + ' of ' + _fmtBytes(e.total))
+    if (e.speedBps > 0) bits.push(_fmtBytes(e.speedBps) + '/s')
+    if (e.eta != null) bits.push(_etaLabel(e.eta))
+    if (e.peers > 0) bits.push(e.peers + (e.peers === 1 ? ' peer' : ' peers'))
+  } else {
+    if (e.sizeBytes > 0) bits.push(_fmtBytes(e.sizeBytes))
+    if (e.keptAt) bits.push('Saved ' + _agoLabel(Date.now() - e.keptAt))
+    else if (e.savedAt) bits.push('Watched ' + _agoLabel(Date.now() - (e.lastUsedAt || e.savedAt)))
+  }
+  return bits.map(esc).join(' \u00b7 ')
+}
+// Time remaining, in words that do not lie. Under a minute rounded to "0m
+// left" read as finished when the file was still arriving (seen live,
+// 2026-09-14), so short waits say so instead.
+function _etaLabel(sec) {
+  const n = Math.max(0, Math.round(Number(sec) || 0))
+  if (n < 60) return 'less than a minute left'
+  return _vDurText(n) + ' left'
+}
+
+// The episode line, when this is one: "Season 2 · Episode 7", or "Episode 7"
+// for anime, which numbers straight through.
+function _deviceEpisodeLabel(e) {
+  if (e.episode == null) return ''
+  return (e.season != null ? 'Season ' + e.season + ' \u00b7 ' : '') + 'Episode ' + e.episode
+}
+function _deviceCardHtml(e, kind) {
+  const meta = e.meta || null
+  const art = e.poster || (meta && meta.poster) || null
+  const pct = kind === 'download' && e.total > 0 ? Math.min(100, Math.round(e.bytes / e.total * 100)) : null
+  const nav = meta && meta.type && meta.id != null ? ' data-device-open="' + esc(meta.type + ':' + meta.id) + '"' : ''
+  const badges = []
+  if (e.quality) badges.push('<span class="vbadge vbadge-quality">' + esc(e.quality) + '</span>')
+  if (kind === 'cache') badges.push('<span class="vbadge vbadge-type">cached</span>')
+  const ep = _deviceEpisodeLabel(e)
+  return '<article class="vcard vdevice-card" tabindex="0" role="button"' + nav +
+      ' data-device-kind="' + kind + '" data-device-id="' + esc(String(e.id || e.key || '')) + '"' +
+      (e.path ? ' data-device-path="' + esc(e.path) + '"' : '') +
+      ' aria-label="' + esc(e.title || 'Video') + '">' +
+    '<div class="vcard-art">' +
+      (art ? '<img class="vcard-poster is-loaded" src="' + esc(art) + '" alt="" loading="lazy">' : '') +
+      '<div class="vcard-fallback"' + (art ? ' style="display:none"' : '') + '>' + esc(e.title || '') + '</div>' +
+      (badges.length ? '<div class="vcard-badges">' + badges.join('') + '</div>' : '') +
+      (pct != null ? '<div class="vcard-progress"><i style="width:' + pct + '%"></i></div>' : '') +
+      '<div class="vcard-actions">' +
+        (kind === 'download'
+          ? '<button class="vcard-act" data-device-act="cancel" aria-label="Stop this download">&#10005;</button>'
+          : '<button class="vcard-act vcard-act-play" data-device-act="play" aria-label="Play">' + _VICON.play + '</button>' +
+            '<button class="vcard-act" data-device-act="delete" aria-label="Delete from this device">&#10005;</button>') +
+      '</div>' +
+    '</div>' +
+    '<div class="vcard-title">' + esc(e.title || 'Video') + '</div>' +
+    (ep ? '<div class="vcard-meta vdevice-ep">' + esc(ep) + '</div>' : '') +
+    '<div class="vcard-meta vdevice-facts">' + _deviceFactsHtml(e, kind) + '</div>' +
+    (e.source && kind !== 'download' ? '<div class="vcard-meta vdevice-src">' + esc(e.source) + '</div>' : '') +
+  '</article>'
+}
+
+// Downloaded episodes belong under the show they came from, in episode order;
+// films stand alone. Returns [{ show, items }] with the most recently saved
+// group first, because that is what the viewer came back for.
+function _groupDeviceEntries(entries) {
+  const groups = new Map()
+  for (const e of entries) {
+    const key = (e.show && String(e.show)) || e.title || 'Other'
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key).push(e)
+  }
+  const out = [...groups.entries()].map(function (pair) {
+    const items = pair[1].slice().sort(function (a, b) {
+      const sa = Number(a.season) || 0, sb = Number(b.season) || 0
+      if (sa !== sb) return sa - sb
+      const ea = Number(a.episode) || 0, eb = Number(b.episode) || 0
+      if (ea !== eb) return ea - eb
+      return (Number(b.keptAt) || 0) - (Number(a.keptAt) || 0)
+    })
+    const newest = items.reduce(function (n, i) { return Math.max(n, Number(i.keptAt) || 0) }, 0)
+    const bytes = items.reduce(function (n, i) { return n + (Number(i.sizeBytes) || 0) }, 0)
+    return { show: pair[0], items: items, newest: newest, bytes: bytes }
+  })
+  out.sort(function (a, b) { return b.newest - a.newest })
+  return out
+}
+
+function _deviceSectionHtml(title, note, body) {
+  return '<section class="vdevice-section">' +
+    '<div class="vdevice-head">' + esc(title) +
+      (note ? '<span class="vdevice-note">' + esc(note) + '</span>' : '') + '</div>' +
+    body + '</section>'
+}
+
+// How much of this device the app is using, and what the limits are. Shown
+// once at the top so "is it safe to keep downloading?" has an answer without
+// opening Settings.
+function _deviceStorageHtml(keepUsed, keepLimit, cacheUsed, cacheLimit) {
+  const line = function (label, used, limit) {
+    const pct = limit > 0 ? Math.min(100, Math.round(used / limit * 100)) : null
+    return '<div class="vdevice-meter">' +
+      '<div class="vdevice-meter-top"><span>' + esc(label) + '</span>' +
+        '<span>' + esc(_fmtBytes(used)) + (limit > 0 ? ' of ' + esc(_fmtBytes(limit)) : '') + '</span></div>' +
+      (pct != null ? '<div class="vdevice-bar"><i style="width:' + pct + '%"></i></div>' : '') +
+    '</div>'
+  }
+  return '<div class="vdevice-storage">' +
+    line('Downloads', keepUsed, keepLimit) +
+    line('Rewatch cache', cacheUsed, cacheLimit) +
+  '</div>'
+}
+
+// The On-device page. Three honest sections in the order they matter:
+// what is arriving, what you chose to keep (grouped by show, in episode
+// order), and what recent watching left behind. Nothing is invented — a
+// section with nothing in it is not drawn at all.
+async function _renderDeviceTab(rows, ticket) {
+  if (!rows) return
+  rows.innerHTML = '<div class="vdevice-page"><div class="spin"></div></div>'
+  const [dl, keep, cache] = await Promise.all([
+    window.api.videoDownloadList ? window.api.videoDownloadList().catch(function () { return null }) : null,
+    window.api.videoKeepList ? window.api.videoKeepList().catch(function () { return null }) : null,
+    window.api.videoCacheList ? window.api.videoCacheList().catch(function () { return null }) : null,
+  ])
+  if (_videoCatalogTicket !== ticket || state.currentPage !== 'video') return
+  const mount = document.getElementById('vrows')
+  if (!mount) return
+  const downloads = (dl && dl.ok && dl.downloads) || []
+  const keeps = (keep && keep.ok && keep.entries) || []
+  const cached = ((cache && cache.ok && cache.entries) || []).map(function (e) {
+    // A cache entry keys on the watch, so its show/episode live in `meta`.
+    const m = e.meta || {}
+    return Object.assign({}, e, {
+      show: e.show || m.title || null,
+      season: e.season != null ? e.season : (m.season != null ? m.season : null),
+      episode: e.episode != null ? e.episode : (m.episode != null ? m.episode : null),
+      poster: e.poster || m.poster || null,
+    })
+  })
+  const keepUsed = (keep && keep.ok && keep.usedBytes) || 0
+  const keepLimit = (keep && keep.ok && keep.quotaBytes) || 0
+  const cacheUsed = cached.reduce(function (n, e) { return n + (Number(e.sizeBytes) || 0) }, 0)
+  const cacheLimit = ((cache && cache.ok && cache.capGB) || 0) * 1024 * 1024 * 1024
+
+  let html = _deviceStorageHtml(keepUsed, keepLimit, cacheUsed, cacheLimit)
+
+  if (downloads.length) {
+    const active = downloads.filter(function (e) { return e.status !== 'saving' }).length
+    html += _deviceSectionHtml('Downloading now',
+      active ? active + (active === 1 ? ' download running' : ' downloads running') : 'Finishing up',
+      '<div class="vgrid">' + downloads.map(function (e) { return _deviceCardHtml(e, 'download') }).join('') + '</div>')
+  }
+
+  if (keeps.length) {
+    const groups = _groupDeviceEntries(keeps)
+    const body = groups.map(function (g) {
+      // A show with one file needs no heading of its own; the card says it.
+      const head = g.items.length > 1
+        ? '<div class="vdevice-group">' + esc(g.show) +
+            '<span class="vdevice-note">' + g.items.length + ' files \u00b7 ' + esc(_fmtBytes(g.bytes)) + '</span></div>'
+        : ''
+      return head + '<div class="vgrid">' + g.items.map(function (e) { return _deviceCardHtml(e, 'keep') }).join('') + '</div>'
+    }).join('')
+    html += _deviceSectionHtml('Downloaded',
+      keeps.length + (keeps.length === 1 ? ' file' : ' files') + ' \u00b7 ' + _fmtBytes(keepUsed), body)
+  }
+
+  if (cached.length) {
+    html += _deviceSectionHtml('Ready to rewatch',
+      'Kept automatically from what you watched \u2014 the oldest go first',
+      '<div class="vgrid">' + cached.map(function (e) { return _deviceCardHtml(e, 'cache') }).join('') + '</div>')
+  }
+
+  if (!downloads.length && !keeps.length && !cached.length) {
+    html += '<div class="vrow-msg">Nothing is saved on this device yet. Open a film or an episode and press Download \u2014 it appears here, and plays with no internet at all.</div>'
+  }
+
+  mount.innerHTML = '<div class="vdevice-page">' + html + '</div>'
+  _bindDeviceCards(ticket)
+}
+
+function _bindDeviceCards(ticket) {
+  const root = document.getElementById('vdevice-grid')
+  if (!root) return
+  root.addEventListener('click', function (ev) {
+    const act = ev.target.closest ? ev.target.closest('[data-device-act]') : null
+    const card = ev.target.closest ? ev.target.closest('.vdevice-card') : null
+    if (!card) return
+    const kind = card.dataset.deviceKind
+    const id = card.dataset.deviceId
+    const path = card.dataset.devicePath || null
+    if (act) {
+      ev.stopPropagation()
+      const what = act.dataset.deviceAct
+      if (what === 'cancel') {
+        window.api.videoDownloadCancel({ id: id }).then(function () { _renderDeviceTab(document.getElementById('vrows'), _videoCatalogTicket) })
+      } else if (what === 'delete') {
+        const call = kind === 'cache' ? window.api.videoCacheDelete({ key: id }) : window.api.videoKeepDelete(id)
+        Promise.resolve(call).then(function () { _renderDeviceTab(document.getElementById('vrows'), _videoCatalogTicket) })
+      } else if (what === 'play' && path) {
+        _playDeviceFile(card)
+      }
+      return
+    }
+    // The card itself: the title's page when known, else play the file.
+    if (card.dataset.deviceOpen) navigate('video-detail', card.dataset.deviceOpen)
+    else if (path) _playDeviceFile(card)
+  })
+}
+// A local file plays with no detail page open: the minimal result the play
+// pipeline needs, and no watch identity beyond what the card knows.
+function _playDeviceFile(card) {
+  const path = card.dataset.devicePath
+  if (!path) return
+  _videoPlayResult({ kind: 'cached', url: path, title: card.getAttribute('aria-label') || 'Video' }, { manual: true })
+}
+var _deviceEventsBound = false
+function _bindDeviceEvents() {
+  if (_deviceEventsBound || !window.api || !window.api.onVideoDownloadEvent) return
+  _deviceEventsBound = true
+  window.api.onVideoDownloadEvent(function (e) {
+    if (!e) return
+    if (e.kind === 'done') showSnackbar('\u201c' + (e.title || 'Download') + '\u201d is ready to watch offline', null, null, 6000)
+    if (e.kind === 'error') showSnackbar('Download failed: ' + _shortQ(e.message || '', 90), null, null, 6000)
+    // A visible On-device tab repaints on anything but the 2-second ticks.
+    if (e.kind !== 'progress' && _videoTab === 'device' && state.currentPage === 'video') {
+      const rows = document.getElementById('vrows')
+      if (rows) _renderDeviceTab(rows, _videoCatalogTicket)
+    }
+    if (e.kind === 'progress' && _videoTab === 'device' && state.currentPage === 'video') {
+      const card = document.querySelector('.vdevice-card[data-device-id="' + (window.CSS && CSS.escape ? CSS.escape(e.id) : e.id) + '"]')
+      if (card) {
+        const bar = card.querySelector('.vcard-progress i')
+        if (bar && e.total > 0) bar.style.width = Math.min(100, Math.round(e.bytes / e.total * 100)) + '%'
+        const facts = card.querySelector('.vdevice-facts')
+        // The event IS the row, so the same builder writes the same line.
+        if (facts) facts.innerHTML = _deviceFactsHtml(e, 'download')
+      }
+    }
+  })
 }
 
 function _renderMyList(rows) {
@@ -8146,6 +8511,9 @@ function _bindDetailActions(d) {
     showToast('Finding sources…')
     document.getElementById('video-sources')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
   })
+  document.getElementById('vdet-download')?.addEventListener('click', function () {
+    _downloadCurrentPick()
+  })
   document.getElementById('vdet-list')?.addEventListener('click', function () {
     // Carry the collection through so My List can group this by its real TMDB
     // franchise, not a title guess (#22). movie details expose d.collection.
@@ -8261,6 +8629,7 @@ function _videoDetailShell(d) {
       '<div class="vhero-actions" style="margin-top:12px">' +
         '<button class="vbtn vbtn-primary" id="vdet-play">' + _VICON.play + 'Play</button>' +
         '<button class="vbtn" id="vdet-list">' + (_detInList(d) ? _VICON.check + 'In My List' : _VICON.plus + 'My List') + '</button>' +
+        '<button class="vbtn" id="vdet-download" title="Save to this device for offline watching">' + _VICON.down + 'Download</button>' +
         (_bestTrailer(d) ? '<button class="vbtn" id="video-trailer-btn">' + _VICON.play + 'Trailer</button>' : '') +
         // Jumps to the music side, pre-filled to hunt this title's score (App
         // #71). The same search the toolbar runs, so a found soundtrack downloads
@@ -9755,6 +10124,12 @@ function _renderVideoSourceRows(target, sort) {
       _videoPlayResult(_videoStreams[idx], { manual: true, index: idx })
     })
   })
+  listEl.querySelectorAll('.video-source-dl').forEach(function (btn) {
+    btn.addEventListener('click', function (ev) {
+      ev.stopPropagation()
+      _downloadStream(_videoStreams[Number(btn.dataset.dlIdx)])
+    })
+  })
   // Reflect what is actually playing (including after an auto-switch) on the
   // freshly-rendered rows.
   _syncSourcesHighlight()
@@ -9834,6 +10209,23 @@ async function _loadVideoSources(ticket, seasonTicket) {
   // The hero's Play was pressed while sources were still loading. Honour any
   // remembered preferred source for this title (App #43) rather than always
   // taking the ranked first.
+  // Warm the top source's swarm while the viewer reads the page (2026-09-14):
+  // peers connect and the opening pieces arrive before Play is pressed. Only
+  // when nothing is playing — a warm must never take peers from a stream —
+  // and never for a title whose saved copy would play locally anyway.
+  if (streams.length && streams[0].kind === 'torrent' && streams[0].magnet &&
+      window.api.videoWarm && !(_player && _player.isOpen && _player.isOpen())) {
+    const warmKey = _videoDetail && _videoDetail.d
+      ? _watchKey(_videoDetail.type, _videoDetail.d.id, _videoState.season, _videoState.episode)
+      : null
+    const probe = (warmKey && window.api.videoCacheGet)
+      ? window.api.videoCacheGet({ key: warmKey }).catch(function () { return null })
+      : Promise.resolve(null)
+    probe.then(function (res) {
+      if (res && res.ok && res.hit) return   // local copy: nothing to warm
+      window.api.videoWarm({ magnet: streams[0].magnet }).catch(function () {})
+    })
+  }
   if (_autoPlayTicket === _videoDetailTicket && streams.length) {
     _autoPlayTicket = 0
     _videoPlayResult(_autoPickStream(streams))
@@ -9909,6 +10301,13 @@ function _videoStreamRow(s, i) {
     seedStat + sizeStat +
     '<span class="video-source-label">' + esc(label) + '</span>' +
     '<button class="video-source-play" data-idx="' + i + '" aria-label="Play ' + esc(badge) + '"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button>' +
+    // Every torrent row can be downloaded, not just the one Play would pick:
+    // the viewer may want a different quality, group or language on disk than
+    // the one that streams best right now. A direct-HTTP source has no
+    // background download path, so it gets no button rather than a dead one.
+    (s.kind === 'torrent' && s.magnet
+      ? '<button class="video-source-dl" data-dl-idx="' + i + '" aria-label="Download ' + esc(badge) + '" title="Download this source to watch offline">' + _VICON.down + '</button>'
+      : '') +
   '</div>'
 }
 
@@ -21425,6 +21824,18 @@ function _initVideoKeepManager(s, save) {
     quotaInput.value = String(n)
     save({ videoKeepQuotaGB: n })
   })
+  // The rewatch cache's size rides the same settings save (videoCacheGB is on
+  // main's allowlist beside the keep quota).
+  const cacheInput = $('video-cache-gb')
+  if (cacheInput) {
+    if (s.videoCacheGB != null) cacheInput.value = String(s.videoCacheGB)
+    cacheInput.addEventListener('change', function () {
+      let n = Number(cacheInput.value)
+      if (!isFinite(n) || n < 0) n = 0
+      cacheInput.value = String(n)
+      save({ videoCacheGB: n })
+    })
+  }
   _refreshVideoKeepList()
 }
 
