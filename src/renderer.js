@@ -5677,6 +5677,9 @@ async function _renderVideoTab(ticket, opts) {
     else tasteRow.innerHTML = ''
   }
 
+  // Before any card is built, so the first paint already carries the badges.
+  await _refreshInstantKeys()
+
   const wanted = _videoRows.filter(function (r) { return r.tabs.indexOf(_videoTab) !== -1 })
   const curated = _curatedRows(_videoTab)
   const personal = _personalRows()
@@ -6544,6 +6547,20 @@ function _railSyncPass() {
   due.forEach(function (j, i) { if (measured[i]) { try { j.write(measured[i]) } catch (_) {} } })
 }
 if (typeof document !== 'undefined') document.addEventListener('scroll', _railSyncSoon, { capture: true, passive: true })
+
+// Which titles are known to start instantly, as { 'anime:21': 'device' }.
+// Read once per catalogue render rather than per card: it is one small map
+// from main, and a card must never make a request of its own.
+var _instantKeys = {}
+var _instantAt = 0
+function _refreshInstantKeys(force) {
+  if (!window.api || !window.api.videoInstantList) return Promise.resolve()
+  if (!force && Date.now() - _instantAt < 30000) return Promise.resolve()
+  _instantAt = Date.now()
+  return window.api.videoInstantList().then(function (res) {
+    if (res && res.ok && res.instant) _instantKeys = res.instant
+  }).catch(function () { /* no badges is a fine outcome */ })
+}
 
 // ── Hero spotlight ──────────────────────────────────────────────────────────
 function _startVideoHero(items, ticket) {
@@ -7887,6 +7904,17 @@ function _videoCard(item) {
     const r = Number(item.rating)
     // AniList scores 0-100, TMDB 0-10. Normalise so one badge means one thing.
     badges.push('<span class="vbadge vbadge-rating">★ ' + esc(String(r > 10 ? Math.round(r / 10 * 10) / 10 : Math.round(r * 10) / 10)) + '</span>')
+  }
+  // Known to start at once: the file is on this device, or its direct link is
+  // already resolved. Never a guess — see _instantKeys.
+  // Tolerant of the map not existing: a badge is decoration and must never be
+  // able to throw a card away (the card builder is also extracted on its own
+  // by several tests).
+  const instant = (typeof _instantKeys !== 'undefined' && _instantKeys) ? _instantKeys[key] : null
+  if (instant) {
+    badges.push('<span class="vbadge vbadge-instant" title="' +
+      (instant === 'device' ? 'Saved on this device — plays with no internet' : 'Ready on your debrid account — starts at once') +
+      '">' + (instant === 'device' ? 'ON DEVICE' : 'INSTANT') + '</span>')
   }
   // A row can say something about the card ("Ep 12 · 3h ago", "Ep 5 · 19:15").
   if (item.badge) badges.push('<span class="vbadge vbadge-ep">' + esc(String(item.badge)) + '</span>')
@@ -10223,7 +10251,9 @@ async function _loadVideoSources(ticket, seasonTicket) {
       : Promise.resolve(null)
     probe.then(function (res) {
       if (res && res.ok && res.hit) return   // local copy: nothing to warm
-      window.api.videoWarm({ magnet: streams[0].magnet }).catch(function () {})
+      window.api.videoWarm({ magnet: streams[0].magnet, titleKey: _videoDetail && _videoDetail.d ? _videoDetail.type + ':' + _videoDetail.d.id : null })
+        .then(function () { _refreshInstantKeys(true) })
+        .catch(function () {})
     })
   }
   if (_autoPlayTicket === _videoDetailTicket && streams.length) {

@@ -8061,6 +8061,10 @@ body.app-unfocused .vt-menu {
 .vdevice-facts, .vdevice-src { color:var(--text3); }
 .vdevice-src { font-size:11px; }
 .vbadge-quality { background:rgba(0,0,0,.72); color:var(--text); font-weight:700; }
+/* Known to start at once (2026-09-15). Two truths, two looks: the file is
+   here, or the direct link is already resolved. Never a guess. */
+.vbadge-instant { background:var(--accent); color:#000; font-weight:800; letter-spacing:.03em; }
+.vbadge-instant[title*="device"] { background:#7ad1a1; }
 /* A character tile opens nothing. */
 .vcast-static { cursor:default; }
 .vcast-static:hover { transform:none; }

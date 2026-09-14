@@ -962,6 +962,11 @@ const sideStores = {
   // The rewatch cache's ledger (2026-09-14): [{key, path, sizeBytes, savedAt,
   // lastUsedAt, title, meta}], bounded by videoCacheGB through evictPlan.
   videoCacheIndex: new SideStore({ dir: USER_DATA, name: 'video-cache-index', fallback: [], debounceMs: 800, onError: _sideErr }),
+  // Titles known to start instantly (2026-09-15): { 'movie:603': { via, at } }.
+  // "Known" is the whole point — RealDebrid disabled its bulk availability
+  // endpoint (403 disabled_endpoint), so the only way to learn about a title
+  // is to have actually resolved or saved it. Nothing here is a guess.
+  videoInstantIndex: new SideStore({ dir: USER_DATA, name: 'video-instant-index', fallback: {}, debounceMs: 800, onError: _sideErr }),
 
   // Self-maintenance suite. Two small, infrequently-written stores:
   //   trackerList  — { trackers, lastRefreshAt }, the weekly-refreshed curated
@@ -11716,6 +11721,33 @@ function _thumbnailerTeardown() {
 // streams only: a reused torrent's store belongs to whoever added it, and
 // renaming a file out of it would break that owner.
 const videoCache = require('./src/video-cache')
+// Remember that a title starts instantly, and how. `via` is 'device' (the
+// file is here) or 'debrid' (a direct link is resolved and held). Keyed by
+// the TITLE — 'anime:21' — because that is what a poster is. Capped, oldest
+// out, and never fatal.
+const INSTANT_CAP = 600
+function _instantMark(titleKey, via) {
+  try {
+    if (!titleKey || typeof titleKey !== 'string') return
+    sideStores.videoInstantIndex.update(prev => {
+      const map = prev && typeof prev === 'object' ? { ...prev } : {}
+      map[titleKey] = { via, at: Date.now() }
+      const keys = Object.keys(map)
+      if (keys.length > INSTANT_CAP) {
+        keys.sort((a, b) => (map[a].at || 0) - (map[b].at || 0))
+        for (const k of keys.slice(0, keys.length - INSTANT_CAP)) delete map[k]
+      }
+      return map
+    })
+  } catch (_) { /* a badge is never worth failing over */ }
+}
+// The title key a piece of watch metadata belongs to: 'anime:21' from
+// { type:'anime', id:21, season, episode }.
+function _titleKeyOf(meta) {
+  if (!meta || !meta.type || meta.id == null) return null
+  return meta.type + ':' + meta.id
+}
+
 function _videoCacheRoot() {
   return path.join(USER_DATA, 'video-cache')
 }
@@ -11729,6 +11761,7 @@ function _cacheEntryFor(key, meta, info, dest, size) {
     title: (meta && meta.title) || info.name, meta: meta || null }
 }
 function _videoCacheIndexAdd(entry) {
+  _instantMark(_titleKeyOf(entry && entry.meta), 'device')
   const entries = _videoCacheEntries().filter(e => e.key !== entry.key)
   const capBytes = (Number(_videoSettings().videoCacheGB) || 0) * videoCache.GB
   const plan = videoCache.evictPlan(entries, capBytes, entry.sizeBytes)
@@ -12722,7 +12755,7 @@ function _warmSweep() {
     try { fs.rmSync(dir, { recursive: true, force: true }) } catch (_) {}
   }
 }
-ipcMain.handle('video-warm', async (_, { magnet } = {}) => {
+ipcMain.handle('video-warm', async (_, { magnet, titleKey } = {}) => {
   try {
     if (!magnet || typeof magnet !== 'string') return { ok: false }
     // The debrid head start (2026-09-15). Resolving a magnet to a direct link
@@ -12733,7 +12766,15 @@ ipcMain.handle('video-warm', async (_, { magnet } = {}) => {
     // hand before Play is pressed and the play path spends no budget at all.
     // Fire and forget: it never blocks the swarm warm below, and a failure is
     // simply a play that resolves for itself.
-    if (_debridConfigured()) { try { debrid().prewarm(magnet) } catch (_) {} }
+    if (_debridConfigured()) {
+      try {
+        debrid().prewarm(magnet).then(url => {
+          // Resolved: this title now genuinely starts at once, and the poster
+          // can say so wherever it appears.
+          if (url) _instantMark(titleKey, 'debrid')
+        })
+      } catch (_) {}
+    }
     // Never compete with an actual stream, and never re-warm the same magnet.
     if (_videoSession.streamer) return { ok: true, skipped: 'playing' }
     if (_warm.magnet === magnet) return { ok: true, skipped: 'already' }
@@ -12822,6 +12863,7 @@ async function _downloadFinish(id, d, info) {
       id: crypto.randomBytes(8).toString('hex'),
       title: d.meta.title || info.name,
       path: dest, sizeBytes: size, keptAt: Date.now(),
+      titleKey: _titleKeyOf(d.meta.detail),
       // The facts the On-device view groups and labels by. Kept flat beside
       // the nested `meta` the detail route needs, so the list never has to
       // reach into a sub-object that older entries do not have.
@@ -12835,6 +12877,7 @@ async function _downloadFinish(id, d, info) {
       meta: d.meta.detail || null,
     })
     sideStores.videoKeepIndex.set(index)
+    _instantMark(_titleKeyOf(d.meta.detail), 'device')
     safeSend('video-download-event', { kind: 'done', id, title: d.meta.title })
     if (Notification.isSupported()) new Notification({ title: 'Download finished', body: d.meta.title || info.name, silent: false }).show()
   } catch (e) {
@@ -12930,6 +12973,37 @@ ipcMain.handle('video-cache-get', async (_, { key } = {}) => {
     return { ok: true, hit: { key: e.key, path: e.path, title: e.title, sizeBytes: e.sizeBytes, meta: e.meta || null } }
   } catch (e) {
     return { ok: true, hit: null, error: (e && e.message) || String(e) }
+  }
+})
+
+// Every title known to start instantly, for the badge on posters. Device
+// entries are re-proved against the disk so a deleted file stops claiming to
+// be instant; debrid entries expire, because a resolved link does not live
+// forever on RealDebrid's side.
+const INSTANT_DEBRID_TTL_MS = 1000 * 60 * 60 * 12
+ipcMain.handle('video-instant-list', async () => {
+  try {
+    const map = sideStores.videoInstantIndex.get() || {}
+    const live = new Set()
+    for (const e of _videoCacheEntries()) {
+      const k = _titleKeyOf(e.meta)
+      if (k) live.add(k)
+    }
+    for (const e of (sideStores.videoKeepIndex.get() || [])) {
+      if (e && e.titleKey) live.add(e.titleKey)
+    }
+    const now = Date.now()
+    const out = {}
+    for (const [k, v] of Object.entries(map)) {
+      if (!v) continue
+      if (v.via === 'device') { if (live.has(k)) out[k] = v.via; continue }
+      if (now - (v.at || 0) < INSTANT_DEBRID_TTL_MS) out[k] = v.via
+    }
+    // A file on disk is instant whether or not the index remembered it.
+    for (const k of live) out[k] = 'device'
+    return { ok: true, instant: out }
+  } catch (e) {
+    return { ok: true, instant: {}, error: (e && e.message) || String(e) }
   }
 })
 

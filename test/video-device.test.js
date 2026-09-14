@@ -102,7 +102,7 @@ test('playing the warmed title adopts its torrent; teardown sweeps what was adop
 })
 
 test('the page warms its top source after the list lands, skips titles already saved, and cancels on leaving', () => {
-  assert.ok(/window\.api\.videoWarm\(\{ magnet: streams\[0\]\.magnet \}\)/.test(RENDERER))
+  assert.ok(/window\.api\.videoWarm\(\{ magnet: streams\[0\]\.magnet, titleKey:/.test(RENDERER))
   const hook = RENDERER.slice(RENDERER.indexOf('// Warm the top source'), RENDERER.indexOf('if (_autoPlayTicket === _videoDetailTicket'))
   assert.ok(/videoCacheGet/.test(hook) && /if \(res && res\.ok && res\.hit\) return/.test(hook))
   assert.ok(/state\.currentPage === 'video-detail' && page !== 'video-detail'[\s\S]{0,200}videoWarmCancel/.test(RENDERER))

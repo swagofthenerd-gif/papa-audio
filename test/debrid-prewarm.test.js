@@ -74,7 +74,7 @@ test('an uncached magnet resolves to nothing rather than hanging on RD', async (
 
 test('opening a title asks debrid to resolve it, before and regardless of the swarm warm', () => {
   const warm = MAIN.slice(MAIN.indexOf("ipcMain.handle('video-warm'"), MAIN.indexOf("ipcMain.handle('video-warm-cancel'"))
-  assert.ok(/_debridConfigured\(\)\) \{ try \{ debrid\(\)\.prewarm\(magnet\) \}/.test(warm))
+  assert.ok(/_debridConfigured\(\)\) \{[\s\S]{0,200}debrid\(\)\.prewarm\(magnet\)/.test(warm))
   // Before the "already playing" early return, so a warm still helps then.
   assert.ok(warm.indexOf('prewarm(magnet)') < warm.indexOf("skipped: 'playing'"))
 })
