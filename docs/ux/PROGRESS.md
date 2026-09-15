@@ -218,7 +218,7 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | V050 | Pending review/implementation |
 | V051 | Pending review/implementation |
 | V052 | Fixed `726414d` — inferred vs measured badges |
-| V053 | Pending review/implementation |
+| V053 | Fixed — click expands, double-click copies |
 | V054 | Pending review/implementation |
 | V055 | Fixed `012c192` — pack pick verdict |
 | V056 | Pending review/implementation |

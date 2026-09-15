@@ -128,6 +128,7 @@ Each F item re-checked on this branch, not assumed from the `main` review.
 | 2026-09-15 | V020 | see log | spoiler-safe rows: blurred still, synopsis behind Show; Hide spoilers toggle |
 | 2026-09-15 | V048 | `10329fa` | planned total vs aired so far line |
 | 2026-09-15 | V046 | see log | "language ?" tag for unknown; sub/dub tags say they are name-derived |
+| 2026-09-15 | V053 | see log | source label click expands, double-click copies |
 
 ## F list: all resolved (134 deferred to runtime). Now working through P0 E-items
 
