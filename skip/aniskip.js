@@ -36,7 +36,10 @@ function normalizeResult(result) {
   const start = interval && interval.startTime
   const end = interval && interval.endTime
   if (typeof start !== 'number' || typeof end !== 'number' || end <= start) return null
-  return { kind, start, end, origin: 'aniskip', confidence: 0.95 }
+  // The episode length AniSkip's contributor timed against, so the caller can
+  // tell whether these timings belong to this cut of the file (V045).
+  const sourceLength = Number(result.episodeLength) || 0
+  return { kind, start, end, origin: 'aniskip', confidence: 0.95, sourceLength }
 }
 
 function createAniSkip({ fetchFn, baseUrl = DEFAULT_BASE_URL } = {}) {

@@ -352,7 +352,9 @@ test('video-skip-segments merges every cheap layer', () => {
   assert.match(body, /aniskip\(\)\(/, 'layer 2: AniSkip for anime')
   assert.match(body, /req\.manual/, 'layer 4: the user\u2019s own corrections')
   assert.match(body, /creditsFallback\(duration\)/, 'layer 4: tail-of-file credits guess')
-  assert.match(body, /mergeSegments\(sources\)/)
+  // V045: every layer is checked against the file's length before the merge.
+  assert.match(body, /const checked = sources\.map\(src => validateSegments\(src, duration\)\)/)
+  assert.match(body, /mergeSegments\(checked\)/)
 })
 
 // A skip service must never be able to stop playback.

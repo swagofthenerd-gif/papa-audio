@@ -116,11 +116,38 @@
       credits: prefs.autoSkipCredits === true,
       preview: prefs.autoSkipPreview === true,
     }
+  // V045: a segment whose source did not match this file's edition (a
+  // different cut's timings, an unverified length) is offered as a button,
+  // never jumped to automatically — the person decides.
+  const uncertain = seg.uncertain === true || (Number(seg.confidence) || 0) < AUTO_MIN_CONFIDENCE
   return {
     label: `Skip ${KIND_LABEL[seg.kind] || 'Segment'}`,
-    action: autoPref[seg.kind] ? 'auto' : 'offer',
+    action: autoPref[seg.kind] && !uncertain ? 'auto' : 'offer',
     segment: seg,
   }
+}
+
+// Below this confidence a segment is never auto-skipped (V045).
+const AUTO_MIN_CONFIDENCE = 0.8
+
+// V045: drop or demote segments that cannot belong to this file. A segment
+// that starts past the end or ends past the end (beyond a small tolerance)
+// is not this cut's; one from a source whose reported episode length is
+// more than `toleranceS` off the real duration is kept but marked uncertain.
+function validateSegments(segments, duration, { toleranceS = 15 } = {}) {
+  const dur = Number(duration) || 0
+  const out = []
+  for (const seg of segments || []) {
+    if (!seg || typeof seg.start !== 'number' || typeof seg.end !== 'number') continue
+    if (dur > 0) {
+      if (seg.start >= dur) continue
+      if (seg.end > dur + toleranceS) continue
+    }
+    const src = Number(seg.sourceLength) || 0
+    const mismatch = dur > 0 && src > 0 && Math.abs(src - dur) > toleranceS
+    out.push(mismatch ? { ...seg, uncertain: true, confidence: Math.min(Number(seg.confidence) || 0, 0.5) } : seg)
+  }
+  return out
 }
 
 // Layer 4 fallback: with no better credits source (chapter, AniSkip, manual),
@@ -204,7 +231,7 @@ function creditsFallback(duration, { maxSeconds = 90, maxFraction = 0.08 } = {})
   }
 
   return {
-    mergeSegments, activeSegment, buttonFor, creditsFallback,
+    mergeSegments, activeSegment, buttonFor, creditsFallback, validateSegments, AUTO_MIN_CONFIDENCE,
     isIntroSkipSeek, recordIntroSeek, shouldOfferSkipTraining, skipSegmentFromTraining,
     KIND_LABEL, MANUAL, APPEAR_BEFORE_S, DISMISS_AFTER_S,
     TRAIN_MAX_FROM_S, TRAIN_MIN_JUMP_S, TRAIN_MAX_JUMP_S, TRAIN_OFFER_AT,

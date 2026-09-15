@@ -19,8 +19,9 @@ test('buildUrl asks for every type SKIP_KIND can map', () => {
 
 test('normalizeResult maps op/ed/recap and drops junk', () => {
   assert.deepStrictEqual(
-    normalizeResult({ skipType: 'op', interval: { startTime: 28.7, endTime: 118.7 } }),
-    { kind: 'intro', start: 28.7, end: 118.7, origin: 'aniskip', confidence: 0.95 }
+    normalizeResult({ skipType: 'op', interval: { startTime: 28.7, endTime: 118.7 }, episodeLength: 1420 }),
+    // V045: the contributor's episode length rides along so a mismatched cut can be told apart.
+    { kind: 'intro', start: 28.7, end: 118.7, origin: 'aniskip', confidence: 0.95, sourceLength: 1420 }
   )
   assert.strictEqual(normalizeResult({ skipType: 'ed', interval: { startTime: 1388, endTime: 1500 } }).kind, 'credits')
   assert.strictEqual(normalizeResult({ skipType: 'recap', interval: { startTime: 0, endTime: 30 } }).kind, 'recap')
@@ -63,7 +64,7 @@ test('a recap result flows through as a recap segment', async () => {
   const aniskip = createAniSkip({ fetchFn })
   const segments = await aniskip({ malId: 21, episode: 2 })
   assert.deepStrictEqual(segments,
-    [{ kind: 'recap', start: 5, end: 65, origin: 'aniskip', confidence: 0.95 }])
+    [{ kind: 'recap', start: 5, end: 65, origin: 'aniskip', confidence: 0.95, sourceLength: 0 }])
 })
 
 test('createAniSkip returns [] when found is false, not an error', async () => {

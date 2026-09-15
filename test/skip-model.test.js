@@ -2,7 +2,7 @@
 const test = require('node:test')
 const assert = require('node:assert')
 const {
-  mergeSegments, activeSegment, buttonFor, creditsFallback,
+  mergeSegments, activeSegment, buttonFor, creditsFallback, validateSegments,
   isIntroSkipSeek, recordIntroSeek, shouldOfferSkipTraining, skipSegmentFromTraining,
 } = require('../src/skip-model')
 
@@ -191,4 +191,26 @@ test('skipSegmentFromTraining is null with nothing to average or no interval', (
   assert.strictEqual(skipSegmentFromTraining({ count: 0, sumFrom: 0, sumTo: 0 }), null)
   // Degenerate: a record whose averages do not form a forward interval.
   assert.strictEqual(skipSegmentFromTraining({ count: 1, sumFrom: 100, sumTo: 100 }), null)
+})
+
+// V045: segments are checked against the file's length; a mismatched edition is a button, never a jump.
+test('validateSegments drops what cannot belong to this file and marks a mismatched source uncertain', () => {
+  const segs = [
+    { kind: 'intro', start: 90, end: 180, origin: 'aniskip', confidence: 0.95, sourceLength: 1420 },
+    { kind: 'credits', start: 1500, end: 1580, origin: 'aniskip', confidence: 0.95, sourceLength: 1420 },
+    { kind: 'intro', start: 60, end: 150, origin: 'aniskip', confidence: 0.95, sourceLength: 1100 },
+  ]
+  const out = validateSegments(segs, 1420)
+  assert.equal(out.length, 2, 'the segment past the end is gone')
+  assert.equal(out[0].uncertain, undefined)
+  assert.equal(out[1].uncertain, true); assert.ok(out[1].confidence <= 0.5, 'a 320 s length mismatch demotes it')
+  assert.equal(validateSegments(segs, 0).length, 3, 'no known duration: nothing can be judged')
+})
+
+test('an uncertain segment is offered, never auto-skipped, whatever the preference', () => {
+  const segs = [{ kind: 'intro', start: 60, end: 150, origin: 'aniskip', confidence: 0.5, uncertain: true }]
+  const b = buttonFor(segs, 70, { autoSkipIntro: true })
+  assert.ok(b && b.action === 'offer', JSON.stringify(b))
+  const sure = buttonFor([{ kind: 'intro', start: 60, end: 150, origin: 'aniskip', confidence: 0.95 }], 70, { autoSkipIntro: true })
+  assert.equal(sure.action, 'auto')
 })

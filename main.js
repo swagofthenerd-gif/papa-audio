@@ -7,7 +7,7 @@ const os = require('os')
 const tagEdit = require('./src/tag-edit')
 const crypto = require('crypto')
 const { makeCache } = require('./src/ttl-cache')
-const { mergeSegments, creditsFallback } = require('./src/skip-model')
+const { mergeSegments, creditsFallback, validateSegments } = require('./src/skip-model')
 const { classifyChapters } = require('./skip/chapters')
 const { createAniSkip } = require('./skip/aniskip')
 const { detectIntro } = require('./skip/detect-intro')
@@ -14305,7 +14305,9 @@ ipcMain.handle('video-skip-segments', async (_, req) => {
     const malId = Number(req.malId) || 0
     const episode = Number(req.episode) || 0
     if (req.type === 'anime' && malId && episode) {
-      const key = `${malId}:${episode}`
+      // V045: keyed by the file's length too — another cut of the same
+      // episode has different timings and must not reuse these.
+      const key = `${malId}:${episode}:${Math.round(duration / 10)}`
       let segs = _aniskipCache.get(key)
       if (!segs) {
         segs = await aniskip()({ malId, episode, episodeLength: Math.round(duration) })
@@ -14323,7 +14325,10 @@ ipcMain.handle('video-skip-segments', async (_, req) => {
     const fallback = creditsFallback(duration)
     if (fallback) sources.push([fallback])
 
-    return { ok: true, segments: mergeSegments(sources) }
+    // V045: nothing outside this file, and nothing from a mismatched edition
+    // jumps on its own (validateSegments marks those uncertain → button only).
+    const checked = sources.map(src => validateSegments(src, duration))
+    return { ok: true, segments: mergeSegments(checked) }
   } catch (e) {
     // A skip service must never be able to stop playback.
     return { ok: false, error: (e && e.message) || String(e), segments: [] }
