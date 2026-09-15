@@ -44,7 +44,7 @@ test('1080p HEVC 10-bit + AAC 5.1 re-encodes the video on the GPU and copies the
   assert.ok(p.videoArgs.includes('h264_nvenc') && p.videoArgs.includes('scale_cuda=format=nv12'))
   assert.deepEqual(p.audioArgs, ['-c:a', 'copy'])
   assert.equal(p.prerollSec, 2)
-  assert.deepEqual(p.badges, ['converted'])
+  assert.deepEqual(p.badges, ['video re-encoded'])
   assert.deepEqual(p.subtitles.sidecars, [{ index: 3, lang: 'eng', title: 'English' }])
   assert.equal(p.audios.length, 2)
 })
@@ -64,7 +64,7 @@ test('4K HDR TrueHD: tone-mapped on the GPU through OpenCL, H.264 at 4K bitrate,
   assert.ok(p.videoArgs.includes('45M'))
   assert.deepEqual(p.audioArgs, ['-c:a', 'libopus', '-b:a', '512k', '-ac', '6'], '7.1 folds to 5.1 Opus')
   assert.equal(p.prerollSec, 4)
-  assert.deepEqual(p.badges, ['HDR shown as SDR', 'converted'])
+  assert.deepEqual(p.badges, ['HDR shown as SDR', 'video re-encoded'])
   // No OpenCL on the machine: the CPU tone-map, and the long pre-roll.
   const cpu = P.plan(f4, { caps: { opencl: false } })
   assert.deepEqual(cpu.inputArgs, ['-hwaccel', 'cuda'], 'frames must reach system memory for the CPU tone-map')
@@ -172,4 +172,16 @@ test('a copied picture keeps the muxer from writing a sound gap on seek, and the
   assert.equal(P.keyframeAtOrBefore('16.000000\n18.000000\n20.000000\n22.000000\n', 21), 20)
   assert.equal(P.keyframeAtOrBefore('20.000000\n', 20), 20)
   assert.equal(P.keyframeAtOrBefore('', 21), null)
+})
+
+// V067: an audio-only re-encode is named, not left silent as if untouched.
+test('AV1 + TrueHD copies the picture and re-encodes only the sound — and says so', () => {
+  const p = P.plan([
+    { index: 0, codec_type: 'video', codec_name: 'av1', pix_fmt: 'yuv420p10le', width: 1788, height: 1080 },
+    { index: 1, codec_type: 'audio', codec_name: 'truehd', channels: 8 },
+  ])
+  assert.equal(p.video.copy, true)
+  assert.equal(p.audio.copy, false)
+  assert.equal(p.reason, 'audio re-encoded')
+  assert.deepEqual(p.badges, ['audio re-encoded'])
 })

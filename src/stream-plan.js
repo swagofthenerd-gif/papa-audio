@@ -172,7 +172,14 @@ function plan(streams, opts) {
     inputArgs, videoArgs, audioArgs,
     prerollSec,
     mime: mimeFor(video, audio, videoCopy, !!(audio && caps.audio.has(acodec))),
-    badges: [hdr ? 'HDR shown as SDR' : null, !videoCopy ? 'converted' : null].filter(Boolean),
+    // V067: the three transformations are told apart and none is left silent
+    // except a true remux, where picture and sound are the file's own. An
+    // audio re-encode alone used to carry no badge at all.
+    badges: [
+      hdr ? 'HDR shown as SDR' : null,
+      !videoCopy ? 'video re-encoded' : null,
+      (videoCopy && audio && !caps.audio.has(acodec)) ? 'audio re-encoded' : null,
+    ].filter(Boolean),
   }
 }
 
