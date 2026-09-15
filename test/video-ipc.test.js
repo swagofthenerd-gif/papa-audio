@@ -1250,11 +1250,13 @@ test('the backup payload is built once, by the shared helper', () => {
 })
 
 test('secrets are redacted by key name, not exported in the clear', () => {
-  assert.match(MAIN, /const _SECRET_KEY_RE = \/password\|token\|key\/i/)
-  const start = MAIN.indexOf('function _redactSecrets(')
-  const body = MAIN.slice(start, MAIN.indexOf('\n}', start))
-  assert.match(body, /_SECRET_KEY_RE\.test\(k\)/)
-  assert.match(body, /_redactSecrets\(v\)/, 'nested objects are redacted too')
+  // Roadmap 136: the rule moved to src/redact.js so the logger, the bundle and
+  // the export agree; behaviour is tested in test/redact.test.js.
+  assert.match(MAIN, /const _SECRET_KEY_RE = _redact\.SECRET_KEY/)
+  assert.match(MAIN, /function _redactSecrets\(obj\) \{ return _redact\.redactObject\(obj\) \}/)
+  const R = require('../src/redact')
+  const out = R.redactObject({ a: { password: 'x', token: 'y', apiKey: 'z', name: 'n' } })
+  assert.deepStrictEqual(out, { a: { password: R.MARK, token: R.MARK, apiKey: R.MARK, name: 'n' } }, 'nested objects are redacted too')
 })
 
 test('papa-import-all validates the shape and never overwrites blind', () => {

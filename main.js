@@ -785,6 +785,9 @@ function _flushLog() {
     .finally(() => { _logFlushing = false })
 }
 
+// Roadmap 136: secrets are scrubbed as a line is WRITTEN, not only when a
+// bundle is exported — the log on disk is itself something people copy.
+const _redact = require('./src/redact')
 function _queueLog(level, args) {
   if (!_logDir) return
   if ((LOG_LEVELS[level.toLowerCase()] || LOG_LEVELS.info) < LOG_MIN_LEVEL) return
@@ -794,6 +797,7 @@ function _queueLog(level, args) {
   } catch (_) {
     msg = args.map(a => String(a)).join(' ')   // circular structures, etc.
   }
+  try { msg = _redact.redactText(msg) } catch (_) {}
   if (_logBuf.length >= LOG_MAX_BUFFER) { _logDropped++; return }
   _logBuf.push(`[${new Date().toISOString()}] [${SESSION_ID}] [${level}] ${msg}\n`)
   if (!_logTimer) {
@@ -13365,19 +13369,12 @@ async function _collectDiagnostics() {
 // secret the user should not be handing around in a plaintext backup. Redacted
 // on export rather than dropped, so the shape survives and the user can see
 // that a value was there without the value itself leaving the machine.
-const _SECRET_KEY_RE = /password|token|key/i
-const _REDACTED = '__redacted__'
+// The rule lives in src/redact.js (roadmap 136) so exports, diagnostics and
+// the logger agree on what a secret looks like.
+const _SECRET_KEY_RE = _redact.SECRET_KEY
+const _REDACTED = _redact.MARK
 
-function _redactSecrets(obj) {
-  if (!obj || typeof obj !== 'object') return obj
-  const out = Array.isArray(obj) ? [] : {}
-  for (const [k, v] of Object.entries(obj)) {
-    if (_SECRET_KEY_RE.test(k)) out[k] = _REDACTED
-    else if (v && typeof v === 'object') out[k] = _redactSecrets(v)
-    else out[k] = v
-  }
-  return out
-}
+function _redactSecrets(obj) { return _redact.redactObject(obj) }
 
 // The one bundling routine, shared by the manual export handler and the
 // automatic startup backup below. It reads every SideStore by its own map key —
@@ -13568,7 +13565,7 @@ ipcMain.handle('papa-bug-report', async () => {
       fs.writeFileSync(
         path.join(root, 'log-tail.txt'),
         logTail != null
-          ? `Last 200 lines of ${path.basename(newestLog)}:\n\n${logTail}\n`
+          ? _redact.redactText(`Last 200 lines of ${path.basename(newestLog)}:\n\n${logTail}\n`)
           : 'No app log was found to include.\n',
         'utf8')
     } catch (_) { /* best-effort */ }
@@ -13577,7 +13574,9 @@ ipcMain.handle('papa-bug-report', async () => {
     const crashLog = path.join(USER_DATA, 'crash-log.txt')
     try {
       if (fs.existsSync(crashLog)) {
-        fs.copyFileSync(crashLog, path.join(root, 'crash-log.txt'))
+        // Scrubbed on the way out (roadmap 136): a crash dump can quote a URL
+        // or a header that carried a key.
+        fs.writeFileSync(path.join(root, 'crash-log.txt'), _redact.redactText(fs.readFileSync(crashLog, 'utf8')), 'utf8')
       }
     } catch (_) { /* best-effort */ }
 
@@ -13587,7 +13586,7 @@ ipcMain.handle('papa-bug-report', async () => {
     try {
       fs.writeFileSync(
         path.join(root, 'diagnostics.json'),
-        JSON.stringify(diagnostics || { ok: false, error: 'diagnostics could not be gathered' }, null, 2),
+        _redact.redactText(JSON.stringify(_redact.redactObject(diagnostics) || { ok: false, error: 'diagnostics could not be gathered' }, null, 2)),
         'utf8')
     } catch (_) { /* best-effort */ }
 

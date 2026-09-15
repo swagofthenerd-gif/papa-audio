@@ -559,3 +559,17 @@ test('the scan keeps albums from an unreachable root and track-exists never call
   const te = M.slice(M.indexOf("ipcMain.handle('track-exists'"), M.indexOf("ipcMain.handle('locate-track-file'"))
   assert.match(te, /reason: 'drive not connected'/, 'ENOENT under an unreachable root is "cannot tell"')
 })
+
+// Roadmap 136: secrets are scrubbed at log-write time and on every export path.
+test('the logger, the bundle and the settings export all go through src/redact', () => {
+  const fs = require('node:fs'), path = require('node:path')
+  const M = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
+  assert.ok(M.includes("const _redact = require('./src/redact')"))
+  const q = M.slice(M.indexOf('function _queueLog('), M.indexOf('function _queueLog(') + 900)
+  assert.ok(q.includes('msg = _redact.redactText(msg)'), 'log lines are scrubbed before they are buffered')
+  assert.ok(M.includes('function _redactSecrets(obj) { return _redact.redactObject(obj) }'))
+  assert.ok(M.includes("_redact.redactText(`Last 200 lines of"), 'the log tail in the bundle is scrubbed')
+  assert.ok(M.includes("_redact.redactText(fs.readFileSync(crashLog, 'utf8'))"), 'so is the crash log')
+  assert.ok(M.includes('_redact.redactText(JSON.stringify(_redact.redactObject(diagnostics)'), 'and the diagnostics snapshot')
+  assert.ok(!/const _SECRET_KEY_RE = \/password\|token\|key\/i/.test(M), 'the narrow key rule is gone')
+})
