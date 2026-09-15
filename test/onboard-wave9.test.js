@@ -204,7 +204,7 @@ test('the wizard offers Add / Explore / Later, remembers the answer, and init co
   assert.match(H, /id="choose-folder-btn">Add my music</)
   assert.match(H, /id="setup-explore">Explore music instead</)
   assert.match(H, /id="setup-skip-1">Set up later</)
-  assert.match(H, /Nothing is copied, moved or shared/, 'what adding a folder does is stated (017)')
+  assert.match(H, /Nothing is copied or moved\. Sharing with Soulseek is a separate setting/, 'what adding a folder does is stated (017), truthfully about sharing (137)')
   // init no longer returns early on zero folders
   const i = R.indexOf("if (!state.musicFolders.length && !_setupDeferred()) {")
   assert.ok(i > 0, 'the gate consults the remembered decision')

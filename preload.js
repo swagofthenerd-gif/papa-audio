@@ -287,6 +287,9 @@ contextBridge.exposeInMainWorld('api', {
   slskRetryTransfer:  (p) => ipcRenderer.invoke('slsk-retry-transfer', p),
   slskGetDownloadDir: ()  => ipcRenderer.invoke('slsk-get-download-dir'),
   slskSetDownloadDir: ()  => ipcRenderer.invoke('slsk-set-download-dir'),
+  // Roadmap 137: what is shared with Soulseek peers.
+  slskShareModeGet:   ()  => ipcRenderer.invoke('slsk-share-mode-get'),
+  slskShareModeSet:   (p) => ipcRenderer.invoke('slsk-share-mode-set', p),
   onSlskdStatusChange: (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('slskd-status-change', h); return () => ipcRenderer.removeListener('slskd-status-change', h) },
   slskResolveFile:    (p) => ipcRenderer.invoke('slsk-resolve-file', p),
   slskVerifyFile:     (p) => ipcRenderer.invoke('slsk-verify-file', p),

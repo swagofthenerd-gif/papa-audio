@@ -100,6 +100,8 @@ const IPC_TIMEOUT_OVERRIDES = {
   'add-music-folder': 0,
   'library-pick-artwork': 0,
   'slsk-set-download-dir': 0,
+  // Restarts slskd; not a per-request deadline (roadmap 137).
+  'slsk-share-mode-set': 0,
   // Opens a file picker, so it waits on the user, not on the machine.
   'video-sub-open': 0,
   'save-lyrics': 0,
@@ -1131,15 +1133,17 @@ function _mintSlskdApiCreds() {
   return creds
 }
 
+const slskShare = require('./src/slsk-share')
 function writeSlskdConfig({ username = '', password = '', downloadDir = '' } = {}) {
   if (!downloadDir) downloadDir = _downloadDir()
   fs.mkdirSync(SLSKD_DIR, { recursive: true })
   fs.mkdirSync(path.join(SLSKD_DIR, 'incomplete'), { recursive: true })
   fs.mkdirSync(downloadDir, { recursive: true })
   const apiCreds = _mintSlskdApiCreds()
-  // Share the parent of the download dir if it's a subfolder, so the whole library is shared
+  // Roadmap 137: what is shared is a stated setting (src/slsk-share.js), not
+  // a silent "first music folder". Default unchanged; scope and off exist.
   const musicFolders = store.get('musicFolders', [])
-  const shareDir = musicFolders[0] || path.dirname(downloadDir)
+  const shareDirs = slskShare.shareDirs(store.get('slskShareMode', slskShare.DEFAULT), musicFolders, downloadDir)
   const yml = [
     `soulseek:`,
     `  username: ${JSON.stringify(username)}`,
@@ -1164,8 +1168,8 @@ function writeSlskdConfig({ username = '', password = '', downloadDir = '' } = {
     `  incomplete: ${JSON.stringify(path.join(SLSKD_DIR, 'incomplete'))}`,
     `  downloads: ${JSON.stringify(downloadDir)}`,
     `shares:`,
-    `  directories:`,
-    `    - ${JSON.stringify(shareDir)}`,
+    `  directories:` + (shareDirs.length ? '' : ' []'),
+    ...shareDirs.map(d => `    - ${JSON.stringify(d)}`),
     `  filters:`,
     `    - \\.jpg$`,
     `    - \\.png$`,
@@ -8686,6 +8690,29 @@ ipcMain.handle('slsk-set-download-dir', async () => {
     return { ok: true, downloadDir, restarted: true }
   }
   return { ok: true, downloadDir, restarted: false }
+})
+
+// Roadmap 137: read and change what is shared. A change rewrites the daemon
+// config and restarts slskd if it is running, exactly as a folder change does.
+ipcMain.handle('slsk-share-mode-get', () => {
+  const mode = slskShare.normalise(store.get('slskShareMode', slskShare.DEFAULT))
+  const dirs = slskShare.shareDirs(mode, store.get('musicFolders', []), _downloadDir())
+  return { mode, dirs, text: slskShare.describe(mode, dirs), modes: slskShare.MODES }
+})
+ipcMain.handle('slsk-share-mode-set', async (_, { mode }) => {
+  const m = slskShare.normalise(mode)
+  store.set('slskShareMode', m)
+  const cfg = store.get('slskConfig', {})
+  writeSlskdConfig({ ...cfg, downloadDir: _downloadDir() })
+  let restarted = false
+  if (slskdProc || slskdReady) {
+    stopSlskd()
+    try { await startSlskd(); restarted = true } catch (e) {
+      console.error('[papa] slskd restart after share change:', String(e && e.message || e))
+    }
+  }
+  const dirs = slskShare.shareDirs(m, store.get('musicFolders', []), _downloadDir())
+  return { ok: true, mode: m, dirs, text: slskShare.describe(m, dirs), restarted }
 })
 
 ipcMain.handle('slsk-show-in-folder', (_, filePath) => {

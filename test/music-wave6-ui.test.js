@@ -50,6 +50,18 @@ test('the queue panel wires a clear-played action to the tested helper', () => {
   assert.ok(renderer.includes("'Clear played'"), 'no Clear played button label')
 })
 
+// Roadmap 137: sharing with Soulseek peers is a stated, changeable setting.
+test('the slskd config shares what the setting says, and the setting is in the panel', () => {
+  const M = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'main.js'), 'utf8')
+  const H = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'index.html'), 'utf8')
+  assert.ok(M.includes("const slskShare = require('./src/slsk-share')"))
+  assert.ok(M.includes("slskShare.shareDirs(store.get('slskShareMode', slskShare.DEFAULT), musicFolders, downloadDir)"))
+  assert.ok(!M.includes('const shareDir = musicFolders[0] || path.dirname(downloadDir)'), 'the silent whole-library share is gone')
+  assert.ok(M.includes("ipcMain.handle('slsk-share-mode-set'"))
+  assert.ok(H.includes('id="slsk-share-mode"') && H.includes('<option value="off">Nothing</option>'))
+  assert.ok(renderer.includes('async function _initSharingSettings()'))
+})
+
 // Roadmap 110: the provider choice states what leaves the device; main scrubs cloud-bound messages.
 test('the provider setting shows the disclosure and cloud-bound messages are scrubbed in main', () => {
   const M = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'main.js'), 'utf8')

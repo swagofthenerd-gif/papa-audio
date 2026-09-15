@@ -23497,6 +23497,25 @@ async function initPlaybackSettings() {
 
   await _initGeneralSettings()
   await _initEqSettings(cfg, apply)
+  await _initSharingSettings()
+}
+
+// Roadmap 137: the sharing choice, with a sentence that says exactly what is
+// exposed for the chosen mode.
+async function _initSharingSettings() {
+  const sel = document.getElementById('slsk-share-mode')
+  const text = document.getElementById('slsk-share-text')
+  if (!sel || !window.api || typeof window.api.slskShareModeGet !== 'function') return
+  const paint = (r) => { if (r && r.mode) sel.value = r.mode; if (text && r) text.textContent = r.text || '' }
+  paint(await window.api.slskShareModeGet().catch(() => null))
+  sel.onchange = async e => {
+    if (text) text.textContent = 'Applying…'
+    const r = await window.api.slskShareModeSet({ mode: e.target.value }).catch(() => null)
+    paint(r)
+    showSnackbar(r && r.ok
+      ? (r.mode === 'off' ? 'Sharing off' : 'Sharing: ' + (r.dirs || []).join(', ')) + (r.restarted ? ' — Soulseek restarted' : '')
+      : 'Could not change sharing')
+  }
 }
 
 // The interface-size setting offers four steps. A stored value that is out of

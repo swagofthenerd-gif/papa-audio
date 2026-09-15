@@ -515,6 +515,19 @@
           </label>
           <div class="mcs-set-hint">Uses the loudness scan from the Stats page to level quiet and loud tracks at playback. Nothing is written to your files. Scan first, then turn this on.</div>
         </div>
+        <!-- Roadmap 137: what this computer shares with Soulseek peers. The
+             daemon used to be handed the whole first music folder silently. -->
+        <div class="mcs-set-group" id="sharing-settings">
+          <div class="mcs-set-group-label">Soulseek sharing</div>
+          <label class="mcs-set-row">Share with other people
+            <select class="mcs-set-select" id="slsk-share-mode">
+              <option value="library">My music library (default)</option>
+              <option value="downloads">Only my download folder</option>
+              <option value="off">Nothing</option>
+            </select>
+          </label>
+          <div class="mcs-set-hint" id="slsk-share-text">Loading…</div>
+        </div>
         <div class="mcs-set-group" id="video-settings">
           <div class="mcs-set-group-label">Video</div>
           <label class="mcs-set-row">TMDB API key
@@ -1083,7 +1096,7 @@
       <p>Play the music on this computer, find more online, and keep it all in one collection.</p>
       <p class="setup-chosen" id="setup-folder-chosen" style="display:none"></p>
       <button class="choose-folder-btn" id="choose-folder-btn">Add my music</button>
-      <p class="setup-hint">Points at a folder and reads it in place. Nothing is copied, moved or shared.</p>
+      <p class="setup-hint">Points at a folder and reads it in place. Nothing is copied or moved. Sharing with Soulseek is a separate setting (on by default for your library — change it in Settings).</p>
       <div class="setup-nav">
         <button class="setup-link" id="setup-explore">Explore music instead</button>
         <button class="setup-link" id="setup-skip-1">Set up later</button>
