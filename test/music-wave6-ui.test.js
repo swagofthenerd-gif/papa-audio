@@ -121,6 +121,15 @@ test('assistant Stop releases immediately, aborts the provider request, and name
   }
 })
 
+// Roadmap 104: consequential tool calls the person did not ask for are previewed.
+test('auto_download and clear_queue are gated behind a preview unless the request named them', () => {
+  assert.ok(renderer.includes('var _CONSEQUENTIAL_TOOLS = {'))
+  assert.ok(renderer.includes("auto_download: { ask: /\\b(download|get|grab|fetch|save)\\b/i"))
+  assert.ok(renderer.includes("if (asked && rule.ask.test(asked.content)) return Promise.resolve(true)"), 'naming the action is authorisation')
+  const fn = renderer.slice(renderer.indexOf('async function _executeTool('), renderer.indexOf('async function _executeTool(') + 400)
+  assert.ok(fn.includes("if (!ok) return 'The user declined: '"), 'a decline is reported back to the model honestly')
+})
+
 // Roadmap 111: provider failures are specific and recoverable.
 test('a provider failure comes back classified with a next step, and the renderer offers it', () => {
   const M = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'main.js'), 'utf8')

@@ -21749,7 +21749,39 @@ function _setChatBusy(busy) {
 }
 
 // ── Tool execution — agent calls these, renderer executes them ─────────────
+// Roadmap 104: a consequential step the person did not ask for in so many
+// words is previewed before it runs. The assistant may decide on its own
+// that "play X" means "download X from Soulseek" when nothing local matches;
+// that is a download the person did not request, so it is put to them
+// first. A request that names the action ("download …", "clear the queue")
+// is already authorisation and runs straight away.
+var _CONSEQUENTIAL_TOOLS = {
+  auto_download: { ask: /\b(download|get|grab|fetch|save)\b/i, what: function (i) { return 'Download "' + (i && i.query || '') + '" from Soulseek?' },
+    note: 'This queues a transfer to your download folder. It was not part of what you asked in so many words.' },
+  clear_queue: { ask: /\b(clear|empty|wipe)\b/i, what: function () { return 'Clear the queue?' },
+    note: 'Stops playback and empties the whole queue. Undo is offered afterwards.' },
+}
+function _toolPreviewIfNeeded(name, input) {
+  const rule = _CONSEQUENTIAL_TOOLS[name]
+  if (!rule) return Promise.resolve(true)
+  const asked = (chatState.history || []).slice().reverse().find(function (m) { return m && m.role === 'user' && typeof m.content === 'string' })
+  if (asked && rule.ask.test(asked.content)) return Promise.resolve(true)
+  return new Promise(function (resolve) {
+    var settled = false
+    _mgConfirm(rule.what(input), '<p class="mg-confirm-note">' + esc(rule.note) + '</p>', 'Go ahead', function () { settled = true; resolve(true) })
+    // The dialog's own close (Cancel, Esc, backdrop) leaves `settled` false.
+    var watch = setInterval(function () {
+      if (settled) { clearInterval(watch); return }
+      if (!document.getElementById('mg-confirm-modal')) { clearInterval(watch); resolve(false) }
+    }, 200)
+  })
+}
+
 async function _executeTool(name, input) {
+  if (_CONSEQUENTIAL_TOOLS[name]) {
+    const ok = await _toolPreviewIfNeeded(name, input)
+    if (!ok) return 'The user declined: ' + name.replace(/_/g, ' ') + ' was not done.'
+  }
   switch (name) {
 
     case 'play_from_library': {
