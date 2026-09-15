@@ -1683,7 +1683,18 @@
             const offset = type === 'sub' ? 1 : 0
             const picked = (type === 'sub' && i === 0) ? null : list[i - offset]
             const id = picked ? picked.id : null
-            send('track', { type: type, id: id })
+            const before = state && state.tracks ? state.tracks[type] : null
+            // The tick follows the engine's answer (V082): shown only once the
+            // active playback path accepted the track. A refusal puts the
+            // previous track back on the tick and says so, with the menu one
+            // key away to try another.
+            send('track', { type: type, id: id }).then(function (r) {
+              if (r && r.ok !== false) return
+              if (state && state.tracks) state.tracks[type] = before
+              render()
+              const what = type === 'sub' ? 'subtitle track' : 'audio track'
+              onToast('That ' + what + ' could not be switched on' + (r && r.error ? ' — ' + r.error : '') + '. Open the menu to pick another.')
+            })
             // An explicit pick — including Off — outranks the remembered
             // language for the rest of this file, and a pick that carries a
             // language code becomes the remembered language.

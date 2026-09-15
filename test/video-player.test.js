@@ -2716,3 +2716,12 @@ test('isOpen is true from open() until close(), including while minimised', () =
   p.close()
   assert.strictEqual(p.isOpen(), false)
 })
+
+// V082: the selected tick is only kept when the playback path accepted the track.
+// The harness's fake DOM does not build menu items, so this is a source check.
+test('a refused track switch puts the previous track back and says so', () => {
+  const pick = PLAYER_SRC.slice(PLAYER_SRC.indexOf("send('track', { type: type, id: id }).then(function (r) {"), PLAYER_SRC.indexOf("langChosen[type] = true"))
+  assert.match(pick, /if \(r && r\.ok !== false\) return/)
+  assert.match(pick, /state\.tracks\[type\] = before/, 'the previous track comes back on the tick')
+  assert.match(pick, /onToast\('That ' \+ what \+ ' could not be switched on'/, 'and the person is told, with the menu to try another')
+})
