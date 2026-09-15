@@ -14,21 +14,29 @@
   // Returns the entries to delete, oldest first; an empty list when the new
   // file already fits. capBytes <= 0 means the cache is off: everything
   // (including the newcomer, signalled by ok:false) goes.
-  function evictPlan(entries, capBytes, addBytes) {
+  // `protectKeys` (V123): entries that must never be evicted — the file that
+  // is playing right now. If the newcomer cannot fit without touching one,
+  // the newcomer is refused (ok:false) rather than the viewer's picture
+  // vanishing from under them. Kept-for-offline files live in their own
+  // store and are never in this list at all.
+  function evictPlan(entries, capBytes, addBytes, protectKeys) {
     const cap = Number(capBytes) || 0
     const add = Math.max(0, Number(addBytes) || 0)
+    const protect = new Set((Array.isArray(protectKeys) ? protectKeys : []).filter(Boolean))
     const list = (Array.isArray(entries) ? entries : []).filter(e => e && e.path)
-    if (cap <= 0) return { ok: false, evict: list.slice() }
+    if (cap <= 0) return { ok: false, evict: list.filter(e => !protect.has(e.key)) }
     if (add > cap) return { ok: false, evict: [] }   // one file bigger than the whole cache
     const byAge = list.slice().sort((a, b) =>
       (Number(a.lastUsedAt) || Number(a.savedAt) || 0) - (Number(b.lastUsedAt) || Number(b.savedAt) || 0))
     let used = byAge.reduce((n, e) => n + (Number(e.sizeBytes) || 0), 0)
     const evict = []
-    while (used + add > cap && byAge.length) {
-      const gone = byAge.shift()
+    const candidates = byAge.filter(e => !protect.has(e.key))
+    while (used + add > cap && candidates.length) {
+      const gone = candidates.shift()
       used -= Number(gone.sizeBytes) || 0
       evict.push(gone)
     }
+    if (used + add > cap) return { ok: false, evict: [], blockedBy: 'protected' }
     return { ok: true, evict }
   }
 

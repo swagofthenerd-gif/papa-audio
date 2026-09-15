@@ -11989,7 +11989,8 @@ function _videoCacheIndexAdd(entry) {
   _instantMark(_titleKeyOf(entry && entry.meta), 'device')
   const entries = _videoCacheEntries().filter(e => e.key !== entry.key)
   const capBytes = (Number(_videoSettings().videoCacheGB) || 0) * videoCache.GB
-  const plan = videoCache.evictPlan(entries, capBytes, entry.sizeBytes)
+  // V123: the file on screen is never the one evicted to make room.
+  const plan = videoCache.evictPlan(entries, capBytes, entry.sizeBytes, [_videoSession.cacheKey])
   if (!plan.ok) return false
   for (const gone of plan.evict) { try { fs.unlinkSync(gone.path) } catch (_) {} }
   const kept = entries.filter(e => !plan.evict.includes(e))
