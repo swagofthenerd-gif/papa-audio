@@ -1085,3 +1085,10 @@ test('spoiler-safe rows conceal synopsis and still for unwatched episodes, with 
   assert.ok(R.includes("if (e && e.target && e.target.closest && e.target.closest('.vep-reveal')) return"), 'revealing does not select the episode')
   assert.ok(R.includes("_spoilerSafe = localStorage.getItem(SPOILER_SAFE_KEY) !== '0'"), 'on by default, off remembered')
 })
+
+// V048: an ongoing anime keeps planned, aired and available distinct.
+test('the anime grid states planned total and aired-so-far separately, and admits an unannounced total', () => {
+  const R = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
+  assert.ok(R.includes("' episodes planned · ' : 'Total not announced · '"))
+  assert.ok(R.includes("' aired so far</div>'"))
+})

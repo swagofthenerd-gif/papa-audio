@@ -10122,8 +10122,17 @@ function _renderVideoControls(type) {
     // Progress is read across the whole run — the resume banner and the
     // watched count are questions about the show, not the visible window.
     const prog = _epProgress('anime', _videoDetail.d.id, null, numbers)
+    // V048: three different numbers, said apart — the run's known total,
+    // how many have aired so far, and (only once a season pack streams) how
+    // many are available here. None is invented: an airing show with no
+    // total says so instead of pretending the aired count is the whole run.
+    const known = Number(_videoDetail.d.episodeCount) || 0
+    const airedSoFar = na && Number(na.episode) > 1 ? Number(na.episode) - 1 : (known || 0)
+    const countLine = na && na.airingAt
+      ? '<div class="vep-counts">' + (known ? esc(String(known)) + ' episodes planned · ' : 'Total not announced · ') + esc(String(airedSoFar)) + ' aired so far</div>'
+      : (known ? '<div class="vep-counts">' + esc(String(known)) + ' episodes</div>' : '')
     const grid = n > 0
-      ? '<div class="video-episode-wrap">' +
+      ? countLine + '<div class="video-episode-wrap">' +
           _epRangeJumperHtml(total, _epWindowOf(total, _videoState.episode)) +
           '<div class="video-episode-list" id="video-episode-list"></div></div>'
       // Episode count unknown -- an airing show AniList has no total for, or a
