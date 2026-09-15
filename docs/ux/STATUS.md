@@ -106,6 +106,8 @@ Each F item re-checked on this branch, not assumed from the `main` review.
 | 2026-09-15 | 044 | see log | queue header: time left · total |
 | 2026-09-15 | 049 | `e8d95f1` | saved queue keeps index + position; resumes there; labels explain session vs collection |
 | 2026-09-15 | 080 | see log | Cancel/Remove/Retry tooltips state outcomes |
+| 2026-09-15 | 041 | `b4c4997` | sleep panel states timer, +15, stop-after interaction |
+| 2026-09-15 | 098 | `5a988f3` | device fallback remembered; "Active now" line; BIT-PERFECT demoted |
 
 ## F list: all resolved (134 deferred to runtime). Now working through P0 E-items
 

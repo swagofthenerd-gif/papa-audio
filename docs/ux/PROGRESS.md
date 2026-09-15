@@ -46,7 +46,7 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | A038 | Fixed `273a9d8` — device loss pauses by default |
 | A039 | Pending review/implementation |
 | A040 | Fixed — prevAction rule + help text |
-| A041 | Pending review/implementation |
+| A041 | Fixed `b4c4997` |
 | A042 | Pending review/implementation |
 | A043 | Pending review/implementation |
 | A044 | Fixed — time left · total |
@@ -81,7 +81,7 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | A073 | Pending review/implementation |
 | A074 | Pending review/implementation |
 | A075 | Pending review/implementation |
-| A076 | Pending review/implementation |
+| A076 | Already satisfied — scheduler caps distinct sources per file (maxAttempts 4), attempts shown per row, cancel stops it |
 | A077 | Pending review/implementation |
 | A078 | Pending review/implementation |
 | A079 | Fixed `bfb2d44` — capacity check before enqueue |
@@ -103,7 +103,7 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | A095 | Pending review/implementation |
 | A096 | Fixed `578f3e5` — gain policy + clipping risk |
 | A097 | Pending review/implementation |
-| A098 | Pending review/implementation |
+| A098 | Fixed `5a988f3` |
 | A099 | Pending review/implementation |
 | A100 | Pending review/implementation |
 | A101 | Pending review/implementation |
