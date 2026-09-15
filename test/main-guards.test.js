@@ -573,3 +573,17 @@ test('the logger, the bundle and the settings export all go through src/redact',
   assert.ok(M.includes('_redact.redactText(JSON.stringify(_redact.redactObject(diagnostics)'), 'and the diagnostics snapshot')
   assert.ok(!/const _SECRET_KEY_RE = \/password\|token\|key\/i/.test(M), 'the narrow key rule is gone')
 })
+
+// Roadmap 139: an update writes a backup before it touches anything.
+test('a version change writes a pre-migration backup before the scheduled tick, and the route is documented', () => {
+  const fs = require('node:fs'), path = require('node:path')
+  const M = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
+  assert.ok(M.includes('function backupBeforeMigration()'))
+  assert.match(M, /backupBeforeMigration\(\)\n\s+startScheduledBackup\(\)/, 'runs at startup, before the delayed backup tick')
+  const fn = M.slice(M.indexOf('function backupBeforeMigration()'), M.indexOf('function backupBeforeMigration()') + 1600)
+  assert.ok(fn.includes("if (last === current) return"), 'same version: nothing')
+  assert.ok(fn.indexOf('fs.writeFileSync(file') < fn.indexOf("store.set('lastRunVersion', current)\n    console.log"), 'the version is recorded only after the backup is written')
+  assert.ok(fn.includes('MIGRATION_BACKUP_KEEP'), 'rotated')
+  assert.ok(M.includes('migrationFiles,'), 'the backup status lists them')
+  assert.ok(fs.existsSync(path.join(__dirname, '..', 'docs', 'RECOVERY.md')), 'the recovery route is documented')
+})

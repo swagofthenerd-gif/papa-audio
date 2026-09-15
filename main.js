@@ -2016,6 +2016,7 @@ app.whenReady().then(() => {
 
   startConnectivityMonitor()
   startAutoBackup()
+  backupBeforeMigration()
   startScheduledBackup()
 
   // Air-date notifications (roadmap #35): first check after the launch stampede
@@ -2191,6 +2192,40 @@ function startScheduledBackup() {
   // On the same delayed startup tick as the auto-backup, so neither competes
   // with the launch stampede. Only runs if the interval says it is due.
   setTimeout(() => { _maybeRunScheduledBackup() }, AUTO_BACKUP_DELAY_MS).unref?.()
+}
+
+// Roadmap 139: an update must not be the thing that loses a person's data.
+// The first launch of a new version writes a full backup of every store into
+// userData/migration-backups BEFORE any migration or first write, keeps the
+// newest three, and records the version. It runs synchronously at startup,
+// not on the delayed tick — the point is to run before anything else does.
+// docs/RECOVERY.md says where these are and how to restore one.
+const MIGRATION_BACKUP_KEEP = 3
+function _migrationBackupDir() { return path.join(USER_DATA, 'migration-backups') }
+function backupBeforeMigration() {
+  const current = app.getVersion()
+  const last = store.get('lastRunVersion', null)
+  if (last === current) return { ran: false, reason: 'same version' }
+  if (!last) { store.set('lastRunVersion', current); return { ran: false, reason: 'first run' } }
+  try {
+    const dir = _migrationBackupDir()
+    fs.mkdirSync(dir, { recursive: true })
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const file = path.join(dir, `papa-before-${current}-from-${last}-${stamp}.json`)
+    fs.writeFileSync(file, JSON.stringify(_buildBackupPayload(), null, 2), 'utf8')
+    let names = []
+    try { names = fs.readdirSync(dir).filter(n => /^papa-before-.*\.json$/.test(n)).sort() } catch (_) { names = [] }
+    for (const n of names.slice(0, Math.max(0, names.length - MIGRATION_BACKUP_KEEP))) {
+      try { fs.rmSync(path.join(dir, n), { force: true }) } catch (_) {}
+    }
+    store.set('lastRunVersion', current)
+    console.log(`[papa] version changed ${last} → ${current}; wrote a pre-migration backup to ${file}`)
+    return { ran: true, path: file, from: last, to: current }
+  } catch (e) {
+    // A failed backup must not stop the app, but it must not go unrecorded.
+    console.error('[papa] pre-migration backup failed:', String((e && e.message) || e))
+    return { ran: false, error: String((e && e.message) || e) }
+  }
 }
 
 // mpv is spawned as a plain child, so it dies with a graceful quit (will-quit
@@ -13568,6 +13603,8 @@ ipcMain.handle('papa-backup-status', () => {
       .sort()
       .reverse() // newest first
   } catch (_) { files = [] }
+  let migrationFiles = []
+  try { migrationFiles = fs.readdirSync(_migrationBackupDir()).filter(n => /^papa-before-.*\.json$/.test(n)).sort().reverse() } catch (_) { migrationFiles = [] }
   return {
     intervalDays,
     lastBackupAt: lastBackupAt || null,
@@ -13575,6 +13612,9 @@ ipcMain.handle('papa-backup-status', () => {
     dir,
     files,
     keep: backupSchedule.KEEP,
+    // Roadmap 139: the automatic pre-update backups, newest first.
+    migrationDir: _migrationBackupDir(),
+    migrationFiles,
   }
 })
 
