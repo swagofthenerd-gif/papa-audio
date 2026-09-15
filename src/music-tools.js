@@ -67,6 +67,20 @@
     return { queue: queue.slice(0, idx + 1), queueIndex: idx }
   }
 
+  // Album rows: what a wheel event means over a horizontal row (roadmap 005).
+  // Ordinary vertical wheeling used to be turned into horizontal movement, so
+  // the page could not be scrolled past a row the pointer happened to rest on.
+  // Now: a horizontal gesture (trackpad swipe, tilt wheel) and Shift+wheel
+  // move the row; plain vertical wheel is left to the page. Returns the number
+  // of pixels to scroll the row by, or 0 to leave the event alone.
+  function rowWheelDelta(e) {
+    if (!e) return 0
+    var dy = Number(e.deltaY) || 0, dx = Number(e.deltaX) || 0
+    if (e.shiftKey && dy && Math.abs(dy) >= Math.abs(dx)) return dy
+    if (Math.abs(dx) > Math.abs(dy)) return dx
+    return 0
+  }
+
   function clearPlayedQueue(queue, queueIndex) {
     queue = queue || []
     var idx = Number(queueIndex)
@@ -1673,6 +1687,7 @@
     SLEEP_PRESETS: SLEEP_PRESETS,
     clearPlayedQueue: clearPlayedQueue,
     clearUpcomingQueue: clearUpcomingQueue,
+    rowWheelDelta: rowWheelDelta,
     topAlbumsByPlays: topAlbumsByPlays,
     playsPerMonth: playsPerMonth,
     normalizeForDupe: normalizeForDupe,

@@ -669,6 +669,9 @@ h2.section-title { font-size:18px; font-weight:700; }
   scrollbar-width:none;
 }
 .scroll-row::-webkit-scrollbar { display:none; }
+/* Roadmap 005: album rows wear the video rail arrows; the row keeps its own
+   bottom padding, so the arrow band stops above it like the video rail's. */
+.music-rail-wrap .vrail-nav { bottom:12px; }
 /* Cards inside scroll-row get a fixed width */
 .scroll-row .album-card { flex-shrink:0; width:150px; }
 

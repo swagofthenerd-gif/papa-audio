@@ -50,6 +50,18 @@ test('the queue panel wires a clear-played action to the tested helper', () => {
   assert.ok(renderer.includes("'Clear played'"), 'no Clear played button label')
 })
 
+// Roadmap 005: the page scrolls vertically over album rows; rows get arrows.
+test('album rows no longer hijack vertical wheel and are dressed with rail arrows', () => {
+  const i = renderer.indexOf("addEventListener('wheel', e => {\n    const row = e.target.closest('.scroll-row')")
+  assert.ok(i > 0, 'the row wheel delegate exists')
+  const body = renderer.slice(i, renderer.indexOf('}, { passive: false })', i))
+  assert.ok(body.includes('rowWheelDelta(e)'), 'the delegate asks the tested helper what the wheel meant')
+  assert.ok(!/row\.scrollLeft \+= e\.deltaY/.test(body), 'deltaY is never applied as horizontal movement directly')
+  assert.ok(renderer.includes('function _dressScrollRow('), 'rows are wrapped with arrows')
+  assert.ok(renderer.includes("wrap.className = 'vrail-wrap music-rail-wrap'"), 'reusing the video rail wrapper so _bindRail applies')
+  assert.ok(renderer.includes('_watchScrollRows()'), 'the observer is started from setup')
+})
+
 // Roadmap 004: clearing upcoming and stopping are separate, explicit actions.
 test('the queue panel separates Clear upcoming from Stop and clear', () => {
   assert.ok(renderer.includes('clearUpcomingQueue'), 'clear-upcoming does not call the tested helper')

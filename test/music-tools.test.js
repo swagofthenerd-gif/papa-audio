@@ -48,6 +48,23 @@ test('the preset menu offers end-of-track and the five minute presets', () => {
   assert.ok(T.SLEEP_PRESETS.some(p => p.endOfTrack), 'no end-of-track option')
 })
 
+// ── Album rows: wheel intent (roadmap 005) ───────────────────────────────────
+test('plain vertical wheel over a row is left to the page', () => {
+  assert.equal(T.rowWheelDelta({ deltaY: 120, deltaX: 0 }), 0)
+  assert.equal(T.rowWheelDelta({ deltaY: -3, deltaX: 1 }), 0)
+  assert.equal(T.rowWheelDelta(null), 0)
+})
+
+test('a horizontal gesture moves the row by its own delta', () => {
+  assert.equal(T.rowWheelDelta({ deltaY: 2, deltaX: 50 }), 50)
+  assert.equal(T.rowWheelDelta({ deltaY: 0, deltaX: -30 }), -30)
+})
+
+test('Shift+wheel turns a vertical wheel into row movement', () => {
+  assert.equal(T.rowWheelDelta({ deltaY: 100, deltaX: 0, shiftKey: true }), 100)
+  assert.equal(T.rowWheelDelta({ deltaY: 0, deltaX: 0, shiftKey: true }), 0)
+})
+
 // ── Queue: clear upcoming (roadmap 004) ──────────────────────────────────────
 test('clearing upcoming drops everything after the current track and keeps it playing', () => {
   const q = [{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }]

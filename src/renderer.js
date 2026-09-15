@@ -6590,6 +6590,48 @@ function _fillRowHideSeen(key, items) {
   _fillRow(key, vis.shown)
 }
 
+// Music album rows get the same arrows the video rails have (roadmap 005):
+// with the wheel no longer hijacked, a mouse user needs a visible way along
+// the row. Each .scroll-row is wrapped once in the video rail wrapper so
+// _bindRail's arrow logic and CSS apply unchanged. A MutationObserver on
+// #content catches every render path — eleven places build these rows.
+function _dressScrollRow(row) {
+  if (!row || row.closest('.vrail-wrap') || !row.parentNode) return
+  const wrap = document.createElement('div')
+  wrap.className = 'vrail-wrap music-rail-wrap'
+  const prev = document.createElement('button')
+  prev.className = 'vrail-nav vrail-prev'; prev.type = 'button'
+  prev.setAttribute('aria-label', 'Scroll left'); prev.hidden = true
+  prev.innerHTML = _VICON.left
+  const next = document.createElement('button')
+  next.className = 'vrail-nav vrail-next'; next.type = 'button'
+  next.setAttribute('aria-label', 'Scroll right'); next.hidden = true
+  next.innerHTML = _VICON.right
+  row.parentNode.insertBefore(wrap, row)
+  wrap.appendChild(prev); wrap.appendChild(row); wrap.appendChild(next)
+  _bindRail(row)
+}
+function _dressScrollRows(root) {
+  if (!root || !root.querySelectorAll) return
+  root.querySelectorAll('.scroll-row').forEach(_dressScrollRow)
+}
+var _scrollRowObserver = null
+function _watchScrollRows() {
+  const content = document.getElementById('content')
+  if (!content || _scrollRowObserver || typeof MutationObserver === 'undefined') return
+  _dressScrollRows(content)
+  _scrollRowObserver = new MutationObserver(function (records) {
+    for (const r of records) {
+      r.addedNodes.forEach(function (n) {
+        if (n.nodeType !== 1) return
+        if (n.classList && n.classList.contains('scroll-row')) _dressScrollRow(n)
+        else _dressScrollRows(n)
+      })
+    }
+  })
+  _scrollRowObserver.observe(content, { childList: true, subtree: true })
+}
+
 // Arrow visibility is driven by actual scroll position, so a rail that fits
 // on screen never shows a control that would do nothing.
 function _bindRail(rail) {
@@ -28197,15 +28239,22 @@ function setupListeners() {
     card.click()
   })
 
-  // Global delegation: plain mouse wheel scrolls .scroll-row rows horizontally
+  // Global delegation for album rows (roadmap 005). Plain vertical wheel used
+  // to be converted into horizontal row movement, so the page stuck whenever
+  // the pointer rested on a row. Now only a horizontal gesture or Shift+wheel
+  // moves the row (music-tools.rowWheelDelta); vertical wheel scrolls the
+  // page. The arrows added by _dressScrollRows are the pointer route.
   document.getElementById('content')?.addEventListener('wheel', e => {
     const row = e.target.closest('.scroll-row')
     if (!row) return
-    if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return
+    var tools = (typeof window !== 'undefined' && window.PapaMusicTools) || null
+    const delta = tools ? tools.rowWheelDelta(e) : 0
+    if (!delta) return
     if (row.scrollWidth <= row.clientWidth) return
-    row.scrollLeft += e.deltaY
+    row.scrollLeft += delta
     e.preventDefault()
   }, { passive: false })
+  _watchScrollRows()
 
   // Global delegation: hover action buttons (play next / add to queue)
   document.getElementById('content')?.addEventListener('click', e => {
