@@ -1985,6 +1985,9 @@ h2.section-title { font-size:18px; font-weight:700; }
 /* Roadmap V129: the connections disclosure folds under one line. */
 .mcs-set-details summary { cursor:pointer; list-style:revert; }
 .mcs-set-details .mcs-disclosure li b { color:var(--text2); font-weight:600; }
+/* V041: the numbering a release is matched on, above the sources. */
+.video-numbering-line { font-size:12px; color:var(--text3); padding:2px 28px 8px; }
+.video-numbering-warn { color:#e3b341; }
 .folder-item-empty { color:var(--text3); font-style:italic; cursor:default; }
 .setup-hint { font-size:12px; color:var(--text3); margin:8px 0 0; }
 .setup-chosen { color:var(--accent) !important; font-weight:600; word-break:break-all; }

@@ -11941,7 +11941,7 @@ ipcMain.handle('video-streams', async (_, req) => {
     // settings change can never be masked by a cache hit.
     const key = JSON.stringify([request, settings.preferSurround, settings.preferredQuality, settings.torrentSources])
     const cached = _videoStreamCache.get(key)
-    if (cached) return { ok: true, streams: cached }
+    if (cached) return { ok: true, streams: cached, numbering: { season: season ?? null, episode: episode ?? null, absoluteEpisode: absoluteEpisode ?? null } }
     const backends = _videoBackends(sourceType, settings)
     const ranked = await resolveStream(request, backends, {
       preferSurround: settings.preferSurround,
@@ -11960,7 +11960,9 @@ ipcMain.handle('video-streams', async (_, req) => {
     // Caching it pinned "No sources found" on that title for the full 15-minute
     // TTL even after the indexer came back.
     if (streams.length) _videoStreamCache.set(key, streams)
-    return { ok: true, streams }
+    // V041: the numbering the request was made with, so the page can show
+    // "episode 3 · absolute 15" before a release is chosen.
+    return { ok: true, streams, numbering: { season: season ?? null, episode: episode ?? null, absoluteEpisode: absoluteEpisode ?? null } }
   } catch (e) {
     return { ok: false, error: e.message }
   }

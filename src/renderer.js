@@ -9697,6 +9697,9 @@ function _openAnimeNumberingDialog(d) {
       '<input id="anm-input" class="sq-name-input" type="number" min="1" step="1" ' +
         'placeholder="e.g. 65" value="' + (current != null ? esc(current) : '') + '">' +
       '<div class="mcs-set-hint" style="margin-top:8px">Fansub groups often number a continuing season absolutely. Set the real episode number this entry starts at, and every episode here is shifted to match the releases.</div>' +
+      // V042: what the override does, shown as it is typed; Clear is the reset.
+      '<div class="mcs-set-hint" id="anm-preview" style="margin-top:8px"></div>' +
+      '<div class="mcs-set-hint" style="margin-top:8px">Only the release search changes. Your watched marks and positions stay with the episodes as this entry numbers them.</div>' +
     '</div>' +
     '<div class="mg-confirm-actions">' +
       '<button class="mg-btn" id="anm-clear">Clear</button>' +
@@ -9742,6 +9745,20 @@ function _openAnimeNumberingDialog(d) {
     showSnackbar('Numbering cleared')
     refresh()
   }
+
+  // V042: the mapping preview follows the input.
+  const preview = dlg.querySelector('#anm-preview')
+  const total = Number(d.episodeCount) || 0
+  function paintPreview() {
+    const startAbs = N.normalizeStart(input.value)
+    if (!preview) return
+    if (startAbs == null) { preview.textContent = current != null ? 'Cleared: episodes are searched by their own numbers again.' : 'No override: episodes are searched by their own numbers' + (total ? ' (1–' + total + ')' : '') + '.'; return }
+    const last = total || 12
+    preview.textContent = 'Episode 1 → absolute ' + N.absoluteFor(startAbs, 1) + ', episode 2 → ' + N.absoluteFor(startAbs, 2) +
+      ' … episode ' + last + ' → ' + N.absoluteFor(startAbs, last) + (total ? '' : ' (episode count unknown)')
+  }
+  input.addEventListener('input', paintPreview)
+  paintPreview()
 
   dlg.addEventListener('keydown', function (e) {
     if (e.key === 'Enter') { e.preventDefault(); save() }
@@ -10379,6 +10396,31 @@ function _videoStreamRequest() {
   return _applyAnimeNumbering(req)
 }
 
+// V041: the numbering a release is being matched on, stated above the list.
+// "Episode 3 · absolute 15" when the season chain resolved it, "your
+// override" when the person set it, or "absolute unknown" — never a quiet
+// mismatch between what the page says and what the indexer was asked for.
+function _numberingLineHtml(num) {
+  if (!_videoDetail || _videoDetail.type === 'movie' || !num || num.episode == null) return ''
+  const N = (typeof window !== 'undefined' && window.PapaAnimeNumbering) || null
+  const d = _videoDetail.d || {}
+  let text, cls = 'video-numbering-line'
+  if (_videoDetail.type === 'anime' && N && d.id != null && N.get(window.PapaLocal, d.id) != null) {
+    // With an override the request's episode already IS the absolute number.
+    const startAbs = N.get(window.PapaLocal, d.id)
+    const seasonal = Number(_videoState.episode) || num.episode
+    text = 'Episode ' + seasonal + ' · absolute ' + N.absoluteFor(startAbs, seasonal) + ' (your override)'
+  } else if (_videoDetail.type === 'anime') {
+    text = num.absoluteEpisode != null
+      ? 'Episode ' + num.episode + ' · absolute ' + num.absoluteEpisode + ' (from the season chain) — releases are matched on either'
+      : 'Episode ' + num.episode + ' · absolute number unknown — releases numbered absolutely will not match. Fix it with Numbering…'
+    if (num.absoluteEpisode == null) cls += ' video-numbering-warn'
+  } else {
+    text = 'Season ' + (num.season != null ? num.season : _videoState.season) + ' · Episode ' + num.episode
+  }
+  return '<div class="' + cls + '" id="video-numbering-line">' + esc(text) + '</div>'
+}
+
 // Rewrite a stream request through the numbering override if one is stored for
 // its anilistId. Thin, feature-detected wrapper so _videoStreamRequest stays
 // readable and the same apply is reused anywhere a request is built.
@@ -10565,7 +10607,7 @@ async function _loadVideoSources(ticket, seasonTicket) {
   // pointing into the ranked _videoStreams via each row's data-idx.
   const sort = _vSourcesSort()
   target.innerHTML = '<div class="video-sources-header"><span class="section-title">Sources</span>' +
-    _vSortChipsHtml(sort) + '</div><div class="video-source-list"></div>'
+    _vSortChipsHtml(sort) + '</div>' + _numberingLineHtml(res.numbering) + '<div class="video-source-list"></div>'
   _renderVideoSourceRows(target, sort)
   _wireVideoSortChips(target)
   _renderUnlikelyFoot(target)

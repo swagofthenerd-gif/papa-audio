@@ -1043,3 +1043,15 @@ test('media keys drive the film while a video session is open, the album otherwi
   assert.ok(R.includes("if (_mediaKeyToVideo(key)) return\n    if (key === 'play-pause') togglePlay()"), 'the media-key handler tries video first')
   assert.ok(R.includes("window.api.on('media-playpause', () => { if (!_mediaKeyToVideo('play-pause')) togglePlay() })"), 'so do the tray/MPRIS channels')
 })
+
+// V041/V042: numbering is visible before choosing a release; the override previews and resets cleanly.
+test('the sources panel states the numbering a release is matched on, and the override dialog previews the mapping', () => {
+  const R = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
+  const M = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'main.js'), 'utf8')
+  assert.ok(M.includes("return { ok: true, streams, numbering: { season: season ?? null, episode: episode ?? null, absoluteEpisode: absoluteEpisode ?? null } }"))
+  assert.ok(R.includes('function _numberingLineHtml(num)'))
+  assert.ok(R.includes("_numberingLineHtml(res.numbering) + '<div class=\"video-source-list\"></div>'"))
+  assert.ok(R.includes("absolute number unknown — releases numbered absolutely will not match"), 'an unknown absolute is said, not hidden')
+  assert.ok(R.includes("'Episode 1 → absolute ' + N.absoluteFor(startAbs, 1)"), 'the dialog previews the mapping')
+  assert.ok(R.includes('Your watched marks and positions stay with the episodes'), 'and says progress is untouched')
+})
