@@ -4452,6 +4452,9 @@ async function parseTrackFile(filePath, st) {
     album: c.album || 'Unknown Album',
     trackNumber: c.track?.no || 0,
     discNumber: c.disk?.no || 1,
+    // Roadmap 089: the disc total, so "Disc 1 of 2" can be said rather than
+    // guessed from which discs happen to be present.
+    discTotal: c.disk?.of || null,
     year: c.year || null,
     genre: c.genre?.[0] || null,
     duration: f.duration || 0,
@@ -5797,7 +5800,7 @@ function buildAlbums(tracks) {
     if (!album.artPath && t.artPath) album.artPath = t.artPath
     if (t.addedAt && t.addedAt > (album._maxAddedAt || 0)) album._maxAddedAt = t.addedAt
     album.tracks.push({ id: t.id, title: t.title, artist: t.artist, genre: t.genre || null,
-      trackNumber: t.trackNumber, discNumber: t.discNumber,
+      trackNumber: t.trackNumber, discNumber: t.discNumber, discTotal: t.discTotal || null,
       duration: t.duration, filePath: t.filePath,
       sampleRate: t.sampleRate || 0, bitsPerSample: t.bitsPerSample || 0, channels: t.channels || 0,
       replayGainTrack: t.replayGainTrack ?? null, replayGainAlbum: t.replayGainAlbum ?? null,

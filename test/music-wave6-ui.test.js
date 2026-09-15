@@ -121,6 +121,15 @@ test('assistant Stop releases immediately, aborts the provider request, and name
   }
 })
 
+// Roadmap 089: compilations show the track artist; discs say their total.
+test('now-playing and queue rows lead with the track artist; disc bands say "of N"', () => {
+  const M = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'main.js'), 'utf8')
+  assert.ok(M.includes("discTotal: c.disk?.of || null,"))
+  assert.ok(renderer.includes("? track.artist + ' · ' + track.albumArtist"))
+  assert.ok(renderer.includes("${esc(t.artist || t.albumArtist || '')}${t.bpm"))
+  assert.ok(renderer.includes("Disc ${disc}${discTotal > 1 ? ' of ' + discTotal : ''}"))
+})
+
 // Roadmap 088: artwork changes preview the candidate, its size, the current cover and what is replaced.
 test('the artwork dialog shows current vs new, measures the candidate, and states where the change lands', () => {
   const fn = renderer.slice(renderer.indexOf('async function setAlbumArtwork()'), renderer.indexOf('function _artCacheBust('))

@@ -12975,7 +12975,10 @@ function renderAlbum(albumId) {
     const disc = _discOf(t)
     if (hasMultipleDiscs && disc !== lastDisc) {
       lastDisc = disc
-      discHeader = `<div class="disc-separator">Disc ${disc}</div>`
+      // Roadmap 089: say the total when the tags carry one, and say when a
+      // disc is not here at all rather than numbering what is present 1, 2.
+      const discTotal = Number(t.discTotal) || 0
+      discHeader = `<div class="disc-separator">Disc ${disc}${discTotal > 1 ? ' of ' + discTotal : ''}</div>`
     }
     const isPlaying = isCurrentTrack(t.filePath)
     const plays = state.playCounts[t.filePath] || 0
@@ -18041,7 +18044,7 @@ function renderQueuePanel() {
         </div>
         <div class="queue-row-info">
           <div class="queue-row-title">${esc(t.title)}${t.explicit ? '<span class="track-explicit">E</span>' : ''}${stereoBadge}${missingBadge}</div>
-          <div class="queue-row-artist">${esc(t.albumArtist || t.artist || '')}${t.bpm ? `<span class="track-bpm">${t.bpm} BPM</span>` : ''}</div>
+          <div class="queue-row-artist">${esc(t.artist || t.albumArtist || '')}${t.bpm ? `<span class="track-bpm">${t.bpm} BPM</span>` : ''}</div>
         </div>
         ${(state.playCounts[t.filePath] || 0) > 0 ? `<span class="track-plays">${state.playCounts[t.filePath]}</span>` : ''}
         <button class="track-like-btn ${state.likedTracks.includes(t.filePath) ? 'liked' : ''}" data-like="${esc(t.filePath)}" title="${state.likedTracks.includes(t.filePath) ? 'Unlike' : 'Like'}">${state.likedTracks.includes(t.filePath) ? '♥' : '♡'}</button>
@@ -20088,7 +20091,11 @@ function updateNowPlaying(track) {
   const sepEl    = document.getElementById('np-sep')
   const artEl    = document.getElementById('np-art')
   const artFb    = document.getElementById('np-art-fallback')
-  const artistStr = track.albumArtist || track.artist || ''
+  // Roadmap 089: on a compilation the track's own artist is the one that
+  // matters; the album artist is shown beside it only when they differ.
+  const artistStr = track.artist && track.albumArtist && track.artist !== track.albumArtist
+    ? track.artist + ' · ' + track.albumArtist
+    : (track.artist || track.albumArtist || '')
   const albumStr  = track.albumName || ''
   if (titleEl)  { titleEl.textContent = track.title || '—'; titleEl.dataset.albumId = track.albumId || ''; applyTicker(titleEl) }
   if (artistEl) { artistEl.textContent = artistStr || '—'; applyTicker(artistEl) }
