@@ -466,10 +466,12 @@
           <div class="mcs-set-group-label">Playback</div>
           <label class="mcs-set-row">Output
             <select class="mcs-set-select" id="pb-output-mode">
-              <option value="default">System (PipeWire)</option>
-              <option value="exclusive">Bit-perfect (exclusive ALSA)</option>
+              <option value="default">System (shared)</option>
+              <option value="exclusive">Exclusive (bit-perfect)</option>
             </select>
           </label>
+          <!-- Roadmap 097: the tradeoff, before it is chosen. -->
+          <div class="mcs-set-hint">Shared: the system mixer resamples to its own rate; other apps keep their sound. Exclusive: Papa Audio opens the device alone at the file's own rate — nothing else can play through it while a track is loaded, and if the device refuses, playback falls back to the system output and says so here.</div>
           <label class="mcs-set-row" id="pb-device-row" style="display:none">Device
             <select class="mcs-set-select" id="pb-alsa-device"></select>
           </label>
@@ -494,10 +496,12 @@
           <label class="mcs-set-row">ReplayGain
             <select class="mcs-set-select" id="pb-replaygain">
               <option value="no">Off</option>
-              <option value="track">Track</option>
-              <option value="album">Album</option>
+              <option value="track">Track — every song at the same loudness</option>
+              <option value="album">Album — keep an album's quiet and loud songs as mastered, level between albums</option>
             </select>
           </label>
+          <!-- Roadmap 095: what each choice does and what happens without tags. -->
+          <div class="mcs-set-hint">Uses the ReplayGain tags in your files; a file without them plays unchanged, so a mixed library can still jump in volume. Changes apply to what is playing without restarting it. This is not a sample-exact path — the BIT-PERFECT badge turns off while it is on.</div>
           <label class="mcs-set-row">Channels
             <select class="mcs-set-select" id="pb-channels">
               <option value="auto">Auto</option>

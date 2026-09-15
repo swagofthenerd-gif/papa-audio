@@ -121,6 +121,14 @@ test('assistant Stop releases immediately, aborts the provider request, and name
   }
 })
 
+// Roadmap 095/097: ReplayGain and exclusive mode are explained before they are chosen.
+test('the output-mode and ReplayGain controls carry plain explanations', () => {
+  const H = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'index.html'), 'utf8')
+  assert.ok(H.includes('nothing else can play through it while a track is loaded'))
+  assert.ok(H.includes('a file without them plays unchanged'))
+  assert.ok(H.includes('<option value="album">Album — keep an album'))
+})
+
 // Roadmap 089: compilations show the track artist; discs say their total.
 test('now-playing and queue rows lead with the track artist; disc bands say "of N"', () => {
   const M = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'main.js'), 'utf8')
