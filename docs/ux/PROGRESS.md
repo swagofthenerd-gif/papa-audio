@@ -178,10 +178,10 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | V010 | Fixed `0c76049` |
 | V011 | Pending review/implementation |
 | V012 | Fixed `3d58e3b` — Play / Resume from <time> / Start over |
-| V013 | Pending review/implementation |
+| V013 | Already satisfied — trailer path clears the watch key, suppresses resume and Up Next (`_playTrailerInTheatre`) |
 | V014 | Pending review/implementation |
 | V015 | Pending review/implementation |
-| V016 | Pending review/implementation |
+| V016 | Already satisfied — hero and cards re-read the store after toggle; failure shows a toast |
 | V017 | Pending review/implementation |
 | V018 | Pending review/implementation |
 | V019 | Pending review/implementation |
@@ -205,7 +205,7 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | V037 | Fixed `e1e9fc4` |
 | V038 | Already satisfied — episode-list.js labels future dates "Airs …" in local time, rows carry `unaired`, Play is withheld |
 | V039 | Pending review/implementation |
-| V040 | Pending review/implementation |
+| V040 | Fixed by the parallel session (f69067c/323228a) — noteActivity is the single presence signal; test in video-player.test.js |
 | V041 | Fixed `58293d6` |
 | V042 | Fixed `58293d6` |
 | V043 | Pending review/implementation |
