@@ -26,6 +26,8 @@ function reportSeq(channel, meta) {
 contextBridge.exposeInMainWorld('api', {
   // What this renderer has missed, for a diagnostics copy-out.
   ipcGaps: () => _seqGaps.slice(),
+  // The OS, so install instructions match the machine (roadmap 008).
+  platform: process.platform,
   // Window
   minimize: () => ipcRenderer.send('win-minimize'),
   maximize: () => ipcRenderer.send('win-maximize'),

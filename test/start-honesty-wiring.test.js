@@ -20,7 +20,10 @@ function fn(name) {
 
 test('the page loads the honesty table before the video scripts and the error text reads it', () => {
   assert.ok(HTML.indexOf('start-honesty.js') < HTML.indexOf('video-player.js'))
-  assert.match(fn('_videoErrorText'), /PapaStartHonesty\.sentence\(msg\)/)
+  // Roadmap 008: install-hints loads first so the honesty table can name the
+  // right package manager, and the error text passes the platform through.
+  assert.ok(HTML.indexOf('install-hints.js') < HTML.indexOf('start-honesty.js'))
+  assert.match(fn('_videoErrorText'), /PapaStartHonesty\.sentence\(msg, platform\)/)
 })
 
 test('the start-up watchdog is armed on play and disarmed on playing, ended, error and stop', () => {

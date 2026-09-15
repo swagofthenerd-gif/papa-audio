@@ -42,6 +42,27 @@ const ADVICE = Object.freeze({
   'ffmpeg-missing': 'sudo dnf install ffmpeg   (or: sudo apt install ffmpeg)',
 })
 
+// The same advice for the other two desktops the app builds for (roadmap 008).
+// A Mac user shown `sudo dnf` has been told nothing; Homebrew and winget are
+// the routes most people on those systems actually have.
+const ADVICE_BY_PLATFORM = Object.freeze({
+  darwin: Object.freeze({
+    mpv: 'brew upgrade mpv', ffmpeg: 'brew upgrade ffmpeg',
+    'mpv-missing': 'brew install mpv', 'ffmpeg-missing': 'brew install ffmpeg',
+  }),
+  win32: Object.freeze({
+    mpv: 'winget upgrade mpv', ffmpeg: 'winget upgrade ffmpeg',
+    'mpv-missing': 'winget install mpv   (or download from mpv.io and add it to PATH)',
+    'ffmpeg-missing': 'winget install ffmpeg   (or download from ffmpeg.org and add it to PATH)',
+  }),
+  linux: ADVICE,
+})
+
+function adviceFor(key, platform) {
+  const table = ADVICE_BY_PLATFORM[platform] || ADVICE
+  return table[key] || null
+}
+
 // Monthly. These binaries change on the order of months for a distro user, and
 // there is nothing this module can do about an out-of-date one except tell the
 // user — so a frequent check would only cost subprocess spawns for no benefit.
@@ -82,7 +103,8 @@ function meetsFloor(version, floor) {
 //   output: { name, ok, present, version, floor, reason, advice }
 // reason ∈ 'ok' | 'missing' | 'outdated'. advice is the copyable command, or
 // null when nothing is wrong.
-function adviseFor(name, { present, version } = {}) {
+// `platform` defaults to the one this process runs on; tests pass it in.
+function adviseFor(name, { present, version } = {}, platform = process.platform) {
   const floor = FLOORS[name]
   const versionStr = version ? `${version.major}.${version.minor}` : null
   if (!present) {
@@ -90,7 +112,7 @@ function adviseFor(name, { present, version } = {}) {
       name, ok: false, present: false, version: null,
       floor: floor ? floor.label : null,
       reason: 'missing',
-      advice: ADVICE[`${name}-missing`] || null,
+      advice: adviceFor(`${name}-missing`, platform),
     }
   }
   if (meetsFloor(version, floor)) {
@@ -100,7 +122,7 @@ function adviseFor(name, { present, version } = {}) {
     name, ok: false, present: true, version: versionStr,
     floor: floor ? floor.label : null,
     reason: 'outdated',
-    advice: ADVICE[name] || null,
+    advice: adviceFor(name, platform),
   }
 }
 
@@ -186,6 +208,8 @@ module.exports = {
   isCheckDue,
   FLOORS,
   ADVICE,
+  ADVICE_BY_PLATFORM,
+  adviceFor,
   CHECK_INTERVAL_MS,
   VERSION_TIMEOUT_MS,
 }

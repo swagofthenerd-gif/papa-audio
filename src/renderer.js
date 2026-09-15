@@ -5230,14 +5230,17 @@ function _videoErrorText(message) {
   // V4: the one table of start-up failures and their next steps
   // (src/start-honesty.js). The cases below remain as the fallback when the
   // module is not loaded (tests evaluate this function on its own).
+  const hints = (typeof PapaInstallHints !== 'undefined' && PapaInstallHints) || null
+  const platform = hints ? hints.detect() : 'linux'
   if (typeof PapaStartHonesty !== 'undefined' && PapaStartHonesty && typeof PapaStartHonesty.sentence === 'function') {
-    return PapaStartHonesty.sentence(msg)
+    return PapaStartHonesty.sentence(msg, platform)
   }
   // The raw failure is "mpv socket not ready: /run/user/… (last error: ENOENT)"
   // — which reads like the app is broken when the actual problem is that the
   // player program is not installed.
   if (/mpv socket not ready|spawn mpv/i.test(msg)) {
-    return 'The mpv player could not start. It may not be installed — run: sudo dnf install mpv'
+    return 'The mpv player could not start. It may not be installed — ' +
+      (hints ? hints.next('mpv', platform).replace(/^Run/, 'run') : 'install mpv and try again.')
   }
   if (/401|api key/i.test(msg)) return 'TMDB API key missing or invalid — set it in Settings → Video.'
   // The YouTube extractor's failures were reported as "the source timed out —
@@ -14728,6 +14731,7 @@ function showEngineBlocker(kind, detail) {
         (detail && detail.detail ? ` (${detail.detail})` : '')
   }
   if (install) install.style.display = missing ? '' : 'none'
+  if (missing) _fillInstallHint(install, 'mpv')
   const lines = detail && Array.isArray(detail.log) ? detail.log.filter(Boolean) : []
   if (log) {
     log.textContent = lines.slice(-8).join('\n')
@@ -14735,6 +14739,31 @@ function showEngineBlocker(kind, detail) {
   }
   if (btn) btn.textContent = missing ? 'I installed it \u2014 check again' : 'Try starting it again'
   el.style.display = 'flex'
+}
+
+// Writes the install command for THIS machine into the blocker (roadmap 008).
+// The markup ships Linux text as a fallback; a Mac must see `brew`, Windows
+// `winget`, and never a `sudo dnf` it cannot run. textContent throughout: the
+// strings are ours, but the habit is the point.
+function _fillInstallHint(container, tool) {
+  if (!container) return
+  const hints = (typeof PapaInstallHints !== 'undefined' && PapaInstallHints) || null
+  if (!hints) return
+  const h = hints.hint(tool, hints.detect())
+  if (!h) return
+  const cmd = container.querySelector('#mpv-blocker-cmd')
+  const alt = container.querySelector('#mpv-blocker-alt')
+  if (cmd) cmd.textContent = h.primary
+  if (alt) {
+    alt.textContent = ''
+    const parts = h.alternatives.slice()
+    if (h.note) parts.unshift(h.note)
+    parts.forEach((text, i) => {
+      if (i) alt.appendChild(document.createTextNode(' \u00b7 '))
+      alt.appendChild(document.createTextNode(text))
+    })
+    alt.style.display = parts.length ? '' : 'none'
+  }
 }
 
 function hideEngineBlocker() {

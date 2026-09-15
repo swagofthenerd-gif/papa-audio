@@ -1152,9 +1152,12 @@
     <!-- Install instructions are hidden when mpv is present and something else
          failed; telling the user to install mpv they already have is worse than
          saying nothing. -->
+    <!-- Filled by showEngineBlocker() from src/install-hints.js for the OS
+         this is running on (roadmap 008). The Linux text is only the fallback
+         for a renderer that loaded without the module. -->
     <div id="mpv-blocker-install">
-      <pre>sudo dnf install -y mpv</pre>
-      <p class="mpv-blocker-hint">Debian/Ubuntu: <code>sudo apt install mpv</code> &middot; Arch: <code>sudo pacman -S mpv</code></p>
+      <pre id="mpv-blocker-cmd">sudo dnf install -y mpv</pre>
+      <p class="mpv-blocker-hint" id="mpv-blocker-alt">Debian/Ubuntu: <code>sudo apt install mpv</code> &middot; Arch: <code>sudo pacman -S mpv</code></p>
     </div>
     <!-- mpv's own last words, when there are any. This is the diagnosis. -->
     <pre id="mpv-blocker-log" style="display:none"></pre>
@@ -1233,6 +1236,7 @@
 <script src="saved-users.js"></script>
 <script src="download-spread.js"></script>
 <script src="video-format.js"></script>
+<script src="install-hints.js"></script>
 <script src="start-honesty.js"></script>
 <script src="watch-rules.js"></script>
 <script src="release-name.js"></script>

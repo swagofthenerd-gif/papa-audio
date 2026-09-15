@@ -52,25 +52,42 @@ test('adviseFor: a healthy binary needs no advice', () => {
 })
 
 test('adviseFor: a missing binary gives an install command', () => {
-  const v = m.adviseFor('ffmpeg', { present: false })
+  const v = m.adviseFor('ffmpeg', { present: false }, 'linux')
   assert.strictEqual(v.ok, false)
   assert.strictEqual(v.reason, 'missing')
   assert.match(v.advice, /dnf install ffmpeg/)
 })
 
 test('adviseFor: an outdated binary gives an update command and the version', () => {
-  const v = m.adviseFor('mpv', { present: true, version: { major: 0, minor: 32 } })
+  const v = m.adviseFor('mpv', { present: true, version: { major: 0, minor: 32 } }, 'linux')
   assert.strictEqual(v.ok, false)
   assert.strictEqual(v.reason, 'outdated')
   assert.strictEqual(v.version, '0.32')
   assert.match(v.advice, /dnf update mpv/)
 })
 
+// Roadmap 008: the advice matches the OS. A Mac never sees dnf.
+test('adviseFor: the command matches the platform it will be run on', () => {
+  assert.match(m.adviseFor('mpv', { present: false }, 'darwin').advice, /^brew install mpv$/)
+  assert.match(m.adviseFor('mpv', { present: true, version: { major: 0, minor: 32 } }, 'darwin').advice, /^brew upgrade mpv$/)
+  assert.match(m.adviseFor('ffmpeg', { present: false }, 'win32').advice, /^winget install ffmpeg/)
+  assert.match(m.adviseFor('ffmpeg', { present: true, version: { major: 4, minor: 4 } }, 'win32').advice, /^winget upgrade ffmpeg$/)
+  for (const p of ['darwin', 'win32']) {
+    for (const a of Object.values(m.ADVICE_BY_PLATFORM[p])) assert.doesNotMatch(a, /dnf|apt|sudo/, p + ' never shows a Linux command')
+  }
+  // Default is the running process, and an unknown platform gets the Linux table.
+  assert.strictEqual(m.adviseFor('mpv', { present: false }).advice, m.adviseFor('mpv', { present: false }, process.platform).advice)
+  assert.match(m.adviseFor('mpv', { present: false }, 'freebsd').advice, /dnf install mpv/)
+})
+
 test('the advice never names a package-manager INSTALL of a running upgrade', () => {
   // The whole contract is advisory: the strings must be commands the USER runs,
   // and the module must never itself spawn a package manager. Guard the text.
   for (const a of Object.values(m.ADVICE)) {
-    assert.match(a, /^sudo /, 'advice is a copyable sudo command')
+    assert.match(a, /^sudo /, 'Linux advice is a copyable sudo command')
+  }
+  for (const table of Object.values(m.ADVICE_BY_PLATFORM)) {
+    for (const a of Object.values(table)) assert.match(a, /^(sudo|brew|winget) /, 'every line is a command the user runs')
   }
 })
 

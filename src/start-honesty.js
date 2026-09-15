@@ -13,11 +13,20 @@
 
   // The cases, most specific first. `test` is a regex on the raw message;
   // `text` the sentence; `next` what to do; `kind` a stable tag for callers.
+  // Install commands come from install-hints so they match the OS (roadmap
+  // 008); `next` may be a function of the platform for exactly that reason.
+  var hints = (typeof PapaInstallHints !== 'undefined' && PapaInstallHints) ||
+    (typeof require === 'function' ? (function () { try { return require('./install-hints') } catch (_) { return null } })() : null)
+  function installNext(tool, platform) {
+    return hints ? hints.next(tool, platform) : 'Install ' + tool + ' and try again.'
+  }
   var CASES = [
     { kind: 'mpv-missing', test: /mpv socket not ready|spawn mpv/i,
-      text: 'The mpv player could not start. It may not be installed.', next: 'Run: sudo dnf install mpv' },
+      text: 'The mpv player could not start. It may not be installed.',
+      next: function (platform) { return installNext('mpv', platform) } },
     { kind: 'ffmpeg-missing', test: /spawn ffprobe ENOENT|spawn ffmpeg ENOENT|ffprobe.*ENOENT|ffmpeg.*ENOENT/i,
-      text: 'ffmpeg is not installed, so the smooth player cannot read this file.', next: 'Run: sudo dnf install ffmpeg — or switch to Purist mode in Settings → Video.' },
+      text: 'ffmpeg is not installed, so the smooth player cannot read this file.',
+      next: function (platform) { return installNext('ffmpeg', platform) + ' — or switch to Purist mode in Settings → Video.' } },
     { kind: 'tmdb-key', test: /401|api key/i,
       text: 'TMDB API key missing or invalid.', next: 'Set it in Settings → Video.' },
     { kind: 'extractor', test: /yt-dlp|Could not load this trailer|unable to extract|Sign in to confirm|extractor|Video unavailable|HTTP Error 4\d\d.*youtube/i,
@@ -41,18 +50,23 @@
       text: 'Could not reach the service.', next: 'Check your connection.' },
   ]
 
-  function explain(message) {
+  // `platform` is process.platform or one of its spellings; omitted means
+  // Linux, which is what every caller before roadmap 008 silently assumed.
+  function explain(message, platform) {
     var msg = String(message || 'Something went wrong').trim()
     for (var i = 0; i < CASES.length; i++) {
       var c = CASES[i]
-      if (c.test.test(msg)) return { kind: c.kind, text: c.text || msg, next: c.next }
+      if (c.test.test(msg)) {
+        var next = typeof c.next === 'function' ? c.next(platform || 'linux') : c.next
+        return { kind: c.kind, text: c.text || msg, next: next }
+      }
     }
     return { kind: 'unknown', text: msg, next: SOURCE }
   }
 
   // One line for a toast or a stage: sentence, then the next step.
-  function sentence(message) {
-    var e = explain(message)
+  function sentence(message, platform) {
+    var e = explain(message, platform)
     if (!e.next) return e.text
     // A sentence that already ends gets a space; a raw fragment gets a dash.
     return e.text + (/[.!?]$/.test(e.text) ? ' ' : ' — ') + e.next

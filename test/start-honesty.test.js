@@ -7,9 +7,14 @@ const H = require('../src/start-honesty')
 
 test('each known failure is named with its own next step', () => {
   assert.equal(H.explain('mpv socket not ready: /run/user/1000 (last error: ENOENT)').kind, 'mpv-missing')
-  assert.match(H.sentence('spawn mpv ENOENT'), /sudo dnf install mpv/)
+  assert.match(H.sentence('spawn mpv ENOENT'), /sudo dnf install -y mpv/)
   assert.equal(H.explain('ffprobe could not read the source: spawn ffprobe ENOENT').kind, 'ffmpeg-missing')
-  assert.match(H.sentence('spawn ffmpeg ENOENT'), /sudo dnf install ffmpeg/)
+  assert.match(H.sentence('spawn ffmpeg ENOENT'), /sudo dnf install -y ffmpeg/)
+  // Roadmap 008: the next step matches the OS it is shown on.
+  assert.match(H.sentence('spawn mpv ENOENT', 'darwin'), /brew install mpv/)
+  assert.match(H.sentence('spawn mpv ENOENT', 'win32'), /winget install mpv/)
+  assert.doesNotMatch(H.sentence('spawn ffmpeg ENOENT', 'darwin'), /dnf|apt/)
+  assert.match(H.sentence('spawn ffmpeg ENOENT', 'darwin'), /brew install ffmpeg — or switch to Purist mode/)
   assert.equal(H.explain('ffprobe could not read the source: Invalid data (after 3 attempts)').kind, 'unreadable')
   assert.equal(H.sentence('ffprobe could not read the source'), 'The file could not be read. It may be corrupt, still downloading, or not a video. Try another source from the list below.', 'a finished sentence is followed by a space, not a dash')
   assert.match(H.sentence('Nobody is sharing this right now (searched for 30s)'), /Nobody is sharing.*Try another source/)
