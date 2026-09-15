@@ -6,11 +6,11 @@ Completed implementation batches, tests, limitations and recovery status are rec
 
 | Item | Status |
 | --- | --- |
-| A001 | Pending review/implementation |
-| A002 | Pending review/implementation |
+| A001 | Fixed `58e0b7e` — wizard is an offer, not a gate; see STATUS.md |
+| A002 | Fixed — permanent Settings nav entry, openSettings(section); see STATUS.md |
 | A003 | Pending review/implementation |
 | A004 | Fixed `55143ea` — Clear upcoming / Stop and clear; see STATUS.md |
-| A005 | Pending review/implementation |
+| A005 | Fixed — vertical wheel scrolls the page; rows get arrows; see STATUS.md |
 | A006 | Pending review/implementation |
 | A007 | Pending review/implementation |
 | A008 | Fixed `9d801e0` — OS-aware install instructions; see STATUS.md |
@@ -18,11 +18,11 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | A010 | Pending review/implementation |
 | A011 | Pending review/implementation |
 | A012 | Already satisfied on this branch — local @font-face; see STATUS.md |
-| A013 | Pending review/implementation |
+| A013 | Partial — one-sentence product description on wizard step 1 (with A001) |
 | A014 | Pending review/implementation |
 | A015 | Pending review/implementation |
 | A016 | Pending review/implementation |
-| A017 | Pending review/implementation |
+| A017 | Partial — wizard states that a folder is read in place, nothing copied/moved/shared (with A001) |
 | A018 | Pending review/implementation |
 | A019 | Pending review/implementation |
 | A020 | Pending review/implementation |
@@ -92,7 +92,7 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | A084 | Pending review/implementation |
 | A085 | Pending review/implementation |
 | A086 | Pending review/implementation |
-| A087 | Pending review/implementation |
+| A087 | Fixed — hero edits write real tags with an explicit scope note; see STATUS.md |
 | A088 | Pending review/implementation |
 | A089 | Pending review/implementation |
 | A090 | Pending review/implementation |

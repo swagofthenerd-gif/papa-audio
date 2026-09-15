@@ -28,13 +28,13 @@ Each F item re-checked on this branch, not assumed from the `main` review.
 
 | ID | Status | Evidence on this branch |
 |---|---|---|
-| 001 | Confirmed (softer) | Wizard can be finished with no folder, but reappears every launch until one is set (`renderer.js` `_initSetupWizard` finish comment). |
+| 001 | **Fixed** `58e0b7e` | Wizard can be finished with no folder, but reappears every launch until one is set (`renderer.js` `_initSetupWizard` finish comment). |
 | 004 | **Fixed** `55143ea` | Queue panel "Clear queue" pauses audio and drops the current track (`renderer.js` ~17487); same in the `clear-queue` command (~29535). No "clear upcoming". |
-| 005 | Confirmed | `#content` wheel handler converts vertical `deltaY` into `scrollLeft` on `.scroll-row` (~28120). |
+| 005 | **Fixed** (see work log) | `#content` wheel handler converts vertical `deltaY` into `scrollLeft` on `.scroll-row` (~28120). |
 | 008 | **Fixed** `9d801e0` | `index.html` ~1156 hard-codes `dnf`/`apt`/`pacman`; `renderer.js` ~5240 says "run: sudo dnf install mpv". No macOS/Windows text. |
 | 012 | **Already satisfied** | `styles.css` uses local `@font-face` → `assets/fonts/Poppins-*.woff2`; no Google Fonts import anywhere. |
 | 043 | Confirmed as described | `playAlbum`/`playTrack` replace the queue; policy item, not a bug. |
-| 087 | Confirmed | `renderer.js` ~12489 still shows "visual only — save to file coming soon". |
+| 087 | **Fixed** (see work log) | `renderer.js` ~12489 still shows "visual only — save to file coming soon". |
 | 093 | **Fixed** `1da705b` | `updateBitPerfectBadge` (~1230) labels any non-http track LOSSLESS with no codec check. |
 | 134 | Confirmed | `main.js` `minWidth: 950`. |
 | V101 | **Fixed** `af4d25b` | `bindMiniDrag`: `pointercancel` → `endDrag`, which contains the tap-to-toggle and fling paths (~789–836). |
@@ -54,11 +54,14 @@ Each F item re-checked on this branch, not assumed from the `main` review.
 | 2026-09-15 | 008 | `9d801e0` | src/install-hints.js; preload exposes platform; blocker, start-honesty, _videoErrorText and sysdeps-advisor all OS-aware |
 | 2026-09-15 | 093 | `1da705b` | src/quality-badge.js: codec-checked LOSSLESS, full-chain BIT-PERFECT, honest tooltip; refreshes on every relevant change. Also fixed: ReplayGain 'no' vs 'off' mismatch |
 
+| 2026-09-15 | merge | `ecd8ff0` | parallel-session checkpoint merged (V104/V105/V036/V027/V073/V076/V080/V074 partial); wheel notch corrected to 40 px |
+| 2026-09-15 | 005 | see log | rowWheelDelta: vertical wheel scrolls the page; rows get the video rail arrows via MutationObserver |
+| 2026-09-15 | 087 | see log | album hero edits write real tags through library-write-tags with an explicit scope note; heroTagWrites + tests |
+| 2026-09-15 | 001 (+013/017 copy) | `58e0b7e` | wizard offers Add / Explore / Later, remembers the answer, init continues with zero folders |
+| 2026-09-15 | 002 | see log | Settings nav entry + openSettings(section); drawer titled Settings on that tab |
+
 ## Still open from the F list, in suggested order
 
-- **005** (P1) vertical wheel → horizontal rail: `#content` wheel delegate at `renderer.js` ~28120. Same shape as V005.
-- **087** (P0 by roadmap, verify scope first): `editField` "visual only" path; other tag writers exist (`flac-tags.js`) — map every entry point before changing copy.
-- **001** (P1) wizard reappears every launch until a folder is set.
 - **134** (P1) 950px minimum window width — needs a layout audit, not just a number change.
 - **V111** (P1) resume thresholds in `watch-rules.js` — a policy decision; evaluate with real film lengths before changing.
 
