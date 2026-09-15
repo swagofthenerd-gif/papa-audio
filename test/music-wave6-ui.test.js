@@ -121,6 +121,12 @@ test('assistant Stop releases immediately, aborts the provider request, and name
   }
 })
 
+// Roadmap 044: remaining listening time is shown separately from the total.
+test('the queue header shows time left from here and the total', () => {
+  assert.ok(renderer.includes("? fmtDur(leftQD) + ' left · ' + totalQDstr + ' total'"))
+  assert.ok(renderer.includes("leftQD = Math.max(0, leftQD - (Number(audio && audio.currentTime) || 0))"), 'minus how far into this track we are')
+})
+
 // Roadmap 047: shuffle's next pick is visible; the list keeps its original order.
 test('the queue panel names the shuffled next pick and says the order is kept', () => {
   assert.ok(renderer.includes("shuffleNote = '<div class=\"queue-shuffle-note\">Shuffle is on — next up: '"))

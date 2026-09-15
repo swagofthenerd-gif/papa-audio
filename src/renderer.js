@@ -17874,6 +17874,16 @@ function renderQueuePanel() {
 
   var totalQD = state.queue.reduce(function(s, t) { return s + (t.duration || 0) }, 0)
   var totalQDstr = fmtDur(totalQD)
+  // Roadmap 044: what is LEFT to listen to is the number a person wants —
+  // from here to the end of the queue, minus how far into this track we are.
+  var leftQD = 0
+  if (state.queueIndex >= 0) {
+    for (var qi = state.queueIndex; qi < state.queue.length; qi++) leftQD += Number(state.queue[qi] && state.queue[qi].duration) || 0
+    leftQD = Math.max(0, leftQD - (Number(audio && audio.currentTime) || 0))
+  }
+  var timeStr = (state.queueIndex >= 0 && state.queue.length > 1 && leftQD > 0)
+    ? fmtDur(leftQD) + ' left · ' + totalQDstr + ' total'
+    : totalQDstr
 
   // A surround-first queue (Task 7) mixes 5.1+ tracks with the occasional
   // stereo one. Once at least one surround track is present, mark the stereo
@@ -17889,7 +17899,7 @@ function renderQueuePanel() {
     var nxt = (_pendingShuffle != null && state.queue[_pendingShuffle]) ? state.queue[_pendingShuffle] : null
     shuffleNote = '<div class="queue-shuffle-note">Shuffle is on — next up: ' + (nxt ? esc(nxt.title || 'a track') : 'chosen when this track ends') + '. The list keeps its original order.</div>'
   }
-  list.innerHTML = fromHtml + '<div style="padding:12px;font-size:13px;font-weight:600;display:flex;justify-content:space-between"><span>Queue (' + state.queue.length + ')</span><span style="font-size:11px;color:var(--text3);font-weight:400">' + totalQDstr + '</span></div>' + shuffleNote + state.queue.map((t, i) => {
+  list.innerHTML = fromHtml + '<div style="padding:12px;font-size:13px;font-weight:600;display:flex;justify-content:space-between"><span>Queue (' + state.queue.length + ')</span><span style="font-size:11px;color:var(--text3);font-weight:400" title="Time left in the queue from here · total length of the queue">' + timeStr + '</span></div>' + shuffleNote + state.queue.map((t, i) => {
     const isPlaying = i === state.queueIndex
     const art = t.artPath
       ? `<img class="queue-row-art" src="${esc(_artSrc(t.artPath))}" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
