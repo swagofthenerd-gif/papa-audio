@@ -4839,6 +4839,26 @@ function _streamable(stream, minutes) {
   return need === 0 || need <= STREAMABLE_MBPS
 }
 
+// The sources worth asking RealDebrid about for THIS play: streamable, not
+// cams, best picture first (sharer counts are irrelevant to debrid). Sent with
+// the play so main can resolve without depending on the page's background
+// search having finished — that dependency was the timing bug.
+var _DEBRID_CANDIDATE_LIMIT = 4
+function _debridCandidatesFor(streams, chosen) {
+  const list = Array.isArray(streams) ? streams : []
+  const minutes = _playMinutes()
+  const qRank = { '2160p': 4, '1080p': 3, '720p': 2, '480p': 1 }
+  const out = list
+    .filter(function (s) { return s && s.kind === 'torrent' && s.magnet && !s.lowQuality && _streamable(s, minutes) })
+    .map(function (s, i) { return { s: s, i: i } })
+    .sort(function (a, b) { return ((qRank[b.s.quality] || 0) - (qRank[a.s.quality] || 0)) || (a.i - b.i) })
+    .map(function (e) { return e.s.magnet })
+  // The source actually chosen leads, so a held one of the right quality wins.
+  const picked = chosen && chosen.magnet
+  const ordered = picked ? [picked].concat(out.filter(function (m) { return m !== picked })) : out
+  return ordered.slice(0, _DEBRID_CANDIDATE_LIMIT)
+}
+
 // What Play starts. The picker wins when the viewer set one; among equals the
 // first source that can actually stream wins, because the best-looking file
 // is worthless if it stalls every few seconds.
@@ -5226,6 +5246,13 @@ function _videoPlayResult(result, opts) {
   // first stream to become servable wins (2026-09-14). Torrents only — a
   // direct URL has nothing to hedge — and never the pick itself.
   if (result.kind === 'torrent') {
+    // Everything debrid could serve for this play, so main never has to wait
+    // on a background search that may not have finished.
+    // Tolerant, like every other read on this path: a ReferenceError here is
+    // a dead Play button, and that has happened before.
+    const debridCandidates = (typeof _debridCandidatesFor === 'function')
+      ? _debridCandidatesFor(_videoStreams, result) : []
+    if (debridCandidates.length) result = Object.assign({}, result, { debridCandidates: debridCandidates })
     const pickedKey = _sourceKey(result)
     const alts = (_videoStreams || []).filter(function (s) {
       return s && s.kind === 'torrent' && s.magnet && _sourceKey(s) !== pickedKey

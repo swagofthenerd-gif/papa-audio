@@ -92,37 +92,37 @@ function createDebridProxy({ fetchFn, host = '127.0.0.1' } = {}) {
     return 0
   }
 
-  // The file's size. A HEAD usually answers, but these servers 503
-  // intermittently (two in five, measured) — including on HEAD — so it is
-  // retried, and then falls back to asking for a single byte and reading the
-  // total out of Content-Range ("bytes 0-0/94007336").
+  // The file's size. HEAD and a one-byte range are asked AT THE SAME TIME and
+  // whichever answers first wins: these servers refuse about two requests in
+  // five, and asking them in sequence with backoff was costing seconds on
+  // every single play (measured 2026-09-16 — the candidate check took 1 s and
+  // then this took over ten).
   async function _probe(url) {
-    for (let i = 0; i < UPSTREAM_TRIES; i++) {
-      try {
-        const res = await fetcher(url, { method: 'HEAD' })
-        if (res && res.ok) {
-          const len = Number(res.headers.get('content-length'))
-          if (Number.isFinite(len) && len > 0) {
-            total = len
-            contentType = res.headers.get('content-type') || contentType
-            return total
-          }
-        }
-      } catch (_) { /* fall through to the retry */ }
-      await _sleep(RETRY_DELAY_MS * (i + 1))
+    const viaHead = async () => {
+      const res = await fetcher(url, { method: 'HEAD' })
+      if (!res || !res.ok) throw new Error('HEAD ' + (res && res.status))
+      const len = Number(res.headers.get('content-length'))
+      if (!Number.isFinite(len) || len <= 0) throw new Error('no length')
+      return { total: len, type: res.headers.get('content-type') }
     }
-    for (let i = 0; i < UPSTREAM_TRIES; i++) {
-      try {
-        const res = await fetcher(url, { headers: { Range: 'bytes=0-0' } })
-        if (res && (res.status === 206 || res.status === 200)) {
-          const cr = res.headers.get('content-range') || ''
-          const m = /\/(\d+)\s*$/.exec(cr)
-          contentType = res.headers.get('content-type') || contentType
-          try { if (res.body && res.body.cancel) res.body.cancel() } catch (_) {}
-          if (m) { total = Number(m[1]); return total }
-        }
-      } catch (_) { /* fall through to the retry */ }
-      await _sleep(RETRY_DELAY_MS * (i + 1))
+    const viaRange = async () => {
+      const res = await fetcher(url, { headers: { Range: 'bytes=0-0' } })
+      if (!res || !(res.status === 206 || res.status === 200)) throw new Error('range ' + (res && res.status))
+      const cr = res.headers.get('content-range') || ''
+      try { if (res.body && res.body.cancel) res.body.cancel() } catch (_) {}
+      const m = /\/(\d+)\s*$/.exec(cr)
+      if (!m) throw new Error('no content-range')
+      return { total: Number(m[1]), type: res.headers.get('content-type') }
+    }
+    for (let round = 0; round < 2; round++) {
+      const results = await Promise.allSettled([viaHead(), viaRange()])
+      const win = results.find(r => r.status === 'fulfilled' && r.value && r.value.total > 0)
+      if (win) {
+        total = win.value.total
+        contentType = win.value.type || contentType
+        return total
+      }
+      if (round === 0) await _sleep(300)
     }
     throw new Error('debrid server would not report the file size')
   }

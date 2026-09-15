@@ -47,7 +47,10 @@ test('every debrid play goes through the relay, built once per title and reused'
   const MAIN = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
   assert.ok(/require\('\.\/src\/debrid-proxy'\)/.test(MAIN))
   // Both players take the relay's local URL, never the debrid link itself.
-  assert.strictEqual((MAIN.match(/_debridPlayable\(result\.magnet\)/g) || []).length, 2)
+  // Both play paths call it; the third match is the function's own
+  // definition line.
+  assert.ok(/Promise\.race\(\[_debridPlayableAny\(result\), budget\]\)/.test(MAIN), 'smooth path')
+  assert.ok(/_debridPlayableAny\(result\),\n\s*new Promise/.test(MAIN), 'purist path')
   assert.ok(!/debrid\(\)\.linkFor\(result\.magnet\)/.test(MAIN), 'the raw link must not reach the player')
   const fn = MAIN.slice(MAIN.indexOf('async function _debridPlayable('), MAIN.indexOf('const DEBRID_BUDGET_MS'))
   // A relay already standing for this magnet is reused outright — that reuse

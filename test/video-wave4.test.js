@@ -93,7 +93,10 @@ test('the TV controls carry a confirmed, undoable "Mark season watched"', () => 
 // ── Per-show track memory feature-detect (roadmap #31/#32) ─────────────────────
 test('_videoPlayResult feature-detects the videoTrackMemory contract', () => {
   const at = SRC.indexOf('function _videoPlayResult(')
-  const body = SRC.slice(at, at + 8000)
+  // Widened as _videoPlayResult grew: the watch identity, the hedge lanes,
+  // the debrid candidate list and the rewatch-cache probe all sit above the
+  // track-memory block now (2026-09-16).
+  const body = SRC.slice(at, at + 14000)
   // Read side: prefer the backend memory, fall back to the store's prefs.
   assert.match(body, /videoTrackMemoryGet/, 'reads from the contract when present')
   assert.match(body, /store\.prefs\(showKey\)/, 'still reads the local store')

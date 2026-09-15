@@ -72,7 +72,8 @@ test('only settled answers are remembered, never a transient failure', () => {
 })
 
 test('both play paths skip the wait entirely for a refused source', () => {
-  assert.strictEqual((MAIN.match(/_debridWorthTrying\(result\.magnet\)/g) || []).length, 2)
+  assert.ok(/if \(_debridAnyWorthTrying\(result\)\) \{/.test(MAIN), 'both play paths guard on it')
+  assert.strictEqual((MAIN.match(/if \(_debridAnyWorthTrying\(result\)\) \{/g) || []).length, 2)
   // And the candidate search never re-offers one already refused.
   const pick = MAIN.slice(MAIN.indexOf("ipcMain.handle('video-debrid-pick'"), MAIN.indexOf("ipcMain.handle('video-warm-cancel'"))
   assert.ok(/!_debridRefusedHas\(m\)/.test(pick))

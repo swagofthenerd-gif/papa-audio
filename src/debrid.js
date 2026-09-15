@@ -41,9 +41,12 @@ const VIDEO_EXT = /\.(mkv|mp4|avi|mov|m4v|webm|ts|wmv|flv|mpg|mpeg)$/i
 // nothing. Links are now short-lived and proved before use.
 const LINK_TTL_MS = 10 * 60 * 1000
 // How long to wait when proving a link is still alive (one byte).
-const VERIFY_TIMEOUT_MS = 4000
+const VERIFY_TIMEOUT_MS = 2500
 // How many times to ask whether a link is alive before believing it is not.
-const ALIVE_TRIES = 3
+// Two quick looks, not three slow ones: the relay that follows retries every
+// upstream request anyway, so this only has to catch a link that is plainly
+// dead — not fight a busy server (2026-09-16).
+const ALIVE_TRIES = 2
 
 const DEFAULT_POLL_TIMEOUT_MS = 30000
 // How often to re-ask for the torrent's status while polling.
@@ -262,7 +265,7 @@ function createDebrid(opts = {}) {
       } catch (_) {
         // network hiccup: worth one more look
       } finally { if (timer) clearTimeout(timer) }
-      if (i < ALIVE_TRIES - 1) await new Promise(r => setTimeout(r, 250 * (i + 1)))
+      if (i < ALIVE_TRIES - 1) await new Promise(r => setTimeout(r, 200))
     }
     return false
   }
