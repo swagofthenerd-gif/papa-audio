@@ -122,6 +122,13 @@ function _slskRepaint(query) {
 // wraps renderer-side IPC errors as "Error invoking remote method '...': ...",
 // which is noise to the user.
 function _slskErrText(e) {
+  // Roadmap 057: the same classifier YouTube uses, so both sources describe
+  // the same failure the same way. The slskd-specific lines below stay.
+  var F = (typeof PapaSourceFailure !== 'undefined' && PapaSourceFailure) || null
+  if (F) {
+    var r = F.explain('Soulseek', e, { offline: typeof state !== 'undefined' && state && state.isOnline === false })
+    if (r.kind !== 'error' && r.kind !== 'empty' && r.kind !== 'server') return r.text
+  }
   var m = String((e && e.message) || e || 'Unknown error')
   m = m.replace(/^Error invoking remote method '[^']*':\s*/, '').replace(/^Error:\s*/, '')
   if (/not connected/i.test(m)) return 'Soulseek is not connected.'
@@ -13609,13 +13616,27 @@ function updateYtHealth(status) {
   dot.className = 'yt-health-dot yt-health-' + status
 }
 
+// Roadmap 057: one painter for a YouTube section that came back with nothing,
+// so offline, cancelled, timed out, rate-limited and truly-empty each get
+// their own sentence and their own button.
+function _ytFailureHtml(error, opts) {
+  var F = (typeof PapaSourceFailure !== 'undefined' && PapaSourceFailure) || null
+  if (!F) return '<div class="yt-status yt-error">YouTube search failed: ' + esc(String(error || 'unknown error')) + ' <button class="yt-retry" id="yt-retry-btn">Retry</button></div>'
+  var r = F.explain('YouTube', error, opts)
+  var label = F.actionLabel(r.action)
+  var btn = ''
+  if (r.action === 'retry' || r.action === 'wait') btn = ' <button class="yt-retry" id="yt-retry-btn">' + esc(label) + '</button>'
+  else if (r.action === 'settings') btn = ' <button class="yt-retry" id="yt-settings-btn">' + esc(label) + '</button>'
+  return '<div class="yt-status' + (r.kind === 'empty' || r.kind === 'cancelled' ? '' : ' yt-error') + '" data-failure="' + esc(r.kind) + '">' + esc(r.text) + btn + '</div>'
+}
+
 async function runYtSearch(query, scope) {
   ytSearchState.scope = scope
   ytSearchState.lastQuery = query
   const box = document.getElementById('yt-results')
   if (!box) return
   if (!state.isOnline) {
-    box.innerHTML = '<div class="yt-status yt-error">You are offline — YouTube unavailable</div>'
+    box.innerHTML = _ytFailureHtml(null, { offline: true })
     return
   }
   var cacheKey = `${scope}::${query}`
@@ -13633,7 +13654,7 @@ async function runYtSearch(query, scope) {
       cur.innerHTML = '<div class="yt-status yt-slow">Taking longer than expected… <button class="yt-retry" id="yt-cancel-btn">Cancel</button></div>'
       document.getElementById('yt-cancel-btn')?.addEventListener('click', function() {
         ytSearchState.lastQuery = null
-        cur.innerHTML = '<div class="yt-status">Search cancelled</div>'
+        cur.innerHTML = _ytFailureHtml(null, { cancelled: true })
       })
     }
   }, 8000)
@@ -13646,7 +13667,7 @@ async function runYtSearch(query, scope) {
   if (!res.ok) {
     updateYtHealth('error')
     const cur = document.getElementById('yt-results')
-    if (cur) cur.innerHTML = `<div class="yt-status yt-error">YouTube search failed: ${esc(res.error || 'unknown error')} <button class="yt-retry" id="yt-retry-btn">Retry</button></div>`
+    if (cur) cur.innerHTML = _ytFailureHtml(res.error || 'unknown error', { offline: !state.isOnline })
     setTimeout(function() {
       // Also stop when the user has left the search page, and give up after a
       // few attempts: this used to retry forever, from any page.
@@ -20483,6 +20504,14 @@ function bindContentEvents() {
 
   document.getElementById('yt-retry-btn')?.addEventListener('click', () => {
     runYtSearch(ytSearchState.lastQuery, ytSearchState.scope)
+  })
+  // The failure painter's buttons are re-rendered with every result, so the
+  // retry/settings actions are delegated (roadmap 057).
+  document.getElementById('content')?.addEventListener('click', e => {
+    const t = e.target
+    if (!t || !t.closest) return
+    if (t.closest('#yt-retry-btn')) { if (ytSearchState.lastQuery) runYtSearch(ytSearchState.lastQuery, ytSearchState.scope); return }
+    if (t.closest('#yt-settings-btn')) { openSettings('ytdlp'); return }
   })
 
   document.getElementById('jumpback-play')?.addEventListener('click', function () {

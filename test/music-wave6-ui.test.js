@@ -50,6 +50,18 @@ test('the queue panel wires a clear-played action to the tested helper', () => {
   assert.ok(renderer.includes("'Clear played'"), 'no Clear played button label')
 })
 
+// Roadmap 057: empty is not failure; each failure kind has its own next step.
+test('the YouTube section paints failures through the shared classifier', () => {
+  const H = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'index.html'), 'utf8')
+  assert.ok(H.includes('<script src="source-failure.js"></script>'))
+  assert.ok(renderer.includes('function _ytFailureHtml('))
+  assert.ok(renderer.includes('_ytFailureHtml(null, { offline: true })'), 'offline')
+  assert.ok(renderer.includes('_ytFailureHtml(null, { cancelled: true })'), 'cancelled')
+  assert.ok(renderer.includes("_ytFailureHtml(res.error || 'unknown error', { offline: !state.isOnline })"), 'errors')
+  assert.ok(!/YouTube search failed: \$\{esc\(res\.error/.test(renderer), 'the raw error dump is gone')
+  assert.ok(renderer.includes("F.explain('Soulseek', e,"), 'Soulseek reads the same table')
+})
+
 // Roadmap 040/045: Previous and Play next follow one documented rule each.
 test('Previous and the context-menu Play next go through the tested rules and the help says so', () => {
   assert.ok(renderer.includes('tools.prevAction(audio.currentTime, state.queue.length)'))
