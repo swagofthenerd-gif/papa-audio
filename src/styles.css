@@ -9160,10 +9160,34 @@ body.video-active .np-byline { font-size:10.5px; }
 
 .vt-row {
   display:flex; align-items:center; gap:8px; margin-top:4px;
-  /* The row has grown enough controls that a narrow window used to push the
-     entire right-hand side (CC, Audio, Speed, Stats, settings, fullscreen)
-     past the edge of the screen. Wrapping keeps every control reachable. */
-  flex-wrap:wrap; row-gap:6px;
+  /* This row used to wrap to keep every control reachable on a narrow window,
+     and wrapping turned out to be the more expensive bug of the two.
+     .vt-deck is the one theatre row with no height contract: it is `auto`, so
+     a second line grew it by 42px, .vt-stage (1fr) gave up exactly that, and
+     the whole strip slid up — but the stage IS the rectangle the native mpv
+     window is positioned onto, and bounds are only re-sent on window resize,
+     fullscreen and session start (there is no ResizeObserver anywhere). So
+     the picture kept its old, taller rectangle and covered the top of the
+     episode row, where a click lands on the native video and does nothing.
+     Measured at the 950px window minimum: row 42 -> 84px, deck 94 -> 136px,
+     stage 452 -> 410px, mid-playback, the moment the Chapters or Source chip
+     appeared from the state stream.
+     So: never wrap, hold the height explicitly, and scroll as a last resort.
+     The media query below is what makes that last resort unnecessary at every
+     width the app can actually be. */
+  flex-wrap:nowrap; height:42px; min-width:0;
+  overflow-x:auto; scrollbar-width:none;
+}
+.vt-row::-webkit-scrollbar { display:none; }
+/* Below ~1100px the full control set is about 120px wider than the row, and a
+   control reachable only by scrolling an invisible scrollbar is the bug this
+   replaces — worse, #vt-deck binds the wheel to volume, so the obvious gesture
+   does not even scroll. Stats is the one chip here that is diagnostic rather
+   than part of watching, so it is what gives way; the volume slider stays.
+   Measured at 950px with every optional control shown: 0px overflow. */
+@media (max-width: 1100px) {
+  .vt-row { gap:4px; }
+  #vt-stats { display:none; }
 }
 .vt-spacer { flex:1 1 auto; }
 
