@@ -4161,9 +4161,16 @@ async function _autoSwitchSource() {
     _watch.pick = next
     _watch.stallEvents = 0
     _watch.stallNotified = false
+    const before = _playing || {}
     _playing = { dub: next.dub === true, source: next.source || null, quality: next.quality || null }
     _syncSourcesHighlight()
-    showToast('Switched to ' + (next.source || 'another source'))
+    // V058: the fallback says what changed, not only that it happened — a
+    // different quality, or a dub where there was a sub, is a real change
+    // the person would want to know about and can undo from the list.
+    const changed = []
+    if (before.quality && next.quality && before.quality !== next.quality) changed.push(before.quality + ' → ' + next.quality)
+    if (before.dub != null && next.dub != null && Boolean(before.dub) !== Boolean(next.dub)) changed.push(next.dub ? 'now dubbed' : 'now subtitled')
+    showToast('Switched to ' + (next.source || 'another source') + (changed.length ? ' (' + changed.join(', ') + ') — pick another from the list if that is wrong' : ''))
   }
 }
 

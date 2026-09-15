@@ -1106,3 +1106,11 @@ test('a source label expands on click and copies on double-click', () => {
   assert.ok(R.includes("lbl.classList.toggle('video-source-label-full')"))
   assert.ok(R.includes("showToast('Release name copied')"))
 })
+
+// V058: an automatic fallback names what changed.
+test('the auto-switch toast names a quality or language change and points at the list', () => {
+  const R = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
+  assert.ok(R.includes("changed.push(before.quality + ' → ' + next.quality)"))
+  assert.ok(R.includes("changed.push(next.dub ? 'now dubbed' : 'now subtitled')"))
+  assert.ok(R.includes("— pick another from the list if that is wrong"))
+})
