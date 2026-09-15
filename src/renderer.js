@@ -4221,6 +4221,9 @@ function _startWatchTick(nowMs) {
 // The theatre shows lifecycle on the stage, because until mpv is actually
 // playing there is nothing behind the deck to look at. Once it is playing the
 // message is cleared so the video is unobstructed.
+// The last thing debrid did for this play, in plain words. Read by the tests
+// and available to any surface that wants to show it.
+var _debridNote = ''
 function _handleVideoEvent(payload) {
   if (!_player) return
   if (payload.kind === 'audio') return   // badges come from the state stream
@@ -4228,6 +4231,23 @@ function _handleVideoEvent(payload) {
   // The mouse moved over the picture. Only the theatre cares, and only to know
   // the viewer is still watching rather than gone.
   if (payload.kind === 'activity') { _player.noteActivity(); return }
+
+  // Debrid either served this play or could not. Saying which, and why, is the
+  // whole point: falling back to peers in silence made a working subscription
+  // look broken for days, because there was no way to tell "RealDebrid does
+  // not carry this title" from "the app is ignoring what I paid for".
+  if (payload.kind === 'debrid') {
+    if (payload.ok) { _debridNote = 'Streaming from your debrid account'; return }
+    const why = {
+      blocked: 'RealDebrid does not carry this title — using peers instead',
+      notHeld: 'RealDebrid is not holding any of these sources — using peers instead',
+      busy: 'RealDebrid is rate-limiting this account right now — using peers instead',
+      slow: 'RealDebrid did not answer in time — using peers instead',
+    }[payload.reason] || 'RealDebrid could not serve this one — using peers instead'
+    _debridNote = why
+    showToast(why)
+    return
+  }
 
   // A key pressed inside the video window. mpv owns the keyboard while it has
   // focus, so it forwards the actions that belong to the app.
@@ -4763,6 +4783,12 @@ function _qualityDistance(a, b) {
 // because a source debrid can serve starts in a fraction of a second and one
 // it refuses (404/451, both seen) falls back to the swarm.
 var _debridPick = null
+// The in-flight search for a source debrid can serve. Pressing Play while it
+// was still running raced straight past it to the swarm — which is exactly
+// what "it still falls back to hunting for peers" was (reproduced
+// 2026-09-16). Play now waits briefly for it instead.
+var _debridPickPending = null
+var _DEBRID_PICK_WAIT_MS = 7000
 var _playQuality = ''
 var _QUALITY_ORDER = ['2160p', '1080p', '720p', '480p']
 
@@ -4831,6 +4857,26 @@ var STREAMABLE_MBPS = 30
 function _streamable(stream, minutes) {
   const need = _requiredMbps(stream, minutes)
   return need === 0 || need <= STREAMABLE_MBPS
+}
+
+// The sources worth asking RealDebrid about for THIS play: streamable, not
+// cams, best picture first (sharer counts are irrelevant to debrid). Sent with
+// the play so main can resolve without depending on the page's background
+// search having finished — that dependency was the timing bug.
+var _DEBRID_CANDIDATE_LIMIT = 4
+function _debridCandidatesFor(streams, chosen) {
+  const list = Array.isArray(streams) ? streams : []
+  const minutes = _playMinutes()
+  const qRank = { '2160p': 4, '1080p': 3, '720p': 2, '480p': 1 }
+  const out = list
+    .filter(function (s) { return s && s.kind === 'torrent' && s.magnet && !s.lowQuality && _streamable(s, minutes) })
+    .map(function (s, i) { return { s: s, i: i } })
+    .sort(function (a, b) { return ((qRank[b.s.quality] || 0) - (qRank[a.s.quality] || 0)) || (a.i - b.i) })
+    .map(function (e) { return e.s.magnet })
+  // The source actually chosen leads, so a held one of the right quality wins.
+  const picked = chosen && chosen.magnet
+  const ordered = picked ? [picked].concat(out.filter(function (m) { return m !== picked })) : out
+  return ordered.slice(0, _DEBRID_CANDIDATE_LIMIT)
 }
 
 // What Play starts. The picker wins when the viewer set one; among equals the
@@ -5220,6 +5266,13 @@ function _videoPlayResult(result, opts) {
   // first stream to become servable wins (2026-09-14). Torrents only — a
   // direct URL has nothing to hedge — and never the pick itself.
   if (result.kind === 'torrent') {
+    // Everything debrid could serve for this play, so main never has to wait
+    // on a background search that may not have finished.
+    // Tolerant, like every other read on this path: a ReferenceError here is
+    // a dead Play button, and that has happened before.
+    const debridCandidates = (typeof _debridCandidatesFor === 'function')
+      ? _debridCandidatesFor(_videoStreams, result) : []
+    if (debridCandidates.length) result = Object.assign({}, result, { debridCandidates: debridCandidates })
     const pickedKey = _sourceKey(result)
     const alts = (_videoStreams || []).filter(function (s) {
       return s && s.kind === 'torrent' && s.magnet && _sourceKey(s) !== pickedKey
@@ -5368,8 +5421,36 @@ function _videoPlayResult(result, opts) {
   const cacheProbe = (!opts.manual && result.cacheKey && window.api.videoCacheGet)
     ? window.api.videoCacheGet({ key: result.cacheKey }).catch(function () { return null })
     : Promise.resolve(null)
+  // If the search for a debrid-servable source is still running, give it a
+  // moment before committing to the swarm. Bounded, so a slow or dead debrid
+  // never holds playback hostage — it just loses the race it was going to
+  // lose anyway.
+  // Tolerant of the module state not existing: this sits on the Play path,
+  // and a throw here is a dead Play button — which has already happened once.
+  const pickPending = (typeof _debridPickPending !== 'undefined') ? _debridPickPending : null
+  const pickWaitMs = (typeof _DEBRID_PICK_WAIT_MS !== 'undefined') ? _DEBRID_PICK_WAIT_MS : 7000
+  const debridWait = (!opts.manual && pickPending && result.kind === 'torrent')
+    ? Promise.race([
+        pickPending,
+        new Promise(function (r) { setTimeout(function () { r(null) }, pickWaitMs) }),
+      ]).catch(function () { return null })
+    : Promise.resolve(null)
   Promise.resolve(_player.ready ? _player.ready() : null).then(function () {
-  cacheProbe.then(function (res) {
+  debridWait.then(function (servable) {
+    // The search finished while we waited and named a source debrid will
+    // serve: play THAT instead of whatever the swarm ordering chose.
+    if (servable && Array.isArray(_videoStreams)) {
+      const better = _videoStreams.find(function (s) { return s && s.magnet === servable })
+      if (better) {
+        result = Object.assign({}, better, {
+          season: result.season, episode: result.episode,
+          cacheKey: result.cacheKey, cacheMeta: result.cacheMeta,
+          alternates: result.alternates,
+        })
+      }
+    }
+  return cacheProbe
+  }).then(function (res) {
     const hit = res && res.ok && res.hit
     if (hit && hit.path) {
       result = Object.assign({}, result, { kind: 'cached', url: hit.path, magnet: null, alternates: null })
@@ -10686,11 +10767,17 @@ async function _loadVideoSources(ticket, seasonTicket) {
           .sort(function (a, b) { return ((qRank[b.s.quality] || 0) - (qRank[a.s.quality] || 0)) || (a.i - b.i) })
           .slice(0, 4).map(function (e) { return e.s.magnet })
         if (candidates.length) {
-          window.api.videoDebridPick({ magnets: candidates, titleKey: titleKey })
+          const ticketAtPick = _videoDetailTicket
+          _debridPickPending = window.api.videoDebridPick({ magnets: candidates, titleKey: titleKey })
             .then(function (res) {
+              // A result that arrives after the viewer moved on belongs to a
+              // page that is no longer open.
+              if (_videoDetailTicket !== ticketAtPick) return null
               if (res && res.magnet) { _debridPick = res.magnet; _refreshInstantKeys(true) }
+              return (res && res.magnet) ? res.magnet : null
             })
-            .catch(function () {})
+            .catch(function () { return null })
+            .then(function (m) { _debridPickPending = null; return m })
         }
       }
     })

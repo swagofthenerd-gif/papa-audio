@@ -9922,7 +9922,10 @@ function _videoSettings() {
 const debrid = _lazy(() => createDebrid({
   provider: _videoSettings().debridProvider || 'realdebrid',
   token: () => _videoSettings().debridToken || '',
-  fetchFn: (url, opts) => fetch(url, { ...(opts || {}), signal: AbortSignal.timeout(15000) }),
+  // Node's stack, not Electron's Chromium-backed fetch — see the note beside
+  // the _rdFetch import. This is the difference between debrid working and
+  // "fetch failed" in the log while curl reaches the same host fine.
+  fetchFn: (url, opts) => _rdFetch(url, { ...(opts || {}), signal: AbortSignal.timeout(15000) }),
 }))
 
 // Whether debrid is switched on: a provider AND a token. The check every
@@ -12666,9 +12669,16 @@ ipcMain.handle('video-play', async (_, { result }) => {
             try { const files = streamer.files(); if (files.length > 1 && current()) safeSend('video-event', { kind: 'pack', files, pick: (typeof streamer.pickInfo === 'function' ? streamer.pickInfo() : null) }) } catch (_) {}
           }).catch(fail)
         } })
-        if (_debridWorthTrying(result.magnet)) {
+        if (_debridConfigured() && !_debridAnyWorthTrying(result)) {
+          // Every candidate is already known-refused (RealDebrid answers 451
+          // for a great deal of anime). Say so instead of silently using
+          // peers — silence is what made this look broken.
+          _sendDebridMiss(current, new Error(_debridRateLimited() ? 'too_many_requests' : 'already refused'))
+        }
+        if (_debridAnyWorthTrying(result)) {
           const budget = new Promise((_r, rej) => setTimeout(() => rej(new Error('debrid budget')), DEBRID_BUDGET_MS))
-          Promise.race([_debridPlayable(result.magnet), budget])
+          Promise.race([_debridPlayableAny(result), budget])
+            .catch(e => { _sendDebridMiss(current, e); throw e })
             .then(directUrl => { if (!current() || !directUrl) throw new Error('debrid unusable'); return serve(directUrl).then(() => safeSend('video-event', { kind: 'debrid', ok: true })) })
             .catch(() => { if (current()) startTorrent() })
         } else startTorrent()
@@ -12742,17 +12752,21 @@ ipcMain.handle('video-play', async (_, { result }) => {
       // goes through the exact same engine.load() the torrent path uses (mpv
       // plays a URL and a local server URL identically), so nothing downstream
       // changes.
-      if (_debridWorthTrying(result.magnet)) {
+      if (_debridConfigured() && !_debridAnyWorthTrying(result)) {
+        _sendDebridMiss(current, new Error(_debridRateLimited() ? 'too_many_requests' : 'already refused'))
+      }
+      if (_debridAnyWorthTrying(result)) {
         // A link resolved during the page visit is used at once; only an
         // unresolved magnet is raced against the budget.
         // linkFor proves the link before handing it over and re-mints a stale
         // one, because a dead link looks exactly like debrid not working
         // (2026-09-15). The budget still bounds the whole attempt.
         const attempt = Promise.race([
-          _debridPlayable(result.magnet),
+          _debridPlayableAny(result),
           new Promise((_r, rej) => setTimeout(() => rej(new Error('debrid budget')), DEBRID_BUDGET_MS)),
         ])
         attempt
+          .catch(e => { _sendDebridMiss(current, e); throw e })
           .then(async directUrl => {
             if (!current() || !directUrl) throw new Error('debrid unusable')
             await spinUp
@@ -13270,16 +13284,51 @@ ipcMain.handle('video-debrid-pick', async (_, { magnets, titleKey } = {}) => {
     const list = (Array.isArray(magnets) ? magnets : [])
       .filter(m => typeof m === 'string' && m && !_debridRefusedHas(m)).slice(0, 4)
     if (!list.length) return { ok: true, magnet: null, allRefused: true }
-    for (const magnet of list) {
-      if (_videoSession.streamer) return { ok: true, magnet: null, skipped: 'playing' }
+
+    if (_debridRateLimited()) return { ok: true, magnet: null, rateLimited: true }
+    const deadline = Date.now() + DEBRID_PICK_DEADLINE_MS
+    const outOfTime = () => Date.now() > deadline
+
+    // Ask each candidate whether RealDebrid is already holding it.
+    // Resolving them one at a time took 30-60 s, which is far longer than
+    // anyone waits before pressing Play — so the app fell back to peers every
+    // time and the subscription looked broken (reproduced 2026-09-16: press
+    // Play as soon as the sources appear and the pick is still unfinished).
+    // One cheap look each, in parallel, is a second or two.
+    const checks = await Promise.all(list.map(async (magnet, i) => {
+      // Staggered, not a burst — see DEBRID_STAGGER_MS.
+      if (i) await new Promise(r => setTimeout(r, i * DEBRID_STAGGER_MS))
+      if (outOfTime()) return { magnet, cached: false, error: 'out of time' }
       try {
-        const url = await _debridPlayable(magnet)
+        return { magnet, cached: await debrid().isCached(magnet) }
+      } catch (e) {
+        const code = (e && e.code) || ''
+        if (/HTTP_(451|404)/.test(code)) _debridRefusedMark(magnet, code)
+        // A 429 is about US, not this source — never remember it as a refusal.
+        if (/HTTP_429/.test(code)) _debridBackOff()
+        return { magnet, cached: false, error: (e && e.message) || String(e) }
+      }
+    }))
+
+    // Candidates arrive best-picture-first, so the first held one is the best
+    // held one.
+    const held = checks.filter(c => c.cached)
+    if (!held.length) {
+      const why = checks.map(c => c.error).filter(Boolean)[0]
+      if (why) { try { console.warn('[papa][debrid] no candidate held:', why) } catch (_) {} }
+      return { ok: true, magnet: null, noneHeld: true }
+    }
+    for (const c of held) {
+      if (outOfTime()) break
+      try {
+        const url = await _debridPlayable(c.magnet)
         if (url) {
           if (titleKey) _instantMark(titleKey, 'debrid')
-          return { ok: true, magnet }
+          return { ok: true, magnet: c.magnet }
         }
       } catch (e) {
-        try { console.warn('[papa][debrid] source refused:', (e && e.message) || e) } catch (_) {}
+        if (/HTTP_429/.test((e && e.code) || '')) _debridBackOff()
+        try { console.warn('[papa][debrid] held but unplayable:', (e && e.message) || e) } catch (_) {}
       }
     }
     return { ok: true, magnet: null }
@@ -13440,6 +13489,11 @@ ipcMain.handle('video-download-list', async () => ({ ok: true, downloads: _downl
 // bounds that range and playback and seeking both work. One at a time, torn
 // down with the stream.
 const { createDebridProxy } = require('./src/debrid-proxy')
+// Debrid talks to RealDebrid through Node's own HTTP stack, not Electron's
+// Chromium-backed fetch: measured 2026-09-16, curl reached the host six times
+// out of six while the app logged "fetch failed" for the same host in the
+// same minute.
+const { nodeFetch: _rdFetch } = require('./src/node-fetch-shim')
 // The relay is built ONCE per magnet and kept, because building it is the
 // slow part: proving the link, then a HEAD probe that these servers answer
 // 503 to about two times in five, each retry costing hundreds of
@@ -13489,8 +13543,89 @@ function _debridRefusedMark(magnet, code) {
 function _debridWorthTrying(magnet) {
   return _debridConfigured() && !!magnet && !_debridRefusedHas(magnet)
 }
+// Worth asking about this PLAY at all: any candidate RealDebrid has not
+// already refused is reason enough to look.
+function _debridAnyWorthTrying(result) {
+  if (!_debridConfigured() || !result) return false
+  // Rate-limited: asking again now only prolongs it.
+  if (_debridRateLimited()) return false
+  const all = [result.magnet].concat(Array.isArray(result.debridCandidates) ? result.debridCandidates : [])
+  return all.some(m => typeof m === 'string' && m && !_debridRefusedHas(m))
+}
 
 const DEBRID_RELAY_TTL_MS = 9 * 60 * 1000
+// The candidate search must answer well inside its IPC deadline (60 s): a
+// search that outlives it errors the whole call and tells the page nothing.
+const DEBRID_PICK_DEADLINE_MS = 25000
+// Space between registrations. Four in the same instant is what earns
+// RealDebrid's 429 "too_many_requests" (seen 2026-09-16).
+const DEBRID_STAGGER_MS = 350
+// RealDebrid rate-limits per account. When it says so, stop asking for a
+// while rather than digging the hole deeper; playback simply uses peers.
+let _debridBackoffUntil = 0
+function _debridBackOff() { _debridBackoffUntil = Date.now() + 2 * 60 * 1000 }
+function _debridRateLimited() { return Date.now() < _debridBackoffUntil }
+// Play's OWN debrid resolution, independent of any background search having
+// finished. Waiting on the page's search was the timing bug: press Play as
+// soon as the sources appear and the search is still running, so playback
+// fell back to peers (reproduced 2026-09-16). Asking RealDebrid which of a
+// handful of candidates it is holding now costs one parallel round of cheap
+// look-ups, so Play can simply do it itself and never depend on timing.
+//
+// Order matters: the source actually chosen comes first, then the rest
+// best-picture-first, so a held source of the right quality wins.
+// Why debrid could not serve this play, in words the viewer can act on.
+// Falling back to peers SILENTLY is what made a working subscription look
+// broken for days: there was no way to tell "RealDebrid does not have this"
+// from "the app is ignoring my subscription".
+function _debridReasonFrom(err) {
+  const msg = String((err && err.message) || err || '')
+  const code = (err && err.code) || ''
+  if (_debridRateLimited() || /HTTP_429|too_many_requests/.test(msg + code)) return 'busy'
+  if (/451/.test(msg + code)) return 'blocked'
+  if (/not holding any/.test(msg)) return 'notHeld'
+  if (/already refused/.test(msg)) return 'blocked'
+  if (/aborted|timed out|budget/.test(msg)) return 'slow'
+  return 'unavailable'
+}
+function _sendDebridMiss(current, err) {
+  try {
+    if (typeof current === 'function' && !current()) return
+    safeSend('video-event', { kind: 'debrid', ok: false, reason: _debridReasonFrom(err) })
+  } catch (_) {}
+}
+
+async function _debridPlayableAny(result) {
+  const candidates = []
+  const push = m => { if (typeof m === 'string' && m && candidates.indexOf(m) === -1) candidates.push(m) }
+  push(result && result.magnet)
+  for (const m of (Array.isArray(result && result.debridCandidates) ? result.debridCandidates : [])) push(m)
+  const usable = candidates.filter(m => !_debridRefusedHas(m)).slice(0, 4)
+  if (!usable.length) throw new Error('every candidate already refused')
+
+  // A relay already standing for any of them is instant — no look-up at all.
+  for (const m of usable) {
+    if (_debridReady && _debridReady.magnet === m &&
+        (Date.now() - _debridReady.at) < DEBRID_RELAY_TTL_MS) return _debridReady.url
+  }
+
+  const checks = await Promise.all(usable.map(async magnet => {
+    try { return { magnet, cached: await debrid().isCached(magnet) } }
+    catch (e) {
+      const code = (e && e.code) || ''
+      if (/HTTP_(451|404)/.test(code)) _debridRefusedMark(magnet, code)
+      return { magnet, cached: false }
+    }
+  }))
+  const held = checks.filter(c => c.cached)
+  if (!held.length) throw new Error('RealDebrid is not holding any of these sources')
+  let last = null
+  for (const c of held) {
+    try { return await _debridPlayable(c.magnet) } catch (e) { last = e }
+  }
+  throw last || new Error('no held source would serve')
+}
+
 async function _debridPlayable(magnet) {
   if (_debridReady && _debridReady.magnet === magnet &&
       (Date.now() - _debridReady.at) < DEBRID_RELAY_TTL_MS) {
@@ -13506,14 +13641,18 @@ async function _debridPlayable(magnet) {
     if (/HTTP_(451|404)/.test(code)) _debridRefusedMark(magnet, code)
     throw e
   }
-  const proxy = createDebridProxy({})
+  // The relay's own requests are bounded too: a stalled one used to hang the
+  // whole search past its IPC deadline.
+  const proxy = createDebridProxy({ fetchFn: (u, o) => _rdFetch(u, Object.assign({ timeoutMs: 20000 }, o || {})) })
   const url = await proxy.serve(direct)
   _debridProxyStop()
   _debridReady = { magnet, proxy, url, at: Date.now() }
   return url
 }
 
-const DEBRID_BUDGET_MS = 5000
+// Enough for one parallel round of cheap look-ups plus building the relay,
+// on servers that refuse about two requests in five.
+const DEBRID_BUDGET_MS = 14000
 // The rewatch cache, read side. get: one key, touching lastUsedAt so the
 // eviction clock follows watching, not saving. list/delete serve the
 // on-device view. Missing files self-heal out of the index.

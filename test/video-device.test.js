@@ -81,7 +81,9 @@ test('the renderer rides the watch identity on every play and swaps the default 
   assert.ok(/cacheKey: _watchKey\(_videoDetail\.type, d\.id, _videoState\.season, _videoState\.episode\)/.test(RENDERER))
   const at = RENDERER.indexOf('const cacheProbe =')
   assert.ok(at > -1)
-  const probe = RENDERER.slice(at, at + 1200)
+  // Widened: the bounded wait for the debrid-servable source now sits between
+  // the cache probe and the swap (2026-09-16).
+  const probe = RENDERER.slice(at, at + 3000)
   assert.ok(/!opts\.manual && result\.cacheKey/.test(probe), 'a hand-picked source row is never overridden')
   assert.ok(/kind: 'cached', url: hit\.path, magnet: null, alternates: null/.test(probe))
 })
