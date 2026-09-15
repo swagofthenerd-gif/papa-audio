@@ -50,6 +50,19 @@ test('the queue panel wires a clear-played action to the tested helper', () => {
   assert.ok(renderer.includes("'Clear played'"), 'no Clear played button label')
 })
 
+// Roadmap 114: the player bar's seek and volume are sliders to assistive tech.
+test('the player-bar seek and volume tracks carry slider semantics, values and keys', () => {
+  const H = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'index.html'), 'utf8')
+  assert.match(H, /id="progress-track" role="slider" tabindex="0"\n\s+aria-label="Seek" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-valuetext=/)
+  assert.match(H, /id="vol-track" role="slider" tabindex="0"\n\s+aria-label="Volume" aria-valuemin="0" aria-valuemax="100"/)
+  assert.ok(renderer.includes('_syncSeekAria(ct, audio.duration)'), 'the time tick keeps the seek value current')
+  assert.ok(renderer.includes('_syncVolumeAria(vol)'), 'every volume change keeps the volume value current')
+  assert.ok(/if \(a\.valuenow === _ariaSeekLast\) return/.test(renderer), 'the seek value is written only when the percent changes (116)')
+  assert.ok(renderer.includes("bindSliderKeys(document.getElementById('progress-track')"), 'seek takes keys')
+  assert.ok(renderer.includes("bindSliderKeys(document.getElementById('vol-track')"), 'volume takes keys')
+  assert.ok(renderer.includes('sliderKeyRatio(e.key, e.shiftKey, cur, step)'), 'through the tested key rule')
+})
+
 // Roadmap 087: the hero editor writes real tags and says so; no "coming soon".
 test('album hero edits go through the tag writer with an explicit scope note', () => {
   assert.ok(!renderer.includes('visual only — save to file coming soon'), 'the placeholder note is gone')

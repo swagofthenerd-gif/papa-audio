@@ -48,6 +48,31 @@ test('the preset menu offers end-of-track and the five minute presets', () => {
   assert.ok(T.SLEEP_PRESETS.some(p => p.endOfTrack), 'no end-of-track option')
 })
 
+// ── Slider semantics (roadmap 114) ───────────────────────────────────────────
+const mmss = s => Math.floor(s / 60) + ':' + String(Math.floor(s % 60)).padStart(2, '0')
+test('the seek slider reports a percent and a spoken position', () => {
+  assert.deepEqual(T.seekAria(85, 250, mmss), { valuenow: 34, valuemax: 100, valuetext: '1:25 of 4:10' })
+  assert.deepEqual(T.seekAria(0, 0, mmss), { valuenow: 0, valuemax: 100, valuetext: 'Nothing playing' })
+  assert.equal(T.seekAria(999, 250, mmss).valuenow, 100, 'clamped to the track')
+})
+
+test('the volume slider reports a percent and says Muted at zero', () => {
+  assert.deepEqual(T.volumeAria(0.8), { valuenow: 80, valuemax: 100, valuetext: '80%' })
+  assert.deepEqual(T.volumeAria(0), { valuenow: 0, valuemax: 100, valuetext: 'Muted' })
+  assert.equal(T.volumeAria(1.3).valuenow, 100)
+})
+
+test('slider keys: arrows step, Shift is six times bigger, Home/End go to the ends, others are not owned', () => {
+  assert.equal(T.sliderKeyRatio('ArrowRight', false, 0.5, 0.05), 0.55)
+  assert.equal(T.sliderKeyRatio('ArrowLeft', true, 0.5, 0.05), 0.2)
+  assert.equal(T.sliderKeyRatio('ArrowUp', false, 0.98, 0.05), 1)
+  assert.equal(T.sliderKeyRatio('Home', false, 0.5, 0.05), 0)
+  assert.equal(T.sliderKeyRatio('End', false, 0.5, 0.05), 1)
+  assert.equal(T.sliderKeyRatio('PageDown', false, 0.5, 0.05), 0.4)
+  assert.equal(T.sliderKeyRatio(' ', false, 0.5, 0.05), null, 'Space is not a slider key')
+  assert.equal(T.sliderKeyRatio('Enter', false, 0.5, 0.05), null)
+})
+
 // ── Album hero edits → tag writes (roadmap 087) ──────────────────────────────
 const heroAlbum = () => ({ artist: 'Camel', name: 'Snow Goose', tracks: [
   { filePath: '/m/1.flac', artist: 'Camel' },

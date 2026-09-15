@@ -811,7 +811,10 @@
     </div>
     <div class="progress-row">
       <span class="time-label" id="time-cur">0:00</span>
-      <div class="progress-track" id="progress-track">
+      <!-- Roadmap 114: a real slider to assistive technology — name, value,
+           bounds and keyboard (arrows, Home/End; Shift for big steps). -->
+      <div class="progress-track" id="progress-track" role="slider" tabindex="0"
+           aria-label="Seek" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-valuetext="Nothing playing">
         <div class="progress-fill" id="progress-fill" style="width:0%"></div>
         <!-- A–B loop markers (App #5): hidden until a loop point is set. -->
         <div class="ab-marker ab-marker-a" id="ab-marker-a" style="display:none" title="Loop point A"></div>
@@ -837,7 +840,8 @@
       <button class="ctrl-btn vol-icon-btn" id="btn-vol" title="Mute (M)" aria-label="Mute" aria-pressed="false">
         <svg class="vol-icon" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77 0-4.28-2.99-7.86-7-8.77z"/></svg>
       </button>
-      <div class="vol-track" id="vol-track">
+      <div class="vol-track" id="vol-track" role="slider" tabindex="0"
+           aria-label="Volume" aria-valuemin="0" aria-valuemax="100" aria-valuenow="80" aria-valuetext="80%">
         <div class="vol-fill" id="vol-fill" style="width:80%"></div>
         <div class="vol-thumb" id="vol-thumb" style="left:80%"></div>
       </div>

@@ -109,6 +109,37 @@
     return out
   }
 
+  // Slider semantics for assistive technology (roadmap 114). The player bar's
+  // seek and volume tracks are plain divs; this gives them the ARIA values a
+  // screen reader reads out: a 0–100 number, and text a person understands.
+  // Pure so the wording is tested. `fmt` formats seconds as m:ss.
+  function seekAria(position, duration, fmt) {
+    var d = Number(duration) || 0, p = Math.max(0, Math.min(d, Number(position) || 0))
+    var f = typeof fmt === 'function' ? fmt : function (s) { return String(Math.round(s)) + 's' }
+    if (d <= 0) return { valuenow: 0, valuemax: 100, valuetext: 'Nothing playing' }
+    return { valuenow: Math.round(p / d * 100), valuemax: 100, valuetext: f(p) + ' of ' + f(d) }
+  }
+  function volumeAria(volume) {
+    var v = Math.max(0, Math.min(1, Number(volume) || 0))
+    var pct = Math.round(v * 100)
+    return { valuenow: pct, valuemax: 100, valuetext: pct === 0 ? 'Muted' : pct + '%' }
+  }
+  // What an arrow/Home/End key on a slider means, as a new 0–1 ratio, or null
+  // for a key the slider does not own. Shift makes the step six times bigger
+  // (30 s on a 5 s seek step; 30 % on a 5 % volume step).
+  function sliderKeyRatio(key, shift, current, step) {
+    var cur = Math.max(0, Math.min(1, Number(current) || 0))
+    var st = (Number(step) || 0.05) * (shift ? 6 : 1)
+    var clamp = function (v) { return Math.round(Math.max(0, Math.min(1, v)) * 1e6) / 1e6 }
+    if (key === 'Home') return 0
+    if (key === 'End') return 1
+    if (key === 'ArrowRight' || key === 'ArrowUp') return clamp(cur + st)
+    if (key === 'ArrowLeft' || key === 'ArrowDown') return clamp(cur - st)
+    if (key === 'PageUp') return clamp(cur + st * 2)
+    if (key === 'PageDown') return clamp(cur - st * 2)
+    return null
+  }
+
   function clearPlayedQueue(queue, queueIndex) {
     queue = queue || []
     var idx = Number(queueIndex)
@@ -1717,6 +1748,9 @@
     clearUpcomingQueue: clearUpcomingQueue,
     rowWheelDelta: rowWheelDelta,
     heroTagWrites: heroTagWrites,
+    seekAria: seekAria,
+    volumeAria: volumeAria,
+    sliderKeyRatio: sliderKeyRatio,
     topAlbumsByPlays: topAlbumsByPlays,
     playsPerMonth: playsPerMonth,
     normalizeForDupe: normalizeForDupe,

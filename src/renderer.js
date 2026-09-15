@@ -20207,6 +20207,47 @@ function reorderQueue(srcIdx, destIdx, insertBefore) {
   }
 }
 
+// Roadmap 114: the player bar's seek and volume tracks are sliders to a screen
+// reader — value, bounds and text kept current from the same ticks that paint
+// them — and take the standard slider keys. The wording and key rules live in
+// music-tools so they are tested.
+var _ariaSeekLast = -1
+function _syncSeekAria(position, duration) {
+  var el = document.getElementById('progress-track')
+  var tools = (typeof window !== 'undefined' && window.PapaMusicTools) || null
+  if (!el || !tools) return
+  var a = tools.seekAria(position, duration, fmtDur)
+  // Elapsed time must not flood a screen reader (roadmap 116): the value only
+  // changes when the whole-percent does, and aria-valuetext is not live.
+  if (a.valuenow === _ariaSeekLast) return
+  _ariaSeekLast = a.valuenow
+  el.setAttribute('aria-valuenow', String(a.valuenow))
+  el.setAttribute('aria-valuetext', a.valuetext)
+}
+function _syncVolumeAria(volume) {
+  var el = document.getElementById('vol-track')
+  var tools = (typeof window !== 'undefined' && window.PapaMusicTools) || null
+  if (!el || !tools) return
+  var a = tools.volumeAria(volume)
+  el.setAttribute('aria-valuenow', String(a.valuenow))
+  el.setAttribute('aria-valuetext', a.valuetext)
+}
+function bindSliderKeys(el, opts) {
+  if (!el) return
+  el.addEventListener('keydown', function (e) {
+    if (e.defaultPrevented || e.isComposing || e.ctrlKey || e.metaKey || e.altKey) return
+    var tools = (typeof window !== 'undefined' && window.PapaMusicTools) || null
+    if (!tools) return
+    var cur = opts.get()
+    if (cur == null) return
+    var step = typeof opts.step === 'function' ? opts.step() : opts.step
+    var next = tools.sliderKeyRatio(e.key, e.shiftKey, cur, step)
+    if (next == null) return
+    e.preventDefault(); e.stopPropagation()
+    opts.set(next)
+  })
+}
+
 function makeDraggable(trackEl, fillEl, thumbEl, onChange) {
   if (!trackEl) return
   let activeId = null
@@ -20987,6 +21028,7 @@ function setVolDisplay(vol) {
   // Volume below or above unity rescales samples, so the quality badge's
   // BIT-PERFECT verdict depends on it (roadmap 093).
   try { updateBitPerfectBadge() } catch (_) {}
+  _syncVolumeAria(vol)
   const fill  = document.getElementById('vol-fill')
   const thumb = document.getElementById('vol-thumb')
   if (fill)  fill.style.width  = pct
@@ -28638,6 +28680,14 @@ function setupListeners() {
     ratio => { if (audio.duration) audio.currentTime = ratio * audio.duration }
   )
 
+  // Keyboard on the seek slider (roadmap 114): 5 s steps, Shift for 30 s,
+  // Home/End. Nothing to seek in means the keys do nothing rather than lie.
+  bindSliderKeys(document.getElementById('progress-track'), {
+    step: function () { return audio.duration ? 5 / audio.duration : 0.05 },   // 5 s as a ratio of this track
+    get: function () { return audio.duration ? audio.currentTime / audio.duration : null },
+    set: function (r) { if (audio.duration) audio.currentTime = r * audio.duration },
+  })
+
   // Progress bar hover tooltip
   const progressTrack = document.getElementById('progress-track')
   const progressTooltip = document.getElementById('progress-tooltip')
@@ -28679,6 +28729,18 @@ function setupListeners() {
       _volSaveTimer = setTimeout(() => window.api.saveVolume(ratio), 300)
     }
   )
+
+  // Keyboard on the volume slider (roadmap 114): 5 % steps, Shift for 30 %.
+  bindSliderKeys(document.getElementById('vol-track'), {
+    step: 0.05,
+    get: function () { return audio.volume },
+    set: function (r) {
+      audio.volume = r; state.lastVolume = r
+      setVolDisplay(r)
+      clearTimeout(_volSaveTimer)
+      _volSaveTimer = setTimeout(() => window.api.saveVolume(r), 300)
+    },
+  })
 
   // Volume scroll with mouse wheel
   document.getElementById('vol-track')?.addEventListener('wheel', e => {
@@ -29133,6 +29195,7 @@ function setupListeners() {
     // the bar, the recalc touches only the bar's subtree.
     if (_dom.playerBar) _dom.playerBar.style.setProperty('--np-bar-progress', String(ratio * 100))
     if (_dom.timeCur) { _dom.timeCur.textContent = _fmtTimeCur(ct); _dom.timeCur.title = _timeCurTitle() }
+    _syncSeekAria(ct, audio.duration)
     if (state.modalOpen) {
       if (_dom.modalFill)  _dom.modalFill.style.width = pct
       if (_dom.modalThumb) _dom.modalThumb.style.left  = pct
