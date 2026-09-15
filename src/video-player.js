@@ -287,6 +287,7 @@
     let upNextInfo = null
     let upNextDismissed = false
     let upNextHover = false
+    let upNextFocused = false
     let media = null   // { title, sub, next, onPrev?, onPrefChange? }
 
     // total ⇄ remaining on the duration readout. Read once at creation, written
@@ -1189,7 +1190,7 @@
         // the card means the same thing said with the pointer: the user is
         // reading it, deciding — and a card that advances while being read is
         // a card that cannot be declined. Resumes the moment the pointer leaves.
-        if ((state && state.paused) || upNextHover) return
+        if ((state && state.paused) || upNextHover || upNextFocused) return
         // Enough episodes have played to an empty room: hold at three seconds
         // and ask, rather than starting yet another one. The interval keeps
         // running but goes no lower, so answering Continue can resume it from
@@ -2161,7 +2162,13 @@
     }
 
     function onKey(e) {
-      if (!keymap) return
+      if (!keymap || e.defaultPrevented || e.isComposing) return
+      // Space belongs to the focused control; its native activation must not
+      // also toggle the film through this document-level handler.
+      const target = e.target
+      const tag = String(target && target.tagName || '').toUpperCase()
+      const isButton = tag === 'BUTTON' || (target && target.closest && target.closest('button, [role="button"]'))
+      if ((e.key === ' ' || e.key === 'Enter') && isButton) return
       // The handler lives on document for the life of the app, so it must do
       // nothing at all unless the theatre is actually open. Otherwise these
       // shortcuts apply to every screen in the app.
@@ -2682,6 +2689,11 @@
       // Bound on the box, which survives every innerHTML repaint of the card.
       $('vt-upnext')?.addEventListener('pointerenter', function () { upNextHover = true })
       $('vt-upnext')?.addEventListener('pointerleave', function () { upNextHover = false })
+      $('vt-upnext')?.addEventListener('focusin', function () { upNextFocused = true })
+      $('vt-upnext')?.addEventListener('focusout', function (e) {
+        const box = $('vt-upnext')
+        upNextFocused = !!(box && e.relatedTarget && box.contains(e.relatedTarget))
+      })
       bindSeek()
       bindIdle()
       doc.addEventListener('keydown', onKey)
@@ -2731,6 +2743,7 @@
       lastSkipShown = null
       upNextDismissed = false
       upNextHover = false
+      upNextFocused = false
       // The still-watching prompt belongs to whatever card was on screen; a
       // new file starts without it. The autoAdvances count is deliberately NOT
       // reset here — an auto-advance re-opens the player through this very path,

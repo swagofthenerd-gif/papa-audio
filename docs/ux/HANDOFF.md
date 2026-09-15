@@ -36,3 +36,25 @@ real pointer hardware, native mpv relay, or actual audio/video validation yet.
 5. Keep this file updated with exact tests, outstanding risks, and push status.
 
 No roadmap item is marked fully done solely on fake-DOM tests.
+
+## Second batch: V104/V105 and V036 (partial)
+
+- Document keyboard handling now respects defaultPrevented and IME composition.
+- Space/Enter on a focused button stays with that button's native activation.
+- Up Next countdown pauses for keyboard focus independently of mouse hover.
+- Three more behavioral tests added (12 new regressions total).
+
+Final targeted validation: `node --test test/video-player.test.js test/video-mini.test.js test/video-keymap.test.js`
+passed **204/204**. `git diff --check` passed. No whole-app or real-device test
+has been run. Next priorities remain actual DOM/native gesture validation and
+seek cancellation/session-lifetime review. Fixed 300 ms double-click arbitration
+is a known limitation for slower OS double-click settings.
+
+## Remote checkpoint status
+
+GitHub push was attempted and FAILED: no GitHub authentication was available
+(`could not read Username for https://github.com`). The branch is committed
+locally, not published. Public repository visibility permits reads, not writes.
+A portable checkpoint archive accompanies this handoff and contains the git
+bundle, patch series, both plans, and recovery instructions. Import it into an
+authenticated checkout and push the named branch; do not assume it exists online.

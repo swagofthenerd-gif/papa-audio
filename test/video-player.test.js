@@ -2485,3 +2485,38 @@ test('wheel over a menu never modifies background volume', () => {
   nodes['vt-deck'].fire('wheel', { deltaY: 120, target: { closest: () => ({}) } })
   assert.equal(sent.length, 0)
 })
+
+test('Space on a focused transport button leaves activation to the button', () => {
+  const { p, nodes, sent, press } = harness()
+  p.open({ title: 'X' }); p._setState(stateAt(100))
+  sent.length = 0
+  assert.equal(press(' ', { tagName: 'BUTTON' }), false)
+  assert.equal(sent.length, 0)
+  nodes['vt-play'].fire('click')
+  assert.equal(sent.filter(x => x.verb === 'pause').length, 1)
+})
+
+test('handled keys and IME composition never reach video shortcuts', () => {
+  const { p, sent, fire } = harness()
+  p.open({ title: 'X' }); p._setState(stateAt(100)); sent.length = 0
+  fire('keydown', { key: 'm', defaultPrevented: true })
+  fire('keydown', { key: ' ', isComposing: true })
+  assert.equal(sent.length, 0)
+})
+
+test('Up Next waits while keyboard focus is inside, then resumes', t => {
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
+  let advanced = 0
+  const { p, nodes } = harness({
+    segments: [{ kind: 'credits', start: 3400, end: 3600, origin: 'chapters', confidence: 0.9 }],
+    onNext: () => { advanced++ },
+  })
+  p.setUpNext({ title: 'Next' }); p._setState(stateAt(3450))
+  nodes['vt-upnext'].fire('focusin')
+  nodes['vt-upnext'].fire('pointerleave')
+  t.mock.timers.tick(20000)
+  assert.equal(advanced, 0)
+  nodes['vt-upnext'].fire('focusout', { relatedTarget: null })
+  t.mock.timers.tick(20000)
+  assert.equal(advanced, 1)
+})
