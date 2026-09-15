@@ -87,7 +87,7 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | A079 | Fixed `bfb2d44` — capacity check before enqueue |
 | A080 | Fixed — outcomes stated on every action |
 | A081 | Fixed — one notice per album, click to play |
-| A082 | Pending review/implementation |
+| A082 | Fixed `b6fb102` |
 | A083 | Fixed `71abddb` — relink carries every store and the cache |
 | A084 | Fixed `2e01d08` — unplugged root = unavailable, not deleted |
 | A085 | Fixed `71abddb` — guided relink with preview |
@@ -229,10 +229,10 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | V061 | Already satisfied in source — Finding sources / Still connecting / Buffering N% / Downloading N% · Mbps · peers / stuck words / error; runtime check pending |
 | V062 | Pending review/implementation |
 | V063 | Pending review/implementation |
-| V064 | Pending review/implementation |
+| V064 | Already satisfied in source — media-handoff.js referees music/video ownership (#72); runtime check pending |
 | V065 | Pending review/implementation |
 | V066 | Pending review/implementation |
-| V067 | Pending review/implementation |
+| V067 | Fixed — three transformations named; remux silent |
 | V068 | Pending review/implementation |
 | V069 | Pending review/implementation |
 | V070 | Pending review/implementation |
