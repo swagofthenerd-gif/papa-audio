@@ -32106,17 +32106,24 @@ async function renderManageHealth() {
   }
   var findings = H.assessLibrary(state.library, extras)
   _mgState.findings = findings
+  // Roadmap 083/085: files the library lists that are no longer where it
+  // thinks. Shown first, with the guided relink, because every other health
+  // number is wrong until these are either found again or removed.
+  var deadRes = await window.api.libraryDeadPaths().catch(function () { return null })
+  var dead = (deadRes && deadRes.ok && Array.isArray(deadRes.dead)) ? deadRes.dead : []
+  if (_mgState.tab !== _tabAtStart || state.currentPage !== 'manage') return
+  var relinkHtml = dead.length ? _mgRelinkGroupHtml(dead) : ''
   _mgCachePut('health', { findings: findings })   // feed the dashboard health card
   var reclaim = H.reclaimable(findings)
 
-  if (!findings.length) {
+  if (!findings.length && !dead.length) {
     setContent(_mgShell('<div class="mg-empty">Nothing wrong found. Library looks clean.</div>',
       'No problems detected'))
     _mgBindTabs()
     return
   }
 
-  var html = ''
+  var html = relinkHtml
   for (var i = 0; i < findings.length; i++) {
     var f = findings[i]
     // Album findings show real albums — name, folder, a click-through — not
@@ -32165,6 +32172,51 @@ async function renderManageHealth() {
       if (f && f.fixAction) libraryMutate({ kind: 'trash', paths: f.fixAction.paths, label: f.title })
     })
   })
+  document.getElementById('mg-relink-btn')?.addEventListener('click', _mgRelinkFlow)
+}
+
+function _mgRelinkGroupHtml(dead) {
+  return '<div class="mg-group mg-sev-high" id="mg-relink-group">' +
+    '<div class="mg-group-head"><span class="mg-group-title">Files that moved or were renamed outside the app</span>' +
+    '<span class="mg-group-meta">' + dead.length + ' file' + (dead.length === 1 ? '' : 's') + '</span></div>' +
+    '<div class="mg-health-detail">The library still lists these where they used to be. Point at their new folder and their likes, play counts, history, playlists and queues follow them. Nothing is deleted here.</div>' +
+    dead.slice(0, 6).map(function (p) { return '<div class="mg-health-path">' + esc(_mgBaseName(p) || p) + '</div>' }).join('') +
+    (dead.length > 6 ? '<div class="mg-health-path">…and ' + (dead.length - 6) + ' more</div>' : '') +
+    '<div class="mg-health-actions"><button class="mg-btn mg-btn-sm" id="mg-relink-btn">Find them in a folder…</button></div>' +
+  '</div>'
+}
+
+// The guided relink (roadmap 085): choose the folder, preview the matches
+// and what could not be matched, then apply — or not.
+async function _mgRelinkFlow() {
+  var picked = await window.api.pickFolder({ title: 'Where did the files move to?' }).catch(function () { return null })
+  if (!picked || !picked.ok) return
+  showSnackbar('Looking in ' + shortPath(picked.path) + '…', '', function () {}, 3000)
+  var res = await window.api.libraryRelinkPlan({ newRoot: picked.path }).catch(function () { return null })
+  if (!res || !res.ok) { showSnackbar('Could not look there' + (res && res.error ? ' — ' + res.error : '')); return }
+  var plan = res.plan
+  if (!plan.remaps.length) {
+    showSnackbar('None of the ' + res.deadCount + ' missing files were found under ' + shortPath(picked.path) + ' (' + res.foundCount + ' audio files there)')
+    return
+  }
+  var sample = plan.remaps.slice(0, 5).map(function (r) {
+    return '<div class="mg-health-path" title="' + esc(r.from) + ' → ' + esc(r.to) + '">' + esc(_mgBaseName(r.from)) + ' <span style="color:var(--text3)">→</span> ' + esc(shortPath(r.to)) + '</div>'
+  }).join('')
+  _mgConfirm('Relink ' + plan.remaps.length + ' file' + (plan.remaps.length === 1 ? '' : 's') + '?',
+    '<p class="mg-confirm-sum" style="margin-top:0">' + esc(res.text) + '</p>' + sample +
+    (plan.remaps.length > 5 ? '<div class="mg-health-path">…and ' + (plan.remaps.length - 5) + ' more</div>' : '') +
+    (plan.ambiguous.length ? '<p class="mg-confirm-note">' + plan.ambiguous.length + ' had more than one possible match and are left alone.</p>' : '') +
+    (plan.unresolved.length ? '<p class="mg-confirm-note">' + plan.unresolved.length + ' were not found under this folder and stay as they are.</p>' : '') +
+    '<p class="mg-confirm-note">Likes, play counts, history, playlists and saved queues follow the files. No file is moved or deleted.</p>',
+    'Relink',
+    async function () {
+      var out = await window.api.libraryRelinkApply({ remaps: plan.remaps, root: res.root }).catch(function () { return null })
+      if (!out || !out.ok) { showSnackbar('Relink failed' + (out && out.error ? ' — ' + out.error : '')); return }
+      await reloadPersistedState()
+      showSnackbar('Relinked ' + out.relinked + ' file' + (out.relinked === 1 ? '' : 's') + (out.rootAdded ? ' — ' + shortPath(res.root) + ' added to your music folders' : ''))
+      _scheduleLibRescan()
+      if (state.currentPage === 'manage') setTimeout(renderManage, 1500)
+    })
 }
 
 // ── Bulk genre fixer (App #8) ──────────────────────────────────────────────

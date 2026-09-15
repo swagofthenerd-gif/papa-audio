@@ -53,6 +53,10 @@ const IPC_TIMEOUT_OVERRIDES = {
   'transcode-file': 0,
   'batch-transcode': 0,
   'library-write-tags': 0,
+  // Folder pickers and the relink scan wait on a person / walk a tree (roadmap 085).
+  'pick-folder': 0,
+  'library-relink-plan': 0,
+  'library-dead-paths': 0,
   // A file picker: waits on a person (roadmap 048).
   'locate-track-file': 0,
   // Rewrites FLAC files one by one on the calling thread; a large batch is
@@ -1133,7 +1137,7 @@ function _mintSlskdApiCreds() {
   return creds
 }
 
-const slskShare = require('./src/slsk-share')
+const slskShare = _lazyNs(() => require('./src/slsk-share'))
 function writeSlskdConfig({ username = '', password = '', downloadDir = '' } = {}) {
   if (!downloadDir) downloadDir = _downloadDir()
   fs.mkdirSync(SLSKD_DIR, { recursive: true })
@@ -4916,6 +4920,88 @@ const libHealth = require('./src/library-health')
 // The library index only knows about audio it could parse. Everything else —
 // installers, logs, leftovers, empty folders — is invisible to it, so it has
 // to be found by walking the disk.
+// ── Guided relink (roadmap 083/085) ─────────────────────────────────────────
+// Files the library still lists but that are no longer where it thinks —
+// moved or renamed outside the app. A root that is not reachable at all is
+// not "moved" (roadmap 084) and is left out.
+const relink = _lazyNs(() => require('./src/relink'))
+async function _libraryDeadPaths() {
+  const roots = store.get('musicFolders', [])
+  const live = []
+  for (const r of roots) { try { await fs.promises.stat(r); live.push(r) } catch (_) {} }
+  const dead = []
+  const albums = sideStores.libraryCache.get() || []
+  const paths = []
+  for (const a of albums) for (const t of (a.tracks || [])) if (t && t.filePath && !/^https?:/i.test(t.filePath)) paths.push(t.filePath)
+  const CONC = 16
+  let i = 0
+  const worker = async () => {
+    while (i < paths.length) {
+      const p = paths[i++]
+      if (!_underAnyRoot(p, live)) continue
+      try { await fs.promises.stat(p) } catch (e) { if (e && e.code === 'ENOENT') dead.push(p) }
+    }
+  }
+  await Promise.all(Array.from({ length: CONC }, worker))
+  return dead
+}
+ipcMain.handle('library-dead-paths', async () => {
+  try { return { ok: true, dead: await _libraryDeadPaths() } }
+  catch (e) { return { ok: false, error: (e && e.message) || String(e), dead: [] } }
+})
+ipcMain.handle('pick-folder', async (_, { title } = {}) => {
+  const r = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'], title: title || 'Choose a folder' })
+  if (r.canceled || !r.filePaths[0]) return { ok: false, cancelled: true }
+  return { ok: true, path: r.filePaths[0] }
+})
+ipcMain.handle('library-relink-plan', async (_, { newRoot } = {}) => {
+  try {
+    const root = String(newRoot || '')
+    if (!root) return { ok: false, error: 'No folder chosen' }
+    await fs.promises.stat(root)
+    const dead = await _libraryDeadPaths()
+    const found = (await scanDirAsync(root)).audio
+    const plan = relink.plan(dead, found)
+    return { ok: true, root, plan, text: relink.describe(plan), deadCount: dead.length, foundCount: found.length }
+  } catch (e) { return { ok: false, error: (e && e.message) || String(e) } }
+})
+ipcMain.handle('library-relink-apply', async (_, { remaps, root } = {}) => {
+  try {
+    const list = (Array.isArray(remaps) ? remaps : []).filter(r => r && r.from && r.to)
+    if (!list.length) return { ok: false, error: 'Nothing to relink' }
+    // The new home becomes a library root if it is not already under one, or
+    // the relinked files would be outside the folders the app is allowed to
+    // read and the next scan would drop them again.
+    const roots = store.get('musicFolders', [])
+    if (root && !libPathInRoots(path.join(root, 'x'))) { roots.push(root); store.set('musicFolders', roots) }
+    // Every saved reference follows the files (likes, history, playlists,
+    // queues, resume) through the same remap the in-app move uses.
+    const map = libPrune.buildRemap([], list)
+    const snapshot = {
+      likedTracks: store.get('likedTracks', []), playCounts: store.get('playCounts', {}),
+      playHistory: sideStores.playHistory.get() || [], playlists: store.get('playlists', []),
+      savedQueues: store.get('savedQueues', []), playbackState: sideStores.playbackState.get(),
+    }
+    const { next, summary } = libPrune.pruneAll(snapshot, map)
+    store.set('likedTracks', next.likedTracks); store.set('playCounts', next.playCounts)
+    sideStores.playHistory.set(next.playHistory); store.set('playlists', next.playlists)
+    store.set('savedQueues', next.savedQueues)
+    if (next.playbackState) sideStores.playbackState.set(next.playbackState)
+    // The library cache follows too, so the albums keep their ids (and their
+    // album-level likes and notes) instead of being re-created by the rescan.
+    const byFrom = new Map(list.map(r => [libPrune.normalizePath(r.from), r.to]))
+    const albums = (sideStores.libraryCache.get() || []).map(a => ({
+      ...a, tracks: (a.tracks || []).map(t => {
+        const to = t && t.filePath ? byFrom.get(libPrune.normalizePath(t.filePath)) : null
+        return to ? { ...t, filePath: to } : t
+      }),
+    }))
+    sideStores.libraryCache.set(albums)
+    _scheduleLibraryRescan()
+    return { ok: true, relinked: list.length, summary, rootAdded: root && roots.includes(root) }
+  } catch (e) { return { ok: false, error: (e && e.message) || String(e) } }
+})
+
 ipcMain.handle('library-scan-extras', async () => {
   const nonAudio = []
   const emptyDirs = []
@@ -8004,7 +8090,7 @@ async function dlSeedFolderSources(items) {
 
 // Roadmap 079: capacity and writability are checked before any transfer
 // work. The verdict comes from src/dl-capacity.js; this only gathers facts.
-const dlCapacity = require('./src/dl-capacity')
+const dlCapacity = _lazyNs(() => require('./src/dl-capacity'))
 async function _dlCapacityCheck(items) {
   const dir = _downloadDir()
   let writable = null

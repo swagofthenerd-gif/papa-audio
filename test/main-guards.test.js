@@ -587,3 +587,20 @@ test('a version change writes a pre-migration backup before the scheduled tick, 
   assert.ok(M.includes('migrationFiles,'), 'the backup status lists them')
   assert.ok(fs.existsSync(path.join(__dirname, '..', 'docs', 'RECOVERY.md')), 'the recovery route is documented')
 })
+
+// Roadmap 083/085: the guided relink.
+test('the relink finds dead paths only under reachable roots, previews before applying, and carries every store', () => {
+  const fs = require('node:fs'), path = require('node:path')
+  const M = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
+  const R = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
+  const PRE = fs.readFileSync(path.join(__dirname, '..', 'preload.js'), 'utf8')
+  const dead = M.slice(M.indexOf('async function _libraryDeadPaths()'), M.indexOf("ipcMain.handle('library-dead-paths'"))
+  assert.ok(dead.includes('if (!_underAnyRoot(p, live)) continue'), 'an unplugged root is not "moved" (084)')
+  const apply = M.slice(M.indexOf("ipcMain.handle('library-relink-apply'"), M.indexOf("ipcMain.handle('library-scan-extras'"))
+  assert.ok(apply.includes('libPrune.pruneAll(snapshot, map)'), 'likes/history/playlists/queues follow through the same remap as an in-app move')
+  assert.ok(apply.includes('sideStores.libraryCache.set(albums)'), 'the library cache follows so album ids survive')
+  assert.ok(apply.includes("roots.push(root); store.set('musicFolders', roots)"), 'the new home becomes a root')
+  assert.ok(R.includes('async function _mgRelinkFlow()') && R.includes("_mgConfirm('Relink '"), 'a preview stands between choosing and applying')
+  assert.ok(R.includes('had more than one possible match and are left alone'))
+  for (const ch of ['library-dead-paths', 'pick-folder', 'library-relink-plan', 'library-relink-apply']) assert.ok(PRE.includes("'" + ch + "'"), ch)
+})

@@ -82,7 +82,7 @@ test('the playback settings show the summed gain policy and clipping risk', () =
 test('the slskd config shares what the setting says, and the setting is in the panel', () => {
   const M = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'main.js'), 'utf8')
   const H = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'index.html'), 'utf8')
-  assert.ok(M.includes("const slskShare = require('./src/slsk-share')"))
+  assert.ok(M.includes("const slskShare = _lazyNs(() => require('./src/slsk-share'))"))
   assert.ok(M.includes("slskShare.shareDirs(store.get('slskShareMode', slskShare.DEFAULT), musicFolders, downloadDir)"))
   assert.ok(!M.includes('const shareDir = musicFolders[0] || path.dirname(downloadDir)'), 'the silent whole-library share is gone')
   assert.ok(M.includes("ipcMain.handle('slsk-share-mode-set'"))
@@ -141,7 +141,7 @@ test('the first successful enqueue names the destination and free space with a C
 // Roadmap 079: capacity is checked before transfer work and refused as a choice.
 test('downloads are checked for space and writability before enqueue, and refusals offer a way on', () => {
   const M = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'main.js'), 'utf8')
-  assert.ok(M.includes("require('./src/dl-capacity')"))
+  assert.ok(M.includes("const dlCapacity = _lazyNs(() => require('./src/dl-capacity'))"))
   const h = M.slice(M.indexOf("ipcMain.handle('slsk-enqueue-downloads'"), M.indexOf('function dlQueueFiles()'))
   assert.ok(/if \(!ignoreCapacity\) \{\n\s+const cap = await _dlCapacityCheck\(items\)\n\s+if \(!cap\.ok\) \{/.test(h), 'the check runs before addItems')
   assert.ok(h.indexOf('_dlCapacityCheck') < h.indexOf('dlSched.addItems'), 'and before anything is queued')

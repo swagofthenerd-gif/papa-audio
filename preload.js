@@ -322,6 +322,11 @@ contextBridge.exposeInMainWorld('api', {
   libraryTrashList:    ()  => ipcRenderer.invoke('library-trash-list'),
   libraryEmptyTrash:   (p) => ipcRenderer.invoke('library-empty-trash', p),
   libraryScanExtras:   ()  => ipcRenderer.invoke('library-scan-extras'),
+  // Roadmap 083/085: files moved outside the app, and the guided relink.
+  libraryDeadPaths:    ()  => ipcRenderer.invoke('library-dead-paths'),
+  pickFolder:          (p) => ipcRenderer.invoke('pick-folder', p),
+  libraryRelinkPlan:   (p) => ipcRenderer.invoke('library-relink-plan', p),
+  libraryRelinkApply:  (p) => ipcRenderer.invoke('library-relink-apply', p),
   libraryStorageReport:()  => ipcRenderer.invoke('library-storage-report'),
   libraryFreeSpace:    (p) => ipcRenderer.invoke('library-free-space', p),
   manageCacheGet:      ()  => ipcRenderer.invoke('manage-cache-get'),
