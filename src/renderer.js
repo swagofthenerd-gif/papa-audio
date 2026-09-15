@@ -22009,6 +22009,14 @@ function openSettings(section) {
   if (first && typeof first.focus === 'function') { try { first.focus({ preventScroll: true }) } catch (_) {} }
 }
 
+// Roadmap 110: what the chosen provider receives, stated next to the choice.
+function _paintProviderDisclosure(provider) {
+  const box = document.getElementById('mcs-provider-disclosure')
+  const D = (typeof PapaAgentDisclosure !== 'undefined' && PapaAgentDisclosure) || null
+  if (!box || !D) return
+  box.innerHTML = D.html(provider, esc)
+}
+
 // ── Settings panel ───────────────────────────────────────────────────────────
 async function _initSettingsPanel() {
   const saved = await window.api.getApiKeys().catch(() => ({ provider: 'ollama' }))
@@ -22023,7 +22031,8 @@ async function _initSettingsPanel() {
   if (claudeInput && saved.claudeSet) claudeInput.placeholder = 'Key saved ✓ — paste new one to change'
   if (openaiInput && saved.openaiSet) openaiInput.placeholder = 'Key saved ✓ — paste new one to change'
 
-  sel?.addEventListener('change', e => _updateProviderRows(e.target.value))
+  sel?.addEventListener('change', e => { _updateProviderRows(e.target.value); _paintProviderDisclosure(e.target.value) })
+  _paintProviderDisclosure(chatState.provider)
 
   document.getElementById('agent-refresh-btn')?.addEventListener('click', async () => {
     const btn = document.getElementById('agent-refresh-btn')

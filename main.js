@@ -6103,6 +6103,9 @@ async function _agentChatOnce({ provider, messages, tasteProfile }) {
   const keys = store.get('apiKeys', {})
   const sys  = _buildAgentSystem()
 
+  // Roadmap 110: nothing bound for a cloud provider carries a local path or a
+  // secret. Ollama runs on this machine and is left as is.
+  if (provider === 'claude' || provider === 'openai') messages = _redact.scrubMessagesForCloud(messages)
   if (provider === 'claude') {
     const apiKey = keys.claude
     if (!apiKey) return { error: 'No Claude API key. Add it in the Settings tab of the agent panel.' }

@@ -50,6 +50,15 @@ test('the queue panel wires a clear-played action to the tested helper', () => {
   assert.ok(renderer.includes("'Clear played'"), 'no Clear played button label')
 })
 
+// Roadmap 110: the provider choice states what leaves the device; main scrubs cloud-bound messages.
+test('the provider setting shows the disclosure and cloud-bound messages are scrubbed in main', () => {
+  const M = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'main.js'), 'utf8')
+  const H = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'index.html'), 'utf8')
+  assert.ok(H.includes('id="mcs-provider-disclosure"') && H.includes('<script src="agent-disclosure.js"></script>'))
+  assert.ok(renderer.includes('_paintProviderDisclosure(chatState.provider)'))
+  assert.ok(M.includes("if (provider === 'claude' || provider === 'openai') messages = _redact.scrubMessagesForCloud(messages)"))
+})
+
 // Roadmap 106: Stop stops the assistant now, aborts the request, and is honest about in-flight work.
 test('assistant Stop releases immediately, aborts the provider request, and names the tool in flight', () => {
   const M = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'main.js'), 'utf8')

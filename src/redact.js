@@ -45,5 +45,34 @@
     return s
   }
 
-  return { redactObject: redactObject, redactText: redactText, MARK: MARK, SECRET_KEY: SECRET_KEY }
+  // Local paths out of anything bound for a cloud provider (roadmap 110). A
+  // file path is where a person keeps their music; a model has no use for it.
+  var LOCAL_PATH = /(?:\/(?:Users|home|mnt|Volumes|media|run\/media|srv|opt|var|tmp|private)\/[^\s"'<>|]+|\b[A-Za-z]:\\[^\s"'<>|]+)/g
+  function stripLocalPaths(text) {
+    return String(text == null ? '' : text).replace(LOCAL_PATH, '[local path]')
+  }
+  // Scrub a provider message list in place-safe fashion: strings, text blocks
+  // and tool_result contents all pass through stripLocalPaths + redactText.
+  function scrubMessagesForCloud(messages) {
+    var clean = function (v) { return redactText(stripLocalPaths(v)) }
+    return (messages || []).map(function (m) {
+      if (!m || typeof m !== 'object') return m
+      var out = Object.assign({}, m)
+      if (typeof out.content === 'string') out.content = clean(out.content)
+      else if (Array.isArray(out.content)) {
+        out.content = out.content.map(function (b) {
+          if (!b || typeof b !== 'object') return typeof b === 'string' ? clean(b) : b
+          var nb = Object.assign({}, b)
+          if (typeof nb.text === 'string') nb.text = clean(nb.text)
+          if (typeof nb.content === 'string') nb.content = clean(nb.content)
+          if (nb.input && typeof nb.input === 'object') nb.input = JSON.parse(clean(JSON.stringify(nb.input)))
+          return nb
+        })
+      }
+      return out
+    })
+  }
+
+  return { redactObject: redactObject, redactText: redactText, stripLocalPaths: stripLocalPaths,
+    scrubMessagesForCloud: scrubMessagesForCloud, MARK: MARK, SECRET_KEY: SECRET_KEY }
 })
