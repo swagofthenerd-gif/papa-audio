@@ -2387,3 +2387,101 @@ test('videoSubStyle passthrough is called alongside subStyle when exposed', asyn
   assert.ok(passed.length, 'the passthrough was called')
   assert.strictEqual(passed[passed.length - 1].color, 'cyan', 'with the friendly names')
 })
+
+// Roadmap V101–V103: exercise real bound handlers with delayed engine state.
+const pictureWait = () => new Promise(resolve => setTimeout(resolve, 330))
+const pointer = (over = {}) => Object.assign({ button: 0, pointerId: 7,
+  clientX: 20, clientY: 20, preventDefault () {}, target: { closest () { return null } } }, over)
+
+test('cancelled mini picture press never pauses playback', async () => {
+  const { p, nodes, sent } = harness()
+  p._setState(stateAt(100))
+  nodes['vmini-video'].fire('pointerdown', pointer())
+  nodes['vmini-video'].fire('pointercancel', pointer())
+  await pictureWait()
+  assert.equal(sent.filter(x => x.verb === 'pause' || x.verb === 'play').length, 0)
+  assert.equal(nodes.vmini.classList.contains('vmini-dragging'), false)
+})
+
+test('lost capture aborts a moved mini drag without saving a new corner', () => {
+  const writes = []
+  const { p, nodes, sent } = harness({ local: { readObject: () => ({}), write: (...a) => writes.push(a) } })
+  p._setState(stateAt(100))
+  nodes['vmini-video'].fire('pointerdown', pointer())
+  nodes['vmini-video'].fire('pointermove', pointer({ clientX: 200 }))
+  nodes['vmini-video'].fire('lostpointercapture', pointer())
+  nodes['vmini-video'].fire('pointerup', pointer())
+  assert.equal(writes.length, 0)
+  assert.equal(sent.filter(x => ['pause', 'play'].includes(x.verb)).length, 0)
+  assert.equal(nodes.vmini.classList.contains('vmini-dragging'), false)
+})
+
+test('theatre double-click changes display without playback commands', async () => {
+  const { p, nodes, sent } = harness()
+  p._setState(stateAt(100))
+  nodes['vt-stage'].fire('click', pointer())
+  nodes['vt-stage'].fire('click', pointer())
+  nodes['vt-stage'].fire('dblclick', pointer())
+  await pictureWait()
+  assert.equal(sent.filter(x => ['pause', 'play'].includes(x.verb)).length, 0)
+  assert.equal(sent.filter(x => x.verb === 'fullscreen').length, 1)
+})
+
+test('mini double-click restores without toggling stale playback state', async () => {
+  const { p, nodes, sent } = harness()
+  p._setState(stateAt(100, { paused: true }))
+  for (let i = 0; i < 2; i++) {
+    nodes['vmini-video'].fire('pointerdown', pointer())
+    nodes['vmini-video'].fire('pointerup', pointer())
+  }
+  nodes['vmini-video'].fire('dblclick', pointer())
+  await pictureWait()
+  assert.equal(sent.filter(x => ['pause', 'play'].includes(x.verb)).length, 0)
+  assert.equal(p.isMinimised(), false)
+})
+
+test('one picture click toggles once and explicit transport stays immediate', async () => {
+  const { p, nodes, sent } = harness()
+  p._setState(stateAt(100))
+  nodes['vt-stage'].fire('click', pointer())
+  assert.equal(sent.length, 0)
+  await pictureWait()
+  assert.equal(sent.filter(x => x.verb === 'pause').length, 1)
+  nodes['vt-play'].fire('click')
+  assert.equal(sent.filter(x => x.verb === 'pause').length, 2)
+})
+
+test('closing cancels a pending picture action', async () => {
+  const { p, nodes, sent } = harness()
+  p._setState(stateAt(100))
+  nodes['vt-stage'].fire('click', pointer())
+  p.close()
+  await pictureWait()
+  assert.equal(sent.filter(x => ['pause', 'play'].includes(x.verb)).length, 0)
+})
+
+test('wheel ignores zero, horizontal, invalid and pinch input on both surfaces', () => {
+  const { p, nodes, sent } = harness()
+  p._setState(stateAt(100, { volume: 50 }))
+  for (const id of ['vt-stage', 'vt-deck']) {
+    for (const data of [{ deltaY: 0 }, { deltaY: 2, deltaX: 50 },
+      { deltaY: NaN }, { deltaY: 120, ctrlKey: true }]) nodes[id].fire('wheel', data)
+  }
+  assert.equal(sent.filter(x => x.verb === 'volume').length, 0)
+})
+
+test('small trackpad deltas equal one ordinary wheel step', () => {
+  const { p, nodes, sent } = harness()
+  p._setState(stateAt(100, { volume: 50 }))
+  for (let i = 0; i < 120; i++) nodes['vt-stage'].fire('wheel', { deltaY: 1 })
+  assert.deepEqual(sent.filter(x => x.verb === 'volume').map(x => x.args.value), [45])
+  nodes['vt-deck'].fire('wheel', { deltaY: -3, deltaMode: 1 })
+  assert.equal(sent.at(-1).args.value, 50)
+})
+
+test('wheel over a menu never modifies background volume', () => {
+  const { p, nodes, sent } = harness()
+  p._setState(stateAt(100))
+  nodes['vt-deck'].fire('wheel', { deltaY: 120, target: { closest: () => ({}) } })
+  assert.equal(sent.length, 0)
+})

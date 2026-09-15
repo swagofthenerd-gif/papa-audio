@@ -752,6 +752,7 @@
           if (e.button !== 0) return
           if (e.target && typeof e.target.closest === 'function' &&
               e.target.closest('button, .vmini-seek')) return
+          cancelPictureTap()
           pointerId = e.pointerId
           captureEl = el
           miniDragging = true
@@ -797,7 +798,7 @@
         // pure drag surfaces.
         if (!moved && pressEl && pressEl.id === 'vmini-video' && nowMs() - pressAt < 400 && state) {
           miniDragTL = null; pointerId = null; captureEl = null; samples = []
-          togglePlay()
+          queuePictureTap()
           return
         }
         if (!moved) { miniDragTL = null; pointerId = null; captureEl = null; samples = []; return }
@@ -824,6 +825,18 @@
         placeMiniCard(null, true)
       }
 
+      const cancelDrag = function (e) {
+        if (!miniDragging || pointerId !== e.pointerId) return
+        const captured = captureEl, id = pointerId
+        miniDragging = false
+        miniDragTL = null; pointerId = null; captureEl = null; samples = []
+        mini.classList.remove('vmini-dragging')
+        cancelPictureTap()
+        if (miniRectTimer) { clearTimeout(miniRectTimer); miniRectTimer = 0 }
+        try { if (captured) captured.releasePointerCapture(id) } catch (_) {}
+        placeMiniCard(null, true)
+      }
+
       // The picture region joins the drag surfaces (V1): with the smooth
       // player the <video> lives inside it and receives the pointer, so the
       // whole card drags. Under mpv the native window still eats the events
@@ -833,7 +846,8 @@
         el.addEventListener('pointerdown', onDown(el))
         el.addEventListener('pointermove', onMove)
         el.addEventListener('pointerup', endDrag)
-        el.addEventListener('pointercancel', endDrag)
+        el.addEventListener('pointercancel', cancelDrag)
+        el.addEventListener('lostpointercapture', cancelDrag)
       }
     }
 
@@ -1300,6 +1314,46 @@
     function send(verb, args) {
       if (!api || !api.videoControl) return Promise.resolve({ ok: false })
       return api.videoControl(verb, args || {}).catch(function () { return { ok: false } })
+    }
+
+    // Delay picture taps so a double-click changes display mode without
+    // racing asynchronous pause/play state. Explicit transport buttons stay immediate.
+    let pictureTapTimer = null
+    function cancelPictureTap() {
+      if (pictureTapTimer != null) clearTimeout(pictureTapTimer)
+      pictureTapTimer = null
+    }
+    function queuePictureTap() {
+      cancelPictureTap()
+      pictureTapTimer = setTimeout(function () {
+        pictureTapTimer = null
+        if (!state) return
+        togglePlay()
+        noteActivity()
+      }, 300)
+    }
+
+    let wheelRemainder = 0, wheelAt = 0
+    function wheelVolume(e) {
+      if (!state || e.ctrlKey || e.metaKey || e.altKey) return
+      const target = e.target
+      if (target && target.closest && target.closest('.vt-menu, input, select, textarea')) return
+      const dy = Number(e.deltaY), dx = Number(e.deltaX) || 0
+      if (!Number.isFinite(dy) || !dy || Math.abs(dx) >= Math.abs(dy)) return
+      const now = Date.now()
+      if (now - wheelAt > 250 || Math.sign(dy) !== Math.sign(wheelRemainder)) wheelRemainder = 0
+      wheelAt = now
+      // Convert line/page events to pixel-like distance. Small trackpad
+      // events accumulate; a single unusually large event is capped.
+      const pixels = dy * (e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? 120 : 1)
+      wheelRemainder += Math.max(-120, Math.min(120, pixels))
+      if (typeof e.preventDefault === 'function') e.preventDefault()
+      const steps = Math.trunc(wheelRemainder / 120)
+      if (!steps) return
+      wheelRemainder -= steps * 120
+      setVolume((Number(state.volume) || 0) - steps * 5)
+      flashVolume()
+      render()
     }
 
     function togglePlay() { send(state && state.paused ? 'play' : 'pause') }
@@ -2559,7 +2613,7 @@
       // native mpv window (see the fullscreen relay below), but a double-click on
       // the reserved region itself — when the picture is not covering it — is
       // handled here as a reliable page-side path too.
-      $('vmini-video')?.addEventListener('dblclick', restore)
+      $('vmini-video')?.addEventListener('dblclick', function () { cancelPictureTap(); restore() })
       // The hover chrome over the picture (only visible with the picture in
       // the page; under mpv the native window covers it).
       $('vmini-ov-play')?.addEventListener('click', togglePlay)
@@ -2588,18 +2642,11 @@
       // The wheel works anywhere over the deck, not only on the 88px slider:
       // volume is the thing people reach for mid-scene, and the pointer is
       // rarely parked on the one control that takes it.
-      $('vt-deck')?.addEventListener('wheel', function (e) {
-        if (typeof e.preventDefault === 'function') e.preventDefault()
-        const step = (Number(e.deltaY) || 0) > 0 ? -5 : 5
-        setVolume((Number(state && state.volume) || 0) + step)
-        flashVolume()
-        render()
-      })
+      $('vt-deck')?.addEventListener('wheel', wheelVolume, { passive: false })
       // The picture itself (V4): with the smooth player the <video> lives in
       // the page and takes the pointer, so the stage handles what mpv's own
       // window used to — click to play/pause (with a burst), double-click for
-      // fullscreen (the second click undoes the first's toggle, as YouTube's
-      // does), wheel for volume, Shift+wheel to seek. Under mpv the native
+      // fullscreen (picture taps wait briefly for double-click arbitration), wheel for volume, Shift+wheel to seek. Under mpv the native
       // window swallows these and relays them itself; nothing fires here.
       const stageEl = $('vt-stage')
       if (stageEl) {
@@ -2610,23 +2657,25 @@
         }
         stageEl.addEventListener('click', function (e) {
           if (!onPicture(e) || !state) return
-          togglePlay()
-          burst(state.paused ? ICON.play : ICON.pause)
-          noteActivity()
+          queuePictureTap()
         })
         stageEl.addEventListener('dblclick', function (e) {
           if (!onPicture(e)) return
           if (typeof e.preventDefault === 'function') e.preventDefault()
+          cancelPictureTap()
           toggleFullscreen()
         })
         stageEl.addEventListener('wheel', function (e) {
-          if (!onPicture(e) || !state) return
-          if (typeof e.preventDefault === 'function') e.preventDefault()
-          if (e.shiftKey) { seekBy((Number(e.deltaY) || 0) > 0 ? -10 : 10); osd(((Number(e.deltaY) || 0) > 0 ? '−' : '+') + '10 s', 600); return }
-          const step = (Number(e.deltaY) || 0) > 0 ? -5 : 5
-          setVolume((Number(state && state.volume) || 0) + step)
-          flashVolume()
-          render()
+          if (!onPicture(e) || !state || e.ctrlKey || e.metaKey || e.altKey) return
+          const dy = Number(e.deltaY), dx = Number(e.deltaX) || 0
+          if (!Number.isFinite(dy) || !dy || Math.abs(dx) >= Math.abs(dy)) return
+          if (e.shiftKey) {
+            if (typeof e.preventDefault === 'function') e.preventDefault()
+            seekBy(dy > 0 ? -10 : 10)
+            osd((dy > 0 ? '−' : '+') + '10 s', 600)
+            return
+          }
+          wheelVolume(e)
         }, { passive: false })
       }
       // Hovering the Up Next card holds its countdown; leaving resumes it.
@@ -2653,6 +2702,8 @@
     }
 
     function open(info) {
+      cancelPictureTap()
+      wheelRemainder = 0
       media = info || {}
       const root = $('vtheatre')
       if (!root) return
@@ -2727,6 +2778,8 @@
     // app be browsed while something plays, which is the whole point of
     // minimising rather than closing.
     function minimise() {
+      cancelPictureTap()
+      wheelRemainder = 0
       closeMenu()
       if (isFullscreen) toggleFullscreen(false)
       const root = $('vtheatre')
@@ -2771,6 +2824,8 @@
     }
 
     function restore() {
+      cancelPictureTap()
+      wheelRemainder = 0
       stopSettle()
       const mini = $('vmini')
       const root = $('vtheatre')
@@ -2897,6 +2952,8 @@
     // handler throws.
     let closing = false
     function close() {
+      cancelPictureTap()
+      wheelRemainder = 0
       if (closing) return
       closing = true
       stopSettle()
