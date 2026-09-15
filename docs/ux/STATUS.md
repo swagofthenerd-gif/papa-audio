@@ -82,6 +82,10 @@ Each F item re-checked on this branch, not assumed from the `main` review.
 | 2026-09-15 | V052 | `726414d` | inferred vs measured source badges; engine passes demux-channel-count |
 | 2026-09-15 | V113 | `7e5dd3a` | pause is a position checkpoint (close/pagehide flush already existed) |
 | 2026-09-15 | V109 | `9ef44c1` | player.isOpen(); media keys route to the video session when one exists |
+| 2026-09-15 | V082 | `356f05c` | refused track switch reverts the tick and reports |
+| 2026-09-15 | V123 | `f429e67` | evictPlan protects the playing file |
+| 2026-09-15 | V125 | `212b659` | keep checks space first; ENOSPC removes the partial file |
+| 2026-09-15 | V121 | `0a86fd5` | SAVED / CACHED / INSTANT badges |
 
 ## F list: all resolved (134 deferred to runtime). Now working through P0 E-items
 
