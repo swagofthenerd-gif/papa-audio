@@ -4923,6 +4923,12 @@ textarea:focus:not(:focus-visible) { outline: none; }
   animation: marquee-tick 10s ease-in-out infinite alternate;
   white-space: nowrap; overflow: hidden; display: block;
 }
+/* Roadmap 128: hold still to read it; never scroll under reduced motion. */
+.np-title.ticker-active:hover, .np-artist.ticker-active:hover,
+.np-title.ticker-active:focus-visible, .np-artist.ticker-active:focus-visible { animation-play-state: paused; }
+@media (prefers-reduced-motion: reduce) {
+  .np-title.ticker-active, .np-artist.ticker-active { animation: none; text-overflow: ellipsis; }
+}
 
 
 /* ══════════════════════════════════════════════════════

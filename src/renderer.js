@@ -19959,9 +19959,14 @@ function updateNowPlaying(track) {
   updateRadioState()
 }
 
+// Roadmap 128: a long title is readable without watching it scroll for
+// ever. The full text is always on the tooltip; the marquee runs only when
+// the text overflows, pauses while the pointer or keyboard focus is on it
+// (CSS), and does not run at all under reduced motion — an ellipsis does.
 function applyTicker(el) {
   el.classList.remove('ticker-active')
   el.style.removeProperty('--ticker-dist')
+  el.title = (el.textContent || '').trim()
   requestAnimationFrame(() => {
     const overflow = el.scrollWidth - el.clientWidth
     if (overflow > 4) {

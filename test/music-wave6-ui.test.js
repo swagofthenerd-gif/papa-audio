@@ -121,6 +121,15 @@ test('assistant Stop releases immediately, aborts the provider request, and name
   }
 })
 
+// Roadmap 128: long titles are readable without a perpetual marquee.
+test('the now-playing ticker carries the full text on its tooltip, pauses on hover, and is off under reduced motion', () => {
+  const CSS = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'styles.css'), 'utf8')
+  const fn = renderer.slice(renderer.indexOf('function applyTicker('), renderer.indexOf('function updateStatsRow('))
+  assert.ok(fn.includes("el.title = (el.textContent || '').trim()"))
+  assert.match(CSS, /\.np-title\.ticker-active:hover[^{]*\{ animation-play-state: paused; \}/)
+  assert.match(CSS, /prefers-reduced-motion: reduce\) \{\n\s+\.np-title\.ticker-active, \.np-artist\.ticker-active \{ animation: none; text-overflow: ellipsis; \}/)
+})
+
 // Roadmap 019: the Library's empty state says why.
 test('the Library empty state goes through the tested cause table and offers Add a music folder', () => {
   assert.ok(renderer.includes('function _libEmptyHtml('))
