@@ -50,6 +50,13 @@ test('the queue panel wires a clear-played action to the tested helper', () => {
   assert.ok(renderer.includes("'Clear played'"), 'no Clear played button label')
 })
 
+// Roadmap 084: the renderer reports a disconnected root and dims its albums.
+test('unavailable albums are shown as not connected, not removed', () => {
+  assert.ok(renderer.includes('_reportUnavailableRoots(data.unavailableRoots)'))
+  assert.ok(renderer.includes("class=\"album-card${album.unavailable ? ' unavailable' : ''}\""))
+  assert.ok(renderer.includes('kept but unavailable until it returns'))
+})
+
 // Roadmap 048: a missing file stays in the queue with Locate / Remove.
 test('a confirmed-missing file is marked, played past, and offered Locate', () => {
   const P = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'load-error-policy.js'), 'utf8')

@@ -3275,9 +3275,19 @@ ipcMain.handle('track-exists', async (_, filePath) => {
     const st = await fs.promises.stat(p)
     return { checked: true, exists: st.isFile(), size: st.size }
   } catch (e) {
-    // ENOENT is the answer. Anything else — EACCES, EIO, a dead mount — is not
-    // evidence the file is gone, and must not be treated as though it were.
-    if (e && e.code === 'ENOENT') return { checked: true, exists: false }
+    // ENOENT is the answer — unless the whole root is gone (roadmap 084): an
+    // unplugged drive makes every file under it ENOENT, and that is
+    // "not connected", never "deleted".
+    if (e && e.code === 'ENOENT') {
+      const roots = store.get('musicFolders', [])
+      const root = roots.find(r => _underAnyRoot(p, [r]))
+      if (root) {
+        try { await fs.promises.stat(root) } catch (_) { return { checked: false, exists: true, reason: 'drive not connected', root } }
+      }
+      return { checked: true, exists: false }
+    }
+    // Anything else — EACCES, EIO, a dead mount — is not evidence the file is
+    // gone, and must not be treated as though it were.
     return { checked: false, exists: true, reason: (e && e.code) || 'stat failed' }
   }
 })
@@ -4423,6 +4433,23 @@ let _scanRunning = false
 // a user who pressed Scan got the old library back and no indication why.
 let _scanInFlight = null
 
+// Roadmap 084 helpers: is a path under one of these roots, and which root an
+// album (by its first track) lives under. Separators are normalised so a
+// Windows-style cache entry still matches.
+function _underAnyRoot(fp, roots) {
+  const n = String(fp || '').replace(/\\/g, '/')
+  return (roots || []).some(r => {
+    const root = String(r || '').replace(/\\/g, '/').replace(/\/+$/, '')
+    return root && (n === root || n.startsWith(root + '/'))
+  })
+}
+function _rootOfAlbum(album, roots) {
+  const t = (album && album.tracks || []).find(x => x && x.filePath)
+  if (!t) return null
+  for (const r of roots || []) if (_underAnyRoot(t.filePath, [r])) return r
+  return null
+}
+
 function performScan(onProgress) {
   if (_scanInFlight) return _scanInFlight
   _scanInFlight = _performScanOnce(onProgress).finally(() => { _scanInFlight = null })
@@ -4443,7 +4470,13 @@ async function _performScanOnce(onProgress) {
   const overDeadline = () => Date.now() - scanStarted > SCAN_DEADLINE_MS
   try {
     const found = { audio: [], cues: [] }
+    // Roadmap 084: a root that cannot be reached (an unplugged drive, an
+    // unmounted share) is not an empty root. Its albums are kept from the
+    // previous cache, flagged unavailable, instead of being dropped — and the
+    // renderer is told which roots were missing.
+    const unreachable = []
     for (const f of folders) {
+      try { await fs.promises.stat(f) } catch (_) { unreachable.push(f); continue }
       if (overDeadline()) {
         // Partial results with a clear report, rather than a stall with none.
         console.error(`[papa] scan deadline reached after ${Math.round((Date.now() - scanStarted) / 1000)}s; ` +
@@ -4515,11 +4548,28 @@ async function _performScanOnce(onProgress) {
     }
     await Promise.all(Array.from({ length: CONCURRENCY }, worker))
 
+    // The per-file cache must keep the entries under an unreachable root too,
+    // or the next scan after the drive returns re-parses every file on it.
+    if (unreachable.length) {
+      for (const [fp, rec] of Object.entries(cache.files || {})) {
+        if (!newCache.files[fp] && _underAnyRoot(fp, unreachable)) newCache.files[fp] = rec
+      }
+    }
     writeJsonAtomic(TRACK_CACHE_PATH(), newCache)
     const albums = buildAlbums(tracks)
+    if (unreachable.length) {
+      const prev = sideStores.libraryCache.get() || []
+      const have = new Set(albums.map(a => a.id))
+      for (const a of prev) {
+        if (have.has(a.id)) continue
+        const root = _rootOfAlbum(a, unreachable)
+        if (!root) continue
+        albums.push({ ...a, unavailable: true, unavailableRoot: root })
+      }
+    }
     sideStores.libraryCache.set(albums)
     onProgress?.({ done: total, total, parsed, phase: 'done', albums: albums.length })
-    return { albums }
+    return { albums, unavailableRoots: unreachable }
   } catch (e) {
     console.error('[papa] scan-error:', e?.code || e.message || e, '|', (e?.stack || '').split('\n')[0] || '')
     // `failed` matters: an empty array is a legitimate result for an empty

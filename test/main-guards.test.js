@@ -547,3 +547,15 @@ test('a future schema version is detected loudly as a downgrade', () => {
 test('the schema check runs at startup', () => {
   assert.match(CODE, /checkStoreSchemaVersion\(\)/)
 })
+
+// Roadmap 084: an unplugged drive is "not connected", never "deleted".
+test('the scan keeps albums from an unreachable root and track-exists never calls them gone', () => {
+  const fs = require('node:fs'), path = require('node:path')
+  const M = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
+  const scan = M.slice(M.indexOf('async function _performScanOnce('), M.indexOf('async function scanDirAsync(') > 0 ? M.length : M.length)
+  assert.match(scan, /try \{ await fs\.promises\.stat\(f\) \} catch \(_\) \{ unreachable\.push\(f\); continue \}/, 'each root is checked before it is scanned')
+  assert.match(scan, /albums\.push\(\{ \.\.\.a, unavailable: true, unavailableRoot: root \}\)/, 'cached albums under it are kept, flagged')
+  assert.match(scan, /return \{ albums, unavailableRoots: unreachable \}/, 'and the renderer is told')
+  const te = M.slice(M.indexOf("ipcMain.handle('track-exists'"), M.indexOf("ipcMain.handle('locate-track-file'"))
+  assert.match(te, /reason: 'drive not connected'/, 'ENOENT under an unreachable root is "cannot tell"')
+})

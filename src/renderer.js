@@ -1581,6 +1581,16 @@ async function fullScan() {
   setTimeout(fetchMissingArtwork, 1200)
   syncLibraryExt()
   showSnackbar('Library scan complete: ' + _plural(state.library.length, 'album') + ' found')
+  _reportUnavailableRoots(data.unavailableRoots)
+}
+
+// Roadmap 084: a root that was not reachable is reported as not connected,
+// with the count it holds — never as albums that no longer exist.
+function _reportUnavailableRoots(roots) {
+  if (!Array.isArray(roots) || !roots.length) return
+  var n = state.library.filter(function (a) { return a.unavailable }).length
+  var what = roots.length === 1 ? shortPath(roots[0]) : roots.length + ' music folders'
+  showSnackbar(what + ' is not connected — ' + _plural(n, 'album') + ' kept but unavailable until it returns', '', function () {}, 8000)
 }
 
 // Album ids alone missed per-track deletes inside a surviving album, so a
@@ -21020,7 +21030,7 @@ function albumCard(album, idx, sortMode, query) {
     ? '<span class="new-badge">NEW</span>' : ''
   const hue = _cardHue((album.artist || '') + (album.name || ''))
   var fallbackStyle = `background:linear-gradient(135deg,hsl(${hue},55%,22%) 0%,hsl(${(hue+40)%360},45%,14%) 100%)`
-  return `<div class="album-card" data-album="${esc(album.id)}">
+  return `<div class="album-card${album.unavailable ? ' unavailable' : ''}" data-album="${esc(album.id)}"${album.unavailable ? ' title="Not connected — this album\'s drive is unplugged"' : ''}>
     <div class="album-card-art-wrap">
       ${album.artPath
         ? `<img class="album-card-art" src="${isHttpPath(album.artPath) ? esc(album.artPath) : esc(`file://${album.artPath}`)}" alt="" loading="lazy" decoding="async" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
