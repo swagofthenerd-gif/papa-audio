@@ -45,24 +45,24 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | A037 | Pending review/implementation |
 | A038 | Pending review/implementation |
 | A039 | Pending review/implementation |
-| A040 | Pending review/implementation |
+| A040 | Fixed — prevAction rule + help text |
 | A041 | Pending review/implementation |
 | A042 | Pending review/implementation |
 | A043 | Pending review/implementation |
 | A044 | Pending review/implementation |
-| A045 | Pending review/implementation |
+| A045 | Fixed — insertPlayNext single rule |
 | A046 | Pending review/implementation |
 | A047 | Pending review/implementation |
-| A048 | Pending review/implementation |
+| A048 | Fixed `6ba664c` — Locate/Remove for missing queue files |
 | A049 | Pending review/implementation |
 | A050 | Pending review/implementation |
-| A051 | Pending review/implementation |
+| A051 | Fixed `92584be` — Keep both offered |
 | A052 | Pending review/implementation |
 | A053 | Pending review/implementation |
 | A054 | Pending review/implementation |
 | A055 | Pending review/implementation |
 | A056 | Pending review/implementation |
-| A057 | Pending review/implementation |
+| A057 | Fixed `890a469` — source-failure classifier |
 | A058 | Pending review/implementation |
 | A059 | Pending review/implementation |
 | A060 | Pending review/implementation |
@@ -84,12 +84,12 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | A076 | Pending review/implementation |
 | A077 | Pending review/implementation |
 | A078 | Pending review/implementation |
-| A079 | Pending review/implementation |
+| A079 | Fixed `bfb2d44` — capacity check before enqueue |
 | A080 | Pending review/implementation |
-| A081 | Pending review/implementation |
+| A081 | Fixed — one notice per album, click to play |
 | A082 | Pending review/implementation |
 | A083 | Pending review/implementation |
-| A084 | Pending review/implementation |
+| A084 | Fixed `2e01d08` — unplugged root = unavailable, not deleted |
 | A085 | Pending review/implementation |
 | A086 | Pending review/implementation |
 | A087 | Fixed — hero edits write real tags with an explicit scope note; see STATUS.md |
@@ -111,7 +111,7 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | A103 | Pending review/implementation |
 | A104 | Pending review/implementation |
 | A105 | Pending review/implementation |
-| A106 | Pending review/implementation |
+| A106 | Fixed `037e34b` — Stop aborts + honest |
 | A107 | Pending review/implementation |
 | A108 | Pending review/implementation |
 | A109 | Pending review/implementation |
@@ -119,9 +119,9 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | A111 | Pending review/implementation |
 | A112 | Pending review/implementation |
 | A113 | Pending review/implementation |
-| A114 | Pending review/implementation |
+| A114 | Fixed `157ddc1` — ARIA sliders + keys |
 | A115 | Pending review/implementation |
-| A116 | Pending review/implementation |
+| A116 | Partial — seek value throttled to whole percents (with A114) |
 | A117 | Pending review/implementation |
 | A118 | Pending review/implementation |
 | A119 | Pending review/implementation |
@@ -139,9 +139,9 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | A131 | Pending review/implementation |
 | A132 | Pending review/implementation |
 | A133 | Pending review/implementation |
-| A134 | Pending review/implementation |
+| A134 | Deferred — needs the app running (see STATUS.md) |
 | A135 | Pending review/implementation |
-| A136 | Pending review/implementation |
+| A136 | Fixed `20689d5` — redact at write and export |
 | A137 | Pending review/implementation |
 | A138 | Pending review/implementation |
 | A139 | Pending review/implementation |
@@ -276,7 +276,7 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | V108 | Pending review/implementation |
 | V109 | Pending review/implementation |
 | V110 | Pending review/implementation |
-| V111 | Pending review/implementation |
+| V111 | Fixed — 5 % start threshold capped at 120 s; see STATUS.md |
 | V112 | Pending review/implementation |
 | V113 | Pending review/implementation |
 | V114 | Pending review/implementation |

@@ -36,11 +36,11 @@ Each F item re-checked on this branch, not assumed from the `main` review.
 | 043 | Confirmed as described | `playAlbum`/`playTrack` replace the queue; policy item, not a bug. |
 | 087 | **Fixed** (see work log) | `renderer.js` ~12489 still shows "visual only — save to file coming soon". |
 | 093 | **Fixed** `1da705b` | `updateBitPerfectBadge` (~1230) labels any non-http track LOSSLESS with no codec check. |
-| 134 | Confirmed | `main.js` `minWidth: 950`. |
+| 134 | **Deferred to the runtime pass** — CSS has 900/600 px breakpoints the 950 px floor hides; needs the app running to judge | `main.js` `minWidth: 950`. |
 | V101 | **Fixed** `af4d25b` | `bindMiniDrag`: `pointercancel` → `endDrag`, which contains the tap-to-toggle and fling paths (~789–836). |
 | V102 | **Fixed** `2d1f1c9` | Stage has `click` → `togglePlay()` and `dblclick` → `toggleFullscreen()`; a double-click issues two play toggles (~2610–2620). |
 | V103 | **Fixed** `ff8a02b` | Deck and stage wheel use `deltaY > 0 ? -5 : 5`: zero delta = volume up; horizontal-only scroll changes volume (~2593, ~2626). |
-| V111 | Confirmed | `watch-rules.js`: `STARTED_AT 0.05`, `MIN_SECONDS 30`, `WATCHED_AT 0.92`. |
+| V111 | **Fixed** (see log) | `watch-rules.js`: `STARTED_AT 0.05`, `MIN_SECONDS 30`, `WATCHED_AT 0.92`. |
 
 ## Work log
 
@@ -59,11 +59,20 @@ Each F item re-checked on this branch, not assumed from the `main` review.
 | 2026-09-15 | 087 | see log | album hero edits write real tags through library-write-tags with an explicit scope note; heroTagWrites + tests |
 | 2026-09-15 | 001 (+013/017 copy) | `58e0b7e` | wizard offers Add / Explore / Later, remembers the answer, init continues with zero folders |
 | 2026-09-15 | 002 | see log | Settings nav entry + openSettings(section); drawer titled Settings on that tab |
+| 2026-09-15 | V111 | `ac…` | resume: 5 % threshold capped at 120 s; long films resume |
+| 2026-09-15 | 114 (+116 part) | `157ddc1` | player-bar seek/volume are ARIA sliders with keys; seek value written only on whole-percent change |
+| 2026-09-15 | 040, 045 | see log | prevAction (3 s rule, in help); insertPlayNext single rule; ctx Play next re-arms prefetch |
+| 2026-09-15 | 057 | `890a469` | src/source-failure.js: cancelled/offline/rate-limited/auth/timeout/unreachable/empty each with a next step; YouTube + Soulseek |
+| 2026-09-15 | 081 | see log | one "Album ready" notice per album (summary above 3), click plays it |
+| 2026-09-15 | 051 | `92584be` | playlist duplicates skipped by default, "Keep both" offered |
+| 2026-09-15 | 048 | `6ba664c` | missing queue file stays, badged, Locate/Remove; playback plays past it |
+| 2026-09-15 | 084 | `2e01d08` | unreachable root keeps its albums flagged unavailable; track-exists says "drive not connected" |
+| 2026-09-15 | 079 | `bfb2d44` | src/dl-capacity.js: space + writability checked before enqueue; Choose folder / Download anyway |
+| 2026-09-15 | 136 | `20689d5` | src/redact.js: logger scrubs at write; bundle scrubs log tail, crash log, diagnostics; broader key rule |
+| 2026-09-15 | 106 | `037e34b` | assistant Stop releases at once, aborts provider request (agent-cancel), names in-flight tool |
 
-## Still open from the F list, in suggested order
+## F list: all resolved (134 deferred to runtime). Now working through P0 E-items
 
-- **134** (P1) 950px minimum window width — needs a layout audit, not just a number change.
-- **V111** (P1) resume thresholds in `watch-rules.js` — a policy decision; evaluate with real film lengths before changing.
 
 ## Verification scope — read before trusting the table
 
