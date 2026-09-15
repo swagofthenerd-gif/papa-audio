@@ -26131,7 +26131,7 @@ function _renderTorrentSection() {
         <span class="torrent-pct">${pct}%</span>
         ${speed ? `<span class="torrent-speed">${speed}</span>` : ''}
         ${eta ? `<span class="torrent-eta">${eta}</span>` : ''}
-        <button class="torrent-remove" data-hash="${esc(t.infoHash)}" title="Cancel" aria-label="Cancel">✕</button>
+        <button class="torrent-remove" data-hash="${esc(t.infoHash)}" title="Cancel — stops this transfer and takes it off the queue. Nothing downloaded so far is kept; ask for it again from search to start over." aria-label="Cancel this transfer">✕</button>
       </div>
     </div>`
   }).join('')
@@ -26376,10 +26376,10 @@ function _renderActiveTab(files, container) {
           </div>
           <div class="dl2-file-end">
             <span class="dl2-tag ${cls}">${label}</span>
-            ${canRetry ? `<button class="dl2-icon-btn dl2-retry-btn" data-id="${esc(f.id)}" data-user="${esc(f.username)}" data-file="${esc(f.filename)}" data-size="${esc(String(f.size || 0))}" title="Retry this file" aria-label="Retry this file">
+            ${canRetry ? `<button class="dl2-icon-btn dl2-retry-btn" data-id="${esc(f.id)}" data-user="${esc(f.username)}" data-file="${esc(f.filename)}" data-size="${esc(String(f.size || 0))}" title="Retry — asks for this file again, from the same peer or another that has it" aria-label="Retry this file">
               <svg viewBox="0 0 24 24"><path d="M17.65 6.35A7.958 7.958 0 0 0 12 4a8 8 0 1 0 7.73 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
             </button>` : ''}
-            <button class="dl2-icon-btn dl2-cancel-btn" data-id="${esc(f.id)}" data-user="${esc(f.username)}" title="Cancel" aria-label="Cancel">
+            <button class="dl2-icon-btn dl2-cancel-btn" data-id="${esc(f.id)}" data-user="${esc(f.username)}" title="Cancel — stops this transfer and takes it off the queue. Nothing downloaded so far is kept; ask for it again from search to start over." aria-label="Cancel this transfer">
               <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
             </button>
           </div>
@@ -26418,7 +26418,7 @@ function _renderActiveTab(files, container) {
         ${stuckFiles.length ? `<button class="dl2-icon-btn dl2-grp-btn dl2-retry-group-btn" data-retry='${esc(groupRetry)}' title="Retry stuck files in group" aria-label="Retry stuck files in group">
           <svg viewBox="0 0 24 24"><path d="M17.65 6.35A7.958 7.958 0 0 0 12 4a8 8 0 1 0 7.73 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
         </button>` : ''}
-        <button class="dl2-icon-btn dl2-grp-btn dl2-cancel-btn dl2-cancel-group-btn" data-user="${esc(g.username)}" data-ids="${esc(groupIds)}" title="Cancel all in group" aria-label="Cancel all in group">
+        <button class="dl2-icon-btn dl2-grp-btn dl2-cancel-btn dl2-cancel-group-btn" data-user="${esc(g.username)}" data-ids="${esc(groupIds)}" title="Cancel the whole album — stops every transfer in it and takes them off the queue. Finished tracks stay in your library." aria-label="Cancel every transfer in this album">
           <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
         </button>
       </div>
@@ -26662,7 +26662,7 @@ function _renderCompletedTab(files, container) {
               <button class="dl2-icon-btn dl2-open-btn" data-filename="${esc(f.filename)}" data-user="${esc(f.username)}" title="Show in folder" aria-label="Show in folder">
                 <svg viewBox="0 0 24 24"><path d="M20 6h-8l-2-2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2z"/></svg>
               </button>
-              <button class="dl2-icon-btn dl2-remove-btn" data-id="${esc(f.id)}" data-user="${esc(f.username)}" title="Remove from list" aria-label="Remove from list">
+              <button class="dl2-icon-btn dl2-remove-btn" data-id="${esc(f.id)}" data-user="${esc(f.username)}" title="Remove from this list only. A downloaded file stays in your library; a failed one can be requested again from search." aria-label="Remove from this list">
                 <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
               </button>
             </div>
@@ -26939,7 +26939,7 @@ function _renderFailedTab(files, container) {
             <button class="dl2-icon-btn dl2-retry-btn" data-id="${esc(f.id)}" data-user="${esc(f.username)}" data-filename="${esc(f.filename)}" data-size="${f.size || 0}" title="Retry" aria-label="Retry">
               <svg viewBox="0 0 24 24"><path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
             </button>
-            <button class="dl2-icon-btn dl2-remove-btn" data-id="${esc(f.id)}" data-user="${esc(f.username)}" title="Remove" aria-label="Remove">
+            <button class="dl2-icon-btn dl2-remove-btn" data-id="${esc(f.id)}" data-user="${esc(f.username)}" title="Remove from this list only. The file, if it downloaded, stays in your library." aria-label="Remove from this list">
               <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
             </button>
           </div>

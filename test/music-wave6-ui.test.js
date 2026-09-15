@@ -121,6 +121,14 @@ test('assistant Stop releases immediately, aborts the provider request, and name
   }
 })
 
+// Roadmap 080: Cancel and Remove say what they keep and what they drop.
+test('download row actions explain partial data, list-only removal and retry', () => {
+  assert.ok(renderer.includes('title="Cancel — stops this transfer and takes it off the queue. Nothing downloaded so far is kept'))
+  assert.ok(renderer.includes('title="Remove from this list only. A downloaded file stays in your library'))
+  assert.ok(renderer.includes('Finished tracks stay in your library." aria-label="Cancel every transfer in this album"'))
+  assert.ok(!renderer.includes('title="Remove" aria-label="Remove">'), 'no bare Remove is left')
+})
+
 // Roadmap 049: a saved queue is a session (tracks + place); a playlist is a collection.
 test('a saved queue keeps index and position and resumes there', () => {
   assert.ok(renderer.includes("index: state.queueIndex >= 0 ? state.queueIndex : 0,"))
