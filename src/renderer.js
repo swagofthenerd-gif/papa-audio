@@ -22394,14 +22394,38 @@ async function _renderMemoryTab(opts = {}) {
   if (mem.profile?.insights?.length) {
     noProf.style.display = 'none'
     const iconMap = { taste: '♪', artists: '◈', habits: '◷', style: '◉', genres: '◈', other: '◆' }
+    // Roadmap 109: every insight can be corrected, deleted, or deleted and
+    // never relearned — not only wiped all at once.
     cards.innerHTML = mem.profile.insights.map(ins => `
-      <div class="mcs-mem-card">
+      <div class="mcs-mem-card" data-ins-key="${esc(ins.key)}">
         <div class="mcs-mem-card-icon">${iconMap[ins.key] || '◆'}</div>
         <div class="mcs-mem-card-body">
-          <div class="mcs-mem-card-key">${esc(ins.key)}</div>
+          <div class="mcs-mem-card-key">${esc(ins.key)}${ins.edited ? ' <span class="mcs-mem-edited" title="You corrected this; the assistant will not overwrite it">edited</span>' : ''}</div>
           <div class="mcs-mem-card-text">${esc(ins.text)}</div>
+          <div class="mcs-mem-card-actions">
+            <button class="mcs-mem-act" data-ins-act="edit" title="Correct this">Edit</button>
+            <button class="mcs-mem-act" data-ins-act="delete" title="Forget this; it may be learned again">Delete</button>
+            <button class="mcs-mem-act" data-ins-act="exclude" title="Forget this and never learn it again">Delete &amp; don’t relearn</button>
+          </div>
         </div>
-      </div>`).join('')
+      </div>`).join('') +
+      ((mem.excluded || []).length ? '<div class="mcs-mem-excluded">Never relearned: ' + mem.excluded.map(esc).join(', ') + '</div>' : '')
+    cards.querySelectorAll('[data-ins-act]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const card = btn.closest('.mcs-mem-card'), key = card && card.dataset.insKey
+        if (!key) return
+        const act = btn.dataset.insAct
+        if (act === 'edit') {
+          const cur = card.querySelector('.mcs-mem-card-text')?.textContent || ''
+          _mgPrompt('Correct: ' + key, { label: key, value: cur, confirmLabel: 'Save', note: 'Saved as your own words; the assistant will not overwrite it.',
+            onConfirm: async v => { await window.api.agentEditInsight({ key, text: v, action: 'edit' }).catch(() => null); _renderMemoryTab() } })
+          return
+        }
+        await window.api.agentEditInsight({ key, action: act }).catch(() => null)
+        showSnackbar(act === 'exclude' ? 'Forgotten, and will not be learned again' : 'Forgotten', '', function () {}, 2500)
+        _renderMemoryTab()
+      })
+    })
     if (lastUpd && mem.profile.updatedAt) {
       const d = new Date(mem.profile.updatedAt)
       lastUpd.textContent = 'Updated ' + d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })

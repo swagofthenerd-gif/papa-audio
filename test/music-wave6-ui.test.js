@@ -121,6 +121,16 @@ test('assistant Stop releases immediately, aborts the provider request, and name
   }
 })
 
+// Roadmap 109: taste memory is editable one insight at a time; rejected keys stay rejected.
+test('insights can be edited, deleted or excluded, and the profile builder honours both', () => {
+  const M = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'main.js'), 'utf8')
+  const PRE = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'preload.js'), 'utf8')
+  assert.ok(M.includes("ipcMain.handle('agent-edit-insight'") && PRE.includes("'agent-edit-insight'"))
+  assert.ok(M.includes("if (!ins || excluded.has(ins.key)) continue"), 'an excluded key is never merged back')
+  assert.ok(M.includes("if (ex && ex.edited) continue"), 'a hand-corrected text is never overwritten')
+  assert.ok(renderer.includes('data-ins-act="exclude"') && renderer.includes('data-ins-act="edit"') && renderer.includes('data-ins-act="delete"'))
+})
+
 // Roadmap 103: the assistant's welcome reflects real capabilities and names what is off.
 test('the agent welcome is built from connections and says what is not available', () => {
   const fn = renderer.slice(renderer.indexOf('function _paintAgentWelcome()'), renderer.indexOf('async function _initSettingsPanel()'))

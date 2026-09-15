@@ -6382,6 +6382,7 @@ async function _agentChatOnce({ provider, messages, tasteProfile }) {
 ipcMain.handle('agent-get-memory', () => {
   return {
     profile:    store.get('agentProfile', null),
+    excluded:   store.get('agentExcludedInsights', []),
     recentConvs: (store.get('agentConvHistory', [])).slice(-15),
   }
 })
@@ -6449,8 +6450,12 @@ Existing insights: ${JSON.stringify(existing.insights || [])}`
 
   if (parsed?.insights?.length) {
     const merged = [...(existing.insights || [])]
+    const excluded = new Set(store.get('agentExcludedInsights', []))
     for (const ins of parsed.insights) {
+      if (!ins || excluded.has(ins.key)) continue   // roadmap 109: rejected, stays rejected
       const ex = merged.find(e => e.key === ins.key)
+      // A text the person corrected by hand is not overwritten by a guess.
+      if (ex && ex.edited) continue
       if (ex) { ex.text = ins.text; ex.updatedAt = Date.now() }
       else merged.push({ ...ins, updatedAt: Date.now() })
     }
@@ -6465,6 +6470,32 @@ ipcMain.handle('agent-clear-memory', () => {
   store.delete('agentProfile')
   store.delete('agentConvHistory')
   return { ok: true }
+})
+
+// Roadmap 109: one insight at a time — correct its text, delete it, or
+// delete it AND stop the profile builder from learning that key again.
+// Excluded keys are dropped from every future merge, so a preference the
+// person rejected cannot creep back from the next conversation.
+ipcMain.handle('agent-edit-insight', (_, { key, text, action } = {}) => {
+  const k = String(key || '').trim()
+  if (!k) return { ok: false, error: 'No insight named' }
+  const prof = store.get('agentProfile', { insights: [], raw: '', updatedAt: null }) || { insights: [] }
+  let insights = Array.isArray(prof.insights) ? prof.insights.slice() : []
+  const excluded = new Set(store.get('agentExcludedInsights', []))
+  if (action === 'delete' || action === 'exclude') {
+    insights = insights.filter(i => i && i.key !== k)
+    if (action === 'exclude') excluded.add(k)
+  } else {
+    const t = String(text || '').trim()
+    if (!t) return { ok: false, error: 'Nothing to save' }
+    const ex = insights.find(i => i && i.key === k)
+    if (ex) { ex.text = t; ex.updatedAt = Date.now(); ex.edited = true }
+    else insights.push({ key: k, text: t, updatedAt: Date.now(), edited: true })
+    excluded.delete(k)
+  }
+  store.set('agentExcludedInsights', Array.from(excluded))
+  store.set('agentProfile', { insights, raw: insights.map(i => `${i.key}: ${i.text}`).join('\n'), updatedAt: Date.now() })
+  return { ok: true, insights, excluded: Array.from(excluded) }
 })
 
 ipcMain.handle('get-api-keys', () => {
