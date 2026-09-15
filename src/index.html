@@ -508,6 +508,14 @@
           </label>
           <!-- Roadmap 096: the gain policy, summed, with clipping risk. -->
           <div class="mcs-set-hint" id="gain-policy-text">Gain policy: loading…</div>
+          <!-- Roadmap 038: what happens when the output device disconnects. -->
+          <label class="mcs-set-row">If the audio device disconnects
+            <select class="mcs-set-select" id="pb-device-loss">
+              <option value="pause">Pause (default)</option>
+              <option value="continue">Keep playing on the default device</option>
+            </select>
+          </label>
+          <div class="mcs-set-hint">Unplugging headphones or a DAC mid-song: Pause keeps your place and waits; Keep playing switches to whatever is now the default output — usually the speakers — at the current volume.</div>
           <label class="mcs-set-row" id="pb-bitperfect-row">Bit-perfect output
             <input type="checkbox" id="pb-bitperfect">
           </label>

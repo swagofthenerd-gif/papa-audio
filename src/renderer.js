@@ -23555,6 +23555,11 @@ async function initPlaybackSettings() {
   }
   $('pb-channels').onchange = e => apply({ channels: e.target.value })
   $('pb-boost').onchange = e => apply({ boost: e.target.checked })
+  // Roadmap 038: device-loss policy, remembered with the player settings.
+  if ($('pb-device-loss')) {
+    $('pb-device-loss').value = cfg.onDeviceLoss === 'continue' ? 'continue' : 'pause'
+    $('pb-device-loss').onchange = e => apply({ onDeviceLoss: e.target.value })
+  }
   // Bit-perfect goes through its dedicated IPC (it also disables EQ / leveling /
   // crossfade engine-side), feature-detected so an older backend simply has no
   // control. The honest sublabel already warns those three go quiet.
@@ -29657,6 +29662,15 @@ function setupListeners() {
     state.isPlaying = !!d.wasPlaying
     updatePlayBtn()
     if (state.modalOpen) syncModalPlayBtn()
+    // Roadmap 038: the engine came back paused after a device loss (the
+    // default policy). Say so, and make continuing one deliberate click.
+    if (d.pausedForSafety) {
+      syncExtension()
+      showSnackbar('The audio device disconnected — paused at ' + fmtDur(d.position || 0) + ' so nothing blasts out of the wrong speakers. Change this in Settings → Playback.',
+        'Keep playing', function () { togglePlay() }, 12000)
+      updateNextPrefetch()
+      return
+    }
     // The decided behaviour: resume at the same position, then say so once,
     // briefly, dismissibly. Never a blocking prompt, never silent.
     showSnackbar(
@@ -29738,6 +29752,7 @@ function setupListeners() {
     console.error('[papa] audio device lost:', d.text || '')
     showSnackbar('The audio device went away — mpv is trying to reopen it', '', function () {}, 6000)
   })
+
 
   audio.addEventListener('audiodevicefallback', e => {
     const d = e.detail || {}

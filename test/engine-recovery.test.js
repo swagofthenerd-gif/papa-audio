@@ -383,3 +383,20 @@ test('a restart that cannot finish its resume says so instead of going quiet', a
   assert.strictEqual(d.path, '/music/a.flac')
   eng.stop(); f.close()
 })
+
+// Roadmap 038: a device loss brings the engine back paused unless told otherwise.
+test('after a device fault the respawn resumes paused by default, and continues only on the continue policy', () => {
+  const fs = require('node:fs'), path = require('node:path')
+  const E = fs.readFileSync(path.join(__dirname, '..', 'mpv-engine.js'), 'utf8')
+  assert.match(E, /const pauseForSafety = !!deviceFault && !resume\.paused && \(this\.config\.onDeviceLoss \|\| 'pause'\) !== 'continue'/)
+  assert.match(E, /if \(pauseForSafety\) \{\n\s+resume = \{ \.\.\.resume, paused: true \}/)
+  assert.match(E, /pausedForSafety: pauseForSafety,/, 'the renderer is told why it is paused')
+  const B = require('../src/bit-perfect')
+  assert.strictEqual(B.resolveEngineConfig({}).onDeviceLoss, 'pause', 'default is pause')
+  assert.strictEqual(B.resolveEngineConfig({ onDeviceLoss: 'continue' }).onDeviceLoss, 'continue')
+  assert.strictEqual(B.resolveEngineConfig({ onDeviceLoss: 'nonsense' }).onDeviceLoss, 'pause')
+  const R = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
+  assert.ok(R.includes("if (d.pausedForSafety) {") && R.includes("'Keep playing', function () { togglePlay() }, 12000)"))
+  const H = fs.readFileSync(path.join(__dirname, '..', 'src', 'index.html'), 'utf8')
+  assert.ok(H.includes('id="pb-device-loss"'), 'the policy is a setting')
+})

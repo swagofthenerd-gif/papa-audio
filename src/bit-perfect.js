@@ -66,6 +66,8 @@
       audioChannels: cfg.channels,
       eq: cfg.eq,
       bitPerfect: on,
+      // Roadmap 038: what to do when the output device vanishes mid-play.
+      onDeviceLoss: cfg.onDeviceLoss === 'continue' ? 'continue' : 'pause',
     }
     if (!on) return base
     return {

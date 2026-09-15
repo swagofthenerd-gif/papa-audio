@@ -954,6 +954,17 @@ class MpvEngine extends EventEmitter {
       return
     }
     this._respawns.push(now)
+    // Roadmap 038: the device that was playing went away. Coming back on
+    // whatever device is now the default — the speakers, when the headphones
+    // were what vanished — must not happen at full volume without a say. The
+    // policy is a config (onDeviceLoss: 'pause' | 'continue'), default pause:
+    // the position is kept and the engine comes back paused, and the renderer
+    // says so with a "keep playing" way on.
+    const pauseForSafety = !!deviceFault && !resume.paused && (this.config.onDeviceLoss || 'pause') !== 'continue'
+    if (pauseForSafety) {
+      resume = { ...resume, paused: true }
+      this._rec('device-loss-pause', { path: resume.path, position: resume.position, because: deviceFault.text })
+    }
     try {
       await this.start()
       const outcome = await this._resume(resume, 'respawn resume')
@@ -964,6 +975,7 @@ class MpvEngine extends EventEmitter {
         path: resume.path, position: resume.position,
         resumed: outcome.resumed, wasPlaying: !resume.paused,
         deviceFallback: this._deviceFallback,
+        pausedForSafety: pauseForSafety,
       })
       this._emitDiagnostic('engine-recovered', { path: resume.path, position: resume.position })
     } catch (e) {
