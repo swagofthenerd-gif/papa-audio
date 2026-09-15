@@ -8198,9 +8198,13 @@ function _videoCard(item) {
   // by several tests).
   const instant = (typeof _instantKeys !== 'undefined' && _instantKeys) ? _instantKeys[key] : null
   if (instant) {
-    badges.push('<span class="vbadge vbadge-instant" title="' +
-      (instant === 'device' ? 'Saved on this device — plays with no internet' : 'Ready on your debrid account — starts at once') +
-      '">' + (instant === 'device' ? 'ON DEVICE' : 'INSTANT') + '</span>')
+    // V121: three different promises, three different words. SAVED is yours
+    // until you delete it; CACHED is on this device for now and may be
+    // evicted to make room; INSTANT is a resolved debrid link, not a file.
+    const words = instant === 'saved' ? ['SAVED', 'Saved on this device — plays with no internet, kept until you delete it']
+      : (instant === 'cached' || instant === 'device') ? ['CACHED', 'On this device for now — plays with no internet, but may be cleared to make room. Save it to keep it.']
+      : ['INSTANT', 'Ready on your debrid account — starts at once, needs internet']
+    badges.push('<span class="vbadge vbadge-instant vbadge-' + esc(instant) + '" title="' + words[1] + '">' + words[0] + '</span>')
   }
   // A row can say something about the card ("Ep 12 · 3h ago", "Ep 5 · 19:15").
   if (item.badge) badges.push('<span class="vbadge vbadge-ep">' + esc(String(item.badge)) + '</span>')

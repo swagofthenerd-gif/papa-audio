@@ -45,14 +45,15 @@ test('a deleted file stops claiming to be instant, and a debrid claim expires', 
     'a device claim is re-proved against what is actually on disk')
   assert.ok(/now - \(v\.at \|\| 0\) < INSTANT_DEBRID_TTL_MS/.test(body), 'a debrid claim ages out')
   assert.ok(/const INSTANT_DEBRID_TTL_MS = 1000 \* 60 \* 60 \* 12/.test(MAIN))
-  assert.ok(/for \(const k of live\) out\[k\] = 'device'/.test(body), 'a file on disk is instant regardless')
+  // V121: on disk is instant regardless — and SAVED (kept) is told apart from CACHED (evictable).
+  assert.ok(/for \(const k of live\) out\[k\] = kept\.has\(k\) \? 'saved' : 'cached'/.test(body), 'a file on disk is instant regardless, with its promise named')
 })
 
 test('the card badges from the memory, distinguishing on-device from debrid, and never asks per card', () => {
   const card = RENDERER.slice(RENDERER.indexOf('function _videoCard(item)'), RENDERER.indexOf('// ── Folder management'))
   // Read tolerantly: a badge must never be able to throw a card away.
   assert.ok(/const instant = \(typeof _instantKeys !== 'undefined' && _instantKeys\) \? _instantKeys\[key\] : null/.test(card))
-  assert.ok(/ON DEVICE/.test(card) && /INSTANT/.test(card), 'two different truths read differently')
+  assert.ok(/'SAVED'/.test(card) && /'CACHED'/.test(card) && /'INSTANT'/.test(card), 'three different truths read differently (V121)')
   assert.ok(!/videoInstantList/.test(card), 'a card must never make its own request')
   // The map is fetched once per catalogue render, before the cards are built.
   assert.ok(/await _refreshInstantKeys\(\)\n\n  const wanted = _videoRows\.filter/.test(RENDERER))

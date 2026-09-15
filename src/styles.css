@@ -8104,7 +8104,8 @@ body.app-unfocused .vt-menu {
 }
 .vbtn-quality select:hover { background-color:var(--glass-hi); }
 .vbtn-quality select:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
-.vbadge-instant[title*="device"] { background:#7ad1a1; }
+.vbadge-instant.vbadge-saved { background:#7ad1a1; }
+.vbadge-instant.vbadge-cached, .vbadge-instant.vbadge-device { background:#c9d8a0; }
 /* A character tile opens nothing. */
 .vcast-static { cursor:default; }
 .vcast-static:hover { transform:none; }

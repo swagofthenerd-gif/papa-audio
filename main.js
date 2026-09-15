@@ -13334,13 +13334,17 @@ const INSTANT_DEBRID_TTL_MS = 1000 * 60 * 60 * 12
 ipcMain.handle('video-instant-list', async () => {
   try {
     const map = sideStores.videoInstantIndex.get() || {}
+    // V121: a kept file ("saved", yours until you delete it) and a rewatch-
+    // cache file ("cached", evicted by age and size) are different promises.
+    // Both are on this device; only one is available offline for good.
     const live = new Set()
+    const kept = new Set()
     for (const e of _videoCacheEntries()) {
       const k = _titleKeyOf(e.meta)
       if (k) live.add(k)
     }
     for (const e of (sideStores.videoKeepIndex.get() || [])) {
-      if (e && e.titleKey) live.add(e.titleKey)
+      if (e && e.titleKey) { live.add(e.titleKey); kept.add(e.titleKey) }
     }
     const now = Date.now()
     const out = {}
@@ -13350,7 +13354,7 @@ ipcMain.handle('video-instant-list', async () => {
       if (now - (v.at || 0) < INSTANT_DEBRID_TTL_MS) out[k] = v.via
     }
     // A file on disk is instant whether or not the index remembered it.
-    for (const k of live) out[k] = 'device'
+    for (const k of live) out[k] = kept.has(k) ? 'saved' : 'cached'
     return { ok: true, instant: out }
   } catch (e) {
     return { ok: true, instant: {}, error: (e && e.message) || String(e) }
