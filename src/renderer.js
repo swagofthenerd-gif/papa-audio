@@ -21475,7 +21475,7 @@ function renderSavedQueues() {
       ${artHtml}
       <span class="sq-item-info">
         <span class="sq-item-name" title="${esc(q.name)}">${esc(q.name)}</span>
-        <span class="sq-item-count">${q.tracks?.length || 0} tracks</span>
+        <span class="sq-item-count" title="A saved queue is a listening session: it resumes where you were. A playlist is a collection.">${q.tracks?.length || 0} tracks${Number.isInteger(q.index) && q.index > 0 ? ' · at #' + (q.index + 1) : ''}</span>
       </span>
       <button class="sq-item-del" data-qid="${esc(q.id)}" title="Delete">&#10005;</button>
     </li>`
@@ -21487,8 +21487,11 @@ function renderSavedQueues() {
       const q = state.savedQueues.find(x => x.id === li.dataset.qid)
       if (!q?.tracks?.length) return
       state.queue = q.tracks
-      state.queueIndex = 0
+      // Roadmap 049: resume the session where it was saved, not from the top.
+      const idx = Number.isInteger(q.index) && q.index >= 0 && q.index < q.tracks.length ? q.index : 0
+      state.queueIndex = idx
       playCurrentTrack()
+      if (q.position > 5) setTimeout(function () { try { audio.currentTime = q.position } catch (_) {} }, 800)
       if (state.queuePanelOpen) renderQueuePanel()
     })
   })
@@ -28255,9 +28258,16 @@ function showSlskConfigModal(query) {
   dlg.addEventListener('click', e => { if (e.target === dlg) dlg.remove() })
 }
 
+// Roadmap 049: a saved queue is a listening SESSION — it keeps where you
+// were (index and position) as well as the tracks, which is what tells it
+// apart from a playlist (an ordered collection with no "where I was").
 function saveCurrentQueue(name) {
   if (!state.queue.length || !name.trim()) return
-  const q = { id: `sq_${Date.now()}`, name: name.trim(), tracks: [...state.queue], savedAt: Date.now() }
+  const q = {
+    id: `sq_${Date.now()}`, name: name.trim(), tracks: [...state.queue], savedAt: Date.now(),
+    index: state.queueIndex >= 0 ? state.queueIndex : 0,
+    position: state.queueIndex >= 0 ? Math.floor(Number(audio && audio.currentTime) || 0) : 0,
+  }
   state.savedQueues = [q, ...state.savedQueues]
   window.api.saveQueue(q)
   renderSavedQueues()

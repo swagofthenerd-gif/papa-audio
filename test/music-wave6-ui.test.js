@@ -121,6 +121,15 @@ test('assistant Stop releases immediately, aborts the provider request, and name
   }
 })
 
+// Roadmap 049: a saved queue is a session (tracks + place); a playlist is a collection.
+test('a saved queue keeps index and position and resumes there', () => {
+  assert.ok(renderer.includes("index: state.queueIndex >= 0 ? state.queueIndex : 0,"))
+  assert.ok(renderer.includes("position: state.queueIndex >= 0 ? Math.floor(Number(audio && audio.currentTime) || 0) : 0,"))
+  assert.ok(renderer.includes("const idx = Number.isInteger(q.index) && q.index >= 0 && q.index < q.tracks.length ? q.index : 0"))
+  const H = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'index.html'), 'utf8')
+  assert.ok(H.includes('A saved queue is a listening session'))
+})
+
 // Roadmap 044: remaining listening time is shown separately from the total.
 test('the queue header shows time left from here and the total', () => {
   assert.ok(renderer.includes("? fmtDur(leftQD) + ' left · ' + totalQDstr + ' total'"))
