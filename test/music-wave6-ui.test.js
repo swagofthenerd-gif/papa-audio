@@ -50,6 +50,17 @@ test('the queue panel wires a clear-played action to the tested helper', () => {
   assert.ok(renderer.includes("'Clear played'"), 'no Clear played button label')
 })
 
+// Roadmap 037: sleep keeps track, position and paused state; waking offers the same place back.
+test('suspend saves the place and resume offers it back without starting noise on its own', () => {
+  const sus = renderer.slice(renderer.indexOf("window.api.on('system-suspend'"), renderer.indexOf("window.api.on('system-resume'"))
+  assert.ok(sus.includes('_sleptWhilePlaying = (state.isPlaying && t)'), 'what was playing is remembered')
+  assert.ok(sus.includes('window.api.savePlaybackState({ filePath: t.filePath, position: Number(audio.currentTime) || 0 })'), 'and persisted')
+  const res = renderer.slice(renderer.indexOf("window.api.on('system-resume'"), renderer.indexOf("window.api.on('papa-memory-pressure'"))
+  assert.ok(res.includes("'Paused while the computer slept — '"), 'resume says what happened')
+  assert.ok(res.includes("'Resume', function () {"), 'and offers the same place back')
+  assert.ok(!/audio\.play\(\)|togglePlay\(\)\n/.test(res.slice(0, res.indexOf("showSnackbar('Paused while"))), 'nothing starts playing on its own after waking')
+})
+
 // Roadmap 034: Play flips at once, then the engine's truth is reported.
 test('a refused or silent Play reverts the button and says why, with Retry', () => {
   assert.ok(renderer.includes("Promise.resolve().then(function () { return audio.play() }).then(_armMusicStartWatch).catch(_onPlayRefused)"), 'togglePlay handles the rejection')

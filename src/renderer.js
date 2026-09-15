@@ -29992,11 +29992,20 @@ function setupListeners() {
 
   // main pauses mpv before the machine suspends. Without this the UI came back
   // still claiming to be playing.
+  // Roadmap 037: main has already paused the engine. Remember what was
+  // playing and where, so resume can offer the same track at the same place
+  // rather than guessing from whatever the engine reports after waking.
+  var _sleptWhilePlaying = null
   window.api.on('system-suspend', () => {
     console.log('[papa] system suspending')
+    const t = state.queue[state.queueIndex]
+    _sleptWhilePlaying = (state.isPlaying && t) ? { filePath: t.filePath, title: t.title || '', position: Number(audio.currentTime) || 0 } : null
+    if (t) { try { window.api.savePlaybackState({ filePath: t.filePath, position: Number(audio.currentTime) || 0 }) } catch (_) {} }
     state.isPlaying = false
+    _disarmMusicStartWatch()
     updatePlayBtn()
     if (state.modalOpen) syncModalPlayBtn()
+    syncExtension()
   })
 
   // The audio device is the thing most likely to have changed underneath us, so
@@ -30013,6 +30022,25 @@ function setupListeners() {
         state.isPlaying = !st.state.paused
         updatePlayBtn()
         if (state.modalOpen) syncModalPlayBtn()
+      }
+      // Roadmap 037: it was playing when the machine slept; it stays paused
+      // now (a computer waking up should not start making noise), and the
+      // person gets the same track and place back with one click.
+      const slept = _sleptWhilePlaying
+      _sleptWhilePlaying = null
+      if (slept && !state.isPlaying) {
+        const cur = state.queue[state.queueIndex]
+        const same = cur && cur.filePath === slept.filePath
+        showSnackbar('Paused while the computer slept — ' + (slept.title || 'your track') + ' at ' + fmtDur(slept.position), 'Resume', function () {
+          if (same) {
+            if (Math.abs((Number(audio.currentTime) || 0) - slept.position) > 2) { try { audio.currentTime = slept.position } catch (_) {} }
+            togglePlay()
+          } else {
+            const idx = state.queue.findIndex(function (q) { return q && q.filePath === slept.filePath })
+            if (idx >= 0) { state.queueIndex = idx; playCurrentTrack(); setTimeout(function () { try { audio.currentTime = slept.position } catch (_) {} }, 800) }
+            else togglePlay()
+          }
+        }, 15000)
       }
     } catch (e) {
       console.error('[papa] could not reconcile after resume:', String(e && e.message || e))
