@@ -1394,3 +1394,14 @@ test('video-keep-file checks space first and cleans up a half-written copy on EN
   const R = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
   assert.ok(R.includes("else if (res && res.error === 'space') showToast(res.text"))
 })
+
+// V055: a pack that did not name the wanted episode says so.
+test('the pack event carries the pick verdict and the renderer says when it did not match', () => {
+  const fs = require('node:fs'), path = require('node:path')
+  const M = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
+  const T = fs.readFileSync(path.join(__dirname, '..', 'torrent-stream.js'), 'utf8')
+  const R = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
+  assert.ok((M.match(/kind: 'pack', files, pick: \(typeof streamer\.pickInfo === 'function' \? streamer\.pickInfo\(\) : null\)/g) || []).length === 3, 'every pack event carries the pick')
+  assert.ok(T.includes('matched: this._want && this._want.episode != null ? matchesWantedEpisode(file.name'))
+  assert.ok(R.includes("if (pk && pk.wanted != null && pk.matched === false)"))
+})

@@ -1594,3 +1594,13 @@ test('peers with no bytes get one extension; growing bytes keep the extensions c
   assert.strictEqual(g._extensions, 3)
   g.stop()
 })
+
+// V055: the pick reports whether it matched the requested episode.
+test('pickInfo says whether the chosen file names the wanted episode', () => {
+  const { pickVideoFile, matchesWantedEpisode } = require('../torrent-stream')
+  const files = [{ name: 'Show S01E01.mkv', length: 5 }, { name: 'Show S01E02.mkv', length: 6 }, { name: 'sample.mkv', length: 1 }]
+  const i = pickVideoFile(files, { episode: 7 })
+  assert.ok(i === 1, 'no match: the largest usable file, not the sample')
+  assert.strictEqual(matchesWantedEpisode(files[i].name, { episode: 7 }), false, 'and the caller can tell it did not match')
+  assert.strictEqual(pickVideoFile(files, { episode: 1 }), 0)
+})

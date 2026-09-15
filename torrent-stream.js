@@ -409,6 +409,9 @@ class TorrentStreamer extends EventEmitter {
   // read out of its name. A season pack already holds every episode, so
   // switching between them costs nothing: same torrent, same peers, no new
   // resolve — just a different URL from the server that is already running.
+  // V055: what was picked and whether it matched the requested episode.
+  pickInfo() { return this._pick ? { ...this._pick } : null }
+
   files() {
     const torrent = this._torrent
     const addr = this._server && this._server.address && this._server.address()
@@ -687,6 +690,15 @@ class TorrentStreamer extends EventEmitter {
     this._prefetched = null
     this._fileIndex = index
     this._file = file
+    // V055: whether the file actually names the episode that was asked for,
+    // or is the fallback (largest usable file) — the renderer says so rather
+    // than letting a wrong episode play as if it were the right one.
+    this._pick = {
+      index, name: file.name || '',
+      wanted: this._want && this._want.episode != null ? Number(this._want.episode) : null,
+      matched: this._want && this._want.episode != null ? matchesWantedEpisode(file.name || '', this._want) : null,
+      junk: JUNK.test(file.name || ''),
+    }
 
     // Everything else in the pack is dead weight. A season pack or a batch
     // release would otherwise download all of it in parallel with the episode

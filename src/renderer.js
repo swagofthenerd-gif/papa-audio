@@ -4205,6 +4205,12 @@ function _handleVideoEvent(payload) {
   // The episodes inside the season pack now streaming.
   if (payload.kind === 'pack') {
     _player.setPack(payload.files || [], _switchPackEpisode, _keepPackEpisode)
+    // V055: the pack did not name the episode that was asked for, so the
+    // largest usable file is playing. Say so; the pack list is the correction.
+    const pk = payload.pick
+    if (pk && pk.wanted != null && pk.matched === false) {
+      showToast('Could not tell which file is episode ' + pk.wanted + (pk.junk ? '' : ' — playing "' + (pk.name || '').split(/[\\/]/).pop() + '"') + '. Pick the right one from the episode list.')
+    }
     // The pack's file list — each carries an in-torrent index — is what the
     // "Download next episode" affordance needs to know which file to fetch.
     _setPackFiles(payload.files || [])

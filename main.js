@@ -12651,7 +12651,7 @@ ipcMain.handle('video-play', async (_, { result }) => {
         if (!result.magnet) return { ok: false, error: 'This source has no magnet link' }
         const startTorrent = () => _startTorrentRace(result, result.alternates, { current, fail, onReady: (url, streamer) => {
           serve(url).then(() => {
-            try { const files = streamer.files(); if (files.length > 1 && current()) safeSend('video-event', { kind: 'pack', files }) } catch (_) {}
+            try { const files = streamer.files(); if (files.length > 1 && current()) safeSend('video-event', { kind: 'pack', files, pick: (typeof streamer.pickInfo === 'function' ? streamer.pickInfo() : null) }) } catch (_) {}
           }).catch(fail)
         } })
         if (_debridWorthTrying(result.magnet)) {
@@ -12783,7 +12783,7 @@ ipcMain.handle('video-play', async (_, { result }) => {
             // that is already running — same peers, no new resolve, no wait.
             try {
               const files = streamer.files()
-              if (files.length > 1) safeSend('video-event', { kind: 'pack', files })
+              if (files.length > 1) safeSend('video-event', { kind: 'pack', files, pick: (typeof streamer.pickInfo === 'function' ? streamer.pickInfo() : null) })
             } catch (_) { /* the pack list is a convenience, never required */ }
           }).catch(fail)
         },
@@ -12953,7 +12953,7 @@ ipcMain.handle('video-switch-stream', async (_, { result } = {}) => {
           safeSend('video-event', { kind: 'playing' })
           try {
             const files = streamer.files()
-            if (files.length > 1) safeSend('video-event', { kind: 'pack', files })
+            if (files.length > 1) safeSend('video-event', { kind: 'pack', files, pick: (typeof streamer.pickInfo === 'function' ? streamer.pickInfo() : null) })
           } catch (_) { /* the pack list is a convenience, never required */ }
         }).catch(fail)
       },
