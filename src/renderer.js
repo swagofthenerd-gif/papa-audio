@@ -32041,6 +32041,7 @@ function _mgTracksFromLibrary() {
         album: a.name,
         albumArtist: a.artist,
         artist: t.artist || a.artist,
+        year: a.year || null,
       })
     }
   }
@@ -32934,7 +32935,11 @@ function renderManageDuplicates() {
     html += '<div class="mg-group' + (g.reliable ? '' : ' mg-group-unsafe') + '">' +
       '<div class="mg-group-head">' +
         '<span class="mg-group-title">' + esc(g.artist || 'Unknown artist') + ' — ' + esc(g.album || 'Unknown album') + '</span>' +
-        '<span class="mg-group-meta">' + g.folders.length + ' copies · ' + _mgFmt(g.totalBytes) + '</span>' +
+        '<span class="mg-group-meta">' + g.folders.length + ' copies · ' + _mgFmt(g.totalBytes) +
+          // Roadmap 086: what kind of "duplicate" this is, before any removal.
+          ' · <span class="mg-relation mg-relation-' + esc(g.relation || 'recordings') + '">' +
+          (g.relation === 'identical' ? 'byte-identical copies' : g.relation === 'editions' ? 'different releases' : 'same record, different encodings') +
+          '</span></span>' +
       '</div>'
     for (var w = 0; w < g.warnings.length; w++) {
       html += '<div class="mg-warn">' + esc(g.warnings[w]) + '</div>'

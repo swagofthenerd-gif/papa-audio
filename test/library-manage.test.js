@@ -135,3 +135,21 @@ test('track identity ignores numbering and remaster noise', () => {
   assert.equal(L.trackIdentity({ filePath: '/x/03 - Time (2011 Remaster).flac' }),
                L.trackIdentity({ filePath: '/y/Time.flac' }))
 })
+
+// Roadmap 086: byte-identical copies, other encodings, and different releases are told apart.
+test('relationOf: identical sizes are byte-identical copies; edition words or years make releases; else encodings', () => {
+  const L2 = require('../src/library-manage')
+  const t = (dir, album, year, size, n, codec) => ({ filePath: dir + '/' + String(n).padStart(2, '0') + ' T' + n + '.flac', title: 'T' + n, trackNumber: n, fileSize: size, album, year, channels: 2, codec })
+  const same = L2.buildFolders([t('/a', 'X', 2000, 100, 1), t('/a', 'X', 2000, 200, 2), t('/b', 'X', 2000, 100, 1), t('/b', 'X', 2000, 200, 2)])
+  assert.equal(L2.relationOf(same), 'identical')
+  const enc = L2.buildFolders([t('/a', 'X', 2000, 100, 1), t('/b', 'X', 2000, 900, 1)])
+  assert.equal(L2.relationOf(enc), 'recordings')
+  const ed = L2.buildFolders([t('/a', 'X', 2000, 100, 1), t('/b', 'X (Remastered)', 2000, 100, 1)])
+  assert.equal(L2.relationOf(ed), 'editions')
+  const yr = L2.buildFolders([t('/a', 'X', 1975, 100, 1), t('/b', 'X', 2011, 100, 1)])
+  assert.equal(L2.relationOf(yr), 'editions')
+  const g = L2.assessGroup({ folders: ed })
+  assert.ok(g.folders.every(f => !f.safeToDelete), 'a different release is never marked safe to delete')
+  assert.ok(g.warnings.some(w => /different releases/.test(w)))
+  assert.deepEqual(L2.editionTokens('Kind of Blue (Mono, Remastered)'), ['mono', 'remastered'])
+})
