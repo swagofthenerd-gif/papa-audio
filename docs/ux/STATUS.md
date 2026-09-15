@@ -114,6 +114,9 @@ Each F item re-checked on this branch, not assumed from the `main` review.
 | 2026-09-15 | 056 | `7f8357c` | Show all N songs lifts the local search cap |
 | 2026-09-15 | 118, 046 | `75a9e17` | queue Move up/down via context menu and Alt+↑/↓ |
 | 2026-09-15 | merge | `5d3a166` | other session's debrid work (0d26dc3, 18be92b, 48d1799) merged; suite green |
+| 2026-09-15 | 088 | `c5fcbb1` | artwork preview: current vs new, measured resolution, scope stated |
+| 2026-09-15 | 089 | `285be09` | track artist leads on compilations; Disc N of M |
+| 2026-09-15 | 092 | see log | m3u8For: absolute paths, streams as comments, counts; liked-songs export |
 
 ## F list: all resolved (134 deferred to runtime). Now working through P0 E-items
 

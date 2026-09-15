@@ -93,11 +93,11 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | A085 | Fixed `71abddb` — guided relink with preview |
 | A086 | Fixed — relationOf classifies groups; editions never deletable |
 | A087 | Fixed — hero edits write real tags with an explicit scope note; see STATUS.md |
-| A088 | Pending review/implementation |
-| A089 | Pending review/implementation |
-| A090 | Pending review/implementation |
+| A088 | Fixed `c5fcbb1` |
+| A089 | Fixed `285be09` |
+| A090 | Partial — missing files → guided relink; duplicates → classified review; untagged → open album; previews on relink |
 | A091 | Fixed `3668f0b` — move journal + startup recovery |
-| A092 | Pending review/implementation |
+| A092 | Partial — playlists + liked songs export as M3U8 with honest path handling; notes/metadata export pending |
 | A093 | Fixed `1da705b` — codec-checked LOSSLESS, full-chain BIT-PERFECT; see STATUS.md |
 | A094 | Pending review/implementation |
 | A095 | Pending review/implementation |
