@@ -50,6 +50,19 @@ test('the queue panel wires a clear-played action to the tested helper', () => {
   assert.ok(renderer.includes("'Clear played'"), 'no Clear played button label')
 })
 
+// Roadmap 087: the hero editor writes real tags and says so; no "coming soon".
+test('album hero edits go through the tag writer with an explicit scope note', () => {
+  assert.ok(!renderer.includes('visual only — save to file coming soon'), 'the placeholder note is gone')
+  const i = renderer.indexOf('function editField(')
+  const body = renderer.slice(i, renderer.indexOf('\n}\n', i))
+  assert.ok(body.includes('libraryWriteTags'), 'editField writes through the real writer')
+  assert.ok(body.includes('Writes the tag into '), 'the prompt states the file scope')
+  assert.ok(body.includes('Changes only what this app shows'), 'and the app-only scope when there is no writer')
+  assert.ok(/if \(!res\.written\) \{[\s\S]*?return\s*\}[\s\S]*?callback\(newVal\)/.test(body), 'the display changes only after a successful write')
+  assert.ok(renderer.includes("_heroWrite('album')") && renderer.includes("_heroWrite('artist')"), 'title and artist edits are wired to it')
+  assert.ok(renderer.includes('heroTagWrites(album'), 'through the tested mapping')
+})
+
 // Roadmap 005: the page scrolls vertically over album rows; rows get arrows.
 test('album rows no longer hijack vertical wheel and are dressed with rail arrows', () => {
   const i = renderer.indexOf("addEventListener('wheel', e => {\n    const row = e.target.closest('.scroll-row')")

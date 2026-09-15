@@ -81,6 +81,34 @@
     return 0
   }
 
+  // Album hero edits → file tag writes (roadmap 087). The hero's title, artist
+  // and year used to change only what was drawn, with a "save to file coming
+  // soon" note — while a real ffmpeg tag writer already existed for the tag
+  // fixer. This maps one hero field to the per-file writes that writer takes.
+  // Artist edits rewrite albumartist everywhere, and artist too on tracks whose
+  // artist was the old album artist (a compilation's per-track artists stay).
+  // Streams have no file and are skipped; the caller reports the count.
+  function heroTagWrites(album, field, newVal) {
+    var tracks = (album && album.tracks) || []
+    var val = newVal == null ? '' : String(newVal)
+    var out = []
+    var oldArtist = String((album && album.artist) || '')
+    for (var i = 0; i < tracks.length; i++) {
+      var t = tracks[i]
+      var fp = t && t.filePath
+      if (!fp || /^https?:/i.test(fp)) continue
+      var tags = null
+      if (field === 'album') tags = { album: val }
+      else if (field === 'year') tags = { date: val }
+      else if (field === 'artist') {
+        tags = { albumartist: val }
+        if (!t.artist || t.artist === oldArtist) tags.artist = val
+      }
+      if (tags) out.push({ filePath: fp, tags: tags })
+    }
+    return out
+  }
+
   function clearPlayedQueue(queue, queueIndex) {
     queue = queue || []
     var idx = Number(queueIndex)
@@ -1688,6 +1716,7 @@
     clearPlayedQueue: clearPlayedQueue,
     clearUpcomingQueue: clearUpcomingQueue,
     rowWheelDelta: rowWheelDelta,
+    heroTagWrites: heroTagWrites,
     topAlbumsByPlays: topAlbumsByPlays,
     playsPerMonth: playsPerMonth,
     normalizeForDupe: normalizeForDupe,

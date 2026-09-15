@@ -48,6 +48,33 @@ test('the preset menu offers end-of-track and the five minute presets', () => {
   assert.ok(T.SLEEP_PRESETS.some(p => p.endOfTrack), 'no end-of-track option')
 })
 
+// ── Album hero edits → tag writes (roadmap 087) ──────────────────────────────
+const heroAlbum = () => ({ artist: 'Camel', name: 'Snow Goose', tracks: [
+  { filePath: '/m/1.flac', artist: 'Camel' },
+  { filePath: '/m/2.flac', artist: 'Camel feat. X' },
+  { filePath: 'https://yt/x', artist: 'Camel' },
+  { filePath: '/m/3.flac' },
+] })
+
+test('album title edits write the album tag to every local file, never a stream', () => {
+  const w = T.heroTagWrites(heroAlbum(), 'album', 'The Snow Goose')
+  assert.deepEqual(w.map(x => x.filePath), ['/m/1.flac', '/m/2.flac', '/m/3.flac'])
+  assert.deepEqual(w[0].tags, { album: 'The Snow Goose' })
+})
+
+test('artist edits rewrite albumartist everywhere and artist only where it was the album artist', () => {
+  const w = T.heroTagWrites(heroAlbum(), 'artist', 'Camel (UK)')
+  assert.deepEqual(w[0].tags, { albumartist: 'Camel (UK)', artist: 'Camel (UK)' })
+  assert.deepEqual(w[1].tags, { albumartist: 'Camel (UK)' }, 'a per-track artist is kept')
+  assert.deepEqual(w[2].tags, { albumartist: 'Camel (UK)', artist: 'Camel (UK)' }, 'a track with no artist takes it')
+})
+
+test('year edits write the date tag; an unknown field writes nothing', () => {
+  assert.deepEqual(T.heroTagWrites(heroAlbum(), 'year', '1975')[0].tags, { date: '1975' })
+  assert.deepEqual(T.heroTagWrites(heroAlbum(), 'mood', 'x'), [])
+  assert.deepEqual(T.heroTagWrites(null, 'album', 'x'), [])
+})
+
 // ── Album rows: wheel intent (roadmap 005) ───────────────────────────────────
 test('plain vertical wheel over a row is left to the page', () => {
   assert.equal(T.rowWheelDelta({ deltaY: 120, deltaX: 0 }), 0)

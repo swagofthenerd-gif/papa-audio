@@ -12527,15 +12527,37 @@ function renderLibrary() {
   })
 }
 
-function editField(field, currentValue, callback) {
+// Roadmap 087: every editor says what it writes. `write` names the files and
+// the tag; without it the change is app-only and the prompt says so. Durable
+// success is shown only after the writer reports it; partial failure is
+// reported as counts, and the display follows the files, not the wish.
+function editField(field, currentValue, callback, write) {
+  var files = write && Array.isArray(write.files) ? write.files : null
+  var note = files
+    ? (files.length ? 'Writes the tag into ' + files.length + ' file' + (files.length === 1 ? '' : 's') + ' on disk.'
+                    : 'No local files here — nothing can be written to disk.')
+    : 'Changes only what this app shows; the files are not touched.'
   _mgPrompt('Edit ' + field, {
     label: field,
     value: currentValue,
-    confirmLabel: 'Update',
-    onConfirm: function (newVal) {
+    note: note,
+    confirmLabel: files && files.length ? 'Save to files' : 'Update',
+    onConfirm: async function (newVal) {
       if (!newVal || newVal === currentValue) return
+      if (!files) { callback(newVal); showSnackbar(field + ' updated in the app only'); return }
+      var writes = files
+      if (typeof write.build === 'function') writes = write.build(newVal)
+      if (!writes || !writes.length) { showSnackbar('No local files to write'); return }
+      var res = await window.api.libraryWriteTags({ files: writes }).catch(function () { return null })
+      if (!res) { showSnackbar('Could not write ' + field.toLowerCase() + ' — the files are unchanged'); return }
+      if (!res.written) {
+        var err = (res.results || []).find(function (r) { return r && r.error })
+        showSnackbar('Nothing written' + (err && err.error ? ' — ' + err.error : '') + '. The files are unchanged.')
+        return
+      }
       callback(newVal)
-      showSnackbar(field + ' updated (visual only — save to file coming soon)')
+      showSnackbar(field + ' saved to ' + res.written + ' file' + (res.written === 1 ? '' : 's') +
+        (res.failed ? ' — ' + res.failed + ' failed, check the log' : ''))
     },
   })
 }
@@ -12734,23 +12756,35 @@ function renderAlbum(albumId) {
     })
   })
 
+  // Hero edits write real tags (roadmap 087) through the same writer the tag
+  // fixer uses; the file list is the album's local tracks.
+  var _heroWrite = function (field) {
+    var tools = (typeof window !== 'undefined' && window.PapaMusicTools) || null
+    var probe = tools ? tools.heroTagWrites(album, field, 'x') : []
+    return { files: probe, build: function (v) { return tools ? tools.heroTagWrites(album, field, v) : [] } }
+  }
   document.querySelector('.album-hero-title')?.addEventListener('click', () => {
-    editField('Album title', album.name, function(v) { album.name = v; renderAlbum(albumId) })
+    editField('Album title', album.name, function(v) { album.name = v; renderAlbum(albumId) }, _heroWrite('album'))
   })
   document.querySelector('.hero-artist')?.addEventListener('click', e => {
     e.stopPropagation()
-    editField('Artist', album.artist, function(v) { album.artist = v; renderAlbum(albumId) })
+    editField('Artist', album.artist, function(v) { album.artist = v; renderAlbum(albumId) }, _heroWrite('artist'))
   })
   document.querySelector('.hero-year')?.addEventListener('click', e => {
     e.stopPropagation()
-    editField('Year', String(album.year || ''), function(v) {
+    var yearWrite = _heroWrite('year')
+    yearWrite.build = function (v) {
       // Was `parseInt(v, 10) || v`, which kept arbitrary text on non-numeric
       // input and fed it to two unescaped sinks. A year is a number or nothing.
       var yr = parseInt(v, 10)
-      if (!Number.isInteger(yr) || yr < 1 || yr > 9999) { showSnackbar('Year must be a number'); return }
-      album.year = yr
+      if (!Number.isInteger(yr) || yr < 1 || yr > 9999) { showSnackbar('Year must be a number'); return [] }
+      var tools = (typeof window !== 'undefined' && window.PapaMusicTools) || null
+      return tools ? tools.heroTagWrites(album, 'year', String(yr)) : []
+    }
+    editField('Year', String(album.year || ''), function(v) {
+      album.year = parseInt(v, 10)
       renderAlbum(albumId)
-    })
+    }, yearWrite)
   })
 
   // Sticky header: show when hero scrolls out of view
@@ -32340,6 +32374,7 @@ function _mgPrompt(title, opts) {
     '</div>' +
     '<div class="mg-confirm-body">' +
       (label ? '<label class="sq-label">' + esc(label) + '</label>' : '') + field +
+      (opts.note ? '<p class="mg-confirm-note">' + esc(opts.note) + '</p>' : '') +
     '</div>' +
     '<div class="mg-confirm-actions">' +
       '<button class="mg-btn" id="mg-cf-cancel">Cancel</button>' +
