@@ -2,7 +2,7 @@
 
 Updated 2026-09-15. A001–A160 map to 001–160 in the music roadmap. V001–V150 map to the video roadmap. Full requirements and acceptance criteria remain in the two original files. No item is claimed complete on simulated DOM tests alone.
 
-Completed implementation batches, tests, limitations and recovery status are recorded in HANDOFF.md. 10 items partially addressed; 300 pending review/implementation.
+Completed implementation batches, tests, limitations and recovery status are recorded in HANDOFF.md. 11 items partially addressed; 299 pending review/implementation.
 
 | Item | Status |
 | --- | --- |
@@ -239,7 +239,7 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | V071 | Pending review/implementation |
 | V072 | Pending review/implementation |
 | V073 | Partial — source fix and targeted tests; desktop verification pending |
-| V074 | Pending review/implementation |
+| V074 | Partial — source fix and targeted tests; desktop verification pending |
 | V075 | Pending review/implementation |
 | V076 | Partial — source fix and targeted tests; desktop verification pending |
 | V077 | Pending review/implementation |

@@ -502,7 +502,7 @@
       const mini = $('vmini')
       if (!mini || mini.classList.contains('hidden') || !state) return
       const dur = Number(state.duration) || 0
-      const pos = Number(state.position) || 0
+      const pos = kbTarget != null ? kbTarget : (Number(state.position) || 0)
       const ovPlay = $('vmini-ov-play')
       if (ovPlay) { ovPlay.innerHTML = state.paused ? ICON.play : ICON.pause; ovPlay.setAttribute('aria-label', state.paused ? 'Play' : 'Pause') }
       const play = $('vmini-play')
@@ -886,6 +886,7 @@
         if (e.button !== 0) return
         const dur = Number(state && state.duration) || 0
         if (!dur) return
+        cancelKeyboardSeek()
         pid = e.pointerId
         seekEpoch = sessionEpoch
         startPosition = Number(state.position) || 0; previewRequested = false
@@ -918,10 +919,7 @@
       }
       seek.addEventListener('pointercancel', cancel)
       seek.addEventListener('lostpointercapture', cancel)
-      seek.addEventListener('keydown', function (e) {
-        if (e.key === 'ArrowLeft') { seekBy(-10); e.preventDefault(); e.stopPropagation() }
-        if (e.key === 'ArrowRight') { seekBy(10); e.preventDefault(); e.stopPropagation() }
-      })
+      seek.addEventListener('keydown', onSeekKey)
     }
 
     // mpv reports every alias a codec has ever had, so the badge read
@@ -2543,6 +2541,28 @@
       if (bubble) bubble.hidden = true
     }
 
+    function cancelKeyboardSeek() {
+      clearTimeout(kbTimer)
+      kbTimer = null; kbTarget = null
+      const bubble = $('vt-seek-bubble')
+      if (bubble) { bubble.hidden = true; clearThumbState(bubble) }
+    }
+
+    function onSeekKey(e) {
+      if (e.defaultPrevented || e.isComposing || e.ctrlKey || e.metaKey || e.altKey) return
+      const steps = { ArrowLeft: -10, ArrowDown: -10, ArrowRight: 10, ArrowUp: 10,
+        PageDown: -60, PageUp: 60 }
+      const boundary = e.key === 'Home' || e.key === 'End'
+      if (!boundary && !Object.prototype.hasOwnProperty.call(steps, e.key)) return
+      e.preventDefault(); e.stopPropagation()
+      const dur = Number(state && state.duration) || 0
+      if (!Number.isFinite(dur) || dur <= 0 || dragging || miniDragging) return
+      if (boundary) {
+        cancelKeyboardSeek()
+        seekTo(e.key === 'Home' ? 0 : dur)
+      } else kbSeek(steps[e.key])
+    }
+
     function kbSeek(delta) {
       const dur = Number(state && state.duration) || 0
       // No duration means no bar to aim on; the blind jump is all there is.
@@ -2558,6 +2578,7 @@
         requestThumb(bubble, kbTarget)
       }
       paintSeek(kbTarget, dur)
+      paintMini()
       clearTimeout(kbTimer)
       kbTimer = setTimeout(function () {
         kbTimer = null
@@ -2609,6 +2630,7 @@
         if (e.button != null && e.button !== 0) return
         const dur = Number(state && state.duration) || 0
         if (!dur) return
+        cancelKeyboardSeek()
         pid = e.pointerId; seekEpoch = sessionEpoch
         startPosition = Number(state.position) || 0; previewRequested = false
         dragging = true
@@ -2637,11 +2659,7 @@
       seek.addEventListener('lostpointercapture', cancel)
 
       // A slider must be operable from the keyboard, not only the pointer.
-      seek.addEventListener('keydown', function (e) {
-        if (e.key === 'ArrowLeft') { kbSeek(-10); e.preventDefault(); e.stopPropagation() }
-        if (e.key === 'ArrowRight') { kbSeek(10); e.preventDefault(); e.stopPropagation() }
-        if (e.key === 'Home') { seekTo(0); e.preventDefault(); e.stopPropagation() }
-      })
+      seek.addEventListener('keydown', onSeekKey)
     }
 
     // ── Lifecycle ───────────────────────────────────────────────────────────

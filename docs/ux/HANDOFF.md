@@ -89,3 +89,20 @@ Validation after fourth batch: **217/217 targeted tests passed** using
 `git diff --check` passed. 25 new regressions across four batches. Full suite and
 real desktop playback have not been tested. GitHub publication remains blocked
 by missing authentication; the checkpoint preserves the local branch and plans.
+
+## Fifth batch: keyboard seeking consistency (V074/V104/V105 partial)
+
+- Both seek sliders now share Left/Down (-10s), Right/Up (+10s), Page Down/Up
+  (-/+60s), Home (start) and End (duration) controls.
+- Mini-player key repeats accumulate against the pending target and show it in
+  the slider and accessible value even while stale engine updates arrive.
+- Home/End and new pointer gestures cancel queued keyboard seeks, preventing a
+  delayed command from overriding the newer action.
+- Slider keys respect IME, handled events, and Ctrl/Meta/Alt combinations.
+  Unknown duration and active pointer dragging do not accept keyboard seeks.
+- Eight new regression tests; **225/225** targeted player/mini/keymap tests pass.
+  `git diff --check` passed. Real desktop, screen-reader and native mpv validation
+  remain outstanding; no full-suite test or GitHub publication claimed.
+- Next: validate the above in desktop; inspect focus and keyboard behavior in
+  chapter/track menus (V077), including Escape and focus return. Preserve all 310
+  requirements and continue updating PROGRESS.md with evidence per batch.

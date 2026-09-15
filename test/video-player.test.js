@@ -2646,3 +2646,52 @@ for (const id of ['vt-seek', 'vmini-seek']) {
     assert.equal(sent.filter(x => x.verb === 'seek').length, 0)
   })
 }
+
+for (const id of ['vt-seek', 'vmini-seek']) {
+  const key = name => ({ key: name, preventDefault() {}, stopPropagation() {} })
+  test(id + ' repeated keyboard seeks accumulate despite stale state', t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    const { p, nodes, sent } = harness()
+    p.open({ title: 'A' }); p.minimise(); p._setState(stateAt(100))
+    nodes[id].fire('keydown', key('ArrowRight'))
+    p._setState(stateAt(101))
+    nodes[id].fire('keydown', key('ArrowUp'))
+    assert.equal(nodes[id].getAttribute('aria-valuenow'), '120')
+    t.mock.timers.tick(500)
+    assert.deepEqual(sent.filter(x => x.verb === 'seek'), [{ verb: 'seek', args: { seconds: 120, mode: 'absolute' } }])
+  })
+  test(id + ' Home and End supersede pending arrow seeks', t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    const { p, nodes, sent } = harness()
+    p._setState(stateAt(100))
+    for (const [name, seconds] of [['Home', 0], ['End', 3600]]) {
+      sent.length = 0
+      nodes[id].fire('keydown', key('ArrowRight'))
+      nodes[id].fire('keydown', key(name))
+      t.mock.timers.tick(500)
+      assert.deepEqual(sent.filter(x => x.verb === 'seek'), [{ verb: 'seek', args: { seconds, mode: 'absolute' } }])
+    }
+  })
+  test(id + ' pointer drag supersedes pending keyboard seek', t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    const { p, nodes, sent } = harness()
+    p._setState(stateAt(100))
+    nodes[id].fire('keydown', key('ArrowRight'))
+    nodes[id].fire('pointerdown', pointer())
+    nodes[id].fire('pointerup', pointer({ clientX: 50 }))
+    t.mock.timers.tick(500)
+    assert.deepEqual(sent.filter(x => x.verb === 'seek'), [{ verb: 'seek', args: { seconds: 1800, mode: 'absolute' } }])
+  })
+  test(id + ' unknown duration and composing keys cannot seek', t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    const { p, nodes, sent } = harness()
+    p._setState(stateAt(0, { duration: 0 }))
+    nodes[id].fire('keydown', key('ArrowRight'))
+    nodes[id].fire('keydown', key('End'))
+    p._setState(stateAt(100))
+    nodes[id].fire('keydown', { ...key('ArrowRight'), isComposing: true })
+    nodes[id].fire('keydown', { ...key('ArrowRight'), ctrlKey: true })
+    t.mock.timers.tick(500)
+    assert.equal(sent.filter(x => x.verb === 'seek').length, 0)
+  })
+}
