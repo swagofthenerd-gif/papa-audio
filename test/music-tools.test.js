@@ -48,6 +48,33 @@ test('the preset menu offers end-of-track and the five minute presets', () => {
   assert.ok(T.SLEEP_PRESETS.some(p => p.endOfTrack), 'no end-of-track option')
 })
 
+// ── Previous (roadmap 040) and Play next (roadmap 045) ───────────────────────
+test('Previous restarts after three seconds and goes back before that, everywhere', () => {
+  assert.equal(T.PREV_RESTART_AFTER_SECONDS, 3)
+  assert.equal(T.prevAction(0, 5), 'previous')
+  assert.equal(T.prevAction(3, 5), 'previous', 'exactly 3 s still goes back')
+  assert.equal(T.prevAction(3.1, 5), 'restart')
+  assert.equal(T.prevAction(60, 0), 'none', 'an empty queue does nothing')
+})
+
+test('Play next puts tracks right after the current one, in order; a later Play next goes in front', () => {
+  const q = [{ id: 'a' }, { id: 'b' }, { id: 'c' }]
+  let r = T.insertPlayNext(q, 0, [{ id: 'x1' }, { id: 'x2' }])
+  assert.deepEqual(r.queue.map(t => t.id), ['a', 'x1', 'x2', 'b', 'c'])
+  assert.equal(r.queueIndex, 0); assert.equal(r.insertedAt, 1); assert.equal(r.count, 2)
+  r = T.insertPlayNext(r.queue, r.queueIndex, { id: 'y' })
+  assert.deepEqual(r.queue.map(t => t.id), ['a', 'y', 'x1', 'x2', 'b', 'c'], 'the most recent "next" is next')
+  assert.equal(q.length, 3, 'the caller\'s array is untouched')
+})
+
+test('Play next with nothing playing starts a queue at the head', () => {
+  const r = T.insertPlayNext([], -1, [{ id: 'a' }])
+  assert.deepEqual(r, { queue: [{ id: 'a' }], queueIndex: 0, insertedAt: 0, count: 1 })
+  const r2 = T.insertPlayNext([{ id: 'old' }], -1, [{ id: 'a' }])
+  assert.deepEqual(r2.queue.map(t => t.id), ['a', 'old'])
+  assert.equal(r2.queueIndex, 0)
+})
+
 // ── Slider semantics (roadmap 114) ───────────────────────────────────────────
 const mmss = s => Math.floor(s / 60) + ':' + String(Math.floor(s % 60)).padStart(2, '0')
 test('the seek slider reports a percent and a spoken position', () => {

@@ -50,6 +50,17 @@ test('the queue panel wires a clear-played action to the tested helper', () => {
   assert.ok(renderer.includes("'Clear played'"), 'no Clear played button label')
 })
 
+// Roadmap 040/045: Previous and Play next follow one documented rule each.
+test('Previous and the context-menu Play next go through the tested rules and the help says so', () => {
+  assert.ok(renderer.includes('tools.prevAction(audio.currentTime, state.queue.length)'))
+  assert.ok(renderer.includes("desc: 'Previous / next track — Previous restarts the track after 3 s, goes back before that'"), 'the shortcut help states the threshold')
+  assert.ok(renderer.includes('tools.insertPlayNext(state.queue, state.queueIndex, tracks)'))
+  const i = renderer.indexOf("_ctxOn('ctx-play-next'")
+  const body = renderer.slice(i, renderer.indexOf("_ctxOn('ctx-trash'", i))
+  assert.ok(body.includes('updateNextPrefetch()'), 'Play next re-arms gapless prefetch')
+  assert.ok(body.includes('in order'), 'a multi-track Play next says the order is kept')
+})
+
 // Roadmap 114: the player bar's seek and volume are sliders to assistive tech.
 test('the player-bar seek and volume tracks carry slider semantics, values and keys', () => {
   const H = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'index.html'), 'utf8')

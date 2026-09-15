@@ -140,6 +140,31 @@
     return null
   }
 
+  // Previous (roadmap 040): one rule for the button, the shortcut and the
+  // media key. Past this many seconds into a track, Previous restarts it;
+  // before that it goes to the previous track. Stated in the shortcut help.
+  var PREV_RESTART_AFTER_SECONDS = 3
+  function prevAction(currentTime, queueLength) {
+    if (!queueLength) return 'none'
+    return (Number(currentTime) || 0) > PREV_RESTART_AFTER_SECONDS ? 'restart' : 'previous'
+  }
+
+  // Play next (roadmap 045): the documented order. Tracks go directly after
+  // the current one, in the order given; a later Play next goes in front of
+  // an earlier one (the most recent "next" is next — as Spotify and Apple
+  // Music do), which is exactly what the "Up next: …" toast says. With
+  // nothing playing they become the queue. Pure; returns the new index and
+  // where the tracks landed so callers can report or undo.
+  function insertPlayNext(queue, queueIndex, tracks) {
+    queue = (queue || []).slice()
+    tracks = Array.isArray(tracks) ? tracks : [tracks]
+    var idx = Number(queueIndex)
+    var at = isFinite(idx) && idx >= 0 && idx < queue.length ? idx + 1 : 0
+    var qi = at === 0 && !(isFinite(idx) && idx >= 0 && idx < queue.length) ? 0 : idx
+    queue.splice.apply(queue, [at, 0].concat(tracks))
+    return { queue: queue, queueIndex: qi, insertedAt: at, count: tracks.length }
+  }
+
   function clearPlayedQueue(queue, queueIndex) {
     queue = queue || []
     var idx = Number(queueIndex)
@@ -1749,6 +1774,9 @@
     rowWheelDelta: rowWheelDelta,
     heroTagWrites: heroTagWrites,
     seekAria: seekAria,
+    prevAction: prevAction,
+    PREV_RESTART_AFTER_SECONDS: PREV_RESTART_AFTER_SECONDS,
+    insertPlayNext: insertPlayNext,
     volumeAria: volumeAria,
     sliderKeyRatio: sliderKeyRatio,
     topAlbumsByPlays: topAlbumsByPlays,

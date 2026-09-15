@@ -431,7 +431,7 @@ var DEFAULT_SHORTCUTS = {
 var SHORTCUT_LABELS = {
   playPause: 'Play / pause',
   nextTrack: 'Next track',
-  prevTrack: 'Previous track',
+  prevTrack: 'Previous track (restarts after 3 s)',
   seekForward: 'Seek forward 10s',
   seekBackward: 'Seek back 10s',
   volumeUp: 'Volume up',
@@ -624,6 +624,7 @@ const SPEEDS = [1, 1.25, 1.5, 2, 0.75]
 var ALL_SHORTCUTS = [
   { category: 'Playback', keys: ['Space'], desc: 'Play/Pause' },
   { category: 'Playback', keys: ['← / →'], desc: 'Seek ±10s' },
+  { category: 'Playback', keys: ['Shift+← / Shift+→'], desc: 'Previous / next track — Previous restarts the track after 3 s, goes back before that' },
   { category: 'Playback', keys: ['X'], desc: 'Cycle speed (1x→1.25x→1.5x→2x→0.75x)' },
   { category: 'Playback', keys: ['S'], desc: 'Toggle shuffle' },
   { category: 'Playback', keys: ['R'], desc: 'Cycle repeat (off/one/all)' },
@@ -19885,9 +19886,15 @@ function pickShuffleIndex(queue, recentIndices) {
   return other >= state.queueIndex ? other + 1 : other
 }
 
+// Roadmap 040: the restart-versus-previous rule lives in music-tools
+// (prevAction) and is stated in the shortcut help, so the button, Shift+←
+// and the media key all behave identically and say so.
 function playPrev() {
-  if (!state.queue.length) return
-  if (audio.currentTime > 3) { audio.currentTime = 0; return }
+  var tools = (typeof window !== 'undefined' && window.PapaMusicTools) || null
+  var action = tools ? tools.prevAction(audio.currentTime, state.queue.length)
+    : (!state.queue.length ? 'none' : audio.currentTime > 3 ? 'restart' : 'previous')
+  if (action === 'none') return
+  if (action === 'restart') { audio.currentTime = 0; return }
   state.queueIndex = (state.queueIndex - 1 + state.queue.length) % state.queue.length
   playCurrentTrack()
 }
@@ -29026,10 +29033,16 @@ function setupListeners() {
     } else {
       tracks = album.tracks.map(t => ({ ...t, albumArtist: album.artist, artPath: album.artPath, albumName: album.name, albumId: album.id }))
     }
-    const insertIdx = state.queueIndex >= 0 ? state.queueIndex + 1 : 0
-    state.queue.splice(insertIdx, 0, ...tracks)
+    // Roadmap 045: one documented insertion rule (music-tools.insertPlayNext),
+    // and the gapless prefetch learns the new next track — it used to keep
+    // pointing at the old one, so the album's next track played instead.
+    var tools = (typeof window !== 'undefined' && window.PapaMusicTools) || null
+    var res = tools ? tools.insertPlayNext(state.queue, state.queueIndex, tracks)
+      : { queue: state.queue.slice(0, Math.max(0, state.queueIndex + 1)).concat(tracks, state.queue.slice(Math.max(0, state.queueIndex + 1))), queueIndex: state.queueIndex }
+    state.queue = res.queue; state.queueIndex = res.queueIndex
+    updateNextPrefetch()
     if (state.queuePanelOpen) renderQueuePanel()
-    showToast(`Up next: ${tracks[0].title || 'track'}`)
+    showToast(tracks.length === 1 ? `Up next: ${tracks[0].title || 'track'}` : `Up next: ${tracks.length} tracks, in order`)
     hideContextMenu()
   })
   _ctxOn('ctx-trash', () => {
