@@ -2020,6 +2020,11 @@ h2.section-title { font-size:18px; font-weight:700; }
 .mg-relation { font-weight:600; }
 .mg-relation-identical { color:#7ad1a1; }
 .mg-relation-editions { color:#e3b341; }
+/* Roadmap 088: current and candidate covers side by side. */
+.art-preview-pair { display:flex; gap:12px; align-items:flex-start; }
+.art-preview-pair .art-preview { flex:1; min-width:0; text-align:center; }
+.art-preview-current img { opacity:.7; }
+.art-preview-cap { font-size:11px; color:var(--text3); margin-top:4px; }
 .folder-item-empty { color:var(--text3); font-style:italic; cursor:default; }
 .setup-hint { font-size:12px; color:var(--text3); margin:8px 0 0; }
 .setup-chosen { color:var(--accent) !important; font-weight:600; word-break:break-all; }

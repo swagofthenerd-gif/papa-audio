@@ -121,6 +121,14 @@ test('assistant Stop releases immediately, aborts the provider request, and name
   }
 })
 
+// Roadmap 088: artwork changes preview the candidate, its size, the current cover and what is replaced.
+test('the artwork dialog shows current vs new, measures the candidate, and states where the change lands', () => {
+  const fn = renderer.slice(renderer.indexOf('async function setAlbumArtwork()'), renderer.indexOf('function _artCacheBust('))
+  assert.ok(fn.includes('art-preview-current') && fn.includes('id="art-candidate"'))
+  assert.ok(fn.includes("cand.naturalWidth + '×' + cand.naturalHeight"), 'resolution is read from the decoded image')
+  assert.ok(fn.includes("Replaces the cover Papa Audio shows for this album; the image file you chose and your music files are not touched unless you embed"))
+})
+
 // Roadmap 056: a truncated Songs section says how many are shown and gives access to the rest.
 test('local search shows "N of M" and a Show all button that lifts the cap for this query', () => {
   assert.ok(renderer.includes("if (state._searchTrackCapFor !== query) { state._searchTrackCap = 20; state._searchTrackCapFor = query }"))

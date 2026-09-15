@@ -33528,11 +33528,15 @@ async function setAlbumArtwork() {
 
   var files = (album.tracks || []).map(function (t) { return t.filePath }).filter(Boolean)
 
+  // Roadmap 088: what is being replaced, by what, at what size, and where
+  // the change lands — all visible before anything is written.
+  var currentArt = album.artPath ? '<div class="art-preview art-preview-current"><img src="' + esc(_artSrc(album.artPath)) + '" alt=""><div class="art-preview-cap">Current</div></div>' : '<div class="art-preview art-preview-current"><div class="art-preview-cap">No cover yet</div></div>'
   _mgConfirm('Set artwork',
     '<p class="mg-confirm-sum" style="margin-top:0">' +
       esc(album.artist + ' — ' + album.name) + '</p>' +
-    '<div class="art-preview"><img src="file://' + esc(picked.path) + '" alt=""></div>' +
-    '<p class="mg-confirm-note">' + esc(_mgBaseName(picked.path)) + '</p>' +
+    '<div class="art-preview-pair">' + currentArt +
+      '<div class="art-preview"><img id="art-candidate" src="file://' + esc(picked.path) + '" alt=""><div class="art-preview-cap">New · <span id="art-candidate-dims">measuring…</span></div></div></div>' +
+    '<p class="mg-confirm-note">' + esc(_mgBaseName(picked.path)) + ' → saved as this album\'s cover in the app\'s cover cache (scaled to at most 1000 px wide, JPEG). Replaces the cover Papa Audio shows for this album; the image file you chose and your music files are not touched unless you embed.</p>' +
     '<label class="tag-check"><input type="checkbox" id="art-embed"> ' +
       'Also embed it into all ' + files.length + ' audio file' + (files.length === 1 ? '' : 's') +
       '</label>' +
@@ -33556,6 +33560,15 @@ async function setAlbumArtwork() {
       _artCacheBust(album.id, res.artPath)
       _scheduleLibRescan()
     })
+  // Resolution of the candidate, read from the image itself once it decodes.
+  var cand = document.getElementById('art-candidate')
+  if (cand) {
+    var paint = function () {
+      var el = document.getElementById('art-candidate-dims')
+      if (el) el.textContent = cand.naturalWidth ? cand.naturalWidth + '×' + cand.naturalHeight + (cand.naturalWidth < 600 ? ' — small; may look soft' : '') : 'unreadable image'
+    }
+    if (cand.complete) paint(); else { cand.onload = paint; cand.onerror = paint }
+  }
 }
 
 // Same path, same filename, new bytes — without this the old cover stays on
