@@ -24,9 +24,9 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | A016 | Pending review/implementation |
 | A017 | Fixed — wizard states read-in-place and that sharing is a separate setting (with A137) |
 | A018 | Pending review/implementation |
-| A019 | Pending review/implementation |
+| A019 | Fixed `94eec8a` |
 | A020 | Pending review/implementation |
-| A021 | Pending review/implementation |
+| A021 | Fixed `2d47c50` |
 | A022 | Pending review/implementation |
 | A023 | Pending review/implementation |
 | A024 | Pending review/implementation |
@@ -88,9 +88,9 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | A080 | Pending review/implementation |
 | A081 | Fixed — one notice per album, click to play |
 | A082 | Pending review/implementation |
-| A083 | Pending review/implementation |
+| A083 | Fixed `71abddb` — relink carries every store and the cache |
 | A084 | Fixed `2e01d08` — unplugged root = unavailable, not deleted |
-| A085 | Pending review/implementation |
+| A085 | Fixed `71abddb` — guided relink with preview |
 | A086 | Pending review/implementation |
 | A087 | Fixed — hero edits write real tags with an explicit scope note; see STATUS.md |
 | A088 | Pending review/implementation |
@@ -284,7 +284,7 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | V116 | Already satisfied — watch keys are type:id:season:episode, never source-specific (`_watchKey`) |
 | V117 | Pending review/implementation |
 | V118 | Pending review/implementation |
-| V119 | Pending review/implementation |
+| V119 | Not applicable — there is no external watch sync (AniList is a catalog only); revisit if one is added |
 | V120 | Pending review/implementation |
 | V121 | Fixed `0a86fd5` |
 | V122 | Pending review/implementation |
@@ -294,10 +294,10 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | V126 | Pending review/implementation |
 | V127 | Pending review/implementation |
 | V128 | Pending review/implementation |
-| V129 | Pending review/implementation |
+| V129 | Fixed `0e60fd1` |
 | V130 | Fixed via A136 — bundles scrubbed of tokens/paths (`20689d5`) |
 | V131 | Pending review/implementation |
-| V132 | Pending review/implementation |
+| V132 | Fixed `87ce8d7` |
 | V133 | Pending review/implementation |
 | V134 | Pending review/implementation |
 | V135 | Pending review/implementation |

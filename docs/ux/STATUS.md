@@ -86,6 +86,11 @@ Each F item re-checked on this branch, not assumed from the `main` review.
 | 2026-09-15 | V123 | `f429e67` | evictPlan protects the playing file |
 | 2026-09-15 | V125 | `212b659` | keep checks space first; ENOSPC removes the partial file |
 | 2026-09-15 | V121 | `0a86fd5` | SAVED / CACHED / INSTANT badges |
+| 2026-09-15 | V132 | `87ce8d7` | aria-pressed/labels on deck toggles; aria-haspopup on menu openers |
+| 2026-09-15 | V129 | `0e60fd1` | "Who receives what" disclosure in Video settings |
+| 2026-09-15 | 021 | `2d47c50` | first download of a session names destination + free space |
+| 2026-09-15 | 019 | `94eec8a` | libraryEmptyState: no folder / not connected / no music / filtered |
+| 2026-09-15 | 083, 085 | `71abddb` | guided relink: dead paths → longest-tail matching → preview → remap every store + cache |
 
 ## F list: all resolved (134 deferred to runtime). Now working through P0 E-items
 
