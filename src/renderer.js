@@ -10732,6 +10732,19 @@ function _renderVideoSourceRows(target, sort) {
       _downloadStream(_videoStreams[Number(btn.dataset.dlIdx)])
     })
   })
+  // V053: the full release name is one click away — a click on the label
+  // toggles it between the trimmed and the whole name; a double-click copies
+  // it. The tooltip already carries it for hover.
+  listEl.querySelectorAll('.video-source-label').forEach(function (lbl) {
+    lbl.addEventListener('click', function () { lbl.classList.toggle('video-source-label-full') })
+    lbl.addEventListener('dblclick', function (ev) {
+      ev.preventDefault()
+      const row = lbl.closest('.video-source-row')
+      const name = (row && row.getAttribute('title')) || lbl.textContent || ''
+      if (!name) return
+      navigator.clipboard?.writeText(name).then(function () { showToast('Release name copied') }).catch(function () {})
+    })
+  })
   // Reflect what is actually playing (including after an auto-switch) on the
   // freshly-rendered rows.
   _syncSourcesHighlight()

@@ -1099,3 +1099,10 @@ test('a source with no language information is tagged "language ?" rather than l
   assert.ok(R.includes('>language ?</span>'))
   assert.ok(R.includes("(s.sub && !s.dub ? 'sub' : s.dub && !s.sub ? 'dub' : 'sub+dub')"))
 })
+
+// V053: long release names can be expanded and copied without widening the list.
+test('a source label expands on click and copies on double-click', () => {
+  const R = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
+  assert.ok(R.includes("lbl.classList.toggle('video-source-label-full')"))
+  assert.ok(R.includes("showToast('Release name copied')"))
+})
