@@ -1001,3 +1001,13 @@ test('the detail hero reads Play or Resume from <time>, with Start over only whe
   assert.ok(R.includes('_watch.startFromZero = true'), 'Start over suppresses the resume offer rather than deleting progress')
   assert.ok(R.includes("if (_watch.startFromZero) { _watch.startFromZero = false; return }"))
 })
+
+// V097: Close and Minimize are told apart by label and by what Esc does.
+test('Stop reads as stop-and-close, Back as keep-watching, and the help says Esc never stops', () => {
+  const H = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'index.html'), 'utf8')
+  const R = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
+  assert.match(H, /id="vt-stop" aria-label="Stop and close — ends this video"/)
+  assert.match(H, /id="vmini-stop" aria-label="Stop and close — ends this video"/)
+  assert.match(H, /id="vt-back" aria-label="Keep watching and go back to browsing"/)
+  assert.match(R, /keys: \['Esc'\], desc: 'Back out one level[^']*Keeps playing; Stop \(■\) ends it'/)
+})

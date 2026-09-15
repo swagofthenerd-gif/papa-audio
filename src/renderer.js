@@ -715,7 +715,9 @@ function _videoShortcutRows(keymap) {
     { a: A.THEATRE,    keys: ['T'], desc: 'Theatre mode' },
     { a: A.STATS,      keys: ['I'], desc: 'Playback stats' },
     { a: A.BOOKMARK,   keys: ['B'], desc: 'Bookmark this moment' },
-    { a: A.EXIT,       keys: ['Esc'], desc: 'Exit theatre' },
+    // V097: Esc never stops playback; it backs out one level. Stopping is the
+    // Stop button (■) in the deck and on the mini card, by design unbound.
+    { a: A.EXIT,       keys: ['Esc'], desc: 'Back out one level: close menu → leave fullscreen → minimise to the mini player. Keeps playing; Stop (■) ends it' },
     { a: A.FOCUS_SEARCH, keys: ['/'], desc: 'Focus search' },
     { a: A.SHORTCUTS,  keys: ['? / Shift+/'], desc: 'This shortcut list' },
   ]
