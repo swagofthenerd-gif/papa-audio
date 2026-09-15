@@ -1965,6 +1965,9 @@ h2.section-title { font-size:18px; font-weight:700; }
   font-size:22px; font-weight:800; color:var(--text); letter-spacing:-.4px;
 }
 .setup-step p { font-size:13px; color:var(--text2); line-height:1.6; margin:0; }
+/* Roadmap 017: what adding a folder does, stated before the user commits. */
+.folder-item-empty { color:var(--text3); font-style:italic; cursor:default; }
+.setup-hint { font-size:12px; color:var(--text3); margin:8px 0 0; }
 .setup-chosen { color:var(--accent) !important; font-weight:600; word-break:break-all; }
 .setup-hint { font-size:12px; }
 .setup-a { color:var(--accent); text-decoration:none; }

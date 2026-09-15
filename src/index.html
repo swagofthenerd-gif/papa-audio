@@ -1064,12 +1064,15 @@
     <div class="setup-step" id="setup-step-1">
       <svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>
       <h1>Welcome to Papa Audio</h1>
-      <p>Choose the folder where your music is stored to get started.</p>
+      <!-- Roadmap 013/001: one plain sentence, then three real choices. Adding
+           a folder indexes it in place — nothing is copied or moved (017). -->
+      <p>Play the music on this computer, find more online, and keep it all in one collection.</p>
       <p class="setup-chosen" id="setup-folder-chosen" style="display:none"></p>
-      <button class="choose-folder-btn" id="choose-folder-btn">Choose Music Folder</button>
+      <button class="choose-folder-btn" id="choose-folder-btn">Add my music</button>
+      <p class="setup-hint">Points at a folder and reads it in place. Nothing is copied, moved or shared.</p>
       <div class="setup-nav">
-        <span></span>
-        <button class="setup-link" id="setup-skip-1">Skip for now</button>
+        <button class="setup-link" id="setup-explore">Explore music instead</button>
+        <button class="setup-link" id="setup-skip-1">Set up later</button>
       </div>
     </div>
 

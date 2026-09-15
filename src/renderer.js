@@ -1496,9 +1496,13 @@ async function init() {
   // migration happen before the first read.
   try { await (window.PapaVideoStore?.init?.() || null) } catch (_) { /* store degrades to localStorage */ }
 
-  if (!state.musicFolders.length) {
+  // Roadmap 001: no folder is not a locked door. The wizard is offered until
+  // the person answers it — Add my music, Explore instead, or Set up later —
+  // and any answer is remembered, so it never nags on the next launch. The
+  // app keeps initialising underneath either way: Home, Explore, Movies & TV
+  // and the online sources all work with zero folders.
+  if (!state.musicFolders.length && !_setupDeferred()) {
     document.getElementById('setup-overlay').style.display = 'flex'
-    return
   }
 
   const cached = await window.api.getLibraryCache()
@@ -1531,10 +1535,25 @@ async function init() {
     // queue the user may not want back.
     if (_uncleanExit) setTimeout(_offerCrashRestore, 1200)
     else setTimeout(restorePlaybackState, 1200)
-  } else {
+  } else if (state.musicFolders.length) {
     showLoading()
     await fullScan()
+  } else {
+    // Nothing to scan and nothing cached: land on Home in its empty state
+    // rather than reporting "0 albums found" for a scan that was never asked.
+    navigate('home', null, { skipHistory: true })
   }
+}
+
+// Roadmap 001: the wizard's "Set up later" / "Explore instead" are remembered
+// here. Adding a folder later clears it (renderFolders), so a person who
+// removes every folder again gets the offer once more, not a nag.
+var _SETUP_DEFER_KEY = 'papa-setup-deferred'
+function _setupDeferred() {
+  try { return localStorage.getItem(_SETUP_DEFER_KEY) === '1' } catch (_) { return false }
+}
+function _setSetupDeferred(on) {
+  try { on ? localStorage.setItem(_SETUP_DEFER_KEY, '1') : localStorage.removeItem(_SETUP_DEFER_KEY) } catch (_) {}
 }
 
 // ── Library ─────────────────────────────────────────────────────────────────
@@ -10537,12 +10556,14 @@ function renderFolders() {
   const list = document.getElementById('folders-list')
   if (!list) return
   const section = list.closest('.sidebar-section')
+  if (section) section.style.display = ''
   if (!state.musicFolders.length) {
-    if (section) section.style.display = 'none'
-    document.getElementById('setup-overlay').style.display = 'flex'
+    // The section stays: its Add Folder button is the discoverable route to a
+    // library (roadmap 001/025). The wizard is not re-raised from here.
+    list.innerHTML = '<li class="folder-item folder-item-empty">No folders yet</li>'
     return
   }
-  if (section) section.style.display = ''
+  _setSetupDeferred(false)
   list.innerHTML = state.musicFolders.map(f => `
     <li class="folder-item" title="${esc(f)}">
       <span>${esc(shortPath(f))}</span>
@@ -22419,13 +22440,14 @@ function _initSetupWizard() {
 
   // Finishing closes the overlay and kicks off the library scan if a folder was
   // chosen. Finishing with no folder just closes it — the app falls back to its
-  // empty-library state, and the wizard reappears next launch until a folder is
-  // set. Never throws past a log.
+  // empty-library state and the decision is remembered (roadmap 001). Never
+  // throws past a log.
   let _finished = false
   const finish = async () => {
     if (_finished) return
     _finished = true
     overlay.style.display = 'none'
+    if (!(state.musicFolders || []).length) _setSetupDeferred(true)
     // First-run tour (App #61): offered once, only after the wizard actually
     // completes, so it never overlaps the wizard (and never fires in the e2e
     // wizard check, which asserts the overlay flow before Finish is clicked).
@@ -22451,7 +22473,16 @@ function _initSetupWizard() {
       show(2)
     }
   })
-  $('setup-skip-1')?.addEventListener('click', () => goto('forward'))
+  // Roadmap 001: both are real answers, remembered so the wizard does not
+  // reappear on every launch. The environment check (step 3) is still
+  // reachable later from Settings.
+  const later = (page) => {
+    _setSetupDeferred(true)
+    overlay.style.display = 'none'
+    if (page) { try { navigate(page) } catch (e) { console.error('[papa] setup navigate failed', e) } }
+  }
+  $('setup-skip-1')?.addEventListener('click', () => later(null))
+  $('setup-explore')?.addEventListener('click', () => later('explore'))
 
   // Step 2 — the optional TMDB key. Save through videoSettingsSet; skip leaves
   // it untouched. Either way we advance.

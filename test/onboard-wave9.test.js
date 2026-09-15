@@ -196,3 +196,24 @@ test('the settings panel has a Report-a-problem group wired to a toast + path li
 test('_initBugReport is called from the settings init', () => {
   assert.match(RENDERER, /_initBugReport\(\)/)
 })
+
+// Roadmap 001: the first launch is an offer, not a gate.
+test('the wizard offers Add / Explore / Later, remembers the answer, and init continues with zero folders', () => {
+  const R = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
+  const H = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'index.html'), 'utf8')
+  assert.match(H, /id="choose-folder-btn">Add my music</)
+  assert.match(H, /id="setup-explore">Explore music instead</)
+  assert.match(H, /id="setup-skip-1">Set up later</)
+  assert.match(H, /Nothing is copied, moved or shared/, 'what adding a folder does is stated (017)')
+  // init no longer returns early on zero folders
+  const i = R.indexOf("if (!state.musicFolders.length && !_setupDeferred()) {")
+  assert.ok(i > 0, 'the gate consults the remembered decision')
+  assert.doesNotMatch(R.slice(i, i + 200), /\n\s+return\n/, 'and does not stop initialising')
+  assert.match(R, /\} else if \(state\.musicFolders\.length\) \{\n\s+showLoading\(\)\n\s+await fullScan\(\)/, 'no scan is run with no folders')
+  assert.match(R, /\$\('setup-skip-1'\)\?\.addEventListener\('click', \(\) => later\(null\)\)/)
+  assert.match(R, /\$\('setup-explore'\)\?\.addEventListener\('click', \(\) => later\('explore'\)\)/)
+  // renderFolders keeps the Add Folder route and never re-raises the wizard
+  const rf = R.slice(R.indexOf('function renderFolders()'), R.indexOf('function renderFolders()') + 900)
+  assert.doesNotMatch(rf, /setup-overlay/, 'renderFolders does not re-raise the wizard')
+  assert.match(rf, /_setSetupDeferred\(false\)/, 'adding a folder clears the deferral')
+})
