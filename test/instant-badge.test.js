@@ -29,9 +29,13 @@ test('the memory is written only where the app really learned something', () => 
   assert.ok(/function _videoCacheIndexAdd\(entry\) \{\n  _instantMark\(_titleKeyOf\(entry && entry\.meta\), 'device'\)/.test(MAIN))
   assert.ok(/_instantMark\(_titleKeyOf\(d\.meta\.detail\), 'device'\)/.test(MAIN))
   assert.ok(/if \(url\) _instantMark\(titleKey, 'debrid'\)/.test(MAIN), 'only a link that actually resolved')
+  // And when a source is proved servable by trying candidates in turn.
+  assert.ok(/if \(titleKey\) _instantMark\(titleKey, 'debrid'\)/.test(MAIN))
   // The warm call carries the title so there is something to key on.
   assert.ok(/ipcMain\.handle\('video-warm', async \(_, \{ magnet, titleKey \} = \{\}\) =>/.test(MAIN))
-  assert.ok(/videoWarm\(\{ magnet: streams\[0\]\.magnet, titleKey:/.test(RENDERER))
+  // Warming follows the source Play would actually start, not merely the
+  // first listed one.
+  assert.ok(/videoWarm\(\{ magnet: warmPick\.magnet, titleKey:/.test(RENDERER))
 })
 
 test('a deleted file stops claiming to be instant, and a debrid claim expires', () => {

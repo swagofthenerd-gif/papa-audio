@@ -51,7 +51,10 @@ test('equal qualities keep the order the ranking already gave them', () => {
 
 function picker() {
   const src = RENDERER.slice(RENDERER.indexOf('var _playQuality ='), RENDERER.indexOf('function _autoPickStream('))
-  const ctx = { esc: x => String(x == null ? '' : x), document: { getElementById: () => null }, Array, Number, String }
+  // _pickForPlay reads page state: which source debrid proved it can serve,
+  // and how long the thing is (to judge whether a file can stream at all).
+  const ctx = { esc: x => String(x == null ? '' : x), document: { getElementById: () => null },
+    Array, Number, String, Math, _videoDetail: null, _debridPick: null }
   vm.createContext(ctx)
   vm.runInContext(src, ctx)
   return ctx

@@ -76,8 +76,12 @@ test('the hero Play and the loading auto-play both honour the remembered source'
   // asked for a particular quality.
   const bind = fn('_bindDetailActions')
   assert.match(bind, /_videoPlayResult\(_pickForPlay\(_videoStreams\)\)/)
+  // The remembered source still decides when nothing outranks it. Two things
+  // now do: a source debrid proved it can serve, and (failing that) one that
+  // can actually stream at this connection's speed.
   const pick = fn('_pickForPlay')
-  assert.match(pick, /return _autoPickStream\(list\)/, 'no chosen quality: the remembered source decides')
+  assert.match(pick, /const auto = _autoPickStream\(list\)/, 'the remembered source is still consulted')
+  assert.match(pick, /if \(auto && _streamable\(auto, minutes\)\) return auto/, 'and wins when it can stream')
   const load = fn('_loadVideoSources')
   assert.match(load, /_videoPlayResult\(_autoPickStream\(streams\)\)/)
 })

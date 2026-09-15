@@ -4588,6 +4588,11 @@ function _qualityDistance(a, b) {
 // Which quality the Play button should aim for. '' means "the best there
 // is". Held for the session only: it is a decision about this sitting, not a
 // setting, and Settings already owns the standing preference.
+// The one source on this page that RealDebrid proved it will actually serve,
+// found while the page is open. Play prefers it above everything else,
+// because a source debrid can serve starts in a fraction of a second and one
+// it refuses (404/451, both seen) falls back to the swarm.
+var _debridPick = null
 var _playQuality = ''
 var _QUALITY_ORDER = ['2160p', '1080p', '720p', '480p']
 
@@ -4622,17 +4627,69 @@ function _renderQualityPicker(streams) {
   }
 }
 
-// What Play starts. The picker wins when the viewer set one; otherwise this
-// is the ordinary automatic pick, which main has already ordered (quality
-// first when debrid is configured, swarm health first when it is not).
+// How many megabits a second a source needs to play in real time: its size
+// over its running time. A 94 GB 4K remux of a three-hour film needs about
+// 72 Mbit/s — more than most connections deliver, debrid or not, so it limps
+// however fast the start was (measured 2026-09-15, and it is why "best
+// picture wins" alone made streaming WORSE: it chose the largest file).
+function _requiredMbps(stream, minutes) {
+  const bytes = Number(stream && stream.sizeBytes) || 0
+  const mins = Number(minutes) || 0
+  if (!bytes || mins <= 0) return 0        // unknown: never judged on a guess
+  return (bytes * 8) / (mins * 60) / 1e6
+}
+
+// The running time of what is about to play: a film's runtime, or one
+// episode's length for a series.
+function _playMinutes() {
+  // Tolerant of there being no open detail page: this sits on the Play path,
+  // and a throw here is a dead Play button (which has happened once already).
+  if (typeof _videoDetail === 'undefined' || !_videoDetail) return 0
+  const d = _videoDetail.d
+  if (!d) return 0
+  if (_videoDetail.type === 'movie') return Number(d.runtime) || 0
+  return Number(d.duration) || Number(d.episodeRunTime) || 24
+}
+
+// Comfortably inside what a good connection sustains, and enough for a strong
+// 2160p encode (15-25 Mbit/s) while excluding untouched remuxes (60-100).
+var STREAMABLE_MBPS = 30
+
+// Can this source realistically play without stalling? An unknown size is
+// treated as fine rather than excluded — refusing what we cannot measure
+// would throw away most of the list.
+function _streamable(stream, minutes) {
+  const need = _requiredMbps(stream, minutes)
+  return need === 0 || need <= STREAMABLE_MBPS
+}
+
+// What Play starts. The picker wins when the viewer set one; among equals the
+// first source that can actually stream wins, because the best-looking file
+// is worthless if it stalls every few seconds.
 function _pickForPlay(streams) {
   const list = Array.isArray(streams) ? streams : []
   if (!list.length) return null
+  const minutes = _playMinutes()
+  // A source debrid will serve beats everything, unless the viewer asked for
+  // a particular quality and this is not it.
+  if (_debridPick) {
+    const served = list.find(function (s) { return s && s.magnet === _debridPick })
+    if (served && (!_playQuality || served.quality === _playQuality)) return served
+  }
+  const best = function (pool) {
+    if (!pool.length) return null
+    const fits = pool.filter(function (s) { return _streamable(s, minutes) })
+    return fits.length ? fits[0] : pool[0]
+  }
   if (_playQuality) {
     const match = list.filter(function (s) { return s && s.quality === _playQuality && !s.lowQuality })
-    if (match.length) return match[0]
+    const chosen = best(match)
+    if (chosen) return chosen
   }
-  return _autoPickStream(list)
+  // A remembered source the viewer chose by hand is still honoured first.
+  const auto = _autoPickStream(list)
+  if (auto && _streamable(auto, minutes)) return auto
+  return best(list) || auto
 }
 
 function _autoPickStream(streams) {
@@ -8469,6 +8526,7 @@ async function renderVideoDetail(navId) {
   _videoDetail = { type, id, d: null }
   _videoState = { season: null, episode: 1, sub: true }
   _videoStreams = []
+  _debridPick = null
   _playing = { dub: null, source: null, quality: null }
   _prefetch = { key: null, streams: null, inflight: false }
   setContent('<div class="page"><div class="skeleton skeleton-card" style="height:280px"></div></div>')
@@ -10298,7 +10356,10 @@ async function _loadVideoSources(ticket, seasonTicket) {
   // peers connect and the opening pieces arrive before Play is pressed. Only
   // when nothing is playing — a warm must never take peers from a stream —
   // and never for a title whose saved copy would play locally anyway.
-  if (streams.length && streams[0].kind === 'torrent' && streams[0].magnet &&
+  // Warm exactly what Play would start — warming a different source than the
+  // one played leaves the relay useless at the moment it is needed.
+  const warmPick = streams.length ? _pickForPlay(streams) : null
+  if (warmPick && warmPick.kind === 'torrent' && warmPick.magnet &&
       window.api.videoWarm && !(_player && _player.isOpen && _player.isOpen())) {
     const warmKey = _videoDetail && _videoDetail.d
       ? _watchKey(_videoDetail.type, _videoDetail.d.id, _videoState.season, _videoState.episode)
@@ -10308,9 +10369,26 @@ async function _loadVideoSources(ticket, seasonTicket) {
       : Promise.resolve(null)
     probe.then(function (res) {
       if (res && res.ok && res.hit) return   // local copy: nothing to warm
-      window.api.videoWarm({ magnet: streams[0].magnet, titleKey: _videoDetail && _videoDetail.d ? _videoDetail.type + ':' + _videoDetail.d.id : null })
+      const titleKey = _videoDetail && _videoDetail.d ? _videoDetail.type + ':' + _videoDetail.d.id : null
+      window.api.videoWarm({ magnet: warmPick.magnet, titleKey: titleKey })
         .then(function () { _refreshInstantKeys(true) })
         .catch(function () {})
+      // And find out which source debrid will actually serve. The candidates
+      // are the streamable ones, best first, so the winner is both playable
+      // over this connection and servable at full speed.
+      if (window.api.videoDebridPick) {
+        const minutes = _playMinutes()
+        const candidates = streams
+          .filter(function (s) { return s && s.kind === 'torrent' && s.magnet && !s.lowQuality && _streamable(s, minutes) })
+          .slice(0, 4).map(function (s) { return s.magnet })
+        if (candidates.length) {
+          window.api.videoDebridPick({ magnets: candidates, titleKey: titleKey })
+            .then(function (res) {
+              if (res && res.magnet) { _debridPick = res.magnet; _refreshInstantKeys(true) }
+            })
+            .catch(function () {})
+        }
+      }
     })
   }
   if (_autoPlayTicket === _videoDetailTicket && streams.length) {

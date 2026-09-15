@@ -12827,6 +12827,36 @@ ipcMain.handle('video-warm', async (_, { magnet, titleKey } = {}) => {
     return { ok: false, error: (e && e.message) || String(e) }
   }
 })
+// Which of these sources RealDebrid will actually serve (2026-09-15).
+// Measured: RD answers 404 to some magnets and 451 to others, and its bulk
+// availability endpoint is disabled — so the only way to know is to try them,
+// one at a time, while the viewer is reading the page. The first that works
+// gets its relay built and is handed back so the page can play THAT source
+// rather than one debrid cannot touch. Candidates that fail are removed from
+// the account by resolveMagnet itself.
+ipcMain.handle('video-debrid-pick', async (_, { magnets, titleKey } = {}) => {
+  try {
+    if (!_debridConfigured()) return { ok: true, magnet: null, configured: false }
+    const list = (Array.isArray(magnets) ? magnets : [])
+      .filter(m => typeof m === 'string' && m).slice(0, 4)
+    for (const magnet of list) {
+      if (_videoSession.streamer) return { ok: true, magnet: null, skipped: 'playing' }
+      try {
+        const url = await _debridPlayable(magnet)
+        if (url) {
+          if (titleKey) _instantMark(titleKey, 'debrid')
+          return { ok: true, magnet }
+        }
+      } catch (e) {
+        try { console.warn('[papa][debrid] source refused:', (e && e.message) || e) } catch (_) {}
+      }
+    }
+    return { ok: true, magnet: null }
+  } catch (e) {
+    return { ok: true, magnet: null, error: (e && e.message) || String(e) }
+  }
+})
+
 ipcMain.handle('video-warm-cancel', async () => { try { _warmSweep() } catch (_) {} ; return { ok: true } })
 
 // Downloads without watching (2026-09-14): "Download" on a title's page

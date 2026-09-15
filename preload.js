@@ -142,6 +142,7 @@ contextBridge.exposeInMainWorld('api', {
   videoCacheDelete:         (p)  => ipcRenderer.invoke('video-cache-delete', p),
   videoWarm:                (p)  => ipcRenderer.invoke('video-warm', p),
   videoWarmCancel:          ()   => ipcRenderer.invoke('video-warm-cancel'),
+  videoDebridPick:          (p)  => ipcRenderer.invoke('video-debrid-pick', p),
   videoDownloadStart:       (p)  => ipcRenderer.invoke('video-download-start', p),
   videoDownloadCancel:      (p)  => ipcRenderer.invoke('video-download-cancel', p),
   videoDownloadList:        ()   => ipcRenderer.invoke('video-download-list'),

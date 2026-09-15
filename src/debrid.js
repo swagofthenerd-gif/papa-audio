@@ -178,9 +178,18 @@ function createDebrid(opts = {}) {
     //    matches what the RD web UI does for a magnet you have not curated.
     await rd('POST', `/torrents/selectFiles/${id}`, 'files=all')
 
-    // 3. Poll until downloaded, a terminal failure, or the timeout.
+    // 3. Poll until downloaded, a terminal failure, or the timeout. Anything
+    //    that does not become playable is removed again — otherwise every
+    //    rejected candidate is left cluttering the user's account as a
+    //    half-finished download.
     const deadline = now() + pollTimeoutMs
     let info = null
+    let settled = false
+    const abandon = async () => {
+      if (settled) return
+      try { await rd('DELETE', `/torrents/delete/${id}`) } catch (_) {}
+    }
+    try {
     for (;;) {
       info = await rd('GET', `/torrents/info/${id}`)
       const status = info && info.status
@@ -209,12 +218,16 @@ function createDebrid(opts = {}) {
     const un = await rd('POST', '/unrestrict/link', 'link=' + encodeURIComponent(restricted))
     const url = un && un.download
     if (!url) throw new DebridError('RealDebrid did not return a direct link', 'NO_DOWNLOAD')
+    settled = true
 
     // ok:false until something has actually fetched a byte from it — an
     // unproved link must never be offered as instant (found by test, and it
     // is the same class of bug as the stale link that started all this).
     if (hash) linkCache.set(hash, { url, restricted, at: now(), ok: false })
     return url
+    } finally {
+      await abandon()
+    }
   }
 
   // Turn a restricted /d/ link into a playable one. Returns null rather than
