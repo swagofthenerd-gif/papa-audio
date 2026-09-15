@@ -2610,3 +2610,39 @@ test('out-of-order thumbnail responses cannot replace the current hover', async 
   assert.equal(nodes['vt-seek-bubble'].__vtThumbImg.getAttribute('src'), 'file:///current.jpg')
   p.close()
 })
+
+for (const id of ['vt-seek', 'vmini-seek']) {
+  test(id + ' cancelled preview restores original position once without changing pause', t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    const { p, nodes, sent } = harness()
+    p._setState(stateAt(123, { paused: true }))
+    nodes[id].fire('pointerdown', pointer())
+    nodes[id].fire('pointermove', pointer({ clientX: 40 }))
+    p._setState(stateAt(1440, { paused: true }))
+    nodes[id].fire('pointermove', pointer({ clientX: 60 }))
+    sent.length = 0
+    nodes[id].fire('pointercancel', pointer())
+    nodes[id].fire('lostpointercapture', pointer())
+    nodes[id].fire('pointerup', pointer({ clientX: 80 }))
+    t.mock.timers.tick(500)
+    assert.deepEqual(sent.filter(x => x.verb === 'seek'), [{ verb: 'seek', args: { seconds: 123, mode: 'absolute' } }])
+    assert.equal(sent.some(x => x.verb === 'pause'), false)
+  })
+  test(id + ' cancelled press without preview does not rewind playback', () => {
+    const { p, nodes, sent } = harness()
+    p._setState(stateAt(123))
+    nodes[id].fire('pointerdown', pointer())
+    p._setState(stateAt(125))
+    nodes[id].fire('lostpointercapture', pointer())
+    assert.equal(sent.filter(x => x.verb === 'seek').length, 0)
+  })
+  test(id + ' old title cancellation cannot restore into the next title', () => {
+    const { p, nodes, sent } = harness()
+    p.open({ title: 'A' }); p._setState(stateAt(123))
+    nodes[id].fire('pointerdown', pointer())
+    nodes[id].fire('pointermove', pointer({ clientX: 40 }))
+    p.open({ title: 'B' }); p._setState(stateAt(0)); sent.length = 0
+    nodes[id].fire('pointercancel', pointer())
+    assert.equal(sent.filter(x => x.verb === 'seek').length, 0)
+  })
+}

@@ -26,14 +26,12 @@ real pointer hardware, native mpv relay, or actual audio/video validation yet.
 
 ## Next work
 
-1. Inspect keyboard input ownership (V104/V105) and countdown focus (V036).
-2. Run combined player/mini/keymap regression suites after changes.
-3. Validate gesture behavior in the real desktop app on web and native paths.
-   Especially test slow double-click settings: the 300 ms arbitration interval
-   may need an accessible configurable preference. Do not claim V102 complete
-   across native mpv merely because the page handlers pass.
-4. Verify seek cancellation and delayed commands do not cross video sessions.
-5. Keep this file updated with exact tests, outstanding risks, and push status.
+1. Verify cancellation restoration, double-clicks, keyboard ownership and focus
+   countdown in the desktop app on both web playback and native mpv.
+2. Review V073 seek accessibility against actual DOM and keyboard behavior.
+3. Check slow OS double-click settings; fixed 300 ms arbitration is still limited.
+4. Continue the complete PROGRESS.md tracker against both original roadmaps.
+5. Save a fresh checkpoint after each batch. GitHub push needs authenticated access.
 
 No roadmap item is marked fully done solely on fake-DOM tests.
 
@@ -73,3 +71,21 @@ authenticated checkout and push the named branch; do not assume it exists online
   it does not undo engine seeks already completed before cancellation. Full V073
   pre-drag-position restoration remains a product decision and implementation task.
 - No real desktop/hardware verification yet; GitHub still not authenticated.
+
+## Fourth batch: restore cancelled seek previews (V073 partial)
+
+- Both seek bars remember the playback position at gesture start. Cancelling a
+  preview drag or losing pointer capture seeks back to that position once.
+- A cancelled press without preview leaves progressing playback alone.
+- Cancellation from an old title cannot restore a position into a new title.
+- Six regression tests cover both bars, engine position updates, queued previews,
+  late release/lost capture, and title changes. No pause command is introduced.
+- Supersedes the third-batch limitation about retaining the preview position.
+  Actual engine restore success and native pointer delivery still need desktop tests.
+- Added PROGRESS.md with all 310 item IDs. Original requirements remain intact.
+
+Validation after fourth batch: **217/217 targeted tests passed** using
+`node --test test/video-player.test.js test/video-mini.test.js test/video-keymap.test.js`.
+`git diff --check` passed. 25 new regressions across four batches. Full suite and
+real desktop playback have not been tested. GitHub publication remains blocked
+by missing authentication; the checkpoint preserves the local branch and plans.

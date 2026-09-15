@@ -870,7 +870,7 @@
     function bindMiniSeek() {
       const seek = $('vmini-seek')
       if (!seek) return
-      let seekEpoch = -1
+      let seekEpoch = -1, startPosition = 0, previewRequested = false
       const trackOf = function () { return seek.querySelector('.vmini-seek-track') || seek }
       const fracAt = function (clientX) {
         const t = trackOf()
@@ -888,6 +888,7 @@
         if (!dur) return
         pid = e.pointerId
         seekEpoch = sessionEpoch
+        startPosition = Number(state.position) || 0; previewRequested = false
         miniDragging = true      // freeze the state-driven repaint while scrubbing
         try { seek.setPointerCapture(e.pointerId) } catch (_) {}
         const f = fracAt(e.clientX); paint(f)
@@ -897,7 +898,7 @@
         if (pid == null || pid !== e.pointerId || seekEpoch !== sessionEpoch) return
         const dur = Number(state && state.duration) || 0
         if (!dur) return
-        const f = fracAt(e.clientX); paint(f); scrubSeek(dur * f)
+        const f = fracAt(e.clientX); paint(f); previewRequested = true; scrubSeek(dur * f)
       })
       const done = function (e) {
         if (pid == null || pid !== e.pointerId || seekEpoch !== sessionEpoch) return
@@ -909,8 +910,9 @@
       }
       seek.addEventListener('pointerup', done)
       const cancel = function (e) {
-        if (pid == null || pid !== e.pointerId) return
+        if (pid == null || pid !== e.pointerId || seekEpoch !== sessionEpoch) return
         pid = null; miniDragging = false; scrubEnd()
+        if (previewRequested) seekTo(startPosition)
         try { seek.releasePointerCapture(e.pointerId) } catch (_) {}
         render()
       }
@@ -2577,7 +2579,7 @@
       const seek = $('vt-seek')
       if (!seek) return
       const bubble = $('vt-seek-bubble')
-      let pid = null, seekEpoch = -1
+      let pid = null, seekEpoch = -1, startPosition = 0, previewRequested = false
 
       seek.addEventListener('pointermove', function (e) {
         if (dragging && (pid !== e.pointerId || seekEpoch !== sessionEpoch)) return
@@ -2595,6 +2597,7 @@
           // throttled keyframe seek so the drag feels live instead of frozen
           // until release.
           paintSeek(at, dur)
+          previewRequested = true
           scrubSeek(at)
         }
       })
@@ -2607,6 +2610,7 @@
         const dur = Number(state && state.duration) || 0
         if (!dur) return
         pid = e.pointerId; seekEpoch = sessionEpoch
+        startPosition = Number(state.position) || 0; previewRequested = false
         dragging = true
         seek.setPointerCapture?.(e.pointerId)
         paintSeek(dur * seekFraction(e.clientX), dur)
@@ -2622,8 +2626,9 @@
         if (dur) seekTo(dur * seekFraction(e.clientX))
       })
       const cancel = function (e) {
-        if (!dragging || pid !== e.pointerId) return
+        if (!dragging || pid !== e.pointerId || seekEpoch !== sessionEpoch) return
         dragging = false; pid = null; scrubEnd()
+        if (previewRequested) seekTo(startPosition)
         try { seek.releasePointerCapture?.(e.pointerId) } catch (_) {}
         if (bubble) { bubble.hidden = true; clearThumbState(bubble) }
         render()
