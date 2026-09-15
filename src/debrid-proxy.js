@@ -88,27 +88,61 @@ function createDebridProxy({ fetchFn, host = '127.0.0.1' } = {}) {
     throw new Error('debrid server would not report the file size')
   }
 
-  async function _upstream(start, end) {
+  async function _upstream(start, end, signal) {
     let last = null
     for (let i = 0; i < UPSTREAM_TRIES; i++) {
+      if (signal && signal.aborted) throw new Error('client gone')
       try {
-        const res = await fetcher(target, { headers: { Range: `bytes=${start}-${end}` } })
+        const res = await fetcher(target, Object.assign(
+          { headers: { Range: `bytes=${start}-${end}` } },
+          signal ? { signal } : {}))
         if (res && (res.status === 206 || res.status === 200)) return res
+        // Drain the error body so the socket is returned to the pool rather
+        // than left half-read — a leaked connection is what makes these
+        // servers start refusing everything.
+        try { if (res && res.body && res.body.cancel) await res.body.cancel() } catch (_) {}
         last = new Error('upstream ' + (res && res.status))
-      } catch (e) { last = e }
+      } catch (e) {
+        if (signal && signal.aborted) throw e
+        last = e
+      }
       await _sleep(RETRY_DELAY_MS * (i + 1))
     }
     throw last || new Error('upstream failed')
   }
 
+  // Wait for the socket to drain, but never forever: a player that seeks
+  // abandons its request mid-flight, and a handler parked on a drain that
+  // will never come holds an upstream connection open for good.
+  function _drain(res) {
+    return new Promise(resolve => {
+      let done = false
+      const finish = () => { if (!done) { done = true; cleanup(); resolve() } }
+      const cleanup = () => {
+        res.off('drain', finish); res.off('close', finish); res.off('error', finish)
+      }
+      res.once('drain', finish)
+      res.once('close', finish)
+      res.once('error', finish)
+    })
+  }
+
   async function _handle(req, res) {
+    // Every request owns an abort signal, fired the moment the player goes
+    // away. Without this the upstream fetch keeps running against a dead
+    // socket and the connection is never given back.
+    const ctrl = typeof AbortController === 'function' ? new AbortController() : null
+    const giveUp = () => { try { if (ctrl) ctrl.abort() } catch (_) {} }
+    res.once('close', giveUp)
+    req.once('aborted', giveUp)
     try {
       const wanted = parseRange(req.headers.range, total) || { start: 0, end: total ? total - 1 : 0 }
       if (req.method === 'HEAD') {
         res.writeHead(200, { 'Content-Length': String(total), 'Content-Type': contentType, 'Accept-Ranges': 'bytes' })
         return res.end()
       }
-      const up = await _upstream(wanted.start, wanted.end)
+      const up = await _upstream(wanted.start, wanted.end, ctrl ? ctrl.signal : null)
+      if (res.destroyed || res.writableEnded) { try { await up.body.cancel() } catch (_) {} ; return }
       const length = wanted.end - wanted.start + 1
       res.writeHead(req.headers.range ? 206 : 200, Object.assign({
         'Content-Length': String(length),
@@ -117,18 +151,24 @@ function createDebridProxy({ fetchFn, host = '127.0.0.1' } = {}) {
       }, req.headers.range ? { 'Content-Range': `bytes ${wanted.start}-${wanted.end}/${total}` } : {}))
       if (!up.body) { const buf = Buffer.from(await up.arrayBuffer()); return res.end(buf) }
       const reader = up.body.getReader()
-      for (;;) {
-        const { done, value } = await reader.read()
-        if (done) break
-        if (!res.write(Buffer.from(value))) {
-          await new Promise(r => res.once('drain', r))
+      try {
+        for (;;) {
+          if (res.destroyed || res.writableEnded) break
+          const { done, value } = await reader.read()
+          if (done) break
+          if (!res.write(Buffer.from(value))) await _drain(res)
         }
+      } finally {
+        // Whether the player finished, seeked away or vanished, the upstream
+        // read is closed here and nowhere else.
+        try { await reader.cancel() } catch (_) {}
       }
-      res.end()
+      if (!res.writableEnded) res.end()
     } catch (e) {
-      // A player that loses the stream mid-file retries; an honest 502 is
-      // better than a silent truncation it would treat as the end.
-      try { if (!res.headersSent) res.writeHead(502); res.end() } catch (_) {}
+      try {
+        if (!res.headersSent && !res.destroyed) { res.writeHead(502); res.end() }
+        else if (!res.writableEnded) res.end()
+      } catch (_) {}
     }
   }
 

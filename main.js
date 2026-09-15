@@ -11856,6 +11856,9 @@ function _maybeCacheFinishedFile() {
 }
 
 function _videoTeardown() {
+  // The relay is deliberately NOT stopped here: it is what makes the next
+  // press of Play instant, it holds no upstream connection while idle, and it
+  // is replaced when a different magnet is played or when it ages out.
   _maybeCacheFinishedFile()
   _videoSession.cacheKey = null
   _videoSession.cacheMeta = null
@@ -12248,7 +12251,7 @@ ipcMain.handle('video-play', async (_, { result }) => {
         } })
         if (_debridConfigured()) {
           const budget = new Promise((_r, rej) => setTimeout(() => rej(new Error('debrid budget')), DEBRID_BUDGET_MS))
-          Promise.race([debrid().linkFor(result.magnet), budget])
+          Promise.race([_debridPlayable(result.magnet), budget])
             .then(directUrl => { if (!current() || !directUrl) throw new Error('debrid unusable'); return serve(directUrl).then(() => safeSend('video-event', { kind: 'debrid', ok: true })) })
             .catch(() => { if (current()) startTorrent() })
         } else startTorrent()
@@ -12329,7 +12332,7 @@ ipcMain.handle('video-play', async (_, { result }) => {
         // one, because a dead link looks exactly like debrid not working
         // (2026-09-15). The budget still bounds the whole attempt.
         const attempt = Promise.race([
-          debrid().linkFor(result.magnet),
+          _debridPlayable(result.magnet),
           new Promise((_r, rej) => setTimeout(() => rej(new Error('debrid budget')), DEBRID_BUDGET_MS)),
         ])
         attempt
@@ -12781,11 +12784,17 @@ ipcMain.handle('video-warm', async (_, { magnet, titleKey } = {}) => {
     // Fire and forget: it never blocks the swarm warm below, and a failure is
     // simply a play that resolves for itself.
     if (_debridConfigured()) {
+      // The whole path — proved link AND a running relay — so that pressing
+      // Play costs nothing. Fire and forget; a failure just means the play
+      // path does the work itself, or the swarm does.
       try {
-        debrid().prewarm(magnet).then(url => {
-          // Resolved: this title now genuinely starts at once, and the poster
-          // can say so wherever it appears.
+        _debridPlayable(magnet).then(url => {
           if (url) _instantMark(titleKey, 'debrid')
+        }).catch(e => {
+          // Silently swallowing this is how a broken debrid path went
+          // unnoticed for days. It is not fatal — the swarm still plays —
+          // but it must be visible.
+          try { console.warn('[papa][debrid] could not prepare the direct stream:', (e && e.message) || e) } catch (_) {}
         })
       } catch (_) {}
     }
@@ -12964,6 +12973,38 @@ ipcMain.handle('video-download-list', async () => ({ ok: true, downloads: _downl
 // only an unresolved magnet costs the full flow, and not for long — ten
 // seconds of waiting with nothing on screen was worse than never having
 // tried, because the swarm had not even been contacted yet.
+// The relay that stands between the player and a debrid link. RealDebrid
+// answers 503 to the open-ended range request every player opens a file with
+// (proved 2026-09-15), so the link is never handed over directly: the relay
+// bounds that range and playback and seeking both work. One at a time, torn
+// down with the stream.
+const { createDebridProxy } = require('./src/debrid-proxy')
+// The relay is built ONCE per magnet and kept, because building it is the
+// slow part: proving the link, then a HEAD probe that these servers answer
+// 503 to about two times in five, each retry costing hundreds of
+// milliseconds. Built during a play it lost the race to the swarm every time
+// (measured: the 5 s budget expired and peers took over at 5,166 ms). Built
+// while the page is open, pressing Play is instant.
+let _debridReady = null   // { magnet, proxy, url, at }
+function _debridProxyStop() {
+  if (_debridReady) { try { _debridReady.proxy.stop() } catch (_) {} _debridReady = null }
+}
+// A relay older than the link's own lifetime is pointing at a URL that has
+// since died, so it is rebuilt rather than trusted.
+const DEBRID_RELAY_TTL_MS = 9 * 60 * 1000
+async function _debridPlayable(magnet) {
+  if (_debridReady && _debridReady.magnet === magnet &&
+      (Date.now() - _debridReady.at) < DEBRID_RELAY_TTL_MS) {
+    return _debridReady.url
+  }
+  const direct = await debrid().linkFor(magnet)
+  const proxy = createDebridProxy({})
+  const url = await proxy.serve(direct)
+  _debridProxyStop()
+  _debridReady = { magnet, proxy, url, at: Date.now() }
+  return url
+}
+
 const DEBRID_BUDGET_MS = 5000
 // The rewatch cache, read side. get: one key, touching lastUsedAt so the
 // eviction clock follows watching, not saving. list/delete serve the

@@ -11,9 +11,9 @@
 // Proved by running mpv with seekable=0 (which forces a plain GET): it played.
 //
 // The relay below translates the player's open-ended range into the bounded
-// one the server accepts, so seeking survives. NOT yet wired into the app:
-// its streaming path still has a fault under a bounded request, and shipping
-// a half-working relay on top of this is not worth it.
+// one the server accepts, so seeking survives. Verified end to end against a
+// real link: mpv opened and played through it, and seeking to ten minutes
+// played too — both of which failed on the direct link.
 const test = require('node:test')
 const assert = require('node:assert')
 const { parseRange, UPSTREAM_TRIES } = require('../src/debrid-proxy')
@@ -42,10 +42,33 @@ test('upstream requests are retried, because these servers 503 intermittently', 
   assert.ok(UPSTREAM_TRIES >= 2, 'two in five requests failed when measured')
 })
 
-test('the relay is not wired into the app yet', () => {
+test('every debrid play goes through the relay, built once per title and reused', () => {
   const fs = require('fs'); const path = require('path')
-  for (const f of ['main.js', 'preload.js', path.join('src', 'renderer.js')]) {
-    const src = fs.readFileSync(path.join(__dirname, '..', f), 'utf8')
-    assert.ok(!/debrid-proxy/.test(src), f + ' must not use the relay until it is finished')
-  }
+  const MAIN = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
+  assert.ok(/require\('\.\/src\/debrid-proxy'\)/.test(MAIN))
+  // Both players take the relay's local URL, never the debrid link itself.
+  assert.strictEqual((MAIN.match(/_debridPlayable\(result\.magnet\)/g) || []).length, 2)
+  assert.ok(!/debrid\(\)\.linkFor\(result\.magnet\)/.test(MAIN), 'the raw link must not reach the player')
+  const fn = MAIN.slice(MAIN.indexOf('async function _debridPlayable('), MAIN.indexOf('const DEBRID_BUDGET_MS'))
+  // A relay already standing for this magnet is reused outright — that reuse
+  // is the whole reason Play is instant instead of losing to the swarm.
+  assert.ok(/_debridReady\.magnet === magnet/.test(fn) && /return _debridReady\.url/.test(fn))
+  // The link is proved first, then put behind the relay.
+  assert.ok(fn.indexOf('debrid().linkFor(magnet)') < fn.indexOf('proxy.serve(direct)'))
+  // A relay older than its link's life is rebuilt, never trusted.
+  assert.ok(/DEBRID_RELAY_TTL_MS/.test(fn))
+  // Teardown must NOT stop it: that is what keeps the next play instant.
+  const td = MAIN.slice(MAIN.indexOf('function _videoTeardown()'), MAIN.indexOf('function _wireVideoEngine'))
+  assert.ok(!/_debridProxyStop\(\)/.test(td), 'stopping the ready relay here would undo the fix')
+})
+
+test('a client that vanishes mid-stream cannot strand the upstream connection', () => {
+  const fs = require('fs'); const path = require('path')
+  const SRC = fs.readFileSync(path.join(__dirname, '..', 'src', 'debrid-proxy.js'), 'utf8')
+  // Leaked connections are what made the server start refusing everything.
+  assert.ok(/res\.once\('close', giveUp\)/.test(SRC) && /ctrl\.abort\(\)/.test(SRC))
+  assert.ok(/signal \? \{ signal \} : \{\}/.test(SRC), 'the abort reaches the upstream fetch')
+  assert.ok(/await reader\.cancel\(\)/.test(SRC), 'the upstream read is always closed')
+  // A drain that never comes must not park the handler for ever.
+  assert.ok(/res\.once\('close', finish\)/.test(SRC))
 })

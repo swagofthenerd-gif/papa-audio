@@ -76,18 +76,22 @@ test('an uncached magnet resolves to nothing rather than hanging on RD', async (
   assert.strictEqual(await d.prewarm(MAGNET), null)
 })
 
-test('opening a title asks debrid to resolve it, before and regardless of the swarm warm', () => {
+test('opening a title builds the whole playable path, before and regardless of the swarm warm', () => {
   const warm = MAIN.slice(MAIN.indexOf("ipcMain.handle('video-warm'"), MAIN.indexOf("ipcMain.handle('video-warm-cancel'"))
-  assert.ok(/_debridConfigured\(\)\) \{[\s\S]{0,200}debrid\(\)\.prewarm\(magnet\)/.test(warm))
+  // Not just the link: the relay too. Building it during a play lost the race
+  // to the swarm every time (the 5 s budget expired at 5,166 ms, measured).
+  assert.ok(/_debridConfigured\(\)\) \{[\s\S]{0,300}_debridPlayable\(magnet\)/.test(warm))
   // Before the "already playing" early return, so a warm still helps then.
-  assert.ok(warm.indexOf('prewarm(magnet)') < warm.indexOf("skipped: 'playing'"))
+  assert.ok(warm.indexOf('_debridPlayable(magnet)') < warm.indexOf("skipped: 'playing'"))
 })
 
-test('play waits only briefly on debrid, and a held link still costs one proof', () => {
+test('play waits only briefly on debrid, and the link is proved before use', () => {
   assert.ok(/const DEBRID_BUDGET_MS = 5000/.test(MAIN), 'ten seconds of dead air was worse than not trying')
-  // Both players go through linkFor, which proves the link before the player
-  // is ever handed it. A remembered URL is never played unproved.
-  assert.strictEqual((MAIN.match(/debrid\(\)\.linkFor\(result\.magnet\)/g) || []).length, 2)
+  // Both players go through _debridPlayable, which proves the link (linkFor)
+  // and then puts it behind the relay. A remembered URL is never played
+  // unproved, and the raw debrid link never reaches the player at all.
+  assert.strictEqual((MAIN.match(/_debridPlayable\(result\.magnet\)/g) || []).length, 2)
+  assert.ok(/const direct = await debrid\(\)\.linkFor\(magnet\)/.test(MAIN))
   assert.ok(!/_debridLinkNow/.test(MAIN))
 })
 
@@ -159,6 +163,7 @@ test('an expired link is not offered to the badge either', async () => {
 })
 
 test('both play paths take the proved link, not a remembered one', () => {
-  assert.strictEqual((MAIN.match(/debrid\(\)\.linkFor\(result\.magnet\)/g) || []).length, 2)
+  assert.strictEqual((MAIN.match(/_debridPlayable\(result\.magnet\)/g) || []).length, 2)
+  assert.ok(/debrid\(\)\.linkFor\(magnet\)/.test(MAIN), 'proved inside _debridPlayable')
   assert.ok(!/_debridLinkNow/.test(MAIN), 'the unproved sync peek is gone from the play path')
 })
