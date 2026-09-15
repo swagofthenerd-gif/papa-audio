@@ -927,6 +927,45 @@ test('a stage with no size reports nothing rather than a degenerate rectangle', 
     assert.strictEqual(store['papa-vmini-pos'].corner, 'tl', 'the release snapped to top-left')
   })
 
+  // V101: pointercancel and lostpointercapture are aborts, not releases. They
+  // shared endDrag, whose tap and fling paths then ran on a gesture the
+  // browser had taken away.
+  test('a cancelled unmoved press on the picture never toggles playback', () => {
+    const { p, nodes, sent } = miniHarness()
+    p.open({ title: 'Dune' })
+    p._setState(stateAt(10, { paused: false }))
+    p.minimise()
+    const v = nodes['vmini-video']
+    const before = sent.length
+    v.fire('pointerdown', { button: 0, pointerId: 7, clientX: 900, clientY: 700, preventDefault () {} })
+    v.fire('pointercancel', { pointerId: 7 })
+    assert.deepStrictEqual(sent.slice(before).filter(s => /pause|play|toggle/i.test(s.verb)), [],
+      'a cancel is not a tap')
+    assert.ok(!nodes.vmini.classList.contains('vmini-dragging'), 'the drag state was released')
+    // And the gesture is fully over: a stray pointerup with the same id is ignored.
+    v.fire('pointerup', { pointerId: 7 })
+    assert.deepStrictEqual(sent.slice(before).filter(s => /pause|play|toggle/i.test(s.verb)), [])
+  })
+
+  test('a cancelled drag keeps the pre-drag corner and does not fling', () => {
+    const { p, nodes, store } = miniHarness()
+    p.open({ title: 'Dune' })
+    p._setState(stateAt(10))
+    p.minimise()
+    const h = nodes['vmini-handle']
+    h.fire('pointerdown', { button: 0, pointerId: 8, clientX: 900, clientY: 700, preventDefault () {} })
+    h.fire('pointermove', { pointerId: 8, clientX: -2000, clientY: -2000 })
+    h.fire('pointercancel', { pointerId: 8 })
+    assert.notStrictEqual((store['papa-vmini-pos'] || {}).corner, 'tl',
+      'the release-snap to top-left did not happen')
+    assert.ok(!nodes.vmini.classList.contains('vmini-dragging'))
+    // lostpointercapture is bound as the same abort on every drag surface.
+    for (const id of ['vmini-handle', 'vmini-bar', 'vmini-video']) {
+      assert.ok((nodes[id].handlers.lostpointercapture || []).length, id + ' handles lostpointercapture')
+      assert.ok((nodes[id].handlers.pointercancel || []).length, id + ' handles pointercancel')
+    }
+  })
+
   test('a press on a bar control does not start a drag', () => {
     const { p, nodes } = miniHarness()
     p.open({ title: 'Dune' })

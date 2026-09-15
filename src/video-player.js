@@ -824,6 +824,26 @@
         placeMiniCard(null, true)
       }
 
+      // pointercancel is not a release (V101). The browser fires it when it
+      // takes the gesture away — a touch that became a scroll, capture lost
+      // to a window switch, a palm on the trackpad. It used to share endDrag,
+      // so an unmoved cancel toggled playback as if it were a tap, and a moved
+      // one flung the card from stale coordinates as if the hand had let go.
+      // A cancelled gesture is one that never happened: playback untouched,
+      // corner unchanged, capture released, the card eased back to where it
+      // started.
+      const cancelDrag = function (e) {
+        if (!miniDragging || (pointerId != null && e.pointerId !== pointerId)) return
+        miniDragging = false
+        mini.classList.remove('vmini-dragging')
+        try { if (captureEl) captureEl.releasePointerCapture(e.pointerId) } catch (_) {}
+        if (miniRectTimer) { clearTimeout(miniRectTimer); miniRectTimer = 0 }
+        const from = miniDragTL && moved ? { x: miniDragTL.x, y: miniDragTL.y } : null
+        miniDragTL = null; pointerId = null; captureEl = null; samples = []; moved = false
+        if (from) settleTo(from, { vx: 0, vy: 0 })
+        else placeMiniCard(null, true)
+      }
+
       // The picture region joins the drag surfaces (V1): with the smooth
       // player the <video> lives inside it and receives the pointer, so the
       // whole card drags. Under mpv the native window still eats the events
@@ -833,7 +853,10 @@
         el.addEventListener('pointerdown', onDown(el))
         el.addEventListener('pointermove', onMove)
         el.addEventListener('pointerup', endDrag)
-        el.addEventListener('pointercancel', endDrag)
+        el.addEventListener('pointercancel', cancelDrag)
+        // Capture lost without a cancel (a native window steals the pointer,
+        // the tab is hidden mid-drag): the same abort, never a release.
+        el.addEventListener('lostpointercapture', cancelDrag)
       }
     }
 
