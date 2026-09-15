@@ -217,3 +217,19 @@ test('the wizard offers Add / Explore / Later, remembers the answer, and init co
   assert.doesNotMatch(rf, /setup-overlay/, 'renderFolders does not re-raise the wizard')
   assert.match(rf, /_setSetupDeferred\(false\)/, 'adding a folder clears the deferral')
 })
+
+// Roadmap 002: Settings has a permanent entry that never goes through the chat.
+test('a Settings nav entry opens the settings panel directly, titled Settings', () => {
+  const R = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
+  const H = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'index.html'), 'utf8')
+  assert.match(H, /id="nav-settings"[^>]*>[\s\S]*?<span>Settings<\/span>/)
+  assert.match(H, /id="mcs-header-title">Music Agent</)
+  assert.match(R, /if \(el\.dataset\.action === 'settings'\) \{ openSettings\('general'\); return \}/)
+  const fn = R.slice(R.indexOf('function openSettings('), R.indexOf('\n}\n', R.indexOf('function openSettings(')))
+  assert.match(fn, /_switchMcsTab\('settings'\)/)
+  assert.doesNotMatch(fn, /_switchMcsTab\('chat'\)/)
+  assert.match(R, /hdr\.textContent = tab === 'settings' \? 'Settings' : 'Music Agent'/)
+  for (const id of ['general-settings', 'playback-settings', 'video-settings', 'eq-settings']) {
+    assert.ok(H.includes('id="' + id + '"'), id + ' group exists to scroll to')
+  }
+})

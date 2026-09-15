@@ -21769,12 +21769,31 @@ async function _renderMemoryTab(opts = {}) {
 // ── Tab switching ────────────────────────────────────────────────────────────
 function _switchMcsTab(tab) {
   chatState.activeTab = tab
+  // Roadmap 002: the drawer is titled by what it is showing. Settings are not
+  // a chat feature, so the header must not say "Music Agent" over them.
+  const hdr = document.getElementById('mcs-header-title')
+  if (hdr) hdr.textContent = tab === 'settings' ? 'Settings' : 'Music Agent'
   document.querySelectorAll('.mcs-tab-btn').forEach(b => b.classList.toggle('mcs-tab-active', b.dataset.tab === tab))
   document.querySelectorAll('.mcs-panel').forEach(p => p.classList.toggle('mcs-panel-hidden', !p.id.endsWith(tab)))
   if (tab === 'memory') _renderMemoryTab()
   // Poll the storage-health chip only while Settings is on screen (App #5).
   if (tab === 'settings') { _startStorageHealthPoll(); _refreshDiagnostics() }
   else _stopStorageHealthPoll()
+}
+
+// Roadmap 002: open Settings directly, at a named group, without going
+// through the chat tab. `section` is one of the mcs-set-group ids
+// (general-settings, playback-settings, video-settings, eq-settings, …).
+function openSettings(section) {
+  if (!chatState.open) toggleChatSidebar()
+  _switchMcsTab('settings')
+  const id = section ? (String(section).endsWith('-settings') ? section : section + '-settings') : 'general-settings'
+  const group = document.getElementById(id)
+  if (group && typeof group.scrollIntoView === 'function') {
+    try { group.scrollIntoView({ block: 'start', behavior: 'smooth' }) } catch (_) { group.scrollIntoView() }
+  }
+  const first = group && group.querySelector('input, select, button, textarea')
+  if (first && typeof first.focus === 'function') { try { first.focus({ preventScroll: true }) } catch (_) {} }
 }
 
 // ── Settings panel ───────────────────────────────────────────────────────────
@@ -28434,6 +28453,7 @@ function setupListeners() {
   // Sidebar nav
   document.querySelectorAll('.nav-item').forEach(el => {
     el.addEventListener('click', () => {
+      if (el.dataset.action === 'settings') { openSettings('general'); return }
       if (el.dataset.page === 'search') {
         if (slsk.lastQuery) navigate('search', slsk.lastQuery)
         else document.getElementById('tb-search')?.focus()

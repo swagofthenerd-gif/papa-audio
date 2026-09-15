@@ -107,6 +107,13 @@
         <svg viewBox="0 0 24 24"><path d="M13 3a9 9 0 0 0-9 9H1l4 4 4-4H6a7 7 0 1 1 2 5l-1.5 1.3A9 9 0 1 0 13 3zm-1 5v5l4 2 .7-1.2-3.2-1.9V8z"/></svg>
         <span>Trail</span>
       </li>
+      <!-- Roadmap 002: a permanent Settings entry. The settings panel is the
+           same one the agent drawer carries, opened straight to General —
+           nobody has to know it lives behind the chat. -->
+      <li class="nav-item nav-item-settings" data-action="settings" id="nav-settings" title="Settings">
+        <svg viewBox="0 0 24 24"><path d="M19.14 12.94a7.07 7.07 0 0 0 0-1.88l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.03 7.03 0 0 0-1.63-.94l-.36-2.54A.5.5 0 0 0 13.9 2h-3.8a.5.5 0 0 0-.49.42l-.36 2.54c-.59.24-1.13.56-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L2.71 8.48a.5.5 0 0 0 .12.64l2.03 1.58a7.07 7.07 0 0 0 0 1.88l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32c.13.22.39.31.6.22l2.39-.96c.5.38 1.04.7 1.63.94l.36 2.54c.04.24.25.42.49.42h3.8c.24 0 .45-.18.49-.42l.36-2.54c.59-.24 1.13-.56 1.63-.94l2.39.96c.21.09.47 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58zM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5z"/></svg>
+        <span>Settings</span>
+      </li>
     </ul>
 
     <div class="sidebar-scroll-body">
@@ -339,7 +346,7 @@
     <div class="mcs-header">
       <div class="mcs-header-left">
         <svg viewBox="0 0 24 24"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"/></svg>
-        <span>Music Agent</span>
+        <span id="mcs-header-title">Music Agent</span>
       </div>
       <div class="mcs-header-right">
         <button class="mcs-tab-btn mcs-tab-active" id="mcs-tab-chat" data-tab="chat">Chat</button>
