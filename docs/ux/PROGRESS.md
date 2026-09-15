@@ -172,10 +172,10 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | V004 | Pending review/implementation |
 | V005 | Pending review/implementation |
 | V006 | Pending review/implementation |
-| V007 | Pending review/implementation |
+| V007 | Fixed `4282de7` — outage / empty / cached-with-age |
 | V008 | Pending review/implementation |
 | V009 | Pending review/implementation |
-| V010 | Pending review/implementation |
+| V010 | Fixed `0c76049` |
 | V011 | Pending review/implementation |
 | V012 | Fixed `3d58e3b` — Play / Resume from <time> / Start over |
 | V013 | Pending review/implementation |
