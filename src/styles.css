@@ -2006,6 +2006,8 @@ h2.section-title { font-size:18px; font-weight:700; }
 .album-hero-title, .hero-artist, .queue-row-title, .queue-row-artist, .vt-title, .vt-sub, .vcard-title,
 .video-detail-title, .vep-title, .vmini-title, .video-source-label, .search-result-title, .pl-card-name,
 .artist-card-name, .mg-health-item-name, .sq-name, .folder-item span { unicode-bidi: plaintext; }
+/* Roadmap 047: what shuffle has decided, stated above the (unchanged) list. */
+.queue-shuffle-note { font-size:11px; color:var(--text3); padding:0 12px 8px; }
 .folder-item-empty { color:var(--text3); font-style:italic; cursor:default; }
 .setup-hint { font-size:12px; color:var(--text3); margin:8px 0 0; }
 .setup-chosen { color:var(--accent) !important; font-weight:600; word-break:break-all; }

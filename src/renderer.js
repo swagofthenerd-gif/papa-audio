@@ -17880,7 +17880,16 @@ function renderQueuePanel() {
   // ones so it is obvious why they will not fill the room the same way.
   var hasSurround = state.queue.some(function (t) { return (t.channels || 0) >= 6 })
 
-  list.innerHTML = fromHtml + '<div style="padding:12px;font-size:13px;font-weight:600;display:flex;justify-content:space-between"><span>Queue (' + state.queue.length + ')</span><span style="font-size:11px;color:var(--text3);font-weight:400">' + totalQDstr + '</span></div>' + state.queue.map((t, i) => {
+  // Roadmap 047: with shuffle on, the list below is the ORIGINAL order (it is
+  // never rewritten, so turning shuffle off restores it exactly); the one
+  // thing shuffle has decided — the next pick — is named here so the order
+  // the player will actually take is not a secret.
+  var shuffleNote = ''
+  if (state.shuffle) {
+    var nxt = (_pendingShuffle != null && state.queue[_pendingShuffle]) ? state.queue[_pendingShuffle] : null
+    shuffleNote = '<div class="queue-shuffle-note">Shuffle is on — next up: ' + (nxt ? esc(nxt.title || 'a track') : 'chosen when this track ends') + '. The list keeps its original order.</div>'
+  }
+  list.innerHTML = fromHtml + '<div style="padding:12px;font-size:13px;font-weight:600;display:flex;justify-content:space-between"><span>Queue (' + state.queue.length + ')</span><span style="font-size:11px;color:var(--text3);font-weight:400">' + totalQDstr + '</span></div>' + shuffleNote + state.queue.map((t, i) => {
     const isPlaying = i === state.queueIndex
     const art = t.artPath
       ? `<img class="queue-row-art" src="${esc(_artSrc(t.artPath))}" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`

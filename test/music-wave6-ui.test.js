@@ -121,6 +121,12 @@ test('assistant Stop releases immediately, aborts the provider request, and name
   }
 })
 
+// Roadmap 047: shuffle's next pick is visible; the list keeps its original order.
+test('the queue panel names the shuffled next pick and says the order is kept', () => {
+  assert.ok(renderer.includes("shuffleNote = '<div class=\"queue-shuffle-note\">Shuffle is on — next up: '"))
+  assert.ok(renderer.includes('The list keeps its original order.'))
+})
+
 // Roadmap 050: playlist edits report their count and undo without touching files.
 test('playlist removal — single × and bulk — is undoable and never deletes audio', () => {
   const H = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'index.html'), 'utf8')
