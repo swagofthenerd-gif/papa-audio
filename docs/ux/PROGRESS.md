@@ -185,7 +185,7 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | V017 | Pending review/implementation |
 | V018 | Pending review/implementation |
 | V019 | Pending review/implementation |
-| V020 | Pending review/implementation |
+| V020 | Fixed — spoiler-safe rows, per-row and global reveal |
 | V021 | Pending review/implementation |
 | V022 | Pending review/implementation |
 | V023 | Pending review/implementation |
