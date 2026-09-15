@@ -3405,6 +3405,7 @@ function _initVideoUI() {
         if (_handoff) _applyHandoff(_handoff.onVideoStop())
       },
       onNext: _playNextEpisode,
+      sources: { list: _playerSourceList, pick: _playerPickSource },
       onState: _onVideoStateTick,
       onToast: function (msg) { showToast(msg) },
     })
@@ -4099,6 +4100,70 @@ function _nextUntriedSource() {
   }) || null
 }
 
+// The sources the deck's Source chip offers, describing what is playing and
+// what else this title has. Built from the same _videoStreams the page shows,
+// so the two never disagree.
+function _playerSourceList() {
+  const list = Array.isArray(_videoStreams) ? _videoStreams : []
+  const cur = _watch && _watch.pick ? _sourceKey(_watch.pick) : ''
+  return list.slice(0, 20).map(function (s) {
+    const rel = (window.PapaReleaseName && s.title) ? window.PapaReleaseName.parse(s.title) : null
+    return {
+      key: _sourceKey(s),
+      label: _sourceOptionLabel(s),
+      short: (rel && rel.group) || s.quality || s.source || 'Source',
+      current: _sourceKey(s) === cur,
+      instant: _isInstantSource(s),
+    }
+  })
+}
+
+// Switching by hand, from inside the video. The stall-driven switch below does
+// the same thing on its own; this is the viewer deciding rather than the app
+// noticing. Position is kept — main keeps the player alive across the swap and
+// seeks back.
+async function _playerPickSource(key) {
+  if (!window.api.videoSwitchStream) { showToast('Switching sources is not available in this build'); return }
+  if (_autoSwitchInFlight) return
+  const next = (Array.isArray(_videoStreams) ? _videoStreams : []).find(function (s) { return _sourceKey(s) === key })
+  if (!next) return
+  if (next.kind !== 'torrent') { showToast('Only torrent sources can be switched to'); return }
+  const detailTicket = _videoDetailTicket
+  const seasonTicket = _videoSeasonTicket
+  _autoSwitchInFlight = true
+  // Remembered as tried, so a later stall does not swing back to a source the
+  // viewer has just moved away from.
+  if (_watch && _watch.tried) _watch.tried[_sourceKey(next)] = true
+  let result = next
+  if (_videoDetail && _videoDetail.type !== 'movie') {
+    result = Object.assign({}, next, {
+      season: _videoDetail.type === 'tv' ? _videoState.season : null,
+      episode: _videoState.episode,
+    })
+  }
+  showToast('Switching to ' + (next.source || 'another source') + '…')
+  const res = await window.api.videoSwitchStream({ result })
+    .catch(function (e) { return { ok: false, error: String((e && e.message) || e) } })
+  _autoSwitchInFlight = false
+  if (_videoDetailTicket !== detailTicket || _videoSeasonTicket !== seasonTicket) return
+  if (res && res.ok) {
+    _watch.pick = next
+    _watch.stallEvents = 0
+    _watch.stallNotified = false
+    _playing = { dub: next.dub === true, source: next.source || null, quality: next.quality || null }
+    // An explicit choice is a standing preference for this title, exactly as
+    // choosing from the hero selector is.
+    _playSourceKey = _sourceKey(next)
+    const rel = (window.PapaReleaseName && next.title) ? window.PapaReleaseName.parse(next.title) : null
+    _rememberPreferredSource({ source: next.source || null, quality: next.quality || null, group: (rel && rel.group) || null })
+    _syncSourcesHighlight()
+    if (_player && _player.syncSources) _player.syncSources()
+    showToast('Switched to ' + (next.source || 'another source'))
+  } else {
+    showToast(_videoErrorText((res && res.error) || 'Could not switch source'))
+  }
+}
+
 // Swap the running stream for the next viable source without leaving the
 // theatre or losing the place. The switch handler keeps mpv alive, starts the
 // new torrent, and seeks back — from here it is one call and a toast.
@@ -4789,7 +4854,16 @@ var _debridPick = null
 // 2026-09-16). Play now waits briefly for it instead.
 var _debridPickPending = null
 var _DEBRID_PICK_WAIT_MS = 7000
+// Every candidate RealDebrid answered for, not just the winner. A row that is
+// held starts in a fraction of a second; one that is not has to find peers.
+// Without this the list could not say which was which, so "choose a source"
+// meant choosing blind.
+var _debridHeld = []
 var _playQuality = ''
+// The source the viewer chose by hand from the hero selector, as a key. Play
+// honours it above everything else — including the debrid pick, because an
+// explicit choice is not a suggestion. Cleared when the page changes.
+var _playSourceKey = ''
 var _QUALITY_ORDER = ['2160p', '1080p', '720p', '480p']
 
 // The sources that actually offer a quality, best first, for the picker.
@@ -4820,6 +4894,74 @@ function _renderQualityPicker(streams) {
   if (!sel.dataset.bound) {
     sel.dataset.bound = '1'
     sel.addEventListener('change', function () { _playQuality = sel.value || '' })
+  }
+}
+
+// Is RealDebrid holding this source? A held source starts almost at once; the
+// rest have to find peers first.
+function _isInstantSource(s) {
+  if (!s || s.kind !== 'torrent' || !s.magnet) return false
+  if (_debridPick && s.magnet === _debridPick) return true
+  return _debridHeld.indexOf(s.magnet) !== -1
+}
+
+// One source, described in the few words that actually decide between them:
+// who made it, how it looks, how well it is shared, how big it is, and whether
+// it will start instantly.
+function _sourceOptionLabel(s) {
+  const rel = (window.PapaReleaseName && s.title) ? window.PapaReleaseName.parse(s.title) : null
+  const bits = []
+  if (_isInstantSource(s)) bits.push('instant')
+  if (s.quality) bits.push(s.quality)
+  if (rel && rel.group) bits.push(rel.group)
+  else if (s.source) bits.push(s.source)
+  const seeds = Number(s.seeders)
+  if (Number.isFinite(seeds)) bits.push(seeds + ' seeds')
+  const size = Number(s.sizeBytes)
+  if (Number.isFinite(size) && size > 0) bits.push(_fmtBytes(size))
+  if (s.isPack) bits.push('pack')
+  return bits.join(' · ')
+}
+
+// The hero's source selector. Sources were always gathered — six or seven
+// indexers for anime, more than for film — but Play picked one silently and
+// the only control beside it chose a RESOLUTION, so there was no way to say
+// "not that one, this one" without scrolling to the list below and hunting
+// for the row. "my anime is only playing from a single source" (2026-09-16).
+//
+// Auto stays the default: the viewer asked for a selector, not for a decision
+// to make every time.
+function _renderSourcePicker(streams) {
+  const wrap = document.getElementById('vdet-source-wrap')
+  const sel = document.getElementById('vdet-source')
+  if (!wrap || !sel) return
+  const list = Array.isArray(streams) ? streams : []
+  if (list.length < 2) { wrap.hidden = true; return }
+  // A source that is no longer on offer must not stay selected.
+  if (_playSourceKey && !list.some(function (s) { return _sourceKey(s) === _playSourceKey })) _playSourceKey = ''
+  wrap.hidden = false
+  const auto = _pickForPlay(list)
+  const autoLabel = auto ? 'Auto — ' + _sourceOptionLabel(auto) : 'Auto'
+  sel.innerHTML = ['<option value="">' + esc(autoLabel) + '</option>']
+    .concat(list.slice(0, 40).map(function (s) {
+      const k = _sourceKey(s)
+      return '<option value="' + esc(k) + '"' + (k === _playSourceKey ? ' selected' : '') + '>' +
+        esc(_sourceOptionLabel(s)) + '</option>'
+    })).join('')
+  if (!sel.dataset.bound) {
+    sel.dataset.bound = '1'
+    sel.addEventListener('change', function () {
+      _playSourceKey = sel.value || ''
+      // Choosing by hand is a standing preference for this title, the same as
+      // pressing Play on a row (App #43) — the next episode should not go back
+      // to guessing.
+      const chosen = _videoStreams.find(function (s) { return _sourceKey(s) === _playSourceKey })
+      if (chosen) {
+        const rel = (window.PapaReleaseName && chosen.title) ? window.PapaReleaseName.parse(chosen.title) : null
+        _rememberPreferredSource({ source: chosen.source || null, quality: chosen.quality || null, group: (rel && rel.group) || null })
+      }
+      _syncSourcesHighlight()
+    })
   }
 }
 
@@ -4886,6 +5028,13 @@ function _pickForPlay(streams) {
   const list = Array.isArray(streams) ? streams : []
   if (!list.length) return null
   const minutes = _playMinutes()
+  // A source the viewer picked by hand wins outright. Not a hint to be
+  // weighed against picture quality or what debrid is holding: they looked at
+  // the list and chose, and Play must start THAT.
+  if (_playSourceKey) {
+    const chosen = list.find(function (s) { return _sourceKey(s) === _playSourceKey })
+    if (chosen) return chosen
+  }
   // A source debrid will serve beats everything, unless the viewer asked for
   // a particular quality and this is not it.
   if (_debridPick) {
@@ -8839,6 +8988,8 @@ async function renderVideoDetail(navId) {
   _videoState = { season: null, episode: 1, sub: true }
   _videoStreams = []
   _debridPick = null
+  _debridHeld = []
+  _playSourceKey = ''
   _playing = { dub: null, source: null, quality: null }
   _prefetch = { key: null, streams: null, inflight: false }
   setContent('<div class="page"><div class="skeleton skeleton-card" style="height:280px"></div></div>')
@@ -9104,6 +9255,12 @@ function _videoDetailShell(d) {
         '<span class="vbtn-quality" id="vdet-quality-wrap" hidden>' +
           '<label class="sr-only" for="vdet-quality">Quality to play</label>' +
           '<select id="vdet-quality" title="Which quality to play"></select>' +
+        '</span>' +
+        // Which release to play, not just which resolution. Auto is the
+        // default and does what Play always did.
+        '<span class="vbtn-quality vbtn-source" id="vdet-source-wrap" hidden>' +
+          '<label class="sr-only" for="vdet-source">Source to play</label>' +
+          '<select id="vdet-source" title="Which source to play"></select>' +
         '</span>' +
         '<button class="vbtn" id="vdet-download" title="Save to this device for offline watching">' + _VICON.down + 'Download</button>' +
         (_bestTrailer(d) ? '<button class="vbtn" id="video-trailer-btn">' + _VICON.play + 'Trailer</button>' : '') +
@@ -10701,6 +10858,7 @@ async function _loadVideoSources(ticket, seasonTicket) {
   // The hero's quality picker is built from what this title actually offers,
   // so it appears with the sources and never promises a quality nobody has.
   _renderQualityPicker(streams)
+  _renderSourcePicker(streams)
   if (!streams.length) {
     target.innerHTML = '<div class="video-sources-header"><span class="section-title">Sources</span></div>' +
       '<div class="yt-status">' + (split.unlikely.length
@@ -10773,7 +10931,21 @@ async function _loadVideoSources(ticket, seasonTicket) {
               // A result that arrives after the viewer moved on belongs to a
               // page that is no longer open.
               if (_videoDetailTicket !== ticketAtPick) return null
+              // Every held candidate, so the list can mark each row that
+              // will start instantly rather than only the winner.
+              _debridHeld = (res && Array.isArray(res.held)) ? res.held.slice() : []
               if (res && res.magnet) { _debridPick = res.magnet; _refreshInstantKeys(true) }
+              // The badges and the selector both describe what debrid is
+              // holding, so both are stale until this lands.
+              if (_debridHeld.length || (res && res.magnet)) {
+                try {
+                  _renderSourcePicker(_videoStreams)
+                  const panel = document.getElementById('video-sources')
+                  if (panel) _renderVideoSourceRows(panel, _vSourcesSort())
+                  // The deck's Source chip carries the same instant marks.
+                  if (_player && _player.syncSources) _player.syncSources()
+                } catch (_) {}
+              }
               return (res && res.magnet) ? res.magnet : null
             })
             .catch(function () { return null })
@@ -10885,9 +11057,16 @@ function _videoStreamRow(s, i) {
   const unlikelyTag = unlikely ? '<span class="video-source-tag video-source-unlikely" title="The release name does not carry this title">unlikely</span>' : ''
   const groupTag = rel && rel.group ? '<span class="video-source-group" title="Release group">' + esc(rel.group) + '</span>' : ''
   const batchTag = rel && rel.batch && !s.isPack ? '<span class="video-source-tag">batch</span>' : ''
+  // Which rows start at once. RealDebrid's answer for each candidate was
+  // already being fetched and then discarded, so a list of a dozen sources
+  // gave no way to tell the one that plays in half a second from the one that
+  // spends a minute looking for peers.
+  const instantTag = _isInstantSource(s)
+    ? '<span class="video-source-tag video-source-instant" title="RealDebrid is holding this — it starts almost at once">instant</span>'
+    : ''
   return '<div class="video-source-row" data-idx="' + i + '"' + (s.title ? ' title="' + esc(s.title) + '"' : '') + '>' +
     '<span class="' + b.cls + '" title="' + esc(b.title) + '">' + esc(badge) + '</span>' +
-    groupTag + torrent + subDub + batchTag + unlikelyTag +
+    groupTag + instantTag + torrent + subDub + batchTag + unlikelyTag +
     seedStat + sizeStat +
     '<span class="video-source-label">' + esc(label) + '</span>' +
     '<button class="video-source-play" data-idx="' + i + '" aria-label="Play ' + esc(badge) + '"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button>' +

@@ -255,6 +255,10 @@
         <button class="vt-chip" id="vt-chapters" aria-label="Chapters" title="Chapters" hidden>Chapters</button>
         <button class="vt-chip" id="vt-subs" aria-label="Subtitles off — choose a track" aria-pressed="false" aria-haspopup="menu" title="Subtitles (C)">CC</button>
         <button class="vt-chip" id="vt-audio" aria-label="Audio track" aria-haspopup="menu" title="Audio track (V)">Audio</button>
+        <!-- Which release is playing, and a way to change it without leaving
+             the video. A stalling source used to mean going back to the page
+             and starting over. Hidden unless the renderer supplies a list. -->
+        <button class="vt-chip" id="vt-source" aria-label="Source" aria-haspopup="menu" title="Play this from a different source" hidden>Source</button>
         <button class="vt-chip" id="vt-speed" aria-label="Playback speed" title="Speed">1&times;</button>
         <button class="vt-chip" id="vt-stats" aria-label="Playback statistics" title="Stats (I)">Stats</button>
         <button class="vt-icon" id="vt-shot" aria-label="Take a screenshot" title="Screenshot (Shift+S)">

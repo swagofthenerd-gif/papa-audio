@@ -236,6 +236,11 @@
     // The renderer persists progress from here rather than opening a second
     // subscription to the same throttled stream.
     const onState = opts.onState || null
+    // The sources this title has, and a way to switch to one mid-playback.
+    // { list: () => [{ key, label, current, instant }], pick: key => {} }.
+    // Optional: with no list the chip stays hidden, because a control that
+    // cannot do anything is worse than no control.
+    const sources = opts.sources || null
 
     const $ = id => doc && doc.getElementById(id)
 
@@ -459,6 +464,7 @@
 
       paintBadges()
       syncChapterButton()
+      syncSourceButton()
       paintMini()
       // Segments are set before the first state tick, when the duration is
       // still 0 and the marks cannot be positioned. Repaint whenever the
@@ -2015,6 +2021,38 @@
       btn.hidden = n < 2
     }
 
+    // What is playing and what else could be. Switching keeps the place and
+    // the window: main swaps the stream underneath and seeks back.
+    function sourceList() {
+      if (!sources || typeof sources.list !== 'function') return []
+      try { const l = sources.list(); return Array.isArray(l) ? l : [] } catch (_) { return [] }
+    }
+
+    function syncSourceButton() {
+      const btn = $('vt-source')
+      if (!btn) return
+      const list = sourceList()
+      // One source is not a choice.
+      btn.hidden = list.length < 2
+      const cur = list.find(function (s) { return s.current })
+      if (cur && cur.short) btn.textContent = cur.short
+    }
+
+    function openSourceMenu() {
+      const list = sourceList()
+      if (list.length < 2) return
+      const html = '<div class="vt-menu-head">Play this from</div>' +
+        list.map(function (s) { return menuItem(s.label, !!s.current, s.instant ? 'instant' : '') }).join('')
+      openMenu('vt-source', html, function (m) {
+        m.querySelectorAll('.vt-menu-item').forEach(function (el, i) {
+          el.addEventListener('click', function () {
+            closeMenu()
+            if (list[i] && !list[i].current && sources && typeof sources.pick === 'function') sources.pick(list[i].key)
+          })
+        })
+      })
+    }
+
     function openSpeedMenu() {
       const cur = Number(state && state.speed) || 1
       const html = '<div class="vt-menu-head">Playback speed</div>' +
@@ -2783,6 +2821,7 @@
       $('vt-subs')?.addEventListener('click', function () { openTrackMenu('sub') })
       $('vt-audio')?.addEventListener('click', function () { openTrackMenu('audio') })
       $('vt-chapters')?.addEventListener('click', openChapterMenu)
+      $('vt-source')?.addEventListener('click', openSourceMenu)
       $('vt-speed')?.addEventListener('click', openSpeedMenu)
       $('vt-stats')?.addEventListener('click', toggleStatsMenu)
       $('vt-shot')?.addEventListener('click', takeScreenshot)
@@ -3196,6 +3235,9 @@
       // itself cannot see because the video window takes the event.
       noteActivity: noteActivity,
       setPack: setPack,
+      // The renderer calls this when the source list or debrid's answer
+      // changes; the deck also re-syncs on every state tick.
+      syncSources: syncSourceButton,
       minimise: minimise,
       restore: restore,
       isMinimised: function () { return minimised },

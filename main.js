@@ -13374,10 +13374,15 @@ ipcMain.handle('video-debrid-pick', async (_, { magnets, titleKey } = {}) => {
     // Candidates arrive best-picture-first, so the first held one is the best
     // held one.
     const held = checks.filter(c => c.cached)
+    // Which of the candidates RealDebrid is holding, not just the winner. The
+    // answer is already computed above and was being thrown away, so the
+    // sources list could never say which rows would start instantly — the one
+    // fact that makes choosing between them possible.
+    const heldMagnets = held.map(c => c.magnet)
     if (!held.length) {
       const why = checks.map(c => c.error).filter(Boolean)[0]
       if (why) { try { console.warn('[papa][debrid] no candidate held:', why) } catch (_) {} }
-      return { ok: true, magnet: null, noneHeld: true }
+      return { ok: true, magnet: null, held: [], noneHeld: true }
     }
     for (const c of held) {
       if (outOfTime()) break
@@ -13385,14 +13390,14 @@ ipcMain.handle('video-debrid-pick', async (_, { magnets, titleKey } = {}) => {
         const url = await _debridPlayable(c.magnet)
         if (url) {
           if (titleKey) _instantMark(titleKey, 'debrid')
-          return { ok: true, magnet: c.magnet }
+          return { ok: true, magnet: c.magnet, held: heldMagnets }
         }
       } catch (e) {
         if (/HTTP_429/.test((e && e.code) || '')) _debridBackOff()
         try { console.warn('[papa][debrid] held but unplayable:', (e && e.message) || e) } catch (_) {}
       }
     }
-    return { ok: true, magnet: null }
+    return { ok: true, magnet: null, held: heldMagnets }
   } catch (e) {
     return { ok: true, magnet: null, error: (e && e.message) || String(e) }
   }
