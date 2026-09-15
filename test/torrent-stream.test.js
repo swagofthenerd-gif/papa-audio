@@ -1604,3 +1604,24 @@ test('pickInfo says whether the chosen file names the wanted episode', () => {
   assert.strictEqual(matchesWantedEpisode(files[i].name, { episode: 7 }), false, 'and the caller can tell it did not match')
   assert.strictEqual(pickVideoFile(files, { episode: 1 }), 0)
 })
+
+// V034: double episodes and specials never silently resolve to a different episode.
+test('a double-episode file matches either of its episodes and nothing outside them', () => {
+  const { matchesWantedEpisode, pickVideoFile } = require('../torrent-stream')
+  for (const name of ['Show.S01E01E02.mkv', 'Show.S01E01-E02.mkv', 'Show S01E01-02 1080p.mkv']) {
+    assert.strictEqual(matchesWantedEpisode(name, { season: 1, episode: 1 }), true, name + ' ep1')
+    assert.strictEqual(matchesWantedEpisode(name, { season: 1, episode: 2 }), true, name + ' ep2')
+    assert.strictEqual(matchesWantedEpisode(name, { season: 1, episode: 3 }), false, name + ' ep3')
+  }
+  const files = [{ name: 'Show.S01E01E02.mkv', length: 9 }, { name: 'Show.S01E03.mkv', length: 5 }]
+  assert.strictEqual(pickVideoFile(files, { season: 1, episode: 2 }), 0, 'episode 2 lives inside the double')
+  assert.strictEqual(pickVideoFile(files, { season: 1, episode: 3 }), 1)
+})
+
+test('a special never poses as an ordinary episode', () => {
+  const { matchesWantedEpisode, episodeNumberOf } = require('../torrent-stream')
+  assert.strictEqual(matchesWantedEpisode('Show.S00E01.Special.mkv', { season: 1, episode: 1 }), false, 'season 0 is not season 1')
+  assert.strictEqual(episodeNumberOf('Show - SP1 [1080p].mkv'), null, '"SP1" is a special tag, not episode 1')
+  assert.strictEqual(episodeNumberOf('Show - Special 2 [1080p].mkv'), null)
+  assert.strictEqual(episodeNumberOf('Show - 02 [1080p].mkv'), 2)
+})

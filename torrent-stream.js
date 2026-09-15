@@ -133,13 +133,21 @@ function matchesWantedEpisode(name, want) {
   if (!Number.isFinite(n) || n < 0) return false
   const text = String(name || '').replace(NON_EPISODE_TOKEN, ' ')
   const s = Number(want && want.season)
-  // SxxEyy is unambiguous, so when a season is known it has to agree.
-  const sxe = /s(\d{1,3})[\s._-]?e(\d{1,4})/i.exec(text)
+  // SxxEyy is unambiguous, so when a season is known it has to agree. A
+  // double episode (S01E01E02, S01E01-E02, S01E01-02) covers a RANGE: asking
+  // for either episode must find it, and a request outside the range must
+  // not (V034) — a file called E03E04 is not episode 5.
+  const sxe = /s(\d{1,3})[\s._-]?e(\d{1,4})(?:[\s._-]?(?:e|-e?)(\d{1,4}))?/i.exec(text)
   if (sxe) {
-    if (Number(sxe[2]) !== n) return false
+    const lo = Number(sxe[2]), hi = sxe[3] != null ? Number(sxe[3]) : lo
+    if (!(n >= Math.min(lo, hi) && n <= Math.max(lo, hi))) return false
     if (Number.isFinite(s) && s > 0 && Number(sxe[1]) !== s) return false
     return true
   }
+  // A special (S00Exx) is never what "episode n of season s" means unless
+  // season 0 was asked for; the SxxEyy branch above already enforces that.
+  // "Special", "SP", "OVA" files are stripped by NON_EPISODE_TOKEN below so
+  // their own digit cannot pose as an episode number.
   // Otherwise a bare episode number, bounded on both sides so 9 never matches
   // inside 109, and a year like 2009 is never mistaken for one.
   return new RegExp(`(?:^|[\\s._\\-\\[(])(?:e|ep|episode\\s*)?0*${n}(?:v\\d)?(?:$|[\\s._\\-\\])])`, 'i').test(text)
@@ -149,7 +157,7 @@ function matchesWantedEpisode(name, want) {
 // their own -- "NCED1", "OP2", "Ver.2" -- that reads exactly like an episode
 // number to the regex below. Stripped before parsing so a batch pack's
 // ending-theme clip is never mistaken for the next episode.
-const NON_EPISODE_TOKEN = /\b(?:nc)?(?:op|ed)\d*\b|\bova\d*\b|\bver(?:sion)?\.?\s*\d+\b/gi
+const NON_EPISODE_TOKEN = /\b(?:nc)?(?:op|ed)\d*\b|\bova\d*\b|\bsp(?:ecial)?s?\s*\d*\b|\bver(?:sion)?\.?\s*\d+\b/gi
 
 // The episode number a filename states, or null.
 function episodeNumberOf(name) {
