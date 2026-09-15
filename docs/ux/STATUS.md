@@ -70,6 +70,13 @@ Each F item re-checked on this branch, not assumed from the `main` review.
 | 2026-09-15 | 079 | `bfb2d44` | src/dl-capacity.js: space + writability checked before enqueue; Choose folder / Download anyway |
 | 2026-09-15 | 136 | `20689d5` | src/redact.js: logger scrubs at write; bundle scrubs log tail, crash log, diagnostics; broader key rule |
 | 2026-09-15 | 106 | `037e34b` | assistant Stop releases at once, aborts provider request (agent-cancel), names in-flight tool |
+| 2026-09-15 | 110 | `ece3972` | src/agent-disclosure.js beside the provider choice; main scrubs local paths + secrets from cloud-bound messages |
+| 2026-09-15 | 137 | `54971c2` | src/slsk-share.js: library / downloads only / nothing; Settings group; wizard copy corrected |
+| 2026-09-15 | V012 | `3d58e3b` | detail hero reads Play or Resume from <time>; Start over erases nothing until playback starts |
+| 2026-09-15 | V097 | `bf9c785` | ■ reads "Stop and close"; help says Esc backs out one level and never stops |
+| 2026-09-15 | 096 | `578f3e5` | src/gain-policy.js: summed gain + clipping verdict under Volume boost |
+| 2026-09-15 | 034 | `4f045cd` | refused Play reverts + says why; silent Play reported (not asserted) after 6 s |
+| 2026-09-15 | 038 | `273a9d8` | device loss → respawn resumes paused (policy setting); Keep playing one click |
 
 ## F list: all resolved (134 deferred to runtime). Now working through P0 E-items
 

@@ -22,7 +22,7 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | A014 | Pending review/implementation |
 | A015 | Pending review/implementation |
 | A016 | Pending review/implementation |
-| A017 | Partial — wizard states that a folder is read in place, nothing copied/moved/shared (with A001) |
+| A017 | Fixed — wizard states read-in-place and that sharing is a separate setting (with A137) |
 | A018 | Pending review/implementation |
 | A019 | Pending review/implementation |
 | A020 | Pending review/implementation |
@@ -39,11 +39,11 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | A031 | Pending review/implementation |
 | A032 | Pending review/implementation |
 | A033 | Pending review/implementation |
-| A034 | Pending review/implementation |
+| A034 | Fixed `4f045cd` — refused/silent Play reported |
 | A035 | Pending review/implementation |
 | A036 | Pending review/implementation |
 | A037 | Pending review/implementation |
-| A038 | Pending review/implementation |
+| A038 | Fixed `273a9d8` — device loss pauses by default |
 | A039 | Pending review/implementation |
 | A040 | Fixed — prevAction rule + help text |
 | A041 | Pending review/implementation |
@@ -101,7 +101,7 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | A093 | Fixed `1da705b` — codec-checked LOSSLESS, full-chain BIT-PERFECT; see STATUS.md |
 | A094 | Pending review/implementation |
 | A095 | Pending review/implementation |
-| A096 | Pending review/implementation |
+| A096 | Fixed `578f3e5` — gain policy + clipping risk |
 | A097 | Pending review/implementation |
 | A098 | Pending review/implementation |
 | A099 | Pending review/implementation |
@@ -115,7 +115,7 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | A107 | Pending review/implementation |
 | A108 | Pending review/implementation |
 | A109 | Pending review/implementation |
-| A110 | Pending review/implementation |
+| A110 | Fixed `ece3972` — disclosure + cloud scrubbing |
 | A111 | Pending review/implementation |
 | A112 | Pending review/implementation |
 | A113 | Pending review/implementation |
@@ -135,14 +135,14 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | A127 | Pending review/implementation |
 | A128 | Pending review/implementation |
 | A129 | Pending review/implementation |
-| A130 | Pending review/implementation |
+| A130 | Partial — credentials scrubbed from bundles (A136); viewing history not yet excludable |
 | A131 | Pending review/implementation |
 | A132 | Pending review/implementation |
 | A133 | Pending review/implementation |
 | A134 | Deferred — needs the app running (see STATUS.md) |
 | A135 | Pending review/implementation |
 | A136 | Fixed `20689d5` — redact at write and export |
-| A137 | Pending review/implementation |
+| A137 | Fixed `54971c2` — sharing is a stated setting |
 | A138 | Pending review/implementation |
 | A139 | Pending review/implementation |
 | A140 | Pending review/implementation |
@@ -177,7 +177,7 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | V009 | Pending review/implementation |
 | V010 | Pending review/implementation |
 | V011 | Pending review/implementation |
-| V012 | Pending review/implementation |
+| V012 | Fixed `3d58e3b` — Play / Resume from <time> / Start over |
 | V013 | Pending review/implementation |
 | V014 | Pending review/implementation |
 | V015 | Pending review/implementation |
@@ -262,7 +262,7 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | V094 | Pending review/implementation |
 | V095 | Pending review/implementation |
 | V096 | Pending review/implementation |
-| V097 | Pending review/implementation |
+| V097 | Fixed `bf9c785` — Stop and close vs Back; Esc never stops |
 | V098 | Pending review/implementation |
 | V099 | Pending review/implementation |
 | V100 | Pending review/implementation |
@@ -295,7 +295,7 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | V127 | Pending review/implementation |
 | V128 | Pending review/implementation |
 | V129 | Pending review/implementation |
-| V130 | Pending review/implementation |
+| V130 | Fixed via A136 — bundles scrubbed of tokens/paths (`20689d5`) |
 | V131 | Pending review/implementation |
 | V132 | Pending review/implementation |
 | V133 | Pending review/implementation |
