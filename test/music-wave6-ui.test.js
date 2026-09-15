@@ -121,6 +121,14 @@ test('assistant Stop releases immediately, aborts the provider request, and name
   }
 })
 
+// Roadmap 019: the Library's empty state says why.
+test('the Library empty state goes through the tested cause table and offers Add a music folder', () => {
+  assert.ok(renderer.includes('function _libEmptyHtml('))
+  assert.ok(renderer.includes('tools.libraryEmptyState({ folders: state.musicFolders, unavailableRoots: state._unavailableRoots'))
+  assert.ok(renderer.includes('id="lib-empty-add-folder">Add a music folder</button>'))
+  assert.ok(!renderer.includes("'Your library is empty. Add a music folder to get started.')}</p>"), 'the one-size message is gone from the grid')
+})
+
 // Roadmap 021: the first download of a session says where it goes and how much room there is.
 test('the first successful enqueue names the destination and free space with a Change folder action', () => {
   const M = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'main.js'), 'utf8')

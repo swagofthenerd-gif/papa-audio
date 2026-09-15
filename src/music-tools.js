@@ -182,6 +182,26 @@
     return { fresh: fresh, dupes: dupes }
   }
 
+  // The Library's empty state, by cause (roadmap 019). "Your library is
+  // empty" was the answer to four different situations, three of which had
+  // nothing to do with an empty library. `facts`: { folders, unavailableRoots,
+  // albumCount, filtered }. Returns { kind, title, text, action } where
+  // action is 'add-folder' | 'clear-filters' | 'none'.
+  function libraryEmptyState(facts) {
+    facts = facts || {}
+    var folders = (facts.folders || []).filter(Boolean)
+    var down = (facts.unavailableRoots || []).filter(Boolean)
+    if (facts.filtered) return { kind: 'filtered', title: 'No albums match', text: 'Try clearing a filter or two.', action: 'clear-filters' }
+    if (!folders.length) return { kind: 'no-folders', title: 'No music folder yet', text: 'Add the folder where your music lives. It is read in place — nothing is copied or moved.', action: 'add-folder' }
+    if (down.length && down.length >= folders.length) {
+      return { kind: 'disconnected', title: (down.length === 1 ? down[0] : down.length + ' music folders') + ' is not connected',
+        text: 'Plug the drive back in or mount the share and the library comes back on its own. Nothing has been removed.', action: 'none' }
+    }
+    if (down.length) return { kind: 'partly-disconnected', title: 'Part of your library is not connected', text: down.join(', ') + ' cannot be reached right now. Albums on it are kept and marked.', action: 'none' }
+    return { kind: 'no-music', title: 'No music found in ' + (folders.length === 1 ? folders[0] : 'your folders'),
+      text: 'Supported files: FLAC, WAV, ALAC/M4A, MP3, AAC, OGG, Opus, AIFF, APE, WavPack. Check the folder, or add a different one.', action: 'add-folder' }
+  }
+
   function clearPlayedQueue(queue, queueIndex) {
     queue = queue || []
     var idx = Number(queueIndex)
@@ -1795,6 +1815,7 @@
     PREV_RESTART_AFTER_SECONDS: PREV_RESTART_AFTER_SECONDS,
     insertPlayNext: insertPlayNext,
     playlistAddPlan: playlistAddPlan,
+    libraryEmptyState: libraryEmptyState,
     volumeAria: volumeAria,
     sliderKeyRatio: sliderKeyRatio,
     topAlbumsByPlays: topAlbumsByPlays,

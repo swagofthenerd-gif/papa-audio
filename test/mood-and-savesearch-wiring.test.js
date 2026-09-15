@@ -43,7 +43,9 @@ test('R6: the Library filters and ranks by mood, counts it as a filter, clears i
   assert.match(lib, /return albums\.sort\(function \(a, b\) \{ return mr\[a\.id\] - mr\[b\.id\] \}\)/)
   assert.match(lib, /if \(state\.libMood\) activeFilterCount\+\+/)
   assert.match(lib, /id="clear-mood-filter"/)
-  assert.match(lib, /Nothing feels ' \+ _moodDef\.emoji/)
+  // Roadmap 019 moved the empty state into _libEmptyHtml; the mood wording lives there.
+  assert.match(lib, /_libEmptyHtml\(activeFilterCount\)/)
+  assert.match(fn('_libEmptyHtml'), /Nothing feels ' \+ _moodDef\.emoji/)
   assert.equal((lib.match(/state\.libMood = null/g) || []).length, 2, 'both reset buttons clear it')
   assert.match(CODE, /getElementById\('clear-mood-filter'\)\?\.addEventListener\('click', function\(\) \{ state\.libMood = null; renderLibrary\(\) \}\)/, 'and the chip ✕ clears it')
 })

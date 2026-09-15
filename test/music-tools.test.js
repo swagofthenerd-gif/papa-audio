@@ -48,6 +48,18 @@ test('the preset menu offers end-of-track and the five minute presets', () => {
   assert.ok(T.SLEEP_PRESETS.some(p => p.endOfTrack), 'no end-of-track option')
 })
 
+// ── Library empty state by cause (roadmap 019) ───────────────────────────────
+test('the empty Library names its cause and the action that fits', () => {
+  assert.equal(T.libraryEmptyState({ folders: [] }).kind, 'no-folders')
+  assert.equal(T.libraryEmptyState({ folders: [] }).action, 'add-folder')
+  const down = T.libraryEmptyState({ folders: ['/Volumes/X'], unavailableRoots: ['/Volumes/X'] })
+  assert.equal(down.kind, 'disconnected'); assert.match(down.title, /\/Volumes\/X is not connected/); assert.match(down.text, /Nothing has been removed/)
+  assert.equal(T.libraryEmptyState({ folders: ['/a', '/b'], unavailableRoots: ['/b'] }).kind, 'partly-disconnected')
+  const none = T.libraryEmptyState({ folders: ['/m'], albumCount: 0 })
+  assert.equal(none.kind, 'no-music'); assert.match(none.text, /FLAC, WAV/)
+  assert.equal(T.libraryEmptyState({ folders: ['/m'], albumCount: 9, filtered: true }).kind, 'filtered')
+})
+
 // ── Playlist add plan (roadmap 051) ──────────────────────────────────────────
 test('adding to a playlist splits fresh from already-present, and never drops either', () => {
   const pl = [{ filePath: '/a' }, { filePath: '/b' }]

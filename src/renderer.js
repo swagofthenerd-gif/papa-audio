@@ -1598,6 +1598,7 @@ async function fullScan() {
   setTimeout(fetchMissingArtwork, 1200)
   syncLibraryExt()
   showSnackbar('Library scan complete: ' + _plural(state.library.length, 'album') + ' found')
+  state._unavailableRoots = Array.isArray(data.unavailableRoots) ? data.unavailableRoots : []
   _reportUnavailableRoots(data.unavailableRoots)
 }
 
@@ -12141,6 +12142,22 @@ function _libSearchNoteHtml() {
   return html
 }
 
+// Roadmap 019: the empty Library says WHY it is empty — no folder, a folder
+// that is not connected, a folder with no supported files, or filters — and
+// offers the one action that fits. The mood view keeps its own wording.
+function _libEmptyHtml(activeFilterCount) {
+  const tools = (typeof window !== 'undefined' && window.PapaMusicTools) || null
+  const svg = '<svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>'
+  if (_moodDef) {
+    return '<div class="empty-wrap">' + svg + '<h2>Nothing feels ' + _moodDef.emoji + ' ' + esc(_moodDef.name) + ' yet</h2><p>' + _libMoodEmptyHint() + '</p></div>'
+  }
+  const e = tools ? tools.libraryEmptyState({ folders: state.musicFolders, unavailableRoots: state._unavailableRoots, albumCount: state.library.length, filtered: activeFilterCount > 0 })
+    : { title: activeFilterCount ? 'No albums match' : 'Your library is empty', text: activeFilterCount ? 'Try clearing a filter or two.' : 'Add a music folder to get started.', action: activeFilterCount ? 'clear-filters' : 'add-folder' }
+  const btn = e.action === 'clear-filters' ? '<button class="lib-reset-btn" id="lib-empty-reset">Clear all filters</button>'
+    : e.action === 'add-folder' ? '<button class="lib-reset-btn" id="lib-empty-add-folder">Add a music folder</button>' : ''
+  return '<div class="empty-wrap" data-empty="' + esc(e.kind || '') + '">' + svg + '<h2>' + esc(e.title) + '</h2><p>' + esc(e.text) + '</p>' + btn + '</div>'
+}
+
 function renderLibrary() {
   const getSorted = () => {
     // Saved YT albums are merged as pseudo-cards at render time — they never
@@ -12511,7 +12528,7 @@ function renderLibrary() {
           '<button class="lib-reset-btn" id="lib-delete-preset" title="Delete the selected preset" aria-label="Delete the selected preset" style="display:none;margin-left:4px">✕</button>' : ''}
       </div>
     </div>
-    ${state.libView === 'folders' ? buildFolderTree() : (sortedAlbums.length ? _libGridInitial() : `<div class="empty-wrap"><svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg><h2>${_moodDef ? 'Nothing feels ' + _moodDef.emoji + ' ' + esc(_moodDef.name) + ' yet' : 'No albums match'}</h2><p>${_moodDef ? _libMoodEmptyHint() : (activeFilterCount ? 'Try clearing a filter or two.' : 'Your library is empty. Add a music folder to get started.')}</p>${activeFilterCount ? '<button class="lib-reset-btn" id="lib-empty-reset">Clear all filters</button>' : ''}</div>`)}
+    ${state.libView === 'folders' ? buildFolderTree() : (sortedAlbums.length ? _libGridInitial() : _libEmptyHtml(activeFilterCount))}
     ${summaryHTML}
   </div>`)
 
@@ -12615,6 +12632,7 @@ function renderLibrary() {
   document.getElementById('lib-decade-filter')?.addEventListener('change', function() { state.libDecade = this.value; renderLibrary() })
   document.getElementById('lib-surround-filter')?.addEventListener('change', function() { state.libSurround = this.value; renderLibrary() })
   document.getElementById('lib-empty-reset')?.addEventListener('click', function() {
+  document.getElementById('lib-empty-add-folder')?.addEventListener('click', () => document.getElementById('add-folder-btn')?.click())
     state.libYear = ''; state.libFormat = ''; state.libDecade = ''; state.libSurround = ''
     state.libGenre = null; state.libMood = null; state.libFolder = null; state.libLikedOnly = false; state.libSearch = ''
     state.libYearMin = ''; state.libYearMax = ''; state.libFormatClass = ''
