@@ -3985,6 +3985,8 @@ function _offerResume(state) {
   const store = _vStore()
   if (!store || !_watch.key || _watch.resumed) return
   _watch.resumed = true
+  // Start over was chosen on the detail page (V012): no resume offer.
+  if (_watch.startFromZero) { _watch.startFromZero = false; return }
   // An episode advance plays from the start; the saved position for this key is
   // from an earlier viewing and the "Resume from…" offer would be stale/wrong.
   if (_watch.autoAdvanced) return
@@ -8778,8 +8780,20 @@ function _bindDetailMotion(d) {
   }
 }
 
+// V012: what the primary button will do for this title, from the saved
+// record and the shared rule. Movies only carry a single record; a series'
+// button plays its next episode, which the episode list already labels.
+function _detPrimary(d) {
+  const R = window.PapaWatchRules
+  if (!R || !d || d.type !== 'movie') return { kind: 'play', label: 'Play', startOver: false }
+  let saved = null
+  try { const st = _vStore(); saved = st ? st.get(_watchKey('movie', d.id)) : null } catch (_) { saved = null }
+  const fmt = (_player && _player.fmtTime) ? _player.fmtTime : (s) => fmtDur(s)
+  return R.primaryAction(saved, fmt)
+}
+
 function _bindDetailActions(d) {
-  document.getElementById('vdet-play')?.addEventListener('click', function () {
+  const startPlay = function () {
     if (_videoStreams && _videoStreams.length) {
       _videoPlayResult(_pickForPlay(_videoStreams))
       return
@@ -8787,6 +8801,15 @@ function _bindDetailActions(d) {
     _autoPlayTicket = _videoDetailTicket
     showToast('Finding sources…')
     document.getElementById('video-sources')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }
+  document.getElementById('vdet-play')?.addEventListener('click', startPlay)
+  // Start over (V012): the saved position is NOT erased here — playback
+  // starts, the resume offer is suppressed, and the position is replaced by
+  // the first progress tick like any other viewing. Closing before then
+  // leaves the old position intact.
+  document.getElementById('vdet-startover')?.addEventListener('click', function () {
+    _watch.startFromZero = true
+    startPlay()
   })
   document.getElementById('vdet-download')?.addEventListener('click', function () {
     _downloadCurrentPick()
@@ -8904,7 +8927,10 @@ function _videoDetailShell(d) {
       // saving meant finding this title's poster somewhere else. The two
       // things a person most often came here to do belong on the hero.
       '<div class="vhero-actions" style="margin-top:12px">' +
-        '<button class="vbtn vbtn-primary" id="vdet-play">' + _VICON.play + 'Play</button>' +
+        // V012: the button says what it will do. A partial viewing reads
+        // "Resume from 1:02:14" with a Start over beside it; otherwise Play.
+        '<button class="vbtn vbtn-primary" id="vdet-play">' + _VICON.play + esc(_detPrimary(d).label) + '</button>' +
+        (_detPrimary(d).startOver ? '<button class="vbtn" id="vdet-startover" title="Play from the beginning; your saved position is replaced once playback starts">Start over</button>' : '') +
         '<button class="vbtn" id="vdet-list">' + (_detInList(d) ? _VICON.check + 'In My List' : _VICON.plus + 'My List') + '</button>' +
         '<span class="vbtn-quality" id="vdet-quality-wrap" hidden>' +
           '<label class="sr-only" for="vdet-quality">Quality to play</label>' +

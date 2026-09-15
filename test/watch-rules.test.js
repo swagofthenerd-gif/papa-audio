@@ -40,3 +40,12 @@ test('progress bars and resume offers exist only for partial titles', () => {
   assert.equal(R.resumeOffer(10, 3600), null)
   assert.equal(R.resumeOffer(3550, 3600), null)
 })
+
+// V012: the primary button says what it will do.
+test('primaryAction reads Play or Resume from <time>, and offers Start over only when resuming', () => {
+  const mmss = s => Math.floor(s / 60) + ':' + String(Math.floor(s % 60)).padStart(2, '0')
+  assert.deepEqual(R.primaryAction(null, mmss), { kind: 'play', label: 'Play', startOver: false })
+  assert.deepEqual(R.primaryAction({ position: 1800, duration: 3600 }, mmss), { kind: 'resume', label: 'Resume from 30:00', startOver: true, position: 1800 })
+  assert.equal(R.primaryAction({ position: 10, duration: 3600 }, mmss).kind, 'play', 'fresh plays')
+  assert.equal(R.primaryAction({ position: 3500, duration: 3600, watched: true }, mmss).kind, 'play', 'watched plays from the start')
+})

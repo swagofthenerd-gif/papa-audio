@@ -991,3 +991,13 @@ test('the card preview still routes through the shared factory (behavior intact)
   const start = extract('_startHoverTrailer')
   assert.match(start, /_makeTrailerVideo\(res\.url, 'vcard-preview'\)/)
 })
+
+// V012: the detail page's primary button names its real behaviour.
+test('the detail hero reads Play or Resume from <time>, with Start over only when resuming', () => {
+  const R = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
+  assert.ok(R.includes("id=\"vdet-play\">' + _VICON.play + esc(_detPrimary(d).label) + '</button>'"))
+  assert.ok(R.includes("_detPrimary(d).startOver ? '<button class=\"vbtn\" id=\"vdet-startover\""))
+  assert.ok(R.includes('return R.primaryAction(saved, fmt)'), 'through the shared watch rule')
+  assert.ok(R.includes('_watch.startFromZero = true'), 'Start over suppresses the resume offer rather than deleting progress')
+  assert.ok(R.includes("if (_watch.startFromZero) { _watch.startFromZero = false; return }"))
+})

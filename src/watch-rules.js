@@ -53,5 +53,17 @@
     return { position: _n(position), left: Math.max(0, _n(duration) - _n(position)) }
   }
 
-  return { STARTED_AT, WATCHED_AT, MIN_SECONDS, STARTED_CAP_SECONDS, ratio, status, isWatched, isPartial, progressPct, resumeOffer }
+  // The primary button on a detail page (V012): its label names what it will
+  // do. `saved` is the stored record ({ position, duration, watched }) or
+  // null; `fmt` formats seconds. Resume is offered only when the shared rule
+  // says the title is partial; a watched title plays from the start again.
+  function primaryAction(saved, fmt) {
+    const f = typeof fmt === 'function' ? fmt : (s) => Math.round(s) + 's'
+    if (!saved || saved.watched) return { kind: 'play', label: 'Play', startOver: false }
+    const offer = resumeOffer(saved.position, saved.duration)
+    if (!offer) return { kind: 'play', label: 'Play', startOver: false }
+    return { kind: 'resume', label: 'Resume from ' + f(offer.position), startOver: true, position: offer.position }
+  }
+
+  return { STARTED_AT, WATCHED_AT, MIN_SECONDS, STARTED_CAP_SECONDS, primaryAction, ratio, status, isWatched, isPartial, progressPct, resumeOffer }
 })
