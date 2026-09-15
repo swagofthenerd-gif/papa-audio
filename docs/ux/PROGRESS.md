@@ -49,12 +49,12 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | A041 | Pending review/implementation |
 | A042 | Pending review/implementation |
 | A043 | Pending review/implementation |
-| A044 | Pending review/implementation |
+| A044 | Fixed — time left · total |
 | A045 | Fixed — insertPlayNext single rule |
 | A046 | Pending review/implementation |
 | A047 | Fixed — next pick shown; original order kept |
 | A048 | Fixed `6ba664c` — Locate/Remove for missing queue files |
-| A049 | Pending review/implementation |
+| A049 | Fixed `e8d95f1` |
 | A050 | Fixed `8a69303` |
 | A051 | Fixed `92584be` — Keep both offered |
 | A052 | Pending review/implementation |
@@ -85,7 +85,7 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | A077 | Pending review/implementation |
 | A078 | Pending review/implementation |
 | A079 | Fixed `bfb2d44` — capacity check before enqueue |
-| A080 | Pending review/implementation |
+| A080 | Fixed — outcomes stated on every action |
 | A081 | Fixed — one notice per album, click to play |
 | A082 | Pending review/implementation |
 | A083 | Fixed `71abddb` — relink carries every store and the cache |

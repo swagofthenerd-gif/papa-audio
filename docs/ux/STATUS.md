@@ -103,6 +103,9 @@ Each F item re-checked on this branch, not assumed from the `main` review.
 | 2026-09-15 | 130 | `36366fc` | ▶ on playing rows; outline + ✓ on selected rows |
 | 2026-09-15 | 050 | `8a69303` | bulk Remove from playlist with count + undo; × undoable |
 | 2026-09-15 | 047 | see log | shuffle next-pick line; order kept |
+| 2026-09-15 | 044 | see log | queue header: time left · total |
+| 2026-09-15 | 049 | `e8d95f1` | saved queue keeps index + position; resumes there; labels explain session vs collection |
+| 2026-09-15 | 080 | see log | Cancel/Remove/Retry tooltips state outcomes |
 
 ## F list: all resolved (134 deferred to runtime). Now working through P0 E-items
 
