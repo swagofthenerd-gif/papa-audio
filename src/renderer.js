@@ -29984,11 +29984,27 @@ function setupListeners() {
     for (const d of (list || [])) state.ytDownloads.set(d.id, d)
   }).catch(() => {})
 
+  // Roadmap V109: one active session takes the media keys. While a video
+  // session is open (theatre or mini card) the keys drive the film; otherwise
+  // the album. Never both, never the wrong one.
+  const _mediaKeyToVideo = key => {
+    if (!_player || !_player.isOpen || !_player.isOpen()) return false
+    const st = _videoLastState || {}
+    if (key === 'play-pause') _player.togglePlay()
+    else if (key === 'play')  { if (st.paused !== false) _player.togglePlay() }
+    else if (key === 'pause') { if (st.paused === false) _player.togglePlay() }
+    else if (key === 'next')  { if (typeof _playNextEpisode === 'function') _playNextEpisode() }
+    else if (key === 'prev')  { window.api.videoControl?.('seek', { seconds: 0, mode: 'absolute' }).catch(function () {}) }
+    else if (key === 'stop')  _player.close()
+    else return false
+    return true
+  }
   window.api.on('media-key', key => {
     // main sends six commands and this understood three. A desktop applet's
     // dedicated Play, Pause and Stop buttons were all inert -- only the
     // combined toggle worked -- and a headset's play button usually maps to
     // Play, not PlayPause.
+    if (_mediaKeyToVideo(key)) return
     if (key === 'play-pause') togglePlay()
     else if (key === 'next')  playNext()
     else if (key === 'prev')  playPrev()
@@ -30002,9 +30018,9 @@ function setupListeners() {
   // Every one of these was sent by main and had no listener anywhere — several
   // were not even in preload's allowlist, so nothing could have listened. The
   // tray's Play/Pause/Next/Previous did nothing at all.
-  window.api.on('media-playpause', () => togglePlay())
-  window.api.on('media-next',      () => playNext())
-  window.api.on('media-previous',  () => playPrev())
+  window.api.on('media-playpause', () => { if (!_mediaKeyToVideo('play-pause')) togglePlay() })
+  window.api.on('media-next',      () => { if (!_mediaKeyToVideo('next')) playNext() })
+  window.api.on('media-previous',  () => { if (!_mediaKeyToVideo('prev')) playPrev() })
 
   // MPRIS sends an absolute position or a relative offset, in seconds.
   window.api.on('media-seek', d => {

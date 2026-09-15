@@ -1034,3 +1034,12 @@ test('position is flushed on exit and pagehide, throttled while playing, and che
   assert.ok(R.includes('const justPaused = !!st.paused && !(_videoLastPaused === true)'), 'a pause is a checkpoint')
   assert.ok(R.includes('if (!justPaused && now - _watch.savedAt < 5000) return'))
 })
+
+// V109: media keys go to the one active session.
+test('media keys drive the film while a video session is open, the album otherwise', () => {
+  const R = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
+  assert.ok(R.includes('const _mediaKeyToVideo = key => {'))
+  assert.ok(R.includes("if (!_player || !_player.isOpen || !_player.isOpen()) return false"))
+  assert.ok(R.includes("if (_mediaKeyToVideo(key)) return\n    if (key === 'play-pause') togglePlay()"), 'the media-key handler tries video first')
+  assert.ok(R.includes("window.api.on('media-playpause', () => { if (!_mediaKeyToVideo('play-pause')) togglePlay() })"), 'so do the tray/MPRIS channels')
+})

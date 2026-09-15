@@ -2703,3 +2703,16 @@ for (const id of ['vt-seek', 'vmini-seek']) {
     assert.equal(sent.filter(x => x.verb === 'seek').length, 0)
   })
 }
+
+// V109: a session exists from open to close, whichever surface shows it.
+test('isOpen is true from open() until close(), including while minimised', () => {
+  const { p } = harness()
+  assert.strictEqual(p.isOpen(), false)
+  p.open({ title: 'X' })
+  assert.strictEqual(p.isOpen(), true)
+  p._setState(stateAt(10))
+  p.minimise()
+  assert.strictEqual(p.isOpen(), true, 'the mini card is still the session')
+  p.close()
+  assert.strictEqual(p.isOpen(), false)
+})

@@ -2789,10 +2789,16 @@
       }
     }
 
+    // A video session exists from open() until close() finishes — whether the
+    // theatre is up or the mini card is. Media keys route on this (V109).
+    let sessionOpen = false
+    function isOpen() { return sessionOpen }
+
     function open(info) {
       resetSeekWork()
       cancelPictureTap()
       wheelRemainder = 0
+      sessionOpen = true
       media = info || {}
       const root = $('vtheatre')
       if (!root) return
@@ -3047,6 +3053,7 @@
       wheelRemainder = 0
       if (closing) return
       closing = true
+      sessionOpen = false
       stopSettle()
       if (miniFlight) { try { miniFlight.cancel() } catch (_) {} miniFlight = null }
       cancelAutoSkip()
@@ -3126,6 +3133,7 @@
       minimise: minimise,
       restore: restore,
       isMinimised: function () { return minimised },
+      isOpen: isOpen,
       clearPack: clearPack,
       setStageMessage: setStageMessage,
       reportBounds: reportBounds,
