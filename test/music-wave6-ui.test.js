@@ -121,6 +121,15 @@ test('assistant Stop releases immediately, aborts the provider request, and name
   }
 })
 
+// Roadmap 041: the sleep timer states itself, can be extended, and explains Stop after this track.
+test('the sleep panel shows remaining time in words, offers +15, and explains the stop-after interaction', () => {
+  const H = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'index.html'), 'utf8')
+  assert.ok(H.includes('id="sleep-status"') && H.includes('id="sleep-extend" data-extend="15"'))
+  assert.ok(renderer.includes("' min left — fades out and pauses at ' + hhmm"))
+  assert.ok(renderer.includes("Stop after this track is also on; whichever comes first wins."))
+  assert.ok(renderer.includes("setSleepTimer(Math.round((left + Number(btn.dataset.extend) * 60000) / 60000))"), 'extend adds to what is left')
+})
+
 // Roadmap 080: Cancel and Remove say what they keep and what they drop.
 test('download row actions explain partial data, list-only removal and retry', () => {
   assert.ok(renderer.includes('title="Cancel — stops this transfer and takes it off the queue. Nothing downloaded so far is kept'))

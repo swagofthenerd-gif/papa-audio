@@ -948,6 +948,21 @@ function updateSleepBtn() {
     : active
       ? `Sleep timer: ${remaining}m remaining`
       : 'Sleep timer'
+  // Roadmap 041: the panel states the timer in words, offers +15 minutes
+  // while a countdown runs, and says how it meets "Stop after this track".
+  var status = document.getElementById('sleep-status')
+  var extend = document.getElementById('sleep-extend')
+  if (status) {
+    var when = active ? new Date(state.sleepTimerEnd) : null
+    var hhmm = when ? when.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''
+    status.textContent = eot
+      ? 'Sleep: stops when this track ends.'
+      : active
+        ? 'Sleep: ' + remaining + ' min left — fades out and pauses at ' + hhmm + (state.stopAfterTrack ? '. Stop after this track is also on; whichever comes first wins.' : '.')
+        : ''
+    status.hidden = !(active || eot)
+  }
+  if (extend) extend.hidden = !active
   var label = btn.querySelector('.sleep-label')
   var text = eot ? 'EOT' : active ? remaining + 'm' : ''
   if (text) {
@@ -29294,6 +29309,15 @@ function setupListeners() {
   })
   document.querySelectorAll('.sleep-option').forEach(btn => {
     btn.addEventListener('click', () => {
+      // Roadmap 041: +15 keeps the timer, later — not a new one from scratch.
+      if (btn.dataset.extend) {
+        if (state.sleepTimerEnd) {
+          const left = Math.max(0, state.sleepTimerEnd - Date.now())
+          setSleepTimer(Math.round((left + Number(btn.dataset.extend) * 60000) / 60000))
+          showSnackbar('Sleep timer extended by ' + btn.dataset.extend + ' minutes', '', function () {}, 2500)
+        }
+        return
+      }
       setSleepTimer(parseInt(btn.dataset.mins))
       document.getElementById('sleep-panel')?.classList.remove('open')
     })

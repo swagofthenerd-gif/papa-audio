@@ -1161,13 +1161,17 @@
 
 <!-- Sleep timer panel -->
 <div class="sleep-panel" id="sleep-panel">
+  <!-- Roadmap 041: the timer's own state, extend, and how it meets Stop after
+       this track — filled by updateSleepBtn(). -->
+  <div class="sleep-status" id="sleep-status" hidden></div>
+  <button class="sleep-option sleep-extend" id="sleep-extend" data-extend="15" hidden>+15 minutes</button>
   <button class="sleep-option" data-mins="15">15 minutes</button>
   <button class="sleep-option" data-mins="30">30 minutes</button>
   <button class="sleep-option" data-mins="45">45 minutes</button>
   <button class="sleep-option" data-mins="60">1 hour</button>
   <button class="sleep-option" data-mins="90">1.5 hours</button>
   <button class="sleep-option" data-mins="120">2 hours</button>
-  <button class="sleep-option" data-mins="0">End of track</button>
+  <button class="sleep-option" data-mins="0" title="Stops when the track that is playing when the timer fires ends — the same as Stop after this track, armed for later">End of track</button>
   <button class="sleep-option sleep-cancel" data-mins="-1">Cancel timer</button>
   <div class="alarm-block" id="alarm-block">
     <div class="alarm-title">Wake me</div>
