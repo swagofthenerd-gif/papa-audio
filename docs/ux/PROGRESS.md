@@ -52,10 +52,10 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | A044 | Pending review/implementation |
 | A045 | Fixed — insertPlayNext single rule |
 | A046 | Pending review/implementation |
-| A047 | Pending review/implementation |
+| A047 | Fixed — next pick shown; original order kept |
 | A048 | Fixed `6ba664c` — Locate/Remove for missing queue files |
 | A049 | Pending review/implementation |
-| A050 | Pending review/implementation |
+| A050 | Fixed `8a69303` |
 | A051 | Fixed `92584be` — Keep both offered |
 | A052 | Pending review/implementation |
 | A053 | Pending review/implementation |
@@ -121,12 +121,12 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | A113 | Pending review/implementation |
 | A114 | Fixed `157ddc1` — ARIA sliders + keys |
 | A115 | Pending review/implementation |
-| A116 | Partial — seek value throttled to whole percents (with A114) |
+| A116 | Partial — toasts/snackbars are polite live regions, track changes announced once, seek value throttled; screen-reader pass pending |
 | A117 | Pending review/implementation |
 | A118 | Pending review/implementation |
 | A119 | Pending review/implementation |
 | A120 | Pending review/implementation |
-| A121 | Pending review/implementation |
+| A121 | Fixed `f1f37c3` |
 | A122 | Pending review/implementation |
 | A123 | Pending review/implementation |
 | A124 | Pending review/implementation |
@@ -135,7 +135,7 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | A127 | Pending review/implementation |
 | A128 | Fixed — tooltip, hover pause, reduced-motion ellipsis |
 | A129 | Pending review/implementation |
-| A130 | Partial — credentials scrubbed from bundles (A136); viewing history not yet excludable |
+| A130 | Fixed `36366fc` |
 | A131 | Pending review/implementation |
 | A132 | Pending review/implementation |
 | A133 | Pending review/implementation |

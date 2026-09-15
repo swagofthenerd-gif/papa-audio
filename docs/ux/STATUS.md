@@ -99,6 +99,10 @@ Each F item re-checked on this branch, not assumed from the `main` review.
 | 2026-09-15 | V034 | `90c2816` | double-episode ranges; SP/Special tags stripped |
 | 2026-09-15 | V088 | `5428081` | online subs scored against the playing release; source + sync verdict on the row |
 | 2026-09-15 | 128 | see log | ticker: tooltip, pause on hover, off under reduced motion |
+| 2026-09-15 | 121 | `f1f37c3` | unicode-bidi: plaintext on metadata elements |
+| 2026-09-15 | 130 | `36366fc` | ▶ on playing rows; outline + ✓ on selected rows |
+| 2026-09-15 | 050 | `8a69303` | bulk Remove from playlist with count + undo; × undoable |
+| 2026-09-15 | 047 | see log | shuffle next-pick line; order kept |
 
 ## F list: all resolved (134 deferred to runtime). Now working through P0 E-items
 
