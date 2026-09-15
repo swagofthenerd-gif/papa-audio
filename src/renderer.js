@@ -22149,6 +22149,20 @@ async function _executeTool(name, input) {
 }
 
 // ── Main conversation loop ──────────────────────────────────────────────────
+// Roadmap 111: a provider failure names itself and offers the one thing to
+// do about it; playback and every non-assistant control stay untouched.
+function _agentFailureText(res) {
+  const t = String((res && res.error) || 'The assistant could not answer.')
+  const a = res && res.action
+  return t + (a === 'settings' ? ' Open Settings to fix the key.' : a === 'connection' ? ' Check your connection.' : a === 'wait' ? ' Try again in a moment.' : '')
+}
+function _agentFailureAction(res) {
+  if (!res || res.cancelled) return
+  if (res.action === 'settings' || /API key/i.test(String(res.error || ''))) {
+    showSnackbar(String(res.error || 'The assistant needs a key'), 'Open Settings', function () { openSettings('mcs-claude-row') }, 8000)
+  }
+}
+
 // Roadmap 106: Stop releases the assistant IMMEDIATELY — it used to only set
 // a flag that the loop noticed after the in-flight request returned, up to
 // the provider timeout later. A generation token makes a stale continuation
@@ -22192,7 +22206,8 @@ async function handleChatMessage(userMsg) {
     if (stale()) return   // Stop already spoke; this continuation is dead
 
     if (firstRes.error) {
-      _updateChatMsg(thinkId, firstRes.error, 'agent')
+      _updateChatMsg(thinkId, _agentFailureText(firstRes), 'agent')
+      _agentFailureAction(firstRes)
 
     } else if (firstRes.ollamaFallback) {
       // Fallback path: Ollama tool-calling failed, use simple intent
@@ -22226,7 +22241,7 @@ async function handleChatMessage(userMsg) {
         if (stale()) return
         const res = iter === 0 ? pendingRes : await window.api.agentChat({ provider: chatState.provider, messages: loopMsgs, tasteProfile: chatState.tasteProfile })
         if (stale()) return
-        if (res.error) { _updateChatMsg(thinkId, res.error, 'agent'); break }
+        if (res.error) { _updateChatMsg(thinkId, _agentFailureText(res), 'agent'); _agentFailureAction(res); break }
 
         const { response } = res
         const textBlocks = (response.content || []).filter(b => b.type === 'text')

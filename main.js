@@ -6334,7 +6334,19 @@ ipcMain.handle('agent-chat', async (_, { provider, messages, tasteProfile }) => 
     return await _agentChatOnce({ provider, messages, tasteProfile })
   } catch (e) {
     if (mine.signal.aborted) return { error: 'Stopped.', cancelled: true }
-    throw e
+    // Roadmap 111: a provider failure comes back as a specific sentence and a
+    // next step, never a thrown "Error invoking remote method". The renderer
+    // adds the button for the action.
+    const F = require('./src/source-failure')
+    const name = provider === 'claude' ? 'Anthropic' : provider === 'openai' ? 'OpenAI' : 'Ollama'
+    const r = F.explain(name, e, {})
+    const msg = String((e && e.message) || e || '')
+    const quota = /\b429\b|quota|rate.?limit|insufficient_quota|credit/i.test(msg)
+    return {
+      error: quota ? name + ' says the quota or rate limit is reached — wait a moment, or check your plan.' : r.text,
+      failure: quota ? 'quota' : r.kind,
+      action: quota ? 'wait' : r.action,
+    }
   } finally {
     if (_agentAbort === mine) _agentAbort = null
   }

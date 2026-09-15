@@ -121,6 +121,15 @@ test('assistant Stop releases immediately, aborts the provider request, and name
   }
 })
 
+// Roadmap 111: provider failures are specific and recoverable.
+test('a provider failure comes back classified with a next step, and the renderer offers it', () => {
+  const M = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'main.js'), 'utf8')
+  const h = M.slice(M.indexOf("ipcMain.handle('agent-chat'"), M.indexOf('async function _agentChatOnce('))
+  assert.ok(h.includes("const r = F.explain(name, e, {})") && h.includes("failure: quota ? 'quota' : r.kind"))
+  assert.ok(!h.includes('throw e'), 'nothing reaches the renderer as an IPC throw')
+  assert.ok(renderer.includes('function _agentFailureText(res)') && renderer.includes("'Open Settings', function () { openSettings('mcs-claude-row') }"))
+})
+
 // Roadmap 109: taste memory is editable one insight at a time; rejected keys stay rejected.
 test('insights can be edited, deleted or excluded, and the profile builder honours both', () => {
   const M = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'main.js'), 'utf8')
