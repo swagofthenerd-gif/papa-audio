@@ -927,69 +927,6 @@ test('a stage with no size reports nothing rather than a degenerate rectangle', 
     assert.strictEqual(store['papa-vmini-pos'].corner, 'tl', 'the release snapped to top-left')
   })
 
-  // V101: pointercancel and lostpointercapture are aborts, not releases. They
-  // shared endDrag, whose tap and fling paths then ran on a gesture the
-  // browser had taken away.
-  test('a cancelled unmoved press on the picture never toggles playback', () => {
-    const { p, nodes, sent } = miniHarness()
-    p.open({ title: 'Dune' })
-    p._setState(stateAt(10, { paused: false }))
-    p.minimise()
-    const v = nodes['vmini-video']
-    const before = sent.length
-    v.fire('pointerdown', { button: 0, pointerId: 7, clientX: 900, clientY: 700, preventDefault () {} })
-    v.fire('pointercancel', { pointerId: 7 })
-    assert.deepStrictEqual(sent.slice(before).filter(s => /pause|play|toggle/i.test(s.verb)), [],
-      'a cancel is not a tap')
-    assert.ok(!nodes.vmini.classList.contains('vmini-dragging'), 'the drag state was released')
-    // And the gesture is fully over: a stray pointerup with the same id is ignored.
-    v.fire('pointerup', { pointerId: 7 })
-    assert.deepStrictEqual(sent.slice(before).filter(s => /pause|play|toggle/i.test(s.verb)), [])
-  })
-
-  test('a cancelled drag keeps the pre-drag corner and does not fling', () => {
-    const { p, nodes, store } = miniHarness()
-    p.open({ title: 'Dune' })
-    p._setState(stateAt(10))
-    p.minimise()
-    const h = nodes['vmini-handle']
-    h.fire('pointerdown', { button: 0, pointerId: 8, clientX: 900, clientY: 700, preventDefault () {} })
-    h.fire('pointermove', { pointerId: 8, clientX: -2000, clientY: -2000 })
-    h.fire('pointercancel', { pointerId: 8 })
-    assert.notStrictEqual((store['papa-vmini-pos'] || {}).corner, 'tl',
-      'the release-snap to top-left did not happen')
-    assert.ok(!nodes.vmini.classList.contains('vmini-dragging'))
-    // lostpointercapture is bound as the same abort on every drag surface.
-    for (const id of ['vmini-handle', 'vmini-bar', 'vmini-video']) {
-      assert.ok((nodes[id].handlers.lostpointercapture || []).length, id + ' handles lostpointercapture')
-      assert.ok((nodes[id].handlers.pointercancel || []).length, id + ' handles pointercancel')
-    }
-  })
-
-  test('a tap on the mini picture waits out the double-click window; a double-click restores without toggling (V102)', t => {
-    t.mock.timers.enable({ apis: ['setTimeout'] })
-    const { p, nodes, sent } = miniHarness()
-    p.open({ title: 'Dune' })
-    p._setState(stateAt(10, { paused: false }))
-    p.minimise()
-    const v = nodes['vmini-video']
-    v.fire('pointerdown', { button: 0, pointerId: 3, clientX: 900, clientY: 700, preventDefault () {} })
-    v.fire('pointerup', { pointerId: 3 })
-    assert.strictEqual(sent.filter(s => s.verb === 'pause').length, 0, 'not yet')
-    v.fire('pointerdown', { button: 0, pointerId: 4, clientX: 900, clientY: 700, preventDefault () {} })
-    v.fire('pointerup', { pointerId: 4 })
-    v.fire('dblclick')
-    t.mock.timers.tick(1000)
-    assert.strictEqual(p.isMinimised(), false, 'the double-click restored the theatre')
-    assert.strictEqual(sent.filter(s => s.verb === 'pause' || s.verb === 'play').length, 0, 'and playback was left alone')
-    // A lone tap still toggles, once the window has passed.
-    p.minimise()
-    v.fire('pointerdown', { button: 0, pointerId: 5, clientX: 900, clientY: 700, preventDefault () {} })
-    v.fire('pointerup', { pointerId: 5 })
-    t.mock.timers.tick(300)
-    assert.strictEqual(sent.filter(s => s.verb === 'pause').length, 1)
-  })
-
   test('a press on a bar control does not start a drag', () => {
     const { p, nodes } = miniHarness()
     p.open({ title: 'Dune' })
@@ -1704,95 +1641,6 @@ test('the wheel over the deck steps volume by five and flashes it on the picture
   // The OSD is the one text that CAN be drawn over the native window,
   // because mpv draws it itself.
   assert.deepStrictEqual(osd.map(o => o[0]), ['Volume 105%', 'Volume 100%'])
-})
-
-// V103: the wheel used to read only the sign of deltaY. A zero delta went up,
-// a sideways swipe changed volume, and a trackpad's stream of tiny deltas
-// produced one 5-point jump per event.
-test('a zero wheel delta changes nothing, and neither does a horizontal one', () => {
-  const { p, nodes, sent } = harness()
-  p._setState(stateAt(10, { volume: 100 }))
-  const before = sent.length
-  nodes['vt-deck'].fire('wheel', { deltaY: 0 })
-  nodes['vt-deck'].fire('wheel', { deltaY: 0, deltaX: 80 })
-  nodes['vt-deck'].fire('wheel', { deltaY: 3, deltaX: 80 })   // sideways-dominant
-  nodes['vt-deck'].fire('wheel', { deltaY: -3, deltaX: -80 })
-  assert.strictEqual(sent.length, before, 'no volume command was sent')
-})
-
-test('trackpad micro-deltas add up to one notch per 40px instead of one step per event', () => {
-  const { p, nodes, sent } = harness()
-  p._setState(stateAt(10, { volume: 100 }))
-  // Twelve events of 5px each = 60px = one notch and a 20px remainder.
-  for (let i = 0; i < 12; i++) nodes['vt-deck'].fire('wheel', { deltaY: -5 })
-  const vols = sent.filter(s => s.verb === 'volume').map(s => s.args.value)
-  assert.deepStrictEqual(vols, [105], 'exactly one step, not twelve')
-  // A direction flip discards the remainder rather than cancelling against it.
-  for (let i = 0; i < 8; i++) nodes['vt-deck'].fire('wheel', { deltaY: 5 })
-  assert.deepStrictEqual(sent.filter(s => s.verb === 'volume').map(s => s.args.value), [105, 100])
-})
-
-test('a single event of a full notch is still exactly one 5-point step, and lines/pages count', () => {
-  const { p, nodes, sent } = harness()
-  p._setState(stateAt(10, { volume: 100 }))
-  nodes['vt-deck'].fire('wheel', { deltaY: -400 })          // a big flick is one notch, not ten
-  nodes['vt-deck'].fire('wheel', { deltaY: -3, deltaMode: 1 }) // 3 lines ≈ 48px → one notch
-  nodes['vt-deck'].fire('wheel', { deltaY: 1, deltaMode: 2 })  // a page down → one notch
-  assert.deepStrictEqual(sent.filter(s => s.verb === 'volume').map(s => s.args.value), [105, 110, 105])
-})
-
-test('the picture wheel follows the same rules, including Shift-seek', () => {
-  const { p, nodes, sent } = harness()
-  p.open({ title: 'X' })
-  p._setState(stateAt(100, { volume: 50 }))
-  const stage = nodes['vt-stage']
-  stage.fire('wheel', { deltaY: 0, target: { closest: () => null } })
-  stage.fire('wheel', { deltaY: 0, shiftKey: true, target: { closest: () => null } })
-  assert.strictEqual(sent.filter(s => s.verb === 'volume' || s.verb === 'seek').length, 0)
-  stage.fire('wheel', { deltaY: 100, shiftKey: true, target: { closest: () => null } })
-  assert.deepStrictEqual(sent.filter(s => s.verb === 'seek').pop().args, { seconds: -10, mode: 'relative' })
-  stage.fire('wheel', { deltaY: -100, target: { closest: () => null } })
-  assert.strictEqual(sent.filter(s => s.verb === 'volume').pop().args.value, 55)
-})
-
-// V102: click and double-click on the picture are arbitrated. Before, a
-// double-click sent two play/pause commands that both read the same stale
-// state, so the film ended up paused as well as fullscreen.
-const onPic = { closest: () => null }
-test('a single click on the picture toggles playback once, after the double-click window', t => {
-  t.mock.timers.enable({ apis: ['setTimeout'] })
-  const { p, nodes, sent } = harness()
-  p.open({ title: 'X' })
-  p._setState(stateAt(100, { paused: false }))
-  nodes['vt-stage'].fire('click', { target: onPic })
-  assert.strictEqual(sent.filter(s => s.verb === 'pause').length, 0, 'nothing yet: a second click may follow')
-  t.mock.timers.tick(300)
-  assert.strictEqual(sent.filter(s => s.verb === 'pause').length, 1, 'then exactly one pause')
-})
-
-test('a double-click on the picture only toggles fullscreen and leaves the pause state alone', t => {
-  t.mock.timers.enable({ apis: ['setTimeout'] })
-  const { p, nodes, sent } = harness()
-  p.open({ title: 'X' })
-  p._setState(stateAt(100, { paused: false }))
-  const stage = nodes['vt-stage']
-  stage.fire('click', { target: onPic })
-  stage.fire('click', { target: onPic, detail: 2 })
-  stage.fire('dblclick', { target: onPic, preventDefault () {} })
-  t.mock.timers.tick(1000)
-  assert.deepStrictEqual(sent.filter(s => s.verb === 'pause' || s.verb === 'play'), [], 'no play/pause was ever sent')
-  assert.strictEqual(sent.filter(s => s.verb === 'fullscreen').length, 1, 'fullscreen toggled once')
-})
-
-test('two quick clicks with no dblclick still toggle once, never twice', t => {
-  t.mock.timers.enable({ apis: ['setTimeout'] })
-  const { p, nodes, sent } = harness()
-  p.open({ title: 'X' })
-  p._setState(stateAt(100, { paused: false }))
-  nodes['vt-stage'].fire('click', { target: onPic })
-  nodes['vt-stage'].fire('click', { target: onPic })
-  t.mock.timers.tick(1000)
-  assert.strictEqual(sent.filter(s => s.verb === 'pause').length, 1)
 })
 
 test('keyboard volume flashes too, and an api without videoOsd costs nothing', () => {
@@ -2539,3 +2387,319 @@ test('videoSubStyle passthrough is called alongside subStyle when exposed', asyn
   assert.ok(passed.length, 'the passthrough was called')
   assert.strictEqual(passed[passed.length - 1].color, 'cyan', 'with the friendly names')
 })
+
+// Roadmap V101–V103: exercise real bound handlers with delayed engine state.
+const pictureWait = () => new Promise(resolve => setTimeout(resolve, 330))
+const pointer = (over = {}) => Object.assign({ button: 0, pointerId: 7,
+  clientX: 20, clientY: 20, preventDefault () {}, target: { closest () { return null } } }, over)
+
+test('cancelled mini picture press never pauses playback', async () => {
+  const { p, nodes, sent } = harness()
+  p._setState(stateAt(100))
+  nodes['vmini-video'].fire('pointerdown', pointer())
+  nodes['vmini-video'].fire('pointercancel', pointer())
+  await pictureWait()
+  assert.equal(sent.filter(x => x.verb === 'pause' || x.verb === 'play').length, 0)
+  assert.equal(nodes.vmini.classList.contains('vmini-dragging'), false)
+})
+
+test('lost capture aborts a moved mini drag without saving a new corner', () => {
+  const writes = []
+  const { p, nodes, sent } = harness({ local: { readObject: () => ({}), write: (...a) => writes.push(a) } })
+  p._setState(stateAt(100))
+  nodes['vmini-video'].fire('pointerdown', pointer())
+  nodes['vmini-video'].fire('pointermove', pointer({ clientX: 200 }))
+  nodes['vmini-video'].fire('lostpointercapture', pointer())
+  nodes['vmini-video'].fire('pointerup', pointer())
+  assert.equal(writes.length, 0)
+  assert.equal(sent.filter(x => ['pause', 'play'].includes(x.verb)).length, 0)
+  assert.equal(nodes.vmini.classList.contains('vmini-dragging'), false)
+})
+
+test('theatre double-click changes display without playback commands', async () => {
+  const { p, nodes, sent } = harness()
+  p._setState(stateAt(100))
+  nodes['vt-stage'].fire('click', pointer())
+  nodes['vt-stage'].fire('click', pointer())
+  nodes['vt-stage'].fire('dblclick', pointer())
+  await pictureWait()
+  assert.equal(sent.filter(x => ['pause', 'play'].includes(x.verb)).length, 0)
+  assert.equal(sent.filter(x => x.verb === 'fullscreen').length, 1)
+})
+
+test('mini double-click restores without toggling stale playback state', async () => {
+  const { p, nodes, sent } = harness()
+  p._setState(stateAt(100, { paused: true }))
+  for (let i = 0; i < 2; i++) {
+    nodes['vmini-video'].fire('pointerdown', pointer())
+    nodes['vmini-video'].fire('pointerup', pointer())
+  }
+  nodes['vmini-video'].fire('dblclick', pointer())
+  await pictureWait()
+  assert.equal(sent.filter(x => ['pause', 'play'].includes(x.verb)).length, 0)
+  assert.equal(p.isMinimised(), false)
+})
+
+test('one picture click toggles once and explicit transport stays immediate', async () => {
+  const { p, nodes, sent } = harness()
+  p._setState(stateAt(100))
+  nodes['vt-stage'].fire('click', pointer())
+  assert.equal(sent.length, 0)
+  await pictureWait()
+  assert.equal(sent.filter(x => x.verb === 'pause').length, 1)
+  nodes['vt-play'].fire('click')
+  assert.equal(sent.filter(x => x.verb === 'pause').length, 2)
+})
+
+test('closing cancels a pending picture action', async () => {
+  const { p, nodes, sent } = harness()
+  p._setState(stateAt(100))
+  nodes['vt-stage'].fire('click', pointer())
+  p.close()
+  await pictureWait()
+  assert.equal(sent.filter(x => ['pause', 'play'].includes(x.verb)).length, 0)
+})
+
+test('wheel ignores zero, horizontal, invalid and pinch input on both surfaces', () => {
+  const { p, nodes, sent } = harness()
+  p._setState(stateAt(100, { volume: 50 }))
+  for (const id of ['vt-stage', 'vt-deck']) {
+    for (const data of [{ deltaY: 0 }, { deltaY: 2, deltaX: 50 },
+      { deltaY: NaN }, { deltaY: 120, ctrlKey: true }]) nodes[id].fire('wheel', data)
+  }
+  assert.equal(sent.filter(x => x.verb === 'volume').length, 0)
+})
+
+test('small trackpad deltas add up to a 40px notch; any single event of a notch or more is exactly one step', () => {
+  const { p, nodes, sent } = harness()
+  p._setState(stateAt(100, { volume: 50 }))
+  const vols = () => sent.filter(x => x.verb === 'volume').map(x => x.args.value)
+  for (let i = 0; i < 40; i++) nodes['vt-stage'].fire('wheel', { deltaY: 1 })
+  assert.deepEqual(vols(), [45], 'forty 1px events are one step, not forty')
+  nodes['vt-deck'].fire('wheel', { deltaY: -3, deltaMode: 1 })   // 3 lines ≈ 48px
+  assert.equal(sent.at(-1).args.value, 50)
+  // A real mouse detent is ~100px in Chromium: still one 5-point step, as it always was.
+  nodes['vt-deck'].fire('wheel', { deltaY: -100 })
+  assert.equal(sent.at(-1).args.value, 55)
+  // A big flick is one step, not ten.
+  nodes['vt-deck'].fire('wheel', { deltaY: 400 })
+  assert.equal(sent.at(-1).args.value, 50)
+  assert.equal(vols().length, 4)
+})
+
+test('wheel over a menu never modifies background volume', () => {
+  const { p, nodes, sent } = harness()
+  p._setState(stateAt(100))
+  nodes['vt-deck'].fire('wheel', { deltaY: 120, target: { closest: () => ({}) } })
+  assert.equal(sent.length, 0)
+})
+
+test('Space on a focused transport button leaves activation to the button', () => {
+  const { p, nodes, sent, press } = harness()
+  p.open({ title: 'X' }); p._setState(stateAt(100))
+  sent.length = 0
+  assert.equal(press(' ', { tagName: 'BUTTON' }), false)
+  assert.equal(sent.length, 0)
+  nodes['vt-play'].fire('click')
+  assert.equal(sent.filter(x => x.verb === 'pause').length, 1)
+})
+
+test('handled keys and IME composition never reach video shortcuts', () => {
+  const { p, sent, fire } = harness()
+  p.open({ title: 'X' }); p._setState(stateAt(100)); sent.length = 0
+  fire('keydown', { key: 'm', defaultPrevented: true })
+  fire('keydown', { key: ' ', isComposing: true })
+  assert.equal(sent.length, 0)
+})
+
+test('Up Next waits while keyboard focus is inside, then resumes', t => {
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
+  let advanced = 0
+  const { p, nodes } = harness({
+    segments: [{ kind: 'credits', start: 3400, end: 3600, origin: 'chapters', confidence: 0.9 }],
+    onNext: () => { advanced++ },
+  })
+  p.setUpNext({ title: 'Next' }); p._setState(stateAt(3450))
+  nodes['vt-upnext'].fire('focusin')
+  nodes['vt-upnext'].fire('pointerleave')
+  t.mock.timers.tick(20000)
+  assert.equal(advanced, 0)
+  nodes['vt-upnext'].fire('focusout', { relatedTarget: null })
+  t.mock.timers.tick(20000)
+  assert.equal(advanced, 1)
+})
+
+test('closing cancels a queued keyboard seek', t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const { p, press, sent } = harness()
+  p.open({ title: 'A' }); p._setState(stateAt(100))
+  press('ArrowRight'); p.close()
+  t.mock.timers.tick(500)
+  assert.equal(sent.filter(x => x.verb === 'seek').length, 0)
+})
+
+test('opening another title cancels pending live scrub commands', t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const { p, nodes, sent } = harness()
+  p.open({ title: 'A' }); p._setState(stateAt(100))
+  nodes['vt-seek'].fire('pointerdown', pointer())
+  nodes['vt-seek'].fire('pointermove', pointer({ clientX: 40 }))
+  nodes['vt-seek'].fire('pointermove', pointer({ clientX: 60 }))
+  p.open({ title: 'B' }); p._setState(stateAt(0))
+  sent.length = 0
+  t.mock.timers.tick(500)
+  nodes['vt-seek'].fire('pointerup', pointer({ clientX: 60 }))
+  assert.equal(sent.filter(x => x.verb === 'seek').length, 0)
+})
+
+test('mini seek release from the previous title cannot seek the new title', () => {
+  const { p, nodes, sent } = harness()
+  p.open({ title: 'A' }); p._setState(stateAt(100))
+  nodes['vmini-seek'].fire('pointerdown', pointer())
+  p.open({ title: 'B' }); p._setState(stateAt(0)); sent.length = 0
+  nodes['vmini-seek'].fire('pointerup', pointer({ clientX: 80 }))
+  assert.equal(sent.filter(x => x.verb === 'seek').length, 0)
+})
+
+test('theatre scrub ignores right button and another pointer', () => {
+  const { p, nodes, sent } = harness()
+  p._setState(stateAt(100))
+  nodes['vt-seek'].fire('pointerdown', pointer({ button: 2 }))
+  nodes['vt-seek'].fire('pointerup', pointer())
+  assert.equal(sent.length, 0)
+  nodes['vt-seek'].fire('pointerdown', pointer())
+  nodes['vt-seek'].fire('pointerup', pointer({ pointerId: 8 }))
+  assert.equal(sent.length, 0)
+  nodes['vt-seek'].fire('pointerup', pointer({ clientX: 50 }))
+  assert.equal(sent.filter(x => x.verb === 'seek').length, 1)
+})
+
+test('lost seek capture cancels trailing work and late release', t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const { p, nodes, sent } = harness()
+  p._setState(stateAt(100))
+  nodes['vt-seek'].fire('pointerdown', pointer())
+  nodes['vt-seek'].fire('pointermove', pointer({ clientX: 30 }))
+  nodes['vt-seek'].fire('pointermove', pointer({ clientX: 40 }))
+  nodes['vt-seek'].fire('lostpointercapture', pointer())
+  sent.length = 0
+  t.mock.timers.tick(500)
+  nodes['vt-seek'].fire('pointerup', pointer())
+  assert.equal(sent.length, 0)
+  assert.equal(nodes['vt-seek-bubble'].hidden, true)
+})
+
+test('late thumbnail from an old title cannot paint or populate the new cache', async () => {
+  const pending = []
+  const { p, nodes } = harness({ apiExtra: { videoThumbAt: () => new Promise(resolve => pending.push(resolve)) } })
+  p.open({ title: 'A' }); p._setState(stateAt(100))
+  nodes['vt-seek'].fire('pointermove', pointer({ clientX: 20 }))
+  assert.equal(pending.length, 1)
+  p.open({ title: 'B' }); p._setState(stateAt(100))
+  pending[0]({ path: '/old-title.jpg' })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(nodes['vt-seek-bubble'].__vtThumbImg, undefined)
+  p.close()
+})
+
+test('out-of-order thumbnail responses cannot replace the current hover', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const pending = []
+  const { p, nodes } = harness({ apiExtra: { videoThumbAt: () => new Promise(resolve => pending.push(resolve)) } })
+  p._setState(stateAt(100))
+  nodes['vt-seek'].fire('pointermove', pointer({ clientX: 20 }))
+  nodes['vt-seek'].fire('pointermove', pointer({ clientX: 80 }))
+  t.mock.timers.tick(250)
+  assert.equal(pending.length, 2)
+  pending[1]({ path: '/current.jpg' })
+  await new Promise(resolve => setImmediate(resolve))
+  pending[0]({ path: '/outdated.jpg' })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(nodes['vt-seek-bubble'].__vtThumbImg.getAttribute('src'), 'file:///current.jpg')
+  p.close()
+})
+
+for (const id of ['vt-seek', 'vmini-seek']) {
+  test(id + ' cancelled preview restores original position once without changing pause', t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    const { p, nodes, sent } = harness()
+    p._setState(stateAt(123, { paused: true }))
+    nodes[id].fire('pointerdown', pointer())
+    nodes[id].fire('pointermove', pointer({ clientX: 40 }))
+    p._setState(stateAt(1440, { paused: true }))
+    nodes[id].fire('pointermove', pointer({ clientX: 60 }))
+    sent.length = 0
+    nodes[id].fire('pointercancel', pointer())
+    nodes[id].fire('lostpointercapture', pointer())
+    nodes[id].fire('pointerup', pointer({ clientX: 80 }))
+    t.mock.timers.tick(500)
+    assert.deepEqual(sent.filter(x => x.verb === 'seek'), [{ verb: 'seek', args: { seconds: 123, mode: 'absolute' } }])
+    assert.equal(sent.some(x => x.verb === 'pause'), false)
+  })
+  test(id + ' cancelled press without preview does not rewind playback', () => {
+    const { p, nodes, sent } = harness()
+    p._setState(stateAt(123))
+    nodes[id].fire('pointerdown', pointer())
+    p._setState(stateAt(125))
+    nodes[id].fire('lostpointercapture', pointer())
+    assert.equal(sent.filter(x => x.verb === 'seek').length, 0)
+  })
+  test(id + ' old title cancellation cannot restore into the next title', () => {
+    const { p, nodes, sent } = harness()
+    p.open({ title: 'A' }); p._setState(stateAt(123))
+    nodes[id].fire('pointerdown', pointer())
+    nodes[id].fire('pointermove', pointer({ clientX: 40 }))
+    p.open({ title: 'B' }); p._setState(stateAt(0)); sent.length = 0
+    nodes[id].fire('pointercancel', pointer())
+    assert.equal(sent.filter(x => x.verb === 'seek').length, 0)
+  })
+}
+
+for (const id of ['vt-seek', 'vmini-seek']) {
+  const key = name => ({ key: name, preventDefault() {}, stopPropagation() {} })
+  test(id + ' repeated keyboard seeks accumulate despite stale state', t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    const { p, nodes, sent } = harness()
+    p.open({ title: 'A' }); p.minimise(); p._setState(stateAt(100))
+    nodes[id].fire('keydown', key('ArrowRight'))
+    p._setState(stateAt(101))
+    nodes[id].fire('keydown', key('ArrowUp'))
+    assert.equal(nodes[id].getAttribute('aria-valuenow'), '120')
+    t.mock.timers.tick(500)
+    assert.deepEqual(sent.filter(x => x.verb === 'seek'), [{ verb: 'seek', args: { seconds: 120, mode: 'absolute' } }])
+  })
+  test(id + ' Home and End supersede pending arrow seeks', t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    const { p, nodes, sent } = harness()
+    p._setState(stateAt(100))
+    for (const [name, seconds] of [['Home', 0], ['End', 3600]]) {
+      sent.length = 0
+      nodes[id].fire('keydown', key('ArrowRight'))
+      nodes[id].fire('keydown', key(name))
+      t.mock.timers.tick(500)
+      assert.deepEqual(sent.filter(x => x.verb === 'seek'), [{ verb: 'seek', args: { seconds, mode: 'absolute' } }])
+    }
+  })
+  test(id + ' pointer drag supersedes pending keyboard seek', t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    const { p, nodes, sent } = harness()
+    p._setState(stateAt(100))
+    nodes[id].fire('keydown', key('ArrowRight'))
+    nodes[id].fire('pointerdown', pointer())
+    nodes[id].fire('pointerup', pointer({ clientX: 50 }))
+    t.mock.timers.tick(500)
+    assert.deepEqual(sent.filter(x => x.verb === 'seek'), [{ verb: 'seek', args: { seconds: 1800, mode: 'absolute' } }])
+  })
+  test(id + ' unknown duration and composing keys cannot seek', t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    const { p, nodes, sent } = harness()
+    p._setState(stateAt(0, { duration: 0 }))
+    nodes[id].fire('keydown', key('ArrowRight'))
+    nodes[id].fire('keydown', key('End'))
+    p._setState(stateAt(100))
+    nodes[id].fire('keydown', { ...key('ArrowRight'), isComposing: true })
+    nodes[id].fire('keydown', { ...key('ArrowRight'), ctrlKey: true })
+    t.mock.timers.tick(500)
+    assert.equal(sent.filter(x => x.verb === 'seek').length, 0)
+  })
+}

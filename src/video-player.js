@@ -239,6 +239,7 @@
 
     const $ = id => doc && doc.getElementById(id)
 
+    let sessionEpoch = 0
     let state = null
     let segments = []
     let prefs = {}
@@ -287,6 +288,7 @@
     let upNextInfo = null
     let upNextDismissed = false
     let upNextHover = false
+    let upNextFocused = false
     let media = null   // { title, sub, next, onPrev?, onPrefChange? }
 
     // total ⇄ remaining on the duration readout. Read once at creation, written
@@ -500,7 +502,7 @@
       const mini = $('vmini')
       if (!mini || mini.classList.contains('hidden') || !state) return
       const dur = Number(state.duration) || 0
-      const pos = Number(state.position) || 0
+      const pos = kbTarget != null ? kbTarget : (Number(state.position) || 0)
       const ovPlay = $('vmini-ov-play')
       if (ovPlay) { ovPlay.innerHTML = state.paused ? ICON.play : ICON.pause; ovPlay.setAttribute('aria-label', state.paused ? 'Play' : 'Pause') }
       const play = $('vmini-play')
@@ -752,6 +754,7 @@
           if (e.button !== 0) return
           if (e.target && typeof e.target.closest === 'function' &&
               e.target.closest('button, .vmini-seek')) return
+          cancelPictureTap()
           pointerId = e.pointerId
           captureEl = el
           miniDragging = true
@@ -797,7 +800,7 @@
         // pure drag surfaces.
         if (!moved && pressEl && pressEl.id === 'vmini-video' && nowMs() - pressAt < 400 && state) {
           miniDragTL = null; pointerId = null; captureEl = null; samples = []
-          pictureTap(togglePlay)   // arbitrated against the dblclick restore (V102)
+          queuePictureTap()
           return
         }
         if (!moved) { miniDragTL = null; pointerId = null; captureEl = null; samples = []; return }
@@ -824,24 +827,16 @@
         placeMiniCard(null, true)
       }
 
-      // pointercancel is not a release (V101). The browser fires it when it
-      // takes the gesture away — a touch that became a scroll, capture lost
-      // to a window switch, a palm on the trackpad. It used to share endDrag,
-      // so an unmoved cancel toggled playback as if it were a tap, and a moved
-      // one flung the card from stale coordinates as if the hand had let go.
-      // A cancelled gesture is one that never happened: playback untouched,
-      // corner unchanged, capture released, the card eased back to where it
-      // started.
       const cancelDrag = function (e) {
-        if (!miniDragging || (pointerId != null && e.pointerId !== pointerId)) return
+        if (!miniDragging || pointerId !== e.pointerId) return
+        const captured = captureEl, id = pointerId
         miniDragging = false
+        miniDragTL = null; pointerId = null; captureEl = null; samples = []
         mini.classList.remove('vmini-dragging')
-        try { if (captureEl) captureEl.releasePointerCapture(e.pointerId) } catch (_) {}
+        cancelPictureTap()
         if (miniRectTimer) { clearTimeout(miniRectTimer); miniRectTimer = 0 }
-        const from = miniDragTL && moved ? { x: miniDragTL.x, y: miniDragTL.y } : null
-        miniDragTL = null; pointerId = null; captureEl = null; samples = []; moved = false
-        if (from) settleTo(from, { vx: 0, vy: 0 })
-        else placeMiniCard(null, true)
+        try { if (captured) captured.releasePointerCapture(id) } catch (_) {}
+        placeMiniCard(null, true)
       }
 
       // The picture region joins the drag surfaces (V1): with the smooth
@@ -854,8 +849,6 @@
         el.addEventListener('pointermove', onMove)
         el.addEventListener('pointerup', endDrag)
         el.addEventListener('pointercancel', cancelDrag)
-        // Capture lost without a cancel (a native window steals the pointer,
-        // the tab is hidden mid-drag): the same abort, never a release.
         el.addEventListener('lostpointercapture', cancelDrag)
       }
     }
@@ -877,6 +870,7 @@
     function bindMiniSeek() {
       const seek = $('vmini-seek')
       if (!seek) return
+      let seekEpoch = -1, startPosition = 0, previewRequested = false
       const trackOf = function () { return seek.querySelector('.vmini-seek-track') || seek }
       const fracAt = function (clientX) {
         const t = trackOf()
@@ -892,20 +886,23 @@
         if (e.button !== 0) return
         const dur = Number(state && state.duration) || 0
         if (!dur) return
+        cancelKeyboardSeek()
         pid = e.pointerId
+        seekEpoch = sessionEpoch
+        startPosition = Number(state.position) || 0; previewRequested = false
         miniDragging = true      // freeze the state-driven repaint while scrubbing
         try { seek.setPointerCapture(e.pointerId) } catch (_) {}
         const f = fracAt(e.clientX); paint(f)
         if (typeof e.preventDefault === 'function') e.preventDefault()
       })
       seek.addEventListener('pointermove', function (e) {
-        if (pid !== e.pointerId) return
+        if (pid == null || pid !== e.pointerId || seekEpoch !== sessionEpoch) return
         const dur = Number(state && state.duration) || 0
         if (!dur) return
-        const f = fracAt(e.clientX); paint(f); scrubSeek(dur * f)
+        const f = fracAt(e.clientX); paint(f); previewRequested = true; scrubSeek(dur * f)
       })
       const done = function (e) {
-        if (pid !== e.pointerId) return
+        if (pid == null || pid !== e.pointerId || seekEpoch !== sessionEpoch) return
         pid = null
         miniDragging = false
         try { seek.releasePointerCapture(e.pointerId) } catch (_) {}
@@ -913,11 +910,16 @@
         if (dur) { scrubEnd(); seekTo(dur * fracAt(e.clientX)) }
       }
       seek.addEventListener('pointerup', done)
-      seek.addEventListener('pointercancel', function () { pid = null; miniDragging = false; scrubEnd() })
-      seek.addEventListener('keydown', function (e) {
-        if (e.key === 'ArrowLeft') { seekBy(-10); e.preventDefault(); e.stopPropagation() }
-        if (e.key === 'ArrowRight') { seekBy(10); e.preventDefault(); e.stopPropagation() }
-      })
+      const cancel = function (e) {
+        if (pid == null || pid !== e.pointerId || seekEpoch !== sessionEpoch) return
+        pid = null; miniDragging = false; scrubEnd()
+        if (previewRequested) seekTo(startPosition)
+        try { seek.releasePointerCapture(e.pointerId) } catch (_) {}
+        render()
+      }
+      seek.addEventListener('pointercancel', cancel)
+      seek.addEventListener('lostpointercapture', cancel)
+      seek.addEventListener('keydown', onSeekKey)
     }
 
     // mpv reports every alias a codec has ever had, so the badge read
@@ -1198,7 +1200,7 @@
         // the card means the same thing said with the pointer: the user is
         // reading it, deciding — and a card that advances while being read is
         // a card that cannot be declined. Resumes the moment the pointer leaves.
-        if ((state && state.paused) || upNextHover) return
+        if ((state && state.paused) || upNextHover || upNextFocused) return
         // Enough episodes have played to an empty room: hold at three seconds
         // and ask, rather than starting yet another one. The interval keeps
         // running but goes no lower, so answering Continue can resume it from
@@ -1325,27 +1327,56 @@
       return api.videoControl(verb, args || {}).catch(function () { return { ok: false } })
     }
 
+    // Delay picture taps so a double-click changes display mode without
+    // racing asynchronous pause/play state. Explicit transport buttons stay immediate.
+    let pictureTapTimer = null
+    function cancelPictureTap() {
+      if (pictureTapTimer != null) clearTimeout(pictureTapTimer)
+      pictureTapTimer = null
+    }
+    function queuePictureTap() {
+      cancelPictureTap()
+      pictureTapTimer = setTimeout(function () {
+        pictureTapTimer = null
+        if (!state) return
+        togglePlay()
+        burst(state.paused ? ICON.play : ICON.pause)
+        noteActivity()
+      }, 300)
+    }
+
+    const WHEEL_NOTCH_PX = 40
+    let wheelRemainder = 0, wheelAt = 0
+    function wheelVolume(e) {
+      if (!state || e.ctrlKey || e.metaKey || e.altKey) return
+      const target = e.target
+      if (target && target.closest && target.closest('.vt-menu, input, select, textarea')) return
+      const dy = Number(e.deltaY), dx = Number(e.deltaX) || 0
+      if (!Number.isFinite(dy) || !dy || Math.abs(dx) >= Math.abs(dy)) return
+      const now = Date.now()
+      if (now - wheelAt > 250 || Math.sign(dy) !== Math.sign(wheelRemainder)) wheelRemainder = 0
+      wheelAt = now
+      // Convert line/page events to pixel-like distance. Small trackpad
+      // events accumulate to one notch; a single event of at least one
+      // notch is exactly one step however large it is (a flick is not ten
+      // steps). A real mouse detent is ~100px in Chromium and must stay one
+      // 5-point step, as it always was — hence a 40px notch, not 120.
+      if (typeof e.preventDefault === 'function') e.preventDefault()
+      const pixels = dy * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? WHEEL_NOTCH_PX : 1)
+      let steps
+      if (Math.abs(pixels) >= WHEEL_NOTCH_PX) { wheelRemainder = 0; steps = Math.sign(pixels) }
+      else {
+        wheelRemainder += pixels
+        steps = Math.trunc(wheelRemainder / WHEEL_NOTCH_PX)
+        if (!steps) return
+        wheelRemainder -= steps * WHEEL_NOTCH_PX
+      }
+      setVolume((Number(state.volume) || 0) - steps * 5)
+      flashVolume()
+      render()
+    }
+
     function togglePlay() { send(state && state.paused ? 'play' : 'pause') }
-    // Click arbitration for the picture (V102). A double-click used to be
-    // click → togglePlay, click → togglePlay, dblclick → fullscreen. State
-    // arrives ~4/s, so both clicks read the same stale `paused` and both sent
-    // the same command: the film ended up paused AND fullscreen. Now a single
-    // click is committed only after the double-click window has passed with
-    // no second click; a second click leaves that pending single alone (so
-    // two clicks never mean two toggles), and the dblclick that follows it
-    // cancels the single and does only its own job. The cost is one short
-    // window of latency on a single click; the win is that the pause state
-    // after a double-click is the one you had before it.
-    const DBLCLICK_MS = 250
-    let pictureClickTimer = null
-    function pictureTap(fn) {
-      if (pictureClickTimer) return
-      pictureClickTimer = setTimeout(function () { pictureClickTimer = null; fn() }, DBLCLICK_MS)
-    }
-    function pictureDouble(fn) {
-      if (pictureClickTimer) { clearTimeout(pictureClickTimer); pictureClickTimer = null }
-      fn()
-    }
     function seekBy(sec) { send('seek', { seconds: sec, mode: 'relative' }) }
     function seekTo(sec) { send('seek', { seconds: sec, mode: 'absolute' }) }
     // While a scrub is in flight the picture should follow the pointer, not sit
@@ -1386,35 +1417,6 @@
           onToast('Could not save the screenshot')
         }
       })
-    }
-
-    // Wheel → one step of intent, or none (V103). The old code read only the
-    // sign of deltaY, so a zero delta stepped volume UP, a purely horizontal
-    // swipe changed volume, and a high-resolution trackpad — which reports
-    // dozens of tiny events per flick — produced a dozen 5-point jumps. Now:
-    // a single event of at least one notch is one step (a mouse detent is
-    // unchanged at 5 points); smaller deltas accumulate until they add up to a
-    // notch; the accumulator resets when the direction flips or after a short
-    // pause; horizontal-dominant and zero deltas are ignored outright.
-    const WHEEL_NOTCH_PX = 40
-    const WHEEL_IDLE_MS = 150
-    let wheelAcc = 0
-    let wheelAt = 0
-    function wheelDirection(e) {
-      const mode = Number(e && e.deltaMode) || 0
-      let dy = Number(e && e.deltaY) || 0
-      const dx = Number(e && e.deltaX) || 0
-      if (!dy || Math.abs(dx) > Math.abs(dy)) return 0
-      if (mode === 1) dy *= 16            // lines → px
-      else if (mode === 2) dy = Math.sign(dy) * WHEEL_NOTCH_PX   // pages → one notch
-      const now = nowMs()
-      if (now - wheelAt > WHEEL_IDLE_MS || Math.sign(wheelAcc) !== Math.sign(dy)) wheelAcc = 0
-      wheelAt = now
-      if (Math.abs(dy) >= WHEEL_NOTCH_PX) { wheelAcc = 0; return dy > 0 ? -1 : 1 }
-      wheelAcc += dy
-      if (Math.abs(wheelAcc) < WHEEL_NOTCH_PX) return 0
-      wheelAcc -= Math.sign(wheelAcc) * WHEEL_NOTCH_PX
-      return dy > 0 ? -1 : 1
     }
 
     function setVolume(v) {
@@ -2179,7 +2181,13 @@
     }
 
     function onKey(e) {
-      if (!keymap) return
+      if (!keymap || e.defaultPrevented || e.isComposing) return
+      // Space belongs to the focused control; its native activation must not
+      // also toggle the film through this document-level handler.
+      const target = e.target
+      const tag = String(target && target.tagName || '').toUpperCase()
+      const isButton = tag === 'BUTTON' || (target && target.closest && target.closest('button, [role="button"]'))
+      if ((e.key === ' ' || e.key === 'Enter') && isButton) return
       // The handler lives on document for the life of the app, so it must do
       // nothing at all unless the theatre is actually open. Otherwise these
       // shortcuts apply to every screen in the app.
@@ -2381,6 +2389,7 @@
     let thumbLastAt = 0
     let thumbTimer = null
     let thumbPendingPos = null
+    let thumbRevision = 0
     // The bucket whose frame is currently painted, so an unchanged hover does not
     // rebuild the <img> src every emit and flicker the picture.
     let thumbShownKey = null
@@ -2482,27 +2491,33 @@
       if (!fetchThumb) return
       thumbPendingPos = positionSec
       // A bucket already in the cache is painted straight away — no IPC, no
-      // ffmpeg — including a cached null (asked, none yet), which correctly
-      // leaves the previous frame alone. Only a genuinely unseen bucket falls
+      // ffmpeg — including a cached null (asked, none yet), which clears
+      // an unrelated previous frame. Only a genuinely unseen bucket falls
       // through to a network request.
       if (thumbCache.has(positionSec)) {
         const cached = thumbCache.get(positionSec)
-        if (cached && cached !== thumbShownKey) { thumbShownKey = cached; paintBubbleThumb(bubble, cached) }
+        thumbShownKey = cached || null
+        paintBubbleThumb(bubble, cached || null)
         return
       }
+      // A previous bucket's image must not masquerade as the new timestamp.
+      thumbShownKey = null
+      paintBubbleThumb(bubble, null)
       const fire = function () {
+        const epoch = sessionEpoch, revision = thumbRevision
         thumbLastAt = (typeof Date !== 'undefined' ? Date.now() : 0)
         const pos = thumbPendingPos
+        if (pos == null) return
         fetchThumb(pos).then(function (p) {
+          if (epoch !== sessionEpoch || revision !== thumbRevision) return
           // Cache the answer for the bucket even when null, so a still-generating
           // frame is not re-requested on every pass through the same ten seconds.
           thumbCache.set(pos, p || null)
           // The bubble was hidden (pointer left) while this was in flight: drop
           // the answer rather than painting into a bubble nobody is looking at.
-          if (thumbPendingPos == null) return
-          // A null answer leaves whatever frame is already up in place — the
-          // previous bucket's frame is a better preview than none while the new
-          // one generates. A path repaints only when it names a new frame.
+          if (thumbPendingPos == null || thumbBucketOf(pos) !== thumbBucketOf(thumbPendingPos)) return
+          // Only paint the currently requested bucket; an earlier scene's
+          // thumbnail is misleading under the current timestamp.
           if (p && p !== thumbShownKey) { thumbShownKey = p; paintBubbleThumb(bubble, p) }
         }).catch(function () { /* a hover must never surface an error */ })
       }
@@ -2516,10 +2531,45 @@
     // Reset the thumb state when the bubble is hidden, so the next hover starts
     // clean rather than flashing the last frame from the previous hover.
     function clearThumbState(bubble) {
+      thumbRevision++
       thumbPendingPos = null
       thumbShownKey = null
       if (thumbTimer) { clearTimeout(thumbTimer); thumbTimer = null }
       if (bubble) paintBubbleThumb(bubble, null)
+    }
+
+    function resetSeekWork() {
+      sessionEpoch++
+      dragging = false
+      miniDragging = false
+      scrubEnd()
+      clearTimeout(kbTimer)
+      kbTimer = null; kbTarget = null
+      const bubble = $('vt-seek-bubble')
+      clearThumbState(bubble)
+      if (bubble) bubble.hidden = true
+    }
+
+    function cancelKeyboardSeek() {
+      clearTimeout(kbTimer)
+      kbTimer = null; kbTarget = null
+      const bubble = $('vt-seek-bubble')
+      if (bubble) { bubble.hidden = true; clearThumbState(bubble) }
+    }
+
+    function onSeekKey(e) {
+      if (e.defaultPrevented || e.isComposing || e.ctrlKey || e.metaKey || e.altKey) return
+      const steps = { ArrowLeft: -10, ArrowDown: -10, ArrowRight: 10, ArrowUp: 10,
+        PageDown: -60, PageUp: 60 }
+      const boundary = e.key === 'Home' || e.key === 'End'
+      if (!boundary && !Object.prototype.hasOwnProperty.call(steps, e.key)) return
+      e.preventDefault(); e.stopPropagation()
+      const dur = Number(state && state.duration) || 0
+      if (!Number.isFinite(dur) || dur <= 0 || dragging || miniDragging) return
+      if (boundary) {
+        cancelKeyboardSeek()
+        seekTo(e.key === 'Home' ? 0 : dur)
+      } else kbSeek(steps[e.key])
     }
 
     function kbSeek(delta) {
@@ -2537,6 +2587,7 @@
         requestThumb(bubble, kbTarget)
       }
       paintSeek(kbTarget, dur)
+      paintMini()
       clearTimeout(kbTimer)
       kbTimer = setTimeout(function () {
         kbTimer = null
@@ -2558,8 +2609,10 @@
       const seek = $('vt-seek')
       if (!seek) return
       const bubble = $('vt-seek-bubble')
+      let pid = null, seekEpoch = -1, startPosition = 0, previewRequested = false
 
       seek.addEventListener('pointermove', function (e) {
+        if (dragging && (pid !== e.pointerId || seekEpoch !== sessionEpoch)) return
         const dur = Number(state && state.duration) || 0
         if (!dur || !bubble) return
         const f = seekFraction(e.clientX)
@@ -2574,6 +2627,7 @@
           // throttled keyframe seek so the drag feels live instead of frozen
           // until release.
           paintSeek(at, dur)
+          previewRequested = true
           scrubSeek(at)
         }
       })
@@ -2582,28 +2636,39 @@
       })
 
       seek.addEventListener('pointerdown', function (e) {
+        if (e.button != null && e.button !== 0) return
         const dur = Number(state && state.duration) || 0
         if (!dur) return
+        cancelKeyboardSeek()
+        pid = e.pointerId; seekEpoch = sessionEpoch
+        startPosition = Number(state.position) || 0; previewRequested = false
         dragging = true
         seek.setPointerCapture?.(e.pointerId)
         paintSeek(dur * seekFraction(e.clientX), dur)
       })
       seek.addEventListener('pointerup', function (e) {
-        if (!dragging) return
+        if (!dragging || pid !== e.pointerId || seekEpoch !== sessionEpoch) return
         dragging = false
+        pid = null
+        try { seek.releasePointerCapture?.(e.pointerId) } catch (_) {}
         // Cancel any pending keyframe scrub, then land exactly where released.
         scrubEnd()
         const dur = Number(state && state.duration) || 0
         if (dur) seekTo(dur * seekFraction(e.clientX))
       })
-      seek.addEventListener('pointercancel', function () { dragging = false; scrubEnd() })
+      const cancel = function (e) {
+        if (!dragging || pid !== e.pointerId || seekEpoch !== sessionEpoch) return
+        dragging = false; pid = null; scrubEnd()
+        if (previewRequested) seekTo(startPosition)
+        try { seek.releasePointerCapture?.(e.pointerId) } catch (_) {}
+        if (bubble) { bubble.hidden = true; clearThumbState(bubble) }
+        render()
+      }
+      seek.addEventListener('pointercancel', cancel)
+      seek.addEventListener('lostpointercapture', cancel)
 
       // A slider must be operable from the keyboard, not only the pointer.
-      seek.addEventListener('keydown', function (e) {
-        if (e.key === 'ArrowLeft') { kbSeek(-10); e.preventDefault(); e.stopPropagation() }
-        if (e.key === 'ArrowRight') { kbSeek(10); e.preventDefault(); e.stopPropagation() }
-        if (e.key === 'Home') { seekTo(0); e.preventDefault(); e.stopPropagation() }
-      })
+      seek.addEventListener('keydown', onSeekKey)
     }
 
     // ── Lifecycle ───────────────────────────────────────────────────────────
@@ -2631,7 +2696,7 @@
       // native mpv window (see the fullscreen relay below), but a double-click on
       // the reserved region itself — when the picture is not covering it — is
       // handled here as a reliable page-side path too.
-      $('vmini-video')?.addEventListener('dblclick', function () { pictureDouble(restore) })
+      $('vmini-video')?.addEventListener('dblclick', function () { cancelPictureTap(); restore() })
       // The hover chrome over the picture (only visible with the picture in
       // the page; under mpv the native window covers it).
       $('vmini-ov-play')?.addEventListener('click', togglePlay)
@@ -2660,19 +2725,11 @@
       // The wheel works anywhere over the deck, not only on the 88px slider:
       // volume is the thing people reach for mid-scene, and the pointer is
       // rarely parked on the one control that takes it.
-      $('vt-deck')?.addEventListener('wheel', function (e) {
-        if (typeof e.preventDefault === 'function') e.preventDefault()
-        const dir = wheelDirection(e)
-        if (!dir) return
-        setVolume((Number(state && state.volume) || 0) + dir * 5)
-        flashVolume()
-        render()
-      })
+      $('vt-deck')?.addEventListener('wheel', wheelVolume, { passive: false })
       // The picture itself (V4): with the smooth player the <video> lives in
       // the page and takes the pointer, so the stage handles what mpv's own
       // window used to — click to play/pause (with a burst), double-click for
-      // fullscreen (the second click undoes the first's toggle, as YouTube's
-      // does), wheel for volume, Shift+wheel to seek. Under mpv the native
+      // fullscreen (picture taps wait briefly for double-click arbitration), wheel for volume, Shift+wheel to seek. Under mpv the native
       // window swallows these and relays them itself; nothing fires here.
       const stageEl = $('vt-stage')
       if (stageEl) {
@@ -2683,34 +2740,36 @@
         }
         stageEl.addEventListener('click', function (e) {
           if (!onPicture(e) || !state) return
-          noteActivity()
-          if (Number(e.detail) > 1) return   // the browser already knows it is a double
-          pictureTap(function () {
-            if (!state) return
-            togglePlay()
-            burst(state.paused ? ICON.play : ICON.pause)
-          })
+          queuePictureTap()
         })
         stageEl.addEventListener('dblclick', function (e) {
           if (!onPicture(e)) return
           if (typeof e.preventDefault === 'function') e.preventDefault()
-          pictureDouble(toggleFullscreen)
+          cancelPictureTap()
+          toggleFullscreen()
         })
         stageEl.addEventListener('wheel', function (e) {
-          if (!onPicture(e) || !state) return
-          if (typeof e.preventDefault === 'function') e.preventDefault()
-          const dir = wheelDirection(e)
-          if (!dir) return
-          if (e.shiftKey) { seekBy(dir * 10); osd((dir > 0 ? '+' : '−') + '10 s', 600); return }
-          setVolume((Number(state && state.volume) || 0) + dir * 5)
-          flashVolume()
-          render()
+          if (!onPicture(e) || !state || e.ctrlKey || e.metaKey || e.altKey) return
+          const dy = Number(e.deltaY), dx = Number(e.deltaX) || 0
+          if (!Number.isFinite(dy) || !dy || Math.abs(dx) >= Math.abs(dy)) return
+          if (e.shiftKey) {
+            if (typeof e.preventDefault === 'function') e.preventDefault()
+            seekBy(dy > 0 ? -10 : 10)
+            osd((dy > 0 ? '−' : '+') + '10 s', 600)
+            return
+          }
+          wheelVolume(e)
         }, { passive: false })
       }
       // Hovering the Up Next card holds its countdown; leaving resumes it.
       // Bound on the box, which survives every innerHTML repaint of the card.
       $('vt-upnext')?.addEventListener('pointerenter', function () { upNextHover = true })
       $('vt-upnext')?.addEventListener('pointerleave', function () { upNextHover = false })
+      $('vt-upnext')?.addEventListener('focusin', function () { upNextFocused = true })
+      $('vt-upnext')?.addEventListener('focusout', function (e) {
+        const box = $('vt-upnext')
+        upNextFocused = !!(box && e.relatedTarget && box.contains(e.relatedTarget))
+      })
       bindSeek()
       bindIdle()
       doc.addEventListener('keydown', onKey)
@@ -2731,6 +2790,9 @@
     }
 
     function open(info) {
+      resetSeekWork()
+      cancelPictureTap()
+      wheelRemainder = 0
       media = info || {}
       const root = $('vtheatre')
       if (!root) return
@@ -2758,6 +2820,7 @@
       lastSkipShown = null
       upNextDismissed = false
       upNextHover = false
+      upNextFocused = false
       // The still-watching prompt belongs to whatever card was on screen; a
       // new file starts without it. The autoAdvances count is deliberately NOT
       // reset here — an auto-advance re-opens the player through this very path,
@@ -2770,8 +2833,6 @@
       const ticks = $('vt-seek-chapters'); if (ticks) ticks.innerHTML = ''
       kbTarget = null
       clearTimeout(kbTimer)
-      // A click still waiting out the double-click window belonged to the old file.
-      if (pictureClickTimer) { clearTimeout(pictureClickTimer); pictureClickTimer = null }
       // A new file's frames are its own: drop the previous film's cached buckets
       // so a hover never shows a frame from what was playing before (roadmap #28).
       thumbCache.clear()
@@ -2807,6 +2868,8 @@
     // app be browsed while something plays, which is the whole point of
     // minimising rather than closing.
     function minimise() {
+      cancelPictureTap()
+      wheelRemainder = 0
       closeMenu()
       if (isFullscreen) toggleFullscreen(false)
       const root = $('vtheatre')
@@ -2851,6 +2914,8 @@
     }
 
     function restore() {
+      cancelPictureTap()
+      wheelRemainder = 0
       stopSettle()
       const mini = $('vmini')
       const root = $('vtheatre')
@@ -2977,6 +3042,9 @@
     // handler throws.
     let closing = false
     function close() {
+      resetSeekWork()
+      cancelPictureTap()
+      wheelRemainder = 0
       if (closing) return
       closing = true
       stopSettle()
