@@ -121,6 +121,13 @@ test('assistant Stop releases immediately, aborts the provider request, and name
   }
 })
 
+// Roadmap 056: a truncated Songs section says how many are shown and gives access to the rest.
+test('local search shows "N of M" and a Show all button that lifts the cap for this query', () => {
+  assert.ok(renderer.includes("if (state._searchTrackCapFor !== query) { state._searchTrackCap = 20; state._searchTrackCapFor = query }"))
+  assert.ok(renderer.includes('id="search-show-all-tracks">Show all ${matchTracksTotal} songs</button>'))
+  assert.ok(renderer.includes("state._searchTrackCap = Infinity\n    renderSearch(query)"))
+})
+
 // Roadmap 082: wishlist automation is explicit per entry.
 test('wishlist rows state auto vs notify, pause, last check and cadence; paused entries are skipped', () => {
   const M = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'main.js'), 'utf8')

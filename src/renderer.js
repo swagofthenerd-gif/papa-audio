@@ -13497,8 +13497,11 @@ function renderSearch(query) {
   // Display cap. Applied here, not before the filters, so an operator search
   // reports what it actually matched rather than what survived an arbitrary
   // 20-row window.
+  // Roadmap 056: the cap is a starting point, not a wall — "Show all N"
+  // lifts it for this query; a new query resets it.
+  if (state._searchTrackCapFor !== query) { state._searchTrackCap = 20; state._searchTrackCapFor = query }
   var matchTracksTotal = matchTracks.length
-  if (matchTracks.length > 20) matchTracks = matchTracks.slice(0, 20)
+  if (matchTracks.length > state._searchTrackCap) matchTracks = matchTracks.slice(0, state._searchTrackCap)
 
   var dymHTML = ''
   if (correction) dymHTML += _correctionChipHtml(correction.to, correction.from, 'search-page-undo')
@@ -13599,7 +13602,8 @@ function renderSearch(query) {
           </div>
           <span class="track-dur">${fmtDur(t.duration)}</span>
         </div>`).join('')
-      html += `</div></div>`
+      html += `</div>` + (matchTracksTotal > matchTracks.length
+        ? `<button class="lib-reset-btn search-show-all" id="search-show-all-tracks">Show all ${matchTracksTotal} songs</button>` : '') + `</div>`
     }
   } else {
     html += '<div class="empty-wrap" style="padding:60px 20px;text-align:center">' +
@@ -13666,6 +13670,10 @@ function renderSearch(query) {
 
   // From an empty library result, take the user to the P2P results that are
   // already loading rather than leaving them to scroll for them.
+  document.getElementById('search-show-all-tracks')?.addEventListener('click', function () {
+    state._searchTrackCap = Infinity
+    renderSearch(query)
+  })
   document.getElementById('search-empty-slsk-btn')?.addEventListener('click', function() {
     document.getElementById('slsk-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   })
