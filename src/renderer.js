@@ -33477,6 +33477,9 @@ function _slskEnqueue(items) {
   }
   return window.api.slskEnqueueDownloads({ items: list })
     .then(function (res) {
+      // Roadmap 079: the destination was checked before any transfer work.
+      // Not enough space or an unwritable folder comes back as a choice.
+      if (res && res.capacity && !res.ok) { _slskOfferCapacityChoice(list, res.capacity); return res }
       // A refusal used to be a silent null in main, so asking again for
       // something you had cancelled looked like a button that did nothing.
       // Offer the one thing the user wants: ask again and mean it.
@@ -33489,6 +33492,24 @@ function _slskEnqueue(items) {
       showSnackbar('Could not queue those downloads')
       return null
     })
+}
+
+// Roadmap 079: the destination cannot take the download. Unwritable → choose
+// another folder; not enough space → free some, choose another folder, or
+// go ahead anyway (the person may know a cleanup is already running).
+function _slskOfferCapacityChoice(list, cap) {
+  if (cap.kind === 'unwritable') {
+    showSnackbar(cap.text, 'Choose folder', async function () {
+      var res = await window.api.slskSetDownloadDir().catch(function () { return null })
+      if (res && res.ok !== false) _slskEnqueue(list)
+    }, 12000)
+    return
+  }
+  showSnackbar(cap.text, 'Download anyway', function () {
+    window.api.slskEnqueueDownloads({ items: list, ignoreCapacity: true })
+      .then(function (r) { showSnackbar('Queued ' + ((r && r.added) || list.length) + ' file' + (((r && r.added) || list.length) === 1 ? '' : 's') + ' — watch the free space') })
+      .catch(function () { showSnackbar('Could not queue those downloads') })
+  }, 15000)
 }
 
 // The scheduler refuses a file it has already been told to abandon or that ran

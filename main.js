@@ -7917,9 +7917,29 @@ async function dlSeedFolderSources(items) {
   }
 }
 
-ipcMain.handle('slsk-enqueue-downloads', async (_, { items, force }) => {
+// Roadmap 079: capacity and writability are checked before any transfer
+// work. The verdict comes from src/dl-capacity.js; this only gathers facts.
+const dlCapacity = require('./src/dl-capacity')
+async function _dlCapacityCheck(items) {
+  const dir = _downloadDir()
+  let writable = null
+  try { await fs.promises.access(dir, fs.constants.W_OK); writable = true } catch (_) { writable = false }
+  const need = (items || []).reduce((n, it) => n + (Number(it && it.size) || 0), 0)
+  // freeSpaceAt takes the parent of what it is given; pass a child so the
+  // measurement is of the folder itself.
+  return dlCapacity.check({ needBytes: need, freeBytes: freeSpaceAt(path.join(dir, 'x')), writable, dir })
+}
+
+ipcMain.handle('slsk-enqueue-downloads', async (_, { items, force, ignoreCapacity }) => {
   let added = 0
   const refused = []
+  if (!ignoreCapacity) {
+    const cap = await _dlCapacityCheck(items)
+    if (!cap.ok) {
+      console.warn('[papa] enqueue refused on capacity:', cap.kind, cap.text)
+      return { ok: false, added: 0, refused: [], capacity: cap, stats: dlSched.stats(dlState) }
+    }
+  }
   // Record the album-group membership for verification/organize (#49/#50). The
   // group username is the primary source's username (the one the folder came
   // from); a file's own filename gives the folder path.

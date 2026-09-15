@@ -50,6 +50,19 @@ test('the queue panel wires a clear-played action to the tested helper', () => {
   assert.ok(renderer.includes("'Clear played'"), 'no Clear played button label')
 })
 
+// Roadmap 079: capacity is checked before transfer work and refused as a choice.
+test('downloads are checked for space and writability before enqueue, and refusals offer a way on', () => {
+  const M = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'main.js'), 'utf8')
+  assert.ok(M.includes("require('./src/dl-capacity')"))
+  const h = M.slice(M.indexOf("ipcMain.handle('slsk-enqueue-downloads'"), M.indexOf('function dlQueueFiles()'))
+  assert.ok(/if \(!ignoreCapacity\) \{\n\s+const cap = await _dlCapacityCheck\(items\)\n\s+if \(!cap\.ok\) \{/.test(h), 'the check runs before addItems')
+  assert.ok(h.indexOf('_dlCapacityCheck') < h.indexOf('dlSched.addItems'), 'and before anything is queued')
+  assert.ok(renderer.includes('_slskOfferCapacityChoice(list, res.capacity)'))
+  assert.ok(renderer.includes("showSnackbar(cap.text, 'Choose folder'"), 'unwritable offers a folder change')
+  assert.ok(renderer.includes("showSnackbar(cap.text, 'Download anyway'"), 'low space offers to proceed knowingly')
+  assert.ok(renderer.includes('ignoreCapacity: true'))
+})
+
 // Roadmap 084: the renderer reports a disconnected root and dims its albums.
 test('unavailable albums are shown as not connected, not removed', () => {
   assert.ok(renderer.includes('_reportUnavailableRoots(data.unavailableRoots)'))
