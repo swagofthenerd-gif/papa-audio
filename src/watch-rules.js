@@ -7,6 +7,8 @@
 //   fresh    under 5 % in (or under 30 s), or no usable duration: play from
 //            the start, no progress bar, not in Continue Watching.
 //   partial  5 %–92 % in: offer resume, show the bar, list it, mark started.
+//            The 5 % is capped at two minutes (V111): on a two-hour film five
+//            minutes in is real progress, and 5 % would have thrown it away.
 //   watched  92 % or more: watched. Credits are the last 8 %.
 ;(function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory()
@@ -15,6 +17,8 @@
   const STARTED_AT = 0.05
   const WATCHED_AT = 0.92
   const MIN_SECONDS = 30
+  // The percentage threshold never asks for more than this many seconds.
+  const STARTED_CAP_SECONDS = 120
 
   function _n(v) { const x = Number(v); return Number.isFinite(x) ? x : 0 }
 
@@ -29,7 +33,7 @@
     if (d <= 0) return 'fresh'
     const r = p / d
     if (r >= WATCHED_AT) return 'watched'
-    if (r >= STARTED_AT && p >= MIN_SECONDS) return 'partial'
+    if (p >= MIN_SECONDS && (r >= STARTED_AT || p >= STARTED_CAP_SECONDS)) return 'partial'
     return 'fresh'
   }
 
@@ -49,5 +53,5 @@
     return { position: _n(position), left: Math.max(0, _n(duration) - _n(position)) }
   }
 
-  return { STARTED_AT, WATCHED_AT, MIN_SECONDS, ratio, status, isWatched, isPartial, progressPct, resumeOffer }
+  return { STARTED_AT, WATCHED_AT, MIN_SECONDS, STARTED_CAP_SECONDS, ratio, status, isWatched, isPartial, progressPct, resumeOffer }
 })
