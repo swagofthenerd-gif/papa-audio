@@ -1345,6 +1345,15 @@ h2.section-title { font-size:18px; font-weight:700; }
 .queue-row:hover { background:var(--glass); }
 .queue-row.playing { background:var(--accent-dim); }
 .queue-row.playing .queue-row-title { color:var(--accent); }
+/* Roadmap 130: the playing row is not marked by colour alone — a ▶ before the
+   title says it to anyone who cannot tell the accent from the text. */
+.queue-row.playing .queue-row-title::before { content:'\25B6\00A0'; font-size:9px; vertical-align:middle; }
+.track-row.playing .track-title::before { content:'\25B6\00A0'; font-size:9px; vertical-align:middle; }
+/* Unavailable / failed / complete states carry text or an icon already
+   (MISSING and NOT CONNECTED badges, ✓ ticks, the failed tab); a selected row
+   gets an outline and a ✓ as well as its fill. */
+.track-row.row-selected, .queue-row.row-selected { outline:1px solid var(--accent); outline-offset:-1px; }
+.track-row.row-selected .track-num::after { content:' \2713'; font-size:10px; }
 .queue-row.dragging { opacity:.4; }
 .queue-row.drag-over-top { box-shadow:inset 0 2px 0 var(--accent); }
 .queue-row.drag-over-bottom { box-shadow:inset 0 -2px 0 var(--accent); }

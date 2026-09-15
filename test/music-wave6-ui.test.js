@@ -121,6 +121,15 @@ test('assistant Stop releases immediately, aborts the provider request, and name
   }
 })
 
+// Roadmap 130: playing and selected are not colour alone.
+test('the playing row carries a ▶ and a selected row an outline and ✓, not only a colour', () => {
+  const CSS = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'styles.css'), 'utf8')
+  assert.match(CSS, /\.queue-row\.playing \.queue-row-title::before \{ content:'\\25B6/)
+  assert.match(CSS, /\.track-row\.playing \.track-title::before \{ content:'\\25B6/)
+  assert.match(CSS, /\.track-row\.row-selected, \.queue-row\.row-selected \{ outline:1px solid var\(--accent\)/)
+  assert.match(CSS, /\.track-row\.row-selected \.track-num::after \{ content:' \\2713'/)
+})
+
 // Roadmap 121: mixed-script metadata reads in its own direction.
 test('metadata text elements use unicode-bidi: plaintext', () => {
   const CSS = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'styles.css'), 'utf8')
