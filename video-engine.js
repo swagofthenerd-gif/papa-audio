@@ -220,6 +220,9 @@ function normalizeTrack(raw, index) {
     title: raw.title ?? null,
     lang: raw.lang ?? null,
     codec: raw.codec ?? null,
+    // Measured, not inferred from a filename (roadmap V052): mpv's own
+    // channel count for an audio track, when it reports one.
+    channels: Number(raw['demux-channel-count']) || null,
     default: raw.default === true,
     forced: raw.forced === true,
     external: raw.external === true,

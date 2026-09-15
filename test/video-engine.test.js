@@ -519,7 +519,7 @@ test('getState returns a copy the caller cannot mutate into the engine', async (
 test('getTracks normalizes the mpv track-list', async () => {
   const list = [
     { id: 1, type: 'video', codec: 'h264' },
-    { id: 2, type: 'audio', title: '5.1', lang: 'eng', codec: 'ac3', default: true, forced: false, external: false },
+    { id: 2, type: 'audio', title: '5.1', lang: 'eng', codec: 'ac3', 'demux-channel-count': 6, default: true, forced: false, external: false },
     { id: 3, type: 'sub', title: 'English', lang: 'eng', codec: 'ass', default: false, forced: false, external: true },
   ]
   const f = await fakeMpv2({ props: { 'track-list': list } })
@@ -527,8 +527,9 @@ test('getTracks normalizes the mpv track-list', async () => {
   await eng.start()
   const tracks = await eng.getTracks()
   assert.strictEqual(tracks.length, 2)
-  assert.deepStrictEqual(tracks[0], { id: 2, type: 'audio', title: '5.1', lang: 'eng', codec: 'ac3', default: true, forced: false, external: false })
-  assert.deepStrictEqual(tracks[1], { id: 3, type: 'sub', title: 'English', lang: 'eng', codec: 'ass', default: false, forced: false, external: true })
+  // V052: the measured channel count rides along (null when mpv has none).
+  assert.deepStrictEqual(tracks[0], { id: 2, type: 'audio', title: '5.1', lang: 'eng', codec: 'ac3', channels: 6, default: true, forced: false, external: false })
+  assert.deepStrictEqual(tracks[1], { id: 3, type: 'sub', title: 'English', lang: 'eng', codec: 'ass', channels: null, default: false, forced: false, external: true })
   eng.stop(); f.close()
 })
 

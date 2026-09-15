@@ -1011,3 +1011,15 @@ test('Stop reads as stop-and-close, Back as keep-watching, and the help says Esc
   assert.match(H, /id="vt-back" aria-label="Keep watching and go back to browsing"/)
   assert.match(R, /keys: \['Esc'\], desc: 'Back out one level[^']*Keeps playing; Stop \(■\) ends it'/)
 })
+
+// V052: inferred source badges are labelled as such; measured ones replace them.
+test('source badges say whether they were read from the name or measured, and never invent a layout', () => {
+  const R = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
+  const E = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'video-engine.js'), 'utf8')
+  assert.ok(R.includes("cls: 'video-source-badge inferred'") && R.includes("title: 'Read from the release name — not checked until it plays'"))
+  assert.ok(R.includes("(s.audioLayout || 'audio ?')"), 'no layout is not stereo')
+  assert.ok(!R.includes("(s.audioLayout || 'stereo')"))
+  assert.ok(R.includes("cls: 'video-source-badge measured'"))
+  assert.ok(R.includes('_recordMeasuredStream(res.tracks)'), 'measured after the first frame')
+  assert.ok(E.includes("channels: Number(raw['demux-channel-count']) || null"), 'the engine passes the measured channel count')
+})

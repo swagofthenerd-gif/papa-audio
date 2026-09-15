@@ -1979,6 +1979,9 @@ h2.section-title { font-size:18px; font-weight:700; }
 /* Roadmap 110: the provider disclosure lists. */
 .mcs-disclosure { margin:2px 0 6px; padding-left:18px; font-size:11px; color:var(--text3); }
 .mcs-disclosure li { margin:1px 0; }
+/* Roadmap V052: a badge read from a release name is a guess (dotted); a measured one is solid. */
+.video-source-badge.inferred { border-bottom:1px dotted currentColor; }
+.video-source-badge.measured { border-bottom:1px solid currentColor; }
 .folder-item-empty { color:var(--text3); font-style:italic; cursor:default; }
 .setup-hint { font-size:12px; color:var(--text3); margin:8px 0 0; }
 .setup-chosen { color:var(--accent) !important; font-weight:600; word-break:break-all; }

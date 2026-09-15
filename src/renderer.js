@@ -4263,6 +4263,15 @@ function _handleVideoEvent(payload) {
     if (payload.web) _disarmStartWatch()
     _player.setStageMessage('')
     _loadSkipSegments()
+    // Roadmap V052: what mpv actually found replaces the badge the release
+    // name guessed. Asked once per play, a moment after the first frame so
+    // the track list is populated.
+    setTimeout(function () {
+      if (!window.api || typeof window.api.videoTracks !== 'function') return
+      window.api.videoTracks().then(function (res) {
+        if (res && res.ok) _recordMeasuredStream(res.tracks)
+      }).catch(function () {})
+    }, 1500)
     _offerResume(_player._state())
     _setUpNextInfo()
     // Resolving the next episode's sources now means advancing later is
@@ -10624,8 +10633,42 @@ function _showUnlikelyStreams(target) {
   _renderPreferredSourceChip(target)
 }
 
+// Roadmap V052: a badge parsed out of a release name is a guess until the
+// stream has been opened and mpv has said what is in it. Both are shown
+// distinctly: inferred badges are dotted with a tooltip saying so and never
+// invent a layout ("audio ?" rather than "stereo"); once a source has played,
+// its measured layout and codec replace the guess with a "measured" tooltip.
+function _videoStreamBadge(s) {
+  const m = s.measured
+  if (m && (m.audioLayout || m.codec)) {
+    const parts = [s.quality || 'unknown', m.audioLayout || 'audio ?']
+    if (m.codec) parts.push(String(m.codec).toUpperCase())
+    return { text: parts.join(' · '), cls: 'video-source-badge measured', title: 'Measured from the stream when it last played' }
+  }
+  return {
+    text: (s.quality || 'unknown') + ' · ' + (s.audioLayout || 'audio ?'),
+    cls: 'video-source-badge inferred',
+    title: 'Read from the release name — not checked until it plays',
+  }
+}
+// Called once the player reports its tracks: remember what was measured on
+// the stream that is playing and repaint its row.
+function _recordMeasuredStream(tracks) {
+  const s = _watch && _watch.pick
+  if (!s || !Array.isArray(tracks)) return
+  const audio = tracks.find(t => t && t.type === 'audio' && t.default) || tracks.find(t => t && t.type === 'audio')
+  if (!audio) return
+  const ch = Number(audio.channels) || 0
+  const layout = ch >= 8 ? '7.1' : ch >= 6 ? '5.1' : ch === 2 ? 'stereo' : ch === 1 ? 'mono' : null
+  s.measured = { audioLayout: layout, codec: audio.codec || null, channels: ch || null }
+  const idx = (_videoStreams || []).indexOf(s)
+  const row = idx >= 0 ? document.querySelector('.video-source-row[data-idx="' + idx + '"] .video-source-badge') : null
+  if (row) { const b = _videoStreamBadge(s); row.textContent = b.text; row.className = b.cls; row.title = b.title }
+}
+
 function _videoStreamRow(s, i) {
-  const badge = (s.quality || 'unknown') + ' · ' + (s.audioLayout || 'stereo')
+  const b = _videoStreamBadge(s)
+  const badge = b.text
   const torrent = s.kind === 'torrent' ? '<span class="video-torrent-badge">torrent</span>' : ''
   const subDub = (s.sub != null && s.dub != null)
     ? '<span class="video-source-tag">' + (s.sub && !s.dub ? 'sub' : s.dub && !s.sub ? 'dub' : 'sub+dub') + '</span>'
@@ -10652,7 +10695,7 @@ function _videoStreamRow(s, i) {
   const groupTag = rel && rel.group ? '<span class="video-source-group" title="Release group">' + esc(rel.group) + '</span>' : ''
   const batchTag = rel && rel.batch && !s.isPack ? '<span class="video-source-tag">batch</span>' : ''
   return '<div class="video-source-row" data-idx="' + i + '"' + (s.title ? ' title="' + esc(s.title) + '"' : '') + '>' +
-    '<span class="video-source-badge">' + esc(badge) + '</span>' +
+    '<span class="' + b.cls + '" title="' + esc(b.title) + '">' + esc(badge) + '</span>' +
     groupTag + torrent + subDub + batchTag + unlikelyTag +
     seedStat + sizeStat +
     '<span class="video-source-label">' + esc(label) + '</span>' +
