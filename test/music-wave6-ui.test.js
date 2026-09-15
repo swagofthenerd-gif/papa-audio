@@ -121,6 +121,15 @@ test('assistant Stop releases immediately, aborts the provider request, and name
   }
 })
 
+// Roadmap 103: the assistant's welcome reflects real capabilities and names what is off.
+test('the agent welcome is built from connections and says what is not available', () => {
+  const fn = renderer.slice(renderer.indexOf('function _paintAgentWelcome()'), renderer.indexOf('async function _initSettingsPanel()'))
+  assert.ok(fn.includes("const slskOn = !!(slsk && slsk.status && slsk.status.connected)"))
+  assert.ok(fn.includes("if (!slskOn) cannot.push('Soulseek is not connected, so downloading is off until it is')"))
+  assert.ok(fn.includes("if (!online) cannot.push("))
+  assert.ok(renderer.includes("if (chatState.open) { try { _paintAgentWelcome() } catch (_) {} }"), 'refreshed each time the drawer opens')
+})
+
 // Roadmap 094: the signal path is stated stage by stage, with unknowns labelled.
 test('the stats row carries a source → decoder → processing → output tooltip that never claims a device rate', () => {
   const fn = renderer.slice(renderer.indexOf('function _signalPathText('), renderer.indexOf('function updatePlayBtn('))

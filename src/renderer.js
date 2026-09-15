@@ -22476,9 +22476,37 @@ function _paintProviderDisclosure(provider) {
 }
 
 // ── Settings panel ───────────────────────────────────────────────────────────
+// Roadmap 103: the assistant's welcome says what it can actually do right
+// now — from the real connections and the real tool list — and names what
+// is not available rather than offering an example that would fail.
+function _paintAgentWelcome() {
+  const w = document.querySelector('.mcs-welcome')
+  if (!w) return
+  const p = chatState.provider || 'ollama'
+  const slskOn = !!(slsk && slsk.status && slsk.status.connected)
+  const online = state.isOnline !== false
+  const lib = state.library.length > 0
+  const can = []
+  if (lib) can.push('play from your library (<em>"play Opeth"</em>, <em>"shuffle my library"</em>)')
+  can.push('control playback (<em>"pause"</em>, <em>"next"</em>, <em>"volume 40"</em>)')
+  if (online) can.push('stream instantly from YouTube (<em>"play Kind of Blue"</em>)')
+  if (slskOn) can.push('find and download lossless copies from Soulseek (<em>"download Kind of Blue Miles Davis"</em>)')
+  can.push('manage the queue and playlists, and answer questions about your collection')
+  const cannot = []
+  if (!slskOn) cannot.push('Soulseek is not connected, so downloading is off until it is')
+  if (!online) cannot.push('you are offline, so only your library and playback controls work')
+  if (!lib) cannot.push('no music folder is set yet, so library requests will find nothing')
+  const where = p === 'ollama' ? 'Runs on this computer (Ollama).' : 'Runs on ' + (p === 'claude' ? 'Anthropic' : 'OpenAI') + ' — see Settings for what is sent.'
+  w.innerHTML = '<svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>' +
+    '<p>Right now I can: ' + can.join('; ') + '.</p>' +
+    (cannot.length ? '<p class="mcs-examples">Not right now: ' + cannot.map(esc).join('; ') + '.</p>' : '') +
+    '<p class="mcs-examples">' + esc(where) + '</p>'
+}
+
 async function _initSettingsPanel() {
   const saved = await window.api.getApiKeys().catch(() => ({ provider: 'ollama' }))
   chatState.provider = saved.provider || 'ollama'
+  _paintAgentWelcome()
   const sel = document.getElementById('mcs-provider-sel')
   if (sel) sel.value = chatState.provider
   _updateProviderRows(chatState.provider)
@@ -24642,6 +24670,7 @@ async function _refreshOllamaModels(preselect) {
 function toggleChatSidebar() {
   const wasOpen = chatState.open
   chatState.open = !chatState.open
+  if (chatState.open) { try { _paintAgentWelcome() } catch (_) {} }
   const mcs    = document.getElementById('mcs')
   const btn    = document.getElementById('btn-agent-chat')
   const layout = document.querySelector('.layout')
