@@ -105,16 +105,16 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | A097 | Fixed `11e3e2c` |
 | A098 | Fixed `5a988f3` |
 | A099 | Partial — EQ has enable (bypass), reset and preset delete; preview/restore-unsaved pending |
-| A100 | Pending review/implementation |
+| A100 | Partial — channel counts come from ffprobe/music-metadata for local files; download-source surround badges are still name-inferred |
 | A101 | Pending review/implementation |
 | A102 | Pending review/implementation |
-| A103 | Pending review/implementation |
+| A103 | Fixed `7e5d047` |
 | A104 | Pending review/implementation |
 | A105 | Pending review/implementation |
 | A106 | Fixed `037e34b` — Stop aborts + honest |
 | A107 | Pending review/implementation |
 | A108 | Pending review/implementation |
-| A109 | Pending review/implementation |
+| A109 | Fixed — edit/delete/exclude per insight |
 | A110 | Fixed `ece3972` — disclosure + cloud scrubbing |
 | A111 | Pending review/implementation |
 | A112 | Pending review/implementation |
