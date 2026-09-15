@@ -133,7 +133,7 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | A125 | Pending review/implementation |
 | A126 | Pending review/implementation |
 | A127 | Pending review/implementation |
-| A128 | Pending review/implementation |
+| A128 | Fixed — tooltip, hover pause, reduced-motion ellipsis |
 | A129 | Pending review/implementation |
 | A130 | Partial — credentials scrubbed from bundles (A136); viewing history not yet excludable |
 | A131 | Pending review/implementation |
@@ -197,13 +197,13 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | V029 | Pending review/implementation |
 | V030 | Pending review/implementation |
 | V031 | Pending review/implementation |
-| V032 | Pending review/implementation |
+| V032 | Partial (structural) — one _videoState drives request, title, watch key and next target; season tickets guard late metadata (V033); runtime check pending |
 | V033 | Pending review/implementation |
-| V034 | Pending review/implementation |
+| V034 | Fixed `90c2816` |
 | V035 | Pending review/implementation |
 | V036 | Partial — source fix and targeted tests; desktop verification pending |
 | V037 | Fixed `e1e9fc4` |
-| V038 | Pending review/implementation |
+| V038 | Already satisfied — episode-list.js labels future dates "Airs …" in local time, rows carry `unaired`, Play is withheld |
 | V039 | Pending review/implementation |
 | V040 | Pending review/implementation |
 | V041 | Fixed `58293d6` |
@@ -222,11 +222,11 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | V054 | Pending review/implementation |
 | V055 | Fixed `012c192` — pack pick verdict |
 | V056 | Pending review/implementation |
-| V057 | Pending review/implementation |
+| V057 | Partial — single in-flight auto-switch guard and session epochs exist (other session); runtime check pending |
 | V058 | Pending review/implementation |
 | V059 | Pending review/implementation |
-| V060 | Pending review/implementation |
-| V061 | Pending review/implementation |
+| V060 | Partial — detail/season tickets and current() guards cover discovery/probing/opening; runtime check pending |
+| V061 | Already satisfied in source — Finding sources / Still connecting / Buffering N% / Downloading N% · Mbps · peers / stuck words / error; runtime check pending |
 | V062 | Pending review/implementation |
 | V063 | Pending review/implementation |
 | V064 | Pending review/implementation |
@@ -253,7 +253,7 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | V085 | Pending review/implementation |
 | V086 | Pending review/implementation |
 | V087 | Pending review/implementation |
-| V088 | Pending review/implementation |
+| V088 | Fixed `5428081` |
 | V089 | Pending review/implementation |
 | V090 | Pending review/implementation |
 | V091 | Pending review/implementation |

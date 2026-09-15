@@ -96,6 +96,9 @@ Each F item re-checked on this branch, not assumed from the `main` review.
 | 2026-09-15 | V055 | `012c192` | pack pick verdict; unmatched episode is announced |
 | 2026-09-15 | V037 | `e1e9fc4` | unaired next season → honest end, no Up Next |
 | 2026-09-15 | V041, V042 | `58293d6` | numbering line above sources; override dialog previews mapping, progress untouched |
+| 2026-09-15 | V034 | `90c2816` | double-episode ranges; SP/Special tags stripped |
+| 2026-09-15 | V088 | `5428081` | online subs scored against the playing release; source + sync verdict on the row |
+| 2026-09-15 | 128 | see log | ticker: tooltip, pause on hover, off under reduced motion |
 
 ## F list: all resolved (134 deferred to runtime). Now working through P0 E-items
 
