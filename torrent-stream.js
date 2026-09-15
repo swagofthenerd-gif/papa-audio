@@ -1211,4 +1211,4 @@ class TorrentStreamer extends EventEmitter {
   }
 }
 
-module.exports = { TorrentStreamer, PREFETCH_BYTES, PROGRESS_THROTTLE_MS, buildFileUrl, pickVideoFile, matchesWantedEpisode, episodeNumberOf, DEFAULT_STREAM_ROOT, streamRoot, setStreamRoot, purgeOrphanStreams, newStreamDir, headBytesReady, VIDEO_EXT, SUBTITLE_EXT }
+module.exports = { TorrentStreamer, PREFETCH_BYTES, PROGRESS_THROTTLE_MS, buildFileUrl, pickVideoFile, matchesWantedEpisode, episodeNumberOf, DEFAULT_STREAM_ROOT, streamRoot, setStreamRoot, purgeOrphanStreams, newStreamDir, headBytesReady, VIDEO_EXT, SUBTITLE_EXT, JUNK }

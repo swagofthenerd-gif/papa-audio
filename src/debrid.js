@@ -22,6 +22,13 @@
 
 const API = 'https://api.real-debrid.com/rest/1.0'
 
+// The SAME episode matcher the torrent path uses. This module used to pick the
+// largest video in a pack, full stop, so a debrid-served season pack handed
+// back an arbitrary episode while the torrent path got the right one — the two
+// halves of the app disagreeing about which episode "episode 9" is. One
+// definition, used by both.
+const { matchesWantedEpisode, episodeNumberOf, JUNK } = require('../torrent-stream')
+
 // The file extensions worth streaming. A pack's .nfo, .txt and sample clips are
 // never the episode; picking the largest video file is the same heuristic the
 // torrent streamer uses, and it is right for both a single film and a season
@@ -78,6 +85,18 @@ function infoHashOf(magnet) {
   return m ? m[1].toLowerCase() : ''
 }
 
+// RealDebrid reports a file as a path inside the torrent ('/Season 1/Show - 09.mkv').
+// The episode number lives in the filename; the folder is the season.
+function baseNameOf(path) {
+  const parts = String(path || '').split(/[/\\]/)
+  return parts[parts.length - 1] || ''
+}
+
+function folderOf(path) {
+  const parts = String(path || '').split(/[/\\]/).filter(Boolean)
+  return parts.length >= 2 ? parts[parts.length - 2] : ''
+}
+
 function createDebrid(opts = {}) {
   const provider = opts.provider || 'realdebrid'
   // The token is read through a getter so a token changed in Settings is picked
@@ -97,6 +116,25 @@ function createDebrid(opts = {}) {
   // resolved once should not pay the whole addMagnet/poll/unrestrict round trip
   // again in the same session (a source switch back and forth, a re-watch).
   const linkCache = new Map()
+
+  // hash → the torrent's file list and restricted links, as RealDebrid last
+  // reported them. Kept because a season pack has one entry per episode and
+  // the strip needs all of them, while linkCache only ever held the one file
+  // that happened to be played. RD's /d/ links outlive the torrent entry, so
+  // this stays usable for switching episodes even after the torrent is gone
+  // from the account.
+  const infoCache = new Map()
+
+  // A pack's episodes are different files behind one infohash, so the link
+  // cache cannot be keyed on the hash alone — asking for episode 3 after
+  // episode 1 would be handed episode 1's link. Requests that name no episode
+  // keep the bare hash, so every existing caller behaves exactly as before.
+  function keyFor(hash, want) {
+    const ep = Number(want && want.episode)
+    if (!hash || !Number.isFinite(ep)) return hash
+    const se = Number(want && want.season)
+    return hash + '#' + (Number.isFinite(se) ? se : '') + 'e' + ep
+  }
 
   function authHeaders() {
     const token = getToken()
@@ -147,29 +185,56 @@ function createDebrid(opts = {}) {
   // Pick the file to stream out of an RD torrent-info `files` array. RD numbers
   // files from 1 and marks the selected ones with `selected:1`; the largest
   // selected video wins, falling back to the largest video of any, then null.
-  function pickVideoFile(files) {
+  function pickVideoFile(files, want) {
     const list = Array.isArray(files) ? files : []
     const videos = list.filter(f => f && VIDEO_EXT.test(String(f.path || '')))
     if (!videos.length) return null
     const selected = videos.filter(f => Number(f.selected) === 1)
     const pool = selected.length ? selected : videos
+
+    // In a pack the requested episode is the answer, never the biggest file.
+    // Mirrors pickVideoFile in torrent-stream.js, including the "several
+    // matches means several encodes of the same episode, take the largest"
+    // rule — a v2 and a v1 of episode 9 are both episode 9.
+    if (want && want.episode != null && pool.length > 1) {
+      const matches = pool.filter(f => matchesWantedEpisode(baseNameOf(f.path), want))
+      if (matches.length) {
+        return matches.reduce((best, f) =>
+          (!best || (Number(f.bytes) || 0) > (Number(best.bytes) || 0)) ? f : best, null)
+      }
+      // No match: fall through to the largest. A pack that does not hold the
+      // episode is better answered with something playable than with nothing,
+      // and the caller sees the real file name in the strip either way.
+    }
     return pool.reduce((best, f) =>
       (!best || (Number(f.bytes) || 0) > (Number(best.bytes) || 0)) ? f : best, null)
   }
 
   // The whole flow. Returns the direct HTTPS URL, or throws DebridError. The
   // caller races this against its own budget and falls back to P2P on any throw.
-  async function resolveMagnet(magnet) {
+  async function resolveMagnet(magnet, want) {
     if (!magnet || typeof magnet !== 'string') {
       throw new DebridError('no magnet to resolve', 'NO_MAGNET')
     }
     const hash = infoHashOf(magnet)
+    const key = keyFor(hash, want)
     // A magnet already registered here only needs a new unrestricted link:
     // two round trips instead of the whole add/select/poll flow.
-    const held = hash ? linkCache.get(hash) : null
+    const held = key ? linkCache.get(key) : null
     if (held && held.restricted) {
       const fresh = await _unrestrict(held.restricted)
-      if (fresh) { linkCache.set(hash, { url: fresh, restricted: held.restricted, at: now(), ok: false }); return fresh }
+      if (fresh) { linkCache.set(key, { url: fresh, restricted: held.restricted, at: now(), ok: false }); return fresh }
+    }
+    // The file list from an earlier resolve answers a different episode of the
+    // same pack without going near the network again.
+    const remembered = hash ? infoCache.get(hash) : null
+    if (remembered) {
+      const pick = pickVideoFile(remembered.files, want)
+      const restricted = pick ? _restrictedFor(remembered, pick) : null
+      if (restricted) {
+        const fresh = await _unrestrict(restricted)
+        if (fresh) { linkCache.set(key, { url: fresh, restricted, at: now(), ok: false }); return fresh }
+      }
     }
 
     // 1. Register the magnet.
@@ -211,12 +276,13 @@ function createDebrid(opts = {}) {
     // 4. Match the picked file to its /d/ link. RD's `links` are in the order of
     //    the *selected* files, so the video's position among selected files is
     //    its index into links.
-    const file = pickVideoFile(info.files)
+    // Every file and every link, kept before anything narrows to one: this is
+    // the only moment RD reports the whole pack, and the episode strip needs
+    // all of it.
+    if (hash) infoCache.set(hash, { files: Array.isArray(info.files) ? info.files : [], links: Array.isArray(info.links) ? info.links : [], at: now() })
+    const file = pickVideoFile(info.files, want)
     if (!file) throw new DebridError('no video file in this magnet', 'NO_VIDEO')
-    const selected = (Array.isArray(info.files) ? info.files : []).filter(f => Number(f.selected) === 1)
-    const at = selected.findIndex(f => f && f.id === file.id)
-    const links = Array.isArray(info.links) ? info.links : []
-    const restricted = (at >= 0 && links[at]) || links[0]
+    const restricted = _restrictedFor(infoCache.get(hash) || { files: info.files, links: info.links }, file)
     if (!restricted) throw new DebridError('RealDebrid returned no download link', 'NO_LINK')
 
     // 5. Unrestrict into the real, streamable HTTPS URL.
@@ -228,11 +294,23 @@ function createDebrid(opts = {}) {
     // ok:false until something has actually fetched a byte from it — an
     // unproved link must never be offered as instant (found by test, and it
     // is the same class of bug as the stale link that started all this).
-    if (hash) linkCache.set(hash, { url, restricted, at: now(), ok: false })
+    if (key) linkCache.set(key, { url, restricted, at: now(), ok: false })
     return url
     } finally {
       await abandon()
     }
+  }
+
+  // The /d/ link belonging to one file. RD's `links` array is in the order of
+  // the SELECTED files, so a file's position among the selected ones is its
+  // index into links — not its position in `files`, which counts the .nfo and
+  // the sample too.
+  function _restrictedFor(info, file) {
+    const files = Array.isArray(info && info.files) ? info.files : []
+    const links = Array.isArray(info && info.links) ? info.links : []
+    const selected = files.filter(f => Number(f.selected) === 1)
+    const at = file ? selected.findIndex(f => f && f.id === file.id) : -1
+    return (at >= 0 && links[at]) || links[0] || null
   }
 
   // Turn a restricted /d/ link into a playable one. Returns null rather than
@@ -273,28 +351,107 @@ function createDebrid(opts = {}) {
   // The link to actually play: a held one when it is young AND still alive,
   // otherwise a freshly minted one. This is what the play path must use —
   // cachedLink() below is only for deciding whether to show a badge.
-  async function linkFor(magnet) {
+  async function linkFor(magnet, want) {
     const hash = infoHashOf(magnet)
-    const held = hash ? linkCache.get(hash) : null
+    const key = keyFor(hash, want)
+    const held = key ? linkCache.get(key) : null
     const bless = url => {
-      if (hash) {
-        const e = linkCache.get(hash)
+      if (key) {
+        const e = linkCache.get(key)
         if (e) e.ok = true
-        else linkCache.set(hash, { url, restricted: null, at: now(), ok: true })
+        else linkCache.set(key, { url, restricted: null, at: now(), ok: true })
       }
       return url
     }
     if (held && held.url && (now() - held.at) < LINK_TTL_MS && await _alive(held.url)) return bless(held.url)
     // Stale, or dead: resolveMagnet re-mints from the restricted link it kept.
-    const fresh = await resolveMagnet(magnet)
+    const fresh = await resolveMagnet(magnet, want)
     if (fresh && await _alive(fresh)) return bless(fresh)
     // Nothing usable. Drop the url but keep `restricted`, which still lets a
     // later attempt re-mint in two round trips instead of the whole flow.
-    if (hash) {
-      const e = linkCache.get(hash)
+    if (key) {
+      const e = linkCache.get(key)
       if (e) { e.url = null; e.ok = false }
     }
     throw new DebridError('RealDebrid link would not serve', 'DEAD_LINK')
+  }
+
+  // Every episode RealDebrid is holding behind this magnet, in the shape the
+  // episode strip already speaks — the same shape TorrentStreamer.files()
+  // returns, so the strip needs no knowledge of where the files came from.
+  // `index` is RD's own file id, which is what linkForFile() takes back.
+  //
+  // This exists because the debrid path never built a file list at all: it
+  // resolved one URL and played it, so a season pack served by debrid showed
+  // no episode strip and could not be switched, while the same pack served by
+  // peers could.
+  async function packFiles(magnet, want) {
+    const hash = infoHashOf(magnet)
+    if (!hash) return []
+    let info = infoCache.get(hash)
+    if (!info) {
+      // Nothing remembered: resolving fills infoCache as a side effect. A
+      // failure here is not worth reporting — the strip is a convenience.
+      try { await resolveMagnet(magnet, want) } catch (_) { return [] }
+      info = infoCache.get(hash)
+    }
+    const files = Array.isArray(info && info.files) ? info.files : []
+    const current = pickVideoFile(files, want)
+    const groupOrder = new Map()
+    return files
+      .filter(f => f && Number(f.selected) === 1 &&
+        VIDEO_EXT.test(String(f.path || '')) &&
+        !JUNK.test(String(f.path || '')) &&
+        !/\bnc(?:op|ed)\d*\b/i.test(baseNameOf(f.path)))
+      .map(f => {
+        const group = folderOf(f.path)
+        if (!groupOrder.has(group)) groupOrder.set(group, groupOrder.size)
+        return {
+          index: Number(f.id),
+          name: baseNameOf(f.path),
+          group,
+          length: Number(f.bytes) || 0,
+          episode: episodeNumberOf(baseNameOf(f.path)),
+          current: !!(current && current.id === f.id),
+        }
+      })
+      .sort((a, b) => {
+        const g = groupOrder.get(a.group) - groupOrder.get(b.group)
+        if (g) return g
+        if (a.episode == null && b.episode == null) return a.name.localeCompare(b.name)
+        if (a.episode == null) return 1
+        if (b.episode == null) return -1
+        return a.episode - b.episode
+      })
+  }
+
+  // A playable link for one named file of a pack — what switching episodes
+  // needs. Keyed per file, so switching back and forth costs one unrestrict
+  // rather than the whole flow.
+  async function linkForFile(magnet, fileId) {
+    const hash = infoHashOf(magnet)
+    const id = Number(fileId)
+    if (!hash || !Number.isFinite(id)) throw new DebridError('no such file in this release', 'NO_FILE')
+    const key = hash + '/' + id
+    const held = linkCache.get(key)
+    if (held && held.url && (now() - held.at) < LINK_TTL_MS && await _alive(held.url)) {
+      held.ok = true
+      return held.url
+    }
+    let info = infoCache.get(hash)
+    if (!info) {
+      try { await resolveMagnet(magnet) } catch (_) {}
+      info = infoCache.get(hash)
+    }
+    const files = Array.isArray(info && info.files) ? info.files : []
+    const file = files.find(f => f && Number(f.id) === id)
+    if (!file) throw new DebridError('no such file in this release', 'NO_FILE')
+    const restricted = _restrictedFor(info, file)
+    if (!restricted) throw new DebridError('RealDebrid returned no download link', 'NO_LINK')
+    const url = await _unrestrict(restricted)
+    if (!url) throw new DebridError('RealDebrid did not return a direct link', 'NO_DOWNLOAD')
+    linkCache.set(key, { url, restricted, at: now(), ok: true })
+    return url
   }
 
   // Is RealDebrid already holding this file? Cheap, and the ONLY part that
@@ -370,6 +527,8 @@ function createDebrid(opts = {}) {
     resolveMagnet,
     isCached,
     linkFor,
+    linkForFile,
+    packFiles,
     cachedLink,
     prewarm,
     check,

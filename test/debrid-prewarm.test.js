@@ -98,7 +98,9 @@ test('play waits only briefly on debrid, and the link is proved before use', () 
   assert.ok(/_debridPlayableAny\(result\),\n\s*new Promise/.test(MAIN), 'purist path')
   // linkFor is awaited inside _debridPlayable, now wrapped so a settled
   // refusal (451/404) can be remembered before it is re-thrown.
-  assert.ok(/direct = await debrid\(\)\.linkFor\(magnet\)/.test(MAIN))
+  // The wanted episode travels with the magnet, so a season pack resolves the
+  // episode that was asked for rather than its largest file.
+  assert.ok(/direct = await debrid\(\)\.linkFor\(magnet, want\)/.test(MAIN))
   assert.ok(!/_debridLinkNow/.test(MAIN))
 })
 
@@ -174,6 +176,6 @@ test('both play paths take the proved link, not a remembered one', () => {
   // definition line.
   assert.ok(/Promise\.race\(\[_debridPlayableAny\(result\), budget\]\)/.test(MAIN), 'smooth path')
   assert.ok(/_debridPlayableAny\(result\),\n\s*new Promise/.test(MAIN), 'purist path')
-  assert.ok(/debrid\(\)\.linkFor\(magnet\)/.test(MAIN), 'proved inside _debridPlayable')
+  assert.ok(/debrid\(\)\.linkFor\(magnet, want\)/.test(MAIN), 'proved inside _debridPlayable')
   assert.ok(!/_debridLinkNow/.test(MAIN), 'the unproved sync peek is gone from the play path')
 })

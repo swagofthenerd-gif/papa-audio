@@ -9826,6 +9826,21 @@ async function _webOpenAndAnnounce(url, current, title) {
   return sess
 }
 
+// Point whichever player is actually on screen at a new URL. mpv and the
+// in-page player are loaded completely differently, and the episode switch
+// used to assume mpv — so in smooth mode clicking an episode changed nothing
+// at all.
+async function _loadIntoActivePlayer(url, current, title) {
+  if (_webSessionId) {
+    const sess = await _webOpenAndAnnounce(url, current, title || '')
+    if (sess && sess.superseded) return false
+    if (sess && sess.refused) throw new Error(sess.reason || 'the in-page player refused this file')
+    return true
+  }
+  await videoEngine().load(url)
+  return true
+}
+
 // The stored default of 'smooth' (what every profile carried from V1) is
 // migrated to purist once; a mode he chose in Settings carries
 // playerModeByUser and is kept. Persisted with a stamp so it runs once.
@@ -10058,7 +10073,7 @@ const movieTv = _lazy(() => createMovieTvProvider({ fetchFn: fetchWithTimeout(15
 const anime = _lazy(() => createAnimeProvider({ fetchFn: fetchWithTimeout(15000), resolvers: [] }))
 const videoEngine = _lazy(() => new VideoEngine({ config: { ytdlPath: ytdlp.binaryPath(), ytdlJsRuntime: ytdlp.nodePath(), ao: process.env.PAPA_VIDEO_AO || undefined } }))
 const yarrlist = _lazy(() => createYarrlistDirectory({ fetchFn: fetchWithTimeout(15000) }))
-const _videoSession = { streamer: null, thumbnailer: null, win: null, overlay: null, token: 0, bounds: null, mini: false, miniRect: null }
+const _videoSession = { streamer: null, thumbnailer: null, win: null, overlay: null, token: 0, bounds: null, mini: false, miniRect: null, debrid: null }
 
 // In-app embedding of the mpv video surface. mpv's `--wid` is an X11 concept:
 // on this XWayland session the native handle of a child BrowserWindow is the
@@ -12300,6 +12315,9 @@ function _videoTeardown() {
     try { _videoSession.streamer.stop() } catch (_) {}
     _videoSession.streamer = null
   }
+  // The debrid-served play is over too; a stale magnet here would let the next
+  // episode switch act on the last title.
+  _videoSession.debrid = null
   _thumbnailerTeardown()
   // A stopped stream leaves mini mode: the next play opens in the theatre, not
   // whatever corner the last one was tucked into.
@@ -12679,7 +12697,7 @@ ipcMain.handle('video-play', async (_, { result }) => {
           const budget = new Promise((_r, rej) => setTimeout(() => rej(new Error('debrid budget')), DEBRID_BUDGET_MS))
           Promise.race([_debridPlayableAny(result), budget])
             .catch(e => { _sendDebridMiss(current, e); throw e })
-            .then(directUrl => { if (!current() || !directUrl) throw new Error('debrid unusable'); return serve(directUrl).then(() => safeSend('video-event', { kind: 'debrid', ok: true })) })
+            .then(directUrl => { if (!current() || !directUrl) throw new Error('debrid unusable'); return serve(directUrl).then(() => { safeSend('video-event', { kind: 'debrid', ok: true }); _sendDebridPack(current) }) })
             .catch(() => { if (current()) startTorrent() })
         } else startTorrent()
         return { ok: true, smooth: true }
@@ -12775,6 +12793,7 @@ ipcMain.handle('video-play', async (_, { result }) => {
             if (!current()) return
             started(directUrl)
             safeSend('video-event', { kind: 'debrid', ok: true })
+            _sendDebridPack(current)
           })
           .catch(() => {
             // Debrid did not deliver in time (or at all). Only start the torrent
@@ -12912,13 +12931,48 @@ ipcMain.handle('video-trailer-url', async (_, { type, id } = {}) => {
 // Switch to another episode inside the pack already streaming.
 ipcMain.handle('video-pack-select', async (_, { index } = {}) => {
   try {
+    const token = _videoSession.token
+    const current = () => _videoSession.token === token
     const streamer = _videoSession.streamer
-    if (!streamer) return { ok: false, error: 'Nothing is streaming' }
-    const url = streamer.selectFile(Number(index))
-    if (!url) return { ok: false, error: 'That episode is not in this release' }
-    await videoEngine().load(url)
+    if (streamer) {
+      const url = streamer.selectFile(Number(index))
+      if (!url) return { ok: false, error: 'That episode is not in this release' }
+      if (!await _loadIntoActivePlayer(url, current)) return { ok: false, error: 'Superseded' }
+      safeSend('video-event', { kind: 'playing' })
+      return { ok: true, url, files: streamer.files() }
+    }
+    // Nothing is streaming from the swarm — but RealDebrid may be serving this
+    // pack, in which case there is no streamer at all and there never was.
+    // This used to answer 'Nothing is streaming' and switching simply did not
+    // work for anyone with a debrid account.
+    const held = _videoSession.debrid
+    if (!held || !held.magnet) return { ok: false, error: 'Nothing is streaming' }
+
+    // Where the viewer is, captured before the load, so a switch inside a pack
+    // does not silently restart them at zero on the new episode... except that
+    // a DIFFERENT episode is not the same picture, so position is deliberately
+    // NOT carried over. Only the source-swap case restores position.
+    const direct = await debrid().linkForFile(held.magnet, Number(index))
+    const proxy = createDebridProxy({ fetchFn: (u, o) => _rdFetch(u, Object.assign({ timeoutMs: 20000 }, o || {})) })
+    const url = await proxy.serve(direct)
+    _debridProxyStop()
+    _debridReady = { magnet: held.magnet, proxy, url, want: null, at: Date.now() }
+
+    // The wanted episode is now whatever was clicked, so the strip's own idea
+    // of "current" follows it and a later Next advances from here.
+    const files = await debrid().packFiles(held.magnet, held.want)
+    const chosen = files.find(f => f && Number(f.index) === Number(index))
+    _videoSession.debrid = {
+      magnet: held.magnet,
+      want: chosen && chosen.episode != null
+        ? { season: (held.want && held.want.season) || null, episode: chosen.episode }
+        : held.want,
+    }
+    const marked = files.map(f => Object.assign({}, f, { current: Number(f.index) === Number(index) }))
+
+    if (!await _loadIntoActivePlayer(url, current, chosen && chosen.name)) return { ok: false, error: 'Superseded' }
     safeSend('video-event', { kind: 'playing' })
-    return { ok: true, url, files: streamer.files() }
+    return { ok: true, url, files: marked }
   } catch (e) {
     return { ok: false, error: (e && e.message) || String(e) }
   }
@@ -13080,6 +13134,13 @@ ipcMain.handle('video-keep-file', async (_, { index, show } = {}) => {
   try {
     const streamer = _videoSession.streamer
     if (!streamer || typeof streamer.fileInfo !== 'function') {
+      // A debrid-served episode is not on disk at all — it is streaming from
+      // RealDebrid — so there is no file to keep. Say that, rather than the
+      // bare "nothing is streaming" that used to appear while something was
+      // plainly playing.
+      if (_videoSession.debrid) {
+        return { ok: false, error: 'This is streaming from RealDebrid, not downloading — use Download to keep it' }
+      }
       return { ok: false, error: 'Nothing is streaming to keep' }
     }
     const info = streamer.fileInfo(Number(index))
@@ -13595,7 +13656,44 @@ function _sendDebridMiss(current, err) {
   } catch (_) {}
 }
 
+// The episode strip, for a pack RealDebrid is serving. The torrent path builds
+// this from the live swarm; debrid never built it at all, so a pack served by
+// debrid showed no strip and could not be switched — the same pack served by
+// peers could. Deliberately fire-and-forget and never fatal: the strip is a
+// convenience, and a play that works without it is still a play that works.
+function _sendDebridPack(current) {
+  const held = _videoSession.debrid
+  if (!held || !held.magnet) return
+  Promise.resolve()
+    .then(() => debrid().packFiles(held.magnet, held.want))
+    .then(files => {
+      if (!Array.isArray(files) || files.length < 2) return
+      if (typeof current === 'function' && !current()) return
+      // Same shape the torrent path sends, so the renderer and the strip do
+      // not know or care which half of the app produced it.
+      //
+      // `matched` is whether the file playing IS the episode that was asked
+      // for — not merely whether something was picked. pickVideoFile always
+      // picks something (largest, when it cannot tell), and reporting that as
+      // a match would swallow the one warning that tells the viewer to choose
+      // from the strip.
+      const wanted = held.want && held.want.episode != null ? Number(held.want.episode) : null
+      const at = files.findIndex(f => f && f.current)
+      safeSend('video-event', {
+        kind: 'pack',
+        files,
+        pick: {
+          wanted,
+          matched: wanted == null || (at >= 0 && files[at].episode === wanted),
+          name: at >= 0 ? files[at].name : '',
+        },
+      })
+    })
+    .catch(() => {})
+}
+
 async function _debridPlayableAny(result) {
+  const want = _wantOf(result)
   const candidates = []
   const push = m => { if (typeof m === 'string' && m && candidates.indexOf(m) === -1) candidates.push(m) }
   push(result && result.magnet)
@@ -13605,8 +13703,11 @@ async function _debridPlayableAny(result) {
 
   // A relay already standing for any of them is instant — no look-up at all.
   for (const m of usable) {
-    if (_debridReady && _debridReady.magnet === m &&
-        (Date.now() - _debridReady.at) < DEBRID_RELAY_TTL_MS) return _debridReady.url
+    if (_debridReady && _debridReady.magnet === m && _sameWant(_debridReady.want, want) &&
+        (Date.now() - _debridReady.at) < DEBRID_RELAY_TTL_MS) {
+      _videoSession.debrid = { magnet: m, want }
+      return _debridReady.url
+    }
   }
 
   const checks = await Promise.all(usable.map(async magnet => {
@@ -13621,19 +13722,26 @@ async function _debridPlayableAny(result) {
   if (!held.length) throw new Error('RealDebrid is not holding any of these sources')
   let last = null
   for (const c of held) {
-    try { return await _debridPlayable(c.magnet) } catch (e) { last = e }
+    try {
+      const url = await _debridPlayable(c.magnet, want)
+      // Which magnet actually served is what the episode strip is a view of,
+      // and what switching episodes acts on. Without this the debrid path
+      // knew a URL and nothing else.
+      _videoSession.debrid = { magnet: c.magnet, want }
+      return url
+    } catch (e) { last = e }
   }
   throw last || new Error('no held source would serve')
 }
 
-async function _debridPlayable(magnet) {
-  if (_debridReady && _debridReady.magnet === magnet &&
+async function _debridPlayable(magnet, want) {
+  if (_debridReady && _debridReady.magnet === magnet && _sameWant(_debridReady.want, want) &&
       (Date.now() - _debridReady.at) < DEBRID_RELAY_TTL_MS) {
     return _debridReady.url
   }
   let direct
   try {
-    direct = await debrid().linkFor(magnet)
+    direct = await debrid().linkFor(magnet, want)
   } catch (e) {
     // 451 (legal block) and 404 (unknown to RealDebrid) are settled answers
     // about this source, not transient failures worth repeating.
@@ -13646,8 +13754,28 @@ async function _debridPlayable(magnet) {
   const proxy = createDebridProxy({ fetchFn: (u, o) => _rdFetch(u, Object.assign({ timeoutMs: 20000 }, o || {})) })
   const url = await proxy.serve(direct)
   _debridProxyStop()
-  _debridReady = { magnet, proxy, url, at: Date.now() }
+  _debridReady = { magnet, proxy, url, want: want || null, at: Date.now() }
   return url
+}
+
+// Two requests are for the same file only when they name the same episode. A
+// relay standing for episode 1 must not be handed back for episode 2 — the
+// bug that made a pack play the wrong episode in the first place.
+function _sameWant(a, b) {
+  const ea = Number(a && a.episode), eb = Number(b && b.episode)
+  if (!Number.isFinite(ea) && !Number.isFinite(eb)) return true
+  if (ea !== eb) return false
+  const sa = Number(a && a.season), sb = Number(b && b.season)
+  if (!Number.isFinite(sa) && !Number.isFinite(sb)) return true
+  return sa === sb
+}
+
+// What the viewer asked to watch, as the file matchers want it.
+function _wantOf(result) {
+  const episode = Number(result && result.episode)
+  if (!Number.isFinite(episode)) return null
+  const season = Number(result && result.season)
+  return { season: Number.isFinite(season) ? season : null, episode }
 }
 
 // Enough for one parallel round of cheap look-ups plus building the relay,

@@ -164,3 +164,130 @@ test('pickVideoFile prefers the largest selected video', () => {
   ])
   assert.strictEqual(pick.id, 2)
 })
+
+// ---------------------------------------------------------------------------
+// Season packs served by RealDebrid (2026-09-16).
+//
+// Two bugs lived here. The debrid path picked "the largest video file, full
+// stop", so a pack handed back an arbitrary episode while the torrent path —
+// using the same release — picked the right one. And it never built a file
+// list at all, so the episode strip that works for peer-served packs simply
+// never appeared for anyone with a debrid account, and switching episodes
+// answered "Nothing is streaming" while something was plainly streaming.
+//
+// These run the real functions against a fake RealDebrid rather than checking
+// that the source mentions them.
+
+const PACK_MAGNET = 'magnet:?xt=urn:btih:FEEDFACE0000AAAA&dn=Show.S01.1080p'
+
+// A twelve-episode pack where episode 9 is NOT the largest file, so "largest
+// wins" and "the episode asked for" give different answers.
+function packFilesFixture() {
+  const files = []
+  for (let n = 1; n <= 12; n++) {
+    files.push({
+      id: n,
+      path: '/Show S01/Show - ' + String(n).padStart(2, '0') + ' [1080p].mkv',
+      bytes: n === 4 ? 9e9 : 1e9 + n,
+      selected: 1,
+    })
+  }
+  // The junk a real pack carries, which must never be offered as an episode.
+  files.push({ id: 90, path: '/Show S01/Sample/sample.mkv', bytes: 5e6, selected: 1 })
+  files.push({ id: 91, path: '/Show S01/Show - NCED1.mkv', bytes: 6e7, selected: 1 })
+  files.push({ id: 92, path: '/Show S01/readme.nfo', bytes: 1e3, selected: 1 })
+  return files
+}
+
+function packRoutes() {
+  const files = packFilesFixture()
+  // RD's links are in the order of the SELECTED files.
+  const links = files.map(f => 'https://real-debrid.com/d/FILE' + f.id)
+  return [
+    ['/torrents/addMagnet', { body: { id: 'pack1' } }],
+    ['/torrents/selectFiles/', { status: 204 }],
+    ['/torrents/info/', { body: { status: 'downloaded', files, links } }],
+    ['/unrestrict/link', (url, init) => {
+      const link = decodeURIComponent(String(init.body).replace(/^link=/, ''))
+      return { body: { download: link.replace('real-debrid.com/d/', 'cdn.example/') } }
+    }],
+    ['/torrents/delete/', { status: 204 }],
+    // _alive() proves a link before it is handed over.
+    ['cdn.example/', { status: 206 }],
+  ]
+}
+
+test('a pack resolves the episode that was asked for, not the biggest file', async () => {
+  const { fetch } = makeFetch(packRoutes())
+  const d = createDebrid({ token: 't', fetchFn: fetch })
+  // Episode 4 is the largest file; asking for 9 must still get 9.
+  const url = await d.linkFor(PACK_MAGNET, { season: 1, episode: 9 })
+  assert.strictEqual(url, 'https://cdn.example/FILE9')
+})
+
+test('the same pack serves a different episode without re-registering the magnet', async () => {
+  const { fetch, calls } = makeFetch(packRoutes())
+  const d = createDebrid({ token: 't', fetchFn: fetch })
+  await d.linkFor(PACK_MAGNET, { season: 1, episode: 9 })
+  const addsAfterFirst = calls.filter(c => c.url.includes('/torrents/addMagnet')).length
+  const second = await d.linkFor(PACK_MAGNET, { season: 1, episode: 3 })
+  assert.strictEqual(second, 'https://cdn.example/FILE3')
+  // The whole add/select/poll flow must not run again: the file list from the
+  // first resolve already answers this.
+  assert.strictEqual(calls.filter(c => c.url.includes('/torrents/addMagnet')).length, addsAfterFirst)
+})
+
+test('one episode is never handed back for another (the cache is per file)', async () => {
+  const { fetch } = makeFetch(packRoutes())
+  const d = createDebrid({ token: 't', fetchFn: fetch })
+  const nine = await d.linkFor(PACK_MAGNET, { season: 1, episode: 9 })
+  const three = await d.linkFor(PACK_MAGNET, { season: 1, episode: 3 })
+  assert.notStrictEqual(nine, three)
+  // And asking again for 9 still gets 9, not whatever was resolved last.
+  assert.strictEqual(await d.linkFor(PACK_MAGNET, { season: 1, episode: 9 }), nine)
+})
+
+test('packFiles lists every episode, in order, with the junk left out', async () => {
+  const { fetch } = makeFetch(packRoutes())
+  const d = createDebrid({ token: 't', fetchFn: fetch })
+  const files = await d.packFiles(PACK_MAGNET, { season: 1, episode: 9 })
+  assert.strictEqual(files.length, 12, 'twelve episodes, no sample, no NCED, no .nfo')
+  assert.deepStrictEqual(files.map(f => f.episode), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
+  // The strip highlights what is playing, and takes `index` back as the handle.
+  const current = files.filter(f => f.current)
+  assert.strictEqual(current.length, 1)
+  assert.strictEqual(current[0].episode, 9)
+  assert.strictEqual(current[0].index, 9)
+  // Every field the strip actually reads must be present.
+  for (const f of files) {
+    assert.ok(typeof f.index === 'number' && Number.isFinite(f.index))
+    assert.ok(typeof f.name === 'string' && f.name)
+    assert.ok(typeof f.group === 'string')
+    assert.ok(f.episode == null || typeof f.episode === 'number')
+  }
+})
+
+test('linkForFile resolves one named file of a pack, for the episode switch', async () => {
+  const { fetch } = makeFetch(packRoutes())
+  const d = createDebrid({ token: 't', fetchFn: fetch })
+  await d.linkFor(PACK_MAGNET, { season: 1, episode: 1 })
+  assert.strictEqual(await d.linkForFile(PACK_MAGNET, 7), 'https://cdn.example/FILE7')
+  await assert.rejects(() => d.linkForFile(PACK_MAGNET, 9999), /no such file/i)
+})
+
+test('a single-file release is unaffected by the episode matcher', async () => {
+  const files = [{ id: 1, path: '/Some.Movie.1080p.mkv', bytes: 8e9, selected: 1 }]
+  const { fetch } = makeFetch([
+    ['/torrents/addMagnet', { body: { id: 'm1' } }],
+    ['/torrents/selectFiles/', { status: 204 }],
+    ['/torrents/info/', { body: { status: 'downloaded', files, links: ['https://real-debrid.com/d/ONLY'] } }],
+    ['/unrestrict/link', { body: { download: 'https://cdn.example/ONLY' } }],
+    ['/torrents/delete/', { status: 204 }],
+    ['cdn.example/', { status: 206 }],
+  ])
+  const d = createDebrid({ token: 't', fetchFn: fetch })
+  // Asking for an episode of something that holds one file still plays it.
+  assert.strictEqual(await d.linkFor(MAGNET, { season: 1, episode: 9 }), 'https://cdn.example/ONLY')
+  // And a pack list of one is below the strip's threshold, so nothing is shown.
+  assert.strictEqual((await d.packFiles(MAGNET)).length, 1)
+})

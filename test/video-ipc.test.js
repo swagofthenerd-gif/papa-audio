@@ -564,17 +564,53 @@ test('the pack contents are announced once playback starts', () => {
   assert.match(body, /files\.length > 1/)
 })
 
+// The strip existed and worked, but only ever on the peer-served path. Debrid
+// is tried FIRST whenever it is configured, so for anyone with an account the
+// episode strip simply never appeared — "i cant see my season pack episode
+// selectors anywhere while i am streaming" (2026-09-16).
+test('a pack served by RealDebrid announces its episodes too', () => {
+  assert.match(MAIN, /function _sendDebridPack\(current\)/)
+  const start = MAIN.indexOf('function _sendDebridPack(')
+  const body = MAIN.slice(start, MAIN.indexOf('async function _debridPlayableAny', start))
+  assert.match(body, /packFiles\(held\.magnet, held\.want\)/)
+  assert.match(body, /kind: 'pack'/, 'the same event the torrent path sends')
+  assert.match(body, /files\.length < 2/, 'one file is not a pack')
+  // Reporting "matched" for a file that merely got picked would swallow the
+  // one warning that tells the viewer to choose from the strip themselves.
+  assert.match(body, /files\[at\]\.episode === wanted/)
+
+  // Both play paths must actually call it, or the strip still never shows.
+  const calls = MAIN.match(/_sendDebridPack\(current\)/g) || []
+  assert.ok(calls.length >= 2, 'smooth and purist both announce the pack, found ' + calls.length)
+})
+
 test('switching episode reuses the running torrent', () => {
   const body = handlerBody('video-pack-select')
   assert.match(body, /streamer\.selectFile\(Number\(index\)\)/)
-  assert.match(body, /videoEngine\(\)\.load\(url\)/, 'the player is pointed at the new file')
+  // Whichever player is on screen is pointed at the new file. This used to
+  // call videoEngine().load directly, which meant clicking an episode did
+  // nothing at all in smooth mode.
+  assert.match(body, /_loadIntoActivePlayer\(url, current\)/, 'the player is pointed at the new file')
   assert.ok(!/streamer\.start|new TorrentStreamer/.test(body),
     'a switch must not start a second torrent')
 })
 
-test('switching with nothing streaming is refused', () => {
+// A debrid-served pack has no streamer and never had one: playback came
+// straight from a RealDebrid URL. Refusing on "no streamer" meant episode
+// switching was broken for everyone with a debrid account, while the strip
+// itself never even appeared.
+test('switching episode works for a pack RealDebrid is serving', () => {
   const body = handlerBody('video-pack-select')
-  assert.match(body, /if \(!streamer\) return \{ ok: false/)
+  assert.match(body, /_videoSession\.debrid/, 'the debrid play is remembered')
+  assert.match(body, /linkForFile\(held\.magnet, Number\(index\)\)/,
+    'the chosen file gets its own link')
+  assert.match(body, /packFiles\(held\.magnet/, 'the strip is rebuilt around the new episode')
+})
+
+test('switching with nothing streaming at all is refused', () => {
+  const body = handlerBody('video-pack-select')
+  // Neither a torrent nor a debrid play: there is genuinely nothing to switch.
+  assert.match(body, /if \(!held \|\| !held\.magnet\) return \{ ok: false, error: 'Nothing is streaming' \}/)
 })
 
 test('the pack channel is reachable from the renderer', () => {
