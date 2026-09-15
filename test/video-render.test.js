@@ -1055,3 +1055,12 @@ test('the sources panel states the numbering a release is matched on, and the ov
   assert.ok(R.includes("'Episode 1 → absolute ' + N.absoluteFor(startAbs, 1)"), 'the dialog previews the mapping')
   assert.ok(R.includes('Your watched marks and positions stay with the episodes'), 'and says progress is untouched')
 })
+
+// V007: a cached shelf states its age; an outage never reads as "nothing here".
+test('a saved catalog row carries its age and an outage is told apart from an empty result', () => {
+  const R = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
+  const M = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'main.js'), 'utf8')
+  assert.ok(M.includes("fromCache: true, cachedAt: saved.cachedAt || null, outage: lf.message"))
+  assert.ok(R.includes("' from ' + _agoLabel(Date.now() - Number(cachedAt))"))
+  assert.ok(R.includes("if (res.outage) return _rowOutage(row.key, res.outage)\n      return _rowEmpty(row.key, 'Nothing here right now')"))
+})

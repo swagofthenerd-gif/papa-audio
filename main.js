@@ -11176,7 +11176,7 @@ ipcMain.handle('video-discover', async (_, req) => {
         }
         const saved = _animeBrowseCacheRead('discover:' + key)
         if (saved && saved.value && Array.isArray(saved.value.results) && saved.value.results.length) {
-          return { ok: true, ...saved.value, fromCache: true, outage: lf.message }
+          return { ok: true, ...saved.value, fromCache: true, cachedAt: saved.cachedAt || null, outage: lf.message }
         }
         return { ok: true, ...out, outage: lf.message }
       }

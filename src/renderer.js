@@ -6163,7 +6163,7 @@ async function _renderVideoTab(ticket, opts) {
     if (res.viaMal) _rowViaMalNote(row.key, items)
     // Saved-list content is real, so the row fills normally — a small note just
     // admits it may be stale while AniList recovers.
-    else if (res.fromCache) _rowCacheNote(row.key)
+    else if (res.fromCache) _rowCacheNote(row.key, res.cachedAt)
     // The hero features from the full row: what you have seen is hidden from
     // the shelf you scroll, not from the editorial spotlight.
     if (row.key === wanted[0].key && !(_videoTab === 'anime' && pending !== wanted)) _startVideoHero(items, ticket)
@@ -6226,7 +6226,7 @@ async function _fillAnimeHome(ticket, wanted) {
     if (!list.length) return _dropRow(row.key)
     const items = row.home === 'newEpisodes' ? list.map(_newEpisodeCard) : list
     _fillRowHideSeen(row.key, items)
-    if (res.fromCache) _rowCacheNote(row.key)
+    if (res.fromCache) _rowCacheNote(row.key, res.cachedAt)
     if (row.key === 'trending-anime') _startVideoHero(list, ticket)
   })
   _renderTodayRow(home.today)
@@ -6784,14 +6784,15 @@ function _anilistOutageText(message) {
 // A small note pinned under a shelf that is showing its last SAVED list because
 // AniList is currently down. The content is real (the last good result), so the
 // row renders normally; this only tells the user it may be stale.
-function _rowCacheNote(key) {
+function _rowCacheNote(key, cachedAt) {
   const row = document.querySelector('.vrow[data-row="' + key + '"]')
   if (!row) return
   const head = row.querySelector('.vrow-head')
   if (!head || head.querySelector('.vrow-cache-note')) return
   const p = document.createElement('p')
   p.className = 'vrow-note vrow-cache-note'
-  p.textContent = 'showing saved list — AniList is down'
+  // V007: a saved row says how old it is, not only that it is saved.
+  p.textContent = 'showing saved list' + (cachedAt ? ' from ' + _agoLabel(Date.now() - Number(cachedAt)) : '') + ' — AniList is down'
   head.appendChild(p)
 }
 
