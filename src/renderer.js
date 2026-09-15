@@ -815,6 +815,7 @@ function cycleSpeed() {
   const idx = SPEEDS.indexOf(state.playbackSpeed)
   state.playbackSpeed = SPEEDS[(idx + 1) % SPEEDS.length]
   audio.playbackRate = state.playbackSpeed
+  updateBitPerfectBadge()   // speed ≠ 1 is processing (roadmap 093)
   const btn = document.getElementById('btn-speed')
   if (btn) btn.querySelector('.btn-speed-label').textContent =
     state.playbackSpeed === 1 ? '1×' : `${state.playbackSpeed}×`
@@ -1228,24 +1229,27 @@ function updateFormatBadge(track) {
   el.className = 'np-format' + (isMaster ? ' hi-res master' : isHiRes ? ' hi-res' : '')
 }
 
+// Roadmap 093: the verdict comes from src/quality-badge.js, which checks the
+// codec before it says LOSSLESS and every sample-altering setting before it
+// says BIT-PERFECT. The tooltip carries the reason, including what is
+// processing the audio, and never claims the device was measured.
 function updateBitPerfectBadge() {
   var el = document.getElementById('np-bitperfect')
   if (!el) return
   var track = state.queue[state.queueIndex]
-  if (!track) { el.style.display = 'none'; return }
-  var settings = state._playerSettings || {}
-  var isBitPerfect = settings.outputMode === 'exclusive' && track.sampleRate && track.bitsPerSample
-  var noEffects = state.playbackSpeed === 1 && (!settings.replaygain || settings.replaygain === 'off')
-  if (isBitPerfect && noEffects) {
-    el.textContent = 'BIT-PERFECT'
-    el.style.display = ''
+  var Q = (typeof PapaQualityBadge !== 'undefined' && PapaQualityBadge) || null
+  if (!track || !Q) { el.style.display = 'none'; el.removeAttribute('title'); return }
+  var vol = null
+  try { vol = (typeof audio !== 'undefined' && audio && isFinite(audio.volume)) ? Math.round(audio.volume * 100) : null } catch (_) { vol = null }
+  var v = Q.classify({ track: track, settings: state._playerSettings || {}, speed: state.playbackSpeed, volume: vol })
+  if (!v.label) { el.style.display = 'none'; el.removeAttribute('title'); return }
+  el.textContent = v.label
+  el.title = v.reason
+  el.style.display = ''
+  if (v.label === 'BIT-PERFECT') {
     el.style.background = 'rgba(29,185,84,.15)'
     el.style.color = '#1db954'
-  } else if (track.filePath && track.filePath.startsWith('http')) {
-    el.style.display = 'none'
   } else {
-    el.textContent = 'LOSSLESS'
-    el.style.display = ''
     el.style.background = 'rgba(255,255,255,.08)'
     el.style.color = 'var(--text2)'
   }
@@ -20883,6 +20887,9 @@ function _albumTotalDuration() {
 var _lastVolDisplay = -1
 function setVolDisplay(vol) {
   var pct = `${Math.round(vol * 100)}%`
+  // Volume below or above unity rescales samples, so the quality badge's
+  // BIT-PERFECT verdict depends on it (roadmap 093).
+  try { updateBitPerfectBadge() } catch (_) {}
   const fill  = document.getElementById('vol-fill')
   const thumb = document.getElementById('vol-thumb')
   if (fill)  fill.style.width  = pct
@@ -23074,7 +23081,13 @@ async function initPlaybackSettings() {
     showSnackbar(`The chosen audio device (${cfg.alsaDevice}) is not connected`, '', function () {}, 8000)
   }
 
-  const apply = (partial) => window.api.playerSetConfig(partial)
+  const apply = (partial) => {
+    // The badge reads the cached settings; keep them current so a changed
+    // output mode or ReplayGain shows immediately (roadmap 093).
+    state._playerSettings = { ...(state._playerSettings || {}), ...partial }
+    try { updateBitPerfectBadge() } catch (_) {}
+    return window.api.playerSetConfig(partial)
+  }
   $('pb-output-mode').onchange = e => {
     $('pb-device-row').style.display = e.target.value === 'exclusive' ? '' : 'none'
     apply({ outputMode: e.target.value, alsaDevice: $('pb-alsa-device').value || null })
@@ -23104,6 +23117,8 @@ async function initPlaybackSettings() {
     $('pb-replaygain').onchange = e => {
       var v = e.target.value
       window.api.mpvReplaygainMode(v === 'no' ? 'off' : v)
+      state._playerSettings = { ...(state._playerSettings || {}), replaygain: v }
+      try { updateBitPerfectBadge() } catch (_) {}
       showSnackbar(v === 'no' ? 'Volume leveling off'
         : v === 'album' ? 'Volume leveling: per album' : 'Volume leveling: per track')
     }
@@ -23120,6 +23135,8 @@ async function initPlaybackSettings() {
     $('pb-bitperfect').onchange = e => {
       const on = e.target.checked
       window.api.playerSetBitPerfect({ on })
+      state._playerSettings = { ...(state._playerSettings || {}), bitPerfect: on }
+      try { updateBitPerfectBadge() } catch (_) {}
       showSnackbar(on
         ? 'Bit-perfect on — EQ, volume leveling and crossfade are off'
         : 'Bit-perfect off')
@@ -23620,7 +23637,7 @@ async function _initEqSettings(cfg, apply) {
     if (delBtn) delBtn.style.display = customMatch ? '' : 'none'
   }
 
-  const push = () => { state._playerSettings = { ...state._playerSettings, eq }; apply({ eq }) }
+  const push = () => { state._playerSettings = { ...state._playerSettings, eq }; try { updateBitPerfectBadge() } catch (_) {}; apply({ eq }) }
 
   $('eq-enabled').onchange = e => { eq.enabled = e.target.checked; paint(); push() }
   $('eq-preamp').oninput = e => {
