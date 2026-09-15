@@ -8604,6 +8604,16 @@ body.app-unfocused .vt-menu {
      picture vanished on going fullscreen. Explicit placement makes hiding any
      one row harmless. .vt-menu is position:fixed and not a grid item. */
   display:grid; grid-template-rows:auto 1fr auto auto auto;
+  /* The column is capped deliberately. With only grid-template-rows declared,
+     the implicit column is `auto` — it sizes to the WIDEST row, so one row
+     whose content overruns makes every other row that wide too. A 24-episode
+     pack did exactly that: the episode strip grew past the viewport and took
+     the deck with it, putting the settings and fullscreen buttons off the
+     right edge where they could not be clicked at all. minmax(0, 1fr) pins the
+     column to the theatre's own width, so a row that overflows now has to
+     handle it inside itself (see .vt-pack-list) instead of moving its
+     siblings. */
+  grid-template-columns:minmax(0, 1fr);
   background:#000; color:#fff;
   animation:fadeIn .18s var(--ease-out);
 }
@@ -8939,7 +8949,7 @@ body.video-active .np-byline { font-size:10.5px; }
    torrent that is already running: same peers, no new resolve, no wait. That
    makes a full episode list worth showing rather than a next/previous pair. */
 .vt-pack {
-  display:flex; align-items:center; gap:10px;
+  display:flex; align-items:center; gap:10px; min-width:0;
   padding:8px 20px; background:#0a0a0a; border-top:1px solid rgba(255,255,255,.06);
   /* Fixed height, and hidden means invisible rather than gone. This row and
      the strip below sit between the stage and the deck, and the stage is the
@@ -8969,6 +8979,14 @@ body.video-active .np-byline { font-size:10.5px; }
 .vt-pack-list {
   display:flex; gap:5px; overflow-x:auto; padding-bottom:2px;
   scrollbar-width:none; scroll-snap-type:x proximity;
+  /* overflow-x:auto above did nothing on its own for four months. A flex
+     item's min-width defaults to `auto`, meaning "never shrink below my
+     content" — so with 24 episodes this box simply grew to 24 buttons wide and
+     the overflow never had anything to clip. min-width:0 is what lets it
+     shrink to the space available, which is what makes the scroll engage.
+     flex:1 then gives it the whole row after the label, so the episodes use
+     the full width before they start scrolling. */
+  min-width:0; flex:1 1 0;
 }
 .vt-pack-list::-webkit-scrollbar { display:none; }
 .vt-ep {
