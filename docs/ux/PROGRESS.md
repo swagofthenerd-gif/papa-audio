@@ -109,14 +109,14 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | A101 | Pending review/implementation |
 | A102 | Pending review/implementation |
 | A103 | Fixed `7e5d047` |
-| A104 | Pending review/implementation |
-| A105 | Pending review/implementation |
+| A104 | Fixed — preview gate on consequential tools |
+| A105 | Partial — tool results are action receipts (Playing., Downloading … from …); recommendation wording is the model's |
 | A106 | Fixed `037e34b` — Stop aborts + honest |
 | A107 | Pending review/implementation |
 | A108 | Pending review/implementation |
 | A109 | Fixed — edit/delete/exclude per insight |
 | A110 | Fixed `ece3972` — disclosure + cloud scrubbing |
-| A111 | Pending review/implementation |
+| A111 | Fixed `d18d8fe` |
 | A112 | Pending review/implementation |
 | A113 | Pending review/implementation |
 | A114 | Fixed `157ddc1` — ARIA sliders + keys |

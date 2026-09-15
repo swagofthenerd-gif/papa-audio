@@ -121,6 +121,8 @@ Each F item re-checked on this branch, not assumed from the `main` review.
 | 2026-09-15 | 094 | see log | signal-path tooltip on the stats row; device rate marked not measured |
 | 2026-09-15 | 103 | `7e5d047` | agent welcome built from real connections; names what is off |
 | 2026-09-15 | 109 | see log | per-insight edit / delete / exclude; excluded keys never relearned |
+| 2026-09-15 | 111 | `d18d8fe` | provider failures classified with next step; Open Settings action |
+| 2026-09-15 | 104 | see log | auto_download / clear_queue previewed unless the request named them |
 
 ## F list: all resolved (134 deferred to runtime). Now working through P0 E-items
 
