@@ -121,6 +121,15 @@ test('assistant Stop releases immediately, aborts the provider request, and name
   }
 })
 
+// Roadmap 094: the signal path is stated stage by stage, with unknowns labelled.
+test('the stats row carries a source → decoder → processing → output tooltip that never claims a device rate', () => {
+  const fn = renderer.slice(renderer.indexOf('function _signalPathText('), renderer.indexOf('function updatePlayBtn('))
+  assert.ok(fn.includes("'\\nDecoder: '") && fn.includes("'\\nProcessing: '") && fn.includes("'\\nOutput: '"))
+  assert.ok(fn.includes('device sample rate not measured'))
+  assert.ok(fn.includes("'mpv (decoded format not reported yet)'"))
+  assert.ok(renderer.includes('el.title = _signalPathText(track)'))
+})
+
 // Roadmap 095/097: ReplayGain and exclusive mode are explained before they are chosen.
 test('the output-mode and ReplayGain controls carry plain explanations', () => {
   const H = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'index.html'), 'utf8')

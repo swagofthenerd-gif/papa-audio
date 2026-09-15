@@ -20191,6 +20191,32 @@ function updateStatsRow(track) {
   if (track.bitrate) pills.push(`${Math.round(track.bitrate/1000).toLocaleString()} kbps`)
   if (track.fileSize) pills.push(`${(track.fileSize/1024/1024).toFixed(1)} MB`)
   el.innerHTML = pills.map(p => `<span class="np-stats-pill">${esc(p)}</span>`).join('')
+  // Roadmap 094: the signal path, stage by stage, on the row's tooltip.
+  el.title = _signalPathText(track)
+}
+
+// Roadmap 094: source → decoder → processing → output, each stage named
+// from what is actually known, and "not measured" where it is not. The
+// decoder's own report (audio-params) gives the decoded format and rate
+// when mpv has sent one; the output device's true rate is never claimed.
+function _signalPathText(track) {
+  const settings = state._playerSettings || {}
+  const Q = (typeof PapaQualityBadge !== 'undefined' && PapaQualityBadge) || null
+  const bd = track.bitDepth || track.bitsPerSample, sr = track.sampleRate
+  const src = [track.codec ? String(track.codec).toUpperCase() : (String(track.filePath || '').split('.').pop() || '').toUpperCase(),
+    bd && sr ? bd + '-bit / ' + (sr / 1000) + ' kHz' : sr ? (sr / 1000) + ' kHz' : ''].filter(Boolean).join(' ')
+  const ap = (typeof audio !== 'undefined' && audio && audio.audioParams) || null
+  const dec = ap && ap.samplerate ? 'mpv → ' + String(ap.format || '').toUpperCase() + ' ' + Math.round(ap.samplerate / 1000) + ' kHz' + (ap.channels ? ' · ' + ap.channels + ' ch' : '') : 'mpv (decoded format not reported yet)'
+  let vol = null
+  try { vol = isFinite(audio.volume) ? Math.round(audio.volume * 100) : null } catch (_) {}
+  const proc = Q ? Q.processing(settings, state.playbackSpeed, vol) : []
+  const fb = state._activeDeviceFallback
+  const out = fb ? 'default output (fallback from ' + fb.from + ')'
+    : settings.outputMode === 'exclusive' ? 'exclusive' + (settings.alsaDevice ? ' · ' + settings.alsaDevice : '') : 'system mixer (shared)'
+  return 'Signal path\nSource: ' + (src || 'unknown') +
+    '\nDecoder: ' + dec +
+    '\nProcessing: ' + (proc.length ? proc.join(', ') : 'none') +
+    '\nOutput: ' + out + ' · device sample rate not measured'
 }
 
 function updatePlayBtn() {
@@ -29977,6 +30003,9 @@ function setupListeners() {
     if (!el) return
     const p = e.detail
     el.textContent = p?.samplerate ? `${(p.format || '').toUpperCase()} ${Math.round(p.samplerate / 1000)}kHz` : ''
+    // Roadmap 094: the decoder stage just became known.
+    const row = document.getElementById('np-stats-row'), t = state.queue[state.queueIndex]
+    if (row && t) row.title = _signalPathText(t)
   })
 
   // ── Reconciling the UI against mpv ────────────────────────────────────────
