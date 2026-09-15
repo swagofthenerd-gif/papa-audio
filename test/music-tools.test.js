@@ -48,6 +48,31 @@ test('the preset menu offers end-of-track and the five minute presets', () => {
   assert.ok(T.SLEEP_PRESETS.some(p => p.endOfTrack), 'no end-of-track option')
 })
 
+// ── Queue: clear upcoming (roadmap 004) ──────────────────────────────────────
+test('clearing upcoming drops everything after the current track and keeps it playing', () => {
+  const q = [{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }]
+  const res = T.clearUpcomingQueue(q, 1)
+  assert.deepEqual(res.queue.map(t => t.id), [1, 2], 'played and current survive, upcoming go')
+  assert.equal(res.queueIndex, 1, 'the current track is still the current track')
+  assert.equal(res.queue[res.queueIndex].id, 2)
+})
+
+test('clearing upcoming with nothing after the current track changes nothing', () => {
+  const q = [{ id: 1 }, { id: 2 }]
+  assert.deepEqual(T.clearUpcomingQueue(q, 1), { queue: [{ id: 1 }, { id: 2 }], queueIndex: 1 })
+})
+
+test('clearing upcoming with nothing playing empties the queue', () => {
+  assert.deepEqual(T.clearUpcomingQueue([{ id: 1 }], -1), { queue: [], queueIndex: -1 })
+  assert.deepEqual(T.clearUpcomingQueue([{ id: 1 }], 7), { queue: [], queueIndex: -1 })
+})
+
+test('clearing upcoming does not mutate the original queue', () => {
+  const q = [{ id: 1 }, { id: 2 }, { id: 3 }]
+  T.clearUpcomingQueue(q, 0)
+  assert.equal(q.length, 3, 'the caller keeps its array intact for undo')
+})
+
 // ── Queue: clear played ───────────────────────────────────────────────────────
 test('clearing played drops everything before the current track', () => {
   const q = [{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }]

@@ -50,6 +50,21 @@ test('the queue panel wires a clear-played action to the tested helper', () => {
   assert.ok(renderer.includes("'Clear played'"), 'no Clear played button label')
 })
 
+// Roadmap 004: clearing upcoming and stopping are separate, explicit actions.
+test('the queue panel separates Clear upcoming from Stop and clear', () => {
+  assert.ok(renderer.includes('clearUpcomingQueue'), 'clear-upcoming does not call the tested helper')
+  assert.ok(renderer.includes("'Clear upcoming'"), 'no Clear upcoming button label')
+  assert.ok(renderer.includes("'Stop and clear'"), 'no Stop and clear button label')
+  assert.ok(!renderer.includes("'Clear queue'"), 'the ambiguous Clear queue label is gone')
+  // The upcoming path never touches playback: no pause between its helper call and its undo.
+  const start = renderer.indexOf("clearUpcomingBtn.addEventListener('click'")
+  const end = renderer.indexOf('const clearBtn = document.createElement', start)
+  const body = renderer.slice(start, end)
+  assert.ok(start > 0 && end > start)
+  assert.ok(!/audio\.pause\(|isPlaying = false|updateNowPlaying\(null\)/.test(body), 'Clear upcoming stops nothing')
+  assert.ok(renderer.includes("cmd === 'clear-upcoming'"), 'the extension can ask for the safe clear too')
+})
+
 test('the stats page registers under navigate and gains the new sections', () => {
   assert.ok(/page === 'stats'\s*\)\s*renderStats\(\)/.test(renderer), 'stats page is not registered in navigate')
   assert.ok(renderer.includes('topAlbumsByPlays'), 'stats page does not compute top albums')

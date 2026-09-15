@@ -200,7 +200,9 @@ test('the destructive actions that already had Undo still do', () => {
   assert.match(code, /pushUndo\('Removed from ' \+ pl\.name/, 'remove from playlist')
   // Wording depends on the store the playlist lived in (R7), the Undo does not.
   assert.match(code, /showSnackbar\(isSmart \? 'Smart playlist deleted' : 'Playlist deleted', 'Undo'/, 'delete playlist')
-  assert.match(code, /pushUndo\('Queue cleared'/, 'clear queue')
+  // Roadmap 004 split the old Clear queue into two; both keep their Undo.
+  assert.match(code, /pushUndo\('Stopped and cleared the queue'/, 'stop and clear')
+  assert.match(code, /pushUndo\('Cleared ' \+ dropped \+ ' upcoming track'/, 'clear upcoming')
   assert.match(code, /pushUndo\('Cleared played tracks'/, 'clear played')
   assert.match(code, /pushUndo\('Removed from queue'/, 'remove from queue')
 })

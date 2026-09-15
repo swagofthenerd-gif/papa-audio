@@ -1395,7 +1395,11 @@ h2.section-title { font-size:18px; font-weight:700; }
    grid distributes the width and the calc()-based margins still read right. */
 .queue-clear-row { display:flex; gap:0; }
 .queue-clear-row .queue-clear-btn { flex:1; width:auto; }
-.queue-clear-played-btn { margin-left:0; }
+.queue-clear-row .queue-clear-btn + .queue-clear-btn { margin-left:0; }
+.queue-clear-played-btn, .queue-clear-upcoming-btn { }
+/* Roadmap 004: stopping is the destructive one, so it reads differently from
+   the two that keep the music going — never a plain sibling you hit by reflex. */
+.queue-stop-clear-btn:hover { background:rgba(255,77,77,.12); color:#ff4d4d; border-color:rgba(255,77,77,.35); }
 
 /* ══════════════════════════════════════════════════════
    NOW PLAYING MODAL (fullscreen)

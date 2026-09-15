@@ -56,6 +56,17 @@
   // Drop every track before the current index. The playing track survives and
   // becomes the new head, so playback is untouched. Returns the trimmed queue
   // and its new index; out-of-range indices leave the queue as-is.
+  // Queue: clear upcoming (roadmap 004). Drops everything AFTER the current
+  // track and leaves the current one — and playback — exactly where they are.
+  // This is what "clear the queue" means to a listener mid-song; stopping is a
+  // separate, explicit action. With nothing playing there is nothing to keep.
+  function clearUpcomingQueue(queue, queueIndex) {
+    queue = queue || []
+    var idx = Number(queueIndex)
+    if (!isFinite(idx) || idx < 0 || idx >= queue.length) return { queue: [], queueIndex: -1 }
+    return { queue: queue.slice(0, idx + 1), queueIndex: idx }
+  }
+
   function clearPlayedQueue(queue, queueIndex) {
     queue = queue || []
     var idx = Number(queueIndex)
@@ -1661,6 +1672,7 @@
     crossfadeConfigDiffers: crossfadeConfigDiffers,
     SLEEP_PRESETS: SLEEP_PRESETS,
     clearPlayedQueue: clearPlayedQueue,
+    clearUpcomingQueue: clearUpcomingQueue,
     topAlbumsByPlays: topAlbumsByPlays,
     playsPerMonth: playsPerMonth,
     normalizeForDupe: normalizeForDupe,

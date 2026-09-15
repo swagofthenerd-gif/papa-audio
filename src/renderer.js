@@ -17480,10 +17480,43 @@ function renderQueuePanel() {
       </div>`
   }).join('')
 
-  // Add clear-all button
+  // Roadmap 004: "clear the queue" used to mean "and stop the music" — one
+  // button paused playback and dropped the current song. Clearing what is
+  // coming up and stopping what is playing are different intentions, so they
+  // are different buttons. Clear upcoming leads; Stop and clear is explicit.
+  var clearUpcomingBtn = null
+  if (state.queueIndex >= 0 && state.queueIndex < state.queue.length - 1) {
+    clearUpcomingBtn = document.createElement('button')
+    clearUpcomingBtn.className = 'queue-clear-btn queue-clear-upcoming-btn'
+    clearUpcomingBtn.textContent = 'Clear upcoming'
+    clearUpcomingBtn.title = 'Remove the tracks after this one. Keeps playing.'
+    clearUpcomingBtn.addEventListener('click', () => {
+      var tools = (typeof window !== 'undefined' && window.PapaMusicTools) || null
+      var res = tools
+        ? tools.clearUpcomingQueue(state.queue, state.queueIndex)
+        : { queue: state.queue.slice(0, state.queueIndex + 1), queueIndex: state.queueIndex }
+      var savedQueue = state.queue.slice(), savedIdx = state.queueIndex
+      var dropped = savedQueue.length - res.queue.length
+      state.queue = res.queue
+      state.queueIndex = res.queueIndex
+      _pendingShuffle = null
+      // Playback is untouched; only the gapless prefetch needs to learn that
+      // nothing follows now.
+      updateNextPrefetch()
+      renderQueuePanel()
+      pushUndo('Cleared ' + dropped + ' upcoming track' + (dropped === 1 ? '' : 's'), function() {
+        state.queue = savedQueue; state.queueIndex = savedIdx
+        _pendingShuffle = null
+        updateNextPrefetch()
+        if (state.queuePanelOpen) renderQueuePanel()
+      })
+    })
+  }
+
   const clearBtn = document.createElement('button')
-  clearBtn.className = 'queue-clear-btn'
-  clearBtn.textContent = 'Clear queue'
+  clearBtn.className = 'queue-clear-btn queue-stop-clear-btn'
+  clearBtn.textContent = 'Stop and clear'
+  clearBtn.title = 'Stop playback and empty the whole queue.'
   clearBtn.addEventListener('click', () => {
     if (state.queue.length === 0) return
     // Was a native confirm(), which blocks the renderer and mpv's IPC
@@ -17496,7 +17529,7 @@ function renderQueuePanel() {
     updateNextPrefetch()
     updatePlayBtn(); updateNowPlaying(null)
     renderQueuePanel()
-    pushUndo('Queue cleared', function() {
+    pushUndo('Stopped and cleared the queue', function() {
       state.queue = savedQueue; state.queueIndex = savedIdx
       // Re-arm gapless prefetch and refresh the transport chrome the way the
       // sibling undo paths do (~14004, ~23564) — without this the restored
@@ -17538,11 +17571,13 @@ function renderQueuePanel() {
     })
   }
 
-  // Both clear actions sit in one row so they read as a pair.
+  // The clear actions sit in one row. Upcoming leads because it is the safe
+  // one; Stop and clear sits last so it is never the reflex hit.
   const clearRow = document.createElement('div')
   clearRow.className = 'queue-clear-row'
-  clearRow.appendChild(clearBtn)
+  if (clearUpcomingBtn) clearRow.appendChild(clearUpcomingBtn)
   if (clearPlayedBtn) clearRow.appendChild(clearPlayedBtn)
+  clearRow.appendChild(clearBtn)
   list.appendChild(clearRow)
 
   // Queue header controls (autoplay + keep-going + save-as-playlist).
@@ -29532,7 +29567,31 @@ function setupListeners() {
       }
       return
     }
+    if (cmd === 'clear-upcoming') {
+      // Roadmap 004: the safe clear — what follows goes, the song stays.
+      if (state.queueIndex < 0 || state.queueIndex >= state.queue.length - 1) return
+      var tools = (typeof window !== 'undefined' && window.PapaMusicTools) || null
+      var res = tools
+        ? tools.clearUpcomingQueue(state.queue, state.queueIndex)
+        : { queue: state.queue.slice(0, state.queueIndex + 1), queueIndex: state.queueIndex }
+      var savedQueue = state.queue.slice(), savedIdx = state.queueIndex
+      var dropped = savedQueue.length - res.queue.length
+      state.queue = res.queue; state.queueIndex = res.queueIndex
+      _pendingShuffle = null
+      updateNextPrefetch()
+      if (state.queuePanelOpen) renderQueuePanel()
+      syncExtension()
+      pushUndo('Cleared ' + dropped + ' upcoming track' + (dropped === 1 ? '' : 's'), function() {
+        state.queue = savedQueue; state.queueIndex = savedIdx
+        _pendingShuffle = null
+        updateNextPrefetch()
+        if (state.queuePanelOpen) renderQueuePanel()
+        syncExtension()
+      })
+      return
+    }
     if (cmd === 'clear-queue') {
+      // Stop and clear: the explicit, destructive one (roadmap 004).
       if (state.queue.length === 0) return
       // Was a native confirm(), which is the worst possible place for one: this
       // arrives from the browser extension, so a blocking dialog appeared in an
@@ -29546,9 +29605,12 @@ function setupListeners() {
       updatePlayBtn(); updateNowPlaying(null)
       if (state.queuePanelOpen) renderQueuePanel()
       syncExtension()
-      pushUndo('Queue cleared (' + savedQueue.length + ' tracks)', function() {
+      pushUndo('Stopped and cleared (' + savedQueue.length + ' tracks)', function() {
         state.queue = savedQueue; state.queueIndex = savedIdx
         updateNextPrefetch()
+        updatePlayBtn()
+        const restored = savedIdx >= 0 ? savedQueue[savedIdx] : null
+        if (restored) updateNowPlaying(restored)
         if (state.queuePanelOpen) renderQueuePanel()
         syncExtension()
       })
