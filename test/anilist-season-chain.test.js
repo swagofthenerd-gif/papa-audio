@@ -169,3 +169,121 @@ test('a mal- id is resolved through idMal, and side stories come back as related
   const none = await cat.seasonChain('kitsu-77')
   assert.deepStrictEqual(none, { seasons: [], related: [] }, 'nothing to resolve by means no walk')
 })
+
+// ── Spin-offs must not inherit the parent series' numbering ─────────────────
+// "man i am watching sword art online and its not even loading the correct
+// seasons or episodes" (2026-09-16).
+//
+// PARENT was in SPINE as well as EXPAND, which made the walk asymmetric.
+// Walking DOWN from Sword Art Online correctly demoted Gun Gale Online to
+// `related` via SPIN_OFF. But starting AT Gun Gale Online II and walking UP
+// through PREQUEL -> PARENT pulled the whole SAO main line in as SEASONS. GGO
+// II then sat at index 6 of a seven-season array, and main.js's
+// _animeAbsoluteEpisode summed 25+24+12+24+12+11 to call its first episode
+// "absolute 109" — of a twelve-episode show. Measured in the running app.
+//
+// Worse than a missing number, because providers/nyaa.js both QUERIES the
+// absolute and ACCEPTS a release numbered with it as a match for the episode
+// asked for. Fixtures rather than live ids: the real walk rate-limits, and a
+// truncated live chain reads as a passing test.
+
+// The real shape, reduced: a spin-off's second season, its own first season,
+// and the parent franchise reached through PARENT.
+const SPINOFF_GRAPH = {
+  // GGO II — the page being opened.
+  22: { self: node(22, 'Spin-off II', 2024), relations: [['PREQUEL', node(21, 'Spin-off', 2018)]] },
+  // GGO — reached by PREQUEL, so it IS a season of the spin-off.
+  21: { self: node(21, 'Spin-off', 2018), relations: [
+    ['SEQUEL', node(22, 'Spin-off II', 2024)],
+    // ...and the parent franchise, reached by PARENT.
+    ['PARENT', node(12, 'Main II', 2014, { episodes: 24 })],
+  ] },
+  12: { self: node(12, 'Main II', 2014, { episodes: 24 }), relations: [
+    ['PREQUEL', node(11, 'Main', 2012, { episodes: 25 })],
+    ['SEQUEL', node(13, 'Main III', 2018, { episodes: 24 })],
+  ] },
+  11: { self: node(11, 'Main', 2012, { episodes: 25 }), relations: [['SEQUEL', node(12, 'Main II', 2014, { episodes: 24 })]] },
+  13: { self: node(13, 'Main III', 2018, { episodes: 24 }), relations: [['PREQUEL', node(12, 'Main II', 2014, { episodes: 24 })]] },
+}
+
+// main.js's _animeAbsoluteEpisode, replayed against a chain. Kept in step with
+// main.js:_animeAbsoluteEpisode deliberately — this is the consumer whose
+// answer the `run` flag exists to protect.
+function absoluteEpisode(chain, id, episode) {
+  const tv = (chain.seasons || []).filter(s => s && /^TV/i.test(String(s.format || '')) && s.run !== false)
+  const idx = tv.findIndex(s => String(s.id) === String(id))
+  if (idx <= 0) return null
+  let prior = 0
+  for (let i = 0; i < idx; i++) { const n = Number(tv[i].episodeCount); if (!n || n < 1) return null; prior += n }
+  const own = Number(tv[idx] && tv[idx].episodeCount)
+  const ep = Number(episode) || 0
+  if (own && ep > own) return null
+  return prior + ep
+}
+
+test('a spin-off\'s seasons are its own — the parent franchise is related, not a season', async () => {
+  const cat = createAnilistCatalog({ fetchFn: chainFetch(SPINOFF_GRAPH), retryDelayMs: 1 })
+  const chain = await cat.seasonChain(22)
+  assert.deepStrictEqual(Array.from(chain.seasons).map(s => s.id), [21, 22],
+    'exactly the spin-off\'s two seasons — not the parent franchise as well')
+  // The parent is still DISCOVERED and still offered, just not counted.
+  const relatedIds = Array.from(chain.related).map(r => r.id)
+  for (const id of [11, 12, 13]) {
+    assert.ok(relatedIds.includes(id), 'the parent series stays reachable under Related, id ' + id)
+  }
+})
+
+test('a spin-off\'s episode 1 is not numbered from the parent franchise', async () => {
+  const cat = createAnilistCatalog({ fetchFn: chainFetch(SPINOFF_GRAPH), retryDelayMs: 1 })
+  const chain = await cat.seasonChain(22)
+  // 12 episodes of the spin-off's own first season, then this one.
+  assert.strictEqual(absoluteEpisode(chain, 22, 1), 13, 'was 109 — the whole parent franchise summed in')
+  // An episode beyond this entry's own length is not an answerable question;
+  // a confident wrong absolute is worse than none, because nyaa.js accepts it.
+  assert.strictEqual(absoluteEpisode(chain, 22, 99), null)
+})
+
+test('a spin-off\'s FIRST season reports no absolute — its own numbers already are', async () => {
+  const cat = createAnilistCatalog({ fetchFn: chainFetch(SPINOFF_GRAPH), retryDelayMs: 1 })
+  const chain = await cat.seasonChain(21)
+  assert.strictEqual(absoluteEpisode(chain, 21, 1), null, 'was 50')
+})
+
+// The other half, and the reason ALTERNATIVE stays in SPINE while PARENT
+// leaves it. AniList links Steins;Gate to Steins;Gate 0 only through an
+// ALTERNATIVE edge, so dropping ALTERNATIVE "on the same argument" would lose
+// the second series from the season list entirely — which is the regression
+// the comment above SPINE was written for. But an ALTERNATIVE sibling is
+// released numbered from 1, so it must not inherit the numbering either.
+const ALTERNATIVE_GRAPH = {
+  1: { self: node(1, 'Original', 2011, { episodes: 24 }), relations: [['ALTERNATIVE', node(2, 'Alternative', 2018, { episodes: 23 })]] },
+  2: { self: node(2, 'Alternative', 2018, { episodes: 23 }), relations: [['ALTERNATIVE', node(1, 'Original', 2011, { episodes: 24 })]] },
+}
+
+test('an ALTERNATIVE sibling stays in the season list but keeps its own numbering', async () => {
+  const cat = createAnilistCatalog({ fetchFn: chainFetch(ALTERNATIVE_GRAPH), retryDelayMs: 1 })
+  const chain = await cat.seasonChain(2)
+  assert.deepStrictEqual(Array.from(chain.seasons).map(s => s.id), [1, 2],
+    'both belong in the season list — this is why ALTERNATIVE stays in SPINE')
+  assert.strictEqual(absoluteEpisode(chain, 2, 1), null,
+    'but it is released numbered from 1, so it must not be summed onto the original')
+})
+
+// The case the whole mechanism exists to serve, which must keep working.
+const CONTINUATION_GRAPH = {
+  1: { self: node(1, 'S1', 2013, { episodes: 25 }), relations: [['SEQUEL', node(2, 'S2', 2017, { episodes: 12 })]] },
+  2: { self: node(2, 'S2', 2017, { episodes: 12 }), relations: [
+    ['PREQUEL', node(1, 'S1', 2013, { episodes: 25 })],
+    ['SEQUEL', node(3, 'S3', 2018, { episodes: 22 })],
+  ] },
+  3: { self: node(3, 'S3', 2018, { episodes: 22 }), relations: [['PREQUEL', node(2, 'S2', 2017, { episodes: 12 })]] },
+}
+
+test('a genuine continuation still numbers absolutely across its seasons', async () => {
+  const cat = createAnilistCatalog({ fetchFn: chainFetch(CONTINUATION_GRAPH), retryDelayMs: 1 })
+  const chain = await cat.seasonChain(3)
+  assert.deepStrictEqual(Array.from(chain.seasons).map(s => s.id), [1, 2, 3])
+  assert.strictEqual(absoluteEpisode(chain, 3, 1), 38, '25 + 12 + 1 — fansubs number this one 38')
+  assert.strictEqual(absoluteEpisode(chain, 2, 1), 26)
+  assert.strictEqual(absoluteEpisode(chain, 1, 1), null, 'a first season is already absolute')
+})

@@ -821,13 +821,44 @@ function createAnilistCatalog({ fetchFn, retryDelayMs = 1000,
       // OVAs, specials, the wider universe — is related, relation named.
       const EXPAND = new Set(['PREQUEL', 'SEQUEL', 'SIDE_STORY', 'SPIN_OFF', 'ALTERNATIVE', 'PARENT', 'SUMMARY', 'COMPILATION', 'CONTAINS'])
       // A season is a television entry on the story's own line: reached from
-      // the start through prequel/sequel/parent/alternative/summary edges
-      // only. A side story or spin-off — even a television one — and
-      // everything reached through it is related, not a season.
-      const SPINE = new Set(['PREQUEL', 'SEQUEL', 'PARENT', 'ALTERNATIVE', 'SUMMARY', 'COMPILATION', 'CONTAINS'])
+      // the start through prequel/sequel/alternative/summary edges only. A
+      // side story or spin-off — even a television one — and everything
+      // reached through it is related, not a season.
+      //
+      // PARENT is deliberately NOT here, though it IS in EXPAND above. It is
+      // the reverse of SPIN_OFF, and leaving it in made the walk asymmetric:
+      // going DOWN from Sword Art Online correctly demoted Gun Gale Online to
+      // `related`, but starting AT Gun Gale Online and walking UP through
+      // PARENT pulled the entire SAO main line in as seasons. GGO II then sat
+      // at index 6 of a seven-season array and _animeAbsoluteEpisode summed
+      // 25+24+12+24+12+11 to call its first episode "absolute 109" — of a
+      // twelve-episode show. Measured in the running app, 2026-09-16.
+      // Keeping PARENT in EXPAND means the parent series is still discovered
+      // and still listed under Related; it simply stops being counted as a
+      // season of the spin-off.
+      const SPINE = new Set(['PREQUEL', 'SEQUEL', 'ALTERNATIVE', 'SUMMARY', 'COMPILATION', 'CONTAINS'])
+      // Which edges continue the SAME episode numbering. This is a narrower
+      // question than "same story line", and conflating the two is what the
+      // bug above really was. Attack on Titan season 2 continues season 1's
+      // count (fansubs call its first episode 26) because they are joined by
+      // SEQUEL. Steins;Gate 0 does NOT continue Steins;Gate's count even
+      // though ALTERNATIVE rightly puts it in the same season list — it is
+      // released numbered from 1. Only prequel/sequel edges carry numbering.
+      const RUN = new Set(['PREQUEL', 'SEQUEL'])
       const MAX_REQUESTS = Math.max(4, maxHops)
       const franchise = new Map()   // id -> entry (+ relation by which it was reached)
       const related = new Map()
+      // id -> ids joined to it by a prequel/sequel edge. Built during the walk
+      // and resolved afterwards, because which node BFS happens to reach first
+      // must not decide which numbering run an entry belongs to.
+      const runAdj = new Map()
+      const joinRun = (a, b) => {
+        if (a == null || b == null) return
+        if (!runAdj.has(a)) runAdj.set(a, new Set())
+        if (!runAdj.has(b)) runAdj.set(b, new Set())
+        runAdj.get(a).add(b)
+        runAdj.get(b).add(a)
+      }
       let truncated = false
       let capped = false
 
@@ -889,6 +920,7 @@ function createAnilistCatalog({ fetchFn, retryDelayMs = 1000,
           if (!n || n.type !== 'ANIME' || n.id == null) continue
           const from = franchise.get(fromId)
           const entry = Object.assign({ relation: edge.relationType || null, spine: !!(from && from.spine !== false) && SPINE.has(edge.relationType) }, normalizeChainNode(n))
+          if (RUN.has(edge.relationType)) joinRun(fromId, entry.id)
           if (EXPAND.has(edge.relationType)) {
             if (!franchise.has(entry.id)) { franchise.set(entry.id, entry); queue.push(entry.id) }
             else if (entry.spine && franchise.get(entry.id).spine === false) franchise.get(entry.id).spine = true
@@ -909,6 +941,22 @@ function createAnilistCatalog({ fetchFn, retryDelayMs = 1000,
         if (ay !== by) return ay - by
         return String(a.title || '').localeCompare(String(b.title || ''))
       }
+      // The entries that share the start's episode numbering: reachable from it
+      // over prequel/sequel edges alone. Everything else in the season list is
+      // a legitimate season of the same story that nonetheless starts counting
+      // again at 1, and must not be summed into an absolute number.
+      const run = new Set([start])
+      const runQueue = [start]
+      while (runQueue.length) {
+        const id = runQueue.shift()
+        for (const next of (runAdj.get(id) || [])) {
+          if (run.has(next)) continue
+          run.add(next)
+          runQueue.push(next)
+        }
+      }
+      for (const e of franchise.values()) e.run = run.has(e.id)
+
       const isSeries = e => e.id === start || (e.spine !== false && /^TV/i.test(String(e.format || '')))
       // Chronological, which for a franchise is watch order. Entries with no
       // year sort last rather than to 1970.

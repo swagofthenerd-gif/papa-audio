@@ -8990,6 +8990,10 @@ async function renderVideoDetail(navId) {
   _debridPick = null
   _debridHeld = []
   _playSourceKey = ''
+  // Whose numbering the last source list was fetched with — a new page's
+  // sources have not been fetched yet, and a stale value here would let the
+  // chain-landed re-search fire against the wrong title.
+  _lastNumbering = null
   _playing = { dub: null, source: null, quality: null }
   _prefetch = { key: null, streams: null, inflight: false }
   setContent('<div class="page"><div class="skeleton skeleton-card" style="height:280px"></div></div>')
@@ -9020,8 +9024,16 @@ async function renderVideoDetail(navId) {
   _bindGenreJumps()
 
   // Not awaited: an anime chain is one request per hop, and the source list
-  // must not wait on it.
-  _renderSeasonChain(ticket)
+  // must not wait on it. But the chain is exactly what defines an anime's
+  // ABSOLUTE episode number, and the source search needs that — fansub groups
+  // number continuing seasons absolutely ("Attack on Titan 64", not "Final
+  // Season 05"). Measured on a cold page: the rail lands ~25 s after the
+  // sources do, and nothing ever re-asked, so the first visit to any
+  // multi-season anime always searched without the absolute and showed
+  // "absolute number unknown" for good. So: let it land, then ask again if it
+  // changed anything.
+  _chainPending = _renderSeasonChain(ticket).catch(function () {})
+  _chainPending.then(function () { _researchSourcesIfNumberingArrived(ticket) })
 
   if (type === 'tv') {
     const seasons = Array.isArray(d.seasons) ? d.seasons : []
@@ -10666,6 +10678,43 @@ function _videoStreamRequest() {
   return _applyAnimeNumbering(req)
 }
 
+// The season chain has landed. If the source list went out before the absolute
+// episode number existed, and one exists now, search again — once.
+//
+// Deliberately narrow. It re-searches only when ALL of: this is still the same
+// page, the list we have was fetched with no absolute number, the title is one
+// whose chain could supply one (an anime past its first season), and we have
+// not already done this for this page. Anything looser and an ordinary visit
+// pays for a second fan-out across seven indexers for nothing.
+async function _researchSourcesIfNumberingArrived(ticket) {
+  if (_videoDetailTicket !== ticket) return
+  if (!_videoDetail || _videoDetail.type !== 'anime') return
+  if (_numberingRetried === ticket) return
+  // Already had an absolute, or this is a first season where the seasonal
+  // number IS the absolute — nothing to gain.
+  if (!_lastNumbering || _lastNumbering.absoluteEpisode != null) return
+  if (_lastNumbering.episode == null) return
+  // Set before the await, so this runs at most once per page however many
+  // times it is called — and it IS called from both sides, because either the
+  // chain or the source search can finish first. Measured on a cold page: the
+  // rail landed at 12 s and the sources at 24 s, so hooking only the chain
+  // fired while there was still no source list to compare against.
+  _numberingRetried = ticket
+  try { await _chainPending } catch (_) {}
+  if (_videoDetailTicket !== ticket) return
+  await _loadVideoSources(ticket, ++_videoSeasonTicket)
+}
+var _numberingRetried = 0
+var _chainPending = null
+
+// The numbering the current source list was actually fetched with. An anime's
+// absolute episode number comes from its season chain, and the chain is walked
+// in parallel with the source search rather than before it — so on a first
+// visit the search genuinely goes out before the number it needs can exist.
+// This is what lets _resourceSourcesIfNumberingArrived tell "we already knew"
+// from "we asked too early".
+var _lastNumbering = null
+
 // V041: the numbering a release is being matched on, stated above the list.
 // "Episode 3 · absolute 15" when the season chain resolved it, "your
 // override" when the person set it, or "absolute unknown" — never a quiet
@@ -10877,6 +10926,7 @@ async function _loadVideoSources(ticket, seasonTicket) {
   // The sort chips re-order the displayed rows only; the play buttons keep
   // pointing into the ranked _videoStreams via each row's data-idx.
   const sort = _vSourcesSort()
+  _lastNumbering = res.numbering || null
   target.innerHTML = '<div class="video-sources-header"><span class="section-title">Sources</span>' +
     _vSortChipsHtml(sort) + '</div>' + _numberingLineHtml(res.numbering) + '<div class="video-source-list"></div>'
   _renderVideoSourceRows(target, sort)
@@ -10958,6 +11008,11 @@ async function _loadVideoSources(ticket, seasonTicket) {
     _autoPlayTicket = 0
     _videoPlayResult(_autoPickStream(streams))
   }
+  // The other half of the race. Not awaited: this list is already on screen
+  // and usable; the re-search, if it happens at all, replaces it when it
+  // lands. Re-entry is impossible — _numberingRetried is set before its own
+  // await.
+  _researchSourcesIfNumberingArrived(ticket)
 }
 
 // Sources whose release name does not carry the title (V2/V4). Kept, counted

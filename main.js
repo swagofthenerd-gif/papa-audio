@@ -11200,14 +11200,14 @@ ipcMain.handle('video-seasons', async (_, { type, id, idMal, title } = {}) => {
     // still resolve pack playback across restarts and while AniList is down.
     if (out.seasons.length && out.truncated !== true) {
       _videoChainCache.set(key, out)
-      _animeDetailCacheWrite(`chain:${id}`, { chain: out })
+      _animeDetailCacheWrite(`chain2:${id}`, { chain: out })
       return { ok: true, ...out }
     }
     // The fresh walk came back empty or truncated. During an outage that is the
     // norm — fall back to the last complete chain persisted on disk (a stale
     // season list beats none, and pack playback needs it). Rehydrate the
     // in-memory cache so the same session stops re-walking a dead API.
-    const persisted = _animeDetailCacheRead(`chain:${id}`)
+    const persisted = _animeDetailCacheRead(`chain2:${id}`)
     if (persisted && persisted.chain && persisted.chain.seasons &&
         persisted.chain.seasons.length) {
       _videoChainCache.set(key, persisted.chain)
@@ -11929,12 +11929,19 @@ function _animeAbsoluteEpisode(anilistId, episode) {
     // or while AniList is down and the fresh walk returned nothing.
     let chain = _videoChainCache.get(`anime:${anilistId}`)
     if (!chain || !Array.isArray(chain.seasons) || !chain.seasons.length) {
-      const persisted = _animeDetailCacheRead(`chain:${anilistId}`)
+      const persisted = _animeDetailCacheRead(`chain2:${anilistId}`)
       if (persisted && persisted.chain) chain = persisted.chain
     }
     const seasons = chain && Array.isArray(chain.seasons) ? chain.seasons : []
     if (!seasons.length) return null
-    const tv = seasons.filter(s => s && (s.format === 'TV' || s.format === 'TV_SHORT'))
+    // Only the seasons that share this entry's episode NUMBERING, which is a
+    // narrower thing than sharing its story line. The chain marks them (`run`,
+    // set in catalog/anilist.js from prequel/sequel edges alone): Attack on
+    // Titan season 2 continues season 1's count, Steins;Gate 0 does not
+    // continue Steins;Gate's even though both belong in the same season list.
+    // Summing the whole list is what turned Gun Gale Online II episode 1 into
+    // "absolute 109" of a twelve-episode show.
+    const tv = seasons.filter(s => s && (s.format === 'TV' || s.format === 'TV_SHORT') && s.run !== false)
     const idx = tv.findIndex(s => String(s.id) === String(anilistId))
     if (idx <= 0) return null   // first season's numbering is already absolute
     let prior = 0
@@ -11943,7 +11950,14 @@ function _animeAbsoluteEpisode(anilistId, episode) {
       if (!n || n < 1) return null
       prior += n
     }
-    return prior + (Number(episode) || 0)
+    // Last guard: an episode beyond this entry's own length is not a request
+    // this function can answer honestly, and a confident wrong absolute is
+    // worse than none — providers/nyaa.js will both query it and ACCEPT a
+    // release numbered with it as a match for the episode asked for.
+    const own = Number(tv[idx] && tv[idx].episodeCount)
+    const ep = Number(episode) || 0
+    if (own && ep > own) return null
+    return prior + ep
   } catch (_) { return null }
 }
 
