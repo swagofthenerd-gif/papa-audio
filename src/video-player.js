@@ -1752,6 +1752,30 @@
     // supplied, results listed newest-downloads-first as the service ranks
     // them. Missing API key is a first-class answer, not an error — the
     // service requires one and the row says where to put it.
+    // V088: how well a subtitle's release name agrees with the file that is
+    // playing. Tokens that decide sync — the release group, the source
+    // (WEB/BluRay/HDTV), the resolution — are compared; a subtitle from the
+    // same group and source is almost always in sync, one from a different
+    // source often is not. Pure; exported for tests.
+    function releaseAgreement(subRelease, playingRelease) {
+      const tok = function (s) {
+        const t = String(s || '').toLowerCase()
+        const group = (/-([a-z0-9]+)(?:\.[a-z0-9]{2,4})?$/.exec(t) || [])[1] || (/\[([a-z0-9-]+)\]/.exec(t) || [])[1] || null
+        const source = (/\b(web[-. ]?(?:dl|rip)?|bluray|blu-ray|bdrip|brrip|hdtv|dvdrip|remux|amzn|nf|dsnp|hmax)\b/.exec(t) || [])[1] || null
+        const res = (/\b(2160p|1080p|720p|480p)\b/.exec(t) || [])[1] || null
+        return { group: group, source: source ? source.replace(/[-. ]/g, '') : null, res: res }
+      }
+      const a = tok(subRelease), b = tok(playingRelease)
+      const why = []
+      let score = 0
+      if (a.group && b.group && a.group === b.group) { score += 2; why.push('same release group') }
+      if (a.source && b.source && a.source === b.source) { score += 1; why.push('same source') }
+      else if (a.source && b.source && a.source !== b.source) { score -= 1; why.push('different source — may be out of sync') }
+      if (a.res && b.res && a.res === b.res) { score += 0.5 }
+      const verdict = score >= 2 ? 'likely in sync' : score >= 1 ? 'probably fine' : score < 0 ? 'may not match this cut' : 'unknown'
+      return { score: score, verdict: verdict, why: why }
+    }
+
     async function openOnlineSubsMenu() {
       if (!api || !api.videoSubSearch || !media || !media.subMeta) return
       openMenu('vt-subs', '<div class="vt-menu-head">Online subtitles</div>' +
@@ -1764,13 +1788,22 @@
       } else if (!results.length) {
         html += '<div class="vt-menu-row">Nothing found for this title.</div>'
       } else {
-        html += results.slice(0, 8).map(function (r, i) {
-          const label = [(r.language || '??').toUpperCase(), r.release || ('Result ' + (i + 1))].join(' · ')
-          const note = r.downloadCount ? (r.downloadCount + ' downloads') : ''
-          return '<button class="vt-menu-item" role="menuitem" data-online-sub="' + i + '">' +
+        // V088: sort by how well each agrees with the playing release, and
+        // say so on the row — the source and the sync verdict, not just a
+        // download count.
+        const playing = media.subMeta.release || ''
+        const scored = results.slice(0, 12).map(function (r, i) { return { r: r, i: i, m: releaseAgreement(r.release, playing) } })
+        scored.sort(function (x, y) { return y.m.score - x.m.score || (y.r.downloadCount || 0) - (x.r.downloadCount || 0) })
+        html += scored.slice(0, 8).map(function (e) {
+          const r = e.r
+          const label = [(r.language || '??').toUpperCase(), r.release || ('Result ' + (e.i + 1))].join(' · ')
+          const bits = ['OpenSubtitles']
+          if (playing) bits.push(e.m.verdict + (e.m.why.length ? ' (' + e.m.why.join(', ') + ')' : ''))
+          if (r.downloadCount) bits.push(r.downloadCount + ' downloads')
+          return '<button class="vt-menu-item" role="menuitem" data-online-sub="' + e.i + '">' +
             '<span class="vt-menu-tick"></span>' +
             '<span class="vt-menu-label">' + escapeHtml(label) + '</span>' +
-            (note ? '<span class="vt-menu-note">' + escapeHtml(note) + '</span>' : '') +
+            '<span class="vt-menu-note">' + escapeHtml(bits.join(' · ')) + '</span>' +
           '</button>'
         }).join('')
       }
@@ -1781,7 +1814,14 @@
             closeMenu()
             if (!r || !api.videoSubDownload) return
             api.videoSubDownload({ fileId: r.fileId }).then(function (d) {
-              if (d && d.ok && d.path) send('subAdd', { path: d.path })
+              if (d && d.ok && d.path) {
+                // Added as a new track and selected; the file's own tracks stay
+                // in the menu, so switching back is one pick (V088).
+                send('subAdd', { path: d.path })
+                onToast('Added ' + (r.language || '').toUpperCase() + ' subtitles from OpenSubtitles' + (r.release ? ' — ' + r.release : '') + '. If they drift, use the delay chips in the subtitle menu.')
+              } else {
+                onToast('Could not download that subtitle' + (d && d.error ? ' — ' + d.error : ''))
+              }
             }).catch(function () {})
           })
         })
@@ -3165,6 +3205,7 @@
       reportBounds: reportBounds,
       ready: ready,
       // Exposed for tests and for the renderer's own event handling.
+      _releaseAgreement: releaseAgreement,
       _state: function () { return state },
       _setState: function (s) { state = s; render() },
       _segments: function () { return segments },

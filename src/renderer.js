@@ -5297,6 +5297,9 @@ function _videoPlayResult(result, opts) {
       query: d.title || null,
       season: _videoDetail.type === 'tv' ? _videoState.season : null,
       episode: isEpisode ? _videoState.episode : null,
+      // V088: the release that is playing, so a downloaded subtitle can be
+      // judged against this cut rather than offered blind.
+      release: (result && (result.title || result.label)) || null,
     } : null,
     prefs: langPrefs,
     onPrefChange: function (patch) {

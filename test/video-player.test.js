@@ -2742,3 +2742,16 @@ test('render keeps aria-pressed and labels on the deck toggles in step with the 
   assert.match(HTML_SRC, /id="vt-subs" aria-label="Subtitles off — choose a track" aria-pressed="false" aria-haspopup="menu"/)
   assert.match(HTML_SRC, /id="vt-settings" aria-label="Settings" aria-haspopup="menu"/)
 })
+
+// V088: a downloaded subtitle is judged against the cut that is playing.
+test('releaseAgreement scores group and source agreement and warns on a different source', () => {
+  const { p } = harness()
+  const ra = p._releaseAgreement
+  const same = ra('Show.S01E01.1080p.WEB-DL.DDP5.1.H.264-NTb', 'Show.S01E01.1080p.WEB-DL.DDP5.1.H.264-NTb.mkv')
+  assert.strictEqual(same.verdict, 'likely in sync'); assert.ok(same.why.includes('same release group'))
+  const diff = ra('Show.S01E01.720p.HDTV.x264-KILLERS', 'Show.S01E01.1080p.BluRay.x264-SPARKS.mkv')
+  assert.strictEqual(diff.verdict, 'may not match this cut'); assert.ok(diff.why[0].includes('different source'))
+  assert.strictEqual(ra(null, 'x').verdict, 'unknown')
+  const anime = ra('[SubsPlease] Show - 01 (1080p)', '[SubsPlease] Show - 01 (1080p) [ABCD1234].mkv')
+  assert.ok(anime.score >= 2, 'bracketed groups count too')
+})
