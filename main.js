@@ -2021,6 +2021,7 @@ app.whenReady().then(() => {
   startConnectivityMonitor()
   startAutoBackup()
   backupBeforeMigration()
+  recoverInterruptedOps()
   startScheduledBackup()
 
   // Air-date notifications (roadmap #35): first check after the launch stampede
@@ -5244,6 +5245,103 @@ ipcMain.handle('library-trash-paths', async (_, { paths }) => {
   return { results, moved, failed: results.length - moved }
 })
 
+// ── Operation journal (roadmap 091) ─────────────────────────────────────────
+// A move or rename that is interrupted — a crash, a kill, a power cut — must
+// leave either the original or a completed result, never a half-copied tree
+// the next attempt trips over. Each file operation writes a journal entry
+// before it starts and removes it when it is done; startup reads whatever is
+// left and either finishes the operation or cleans up its partial result.
+function _opJournalDir() { return path.join(USER_DATA, 'ops') }
+function _opBegin(op) {
+  try {
+    fs.mkdirSync(_opJournalDir(), { recursive: true })
+    const id = Date.now().toString(36) + '-' + crypto.randomBytes(3).toString('hex')
+    fs.writeFileSync(path.join(_opJournalDir(), id + '.json'), JSON.stringify({ ...op, id, startedAt: Date.now() }), 'utf8')
+    return id
+  } catch (_) { return null }
+}
+function _opUpdate(id, patch) {
+  if (!id) return
+  try {
+    const f = path.join(_opJournalDir(), id + '.json')
+    const cur = JSON.parse(fs.readFileSync(f, 'utf8'))
+    fs.writeFileSync(f, JSON.stringify({ ...cur, ...patch }), 'utf8')
+  } catch (_) {}
+}
+function _opEnd(id) {
+  if (!id) return
+  try { fs.rmSync(path.join(_opJournalDir(), id + '.json'), { force: true }) } catch (_) {}
+}
+// Remap every saved reference and the library cache for a directory (or
+// file) that moved from `from` to `to` — the tail of a move that the
+// renderer normally asks for after the IPC returns, done here when the app
+// died in between.
+function _remapMovedPrefix(from, to) {
+  const fromN = libPrune.normalizePath(path.resolve(from)).replace(/\/+$/, '')
+  const toN = libPrune.normalizePath(path.resolve(to)).replace(/\/+$/, '')
+  const renamed = []
+  const albums = (sideStores.libraryCache.get() || []).map(a => ({
+    ...a, tracks: (a.tracks || []).map(t => {
+      const fp = t && t.filePath ? libPrune.normalizePath(t.filePath) : ''
+      if (fp === fromN || fp.startsWith(fromN + '/')) {
+        const np = toN + fp.slice(fromN.length)
+        renamed.push({ from: t.filePath, to: np })
+        return { ...t, filePath: np }
+      }
+      return t
+    }),
+  }))
+  if (!renamed.length) return 0
+  const map = libPrune.buildRemap([], renamed)
+  const snapshot = {
+    likedTracks: store.get('likedTracks', []), playCounts: store.get('playCounts', {}),
+    playHistory: sideStores.playHistory.get() || [], playlists: store.get('playlists', []),
+    savedQueues: store.get('savedQueues', []), playbackState: sideStores.playbackState.get(),
+  }
+  const { next } = libPrune.pruneAll(snapshot, map)
+  store.set('likedTracks', next.likedTracks); store.set('playCounts', next.playCounts)
+  sideStores.playHistory.set(next.playHistory); store.set('playlists', next.playlists)
+  store.set('savedQueues', next.savedQueues)
+  if (next.playbackState) sideStores.playbackState.set(next.playbackState)
+  sideStores.libraryCache.set(albums)
+  return renamed.length
+}
+function recoverInterruptedOps() {
+  let names = []
+  try { names = fs.readdirSync(_opJournalDir()).filter(n => n.endsWith('.json')) } catch (_) { return [] }
+  const report = []
+  for (const n of names) {
+    const f = path.join(_opJournalDir(), n)
+    let op = null
+    try { op = JSON.parse(fs.readFileSync(f, 'utf8')) } catch (_) { try { fs.rmSync(f, { force: true }) } catch (_) {} continue }
+    try {
+      if (op && op.kind === 'move' && op.from && op.to) {
+        const srcThere = fs.existsSync(op.from), dstThere = fs.existsSync(op.to)
+        if (srcThere && dstThere && op.phase === 'copy') {
+          // Died mid-copy: the destination is partial and the original is whole.
+          fs.rmSync(op.to, { recursive: true, force: true })
+          report.push({ op: op.id, outcome: 'removed partial copy; original untouched', from: op.from, to: op.to })
+        } else if (!srcThere && dstThere) {
+          // The files moved but the app died before the references followed.
+          const n2 = _remapMovedPrefix(op.from, op.to)
+          if (op.phase === 'copy' && op.trashSource !== true) { /* source already gone */ }
+          report.push({ op: op.id, outcome: 'finished: ' + n2 + ' references updated', from: op.from, to: op.to })
+        } else if (srcThere && !dstThere) {
+          report.push({ op: op.id, outcome: 'never started; nothing to do', from: op.from, to: op.to })
+        } else {
+          report.push({ op: op.id, outcome: 'neither side exists — left for the relink tool', from: op.from, to: op.to })
+        }
+      }
+    } catch (e) {
+      report.push({ op: op && op.id, outcome: 'recovery failed: ' + String((e && e.message) || e) })
+    }
+    try { fs.rmSync(f, { force: true }) } catch (_) {}
+  }
+  for (const r of report) console.warn('[papa] interrupted file operation:', JSON.stringify(r))
+  if (report.length) store.set('lastOpRecovery', { at: Date.now(), report })
+  return report
+}
+
 ipcMain.handle('library-move-path', async (_, { from, to }) => {
   if (!libPathAllowed(from)) return { ok: false, error: 'Source is outside your music folders' }
   const dest = path.resolve(String(to))
@@ -5257,18 +5355,26 @@ ipcMain.handle('library-move-path', async (_, { from, to }) => {
     return { ok: false, error: 'Not enough free space at the destination (' +
       Math.round(needed / 1e6) + ' MB needed, ' + Math.round(free / 1e6) + ' MB free)' }
   }
+  const opId = _opBegin({ kind: 'move', from: path.resolve(from), to: dest, phase: 'rename' })
   try {
     fs.mkdirSync(path.dirname(dest), { recursive: true })
     fs.renameSync(path.resolve(from), dest)
   } catch (e) {
-    // Cross-device rename fails; fall back to copy-then-remove.
+    // Cross-device rename fails; fall back to copy-then-remove. The journal
+    // records the copy phase so a crash mid-copy is cleaned up at startup
+    // (roadmap 091) rather than leaving a partial tree the next attempt
+    // trips over with "Something already exists at that name".
+    _opUpdate(opId, { phase: 'copy' })
     try {
       fs.cpSync(path.resolve(from), dest, { recursive: true })
       await shell.trashItem(path.resolve(from))
     } catch (e2) {
+      try { if (fs.existsSync(path.resolve(from))) fs.rmSync(dest, { recursive: true, force: true }) } catch (_) {}
+      _opEnd(opId)
       return { ok: false, error: e2.message || e.message }
     }
   }
+  _opEnd(opId)
   _scheduleLibraryRescan()
   return { ok: true, path: dest }
 })
@@ -13574,6 +13680,9 @@ async function _collectDiagnostics() {
     mpv,
     storeBridge: probeStoreBridge,
     sources: probeSources,
+    // Roadmap 091: what startup did about an interrupted file operation, so
+    // a support bundle shows it and the person can see it happened.
+    lastOpRecovery: store.get('lastOpRecovery', null),
   }
 }
 
