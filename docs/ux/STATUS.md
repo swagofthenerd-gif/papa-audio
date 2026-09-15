@@ -117,6 +117,8 @@ Each F item re-checked on this branch, not assumed from the `main` review.
 | 2026-09-15 | 088 | `c5fcbb1` | artwork preview: current vs new, measured resolution, scope stated |
 | 2026-09-15 | 089 | `285be09` | track artist leads on compilations; Disc N of M |
 | 2026-09-15 | 092 | see log | m3u8For: absolute paths, streams as comments, counts; liked-songs export |
+| 2026-09-15 | 095, 097 | `11e3e2c` | ReplayGain / exclusive explained in labels and hints |
+| 2026-09-15 | 094 | see log | signal-path tooltip on the stats row; device rate marked not measured |
 
 ## F list: all resolved (134 deferred to runtime). Now working through P0 E-items
 

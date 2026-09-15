@@ -99,12 +99,12 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | A091 | Fixed `3668f0b` — move journal + startup recovery |
 | A092 | Partial — playlists + liked songs export as M3U8 with honest path handling; notes/metadata export pending |
 | A093 | Fixed `1da705b` — codec-checked LOSSLESS, full-chain BIT-PERFECT; see STATUS.md |
-| A094 | Pending review/implementation |
-| A095 | Pending review/implementation |
+| A094 | Fixed — signal-path tooltip; unknowns labelled |
+| A095 | Fixed `11e3e2c` |
 | A096 | Fixed `578f3e5` — gain policy + clipping risk |
-| A097 | Pending review/implementation |
+| A097 | Fixed `11e3e2c` |
 | A098 | Fixed `5a988f3` |
-| A099 | Pending review/implementation |
+| A099 | Partial — EQ has enable (bypass), reset and preset delete; preview/restore-unsaved pending |
 | A100 | Pending review/implementation |
 | A101 | Pending review/implementation |
 | A102 | Pending review/implementation |
