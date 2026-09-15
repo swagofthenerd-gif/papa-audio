@@ -18161,7 +18161,7 @@ function renderQueuePanel() {
       const t = state.queue[parseInt(row.dataset.queueIdx)]
       if (!t) return
       showContextMenu(e, { type: 'track', kind: 'queue-item', albumId: t.albumId,
-        track: t, artist: t.albumArtist || t.artist, queueIdx: parseInt(row.dataset.queueIdx) })
+        track: t, artist: t.albumArtist || t.artist, queueIdx: parseInt(row.dataset.queueIdx), queueLength: state.queue.length })
     })
   })
 
@@ -19075,6 +19075,8 @@ var CTX_ICONS = {
   'ctx-like':        '<path d="M16.5 3c-1.74 0-3.41.81-4.5 2.09A5.99 5.99 0 0 0 7.5 3C4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3z"/>',
   'ctx-remove-playlist': '<path d="M14 10H2v2h12v-2zm0-4H2v2h12V6zM2 16h8v-2H2v2zm19-2h-8v2h8v-2z"/>',
   'ctx-remove-queue':    '<path d="M14 10H2v2h12v-2zm0-4H2v2h12V6zM2 16h8v-2H2v2zm19-2h-8v2h8v-2z"/>',
+  'ctx-queue-up':        '<path d="M7 14l5-5 5 5z"/>',
+  'ctx-queue-down':      '<path d="M7 10l5 5 5-5z"/>',
   'ctx-unlike':          '<path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09A5.99 5.99 0 0 1 16.5 3C19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>',
 }
 
@@ -19134,6 +19136,26 @@ function _ctxTargetForRow(row) {
     artist: (album && album.artist) || (track && (track.albumArtist || track.artist)) || null,
     listName: listName,
   }
+}
+
+// Roadmap 118/046: the keyboard and menu route to reordering the queue. The
+// moved track stays focused, the current track keeps playing, and the new
+// position is announced.
+function _queueMoveBy(idx, delta) {
+  const to = idx + delta
+  if (idx < 0 || idx >= state.queue.length || to < 0 || to >= state.queue.length) return
+  const [moved] = state.queue.splice(idx, 1)
+  state.queue.splice(to, 0, moved)
+  if (idx === state.queueIndex) state.queueIndex = to
+  else if (idx < state.queueIndex && to >= state.queueIndex) state.queueIndex--
+  else if (idx > state.queueIndex && to <= state.queueIndex) state.queueIndex++
+  _pendingShuffle = null
+  updateNextPrefetch()
+  renderQueuePanel()
+  const row = document.querySelector('.queue-row[data-queue-idx="' + to + '"]')
+  if (row && typeof row.focus === 'function') { row.setAttribute('tabindex', '0'); row.focus() }
+  showSnackbar((moved.title || 'Track') + ' moved to #' + (to + 1) + ' of ' + state.queue.length, '', function () {}, 2000)
+  syncExtension()
 }
 
 function showContextMenu(e, target) {
@@ -29739,6 +29761,9 @@ function setupListeners() {
     })
   })
 
+  _ctxOn('ctx-queue-up', () => { const i = ctxTarget?.queueIdx; hideContextMenu(); if (typeof i === 'number') _queueMoveBy(i, -1) })
+  _ctxOn('ctx-queue-down', () => { const i = ctxTarget?.queueIdx; hideContextMenu(); if (typeof i === 'number') _queueMoveBy(i, 1) })
+
   _ctxOn('ctx-remove-queue', () => {
     const t = ctxTarget?.track
     const known = ctxTarget?.queueIdx
@@ -30600,6 +30625,13 @@ function setupListeners() {
 
   // Keyboard shortcuts
   document.addEventListener('keydown', e => {
+    // Roadmap 118/046: Alt+↑/↓ on a focused queue row moves it — the keyboard
+    // route to what the drag handle does. Lives in the one global handler so
+    // the listener budget is unchanged.
+    if (e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown') && e.target && typeof e.target.closest === 'function') {
+      const qrow = e.target.closest('.queue-row')
+      if (qrow) { e.preventDefault(); _queueMoveBy(parseInt(qrow.dataset.queueIdx, 10), e.key === 'ArrowUp' ? -1 : 1); return }
+    }
     // The theatre owns the keyboard while it is open (App #74). Its own handler
     // (video-player.js) fires on the same document, so without this guard a bare
     // key like Space, m, s or l would trigger BOTH the film's action and this
