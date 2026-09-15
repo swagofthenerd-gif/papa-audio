@@ -239,6 +239,7 @@
 
     const $ = id => doc && doc.getElementById(id)
 
+    let sessionEpoch = 0
     let state = null
     let segments = []
     let prefs = {}
@@ -869,6 +870,7 @@
     function bindMiniSeek() {
       const seek = $('vmini-seek')
       if (!seek) return
+      let seekEpoch = -1
       const trackOf = function () { return seek.querySelector('.vmini-seek-track') || seek }
       const fracAt = function (clientX) {
         const t = trackOf()
@@ -885,19 +887,20 @@
         const dur = Number(state && state.duration) || 0
         if (!dur) return
         pid = e.pointerId
+        seekEpoch = sessionEpoch
         miniDragging = true      // freeze the state-driven repaint while scrubbing
         try { seek.setPointerCapture(e.pointerId) } catch (_) {}
         const f = fracAt(e.clientX); paint(f)
         if (typeof e.preventDefault === 'function') e.preventDefault()
       })
       seek.addEventListener('pointermove', function (e) {
-        if (pid !== e.pointerId) return
+        if (pid == null || pid !== e.pointerId || seekEpoch !== sessionEpoch) return
         const dur = Number(state && state.duration) || 0
         if (!dur) return
         const f = fracAt(e.clientX); paint(f); scrubSeek(dur * f)
       })
       const done = function (e) {
-        if (pid !== e.pointerId) return
+        if (pid == null || pid !== e.pointerId || seekEpoch !== sessionEpoch) return
         pid = null
         miniDragging = false
         try { seek.releasePointerCapture(e.pointerId) } catch (_) {}
@@ -905,7 +908,14 @@
         if (dur) { scrubEnd(); seekTo(dur * fracAt(e.clientX)) }
       }
       seek.addEventListener('pointerup', done)
-      seek.addEventListener('pointercancel', function () { pid = null; miniDragging = false; scrubEnd() })
+      const cancel = function (e) {
+        if (pid == null || pid !== e.pointerId) return
+        pid = null; miniDragging = false; scrubEnd()
+        try { seek.releasePointerCapture(e.pointerId) } catch (_) {}
+        render()
+      }
+      seek.addEventListener('pointercancel', cancel)
+      seek.addEventListener('lostpointercapture', cancel)
       seek.addEventListener('keydown', function (e) {
         if (e.key === 'ArrowLeft') { seekBy(-10); e.preventDefault(); e.stopPropagation() }
         if (e.key === 'ArrowRight') { seekBy(10); e.preventDefault(); e.stopPropagation() }
@@ -2370,6 +2380,7 @@
     let thumbLastAt = 0
     let thumbTimer = null
     let thumbPendingPos = null
+    let thumbRevision = 0
     // The bucket whose frame is currently painted, so an unchanged hover does not
     // rebuild the <img> src every emit and flicker the picture.
     let thumbShownKey = null
@@ -2471,27 +2482,33 @@
       if (!fetchThumb) return
       thumbPendingPos = positionSec
       // A bucket already in the cache is painted straight away — no IPC, no
-      // ffmpeg — including a cached null (asked, none yet), which correctly
-      // leaves the previous frame alone. Only a genuinely unseen bucket falls
+      // ffmpeg — including a cached null (asked, none yet), which clears
+      // an unrelated previous frame. Only a genuinely unseen bucket falls
       // through to a network request.
       if (thumbCache.has(positionSec)) {
         const cached = thumbCache.get(positionSec)
-        if (cached && cached !== thumbShownKey) { thumbShownKey = cached; paintBubbleThumb(bubble, cached) }
+        thumbShownKey = cached || null
+        paintBubbleThumb(bubble, cached || null)
         return
       }
+      // A previous bucket's image must not masquerade as the new timestamp.
+      thumbShownKey = null
+      paintBubbleThumb(bubble, null)
       const fire = function () {
+        const epoch = sessionEpoch, revision = thumbRevision
         thumbLastAt = (typeof Date !== 'undefined' ? Date.now() : 0)
         const pos = thumbPendingPos
+        if (pos == null) return
         fetchThumb(pos).then(function (p) {
+          if (epoch !== sessionEpoch || revision !== thumbRevision) return
           // Cache the answer for the bucket even when null, so a still-generating
           // frame is not re-requested on every pass through the same ten seconds.
           thumbCache.set(pos, p || null)
           // The bubble was hidden (pointer left) while this was in flight: drop
           // the answer rather than painting into a bubble nobody is looking at.
-          if (thumbPendingPos == null) return
-          // A null answer leaves whatever frame is already up in place — the
-          // previous bucket's frame is a better preview than none while the new
-          // one generates. A path repaints only when it names a new frame.
+          if (thumbPendingPos == null || thumbBucketOf(pos) !== thumbBucketOf(thumbPendingPos)) return
+          // Only paint the currently requested bucket; an earlier scene's
+          // thumbnail is misleading under the current timestamp.
           if (p && p !== thumbShownKey) { thumbShownKey = p; paintBubbleThumb(bubble, p) }
         }).catch(function () { /* a hover must never surface an error */ })
       }
@@ -2505,10 +2522,23 @@
     // Reset the thumb state when the bubble is hidden, so the next hover starts
     // clean rather than flashing the last frame from the previous hover.
     function clearThumbState(bubble) {
+      thumbRevision++
       thumbPendingPos = null
       thumbShownKey = null
       if (thumbTimer) { clearTimeout(thumbTimer); thumbTimer = null }
       if (bubble) paintBubbleThumb(bubble, null)
+    }
+
+    function resetSeekWork() {
+      sessionEpoch++
+      dragging = false
+      miniDragging = false
+      scrubEnd()
+      clearTimeout(kbTimer)
+      kbTimer = null; kbTarget = null
+      const bubble = $('vt-seek-bubble')
+      clearThumbState(bubble)
+      if (bubble) bubble.hidden = true
     }
 
     function kbSeek(delta) {
@@ -2547,8 +2577,10 @@
       const seek = $('vt-seek')
       if (!seek) return
       const bubble = $('vt-seek-bubble')
+      let pid = null, seekEpoch = -1
 
       seek.addEventListener('pointermove', function (e) {
+        if (dragging && (pid !== e.pointerId || seekEpoch !== sessionEpoch)) return
         const dur = Number(state && state.duration) || 0
         if (!dur || !bubble) return
         const f = seekFraction(e.clientX)
@@ -2571,21 +2603,33 @@
       })
 
       seek.addEventListener('pointerdown', function (e) {
+        if (e.button != null && e.button !== 0) return
         const dur = Number(state && state.duration) || 0
         if (!dur) return
+        pid = e.pointerId; seekEpoch = sessionEpoch
         dragging = true
         seek.setPointerCapture?.(e.pointerId)
         paintSeek(dur * seekFraction(e.clientX), dur)
       })
       seek.addEventListener('pointerup', function (e) {
-        if (!dragging) return
+        if (!dragging || pid !== e.pointerId || seekEpoch !== sessionEpoch) return
         dragging = false
+        pid = null
+        try { seek.releasePointerCapture?.(e.pointerId) } catch (_) {}
         // Cancel any pending keyframe scrub, then land exactly where released.
         scrubEnd()
         const dur = Number(state && state.duration) || 0
         if (dur) seekTo(dur * seekFraction(e.clientX))
       })
-      seek.addEventListener('pointercancel', function () { dragging = false; scrubEnd() })
+      const cancel = function (e) {
+        if (!dragging || pid !== e.pointerId) return
+        dragging = false; pid = null; scrubEnd()
+        try { seek.releasePointerCapture?.(e.pointerId) } catch (_) {}
+        if (bubble) { bubble.hidden = true; clearThumbState(bubble) }
+        render()
+      }
+      seek.addEventListener('pointercancel', cancel)
+      seek.addEventListener('lostpointercapture', cancel)
 
       // A slider must be operable from the keyboard, not only the pointer.
       seek.addEventListener('keydown', function (e) {
@@ -2714,6 +2758,7 @@
     }
 
     function open(info) {
+      resetSeekWork()
       cancelPictureTap()
       wheelRemainder = 0
       media = info || {}
@@ -2965,6 +3010,7 @@
     // handler throws.
     let closing = false
     function close() {
+      resetSeekWork()
       cancelPictureTap()
       wheelRemainder = 0
       if (closing) return

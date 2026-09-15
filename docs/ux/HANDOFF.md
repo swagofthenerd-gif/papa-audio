@@ -58,3 +58,18 @@ locally, not published. Public repository visibility permits reads, not writes.
 A portable checkpoint archive accompanies this handoff and contains the git
 bundle, patch series, both plans, and recovery instructions. Import it into an
 authenticated checkout and push the named branch; do not assume it exists online.
+
+## Third batch: seek/session and thumbnail correctness (V027/V073/V076/V080)
+
+- Opening/closing a title invalidates pending thumbnail responses and cancels
+  queued keyboard/live-scrub commands.
+- Thumbnail responses only paint for the current requested bucket/session;
+  missing previews clear unrelated images instead of implying a wrong scene.
+- Theatre seeks enforce primary-button/pointer ownership; lost capture cancels
+  trailing work. Mini seek releases from an older title cannot seek the next one.
+- Seven new behavioral regressions. Combined targeted suite now **211/211 passed**
+  (19 new tests across all three batches). `git diff --check` passed.
+- Cancellation currently keeps the last already-sent live preview position;
+  it does not undo engine seeks already completed before cancellation. Full V073
+  pre-drag-position restoration remains a product decision and implementation task.
+- No real desktop/hardware verification yet; GitHub still not authenticated.

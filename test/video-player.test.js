@@ -2520,3 +2520,93 @@ test('Up Next waits while keyboard focus is inside, then resumes', t => {
   t.mock.timers.tick(20000)
   assert.equal(advanced, 1)
 })
+
+test('closing cancels a queued keyboard seek', t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const { p, press, sent } = harness()
+  p.open({ title: 'A' }); p._setState(stateAt(100))
+  press('ArrowRight'); p.close()
+  t.mock.timers.tick(500)
+  assert.equal(sent.filter(x => x.verb === 'seek').length, 0)
+})
+
+test('opening another title cancels pending live scrub commands', t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const { p, nodes, sent } = harness()
+  p.open({ title: 'A' }); p._setState(stateAt(100))
+  nodes['vt-seek'].fire('pointerdown', pointer())
+  nodes['vt-seek'].fire('pointermove', pointer({ clientX: 40 }))
+  nodes['vt-seek'].fire('pointermove', pointer({ clientX: 60 }))
+  p.open({ title: 'B' }); p._setState(stateAt(0))
+  sent.length = 0
+  t.mock.timers.tick(500)
+  nodes['vt-seek'].fire('pointerup', pointer({ clientX: 60 }))
+  assert.equal(sent.filter(x => x.verb === 'seek').length, 0)
+})
+
+test('mini seek release from the previous title cannot seek the new title', () => {
+  const { p, nodes, sent } = harness()
+  p.open({ title: 'A' }); p._setState(stateAt(100))
+  nodes['vmini-seek'].fire('pointerdown', pointer())
+  p.open({ title: 'B' }); p._setState(stateAt(0)); sent.length = 0
+  nodes['vmini-seek'].fire('pointerup', pointer({ clientX: 80 }))
+  assert.equal(sent.filter(x => x.verb === 'seek').length, 0)
+})
+
+test('theatre scrub ignores right button and another pointer', () => {
+  const { p, nodes, sent } = harness()
+  p._setState(stateAt(100))
+  nodes['vt-seek'].fire('pointerdown', pointer({ button: 2 }))
+  nodes['vt-seek'].fire('pointerup', pointer())
+  assert.equal(sent.length, 0)
+  nodes['vt-seek'].fire('pointerdown', pointer())
+  nodes['vt-seek'].fire('pointerup', pointer({ pointerId: 8 }))
+  assert.equal(sent.length, 0)
+  nodes['vt-seek'].fire('pointerup', pointer({ clientX: 50 }))
+  assert.equal(sent.filter(x => x.verb === 'seek').length, 1)
+})
+
+test('lost seek capture cancels trailing work and late release', t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const { p, nodes, sent } = harness()
+  p._setState(stateAt(100))
+  nodes['vt-seek'].fire('pointerdown', pointer())
+  nodes['vt-seek'].fire('pointermove', pointer({ clientX: 30 }))
+  nodes['vt-seek'].fire('pointermove', pointer({ clientX: 40 }))
+  nodes['vt-seek'].fire('lostpointercapture', pointer())
+  sent.length = 0
+  t.mock.timers.tick(500)
+  nodes['vt-seek'].fire('pointerup', pointer())
+  assert.equal(sent.length, 0)
+  assert.equal(nodes['vt-seek-bubble'].hidden, true)
+})
+
+test('late thumbnail from an old title cannot paint or populate the new cache', async () => {
+  const pending = []
+  const { p, nodes } = harness({ apiExtra: { videoThumbAt: () => new Promise(resolve => pending.push(resolve)) } })
+  p.open({ title: 'A' }); p._setState(stateAt(100))
+  nodes['vt-seek'].fire('pointermove', pointer({ clientX: 20 }))
+  assert.equal(pending.length, 1)
+  p.open({ title: 'B' }); p._setState(stateAt(100))
+  pending[0]({ path: '/old-title.jpg' })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(nodes['vt-seek-bubble'].__vtThumbImg, undefined)
+  p.close()
+})
+
+test('out-of-order thumbnail responses cannot replace the current hover', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const pending = []
+  const { p, nodes } = harness({ apiExtra: { videoThumbAt: () => new Promise(resolve => pending.push(resolve)) } })
+  p._setState(stateAt(100))
+  nodes['vt-seek'].fire('pointermove', pointer({ clientX: 20 }))
+  nodes['vt-seek'].fire('pointermove', pointer({ clientX: 80 }))
+  t.mock.timers.tick(250)
+  assert.equal(pending.length, 2)
+  pending[1]({ path: '/current.jpg' })
+  await new Promise(resolve => setImmediate(resolve))
+  pending[0]({ path: '/outdated.jpg' })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(nodes['vt-seek-bubble'].__vtThumbImg.getAttribute('src'), 'file:///current.jpg')
+  p.close()
+})
