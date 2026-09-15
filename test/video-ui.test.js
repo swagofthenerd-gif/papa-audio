@@ -550,3 +550,11 @@ test('the Browse grid treats an outage as down, not as a too-narrow filter', () 
   assert.match(branch, /if \(res\.outage\) \{/, 'an outage is handled before _browseEmptyHtml')
   assert.match(branch, /AniList is temporarily down/, 'and says AniList is down, not "nothing matches"')
 })
+
+// V129: the video settings say which services receive queries and what peers see.
+test('the video settings carry a connections disclosure naming every service and the peer exposure', () => {
+  const H = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'index.html'), 'utf8')
+  const d = H.slice(H.indexOf('id="video-connections-disclosure"'), H.indexOf('</details>', H.indexOf('id="video-connections-disclosure"')))
+  for (const svc of ['TMDB', 'AniList', 'Nyaa', 'AnimeTosho', 'YTS', 'EZTV', 'SolidTorrents', 'Knaben', 'apibay', 'Jackett', 'RealDebrid']) assert.ok(d.includes(svc), svc)
+  assert.match(d, /IP address/); assert.match(d, /Never sent:/)
+})

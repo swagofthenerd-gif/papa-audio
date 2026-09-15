@@ -555,6 +555,17 @@
             <input type="checkbox" id="video-seed-watching">
           </label>
           <div class="mcs-set-hint">Sharing (seeding) sends the parts you already have back to other people watching the same thing. It keeps things fast for everyone and is on by default.</div>
+          <!-- Roadmap V129: which services receive what, and what peers see. -->
+          <details class="mcs-set-details" id="video-connections-disclosure">
+            <summary class="mcs-set-hint">Who receives what when you use Movies &amp; TV</summary>
+            <ul class="mcs-disclosure">
+              <li><b>TMDB</b> and <b>AniList</b> get the titles you search and open, to show posters, episodes and details.</li>
+              <li><b>Torrent indexers</b> (Nyaa, AnimeTosho, YTS, EZTV, SolidTorrents, Knaben, apibay, and Jackett if you set one up) get the title, year and episode you ask for.</li>
+              <li><b>RealDebrid</b>, if a token is set, gets the magnet links of the sources you play.</li>
+              <li><b>Other torrent users</b> can see your IP address while a torrent streams. While "Share while watching" is on they also download from you; off, you only download.</li>
+              <li><b>Never sent:</b> your watch history, lists, ratings, notes, or anything about your music. Support bundles are scrubbed of tokens and paths.</li>
+            </ul>
+          </details>
           <label class="mcs-set-row">Prefer surround
             <input type="checkbox" id="video-prefer-surround">
           </label>
