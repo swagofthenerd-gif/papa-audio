@@ -50,6 +50,15 @@ test('the queue panel wires a clear-played action to the tested helper', () => {
   assert.ok(renderer.includes("'Clear played'"), 'no Clear played button label')
 })
 
+// Roadmap 034: Play flips at once, then the engine's truth is reported.
+test('a refused or silent Play reverts the button and says why, with Retry', () => {
+  assert.ok(renderer.includes("Promise.resolve().then(function () { return audio.play() }).then(_armMusicStartWatch).catch(_onPlayRefused)"), 'togglePlay handles the rejection')
+  assert.ok(renderer.includes('function _armMusicStartWatch()') && renderer.includes("if ((Number(audio.currentTime) || 0) > at + 0.2) return"), 'no movement after Play is reported')
+  assert.ok(renderer.includes("showSnackbar(text, 'Retry', function () { togglePlay() }, 8000)"))
+  assert.ok(!renderer.includes("titleEl.textContent = 'File not available'"), 'the blanket "File not available" is gone')
+  assert.ok(renderer.includes("audio.play().then(function () { _armMusicStartWatch(); return onStarted() }).catch(onError)"))
+})
+
 // Roadmap 096: the gain policy is one sentence under Volume boost, kept live.
 test('the playback settings show the summed gain policy and clipping risk', () => {
   const H = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'index.html'), 'utf8')

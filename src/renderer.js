@@ -19716,12 +19716,10 @@ function playCurrentTrack() {
     console.error('Playback error:', e)
     state.isPlaying = false
     updatePlayBtn()
-    const titleEl = document.getElementById('np-title')
-    if (titleEl) {
-      const orig = titleEl.textContent
-      titleEl.textContent = 'File not available'
-      setTimeout(() => { titleEl.textContent = orig }, 2500)
-    }
+    // Roadmap 034: say what actually happened, not "File not available" for
+    // every failure. A missing file goes through the load-error policy
+    // elsewhere; here the engine refused or could not open the source.
+    _onPlayRefused(e)
   }
 
   // Streaming tracks: use atomic switch (pause→resolve→load→play) to avoid
@@ -19739,7 +19737,7 @@ function playCurrentTrack() {
   // Local files: existing fast path
   if (!audio.paused && !audio.ended) audio.pause()
   audio.src = `file://${track.filePath}`
-  audio.play().then(onStarted).catch(onError)
+  audio.play().then(function () { _armMusicStartWatch(); return onStarted() }).catch(onError)
 }
 
 // Home's "Continue listening" card is built by renderHome(), so it froze on
@@ -19939,14 +19937,52 @@ function isCurrentTrack(filePath) {
   return state.queue[state.queueIndex]?.filePath === filePath && state.isPlaying
 }
 
+// Roadmap 034: Play is acknowledged at once (the button flips), and then the
+// engine's truth is reported. A resume that the engine refuses used to leave
+// the button showing "playing" with the rejection unhandled; a resume the
+// engine accepted but never sounded (a device that vanished, a stalled
+// stream) showed "playing" forever. The first is caught; the second is
+// watched for a few seconds of no movement.
+var _musicStartWatch = null
+function _onPlayRefused(e) {
+  state.isPlaying = false
+  updatePlayBtn()
+  if (state.modalOpen) syncModalPlayBtn()
+  syncExtension()
+  var why = String((e && e.message) || e || '').replace(/^Error:\s*/, '')
+  var text = (typeof PapaStartHonesty !== 'undefined' && PapaStartHonesty && why)
+    ? PapaStartHonesty.sentence(why, (typeof PapaInstallHints !== 'undefined' && PapaInstallHints) ? PapaInstallHints.detect() : 'linux')
+    : ('Could not start playback' + (why ? ' — ' + why : ''))
+  showSnackbar(text, 'Retry', function () { togglePlay() }, 8000)
+}
+function _armMusicStartWatch() {
+  _disarmMusicStartWatch()
+  var at = Number(audio.currentTime) || 0
+  _musicStartWatch = setTimeout(function () {
+    _musicStartWatch = null
+    if (!state.isPlaying || audio.paused) return
+    if ((Number(audio.currentTime) || 0) > at + 0.2) return   // it moved: it is playing
+    // Reported, not asserted: a slow mount can take longer than this, and
+    // flipping the button to "paused" while mpv then starts would be a new
+    // lie. The person gets the fact and a Retry; the engine's own events
+    // still own the state.
+    showSnackbar('Play was accepted but nothing is sounding yet — if it stays silent, check the output device in Settings → Playback', 'Retry', function () { playCurrentTrack() }, 8000)
+  }, 6000)
+}
+function _disarmMusicStartWatch() {
+  if (_musicStartWatch) { clearTimeout(_musicStartWatch); _musicStartWatch = null }
+}
+
 function togglePlay() {
   if (!state.queue.length) return
   if (audio.paused) {
-    audio.play(); state.isPlaying = true
+    Promise.resolve().then(function () { return audio.play() }).then(_armMusicStartWatch).catch(_onPlayRefused)
+    state.isPlaying = true
     // A user-driven play. Pause any film on screen and take ownership so a
     // later video-close does not resume music the user is already hearing (#72).
     if (_handoff) _applyHandoff(_handoff.onMusicStart(_videoIsPlaying()))
   } else {
+    _disarmMusicStartWatch()
     audio.pause(); state.isPlaying = false
     // A user-driven pause voids any resume the film owed the album, and — if a
     // film is waiting behind the music it paused — brings that film back (#72).
