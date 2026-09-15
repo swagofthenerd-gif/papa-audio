@@ -91,7 +91,9 @@ test('play waits only briefly on debrid, and the link is proved before use', () 
   // and then puts it behind the relay. A remembered URL is never played
   // unproved, and the raw debrid link never reaches the player at all.
   assert.strictEqual((MAIN.match(/_debridPlayable\(result\.magnet\)/g) || []).length, 2)
-  assert.ok(/const direct = await debrid\(\)\.linkFor\(magnet\)/.test(MAIN))
+  // linkFor is awaited inside _debridPlayable, now wrapped so a settled
+  // refusal (451/404) can be remembered before it is re-thrown.
+  assert.ok(/direct = await debrid\(\)\.linkFor\(magnet\)/.test(MAIN))
   assert.ok(!/_debridLinkNow/.test(MAIN))
 })
 

@@ -967,6 +967,12 @@ const sideStores = {
   // endpoint (403 disabled_endpoint), so the only way to learn about a title
   // is to have actually resolved or saved it. Nothing here is a guess.
   videoInstantIndex: new SideStore({ dir: USER_DATA, name: 'video-instant-index', fallback: {}, debounceMs: 800, onError: _sideErr }),
+  // Sources RealDebrid will not serve (2026-09-15). It answers 451
+  // "unavailable for legal reasons" for a great deal of anime and 404 for
+  // other magnets, and there is no bulk way to ask — so a refusal is
+  // remembered and never paid for twice. Without this every play of an
+  // affected title waits on debrid before falling back to peers.
+  debridRefusedIndex: new SideStore({ dir: USER_DATA, name: 'debrid-refused-index', fallback: {}, debounceMs: 800, onError: _sideErr }),
 
   // Self-maintenance suite. Two small, infrequently-written stores:
   //   trackerList  — { trackers, lastRefreshAt }, the weekly-refreshed curated
@@ -12249,7 +12255,7 @@ ipcMain.handle('video-play', async (_, { result }) => {
             try { const files = streamer.files(); if (files.length > 1 && current()) safeSend('video-event', { kind: 'pack', files }) } catch (_) {}
           }).catch(fail)
         } })
-        if (_debridConfigured()) {
+        if (_debridWorthTrying(result.magnet)) {
           const budget = new Promise((_r, rej) => setTimeout(() => rej(new Error('debrid budget')), DEBRID_BUDGET_MS))
           Promise.race([_debridPlayable(result.magnet), budget])
             .then(directUrl => { if (!current() || !directUrl) throw new Error('debrid unusable'); return serve(directUrl).then(() => safeSend('video-event', { kind: 'debrid', ok: true })) })
@@ -12325,7 +12331,7 @@ ipcMain.handle('video-play', async (_, { result }) => {
       // goes through the exact same engine.load() the torrent path uses (mpv
       // plays a URL and a local server URL identically), so nothing downstream
       // changes.
-      if (_debridConfigured()) {
+      if (_debridWorthTrying(result.magnet)) {
         // A link resolved during the page visit is used at once; only an
         // unresolved magnet is raced against the budget.
         // linkFor proves the link before handing it over and re-mints a stale
@@ -12838,7 +12844,8 @@ ipcMain.handle('video-debrid-pick', async (_, { magnets, titleKey } = {}) => {
   try {
     if (!_debridConfigured()) return { ok: true, magnet: null, configured: false }
     const list = (Array.isArray(magnets) ? magnets : [])
-      .filter(m => typeof m === 'string' && m).slice(0, 4)
+      .filter(m => typeof m === 'string' && m && !_debridRefusedHas(m)).slice(0, 4)
+    if (!list.length) return { ok: true, magnet: null, allRefused: true }
     for (const magnet of list) {
       if (_videoSession.streamer) return { ok: true, magnet: null, skipped: 'playing' }
       try {
@@ -13021,13 +13028,60 @@ function _debridProxyStop() {
 }
 // A relay older than the link's own lifetime is pointing at a URL that has
 // since died, so it is rebuilt rather than trusted.
+// A legal block does not lift; a 404 might, so both are re-tried eventually
+// rather than remembered for ever.
+const DEBRID_REFUSAL_TTL_MS = 7 * 24 * 60 * 60 * 1000
+const DEBRID_REFUSED_CAP = 1500
+function _infoHashOfMagnet(magnet) {
+  const m = /btih:([a-fA-F0-9]{40})/i.exec(String(magnet || ''))
+  return m ? m[1].toLowerCase() : null
+}
+function _debridRefusedHas(magnet) {
+  try {
+    const hash = _infoHashOfMagnet(magnet)
+    if (!hash) return false
+    const e = (sideStores.debridRefusedIndex.get() || {})[hash]
+    return !!(e && (Date.now() - (e.at || 0)) < DEBRID_REFUSAL_TTL_MS)
+  } catch (_) { return false }
+}
+function _debridRefusedMark(magnet, code) {
+  try {
+    const hash = _infoHashOfMagnet(magnet)
+    if (!hash) return
+    sideStores.debridRefusedIndex.update(prev => {
+      const map = prev && typeof prev === 'object' ? { ...prev } : {}
+      map[hash] = { at: Date.now(), code: code || 'refused' }
+      const keys = Object.keys(map)
+      if (keys.length > DEBRID_REFUSED_CAP) {
+        keys.sort((a, b) => (map[a].at || 0) - (map[b].at || 0))
+        for (const k of keys.slice(0, keys.length - DEBRID_REFUSED_CAP)) delete map[k]
+      }
+      return map
+    })
+  } catch (_) {}
+}
+// Is it worth asking debrid about this source at all? No account, or a source
+// it has already refused, means going straight to peers with no wait.
+function _debridWorthTrying(magnet) {
+  return _debridConfigured() && !!magnet && !_debridRefusedHas(magnet)
+}
+
 const DEBRID_RELAY_TTL_MS = 9 * 60 * 1000
 async function _debridPlayable(magnet) {
   if (_debridReady && _debridReady.magnet === magnet &&
       (Date.now() - _debridReady.at) < DEBRID_RELAY_TTL_MS) {
     return _debridReady.url
   }
-  const direct = await debrid().linkFor(magnet)
+  let direct
+  try {
+    direct = await debrid().linkFor(magnet)
+  } catch (e) {
+    // 451 (legal block) and 404 (unknown to RealDebrid) are settled answers
+    // about this source, not transient failures worth repeating.
+    const code = (e && e.code) || ''
+    if (/HTTP_(451|404)/.test(code)) _debridRefusedMark(magnet, code)
+    throw e
+  }
   const proxy = createDebridProxy({})
   const url = await proxy.serve(direct)
   _debridProxyStop()
