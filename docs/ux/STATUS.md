@@ -59,7 +59,7 @@ Each F item re-checked on this branch, not assumed from the `main` review.
 | 2026-09-15 | 087 | see log | album hero edits write real tags through library-write-tags with an explicit scope note; heroTagWrites + tests |
 | 2026-09-15 | 001 (+013/017 copy) | `58e0b7e` | wizard offers Add / Explore / Later, remembers the answer, init continues with zero folders |
 | 2026-09-15 | 002 | see log | Settings nav entry + openSettings(section); drawer titled Settings on that tab |
-| 2026-09-15 | V111 | `ac…` | resume: 5 % threshold capped at 120 s; long films resume |
+| 2026-09-15 | V111 | see log | resume: 5 % threshold capped at 120 s; long films resume |
 | 2026-09-15 | 114 (+116 part) | `157ddc1` | player-bar seek/volume are ARIA sliders with keys; seek value written only on whole-percent change |
 | 2026-09-15 | 040, 045 | see log | prevAction (3 s rule, in help); insertPlayNext single rule; ctx Play next re-arms prefetch |
 | 2026-09-15 | 057 | `890a469` | src/source-failure.js: cancelled/offline/rate-limited/auth/timeout/unreachable/empty each with a next step; YouTube + Soulseek |
