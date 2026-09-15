@@ -1370,6 +1370,11 @@ h2.section-title { font-size:18px; font-weight:700; }
 }
 .queue-row-art-fallback svg { width:16px; height:16px; fill:currentColor; }
 .queue-row-info { flex:1; min-width:0; }
+/* Roadmap 048: a missing file stays a row, dimmed, badged, with Locate. */
+.queue-row.missing .queue-row-title, .queue-row.missing .queue-row-artist { color:var(--text3); text-decoration:line-through; }
+.q-missing-badge { display:inline-block; margin-left:6px; font-size:9px; font-weight:700; letter-spacing:.04em; color:#ff4d4d; border:1px solid rgba(255,77,77,.4); border-radius:3px; padding:0 4px; vertical-align:middle; }
+.queue-row-locate { background:var(--glass); border:1px solid var(--glass-border); border-radius:var(--r-sm); color:var(--text2); font-size:10px; padding:2px 7px; cursor:pointer; flex-shrink:0; }
+.queue-row-locate:hover { color:var(--text); background:var(--glass-hi); }
 .queue-row-title {
   font-size:12px; font-weight:500; color:var(--text);
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap;

@@ -50,6 +50,21 @@ test('the queue panel wires a clear-played action to the tested helper', () => {
   assert.ok(renderer.includes("'Clear played'"), 'no Clear played button label')
 })
 
+// Roadmap 048: a missing file stays in the queue with Locate / Remove.
+test('a confirmed-missing file is marked, played past, and offered Locate', () => {
+  const P = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'load-error-policy.js'), 'utf8')
+  const M = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'main.js'), 'utf8')
+  const PRE = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'preload.js'), 'utf8')
+  assert.ok(!P.includes("action: 'drop'"), 'the policy no longer removes anything')
+  assert.ok(P.includes("action: 'mark'"))
+  assert.ok(renderer.includes("if (decision.action === 'mark') {") && renderer.includes('markMissingTrack(filePath, track)'))
+  assert.ok(renderer.includes('function _nextPlayableIndex('), 'playback skips marked entries')
+  assert.ok(/if \(track\._missing\) \{\n\s+const next = _nextPlayableIndex/.test(renderer), 'a marked entry is never sent to the engine')
+  assert.ok(renderer.includes('class="q-missing-badge"') && renderer.includes('data-locate-idx='), 'the row shows the badge and Locate')
+  assert.ok(PRE.includes("ipcRenderer.invoke('locate-track-file', p)"))
+  assert.ok(M.includes("ipcMain.handle('locate-track-file'") && M.includes('if (!libPathInRoots(fp)) return'), 'Locate stays inside the library roots')
+})
+
 // Roadmap 051: duplicates are skipped by default and offered, never silently dropped.
 test('adding duplicates to a playlist offers Keep both instead of discarding them', () => {
   assert.ok(renderer.includes('tools.playlistAddPlan(pl.tracks, slim)'))

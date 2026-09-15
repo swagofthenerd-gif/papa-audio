@@ -444,6 +444,8 @@ contextBridge.exposeInMainWorld('api', {
   getSessionId:      ()  => ipcRenderer.invoke('get-session-id'),
   getAlbumIdRemap:   ()  => ipcRenderer.invoke('get-album-id-remap'),
   trackExists:       (p) => ipcRenderer.invoke('track-exists', p),
+  // Roadmap 048: point at a missing queue file's new home.
+  locateTrackFile:   (p) => ipcRenderer.invoke('locate-track-file', p),
   slskCancelSearches: (p) => ipcRenderer.invoke('slsk-cancel-searches', p),
   getAudioDevices:   ()  => ipcRenderer.invoke('get-audio-devices'),
   setAudioDevice:    (d) => ipcRenderer.invoke('set-audio-device', d),

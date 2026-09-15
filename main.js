@@ -53,6 +53,8 @@ const IPC_TIMEOUT_OVERRIDES = {
   'transcode-file': 0,
   'batch-transcode': 0,
   'library-write-tags': 0,
+  // A file picker: waits on a person (roadmap 048).
+  'locate-track-file': 0,
   // Rewrites FLAC files one by one on the calling thread; a large batch is
   // legitimately slow, so it is not deadlined (same reasoning as write-tags).
   'tag-write-batch': 0,
@@ -3279,6 +3281,26 @@ ipcMain.handle('track-exists', async (_, filePath) => {
     return { checked: false, exists: true, reason: (e && e.code) || 'stat failed' }
   }
 })
+// Roadmap 048: a file picker for a queue entry whose file is gone. The chosen
+// path must be a real file inside the library roots — the queue is not a way
+// around the folder policy.
+ipcMain.handle('locate-track-file', async (_, p) => {
+  const title = String((p && p.title) || '')
+  const r = await dialog.showOpenDialog(mainWindow, {
+    title: title ? `Locate "${title}"` : 'Locate the file',
+    properties: ['openFile'],
+    filters: [{ name: 'Audio', extensions: ['flac', 'mp3', 'wav', 'm4a', 'aac', 'ogg', 'opus', 'aiff', 'aif', 'ape', 'wv', 'wma', 'dsf'] }],
+  })
+  if (r.canceled || !r.filePaths[0]) return { ok: false, cancelled: true }
+  const fp = r.filePaths[0]
+  if (!libPathInRoots(fp)) return { ok: false, error: 'That file is outside your music folders — add its folder first.' }
+  try {
+    const st = await fs.promises.stat(fp)
+    if (!st.isFile()) return { ok: false, error: 'That is not a file.' }
+  } catch (e) { return { ok: false, error: 'Could not read that file.' } }
+  return { ok: true, filePath: fp }
+})
+
 // Ground truth for the QA harness: the full flight recorder and mpv's own log,
 // straight off the engine, with no UI state anywhere in the answer.
 ipcMain.handle('player-get-diagnostics', () => {

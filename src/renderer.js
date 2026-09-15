@@ -1678,9 +1678,9 @@ async function handleLoadError(filePath, track) {
     : { action: 'skip', reason: 'policy-module-missing' }
   console.error('[papa] load failed:', filePath, '->', decision.action, `(${decision.reason})`)
 
-  if (decision.action === 'drop') {
+  if (decision.action === 'mark') {
     _loadRetried.delete(filePath)
-    dropMissingTrack(filePath, track)
+    markMissingTrack(filePath, track)
     return
   }
 
@@ -1700,6 +1700,61 @@ async function handleLoadError(filePath, track) {
     state.isPlaying = false
     updatePlayBtn()
   }
+}
+
+// Roadmap 048: a confirmed-missing file stays in the queue, marked, so it can
+// be located, skipped or removed on purpose — it used to vanish with a
+// snackbar, which is not how a person finds out a drive is unplugged. The
+// queue plays past marked entries (playCurrentTrack); the panel shows the
+// badge and the Locate / Remove actions.
+function markMissingTrack(filePath, track) {
+  var name = (track && track.title) || (filePath || '').split('/').pop() || 'That track'
+  var marked = 0
+  state.queue.forEach(function (t) { if (t && t.filePath === filePath && !t._missing) { t._missing = true; marked++ } })
+  var wasCurrent = state.queue[state.queueIndex] && state.queue[state.queueIndex].filePath === filePath
+  var next = _nextPlayableIndex(state.queueIndex)
+  if (wasCurrent && next >= 0) {
+    showSnackbar(name + ' is missing — skipped, kept in the queue to locate or remove', '', function () {}, 6000)
+    state.queueIndex = next
+    playCurrentTrack()
+  } else if (wasCurrent) {
+    audio.pause()
+    state.isPlaying = false
+    updatePlayBtn(); updateNowPlaying(null)
+    showSnackbar(name + ' is missing — nothing else to play. Locate or remove it from the queue.', '', function () {}, 8000)
+  } else {
+    showSnackbar(name + ' is missing — kept in the queue to locate or remove')
+  }
+  updateNextPrefetch()
+  renderQueuePanel()
+}
+
+// The next index after `from` (wrapping once) whose entry is not marked
+// missing, or -1 when every remaining entry is.
+function _nextPlayableIndex(from) {
+  var n = state.queue.length
+  for (var step = 1; step <= n; step++) {
+    var i = (from + step) % n
+    if (state.repeat !== 'all' && i <= from) break   // do not wrap unless repeating
+    if (!state.queue[i]._missing) return i
+  }
+  return -1
+}
+
+// Locate (roadmap 048): the person points at the file's new home; every queue
+// entry with the old path takes the new one and the mark clears.
+async function locateMissingTrack(idx) {
+  var t = state.queue[idx]
+  if (!t) return
+  var res = null
+  try { res = await window.api.locateTrackFile({ title: t.title || '', oldPath: t.filePath || '' }) } catch (_) { res = null }
+  if (!res || !res.ok || !res.filePath) { if (res && res.error) showSnackbar(res.error); return }
+  var oldPath = t.filePath
+  state.queue.forEach(function (q) { if (q && q.filePath === oldPath) { q.filePath = res.filePath; delete q._missing } })
+  showSnackbar('Found: ' + (t.title || res.filePath.split('/').pop()))
+  updateNextPrefetch()
+  renderQueuePanel()
+  if (idx === state.queueIndex && !state.isPlaying) playCurrentTrack()
 }
 
 function dropMissingTrack(filePath, track) {
@@ -17635,19 +17690,23 @@ function renderQueuePanel() {
       ? `<img class="queue-row-art" src="${esc(_artSrc(t.artPath))}" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
       : ''
     const stereoBadge = (hasSurround && (t.channels || 0) < 6) ? '<span class="q-stereo-badge">STEREO</span>' : ''
+    // Roadmap 048: a missing file is still a row — badged, with Locate.
+    const missingBadge = t._missing ? '<span class="q-missing-badge" title="The file could not be found on disk">MISSING</span>' : ''
+    const locateBtn = t._missing ? `<button class="queue-row-locate" data-locate-idx="${i}" title="Locate the file">Locate</button>` : ''
     return `
-      <div class="queue-row ${isPlaying ? 'playing' : ''}" draggable="true" data-queue-idx="${i}">
+      <div class="queue-row ${isPlaying ? 'playing' : ''}${t._missing ? ' missing' : ''}" draggable="true" data-queue-idx="${i}">
         <div class="queue-drag-handle">${dragHandleSvg}</div>
         ${art}
         <div class="queue-row-art-fallback" ${art ? 'style="display:none"' : ''}>
           <svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>
         </div>
         <div class="queue-row-info">
-          <div class="queue-row-title">${esc(t.title)}${t.explicit ? '<span class="track-explicit">E</span>' : ''}${stereoBadge}</div>
+          <div class="queue-row-title">${esc(t.title)}${t.explicit ? '<span class="track-explicit">E</span>' : ''}${stereoBadge}${missingBadge}</div>
           <div class="queue-row-artist">${esc(t.albumArtist || t.artist || '')}${t.bpm ? `<span class="track-bpm">${t.bpm} BPM</span>` : ''}</div>
         </div>
         ${(state.playCounts[t.filePath] || 0) > 0 ? `<span class="track-plays">${state.playCounts[t.filePath]}</span>` : ''}
         <button class="track-like-btn ${state.likedTracks.includes(t.filePath) ? 'liked' : ''}" data-like="${esc(t.filePath)}" title="${state.likedTracks.includes(t.filePath) ? 'Unlike' : 'Like'}">${state.likedTracks.includes(t.filePath) ? '♥' : '♡'}</button>
+        ${locateBtn}
         <button class="queue-row-remove" data-remove-idx="${i}" title="Remove">${removeSvg}</button>
       </div>`
   }).join('')
@@ -17769,13 +17828,21 @@ function renderQueuePanel() {
 
   list.querySelectorAll('.queue-row').forEach(row => {
     row.addEventListener('click', e => {
-      if (e.target.closest('.queue-row-remove') || e.target.closest('.queue-drag-handle') || e.target.closest('.track-like-btn')) return
+      if (e.target.closest('.queue-row-remove') || e.target.closest('.queue-row-locate') || e.target.closest('.queue-drag-handle') || e.target.closest('.track-like-btn')) return
       state.queueIndex = parseInt(row.dataset.queueIdx)
       playCurrentTrack()
       renderQueuePanel()
     })
   })
   wireTrackLikeButtons()
+
+  // Locate (roadmap 048)
+  list.querySelectorAll('.queue-row-locate').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation()
+      locateMissingTrack(parseInt(btn.dataset.locateIdx, 10))
+    })
+  })
 
   // Remove buttons
   list.querySelectorAll('.queue-row-remove').forEach(btn => {
@@ -19521,6 +19588,13 @@ function playCurrentTrack() {
   const track = state.queue[state.queueIndex]
   if (!track) return
   _playbackIntent++
+  // A marked-missing entry is skipped, never sent to the engine (roadmap 048).
+  if (track._missing) {
+    const next = _nextPlayableIndex(state.queueIndex)
+    if (next < 0) { audio.pause(); state.isPlaying = false; updatePlayBtn(); updateNowPlaying(null); return }
+    state.queueIndex = next
+    return playCurrentTrack()
+  }
   // An A–B loop belongs to the file it was set on; starting a (different) track
   // via next/prev/select clears it. Repeat-one replays in place without calling
   // here, so a loop survives a natural track repeat.

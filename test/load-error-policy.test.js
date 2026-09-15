@@ -16,7 +16,7 @@ const UNKNOWN = { checked: false, exists: true, reason: 'EACCES' }
 
 test('a file the filesystem says is gone is dropped from the queue', () => {
   const d = decide({ verdict: GONE, alreadyRetried: false, queueLength: 12 })
-  assert.strictEqual(d.action, 'drop')
+  assert.strictEqual(d.action, 'mark')
 })
 
 test('a file that is still there is retried once, never dropped', () => {
@@ -33,7 +33,7 @@ test('"could not tell" is never treated as "it is missing"', () => {
     assert.strictEqual(first.action, 'retry', JSON.stringify(verdict))
     const second = decide({ verdict, alreadyRetried: true, queueLength: 12 })
     assert.strictEqual(second.action, 'skip', JSON.stringify(verdict))
-    assert.notStrictEqual(second.action, 'drop')
+    assert.notStrictEqual(second.action, 'mark')
   }
 })
 
@@ -50,7 +50,7 @@ test('a second failure with nothing else queued stops rather than skipping', () 
 
 test('a confirmed-missing file is dropped even on the second attempt', () => {
   const d = decide({ verdict: GONE, alreadyRetried: true, queueLength: 12 })
-  assert.strictEqual(d.action, 'drop')
+  assert.strictEqual(d.action, 'mark')
 })
 
 test('only a confirmed absence can ever mutate the queue', () => {
@@ -59,9 +59,9 @@ test('only a confirmed absence can ever mutate the queue', () => {
     for (const alreadyRetried of [false, true]) {
       for (const queueLength of [0, 1, 12]) {
         const d = decide({ verdict, alreadyRetried, queueLength })
-        if (d.action === 'drop') {
+        if (d.action === 'mark') {
           assert.ok(verdict && verdict.checked === true && verdict.exists === false,
-            `drop requires a confirmed absence, got ${JSON.stringify(verdict)}`)
+            `mark requires a confirmed absence, got ${JSON.stringify(verdict)}`)
         }
       }
     }
@@ -71,6 +71,6 @@ test('only a confirmed absence can ever mutate the queue', () => {
 test('malformed input still produces a decision rather than throwing', () => {
   for (const facts of [undefined, {}, { verdict: null }, { queueLength: 'x' }]) {
     assert.doesNotThrow(() => decide(facts))
-    assert.ok(['drop', 'retry', 'skip', 'stop'].includes(decide(facts).action))
+    assert.ok(['mark', 'retry', 'skip', 'stop'].includes(decide(facts).action))
   }
 })

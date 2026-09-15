@@ -15,7 +15,9 @@
   //                                        a stream, a path outside the roots)
   //
   // Actions:
-  //   'drop'  remove it from the queue — the only action allowed to mutate it
+  //   'mark'  the file is confirmed gone: keep the entry, mark it missing so it
+//           stays identifiable with Locate / Remove (roadmap 048), and play
+//           past it — the only action allowed to touch the queue
   //   'retry' load the same track once more
   //   'skip'  move to the next track, leaving the queue untouched
   //   'stop'  nothing else to play
@@ -24,10 +26,10 @@
     const verdict = f.verdict || {}
     const queueLength = Number(f.queueLength) || 0
 
-    // Confirmed gone by the filesystem. This is the ONLY route to 'drop':
+    // Confirmed gone by the filesystem. This is the ONLY route to 'mark':
     // "could not tell" must never be treated as "it is missing".
     if (verdict.checked === true && verdict.exists === false) {
-      return { action: 'drop', reason: 'confirmed-missing' }
+      return { action: 'mark', reason: 'confirmed-missing' }
     }
 
     // Present, or unknown. One retry, because the common case here is a
@@ -40,8 +42,8 @@
     }
 
     // Twice is not transient. Move on, but leave the queue alone — the track is
-    // not missing, so deleting it from the queue would be losing the user's data
-    // to work around a playback problem.
+    // not missing, so marking it would be lying and deleting it would be losing
+    // the user's data to work around a playback problem.
     if (queueLength > 1) return { action: 'skip', reason: 'failed-twice' }
     return { action: 'stop', reason: 'failed-twice-nothing-else' }
   }
