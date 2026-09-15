@@ -165,6 +165,23 @@
     return { queue: queue, queueIndex: qi, insertedAt: at, count: tracks.length }
   }
 
+  // Adding to a playlist (roadmap 051): split the incoming tracks into the
+  // ones the playlist lacks and the ones it already has, so the caller can
+  // add the fresh ones and OFFER to keep the duplicates too — a duplicate is
+  // sometimes wanted (a set list that repeats a song) and never something to
+  // discard silently. Tracks without a file path cannot be matched and count
+  // as fresh.
+  function playlistAddPlan(existing, incoming) {
+    var have = {}
+    ;(existing || []).forEach(function (t) { if (t && t.filePath) have[t.filePath] = true })
+    var fresh = [], dupes = []
+    ;(incoming || []).forEach(function (t) {
+      if (t && t.filePath && have[t.filePath]) dupes.push(t)
+      else fresh.push(t)
+    })
+    return { fresh: fresh, dupes: dupes }
+  }
+
   function clearPlayedQueue(queue, queueIndex) {
     queue = queue || []
     var idx = Number(queueIndex)
@@ -1777,6 +1794,7 @@
     prevAction: prevAction,
     PREV_RESTART_AFTER_SECONDS: PREV_RESTART_AFTER_SECONDS,
     insertPlayNext: insertPlayNext,
+    playlistAddPlan: playlistAddPlan,
     volumeAria: volumeAria,
     sliderKeyRatio: sliderKeyRatio,
     topAlbumsByPlays: topAlbumsByPlays,

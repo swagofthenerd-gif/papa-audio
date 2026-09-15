@@ -50,6 +50,14 @@ test('the queue panel wires a clear-played action to the tested helper', () => {
   assert.ok(renderer.includes("'Clear played'"), 'no Clear played button label')
 })
 
+// Roadmap 051: duplicates are skipped by default and offered, never silently dropped.
+test('adding duplicates to a playlist offers Keep both instead of discarding them', () => {
+  assert.ok(renderer.includes('tools.playlistAddPlan(pl.tracks, slim)'))
+  assert.ok(renderer.includes("showSnackbar(msg, 'Keep both', keepBoth, 6000)"))
+  assert.ok(renderer.includes("showSnackbar('Already in this playlist', 'Keep both'"), 'the single-track path offers it too')
+  assert.ok(!renderer.includes("showSnackbar('Already in this playlist'); return"), 'the flat refusal is gone')
+})
+
 // Roadmap 057: empty is not failure; each failure kind has its own next step.
 test('the YouTube section paints failures through the shared classifier', () => {
   const H = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'index.html'), 'utf8')

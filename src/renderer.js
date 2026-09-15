@@ -15890,7 +15890,13 @@ function renderPlaylist(id, sortKey) {
       const track = _allLibraryTracks().find(t => t.filePath === fp)
       if (!track) return
       if ((pl.tracks || []).some(function (x) { return x && x.filePath === track.filePath })) {
-        showSnackbar('Already in this playlist'); return
+        // Roadmap 051: skipped by default, offered rather than refused.
+        showSnackbar('Already in this playlist', 'Keep both', function () {
+          pl.tracks.push({ ...track })
+          window.api.savePlaylist(pl)
+          renderPlaylist(id, sortKey)
+        }, 6000)
+        return
       }
       pl.tracks.push({ ...track })
       window.api.savePlaylist(pl)
@@ -17428,18 +17434,32 @@ function showAddToPlaylistModal(tracks) {
     pl.tracks = pl.tracks || []
     // Adding the same track twice used to silently double it, with no feedback
     // at all -- from Home you could not tell the add had happened.
-    const have = new Set(pl.tracks.map(t => t && t.filePath).filter(Boolean))
-    const fresh = slim.filter(t => !t.filePath || !have.has(t.filePath))
-    const dupes = slim.length - fresh.length
+    // Roadmap 051: duplicates are skipped by default and OFFERED, never
+    // dropped silently — "Keep both" on the notice appends them too.
+    const tools = (typeof window !== 'undefined' && window.PapaMusicTools) || null
+    const plan = tools ? tools.playlistAddPlan(pl.tracks, slim)
+      : (function () { const have = new Set(pl.tracks.map(t => t && t.filePath).filter(Boolean)); return { fresh: slim.filter(t => !t.filePath || !have.has(t.filePath)), dupes: slim.filter(t => t.filePath && have.has(t.filePath)) } })()
+    const fresh = plan.fresh, dupes = plan.dupes
     pl.tracks.push(...fresh)
     window.api.savePlaylist(pl)
     close()
-    showSnackbar(fresh.length
+    const repaint = () => {
+      if (state.currentPage === 'playlist' && state.currentPlaylistId === pl.id) renderPlaylist(pl.id)
+      if (state.currentPage === 'playlists') renderPlaylists()
+    }
+    const keepBoth = () => {
+      pl.tracks.push(...dupes.map(t => ({ ...t })))
+      window.api.savePlaylist(pl)
+      showSnackbar('Kept ' + dupes.length + ' duplicate' + (dupes.length === 1 ? '' : 's') + ' in "' + pl.name + '"')
+      repaint()
+    }
+    const msg = fresh.length
       ? 'Added ' + fresh.length + ' track' + (fresh.length === 1 ? '' : 's') + ' to "' + pl.name + '"' +
-        (dupes ? ' (' + dupes + ' already there)' : '')
-      : 'Already in "' + pl.name + '"')
-    if (state.currentPage === 'playlist' && state.currentPlaylistId === pl.id) renderPlaylist(pl.id)
-    if (state.currentPage === 'playlists') renderPlaylists()
+        (dupes.length ? ' — ' + dupes.length + ' already there, skipped' : '')
+      : (dupes.length === 1 ? 'Already in "' + pl.name + '"' : 'All ' + dupes.length + ' already in "' + pl.name + '"')
+    if (dupes.length) showSnackbar(msg, 'Keep both', keepBoth, 6000)
+    else showSnackbar(msg)
+    repaint()
   }
 
   overlay.addEventListener('click', e => { if (e.target === overlay) close() })

@@ -48,6 +48,15 @@ test('the preset menu offers end-of-track and the five minute presets', () => {
   assert.ok(T.SLEEP_PRESETS.some(p => p.endOfTrack), 'no end-of-track option')
 })
 
+// ── Playlist add plan (roadmap 051) ──────────────────────────────────────────
+test('adding to a playlist splits fresh from already-present, and never drops either', () => {
+  const pl = [{ filePath: '/a' }, { filePath: '/b' }]
+  const plan = T.playlistAddPlan(pl, [{ filePath: '/b' }, { filePath: '/c' }, { title: 'stream, no path' }])
+  assert.deepEqual(plan.fresh.map(t => t.filePath || t.title), ['/c', 'stream, no path'])
+  assert.deepEqual(plan.dupes.map(t => t.filePath), ['/b'])
+  assert.deepEqual(T.playlistAddPlan(null, []), { fresh: [], dupes: [] })
+})
+
 // ── Previous (roadmap 040) and Play next (roadmap 045) ───────────────────────
 test('Previous restarts after three seconds and goes back before that, everywhere', () => {
   assert.equal(T.PREV_RESTART_AFTER_SECONDS, 3)
