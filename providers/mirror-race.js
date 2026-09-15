@@ -47,9 +47,12 @@ async function raceMirrors(urls, attempt, { timeoutMs = DEFAULT_RACE_TIMEOUT_MS 
     }
     // The overall backstop: expiry resolves null and aborts the stragglers.
     if (timeoutMs > 0) {
+      // Deliberately NOT unref'd. When every attempt is hung this timer is the
+      // only handle left, and an unref'd timer lets the event loop drain before
+      // it fires — the awaiting caller then never resolves, which is the exact
+      // hang the backstop exists to prevent. finish() clears it, so it never
+      // outlives the race.
       timer = setTimeout(() => finish(null), timeoutMs)
-      // Never keep the process alive just for this timer (Node only).
-      if (typeof timer.unref === 'function') timer.unref()
     }
     list.forEach((baseUrl, i) => {
       Promise.resolve()
