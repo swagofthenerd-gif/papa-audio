@@ -202,12 +202,12 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | V034 | Pending review/implementation |
 | V035 | Pending review/implementation |
 | V036 | Partial — source fix and targeted tests; desktop verification pending |
-| V037 | Pending review/implementation |
+| V037 | Fixed `e1e9fc4` |
 | V038 | Pending review/implementation |
 | V039 | Pending review/implementation |
 | V040 | Pending review/implementation |
-| V041 | Pending review/implementation |
-| V042 | Pending review/implementation |
+| V041 | Fixed `58293d6` |
+| V042 | Fixed `58293d6` |
 | V043 | Pending review/implementation |
 | V044 | Pending review/implementation |
 | V045 | Fixed `2037c8d` — edition-aware skip |
