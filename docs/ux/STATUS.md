@@ -110,6 +110,7 @@ Each F item re-checked on this branch, not assumed from the `main` review.
 | 2026-09-15 | 098 | `5a988f3` | device fallback remembered; "Active now" line; BIT-PERFECT demoted |
 | 2026-09-15 | 082 | `b6fb102` | wishlist rows: auto/notify, pause, last check, cadence |
 | 2026-09-15 | V067 | see log | badges: HDR shown as SDR / video re-encoded / audio re-encoded; remux silent |
+| 2026-09-15 | 086 | see log | duplicate groups classified: identical / recordings / editions; editions never safe to delete |
 
 ## F list: all resolved (134 deferred to runtime). Now working through P0 E-items
 

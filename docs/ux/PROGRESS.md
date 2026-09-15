@@ -91,7 +91,7 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | A083 | Fixed `71abddb` — relink carries every store and the cache |
 | A084 | Fixed `2e01d08` — unplugged root = unavailable, not deleted |
 | A085 | Fixed `71abddb` — guided relink with preview |
-| A086 | Pending review/implementation |
+| A086 | Fixed — relationOf classifies groups; editions never deletable |
 | A087 | Fixed — hero edits write real tags with an explicit scope note; see STATUS.md |
 | A088 | Pending review/implementation |
 | A089 | Pending review/implementation |
