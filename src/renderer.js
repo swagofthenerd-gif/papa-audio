@@ -9089,12 +9089,20 @@ function _videoDetailShell(d) {
   const backdrop = d.backdrop
   const poster = d.poster
   const genres = Array.isArray(d.genres) ? d.genres : []
-  const rating = d.rating != null ? (typeof d.rating === 'number' ? (Math.round(d.rating * 10) / 10) : d.rating) : null
+  // V010: unknown is said, zero is not dressed up as a value. A catalog that
+  // has no rating yet (0 votes) reports 0; that is not a one-star film.
+  const ratingNum = typeof d.rating === 'number' ? d.rating : (d.rating != null && d.rating !== '' ? Number(d.rating) : NaN)
+  const rating = Number.isFinite(ratingNum) && ratingNum > 0 ? Math.round(ratingNum * 10) / 10 : null
   const kind = d.type === 'anime' ? 'Anime' : d.type === 'tv' ? 'TV Series' : 'Movie'
   const metaBits = []
-  if (d.year != null) metaBits.push(esc(String(d.year)))
+  metaBits.push(d.year != null && d.year !== '' && Number(d.year) > 0 ? esc(String(d.year)) : '<span class="vmeta-unknown" title="The catalog has no year for this">year unknown</span>')
   metaBits.push(kind)
   if (rating != null) metaBits.push('★ ' + esc(String(rating)))
+  else metaBits.push('<span class="vmeta-unknown" title="No rating yet — not a zero">not rated</span>')
+  if (d.type === 'movie') {
+    const rt = Number(d.runtime)
+    metaBits.push(Number.isFinite(rt) && rt > 0 ? rt + ' min' : '<span class="vmeta-unknown" title="The catalog has no runtime for this">runtime unknown</span>')
+  }
   const hero = '<div class="video-detail-hero"' + (backdrop ? ' style="background-image:url(\'' + esc(backdrop) + '\')"' : '') + '>' +
     '<div class="video-detail-overlay"></div>' +
     (poster ? '<img class="video-detail-poster" src="' + esc(poster) + '" alt="" onerror="this.style.display=\'none\'">' : '<div class="video-detail-poster video-detail-poster-fallback">' + esc(d.title || '') + '</div>') +

@@ -1064,3 +1064,11 @@ test('a saved catalog row carries its age and an outage is told apart from an em
   assert.ok(R.includes("' from ' + _agoLabel(Date.now() - Number(cachedAt))"))
   assert.ok(R.includes("if (res.outage) return _rowOutage(row.key, res.outage)\n      return _rowEmpty(row.key, 'Nothing here right now')"))
 })
+
+// V010: metadata badges distinguish unknown from zero.
+test('the detail meta line says year unknown / not rated / runtime unknown instead of 0 or nothing', () => {
+  const R = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
+  assert.ok(R.includes("const rating = Number.isFinite(ratingNum) && ratingNum > 0 ? Math.round(ratingNum * 10) / 10 : null"), 'a zero rating is not a rating')
+  assert.ok(R.includes('title="No rating yet — not a zero">not rated</span>'))
+  assert.ok(R.includes('>year unknown</span>') && R.includes('>runtime unknown</span>'))
+})

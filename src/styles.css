@@ -2031,6 +2031,8 @@ h2.section-title { font-size:18px; font-weight:700; }
 .mcs-mem-act:hover { color:var(--text); }
 .mcs-mem-edited { font-size:9px; color:var(--accent); margin-left:6px; }
 .mcs-mem-excluded { font-size:11px; color:var(--text3); padding:8px 4px; }
+/* V010: an unknown fact reads as unknown, not as a value. */
+.vmeta-unknown { opacity:.6; font-style:italic; }
 .folder-item-empty { color:var(--text3); font-style:italic; cursor:default; }
 .setup-hint { font-size:12px; color:var(--text3); margin:8px 0 0; }
 .setup-chosen { color:var(--accent) !important; font-weight:600; word-break:break-all; }
