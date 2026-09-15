@@ -1553,6 +1553,7 @@ async function init() {
   restoreDiscoverDismissals()
   restoreHoverTrailerPref()
   restoreHideSeenPref()
+  restoreSpoilerPref()
 
   window.api.slskStatus().then(s => { _setSlskStatus(s) }).catch(() => {})
   // The rate is decided in one place; at startup nothing is known to be active
@@ -5712,6 +5713,41 @@ function restoreHideSeenPref() {
 function setHideSeen(on) {
   _hideSeen = !!on
   try { localStorage.setItem(HIDE_SEEN_KEY, _hideSeen ? '1' : '0') } catch (_) {}
+}
+
+// V020: spoiler-safe episode lists. On by default: an episode you have not
+// watched shows its number, title, date and runtime, but its synopsis and
+// still are concealed until you ask — a click on the row's "Show" reveals
+// that one; the toggle above the list reveals all. Watched episodes and the
+// one you are on are never concealed. Off is remembered.
+const SPOILER_SAFE_KEY = 'papa_spoiler_safe'
+var _spoilerSafe = true
+function restoreSpoilerPref() {
+  try { _spoilerSafe = localStorage.getItem(SPOILER_SAFE_KEY) !== '0' } catch (_) { _spoilerSafe = true }
+}
+function setSpoilerSafe(on) {
+  _spoilerSafe = !!on
+  try { localStorage.setItem(SPOILER_SAFE_KEY, _spoilerSafe ? '1' : '0') } catch (_) {}
+}
+function _spoilerToggleHtml() {
+  return '<label class="video-control vep-spoiler-toggle" title="Hide the synopsis and picture of episodes you have not watched"><input type="checkbox" id="vep-spoiler-safe"' +
+    (_spoilerSafe ? ' checked' : '') + '> <span>Hide spoilers</span></label>'
+}
+// A row's own "Show synopsis" reveals that row and nothing else.
+function _bindRevealButtons(list) {
+  if (!list) return
+  list.querySelectorAll('.vep-reveal').forEach(function (btn) {
+    btn.addEventListener('click', function (e) {
+      e.stopPropagation()
+      const row = btn.closest('.vep-row')
+      if (row) row.classList.remove('concealed')
+      const box = btn.closest('.vep-synopsis')
+      if (box) { box.classList.remove('vep-synopsis-hidden'); box.textContent = btn.dataset.text || '' }
+    })
+  })
+}
+function _bindSpoilerToggle(repaint) {
+  document.getElementById('vep-spoiler-safe')?.addEventListener('change', function (e) { setSpoilerSafe(e.target.checked); repaint() })
 }
 
 // A card's key is the same _watchKey shape the diary stores, so "seen" here and
@@ -10055,8 +10091,9 @@ function _renderVideoControls(type) {
       // elsewhere. Confirmed and undoable; bound below.
       '<button class="mcs-set-btn video-season-seen" id="video-season-seen" type="button"' +
         ' title="Mark every episode of this season as watched">Mark season watched</button>' +
-      _dubControl(d) +
+      _dubControl(d) + _spoilerToggleHtml() +
       '<div class="video-episode-list" id="video-episode-list"></div></div>'
+    _bindSpoilerToggle(function () { _renderVideoControls('tv') })
     document.getElementById('video-season-select')?.addEventListener('change', function (e) {
       _videoState.season = Number(e.target.value) || 1
       _videoState.episode = 1
@@ -10094,9 +10131,10 @@ function _renderVideoControls(type) {
       : '<label class="video-control">Episode <input class="mcs-set-input" id="video-episode-input" type="number" min="1" value="' + _videoState.episode + '" style="width:90px"></label>'
     box.innerHTML = '<div class="video-controls-row">' +
       _epResumeHtml(prog, numbers.length) +
-      _dubControl(_videoDetail.d) + _numberingControl(_videoDetail.d) + grid +
+      _dubControl(_videoDetail.d) + _numberingControl(_videoDetail.d) + (n > 0 ? _spoilerToggleHtml() : '') + grid +
     '</div>'
     _bindNumberingControl(_videoDetail.d)
+    _bindSpoilerToggle(function () { _renderVideoControls('anime') })
     const setEp = function (ep) {
       _videoState.episode = ep
       _syncEpisodeSelection(ep)
@@ -10126,8 +10164,10 @@ function _renderVideoControls(type) {
       for (let i = win.start; i <= win.end; i++) shown.push(byN[i] || { episodeNumber: i })
       list.classList.add('vep-rows')
       list.innerHTML = EL.rows(shown, prog, _videoState.episode, Date.now()).map(_epRowHtml).join('')
+      _bindRevealButtons(list)
       list.querySelectorAll('.vep-row').forEach(function (b) {
-        const go = function () {
+        const go = function (e) {
+          if (e && e.target && e.target.closest && e.target.closest('.vep-reveal')) return
           if (!b.classList.contains('unaired')) _autoPlayTicket = _videoDetailTicket
           setEp(Number(b.dataset.ep) || 1)
         }
@@ -10405,7 +10445,9 @@ async function _refreshTvEpisodes(ticket, seasonTicket) {
 // does not fetch 24 images before the first paint; a missing still keeps the
 // slot so the rows line up.
 function _epRowHtml(r) {
-  const cls = 'vep-row' + (r.current ? ' active' : '') + (r.watched ? ' seen' : '') + (r.pct ? ' partial' : '') + (r.upNext ? ' upnext' : '') + (r.unaired ? ' unaired' : '')
+  // V020: conceal what would spoil an episode not yet watched.
+  const conceal = _spoilerSafe && !r.watched && !r.current && !r.pct
+  const cls = 'vep-row' + (r.current ? ' active' : '') + (r.watched ? ' seen' : '') + (r.pct ? ' partial' : '') + (r.upNext ? ' upnext' : '') + (r.unaired ? ' unaired' : '') + (conceal ? ' concealed' : '')
   const still = r.still
     ? '<img class="vep-still" src="' + esc(r.still) + '" alt="" loading="lazy" decoding="async">'
     : '<span class="vep-still vep-still-empty"></span>'
@@ -10420,7 +10462,9 @@ function _epRowHtml(r) {
     '<div class="vep-body">' +
       '<div class="vep-head">' + kicker + '<span class="vep-title">' + esc(r.title) + '</span>' + mark + '</div>' +
       (meta ? '<div class="vep-meta">' + meta + '</div>' : '') +
-      (r.synopsis ? '<div class="vep-synopsis">' + esc(r.synopsis) + '</div>' : '') +
+      (r.synopsis ? (conceal
+        ? '<div class="vep-synopsis vep-synopsis-hidden"><button type="button" class="vep-reveal" data-reveal="' + r.n + '" data-text="' + esc(r.synopsis) + '">Show synopsis</button></div>'
+        : '<div class="vep-synopsis">' + esc(r.synopsis) + '</div>') : '') +
     '</div>' +
     '<span class="vep-play" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></span>' +
   '</div>'
@@ -10461,8 +10505,10 @@ function _tvEpRenderGrid(target, episodes, prog, top, setEp) {
     // button, which he read as "they don't play anything". Now it selects
     // and plays, through the same path the Play button takes (an unaired
     // episode only selects — there is nothing to play yet).
+    _bindRevealButtons(list)
     list.querySelectorAll('.video-episode-btn, .vep-row').forEach(function (b) {
-      const go = function () {
+      const go = function (e) {
+        if (e && e.target && e.target.closest && e.target.closest('.vep-reveal')) return
         // Selecting refetches this episode's sources; playing straight away
         // would use the previous episode's list (it picked E01 for E02).
         // The autoplay ticket plays as soon as the new list lands.

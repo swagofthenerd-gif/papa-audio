@@ -519,6 +519,9 @@ function tvGridCtx() {
     _videoState: { episode: 1, season: 1 },
     esc: s => String(s == null ? '' : s),
     document: { getElementById: () => { const e = fakeEl(); created.push(e); return e } },
+    // V020: the grid binds the per-row reveal buttons; a no-op here.
+    _bindRevealButtons: () => {},
+    _spoilerSafe: false,
   }
   vm.createContext(ctx)
   for (const fn of ['_tvEpRenderGrid', '_epButton', '_epWindowOf', '_epRangeJumperHtml', '_epMark']) {
@@ -1071,4 +1074,14 @@ test('the detail meta line says year unknown / not rated / runtime unknown inste
   assert.ok(R.includes("const rating = Number.isFinite(ratingNum) && ratingNum > 0 ? Math.round(ratingNum * 10) / 10 : null"), 'a zero rating is not a rating')
   assert.ok(R.includes('title="No rating yet — not a zero">not rated</span>'))
   assert.ok(R.includes('>year unknown</span>') && R.includes('>runtime unknown</span>'))
+})
+
+// V020: unwatched episodes hide their synopsis and still until asked.
+test('spoiler-safe rows conceal synopsis and still for unwatched episodes, with per-row and global reveal', () => {
+  const R = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
+  assert.ok(R.includes("const conceal = _spoilerSafe && !r.watched && !r.current && !r.pct"))
+  assert.ok(R.includes('class="vep-reveal" data-reveal="'))
+  assert.ok(R.includes("_bindSpoilerToggle(function () { _renderVideoControls('tv') })") && R.includes("_bindSpoilerToggle(function () { _renderVideoControls('anime') })"))
+  assert.ok(R.includes("if (e && e.target && e.target.closest && e.target.closest('.vep-reveal')) return"), 'revealing does not select the episode')
+  assert.ok(R.includes("_spoilerSafe = localStorage.getItem(SPOILER_SAFE_KEY) !== '0'"), 'on by default, off remembered')
 })
