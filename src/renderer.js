@@ -10945,9 +10945,12 @@ function _videoStreamRow(s, i) {
   const b = _videoStreamBadge(s)
   const badge = b.text
   const torrent = s.kind === 'torrent' ? '<span class="video-torrent-badge">torrent</span>' : ''
+  // V046: sub, dub, both, and UNKNOWN are four states. A release whose name
+  // says nothing about language gets "language ?" rather than nothing — a
+  // blank used to read as "no dub", which is a different claim.
   const subDub = (s.sub != null && s.dub != null)
-    ? '<span class="video-source-tag">' + (s.sub && !s.dub ? 'sub' : s.dub && !s.sub ? 'dub' : 'sub+dub') + '</span>'
-    : ''
+    ? '<span class="video-source-tag" title="Read from the release name">' + (s.sub && !s.dub ? 'sub' : s.dub && !s.sub ? 'dub' : 'sub+dub') + '</span>'
+    : (s.kind === 'torrent' ? '<span class="video-source-tag video-source-tag-unknown" title="The release name does not say whether this is subtitled or dubbed">language ?</span>' : '')
   // Seeders and size sit between the badges and the label. Both dim gracefully
   // when the indexer did not report them: an absent seeder count and an
   // unparseable size are honest-unknown, shown as a muted dash rather than a

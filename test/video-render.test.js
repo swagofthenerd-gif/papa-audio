@@ -1092,3 +1092,10 @@ test('the anime grid states planned total and aired-so-far separately, and admit
   assert.ok(R.includes("' episodes planned · ' : 'Total not announced · '"))
   assert.ok(R.includes("' aired so far</div>'"))
 })
+
+// V046: dub, sub, both and unknown are distinct states on a source row.
+test('a source with no language information is tagged "language ?" rather than left blank', () => {
+  const R = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
+  assert.ok(R.includes('>language ?</span>'))
+  assert.ok(R.includes("(s.sub && !s.dub ? 'sub' : s.dub && !s.sub ? 'dub' : 'sub+dub')"))
+})

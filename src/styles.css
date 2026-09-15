@@ -2041,6 +2041,8 @@ h2.section-title { font-size:18px; font-weight:700; }
 .vep-spoiler-toggle { font-size:12px; color:var(--text2); display:inline-flex; gap:6px; align-items:center; }
 /* V048: known total vs aired so far, stated above the grid. */
 .vep-counts { font-size:11px; color:var(--text3); padding:2px 0 6px; }
+/* V046: an unknown language state is shown as unknown. */
+.video-source-tag-unknown { opacity:.6; font-style:italic; }
 .folder-item-empty { color:var(--text3); font-style:italic; cursor:default; }
 .setup-hint { font-size:12px; color:var(--text3); margin:8px 0 0; }
 .setup-chosen { color:var(--accent) !important; font-weight:600; word-break:break-all; }
