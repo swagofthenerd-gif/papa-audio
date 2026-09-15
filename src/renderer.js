@@ -16116,7 +16116,15 @@ function renderPlaylist(id, sortKey) {
       e.stopPropagation()
       const fp = btn.dataset.plRemoveFp
       const idx = pl.tracks.findIndex(t => t.filePath === fp)
-      if (idx >= 0) { pl.tracks.splice(idx, 1); window.api.savePlaylist(pl); renderPlaylist(id, sortKey) }
+      if (idx < 0) return
+      // Roadmap 050: the row's own × is undoable like the context-menu path.
+      const removed = pl.tracks.splice(idx, 1)[0]
+      window.api.savePlaylist(pl); renderPlaylist(id, sortKey)
+      pushUndo('Removed from ' + pl.name, function () {
+        pl.tracks.splice(Math.min(idx, pl.tracks.length), 0, removed)
+        window.api.savePlaylist(pl)
+        if (state.currentPage === 'playlist' && state.currentPlaylistId === pl.id) renderPlaylist(id, sortKey)
+      })
     })
   })
 
@@ -33485,6 +33493,9 @@ function _selPaint() {
   if (!bar) return
   if (!_sel.selected.length) { bar.style.display = 'none'; return }
   bar.style.display = 'flex'
+  // Roadmap 050: the playlist-only action appears only where it applies.
+  var rm = document.getElementById('sel-remove-pl')
+  if (rm) rm.style.display = state.currentPage === 'playlist' && state.currentPlaylistId ? '' : 'none'
   document.getElementById('sel-bar-text').textContent =
     M ? M.describe(_sel.selected.length, _sel.noun) : _sel.selected.length + ' selected'
   // Deleting albums and deleting tracks are both fine; queueing a set of
@@ -33589,6 +33600,28 @@ function _selBindBar() {
     renderQueuePanel()
     showSnackbar(tracks.length + ' added to queue')
     _selClear()
+  })
+
+  // Roadmap 050: bulk remove from the open playlist — count reported, undo
+  // restores every track at its original position, no file touched.
+  document.getElementById('sel-remove-pl')?.addEventListener('click', function () {
+    var pl = state.playlists.find(function (p) { return p.id === state.currentPlaylistId })
+    var paths = _selPaths()
+    if (!pl || !paths.length) return
+    var wanted = {}
+    paths.forEach(function (fp) { wanted[fp] = true })
+    var removed = []
+    pl.tracks.forEach(function (t, i) { if (t && t.filePath && wanted[t.filePath]) removed.push({ i: i, t: t }) })
+    if (!removed.length) { _selClear(); return }
+    pl.tracks = pl.tracks.filter(function (t) { return !(t && t.filePath && wanted[t.filePath]) })
+    window.api.savePlaylist(pl)
+    _selClear()
+    renderPlaylist(pl.id)
+    pushUndo('Removed ' + removed.length + ' track' + (removed.length === 1 ? '' : 's') + ' from ' + pl.name, function () {
+      removed.forEach(function (r) { pl.tracks.splice(Math.min(r.i, pl.tracks.length), 0, r.t) })
+      window.api.savePlaylist(pl)
+      if (state.currentPage === 'playlist' && state.currentPlaylistId === pl.id) renderPlaylist(pl.id)
+    })
   })
 
   document.getElementById('sel-trash')?.addEventListener('click', function () {

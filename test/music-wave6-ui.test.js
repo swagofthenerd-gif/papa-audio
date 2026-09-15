@@ -121,6 +121,17 @@ test('assistant Stop releases immediately, aborts the provider request, and name
   }
 })
 
+// Roadmap 050: playlist edits report their count and undo without touching files.
+test('playlist removal — single × and bulk — is undoable and never deletes audio', () => {
+  const H = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'index.html'), 'utf8')
+  assert.ok(H.includes('id="sel-remove-pl"'))
+  const bulk = renderer.slice(renderer.indexOf("document.getElementById('sel-remove-pl')?.addEventListener"), renderer.indexOf("document.getElementById('sel-trash')?.addEventListener"))
+  assert.ok(bulk.includes("pushUndo('Removed ' + removed.length + ' track'"), 'count + undo')
+  assert.ok(!/trash|unlink|rm/i.test(bulk.replace(/Removed/g, '')), 'no file operation')
+  const single = renderer.slice(renderer.indexOf("const fp = btn.dataset.plRemoveFp"), renderer.indexOf("const fp = btn.dataset.plRemoveFp") + 600)
+  assert.ok(single.includes("pushUndo('Removed from ' + pl.name"), 'the × is undoable too')
+})
+
 // Roadmap 130: playing and selected are not colour alone.
 test('the playing row carries a ▶ and a selected row an outline and ✓, not only a colour', () => {
   const CSS = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'styles.css'), 'utf8')
