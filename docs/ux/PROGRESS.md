@@ -219,11 +219,11 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | V051 | Pending review/implementation |
 | V052 | Fixed `726414d` — inferred vs measured badges |
 | V053 | Fixed — click expands, double-click copies |
-| V054 | Pending review/implementation |
+| V054 | Partial — connecting / buffering / downloading with peers and Mbps / no-seeders / stalled are distinct stage messages; a diagnostic-counts view is pending |
 | V055 | Fixed `012c192` — pack pick verdict |
 | V056 | Pending review/implementation |
 | V057 | Partial — single in-flight auto-switch guard and session epochs exist (other session); runtime check pending |
-| V058 | Pending review/implementation |
+| V058 | Fixed — switch toast names quality/language changes |
 | V059 | Pending review/implementation |
 | V060 | Partial — detail/season tickets and current() guards cover discovery/probing/opening; runtime check pending |
 | V061 | Already satisfied in source — Finding sources / Still connecting / Buffering N% / Downloading N% · Mbps · peers / stuck words / error; runtime check pending |
