@@ -91,6 +91,9 @@ Each F item re-checked on this branch, not assumed from the `main` review.
 | 2026-09-15 | 021 | `2d47c50` | first download of a session names destination + free space |
 | 2026-09-15 | 019 | `94eec8a` | libraryEmptyState: no folder / not connected / no music / filtered |
 | 2026-09-15 | 083, 085 | `71abddb` | guided relink: dead paths → longest-tail matching → preview → remap every store + cache |
+| 2026-09-15 | 091 | `3668f0b` | move journal; startup recovery finishes or undoes an interrupted move |
+| 2026-09-15 | V045 | `2037c8d` | validateSegments: outside-file dropped, mismatched edition → button only; cache keyed by length |
+| 2026-09-15 | V055 | `012c192` | pack pick verdict; unmatched episode is announced |
 
 ## F list: all resolved (134 deferred to runtime). Now working through P0 E-items
 

@@ -96,7 +96,7 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | A088 | Pending review/implementation |
 | A089 | Pending review/implementation |
 | A090 | Pending review/implementation |
-| A091 | Pending review/implementation |
+| A091 | Fixed `3668f0b` — move journal + startup recovery |
 | A092 | Pending review/implementation |
 | A093 | Fixed `1da705b` — codec-checked LOSSLESS, full-chain BIT-PERFECT; see STATUS.md |
 | A094 | Pending review/implementation |
@@ -210,7 +210,7 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | V042 | Pending review/implementation |
 | V043 | Pending review/implementation |
 | V044 | Pending review/implementation |
-| V045 | Pending review/implementation |
+| V045 | Fixed `2037c8d` — edition-aware skip |
 | V046 | Pending review/implementation |
 | V047 | Pending review/implementation |
 | V048 | Pending review/implementation |
@@ -220,7 +220,7 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | V052 | Fixed `726414d` — inferred vs measured badges |
 | V053 | Pending review/implementation |
 | V054 | Pending review/implementation |
-| V055 | Pending review/implementation |
+| V055 | Fixed `012c192` — pack pick verdict |
 | V056 | Pending review/implementation |
 | V057 | Pending review/implementation |
 | V058 | Pending review/implementation |
