@@ -48,6 +48,20 @@ test('the preset menu offers end-of-track and the five minute presets', () => {
   assert.ok(T.SLEEP_PRESETS.some(p => p.endOfTrack), 'no end-of-track option')
 })
 
+// ── Portable export (roadmap 092) ────────────────────────────────────────────
+test('m3u8For writes files as absolute paths, keeps streams as comments, and counts everything', () => {
+  const out = T.m3u8For('Mix', [
+    { filePath: '/m/a.flac', title: 'A', artist: 'X', duration: 61.4 },
+    { filePath: 'https://yt/x', title: 'S', artist: 'Y', duration: 10 },
+    { title: 'no path' },
+  ])
+  assert.equal(out.files, 1); assert.equal(out.streams, 1); assert.equal(out.skipped, 1)
+  const lines = out.text.split('\n')
+  assert.equal(lines[0], '#EXTM3U'); assert.equal(lines[1], '#PLAYLIST:Mix')
+  assert.equal(lines[2], '#EXTINF:61,X - A'); assert.equal(lines[3], '/m/a.flac')
+  assert.ok(lines[4].startsWith('# stream, not a file:') && lines[5] === '# https://yt/x')
+})
+
 // ── Library empty state by cause (roadmap 019) ───────────────────────────────
 test('the empty Library names its cause and the action that fits', () => {
   assert.equal(T.libraryEmptyState({ folders: [] }).kind, 'no-folders')

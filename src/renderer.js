@@ -1254,6 +1254,26 @@ function updateFormatBadge(track) {
   el.className = 'np-format' + (isMaster ? ' hi-res master' : isHiRes ? ' hi-res' : '')
 }
 
+// Roadmap 092: one export routine for playlists and liked songs — extended
+// M3U8, UTF-8, absolute paths, streams kept as comments — and a report that
+// says what went in and what could not.
+function _exportM3u8(name, tracks) {
+  var tools = (typeof window !== 'undefined' && window.PapaMusicTools) || null
+  if (!tools) return
+  var out = tools.m3u8For(name, tracks)
+  var blob = new Blob(['\ufeff' + out.text], { type: 'audio/x-mpegurl;charset=utf-8' })
+  var url = URL.createObjectURL(blob)
+  var a = document.createElement('a')
+  a.href = url
+  a.download = String(name).replace(/[/\\?%*:|"<>]/g, '_') + '.m3u8'
+  a.click()
+  URL.revokeObjectURL(url)
+  var bits = ['Exported ' + out.files + ' file' + (out.files === 1 ? '' : 's') + ' as .m3u8 (absolute paths)']
+  if (out.streams) bits.push(out.streams + ' stream' + (out.streams === 1 ? '' : 's') + ' kept as comments — other players cannot open them')
+  if (out.skipped) bits.push(out.skipped + ' without a path skipped')
+  showSnackbar(bits.join(' · '), '', function () {}, 6000)
+}
+
 // Roadmap 098: requested versus active output, under the device picker.
 function _paintActiveDevice() {
   var el = document.getElementById('pb-device-active')
@@ -16572,6 +16592,7 @@ function renderLikedSongs() {
       <button class="album-play-btn" id="liked-play-btn" aria-label="Play liked songs" ${!totalCount ? 'disabled' : ''}>
         <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
       </button>
+      <button class="sort-btn" id="liked-export-btn" title="Export liked songs as an .m3u8 playlist (absolute paths; streams kept as comments)" ${!totalCount ? 'disabled' : ''}>Export .m3u8</button>
     </div>
     <div class="track-list">
       ${tracks.length
@@ -16593,6 +16614,7 @@ function renderLikedSongs() {
           </div>`).join('')}</div>` : ''}
     </div>`)
 
+  document.getElementById('liked-export-btn')?.addEventListener('click', () => { _exportM3u8('Liked songs', tracks) })
   document.getElementById('liked-play-btn')?.addEventListener('click', () => {
     if (!totalCount) return
     state.queue = [...tracks.map(t => ({ ...t })), ...state.ytLiked.map(t => _ytQueueItem(t))]
@@ -21361,19 +21383,7 @@ function bindContentEvents() {
     var id = state.currentPlaylistId
     var pl = state.playlists.find(function(p) { return p.id === id })
     if (!pl || !pl.tracks || !pl.tracks.length) return
-    var m3u = '#EXTM3U\n#PLAYLIST:' + pl.name + '\n'
-    pl.tracks.forEach(function(t, i) {
-      m3u += '#EXTINF:' + Math.round(t.duration || 0) + ',' + (t.albumArtist || t.artist || '') + ' - ' + (t.title || '') + '\n'
-      m3u += (t.filePath || '') + '\n'
-    })
-    var blob = new Blob([m3u], { type: 'audio/x-mpegurl' })
-    var url = URL.createObjectURL(blob)
-    var a = document.createElement('a')
-    a.href = url
-    a.download = (pl.name || 'playlist').replace(/[/\\?%*:|"<>]/g, '_') + '.m3u'
-    a.click()
-    URL.revokeObjectURL(url)
-    showSnackbar('Exported ' + pl.tracks.length + ' tracks')
+    _exportM3u8(pl.name || 'playlist', pl.tracks)
   })
 
   document.getElementById('import-pl-btn')?.addEventListener('click', function() { fileInput.click() })
