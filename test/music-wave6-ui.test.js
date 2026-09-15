@@ -121,6 +121,15 @@ test('assistant Stop releases immediately, aborts the provider request, and name
   }
 })
 
+// Roadmap 121: mixed-script metadata reads in its own direction.
+test('metadata text elements use unicode-bidi: plaintext', () => {
+  const CSS = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'styles.css'), 'utf8')
+  const rule = CSS.slice(CSS.indexOf('/* Roadmap 121'), CSS.indexOf('{ unicode-bidi: plaintext; }'))
+  for (const c of ['.np-title', '.track-title', '.track-artist', '.album-card-name', '.queue-row-title', '.vt-title', '.vcard-title', '.video-detail-title', '.vep-title']) {
+    assert.ok(rule.includes(c), c + ' is covered')
+  }
+})
+
 // Roadmap 128: long titles are readable without a perpetual marquee.
 test('the now-playing ticker carries the full text on its tooltip, pauses on hover, and is off under reduced motion', () => {
   const CSS = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'styles.css'), 'utf8')
