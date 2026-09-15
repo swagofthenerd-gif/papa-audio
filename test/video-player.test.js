@@ -966,6 +966,30 @@ test('a stage with no size reports nothing rather than a degenerate rectangle', 
     }
   })
 
+  test('a tap on the mini picture waits out the double-click window; a double-click restores without toggling (V102)', t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    const { p, nodes, sent } = miniHarness()
+    p.open({ title: 'Dune' })
+    p._setState(stateAt(10, { paused: false }))
+    p.minimise()
+    const v = nodes['vmini-video']
+    v.fire('pointerdown', { button: 0, pointerId: 3, clientX: 900, clientY: 700, preventDefault () {} })
+    v.fire('pointerup', { pointerId: 3 })
+    assert.strictEqual(sent.filter(s => s.verb === 'pause').length, 0, 'not yet')
+    v.fire('pointerdown', { button: 0, pointerId: 4, clientX: 900, clientY: 700, preventDefault () {} })
+    v.fire('pointerup', { pointerId: 4 })
+    v.fire('dblclick')
+    t.mock.timers.tick(1000)
+    assert.strictEqual(p.isMinimised(), false, 'the double-click restored the theatre')
+    assert.strictEqual(sent.filter(s => s.verb === 'pause' || s.verb === 'play').length, 0, 'and playback was left alone')
+    // A lone tap still toggles, once the window has passed.
+    p.minimise()
+    v.fire('pointerdown', { button: 0, pointerId: 5, clientX: 900, clientY: 700, preventDefault () {} })
+    v.fire('pointerup', { pointerId: 5 })
+    t.mock.timers.tick(300)
+    assert.strictEqual(sent.filter(s => s.verb === 'pause').length, 1)
+  })
+
   test('a press on a bar control does not start a drag', () => {
     const { p, nodes } = miniHarness()
     p.open({ title: 'Dune' })
@@ -1729,6 +1753,46 @@ test('the picture wheel follows the same rules, including Shift-seek', () => {
   assert.deepStrictEqual(sent.filter(s => s.verb === 'seek').pop().args, { seconds: -10, mode: 'relative' })
   stage.fire('wheel', { deltaY: -100, target: { closest: () => null } })
   assert.strictEqual(sent.filter(s => s.verb === 'volume').pop().args.value, 55)
+})
+
+// V102: click and double-click on the picture are arbitrated. Before, a
+// double-click sent two play/pause commands that both read the same stale
+// state, so the film ended up paused as well as fullscreen.
+const onPic = { closest: () => null }
+test('a single click on the picture toggles playback once, after the double-click window', t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const { p, nodes, sent } = harness()
+  p.open({ title: 'X' })
+  p._setState(stateAt(100, { paused: false }))
+  nodes['vt-stage'].fire('click', { target: onPic })
+  assert.strictEqual(sent.filter(s => s.verb === 'pause').length, 0, 'nothing yet: a second click may follow')
+  t.mock.timers.tick(300)
+  assert.strictEqual(sent.filter(s => s.verb === 'pause').length, 1, 'then exactly one pause')
+})
+
+test('a double-click on the picture only toggles fullscreen and leaves the pause state alone', t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const { p, nodes, sent } = harness()
+  p.open({ title: 'X' })
+  p._setState(stateAt(100, { paused: false }))
+  const stage = nodes['vt-stage']
+  stage.fire('click', { target: onPic })
+  stage.fire('click', { target: onPic, detail: 2 })
+  stage.fire('dblclick', { target: onPic, preventDefault () {} })
+  t.mock.timers.tick(1000)
+  assert.deepStrictEqual(sent.filter(s => s.verb === 'pause' || s.verb === 'play'), [], 'no play/pause was ever sent')
+  assert.strictEqual(sent.filter(s => s.verb === 'fullscreen').length, 1, 'fullscreen toggled once')
+})
+
+test('two quick clicks with no dblclick still toggle once, never twice', t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const { p, nodes, sent } = harness()
+  p.open({ title: 'X' })
+  p._setState(stateAt(100, { paused: false }))
+  nodes['vt-stage'].fire('click', { target: onPic })
+  nodes['vt-stage'].fire('click', { target: onPic })
+  t.mock.timers.tick(1000)
+  assert.strictEqual(sent.filter(s => s.verb === 'pause').length, 1)
 })
 
 test('keyboard volume flashes too, and an api without videoOsd costs nothing', () => {

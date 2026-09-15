@@ -797,7 +797,7 @@
         // pure drag surfaces.
         if (!moved && pressEl && pressEl.id === 'vmini-video' && nowMs() - pressAt < 400 && state) {
           miniDragTL = null; pointerId = null; captureEl = null; samples = []
-          togglePlay()
+          pictureTap(togglePlay)   // arbitrated against the dblclick restore (V102)
           return
         }
         if (!moved) { miniDragTL = null; pointerId = null; captureEl = null; samples = []; return }
@@ -1326,6 +1326,26 @@
     }
 
     function togglePlay() { send(state && state.paused ? 'play' : 'pause') }
+    // Click arbitration for the picture (V102). A double-click used to be
+    // click → togglePlay, click → togglePlay, dblclick → fullscreen. State
+    // arrives ~4/s, so both clicks read the same stale `paused` and both sent
+    // the same command: the film ended up paused AND fullscreen. Now a single
+    // click is committed only after the double-click window has passed with
+    // no second click; a second click leaves that pending single alone (so
+    // two clicks never mean two toggles), and the dblclick that follows it
+    // cancels the single and does only its own job. The cost is one short
+    // window of latency on a single click; the win is that the pause state
+    // after a double-click is the one you had before it.
+    const DBLCLICK_MS = 250
+    let pictureClickTimer = null
+    function pictureTap(fn) {
+      if (pictureClickTimer) return
+      pictureClickTimer = setTimeout(function () { pictureClickTimer = null; fn() }, DBLCLICK_MS)
+    }
+    function pictureDouble(fn) {
+      if (pictureClickTimer) { clearTimeout(pictureClickTimer); pictureClickTimer = null }
+      fn()
+    }
     function seekBy(sec) { send('seek', { seconds: sec, mode: 'relative' }) }
     function seekTo(sec) { send('seek', { seconds: sec, mode: 'absolute' }) }
     // While a scrub is in flight the picture should follow the pointer, not sit
@@ -2611,7 +2631,7 @@
       // native mpv window (see the fullscreen relay below), but a double-click on
       // the reserved region itself — when the picture is not covering it — is
       // handled here as a reliable page-side path too.
-      $('vmini-video')?.addEventListener('dblclick', restore)
+      $('vmini-video')?.addEventListener('dblclick', function () { pictureDouble(restore) })
       // The hover chrome over the picture (only visible with the picture in
       // the page; under mpv the native window covers it).
       $('vmini-ov-play')?.addEventListener('click', togglePlay)
@@ -2663,14 +2683,18 @@
         }
         stageEl.addEventListener('click', function (e) {
           if (!onPicture(e) || !state) return
-          togglePlay()
-          burst(state.paused ? ICON.play : ICON.pause)
           noteActivity()
+          if (Number(e.detail) > 1) return   // the browser already knows it is a double
+          pictureTap(function () {
+            if (!state) return
+            togglePlay()
+            burst(state.paused ? ICON.play : ICON.pause)
+          })
         })
         stageEl.addEventListener('dblclick', function (e) {
           if (!onPicture(e)) return
           if (typeof e.preventDefault === 'function') e.preventDefault()
-          toggleFullscreen()
+          pictureDouble(toggleFullscreen)
         })
         stageEl.addEventListener('wheel', function (e) {
           if (!onPicture(e) || !state) return
@@ -2746,6 +2770,8 @@
       const ticks = $('vt-seek-chapters'); if (ticks) ticks.innerHTML = ''
       kbTarget = null
       clearTimeout(kbTimer)
+      // A click still waiting out the double-click window belonged to the old file.
+      if (pictureClickTimer) { clearTimeout(pictureClickTimer); pictureClickTimer = null }
       // A new file's frames are its own: drop the previous film's cached buckets
       // so a hover never shows a frame from what was playing before (roadmap #28).
       thumbCache.clear()

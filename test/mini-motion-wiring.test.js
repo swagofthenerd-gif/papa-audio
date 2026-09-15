@@ -82,7 +82,8 @@ test('hover chrome on the picture and keys that reach a minimised card', () => {
 test('the picture handles the pointer in the page: click toggles with a burst, double-click fullscreens, wheel is volume, the mini card taps to pause', () => {
   const bind = DECK.slice(DECK.indexOf("const stageEl = $('vt-stage')"), DECK.indexOf("$('vt-upnext')?.addEventListener('pointerenter'"))
   assert.match(bind, /stageEl\.addEventListener\('click'/); assert.match(bind, /togglePlay\(\)\n\s+burst\(state\.paused \? ICON\.play : ICON\.pause\)/)
-  assert.match(bind, /stageEl\.addEventListener\('dblclick'[\s\S]*toggleFullscreen\(\)/)
+  // V102: the click is arbitrated against the double-click; behaviour is in video-player.test.js.
+  assert.match(bind, /stageEl\.addEventListener\('dblclick'[\s\S]*pictureDouble\(toggleFullscreen\)/)
   assert.match(bind, /stageEl\.addEventListener\('wheel'[\s\S]*setVolume\(/)
   assert.match(bind, /closest\('button, \.vt-upnext, \.vt-pack, \.vt-skip, \.vt-menu, \.vt-stage-msg, \.vt-strip'\)/, 'controls over the picture are not the picture')
   assert.match(DECK, /function osd\(text, ms\) \{\n\s+if \(pictureInPage\(\)\) \{/, 'the OSD is drawn in the page when the picture is')
