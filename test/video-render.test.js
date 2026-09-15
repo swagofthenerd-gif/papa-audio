@@ -1023,3 +1023,14 @@ test('source badges say whether they were read from the name or measured, and ne
   assert.ok(R.includes('_recordMeasuredStream(res.tracks)'), 'measured after the first frame')
   assert.ok(E.includes("channels: Number(raw['demux-channel-count']) || null"), 'the engine passes the measured channel count')
 })
+
+// V113: the latest position survives close and crash.
+test('position is flushed on exit and pagehide, throttled while playing, and checkpointed on pause', () => {
+  const R = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
+  const exit = R.slice(R.indexOf('onExit: function () {'), R.indexOf('onExit: function () {') + 300)
+  assert.ok(exit.includes('_persistPosition(true)'), 'graceful close flushes')
+  const ph = R.slice(R.indexOf("window.addEventListener('pagehide'"), R.indexOf("window.addEventListener('pagehide'") + 300)
+  assert.ok(ph.includes('_persistPosition(true)') && ph.includes('PapaVideoStore?.flush?.()'), 'window close flushes through the bridge')
+  assert.ok(R.includes('const justPaused = !!st.paused && !(_videoLastPaused === true)'), 'a pause is a checkpoint')
+  assert.ok(R.includes('if (!justPaused && now - _watch.savedAt < 5000) return'))
+})

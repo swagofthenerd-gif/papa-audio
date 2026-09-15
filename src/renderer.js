@@ -3930,10 +3930,15 @@ function _onVideoStateTick(st) {
     _rememberPreferredSource(cand)
   }
 
-  if (now - _watch.savedAt < 5000) return
+  // A pause is a natural checkpoint (V113): a crash or a kill during a long
+  // pause used to lose up to five seconds of the position before it.
+  const justPaused = !!st.paused && !(_videoLastPaused === true)
+  _videoLastPaused = !!st.paused
+  if (!justPaused && now - _watch.savedAt < 5000) return
   _watch.savedAt = now
   _persistPosition(false, st)
 }
+var _videoLastPaused = null
 
 // Persist the preferred source for the current title and, if the sources panel
 // is on screen, surface the chip that now reflects it (App #43).
