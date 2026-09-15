@@ -24,6 +24,16 @@ const http = require('http')
 const UPSTREAM_TRIES = 3
 const RETRY_DELAY_MS = 400
 
+// Opening or seeking in a film costs FOUR requests to RealDebrid, each
+// waiting about 750 ms (logged 2026-09-15): the file opens, the index at the
+// very end is read, the headers near the start are read, and only the fourth
+// is the place you actually asked for. Three of those four touch the same two
+// small regions every single time, so both are fetched once when the relay
+// starts and served from memory afterwards. That is ~2.3 s of dead waiting
+// removed from every open and every seek.
+const HEAD_CACHE_BYTES = 4 * 1024 * 1024
+const TAIL_CACHE_BYTES = 8 * 1024 * 1024
+
 function parseRange(header, total) {
   const m = /^bytes=(\d*)-(\d*)$/.exec(String(header || '').trim())
   if (!m) return null
@@ -52,6 +62,35 @@ function createDebridProxy({ fetchFn, host = '127.0.0.1' } = {}) {
   let target = null
   let total = 0
   let contentType = 'video/x-matroska'
+  // { from, buf } for the opening and closing regions of the file.
+  let headCache = null
+  let tailCache = null
+
+  // Read one region into memory, retried. Returns null rather than throwing:
+  // an uncached region only costs a round trip later.
+  async function _slurp(start, end) {
+    try {
+      const res = await _upstream(start, end, null)
+      if (!res) return null
+      const buf = Buffer.from(await res.arrayBuffer())
+      return buf.length ? { from: start, buf } : null
+    } catch (_) { return null }
+  }
+
+  // Serve whatever part of [start,end] is already in memory. Returns the
+  // number of bytes written, so the caller knows where to resume upstream.
+  function _fromCache(res, start, end) {
+    for (const c of [headCache, tailCache]) {
+      if (!c) continue
+      const cStart = c.from
+      const cEnd = c.from + c.buf.length - 1
+      if (start < cStart || start > cEnd) continue
+      const upTo = Math.min(end, cEnd)
+      res.write(c.buf.subarray(start - cStart, upTo - cStart + 1))
+      return upTo - start + 1
+    }
+    return 0
+  }
 
   // The file's size. A HEAD usually answers, but these servers 503
   // intermittently (two in five, measured) — including on HEAD — so it is
@@ -141,14 +180,20 @@ function createDebridProxy({ fetchFn, host = '127.0.0.1' } = {}) {
         res.writeHead(200, { 'Content-Length': String(total), 'Content-Type': contentType, 'Accept-Ranges': 'bytes' })
         return res.end()
       }
-      const up = await _upstream(wanted.start, wanted.end, ctrl ? ctrl.signal : null)
-      if (res.destroyed || res.writableEnded) { try { await up.body.cancel() } catch (_) {} ; return }
       const length = wanted.end - wanted.start + 1
       res.writeHead(req.headers.range ? 206 : 200, Object.assign({
         'Content-Length': String(length),
         'Content-Type': contentType,
         'Accept-Ranges': 'bytes',
       }, req.headers.range ? { 'Content-Range': `bytes ${wanted.start}-${wanted.end}/${total}` } : {}))
+      // Anything already in memory goes out with no network wait at all —
+      // which is most of what opening and seeking actually read.
+      const served = _fromCache(res, wanted.start, wanted.end)
+      if (served >= length) return res.end()
+      const from = wanted.start + served
+      if (res.destroyed || res.writableEnded) return
+      const up = await _upstream(from, wanted.end, ctrl ? ctrl.signal : null)
+      if (res.destroyed || res.writableEnded) { try { await up.body.cancel() } catch (_) {} ; return }
       if (!up.body) { const buf = Buffer.from(await up.arrayBuffer()); return res.end(buf) }
       const reader = up.body.getReader()
       try {
@@ -185,13 +230,26 @@ function createDebridProxy({ fetchFn, host = '127.0.0.1' } = {}) {
           server.listen(0, host, resolve)
         })
       }
+      // Both ends of the file, fetched once, in parallel with each other.
+      if (total > 0) {
+        const headEnd = Math.min(total - 1, HEAD_CACHE_BYTES - 1)
+        const tailFrom = Math.max(0, total - TAIL_CACHE_BYTES)
+        const [h, t] = await Promise.all([
+          _slurp(0, headEnd),
+          tailFrom > headEnd ? _slurp(tailFrom, total - 1) : Promise.resolve(null),
+        ])
+        headCache = h
+        tailCache = t
+      }
       const addr = server.address()
       return `http://${host}:${addr.port}/stream`
     },
     stop() {
       if (server) { try { server.close() } catch (_) {} server = null }
       target = null; total = 0
+      headCache = null; tailCache = null
     },
+    _cached: () => ({ head: headCache ? headCache.buf.length : 0, tail: tailCache ? tailCache.buf.length : 0 }),
     _total: () => total,
   }
 }

@@ -10378,9 +10378,16 @@ async function _loadVideoSources(ticket, seasonTicket) {
       // over this connection and servable at full speed.
       if (window.api.videoDebridPick) {
         const minutes = _playMinutes()
+        // Ordered by PICTURE, not by swarm health: debrid serves a file at
+        // full speed however few people are sharing it, so the best-looking
+        // streamable source is the one worth asking about first. The list
+        // itself stays health-first for the swarm fallback.
+        const qRank = { '2160p': 4, '1080p': 3, '720p': 2, '480p': 1 }
         const candidates = streams
           .filter(function (s) { return s && s.kind === 'torrent' && s.magnet && !s.lowQuality && _streamable(s, minutes) })
-          .slice(0, 4).map(function (s) { return s.magnet })
+          .map(function (s, i) { return { s: s, i: i } })
+          .sort(function (a, b) { return ((qRank[b.s.quality] || 0) - (qRank[a.s.quality] || 0)) || (a.i - b.i) })
+          .slice(0, 4).map(function (e) { return e.s.magnet })
         if (candidates.length) {
           window.api.videoDebridPick({ magnets: candidates, titleKey: titleKey })
             .then(function (res) {

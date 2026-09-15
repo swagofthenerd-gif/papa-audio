@@ -22,31 +22,33 @@ function ranker() {
 }
 const t = (q, seeds, extra) => Object.assign({ kind: 'torrent', quality: q, seeds }, extra)
 
-test('with debrid on, the best picture leads even on a starving swarm', () => {
+// The source list is the PEER-TO-PEER ordering and stays health-first even
+// when debrid is configured. Making it quality-first under debrid was wrong:
+// RealDebrid refuses a great deal of content (every anime source tried came
+// back 451), so the app lands on the swarm anyway and was then handed a
+// four-seeder source. Which source debrid can serve is decided separately.
+test('a starving swarm never leads, whether or not debrid is configured', () => {
   const ctx = ranker()
   const thin4k = t('2160p', 2)
   const healthy1080 = t('1080p', 900)
-  const out = [...ctx._applyQualityPreference([healthy1080, thin4k], '2160p', true)]
-  assert.deepStrictEqual(out, [thin4k, healthy1080], 'debrid serves it regardless of sharers')
-  // Without debrid the health rule still stands.
-  assert.deepStrictEqual([...ctx._applyQualityPreference([healthy1080, thin4k], '2160p', false)],
-    [healthy1080, thin4k])
+  assert.deepStrictEqual([...ctx._applyQualityPreference([healthy1080, thin4k], '2160p')],
+    [healthy1080, thin4k], 'health decides the swarm ordering')
 })
 
-test('even with debrid, cams and known-dead magnets stay at the bottom', () => {
+test('cams and known-dead magnets stay at the bottom', () => {
   const ctx = ranker()
   const cam = t('2160p', 999, { lowQuality: true })
   const dead4k = t('2160p', 500, { deadHint: true })
   const good1080 = t('1080p', 10)
-  const out = [...ctx._applyQualityPreference([cam, dead4k, good1080], '2160p', true)]
-  assert.deepStrictEqual(out, [good1080, dead4k, cam])
+  assert.deepStrictEqual([...ctx._applyQualityPreference([cam, dead4k, good1080], '2160p')],
+    [good1080, dead4k, cam])
 })
 
-test('equal qualities keep the order the ranking already gave them', () => {
-  const ctx = ranker()
-  const a = t('1080p', 5, { source: 'a' })
-  const b = t('1080p', 900, { source: 'b' })
-  assert.deepStrictEqual([...ctx._applyQualityPreference([a, b], '1080p', true)], [a, b], 'stable, not reshuffled')
+test('the debrid candidates are ordered by picture, since sharers do not matter there', () => {
+  const RENDERER2 = require('fs').readFileSync(require('path').join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
+  const block = RENDERER2.slice(RENDERER2.indexOf('const qRank = {'), RENDERER2.indexOf('videoDebridPick({'))
+  assert.ok(/sort\(function \(a, b\) \{ return \(\(qRank\[b\.s\.quality\]/.test(block), 'best picture asked about first')
+  assert.ok(/_streamable\(s, minutes\)/.test(block), 'and only ones that can stream at all')
 })
 
 function picker() {
@@ -88,5 +90,7 @@ test('the picker is wired to Play, filled from the real sources, and hidden when
   const fn = RENDERER.slice(RENDERER.indexOf('function _renderQualityPicker('), RENDERER.indexOf('// What Play starts.'))
   assert.ok(/if \(qualities\.length < 2\) \{ wrap\.hidden = true; return \}/.test(fn), 'one option is not a choice')
   assert.ok(/qualities\.indexOf\(_playQuality\) === -1\) _playQuality = ''/.test(fn), 'a vanished quality cannot stay selected')
-  assert.ok(/_applyQualityPreference\(ranked, settings\.preferredQuality, _debridConfigured\(\)\)/.test(MAIN))
+  // The source list is the peer ordering; debrid servability is decided
+  // separately by the renderer's debrid pick, not by reshuffling this list.
+  assert.ok(/_applyQualityPreference\(ranked, settings\.preferredQuality\)/.test(MAIN))
 })

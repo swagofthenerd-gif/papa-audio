@@ -72,3 +72,60 @@ test('a client that vanishes mid-stream cannot strand the upstream connection', 
   // A drain that never comes must not park the handler for ever.
   assert.ok(/res\.once\('close', finish\)/.test(SRC))
 })
+
+// Opening or seeking costs FOUR upstream requests, each waiting ~750 ms
+// (logged 2026-09-15 against a real link): open the file, read the index at
+// the very end, read the headers near the start, then finally the place you
+// asked for. Three of those four touch the same two small regions every time,
+// so both are fetched once and served from memory. Measured after: opening a
+// film fell 6.05s -> 2.40s and seeking 9.02s -> 4.48s.
+test('the ends of the file are cached once and then served with no network wait', async () => {
+  const { createDebridProxy } = require('../src/debrid-proxy')
+  // Comfortably larger than head (4 MB) + tail (8 MB) so the two regions do
+  // not overlap — a file smaller than that has no middle to fetch anyway.
+  const TOTAL = 40 * 1024 * 1024
+  const body = Buffer.alloc(TOTAL)
+  for (let i = 0; i < TOTAL; i += 7) body[i] = (i / 7) % 251
+  const upstream = []
+  const fetchFn = async (url, init) => {
+    if (init && init.method === 'HEAD') {
+      return { ok: true, status: 200, headers: { get: k => (k === 'content-length' ? String(TOTAL) : null) } }
+    }
+    const m = /^bytes=(\d+)-(\d+)$/.exec((init && init.headers && init.headers.Range) || '')
+    const start = Number(m[1]); const end = Number(m[2])
+    upstream.push([start, end])
+    const slice = body.subarray(start, end + 1)
+    return { ok: true, status: 206, body: null, arrayBuffer: async () => slice, headers: { get: () => null } }
+  }
+  const proxy = createDebridProxy({ fetchFn })
+  try {
+    const local = await proxy.serve('https://rd.example/film.mkv')
+    const cached = proxy._cached()
+    assert.ok(cached.head > 0 && cached.tail > 0, 'both ends held: ' + JSON.stringify(cached))
+    const afterWarm = upstream.length
+
+    // Reading the very end — the index — must cost nothing upstream.
+    const tailRes = await fetch(local, { headers: { Range: `bytes=${TOTAL - 1000}-${TOTAL - 1}` } })
+    const tailBuf = Buffer.from(await tailRes.arrayBuffer())
+    assert.strictEqual(tailRes.status, 206)
+    assert.ok(tailBuf.equals(body.subarray(TOTAL - 1000)), 'the bytes are right, not merely fast')
+    assert.strictEqual(upstream.length, afterWarm, 'served from memory, no upstream request')
+
+    // The opening headers likewise.
+    const headRes = await fetch(local, { headers: { Range: 'bytes=0-4095' } })
+    const headBuf = Buffer.from(await headRes.arrayBuffer())
+    assert.ok(headBuf.equals(body.subarray(0, 4096)))
+    assert.strictEqual(upstream.length, afterWarm, 'still no upstream request')
+
+    // A read starting inside the cache but running past it is served from
+    // memory first and only then goes upstream for the remainder.
+    const mixed = await fetch(local, { headers: { Range: 'bytes=0-8388607' } })
+    const mixedBuf = Buffer.from(await mixed.arrayBuffer())
+    assert.strictEqual(mixedBuf.length, 8388608)
+    assert.ok(mixedBuf.equals(body.subarray(0, 8388608)), 'the join is seamless')
+    assert.ok(upstream.length > afterWarm, 'the part beyond the cache did come from upstream')
+  } finally {
+    proxy.stop()
+  }
+  assert.deepStrictEqual(proxy._cached(), { head: 0, tail: 0 }, 'released on stop')
+})
