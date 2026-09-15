@@ -121,6 +121,16 @@ test('assistant Stop releases immediately, aborts the provider request, and name
   }
 })
 
+// Roadmap 098: the requested device is never shown as active while the default output plays.
+test('a device fallback is remembered, shown under the picker, and demotes BIT-PERFECT', () => {
+  const H = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'index.html'), 'utf8')
+  assert.ok(H.includes('id="pb-device-active"'))
+  assert.ok(renderer.includes("state._activeDeviceFallback = { from: d.from || 'the chosen device'"))
+  assert.ok(renderer.includes("el.textContent = 'Active now: the default output — not ' + fb.from"))
+  assert.ok(renderer.includes("if (fb && v.label === 'BIT-PERFECT') { v = { label: 'LOSSLESS'"), 'no bit-perfect claim on a device not in use')
+  assert.ok(renderer.includes("if (!d.deviceFallback && state._activeDeviceFallback) { state._activeDeviceFallback = null"), 'cleared on a clean recovery')
+})
+
 // Roadmap 041: the sleep timer states itself, can be extended, and explains Stop after this track.
 test('the sleep panel shows remaining time in words, offers +15, and explains the stop-after interaction', () => {
   const H = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'index.html'), 'utf8')

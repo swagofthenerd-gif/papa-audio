@@ -1254,6 +1254,16 @@ function updateFormatBadge(track) {
   el.className = 'np-format' + (isMaster ? ' hi-res master' : isHiRes ? ' hi-res' : '')
 }
 
+// Roadmap 098: requested versus active output, under the device picker.
+function _paintActiveDevice() {
+  var el = document.getElementById('pb-device-active')
+  if (!el) return
+  var fb = state._activeDeviceFallback
+  if (!fb) { el.style.display = 'none'; el.textContent = ''; return }
+  el.style.display = ''
+  el.textContent = 'Active now: the default output — not ' + fb.from + (fb.because ? ' (' + fb.because + ')' : '') + '. Pick another device or fix this one, then play again.'
+}
+
 // Roadmap 096: the gain policy sentence under Volume boost, recomputed from
 // the same facts the quality badge reads whenever any of them changes.
 function updateGainPolicyText() {
@@ -1284,6 +1294,10 @@ function updateBitPerfectBadge() {
   var v = Q.classify({ track: track, settings: state._playerSettings || {}, speed: state.playbackSpeed, volume: vol })
   if (!v.label) { el.style.display = 'none'; el.removeAttribute('title'); return }
   el.textContent = v.label
+  // Roadmap 098: a fallback means the requested device is not the active one;
+  // BIT-PERFECT cannot be claimed for a device that is not in use.
+  var fb = state._activeDeviceFallback
+  if (fb && v.label === 'BIT-PERFECT') { v = { label: 'LOSSLESS', reason: 'Lossless source, but playing on the default output instead of ' + fb.from + ' — exclusive output is not active.' } }
   el.title = v.reason
   el.style.display = ''
   if (v.label === 'BIT-PERFECT') {
@@ -23740,6 +23754,7 @@ async function initPlaybackSettings() {
   }
   $('pb-channels').onchange = e => apply({ channels: e.target.value })
   $('pb-boost').onchange = e => apply({ boost: e.target.checked })
+  _paintActiveDevice()
   // Roadmap 038: device-loss policy, remembered with the player settings.
   if ($('pb-device-loss')) {
     $('pb-device-loss').value = cfg.onDeviceLoss === 'continue' ? 'continue' : 'pause'
@@ -29958,8 +29973,18 @@ function setupListeners() {
   audio.addEventListener('audiodevicefallback', e => {
     const d = e.detail || {}
     console.error('[papa] falling back to the default audio device, away from', d.from)
-    showSnackbar(`Could not use ${d.from || 'the chosen device'} — switched to the default output`,
-      '', function () {}, 8000)
+    // Roadmap 098: remember that what is playing is NOT the requested
+    // device, and say so wherever the device is named.
+    state._activeDeviceFallback = { from: d.from || 'the chosen device', because: d.because || '', at: Date.now() }
+    _paintActiveDevice()
+    try { updateBitPerfectBadge() } catch (_) {}
+    showSnackbar(`Could not use ${d.from || 'the chosen device'} — playing on the default output instead`,
+      'Settings', function () { openSettings('playback') }, 10000)
+  })
+  // A clean recovery on the requested device clears the note.
+  audio.addEventListener('enginerecovered', e => {
+    const d = e.detail || {}
+    if (!d.deviceFallback && state._activeDeviceFallback) { state._activeDeviceFallback = null; _paintActiveDevice() }
   })
   audio.addEventListener('error', e => {
     console.error('Audio error:', e)

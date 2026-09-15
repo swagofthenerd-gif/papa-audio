@@ -477,6 +477,10 @@
                failure used to surface only at spawn time, as playback not
                starting, with the setting still showing the device as fine. -->
           <div class="mcs-set-warning" id="pb-device-warning" style="display:none"></div>
+          <!-- Roadmap 098: requested versus active. Filled when the engine
+               reports a fallback, so the chosen device is never shown as in
+               use while the default output is what is actually playing. -->
+          <div class="mcs-set-hint" id="pb-device-active" style="display:none"></div>
           <label class="mcs-set-row">Track transition
             <select class="mcs-set-select" id="pb-mode">
               <option value="gapless">Gapless</option>
