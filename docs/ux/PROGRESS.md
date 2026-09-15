@@ -51,7 +51,7 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | A043 | Pending review/implementation |
 | A044 | Fixed — time left · total |
 | A045 | Fixed — insertPlayNext single rule |
-| A046 | Pending review/implementation |
+| A046 | Fixed `75a9e17` — menu + keyboard reorder, position announced |
 | A047 | Fixed — next pick shown; original order kept |
 | A048 | Fixed `6ba664c` — Locate/Remove for missing queue files |
 | A049 | Fixed `e8d95f1` |
@@ -61,11 +61,11 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | A053 | Pending review/implementation |
 | A054 | Pending review/implementation |
 | A055 | Pending review/implementation |
-| A056 | Pending review/implementation |
+| A056 | Fixed `7f8357c` |
 | A057 | Fixed `890a469` — source-failure classifier |
 | A058 | Pending review/implementation |
 | A059 | Pending review/implementation |
-| A060 | Pending review/implementation |
+| A060 | Partial — nav stacks and scroll memory restore query and position; filters/sort restore pending runtime check |
 | A061 | Pending review/implementation |
 | A062 | Pending review/implementation |
 | A063 | Pending review/implementation |
@@ -123,7 +123,7 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | A115 | Pending review/implementation |
 | A116 | Partial — toasts/snackbars are polite live regions, track changes announced once, seek value throttled; screen-reader pass pending |
 | A117 | Pending review/implementation |
-| A118 | Pending review/implementation |
+| A118 | Partial `75a9e17` — queue reorder by menu/keys; other drag/hover surfaces pending |
 | A119 | Pending review/implementation |
 | A120 | Pending review/implementation |
 | A121 | Fixed `f1f37c3` |

@@ -111,6 +111,9 @@ Each F item re-checked on this branch, not assumed from the `main` review.
 | 2026-09-15 | 082 | `b6fb102` | wishlist rows: auto/notify, pause, last check, cadence |
 | 2026-09-15 | V067 | see log | badges: HDR shown as SDR / video re-encoded / audio re-encoded; remux silent |
 | 2026-09-15 | 086 | see log | duplicate groups classified: identical / recordings / editions; editions never safe to delete |
+| 2026-09-15 | 056 | `7f8357c` | Show all N songs lifts the local search cap |
+| 2026-09-15 | 118, 046 | `75a9e17` | queue Move up/down via context menu and Alt+↑/↓ |
+| 2026-09-15 | merge | `5d3a166` | other session's debrid work (0d26dc3, 18be92b, 48d1799) merged; suite green |
 
 ## F list: all resolved (134 deferred to runtime). Now working through P0 E-items
 
