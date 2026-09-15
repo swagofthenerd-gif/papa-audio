@@ -437,10 +437,25 @@
       if (speed) {
         speed.textContent = (Number(state.speed) || 1) + '×'
         speed.classList.toggle('on', Number(state.speed) !== 1)
+        // V132: the chip's colour says "not 1×"; the label must say it too.
+        speed.setAttribute('aria-label', 'Playback speed, ' + (Number(state.speed) || 1) + '×')
       }
 
       const subs = $('vt-subs')
-      if (subs) subs.classList.toggle('on', state.tracks && state.tracks.sub != null)
+      if (subs) {
+        const on = !!(state.tracks && state.tracks.sub != null)
+        subs.classList.toggle('on', on)
+        // V132: the CC chip is a toggle with a state, not just a menu opener.
+        subs.setAttribute('aria-pressed', on ? 'true' : 'false')
+        subs.setAttribute('aria-label', on ? 'Subtitles on — choose a track' : 'Subtitles off — choose a track')
+      }
+      const mute2 = $('vt-mute')
+      if (mute2) mute2.setAttribute('aria-pressed', state.muted ? 'true' : 'false')
+      const full = $('vt-full')
+      if (full) {
+        full.setAttribute('aria-pressed', isFullscreen ? 'true' : 'false')
+        full.setAttribute('aria-label', isFullscreen ? 'Leave fullscreen' : 'Fullscreen')
+      }
 
       paintBadges()
       syncChapterButton()

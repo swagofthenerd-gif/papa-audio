@@ -2725,3 +2725,20 @@ test('a refused track switch puts the previous track back and says so', () => {
   assert.match(pick, /state\.tracks\[type\] = before/, 'the previous track comes back on the tick')
   assert.match(pick, /onToast\('That ' \+ what \+ ' could not be switched on'/, 'and the person is told, with the menu to try another')
 })
+
+// V132: toggles carry a state, menus say they open one, the speed chip says its value.
+test('render keeps aria-pressed and labels on the deck toggles in step with the state', () => {
+  const { p, nodes } = harness()
+  p.open({ title: 'X' })
+  p._setState(stateAt(10, { muted: true, speed: 1.5, tracks: { sub: 3, audio: 1 } }))
+  assert.strictEqual(nodes['vt-mute'].attrs['aria-pressed'], 'true')
+  assert.strictEqual(nodes['vt-subs'].attrs['aria-pressed'], 'true')
+  assert.match(nodes['vt-subs'].attrs['aria-label'], /Subtitles on/)
+  assert.strictEqual(nodes['vt-speed'].attrs['aria-label'], 'Playback speed, 1.5×')
+  assert.strictEqual(nodes['vt-full'].attrs['aria-pressed'], 'false')
+  p._setState(stateAt(10, { muted: false, speed: 1, tracks: { sub: null, audio: 1 } }))
+  assert.strictEqual(nodes['vt-mute'].attrs['aria-pressed'], 'false')
+  assert.strictEqual(nodes['vt-subs'].attrs['aria-pressed'], 'false')
+  assert.match(HTML_SRC, /id="vt-subs" aria-label="Subtitles off — choose a track" aria-pressed="false" aria-haspopup="menu"/)
+  assert.match(HTML_SRC, /id="vt-settings" aria-label="Settings" aria-haspopup="menu"/)
+})

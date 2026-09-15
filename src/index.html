@@ -242,7 +242,7 @@
              id="vt-dur" title="Click to show time remaining">0:00</span></div>
 
         <div class="vt-vol">
-          <button class="vt-icon" id="vt-mute" aria-label="Mute" title="Mute (M)"></button>
+          <button class="vt-icon" id="vt-mute" aria-label="Mute" aria-pressed="false" title="Mute (M)"></button>
           <input class="vt-vol-range" id="vt-vol" type="range" min="0" max="130" step="1" value="100" aria-label="Volume">
         </div>
 
@@ -253,17 +253,17 @@
              turning it off when embedded took that away with nothing in its
              place. -->
         <button class="vt-chip" id="vt-chapters" aria-label="Chapters" title="Chapters" hidden>Chapters</button>
-        <button class="vt-chip" id="vt-subs" aria-label="Subtitles" title="Subtitles (C)">CC</button>
-        <button class="vt-chip" id="vt-audio" aria-label="Audio track" title="Audio track (V)">Audio</button>
+        <button class="vt-chip" id="vt-subs" aria-label="Subtitles off — choose a track" aria-pressed="false" aria-haspopup="menu" title="Subtitles (C)">CC</button>
+        <button class="vt-chip" id="vt-audio" aria-label="Audio track" aria-haspopup="menu" title="Audio track (V)">Audio</button>
         <button class="vt-chip" id="vt-speed" aria-label="Playback speed" title="Speed">1&times;</button>
         <button class="vt-chip" id="vt-stats" aria-label="Playback statistics" title="Stats (I)">Stats</button>
         <button class="vt-icon" id="vt-shot" aria-label="Take a screenshot" title="Screenshot (Shift+S)">
           <svg viewBox="0 0 24 24"><path d="M9 3 7.2 5H4a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-3.2L15 3zm3 14a4.5 4.5 0 1 1 0-9 4.5 4.5 0 0 1 0 9zm0-2a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
         </button>
-        <button class="vt-icon" id="vt-settings" aria-label="Settings" title="Settings">
+        <button class="vt-icon" id="vt-settings" aria-label="Settings" aria-haspopup="menu" title="Settings">
           <svg viewBox="0 0 24 24"><path d="M12 15.5A3.5 3.5 0 1 1 15.5 12 3.5 3.5 0 0 1 12 15.5zm7.4-2.6.1-.9-.1-.9 1.9-1.5a.5.5 0 0 0 .1-.6l-1.8-3.1a.5.5 0 0 0-.6-.2l-2.2.9a7 7 0 0 0-1.6-.9l-.3-2.4a.5.5 0 0 0-.5-.4h-3.6a.5.5 0 0 0-.5.4l-.3 2.4a7 7 0 0 0-1.6.9l-2.2-.9a.5.5 0 0 0-.6.2L3.7 9a.5.5 0 0 0 .1.6l1.9 1.5-.1.9.1.9-1.9 1.5a.5.5 0 0 0-.1.6l1.8 3.1a.5.5 0 0 0 .6.2l2.2-.9a7 7 0 0 0 1.6.9l.3 2.4a.5.5 0 0 0 .5.4h3.6a.5.5 0 0 0 .5-.4l.3-2.4a7 7 0 0 0 1.6-.9l2.2.9a.5.5 0 0 0 .6-.2l1.8-3.1a.5.5 0 0 0-.1-.6z"/></svg>
         </button>
-        <button class="vt-icon" id="vt-full" aria-label="Fullscreen" title="Fullscreen (F)">
+        <button class="vt-icon" id="vt-full" aria-label="Fullscreen" aria-pressed="false" title="Fullscreen (F)">
           <svg viewBox="0 0 24 24"><path d="M7 14H5v5h5v-2H7zm-2-4h2V7h3V5H5zm12 7h-3v2h5v-5h-2zM14 5v2h3v3h2V5z"/></svg>
         </button>
       </div>
