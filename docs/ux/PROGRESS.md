@@ -211,9 +211,9 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | V043 | Pending review/implementation |
 | V044 | Pending review/implementation |
 | V045 | Fixed `2037c8d` — edition-aware skip |
-| V046 | Pending review/implementation |
-| V047 | Pending review/implementation |
-| V048 | Pending review/implementation |
+| V046 | Fixed — four states on the row |
+| V047 | Partial — per-show sub/dub memory exists (onPrefChange); a global default is not offered yet |
+| V048 | Fixed `10329fa` |
 | V049 | Pending review/implementation |
 | V050 | Pending review/implementation |
 | V051 | Pending review/implementation |
