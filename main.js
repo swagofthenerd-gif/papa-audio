@@ -12669,9 +12669,16 @@ ipcMain.handle('video-play', async (_, { result }) => {
             try { const files = streamer.files(); if (files.length > 1 && current()) safeSend('video-event', { kind: 'pack', files, pick: (typeof streamer.pickInfo === 'function' ? streamer.pickInfo() : null) }) } catch (_) {}
           }).catch(fail)
         } })
+        if (_debridConfigured() && !_debridAnyWorthTrying(result)) {
+          // Every candidate is already known-refused (RealDebrid answers 451
+          // for a great deal of anime). Say so instead of silently using
+          // peers — silence is what made this look broken.
+          _sendDebridMiss(current, new Error(_debridRateLimited() ? 'too_many_requests' : 'already refused'))
+        }
         if (_debridAnyWorthTrying(result)) {
           const budget = new Promise((_r, rej) => setTimeout(() => rej(new Error('debrid budget')), DEBRID_BUDGET_MS))
           Promise.race([_debridPlayableAny(result), budget])
+            .catch(e => { _sendDebridMiss(current, e); throw e })
             .then(directUrl => { if (!current() || !directUrl) throw new Error('debrid unusable'); return serve(directUrl).then(() => safeSend('video-event', { kind: 'debrid', ok: true })) })
             .catch(() => { if (current()) startTorrent() })
         } else startTorrent()
@@ -12745,6 +12752,9 @@ ipcMain.handle('video-play', async (_, { result }) => {
       // goes through the exact same engine.load() the torrent path uses (mpv
       // plays a URL and a local server URL identically), so nothing downstream
       // changes.
+      if (_debridConfigured() && !_debridAnyWorthTrying(result)) {
+        _sendDebridMiss(current, new Error(_debridRateLimited() ? 'too_many_requests' : 'already refused'))
+      }
       if (_debridAnyWorthTrying(result)) {
         // A link resolved during the page visit is used at once; only an
         // unresolved magnet is raced against the budget.
@@ -12756,6 +12766,7 @@ ipcMain.handle('video-play', async (_, { result }) => {
           new Promise((_r, rej) => setTimeout(() => rej(new Error('debrid budget')), DEBRID_BUDGET_MS)),
         ])
         attempt
+          .catch(e => { _sendDebridMiss(current, e); throw e })
           .then(async directUrl => {
             if (!current() || !directUrl) throw new Error('debrid unusable')
             await spinUp
@@ -13563,6 +13574,27 @@ function _debridRateLimited() { return Date.now() < _debridBackoffUntil }
 //
 // Order matters: the source actually chosen comes first, then the rest
 // best-picture-first, so a held source of the right quality wins.
+// Why debrid could not serve this play, in words the viewer can act on.
+// Falling back to peers SILENTLY is what made a working subscription look
+// broken for days: there was no way to tell "RealDebrid does not have this"
+// from "the app is ignoring my subscription".
+function _debridReasonFrom(err) {
+  const msg = String((err && err.message) || err || '')
+  const code = (err && err.code) || ''
+  if (_debridRateLimited() || /HTTP_429|too_many_requests/.test(msg + code)) return 'busy'
+  if (/451/.test(msg + code)) return 'blocked'
+  if (/not holding any/.test(msg)) return 'notHeld'
+  if (/already refused/.test(msg)) return 'blocked'
+  if (/aborted|timed out|budget/.test(msg)) return 'slow'
+  return 'unavailable'
+}
+function _sendDebridMiss(current, err) {
+  try {
+    if (typeof current === 'function' && !current()) return
+    safeSend('video-event', { kind: 'debrid', ok: false, reason: _debridReasonFrom(err) })
+  } catch (_) {}
+}
+
 async function _debridPlayableAny(result) {
   const candidates = []
   const push = m => { if (typeof m === 'string' && m && candidates.indexOf(m) === -1) candidates.push(m) }

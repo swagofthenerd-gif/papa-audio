@@ -4221,6 +4221,9 @@ function _startWatchTick(nowMs) {
 // The theatre shows lifecycle on the stage, because until mpv is actually
 // playing there is nothing behind the deck to look at. Once it is playing the
 // message is cleared so the video is unobstructed.
+// The last thing debrid did for this play, in plain words. Read by the tests
+// and available to any surface that wants to show it.
+var _debridNote = ''
 function _handleVideoEvent(payload) {
   if (!_player) return
   if (payload.kind === 'audio') return   // badges come from the state stream
@@ -4228,6 +4231,23 @@ function _handleVideoEvent(payload) {
   // The mouse moved over the picture. Only the theatre cares, and only to know
   // the viewer is still watching rather than gone.
   if (payload.kind === 'activity') { _player.noteActivity(); return }
+
+  // Debrid either served this play or could not. Saying which, and why, is the
+  // whole point: falling back to peers in silence made a working subscription
+  // look broken for days, because there was no way to tell "RealDebrid does
+  // not carry this title" from "the app is ignoring what I paid for".
+  if (payload.kind === 'debrid') {
+    if (payload.ok) { _debridNote = 'Streaming from your debrid account'; return }
+    const why = {
+      blocked: 'RealDebrid does not carry this title — using peers instead',
+      notHeld: 'RealDebrid is not holding any of these sources — using peers instead',
+      busy: 'RealDebrid is rate-limiting this account right now — using peers instead',
+      slow: 'RealDebrid did not answer in time — using peers instead',
+    }[payload.reason] || 'RealDebrid could not serve this one — using peers instead'
+    _debridNote = why
+    showToast(why)
+    return
+  }
 
   // A key pressed inside the video window. mpv owns the keyboard while it has
   // focus, so it forwards the actions that belong to the app.

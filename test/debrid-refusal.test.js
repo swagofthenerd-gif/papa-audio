@@ -79,3 +79,24 @@ test('both play paths skip the wait entirely for a refused source', () => {
   assert.ok(/!_debridRefusedHas\(m\)/.test(pick))
   assert.ok(/allRefused: true/.test(pick), 'says so rather than silently finding nothing')
 })
+
+// Falling back to peers in SILENCE is what made a working subscription look
+// broken for days: there was no way to tell "RealDebrid does not carry this
+// title" from "the app is ignoring what I paid for" (2026-09-16).
+test('a debrid miss is explained to the viewer, with the reason', () => {
+  const fs = require('fs'); const path = require('path')
+  const MAINSRC = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
+  const R = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
+  // Main classifies the failure rather than reporting a bare error.
+  const fn = MAINSRC.slice(MAINSRC.indexOf('function _debridReasonFrom('), MAINSRC.indexOf('async function _debridPlayableAny('))
+  for (const r of ['busy', 'blocked', 'notHeld', 'slow']) {
+    assert.ok(new RegExp("'" + r + "'").test(fn), 'classifies ' + r)
+  }
+  // Both play paths report the miss before the swarm takes over.
+  assert.strictEqual((MAINSRC.match(/_sendDebridMiss\(current, e\)/g) || []).length, 2)
+  // And the renderer turns each reason into words a person can act on.
+  const handler = R.slice(R.indexOf("if (payload.kind === 'debrid')"), R.indexOf("if (payload.kind === 'pack')"))
+  assert.ok(/does not carry this title/.test(handler), 'blocked reads as coverage, not breakage')
+  assert.ok(/rate-limiting this account/.test(handler))
+  assert.ok(/showToast\(why\)/.test(handler), 'the viewer is actually told')
+})
