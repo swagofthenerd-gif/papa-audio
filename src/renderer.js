@@ -4503,7 +4503,7 @@ async function _prefetchNextSources() {
 function _setUpNextInfo() {
   if (!_player || !_videoDetail || !_videoDetail.d) return
   const next = _nextEpisodeOf(_videoDetail, _videoState)
-  if (!next) return _player.setUpNext(null)
+  if (!next || next.unaired) return _player.setUpNext(null)   // V037: no card for an episode nobody has
   const d = _videoDetail.d
   let title = 'Episode ' + next.episode
   let still = null
@@ -4884,6 +4884,11 @@ function _nextEpisodeOf(detail, stateNow) {
   // End of the season: roll into the next real season, skipping specials (0).
   const later = seasons.filter(function (x) { return x.seasonNumber > stateNow.season && x.seasonNumber >= 1 })
   if (!later.length) return null
+  // V037: a next season that exists on the catalog but has no episodes yet
+  // (announced, not aired) is not somewhere to advance to. It is reported so
+  // the finale can end honestly — "Season 3 has not aired yet" — rather than
+  // opening a player that searches for an episode nobody has.
+  if (!(Number(later[0].episodeCount) || 0)) return { season: later[0].seasonNumber, episode: 1, unaired: true }
   return { season: later[0].seasonNumber, episode: 1 }
 }
 
@@ -4963,6 +4968,10 @@ async function _playNextEpisode() {
   const next = _nextEpisodeOf(_videoDetail, _videoState)
   if (!next) {
     showToast('That was the last episode')
+    return
+  }
+  if (next.unaired) {
+    showToast('That was the last episode so far — Season ' + next.season + ' has not aired yet')
     return
   }
 

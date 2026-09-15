@@ -262,3 +262,15 @@ test('auto-pick of an empty list is null', () => {
   withPref({ source: 'TPB' })
   assert.strictEqual(autoPick([]), null)
 })
+
+// V037: a finale advances only to a season that has episodes; an announced,
+// empty next season is reported, never opened.
+test('rolling into a next season with no episodes yet is reported as unaired, not advanced to', () => {
+  assert.deepStrictEqual(
+    nextEpisodeOf(show([[1, 7], [2, 0]]), { season: 1, episode: 7 }),
+    { season: 2, episode: 1, unaired: true }
+  )
+  const R = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
+  assert.ok(R.includes("showToast('That was the last episode so far — Season ' + next.season + ' has not aired yet')"))
+  assert.ok(R.includes('if (!next || next.unaired) return _player.setUpNext(null)'), 'and no Up Next card counts down to it')
+})
