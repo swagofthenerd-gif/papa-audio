@@ -33720,6 +33720,7 @@ async function reloadPersistedState() {
 // ── Download scheduling ─────────────────────────────────────────────────────
 // Hand files to the main-process scheduler rather than POSTing each one, so a
 // folder does not land as one deep queue on a single peer.
+var _dlDestinationTold = false
 function _slskEnqueue(items) {
   var list = (items || []).filter(function(it) { return it && it.filename && it.username })
   if (!list.length) return Promise.resolve(null)
@@ -33734,6 +33735,16 @@ function _slskEnqueue(items) {
       // Roadmap 079: the destination was checked before any transfer work.
       // Not enough space or an unwritable folder comes back as a choice.
       if (res && res.capacity && !res.ok) { _slskOfferCapacityChoice(list, res.capacity); return res }
+      // Roadmap 021: the first download of a session says where it is going
+      // and how much room is there, with the folder one click away.
+      if (res && res.ok && res.added && res.destination && !_dlDestinationTold) {
+        _dlDestinationTold = true
+        var C = (typeof PapaDlCapacity !== 'undefined' && PapaDlCapacity) || null
+        var free = res.destination.freeBytes != null && C ? ' · ' + C.fmt(res.destination.freeBytes) + ' free' : ''
+        showSnackbar('Downloading to ' + shortPath(res.destination.dir) + free, 'Change folder', function () {
+          window.api.slskSetDownloadDir().catch(function () {})
+        }, 8000)
+      }
       // A refusal used to be a silent null in main, so asking again for
       // something you had cancelled looked like a button that did nothing.
       // Offer the one thing the user wants: ask again and mean it.

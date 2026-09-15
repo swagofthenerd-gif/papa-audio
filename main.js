@@ -8018,12 +8018,17 @@ async function _dlCapacityCheck(items) {
 ipcMain.handle('slsk-enqueue-downloads', async (_, { items, force, ignoreCapacity }) => {
   let added = 0
   const refused = []
+  let destination = null
   if (!ignoreCapacity) {
     const cap = await _dlCapacityCheck(items)
     if (!cap.ok) {
       console.warn('[papa] enqueue refused on capacity:', cap.kind, cap.text)
       return { ok: false, added: 0, refused: [], capacity: cap, stats: dlSched.stats(dlState) }
     }
+    // Roadmap 021: where this is going and how much room there is, so the
+    // renderer can say so before the first download of a session.
+    const dir = _downloadDir()
+    destination = { dir, freeBytes: freeSpaceAt(path.join(dir, 'x')) }
   }
   // Record the album-group membership for verification/organize (#49/#50). The
   // group username is the primary source's username (the one the folder came
@@ -8062,7 +8067,7 @@ ipcMain.handle('slsk-enqueue-downloads', async (_, { items, force, ignoreCapacit
     const single = (items || []).filter(it => it && it.filename && !(it.sources && it.sources.length > 1))
     if (single.length) dlSeedFolderSources(single).catch(() => {})
   }
-  return { ok: true, added, refused, stats: dlSched.stats(dlState) }
+  return { ok: true, added, refused, destination, stats: dlSched.stats(dlState) }
 })
 
 function dlQueueFiles() {

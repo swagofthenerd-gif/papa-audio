@@ -121,6 +121,15 @@ test('assistant Stop releases immediately, aborts the provider request, and name
   }
 })
 
+// Roadmap 021: the first download of a session says where it goes and how much room there is.
+test('the first successful enqueue names the destination and free space with a Change folder action', () => {
+  const M = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'main.js'), 'utf8')
+  assert.ok(M.includes("destination = { dir, freeBytes: freeSpaceAt(path.join(dir, 'x')) }"))
+  assert.ok(M.includes('return { ok: true, added, refused, destination, stats: dlSched.stats(dlState) }'))
+  assert.ok(renderer.includes("showSnackbar('Downloading to ' + shortPath(res.destination.dir) + free, 'Change folder'"))
+  assert.ok(renderer.includes('_dlDestinationTold = true'), 'once per session, not per download')
+})
+
 // Roadmap 079: capacity is checked before transfer work and refused as a choice.
 test('downloads are checked for space and writability before enqueue, and refusals offer a way on', () => {
   const M = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'main.js'), 'utf8')
