@@ -21146,6 +21146,26 @@ function bindContentEvents() {
       if (w) { navigate('search', w.query) }
     })
   })
+  // Roadmap 082: per-entry mode and pause.
+  document.querySelectorAll('.wishlist-mode-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var w = state.downloadWishlist[parseInt(btn.dataset.wlIdx)]
+      if (!w) return
+      w.notifyOnly = !w.notifyOnly
+      window.api.saveDownloadWishlist(state.downloadWishlist)
+      showSnackbar(w.notifyOnly ? 'Will only tell you when "' + w.query + '" turns up' : 'Will download "' + w.query + '" on its own when it turns up', '', function () {}, 3000)
+      renderDownloads()
+    })
+  })
+  document.querySelectorAll('.wishlist-pause-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var w = state.downloadWishlist[parseInt(btn.dataset.wlIdx)]
+      if (!w) return
+      w.paused = !w.paused
+      window.api.saveDownloadWishlist(state.downloadWishlist)
+      renderDownloads()
+    })
+  })
   document.querySelectorAll('.wishlist-remove-btn').forEach(function(btn) {
     btn.addEventListener('click', function() {
       var idx = parseInt(btn.dataset.wlIdx)
@@ -27294,11 +27314,33 @@ function _renderSubLog() {
 }
 
 function renderDownloads() {
+  // Roadmap 082: fetch the automation's facts once; repaint when they land.
+  if (window.api && typeof window.api.getWishlistStatus === 'function' && !state._wishlistStatusAt) {
+    state._wishlistStatusAt = Date.now()
+    window.api.getWishlistStatus().then(function (st) {
+      state._wishlistStatus = st || {}
+      if (state.currentPage === 'downloads') renderDownloads()
+      setTimeout(function () { state._wishlistStatusAt = 0 }, 60000)
+    }).catch(function () { state._wishlistStatusAt = 0 })
+  }
   // The headline cards come from the one reconciled model (R5) and are
   // patched on every poll by _dlPaintDashboard.
   var dashHTML = _dlDashboardHtml()
   var batchBtns = '<div style="display:flex;gap:8px;padding:12px 28px"><button class="dl-action-btn" id="dl-pause-all">\u23f8 Pause All</button><button class="dl-action-btn" id="dl-resume-all">\u25b6 Resume All</button></div>'
-  var wishlistHTML = state.downloadWishlist && state.downloadWishlist.length ? '<div class="section-header"><span class="section-title">Wishlist</span></div>' + state.downloadWishlist.map(function(w, i) { return '<div class="wishlist-row"><span>' + esc(w.query) + '</span><button class="wishlist-search-btn" data-wl-idx="' + i + '">Search</button><button class="wishlist-remove-btn" data-wl-idx="' + i + '">Remove</button></div>' }).join('') : '<div class="section-header"><span class="section-title">Wishlist</span></div><div style="padding:8px 28px;color:var(--text3);font-size:12px">Add albums to wishlist from any search result to auto-download them when available.</div>'
+  // Roadmap 082: each entry says what the automation does with it — download
+  // on its own or only tell you — whether it is paused, and when it was last
+  // checked; the header says the cadence. Nothing here is implied.
+  var wlStatus = state._wishlistStatus || {}
+  var wlEvery = wlStatus.everyMs ? Math.round(wlStatus.everyMs / 3600000) + ' h' : '6 h'
+  var wlLast = wlStatus.lastSweepAt ? 'last check ' + _agoLabel(Date.now() - wlStatus.lastSweepAt) : 'not checked yet this session'
+  var wlHead = '<div class="section-header"><span class="section-title">Wishlist</span><span class="wishlist-cadence" title="How the wishlist automation runs">Checked every ' + wlEvery + ' while the app is open · ' + wlLast + '</span></div>'
+  var wishlistHTML = state.downloadWishlist && state.downloadWishlist.length ? wlHead + state.downloadWishlist.map(function(w, i) {
+    var mode = w.paused ? 'Paused — not checked' : w.notifyOnly ? 'Notify only — tells you, never downloads' : 'Auto-download when a clean copy appears'
+    return '<div class="wishlist-row' + (w.paused ? ' paused' : '') + '"><span class="wishlist-q">' + esc(w.query) + '<span class="wishlist-mode">' + mode + '</span></span>' +
+      '<button class="wishlist-mode-btn" data-wl-idx="' + i + '" title="Switch between downloading on its own and only telling you">' + (w.notifyOnly ? 'Auto' : 'Notify only') + '</button>' +
+      '<button class="wishlist-pause-btn" data-wl-idx="' + i + '" title="' + (w.paused ? 'Check this entry again' : 'Stop checking this entry; keep it on the list') + '">' + (w.paused ? 'Resume' : 'Pause') + '</button>' +
+      '<button class="wishlist-search-btn" data-wl-idx="' + i + '" title="Search for it now, by hand">Search</button><button class="wishlist-remove-btn" data-wl-idx="' + i + '">Remove</button></div>' }).join('')
+    : wlHead + '<div style="padding:8px 28px;color:var(--text3);font-size:12px">Add albums to the wishlist from any search result. Each entry is checked every ' + wlEvery + ' while the app is open and downloaded on its own when a clean copy appears — or, if you set it to Notify only, you are told instead.</div>'
 
   setContent(`<div class="dl2-page">
     <div class="dl2-topbar">

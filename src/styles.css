@@ -2010,6 +2010,12 @@ h2.section-title { font-size:18px; font-weight:700; }
 .queue-shuffle-note { font-size:11px; color:var(--text3); padding:0 12px 8px; }
 /* Roadmap 041: the sleep timer's state in words. */
 .sleep-status { font-size:11px; color:var(--text2); padding:6px 10px 8px; border-bottom:1px solid var(--glass-border); margin-bottom:4px; }
+/* Roadmap 082: the wishlist says what its automation does. */
+.wishlist-cadence { font-size:11px; color:var(--text3); font-weight:400; }
+.wishlist-q { display:flex; flex-direction:column; gap:2px; flex:1; min-width:0; }
+.wishlist-mode { font-size:10px; color:var(--text3); }
+.wishlist-row.paused .wishlist-q { opacity:.6; }
+.wishlist-mode-btn, .wishlist-pause-btn { background:var(--glass); border:1px solid var(--glass-border); border-radius:var(--r-sm); color:var(--text2); font-size:11px; padding:3px 8px; cursor:pointer; }
 .folder-item-empty { color:var(--text3); font-style:italic; cursor:default; }
 .setup-hint { font-size:12px; color:var(--text3); margin:8px 0 0; }
 .setup-chosen { color:var(--accent) !important; font-weight:600; word-break:break-all; }

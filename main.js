@@ -4242,6 +4242,12 @@ ipcMain.handle('get-session-id', () => ({
 }))
 
 ipcMain.handle('get-download-wishlist', () => store.get('downloadWishlist', []))
+// Roadmap 082: the automation's own facts for the wishlist page.
+ipcMain.handle('get-wishlist-status', () => ({
+  lastSweepAt: store.get('wishlistLastSweepAt', 0) || null,
+  everyMs: WISHLIST_SWEEP_EVERY_MS,
+  sweeping: !!slskWishlistSweeping,
+}))
 ipcMain.on('save-download-wishlist', (_, wl) => store.set('downloadWishlist', wl))
 
 ipcMain.handle('get-followed-artists', () => store.get('followedArtists', []))
@@ -8592,9 +8598,13 @@ async function slskWishlistSweep() {
   if (slskWishlistSweeping) return { ok: false, error: 'A wishlist sweep is already running', results: [] }
   slskWishlistSweeping = true
   try {
-    const entries = store.get('downloadWishlist', [])
+    // Roadmap 082: a paused entry is skipped, and every sweep leaves a
+    // timestamp so the page can say when the last check happened.
+    const all = store.get('downloadWishlist', [])
+    const entries = all.filter(w => w && !w.paused)
+    store.set('wishlistLastSweepAt', Date.now())
     if (!entries.length) return { ok: true, results: [] }
-    console.log('[papa] wishlist: sweeping', entries.length, 'item(s)')
+    console.log('[papa] wishlist: sweeping', entries.length, 'of', all.length, 'item(s)')
 
     const sweep = await wishlistHunter.runSweep({
       entries,

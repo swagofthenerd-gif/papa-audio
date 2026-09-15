@@ -273,6 +273,7 @@ contextBridge.exposeInMainWorld('api', {
 
   getDownloadWishlist:  () => ipcRenderer.invoke('get-download-wishlist'),
   saveDownloadWishlist: (w) => ipcRenderer.send('save-download-wishlist', w),
+  getWishlistStatus:    ()  => ipcRenderer.invoke('get-wishlist-status'),
 
   // Soulseek
   slskStatus:    ()  => ipcRenderer.invoke('slsk-status'),

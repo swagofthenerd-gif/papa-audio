@@ -121,6 +121,17 @@ test('assistant Stop releases immediately, aborts the provider request, and name
   }
 })
 
+// Roadmap 082: wishlist automation is explicit per entry.
+test('wishlist rows state auto vs notify, pause, last check and cadence; paused entries are skipped', () => {
+  const M = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'main.js'), 'utf8')
+  assert.ok(M.includes("const entries = all.filter(w => w && !w.paused)"), 'the sweep skips paused entries')
+  assert.ok(M.includes("store.set('wishlistLastSweepAt', Date.now())"))
+  assert.ok(M.includes("ipcMain.handle('get-wishlist-status'"))
+  assert.ok(renderer.includes("'Notify only — tells you, never downloads'") && renderer.includes("'Auto-download when a clean copy appears'"))
+  assert.ok(renderer.includes("Checked every ' + wlEvery + ' while the app is open"))
+  assert.ok(renderer.includes("class=\"wishlist-pause-btn\"") && renderer.includes("class=\"wishlist-mode-btn\""))
+})
+
 // Roadmap 098: the requested device is never shown as active while the default output plays.
 test('a device fallback is remembered, shown under the picker, and demotes BIT-PERFECT', () => {
   const H = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'index.html'), 'utf8')
