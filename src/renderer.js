@@ -25448,8 +25448,14 @@ async function _pollAndRenderDownloadsInner() {
   // Only what just finished this session, not slskd's entire memory.
   const completedNow = files.filter(f => _dlCategory(f.state) === 'completed' && _dlJustFinished.has(f.id))
   if (_dlPrevActiveCount > 0 && activeCount === 0 && completedNow.length > 0) {
-    const folder = completedNow[0] ? _dlFolderName(completedNow[0].filename) || 'your music' : 'your music'
-    window.api.notifyDownloadComplete({ count: completedNow.length, albumName: folder })
+    // Roadmap 081: one notice per album that just finished (a big batch
+    // collapses to one summary), each offering Play album via its click.
+    const notices = (window.PapaDlNumbers && window.PapaDlNumbers.completionNotices)
+      ? window.PapaDlNumbers.completionNotices(completedNow, 3)
+      : [{ folder: null, name: _dlFolderName(completedNow[0].filename) || 'your music', count: completedNow.length }]
+    for (const n of notices) {
+      window.api.notifyDownloadComplete({ count: n.count, albumName: n.name, folder: n.summary ? null : n.name })
+    }
     // Reset, so the next batch reports its own count rather than accumulating.
     _dlJustFinished.clear()
   }
@@ -29587,6 +29593,15 @@ function setupListeners() {
     backgroundSync()
   })
   window.api.on('do-lib-rescan', () => backgroundSync())
+  // A completion notice was clicked (roadmap 081): find the album whose files
+  // live in that folder and play it. The library may not have rescanned yet,
+  // so a miss opens Downloads rather than doing nothing.
+  window.api.on('open-downloaded-album', (p) => {
+    const folder = p && p.folder
+    const album = folder && state.library.find(a => (a.tracks || []).some(t => _dlFolderName(t.filePath) === folder))
+    if (album) { playAlbum(album, 0); navigate('album', album.id); return }
+    navigate('downloads')
+  })
 
   // Electron-initiated downloads: a link clicked in the Google sign-in window,
   // or a .torrent. main has always emitted these five events and offered a

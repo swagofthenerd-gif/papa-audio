@@ -483,6 +483,7 @@ contextBridge.exposeInMainWorld('api', {
       // wiring test parses it by quote pairs.
       'media-playpause', 'media-next', 'media-previous',
       'media-volume', 'media-shuffle', 'media-loop-status',
+      'open-downloaded-album',
       'system-suspend', 'system-resume',
       // Memory ceiling watchdog (roadmap #63): main asks the renderer to trim its
       // caches when the renderer RSS crosses the ceiling twice in a row.

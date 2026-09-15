@@ -220,7 +220,30 @@
     return { show: n > 0, text: String(n), title: n + ' completed today' }
   }
 
+  // Completion notices (roadmap 081): one per album, not one per track and
+  // not one for the batch named after whichever file finished first. Groups
+  // the just-finished files by their album folder; more than `maxAlbums`
+  // collapses into a single summary so a big batch never floods the desktop.
+  function completionNotices(completed, maxAlbums) {
+    const max = Number(maxAlbums) > 0 ? Number(maxAlbums) : 3
+    const byFolder = new Map()
+    for (const f of completed || []) {
+      const folder = folderOf(f && f.filename)
+      const name = folder.slice(Math.max(folder.lastIndexOf('\\'), folder.lastIndexOf('/')) + 1) || 'your music'
+      if (!byFolder.has(folder)) byFolder.set(folder, { folder: folder, name: name, count: 0 })
+      byFolder.get(folder).count++
+    }
+    const albums = Array.from(byFolder.values())
+    if (!albums.length) return []
+    if (albums.length > max) {
+      const total = albums.reduce((n, a) => n + a.count, 0)
+      return [{ folder: null, name: albums.length + ' albums', count: total, summary: true }]
+    }
+    return albums
+  }
+
   return {
+    completionNotices: completionNotices,
     BUCKETS: BUCKETS,
     LABELS: LABELS,
     bucket: bucket,

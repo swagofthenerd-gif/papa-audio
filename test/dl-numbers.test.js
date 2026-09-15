@@ -155,3 +155,14 @@ test('hmsToSecs reads slskd\'s remaining-time strings', () => {
   assert.equal(N.folderOf('x/y/z.flac'), 'x/y')
   assert.equal(N.folderOf('bare.flac'), '')
 })
+
+// Roadmap 081: one notice per album, summary above three, never per track.
+test('completionNotices groups finished files by album and collapses a large batch', () => {
+  const f = (folder, n) => ({ filename: 'peer\\Music\\' + folder + '\\' + n + '.flac' })
+  const two = N.completionNotices([f('A', 1), f('A', 2), f('B', 1)])
+  assert.deepStrictEqual(two, [{ folder: 'peer\\Music\\A', name: 'A', count: 2 }, { folder: 'peer\\Music\\B', name: 'B', count: 1 }])
+  const many = N.completionNotices([f('A', 1), f('B', 1), f('C', 1), f('D', 1)], 3)
+  assert.deepStrictEqual(many, [{ folder: null, name: '4 albums', count: 4, summary: true }])
+  assert.deepStrictEqual(N.completionNotices([]), [])
+  assert.strictEqual(N.completionNotices([{ filename: 'loose.flac' }])[0].name, 'your music')
+})

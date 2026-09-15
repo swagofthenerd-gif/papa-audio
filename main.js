@@ -3889,14 +3889,25 @@ powerMonitor.on('resume', () => {
   if (mainWindow) safeSend('system-resume')
 })
 
-ipcMain.on('notify-download-complete', (_, { count, albumName }) => {
+ipcMain.on('notify-download-complete', (_, { count, albumName, folder }) => {
   if (!Notification.isSupported()) return
-  new Notification({
-    title: count === 1 ? 'Download complete' : `${count} downloads complete`,
-    body: albumName,
+  // Roadmap 081: the notice is about the album, and clicking it plays it.
+  const n = new Notification({
+    title: folder ? 'Album ready' : (count === 1 ? 'Download complete' : `${count} downloads complete`),
+    body: folder ? `${albumName} — ${count} track${count === 1 ? '' : 's'} · click to play` : albumName,
     icon: ICON_PATH,
     silent: false
-  }).show()
+  })
+  n.on('click', () => {
+    try {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        if (mainWindow.isMinimized()) mainWindow.restore()
+        mainWindow.show(); mainWindow.focus()
+      }
+    } catch (_) {}
+    safeSend('open-downloaded-album', { folder: folder || null })
+  })
+  n.show()
 })
 
 ipcMain.handle('torrent-add', async (_, { uri }) => {
