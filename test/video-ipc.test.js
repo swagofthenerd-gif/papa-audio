@@ -1382,3 +1382,13 @@ test('every MPRIS transport control forwards to the renderer', () => {
   // The service declares itself controllable so the widget enables its buttons.
   assert.match(init, /mprisPlayer\.canControl = true/)
 })
+
+// V125: insufficient disk space during a keep stops safely and says what to do.
+test('video-keep-file checks space first and cleans up a half-written copy on ENOSPC', () => {
+  const body = handlerBody('video-keep-file')
+  assert.match(body, /dlCapacity\.check\(\{ needBytes: info\.total/, 'space is checked before the copy')
+  assert.ok(body.indexOf('dlCapacity.check(') < body.indexOf('fs.promises.copyFile(info.path, dest)'))
+  assert.match(body, /try \{ fs\.rmSync\(dest, \{ force: true \}\) \} catch \(_\) \{\}\n\s+if \(e && e\.code === 'ENOSPC'\)/, 'a partial keep never survives')
+  const R = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
+  assert.ok(R.includes("else if (res && res.error === 'space') showToast(res.text"))
+})

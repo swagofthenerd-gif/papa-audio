@@ -4606,6 +4606,11 @@ function _keepEpisode(index, btn) {
   window.api.videoKeepFile(index, show)
     .then(function (res) {
       if (res && res.ok) showToast('Saved to ' + res.path)
+      // V125: not enough space is a sentence with a next step, and "quota" is
+      // the app's own limit rather than the disk's — both used to read as a
+      // bare word.
+      else if (res && res.error === 'space') showToast(res.text || 'Not enough space to save this episode')
+      else if (res && res.error === 'quota') showToast('Your offline storage limit is reached — raise it in Settings → Video or delete a kept file')
       else showToast((res && res.error) || 'Could not save this episode')
     })
     .catch(function () { showToast('Could not save this episode') })

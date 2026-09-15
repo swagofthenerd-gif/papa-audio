@@ -12886,9 +12886,22 @@ ipcMain.handle('video-keep-file', async (_, { index, show } = {}) => {
     try { fs.mkdirSync(path.dirname(dest), { recursive: true }) } catch (e) {
       return { ok: false, error: 'Could not create the Videos folder: ' + ((e && e.message) || e) }
     }
+    // V125: check the destination BEFORE copying, with the same capacity rule
+    // downloads use, and stop safely if the copy runs out of space anyway —
+    // a half-written keep is removed so nothing on disk pretends to be whole.
+    const cap = dlCapacity.check({ needBytes: info.total, freeBytes: freeSpaceAt(path.join(path.dirname(dest), 'x')), writable: true, dir: path.dirname(dest) })
+    if (!cap.ok) return { ok: false, error: 'space', text: cap.text, shortBytes: cap.shortBytes || 0 }
     // copyFile replaces any earlier keep of the same episode rather than
     // erroring — re-keeping is a no-op the user should not have to think about.
-    await fs.promises.copyFile(info.path, dest)
+    try {
+      await fs.promises.copyFile(info.path, dest)
+    } catch (e) {
+      try { fs.rmSync(dest, { force: true }) } catch (_) {}
+      if (e && e.code === 'ENOSPC') {
+        return { ok: false, error: 'space', text: 'The disk filled up while saving. The partial file was removed; free some space and try again — the stream is untouched.' }
+      }
+      throw e
+    }
     // Record it in the index so the downloads manager (#42) can list and delete
     // it without walking the disk. Keyed by path so a re-keep updates in place
     // rather than duplicating. Best-effort: a failed index write does not undo a
