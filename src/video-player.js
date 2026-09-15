@@ -1345,6 +1345,35 @@
       })
     }
 
+    // Wheel → one step of intent, or none (V103). The old code read only the
+    // sign of deltaY, so a zero delta stepped volume UP, a purely horizontal
+    // swipe changed volume, and a high-resolution trackpad — which reports
+    // dozens of tiny events per flick — produced a dozen 5-point jumps. Now:
+    // a single event of at least one notch is one step (a mouse detent is
+    // unchanged at 5 points); smaller deltas accumulate until they add up to a
+    // notch; the accumulator resets when the direction flips or after a short
+    // pause; horizontal-dominant and zero deltas are ignored outright.
+    const WHEEL_NOTCH_PX = 40
+    const WHEEL_IDLE_MS = 150
+    let wheelAcc = 0
+    let wheelAt = 0
+    function wheelDirection(e) {
+      const mode = Number(e && e.deltaMode) || 0
+      let dy = Number(e && e.deltaY) || 0
+      const dx = Number(e && e.deltaX) || 0
+      if (!dy || Math.abs(dx) > Math.abs(dy)) return 0
+      if (mode === 1) dy *= 16            // lines → px
+      else if (mode === 2) dy = Math.sign(dy) * WHEEL_NOTCH_PX   // pages → one notch
+      const now = nowMs()
+      if (now - wheelAt > WHEEL_IDLE_MS || Math.sign(wheelAcc) !== Math.sign(dy)) wheelAcc = 0
+      wheelAt = now
+      if (Math.abs(dy) >= WHEEL_NOTCH_PX) { wheelAcc = 0; return dy > 0 ? -1 : 1 }
+      wheelAcc += dy
+      if (Math.abs(wheelAcc) < WHEEL_NOTCH_PX) return 0
+      wheelAcc -= Math.sign(wheelAcc) * WHEEL_NOTCH_PX
+      return dy > 0 ? -1 : 1
+    }
+
     function setVolume(v) {
       // The page's <video> stops at 100 %; only mpv has the 130 % headroom.
       if (pictureInPage()) v = Math.min(100, Number(v) || 0)
@@ -2590,8 +2619,9 @@
       // rarely parked on the one control that takes it.
       $('vt-deck')?.addEventListener('wheel', function (e) {
         if (typeof e.preventDefault === 'function') e.preventDefault()
-        const step = (Number(e.deltaY) || 0) > 0 ? -5 : 5
-        setVolume((Number(state && state.volume) || 0) + step)
+        const dir = wheelDirection(e)
+        if (!dir) return
+        setVolume((Number(state && state.volume) || 0) + dir * 5)
         flashVolume()
         render()
       })
@@ -2622,9 +2652,10 @@
         stageEl.addEventListener('wheel', function (e) {
           if (!onPicture(e) || !state) return
           if (typeof e.preventDefault === 'function') e.preventDefault()
-          if (e.shiftKey) { seekBy((Number(e.deltaY) || 0) > 0 ? -10 : 10); osd(((Number(e.deltaY) || 0) > 0 ? '−' : '+') + '10 s', 600); return }
-          const step = (Number(e.deltaY) || 0) > 0 ? -5 : 5
-          setVolume((Number(state && state.volume) || 0) + step)
+          const dir = wheelDirection(e)
+          if (!dir) return
+          if (e.shiftKey) { seekBy(dir * 10); osd((dir > 0 ? '+' : '−') + '10 s', 600); return }
+          setVolume((Number(state && state.volume) || 0) + dir * 5)
           flashVolume()
           render()
         }, { passive: false })

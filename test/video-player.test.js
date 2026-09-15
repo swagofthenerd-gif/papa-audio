@@ -1643,6 +1643,55 @@ test('the wheel over the deck steps volume by five and flashes it on the picture
   assert.deepStrictEqual(osd.map(o => o[0]), ['Volume 105%', 'Volume 100%'])
 })
 
+// V103: the wheel used to read only the sign of deltaY. A zero delta went up,
+// a sideways swipe changed volume, and a trackpad's stream of tiny deltas
+// produced one 5-point jump per event.
+test('a zero wheel delta changes nothing, and neither does a horizontal one', () => {
+  const { p, nodes, sent } = harness()
+  p._setState(stateAt(10, { volume: 100 }))
+  const before = sent.length
+  nodes['vt-deck'].fire('wheel', { deltaY: 0 })
+  nodes['vt-deck'].fire('wheel', { deltaY: 0, deltaX: 80 })
+  nodes['vt-deck'].fire('wheel', { deltaY: 3, deltaX: 80 })   // sideways-dominant
+  nodes['vt-deck'].fire('wheel', { deltaY: -3, deltaX: -80 })
+  assert.strictEqual(sent.length, before, 'no volume command was sent')
+})
+
+test('trackpad micro-deltas add up to one notch per 40px instead of one step per event', () => {
+  const { p, nodes, sent } = harness()
+  p._setState(stateAt(10, { volume: 100 }))
+  // Twelve events of 5px each = 60px = one notch and a 20px remainder.
+  for (let i = 0; i < 12; i++) nodes['vt-deck'].fire('wheel', { deltaY: -5 })
+  const vols = sent.filter(s => s.verb === 'volume').map(s => s.args.value)
+  assert.deepStrictEqual(vols, [105], 'exactly one step, not twelve')
+  // A direction flip discards the remainder rather than cancelling against it.
+  for (let i = 0; i < 8; i++) nodes['vt-deck'].fire('wheel', { deltaY: 5 })
+  assert.deepStrictEqual(sent.filter(s => s.verb === 'volume').map(s => s.args.value), [105, 100])
+})
+
+test('a single event of a full notch is still exactly one 5-point step, and lines/pages count', () => {
+  const { p, nodes, sent } = harness()
+  p._setState(stateAt(10, { volume: 100 }))
+  nodes['vt-deck'].fire('wheel', { deltaY: -400 })          // a big flick is one notch, not ten
+  nodes['vt-deck'].fire('wheel', { deltaY: -3, deltaMode: 1 }) // 3 lines ≈ 48px → one notch
+  nodes['vt-deck'].fire('wheel', { deltaY: 1, deltaMode: 2 })  // a page down → one notch
+  assert.deepStrictEqual(sent.filter(s => s.verb === 'volume').map(s => s.args.value), [105, 110, 105])
+})
+
+test('the picture wheel follows the same rules, including Shift-seek', () => {
+  const { p, nodes, sent } = harness()
+  p.open({ title: 'X' })
+  p._setState(stateAt(100, { volume: 50 }))
+  const stage = nodes['vt-stage']
+  stage.fire('wheel', { deltaY: 0, target: { closest: () => null } })
+  stage.fire('wheel', { deltaY: 0, shiftKey: true, target: { closest: () => null } })
+  assert.strictEqual(sent.filter(s => s.verb === 'volume' || s.verb === 'seek').length, 0)
+  stage.fire('wheel', { deltaY: 100, shiftKey: true, target: { closest: () => null } })
+  assert.deepStrictEqual(sent.filter(s => s.verb === 'seek').pop().args, { seconds: -10, mode: 'relative' })
+  stage.fire('wheel', { deltaY: -100, target: { closest: () => null } })
+  assert.strictEqual(sent.filter(s => s.verb === 'volume').pop().args.value, 55)
+})
+
 test('keyboard volume flashes too, and an api without videoOsd costs nothing', () => {
   const { p, press, sent } = harness()   // no videoOsd on the default api
   p.open({ title: 'X' })
