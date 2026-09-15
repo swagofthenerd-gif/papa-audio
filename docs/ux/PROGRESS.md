@@ -42,7 +42,7 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | A034 | Fixed `4f045cd` — refused/silent Play reported |
 | A035 | Pending review/implementation |
 | A036 | Pending review/implementation |
-| A037 | Pending review/implementation |
+| A037 | Fixed `54d84c0` — sleep keeps the place |
 | A038 | Fixed `273a9d8` — device loss pauses by default |
 | A039 | Pending review/implementation |
 | A040 | Fixed — prevAction rule + help text |
@@ -144,7 +144,7 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | A136 | Fixed `20689d5` — redact at write and export |
 | A137 | Fixed `54971c2` — sharing is a stated setting |
 | A138 | Pending review/implementation |
-| A139 | Pending review/implementation |
+| A139 | Fixed `ef3789a` — pre-update backup + RECOVERY.md |
 | A140 | Pending review/implementation |
 | A141 | Pending review/implementation |
 | A142 | Pending review/implementation |
@@ -217,7 +217,7 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | V049 | Pending review/implementation |
 | V050 | Pending review/implementation |
 | V051 | Pending review/implementation |
-| V052 | Pending review/implementation |
+| V052 | Fixed `726414d` — inferred vs measured badges |
 | V053 | Pending review/implementation |
 | V054 | Pending review/implementation |
 | V055 | Pending review/implementation |
@@ -274,11 +274,11 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | V106 | Pending review/implementation |
 | V107 | Pending review/implementation |
 | V108 | Pending review/implementation |
-| V109 | Pending review/implementation |
+| V109 | Fixed `9ef44c1` — media keys to the active session |
 | V110 | Pending review/implementation |
 | V111 | Fixed — 5 % start threshold capped at 120 s; see STATUS.md |
 | V112 | Pending review/implementation |
-| V113 | Pending review/implementation |
+| V113 | Fixed `7e5dd3a` — pause checkpoint; close/pagehide flush |
 | V114 | Pending review/implementation |
 | V115 | Pending review/implementation |
 | V116 | Pending review/implementation |

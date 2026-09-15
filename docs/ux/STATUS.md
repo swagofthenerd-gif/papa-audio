@@ -77,6 +77,11 @@ Each F item re-checked on this branch, not assumed from the `main` review.
 | 2026-09-15 | 096 | `578f3e5` | src/gain-policy.js: summed gain + clipping verdict under Volume boost |
 | 2026-09-15 | 034 | `4f045cd` | refused Play reverts + says why; silent Play reported (not asserted) after 6 s |
 | 2026-09-15 | 038 | `273a9d8` | device loss → respawn resumes paused (policy setting); Keep playing one click |
+| 2026-09-15 | 139 | `ef3789a` | pre-migration backup on version change (userData/migration-backups, keep 3); docs/RECOVERY.md |
+| 2026-09-15 | 037 | `54d84c0` | suspend remembers track+position; resume stays paused and offers the place back |
+| 2026-09-15 | V052 | `726414d` | inferred vs measured source badges; engine passes demux-channel-count |
+| 2026-09-15 | V113 | `7e5dd3a` | pause is a position checkpoint (close/pagehide flush already existed) |
+| 2026-09-15 | V109 | `9ef44c1` | player.isOpen(); media keys route to the video session when one exists |
 
 ## F list: all resolved (134 deferred to runtime). Now working through P0 E-items
 
