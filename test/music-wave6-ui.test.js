@@ -50,6 +50,14 @@ test('the queue panel wires a clear-played action to the tested helper', () => {
   assert.ok(renderer.includes("'Clear played'"), 'no Clear played button label')
 })
 
+// Roadmap 096: the gain policy is one sentence under Volume boost, kept live.
+test('the playback settings show the summed gain policy and clipping risk', () => {
+  const H = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'index.html'), 'utf8')
+  assert.ok(H.includes('id="gain-policy-text"') && H.includes('<script src="gain-policy.js"></script>'))
+  assert.ok(renderer.includes('function updateGainPolicyText()'))
+  assert.ok(renderer.includes('try { updateGainPolicyText() } catch (_) {}'), 'refreshed with the quality badge, i.e. on every volume/EQ/settings change')
+})
+
 // Roadmap 137: sharing with Soulseek peers is a stated, changeable setting.
 test('the slskd config shares what the setting says, and the setting is in the panel', () => {
   const M = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'main.js'), 'utf8')

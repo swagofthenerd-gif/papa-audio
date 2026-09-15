@@ -1239,6 +1239,20 @@ function updateFormatBadge(track) {
   el.className = 'np-format' + (isMaster ? ' hi-res master' : isHiRes ? ' hi-res' : '')
 }
 
+// Roadmap 096: the gain policy sentence under Volume boost, recomputed from
+// the same facts the quality badge reads whenever any of them changes.
+function updateGainPolicyText() {
+  var el = document.getElementById('gain-policy-text')
+  var G = (typeof PapaGainPolicy !== 'undefined' && PapaGainPolicy) || null
+  if (!el || !G) return
+  var settings = state._playerSettings || {}
+  var vol = null
+  try { vol = (typeof audio !== 'undefined' && audio && isFinite(audio.volume)) ? Math.round(audio.volume * 100) : null } catch (_) { vol = null }
+  var r = G.assess({ boost: !!settings.boost, volumePct: vol, eq: settings.eq, replaygain: settings.replaygain })
+  el.textContent = 'Gain policy: ' + r.text
+  el.classList.toggle('mcs-set-chip-warn', r.risk === 'likely')
+}
+
 // Roadmap 093: the verdict comes from src/quality-badge.js, which checks the
 // codec before it says LOSSLESS and every sample-altering setting before it
 // says BIT-PERFECT. The tooltip carries the reason, including what is
@@ -1248,6 +1262,7 @@ function updateBitPerfectBadge() {
   if (!el) return
   var track = state.queue[state.queueIndex]
   var Q = (typeof PapaQualityBadge !== 'undefined' && PapaQualityBadge) || null
+  try { updateGainPolicyText() } catch (_) {}
   if (!track || !Q) { el.style.display = 'none'; el.removeAttribute('title'); return }
   var vol = null
   try { vol = (typeof audio !== 'undefined' && audio && isFinite(audio.volume)) ? Math.round(audio.volume * 100) : null } catch (_) { vol = null }
