@@ -4763,6 +4763,12 @@ function _qualityDistance(a, b) {
 // because a source debrid can serve starts in a fraction of a second and one
 // it refuses (404/451, both seen) falls back to the swarm.
 var _debridPick = null
+// The in-flight search for a source debrid can serve. Pressing Play while it
+// was still running raced straight past it to the swarm — which is exactly
+// what "it still falls back to hunting for peers" was (reproduced
+// 2026-09-16). Play now waits briefly for it instead.
+var _debridPickPending = null
+var _DEBRID_PICK_WAIT_MS = 7000
 var _playQuality = ''
 var _QUALITY_ORDER = ['2160p', '1080p', '720p', '480p']
 
@@ -5368,8 +5374,36 @@ function _videoPlayResult(result, opts) {
   const cacheProbe = (!opts.manual && result.cacheKey && window.api.videoCacheGet)
     ? window.api.videoCacheGet({ key: result.cacheKey }).catch(function () { return null })
     : Promise.resolve(null)
+  // If the search for a debrid-servable source is still running, give it a
+  // moment before committing to the swarm. Bounded, so a slow or dead debrid
+  // never holds playback hostage — it just loses the race it was going to
+  // lose anyway.
+  // Tolerant of the module state not existing: this sits on the Play path,
+  // and a throw here is a dead Play button — which has already happened once.
+  const pickPending = (typeof _debridPickPending !== 'undefined') ? _debridPickPending : null
+  const pickWaitMs = (typeof _DEBRID_PICK_WAIT_MS !== 'undefined') ? _DEBRID_PICK_WAIT_MS : 7000
+  const debridWait = (!opts.manual && pickPending && result.kind === 'torrent')
+    ? Promise.race([
+        pickPending,
+        new Promise(function (r) { setTimeout(function () { r(null) }, pickWaitMs) }),
+      ]).catch(function () { return null })
+    : Promise.resolve(null)
   Promise.resolve(_player.ready ? _player.ready() : null).then(function () {
-  cacheProbe.then(function (res) {
+  debridWait.then(function (servable) {
+    // The search finished while we waited and named a source debrid will
+    // serve: play THAT instead of whatever the swarm ordering chose.
+    if (servable && Array.isArray(_videoStreams)) {
+      const better = _videoStreams.find(function (s) { return s && s.magnet === servable })
+      if (better) {
+        result = Object.assign({}, better, {
+          season: result.season, episode: result.episode,
+          cacheKey: result.cacheKey, cacheMeta: result.cacheMeta,
+          alternates: result.alternates,
+        })
+      }
+    }
+  return cacheProbe
+  }).then(function (res) {
     const hit = res && res.ok && res.hit
     if (hit && hit.path) {
       result = Object.assign({}, result, { kind: 'cached', url: hit.path, magnet: null, alternates: null })
@@ -10686,11 +10720,17 @@ async function _loadVideoSources(ticket, seasonTicket) {
           .sort(function (a, b) { return ((qRank[b.s.quality] || 0) - (qRank[a.s.quality] || 0)) || (a.i - b.i) })
           .slice(0, 4).map(function (e) { return e.s.magnet })
         if (candidates.length) {
-          window.api.videoDebridPick({ magnets: candidates, titleKey: titleKey })
+          const ticketAtPick = _videoDetailTicket
+          _debridPickPending = window.api.videoDebridPick({ magnets: candidates, titleKey: titleKey })
             .then(function (res) {
+              // A result that arrives after the viewer moved on belongs to a
+              // page that is no longer open.
+              if (_videoDetailTicket !== ticketAtPick) return null
               if (res && res.magnet) { _debridPick = res.magnet; _refreshInstantKeys(true) }
+              return (res && res.magnet) ? res.magnet : null
             })
-            .catch(function () {})
+            .catch(function () { return null })
+            .then(function (m) { _debridPickPending = null; return m })
         }
       }
     })

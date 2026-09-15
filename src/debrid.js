@@ -42,6 +42,8 @@ const VIDEO_EXT = /\.(mkv|mp4|avi|mov|m4v|webm|ts|wmv|flv|mpg|mpeg)$/i
 const LINK_TTL_MS = 10 * 60 * 1000
 // How long to wait when proving a link is still alive (one byte).
 const VERIFY_TIMEOUT_MS = 4000
+// How many times to ask whether a link is alive before believing it is not.
+const ALIVE_TRIES = 3
 
 const DEFAULT_POLL_TIMEOUT_MS = 30000
 // How often to re-ask for the torrent's status while polling.
@@ -242,17 +244,27 @@ function createDebrid(opts = {}) {
   // Prove a link still serves bytes. RealDebrid answers 503 on a link that has
   // gone stale, and handing that to the player looks exactly like debrid not
   // working at all. One byte is enough to tell.
+  // RETRIED, because these servers answer 503 to a perfectly good link about
+  // two times in five (measured). A single probe threw away working links and
+  // sent playback back to the swarm — "held but unplayable" in the log.
   async function _alive(url) {
-    const ctrl = typeof AbortController === 'function' ? new AbortController() : null
-    const timer = ctrl ? setTimeout(() => ctrl.abort(), VERIFY_TIMEOUT_MS) : null
-    try {
-      const res = await fetchFn(url, Object.assign(
-        { method: 'GET', headers: { Range: 'bytes=0-0' } },
-        ctrl ? { signal: ctrl.signal } : {}))
-      return !!(res && (res.status === 206 || res.status === 200))
-    } catch (_) {
-      return false
-    } finally { if (timer) clearTimeout(timer) }
+    for (let i = 0; i < ALIVE_TRIES; i++) {
+      const ctrl = typeof AbortController === 'function' ? new AbortController() : null
+      const timer = ctrl ? setTimeout(() => ctrl.abort(), VERIFY_TIMEOUT_MS) : null
+      try {
+        const res = await fetchFn(url, Object.assign(
+          { method: 'GET', headers: { Range: 'bytes=0-0' } },
+          ctrl ? { signal: ctrl.signal } : {}))
+        if (res && (res.status === 206 || res.status === 200)) return true
+        // A 404/410 is a settled answer about the link; only retry a refusal
+        // that is plausibly the server being busy.
+        if (res && res.status !== 503 && res.status !== 500 && res.status !== 429) return false
+      } catch (_) {
+        // network hiccup: worth one more look
+      } finally { if (timer) clearTimeout(timer) }
+      if (i < ALIVE_TRIES - 1) await new Promise(r => setTimeout(r, 250 * (i + 1)))
+    }
+    return false
   }
 
   // The link to actually play: a held one when it is young AND still alive,
@@ -280,6 +292,47 @@ function createDebrid(opts = {}) {
       if (e) { e.url = null; e.ok = false }
     }
     throw new DebridError('RealDebrid link would not serve', 'DEAD_LINK')
+  }
+
+  // Is RealDebrid already holding this file? Cheap, and the ONLY part that
+  // needs to be asked of every candidate: register, select, look once. A
+  // cached torrent reports 'downloaded' immediately; anything else is queued
+  // for download on the account, which is not what a viewer pressing Play
+  // wants, so it is removed again at once.
+  //
+  // This exists because resolving candidates one at a time took 30-60 s —
+  // far longer than anyone waits before pressing Play, so the app fell back
+  // to peers every time and the subscription looked broken (2026-09-16).
+  async function isCached(magnet) {
+    if (!magnet) return false
+    const hash = infoHashOf(magnet)
+    const held = hash ? linkCache.get(hash) : null
+    if (held && held.ok) return true
+    let id = null
+    try {
+      const added = await rd('POST', '/torrents/addMagnet', 'magnet=' + encodeURIComponent(magnet))
+      id = added && added.id
+      if (!id) return false
+      await rd('POST', `/torrents/selectFiles/${id}`, 'files=all')
+      const info = await rd('GET', `/torrents/info/${id}`)
+      if (info && info.status === 'downloaded') {
+        // Keep the restricted link so resolveMagnet re-mints in two round
+        // trips instead of repeating the whole flow.
+        const links = Array.isArray(info.links) ? info.links : []
+        const file = pickVideoFile(info.files)
+        const selected = (Array.isArray(info.files) ? info.files : []).filter(f => Number(f.selected) === 1)
+        const at = file ? selected.findIndex(f => f && f.id === file.id) : -1
+        const restricted = (at >= 0 && links[at]) || links[0] || null
+        if (hash && restricted) linkCache.set(hash, { url: null, restricted, at: now(), ok: false })
+        return true
+      }
+      // Not held: do not leave it downloading on the user's account.
+      await rd('DELETE', `/torrents/delete/${id}`).catch(() => {})
+      return false
+    } catch (e) {
+      if (id) { try { await rd('DELETE', `/torrents/delete/${id}`) } catch (_) {} }
+      throw e
+    }
   }
 
   // The already-resolved direct link for a magnet, or null. Lets a caller
@@ -312,6 +365,7 @@ function createDebrid(opts = {}) {
   return {
     provider,
     resolveMagnet,
+    isCached,
     linkFor,
     cachedLink,
     prewarm,

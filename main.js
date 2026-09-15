@@ -13270,16 +13270,40 @@ ipcMain.handle('video-debrid-pick', async (_, { magnets, titleKey } = {}) => {
     const list = (Array.isArray(magnets) ? magnets : [])
       .filter(m => typeof m === 'string' && m && !_debridRefusedHas(m)).slice(0, 4)
     if (!list.length) return { ok: true, magnet: null, allRefused: true }
-    for (const magnet of list) {
-      if (_videoSession.streamer) return { ok: true, magnet: null, skipped: 'playing' }
+
+    // Ask every candidate AT ONCE whether RealDebrid is already holding it.
+    // Resolving them one at a time took 30-60 s, which is far longer than
+    // anyone waits before pressing Play — so the app fell back to peers every
+    // time and the subscription looked broken (reproduced 2026-09-16: press
+    // Play as soon as the sources appear and the pick is still unfinished).
+    // One cheap look each, in parallel, is a second or two.
+    const checks = await Promise.all(list.map(async magnet => {
       try {
-        const url = await _debridPlayable(magnet)
+        return { magnet, cached: await debrid().isCached(magnet) }
+      } catch (e) {
+        const code = (e && e.code) || ''
+        if (/HTTP_(451|404)/.test(code)) _debridRefusedMark(magnet, code)
+        return { magnet, cached: false, error: (e && e.message) || String(e) }
+      }
+    }))
+
+    // Candidates arrive best-picture-first, so the first held one is the best
+    // held one.
+    const held = checks.filter(c => c.cached)
+    if (!held.length) {
+      const why = checks.map(c => c.error).filter(Boolean)[0]
+      if (why) { try { console.warn('[papa][debrid] no candidate held:', why) } catch (_) {} }
+      return { ok: true, magnet: null, noneHeld: true }
+    }
+    for (const c of held) {
+      try {
+        const url = await _debridPlayable(c.magnet)
         if (url) {
           if (titleKey) _instantMark(titleKey, 'debrid')
-          return { ok: true, magnet }
+          return { ok: true, magnet: c.magnet }
         }
       } catch (e) {
-        try { console.warn('[papa][debrid] source refused:', (e && e.message) || e) } catch (_) {}
+        try { console.warn('[papa][debrid] held but unplayable:', (e && e.message) || e) } catch (_) {}
       }
     }
     return { ok: true, magnet: null }
