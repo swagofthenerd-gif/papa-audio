@@ -21691,9 +21691,32 @@ async function _executeTool(name, input) {
 }
 
 // ── Main conversation loop ──────────────────────────────────────────────────
+// Roadmap 106: Stop releases the assistant IMMEDIATELY — it used to only set
+// a flag that the loop noticed after the in-flight request returned, up to
+// the provider timeout later. A generation token makes a stale continuation
+// exit silently, main is asked to abort the request, and whatever tool was
+// mid-execution is named honestly rather than reported as stopped.
+function stopChat() {
+  if (!chatState.busy) return
+  chatState.aborted = true
+  chatState.gen = (chatState.gen || 0) + 1
+  const tool = chatState.inflightTool
+  const note = tool
+    ? 'Stopped. ' + tool.replace(/_/g, ' ') + ' was already running and may finish on its own; nothing new will start. Your playback was not touched.'
+    : 'Stopped. Nothing new will start; your playback was not touched.'
+  if (chatState.thinkId) _updateChatMsg(chatState.thinkId, note, 'agent')
+  chatState.history.push({ role: 'assistant', content: note })
+  try { window.api.agentCancel && window.api.agentCancel() } catch (_) {}
+  _setChatBusy(false)
+}
+
 async function handleChatMessage(userMsg) {
   if (chatState.busy) return
   chatState.aborted = false
+  chatState.gen = (chatState.gen || 0) + 1
+  const myGen = chatState.gen
+  const stale = () => chatState.gen !== myGen
+  chatState.inflightTool = null
   _setChatBusy(true)
   if (!chatState.convStartedAt) chatState.convStartedAt = Date.now()
 
@@ -21701,12 +21724,14 @@ async function handleChatMessage(userMsg) {
   chatState.history.push({ role: 'user', content: userMsg })
 
   const thinkId = 'mcs-think-' + Date.now()
+  chatState.thinkId = thinkId
   _addChatMsg('agent', '…', { thinking: true, id: thinkId })
 
   try {
     // All providers now share the same tool-use loop.
     // Ollama returns { response } via its OpenAI-compat endpoint, with { ollamaFallback } as a safety net.
     const firstRes = await window.api.agentChat({ provider: chatState.provider, messages: chatState.history.slice(-12), tasteProfile: chatState.tasteProfile })
+    if (stale()) return   // Stop already spoke; this continuation is dead
 
     if (firstRes.error) {
       _updateChatMsg(thinkId, firstRes.error, 'agent')
@@ -21740,9 +21765,9 @@ async function handleChatMessage(userMsg) {
       // Process firstRes before looping
       let pendingRes = firstRes
       for (let iter = 0; iter < 8; iter++) {
-        if (chatState.aborted) { _updateChatMsg(thinkId, 'Stopped.', 'agent'); break }
+        if (stale()) return
         const res = iter === 0 ? pendingRes : await window.api.agentChat({ provider: chatState.provider, messages: loopMsgs, tasteProfile: chatState.tasteProfile })
-        if (chatState.aborted) { _updateChatMsg(thinkId, 'Stopped.', 'agent'); break }
+        if (stale()) return
         if (res.error) { _updateChatMsg(thinkId, res.error, 'agent'); break }
 
         const { response } = res
@@ -21756,19 +21781,25 @@ async function handleChatMessage(userMsg) {
         loopMsgs.push({ role: 'assistant', content: response.content })
         const toolResults = []
         for (const tb of toolBlocks) {
-          if (chatState.aborted) break
+          if (stale()) return
           if (!text) _updateChatMsg(thinkId, `${tb.name.replace(/_/g,' ')}…`, 'agent')
+          chatState.inflightTool = tb.name
           const result = await _executeTool(tb.name, tb.input)
+          chatState.inflightTool = null
+          if (stale()) return
           toolResults.push({ type: 'tool_result', tool_use_id: tb.id, content: result })
         }
-        if (chatState.aborted) { _updateChatMsg(thinkId, 'Stopped.', 'agent'); break }
         loopMsgs.push({ role: 'user', content: toolResults })
       }
       chatState.history.push({ role: 'assistant', content: reply || '(done)' })
     }
   } catch (err) {
-    if (!chatState.aborted) _updateChatMsg(thinkId, `Error: ${err.message}`, 'agent')
+    if (stale()) return
+    _updateChatMsg(thinkId, `Error: ${err.message}`, 'agent')
   }
+  if (stale()) return
+  chatState.inflightTool = null
+  chatState.thinkId = null
   _setChatBusy(false)
 }
 
@@ -24204,7 +24235,7 @@ async function initChatSidebar() {
   }
   input?.addEventListener('keydown', e => { if (e.key === 'Enter') doSend() })
   sendBtn?.addEventListener('click', doSend)
-  stopBtn?.addEventListener('click', () => { chatState.aborted = true })
+  stopBtn?.addEventListener('click', stopChat)
 
   await _initSettingsPanel()
 

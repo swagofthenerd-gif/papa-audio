@@ -50,6 +50,28 @@ test('the queue panel wires a clear-played action to the tested helper', () => {
   assert.ok(renderer.includes("'Clear played'"), 'no Clear played button label')
 })
 
+// Roadmap 106: Stop stops the assistant now, aborts the request, and is honest about in-flight work.
+test('assistant Stop releases immediately, aborts the provider request, and names the tool in flight', () => {
+  const M = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'main.js'), 'utf8')
+  const PRE = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'preload.js'), 'utf8')
+  assert.ok(renderer.includes("stopBtn?.addEventListener('click', stopChat)"))
+  const fn = renderer.slice(renderer.indexOf('function stopChat()'), renderer.indexOf('async function handleChatMessage('))
+  assert.ok(fn.includes('_setChatBusy(false)'), 'the UI is released at once, not after the request returns')
+  assert.ok(fn.includes('window.api.agentCancel'), 'main is asked to abort')
+  assert.ok(fn.includes('was already running and may finish on its own'), 'in-flight work is reported honestly')
+  assert.ok(fn.includes('Your playback was not touched'), 'and playback is left alone')
+  assert.ok(!fn.includes('audio.pause'), 'Stop never pauses the music')
+  const loop = renderer.slice(renderer.indexOf('async function handleChatMessage('), renderer.indexOf('// ── UI helpers'))
+  assert.ok((loop.match(/if \(stale\(\)\) return/g) || []).length >= 5, 'every await is followed by a staleness check')
+  assert.ok(!loop.includes("'Stopped.'"), 'the loop no longer speaks for Stop')
+  assert.ok(PRE.includes("ipcRenderer.invoke('agent-cancel')"))
+  assert.ok(M.includes("ipcMain.handle('agent-cancel'") && M.includes('_agentAbort = new AbortController()'))
+  for (const fn2 of ['claudeChat', 'openaiChat', 'ollamaToolChat']) {
+    const body = M.slice(M.indexOf('async function ' + fn2 + '('), M.indexOf('\n}\n', M.indexOf('async function ' + fn2 + '(')))
+    assert.ok(body.includes('signal: _agentSignal(30000)'), fn2 + ' honours the cancel')
+  }
+})
+
 // Roadmap 079: capacity is checked before transfer work and refused as a choice.
 test('downloads are checked for space and writability before enqueue, and refusals offer a way on', () => {
   const M = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'main.js'), 'utf8')

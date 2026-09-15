@@ -5750,6 +5750,10 @@ function ollamaChat(model, messages, onToken) {
       }
     )
     req.on('error', (err) => { clearTimeout(timer); reject(err) })
+    // Roadmap 106: the assistant's Stop tears the stream down too.
+    if (_agentAbort && !_agentAbort.signal.aborted) {
+      _agentAbort.signal.addEventListener('abort', () => { clearTimeout(timer); req.destroy(new Error('cancelled')) }, { once: true })
+    }
     req.write(body)
     req.end()
   })
@@ -5805,6 +5809,29 @@ UTILITY: get_status, sleep_timer, like_album
 }
 
 // ── Anthropic (Claude) ────────────────────────────────────────────────────────
+// Roadmap 106: Stop in the assistant aborts the provider request that is in
+// flight, not just the renderer's willingness to read its answer. One
+// controller per agent-chat call; agent-cancel aborts it. Each provider's
+// signal is the timeout OR the cancel, whichever comes first (Electron's
+// Node has no AbortSignal.any yet, so the pair is built by hand).
+let _agentAbort = null
+function _agentSignal(ms) {
+  const ctrl = new AbortController()
+  const t = setTimeout(() => ctrl.abort(new Error('timed out')), ms)
+  if (typeof t.unref === 'function') t.unref()
+  const cancel = _agentAbort
+  if (cancel) {
+    if (cancel.signal.aborted) ctrl.abort(new Error('cancelled'))
+    else cancel.signal.addEventListener('abort', () => { clearTimeout(t); ctrl.abort(new Error('cancelled')) }, { once: true })
+  }
+  return ctrl.signal
+}
+ipcMain.handle('agent-cancel', () => {
+  const had = !!(_agentAbort && !_agentAbort.signal.aborted)
+  if (had) _agentAbort.abort(new Error('cancelled'))
+  return { ok: true, cancelled: had }
+})
+
 async function claudeChat(apiKey, model, messages, tools, system) {
   const body = JSON.stringify({ model, max_tokens: 1024, system: system || _buildAgentSystem(), messages, tools: tools?.length ? tools : undefined })
   const res = await fetch('https://api.anthropic.com/v1/messages', {
@@ -5815,7 +5842,7 @@ async function claudeChat(apiKey, model, messages, tools, system) {
       'content-type': 'application/json',
     },
     body,
-    signal: AbortSignal.timeout(30000),
+    signal: _agentSignal(30000),
   })
   if (!res.ok) { const t = await res.text(); throw new Error(`Claude API ${res.status}: ${t.slice(0,200)}`) }
   return res.json()
@@ -5837,7 +5864,7 @@ async function openaiChat(apiKey, model, messages, tools, system) {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${apiKey}`, 'content-type': 'application/json' },
     body,
-    signal: AbortSignal.timeout(30000),
+    signal: _agentSignal(30000),
   })
   if (!res.ok) { const t = await res.text(); throw new Error(`OpenAI API ${res.status}: ${t.slice(0,200)}`) }
   const data = await res.json()
@@ -6043,7 +6070,7 @@ async function ollamaToolChat(model, messages, tools, system) {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'Authorization': 'Bearer ollama' },
     body,
-    signal: AbortSignal.timeout(30000),
+    signal: _agentSignal(30000),
   })
   if (!res.ok) { const t = await res.text(); throw new Error(`Ollama ${res.status}: ${t.slice(0,300)}`) }
   const data = await res.json()
@@ -6061,6 +6088,18 @@ async function ollamaToolChat(model, messages, tools, system) {
 
 // Main IPC handler — called by renderer for each conversation turn
 ipcMain.handle('agent-chat', async (_, { provider, messages, tasteProfile }) => {
+  _agentAbort = new AbortController()
+  const mine = _agentAbort
+  try {
+    return await _agentChatOnce({ provider, messages, tasteProfile })
+  } catch (e) {
+    if (mine.signal.aborted) return { error: 'Stopped.', cancelled: true }
+    throw e
+  } finally {
+    if (_agentAbort === mine) _agentAbort = null
+  }
+})
+async function _agentChatOnce({ provider, messages, tasteProfile }) {
   const keys = store.get('apiKeys', {})
   const sys  = _buildAgentSystem()
 
@@ -6093,7 +6132,7 @@ ipcMain.handle('agent-chat', async (_, { provider, messages, tasteProfile }) => 
     )
     return { ollamaFallback: result }
   }
-})
+}
 
 // ── Agent memory IPC handlers ─────────────────────────────────────────────────
 

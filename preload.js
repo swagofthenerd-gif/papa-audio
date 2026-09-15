@@ -263,6 +263,8 @@ contextBridge.exposeInMainWorld('api', {
   getAgentModel:   ()  => ipcRenderer.invoke('get-agent-model'),
   saveAgentModel:  (m) => ipcRenderer.send('save-agent-model', m),
   agentChat:       (p) => ipcRenderer.invoke('agent-chat', p),
+  // Roadmap 106: Stop aborts the provider request in flight.
+  agentCancel:     ()  => ipcRenderer.invoke('agent-cancel'),
   getApiKeys:      ()  => ipcRenderer.invoke('get-api-keys'),
   saveApiKeys:     (p) => ipcRenderer.invoke('save-api-keys', p),
   tasteRecordPlay: (d) => ipcRenderer.invoke('taste-record-play', d),
