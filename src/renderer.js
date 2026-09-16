@@ -4259,6 +4259,16 @@ function _armStartWatch() {
 function _disarmStartWatch() {
   if (_startWatchTimer) clearInterval(_startWatchTimer)
   _startWatchTimer = null
+  // The watchdog disarmed correctly the moment the position moved — but the
+  // warning it had already painted was never taken down, so "Still no picture
+  // after 15 s. Try another source below." sat on the stage over video that
+  // was playing perfectly well. Found on a twin, 2026-09-16: debrid served the
+  // file, the position ran 25 -> 32 -> 38 s, and the stage still said nothing
+  // had arrived. Only a message this watchdog itself painted is cleared, so
+  // nothing else's message is ever wiped.
+  if (_startWatch && _startWatch.painted && _player && _player.setStageMessage) {
+    try { _player.setStageMessage('') } catch (_) {}
+  }
   _startWatch = null
 }
 function _startWatchWords() { if (_startWatch) _startWatch.wordsAt = Date.now() }
@@ -4272,6 +4282,7 @@ function _startWatchTick(nowMs) {
     : { text: 'Still no picture after ' + waited + ' s.', next: 'Try another source below.' }
   _player.setStageMessage('<div class="spin"></div><div>' + esc(w.text) + '</div>' +
     '<div style="opacity:.6">' + esc(w.next) + '</div>')
+  _startWatch.painted = true
   if (!_startWatch.warned) { _startWatch.warned = true; showToast(w.text) }
   // Nothing for 20 s on a torrent with other sources to hand: take the next
   // one rather than leave him staring. Once per start; the mid-play rule

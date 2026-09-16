@@ -208,3 +208,51 @@ test('a show whose reported count overshoots Kitsu\'s rows still terminates', ()
   assert.ok(r.requested.length <= 12, 'bounded: ' + r.requested.length + ' requests')
   assert.deepStrictEqual(r.out.map(e => e.episodeNumber), [1, 2])
 })
+
+// ── The start-up watchdog cleans up after itself ───────────────────────────
+// Found on a twin during an end-to-end run (2026-09-16): RealDebrid served the
+// file, the position ran 25 -> 32 -> 38 -> 50 s, and the stage still read
+// "Still no picture after 15 s. Try another source below." The watchdog
+// disarmed correctly the moment the position moved; it just never took down
+// the warning it had already painted. So working playback carried a message
+// telling the viewer it was broken.
+const RENDERER = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
+
+function watchdog(over) {
+  const stage = []
+  const ctx = Object.assign({
+    console, Date, Math, String,
+    _startWatchTimer: null,
+    _player: { setStageMessage: m => stage.push(m) },
+    _watch: { pick: null },
+    esc: v => String(v == null ? '' : v),
+    showToast() {},
+    _autoSwitchSource() {},
+    START_WATCH_QUIET_MS: 0,
+    START_SWITCH_QUIET_MS: 1e9,
+    PapaStartHonesty: undefined,
+    clearInterval() {},
+  }, over)
+  const start = RENDERER.indexOf('function _disarmStartWatch()')
+  const end = RENDERER.indexOf('\n}', RENDERER.indexOf('function _startWatchTick('))
+  vm.createContext(ctx)
+  vm.runInContext(RENDERER.slice(start, end + 2), ctx)
+  return { ctx, stage }
+}
+
+test('a warning the watchdog painted is taken down when the picture arrives', () => {
+  const { ctx, stage } = watchdog({ _startWatch: { at: Date.now() - 15000, wordsAt: Date.now() - 15000 } })
+  ctx._startWatchTick(Date.now())
+  assert.strictEqual(stage.length, 1, 'it warned')
+  assert.match(stage[0], /Still no picture/)
+  ctx._disarmStartWatch()
+  assert.strictEqual(stage.length, 2, 'and it cleared')
+  assert.strictEqual(stage[1], '', 'the stage is handed back empty, not left saying playback failed')
+})
+
+test('a watchdog that never warned clears nothing', () => {
+  // Otherwise disarming would wipe whatever else had put a message up.
+  const { ctx, stage } = watchdog({ _startWatch: { at: Date.now(), wordsAt: Date.now() } })
+  ctx._disarmStartWatch()
+  assert.strictEqual(stage.length, 0)
+})

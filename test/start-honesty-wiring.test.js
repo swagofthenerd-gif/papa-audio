@@ -69,9 +69,31 @@ test('a quiet start says how long it has waited, on the stage and once as a toas
   ctx._startWatchWords()   // a buffering report at t=100000 (Date.now) resets the quiet clock
   ctx._startWatchTick(100000 + 14000)
   assert.equal(msgs.length, 2)
+  // Disarming takes the warning back down. Without this the stage kept saying
+  // "Still no picture" over video that was playing perfectly well — seen on a
+  // twin with RealDebrid serving and the position running past 50 s.
   ctx._disarmStartWatch()
+  assert.equal(msgs.length, 3, 'the warning is cleared, not left up')
+  assert.equal(msgs[2], '', 'and the stage is handed back empty')
   ctx._startWatchTick(100000 + 60000)
-  assert.equal(msgs.length, 2, 'disarmed: silent')
+  assert.equal(msgs.length, 3, 'disarmed: silent thereafter')
+})
+
+test('a watchdog that never warned leaves the stage alone when it disarms', () => {
+  // Otherwise disarming would wipe whatever else had put a message up.
+  const src = fn('_armStartWatch') + fn('_disarmStartWatch') + fn('_startWatchWords') + fn('_startWatchTick')
+  const msgs = []
+  const ctx = vm.createContext({
+    _startWatch: null, _startWatchTimer: null, START_WATCH_QUIET_MS: 15000, START_SWITCH_QUIET_MS: 20000,
+    _watch: { pick: null }, _autoSwitchSource() {},
+    setInterval: () => 1, clearInterval() {}, Date: { now: () => 100000 },
+    _player: { setStageMessage: m => msgs.push(m) }, showToast() {},
+    esc: s => s, PapaStartHonesty: require('../src/start-honesty'),
+  })
+  vm.runInContext(src + '\nthis._armStartWatch = _armStartWatch; this._disarmStartWatch = _disarmStartWatch', ctx)
+  ctx._armStartWatch()
+  ctx._disarmStartWatch()
+  assert.equal(msgs.length, 0)
 })
 
 test('the stage words paint above the in-page video', () => {
