@@ -466,8 +466,16 @@ function createDebrid(opts = {}) {
   async function isCached(magnet) {
     if (!magnet) return false
     const hash = infoHashOf(magnet)
-    const held = hash ? linkCache.get(hash) : null
-    if (held && held.ok) return true
+    // Any proved link for this torrent settles the question, whichever episode
+    // it was minted for. Links are keyed per episode now (a pack has one per
+    // file), so looking only under the bare hash missed every entry a
+    // previously-resolved episode had left behind and re-asked RealDebrid for
+    // something it had already answered.
+    if (hash) {
+      for (const [k, v] of linkCache) {
+        if (v && v.ok && (k === hash || k.startsWith(hash + '#') || k.startsWith(hash + '/'))) return true
+      }
+    }
     let id = null
     try {
       const added = await rd('POST', '/torrents/addMagnet', 'magnet=' + encodeURIComponent(magnet))

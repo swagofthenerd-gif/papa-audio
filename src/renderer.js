@@ -11008,7 +11008,15 @@ async function _loadVideoSources(ticket, seasonTicket) {
           .slice(0, 4).map(function (e) { return e.s.magnet })
         if (candidates.length) {
           const ticketAtPick = _videoDetailTicket
-          _debridPickPending = window.api.videoDebridPick({ magnets: candidates, titleKey: titleKey })
+          // The episode travels with the pick, so the relay it builds is for
+          // the file Play will actually ask for. Without it the pick warmed a
+          // relay stamped "no particular episode", which the play path then
+          // rejected — and the first play paid the full cold cost.
+          _debridPickPending = window.api.videoDebridPick({
+            magnets: candidates, titleKey: titleKey,
+            season: _videoDetail && _videoDetail.type === 'tv' ? _videoState.season : null,
+            episode: _videoDetail && _videoDetail.type !== 'movie' ? _videoState.episode : null,
+          })
             .then(function (res) {
               // A result that arrives after the viewer moved on belongs to a
               // page that is no longer open.

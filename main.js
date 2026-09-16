@@ -13458,9 +13458,18 @@ ipcMain.handle('video-warm', async (_, { magnet, titleKey } = {}) => {
 // gets its relay built and is handed back so the page can play THAT source
 // rather than one debrid cannot touch. Candidates that fail are removed from
 // the account by resolveMagnet itself.
-ipcMain.handle('video-debrid-pick', async (_, { magnets, titleKey } = {}) => {
+ipcMain.handle('video-debrid-pick', async (_, { magnets, titleKey, season, episode } = {}) => {
   try {
     if (!_debridConfigured()) return { ok: true, magnet: null, configured: false }
+    // The episode this pick is FOR. Without it the pick resolved a season pack
+    // to whatever its largest file was, and — worse — stamped the relay it
+    // built with `want: null`. The play then asked for episode 1 and the
+    // relay-reuse check rejected it as being for a different file, so the very
+    // first play threw away a relay that was already standing and re-ran the
+    // whole cold flow against its 14 s budget. That is precisely why debrid
+    // fell back to peers on the FIRST play and worked on every one after
+    // (measured on a twin, 2026-09-16).
+    const want = _wantOf({ season, episode })
     const list = (Array.isArray(magnets) ? magnets : [])
       .filter(m => typeof m === 'string' && m && !_debridRefusedHas(m)).slice(0, 4)
     if (!list.length) return { ok: true, magnet: null, allRefused: true }
@@ -13469,26 +13478,41 @@ ipcMain.handle('video-debrid-pick', async (_, { magnets, titleKey } = {}) => {
     const deadline = Date.now() + DEBRID_PICK_DEADLINE_MS
     const outOfTime = () => Date.now() > deadline
 
-    // Ask each candidate whether RealDebrid is already holding it.
-    // Resolving them one at a time took 30-60 s, which is far longer than
-    // anyone waits before pressing Play — so the app fell back to peers every
-    // time and the subscription looked broken (reproduced 2026-09-16: press
-    // Play as soon as the sources appear and the pick is still unfinished).
-    // One cheap look each, in parallel, is a second or two.
-    const checks = await Promise.all(list.map(async (magnet, i) => {
-      // Staggered, not a burst — see DEBRID_STAGGER_MS.
-      if (i) await new Promise(r => setTimeout(r, i * DEBRID_STAGGER_MS))
-      if (outOfTime()) return { magnet, cached: false, error: 'out of time' }
+    // Ask each candidate whether RealDebrid is already holding it — one at a
+    // time, stopping at the first that is.
+    //
+    // This used to fan out all four in parallel. Each isCached is three
+    // requests (addMagnet, selectFiles, info), so four at once is twelve in
+    // about a second and a half, and RealDebrid answers that with
+    // "too_many_requests" — captured verbatim on a cold twin:
+    //   POST /torrents/selectFiles/... -> 429 {"error":"too_many_requests"}
+    // That 429 sets a two-minute back-off, and the viewer pressing Play
+    // seconds later was refused in 89 ms with no request going out at all.
+    // Our own prewarming was rate-limiting the account and then blocking the
+    // play it exists to make instant.
+    //
+    // Candidates arrive best-first, so the usual case is now THREE requests,
+    // not twelve. Latency matters little here: this runs in the background
+    // while the page is being read, and Play no longer waits on it — Play
+    // resolves debrid itself (_debridPlayableAny) and, failing that, uses
+    // whatever relay this left standing.
+    const checks = []
+    for (const magnet of list) {
+      if (outOfTime()) { checks.push({ magnet, cached: false, error: 'out of time' }); continue }
+      if (_debridRateLimited()) { checks.push({ magnet, cached: false, error: 'rate limited' }); continue }
       try {
-        return { magnet, cached: await debrid().isCached(magnet) }
+        const cached = await debrid().isCached(magnet)
+        checks.push({ magnet, cached })
+        if (cached) break   // best-first: the first held one is the best held one
       } catch (e) {
         const code = (e && e.code) || ''
         if (/HTTP_(451|404)/.test(code)) _debridRefusedMark(magnet, code)
         // A 429 is about US, not this source — never remember it as a refusal.
         if (/HTTP_429/.test(code)) _debridBackOff()
-        return { magnet, cached: false, error: (e && e.message) || String(e) }
+        checks.push({ magnet, cached: false, error: (e && e.message) || String(e) })
       }
-    }))
+      await new Promise(r => setTimeout(r, DEBRID_STAGGER_MS))
+    }
 
     // Candidates arrive best-picture-first, so the first held one is the best
     // held one.
@@ -13506,7 +13530,7 @@ ipcMain.handle('video-debrid-pick', async (_, { magnets, titleKey } = {}) => {
     for (const c of held) {
       if (outOfTime()) break
       try {
-        const url = await _debridPlayable(c.magnet)
+        const url = await _debridPlayable(c.magnet, want)
         if (url) {
           if (titleKey) _instantMark(titleKey, 'debrid')
           return { ok: true, magnet: c.magnet, held: heldMagnets }
@@ -13732,10 +13756,29 @@ function _debridWorthTrying(magnet) {
 // already refused is reason enough to look.
 function _debridAnyWorthTrying(result) {
   if (!_debridConfigured() || !result) return false
-  // Rate-limited: asking again now only prolongs it.
-  if (_debridRateLimited()) return false
   const all = [result.magnet].concat(Array.isArray(result.debridCandidates) ? result.debridCandidates : [])
+  // A relay already standing for one of these costs RealDebrid NOTHING — the
+  // link is minted and the local proxy is up. Refusing it because of a
+  // back-off punishes the viewer for work we already did.
+  //
+  // This was the whole of "debrid falls back to peers on the first play, then
+  // works" (measured 2026-09-16). The background pick fires four candidates at
+  // three requests each; RealDebrid answers that burst with a 429, which sets
+  // a flat two-minute back-off — and the viewer then presses Play seconds
+  // later and is refused in 89 ms without a single request going out. Our own
+  // prewarming was rate-limiting the account and then blocking the play it
+  // existed to make instant.
+  if (_debridRelayStandingFor(all)) return true
+  // Otherwise, rate-limited means asking again now only prolongs it.
+  if (_debridRateLimited()) return false
   return all.some(m => typeof m === 'string' && m && !_debridRefusedHas(m))
+}
+
+// Is one of these magnets already served by a live relay?
+function _debridRelayStandingFor(magnets) {
+  if (!_debridReady || !_debridReady.url) return false
+  if ((Date.now() - _debridReady.at) >= DEBRID_RELAY_TTL_MS) return false
+  return (Array.isArray(magnets) ? magnets : []).some(m => m && m === _debridReady.magnet)
 }
 
 const DEBRID_RELAY_TTL_MS = 9 * 60 * 1000
@@ -13826,12 +13869,26 @@ async function _debridPlayableAny(result) {
   if (!usable.length) throw new Error('every candidate already refused')
 
   // A relay already standing for any of them is instant — no look-up at all.
+  const relayFresh = _debridReady && (Date.now() - _debridReady.at) < DEBRID_RELAY_TTL_MS
   for (const m of usable) {
-    if (_debridReady && _debridReady.magnet === m && _sameWant(_debridReady.want, want) &&
-        (Date.now() - _debridReady.at) < DEBRID_RELAY_TTL_MS) {
+    if (relayFresh && _debridReady.magnet === m && _sameWant(_debridReady.want, want)) {
       _videoSession.debrid = { magnet: m, want }
       return _debridReady.url
     }
+  }
+
+  // A relay standing for the right SOURCE but a different episode — switching
+  // episodes inside a pack, or a pick warmed before the viewer moved on. The
+  // URL cannot be reused, but the expensive part of the work already has an
+  // answer: RealDebrid demonstrably holds this magnet, so there is no reason
+  // to ask four candidates whether they are cached before using it.
+  const knownHeld = relayFresh ? usable.find(m => _debridReady.magnet === m) : null
+  if (knownHeld) {
+    try {
+      const url = await _debridPlayable(knownHeld, want)
+      _videoSession.debrid = { magnet: knownHeld, want }
+      return url
+    } catch (_) { /* fall through to the full check */ }
   }
 
   const checks = await Promise.all(usable.map(async magnet => {
@@ -13896,10 +13953,13 @@ function _sameWant(a, b) {
 
 // What the viewer asked to watch, as the file matchers want it.
 function _wantOf(result) {
-  const episode = Number(result && result.episode)
-  if (!Number.isFinite(episode)) return null
-  const season = Number(result && result.season)
-  return { season: Number.isFinite(season) ? season : null, episode }
+  // Number(null) is 0, and 0 is finite — so a title with no season was coming
+  // out as "season 0", which in episode-numbering terms means specials. Read
+  // the raw value first and only convert something that is actually there.
+  const num = v => (v == null || v === '' ? null : (Number.isFinite(Number(v)) ? Number(v) : null))
+  const episode = num(result && result.episode)
+  if (episode == null) return null
+  return { season: num(result && result.season), episode }
 }
 
 // Enough for one parallel round of cheap look-ups plus building the relay,
