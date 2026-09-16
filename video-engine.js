@@ -7,6 +7,7 @@ const fs = require('fs')
 const crypto = require('crypto')
 const net = require('net')
 const { MpvIpcClient } = require('./mpv-ipc')
+const upscale = require('./src/anime-upscale')
 
 // The app's own actions, bound inside mpv so they work while the video window
 // has focus — the deck is in another window and never sees those keypresses.
@@ -278,6 +279,9 @@ class VideoEngine extends EventEmitter {
       // stream); pinning it there too keeps both engines off PATH-order luck.
       ytdlPath: null,
       ytdlJsRuntime: null,
+      // Which Anime4K preset mpv should run, by id ('off' when none). The
+      // shader files themselves live outside the asar — see _resolveShaderDir.
+      upscale: upscale.DEFAULT_PRESET,
       ...opts.config,
     }
     this._spawnFn = opts.spawnFn || spawn
@@ -295,6 +299,12 @@ class VideoEngine extends EventEmitter {
     // rather than here. An explicit inputConf from the caller wins in both.
     this._inputConfOverride = opts.inputConf
     this._inputConf = opts.inputConf !== undefined ? opts.inputConf : writeInputConf(configDir(), false)
+    // Resolved on first use, not here: ensureShaders() copies files, and an
+    // engine that never plays anything should never write anything. undefined
+    // means "not yet asked"; null means "asked, and there is no usable dir",
+    // which is a normal outcome and simply plays without the upscaler.
+    this._shaderDirOverride = opts.shaderDir
+    this._shaderDir = undefined
     // The live §4.2 payload, plus the raw lists the track/chapter endpoints read.
     this.state = emptyState()
     this._trackList = []
@@ -398,6 +408,18 @@ class VideoEngine extends EventEmitter {
       // 28660; x11 -> 22107; xv -> 19288. x11egl is the pick because it is
       // hardware-accelerated and needs no Vulkan driver.
       a.push(`--wid=${wid}`, '--gpu-context=x11egl')
+    }
+    // One --glsl-shaders-append per file rather than a single ':'-joined
+    // --glsl-shaders: mpv splits that list on ':' and ',', and its %n% escape
+    // is stored verbatim here rather than unescaped, which turns every path
+    // into an unopenable filename with no error of any kind. The append form
+    // takes one value and never splits it.
+    // Short-circuited on 'off' so the shader files are not copied out of the
+    // asar for a feature nobody has turned on — which is most runs, since off
+    // is the default. Resolving the directory is what writes them.
+    const preset = upscale.normalizePreset(this.config.upscale)
+    if (preset !== upscale.DEFAULT_PRESET) {
+      a.push(...upscale.shaderArgs(preset, this._resolveShaderDir()))
     }
     if (this.config.outputMode === 'exclusive' && this.config.alsaDevice) {
       a.push(`--audio-device=${this.config.alsaDevice}`, '--audio-exclusive=yes')
@@ -582,6 +604,29 @@ class VideoEngine extends EventEmitter {
       if (!prop) continue
       await this._guard('setSubStyle')('set_property', prop, value)
     }
+  }
+
+  _resolveShaderDir() {
+    if (this._shaderDirOverride !== undefined) return this._shaderDirOverride
+    if (this._shaderDir === undefined) this._shaderDir = upscale.ensureShaders(configDir())
+    return this._shaderDir
+  }
+
+  // Change the anime upscaler. Always records the choice so the next start()
+  // uses it, and additionally applies it to the mpv that is playing right now,
+  // so switching preset does not interrupt the episode.
+  //
+  // 'clr' first is what makes Off work: the shader list is additive, so without
+  // clearing it a second preset would stack on top of the first.
+  async setUpscale(preset) {
+    const id = upscale.normalizePreset(preset)
+    this.config.upscale = id
+    if (!this.alive || !this.client) return id
+    await this._guard('setUpscale')('change-list', 'glsl-shaders', 'clr', '')
+    for (const file of upscale.shaderPaths(id, this._resolveShaderDir())) {
+      await this._guard('setUpscale')('change-list', 'glsl-shaders', 'append', file)
+    }
+    return id
   }
 
   async setAspect(aspect) {

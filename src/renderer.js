@@ -22792,6 +22792,7 @@ const _VIDEO_SETTING_DEFAULTS = {
   preferredQuality: '1080p',
   downloadLimitMbps: null,
   seedWhileWatching: true,
+  videoUpscale: 'off',
 }
 
 // Does a settings row/group match the search box text? Case-insensitive
@@ -22936,6 +22937,16 @@ async function _initVideoSettings() {
   const seedInput = $('video-seed-watching')
   $('video-prefer-surround').checked = s.preferSurround !== false
   $('video-quality').value = s.preferredQuality || '1080p'
+  const upscaleSel = $('video-upscale')
+  if (upscaleSel) {
+    // An unknown stored value (a preset from a later version, a hand-edited
+    // file) leaves the <select> showing a blank box while mpv quietly runs
+    // nothing. Falling back to 'off' makes the control agree with what main
+    // normalises the same value to.
+    upscaleSel.value = s.videoUpscale || 'off'
+    if (!upscaleSel.value) upscaleSel.value = 'off'
+    upscaleSel.addEventListener('change', function () { save({ videoUpscale: upscaleSel.value }) })
+  }
   const modeSel = $('video-player-mode')
   if (modeSel) {
     modeSel.value = s.playerMode === 'smooth' ? 'smooth' : 'purist'
@@ -23000,6 +23011,7 @@ async function _initVideoSettings() {
       const d = _VIDEO_SETTING_DEFAULTS
       $('video-prefer-surround').checked = d.preferSurround
       $('video-quality').value = d.preferredQuality
+      if (upscaleSel) upscaleSel.value = d.videoUpscale
       if (limitInput) limitInput.value = ''
       if (seedInput) seedInput.checked = d.seedWhileWatching
       // Keys are intentionally not wiped by a reset — losing a pasted API key on
@@ -23009,6 +23021,7 @@ async function _initVideoSettings() {
         preferredQuality: d.preferredQuality,
         downloadLimitMbps: d.downloadLimitMbps,
         seedWhileWatching: d.seedWhileWatching,
+        videoUpscale: d.videoUpscale,
       })
       resetBtn.textContent = 'Reset ✓'
       setTimeout(() => { resetBtn.textContent = 'Reset video options to defaults' }, 1500)

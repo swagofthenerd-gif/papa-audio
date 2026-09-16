@@ -57,6 +57,7 @@
       "catalog/**",
       "providers/**",
       "skip/**",
+    "shaders/**",
       "subtitles/**",
       "subs/**",
       "package.json",

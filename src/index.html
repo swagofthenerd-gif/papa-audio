@@ -583,6 +583,15 @@
               <option value="purist">Purist (mpv, bit-exact)</option>
             </select>
           </label>
+          <label class="mcs-set-row">Anime upscaling
+            <select class="mcs-set-select" id="video-upscale" title="Redraws anime line art as the picture is scaled up to your screen, instead of simply stretching it. Runs on the graphics card while the episode plays.">
+              <option value="off">Off</option>
+              <option value="standard">Standard — best for most anime</option>
+              <option value="soft">Soft or blurry episodes</option>
+              <option value="denoise">Noisy or low-quality rips</option>
+            </select>
+          </label>
+          <div class="mcs-set-hint">Anime is made at 1080p or less, so on a bigger screen something has to stretch it. This redraws the outlines instead of blurring them. It needs the Purist player above, and changing it takes effect straight away — you do not have to restart the episode.</div>
           <label class="mcs-set-row">Preferred quality
             <select class="mcs-set-select" id="video-quality">
               <option value="2160p">2160p</option>

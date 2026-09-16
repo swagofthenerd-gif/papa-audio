@@ -335,7 +335,14 @@ test('main registers the two IPC handlers and schedules the startup check', () =
 test('main pins both engines to the discovered yt-dlp', () => {
   const main = root('main.js')
   assert.match(main, /engineConfig\.ytdlPath\s*=\s*ytdlp\.binaryPath\(\)/)
-  assert.match(main, /new VideoEngine\(\{ config: \{ ytdlPath: ytdlp\.binaryPath\(\), ytdlJsRuntime: ytdlp\.nodePath\(\)(, ao: process\.env\.PAPA_VIDEO_AO \|\| undefined)? \} \}\)/)
+  // Sliced to the construction line rather than matched as a whole config
+  // literal. Pinning every key meant an unrelated setting added to the same
+  // object failed this test with nothing about yt-dlp having changed, which
+  // says "yt-dlp is unpinned" when it is not.
+  const videoCtor = main.split('\n').find(l => l.includes('new VideoEngine({'))
+  assert.ok(videoCtor, 'the video engine is still constructed in main')
+  assert.match(videoCtor, /ytdlPath: ytdlp\.binaryPath\(\)/)
+  assert.match(videoCtor, /ytdlJsRuntime: ytdlp\.nodePath\(\)/)
   assert.match(main, /engineConfig\.ytdlJsRuntime = ytdlp\.nodePath\(\)/)
   assert.match(main, /ytdlp\.jsRuntimeArgs\(\)\.concat\(\['-f', format, '-g'/, 'the trailer resolver passes the runtime too')
 })

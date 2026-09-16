@@ -9924,6 +9924,11 @@ function _videoSettings() {
       // Where kept-offline files may grow to before a new keep is refused
       // (roadmap #42), in gigabytes. 0 means no ceiling.
       videoKeepQuotaGB: 20,
+      // Anime4K preset id for the mpv path ('off' when none) — see
+      // src/anime-upscale.js. Off by default: it is a change to the picture,
+      // and a picture change nobody asked for is a bug report waiting to
+      // happen. Only the mpv player can run it; the in-page player ignores it.
+      videoUpscale: 'off',
     },
     store.get('videoSettings')
   )
@@ -10071,7 +10076,7 @@ function jackett() {
 // router, the engine, or the UI.
 const movieTv = _lazy(() => createMovieTvProvider({ fetchFn: fetchWithTimeout(15000), resolvers: [] }))
 const anime = _lazy(() => createAnimeProvider({ fetchFn: fetchWithTimeout(15000), resolvers: [] }))
-const videoEngine = _lazy(() => new VideoEngine({ config: { ytdlPath: ytdlp.binaryPath(), ytdlJsRuntime: ytdlp.nodePath(), ao: process.env.PAPA_VIDEO_AO || undefined } }))
+const videoEngine = _lazy(() => new VideoEngine({ config: { ytdlPath: ytdlp.binaryPath(), ytdlJsRuntime: ytdlp.nodePath(), ao: process.env.PAPA_VIDEO_AO || undefined, upscale: _videoSettings().videoUpscale } }))
 const yarrlist = _lazy(() => createYarrlistDirectory({ fetchFn: fetchWithTimeout(15000) }))
 const _videoSession = { streamer: null, thumbnailer: null, win: null, overlay: null, token: 0, bounds: null, mini: false, miniRect: null, debrid: null }
 
@@ -10662,6 +10667,7 @@ const VIDEO_SETTING_KEYS = new Set([
   // W5 surfaces: the offline-keeps quota and debrid credentials save through
   // the same settings path; missing keys here silently dropped their writes.
   'videoKeepQuotaGB', 'videoCacheGB', 'debridProvider', 'debridToken',
+  'videoUpscale',
 ])
 
 ipcMain.handle('video-settings-set', (_, { patch }) => {
@@ -10716,6 +10722,13 @@ ipcMain.handle('video-settings-set', (_, { patch }) => {
       if (next.seedWhileWatching !== current.seedWhileWatching) {
         try { streamer.setSeedWhileWatching(next.seedWhileWatching !== false) } catch (_) {}
       }
+    }
+    // The upscaler applies to the episode already on screen, not just the next
+    // one — mpv rebuilds its shader chain live. Deliberately outside the
+    // `if (streamer)` above: the debrid path plays an HTTP link with no
+    // streamer at all, and that is the path most anime actually takes.
+    if (next.videoUpscale !== current.videoUpscale) {
+      Promise.resolve(videoEngine().setUpscale(next.videoUpscale)).catch(() => {})
     }
     return { ok: true }
   } catch (e) {
