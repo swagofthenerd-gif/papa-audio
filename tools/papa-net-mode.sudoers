@@ -1,0 +1,30 @@
+# papa-net-mode — passwordless switching of this machine's routing between the
+# Ethernet connection alone and both connections merged.
+#
+# SECURITY NOTE. Read this before changing anything below.
+#
+# sudo does not check the owner, mode, or contents of the command it runs. It
+# matches the path string and execs whatever is at that path at that instant.
+# This grant is therefore worth exactly as much as write access to that path.
+# It MUST stay:
+#
+#     /usr/local/libexec/papa-net-apply   root:root   0755
+#
+# with every parent directory root-owned and not group- or other-writable. If
+# that file ever becomes writable by a non-root user, these three lines become
+# a silent, permanent, passwordless root shell. Never point this at a path
+# under /home, and never replace the installed file with a symlink.
+#
+# The four argument vectors are enumerated on purpose. Do NOT collapse them to
+# a bare command name — that permits ANY arguments — and do NOT use a "*"
+# wildcard. `ip` running as root is a general-purpose code execution primitive
+# (ip netns exec <ns> /bin/sh; ip -force -batch <file>), so unconstrained
+# arguments reaching a root script that drives `ip` is a root shell by another
+# route.
+
+Cmnd_Alias PAPA_NET_MODE = /usr/local/libexec/papa-net-apply boost, \
+                           /usr/local/libexec/papa-net-apply normal, \
+                           /usr/local/libexec/papa-net-apply reapply, \
+                           /usr/local/libexec/papa-net-apply status
+
+shaharyar ALL=(root) NOPASSWD: PAPA_NET_MODE

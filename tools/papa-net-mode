@@ -1,0 +1,156 @@
+#!/usr/bin/env bash
+# papa-net-mode — switch between one internet connection and both at once.
+#
+# This machine has two genuinely separate connections: the Ethernet port and a
+# USB WiFi dongle, on different ISPs (different public addresses, different
+# router MACs, both reached at 192.168.18.1 on their own link).
+#
+#   normal   Ethernet only. NetworkManager's own routing, untouched.
+#            3.6 ms, ~1 ms jitter. What you want for games, calls, browsing.
+#   boost    Both links merged. Measured 14.6 MB/s against Ethernet's 10.8 —
+#            about a third more — but only for work spread across MANY
+#            connections, because the kernel hashes per connection: one download
+#            rides one link for its whole life. And anything that lands on the
+#            WiFi link gets its 80 ms and 75 ms of jitter.
+#
+# So this is a switch, not a setting. Nothing here survives a reboot.
+#
+# Everything privileged happens in /usr/local/libexec/papa-net-apply, which is
+# root-owned and takes four fixed words. This script is unprivileged: it reads
+# state, formats it, and asks that one command to do the work.
+set -uo pipefail
+
+APPLY=/usr/local/libexec/papa-net-apply
+STATE=/var/lib/papa-net/mode
+MARKER=/run/papa-net/active
+
+# Our routes carry protocol 200 and metric 50 — see papa-net-apply for why.
+PROTO=200
+METRIC=50
+RULE_ETH=5300
+RULE_WIFI=5310
+
+have_apply() { [ -x "$APPLY" ]; }
+
+# What the machine is ACTUALLY doing, read from the routing table. The state
+# file records what was ASKED for and is never treated as truth: recorded-state-
+# versus-reality drift is a known bug class in this toolchain, which is why
+# `verify` exists here and on the audio side.
+actual() {
+  local line nh
+  line=$(ip -4 route show table main default proto "$PROTO" metric "$METRIC" 2>/dev/null)
+  [ -n "$line" ] || { echo normal; return; }
+  nh=$(printf '%s\n' "$line" | grep -c nexthop)
+  case "$nh" in
+    2) echo boost ;;
+    *) echo degraded ;;
+  esac
+}
+
+desired() { cat "$STATE" 2>/dev/null || echo normal; }
+
+eth_dev()  { ip -4 -o route show default proto dhcp 2>/dev/null | awk '$5!~/^wl/{print $5; exit}'; }
+wifi_dev() { ip -4 -o route show default proto dhcp 2>/dev/null | awk '$5~/^wl/{print $5; exit}'; }
+addr_of()  { ip -4 -o addr show dev "$1" scope global 2>/dev/null | awk '{sub(/\/.*/,"",$4); print $4; exit}'; }
+wifi_name() { nmcli -t -f DEVICE,CONNECTION device status 2>/dev/null | awk -F: -v d="$1" '$1==d{print $2; exit}'; }
+
+# Errors name the next command to run, per the house rule.
+no_grant() {
+  echo "papa-net-mode: cannot switch — the passwordless rule or the helper is missing." >&2
+  echo "  Check with:   sudo -n -l | grep papa-net-apply" >&2
+  echo "  Install with: see $(dirname "$0")/README-network.md" >&2
+  exit 3
+}
+
+notify() {
+  [ "$(id -u)" = "0" ] && return 0
+  [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ] || return 0
+  command -v notify-send >/dev/null 2>&1 || return 0
+  notify-send "Network" "$1" --icon="${2:-network-wired}" 2>/dev/null || true
+}
+
+switch_to() {
+  local want="$1"
+  have_apply || no_grant
+  sudo -n "$APPLY" "$want" || no_grant
+  # Every mutating branch ends by checking reality, the same self-check
+  # papa-audio-mode does.
+  "$0" verify | grep -q '^OK' || \
+    echo "  WARNING: the end state does not match — run: papa-net-mode verify" >&2
+}
+
+case "${1:-status}" in
+  boost)
+    switch_to boost
+    notify "Both connections merged. Games and calls will feel worse." network-connect
+    ;;
+
+  normal)
+    switch_to normal
+    notify "Back to the Ethernet connection only." network-wired
+    ;;
+
+  toggle)
+    if [ "$(actual)" = "normal" ]; then "$0" boost; else "$0" normal; fi
+    ;;
+
+  # Exactly one word, nothing else — so the tray never has to parse prose.
+  current)
+    actual
+    ;;
+
+  verify)
+    a=$(actual); d=$(desired)
+    bad=0
+    if [ "$a" != "$d" ]; then
+      echo "MISMATCH: asked for $d but the routing table says $a"
+      bad=1
+    fi
+    if [ "$a" = "boost" ]; then
+      e=$(eth_dev); w=$(wifi_dev)
+      ei=$([ -n "$e" ] && addr_of "$e"); wi=$([ -n "$w" ] && addr_of "$w")
+      if [ -n "$ei" ] && ! ip -4 route get 1.1.1.1 from "$ei" 2>/dev/null | grep -q "dev $e"; then
+        echo "MISMATCH: traffic from $ei does not leave over $e"; bad=1
+      fi
+      if [ -n "$wi" ] && ! ip -4 route get 1.1.1.1 from "$wi" 2>/dev/null | grep -q "dev $w"; then
+        echo "MISMATCH: traffic from $wi does not leave over $w"; bad=1
+      fi
+      ip rule show 2>/dev/null | grep -q "^$RULE_ETH:"  || { echo "MISMATCH: the Ethernet source rule is gone"; bad=1; }
+      ip rule show 2>/dev/null | grep -q "^$RULE_WIFI:" || { echo "MISMATCH: the WiFi source rule is gone"; bad=1; }
+    fi
+    [ "$bad" = "0" ] && echo "OK: $a"
+    exit "$bad"
+    ;;
+
+  status|"")
+    a=$(actual); d=$(desired)
+    e=$(eth_dev); w=$(wifi_dev)
+    ei=$([ -n "$e" ] && addr_of "$e"); wi=$([ -n "$w" ] && addr_of "$w")
+    case "$a" in
+      normal)   echo "current mode  : normal — the Ethernet connection only" ;;
+      boost)    echo "current mode  : boost — both connections merged" ;;
+      degraded) echo "current mode  : DEGRADED — boost is on but only one link is carrying" ;;
+    esac
+    echo "  default route : $(ip -4 route show default | head -1 | sed 's/^/  /;s/^  //')"
+    echo "  ethernet      : ${e:-none}  ${ei:-}"
+    echo "  wifi          : ${w:-none}  ${wi:-}  $( [ -n "$w" ] && wifi_name "$w" )"
+    if [ "$a" != "$d" ]; then
+      echo "  DRIFT — you asked for $d. Run: papa-net-mode $d"
+    else
+      echo "  agreement     : OK — reality matches what was asked for"
+    fi
+    have_apply || echo "  NOT INSTALLED — the privileged helper is missing; see README-network.md"
+    echo
+    echo "usage: papa-net-mode {normal|boost|toggle|status|verify|current}"
+    echo "  normal  the Ethernet connection only — low latency, what games want"
+    echo "  boost   both connections merged — more total speed across many"
+    echo "          downloads, worse latency for anything that lands on WiFi"
+    echo "  verify  check the real routing matches what was asked for"
+    ;;
+
+  *)
+    echo "papa-net-mode: unknown command '$1'" >&2
+    echo "usage: papa-net-mode {normal|boost|toggle|status|verify|current}" >&2
+    exit 2
+    ;;
+esac

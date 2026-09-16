@@ -1,0 +1,33 @@
+#!/bin/sh
+# Re-apply the merged-links routing after NetworkManager touches an interface.
+#
+# The WiFi DHCP lease is one hour and the address changes with it. When the old
+# address goes away the kernel deletes every route carrying it as a preferred
+# source, so the WiFi table empties and its source rule ends up naming nobody.
+# Boost then rots quietly: traffic still leaves over WiFi, but with a source the
+# rules no longer match. This puts it back.
+#
+#   $1 = interface, $2 = action.
+#
+# Runs as root, and NetworkManager BLOCKS waiting on it. So: fast, no prompts,
+# no network calls of its own, and always exit 0. It is installed as a symlink
+# into no-wait.d precisely so route work never sits in NM's serialised queue
+# behind another hook.
+#
+# THE TRAP: this runs as root, so $HOME is /root, not the user's home. Every
+# path here is a literal absolute constant for that reason.
+[ -x /usr/local/libexec/papa-net-apply ] || exit 0
+
+case "$2" in
+  up|dhcp4-change|dhcp6-change|reapply|down) ;;
+  # Deliberately NOT connectivity-change: we change routes, connectivity
+  # changes, we get called again — a loop.
+  *) exit 0 ;;
+esac
+
+# Not filtered by interface. Tailscale and the wired link both churn routes, and
+# the merged routing can be disturbed by an event on any of them. The helper's
+# first act is to check whether anything needs doing, so the common case costs
+# almost nothing.
+/usr/local/libexec/papa-net-apply reapply >/dev/null 2>&1
+exit 0

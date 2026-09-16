@@ -1,0 +1,299 @@
+#!/usr/bin/env bash
+# papa-net-apply — the only part of the network switch that runs as root.
+#
+# Installed:  /usr/local/libexec/papa-net-apply   root:root  0755
+# Granted by: /etc/sudoers.d/papa-net-mode, for four exact argv vectors.
+#
+# WHY THIS FILE MUST NOT LIVE UNDER $HOME
+#   sudo does not check the owner, mode, or contents of the command it runs. It
+#   matches the path string in the rule and execs whatever is at that path at
+#   that instant. A NOPASSWD grant is therefore worth exactly as much as write
+#   access to that path. Under $HOME, anything running as the user — a bad npm
+#   postinstall, a compromised uv tool, a curl-to-bash — could rewrite this file
+#   and become root with no password and no prompt. Root-owned path, root-owned
+#   parents, copied not symlinked.
+#
+# WHY ARGV IS NEVER FORWARDED TO ip(8)
+#   `ip` as root is a general-purpose code execution primitive:
+#     ip netns exec <ns> /bin/sh   -> an arbitrary command as root
+#     ip -force -batch <file>      -> commands read from a file
+#   So `exec /usr/sbin/ip "$@"` behind a NOPASSWD rule IS a root shell. Below,
+#   argv is matched against a four-way whitelist and every ip invocation is
+#   built from constants and from values read back out of the kernel. Nothing
+#   the caller sends is ever interpolated into a command.
+#
+# WHY THE STATE FILE IS NOT IN $HOME
+#   It is an INPUT to a privileged action: the root dispatcher hook reads it on
+#   every interface event. A user-writable input to a root action is a hazard
+#   even when the value is whitelisted — it can be swapped for a symlink, or for
+#   a FIFO, and a FIFO would hang the dispatcher, which NetworkManager runs
+#   synchronously and waits on. Root does not read out of $HOME.
+set -uo pipefail
+PATH=/usr/sbin:/usr/bin:/sbin:/bin ; export PATH
+umask 022
+
+IP=/usr/sbin/ip
+[ -x "$IP" ] || IP=/sbin/ip
+STATE_DIR=/var/lib/papa-net
+STATE="$STATE_DIR/mode"
+RUN_DIR=/run/papa-net
+MARKER="$RUN_DIR/active"
+LOCK=/run/papa-net.lock
+
+# Our own routes carry this protocol number so they can be told apart from
+# NetworkManager's at a glance: `ip route show proto 200`. Deliberately NOT
+# `static` — that is what NM uses for profile-configured routes, and sharing it
+# would put us in the way of its reconciler.
+PROTO=200
+# Below Tailscale's block (5210-5270). Above it, a packet already sourced from
+# one of our addresses would be grabbed before Tailscale's `from all lookup 52`
+# — which looks harmless today, and would silently bypass an exit node the
+# moment one is enabled. That is a privacy break, not a speed one.
+RULE_ETH=5300
+RULE_WIFI=5310
+TABLE_ETH=100
+TABLE_WIFI=200
+# Our default sits ABOVE NetworkManager's in preference (a lower metric wins),
+# and NM's metric-100 route is never touched. So if ours is removed for any
+# reason, connectivity simply continues over Ethernet — there is nothing to
+# restore. `ipv4.route-metric` is -1 (auto) on both profiles, so 50 is free.
+METRIC=50
+WEIGHT_ETH=5
+WEIGHT_WIFI=3
+
+case "${1:-}" in
+  boost|normal|reapply|status) ;;
+  *) echo "papa-net-apply: refusing '${1:-}' — expected boost|normal|reapply|status" >&2; exit 2 ;;
+esac
+VERB="$1"
+
+err=0
+run() { "$@" || { err=$((err+1)); printf 'FAIL: %s\n' "$*" >&2; }; }
+opt() { "$@" >/dev/null 2>&1 || true; }   # deletes that may legitimately not exist
+log() { logger -t papa-net -p daemon.notice "$*" 2>/dev/null || true; }
+
+# ── Discovery ──────────────────────────────────────────────────────────────
+# Nothing here is hardcoded. The WiFi adapter is a USB dongle and its interface
+# name encodes the port it is plugged into, so it changes if it is moved; the
+# WiFi address comes from a one-hour DHCP lease. `proto dhcp` on the gateway
+# lookups deliberately excludes our own metric-50 route, so discovery reads the
+# same whether or not boost is already on.
+ETH=$($IP -4 -o route show default proto dhcp 2>/dev/null | awk '$5!~/^wl/{print $5; exit}')
+WIFI=$($IP -4 -o route show default proto dhcp 2>/dev/null | awk '$5~/^wl/{print $5; exit}')
+addr_of() { $IP -4 -o addr show dev "$1" scope global 2>/dev/null | awk '{sub(/\/.*/,"",$4); print $4; exit}'; }
+net_of()  { $IP -4 -o route show dev "$1" scope link proto kernel 2>/dev/null | awk '{print $1; exit}'; }
+gw_of()   { $IP -4 -o route show default dev "$1" proto dhcp 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="via"){print $(i+1); exit}}'; }
+
+ETH_IP=$([ -n "$ETH" ] && addr_of "$ETH")
+WIFI_IP=$([ -n "$WIFI" ] && addr_of "$WIFI")
+ETH_NET=$([ -n "$ETH" ] && net_of "$ETH")
+WIFI_NET=$([ -n "$WIFI" ] && net_of "$WIFI")
+ETH_GW=$([ -n "$ETH" ] && gw_of "$ETH")
+WIFI_GW=$([ -n "$WIFI" ] && gw_of "$WIFI")
+
+# ── What the machine is ACTUALLY doing ─────────────────────────────────────
+# Derived from the routing table, never from the state file. Recorded-state-
+# versus-reality drift has caused real bugs in this toolchain before, which is
+# why `verify` exists on the audio side too. The file is two-valued; this is
+# three-valued, and the third value is never written anywhere.
+actual() {
+  local line nh
+  line=$($IP -4 route show table main default proto "$PROTO" metric "$METRIC" 2>/dev/null)
+  [ -n "$line" ] || { echo normal; return; }
+  nh=$(printf '%s\n' "$line" | grep -c nexthop)
+  case "$nh" in
+    2) echo boost ;;
+    *) echo degraded ;;
+  esac
+}
+
+write_state() {
+  mkdir -p "$STATE_DIR" 2>/dev/null
+  printf '%s\n' "$1" > "$STATE.tmp" 2>/dev/null && mv -f "$STATE.tmp" "$STATE" 2>/dev/null
+  chmod 0644 "$STATE" 2>/dev/null
+}
+
+if [ "$VERB" = status ]; then
+  echo "actual:  $(actual)"
+  echo "desired: $(cat "$STATE" 2>/dev/null || echo normal)"
+  echo "armed:   $([ -e "$MARKER" ] && echo yes || echo no)"
+  echo "eth:     ${ETH:-none} ${ETH_IP:-} via ${ETH_GW:-}"
+  echo "wifi:    ${WIFI:-none} ${WIFI_IP:-} via ${WIFI_GW:-}"
+  exit 0
+fi
+
+[ "$(id -u)" = "0" ] || { echo "papa-net-apply: must run as root" >&2; exit 4; }
+
+# One at a time. The dispatcher can fire while a manual switch is mid-flight.
+exec 9>"$LOCK" 2>/dev/null
+if [ "$VERB" = reapply ]; then
+  flock -n 9 2>/dev/null || exit 0      # a queued-but-obsolete event just drops
+else
+  flock -w 10 9 2>/dev/null || true     # a person's command waits its turn
+fi
+
+# ── normal ─────────────────────────────────────────────────────────────────
+# Mirror image of boost: the globally visible route goes FIRST, so a crash
+# mid-teardown leaves an Ethernet-only machine rather than rules pointing at
+# flushed tables. NetworkManager's own metric-100 default is never touched, so
+# there is nothing to put back.
+go_normal() {
+  opt $IP route del default metric "$METRIC" table main
+  while $IP rule del priority "$RULE_ETH"  2>/dev/null; do :; done
+  while $IP rule del priority "$RULE_WIFI" 2>/dev/null; do :; done
+  opt $IP route flush table "$TABLE_ETH"
+  opt $IP route flush table "$TABLE_WIFI"
+  opt $IP route flush cache
+  rm -f "$MARKER" 2>/dev/null
+}
+
+# ── boost ──────────────────────────────────────────────────────────────────
+go_boost() {
+  # Per-link tables first: invisible, because nothing points at them yet.
+  #
+  # The /24 in each table is MANDATORY, and must come before that table's
+  # default. Two reasons. It makes the kernel's nexthop validation resolve
+  # locally and deterministically at insert time. And — the one that actually
+  # bites — once `from <eth ip> lookup 100` exists, ALL traffic from that
+  # address consults table 100, including traffic to the LAN. A table holding
+  # only a default route would send every LAN peer to the gateway instead of
+  # on-link, and KDE Connect, SMB and the printer would die the instant boost
+  # was enabled and come back on normal.
+  opt $IP route flush table "$TABLE_ETH"
+  run $IP route add "$ETH_NET"  dev "$ETH"  proto "$PROTO" scope link src "$ETH_IP"  table "$TABLE_ETH"
+  run $IP route add default via "$ETH_GW"  dev "$ETH"  proto "$PROTO" src "$ETH_IP"  table "$TABLE_ETH"
+  opt $IP route flush table "$TABLE_WIFI"
+  run $IP route add "$WIFI_NET" dev "$WIFI" proto "$PROTO" scope link src "$WIFI_IP" table "$TABLE_WIFI"
+  run $IP route add default via "$WIFI_GW" dev "$WIFI" proto "$PROTO" src "$WIFI_IP" table "$TABLE_WIFI"
+
+  # Source rules. `ip rule add` STACKS duplicates — it is not idempotent — so
+  # every prior copy goes first, in a loop: a single del leaves stragglers
+  # behind if this ever ran three times.
+  while $IP rule del priority "$RULE_ETH"  2>/dev/null; do :; done
+  while $IP rule del priority "$RULE_WIFI" 2>/dev/null; do :; done
+  run $IP rule add from "$ETH_IP"  lookup "$TABLE_ETH"  priority "$RULE_ETH"
+  run $IP rule add from "$WIFI_IP" lookup "$TABLE_WIFI" priority "$RULE_WIFI"
+
+  # The only globally visible change, and therefore last.
+  #
+  # Every `via` names its `dev` explicitly: 192.168.18.1 answers on BOTH links
+  # (two different routers, two different MACs, same address), so without `dev`
+  # the kernel resolves the gateway through the main table and always picks
+  # Ethernet. Naming the device scopes neighbour resolution to that interface.
+  #
+  # No `src` on this route, deliberately: the kernel deletes routes whose
+  # prefsrc disappears, so a source address here would make the hourly WiFi
+  # lease rotation delete the multipath default outright.
+  run $IP route replace default proto "$PROTO" metric "$METRIC" \
+    nexthop via "$ETH_GW"  dev "$ETH"  weight "$WEIGHT_ETH"  onlink \
+    nexthop via "$WIFI_GW" dev "$WIFI" weight "$WEIGHT_WIFI" onlink
+  opt $IP route flush cache
+}
+
+# Ethernet only, but keeping the rules and tables, so the dispatcher can promote
+# back to full boost on the next WiFi `up` without the viewer doing anything.
+degrade_to_eth() {
+  run $IP route replace default proto "$PROTO" metric "$METRIC" \
+    via "$ETH_GW" dev "$ETH" onlink
+  opt $IP route flush cache
+}
+
+have_eth()  { [ -n "$ETH"  ] && [ -n "$ETH_IP"  ] && [ -n "$ETH_NET"  ] && [ -n "$ETH_GW"  ]; }
+have_wifi() { [ -n "$WIFI" ] && [ -n "$WIFI_IP" ] && [ -n "$WIFI_NET" ] && [ -n "$WIFI_GW" ]; }
+
+# Can each router be reached over its OWN link? -I <iface> uses SO_BINDTODEVICE,
+# so this is a pure layer-2 + ARP probe that does not depend on any route we are
+# about to install.
+reaches() { ping -n -q -c 2 -W 2 -I "$1" "$2" >/dev/null 2>&1; }
+# And does the whole path work, through the rules we just added? -I <address>
+# (not <iface>) is the point: the address form is what exercises the source rule.
+serves()  { ping -n -q -c 3 -W 2 -w 6 -I "$1" 1.1.1.1 >/dev/null 2>&1; }
+
+case "$VERB" in
+  normal)
+    go_normal
+    write_state normal
+    echo "NETWORK: NORMAL — Ethernet only, NetworkManager's own routing."
+    exit $err
+    ;;
+
+  boost|reapply)
+    # reapply is the dispatcher's verb: it acts on what was ASKED for and never
+    # rewrites it, so an automatic re-application can never change the mode.
+    if [ "$VERB" = reapply ]; then
+      [ "$(cat "$STATE" 2>/dev/null || echo normal)" = boost ] || exit 0
+      # /run is tmpfs, so this marker is gone after a reboot. Boost survives a
+      # DHCP renewal and a suspend, and deliberately does NOT survive a restart
+      # — silently booting into a path with 75 ms of jitter would ruin a game
+      # with nothing on screen to explain it.
+      [ -e "$MARKER" ] || exit 0
+    fi
+
+    have_eth || { echo "papa-net-apply: no usable Ethernet link — refusing" >&2; exit 1; }
+    if ! have_wifi; then
+      # Record the intent anyway, so the dispatcher finishes the job when WiFi
+      # comes back, and run Ethernet-only in the meantime.
+      [ "$VERB" = boost ] && { write_state boost; mkdir -p "$RUN_DIR" 2>/dev/null; : > "$MARKER"; }
+      degrade_to_eth
+      echo "NETWORK: BOOST (degraded) — no WiFi link yet; Ethernet only until it returns."
+      exit $err
+    fi
+
+    reaches "$ETH" "$ETH_GW" || { echo "papa-net-apply: the Ethernet router does not answer — refusing" >&2; exit 1; }
+    if ! reaches "$WIFI" "$WIFI_GW"; then
+      [ "$VERB" = boost ] && { write_state boost; mkdir -p "$RUN_DIR" 2>/dev/null; : > "$MARKER"; }
+      degrade_to_eth
+      echo "NETWORK: BOOST (degraded) — the WiFi router does not answer; Ethernet only."
+      exit $err
+    fi
+
+    # The deadman. This is the actual never-lose-connectivity guarantee: if this
+    # script is killed, the terminal dies, or verification hangs, the machine
+    # goes back to normal on its own in ninety seconds. Armed BEFORE the only
+    # globally visible change, cancelled once the new state is proved.
+    DEADMAN=0
+    if [ "$VERB" = boost ] && command -v systemd-run >/dev/null 2>&1; then
+      systemd-run --collect --unit=papa-net-deadman --on-active=90 \
+        /usr/local/libexec/papa-net-apply normal >/dev/null 2>&1 && DEADMAN=1
+    fi
+
+    mkdir -p "$RUN_DIR" 2>/dev/null; : > "$MARKER"
+    write_state boost
+    go_boost
+
+    # Settle: the WiFi neighbour entry is often STALE, and the first packet
+    # triggers ARP.
+    sleep 2
+
+    ok=1
+    $IP -4 route get 1.1.1.1 from "$ETH_IP"  2>/dev/null | grep -q "dev $ETH"  || ok=0
+    $IP -4 route get 1.1.1.1 from "$WIFI_IP" 2>/dev/null | grep -q "dev $WIFI" || ok=0
+    [ "$($IP -4 route show default proto "$PROTO" metric "$METRIC" 2>/dev/null | grep -c nexthop)" = "2" ] || ok=0
+    serves "$ETH_IP" || ok=0
+
+    if [ "$ok" = "1" ] && ! serves "$WIFI_IP"; then
+      # Ethernet is fine and only WiFi is not carrying. Degrade rather than roll
+      # back: rolling all the way back would mean remembering to re-enter boost
+      # after a transient dongle hiccup, and the dispatcher can promote this
+      # back on its own.
+      degrade_to_eth
+      log "wifi did not carry; degraded to ethernet-only"
+      [ "$DEADMAN" = "1" ] && opt systemctl stop papa-net-deadman.timer
+      echo "NETWORK: BOOST (degraded) — WiFi did not carry traffic; Ethernet only."
+      exit $err
+    fi
+
+    if [ "$ok" != "1" ]; then
+      go_normal
+      write_state normal
+      log "boost failed verification; rolled back to normal"
+      [ "$DEADMAN" = "1" ] && opt systemctl stop papa-net-deadman.timer
+      echo "papa-net-apply: boost did not verify — rolled back to normal." >&2
+      exit 1
+    fi
+
+    [ "$DEADMAN" = "1" ] && opt systemctl stop papa-net-deadman.timer
+    echo "NETWORK: BOOST — $ETH + $WIFI, weighted $WEIGHT_ETH:$WEIGHT_WIFI."
+    exit $err
+    ;;
+esac

@@ -11,3 +11,7 @@ bridge-server/node_modules/
 # mpv's own screenshot path, if one ever escapes the configured directory
 mpv-shot*.jpg
 mpv-shot*.png
+
+# Python bytecode from tools/
+__pycache__/
+*.pyc
