@@ -11166,7 +11166,7 @@ ipcMain.handle('video-discover', async (_, req) => {
 
 // The other entries in a series. Anime chains are walked from AniList
 // relations; a film's equivalent is the franchise it belongs to.
-ipcMain.handle('video-seasons', async (_, { type, id, idMal, title } = {}) => {
+ipcMain.handle('video-seasons', async (_, { type, id, idMal, title, titles, year } = {}) => {
   try {
     if (type !== 'anime' || !id) return { ok: true, seasons: [], related: [] }
     const key = `anime:${id}`
@@ -11178,7 +11178,7 @@ ipcMain.handle('video-seasons', async (_, { type, id, idMal, title } = {}) => {
       // seasonChain (by MAL id, else by title); when AniList cannot answer,
       // MAL's own relation graph is walked instead, so a show opened during
       // an AniList outage still lists its seasons.
-      out = await anilist().seasonChain(id, { idMal: idMal || null, title: title || null })
+      out = await anilist().seasonChain(id, { idMal: idMal || null, title: title || null, titles: titles || null, year: year || null })
       const mal = Number(idMal) || (/^mal-(\d+)$/.test(String(id)) ? Number(String(id).slice(4)) : 0)
       if ((!out.seasons.length || out.truncated) && mal) {
         try {
@@ -11200,7 +11200,23 @@ ipcMain.handle('video-seasons', async (_, { type, id, idMal, title } = {}) => {
     // still resolve pack playback across restarts and while AniList is down.
     if (out.seasons.length && out.truncated !== true) {
       _videoChainCache.set(key, out)
-      _animeDetailCacheWrite(`chain2:${id}`, { chain: out })
+      // A capped walk is still worth holding in memory — the alternative is
+      // re-walking twelve AniList requests on every open of the biggest
+      // franchises, whose 429s then set truncated and block the cache too, so
+      // they would land in a permanent re-walk loop that degrades every other
+      // AniList call in the app. But it must never overwrite a COMPLETE chain
+      // already on disk: that would trade a good answer for a prefix of one.
+      // A chain whose starting entry was matched on year+format rather than on
+      // a shared name is a reasonable guess, not a fact. Hold it in memory for
+      // this session; never write it to a store that has no expiry.
+      const complete = out.capped !== true && out.fuzzy !== true
+      if (complete) _animeDetailCacheWrite(`chain2:${id}`, { chain: out })
+      else {
+        const prior = _animeDetailCacheRead(`chain2:${id}`)
+        const priorComplete = prior && prior.chain && prior.chain.capped !== true &&
+          Array.isArray(prior.chain.seasons) && prior.chain.seasons.length
+        if (!priorComplete) _animeDetailCacheWrite(`chain2:${id}`, { chain: out })
+      }
       return { ok: true, ...out }
     }
     // The fresh walk came back empty or truncated. During an outage that is the
@@ -11227,7 +11243,10 @@ ipcMain.handle('video-seasons', async (_, { type, id, idMal, title } = {}) => {
 // for, so One Piece's 1,177 episodes cost six requests for the window on
 // screen, not sixty. Never throws: no list is an empty list, and the grid
 // falls back to numbered buttons.
-const _animeEpisodesCache = makeCache({ cap: 64, ttlMs: 1000 * 60 * 60 * 6 })
+// 64 was below the page count of a single long-runner — One Piece alone is 71
+// pages — so browsing one show evicted its own earlier pages and every other
+// show's, and the same pages were fetched again on the next scroll.
+const _animeEpisodesCache = makeCache({ cap: 256, ttlMs: 1000 * 60 * 60 * 6 })
 ipcMain.handle('video-anime-episodes', async (_, { idMal, start = 1, end = 20 } = {}) => {
   try {
     const mal = Number(idMal)
@@ -11245,10 +11264,32 @@ ipcMain.handle('video-anime-episodes', async (_, { idMal, start = 1, end = 20 } 
     if (!kitsuId) return { ok: true, episodes: [], total: null }
     const PAGE = KITSU_EPISODE_PAGE
     const first = Math.max(1, Number(start) || 1)
-    const last = Math.max(first, Number(end) || first)
+    let last = Math.max(first, Number(end) || first)
+    // "Show all" on a long-runner asked for every episode at once: One Piece
+    // is 1,402 rows, which is 71 Kitsu requests serialized behind a 250 ms
+    // single-lane queue — about half a minute of blank numbered buttons, and
+    // 71 hits on a keyless public API. Bounded here, and the answer SAYS it
+    // was bounded so the page can explain itself rather than silently showing
+    // bare numbers for the tail.
+    const MAX_PAGES = 10
+    let truncated = false
+    if (last - first + 1 > MAX_PAGES * PAGE) {
+      last = first + MAX_PAGES * PAGE - 1
+      truncated = true
+    }
     const out = []
     let total = null
-    for (let offset = Math.floor((first - 1) / PAGE) * PAGE; offset < last; offset += PAGE) {
+    let offset = Math.floor((first - 1) / PAGE) * PAGE
+    let highest = 0
+    // Paged on Kitsu's own meta.count rather than on how many rows survived
+    // filtering. The old control did two things wrong at once: it assumed
+    // Kitsu row N holds episode N+1, and it stopped on a page shorter than
+    // twenty — but that length is measured AFTER normalizeEpisode drops rows
+    // with no usable number, so a single episode-0 or null-numbered row in the
+    // middle of a run convinced the loop it had reached the end and silently
+    // truncated everything after it. The guard is a hard backstop for an
+    // airing show whose reported count overshoots Kitsu's actual list.
+    for (let guard = 0; guard < MAX_PAGES + 2; guard++) {
       const pageKey = `eps:${kitsuId}:${offset}`
       let page = _animeEpisodesCache.get(pageKey)
       if (!page) {
@@ -11266,11 +11307,19 @@ ipcMain.handle('video-anime-episodes', async (_, { idMal, start = 1, end = 20 } 
       }
       _animeEpisodesCache.set(pageKey, page)
       if (page.total != null) total = page.total
-      for (const ep of page.episodes) if (ep.episodeNumber >= first && ep.episodeNumber <= last) out.push(ep)
-      // A short page is the end of what Kitsu has.
-      if (page.episodes.length < PAGE) break
+      for (const ep of page.episodes) {
+        if (ep.episodeNumber > highest) highest = ep.episodeNumber
+        if (ep.episodeNumber >= first && ep.episodeNumber <= last) out.push(ep)
+      }
+      offset += PAGE
+      // Kitsu has no more rows to give.
+      if (total != null && offset >= total) break
+      // Nothing came back and nothing is expected to: the run really has ended.
+      if (!page.episodes.length && total == null) break
+      // The window is covered.
+      if (highest >= last) break
     }
-    return { ok: true, episodes: out, total }
+    return { ok: true, episodes: out, total, truncated, servedTo: truncated ? last : null }
   } catch (e) {
     return { ok: true, episodes: [], total: null, error: e && e.message }
   }
@@ -11404,6 +11453,44 @@ ipcMain.handle('video-search', async (_, { query, type }) => {
   }
 })
 
+// Two normalised titles that name the SAME show, not a show and its sequel.
+//
+// Both matchers below used to accept plain substring containment in either
+// direction, which makes "sword art online" a match for "sword art online
+// alternative gun gale online ii" — a parent series passing as its own
+// spin-off. Where that bites: _enrichAnimeDetail takes the FIRST overlapping
+// AniList hit and copies its titles, idMal and anilistId onto the detail, so
+// an anime opened from Movies & TV could silently borrow the wrong show's
+// romaji title (which is what goes to the torrent indexers) and the wrong MAL
+// id (which is what goes to AniSkip).
+//
+// Exact equality stays the strong accept. Containment survives, because Kitsu,
+// MAL, TMDB and AniList genuinely disagree about subtitles and punctuation —
+// but only when the part that DIFFERS carries no sequel or spin-off marker,
+// and only when the shorter title is substantial enough to mean something. A
+// title normalising to "2" or "re" is not evidence of anything.
+//
+// A bare number counts as a marker: "Steins;Gate 0" and "Mushoku Tensei II"
+// differ from their siblings by exactly that. It costs the occasional false
+// negative (a source listing "Mob Psycho" against AniList's "Mob Psycho 100"),
+// and that is the right way to be wrong here — a false negative shows a
+// duplicate row in search, while a false positive hands the wrong show's
+// romaji title to the torrent indexers and the wrong MAL id to AniSkip.
+const _SEQUEL_MARKER = /\b(?:\d+|ii|iii|iv|2nd|3rd|4th|second|third|fourth|final|season|part|cour|movie|gekijouban|ova|special|alternative|gaiden|side|next|progressive|recap|prologue)\b/
+const _MIN_CONTAINED_CHARS = 8
+
+function _titlesNameSameShow(a, b) {
+  if (!a || !b) return false
+  if (a === b) return true
+  const [short, long] = a.length <= b.length ? [a, b] : [b, a]
+  if (short.length < _MIN_CONTAINED_CHARS) return false
+  if (!long.includes(short)) return false
+  // What the longer title says that the shorter does not. If that carries a
+  // sequel or spin-off marker, these are two different shows in one franchise.
+  const extra = long.split(short).join(' ')
+  return !_SEQUEL_MARKER.test(extra)
+}
+
 // Whether an AniList entry and a TMDB entry describe the same show. Compared
 // on every title each side knows, because the English, romaji and original
 // names rarely agree across the two.
@@ -11413,7 +11500,7 @@ function _sameShow(anilistEntry, tmdbEntry) {
   const left = [anilistEntry.title, t.romaji, t.english, t.native].map(norm).filter(Boolean)
   const right = [tmdbEntry.title, tmdbEntry.originalName].map(norm).filter(Boolean)
   if (!left.length || !right.length) return false
-  return left.some(a => right.some(b => a === b || a.includes(b) || b.includes(a)))
+  return left.some(a => right.some(b => _titlesNameSameShow(a, b)))
 }
 
 // The show payload and each season payload are fetched and cached separately:
@@ -11574,7 +11661,7 @@ function _titlesOverlap(a, b) {
   const aNames = [a.title, a.titles && a.titles.romaji, a.titles && a.titles.english,
                   a.titles && a.titles.native].map(norm).filter(Boolean)
   const bNames = [b.title, b.originalName].map(norm).filter(Boolean)
-  return aNames.some(x => bNames.some(y => x === y || x.includes(y) || y.includes(x)))
+  return aNames.some(x => bNames.some(y => _titlesNameSameShow(x, y)))
 }
 
 async function _videoSeasonDetail(tvId, season) {
@@ -11932,6 +12019,15 @@ function _animeAbsoluteEpisode(anilistId, episode) {
       const persisted = _animeDetailCacheRead(`chain2:${anilistId}`)
       if (persisted && persisted.chain) chain = persisted.chain
     }
+    // A partial walk can still render a useful season row, but it must never
+    // back arithmetic. `capped` means the BFS ran out of request budget
+    // mid-walk; `truncated` means a hop was lost. Either way the list is a
+    // prefix of the truth, and summing a prefix produces a confident wrong
+    // number. Measured: a Fate-sized franchise caps at eight "seasons" that
+    // are really five separate series, and Fate/Apocrypha episode 1 comes out
+    // as absolute 76. The gate above cared about `truncated` and ignored
+    // `capped`, which is the same partial answer by another name.
+    if (!chain || chain.capped === true || chain.truncated === true) return null
     const seasons = chain && Array.isArray(chain.seasons) ? chain.seasons : []
     if (!seasons.length) return null
     // Only the seasons that share this entry's episode NUMBERING, which is a
@@ -11942,7 +12038,16 @@ function _animeAbsoluteEpisode(anilistId, episode) {
     // Summing the whole list is what turned Gun Gale Online II episode 1 into
     // "absolute 109" of a twelve-episode show.
     const tv = seasons.filter(s => s && (s.format === 'TV' || s.format === 'TV_SHORT') && s.run !== false)
-    const idx = tv.findIndex(s => String(s.id) === String(anilistId))
+    // A card from the Jikan or Kitsu fallback has id "mal-9253"/"kitsu-48671"
+    // while the chain's entries are AniList ids, so comparing the two always
+    // missed and such a show could NEVER resolve an absolute number. The chain
+    // records the AniList id it actually walked from; fall back to that.
+    const selfId = String(anilistId)
+    let idx = tv.findIndex(s => String(s.id) === selfId)
+    if (idx < 0 && chain.startId != null) {
+      const resolved = String(chain.startId)
+      idx = tv.findIndex(s => String(s.id) === resolved)
+    }
     if (idx <= 0) return null   // first season's numbering is already absolute
     let prior = 0
     for (let i = 0; i < idx; i++) {

@@ -287,3 +287,101 @@ test('a genuine continuation still numbers absolutely across its seasons', async
   assert.strictEqual(absoluteEpisode(chain, 2, 1), 26)
   assert.strictEqual(absoluteEpisode(chain, 1, 1), null, 'a first season is already absolute')
 })
+
+// ── Resolving a card that carries no AniList id ─────────────────────────────
+// A "mal-…"/"kitsu-…" card is resolved by MAL id, else by title. The title
+// branch used to end `exact || list[0]` — AniList's top relevance hit, taken
+// with no year check, no format check and no title check at all. For a
+// franchise title that is a prefix of many entries the top hit is routinely
+// the umbrella or first series, and that entry then became the START of the
+// whole chain walk: the seasons rail and the absolute numbering both derived
+// from a show nobody asked for.
+
+function searchFetch(hits, { byMal = null, malThrows = false } = {}) {
+  return async (_url, opts) => {
+    const body = JSON.parse(opts.body)
+    // Dispatch on the VARIABLES, not on the query text: MEDIA_SELECTION itself
+    // contains the word idMal, so every query matches /idMal/ and a fake that
+    // keys on that answers the search with the byMal response.
+    if (body.variables.idMal != null) {
+      if (malThrows) return { ok: false, status: 500 }
+      return { ok: true, json: async () => ({ data: { Media: byMal } }) }
+    }
+    if (/Page\(/.test(body.query)) {
+      return { ok: true, json: async () => ({ data: { Page: { pageInfo: { hasNextPage: false }, media: hits } } }) }
+    }
+    // byId / relations for whatever the walk does next.
+    const id = body.variables.id
+    if (/relations \{/.test(body.query)) {
+      return { ok: true, json: async () => ({ data: { Media: { id, relations: { edges: [] } } } }) }
+    }
+    return { ok: true, json: async () => ({ data: { Media: node(id, 'Resolved', 2020) } }) }
+  }
+}
+
+const HIT = (id, romaji, year, over = {}) => Object.assign({
+  id, format: 'TV', seasonYear: year, episodes: 12, status: 'FINISHED',
+  title: { romaji, english: romaji, native: romaji }, coverImage: { large: null },
+}, over)
+
+test('a MAL id resolves the card outright, and is not called fuzzy', async () => {
+  const cat = createAnilistCatalog({ fetchFn: searchFetch([], { byMal: HIT(21127, 'Steins;Gate 0', 2018) }), retryDelayMs: 1 })
+  const got = await cat._resolveStartId({ id: 'mal-30484', idMal: 30484, title: 'Steins;Gate 0', year: 2018 })
+  assert.deepStrictEqual({ id: got.id, fuzzy: got.fuzzy }, { id: 21127, fuzzy: false })
+})
+
+test('a name in common resolves the card, across punctuation and spacing', async () => {
+  const hits = [HIT(1, 'Some Other Show', 2019), HIT(2, 'Sword Art Online: Alicization', 2018)]
+  const cat = createAnilistCatalog({ fetchFn: searchFetch(hits), retryDelayMs: 1 })
+  const got = await cat._resolveStartId({ id: 'kitsu-9', title: 'Sword Art Online Alicization', year: 2018 })
+  assert.strictEqual(got.id, 2, 'matched on the normalised title, not on relevance order')
+  assert.strictEqual(got.fuzzy, false)
+})
+
+test('a bare relevance hit is never accepted', async () => {
+  // AniList's top hit for a franchise prefix is the umbrella series. It shares
+  // no name with the card and disagrees on year — it must not be taken.
+  const hits = [HIT(11757, 'Sword Art Online', 2012), HIT(167141, 'Gun Gale Online II', 2024)]
+  const cat = createAnilistCatalog({ fetchFn: searchFetch(hits), retryDelayMs: 1 })
+  const got = await cat._resolveStartId({ id: 'kitsu-1', title: 'Totally Different Title', year: 2024 })
+  assert.strictEqual(got.id, 167141, 'only because year and format independently agree')
+  assert.strictEqual(got.fuzzy, true, 'and it is reported as a guess')
+  // With no year to corroborate, nothing is accepted at all.
+  const blind = await cat._resolveStartId({ id: 'kitsu-1', title: 'Totally Different Title', year: null })
+  assert.deepStrictEqual({ id: blind.id, fuzzy: blind.fuzzy }, { id: 0, fuzzy: false })
+})
+
+test('a year that matches nothing on offer resolves to nothing, not to the top hit', () => {
+  // The branch that actually mattered: a year IS known, and no hit agrees with
+  // it. The old code fell through to list[0] here — AniList's top relevance
+  // hit for a franchise prefix, which is routinely the umbrella series, and
+  // which then became the START of the entire chain walk.
+  const hits = [HIT(11757, 'Sword Art Online', 2012), HIT(20594, 'Sword Art Online II', 2014)]
+  const cat = createAnilistCatalog({ fetchFn: searchFetch(hits), retryDelayMs: 1 })
+  return cat._resolveStartId({ id: 'kitsu-1', title: 'Some 2024 Spin-off', year: 2024 })
+    .then(got => {
+      assert.deepStrictEqual({ id: got.id, fuzzy: got.fuzzy }, { id: 0, fuzzy: false },
+        'nothing shares a name and nothing shares a year — the honest answer is none')
+    })
+})
+
+test('a hit that agrees on year but is the wrong FORMAT is not accepted either', () => {
+  const hits = [HIT(999, 'Some Film', 2024, { format: 'MOVIE' })]
+  const cat = createAnilistCatalog({ fetchFn: searchFetch(hits), retryDelayMs: 1 })
+  return cat._resolveStartId({ id: 'kitsu-1', title: 'Some 2024 Series', year: 2024 })
+    .then(got => assert.strictEqual(got.id, 0))
+})
+
+test('a byMal that throws does not take the title search down with it', async () => {
+  const hits = [HIT(42, 'Cowboy Bebop', 1998)]
+  const cat = createAnilistCatalog({ fetchFn: searchFetch(hits, { malThrows: true }), retryDelayMs: 1 })
+  const got = await cat._resolveStartId({ id: 'mal-1', idMal: 1, title: 'Cowboy Bebop', year: 1998 })
+  assert.strictEqual(got.id, 42, 'the title path still ran')
+})
+
+test('a chain records the id it actually walked from', async () => {
+  const cat = createAnilistCatalog({ fetchFn: chainFetch(TWO_SEASONS), retryDelayMs: 1 })
+  const chain = await cat.seasonChain(2)
+  assert.strictEqual(chain.startId, 2, 'so a card whose own id is not an AniList id can locate itself')
+  assert.strictEqual(chain.fuzzy, false)
+})

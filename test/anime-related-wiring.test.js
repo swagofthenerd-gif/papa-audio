@@ -10,8 +10,13 @@ const R = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'utf
 const M = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
 
 test('the seasons request carries idMal and title, and main tries MAL when AniList gives nothing', () => {
-  assert.match(R, /window\.api\.videoSeasons\(\{ type: 'anime', id: detail\.d\.id, idMal: detail\.d\.idMal \|\| null, title: detail\.d\.title \|\| null \}\)/)
-  assert.match(M, /out = await anilist\(\)\.seasonChain\(id, \{ idMal: idMal \|\| null, title: title \|\| null \}\)/)
+  assert.match(R, /window\.api\.videoSeasons\(\{ type: 'anime', id: detail\.d\.id, idMal: detail\.d\.idMal \|\| null,/)
+  // year and titles travel too. A card with no AniList id ("mal-…"/"kitsu-…")
+  // is resolved by a title search, and without a year and the full title set
+  // to corroborate, the only thing left to accept was AniList's top relevance
+  // hit — which for a franchise prefix is routinely the umbrella series.
+  assert.match(R, /title: detail\.d\.title \|\| null, titles: detail\.d\.titles \|\| null, year: detail\.d\.year \|\| null \}\)/)
+  assert.match(M, /out = await anilist\(\)\.seasonChain\(id, \{ idMal: idMal \|\| null, title: title \|\| null, titles: titles \|\| null, year: year \|\| null \}\)/)
   assert.match(M, /const viaMal = await jikan\(\)\.seasonChain\(mal\)/)
 })
 

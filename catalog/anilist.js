@@ -505,6 +505,18 @@ function _sleep(ms) {
 // `minGapMs` and `rateLimitWaitCapMs` default to the production pacing only
 // when the real network is used; an injected fetcher (the tests) gets no
 // pacing and no internal 429 retry unless it asks for them.
+// Normalised for comparison: case, punctuation and spacing all disagree freely
+// between AniList, MAL, Kitsu and TMDB for the same show.
+function _normTitle(v) {
+  return String(v || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+}
+
+// Every name a card or a hit goes by, normalised and de-duplicated.
+function _titleSet(o) {
+  const t = (o && o.titles) || {}
+  return [...new Set([o && o.title, t.english, t.romaji, t.native].map(_normTitle).filter(Boolean))]
+}
+
 function createAnilistCatalog({ fetchFn, retryDelayMs = 1000,
   timeoutMs = REQUEST_TIMEOUT_MS,
   minGapMs = fetchFn ? 0 : MIN_GAP_MS,
@@ -785,7 +797,61 @@ function createAnilistCatalog({ fetchFn, retryDelayMs = 1000,
     // refuse to cache a truncated one. (The current caller caches on
     // `seasons.length` alone, which is exactly why the retry lives here: a
     // transient blip must not become a permanently cached half-chain.)
-    async seasonChain(id, { maxHops = MAX_CHAIN_HOPS, idMal = null, title = null } = {}) {
+    // The AniList id behind a card that has none — a "mal-9253" or
+    // "kitsu-48671" from the Jikan/Kitsu fallback. MAL id first, because it is
+    // an identity rather than a guess; a title search only after that.
+    //
+    // The title branch used to end `const pick = exact || list[0]` — AniList's
+    // top relevance hit, accepted with no year check, no format check and no
+    // title check at all. For a franchise title that is a prefix of many
+    // entries the top hit is routinely the umbrella or first series, and that
+    // entry then became the START of the whole chain walk: the seasons rail
+    // and the absolute numbering both derived from a show nobody asked for.
+    // A bare relevance hit is never accepted now. What replaces it is a match
+    // that independently agrees on year and format, reported as `fuzzy` so the
+    // caller can decline to write a guess to disk for good.
+    async _resolveStartId({ id, idMal, title, titles, year }) {
+      const malMatch = /^mal-(\d+)$/.exec(String(id || ''))
+      const mal = Number(idMal) || (malMatch ? Number(malMatch[1]) : 0)
+      // Its own try/catch: a byMal that throws used to abandon the title path
+      // with it, so a MAL outage silently disabled both routes.
+      if (mal) {
+        try {
+          const byMal = await _post('byMal', { idMal: mal })
+          if (byMal && byMal.id) return { id: Number(byMal.id), fuzzy: false }
+        } catch (_) { /* fall through to the title search */ }
+      }
+      if (!title && !titles) return { id: 0, fuzzy: false }
+      let list = []
+      try {
+        const hits = await _post('search', { query: title || _titleSet({ titles })[0], page: 1, perPage: 5 })
+        list = Array.isArray(hits) ? hits : (hits && hits.items) || []
+      } catch (_) { return { id: 0, fuzzy: false } }
+      if (!list.length) return { id: 0, fuzzy: false }
+
+      // Compare every name the card goes by against every name each hit goes
+      // by, normalised. One string against three was what made honest
+      // near-misses (punctuation, a dropped subtitle) fall through to list[0].
+      const want = _titleSet({ title, titles })
+      if (!want.length) return { id: 0, fuzzy: false }
+      const exact = list.find(m => _titleSet(m).some(t => want.includes(t)))
+      if (exact && exact.id) return { id: Number(exact.id), fuzzy: false }
+
+      // No name in common. A hit may still be the right show under a name
+      // neither database shares — but only if it agrees independently, on
+      // both year and format. Year within one, because AniList's seasonYear
+      // and a TMDB/Kitsu first-air year legitimately differ by one for
+      // split-cour and late-autumn shows.
+      const wantYear = Number(year)
+      if (!Number.isFinite(wantYear) || wantYear <= 0) return { id: 0, fuzzy: false }
+      const near = list.find(m => {
+        const y = Number(m && m.year)
+        return Number.isFinite(y) && Math.abs(y - wantYear) <= 1 && /^TV/i.test(String((m && m.format) || ''))
+      })
+      return near && near.id ? { id: Number(near.id), fuzzy: true } : { id: 0, fuzzy: false }
+    },
+
+    async seasonChain(id, { maxHops = MAX_CHAIN_HOPS, idMal = null, title = null, titles = null, year = null } = {}) {
       // No id means no walk ran, so there is nothing to be truncated: the
       // pre-walk shape stays exactly as it was. A card from the Jikan or
       // Kitsu fallback ("mal-9253", "kitsu-…") carries no AniList id: it is
@@ -793,20 +859,11 @@ function createAnilistCatalog({ fetchFn, retryDelayMs = 1000,
       // walks for every show, whichever database the card came from.
       // (Steins;Gate opened from a MAL card listed no seasons at all.)
       let start = Number(id)
+      let fuzzy = false
       if (!start) {
-        const malMatch = /^mal-(\d+)$/.exec(String(id || ''))
-        const mal = Number(idMal) || (malMatch ? Number(malMatch[1]) : 0)
-        try {
-          if (mal) { const byMal = await _post('byMal', { idMal: mal }); if (byMal && byMal.id) start = Number(byMal.id) }
-          if (!start && title) {
-            const hits = await _post('search', { query: title, page: 1, perPage: 5 })
-            const list = Array.isArray(hits) ? hits : (hits && hits.items) || []
-            const want = String(title).toLowerCase().trim()
-            const exact = list.find(m => m && m.titles && [m.titles.english, m.titles.romaji, m.titles.native].some(t => t && String(t).toLowerCase().trim() === want))
-            const pick = exact || list[0]
-            if (pick && pick.id) start = Number(pick.id)
-          }
-        } catch (_) { /* resolution is best-effort; no id means no walk */ }
+        const resolved = await this._resolveStartId({ id, idMal, title, titles, year })
+        start = resolved.id
+        fuzzy = resolved.fuzzy
       }
       if (!start) return { seasons: [], related: [] }
 
@@ -964,7 +1021,14 @@ function createAnilistCatalog({ fetchFn, retryDelayMs = 1000,
       const rest = [...franchise.values()].filter(e => !isSeries(e))
       for (const r of rest) if (!related.has(r.id)) related.set(r.id, r)
       for (const s of seasons) related.delete(s.id)
-      return { seasons, related: [...related.values()].sort(byYear), truncated, capped }
+      // `startId` is the AniList id the walk actually began from. For a card
+      // that already carried one it is just that id; for a "mal-…"/"kitsu-…"
+      // card it is what the resolution above found. Callers need it because
+      // the chain's entries are AniList ids while the CARD's id is not, so
+      // comparing the two always missed — which is why such a card could
+      // never resolve an absolute episode number and never marked its own row
+      // in the seasons rail.
+      return { seasons, related: [...related.values()].sort(byYear), truncated, capped, fuzzy, startId: start }
     },
     // The browse vocabularies. Both are static enough to cache for a week: 19
     // genres, and 361 tags that change when AniList's editors add one.

@@ -9305,17 +9305,30 @@ async function _renderSeasonChain(ticket) {
   let items = []
   let related = []
   let label = ''
+  // Which row is "this page". A card from the Jikan or Kitsu fallback has a
+  // "mal-…"/"kitsu-…" id while the chain's rows are AniList ids, so this never
+  // matched: no row was marked, and clicking any season navigated away to a
+  // different detail page for the same show. The chain reports the AniList id
+  // it actually walked from — use that when our own id is not among the rows.
   let currentId = detail.d.id
 
   if (detail.type === 'anime') {
     // The MAL id and the title let main resolve a card that came from the
     // Jikan or Kitsu fallback to its AniList entry (or walk MAL's graph).
-    const res = await window.api.videoSeasons({ type: 'anime', id: detail.d.id, idMal: detail.d.idMal || null, title: detail.d.title || null })
+    // year and titles travel too: without them a card that carries no AniList
+    // id can only be resolved by a bare relevance hit, which for a franchise
+    // title is routinely the umbrella entry rather than the show asked for.
+    const res = await window.api.videoSeasons({ type: 'anime', id: detail.d.id, idMal: detail.d.idMal || null,
+      title: detail.d.title || null, titles: detail.d.titles || null, year: detail.d.year || null })
       .catch(function () { return { ok: false } })
     if (_videoDetailTicket !== ticket) return
     items = (res && res.ok && Array.isArray(res.seasons)) ? res.seasons : []
     related = (res && res.ok && Array.isArray(res.related)) ? res.related : []
     label = 'Seasons'
+    if (res && res.ok && res.startId != null &&
+        !items.some(function (it) { return String(it.id) === String(currentId) })) {
+      currentId = res.startId
+    }
   } else if (detail.type === 'movie' && detail.d.collection && detail.d.collection.id) {
     const res = await window.api.videoCollection({ id: detail.d.collection.id })
       .catch(function () { return { ok: false } })
@@ -10265,7 +10278,15 @@ function _renderVideoControls(type) {
       const shown = []
       for (let i = win.start; i <= win.end; i++) shown.push(byN[i] || { episodeNumber: i })
       list.classList.add('vep-rows')
-      list.innerHTML = EL.rows(shown, prog, _videoState.episode, Date.now()).map(_epRowHtml).join('')
+      // "Show all" on a long-runner asks for more episodes than the titles
+      // service will serve in one go (One Piece is 1,402), so main bounds it
+      // and says so. Without this line the tail silently rendered as bare
+      // numbers and read as a bug rather than as a limit.
+      const note = (res && res.truncated && res.servedTo)
+        ? '<li class="vep-note">Titles shown up to episode ' + esc(res.servedTo) +
+          ' — pick a narrower range for the rest.</li>'
+        : ''
+      list.innerHTML = EL.rows(shown, prog, _videoState.episode, Date.now()).map(_epRowHtml).join('') + note
       list.querySelectorAll('.vep-row').forEach(function (b) {
         const go = function () {
           if (!b.classList.contains('unaired')) _autoPlayTicket = _videoDetailTicket
