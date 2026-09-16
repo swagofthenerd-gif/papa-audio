@@ -8529,6 +8529,11 @@ function _videoCard(item) {
   if (item.season != null && item.episode != null) metaBits.push('S' + item.season + ' · E' + item.episode)
 
   return '<article class="vcard" data-video="' + esc(key) + '" tabindex="0" role="button"' +
+    // Where this card was left off. A Continue Watching card for episode 9
+    // must resume episode 9 — without these, Play would open the show and
+    // start it from episode 1, which is worse than the button doing nothing.
+    (item && item.episode != null ? ' data-episode="' + esc(item.episode) + '"' : '') +
+    (item && item.season != null ? ' data-season="' + esc(item.season) + '"' : '') +
       ' aria-label="' + esc(item.title || 'Untitled') + '">' +
     '<div class="vcard-art">' + img + fb +
       '<div class="vcard-badges">' + badges.join('') + '</div>' +
@@ -8806,7 +8811,19 @@ function _bindVideoCards(root) {
       const act = e.target.closest('[data-act]')
       if (!act) return open()
       e.stopPropagation()
-      if (act.dataset.act === 'play') return open()
+      if (act.dataset.act === 'play') {
+        // This button used to call open() — exactly what clicking the card does
+        // — so it navigated to the detail page and stopped there. A Play button
+        // that only opens a page is a lie, and on the Continue Watching shelf it
+        // is the one control people reach for. Measured on a twin: click it, and
+        // sixty seconds later the theatre had never opened and no play event had
+        // fired.
+        _playOnArrival = {
+          episode: c.dataset.episode != null ? Number(c.dataset.episode) : null,
+          season: c.dataset.season != null ? Number(c.dataset.season) : null,
+        }
+        return open()
+      }
       if (act.dataset.act === 'cwremove') {
         _removeFromContinueWatching(act.dataset.cwkey, c)
         return
@@ -8997,6 +9014,16 @@ async function renderVideoDetail(navId) {
   const ticket = ++_videoDetailTicket
   _videoDetail = { type, id, d: null }
   _videoState = { season: null, episode: 1, sub: true }
+  // A Play pressed on a card. Taken exactly once, and cleared even when it
+  // carries nothing usable, so a stale arm can never make a later, unrelated
+  // page start playing by itself.
+  const arrival = _playOnArrival
+  _playOnArrival = null
+  if (arrival) {
+    if (Number.isFinite(arrival.episode)) _videoState.episode = arrival.episode
+    if (Number.isFinite(arrival.season)) _videoState.season = arrival.season
+    _autoPlayTicket = ticket
+  }
   _videoStreams = []
   _debridPick = null
   _debridHeld = []
@@ -9073,7 +9100,9 @@ async function renderVideoDetail(navId) {
   if (type === 'tv') {
     const seasons = Array.isArray(d.seasons) ? d.seasons : []
     const pick = seasons.find(function (s) { return s.seasonNumber >= 1 }) || seasons[0] || null
-    _videoState.season = pick ? pick.seasonNumber : 1
+    // A Play from a card already chose the season it was left off at; only fall
+    // back to the show's first season when nothing asked for one.
+    if (!Number.isFinite(_videoState.season)) _videoState.season = pick ? pick.seasonNumber : 1
     _renderVideoControls(type)
     await _refreshTvEpisodes(ticket, ++_videoSeasonTicket)
   } else if (type === 'anime') {
