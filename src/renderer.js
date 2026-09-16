@@ -9007,9 +9007,33 @@ async function renderVideoDetail(navId) {
   _lastNumbering = null
   _playing = { dub: null, source: null, quality: null }
   _prefetch = { key: null, streams: null, inflight: false }
-  setContent('<div class="page"><div class="skeleton skeleton-card" style="height:280px"></div></div>')
+  setContent('<div class="page"><div class="skeleton skeleton-card" style="height:280px"></div>' +
+    '<div class="vdet-waiting" id="vdet-waiting" hidden></div></div>')
 
-  const res = await window.api.videoDetail({ type, id }).catch(function (e) { return { ok: false, error: String((e && e.message) || e) } })
+  // A bare skeleton says nothing, and this request is not always quick: the
+  // catalog lane is strictly first-come, so a page opened while the app is
+  // still filling its shelves waits behind them, and a single rate-limit
+  // refusal makes the lane hold everything for as long as the service asks.
+  // Measured on a cold start: usually 1-2 s, but one run took 22 s and then
+  // failed. Whatever the cause, a skeleton that never changes reads as "it is
+  // not loading" — so after a few seconds the page says what it is waiting on.
+  const waitWords = [
+    [4000, 'Still fetching this title…'],
+    [12000, 'The catalog is being slow — it limits how often it answers, and the app is waiting its turn.'],
+  ]
+  const waitTimers = waitWords.map(function (w) {
+    return setTimeout(function () {
+      if (_videoDetailTicket !== ticket) return
+      const el = document.getElementById('vdet-waiting')
+      if (!el) return
+      el.hidden = false
+      el.textContent = w[1]
+    }, w[0])
+  })
+
+  const res = await window.api.videoDetail({ type, id })
+    .catch(function (e) { return { ok: false, error: String((e && e.message) || e) } })
+  waitTimers.forEach(clearTimeout)
   if (_videoDetailTicket !== ticket) return
   if (!res.ok || !res.detail) {
     _videoError(res.error)

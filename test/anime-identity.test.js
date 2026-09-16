@@ -256,3 +256,27 @@ test('a watchdog that never warned clears nothing', () => {
   ctx._disarmStartWatch()
   assert.strictEqual(stage.length, 0)
 })
+
+// ── A slow catalog fetch says so ───────────────────────────────────────────
+// The detail page showed a bare skeleton for as long as the fetch took, and
+// said nothing. Usually that is a second or two. But the catalog lane is
+// strictly first-come — a page opened while the app is still filling its
+// shelves waits behind them — and a single rate-limit refusal makes the lane
+// hold everything for as long as the service asks. Observed once on a cold
+// start: 22 s, and then a failure. Intermittent, and I could not reproduce it
+// on demand, so this does not claim a cause — it fixes the part that is wrong
+// in every version of it, which is a screen that never changes reading as
+// "not loading".
+test('the detail skeleton carries somewhere to say what it is waiting on', () => {
+  const at = RENDERER.indexOf("setContent('<div class=\"page\"><div class=\"skeleton skeleton-card\" style=\"height:280px\">")
+  assert.ok(at > 0, 'found the detail skeleton')
+  const block = RENDERER.slice(at, at + 2200)
+  assert.match(block, /id="vdet-waiting" hidden/, 'the element ships hidden with the skeleton')
+  assert.match(block, /Still fetching this title/, 'a first word after a few seconds')
+  assert.match(block, /limits how often it answers/, 'and an explanation if it drags on')
+  // Both timers must be cleared, or a slow page that has already rendered
+  // still paints "still fetching" over the finished article.
+  assert.match(block, /waitTimers\.forEach\(clearTimeout\)/)
+  // And nothing may paint into a page the viewer has already left.
+  assert.match(block, /if \(_videoDetailTicket !== ticket\) return/)
+})
