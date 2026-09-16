@@ -30267,6 +30267,51 @@ function setupListeners() {
   let _reconcileWarnedPath = null
   let _barStale = false
 
+    // 128: what the UI is showing versus what mpv actually has open. mpv is the
+    // authority on what is audible; everything else here is a belief about it.
+    //
+    // Extracted from the once-a-second timer so the 'trackchanged' event can call
+    // it the instant mpv says the file changed, instead of the bar waiting out a
+    // poll. A second of the wrong song is exactly the lag that gets reported, and
+    // on a gapless album it happens at every single track boundary.
+    function reconcileWhatIsPlaying() {
+      const shown = state.queue[state.queueIndex]
+      const real = audio.mpvPath
+      if (!real || !shown || !shown.filePath) return
+      if (real === shown.filePath) { _reconcileWarnedPath = null; return }
+      // Streams are resolved to a direct URL before mpv sees them, so the paths
+      // legitimately differ and comparing them would cry wolf every track.
+      if (/^https?:\/\//.test(shown.filePath) || /^https?:\/\//.test(real)) return
+      const idx = state.queue.findIndex(t => t.filePath === real)
+      // Say it once per path. This guard used to sit ABOVE the correction, so it
+      // throttled the FIX and not just the log: once a disagreement had been
+      // reported, that same one was never acted on again.
+      if (_reconcileWarnedPath !== real) {
+        _reconcileWarnedPath = real
+        console.error('[papa] the UI and mpv disagree about what is playing:',
+          JSON.stringify({ shown: shown.filePath, mpv: real, foundInQueueAt: idx }))
+      }
+      if (idx >= 0) {
+        // mpv is the authority. Resync rather than leave scrobbling, now-playing
+        // and playNext's arithmetic all acting on the wrong track.
+        state.queueIndex = idx
+        updateNowPlaying(state.queue[idx])
+        updateTrackHighlight()
+        if (state.queuePanelOpen) renderQueuePanel()
+        if (state.modalOpen) updateNowPlayingModal()
+        updateNextPrefetch()
+      } else {
+        updateNowPlayingFromPath(real)
+      }
+    }
+
+    // mpv reports the file it actually has open. The shim has emitted this for a
+    // while — its own comment calls it "the thing several desync findings turn
+    // on" — and nothing had ever listened, so the bar's only corrections were a
+    // gapless auto-advance and the once-a-second poll below.
+    audio.addEventListener('trackchanged', function () { reconcileWhatIsPlaying() })
+
+
   const reconcileTimer = setInterval(() => {
     if (audio.engineDown) return          // already saying so, loudly
     // 185, in practice: mpv's pause property is the authority, and the shim's
@@ -30287,31 +30332,7 @@ function setupListeners() {
       if (stale) console.error(`[papa] the progress bar has not moved for ${Math.round(audio.positionAgeMs)}ms while unpaused`)
     }
 
-    // 128: what the UI is showing versus what mpv actually has open.
-    const shown = state.queue[state.queueIndex]
-    const real = audio.mpvPath
-    if (!real || !shown || !shown.filePath) return
-    if (real === shown.filePath) { _reconcileWarnedPath = null; return }
-    // Streams are resolved to a direct URL before mpv sees them, so the paths
-    // legitimately differ and comparing them would cry wolf every track.
-    if (/^https?:\/\//.test(shown.filePath) || /^https?:\/\//.test(real)) return
-    if (_reconcileWarnedPath === real) return
-    _reconcileWarnedPath = real
-    const idx = state.queue.findIndex(t => t.filePath === real)
-    console.error('[papa] the UI and mpv disagree about what is playing:',
-      JSON.stringify({ shown: shown.filePath, mpv: real, foundInQueueAt: idx }))
-    if (idx >= 0) {
-      // mpv is the authority. Resync rather than leave scrobbling, now-playing
-      // and playNext's arithmetic all acting on the wrong track.
-      state.queueIndex = idx
-      updateNowPlaying(state.queue[idx])
-      updateTrackHighlight()
-      if (state.queuePanelOpen) renderQueuePanel()
-      if (state.modalOpen) updateNowPlayingModal()
-      updateNextPrefetch()
-    } else {
-      updateNowPlayingFromPath(real)
-    }
+      reconcileWhatIsPlaying()
   }, RECONCILE_MS)
   reconcileTimer.unref?.()
 

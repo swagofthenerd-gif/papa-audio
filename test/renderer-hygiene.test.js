@@ -150,30 +150,47 @@ test('the downloads poll survives a throwing frame and says so', () => {
 
 // ── Items 127, 128, 185: the UI converges on mpv ───────────────────────────
 
+// The path comparison moved OUT of the timer and into reconcileWhatIsPlaying(),
+// so that the 'trackchanged' event can call it the instant mpv changes file
+// rather than the bar waiting out a poll (measured: 953 ms before, 11 ms after).
+// These slice the right place now; what they assert is unchanged.
+const reconcileFn = () => {
+  const at = CODE.indexOf('function reconcileWhatIsPlaying() {')
+  assert.ok(at > 0, 'the reconciler is missing')
+  return CODE.slice(at, CODE.indexOf("audio.addEventListener('trackchanged'", at))
+}
+const reconcileTick = () => {
+  const at = CODE.indexOf('const reconcileTimer = setInterval(')
+  assert.ok(at > 0, 'the reconcile tick is missing')
+  return CODE.slice(at, at + 2600)
+}
+
 test('the renderer reconciles its playback state against mpv once a second', () => {
   // Three copies exist: mpv's properties, the shim's fields, and
   // state.isPlaying. This makes the last converge on the first.
-  const at = CODE.indexOf('const reconcileTimer = setInterval(')
-  assert.ok(at > 0, 'the reconcile tick is missing')
-  const fn = CODE.slice(at, at + 2600)
-  assert.match(fn, /state\.isPlaying !== playing/, 'the UI flag must follow mpv, not the last optimistic write')
-  assert.match(fn, /audio\.mpvPath/, 'compare against what mpv has open')
-  assert.match(fn, /audio\.positionAgeMs > STALE_POSITION_MS/, 'a frozen bar is its own signal')
-  assert.match(fn, /if \(audio\.engineDown\) return/, 'do not shout while the engine is already down')
-  assert.match(fn, /reconcileTimer\.unref/, 'a 1s interval must not hold the process open')
+  const tick = reconcileTick()
+  assert.match(tick, /state\.isPlaying !== playing/, 'the UI flag must follow mpv, not the last optimistic write')
+  assert.match(tick, /audio\.positionAgeMs > STALE_POSITION_MS/, 'a frozen bar is its own signal')
+  assert.match(tick, /if \(audio\.engineDown\) return/, 'do not shout while the engine is already down')
+  assert.match(tick, /reconcileTimer\.unref/, 'a 1s interval must not hold the process open')
+  assert.match(tick, /reconcileWhatIsPlaying\(\)/, 'the poll still runs the reconcile')
+  assert.match(reconcileFn(), /audio\.mpvPath/, 'compare against what mpv has open')
+})
+
+test('the reconcile is also driven by mpv, not only by the clock', () => {
+  // The shim emits 'trackchanged' for exactly this, and nothing listened — so
+  // every track change showed the previous song for about a second.
+  assert.match(CODE, /audio\.addEventListener\('trackchanged', function \(\) \{ reconcileWhatIsPlaying\(\) \}\)/)
 })
 
 test('the reconcile does not cry wolf over streams', () => {
   // A stream is resolved to a direct URL before mpv sees it, so the paths
   // legitimately differ and comparing them would fire on every track.
-  const at = CODE.indexOf('const reconcileTimer = setInterval(')
-  const fn = CODE.slice(at, at + 2600)
-  assert.match(fn, /\^https\?/, 'streams have to be exempted')
+  assert.match(reconcileFn(), /\^https\?/, 'streams have to be exempted')
 })
 
 test('a disagreement resyncs to mpv rather than to the queue', () => {
-  const at = CODE.indexOf('const reconcileTimer = setInterval(')
-  const fn = CODE.slice(at, at + 2600)
+  const fn = reconcileFn()
   assert.match(fn, /state\.queueIndex = idx/)
   assert.match(fn, /updateNextPrefetch\(\)/, 'a resync without re-arming prefetch stops the album at the next boundary')
   assert.match(fn, /updateNowPlayingFromPath\(real\)/, 'and mpv playing something not in the queue still has to be shown')
