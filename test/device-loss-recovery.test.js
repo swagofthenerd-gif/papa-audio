@@ -15,6 +15,7 @@ const settle = (ms = 80) => new Promise(r => setTimeout(r, ms))
 function fakeMpv() {
   const sock = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'papa-dev-')), 'mpv.sock')
   const conns = []
+  const commands = []
   const server = net.createServer(c => {
     conns.push(c)
     let buf = ''
@@ -25,6 +26,7 @@ function fakeMpv() {
         const line = buf.slice(0, i); buf = buf.slice(i + 1)
         if (!line.trim()) continue
         const msg = JSON.parse(line)
+        commands.push(msg.command)
         c.write(JSON.stringify({ error: 'success', data: null, request_id: msg.request_id }) + '\n')
       }
     })
@@ -34,7 +36,7 @@ function fakeMpv() {
   proc.stderr = new PT()
   proc.kill = () => proc.emit('exit', 0)
   return new Promise(res => server.listen(sock, () => res({
-    sock, proc,
+    sock, proc, commands,
     spawnFn: () => proc,
     // The engine closes its socket while it respawns, and the playback-restart
     // pump keeps firing across that moment. Writing to the closed end throws
@@ -131,6 +133,64 @@ test('a device fault while paused recovers without claiming it paused for safety
     assert.strictEqual(r.restarts, 1, 'it recovered')
     assert.strictEqual(r.pausedForSafety, false,
       'it was already paused; there is nothing to pause for safety')
+  } finally {
+    try { eng.stop() } catch (_) {}
+    f.close()
+  }
+})
+
+// The tests above stub start(), which is where _resume runs — so they prove the
+// decision to come back paused was RECORDED, never that the engine obeys it. A
+// mutation removing the `if (!resume.paused)` guard from _resume left all three
+// green: headphones out, speakers at full volume, and the event still
+// truthfully reporting pausedForSafety: true. This asks mpv instead.
+test('a resume that came back paused never un-pauses mpv', async () => {
+  const f = await fakeMpv()
+  const eng = new MpvEngine({ spawnFn: f.spawnFn, socketPath: f.sock, ...FAST })
+  await eng.start()
+  try {
+    f.commands.length = 0
+    await eng._resume({ path: '/music/a.flac', position: 0, volume: 70, paused: true }, 'test')
+    const unpaused = f.commands.filter(c =>
+      c[0] === 'set_property' && c[1] === 'pause' && c[2] === false)
+    assert.deepStrictEqual(unpaused, [],
+      'the whole point of the safety pause is that nothing comes back playing')
+  } finally {
+    try { eng.stop() } catch (_) {}
+    f.close()
+  }
+})
+
+test('a resume that was playing does come back playing', async () => {
+  const f = await fakeMpv()
+  const eng = new MpvEngine({ spawnFn: f.spawnFn, socketPath: f.sock, ...FAST })
+  await eng.start()
+  try {
+    f.commands.length = 0
+    await eng._resume({ path: '/music/a.flac', position: 0, volume: 70, paused: false }, 'test')
+    assert.ok(
+      f.commands.some(c => c[0] === 'set_property' && c[1] === 'pause' && c[2] === false),
+      'or a device blip would silently leave the music stopped'
+    )
+  } finally {
+    try { eng.stop() } catch (_) {}
+    f.close()
+  }
+})
+
+test('the resume replays the file and the volume it had', async () => {
+  const f = await fakeMpv()
+  const eng = new MpvEngine({ spawnFn: f.spawnFn, socketPath: f.sock, ...FAST })
+  await eng.start()
+  try {
+    f.commands.length = 0
+    // position 0 deliberately: a non-zero position defers a seek until mpv
+    // reports playback-restart, which this harness does not pump, so asserting
+    // one here would be asserting the harness rather than the engine.
+    await eng._resume({ path: '/music/a.flac', position: 0, volume: 64, paused: true }, 'test')
+    assert.ok(f.commands.some(c => c[0] === 'loadfile' && c[1] === '/music/a.flac'), 'the file')
+    assert.ok(f.commands.some(c => c[0] === 'set_property' && c[1] === 'volume' && c[2] === 64),
+      'and the volume, at the value it had — a respawn at the wrong volume is its own kind of loud')
   } finally {
     try { eng.stop() } catch (_) {}
     f.close()

@@ -1748,9 +1748,15 @@ function _flushNowPlaying() {
   // process can see what is playing, and a second of staleness in a number that
   // is only ever read for display costs nothing. Anything else — the track, the
   // queue, play/pause — writes immediately.
-  const withoutPosition = body.length < 1e6
-    ? body.replace(/"position":-?[\d.]+,?/, '')
-    : body
+  // Compared structurally rather than by cutting the position out of the
+  // serialised string. The string version depended on the top-level "position"
+  // being the FIRST one in the JSON — true today only because of the order the
+  // renderer happens to build the payload in, and it had no /g flag, so one
+  // nested "position" appearing earlier would have silently disabled the whole
+  // optimisation. Destructuring cannot drift that way.
+  const { position: _npPos, ...withoutPositionObj } = payload || {}
+  let withoutPosition
+  try { withoutPosition = JSON.stringify(withoutPositionObj) } catch (_) { withoutPosition = body }
   if (withoutPosition === _npLastBodyNoPos) {
     _npWriting = false
     if (!_npStopped && _npPending != null && !_npTimer) _npTimer = setTimeout(_flushNowPlaying, NOW_PLAYING_COALESCE_MS)
