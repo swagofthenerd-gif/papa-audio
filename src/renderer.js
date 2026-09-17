@@ -8131,6 +8131,18 @@ var _deviceEventsBound = false
 function _bindDeviceEvents() {
   if (_deviceEventsBound || !window.api || !window.api.onVideoDownloadEvent) return
   _deviceEventsBound = true
+  // A newly CACHED episode arrives on the shared 'video-event' channel, not on
+  // the download channel below — so an episode he had just watched did not
+  // appear in On Device until he left the tab and came back, which reads as the
+  // page being broken rather than merely late.
+  if (window.api.onVideoEvent) {
+    window.api.onVideoEvent(function (e) {
+      if (!e || e.kind !== 'cached') return
+      if (_videoTab !== 'device' || state.currentPage !== 'video') return
+      var rows = document.getElementById('vrows')
+      if (rows) _renderDeviceTab(rows, _videoCatalogTicket)
+    })
+  }
   window.api.onVideoDownloadEvent(function (e) {
     if (!e) return
     if (e.kind === 'done') showSnackbar('\u201c' + (e.title || 'Download') + '\u201d is ready to watch offline', null, null, 6000)
