@@ -355,6 +355,9 @@ class TorrentStreamer extends EventEmitter {
     // where that stood last time it was asked. Distinct from _prefetched, which
     // only ever grabs the opening.
     this._predownload = null
+    // The whole-tail claim the LAST seek put on the swarm, kept so the next
+    // seek can take it back. See seekToFraction.
+    this._seekSelection = null
     this._prebufferTimer = null
     this._storeDir = null
     // Where served subtitles land when this stream has no _storeDir of its
@@ -564,8 +567,35 @@ class TorrentStreamer extends EventEmitter {
     // "fetch that file" and the file it names has not changed. Only the
     // per-index bookkeeping tied to what is *playing* (the prefetch marker)
     // resets here.
+    //
+    // That was the intent, but the loop above was quietly undoing it. A
+    // predownload IS torrent.select(file._startPiece, file._endPiece, 0), and
+    // File.deselect() is torrent.deselect(_startPiece, _endPiece, false) --
+    // Number(false) is 0, so it matches that triple exactly and removes it.
+    // Every episode switch therefore cancelled the download the user had
+    // explicitly asked to keep, while _predownload stayed set and
+    // predownloadProgress() went on reporting a fetch that had stopped, frozen
+    // at whatever percentage it had reached. Put the claim back.
+    this._reassertPredownload()
     this._prioritiseHead(torrent, file)
     return buildFileUrl(addr.port, index, file.name)
+  }
+
+  // Re-place the standing whole-file claim after something has withdrawn it.
+  // No-op when nothing is predownloading, or when the predownloaded file is the
+  // one now playing -- that file's selection was never withdrawn, and a second
+  // identical claim would only make WebTorrent walk the same range twice.
+  _reassertPredownload() {
+    const pd = this._predownload
+    const torrent = this._torrent
+    if (!pd || !torrent || pd.index === this._fileIndex) return false
+    try {
+      if (typeof torrent.select !== 'function') return false
+      torrent.select(pd.start, pd.end, 0)
+      return true
+    } catch (_) {
+      return false
+    }
   }
 
   // A live reading of the swarm, null when nothing is active. The 'progress'
@@ -741,6 +771,9 @@ class TorrentStreamer extends EventEmitter {
     this._reusedReady = null
     this._torrent = torrent
     this._predownload = null
+    // A new torrent means the old torrent's selection list is gone with it;
+    // holding a claim against it would deselect a range on the wrong torrent.
+    this._seekSelection = null
 
     // Re-assert the bandwidth intent now that a torrent (and its client) is
     // live: the switches can be set before anything is streaming, and a client
@@ -1047,9 +1080,27 @@ class TorrentStreamer extends EventEmitter {
       const offset = Math.floor((Number(file.length) || 0) * clamped)
       const target = Math.min(endPiece, startPiece + Math.floor(offset / pieceLength))
 
-      // Everything from the jump onward is what the viewer is going to watch,
-      // so that is what the torrent should be asking for.
-      if (typeof torrent.select === 'function') torrent.select(target, endPiece, 1)
+      // Give back the previous jump's claim before making a new one.
+      //
+      // WebTorrent's select() PUSHES a new entry onto _selections every time and
+      // deselect() only removes an entry matching (from, to, priority) exactly
+      // (webtorrent/lib/torrent.js) -- so a seek that never deselected left its
+      // whole-tail claim behind for good. Every one of them is priority 1, equal
+      // priorities keep insertion order through the sort, and the request loop
+      // walks the list from the FRONT: the oldest, stalest claim is served
+      // first and the place the viewer has actually just jumped to goes to the
+      // back of a queue that grows by one with every scrub. Half a minute of
+      // dragging the seek bar is enough to put the playhead behind dozens of
+      // claims on parts of the film nobody is waiting for.
+      if (this._seekSelection && typeof torrent.deselect === 'function') {
+        const prev = this._seekSelection
+        try { torrent.deselect(prev.from, prev.to, prev.priority) } catch (_) {}
+        this._seekSelection = null
+      }
+      if (typeof torrent.select === 'function') {
+        torrent.select(target, endPiece, 1)
+        this._seekSelection = { from: target, to: endPiece, priority: 1 }
+      }
       // And the first few seconds of it are needed now, not eventually.
       const urgent = Math.max(1, Math.ceil(SEEK_URGENT_BYTES / pieceLength))
       if (typeof torrent.critical === 'function') {
