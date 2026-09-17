@@ -5677,6 +5677,19 @@ function _videoPlayResult(result, opts) {
         ? { source: result.source || null, quality: result.quality || null, group: _releaseGroupOf(result) }
         : null,
     }
+  } else {
+    // A play with no title behind it — a file opened straight off the
+    // On-device page — must CLEAR the watch, not inherit the last one. The
+    // `if (d)` above used to be the only writer, so starting a cached file
+    // left _watch pointing at whatever was watched before it: every position
+    // tick from the new film was written under the old film's key
+    // (_onVideoStateTick gates on _watch.key, which was still set), and the
+    // deck's Next/Previous read _watch.ctx and advanced the old show.
+    _watch = {
+      key: null, meta: null, savedAt: 0, resumed: false,
+      startFromZero: false, autoAdvanced: false,
+      ctx: pctx, pick: result, sourceCandidate: null,
+    }
   }
 
   // The show's remembered languages ride in with the open, and choices made
@@ -5708,12 +5721,14 @@ function _videoPlayResult(result, opts) {
     // Passed only when a previous episode exists; the deck hides the button
     // otherwise.
     onPrev: _prevEpisodeOf(vd, vs) ? _playPrevEpisode : null,
-    title: d ? d.title : 'Video',
+    // With no title behind the play (a file opened from On device) the result
+    // carries its own name. 'Video' is the last resort, not the first.
+    title: d ? d.title : (result.title || 'Video'),
     subtitle: isEpisode
       ? (vd.type === 'tv'
           ? 'Season ' + vs.season + ' · Episode ' + vs.episode
           : 'Episode ' + vs.episode)
-      : (d && d.year ? String(d.year) : ''),
+      : (d && d.year ? String(d.year) : (result.subtitleLine || '')),
     // The identity the online-subtitle search needs. AniList ids mean nothing
     // to OpenSubtitles, so anime searches by title and episode instead.
     subMeta: d ? {
@@ -5985,6 +6000,9 @@ function _tasteLanguageCode(list) {
 async function _renderTasteRow(ticket) {
   const mount = document.getElementById('vtaste-row')
   if (!mount) return
+  // Every path below replaces this mount's contents, and by the second run it
+  // holds a filled rail of enriched cards. Release before overwriting.
+  if (typeof _releaseCardsIn === 'function') _releaseCardsIn(mount)
   const sig = _tasteSignals()
   if (!sig) { mount.innerHTML = ''; return }
 
@@ -6007,6 +6025,7 @@ async function _renderTasteRow(ticket) {
   if (_videoCatalogTicket !== ticket) return
   const box = document.getElementById('vtaste-row')
   if (!box) return
+  if (typeof _releaseCardsIn === 'function') _releaseCardsIn(box)
   if (!res.ok) {
     box.innerHTML = '<div class="vrow-msg err">' + esc(_videoErrorText(res.error)) + '</div>'
     return
@@ -6376,6 +6395,18 @@ function _bindVideoHead() {
   _bindVideoSearch()
 }
 
+// Releases everything the three video-page mounts are about to throw away.
+// Split out because a tab switch, a hide-seen repaint and the taste row all
+// replace the same nodes and all have to pay the same cost.
+function _wipeVideoMounts() {
+  if (typeof _stopHoverTrailer === 'function') _stopHoverTrailer()
+  if (typeof _releaseCardsIn !== 'function') return
+  for (const id of ['vrows', 'vtaste-row', 'vhero-mount']) {
+    const el = document.getElementById(id)
+    if (el) _releaseCardsIn(el)
+  }
+}
+
 // One tab render: the hero (skipped for My List, which has no editorial
 // content to feature) plus the rows that belong to this tab.
 async function _renderVideoTab(ticket, opts) {
@@ -6413,6 +6444,17 @@ async function _renderVideoTab(ticket, opts) {
   }
   if (!rows) return
   _stopVideoHero()
+  // Every branch below replaces the contents of #vrows, #vhero-mount and
+  // #vtaste-row. setContent() releases the outgoing cards from the enrichment
+  // queue and stops a playing hover preview, but a TAB SWITCH never goes
+  // through setContent — it repaints these three mounts in place. So the
+  // enricher's element-keyed Map (a strong Map, plus a callback closure per
+  // card) kept every card the page had ever drawn, and a hover trailer left
+  // mid-fade kept a detached <video> decoding. All → Movies → TV → Anime →
+  // My List → On device and back is six full shelf-sets of cards retained,
+  // per lap, for the life of the session. This is the same leak the
+  // setContent call was added to fix, in the path it does not reach.
+  _wipeVideoMounts()
 
   const tasteRow = document.getElementById('vtaste-row')
   if (_videoTab === 'list') {
@@ -7810,9 +7852,14 @@ function _deviceCardHtml(e, kind) {
   if (e.quality) badges.push('<span class="vbadge vbadge-quality">' + esc(e.quality) + '</span>')
   if (kind === 'cache') badges.push('<span class="vbadge vbadge-type">cached</span>')
   const ep = _deviceEpisodeLabel(e)
+  // What the theatre header should say when this file is played straight from
+  // here. The card is the only thing that knows: there is no detail page open
+  // behind the On-device view, so the play cannot borrow one (see
+  // _playDeviceFile). Episode and season ride along for the same reason.
   return '<article class="vcard vdevice-card" tabindex="0" role="button"' + nav +
       ' data-device-kind="' + kind + '" data-device-id="' + esc(String(e.id || e.key || '')) + '"' +
       (e.path ? ' data-device-path="' + esc(e.path) + '"' : '') +
+      (ep ? ' data-device-ep="' + esc(ep) + '"' : '') +
       ' aria-label="' + esc(e.title || 'Video') + '">' +
     '<div class="vcard-art">' +
       (art ? '<img class="vcard-poster is-loaded" src="' + esc(art) + '" alt="" loading="lazy">' : '') +
@@ -7890,7 +7937,15 @@ function _deviceStorageHtml(keepUsed, keepLimit, cacheUsed, cacheLimit) {
 // section with nothing in it is not drawn at all.
 async function _renderDeviceTab(rows, ticket) {
   if (!rows) return
-  rows.innerHTML = '<div class="vdevice-page"><div class="spin"></div></div>'
+  // The spinner belongs to the FIRST paint only. This function re-runs on every
+  // download event and after every delete, and blanking a page of cards to a
+  // spinner three times a minute is what "bugged out and extremely laggy" looks
+  // like from the outside: the list the viewer was aiming at vanishes under the
+  // pointer. A repaint keeps the old cards on screen until the new ones are
+  // ready.
+  if (!rows.querySelector('.vdevice-page')) {
+    rows.innerHTML = '<div class="vdevice-page"><div class="spin"></div></div>'
+  }
   const [dl, keep, cache] = await Promise.all([
     window.api.videoDownloadList ? window.api.videoDownloadList().catch(function () { return null }) : null,
     window.api.videoKeepList ? window.api.videoKeepList().catch(function () { return null }) : null,
@@ -7949,44 +8004,110 @@ async function _renderDeviceTab(rows, ticket) {
     html += '<div class="vrow-msg">Nothing is saved on this device yet. Open a film or an episode and press Download \u2014 it appears here, and plays with no internet at all.</div>'
   }
 
-  mount.innerHTML = '<div class="vdevice-page">' + html + '</div>'
-  _bindDeviceCards(ticket)
+  // The id the binder looks for. It was missing for the life of this page: the
+  // markup only ever carried the CLASS, so _bindDeviceCards' getElementById
+  // returned null and bailed on its first line — every click on every card,
+  // Play, Delete and Cancel included, hit nothing at all. The page rendered
+  // perfectly and did nothing, which is exactly how it was reported ("i have
+  // cached episodes which i like, but i cant fucking open them or play them
+  // from there, and i cant even delete them").
+  //
+  // The div is rebuilt on every render, so binding to it cannot stack
+  // listeners — but the guard in _bindDeviceCards says so out loud rather than
+  // leaving that as a property of this line.
+  mount.innerHTML = '<div class="vdevice-page" id="vdevice-grid">' + html + '</div>'
+  _bindDeviceCards(mount.querySelector('.vdevice-page'))
 }
 
-function _bindDeviceCards(ticket) {
-  const root = document.getElementById('vdevice-grid')
-  if (!root) return
+// Reports what actually happened. An IPC that answers { ok:false, error } and a
+// promise that rejects used to look identical to a working delete: the old code
+// re-rendered on .then() without reading the answer and had no .catch() at all,
+// so "that download is not in the list" repainted the same card and said
+// nothing. A destructive action that fails silently is worse than one that
+// refuses out loud.
+function _deviceAction(promise, done, failed) {
+  return Promise.resolve(promise).then(function (res) {
+    if (res && res.ok === false) {
+      showSnackbar(failed + ((res.error && ': ' + _shortQ(res.error, 90)) || ''), null, null, 6000)
+    } else if (done) {
+      showSnackbar(done, null, null, 4000)
+    }
+    return res
+  }).catch(function (e) {
+    showSnackbar(failed + ': ' + _shortQ(String((e && e.message) || e), 90), null, null, 6000)
+    return null
+  }).then(function (res) {
+    _renderDeviceTab(document.getElementById('vrows'), _videoCatalogTicket)
+    return res
+  })
+}
+
+function _bindDeviceCards(root) {
+  root = root || document.getElementById('vdevice-grid')
+  if (!root || root.dataset.deviceBound === '1') return
+  root.dataset.deviceBound = '1'
+  const run = function (card, act) {
+    const kind = card.dataset.deviceKind
+    const id = card.dataset.deviceId
+    const path = card.dataset.devicePath || null
+    const name = card.getAttribute('aria-label') || 'That file'
+    if (act === 'cancel') {
+      return _deviceAction(window.api.videoDownloadCancel({ id: id }),
+        'Stopped downloading “' + name + '”', 'Could not stop that download')
+    }
+    if (act === 'delete') {
+      const call = kind === 'cache' ? window.api.videoCacheDelete({ key: id }) : window.api.videoKeepDelete(id)
+      return _deviceAction(call, 'Deleted “' + name + '” from this device',
+        'Could not delete that file').then(function (res) {
+          // The poster badges elsewhere claim this title starts instantly. It
+          // does not any more, so re-ask rather than leave them lying.
+          if (res && res.ok !== false && typeof _refreshInstantKeys === 'function') _refreshInstantKeys(true)
+        })
+    }
+    if (act === 'play') {
+      if (!path) { showToast('That file is not on this device any more'); return }
+      return _playDeviceFile(card)
+    }
+    // The card itself: the title's page when known, else play the file.
+    if (card.dataset.deviceOpen) return navigate('video-detail', card.dataset.deviceOpen)
+    if (path) return _playDeviceFile(card)
+    showToast('There is nothing to open for this one')
+  }
   root.addEventListener('click', function (ev) {
     const act = ev.target.closest ? ev.target.closest('[data-device-act]') : null
     const card = ev.target.closest ? ev.target.closest('.vdevice-card') : null
     if (!card) return
-    const kind = card.dataset.deviceKind
-    const id = card.dataset.deviceId
-    const path = card.dataset.devicePath || null
-    if (act) {
-      ev.stopPropagation()
-      const what = act.dataset.deviceAct
-      if (what === 'cancel') {
-        window.api.videoDownloadCancel({ id: id }).then(function () { _renderDeviceTab(document.getElementById('vrows'), _videoCatalogTicket) })
-      } else if (what === 'delete') {
-        const call = kind === 'cache' ? window.api.videoCacheDelete({ key: id }) : window.api.videoKeepDelete(id)
-        Promise.resolve(call).then(function () { _renderDeviceTab(document.getElementById('vrows'), _videoCatalogTicket) })
-      } else if (what === 'play' && path) {
-        _playDeviceFile(card)
-      }
-      return
-    }
-    // The card itself: the title's page when known, else play the file.
-    if (card.dataset.deviceOpen) navigate('video-detail', card.dataset.deviceOpen)
-    else if (path) _playDeviceFile(card)
+    if (act) ev.stopPropagation()
+    run(card, act ? act.dataset.deviceAct : null)
+  })
+  // The card says role="button" and takes focus. It has to answer to the
+  // keyboard, or that is a second lie on the same element.
+  root.addEventListener('keydown', function (ev) {
+    if (ev.key !== 'Enter' && ev.key !== ' ') return
+    const card = ev.target.closest ? ev.target.closest('.vdevice-card') : null
+    if (!card || ev.target !== card) return
+    ev.preventDefault()
+    run(card, null)
   })
 }
 // A local file plays with no detail page open: the minimal result the play
 // pipeline needs, and no watch identity beyond what the card knows.
+//
+// The context is passed EXPLICITLY and empty. Without it _videoPlayResult
+// falls back to _videoDetail / _videoState / _videoStreams, which on this page
+// are whatever title was opened last — so playing a cached episode inherited a
+// stranger's identity: the theatre showed that title's name, the result was
+// stamped with that title's season and episode, and the position ticks were
+// written to that title's watch key. Nothing on the On-device page belongs to
+// the page behind it.
 function _playDeviceFile(card) {
   const path = card.dataset.devicePath
   if (!path) return
-  _videoPlayResult({ kind: 'cached', url: path, title: card.getAttribute('aria-label') || 'Video' }, { manual: true })
+  const title = card.getAttribute('aria-label') || 'Video'
+  _videoPlayResult({
+    kind: 'cached', url: path, title: title,
+    subtitleLine: card.dataset.deviceEp || '',
+  }, { manual: true, ctx: { detail: null, state: null, streams: [] } })
 }
 var _deviceEventsBound = false
 function _bindDeviceEvents() {
@@ -8015,6 +8136,11 @@ function _bindDeviceEvents() {
 }
 
 function _renderMyList(rows) {
+  // Folding a franchise and pressing a sort chip both re-enter here and replace
+  // the whole grid, so the cards being discarded have to leave the enrichment
+  // queue first — a session of tidying My List would otherwise retain every
+  // card it ever drew.
+  if (typeof _releaseCardsIn === 'function') _releaseCardsIn(rows)
   const store = _vStore()
   const list = store ? (store.watchlist() || []) : []
   if (!list.length) {
@@ -24367,7 +24493,21 @@ function _initBackupSettings() {
       try {
         const res = await window.api.papaImportAll()
         if (res && (res.cancelled || res.canceled)) setStatus('')
-        else if (res && res.ok !== false) setStatus('Restored ✓ — restart to see everything.')
+        else if (res && res.ok !== false) {
+          // Say what actually came back. A restore that silently leaves things
+          // out, while reporting success, is how he would find out months
+          // later that his liked albums never returned.
+          var parts = []
+          if (res.imported && res.imported.length) parts.push(res.imported.length + ' stores')
+          if (res.settingsWritten && res.settingsWritten.length) parts.push(res.settingsWritten.length + ' settings')
+          var msg = 'Restored ' + (parts.length ? parts.join(' and ') : 'nothing') + ' ✓ — restart to see everything.'
+          if (res.settingsSkipped && res.settingsSkipped.length) {
+            msg += ' ' + res.settingsSkipped.length + ' item' +
+                   (res.settingsSkipped.length === 1 ? '' : 's') +
+                   ' held passwords or keys, which a backup never stores — those were left as they are.'
+          }
+          setStatus(msg)
+        }
         else setStatus('Could not restore.' + (res && res.error ? ' ' + res.error : ''))
       } catch (e) {
         setStatus('Could not restore.')

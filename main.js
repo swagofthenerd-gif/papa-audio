@@ -4899,6 +4899,7 @@ ipcMain.handle('library-inspect-paths', async (_, { paths }) => {
 })
 
 const libPrune = require('./src/library-prune')
+const restoreMerge = require('./src/restore-merge')
 
 // One handler, not seven. Pruning is a single logical transaction — the
 // renderer must never be able to complete three of these and abandon the rest.
@@ -14788,7 +14789,33 @@ ipcMain.handle('papa-import-all', async (_, { path: givenPath } = {}) => {
         imported.push(name)
       } catch (_) { /* one store failing must not fail the rest */ }
     }
-    return { ok: true, imported }
+
+    // The settings half. This used to be skipped entirely, on the grounds that
+    // restoring it "would clobber real keys with the redaction marker".
+    // Measured against a real config that reasoning was inverted: 31 keys carry
+    // real data and 6 are redacted, so the guard against 6 was throwing away
+    // 31 — liked albums, followed artists, the download wishlist, the music
+    // folders themselves, EQ, theme, volume, saved Soulseek users and the whole
+    // YouTube library — while the UI reported a successful restore.
+    //
+    // Redaction is per-FIELD, so this merges rather than replacing: a
+    // credentials object keeps its username and leaves its secret alone.
+    const settingsWritten = []
+    const settingsSkipped = []
+    if (parsed.settings && typeof parsed.settings === 'object') {
+      try {
+        const bak = path.join(USER_DATA, `settings.${stamp}.bak`)
+        fs.writeFileSync(bak, JSON.stringify(store.store || {}), 'utf8')
+      } catch (_) { /* the backup of the backup is best-effort */ }
+      const plan = restoreMerge.planSettingsRestore(store.store || {}, parsed.settings)
+      for (const w of plan.writes) {
+        try { store.set(w.key, w.value); settingsWritten.push(w.key) }
+        catch (_) { /* one key failing must not fail the rest */ }
+      }
+      settingsSkipped.push(...plan.skipped)
+    }
+
+    return { ok: true, imported, settingsWritten, settingsSkipped }
   } catch (e) {
     return { ok: false, error: (e && e.message) || String(e) }
   }
