@@ -7247,6 +7247,9 @@ const DL_TICK_MS = 4000
 let dlState = dlSched.createState()
 let dlTimer = null
 let dlTicking = false
+// Consecutive ticks where slskd reported no transfers while we believed some
+// were in flight. See the guard in dlTick.
+let _dlEmptySnapshots = 0
 
 // Album-group ledger for verification/organize (#49/#50). Keyed
 // `username::folderPath`. Populated on enqueue (the ONLY point we know the
@@ -7762,6 +7765,31 @@ async function dlTick() {
     const snap = await dlSnapshot()
     // slskd unreachable — do nothing rather than double-request on recovery.
     if (!snap) return
+    // And an EMPTY answer while we believe files are in flight is not an
+    // answer either. dlSnapshot only returns null when the fetch THROWS; a 204
+    // or an empty body iterates nothing and hands back an empty Map, which is
+    // truthy and sailed straight past the guard above. Every in-flight file
+    // then looked removed, and 30 seconds later the loop below called
+    // recordAbandoned on all of them — which is terminal AND persisted, and
+    // writes a band-independent song key, so the same song was blocked from
+    // every peer and in every format, forever, across restarts.
+    //
+    // slskd answers this way while it is restarting, which is exactly what
+    // changing the download folder, the share mode or the Soulseek password
+    // does. So: queue an album, change a setting, and the album silently
+    // vanished and could never be re-added.
+    if (snap.size === 0 && Object.keys(dlState.inflight).length > 0) {
+      _dlEmptySnapshots++
+      // Two in a row before believing it. One is indistinguishable from a
+      // daemon that has just come back up and not yet re-read its transfers.
+      if (_dlEmptySnapshots < 2) {
+        console.warn('[papa][dl] slskd returned no transfers while ' +
+          `${Object.keys(dlState.inflight).length} are in flight; waiting a tick before believing it`)
+        return
+      }
+    } else {
+      _dlEmptySnapshots = 0
+    }
 
     // Adopt before dispatching: a pending entry slskd is ALREADY moving or
     // queueing — a restart wrote it back to pending, slskd kept the transfer —
