@@ -138,6 +138,13 @@ class MpvEngine extends EventEmitter {
     this._poisonCount = 0
     this._lastPosEmit = 0
     this._nextPath = null
+    // What mpv has CONFIRMED it has open, as opposed to state.path, which load()
+    // sets optimistically the moment loadfile is issued. They must be separate:
+    // comparing mpv's report against the optimistic value made every confirmation
+    // look like old news, so the confirmation event was never emitted on a normal
+    // track change and the renderer's copy of mpv's path stayed null (or, once
+    // set, stale for the rest of the session).
+    this._confirmedPath = null
     this._eofTimer = null
     // One state machine for what follows an eof, instead of two independent
     // timers that could both reach the renderer.
@@ -843,8 +850,9 @@ class MpvEngine extends EventEmitter {
         this.emit('audioParams', data)
         break
       case 'path': {
-        if (!data || data === this.state.path) return
-        const previous = this.state.path
+        if (!data || data === this._confirmedPath) return
+        const previous = this._confirmedPath
+        this._confirmedPath = data
         const eofState = this._eofState
         this.state.path = data
         this._lastPosChangeAt = Date.now()
@@ -855,6 +863,14 @@ class MpvEngine extends EventEmitter {
           this._eofState = 'idle'
           this._rec('late-advance-suppressed', { from: previous, to: data })
           if (data === this._nextPath) this._nextPath = null
+          // The ADVANCE is the double-fire, not the fact of which file mpv now
+          // has open. Returning in total silence left the renderer's copy of
+          // mpv's path pinned to the track that just ended — for the rest of
+          // the session, since nothing else ever sets it. The desync
+          // reconciler treats that copy as ground truth, so it then dragged
+          // the queue back to the finished track roughly once a second and
+          // every manual Next was undone before the listener could hear it.
+          this.emit('trackChanged', data)
           return
         }
         if (eofState === 'pending' || eofState === 'advancing') {
