@@ -30,6 +30,8 @@ class PapaPlayerShim extends EventTarget {
     // told apart from a paused one.
     this._lastPositionAt = 0
     this.audioParams = null
+    // mpv's own volume, not the slider's. See main.js's engineVolume relay.
+    this.engineVolume = null
 
     window.api.on('player-event', ({ type, data }) => {
       switch (type) {
@@ -50,6 +52,10 @@ class PapaPlayerShim extends EventTarget {
         case 'audioParams':
           this.audioParams = data
           this.dispatchEvent(new CustomEvent('audioparams', { detail: data }))
+          break
+        case 'engineVolume':
+          this.engineVolume = data
+          this.dispatchEvent(new CustomEvent('enginevolume', { detail: data }))
           break
         case 'autoAdvanced':
           this._src = `file://${data}`

@@ -22,6 +22,13 @@ planning."*
 | S3 | **Open an album and look inside it** from the browse view. | TODO |
 | S4 | Wider UX pass on the whole Soulseek tab — S2/S3 are *examples he gave*, not the whole ask. Needs a proper design pass, not point fixes. | TODO |
 | S5 | Audit the tab for missing functionality and plan it deliberately. | TODO |
+| S6 | **PERFORMANCE — his words: "extremely unoptimized, it slows down, stutters, lots of problems with the shelves tab".** Measured fixes, not guesses. | WIP |
+
+**Correction, 17 Sep:** shelves are NOT new. `src/slsk-shelves.js`,
+`src/slsk-tree.js` and `src/manage-redundant.js` already ship — the latter
+already has `findRedundantLossy(library, shelves)`. So S1-S3 are about an
+existing feature that is slow and awkward, not a green-field build. Anything
+proposing to build these from scratch is re-deriving what exists.
 
 **Hard rule on S1, no exceptions.** The slskd daemon at `localhost:5030` is his
 real account and `/mnt/data/MUSIC` is his real library. Build the feature;

@@ -1295,7 +1295,14 @@ function updateGainPolicyText() {
   var settings = state._playerSettings || {}
   var vol = null
   try { vol = (typeof audio !== 'undefined' && audio && isFinite(audio.volume)) ? Math.round(audio.volume * 100) : null } catch (_) { vol = null }
-  var r = G.assess({ boost: !!settings.boost, volumePct: vol, eq: settings.eq, replaygain: settings.replaygain })
+  // mpv's real volume, not the slider's. ReplayGain folds each track's measured
+  // gain into it and boost puts slider 100% at mpv 130, so the slider was never
+  // the truth about whether anything can clip.
+  var mpvVol = null
+  try { mpvVol = (typeof audio !== 'undefined' && audio) ? audio.engineVolume : null } catch (_) { mpvVol = null }
+  var r = G.assess({ boost: !!settings.boost, volumePct: vol, eq: settings.eq,
+                     replaygain: settings.replaygain, bitPerfect: !!settings.bitPerfect,
+                     mpvVolume: mpvVol, replaygainApply: settings.replaygainApply })
   el.textContent = 'Gain policy: ' + r.text
   el.classList.toggle('mcs-set-chip-warn', r.risk === 'likely')
 }
@@ -1313,7 +1320,12 @@ function updateBitPerfectBadge() {
   if (!track || !Q) { el.style.display = 'none'; el.removeAttribute('title'); return }
   var vol = null
   try { vol = (typeof audio !== 'undefined' && audio && isFinite(audio.volume)) ? Math.round(audio.volume * 100) : null } catch (_) { vol = null }
-  var v = Q.classify({ track: track, settings: state._playerSettings || {}, speed: state.playbackSpeed, volume: vol })
+  var engVol = null
+  try { engVol = (typeof audio !== 'undefined' && audio) ? audio.engineVolume : null } catch (_) { engVol = null }
+  var v = Q.classify({ track: track, settings: state._playerSettings || {}, speed: state.playbackSpeed,
+                       volume: vol, engineVolume: engVol,
+                       prevTrack: state.queue[state.queueIndex - 1],
+                       nextTrack: state.queue[state.queueIndex + 1] })
   if (!v.label) { el.style.display = 'none'; el.removeAttribute('title'); return }
   el.textContent = v.label
   // Roadmap 098: a fallback means the requested device is not the active one;
@@ -1467,6 +1479,36 @@ async function init() {
       const name = String((data && data.path) || '').split('/').pop() || 'That track'
       showToast(name + ' could not be played — it crashes the audio engine. Skipping it.')
       playNext()
+    }
+    // The PREFETCHED next track is poisoned, not the one playing. Drop it from
+    // the queue and say so, but do NOT call playNext() -- the current track is
+    // fine, and skipping it would punish the listener for the wrong file.
+    else if (type === 'nextTrackUnplayable') {
+      const path = String((data && data.path) || '')
+      const name = path.split('/').pop() || 'The next track'
+      const at = state.queue.findIndex(t => t && t.filePath === path)
+      if (at > state.queueIndex) {
+        state.queue.splice(at, 1)
+        if (state.queuePanelOpen) renderQueuePanel()
+        updateTrackHighlight()
+      }
+      showToast(name + ' was removed from the queue — it crashes the audio engine.')
+    }
+    // Crossfade has quietly become gapless because the output device is held
+    // exclusively. Two mpv processes cannot share an exclusive handle, so this
+    // is a real constraint rather than a failure -- but silently not doing what
+    // the setting says is how a setting becomes a lie.
+    else if (type === 'crossfadeUnavailable') {
+      showToast('Crossfade is off while exclusive output is on — tracks are joined gaplessly instead.')
+    }
+    // A transition failed and the track that was already playing was put back.
+    else if (type === 'crossfadeFailed') {
+      showToast('That crossfade did not complete — kept playing the current track.')
+    }
+    // mpv's real volume, which is not the slider: ReplayGain and boost both
+    // move it. The badge reads it; nothing here may write it to the slider.
+    else if (type === 'engineVolume') {
+      try { updateBitPerfectBadge() } catch (_) {}
     }
   })
   // yt-dlp self-maintenance: main updated the YouTube engine (either on its own

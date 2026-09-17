@@ -26,9 +26,16 @@ const sent = names(MAIN, /sendPlayerEvent\('([^']+)'/g)
 // An engine event that main never subscribes to is dead on arrival. Anything
 // listed here is deliberately consumed before the renderer, and the reason is
 // the thing being asserted — not the absence.
+// `volume` used to be listed here as "the renderer owns the slider, so echoing
+// it back fights the user". The first half of that is still true and the
+// renderer must never feed this into the slider. But mpv's volume is NOT the
+// slider: ReplayGain folds each track's measured gain into it, and boost puts
+// slider 100% at mpv 130 (+6.8 dB on a cubic scale). The quality badge was
+// reporting the slider as if it were what the engine was doing. So it is now
+// forwarded under a DIFFERENT name -- engineVolume -- precisely so that no
+// slider binding can ever pick it up by accident.
 const STOPS_AT_MAIN = {
   ready: 'main awaits start() instead; nothing in the UI needs the event',
-  volume: 'the renderer owns the volume slider and sends the value, so echoing it back fights the user',
   diagnostic: 'written to the daily log by main; it is evidence, not UI state',
 }
 
@@ -36,6 +43,9 @@ const STOPS_AT_MAIN = {
 const STOPS_AT_SHIM = {
   mpvMissing: 'the renderer subscribes to player-event directly for the blocker; there is no audio-element analogue',
   trackUnplayable: 'a queue decision (skip this file, say why) rather than a playback state change — the renderer takes it straight off player-event; an audio element has no analogue for "this file kills the engine"',
+  crossfadeUnavailable: 'a mode decision (crossfade has degraded to gapless because the device is held exclusively), not a playback state change — the renderer takes it straight off player-event',
+  crossfadeFailed: 'a transition failed and the still-playing track was restored; the renderer says so off player-event, and an audio element has no analogue for a failed fade',
+  nextTrackUnplayable: 'the PREFETCHED next file is poisoned, not the one playing — the renderer drops it from the queue off player-event and must NOT skip the current track',
 }
 
 test('every engine event is either forwarded to the renderer or documented as stopping at main', () => {

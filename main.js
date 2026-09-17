@@ -2884,6 +2884,16 @@ function buildPlayer(cfg) {
   p.on('duration',     d => sendPlayerEvent('duration', d))
   p.on('paused',       d => { sendPlayerEvent('paused', d); refreshTrayTooltip(); updateTrayMenu(playerIsPlaying()) })
   p.on('audioParams',  d => sendPlayerEvent('audioParams', d))
+  // The engine's REAL volume, so the badge stops reporting the slider as
+  // though it were what mpv is doing. With boost on, slider 100% is mpv 130 --
+  // +6.8 dB on a cubic scale -- and nothing downstream could see that.
+  p.on('volume',       d => sendPlayerEvent('engineVolume', d))
+  // The crossfade wrapper's three announcements. Without these the wrapper can
+  // degrade to gapless, abandon a fade, or find the prefetched next track
+  // unplayable, and the user is told none of it.
+  p.on('crossfadeUnavailable', d => sendPlayerEvent('crossfadeUnavailable', d))
+  p.on('crossfadeFailed',      d => sendPlayerEvent('crossfadeFailed', d))
+  p.on('nextTrackUnplayable',  d => sendPlayerEvent('nextTrackUnplayable', d))
   // A gapless advance and a crossfade both change the playing file without ever
   // going through player-load, so the gain used to stay on the track BEFORE the
   // one now playing — for the whole rest of the album. That defeats the entire
