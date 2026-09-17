@@ -137,7 +137,15 @@ function topLevelRequireCount () {
 // sysdeps-advisor, app-update-check). Each is pure policy + an exec layer that
 // only runs later behind a throttled scheduler, so nothing does I/O at import;
 // the startup cost is negligible. Re-based ~15% above the new measured total (82).
-const REQUIRE_CEILING = 94
+// Re-based 2026-09-17 to 108: the count had crept from the measured 82 of the
+// last re-base to 94 -- the audio-overhaul run added pure-logic modules at a
+// steady rate (album-grouping, anime-upscale, anime-numbering, store-migration
+// and others), each a handful of pure functions with no I/O at import. The
+// ceiling moves deliberately, ~15% above the new measured total, per the
+// contract below. Worth a look on its own though: twelve new startup requires
+// since 07 Sep is a trend, not an incident, and the next re-base should be a
+// decision about what belongs at startup rather than another arithmetic bump.
+const REQUIRE_CEILING = 108
 
 test('main.js top-level require count stays under its recorded ceiling', () => {
   const n = topLevelRequireCount()

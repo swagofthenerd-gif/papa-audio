@@ -1044,9 +1044,6 @@ try {
     log: m => console.log(m),
     onError: _sideErr,
   })
-  if (retired.length) {
-    try { store.set('_storeRetiredAt', Date.now()) } catch (_) {}
-  }
 } catch (e) { _sideErr(new Error(`store migration failed (${e && e.message})`)) }
 
 // Learned dead-magnet memory (App #41): drop entries whose last failure has
