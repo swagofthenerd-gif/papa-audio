@@ -562,6 +562,20 @@ function _appendCrashLog(kind, err) {
       `You can send this file to the developer — it holds no passwords or ` +
       `personal data, only what the app was doing when it stumbled.\n\n`
     try { fs.mkdirSync(dir, { recursive: true }) } catch (_) { /* already there, or read-only */ }
+    // The last file in the app with no ceiling, and it is written from the
+    // handler that fires on every background rejection. Keep the most recent
+    // half when it passes the cap: an old crash matters far less than the one
+    // that just happened, and an unbounded file is its own bug.
+    try {
+      const MAX = 256 * 1024
+      if (fs.existsSync(file) && fs.statSync(file).size > MAX) {
+        const kept = fs.readFileSync(file, 'utf8').slice(-Math.floor(MAX / 2))
+        const cut = kept.indexOf('\u2500\u2500\u2500')
+        fs.writeFileSync(file,
+          '(older entries trimmed to keep this file a readable size)\n\n' +
+          (cut > -1 ? kept.slice(cut) : kept), 'utf8')
+      }
+    } catch (_) { /* trimming is housekeeping; never let it lose the new entry */ }
     fs.appendFileSync(file, entry, 'utf8')
   } catch (_) { /* a crash reporter that crashes is worse than a missing line */ }
 }
@@ -2578,7 +2592,12 @@ function createWindow(hidden = false) {
   mainWindow.webContents.on('render-process-gone', (_e, details) => {
     const reason = (details && details.reason) || 'unknown'
     console.error('[papa] renderer gone:', reason)
-    if (reason === 'clean-exit') return
+    // Electron reports an ordinary shutdown as 'killed', not 'clean-exit', so
+    // the clean-exit check alone let EVERY normal quit be written down as a
+    // crash. His crash-log.txt held 65 entries and all 65 were him closing the
+    // app -- the one file he is told to send to the developer was pure noise,
+    // and each quit also raced a dialog onto a window being destroyed.
+    if (reason === 'clean-exit' || app.isQuitting) return
     // Same plain-English record the main-process crash handlers write, so a
     // renderer crash lands in the one file the user is told to send.
     _appendCrashLog(`the window crashed (${reason})`,

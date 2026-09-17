@@ -24334,7 +24334,11 @@ function _initBackupSettings() {
       setStatus('Backing up…')
       try {
         const res = await window.api.papaExportAll()
-        if (res && res.canceled) setStatus('')
+        // main.js answers with `cancelled` here and `canceled` elsewhere; this
+        // read only ever matched the other spelling, so simply pressing Cancel
+        // in the file picker reported "Could not back up / restore" — easy to
+        // read as "my backup is broken" at exactly the wrong moment.
+        if (res && (res.cancelled || res.canceled)) setStatus('')
         else if (res && res.ok !== false) setStatus('Backed up' + (res && res.path ? ' to ' + res.path : '') + ' ✓')
         else setStatus('Could not back up.' + (res && res.error ? ' ' + res.error : ''))
       } catch (e) {
@@ -24362,7 +24366,7 @@ function _initBackupSettings() {
       setStatus('Restoring…')
       try {
         const res = await window.api.papaImportAll()
-        if (res && res.canceled) setStatus('')
+        if (res && (res.cancelled || res.canceled)) setStatus('')
         else if (res && res.ok !== false) setStatus('Restored ✓ — restart to see everything.')
         else setStatus('Could not restore.' + (res && res.error ? ' ' + res.error : ''))
       } catch (e) {
@@ -30010,6 +30014,13 @@ function setupListeners() {
     const card = e.target.closest('.album-card,.quick-card,.artist-card,.daily-mix-card,.q-mix-card,.jumpback-card,.folder-tree-item,.pl-card,.pl-folder-header,.genre-tile,.mood-card,.recent-search-card,.artist-pill,.discovery-swipe-card,.yt-row,.yt-album-card,.yt-artist-card,.yt-playlist-card,.dl2-group-toggle,.dl2-group-toggle-failed,.pl-track-row')
     if (!card || e.target.closest('button')) return
     e.preventDefault()
+    // And stop it here. Without this the SAME keypress carried on up to the
+    // document handler, where Space is the play/pause shortcut -- so choosing a
+    // song with the keyboard started it and then immediately paused it, and
+    // opening an album stopped whatever was playing. preventDefault does not
+    // stop propagation, and defaultPrevented is checked in exactly one
+    // unrelated place in this file, so nothing downstream noticed.
+    e.stopPropagation()
     card.click()
   })
 
