@@ -178,6 +178,7 @@ const history = require('./history')
 // initialization' from handlers that had already been registered.
 const { createHistoryArchive } = require('./src/history-archive')
 const browseCacheCap = require('./src/browse-cache-cap')
+const aliveFiles = require('./src/alive-files')
 const { defaultSettings: eqDefaults, BANDS: EQ_BANDS, GAIN_LIMIT: EQ_GAIN_LIMIT, PRESETS: EQ_PRESETS, presetSettings } = require('./eq')
 const { MpvCrossfade } = require('./mpv-crossfade')
 const { linearToMpv, MPV_MAX } = require('./volume-map')
@@ -13673,13 +13674,15 @@ ipcMain.handle('video-keep-file', async (_, { index, show } = {}) => {
 // its size and when it was kept; the renderer draws the manager. Stale entries
 // whose file has since been removed on disk are pruned from the answer (and from
 // the index) so a list never shows a file that is not there.
-ipcMain.handle('video-keep-list', () => {
+ipcMain.handle('video-keep-list', async () => {
   try {
     const raw = sideStores.videoKeepIndex.get() || []
-    const alive = raw.filter(e => {
-      if (!e || !e.path) return false
-      try { return fs.statSync(e.path).isFile() } catch (_) { return false }
-    })
+    // Statted in PARALLEL, not one blocking syscall after another. The On Device
+    // page re-renders on every download event, so this ran constantly, and on a
+    // network mount a single stat blocks for as long as the mount takes to
+    // answer. Same answer as before — an entry that cannot be statted counts as
+    // missing — so the pruning behaviour is unchanged.
+    const { alive } = await aliveFiles.partitionAlive(raw)
     // Rewrite the index only when pruning actually removed something, so a plain
     // list does not churn the store on every call.
     if (alive.length !== raw.length) sideStores.videoKeepIndex.set(alive)
@@ -14371,7 +14374,7 @@ ipcMain.handle('video-instant-list', async () => {
 ipcMain.handle('video-cache-list', async () => {
   try {
     const entries = _videoCacheEntries()
-    const alive = entries.filter(e => { try { return fs.statSync(e.path).isFile() } catch (_) { return false } })
+    const { alive } = await aliveFiles.partitionAlive(entries)
     if (alive.length !== entries.length) sideStores.videoCacheIndex.set(alive)
     return { ok: true, entries: alive, capGB: Number(_videoSettings().videoCacheGB) || 0 }
   } catch (e) {
