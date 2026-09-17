@@ -194,3 +194,45 @@ brand-asset generator that calls paid image APIs — wrong tool entirely.
   restart before any of `9d511b3` takes effect.
 - **The app needs a restart** for the keyboard pause fix and everything since.
 - The network boost switch needs root installs he runs himself (section 6).
+
+## 10. The 17 Sep incident — agents editing his live tree
+
+He restarted the app and found it "extreeeeeemly laggy", tabs not opening,
+Movies/TV "bugged out". Cause was mine and structural, not a code bug:
+**background agents were editing the very folder his app runs from.** Three
+were killed mid-write when the session restarted, leaving half-finished
+Soulseek files in place — 8 failing tests, unfinished code, in his running app.
+
+Fixed: tree restored to the last green commit, every line of the partial work
+preserved at `~/flac-player-wip/` (a patch plus the new test fixtures), and a
+clean runnable copy for him at `~/flac-player-stable`.
+
+**Rule from now on: agents must not edit the tree he runs from.** Either give
+them a worktree, or stage their output and apply it here. A half-written file
+in his folder is indistinguishable from the app being broken.
+
+## 11. Skills — 18 installed, all read before installing
+
+Design/UX (10): frontend-design, bencium-innovative-ux-designer, design-audit,
+design-motion-principles, typography, web-interface-guidelines,
+ux-designer-skill, interaction-design-skills, ui-audit, no-bullshit.
+
+Engineering (8, added 17 Sep): **test-driven-development** and **test-guard**
+(these name this repo's exact disease — "asserting that a script contains an
+exact line proves only that the source is the source" — and codify the
+mutation check), **systematic-debugging** and **hunt** (root cause before any
+fix; hunt has a native-app-freeze mode), **clean-code-guard**,
+**legacy-code** (Feathers: characterization tests and seams — the counterweight
+that stops a 36k-line renderer.js being attacked head-on),
+**verification-before-completion**, **electron-dev** (read-only).
+
+Rejected after reading the actual files, not the README: `herdr-orchestration`
+(instructs launching with `--dangerously-skip-permissions`), `sentry-cli`
+(`curl … | bash`), `pbakaus/impeccable` (downloads and execs a binary, installs
+a persistent hook), `nextlevelbuilder/ui-ux-pro-max-skill` (brand-asset
+generator calling paid image APIs), `Waza/health` (reads Claude and Codex
+session transcripts — out of scope). superpowers ships hooks, so only three
+skill directories were copied, never the plugin.
+
+Honest gaps: nothing credible for React Native/Expo or PyQt6. Not installing
+junk to make the number bigger.
