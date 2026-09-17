@@ -2342,6 +2342,15 @@
         case 'subtitles': openTrackMenu('sub'); break
         case 'audioTrack': openTrackMenu('audio'); break
         case 'stats': toggleStatsMenu(); break
+        // The keymap has resolved '?' since it was written, but the switch had
+        // no case for it, so it fell to `default: return` — and the renderer's
+        // own global handler stands down entirely while the theatre is open.
+        // The help key was dead in the one place a viewer is most likely to
+        // need it. Raised as an event because the shortcut list is the
+        // renderer's, and this module must not reach into it.
+        case 'shortcuts':
+          document.dispatchEvent(new CustomEvent('papa-video-shortcuts'))
+          break
         case 'next': if (onNext) onNext(); break
         case 'prev': if (media && typeof media.onPrev === 'function') media.onPrev(); break
         case 'skip': {

@@ -27,7 +27,12 @@ test('the page loads the honesty table before the video scripts and the error te
 })
 
 test('the start-up watchdog is armed on play and disarmed on playing, ended, error and stop', () => {
-  assert.match(fn('_videoPlayResult'), /_handleVideoEvent\(\{ kind: 'buffering' \}\)\n\s+_armStartWatch\(\)/)
+  // Matched loosely on the payload so the phase can be named without breaking
+  // this: what it guards is that the watchdog is armed on the same beat as the
+  // first buffering report, not what that report happens to carry. The payload
+  // now names its phase, because an unphased event fell through to the label
+  // "Downloading" while no source had been chosen yet.
+  assert.match(fn('_videoPlayResult'), /_handleVideoEvent\(\{ kind: 'buffering'[^}]*\}\)\n\s+_armStartWatch\(\)/)
   const h = fn('_handleVideoEvent')
   assert.match(h, /kind === 'playing'\) \{[\s\S]*?if \(payload\.web\) _disarmStartWatch\(\)/, 'mpv says playing before any frame; only the page engine disarms here')
   assert.match(fn('_onVideoStateTick'), /if \(_startWatch && st && \(st\.position > 0\.05 \|\| \(st\.paused && st\.duration > 0\)\)\) _disarmStartWatch\(\)/)

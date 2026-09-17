@@ -31,6 +31,13 @@
 
   // The exact verb set the player understands. Listed here so a typo in a case
   // label is a test failure, not a silent no-op at 1am.
+  // T (theatre mode), B (bookmark) and / (focus search) used to resolve here.
+  // The theatre's own key handler had no case for any of them — they fell to
+  // `default: return` — and the renderer's global handler stands down entirely
+  // while the theatre is open. So all three were bound keys that did nothing,
+  // advertised in the help list as features. A key that resolves to an action
+  // nobody performs is worse than an unbound one: it makes the viewer doubt
+  // the keys that do work. Unbound until something actually does them.
   const ACTIONS = {
     PLAY_PAUSE: 'playPause',
     SEEK: 'seek',            // arg: signed seconds
@@ -46,11 +53,8 @@
     SCREENSHOT: 'screenshot',
     NEXT: 'next',
     PREV: 'prev',
-    THEATRE: 'theatre',
     STATS: 'stats',
-    BOOKMARK: 'bookmark',
     EXIT: 'exit',
-    FOCUS_SEARCH: 'focusSearch',
     SHORTCUTS: 'shortcuts',
   }
 
@@ -103,11 +107,9 @@
       case 's': return shift ? { action: ACTIONS.SCREENSHOT } : { action: ACTIONS.SKIP }
       case 'n': return { action: ACTIONS.NEXT }
       case 'p': return { action: ACTIONS.PREV }
-      case 't': return { action: ACTIONS.THEATRE }
       case 'i': return { action: ACTIONS.STATS }
-      case 'b': return { action: ACTIONS.BOOKMARK }
       case 'escape': return { action: ACTIONS.EXIT }
-      case '/': return shift ? { action: ACTIONS.SHORTCUTS } : { action: ACTIONS.FOCUS_SEARCH }
+      case '/': return shift ? { action: ACTIONS.SHORTCUTS } : null
       case '?': return { action: ACTIONS.SHORTCUTS }
     }
 

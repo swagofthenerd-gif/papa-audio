@@ -38,7 +38,7 @@ test('single-letter commands map to their actions', () => {
   const table = {
     f: ACTIONS.FULLSCREEN, m: ACTIONS.MUTE, c: ACTIONS.SUBTITLES,
     v: ACTIONS.AUDIO_TRACK, s: ACTIONS.SKIP, n: ACTIONS.NEXT,
-    p: ACTIONS.PREV, t: ACTIONS.THEATRE, i: ACTIONS.STATS, b: ACTIONS.BOOKMARK,
+    p: ACTIONS.PREV, i: ACTIONS.STATS,
   }
   for (const [key, action] of Object.entries(table)) {
     assert.deepStrictEqual(resolve(ev(key)), { action }, key)
@@ -56,7 +56,16 @@ test('Escape exits', () => {
 })
 
 test('slash focuses search, shift-slash opens the shortcut sheet', () => {
-  assert.deepStrictEqual(resolve(ev('/')), { action: ACTIONS.FOCUS_SEARCH })
+  // T, B and a bare / used to resolve to theatre-mode, bookmark and
+  // focus-search. The theatre's key handler has no case for any of them and the
+  // renderer's global handler stands down while the theatre is open, so all
+  // three were bound keys that did nothing while the help list advertised them
+  // as features. Unbound until something actually performs them.
+  assert.strictEqual(resolve(ev('/')), null, 'a bare slash does nothing in the theatre')
+  assert.strictEqual(resolve(ev('t')), null, 'and so does T')
+  assert.strictEqual(resolve(ev('b')), null, 'and B')
+  // Shift+/ is '?' on most layouts and still opens the list.
+  assert.deepStrictEqual(resolve(ev('/', { shiftKey: true })), { action: ACTIONS.SHORTCUTS })
   assert.deepStrictEqual(resolve(ev('/', { shiftKey: true })), { action: ACTIONS.SHORTCUTS })
   assert.deepStrictEqual(resolve(ev('?')), { action: ACTIONS.SHORTCUTS })
 })

@@ -709,15 +709,18 @@ function _videoShortcutRows(keymap) {
     { a: A.AUDIO_TRACK,keys: ['V'], desc: 'Audio track' },
     { a: A.SKIP,       keys: ['S'], desc: 'Skip intro / credits — not shuffle, in the theatre' },
     { a: A.SCREENSHOT, keys: ['Shift+S'], desc: 'Take a screenshot' },
+    // T (theatre mode), B (bookmark) and / (focus search) were listed here for a
+    // long time. The keymap resolves all three, but the theatre's own key
+    // handler has no case for any of them and the renderer's global handler
+    // stands down while the theatre is open — so all three were dead keys
+    // advertised as features. Listing a shortcut that does nothing is worse
+    // than not listing it: it makes the viewer doubt the ones that do work.
     { a: A.NEXT,       keys: ['N'], desc: 'Next episode' },
     { a: A.PREV,       keys: ['P'], desc: 'Previous episode' },
-    { a: A.THEATRE,    keys: ['T'], desc: 'Theatre mode' },
     { a: A.STATS,      keys: ['I'], desc: 'Playback stats' },
-    { a: A.BOOKMARK,   keys: ['B'], desc: 'Bookmark this moment' },
     // V097: Esc never stops playback; it backs out one level. Stopping is the
     // Stop button (■) in the deck and on the mini card, by design unbound.
     { a: A.EXIT,       keys: ['Esc'], desc: 'Back out one level: close menu → leave fullscreen → minimise to the mini player. Keeps playing; Stop (■) ends it' },
-    { a: A.FOCUS_SEARCH, keys: ['/'], desc: 'Focus search' },
     { a: A.SHORTCUTS,  keys: ['? / Shift+/'], desc: 'This shortcut list' },
   ]
   return rows
@@ -4422,7 +4425,16 @@ function _handleVideoEvent(payload) {
     const peers = payload.peers != null ? payload.peers + ' peers' : null
     // 'connecting' means the first deadline passed while peers were connected —
     // it is taking a while, not failing, and saying so beats a stuck spinner.
-    const label = payload.phase === 'connecting'
+    // 'finding' is the moment straight after Play, before any source has been
+    // committed to: the debrid pick is still racing and the local cache is
+    // still being probed. It used to arrive with no phase at all and fall
+    // through to "Downloading", so the first word a viewer saw after pressing
+    // Play was untrue, for up to the seven seconds that race is allowed.
+    // 'connecting' means the first deadline passed while peers were connected —
+    // it is taking a while, not failing, and saying so beats a stuck spinner.
+    const label = payload.phase === 'finding'
+      ? 'Finding the best copy'
+      : payload.phase === 'connecting'
       ? 'Still connecting'
       : (payload.phase === 'prebuffer' || payload.web ? 'Buffering' : 'Downloading')
     const detail = [mbps, peers].filter(Boolean).join(' · ')
@@ -5620,7 +5632,8 @@ function _videoPlayResult(result, opts) {
       } catch (_) { /* memory is a convenience, never a blocker */ }
     },
   })
-  _handleVideoEvent({ kind: 'buffering' })
+  // Nothing is downloading yet — the source has not even been chosen.
+  _handleVideoEvent({ kind: 'buffering', phase: 'finding' })
   _armStartWatch()
   // Wait until main knows the stage rectangle. Starting playback first shows
   // the mpv window at its creation size, floating over the app as a separate
@@ -10058,7 +10071,7 @@ async function _playTrailerInTheatre() {
       title: (d && d.title ? d.title : 'Trailer'),
       subtitle: t.name || 'Trailer',
     })
-    _handleVideoEvent({ kind: 'buffering' })
+    _handleVideoEvent({ kind: 'buffering', phase: 'finding' })
     if (btn) btn.disabled = true
     const res = await window.api.videoTrailer({ youtubeId: t.youtubeId, title: d && d.title })
       .catch(function (e) { return { ok: false, error: String((e && e.message) || e) } })
@@ -29877,6 +29890,9 @@ function setupListeners() {
     if (e.target === document.getElementById('shortcuts-modal')) toggleShortcutsModal()
   })
   document.querySelector('#shortcuts-modal .shortcuts-close')?.addEventListener('click', toggleShortcutsModal)
+  // '?' inside the theatre. The theatre cannot open this itself — the list is
+  // built here — so it asks.
+  document.addEventListener('papa-video-shortcuts', function () { toggleShortcutsModal() })
 
   // Saved queues
   document.getElementById('sq-save-btn')?.addEventListener('click', () => {
