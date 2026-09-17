@@ -10753,7 +10753,15 @@ function _seasonEpisodeNumbers(season) {
     nums = s.episodes.map(function (ep) { return ep.episodeNumber }).filter(function (n) { return n != null })
   }
   if (!nums.length) {
-    document.querySelectorAll('#video-episode-list .video-episode-btn, #video-episode-list-inner .video-episode-btn')
+    // The fallback reads whatever the episode grid is currently showing. It
+    // used to look only for `.video-episode-btn` — the numbered buttons — and
+    // those are the FALLBACK rendering, used when src/episode-list.js is not
+    // loaded. With the module present (which is the shipping case) television
+    // and anime both draw `.vep-row` instead, so this found nothing and "Mark
+    // season watched" answered "No episodes to mark for this season" with a
+    // full season of episodes on the screen in front of you. Keying on the
+    // data attribute both shapes carry covers either rendering.
+    document.querySelectorAll('#video-episode-list [data-ep], #video-episode-list-inner [data-ep]')
       .forEach(function (b) { var n = Number(b.dataset.ep); if (n) nums.push(n) })
   }
   return nums
