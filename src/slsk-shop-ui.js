@@ -1000,7 +1000,10 @@
     </section>`
   }
 
-  function shHeroHtml() {
+  // The changing half of the hero: the stats line and the cache provenance note.
+  // Kept apart from the hero itself so a repaint can refresh the numbers without
+  // going anywhere near the search box sitting below them.
+  function shHeroMetaHtml() {
     const st = shelves ? shelves.stats : { albums: 0, tracks: 0, size: 0, losslessPct: 0, hiRes: 0, surround: 0 }
     const bits = [
       `${st.albums.toLocaleString()} album${st.albums !== 1 ? 's' : ''}`,
@@ -1018,11 +1021,40 @@
     } else if (shFromCache) {
       cacheLine = `<div class="slsh-hero-cache">from cache${shCachedAt ? ' · updated ' + _shAgo(shCachedAt) : ''}</div>`
     }
+    return `<div class="slsh-hero-stats">${bits.map(b => `<span class="slsh-stat">${esc(b)}</span>`).join('<span class="slsh-stat-sep">·</span>')}</div>${cacheLine}`
+  }
+
+  function shHeroHtml() {
     return `<div class="slsh-hero">
-      <div class="slsh-hero-stats">${bits.map(b => `<span class="slsh-stat">${esc(b)}</span>`).join('<span class="slsh-stat-sep">·</span>')}</div>
-      ${cacheLine}
+      <div class="slsh-hero-meta" id="slsh-hero-meta">${shHeroMetaHtml()}</div>
       <input class="slsh-search" id="slsh-search" placeholder="Search ${esc(username)}'s albums and files…" autocomplete="off">
     </div>`
+  }
+
+  // Paint the shop: the hero, then whatever the caller wants underneath it.
+  //
+  // The hero holds the search box he types into, and every repaint used to
+  // re-emit it — which destroyed that input mid-keystroke. The replacement was
+  // repopulated from the TRIMMED query and had its caret forced to the end, so
+  // typing "pink", pausing, then "floyd" gave him "pinkfloyd": the 160ms debounce
+  // fired during the pause, the space was trimmed off with the rest of the value,
+  // and the caret jumped to the end. A background browse refresh repaints too, so
+  // it could happen while he was not typing at all.
+  //
+  // The hero is therefore built once and then left alone. Later paints replace
+  // only what sits after it and refresh the stats in place; the input element,
+  // its value and its selection are never touched again.
+  function shPaint(bodyHtml) {
+    const hero = shBody.querySelector('.slsh-hero')
+    if (!hero) {
+      shBody.innerHTML = shHeroHtml() + bodyHtml
+      bindShHero()
+      return
+    }
+    const meta = shBody.querySelector('#slsh-hero-meta')
+    if (meta) meta.innerHTML = shHeroMetaHtml()
+    while (hero.nextSibling) hero.parentNode.removeChild(hero.nextSibling)
+    hero.insertAdjacentHTML('afterend', bodyHtml)
   }
 
   // "5m ago" / "just now" from a millisecond timestamp. Small and local — the
@@ -1053,8 +1085,7 @@
 
   function renderShelves() {
     if (shParsing || !shelves) {
-      shBody.innerHTML = shHeroHtml() + `<div class="slsh-rails">${shSkeletonHtml()}</div>`
-      bindShHero()
+      shPaint(`<div class="slsh-rails">${shSkeletonHtml()}</div>`)
       return
     }
     if (shSearchQuery) return renderShelvesSearch()
@@ -1076,10 +1107,9 @@
       ? '<div class="slsh-empty">No albums could be read from this library. Try Folders mode for the raw file tree.</div>'
       : ''
 
-    shBody.innerHTML = shHeroHtml() +
+    shPaint(
       `<div class="slsh-rails">${rails}${emptyRails}</div>` +
-      `<div class="slsh-grid-wrap" id="slsh-grid-wrap"></div>`
-    bindShHero()
+      `<div class="slsh-grid-wrap" id="slsh-grid-wrap"></div>`)
     shRenderGrid()
     bindShCards(shBody)
     shBindGrabAll()
@@ -1164,19 +1194,26 @@
       ? SF.applyShelfFilterSort(albumHits, { filters: shFilters, decade: shDecade, sort: shSort })
       : albumHits
     const cards = shown.slice(0, 120).map(a => shCardHtml(a, a._idx, a.inLibrary ? 'plain' : 'missing')).join('')
-    shBody.innerHTML = shHeroHtml() +
+    shPaint(
       `<div class="slsh-search-results">
         <div class="slsh-rail-head"><span class="slsh-rail-title">Results for “${esc(q)}”</span>
           <span class="slsh-rail-sub">${shown.length} album${shown.length !== 1 ? 's' : ''}</span></div>
         ${shControlsHtml()}
         <div class="slsh-grid">${cards || '<div class="slsh-empty">Nothing matching that.</div>'}</div>
-      </div>`
-    bindShHero()
+      </div>`)
     bindShCards(shBody)
     shBindShelfControls()
     shArmArtObserver(shBody)
   }
 
+  // Called once, when the hero is first built — shPaint keeps the input alive
+  // across every later repaint, so nothing here runs again while he is typing.
+  // Seeding the value and placing the caret is therefore a restore (reopening
+  // the shop with a query already set), not something done mid-keystroke.
+  //
+  // `shSearchQuery` is trimmed because a trailing space means nothing to the
+  // search. The box itself is never written back from it: that is what swallowed
+  // the space between two words.
   function bindShHero() {
     const si = dlg.querySelector('#slsh-search')
     if (!si) return

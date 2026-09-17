@@ -7573,9 +7573,28 @@ function _dlAlbumFolderTerm(filename) {
   return folder.replace(/[_\-\[\]()]+/g, ' ').replace(/\s+/g, ' ').trim()
 }
 
+// The byte count of the file we are trying to re-source. Items carry their own
+// size once enqueued; before that the only record of it is on the source the
+// file was going to be fetched from, so fall back to that rather than giving up
+// and letting an unidentifiable candidate through.
+function dlWantedSize(item) {
+  if (!item) return 0
+  const own = Number(item.size)
+  if (Number.isFinite(own) && own > 0) return own
+  const src = (item.sources && item.sources[0]) || {}
+  const fromSrc = Number(src.size)
+  return Number.isFinite(fromSrc) && fromSrc > 0 ? fromSrc : 0
+}
+
 // Search the network for the whole album folder, returning every file that
 // matches one of the wanted basenames, each with its metadata for fingerprinting.
-async function dlSearchAlbum(term, wantedBasenames) {
+//
+// `wantedSize` is the byte count of the file we are trying to re-source. A
+// basename on its own is not an identity — see dlSched.sameRecordingSize — so a
+// candidate whose size does not agree is a different recording that happens to
+// share a track name, and is dropped here before it can ever be offered as a
+// substitute.
+async function dlSearchAlbum(term, wantedBasenames, wantedSize) {
   if (term.length < 4) return []
   let id
   try {
@@ -7594,6 +7613,7 @@ async function dlSearchAlbum(term, wantedBasenames) {
       for (const f of r.files || []) {
         const nm = dlBaseName(f.filename).toLowerCase()
         if (!want.has(nm)) continue
+        if (!dlSched.sameRecordingSize(wantedSize, f.size)) continue
         out.push({
           username: r.username,
           filename: f.filename,
@@ -7640,7 +7660,11 @@ async function dlDiscoverForItem(item, now) {
   }
 
   const wanted = dlBaseName(item.filename).toLowerCase()
-  const candidates = await dlSearchAlbum(term, [wanted])
+  // The size of the file he actually asked for: the item's own, or the one
+  // recorded against the source it was going to come from. Without it a
+  // same-named track off another record cannot be told apart from this one.
+  const wantedSize = dlWantedSize(item)
+  const candidates = await dlSearchAlbum(term, [wanted], wantedSize)
   if (!candidates.length) return
 
   // The fingerprint of what the user actually asked for. Built from the item's
@@ -8406,6 +8430,7 @@ async function dlSeedFolderSources(items) {
         const src0 = (it.sources && it.sources[0]) || {}
         want.set(dlBaseName(it.filename).toLowerCase(), {
           it,
+          size: dlWantedSize(it),
           fp: dlFingerprint.fingerprint({
             filename: it.filename, bitDepth: src0.bitDepth, sampleRate: src0.sampleRate,
           }),
@@ -8416,6 +8441,21 @@ async function dlSeedFolderSources(items) {
         for (const f of r.files || []) {
           const hit = want.get(dlBaseName(f.filename).toLowerCase())
           if (!hit) continue
+          // A shared track name is not a shared recording. The quality
+          // fingerprint below cannot see the difference between two 16/44
+          // stereo FLACs, so without this the hunt would fetch a different song
+          // off a different record and mark the wanted track done. Size is what
+          // tells them apart — see dlSched.sameRecordingSize.
+          if (!dlSched.sameRecordingSize(hit.size, f.size)) {
+            dlSched.logSubstitution(dlState, {
+              at: Date.now(), key: dlSched.itemKey(hit.it.filename),
+              from: hit.it.filename, to: f.filename, candidate: r.username,
+              accepted: false,
+              reason: `seed rejected: ${hit.size || 'unknown'} bytes wanted vs ` +
+                `${f.size || 'unknown'} offered — same track name, different recording`,
+            })
+            continue
+          }
           // Same gate as discovery: only add a source whose quality fingerprint
           // is compatible with the file the user actually chose. This closes the
           // seed-folder path against the 5.1-replaced-by-stereo failure, which

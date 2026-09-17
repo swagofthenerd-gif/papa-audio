@@ -3695,6 +3695,14 @@ function _renderTasteSection() {
 
 var _diaryYear = null
 var _diaryView = 'all'
+// The teardown for the panel listeners currently on #tp-body. The diary body is
+// repainted by overwriting that element's innerHTML, which drops its children
+// but keeps the element itself -- so a fresh mount() on top of the old one left
+// both sets of delegated listeners attached. Every mutation repaints, so the
+// count doubled per interaction (1, 2, 4, 8, 16), and a destructive action that
+// arms on one click and commits on the next got armed *and* committed inside a
+// single click. Hold the handle; unmount before mounting again.
+var _diaryUnmount = null
 
 function renderDiary() {
   _initVideoUI()
@@ -3781,7 +3789,8 @@ function _renderDiaryBody() {
       '</aside>' +
     '</div>'
 
-  panel.mount(body)
+  if (_diaryUnmount) _diaryUnmount()
+  _diaryUnmount = panel.mount(body)
   _renderDiaryYears()
   _bindDiaryLinks()
   _bindTimelineLinks()
@@ -22789,7 +22798,18 @@ function _setChatBusy(busy) {
 // first. A request that names the action ("download …", "clear the queue")
 // is already authorisation and runs straight away.
 var _CONSEQUENTIAL_TOOLS = {
-  auto_download: { ask: /\b(download|get|grab|fetch|save)\b/i, what: function (i) { return 'Download "' + (i && i.query || '') + '" from Soulseek?' },
+  // "In so many words" has to mean the message named THIS action. A bare "get"
+  // or "save" does not. "get me something chill" is a request for music, and the
+  // assistant deciding that means a Soulseek transfer is precisely the case the
+  // preview exists for — yet the word "get" in his own sentence switched the
+  // preview off. "save" was worse: "save this queue" is about the queue, and it
+  // silently authorised a download in the same turn because the word appeared.
+  //
+  // What is left are the verbs that mean only this, plus "get" when the sentence
+  // goes on to say where from.
+  auto_download: {
+    ask: /\b(?:re-?)?download(?:s|ed|ing)?\b|\b(?:grab(?:s|bed|bing)?|fetch(?:es|ed|ing)?)\b|\bget\b[^.?!]{0,40}\bfrom\s+(?:soulseek|slsk)\b/i,
+    what: function (i) { return 'Download "' + (i && i.query || '') + '" from Soulseek?' },
     note: 'This queues a transfer to your download folder. It was not part of what you asked in so many words.' },
   clear_queue: { ask: /\b(clear|empty|wipe)\b/i, what: function () { return 'Clear the queue?' },
     note: 'Stops playback and empties the whole queue. Undo is offered afterwards.' },
@@ -31965,31 +31985,31 @@ function setupListeners() {
     if (matchesShortcut('commandPalette', e)) {
       e.preventDefault(); toggleCommandPalette('commands'); return
     }
-    if (matchesShortcut('likeTrack', e)) {
+    if (matchesShortcut('likeTrack', e) && !inInput) {
       e.preventDefault()
       var currentTrack = state.queue[state.queueIndex]
       if (currentTrack && currentTrack.filePath) toggleTrackLike(currentTrack.filePath)
       return
     }
-    if (matchesShortcut('sleepTimer', e)) {
+    if (matchesShortcut('sleepTimer', e) && !inInput) {
       e.preventDefault()
       setSleepTimer(30)
       showSnackbar('Sleep timer: 30 min')
       return
     }
-    if (matchesShortcut('skipShort', e)) {
+    if (matchesShortcut('skipShort', e) && !inInput) {
       e.preventDefault()
       state.skipShortTracks = !state.skipShortTracks
       showSnackbar('Auto-skip short tracks: ' + (state.skipShortTracks ? 'on' : 'off'))
       return
     }
-    if (matchesShortcut('skipInterludes', e)) {
+    if (matchesShortcut('skipInterludes', e) && !inInput) {
       e.preventDefault()
       state.skipInterludes = !state.skipInterludes
       showSnackbar('Skip interludes: ' + (state.skipInterludes ? 'on' : 'off'))
       return
     }
-    if (matchesShortcut('saveQueue', e)) {
+    if (matchesShortcut('saveQueue', e) && !inInput) {
       e.preventDefault()
       var name = 'Queue ' + new Date().toLocaleTimeString()
       saveCurrentQueue(name)

@@ -320,6 +320,36 @@ function fileIdentity(filename, size) {
   return Number.isFinite(n) && n > 0 ? base + '|' + n : base
 }
 
+// The same question fileIdentity answers, asked of two files that are being
+// considered as substitutes for each other rather than as duplicates.
+//
+// The alternate-source hunt looks for another peer serving the file we already
+// want, and matched on the basename alone. But "01 - Intro.flac" is a name
+// dozens of records share, and the quality fingerprint the hunt checks next
+// (surround, lossless, bit depth, sample rate) cannot tell two different songs
+// apart — a 16/44 stereo FLAC looks exactly like any other 16/44 stereo FLAC.
+// So the hunt could fetch a completely different song off a completely
+// different album and mark the wanted track done.
+//
+// Size is the separator, for the same reason fileIdentity uses it: one release
+// circulating between peers has one byte count. Exact equality is the real
+// signal. The 2% band on top of it is for the same recording ripped by someone
+// else — a legitimate alternate — while two different songs differ by far more
+// than 2%.
+//
+// A size we do not know on either side proves nothing, and is refused rather
+// than waved through: an unverifiable substitution is precisely how the wrong
+// song gets downloaded and called done.
+var SIZE_TOLERANCE = 0.02
+function sameRecordingSize(wantSize, candidateSize) {
+  var a = Number(wantSize)
+  var b = Number(candidateSize)
+  if (!Number.isFinite(a) || a <= 0) return false
+  if (!Number.isFinite(b) || b <= 0) return false
+  if (a === b) return true
+  return Math.abs(a - b) <= a * SIZE_TOLERANCE
+}
+
 function inflightIdentities(state) {
   var out = {}
   var keys = Object.keys(state.inflight)
@@ -1098,7 +1128,14 @@ function explainState(state, cfg, now) {
     var e = state.pending[i]
     byFile[e.filename] = {
       attempts: e.attempts || 0,
+      // `attempts` counts DISPATCHES, and the ceiling on dispatches is
+      // maxTotalAttempts. maxAttempts is the cap on distinct PEERS, which is a
+      // different quantity with a different number — pairing the two in one
+      // "attempt X/Y" was what pinned the row at 4/4 while the file was still
+      // being worked on. Both pairs are published; neither is mixed.
       maxAttempts: cfg.maxAttempts,
+      maxTotalAttempts: cfg.maxTotalAttempts,
+      sourcesTried: distinctTried(e),
       sourceCount: (e.sources || []).length,
       nextRetryInMs: _nextRetryInMs(state, e, cfg, now),
       inflight: false,
@@ -1110,6 +1147,8 @@ function explainState(state, cfg, now) {
     byFile[v.filename] = {
       attempts: v.attempts || 0,
       maxAttempts: cfg.maxAttempts,
+      maxTotalAttempts: cfg.maxTotalAttempts,
+      sourcesTried: distinctTried(v),
       sourceCount: (v.sources || []).length,
       // Inflight: no queued retry countdown; slskd's state explains it instead.
       nextRetryInMs: null,
@@ -1120,12 +1159,25 @@ function explainState(state, cfg, now) {
 }
 
 // ms until a pending item's soonest source becomes eligible again, or null when
-// it has an untried source (dispatched next tick, not "retrying") or no source
-// at all. Mirrors eligibleSource's retry gate: the shortest wait across sources
-// whose last-tried time has not yet cleared retryPeerAfterMs.
+// it has an untried source (dispatched next tick, not "retrying"), no source at
+// all, or no retry left to wait for.
+//
+// This has to mirror what planDispatch and eligibleSource will actually DO,
+// because the number goes on screen as a countdown and he watches it. It used to
+// use the flat retryPeerAfterMs while the real gate was retryGapMs — the same
+// base doubled once per attempt already spent, up to half an hour — so the
+// countdown ran out four, eight, sixteen times too early, nothing happened, and
+// the app looked broken while working correctly.
+//
+// The dispatch caps are checked for the same reason: a file that has used up its
+// distinct sources, or its total dispatches, is never going to be re-asked, and
+// counting down to a retry that cannot come is the same lie in a worse form.
 function _nextRetryInMs(state, entry, cfg, now) {
   var ranked = rankSources(entry.sources)
   if (!ranked.length) return null
+  if (distinctTried(entry) >= cfg.maxAttempts) return null
+  if ((entry.attempts || 0) >= cfg.maxTotalAttempts) return null
+  var gap = retryGapMs(entry, cfg)
   var triedAt = entry.triedAt || {}
   var soonest = null
   for (var i = 0; i < ranked.length; i++) {
@@ -1134,8 +1186,8 @@ function _nextRetryInMs(state, entry, cfg, now) {
     // An untried source is ready now — nothing to count down to.
     if ((entry.tried || []).indexOf(s.username) === -1) return null
     var last = triedAt[s.username] || 0
-    var wait = cfg.retryPeerAfterMs - (now - last)
-    if (wait < 0) return null   // already eligible: ready now, not a countdown
+    var wait = gap - (now - last)
+    if (wait <= 0) return null  // already eligible: ready now, not a countdown
     if (soonest == null || wait < soonest) soonest = wait
   }
   return soonest
@@ -1178,6 +1230,7 @@ var _PapaDownloadScheduler = {
   songKey: songKey,
   isAbandoned: isAbandoned,
   fileIdentity: fileIdentity,
+  sameRecordingSize: sameRecordingSize,
   inflightIdentities: inflightIdentities,
   logSubstitution: logSubstitution,
   nextGlobalInflight: nextGlobalInflight,

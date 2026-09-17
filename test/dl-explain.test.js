@@ -47,20 +47,32 @@ test('a failed/errored/timed-out transfer reads as the peer not responding', () 
 
 test('a scheduler retry countdown wins over a bare queued state', () => {
   // attempts is the count already made; the NEXT attempt is attempts+1.
+  // "another source" only appears when the file actually has more than one.
   assert.strictEqual(
     E.waitingReason({ state: 'Queued', username: 'bob' },
-      { attempts: 1, maxAttempts: 4, nextRetryInMs: 12000 }, 1000),
-    'Retrying via another source in 12s (attempt 2/4)')
+      { attempts: 1, maxTotalAttempts: 24, sourceCount: 3, nextRetryInMs: 12000 }, 1000),
+    'Retrying via another source in 12s (attempt 2/24)')
+  // One known peer: it is being re-asked of that same peer, and the line says so.
+  assert.strictEqual(
+    E.waitingReason({ state: 'Queued', username: 'bob' },
+      { attempts: 1, maxTotalAttempts: 24, sourceCount: 1, nextRetryInMs: 12000 }, 1000),
+    'Retrying in 12s (attempt 2/24)')
   // Sub-second rounds up to at least 1s — never "in 0s".
   assert.match(
     E.waitingReason({ state: 'Queued', username: 'bob' },
-      { attempts: 0, maxAttempts: 4, nextRetryInMs: 400 }, 1000),
-    /in 1s \(attempt 1\/4\)/)
+      { attempts: 0, maxTotalAttempts: 24, sourceCount: 2, nextRetryInMs: 400 }, 1000),
+    /in 1s \(attempt 1\/24\)/)
   // The shown attempt never exceeds the max.
   assert.match(
     E.waitingReason({ state: 'Queued', username: 'bob' },
-      { attempts: 4, maxAttempts: 4, nextRetryInMs: 5000 }, 1000),
-    /attempt 4\/4/)
+      { attempts: 40, maxTotalAttempts: 24, sourceCount: 2, nextRetryInMs: 5000 }, 1000),
+    /attempt 24\/24/)
+  // An older view with only the distinct-source cap still renders rather than
+  // falling back to a hardcoded 4.
+  assert.match(
+    E.waitingReason({ state: 'Queued', username: 'bob' },
+      { attempts: 1, maxAttempts: 4, sourceCount: 2, nextRetryInMs: 5000 }, 1000),
+    /attempt 2\/4/)
 })
 
 test('a queued row with no position and no retry still says "In line", honestly', () => {
