@@ -264,6 +264,9 @@ test('playing an episode reaches videoPlay, carrying the episode and its cache i
     _vStore: () => null,
     _nextEpisodeOf: () => null, _prevEpisodeOf: () => null,
     _playPrevEpisode() {}, _handleVideoEvent() {}, _armStartWatch() {},
+    // Every play starts by dropping the previous one's episode strip; that
+    // behaviour has its own tests in test/pack-strip-new-play.test.js.
+    _forgetPackStrip() {},
     showSnackbar() {}, showToast() {},
     _player: { open() {}, ready: () => Promise.resolve() },
     _watch: null, _playing: null,
