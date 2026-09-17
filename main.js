@@ -1690,6 +1690,9 @@ const CMD_PATH         = path.join(USER_DATA, 'cmd')
 let _npPending = null
 let _npWriting = false
 let _npTimer = null
+// The last payload written, with `position` stripped, so a tick that only moved
+// the clock can be recognised and skipped.
+let _npLastBodyNoPos = null
 const NOW_PLAYING_COALESCE_MS = 250
 
 function writeNowPlaying(data) {
@@ -1713,6 +1716,25 @@ function _flushNowPlaying() {
     console.error('[papa] write-now-playing: unserialisable payload:', e.message || e)
     return
   }
+  // Nothing on this path ever checked whether anything had CHANGED. The
+  // renderer ticks once a second while playing, and `position` moves every
+  // tick, so every tick produced a fresh temp write plus a rename — 86,400 file
+  // writes a day of continuous listening, each one re-serialising the entire
+  // queue, on the same thread that pumps mpv's IPC.
+  //
+  // Position alone moving is not worth a write: the file exists so another
+  // process can see what is playing, and a second of staleness in a number that
+  // is only ever read for display costs nothing. Anything else — the track, the
+  // queue, play/pause — writes immediately.
+  const withoutPosition = body.length < 1e6
+    ? body.replace(/"position":-?[\d.]+,?/, '')
+    : body
+  if (withoutPosition === _npLastBodyNoPos) {
+    _npWriting = false
+    if (!_npStopped && _npPending != null && !_npTimer) _npTimer = setTimeout(_flushNowPlaying, NOW_PLAYING_COALESCE_MS)
+    return
+  }
+  _npLastBodyNoPos = withoutPosition
   // Temp plus rename, so the extension never reads a half-written file.
   const tmp = NOW_PLAYING_PATH + '.tmp'
   fs.promises.writeFile(tmp, body)

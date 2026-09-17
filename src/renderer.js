@@ -200,7 +200,6 @@ var _slskPipeline = null   // the last renderSoulseekRow's unit list and summary
 // Interval handles. An interval with no handle can never be stopped or
 // superseded; several of these restarted without clearing the previous one.
 var _connCheckTimer = null
-var _waveformTimer = null
 // Set by init() from the papa-clean-exit flag: true when the previous session
 // did NOT shut down cleanly (App #1). Read once, then the crash-restore banner
 // consumes it.
@@ -2019,10 +2018,16 @@ async function restorePlaybackState(opts) {
     if (state.queuePanelOpen) renderQueuePanel()
     // Say when the restored queue is not the queue that was saved. It used to
     // report the truncated count as though that were the whole thing.
+    // Put the play modes back with the queue they belong to.
+    if (typeof autoQueue.shuffle === 'boolean') state.shuffle = autoQueue.shuffle
+    if (autoQueue.repeat) state.repeat = autoQueue.repeat
+    if (Number(autoQueue.speed) > 0) state.playbackSpeed = Number(autoQueue.speed)
     var _msg = 'Previous queue restored (' + autoQueue.tracks.length + ' tracks)'
     if (autoQueue.truncatedFrom) {
-      _msg = 'Previous queue restored — first ' + autoQueue.tracks.length +
-        ' of ' + autoQueue.truncatedFrom + ' tracks'
+      var _lo = (Number(autoQueue.windowFrom) || 0) + 1
+      var _hi = _lo + autoQueue.tracks.length - 1
+      _msg = 'Previous queue restored — tracks ' + _lo + '–' + _hi +
+        ' of ' + autoQueue.truncatedFrom
     }
     showSnackbar(_msg, 'Clear', function() {
       state.queue = []; state.queueIndex = -1
@@ -3082,6 +3087,7 @@ function _paintBrowseGrid() {
   const grid = document.getElementById('vgrid')
   if (!grid) return
   const vis = _hideSeenApply(_browse.results)
+  if (typeof _releaseCardsIn === 'function') _releaseCardsIn(grid)
   grid.innerHTML = _hideSeenNote(vis.hidden) + vis.shown.map(_videoCard).join('')
   _bindVideoCards(grid)
 }
@@ -3364,6 +3370,22 @@ function _applyCardMeta(el, meta) {
 // IntersectionObserver, and deliberately leaves the metadata cache alone — that
 // is keyed by title, not by element, so the same film on the next page still
 // paints instantly from it.
+// The scoped version. _releaseObservedCards sweeps the whole of #content, which
+// is right when setContent replaces the page — but four paths replace a grid's
+// innerHTML IN PLACE without ever navigating, so the enricher's strong Map kept
+// a record, an .el reference and an apply closure for every card they threw
+// away. Browse is the worst of them: infinite scroll re-renders the whole
+// accumulated result set on every page, so the retention is quadratic in pages
+// scrolled — ten "load more" pages leaves about nine hundred detached .vcard
+// subtrees alive, each with its own poster <img>. That is the same leak the
+// setContent call was added to fix, in the paths it does not reach.
+function _releaseCardsIn(el) {
+  if (!_enricher || !el || !el.querySelectorAll) return
+  for (const card of el.querySelectorAll('.vcard[data-enrich-observed="1"]')) {
+    try { _enricher.unobserve(card) } catch (_) { /* already gone */ }
+  }
+}
+
 function _releaseObservedCards() {
   if (!_enricher) return
   const root = document.getElementById('content')
@@ -6120,6 +6142,7 @@ function _repaintShelfGrid() {
   if (!grid) return
   const sorted = _vSortItems(_shelfPage.items, _shelfPage.sort)
   const vis = _hideSeenApply(sorted)
+  if (typeof _releaseCardsIn === 'function') _releaseCardsIn(grid)
   grid.innerHTML = _hideSeenNote(vis.hidden) + vis.shown.map(_videoCard).join('')
   _bindVideoCards(grid)
   // The note under the control appears and disappears with the sort.
@@ -7056,6 +7079,7 @@ function _dropRow(key) {
 function _fillRow(key, items) {
   const rail = document.querySelector('.vrail[data-rail="' + key + '"]')
   if (!rail) return
+  if (typeof _releaseCardsIn === 'function') _releaseCardsIn(rail)
   rail.innerHTML = items.map(_videoCard).join('')
   _bindVideoCards(rail)
   _bindRail(rail)
@@ -12374,6 +12398,14 @@ async function loadYtHome() {
   el.querySelectorAll('[id^="yt-home-explore-"]').forEach(btn => btn.addEventListener('click', () => navigate('explore')))
 }
 
+// Sorting only — never for display. "The Beatles", "The Avalanches" and six
+// others all filed under T, which is not where anyone looks for them. English
+// leading articles are dropped for comparison; the name shown is untouched.
+const _ARTICLE = /^(the|a|an)\s+/i
+function _artistSortKey(name) {
+  return String(name || '').replace(_ARTICLE, '').trim().toLowerCase()
+}
+
 function renderArtists() {
   const artistMap = new Map()
   for (const album of state.library) {
@@ -12396,7 +12428,7 @@ function renderArtists() {
     if (!entry.artPath && album.artPath) entry.artPath = album.artPath
     }
   }
-  const artists = [...artistMap.values()].sort((a, b) => a.name.localeCompare(b.name))
+  const artists = [...artistMap.values()].sort((a, b) => _artistSortKey(a.name).localeCompare(_artistSortKey(b.name)))
   if (!artists.length && !state.ytFollowed.length) { navigate('library'); return }
 
   setContent(`<div class="page">
@@ -12872,7 +12904,7 @@ function renderLibrary() {
       var d = (b.maxChannels || 0) - (a.maxChannels || 0)
       if (d) return d
       var at = (b.atmos ? 1 : 0) - (a.atmos ? 1 : 0)
-      return at || a.name.localeCompare(b.name)
+      return at || _artistSortKey(a.name).localeCompare(_artistSortKey(b.name))
     })
     return albums
   }
@@ -14280,6 +14312,9 @@ function runVideoStrip(query) {
       const sec = document.getElementById('video-strip-section')
       if (!sec) return
       const results = (res && res.ok && Array.isArray(res.results)) ? res.results : []
+      // Same as the grid and rail paths: the cards about to be thrown away are
+      // still held by the enricher's Map until they are released.
+      if (typeof _releaseCardsIn === 'function') _releaseCardsIn(sec)
       if (!results.length) { sec.hidden = true; sec.innerHTML = ''; return }
       const cards = results.slice(0, 6)
       sec.innerHTML =
@@ -20495,16 +20530,35 @@ function playCurrentTrack() {
     // out of bounds. Keep the in-memory copy in sync too: the sidebar reads
     // state.savedQueues, which was otherwise only ever loaded at startup and
     // showed a launch-time snapshot for the rest of the session.
-    var _autoTracks = state.queue.slice(0, AUTO_QUEUE_CAP)
+    // A window around where he actually is, not the first hundred. The old
+    // slice always kept tracks 1-100 and then clamped the index into them, so
+    // anyone past track 100 of a long playlist or a shuffled Liked Songs came
+    // back to a DIFFERENT song: the right track played (that is restored
+    // separately from playbackState) while the queue panel, the highlight and
+    // Next/Previous all pointed at track 100 of a list he was no longer in.
+    var _half = Math.floor(AUTO_QUEUE_CAP / 2)
+    var _from = Math.max(0, Math.min(Math.max(0, state.queueIndex) - _half,
+                                     Math.max(0, state.queue.length - AUTO_QUEUE_CAP)))
+    var _autoTracks = state.queue.slice(_from, _from + AUTO_QUEUE_CAP)
     var _autoQ = {
       id: '_auto',
       name: 'Previous Session',
       tracks: _autoTracks,
-      index: Math.min(Math.max(0, state.queueIndex), Math.max(0, _autoTracks.length - 1)),
+      index: Math.max(0, Math.min(Math.max(0, state.queueIndex) - _from, _autoTracks.length - 1)),
       savedAt: Date.now(),
       // Recorded so a restore can say so. Silently handing back a different
       // queue is worse than a long one being truncated.
       truncatedFrom: state.queue.length > AUTO_QUEUE_CAP ? state.queue.length : 0,
+      // Where the window sits in the full queue, so a restore can say "tracks
+      // 120-220 of 400" rather than implying it kept the beginning.
+      windowFrom: _from,
+      // Shuffle, repeat and speed were pure in-memory state and reset on every
+      // restart, even though the whole point of this snapshot is to put the
+      // listener back where they were. They ride along with the queue they
+      // belong to.
+      shuffle: !!state.shuffle,
+      repeat: state.repeat || 'off',
+      speed: Number(state.playbackSpeed) || 1,
     }
     window.api.saveQueue(_autoQ)
     var _autoAt = state.savedQueues.findIndex(function (q) { return q.id === '_auto' })
@@ -21327,13 +21381,37 @@ function bindSliderKeys(el, opts) {
 function makeDraggable(trackEl, fillEl, thumbEl, onChange) {
   if (!trackEl) return
   let activeId = null
-  function update(e) {
+  // The thumb follows the finger on every single move; the EXPENSIVE half —
+  // onChange, which for the seek bar is a real sample-accurate mpv seek over
+  // IPC — is gated to one per animation frame. It used to fire on every
+  // pointermove, so dragging the scrubber across a track sent one seek per
+  // pixel of travel: on local FLAC each of those does real demux work, so the
+  // audio stuttered through a dozen positions and lagged behind the thumb.
+  // The volume slider shares this helper and had the same pattern, cheaper but
+  // no less pointless.
+  let pendingRatio = null
+  let frame = 0
+  function flush() {
+    frame = 0
+    if (pendingRatio === null) return
+    const r = pendingRatio
+    pendingRatio = null
+    onChange(r)
+  }
+  function update(e, immediate) {
     const rect = trackEl.getBoundingClientRect()
     if (!rect.width) return
     const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
     if (fillEl)  fillEl.style.width = `${ratio * 100}%`
     if (thumbEl) thumbEl.style.left = `${ratio * 100}%`
-    onChange(ratio)
+    if (immediate) {
+      if (frame) { cancelAnimationFrame(frame); frame = 0 }
+      pendingRatio = null
+      onChange(ratio)
+      return
+    }
+    pendingRatio = ratio
+    if (!frame) frame = requestAnimationFrame(flush)
   }
   trackEl.addEventListener('pointerdown', e => {
     // Primary button / primary touch only: a right-click opens the context menu
@@ -21343,7 +21421,8 @@ function makeDraggable(trackEl, fillEl, thumbEl, onChange) {
     // preventDefault stops touch scrolling and the text-selection drag.
     e.preventDefault()
     try { trackEl.setPointerCapture(e.pointerId) } catch (_) {}
-    update(e)
+    // A click, as opposed to a drag, must land exactly where it was clicked.
+    update(e, true)
   })
   trackEl.addEventListener('pointermove', e => {
     if (activeId !== e.pointerId) return
@@ -21352,6 +21431,10 @@ function makeDraggable(trackEl, fillEl, thumbEl, onChange) {
   function end(e) {
     if (activeId !== e.pointerId) return
     activeId = null
+    // Whatever the last frame held must still be delivered, or a drag that
+    // ends between frames leaves the thumb somewhere the player never went.
+    if (frame) { cancelAnimationFrame(frame); frame = 0 }
+    if (pendingRatio !== null) { const r = pendingRatio; pendingRatio = null; onChange(r) }
     try { trackEl.releasePointerCapture(e.pointerId) } catch (_) {}
   }
   // pointercancel matters on touch: the OS can take the gesture away (a
@@ -25590,6 +25673,8 @@ function _slskDirQuality(node) {
 // progress strip can report "done / total" from the downloads poll data that is
 // already flowing — no new polling. Session-only: cleared on reload, as briefed.
 const _slskCardDownloads = new Map()
+// What the tracked set looked like last repaint, so an unchanged poll is free.
+let _slskCardSig = null
 function _slskCardKey(username, folder) {
   return String(username || '').toLowerCase() + '::' + String(folder || '').toLowerCase()
 }
@@ -26652,13 +26737,41 @@ async function _pollAndRenderDownloadsInner() {
   // session in step with the poll — reuses the data just fetched, no new poll.
   // Only touches the DOM when a slsk-section is actually on screen (Search page
   // or the hub) and something is being tracked.
-  if (_slskCardDownloads.size) {
-    const sec = document.getElementById('slsk-section')
-    if (sec && (state.currentPage === 'search' || state.currentPage === 'soulseek')) {
-      const q = state.currentPage === 'search' ? (state.currentSearchQuery || slsk.lastQuery) : slsk.lastQuery
-      sec.innerHTML = renderSoulseekRow(q)
-      bindSlskSearchEvents(q)
+  // Entries were only ever ADDED to _slskCardDownloads — four set() calls, no
+  // delete anywhere — so after the first album download the map was permanently
+  // non-empty. And this repaint, unlike _renderDlTab, had no signature gate. So
+  // for the rest of the session every poll tore down and rebuilt the entire
+  // Soulseek results section, which re-walks every file of every response to
+  // regroup and rescore them, losing the scroll position each time. Measured
+  // elsewhere in this file at 112 -> 249 ms and growing.
+  //
+  // Now: a card stops being tracked once none of its files are still moving,
+  // and the rebuild only happens when the tracked set or its progress actually
+  // changed.
+  const _liveCardKeys = new Set()
+  for (const f of files) {
+    if (_dlCategory(f.state) === 'active' || _dlCategory(f.state) === 'queued') {
+      _liveCardKeys.add(_slskCardKey(f.username, _dlFolderName(f.filename)))
     }
+  }
+  for (const key of [..._slskCardDownloads.keys()]) {
+    if (!_liveCardKeys.has(key)) _slskCardDownloads.delete(key)
+  }
+  if (_slskCardDownloads.size) {
+    const sig = [..._slskCardDownloads.keys()].sort().join('|') + '#' + _liveCardKeys.size
+    if (sig !== _slskCardSig) {
+      _slskCardSig = sig
+      const sec = document.getElementById('slsk-section')
+      if (sec && (state.currentPage === 'search' || state.currentPage === 'soulseek')) {
+        const q = state.currentPage === 'search' ? (state.currentSearchQuery || slsk.lastQuery) : slsk.lastQuery
+        const keepScroll = sec.scrollTop
+        sec.innerHTML = renderSoulseekRow(q)
+        bindSlskSearchEvents(q)
+        sec.scrollTop = keepScroll
+      }
+    }
+  } else {
+    _slskCardSig = null
   }
 
   // Detect transitions from active → succeeded and trigger a library sync
@@ -31788,65 +31901,17 @@ async function checkConnections() {
     ytEl.childNodes[ytEl.childNodes.length - 1].textContent = isConnected2 ? ' YouTube' : ' YouTube offline'
   }
 
-  var waveformProgressRow = document.querySelector('.progress-row')
-  if (waveformProgressRow && !document.getElementById('waveform-canvas')) {
-    var canvas = document.createElement('canvas')
-    canvas.id = 'waveform-canvas'
-    canvas.style.cssText = 'width:100%;height:24px;margin-bottom:4px;border-radius:2px;opacity:0.3'
-    waveformProgressRow.parentNode.insertBefore(canvas, waveformProgressRow)
-
-    function drawWaveform() {
-      var ctx = canvas.getContext('2d')
-      var w = canvas.offsetWidth, h = canvas.offsetHeight
-      canvas.width = w; canvas.height = h
-      ctx.clearRect(0, 0, w, h)
-      var bars = Math.floor(w / 3)
-      var progress = audio.duration ? audio.currentTime / audio.duration : 0
-      for (var i = 0; i < bars; i++) {
-        var barH = Math.random() * h * 0.8 + h * 0.1
-        var x = i * (w / bars)
-        ctx.fillStyle = i / bars < progress ? 'rgba(29,185,84,0.5)' : 'rgba(255,255,255,0.15)'
-        ctx.fillRect(x, (h - barH) / 2, w / bars - 1, barH)
-      }
-    }
-    clearInterval(_waveformTimer)
-    _waveformTimer = setInterval(drawWaveform, 1000)
-    drawWaveform()
-
-    // Waveform hover preview (App #3): the seek bar below already shows a
-    // time-at-cursor bubble on hover; extend the same tooltip to the waveform
-    // so hovering the wave reads out the time at that point too. Reuses the
-    // existing #progress-tooltip and its fmtDur/time-display convention.
-    canvas.style.cursor = 'pointer'
-    canvas.addEventListener('mousemove', function (e) {
-      if (!audio.duration) return
-      var tooltip = document.getElementById('progress-tooltip')
-      if (!tooltip) return
-      var rect = canvas.getBoundingClientRect()
-      var ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
-      var timeVal = timeDisplay === 'remaining'
-        ? audio.duration - (ratio * audio.duration)
-        : timeDisplay === 'total' ? _albumTotalDuration() : ratio * audio.duration
-      tooltip.textContent = fmtDur(Math.abs(timeVal))
-      tooltip.style.display = 'block'
-      // The tooltip lives inside .progress-track; place it under the cursor by
-      // its offset within that track, which spans the same width as the wave.
-      var track = document.getElementById('progress-track')
-      var tRect = track ? track.getBoundingClientRect() : rect
-      tooltip.style.left = (e.clientX - tRect.left) + 'px'
-    })
-    canvas.addEventListener('mouseleave', function () {
-      var tooltip = document.getElementById('progress-tooltip')
-      if (tooltip) tooltip.style.display = 'none'
-    })
-    // A click on the wave seeks, matching the seek bar it mirrors.
-    canvas.addEventListener('click', function (e) {
-      if (!audio.duration) return
-      var rect = canvas.getBoundingClientRect()
-      var ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
-      audio.currentTime = ratio * audio.duration
-    })
-  }
+  // The waveform that used to live here has been removed. It was not a
+  // waveform: every bar height was Math.random(), re-rolled by a setInterval
+  // once a second, drawn full-width above the seek bar with a progress fill, a
+  // time-at-cursor tooltip and click-to-seek — everything needed to convince a
+  // listener it was the shape of their track. In an app whose whole claim is
+  // that it does not touch or misrepresent the audio, and whose badge refuses
+  // to say BIT-PERFECT unless it really is, decorative noise dressed as signal
+  // was the one thing that could make the honest parts unbelievable too.
+  //
+  // A real waveform would mean decoding the file and caching a peak map per
+  // track. That is worth building; a random one is worse than none.
 }
 
 function renderShortcuts() {

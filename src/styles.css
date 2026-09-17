@@ -936,10 +936,35 @@ h2.section-title { font-size:18px; font-weight:700; }
 }
 .track-row:hover { background:var(--glass); }
 .track-row.playing { color:var(--accent); }
+/* Seven children, five columns. The row emits track-num, track-info,
+   track-plays, track-like-btn, hover-actions, track-dur and track-more-btn —
+   and nothing was ever placed explicitly, so the ⋮ button fell onto an implicit
+   SECOND grid row under the track number, and the moment the cursor entered the
+   row the hover actions claimed a column and the duration dropped to that
+   second line too. Every row, every album, growing taller on hover: the
+   most-used surface in the app reflowing under the pointer.
+
+   Seven columns now, and every child placed by name rather than by order — so a
+   child that is display:none while not hovered leaves its column empty instead
+   of shifting everything after it along. */
 .track-list .track-row:not(.pl-track-row),
 .liked-track-row {
-  grid-template-columns:36px 1fr auto auto 52px;
+  grid-template-columns:36px minmax(0,1fr) auto auto auto 52px 28px;
 }
+.track-list .track-row:not(.pl-track-row) > .track-num,
+.liked-track-row > .track-num { grid-column:1; }
+.track-list .track-row:not(.pl-track-row) > .track-info,
+.liked-track-row > .track-info { grid-column:2; min-width:0; }
+.track-list .track-row:not(.pl-track-row) > .track-plays,
+.liked-track-row > .track-plays { grid-column:3; }
+.track-list .track-row:not(.pl-track-row) > .track-like-btn,
+.liked-track-row > .track-like-btn { grid-column:4; }
+.track-list .track-row:not(.pl-track-row) > .hover-actions,
+.liked-track-row > .hover-actions { grid-column:5; }
+.track-list .track-row:not(.pl-track-row) > .track-dur,
+.liked-track-row > .track-dur { grid-column:6; text-align:right; }
+.track-list .track-row:not(.pl-track-row) > .track-more-btn,
+.liked-track-row > .track-more-btn { grid-column:7; }
 .track-list .track-row:not(.pl-track-row) .track-plays,
 .liked-track-row .track-plays { opacity:0; transition:opacity .15s; }
 .track-list .track-row:not(.pl-track-row):hover .track-plays,
@@ -5450,9 +5475,15 @@ textarea:focus:not(:focus-visible) { outline: none; }
 }
 
 /* ── Track list header improvements ─────────────── */
+/* The header carried three spans against a five-column template of its own, so
+   "Duration" landed in what is the play-count column in the rows beneath it —
+   the word floating mid-list with the actual durations 200px to its right — and
+   its first column was 40px against the rows' 36px, leaving "#" four pixels off
+   the numbers below. Same template as the rows now, with each label placed in
+   the column it actually labels. */
 .track-list-header {
   display: grid;
-  grid-template-columns: 40px 1fr auto auto auto;
+  grid-template-columns: 36px minmax(0,1fr) auto auto auto 52px 28px;
   gap: 0 8px;
   padding: 0 10px 8px;
   border-bottom: 1px solid rgba(255,255,255,.07);
@@ -9317,6 +9348,41 @@ body.video-active .np-byline { font-size:10.5px; }
   .vtheatre, .vt-menu, .vt-skip button { animation:none; }
   .vt-seek-track, .vt-seek-knob, .vt-icon { transition:none; }
   .vt-stage-msg .spin { animation:none; }
+}
+
+
+
+/* The album hero's title, artist and year open a dialog that WRITES TAGS TO THE
+   FILES. That is the most destructive thing on the page, and it had no styling
+   of any kind: no cursor, no underline, no hover — nothing to say the text was
+   interactive, let alone that clicking it would rewrite metadata on disk. A
+   listener clicking the big album title to see what happens deserves a warning
+   before the dialog, not after. */
+.clickable-meta {
+  cursor: text;
+  border-bottom: 1px dashed transparent;
+  transition: border-color .15s ease, opacity .15s ease;
+}
+.clickable-meta:hover,
+.clickable-meta:focus-visible {
+  border-bottom-color: var(--text3, rgba(255, 255, 255, .35));
+}
+.clickable-meta:hover::after {
+  content: ' \270E';
+  font-size: .7em;
+  opacity: .55;
+  vertical-align: super;
+}
+
+/* The three header labels sit over the columns they name. */
+.track-list-header > *:nth-child(1) { grid-column:1; }
+.track-list-header > *:nth-child(2) { grid-column:2; }
+.track-list-header > *:nth-child(3) { grid-column:6; text-align:right; }
+
+/* Both of the above add a transition; reduced motion must cancel it like
+   everything else in this file. */
+@media (prefers-reduced-motion: reduce) {
+  .clickable-meta { transition: none; }
 }
 
 /* ── Cinema stays dark in light mode (App #87, design decision 3) ─────

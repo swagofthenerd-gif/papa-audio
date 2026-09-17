@@ -86,16 +86,24 @@ test('the queue header wires the keep-going toggle', () => {
   assert.match(wire, /queue-keepgoing-toggle.*setKeepGoing/s, 'the toggle flips the setting')
 })
 
-// ── Item 3: waveform hover preview ──────────────────────────────────────────
+// ── Item 3: the waveform, removed ───────────────────────────────────────────
+// It was never a waveform. Every bar height was Math.random(), re-rolled by a
+// setInterval once a second, drawn full width above the seek bar with a
+// progress fill, a time-at-cursor tooltip and click-to-seek — everything needed
+// to convince a listener it was the shape of their track. In an app whose whole
+// claim is that it does not touch or misrepresent the audio, and whose badge
+// refuses to say BIT-PERFECT unless it really is, decorative noise dressed as
+// signal was the one thing that could make the honest parts unbelievable too.
+//
+// This test used to pin its hover behaviour, so it guarded the wrong thing. It
+// now guards the removal: a real waveform means decoding the file and caching a
+// peak map, and until that exists there must not be a fake one.
 
-test('the waveform reuses the seek bar tooltip on hover', () => {
-  const at = code.indexOf("canvas.id = 'waveform-canvas'")
-  assert.ok(at > 0, 'found the waveform canvas')
-  const fn = code.slice(at, at + 2200)
-  assert.match(fn, /canvas\.addEventListener\('mousemove'/, 'hover handler on the wave')
-  assert.match(fn, /getElementById\('progress-tooltip'\)/, 'reuses the existing tooltip')
-  assert.match(fn, /fmtDur\(/, 'shows a time at the cursor')
-  assert.match(fn, /canvas\.addEventListener\('mouseleave'/, 'hides on leave')
+test('there is no fake waveform drawn over the player bar', () => {
+  assert.doesNotMatch(code, /waveform-canvas/, 'the canvas is gone')
+  assert.doesNotMatch(code, /drawWaveform/, 'so is the drawing loop')
+  assert.doesNotMatch(code, /Math\.random\(\) \* h \* 0\.8/, 'and the random bar heights')
+  assert.doesNotMatch(code, /_waveformTimer/, 'and the interval that re-rolled them every second')
 })
 
 // ── Item 4: long-track bookmarks ────────────────────────────────────────────
