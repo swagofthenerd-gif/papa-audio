@@ -1628,3 +1628,74 @@ test('a special never poses as an ordinary episode', () => {
   assert.strictEqual(episodeNumberOf('Show - Special 2 [1080p].mkv'), null)
   assert.strictEqual(episodeNumberOf('Show - 02 [1080p].mkv'), 2)
 })
+
+// B3: codec and audio tags were read as episode numbers. Proven by running the
+// shipped matcher: "[Grp] Show - 24 (2160p) [DD5.1 H.264].mkv" answered yes to
+// episode 1, "[DTS-HD.MA.5.1]" answered yes to 1 AND 5, "[EAC3 2.0]" to 2, and
+// because pickVideoFile takes the largest match, asking for episode 1 of a pack
+// returned the 9 GB episode 24.
+{
+  const { matchesWantedEpisode, episodeNumberOf, pickVideoFile } = require('../torrent-stream')
+
+  // Every episode number 1..30 a name claims to be. A correct name claims one.
+  const claimed = name => {
+    const out = []
+    for (let n = 1; n <= 30; n++) if (matchesWantedEpisode(name, { episode: n })) out.push(n)
+    return out
+  }
+
+  test('a channel layout is not an episode number', () => {
+    assert.deepStrictEqual(claimed('[Grp] Show - 24 (2160p) [DD5.1 H.264].mkv'), [24])
+    assert.deepStrictEqual(claimed('[Grp] Show - 24 (1080p) [DTS-HD.MA.5.1][x265].mkv'), [24])
+    assert.deepStrictEqual(claimed('Show - 12 [EAC3 2.0][HEVC].mkv'), [12])
+    assert.deepStrictEqual(claimed('Show - 07 [DDP5.1 Atmos][AVC].mkv'), [7])
+    assert.deepStrictEqual(claimed('Show - 03 [TrueHD 7.1][x264].mkv'), [3])
+    assert.deepStrictEqual(claimed('Show - 08 [FLAC 2.0][AAC 2.0][Opus 2.0].mkv'), [8])
+    assert.deepStrictEqual(claimed('Show - 11 [E-AC-3 5.1][PCM 6ch].mkv'), [11])
+    // A film with no episode number at all claims nothing.
+    assert.deepStrictEqual(claimed('Show.2160p.DDP5.1.H.265.mkv'), [])
+  })
+
+  test('a codec tag is not an episode number to episodeNumberOf either', () => {
+    assert.strictEqual(episodeNumberOf('Show [H.264].mkv'), null, '"H.264" is a codec, not episode 264')
+    assert.strictEqual(episodeNumberOf('Show.2160p.DDP5.1.H.265.mkv'), null)
+    assert.strictEqual(episodeNumberOf('[Grp] Show - 24 (2160p) [DD5.1 H.264].mkv'), 24)
+    assert.strictEqual(episodeNumberOf('Show - 07 [AC3][XviD].mkv'), 7)
+    // Real numbers still read normally.
+    assert.strictEqual(episodeNumberOf('[Grp] Show - 01 (1080p) [FLAC][x264].mkv'), 1)
+    assert.strictEqual(episodeNumberOf('Show.S01E05.1080p.TrueHD.7.1.Atmos.x265-GRP.mkv'), 5)
+  })
+
+  test('a codec word does not eat the episode number that follows it', () => {
+    // A channel layout has to look like one ("5.1", "6ch"), so a bare digit
+    // after a codec word is left alone.
+    assert.strictEqual(episodeNumberOf('Opus 5.mkv'), 5)
+    assert.strictEqual(episodeNumberOf('Atmos - 09 [1080p].mkv'), 9)
+  })
+
+  test('asking for episode 1 of a pack does not return the biggest episode', () => {
+    const pack = [
+      { name: '[Grp] Show - 01 (1080p) [AAC][H.264].mkv', length: 300e6 },
+      { name: '[Grp] Show - 24 (2160p) [DD5.1 H.264].mkv', length: 9000e6 },
+      { name: '[Grp] Show - 12 (1080p) [DTS-HD.MA.5.1].mkv', length: 5000e6 },
+    ]
+    assert.strictEqual(pickVideoFile(pack, { episode: 1, season: 1 }), 0, 'episode 1 is episode 1')
+    assert.strictEqual(pickVideoFile(pack, { episode: 12, season: 1 }), 2)
+    assert.strictEqual(pickVideoFile(pack, { episode: 24, season: 1 }), 1)
+  })
+
+  test('the file that states the wanted episode beats a bigger file that only matched', () => {
+    // The tier preference is the standing defence: a tag nobody has thought of
+    // yet (here a frame rate) still makes a big file answer yes to the wrong
+    // episode, and without the preference the biggest match wins as before.
+    const pack = [
+      { name: '[Grp] Show - 23 [1080p].mkv', length: 200e6 },
+      { name: '[Grp] Show - 24 [2160p][23.976fps].mkv', length: 8000e6 },
+    ]
+    assert.strictEqual(matchesWantedEpisode(pack[1].name, { episode: 23 }), true,
+      'the frame rate still makes the big file answer yes to episode 23')
+    assert.strictEqual(pickVideoFile(pack, { episode: 23, season: 1 }), 0,
+      'but the file that states episode 23 wins anyway')
+    assert.strictEqual(pickVideoFile(pack, { episode: 24, season: 1 }), 1)
+  })
+}

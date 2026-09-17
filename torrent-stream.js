@@ -165,11 +165,37 @@ function matchesWantedEpisode(name, want) {
   return new RegExp(`(?:^|[\\s._\\-\\[(])(?:e|ep|episode\\s*)?0*${n}(?:v\\d)?(?:$|[\\s._\\-\\])])`, 'i').test(text)
 }
 
-// Non-credit openings/endings, specials and revision tags carry a digit of
-// their own -- "NCED1", "OP2", "Ver.2" -- that reads exactly like an episode
-// number to the regex below. Stripped before parsing so a batch pack's
-// ending-theme clip is never mistaken for the next episode.
-const NON_EPISODE_TOKEN = /\b(?:nc)?(?:op|ed)\d*\b|\bova\d*\b|\bsp(?:ecial)?s?\s*\d*\b|\bver(?:sion)?\.?\s*\d+\b/gi
+// Release tags that carry a digit of their own, which reads exactly like an
+// episode number to the bare-number regex above and below.
+//
+// Two families. The first is extras and revisions -- "NCED1", "OP2", "Ver.2",
+// "OVA", "SP1". The second is codec and audio tags, and it is the one that
+// actually bit: the channel count in "DD5.1" is a bare 5 and a bare 1 to the
+// parser, so "[Grp] Show - 24 (2160p) [DD5.1 H.264].mkv" answered YES to
+// "are you episode 1?" -- and because pickVideoFile takes the LARGEST match,
+// asking for episode 1 of a pack handed back the 9 GB episode 24. Executed
+// against the shipped function before and after: "[DTS-HD.MA.5.1]" claimed to
+// be episodes 1 AND 5, "[EAC3 2.0]" claimed episode 2, and "[H.264]" alone
+// made episodeNumberOf report episode 264.
+//
+// A channel layout only counts as one when it looks like one ("5.1", "2.0",
+// "6ch"), so a bare digit after a codec word is left alone -- otherwise a show
+// whose title ends in a codec word would lose its episode number.
+const NON_EPISODE_TOKEN = new RegExp([
+  // Non-credit openings and endings: NCOP, NCED2, OP, ED1.
+  /\b(?:nc)?(?:op|ed)\d*\b/,
+  // OVAs, specials and revision tags: OVA2, SP1, Specials, Ver.2, Version 3.
+  /\bova\d*\b/,
+  /\bsp(?:ecial)?s?\s*\d*\b/,
+  /\bver(?:sion)?\.?\s*\d+\b/,
+  // Audio codecs, with the channel layout they usually carry: DD5.1, DDP5.1,
+  // DD+5.1, DTS, DTS-HD, DTS-HD.MA.5.1, TrueHD 7.1, Atmos, AAC2.0, AC3,
+  // EAC3 2.0, E-AC-3, FLAC, Opus 2.0, PCM 6ch.
+  /\b(?:ddp|dd\+|dd|e-?ac-?3|ac-?3|aac|dts(?:[-._\s]?hd)?(?:[-._\s]?ma)?|true-?hd|atmos|flac|opus|mp3|l?pcm|vorbis)(?:[-._\s]?(?:\d[._]\d(?:ch)?|\dch))?\b/,
+  // Video codecs: H.264, H 265, x264, x265, HEVC, AVC, XviD, DivX, AV1, VP9.
+  /\b[hx][-._\s]?26[45]\b/,
+  /\b(?:hevc|avc|xvid|divx|av1|vp9)\b/,
+].map(r => r.source).join('|'), 'gi')
 
 // The episode number a filename states, or null.
 function episodeNumberOf(name) {
@@ -198,9 +224,22 @@ function pickVideoFile(files, want) {
   if (want && want.episode != null && pool.length > 1) {
     // Several matches means the pack holds more than one version of the
     // episode — a v2, or two encodes; the largest of those is the right pick.
+    //
+    // But "largest of the matches" is only safe when every match is really the
+    // episode. A tag that still poses as a number biases the answer towards the
+    // BIGGEST file, which is how asking for episode 1 used to return a 9 GB
+    // episode 24. So a file whose own stated episode number IS the one asked
+    // for outranks one that merely matched somewhere in its name, and size only
+    // decides between equals. A double episode (S01E01E02) states 1 and covers
+    // 2, so it has no exact number for 2 and stays in the fallback tier — which
+    // is where it belongs when a single-episode file for 2 also exists.
     const pass = w => {
       const matches = pool.filter(f => matchesWantedEpisode(f.name, w))
-      return matches.length ? matches.reduce((a, b) => (b.length > a.length ? b : a)).index : -1
+      if (!matches.length) return -1
+      const n = Number(w.episode)
+      const exact = matches.filter(f => episodeNumberOf(f.name) === n)
+      const best = exact.length ? exact : matches
+      return best.reduce((a, b) => (b.length > a.length ? b : a)).index
     }
     // The ABSOLUTE number is tried FIRST, and that order is load-bearing. A
     // complete-series batch holds both files: "09" is season one's ninth
