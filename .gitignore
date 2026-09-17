@@ -15,3 +15,9 @@ mpv-shot*.png
 # Python bytecode from tools/
 __pycache__/
 *.pyc
+
+# Local scaffolding: this worktree symlinks node_modules from the main
+# checkout so it can run the suite without a second install. The entries
+# above end in "/" and match a directory, not a symlink.
+/node_modules
+/bridge-server/node_modules
