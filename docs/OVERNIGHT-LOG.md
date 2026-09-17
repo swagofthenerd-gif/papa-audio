@@ -65,3 +65,20 @@ print the debrid token.
 - G1 Continuous bug hunt across every tab (running in parallel throughout)
 - G2 Per-tab exhaustive QA pass — one "month" per tab, on twins
 - G3 RealDebrid cleanup of my own test entries, dry-run logged first
+
+## Branch divergence — needs his decision, not mine
+
+`feature/papa-video` on GitHub carries **32 commits from 2026-09-15** that this
+working copy never had: video work (V020, V046, V048, V053, V058 and the ledger
+entries around them), authored in a parallel session. This copy is 16 ahead and
+32 behind.
+
+I did not merge them. A test merge in a throwaway worktree conflicts in exactly
+one file — `src/renderer.js` — which is tractable, but resolving two days of
+someone else's work into mine in a 34k-line file and pushing it to the shared
+branch, unattended, risks the video side he uses daily. The conservative option
+costs nothing; the other could cost two days of work.
+
+So every commit from this run is pushed to **`feature/audio-overhaul`** instead.
+Nothing is lost and nothing of his is overwritten. Merging the two lines is a
+decision for him when he is back.
