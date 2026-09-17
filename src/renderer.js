@@ -5599,6 +5599,13 @@ async function _switchPackEpisode(index, opts) {
 
 function _videoPlayResult(result, opts) {
   if (!result) return
+  // Whatever pack was on screen belonged to the LAST thing played, and its
+  // file numbers do not address this one. Left alone it survived into the new
+  // play — a film opened after a season pack still showed the season's
+  // episodes, and both the strip and "Download next episode" would then act on
+  // the new stream with the old release's indexes. This play announces its own
+  // episodes if it has any.
+  _forgetPackStrip()
   opts = opts || {}
   // What this play IS, as opposed to what is on screen behind it.
   //
