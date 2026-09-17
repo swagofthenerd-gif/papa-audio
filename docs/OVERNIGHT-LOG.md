@@ -114,3 +114,22 @@ costs nothing; the other could cost two days of work.
 So every commit from this run is pushed to **`feature/audio-overhaul`** instead.
 Nothing is lost and nothing of his is overwritten. Merging the two lines is a
 decision for him when he is back.
+
+## Video side
+
+| Item | State |
+|---|---|
+| Anime played the WRONG EPISODE from a season pack (absolute vs seasonal numbering) | DONE `53289f1` |
+| "Start over" resumed instead of starting over | DONE `53289f1` |
+| "Hide spoilers" wiped the whole TV episode list | DONE `53289f1` |
+| Next/Previous/source controls acted on the page being browsed, not what was playing | DONE `b7214d8` |
+| The first word after Play was "Downloading" while nothing was downloading | DONE `81da92d` |
+| Three keys advertised in the help list did nothing; `?` was dead in the theatre | DONE `81da92d` |
+
+## Resource ceilings
+
+| Item | State |
+|---|---|
+| Four `spawn('ffmpeg')` with no deadline — a hang wedged the handler forever | DONE `246509c` |
+| Debrid link/info caches: no cap, no TTL | DONE `246509c` |
+| Download ledger never forgot a group; walked all of them every 4s forever | DONE `246509c` |
