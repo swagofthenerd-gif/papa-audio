@@ -2809,8 +2809,20 @@ function buildPlayer(cfg) {
   p.on('duration',     d => sendPlayerEvent('duration', d))
   p.on('paused',       d => { sendPlayerEvent('paused', d); refreshTrayTooltip(); updateTrayMenu(playerIsPlaying()) })
   p.on('audioParams',  d => sendPlayerEvent('audioParams', d))
-  p.on('autoAdvanced', d => sendPlayerEvent('autoAdvanced', d))
-  p.on('trackChanged', d => { sendPlayerEvent('trackChanged', d); updateTrayMenu(playerIsPlaying()) })
+  // A gapless advance and a crossfade both change the playing file without ever
+  // going through player-load, so the gain used to stay on the track BEFORE the
+  // one now playing — for the whole rest of the album. That defeats the entire
+  // point of loudness matching in the one mode where it matters most, continuous
+  // album listening. It also left _loudnessCurrentPath stale, so nudging the
+  // volume slider mid-album re-applied the PREVIOUS track's correction to the
+  // current one. Applying it here keeps both honest wherever the change came
+  // from; it is idempotent, so the explicit-load path re-applying is harmless.
+  p.on('autoAdvanced', d => { sendPlayerEvent('autoAdvanced', d); try { applyLoudnessGain(d) } catch (_) {} })
+  p.on('trackChanged', d => {
+    sendPlayerEvent('trackChanged', d)
+    updateTrayMenu(playerIsPlaying())
+    try { applyLoudnessGain(d) } catch (_) {}
+  })
   p.on('ended',        () => sendPlayerEvent('ended'))
   p.on('loadError',    d => sendPlayerEvent('loadError', d))
   // These four carry a payload now. engineDown says whether recovery is coming,
@@ -3200,15 +3212,15 @@ ipcMain.handle('loudness-get-map', () => ({ ok: true, map: sideStores.loudnessMa
 
 ipcMain.handle('player-load',       async (_, { path: p, play }) => {
   var resolved = await _resolvePlayerPath(p)
-  var r = await wrap(() => player.load(resolved, { play }))()
-  // Non-destructive ReplayGain (App #59): after the file is open, fold its
-  // stored gain into mpv's volume. mpv keeps its `volume` property across a
-  // loadfile, so without this a per-track gain from a previous track would
-  // linger; with it, each track lands at the target loudness. Off by default —
-  // only runs when the user has turned replaygainApply on. A no-op for any track
-  // not yet scanned (gainDb null → base volume unchanged).
-  try { applyLoudnessGain(resolved) } catch (_) { /* cosmetic; never fails a load */ }
-  return r
+  // Non-destructive ReplayGain (App #59): fold the incoming track's stored gain
+  // into mpv's volume BEFORE the loadfile, not after. mpv keeps its `volume`
+  // across a load, so applying it afterwards meant the opening moment of every
+  // track was audible at the PREVIOUS track's level and then snapped — a jump
+  // in the wrong direction, worst exactly where the two tracks differ most.
+  // Setting it first means the first sample is already at the right level.
+  // Off by default; a no-op for any track not yet scanned (gainDb null).
+  try { await applyLoudnessGain(resolved) } catch (_) { /* cosmetic; never fails a load */ }
+  return await wrap(() => player.load(resolved, { play }))()
 })
 ipcMain.handle('player-set-next',   async (_, p) => {
   // Pre-warm the cache for the next track so it plays instantly
@@ -3239,9 +3251,9 @@ ipcMain.handle('player-switch',     async (_, path) => {
     return { ok: false, error: `could not pause before switching: ${String(e && e.message || e)}` }
   }
   var resolved = await _resolvePlayerPath(path)
-  var r = await wrap(() => player.load(resolved, { play: true }))()
-  try { applyLoudnessGain(resolved) } catch (_) { /* cosmetic; never fails a switch */ }
-  return r
+  // Before the load, for the same reason as player-load above.
+  try { await applyLoudnessGain(resolved) } catch (_) { /* cosmetic; never fails a switch */ }
+  return await wrap(() => player.load(resolved, { play: true }))()
 })
 ipcMain.handle('player-seek',       (_, s) => wrap(() => player.seek(s))())
 // Renderer sends linear 0–100 (HTMLAudioElement semantics); mpv softvol is
