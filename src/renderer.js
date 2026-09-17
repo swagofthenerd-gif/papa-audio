@@ -6485,8 +6485,7 @@ async function _renderVideoTab(ticket, opts) {
   // Switching tabs with search results showing used to repaint the new tab's
   // rows behind display:none while the old query's results stayed on screen.
   // A tab switch is a statement that the search is over.
-  const searchBox = document.getElementById('video-search-results')
-  if (searchBox && !preserve) searchBox.innerHTML = ''
+  if (!preserve) _setVideoSearchHtml('')
   // The taste row is a sibling of the rows container, so it needs hiding and
   // showing alongside them — never inherited from either.
   const tasteMount = document.getElementById('vtaste-row')
@@ -6545,6 +6544,14 @@ async function _renderVideoTab(ticket, opts) {
 
   // Before any card is built, so the first paint already carries the badges.
   await _refreshInstantKeys()
+  // Every other await in this function is followed by a ticket check, and this
+  // one was not — so a tab pressed while the instant-badge list was still in
+  // flight let the tab you LEFT come back and paint its row shells over the
+  // tab you are on. It is a real request on the first render of a session and
+  // again whenever the 30-second cache has lapsed, which is exactly when the
+  // tabs are being pressed. Everything below writes to the page, so the check
+  // belongs immediately after the await rather than at the first fetch.
+  if (_videoCatalogTicket !== ticket || state.currentPage !== 'video') return
 
   const wanted = _videoRows.filter(function (r) { return r.tabs.indexOf(_videoTab) !== -1 })
   const curated = _curatedRows(_videoTab)
@@ -8333,8 +8340,7 @@ function _bindVideoSearch() {
     // Clearing the box ends the journey: the page is the anonymous catalog
     // again, so its navId (the query) is dropped with the results.
     state.currentVideoQuery = ''
-    const box = document.getElementById('video-search-results')
-    if (box) box.innerHTML = ''
+    _setVideoSearchHtml('')
     document.getElementById('vrows')?.style.removeProperty('display')
     document.getElementById('vhero-mount')?.style.removeProperty('display')
     document.getElementById('vtaste-row')?.style.removeProperty('display')
@@ -8559,6 +8565,28 @@ function _vSearchEmptyHtml(query) {
   '</div>'
 }
 
+// ── Replacing the search results ────────────────────────────────────────────
+// Every path that repaints #video-search-results throws away a grid of cards,
+// and a card that is thrown away has to leave the enrichment queue on the way
+// out. The queue (src/video-enrich.js) keys its bookkeeping on the card
+// ELEMENT in a plain Map and holds an apply closure per card, so a card it
+// still knows about is a detached <article>, its poster <img> and a closure
+// that can never be collected.
+//
+// This is the same leak _wipeVideoMounts closed for tab switches — in the path
+// it does not reach, and the busiest one there is. Search is debounced on
+// every keystroke: typing "tokyo revengers" is fourteen fetches, each of which
+// replaced a full result grid, and every chip click and decade change
+// replaced another. setContent() only sweeps on a page CHANGE, and none of
+// this changes the page.
+function _setVideoSearchHtml(html) {
+  const target = document.getElementById('video-search-results')
+  if (!target) return null
+  if (typeof _releaseCardsIn === 'function') _releaseCardsIn(target)
+  target.innerHTML = html
+  return target
+}
+
 // Paints a fetched result set into #video-search-results: the filter bar, then
 // the type-grouped rows, then the chips are wired. `note` is the optional
 // "Showing results for …" line the typo-tolerance retry passes in. Called on
@@ -8600,7 +8628,7 @@ function _paintVideoSearchResults(note) {
       if (groupItems[g.key].length) html += _vRowShell('search-' + g.key, g.label, groupItems[g.key].length)
     }
   }
-  target.innerHTML = html
+  _setVideoSearchHtml(html)
   if (anyShown) {
     for (const g of groupsShown) {
       if (groupItems[g.key].length) _fillRow('search-' + g.key, groupItems[g.key])
@@ -8653,7 +8681,7 @@ function _runVideoTitleSearch(query) {
     if (rows) rows.style.display = 'none'
     if (hero) hero.style.display = 'none'
     if (taste) taste.style.display = 'none'
-    box.innerHTML = _vRowShell('search', 'Searching…', 0)
+    _setVideoSearchHtml(_vRowShell('search', 'Searching…', 0))
 
     window.api.videoSearch({ query: query, type: 'all' })
       .catch(function (e) { return { ok: false, error: String((e && e.message) || e) } })
@@ -8662,7 +8690,7 @@ function _runVideoTitleSearch(query) {
         const target = document.getElementById('video-search-results')
         if (!target) return
         if (!res.ok) {
-          target.innerHTML = '<div class="vrow-msg err">' + esc(_videoErrorText(res.error)) + '</div>'
+          _setVideoSearchHtml('<div class="vrow-msg err">' + esc(_videoErrorText(res.error)) + '</div>')
           return
         }
         const results = Array.isArray(res.results) ? res.results : []
@@ -8676,7 +8704,7 @@ function _runVideoTitleSearch(query) {
           if (simplified && simplified !== query) {
             return _retryVideoTitleSearch(query, simplified, ticket)
           }
-          target.innerHTML = _vSearchEmptyHtml(query)
+          _setVideoSearchHtml(_vSearchEmptyHtml(query))
           return
         }
         _vSearchFilter.results = results
@@ -8699,7 +8727,7 @@ function _retryVideoTitleSearch(original, simplified, ticket) {
       if (!target) return
       const results = (res && res.ok && Array.isArray(res.results)) ? res.results : []
       if (!results.length) {
-        target.innerHTML = _vSearchEmptyHtml(original)
+        _setVideoSearchHtml(_vSearchEmptyHtml(original))
         return
       }
       // Commit-only: don't remember on this debounced retry. Update the pending
