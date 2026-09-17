@@ -2685,6 +2685,11 @@ function getPlayerSettings() {
   // derived mode below can never come back 'crossfade' while bit-perfect is on.
   const bitPerfectOn = saved.bitPerfect === true
   const crossfadeAllowed = crossfadeSeconds > 0 && !bitPerfect.forcesGapless(bitPerfectOn)
+  // What the ENGINE actually got, as distinct from what the dropdown shows.
+  // The badge reads this; the dropdown keeps his preference.
+  const replaygainEffective = bitPerfect.effectiveReplaygain({
+    replaygain: saved.replaygain, bitPerfect: bitPerfectOn,
+  }).mode
   return {
     outputMode: 'default', alsaDevice: null,
     mode: 'gapless', crossfadeSecs: 4, replaygain: 'no',
@@ -2706,6 +2711,11 @@ function getPlayerSettings() {
     crossfadeSeconds,
     mode: crossfadeAllowed ? 'crossfade' : 'gapless',
     crossfadeSecs: crossfadeSeconds > 0 ? crossfadeSeconds : 4,
+    // What the engine was actually given. `replaygain` above is still what the
+    // dropdown should show — his preference is preserved — but the badge must
+    // read this, or it will keep claiming bit-perfect while ReplayGain scales
+    // the samples.
+    replaygainEffective,
   }
 }
 
@@ -3391,12 +3401,20 @@ ipcMain.handle('mpv-ab-loop', async (_, range) => {
 // spawn uses it (the engine folds config.replaygain into its spawn args). 'off'
 // maps to mpv's 'no'.
 ipcMain.handle('mpv-replaygain-mode', async (_, mode) => {
-  const mpvMode = mode === 'track' ? 'track' : mode === 'album' ? 'album' : 'no'
-  const cfg = { ...getPlayerSettings(), replaygain: mpvMode }
-  store.set('playerSettings', cfg)
-  if (!playerReady()) return { ok: false, error: 'engine unavailable', mode: mpvMode }
-  try { await player.setReplaygain(mpvMode); return { ok: true, mode: mpvMode } }
-  catch (e) { return { ok: false, error: String(e.message || e), mode: mpvMode } }
+  // This handler used to set mpv's replaygain directly with no bit-perfect
+  // check, while resolveEngineConfig forces 'no' at spawn. Three places then
+  // held three different answers: the running mpv (on), the spawn config
+  // (off), and the store (on) — and the badge read the store, so it could
+  // claim bit-perfect while ReplayGain was scaling the samples. One rule now,
+  // in src/bit-perfect, and it SAYS when it overrides rather than silently
+  // dropping the request.
+  const cur = getPlayerSettings()
+  const gate = bitPerfect.effectiveReplaygain({ replaygain: mode, bitPerfect: cur.bitPerfect })
+  // The dropdown keeps showing what he asked for; only the engine is gated.
+  store.set('playerSettings', { ...cur, replaygain: gate.requested })
+  if (!playerReady()) return { ok: false, error: 'engine unavailable', mode: gate.mode, ...gate }
+  try { await player.setReplaygain(gate.mode); return { ok: true, ...gate } }
+  catch (e) { return { ok: false, error: String(e.message || e), mode: gate.mode, ...gate } }
 })
 // Whether a queued track is genuinely gone, asked of the filesystem rather than
 // inferred from one load error. A transient demuxer or cache error on a large

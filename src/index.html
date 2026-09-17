@@ -471,11 +471,11 @@
           <label class="mcs-set-row">Output
             <select class="mcs-set-select" id="pb-output-mode">
               <option value="default">System (shared)</option>
-              <option value="exclusive">Exclusive (bit-perfect)</option>
+              <option value="exclusive">Exclusive device access</option>
             </select>
           </label>
           <!-- Roadmap 097: the tradeoff, before it is chosen. -->
-          <div class="mcs-set-hint">Shared: the system mixer resamples to its own rate; other apps keep their sound. Exclusive: Papa Audio opens the device alone at the file's own rate — nothing else can play through it while a track is loaded, and if the device refuses, playback falls back to the system output and says so here.</div>
+          <div class="mcs-set-hint">Shared: the system mixer resamples to its own rate; other apps keep their sound. Exclusive device access: Papa Audio opens the device alone at the file’s own rate — nothing else can play through it while a track is loaded, and if the device refuses, playback falls back to the system output and says so here. <strong>This is not bit-perfect on its own</strong> — EQ, ReplayGain, volume leveling, the volume boost and crossfade all still change the samples. Use Bit-perfect mode below to turn those off.</div>
           <label class="mcs-set-row" id="pb-device-row" style="display:none">Device
             <select class="mcs-set-select" id="pb-alsa-device"></select>
           </label>
@@ -528,10 +528,10 @@
             </select>
           </label>
           <div class="mcs-set-hint">Unplugging headphones or a DAC mid-song: Pause keeps your place and waits; Keep playing switches to whatever is now the default output — usually the speakers — at the current volume.</div>
-          <label class="mcs-set-row" id="pb-bitperfect-row">Bit-perfect output
+          <label class="mcs-set-row" id="pb-bitperfect-row">Bit-perfect mode (turns off everything that changes the samples)
             <input type="checkbox" id="pb-bitperfect">
           </label>
-          <div class="mcs-set-hint" id="pb-bitperfect-hint">Disables EQ, volume leveling and crossfade — the file's samples reach your DAC untouched.</div>
+          <div class="mcs-set-hint" id="pb-bitperfect-hint">Opens the device exclusively AND turns off EQ, ReplayGain, volume leveling, the volume boost and crossfade, so the file’s own samples reach the DAC. Gapless stays on, and <strong>a queue that mixes sample rates is still resampled at the handoff</strong> to keep it seamless — that is a deliberate choice in favour of not hearing a gap between tracks.</div>
           <label class="mcs-set-row">Apply ReplayGain (even out album loudness)
             <input type="checkbox" id="pb-replaygain-apply">
           </label>
