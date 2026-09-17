@@ -685,7 +685,7 @@ test('Up Next advances within the pack instead of re-resolving sources', () => {
   // In-season only: anime (season null) or a TV advance whose season still
   // equals the one being watched. A boundary roll skips the pack and takes the
   // resolve-from-scratch path, which carries the new season.
-  assert.match(next, /const sameSeason = next\.season == null \|\| next\.season === _videoState\.season/)
+  assert.match(next, /const sameSeason = next\.season == null \|\| next\.season === pctx\.state\.season/)
   assert.match(next, /sameSeason \? _packFileForEpisode\(_packFiles, next\) : null/)
   // The fallback still exists for when the pack does not carry the next episode.
   assert.match(next, /window\.api\.videoStreams\(_videoStreamRequest\(\)\)/)

@@ -18,8 +18,19 @@ function fn(name) {
 }
 
 test('_nextUntriedSource skips the current pick and everything tried before', () => {
-  const ctx = vm.createContext({ _watch: { pick: { magnet: 'a' }, tried: { b: true } }, _videoStreams: [{ magnet: 'a' }, { magnet: 'b' }, { magnet: 'c' }, { magnet: 'd' }] })
-  vm.runInContext(fn('_sourceKey') + '\n' + fn('_nextUntriedSource') + '\nthis.next = _nextUntriedSource', ctx)
+  // _playCtx falls back to the page when nothing is pinned, so the page-scoped
+  // globals have to exist in the sandbox even though this case does not use them.
+  const ctx = vm.createContext({
+    _watch: { pick: { magnet: 'a' }, tried: { b: true } },
+    _videoStreams: [{ magnet: 'a' }, { magnet: 'b' }, { magnet: 'c' }, { magnet: 'd' }],
+    _videoDetail: null,
+    _videoState: null,
+  })
+  // _nextUntriedSource reads the PLAY context now, not the page-scoped globals:
+  // with a film minimised and another title's page open, the old version offered
+  // the browsed page's sources to a stall that was about to swap the running
+  // film. The harness supplies the accessor the same way it supplies _sourceKey.
+  vm.runInContext(fn('_sourceKey') + '\n' + fn('_playCtx') + '\n' + fn('_nextUntriedSource') + '\nthis.next = _nextUntriedSource', ctx)
   assert.deepStrictEqual(ctx.next(), { magnet: 'c' })
   assert.equal(ctx._watch.tried.a, true, 'the current pick is remembered as tried')
   ctx._watch.tried.c = true; ctx._watch.tried.d = true

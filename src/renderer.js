@@ -4130,13 +4130,38 @@ var _autoSwitchInFlight = false
 var _lastVideoErrorMsg = ''
 var _lastVideoErrorAt = 0
 function _sourceKey(s) { return ((s && (s.magnet || s.url)) || '') + '' }
+
+// What is PLAYING, as opposed to what is on screen. The deck's Next, Previous
+// and source controls live on for as long as the mini player does, and the page
+// underneath can be any other title by then — so they must read the context the
+// play pinned on _watch, not the live page. Falls back to the page when nothing
+// is playing, which is what a fresh Play wants.
+function _playCtx() {
+  const c = _watch && _watch.ctx
+  return {
+    detail: (c && c.detail) || _videoDetail,
+    state: (c && c.state) || _videoState,
+    streams: Array.isArray(c && c.streams) ? c.streams : (Array.isArray(_videoStreams) ? _videoStreams : []),
+  }
+}
+
+// True when the page on screen IS the title that is playing, so an advance may
+// repaint the season picker and episode list behind the theatre. False while
+// the viewer is browsing something else — repainting then would overwrite their
+// page with the playing show's episode.
+function _playCtxOnScreen() {
+  const c = _watch && _watch.ctx
+  return !c || !c.detail || c.detail === _videoDetail
+}
 // The next source not yet tried for this episode, or null. Every source
 // tried is remembered on the watch state, so a second switch never lands
 // back on the first dead one. Synchronous, so a caller can decide before
 // starting the (async) switch.
 function _nextUntriedSource() {
   const cur = _watch.pick
-  const list = Array.isArray(_videoStreams) ? _videoStreams : []
+  // The sources of the film in the picture, not of the page being browsed —
+  // this one fires unattended, from the stall handler.
+  const list = (typeof _playCtx === 'function' ? _playCtx() : { detail: _videoDetail, state: _videoState, streams: Array.isArray(_videoStreams) ? _videoStreams : [] }).streams
   _watch.tried = _watch.tried || {}
   if (cur) _watch.tried[_sourceKey(cur)] = true
   return list.find(function (s) {
@@ -4150,7 +4175,10 @@ function _nextUntriedSource() {
 // what else this title has. Built from the same _videoStreams the page shows,
 // so the two never disagree.
 function _playerSourceList() {
-  const list = Array.isArray(_videoStreams) ? _videoStreams : []
+  // The playing title's sources. This listed the BROWSED page's, while marking
+  // "current" against the playing pick — so nothing was ever marked current and
+  // every row belonged to another title.
+  const list = (typeof _playCtx === 'function' ? _playCtx() : { detail: _videoDetail, state: _videoState, streams: Array.isArray(_videoStreams) ? _videoStreams : [] }).streams
   const cur = _watch && _watch.pick ? _sourceKey(_watch.pick) : ''
   return list.slice(0, 20).map(function (s) {
     const rel = (window.PapaReleaseName && s.title) ? window.PapaReleaseName.parse(s.title) : null
@@ -4169,9 +4197,12 @@ function _playerSourceList() {
 // noticing. Position is kept — main keeps the player alive across the swap and
 // seeks back.
 async function _playerPickSource(key) {
+  // The fallback keeps this runnable in the single-function vm harnesses the
+  // video tests use, which evaluate one function with the globals in scope.
+  const pctx = (typeof _playCtx === 'function' ? _playCtx() : { detail: _videoDetail, state: _videoState, streams: Array.isArray(_videoStreams) ? _videoStreams : [] })
   if (!window.api.videoSwitchStream) { showToast('Switching sources is not available in this build'); return }
   if (_autoSwitchInFlight) return
-  const next = (Array.isArray(_videoStreams) ? _videoStreams : []).find(function (s) { return _sourceKey(s) === key })
+  const next = (Array.isArray(pctx.streams) ? pctx.streams : []).find(function (s) { return _sourceKey(s) === key })
   if (!next) return
   if (next.kind !== 'torrent') { showToast('Only torrent sources can be switched to'); return }
   const detailTicket = _videoDetailTicket
@@ -4181,10 +4212,10 @@ async function _playerPickSource(key) {
   // viewer has just moved away from.
   if (_watch && _watch.tried) _watch.tried[_sourceKey(next)] = true
   let result = next
-  if (_videoDetail && _videoDetail.type !== 'movie') {
+  if (pctx.detail && pctx.detail.type !== 'movie') {
     result = Object.assign({}, next, {
-      season: _videoDetail.type === 'tv' ? _videoState.season : null,
-      episode: _videoState.episode,
+      season: pctx.detail.type === 'tv' ? pctx.state.season : null,
+      episode: pctx.state.episode,
     })
   }
   showToast('Switching to ' + (next.source || 'another source') + '…')
@@ -4214,6 +4245,9 @@ async function _playerPickSource(key) {
 // theatre or losing the place. The switch handler keeps mpv alive, starts the
 // new torrent, and seeks back — from here it is one call and a toast.
 async function _autoSwitchSource() {
+  // The fallback keeps this runnable in the single-function vm harnesses the
+  // video tests use, which evaluate one function with the globals in scope.
+  const pctx = (typeof _playCtx === 'function' ? _playCtx() : { detail: _videoDetail, state: _videoState, streams: Array.isArray(_videoStreams) ? _videoStreams : [] })
   if (!window.api.videoSwitchStream) return
   // One switch at a time. A stall storm (several 'stalled' events while the
   // torrent is dying) used to fire concurrent switches that raced each other.
@@ -4230,10 +4264,10 @@ async function _autoSwitchSource() {
   _watch.tried[_sourceKey(next)] = true
   // The request needs the same episode context _videoPlayResult attaches.
   let result = next
-  if (_videoDetail && _videoDetail.type !== 'movie') {
+  if (pctx.detail && pctx.detail.type !== 'movie') {
     result = Object.assign({}, next, {
-      season: _videoDetail.type === 'tv' ? _videoState.season : null,
-      episode: _videoState.episode,
+      season: pctx.detail.type === 'tv' ? pctx.state.season : null,
+      episode: pctx.state.episode,
     })
   }
   showToast('Source stalled — switching to another…')
@@ -5209,15 +5243,18 @@ function _prevEpisodeOf(detail, stateNow) {
 // Steps back one episode. Same source flow as advancing, without the
 // watched-marking: going back is not finishing anything.
 async function _playPrevEpisode() {
-  if (!_videoDetail || !_videoDetail.d) return
-  const prev = _prevEpisodeOf(_videoDetail, _videoState)
+  // The fallback keeps this runnable in the single-function vm harnesses the
+  // video tests use, which evaluate one function with the globals in scope.
+  const pctx = (typeof _playCtx === 'function' ? _playCtx() : { detail: _videoDetail, state: _videoState, streams: Array.isArray(_videoStreams) ? _videoStreams : [] })
+  if (!pctx.detail || !pctx.detail.d) return
+  const prev = _prevEpisodeOf(pctx.detail, pctx.state)
   if (!prev) {
     showToast('This is the first episode')
     return
   }
   _persistPosition(true)
-  if (prev.season != null) _videoState.season = prev.season
-  _videoState.episode = prev.episode
+  if (prev.season != null) pctx.state.season = prev.season
+  pctx.state.episode = prev.episode
   _player.setSegments([])
   _player.setStageMessage('<div class="spin"></div><div>Finding sources for episode ' + prev.episode + '…</div>')
   const res = await window.api.videoStreams(_videoStreamRequest())
@@ -5227,15 +5264,19 @@ async function _playPrevEpisode() {
       esc(res.ok ? 'No sources found for episode ' + prev.episode : _videoErrorText(res.error)) + '</div>')
     return
   }
-  _videoStreams = res.streams
+  pctx.streams = res.streams
   // Or the absolute number goes stale after one advance and is refused.
   _lastNumbering = res.numbering || null
-  _videoPlayResult(_pickMatchingStream(res.streams, _playing))
-  if (_videoDetail.type === 'tv') {
+  pctx.streams = res.streams
+  _videoPlayResult(_pickMatchingStream(res.streams, _playing), { ctx: pctx })
+  // Only repaint the page behind the theatre when it is still showing what
+  // is playing; otherwise this overwrites the title the viewer is browsing.
+  if (!_playCtxOnScreen()) return
+  if (pctx.detail.type === 'tv') {
     _renderVideoControls('tv')
     _refreshTvEpisodes(_videoDetailTicket, ++_videoSeasonTicket)
   } else {
-    _syncEpisodeSelection(_videoState.episode)
+    _syncEpisodeSelection(pctx.state.episode)
   }
 }
 
@@ -5263,8 +5304,11 @@ function _packFileForEpisode(packFiles, next) {
 // episode — a single-file torrent, a season boundary — does it fall back to
 // resolving fresh sources from the indexers.
 async function _playNextEpisode() {
-  if (!_videoDetail || !_videoDetail.d) return
-  const next = _nextEpisodeOf(_videoDetail, _videoState)
+  // The fallback keeps this runnable in the single-function vm harnesses the
+  // video tests use, which evaluate one function with the globals in scope.
+  const pctx = (typeof _playCtx === 'function' ? _playCtx() : { detail: _videoDetail, state: _videoState, streams: Array.isArray(_videoStreams) ? _videoStreams : [] })
+  if (!pctx.detail || !pctx.detail.d) return
+  const next = _nextEpisodeOf(pctx.detail, pctx.state)
   if (!next) {
     showToast('That was the last episode')
     return
@@ -5284,7 +5328,7 @@ async function _playNextEpisode() {
   // season (next.season is null); a TV advance stays in-season only while
   // next.season still equals the season being watched. A boundary roll takes
   // the resolve-from-scratch path below, which carries the new season.
-  const sameSeason = next.season == null || next.season === _videoState.season
+  const sameSeason = next.season == null || next.season === pctx.state.season
   const packFile = sameSeason ? _packFileForEpisode(_packFiles, next) : null
   if (packFile) {
     _persistPosition(true)
@@ -5299,16 +5343,16 @@ async function _playNextEpisode() {
   // Finishing an episode by advancing counts as having watched it.
   try { if (store && _watch.key) store.markWatched(_watch.key) } catch (_) {}
 
-  if (next.season != null) _videoState.season = next.season
-  _videoState.episode = next.episode
+  if (next.season != null) pctx.state.season = next.season
+  pctx.state.episode = next.episode
 
   _player.setSegments([])
   _player.setStageMessage('<div class="spin"></div><div>Finding sources for episode ' + next.episode + '…</div>')
   _player.open({
-    title: _videoDetail.d.title,
-    subtitle: _videoDetail.type === 'tv'
-      ? 'Season ' + _videoState.season + ' · Episode ' + _videoState.episode
-      : 'Episode ' + _videoState.episode,
+    title: pctx.detail.d.title,
+    subtitle: pctx.detail.type === 'tv'
+      ? 'Season ' + pctx.state.season + ' · Episode ' + pctx.state.episode
+      : 'Episode ' + pctx.state.episode,
   })
 
   // Use what was resolved during the credits when it matches this episode.
@@ -5323,7 +5367,7 @@ async function _playNextEpisode() {
       esc(res.ok ? 'No sources found for episode ' + next.episode : _videoErrorText(res.error)) + '</div>')
     return
   }
-  _videoStreams = res.streams
+  pctx.streams = res.streams
   // Or the absolute number goes stale after one advance and is refused.
   _lastNumbering = res.numbering || null
   const pick = _pickMatchingStream(res.streams, _playing)
@@ -5341,13 +5385,15 @@ async function _playNextEpisode() {
   // for this episode key (if any) belongs to a much earlier viewing, so the
   // stale "Resume from…" prompt must not fire here — flag the play as an
   // advance so _offerResume skips it (App audit: auto-advance vs stale resume).
-  _videoPlayResult(pick, { fromAdvance: true })
+  pctx.streams = res.streams
+  _videoPlayResult(pick, { fromAdvance: true, ctx: pctx })
+  if (!_playCtxOnScreen()) return
   // The detail page behind the theatre should reflect where we now are.
-  if (_videoDetail.type === 'tv') {
+  if (pctx.detail.type === 'tv') {
     _renderVideoControls('tv')
     _refreshTvEpisodes(_videoDetailTicket, ++_videoSeasonTicket)
   } else {
-    _syncEpisodeSelection(_videoState.episode)
+    _syncEpisodeSelection(pctx.state.episode)
   }
 }
 
@@ -5472,6 +5518,24 @@ async function _switchPackEpisode(index, opts) {
 function _videoPlayResult(result, opts) {
   if (!result) return
   opts = opts || {}
+  // What this play IS, as opposed to what is on screen behind it.
+  //
+  // _videoDetail, _videoState and _videoStreams are PAGE-scoped: opening
+  // another title replaces all three, and the mini player deliberately keeps
+  // playing across that. So a play started from page A has to keep reading page
+  // A's objects, or pressing Next on the mini card while browsing page B
+  // advances B — marking B's episode watched, writing B's progress under A's
+  // key, and letting an unattended stall swap the running film for one of B's
+  // sources. Capturing the object REFERENCES is enough precisely because a page
+  // open rebinds the variables rather than mutating the objects.
+  //
+  // A fresh Play from a page passes nothing and takes the page's context; a
+  // continuation (Next, Previous, a source switch) passes the pinned one back
+  // in as opts.ctx.
+  const pctx = opts.ctx || { detail: _videoDetail, state: _videoState, streams: _videoStreams }
+  const vd = pctx.detail
+  const vs = pctx.state || { season: null, episode: 1, sub: true }
+  const vstreams = Array.isArray(pctx.streams) ? pctx.streams : []
   // "Start over" sets this on the OUTGOING watch state and then calls
   // startPlay(); the _watch rebuild below replaced the whole object, so the
   // flag was gone by the time _offerResume read it and Start over resumed from
@@ -5489,10 +5553,10 @@ function _videoPlayResult(result, opts) {
   if (_handoff) _applyHandoff(_handoff.onVideoStart(!!(audio && !audio.paused && state.queue.length)))
   // The source does not know which episode was asked for, and a season pack
   // contains them all — so the request's episode travels with it.
-  if (_videoDetail && _videoDetail.type !== 'movie') {
+  if (vd && vd.type !== 'movie') {
     result = Object.assign({}, result, {
-      season: _videoDetail.type === 'tv' ? _videoState.season : null,
-      episode: _videoState.episode,
+      season: vd.type === 'tv' ? vs.season : null,
+      episode: vs.episode,
     })
   }
   // The two next-ranked sources ride along as hedge lanes: if the picked
@@ -5505,10 +5569,10 @@ function _videoPlayResult(result, opts) {
     // Tolerant, like every other read on this path: a ReferenceError here is
     // a dead Play button, and that has happened before.
     const debridCandidates = (typeof _debridCandidatesFor === 'function')
-      ? _debridCandidatesFor(_videoStreams, result) : []
+      ? _debridCandidatesFor(vstreams, result) : []
     if (debridCandidates.length) result = Object.assign({}, result, { debridCandidates: debridCandidates })
     const pickedKey = _sourceKey(result)
-    const alts = (_videoStreams || []).filter(function (s) {
+    const alts = (vstreams || []).filter(function (s) {
       return s && s.kind === 'torrent' && s.magnet && _sourceKey(s) !== pickedKey
     }).slice(0, 2).map(function (s) {
       return Object.assign({}, s, {
@@ -5523,8 +5587,8 @@ function _videoPlayResult(result, opts) {
     source: result.source || null,
     quality: result.quality || null,
   }
-  const d = _videoDetail && _videoDetail.d
-  const isEpisode = _videoDetail && _videoDetail.type !== 'movie'
+  const d = vd && vd.d
+  const isEpisode = vd && vd.type !== 'movie'
 
   // The identity of what is being watched rides with the play, so a file
   // that finishes downloading can be kept for next time (the rewatch cache),
@@ -5534,11 +5598,11 @@ function _videoPlayResult(result, opts) {
   // are not playing"), which is what the regression test below now forbids.
   if (d) {
     result = Object.assign({}, result, {
-      cacheKey: _watchKey(_videoDetail.type, d.id, _videoState.season, _videoState.episode),
+      cacheKey: _watchKey(vd.type, d.id, vs.season, vs.episode),
       cacheMeta: {
-        type: _videoDetail.type, id: d.id, title: d.title, poster: d.poster || null,
-        season: _videoDetail.type === 'tv' ? _videoState.season : null,
-        episode: isEpisode ? _videoState.episode : null,
+        type: vd.type, id: d.id, title: d.title, poster: d.poster || null,
+        season: vd.type === 'tv' ? vs.season : null,
+        episode: isEpisode ? vs.episode : null,
       },
     })
   }
@@ -5547,13 +5611,16 @@ function _videoPlayResult(result, opts) {
   // first state tick already has somewhere to write.
   if (d) {
     _watch = {
-      key: _watchKey(_videoDetail.type, d.id, _videoState.season, _videoState.episode),
+      key: _watchKey(vd.type, d.id, vs.season, vs.episode),
       meta: {
-        type: _videoDetail.type, id: d.id, title: d.title, poster: d.poster || null,
-        season: _videoDetail.type === 'tv' ? _videoState.season : null,
-        episode: isEpisode ? _videoState.episode : null,
+        type: vd.type, id: d.id, title: d.title, poster: d.poster || null,
+        season: vd.type === 'tv' ? vs.season : null,
+        episode: isEpisode ? vs.episode : null,
       },
       savedAt: 0, resumed: false, startFromZero: startFromZero,
+      // Everything the deck does afterwards reads this, so browsing another
+      // title while the mini player runs cannot redirect what is playing.
+      ctx: pctx,
       // Set when this play is an episode advance rather than an explicit
       // (re-)open of an episode. _offerResume skips the stale "Resume from…"
       // prompt for an advance — the viewer is moving forward, not picking up
@@ -5573,7 +5640,7 @@ function _videoPlayResult(result, opts) {
   // The show's remembered languages ride in with the open, and choices made
   // in the track menus ride back out to the store — so the next episode of a
   // dub stays a dub without being asked every time.
-  const showKey = d ? _videoDetail.type + ':' + d.id : null
+  const showKey = d ? vd.type + ':' + d.id : null
   let langPrefs = {}
   try {
     const store = _vStore()
@@ -5595,29 +5662,29 @@ function _videoPlayResult(result, opts) {
   }
 
   _player.open({
-    hasNext: !!_nextEpisodeOf(_videoDetail, _videoState),
+    hasNext: !!_nextEpisodeOf(vd, vs),
     // Passed only when a previous episode exists; the deck hides the button
     // otherwise.
-    onPrev: _prevEpisodeOf(_videoDetail, _videoState) ? _playPrevEpisode : null,
+    onPrev: _prevEpisodeOf(vd, vs) ? _playPrevEpisode : null,
     title: d ? d.title : 'Video',
     subtitle: isEpisode
-      ? (_videoDetail.type === 'tv'
-          ? 'Season ' + _videoState.season + ' · Episode ' + _videoState.episode
-          : 'Episode ' + _videoState.episode)
+      ? (vd.type === 'tv'
+          ? 'Season ' + vs.season + ' · Episode ' + vs.episode
+          : 'Episode ' + vs.episode)
       : (d && d.year ? String(d.year) : ''),
     // The identity the online-subtitle search needs. AniList ids mean nothing
     // to OpenSubtitles, so anime searches by title and episode instead.
     subMeta: d ? {
       imdbId: d.imdbId || null,
-      tmdbId: _videoDetail.type !== 'anime' ? d.id : null,
+      tmdbId: vd.type !== 'anime' ? d.id : null,
       query: d.title || null,
-      season: _videoDetail.type === 'tv' ? _videoState.season : null,
-      episode: isEpisode ? _videoState.episode : null,
+      season: vd.type === 'tv' ? vs.season : null,
+      episode: isEpisode ? vs.episode : null,
       // The number the indexers matched the batch on travels with the play, or
       // the picker inside the pack looks for "09" and returns season one's
       // ninth episode. Null for film and television, and for a first season,
       // where the seasonal number already IS the absolute.
-      absoluteEpisode: typeof _absoluteEpisodeFor === 'function' ? _absoluteEpisodeFor(_videoDetail, _videoState) : null,
+      absoluteEpisode: typeof _absoluteEpisodeFor === 'function' ? _absoluteEpisodeFor(vd, vs) : null,
       // V088: the release that is playing, so a downloaded subtitle can be
       // judged against this cut rather than offered blind.
       release: (result && (result.title || result.label)) || null,
@@ -5679,8 +5746,8 @@ function _videoPlayResult(result, opts) {
   debridWait.then(function (servable) {
     // The search finished while we waited and named a source debrid will
     // serve: play THAT instead of whatever the swarm ordering chose.
-    if (servable && Array.isArray(_videoStreams)) {
-      const better = _videoStreams.find(function (s) { return s && s.magnet === servable })
+    if (servable && Array.isArray(vstreams)) {
+      const better = vstreams.find(function (s) { return s && s.magnet === servable })
       if (better) {
         result = Object.assign({}, better, {
           season: result.season, episode: result.episode,

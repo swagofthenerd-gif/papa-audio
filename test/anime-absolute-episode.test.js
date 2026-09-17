@@ -67,7 +67,7 @@ test('an opening or ending clip is still never mistaken for the absolute episode
 test('the number actually reaches the picker from the renderer', () => {
   const R = read('src/renderer.js'), M = read('main.js'), T = read('torrent-stream.js'), D = read('src/debrid.js')
   assert.match(R, /function _absoluteEpisodeFor\(detail, state\)/, 'the renderer can compute it')
-  assert.match(R, /absoluteEpisode: typeof _absoluteEpisodeFor === 'function' \? _absoluteEpisodeFor\(_videoDetail, _videoState\) : null/, 'and puts it on the play')
+  assert.match(R, /absoluteEpisode: typeof _absoluteEpisodeFor === 'function' \? _absoluteEpisodeFor\(vd, vs\) : null/, 'and puts it on the play, from the pinned play context')
   assert.match(M, /absoluteEpisode: result\.absoluteEpisode \?\? null/, 'main hands it to the streamer')
   assert.match(M, /absoluteEpisode: num\(result && result\.absoluteEpisode\)/, 'and into the debrid want')
   assert.match(T, /const want = episode != null \? \{ season, episode, absoluteEpisode \} : null/)

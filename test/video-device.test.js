@@ -78,7 +78,15 @@ test('the cache read side touches the watch clock and self-heals missing files',
 })
 
 test('the renderer rides the watch identity on every play and swaps the default pick for a saved copy', () => {
-  assert.ok(/cacheKey: _watchKey\(_videoDetail\.type, d\.id, _videoState\.season, _videoState\.episode\)/.test(RENDERER))
+  // vd / vs, not _videoDetail / _videoState: those are PAGE-scoped and get
+  // replaced when another title's page is opened, while the mini player keeps
+  // playing. _videoPlayResult now reads a context pinned to the play, so the
+  // watch identity belongs to the film in the picture rather than to whatever
+  // is on screen behind it.
+  assert.ok(/cacheKey: _watchKey\(vd\.type, d\.id, vs\.season, vs\.episode\)/.test(RENDERER),
+    'the cache key is still built from the play context')
+  assert.ok(/const pctx = opts\.ctx \|\| \{ detail: _videoDetail, state: _videoState, streams: _videoStreams \}/.test(RENDERER),
+    'and that context falls back to the page when a play starts fresh from one')
   const at = RENDERER.indexOf('const cacheProbe =')
   assert.ok(at > -1)
   // Widened: the bounded wait for the debrid-servable source now sits between
