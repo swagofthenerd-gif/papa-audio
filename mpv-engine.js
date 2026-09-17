@@ -323,22 +323,34 @@ class MpvEngine extends EventEmitter {
       gapless: this.config.gapless, channels: this.config.audioChannels,
     })
     // stderr is piped rather than ignored so mpv's dying words are readable.
-    this.proc = this._spawnFn(this.binary, this._args(socketPath), { stdio: ['ignore', 'ignore', 'pipe'] })
-    this._attachStderr(this.proc)
-    this.proc.on('exit', (code, signal) => {
-      this._rec('proc-exit', { code: code ?? null, signal: signal ?? null })
-      this._onExit()
+    const proc = this._spawnFn(this.binary, this._args(socketPath), { stdio: ['ignore', 'ignore', 'pipe'] })
+    this.proc = proc
+    this._attachStderr(proc)
+    // Bound to THIS process, by identity. stop() SIGTERMs the old mpv and drops
+    // its reference but cannot remove listeners it never held, and the start()
+    // that follows clears _stopping in the same tick — while a real mpv takes
+    // far longer than a tick to close its files and go. The old process's
+    // 'exit' therefore arrived when _stopping was already false and alive
+    // already true again, and _onExit tore down (and tried to respawn) the mpv
+    // that had just replaced it.
+    proc.on('exit', (code, signal) => {
+      this._rec('proc-exit', { code: code ?? null, signal: signal ?? null, current: this.proc === proc })
+      if (this.proc === proc) this._onExit()
     })
-    this.proc.on('error', err => {
-      this._rec('proc-error', { error: String((err && err.message) || err) })
-      this._onExit()
+    proc.on('error', err => {
+      this._rec('proc-error', { error: String((err && err.message) || err), current: this.proc === proc })
+      if (this.proc === proc) this._onExit()
     })
     this.client = new MpvIpcClient(socketPath)
     await this.client.connect()
-    this.client.on('event', e => this._onEvent(e))
-    this.client.on('disconnected', () => {
-      this._rec('ipc-disconnected', {})
-      this._onExit()
+    // Same identity rule: stop() destroys the socket, but the 'disconnected'
+    // that follows is delivered a tick later, by which time this.client may be
+    // the replacement's.
+    const client = this.client
+    client.on('event', e => { if (this.client === client) this._onEvent(e) })
+    client.on('disconnected', () => {
+      this._rec('ipc-disconnected', { current: this.client === client })
+      if (this.client === client) this._onExit()
     })
     // A slow mpv that eventually answered is not the same as a failure, and the
     // app's idea of state is wrong either way. Both are recorded.

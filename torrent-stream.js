@@ -165,11 +165,37 @@ function matchesWantedEpisode(name, want) {
   return new RegExp(`(?:^|[\\s._\\-\\[(])(?:e|ep|episode\\s*)?0*${n}(?:v\\d)?(?:$|[\\s._\\-\\])])`, 'i').test(text)
 }
 
-// Non-credit openings/endings, specials and revision tags carry a digit of
-// their own -- "NCED1", "OP2", "Ver.2" -- that reads exactly like an episode
-// number to the regex below. Stripped before parsing so a batch pack's
-// ending-theme clip is never mistaken for the next episode.
-const NON_EPISODE_TOKEN = /\b(?:nc)?(?:op|ed)\d*\b|\bova\d*\b|\bsp(?:ecial)?s?\s*\d*\b|\bver(?:sion)?\.?\s*\d+\b/gi
+// Release tags that carry a digit of their own, which reads exactly like an
+// episode number to the bare-number regex above and below.
+//
+// Two families. The first is extras and revisions -- "NCED1", "OP2", "Ver.2",
+// "OVA", "SP1". The second is codec and audio tags, and it is the one that
+// actually bit: the channel count in "DD5.1" is a bare 5 and a bare 1 to the
+// parser, so "[Grp] Show - 24 (2160p) [DD5.1 H.264].mkv" answered YES to
+// "are you episode 1?" -- and because pickVideoFile takes the LARGEST match,
+// asking for episode 1 of a pack handed back the 9 GB episode 24. Executed
+// against the shipped function before and after: "[DTS-HD.MA.5.1]" claimed to
+// be episodes 1 AND 5, "[EAC3 2.0]" claimed episode 2, and "[H.264]" alone
+// made episodeNumberOf report episode 264.
+//
+// A channel layout only counts as one when it looks like one ("5.1", "2.0",
+// "6ch"), so a bare digit after a codec word is left alone -- otherwise a show
+// whose title ends in a codec word would lose its episode number.
+const NON_EPISODE_TOKEN = new RegExp([
+  // Non-credit openings and endings: NCOP, NCED2, OP, ED1.
+  /\b(?:nc)?(?:op|ed)\d*\b/,
+  // OVAs, specials and revision tags: OVA2, SP1, Specials, Ver.2, Version 3.
+  /\bova\d*\b/,
+  /\bsp(?:ecial)?s?\s*\d*\b/,
+  /\bver(?:sion)?\.?\s*\d+\b/,
+  // Audio codecs, with the channel layout they usually carry: DD5.1, DDP5.1,
+  // DD+5.1, DTS, DTS-HD, DTS-HD.MA.5.1, TrueHD 7.1, Atmos, AAC2.0, AC3,
+  // EAC3 2.0, E-AC-3, FLAC, Opus 2.0, PCM 6ch.
+  /\b(?:ddp|dd\+|dd|e-?ac-?3|ac-?3|aac|dts(?:[-._\s]?hd)?(?:[-._\s]?ma)?|true-?hd|atmos|flac|opus|mp3|l?pcm|vorbis)(?:[-._\s]?(?:\d[._]\d(?:ch)?|\dch))?\b/,
+  // Video codecs: H.264, H 265, x264, x265, HEVC, AVC, XviD, DivX, AV1, VP9.
+  /\b[hx][-._\s]?26[45]\b/,
+  /\b(?:hevc|avc|xvid|divx|av1|vp9)\b/,
+].map(r => r.source).join('|'), 'gi')
 
 // The episode number a filename states, or null.
 function episodeNumberOf(name) {
@@ -198,9 +224,22 @@ function pickVideoFile(files, want) {
   if (want && want.episode != null && pool.length > 1) {
     // Several matches means the pack holds more than one version of the
     // episode — a v2, or two encodes; the largest of those is the right pick.
+    //
+    // But "largest of the matches" is only safe when every match is really the
+    // episode. A tag that still poses as a number biases the answer towards the
+    // BIGGEST file, which is how asking for episode 1 used to return a 9 GB
+    // episode 24. So a file whose own stated episode number IS the one asked
+    // for outranks one that merely matched somewhere in its name, and size only
+    // decides between equals. A double episode (S01E01E02) states 1 and covers
+    // 2, so it has no exact number for 2 and stays in the fallback tier — which
+    // is where it belongs when a single-episode file for 2 also exists.
     const pass = w => {
       const matches = pool.filter(f => matchesWantedEpisode(f.name, w))
-      return matches.length ? matches.reduce((a, b) => (b.length > a.length ? b : a)).index : -1
+      if (!matches.length) return -1
+      const n = Number(w.episode)
+      const exact = matches.filter(f => episodeNumberOf(f.name) === n)
+      const best = exact.length ? exact : matches
+      return best.reduce((a, b) => (b.length > a.length ? b : a)).index
     }
     // The ABSOLUTE number is tried FIRST, and that order is load-bearing. A
     // complete-series batch holds both files: "09" is season one's ninth
@@ -316,6 +355,9 @@ class TorrentStreamer extends EventEmitter {
     // where that stood last time it was asked. Distinct from _prefetched, which
     // only ever grabs the opening.
     this._predownload = null
+    // The whole-tail claim the LAST seek put on the swarm, kept so the next
+    // seek can take it back. See seekToFraction.
+    this._seekSelection = null
     this._prebufferTimer = null
     this._storeDir = null
     // Where served subtitles land when this stream has no _storeDir of its
@@ -525,8 +567,35 @@ class TorrentStreamer extends EventEmitter {
     // "fetch that file" and the file it names has not changed. Only the
     // per-index bookkeeping tied to what is *playing* (the prefetch marker)
     // resets here.
+    //
+    // That was the intent, but the loop above was quietly undoing it. A
+    // predownload IS torrent.select(file._startPiece, file._endPiece, 0), and
+    // File.deselect() is torrent.deselect(_startPiece, _endPiece, false) --
+    // Number(false) is 0, so it matches that triple exactly and removes it.
+    // Every episode switch therefore cancelled the download the user had
+    // explicitly asked to keep, while _predownload stayed set and
+    // predownloadProgress() went on reporting a fetch that had stopped, frozen
+    // at whatever percentage it had reached. Put the claim back.
+    this._reassertPredownload()
     this._prioritiseHead(torrent, file)
     return buildFileUrl(addr.port, index, file.name)
+  }
+
+  // Re-place the standing whole-file claim after something has withdrawn it.
+  // No-op when nothing is predownloading, or when the predownloaded file is the
+  // one now playing -- that file's selection was never withdrawn, and a second
+  // identical claim would only make WebTorrent walk the same range twice.
+  _reassertPredownload() {
+    const pd = this._predownload
+    const torrent = this._torrent
+    if (!pd || !torrent || pd.index === this._fileIndex) return false
+    try {
+      if (typeof torrent.select !== 'function') return false
+      torrent.select(pd.start, pd.end, 0)
+      return true
+    } catch (_) {
+      return false
+    }
   }
 
   // A live reading of the swarm, null when nothing is active. The 'progress'
@@ -702,6 +771,9 @@ class TorrentStreamer extends EventEmitter {
     this._reusedReady = null
     this._torrent = torrent
     this._predownload = null
+    // A new torrent means the old torrent's selection list is gone with it;
+    // holding a claim against it would deselect a range on the wrong torrent.
+    this._seekSelection = null
 
     // Re-assert the bandwidth intent now that a torrent (and its client) is
     // live: the switches can be set before anything is streaming, and a client
@@ -1008,9 +1080,27 @@ class TorrentStreamer extends EventEmitter {
       const offset = Math.floor((Number(file.length) || 0) * clamped)
       const target = Math.min(endPiece, startPiece + Math.floor(offset / pieceLength))
 
-      // Everything from the jump onward is what the viewer is going to watch,
-      // so that is what the torrent should be asking for.
-      if (typeof torrent.select === 'function') torrent.select(target, endPiece, 1)
+      // Give back the previous jump's claim before making a new one.
+      //
+      // WebTorrent's select() PUSHES a new entry onto _selections every time and
+      // deselect() only removes an entry matching (from, to, priority) exactly
+      // (webtorrent/lib/torrent.js) -- so a seek that never deselected left its
+      // whole-tail claim behind for good. Every one of them is priority 1, equal
+      // priorities keep insertion order through the sort, and the request loop
+      // walks the list from the FRONT: the oldest, stalest claim is served
+      // first and the place the viewer has actually just jumped to goes to the
+      // back of a queue that grows by one with every scrub. Half a minute of
+      // dragging the seek bar is enough to put the playhead behind dozens of
+      // claims on parts of the film nobody is waiting for.
+      if (this._seekSelection && typeof torrent.deselect === 'function') {
+        const prev = this._seekSelection
+        try { torrent.deselect(prev.from, prev.to, prev.priority) } catch (_) {}
+        this._seekSelection = null
+      }
+      if (typeof torrent.select === 'function') {
+        torrent.select(target, endPiece, 1)
+        this._seekSelection = { from: target, to: endPiece, priority: 1 }
+      }
       // And the first few seconds of it are needed now, not eventually.
       const urgent = Math.max(1, Math.ceil(SEEK_URGENT_BYTES / pieceLength))
       if (typeof torrent.critical === 'function') {

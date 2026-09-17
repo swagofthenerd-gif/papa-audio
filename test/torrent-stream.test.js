@@ -1628,3 +1628,196 @@ test('a special never poses as an ordinary episode', () => {
   assert.strictEqual(episodeNumberOf('Show - Special 2 [1080p].mkv'), null)
   assert.strictEqual(episodeNumberOf('Show - 02 [1080p].mkv'), 2)
 })
+
+// B3: codec and audio tags were read as episode numbers. Proven by running the
+// shipped matcher: "[Grp] Show - 24 (2160p) [DD5.1 H.264].mkv" answered yes to
+// episode 1, "[DTS-HD.MA.5.1]" answered yes to 1 AND 5, "[EAC3 2.0]" to 2, and
+// because pickVideoFile takes the largest match, asking for episode 1 of a pack
+// returned the 9 GB episode 24.
+{
+  const { matchesWantedEpisode, episodeNumberOf, pickVideoFile } = require('../torrent-stream')
+
+  // Every episode number 1..30 a name claims to be. A correct name claims one.
+  const claimed = name => {
+    const out = []
+    for (let n = 1; n <= 30; n++) if (matchesWantedEpisode(name, { episode: n })) out.push(n)
+    return out
+  }
+
+  test('a channel layout is not an episode number', () => {
+    assert.deepStrictEqual(claimed('[Grp] Show - 24 (2160p) [DD5.1 H.264].mkv'), [24])
+    assert.deepStrictEqual(claimed('[Grp] Show - 24 (1080p) [DTS-HD.MA.5.1][x265].mkv'), [24])
+    assert.deepStrictEqual(claimed('Show - 12 [EAC3 2.0][HEVC].mkv'), [12])
+    assert.deepStrictEqual(claimed('Show - 07 [DDP5.1 Atmos][AVC].mkv'), [7])
+    assert.deepStrictEqual(claimed('Show - 03 [TrueHD 7.1][x264].mkv'), [3])
+    assert.deepStrictEqual(claimed('Show - 08 [FLAC 2.0][AAC 2.0][Opus 2.0].mkv'), [8])
+    assert.deepStrictEqual(claimed('Show - 11 [E-AC-3 5.1][PCM 6ch].mkv'), [11])
+    // A film with no episode number at all claims nothing.
+    assert.deepStrictEqual(claimed('Show.2160p.DDP5.1.H.265.mkv'), [])
+  })
+
+  test('a codec tag is not an episode number to episodeNumberOf either', () => {
+    assert.strictEqual(episodeNumberOf('Show [H.264].mkv'), null, '"H.264" is a codec, not episode 264')
+    assert.strictEqual(episodeNumberOf('Show.2160p.DDP5.1.H.265.mkv'), null)
+    assert.strictEqual(episodeNumberOf('[Grp] Show - 24 (2160p) [DD5.1 H.264].mkv'), 24)
+    assert.strictEqual(episodeNumberOf('Show - 07 [AC3][XviD].mkv'), 7)
+    // Real numbers still read normally.
+    assert.strictEqual(episodeNumberOf('[Grp] Show - 01 (1080p) [FLAC][x264].mkv'), 1)
+    assert.strictEqual(episodeNumberOf('Show.S01E05.1080p.TrueHD.7.1.Atmos.x265-GRP.mkv'), 5)
+  })
+
+  test('a codec word does not eat the episode number that follows it', () => {
+    // A channel layout has to look like one ("5.1", "6ch"), so a bare digit
+    // after a codec word is left alone.
+    assert.strictEqual(episodeNumberOf('Opus 5.mkv'), 5)
+    assert.strictEqual(episodeNumberOf('Atmos - 09 [1080p].mkv'), 9)
+  })
+
+  test('asking for episode 1 of a pack does not return the biggest episode', () => {
+    const pack = [
+      { name: '[Grp] Show - 01 (1080p) [AAC][H.264].mkv', length: 300e6 },
+      { name: '[Grp] Show - 24 (2160p) [DD5.1 H.264].mkv', length: 9000e6 },
+      { name: '[Grp] Show - 12 (1080p) [DTS-HD.MA.5.1].mkv', length: 5000e6 },
+    ]
+    assert.strictEqual(pickVideoFile(pack, { episode: 1, season: 1 }), 0, 'episode 1 is episode 1')
+    assert.strictEqual(pickVideoFile(pack, { episode: 12, season: 1 }), 2)
+    assert.strictEqual(pickVideoFile(pack, { episode: 24, season: 1 }), 1)
+  })
+
+  test('the file that states the wanted episode beats a bigger file that only matched', () => {
+    // The tier preference is the standing defence: a tag nobody has thought of
+    // yet (here a frame rate) still makes a big file answer yes to the wrong
+    // episode, and without the preference the biggest match wins as before.
+    const pack = [
+      { name: '[Grp] Show - 23 [1080p].mkv', length: 200e6 },
+      { name: '[Grp] Show - 24 [2160p][23.976fps].mkv', length: 8000e6 },
+    ]
+    assert.strictEqual(matchesWantedEpisode(pack[1].name, { episode: 23 }), true,
+      'the frame rate still makes the big file answer yes to episode 23')
+    assert.strictEqual(pickVideoFile(pack, { episode: 23, season: 1 }), 0,
+      'but the file that states episode 23 wins anyway')
+    assert.strictEqual(pickVideoFile(pack, { episode: 24, season: 1 }), 1)
+  })
+}
+
+// ── Selections are given back, not just taken ───────────────────────────────
+//
+// WebTorrent's selection list is the whole mechanism here, so the fake models
+// it exactly as webtorrent/lib/torrent.js does rather than merely recording
+// calls: select() PUSHES an entry and sorts by descending priority (a stable
+// sort, so equal priorities keep insertion order); deselect() removes the FIRST
+// entry matching (from, to, priority) exactly and nothing else; and the request
+// loop walks the list from the front, so index 0 is served first.
+{
+  function fakeTorrent(files) {
+    const selections = []
+    const t = {
+      pieceLength: 1 << 20,
+      files,
+      selections,
+      select(from, to, priority) {
+        selections.push({ from, to, priority: Number(priority) || 0 })
+        selections.sort((a, b) => b.priority - a.priority)
+      },
+      deselect(from, to, priority) {
+        const p = Number(priority) || 0
+        for (let i = 0; i < selections.length; i++) {
+          const s = selections[i]
+          if (s.from === from && s.to === to && s.priority === p) { selections.splice(i, 1); break }
+        }
+      },
+      critical() {},
+      bitfield: { get: () => false },
+    }
+    for (const f of files) {
+      f.select = priority => t.select(f._startPiece, f._endPiece, priority)
+      f.deselect = () => t.deselect(f._startPiece, f._endPiece, false)
+    }
+    return t
+  }
+
+  const mkFile = (start, end, len, name) => ({
+    _startPiece: start, _endPiece: end, length: len, name: name || 'ep.mkv',
+  })
+  // Exactly 1000 pieces of 1 MiB, so a fraction maps to a round piece number.
+  const THOUSAND_PIECES = 1000 * (1 << 20)
+
+  test('scrubbing does not pile up whole-tail claims on the swarm', () => {
+    const s = new TorrentStreamer({ client: { add() {} } })
+    const file = mkFile(0, 999, THOUSAND_PIECES)
+    const torrent = fakeTorrent([file])
+    s._torrent = torrent
+    s._file = file
+
+    for (let i = 1; i <= 25; i++) s.seekToFraction(i / 100)
+
+    const tails = torrent.selections.filter(x => x.priority === 1)
+    assert.strictEqual(tails.length, 1,
+      `25 seeks left ${tails.length} standing claims; only the last one is still wanted`)
+    assert.strictEqual(tails[0].from, 250, 'and it is the place last jumped to')
+  })
+
+  test('the place last jumped to is at the front of the queue, not the back', () => {
+    const s = new TorrentStreamer({ client: { add() {} } })
+    const file = mkFile(0, 999, THOUSAND_PIECES)
+    const torrent = fakeTorrent([file])
+    s._torrent = torrent
+    s._file = file
+    s.seekToFraction(0.1)
+    s.seekToFraction(0.9)
+    // The request loop takes selections in list order, so this is the piece the
+    // swarm is actually asked for first.
+    assert.strictEqual(torrent.selections[0].from, 900)
+  })
+
+  test('a torrent that cannot deselect still seeks', () => {
+    const s = new TorrentStreamer({ client: { add() {} } })
+    s._torrent = { pieceLength: 1 << 20, select: () => {} }
+    s._file = mkFile(0, 999, THOUSAND_PIECES)
+    assert.strictEqual(s.seekToFraction(0.2), true)
+    assert.strictEqual(s.seekToFraction(0.8), true)
+  })
+
+  test('switching episode does not silently cancel a whole-file predownload', () => {
+    const s = new TorrentStreamer({ client: { add() {} } })
+    const files = [mkFile(0, 999, 1e9), mkFile(1000, 1999, 1e9), mkFile(2000, 2999, 1e9)]
+    const torrent = fakeTorrent(files)
+    s._torrent = torrent
+    s._file = files[0]
+    s._fileIndex = 0
+    s._server = { address: () => ({ port: 8123 }) }
+
+    // The user asks for the whole of episode 3 to be fetched in the background.
+    assert.strictEqual(s.predownloadFile(2), true)
+    const claim = { from: 2000, to: 2999, priority: 0 }
+    const standing = () => torrent.selections.some(
+      x => x.from === claim.from && x.to === claim.to && x.priority === claim.priority)
+    assert.ok(standing(), 'the whole of file 2 is claimed')
+
+    // …then switches to episode 2. File.deselect() on file 2 is
+    // torrent.deselect(2000, 2999, false) — the predownload's exact triple.
+    assert.ok(s.selectFile(1), 'the switch succeeded')
+
+    assert.ok(standing(), 'the predownload claim survives the switch')
+    assert.strictEqual(s.predownloadProgress().index, 2,
+      'and what it reports is a fetch that is really still running')
+  })
+
+  test('nothing is re-asserted when the predownloaded file is the one now playing', () => {
+    const s = new TorrentStreamer({ client: { add() {} } })
+    const files = [mkFile(0, 999, 1e9), mkFile(1000, 1999, 1e9)]
+    const torrent = fakeTorrent(files)
+    s._torrent = torrent
+    s._file = files[0]
+    s._fileIndex = 0
+    s._server = { address: () => ({ port: 8123 }) }
+    s.predownloadFile(1)
+    s.selectFile(1)
+    // The deselect loop skips the file being switched TO, so its claim was
+    // never withdrawn and putting another one back would only make WebTorrent
+    // walk the same range twice.
+    const before = torrent.selections.length
+    assert.strictEqual(s._reassertPredownload(), false)
+    assert.strictEqual(torrent.selections.length, before, 'no extra claim was added')
+  })
+}

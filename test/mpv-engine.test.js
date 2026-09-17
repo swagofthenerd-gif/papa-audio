@@ -371,3 +371,109 @@ test('isActuallyPlaying is false with no path loaded', async () => {
   assert.strictEqual(eng.isActuallyPlaying(), false)
   eng.stop(); f.close()
 })
+
+// B5: a dying mpv's exit event tore down the mpv that replaced it.
+//
+// stop() SIGTERMs the old process but never removes its listeners, and the
+// start() that follows clears _stopping in the same tick. Node delivers the old
+// process's 'exit' later -- a real mpv takes far longer than a tick to close
+// its files and go -- and _onExit() only asked "am I stopping?" and "am I
+// alive?", both of which by then describe the REPLACEMENT. The same object is
+// restarted in place on the respawn path inside _onExit, so the engine's own
+// crash recovery was exposed to it too.
+function fakeMpvPerSpawn() {
+  const sock = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'papa-eng-gen-')), 'mpv.sock')
+  const conns = []
+  const commands = []
+  const procs = []
+  const server = net.createServer(c => {
+    conns.push(c)
+    let buf = ''
+    c.on('data', d => {
+      buf += d
+      let i
+      while ((i = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, i); buf = buf.slice(i + 1)
+        if (!line.trim()) continue
+        const msg = JSON.parse(line)
+        commands.push(msg.command)
+        c.write(JSON.stringify({ error: 'success', data: null, request_id: msg.request_id }) + '\n')
+      }
+    })
+  })
+  const spawnFn = () => {
+    const proc = new EventEmitter()
+    proc.killed = false
+    // SIGTERM is a request, not an execution. The delay IS the bug's window.
+    proc.kill = () => { proc.killed = true; setTimeout(() => proc.emit('exit', 0), 5) }
+    procs.push(proc)
+    return proc
+  }
+  return new Promise(res => server.listen(sock, () => res({
+    sock, commands, procs, spawnFn,
+    close: () => { conns.forEach(c => c.destroy()); server.close() },
+  })))
+}
+
+const settle = () => new Promise(r => setTimeout(r, 60))
+
+test('a dying mpv does not tear down the mpv that replaced it', async () => {
+  const f = await fakeMpvPerSpawn()
+  const eng = new MpvEngine({ spawnFn: f.spawnFn, socketPath: f.sock })
+  await eng.start()
+  const first = f.procs[0]
+  eng.stop()
+  await eng.start()
+  assert.strictEqual(f.procs.length, 2)
+  assert.strictEqual(eng.alive, true)
+
+  const down = []
+  eng.on('engineDown', d => down.push(d))
+  // The first process finally goes, and its socket finishes closing.
+  await settle()
+
+  assert.strictEqual(eng.alive, true, 'the replacement is still alive')
+  assert.deepStrictEqual(down, [], 'and nothing was told the engine went down')
+  f.commands.length = 0
+  await eng.load('/music/a.flac')
+  assert.ok(f.commands.some(c => c[0] === 'loadfile' && c[1] === '/music/a.flac'),
+    'the replacement still reaches mpv')
+  eng.stop(); f.close()
+})
+
+test('the corpse of a crashed mpv does not kill the respawn that replaced it', async () => {
+  const f = await fakeMpvPerSpawn()
+  const eng = new MpvEngine({ spawnFn: f.spawnFn, socketPath: f.sock })
+  await eng.start()
+  const first = f.procs[0]
+  const down = []
+  eng.on('engineDown', d => down.push(d))
+
+  first.emit('exit', 1)          // mpv crashes; _onExit respawns in place
+  await settle()
+  assert.strictEqual(f.procs.length, 2, 'the engine respawned')
+  assert.strictEqual(eng.alive, true, 'and the respawn is up')
+  assert.strictEqual(down.length, 1, 'one engineDown for the one crash')
+
+  // A dead process can still emit after its exit -- a broken stdio pipe, say.
+  first.emit('error', new Error('EPIPE from a process that is already gone'))
+  await settle()
+  assert.strictEqual(eng.alive, true, 'the respawn survives the corpse')
+  assert.strictEqual(down.length, 1, 'and no second engineDown was invented')
+  eng.stop(); f.close()
+})
+
+test('the CURRENT mpv dying is still reported as the engine going down', async () => {
+  const f = await fakeMpvPerSpawn()
+  const eng = new MpvEngine({ spawnFn: f.spawnFn, socketPath: f.sock })
+  await eng.start()
+  eng.stop()
+  await eng.start()
+  await settle()
+  const down = []
+  eng.on('engineDown', d => down.push(d))
+  f.procs[1].emit('exit', 1)     // the live process crashes on its own
+  await settle()
+  assert.strictEqual(down.length, 1, 'the crash is reported exactly once')
+  eng.stop(); f.close()
+})
