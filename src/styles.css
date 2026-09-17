@@ -8207,6 +8207,22 @@ body.app-unfocused .vt-menu {
 .vdevice-ep { color:var(--text2); font-weight:600; }
 .vdevice-facts, .vdevice-src { color:var(--text3); }
 .vdevice-src { font-size:11px; }
+/* An On-device card's controls ARE the page. Play and Delete are the only two
+   things this surface exists to do, and the shared .vcard rule hides them until
+   the pointer is over the card — which is how "i cant even delete them" happens
+   on a page whose delete button is right there. The app's own default (rule 5:
+   play buttons always visible, opacity .85) applied where it matters most.
+   Specificity beats the shared `.vcard-actions { opacity:0 }` in both themes;
+   the hover/focus rules still take it to full strength. */
+.vdevice-card .vcard-actions,
+.cinema .vdevice-card .vcard-actions { opacity:.85; transform:none; }
+.vdevice-card:hover .vcard-actions,
+.vdevice-card:focus-within .vcard-actions,
+.cinema .vdevice-card:hover .vcard-actions,
+.cinema .vdevice-card:focus-within .vcard-actions { opacity:1; transform:none; }
+/* Focus has to be visible on a card that is a button and now carries live
+   controls: the keyboard route to Play and Delete is a real route. */
+.vdevice-card:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 .vbadge-quality { background:rgba(0,0,0,.72); color:var(--text); font-weight:700; }
 /* Known to start at once (2026-09-15). Two truths, two looks: the file is
    here, or the direct link is already resolved. Never a guess. */

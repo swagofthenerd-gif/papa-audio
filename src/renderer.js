@@ -7946,10 +7946,11 @@ async function _renderDeviceTab(rows, ticket) {
   if (!rows.querySelector('.vdevice-page')) {
     rows.innerHTML = '<div class="vdevice-page"><div class="spin"></div></div>'
   }
+  const has = function (name) { return typeof window.api[name] === 'function' }
   const [dl, keep, cache] = await Promise.all([
-    window.api.videoDownloadList ? window.api.videoDownloadList().catch(function () { return null }) : null,
-    window.api.videoKeepList ? window.api.videoKeepList().catch(function () { return null }) : null,
-    window.api.videoCacheList ? window.api.videoCacheList().catch(function () { return null }) : null,
+    has('videoDownloadList') ? window.api.videoDownloadList().catch(function () { return null }) : null,
+    has('videoKeepList') ? window.api.videoKeepList().catch(function () { return null }) : null,
+    has('videoCacheList') ? window.api.videoCacheList().catch(function () { return null }) : null,
   ])
   if (_videoCatalogTicket !== ticket || state.currentPage !== 'video') return
   const mount = document.getElementById('vrows')
@@ -8000,7 +8001,24 @@ async function _renderDeviceTab(rows, ticket) {
       '<div class="vgrid">' + cached.map(function (e) { return _deviceCardHtml(e, 'cache') }).join('') + '</div>')
   }
 
-  if (!downloads.length && !keeps.length && !cached.length) {
+  // A list that could not be READ is not an empty list. All three answers were
+  // folded into `|| []`, so a handler that threw, or answered { ok:false },
+  // painted the same page as a genuinely empty device \u2014 "nothing is saved on
+  // this device yet" over files that are plainly on the disk. That is the exact
+  // shape of a swallowed error, and it is indistinguishable from the bug this
+  // page was reported for.
+  const broken = []
+  if (has('videoDownloadList') && !(dl && dl.ok)) broken.push('what is downloading')
+  if (has('videoKeepList') && !(keep && keep.ok)) broken.push('your downloads')
+  if (has('videoCacheList') && !(cache && cache.ok)) broken.push('the rewatch cache')
+  if (broken.length) {
+    const named = broken.length === 1 ? broken[0]
+      : broken.slice(0, -1).join(', ') + ' and ' + broken[broken.length - 1]
+    const why = (dl && dl.error) || (keep && keep.error) || (cache && cache.error) || ''
+    html += '<div class="vrow-msg err">Could not read ' + esc(named) + '.' +
+      (why ? ' ' + esc(_shortQ(why, 120)) : '') +
+      ' Anything not listed above may still be on this device.</div>'
+  } else if (!downloads.length && !keeps.length && !cached.length) {
     html += '<div class="vrow-msg">Nothing is saved on this device yet. Open a film or an episode and press Download \u2014 it appears here, and plays with no internet at all.</div>'
   }
 
@@ -9226,6 +9244,12 @@ function _bindVideoCardContextMenu() {
   document.addEventListener('contextmenu', function (e) {
     const card = e.target.closest ? e.target.closest('.vcard') : null
     if (!card) return
+    // An On-device card is a .vcard with no data-video, so this used to build
+    // the menu around an empty key: "Play" and "Go to details" both navigated
+    // to video-detail with no id, and "Add to My List" pushed a ghost entry
+    // keyed "movie:". A card that cannot answer any of the four questions the
+    // menu asks gets no menu rather than a menu of wrong answers.
+    if (!card.dataset.video && !card.classList.contains('vdevice-card')) return
     e.preventDefault()
     _openVideoCardMenu(card, e.clientX, e.clientY)
   })
@@ -9259,6 +9283,37 @@ function _vCardMenuState(type, id) {
   return out
 }
 
+// The menu an On-device card gets. It is a different card with different
+// facts: it owns a FILE, so Play means "play this file" and the fourth row is
+// Delete rather than Mark watched. The hover ✕ is the only other way to delete
+// one, and a control that is invisible until the pointer is over it is not a
+// way most people find ("i cant even delete them man").
+function _deviceCardMenuItems(card) {
+  const nav = card.dataset.deviceOpen || ''
+  const hasFile = !!card.dataset.devicePath
+  const kind = card.dataset.deviceKind
+  const name = card.getAttribute('aria-label') || 'this file'
+  const items = []
+  if (hasFile) items.push({ label: 'Play', icon: _VICON.play, run: function () { _playDeviceFile(card) } })
+  if (nav) items.push({ label: 'Go to details', icon: _VICON.info, run: function () { navigate('video-detail', nav) } })
+  if (kind === 'download') {
+    items.push({ label: 'Stop this download', icon: _VICON.stop, run: function () {
+      _deviceAction(window.api.videoDownloadCancel({ id: card.dataset.deviceId }),
+        'Stopped downloading “' + name + '”', 'Could not stop that download')
+    } })
+  } else {
+    items.push({ label: 'Delete from this device', icon: _VICON.stop, run: function () {
+      const id = card.dataset.deviceId
+      const call = kind === 'cache' ? window.api.videoCacheDelete({ key: id }) : window.api.videoKeepDelete(id)
+      _deviceAction(call, 'Deleted “' + name + '” from this device', 'Could not delete that file')
+        .then(function (res) {
+          if (res && res.ok !== false && typeof _refreshInstantKeys === 'function') _refreshInstantKeys(true)
+        })
+    } })
+  }
+  return items
+}
+
 function _openVideoCardMenu(card, x, y) {
   const key = String(card.dataset.video || '')
   const parts = key.split(':')
@@ -9266,10 +9321,10 @@ function _openVideoCardMenu(card, x, y) {
   const id = parts.slice(1).join(':')
   const title = card.querySelector('.vcard-title')?.textContent || ''
   const poster = card.querySelector('.vcard-poster')?.getAttribute('src') || null
-  const st = _vCardMenuState(type, id)
+  const st = key ? _vCardMenuState(type, id) : { inList: false, watched: false }
 
   const open = function () { navigate('video-detail', key) }
-  const items = [
+  const items = card.classList && card.classList.contains('vdevice-card') ? _deviceCardMenuItems(card) : [
     { label: 'Play', icon: _VICON.play, run: open },
     { label: 'Go to details', icon: _VICON.info, run: open },
     {

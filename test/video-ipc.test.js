@@ -1314,7 +1314,11 @@ test('papa-import-all validates the shape and never overwrites blind', () => {
     'the backup must be written before the store is overwritten')
   // Returns the names it actually wrote.
   assert.match(body, /imported\.push\(name\)/)
-  assert.match(body, /return \{ ok: true, imported \}/)
+  // The handler now also reports the settings half of the restore
+  // (cd53956, "Restoring a backup brings back your settings again"), so the
+  // return carries settingsWritten/settingsSkipped alongside the store names.
+  // Pinned on the store names it must still report, not on the whole literal.
+  assert.match(body, /return \{ ok: true, imported[,}]/)
 })
 
 test('the export/import channels are reachable from the renderer', () => {
