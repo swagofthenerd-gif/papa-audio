@@ -572,6 +572,10 @@ function predlCtx(api) {
     console,
     _VICON: { check: '<svg/>', plus: '<svg/>' },
     _packFiles: [],
+    // Where the pack on screen came from. 'torrent' is the case this block is
+    // about: a debrid-served pack has no torrent behind it to predownload, and
+    // is covered in test/debrid-pack-predownload.test.js.
+    _packVia: 'torrent',
     _videoDetail: { type: 'tv' },
     _videoState: { season: 1, episode: 1 },
     window: { api: api || {} },

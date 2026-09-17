@@ -4492,7 +4492,8 @@ function _handleVideoEvent(payload) {
     }
     // The pack's file list — each carries an in-torrent index — is what the
     // "Download next episode" affordance needs to know which file to fetch.
-    _setPackFiles(payload.files || [])
+    // Which half produced it: debrid packs cannot be predownloaded.
+    _setPackFiles(payload.files || [], payload.via || 'torrent')
     return
   }
 
@@ -4825,10 +4826,22 @@ function _setUpNextInfo() {
 // IPC is not present (an older main process), the whole thing no-ops and no
 // control is drawn, rather than throwing into a half-wired feature.
 var _packFiles = []
+// Which half of the app produced the strip on screen. It decides whether
+// predownloading is possible at all: a pack served by RealDebrid is an HTTPS
+// stream, not a torrent being downloaded, so there is no next file to pull
+// down in the background and main's video-predownload has no streamer to ask.
+// Before the debrid strip existed this could not come up; now that it does,
+// the control was being offered on every debrid pack and answering "Nothing is
+// streaming" while something was plainly streaming — the very complaint the
+// strip was added to fix.
+var _packVia = 'torrent'
 var _predl = { index: null, timer: null, done: false }
 
-function _setPackFiles(files) {
+// `via` is optional: a caller that is only replacing the file list (switching
+// episode inside the same pack) leaves the origin as it was.
+function _setPackFiles(files, via) {
   _packFiles = Array.isArray(files) ? files : []
+  if (via) _packVia = via
   // A new pack means the previous episode's predownload is no longer the one
   // being offered; the control re-reads state on the next render.
   _updatePredownloadControl()
@@ -4849,6 +4862,8 @@ function _nextEpisodePackFile() {
 // Whether the predownload surface can exist at all: the IPC has to be wired,
 // something has to be streaming as a pack, and there has to be a next file.
 function _predownloadAvailable() {
+  // Nothing to pull down when RealDebrid is serving the pack over HTTPS.
+  if (_packVia === 'debrid') return false
   return !!(window.api && typeof window.api.videoPredownload === 'function' && _nextEpisodePackFile())
 }
 

@@ -14206,6 +14206,13 @@ function _sendDebridPack(current) {
       const at = files.findIndex(f => f && f.current)
       safeSend('video-event', {
         kind: 'pack',
+        // Which half of the app produced this list. The strip itself does not
+        // care, but the "Download next episode" control does: a debrid pack is
+        // an HTTPS stream, not a torrent being downloaded, so there is no next
+        // file to pull down in the background and video-predownload has no
+        // streamer to ask. Unmarked means peers, which is what every other
+        // pack event is.
+        via: 'debrid',
         files,
         pick: {
           wanted,
