@@ -968,7 +968,7 @@
     }
     const wishBtn = variant === 'missing'
       ? `<button class="slsh-card-act slsh-wish" data-idx="${idx}" title="Add to wishlist">＋</button>` : ''
-    return `<div class="slsh-card" data-idx="${idx}" data-folder="${esc(a.folderPath)}" tabindex="0">
+    return `<div class="slsh-card" data-idx="${idx}" data-folder="${esc(a.folderPath)}" tabindex="0" role="button" aria-label="Open ${esc((a.artist ? a.artist + ' — ' : '') + (a.album || 'album'))}">
       ${shAlbumArtHtml(a)}
       <div class="slsh-card-title" title="${esc(title)}">${esc(title)}</div>
       <div class="slsh-card-artist" title="${esc(artist)}">${esc(artist)}${a.year ? ' · ' + a.year : ''}</div>

@@ -3103,8 +3103,14 @@ h2.section-title { font-size:18px; font-weight:700; }
 .slsh-card {
   flex-shrink: 0; width: 160px;
   background: var(--bg3, #202020); border-radius: 8px; padding: 10px;
-  cursor: default; display: flex; flex-direction: column;
-  transition: background .15s;
+  /* These cards OPEN. A click on the card body opens the album view with its
+     full track list (slsk-shop-ui.js, "the card becomes a first-class,
+     openable album"), and they are already tabbable and Enter-activated. The
+     cursor said otherwise, so the feature was invisible: he asked to be able
+     to open albums and look inside them, and that had shipped -- nothing on
+     screen ever said so. */
+  cursor: pointer; display: flex; flex-direction: column;
+  transition: background .15s, transform .15s, box-shadow .15s;
   /* Huge libraries render thousands of image-rich cards; letting the
      browser skip layout/paint for offscreen ones took a 7k-album scroll
      from ~10fps to smooth (measured live vs Substrata's 438-album shop:
@@ -3115,7 +3121,21 @@ h2.section-title { font-size:18px; font-weight:700; }
   contain: layout paint style;
 }
 .slsh-rail-track .slsh-card { width: 168px; }
-.slsh-card:hover { background: #2a2a2a; }
+.slsh-card:hover {
+  background: #2a2a2a;
+  /* A hover cue that reads as "this opens" rather than "this is highlighted". */
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, .35);
+}
+.slsh-card:focus-visible {
+  outline: 2px solid var(--accent, #1db954);
+  outline-offset: 2px;
+}
+/* The skeleton placeholders are not openable and must not pretend to be. */
+.slsh-card.slsh-skel { cursor: default; }
+.slsh-card.slsh-skel:hover { transform: none; box-shadow: none; }
+/* The action buttons keep their own affordance over the card's. */
+.slsh-card .slsh-card-act { cursor: pointer; }
 .slsh-card-art {
   position: relative; width: 100%; aspect-ratio: 1; border-radius: 6px;
   overflow: hidden; margin-bottom: 8px; background: var(--bg2, #181818);
