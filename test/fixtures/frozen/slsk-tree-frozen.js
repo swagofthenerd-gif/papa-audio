@@ -1,3 +1,11 @@
+// FROZEN REFERENCE — do not edit, do not optimise, do not lint-fix.
+//
+// A byte-for-byte copy of src/slsk-tree.js as it stood at commit 0293fbd,
+// before the shelves speed-up. test/slsk-shelves-equivalence.test.js runs this
+// copy and the live module over the same large randomised corpus and asserts
+// deep equality of every result, so the refactor can be proved to have changed
+// no output at all. If a deliberate behaviour change ever lands in the live
+// module, the change goes in HERE too, in the same commit, with the reason.
 // Turns a Soulseek user's shared-file listing into a navigable tree.
 //
 // slskd returns a flat array of directories, each with a full Windows-style
@@ -9,72 +17,7 @@
 const SEP = '\\'
 
 function splitPath(p) {
-  const s = String(p || '')
-  // The replace allocates a whole new string even when there is nothing to
-  // replace, and slskd paths are Windows-style, so the forward slash is the rare
-  // case. Skipping it when absent is the same result for a fraction of the work.
-  return (s.indexOf('/') < 0 ? s : s.replace(/\//g, SEP)).split(SEP).filter(Boolean)
-}
-
-// The last non-empty path segment, without building the intermediate array.
-// Exactly `splitPath(p).pop() || ''` — splitPath drops empty segments, so runs
-// of separators and a trailing one collapse here the same way, and an all-
-// separator input yields '' from both. buildTree calls this once per FILE: on a
-// 60,000-file share that was 60,000 regex-replace + split + filter + pop cycles
-// whose only purpose was to read the tail of a short string.
-//
-// Named with a `_t` prefix on purpose. slsk-tree.js and slsk-shelves.js are two
-// plain <script> tags in the renderer, so they share ONE top-level scope and a
-// name collision between them is a SyntaxError that kills the whole Soulseek
-// tab. That has happened here; test/slsk-renderer-scope.test.js now evaluates
-// the two files together in one scope so it cannot happen silently again.
-function _tBasename(p) {
-  const s = String(p || '')
-  let end = s.length
-  while (end > 0) {
-    const c = s.charCodeAt(end - 1)
-    if (c === 92 || c === 47) end--   // trailing \ or /
-    else break
-  }
-  if (end === 0) return ''
-  let start = end
-  while (start > 0) {
-    const c = s.charCodeAt(start - 1)
-    if (c === 92 || c === 47) break
-    start--
-  }
-  return s.slice(start, end)
-}
-
-// One cached collator per ordering instead of one per comparison. Passing an
-// options bag to String.prototype.localeCompare builds a fresh Intl.Collator on
-// every call, and listDir puts that call inside a sort comparator — so a folder
-// with 3,000 rows paid tens of thousands of collator constructions per
-// navigation. The comparisons are identical by definition: localeCompare(x,
-// undefined, opts) IS new Intl.Collator(undefined, opts).compare(x).
-const _tBaseCollator = (typeof Intl !== 'undefined' && Intl.Collator)
-  ? new Intl.Collator(undefined, { sensitivity: 'base' }) : null
-const _tPlainCollator = (typeof Intl !== 'undefined' && Intl.Collator)
-  ? new Intl.Collator() : null
-function _tCmpBase(a, b) {
-  return _tBaseCollator ? _tBaseCollator.compare(a, b)
-    : String(a).localeCompare(String(b), undefined, { sensitivity: 'base' })
-}
-function _tCmpPlain(a, b) {
-  return _tPlainCollator ? _tPlainCollator.compare(a, b) : String(a).localeCompare(String(b))
-}
-
-// Decorate-sort-undecorate, in place. `keyFn` runs ONCE per row rather than
-// once per comparison — the `type` ordering used to re-split the filename on
-// both sides of every comparison. Array.prototype.sort is stable and the
-// decoration is built in input order, so ties land exactly where they did.
-function _tSortDecorated(arr, keyFn, cmpKeys) {
-  if (arr.length < 2) return arr
-  const d = new Array(arr.length)
-  for (let i = 0; i < arr.length; i++) d[i] = { v: arr[i], k: keyFn(arr[i]) }
-  d.sort((x, y) => cmpKeys(x.k, y.k))
-  for (let i = 0; i < arr.length; i++) arr[i] = d[i].v
-  return arr
+  return String(p || '').replace(/\//g, SEP).split(SEP).filter(Boolean)
 }
 
 // Deliberately broad. A hidden audio file looks like data loss to the user,
@@ -99,18 +42,13 @@ function buildTree(directories) {
     for (const part of parts) {
       acc.push(part)
       const key = part.toLowerCase()
-      // One Map lookup instead of has()+get(), and the acc.join only runs when a
-      // node is actually being created. Every directory in a share re-walks its
-      // ancestors, so the old form rebuilt the same parent path string once per
-      // descendant — pure waste on a deep tree.
-      let next = node.dirs.get(key)
-      if (!next) { next = makeNode(part, acc.join(SEP)); node.dirs.set(key, next) }
-      node = next
+      if (!node.dirs.has(key)) node.dirs.set(key, makeNode(part, acc.join(SEP)))
+      node = node.dirs.get(key)
       // Walk on using the casing we first saw, so node.path stays self-consistent.
       acc[acc.length - 1] = node.name
     }
     for (const f of d.files || []) {
-      const base = _tBasename(f.filename) || f.filename || ''
+      const base = splitPath(f.filename).pop() || f.filename || ''
       // fullPath must use the peer's own casing for this entry - it is what we
       // send back to request the download - not the merged display casing.
       node.files.push({ ...f, name: base, fullPath: (d.name ? d.name + SEP : '') + base })
@@ -120,8 +58,7 @@ function buildTree(directories) {
   // the UI having to walk it.
   const roll = (n) => {
     let count = n.files.length
-    let size = 0
-    for (const f of n.files) size += Number(f.size) || 0
+    let size = n.files.reduce((s, f) => s + (Number(f.size) || 0), 0)
     for (const c of n.dirs.values()) { const r = roll(c); count += r.count; size += r.size }
     n.fileCount = count; n.totalSize = size
     return { count, size }
@@ -166,27 +103,15 @@ function listDir(root, path, { sort = 'name', audioOnly = false } = {}) {
   let files = node.files.slice()
   if (audioOnly) files = files.filter(f => AUDIO_RE.test(f.name))
 
-  // Sort keys are derived once per row, not once per comparison. The orderings
-  // are the ones that were here before, to the letter: `name` is
-  // case-insensitive (sensitivity 'base'), `type` is extension (default
-  // collation) then name, `size` is numeric descending and needs no key at all.
-  // Folders only ever sort by name or by size — `type` is meaningless for them,
-  // which is why the old code passed byName for dirs unless the sort was size.
-  const bySizeDesc = (a, b) => (Number(b.size ?? b.totalSize) || 0) - (Number(a.size ?? a.totalSize) || 0)
-  const byNameKey = (x, y) => _tCmpBase(x[0], y[0])
-  if (sort === 'size') {
-    dirs.sort(bySizeDesc)
-    files.sort(bySizeDesc)
-  } else {
-    _tSortDecorated(dirs, d => [String(d.name)], byNameKey)
-    if (sort === 'type') {
-      _tSortDecorated(files,
-        f => [String(String(f.name).split('.').pop()), String(f.name)],
-        (x, y) => _tCmpPlain(x[0], y[0]) || _tCmpBase(x[1], y[1]))
-    } else {
-      _tSortDecorated(files, f => [String(f.name)], byNameKey)
-    }
-  }
+  const byName = (a, b) => String(a.name).localeCompare(String(b.name), undefined, { sensitivity: 'base' })
+  const cmp = {
+    name: byName,
+    size: (a, b) => (Number(b.size ?? b.totalSize) || 0) - (Number(a.size ?? a.totalSize) || 0),
+    type: (a, b) => String(a.name.split('.').pop()).localeCompare(String(b.name.split('.').pop())) || byName(a, b),
+  }[sort] || byName
+
+  dirs.sort(sort === 'size' ? cmp : byName)
+  files.sort(cmp)
   return { path, node, dirs, files, parent: path === '' ? null : parentPath(path) }
 }
 

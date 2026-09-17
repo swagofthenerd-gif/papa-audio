@@ -1,3 +1,11 @@
+// FROZEN REFERENCE — do not edit, do not optimise, do not lint-fix.
+//
+// A byte-for-byte copy of src/slsk-shelves.js as it stood at commit 0293fbd,
+// before the shelves speed-up. test/slsk-shelves-equivalence.test.js runs this
+// copy and the live module over the same large randomised corpus and asserts
+// deep equality of every result, so the refactor can be proved to have changed
+// no output at all. If a deliberate behaviour change ever lands in the live
+// module, the change goes in HERE too, in the same commit, with the reason.
 // The record shop: turns a Soulseek peer's browse tree into ALBUMS, then into
 // shelves you can actually shop. slsk-tree.js already rebuilt the flat slskd
 // listing into a navigable hierarchy; this walks that hierarchy and answers the
@@ -15,36 +23,9 @@
 const SH_AUDIO_RE = /\.(flac|mp3|wav|aiff?|aif|m4a|m4b|aac|ogg|oga|opus|ape|wv|wma|dsf|dff|mka|ec3|ac3|alac|mpc|tta|shn|dts|spx|caf|w64)$/i
 const SH_LOSSLESS_EXT = new Set(['flac', 'wav', 'aiff', 'aif', 'ape', 'wv', 'alac', 'dsf', 'dff', 'tta', 'shn', 'w64', 'caf'])
 
-// The trailing extension, lowercased — `/\.([a-z0-9]+)$/` over the lowercased
-// name, and nothing else.
-//
-// This is called twice for every file in a share (once through isLosslessName,
-// once for the majority-extension count), so on a 64,000-file peer it ran
-// ~128,000 times and allocated a lowercased copy of the whole filename plus a
-// match array on each one. That was 16% of album extraction and a large share
-// of its garbage. The fast path walks back from the end over ASCII
-// alphanumerics instead and lowercases nothing but the extension itself.
-//
-// The slow path is not decoration. Two non-ASCII characters lowercase INTO the
-// a-z range — the Kelvin sign U+212A ("K" → "k") and the long s U+017F ("ſ" →
-// "s") — so a filename ending in one of those really would be matched by the
-// original regex and missed by an ASCII-only scan. Any non-ASCII byte in the
-// tail therefore falls back to the exact original expression.
-const EXT_RE = /\.([a-z0-9]+)$/
 function extOf(name) {
-  const s = String(name || '')
-  let i = s.length
-  while (i > 0) {
-    const c = s.charCodeAt(i - 1)
-    if (c >= 48 && c <= 57) { i--; continue }              // 0-9
-    if (c >= 97 && c <= 122) { i--; continue }             // a-z
-    if (c >= 65 && c <= 90) { i--; continue }              // A-Z
-    if (c >= 128) { const m = s.toLowerCase().match(EXT_RE); return m ? m[1] : '' }
-    break
-  }
-  // Needs a dot immediately before a non-empty run of alphanumerics.
-  if (i === s.length || i === 0 || s.charCodeAt(i - 1) !== 46) return ''
-  return s.slice(i).toLowerCase()
+  const m = String(name || '').toLowerCase().match(/\.([a-z0-9]+)$/)
+  return m ? m[1] : ''
 }
 
 function isAudioName(name) { return SH_AUDIO_RE.test(String(name || '')) }
@@ -197,26 +178,8 @@ const GENERIC_CONTAINERS = new Set([
   'lossless', 'shared', 'share', 'downloads', 'complete', 'collection',
   'my music', 'audio', 'various', 'various artists', 'va', 'compilations',
 ])
-// slskd can serve a share behind an anonymised ALIAS: the top path segment
-// becomes a literal "@@" plus a short random token ("@@aeylt", "@@agaud",
-// "@@papvf"). It is not a folder the peer named and it is certainly not an
-// artist — but it sits exactly where the artist folder would, so the parser
-// below read it as one. On one real peer that put "@@aeylt" on the artist line
-// of 109 of 439 cards (24.8%).
-//
-// Treating it as a generic container is the whole fix: the artist falls back to
-// empty, which is the truth (the alias replaced the artist folder, so the path
-// carries no artist), and every deeper path — "@@papvf\Music\3 Speed\…", where
-// the real artist folder is still there — is untouched. Anchored and strict on
-// purpose: no whitespace, alphanumerics only, so a folder a human actually
-// named "@@ my rips" is not swallowed by it.
-const SHARE_ALIAS_RE = /^@@[a-z0-9]+$/i
-function isShareAlias(name) {
-  return SHARE_ALIAS_RE.test(String(name || '').trim())
-}
 function isGenericContainer(name) {
-  const s = String(name || '').trim()
-  return GENERIC_CONTAINERS.has(s.toLowerCase()) || isShareAlias(s)
+  return GENERIC_CONTAINERS.has(String(name || '').trim().toLowerCase())
 }
 
 // ── Fuzzy matching ────────────────────────────────────────────────────────────
@@ -371,13 +334,10 @@ function buildLibraryIndex(library, { albumMin = 0.6, artistMin = 0.34 } = {}) {
 
 // One library album into the token buckets. Shared by the sync builder above and
 // the chunked builder below so the two can never drift.
-// `n` (the album-token count) and `g` (a scan-generation stamp) ride on the
-// entry so the finder's gates below cost two integer compares and allocate
-// nothing per lookup.
 function _libIndexInsert(buckets, noKey, a, order) {
   const comp = albumComparable(a && a.albumTokens instanceof Set ? a : libAlbumToComparable(a))
-  const entry = { comp, order, n: comp.albumTokens.size, g: 0 }
-  if (!entry.n) { noKey.push(entry); return }
+  const entry = { comp, order }
+  if (!comp.albumTokens.size) { noKey.push(entry); return }
   for (const tok of comp.albumTokens) {
     let arr = buckets.get(tok)
     if (!arr) { arr = []; buckets.set(tok, arr) }
@@ -385,157 +345,29 @@ function _libIndexInsert(buckets, noKey, a, order) {
   }
 }
 
-// ── Two exact gates that let the finder skip candidates without reading them ──
-//
-// Bucketing by token already beat the full O(peer × library) sweep, but it left
-// one pathology: a token like "the" is carried by hundreds of albums (measured
-// on a real 4,128-album share: "the" ×486, "of" ×370, "hits" ×195), so every
-// peer album whose title contains it drags that whole bucket into the scan. The
-// two gates below cut those buckets out WITHOUT changing a single answer.
-//
-// Both fall out of the same algebra. tokenScoreSets is inter/(na+nb-inter),
-// strictly increasing in `inter`, with inter <= min(na, nb); and
-// albumsMatchComparable rejects outright unless that score reaches albumMin (m).
-//
-//   (1) TOKEN-COUNT BAND. The best score two token sets of sizes na and nb could
-//       ever reach is min(na,nb)/max(na,nb) — take inter = min, which also makes
-//       the union max. If that is below m the matcher WILL reject the pair, so
-//       it can be skipped unread.
-//
-//   (2) PREFIX FILTER. Rearranging inter/(na+nb-inter) >= m gives
-//       inter >= m(na+nb)/(1+m); and every candidate that survives gate (1) has
-//       nb >= m·na, so inter >= m·na. A matching library album therefore shares
-//       at least r = ceil(m·na) of the peer's na album tokens — it is ABSENT
-//       from at most na - r of them. Let F be the peer tokens whose bucket is
-//       empty (no library album carries them): every candidate is absent from
-//       all F, so among the na - F non-empty buckets it is absent from at most
-//       (na - F) - r. Pigeonhole: scanning any (na - F) - r + 1 of those buckets
-//       is GUARANTEED to contain every album that could match. We scan the
-//       rarest that many, which is what stops "the" from costing anything.
-//
-// The +1 is the whole proof and is easy to drop by accident; without it the
-// filter silently loses real matches. test/slsk-shelves-equivalence.test.js
-// checks findMatch against a full frozen scan for every album in a 5,000-album
-// corpus, at four different albumMin settings, which is what catches that.
-//
-// Both gates are NECESSARY conditions only: anything they let through is still
-// put to the full albumsMatchComparable test, so the answer is unchanged.
-//
-// All of it is conditional on m > 0. At albumMin <= 0 a score of 0 passes, so
-// nothing can be excluded and the finder falls back to the original scan —
-// including the no-album-token bucket, which at m > 0 provably cannot match
-// (its score against anything is 0) and is skipped.
-function _countsCanMatch(na, nb, albumMin) {
-  if (na <= 0 || nb <= 0) return albumMin <= 0
-  return (na <= nb ? na / nb : nb / na) >= albumMin
-}
-function _minSharedTokens(na, albumMin) {
-  if (!(albumMin > 0)) return 1
-  // Biased LOW on purpose (0.6 * 5 can land at 3.0000000000000004, and ceil of
-  // that would be 4). A smaller floor only ever means scanning more buckets.
-  return Math.max(1, Math.ceil(albumMin * na - 1e-9))
-}
-// The band as an integer interval, derived by asking _countsCanMatch itself
-// rather than by re-deriving the inequality — so the two cannot disagree on a
-// floating-point edge. _countsCanMatch(na, ·, m) is monotone either side of na
-// (nb/na rises up to nb = na, na/nb falls after it), so the accepting nb form
-// one contiguous run and walking outwards from na finds both ends exactly.
-// Memoised per na; the per-entry test is then two integer compares, no division.
-function _countBand(cache, na, albumMin) {
-  let band = cache[na]
-  if (band) return band
-  if (!(albumMin > 0)) { band = cache[na] = [1, Infinity]; return band }
-  if (na < 1 || !_countsCanMatch(na, na, albumMin)) { band = cache[na] = [1, 0]; return band }
-  let lo = na
-  while (lo > 1 && _countsCanMatch(na, lo - 1, albumMin)) lo--
-  let hi = na
-  // Bounded: na/hi falls monotonically and crosses albumMin at hi = na/albumMin.
-  const ceiling = na / albumMin + 2
-  while (hi < ceiling && _countsCanMatch(na, hi + 1, albumMin)) hi++
-  band = cache[na] = [lo, hi]
-  return band
-}
-function _byBucketLength(x, y) { return x.length - y.length }
-
-// The ungated scan, kept verbatim from before the gates went in. It is what runs
-// when albumMin <= 0, where a score of 0 counts as a match and therefore nothing
-// — not even a library album sharing no tokens at all — can be ruled out ahead
-// of time. Nobody calls the shop that way, but buildLibraryIndex takes albumMin
-// as an option, so the branch has to be right rather than merely unreachable.
-function _scanEveryBucket(buckets, noKey, pc, albumMin, artistMin) {
-  let match = null
-  let matchOrder = Infinity
-  const seen = new Set()
-  const consider = (entry) => {
-    if (entry.order >= matchOrder || seen.has(entry.order)) return
-    seen.add(entry.order)
-    if (albumsMatchComparable(pc, entry.comp, albumMin, artistMin)) {
-      match = entry.comp; matchOrder = entry.order
-    }
-  }
-  for (const tok of pc.albumTokens) {
-    const arr = buckets.get(tok)
-    if (arr) for (const entry of arr) consider(entry)
-  }
-  for (const entry of noKey) consider(entry)
-  return match
-}
-
 // The finder over a finished bucket index — factored out of buildLibraryIndex so
 // buildLibraryIndexChunked returns the identical closure.
 function _libIndexFinder(buckets, noKey, albumMin, artistMin) {
-  // A monotonically rising stamp so a library album reachable through several of
-  // the peer's tokens is tested only once per lookup — the job the old `seen`
-  // Set did, without allocating a Set per peer album.
-  let gen = 0
-  const arrs = []          // scratch, reused across lookups
-  const bandCache = []
-
-  // Find the first (in library order) library comparable that confidently
-  // matches a peer comparable.
+  // Find the first (library-order) library comparable that confidently matches a
+  // peer comparable. Only buckets the peer's album tokens point at are scanned —
+  // a handful of candidates instead of the whole library.
   const findMatch = (peerComp) => {
     const pc = albumComparable(peerComp)
-    if (!(albumMin > 0)) return _scanEveryBucket(buckets, noKey, pc, albumMin, artistMin)
-
     let match = null
     let matchOrder = Infinity
-    const na = pc.albumTokens.size
-    arrs.length = 0
-    let free = 0                 // peer tokens no library album carries at all
-    for (const tok of pc.albumTokens) {
-      const arr = buckets.get(tok)
-      if (arr) arrs.push(arr)
-      else free++
-    }
-    // (na - free) - r + 1 buckets, rarest first. <= 0 means no album can clear
-    // the token floor, so there is nothing to scan.
-    const need = (na - free) - _minSharedTokens(na, albumMin) + 1
-    if (need <= 0 || !arrs.length) return null
-    if (need < arrs.length) {
-      arrs.sort(_byBucketLength)
-      arrs.length = need
-    }
-    const g = ++gen
-    const band = _countBand(bandCache, na, albumMin)
-    const nLo = band[0]
-    const nHi = band[1]
-    for (const arr of arrs) {
-      // Entries were appended in library order, so `order` rises along a bucket:
-      // the first entry that cannot beat the current best means none of the rest
-      // can either.
-      for (let i = 0; i < arr.length; i++) {
-        const entry = arr[i]
-        if (entry.order >= matchOrder) break
-        const nb = entry.n
-        if (nb < nLo || nb > nHi) continue
-        if (entry.g === g) continue
-        entry.g = g
-        if (albumsMatchComparable(pc, entry.comp, albumMin, artistMin)) {
-          match = entry.comp; matchOrder = entry.order
-          break
-        }
+    const seen = new Set()
+    const consider = (entry) => {
+      if (entry.order >= matchOrder || seen.has(entry.order)) return
+      seen.add(entry.order)
+      if (albumsMatchComparable(pc, entry.comp, albumMin, artistMin)) {
+        match = entry.comp; matchOrder = entry.order
       }
     }
+    for (const tok of pc.albumTokens) {
+      const arr = buckets.get(tok)
+      if (arr) for (const entry of arr) consider(entry)
+    }
+    for (const entry of noKey) consider(entry)
     return match
   }
   return findMatch
@@ -570,23 +402,6 @@ function extractAlbums(root, { minTracks = 2 } = {}) {
     return { files, discCount }
   }
 
-  // The same count gatherWithDiscs would report, without building the array. A
-  // node with real subfolders is a shelf, and the only thing the walk asks of
-  // its gathered files is whether there are at least `minTracks` of them — so
-  // the array the old code built for every shelf in the tree was allocated,
-  // filled and thrown away. (The mixed-node album below is built from the
-  // node's OWN audio, never from the gathered list, so nothing needs it.)
-  const countWithDiscs = (node) => {
-    let n = 0
-    for (const f of node.files) if (isAudioName(f.name || f.filename)) n++
-    if (node.dirs && node.dirs.size) {
-      for (const child of node.dirs.values()) {
-        if (isDiscFolder(child.name)) n += countWithDiscs(child)
-      }
-    }
-    return n
-  }
-
   const walk = (node, segs) => {
     // Non-disc subfolders decide whether this node is a leaf album or a shelf.
     const realSubdirs = []
@@ -596,18 +411,12 @@ function extractAlbums(root, { minTracks = 2 } = {}) {
       }
     }
 
-    if (realSubdirs.length === 0) {
-      const gathered = gatherWithDiscs(node)
-      if (gathered.files.length >= minTracks && node.path) {
-        albums.push(buildAlbum(node, segs, gathered))
-        return
-      }
-      // No real subfolders and not enough audio: nothing to recurse into and
-      // nothing to emit. (The old code fell through to a loop over an empty
-      // realSubdirs list and a guard that required realSubdirs.length.)
-      return
-    }
-    {
+    const gathered = gatherWithDiscs(node)
+    const isAlbumLeaf = realSubdirs.length === 0 && gathered.files.length >= minTracks
+
+    if (isAlbumLeaf && node.path) {
+      albums.push(buildAlbum(node, segs, gathered))
+    } else {
       // Recurse into the real (non-disc) subfolders only. If this node ALSO has
       // its own loose audio (a "shelf with a few stray tracks"), we still treat
       // it as an album when it clears the threshold and has no real subdirs —
@@ -616,9 +425,7 @@ function extractAlbums(root, { minTracks = 2 } = {}) {
       for (const child of realSubdirs) walk(child, segs.concat(child.name))
       // Edge case: a node with real subdirs but also enough of its own audio to
       // be an album in its own right (e.g. a "Singles" folder). Emit it too.
-      // Note the gate is on the GATHERED count while the album is built from the
-      // node's own audio — faithfully odd, and kept that way on purpose.
-      if (node.path && countWithDiscs(node) >= minTracks) {
+      if (realSubdirs.length && node.path && gathered.files.length >= minTracks) {
         albums.push(buildAlbum(node, segs, { files: node.files.filter(f => isAudioName(f.name || f.filename)), discCount: 0 }))
       }
     }
@@ -641,31 +448,14 @@ function extractAlbums(root, { minTracks = 2 } = {}) {
 function buildAlbum(node, segs, gathered) {
   const files = gathered.files
   const parsed = parseAlbumFolder(segs)
-  // One walk of the file list for all five roll-ups. It used to be five walks,
-  // three of which allocated a throwaway array, and two of which spread that
-  // array into Math.max as ARGUMENTS. That last part was not merely slow: a
-  // folder holding one flat pile of ~125,000 files — an ordinary shape on
-  // Soulseek, and the shape extractAlbums produces for a peer who shares
-  // everything loose in one directory — overflows the argument limit and throws
-  // RangeError outright, so the album never builds at all.
-  let totalSize = 0
-  let losslessCount = 0
-  let maxBitDepth = 0
-  let maxSampleRate = 0
+  const totalSize = files.reduce((s, f) => s + (Number(f.size) || 0), 0)
+  const losslessCount = files.filter(f => isLosslessName(f.name || f.filename) || f.isFlac).length
+  const maxBitDepth = Math.max(0, ...files.map(f => Number(f.bitDepth) || 0))
+  const maxSampleRate = Math.max(0, ...files.map(f => Number(f.sampleRate) || 0))
   // Representative format: majority extension.
   const counts = {}
   for (const f of files) {
-    totalSize += Number(f.size) || 0
-    const nm = f.name || f.filename
-    // extOf ONCE per file. isLosslessName(nm) is by definition
-    // SH_LOSSLESS_EXT.has(extOf(nm)), and the majority-extension count needs the
-    // same value, so calling both was extracting the extension twice.
-    const e = extOf(nm)
-    if (SH_LOSSLESS_EXT.has(e) || f.isFlac) losslessCount++
-    const bd = Number(f.bitDepth) || 0
-    if (bd > maxBitDepth) maxBitDepth = bd
-    const sr = Number(f.sampleRate) || 0
-    if (sr > maxSampleRate) maxSampleRate = sr
+    const e = extOf(f.name || f.filename)
     if (e) counts[e] = (counts[e] || 0) + 1
   }
   let topExt = '', topN = 0
@@ -705,9 +495,8 @@ function albumQualityLabel(album) {
     if (album.maxSampleRate) return `${fmt} · ${Math.round(album.maxSampleRate / 1000)} kHz`
     return fmt
   }
-  // Lossy: bitrate if we have it. Plain loop, no argument spread — see buildAlbum.
-  let kbps = 0
-  for (const f of album.files) { const b = Number(f.bitRate) || 0; if (b > kbps) kbps = b }
+  // Lossy: bitrate if we have it.
+  const kbps = Math.max(0, ...album.files.map(f => Number(f.bitRate) || 0))
   return kbps ? `${fmt} · ${kbps}` : fmt
 }
 
@@ -718,21 +507,13 @@ function albumQualityLabel(album) {
 // maxBitDepth, maxSampleRate} shape the upgrade logic needs.
 function libAlbumToComparable(a) {
   const tracks = a.tracks || []
-  // One walk, no argument spread — same reasons as buildAlbum. A library album
-  // with a six-figure track list is rarer than a peer folder with one, but the
-  // RangeError is the same RangeError.
-  let losslessCount = 0
-  let depthFallback = 0
-  let rateFallback = 0
-  for (const t of tracks) {
-    if (isLosslessName(t.filePath || t.path || '')) losslessCount++
-    const bd = Number(t.bitsPerSample || t.bitDepth) || 0
-    if (bd > depthFallback) depthFallback = bd
-    const sr = Number(t.sampleRate) || 0
-    if (sr > rateFallback) rateFallback = sr
-  }
-  const maxBitDepth = a.maxBitsPerSample != null ? Number(a.maxBitsPerSample) || 0 : depthFallback
-  const maxSampleRate = a.maxSampleRate != null ? Number(a.maxSampleRate) || 0 : rateFallback
+  const losslessCount = tracks.filter(t => isLosslessName(t.filePath || t.path || '')).length
+  const maxBitDepth = a.maxBitsPerSample != null
+    ? Number(a.maxBitsPerSample) || 0
+    : Math.max(0, ...tracks.map(t => Number(t.bitsPerSample || t.bitDepth) || 0))
+  const maxSampleRate = a.maxSampleRate != null
+    ? Number(a.maxSampleRate) || 0
+    : Math.max(0, ...tracks.map(t => Number(t.sampleRate) || 0))
   return {
     artist: a.artist || a.albumArtist || '',
     album: a.name || a.album || '',
@@ -847,17 +628,11 @@ function buildShelves(peerAlbums, library, { detectSurround = null } = {}) {
   const byQualThenSize = (a, b) => qualRank(b) - qualRank(a) || (b.totalSize - a.totalSize)
 
   missing.sort(byQualThenSize)
-  // Decorate-sort-undecorate: the two keys were lowercased on both sides of
-  // every comparison, so a 5,000-album shelf lowercased ~250,000 strings to
-  // order 5,000 rows. Same ordering — _shelfCollator is a plain Intl.Collator,
-  // which is exactly what localeCompare with no options bag uses.
-  const decorated = albums.map(a => ({
-    a,
-    k1: (a.artist || a.album || '').toLowerCase(),
-    k2: (a.album || '').toLowerCase(),
-  }))
-  decorated.sort(_shCmpShelfKeys)
-  const everything = decorated.map(d => d.a)
+  const everything = albums.slice().sort((a, b) => {
+    const ak = (a.artist || a.album || '').toLowerCase()
+    const bk = (b.artist || b.album || '').toLowerCase()
+    return ak.localeCompare(bk) || (a.album || '').toLowerCase().localeCompare((b.album || '').toLowerCase())
+  })
 
   return {
     upgrades,
@@ -939,8 +714,7 @@ function fmtSize(bytes) {
 function sourceScore(g) {
   if (!g) return -Infinity
   const files = g.files || []
-  let flac = 0
-  for (const f of files) if (f.isFlac || isLosslessName(f.name || f.filename)) flac++
+  const flac = files.filter(f => f.isFlac || isLosslessName(f.name || f.filename)).length
   let s = 0
   s += flac * 8
   s += Math.min(files.length, 20) * 2
@@ -958,53 +732,15 @@ function sourceScore(g) {
 // lossless > lossy, then by depth, then rate.
 function sourceQuality(g) {
   const files = (g && g.files) || []
-  // One pass, no argument spread: this walked the file list three times and the
-  // two Math.max spreads threw RangeError on a folder with ~125k files in it.
-  let lossless = false
-  let maxBitDepth = 0
-  let maxSampleRate = 0
-  for (const f of files) {
-    if (!lossless && (f.isFlac || isLosslessName(f.name || f.filename))) lossless = true
-    const bd = Number(f.bitDepth) || 0
-    if (bd > maxBitDepth) maxBitDepth = bd
-    const sr = Number(f.sampleRate) || 0
-    if (sr > maxSampleRate) maxSampleRate = sr
-  }
+  const lossless = files.some(f => f.isFlac || isLosslessName(f.name || f.filename))
+  const maxBitDepth = Math.max(0, ...files.map(f => Number(f.bitDepth) || 0))
+  const maxSampleRate = Math.max(0, ...files.map(f => Number(f.sampleRate) || 0))
   const hiRes = maxBitDepth >= 24 || maxSampleRate >= 88200
   return { lossless, hiRes, maxBitDepth, maxSampleRate }
 }
 function qualityRankTuple(q) {
   return [q.lossless ? (q.hiRes ? 2 : 1) : 0, q.maxBitDepth || 0, q.maxSampleRate || 0]
 }
-
-// Every quality ordering in this module compares `qualityRankTuple(…).join(',')`
-// strings under NUMERIC collation, and
-// `String.prototype.localeCompare(x, undefined, { numeric: true })` constructs a
-// fresh Intl.Collator on every single call. Inside a sort comparator that is
-// most of the cost of the sort: sorting a real peer's 4,128 albums by quality
-// measured 178 ms, almost all of it collator construction plus re-deriving the
-// key on both sides of every comparison. One cached collator performs the
-// identical comparison — localeCompare with an options bag is DEFINED as
-// new Intl.Collator(undefined, opts).compare — at a fraction of the cost.
-//
-// The plain A–Z compare stays inline on purpose: localeCompare with no options
-// bag already hits the engine's own cached default collator, so pre-keying it
-// buys nothing.
-const _shNumCollator = (typeof Intl !== 'undefined' && Intl.Collator)
-  ? new Intl.Collator(undefined, { numeric: true }) : null
-const _shCmpQualKey = _shNumCollator
-  ? (a, b) => _shNumCollator.compare(a, b)
-  : (a, b) => a.localeCompare(b, undefined, { numeric: true })
-function _shQualKey(q) { return qualityRankTuple(q).join(',') }
-
-// The Everything grid's A–Z ordering, over rows pre-keyed to lowercase artist
-// (k1) and lowercase album (k2). Shared by buildShelves and its chunked twin so
-// the two can never drift; the collator is the engine's default one, which is
-// what a bare `localeCompare(x)` uses anyway.
-const _shelfCollator = (typeof Intl !== 'undefined' && Intl.Collator) ? new Intl.Collator() : null
-const _shCmpShelfKeys = _shelfCollator
-  ? (x, y) => _shelfCollator.compare(x.k1, y.k1) || _shelfCollator.compare(x.k2, y.k2)
-  : (x, y) => x.k1.localeCompare(y.k1) || x.k2.localeCompare(y.k2)
 
 // ── Album-identity merge over search folder-groups ────────────────────────────
 // The search grid renders one card per folder-group, so the same album held by
@@ -1032,14 +768,6 @@ function mergeSourcesByAlbum(groups, { detectSurround = null, parse = null } = {
   // output. Turns the merge from O(n²) to roughly O(n).
   const byToken = new Map()   // albumToken → [bucket]
   const order = []
-  // The same two exact gates the library index uses (see _countsCanMatch and
-  // _minSharedTokens): a token-count band and a rarest-buckets prefix filter.
-  // Without them a search whose results all contain "live" or "greatest hits"
-  // drags every bucket holding that word into every single comparison, which is
-  // the quadratic behaviour the token index was supposed to remove.
-  const scratch = []
-  let gen = 0
-  const bandCache = []
   for (const g of (groups || [])) {
     const p = doParse(g)
     const ident = { artist: p.artist || '', album: p.album || g.folderName || '', year: p.year || null }
@@ -1049,42 +777,20 @@ function mergeSourcesByAlbum(groups, { detectSurround = null, parse = null } = {
     // (singleton) bucket rather than vanishing.
     let placed = null
     let placedSeq = Infinity
-    const na = identComp.albumTokens.size
-    scratch.length = 0
-    let free = 0
+    const seen = new Set()
     for (const tok of identComp.albumTokens) {
       const candidates = byToken.get(tok)
-      if (candidates) scratch.push(candidates)
-      else free++
-    }
-    const need = (na - free) - _minSharedTokens(na, 0.6) + 1
-    if (need > 0 && scratch.length) {
-      if (need < scratch.length) { scratch.sort(_byBucketLength); scratch.length = need }
-      const mark = ++gen
-      const band = _countBand(bandCache, na, 0.6)
-      const nLo = band[0]
-      const nHi = band[1]
-      for (const candidates of scratch) {
-        // Buckets are appended in creation order, so `seq` rises along the list:
-        // once an entry cannot beat the current best, none of the rest can.
-        for (let i = 0; i < candidates.length; i++) {
-          const b = candidates[i]
-          if (b.seq >= placedSeq) break
-          const nb = b.identComp.albumTokens.size
-          if (nb < nLo || nb > nHi) continue
-          if (b.g === mark) continue
-          b.g = mark
-          // Same album identity: album+artist agree. Reuse the shelf matcher so
-          // the same fuzzy rules ("The Beatles" == "beatles") apply here.
-          if (albumsMatchComparable(identComp, b.identComp, 0.6, 0.34)) {
-            placed = b; placedSeq = b.seq
-            break
-          }
-        }
+      if (!candidates) continue
+      for (const b of candidates) {
+        if (b.seq >= placedSeq || seen.has(b.seq)) continue
+        seen.add(b.seq)
+        // Same album identity: album+artist agree. Reuse the shelf matcher so the
+        // same fuzzy rules ("The Beatles" == "beatles") apply here.
+        if (albumsMatchComparable(identComp, b.identComp, 0.6, 0.34)) { placed = b; placedSeq = b.seq }
       }
     }
     if (!placed) {
-      placed = { ident, identComp, sources: [], seq: order.length, g: 0 }
+      placed = { ident, identComp, sources: [], seq: order.length }
       order.push(placed)
       for (const tok of identComp.albumTokens) {
         let arr = byToken.get(tok)
@@ -1104,31 +810,22 @@ function mergeSourcesByAlbum(groups, { detectSurround = null, parse = null } = {
 }
 
 function finalizeMergedAlbum(bucket, detectSurround) {
-  // Decorate-sort-undecorate. sourceQuality walks a group's whole file list and
-  // sourceScore walks it again, and both used to be recomputed on BOTH sides of
-  // every comparison — so ordering the 30 people who hold one album cost ~300
-  // file walks and ~300 collator constructions. Each source is now measured
-  // exactly once. Array.prototype.sort is stable and the decoration is built in
-  // input order, so equal sources keep the order they had.
-  const decorated = bucket.sources.map(s => {
-    const q = sourceQuality(s)
-    return { s, q, qk: _shQualKey(q), score: sourceScore(s) }
-  })
-  decorated.sort((a, b) => {
+  const sources = bucket.sources.slice().sort((a, b) => {
     // Best quality first, then best availability/score.
-    const qr = _shCmpQualKey(b.qk, a.qk)
+    const qr = qualityRankTuple(sourceQuality(b)).join(',')
+      .localeCompare(qualityRankTuple(sourceQuality(a)).join(','), undefined, { numeric: true })
     if (qr !== 0) return qr > 0 ? 1 : -1
-    return b.score - a.score
+    return sourceScore(b) - sourceScore(a)
   })
-  const sources = decorated.map(d => d.s)
   // Best source = highest quality, then highest score (already sorted).
   const best = sources[0] || null
   // Best quality across ALL sources (a fast peer may hold a lesser rip than a
   // slow one; the headline quality is the best available, regardless of who).
   let bestQ = { lossless: false, hiRes: false, maxBitDepth: 0, maxSampleRate: 0 }
-  let bestQKey = _shQualKey(bestQ)
-  for (const d of decorated) {
-    if (_shCmpQualKey(d.qk, bestQKey) > 0) { bestQ = d.q; bestQKey = d.qk }
+  for (const s of sources) {
+    const q = sourceQuality(s)
+    if (qualityRankTuple(q).join(',').localeCompare(
+        qualityRankTuple(bestQ).join(','), undefined, { numeric: true }) > 0) bestQ = q
   }
   const surround = detectSurround
     ? sources.some(s => {
@@ -1173,20 +870,11 @@ function sortMergedAlbums(albums, key) {
     return qualityRankTuple(sourceQuality({ files: a.files || [] }))
   }
   switch (key) {
-    case 'quality': {
-      // Keys derived ONCE per album instead of twice per comparison. qr() walks
-      // every file of a source group, so the old form did O(n log n) file walks
-      // and as many implicit collator constructions. This is the sort behind the
-      // shop's quality chip and behind every re-render of the Everything grid,
-      // so it was the visible stutter: 178 ms on a real 4,128-album share.
-      const d = arr.map(a => ({ a, k: qr(a).join(','), size: a.totalSize || 0 }))
-      d.sort((x, y) => {
-        const c = _shCmpQualKey(y.k, x.k)
-        return c !== 0 ? c : y.size - x.size
+    case 'quality':
+      return arr.sort((a, b) => {
+        const c = qr(b).join(',').localeCompare(qr(a).join(','), undefined, { numeric: true })
+        return c !== 0 ? c : (b.totalSize || 0) - (a.totalSize || 0)
       })
-      for (let i = 0; i < d.length; i++) arr[i] = d[i].a
-      return arr
-    }
     case 'year':
       // Unknown years sink to the bottom rather than pretending to be year 0.
       return arr.sort((a, b) => (b.year || -1) - (a.year || -1))
@@ -1320,136 +1008,52 @@ async function fingerprintBrowseChunked(directories, opts) {
 // final slice.
 const TREE_SEP = '\\'
 function _treeSplitPath(p) {
-  const s = String(p || '')
-  return (s.indexOf('/') < 0 ? s : s.replace(/\//g, TREE_SEP)).split(TREE_SEP).filter(Boolean)
-}
-// Mirrors slsk-tree's _tBasename (see the note there); duplicated rather than
-// imported so this module still stands alone in a test process.
-function _treeBasename(p) {
-  const s = String(p || '')
-  let end = s.length
-  while (end > 0) {
-    const c = s.charCodeAt(end - 1)
-    if (c === 92 || c === 47) end--
-    else break
-  }
-  if (end === 0) return ''
-  let start = end
-  while (start > 0) {
-    const c = s.charCodeAt(start - 1)
-    if (c === 92 || c === 47) break
-    start--
-  }
-  return s.slice(start, end)
+  return String(p || '').replace(/\//g, TREE_SEP).split(TREE_SEP).filter(Boolean)
 }
 function _treeMakeNode(name, path) {
   return { name, path, dirs: new Map(), files: [], fileCount: 0, totalSize: 0 }
 }
-
-// ONE definition of "insert this directory entry into this tree", shared by the
-// chunked builder and the streaming builder below so the three tree builds in
-// this codebase cannot drift apart in casing, path or fullPath handling.
-function _treeInsertDir(root, d) {
-  const parts = _treeSplitPath(d.name)
-  let node = root
-  const acc = []
-  for (const part of parts) {
-    acc.push(part)
-    const key = part.toLowerCase()
-    let next = node.dirs.get(key)
-    if (!next) { next = _treeMakeNode(part, acc.join(TREE_SEP)); node.dirs.set(key, next) }
-    node = next
-    // Walk on using the casing we first saw, so node.path stays self-consistent.
-    acc[acc.length - 1] = node.name
-  }
-  for (const f of d.files || []) {
-    const base = _treeBasename(f.filename) || f.filename || ''
-    // fullPath must use the peer's own casing for this entry — it is what we
-    // send back to request the download — not the merged display casing.
-    node.files.push({ ...f, name: base, fullPath: (d.name ? d.name + TREE_SEP : '') + base })
-  }
-}
-
-// Roll counts and sizes up so a folder can show what it contains without the UI
-// having to walk it. Cheap arithmetic; done once, at the end.
-function _treeRoll(n) {
-  let count = n.files.length
-  let size = 0
-  for (const f of n.files) size += Number(f.size) || 0
-  for (const c of n.dirs.values()) { const r = _treeRoll(c); count += r.count; size += r.size }
-  n.fileCount = count; n.totalSize = size
-  return { count, size }
-}
-
 async function buildTreeChunked(directories, opts) {
   const b = _budget(opts)
   const onProgress = (opts && opts.onProgress) || null
   const dirs = directories || []
   const root = _treeMakeNode('', '')
   for (let i = 0; i < dirs.length; i++) {
-    _treeInsertDir(root, dirs[i])
+    const d = dirs[i]
+    const parts = _treeSplitPath(d.name)
+    let node = root
+    const acc = []
+    for (const part of parts) {
+      acc.push(part)
+      const key = part.toLowerCase()
+      if (!node.dirs.has(key)) node.dirs.set(key, _treeMakeNode(part, acc.join(TREE_SEP)))
+      node = node.dirs.get(key)
+      // Walk on using the casing we first saw, so node.path stays self-consistent.
+      acc[acc.length - 1] = node.name
+    }
+    for (const f of d.files || []) {
+      const base = _treeSplitPath(f.filename).pop() || f.filename || ''
+      // fullPath must use the peer's own casing for this entry — it is what we
+      // send back to request the download — not the merged display casing.
+      node.files.push({ ...f, name: base, fullPath: (d.name ? d.name + TREE_SEP : '') + base })
+    }
     if (await b.tick()) {
       if (b.aborted()) return null
       if (onProgress) { try { onProgress(i + 1, dirs.length) } catch (_) {} }
     }
   }
-  _treeRoll(root)
-  return root
-}
-
-// ── Streaming tree build (for a chunked browse payload) ───────────────────────
-// buildTreeChunked keeps the MAIN THREAD interactive, but it still needs the
-// whole directory array in hand before it starts — and getting that array into
-// the renderer is the actual freeze on a big peer. `slsk-browse-user` returns
-// the entire listing from one ipcRenderer.invoke, so the payload crosses by
-// structured clone in a single uninterruptible step on each side. Measured on a
-// deep-copied 485,000-file payload (114 MB): 594 ms to serialise in main, 1,208
-// ms to deserialise in the renderer, 1.8 s of dead UI behind a static
-// "Loading…" with no cancel. Nothing in this module can shorten that, because
-// the cost is paid before any of this code is reached.
-//
-// The fix is to stop moving it in one piece — and that needs a builder that can
-// be fed the listing a slice at a time. This is it. Feed it whatever arrives,
-// in order, then call finish():
-//
-//   const tb = SH.createTreeBuilder()
-//   for await (const slice of browseSlices(username)) tb.add(slice)
-//   const tree = tb.finish()
-//
-// The result is byte-identical to buildTree() over the concatenation of the
-// slices — the golden test asserts exactly that, at several slice sizes and
-// against a payload whose folders deliberately straddle slice boundaries.
-// `dirCount`/`fileCount` are exposed so the caller can render honest progress
-// without walking anything, and finish() is idempotent so a late slice arriving
-// after a cancel cannot corrupt a tree already handed to the UI.
-function createTreeBuilder() {
-  const root = _treeMakeNode('', '')
-  let dirCount = 0
-  let fileCount = 0
-  let done = false
-  return {
-    get dirCount() { return dirCount },
-    get fileCount() { return fileCount },
-    get finished() { return done },
-    // One slice of the browse listing. Directories may be split across slices in
-    // any way at all: the tree is keyed by path, so a folder whose files arrive
-    // in two slices simply gets both.
-    add(directories) {
-      if (done) return this
-      for (const d of (directories || [])) {
-        _treeInsertDir(root, d)
-        dirCount++
-        fileCount += (d.files || []).length
-      }
-      return this
-    },
-    // Roll the counts up and hand back the tree. Calling it twice returns the
-    // same tree without re-rolling.
-    finish() {
-      if (!done) { _treeRoll(root); done = true }
-      return root
-    },
+  // Roll counts and sizes up so a folder can show what it contains without the
+  // UI having to walk it.
+  const roll = (n) => {
+    let count = n.files.length
+    let size = 0
+    for (const f of n.files) size += Number(f.size) || 0
+    for (const c of n.dirs.values()) { const r = roll(c); count += r.count; size += r.size }
+    n.fileCount = count; n.totalSize = size
+    return { count, size }
   }
+  roll(root)
+  return root
 }
 
 // ── Chunked album extraction ──────────────────────────────────────────────────
@@ -1554,9 +1158,9 @@ async function buildLibraryIndexChunked(library, opts) {
 // album from the SAME index lookup (the shop used to pay a second full
 // findMatch sweep just for that), and every loop, including the surround file-
 // name joins and the sort-key precompute, runs under the slice budget. The
-// Everything sort uses _shCmpShelfKeys — the same cached-collator comparator
-// over the same precomputed lowercase keys the sync builder now uses, so the
-// two orderings cannot drift.
+// Everything sort itself uses a cached Intl.Collator over precomputed
+// lowercase keys — same ordering as localeCompare, a fraction of the cost.
+const _shelfCollator = (typeof Intl !== 'undefined' && Intl.Collator) ? new Intl.Collator() : null
 async function buildShelvesChunked(peerAlbums, library, opts) {
   const b = _budget(opts)
   const detectSurround = (opts && opts.detectSurround) || null
@@ -1611,7 +1215,10 @@ async function buildShelvesChunked(peerAlbums, library, opts) {
   missing.sort(byQualThenSize)
   surround.sort(byQualThenSize)
   hires.sort(byQualThenSize)
-  decorated.sort(_shCmpShelfKeys)
+  const cmpKeys = _shelfCollator
+    ? (x, y) => _shelfCollator.compare(x.k1, y.k1) || _shelfCollator.compare(x.k2, y.k2)
+    : (x, y) => x.k1.localeCompare(y.k1) || x.k2.localeCompare(y.k2)
+  decorated.sort(cmpKeys)
   const everything = decorated.map(d => d.a)
 
   return {
@@ -1703,7 +1310,7 @@ const shApi = {
   fmtSize, sourceScore, sourceQuality, qualityRankTuple, mergeSourcesByAlbum,
   finalizeMergedAlbum, sortMergedAlbums,
   // Big-library cooperative building (peer-library speed wave)
-  fingerprintBrowse, fingerprintBrowseChunked, buildTreeChunked, createTreeBuilder,
+  fingerprintBrowse, fingerprintBrowseChunked, buildTreeChunked,
   extractAlbumsChunked, buildLibraryIndexChunked, buildShelvesChunked,
   buildTreeSearchIndexChunked, searchTreeIndex, buildAlbumSearchIndexChunked,
 }
