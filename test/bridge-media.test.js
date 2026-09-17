@@ -3,6 +3,7 @@ const test = require('node:test')
 const assert = require('node:assert')
 const {
   buildAlbumIndex, transcodeDecision, transcodeArgs, TRANSCODE_FORMATS,
+  createTtlCache, safeSegments,
 } = require('../bridge-server/media-lib')
 
 // A library-cache fixture in the shape buildAlbums() produces and the Android
@@ -82,6 +83,68 @@ test('transcodeArgs builds a 320k mp3 pipe to stdout', () => {
     ['320k', 'libmp3lame'])
   assert.strictEqual(args[args.length - 1], 'pipe:1')
   assert.ok(args.includes('-vn'), 'embedded cover art is dropped')
+})
+
+// ── Search cache: TTL *and* a hard cap ───────────────────────────────────────
+// The bridge's Soulseek search cache holds up to 5000 slskd responses per
+// entry, so an unbounded map is real memory on a server that runs for days.
+
+test('the cache evicts the oldest entry once the cap is reached', () => {
+  let clock = 1000
+  const c = createTtlCache({ ttlMs: 60000, max: 3, now: () => clock })
+  for (const k of ['a', 'b', 'c']) { c.set(k, k); clock += 10 }
+  assert.strictEqual(c.size, 3)
+
+  c.set('d', 'd') // all four are fresh — only the cap can hold the size down
+  assert.strictEqual(c.size, 3, 'a burst of fresh entries grew the cache past its cap')
+  assert.strictEqual(c.get('a'), null, 'the oldest entry should have been evicted')
+  assert.strictEqual(c.get('d'), 'd')
+})
+
+test('a burst far past the cap still leaves exactly cap entries', () => {
+  let clock = 0
+  const c = createTtlCache({ ttlMs: 60000, max: 10, now: () => clock })
+  for (let i = 0; i < 500; i++) { c.set('q' + i, i); clock += 1 }
+  assert.strictEqual(c.size, 10)
+  assert.strictEqual(c.get('q499'), 499)
+  assert.strictEqual(c.get('q0'), null)
+})
+
+test('an entry past its TTL reads back as a miss and is dropped', () => {
+  let clock = 0
+  const c = createTtlCache({ ttlMs: 100, max: 50, now: () => clock })
+  c.set('k', 'v')
+  clock = 99
+  assert.strictEqual(c.get('k'), 'v')
+  clock = 201
+  assert.strictEqual(c.get('k'), null)
+  assert.strictEqual(c.size, 0)
+})
+
+test('re-setting a key refreshes it rather than leaving a stale duplicate', () => {
+  let clock = 0
+  const c = createTtlCache({ ttlMs: 60000, max: 2, now: () => clock })
+  c.set('a', 1); clock += 10
+  c.set('b', 2); clock += 10
+  c.set('a', 3); clock += 10 // 'a' is now the newest, so 'b' is the eviction target
+  c.set('c', 4)
+  assert.strictEqual(c.size, 2)
+  assert.strictEqual(c.get('a'), 3)
+  assert.strictEqual(c.get('b'), null)
+})
+
+// ── Untrusted Soulseek filenames ─────────────────────────────────────────────
+
+test('safeSegments drops the segments that walk out of a directory', () => {
+  assert.deepStrictEqual(safeSegments('../../etc/passwd'), ['etc', 'passwd'])
+  assert.deepStrictEqual(safeSegments('a/./b/../c'), ['a', 'b', 'c'])
+  assert.deepStrictEqual(safeSegments('peer\\Album\\01.flac'), ['peer', 'Album', '01.flac'])
+  assert.deepStrictEqual(safeSegments(''), [])
+  assert.deepStrictEqual(safeSegments(null), [])
+})
+
+test('safeSegments leaves ordinary names, including dotfiles and dotted names, alone', () => {
+  assert.deepStrictEqual(safeSegments('A..B/..hidden/x.flac'), ['A..B', '..hidden', 'x.flac'])
 })
 
 // ── Server wiring: routes, art decoration, version bump, auth ────────────────

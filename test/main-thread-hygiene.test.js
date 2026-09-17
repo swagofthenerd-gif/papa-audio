@@ -104,9 +104,19 @@ test('log lines are buffered, not appended synchronously one at a time', () => {
   // that explains the crash defeats the reporter's whole purpose.
   const syncAppends = [...CODE.matchAll(/fs\.appendFileSync/g)]
   assert.strictEqual(syncAppends.length, 2, 'exactly two: flushLogSync and the crash reporter')
-  const contexts = syncAppends.map(m => CODE.slice(m.index - 900, m.index))
-  assert.ok(contexts.some(c => /function flushLogSync/.test(c)), 'one lives in flushLogSync')
-  assert.ok(contexts.some(c => /_appendCrashLog/.test(c)), 'one lives in the crash reporter')
+  // Which function each append lives in. This used to slice a fixed 900
+  // characters backwards, so simply adding a few lines above the call -- the
+  // crash log's size cap did exactly that -- moved the function name out of
+  // the window and failed a test about something else entirely. Find the
+  // nearest enclosing declaration instead, so the assertion is about where the
+  // call is, not how far it happens to sit from the top of its function.
+  const enclosing = idx => {
+    const decls = [...CODE.slice(0, idx).matchAll(/function\s+(\w+)\s*\(/g)]
+    return decls.length ? decls[decls.length - 1][1] : '(top level)'
+  }
+  const homes = syncAppends.map(m => enclosing(m.index))
+  assert.ok(homes.includes('flushLogSync'), `one lives in flushLogSync, found: ${homes.join(', ')}`)
+  assert.ok(homes.includes('_appendCrashLog'), `one lives in the crash reporter, found: ${homes.join(', ')}`)
 })
 
 test('the log has a size cap as well as an age cap', () => {

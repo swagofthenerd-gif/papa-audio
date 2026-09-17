@@ -66,9 +66,54 @@ function transcodeArgs(inputPath, spec) {
   ]
 }
 
+// A small TTL cache with a hard entry cap.
+//
+// The bridge's Soulseek search cache used to "bound" itself by sweeping entries
+// older than the TTL once the map passed 200 — which deletes nothing at all
+// when all 200 entries are fresh, so a burst of distinct searches grew the map
+// (and the thousands of slskd responses held inside each entry) without limit
+// on a server that runs for days. Evicting the oldest survivor once the cap is
+// reached is what actually bounds it.
+//
+// `now` is injectable so the TTL can be exercised without sleeping.
+function createTtlCache({ ttlMs, max, now = Date.now }) {
+  const entries = new Map() // key -> { value, ts }; Map keeps insertion order
+  return {
+    get(key) {
+      const e = entries.get(key)
+      if (!e) return null
+      if (now() - e.ts > ttlMs) { entries.delete(key); return null }
+      return e.value
+    },
+    set(key, value) {
+      entries.delete(key) // re-insert so the newest key sorts last
+      entries.set(key, { value, ts: now() })
+      const cutoff = now() - ttlMs
+      for (const [k, e] of entries) if (e.ts < cutoff) entries.delete(k)
+      // Everything left is fresh, so the cap can only be held by dropping the
+      // oldest — the step the old sweep-only version was missing.
+      while (entries.size > max) entries.delete(entries.keys().next().value)
+    },
+    get size() { return entries.size },
+  }
+}
+
+// Strip the segments that let a remote filename walk out of the download
+// directory. slskd filenames arrive as `user\\folder\\file.flac` from an
+// untrusted peer; joining those segments straight onto the download dir let a
+// crafted name probe for files anywhere on disk.
+function safeSegments(filename) {
+  return String(filename || '')
+    .replace(/\\/g, '/')
+    .split('/')
+    .filter(seg => seg && seg !== '.' && seg !== '..')
+}
+
 module.exports = {
   buildAlbumIndex,
   transcodeDecision,
   transcodeArgs,
+  createTtlCache,
+  safeSegments,
   TRANSCODE_FORMATS,
 }

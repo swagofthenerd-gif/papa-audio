@@ -60,8 +60,18 @@ test('the dialog persists per id and re-renders on Save and Clear', () => {
 test('the bit-perfect row exists with the honest sublabel', () => {
   const group = HTML.slice(HTML.indexOf('id="playback-settings"'), HTML.indexOf('id="video-settings"'))
   assert.match(group, /id="pb-bitperfect"/, 'a Bit-perfect output checkbox')
-  assert.match(group, /Bit-perfect output/, 'labelled Bit-perfect output')
-  assert.match(group, /Disables EQ, volume leveling and crossfade/, 'the honest sublabel')
+  assert.match(group, /Bit-perfect mode/, 'labelled Bit-perfect mode')
+  // The sublabel has to name what it turns off AND admit what it does not.
+  // The old copy said the samples "reach your DAC untouched", which is not
+  // true for a queue that mixes sample rates: gapless holds the output open
+  // and resamples at the handoff. Keeping it seamless is the deliberate
+  // choice; hiding it was not.
+  assert.match(group, /turns off EQ, ReplayGain, volume leveling/, 'names what it disables')
+  assert.match(group, /resampled at the handoff/, 'and discloses the resampling it does NOT prevent')
+  // The output dropdown must no longer call itself bit-perfect: it only opens
+  // the device alone, and EQ, ReplayGain, boost and crossfade all keep running.
+  assert.doesNotMatch(group, /Exclusive \(bit-perfect\)/,
+    'two different controls must not both claim to be bit-perfect')
 })
 
 test('the toggle is feature-detected and goes through playerSetBitPerfect', () => {

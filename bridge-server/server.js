@@ -22,8 +22,16 @@ const registerYouTube = require('./youtube')
 const mediaLib = require('./media-lib')
 
 // ── Config ────────────────────────────────────────────────────────────────────
-const PORT        = process.env.BRIDGE_PORT || 8765
-const USER_DATA   = path.join(os.homedir(), '.config', 'papa-audio')
+// BRIDGE_PORT=0 asks the OS for an ephemeral port (what the tests use so they
+// never contend with the real bridge on 8765). BRIDGE_HOST lets a test bind
+// loopback-only instead of exposing the LAN.
+const PORT        = process.env.BRIDGE_PORT !== undefined
+  ? Number(process.env.BRIDGE_PORT) : 8765
+const HOST        = process.env.BRIDGE_HOST || '0.0.0.0'
+// PAPA_BRIDGE_USER_DATA redirects the config/artwork/token tree. Tests point it
+// at a temp dir so they never read or write the real ~/.config/papa-audio.
+const USER_DATA   = process.env.PAPA_BRIDGE_USER_DATA ||
+  path.join(os.homedir(), '.config', 'papa-audio')
 const ARTWORK_DIR = path.join(USER_DATA, 'artwork')
 const SLSKD_BASE  = 'http://localhost:5030/api/v0'
 const SLSKD_CREDS = { username: 'slskd', password: 'slskd' }
@@ -78,6 +86,102 @@ function bridgeCapabilities() {
 
 // Re-use the same electron-store data files the desktop app writes
 const store = new Store({ name: 'config', cwd: USER_DATA })
+
+// ── Path containment ──────────────────────────────────────────────────────────
+// Is `child` the same as, or underneath, `parent`?
+//
+// This replaces a bare `resolved.startsWith(path.resolve(folder))`, which is a
+// *string* prefix test, not a *directory* containment test: with the library at
+// /mnt/data/MUSIC it happily accepted /mnt/data/MUSIC-private/anything, because
+// that string does start with "/mnt/data/MUSIC". Comparing against the parent
+// plus a trailing separator makes the boundary a real directory boundary.
+//
+// Note both sides go through path.resolve(), which already collapses "..", so
+// /mnt/data/MUSIC/../etc/passwd becomes /mnt/data/etc/passwd and fails the test
+// on its own. The sibling-directory escape was the live hole, not "..".
+//
+// Caveat (deliberately not enforced): resolve() is lexical, so a symlink that
+// lives inside the library and points outside it still passes. Enforcing
+// realpath() containment would break libraries that are legitimately assembled
+// out of symlinks, so that stays a documented limitation.
+function isInside(child, parent) {
+  if (typeof child !== 'string' || typeof parent !== 'string') return false
+  if (!child || !parent) return false
+  const p = path.resolve(parent)
+  const c = path.resolve(child)
+  if (c === p) return true
+  return c.startsWith(p.endsWith(path.sep) ? p : p + path.sep)
+}
+
+// ── Safe file → response piping ───────────────────────────────────────────────
+// `stream.pipe(res)` does not forward errors. An 'error' on a stream with no
+// listener is an uncaught exception, which in Node kills the process — so one
+// unreadable file (deleted mid-request, a directory, a permissions change) took
+// the whole bridge down and LAN playback with it until the desktop app was
+// restarted. Every read here goes through this helper instead.
+function pipeFile(stream, res, label) {
+  let done = false
+  const finish = () => {
+    if (done) return
+    done = true
+    stream.destroy()
+  }
+  stream.on('error', (err) => {
+    if (done) return
+    console.error(`[bridge] ${label} read failed: ${err && err.message}`)
+    if (!res.headersSent) {
+      finish()
+      res.status(500).json({ error: 'Stream failed' })
+      return
+    }
+    // Headers (and a Content-Length) are already on the wire; the only honest
+    // signal left is an aborted transfer, so the client retries instead of
+    // caching a truncated file.
+    finish()
+    res.destroy()
+  })
+  // A dead client, or a response-side error, must not leave the read fd open.
+  res.on('error', finish)
+  res.on('close', finish)
+  stream.pipe(res)
+  return stream
+}
+
+// ── Range requests ────────────────────────────────────────────────────────────
+// Parse a single-range `Range: bytes=...` header against a known file size.
+// Returns null when there is no usable range (serve the whole file), an
+// { unsatisfiable: true } marker when the client asked for bytes past the end
+// (RFC 9110 says answer 416), or a clamped { start, end } pair.
+//
+// The naive `parseInt(parts[0])` this replaces produced NaN for the perfectly
+// legal suffix form `bytes=-500`, wrote `Content-Length: NaN` to the wire and
+// then threw ERR_OUT_OF_RANGE out of createReadStream after the headers had
+// already gone — a dead response the client could only read as a hang.
+function parseRange(header, total) {
+  if (!header || typeof header !== 'string') return null
+  const m = /^bytes=(\d*)-(\d*)$/.exec(header.trim())
+  if (!m) return null
+  const [, rawStart, rawEnd] = m
+  if (rawStart === '' && rawEnd === '') return null
+  if (total <= 0) return { unsatisfiable: true }
+
+  let start, end
+  if (rawStart === '') {
+    // Suffix form: the last N bytes.
+    const n = Number(rawEnd)
+    if (!Number.isFinite(n) || n <= 0) return { unsatisfiable: true }
+    start = Math.max(0, total - n)
+    end = total - 1
+  } else {
+    start = Number(rawStart)
+    end = rawEnd === '' ? total - 1 : Number(rawEnd)
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return null
+    if (start >= total) return { unsatisfiable: true }
+    if (end > total - 1) end = total - 1
+    if (end < start) return { unsatisfiable: true }
+  }
+  return { start, end }
+}
 
 // ── Soulseek auth ─────────────────────────────────────────────────────────────
 let slskToken  = null
@@ -189,22 +293,14 @@ function httpsGet(url, redirects = 0) {
 }
 
 // ── Search cache ──────────────────────────────────────────────────────────────
-const _searchCache = new Map()
-function searchCacheGet(key) {
-  const e = _searchCache.get(key)
-  if (!e || Date.now() - e.ts > 5 * 60 * 1000) { _searchCache.delete(key); return null }
-  return e.results
-}
-function searchCacheSet(key, results) {
-  _searchCache.set(key, { results, ts: Date.now() })
-  if (_searchCache.size > 200) {
-    const cutoff = Date.now() - 5 * 60 * 1000
-    for (const [k, v] of _searchCache) if (v.ts < cutoff) _searchCache.delete(k)
-  }
-}
+// Hard-capped, not just TTL-swept: see createTtlCache in media-lib.js.
+const _searchCache = mediaLib.createTtlCache({ ttlMs: 5 * 60 * 1000, max: 200 })
+function searchCacheGet(key) { return _searchCache.get(key) }
+function searchCacheSet(key, results) { _searchCache.set(key, results) }
 
 // ── SSE helpers ───────────────────────────────────────────────────────────────
 const _sseClients = new Set()
+const SSE_MAX_CLIENTS = 32
 
 function sseSend(event, data) {
   const msg = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
@@ -215,7 +311,12 @@ function sseSend(event, data) {
 
 // ── Express app ───────────────────────────────────────────────────────────────
 const app = express()
-app.set('trust proxy', true)
+// `trust proxy` makes req.ip come from the client-supplied X-Forwarded-For
+// header. Nothing sits in front of this server — it binds the LAN directly —
+// so trusting that header handed every caller a free rename: a fresh forged IP
+// per request bypassed the rate limiter entirely and grew its bookkeeping map
+// one entry per forgery. Opt in only if a real reverse proxy is ever added.
+if (process.env.BRIDGE_TRUST_PROXY === '1') app.set('trust proxy', true)
 app.use(cors({
   origin: function(origin, cb) {
     if (!origin) return cb(null, true)
@@ -231,15 +332,21 @@ app.use((req, res, next) => {
   if (req.path === '/api/health') return next()
   // /stream and /art gate both the query-string form (?path=) and the id-keyed
   // form the Android bridge added (/stream/<trackId>, /art/<albumId>.jpg).
+  // /events is guarded too: it is a live feed of what is being searched,
+  // downloaded and played, so leaving it open let anything on the LAN subscribe
+  // to the user's activity without the pairing token.
   const guarded = req.path.startsWith('/api/') ||
     req.path === '/stream' || req.path.startsWith('/stream/') ||
-    req.path === '/art' || req.path.startsWith('/art/')
+    req.path === '/art' || req.path.startsWith('/art/') ||
+    req.path === '/events'
   if (!guarded) return next()
   const auth = req.headers.authorization
   // Media routes (/stream*, /art*) also accept ?token= — the phone's player
-  // and image components consume plain URLs and cannot attach headers.
+  // and image components consume plain URLs and cannot attach headers. /events
+  // is in the same boat: EventSource cannot set an Authorization header.
   const isMedia = req.path === '/stream' || req.path.startsWith('/stream/') ||
-    req.path === '/art' || req.path.startsWith('/art/')
+    req.path === '/art' || req.path.startsWith('/art/') ||
+    req.path === '/events'
   const queryTok = isMedia ? req.query.token : undefined
   if (auth === `Bearer ${BRIDGE_TOKEN}` || queryTok === BRIDGE_TOKEN) return next()
   return res.status(401).json({ error: 'Unauthorized' })
@@ -247,14 +354,24 @@ app.use((req, res, next) => {
 
 // ── Rate limiter ──────────────────────────────────────────────────────────────
 const rateLimit = new Map()
-const RATE_LIMIT_MAX = 60
+// Overridable so the tests can drive the limiter to its edge in a few requests
+// instead of sixty.
+const RATE_LIMIT_MAX = Number(process.env.BRIDGE_RATE_LIMIT_MAX) > 0
+  ? Number(process.env.BRIDGE_RATE_LIMIT_MAX) : 60
 const RATE_LIMIT_WINDOW = 60 * 1000
+// A LAN sees a handful of clients; anything beyond this is a forged-key flood,
+// and the map must not grow with it.
+const RATE_LIMIT_MAX_KEYS = 1024
 
 app.use((req, res, next) => {
   const ip = req.ip || req.socket.remoteAddress || 'unknown'
   const now = Date.now()
   let entry = rateLimit.get(ip)
   if (!entry || now > entry.resetAt) {
+    if (rateLimit.size >= RATE_LIMIT_MAX_KEYS) {
+      // Drop the oldest key rather than let the table grow unbounded.
+      rateLimit.delete(rateLimit.keys().next().value)
+    }
     entry = { count: 0, resetAt: now + RATE_LIMIT_WINDOW }
     rateLimit.set(ip, entry)
   }
@@ -272,13 +389,24 @@ setInterval(() => {
 
 // ── SSE event stream ──────────────────────────────────────────────────────────
 app.get('/events', (req, res) => {
+  // A subscriber that never closes cleanly would otherwise sit in the Set for
+  // the life of the process; cap the fan-out so a client loop cannot grow it
+  // without bound.
+  if (_sseClients.size >= SSE_MAX_CLIENTS) {
+    return res.status(503).json({ error: 'Too many event subscribers' })
+  }
   res.setHeader('Content-Type', 'text/event-stream')
   res.setHeader('Cache-Control', 'no-cache')
   res.setHeader('Connection', 'keep-alive')
   res.flushHeaders()
   res.write('event: connected\ndata: {}\n\n')
   _sseClients.add(res)
-  req.on('close', () => _sseClients.delete(res))
+  const drop = () => _sseClients.delete(res)
+  // Without the 'error' listener a socket that dies mid-write raises an
+  // unhandled 'error' on the response and takes the process with it.
+  res.on('error', drop)
+  res.on('close', drop)
+  req.on('close', drop)
 })
 
 // ── Health ────────────────────────────────────────────────────────────────────
@@ -367,7 +495,7 @@ app.get('/stream', async (req, res) => {
 
   const folders = store.get('musicFolders', [])
   const resolved = path.resolve(filePath)
-  const allowed = folders.some(function(f) { return resolved.startsWith(path.resolve(f)) })
+  const allowed = folders.some(function(f) { return isInside(resolved, f) })
   if (!allowed) return res.status(403).json({ error: 'Access denied: path outside music folders' })
 
   let stat
@@ -389,23 +517,25 @@ app.get('/stream', async (req, res) => {
 
   const etag = '"' + stat.mtimeMs.toString(36) + '-' + stat.size.toString(36) + '"'
 
-  if (range) {
-    const parts   = range.replace(/bytes=/, '').split('-')
-    const start   = parseInt(parts[0], 10)
-    const end     = parts[1] ? parseInt(parts[1], 10) : total - 1
-    const chunkSz = end - start + 1
+  const wanted = parseRange(range, total)
+  if (wanted && wanted.unsatisfiable) {
+    res.status(416).set({ 'Content-Range': `bytes */${total}` }).end()
+    return
+  }
+  if (wanted) {
+    const { start, end } = wanted
     res.writeHead(206, {
       'Content-Range':  `bytes ${start}-${end}/${total}`,
       'Accept-Ranges':  'bytes',
-      'Content-Length': chunkSz,
+      'Content-Length': end - start + 1,
       'Content-Type':   mime,
       'Cache-Control':  'no-cache',
       'ETag':           etag,
     })
-    fs.createReadStream(filePath, { start, end }).pipe(res)
+    pipeFile(fs.createReadStream(filePath, { start, end }), res, '/stream')
   } else {
     res.writeHead(200, { 'Content-Length': total, 'Content-Type': mime, 'Accept-Ranges': 'bytes', 'Cache-Control': 'no-cache', 'ETag': etag })
-    fs.createReadStream(filePath).pipe(res)
+    pipeFile(fs.createReadStream(filePath), res, '/stream')
   }
 })
 
@@ -414,10 +544,8 @@ app.get('/art', async (req, res) => {
   const artPath = req.query.path
   if (!artPath) return res.status(400).json({ error: 'Missing path parameter' })
 
-  const folders = store.get('musicFolders', [])
   const resolved = path.resolve(artPath)
-  const allowed = folders.some(function(f) { return resolved.startsWith(path.resolve(f)) }) || resolved.startsWith(path.resolve(os.homedir() + '/.config/papa-audio/artwork'))
-  if (!allowed) return res.status(403).json({ error: 'Access denied' })
+  if (!pathAllowed(resolved)) return res.status(403).json({ error: 'Access denied' })
 
   let artStat
   try { artStat = await fs.promises.stat(artPath) } catch (_) { return res.status(404).send('Not found') }
@@ -426,16 +554,17 @@ app.get('/art', async (req, res) => {
   res.setHeader('Content-Type', mime)
   res.setHeader('Cache-Control', 'public, max-age=86400')
   res.setHeader('ETag', '"' + artStat.mtimeMs.toString(36) + '-' + artStat.size.toString(36) + '"')
-  fs.createReadStream(artPath).pipe(res)
+  pipeFile(fs.createReadStream(artPath), res, '/art')
 })
 
 // Whether a resolved path is inside the music folders or the shared artwork
-// cache — the same allow-list the two query-string routes enforce, factored out
-// so the id-keyed routes below reuse it.
+// cache — the same allow-list every art/stream route enforces, in one place.
+// ARTWORK_DIR rather than a second hardcoded ~/.config/papa-audio/artwork, so
+// the allow-list follows USER_DATA instead of silently diverging from it.
 function pathAllowed(resolved) {
   const folders = store.get('musicFolders', [])
-  return folders.some(function(f) { return resolved.startsWith(path.resolve(f)) }) ||
-    resolved.startsWith(path.resolve(os.homedir() + '/.config/papa-audio/artwork'))
+  return folders.some(function(f) { return isInside(resolved, f) }) ||
+    isInside(resolved, ARTWORK_DIR)
 }
 
 // ── Album art by id (roadmap #64) ───────────────────────────────────────────
@@ -457,7 +586,7 @@ app.get('/art/:albumId.jpg', async (req, res) => {
   res.setHeader('Content-Type', mime)
   res.setHeader('Cache-Control', 'public, max-age=86400')
   res.setHeader('ETag', '"' + artStat.mtimeMs.toString(36) + '-' + artStat.size.toString(36) + '"')
-  fs.createReadStream(artPath).pipe(res)
+  pipeFile(fs.createReadStream(artPath), res, '/art/:albumId')
 })
 
 // ── Transcoded stream by id (roadmap #64) ───────────────────────────────────
@@ -474,7 +603,7 @@ app.get('/stream/:trackId', async (req, res) => {
 
   const resolved = path.resolve(filePath)
   const folders = store.get('musicFolders', [])
-  if (!folders.some(function(f) { return resolved.startsWith(path.resolve(f)) })) {
+  if (!folders.some(function(f) { return isInside(resolved, f) })) {
     return res.status(403).json({ error: 'Access denied: path outside music folders' })
   }
   try { await fs.promises.stat(filePath) } catch (_) {
@@ -496,20 +625,21 @@ app.get('/stream/:trackId', async (req, res) => {
     }
     const mime = mimeMap[ext] || 'audio/mpeg'
     const etag = '"' + stat.mtimeMs.toString(36) + '-' + stat.size.toString(36) + '"'
-    const range = req.headers.range
-    if (range) {
-      const parts = range.replace(/bytes=/, '').split('-')
-      const start = parseInt(parts[0], 10)
-      const end = parts[1] ? parseInt(parts[1], 10) : total - 1
+    const wanted = parseRange(req.headers.range, total)
+    if (wanted && wanted.unsatisfiable) {
+      return res.status(416).set({ 'Content-Range': `bytes */${total}` }).end()
+    }
+    if (wanted) {
+      const { start, end } = wanted
       res.writeHead(206, {
         'Content-Range': `bytes ${start}-${end}/${total}`,
         'Accept-Ranges': 'bytes', 'Content-Length': end - start + 1,
         'Content-Type': mime, 'Cache-Control': 'no-cache', 'ETag': etag,
       })
-      return fs.createReadStream(filePath, { start, end }).pipe(res)
+      return pipeFile(fs.createReadStream(filePath, { start, end }), res, '/stream/:trackId')
     }
     res.writeHead(200, { 'Content-Length': total, 'Content-Type': mime, 'Accept-Ranges': 'bytes', 'Cache-Control': 'no-cache', 'ETag': etag })
-    return fs.createReadStream(filePath).pipe(res)
+    return pipeFile(fs.createReadStream(filePath), res, '/stream/:trackId')
   }
 
   const decision = mediaLib.transcodeDecision({
@@ -731,7 +861,10 @@ app.get('/api/slsk/resolve', (req, res) => {
   const cfg         = store.get('slskConfig', {})
   const folders     = store.get('musicFolders', [])
   const downloadDir = cfg.downloadDir || folders[0] || path.join(os.homedir(), 'Music')
-  const parts       = (filename || '').replace(/\\/g, '/').split('/').filter(Boolean)
+  // The filename comes from a Soulseek peer, so ".." segments in it would walk
+  // path.join() straight out of the download directory and let the caller probe
+  // for files anywhere on disk.
+  const parts       = mediaLib.safeSegments(filename)
   if (!parts.length) return res.json({ path: null, downloadDir })
 
   const tail1 = parts.slice(1)
@@ -761,7 +894,10 @@ app.get('/api/network', (_, res) => {
       if (addr.family === 'IPv4' && !addr.internal) ips.push(addr.address)
     }
   }
-  res.json({ ips, port: PORT })
+  // Report the port actually bound (BRIDGE_PORT=0 means the OS chose one), so
+  // the QR code a client scans points somewhere real.
+  const bound = server.address()
+  res.json({ ips, port: (bound && bound.port) || PORT })
 })
 
 // ── Music folder management ───────────────────────────────────────────────────
@@ -802,7 +938,13 @@ setInterval(function() {
   }
 }, 600000) // Every 10 minutes
 
-app.listen(PORT, '0.0.0.0', () => {
+const server = app.listen(PORT, HOST, () => {
+  // With BRIDGE_PORT=0 the OS picks the port, so report the one we actually
+  // got, not the one we asked for. The BRIDGE_LISTENING line is the handshake
+  // the tests parse to learn where to send requests.
+  const bound = server.address()
+  const boundPort = (bound && bound.port) || PORT
+  console.log(`BRIDGE_LISTENING ${boundPort}`)
   const interfaces = os.networkInterfaces()
   const ips = []
   for (const iface of Object.values(interfaces)) {
@@ -810,10 +952,10 @@ app.listen(PORT, '0.0.0.0', () => {
       if (addr.family === 'IPv4' && !addr.internal) ips.push(addr.address)
     }
   }
-  console.log(`\n🎵 Papa Audio Bridge Server v${BRIDGE_VERSION} running on port ${PORT}`)
+  console.log(`\n🎵 Papa Audio Bridge Server v${BRIDGE_VERSION} running on port ${boundPort}`)
   console.log(`Transcode: ${bridgeTranscodeEnabled() && FFMPEG_AVAILABLE ? 'on (mp3)' : (FFMPEG_AVAILABLE ? 'disabled in settings' : 'unavailable — ffmpeg not found')}`)
   console.log(`Bridge token (add this to Android app): ${BRIDGE_TOKEN}`)
   console.log(`\nAndroid app should connect to one of:`)
-  for (const ip of ips) console.log(`  http://${ip}:${PORT}`)
-  console.log(`\nHealth check: http://localhost:${PORT}/api/health`)
+  for (const ip of ips) console.log(`  http://${ip}:${boundPort}`)
+  console.log(`\nHealth check: http://localhost:${boundPort}/api/health`)
 })
