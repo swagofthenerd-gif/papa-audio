@@ -72,13 +72,21 @@
     //    the most reassuring thing to show — the app is actively working on it.
     if (sched) {
       const attempts = _num(sched.attempts);
-      const max = _num(sched.maxAttempts) || 4;
+      // Pair `attempts` with the ceiling on the same quantity. `attempts` counts
+      // DISPATCHES; maxAttempts is the cap on distinct PEERS, a different and
+      // much smaller number. Showing one over the other pinned the row at "4/4"
+      // and made a file that was still being retried read as abandoned.
+      const max = _num(sched.maxTotalAttempts) || _num(sched.maxAttempts) || 4;
       const inMs = _num(sched.nextRetryInMs);
       if (inMs != null && inMs > 0 && attempts != null) {
         const secs = Math.max(1, Math.round(inMs / 1000));
         // attempts is the count already made; the next one is attempts+1.
         const shown = Math.min(attempts + 1, max);
-        return `Retrying via another source in ${secs}s (attempt ${shown}/${max})`;
+        // "another source" is only true when there is another one. A file with a
+        // single known peer is being re-asked of that same peer, and saying
+        // otherwise invents a second source he does not have.
+        const where = (_num(sched.sourceCount) || 0) > 1 ? ' via another source' : '';
+        return `Retrying${where} in ${secs}s (attempt ${shown}/${max})`;
       }
     }
 
