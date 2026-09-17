@@ -23167,8 +23167,22 @@ function _diagRowsHtml(diag) {
   }
   // A check is { ok:boolean, detail?:string }. Unknown checks render as amber
   // ("unknown") rather than pretending they passed.
-  const row = (label, check) => {
-    const has = check && typeof check === 'object'
+  // main reports the core checks as plain booleans and each source as
+  // { name, healthy }. This read only { ok } on an object, so every core row
+  // rendered amber "unknown" and every source rendered red — the one screen a
+  // person opens to find out what is wrong was inventing an outage and claiming
+  // nothing had been checked. The setup wizard reads the same payload correctly
+  // 500 lines away, which is how the two drifted apart unnoticed.
+  const norm = check => {
+    if (typeof check === 'boolean') return { ok: check }
+    if (check && typeof check === 'object') {
+      return 'ok' in check ? check : ('healthy' in check ? { ok: check.healthy !== false, detail: check.detail } : check)
+    }
+    return null
+  }
+  const row = (label, raw) => {
+    const check = norm(raw)
+    const has = !!check && ('ok' in check)
     const state = !has ? 'unknown' : (check.ok ? 'ok' : 'bad')
     const detail = has && check.detail ? ' — ' + esc(String(check.detail)) : ''
     return '<div class="mcs-diag-row">'
@@ -23181,7 +23195,7 @@ function _diagRowsHtml(diag) {
   html += row('Music downloader (Soulseek)', c.slskd)
   html += row('Movie database (TMDB)', c.tmdb)
   html += row('Player program (mpv)', c.mpv)
-  html += row('Watch-history storage', c.storage)
+  html += row('Watch-history storage', c.storage !== undefined ? c.storage : c.storeBridge)
   // Per-source health rows, if the payload carries any. Each is
   // { name, ok, detail? }.
   const sources = Array.isArray(diag.sources) ? diag.sources

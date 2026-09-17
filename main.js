@@ -1215,7 +1215,15 @@ function writeSlskdConfig({ username = '', password = '', downloadDir = '' } = {
 
 async function slskdAcquireToken() {
   try {
+    // The 15 s deadline every slskdFetch carries, on the token call that runs in
+    // front of them. Without it, a daemon that accepts the connection but never
+    // answers — the exact fault the 3-strikes auto-restart exists to cure — hung
+    // this await forever. The 60 s health check awaits it inside a try, so the
+    // failure counter never advanced, the auto-restart never fired, and each
+    // tick of the setInterval piled on another promise that would never settle.
+    // Soulseek then stayed dead until the whole app was restarted.
     const res = await fetch(`${SLSKD_BASE}/session`, {
+      signal: AbortSignal.timeout(15000),
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(_slskdApiCreds()),

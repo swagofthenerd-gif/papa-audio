@@ -66,8 +66,23 @@ class SideStore {
       if (e && e.code !== 'ENOENT') {
         // A corrupt file must not take the app down, and must not be silently
         // overwritten either — say so, then start from the fallback.
+        //
+        // Saying so was not enough. The fallback was adopted in memory and the
+        // very next write replaced the unreadable file with it, so a half-written
+        // play-history.json became an empty one and two thousand plays were gone
+        // with only a console line to show for it. The file is moved aside first,
+        // so whatever survived in it is still there to be recovered by hand.
+        // video-store.js already does this for a far less precious store.
         this.stats.errors++
-        this._onError(new Error(`${this.name}: unreadable (${e.code || e.message}); starting from the default`))
+        let kept = null
+        try {
+          kept = `${this.file}.corrupt-${Date.now()}`
+          fs.renameSync(this.file, kept)
+        } catch (_) { kept = null }
+        this._onError(new Error(
+          `${this.name}: unreadable (${e.code || e.message}); starting from the default` +
+          (kept ? `. The unreadable file was kept at ${kept}` : '')
+        ))
       }
       this._value = this._fallback
     }
