@@ -600,7 +600,10 @@ test('stop() closes the server, destroys the torrent and removes the download li
   test('the streamer is told which episode to look for', () => {
     const src = require('node:fs').readFileSync(
       require('node:path').join(__dirname, '..', 'torrent-stream.js'), 'utf8')
-    assert.match(src, /async start\(\{ magnet, fileIndex = 0, season = null, episode = null \} = \{\}\)/)
+    // absoluteEpisode joined the signature: a fansub batch numbers continuing
+    // seasons absolutely, and the picker inside the pack needs that number or it
+    // returns the seasonal number's file, which is an earlier season's episode.
+    assert.match(src, /async start\(\{ magnet, fileIndex = 0, season = null, episode = null, absoluteEpisode = null \} = \{\}\)/)
     // Captured before stop(), which clears it.
     assert.match(src, /const want = episode != null[\s\S]*?this\.stop\(\)[\s\S]*?this\._want = want/)
     assert.match(src, /pickVideoFile\(files, this\._want\)/)

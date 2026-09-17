@@ -131,6 +131,18 @@ const JUNK = /(^|[\/\\._-])(sample|trailer|extras?|featurette|behindthescenes)([
 function matchesWantedEpisode(name, want) {
   const n = Number(want && want.episode)
   if (!Number.isFinite(n) || n < 0) return false
+  // Fansub batches number continuing seasons ABSOLUTELY — "Show - 37", not
+  // "S02E09" — and the anime indexers accept a release on that number
+  // (providers/nyaa.js, providers/apibay.js match on absoluteEpisode). So a
+  // batch is won BECAUSE the absolute number matched, and the picker inside
+  // that pack then has to recognise the same number, or it hands back the
+  // seasonal number's file, which belongs to an earlier season. No season
+  // constraint on this pass: an absolutely numbered release does not carry one.
+  const abs = Number(want && want.absoluteEpisode)
+  if (Number.isFinite(abs) && abs >= 1 && abs !== n &&
+      matchesWantedEpisode(name, { season: null, episode: abs })) {
+    return true
+  }
   const text = String(name || '').replace(NON_EPISODE_TOKEN, ' ')
   const s = Number(want && want.season)
   // SxxEyy is unambiguous, so when a season is known it has to agree. A
@@ -184,10 +196,26 @@ function pickVideoFile(files, want) {
 
   // In a pack the requested episode is the answer, never the biggest file.
   if (want && want.episode != null && pool.length > 1) {
-    const matches = pool.filter(f => matchesWantedEpisode(f.name, want))
     // Several matches means the pack holds more than one version of the
     // episode — a v2, or two encodes; the largest of those is the right pick.
-    if (matches.length) return matches.reduce((a, b) => (b.length > a.length ? b : a)).index
+    const pass = w => {
+      const matches = pool.filter(f => matchesWantedEpisode(f.name, w))
+      return matches.length ? matches.reduce((a, b) => (b.length > a.length ? b : a)).index : -1
+    }
+    // The ABSOLUTE number is tried FIRST, and that order is load-bearing. A
+    // complete-series batch holds both files: "09" is season one's ninth
+    // episode and "37" is the one actually asked for, so a seasonal-first pass
+    // returns the wrong season every time. A pack that is genuinely numbered
+    // seasonally cannot contain a file numbered past its own length, so the
+    // absolute pass simply misses there and the seasonal pass below answers.
+    // Verified against both shapes before choosing this order.
+    const abs = Number(want.absoluteEpisode)
+    if (Number.isFinite(abs) && abs >= 1 && abs !== Number(want.episode)) {
+      const hit = pass({ season: null, episode: abs })
+      if (hit >= 0) return hit
+    }
+    const seasonal = pass({ season: want.season, episode: want.episode })
+    if (seasonal >= 0) return seasonal
   }
   if (!pool.length) {
     // No recognisable video extension: fall back to the largest file rather
@@ -591,9 +619,9 @@ class TorrentStreamer extends EventEmitter {
     return dest
   }
 
-  async start({ magnet, fileIndex = 0, season = null, episode = null } = {}) {
+  async start({ magnet, fileIndex = 0, season = null, episode = null, absoluteEpisode = null } = {}) {
     // Captured before stop(), which clears it.
-    const want = episode != null ? { season, episode } : null
+    const want = episode != null ? { season, episode, absoluteEpisode } : null
     this.stop()
     this._want = want
     this._settled = false

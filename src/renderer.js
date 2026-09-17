@@ -5228,6 +5228,8 @@ async function _playPrevEpisode() {
     return
   }
   _videoStreams = res.streams
+  // Or the absolute number goes stale after one advance and is refused.
+  _lastNumbering = res.numbering || null
   _videoPlayResult(_pickMatchingStream(res.streams, _playing))
   if (_videoDetail.type === 'tv') {
     _renderVideoControls('tv')
@@ -5322,6 +5324,8 @@ async function _playNextEpisode() {
     return
   }
   _videoStreams = res.streams
+  // Or the absolute number goes stale after one advance and is refused.
+  _lastNumbering = res.numbering || null
   const pick = _pickMatchingStream(res.streams, _playing)
   // Say so when the match had to be compromised, rather than quietly handing
   // over something different from what was being watched.
@@ -5468,6 +5472,14 @@ async function _switchPackEpisode(index, opts) {
 function _videoPlayResult(result, opts) {
   if (!result) return
   opts = opts || {}
+  // "Start over" sets this on the OUTGOING watch state and then calls
+  // startPlay(); the _watch rebuild below replaced the whole object, so the
+  // flag was gone by the time _offerResume read it and Start over resumed from
+  // exactly where Resume would have. Read here and cleared on the outgoing
+  // state, so a play that errors before _offerResume runs cannot carry it into
+  // the next one and silently swallow a legitimate resume offer.
+  const startFromZero = !!(_watch && _watch.startFromZero)
+  if (_watch) _watch.startFromZero = false
   _initVideoUI()
   // Referee the two players (#72). Starting a film pauses the album and
   // remembers to bring it back — but only if music was actually playing and
@@ -5541,7 +5553,7 @@ function _videoPlayResult(result, opts) {
         season: _videoDetail.type === 'tv' ? _videoState.season : null,
         episode: isEpisode ? _videoState.episode : null,
       },
-      savedAt: 0, resumed: false,
+      savedAt: 0, resumed: false, startFromZero: startFromZero,
       // Set when this play is an episode advance rather than an explicit
       // (re-)open of an episode. _offerResume skips the stale "Resume from…"
       // prompt for an advance — the viewer is moving forward, not picking up
@@ -5601,6 +5613,11 @@ function _videoPlayResult(result, opts) {
       query: d.title || null,
       season: _videoDetail.type === 'tv' ? _videoState.season : null,
       episode: isEpisode ? _videoState.episode : null,
+      // The number the indexers matched the batch on travels with the play, or
+      // the picker inside the pack looks for "09" and returns season one's
+      // ninth episode. Null for film and television, and for a first season,
+      // where the seasonal number already IS the absolute.
+      absoluteEpisode: typeof _absoluteEpisodeFor === 'function' ? _absoluteEpisodeFor(_videoDetail, _videoState) : null,
       // V088: the release that is playing, so a downloaded subtitle can be
       // judged against this cut rather than offered blind.
       release: (result && (result.title || result.label)) || null,
@@ -10383,7 +10400,16 @@ function _renderVideoControls(type) {
         ' title="Mark every episode of this season as watched">Mark season watched</button>' +
       _dubControl(d) + _spoilerToggleHtml() +
       '<div class="video-episode-list" id="video-episode-list"></div></div>'
-    _bindSpoilerToggle(function () { _renderVideoControls('tv') })
+    // The repaint rebuilds an EMPTY #video-episode-list — filling it is
+    // _refreshTvEpisodes's job, which is why every other caller of
+    // _renderVideoControls('tv') pairs the two. Without the partner call,
+    // ticking or unticking "Hide spoilers" wiped the whole season off the page
+    // and it stayed gone until the season was changed or the page reopened.
+    // The anime branch below needs no partner: it paints its own grid.
+    _bindSpoilerToggle(function () {
+      _renderVideoControls('tv')
+      _refreshTvEpisodes(_videoDetailTicket, ++_videoSeasonTicket)
+    })
     document.getElementById('video-season-select')?.addEventListener('change', function (e) {
       _videoState.season = Number(e.target.value) || 1
       _videoState.episode = 1
@@ -10927,6 +10953,32 @@ var _chainPending = null
 // visit the search genuinely goes out before the number it needs can exist.
 // This is what lets _resourceSourcesIfNumberingArrived tell "we already knew"
 // from "we asked too early".
+// The absolute episode number this play's sources were matched on, or null.
+// Fansub batches number continuing seasons absolutely ("Show - 37", not
+// "S02E09"), and an anime batch is accepted into the source list BECAUSE that
+// number matched — so the same number has to reach the file picker inside the
+// pack, or it hands back the seasonal number's file, which belongs to an
+// earlier season. Anime only, and only meaningful for the episode it was
+// resolved for: a stale numbering from a previous episode must not be used.
+function _absoluteEpisodeFor(detail, state) {
+  if (!detail || detail.type !== 'anime' || !state || state.episode == null) return null
+  const ep = Number(state.episode)
+  if (!Number.isFinite(ep) || ep < 1) return null
+  // A manual override is authoritative — it is what the search itself used.
+  try {
+    const N = (typeof window !== 'undefined' && window.PapaAnimeNumbering) || null
+    const d = detail.d
+    if (N && d && d.id != null) {
+      const over = Number(N.absoluteFor(N.get(window.PapaLocal, d.id), ep))
+      if (Number.isFinite(over) && over >= 1) return over
+    }
+  } catch (_) { /* an override is a convenience, never a blocker */ }
+  const n = _lastNumbering
+  if (!n || Number(n.episode) !== ep) return null
+  const abs = Number(n.absoluteEpisode)
+  return Number.isFinite(abs) && abs >= 1 ? abs : null
+}
+
 var _lastNumbering = null
 
 // V041: the numbering a release is being matched on, stated above the list.

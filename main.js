@@ -12912,6 +12912,9 @@ function _startTorrentStream(result, { current, fail, onReady, quiet }) {
     fileIndex: result.fileIndex ?? 0,
     season: result.season ?? null,
     episode: result.episode ?? null,
+    // A batch numbers continuing seasons absolutely; without this the
+    // picker looks for the seasonal number and finds season one's episode.
+    absoluteEpisode: result.absoluteEpisode ?? null,
   })
     .catch(e => { if (e && e.code === 'STOPPED') return; fail(e) })
   return streamer
@@ -13855,6 +13858,9 @@ ipcMain.handle('video-download-start', async (_, { result, meta } = {}) => {
       fileIndex: result.fileIndex ?? 0,
       season: result.season ?? null,
       episode: result.episode ?? null,
+      // A batch numbers continuing seasons absolutely; without this the
+      // picker looks for the seasonal number and finds season one's episode.
+      absoluteEpisode: result.absoluteEpisode ?? null,
     }).catch(e => {
       if (e && e.code === 'STOPPED') return
       safeSend('video-download-event', { kind: 'error', id, message: (e && e.message) || String(e) })
@@ -14140,7 +14146,11 @@ function _wantOf(result) {
   const num = v => (v == null || v === '' ? null : (Number.isFinite(Number(v)) ? Number(v) : null))
   const episode = num(result && result.episode)
   if (episode == null) return null
-  return { season: num(result && result.season), episode }
+  // The absolute number an anime batch may be numbered with, so the debrid file
+  // picker resolves the same file the torrent picker would. Deliberately NOT
+  // part of _sameWant: the relay the pre-pick builds and the relay the play
+  // asks for must still compare equal, which is the bug that comment records.
+  return { season: num(result && result.season), episode, absoluteEpisode: num(result && result.absoluteEpisode) }
 }
 
 // Enough for one parallel round of cheap look-ups plus building the relay,

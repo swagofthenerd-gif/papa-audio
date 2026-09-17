@@ -207,6 +207,19 @@ function createDebrid(opts = {}) {
     // matches means several encodes of the same episode, take the largest"
     // rule — a v2 and a v1 of episode 9 are both episode 9.
     if (want && want.episode != null && pool.length > 1) {
+      // Absolute first, for the same reason as torrent-stream.js's picker: a
+      // complete-series batch holds both the seasonal number's file (an earlier
+      // season) and the absolute one (the episode actually asked for).
+      const pass = w => {
+        const m = pool.filter(f => matchesWantedEpisode(baseNameOf(f.path), w))
+        return m.length ? m.reduce((best, f) =>
+          (!best || (Number(f.bytes) || 0) > (Number(best.bytes) || 0)) ? f : best, null) : null
+      }
+      const _abs = Number(want.absoluteEpisode)
+      if (Number.isFinite(_abs) && _abs >= 1 && _abs !== Number(want.episode)) {
+        const hit = pass({ season: null, episode: _abs })
+        if (hit) return hit
+      }
       const matches = pool.filter(f => matchesWantedEpisode(baseNameOf(f.path), want))
       if (matches.length) {
         return matches.reduce((best, f) =>

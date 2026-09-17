@@ -1081,7 +1081,16 @@ test('spoiler-safe rows conceal synopsis and still for unwatched episodes, with 
   const R = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
   assert.ok(R.includes("const conceal = _spoilerSafe && !r.watched && !r.current && !r.pct"))
   assert.ok(R.includes('class="vep-reveal" data-reveal="'))
-  assert.ok(R.includes("_bindSpoilerToggle(function () { _renderVideoControls('tv') })") && R.includes("_bindSpoilerToggle(function () { _renderVideoControls('anime') })"))
+  // The TV repaint rebuilds an EMPTY #video-episode-list — filling it is
+  // _refreshTvEpisodes's job — so the toggle must be paired with a refill or
+  // ticking "Hide spoilers" wipes the season off the page. This used to pin the
+  // unpaired form as correct. The anime branch paints its own grid and must NOT
+  // gain a partner call.
+  const tvBind = R.slice(R.indexOf("_bindSpoilerToggle(function () {\n      _renderVideoControls('tv')"))
+  assert.match(tvBind.slice(0, 260), /_refreshTvEpisodes\(_videoDetailTicket, \+\+_videoSeasonTicket\)/,
+    'the TV repaint must be paired with a refill')
+  assert.ok(R.includes("_bindSpoilerToggle(function () { _renderVideoControls('anime') })"),
+    'the anime branch stays as it is')
   assert.ok(R.includes("if (e && e.target && e.target.closest && e.target.closest('.vep-reveal')) return"), 'revealing does not select the episode')
   assert.ok(R.includes("_spoilerSafe = localStorage.getItem(SPOILER_SAFE_KEY) !== '0'"), 'on by default, off remembered')
 })
