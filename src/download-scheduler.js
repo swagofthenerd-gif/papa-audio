@@ -320,6 +320,36 @@ function fileIdentity(filename, size) {
   return Number.isFinite(n) && n > 0 ? base + '|' + n : base
 }
 
+// The same question fileIdentity answers, asked of two files that are being
+// considered as substitutes for each other rather than as duplicates.
+//
+// The alternate-source hunt looks for another peer serving the file we already
+// want, and matched on the basename alone. But "01 - Intro.flac" is a name
+// dozens of records share, and the quality fingerprint the hunt checks next
+// (surround, lossless, bit depth, sample rate) cannot tell two different songs
+// apart — a 16/44 stereo FLAC looks exactly like any other 16/44 stereo FLAC.
+// So the hunt could fetch a completely different song off a completely
+// different album and mark the wanted track done.
+//
+// Size is the separator, for the same reason fileIdentity uses it: one release
+// circulating between peers has one byte count. Exact equality is the real
+// signal. The 2% band on top of it is for the same recording ripped by someone
+// else — a legitimate alternate — while two different songs differ by far more
+// than 2%.
+//
+// A size we do not know on either side proves nothing, and is refused rather
+// than waved through: an unverifiable substitution is precisely how the wrong
+// song gets downloaded and called done.
+var SIZE_TOLERANCE = 0.02
+function sameRecordingSize(wantSize, candidateSize) {
+  var a = Number(wantSize)
+  var b = Number(candidateSize)
+  if (!Number.isFinite(a) || a <= 0) return false
+  if (!Number.isFinite(b) || b <= 0) return false
+  if (a === b) return true
+  return Math.abs(a - b) <= a * SIZE_TOLERANCE
+}
+
 function inflightIdentities(state) {
   var out = {}
   var keys = Object.keys(state.inflight)
@@ -1178,6 +1208,7 @@ var _PapaDownloadScheduler = {
   songKey: songKey,
   isAbandoned: isAbandoned,
   fileIdentity: fileIdentity,
+  sameRecordingSize: sameRecordingSize,
   inflightIdentities: inflightIdentities,
   logSubstitution: logSubstitution,
   nextGlobalInflight: nextGlobalInflight,
