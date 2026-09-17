@@ -5,6 +5,7 @@ const os = require('os')
 // Required at the top: album ids are derived during scanning, long before the
 // handler section, and `const` is not hoisted.
 const tagEdit = require('./src/tag-edit')
+const albumGrouping = require('./src/album-grouping')
 const crypto = require('crypto')
 const { makeCache } = require('./src/ttl-cache')
 const { mergeSegments, creditsFallback, validateSegments } = require('./src/skip-model')
@@ -5799,12 +5800,16 @@ function setupLibraryWatcher() {
 
 function buildAlbums(tracks) {
   const map = new Map()
+  // Resolved over the whole set first: whether a folder's tags disagree about
+  // the album artist cannot be decided one track at a time.
+  const groupKeyFor = albumGrouping.buildGroupKeyResolver(tracks, tagEdit.albumKeyOf)
   for (const t of tracks) {
-    const key = tagEdit.albumKeyOf(t)
+    const key = groupKeyFor(t)
     if (!map.has(key)) {
       map.set(key, {
         id: crypto.createHash('md5').update(key).digest('hex'),
         name: t.album, artist: t.albumArtist || t.artist,
+        _tagsCannotSay: key.indexOf('dir:') === 0,
         year: t.year, artPath: t.artPath, tracks: []
       })
     }
@@ -5822,6 +5827,13 @@ function buildAlbums(tracks) {
       cueStart: t.cueStart ?? null, cueEnd: t.cueEnd ?? null })
   }
   for (const [, a] of map) {
+    // With no albumArtist to go on, the album's artist is whatever its tracks
+    // agree on — and when they do not agree, it is a compilation and should say
+    // so rather than borrow whichever track happened to be seen first.
+    if (a._tagsCannotSay) {
+      a.artist = albumGrouping.displayArtistFor(a.tracks, a.artist)
+      delete a._tagsCannotSay
+    }
     if (!a.artPath) {
       const cached = path.join(artworkDir, `${a.id}.jpg`)
       if (fs.existsSync(cached)) a.artPath = cached

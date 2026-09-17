@@ -20590,6 +20590,17 @@ function updateNowPlayingFromPath(filePath) {
 }
 
 function updateNowPlaying(track) {
+  // Nine call sites pass null on purpose, meaning "nothing is playing" — Stop
+  // and clear, removing the last queued track, a file that has gone missing,
+  // the end of the queue. Every one of them threw here on track.artist, and
+  // because the throw escaped the click handler everything after it was
+  // skipped: the queue panel kept listing the tracks just cleared, the undo
+  // toast never appeared so Stop and clear could not be undone, and
+  // syncExtension never ran, so the tray, the MPRIS applet and now-playing.json
+  // went on advertising the cleared track indefinitely. There is no global
+  // error handler, so none of it surfaced outside DevTools.
+  const nothingPlaying = !track
+  track = track || {}
   refreshJumpbackCard()
   const titleEl  = document.getElementById('np-title')
   const artistEl = document.getElementById('np-artist')
@@ -20621,10 +20632,12 @@ function updateNowPlaying(track) {
     }
   }
   var npArtWrap = document.getElementById('np-art-wrap')
-  if (npArtWrap && track) {
-    var tt = track.title + ' — ' + (track.albumArtist || track.artist) + ' · ' + (track.albumName || '')
+  if (npArtWrap && !nothingPlaying && track.title) {
+    var tt = track.title + ' — ' + (track.albumArtist || track.artist || '') + ' · ' + (track.albumName || '')
     if (track.bitsPerSample || track.sampleRate) tt += ' · ' + fmtSpec(track.bitsPerSample, track.sampleRate)
     npArtWrap.title = tt
+  } else if (npArtWrap) {
+    npArtWrap.title = ''
   }
   var npImg = document.getElementById('np-art')
   if (npImg && npImg.src && npImg.src.startsWith('file://')) {
