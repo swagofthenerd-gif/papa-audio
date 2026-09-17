@@ -31915,31 +31915,31 @@ function setupListeners() {
     if (matchesShortcut('commandPalette', e)) {
       e.preventDefault(); toggleCommandPalette('commands'); return
     }
-    if (matchesShortcut('likeTrack', e)) {
+    if (matchesShortcut('likeTrack', e) && !inInput) {
       e.preventDefault()
       var currentTrack = state.queue[state.queueIndex]
       if (currentTrack && currentTrack.filePath) toggleTrackLike(currentTrack.filePath)
       return
     }
-    if (matchesShortcut('sleepTimer', e)) {
+    if (matchesShortcut('sleepTimer', e) && !inInput) {
       e.preventDefault()
       setSleepTimer(30)
       showSnackbar('Sleep timer: 30 min')
       return
     }
-    if (matchesShortcut('skipShort', e)) {
+    if (matchesShortcut('skipShort', e) && !inInput) {
       e.preventDefault()
       state.skipShortTracks = !state.skipShortTracks
       showSnackbar('Auto-skip short tracks: ' + (state.skipShortTracks ? 'on' : 'off'))
       return
     }
-    if (matchesShortcut('skipInterludes', e)) {
+    if (matchesShortcut('skipInterludes', e) && !inInput) {
       e.preventDefault()
       state.skipInterludes = !state.skipInterludes
       showSnackbar('Skip interludes: ' + (state.skipInterludes ? 'on' : 'off'))
       return
     }
-    if (matchesShortcut('saveQueue', e)) {
+    if (matchesShortcut('saveQueue', e) && !inInput) {
       e.preventDefault()
       var name = 'Queue ' + new Date().toLocaleTimeString()
       saveCurrentQueue(name)
