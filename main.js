@@ -179,6 +179,7 @@ const history = require('./history')
 const { createHistoryArchive } = require('./src/history-archive')
 const browseCacheCap = require('./src/browse-cache-cap')
 const aliveFiles = require('./src/alive-files')
+const slskShelves = require('./src/slsk-shelves')
 const { defaultSettings: eqDefaults, BANDS: EQ_BANDS, GAIN_LIMIT: EQ_GAIN_LIMIT, PRESETS: EQ_PRESETS, presetSettings } = require('./eq')
 const { MpvCrossfade } = require('./mpv-crossfade')
 const { linearToMpv, MPV_MAX } = require('./volume-map')
@@ -10078,6 +10079,101 @@ ipcMain.handle('slsk-browse-user', async (_, { username }) => {
     }
     return { ok: false, error: e.message }
   }
+})
+
+// ── Browsing a peer's library without freezing the window ───────────────────
+//
+// slsk-browse-user hands the WHOLE tree across the process boundary in one
+// reply. Electron structure-clones that, and on a large share it is enormous:
+// measured at 485,000 files, 114 MB, 594 ms to serialise in main and 1,208 ms
+// to deserialise in the renderer — 1.8 seconds of frozen window, none of it
+// interruptible, behind a static "Loading…" with no cancel.
+//
+// So the tree stays in main and the renderer PULLS it in slices. Pull rather
+// than push on purpose: a send-per-chunk can outrun the renderer and re-block
+// it, whereas asking for the next slice gives natural backpressure — and makes
+// cancel mean simply "stop asking".
+//
+// The shelves module can rebuild a byte-identical tree from slices
+// (createTreeBuilder), so nothing downstream changes.
+const _browseSessions = new Map()
+const BROWSE_SESSION_TTL_MS = 2 * 60 * 1000
+
+function _browseSessionSweep() {
+  const now = Date.now()
+  for (const [token, sess] of _browseSessions) {
+    if (now - sess.createdAt > BROWSE_SESSION_TTL_MS) _browseSessions.delete(token)
+  }
+}
+
+// Holds a REFERENCE to the array, never a copy — copying would double the very
+// memory this exists to stop moving.
+function _browseSessionOpen(directories) {
+  _browseSessionSweep()
+  const token = crypto.randomBytes(16).toString('hex')
+  _browseSessions.set(token, { directories: directories || [], createdAt: Date.now() })
+  return token
+}
+
+function _browseHead(directories, extra) {
+  const dirs = directories || []
+  let fileCount = 0
+  for (const d of dirs) fileCount += (d && d.files && d.files.length) || 0
+  // Fingerprinted HERE, not in the renderer: main already holds the array, it
+  // costs about 11 ms off the UI thread, and it lets the renderer skip the
+  // whole pull when a background refresh changed nothing.
+  let fingerprint = null
+  try { fingerprint = slskShelves.fingerprintBrowse(dirs) } catch (_) { fingerprint = null }
+  return Object.assign({
+    ok: true,
+    token: _browseSessionOpen(dirs),
+    dirCount: dirs.length,
+    fileCount,
+    fingerprint,
+  }, extra || {})
+}
+
+ipcMain.handle('slsk-browse-begin', async (_, { username } = {}) => {
+  const cached = _browseCacheRead(username)
+  if (cached) {
+    _browseRefresh(username)
+    return _browseHead(cached.directories, { fromCache: true, cachedAt: cached.cachedAt })
+  }
+  try {
+    const dirs = await _browseFetch(username, 30000)
+    _browseCacheWrite(username, dirs)
+    _browseRecordDiff(username, dirs)
+    return _browseHead(dirs)
+  } catch (e) {
+    // Same one-retry-on-timeout behaviour and the same error shape as
+    // slsk-browse-user, so browseFailureText() still reads it.
+    if (/timed out/i.test(String(e && e.message))) {
+      try {
+        const dirs = await _browseFetch(username, 60000)
+        _browseCacheWrite(username, dirs)
+        _browseRecordDiff(username, dirs)
+        return _browseHead(dirs)
+      } catch (e2) {
+        return { ok: false, error: e2.message }
+      }
+    }
+    return { ok: false, error: e.message }
+  }
+})
+
+ipcMain.handle('slsk-browse-chunk', (_, { token, offset = 0, limit = 400 } = {}) => {
+  const sess = _browseSessions.get(token)
+  // An expired or unknown token is not an error the user can act on, but the
+  // renderer must not read it as "the library ends here".
+  if (!sess) return { ok: false, expired: true, error: 'That browse is no longer open', directories: [] }
+  const from = Math.max(0, Number(offset) || 0)
+  const n = Math.max(1, Math.min(2000, Number(limit) || 400))
+  return { ok: true, directories: sess.directories.slice(from, from + n) }
+})
+
+ipcMain.handle('slsk-browse-end', (_, { token } = {}) => {
+  _browseSessions.delete(token)
+  return { ok: true }
 })
 
 // The body, as a plain function. batch-transcode used to call

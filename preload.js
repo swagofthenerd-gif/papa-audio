@@ -300,6 +300,11 @@ contextBridge.exposeInMainWorld('api', {
   // an unsubscribe function.
   onSlskVerifyDone:   (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('slsk-verify-done', h); return () => ipcRenderer.removeListener('slsk-verify-done', h) },
   slskShowInFolder:   (p) => ipcRenderer.invoke('slsk-show-in-folder', p),
+  // Pull a peer's library in slices instead of one enormous reply. See the
+  // handlers in main.js — a large share was 1.8 s of frozen window.
+  slskBrowseBegin: (p) => ipcRenderer.invoke('slsk-browse-begin', p),
+  slskBrowseChunk: (p) => ipcRenderer.invoke('slsk-browse-chunk', p),
+  slskBrowseEnd:   (p) => ipcRenderer.invoke('slsk-browse-end', p),
   slskBrowseUser:     (p) => ipcRenderer.invoke('slsk-browse-user', p),
   // A background browse refresh finished for this user: the renderer re-reads via
   // slskBrowseUser (which now serves the fresh cache). Dedicated subscriber like
