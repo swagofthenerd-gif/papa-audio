@@ -15542,6 +15542,58 @@ function restoreStatsRange() {
 // explicit-start path and the gapless auto-advance path — they used to disagree,
 // which is what made history and play counts disagree.
 const PLAY_RECORD_MS = 30000
+
+// A play means 30 seconds LISTENED, not 30 seconds of wall clock. Both the
+// play-count and the history timers used to be plain setTimeouts armed when a
+// track started and cleared only when the NEXT one started — so starting a
+// track, pausing a second later and walking away still recorded a play half a
+// minute afterwards. Play counts, Stats, achievements, the Trail and every
+// taste signal built on them were all counting time nobody heard.
+//
+// This banks only the time the track was actually playing. Callers schedule
+// through _afterListening, whose callback re-arms itself for the remainder if
+// the threshold is reached in wall-clock terms before it is reached in listened
+// terms, so no pause/resume bookkeeping is needed at the call sites.
+let _listenAccumMs = 0
+let _listenSince = 0
+
+function _listenClockReset() {
+  _listenAccumMs = 0
+  _listenSince = (typeof audio !== 'undefined' && audio && !audio.paused) ? Date.now() : 0
+}
+function _listenedMs() {
+  return _listenAccumMs + (_listenSince ? Date.now() - _listenSince : 0)
+}
+function _listenClockPlay() { if (!_listenSince) _listenSince = Date.now() }
+function _listenClockPause() {
+  if (!_listenSince) return
+  _listenAccumMs += Date.now() - _listenSince
+  _listenSince = 0
+}
+
+// Run fn once `ms` of listening has accumulated. Returns a timer id the caller
+// stores exactly as before, so clearTimeout at the old call sites still works.
+function _afterListening(ms, fn) {
+  const tick = function () {
+    const left = ms - _listenedMs()
+    if (left > 0) { _pendingListenTimers[key] = setTimeout(tick, Math.min(left, ms)); return }
+    fn()
+  }
+  const key = String(++_listenTimerSeq)
+  _pendingListenTimers[key] = setTimeout(tick, ms)
+  return { key: key, get id() { return _pendingListenTimers[key] } }
+}
+let _listenTimerSeq = 0
+const _pendingListenTimers = Object.create(null)
+function _clearListening(handle) {
+  if (!handle) return
+  if (typeof handle === 'object' && handle.key != null) {
+    clearTimeout(_pendingListenTimers[handle.key])
+    delete _pendingListenTimers[handle.key]
+    return
+  }
+  clearTimeout(handle)
+}
 let _historyTimer = null
 // The history entry is written at the 30 s mark, where the position is always
 // ~30 s. Two achievements ask "did you finish it", which needs the position the
@@ -15565,24 +15617,39 @@ function flushPlayHistoryPosition() {
   window.api.updatePlayHistoryPosition({ filePath: rec.filePath, position: _lastSampledPos })
 }
 
+// Mirrors history.HISTORY_CAP in main. The in-memory copy is a view of what
+// main stores, so it must not grow past what main keeps.
+const HISTORY_MEMORY_CAP = 2000
+
 function recordPlayAfterThreshold(track) {
   // The previous track's real position, before the sampler starts over.
   flushPlayHistoryPosition()
   _lastSampledPos = 0
-  clearTimeout(_historyTimer)
+  _clearListening(_historyTimer)
   if (!track || !track.filePath) return
-  _historyTimer = setTimeout(function () {
+  _historyTimer = _afterListening(PLAY_RECORD_MS, function () {
     // No ts: main stamps it. It used to store whatever the renderer sent.
-    window.api.addPlayHistory({
+    const entry = {
       filePath: track.filePath,
       title: track.title,
       artist: track.albumArtist || track.artist,
       album: track.albumName,
       artPath: track.artPath || null,
       duration: track.duration || 0,
-    })
+    }
+    window.api.addPlayHistory(entry)
+    // And keep the in-memory copy in step. state.playHistory was read by Stats,
+    // the calendar, achievements, the Trail, the player bar's "Recently played"
+    // and the playlist "Recent" sort — but it was only ever ASSIGNED, at
+    // startup, and never appended to. So everything played during a session was
+    // invisible to all of them until the app was restarted: play for three
+    // hours, open Stats, see yesterday. The sibling counter state.playCounts was
+    // already kept live, which is why track rows updated and nothing else did.
+    // Stamped the same way main stamps it, so both copies agree.
+    state.playHistory.unshift(Object.assign({ ts: Date.now() }, entry))
+    if (state.playHistory.length > HISTORY_MEMORY_CAP) state.playHistory.length = HISTORY_MEMORY_CAP
     _recordedPlay = { filePath: track.filePath }
-  }, PLAY_RECORD_MS)
+  })
 }
 
 // MPRIS Stop, which is not Pause: it ends playback and returns to the start of
@@ -20448,11 +20515,13 @@ function playCurrentTrack() {
     _shuffleHistory.push(state.queueIndex)
     if (_shuffleHistory.length > 10) _shuffleHistory.shift()
     _maybeOfferLongResume(track)
-    clearTimeout(_playCountTimer)
-    _playCountTimer = setTimeout(() => {
+    _clearListening(_playCountTimer)
+    // The listening clock restarts with the track, not with the timers.
+    _listenClockReset()
+    _playCountTimer = _afterListening(PLAY_RECORD_MS, () => {
       state.playCounts[track.filePath] = (state.playCounts[track.filePath] || 0) + 1
       window.api.incrementPlayCount(track.filePath)
-    }, PLAY_RECORD_MS)
+    })
     // duration was never written, so every stat derived from it read zero.
     recordPlayAfterThreshold(track)
     loadLyricsFor(track)
@@ -30590,6 +30659,13 @@ function setupListeners() {
     // on" — and nothing had ever listened, so the bar's only corrections were a
     // gapless auto-advance and the once-a-second poll below.
     audio.addEventListener('trackchanged', function () { reconcileWhatIsPlaying() })
+
+    // The listening clock behind play counts and history. Banked here rather
+    // than at the call sites so every route into pause — the button, a media
+    // key, MPRIS, the tray, a device loss pausing for safety — counts the same.
+    audio.addEventListener('play', function () { _listenClockPlay() })
+    audio.addEventListener('pause', function () { _listenClockPause() })
+    audio.addEventListener('ended', function () { _listenClockPause() })
 
 
   const reconcileTimer = setInterval(() => {

@@ -41,10 +41,24 @@ var _PapaSmartQuery = (function () {
     return s
   }
 
+  // Letters and digits in ANY script. The old class was [^a-z0-9]+, which made
+  // every non-Latin character a separator: an artist tagged アニメ, Ленинград or
+  // 방탄소년단 tokenised to NOTHING and could never be found by any query — not in
+  // the search page, not in the omnibox, not in the live dropdown, with no error
+  // to explain it. Verified against his own library, which holds 新しい日の誕生
+  // and αριθμός τέσσερα.
+  var TOKEN_SEPARATOR = /[^\p{L}\p{N}]+/u
+
+  // Scripts that do not put spaces between words tokenise into one long run, so
+  // what a person types is usually a SUBSTRING rather than a prefix: ヒカル sits
+  // inside 宇多田ヒカル but does not begin it. Latin keeps its prefix-only rule,
+  // whose ranking is tuned and covered by tests.
+  var UNSPACED_SCRIPT = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]/
+
   function tokenize(str) {
     var folded = _fold(str)
     var out = []
-    var raw = folded.split(/[^a-z0-9]+/)
+    var raw = folded.split(TOKEN_SEPARATOR)
     for (var i = 0; i < raw.length; i++) {
       if (raw[i]) out.push(raw[i])
     }
@@ -119,6 +133,12 @@ var _PapaSmartQuery = (function () {
     if (q.length >= 2 && field.length > q.length && field.indexOf(q) === 0) {
       var cover = q.length / field.length // 0..1
       return 0.75 + 0.15 * cover
+    }
+    // Substring, for scripts with no word gaps only. Deliberately below the
+    // prefix tier and above the typo tier: it is a real, intentional match, but
+    // a weaker signal than "this word starts the way you typed".
+    if (q.length >= 2 && UNSPACED_SCRIPT.test(q) && field.length > q.length && field.indexOf(q) > 0) {
+      return 0.6 + 0.15 * (q.length / field.length)
     }
     // Close typo. Budget grows with word length but never past TYPO_MAX, so
     // "kance" ~ "dance" counts but two-letter words can't drift into each other.
