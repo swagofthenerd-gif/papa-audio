@@ -6258,7 +6258,16 @@ async function _loadShelfPage(ticket) {
   const res = await _fetchShelfPage(_shelfPage.key, _shelfPage.page)
   // A page that arrived after the user left, or after they opened a different
   // shelf, must not append itself to whatever is on screen now.
-  if (_shelfPage.ticket !== ticket || state.currentPage !== 'shelf') return
+  //
+  // But the lock has to come off on the way out. `loading` is what stops two
+  // fetches for the same page being in the air at once, and this early return
+  // left it set for ever: a shelf whose fetch landed while the viewer was
+  // somewhere else could never load another page, so "See all" simply stopped
+  // producing more films and looked like the end of the shelf. A different
+  // shelf gets a fresh _shelfPage object, so the lock is only released when
+  // this is still the same one.
+  if (_shelfPage.ticket !== ticket) return
+  if (state.currentPage !== 'shelf') { _shelfPage.loading = false; return }
   _shelfPage.loading = false
   if (!res.ok) {
     if (more) more.innerHTML = '<div class="vrow-msg err">' + esc(_videoErrorText(res.error)) + '</div>'
@@ -8347,11 +8356,11 @@ function _bindVideoSearch() {
     if (clear) clear.hidden = true
   }
 
-  const run = function () {
+  const run = function (commit) {
     const query = input.value.trim()
     if (clear) clear.hidden = !query
     if (!query) return reset()
-    _runVideoTitleSearch(query)
+    _runVideoTitleSearch(query, { commit: commit === true })
   }
 
   // Recents (J2): the shared dropdown under the box; a pick commits and runs
@@ -8362,7 +8371,7 @@ function _bindVideoSearch() {
     clearTimeout(timer)
     _vSearchRemember(q)
     if (_actOnParsedQuery(_parseVideoQuery(q))) return
-    _runVideoTitleSearch(q)
+    _runVideoTitleSearch(q, { commit: true })
   }, { filterWhileTyping: true })
 
   // Clicking a result is a commit too (the other commit is Enter). Recorded in
@@ -8400,7 +8409,7 @@ function _bindVideoSearch() {
       // Enter is the commit. A query that describes a kind of film goes to
       // Browse; anything else is a title and searches as it always did.
       if (query && _actOnParsedQuery(_parseVideoQuery(query))) return
-      run()
+      run(true)
     }
     if (e.key === 'Escape') { input.value = ''; reset(); input.blur() }
   })
@@ -8416,7 +8425,7 @@ function _bindVideoSearch() {
     input.value = parked
     if (clear) clear.hidden = false
     _vSearchRemember(parked)
-    _runVideoTitleSearch(parked)
+    _runVideoTitleSearch(parked, { commit: true })
   }
 }
 
@@ -8659,9 +8668,27 @@ function _bindVideoSearchFilters() {
 // The title search, unchanged in spirit, lifted out so the parsed path can fall
 // back to it when a name turns out not to be a person. Now it also owns the
 // result filters (App §20) and the typo-tolerance retry (App §21).
-function _runVideoTitleSearch(query) {
+function _runVideoTitleSearch(query, opts) {
     const box = document.getElementById('video-search-results')
-    if (!box) return
+    if (!box) {
+      // Browse, the Diary and the Calendar all render the same Movies & TV
+      // header, so they all carry the same search box — and none of them has
+      // anywhere to put results. Typing a title into it on any of those three
+      // pages and pressing Enter did nothing whatsoever: this function found
+      // no box and returned. (A query that happened to parse as a KIND of
+      // film still worked, because that route leaves through
+      // _actOnParsedQuery before ever reaching here — so the box appeared to
+      // work for "korean thrillers" and to be broken for "Tokyo Revengers",
+      // which is worse than being uniformly dead.)
+      //
+      // A committed search now goes to the page that can answer it, by the
+      // same query-as-navId route that Back-into-a-search already uses:
+      // renderVideo puts the query back in the box and replays it. A
+      // debounced keystroke is NOT a commit and stays put — navigating away
+      // mid-word would take the page out from under someone still typing.
+      if (opts && opts.commit && query) navigate('video', query)
+      return
+    }
     const ticket = ++_videoSearchTicket
     // The query is the page's navId from this moment: navigating away (into a
     // detail page, another tab) records "video, searching for X" in history,
@@ -8917,7 +8944,7 @@ async function _openPersonByName(name, parsed) {
     // No such person: the words might still be a title, so hand them back to
     // the search that was already running rather than showing nothing.
     showSnackbar('No one called \u201c' + name + '\u201d \u2014 searching titles instead', null, null, 4000)
-    _runVideoTitleSearch(name)
+    _runVideoTitleSearch(name, { commit: true })
     return
   }
   navigate('person', String(people[0].id))
@@ -9023,6 +9050,13 @@ function _videoCard(item) {
   const metaBits = []
   if (item.year != null && item.year !== '') metaBits.push(esc(String(item.year)))
   if (item.season != null && item.episode != null) metaBits.push('S' + item.season + ' · E' + item.episode)
+  // An anime is numbered straight through, so the watch store records an
+  // episode and no season for one (_watchKey: 'anime:<id>:e<n>'). The line
+  // above wants both, so a Continue Watching card for an anime — which is most
+  // of that shelf here — said nothing at all about where you were. It showed a
+  // poster, a year and a progress bar, and left the one fact you came to the
+  // shelf for off the card.
+  else if (item.episode != null && item.episode !== '') metaBits.push('E' + esc(String(item.episode)))
 
   return '<article class="vcard" data-video="' + esc(key) + '" tabindex="0" role="button"' +
     // Where this card was left off. A Continue Watching card for episode 9

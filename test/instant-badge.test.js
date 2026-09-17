@@ -56,7 +56,10 @@ test('the card badges from the memory, distinguishing on-device from debrid, and
   assert.ok(/'SAVED'/.test(card) && /'CACHED'/.test(card) && /'INSTANT'/.test(card), 'three different truths read differently (V121)')
   assert.ok(!/videoInstantList/.test(card), 'a card must never make its own request')
   // The map is fetched once per catalogue render, before the cards are built.
-  assert.ok(/await _refreshInstantKeys\(\)\n\n  const wanted = _videoRows\.filter/.test(RENDERER))
+  // The ticket check that sits between the two is the guard against a tab you
+  // have left painting over the one you are on (test/video-tab-generation).
+  assert.ok(/await _refreshInstantKeys\(\)[\s\S]{0,900}?\n  const wanted = _videoRows\.filter/.test(RENDERER),
+    'the instant map is still awaited before the row list is built')
   assert.ok(PRELOAD.includes('videoInstantList'))
 })
 
