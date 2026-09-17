@@ -10860,7 +10860,14 @@ function _renderVideoControls(type) {
       _refreshTvEpisodes(_videoDetailTicket, ++_videoSeasonTicket)
     })
     document.getElementById('video-season-select')?.addEventListener('change', function (e) {
-      _videoState.season = Number(e.target.value) || 1
+      // `Number(v) || 1` eats season ZERO — TMDB's bucket for specials, OVAs
+      // and recaps, which the picker above goes to some trouble to sort last
+      // and to name "Specials" rather than "Season 0". Picking it therefore
+      // loaded season ONE's episodes and season one's sources, while the
+      // dropdown carried on reading "Specials": the page said one thing and
+      // did another, with nothing to tell you.
+      const picked = Number(e.target.value)
+      _videoState.season = Number.isFinite(picked) ? picked : 1
       _videoState.episode = 1
       _refreshTvEpisodes(_videoDetailTicket, ++_videoSeasonTicket)
     })
