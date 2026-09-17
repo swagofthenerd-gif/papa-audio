@@ -4266,21 +4266,32 @@ ipcMain.on('update-play-history-position', (_, { filePath, position } = {}) => {
 
 // Overflow goes to one file per month, appended, never overwritten.
 const HISTORY_ARCHIVE_DIR = path.join(USER_DATA, 'history-archive')
+const _historyArchive = createHistoryArchive({
+  fs, path, dir: HISTORY_ARCHIVE_DIR,
+  groupForArchive: history.groupForArchive,
+  log: m => console.log(m),
+})
+
 function archiveHistoryOverflow(overflow) {
-  const byMonth = history.groupForArchive(overflow)
-  fs.promises.mkdir(HISTORY_ARCHIVE_DIR, { recursive: true }).then(async () => {
-    for (const [month, entries] of byMonth) {
-      const f = path.join(HISTORY_ARCHIVE_DIR, `${month}.json`)
-      let existing = []
-      try { existing = JSON.parse(await fs.promises.readFile(f, 'utf8')) } catch (_) { existing = [] }
-      if (!Array.isArray(existing)) existing = []
-      const merged = existing.concat(entries)
-      const tmp = f + '.tmp'
-      await fs.promises.writeFile(tmp, JSON.stringify(merged), 'utf8')
-      await fs.promises.rename(tmp, f)
-      console.log(`[papa][history] archived ${entries.length} entries to ${month}.json (${merged.length} total)`)
+  return _historyArchive.archive(overflow).catch(e => {
+    // The old version logged "entries kept in memory only" here, which was the
+    // one thing that was definitely untrue: the truncated list had already been
+    // committed without them. Put them back instead. Being briefly over a soft
+    // cap is not a bug; losing the oldest of his listening history is.
+    console.error('[papa][history] archive failed; returning the entries to the live list:',
+      (e && e.message) || e)
+    try {
+      sideStores.playHistory.update(prev => {
+        const list = Array.isArray(prev) ? prev : []
+        const seen = new Set(list.map(x => `${x && x.filePath}|${x && x.ts}`))
+        const back = overflow.filter(x => !seen.has(`${x && x.filePath}|${x && x.ts}`))
+        return list.concat(back)
+      })
+    } catch (e2) {
+      console.error('[papa][history] and could not return them either:', (e2 && e2.message) || e2)
     }
-  }).catch(e => console.error('[papa][history] archive failed, entries kept in memory only:', e && e.message))
+    return { written: 0, months: [], failed: true }
+  })
 }
 
 // Runs once at startup. Reports what it found before changing anything, because
@@ -4900,6 +4911,7 @@ ipcMain.handle('library-inspect-paths', async (_, { paths }) => {
 
 const libPrune = require('./src/library-prune')
 const restoreMerge = require('./src/restore-merge')
+const { createHistoryArchive } = require('./src/history-archive')
 
 // One handler, not seven. Pruning is a single logical transaction — the
 // renderer must never be able to complete three of these and abandon the rest.
