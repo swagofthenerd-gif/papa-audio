@@ -11659,7 +11659,13 @@ ipcMain.handle('video-anime-episodes', async (_, { idMal, start = 1, end = 20 } 
     }
     return { ok: true, episodes: out, total, truncated, servedTo: truncated ? last : null }
   } catch (e) {
-    return { ok: true, episodes: [], total: null, error: e && e.message }
+    // NOT ok. Returning success with an empty list made a failed episode fetch
+    // indistinguishable from a show that genuinely has no episodes, and the
+    // renderer's `if (!eps.length) return` then bailed silently — so titles
+    // never arrived and nothing on screen said why. That is his report that
+    // some tabs "dont even open the saved anime".
+    console.error('[papa][video] anime episodes failed:', (e && e.message) || e)
+    return { ok: false, failed: true, episodes: [], total: null, error: (e && e.message) || String(e) }
   }
 })
 
@@ -14332,7 +14338,7 @@ ipcMain.handle('video-cache-get', async (_, { key } = {}) => {
     sideStores.videoCacheIndex.set(entries)
     return { ok: true, hit: { key: e.key, path: e.path, title: e.title, sizeBytes: e.sizeBytes, meta: e.meta || null } }
   } catch (e) {
-    return { ok: true, hit: null, error: (e && e.message) || String(e) }
+    return { ok: false, failed: true, hit: null, error: (e && e.message) || String(e) }
   }
 })
 
@@ -14367,7 +14373,9 @@ ipcMain.handle('video-instant-list', async () => {
     for (const k of live) out[k] = kept.has(k) ? 'saved' : 'cached'
     return { ok: true, instant: out }
   } catch (e) {
-    return { ok: true, instant: {}, error: (e && e.message) || String(e) }
+    // An empty map here used to mean "nothing of yours starts instantly",
+    // which is a very different statement from "we could not find out".
+    return { ok: false, failed: true, instant: {}, error: (e && e.message) || String(e) }
   }
 })
 
