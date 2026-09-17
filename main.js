@@ -4200,7 +4200,16 @@ function _videoStoreWriteValue(text) {
 }
 
 ipcMain.handle('video-store-read', () => {
-  try { return _videoStoreReadText(sideStores.videoStore.get()) } catch (_) { return null }
+  try {
+    // `false` means "could not be read", which is NOT the same as null, and null
+    // is what a genuine first run looks like. Without the distinction, a damaged
+    // video-store.json read as an empty one: the watch history, Continue
+    // Watching and My List all came back blank, the next play wrote that
+    // emptiness through, and the launch after that overwrote the rolling backup
+    // kept for exactly this case. The renderer already handles `false`.
+    if (sideStores.videoStore.loadFailed) return false
+    return _videoStoreReadText(sideStores.videoStore.get())
+  } catch (_) { return false }
 })
 ipcMain.handle('video-store-write', (_, text) => {
   try { sideStores.videoStore.set(_videoStoreWriteValue(text)); return true } catch (_) { return false }

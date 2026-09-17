@@ -47,6 +47,12 @@ class SideStore {
     // rename stale content over a newer value that flushSync already wrote.
     this._writeSeq = 0
     this._flushedSeq = 0
+    // Sticky for the life of the process: once a load has failed, the value in
+    // memory is the FALLBACK, not what was on disk. Callers that can tell an
+    // empty store from an unreadable one need to know the difference — an empty
+    // watch history and an unreadable one look identical otherwise, and the
+    // next write turns the second into the first permanently.
+    this.loadFailed = false
     this.stats = { loads: 0, writes: 0, coalesced: 0, errors: 0 }
   }
 
@@ -74,6 +80,7 @@ class SideStore {
         // so whatever survived in it is still there to be recovered by hand.
         // video-store.js already does this for a far less precious store.
         this.stats.errors++
+        this.loadFailed = true
         let kept = null
         try {
           kept = `${this.file}.corrupt-${Date.now()}`
