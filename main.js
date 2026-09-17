@@ -9746,23 +9746,49 @@ function slskGenericBaseName(name) {
 }
 
 function slskCandidatePaths(filename, username, downloadDir) {
-  var parts = String(filename || '').replace(/\\/g, '/').split('/').filter(Boolean)
+  // The filename comes from a PEER, so it is untrusted input. Strip "." and
+  // ".." before anything is joined: without this, a name like
+  // "..\..\etc\passwd" resolved to /mnt/data/MUSIC/etc/passwd -- outside the
+  // download folder entirely -- and slsk-resolve-file would hand that path
+  // back, slsk-verify-file would probe it, and with autoOrganizeDownloads on
+  // the organiser would move whatever it found. Nothing downstream re-checked
+  // containment, because this function was assumed to produce paths under the
+  // download directory.
+  var parts = String(filename || '').replace(/\\/g, '/').split('/')
+    .filter(function (seg) { return seg && seg !== '.' && seg !== '..' })
   if (!parts.length) return []
   var tail1 = parts.slice(1)
   var tail2 = parts.slice(2)
   var last2 = parts.slice(-2)
   var last1 = parts.slice(-1)
-  var out = [
-    tail1.length ? path.join(downloadDir, ...tail1) : null,
-    path.join(downloadDir, ...parts),
-    tail1.length ? path.join(downloadDir, username, ...tail1) : null,
-    path.join(downloadDir, username, ...parts),
-    tail2.length ? path.join(downloadDir, ...tail2) : null,
-    tail2.length ? path.join(downloadDir, username, ...tail2) : null,
-    last2.length === 2 ? path.join(downloadDir, ...last2) : null,
-  ]
-  if (!slskGenericBaseName(last1[0])) out.push(path.join(downloadDir, ...last1))
-  return out.filter(Boolean)
+  // A candidate that is ONE generic segment -- "01.flac", "Track 03.mp3" --
+  // sitting directly in the download root is a name dozens of albums share, so
+  // matching it means playing whatever unrelated file happens to be there. The
+  // guard for that existed, but it was applied only to the very last candidate,
+  // while for a two-segment remote path -- the commonest Soulseek shape -- the
+  // bare basename was candidate #0 and was therefore checked FIRST.
+  //
+  // These are not dropped, because a genuinely flat download still needs to
+  // resolve. They are moved behind every more specific candidate, so a
+  // qualified path always wins and the generic name is a last resort, which is
+  // what the guard was reaching for in the first place.
+  var specific = []
+  var lastResort = []
+  var add = function (segs) {
+    if (!segs || !segs.length) return
+    var full = path.join(downloadDir, ...segs)
+    if (segs.length === 1 && slskGenericBaseName(segs[0])) lastResort.push(full)
+    else specific.push(full)
+  }
+  add(tail1)
+  add(parts)
+  if (tail1.length) add([username].concat(tail1))
+  add([username].concat(parts))
+  add(tail2)
+  if (tail2.length) add([username].concat(tail2))
+  if (last2.length === 2) add(last2)
+  if (!slskGenericBaseName(last1[0])) specific.push(path.join(downloadDir, ...last1))
+  return specific.concat(lastResort).filter(Boolean)
 }
 
 ipcMain.handle('slsk-resolve-file', (_, { username, filename }) => {
