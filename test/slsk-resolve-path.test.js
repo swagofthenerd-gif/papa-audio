@@ -44,13 +44,35 @@ test('very short names are generic regardless of shape', () => {
 })
 
 test('the candidate list exists once, not once per handler', () => {
-  const helper = M.indexOf('function slskCandidatePaths')
-  const body = M.slice(helper, M.indexOf('\n}', M.indexOf('return out.filter', helper)))
-  // Every occurrence of the distinctive tail2 line must be inside the helper.
-  const all = [...M.matchAll(/tail2\.length \? path\.join/g)].map(m => m.index)
-  for (const at of all) {
-    assert.ok(at > helper && at < helper + body.length + 200,
+  // This used to grep for one distinctive line of the helper's body and check
+  // it appeared nowhere else. That pinned the SPELLING of the implementation,
+  // so refactoring the helper broke a test about duplication — and it would
+  // equally have passed if a handler rebuilt the paths a slightly different
+  // way. Assert the actual contract instead: every handler that needs a path
+  // asks the helper for it, and nobody joins downloadDir themselves.
+  const helperAt = M.indexOf('function slskCandidatePaths')
+  assert.ok(helperAt > -1, 'slskCandidatePaths must still exist')
+  const helperEnd = M.indexOf('\n}', helperAt)
+  const helperBody = M.slice(helperAt, helperEnd)
+
+  for (const handler of ['slsk-resolve-file', 'slsk-verify-file']) {
+    // Anchored on the registration, not the bare name: the channel names also
+    // appear in the IPC deadline table at the top of main.js, and indexOf found
+    // that first.
+    const at = M.indexOf(`ipcMain.handle('${handler}'`)
+    assert.ok(at > -1, handler + ' must still be registered')
+    const chunk = M.slice(at, at + 900)
+    assert.match(chunk, /slskCandidatePaths\(/,
+      handler + ' must resolve through the shared helper, not its own copy')
+  }
+
+  // And the joining itself happens only inside the helper. Anything outside it
+  // that joins the download directory with spread segments is a second
+  // implementation waiting to drift.
+  const joins = [...M.matchAll(/path\.join\(\s*downloadDir\s*,\s*\.\.\./g)].map(m => m.index)
+  assert.ok(joins.length > 0, 'sanity: the helper does join downloadDir')
+  for (const at of joins) {
+    assert.ok(at >= helperAt && at <= helperAt + helperBody.length,
       'candidate building must live only in slskCandidatePaths')
   }
-  assert.ok(all.length >= 2, 'sanity: the helper builds both tail2 candidates')
 })

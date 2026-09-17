@@ -23,6 +23,8 @@ class PapaPlayerShim extends EventTarget {
     this._ended = false
     this._volume = 0.8
     this._engineDown = false
+    // The in-flight player-load, if any. play() waits on it — see the src setter.
+    this._pendingLoad = null
     // The last path mpv reported. Not what the renderer asked for — what mpv
     // says it has open.
     this._mpvPath = null
@@ -163,12 +165,28 @@ class PapaPlayerShim extends EventTarget {
     this._currentTime = 0
     this._duration = 0
     this._lastPositionAt = 0
-    window.api.playerLoad({ path: this._pathOf(v), play: false })
+    // Keep the load's promise. play() has to wait for it, because the load and
+    // the play are two separate ipcRenderer.invoke calls and NOTHING in main
+    // orders them: player-load awaits a real mpv round trip (applyLoudnessGain's
+    // volume set) before it sends its own `pause true` + `loadfile`, so an
+    // unsequenced player-play overtakes it. Traced on the live app, the socket
+    // order was volume / pause=false / pause=true / loadfile — mpv opened the
+    // newly picked track while paused and stayed there. That is the report
+    // "when i select a song to play, it just pauses": the bar paints, the queue
+    // is right, and nothing comes out until play is pressed by hand.
+    // A rejection is folded into a value so a failed load can never surface as
+    // an unhandled rejection from a fire-and-forget assignment.
+    this._pendingLoad = Promise.resolve(window.api.playerLoad({ path: this._pathOf(v), play: false }))
+      .catch(e => ({ ok: false, error: String((e && e.message) || e) }))
   }
 
   async play() {
     if (this._switching) return
     this._guessPaused(false)
+    // Order before latency: mpv must already have the file open when it is
+    // unpaused, or the unpause lands on the file it is replacing and the new
+    // one loads paused. See the src setter.
+    if (this._pendingLoad) await this._pendingLoad
     try {
       const r = await window.api.playerPlay()
       if (!r.ok) throw new Error(r.error)
