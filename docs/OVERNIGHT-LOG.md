@@ -33,6 +33,21 @@ print the debrid token.
 | — | A wedged slskd killed Soulseek until an app restart | DONE `cc27749` |
 | — | A corrupt store was silently replaced by an empty one | DONE `cc27749` |
 | — | Diagnostics reported an outage that was not happening | DONE `cc27749` |
+| F2 | Resume queue put you on the wrong song past track 100 | DONE `09cd938`→`befor` |
+| F5 | Shuffle, repeat and speed reset on every restart | DONE |
+| D1 | Seek drag fired one mpv seek per pixel of travel | DONE |
+| E2 | "The Beatles" filed under T | DONE |
+| — | Fake random waveform presented as the track's signal | DONE `dd1f8d7` |
+| D2 | Album track list: 7 children in a 5-column grid, reflowed on hover | DONE `dd1f8d7` |
+| — | Track-list header labels sat over the wrong columns | DONE `dd1f8d7` |
+| — | Enricher retained every card from 4 in-place repaints | DONE `dd1f8d7` |
+| — | now-playing.json written 86,400x/day with no change check | DONE `dd1f8d7` |
+| — | Soulseek section rebuilt on every poll for the whole session | DONE `dd1f8d7` |
+| — | Tag-editing hero fields had no affordance at all | DONE `dd1f8d7` |
+| — | My own device-loss test was flaky (2-3 in 20) — now deterministic | DONE `dd1f8d7` |
+
+All of the above are committed and pushed to `feature/audio-overhaul`, each with
+the full account in its commit message. Suite at 4681, green at every commit.
 
 ## Queue
 
