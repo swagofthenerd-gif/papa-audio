@@ -38,10 +38,17 @@
 // localStorage only reaches disk when Chromium feels like it, which is why
 // main.js has to call flushStorageData() at quit at all. The bridge is four
 // async methods over raw text:
-//   read()           → Promise<string|null>
+//   read()           → Promise<string|null|false>
 //   write(text)      → Promise<boolean>
 //   readBackup?()    → Promise<string|null>
 //   writeBackup?(t)  → Promise<boolean>
+// `read()` resolving to anything that is not a string or null — `false`, or an
+// { unreadable: true } envelope — means main HAS a store file but could not
+// read it. That is not the same as null (no store yet) and must never be
+// treated as one: the history is then recovered from the rolling backup, or
+// the session is parked on localStorage, but an empty blob is never written
+// through. Main cannot express this by throwing, because SideStore swallows
+// the read error, renames the file aside and adopts its null fallback.
 // init() hydrates the cache from the bridge ONCE at startup — the renderer
 // awaits it before first use — and every public method stays synchronous
 // afterwards. Saves write the whole blob through the bridge behind a short
@@ -171,9 +178,10 @@
     let text = seedText === undefined ? null : seedText
     let bak = null
     let failWrites = false
+    let unreadable = false
     let writes = 0
     return {
-      read: async () => text,
+      read: async () => (unreadable ? false : text),
       write: async t => { writes++; if (failWrites) return false; text = String(t); return true },
       readBackup: async () => bak,
       writeBackup: async t => { bak = String(t); return true },
@@ -181,6 +189,8 @@
       _bak: () => bak,
       _writes: () => writes,
       _fail: v => { failWrites = !!v },
+      // Main's "there is a store file but I could not read it" signal.
+      _unreadable: v => { unreadable = !!v },
     }
   }
 
@@ -363,13 +373,24 @@
         text = await bridge.read()
       } catch (e) {
         // Can't even read: don't risk clobbering whatever the bridge store
-        // holds. Park the session on localStorage — exactly the old path.
+        // holds. Park the session on localStorage — exactly the old path —
+        // but hand the session the backup rather than a blank history.
         bridgeDown = true
         _log(`the bridge could not read ${KEY}; staying on localStorage this session:`, e && e.message)
-        load()
+        const bak = await _readBridgeBackup()
+        if (_hasContent(bak)) {
+          cache = _normalize(_sanitize(bak))
+          _log(`showing the rolling backup of ${KEY} for this session; nothing is written through the bridge`)
+        } else {
+          load()
+        }
         return false
       }
-      if (text == null || text === '') {
+      // Main says it could not read the file (see UNREADABLE). Anything but a
+      // string or null is that signal — never a blob to parse.
+      let unreadable = _isUnreadable(text)
+      if (unreadable) text = null
+      if (!unreadable && (text == null || text === '')) {
         // First run with a bridge: carry the localStorage history across, and
         // leave the old copy behind under a name the store no longer reads.
         const old = _legacyRaw(KEY)
@@ -387,6 +408,18 @@
           text = old
         }
       }
+      // An empty main store with a rolling backup that has content is not a
+      // first run — a backup is only ever written after a good main read, so
+      // the main blob existed and is gone. Without this, a main process that
+      // cannot read the file (SideStore renames it aside and adopts its null
+      // fallback) is indistinguishable from a fresh install, the history reads
+      // as empty, and the first save writes that emptiness through for good.
+      let recovered = null
+      if (!unreadable && (text == null || text === '')) {
+        recovered = await _readBridgeBackup()
+        if (_hasContent(recovered)) unreadable = true
+      }
+      if (unreadable) return _recoverLost(recovered)
       if (cache !== null) {
         // Someone read or wrote before init() settled and the localStorage
         // fallback answered. That state may hold writes, so it wins — write
@@ -427,6 +460,59 @@
         await _writeBridgeBackup(JSON.stringify(cache))
       }
       return true
+    }
+
+    // The main store was lost: either main told us so outright, or an empty
+    // main blob sat next to a backup that has content. Either way the emptiness
+    // is not the truth and must never be written through. `known` is the backup
+    // if the caller already read it.
+    async function _recoverLost(known) {
+      const bak = _hasContent(known) ? known : await _readBridgeBackup()
+      if (!_hasContent(bak)) {
+        // Nothing to restore from. Park the session on localStorage so the
+        // first save cannot stamp an empty blob over the store — the next
+        // launch gets a clean look at whatever main can read by then.
+        bridgeDown = true
+        _log(`${KEY} could not be read and there is no usable backup;`,
+          'staying on localStorage this session rather than writing an empty store through')
+        if (cache === null) load()
+        return false
+      }
+      if (cache !== null) {
+        // Early-touch state came from the localStorage fallback and may hold
+        // writes, but it cannot be trusted to be the whole history either.
+        // Keep it, and park rather than write it over the store.
+        bridgeDown = true
+        _log(`${KEY} could not be read and was touched before init() settled;`,
+          'keeping the early state on localStorage this session')
+        return false
+      }
+      cache = _normalize(_sanitize(bak))
+      hydrated = true
+      _log(`${KEY} could not be read; recovered the watch history from ${BAK_KEY} and restoring it`)
+      // Put the recovery back where the store lives, so the next launch reads a
+      // real blob instead of coming through here again. The backup itself is
+      // only ever refreshed from a VALID main read, so it is not touched here.
+      save()
+      return true
+    }
+
+    // Is this bridge read the "could not read it" signal rather than a blob?
+    // The contract is Promise<string|null>, so anything else — `false`, or an
+    // `{ unreadable: true }` envelope — is main saying the file did not load.
+    function _isUnreadable(text) {
+      if (text === false) return true
+      return !!(text && typeof text === 'object' && text.unreadable)
+    }
+
+    // Does a parsed blob actually hold anything worth keeping? An empty object
+    // is not a recovery, and restoring one would be the same wipe by a longer
+    // route.
+    function _hasContent(v) {
+      if (!v || typeof v !== 'object' || Array.isArray(v)) return false
+      const n = o => (o && typeof o === 'object' ? Object.keys(o).length : 0)
+      return n(v.items) + (Array.isArray(v.watchlist) ? v.watchlist.length : 0) +
+        n(v.skip) + n(v.prefs) > 0
     }
 
     function _legacyRaw(key) {
