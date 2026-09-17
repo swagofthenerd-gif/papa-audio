@@ -16,6 +16,23 @@ print the debrid token.
 | # | Item | State |
 |---|---|---|
 | — | Next button undone by a stale reconcile (regression from bb7db5d) | DONE `8505088` |
+| A1 | Device loss killed the engine permanently (`const` reassignment) | DONE `6736434` |
+| A2 | ReplayGain applied 3x the requested dB | DONE `6736434` |
+| A3 | Gain not re-applied on gapless advance; stale path in the volume slider | DONE `0103938` |
+| A4 | Audible level blip at the start of every track | DONE `0103938` |
+| — | Merged the 32 Sep-15 commits from the parallel session | DONE `df8f8d1` |
+| — | Non-Latin names unsearchable (JP/KR/CN/RU/GR) | DONE `09cd938` |
+| — | Stats/Trail/Recently-played frozen at launch all session | DONE `09cd938` |
+| F1 | A play counted 30s of wall clock, not of listening | DONE `09cd938` |
+| — | Retry on a stuck download silently did nothing, then blacklisted it | DONE `e7a36a0` |
+| — | Cancel always claimed success even when the daemon refused | DONE `e7a36a0` |
+| — | Video player mode (Smooth/Purist) never saved | DONE `e7a36a0` |
+| — | Space could not open dropdowns; shortcuts fired over them | DONE `e7a36a0` |
+| E1 | Compilations shattered into one album per performer (16 -> 1) | DONE `feeb929` |
+| — | Clearing the queue threw and left the tray/MPRIS lying | DONE `feeb929` |
+| — | A wedged slskd killed Soulseek until an app restart | DONE `cc27749` |
+| — | A corrupt store was silently replaced by an empty one | DONE `cc27749` |
+| — | Diagnostics reported an outage that was not happening | DONE `cc27749` |
 
 ## Queue
 
