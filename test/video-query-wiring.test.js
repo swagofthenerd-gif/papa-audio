@@ -212,7 +212,9 @@ test('a cued person resolves to a person page, and falls back to titles', () => 
   // The parser leaves a bare surname residual because it cannot tell one from a
   // title; when a cued name turns out not to be a person, the words are still
   // worth searching.
-  assert.match(fn, /_runVideoTitleSearch\(name\)/)
+  // Committed, so a fallback from a person page reaches the catalogue search
+  // rather than dying on a page with no results box.
+  assert.match(fn, /_runVideoTitleSearch\(name, \{ commit: true \}\)/)
   assert.match(fn, /_videoSearchTicket !== ticket/, 'a stale person lookup must not navigate')
 })
 

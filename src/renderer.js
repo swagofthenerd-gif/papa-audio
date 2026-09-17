@@ -6314,7 +6314,16 @@ async function _loadShelfPage(ticket) {
   const res = await _fetchShelfPage(_shelfPage.key, _shelfPage.page)
   // A page that arrived after the user left, or after they opened a different
   // shelf, must not append itself to whatever is on screen now.
-  if (_shelfPage.ticket !== ticket || state.currentPage !== 'shelf') return
+  //
+  // But the lock has to come off on the way out. `loading` is what stops two
+  // fetches for the same page being in the air at once, and this early return
+  // left it set for ever: a shelf whose fetch landed while the viewer was
+  // somewhere else could never load another page, so "See all" simply stopped
+  // producing more films and looked like the end of the shelf. A different
+  // shelf gets a fresh _shelfPage object, so the lock is only released when
+  // this is still the same one.
+  if (_shelfPage.ticket !== ticket) return
+  if (state.currentPage !== 'shelf') { _shelfPage.loading = false; return }
   _shelfPage.loading = false
   if (!res.ok) {
     if (more) more.innerHTML = '<div class="vrow-msg err">' + esc(_videoErrorText(res.error)) + '</div>'
@@ -6381,6 +6390,72 @@ function _bindShelfScroll(ticket) {
   }, { root: root, rootMargin: '600px' })
   io.observe(sentinel)
 }
+
+// ── A failing page has to say so ────────────────────────────────────────────
+// navigate() wraps its render dispatch in try/catch and hands anything it
+// catches to _renderFailure, which paints the "This page failed to render"
+// card with a Go Home and a Copy diagnostics. That catch is DEAD for every
+// page whose renderer is `async` — and six of the seven Movies & TV pages
+// are: video, video-detail, shelf, browse, person, calendar. An async
+// function returns a promise, so a throw anywhere after its first `await`
+// rejects that promise instead of throwing out of the call, and the try/catch
+// around the call never sees it.
+//
+// What that looked like: renderVideoDetail paints a grey skeleton, then
+// awaits the catalog. Anything that throws after that point — a malformed
+// detail record, a missing bridge method, a helper reading a field off null —
+// left the skeleton on screen for ever. No message, no retry, no way back
+// except the sidebar, and the stack only in devtools. That is what "some tabs
+// don't even open" is: not a page that fails to load, a page that fails and
+// cannot tell you.
+//
+// The six are wrapped here rather than edited in place, so each reads exactly
+// as it did and no call site changes. A rejection that arrives after the
+// viewer has moved on is logged and nothing more — blanking the page they are
+// looking at now, for a page they already left, would be a second bug.
+var _GUARDED_VIDEO_PAGES = {
+  video: 'renderVideo',
+  'video-detail': 'renderVideoDetail',
+  shelf: 'renderShelf',
+  browse: 'renderBrowse',
+  person: 'renderPerson',
+  calendar: 'renderCalendar',
+}
+
+function _guardVideoRenders(scope) {
+  if (!scope) return []
+  const wrapped = []
+  for (const page of Object.keys(_GUARDED_VIDEO_PAGES)) {
+    const name = _GUARDED_VIDEO_PAGES[page]
+    const original = scope[name]
+    if (typeof original !== 'function' || original.papaGuarded) continue
+    const guard = function (err) {
+      // Still here: show the card. Gone: the page that failed is not the page
+      // on screen, so say it in the log and leave the screen alone.
+      if (typeof state !== 'undefined' && state && state.currentPage !== page) {
+        try { console.error('[papa] ' + name + ' failed after the page was left', err) } catch (_) {}
+        return
+      }
+      _renderFailure(page, err)
+    }
+    const fn = function () {
+      let out = null
+      // A synchronous throw still reaches navigate()'s own catch; catching it
+      // here too means the card is painted once, by whichever sees it first.
+      try { out = original.apply(this, arguments) } catch (err) { guard(err); return }
+      if (out && typeof out.then === 'function') return out.then(null, guard)
+      return out
+    }
+    fn.papaGuarded = true
+    scope[name] = fn
+    wrapped.push(name)
+  }
+  return wrapped
+}
+
+// Function declarations are hoisted across the whole script, so all six exist
+// by the time any top-level statement runs.
+if (typeof window !== 'undefined') _guardVideoRenders(window)
 
 async function renderVideo(navId) {
   _initVideoUI()
@@ -6475,8 +6550,7 @@ async function _renderVideoTab(ticket, opts) {
   // Switching tabs with search results showing used to repaint the new tab's
   // rows behind display:none while the old query's results stayed on screen.
   // A tab switch is a statement that the search is over.
-  const searchBox = document.getElementById('video-search-results')
-  if (searchBox && !preserve) searchBox.innerHTML = ''
+  if (!preserve) _setVideoSearchHtml('')
   // The taste row is a sibling of the rows container, so it needs hiding and
   // showing alongside them — never inherited from either.
   const tasteMount = document.getElementById('vtaste-row')
@@ -6535,6 +6609,14 @@ async function _renderVideoTab(ticket, opts) {
 
   // Before any card is built, so the first paint already carries the badges.
   await _refreshInstantKeys()
+  // Every other await in this function is followed by a ticket check, and this
+  // one was not — so a tab pressed while the instant-badge list was still in
+  // flight let the tab you LEFT come back and paint its row shells over the
+  // tab you are on. It is a real request on the first render of a session and
+  // again whenever the 30-second cache has lapsed, which is exactly when the
+  // tabs are being pressed. Everything below writes to the page, so the check
+  // belongs immediately after the await rather than at the first fetch.
+  if (_videoCatalogTicket !== ticket || state.currentPage !== 'video') return
 
   const wanted = _videoRows.filter(function (r) { return r.tabs.indexOf(_videoTab) !== -1 })
   const curated = _curatedRows(_videoTab)
@@ -7665,7 +7747,17 @@ function _paintVideoHero() {
     }
   }
   const go = function () { navigate('video-detail', key) }
-  document.getElementById('vhero-play')?.addEventListener('click', go)
+  // Play and Details are two different promises and must not be the same
+  // handler. The shelf cards' Play button was fixed for exactly this — it
+  // navigated to the detail page and stopped there, which is what "the Play
+  // button does nothing" means — and the hero, the largest control on the
+  // tab, kept the old behaviour. It arms the same _playOnArrival the card
+  // path arms, so renderVideoDetail starts the film as soon as its sources
+  // land instead of leaving the viewer on a page they did not ask for.
+  document.getElementById('vhero-play')?.addEventListener('click', function () {
+    _playOnArrival = { episode: _heroNum(item.episode), season: _heroNum(item.season) }
+    go()
+  })
   document.getElementById('vhero-info')?.addEventListener('click', go)
   document.getElementById('vhero-list')?.addEventListener('click', function () { _toggleWatchlist(item) })
   mount.querySelectorAll('.vhero-dot').forEach(function (d) {
@@ -7674,6 +7766,15 @@ function _paintVideoHero() {
       _paintVideoHero()
     })
   })
+}
+
+// A hero item's season/episode, or null. Absence has to be checked before the
+// coercion: Number(null) is 0, so a film with no season would arm "season 0"
+// and the detail page would open TMDB's specials bucket.
+function _heroNum(v) {
+  if (v === null || v === undefined || v === '') return null
+  const n = Number(v)
+  return Number.isFinite(n) ? n : null
 }
 
 // AniList overviews are HTML fragments (<br>, <i>), unlike TMDB's plain text.
@@ -8304,19 +8405,18 @@ function _bindVideoSearch() {
     // Clearing the box ends the journey: the page is the anonymous catalog
     // again, so its navId (the query) is dropped with the results.
     state.currentVideoQuery = ''
-    const box = document.getElementById('video-search-results')
-    if (box) box.innerHTML = ''
+    _setVideoSearchHtml('')
     document.getElementById('vrows')?.style.removeProperty('display')
     document.getElementById('vhero-mount')?.style.removeProperty('display')
     document.getElementById('vtaste-row')?.style.removeProperty('display')
     if (clear) clear.hidden = true
   }
 
-  const run = function () {
+  const run = function (commit) {
     const query = input.value.trim()
     if (clear) clear.hidden = !query
     if (!query) return reset()
-    _runVideoTitleSearch(query)
+    _runVideoTitleSearch(query, { commit: commit === true })
   }
 
   // Recents (J2): the shared dropdown under the box; a pick commits and runs
@@ -8327,7 +8427,7 @@ function _bindVideoSearch() {
     clearTimeout(timer)
     _vSearchRemember(q)
     if (_actOnParsedQuery(_parseVideoQuery(q))) return
-    _runVideoTitleSearch(q)
+    _runVideoTitleSearch(q, { commit: true })
   }, { filterWhileTyping: true })
 
   // Clicking a result is a commit too (the other commit is Enter). Recorded in
@@ -8365,7 +8465,7 @@ function _bindVideoSearch() {
       // Enter is the commit. A query that describes a kind of film goes to
       // Browse; anything else is a title and searches as it always did.
       if (query && _actOnParsedQuery(_parseVideoQuery(query))) return
-      run()
+      run(true)
     }
     if (e.key === 'Escape') { input.value = ''; reset(); input.blur() }
   })
@@ -8381,7 +8481,7 @@ function _bindVideoSearch() {
     input.value = parked
     if (clear) clear.hidden = false
     _vSearchRemember(parked)
-    _runVideoTitleSearch(parked)
+    _runVideoTitleSearch(parked, { commit: true })
   }
 }
 
@@ -8530,6 +8630,28 @@ function _vSearchEmptyHtml(query) {
   '</div>'
 }
 
+// ── Replacing the search results ────────────────────────────────────────────
+// Every path that repaints #video-search-results throws away a grid of cards,
+// and a card that is thrown away has to leave the enrichment queue on the way
+// out. The queue (src/video-enrich.js) keys its bookkeeping on the card
+// ELEMENT in a plain Map and holds an apply closure per card, so a card it
+// still knows about is a detached <article>, its poster <img> and a closure
+// that can never be collected.
+//
+// This is the same leak _wipeVideoMounts closed for tab switches — in the path
+// it does not reach, and the busiest one there is. Search is debounced on
+// every keystroke: typing "tokyo revengers" is fourteen fetches, each of which
+// replaced a full result grid, and every chip click and decade change
+// replaced another. setContent() only sweeps on a page CHANGE, and none of
+// this changes the page.
+function _setVideoSearchHtml(html) {
+  const target = document.getElementById('video-search-results')
+  if (!target) return null
+  if (typeof _releaseCardsIn === 'function') _releaseCardsIn(target)
+  target.innerHTML = html
+  return target
+}
+
 // Paints a fetched result set into #video-search-results: the filter bar, then
 // the type-grouped rows, then the chips are wired. `note` is the optional
 // "Showing results for …" line the typo-tolerance retry passes in. Called on
@@ -8571,7 +8693,7 @@ function _paintVideoSearchResults(note) {
       if (groupItems[g.key].length) html += _vRowShell('search-' + g.key, g.label, groupItems[g.key].length)
     }
   }
-  target.innerHTML = html
+  _setVideoSearchHtml(html)
   if (anyShown) {
     for (const g of groupsShown) {
       if (groupItems[g.key].length) _fillRow('search-' + g.key, groupItems[g.key])
@@ -8602,9 +8724,27 @@ function _bindVideoSearchFilters() {
 // The title search, unchanged in spirit, lifted out so the parsed path can fall
 // back to it when a name turns out not to be a person. Now it also owns the
 // result filters (App §20) and the typo-tolerance retry (App §21).
-function _runVideoTitleSearch(query) {
+function _runVideoTitleSearch(query, opts) {
     const box = document.getElementById('video-search-results')
-    if (!box) return
+    if (!box) {
+      // Browse, the Diary and the Calendar all render the same Movies & TV
+      // header, so they all carry the same search box — and none of them has
+      // anywhere to put results. Typing a title into it on any of those three
+      // pages and pressing Enter did nothing whatsoever: this function found
+      // no box and returned. (A query that happened to parse as a KIND of
+      // film still worked, because that route leaves through
+      // _actOnParsedQuery before ever reaching here — so the box appeared to
+      // work for "korean thrillers" and to be broken for "Tokyo Revengers",
+      // which is worse than being uniformly dead.)
+      //
+      // A committed search now goes to the page that can answer it, by the
+      // same query-as-navId route that Back-into-a-search already uses:
+      // renderVideo puts the query back in the box and replays it. A
+      // debounced keystroke is NOT a commit and stays put — navigating away
+      // mid-word would take the page out from under someone still typing.
+      if (opts && opts.commit && query) navigate('video', query)
+      return
+    }
     const ticket = ++_videoSearchTicket
     // The query is the page's navId from this moment: navigating away (into a
     // detail page, another tab) records "video, searching for X" in history,
@@ -8624,7 +8764,7 @@ function _runVideoTitleSearch(query) {
     if (rows) rows.style.display = 'none'
     if (hero) hero.style.display = 'none'
     if (taste) taste.style.display = 'none'
-    box.innerHTML = _vRowShell('search', 'Searching…', 0)
+    _setVideoSearchHtml(_vRowShell('search', 'Searching…', 0))
 
     window.api.videoSearch({ query: query, type: 'all' })
       .catch(function (e) { return { ok: false, error: String((e && e.message) || e) } })
@@ -8633,7 +8773,7 @@ function _runVideoTitleSearch(query) {
         const target = document.getElementById('video-search-results')
         if (!target) return
         if (!res.ok) {
-          target.innerHTML = '<div class="vrow-msg err">' + esc(_videoErrorText(res.error)) + '</div>'
+          _setVideoSearchHtml('<div class="vrow-msg err">' + esc(_videoErrorText(res.error)) + '</div>')
           return
         }
         const results = Array.isArray(res.results) ? res.results : []
@@ -8647,7 +8787,7 @@ function _runVideoTitleSearch(query) {
           if (simplified && simplified !== query) {
             return _retryVideoTitleSearch(query, simplified, ticket)
           }
-          target.innerHTML = _vSearchEmptyHtml(query)
+          _setVideoSearchHtml(_vSearchEmptyHtml(query))
           return
         }
         _vSearchFilter.results = results
@@ -8670,7 +8810,7 @@ function _retryVideoTitleSearch(original, simplified, ticket) {
       if (!target) return
       const results = (res && res.ok && Array.isArray(res.results)) ? res.results : []
       if (!results.length) {
-        target.innerHTML = _vSearchEmptyHtml(original)
+        _setVideoSearchHtml(_vSearchEmptyHtml(original))
         return
       }
       // Commit-only: don't remember on this debounced retry. Update the pending
@@ -8860,7 +9000,7 @@ async function _openPersonByName(name, parsed) {
     // No such person: the words might still be a title, so hand them back to
     // the search that was already running rather than showing nothing.
     showSnackbar('No one called \u201c' + name + '\u201d \u2014 searching titles instead', null, null, 4000)
-    _runVideoTitleSearch(name)
+    _runVideoTitleSearch(name, { commit: true })
     return
   }
   navigate('person', String(people[0].id))
@@ -8966,6 +9106,13 @@ function _videoCard(item) {
   const metaBits = []
   if (item.year != null && item.year !== '') metaBits.push(esc(String(item.year)))
   if (item.season != null && item.episode != null) metaBits.push('S' + item.season + ' · E' + item.episode)
+  // An anime is numbered straight through, so the watch store records an
+  // episode and no season for one (_watchKey: 'anime:<id>:e<n>'). The line
+  // above wants both, so a Continue Watching card for an anime — which is most
+  // of that shelf here — said nothing at all about where you were. It showed a
+  // poster, a year and a progress bar, and left the one fact you came to the
+  // shelf for off the card.
+  else if (item.episode != null && item.episode !== '') metaBits.push('E' + esc(String(item.episode)))
 
   return '<article class="vcard" data-video="' + esc(key) + '" tabindex="0" role="button"' +
     // Where this card was left off. A Continue Watching card for episode 9
@@ -10662,7 +10809,15 @@ function _seasonEpisodeNumbers(season) {
     nums = s.episodes.map(function (ep) { return ep.episodeNumber }).filter(function (n) { return n != null })
   }
   if (!nums.length) {
-    document.querySelectorAll('#video-episode-list .video-episode-btn, #video-episode-list-inner .video-episode-btn')
+    // The fallback reads whatever the episode grid is currently showing. It
+    // used to look only for `.video-episode-btn` — the numbered buttons — and
+    // those are the FALLBACK rendering, used when src/episode-list.js is not
+    // loaded. With the module present (which is the shipping case) television
+    // and anime both draw `.vep-row` instead, so this found nothing and "Mark
+    // season watched" answered "No episodes to mark for this season" with a
+    // full season of episodes on the screen in front of you. Keying on the
+    // data attribute both shapes carry covers either rendering.
+    document.querySelectorAll('#video-episode-list [data-ep], #video-episode-list-inner [data-ep]')
       .forEach(function (b) { var n = Number(b.dataset.ep); if (n) nums.push(n) })
   }
   return nums
@@ -10769,7 +10924,14 @@ function _renderVideoControls(type) {
       _refreshTvEpisodes(_videoDetailTicket, ++_videoSeasonTicket)
     })
     document.getElementById('video-season-select')?.addEventListener('change', function (e) {
-      _videoState.season = Number(e.target.value) || 1
+      // `Number(v) || 1` eats season ZERO — TMDB's bucket for specials, OVAs
+      // and recaps, which the picker above goes to some trouble to sort last
+      // and to name "Specials" rather than "Season 0". Picking it therefore
+      // loaded season ONE's episodes and season one's sources, while the
+      // dropdown carried on reading "Specials": the page said one thing and
+      // did another, with nothing to tell you.
+      const picked = Number(e.target.value)
+      _videoState.season = Number.isFinite(picked) ? picked : 1
       _videoState.episode = 1
       _refreshTvEpisodes(_videoDetailTicket, ++_videoSeasonTicket)
     })

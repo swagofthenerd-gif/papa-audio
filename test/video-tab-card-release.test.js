@@ -81,7 +81,10 @@ function harness(source) {
     }),
   })
 
-  const mounts = { 'vrows': mount('vrows'), 'vtaste-row': mount('vtaste-row'), 'vhero-mount': mount('vhero-mount') }
+  // The search-results box is a fourth thing a tab switch throws away: the
+  // switch ends the search, and the result cards go with it.
+  const mounts = { 'vrows': mount('vrows'), 'vtaste-row': mount('vtaste-row'), 'vhero-mount': mount('vhero-mount'),
+    'video-search-results': mount('video-search-results') }
   const doc = { getElementById: id => mounts[id] || null }
 
   const sandbox = {
@@ -102,6 +105,7 @@ function harness(source) {
   vm.createContext(sandbox)
   vm.runInContext([
     extractFn(source, '_releaseCardsIn'),
+    extractFn(source, '_setVideoSearchHtml'),
     extractFn(source, '_wipeVideoMounts'),
     extractFn(source, '_renderVideoTab'),
   ].join('\n'), sandbox)
@@ -123,7 +127,7 @@ function harness(source) {
 test('a tab switch releases the cards it is throwing away', async () => {
   const h = harness(SRC)
   h.fill()
-  assert.strictEqual(h.observed.size, 9, 'nine cards across the three mounts')
+  assert.strictEqual(h.observed.size, 12, 'twelve cards across the four mounts')
   await h.sandbox._renderVideoTab(2)
   assert.strictEqual(h.observed.size, 0,
     'every card the switch discarded has left the enrichment queue')
@@ -156,7 +160,10 @@ test('MUTATION: without the release, every lap retains another set', async () =>
     h.fill()
     await h.sandbox._renderVideoTab(lap + 2)
   }
+  // Nine per lap, not twelve: this mutation only removes _wipeVideoMounts, and
+  // the search box is released by _setVideoSearchHtml on its own path. The
+  // three shelf mounts are the ones _wipeVideoMounts is responsible for.
   assert.strictEqual(h.observed.size, 54,
-    'six laps of nine cards, all still held by the queue — this is the leak')
+    'six laps of nine shelf cards, all still held by the queue — this is the leak')
   assert.strictEqual(h.sandbox.hoverStops, 0)
 })

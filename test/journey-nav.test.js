@@ -68,7 +68,9 @@ test('renderVideo restores a query navId instead of wiping to the catalog', () =
 test('_renderVideoTab only wipes the search when it is not restoring one', () => {
   const body = fnBody('_renderVideoTab')
   assert.match(body, /opts && opts\.preserveSearch/)
-  assert.match(body, /if \(searchBox && !preserve\) searchBox\.innerHTML = ''/)
+  // The wipe goes through _setVideoSearchHtml so the discarded result cards
+  // leave the enrichment queue with them (test/video-search-card-release).
+  assert.match(body, /if \(!preserve\) _setVideoSearchHtml\(''\)/)
   assert.match(body, /if \(!preserve && searchInput && searchInput\.value\)/)
   // And a genuine wipe ends the journey: the query navId is dropped.
   assert.match(body, /state\.currentVideoQuery = ''/)
