@@ -22739,7 +22739,18 @@ function _setChatBusy(busy) {
 // first. A request that names the action ("download …", "clear the queue")
 // is already authorisation and runs straight away.
 var _CONSEQUENTIAL_TOOLS = {
-  auto_download: { ask: /\b(download|get|grab|fetch|save)\b/i, what: function (i) { return 'Download "' + (i && i.query || '') + '" from Soulseek?' },
+  // "In so many words" has to mean the message named THIS action. A bare "get"
+  // or "save" does not. "get me something chill" is a request for music, and the
+  // assistant deciding that means a Soulseek transfer is precisely the case the
+  // preview exists for — yet the word "get" in his own sentence switched the
+  // preview off. "save" was worse: "save this queue" is about the queue, and it
+  // silently authorised a download in the same turn because the word appeared.
+  //
+  // What is left are the verbs that mean only this, plus "get" when the sentence
+  // goes on to say where from.
+  auto_download: {
+    ask: /\b(?:re-?)?download(?:s|ed|ing)?\b|\b(?:grab(?:s|bed|bing)?|fetch(?:es|ed|ing)?)\b|\bget\b[^.?!]{0,40}\bfrom\s+(?:soulseek|slsk)\b/i,
+    what: function (i) { return 'Download "' + (i && i.query || '') + '" from Soulseek?' },
     note: 'This queues a transfer to your download folder. It was not part of what you asked in so many words.' },
   clear_queue: { ask: /\b(clear|empty|wipe)\b/i, what: function () { return 'Clear the queue?' },
     note: 'Stops playback and empties the whole queue. Undo is offered afterwards.' },
