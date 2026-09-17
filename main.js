@@ -170,6 +170,13 @@ const { SysDepsAdvisor } = require('./src/sysdeps-advisor')
 const { AppUpdateCheck } = require('./src/app-update-check')
 const { formatDiagnostic } = require('./engine-diagnostics')
 const history = require('./history')
+// Used at module scope by the history-overflow archiver far below, so it must
+// be required HERE: a require placed next to its use site sat 645 lines after
+// the const that calls it, and the temporal dead zone aborted main.js midway
+// through loading. Everything declared after that point stayed uninitialised,
+// which surfaced as a stuck startup and a cascade of 'cannot access X before
+// initialization' from handlers that had already been registered.
+const { createHistoryArchive } = require('./src/history-archive')
 const { defaultSettings: eqDefaults, BANDS: EQ_BANDS, GAIN_LIMIT: EQ_GAIN_LIMIT, PRESETS: EQ_PRESETS, presetSettings } = require('./eq')
 const { MpvCrossfade } = require('./mpv-crossfade')
 const { linearToMpv, MPV_MAX } = require('./volume-map')
@@ -4911,7 +4918,6 @@ ipcMain.handle('library-inspect-paths', async (_, { paths }) => {
 
 const libPrune = require('./src/library-prune')
 const restoreMerge = require('./src/restore-merge')
-const { createHistoryArchive } = require('./src/history-archive')
 
 // One handler, not seven. Pruning is a single logical transaction — the
 // renderer must never be able to complete three of these and abandon the rest.
