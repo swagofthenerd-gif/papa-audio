@@ -20622,7 +20622,15 @@ function _removePreviewPill() {
 function playCurrentTrack() {
   const track = state.queue[state.queueIndex]
   if (!track) return
-  _playbackIntent++
+  // Which play this is. Starting a track is asynchronous -- a stream waits on
+  // yt-dlp, a local file on the disk -- so a slower earlier play can resolve
+  // AFTER a faster later one. Without this, the loser of that race still ran
+  // its whole onStarted: it repainted the bar with its own track, fired a
+  // desktop notification for it, armed the play-count timer against it, and
+  // wrote it into playbackState, so the next restart resumed a track he had
+  // already skipped past. The counter was already here and nothing read it.
+  const gen = ++_playbackIntent
+  const superseded = () => _playbackIntent !== gen
   // A marked-missing entry is skipped, never sent to the engine (roadmap 048).
   if (track._missing) {
     const next = _nextPlayableIndex(state.queueIndex)
@@ -20645,6 +20653,9 @@ function playCurrentTrack() {
   _applyPlaylistCrossfade(_consumePlaylistCfArm()).catch(() => {})
 
   function onStarted() {
+    // A newer play has started since this one was asked for. Everything below
+    // describes a track that is no longer the one being listened to.
+    if (superseded()) return
     extractAlbumColor(/^https?:\/\//.test(track.artPath || '') ? null : (track.artPath || null))
     state.isPlaying = true
     // Music is now genuinely playing. If a film is on screen, pause it and
@@ -20716,6 +20727,9 @@ function playCurrentTrack() {
   }
 
   function onError(e) {
+    // A superseded load failing is not news: the track it failed on is not the
+    // one playing, and reporting it would stop the one that is.
+    if (superseded()) return
     console.error('Playback error:', e)
     state.isPlaying = false
     updatePlayBtn()
