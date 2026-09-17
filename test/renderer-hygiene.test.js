@@ -315,13 +315,6 @@ test('the deferred seek cannot move a track the user chose', () => {
     'and confirms it is still seeking the track it loaded')
 })
 
-test('playCurrentTrack records the intent the restore watches', () => {
-  assert.match(RENDERER, /^var _playbackIntent = 0$/m)
-  const fn = RENDERER.slice(RENDERER.indexOf('function playCurrentTrack() {'),
-                       RENDERER.indexOf('function playCurrentTrack() {') + 200)
-  assert.match(fn, /_playbackIntent\+\+/, 'bumped on every deliberate start')
-})
-
 test('the explicit resume card still forces the restore', () => {
   // The guards are about the startup timer racing the user. When the user has
   // pressed "resume where you left off", they are the user.
@@ -330,48 +323,180 @@ test('the explicit resume card still forces the restore', () => {
   assert.match(fn, /restorePlaybackState\(\{ force: true \}\)/)
 })
 
-test('restorePlaybackState, run as the startup timer does, leaves live playback alone', async () => {
-  // A real run of the guard logic, not a reading of it: the queue the user
-  // built must survive a restore that resolves after they pressed play.
-  var order = []
-  var state = { queue: [{ filePath: '/user/pick.flac' }], queueIndex: 0, isPlaying: true, library: [] }
-  var _playbackIntent = 7
-  var audio = { src: 'file:///user/pick.flac', currentTime: 12 }
-  var api = {
-    getPlaybackState: async function () { order.push('getPlaybackState'); return { filePath: '/old/track.flac', position: 90 } },
-    getSavedQueues: async function () { order.push('getSavedQueues'); return [{ id: '_auto', tracks: [{ filePath: '/old/track.flac' }], index: 0 }] }
-  }
-  // The shape of the guarded function, transcribed from the source under test.
-  async function restore(opts) {
-    opts = opts || {}
-    var gen = _playbackIntent
-    var superseded = function () { return !opts.force && (_playbackIntent !== gen || state.isPlaying) }
-    if (!opts.force && (state.queue.length || state.isPlaying)) return 'bailed'
-    var saved = await api.getPlaybackState()
-    if (superseded()) return 'bailed'
-    state.queue = [{ filePath: saved.filePath }]
-    audio.src = 'file://' + saved.filePath
-    var queues = await api.getSavedQueues()
-    if (superseded()) return 'bailed'
-    state.queue = queues[0].tracks
-    return 'restored'
-  }
+// The restore is run for real here, not transcribed. The version this
+// replaced kept a hand-written `restore()` in the test body described as "the
+// shape of the guarded function, transcribed from the source under test" — a
+// copy passes forever, whatever the shipped function later does.
+function liftRestore(deps) {
+  const a = RENDERER.indexOf('async function restorePlaybackState(opts)')
+  assert.ok(a > -1, 'restorePlaybackState must still exist')
+  const b = RENDERER.indexOf('\n// \u2500\u2500 Navigation', a)
+  assert.ok(b > a)
+  // The one statement in playCurrentTrack that stamps the counter the restore
+  // watches, taken from the real source and EXECUTED below — so bumping some
+  // other variable, or not bumping at all, is caught by behaviour here rather
+  // than by the spelling of a line.
+  const head = RENDERER.slice(RENDERER.indexOf('function playCurrentTrack() {'))
+  const bump = /^[ \t]*(?:(?:const|let|var)\s+\w+\s*=\s*\+\+\s*_playbackIntent|_playbackIntent\s*\+\+)[ \t]*$/m
+    .exec(head.slice(0, 3000))
+  assert.ok(bump, 'playCurrentTrack must still stamp _playbackIntent on every deliberate start')
 
-  assert.strictEqual(await restore(), 'bailed', 'a non-empty queue is left alone')
-  assert.deepStrictEqual(order, [], 'and it does not even ask')
-  assert.strictEqual(audio.src, 'file:///user/pick.flac', 'the loaded track is untouched')
-  assert.deepStrictEqual(state.queue, [{ filePath: '/user/pick.flac' }])
+  const names = ['state', 'window', 'audio', 'setTimeout', 'showSnackbar', 'updatePlayBtn',
+    'updateNowPlaying', 'updateTrackHighlight', 'updateLikeBtn', 'syncExtension', 'renderQueuePanel']
+  return new Function(...names, `
+    var _playbackIntent = 0
+    ${RENDERER.slice(a, b)}
+    return {
+      restore: restorePlaybackState,
+      // What playCurrentTrack does when the listener starts something.
+      startTrack: function () { ${bump[0].trim()} },
+    }
+  `)(...names.map(n => deps[n]))
+}
 
-  // The race proper: empty at entry, but the user presses play during the await.
-  state.queue = []; state.isPlaying = false
-  api.getPlaybackState = async function () { _playbackIntent++; state.isPlaying = true; return { filePath: '/old/track.flac', position: 90 } }
-  assert.strictEqual(await restore(), 'bailed', 'the check after the first await catches it')
+// A library of one album, and a saved session pointing into it.
+function restoreHarness(over = {}) {
+  const tracks = [{ filePath: '/m/a1.flac' }, { filePath: '/m/a2.flac' }, { filePath: '/m/a3.flac' }]
+  const album = { artist: 'Boards of Canada', artPath: '/art.jpg', name: 'Geogaddi', tracks }
+  const state = Object.assign({
+    queue: [], queueIndex: -1, isPlaying: false, library: [album],
+    queuePanelOpen: false, shuffle: false, repeat: 'off', playbackSpeed: 1,
+  }, over.state)
+  const audio = { src: '', currentTime: 0 }
+  const snacks = []
+  const timers = []
+  const asked = []
+  const api = Object.assign({
+    getPlaybackState: async () => { asked.push('playbackState'); return { filePath: '/m/a2.flac', position: 90 } },
+    getSavedQueues: async () => { asked.push('savedQueues'); return [{ id: '_auto', tracks, index: 1 }] },
+  }, over.api)
+  const lifted = liftRestore({
+    state, audio, window: { api },
+    setTimeout: (fn, ms) => { timers.push({ fn, ms }); return { unref () {} } },
+    showSnackbar: (msg) => snacks.push(msg),
+    updatePlayBtn: () => {}, updateNowPlaying: () => {}, updateTrackHighlight: () => {},
+    updateLikeBtn: () => {}, syncExtension: () => {}, renderQueuePanel: () => {},
+  })
+  return { ...lifted, state, audio, snacks, timers, asked, tracks }
+}
 
-  // And with nothing playing at all, it still does its job.
-  state.queue = []; state.isPlaying = false
-  api.getPlaybackState = async function () { return { filePath: '/old/track.flac', position: 90 } }
-  assert.strictEqual(await restore(), 'restored')
-  assert.deepStrictEqual(state.queue, [{ filePath: '/old/track.flac' }])
+test('a queue the listener built is never restored over', async () => {
+  const h = restoreHarness({ state: { queue: [{ filePath: '/user/pick.flac' }], isPlaying: true } })
+  await h.restore()
+  assert.deepStrictEqual(h.asked, [], 'it does not even ask')
+  assert.deepStrictEqual(h.state.queue, [{ filePath: '/user/pick.flac' }])
+  assert.strictEqual(h.audio.src, '', 'the loaded track is untouched')
+})
+
+test('pressing play during the first await abandons the restore', async () => {
+  // The whole point: it is a 1.2s startup timer, and the listener is faster.
+  const h = restoreHarness({
+    api: {
+      getPlaybackState: async function () {
+        h.asked.push('playbackState')
+        h.startTrack()
+        h.state.isPlaying = true
+        h.state.queue = [{ filePath: '/user/pick.flac' }]
+        return { filePath: '/m/a2.flac', position: 90 }
+      },
+    },
+  })
+  await h.restore()
+  assert.deepStrictEqual(h.state.queue, [{ filePath: '/user/pick.flac' }],
+    'half-restoring over a queue the listener built is worse than not restoring')
+  assert.deepStrictEqual(h.asked, ['playbackState'], 'and it never went on to the saved queue')
+})
+
+test('pressing play during the second await abandons it too', async () => {
+  const h = restoreHarness({
+    api: {
+      getSavedQueues: async function () {
+        h.startTrack()
+        h.state.isPlaying = true
+        return [{ id: '_auto', tracks: [{ filePath: '/old/x.flac' }], index: 0 }]
+      },
+    },
+  })
+  await h.restore()
+  assert.ok(!h.state._restoredFromQueue, 'the saved queue was not applied')
+  assert.deepStrictEqual(h.snacks, [], 'and nothing was announced')
+})
+
+test('the deferred seek cannot move a track the listener has since chosen', async () => {
+  const h = restoreHarness()
+  await h.restore()
+  const seek = h.timers.find(t => t.ms === 500)
+  assert.ok(seek, 'the resume seek is still deferred')
+
+  h.startTrack()
+  h.state.isPlaying = true
+  h.audio.currentTime = 0
+  seek.fn()
+  assert.strictEqual(h.audio.currentTime, 0,
+    'it used to seek whatever was loaded by the time it fired')
+})
+
+test('the deferred seek will not move a different track that is now loaded', async () => {
+  const h = restoreHarness()
+  await h.restore()
+  const seek = h.timers.find(t => t.ms === 500)
+  h.audio.src = 'file:///user/something-else.flac'
+  h.audio.currentTime = 0
+  seek.fn()
+  assert.strictEqual(h.audio.currentTime, 0)
+})
+
+test('with nothing playing, the session really is restored', async () => {
+  const h = restoreHarness()
+  await h.restore()
+  assert.strictEqual(h.audio.src, 'file:///m/a2.flac', 'the track that was playing is loaded')
+  assert.strictEqual(h.state.isPlaying, false, 'loaded, not started — the listener presses play')
+  assert.strictEqual(h.state._restoredFromQueue, true)
+  assert.strictEqual(h.state.queueIndex, 1)
+  const seek = h.timers.find(t => t.ms === 500)
+  seek.fn()
+  assert.strictEqual(h.audio.currentTime, 90, 'and it picks up where it left off')
+  assert.match(h.snacks[0] || '', /Previous queue restored/)
+})
+
+test('a windowed queue says which stretch of the real queue it is', async () => {
+  const h = restoreHarness({
+    api: { getSavedQueues: async () => [{ id: '_auto', tracks: [{ filePath: '/m/a1.flac' }, { filePath: '/m/a2.flac' }], index: 0, truncatedFrom: 400, windowFrom: 119 }] },
+  })
+  await h.restore()
+  assert.match(h.snacks[0], /tracks 120–121 of 400/,
+    'reporting the truncated count as the whole thing is a lie about what was kept')
+})
+
+test('an index saved past the end of what was kept is clamped', async () => {
+  const h = restoreHarness({
+    api: { getSavedQueues: async () => [{ id: '_auto', tracks: [{ filePath: '/m/a1.flac' }], index: 500 }] },
+  })
+  await h.restore()
+  assert.strictEqual(h.state.queueIndex, 0, 'an old unclamped save must not land out of bounds')
+})
+
+test('the play modes come back with the queue they belong to', async () => {
+  const h = restoreHarness({
+    api: { getSavedQueues: async () => [{ id: '_auto', tracks: [{ filePath: '/m/a1.flac' }], index: 0, shuffle: true, repeat: 'one', speed: 1.5 }] },
+  })
+  await h.restore()
+  assert.strictEqual(h.state.shuffle, true)
+  assert.strictEqual(h.state.repeat, 'one')
+  assert.strictEqual(h.state.playbackSpeed, 1.5)
+})
+
+test('force overrides every guard, because that is the listener asking', async () => {
+  const h = restoreHarness({ state: { queue: [{ filePath: '/user/pick.flac' }], isPlaying: true } })
+  await h.restore({ force: true })
+  assert.strictEqual(h.state._restoredFromQueue, true, 'the resume card must actually resume')
+})
+
+test('a saved track that has left the library restores nothing', async () => {
+  const h = restoreHarness({ api: { getPlaybackState: async () => ({ filePath: '/gone/deleted.flac', position: 10 }) } })
+  await h.restore()
+  assert.deepStrictEqual(h.state.queue, [], 'no queue invented around a file that is not there')
+  assert.strictEqual(h.audio.src, '')
 })
 
 // ── Items 2.12 and 2.13: a disabled button must always come back ───────────

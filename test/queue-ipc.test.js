@@ -77,7 +77,63 @@ test('a halted run schedules exactly one resume re-check, guarded against stacki
   assert.ok(/app\.isQuitting/.test(main.slice(main.indexOf('startAnalysisRun'))), 'resume must not fire once quitting')
 })
 
-test('the feature store is flushed at quit like every other side store', () => {
-  const body = main.slice(main.indexOf('function flushSideStores'), main.indexOf('function flushSideStores') + 800)
-  assert.match(body, /featureStore\.flushSync\(\)/, 'featureStore is skipped by the quit-time flush')
+// ── The quit-time flush, run rather than read ───────────────────────────────
+// A whole-library analysis is hours of CPU. It is debounced in memory and only
+// reaches disk when something flushes it, so a flush that quietly skips the
+// feature store throws the whole run away on every quit. Asserting that the
+// string `featureStore.flushSync()` appears somewhere in an 800-character
+// window cannot see an early return placed above it, so the function is lifted
+// and run.
+function liftFlush(sideStores, featureStore) {
+  const a = main.indexOf('function flushSideStores()')
+  assert.ok(a > -1, 'flushSideStores must still exist in main.js')
+  const b = main.indexOf('\n;(function migrateFolder()', a)
+  assert.ok(b > a, 'and must still be followed by the folder migration')
+  return new Function('sideStores', 'featureStore',
+    main.slice(a, b) + '\nreturn flushSideStores')(sideStores, featureStore)
+}
+
+// A store that records being flushed; `boom` makes it throw like a corrupt one.
+const recorder = (log, name, boom = false) => ({
+  flushSync () { log.push(name); if (boom) throw new Error(name + ' is corrupt') },
+})
+
+test('quitting flushes every side store, the feature store included', () => {
+  const log = []
+  const sideStores = {
+    playHistory: recorder(log, 'playHistory'),
+    slskVerify: recorder(log, 'slskVerify'),
+    slskOrganizeLog: recorder(log, 'slskOrganizeLog'),
+  }
+  liftFlush(sideStores, recorder(log, 'featureStore'))()
+  assert.deepStrictEqual(log.sort(),
+    ['featureStore', 'playHistory', 'slskOrganizeLog', 'slskVerify'],
+    'hours of analysis and every side store must reach disk before the process goes')
+})
+
+test('one corrupt store does not take the rest of the flush down with it', () => {
+  // Without the per-store try, the first thrower at quit silently discards
+  // everything queued behind it — and quit is exactly when nothing is watching.
+  const log = []
+  const sideStores = {
+    first: recorder(log, 'first', true),
+    second: recorder(log, 'second'),
+    third: recorder(log, 'third', true),
+  }
+  liftFlush(sideStores, recorder(log, 'featureStore'))()
+  assert.ok(log.includes('second'), 'a store after the thrower still got written')
+  assert.ok(log.includes('featureStore'), 'and so did the analysis results')
+})
+
+test('a feature store that throws is survivable too', () => {
+  const log = []
+  liftFlush({ a: recorder(log, 'a') }, recorder(log, 'featureStore', true))()
+  assert.deepStrictEqual(log, ['a', 'featureStore'], 'quit must not become a crash')
+})
+
+test('the flush actually runs on the way out', () => {
+  // The lift above proves the function is right; this proves it is called.
+  assert.match(main, /flushSideStores\(\)/)
+  const quit = main.slice(main.indexOf("app.on('will-quit'"))
+  assert.match(quit.slice(0, 1500), /flushSideStores\(\)/, 'will-quit must flush')
 })

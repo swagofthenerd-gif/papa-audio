@@ -31,46 +31,131 @@ function slice(from, to) {
   return RENDERER.slice(a, b)
 }
 
+// The two halves are in different functions 200 lines apart: the card handler
+// arms _playOnArrival, and renderVideoDetail consumes it. Checking each half's
+// spelling separately is what let them drift — "arming auto-play alone would
+// have been WORSE than doing nothing" is a statement about the PAIR. Both are
+// lifted into one scope here, sharing the real variable, so the arm that is set
+// is the arm that is taken.
+function liftArrival() {
+  const bind = slice("      const act = e.target.closest('[data-act]')",
+    "      if (act.dataset.act === 'cwremove') {")
+  const take = slice('  _videoState = { season: null, episode: 1, sub: true }', '\n  _videoStreams = []')
+  const tvLine = /if \(!Number\.isFinite\(_videoState\.season\)\) _videoState\.season = pick/
+  assert.ok(tvLine.test(RENDERER),
+    'a tv page must still default its season only when none was asked for')
+
+  const opened = []
+  const fn = new Function('open', 'navigate', `
+    var _playOnArrival = null
+    var _videoState = null
+    var _autoPlayTicket = null
+    // Every detail page takes the next ticket, exactly as renderVideoDetail
+    // does — that is what stops a stale arm from playing on a later page.
+    var _videoDetailTicket = 0
+    function cardClick(e, c) { ${bind} }
+    function arrive() {
+      var ticket = ++_videoDetailTicket
+      ${take}
+      return { state: _videoState, autoPlay: _autoPlayTicket === ticket }
+    }
+    function tvDefaultSeason(pick) { ${tvLine.exec(RENDERER)[0]} }
+    return { cardClick: cardClick, arrive: arrive, tvDefaultSeason: tvDefaultSeason,
+             armed: function () { return _playOnArrival } }
+  `)(() => opened.push('detail'), () => opened.push('navigate'))
+  return { ...fn, opened }
+}
+
+// A shelf card, and a click on one of its buttons.
+function card(dataset) { return { dataset } }
+function clickOn(actName) {
+  const act = actName ? { dataset: { act: actName } } : null
+  return { target: { closest: sel => (sel === '[data-act]' ? act : null) }, stopPropagation () {} }
+}
+
 test('a card records the episode it was left off at', () => {
-  const card = slice("return '<article class=\"vcard\"", '</article>')
-  assert.match(card, /data-episode="/, 'the card carries its episode')
-  assert.match(card, /data-season="/, 'and its season')
+  const cardHtml = slice("return '<article class=\"vcard\"", '</article>')
+  assert.match(cardHtml, /data-episode="/, 'the card carries its episode')
+  assert.match(cardHtml, /data-season="/, 'and its season')
   // Only when there is one — a film card must not grow empty attributes.
-  assert.match(card, /item && item\.episode != null \?/)
-  assert.match(card, /item && item\.season != null \?/)
+  assert.match(cardHtml, /item && item\.episode != null \?/)
+  assert.match(cardHtml, /item && item\.season != null \?/)
 })
 
-test('the Play button arms a play, instead of only opening the page', () => {
-  const bind = slice('const open = function () { navigate(\'video-detail\'', 'keydown')
-  assert.match(bind, /_playOnArrival = \{/, 'it arms the arrival')
+test('Continue Watching plays the episode on the card, not episode one', () => {
+  // The whole point. A card reading "episode 9" that starts episode 1 does not
+  // merely fail to resume — it writes episode 1's position over episode 9's.
+  const a = liftArrival()
+  a.cardClick(clickOn('play'), card({ episode: '9', season: '3', video: 'tv:1396' }))
+  assert.strictEqual(a.opened.length, 1, 'the detail page still opens')
+
+  const arrived = a.arrive()
+  assert.strictEqual(arrived.state.episode, 9, 'episode 9, as the card said')
+  assert.strictEqual(arrived.state.season, 3)
+  assert.strictEqual(arrived.autoPlay, true, 'and it plays, rather than just sitting there')
+})
+
+test('a Play that carried no episode does not invent one', () => {
+  const a = liftArrival()
+  a.cardClick(clickOn('play'), card({ video: 'movie:550' }))
+  const arrived = a.arrive()
+  assert.strictEqual(arrived.state.episode, 1, 'a film starts where films start')
+  assert.strictEqual(arrived.state.season, null)
+  assert.strictEqual(arrived.autoPlay, true)
+})
+
+test('a season the card asked for survives the page picking a default', () => {
+  // A television page picks its first season on load. Doing that unconditionally
+  // is how Continue Watching on season 3 resumed season 1.
+  const a = liftArrival()
+  a.cardClick(clickOn('play'), card({ episode: '4', season: '3', video: 'tv:1396' }))
+  a.arrive()
+  a.tvDefaultSeason(1)
+  assert.strictEqual(a.armed(), null)
+  const again = liftArrival()
+  again.cardClick(clickOn('play'), card({ episode: '4', season: '3', video: 'tv:1396' }))
+  const st = again.arrive().state
+  again.tvDefaultSeason(1)
+  assert.strictEqual(st.season, 3, 'the default must not overwrite what was asked for')
+})
+
+test('a page opened with no season still gets the default', () => {
+  const a = liftArrival()
+  const st = a.arrive().state
+  a.tvDefaultSeason(2)
+  assert.strictEqual(st.season, 2, 'and a page nobody armed still picks one')
+})
+
+test('the arm is taken exactly once and never leaks into a later page', () => {
+  // An arm left set makes some later, unrelated page start playing by itself.
+  const a = liftArrival()
+  a.cardClick(clickOn('play'), card({ episode: '9', season: '3', video: 'tv:1396' }))
+  assert.ok(a.armed(), 'armed')
+  assert.strictEqual(a.arrive().autoPlay, true)
+  assert.strictEqual(a.armed(), null, 'cleared on the way in')
+  assert.strictEqual(a.arrive().autoPlay, false, 'the next page does not inherit it')
+})
+
+test('an arm carrying nothing usable is still cleared', () => {
+  const a = liftArrival()
+  a.cardClick(clickOn('play'), card({ episode: 'not-a-number', video: 'tv:1' }))
+  const first = a.arrive()
+  assert.strictEqual(first.state.episode, 1, 'junk is ignored, not coerced to NaN')
+  assert.ok(Number.isFinite(first.state.episode))
+  assert.strictEqual(a.armed(), null, 'and the arm is gone either way')
+  assert.strictEqual(a.arrive().autoPlay, false)
+})
+
+test('clicking anywhere else on a card opens it without arming a play', () => {
+  const a = liftArrival()
+  a.cardClick(clickOn(null), card({ episode: '9', video: 'tv:1396' }))
+  assert.strictEqual(a.opened.length, 1, 'the card still opens')
+  assert.strictEqual(a.armed(), null, 'but nothing starts playing on its own')
+  assert.strictEqual(a.arrive().autoPlay, false)
+})
+
+test('the old navigate-and-stop behaviour is gone, not merely shadowed', () => {
+  const bind = slice("const open = function () { navigate('video-detail'", 'keydown')
   assert.ok(!/act === 'play'\) return open\(\)/.test(bind),
-    'the old navigate-and-stop behaviour must be gone, not merely shadowed')
-  assert.match(bind, /episode: c\.dataset\.episode != null \? Number\(c\.dataset\.episode\) : null/)
-})
-
-test('the detail page takes the arm exactly once, and never inherits a stale one', () => {
-  const detail = slice('async function renderVideoDetail(navId)', '_videoStreams = []')
-  assert.match(detail, /const arrival = _playOnArrival/)
-  assert.match(detail, /_playOnArrival = null/, 'cleared immediately, before anything can fail')
-  // The clear must NOT be inside the if — a card Play that carried nothing
-  // usable would otherwise leave the arm set and make some later, unrelated
-  // page start playing by itself.
-  const clearAt = detail.indexOf('_playOnArrival = null')
-  const ifAt = detail.indexOf('if (arrival)')
-  assert.ok(clearAt < ifAt, 'cleared unconditionally, outside the branch')
-  assert.match(detail, /_autoPlayTicket = ticket/, 'and it actually plays')
-})
-
-test('the arm sets the episode it was given, and only a real number', () => {
-  const detail = slice('const arrival = _playOnArrival', '_videoStreams = []')
-  assert.match(detail, /Number\.isFinite\(arrival\.episode\)\) _videoState\.episode = arrival\.episode/)
-  assert.match(detail, /Number\.isFinite\(arrival\.season\)\) _videoState\.season = arrival\.season/)
-})
-
-// A television show picks its first season on load. That must not overwrite the
-// season a card Play just asked for, or Continue Watching on season 3 would
-// resume season 1.
-test('a television show does not overwrite the season the card asked for', () => {
-  const tv = slice("if (type === 'tv') {", '_renderVideoControls(type)')
-  assert.match(tv, /if \(!Number\.isFinite\(_videoState\.season\)\) _videoState\.season = pick/)
+    'a Play button that only opens a page is a lie')
 })

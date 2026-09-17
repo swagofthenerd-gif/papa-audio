@@ -256,6 +256,9 @@ test('an auto-skip preference still shows a cancellable countdown', () => {
 
 // Seeking to the end of the credits lands on a black frame; the useful action
 // is the next episode.
+// Both of these used to end in an assertion that held no matter what the deck
+// did (`x >= 0` and a bare `assert.ok(true)`), so the branch they are named
+// after was never run at all. The offer is now actually clicked.
 test('skipping end credits advances instead of seeking to a black frame', () => {
   let advanced = 0
   const { p, nodes, sent } = harness({
@@ -263,18 +266,29 @@ test('skipping end credits advances instead of seeking to a black frame', () => 
     onNext: () => { advanced++ },
   })
   p._setState(stateAt(3550))
-  nodes['vt-skip-btn'] = nodes['vt-skip-btn'] || el('vt-skip-btn')
-  p._setState(stateAt(3551))
-  assert.strictEqual(advanced + sent.filter(s => s.verb === 'seek').length >= 0, true)
+  assert.strictEqual(nodes['vt-skip'].hidden, false, 'the offer is on screen')
+  assert.match(nodes['vt-skip'].innerHTML, /Skip Credits/)
+
+  nodes['vt-skip-btn'].fire('click')
+  assert.strictEqual(advanced, 1, 'the next episode, not a black frame')
+  assert.deepStrictEqual(sent.filter(s => s.verb === 'seek'), [],
+    'and nothing was seeked to the last second of the file')
+  assert.strictEqual(nodes['vt-skip'].hidden, true, 'and the offer is dismissed once taken')
 })
 
 test('mid-file credits seek rather than advancing', () => {
-  const { p, sent } = harness({
+  // onNext exists here too, so what routes this is the segment ending mid-file
+  // and not merely the absence of a next episode.
+  const { p, nodes, sent } = harness({
     segments: [{ kind: 'credits', start: 100, end: 200, origin: 'chapters', confidence: 0.9 }],
     onNext: () => { throw new Error('must not advance mid-file') },
   })
   p._setState(stateAt(150))
-  assert.ok(true)
+  nodes['vt-skip-btn'].fire('click')
+  const seeks = sent.filter(s => s.verb === 'seek')
+  assert.strictEqual(seeks.length, 1, 'exactly one seek')
+  assert.strictEqual(seeks[0].args.seconds, 200, 'to the end of the credits')
+  assert.strictEqual(seeks[0].args.mode, 'absolute')
 })
 
 test('the keyboard drives the same commands as the buttons', t => {

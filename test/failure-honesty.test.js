@@ -58,28 +58,75 @@ test('the slskd token request carries a deadline, like every other slskd call', 
 // { name, healthy }. The renderer read only { ok } on an object, so every core
 // row rendered amber "unknown" and every source rendered red — the one screen a
 // person opens to find out what is wrong was inventing an outage.
-test('diagnostics understands booleans and healthy flags, not just { ok }', () => {
-  const fn = R.slice(R.indexOf('function _diagRowsHtml'))
-  const body = fn.slice(0, fn.indexOf('\n}\n'))
-  assert.match(body, /typeof check === 'boolean'/, 'a boolean check is a check')
-  assert.match(body, /'healthy' in check/, "a source's healthy flag is a check too")
-  assert.match(body, /c\.storeBridge/, 'and the key main actually sends for storage')
+// The renderer is a browser script with no exports, so _diagRowsHtml is lifted
+// out of its real source and run against the real esc(). The previous version
+// of this file kept a private copy of the normaliser and asserted on THAT, so
+// both polarity mutations to the shipped renderer stayed green — the test could
+// not see the screen it was named after. Every assertion below reads rendered
+// HTML produced by the shipped bytes.
+function liftDiag() {
+  let code = ''
+  for (const n of ['esc', '_diagRowsHtml']) {
+    const start = R.indexOf('function ' + n + '(')
+    assert.ok(start > -1, n + ' must still exist in renderer.js')
+    const end = R.indexOf('\nfunction ', start + 1)
+    code += R.slice(start, end === -1 ? undefined : end) + '\n'
+  }
+  return new Function(code + 'return _diagRowsHtml')()
+}
+const _diagRowsHtml = liftDiag()
+
+// The dot class is the whole point of the screen: ok / bad / unknown, in order.
+function dots(html) {
+  return [...String(html).matchAll(/mcs-diag-dot mcs-diag-(\w+)/g)].map(m => m[1])
+}
+
+test('a plain boolean check is a check, not an unknown', () => {
+  // main sends the four core checks as bare booleans. Reading only { ok } on an
+  // object rendered every one of them amber, so the one screen a person opens
+  // to find out what is wrong claimed nothing had been checked.
+  const html = _diagRowsHtml({ checks: { slskd: true, tmdb: false, mpv: true, storeBridge: true } })
+  assert.deepStrictEqual(dots(html), ['ok', 'bad', 'ok', 'ok'])
 })
 
-test('the normaliser maps every shape main can send to a definite state', () => {
-  // Mirrors the renderer's norm(); asserted here because the renderer is not
-  // loadable outside Electron.
-  const norm = check => {
-    if (typeof check === 'boolean') return { ok: check }
-    if (check && typeof check === 'object') {
-      return 'ok' in check ? check : ('healthy' in check ? { ok: check.healthy !== false, detail: check.detail } : check)
-    }
-    return null
-  }
-  assert.deepStrictEqual(norm(true), { ok: true })
-  assert.deepStrictEqual(norm(false), { ok: false })
-  assert.strictEqual(norm({ name: 'nyaa', healthy: true }).ok, true)
-  assert.strictEqual(norm({ name: 'nyaa', healthy: false }).ok, false)
-  assert.strictEqual(norm({ ok: true }).ok, true)
-  assert.strictEqual(norm(undefined), null, 'genuinely absent stays unknown')
+test("a source's healthy flag is a check too", () => {
+  const html = _diagRowsHtml({
+    checks: { slskd: true, tmdb: true, mpv: true, storeBridge: true },
+    sources: [{ name: 'nyaa', healthy: true }, { name: 'yts', healthy: false }],
+  })
+  assert.deepStrictEqual(dots(html).slice(4), ['ok', 'bad'],
+    'a healthy source must not render as an outage')
+  assert.match(html, /nyaa/)
+  assert.match(html, /yts/)
+})
+
+test('storage is read under the key main actually sends', () => {
+  const [, , , storage] = dots(_diagRowsHtml({ checks: { storeBridge: true } }))
+  assert.strictEqual(storage, 'ok', 'storeBridge is where main puts it')
+  const [, , , newer] = dots(_diagRowsHtml({ checks: { storage: false, storeBridge: true } }))
+  assert.strictEqual(newer, 'bad', 'and an explicit storage key wins when present')
+})
+
+test('an { ok } check is still honoured, and a detail is shown with it', () => {
+  const html = _diagRowsHtml({ checks: { slskd: { ok: false, detail: 'connection refused' } } })
+  assert.strictEqual(dots(html)[0], 'bad')
+  assert.match(html, /connection refused/)
+})
+
+test('a check that was never reported stays unknown — never a false green', () => {
+  assert.deepStrictEqual(dots(_diagRowsHtml({ checks: {} })), ['unknown', 'unknown', 'unknown', 'unknown'])
+  assert.deepStrictEqual(dots(_diagRowsHtml({ checks: { slskd: 'yes' } }))[0], 'unknown',
+    'a string is not a verdict')
+})
+
+test('a malformed payload is one honest line, not a throw', () => {
+  assert.match(_diagRowsHtml(null), /not available/)
+  assert.match(_diagRowsHtml('broken'), /not available/)
+  assert.deepStrictEqual(dots(_diagRowsHtml(null)), [], 'and invents no rows')
+})
+
+test('a source name is escaped, so a payload cannot inject markup', () => {
+  const html = _diagRowsHtml({ checks: {}, sources: [{ name: '<img src=x>', healthy: true }] })
+  assert.doesNotMatch(html, /<img/)
+  assert.match(html, /&lt;img/)
 })
