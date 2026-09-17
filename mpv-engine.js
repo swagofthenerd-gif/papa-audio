@@ -898,7 +898,12 @@ class MpvEngine extends EventEmitter {
     this._eofState = 'idle'
     this.client?.close()
     this.client = null
-    const resume = { ...this.state }
+    // let, not const: the device-loss policy below rewrites this to come back
+    // paused. As a const that reassignment threw a TypeError before start() was
+    // ever reached, so unplugging headphones mid-track killed the engine for
+    // good — no respawn, no engineFailed, nothing to tell the renderer. The
+    // one test that looked like it covered this only regex-matched the source.
+    let resume = { ...this.state }
     const now = Date.now()
     this._respawns = this._respawns.filter(t => now - t < RESPAWN_WINDOW_MS)
     // Blame the file before blaming the engine. A second EARLY death on the

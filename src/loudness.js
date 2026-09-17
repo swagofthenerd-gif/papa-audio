@@ -101,7 +101,12 @@
     if (!isFinite(base)) return baseMpvVolume
     var max = isFinite(Number(mpvMax)) ? Number(mpvMax) : 130
     if (gainDb == null || Number(gainDb) === 0) return Math.min(base, max)
-    var scaled = base * dbToLinear(gainDb)
+    // mpv's volume property is CUBIC in amplitude (see volume-map.js: the
+    // renderer's linear 0-1 is cube-rooted on the way in). Multiplying the
+    // volume percent by a linear amplitude ratio therefore cubes the ratio:
+    // a requested -6 dB actually delivered -18 dB, measured. Taking the cube
+    // root first makes the amplitude change equal the dB that was asked for.
+    var scaled = base * Math.cbrt(dbToLinear(gainDb))
     if (scaled < 0) scaled = 0
     if (scaled > max) scaled = max
     return Math.round(scaled * 10) / 10

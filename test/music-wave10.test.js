@@ -81,11 +81,31 @@ test('applyGainToMpvVolume is a no-op when there is no gain', () => {
   assert.strictEqual(L.applyGainToMpvVolume(100, 0, 130), 100)
 })
 
-test('applyGainToMpvVolume boosts and cuts by the linear factor', () => {
-  // +6 dB on a base of 50 → ~99.75.
-  assert.ok(Math.abs(L.applyGainToMpvVolume(50, 6, 130) - 99.8) < 0.2)
-  // -6 dB on 100 → ~50.
-  assert.ok(Math.abs(L.applyGainToMpvVolume(100, -6, 130) - 50.1) < 0.2)
+// Asserted in dB of ACTUAL LOUDNESS, not in mpv volume units. The old version
+// of this test pinned the volume number itself, which hid the real defect: mpv's
+// volume scale is cubic, so multiplying it by a linear amplitude ratio tripled
+// every correction — a requested -6 dB delivered -18 dB. A test that checks the
+// number the code happens to produce cannot catch that; one that checks the
+// loudness the listener actually gets, can.
+const amplitudeOf = mpvVolume => Math.pow(mpvVolume / 100, 3)
+const deliveredDb = (base, gainDb) =>
+  20 * Math.log10(amplitudeOf(L.applyGainToMpvVolume(base, gainDb, 130)) / amplitudeOf(base))
+
+test('applyGainToMpvVolume delivers the dB it was asked for', () => {
+  for (const asked of [-12, -6, -3, -1, 1, 3, 6]) {
+    const got = deliveredDb(100, asked)
+    assert.ok(Math.abs(got - asked) < 0.05,
+      `asked ${asked} dB, delivered ${got.toFixed(2)} dB`)
+  }
+})
+
+test('applyGainToMpvVolume delivers the same dB from any starting volume', () => {
+  // The correction is a ratio, so where the slider happens to sit must not
+  // change how much quieter or louder the track ends up.
+  for (const base of [40, 60, 80, 100]) {
+    const got = deliveredDb(base, -6)
+    assert.ok(Math.abs(got - -6) < 0.05, `base ${base}: delivered ${got.toFixed(2)} dB`)
+  }
 })
 
 test('applyGainToMpvVolume never exceeds the mpv ceiling', () => {
