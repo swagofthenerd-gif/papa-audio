@@ -135,3 +135,41 @@ test('one failing store does not stop the others being retired', () => {
 
   fs.rmSync(dir, { recursive: true, force: true })
 })
+
+test('adoption is on disk before the config copy is deleted', () => {
+  const dir = tmpdir()
+  // debounceMs deliberately long: if the migration relied on the normal
+  // debounced write, the file would still not exist when the delete happens,
+  // and a crash in that window would lose the data from both places.
+  const side = new SideStore({ dir, name: 'play-counts', fallback: {}, debounceMs: 5000 })
+
+  const store = fakeConfig({ playCounts: { 'a.flac': 41, 'b.flac': 7 } })
+  const res = retireLegacyKeys({ sideStores: { playCounts: side }, store })
+
+  assert.deepStrictEqual(res.adopted, ['playCounts'])
+  assert.deepStrictEqual(res.retired, ['playCounts'])
+
+  const onDisk = JSON.parse(fs.readFileSync(path.join(dir, 'play-counts.json'), 'utf8'))
+  assert.deepStrictEqual(onDisk, { 'a.flac': 41, 'b.flac': 7 },
+    'the side file must be durable BEFORE the only other copy is removed')
+  assert.strictEqual(store.has('playCounts'), false)
+
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test('a value held only in memory is not treated as a surviving copy', () => {
+  const dir = tmpdir()
+  const memoryOnly = {
+    adoptIfEmpty() { return false },
+    get() { return { 'a.flac': 41 } },
+    fileExists() { return false },
+  }
+  const store = fakeConfig({ playCounts: { 'a.flac': 41 } })
+  const res = retireLegacyKeys({ sideStores: { playCounts: memoryOnly }, store })
+
+  assert.deepStrictEqual(res.retired, [])
+  assert.deepStrictEqual(res.kept, ['playCounts'])
+  assert.strictEqual(store.has('playCounts'), true)
+
+  fs.rmSync(dir, { recursive: true, force: true })
+})

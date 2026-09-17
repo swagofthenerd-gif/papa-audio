@@ -1017,6 +1017,19 @@ const sideStores = {
   //                  source-mirror health record (src/source-health.js).
   trackerList: new SideStore({ dir: USER_DATA, name: 'tracker-list', fallback: null, debounceMs: 1000, onError: _sideErr }),
   sourceHealth: new SideStore({ dir: USER_DATA, name: 'source-health', fallback: null, debounceMs: 1000, onError: _sideErr }),
+
+  // The last four big keys off the shared config. electron-store .set() is a
+  // synchronous writeFileSync of the ENTIRE config on the main process thread,
+  // so the cost of every one of these writes was the size of the whole file,
+  // not the size of what changed. playCounts is the worst of them: it is
+  // written on every single track change, and at 181 KB it was dragging the
+  // other 1.1 MB through an fsync with it each time -- a stutter at exactly
+  // the moment the user is least willing to tolerate one.
+  playCounts:   new SideStore({ dir: USER_DATA, name: 'play-counts',   fallback: {}, debounceMs: 600, onError: _sideErr }),
+  tasteProfile: new SideStore({ dir: USER_DATA, name: 'taste-profile', fallback: null, debounceMs: 800, onError: _sideErr }),
+  savedQueues:  new SideStore({ dir: USER_DATA, name: 'saved-queues',  fallback: [], debounceMs: 600, onError: _sideErr }),
+  playlists:    new SideStore({ dir: USER_DATA, name: 'playlists',     fallback: [], debounceMs: 400, onError: _sideErr }),
+  likedTracks:  new SideStore({ dir: USER_DATA, name: 'liked-tracks',  fallback: [], debounceMs: 400, onError: _sideErr }),
 }
 
 // Move out of the shared config, and retire the legacy copy left behind.
@@ -3153,8 +3166,8 @@ ipcMain.handle('queue-build', async (_e, { mode = 'surprise', seedFilePath = nul
   const tracks = allLibraryTracks()
   const vectors = new Map([...featureMap()].map(([fp, entry]) => [fp, entry.vector]))
   const history = readHistoryEntries()
-  const playCounts = store.get('playCounts', {})
-  const affinity = buildAffinity({ history, playCounts, likedTracks: store.get('likedTracks', []) })
+  const playCounts = (sideStores.playCounts.get() || {})
+  const affinity = buildAffinity({ history, playCounts, likedTracks: (sideStores.likedTracks.get() || []) })
   const coldSet = mode === 'rediscover' ? buildColdSet({ history, playCounts }) : null
   let clusterOf = null, seedCluster = null
   if (mode === 'mix') {
@@ -4151,14 +4164,14 @@ ipcMain.handle('video-store-write-backup', (_, text) => {
 ipcMain.handle('get-liked', () => store.get('likedAlbums', []))
 ipcMain.on('save-liked', (_, ids) => store.set('likedAlbums', ids))
 
-ipcMain.handle('get-liked-tracks', () => store.get('likedTracks', []))
-ipcMain.on('save-liked-tracks', (_, paths) => store.set('likedTracks', paths))
+ipcMain.handle('get-liked-tracks', () => (sideStores.likedTracks.get() || []))
+ipcMain.on('save-liked-tracks', (_, paths) => sideStores.likedTracks.set(paths))
 
-ipcMain.handle('get-play-counts', () => store.get('playCounts', {}))
+ipcMain.handle('get-play-counts', () => (sideStores.playCounts.get() || {}))
 ipcMain.on('increment-play-count', (_, filePath) => {
-  const counts = store.get('playCounts', {})
+  const counts = (sideStores.playCounts.get() || {})
   counts[filePath] = (counts[filePath] || 0) + 1
-  store.set('playCounts', counts)
+  sideStores.playCounts.set(counts)
 })
 ipcMain.handle('get-play-history', () => sideStores.playHistory.get() || [])
 
@@ -4249,7 +4262,7 @@ function migratePlayHistory() {
   if (r.changed) sideStores.playHistory.set(history.sortNewestFirst(r.entries))
 
   // Reported, never rewritten: which side is right is not this code's call.
-  const rec = history.reconcile(r.entries, store.get('playCounts', {}))
+  const rec = history.reconcile(r.entries, (sideStores.playCounts.get() || {}))
   if (rec.disagreeing) {
     console.error(`[papa][history] play counts and history disagree on ${rec.disagreeing} tracks: ` +
       `${rec.countedTotal} counted vs ${rec.historyTotal} recorded ` +
@@ -4331,29 +4344,29 @@ ipcMain.handle('get-followed-artists', () => store.get('followedArtists', []))
 ipcMain.on('save-followed-artists', (_, artists) => store.set('followedArtists', artists))
 
 // ── Saved queues ─────────────────────────────────────────────────────────────
-ipcMain.handle('get-saved-queues', () => store.get('savedQueues', []))
+ipcMain.handle('get-saved-queues', () => (sideStores.savedQueues.get() || []))
 ipcMain.on('save-queue', (_, q) => {
-  const queues = store.get('savedQueues', []).filter(x => x.id !== q.id)
+  const queues = (sideStores.savedQueues.get() || []).filter(x => x.id !== q.id)
   queues.unshift(q)
-  store.set('savedQueues', queues.slice(0, 30))
+  sideStores.savedQueues.set(queues.slice(0, 30))
 })
 ipcMain.on('delete-saved-queue', (_, id) => {
-  store.set('savedQueues', store.get('savedQueues', []).filter(q => q.id !== id))
+  sideStores.savedQueues.set((sideStores.savedQueues.get() || []).filter(q => q.id !== id))
 })
 ipcMain.on('rename-saved-queue', (_, { id, name }) => {
-  store.set('savedQueues', store.get('savedQueues', []).map(q => q.id === id ? { ...q, name } : q))
+  sideStores.savedQueues.set((sideStores.savedQueues.get() || []).map(q => q.id === id ? { ...q, name } : q))
 })
 
 // ── Playlists ────────────────────────────────────────────────────────────────
-ipcMain.handle('get-playlists', () => store.get('playlists', []))
+ipcMain.handle('get-playlists', () => (sideStores.playlists.get() || []))
 ipcMain.on('save-playlist', (_, pl) => {
-  const pls = store.get('playlists', [])
+  const pls = (sideStores.playlists.get() || [])
   const idx = pls.findIndex(p => p.id === pl.id)
   if (idx >= 0) pls[idx] = pl; else pls.unshift(pl)
-  store.set('playlists', pls)
+  sideStores.playlists.set(pls)
 })
 ipcMain.on('delete-playlist', (_, id) => {
-  store.set('playlists', store.get('playlists', []).filter(p => p.id !== id))
+  sideStores.playlists.set((sideStores.playlists.get() || []).filter(p => p.id !== id))
 })
 
 // ── YouTube saves (parallel stores — never merged into the library cache) ────
@@ -4850,21 +4863,21 @@ ipcMain.handle('library-prune-state', (_, { removed, renamed }) => {
   if (!Object.keys(map).length) return { ok: true, summary: null, snapshot: null }
 
   const snapshot = {
-    likedTracks:   store.get('likedTracks', []),
-    playCounts:    store.get('playCounts', {}),
+    likedTracks:   (sideStores.likedTracks.get() || []),
+    playCounts:    (sideStores.playCounts.get() || {}),
     playHistory:   sideStores.playHistory.get() || [],
-    playlists:     store.get('playlists', []),
-    savedQueues:   store.get('savedQueues', []),
+    playlists:     (sideStores.playlists.get() || []),
+    savedQueues:   (sideStores.savedQueues.get() || []),
     playbackState: sideStores.playbackState.get(),
   }
   const { next, summary } = libPrune.pruneAll(snapshot, map)
   if (!summary.touched && !summary.renamed) return { ok: true, summary, snapshot: null }
 
-  store.set('likedTracks',   next.likedTracks)
-  store.set('playCounts',    next.playCounts)
+  sideStores.likedTracks.set(next.likedTracks)
+  sideStores.playCounts.set(next.playCounts)
   sideStores.playHistory.set(next.playHistory)
-  store.set('playlists',     next.playlists)
-  store.set('savedQueues',   next.savedQueues)
+  sideStores.playlists.set(next.playlists)
+  sideStores.savedQueues.set(next.savedQueues)
   if (next.playbackState) sideStores.playbackState.set(next.playbackState)
   else sideStores.playbackState.set(null)
 
@@ -4875,11 +4888,11 @@ ipcMain.handle('library-prune-state', (_, { removed, renamed }) => {
 
 ipcMain.handle('library-restore-state', (_, { snapshot }) => {
   if (!snapshot) return { ok: false, error: 'Nothing to restore' }
-  if (snapshot.likedTracks)   store.set('likedTracks', snapshot.likedTracks)
-  if (snapshot.playCounts)    store.set('playCounts', snapshot.playCounts)
+  if (snapshot.likedTracks)   sideStores.likedTracks.set(snapshot.likedTracks)
+  if (snapshot.playCounts)    sideStores.playCounts.set(snapshot.playCounts)
   if (snapshot.playHistory)   sideStores.playHistory.set(snapshot.playHistory)
-  if (snapshot.playlists)     store.set('playlists', snapshot.playlists)
-  if (snapshot.savedQueues)   store.set('savedQueues', snapshot.savedQueues)
+  if (snapshot.playlists)     sideStores.playlists.set(snapshot.playlists)
+  if (snapshot.savedQueues)   sideStores.savedQueues.set(snapshot.savedQueues)
   if (snapshot.playbackState) sideStores.playbackState.set(snapshot.playbackState)
   return { ok: true }
 })
@@ -5065,14 +5078,14 @@ ipcMain.handle('library-relink-apply', async (_, { remaps, root } = {}) => {
     // queues, resume) through the same remap the in-app move uses.
     const map = libPrune.buildRemap([], list)
     const snapshot = {
-      likedTracks: store.get('likedTracks', []), playCounts: store.get('playCounts', {}),
-      playHistory: sideStores.playHistory.get() || [], playlists: store.get('playlists', []),
-      savedQueues: store.get('savedQueues', []), playbackState: sideStores.playbackState.get(),
+      likedTracks: (sideStores.likedTracks.get() || []), playCounts: (sideStores.playCounts.get() || {}),
+      playHistory: sideStores.playHistory.get() || [], playlists: (sideStores.playlists.get() || []),
+      savedQueues: (sideStores.savedQueues.get() || []), playbackState: sideStores.playbackState.get(),
     }
     const { next, summary } = libPrune.pruneAll(snapshot, map)
-    store.set('likedTracks', next.likedTracks); store.set('playCounts', next.playCounts)
-    sideStores.playHistory.set(next.playHistory); store.set('playlists', next.playlists)
-    store.set('savedQueues', next.savedQueues)
+    sideStores.likedTracks.set(next.likedTracks); sideStores.playCounts.set(next.playCounts)
+    sideStores.playHistory.set(next.playHistory); sideStores.playlists.set(next.playlists)
+    sideStores.savedQueues.set(next.savedQueues)
     if (next.playbackState) sideStores.playbackState.set(next.playbackState)
     // The library cache follows too, so the albums keep their ids (and their
     // album-level likes and notes) instead of being re-created by the rescan.
@@ -5380,14 +5393,14 @@ function _remapMovedPrefix(from, to) {
   if (!renamed.length) return 0
   const map = libPrune.buildRemap([], renamed)
   const snapshot = {
-    likedTracks: store.get('likedTracks', []), playCounts: store.get('playCounts', {}),
-    playHistory: sideStores.playHistory.get() || [], playlists: store.get('playlists', []),
-    savedQueues: store.get('savedQueues', []), playbackState: sideStores.playbackState.get(),
+    likedTracks: (sideStores.likedTracks.get() || []), playCounts: (sideStores.playCounts.get() || {}),
+    playHistory: sideStores.playHistory.get() || [], playlists: (sideStores.playlists.get() || []),
+    savedQueues: (sideStores.savedQueues.get() || []), playbackState: sideStores.playbackState.get(),
   }
   const { next } = libPrune.pruneAll(snapshot, map)
-  store.set('likedTracks', next.likedTracks); store.set('playCounts', next.playCounts)
-  sideStores.playHistory.set(next.playHistory); store.set('playlists', next.playlists)
-  store.set('savedQueues', next.savedQueues)
+  sideStores.likedTracks.set(next.likedTracks); sideStores.playCounts.set(next.playCounts)
+  sideStores.playHistory.set(next.playHistory); sideStores.playlists.set(next.playlists)
+  sideStores.savedQueues.set(next.savedQueues)
   if (next.playbackState) sideStores.playbackState.set(next.playbackState)
   sideStores.libraryCache.set(albums)
   return renamed.length
@@ -6631,16 +6644,16 @@ ipcMain.handle('save-api-keys', (_, { provider, claudeKey, openaiKey }) => {
 // qualifying track. Recording itself always worked; the refresh never ran.
 ipcMain.handle('taste-record-play', (_, data) => {
   try {
-    const profile = store.get('tasteProfile', { plays: [] })
+    const profile = (sideStores.tasteProfile.get() || { plays: [] })
     profile.plays.push({ artist: data.artist || '', album: data.album || '', title: data.title || '', ts: Date.now() })
     if (profile.plays.length > 2000) profile.plays = profile.plays.slice(-2000)
-    store.set('tasteProfile', profile)
+    sideStores.tasteProfile.set(profile)
   } catch (_) {}
 })
 
 ipcMain.handle('taste-get-profile', () => {
   try {
-    const profile = store.get('tasteProfile', { plays: [] })
+    const profile = (sideStores.tasteProfile.get() || { plays: [] })
     const counts = {}
     for (const p of profile.plays) {
       if (p.artist) counts[p.artist] = (counts[p.artist] || 0) + 1

@@ -34,11 +34,21 @@ function retireLegacyKeys({ sideStores, store, log, onError }) {
     try {
       if (!store.has || !store.has(key)) continue
 
-      if (side.adoptIfEmpty(store.get(key))) adopted.push(key)
+      if (side.adoptIfEmpty(store.get(key))) {
+        adopted.push(key)
+        // adoptIfEmpty writes through the normal DEBOUNCED path, so at this
+        // instant the value is in memory and not yet on disk. Deleting the
+        // config key here would open a window -- hundreds of milliseconds, but
+        // real -- in which a crash or a kill loses the data from both places.
+        // Force it down synchronously before the only other copy is removed.
+        try { if (typeof side.flushSync === 'function') side.flushSync() } catch (_) {}
+      }
 
-      // Re-read through the side store: this is the proof that the data
-      // survives the delete. `fileExists()` alone is not enough -- a truncated
-      // or unparsable side file exists and reads back as the fallback.
+      // Two independent proofs that the data survives the delete.
+      //
+      // The value must read back non-empty: `fileExists()` alone is not enough,
+      // because a truncated or unparsable side file exists and reads back as
+      // the fallback.
       let live
       try { live = side.get() } catch (_) { live = undefined }
 
@@ -48,6 +58,13 @@ function retireLegacyKeys({ sideStores, store, log, onError }) {
         kept.push(key)
         continue
       }
+
+      // And the side file must actually be ON DISK. An in-memory value with no
+      // file behind it is not a copy -- it is the same single copy, about to be
+      // the only one, held somewhere that does not survive a power cut.
+      let onDisk = true
+      try { if (typeof side.fileExists === 'function') onDisk = side.fileExists() } catch (_) { onDisk = false }
+      if (!onDisk) { kept.push(key); continue }
 
       store.delete(key)
       retired.push(key)
