@@ -409,6 +409,28 @@ const YT_FORMATS = {
   pair: 'bestvideo[height<=1080][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio',
 }
 
+// Every execFile in this file carries an explicit timeout. The spawn sites were
+// missed, and a hung ffmpeg — a stalled network mount, a file that decodes
+// forever, a corrupt header — otherwise stays alive for the life of the app: the
+// promise never settles, the IPC handler behind it never returns, and the
+// .papa-tag-* / .papa-art-* temp file is left on disk. batch-transcode awaits
+// sequentially, so one hang stalls every remaining file permanently.
+//
+// Same shape resolveYtUrl already uses below, factored out so the four ffmpeg
+// spawns cannot each forget it again.
+function _killAfter(proc, ms) {
+  let killed = false
+  const timer = setTimeout(() => {
+    killed = true
+    try { proc.kill('SIGKILL') } catch (_) {}
+  }, ms)
+  timer.unref?.()
+  const disarm = () => clearTimeout(timer)
+  proc.once('close', disarm)
+  proc.once('error', disarm)
+  return { disarm, killed: () => killed }
+}
+
 function resolveYtUrl(videoId, kind = 'audio') {
   const format = YT_FORMATS[kind] || YT_FORMATS.audio
   // Cached per format: the same id resolves to a different URL for audio and
@@ -5467,6 +5489,8 @@ function writeTagsOne(filePath, tags) {
     }
     args.push('-y', tmp)
     const proc = spawn('ffmpeg', args)
+    // A tag write is seconds; two minutes is a hang.
+    _killAfter(proc, 120000)
     let err = ''
     proc.stderr.on('data', d => { err = (err + d.toString()).slice(-400) })
     proc.on('error', e => { try { fs.unlinkSync(tmp) } catch (_) {} resolve({ ok: false, error: e.message }) })
@@ -5533,6 +5557,8 @@ ipcMain.handle('library-set-artwork', async (_, { albumId, sourcePath, embed, fi
       '-v', 'error', '-i', sourcePath,
       '-vf', 'scale=min(1000\\,iw):-1', '-q:v', '3', '-y', dest,
     ])
+    // Artwork work is seconds; two minutes is a hang.
+    _killAfter(proc, 120000)
     proc.on('error', resolve)
     proc.on('close', resolve)
   })
@@ -5569,6 +5595,8 @@ function embedArtworkOne(filePath, imagePath) {
       '-metadata:s:v', 'title=Album cover',
       '-y', tmp,
     ])
+    // Artwork work is seconds; two minutes is a hang.
+    _killAfter(proc, 120000)
     proc.on('error', () => { try { fs.unlinkSync(tmp) } catch (_) {} resolve(false) })
     proc.on('close', (code) => {
       if (code !== 0) { try { fs.unlinkSync(tmp) } catch (_) {} resolve(false); return }
@@ -7820,6 +7848,23 @@ async function dlCheckCompletedGroups() {
     try { await dlVerifyGroup(group) } catch (e) {
       console.error('[papa] post-download verify failed for', key, String(e && e.message || e))
     }
+    // Retire the group once it has been verified. All three of these were pure
+    // growth — dlSucceeded gains TWO entries per completed file and held full
+    // remote path strings, dlGroups one per album with its own growing files
+    // Set, dlVerifiedGroups one per album — and none of them had an eviction
+    // anywhere. The same file caps twenty-four other structures for exactly
+    // this reason; pruneDlDone's own comment says "the point is that it is
+    // bounded at all".
+    //
+    // It is not only memory: this loop walks ALL of dlGroups and runs on every
+    // dlTick, so a group that will never complete — an abandoned peer, a dead
+    // file — had its file list re-walked every four seconds for the life of the
+    // process.
+    for (const f of group.files) {
+      dlSucceeded.delete(f)
+    }
+    dlGroups.delete(key)
+    dlVerifiedGroups.delete(key)
   }
 }
 
@@ -9865,6 +9910,8 @@ function transcodeFile({ filePath, format, outDir }) {
     args.push(out, '-y')
     
     var proc = spawn('ffmpeg', args)
+    // A transcode of a long file is legitimately slow; thirty minutes is a hang.
+    _killAfter(proc, 1800000)
     var stderr = ''
     proc.stderr.on('data', d => stderr = (stderr + d.toString()).slice(-500))
     proc.on('error', e => resolve({ ok: false, error: e.message }))

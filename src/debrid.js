@@ -1,4 +1,5 @@
 'use strict'
+const { makeCache } = require('./ttl-cache')
 // RealDebrid magnet → direct HTTPS stream (roadmap #40).
 //
 // When the user has a debrid account, a magnet the swarm would take a minute to
@@ -115,7 +116,16 @@ function createDebrid(opts = {}) {
   // magnet infohash → resolved HTTPS URL, for the life of this instance. A magnet
   // resolved once should not pay the whole addMagnet/poll/unrestrict round trip
   // again in the same session (a source switch back and forth, a re-watch).
-  const linkCache = new Map()
+  // Capped and TTL'd rather than a bare Map. Both of these grew one entry per
+  // distinct magnet or torrent ever resolved, for the life of the instance —
+  // and an infoCache entry holds a whole torrent's files array plus its links,
+  // which for a season pack is twenty-plus file records. Thirteen caches in
+  // main.js already go through makeCache for exactly this reason.
+  //
+  // A debrid link is short-lived anyway (the /d/ link outlives the torrent
+  // entry, but not by days), so a TTL is not just hygiene here — it stops a
+  // stale link being handed back long after it stopped working.
+  const linkCache = makeCache({ cap: 400, ttlMs: 6 * 60 * 60 * 1000 })
 
   // hash → the torrent's file list and restricted links, as RealDebrid last
   // reported them. Kept because a season pack has one entry per episode and
@@ -123,7 +133,7 @@ function createDebrid(opts = {}) {
   // that happened to be played. RD's /d/ links outlive the torrent entry, so
   // this stays usable for switching episodes even after the torrent is gone
   // from the account.
-  const infoCache = new Map()
+  const infoCache = makeCache({ cap: 200, ttlMs: 6 * 60 * 60 * 1000 })
 
   // A pack's episodes are different files behind one infohash, so the link
   // cache cannot be keyed on the hash alone — asking for episode 3 after
