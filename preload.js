@@ -411,6 +411,8 @@ contextBridge.exposeInMainWorld('api', {
   agentSaveConv:     (p)   => ipcRenderer.invoke('agent-save-conv', p),
   agentUpdateProfile:(p)   => ipcRenderer.invoke('agent-update-profile', p),
   agentClearMemory:  ()    => ipcRenderer.invoke('agent-clear-memory'),
+  // Roadmap 109: edit / delete / exclude one insight.
+  agentEditInsight:  (p)   => ipcRenderer.invoke('agent-edit-insight', p),
 
   // mpv player engine
   playerLoad:        (p) => ipcRenderer.invoke('player-load', p),

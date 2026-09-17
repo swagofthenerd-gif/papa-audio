@@ -1254,6 +1254,26 @@ function updateFormatBadge(track) {
   el.className = 'np-format' + (isMaster ? ' hi-res master' : isHiRes ? ' hi-res' : '')
 }
 
+// Roadmap 092: one export routine for playlists and liked songs — extended
+// M3U8, UTF-8, absolute paths, streams kept as comments — and a report that
+// says what went in and what could not.
+function _exportM3u8(name, tracks) {
+  var tools = (typeof window !== 'undefined' && window.PapaMusicTools) || null
+  if (!tools) return
+  var out = tools.m3u8For(name, tracks)
+  var blob = new Blob(['\ufeff' + out.text], { type: 'audio/x-mpegurl;charset=utf-8' })
+  var url = URL.createObjectURL(blob)
+  var a = document.createElement('a')
+  a.href = url
+  a.download = String(name).replace(/[/\\?%*:|"<>]/g, '_') + '.m3u8'
+  a.click()
+  URL.revokeObjectURL(url)
+  var bits = ['Exported ' + out.files + ' file' + (out.files === 1 ? '' : 's') + ' as .m3u8 (absolute paths)']
+  if (out.streams) bits.push(out.streams + ' stream' + (out.streams === 1 ? '' : 's') + ' kept as comments — other players cannot open them')
+  if (out.skipped) bits.push(out.skipped + ' without a path skipped')
+  showSnackbar(bits.join(' · '), '', function () {}, 6000)
+}
+
 // Roadmap 098: requested versus active output, under the device picker.
 function _paintActiveDevice() {
   var el = document.getElementById('pb-device-active')
@@ -1533,6 +1553,7 @@ async function init() {
   restoreDiscoverDismissals()
   restoreHoverTrailerPref()
   restoreHideSeenPref()
+  restoreSpoilerPref()
 
   window.api.slskStatus().then(s => { _setSlskStatus(s) }).catch(() => {})
   // The rate is decided in one place; at startup nothing is known to be active
@@ -4205,9 +4226,16 @@ async function _autoSwitchSource() {
     _watch.pick = next
     _watch.stallEvents = 0
     _watch.stallNotified = false
+    const before = _playing || {}
     _playing = { dub: next.dub === true, source: next.source || null, quality: next.quality || null }
     _syncSourcesHighlight()
-    showToast('Switched to ' + (next.source || 'another source'))
+    // V058: the fallback says what changed, not only that it happened — a
+    // different quality, or a dub where there was a sub, is a real change
+    // the person would want to know about and can undo from the list.
+    const changed = []
+    if (before.quality && next.quality && before.quality !== next.quality) changed.push(before.quality + ' → ' + next.quality)
+    if (before.dub != null && next.dub != null && Boolean(before.dub) !== Boolean(next.dub)) changed.push(next.dub ? 'now dubbed' : 'now subtitled')
+    showToast('Switched to ' + (next.source || 'another source') + (changed.length ? ' (' + changed.join(', ') + ') — pick another from the list if that is wrong' : ''))
   }
 }
 
@@ -5854,6 +5882,41 @@ function setHideSeen(on) {
   try { localStorage.setItem(HIDE_SEEN_KEY, _hideSeen ? '1' : '0') } catch (_) {}
 }
 
+// V020: spoiler-safe episode lists. On by default: an episode you have not
+// watched shows its number, title, date and runtime, but its synopsis and
+// still are concealed until you ask — a click on the row's "Show" reveals
+// that one; the toggle above the list reveals all. Watched episodes and the
+// one you are on are never concealed. Off is remembered.
+const SPOILER_SAFE_KEY = 'papa_spoiler_safe'
+var _spoilerSafe = true
+function restoreSpoilerPref() {
+  try { _spoilerSafe = localStorage.getItem(SPOILER_SAFE_KEY) !== '0' } catch (_) { _spoilerSafe = true }
+}
+function setSpoilerSafe(on) {
+  _spoilerSafe = !!on
+  try { localStorage.setItem(SPOILER_SAFE_KEY, _spoilerSafe ? '1' : '0') } catch (_) {}
+}
+function _spoilerToggleHtml() {
+  return '<label class="video-control vep-spoiler-toggle" title="Hide the synopsis and picture of episodes you have not watched"><input type="checkbox" id="vep-spoiler-safe"' +
+    (_spoilerSafe ? ' checked' : '') + '> <span>Hide spoilers</span></label>'
+}
+// A row's own "Show synopsis" reveals that row and nothing else.
+function _bindRevealButtons(list) {
+  if (!list) return
+  list.querySelectorAll('.vep-reveal').forEach(function (btn) {
+    btn.addEventListener('click', function (e) {
+      e.stopPropagation()
+      const row = btn.closest('.vep-row')
+      if (row) row.classList.remove('concealed')
+      const box = btn.closest('.vep-synopsis')
+      if (box) { box.classList.remove('vep-synopsis-hidden'); box.textContent = btn.dataset.text || '' }
+    })
+  })
+}
+function _bindSpoilerToggle(repaint) {
+  document.getElementById('vep-spoiler-safe')?.addEventListener('change', function (e) { setSpoilerSafe(e.target.checked); repaint() })
+}
+
 // A card's key is the same _watchKey shape the diary stores, so "seen" here and
 // "seen" in the diary cannot disagree.
 function _cardKey(item) {
@@ -6303,7 +6366,7 @@ async function _renderVideoTab(ticket, opts) {
     if (res.viaMal) _rowViaMalNote(row.key, items)
     // Saved-list content is real, so the row fills normally — a small note just
     // admits it may be stale while AniList recovers.
-    else if (res.fromCache) _rowCacheNote(row.key)
+    else if (res.fromCache) _rowCacheNote(row.key, res.cachedAt)
     // The hero features from the full row: what you have seen is hidden from
     // the shelf you scroll, not from the editorial spotlight.
     if (row.key === wanted[0].key && !(_videoTab === 'anime' && pending !== wanted)) _startVideoHero(items, ticket)
@@ -6366,7 +6429,7 @@ async function _fillAnimeHome(ticket, wanted) {
     if (!list.length) return _dropRow(row.key)
     const items = row.home === 'newEpisodes' ? list.map(_newEpisodeCard) : list
     _fillRowHideSeen(row.key, items)
-    if (res.fromCache) _rowCacheNote(row.key)
+    if (res.fromCache) _rowCacheNote(row.key, res.cachedAt)
     if (row.key === 'trending-anime') _startVideoHero(list, ticket)
   })
   _renderTodayRow(home.today)
@@ -6924,14 +6987,15 @@ function _anilistOutageText(message) {
 // A small note pinned under a shelf that is showing its last SAVED list because
 // AniList is currently down. The content is real (the last good result), so the
 // row renders normally; this only tells the user it may be stale.
-function _rowCacheNote(key) {
+function _rowCacheNote(key, cachedAt) {
   const row = document.querySelector('.vrow[data-row="' + key + '"]')
   if (!row) return
   const head = row.querySelector('.vrow-head')
   if (!head || head.querySelector('.vrow-cache-note')) return
   const p = document.createElement('p')
   p.className = 'vrow-note vrow-cache-note'
-  p.textContent = 'showing saved list — AniList is down'
+  // V007: a saved row says how old it is, not only that it is saved.
+  p.textContent = 'showing saved list' + (cachedAt ? ' from ' + _agoLabel(Date.now() - Number(cachedAt)) : '') + ' — AniList is down'
   head.appendChild(p)
 }
 
@@ -9295,12 +9359,20 @@ function _videoDetailShell(d) {
   const backdrop = d.backdrop
   const poster = d.poster
   const genres = Array.isArray(d.genres) ? d.genres : []
-  const rating = d.rating != null ? (typeof d.rating === 'number' ? (Math.round(d.rating * 10) / 10) : d.rating) : null
+  // V010: unknown is said, zero is not dressed up as a value. A catalog that
+  // has no rating yet (0 votes) reports 0; that is not a one-star film.
+  const ratingNum = typeof d.rating === 'number' ? d.rating : (d.rating != null && d.rating !== '' ? Number(d.rating) : NaN)
+  const rating = Number.isFinite(ratingNum) && ratingNum > 0 ? Math.round(ratingNum * 10) / 10 : null
   const kind = d.type === 'anime' ? 'Anime' : d.type === 'tv' ? 'TV Series' : 'Movie'
   const metaBits = []
-  if (d.year != null) metaBits.push(esc(String(d.year)))
+  metaBits.push(d.year != null && d.year !== '' && Number(d.year) > 0 ? esc(String(d.year)) : '<span class="vmeta-unknown" title="The catalog has no year for this">year unknown</span>')
   metaBits.push(kind)
   if (rating != null) metaBits.push('★ ' + esc(String(rating)))
+  else metaBits.push('<span class="vmeta-unknown" title="No rating yet — not a zero">not rated</span>')
+  if (d.type === 'movie') {
+    const rt = Number(d.runtime)
+    metaBits.push(Number.isFinite(rt) && rt > 0 ? rt + ' min' : '<span class="vmeta-unknown" title="The catalog has no runtime for this">runtime unknown</span>')
+  }
   const hero = '<div class="video-detail-hero"' + (backdrop ? ' style="background-image:url(\'' + esc(backdrop) + '\')"' : '') + '>' +
     '<div class="video-detail-overlay"></div>' +
     (poster ? '<img class="video-detail-poster" src="' + esc(poster) + '" alt="" onerror="this.style.display=\'none\'">' : '<div class="video-detail-poster video-detail-poster-fallback">' + esc(d.title || '') + '</div>') +
@@ -10272,8 +10344,9 @@ function _renderVideoControls(type) {
       // elsewhere. Confirmed and undoable; bound below.
       '<button class="mcs-set-btn video-season-seen" id="video-season-seen" type="button"' +
         ' title="Mark every episode of this season as watched">Mark season watched</button>' +
-      _dubControl(d) +
+      _dubControl(d) + _spoilerToggleHtml() +
       '<div class="video-episode-list" id="video-episode-list"></div></div>'
+    _bindSpoilerToggle(function () { _renderVideoControls('tv') })
     document.getElementById('video-season-select')?.addEventListener('change', function (e) {
       _videoState.season = Number(e.target.value) || 1
       _videoState.episode = 1
@@ -10302,8 +10375,17 @@ function _renderVideoControls(type) {
     // Progress is read across the whole run — the resume banner and the
     // watched count are questions about the show, not the visible window.
     const prog = _epProgress('anime', _videoDetail.d.id, null, numbers)
+    // V048: three different numbers, said apart — the run's known total,
+    // how many have aired so far, and (only once a season pack streams) how
+    // many are available here. None is invented: an airing show with no
+    // total says so instead of pretending the aired count is the whole run.
+    const known = Number(_videoDetail.d.episodeCount) || 0
+    const airedSoFar = na && Number(na.episode) > 1 ? Number(na.episode) - 1 : (known || 0)
+    const countLine = na && na.airingAt
+      ? '<div class="vep-counts">' + (known ? esc(String(known)) + ' episodes planned · ' : 'Total not announced · ') + esc(String(airedSoFar)) + ' aired so far</div>'
+      : (known ? '<div class="vep-counts">' + esc(String(known)) + ' episodes</div>' : '')
     const grid = n > 0
-      ? '<div class="video-episode-wrap">' +
+      ? countLine + '<div class="video-episode-wrap">' +
           _epRangeJumperHtml(total, _epWindowOf(total, _videoState.episode)) +
           '<div class="video-episode-list" id="video-episode-list"></div></div>'
       // Episode count unknown -- an airing show AniList has no total for, or a
@@ -10311,9 +10393,10 @@ function _renderVideoControls(type) {
       : '<label class="video-control">Episode <input class="mcs-set-input" id="video-episode-input" type="number" min="1" value="' + _videoState.episode + '" style="width:90px"></label>'
     box.innerHTML = '<div class="video-controls-row">' +
       _epResumeHtml(prog, numbers.length) +
-      _dubControl(_videoDetail.d) + _numberingControl(_videoDetail.d) + grid +
+      _dubControl(_videoDetail.d) + _numberingControl(_videoDetail.d) + (n > 0 ? _spoilerToggleHtml() : '') + grid +
     '</div>'
     _bindNumberingControl(_videoDetail.d)
+    _bindSpoilerToggle(function () { _renderVideoControls('anime') })
     const setEp = function (ep) {
       _videoState.episode = ep
       _syncEpisodeSelection(ep)
@@ -10351,8 +10434,11 @@ function _renderVideoControls(type) {
           ' — pick a narrower range for the rest.</li>'
         : ''
       list.innerHTML = EL.rows(shown, prog, _videoState.episode, Date.now()).map(_epRowHtml).join('') + note
+      // Spoiler-safe rows (V020) bind after the HTML exists, not before.
+      _bindRevealButtons(list)
       list.querySelectorAll('.vep-row').forEach(function (b) {
-        const go = function () {
+        const go = function (e) {
+          if (e && e.target && e.target.closest && e.target.closest('.vep-reveal')) return
           if (!b.classList.contains('unaired')) _autoPlayTicket = _videoDetailTicket
           setEp(Number(b.dataset.ep) || 1)
         }
@@ -10630,7 +10716,9 @@ async function _refreshTvEpisodes(ticket, seasonTicket) {
 // does not fetch 24 images before the first paint; a missing still keeps the
 // slot so the rows line up.
 function _epRowHtml(r) {
-  const cls = 'vep-row' + (r.current ? ' active' : '') + (r.watched ? ' seen' : '') + (r.pct ? ' partial' : '') + (r.upNext ? ' upnext' : '') + (r.unaired ? ' unaired' : '')
+  // V020: conceal what would spoil an episode not yet watched.
+  const conceal = _spoilerSafe && !r.watched && !r.current && !r.pct
+  const cls = 'vep-row' + (r.current ? ' active' : '') + (r.watched ? ' seen' : '') + (r.pct ? ' partial' : '') + (r.upNext ? ' upnext' : '') + (r.unaired ? ' unaired' : '') + (conceal ? ' concealed' : '')
   const still = r.still
     ? '<img class="vep-still" src="' + esc(r.still) + '" alt="" loading="lazy" decoding="async">'
     : '<span class="vep-still vep-still-empty"></span>'
@@ -10645,7 +10733,9 @@ function _epRowHtml(r) {
     '<div class="vep-body">' +
       '<div class="vep-head">' + kicker + '<span class="vep-title">' + esc(r.title) + '</span>' + mark + '</div>' +
       (meta ? '<div class="vep-meta">' + meta + '</div>' : '') +
-      (r.synopsis ? '<div class="vep-synopsis">' + esc(r.synopsis) + '</div>' : '') +
+      (r.synopsis ? (conceal
+        ? '<div class="vep-synopsis vep-synopsis-hidden"><button type="button" class="vep-reveal" data-reveal="' + r.n + '" data-text="' + esc(r.synopsis) + '">Show synopsis</button></div>'
+        : '<div class="vep-synopsis">' + esc(r.synopsis) + '</div>') : '') +
     '</div>' +
     '<span class="vep-play" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></span>' +
   '</div>'
@@ -10686,8 +10776,10 @@ function _tvEpRenderGrid(target, episodes, prog, top, setEp) {
     // button, which he read as "they don't play anything". Now it selects
     // and plays, through the same path the Play button takes (an unaired
     // episode only selects — there is nothing to play yet).
+    _bindRevealButtons(list)
     list.querySelectorAll('.video-episode-btn, .vep-row').forEach(function (b) {
-      const go = function () {
+      const go = function (e) {
+        if (e && e.target && e.target.closest && e.target.closest('.vep-reveal')) return
         // Selecting refetches this episode's sources; playing straight away
         // would use the previous episode's list (it picked E01 for E02).
         // The autoplay ticket plays as soon as the new list lands.
@@ -10939,6 +11031,19 @@ function _renderVideoSourceRows(target, sort) {
       _downloadStream(_videoStreams[Number(btn.dataset.dlIdx)])
     })
   })
+  // V053: the full release name is one click away — a click on the label
+  // toggles it between the trimmed and the whole name; a double-click copies
+  // it. The tooltip already carries it for hover.
+  listEl.querySelectorAll('.video-source-label').forEach(function (lbl) {
+    lbl.addEventListener('click', function () { lbl.classList.toggle('video-source-label-full') })
+    lbl.addEventListener('dblclick', function (ev) {
+      ev.preventDefault()
+      const row = lbl.closest('.video-source-row')
+      const name = (row && row.getAttribute('title')) || lbl.textContent || ''
+      if (!name) return
+      navigator.clipboard?.writeText(name).then(function () { showToast('Release name copied') }).catch(function () {})
+    })
+  })
   // Reflect what is actually playing (including after an auto-switch) on the
   // freshly-rendered rows.
   _syncSourcesHighlight()
@@ -11181,9 +11286,12 @@ function _videoStreamRow(s, i) {
   const b = _videoStreamBadge(s)
   const badge = b.text
   const torrent = s.kind === 'torrent' ? '<span class="video-torrent-badge">torrent</span>' : ''
+  // V046: sub, dub, both, and UNKNOWN are four states. A release whose name
+  // says nothing about language gets "language ?" rather than nothing — a
+  // blank used to read as "no dub", which is a different claim.
   const subDub = (s.sub != null && s.dub != null)
-    ? '<span class="video-source-tag">' + (s.sub && !s.dub ? 'sub' : s.dub && !s.sub ? 'dub' : 'sub+dub') + '</span>'
-    : ''
+    ? '<span class="video-source-tag" title="Read from the release name">' + (s.sub && !s.dub ? 'sub' : s.dub && !s.sub ? 'dub' : 'sub+dub') + '</span>'
+    : (s.kind === 'torrent' ? '<span class="video-source-tag video-source-tag-unknown" title="The release name does not say whether this is subtitled or dubbed">language ?</span>' : '')
   // Seeders and size sit between the badges and the label. Both dim gracefully
   // when the indexer did not report them: an absent seeder count and an
   // unparseable size are honest-unknown, shown as a muted dash rather than a
@@ -13302,7 +13410,10 @@ function renderAlbum(albumId) {
     const disc = _discOf(t)
     if (hasMultipleDiscs && disc !== lastDisc) {
       lastDisc = disc
-      discHeader = `<div class="disc-separator">Disc ${disc}</div>`
+      // Roadmap 089: say the total when the tags carry one, and say when a
+      // disc is not here at all rather than numbering what is present 1, 2.
+      const discTotal = Number(t.discTotal) || 0
+      discHeader = `<div class="disc-separator">Disc ${disc}${discTotal > 1 ? ' of ' + discTotal : ''}</div>`
     }
     const isPlaying = isCurrentTrack(t.filePath)
     const plays = state.playCounts[t.filePath] || 0
@@ -13824,8 +13935,11 @@ function renderSearch(query) {
   // Display cap. Applied here, not before the filters, so an operator search
   // reports what it actually matched rather than what survived an arbitrary
   // 20-row window.
+  // Roadmap 056: the cap is a starting point, not a wall — "Show all N"
+  // lifts it for this query; a new query resets it.
+  if (state._searchTrackCapFor !== query) { state._searchTrackCap = 20; state._searchTrackCapFor = query }
   var matchTracksTotal = matchTracks.length
-  if (matchTracks.length > 20) matchTracks = matchTracks.slice(0, 20)
+  if (matchTracks.length > state._searchTrackCap) matchTracks = matchTracks.slice(0, state._searchTrackCap)
 
   var dymHTML = ''
   if (correction) dymHTML += _correctionChipHtml(correction.to, correction.from, 'search-page-undo')
@@ -13926,7 +14040,8 @@ function renderSearch(query) {
           </div>
           <span class="track-dur">${fmtDur(t.duration)}</span>
         </div>`).join('')
-      html += `</div></div>`
+      html += `</div>` + (matchTracksTotal > matchTracks.length
+        ? `<button class="lib-reset-btn search-show-all" id="search-show-all-tracks">Show all ${matchTracksTotal} songs</button>` : '') + `</div>`
     }
   } else {
     html += '<div class="empty-wrap" style="padding:60px 20px;text-align:center">' +
@@ -13993,6 +14108,10 @@ function renderSearch(query) {
 
   // From an empty library result, take the user to the P2P results that are
   // already loading rather than leaving them to scroll for them.
+  document.getElementById('search-show-all-tracks')?.addEventListener('click', function () {
+    state._searchTrackCap = Infinity
+    renderSearch(query)
+  })
   document.getElementById('search-empty-slsk-btn')?.addEventListener('click', function() {
     document.getElementById('slsk-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   })
@@ -16888,6 +17007,7 @@ function renderLikedSongs() {
       <button class="album-play-btn" id="liked-play-btn" aria-label="Play liked songs" ${!totalCount ? 'disabled' : ''}>
         <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
       </button>
+      <button class="sort-btn" id="liked-export-btn" title="Export liked songs as an .m3u8 playlist (absolute paths; streams kept as comments)" ${!totalCount ? 'disabled' : ''}>Export .m3u8</button>
     </div>
     <div class="track-list">
       ${tracks.length
@@ -16909,6 +17029,7 @@ function renderLikedSongs() {
           </div>`).join('')}</div>` : ''}
     </div>`)
 
+  document.getElementById('liked-export-btn')?.addEventListener('click', () => { _exportM3u8('Liked songs', tracks) })
   document.getElementById('liked-play-btn')?.addEventListener('click', () => {
     if (!totalCount) return
     state.queue = [...tracks.map(t => ({ ...t })), ...state.ytLiked.map(t => _ytQueueItem(t))]
@@ -18360,7 +18481,7 @@ function renderQueuePanel() {
         </div>
         <div class="queue-row-info">
           <div class="queue-row-title">${esc(t.title)}${t.explicit ? '<span class="track-explicit">E</span>' : ''}${stereoBadge}${missingBadge}</div>
-          <div class="queue-row-artist">${esc(t.albumArtist || t.artist || '')}${t.bpm ? `<span class="track-bpm">${t.bpm} BPM</span>` : ''}</div>
+          <div class="queue-row-artist">${esc(t.artist || t.albumArtist || '')}${t.bpm ? `<span class="track-bpm">${t.bpm} BPM</span>` : ''}</div>
         </div>
         ${(state.playCounts[t.filePath] || 0) > 0 ? `<span class="track-plays">${state.playCounts[t.filePath]}</span>` : ''}
         <button class="track-like-btn ${state.likedTracks.includes(t.filePath) ? 'liked' : ''}" data-like="${esc(t.filePath)}" title="${state.likedTracks.includes(t.filePath) ? 'Unlike' : 'Like'}">${state.likedTracks.includes(t.filePath) ? '♥' : '♡'}</button>
@@ -18480,7 +18601,7 @@ function renderQueuePanel() {
       const t = state.queue[parseInt(row.dataset.queueIdx)]
       if (!t) return
       showContextMenu(e, { type: 'track', kind: 'queue-item', albumId: t.albumId,
-        track: t, artist: t.albumArtist || t.artist, queueIdx: parseInt(row.dataset.queueIdx) })
+        track: t, artist: t.albumArtist || t.artist, queueIdx: parseInt(row.dataset.queueIdx), queueLength: state.queue.length })
     })
   })
 
@@ -19394,6 +19515,8 @@ var CTX_ICONS = {
   'ctx-like':        '<path d="M16.5 3c-1.74 0-3.41.81-4.5 2.09A5.99 5.99 0 0 0 7.5 3C4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3z"/>',
   'ctx-remove-playlist': '<path d="M14 10H2v2h12v-2zm0-4H2v2h12V6zM2 16h8v-2H2v2zm19-2h-8v2h8v-2z"/>',
   'ctx-remove-queue':    '<path d="M14 10H2v2h12v-2zm0-4H2v2h12V6zM2 16h8v-2H2v2zm19-2h-8v2h8v-2z"/>',
+  'ctx-queue-up':        '<path d="M7 14l5-5 5 5z"/>',
+  'ctx-queue-down':      '<path d="M7 10l5 5 5-5z"/>',
   'ctx-unlike':          '<path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09A5.99 5.99 0 0 1 16.5 3C19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>',
 }
 
@@ -19453,6 +19576,26 @@ function _ctxTargetForRow(row) {
     artist: (album && album.artist) || (track && (track.albumArtist || track.artist)) || null,
     listName: listName,
   }
+}
+
+// Roadmap 118/046: the keyboard and menu route to reordering the queue. The
+// moved track stays focused, the current track keeps playing, and the new
+// position is announced.
+function _queueMoveBy(idx, delta) {
+  const to = idx + delta
+  if (idx < 0 || idx >= state.queue.length || to < 0 || to >= state.queue.length) return
+  const [moved] = state.queue.splice(idx, 1)
+  state.queue.splice(to, 0, moved)
+  if (idx === state.queueIndex) state.queueIndex = to
+  else if (idx < state.queueIndex && to >= state.queueIndex) state.queueIndex--
+  else if (idx > state.queueIndex && to <= state.queueIndex) state.queueIndex++
+  _pendingShuffle = null
+  updateNextPrefetch()
+  renderQueuePanel()
+  const row = document.querySelector('.queue-row[data-queue-idx="' + to + '"]')
+  if (row && typeof row.focus === 'function') { row.setAttribute('tabindex', '0'); row.focus() }
+  showSnackbar((moved.title || 'Track') + ' moved to #' + (to + 1) + ' of ' + state.queue.length, '', function () {}, 2000)
+  syncExtension()
 }
 
 function showContextMenu(e, target) {
@@ -20385,7 +20528,11 @@ function updateNowPlaying(track) {
   const sepEl    = document.getElementById('np-sep')
   const artEl    = document.getElementById('np-art')
   const artFb    = document.getElementById('np-art-fallback')
-  const artistStr = track.albumArtist || track.artist || ''
+  // Roadmap 089: on a compilation the track's own artist is the one that
+  // matters; the album artist is shown beside it only when they differ.
+  const artistStr = track.artist && track.albumArtist && track.artist !== track.albumArtist
+    ? track.artist + ' · ' + track.albumArtist
+    : (track.artist || track.albumArtist || '')
   const albumStr  = track.albumName || ''
   if (titleEl)  { titleEl.textContent = track.title || '—'; titleEl.dataset.albumId = track.albumId || ''; applyTicker(titleEl) }
   if (artistEl) { artistEl.textContent = artistStr || '—'; applyTicker(artistEl) }
@@ -20459,6 +20606,32 @@ function updateStatsRow(track) {
   if (track.bitrate) pills.push(`${Math.round(track.bitrate/1000).toLocaleString()} kbps`)
   if (track.fileSize) pills.push(`${(track.fileSize/1024/1024).toFixed(1)} MB`)
   el.innerHTML = pills.map(p => `<span class="np-stats-pill">${esc(p)}</span>`).join('')
+  // Roadmap 094: the signal path, stage by stage, on the row's tooltip.
+  el.title = _signalPathText(track)
+}
+
+// Roadmap 094: source → decoder → processing → output, each stage named
+// from what is actually known, and "not measured" where it is not. The
+// decoder's own report (audio-params) gives the decoded format and rate
+// when mpv has sent one; the output device's true rate is never claimed.
+function _signalPathText(track) {
+  const settings = state._playerSettings || {}
+  const Q = (typeof PapaQualityBadge !== 'undefined' && PapaQualityBadge) || null
+  const bd = track.bitDepth || track.bitsPerSample, sr = track.sampleRate
+  const src = [track.codec ? String(track.codec).toUpperCase() : (String(track.filePath || '').split('.').pop() || '').toUpperCase(),
+    bd && sr ? bd + '-bit / ' + (sr / 1000) + ' kHz' : sr ? (sr / 1000) + ' kHz' : ''].filter(Boolean).join(' ')
+  const ap = (typeof audio !== 'undefined' && audio && audio.audioParams) || null
+  const dec = ap && ap.samplerate ? 'mpv → ' + String(ap.format || '').toUpperCase() + ' ' + Math.round(ap.samplerate / 1000) + ' kHz' + (ap.channels ? ' · ' + ap.channels + ' ch' : '') : 'mpv (decoded format not reported yet)'
+  let vol = null
+  try { vol = isFinite(audio.volume) ? Math.round(audio.volume * 100) : null } catch (_) {}
+  const proc = Q ? Q.processing(settings, state.playbackSpeed, vol) : []
+  const fb = state._activeDeviceFallback
+  const out = fb ? 'default output (fallback from ' + fb.from + ')'
+    : settings.outputMode === 'exclusive' ? 'exclusive' + (settings.alsaDevice ? ' · ' + settings.alsaDevice : '') : 'system mixer (shared)'
+  return 'Signal path\nSource: ' + (src || 'unknown') +
+    '\nDecoder: ' + dec +
+    '\nProcessing: ' + (proc.length ? proc.join(', ') : 'none') +
+    '\nOutput: ' + out + ' · device sample rate not measured'
 }
 
 function updatePlayBtn() {
@@ -21651,19 +21824,7 @@ function bindContentEvents() {
     var id = state.currentPlaylistId
     var pl = state.playlists.find(function(p) { return p.id === id })
     if (!pl || !pl.tracks || !pl.tracks.length) return
-    var m3u = '#EXTM3U\n#PLAYLIST:' + pl.name + '\n'
-    pl.tracks.forEach(function(t, i) {
-      m3u += '#EXTINF:' + Math.round(t.duration || 0) + ',' + (t.albumArtist || t.artist || '') + ' - ' + (t.title || '') + '\n'
-      m3u += (t.filePath || '') + '\n'
-    })
-    var blob = new Blob([m3u], { type: 'audio/x-mpegurl' })
-    var url = URL.createObjectURL(blob)
-    var a = document.createElement('a')
-    a.href = url
-    a.download = (pl.name || 'playlist').replace(/[/\\?%*:|"<>]/g, '_') + '.m3u'
-    a.click()
-    URL.revokeObjectURL(url)
-    showSnackbar('Exported ' + pl.tracks.length + ' tracks')
+    _exportM3u8(pl.name || 'playlist', pl.tracks)
   })
 
   document.getElementById('import-pl-btn')?.addEventListener('click', function() { fileInput.click() })
@@ -22003,7 +22164,39 @@ function _setChatBusy(busy) {
 }
 
 // ── Tool execution — agent calls these, renderer executes them ─────────────
+// Roadmap 104: a consequential step the person did not ask for in so many
+// words is previewed before it runs. The assistant may decide on its own
+// that "play X" means "download X from Soulseek" when nothing local matches;
+// that is a download the person did not request, so it is put to them
+// first. A request that names the action ("download …", "clear the queue")
+// is already authorisation and runs straight away.
+var _CONSEQUENTIAL_TOOLS = {
+  auto_download: { ask: /\b(download|get|grab|fetch|save)\b/i, what: function (i) { return 'Download "' + (i && i.query || '') + '" from Soulseek?' },
+    note: 'This queues a transfer to your download folder. It was not part of what you asked in so many words.' },
+  clear_queue: { ask: /\b(clear|empty|wipe)\b/i, what: function () { return 'Clear the queue?' },
+    note: 'Stops playback and empties the whole queue. Undo is offered afterwards.' },
+}
+function _toolPreviewIfNeeded(name, input) {
+  const rule = _CONSEQUENTIAL_TOOLS[name]
+  if (!rule) return Promise.resolve(true)
+  const asked = (chatState.history || []).slice().reverse().find(function (m) { return m && m.role === 'user' && typeof m.content === 'string' })
+  if (asked && rule.ask.test(asked.content)) return Promise.resolve(true)
+  return new Promise(function (resolve) {
+    var settled = false
+    _mgConfirm(rule.what(input), '<p class="mg-confirm-note">' + esc(rule.note) + '</p>', 'Go ahead', function () { settled = true; resolve(true) })
+    // The dialog's own close (Cancel, Esc, backdrop) leaves `settled` false.
+    var watch = setInterval(function () {
+      if (settled) { clearInterval(watch); return }
+      if (!document.getElementById('mg-confirm-modal')) { clearInterval(watch); resolve(false) }
+    }, 200)
+  })
+}
+
 async function _executeTool(name, input) {
+  if (_CONSEQUENTIAL_TOOLS[name]) {
+    const ok = await _toolPreviewIfNeeded(name, input)
+    if (!ok) return 'The user declined: ' + name.replace(/_/g, ' ') + ' was not done.'
+  }
   switch (name) {
 
     case 'play_from_library': {
@@ -22403,6 +22596,20 @@ async function _executeTool(name, input) {
 }
 
 // ── Main conversation loop ──────────────────────────────────────────────────
+// Roadmap 111: a provider failure names itself and offers the one thing to
+// do about it; playback and every non-assistant control stay untouched.
+function _agentFailureText(res) {
+  const t = String((res && res.error) || 'The assistant could not answer.')
+  const a = res && res.action
+  return t + (a === 'settings' ? ' Open Settings to fix the key.' : a === 'connection' ? ' Check your connection.' : a === 'wait' ? ' Try again in a moment.' : '')
+}
+function _agentFailureAction(res) {
+  if (!res || res.cancelled) return
+  if (res.action === 'settings' || /API key/i.test(String(res.error || ''))) {
+    showSnackbar(String(res.error || 'The assistant needs a key'), 'Open Settings', function () { openSettings('mcs-claude-row') }, 8000)
+  }
+}
+
 // Roadmap 106: Stop releases the assistant IMMEDIATELY — it used to only set
 // a flag that the loop noticed after the in-flight request returned, up to
 // the provider timeout later. A generation token makes a stale continuation
@@ -22446,7 +22653,8 @@ async function handleChatMessage(userMsg) {
     if (stale()) return   // Stop already spoke; this continuation is dead
 
     if (firstRes.error) {
-      _updateChatMsg(thinkId, firstRes.error, 'agent')
+      _updateChatMsg(thinkId, _agentFailureText(firstRes), 'agent')
+      _agentFailureAction(firstRes)
 
     } else if (firstRes.ollamaFallback) {
       // Fallback path: Ollama tool-calling failed, use simple intent
@@ -22480,7 +22688,7 @@ async function handleChatMessage(userMsg) {
         if (stale()) return
         const res = iter === 0 ? pendingRes : await window.api.agentChat({ provider: chatState.provider, messages: loopMsgs, tasteProfile: chatState.tasteProfile })
         if (stale()) return
-        if (res.error) { _updateChatMsg(thinkId, res.error, 'agent'); break }
+        if (res.error) { _updateChatMsg(thinkId, _agentFailureText(res), 'agent'); _agentFailureAction(res); break }
 
         const { response } = res
         const textBlocks = (response.content || []).filter(b => b.type === 'text')
@@ -22648,14 +22856,38 @@ async function _renderMemoryTab(opts = {}) {
   if (mem.profile?.insights?.length) {
     noProf.style.display = 'none'
     const iconMap = { taste: '♪', artists: '◈', habits: '◷', style: '◉', genres: '◈', other: '◆' }
+    // Roadmap 109: every insight can be corrected, deleted, or deleted and
+    // never relearned — not only wiped all at once.
     cards.innerHTML = mem.profile.insights.map(ins => `
-      <div class="mcs-mem-card">
+      <div class="mcs-mem-card" data-ins-key="${esc(ins.key)}">
         <div class="mcs-mem-card-icon">${iconMap[ins.key] || '◆'}</div>
         <div class="mcs-mem-card-body">
-          <div class="mcs-mem-card-key">${esc(ins.key)}</div>
+          <div class="mcs-mem-card-key">${esc(ins.key)}${ins.edited ? ' <span class="mcs-mem-edited" title="You corrected this; the assistant will not overwrite it">edited</span>' : ''}</div>
           <div class="mcs-mem-card-text">${esc(ins.text)}</div>
+          <div class="mcs-mem-card-actions">
+            <button class="mcs-mem-act" data-ins-act="edit" title="Correct this">Edit</button>
+            <button class="mcs-mem-act" data-ins-act="delete" title="Forget this; it may be learned again">Delete</button>
+            <button class="mcs-mem-act" data-ins-act="exclude" title="Forget this and never learn it again">Delete &amp; don’t relearn</button>
+          </div>
         </div>
-      </div>`).join('')
+      </div>`).join('') +
+      ((mem.excluded || []).length ? '<div class="mcs-mem-excluded">Never relearned: ' + mem.excluded.map(esc).join(', ') + '</div>' : '')
+    cards.querySelectorAll('[data-ins-act]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const card = btn.closest('.mcs-mem-card'), key = card && card.dataset.insKey
+        if (!key) return
+        const act = btn.dataset.insAct
+        if (act === 'edit') {
+          const cur = card.querySelector('.mcs-mem-card-text')?.textContent || ''
+          _mgPrompt('Correct: ' + key, { label: key, value: cur, confirmLabel: 'Save', note: 'Saved as your own words; the assistant will not overwrite it.',
+            onConfirm: async v => { await window.api.agentEditInsight({ key, text: v, action: 'edit' }).catch(() => null); _renderMemoryTab() } })
+          return
+        }
+        await window.api.agentEditInsight({ key, action: act }).catch(() => null)
+        showSnackbar(act === 'exclude' ? 'Forgotten, and will not be learned again' : 'Forgotten', '', function () {}, 2500)
+        _renderMemoryTab()
+      })
+    })
     if (lastUpd && mem.profile.updatedAt) {
       const d = new Date(mem.profile.updatedAt)
       lastUpd.textContent = 'Updated ' + d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
@@ -22730,9 +22962,37 @@ function _paintProviderDisclosure(provider) {
 }
 
 // ── Settings panel ───────────────────────────────────────────────────────────
+// Roadmap 103: the assistant's welcome says what it can actually do right
+// now — from the real connections and the real tool list — and names what
+// is not available rather than offering an example that would fail.
+function _paintAgentWelcome() {
+  const w = document.querySelector('.mcs-welcome')
+  if (!w) return
+  const p = chatState.provider || 'ollama'
+  const slskOn = !!(slsk && slsk.status && slsk.status.connected)
+  const online = state.isOnline !== false
+  const lib = state.library.length > 0
+  const can = []
+  if (lib) can.push('play from your library (<em>"play Opeth"</em>, <em>"shuffle my library"</em>)')
+  can.push('control playback (<em>"pause"</em>, <em>"next"</em>, <em>"volume 40"</em>)')
+  if (online) can.push('stream instantly from YouTube (<em>"play Kind of Blue"</em>)')
+  if (slskOn) can.push('find and download lossless copies from Soulseek (<em>"download Kind of Blue Miles Davis"</em>)')
+  can.push('manage the queue and playlists, and answer questions about your collection')
+  const cannot = []
+  if (!slskOn) cannot.push('Soulseek is not connected, so downloading is off until it is')
+  if (!online) cannot.push('you are offline, so only your library and playback controls work')
+  if (!lib) cannot.push('no music folder is set yet, so library requests will find nothing')
+  const where = p === 'ollama' ? 'Runs on this computer (Ollama).' : 'Runs on ' + (p === 'claude' ? 'Anthropic' : 'OpenAI') + ' — see Settings for what is sent.'
+  w.innerHTML = '<svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>' +
+    '<p>Right now I can: ' + can.join('; ') + '.</p>' +
+    (cannot.length ? '<p class="mcs-examples">Not right now: ' + cannot.map(esc).join('; ') + '.</p>' : '') +
+    '<p class="mcs-examples">' + esc(where) + '</p>'
+}
+
 async function _initSettingsPanel() {
   const saved = await window.api.getApiKeys().catch(() => ({ provider: 'ollama' }))
   chatState.provider = saved.provider || 'ollama'
+  _paintAgentWelcome()
   const sel = document.getElementById('mcs-provider-sel')
   if (sel) sel.value = chatState.provider
   _updateProviderRows(chatState.provider)
@@ -24909,6 +25169,7 @@ async function _refreshOllamaModels(preselect) {
 function toggleChatSidebar() {
   const wasOpen = chatState.open
   chatState.open = !chatState.open
+  if (chatState.open) { try { _paintAgentWelcome() } catch (_) {} }
   const mcs    = document.getElementById('mcs')
   const btn    = document.getElementById('btn-agent-chat')
   const layout = document.querySelector('.layout')
@@ -30071,6 +30332,9 @@ function setupListeners() {
     })
   })
 
+  _ctxOn('ctx-queue-up', () => { const i = ctxTarget?.queueIdx; hideContextMenu(); if (typeof i === 'number') _queueMoveBy(i, -1) })
+  _ctxOn('ctx-queue-down', () => { const i = ctxTarget?.queueIdx; hideContextMenu(); if (typeof i === 'number') _queueMoveBy(i, 1) })
+
   _ctxOn('ctx-remove-queue', () => {
     const t = ctxTarget?.track
     const known = ctxTarget?.queueIdx
@@ -30267,6 +30531,9 @@ function setupListeners() {
     if (!el) return
     const p = e.detail
     el.textContent = p?.samplerate ? `${(p.format || '').toUpperCase()} ${Math.round(p.samplerate / 1000)}kHz` : ''
+    // Roadmap 094: the decoder stage just became known.
+    const row = document.getElementById('np-stats-row'), t = state.queue[state.queueIndex]
+    if (row && t) row.title = _signalPathText(t)
   })
 
   // ── Reconciling the UI against mpv ────────────────────────────────────────
@@ -30953,6 +31220,13 @@ function setupListeners() {
 
   // Keyboard shortcuts
   document.addEventListener('keydown', e => {
+    // Roadmap 118/046: Alt+↑/↓ on a focused queue row moves it — the keyboard
+    // route to what the drag handle does. Lives in the one global handler so
+    // the listener budget is unchanged.
+    if (e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown') && e.target && typeof e.target.closest === 'function') {
+      const qrow = e.target.closest('.queue-row')
+      if (qrow) { e.preventDefault(); _queueMoveBy(parseInt(qrow.dataset.queueIdx, 10), e.key === 'ArrowUp' ? -1 : 1); return }
+    }
     // The theatre owns the keyboard while it is open (App #74). Its own handler
     // (video-player.js) fires on the same document, so without this guard a bare
     // key like Space, m, s or l would trigger BOTH the film's action and this
@@ -32489,6 +32763,7 @@ function _mgTracksFromLibrary() {
         album: a.name,
         albumArtist: a.artist,
         artist: t.artist || a.artist,
+        year: a.year || null,
       })
     }
   }
@@ -33382,7 +33657,11 @@ function renderManageDuplicates() {
     html += '<div class="mg-group' + (g.reliable ? '' : ' mg-group-unsafe') + '">' +
       '<div class="mg-group-head">' +
         '<span class="mg-group-title">' + esc(g.artist || 'Unknown artist') + ' — ' + esc(g.album || 'Unknown album') + '</span>' +
-        '<span class="mg-group-meta">' + g.folders.length + ' copies · ' + _mgFmt(g.totalBytes) + '</span>' +
+        '<span class="mg-group-meta">' + g.folders.length + ' copies · ' + _mgFmt(g.totalBytes) +
+          // Roadmap 086: what kind of "duplicate" this is, before any removal.
+          ' · <span class="mg-relation mg-relation-' + esc(g.relation || 'recordings') + '">' +
+          (g.relation === 'identical' ? 'byte-identical copies' : g.relation === 'editions' ? 'different releases' : 'same record, different encodings') +
+          '</span></span>' +
       '</div>'
     for (var w = 0; w < g.warnings.length; w++) {
       html += '<div class="mg-warn">' + esc(g.warnings[w]) + '</div>'
@@ -33844,11 +34123,15 @@ async function setAlbumArtwork() {
 
   var files = (album.tracks || []).map(function (t) { return t.filePath }).filter(Boolean)
 
+  // Roadmap 088: what is being replaced, by what, at what size, and where
+  // the change lands — all visible before anything is written.
+  var currentArt = album.artPath ? '<div class="art-preview art-preview-current"><img src="' + esc(_artSrc(album.artPath)) + '" alt=""><div class="art-preview-cap">Current</div></div>' : '<div class="art-preview art-preview-current"><div class="art-preview-cap">No cover yet</div></div>'
   _mgConfirm('Set artwork',
     '<p class="mg-confirm-sum" style="margin-top:0">' +
       esc(album.artist + ' — ' + album.name) + '</p>' +
-    '<div class="art-preview"><img src="file://' + esc(picked.path) + '" alt=""></div>' +
-    '<p class="mg-confirm-note">' + esc(_mgBaseName(picked.path)) + '</p>' +
+    '<div class="art-preview-pair">' + currentArt +
+      '<div class="art-preview"><img id="art-candidate" src="file://' + esc(picked.path) + '" alt=""><div class="art-preview-cap">New · <span id="art-candidate-dims">measuring…</span></div></div></div>' +
+    '<p class="mg-confirm-note">' + esc(_mgBaseName(picked.path)) + ' → saved as this album\'s cover in the app\'s cover cache (scaled to at most 1000 px wide, JPEG). Replaces the cover Papa Audio shows for this album; the image file you chose and your music files are not touched unless you embed.</p>' +
     '<label class="tag-check"><input type="checkbox" id="art-embed"> ' +
       'Also embed it into all ' + files.length + ' audio file' + (files.length === 1 ? '' : 's') +
       '</label>' +
@@ -33872,6 +34155,15 @@ async function setAlbumArtwork() {
       _artCacheBust(album.id, res.artPath)
       _scheduleLibRescan()
     })
+  // Resolution of the candidate, read from the image itself once it decodes.
+  var cand = document.getElementById('art-candidate')
+  if (cand) {
+    var paint = function () {
+      var el = document.getElementById('art-candidate-dims')
+      if (el) el.textContent = cand.naturalWidth ? cand.naturalWidth + '×' + cand.naturalHeight + (cand.naturalWidth < 600 ? ' — small; may look soft' : '') : 'unreadable image'
+    }
+    if (cand.complete) paint(); else { cand.onload = paint; cand.onerror = paint }
+  }
 }
 
 // Same path, same filename, new bytes — without this the old cover stays on

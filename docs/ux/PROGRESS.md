@@ -51,7 +51,7 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | A043 | Pending review/implementation |
 | A044 | Fixed — time left · total |
 | A045 | Fixed — insertPlayNext single rule |
-| A046 | Pending review/implementation |
+| A046 | Fixed `75a9e17` — menu + keyboard reorder, position announced |
 | A047 | Fixed — next pick shown; original order kept |
 | A048 | Fixed `6ba664c` — Locate/Remove for missing queue files |
 | A049 | Fixed `e8d95f1` |
@@ -61,11 +61,11 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | A053 | Pending review/implementation |
 | A054 | Pending review/implementation |
 | A055 | Pending review/implementation |
-| A056 | Pending review/implementation |
+| A056 | Fixed `7f8357c` |
 | A057 | Fixed `890a469` — source-failure classifier |
 | A058 | Pending review/implementation |
 | A059 | Pending review/implementation |
-| A060 | Pending review/implementation |
+| A060 | Partial — nav stacks and scroll memory restore query and position; filters/sort restore pending runtime check |
 | A061 | Pending review/implementation |
 | A062 | Pending review/implementation |
 | A063 | Pending review/implementation |
@@ -91,39 +91,39 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | A083 | Fixed `71abddb` — relink carries every store and the cache |
 | A084 | Fixed `2e01d08` — unplugged root = unavailable, not deleted |
 | A085 | Fixed `71abddb` — guided relink with preview |
-| A086 | Pending review/implementation |
+| A086 | Fixed — relationOf classifies groups; editions never deletable |
 | A087 | Fixed — hero edits write real tags with an explicit scope note; see STATUS.md |
-| A088 | Pending review/implementation |
-| A089 | Pending review/implementation |
-| A090 | Pending review/implementation |
+| A088 | Fixed `c5fcbb1` |
+| A089 | Fixed `285be09` |
+| A090 | Partial — missing files → guided relink; duplicates → classified review; untagged → open album; previews on relink |
 | A091 | Fixed `3668f0b` — move journal + startup recovery |
-| A092 | Pending review/implementation |
+| A092 | Partial — playlists + liked songs export as M3U8 with honest path handling; notes/metadata export pending |
 | A093 | Fixed `1da705b` — codec-checked LOSSLESS, full-chain BIT-PERFECT; see STATUS.md |
-| A094 | Pending review/implementation |
-| A095 | Pending review/implementation |
+| A094 | Fixed — signal-path tooltip; unknowns labelled |
+| A095 | Fixed `11e3e2c` |
 | A096 | Fixed `578f3e5` — gain policy + clipping risk |
-| A097 | Pending review/implementation |
+| A097 | Fixed `11e3e2c` |
 | A098 | Fixed `5a988f3` |
-| A099 | Pending review/implementation |
-| A100 | Pending review/implementation |
+| A099 | Partial — EQ has enable (bypass), reset and preset delete; preview/restore-unsaved pending |
+| A100 | Partial — channel counts come from ffprobe/music-metadata for local files; download-source surround badges are still name-inferred |
 | A101 | Pending review/implementation |
 | A102 | Pending review/implementation |
-| A103 | Pending review/implementation |
-| A104 | Pending review/implementation |
-| A105 | Pending review/implementation |
+| A103 | Fixed `7e5d047` |
+| A104 | Fixed — preview gate on consequential tools |
+| A105 | Partial — tool results are action receipts (Playing., Downloading … from …); recommendation wording is the model's |
 | A106 | Fixed `037e34b` — Stop aborts + honest |
 | A107 | Pending review/implementation |
 | A108 | Pending review/implementation |
-| A109 | Pending review/implementation |
+| A109 | Fixed — edit/delete/exclude per insight |
 | A110 | Fixed `ece3972` — disclosure + cloud scrubbing |
-| A111 | Pending review/implementation |
+| A111 | Fixed `d18d8fe` |
 | A112 | Pending review/implementation |
 | A113 | Pending review/implementation |
 | A114 | Fixed `157ddc1` — ARIA sliders + keys |
 | A115 | Pending review/implementation |
 | A116 | Partial — toasts/snackbars are polite live regions, track changes announced once, seek value throttled; screen-reader pass pending |
 | A117 | Pending review/implementation |
-| A118 | Pending review/implementation |
+| A118 | Partial `75a9e17` — queue reorder by menu/keys; other drag/hover surfaces pending |
 | A119 | Pending review/implementation |
 | A120 | Pending review/implementation |
 | A121 | Fixed `f1f37c3` |
@@ -172,20 +172,20 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | V004 | Pending review/implementation |
 | V005 | Pending review/implementation |
 | V006 | Pending review/implementation |
-| V007 | Pending review/implementation |
+| V007 | Fixed `4282de7` — outage / empty / cached-with-age |
 | V008 | Pending review/implementation |
 | V009 | Pending review/implementation |
-| V010 | Pending review/implementation |
+| V010 | Fixed `0c76049` |
 | V011 | Pending review/implementation |
 | V012 | Fixed `3d58e3b` — Play / Resume from <time> / Start over |
-| V013 | Pending review/implementation |
+| V013 | Already satisfied — trailer path clears the watch key, suppresses resume and Up Next (`_playTrailerInTheatre`) |
 | V014 | Pending review/implementation |
 | V015 | Pending review/implementation |
-| V016 | Pending review/implementation |
+| V016 | Already satisfied — hero and cards re-read the store after toggle; failure shows a toast |
 | V017 | Pending review/implementation |
 | V018 | Pending review/implementation |
 | V019 | Pending review/implementation |
-| V020 | Pending review/implementation |
+| V020 | Fixed — spoiler-safe rows, per-row and global reveal |
 | V021 | Pending review/implementation |
 | V022 | Pending review/implementation |
 | V023 | Pending review/implementation |
@@ -205,25 +205,25 @@ Completed implementation batches, tests, limitations and recovery status are rec
 | V037 | Fixed `e1e9fc4` |
 | V038 | Already satisfied — episode-list.js labels future dates "Airs …" in local time, rows carry `unaired`, Play is withheld |
 | V039 | Pending review/implementation |
-| V040 | Pending review/implementation |
+| V040 | Fixed by the parallel session (f69067c/323228a) — noteActivity is the single presence signal; test in video-player.test.js |
 | V041 | Fixed `58293d6` |
 | V042 | Fixed `58293d6` |
 | V043 | Pending review/implementation |
 | V044 | Pending review/implementation |
 | V045 | Fixed `2037c8d` — edition-aware skip |
-| V046 | Pending review/implementation |
-| V047 | Pending review/implementation |
-| V048 | Pending review/implementation |
+| V046 | Fixed — four states on the row |
+| V047 | Partial — per-show sub/dub memory exists (onPrefChange); a global default is not offered yet |
+| V048 | Fixed `10329fa` |
 | V049 | Pending review/implementation |
 | V050 | Pending review/implementation |
 | V051 | Pending review/implementation |
 | V052 | Fixed `726414d` — inferred vs measured badges |
-| V053 | Pending review/implementation |
-| V054 | Pending review/implementation |
+| V053 | Fixed — click expands, double-click copies |
+| V054 | Partial — connecting / buffering / downloading with peers and Mbps / no-seeders / stalled are distinct stage messages; a diagnostic-counts view is pending |
 | V055 | Fixed `012c192` — pack pick verdict |
 | V056 | Pending review/implementation |
 | V057 | Partial — single in-flight auto-switch guard and session epochs exist (other session); runtime check pending |
-| V058 | Pending review/implementation |
+| V058 | Fixed — switch toast names quality/language changes |
 | V059 | Pending review/implementation |
 | V060 | Partial — detail/season tickets and current() guards cover discovery/probing/opening; runtime check pending |
 | V061 | Already satisfied in source — Finding sources / Still connecting / Buffering N% / Downloading N% · Mbps · peers / stuck words / error; runtime check pending |

@@ -142,6 +142,14 @@ function buildFolders(tracks) {
     var ident = trackIdentity(t)
     if (ident) e.titles[ident] = true
     e.files.push(t.filePath)
+    // Roadmap 086: what tells identical files from another pressing of the
+    // same record. Sizes per track identity (a byte-identical copy has the
+    // same sizes track for track); edition words in the album name; the year.
+    if (!e.sizes) e.sizes = {}
+    if (ident) e.sizes[ident] = Number(t.fileSize) || 0
+    if (!e.editions) e.editions = {}
+    editionTokens(t.album).forEach(function (w) { e.editions[w] = true })
+    if (t.year && !e.year) e.year = Number(t.year) || null
   }
   var out = []
   for (var k in byDir) {
@@ -184,10 +192,46 @@ function missingFrom(candidate, other) {
   return out
 }
 
+// Roadmap 086: the words in an album name that mark a different release of
+// the same record. Two folders whose names disagree on these are editions,
+// not duplicates, whatever their track lists say.
+var EDITION_WORDS = /\b(remaster(?:ed)?|deluxe|expanded|anniversary|live|mono|stereo|demo|instrumental|acoustic|edition|bonus|redux|reissue|collector'?s|special|limited|japan(?:ese)?|sacd|mfsl|hdtracks|24bit|vinyl)\b/gi
+function editionTokens(album) {
+  var out = [], m
+  var re = new RegExp(EDITION_WORDS.source, 'gi')
+  while ((m = re.exec(String(album || '')))) out.push(m[1].toLowerCase())
+  return out
+}
+
+// Roadmap 086: how two folders in a group relate — 'identical' (same tracks,
+// same sizes track for track: byte-identical copies), 'editions' (edition
+// words or years disagree: different releases of the record), or
+// 'recordings' (the same record in different encodings or completeness).
+function relationOf(folders) {
+  if (!folders || folders.length < 2) return 'recordings'
+  var eds = folders.map(function (f) { return Object.keys(f.editions || {}).sort().join(',') })
+  var years = folders.map(function (f) { return f.year || null }).filter(Boolean)
+  var edsDiffer = eds.some(function (e) { return e !== eds[0] })
+  var yearsDiffer = years.length > 1 && years.some(function (y) { return y !== years[0] })
+  if (edsDiffer || yearsDiffer) return 'editions'
+  var a = folders[0]
+  var allSame = folders.every(function (f) {
+    if (f.trackCount !== a.trackCount) return false
+    var ka = Object.keys(a.sizes || {})
+    if (!ka.length || ka.length !== Object.keys(f.sizes || {}).length) return false
+    return ka.every(function (k) { return f.sizes && f.sizes[k] === a.sizes[k] && a.sizes[k] > 0 })
+  })
+  return allSame ? 'identical' : 'recordings'
+}
+
 function assessGroup(group) {
   var folders = group.folders || []
   var warnings = []
   var reliable = true
+  group.relation = relationOf(folders)
+  if (group.relation === 'editions') {
+    warnings.push('These look like different releases of the same record (the names or years disagree on an edition), not duplicates. Nothing here is marked safe to delete.')
+  }
 
   if (group.unknownTags) {
     reliable = false
@@ -207,10 +251,11 @@ function assessGroup(group) {
       if (covers(folders[k], f) && (!best || folders[k].maxChannels > best.maxChannels)) best = folders[k]
     }
     f.supersededBy = best ? best.dir : null
-    f.safeToDelete = !!best && reliable && !f.mixedChannels
+    f.safeToDelete = !!best && reliable && !f.mixedChannels && group.relation !== 'editions'
 
     f.blockers = []
     if (!reliable) f.blockers.push('grouping is not reliable')
+    if (group.relation === 'editions') f.blockers.push('a different release, not a duplicate')
     if (f.mixedChannels) f.blockers.push('folder mixes stereo and surround tracks')
     if (!best) {
       // The specific trap: a higher-channel copy exists but is incomplete.
@@ -289,6 +334,8 @@ var _PapaLibraryManage = {
   trackIdentity: trackIdentity,
   assessGroup: assessGroup,
   findDuplicates: findDuplicates,
+  editionTokens: editionTokens,
+  relationOf: relationOf,
 }
 
 if (typeof module !== 'undefined' && module.exports) module.exports = _PapaLibraryManage

@@ -4464,6 +4464,9 @@ async function parseTrackFile(filePath, st) {
     album: c.album || 'Unknown Album',
     trackNumber: c.track?.no || 0,
     discNumber: c.disk?.no || 1,
+    // Roadmap 089: the disc total, so "Disc 1 of 2" can be said rather than
+    // guessed from which discs happen to be present.
+    discTotal: c.disk?.of || null,
     year: c.year || null,
     genre: c.genre?.[0] || null,
     duration: f.duration || 0,
@@ -5809,7 +5812,7 @@ function buildAlbums(tracks) {
     if (!album.artPath && t.artPath) album.artPath = t.artPath
     if (t.addedAt && t.addedAt > (album._maxAddedAt || 0)) album._maxAddedAt = t.addedAt
     album.tracks.push({ id: t.id, title: t.title, artist: t.artist, genre: t.genre || null,
-      trackNumber: t.trackNumber, discNumber: t.discNumber,
+      trackNumber: t.trackNumber, discNumber: t.discNumber, discTotal: t.discTotal || null,
       duration: t.duration, filePath: t.filePath,
       sampleRate: t.sampleRate || 0, bitsPerSample: t.bitsPerSample || 0, channels: t.channels || 0,
       replayGainTrack: t.replayGainTrack ?? null, replayGainAlbum: t.replayGainAlbum ?? null,
@@ -6343,7 +6346,19 @@ ipcMain.handle('agent-chat', async (_, { provider, messages, tasteProfile }) => 
     return await _agentChatOnce({ provider, messages, tasteProfile })
   } catch (e) {
     if (mine.signal.aborted) return { error: 'Stopped.', cancelled: true }
-    throw e
+    // Roadmap 111: a provider failure comes back as a specific sentence and a
+    // next step, never a thrown "Error invoking remote method". The renderer
+    // adds the button for the action.
+    const F = require('./src/source-failure')
+    const name = provider === 'claude' ? 'Anthropic' : provider === 'openai' ? 'OpenAI' : 'Ollama'
+    const r = F.explain(name, e, {})
+    const msg = String((e && e.message) || e || '')
+    const quota = /\b429\b|quota|rate.?limit|insufficient_quota|credit/i.test(msg)
+    return {
+      error: quota ? name + ' says the quota or rate limit is reached — wait a moment, or check your plan.' : r.text,
+      failure: quota ? 'quota' : r.kind,
+      action: quota ? 'wait' : r.action,
+    }
   } finally {
     if (_agentAbort === mine) _agentAbort = null
   }
@@ -6391,6 +6406,7 @@ async function _agentChatOnce({ provider, messages, tasteProfile }) {
 ipcMain.handle('agent-get-memory', () => {
   return {
     profile:    store.get('agentProfile', null),
+    excluded:   store.get('agentExcludedInsights', []),
     recentConvs: (store.get('agentConvHistory', [])).slice(-15),
   }
 })
@@ -6458,8 +6474,12 @@ Existing insights: ${JSON.stringify(existing.insights || [])}`
 
   if (parsed?.insights?.length) {
     const merged = [...(existing.insights || [])]
+    const excluded = new Set(store.get('agentExcludedInsights', []))
     for (const ins of parsed.insights) {
+      if (!ins || excluded.has(ins.key)) continue   // roadmap 109: rejected, stays rejected
       const ex = merged.find(e => e.key === ins.key)
+      // A text the person corrected by hand is not overwritten by a guess.
+      if (ex && ex.edited) continue
       if (ex) { ex.text = ins.text; ex.updatedAt = Date.now() }
       else merged.push({ ...ins, updatedAt: Date.now() })
     }
@@ -6474,6 +6494,32 @@ ipcMain.handle('agent-clear-memory', () => {
   store.delete('agentProfile')
   store.delete('agentConvHistory')
   return { ok: true }
+})
+
+// Roadmap 109: one insight at a time — correct its text, delete it, or
+// delete it AND stop the profile builder from learning that key again.
+// Excluded keys are dropped from every future merge, so a preference the
+// person rejected cannot creep back from the next conversation.
+ipcMain.handle('agent-edit-insight', (_, { key, text, action } = {}) => {
+  const k = String(key || '').trim()
+  if (!k) return { ok: false, error: 'No insight named' }
+  const prof = store.get('agentProfile', { insights: [], raw: '', updatedAt: null }) || { insights: [] }
+  let insights = Array.isArray(prof.insights) ? prof.insights.slice() : []
+  const excluded = new Set(store.get('agentExcludedInsights', []))
+  if (action === 'delete' || action === 'exclude') {
+    insights = insights.filter(i => i && i.key !== k)
+    if (action === 'exclude') excluded.add(k)
+  } else {
+    const t = String(text || '').trim()
+    if (!t) return { ok: false, error: 'Nothing to save' }
+    const ex = insights.find(i => i && i.key === k)
+    if (ex) { ex.text = t; ex.updatedAt = Date.now(); ex.edited = true }
+    else insights.push({ key: k, text: t, updatedAt: Date.now(), edited: true })
+    excluded.delete(k)
+  }
+  store.set('agentExcludedInsights', Array.from(excluded))
+  store.set('agentProfile', { insights, raw: insights.map(i => `${i.key}: ${i.text}`).join('\n'), updatedAt: Date.now() })
+  return { ok: true, insights, excluded: Array.from(excluded) }
 })
 
 ipcMain.handle('get-api-keys', () => {
@@ -11170,7 +11216,7 @@ ipcMain.handle('video-discover', async (_, req) => {
         }
         const saved = _animeBrowseCacheRead('discover:' + key)
         if (saved && saved.value && Array.isArray(saved.value.results) && saved.value.results.length) {
-          return { ok: true, ...saved.value, fromCache: true, outage: lf.message }
+          return { ok: true, ...saved.value, fromCache: true, cachedAt: saved.cachedAt || null, outage: lf.message }
         }
         return { ok: true, ...out, outage: lf.message }
       }

@@ -121,6 +121,84 @@ test('assistant Stop releases immediately, aborts the provider request, and name
   }
 })
 
+// Roadmap 104: consequential tool calls the person did not ask for are previewed.
+test('auto_download and clear_queue are gated behind a preview unless the request named them', () => {
+  assert.ok(renderer.includes('var _CONSEQUENTIAL_TOOLS = {'))
+  assert.ok(renderer.includes("auto_download: { ask: /\\b(download|get|grab|fetch|save)\\b/i"))
+  assert.ok(renderer.includes("if (asked && rule.ask.test(asked.content)) return Promise.resolve(true)"), 'naming the action is authorisation')
+  const fn = renderer.slice(renderer.indexOf('async function _executeTool('), renderer.indexOf('async function _executeTool(') + 400)
+  assert.ok(fn.includes("if (!ok) return 'The user declined: '"), 'a decline is reported back to the model honestly')
+})
+
+// Roadmap 111: provider failures are specific and recoverable.
+test('a provider failure comes back classified with a next step, and the renderer offers it', () => {
+  const M = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'main.js'), 'utf8')
+  const h = M.slice(M.indexOf("ipcMain.handle('agent-chat'"), M.indexOf('async function _agentChatOnce('))
+  assert.ok(h.includes("const r = F.explain(name, e, {})") && h.includes("failure: quota ? 'quota' : r.kind"))
+  assert.ok(!h.includes('throw e'), 'nothing reaches the renderer as an IPC throw')
+  assert.ok(renderer.includes('function _agentFailureText(res)') && renderer.includes("'Open Settings', function () { openSettings('mcs-claude-row') }"))
+})
+
+// Roadmap 109: taste memory is editable one insight at a time; rejected keys stay rejected.
+test('insights can be edited, deleted or excluded, and the profile builder honours both', () => {
+  const M = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'main.js'), 'utf8')
+  const PRE = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'preload.js'), 'utf8')
+  assert.ok(M.includes("ipcMain.handle('agent-edit-insight'") && PRE.includes("'agent-edit-insight'"))
+  assert.ok(M.includes("if (!ins || excluded.has(ins.key)) continue"), 'an excluded key is never merged back')
+  assert.ok(M.includes("if (ex && ex.edited) continue"), 'a hand-corrected text is never overwritten')
+  assert.ok(renderer.includes('data-ins-act="exclude"') && renderer.includes('data-ins-act="edit"') && renderer.includes('data-ins-act="delete"'))
+})
+
+// Roadmap 103: the assistant's welcome reflects real capabilities and names what is off.
+test('the agent welcome is built from connections and says what is not available', () => {
+  const fn = renderer.slice(renderer.indexOf('function _paintAgentWelcome()'), renderer.indexOf('async function _initSettingsPanel()'))
+  assert.ok(fn.includes("const slskOn = !!(slsk && slsk.status && slsk.status.connected)"))
+  assert.ok(fn.includes("if (!slskOn) cannot.push('Soulseek is not connected, so downloading is off until it is')"))
+  assert.ok(fn.includes("if (!online) cannot.push("))
+  assert.ok(renderer.includes("if (chatState.open) { try { _paintAgentWelcome() } catch (_) {} }"), 'refreshed each time the drawer opens')
+})
+
+// Roadmap 094: the signal path is stated stage by stage, with unknowns labelled.
+test('the stats row carries a source → decoder → processing → output tooltip that never claims a device rate', () => {
+  const fn = renderer.slice(renderer.indexOf('function _signalPathText('), renderer.indexOf('function updatePlayBtn('))
+  assert.ok(fn.includes("'\\nDecoder: '") && fn.includes("'\\nProcessing: '") && fn.includes("'\\nOutput: '"))
+  assert.ok(fn.includes('device sample rate not measured'))
+  assert.ok(fn.includes("'mpv (decoded format not reported yet)'"))
+  assert.ok(renderer.includes('el.title = _signalPathText(track)'))
+})
+
+// Roadmap 095/097: ReplayGain and exclusive mode are explained before they are chosen.
+test('the output-mode and ReplayGain controls carry plain explanations', () => {
+  const H = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'index.html'), 'utf8')
+  assert.ok(H.includes('nothing else can play through it while a track is loaded'))
+  assert.ok(H.includes('a file without them plays unchanged'))
+  assert.ok(H.includes('<option value="album">Album — keep an album'))
+})
+
+// Roadmap 089: compilations show the track artist; discs say their total.
+test('now-playing and queue rows lead with the track artist; disc bands say "of N"', () => {
+  const M = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'main.js'), 'utf8')
+  assert.ok(M.includes("discTotal: c.disk?.of || null,"))
+  assert.ok(renderer.includes("? track.artist + ' · ' + track.albumArtist"))
+  assert.ok(renderer.includes("${esc(t.artist || t.albumArtist || '')}${t.bpm"))
+  assert.ok(renderer.includes("Disc ${disc}${discTotal > 1 ? ' of ' + discTotal : ''}"))
+})
+
+// Roadmap 088: artwork changes preview the candidate, its size, the current cover and what is replaced.
+test('the artwork dialog shows current vs new, measures the candidate, and states where the change lands', () => {
+  const fn = renderer.slice(renderer.indexOf('async function setAlbumArtwork()'), renderer.indexOf('function _artCacheBust('))
+  assert.ok(fn.includes('art-preview-current') && fn.includes('id="art-candidate"'))
+  assert.ok(fn.includes("cand.naturalWidth + '×' + cand.naturalHeight"), 'resolution is read from the decoded image')
+  assert.ok(fn.includes("Replaces the cover Papa Audio shows for this album; the image file you chose and your music files are not touched unless you embed"))
+})
+
+// Roadmap 056: a truncated Songs section says how many are shown and gives access to the rest.
+test('local search shows "N of M" and a Show all button that lifts the cap for this query', () => {
+  assert.ok(renderer.includes("if (state._searchTrackCapFor !== query) { state._searchTrackCap = 20; state._searchTrackCapFor = query }"))
+  assert.ok(renderer.includes('id="search-show-all-tracks">Show all ${matchTracksTotal} songs</button>'))
+  assert.ok(renderer.includes("state._searchTrackCap = Infinity\n    renderSearch(query)"))
+})
+
 // Roadmap 082: wishlist automation is explicit per entry.
 test('wishlist rows state auto vs notify, pause, last check and cadence; paused entries are skipped', () => {
   const M = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'main.js'), 'utf8')

@@ -131,3 +131,15 @@ test('anything file-backed can be retagged; a bare folder cannot', () => {
 test('editing tags is not marked destructive', () => {
   assert.equal(byId({ kind: 'album', hasPath: true }, 'ctx-edit-tags').danger, false)
 })
+
+// Roadmap 118/046: reordering the queue without a drag.
+test('a queue item offers Move up / Move down only in the directions it can go', () => {
+  const ids2 = ctx => M.menuItemsFor(ctx).map(i => i.id)
+  const first = ids2({ kind: 'queue-item', queueIdx: 0, queueLength: 3 })
+  assert.ok(!first.includes('ctx-queue-up') && first.includes('ctx-queue-down'))
+  const mid = ids2({ kind: 'queue-item', queueIdx: 1, queueLength: 3 })
+  assert.ok(mid.includes('ctx-queue-up') && mid.includes('ctx-queue-down'))
+  const last = ids2({ kind: 'queue-item', queueIdx: 2, queueLength: 3 })
+  assert.ok(last.includes('ctx-queue-up') && !last.includes('ctx-queue-down'))
+  assert.ok(!ids2({ kind: 'queue-item' }).includes('ctx-queue-up'), 'no position, no move')
+})

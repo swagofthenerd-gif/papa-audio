@@ -2016,6 +2016,36 @@ h2.section-title { font-size:18px; font-weight:700; }
 .wishlist-mode { font-size:10px; color:var(--text3); }
 .wishlist-row.paused .wishlist-q { opacity:.6; }
 .wishlist-mode-btn, .wishlist-pause-btn { background:var(--glass); border:1px solid var(--glass-border); border-radius:var(--r-sm); color:var(--text2); font-size:11px; padding:3px 8px; cursor:pointer; }
+/* Roadmap 086: the kind of duplicate, named. */
+.mg-relation { font-weight:600; }
+.mg-relation-identical { color:#7ad1a1; }
+.mg-relation-editions { color:#e3b341; }
+/* Roadmap 088: current and candidate covers side by side. */
+.art-preview-pair { display:flex; gap:12px; align-items:flex-start; }
+.art-preview-pair .art-preview { flex:1; min-width:0; text-align:center; }
+.art-preview-current img { opacity:.7; }
+.art-preview-cap { font-size:11px; color:var(--text3); margin-top:4px; }
+/* Roadmap 109: per-insight actions in the assistant's memory. */
+.mcs-mem-card-actions { display:flex; gap:6px; margin-top:6px; }
+.mcs-mem-act { background:var(--glass); border:1px solid var(--glass-border); border-radius:var(--r-sm); color:var(--text2); font-size:10px; padding:2px 7px; cursor:pointer; }
+.mcs-mem-act:hover { color:var(--text); }
+.mcs-mem-edited { font-size:9px; color:var(--accent); margin-left:6px; }
+.mcs-mem-excluded { font-size:11px; color:var(--text3); padding:8px 4px; }
+/* V010: an unknown fact reads as unknown, not as a value. */
+.vmeta-unknown { opacity:.6; font-style:italic; }
+/* V020: spoiler-safe episode rows — the still is blurred and the synopsis is a button until asked. */
+.vep-row.concealed .vep-still { filter:blur(14px) saturate(.6); }
+.vep-row.concealed:hover .vep-still, .vep-row.concealed:focus-visible .vep-still { filter:blur(14px) saturate(.6); }
+.vep-synopsis-hidden { font-style:italic; }
+.vep-reveal { background:var(--glass); border:1px solid var(--glass-border); border-radius:var(--r-sm); color:var(--text2); font-size:11px; padding:2px 8px; cursor:pointer; }
+.vep-spoiler-toggle { font-size:12px; color:var(--text2); display:inline-flex; gap:6px; align-items:center; }
+/* V048: known total vs aired so far, stated above the grid. */
+.vep-counts { font-size:11px; color:var(--text3); padding:2px 0 6px; }
+/* V046: an unknown language state is shown as unknown. */
+.video-source-tag-unknown { opacity:.6; font-style:italic; }
+/* V053: click a source label to see the whole release name. */
+.video-source-label { cursor:text; }
+.video-source-label-full { white-space:normal; overflow:visible; text-overflow:clip; word-break:break-all; }
 .folder-item-empty { color:var(--text3); font-style:italic; cursor:default; }
 .setup-hint { font-size:12px; color:var(--text3); margin:8px 0 0; }
 .setup-chosen { color:var(--accent) !important; font-weight:600; word-break:break-all; }

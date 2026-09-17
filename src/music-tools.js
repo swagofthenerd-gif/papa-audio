@@ -202,6 +202,31 @@
       text: 'Supported files: FLAC, WAV, ALAC/M4A, MP3, AAC, OGG, Opus, AIFF, APE, WavPack. Check the folder, or add a different one.', action: 'add-folder' }
   }
 
+  // Portable export (roadmap 092): an extended M3U8 in UTF-8, one documented
+  // shape for playlists and liked songs. Local files are written as absolute
+  // paths (other players read them as-is). Streams are not files: they are
+  // kept as commented lines with their URL so nothing is lost and no player
+  // trips on them. Returns the text and the counts to report.
+  function m3u8For(name, tracks) {
+    var lines = ['#EXTM3U', '#PLAYLIST:' + String(name || 'playlist').replace(/[\r\n]+/g, ' ')]
+    var files = 0, streams = 0, skipped = 0
+    ;(tracks || []).forEach(function (t) {
+      if (!t) { skipped++; return }
+      var who = t.artist || t.albumArtist || ''
+      var info = '#EXTINF:' + Math.round(Number(t.duration) || 0) + ',' + (who ? who + ' - ' : '') + (t.title || '')
+      if (t.filePath && /^https?:/i.test(t.filePath)) {
+        streams++
+        lines.push('# stream, not a file: ' + info.slice(8))
+        lines.push('# ' + t.filePath)
+      } else if (t.filePath) {
+        files++
+        lines.push(info)
+        lines.push(t.filePath)
+      } else skipped++
+    })
+    return { text: lines.join('\n') + '\n', files: files, streams: streams, skipped: skipped }
+  }
+
   function clearPlayedQueue(queue, queueIndex) {
     queue = queue || []
     var idx = Number(queueIndex)
@@ -1816,6 +1841,7 @@
     insertPlayNext: insertPlayNext,
     playlistAddPlan: playlistAddPlan,
     libraryEmptyState: libraryEmptyState,
+    m3u8For: m3u8For,
     volumeAria: volumeAria,
     sliderKeyRatio: sliderKeyRatio,
     topAlbumsByPlays: topAlbumsByPlays,

@@ -110,6 +110,26 @@ Each F item re-checked on this branch, not assumed from the `main` review.
 | 2026-09-15 | 098 | `5a988f3` | device fallback remembered; "Active now" line; BIT-PERFECT demoted |
 | 2026-09-15 | 082 | `b6fb102` | wishlist rows: auto/notify, pause, last check, cadence |
 | 2026-09-15 | V067 | see log | badges: HDR shown as SDR / video re-encoded / audio re-encoded; remux silent |
+| 2026-09-15 | 086 | see log | duplicate groups classified: identical / recordings / editions; editions never safe to delete |
+| 2026-09-15 | 056 | `7f8357c` | Show all N songs lifts the local search cap |
+| 2026-09-15 | 118, 046 | `75a9e17` | queue Move up/down via context menu and Alt+↑/↓ |
+| 2026-09-15 | merge | `5d3a166` | other session's debrid work (0d26dc3, 18be92b, 48d1799) merged; suite green |
+| 2026-09-15 | 088 | `c5fcbb1` | artwork preview: current vs new, measured resolution, scope stated |
+| 2026-09-15 | 089 | `285be09` | track artist leads on compilations; Disc N of M |
+| 2026-09-15 | 092 | see log | m3u8For: absolute paths, streams as comments, counts; liked-songs export |
+| 2026-09-15 | 095, 097 | `11e3e2c` | ReplayGain / exclusive explained in labels and hints |
+| 2026-09-15 | 094 | see log | signal-path tooltip on the stats row; device rate marked not measured |
+| 2026-09-15 | 103 | `7e5d047` | agent welcome built from real connections; names what is off |
+| 2026-09-15 | 109 | see log | per-insight edit / delete / exclude; excluded keys never relearned |
+| 2026-09-15 | 111 | `d18d8fe` | provider failures classified with next step; Open Settings action |
+| 2026-09-15 | 104 | see log | auto_download / clear_queue previewed unless the request named them |
+| 2026-09-15 | V007 | `4282de7` | cached shelf note carries its age |
+| 2026-09-15 | V010 | `0c76049` | year unknown / not rated / runtime unknown |
+| 2026-09-15 | V020 | see log | spoiler-safe rows: blurred still, synopsis behind Show; Hide spoilers toggle |
+| 2026-09-15 | V048 | `10329fa` | planned total vs aired so far line |
+| 2026-09-15 | V046 | see log | "language ?" tag for unknown; sub/dub tags say they are name-derived |
+| 2026-09-15 | V053 | see log | source label click expands, double-click copies |
+| 2026-09-15 | V058 | see log | auto-switch toast names quality/language change |
 
 ## F list: all resolved (134 deferred to runtime). Now working through P0 E-items
 

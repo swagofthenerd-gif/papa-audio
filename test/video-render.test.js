@@ -519,6 +519,9 @@ function tvGridCtx() {
     _videoState: { episode: 1, season: 1 },
     esc: s => String(s == null ? '' : s),
     document: { getElementById: () => { const e = fakeEl(); created.push(e); return e } },
+    // V020: the grid binds the per-row reveal buttons; a no-op here.
+    _bindRevealButtons: () => {},
+    _spoilerSafe: false,
   }
   vm.createContext(ctx)
   for (const fn of ['_tvEpRenderGrid', '_epButton', '_epWindowOf', '_epRangeJumperHtml', '_epMark']) {
@@ -1054,4 +1057,60 @@ test('the sources panel states the numbering a release is matched on, and the ov
   assert.ok(R.includes("absolute number unknown — releases numbered absolutely will not match"), 'an unknown absolute is said, not hidden')
   assert.ok(R.includes("'Episode 1 → absolute ' + N.absoluteFor(startAbs, 1)"), 'the dialog previews the mapping')
   assert.ok(R.includes('Your watched marks and positions stay with the episodes'), 'and says progress is untouched')
+})
+
+// V007: a cached shelf states its age; an outage never reads as "nothing here".
+test('a saved catalog row carries its age and an outage is told apart from an empty result', () => {
+  const R = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
+  const M = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'main.js'), 'utf8')
+  assert.ok(M.includes("fromCache: true, cachedAt: saved.cachedAt || null, outage: lf.message"))
+  assert.ok(R.includes("' from ' + _agoLabel(Date.now() - Number(cachedAt))"))
+  assert.ok(R.includes("if (res.outage) return _rowOutage(row.key, res.outage)\n      return _rowEmpty(row.key, 'Nothing here right now')"))
+})
+
+// V010: metadata badges distinguish unknown from zero.
+test('the detail meta line says year unknown / not rated / runtime unknown instead of 0 or nothing', () => {
+  const R = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
+  assert.ok(R.includes("const rating = Number.isFinite(ratingNum) && ratingNum > 0 ? Math.round(ratingNum * 10) / 10 : null"), 'a zero rating is not a rating')
+  assert.ok(R.includes('title="No rating yet — not a zero">not rated</span>'))
+  assert.ok(R.includes('>year unknown</span>') && R.includes('>runtime unknown</span>'))
+})
+
+// V020: unwatched episodes hide their synopsis and still until asked.
+test('spoiler-safe rows conceal synopsis and still for unwatched episodes, with per-row and global reveal', () => {
+  const R = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
+  assert.ok(R.includes("const conceal = _spoilerSafe && !r.watched && !r.current && !r.pct"))
+  assert.ok(R.includes('class="vep-reveal" data-reveal="'))
+  assert.ok(R.includes("_bindSpoilerToggle(function () { _renderVideoControls('tv') })") && R.includes("_bindSpoilerToggle(function () { _renderVideoControls('anime') })"))
+  assert.ok(R.includes("if (e && e.target && e.target.closest && e.target.closest('.vep-reveal')) return"), 'revealing does not select the episode')
+  assert.ok(R.includes("_spoilerSafe = localStorage.getItem(SPOILER_SAFE_KEY) !== '0'"), 'on by default, off remembered')
+})
+
+// V048: an ongoing anime keeps planned, aired and available distinct.
+test('the anime grid states planned total and aired-so-far separately, and admits an unannounced total', () => {
+  const R = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
+  assert.ok(R.includes("' episodes planned · ' : 'Total not announced · '"))
+  assert.ok(R.includes("' aired so far</div>'"))
+})
+
+// V046: dub, sub, both and unknown are distinct states on a source row.
+test('a source with no language information is tagged "language ?" rather than left blank', () => {
+  const R = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
+  assert.ok(R.includes('>language ?</span>'))
+  assert.ok(R.includes("(s.sub && !s.dub ? 'sub' : s.dub && !s.sub ? 'dub' : 'sub+dub')"))
+})
+
+// V053: long release names can be expanded and copied without widening the list.
+test('a source label expands on click and copies on double-click', () => {
+  const R = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
+  assert.ok(R.includes("lbl.classList.toggle('video-source-label-full')"))
+  assert.ok(R.includes("showToast('Release name copied')"))
+})
+
+// V058: an automatic fallback names what changed.
+test('the auto-switch toast names a quality or language change and points at the list', () => {
+  const R = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
+  assert.ok(R.includes("changed.push(before.quality + ' → ' + next.quality)"))
+  assert.ok(R.includes("changed.push(next.dub ? 'now dubbed' : 'now subtitled')"))
+  assert.ok(R.includes("— pick another from the list if that is wrong"))
 })

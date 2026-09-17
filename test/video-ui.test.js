@@ -525,7 +525,7 @@ test('the catalog-row loader distinguishes an outage-empty from a plain empty', 
 })
 
 test('a fromCache row renders content and pins the saved-list note', () => {
-  assert.match(RENDERER, /if \(res\.fromCache\) _rowCacheNote\(row\.key\)/,
+  assert.match(RENDERER, /if \(res\.fromCache\) _rowCacheNote\(row\.key, res\.cachedAt\)/,
     'saved content renders normally, with a note that it may be stale')
 })
 
@@ -539,7 +539,9 @@ test('_rowOutage says AniList is down, carries its message, and offers a retry',
 
 test('_rowCacheNote admits the shelf is showing a saved list', () => {
   const fn = fnBody('_rowCacheNote')
-  assert.match(fn, /showing saved list — AniList is down/)
+  // V007: the note also says how old the saved list is when that is known.
+  assert.match(fn, /'showing saved list' \+ \(cachedAt \? ' from ' \+ _agoLabel/)
+  assert.match(fn, /— AniList is down/)
   assert.match(fn, /vrow-cache-note/, 'the note is de-duplicated by its own class')
 })
 

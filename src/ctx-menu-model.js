@@ -25,6 +25,8 @@ var LABELS = {
   'ctx-like':            'Like',
   'ctx-remove-playlist': 'Remove from playlist',
   'ctx-remove-queue':    'Remove from queue',
+  'ctx-queue-up':        'Move up in queue',
+  'ctx-queue-down':      'Move down in queue',
   'ctx-unlike':          'Remove from Liked Songs',
   'ctx-edit-tags':       'Edit tags…',
   'ctx-artwork':         'Set artwork…',
@@ -72,6 +74,11 @@ function menuItemsFor(ctx) {
       label: ctx.listName ? 'Remove from “' + ctx.listName + '”' : LABELS['ctx-remove-playlist'],
     })
   } else if (kind === 'queue-item') {
+    // Roadmap 118/046: reordering without a drag. Shown whenever the row can
+    // move in that direction; the renderer passes queueIdx and queueLength.
+    var qi = Number(ctx.queueIdx), qn = Number(ctx.queueLength)
+    if (Number.isFinite(qi) && qi > 0) out.push(item('ctx-queue-up', { separatorBefore: true }))
+    if (Number.isFinite(qi) && Number.isFinite(qn) && qi < qn - 1) out.push(item('ctx-queue-down', { separatorBefore: !(qi > 0) }))
     listItem = item('ctx-remove-queue')
   } else if (kind === 'liked-track') {
     listItem = item('ctx-unlike')
