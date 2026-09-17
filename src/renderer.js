@@ -7609,7 +7609,17 @@ function _paintVideoHero() {
     }
   }
   const go = function () { navigate('video-detail', key) }
-  document.getElementById('vhero-play')?.addEventListener('click', go)
+  // Play and Details are two different promises and must not be the same
+  // handler. The shelf cards' Play button was fixed for exactly this — it
+  // navigated to the detail page and stopped there, which is what "the Play
+  // button does nothing" means — and the hero, the largest control on the
+  // tab, kept the old behaviour. It arms the same _playOnArrival the card
+  // path arms, so renderVideoDetail starts the film as soon as its sources
+  // land instead of leaving the viewer on a page they did not ask for.
+  document.getElementById('vhero-play')?.addEventListener('click', function () {
+    _playOnArrival = { episode: _heroNum(item.episode), season: _heroNum(item.season) }
+    go()
+  })
   document.getElementById('vhero-info')?.addEventListener('click', go)
   document.getElementById('vhero-list')?.addEventListener('click', function () { _toggleWatchlist(item) })
   mount.querySelectorAll('.vhero-dot').forEach(function (d) {
@@ -7618,6 +7628,15 @@ function _paintVideoHero() {
       _paintVideoHero()
     })
   })
+}
+
+// A hero item's season/episode, or null. Absence has to be checked before the
+// coercion: Number(null) is 0, so a film with no season would arm "season 0"
+// and the detail page would open TMDB's specials bucket.
+function _heroNum(v) {
+  if (v === null || v === undefined || v === '') return null
+  const n = Number(v)
+  return Number.isFinite(n) ? n : null
 }
 
 // AniList overviews are HTML fragments (<br>, <i>), unlike TMDB's plain text.
