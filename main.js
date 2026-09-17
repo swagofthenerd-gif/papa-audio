@@ -177,6 +177,7 @@ const history = require('./history')
 // which surfaced as a stuck startup and a cascade of 'cannot access X before
 // initialization' from handlers that had already been registered.
 const { createHistoryArchive } = require('./src/history-archive')
+const browseCacheCap = require('./src/browse-cache-cap')
 const { defaultSettings: eqDefaults, BANDS: EQ_BANDS, GAIN_LIMIT: EQ_GAIN_LIMIT, PRESETS: EQ_PRESETS, presetSettings } = require('./eq')
 const { MpvCrossfade } = require('./mpv-crossfade')
 const { linearToMpv, MPV_MAX } = require('./volume-map')
@@ -10871,6 +10872,12 @@ function _animeDetailCacheRead(key) {
 // that lets an expensive fetch be served instantly from the last good result.
 const BROWSE_CACHE_CAP = 20            // users kept before the oldest are evicted
 const BROWSE_CACHE_EVICT = 4           // dropped per pass once at the cap
+// And a real ceiling, in BYTES. Counting users never fired: six of them had
+// accumulated 173 MB here, one peer alone being 102 MB, because a peer's share
+// is a whole file tree and "how many users" says nothing about how big it is.
+// The cost lands on the main process thread — measured on that file, 713 ms of
+// JSON.stringify per write, on the thread that also drives mpv's IPC socket.
+const BROWSE_CACHE_MAX_BYTES = 24 * 1024 * 1024
 
 // Write a fresh browse tree through under `browse:<username>`, stamped with the
 // time, evicting the oldest users when over the cap. Never throws — a cache
@@ -10886,7 +10893,14 @@ function _browseCacheWrite(username, directories) {
         keys.sort((a, b) => (map[a].cachedAt || 0) - (map[b].cachedAt || 0))
         for (const k of keys.slice(0, BROWSE_CACHE_EVICT)) delete map[k]
       }
-      return map
+      const capped = browseCacheCap.capByBytes(map, BROWSE_CACHE_MAX_BYTES, key)
+      if (capped.evicted.length) {
+        try {
+          console.log(`[papa] browse cache over ${Math.round(BROWSE_CACHE_MAX_BYTES / 1048576)} MB; ` +
+            `evicted ${capped.evicted.length} of the oldest (${capped.evicted.join(', ')})`)
+        } catch (_) {}
+      }
+      return capped.map
     })
   } catch (e) {
     try { console.warn('[papa] browse cache write failed:', e && e.message) } catch (_) {}
@@ -14549,9 +14563,29 @@ function checkStoreSchemaVersion() {
   }
 }
 
+// Caches that can be fetched again, so a backup of his DATA has no business
+// carrying them. browse-cache alone is 166 MB on this machine, which is what
+// made every automatic backup 173 MB — seven of those kept is 1.2 GB sitting in
+// his config directory on a volume that is 90% full. Worse, collecting them
+// force-LOADS each one into main's heap (about 1.1 s for the browse cache) and
+// then stringifies it, 30 seconds after every single launch.
+//
+// Nothing here is user data: a peer's file listing, anime metadata and the
+// Manage tab's scratch results all come back from the network or a rescan.
+const BACKUP_SKIP_STORES = new Set([
+  'browseCache',
+  'animeDetailCache',
+  'animeBrowseCache',
+  'manageCache',
+  'artistInfoCache',
+])
+
 function _collectBackupStores() {
   const stores = {}
   for (const [name, side] of Object.entries(sideStores)) {
+    // Deliberately not even read: .get() on a skipped store would pay the parse
+    // cost this exists to avoid.
+    if (BACKUP_SKIP_STORES.has(name)) continue
     try { stores[name] = side.get() } catch (_) { stores[name] = null }
   }
   return stores
