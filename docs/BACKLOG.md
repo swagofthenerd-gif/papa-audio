@@ -236,3 +236,44 @@ skill directories were copied, never the plugin.
 
 Honest gaps: nothing credible for React Native/Expo or PyQt6. Not installing
 junk to make the number bigger.
+
+## 12. UI/UX skills, round two — 6 added (24 installed total)
+
+Added 17 Sep after reading every file:
+
+| Skill | Why, for THIS app |
+|---|---|
+| `reviewing-a11y` | Accessibility as a METHOD, not a checklist: routes by target, severity model, fixed finding format. Says "No ARIA is better than Bad ARIA" and refuses to turn missing evidence into a finding. For the player deck and the video theatre's custom transport controls. |
+| `ui-craft` (core) | Dependency of the three below; carries the dashboard/table/copy reference set. |
+| `ui-craft-dense-dashboard` | The closest thing that exists to dense-desktop craft, and the direct answer to the Soulseek lag: virtualize past 200 rows, sticky headers, `tabular-nums`, `scrollbar-gutter: stable`. Zero React/Tailwind in it — checked. |
+| `unhappy` | A state inventory across every data surface: idle/loading/empty/error/partial/conflict/offline, and three KINDS of empty (first-run vs filtered vs cleared). Aimed at the downloads manager and Soulseek search. |
+| `tokens` | Three-layer token spine in CSS custom properties, and grades dark-theme contrast with APCA rather than the WCAG ratio, which misleads on dark UI. |
+| `ux-evaluate` | The emptiest gap: a real cognitive walkthrough (Motivation/Visibility/Understanding/Feedback per step) plus dark-pattern scanning. Nothing else installed walks a task. |
+
+Skipped deliberately: `ux-writing-skill` — the installed `ux-designer-skill` already
+ships 476 lines of UX writing and `ui-craft`'s `copy.md` is craftier. Installing
+both would be trigger noise.
+
+REJECTED, each verified by opening the file rather than trusting the summary:
+- `Community-Access/accessibility-agents` (409 stars) — its installer writes
+  three enforcement hooks into `~/.claude/settings.json`, self-registers a
+  marketplace, launches a background server, offers a daily auto-updater, and
+  one of its own skills normalises "Bypass Approvals — auto-approves tools
+  without dialog prompts". Confirmed at `install.sh:876` and `:1032`. It also
+  covers only Windows and macOS accessibility APIs — useless on Fedora.
+- `AccessLint/skills` — the best methodology I read, rejected on two hard
+  blockers: no LICENSE file at all, and every skill binds to `npx -y
+  @accesslint/mcp@latest` (unpinned remote code, auto-confirmed).
+- `a11y-specialist-skills/auditing-wcag` — the SIBLING of one we installed;
+  it instructs `npx -y @a11y-skills/audit`. Took `reviewing-a11y` only.
+- `nextlevelbuilder/ui-ux-pro-max-skill` — highest star count in the search;
+  29 MB catalogue, `npm install -g`, and mobile-first rules (44px touch
+  targets, bottom nav) for a keyboard-driven desktop app.
+- `plugin87/ux-ui-agent-skills`, `tommyjepsen/awesome-ux-skills`,
+  `murphytrueman/design-system-ops`, two 1-star visual-regression repos.
+
+Gaps that stay UNFILLED, honestly: CSS architecture for a large vanilla
+stylesheet (nothing exists above 2 stars — would have to be written), visual
+regression (every tool drives a browser at a URL; this renderer is inside
+Electron), and true desktop-app density — toolbars, multi-pane, command
+palettes — where a targeted search returned literally zero results.
