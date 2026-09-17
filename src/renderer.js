@@ -4234,6 +4234,24 @@ function _playerSourceList() {
   })
 }
 
+// The episode strip belongs to ONE release. Swapping source makes it wrong,
+// and dangerously so: the strip's `index` means a different thing on each half
+// of the app — a 0-based offset into the torrent's own files from the swarm,
+// and RealDebrid's 1-based file id (which counts the .nfo and the sample) from
+// debrid. video-pack-select routes on whether a streamer exists, and switching
+// installs one immediately, so from that moment every entry on screen
+// addresses the release just abandoned while the handler acts on the new one.
+// Clicking episode 9 opens whatever file sits at that number in the new
+// torrent, and autoplay-next does it unasked, because _playNextEpisode prefers
+// the pack fast path.
+//
+// The new source announces its own episodes once it is ready, which is up to
+// 45 seconds away and may never come at all. Empty until then is right.
+function _forgetPackStrip() {
+  if (_player && _player.setPack) _player.setPack([], _switchPackEpisode, _keepPackEpisode)
+  _setPackFiles([])
+}
+
 // Switching by hand, from inside the video. The stall-driven switch below does
 // the same thing on its own; this is the viewer deciding rather than the app
 // noticing. Position is kept — main keeps the player alive across the swap and
@@ -4266,6 +4284,9 @@ async function _playerPickSource(key) {
   _autoSwitchInFlight = false
   if (_videoDetailTicket !== detailTicket || _videoSeasonTicket !== seasonTicket) return
   if (res && res.ok) {
+    // The episodes on screen are the old release's, and its numbering is not
+    // the new one's.
+    _forgetPackStrip()
     _watch.pick = next
     _watch.stallEvents = 0
     _watch.stallNotified = false
@@ -4320,6 +4341,10 @@ async function _autoSwitchSource() {
   // now, so applying this switch's state to _watch would corrupt it.
   if (_videoDetailTicket !== detailTicket || _videoSeasonTicket !== seasonTicket) return
   if (res && res.ok) {
+    // The episodes on screen are the stalled release's, and its numbering is
+    // not the new one's. Nobody asked for this switch, so a strip left behind
+    // here is even easier to click by mistake.
+    _forgetPackStrip()
     // Rebuild the watch state coherently around the new pick rather than
     // poking _watch.pick in place: fresh stall accounting for the new source,
     // the new pick recorded so a later stall never re-picks the dead one, and
