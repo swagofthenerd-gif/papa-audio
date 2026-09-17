@@ -1160,3 +1160,110 @@ test('a file-loaded event resets the stall count', async () => {
   assert.strictEqual(eng._stallCount, 0)
   eng.stop(); f.close()
 })
+
+// B5: a dying mpv's exit event tore down the mpv that replaced it.
+//
+// start() calls stop(), which SIGTERMs the old process but never removes its
+// listeners, and then clears _stopping in the same tick. Node delivers the old
+// process's 'exit' a tick or more later -- a real mpv takes longer than that to
+// go -- and _onExit() only asked "am I stopping?" and "am I alive?", both of
+// which now describe the REPLACEMENT. So the replacement's client was closed
+// and engineDown was emitted for a process that was never in trouble.
+//
+// One fake mpv socket, a fresh process handle per spawn, and a kill() that
+// takes a tick to land, which is what a SIGTERM actually does.
+function fakeMpvPerSpawn() {
+  const sock = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'papa-vid-gen-')), 'mpv.sock')
+  const conns = []
+  const commands = []
+  const procs = []
+  const server = net.createServer(c => {
+    conns.push(c)
+    let buf = ''
+    c.on('data', d => {
+      buf += d
+      let i
+      while ((i = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, i); buf = buf.slice(i + 1)
+        if (!line.trim()) continue
+        const msg = JSON.parse(line)
+        commands.push(msg.command)
+        c.write(JSON.stringify({ error: 'success', data: null, request_id: msg.request_id }) + '\n')
+      }
+    })
+  })
+  const spawnFn = () => {
+    const proc = new EventEmitter()
+    proc.killed = false
+    // SIGTERM is a request, not an execution: mpv closes files and saves its
+    // state before it goes. The delay IS the bug's window.
+    proc.kill = () => { proc.killed = true; setTimeout(() => proc.emit('exit', 0), 5) }
+    procs.push(proc)
+    return proc
+  }
+  return new Promise(res => server.listen(sock, () => res({
+    sock, commands, procs, spawnFn,
+    close: () => { conns.forEach(c => c.destroy()); server.close() },
+  })))
+}
+
+const settle = () => new Promise(r => setTimeout(r, 40))
+
+test('a dying mpv does not tear down the mpv that replaced it', async () => {
+  const f = await fakeMpvPerSpawn()
+  const eng = new VideoEngine({ spawnFn: f.spawnFn, socketPath: f.sock })
+  await eng.start('/media/first.mkv')
+  const first = f.procs[0]
+
+  const down = []
+  eng.on('engineDown', d => down.push(d))
+
+  // The user switches episode: a second start() replaces the first mpv.
+  await eng.start('/media/second.mkv')
+  assert.strictEqual(f.procs.length, 2, 'a second process was spawned')
+  assert.ok(first.killed, 'and the first was asked to go')
+  assert.strictEqual(eng.alive, true)
+
+  // Now the first process actually dies, and its socket finishes closing.
+  await settle()
+
+  assert.strictEqual(eng.alive, true, 'the replacement is still alive')
+  assert.deepStrictEqual(down, [], 'and nothing was told the engine went down')
+  assert.ok(eng.client, 'the replacement still has its IPC client')
+  // Still working, not just still flagged: a command reaches mpv.
+  f.commands.length = 0
+  await eng.load('/media/third.mkv')
+  assert.ok(f.commands.some(c => c[0] === 'loadfile' && c[1] === '/media/third.mkv'))
+  eng.stop(); f.close()
+})
+
+test("a dying mpv's error event does not tear down its replacement either", async () => {
+  const f = await fakeMpvPerSpawn()
+  const eng = new VideoEngine({ spawnFn: f.spawnFn, socketPath: f.sock })
+  await eng.start('/media/first.mkv')
+  const first = f.procs[0]
+  const down = []
+  eng.on('engineDown', d => down.push(d))
+  await eng.start('/media/second.mkv')
+  first.emit('error', new Error('ECONNRESET on the process that is already gone'))
+  await settle()
+  assert.strictEqual(eng.alive, true)
+  assert.deepStrictEqual(down, [])
+  eng.stop(); f.close()
+})
+
+test('the CURRENT mpv dying is still reported as the engine going down', async () => {
+  const f = await fakeMpvPerSpawn()
+  const eng = new VideoEngine({ spawnFn: f.spawnFn, socketPath: f.sock })
+  await eng.start('/media/first.mkv')
+  await eng.start('/media/second.mkv')
+  await settle()
+  const down = []
+  eng.on('engineDown', d => down.push(d))
+  // The live process crashes on its own -- nobody asked it to go.
+  f.procs[1].emit('exit', 1)
+  await settle()
+  assert.strictEqual(eng.alive, false, 'the engine knows it is down')
+  assert.strictEqual(down.length, 1, 'and said so exactly once')
+  f.close()
+})

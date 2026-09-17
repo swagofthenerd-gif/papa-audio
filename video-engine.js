@@ -463,13 +463,21 @@ class VideoEngine extends EventEmitter {
     // engine, not this one.
     this._stallCount = 0
     this._clearStallTimer()
-    this.proc = this._spawnFn(this.binary, this._args(socketPath, { wid }), { stdio: ['ignore', 'ignore', 'pipe'] })
+    const proc = this._spawnFn(this.binary, this._args(socketPath, { wid }), { stdio: ['ignore', 'ignore', 'pipe'] })
+    this.proc = proc
     // mpv is chatty on stderr; without a drain the pipe buffer fills and the
     // process blocks. The log content is not needed here. Optional: a test's
     // injected proc may not carry a stderr stream.
-    this.proc.stderr?.resume()
-    this.proc.on('exit', () => this._onExit())
-    this.proc.on('error', () => this._onExit())
+    proc.stderr?.resume()
+    // Bound to THIS process, by identity. stop() SIGTERMs the old mpv and drops
+    // its reference but cannot remove listeners it never held, and start()
+    // clears _stopping in the same tick — while a real mpv takes far longer
+    // than a tick to close its files and go. The old process's 'exit' therefore
+    // arrived when _stopping was already false and alive already true again,
+    // and _onExit tore down the mpv that had just replaced it. The connect and
+    // observe failures below already guard on generation for the same reason.
+    proc.on('exit', () => { if (this.proc === proc) this._onExit() })
+    proc.on('error', () => { if (this.proc === proc) this._onExit() })
     this.client = new MpvIpcClient(socketPath)
     try {
       await this.client.connect()
@@ -489,8 +497,12 @@ class VideoEngine extends EventEmitter {
     // Replaced while connecting: this.client is the replacement's client now,
     // and attaching our handlers to it would deliver every event twice.
     if (gen !== this._gen) throw new EngineGone('start')
-    this.client.on('event', e => this._onEvent(e))
-    this.client.on('disconnected', () => this._onExit())
+    // Same identity rule as the process handlers above: stop() destroys the
+    // socket, but the 'disconnected' that follows is delivered a tick later,
+    // by which time this.client may be the replacement's.
+    const client = this.client
+    client.on('event', e => { if (this.client === client) this._onEvent(e) })
+    client.on('disconnected', () => { if (this.client === client) this._onExit() })
     // Report WHICH property failed, not a bare "observe failed" that names
     // nothing. A dead observation means a dead control deck.
     let obsId = 1
