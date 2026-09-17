@@ -122,3 +122,64 @@ exactly that latency shape (4.9 ms floor, 80 ms average).
 - Never enter credentials. Never print the debrid token.
 - Firewall/sudo commands are handed to him; never run them.
 - Push to `feature/audio-overhaul`.
+
+## 7. Bug sweep, 17 Sep — 20 confirmed findings
+
+Found by a read-only sweep, each traced to a mechanism; the ones marked
+**[executed]** were proven by running the real module, not by reading. I
+re-verify each one myself before it is fixed, and one below has already
+failed that re-verification.
+
+### Tier 1 — silent data loss, or plays the wrong thing
+| # | Finding | State |
+|---|---|---|
+| B1 | One unreadable store file wipes the whole watch history, then destroys the backup on the next launch | TODO |
+| B2 | One empty reply from slskd permanently abandons the entire download queue — and refuses to re-add it, forever | TODO |
+| B3 | Pack playback reads codec/audio tags as episode numbers: ask for ep 1, get ep 24 **[executed]** | TODO |
+| B4 | Auto-skip intro seeks backwards forever — **NOT REPRODUCED on re-verification**, the model returned `offer`, not `auto`. Re-examine before touching. | DISPUTED |
+| B5 | A dying mpv's exit event kills the mpv that replaced it | TODO |
+| B6 | Restore from backup silently drops 19 settings keys, including likes, wishlist and the whole YouTube library **[executed]** | TODO |
+| B7 | Play history past the 2000 cap is lost when the archive write fails, and the log claims the opposite **[executed]** | TODO |
+| B8 | The download-path resolver's first guess is a bare filename in the download root **[executed]** | TODO |
+
+### Tier 2 — destructive UI, or the app quietly does nothing
+| # | Finding | State |
+|---|---|---|
+| B9 | Diary handlers double on every action: one click deletes a list, no confirm, no undo | TODO |
+| B10 | A stuck scan permanently shrinks the saved library | TODO |
+| B11 | During a crossfade, pause/seek/play act on the track being thrown away | TODO |
+| B12 | Alternate-source hunt matches on filename alone — downloads a different song and calls it done | TODO |
+| B13 | Space on a focused card opened it AND paused the music — **his live report** | DONE `3f9548b` |
+| B14 | Notify-only wishlist entries are deleted the moment they match | TODO |
+| B15 | Downloads page counts down to a retry 4-16x further away, and pins at "4/4" | TODO |
+
+### Tier 3
+| # | Finding | State |
+|---|---|---|
+| B16 | Backup/restore said "Could not restore" when you simply pressed Cancel | DONE `3f9548b` |
+| B17 | Every ordinary quit recorded as a crash — 65 of 65 entries in his log were noise | DONE `3f9548b` |
+| B18 | Five shortcuts are tested before the text-input guard | TODO |
+| B19 | The assistant's download confirmation is switched off by the word "get" | TODO |
+| B20 | Soulseek shop search box eats the space between words and throws the caret to the end | TODO |
+
+Lower priority, also confirmed: seek leaks a permanent whole-tail torrent
+claim; `selectFile` cancels an in-progress predownload while reporting stale
+progress; a write fd leaks per superseded converter run and neither ffmpeg
+spawn has an error listener; `purgeOrphanStreams` recursively deletes
+unrecognised files under a configurable root; eztv never varies `page`;
+`renderYtSeeAll` has no generation ticket and "Load more" is not disabled.
+
+## 8. UI/UX skills — INSTALLED 17 Sep
+
+Read before installing, since a skill is instructions I will follow. All
+three are pure markdown with no scripts, no `allowed-tools`, no network
+fetches: `ux-designer-skill` (szilu, MIT — data tables, row expansion,
+search UX, information architecture), `interaction-design-skills` (rastian —
+all ten component states), `ui-audit` (tommygeoco, MIT — progressive
+disclosure, chunking, cognitive load).
+
+Rejected on purpose: `pbakaus/impeccable` (68.7k stars) downloads and execs a
+binary on first run and installs a persistent post-edit hook — checksum-pinned
+and not malicious, but remote code execution is too much for "help me think
+about this UI". `nextlevelbuilder/ui-ux-pro-max-skill` (128k stars) is a
+brand-asset generator that calls paid image APIs — wrong tool entirely.
