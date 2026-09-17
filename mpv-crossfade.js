@@ -92,6 +92,11 @@ class MpvCrossfade extends EventEmitter {
     this.userVolume = 100
     this._nextPath = null
     this._fading = false
+    // Which fade the ramp currently in flight belongs to. A user action during a
+    // fade bumps this, and the ramp checks it after every step — that is how a
+    // loop already awaiting its next tick is told to stop rather than carrying
+    // on setting volumes over the top of the recovery.
+    this._fadeSeq = 0
     // An engine that ran out of respawns is gone for the rest of the session.
     // Fading INTO a dead engine is silence, so a fade must never pick one.
     this._failed = [false, false]
@@ -202,6 +207,10 @@ class MpvCrossfade extends EventEmitter {
 
   async _startFade() {
     this._fading = true
+    const token = ++this._fadeSeq
+    // True once a user action has cancelled this fade out from under us. Every
+    // await below is a point where that can have happened.
+    const cancelled = () => this._fadeSeq !== token
     const next = this._nextPath
     this._nextPath = null
     const from = this._active
@@ -212,16 +221,25 @@ class MpvCrossfade extends EventEmitter {
     let handedOff = false
     try {
       await to.setVolume(0)
+      if (cancelled()) return
       await to.load(next, { play: true })
+      if (cancelled()) return
       for (let i = 1; i <= FADE_STEPS; i++) {
         const step = crossfadeStep(this.userVolume, i / FADE_STEPS)
         await from.setVolume(step.from)
         await to.setVolume(step.to)
         await new Promise(r => setTimeout(r, this._tickMs))
+        // Stop here rather than at the end of the loop: _cancelFade has already
+        // put the volumes back, and another step would undo that.
+        if (cancelled()) return
       }
       handedOff = true
       await from.pause()
     } catch (e) {
+      // A cancelled fade is allowed to throw on the way out — the engine it was
+      // talking to has just been paused underneath it. That is not a failure to
+      // report or recover from; _cancelFade already restored what he can hear.
+      if (cancelled()) return
       // A fade that threw used to leave _fading true forever. Every later fade
       // was blocked by it, every engine event was swallowed by the ifActive gate
       // that reads it, and whichever volumes the ramp had reached when it died
@@ -252,11 +270,44 @@ class MpvCrossfade extends EventEmitter {
   // advance (now unblocked, because _fading is cleared) carries the album on.
   async _abortFade(from, to, next, err) {
     const detail = String((err && err.message) || err)
+    await this._restoreAudible(from, to)
+    this._emitDiagnostic('crossfade-failed', { path: next, detail, engine: this.activeIdx })
+    this.emit('crossfadeFailed', { path: next, detail, recovered: true })
+  }
+
+  // The audible half of the recovery above, with nothing said about it: the
+  // arriving track silenced and stopped, the departing one — the one he is
+  // actually listening to — back at his volume instead of part-way down the ramp.
+  async _restoreAudible(from, to) {
     await this._bestEffort(() => to.setVolume(0))
     await this._bestEffort(() => to.pause())
     await this._bestEffort(() => from.setVolume(this.userVolume))
-    this._emitDiagnostic('crossfade-failed', { path: next, detail, engine: this.activeIdx })
-    this.emit('crossfadeFailed', { path: next, detail, recovered: true })
+  }
+
+  // Called by play/pause/seek/load before they touch an engine.
+  //
+  // `activeIdx` does not move until the ramp finishes, so during a fade
+  // `this._active` is the engine being thrown away. Acting on it is how Pause
+  // used to leave the music playing and getting louder, how a seek moved a track
+  // that was about to be discarded, and how choosing a track played the queued
+  // one instead. Cancelling first makes `_active` mean what it says again: the
+  // track he can hear, still playing, at his volume.
+  //
+  // Deliberately silent. _abortFade reports a genuine failure to the renderer,
+  // which puts "that crossfade did not complete" on screen; nothing failed here,
+  // he pressed a button. The queued track is not retried, exactly as in the abort
+  // path — the current track plays on and the ordinary 'ended' advance carries
+  // the album forward.
+  async _cancelFade() {
+    if (!this._fading) return false
+    const from = this._active
+    const to = this._inactive
+    // Bumped before anything is awaited, so the ramp stops at its next step
+    // rather than painting volumes back over the restore below.
+    this._fadeSeq++
+    this._fading = false
+    await this._restoreAudible(from, to)
+    return true
   }
 
   async _bestEffort(fn) {
@@ -276,16 +327,24 @@ class MpvCrossfade extends EventEmitter {
   }
 
   // ── MpvEngine-compatible surface ──
-  async load(p, o) { this._nextPath = null; await this._active.setVolume(this.userVolume); await this._active.load(p, o) }
+  // The four verbs a person drives the player with all cancel a fade in progress
+  // first (see _cancelFade): until the ramp ends, `_active` is the engine being
+  // faded out and discarded, so without this they each acted on the wrong track.
+  async load(p, o) {
+    await this._cancelFade()
+    this._nextPath = null
+    await this._active.setVolume(this.userVolume)
+    await this._active.load(p, o)
+  }
   async setNext(p) {
     // Degraded to one engine: there is no second engine to fade in, so the queued
     // path has to reach mpv or nothing prefetches it at all.
     if (!this.crossfadeEnabled) { this._nextPath = null; return this._active.setNext(p) }
     this._nextPath = p || null
   }
-  async play() { await this._active.play() }
-  async pause() { await this._active.pause() }
-  async seek(s) { await this._active.seek(s) }
+  async play() { await this._cancelFade(); await this._active.play() }
+  async pause() { await this._cancelFade(); await this._active.pause() }
+  async seek(s) { await this._cancelFade(); await this._active.seek(s) }
   async setVolume(v) { this.userVolume = v; await this._active.setVolume(v) }
   async setSpeed(x) { await this._active.setSpeed(x) }
   async setReplaygain(m) { await Promise.all(this.engines.map(e => e.setReplaygain(m))) }
