@@ -9385,6 +9385,12 @@ body.video-active .np-byline { font-size:10.5px; }
   .clickable-meta { transition: none; }
 }
 
+/* Unsynced lyrics: shown scrolling on evenly-spread times so they move with the
+   song, but not clickable, because those times are a guess rather than a
+   measurement. Without this the lines still looked like seek targets. */
+.lyrics-unsynced .lyrics-line,
+.lyrics-unsynced .lyrics-drawer-line { cursor: default; }
+
 /* ── Cinema stays dark in light mode (App #87, design decision 3) ─────
    The theatre is dark always — a cinema is dark; docs/philosophy.md backs
    this as design honesty. The `.cinema` block above already draws from its

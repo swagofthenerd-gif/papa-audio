@@ -21173,9 +21173,17 @@ async function fetchLyrics(track, force = false) {
   if (res.plain) {
     const paras = res.plain.split('\n').map(s => s.trim()).filter(Boolean)
     if (!paras.length) return null
+    // These times are INVENTED — the lyrics came back unsynced and the lines are
+    // spread evenly across the duration. That is a reasonable way to show them
+    // scrolling, and a terrible thing to let anything else believe. Marked, so
+    // the panel does not offer click-to-seek on a guess and so they are never
+    // written to disk as a real .lrc: a sidecar takes absolute priority on every
+    // future play, so a file of guessed timings would permanently beat the
+    // genuine synced lyrics LRCLIB might publish tomorrow, with no way to undo
+    // it from inside the app.
     const dur = track.duration || audio.duration || paras.length
     const step = dur / paras.length
-    return paras.map((text, i) => ({ time: i * step, text }))
+    return paras.map((text, i) => ({ time: i * step, text, estimated: true }))
   }
   return null
 }
@@ -21220,6 +21228,14 @@ function _scrollLineIntoView(container, el) {
 }
 
 function _bindLyricsSeek(container, lineSelector) {
+  // Not bound when the times were invented. Unsynced lyrics are shown with
+  // evenly-spread times so they scroll, but clicking one would then jump
+  // playback to an arbitrary point in the song while looking like a precise
+  // seek — the worst kind of wrong, because nothing about it says it guessed.
+  if (Array.isArray(_lyrics) && _lyrics.some(l => l && l.estimated)) {
+    container.classList.add('lyrics-unsynced')
+    return
+  }
   container.querySelectorAll(lineSelector).forEach(el => {
     el.addEventListener('click', () => {
       const t = parseFloat(el.dataset.time)
@@ -21380,11 +21396,18 @@ async function searchAndSaveLyrics() {
       return
     }
 
-    const lrcLines = fetched.map(l => {
-      const mins = Math.floor(l.time / 60)
-      const secs = (l.time % 60).toFixed(2).padStart(5, '0')
-      return `[${String(mins).padStart(2, '0')}:${secs}]${l.text}`
-    }).join('\n')
+    // Only real timings become a timed .lrc. When the lyrics came back unsynced
+    // the times were invented by spreading the lines evenly, and writing those
+    // as timestamps would dress a guess up as a measurement — permanently, since
+    // a sidecar wins over anything fetched later.
+    const estimated = fetched.some(l => l && l.estimated)
+    const lrcLines = estimated
+      ? fetched.map(l => l.text).join('\n')
+      : fetched.map(l => {
+          const mins = Math.floor(l.time / 60)
+          const secs = (l.time % 60).toFixed(2).padStart(5, '0')
+          return `[${String(mins).padStart(2, '0')}:${secs}]${l.text}`
+        }).join('\n')
 
     const filePath = track.filePath
     if (filePath && !isHttpPath(filePath)) {
@@ -21393,7 +21416,9 @@ async function searchAndSaveLyrics() {
         _lyrics = fetched
         renderLyricsPanel()
         updateLyricsDrawer()
-        showToast('Lyrics saved next to the file ✓')
+        showToast(estimated
+          ? 'Lyrics saved next to the file ✓ — unsynced, so they will not scroll with the song'
+          : 'Lyrics saved next to the file ✓')
         if (btn) btn.classList.add('saved')
         setTimeout(() => btn?.classList.remove('saved'), 3000)
       } else {
