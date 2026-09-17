@@ -33778,6 +33778,7 @@ function _mgStorageHtml(rep) {
     (bigRows ? '<div class="mg-store-section"><div class="mg-store-h">Biggest albums</div>' + bigRows + '</div>' : '') +
     '<div class="mg-store-section"><div class="mg-store-h">By folder</div>' + rootRows + '</div>' +
     redHtml +
+    _mgUpgradeDupesHtml() +
     '</div>' +
     '<div class="mg-note">Trash counts against your free space until it is emptied — see Recently Deleted.</div>'
 }
@@ -33812,9 +33813,123 @@ function _mgBindStorage() {
     })
   })
   document.getElementById('mg-red-trash')?.addEventListener('click', _mgTrashRedundant)
+  document.getElementById('mg-upg-trash')?.addEventListener('click', _mgTrashUpgraded)
+  document.getElementById('mg-upg-unsure-toggle')?.addEventListener('click', function () {
+    var box = document.getElementById('mg-upg-unsure')
+    if (!box) return
+    var open = box.hasAttribute('hidden')
+    if (open) box.removeAttribute('hidden'); else box.setAttribute('hidden', '')
+    this.textContent = (open ? 'Hide' : 'Show') + ' the ones I am not sure about (' +
+      ((_mgState.upgrades && _mgState.upgrades.ambiguous.length) || 0) + ')'
+    this.setAttribute('aria-expanded', open ? 'true' : 'false')
+  })
 }
 
 // Batch-trash the selected redundant lossy copies through the normal funnel.
+// Upgrades of things he already owns (S1). When a better copy of a track is
+// downloaded it lands beside the old one and the album shows the song twice --
+// his words: "it just adds duplicates in the same album man".
+//
+// Two lists, and the split is the whole point. `plan` holds only the cases
+// where the metadata genuinely proves one copy supersedes another; `ambiguous`
+// holds everything the analysis is not sure about -- a different edit, a live
+// take, two lossless copies at the same depth and rate, MP3 320 against V0.
+// Nothing is ever ticked by default, including in `plan`: a false positive here
+// costs him music he may not be able to find again, so the default is that
+// nothing happens.
+function _mgUpgradeDupesHtml() {
+  var U = window.PapaUpgradeDupes
+  if (!U) return ''
+  var res = null
+  try { res = U.findSupersededCopies(state.library || []) } catch (e) {
+    console.error('[papa] upgrade scan failed:', e && e.message)
+    return ''
+  }
+  _mgState.upgrades = res
+  if (!res || (!res.plan.length && !res.ambiguous.length)) return ''
+
+  // The two lists do NOT have the same shape, and assuming they did threw
+  // here and took the whole Manage page down with it. A decided case names
+  // the copy going and the copy kept; an undecided one only has the copies it
+  // could not choose between, which is exactly why it is undecided.
+  var sureRow = function (it, idx) {
+    return '<div class="mg-store-row mg-redundant-row">' +
+      '<label class="mg-pick"><input type="checkbox" class="mg-upg-check" data-idx="' + idx + '"></label>' +
+      '<span class="mg-store-label">' + esc(it.remove.describe || it.remove.title || 'track') +
+        '<span class="mg-store-sub">' + esc(it.reason) + '</span></span>' +
+      '<span class="mg-store-val">' + _mgFmt(it.bytes || 0) + '</span></div>'
+  }
+  var unsureRow = function (it) {
+    var copies = it.copies || []
+    var title = (copies[0] && (copies[0].title || copies[0].filePath)) || 'track'
+    var which = copies.map(function (c) { return esc(c.describe || c.filePath || '') }).join('  vs  ')
+    return '<div class="mg-store-row mg-redundant-row">' +
+      '<span class="mg-pick mg-pick-none"></span>' +
+      '<span class="mg-store-label">' + esc(title) +
+        '<span class="mg-store-sub">' + which + ' — ' + esc(it.reason) + '</span></span>' +
+      '<span class="mg-store-val"></span></div>'
+  }
+
+  var html = ''
+  if (res.plan.length) {
+    html += '<div class="mg-store-section"><div class="mg-store-h">Upgrades of things you already have</div>' +
+      '<div class="mg-note">A better copy of these tracks is already in your library, so the older one is ' +
+      'just a duplicate in the same album. Up to <strong>' + _mgFmt(res.stats.bytesReclaimable) +
+      '</strong> reclaimable. <strong>Nothing is selected</strong> — tick only what you want gone, and it ' +
+      'goes to the Trash, not deleted.</div>' +
+      res.plan.map(function (it, i) { return sureRow(it, i) }).join('') +
+      '<div class="mg-rule-bar"><button class="mg-btn mg-btn-danger mg-btn-sm" id="mg-upg-trash">' +
+      'Move selected to Trash…</button></div>'
+  } else {
+    html += '<div class="mg-store-section"><div class="mg-store-h">Upgrades of things you already have</div>' +
+      '<div class="mg-note">Nothing here is a clear duplicate.</div>'
+  }
+
+  if (res.ambiguous.length) {
+    html += '<div class="mg-rule-bar"><button class="mg-btn mg-btn-sm" id="mg-upg-unsure-toggle" ' +
+      'aria-expanded="false">Show the ones I am not sure about (' + res.ambiguous.length + ')</button></div>' +
+      '<div id="mg-upg-unsure" hidden>' +
+      '<div class="mg-note">These look similar but the tags do not prove one replaces the other — a ' +
+      'different edit, a live take, or two copies of genuinely equal quality. They cannot be selected here ' +
+      'on purpose.</div>' +
+      res.ambiguous.map(function (it) { return unsureRow(it) }).join('') +
+      '</div>'
+  }
+  return html + '</div>'
+}
+
+async function _mgTrashUpgraded() {
+  var U = window.PapaUpgradeDupes
+  var res = _mgState.upgrades
+  if (!U || !res || !res.plan.length) return
+  var ids = []
+  document.querySelectorAll('.mg-upg-check:checked').forEach(function (cb) {
+    var it = res.plan[Number(cb.dataset.idx)]
+    if (it) ids.push(it.id)
+  })
+  if (!ids.length) { showToast('Tick the copies you want removed'); return }
+
+  // The module validates the ids again on its own side: it refuses anything
+  // ambiguous, stale or invented, so a UI bug cannot widen the selection.
+  var req = U.toRemovalPlan(res, ids)
+  if (!req || !req.paths.length) { showToast('Nothing to remove'); return }
+  if (req.rejected && req.rejected.length) {
+    console.warn('[papa] upgrade removal rejected ids:', req.rejected)
+  }
+
+  await libraryMutate({
+    kind: 'trash',
+    paths: req.paths,
+    label: req.items.length + ' superseded cop' + (req.items.length === 1 ? 'y' : 'ies') +
+      ' (' + _mgFmt(req.bytes || 0) + ')',
+    warnings: req.items.slice(0, 8).map(function (it) {
+      return (it.remove.describe || it.remove.title || 'track') + ' — kept: ' +
+             (it.keeper.describe || it.keeper.title || 'the other copy')
+    }),
+  })
+  _mgCachePut('storage', null)
+}
+
 async function _mgTrashRedundant() {
   var red = _mgState.redundant
   if (!red || !red.pairs.length) return
