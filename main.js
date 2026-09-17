@@ -209,7 +209,6 @@ const { createApibayProvider } = require('./providers/apibay')
 const { createKnabenProvider } = require('./providers/knaben')
 const { createSolidTorrentsProvider } = require('./providers/solidtorrents')
 const { createMovieTvProvider, createVidsrcResolver } = require('./providers/movie-tv')
-const { createAnimeProvider } = require('./providers/anime')
 const { TorrentStreamer, purgeOrphanStreams, setStreamRoot, streamRoot } = require('./torrent-stream')
 const { VideoEngine, purgeOrphanPlayers } = require('./video-engine')
 const { createThumbnailer } = require('./src/thumbnailer')
@@ -10380,8 +10379,17 @@ function jackett() {
 // clicked, while still occupying the top of the source list. The adapters stay
 // so a real direct-stream resolver can be dropped in without touching the
 // router, the engine, or the UI.
+//
+// Being in the SEARCH LIST with nothing to run is a different matter, and not
+// free: resolveStream books a backend that answered nothing as a backend that
+// failed, and _onSearchSweep persists that to the source-health store, whose
+// rows are what the maintenance panel shows. An adapter with no resolvers
+// therefore sat in that table going redder for ever, making a genuinely dark
+// mirror harder to spot. So the anime one is no longer wired in — anime has
+// real indexers behind it. movieTv stays only because it is the sole backend
+// movies and TV have when torrent sources are switched off; what that switch
+// should do with no HTTP resolver is its own question.
 const movieTv = _lazy(() => createMovieTvProvider({ fetchFn: fetchWithTimeout(15000), resolvers: [] }))
-const anime = _lazy(() => createAnimeProvider({ fetchFn: fetchWithTimeout(15000), resolvers: [] }))
 const videoEngine = _lazy(() => new VideoEngine({ config: { ytdlPath: ytdlp.binaryPath(), ytdlJsRuntime: ytdlp.nodePath(), ao: process.env.PAPA_VIDEO_AO || undefined, upscale: _videoSettings().videoUpscale } }))
 const yarrlist = _lazy(() => createYarrlistDirectory({ fetchFn: fetchWithTimeout(15000) }))
 const _videoSession = { streamer: null, thumbnailer: null, win: null, overlay: null, token: 0, bounds: null, mini: false, miniRect: null, debrid: null }
@@ -12272,7 +12280,11 @@ function _videoBackends(type, settings) {
   // `type` here is the *source* type, which is not always the catalog the
   // entry came from: a TMDB tv show flagged as anime is routed to nyaa, so a
   // show found by search gets the same sources as one found in the Anime tab.
-  if (type === 'anime') return torrents ? withJackett([nyaa(), animetosho(), apibay(), knaben(), solidtorrents(), anime()]) : [anime()]
+  // No HTTP adapter here: it has no resolvers, so it only ever answered with
+  // an empty list while being recorded as a failing source. With torrent
+  // sources off there is genuinely no anime backend, and an empty list says
+  // that instead of pretending.
+  if (type === 'anime') return torrents ? withJackett([nyaa(), animetosho(), apibay(), knaben(), solidtorrents()]) : []
   // Every type gets the broad indexer alongside its specialist one. They run
   // in parallel and their results are merged and de-duplicated by info hash,
   // so the specialist's better metadata wins where both have the same torrent
