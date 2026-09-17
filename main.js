@@ -8876,16 +8876,31 @@ ipcMain.handle('slsk-cancel-transfer', async (_, { username, id, alreadyDone }) 
   // A finished transfer has no intent left to cancel, and this lookup costs a
   // FULL /transfers/downloads fetch (~1 MB here). Clearing a large completed
   // list used to pay that once per item.
+  let filename = null
   if (!alreadyDone) {
-    try {
-      const filename = await dlFilenameForTransfer(username, id)
-      if (filename) dlAbandonByFilename(filename)
-    } catch (_) {}
+    try { filename = await dlFilenameForTransfer(username, id) } catch (_) {}
   }
   try {
     // ?remove=true removes completed/failed transfers from the list; harmless for active ones
     await slskdFetch('DELETE', `/transfers/downloads/${encodeURIComponent(username)}/${encodeURIComponent(id)}?remove=true`)
-  } catch (_) {}
+  } catch (e) {
+    // A transfer the daemon no longer has is already cancelled, which is what
+    // was asked for. Anything else is a real failure and must be said out loud:
+    // this used to be swallowed and the handler returned ok regardless, so the
+    // renderer's "Couldn't cancel that download" path could never fire. The
+    // user was told it was cancelled while slskd carried on downloading on
+    // their account and bandwidth — and the track had already been blacklisted,
+    // so it could not be re-queued either.
+    const msg = String((e && e.message) || e)
+    if (!/\b404\b|not found|no such/i.test(msg)) {
+      dlPersist()
+      dlBroadcast()
+      return { ok: false, error: `the daemon would not cancel that transfer: ${msg}` }
+    }
+  }
+  // Abandonment is recorded only once the transfer is actually gone. Recording
+  // it first meant a failed cancel still blacklisted the track for good.
+  if (filename) dlAbandonByFilename(filename)
   dlPersist()
   dlBroadcast()
   return { ok: true }
@@ -10726,6 +10741,12 @@ const VIDEO_SETTING_KEYS = new Set([
   // the same settings path; missing keys here silently dropped their writes.
   'videoKeepQuotaGB', 'videoCacheGB', 'debridProvider', 'debridToken',
   'videoUpscale',
+  // The Smooth/Purist dropdown has always written this key and it was never on
+  // the list, so every write was dropped: the control moved, said nothing, and
+  // reverted on the next restart. The line just below — setting playerModeByUser
+  // so a deliberate choice survives the one-time migration — could never run
+  // either, which is the whole mechanism for respecting a choice he made.
+  'playerMode',
 ])
 
 ipcMain.handle('video-settings-set', (_, { patch }) => {

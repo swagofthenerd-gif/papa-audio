@@ -382,7 +382,18 @@ function addItem(state, item, opts) {
       if (sk) delete state.abandonedIds[sk]
     }
   }
-  if (state.inflight[key]) return { refused: 'inflight', key: key }
+  if (state.inflight[key]) {
+    // Unforced, this is the guard that stops the same file being queued twice
+    // while it is downloading. Forced, it was the bug: both force callers
+    // (slsk-retry-transfer and the respread) DELETE the transfer at the daemon
+    // first and then re-enqueue, so by the time they get here the daemon no
+    // longer has it and "inflight" describes something that no longer exists.
+    // Refusing meant the retry silently did nothing while the UI said
+    // "Retrying…", and the reconcile loop then read the vanished transfer as a
+    // cancellation and blacklisted the track for good.
+    if (!force) return { refused: 'inflight', key: key }
+    delete state.inflight[key]
+  }
   var existing = null
   for (var i = 0; i < state.pending.length; i++) {
     if (state.pending[i].key === key) { existing = state.pending[i]; break }

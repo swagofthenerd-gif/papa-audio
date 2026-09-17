@@ -31322,7 +31322,12 @@ function setupListeners() {
     if (state.currentPage === 'video-detail' && !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey &&
         _DETAIL_KEYS.test(e.key) && e.key !== 'Escape' && !inInputNow(e)) return
 
-    const inInput = e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA'
+    // inInputNow also counts SELECT and contenteditable. This handler used to
+    // test only INPUT and TEXTAREA, so with a dropdown focused, Space toggled
+    // playback and preventDefault stopped the dropdown opening at all — and f,
+    // q, s, r and x fired their shortcuts while the user was trying to pick a
+    // setting. The correct helper already existed and the video side used it.
+    const inInput = inInputNow(e)
 
     // Every test below asks matchesShortcut, so rebinding in the dialog works.
     if (matchesShortcut('undo', e) && !inInput) {
