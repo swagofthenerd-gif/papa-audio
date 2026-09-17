@@ -5,6 +5,11 @@
 // Channel count alone is not enough — a 6-channel eac3 Atmos file and a
 // 6-channel FLAC SACD rip are different things and deserve different labels.
 
+// What a DSD file actually is here: a lossless DSD source that is decoded to
+// PCM for playback. Kept as one exported string so the album badge, the track
+// badge and the now-playing tooltip cannot say three different things.
+const DSD_TITLE = 'Direct Stream Digital — decoded to PCM for playback'
+
 function surroundLabel(channels) {
   const c = Number(channels) || 0
   if (c >= 8) return '7.1'
@@ -41,7 +46,10 @@ function formatBadges(src = {}) {
   if (sur) out.push({ label: sur, kind: 'surround', title: `${sur} multichannel audio` })
 
   if (/^dsd|dsf|dff/i.test(codec)) {
-    out.push({ label: 'DSD', kind: 'dsd', title: 'Direct Stream Digital' })
+    // C5 (2026-09 honesty pass): the file is DSD, but mpv decodes it to PCM to
+    // play it — this app has no DoP or native-DSD output path — so the badge
+    // must not let anyone read "DSD" as "DSD reaches the DAC".
+    out.push({ label: 'DSD', kind: 'dsd', title: DSD_TITLE })
   } else if (bits > 16 || rate > 48000) {
     const khz = Math.round(rate / 100) / 10
     out.push({ label: 'HI-RES', kind: 'hires', title: `${bits ? bits + '-bit/' : ''}${khz}kHz` })
@@ -57,8 +65,8 @@ function formatBadges(src = {}) {
 // so it picks this up as a global via <script>. Tests use the CommonJS export.
 // One implementation either way - duplicating it guarantees the two drift.
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { surroundLabel, isHiRes, isLossless, formatBadges }
+  module.exports = { surroundLabel, isHiRes, isLossless, formatBadges, DSD_TITLE }
 }
 if (typeof window !== 'undefined') {
-  window.PapaFormat = { surroundLabel, isHiRes, isLossless, formatBadges }
+  window.PapaFormat = { surroundLabel, isHiRes, isLossless, formatBadges, DSD_TITLE }
 }

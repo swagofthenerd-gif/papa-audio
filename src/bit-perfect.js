@@ -33,10 +33,57 @@
   // The one-line human explanation the settings surface shows next to the toggle,
   // so the user understands why their EQ/ReplayGain/crossfade go quiet while it is
   // on. Returned by getPlayerSettings as `exclusivityNote`.
+  // C4 is disclosed here rather than fixed: gapless is kept on in bit-perfect
+  // mode, and mpv's --gapless-audio=yes resamples at a handoff between two
+  // different sample rates instead of reopening the output. That is a real
+  // exception to "exact samples" and the note has to say so.
   const EXCLUSIVITY_NOTE =
     'Bit-perfect sends the DAC the file’s exact samples: EQ, ReplayGain, ' +
-    'volume boost and crossfade are disabled and the audio device is opened in ' +
-    'exclusive mode while it is on.'
+    'volume leveling, volume boost and crossfade are disabled and the audio ' +
+    'device is opened in exclusive mode while it is on. One exception: gapless ' +
+    'stays on, so when the next track has a different sample rate mpv resamples ' +
+    'it at the handoff rather than reopening the output — seamless playback is ' +
+    'kept and that one conversion is not bit-perfect.'
+
+  // C3 (2026-09 honesty pass): TWO controls were both called "bit-perfect" and
+  // meant different things — the Output mode dropdown's "Exclusive
+  // (bit-perfect)" option, which only opens the device alone and leaves EQ,
+  // ReplayGain, loudness leveling, the +30 % boost and crossfade all free to
+  // rewrite samples; and this toggle, which actually strips them. Only one of
+  // the two earns the name. The copy lives here so it is one tested string per
+  // control instead of prose duplicated across index.html and renderer.js.
+  const CONTROL_LABELS = {
+    'output-mode-exclusive': {
+      label: 'Exclusive device access',
+      hint: 'Opens the audio device alone at the file’s own rate, so the system ' +
+        'mixer does not resample and nothing else can play through it. This is ' +
+        'not bit-perfect on its own — EQ, ReplayGain, volume leveling, the ' +
+        'volume boost and crossfade all still change the samples. Use ' +
+        'Bit-perfect mode below to turn those off.',
+    },
+    'bit-perfect-toggle': {
+      label: 'Bit-perfect mode (turns off everything that changes the samples)',
+      hint: 'Opens the device exclusively AND turns off EQ, ReplayGain, volume ' +
+        'leveling, the volume boost and crossfade, so the file’s own samples ' +
+        'reach the DAC. Gapless stays on, and a queue that mixes sample rates ' +
+        'is still resampled at the handoff to keep it seamless.',
+    },
+  }
+
+  // Throws on an unknown id on purpose: a typo in a wiring site should fail
+  // loudly at the call, not render an empty label.
+  function controlLabel(id) {
+    const entry = CONTROL_LABELS[id]
+    if (!entry) throw new Error(`unknown bit-perfect control id: ${id}`)
+    return entry
+  }
+
+  // Does this piece of copy claim bit-perfectness? The C3 invariant is that
+  // exactly one of the two controls does. Exported so the check is executable
+  // rather than a comment someone has to remember.
+  function claimsBitPerfect(text) {
+    return /bit[-\s]?perfect/i.test(String(text || ''))
+  }
 
   function isOn(bitPerfect) { return bitPerfect === true }
 
@@ -45,6 +92,38 @@
   // so a crossfade request is silently downgraded to gapless while the mode is on,
   // rather than being honoured and quietly breaking bit-perfectness.
   function forcesGapless(bitPerfect) { return isOn(bitPerfect) }
+
+  // C2 (2026-09 honesty pass): resolveEngineConfig forces ReplayGain off at
+  // SPAWN time, but the runtime `mpv-replaygain-mode` IPC set mpv's replaygain
+  // property directly and persisted the mode, with no bit-perfect gate at all.
+  // That left three places holding three different answers: mpv (ReplayGain
+  // running), the spawn config (forced 'no', so a respawn silently turned it
+  // back off), and getPlayerSettings (the stored mode, which is what the badge
+  // reads). This is that one rule on its own, so the runtime path, the spawn
+  // path and anything that wants to describe the state all ask the same
+  // function instead of each deciding for itself.
+  //
+  //   mode:       what the engine should actually be given
+  //   requested:  what the caller asked for, normalised
+  //   suppressed: true when bit-perfect overrode the request
+  //   reason:     why, in words a person can read — the point is to SAY it
+  //               rather than silently drop it
+  function effectiveReplaygain(cfg) {
+    cfg = cfg || {}
+    const raw = cfg.replaygain
+    const requested = raw === 'track' ? 'track' : raw === 'album' ? 'album' : 'no'
+    if (!isOn(cfg.bitPerfect) || requested === 'no') {
+      return { mode: requested, requested, suppressed: false, reason: '' }
+    }
+    return {
+      mode: 'no',
+      requested,
+      suppressed: true,
+      reason: 'Bit-perfect mode is on, so ReplayGain stays off: it scales the ' +
+        'samples, which is exactly what the mode exists to prevent. Turn ' +
+        'bit-perfect off to use ReplayGain.',
+    }
+  }
 
   // Map the player-settings blob to the MpvEngine spawn config. When bitPerfect is
   // off this is a straight pass-through of the existing fields; when on it:
@@ -72,17 +151,22 @@
     if (!on) return base
     return {
       ...base,
+      // C2: same rule as the runtime IPC, called rather than restated, so the
+      // two can never drift apart again.
+      replaygain: effectiveReplaygain(cfg).mode,
       // Exclusive access is the "bit-perfect" part the OS mixer would otherwise
       // undo by resampling to a shared rate. The engine reads outputMode to add
       // --audio-exclusive=yes; a chosen alsaDevice is kept so it is opened
       // exclusively rather than the default shared sink.
       outputMode: 'exclusive',
-      replaygain: 'no',
       gapless: true,
       // A cleared EQ makes buildAfGraph return '' -> no --af filter chain.
       eq: null,
     }
   }
 
-  return { EXCLUSIVITY_NOTE, isOn, forcesGapless, resolveEngineConfig }
+  return {
+    EXCLUSIVITY_NOTE, isOn, forcesGapless, resolveEngineConfig,
+    effectiveReplaygain, CONTROL_LABELS, controlLabel, claimsBitPerfect,
+  }
 })
