@@ -6326,6 +6326,72 @@ function _bindShelfScroll(ticket) {
   io.observe(sentinel)
 }
 
+// ── A failing page has to say so ────────────────────────────────────────────
+// navigate() wraps its render dispatch in try/catch and hands anything it
+// catches to _renderFailure, which paints the "This page failed to render"
+// card with a Go Home and a Copy diagnostics. That catch is DEAD for every
+// page whose renderer is `async` — and six of the seven Movies & TV pages
+// are: video, video-detail, shelf, browse, person, calendar. An async
+// function returns a promise, so a throw anywhere after its first `await`
+// rejects that promise instead of throwing out of the call, and the try/catch
+// around the call never sees it.
+//
+// What that looked like: renderVideoDetail paints a grey skeleton, then
+// awaits the catalog. Anything that throws after that point — a malformed
+// detail record, a missing bridge method, a helper reading a field off null —
+// left the skeleton on screen for ever. No message, no retry, no way back
+// except the sidebar, and the stack only in devtools. That is what "some tabs
+// don't even open" is: not a page that fails to load, a page that fails and
+// cannot tell you.
+//
+// The six are wrapped here rather than edited in place, so each reads exactly
+// as it did and no call site changes. A rejection that arrives after the
+// viewer has moved on is logged and nothing more — blanking the page they are
+// looking at now, for a page they already left, would be a second bug.
+var _GUARDED_VIDEO_PAGES = {
+  video: 'renderVideo',
+  'video-detail': 'renderVideoDetail',
+  shelf: 'renderShelf',
+  browse: 'renderBrowse',
+  person: 'renderPerson',
+  calendar: 'renderCalendar',
+}
+
+function _guardVideoRenders(scope) {
+  if (!scope) return []
+  const wrapped = []
+  for (const page of Object.keys(_GUARDED_VIDEO_PAGES)) {
+    const name = _GUARDED_VIDEO_PAGES[page]
+    const original = scope[name]
+    if (typeof original !== 'function' || original.papaGuarded) continue
+    const guard = function (err) {
+      // Still here: show the card. Gone: the page that failed is not the page
+      // on screen, so say it in the log and leave the screen alone.
+      if (typeof state !== 'undefined' && state && state.currentPage !== page) {
+        try { console.error('[papa] ' + name + ' failed after the page was left', err) } catch (_) {}
+        return
+      }
+      _renderFailure(page, err)
+    }
+    const fn = function () {
+      let out = null
+      // A synchronous throw still reaches navigate()'s own catch; catching it
+      // here too means the card is painted once, by whichever sees it first.
+      try { out = original.apply(this, arguments) } catch (err) { guard(err); return }
+      if (out && typeof out.then === 'function') return out.then(null, guard)
+      return out
+    }
+    fn.papaGuarded = true
+    scope[name] = fn
+    wrapped.push(name)
+  }
+  return wrapped
+}
+
+// Function declarations are hoisted across the whole script, so all six exist
+// by the time any top-level statement runs.
+if (typeof window !== 'undefined') _guardVideoRenders(window)
+
 async function renderVideo(navId) {
   _initVideoUI()
   // Arriving here from Browse or the Diary, the tab state still names that
