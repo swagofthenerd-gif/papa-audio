@@ -873,6 +873,7 @@ const store = new Store()
 // the thread that drives mpv's IPC. Each of these now owns a small file, written
 // asynchronously and coalesced. See side-store.js.
 const { SideStore } = require('./side-store')
+const { retireLegacyKeys } = require('./src/store-migration')
 const { runAnalysis, analyseOne, needsAnalysis: runnerNeedsAnalysis } = require('./analysis-runner')
 const { buildQueue } = require('./src/queue-engine')
 const { clusterLibrary } = require('./src/queue-clusters')
@@ -1018,17 +1019,22 @@ const sideStores = {
   sourceHealth: new SideStore({ dir: USER_DATA, name: 'source-health', fallback: null, debounceMs: 1000, onError: _sideErr }),
 }
 
-// One-time move out of the shared config. adoptIfEmpty only takes the legacy
-// value when the side file does not exist yet, so a stale config value can never
-// resurrect over data the app has since written.
-for (const [key, side] of Object.entries(sideStores)) {
-  try {
-    if (side.adoptIfEmpty(store.get(key))) {
-      console.log(`[papa][store] moved ${key} out of the shared config`)
-      store.delete(key)
-    }
-  } catch (e) { _sideErr(new Error(`${key}: migration failed (${e && e.message})`)) }
-}
+// Move out of the shared config, and retire the legacy copy left behind.
+// adoptIfEmpty only takes the legacy value when the side file does not exist
+// yet, so a stale config value can never resurrect over data the app has since
+// written -- but for the same reason it also stopped the delete from ever
+// running once the side file existed. See src/store-migration.js.
+try {
+  const { retired } = retireLegacyKeys({
+    sideStores,
+    store,
+    log: m => console.log(m),
+    onError: _sideErr,
+  })
+  if (retired.length) {
+    try { store.set('_storeRetiredAt', Date.now()) } catch (_) {}
+  }
+} catch (e) { _sideErr(new Error(`store migration failed (${e && e.message})`)) }
 
 // Learned dead-magnet memory (App #41): drop entries whose last failure has
 // decayed past the 14-day window, once at startup, so the file can never grow
