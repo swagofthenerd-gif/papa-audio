@@ -17,9 +17,9 @@ planning."*
 
 | # | Item | State |
 |---|---|---|
-| S1 | **Upgrade found → offer to remove the lower-res copy.** Today an upgrade downloads alongside the old file and both sit in the same album, so the album shows duplicate tracks. Detect that the new file supersedes an existing one and offer removal. | TODO |
+| S1 | **Upgrade found → offer to remove the lower-res copy.** | DONE `f34c0e8` — nothing preselected, routed through the audited trash+undo path |
 | S2 | **Shelves.** Browse a peer's library as shelves, not a flat list. | TODO |
-| S3 | **Open an album and look inside it** from the browse view. | TODO |
+| S3 | **Open an album and look inside it** — already shipped; the CSS said `cursor: default` so it was invisible | DONE `591c9b2` |
 | S4 | Wider UX pass on the whole Soulseek tab — S2/S3 are *examples he gave*, not the whole ask. Needs a proper design pass, not point fixes. | TODO |
 | S5 | Audit the tab for missing functionality and plan it deliberately. | TODO |
 | S6 | **PERFORMANCE — his words: "extremely unoptimized, it slows down, stutters, lots of problems with the shelves tab".** Measured fixes, not guesses. | WIP |
@@ -65,13 +65,13 @@ dead config key** (`213dc38`) · **five keys off the synchronous store**
 ### Open
 | # | Item | State |
 |---|---|---|
-| C1-C5 | Quality-badge honesty — fixed in modules, **wiring not yet applied** | WIP |
+| C1-C5 | Quality-badge honesty | DONE `bc64410` + wiring |
 | D4 | Now-playing sync re-serialises the whole queue every second | TODO |
 | D5 | 350 ms from click to sound — find out what the wait actually is | TODO |
 | E3 | `writeLibraryExt` does a 612 KB synchronous write on the main thread | TODO |
 | F3 | Smart playlists + long-track bookmarks live in localStorage, which no backup reaches | TODO |
 | F6 | Two competing crash-recovery prompts that disagree with each other | TODO |
-| — | Bridge-server: stream crash, unauthenticated `/events`, prefix-match path escape | WIP |
+| — | Bridge-server: stream crash, unauthenticated `/events`, sibling-path escape, + 4 more | DONE `9d511b3` (needs a bridge restart) |
 | — | Close-to-tray relaunch does nothing | TODO |
 | — | Two desktop notifications per track | TODO |
 | — | `_findAlbumArt` is O(groups x library) | TODO |
@@ -91,7 +91,7 @@ the test go red, restore.
 
 | # | Item | State |
 |---|---|---|
-| T1 | The five proven-broken tests (`failure-honesty` `norm()`, `session-restore` `windowFor`, analysis banner, credits-skip tautology, slskd throttle) | WIP |
+| T1 | The proven-broken tests | DONE `3c74a99` — 12 files, 38 bugs planted, 38 caught |
 | T2 | Ranked inventory of everything still half-pinned | WIP |
 
 ## 5. Then
@@ -134,7 +134,7 @@ failed that re-verification.
 | # | Finding | State |
 |---|---|---|
 | B1 | One unreadable store file wipes the whole watch history, then destroys the backup on the next launch | TODO |
-| B2 | One empty reply from slskd permanently abandons the entire download queue — and refuses to re-add it, forever | TODO |
+| B2 | One empty reply from slskd permanently abandons the entire download queue — and refuses to re-add it, forever | DONE `da5f0f9` |
 | B3 | Pack playback reads codec/audio tags as episode numbers: ask for ep 1, get ep 24 **[executed]** | TODO |
 | B4 | Auto-skip intro seeks backwards forever — **NOT REPRODUCED on re-verification**, the model returned `offer`, not `auto`. Re-examine before touching. | DISPUTED |
 | B5 | A dying mpv's exit event kills the mpv that replaced it | TODO |
@@ -183,3 +183,14 @@ binary on first run and installs a persistent post-edit hook — checksum-pinned
 and not malicious, but remote code execution is too much for "help me think
 about this UI". `nextlevelbuilder/ui-ux-pro-max-skill` (128k stars) is a
 brand-asset generator that calls paid image APIs — wrong tool entirely.
+
+## 9. Needs him, not me
+
+- **File modes on his machine.** `~/.config/papa-audio/bridge-token` is 644
+  (world-readable, and it is the ONLY gate on the LAN bridge);
+  `config.json` is 666 (world-writable). One command, his call:
+  `chmod 600 ~/.config/papa-audio/bridge-token && chmod 644 ~/.config/papa-audio/config.json`
+- **The bridge is a separate process** and still runs the old code. It needs a
+  restart before any of `9d511b3` takes effect.
+- **The app needs a restart** for the keyboard pause fix and everything since.
+- The network boost switch needs root installs he runs himself (section 6).
