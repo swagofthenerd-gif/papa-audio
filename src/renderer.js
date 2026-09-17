@@ -3695,6 +3695,14 @@ function _renderTasteSection() {
 
 var _diaryYear = null
 var _diaryView = 'all'
+// The teardown for the panel listeners currently on #tp-body. The diary body is
+// repainted by overwriting that element's innerHTML, which drops its children
+// but keeps the element itself -- so a fresh mount() on top of the old one left
+// both sets of delegated listeners attached. Every mutation repaints, so the
+// count doubled per interaction (1, 2, 4, 8, 16), and a destructive action that
+// arms on one click and commits on the next got armed *and* committed inside a
+// single click. Hold the handle; unmount before mounting again.
+var _diaryUnmount = null
 
 function renderDiary() {
   _initVideoUI()
@@ -3781,7 +3789,8 @@ function _renderDiaryBody() {
       '</aside>' +
     '</div>'
 
-  panel.mount(body)
+  if (_diaryUnmount) _diaryUnmount()
+  _diaryUnmount = panel.mount(body)
   _renderDiaryYears()
   _bindDiaryLinks()
   _bindTimelineLinks()
