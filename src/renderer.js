@@ -31555,6 +31555,15 @@ function setupListeners() {
     // poll. A second of the wrong song is exactly the lag that gets reported, and
     // on a gapless album it happens at every single track boundary.
     function reconcileWhatIsPlaying() {
+      // A load the user just asked for is in flight: mpv still has the PREVIOUS
+      // file open and will until it answers, so its path is not evidence of a
+      // disagreement — it is evidence that we are mid-change. Reconciling
+      // across that gap dragged state.queueIndex back to the track being left,
+      // which the next tick then "disagreed" with in the other direction: the
+      // alternating pairs of "the UI and mpv disagree" ~20ms apart during fast
+      // Next, and seven load failed -> retry decisions (and one
+      // skip (failed-twice)) on files that were sitting on disk the whole time.
+      if (audio.loadInFlight) return
       const shown = state.queue[state.queueIndex]
       const real = audio.mpvPath
       if (!real || !shown || !shown.filePath) return
@@ -31762,6 +31771,19 @@ function setupListeners() {
     console.error('Audio error:', e)
     const t = state.queue[state.queueIndex]
     if (!t) return
+    // The error names the file it happened on. If that is not the file the
+    // queue is now pointing at, something moved the index between the failure
+    // and this handler — the reconciler correcting against a stale mpv path
+    // during fast Next, or simply a newer play. Blaming the current track for
+    // it produced "load failed -> retry" (and once "skip (failed-twice)") on
+    // files that were on disk the whole time, and re-entered playCurrentTrack
+    // on a track nobody had asked for.
+    const src = (e && e.detail && e.detail.src) || null
+    if (src && t.filePath && src !== t.filePath) {
+      console.error('[papa] ignoring a load error for a track that is no longer current:',
+        JSON.stringify({ failed: src, current: t.filePath }))
+      return
+    }
     const isStream = /^https?:\/\//.test(t.filePath || '')
 
     if (isStream) {
@@ -31781,8 +31803,7 @@ function setupListeners() {
     // load error with no check. A transient demuxer or cache error on a large
     // FLAC permanently removed a track that was still on disk. Ask the
     // filesystem first; retry once; only then treat it as gone.
-    const failed = (e && e.detail && e.detail.src) || t.filePath
-    handleLoadError(failed, t)
+    handleLoadError(src || t.filePath, t)
   })
 
   // main has always sent this when the previous session ended without a clean

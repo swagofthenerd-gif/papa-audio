@@ -25,6 +25,8 @@ class PapaPlayerShim extends EventTarget {
     this._engineDown = false
     // The in-flight player-load, if any. play() waits on it — see the src setter.
     this._pendingLoad = null
+    // True only for the duration of an atomic switchToTrack.
+    this._switching = false
     // The last path mpv reported. Not what the renderer asked for — what mpv
     // says it has open.
     this._mpvPath = null
@@ -186,8 +188,15 @@ class PapaPlayerShim extends EventTarget {
     // is right, and nothing comes out until play is pressed by hand.
     // A rejection is folded into a value so a failed load can never surface as
     // an unhandled rejection from a fire-and-forget assignment.
-    this._pendingLoad = Promise.resolve(window.api.playerLoad({ path: this._pathOf(v), play: false }))
+    // Cleared once it settles, so the field answers "is a load in flight right
+    // now" rather than "has a load ever happened". The renderer's reconciler
+    // needs the first question: mpv still has the PREVIOUS file open for the
+    // whole gap between asking and opening, so reconciling across that gap
+    // reads a stale path as a disagreement and drags the queue index backwards.
+    const pending = Promise.resolve(window.api.playerLoad({ path: this._pathOf(v), play: false }))
       .catch(e => ({ ok: false, error: String((e && e.message) || e) }))
+    this._pendingLoad = pending
+    pending.then(() => { if (this._pendingLoad === pending) this._pendingLoad = null })
   }
 
   async play() {
@@ -269,6 +278,12 @@ class PapaPlayerShim extends EventTarget {
     if (this._pausedGuess !== null) this._clearPausedGuess()
     return this._pausedTruth
   }
+
+  // True while mpv has been asked to open a file and has not answered yet —
+  // either route in, the src setter's load or switchToTrack's atomic switch.
+  // Derived from the two fields that already track those; nothing else to keep
+  // in step.
+  get loadInFlight() { return !!this._pendingLoad || !!this._switching }
 
   get engineDown() { return this._engineDown }
   // What mpv has open, for reconciling against what the UI is showing.
