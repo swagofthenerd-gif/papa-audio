@@ -15602,7 +15602,7 @@ function renderSearch(query) {
   const tabs = ['All', 'Songs', 'Albums', 'Artists', 'Playlists']
   var html = `<div class="page">
     <div class="search-tabs" id="search-tabs" role="tablist" aria-label="Search result categories">
-      ${tabs.map(t => `<button class="search-tab${t==='All'?' active':''}" role="tab" aria-selected="${t==='All'}" data-tab="${t}">${t}</button>`).join('')}
+      ${tabs.map(t => `<button class="search-tab${t==='All'?' active':''}" role="tab" aria-selected="${t==='All'}" tabindex="${t==='All'?'0':'-1'}" data-tab="${t}">${t}</button>`).join('')}
     </div>
     ${query ? '<div style="padding:4px 0 8px 0;display:flex;align-items:center;gap:12px"><button class="save-search-btn" id="save-search-btn" title="Save as smart playlist">+ Save search</button><div class="search-sort"><select id="search-sort-select">' + sortOptions.map(function(o) { return '<option value="' + o.value + '"' + (o.value === currentSort ? ' selected' : '') + '>' + o.label + '</option>' }).join('') + '</select></div></div>' : ''}
     ${dymHTML}
@@ -15860,6 +15860,12 @@ function renderSearch(query) {
       _applyYtFilter()
     })
   })
+  // The strip declared role="tablist" and role="tab" and then answered to
+  // nothing but the mouse: Left/Right/Home/End did not move between the
+  // categories, which is the one thing the role promises. _bindTablist was
+  // written for exactly this and had only ever been wired to the two video
+  // strips.
+  _bindTablist(document.getElementById('search-tabs'))
 
   // YouTube scope tabs (Music / All of YouTube)
   document.querySelectorAll('.yt-scope').forEach(tab => {
@@ -28722,7 +28728,12 @@ function _setActiveTab(selector, activeEl) {
   document.querySelectorAll(selector).forEach(function (b) {
     var on = b === activeEl
     b.classList.toggle('active', on)
-    if (b.getAttribute('role') === 'tab') b.setAttribute('aria-selected', on ? 'true' : 'false')
+    if (b.getAttribute('role') === 'tab') {
+      b.setAttribute('aria-selected', on ? 'true' : 'false')
+      // Roving tabindex: one stop for the whole strip, so Tab lands on the
+      // chosen category and the arrows move within it.
+      b.setAttribute('tabindex', on ? '0' : '-1')
+    }
   })
 }
 
