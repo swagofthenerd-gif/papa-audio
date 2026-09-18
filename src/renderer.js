@@ -5074,6 +5074,26 @@ var _playQuality = ''
 var _playSourceKey = ''
 var _QUALITY_ORDER = ['2160p', '1080p', '720p', '480p']
 
+// Everything a detail page decides about how to play a title, wiped when a
+// different title opens. One function because these had drifted apart: the
+// hand-picked source was cleared per page and the hand-picked QUALITY was not,
+// so choosing 720p on one film pinned every film opened after it to 720p and
+// its Auto line read "Auto - 720p" for a choice nobody had made about it. They
+// are one preference about one page and they now live or die together.
+function _resetDetailPageChoices() {
+  _videoStreams = []
+  _debridPick = null
+  _debridHeld = []
+  _playSourceKey = ''
+  _playQuality = ''
+  // Whose numbering the last source list was fetched with — a new page's
+  // sources have not been fetched yet, and a stale value here would let the
+  // chain-landed re-search fire against the wrong title.
+  _lastNumbering = null
+  _playing = { dub: null, source: null, quality: null }
+  _prefetch = { key: null, streams: null, inflight: false }
+}
+
 // The sources that actually offer a quality, best first, for the picker.
 function _availableQualities(streams) {
   const seen = {}
@@ -9720,16 +9740,7 @@ async function renderVideoDetail(navId) {
     if (Number.isFinite(arrival.season)) _videoState.season = arrival.season
     _autoPlayTicket = ticket
   }
-  _videoStreams = []
-  _debridPick = null
-  _debridHeld = []
-  _playSourceKey = ''
-  // Whose numbering the last source list was fetched with — a new page's
-  // sources have not been fetched yet, and a stale value here would let the
-  // chain-landed re-search fire against the wrong title.
-  _lastNumbering = null
-  _playing = { dub: null, source: null, quality: null }
-  _prefetch = { key: null, streams: null, inflight: false }
+  _resetDetailPageChoices()
   setContent('<div class="page"><div class="skeleton skeleton-card" style="height:280px"></div>' +
     '<div class="vdet-waiting" id="vdet-waiting" hidden></div></div>')
 

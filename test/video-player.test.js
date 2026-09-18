@@ -1223,7 +1223,9 @@ test('specials go last in the season picker and are named, not numbered', () => 
 // literal string "fetch failed".
 test('load failures are shown in human terms, with a way to retry', () => {
   const fn = _rend.slice(_rend.indexOf('function _videoError(message)'), _rend.indexOf('async function renderVideo()'))
-  assert.match(fn, /const msg = _videoErrorText\(raw\)/)
+  // 'catalog': this page has no source list, so it must not be told to pick
+  // another source from one.
+  assert.match(fn, /const msg = _videoErrorText\(raw, 'catalog'\)/)
   assert.match(fn, /id="video-error-retry"/)
   // With no id to retry with, retrying would only reproduce the same error --
   // that case bails out to a page that works instead of looping forever.
