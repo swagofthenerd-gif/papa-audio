@@ -28554,6 +28554,16 @@ function _dlRenderUnauthorized() {
   btn.textContent = 'Retry'
   btn.addEventListener('click', function () { _dlAuthWarned = false; _pollAndRenderDownloads() })
   el.appendChild(btn)
+  // The banner alone left the list below it stuck on the page shell's
+  // "Loading" placeholder forever: _pollAndRenderDownloadsInner returns here, so
+  // _renderDlTab never runs and nothing ever replaces that placeholder. Only
+  // when there is nothing real to lose: rows already fetched stay put, the same
+  // rule _dlRenderDaemonDown follows.
+  if (!_dlLastFiles.length) {
+    list.innerHTML = '<div class="dl2-empty">' +
+      '<svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>' +
+      '<p>Nothing to show until the daemon lets us in.</p></div>'
+  }
 }
 
 function _dlClearDaemonBanner() {
