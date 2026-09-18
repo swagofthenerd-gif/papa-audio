@@ -289,7 +289,17 @@ const NAV_SESSION_CAP = 60
 // Pages that cannot render anything without an id. A history entry for one of
 // these with no id is a dead end, so restores drop it rather than keep it.
 // (Two boot paths and the stack restore all consult this one list.)
-const _NEEDS_NAV_ID = ['album', 'artist', 'search', 'playlist', 'video-detail', 'person', 'shelf']
+const _NEEDS_NAV_ID = ['album', 'artist', 'search', 'playlist', 'video-detail', 'person', 'shelf',
+  'yt-album', 'yt-artist', 'yt-see-all', 'yt-playlist']
+
+// The online-source pages whose id lives in state.currentYtNavId. All four yt
+// pages are dead ends without one — renderYtArtist(null) paints a skeleton and
+// then "Couldn't load artist: Invalid artist id" behind a Retry that re-asks
+// with the same null, which is why they are in _NEEDS_NAV_ID above. `wrapped`
+// carries its id (the year) the same way but is NOT in that list: with no year
+// it legitimately opens the current one, so an id-less entry is not a dead end
+// — only a year Back would silently swap for this one.
+const YT_NAV_PAGES = new Set(['yt-album', 'yt-artist', 'yt-see-all', 'yt-playlist', 'wrapped'])
 
 function _navEntrySlim(e) { return { page: e.page, navId: e.navId ?? null } }
 
@@ -1997,6 +2007,9 @@ function _currentNavId() {
   if (state.currentPage === 'video-detail' || state.currentPage === 'person' || state.currentPage === 'shelf') {
     return state.currentVideoNavId
   }
+  // The online-source pages and Wrapped. Without this Back/Forward and session
+  // restore handed them a null id and they rendered a permanent error.
+  if (YT_NAV_PAGES.has(state.currentPage)) return state.currentYtNavId
   return null
 }
 
@@ -2202,6 +2215,7 @@ function navigate(page, navId, opts = {}) {
   state.currentPlaylistId  = page === 'playlist' ? navId : null
   state.currentSmartListId = page === 'smartlist' ? navId : null
   state.currentVideoNavId  = (page === 'video-detail' || page === 'person' || page === 'shelf') ? navId : null
+  state.currentYtNavId     = YT_NAV_PAGES.has(page) ? (navId ?? null) : null
   // Leaving (or re-entering) a detail page ends its inline trailer (V2.7).
   if (typeof _stopInlineTrailer === 'function') _stopInlineTrailer()
   if (page !== 'playlist') state._plSearch = ''
