@@ -13846,8 +13846,14 @@ ipcMain.handle('video-keep-file', async (_, { index, show } = {}) => {
     // current size is discounted from usage before the check.
     const quotaGB = _videoSettings().videoKeepQuotaGB
     const dest = videoKeep.destPath(_keepVideosRoot(), show, info.name)
-    const index = (sideStores.videoKeepIndex.get() || []).filter(e => e && e.path !== dest)
-    const verdict = videoKeep.quotaCheck(index, quotaGB, info.total)
+    // NB: this is the KEPT-FILE INDEX (the list of already-saved episodes),
+    // not the file index inside the torrent. It used to be called `index` too,
+    // which shadowed the handler's own `index` argument for the whole body and
+    // put the `streamer.fileInfo(Number(index))` read above into the temporal
+    // dead zone — every keep threw "Cannot access 'index' before
+    // initialization" and no episode could ever be saved.
+    const keptEntries = (sideStores.videoKeepIndex.get() || []).filter(e => e && e.path !== dest)
+    const verdict = videoKeep.quotaCheck(keptEntries, quotaGB, info.total)
     if (!verdict.ok) {
       return {
         ok: false, error: 'quota',
