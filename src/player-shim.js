@@ -28,9 +28,12 @@ class PapaPlayerShim extends EventTarget {
     // The last path mpv reported. Not what the renderer asked for — what mpv
     // says it has open.
     this._mpvPath = null
-    // When the last position update arrived, so a frozen progress bar can be
-    // told apart from a paused one.
-    this._lastPositionAt = 0
+    // When the progress clock last had a reason to be moving: a position
+    // report, a load, or a resume. `null` means playback has never started, so
+    // there is no bar that could be frozen. Deliberately not 0: 0 is a real
+    // instant, and treating it as "unset" makes a clock that has just been
+    // started read as one that never was.
+    this._lastPositionAt = null
     this.audioParams = null
     // mpv's own volume, not the slider's. See main.js's engineVolume relay.
     this.engineVolume = null
@@ -63,6 +66,9 @@ class PapaPlayerShim extends EventTarget {
           this._src = `file://${data}`
           this._mpvPath = data
           this._currentTime = 0
+          // The next track's clock starts here, not at its first position
+          // report — a gapless advance is a load like any other.
+          this._lastPositionAt = Date.now()
           this._ended = false
           this.dispatchEvent(new CustomEvent('autoadvanced', { detail: data }))
           break
@@ -164,7 +170,11 @@ class PapaPlayerShim extends EventTarget {
     this._ended = false
     this._currentTime = 0
     this._duration = 0
-    this._lastPositionAt = 0
+    // The clock restarts AT the load. It used to be zeroed, which the age
+    // getter read as "never reported" and answered with Infinity — so for the
+    // whole gap between asking mpv to open a file and mpv's first position
+    // report, a perfectly healthy track looked infinitely frozen.
+    this._lastPositionAt = Date.now()
     // Keep the load's promise. play() has to wait for it, because the load and
     // the play are two separate ipcRenderer.invoke calls and NOTHING in main
     // orders them: player-load awaits a real mpv round trip (applyLoudnessGain's
@@ -215,6 +225,7 @@ class PapaPlayerShim extends EventTarget {
     this._ended = false
     this._currentTime = 0
     this._duration = 0
+    this._lastPositionAt = Date.now()
     this._switching = true
     try {
       var r = await window.api.playerSwitch(this._pathOf(path))
@@ -227,7 +238,13 @@ class PapaPlayerShim extends EventTarget {
   // Truth from mpv. Clears the overlay once mpv agrees with it, so the guess
   // never lingers past the moment it stopped being a guess.
   _observePaused(value) {
+    const wasPaused = this._pausedTruth
     this._pausedTruth = !!value
+    // mpv stops reporting position while paused, so on the way back out the
+    // age is however long the pause lasted. Restarting the clock at the resume
+    // is what stops a ten-second pause from being announced as a ten-second
+    // freeze the instant playback comes back.
+    if (wasPaused && !this._pausedTruth) this._lastPositionAt = Date.now()
     if (this._pausedGuess === this._pausedTruth) this._clearPausedGuess()
   }
 
@@ -235,6 +252,10 @@ class PapaPlayerShim extends EventTarget {
   _guessPaused(value) {
     this._pausedGuess = !!value
     this._pausedGuessUntil = Date.now() + OPTIMISTIC_PAUSE_MS
+    // `paused` flips optimistically, so the renderer counts this as playing
+    // from right here. The age has to start from the same moment, or the
+    // optimistic window is spent looking frozen.
+    if (!this._pausedGuess) this._lastPositionAt = Date.now()
   }
 
   _clearPausedGuess() {
@@ -252,9 +273,16 @@ class PapaPlayerShim extends EventTarget {
   get engineDown() { return this._engineDown }
   // What mpv has open, for reconciling against what the UI is showing.
   get mpvPath() { return this._mpvPath }
-  // Milliseconds since mpv last reported a position, or Infinity if never. A
-  // frozen bar is otherwise indistinguishable from a paused track.
-  get positionAgeMs() { return this._lastPositionAt ? Date.now() - this._lastPositionAt : Infinity }
+  // Milliseconds since the progress clock last had a reason to move. Always a
+  // real elapsed time: the clock is started by a load and by a resume, not
+  // only by mpv's first position report. It used to answer Infinity for the
+  // gap in between, which the renderer's stall watchdog printed verbatim —
+  // "the progress bar has not moved for Infinityms" — on a track that had only
+  // just been asked for. Nothing has ever played: 0, because there is no bar
+  // to freeze.
+  get positionAgeMs() {
+    return this._lastPositionAt === null ? 0 : Date.now() - this._lastPositionAt
+  }
   get ended() { return this._ended }
   get duration() { return this._duration }
   get currentTime() { return this._currentTime }

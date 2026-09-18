@@ -235,16 +235,41 @@ test('trackChanged reaches the renderer instead of being dropped', () => {
 
 test('position age tells a frozen bar apart from a paused one', () => {
   const { player, emit } = loadShim()
-  assert.strictEqual(player.positionAgeMs, Infinity, 'never having reported is not zero')
+  // Nothing has ever been loaded, so there is no bar that could be frozen.
+  // This used to answer Infinity, which the renderer's watchdog printed into
+  // its warning verbatim.
+  assert.strictEqual(player.positionAgeMs, 0, 'nothing playing is not a stall')
   emit('position', 12.5)
   assert.ok(player.positionAgeMs < 50)
 })
 
-test('loading a new track resets the position age', () => {
+test('loading a new track restarts the position age from the load', () => {
   const { player, emit } = loadShim()
   emit('position', 12.5)
   assert.ok(player.positionAgeMs < 50)
   player.src = 'file:///music/b.flac'
-  assert.strictEqual(player.positionAgeMs, Infinity,
-    'otherwise the first tick of a new track looks stale or fresh at random')
+  const age = player.positionAgeMs
+  assert.ok(Number.isFinite(age), 'the age of a just-loaded track is a real duration')
+  assert.ok(age < 50, 'and it is measured from the load, not from mpv first replying')
+})
+
+test('the age is always a finite number of milliseconds', () => {
+  // The whole of the "has not moved for Infinityms" report: every state the
+  // shim can be in has to answer with a duration.
+  const { player, emit } = loadShim()
+  const states = [
+    () => {},
+    () => { player.src = 'file:///music/a.flac' },
+    () => emit('paused', false),
+    () => emit('paused', true),
+    () => emit('position', 3),
+    () => emit('autoAdvanced', '/music/b.flac'),
+    () => emit('engineDown', {}),
+    () => emit('ended', null),
+  ]
+  for (const step of states) {
+    step()
+    assert.ok(Number.isFinite(player.positionAgeMs),
+      'positionAgeMs went non-finite: ' + player.positionAgeMs)
+  }
 })
