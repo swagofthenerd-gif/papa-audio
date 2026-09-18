@@ -14031,6 +14031,30 @@ function _artistSortKey(name) {
   return String(name || '').replace(_ARTICLE, '').trim().toLowerCase()
 }
 
+// Show only the artists whose name contains `raw`, and say so when that is
+// none of them. Filtering to nothing used to leave a blank page under the
+// search box — no message, no way to tell a typo from an empty library.
+function _applyArtistFilter(raw) {
+  var q = String(raw == null ? '' : raw).toLowerCase()
+  var grid = document.getElementById('artist-grid')
+  if (!grid) return 0
+  var shown = 0
+  grid.querySelectorAll('.artist-card').forEach(function (card) {
+    var name = ((card.dataset && card.dataset.artist) || '').toLowerCase()
+    var hit = name.indexOf(q) !== -1
+    card.style.display = hit ? '' : 'none'
+    if (hit) shown++
+  })
+  var empty = document.getElementById('artist-filter-empty')
+  var msg = document.getElementById('artist-filter-empty-msg')
+  if (empty) {
+    var none = !shown && !!q.trim()
+    empty.style.display = none ? '' : 'none'
+    if (none && msg) msg.textContent = 'No artists match “' + String(raw).trim() + '”'
+  }
+  return shown
+}
+
 function renderArtists() {
   const artistMap = new Map()
   for (const album of state.library) {
@@ -14093,16 +14117,21 @@ function renderArtists() {
         <div class="artist-card-meta">Artist · YT</div>
       </div>`).join('')}
     </div>
+    <!-- Filtering to nothing used to leave a blank page under the search box:
+         no message, no way to tell a typo from an empty library. -->
+    <div class="empty-wrap" id="artist-filter-empty" style="display:none">
+      <h2 id="artist-filter-empty-msg"></h2>
+      <button class="secondary" id="artist-filter-clear">Clear</button>
+    </div>
   </div>`)
 
   document.getElementById('artist-search')?.addEventListener('input', e => {
-    const q = e.target.value.toLowerCase()
-    const grid = document.getElementById('artist-grid')
-    if (!grid) return
-    grid.querySelectorAll('.artist-card').forEach(card => {
-      const name = (card.dataset.artist || '').toLowerCase()
-      card.style.display = name.includes(q) ? '' : 'none'
-    })
+    _applyArtistFilter(e.target.value)
+  })
+  document.getElementById('artist-filter-clear')?.addEventListener('click', () => {
+    const box = document.getElementById('artist-search')
+    if (box) { box.value = ''; box.focus() }
+    _applyArtistFilter('')
   })
 
   // Surfaces that previously had no context menu at all.
