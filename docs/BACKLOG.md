@@ -787,3 +787,22 @@ Verified fine: Omnibox, Ctrl+1–5, Alt+←/→, F6, ?/F1, Home/Explore/Artists/
 Playlists/Liked/Search/Downloads/Soulseek hub states, deck 17 controls,
 onboarding wizard, 1024×640 and 2560×1440 without horizontal scroll, light
 theme on the main pages, offline banner copy.
+
+### 19 Sep — music-tab QA fixes merged; gate 6,109/0; 16-page sweep clean
+- `fix/qa-theme-a11y` (10 commits) and `fix/qa-nav-dialogs` (13 commits)
+  merged. My re-checks: Omnibox background back to hex → 12/16 red;
+  Top-result row back to navigating → 3/10 red; `YT_NAV_PAGES` branch
+  removed from `_currentNavId` → 16/26 red; New-playlist dialog no longer
+  registering for nav-dismiss → 6/24 red.
+- Measured live in light theme: Omnibox 1.08 → 13.9:1, active search tab
+  1.25 → 15.3, Undo 1.58 → 4.96, playing queue title 1.75 → 5.49; every
+  accent-as-text case ≥ 4.5 in both themes via new `--*-ink` tokens.
+- Two guards tripped honestly after the merges: the global-listener budget
+  (one paired Escape listener on the Soulseek modal → 25→26 / keydown cap
+  12→13, recorded) and the crash-notice pin (the notice moved into
+  `_offerCrashRestore`; the test now follows the delegation). Gate 6,109/0.
+- Fresh twin: 16 pages, 0 throws, palette paper-coloured under
+  `theme-light`, 0 stray overlays. His app (pid 870491) untouched.
+- Deviations accepted: `wrapped` records its year for Back but is not in
+  `_NEEDS_NAV_ID` (an id-less entry is not a dead end there); "Resume All"
+  removed (slskd has no resume) and "Pause All" relabelled "Stop All".
