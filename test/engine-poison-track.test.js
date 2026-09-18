@@ -29,6 +29,8 @@ function fakeMpv() {
   const procs = []
   const server = net.createServer(c => {
     conns.push(c)
+    c.on('error', () => {})   // a dead peer is not a test failure
+    c.on('close', () => { const i = conns.indexOf(c); if (i >= 0) conns.splice(i, 1) })
     let buf = ''
     c.on('data', d => {
       buf += d

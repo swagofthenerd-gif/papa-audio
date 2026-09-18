@@ -33,7 +33,12 @@ function fakeMpv() {
   return new Promise(res => server.listen(sock, () => res({
     sock, proc, commands,
     spawnFn: () => proc,
-    push: msg => conns.forEach(c => c.write(JSON.stringify(msg) + '\n')),
+    push: msg => conns.forEach(c => {
+      // The engine destroy()s its socket on respawn/stop; writing to that corpse is
+      // EPIPE, async, and with no error listener it was an uncaught exception that
+      // failed whichever test was running — only under load, so it read as flaky.
+      try { if (c.writable && !c.destroyed) c.write(JSON.stringify(msg) + '\n') } catch (_) {}
+    }),
     close: () => { conns.forEach(c => c.destroy()); server.close() },
   })))
 }

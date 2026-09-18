@@ -17,6 +17,8 @@ function fakeMpv(opts = {}) {
   const state = { mute: false, answers: opts.answers || {} }
   const server = net.createServer(c => {
     conns.push(c)
+    c.on('error', () => {})   // a dead peer is not a test failure
+    c.on('close', () => { const i = conns.indexOf(c); if (i >= 0) conns.splice(i, 1) })
     let buf = ''
     c.on('data', d => {
       buf += d
@@ -41,7 +43,12 @@ function fakeMpv(opts = {}) {
     sock, proc, commands, state,
     spawns: [],
     spawnFn: (bin, args, o) => { (res.spawns = res.spawns || []).push({ bin, args, o }); return proc },
-    push: msg => conns.forEach(c => c.write(JSON.stringify(msg) + '\n')),
+    push: msg => conns.forEach(c => {
+      // The engine destroy()s its socket on respawn/stop; writing to that corpse is
+      // EPIPE, async, and with no error listener it was an uncaught exception that
+      // failed whichever test was running — only under load, so it read as flaky.
+      try { if (c.writable && !c.destroyed) c.write(JSON.stringify(msg) + '\n') } catch (_) {}
+    }),
     mute: () => { state.mute = true },
     unmute: () => { state.mute = false },
     close: () => { conns.forEach(c => c.destroy()); server.close() },
