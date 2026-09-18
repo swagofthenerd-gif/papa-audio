@@ -12797,6 +12797,29 @@ function _recordMeasuredStream(tracks) {
   if (row) { const b = _videoStreamBadge(s); row.textContent = b.text; row.className = b.cls; row.title = b.title }
 }
 
+// A provider's label usually already carries the size and the seeder count —
+// "AnimeTosho \u00b7 1080p \u00b7 sub \u00b7 1.3 GB \u00b7 58 seeds" — and the row paints both
+// as their own stats beside it, so 25 of 45 rows printed each number twice.
+// The row drops only the tokens it is itself about to show: a source whose
+// size the indexer never reported keeps whatever the label knew, because a
+// muted dash plus nothing is less than a dash plus the provider's guess.
+// Stripping here rather than in the providers keeps their labels intact for
+// every other reader (logs, the download list, the diary).
+function _labelWithoutShownStats(label, showsSize, showsSeeds) {
+  const text = String(label || '')
+  const parts = text.split('\u00b7')
+  // The first segment is the source name and is never a stat.
+  if (parts.length < 2) return text.trim()
+  const kept = parts.filter(function (part, i) {
+    if (i === 0) return true
+    const t = part.trim()
+    if (showsSeeds && /^\d[\d,]*\s*seed(er)?s?$/i.test(t)) return false
+    if (showsSize && /^\d+(\.\d+)?\s*(b|kb|mb|gb|tb|kib|mib|gib|tib)$/i.test(t)) return false
+    return true
+  })
+  return kept.join(' \u00b7 ').replace(/\s+/g, ' ').trim()
+}
+
 function _videoStreamRow(s, i) {
   const b = _videoStreamBadge(s)
   const badge = b.text
@@ -12812,14 +12835,18 @@ function _videoStreamRow(s, i) {
   // unparseable size are honest-unknown, shown as a muted dash rather than a
   // fabricated zero.
   const seeds = Number(s.seeders)
-  const seedStat = Number.isFinite(seeds)
+  const showsSeeds = Number.isFinite(seeds)
+  const seedStat = showsSeeds
     ? '<span class="video-source-stat video-source-seeds" title="Seeders">↑ ' + seeds + '</span>'
     : '<span class="video-source-stat video-source-seeds video-source-stat-unknown" title="Seeders unknown">↑ —</span>'
   const sizeN = Number(s.sizeBytes)
-  const sizeStat = Number.isFinite(sizeN) && sizeN > 0
+  const showsSize = Number.isFinite(sizeN) && sizeN > 0
+  const sizeStat = showsSize
     ? '<span class="video-source-stat video-source-size" title="Size">' + esc(_fmtVideoSize(sizeN)) + '</span>'
     : '<span class="video-source-stat video-source-size video-source-stat-unknown" title="Size unknown">—</span>'
-  const label = s.label || s.source || (s.kind === 'torrent' ? (s.magnet || '') : (s.url || '')) || ''
+  const label = _labelWithoutShownStats(
+    s.label || s.source || (s.kind === 'torrent' ? (s.magnet || '') : (s.url || '')) || '',
+    showsSize, showsSeeds)
   // The release name says who made the file (V2.2): the group as a badge, the
   // full name on hover, and a "batch" tag when it is a whole-season file.
   const rel = (window.PapaReleaseName && s.title) ? window.PapaReleaseName.parse(s.title) : null
