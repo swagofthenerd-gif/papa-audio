@@ -23,6 +23,31 @@ const https = require('https')
 // No sync child_process on the main thread: every shell-out goes through run().
 const { spawn, execFile } = require('child_process')
 
+// ── Dry run ─────────────────────────────────────────────────────────────────
+// A QA twin must be able to click anything without the click reaching the real
+// world. This used to be attempted from the renderer, by stubbing window.api —
+// which silently does nothing, because the contextBridge object is frozen and
+// the assignment is a no-op. A hero-Play click on a twin then sent twelve
+// addMagnet calls to the user's real RealDebrid account; RealDebrid happening
+// to reject all twelve is the only reason nothing was added.
+//
+// So the refusal lives HERE, in the main process, on the far side of the IPC
+// boundary, where no renderer can reach around it. One predicate, read once at
+// launch, consulted at the top of every handler that downloads, resolves,
+// trashes, writes tags, or talks to RealDebrid/slskd. Reads — search, browse,
+// list, status — stay live, because a dry-run twin still has to be useful.
+const DRY_RUN = process.env.PAPA_DRY_RUN === '1'
+if (DRY_RUN) {
+  console.log('[papa] DRY RUN: nothing will be downloaded, resolved, trashed, ' +
+    'written to tags, or sent to RealDebrid/slskd')
+}
+
+// The one refusal shape. `what` is plain English naming the action that did not
+// happen, so the renderer can show the user a sentence rather than a code.
+function _dryRunRefusal(what) {
+  return { ok: false, dryRun: true, error: 'Dry run — ' + what + ' was not performed' }
+}
+
 // ── A deadline on every IPC endpoint ────────────────────────────────────────
 // 130 handle() endpoints, none of which had one. A handler that never settles
 // hangs that UI action forever with no feedback and no way to tell a slow
@@ -4154,6 +4179,8 @@ ipcMain.handle('get-app-info', () => ({
   recentlyPlayed: sideStores.recentlyPlayed.get() || [],
   volume:         store.get('volume', 0.8),
   wishlist:       store.get('downloadWishlist', []),
+  // So a screenshot of a QA twin can never be mistaken for the real app.
+  dryRun:         DRY_RUN,
 }))
 
 // ── Library cache ────────────────────────────────────────────────────────────
@@ -5337,6 +5364,7 @@ ipcMain.handle('library-trash-list', async () => {
 })
 
 ipcMain.handle('library-empty-trash', async (_, { names, payloads }) => {
+  if (DRY_RUN) return _dryRunRefusal('emptying the trash')
   const wanted = Array.isArray(payloads) && payloads.length ? payloads.map(p => path.resolve(p)) : null
   // Only ever touches paths inside a recognised trash directory.
   const roots = trashRootsAll()
@@ -5398,6 +5426,7 @@ ipcMain.handle('library-restore-trashed', async (_, { paths }) => {
 })
 
 ipcMain.handle('library-trash-paths', async (_, { paths }) => {
+  if (DRY_RUN) return _dryRunRefusal('moving these files to the trash')
   const results = []
   for (const p of paths || []) {
     if (!libPathAllowed(p)) {
@@ -5516,6 +5545,7 @@ function recoverInterruptedOps() {
 }
 
 ipcMain.handle('library-move-path', async (_, { from, to }) => {
+  if (DRY_RUN) return _dryRunRefusal('moving this folder')
   if (!libPathAllowed(from)) return { ok: false, error: 'Source is outside your music folders' }
   const dest = path.resolve(String(to))
   const roots = libRoots()
@@ -5642,6 +5672,7 @@ async function imageDimensions(file) {
 }
 
 ipcMain.handle('library-set-artwork', async (_, { albumId, sourcePath, embed, filePaths }) => {
+  if (DRY_RUN) return _dryRunRefusal('changing this album artwork')
   if (!albumId) return { ok: false, error: 'No album given' }
   if (!sourcePath || !fs.existsSync(sourcePath)) return { ok: false, error: 'That image is gone' }
 
@@ -5756,6 +5787,7 @@ ipcMain.handle('library-migrate-album-id', (_, { oldKey, newKey }) => {
 })
 
 ipcMain.handle('library-write-tags', async (_, { files }) => {
+  if (DRY_RUN) return _dryRunRefusal('writing tags to these files')
   const results = []
   for (const item of files || []) {
     const fp = item && item.filePath
@@ -5789,6 +5821,7 @@ ipcMain.handle('library-write-tags', async (_, { files }) => {
 // mpv's open-file window is respected via _rewriting like library-write-tags.
 const flacTags = require('./src/flac-tags')
 ipcMain.handle('tag-write-batch', async (_, { edits } = {}) => {
+  if (DRY_RUN) return _dryRunRefusal('writing tags to these files')
   const list = Array.isArray(edits) ? edits : []
   const guarded = []
   for (const e of list) {
@@ -6965,6 +6998,7 @@ ipcMain.handle('slsk-get-config', () => {
 })
 
 ipcMain.handle('slsk-configure', async (_, { username, password }) => {
+  if (DRY_RUN) return _dryRunRefusal('changing the Soulseek account')
   // Merged, not replaced: this used to overwrite the whole slskConfig object,
   // so changing the Soulseek password silently forgot the download folder the
   // user had picked -- and the next config write sent downloads somewhere else.
@@ -8543,6 +8577,7 @@ async function _dlCapacityCheck(items) {
 }
 
 ipcMain.handle('slsk-enqueue-downloads', async (_, { items, force, ignoreCapacity }) => {
+  if (DRY_RUN) return _dryRunRefusal('queueing these downloads')
   let added = 0
   const refused = []
   let destination = null
@@ -8655,6 +8690,7 @@ ipcMain.handle('slsk-scheduler-stats', () => {
 //   scheduler-held (not-yet-sent) file carries a 'sched:' id and only needs the
 //   re-enqueue.
 ipcMain.handle('slsk-retry-transfer', async (_, { username, id, filename, size } = {}) => {
+  if (DRY_RUN) return _dryRunRefusal('retrying this download')
   dlStart()
   try {
     // 1. Let go of the current, stuck attempt at the daemon, if there is one. A
@@ -8789,6 +8825,7 @@ ipcMain.handle('slsk-schedule-set', (_, patch) => {
 // Pull deep per-peer queues back into the local scheduler so they can be
 // re-pointed at peers that are actually moving.
 ipcMain.handle('slsk-respread-backlog', async (_, opts) => {
+  if (DRY_RUN) return _dryRunRefusal('respreading the download backlog')
   const perPeerKeep = (opts && opts.perPeerKeep != null) ? opts.perPeerKeep : dlConfig().maxPerPeer
   let data
   try { data = await slskdFetch('GET', '/transfers/downloads') } catch (e) { return { ok: false, error: e.message } }
@@ -9127,6 +9164,7 @@ ipcMain.handle('slsk-get-transfers', async () => {
 })
 
 ipcMain.handle('slsk-cancel-transfer', async (_, { username, id, alreadyDone }) => {
+  if (DRY_RUN) return _dryRunRefusal('cancelling this download')
   // Scheduler-held files are not known to slskd. Routing here means every
   // existing Cancel button works on them without knowing they are different.
   if (typeof id === 'string' && id.indexOf('sched:') === 0) {
@@ -9255,6 +9293,7 @@ function _downloadDir() {
 ipcMain.handle('slsk-get-download-dir', () => _downloadDir())
 
 ipcMain.handle('slsk-set-download-dir', async () => {
+  if (DRY_RUN) return _dryRunRefusal('changing the download folder')
   const result = await dialog.showOpenDialog(mainWindow, {
     properties: ['openDirectory'],
     title: 'Choose Download Folder',
@@ -9286,6 +9325,7 @@ ipcMain.handle('slsk-share-mode-get', () => {
   return { mode, dirs, text: slskShare.describe(mode, dirs), modes: slskShare.MODES }
 })
 ipcMain.handle('slsk-share-mode-set', async (_, { mode }) => {
+  if (DRY_RUN) return _dryRunRefusal('changing what is shared')
   const m = slskShare.normalise(mode)
   store.set('slskShareMode', m)
   const cfg = store.get('slskConfig', {})
@@ -9707,6 +9747,7 @@ function _ytEmit(dl) {
 }
 
 ipcMain.handle('yt-download', (_, { videoId, title, artist, subdir }) => {
+  if (DRY_RUN) return _dryRunRefusal('downloading this track from YouTube')
   const id = `yt_${videoId}_${Date.now()}`
   const dl = { id, videoId, title, artist, percent: 0, state: 'downloading', error: null, finishedAt: null }
   _ytDownloads.set(id, dl)
@@ -10404,6 +10445,10 @@ function _videoSettings() {
 const debrid = _lazy(() => createDebrid({
   provider: _videoSettings().debridProvider || 'realdebrid',
   token: () => _videoSettings().debridToken || '',
+  // Belt as well as braces: the handlers above already refuse, but any path
+  // that reaches RealDebrid another way — a timer, a prefetch, a branch nobody
+  // thought of — is stopped inside the client itself.
+  dryRun: DRY_RUN,
   // Node's stack, not Electron's Chromium-backed fetch — see the note beside
   // the _rdFetch import. This is the difference between debrid working and
   // "fetch failed" in the log while curl reaches the same host fine.
@@ -13253,6 +13298,7 @@ function _startTorrentStream(result, { current, fail, onReady, quiet }) {
 }
 
 ipcMain.handle('video-play', async (_, { result }) => {
+  if (DRY_RUN) return _dryRunRefusal('streaming this title')
   try {
     if (!result || typeof result !== 'object') return { ok: false, error: 'No source selected' }
     _videoTeardown()
@@ -13582,6 +13628,10 @@ ipcMain.handle('video-pack-select', async (_, { index } = {}) => {
     // work for anyone with a debrid account.
     const held = _videoSession.debrid
     if (!held || !held.magnet) return { ok: false, error: 'Nothing is streaming' }
+    // Only this branch is gated. Above it, selectFile just re-points an already
+    // running local streamer — no network, nothing new on disk — so a QA twin
+    // can still click through a pack. Everything below is a live RealDebrid call.
+    if (DRY_RUN) return _dryRunRefusal('switching episode through RealDebrid')
 
     // Where the viewer is, captured before the load, so a switch inside a pack
     // does not silently restart them at zero on the new episode... except that
@@ -13625,6 +13675,7 @@ ipcMain.handle('video-pack-select', async (_, { index } = {}) => {
 // _prioritiseStreamAtPlayhead reads mpv's resolved position: it is the one true
 // place, not a number computed from the request.
 ipcMain.handle('video-switch-stream', async (_, { result } = {}) => {
+  if (DRY_RUN) return _dryRunRefusal('switching to another source')
   try {
     if (!result || typeof result !== 'object') return { ok: false, error: 'No source selected' }
     if (result.kind !== 'torrent') return { ok: false, error: 'Only torrent sources can be switched' }
@@ -13722,6 +13773,7 @@ ipcMain.handle('video-stream-stats', async () => {
 // wants. One file at a time — a second call for a different index supersedes
 // the first inside the streamer.
 ipcMain.handle('video-predownload', async (_, { index } = {}) => {
+  if (DRY_RUN) return _dryRunRefusal('downloading the rest of this episode')
   try {
     const streamer = _videoSession.streamer
     if (!streamer) return { ok: false, error: 'Nothing is streaming' }
@@ -13766,6 +13818,7 @@ ipcMain.handle('video-predownload-progress', async () => {
 // stream — a local copy of a few GB is fast and the renderer just waits on the
 // promise, then toasts the path.
 ipcMain.handle('video-keep-file', async (_, { index, show } = {}) => {
+  if (DRY_RUN) return _dryRunRefusal('keeping this episode')
   try {
     const streamer = _videoSession.streamer
     if (!streamer || typeof streamer.fileInfo !== 'function') {
@@ -13915,6 +13968,7 @@ function _warmSweep() {
   }
 }
 ipcMain.handle('video-warm', async (_, { magnet, titleKey } = {}) => {
+  if (DRY_RUN) return _dryRunRefusal('warming this title up')
   try {
     if (!magnet || typeof magnet !== 'string') return { ok: false }
     // The debrid head start (2026-09-15). Resolving a magnet to a direct link
@@ -13977,6 +14031,7 @@ ipcMain.handle('video-warm', async (_, { magnet, titleKey } = {}) => {
 // rather than one debrid cannot touch. Candidates that fail are removed from
 // the account by resolveMagnet itself.
 ipcMain.handle('video-debrid-pick', async (_, { magnets, titleKey, season, episode } = {}) => {
+  if (DRY_RUN) return _dryRunRefusal('picking a RealDebrid source')
   try {
     if (!_debridConfigured()) return { ok: true, magnet: null, configured: false }
     // The episode this pick is FOR. Without it the pick resolved a season pack
@@ -14146,6 +14201,7 @@ async function _downloadFinish(id, d, info) {
   _downloadStop(id)
 }
 ipcMain.handle('video-download-start', async (_, { result, meta } = {}) => {
+  if (DRY_RUN) return _dryRunRefusal('downloading this title')
   try {
     if (!result || result.kind !== 'torrent' || !result.magnet) {
       return { ok: false, error: 'Only torrent sources can be downloaded' }
@@ -14567,6 +14623,7 @@ ipcMain.handle('video-cache-list', async () => {
 })
 
 ipcMain.handle('video-cache-delete', async (_, { key } = {}) => {
+  if (DRY_RUN) return _dryRunRefusal('deleting this cached film')
   try {
     const entries = _videoCacheEntries()
     const e = entries.find(x => x.key === key)
@@ -14579,6 +14636,7 @@ ipcMain.handle('video-cache-delete', async (_, { key } = {}) => {
 })
 
 ipcMain.handle('video-keep-delete', async (_, { id } = {}) => {
+  if (DRY_RUN) return _dryRunRefusal('deleting this kept download')
   try {
     const raw = sideStores.videoKeepIndex.get() || []
     const entry = raw.find(e => e && e.id === id)
@@ -15010,6 +15068,7 @@ ipcMain.handle('app-changelog', async () => {
 // `stores` are written back — the redacted settings blob is deliberately not
 // restored, since it would clobber real keys with the redaction marker.
 ipcMain.handle('papa-import-all', async (_, { path: givenPath } = {}) => {
+  if (DRY_RUN) return _dryRunRefusal('importing a backup')
   try {
     let filePath = givenPath
     if (!filePath) {

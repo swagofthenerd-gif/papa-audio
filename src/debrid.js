@@ -110,6 +110,18 @@ function createDebrid(opts = {}) {
   const sleep = typeof opts.sleep === 'function'
     ? opts.sleep
     : ms => new Promise(r => setTimeout(r, ms))
+  // Dry run (injected by main.js from PAPA_DRY_RUN). A QA twin must never be
+  // able to write to the user's real RealDebrid account — the twelve stray
+  // addMagnet calls of 2026-09-18 are why this exists. Rather than gate the
+  // four write helpers one by one and hope none is added later, the refusal
+  // sits at the single choke point every RealDebrid request passes through
+  // (rd(), below) and refuses anything that is not a GET. addMagnet,
+  // selectFiles, delete and unrestrict/link are all POST or DELETE, so all
+  // four are covered, and so is any write nobody has written yet.
+  // A function is accepted as well as a boolean so the flag can be read late.
+  const isDryRun = typeof opts.dryRun === 'function'
+    ? () => opts.dryRun() === true
+    : () => opts.dryRun === true
   const pollTimeoutMs = Number(opts.pollTimeoutMs) > 0 ? Number(opts.pollTimeoutMs) : DEFAULT_POLL_TIMEOUT_MS
   const pollIntervalMs = Number(opts.pollIntervalMs) > 0 ? Number(opts.pollIntervalMs) : DEFAULT_POLL_INTERVAL_MS
 
@@ -156,6 +168,12 @@ function createDebrid(opts = {}) {
   // so 401 (bad token) reads differently from a 503 (RD down). JSON is parsed
   // only when the body is non-empty — selectFiles answers 204 with no body.
   async function rd(method, endpoint, body) {
+    // Refused before authHeaders(), before fetchFn: in a dry run the request is
+    // never built, so there is nothing for a later edit to accidentally let out.
+    if (isDryRun() && String(method).toUpperCase() !== 'GET') {
+      throw new DebridError(
+        `Dry run — RealDebrid ${method} ${endpoint} was not performed`, 'DRY_RUN')
+    }
     const init = { method, headers: { ...authHeaders() } }
     if (body != null) {
       init.headers['Content-Type'] = 'application/x-www-form-urlencoded'

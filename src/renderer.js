@@ -1388,6 +1388,9 @@ async function init() {
     window.api.getYtLiked(), window.api.getYtFollowed(),
     window.api.getYtSavedAlbums(), window.api.getYtRecent(),
   ])
+  // Dry run: main refuses every side effect, and the window must say so, so a
+  // screenshot of a QA twin can never be read as the real app.
+  if (info && info.dryRun) _paintDryRunPill()
   state.ytLiked        = ytLiked || []
   state.ytFollowed     = ytFollowed || []
   state.ytSavedAlbums  = ytSavedAlbums || []
@@ -25624,6 +25627,23 @@ function _applyDensityEarly() {
   } catch (_) { pref = 'comfortable' }
   _applyDensity(pref)
   return pref
+}
+
+// The dry-run badge. Persistent, in the title bar, next to the logo — it is
+// never dismissed and never animates away, because its whole job is to be in
+// every screenshot a QA twin produces.
+function _paintDryRunPill() {
+  if (document.getElementById('dry-run-pill')) return
+  const host = document.querySelector('.titlebar-left')
+  if (!host) return
+  const pill = document.createElement('span')
+  pill.id = 'dry-run-pill'
+  pill.className = 'dry-run-pill'
+  pill.textContent = 'DRY RUN'
+  pill.title = 'Nothing will be downloaded, resolved, trashed, written to tags, ' +
+    'or sent to RealDebrid/slskd'
+  host.appendChild(pill)
+  document.body.classList.add('is-dry-run')
 }
 
 function _initDensityField() {
