@@ -12945,6 +12945,10 @@ function _thumbnailerTeardown() {
 // streams only: a reused torrent's store belongs to whoever added it, and
 // renaming a file out of it would break that owner.
 const videoCache = require('./src/video-cache')
+// The watch identity (an episode, a film), shared with the renderer so the
+// cache and the position store name the same episode the same way. This is
+// what makes "already cached, whatever source it came from" a key comparison.
+const watchKeys = require('./src/watch-key')
 // Remember that a title starts instantly, and how. `via` is 'device' (the
 // file is here) or 'debrid' (a direct link is resolved and held). Keyed by
 // the TITLE — 'anime:21' — because that is what a poster is. Capped, oldest

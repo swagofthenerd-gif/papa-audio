@@ -3959,9 +3959,18 @@ function _bindDiaryLinks() {
 
 // The identity a position is stored against. An episode is keyed per episode,
 // a film per film, so a series remembers where you are in each one.
+// The rule itself now lives in src/watch-key.js, because the main process has
+// to speak it too: caching the NEXT episode ahead means naming an episode the
+// renderer never handed a key for. Both sides must produce the same string, or
+// one episode would sit in the cache under two names.
 function _watchKey(type, id, season, episode) {
+  const K = (typeof PapaWatchKey !== 'undefined' && PapaWatchKey) ||
+    (typeof window !== 'undefined' && window.PapaWatchKey) || null
+  if (K) return K.watchKey(type, id, season, episode)
+  // The module is loaded before this file; this inline form only keeps the
+  // single-function vm harnesses the video tests use runnable.
   if (type === 'movie') return 'movie:' + id
-  if (type === 'tv') return 'tv:' + id + ':s' + season + 'e' + episode
+  if (type === 'tv') return 'tv:' + id + ':s' + (season == null ? 'null' : season) + 'e' + episode
   return 'anime:' + id + ':e' + episode
 }
 
