@@ -820,3 +820,17 @@ hit these because every twin so far had slskd credentials stripped; a
 choke point in `slskdFetch` (DRY_RUN refuses non-GET except `/searches`
 and whatever login needs), per-handler refusals, GATED_CHANNELS + maps,
 scheduler test. Soulseek live QA waits for this merge.
+
+### 19 Sep — slskd dry-run choke merged
+`fix/dry-run-slskd-holes` (d74736a): `slskdFetch` refuses every non-GET
+under `PAPA_DRY_RUN=1` except `/searches` (a real path segment); login's
+raw POST `/session` and three GET `/application` probes are the only fetches
+outside the choke and a tripwire test pins that list. Per-handler refusals
+added on `slsk-download`, `slsk-chat-send`, `slsk-wishlist-run`,
+`slsk-setup` (it rewrites slskd.yml and restarts the daemon). The scheduler
+tick no longer burns a file's retry budget on a dry-run refusal — a twin
+would otherwise have quietly exhausted the queue it was only meant to look
+at. My re-checks: allow-list widened to `/transfers` → 7/22 red;
+`slsk-download` handler refusal removed (choke intact) → 2 red on the
+refusal-shape assertion. A `--keep-slskd` twin is now safe for browse-only
+QA; downloads/cancels/messages are physically refused in main.
