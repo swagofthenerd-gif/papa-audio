@@ -8620,9 +8620,11 @@ body.app-unfocused .vt-menu {
    a filter rail of fat pills reads as a toolbar — so the target is grown
    WITHOUT growing the chip: a transparent overlay, centred on the chip, at
    least 24 px tall and never smaller than the chip itself. Nothing on screen
-   moves; the pointer and the touch just stop missing. */
-.vf-chip, .vlist-chip, .vsfilter-chip, .vt-chip { position:relative; }
-.vf-chip::after, .vlist-chip::after, .vsfilter-chip::after, .vt-chip::after {
+   moves; the pointer and the touch just stop missing.
+   The genre chips were left out of the first pass and measured 17-21 px on
+   both the hub cards and the detail page, so they are in the list too. */
+.vf-chip, .vlist-chip, .vsfilter-chip, .vt-chip, .video-genre-chip { position:relative; }
+.vf-chip::after, .vlist-chip::after, .vsfilter-chip::after, .vt-chip::after, .video-genre-chip::after {
   content:''; position:absolute; left:0; right:0; top:50%;
   transform:translateY(-50%);
   height:24px; min-height:100%;

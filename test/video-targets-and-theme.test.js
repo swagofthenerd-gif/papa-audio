@@ -107,15 +107,31 @@ test('and so does the system-preference light block', () => {
 
 // ── N20: chip hit areas ───────────────────────────────────────────────────────
 
+// Every chip class that is a real button. .video-genre-chip was missed by the
+// first pass and a live re-test measured it at 17-21 px on the hub cards and
+// the detail page — the same defect N20 fixed for the other four.
+const CHIP_CLASSES = ['.vf-chip', '.vlist-chip', '.vsfilter-chip', '.vt-chip', '.video-genre-chip']
+
 test('every Movies & TV chip carries at least a 24 px target', () => {
-  const overlay = ruleProps('.vf-chip::after, .vlist-chip::after, .vsfilter-chip::after, .vt-chip::after')
+  const overlay = ruleProps(CHIP_CLASSES.map((c) => c + '::after').join(', '))
   assert.ok(px(overlay.height) >= 24, 'the target overlay must be 24 px tall, got ' + overlay.height)
   assert.strictEqual(overlay['min-height'], '100%',
     'and never smaller than the chip it covers')
   assert.strictEqual(overlay.position, 'absolute')
-  const anchored = ruleProps('.vf-chip, .vlist-chip, .vsfilter-chip, .vt-chip')
+  const anchored = ruleProps(CHIP_CLASSES.join(', '))
   assert.strictEqual(anchored.position, 'relative',
     'the overlay needs the chip as its positioning parent')
+})
+
+test('the genre chips are in that list, not just the filter rail', () => {
+  // Their own rule is deliberately small (11px text, 3px padding) — about
+  // 19 px of box — so without the overlay they are under the minimum.
+  const chip = ruleProps('.video-genre-chip')
+  const box = px(chip['font-size']) * 1.2 + px(chip.padding.split(' ')[0]) * 2 + 2
+  assert.ok(box < 24, 'if the chip itself grew past 24 px this test is measuring nothing')
+  const overlay = ruleProps(CHIP_CLASSES.map((c) => c + '::after').join(', '))
+  assert.ok(px(overlay.height) >= 24,
+    '.video-genre-chip must be covered by the 24 px overlay rule')
 })
 
 test('and the chips themselves did not get any bigger', () => {
