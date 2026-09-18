@@ -277,3 +277,27 @@ stylesheet (nothing exists above 2 stars — would have to be written), visual
 regression (every tool drives a browser at a URL; this renderer is inside
 Electron), and true desktop-app density — toolbars, multi-pane, command
 palettes — where a targeted search returned literally zero results.
+
+## 13. 18 Sep — verification pass, and what the suite could not see
+
+He said: "check all the work we just did with opus, i am doubtful about it."
+Right to be. A live twin found in sixty seconds what 5,227 green tests did not:
+
+| Found on the twin | Cause | State |
+|---|---|---|
+| `ReferenceError: _playOnArrival is not defined` in renderVideoDetail, 4× on startup — **his "films I open give an error"** | assigned in 3 places, READ in 1, DECLARED nowhere; sloppy-mode read-before-assign throws. Pre-existing since 3fed78b; tonight's render guard made it visible instead of a silent skeleton | DONE `10d4662`, 10/10 films open on the twin |
+| 147 `[ipc] out-of-order event` errors per page load | player-event has two listeners (renderer + shim) sharing one seq counter; every event checked twice | DONE `538aa1c`, 147 → 0 |
+| 15 concurrent ffmpeg on a fresh profile | analysis concurrency = cpus−1 by design; storm only when nothing is analysed yet (fresh install / twin). First-run CPU experience, not a bug | NOTED, not fixed |
+
+**The lesson, as a rule:** a green suite is necessary and nowhere near
+sufficient. Every merge of renderer-side work gets a twin launch + CDP console
+sweep before it is called done. Tests that lift a function cannot see a symbol
+that was never declared, because the vm supplies what the lift forgot.
+
+**Tooling gotcha, durable:** `Agent(isolation: "worktree")` creates the
+worktree in the SESSION's repo (claude-desktop-debian), not the target repo.
+All five agents noticed and made their own `flac-player-wt-*` worktrees. Brief
+agents to create their own worktree of the target repo explicitly.
+
+Adversarial reviews of tonight's merged work (test integrity, semantic
+conflicts, live QA of every tab) are running; findings land here as they arrive.
