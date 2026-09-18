@@ -27917,7 +27917,7 @@ function renderSoulseekRow(query) {
   if (!s.configured) {
     return `<div class="osrc-row slsk-row" id="slsk-row">
       <span class="osrc-name">Soulseek</span>
-      <span class="osrc-status" style="color:#f0a500">Setup required</span>
+      <span class="osrc-status setup">Setup required</span>
       <button class="osrc-agent-btn" id="slsk-config-btn">Configure</button>
     </div>`
   }

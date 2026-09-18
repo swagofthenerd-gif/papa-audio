@@ -93,6 +93,17 @@
   --glass:         rgba(255,255,255,.05);
   --glass-hi:      rgba(255,255,255,.09);
   --glass-border:  rgba(255,255,255,.08);
+  /* INK tokens (M4). --accent and friends are FILL colours: they were picked to
+     glow on a near-black ground, and every place the app used one as TEXT on a
+     surface collapsed in light mode — "Undo" at 1.6:1, the radio badge at 1.6,
+     the playing queue title at 1.7, "Autoplay On" at 2.0, the hi-res badge at
+     1.1. On the dark ground the ink IS the fill, so these are no-ops here; the
+     light block darkens each one to clear AA on every surface it lands on.
+     Rule: fill on a surface → --accent; glyphs and words → --*-ink. */
+  --accent-ink:    #1db954;
+  --amber-ink:     #f0a500;
+  --info-ink:      #00c8ff;
+  --error-ink:     #f58080;
   /* One token for the many 1px hairlines on music surfaces (App #68). On the
      dark ground the historic rgba(255,255,255,.05–.08) reads fine; the point of
      the token is that body.theme-light can darken it in ONE place so those same
@@ -157,6 +168,12 @@ body.theme-light {
   --glass:         rgba(0,0,0,.035);
   --glass-hi:      rgba(0,0,0,.06);
   --glass-border:  rgba(0,0,0,.10);
+  /* Ink, darkened for paper. Each clears 4.5:1 on every light surface it is
+     painted on, --bg5 and the accent-dim tints included. */
+  --accent-ink:    #0d5c2b;
+  --amber-ink:     #7a5000;
+  --info-ink:      #075366;
+  --error-ink:     #9c2020;
   /* Darker than the dark-mode hairline so the music-surface borders that adopt
      var(--hairline) stay visible on the warm paper ground (App #68). */
   --hairline:      rgba(0,0,0,.11);
@@ -1380,7 +1397,7 @@ h2.section-title { font-size:18px; font-weight:700; }
 }
 .queue-row:hover { background:var(--glass); }
 .queue-row.playing { background:var(--accent-dim); }
-.queue-row.playing .queue-row-title { color:var(--accent); }
+.queue-row.playing .queue-row-title { color:var(--accent-ink); }
 /* Roadmap 130: the playing row is not marked by colour alone — a ▶ before the
    title says it to anyone who cannot tell the accent from the text. */
 .queue-row.playing .queue-row-title::before { content:'\25B6\00A0'; font-size:9px; vertical-align:middle; }
@@ -1908,10 +1925,10 @@ h2.section-title { font-size:18px; font-weight:700; }
   display:inline-flex; align-items:center; gap:6px;
   margin-left:10px; padding:2px 6px 2px 8px; border-radius:99px;
   font-size:10px; font-weight:700; letter-spacing:.04em; text-transform:uppercase;
-  background:rgba(91,140,255,.14); color:var(--accent, #7fa8ff);
+  background:rgba(91,140,255,.14); color:var(--accent-ink, #7fa8ff);
   vertical-align:middle;
 }
-.radio-badge .radio-dot { background:var(--accent, #7fa8ff); }
+.radio-badge .radio-dot { background:var(--accent-ink, #7fa8ff); }
 .radio-stop {
   border:none; background:none; color:inherit; cursor:pointer;
   font-size:11px; line-height:1; padding:1px 3px; border-radius:50%; opacity:.7;
@@ -2247,9 +2264,12 @@ h2.section-title { font-size:18px; font-weight:700; }
   animation:searching-dots 1.2s infinite steps(3);
 }
 @keyframes searching-dots { 0%{content:'.'} 33%{content:'..'} 66%{content:'...'} }
-.osrc-status.found     { color:var(--accent); }
+.osrc-status.found     { color:var(--accent-ink); }
+/* "Setup required" used to be an inline style="color:#f0a500" in renderer.js,
+   which put it at 1.9:1 on paper and out of reach of the theme entirely. */
+.osrc-status.setup     { color:var(--amber-ink); font-weight:600; }
 .osrc-status.not-found { color:var(--text3); }
-.osrc-status.error     { color:#ff6b6b; }
+.osrc-status.error     { color:var(--error-ink); }
 .slsk-updating { color:var(--text3); font-size:.75em; animation:slsk-pulse 1.4s ease-in-out infinite; }
 @keyframes slsk-pulse { 0%,100%{opacity:.4} 50%{opacity:.9} }
 
@@ -5391,34 +5411,34 @@ textarea:focus:not(:focus-visible) { outline: none; }
 .np-format {
   align-items: center;
   font-size: 9px; font-weight: 700; letter-spacing: .8px;
-  text-transform: uppercase; color: var(--accent);
+  text-transform: uppercase; color: var(--accent-ink);
   background: var(--accent-dim);
   border-radius: 3px; padding: 2px 6px; margin-top: 3px;
   transition: background .2s, color .2s;
 }
 .np-format.hi-res {
   background: rgba(255,215,0,.12);
-  color: #f0c800;
+  color: var(--amber-ink);
 }
 .np-format.master {
   background: rgba(0,190,255,.12);
-  color: #00c8ff;
+  color: var(--info-ink);
 }
 .np-format.cf-badge {
   background: rgba(240,165,0,.12);
-  color: #f0a500;
+  color: var(--amber-ink);
   margin-left: 4px;
 }
 /* Shown only while the playback engine is down. Deliberately loud enough to be
    noticed in the player bar and quiet enough not to be a dialog. */
 .np-format.engine-state {
   background: rgba(224,92,92,.14);
-  color: #e05c5c;
+  color: var(--error-ink);
   margin-left: 4px;
 }
 .np-format.engine-state.recovering {
   background: rgba(240,165,0,.14);
-  color: #f0a500;
+  color: var(--amber-ink);
   animation: pulse 1.2s infinite;
 }
 /* Unread-notice count in the player bar, and the list behind it. */
@@ -5690,7 +5710,7 @@ textarea:focus:not(:focus-visible) { outline: none; }
   border: 1px solid var(--text3); background: transparent; color: var(--text3);
   border-radius: 12px; padding: 2px 12px; font-size: 11px; font-weight: 700; cursor: pointer;
 }
-.queue-autoplay-toggle.on { border-color: #1db954; color: #1db954; }
+.queue-autoplay-toggle.on { border-color: var(--accent); color: var(--accent-ink); }
 
 /* Queue header: save-as-playlist action (App #14) */
 .queue-header-actions {
@@ -5722,7 +5742,7 @@ textarea:focus:not(:focus-visible) { outline: none; }
 .snackbar { display:flex;align-items:center;gap:12px;background:var(--bg5);color:var(--text);padding:12px 16px;border-radius:var(--r);pointer-events:auto;opacity:0;transform:translateY(12px);transition:opacity .15s,transform .15s;min-width:280px;max-width:480px }
 .snackbar.show { opacity:1;transform:translateY(0) }
 .snackbar-msg { flex:1;font-size:13px }
-.snackbar-action { background:none;border:none;color:var(--accent);font-weight:600;font-size:12px;cursor:pointer;padding:2px 8px;border-radius:4px }
+.snackbar-action { background:none;border:none;color:var(--accent-ink);font-weight:600;font-size:12px;cursor:pointer;padding:2px 8px;border-radius:4px }
 .snackbar-action:hover { background:var(--accent-dim) }
 .snackbar-dismiss { background:none;border:none;color:var(--text3);font-size:14px;cursor:pointer;padding:0;line-height:1 }
 .snackbar-dismiss:hover { color:var(--text) }
@@ -6195,7 +6215,9 @@ body.theme-light .cmd-palette-overlay { background:rgba(32,29,24,.38) }
 /* Search result filter tabs */
 .search-tabs { display:flex;gap:6px;padding:0 28px;margin-bottom:16px }
 .search-tab { padding:8px 16px;border-radius:100px;font-size:12px;cursor:pointer;border:1px solid var(--glass-border);background:var(--bg3);color:var(--text2);transition:background .12s,color .12s,border-color .12s }
-.search-tab.active { background:var(--text);color:#000;border-color:var(--text);font-weight:600 }
+/* color:#000 on var(--text) is 18:1 in dark and 1.25:1 on paper, where
+   --text IS near-black. The label has to be the GROUND, not black. */
+.search-tab.active { background:var(--text);color:var(--bg);border-color:var(--text);font-weight:600 }
 .search-tab:hover:not(.active) { background:var(--glass);color:var(--text) }
 .search-tab-count { font-size:10px;opacity:.6;margin-left:4px }
 
