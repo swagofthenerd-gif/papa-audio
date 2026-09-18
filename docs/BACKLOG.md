@@ -417,3 +417,12 @@ rule stands — one full suite at a time on this machine.
 In flight: L2 (Infinityms), L3 (track rows unreachable by keyboard), and the
 load-order guard's two blind spots → one Opus worktree. L1 (`linkCache is not
 iterable`) waits for the DRY_RUN branch, which is editing the same debrid code.
+
+### 19 Sep — live sweep on a credential-free twin (merged tree)
+Built with `tools/make-twin.py`: 0 startup console errors after reload (149
+on 17 Sep), 5/5 video-detail pages painted with 0 errors, On Device renders
+the 3 keep + 3 cache fixture entries with handlers bound, main log shows 0
+RealDebrid calls and debrid reads as not configured in the renderer. A
+fixture card-body click stayed on the page with no error — the fixtures carry
+no title id to open; fixture shape to be extended so L4 can be exercised.
+Full suite 5,285 / 0 on the same tree.
