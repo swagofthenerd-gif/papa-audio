@@ -600,3 +600,33 @@ catalogue is the visible stutter: ~1 frame in 9 late.
   open, not a regex.
 - Ten fully-merged worktrees removed; his real app restarted from his own
   desktop session at 00:40:55 (not by us) and is healthy.
+
+### 19 Sep — why "the next episode never caches" and "delete watched" do nothing
+Root-caused by a Fable research agent with executed evidence; three
+load-bearing claims re-checked by grep before routing. In flight on
+`fix/watch-loop-cache-ahead` (Opus executor, E4→E3→E6→E7→E1→E5→E10→E2→E8–E12).
+- E1 Every caching mechanism in main (`_maybePrefetchNextEpisode`,
+  `_maybeChainPackDownloads`, `_maybeCacheCurrentFile`) requires a WebTorrent
+  streamer. RealDebrid — tried first whenever configured — never builds one, so
+  on debrid nothing caches: not the next episode, not the current one.
+- E3 `video-pack-select` never updates `_videoSession.cacheKey/cacheMeta/
+  cacheSaved` (0 mentions). After ep5→ep6 inside a pack, ep6's bytes are
+  either saved under ep5's name and label, or never saved at all once ep5 is.
+  "Only the first episode ever ends up on the device."
+- Dedupe across sources is already right: key `tv:1396:s1e5` regardless of
+  source, same-key entries replaced. Keep it; the fix must not invent a second
+  identity (E4 makes the key a shared module so main can compute it).
+- C "Delete watched episodes" has never existed: eviction is LRU by size only;
+  main never reads the watch store; `markWatched` fires on ANY Next, even at
+  3 minutes. E5 adds the setting (default on), a gated handler that never
+  touches the playing file, the keep library, or anything used in the last
+  10 min; E10 stops early Next counting as watched.
+- E2 Torrent chain starts only after the current file is 100% on disk; head
+  prefetch only from mpv state (never in smooth mode). E6 pack switch updates
+  the episode AFTER the strip/Up Next repaint, so "Up next" can name the episode
+  now playing. E7 playing a cached file from On Device has no identity → no
+  resume/progress/watched. E8 Up Next follows the page, not what is playing.
+  E9 natural end never auto-advances if the countdown card never showed.
+- Piece 1 of the old plan (debrid pack strip, `pickVideoFile(files, want)`,
+  debrid branch of `video-pack-select`) is already on the branch; the plan
+  file is stale there.
