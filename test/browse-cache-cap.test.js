@@ -122,3 +122,72 @@ test('a store that throws does not take the whole backup down', () => {
   assert.strictEqual(stores.bad, null)
   assert.deepStrictEqual(stores.good, { ok: 1 })
 })
+
+// ── the call site ───────────────────────────────────────────────────────────
+// capByBytes being correct is worth nothing if the only place that calls it
+// stops calling it. Replacing the capByBytes line in _browseCacheWrite with a
+// pass-through left all ten tests above green while the cache grew to 173 MB
+// again. _browseCacheWrite is lifted and run against a fake store here, so the
+// assertion is about the map that actually gets written.
+
+function liftWrite (source) {
+  const at = source.indexOf('function _browseCacheWrite(')
+  assert.ok(at > -1, '_browseCacheWrite must still exist')
+  const end = source.indexOf('\n}', at) + 2
+  const constsAt = source.indexOf('const BROWSE_CACHE_CAP')
+  const constsEnd = source.indexOf('\n\n', source.indexOf('const BROWSE_CACHE_MAX_BYTES'))
+  assert.ok(constsAt > -1 && constsEnd > constsAt, 'the cap constants must still be there')
+  let stored = null
+  const sideStores = {
+    browseCache: {
+      update (fn) { stored = fn(stored) },
+      get () { return stored },
+    },
+  }
+  const fn = new Function('sideStores', 'browseCacheCap', 'console', `
+    ${source.slice(constsAt, constsEnd)}
+    ${source.slice(at, end)}
+    return _browseCacheWrite
+  `)(sideStores, require('../src/browse-cache-cap'), { log () {}, warn () {} })
+  return { write: fn, read: () => stored }
+}
+
+test('the write path itself caps what it stores', () => {
+  const h = liftWrite(MAIN)
+  // Three peers, 20 MB of file tree each: over the 24 MB ceiling.
+  h.write('peerOne', 'x'.repeat(20 * MB))
+  h.write('peerTwo', 'x'.repeat(20 * MB))
+  h.write('peerThree', 'x'.repeat(20 * MB))
+  const map = h.read()
+  assert.ok(sizeOf(map) <= DEFAULT_MAX_BYTES + MB,
+    'what reaches the store is within budget, not 60 MB of it')
+  assert.ok('browse:peerThree' in map, 'and the peer he is looking at survives')
+})
+
+test('a single oversized peer is stored alone, not alongside the others', () => {
+  const h = liftWrite(MAIN)
+  h.write('small', 'x'.repeat(2 * MB))
+  h.write('monster', 'x'.repeat(100 * MB))
+  assert.deepStrictEqual(Object.keys(h.read()), ['browse:monster'],
+    'the 102 MB peer that started this must not sit on top of the rest')
+})
+
+test('two small peers are both kept — the cap does not evict for sport', () => {
+  const h = liftWrite(MAIN)
+  h.write('a', 'aaa')
+  h.write('b', 'bbb')
+  assert.deepStrictEqual(Object.keys(h.read()).sort(), ['browse:a', 'browse:b'])
+})
+
+test('MUTATION: bypassing the cap at the call site is caught', () => {
+  const broken = MAIN.replace(
+    '      const capped = browseCacheCap.capByBytes(map, BROWSE_CACHE_MAX_BYTES, key)',
+    '      const capped = { map: map, evicted: [] }')
+  assert.notStrictEqual(broken, MAIN, 'the mutation applied')
+  const h = liftWrite(broken)
+  h.write('peerOne', 'x'.repeat(20 * MB))
+  h.write('peerTwo', 'x'.repeat(20 * MB))
+  h.write('peerThree', 'x'.repeat(20 * MB))
+  assert.ok(sizeOf(h.read()) > DEFAULT_MAX_BYTES,
+    'this is the bug: the cap function is perfect and nothing calls it')
+})
