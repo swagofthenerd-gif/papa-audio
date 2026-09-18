@@ -85,13 +85,18 @@ def main(dst, keep_slskd=False):
     # Fixture cache: real-shaped entries whose paths live INSIDE the twin.
     fx = os.path.join(dst, 'fixture-cache'); os.makedirs(fx, exist_ok=True)
     keep, cache = [], []
-    for i, title in enumerate(['Fixture Show — E01', 'Fixture Show — E02', 'Fixture Film']):
+    # `meta.type` + `meta.id` is what makes a device card OPENABLE (renderer's
+    # _deviceCardHtml derives data-device-open from them). Real, public TMDB ids
+    # so the detail page can actually paint — the files themselves stay fixtures.
+    entries = [('Fixture Show — E01', {'type': 'tv', 'id': 1396}, 'Fixture Show', 1, 1),
+               ('Fixture Show — E02', {'type': 'tv', 'id': 1396}, 'Fixture Show', 1, 2),
+               ('Fixture Film', {'type': 'movie', 'id': 603}, None, None, None)]
+    for i, (title, meta, show, season, episode) in enumerate(entries):
         path = os.path.join(fx, f'fixture-{i + 1}.mkv')
         with open(path, 'wb') as f: f.write(b'\0' * 4096)
         keep.append({'id': f'fix-{i + 1}', 'title': title, 'path': path, 'sizeBytes': 4096, 'keptAt': 1700000000000 + i,
-                     'show': 'Fixture Show' if i < 2 else None, 'season': 1 if i < 2 else None,
-                     'episode': i + 1 if i < 2 else None, 'fileName': os.path.basename(path)})
-        cache.append({'key': f'fixture:{i + 1}', 'path': path, 'title': title, 'sizeBytes': 4096, 'lastUsedAt': 1700000000000})
+                     'show': show, 'season': season, 'episode': episode, 'fileName': os.path.basename(path), 'meta': meta})
+        cache.append({'key': f'fixture:{i + 1}', 'path': path, 'title': title, 'sizeBytes': 4096, 'lastUsedAt': 1700000000000, 'meta': meta})
     with open(os.path.join(dst, 'video-keep-index.json'), 'w') as f: json.dump(keep, f)
     with open(os.path.join(dst, 'video-cache-index.json'), 'w') as f: json.dump(cache, f)
     # Verification: no original secret VALUE anywhere under the twin.
