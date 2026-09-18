@@ -732,3 +732,23 @@ F10 theatre error promises "the list below" with no list; `body.video-active`
 sticks after Escape; F11 `#np-art` bypasses the artwork miss memory; F12 the
 seasons lane hits its 8 s ceiling on every anime page (Retry took 21 s and
 worked); F13 `slsk-get-transfers` throws to the renderer on slskd 401 per poll.
+
+### 19 Sep — re-test findings fixed and merged; gate 5,848/0
+`fix/retest-findings` (13 commits) merged at 6f4f1a1. My re-checks: F1
+singleton run without `.vgrid` → 3/4 red; F2 `stopPropagation` removed →
+1/5 red. Twin measurements from the executor: singleton card 177×363 (was
+1975×3059); ArrowRight leaves focus on the next tab with 43 cards on the
+page; "Delete watched (3)" 134×27, one press → one snackbar; scroll restore
+holds 599/600 against a growing spacer where the old code drifted 29→980.
+Also: reconciler blind until mpv speaks (1.2 s ceiling), stall grace 8 s
+before the first position report, source-row stats printed once, one Resume
+load per click, theatre copy no longer promises a list, `body.video-active`
+cleared on Escape, `#np-art` through the miss memory, seasons lane 25 s with
+a waiting note, `slsk-get-transfers` returns `{unauthorized:true}` on 401.
+Two harnesses broke on the refactors and were fixed in ee745a4 (stubbed the
+extracted `_paintNowPlayingArt`; fake key event gained `stopPropagation`).
+Full suite 5,848/0; fresh twin sweep of 11 pages: 0 throws, 0 My List cards
+outside a grid, exactly one tab stop. His app (pid 870491) untouched all
+night; the build is ready for his restart. Open: shuffle exhaustion
+played-set (his call); like-for-like live check of debrid cache-ahead (needs
+his account); N9/N19 real-UI checks need a TMDB key on a twin.
