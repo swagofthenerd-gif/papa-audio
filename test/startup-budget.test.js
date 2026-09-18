@@ -80,7 +80,6 @@ function syncScriptBytes () {
 // it fixes rather than features. The old ceiling had 2.3 KB of headroom left,
 // which is under a tenth of a percent: too tight to mean anything, so this
 // re-base restores a real margin rather than tracking the last byte.
-||||||| df17364
 // Raised 2026-09-19 (player/queue defect pass): the branch had already eaten
 // all but 0.12% of the previous ceiling before this work started, so the
 // comments and guards for the shuffle end-of-queue fix, the stop-and-clear
