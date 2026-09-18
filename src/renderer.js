@@ -2431,6 +2431,10 @@ function _bindBrowseKeys() {
 // than assumed, because the grid is responsive and the column count changes
 // with the window.
 function _moveCardFocus(e) {
+  // A tab strip owns its own arrow keys. Without this the document handler
+  // sees a non-card active element and yanks focus onto the first poster.
+  const t = e.target
+  if (t && typeof t.closest === 'function' && t.closest('[role="tablist"]')) return
   const cards = Array.prototype.slice.call(document.querySelectorAll('.vcard'))
   if (!cards.length) return
   const active = document.activeElement
@@ -6822,8 +6826,11 @@ function _bindTablist(list) {
     const next = _tablistNextIndex(e.key, tabs.length, here)
     if (next == null || next === here) return
     e.preventDefault()
-    // The roving index moves first so the strip keeps exactly one Tab stop
-    // even if the click handler below repaints nothing.
+    // The document-level arrow handler treats any arrow press whose active
+    // element is not a .vcard as "enter the grid" and focuses the first
+    // poster. Stop the event here so a tab strip keeps the focus it just
+    // moved (_moveCardFocus also declines tablist events, belt and braces).
+    e.stopPropagation()
     tabs.forEach(function (t, i) { t.setAttribute('tabindex', i === next ? '0' : '-1') })
     tabs[next].focus()
     tabs[next].click()
