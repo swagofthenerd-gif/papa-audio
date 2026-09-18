@@ -752,3 +752,38 @@ outside a grid, exactly one tab stop. His app (pid 870491) untouched all
 night; the build is ready for his restart. Open: shuffle exhaustion
 played-set (his call); like-for-like live check of debrid cache-ahead (needs
 his account); N9/N19 real-UI checks need a TMDB key on a twin.
+
+### 19 Sep — live QA of the music tabs not yet audited (Fable, twin :9396)
+0 renderer console entries across ~60 navigations and ~120 interactions;
+paint after navigate ≤ 144 ms on every page except Trail (383 ms, 990 imgs).
+Routed to two Opus executors (`fix/qa-nav-dialogs`, `fix/qa-theme-a11y`);
+top claims re-checked by the lead in code before routing:
+- H1 Back/Forward or restore into any `yt-*` page → skeleton then "Invalid
+  artist id" with a Retry that cannot work: `_currentNavId()` has no `yt-`
+  case (0 mentions), so history stores `navId:null`; `_NEEDS_NAV_ID` omits
+  them too.
+- H2 Playlist dialogs and the Soulseek Account modal never call
+  `_registerNavDismiss` (0 calls in `_showNewPlaylistWithFolder`,
+  `showSlskConfigModal`): they float over the next page, stack on
+  double-click; the Soulseek modal ignores Escape.
+- H3 light theme: `.cmd-palette-box` background hard-coded `#161618`
+  (styles.css:5772) → Omnibox unreadable (1.1:1).
+- M1 search Top-result song rows open the album instead of playing; M2
+  Downloads shows "Loading…" forever beside the credentials banner; M3
+  Omnibox Enter in command mode with no match runs a music search for
+  `>zzqq` and remembers it (no `isCommandMode` check); M4 light-theme
+  contrast (active search tab 1.3:1; accent-as-text 1.6–2.0 in six places);
+  M5 two competing Resume snackbars after an unclean exit, one with the raw
+  filename; M6 Trail paints 133 blank squares (bypasses the art miss memory).
+- L1–L14: friends "Checking…" forever on a failed lookup; "Resume All" a
+  permanent no-op; Home Customize mode sticks; wrong reason on empty
+  Rediscover; stale `aria-pressed` on Like/Shuffle/Stop-after; search tabs
+  without arrow keys; sub-24 px targets; clipped genre tile; Artists filter
+  no-match copy; recent dropdown mouse-only; Soulseek search with empty box
+  silent; empty-library Home has no CTA and Liked says "1 Local Likes / 0
+  songs"; Omnibox `aria-activedescendant`; one unreproduced false "nothing
+  is sounding yet".
+Verified fine: Omnibox, Ctrl+1–5, Alt+←/→, F6, ?/F1, Home/Explore/Artists/
+Playlists/Liked/Search/Downloads/Soulseek hub states, deck 17 controls,
+onboarding wizard, 1024×640 and 2560×1440 without horizontal scroll, light
+theme on the main pages, offline banner copy.
