@@ -8180,6 +8180,18 @@ function _deviceCardHtml(e, kind) {
   if (e.quality) badges.push('<span class="vbadge vbadge-quality">' + esc(e.quality) + '</span>')
   if (kind === 'cache') badges.push('<span class="vbadge vbadge-type">cached</span>')
   const ep = _deviceEpisodeLabel(e)
+  let metaAttr = ''
+  if (meta && meta.type && meta.id != null) {
+    try {
+      metaAttr = JSON.stringify({
+        type: meta.type, id: meta.id,
+        title: meta.title != null ? meta.title : (e.title || ''),
+        poster: meta.poster || e.poster || null,
+        season: meta.season != null ? meta.season : (e.season != null ? e.season : null),
+        episode: meta.episode != null ? meta.episode : (e.episode != null ? e.episode : null),
+      })
+    } catch (_) { metaAttr = '' }
+  }
   // What the theatre header should say when this file is played straight from
   // here. The card is the only thing that knows: there is no detail page open
   // behind the On-device view, so the play cannot borrow one (see
@@ -8188,6 +8200,12 @@ function _deviceCardHtml(e, kind) {
       ' data-device-kind="' + kind + '" data-device-id="' + esc(String(e.id || e.key || '')) + '"' +
       (e.path ? ' data-device-path="' + esc(e.path) + '"' : '') +
       (ep ? ' data-device-ep="' + esc(ep) + '"' : '') +
+      // The whole identity of what this file IS, so playing it from here is a
+      // real watch and not an anonymous file open: resume, progress, watched
+      // and Continue Watching all key off it. Without this a cached episode
+      // played from On Device wrote nothing anywhere — the rewatch cache
+      // existed but rewatching from it did not count.
+      (metaAttr ? ' data-device-meta="' + esc(metaAttr) + '"' : '') +
       ' aria-label="' + esc(e.title || 'Video') + '">' +
     '<div class="vcard-art">' +
       (art ? '<img class="vcard-poster is-loaded" src="' + esc(art) + '" alt="" loading="lazy">' : '') +
@@ -8455,10 +8473,30 @@ function _playDeviceFile(card) {
   const path = card.dataset.devicePath
   if (!path) return
   const title = card.getAttribute('aria-label') || 'Video'
+  // ...unless the card knows exactly what the file is. A cached or kept
+  // episode carries its own identity (show, season, episode), and rebuilding a
+  // minimal detail/state pair from it is what makes playing from On Device a
+  // real watch: the position is remembered under the right key, the resume
+  // offer works, finishing it counts, and it shows up in Continue Watching.
+  // Falls back to the anonymous shape when the card has no identity.
+  let ctx = { detail: null, state: null, streams: [] }
+  const raw = card.dataset.deviceMeta || ''
+  if (raw) {
+    try {
+      const m = JSON.parse(raw)
+      if (m && m.type && m.id != null) {
+        ctx = {
+          detail: { type: m.type, d: { id: m.id, title: m.title || title, poster: m.poster || null } },
+          state: { season: m.season != null ? m.season : null, episode: m.episode != null ? m.episode : null },
+          streams: [],
+        }
+      }
+    } catch (_) { /* a card with unreadable meta plays as an anonymous file */ }
+  }
   _videoPlayResult({
     kind: 'cached', url: path, title: title,
     subtitleLine: card.dataset.deviceEp || '',
-  }, { manual: true, ctx: { detail: null, state: null, streams: [] } })
+  }, { manual: true, ctx: ctx })
 }
 var _deviceEventsBound = false
 function _bindDeviceEvents() {
