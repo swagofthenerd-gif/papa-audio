@@ -19376,10 +19376,13 @@ function renderQueuePanel() {
       // nothing follows now.
       updateNextPrefetch()
       renderQueuePanel()
+      // The tray and the MPRIS applet publish the queue, not just the track.
+      syncExtension()
       pushUndo('Cleared ' + dropped + ' upcoming track' + (dropped === 1 ? '' : 's'), function() {
         state.queue = savedQueue; state.queueIndex = savedIdx
         _pendingShuffle = null
         updateNextPrefetch()
+        syncExtension()
         if (state.queuePanelOpen) renderQueuePanel()
       })
     })
@@ -19411,6 +19414,7 @@ function renderQueuePanel() {
       updatePlayBtn()
       const restored = savedIdx >= 0 ? savedQueue[savedIdx] : null
       if (restored) updateNowPlaying(restored)
+      syncExtension()
       if (state.queuePanelOpen) renderQueuePanel()
     })
   })
@@ -19434,10 +19438,12 @@ function renderQueuePanel() {
       _pendingShuffle = null
       updateNextPrefetch()
       renderQueuePanel()
+      syncExtension()
       pushUndo('Cleared played tracks', function() {
         state.queue = savedQueue; state.queueIndex = savedIdx
         _pendingShuffle = null
         updateNextPrefetch()
+        syncExtension()
         if (state.queuePanelOpen) renderQueuePanel()
       })
     })
@@ -19473,6 +19479,47 @@ function renderQueuePanel() {
       state.queueIndex = parseInt(row.dataset.queueIdx)
       playCurrentTrack()
       renderQueuePanel()
+    })
+    // The same a11y pass .track-row got. A queue row is a div with a click
+    // listener: it carried no tabindex and no role, so Tab walked straight past
+    // the whole queue. That also made Alt+Up/Down -- the keyboard route to
+    // reordering, which works perfectly once a row has focus -- unreachable,
+    // because nothing could give a row focus in the first place. The name
+    // matters as much as the focus: twenty identical "button"s read aloud is no
+    // better than skipping them, and the badges printed inside the title and
+    // artist cells (explicit, stereo, missing, BPM) must not be read as part of
+    // the song's name.
+    row.setAttribute('tabindex', '0')
+    row.setAttribute('role', 'button')
+    row.setAttribute('aria-current', row.classList.contains('playing') ? 'true' : 'false')
+    if (!row.hasAttribute('aria-label')) {
+      var _qTitle = _rowLabelText(row.querySelector('.queue-row-title'))
+      var _qArtist = _rowLabelText(row.querySelector('.queue-row-artist'))
+      var _qPos = parseInt(row.dataset.queueIdx, 10)
+      if (_qTitle) {
+        row.setAttribute('aria-label', 'Play ' + _qTitle + (_qArtist ? ' by ' + _qArtist : '')
+          + (Number.isInteger(_qPos) ? ', #' + (_qPos + 1) + ' of ' + state.queue.length : ''))
+      }
+    }
+    // Enter and Space play the focused row. The queue panel is not inside
+    // #content, so the card-activation handler there never saw these rows.
+    // stopPropagation for the same reason it matters there: without it the same
+    // Space carries on to the document handler, where Space is play/pause, so
+    // choosing a track would start it and immediately pause it.
+    row.addEventListener('keydown', e => {
+      if (e.key !== 'Enter' && e.key !== ' ') return
+      if (e.target.closest('button')) return
+      e.preventDefault()
+      e.stopPropagation()
+      var _qIdx = parseInt(row.dataset.queueIdx, 10)
+      state.queueIndex = _qIdx
+      playCurrentTrack()
+      renderQueuePanel()
+      // The repaint replaces the rows, so the row that was just chosen has to
+      // be handed its focus back or a keyboard user loses their place in the
+      // queue entirely. Same move _queueMoveBy makes after a reorder.
+      var _again = document.querySelector('.queue-row[data-queue-idx="' + _qIdx + '"]')
+      if (_again && typeof _again.focus === 'function') _again.focus()
     })
   })
   wireTrackLikeButtons()
@@ -21484,6 +21531,14 @@ function updateNowPlaying(track) {
   updateCrossfadeBadge()
   updateStatsRow(track)
   updateRadioState()
+  // The header above says the stale tray was the bug this function was written
+  // to fix, and then never called syncExtension, so it never actually was.
+  // "Stop and clear" paints the bar empty and stops playback — and because the
+  // once-a-second sync only runs while something is playing, the tray, the
+  // MPRIS applet and now-playing.json went on advertising the cleared track
+  // until the app was restarted. The nothing-playing case is exactly the one
+  // nothing else will ever come back to correct, so it publishes here.
+  if (nothingPlaying) syncExtension()
 }
 
 // Roadmap 128: a long title is readable without watching it scroll for
@@ -21716,17 +21771,36 @@ function playNext() {
   // never hits the wrap-to-0 "queue finished" stop below.
   _radioMaybeRefill()
   if (state.repeat === 'one') { audio.currentTime = 0; audio.play(); return }
+  // "The queue finished" used to be inferred from the index landing on 0. That
+  // only means anything for the sequential step below, which reaches 0 by
+  // wrapping off the end. A shuffle pick of 0 is an ordinary track -- the first
+  // one in the queue -- and reading it as the end stopped the music dead on
+  // roughly one Next in every len presses, with no way back but pressing Play.
+  // The autoplay rescue could not save it either: that path requires
+  // !state.shuffle. So the wrap is computed where the wrap actually happens and
+  // is never re-derived from the value of the index.
+  const prevIdx = state.queueIndex
+  const len = state.queue.length
+  let nextIdx
   if (state.shuffle) {
     // Use the pick already prefetched, or mpv played one file while we advance
     // to a different one.
-    const committed = (_pendingShuffle != null && _pendingShuffle < state.queue.length)
+    const committed = (_pendingShuffle != null && _pendingShuffle < len)
       ? _pendingShuffle : pickShuffleIndex(state.queue, _shuffleHistory.slice(-3))
     _pendingShuffle = null
-    state.queueIndex = committed
+    nextIdx = committed
   } else {
-    state.queueIndex = (state.queueIndex + 1) % state.queue.length
+    nextIdx = (prevIdx + 1) % len
   }
-  if (state.queueIndex === 0 && state.repeat === 'off') {
+  const wrapped = !state.shuffle && nextIdx === 0 && prevIdx === len - 1
+  if (wrapped && state.repeat === 'off') {
+    // The index is deliberately NOT advanced past this point. It used to be
+    // moved to 0 before the decision, so the end of the queue left the index on
+    // track 1 while track 10 was still the audible one: the panel highlighted
+    // the wrong row, MPRIS and the tray named the wrong track, and two more
+    // presses of Next walked 1, 2, 3 -- the album silently restarting from the
+    // top. The continuation paths below set their own index (and are now
+    // correctly seeded from the LAST track rather than the first).
     // Queue finished — restore prior queue if standalone play was active
     if (_oldQueue) { restoreOldQueue(); return }
     // "Keep the music going" (App #2): opt-in library radio continuation, using
@@ -21735,8 +21809,22 @@ function playNext() {
     if (keepGoingEnabled()) { _keepGoingContinue(); return }
     // Spotify-style autoplay keeps going with similar tracks
     if (autoplayEnabled() && !state.shuffle) { tryAutoplayContinue(); return }
-    audio.pause(); state.isPlaying = false; updatePlayBtn(); syncExtension(); return
+    // Nothing follows: stop ON the last track and say so, rather than pausing
+    // while pointing somewhere else. Rewound so Play restarts that track from
+    // the beginning instead of resuming at its end and instantly ending again.
+    audio.pause()
+    state.isPlaying = false
+    try { audio.currentTime = 0 } catch (_) { /* engine already idle */ }
+    updatePlayBtn()
+    updateNowPlaying(state.queue[state.queueIndex] || null)
+    updateTrackHighlight()
+    if (state.queuePanelOpen) renderQueuePanel()
+    if (state.modalOpen) updateNowPlayingModal()
+    syncExtension()
+    showSnackbar('End of queue')
+    return
   }
+  state.queueIndex = nextIdx
   if (state.skipShortTracks && state.queue.length > 1) {
     const track = state.queue[state.queueIndex]
     if (track && track.duration != null && track.duration < state.skipShortSecs) {
@@ -22197,10 +22285,23 @@ function makeDraggable(trackEl, fillEl, thumbEl, onChange) {
     pendingRatio = null
     onChange(r)
   }
+  // A slider you cannot drag to its own end is broken. The volume track is
+  // 80-110px wide, so one pixel is a whole percent: clicking ON the left edge
+  // landed on pixel 1 and floored at ~1%, and the only way to reach silence was
+  // to drag PAST the edge and let the clamp catch it. 1% is quiet, not off.
+  // The same applies to the right-hand end and to the seek bar. A few pixels at
+  // each end therefore mean the end, which is what aiming at the end means.
+  const END_SNAP_PX = 3
   function update(e, immediate) {
     const rect = trackEl.getBoundingClientRect()
     if (!rect.width) return
-    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
+    const fromLeft = e.clientX - rect.left
+    // On a track too narrow for two snap zones there is nothing left in the
+    // middle, so it keeps the plain proportion.
+    const snap = rect.width > END_SNAP_PX * 4 ? END_SNAP_PX : 0
+    const ratio = fromLeft <= snap ? 0
+      : fromLeft >= rect.width - snap ? 1
+      : Math.max(0, Math.min(1, fromLeft / rect.width))
     if (fillEl)  fillEl.style.width = `${ratio * 100}%`
     if (thumbEl) thumbEl.style.left = `${ratio * 100}%`
     if (immediate) {
@@ -23053,6 +23154,19 @@ function setVolDisplay(vol) {
   }
   var volIcon = document.querySelector('.vol-icon')
   if (volIcon) volIcon.title = Math.round(vol * 100) + '%'
+  // The button is a toggle, so its label has to say what pressing it will DO.
+  // It read "Mute (M)" while already muted, which tells a hovering user and a
+  // screen-reader user the same wrong thing: that the sound is still on.
+  // Set here because this is the one funnel every volume change goes through —
+  // the bar, the wheel, the keyboard, the typed value and the mute button
+  // itself all end up in setVolDisplay.
+  var volBtn = document.getElementById('btn-vol')
+  if (volBtn) {
+    var isMuted = vol <= 0
+    volBtn.title = isMuted ? 'Unmute (M)' : 'Mute (M)'
+    volBtn.setAttribute('aria-label', isMuted ? 'Unmute' : 'Mute')
+    volBtn.setAttribute('aria-pressed', isMuted ? 'true' : 'false')
+  }
 
   if (vol <= 0.01 && _lastVolDisplay > 0.01) {
     showSnackbar('Muted', 'Unmute', function() { audio.volume = state.lastVolume || 0.8; setVolDisplay(audio.volume) }, 2000)
@@ -31667,6 +31781,15 @@ function setupListeners() {
     // poll. A second of the wrong song is exactly the lag that gets reported, and
     // on a gapless album it happens at every single track boundary.
     function reconcileWhatIsPlaying() {
+      // A load the user just asked for is in flight: mpv still has the PREVIOUS
+      // file open and will until it answers, so its path is not evidence of a
+      // disagreement — it is evidence that we are mid-change. Reconciling
+      // across that gap dragged state.queueIndex back to the track being left,
+      // which the next tick then "disagreed" with in the other direction: the
+      // alternating pairs of "the UI and mpv disagree" ~20ms apart during fast
+      // Next, and seven load failed -> retry decisions (and one
+      // skip (failed-twice)) on files that were sitting on disk the whole time.
+      if (audio.loadInFlight) return
       const shown = state.queue[state.queueIndex]
       const real = audio.mpvPath
       if (!real || !shown || !shown.filePath) return
@@ -31874,6 +31997,19 @@ function setupListeners() {
     console.error('Audio error:', e)
     const t = state.queue[state.queueIndex]
     if (!t) return
+    // The error names the file it happened on. If that is not the file the
+    // queue is now pointing at, something moved the index between the failure
+    // and this handler — the reconciler correcting against a stale mpv path
+    // during fast Next, or simply a newer play. Blaming the current track for
+    // it produced "load failed -> retry" (and once "skip (failed-twice)") on
+    // files that were on disk the whole time, and re-entered playCurrentTrack
+    // on a track nobody had asked for.
+    const src = (e && e.detail && e.detail.src) || null
+    if (src && t.filePath && src !== t.filePath) {
+      console.error('[papa] ignoring a load error for a track that is no longer current:',
+        JSON.stringify({ failed: src, current: t.filePath }))
+      return
+    }
     const isStream = /^https?:\/\//.test(t.filePath || '')
 
     if (isStream) {
@@ -31893,8 +32029,7 @@ function setupListeners() {
     // load error with no check. A transient demuxer or cache error on a large
     // FLAC permanently removed a track that was still on disk. Ask the
     // filesystem first; retry once; only then treat it as gone.
-    const failed = (e && e.detail && e.detail.src) || t.filePath
-    handleLoadError(failed, t)
+    handleLoadError(src || t.filePath, t)
   })
 
   // main has always sent this when the previous session ended without a clean
