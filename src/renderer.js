@@ -19336,6 +19336,47 @@ function renderQueuePanel() {
       playCurrentTrack()
       renderQueuePanel()
     })
+    // The same a11y pass .track-row got. A queue row is a div with a click
+    // listener: it carried no tabindex and no role, so Tab walked straight past
+    // the whole queue. That also made Alt+Up/Down -- the keyboard route to
+    // reordering, which works perfectly once a row has focus -- unreachable,
+    // because nothing could give a row focus in the first place. The name
+    // matters as much as the focus: twenty identical "button"s read aloud is no
+    // better than skipping them, and the badges printed inside the title and
+    // artist cells (explicit, stereo, missing, BPM) must not be read as part of
+    // the song's name.
+    row.setAttribute('tabindex', '0')
+    row.setAttribute('role', 'button')
+    row.setAttribute('aria-current', row.classList.contains('playing') ? 'true' : 'false')
+    if (!row.hasAttribute('aria-label')) {
+      var _qTitle = _rowLabelText(row.querySelector('.queue-row-title'))
+      var _qArtist = _rowLabelText(row.querySelector('.queue-row-artist'))
+      var _qPos = parseInt(row.dataset.queueIdx, 10)
+      if (_qTitle) {
+        row.setAttribute('aria-label', 'Play ' + _qTitle + (_qArtist ? ' by ' + _qArtist : '')
+          + (Number.isInteger(_qPos) ? ', #' + (_qPos + 1) + ' of ' + state.queue.length : ''))
+      }
+    }
+    // Enter and Space play the focused row. The queue panel is not inside
+    // #content, so the card-activation handler there never saw these rows.
+    // stopPropagation for the same reason it matters there: without it the same
+    // Space carries on to the document handler, where Space is play/pause, so
+    // choosing a track would start it and immediately pause it.
+    row.addEventListener('keydown', e => {
+      if (e.key !== 'Enter' && e.key !== ' ') return
+      if (e.target.closest('button')) return
+      e.preventDefault()
+      e.stopPropagation()
+      var _qIdx = parseInt(row.dataset.queueIdx, 10)
+      state.queueIndex = _qIdx
+      playCurrentTrack()
+      renderQueuePanel()
+      // The repaint replaces the rows, so the row that was just chosen has to
+      // be handed its focus back or a keyboard user loses their place in the
+      // queue entirely. Same move _queueMoveBy makes after a reorder.
+      var _again = document.querySelector('.queue-row[data-queue-idx="' + _qIdx + '"]')
+      if (_again && typeof _again.focus === 'function') _again.focus()
+    })
   })
   wireTrackLikeButtons()
 
