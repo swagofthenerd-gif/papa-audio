@@ -426,3 +426,26 @@ RealDebrid calls and debrid reads as not configured in the renderer. A
 fixture card-body click stayed on the page with no error — the fixtures carry
 no title id to open; fixture shape to be extended so L4 can be exercised.
 Full suite 5,285 / 0 on the same tree.
+
+### 19 Sep — dry-run merged; L2/L3 merged; the "navigation race" was my probe
+- `feat/dry-run-mode` merged: 25 handlers gated + one choke point in the
+  RealDebrid client refusing any non-GET; 62 tests; my own re-check —
+  removing the choke point turns 3 red. Two bugs it surfaced are in flight
+  (`video-keep-file` TDZ makes "Keep this episode" throw on every call;
+  `debrid.isCached()` iterates a non-iterable — that is L1).
+- `fix/l2-l3-loadorder` merged: L2 root cause was not formatting — the shim
+  reported position age = Infinity between load and mpv's first position, so
+  the stall watchdog latched on EVERY track change; L3 gives `.track-row`
+  tabindex/role/aria-label and routes Enter/Space to the play path; the
+  load-order guard now catches `obj.method()` roots and TDZ arguments. My
+  re-checks: `.track-row` out of the selector → 3 red; the original Infinity
+  getter restored → see commit.
+- NOT a bug: three twin runs showed no `#vrows` after `navigate('video')`.
+  Cause: my probe navigated ~3–8 s after reload, before the renderer had
+  defined `state` (a fresh profile spends ~20 s scanning 245 albums); the
+  evaluate threw and my helper swallowed `exceptionDetails`. At t≈25 s the
+  merged tree paints Movies & TV cleanly (#vrows, 8 tabs, 0 errors). Two real
+  gaps found on the way: the DRY RUN pill silently does not render when
+  `.titlebar-left` is absent, and the DRY RUN banner lands in no log. Both,
+  plus a reusable `tools/twin-probe.js` that surfaces evaluation exceptions
+  and waits for readiness, are with an executor.
