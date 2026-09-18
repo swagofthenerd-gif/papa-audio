@@ -86,7 +86,10 @@ function harness (source, page) {
     // `.vtab` before it binds the search box, and an empty strip is a real
     // state (the Diary and Calendar shells render the head with no tabs
     // painted yet).
-    document: { getElementById: id => els[id] || null, querySelectorAll: () => [] },
+    // querySelector answers the tab strip's own lookup: the head binds the
+    // strip's arrow keys (audit N13) before it binds the search box, and a
+    // page with no strip painted yet is a real state.
+    document: { getElementById: id => els[id] || null, querySelectorAll: () => [], querySelector: () => null },
     window: { api: { videoSearch: () => new Promise(() => {}) }, PapaSearchMemory: { DEBOUNCE: { remote: 0 } } },
     state: { currentPage: page, currentVideoQuery: '' },
     navigated: [],
@@ -134,6 +137,10 @@ function harness (source, page) {
     // _bindVideoSearch by hand, which proves the box works but not that
     // anything in the app ever binds it.
     extractFn(source, '_bindVideoHead'),
+    // The head also binds the tab strip's arrow keys now (audit N13); it is a
+    // real function, not a stub, so a break in it shows up here too.
+    extractFn(source, '_tablistNextIndex'),
+    extractFn(source, '_bindTablist'),
   ].join('\n'), sandbox)
   return { sandbox, els }
 }

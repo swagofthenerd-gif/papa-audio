@@ -12214,6 +12214,10 @@ function _sameShow(anilistEntry, tmdbEntry) {
 // The show payload and each season payload are fetched and cached separately:
 // switching season then costs one season request the first time and nothing
 // afterwards, instead of re-fetching the entire show every click.
+// How long the optional ratings lane may hold a detail page open. Four seconds
+// is well past OMDb's normal answer and well inside "the page is broken".
+const RATINGS_LANE_MS = 4000
+
 async function _videoShowDetail(type, id) {
   const key = `${type}:${id}`
   const cached = _videoDetailCache.get(key)
@@ -12302,7 +12306,19 @@ async function _videoShowDetail(type, id) {
     // mattering: TMDB's detail, nyaa's sources.
     if (detail && detail.isAnime) detail = await _enrichAnimeDetail(detail)
   }
-  if (detail) detail = await _enrichExternalRatings(detail)
+  // The ratings lane is OPTIONAL and must never be what a detail page is
+  // waiting on (audit N18: an anime page measured 53.6 s). OMDb is a free tier
+  // behind someone else's rate limit, and a slow or hanging call here held the
+  // hero, the facts, the episode grid and the source list — everything — behind
+  // a number that decorates one line. Bounded, and a miss just means the page
+  // opens without the extra ratings.
+  if (detail) {
+    detail = await withTimeout(_enrichExternalRatings(detail), RATINGS_LANE_MS, 'ratings enrichment')
+      .catch(function (e) {
+        console.error('[papa][video] ratings enrichment skipped:', String((e && e.message) || e))
+        return detail
+      })
+  }
   if (detail) _videoDetailCache.set(key, detail)
   return detail
 }

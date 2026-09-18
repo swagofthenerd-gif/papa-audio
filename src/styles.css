@@ -7961,6 +7961,16 @@ body.app-unfocused .vt-menu {
    inside a 24 px tall hit area, with the extra height as transparent padding on
    the background, so the strip looks no heavier than it did. The current one is
    the accent colour AND wider AND ringed, so it is not colour alone. */
+/* One section that gave up, saying so in its own box (audit N18). Quiet — a
+   missing "other seasons" rail is not a broken page — but never silent, which
+   is what an empty section that is still loading looks like. */
+.vlane-note {
+  display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+  margin:18px 0; padding:12px 14px; border-radius:10px;
+  background:var(--glass); border:1px solid var(--glass-border);
+  color:var(--text2); font-size:12.5px;
+}
+.vlane-note .vlane-retry { padding:5px 14px; font-size:12px; }
 .vhero-dots { position:absolute; right:28px; bottom:20px; display:flex; gap:2px; }
 .vhero-dot {
   width:24px; min-width:24px; height:24px; min-height:24px;

@@ -68,7 +68,9 @@ test('sources that do not carry the title are hidden behind a count, never dropp
 
 test('the trailer plays inline in the hero with sound and close; the theatre is only the fallback', () => {
   const play = fn('_playInlineTrailer')
-  assert.match(play, /window\.api\.videoTrailerUrl\(\{ type: _videoDetail\.type \|\| 'movie', id:/)
+  // Through the shared memo now, so the detail page and the hero hover do not
+  // convert the same trailer twice (audit N15).
+  assert.match(play, /_trailerUrlOnce\(\{ type: _videoDetail\.type \|\| 'movie', id:/)
   assert.match(play, /_makeTrailerVideo\(res\.url, 'vdet-trailer'\)/)
   assert.match(play, /if \(!res \|\| !res\.ok \|\| !res\.url\) return _playTrailerInTheatre\(\)/)
   assert.match(play, /if \(!v\.muted && state\.isPlaying\) \{ _inlineTrailer\.pausedMusic = true; togglePlay\(\) \}/, 'sound on pauses the music')

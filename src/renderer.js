@@ -10117,6 +10117,76 @@ function _vCtxDismiss(e) {
   _closeVideoCardMenu()
 }
 
+// ── One section, one lane (audit N18) ────────────────────────────────────────
+// An anime detail page measured 53.6 s. The hero and the facts paint the
+// moment the catalogue answers, but the sections that need more requests — the
+// prequel/sequel walk in particular, which is one AniList round trip PER HOP
+// down a rate-limited lane — had no bound on them and no way to say they had
+// given up. A section that is still empty after half a minute is
+// indistinguishable from a section that has nothing to show.
+//
+// So each of those sections runs on its own: it cannot delay the hero, it
+// cannot delay its neighbours, and if it takes longer than this or throws, it
+// says so IN ITS OWN BOX with a Retry, and the rest of the page is untouched.
+const DETAIL_LANE_MS = 8000
+
+function _detailLane(name, mountId, label, run, ticket) {
+  const started = Date.now()
+  let settled = false
+  const timer = setTimeout(function () {
+    if (settled) return
+    if (_videoDetailTicket !== ticket) return
+    _paintLaneFailure(name, mountId, label, run, ticket, 'took too long')
+  }, DETAIL_LANE_MS)
+
+  // Promise.resolve() so a `run` that throws synchronously is a lane failure
+  // like any other, not an exception out of the page render.
+  return Promise.resolve().then(run).then(function () {
+    settled = true
+    clearTimeout(timer)
+    // A lane that arrives late, after its own note was painted, wins: it has
+    // real content and the note does not.
+  }, function (err) {
+    settled = true
+    clearTimeout(timer)
+    if (_videoDetailTicket !== ticket) return
+    console.error('[papa][video] the ' + name + ' section failed after ' +
+      Math.round((Date.now() - started) / 1000) + 's:', String((err && err.message) || err))
+    _paintLaneFailure(name, mountId, label, run, ticket, 'could not be loaded')
+  })
+}
+
+// The note one failed section shows. Deliberately small and inside the section
+// — a page-wide error for a missing recommendations rail would be a lie about
+// the page.
+function _paintLaneFailure(name, mountId, label, run, ticket, why) {
+  const box = document.getElementById(mountId)
+  if (!box) return
+  // Never paint over content that did arrive.
+  if (box.innerHTML && !box.dataset.laneFailed) return
+  box.hidden = false
+  box.dataset.laneFailed = '1'
+  box.innerHTML = '<div class="vlane-note" role="status">' +
+    '<span>Couldn\u2019t load ' + esc(label) + ' \u2014 it ' + esc(why) + '.</span>' +
+    '<button type="button" class="vbtn vlane-retry">Retry</button></div>'
+  const btn = box.querySelector('.vlane-retry')
+  if (!btn) return
+  btn.addEventListener('click', function () {
+    if (_videoDetailTicket !== ticket) return
+    btn.disabled = true
+    btn.textContent = 'Loading\u2026'
+    delete box.dataset.laneFailed
+    box.innerHTML = ''
+    _detailLane(name, mountId, label, run, ticket).finally(function () {
+      // If the retry painted something the button is detached and this is a
+      // no-op; if it came back with nothing to show, the note is still on
+      // screen and must not be left with a dead Retry on it.
+      btn.disabled = false
+      btn.textContent = 'Retry'
+    })
+  })
+}
+
 async function renderVideoDetail(navId) {
   _initVideoUI()
   const parts = String(navId || '').split(':')
@@ -10180,6 +10250,9 @@ async function renderVideoDetail(navId) {
   _bindDetailActions(d)
   _bindTrailerButton()
   _bindDetailMotion(d)
+  // Everything that paints from the detail we already have: cast, characters,
+  // your record, where it streams, what else is like it. All synchronous, all
+  // done before the next line runs.
   _renderCastRow(d)
   _renderTasteSection()
   _renderProviders(d)
@@ -10196,7 +10269,8 @@ async function renderVideoDetail(navId) {
   // multi-season anime always searched without the absolute and showed
   // "absolute number unknown" for good. So: let it land, then ask again if it
   // changed anything.
-  _chainPending = _renderSeasonChain(ticket).catch(function () {})
+  _chainPending = _detailLane('seasons', 'vseasons', 'the other seasons',
+    function () { return _renderSeasonChain(ticket) }, ticket)
   _chainPending.then(function () { _researchSourcesIfNumberingArrived(ticket) })
 
   if (type === 'tv') {

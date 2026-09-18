@@ -961,8 +961,10 @@ test('the person filter box repaints only the grids, keeping focus and value', (
 // ── Hero trailer autoplay (App §15) ─────────────────────────────────────────
 test('the hero trailer reuses the card trailer pipeline, gated on the same pref', () => {
   const start = extract('_startHeroTrailer')
-  // Same IPC the cards call, same shared <video> factory.
-  assert.match(start, /window\.api\.videoTrailerUrl/)
+  // Same IPC the cards call, same shared <video> factory — now through the one
+  // memo both go via, so ten hovers convert once (audit N15).
+  assert.match(start, /_trailerUrlOnce\(/)
+  assert.match(extract('_trailerUrlOnce'), /window\.api\.videoTrailerUrl/)
   assert.match(start, /_makeTrailerVideo\(res\.url, 'vhero-trailer'\)/)
   const allowed = extract('_heroTrailerAllowed')
   assert.match(allowed, /_hoverTrailersOn/)
