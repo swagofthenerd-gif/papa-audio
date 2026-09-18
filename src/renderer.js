@@ -3985,13 +3985,13 @@ function _diaryTimelineHtml(store) {
   const rows = built.months.map(function (m) {
     const items = m.events.map(function (e) {
       if (e.kind === 'album') {
-        const art = e.art ? '<img class="tl-art" src="' + esc(e.art) + '" alt="" onerror="this.style.display=\'none\'">' : '<span class="tl-art tl-art-fallback"></span>'
+        const art = _tlArtHtml(e.art)
         const who = e.artist ? '<span class="tl-sub">' + esc(e.artist) + '</span>' : ''
         return '<li class="tl-item tl-album">' + art +
           '<span class="tl-body"><span class="tl-title">First listen · ' + esc(e.album) + '</span>' + who + '</span>' +
           '<time class="tl-date">' + esc(e.date) + '</time></li>'
       }
-      const poster = e.poster ? '<img class="tl-art" src="' + esc(e.poster) + '" alt="" onerror="this.style.display=\'none\'">' : '<span class="tl-art tl-art-fallback"></span>'
+      const poster = _tlArtHtml(e.poster)
       const stars = e.rating != null ? '<span class="tl-sub">' + esc(_tlStars(e.rating)) + '</span>' : ''
       const linked = e.key ? ' data-tl-key="' + esc(String(e.key)) + '"' : ''
       return '<li class="tl-item tl-film"' + linked + '>' + poster +
@@ -4004,6 +4004,19 @@ function _diaryTimelineHtml(store) {
   const note = built.hasAlbums ? '' :
     '<div class="tp-empty">Films and shows only — start playing music and your first listens will appear here too.</div>'
   return '<section class="tp-block"><h3 class="tp-h">Timeline</h3>' + note + rows + '</section>'
+}
+
+// A timeline thumbnail. The old markup hid the <img> on error and showed
+// nothing in its place, so a cover or poster that has gone missing left a hole
+// in the row where every neighbour has a picture. The fallback block is
+// rendered alongside and revealed by the same onerror, and a cover already
+// known to be gone never gets requested at all.
+function _tlArtHtml(src) {
+  const usable = _artSrcIfUsable(src)
+  if (!usable) return '<span class="tl-art tl-art-fallback"></span>'
+  return '<img class="tl-art" src="' + esc(usable) + '" alt="" ' +
+    'onerror="this.style.display=\'none\';if(this.nextElementSibling)this.nextElementSibling.style.display=\'inline-block\'">' +
+    '<span class="tl-art tl-art-fallback" style="display:none"></span>'
 }
 
 // Half-star rating → a compact star string for the timeline row.
@@ -34525,8 +34538,23 @@ function _trailIcon(kind) {
   return { search: '&#9906;', open: '&#8594;', album: '&#9636;', track: '&#9834;', artist: '&#9835;', video: '&#9654;', listen: '&#9835;', watch: '&#9654;' }[kind] || '&#8226;'
 }
 
+// The 28x28 square at the head of a moment. It used to build its own
+// 'file://' + m.art, which meant it bypassed the artwork miss memory
+// _artSrcIfUsable owns AND carried no onerror — so 133 of 990 moments painted
+// a blank square for covers that are no longer on disk, and re-requested every
+// one of them on every repaint. A cover that is known gone, or that fails
+// here, falls back to the moment's own glyph.
+function _trailArtHtml(m) {
+  var glyph = _trailIcon(m.icon || m.kind)
+  var src = _artSrcIfUsable(m.art)
+  if (!src) return '<span class="trail-ico">' + glyph + '</span>'
+  return '<img class="trail-art" src="' + esc(src) + '" alt="" ' +
+    'onerror="this.style.display=\'none\';if(this.nextElementSibling)this.nextElementSibling.style.display=\'inline-flex\'">' +
+    '<span class="trail-ico" style="display:none">' + glyph + '</span>'
+}
+
 function _trailMomentHtml(m, idx, epIdx) {
-  var art = m.art ? '<img class="trail-art" src="' + esc(/^https?:/.test(m.art) ? m.art : 'file://' + m.art) + '" alt="">' : '<span class="trail-ico">' + _trailIcon(m.icon || m.kind) + '</span>'
+  var art = _trailArtHtml(m)
   return '<button class="trail-moment trail-' + esc(m.kind) + '" data-trail-ep="' + epIdx + '" data-trail-i="' + idx + '" title="Go back to this">' +
     art + '<span class="trail-text"><span class="trail-label">' + esc(m.label) + '</span>' +
     (m.sub ? '<span class="trail-sub">' + esc(m.sub) + '</span>' : '') + '</span>' +
