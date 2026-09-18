@@ -567,3 +567,36 @@ catalogue is the visible stutter: ~1 frame in 9 late.
 - `slsk-shelves-complexity` ratio→operation-count conversion handed to an
   executor (prove red on the frozen old modules, 5/5 green under an 8-core
   busy loop).
+
+### 19 Sep — three more merges, each re-checked by mutation
+- `fix/player-queue-critical` (11 commits, +8 test files): D2 shuffle Next
+  no longer stops the music (wrap computed in the sequential branch, never
+  inferred from index 0; my re-check `wrapped = nextIdx === 0` → 3/5 red);
+  D9 end of queue stops ON the last track, rewinds it, says "End of queue";
+  D4 `updateNowPlaying(null)` publishes (my re-check → 2 red); D10 reconciler
+  skips while `loadInFlight` — found on the way that the shim's
+  `_pendingLoad` was never cleared, so it meant "ever loaded"; D5 queue rows
+  focusable with Enter/Space; D14 mute label; D15 slider ends snap. Open
+  DESIGN DECISION: with D2 fixed, shuffle never declares the queue finished,
+  so "Keep the music going"/autoplay do not fire while shuffling (before,
+  they fired at random ~1 in len). Honest shuffle exhaustion needs a
+  played-set; to be decided, not slipped in.
+- `fix/video-detail-honesty` (7 commits): Resume never armed `_autoPlayTicket`
+  so it loaded sources and played nothing (my re-check → 2 red); My List
+  hero button hardcoded to "+"; `_playQuality` survived across titles (my
+  re-check → 3 red); Undo bar after "Mark season watched" was buried under a
+  4 s reload — reload deferred past the bar; Back-scroll restore retries
+  while the page is still short.
+- `test/complexity-opcount`: ratio guards → operation counts. The merge's
+  hot loop never touches caller objects, so the counter borrows
+  `Set.prototype.has`; frozen module probes 2,249→4,499 tokens/group as n
+  doubles, live 1.0→1.0. My re-check: frozen modules → 7/8 red; 3/3 green
+  under an 8-core busy loop. `buildTree` has no mutation signal (old code
+  was already linear) — kept as a forward guard and labelled so.
+- Both executors independently hit `SCRIPT_BYTE_CEILING` with <0.2%
+  headroom; ceiling now 3,360,000 (~15% above measured). A diff3 `|||||||`
+  marker survived my conflict resolution into a commit; caught by the test
+  on the next run and removed in b42e5c9 — resolve conflicts with the file
+  open, not a regex.
+- Ten fully-merged worktrees removed; his real app restarted from his own
+  desktop session at 00:40:55 (not by us) and is healthy.
