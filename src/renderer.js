@@ -6616,11 +6616,16 @@ async function renderVideo(navId) {
 
 function _vHeadHtml() {
   const tabs = _videoTabs.map(function (t) {
+    // Roving tabindex (audit N13): one Tab stop for the whole strip, arrows to
+    // move inside it. Without it every tab is its own Tab stop, which is eight
+    // presses to get past the row, and the arrows — which a tablist is
+    // required to answer — did nothing at all.
     return '<button class="vtab' + (t.key === _videoTab ? ' active' : '') + '" data-vtab="' + t.key + '"' +
-      ' role="tab" aria-selected="' + (t.key === _videoTab) + '">' + esc(t.label) + '</button>'
+      ' role="tab" tabindex="' + (t.key === _videoTab ? '0' : '-1') + '"' +
+      ' aria-selected="' + (t.key === _videoTab) + '">' + esc(t.label) + '</button>'
   }).join('')
   return '<div class="vhead">' +
-    '<div class="vtabs" role="tablist">' + tabs + '</div>' +
+    '<div class="vtabs" role="tablist" aria-label="Movies &amp; TV sections">' + tabs + '</div>' +
     '<div class="vsearch">' +
       '<div class="vsearch-field">' + _VICON.search +
         '<input id="video-search-input" type="search" placeholder="Search movies, TV &amp; anime…" autocomplete="off" aria-label="Search">' +
@@ -6644,11 +6649,59 @@ function _bindVideoHead() {
         const on = x.dataset.vtab === _videoTab
         x.classList.toggle('active', on)
         x.setAttribute('aria-selected', String(on))
+        x.setAttribute('tabindex', on ? '0' : '-1')
       })
       _renderVideoTab(++_videoCatalogTicket)
     })
   })
+  _bindTablist(document.querySelector('.vtabs'))
   _bindVideoSearch()
+}
+
+// ── Tablists answer the arrow keys (audit N13) ───────────────────────────────
+// Every strip in the app that calls itself role="tablist" was a row of buttons
+// and nothing else: Left and Right did nothing, Home and End did nothing, and
+// every tab was its own Tab stop. A screen reader announces "tab, 3 of 8" and
+// then the keys that are supposed to move between them are inert.
+//
+// Which index an arrow press lands on, as a pure function of the key, the
+// count and where you are. Wraps at both ends — a tablist is a ring — and
+// returns null for anything it does not own so the caller leaves the event be.
+function _tablistNextIndex(key, count, index) {
+  if (!(count > 0)) return null
+  const at = Number.isInteger(index) && index >= 0 && index < count ? index : 0
+  switch (key) {
+    case 'ArrowRight':
+    case 'ArrowDown': return (at + 1) % count
+    case 'ArrowLeft':
+    case 'ArrowUp': return (at - 1 + count) % count
+    case 'Home': return 0
+    case 'End': return count - 1
+    default: return null
+  }
+}
+
+// The DOM half. Bound on the CONTAINER, so it survives tabs being repainted
+// inside it, and it moves focus AND selection together — the pattern where
+// arrows only move focus needs a separate Enter press, which is one more thing
+// to know than "the arrows change the tab".
+function _bindTablist(list) {
+  if (!list || list.dataset.tablistBound) return
+  list.dataset.tablistBound = '1'
+  list.addEventListener('keydown', function (e) {
+    if (e.ctrlKey || e.altKey || e.metaKey) return
+    const tabs = Array.prototype.slice.call(list.querySelectorAll('[role="tab"]'))
+    if (!tabs.length) return
+    const here = tabs.indexOf(e.target)
+    const next = _tablistNextIndex(e.key, tabs.length, here)
+    if (next == null || next === here) return
+    e.preventDefault()
+    // The roving index moves first so the strip keeps exactly one Tab stop
+    // even if the click handler below repaints nothing.
+    tabs.forEach(function (t, i) { t.setAttribute('tabindex', i === next ? '0' : '-1') })
+    tabs[next].focus()
+    tabs[next].click()
+  })
 }
 
 // Releases everything the three video-page mounts are about to throw away.
@@ -7167,14 +7220,15 @@ async function renderCalendar() {
         '<div class="vcal-head-main"><h1 class="vcal-title">Coming up</h1>' +
           '<p class="vcal-sub">' + (isMonth ? 'A month at a glance for the shows you follow' : 'The next 14 days for the shows you follow') + '</p></div>' +
         '<div class="vcal-viewtoggle" role="tablist" aria-label="Calendar view">' +
-          '<button class="vcal-viewbtn' + (!isMonth ? ' active' : '') + '" id="vcal-view-agenda" role="tab" aria-selected="' + String(!isMonth) + '">Agenda</button>' +
-          '<button class="vcal-viewbtn' + (isMonth ? ' active' : '') + '" id="vcal-view-month" role="tab" aria-selected="' + String(isMonth) + '">Calendar</button>' +
+          '<button class="vcal-viewbtn' + (!isMonth ? ' active' : '') + '" id="vcal-view-agenda" role="tab" tabindex="' + (!isMonth ? '0' : '-1') + '" aria-selected="' + String(!isMonth) + '">Agenda</button>' +
+          '<button class="vcal-viewbtn' + (isMonth ? ' active' : '') + '" id="vcal-view-month" role="tab" tabindex="' + (isMonth ? '0' : '-1') + '" aria-selected="' + String(isMonth) + '">Calendar</button>' +
         '</div>' +
       '</div>' +
       '<div class="vcal-body" id="vcal-body">' + _vRailSkeleton(3) + '</div>' +
     '</div>' +
   '</div>')
   _bindVideoHead()
+  _bindTablist(document.querySelector('.vcal-viewtoggle'))
   document.getElementById('vcal-view-agenda')?.addEventListener('click', function () {
     if (_vcalView === 'agenda') return
     _vcalView = 'agenda'; renderCalendar()
