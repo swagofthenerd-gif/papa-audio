@@ -20,8 +20,23 @@
 // So the guards below instrument the data instead: the objects handed to the
 // code under test count how many times their expensive parts are READ. That is
 // exact, identical on a fast machine and a loaded one, and it fails loudly on
-// precisely the regression it names. Ratio tests are kept only where the shape
-// really does change (the merge, which is genuinely quadratic in the old form).
+// precisely the regression it names.
+//
+// The last two guards that still timed anything — the merge, and buildTree /
+// extractAlbums — are counted now too, for the opposite reason: a wall-clock
+// ratio cannot be trusted on a loaded machine. Against a bar of 3× they read
+// 3.0× and 3.4× with the code unchanged, because garbage collection lands
+// systematically in the larger, allocation-heavy size. Interleaving the sizes
+// (one run of n, one of 2n, one of n …, keeping the minimum of each) was meant
+// to spread that load evenly over both sizes; it did not — five runs of this
+// file under a busy 8-core box, five failures. So the interleaving machinery is
+// deleted and those two count operations like everything else here.
+//
+// Two of the counters below cannot reach their operation through a getter,
+// because the work happens entirely on objects the module builds for itself.
+// They borrow the built-in method the hot loop actually calls (Set.prototype.has
+// for the merge's token scoring), count the calls, and put it back. Still a
+// count, still exact, still identical on a loaded machine.
 const test = require('node:test')
 const assert = require('node:assert')
 const S = require('../src/slsk-shelves')
@@ -169,43 +184,25 @@ test('listDir derives its sort keys once per row, not once per comparison', () =
 	}
 })
 
-// ── Ratio guards, for the paths whose SHAPE really does change ───────────────
-const RATIO_BAR = 3.0
-// The sizes are timed INTERLEAVED — one run of n, one of 2n, one of n … —
-// rather than all of n and then all of 2n. Sequential timing let a burst of
-// load land inside the larger size and inflate the ratio on its own: two
-// independent runs under a concurrent test suite read 3.0× and 3.4× with the
-// code unchanged, against a bar of 3× (quadratic is ~4×). Interleaving means
-// any load hits both sizes alike and the minimum of each stays comparable.
-function bestInterleaved(fns, runs = 7) {
-	const b = fns.map(() => Infinity)
-	for (let i = 0; i < runs; i++) {
-		fns.forEach((fn, k) => {
-			const t0 = process.hrtime.bigint()
-			fn()
-			const d = Number(process.hrtime.bigint() - t0) / 1e6
-			if (d < b[k]) b[k] = d
-		})
-	}
-	return b
-}
-function assertSubQuadratic(label, sizes, make, run) {
-	const inputs = sizes.map(make)
-	const t = bestInterleaved(inputs.map(input => () => run(input)))
-	const shape = sizes.map((n, i) => `${n}:${t[i].toFixed(1)}ms`).join('  ')
-	for (let i = 1; i < t.length; i++) {
-		// Below a few milliseconds the ratio is timer jitter, not the algorithm.
-		if (t[i - 1] < 3) continue
-		const r = t[i] / t[i - 1]
-		assert.ok(r < RATIO_BAR,
-			`${label}: doubling ${sizes[i - 1]} → ${sizes[i]} cost ${r.toFixed(1)}× ` +
-			`(quadratic is ~4×, the bar is ${RATIO_BAR}×).  ${shape}`)
-	}
+// ── Counted guards for the two paths that used to be timed ──────────────────
+// The merge does all of its comparing on objects it builds for itself — it
+// reads folderPath/folderName once per group and never touches the caller's
+// objects again — so there is no getter to hang a counter on. What the inner
+// loop DOES call, once per token of the smaller set on every candidate
+// comparison, is Set.prototype.has (inside tokenScoreSets). Borrow it, count
+// the calls, put it back. Exact, and unaffected by load.
+function countSetProbes(fn) {
+	const real = Set.prototype.has
+	let n = 0
+	Set.prototype.has = function (v) { n++; return real.call(this, v) }
+	try { fn() } finally { Set.prototype.has = real }
+	return n
 }
 
-test('mergeSourcesByAlbum stays sub-quadratic as the result set grows', () => {
+test('mergeSourcesByAlbum compares a fixed amount per group, however many groups arrive', () => {
 	// Genuinely quadratic in the old form: the buckets grow as the merge runs, so
-	// every new group compares against every bucket sharing its "Live" token.
+	// every new group compares against every bucket sharing its "Live" token —
+	// and with this corpus that is every bucket there is.
 	const make = (n) => {
 		const out = new Array(n)
 		for (let i = 0; i < n; i++) {
@@ -219,7 +216,21 @@ test('mergeSourcesByAlbum stays sub-quadratic as the result set grows', () => {
 		}
 		return out
 	}
-	assertSubQuadratic('mergeSourcesByAlbum', [1500, 3000, 6000], make, g => S.mergeSourcesByAlbum(g))
+	const perGroup = (n) => countSetProbes(() => S.mergeSourcesByAlbum(make(n))) / n
+	const small = perGroup(1500)
+	const large = perGroup(3000)
+	// Measured: the live merge does exactly 1.0 token probes per group at both
+	// sizes. The frozen pre-speed-up merge does 2,249.5 at 1,500 groups and
+	// 4,499.5 at 3,000 — it doubles when the input doubles, which is the
+	// definition of the quadratic scan. Both halves of this assertion are red
+	// against it, by three orders of magnitude.
+	assert.ok(large < small * 1.5 + 2,
+		`the merge probed ${small.toFixed(1)} tokens per group over 1,500 groups but ` +
+		`${large.toFixed(1)} over 3,000 — the cost per group is growing with the number of ` +
+		`groups, which is the every-bucket scan coming back.`)
+	assert.ok(large < 20,
+		`the merge probed ${large.toFixed(1)} tokens per group over 3,000 groups; a bucket ` +
+		`scan that stays targeted is a handful of probes, not a sweep.`)
 	// The corpus above gives every group a unique title on purpose — that is the
 	// worst case for a bucket scan, because nothing ever merges and every bucket
 	// is walked to the end. So check separately that the merge still merges: the
@@ -233,17 +244,70 @@ test('mergeSourcesByAlbum stays sub-quadratic as the result set grows', () => {
 	assert.strictEqual(S.mergeSourcesByAlbum(make(900)).length, 900)
 })
 
-test('buildTree and extractAlbums stay linear in the size of the share', () => {
-	// These were already linear and still are — a forward guard, not a fix.
-	const make = (n) => C.buildShare({ albums: n, artists: Math.max(40, n / 6) }).dirs
-	assertSubQuadratic('buildTree', [1500, 3000, 6000], make, d => T.buildTree(d))
-	const trees = [1500, 3000, 6000].map(n => T.buildTree(make(n)))
-	const t = bestInterleaved(trees.map(tr => () => S.extractAlbums(tr)))
-	for (let i = 1; i < t.length; i++) {
-		assert.ok(t[i] / t[i - 1] < RATIO_BAR,
-			`extractAlbums: doubling cost ${(t[i] / t[i - 1]).toFixed(1)}× — ` +
-			t.map(x => x.toFixed(1) + 'ms').join(' '))
+test('buildTree reads each directory a fixed number of times, however big the share', () => {
+	// Already linear and still is — a forward guard, not a fix. What it catches is
+	// any future edit that re-walks the directory list (or the tree) per
+	// directory: the per-directory read count would climb with the share.
+	const countingDirs = (n, counter) => C.buildShare({ albums: n, artists: Math.max(40, n / 6) })
+		.dirs.map(d => {
+			const name = d.name
+			return { files: d.files, get name() { counter.n++; return name } }
+		})
+	const perDir = (n) => {
+		const counter = { n: 0 }
+		const dirs = countingDirs(n, counter)
+		const root = T.buildTree(dirs)
+		assert.ok(root.fileCount > n, `the share stopped producing files (${root.fileCount})`)
+		return counter.n / dirs.length
 	}
+	const small = perDir(1500)
+	const large = perDir(6000)
+	// Measured ~22.5 at 1,500 albums and ~20.1 at 6,000 — one read for the path
+	// split plus one per file for fullPath, so it tracks tracks-per-folder and
+	// drifts slightly DOWN as the share grows. Identical on the frozen module.
+	assert.ok(large < small * 1.5 + 2,
+		`buildTree read each directory ${small.toFixed(1)} times over a 1,500-album share but ` +
+		`${large.toFixed(1)} times over a 6,000-album one — the per-directory cost is growing ` +
+		`with the share, which is a re-walk.`)
+})
+
+test('extractAlbums reads each file\'s name twice, not once per node it passes under', () => {
+	// The old walk built a filtered array of gathered audio for EVERY node in the
+	// tree, shelves included, and threw it away after asking how long it was. The
+	// live walk counts instead of gathering when the node is a shelf. Measured:
+	// 2.02 name reads per file live, 2.95 frozen — so the 2.5 bar below is red
+	// against the pre-speed-up module and has a comfortable margin above the
+	// live one.
+	const perFile = (n) => {
+		const share = C.buildShare({ albums: n, artists: Math.max(40, n / 6) })
+		const root = T.buildTree(share.dirs)
+		const counter = { n: 0 }
+		const instrument = (node) => {
+			node.files = node.files.map(f => {
+				const nm = f.name
+				const o = { ...f }
+				Object.defineProperty(o, 'name',
+					{ get() { counter.n++; return nm }, enumerable: true })
+				return o
+			})
+			for (const c of node.dirs.values()) instrument(c)
+		}
+		instrument(root)
+		const albums = S.extractAlbums(root)
+		assert.ok(albums.length > n * 0.8,
+			`the share stopped producing albums (${albums.length} from ${n}); the guard ` +
+			'would be measuring nothing')
+		return counter.n / share.fileCount
+	}
+	const small = perFile(1500)
+	const large = perFile(6000)
+	assert.ok(large < small * 1.2 + 0.5,
+		`extractAlbums read each file's name ${small.toFixed(2)} times over a 1,500-album ` +
+		`share but ${large.toFixed(2)} times over a 6,000-album one — the per-file cost is ` +
+		'growing with the share.')
+	assert.ok(large < 2.5,
+		`extractAlbums read each file's name ${large.toFixed(2)} times; gathering the audio ` +
+		'list for shelf nodes as well as album nodes is what pushes this past 2.5.')
 })
 
 // ── The argument-spread crash ────────────────────────────────────────────────
