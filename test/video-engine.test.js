@@ -1196,8 +1196,15 @@ function fakeMpvPerSpawn() {
     const proc = new EventEmitter()
     proc.killed = false
     // SIGTERM is a request, not an execution: mpv closes files and saves its
-    // state before it goes. The delay IS the bug's window.
-    proc.kill = () => { proc.killed = true; setTimeout(() => proc.emit('exit', 0), 5) }
+    // state before it goes, and that delay IS the bug's window. It used to be
+    // modelled with a 5 ms timer racing a restart that takes anywhere from
+    // 0.7 to 3.2 ms, so under load the death sometimes landed BEFORE the
+    // replacement existed and the test passed for the wrong reason (about one
+    // run in eight). Now the kill only records the request and each test fires
+    // the death itself, at the exact moment it means to test: after the
+    // replacement has finished starting.
+    proc.kill = () => { proc.killed = true }
+    proc.die = (code = 0) => proc.emit('exit', code)
     procs.push(proc)
     return proc
   }
@@ -1224,7 +1231,9 @@ test('a dying mpv does not tear down the mpv that replaced it', async () => {
   assert.ok(first.killed, 'and the first was asked to go')
   assert.strictEqual(eng.alive, true)
 
-  // Now the first process actually dies, and its socket finishes closing.
+  // Now the first process actually dies — after the replacement is fully up,
+  // which is the ordering the bug needs and no timer can promise.
+  first.die(0)
   await settle()
 
   assert.strictEqual(eng.alive, true, 'the replacement is still alive')
