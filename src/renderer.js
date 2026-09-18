@@ -7889,9 +7889,15 @@ function _paintVideoHero() {
   const na = item.nextAiring
   const until = na && na.airingAt ? _untilLabel(Number(na.airingAt) - Date.now()) : ''
   if (until) bits.push('<span class="vhero-chip">' + (na.episode ? 'Ep ' + esc(String(na.episode)) + ' ' : 'Next episode ') + esc(until) + '</span>')
+  // "Show N of M", not "Feature N" (audit N14): the position in the set is the
+  // whole point of a dot, and a screen reader reading "Feature 3" out of five
+  // buttons has to count the others to work out where it is. aria-current marks
+  // the one you are on for the same reason the filled dot does on screen.
   const dots = _videoHero.items.map(function (_, i) {
-    return '<button class="vhero-dot' + (i === _videoHero.index ? ' active' : '') +
-      '" data-hero="' + i + '" aria-label="Feature ' + (i + 1) + '"></button>'
+    const on = i === _videoHero.index
+    return '<button class="vhero-dot' + (on ? ' active' : '') +
+      '" data-hero="' + i + '"' + (on ? ' aria-current="true"' : '') +
+      ' aria-label="Show ' + (i + 1) + ' of ' + _videoHero.items.length + '"></button>'
   }).join('')
   // The biggest My List control showed a plus whatever the store held, so
   // pressing it on a saved film read as "add" and removed it.

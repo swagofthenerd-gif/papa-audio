@@ -54,6 +54,15 @@
 @keyframes searchFadeIn { from { opacity:0; transform:translateY(12px) } to { opacity:1; transform:translateY(0) } }
 
 :root {
+  /* Tell the browser which way round the app is (audit N20). Without this the
+     native furniture — scrollbars, <select> popups, date pickers, the caret,
+     the text-selection colour, the checkbox and radio glyphs — is rendered by
+     Chromium's LIGHT defaults on top of a dark app: pale scrollbars down a
+     black page, and white dropdowns over a black one. The token palette below
+     has always been dark by default; this simply says so out loud, and
+     body.theme-light flips it back. */
+  color-scheme: dark;
+
   /* These were referenced across the app but never defined. A var() with no
      fallback makes the whole declaration invalid, so the property was silently
      DROPPED: .stat-compact lost its border-radius entirely, the Smart Playlist
@@ -125,6 +134,8 @@
    (token-block completeness) which fails if one is added above without a
    light value below. */
 body.theme-light {
+  /* The light theme's native furniture, to match its tokens (audit N20). */
+  color-scheme: light;
   --text1:            #201d18;
   --border:           rgba(0,0,0,.12);
   --color-error:      #c0392b;
@@ -6392,6 +6403,7 @@ input::placeholder, textarea::placeholder { color:var(--text3);opacity:.6 }
 /* System color scheme */
 @media (prefers-color-scheme:light) {
   :root {
+    color-scheme: light;
     --bg:#f0f0f0;--bg2:#fff;--bg3:#f5f5f5;--bg4:#e5e5e5;--bg5:#d5d5d5;
     --text:#111;--text2:#555;--text3:#888;
     --glass:rgba(0,0,0,.04);--glass-hi:rgba(0,0,0,.07);--glass-border:rgba(0,0,0,.08);
@@ -7944,13 +7956,24 @@ body.app-unfocused .vt-menu {
   display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden;
 }
 .vhero-actions { display:flex; flex-wrap:wrap; gap:10px; }
-.vhero-dots { position:absolute; right:28px; bottom:28px; display:flex; gap:6px; }
+/* The hero's page dots were a 22x3 px sliver — three pixels of target, which
+   is not a button anyone can hit (audit N14). They are now 8 px of visible bar
+   inside a 24 px tall hit area, with the extra height as transparent padding on
+   the background, so the strip looks no heavier than it did. The current one is
+   the accent colour AND wider AND ringed, so it is not colour alone. */
+.vhero-dots { position:absolute; right:28px; bottom:20px; display:flex; gap:2px; }
 .vhero-dot {
-  width:22px; height:3px; border-radius:2px; border:none; padding:0; cursor:pointer;
-  background:rgba(255,255,255,.24); transition:background .2s var(--ease), width .2s var(--ease);
+  width:24px; min-width:24px; height:24px; min-height:24px;
+  border:none; padding:8px 1px; margin:0; cursor:pointer;
+  background:rgba(255,255,255,.24); background-clip:content-box; border-radius:4px;
+  transition:background .2s var(--ease), width .2s var(--ease);
 }
-.vhero-dot:hover { background:rgba(255,255,255,.5); }
-.vhero-dot.active { background:var(--accent); width:34px; }
+.vhero-dot:hover { background:rgba(255,255,255,.55); background-clip:content-box; }
+.vhero-dot.active {
+  background:var(--accent); background-clip:content-box; width:40px; min-width:40px;
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.35);
+}
+.vhero-dot:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
 
 /* ── Buttons ─────────────────────────────────────────── */
 .vbtn {
@@ -8070,13 +8093,19 @@ body.app-unfocused .vt-menu {
 .vcard-progress { position:absolute; left:0; right:0; bottom:0; height:3px; background:rgba(0,0,0,.6); }
 .vcard-progress i { display:block; height:100%; background:var(--accent); }
 
-/* Quick actions. Revealed on hover/focus, but always reachable by keyboard. */
+/* Quick actions. Always legible (rule 5), full strength on hover or focus. */
 .vcard-actions {
   position:absolute; inset:auto 0 0 0; display:flex; gap:6px; padding:10px;
   background:linear-gradient(0deg, rgba(0,0,0,.88), transparent);
   opacity:0; transform:translateY(6px);
   transition:opacity .18s var(--ease), transform .18s var(--ease);
 }
+/* Rule 5 — play buttons are always visible, never behind a hover (audit N20).
+   The catalogue posters were the last surface still hiding theirs, which on a
+   touchpad or a touchscreen means the only way to find out a card can be
+   played is to hover it and hope. Same treatment the On-device cards already
+   get: .85 at rest, full strength under the pointer or under focus. */
+.vcard-actions { opacity:.85; transform:none; }
 .vcard:hover .vcard-actions, .vcard:focus-within .vcard-actions { opacity:1; transform:translateY(0); }
 .vcard-act {
   width:30px; height:30px; border-radius:50%; border:none; cursor:pointer;
@@ -8572,6 +8601,18 @@ body.app-unfocused .vt-menu {
   background:var(--bg3); border:1px solid var(--glass-border); color:var(--text2);
   font-family:inherit; font-size:11.5px; font-weight:500;
   transition:background .13s var(--ease), color .13s var(--ease), border-color .13s var(--ease);
+}
+/* Every chip in Movies & TV is a real button, and a real button needs at least
+   24 px of target (audit N20 measured 18). The chips are deliberately small —
+   a filter rail of fat pills reads as a toolbar — so the target is grown
+   WITHOUT growing the chip: a transparent overlay, centred on the chip, at
+   least 24 px tall and never smaller than the chip itself. Nothing on screen
+   moves; the pointer and the touch just stop missing. */
+.vf-chip, .vlist-chip, .vsfilter-chip, .vt-chip { position:relative; }
+.vf-chip::after, .vlist-chip::after, .vsfilter-chip::after, .vt-chip::after {
+  content:''; position:absolute; left:0; right:0; top:50%;
+  transform:translateY(-50%);
+  height:24px; min-height:100%;
 }
 .vf-chip:hover { background:var(--bg4); color:var(--text); }
 .vf-chip:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
@@ -9738,9 +9779,11 @@ body.theme-light .cinema {
 .cinema .vcard-progress { background: rgba(11, 11, 12, .72); }
 .cinema .vcard-progress i { background: var(--cin-ember); }
 
-/* Actions stay hidden until wanted, and are reachable by keyboard because the
-   reveal is bound to :focus-within as well as :hover. */
+/* Actions are always legible and go to full strength under the pointer or
+   under focus (rule 5; audit N20 — they used to be hidden until hover). */
 .cinema .vcard-actions {
+  /* Rule 5 again, at the cinema theme's own specificity (audit N20). */
+  opacity: .85; transform: none;
   padding: 12px 10px 10px;
   background: linear-gradient(0deg, rgba(11, 11, 12, .92), transparent);
   transition: opacity .22s var(--cin-ease), transform .22s var(--cin-ease);
@@ -9964,9 +10007,12 @@ body.theme-light .cinema {
   color: var(--cin-bone-2);
   margin-bottom: 22px;
 }
-.cinema .vhero-dot { border-radius: 1px; background: rgba(237, 232, 224, .22); }
-.cinema .vhero-dot:hover { background: rgba(237, 232, 224, .5); }
-.cinema .vhero-dot.active { background: var(--cin-ember); }
+/* Same geometry as above — only the colours change in the cinema theme. The
+   background-clip must be restated with every background, or the 24 px hit
+   area would paint solid again (audit N14). */
+.cinema .vhero-dot { border-radius: 2px; background: rgba(237, 232, 224, .22); background-clip: content-box; }
+.cinema .vhero-dot:hover { background: rgba(237, 232, 224, .5); background-clip: content-box; }
+.cinema .vhero-dot.active { background: var(--cin-ember); background-clip: content-box; }
 
 /* ── Buttons ─────────────────────────────────────────
    Square-shouldered rather than pill, to sit with the poster geometry. */

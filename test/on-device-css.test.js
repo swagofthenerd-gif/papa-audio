@@ -258,17 +258,27 @@ test('hovering or focusing one still takes them to full strength', () => {
   }
 })
 
-test('an ordinary catalogue poster keeps its hover reveal', () => {
+test('an ordinary catalogue poster shows its Play button too now', () => {
+  // This used to assert opacity 0 at rest — the scoped On-device fix was
+  // deliberately narrow. The Movies & TV audit (N20) then found the same
+  // complaint on the catalogue posters, and rule 5 in CLAUDE.md is not scoped
+  // to one surface: play buttons are always visible at .85. The On-device
+  // card's own rules are still what keep it flat (no transform) rather than
+  // sliding, which is what the tests above check.
   const rest = resolve(RULES, posterChain({}), 'opacity')
-  assert.strictEqual(rest.value, '0',
-    'the shared rule is untouched — this fix is scoped to the On-device card')
+  assert.ok(Number(rest.value) >= 0.8,
+    'a poster Play must be findable without hovering, got ' + rest.value + ' from "' + rest.sel + '"')
   const hover = resolve(RULES, posterChain({ hover: true }), 'opacity')
   assert.strictEqual(hover.value, '1')
 })
 
-test('MUTATION: without the scoped rule the device buttons hide again', () => {
-  const broken = CSS.replace(/\.vdevice-card \.vcard-actions,\n\.cinema \.vdevice-card \.vcard-actions \{[^}]*\}\n/, '')
-  assert.notStrictEqual(broken, CSS, 'the mutation applied')
+test('MUTATION: with rule 5 removed from both card rules, the buttons hide again', () => {
+  let broken = CSS.replace(/\.vdevice-card \.vcard-actions,\n\.cinema \.vdevice-card \.vcard-actions \{[^}]*\}\n/, '')
+  assert.notStrictEqual(broken, CSS, 'the device-card mutation applied')
+  const before = broken
+  broken = broken.replace(/\.vcard-actions \{ opacity:\.85; transform:none; \}\n/, '')
+  assert.notStrictEqual(broken, before, 'the shared rule-5 mutation applied')
+  broken = broken.replace(/opacity: \.85; transform: none;\n/, '')
   const rules = collectRules(stripComments(broken))
   const got = resolve(rules, chainFor({}), 'opacity')
   assert.strictEqual(got.value, '0', 'which is the state he was complaining about')
