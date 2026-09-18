@@ -162,7 +162,7 @@ const reconcileFn = () => {
 const reconcileTick = () => {
   const at = CODE.indexOf('const reconcileTimer = setInterval(')
   assert.ok(at > 0, 'the reconcile tick is missing')
-  return CODE.slice(at, at + 2600)
+  return CODE.slice(at, at + 3400)
 }
 
 test('the renderer reconciles its playback state against mpv once a second', () => {
@@ -170,7 +170,8 @@ test('the renderer reconciles its playback state against mpv once a second', () 
   // state.isPlaying. This makes the last converge on the first.
   const tick = reconcileTick()
   assert.match(tick, /state\.isPlaying !== playing/, 'the UI flag must follow mpv, not the last optimistic write')
-  assert.match(tick, /audio\.positionAgeMs > STALE_POSITION_MS/, 'a frozen bar is its own signal')
+  assert.match(tick, /Number\.isFinite\(ageMs\) && ageMs > STALE_POSITION_MS/,
+    'a frozen bar is its own signal, and only a real duration may declare one')
   assert.match(tick, /if \(audio\.engineDown\) return/, 'do not shout while the engine is already down')
   assert.match(tick, /reconcileTimer\.unref/, 'a 1s interval must not hold the process open')
   assert.match(tick, /reconcileWhatIsPlaying\(\)/, 'the poll still runs the reconcile')

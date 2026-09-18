@@ -31511,12 +31511,20 @@ function setupListeners() {
     }
 
     // 127: a frozen progress bar looked exactly like a paused track.
-    const stale = playing && audio.positionAgeMs > STALE_POSITION_MS
+    // The age is read once, and only a real elapsed time can declare a stall.
+    // QA saw "has not moved for Infinityms": the shim answered Infinity for
+    // the window between asking mpv to open a file and mpv's first position
+    // report, so a track that had just been chosen was reported as frozen
+    // forever. The shim now keeps a real clock; this refuses a non-finite age
+    // anyway, so the sentence can never be printed with a number that is not
+    // a duration.
+    const ageMs = audio.positionAgeMs
+    const stale = playing && Number.isFinite(ageMs) && ageMs > STALE_POSITION_MS
     if (stale !== _barStale) {
       _barStale = stale
       document.getElementById('progress-track')?.classList.toggle('stale', stale)
       document.getElementById('np-modal-track')?.classList.toggle('stale', stale)
-      if (stale) console.error(`[papa] the progress bar has not moved for ${Math.round(audio.positionAgeMs)}ms while unpaused`)
+      if (stale) console.error(`[papa] the progress bar has not moved for ${Math.round(ageMs)}ms while unpaused`)
     }
 
       reconcileWhatIsPlaying()
