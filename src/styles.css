@@ -7565,6 +7565,14 @@ body.app-unfocused .vt-menu {
 .pl-track-row:focus-visible {
   outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--r-sm);
 }
+/* Songs are tab stops now. The ring goes INSIDE the row: rows sit flush
+   against each other, so an outward offset overlaps its neighbours. */
+.track-row[tabindex]:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: -2px; border-radius: var(--r-sm);
+}
+/* And someone who arrived by keyboard has to be able to see the row actions
+   the mouse gets on hover. */
+.track-row:focus-within .hover-actions { display: flex; }
 /* Keyboard users must be able to see the row actions they have focused. */
 .pl-track-row:focus-within .pl-track-actions { opacity: 1; }
 

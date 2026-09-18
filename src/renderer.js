@@ -22246,6 +22246,16 @@ function _drawHomeClock() {
   canvas.title = now.toLocaleTimeString()
 }
 
+// The readable part of a title or artist cell: the plain text, without the
+// badges that live inside it (explicit, surround, BPM, the YT chip). Reading
+// "Play RiversideE by Agnes Obel120 BPM" aloud is worse than reading nothing.
+function _rowLabelText(el) {
+  if (!el) return ''
+  var first = el.firstChild
+  var text = (first && first.nodeType === 3 ? first.textContent : el.textContent) || ''
+  return text.replace(/\s+/g, ' ').trim()
+}
+
 function bindContentEvents() {
   // Belongs to renderSearch(). It used to be bound inside renderLibrary()'s
   // search callback, so it only ran when you typed in the Library box -- by
@@ -22258,6 +22268,20 @@ function bindContentEvents() {
       var text = (el.textContent || '').toLowerCase()
       el.style.display = q && !text.includes(q) ? 'none' : ''
     })
+  })
+
+  // Songs, before the cards: a track row is a div with a click listener like
+  // every card here, but it carried neither tabindex nor role, so Tab walked
+  // straight past every song in an album and there was no way to reach one
+  // without a mouse. The name matters as much as the focus -- a screen reader
+  // reading twenty identical "button"s is no better than skipping them.
+  document.querySelectorAll('#content .track-row').forEach(function (row) {
+    if (!row.hasAttribute('tabindex')) row.setAttribute('tabindex', '0')
+    if (!row.hasAttribute('role')) row.setAttribute('role', 'button')
+    if (row.hasAttribute('aria-label')) return
+    var _title = _rowLabelText(row.querySelector('.track-title'))
+    var _artist = _rowLabelText(row.querySelector('.track-artist'))
+    if (_title) row.setAttribute('aria-label', 'Play ' + _title + (_artist ? ' by ' + _artist : ''))
   })
 
   document.querySelectorAll('#content .album-card,#content .quick-card,#content .artist-card,#content .daily-mix-card,#content .q-mix-card,#content .jumpback-card,#content .folder-tree-item,#content .pl-card,#content .pl-folder-header,#content .genre-tile,#content .mood-card,#content .recent-search-card,#content .artist-pill,#content .discovery-swipe-card,#content .yt-row,#content .yt-album-card,#content .yt-artist-card,#content .yt-playlist-card,#content .dl2-group-toggle,#content .dl2-group-toggle-failed,#content .pl-track-row')
@@ -30475,7 +30499,7 @@ function setupListeners() {
   // Cards are divs with a click listener; give them a real keyboard path.
   document.getElementById('content')?.addEventListener('keydown', e => {
     if (e.key !== 'Enter' && e.key !== ' ') return
-    const card = e.target.closest('.album-card,.quick-card,.artist-card,.daily-mix-card,.q-mix-card,.jumpback-card,.folder-tree-item,.pl-card,.pl-folder-header,.genre-tile,.mood-card,.recent-search-card,.artist-pill,.discovery-swipe-card,.yt-row,.yt-album-card,.yt-artist-card,.yt-playlist-card,.dl2-group-toggle,.dl2-group-toggle-failed,.pl-track-row')
+    const card = e.target.closest('.album-card,.quick-card,.artist-card,.daily-mix-card,.q-mix-card,.jumpback-card,.folder-tree-item,.pl-card,.pl-folder-header,.genre-tile,.mood-card,.recent-search-card,.artist-pill,.discovery-swipe-card,.yt-row,.yt-album-card,.yt-artist-card,.yt-playlist-card,.dl2-group-toggle,.dl2-group-toggle-failed,.pl-track-row,.track-row')
     if (!card || e.target.closest('button')) return
     e.preventDefault()
     // And stop it here. Without this the SAME keypress carried on up to the
@@ -30485,7 +30509,16 @@ function setupListeners() {
     // stop propagation, and defaultPrevented is checked in exactly one
     // unrelated place in this file, so nothing downstream noticed.
     e.stopPropagation()
-    card.click()
+    // A song has two meanings for the mouse: the track number plays it, the
+    // rest of the row opens the album it belongs to. Choosing a song with the
+    // keyboard means PLAY that song, so the keypress is routed through the
+    // same element a mouse would have to hit for that -- clicking the row
+    // itself would have navigated away instead, which is not what Enter on a
+    // song means to anyone.
+    const target = card.classList.contains('track-row')
+      ? (card.querySelector('.track-num') || card)
+      : card
+    target.click()
   })
 
   // Global delegation for album rows (roadmap 005). Plain vertical wheel used
