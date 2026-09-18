@@ -10,25 +10,35 @@ const fs = require('fs')
 const path = require('path')
 const MAIN = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
 
-function harness({ files, infos, pd = null }) {
+// `state` is what mpv reports (position/duration). Null means the in-page
+// player, which has no state stream at all — the case that used to leave the
+// next episode with nothing pulled.
+function harness({ files, infos, pd = null, state = null }) {
   const calls = []
+  const heads = []
   const streamer = {
     files: () => files,
     fileInfo: i => infos[i] || null,
     predownloadFile: i => { calls.push(i); return true },
     predownloadProgress: () => pd,
-    prefetchFile: () => true,
+    prefetchFile: i => { heads.push(i); return true },
   }
   // The chain tick also nudges the rewatch cache (2026-09-14); that path has
   // its own tests, so here it is a no-op spy — without it the call throws into
   // the tick's catch and every chain assertion silently passes on empty.
   const cached = []
-  const ctx = { _videoSession: { streamer }, _maybeCacheCurrentFile: s => cached.push(s) }
+  const ctx = {
+    Number,
+    _videoSession: { streamer },
+    _maybeCacheCurrentFile: s => cached.push(s),
+    _debridCacheAhead: () => {},
+    videoEngine: () => ({ state: state }),
+  }
   vm.createContext(ctx)
   const start = MAIN.indexOf('const PACK_CHAIN_TICK_MS')
   const end = MAIN.indexOf('\n}', MAIN.indexOf('function _maybeChainPackDownloads()')) + 2
   vm.runInContext(MAIN.slice(start, end), ctx)
-  return { ctx, calls, cached }
+  return { ctx, calls, cached, heads }
 }
 
 const F = (index, current) => ({ index, current: !!current })
@@ -84,4 +94,68 @@ test('the chain tick offers the current file to the rewatch cache, packs and fil
   film.ctx._maybeChainPackDownloads()
   assert.strictEqual(film.cached.length, 1, 'a single-file torrent is still cached')
   assert.deepStrictEqual(film.calls, [], 'but nothing to chain')
+})
+
+
+// ── The next episode must be ready BEFORE this one runs out ─────────────────
+// "while watching a pack, the next episodes dont cache at all" (2026-09-19).
+// Chaining only started once the current file was ENTIRELY on disk, which for
+// a 45-minute episode is most of the way through it — by then there is no time
+// left to pull the next one, so it was never ready when it was reached.
+
+const ahead = (have, total) => ({ total: total, downloaded: have })
+
+test('the next episode starts pulling once this one is comfortably ahead of the viewer', () => {
+  // Half the file on disk, the viewer a quarter of the way in: a 25-point
+  // lead, so the spare bandwidth goes to the next episode.
+  const h = harness({
+    files: [F(0, true), F(1)],
+    infos: { 0: ahead(50, 100), 1: partial },
+    state: { position: 25, duration: 100 },
+  })
+  h.ctx._maybeChainPackDownloads()
+  assert.deepStrictEqual(h.calls, [1])
+})
+
+test('nothing is taken from a stream the viewer is nearly caught up with', () => {
+  const h = harness({
+    files: [F(0, true), F(1)],
+    infos: { 0: ahead(50, 100), 1: partial },
+    state: { position: 45, duration: 100 },
+  })
+  h.ctx._maybeChainPackDownloads()
+  assert.deepStrictEqual(h.calls, [], 'the picture in front of the viewer comes first')
+})
+
+test('an all-but-finished episode chains even with the viewer right behind it', () => {
+  const h = harness({
+    files: [F(0, true), F(1)],
+    infos: { 0: ahead(96, 100), 1: partial },
+    state: { position: 95, duration: 100 },
+  })
+  h.ctx._maybeChainPackDownloads()
+  assert.deepStrictEqual(h.calls, [1])
+})
+
+test('with no mpv state the next episode’s opening is pulled on the tick', () => {
+  // The in-page player. The half-way head prefetch rode the mpv state stream,
+  // so in this mode it never ran at all and the next episode started cold.
+  const h = harness({
+    files: [F(0, true), F(1)],
+    infos: { 0: partial, 1: partial },
+    state: null,
+  })
+  h.ctx._maybeChainPackDownloads()
+  assert.deepStrictEqual(h.heads, [1], 'the next episode’s head is pulled')
+  assert.deepStrictEqual(h.calls, [], 'the whole-file chain still waits for this one')
+})
+
+test('with no mpv state a finished episode still chains the next, as it always did', () => {
+  const h = harness({
+    files: [F(0, true), F(1)],
+    infos: { 0: complete, 1: partial },
+    state: null,
+  })
+  h.ctx._maybeChainPackDownloads()
+  assert.deepStrictEqual(h.calls, [1])
 })

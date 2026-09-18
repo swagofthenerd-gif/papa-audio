@@ -12930,10 +12930,34 @@ function _maybeChainPackDownloads() {
       const info = streamer.fileInfo(files[i].index)
       return !!(info && info.total > 0 && info.downloaded >= info.total)
     }
-    // The episode being watched comes first, whole, before any chaining —
-    // and the moment it IS whole, it goes to the rewatch cache in the
-    // background, while the connection moves on to the next episode.
-    if (!done(at)) return
+    // The episode being watched comes first — but "first" used to mean
+    // "entirely on disk", which for a 45-minute episode is most of the way
+    // through it. By then there is no time left to pull the next one, so the
+    // next episode was never ready when it was reached.
+    //
+    // The real question is whether this episode is far enough ahead of the
+    // viewer to spare the bandwidth: once the download is a good margin in
+    // front of the playhead, or all but finished, the rest of the connection
+    // can go to the next episode without the current picture ever noticing.
+    const CHAIN_LEAD = 0.15
+    const curInfo = streamer.fileInfo(files[at].index)
+    const haveFrac = curInfo && curInfo.total > 0 ? curInfo.downloaded / curInfo.total : 0
+    const st = videoEngine().state
+    const dur = Number(st && st.duration) || 0
+    const playFrac = dur > 0 ? (Number(st && st.position) || 0) / dur : null
+    if (playFrac == null) {
+      // The in-page player has no mpv state stream, so the half-way head
+      // prefetch never ran for it at all — the next episode started from
+      // nothing every time. Pull its opening here instead, on this tick.
+      if (at + 1 < files.length && typeof streamer.prefetchFile === 'function') {
+        try { streamer.prefetchFile(files[at + 1].index) } catch (_) {}
+      }
+      // With no playhead there is nothing to measure a lead against, so the
+      // old rule stands: the whole file first.
+      if (!done(at)) return
+    } else if (!(haveFrac >= 0.95 || haveFrac >= playFrac + CHAIN_LEAD)) {
+      return
+    }
     // A whole-file pull the viewer asked for themselves (the offline-download
     // button) is never overridden while it is still running.
     const pd = typeof streamer.predownloadProgress === 'function' ? streamer.predownloadProgress() : null
