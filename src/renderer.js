@@ -2185,7 +2185,7 @@ function navigate(page, navId, opts = {}) {
 
   if (opts.restoreScroll && contentEl) {
     const savedScroll = _scrollMemory.get(`${page}:${navId ?? ''}`) || 0
-    requestAnimationFrame(() => { contentEl.scrollTop = savedScroll })
+    requestAnimationFrame(() => { _restoreScrollTop(contentEl, savedScroll) })
   }
 
   window.api.saveSessionState({
@@ -2197,6 +2197,33 @@ function navigate(page, navId, opts = {}) {
     history: navHistory.slice(-NAV_SESSION_CAP).map(_navEntrySlim),
     future: navFuture.slice(-NAV_SESSION_CAP).map(_navEntrySlim),
   })
+}
+
+// Back restored the scroll one frame after navigating — before the shelves
+// have anything in them. Assigning past the bottom of a short page is clamped,
+// so "back to 2,400px" became "back to 180px", about one time in three.
+// Shelves arrive over many frames with no single settle point, so the position
+// is re-applied while the page is too short, up to a cap. It stops when the
+// assignment sticks, or when the viewer has scrolled since the last attempt —
+// a page that yanks itself back under a moving finger is worse than a forgetful
+// one.
+var _SCROLL_RESTORE_TRIES = 20
+var _SCROLL_RESTORE_MS = 100
+
+function _restoreScrollTop(el, wanted, schedule) {
+  if (!el || !(Number(wanted) > 0)) return
+  var later = schedule || function (fn) { setTimeout(fn, _SCROLL_RESTORE_MS) }
+  var tries = 0
+  var applied = -1
+  var step = function () {
+    if (applied !== -1 && el.scrollTop !== applied) return
+    el.scrollTop = wanted
+    applied = el.scrollTop
+    if (applied >= wanted) return
+    if (++tries >= _SCROLL_RESTORE_TRIES) return
+    later(step)
+  }
+  step()
 }
 
 function navigateBack() {
@@ -5075,11 +5102,9 @@ var _playSourceKey = ''
 var _QUALITY_ORDER = ['2160p', '1080p', '720p', '480p']
 
 // Everything a detail page decides about how to play a title, wiped when a
-// different title opens. One function because these had drifted apart: the
-// hand-picked source was cleared per page and the hand-picked QUALITY was not,
-// so choosing 720p on one film pinned every film opened after it to 720p and
-// its Auto line read "Auto - 720p" for a choice nobody had made about it. They
-// are one preference about one page and they now live or die together.
+// new title opens. One function because these drifted: the hand-picked source
+// was cleared per page and the QUALITY was not, so choosing 720p on one film
+// pinned every film after it and its Auto line read "Auto - 720p".
 function _resetDetailPageChoices() {
   _videoStreams = []
   _debridPick = null
@@ -7747,10 +7772,8 @@ function _paintVideoHero() {
     return '<button class="vhero-dot' + (i === _videoHero.index ? ' active' : '') +
       '" data-hero="' + i + '" aria-label="Feature ' + (i + 1) + '"></button>'
   }).join('')
-  // The biggest My List control in the app showed a plus and the word
-  // "My List" whether or not the title was saved, so pressing it on a saved
-  // film read as "add" and silently removed it. It now paints from the store
-  // like every poster button does.
+  // The biggest My List control showed a plus whatever the store held, so
+  // pressing it on a saved film read as "add" and removed it.
   const heroFaceOn = _inMyList(item.type, item.id)
   const heroFace = _myListFace(heroFaceOn)
 
@@ -7837,12 +7860,9 @@ function _toggleWatchlist(item) {
     const added = store.inWatchlist(type, item.id)
     showToast(added ? 'Added to My List' : 'Removed from My List')
     _paintMyListButtons(type + ':' + item.id, added)
-    // My List is a page built out of this same store, and it only repainted
-    // when you pressed a sort chip or folded a franchise. Removing a title
-    // from the list itself left its card on screen and the count one too
-    // high until you navigated away and came back — the app looked like it
-    // had ignored the press. Only the list tab repaints: every other tab's
-    // grid is a catalogue row that saving a title does not change.
+    // My List only repainted on a sort chip or a fold, so removing a title
+    // left its card up and the count one too high until you left the tab.
+    // Only that tab repaints: other grids are catalogue rows, unaffected.
     if (_videoTab === 'list') {
       const rows = document.getElementById('vrows')
       if (rows) _renderMyList(rows)
@@ -7850,18 +7870,16 @@ function _toggleWatchlist(item) {
   } catch (_) { showToast('Could not update My List') }
 }
 
-// Is this title saved? One answer for every surface that shows a My List
-// control, so the hero, the poster buttons and the detail page can never
-// disagree about the same title.
+// Is this title saved? One answer for every My List control, so the hero,
+// the poster buttons and the detail page cannot disagree.
 function _inMyList(type, id) {
   const store = _vStore()
   try { return store ? !!store.inWatchlist(type || 'movie', id) : false } catch (_) { return false }
 }
 
-// The two faces of a My List control. The label is part of the state, not
-// decoration: a poster button kept saying "Remove from My List" after the
-// title had been removed, which is the only thing a screen reader had to go
-// on, and the icon flip it contradicted was the only thing anyone else did.
+// The two faces of a My List control. The label is part of the state: a
+// poster button kept saying "Remove from My List" after removal, which is all
+// a screen reader had to go on.
 function _myListFace(added) {
   return {
     icon: added ? _VICON.check : _VICON.plus,
@@ -7878,10 +7896,8 @@ function _paintMyListButtons(key, added) {
     b.innerHTML = face.icon
     b.setAttribute('aria-label', face.aria)
   })
-  // The hero carries a word as well as an icon, and it showed a plus and
-  // "My List" for a title that was already saved. It is keyed, so a toggle
-  // from a poster further down the page repaints it too when it is the same
-  // title.
+  // The hero carries a word as well as an icon, and showed a plus for a
+  // saved title. Keyed, so a poster toggle repaints it when it is the same.
   const hero = document.getElementById('vhero-list')
   if (hero && hero.dataset && hero.dataset.key === key) {
     hero.classList.toggle('on', added)
@@ -9854,11 +9870,8 @@ function _detInList(d) {
 var _autoPlayTicket = 0
 
 // The single place the arm is consumed. Every Play surface on a detail page
-// (the hero's Play, an episode row, the "Continue episode N · Resume" banner,
-// and the card arm that renderVideoDetail converts on arrival) ends here: it
-// sets `_autoPlayTicket` to the live page ticket, and the source load hands
-// over to the player exactly once. Its own function so the handoff can be
-// exercised for real in a test instead of being re-implemented by one.
+// — hero, episode row, Resume banner, card arrival — sets _autoPlayTicket to
+// the live page ticket, and the source load hands over exactly once.
 function _takeAutoPlayArm(streams) {
   if (_autoPlayTicket !== _videoDetailTicket) return false
   if (!streams || !streams.length) return false
@@ -10920,24 +10933,16 @@ function _seasonEpisodeNumbers(season) {
   return nums
 }
 
-// How long an Undo snackbar stays on screen (showSnackbar's own default). The
-// deferral below waits exactly this long, so the two are one number.
+// How long an Undo snackbar stays up (showSnackbar's default). The deferral
+// below waits exactly this long, so the two are one number.
 var UNDO_SNACKBAR_MS = 5000
 
-// "Mark season watched" promised Undo and then immediately refetched the
-// source list — a network round trip measured at about four seconds, which
-// put a loading state over the page for most of the five seconds the Undo bar
-// was up. Six attempts out of six, the bar was gone before it could be used.
-//
-// The reload is deferred rather than the bar lengthened. Nothing the reload
-// fetches depends on the mark — marking episodes watched does not change which
-// sources exist for the episode on screen — so the work is not urgent, and
-// doing it a few seconds later costs nothing. Lengthening the bar instead
-// would only mean staring at a spinner for longer, which is not the same as
-// being able to undo.
-//
-// The returned function cancels: pressing Undo puts the state back where it
-// started, so there is nothing left to reload for.
+// "Mark season watched" promised Undo, then refetched the source list — about
+// four seconds of loading state over the five the bar was up, so the offer
+// expired before it could be taken (6/6). Deferred rather than the bar
+// lengthened: nothing the refetch returns depends on the mark, so it can wait,
+// whereas a longer bar is only a longer spinner. The returned function
+// cancels — after an Undo there is nothing to reload for.
 function _deferPastUndo(fn) {
   var id = setTimeout(fn, UNDO_SNACKBAR_MS)
   return function () { clearTimeout(id) }
@@ -11349,12 +11354,10 @@ function _bindEpResume(root) {
     const n = Number(banner.dataset.ep) || 1
     _videoState.episode = n
     _syncEpisodeSelection(n)
-    // Selecting the episode is only half of "Resume". Without the autoplay
-    // arm this button refetched the source list and stopped there — the same
-    // "a Play that only navigates" defect the shelf card and the hero were
-    // each fixed for. `_autoPlayTicket` is what _loadVideoSources reads when
-    // the new list lands, and it has to be set BEFORE the load because a
-    // cached list can land in the same turn.
+    // Selecting the episode is only half of "Resume": without this arm the
+    // button refetched sources and stopped there, the same "Play that only
+    // navigates" the card and hero were fixed for. Set before the load —
+    // a cached list can land in the same turn.
     _autoPlayTicket = _videoDetailTicket
     _loadVideoSources(_videoDetailTicket, ++_videoSeasonTicket)
   })
@@ -11440,10 +11443,8 @@ async function _refreshTvEpisodes(ticket, seasonTicket, opts) {
       }
     }
   }
-  // Marking a season watched changes the store, not the swarm: the sources
-  // for the episode on screen are exactly the ones already listed. That caller
-  // asks to skip the refetch so it can be done later, out of the way of the
-  // Undo bar.
+  // Marking a season watched changes the store, not the swarm: that caller
+  // skips the refetch so it can happen later, clear of the Undo bar.
   if (opts && opts.skipSources) return
   await _loadVideoSources(ticket, seasonTicket)
 }
