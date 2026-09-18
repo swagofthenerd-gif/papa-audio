@@ -22446,7 +22446,11 @@ function playCurrentTrack() {
   // Local files: existing fast path
   if (!audio.paused && !audio.ended) audio.pause()
   audio.src = `file://${track.filePath}`
-  audio.play().then(function () { _armMusicStartWatch(); return onStarted() }).catch(onError)
+  // Read the clock BEFORE asking for play, so the watchdog's baseline is the
+  // position play was asked from, not wherever it had reached by the time the
+  // promise settled.
+  var _startedAt = Number(audio.currentTime) || 0
+  audio.play().then(function () { _armMusicStartWatch(_startedAt); return onStarted() }).catch(onError)
 }
 
 // Home's "Continue listening" card is built by renderHome(), so it froze on
@@ -22697,6 +22701,14 @@ function isCurrentTrack(filePath) {
 // stream) showed "playing" forever. The first is caught; the second is
 // watched for a few seconds of no movement.
 var _musicStartWatch = null
+// Every position event the engine emits, counted. The watchdog compares this
+// counter rather than trusting a before/after reading of audio.currentTime: a
+// track change between arming and the check RESETS currentTime, so "did it
+// move?" answered false on music that was audibly playing.
+var _musicStartTicks = 0
+if (audio && audio.addEventListener) {
+  audio.addEventListener('timeupdate', function () { _musicStartTicks++ })
+}
 function _onPlayRefused(e) {
   state.isPlaying = false
   updatePlayBtn()
@@ -22708,12 +22720,21 @@ function _onPlayRefused(e) {
     : ('Could not start playback' + (why ? ' — ' + why : ''))
   showSnackbar(text, 'Retry', function () { togglePlay() }, 8000)
 }
-function _armMusicStartWatch() {
+// `startedAt` is the position the caller read BEFORE asking for play. Without
+// it the baseline was snapshotted here — after the play() promise resolved,
+// which with mpv can be well after the clock has already started moving — so
+// six seconds later "it moved past the baseline" came out false and the app
+// claimed nothing was sounding while the position was visibly advancing.
+function _armMusicStartWatch(startedAt) {
   _disarmMusicStartWatch()
-  var at = Number(audio.currentTime) || 0
+  var at = Number(startedAt != null ? startedAt : audio.currentTime) || 0
+  var ticks = _musicStartTicks
   _musicStartWatch = setTimeout(function () {
     _musicStartWatch = null
     if (!state.isPlaying || audio.paused) return
+    // Any position event since arming is progress, whatever the clock now
+    // reads — this is what catches the track-change reset.
+    if (_musicStartTicks > ticks) return
     if ((Number(audio.currentTime) || 0) > at + 0.2) return   // it moved: it is playing
     // Reported, not asserted: a slow mount can take longer than this, and
     // flipping the button to "paused" while mpv then starts would be a new
@@ -22729,7 +22750,9 @@ function _disarmMusicStartWatch() {
 function togglePlay() {
   if (!state.queue.length) return
   if (audio.paused) {
-    Promise.resolve().then(function () { return audio.play() }).then(_armMusicStartWatch).catch(_onPlayRefused)
+    var _resumeAt = Number(audio.currentTime) || 0
+    Promise.resolve().then(function () { return audio.play() })
+      .then(function () { _armMusicStartWatch(_resumeAt) }).catch(_onPlayRefused)
     state.isPlaying = true
     // A user-driven play. Pause any film on screen and take ownership so a
     // later video-close does not resume music the user is already hearing (#72).
