@@ -12374,27 +12374,45 @@ ipcMain.handle('video-airing', async (_, { anilistIds, tmdbIds } = {}) => {
     // Each source is optional: AniList and TMDB fail independently, and a dead
     // TMDB key must not blank out the anime half of the schedule. Anything that
     // throws contributes an empty list rather than failing the whole handler.
+    // Which source is missing from the schedule below, and why. Without this a
+    // dead AniList produced an empty schedule under `ok: true` — the same bug
+    // video-search had, found by the guard in
+    // test/video-handler-honesty.test.js.
+    const sources = { anilist: aKey.length ? 'ok' : 'skipped', tmdb: tKey.length ? 'ok' : 'skipped' }
+    const failed = []
     const anilistRows = aKey.length
-      ? await anilist().airingSchedule(aKey).catch(() => [])
+      ? await anilist().airingSchedule(aKey).catch(e => {
+          sources.anilist = 'failed'
+          failed.push({ source: 'anilist', error: (e && e.message) || String(e) })
+          return []
+        })
       : []
     // TMDB has no batch next-episode endpoint, so each followed TV id is a
     // detail fetch — but _videoShowDetail caches, so a followed show already
     // opened this session costs nothing, and next_episode_to_air rides the
     // detail response with no extra request of its own.
+    let tmdbMisses = 0
     const tmdbRows = tKey.length
       ? (await Promise.all(tKey.map(id =>
           _videoShowDetail('tv', id)
             .then(d => (d ? { id: d.id ?? id, title: d.title, nextEpisode: d.nextEpisode } : null))
-            .catch(() => null)
+            .catch(e => {
+              tmdbMisses++
+              failed.push({ source: 'tmdb', id, error: (e && e.message) || String(e) })
+              return null
+            })
         ))).filter(Boolean)
       : []
+    // One followed show failing is a gap; every one of them failing is an
+    // outage, and the difference is the whole point of saying so.
+    if (tKey.length && tmdbMisses) sources.tmdb = tmdbMisses === tKey.length ? 'failed' : 'partial'
 
     const airing = _mergeAiring(anilistRows, tmdbRows)
     // Only a non-empty schedule is cached: an empty result is almost always a
     // transient upstream failure, and a 30-minute empty cache would hide the
     // shelf long after the API recovered.
     if (airing.length) _videoAiringCache.set(cacheKey, airing)
-    return { ok: true, airing }
+    return { ok: true, airing, sources, failed }
   } catch (e) {
     return { ok: false, error: (e && e.message) || String(e) }
   }

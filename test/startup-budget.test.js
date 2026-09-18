@@ -73,7 +73,14 @@ function syncScriptBytes () {
 // renderer.js and video-player.js. Deliberate feature work; the old ceiling had
 // been reached to within 0.4 % before the last file. Re-based ~15% above the
 // new measured total (2,539,444).
-const SCRIPT_BYTE_CEILING = 2920000
+// Raised 2026-09-19 (video search honesty/ranking/typo fixes): renderer.js
+// grew by ~10 KB — the per-source outage note and its Retry, the group-ordering
+// helper, and the shortened-query retry chain. The old ceiling had only ~5.6 KB
+// of headroom left, so this tipped it. Re-based to ~4 % above the new measured
+// total (2,924,232) rather than the usual ~15 %: the budget exists to catch an
+// unnoticed doubling, and a 15 % jump here would have blinded it for months of
+// ordinary work.
+const SCRIPT_BYTE_CEILING = 3050000
 
 test('the renderer loads its scripts and none is missing from disk', () => {
   const { count, missing } = syncScriptBytes()

@@ -135,8 +135,102 @@ test('a handler that fails says so in a way the UI can act on', () => {
   }
 })
 
+// ── The hole this test had ──────────────────────────────────────────────────
+// `video-search` passed every assertion above and was still the worst instance
+// of the bug they exist to catch. Its catch was not a `catch` BLOCK — it was an
+// inline `.catch` on a promise inside the handler, discarding the error and
+// substituting an empty list, followed by a plain `ok: true` return. An empty
+// catalogue answer and a dead catalogue then produced the same reply, and the
+// renderer told the user to check the spelling of "Oppenheimer". A live audit
+// hit that on five of twenty searches for famous films.
+//
+// What makes the pattern detectable is that the arrow takes NO argument and its
+// body is a bare literal: there is nowhere for the reason to have gone. A catch
+// with a body that records the failure — which is the fix — reads differently
+// and is allowed.
+//
+// Note which arrow bodies count. `() => []`, `() => null`, `() => ({})` and
+// `() => undefined` all SUBSTITUTE A VALUE that the handler then reads and
+// reports on — that is the bug. A bare `() => {}` is an empty BLOCK: it returns
+// nothing and the promise's result is discarded entirely, which is the
+// fire-and-forget idiom used for side effects like `player.pause()`. Nothing is
+// read out of those, so there is nothing for them to lie about, and the rule
+// deliberately does not cover them.
+const SWALLOW = /\.catch\(\s*\(\s*\)\s*=>\s*(\[\s*\]|null|undefined|\(\s*\{\s*\}\s*\))\s*\)/g
+
+// Handlers where discarding the reason is the documented, intended behaviour.
+// Same rule as DEGRADES_ON_PURPOSE: a reason, or it does not go in the list.
+const SWALLOWS_ON_PURPOSE = {}
+
+test('no video handler discards a failure and then reports success', () => {
+  const liars = []
+  for (const { name, body } of videoHandlers()) {
+    if (name in DEGRADES_ON_PURPOSE || name in SWALLOWS_ON_PURPOSE) continue
+    if (!new RegExp(SWALLOW.source).test(body)) continue
+    // The swallow only matters if the handler goes on to call the whole thing a
+    // success. A handler that swallows and then returns ok:false is already
+    // telling the truth.
+    if (!/ok:\s*true/.test(body)) continue
+    // ...unless the answer carries a per-source verdict naming which lane is
+    // missing. That is the fix, and it must not be flagged.
+    if (!/sources[,:]/.test(body) || !/failed[,:]/.test(body)) liars.push(name)
+  }
+  assert.deepEqual([...new Set(liars)], [],
+    'these throw a failure away and then answer "it worked", which is what made\n' +
+    'a rate-limited catalogue look like a film that does not exist:\n  ' + liars.join('\n  '))
+})
+
+test('the swallow pattern matches what it is meant to match', () => {
+  // A floor on the detector. Without this a typo in the regex would make the
+  // test above pass on every file forever.
+  const caught = [
+    'x.search(q).catch(() => [])',
+    'x.search(q).catch(()=>[])',
+    'x.search(q).catch( () => null )',
+    'x.search(q).catch(() => ({}))',
+    'x.search(q).catch(() => undefined)',
+  ]
+  for (const src of caught) {
+    assert.match(src, new RegExp(SWALLOW.source), src + ' should be flagged')
+  }
+  const allowed = [
+    // The fix: the reason is recorded before the empty value is substituted.
+    "x.search(q).catch(e => { _lost('tmdb', e); return [] })",
+    // An argument at all means the error was at least looked at.
+    'x.search(q).catch(e => [])',
+    // Not a literal — a real fallback value.
+    'x.search(q).catch(() => cached)',
+    // An empty BLOCK, not an empty value: fire-and-forget on a side effect,
+    // whose result nobody reads. `player.pause()` and `setUpscale()` are this.
+    'player.pause().catch(() => {})',
+  ]
+  for (const src of allowed) {
+    assert.doesNotMatch(src, new RegExp(SWALLOW.source), src + ' should not be flagged')
+  }
+})
+
+test('the guard can still see a handler that swallows', () => {
+  // The mutation check, kept in the file: a handler shaped the way video-search
+  // used to be shaped must be flagged. Run against a synthetic body so the
+  // check survives main.js being fixed.
+  const bad = "ipcMain.handle('video-fake', async () => {\n" +
+    '  const [a, b] = await Promise.all([\n' +
+    '    tmdb().search(query).catch(() => []),\n' +
+    '    _animeSearch(query).catch(() => []),\n' +
+    '  ])\n' +
+    '  return { ok: true, results: a.concat(b) }\n'
+  assert.ok(new RegExp(SWALLOW.source).test(bad), 'the swallow is seen')
+  assert.ok(/ok:\s*true/.test(bad), 'and the success claim is seen')
+  assert.ok(!/sources[,:]/.test(bad), 'and there is no per-source verdict to excuse it')
+})
+
 test('every deliberate exception carries a stated reason', () => {
   // Stops the allowlist quietly becoming the place bugs go to hide.
+  for (const [name, why] of Object.entries(SWALLOWS_ON_PURPOSE)) {
+    assert.ok(videoHandlers().some(h => h.name === name),
+      name + ' is exempted from the swallow check but no longer exists')
+    assert.ok(why && why.length > 40, name + ' needs a real reason, not a placeholder')
+  }
   for (const [name, why] of Object.entries(DEGRADES_ON_PURPOSE)) {
     assert.ok(videoHandlers().some(h => h.name === name),
       name + ' is exempted but no longer exists — remove it from the list')
