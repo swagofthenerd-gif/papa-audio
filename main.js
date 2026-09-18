@@ -224,7 +224,8 @@ const { createKitsuCatalog, EPISODE_PAGE: KITSU_EPISODE_PAGE } = require('./cata
 const { resolveAnimeShelf } = require('./catalog/anime-shelf')
 const { createOmdbCatalog, plausibleMatch: omdbPlausibleMatch, omdbTypeFor } = require('./catalog/omdb')
 const { createWebStreamServer } = require('./web-stream')
-const { sortJunkLast, rankByRelevance } = require('./catalog/search-rank')
+const { sortJunkLast, rankByRelevance, floorAnimeNoise, matchScore } =
+  require('./catalog/search-rank')
 const { createOpenSubtitles } = require('./subs/opensubtitles')
 const { resolveStream, rankingSeeds } = require('./providers/index')
 const { createYtsProvider } = require('./providers/yts')
@@ -12022,15 +12023,29 @@ ipcMain.handle('video-search', async (_, { query, type }) => {
       if (r.isAnime && animeRes.some(a => _sameShow(a, r))) continue
       merged.push(r)
     }
+    // AniList answers almost anything with something. A misspelt film title
+    // ("Intersteller") came back with eighteen unrelated shows and no film,
+    // and because the list was not EMPTY the renderer's spelling retry could
+    // never fire — the search was a dead end with no way out of it. Anime
+    // entries that only matched fuzzily are dropped, but only when the film
+    // catalogue found nothing solid either and the query is not Japanese.
+    const animeKept = floorAnimeNoise(query, merged, animeRes)
+
     // Both catalogues rank their own results well; concatenating them threw
     // that away and put every anime entry after every film, whatever was
     // asked for. rankByRelevance interleaves them by how well the title
     // matches the query, keeping each catalogue's own order as the tiebreak.
     // Entries with no year and no poster are strays sharing a title with
     // the real thing; they still go last (R10).
+    const ranked = sortJunkLast(rankByRelevance(query, [merged, animeKept]))
     return {
       ok: true,
-      results: sortJunkLast(rankByRelevance(query, [merged, animeRes])),
+      results: ranked,
+      // How well the best hit actually matches what was typed. The renderer
+      // uses it to decide whether the answer is good enough to stand, or weak
+      // enough to be worth retrying with a shortened query — it cannot compute
+      // this itself, having no access to the catalog modules.
+      topScore: ranked.length ? matchScore(query, ranked[0]) : 0,
       sources,
       failed,
     }

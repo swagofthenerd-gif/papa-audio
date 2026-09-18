@@ -8896,23 +8896,34 @@ function _runVideoTitleSearch(query, opts) {
         // Do NOT remember here: this runs on every debounced keystroke, which is
         // what filled the history with prefixes ("toky","tokyo r",…). History is
         // committed only on Enter (keydown handler) or when a result is clicked.
-        if (!results.length) {
+        // How good the best hit is, as the backend scored it against the query.
+        // Absent (an older answer) reads as "good enough", so nothing changes
+        // for a response that does not carry it.
+        const topScore = typeof res.topScore === 'number' ? res.topScore : 1
+        if (!results.length || topScore < VSEARCH_WEAK_MATCH) {
           // Nothing came back AND a catalogue was down: that is not a miss and
           // the spelling advice would be a lie. Say what actually happened and
           // offer to run the same query again.
-          if (_vSearchFailedSources(_vSearchFilter.sources).length) {
+          if (!results.length && _vSearchFailedSources(_vSearchFilter.sources).length) {
             _setVideoSearchHtml(_vSearchOutageHtml(query, _vSearchFilter.sources))
             _bindVideoSearchRetry()
             return
           }
-          // App §21: a zero-result title search gets exactly one retry with a
-          // simplified query, and only if simplifying actually changed it.
-          const simplified = _simplifyVideoQuery(query)
-          if (simplified && simplified !== query) {
-            return _retryVideoTitleSearch(query, simplified, ticket)
+          // App §21, widened. The retry used to fire only on ZERO results,
+          // which a misspelt film title never produced: the anime lane always
+          // answered with something, so "Intersteller" showed eighteen
+          // unrelated shows and no way to reach Interstellar. It now fires on a
+          // WEAK best match too, and it has a second query to try — see
+          // _relaxVideoQuery.
+          const candidates = _videoRetryQueries(query)
+          if (candidates.length) {
+            return _retryVideoTitleSearch(query, candidates, ticket,
+              { results: results, score: topScore })
           }
-          _setVideoSearchHtml(_vSearchEmptyHtml(query))
-          return
+          if (!results.length) {
+            _setVideoSearchHtml(_vSearchEmptyHtml(query))
+            return
+          }
         }
         _vSearchFilter.results = results
         // Cache by reference: later chip clicks mutate this same object, so a
@@ -8922,29 +8933,102 @@ function _runVideoTitleSearch(query, opts) {
       })
 }
 
-// The one retry App §21 allows: same fetch, simplified query. On a hit the
-// results paint under a gentle "Showing results for …" line so the swap is
-// never silent; on a second miss the original query's empty state stands.
-function _retryVideoTitleSearch(original, simplified, ticket) {
-  window.api.videoSearch({ query: simplified, type: 'all' })
+// Below this, the best hit is not really an answer to what was typed and the
+// search is worth retrying with a different query. Above it, whatever came
+// back stands.
+var VSEARCH_WEAK_MATCH = 0.5
+
+// The queries worth trying when the first one produced nothing useful, in
+// order, skipping any that is the same as what was already asked.
+function _videoRetryQueries(query) {
+  const out = []
+  const simplified = _simplifyVideoQuery(query)
+  if (simplified && simplified !== query) out.push(simplified)
+  const relaxed = _relaxVideoQuery(simplified || query)
+  if (relaxed && relaxed !== query && out.indexOf(relaxed) === -1) out.push(relaxed)
+  return out
+}
+
+// A misspelling the catalogues cannot match, shortened until they can.
+//
+// "Intersteller" finds nothing in the film catalogue and eighteen unrelated
+// shows in the anime one. There is no dictionary here to correct it with, but
+// TMDB matches title PREFIXES, and a typo is nearly always late in the word —
+// so cutting the longest word back by a quarter turns "Intersteller" into
+// "Interstel", which finds Interstellar.
+//
+// The honest limitation: a typo in the first three quarters of the word
+// survives the cut and this does nothing. Null when there is nothing long
+// enough to shorten.
+function _relaxVideoQuery(text) {
+  const raw = String(text == null ? '' : text).trim()
+  if (!raw) return null
+  const words = raw.split(/\s+/)
+  let at = -1
+  for (let i = 0; i < words.length; i++) {
+    if (at < 0 || words[i].length > words[at].length) at = i
+  }
+  if (at < 0 || words[at].length < 6) return null
+  const keep = Math.max(4, Math.ceil(words[at].length * 0.75))
+  if (keep >= words[at].length) return null
+  const out = words.slice()
+  out[at] = words[at].slice(0, keep)
+  const joined = out.join(' ')
+  return joined === raw ? null : joined
+}
+
+// The retries App §21 allows: the same fetch with a different query, tried in
+// order and stopping at the first one that beats what we already have. On a hit
+// the results paint under a gentle "Showing results for …" line so the swap is
+// never silent; when none of them beats it, whatever the original query found
+// stands — or its empty state, if it found nothing.
+function _retryVideoTitleSearch(original, candidates, ticket, base) {
+  const queue = Array.isArray(candidates) ? candidates.slice() : [candidates]
+  const baseResults = (base && Array.isArray(base.results)) ? base.results : []
+  const baseScore = (base && typeof base.score === 'number') ? base.score : 0
+
+  // Nothing left to try: keep what the original query found, or say it found
+  // nothing. Never loops — the queue only ever shrinks.
+  function giveUp() {
+    if (_videoSearchTicket !== ticket) return
+    const target = document.getElementById('video-search-results')
+    if (!target) return
+    if (!baseResults.length) {
+      _setVideoSearchHtml(_vSearchEmptyHtml(original))
+      return
+    }
+    _vSearchFilter.query = original
+    _vSearchFilter.results = baseResults
+    _lastVideoSearch = { filter: _vSearchFilter, timestamp: Date.now() }
+    _paintVideoSearchResults()
+  }
+
+  function attempt() {
+    if (!queue.length) return giveUp()
+    const simplified = queue.shift()
+    return window.api.videoSearch({ query: simplified, type: 'all' })
     .catch(function () { return { ok: false } })
     .then(function (res) {
       if (_videoSearchTicket !== ticket) return
       const target = document.getElementById('video-search-results')
       if (!target) return
       const results = (res && res.ok && Array.isArray(res.results)) ? res.results : []
+      const score = (res && typeof res.topScore === 'number') ? res.topScore : (results.length ? 1 : 0)
       const sources = (res && res.sources) || null
+      // A retry that is no better than what we had is not an improvement worth
+      // showing under a "Showing results for" line. Try the next one.
+      if (results.length && score <= baseScore) return attempt()
       if (!results.length) {
         // Same rule as the first attempt: an outage is not a miss, so the
-        // simplified query's miss must not be blamed on the spelling either.
+        // shortened query's miss must not be blamed on the spelling either,
+        // and there is no point trying another query against a dead catalogue.
         if (_vSearchFailedSources(sources).length) {
           _vSearchFilter.sources = sources
           _setVideoSearchHtml(_vSearchOutageHtml(original, sources))
           _bindVideoSearchRetry()
           return
         }
-        _setVideoSearchHtml(_vSearchEmptyHtml(original))
-        return
+        return attempt()
       }
       _vSearchFilter.sources = sources
       // Commit-only: don't remember on this debounced retry. Update the pending
@@ -8958,6 +9042,9 @@ function _retryVideoTitleSearch(original, simplified, ticket) {
       _lastVideoSearch = { filter: _vSearchFilter, timestamp: Date.now() }
       _paintVideoSearchResults('Showing results for &ldquo;' + esc(simplified) + '&rdquo;')
     })
+  }
+
+  return attempt()
 }
 
 // The parsed intent behind a live query, when it clearly describes a KIND of

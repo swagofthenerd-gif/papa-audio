@@ -886,20 +886,32 @@ test('the title search resets the filter state on every new query', () => {
   assert.match(src, /_vSearchFilter = \{ results: \[\], type: 'all', decade: 'all', query: query, intent: _searchIntent\(query\), sources: null \}/)
 })
 
-test('a zero-result search retries once with a simplified query, only if it differs', () => {
+test('a weak or zero-result search retries with a better query', () => {
+  // Widened from zero-results-only: the anime lane always answered a misspelt
+  // film title with something, so the retry could never fire and the search was
+  // a dead end. Behaviour: test/video-search-typo.test.js.
   const src = extract('_runVideoTitleSearch')
-  assert.match(src, /_simplifyVideoQuery\(query\)/)
-  assert.match(src, /simplified && simplified !== query/)
-  assert.match(src, /_retryVideoTitleSearch\(query, simplified, ticket\)/)
+  assert.match(src, /!results\.length \|\| topScore < VSEARCH_WEAK_MATCH/)
+  assert.match(src, /const candidates = _videoRetryQueries\(query\)/)
+  assert.match(src, /_retryVideoTitleSearch\(query, candidates, ticket,/)
+  // The candidates themselves: punctuation-simplified first, then shortened.
+  const queries = extract('_videoRetryQueries')
+  assert.match(queries, /_simplifyVideoQuery\(query\)/)
+  assert.match(queries, /simplified !== query/)
+  assert.match(queries, /_relaxVideoQuery\(/)
 })
 
 test('the retry paints under a "Showing results for" line and never loops', () => {
   const src = extract('_retryVideoTitleSearch')
-  // One videoSearch call, no further simplification — the retry is terminal.
   assert.match(src, /videoSearch\(\{ query: simplified/)
+  // It works through a FIXED queue handed to it — it never builds another
+  // query of its own, so it cannot chase its own tail.
   assert.doesNotMatch(src, /_simplifyVideoQuery/)
+  assert.doesNotMatch(src, /_relaxVideoQuery/)
+  assert.match(src, /queue\.shift\(\)/)
   assert.match(src, /Showing results for/)
-  // A second miss falls back to the original query's empty state.
+  // Out of candidates falls back to whatever the original query found, or its
+  // empty state when it found nothing.
   assert.match(src, /_vSearchEmptyHtml\(original\)/)
 })
 

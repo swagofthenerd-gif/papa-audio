@@ -19,7 +19,7 @@ const fs = require('fs')
 const path = require('path')
 const vm = require('vm')
 const { runHandler } = require('./helpers/lift-ipc')
-const { sortJunkLast, rankByRelevance } = require('../catalog/search-rank')
+const rank = require('../catalog/search-rank')
 
 const SRC = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
 
@@ -41,8 +41,10 @@ function globalsFor({ tmdbSearch, animeSearch, animeDatabasesDown = false }) {
     kitsu: () => ({ lastFailure: down }),
     // The real ones: ordering is not this test's subject, but a stub for them
     // would quietly turn the results into something that is not a list.
-    sortJunkLast,
-    rankByRelevance,
+    sortJunkLast: rank.sortJunkLast,
+    rankByRelevance: rank.rankByRelevance,
+    floorAnimeNoise: rank.floorAnimeNoise,
+    matchScore: rank.matchScore,
     _sameShow: () => false,
   }
 }
@@ -182,10 +184,8 @@ function harness(videoSearch) {
     _vSearchIntentHtml: () => '',
     _searchIntent: () => null,
     _shortQ: q => String(q),
-    _simplifyVideoQuery: q => q,
-    _retryVideoTitleSearch() {},
     _rememberSearch() {},
-    Date, Promise, Array, String, Number, Object, JSON,
+    Date, Promise, Array, String, Number, Object, JSON, Math, Set,
   }
   sandbox.globalThis = sandbox
   vm.createContext(sandbox)
@@ -203,9 +203,14 @@ function harness(videoSearch) {
     extractFn(SRC, '_vSearchOutageHtml'),
     extractFn(SRC, '_bindVideoSearchRetry'),
     extractFn(SRC, '_vSearchGroupOrder'),
+    extractFn(SRC, '_simplifyVideoQuery'),
+    extractFn(SRC, '_relaxVideoQuery'),
+    extractFn(SRC, '_videoRetryQueries'),
+    extractFn(SRC, '_retryVideoTitleSearch'),
     extractFn(SRC, '_vSearchEmptyHtml'),
     extractFn(SRC, '_paintVideoSearchResults'),
     extractFn(SRC, '_runVideoTitleSearch'),
+    /var VSEARCH_WEAK_MATCH = [\d.]+/.exec(SRC)[0],
     'const _VSEARCH_TYPE_CHIPS = ' + /var _VSEARCH_TYPE_CHIPS = (\[[\s\S]*?\n\])/.exec(SRC)[1],
   ].join('\n'), sandbox)
   return { sandbox, els, filled, html: () => els['video-search-results']._html }
@@ -214,7 +219,7 @@ function harness(videoSearch) {
 const settle = () => new Promise(r => setTimeout(r, 0))
 
 test('an empty result caused by a dead catalogue does not blame the spelling', async () => {
-  const h = harness(async () => ({ ok: true, results: [], sources: { tmdb: 'failed', anime: 'ok' }, failed: [{ source: 'tmdb', error: '429' }] }))
+  const h = harness(async () => ({ ok: true, results: [], topScore: 0, sources: { tmdb: 'failed', anime: 'ok' }, failed: [{ source: 'tmdb', error: '429' }] }))
   h.sandbox._runVideoTitleSearch('Oppenheimer')
   await settle()
   const html = h.html()
@@ -227,7 +232,7 @@ test('the Retry runs the SAME query, not a simplified one', async () => {
   const asked = []
   const h = harness(async ({ query }) => {
     asked.push(query)
-    return { ok: true, results: [], sources: { tmdb: 'failed', anime: 'ok' }, failed: [] }
+    return { ok: true, results: [], topScore: 0, sources: { tmdb: 'failed', anime: 'ok' }, failed: [] }
   })
   h.sandbox._runVideoTitleSearch('Dune: Part Two')
   await settle()
@@ -239,7 +244,7 @@ test('the Retry runs the SAME query, not a simplified one', async () => {
 })
 
 test('a genuine miss still gets the spelling advice', async () => {
-  const h = harness(async () => ({ ok: true, results: [], sources: { tmdb: 'ok', anime: 'ok' }, failed: [] }))
+  const h = harness(async () => ({ ok: true, results: [], topScore: 0, sources: { tmdb: 'ok', anime: 'ok' }, failed: [] }))
   h.sandbox._runVideoTitleSearch('zzzzqqqq')
   await settle()
   assert.match(h.html(), /spelling/i, 'the honest empty state is untouched')
@@ -250,6 +255,7 @@ test('results that arrived with one lane missing carry a one-line note and a Ret
   const h = harness(async () => ({
     ok: true,
     results: [{ type: 'anime', id: 9, title: 'Naruto', year: '2002', poster: 'p' }],
+    topScore: 1,
     sources: { tmdb: 'failed', anime: 'ok' },
     failed: [{ source: 'tmdb', error: '429' }],
   }))
@@ -265,6 +271,7 @@ test('the note survives a filter chip repaint — the catalogue is still down', 
   const h = harness(async () => ({
     ok: true,
     results: [{ type: 'anime', id: 9, title: 'Naruto', year: '2002', poster: 'p' }],
+    topScore: 1,
     sources: { tmdb: 'failed', anime: 'ok' },
     failed: [],
   }))
@@ -278,6 +285,7 @@ test('a healthy search paints no note at all', async () => {
   const h = harness(async () => ({
     ok: true,
     results: [{ type: 'movie', id: 1, title: 'Oppenheimer', year: '2023', poster: 'p' }],
+    topScore: 1,
     sources: { tmdb: 'ok', anime: 'ok' },
     failed: [],
   }))

@@ -79,11 +79,20 @@ function matchScore(query, entry) {
     else if (n.indexOf(q + ' ') === 0) s = 0.9
     // "Dune" for "Dune Part Two" — the query is the more specific one.
     else if (q.indexOf(n + ' ') === 0) s = 0.8
-    // The query appears as whole words inside a longer title.
-    else if (n.indexOf(' ' + q + ' ') > -1 || n.lastIndexOf(' ' + q) === n.length - q.length - 1) s = 0.7
+    // The query appears as whole words inside a longer title. The length guard
+    // matters: without it `lastIndexOf` returning -1 (no match) equals the
+    // computed tail position -1 whenever the two strings are the same length,
+    // and every same-length title scored 0.7 against every query.
+    else if (n.indexOf(' ' + q + ' ') > -1 ||
+      (n.length > q.length && n.lastIndexOf(' ' + q) === n.length - q.length - 1)) s = 0.7
     // Japanese and Chinese titles have no spaces to put a boundary on, so a
     // plain containment is the best available test there.
     else if (hasCJK(q) && q.length > 1 && n.indexOf(q) > -1) s = 0.7
+    // The title STARTS with what was typed, mid-word: "Interstel" for
+    // "Interstellar". This is what makes the shortened-query retry work — a
+    // typo near the end of a word survives being cut off, and TMDB matches
+    // title prefixes.
+    else if (q.length >= 4 && n.indexOf(q) === 0) s = 0.65
     else {
       const nt = new Set(_tokens(n))
       let hit = 0
@@ -127,6 +136,31 @@ function rankByRelevance(query, lists) {
   return rows.map(function (r) { return r.item })
 }
 
+// How weak a title match has to be before an anime entry is noise rather than
+// an answer. AniList's search is fuzzy enough that a misspelt film title
+// ("Intersteller") returns eighteen unrelated shows; because the list was never
+// empty, the spelling retry could never fire and the search was a dead end.
+const ANIME_RELEVANCE_FLOOR = 0.4
+// What counts as "the film catalogue clearly found it", in which case the anime
+// entries are harmless — they sort below the film anyway.
+const STRONG_HIT = 0.7
+
+// Drop anime entries that only matched fuzzily, but ONLY when there is nothing
+// solid from the film catalogue to rank them against and the query is not
+// Japanese. A CJK query is exactly the case where AniList's fuzzy match is the
+// useful one, and a strong film hit means the anime entries cost nothing.
+function floorAnimeNoise(query, filmResults, animeResults) {
+  const anime = Array.isArray(animeResults) ? animeResults : []
+  if (!anime.length) return anime
+  if (hasCJK(query)) return anime
+  const films = Array.isArray(filmResults) ? filmResults : []
+  for (const f of films) if (matchScore(query, f) >= STRONG_HIT) return anime
+  const kept = anime.filter(function (a) { return matchScore(query, a) >= ANIME_RELEVANCE_FLOOR })
+  // Everything fell through the floor: that is the honest answer, and it is
+  // what lets the renderer offer a corrected query instead of a dead end.
+  return kept
+}
+
 module.exports = {
   isJunk,
   sortJunkLast,
@@ -135,4 +169,7 @@ module.exports = {
   titlesOf,
   matchScore,
   rankByRelevance,
+  floorAnimeNoise,
+  ANIME_RELEVANCE_FLOOR,
+  STRONG_HIT,
 }
