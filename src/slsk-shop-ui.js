@@ -1546,6 +1546,55 @@
   // deserialise), none of it interruptible. Pulling gives backpressure, lets the
   // percentage move honestly, and makes closing the dialog mean "stop asking".
   // Falls back to the single-shot call on an engine without the new handlers.
+  // Subscribed BEFORE the pull, not after it. The pull now takes seconds where
+  // the old single-shot call took one round trip, and slsk-browse-begin kicks a
+  // background refresh on a cache hit — so a fast refresh could land while there
+  // was nobody listening, and the shop showed stale data for a whole cycle.
+  // Seamless background refresh (engine contract): when a fresh browse for THIS
+  // user lands, re-fetch and rebuild while preserving scroll, mode and search
+  // text, with an "Updated just now" pulse. Feature-detected — an engine without
+  // the event simply never fires this.
+  let _offBrowseRefreshed = null
+  if (window.api && typeof window.api.onSlskBrowseRefreshed === 'function') {
+    _offBrowseRefreshed = window.api.onSlskBrowseRefreshed(async (evt) => {
+      if (!dlg.isConnected) return
+      if (!evt || String(evt.username || '') !== String(username)) return
+      try {
+        const fresh = await window.api.slskBrowseUser({ username, noCache: true }).catch(() => null)
+        if (!fresh || !fresh.ok || !dlg.isConnected) return
+        // W-S2: fingerprint the fresh payload first. Identical content means
+        // the multi-second rebuild would reproduce exactly what is on screen —
+        // skip it entirely and only freshen the provenance line in place.
+        let freshFp = null
+        if (SH && SH.fingerprintBrowseChunked) {
+          freshFp = await SH.fingerprintBrowseChunked(fresh.directories || [],
+            { shouldAbort: () => !dlg.isConnected }).catch(() => null)
+        }
+        if (!dlg.isConnected) return
+        if (freshFp && shBrowseFp && freshFp === shBrowseFp) {
+          shFromCache = !!fresh.fromCache
+          shCachedAt = Number(fresh.cachedAt) || Date.now()
+          const hero = shBody.querySelector('.slsh-hero-cache')
+          if (hero) {
+            hero.classList.remove('slsh-hero-pulse')
+            hero.textContent = shFromCache && shCachedAt
+              ? 'from cache · updated ' + _shAgo(shCachedAt) : ''
+          }
+          return
+        }
+        shBrowseFp = freshFp
+        shFromCache = !!fresh.fromCache
+        shCachedAt = Number(fresh.cachedAt) || Date.now()
+        shJustRefreshed = true
+        tree = (SH && SH.buildTreeChunked)
+          ? await SH.buildTreeChunked(fresh.directories || [], { shouldAbort: () => !dlg.isConnected })
+          : T.buildTree(fresh.directories || [])
+        if (!tree || !dlg.isConnected) return
+        await buildFromTree({ refresh: true })
+      } catch (_) { /* a failed refresh must never disrupt the open shop */ }
+    })
+  }
+
   const streaming = !!(window.api.slskBrowseBegin && SH && SH.createTreeBuilder)
   const res = streaming
     ? await window.api.slskBrowseBegin({ username })
@@ -1597,14 +1646,16 @@
         }
       }
     } finally {
-      try { window.api.slskBrowseEnd({ token: res.token }) } catch (_) {}
+      // main hashed the payload in the background while we were pulling, and
+      // hands the result back here. The renderer no longer has the payload to
+      // fingerprint itself, and must not — that hash is ~100 ms of work.
+      try {
+        const done = await window.api.slskBrowseEnd({ token: res.token })
+        if (done && done.fingerprint && dlg.isConnected) shBrowseFp = done.fingerprint
+      } catch (_) {}
     }
     if (!dlg.isConnected) return
     tree = tb.finish()
-    // main fingerprinted it while it still held the array — about 11 ms that
-    // never touches this thread, and the renderer no longer has the payload to
-    // fingerprint anyway.
-    if (res.fingerprint) shBrowseFp = res.fingerprint
   } else if (SH && SH.buildTreeChunked) {
     const loadingEl = body.querySelector('.slsk-lib-loading')
     tree = await SH.buildTreeChunked(res.directories || [], {
@@ -1750,50 +1801,6 @@
   }
   buildFromTree()
 
-  // Seamless background refresh (engine contract): when a fresh browse for THIS
-  // user lands, re-fetch and rebuild while preserving scroll, mode and search
-  // text, with an "Updated just now" pulse. Feature-detected — an engine without
-  // the event simply never fires this.
-  let _offBrowseRefreshed = null
-  if (window.api && typeof window.api.onSlskBrowseRefreshed === 'function') {
-    _offBrowseRefreshed = window.api.onSlskBrowseRefreshed(async (evt) => {
-      if (!dlg.isConnected) return
-      if (!evt || String(evt.username || '') !== String(username)) return
-      try {
-        const fresh = await window.api.slskBrowseUser({ username, noCache: true }).catch(() => null)
-        if (!fresh || !fresh.ok || !dlg.isConnected) return
-        // W-S2: fingerprint the fresh payload first. Identical content means
-        // the multi-second rebuild would reproduce exactly what is on screen —
-        // skip it entirely and only freshen the provenance line in place.
-        let freshFp = null
-        if (SH && SH.fingerprintBrowseChunked) {
-          freshFp = await SH.fingerprintBrowseChunked(fresh.directories || [],
-            { shouldAbort: () => !dlg.isConnected }).catch(() => null)
-        }
-        if (!dlg.isConnected) return
-        if (freshFp && shBrowseFp && freshFp === shBrowseFp) {
-          shFromCache = !!fresh.fromCache
-          shCachedAt = Number(fresh.cachedAt) || Date.now()
-          const hero = shBody.querySelector('.slsh-hero-cache')
-          if (hero) {
-            hero.classList.remove('slsh-hero-pulse')
-            hero.textContent = shFromCache && shCachedAt
-              ? 'from cache · updated ' + _shAgo(shCachedAt) : ''
-          }
-          return
-        }
-        shBrowseFp = freshFp
-        shFromCache = !!fresh.fromCache
-        shCachedAt = Number(fresh.cachedAt) || Date.now()
-        shJustRefreshed = true
-        tree = (SH && SH.buildTreeChunked)
-          ? await SH.buildTreeChunked(fresh.directories || [], { shouldAbort: () => !dlg.isConnected })
-          : T.buildTree(fresh.directories || [])
-        if (!tree || !dlg.isConnected) return
-        await buildFromTree({ refresh: true })
-      } catch (_) { /* a failed refresh must never disrupt the open shop */ }
-    })
-  }
 
   // Presence dot, if the presence module is available (best-effort).
   try {

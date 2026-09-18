@@ -7606,6 +7606,23 @@ function dlWantedSize(item) {
 // substitute.
 async function dlSearchAlbum(term, wantedBasenames, wantedSize) {
   if (term.length < 4) return []
+  // sameRecordingSize(0, x) is false — deliberately, fail-closed: a basename is
+  // not an identity, and the 5.1-vs-stereo scar is why. But with no wanted size
+  // EVERY candidate is refused, so the hunt found nothing and said nothing, and
+  // still spent a 15-second slskd search doing it. Say so once, and skip the
+  // search rather than run one that cannot succeed.
+  if (!wantedSize) {
+    try {
+      dlSched.logSubstitution(dlState, {
+        at: Date.now(), key: String((wantedBasenames && wantedBasenames[0]) || term),
+        from: term, to: null, candidate: null, accepted: false,
+        reason: 'hunt skipped: the wanted file has no known size, so no candidate could be ' +
+          'told apart from a different recording with the same name',
+      })
+    } catch (_) {}
+    console.warn(`[papa][dl] alternate-source hunt for "${term}" skipped: wanted size unknown`)
+    return []
+  }
   let id
   try {
     const search = await slskdFetch('POST', '/searches', { searchText: term, fileLimit: 400 })
@@ -10111,7 +10128,20 @@ function _browseSessionSweep() {
 function _browseSessionOpen(directories) {
   _browseSessionSweep()
   const token = crypto.randomBytes(16).toString('hex')
-  _browseSessions.set(token, { directories: directories || [], createdAt: Date.now() })
+  const sess = { directories: directories || [], createdAt: Date.now(), fingerprint: null }
+  _browseSessions.set(token, sess)
+  // Fingerprint in the BACKGROUND, sliced with setImmediate, never on the reply
+  // path. An earlier version hashed synchronously inside slsk-browse-begin with
+  // a comment claiming "about 11 ms". Measured at the cited 480,000-file size it
+  // is 183 ms cold and ~95 ms warm — on the thread that drives mpv's IPC socket,
+  // on every shop open. That number was repeated from a report, not measured;
+  // this one was. The pull takes longer than the hash, so by the time the
+  // renderer asks for `end` the fingerprint is ready and rides back with it.
+  slskShelves.fingerprintBrowseChunked(sess.directories, {
+    budgetMs: 8,
+    yieldFn: () => new Promise(r => setImmediate(r)),
+    shouldAbort: () => !_browseSessions.has(token),
+  }).then(fp => { if (fp) sess.fingerprint = fp }).catch(() => {})
   return token
 }
 
@@ -10119,17 +10149,14 @@ function _browseHead(directories, extra) {
   const dirs = directories || []
   let fileCount = 0
   for (const d of dirs) fileCount += (d && d.files && d.files.length) || 0
-  // Fingerprinted HERE, not in the renderer: main already holds the array, it
-  // costs about 11 ms off the UI thread, and it lets the renderer skip the
-  // whole pull when a background refresh changed nothing.
-  let fingerprint = null
-  try { fingerprint = slskShelves.fingerprintBrowse(dirs) } catch (_) { fingerprint = null }
+  // No fingerprint here. It is computed in the background from the moment the
+  // session opens (see _browseSessionOpen) and returned by slsk-browse-end, so
+  // this reply stays a few dozen bytes and costs the main thread nothing.
   return Object.assign({
     ok: true,
     token: _browseSessionOpen(dirs),
     dirCount: dirs.length,
     fileCount,
-    fingerprint,
   }, extra || {})
 }
 
@@ -10172,8 +10199,12 @@ ipcMain.handle('slsk-browse-chunk', (_, { token, offset = 0, limit = 400 } = {})
 })
 
 ipcMain.handle('slsk-browse-end', (_, { token } = {}) => {
+  const sess = _browseSessions.get(token)
   _browseSessions.delete(token)
-  return { ok: true }
+  // The fingerprint the background hash produced while the renderer was
+  // pulling. null if the hash had not finished — the renderer then simply
+  // rebuilds on the next refresh, which is the pre-existing behaviour.
+  return { ok: true, fingerprint: (sess && sess.fingerprint) || null }
 })
 
 // The body, as a plain function. batch-transcode used to call

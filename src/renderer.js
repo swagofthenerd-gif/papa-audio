@@ -8219,7 +8219,12 @@ function _deviceAction(promise, done, failed) {
     showSnackbar(failed + ': ' + _shortQ(String((e && e.message) || e), 90), null, null, 6000)
     return null
   }).then(function (res) {
-    _renderDeviceTab(document.getElementById('vrows'), _videoCatalogTicket)
+    // The user may have left the video page while the action was in flight;
+    // _renderDeviceTab's first statement dereferences its argument, so a null
+    // here was an unhandled rejection. The two handlers in _bindDeviceEvents
+    // already guard exactly this way.
+    const rows = document.getElementById('vrows')
+    if (rows) _renderDeviceTab(rows, _videoCatalogTicket)
     return res
   })
 }
@@ -11005,10 +11010,26 @@ function _renderVideoControls(type) {
       const res = await window.api.videoAnimeEpisodes({ idMal: idMal, start: win.start, end: win.end })
         .catch(function () { return null })
       if (token !== paintToken || _videoDetailTicket !== ticketAtPaint) return
-      const eps = res && res.ok && Array.isArray(res.episodes) ? res.episodes : []
-      if (!eps.length) return
       const list = document.getElementById('video-episode-list')
       const EL = typeof PapaEpisodeList !== 'undefined' ? PapaEpisodeList : null
+      // A FAILED fetch is not "this show has no episode titles". main now says
+      // which it was (f5c624b), but this block still returned on an empty list
+      // either way — so the wire became honest while the screen showed the same
+      // nothing: bare episode numbers and no explanation. An adversarial review
+      // caught that the fix fixed nothing visible. Now it says so, in the list.
+      if (res && res.failed) {
+        if (list) {
+          const why = res.error ? ' (' + esc(_shortQ(String(res.error), 80)) + ')' : ''
+          const old = list.querySelector('.vep-note.vep-note-failed')
+          if (old) old.remove()
+          list.insertAdjacentHTML('beforeend',
+            '<li class="vep-note vep-note-failed">Episode titles could not be fetched' + why +
+            ' — the numbers still work; open the season again to retry.</li>')
+        }
+        return
+      }
+      const eps = res && res.ok && Array.isArray(res.episodes) ? res.episodes : []
+      if (!eps.length) return
       if (!list || !EL) return
       const byN = {}
       for (const ep of eps) byN[ep.episodeNumber] = ep
