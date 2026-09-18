@@ -497,3 +497,14 @@ reload · 0 `out-of-order` IPC errors on this build.
 Detail page richness (IMDb+RT+Metacritic, awards, box office, where-else-
 streaming — 17/17), keyboard support, empty/error copy. Scrolling the
 catalogue is the visible stutter: ~1 frame in 9 late.
+
+### 19 Sep — keep-file and isCached merged; the complexity guard made load-proof
+- `fix/keep-file-and-iscached` merged. "Keep this episode" had thrown on every
+  call since it was written (a `const index` shadowing the `index` argument);
+  `debrid.isCached()` had thrown on every call (`for…of` over a non-iterable
+  cache) — L1 — so the instant-start shortcut never executed and every debrid
+  play fell back to the swarm. My re-checks: shadowing restored → 4/4 red;
+  raw-object iteration restored → 4/5 red with the exact original error.
+- `slsk-shelves-complexity`'s sub-quadratic guard flaked for two executors
+  (3.0×, 3.4× against a 3× bar) under concurrent suites; sizes are now timed
+  interleaved with a 3 ms floor. 0/5 failures under an 8-core busy loop.
