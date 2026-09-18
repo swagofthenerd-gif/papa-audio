@@ -1,0 +1,32 @@
+{
+  "data": {
+    "Page": {
+      "media": [
+        {
+          "id": 7,
+          "idMal": 7,
+          "title": {
+            "english": "Interstella 5555",
+            "romaji": "Interstella 5555: The 5tory of the 5ecret 5tar 5ystem",
+            "native": "インターステラ 5555"
+          },
+          "seasonYear": 2003,
+          "coverImage": {
+            "large": "https://img/7.jpg"
+          },
+          "averageScore": 85,
+          "genres": [
+            "Action"
+          ],
+          "format": "TV"
+        }
+      ],
+      "pageInfo": {
+        "currentPage": 1,
+        "lastPage": 1,
+        "total": 1,
+        "hasNextPage": false
+      }
+    }
+  }
+}

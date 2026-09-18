@@ -8750,6 +8750,93 @@ function _vSearchFilterBarHtml(results) {
   return '<div class="vsfilter" id="vsfilter">' + typeHtml + decadeHtml + '</div>'
 }
 
+// ── Telling the truth about which catalogue answered ────────────────────────
+// `video-search` returns a per-source verdict: { tmdb: 'ok'|'failed'|'skipped',
+// anime: ... }. Before it did, a failed catalogue and a film that does not
+// exist produced exactly the same empty list, and the empty state below blamed
+// the spelling for both. That is the whole of "most of the films I search and
+// open are not opening": five of twenty searches for famous films (Oppenheimer,
+// Dune: Part Two, The Dark Knight, Spider-Man: No Way Home) came back empty
+// with the app reporting success.
+function _vSearchFailedSources(sources) {
+  const s = sources || {}
+  const out = []
+  if (s.tmdb === 'failed') out.push('tmdb')
+  if (s.anime === 'failed') out.push('anime')
+  return out
+}
+
+// One Retry control, used by both the outage empty-state and the partial note.
+// It re-runs the SAME query — nothing about the query was wrong.
+function _vSearchRetryHtml(label) {
+  return '<button type="button" class="vsearch-retry" data-vsearch-retry>' +
+    esc(label || 'Retry') + '</button>'
+}
+
+// Shown ABOVE results that did arrive, when one lane was missing from them.
+// Empty string when every lane answered, so a healthy search is unchanged.
+function _vSearchSourceNoteHtml(sources) {
+  const failedNames = _vSearchFailedSources(sources)
+  if (!failedNames.length) return ''
+  // Both lanes down with results on screen is impossible — the results came
+  // from somewhere — so this is always exactly one lane.
+  const text = failedNames[0] === 'tmdb'
+    ? 'Films and series couldn’t be fetched just now — showing anime only'
+    : 'Anime couldn’t be fetched just now — showing films and series only'
+  return '<p class="vsearch-note warn" role="status">' + esc(text) + ' · ' +
+    _vSearchRetryHtml('Retry') + '</p>'
+}
+
+// The empty-state for a search that found nothing BECAUSE a catalogue was down.
+// Deliberately carries no spelling advice: the spelling was fine, the server
+// was not.
+function _vSearchOutageHtml(query, sources) {
+  const failedNames = _vSearchFailedSources(sources)
+  const title = failedNames.length > 1
+    ? 'The catalogues didn’t answer'
+    : failedNames[0] === 'anime'
+      ? 'The anime catalogue didn’t answer'
+      : 'The film catalogue didn’t answer'
+  return '<div class="vempty">' +
+    '<div class="vempty-icon">⚠</div>' +
+    '<div class="vempty-title">' + esc(title) + '</div>' +
+    '<div class="vempty-text">Nothing came back for &ldquo;' + esc(_shortQ(query)) +
+      '&rdquo; because the search never reached a working catalogue. Try again.</div>' +
+    '<div class="vempty-actions">' + _vSearchRetryHtml('Try again') + '</div>' +
+  '</div>'
+}
+
+// Wires whichever Retry control the last paint put on screen. Called after
+// every paint that can contain one; the control lives inside the innerHTML
+// that was just replaced, so its old listener went with it.
+function _bindVideoSearchRetry() {
+  const box = document.getElementById('video-search-results')
+  if (!box || !box.querySelectorAll) return
+  const buttons = box.querySelectorAll('[data-vsearch-retry]')
+  for (let i = 0; i < buttons.length; i++) {
+    buttons[i].addEventListener('click', function () {
+      const q = (_vSearchFilter && _vSearchFilter.query) || state.currentVideoQuery
+      if (q) _runVideoTitleSearch(q, { commit: false })
+    })
+  }
+}
+
+// Which group goes first. A group's rank is where its best entry sits in the
+// backend-ranked result list, so the group holding the best answer is painted
+// at the top. A group with nothing in it keeps its place at the back, where it
+// is not painted anyway.
+function _vSearchGroupOrder(groups, ordered) {
+  const firstSeen = {}
+  for (let i = 0; i < ordered.length; i++) {
+    const key = ordered[i].type || 'movie'
+    if (firstSeen[key] === undefined) firstSeen[key] = i
+  }
+  const rank = function (g) {
+    return firstSeen[g.key] === undefined ? Number.MAX_SAFE_INTEGER : firstSeen[g.key]
+  }
+  return groups.slice().sort(function (a, b) { return rank(a) - rank(b) })
+}
+
 // The empty-state markup, shared by the first miss and the simplified retry's
 // miss, so the two paths read the same.
 function _vSearchEmptyHtml(query) {
@@ -8804,6 +8891,10 @@ function _paintVideoSearchResults(note) {
   ]
   let html = ''
   if (note) html += '<p class="vsearch-note">' + note + '</p>'
+  // Which lane is missing from what follows. Lives on the filter object rather
+  // than in `note` so it survives a chip click — the catalogue is still down
+  // after the user narrows to Films.
+  html += _vSearchSourceNoteHtml(_vSearchFilter.sources)
   // A description of a kind of film gets its Browse chip above the title
   // matches, and — when nothing was left over as a title — loses the fuzzy
   // anime hits that were never what was asked for (R11).
@@ -8816,23 +8907,32 @@ function _paintVideoSearchResults(note) {
   for (const g of groupsShown) {
     groupItems[g.key] = shown.filter(function (r) { return (r.type || 'movie') === g.key })
   }
+  // The groups are painted in the order their BEST match arrived in, not in a
+  // fixed Films \u2192 Series \u2192 Anime. The fixed order buried the obvious answer:
+  // searching "Attack on Titan" showed the live-action films first and the
+  // famous series last, and "Breaking Bad" put El Camino above the show.
+  // The backend already ranks the merged results by relevance, so first
+  // appearance in `shown` IS the ranking \u2014 this just stops the paint throwing
+  // it away.
+  const groupOrder = _vSearchGroupOrder(groupsShown, shown)
   const anyShown = groupsShown.some(function (g) { return groupItems[g.key].length })
   if (!anyShown) {
     // The fetch found things; the chips filtered them all out. Say that, rather
     // than reading like the search itself failed.
     html += '<div class="vrow-msg">' + (intent ? 'Nothing matched this as a title \u2014 try Browse above.' : 'Nothing in this result set matches the current filters.') + '</div>'
   } else {
-    for (const g of groupsShown) {
+    for (const g of groupOrder) {
       if (groupItems[g.key].length) html += _vRowShell('search-' + g.key, g.label, groupItems[g.key].length)
     }
   }
   _setVideoSearchHtml(html)
   if (anyShown) {
-    for (const g of groupsShown) {
+    for (const g of groupOrder) {
       if (groupItems[g.key].length) _fillRow('search-' + g.key, groupItems[g.key])
     }
   }
   _bindVideoSearchFilters()
+  _bindVideoSearchRetry()
 }
 
 // The chip bar's listeners. Delegated onto the bar itself, which is rebuilt on
@@ -8885,7 +8985,7 @@ function _runVideoTitleSearch(query, opts) {
     state.currentVideoQuery = query
     // Every new query starts the filters from scratch, so a decade picked on
     // the last search cannot survive into this one.
-    _vSearchFilter = { results: [], type: 'all', decade: 'all', query: query, intent: _searchIntent(query) }
+    _vSearchFilter = { results: [], type: 'all', decade: 'all', query: query, intent: _searchIntent(query), sources: null }
     // Hide rather than unmount, so clearing the query restores the catalog
     // instantly without refetching every row. All THREE catalog surfaces go:
     // the taste row is a sibling of the rows container, not a child, so hiding
@@ -8910,18 +9010,38 @@ function _runVideoTitleSearch(query, opts) {
           return
         }
         const results = Array.isArray(res.results) ? res.results : []
+        _vSearchFilter.sources = res.sources || null
         // Do NOT remember here: this runs on every debounced keystroke, which is
         // what filled the history with prefixes ("toky","tokyo r",…). History is
         // committed only on Enter (keydown handler) or when a result is clicked.
-        if (!results.length) {
-          // App §21: a zero-result title search gets exactly one retry with a
-          // simplified query, and only if simplifying actually changed it.
-          const simplified = _simplifyVideoQuery(query)
-          if (simplified && simplified !== query) {
-            return _retryVideoTitleSearch(query, simplified, ticket)
+        // How good the best hit is, as the backend scored it against the query.
+        // Absent (an older answer) reads as "good enough", so nothing changes
+        // for a response that does not carry it.
+        const topScore = typeof res.topScore === 'number' ? res.topScore : 1
+        if (!results.length || topScore < VSEARCH_WEAK_MATCH) {
+          // Nothing came back AND a catalogue was down: that is not a miss and
+          // the spelling advice would be a lie. Say what actually happened and
+          // offer to run the same query again.
+          if (!results.length && _vSearchFailedSources(_vSearchFilter.sources).length) {
+            _setVideoSearchHtml(_vSearchOutageHtml(query, _vSearchFilter.sources))
+            _bindVideoSearchRetry()
+            return
           }
-          _setVideoSearchHtml(_vSearchEmptyHtml(query))
-          return
+          // App §21, widened. The retry used to fire only on ZERO results,
+          // which a misspelt film title never produced: the anime lane always
+          // answered with something, so "Intersteller" showed eighteen
+          // unrelated shows and no way to reach Interstellar. It now fires on a
+          // WEAK best match too, and it has a second query to try — see
+          // _relaxVideoQuery.
+          const candidates = _videoRetryQueries(query)
+          if (candidates.length) {
+            return _retryVideoTitleSearch(query, candidates, ticket,
+              { results: results, score: topScore })
+          }
+          if (!results.length) {
+            _setVideoSearchHtml(_vSearchEmptyHtml(query))
+            return
+          }
         }
         _vSearchFilter.results = results
         // Cache by reference: later chip clicks mutate this same object, so a
@@ -8931,21 +9051,104 @@ function _runVideoTitleSearch(query, opts) {
       })
 }
 
-// The one retry App §21 allows: same fetch, simplified query. On a hit the
-// results paint under a gentle "Showing results for …" line so the swap is
-// never silent; on a second miss the original query's empty state stands.
-function _retryVideoTitleSearch(original, simplified, ticket) {
-  window.api.videoSearch({ query: simplified, type: 'all' })
+// Below this, the best hit is not really an answer to what was typed and the
+// search is worth retrying with a different query. Above it, whatever came
+// back stands.
+var VSEARCH_WEAK_MATCH = 0.5
+
+// The queries worth trying when the first one produced nothing useful, in
+// order, skipping any that is the same as what was already asked.
+function _videoRetryQueries(query) {
+  const out = []
+  const simplified = _simplifyVideoQuery(query)
+  if (simplified && simplified !== query) out.push(simplified)
+  const relaxed = _relaxVideoQuery(simplified || query)
+  if (relaxed && relaxed !== query && out.indexOf(relaxed) === -1) out.push(relaxed)
+  return out
+}
+
+// A misspelling the catalogues cannot match, shortened until they can.
+//
+// "Intersteller" finds nothing in the film catalogue and eighteen unrelated
+// shows in the anime one. There is no dictionary here to correct it with, but
+// TMDB matches title PREFIXES, and a typo is nearly always late in the word —
+// so cutting the longest word back by a quarter turns "Intersteller" into
+// "Interstel", which finds Interstellar.
+//
+// The honest limitation: a typo in the first three quarters of the word
+// survives the cut and this does nothing. Null when there is nothing long
+// enough to shorten.
+function _relaxVideoQuery(text) {
+  const raw = String(text == null ? '' : text).trim()
+  if (!raw) return null
+  const words = raw.split(/\s+/)
+  let at = -1
+  for (let i = 0; i < words.length; i++) {
+    if (at < 0 || words[i].length > words[at].length) at = i
+  }
+  if (at < 0 || words[at].length < 6) return null
+  const keep = Math.max(4, Math.ceil(words[at].length * 0.75))
+  if (keep >= words[at].length) return null
+  const out = words.slice()
+  out[at] = words[at].slice(0, keep)
+  const joined = out.join(' ')
+  return joined === raw ? null : joined
+}
+
+// The retries App §21 allows: the same fetch with a different query, tried in
+// order and stopping at the first one that beats what we already have. On a hit
+// the results paint under a gentle "Showing results for …" line so the swap is
+// never silent; when none of them beats it, whatever the original query found
+// stands — or its empty state, if it found nothing.
+function _retryVideoTitleSearch(original, candidates, ticket, base) {
+  const queue = Array.isArray(candidates) ? candidates.slice() : [candidates]
+  const baseResults = (base && Array.isArray(base.results)) ? base.results : []
+  const baseScore = (base && typeof base.score === 'number') ? base.score : 0
+
+  // Nothing left to try: keep what the original query found, or say it found
+  // nothing. Never loops — the queue only ever shrinks.
+  function giveUp() {
+    if (_videoSearchTicket !== ticket) return
+    const target = document.getElementById('video-search-results')
+    if (!target) return
+    if (!baseResults.length) {
+      _setVideoSearchHtml(_vSearchEmptyHtml(original))
+      return
+    }
+    _vSearchFilter.query = original
+    _vSearchFilter.results = baseResults
+    _lastVideoSearch = { filter: _vSearchFilter, timestamp: Date.now() }
+    _paintVideoSearchResults()
+  }
+
+  function attempt() {
+    if (!queue.length) return giveUp()
+    const simplified = queue.shift()
+    return window.api.videoSearch({ query: simplified, type: 'all' })
     .catch(function () { return { ok: false } })
     .then(function (res) {
       if (_videoSearchTicket !== ticket) return
       const target = document.getElementById('video-search-results')
       if (!target) return
       const results = (res && res.ok && Array.isArray(res.results)) ? res.results : []
+      const score = (res && typeof res.topScore === 'number') ? res.topScore : (results.length ? 1 : 0)
+      const sources = (res && res.sources) || null
+      // A retry that is no better than what we had is not an improvement worth
+      // showing under a "Showing results for" line. Try the next one.
+      if (results.length && score <= baseScore) return attempt()
       if (!results.length) {
-        _setVideoSearchHtml(_vSearchEmptyHtml(original))
-        return
+        // Same rule as the first attempt: an outage is not a miss, so the
+        // shortened query's miss must not be blamed on the spelling either,
+        // and there is no point trying another query against a dead catalogue.
+        if (_vSearchFailedSources(sources).length) {
+          _vSearchFilter.sources = sources
+          _setVideoSearchHtml(_vSearchOutageHtml(original, sources))
+          _bindVideoSearchRetry()
+          return
+        }
+        return attempt()
       }
+      _vSearchFilter.sources = sources
       // Commit-only: don't remember on this debounced retry. Update the pending
       // commit query to the simplified form so a result click records what
       // actually matched.
@@ -8957,6 +9160,9 @@ function _retryVideoTitleSearch(original, simplified, ticket) {
       _lastVideoSearch = { filter: _vSearchFilter, timestamp: Date.now() }
       _paintVideoSearchResults('Showing results for &ldquo;' + esc(simplified) + '&rdquo;')
     })
+  }
+
+  return attempt()
 }
 
 // The parsed intent behind a live query, when it clearly describes a KIND of

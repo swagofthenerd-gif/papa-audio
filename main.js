@@ -225,7 +225,8 @@ const { createKitsuCatalog, EPISODE_PAGE: KITSU_EPISODE_PAGE } = require('./cata
 const { resolveAnimeShelf } = require('./catalog/anime-shelf')
 const { createOmdbCatalog, plausibleMatch: omdbPlausibleMatch, omdbTypeFor } = require('./catalog/omdb')
 const { createWebStreamServer } = require('./web-stream')
-const { sortJunkLast } = require('./catalog/search-rank')
+const { sortJunkLast, rankByRelevance, floorAnimeNoise, matchScore } =
+  require('./catalog/search-rank')
 const { createOpenSubtitles } = require('./subs/opensubtitles')
 const { resolveStream, rankingSeeds } = require('./providers/index')
 const { createYtsProvider } = require('./providers/yts')
@@ -12003,22 +12004,45 @@ ipcMain.handle('video-search', async (_, { query, type }) => {
       if (!results.length && anilist().lastFailure() && jikan().lastFailure() && kitsu().lastFailure()) {
         return { ok: false, error: 'The anime databases are unreachable right now (AniList, MyAnimeList and Kitsu all failed to answer). This is on their side — try again in a little while.' }
       }
-      return { ok: true, results }
+      return { ok: true, results, sources: { tmdb: 'skipped', anime: 'ok' }, failed: [] }
     }
 
     if (type === 'movie' || type === 'tv') {
       const results = sortJunkLast((await tmdb().search(query)).filter(r => r.type === type))
-      return { ok: true, results }
+      return { ok: true, results, sources: { tmdb: 'ok', anime: 'skipped' }, failed: [] }
     }
 
     // Both catalogs, in parallel. Neither is allowed to fail the search: a
     // dead AniList should still return films, and vice versa. The anime side
     // rides the AniList → Jikan fallback so an AniList outage still surfaces
     // anime entries (with their nyaa-backed sources) in the merged list.
+    //
+    // But "not allowed to fail the search" used to mean "not allowed to be
+    // mentioned". Both lanes discarded the error and substituted an empty
+    // list, so a rate-limited or timed-out TMDB produced the same answer as a
+    // film that does not exist —
+    // an empty list under `ok: true` — and the renderer then blamed the user's
+    // spelling. Five of twenty searches for famous films came back empty that
+    // way. Each lane now records WHY it is empty, and the answer carries a
+    // per-source verdict the renderer can read out loud.
+    const sources = { tmdb: 'ok', anime: 'ok' }
+    const failed = []
+    const _lost = (which, e) => {
+      sources[which] = 'failed'
+      failed.push({ source: which, error: (e && e.message) || String(e) })
+    }
     const [tmdbRes, animeRes] = await Promise.all([
-      tmdb().search(query).catch(() => []),
-      _animeSearch(query).catch(() => []),
+      tmdb().search(query).catch(e => { _lost('tmdb', e); return [] }),
+      _animeSearch(query).catch(e => { _lost('anime', e); return [] }),
     ])
+    // The anime lane does not throw when its three databases are down — it
+    // degrades to an empty list and flags the outage — so an empty answer has
+    // to be checked against those flags the same way the anime-only branch
+    // above already does.
+    if (sources.anime === 'ok' && !animeRes.length &&
+        anilist().lastFailure() && jikan().lastFailure() && kitsu().lastFailure()) {
+      _lost('anime', new Error('AniList, MyAnimeList and Kitsu all failed to answer'))
+    }
 
     const merged = []
     for (const r of tmdbRes) {
@@ -12029,9 +12053,32 @@ ipcMain.handle('video-search', async (_, { query, type }) => {
       if (r.isAnime && animeRes.some(a => _sameShow(a, r))) continue
       merged.push(r)
     }
+    // AniList answers almost anything with something. A misspelt film title
+    // ("Intersteller") came back with eighteen unrelated shows and no film,
+    // and because the list was not EMPTY the renderer's spelling retry could
+    // never fire — the search was a dead end with no way out of it. Anime
+    // entries that only matched fuzzily are dropped, but only when the film
+    // catalogue found nothing solid either and the query is not Japanese.
+    const animeKept = floorAnimeNoise(query, merged, animeRes)
+
+    // Both catalogues rank their own results well; concatenating them threw
+    // that away and put every anime entry after every film, whatever was
+    // asked for. rankByRelevance interleaves them by how well the title
+    // matches the query, keeping each catalogue's own order as the tiebreak.
     // Entries with no year and no poster are strays sharing a title with
-    // the real thing; they go last (R10).
-    return { ok: true, results: sortJunkLast(merged.concat(animeRes)) }
+    // the real thing; they still go last (R10).
+    const ranked = sortJunkLast(rankByRelevance(query, [merged, animeKept]))
+    return {
+      ok: true,
+      results: ranked,
+      // How well the best hit actually matches what was typed. The renderer
+      // uses it to decide whether the answer is good enough to stand, or weak
+      // enough to be worth retrying with a shortened query — it cannot compute
+      // this itself, having no access to the catalog modules.
+      topScore: ranked.length ? matchScore(query, ranked[0]) : 0,
+      sources,
+      failed,
+    }
   } catch (e) {
     return { ok: false, error: e.message }
   }
@@ -12357,27 +12404,45 @@ ipcMain.handle('video-airing', async (_, { anilistIds, tmdbIds } = {}) => {
     // Each source is optional: AniList and TMDB fail independently, and a dead
     // TMDB key must not blank out the anime half of the schedule. Anything that
     // throws contributes an empty list rather than failing the whole handler.
+    // Which source is missing from the schedule below, and why. Without this a
+    // dead AniList produced an empty schedule under `ok: true` — the same bug
+    // video-search had, found by the guard in
+    // test/video-handler-honesty.test.js.
+    const sources = { anilist: aKey.length ? 'ok' : 'skipped', tmdb: tKey.length ? 'ok' : 'skipped' }
+    const failed = []
     const anilistRows = aKey.length
-      ? await anilist().airingSchedule(aKey).catch(() => [])
+      ? await anilist().airingSchedule(aKey).catch(e => {
+          sources.anilist = 'failed'
+          failed.push({ source: 'anilist', error: (e && e.message) || String(e) })
+          return []
+        })
       : []
     // TMDB has no batch next-episode endpoint, so each followed TV id is a
     // detail fetch — but _videoShowDetail caches, so a followed show already
     // opened this session costs nothing, and next_episode_to_air rides the
     // detail response with no extra request of its own.
+    let tmdbMisses = 0
     const tmdbRows = tKey.length
       ? (await Promise.all(tKey.map(id =>
           _videoShowDetail('tv', id)
             .then(d => (d ? { id: d.id ?? id, title: d.title, nextEpisode: d.nextEpisode } : null))
-            .catch(() => null)
+            .catch(e => {
+              tmdbMisses++
+              failed.push({ source: 'tmdb', id, error: (e && e.message) || String(e) })
+              return null
+            })
         ))).filter(Boolean)
       : []
+    // One followed show failing is a gap; every one of them failing is an
+    // outage, and the difference is the whole point of saying so.
+    if (tKey.length && tmdbMisses) sources.tmdb = tmdbMisses === tKey.length ? 'failed' : 'partial'
 
     const airing = _mergeAiring(anilistRows, tmdbRows)
     // Only a non-empty schedule is cached: an empty result is almost always a
     // transient upstream failure, and a 30-minute empty cache would hide the
     // shelf long after the API recovered.
     if (airing.length) _videoAiringCache.set(cacheKey, airing)
-    return { ok: true, airing }
+    return { ok: true, airing, sources, failed }
   } catch (e) {
     return { ok: false, error: (e && e.message) || String(e) }
   }

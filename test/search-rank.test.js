@@ -25,9 +25,12 @@ test('junk sinks to the end, everything keeps its order (the verified "Reacher" 
 })
 
 test('main: the video search ranks junk last, and the OMDb title fallback is gated by year, type and agreement', () => {
-  const search = MAIN.slice(MAIN.indexOf("ipcMain.handle('video-search'"), MAIN.indexOf("ipcMain.handle('video-search'") + 3000)
+  const search = MAIN.slice(MAIN.indexOf("ipcMain.handle('video-search'"), MAIN.indexOf("ipcMain.handle('video-search'") + 5200)
   assert.match(search, /sortJunkLast\(\(await tmdb\(\)\.search\(query\)\)\.filter/)
-  assert.match(search, /results: sortJunkLast\(merged\.concat\(animeRes\)\)/)
+  // The merged list is ranked by relevance across BOTH catalogues before the
+  // junk sink runs — concatenating them put every anime entry after every
+  // film whatever was searched for. Behaviour: test/video-search-ranking.test.js.
+  assert.match(search, /const ranked = sortJunkLast\(rankByRelevance\(query, \[merged, animeKept\]\)\)/)
   const enrich = MAIN.slice(MAIN.indexOf('async function _enrichExternalRatings'), MAIN.indexOf('async function _enrichAnimeDetail'))
   assert.match(enrich, /else if \(detail\.year\) \{/, 'no year → no title lookup')
   assert.match(enrich, /client\.byTitle\(detail\.title, detail\.year, omdbTypeFor\(detail\.type\)\)/)

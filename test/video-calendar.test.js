@@ -126,7 +126,7 @@ test('the cache key is built from sorted, de-duplicated id sets so order does no
 test('the handler only caches a non-empty schedule', () => {
   // The empty-result guard: a transient upstream failure must not be cached for
   // half an hour. Asserted on the source because it is a control-flow property.
-  const body = MAIN.slice(MAIN.indexOf("ipcMain.handle('video-airing'"), MAIN.indexOf("ipcMain.handle('video-airing'") + 3000)
+  const body = MAIN.slice(MAIN.indexOf("ipcMain.handle('video-airing'"), MAIN.indexOf("ipcMain.handle('video-airing'") + 4000)
   assert.match(body, /if \(airing\.length\) _videoAiringCache\.set/)
 })
 

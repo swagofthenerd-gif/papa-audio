@@ -121,6 +121,7 @@ function harness (source, opts) {
     _searchIntent: () => null,
     _videoErrorText: m => String(m),
     _vSearchEmptyHtml: q => 'no matches for ' + q,
+    _shortQ: q => String(q),
     _simplifyVideoQuery: q => q,
     _retryVideoTitleSearch () {},
     _rememberSearch () {},
@@ -136,6 +137,14 @@ function harness (source, opts) {
     extractFn(source, '_videoResultDecades'),
     extractFn(source, '_filterVideoResults'),
     extractFn(source, '_vSearchFilterBarHtml'),
+    // The per-source honesty helpers the paint now calls. Lifted for real
+    // rather than stubbed: a stub here could not see the note being painted.
+    extractFn(source, '_vSearchFailedSources'),
+    extractFn(source, '_vSearchRetryHtml'),
+    extractFn(source, '_vSearchSourceNoteHtml'),
+    extractFn(source, '_vSearchOutageHtml'),
+    extractFn(source, '_bindVideoSearchRetry'),
+    extractFn(source, '_vSearchGroupOrder'),
     extractFn(source, '_paintVideoSearchResults'),
     extractFn(source, '_runVideoTitleSearch'),
     'const _VSEARCH_TYPE_CHIPS = ' + /var _VSEARCH_TYPE_CHIPS = (\[[\s\S]*?\n\])/.exec(source)[1],

@@ -668,10 +668,19 @@ test('an unfiltered search asks both catalogs', () => {
 })
 
 // A dead catalog should still return the other one's results.
-test('neither catalog can fail the whole search', () => {
+test('neither catalog can fail the whole search — but a failure is never silent', () => {
+  // Both lanes are still caught, so a dead AniList still returns films and a
+  // dead TMDB still returns anime. What changed is that the catch now RECORDS
+  // the loss: `.catch(() => [])` made a rate-limited TMDB indistinguishable
+  // from a film that does not exist, and the renderer blamed the spelling.
+  // Behaviour for this lives in test/video-search-honesty.test.js.
   const body = handlerBody('video-search')
-  assert.match(body, /tmdb\(\)\.search\(query\)\.catch\(\(\) => \[\]\)/)
-  assert.match(body, /_animeSearch\(query\)\.catch\(\(\) => \[\]\)/)
+  assert.match(body, /tmdb\(\)\.search\(query\)\.catch\(/)
+  assert.match(body, /_animeSearch\(query\)\.catch\(/)
+  assert.doesNotMatch(body, /\.catch\(\(\) => \[\]\)/,
+    'a catch that discards the reason is what caused the bug')
+  assert.match(body, /sources,/, 'the answer carries a per-source verdict')
+  assert.match(body, /failed,/, 'and the reasons')
 })
 
 // ── AniList outage fallback (2026-09) ───────────────────────────────────────

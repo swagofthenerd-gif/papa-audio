@@ -87,6 +87,11 @@ function syncScriptBytes () {
 // the slider end-snap tipped it over by ~3KB. The growth is fix code and the
 // comments explaining it, not a module tree doubling; re-based ~15% above the
 // new measured total (2,923,120).
+// Same day (video search honesty/ranking/typo fixes): renderer.js grew by
+// another ~10 KB — the per-source outage note and its Retry, the group-ordering
+// helper, and the shortened-query retry chain. Three executors tripped this
+// ceiling within hours of each other; the single re-base below covers all
+// three at ~14 % above the merged total.
 const SCRIPT_BYTE_CEILING = 3360000
 
 test('the renderer loads its scripts and none is missing from disk', () => {
