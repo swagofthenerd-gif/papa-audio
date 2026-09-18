@@ -7724,6 +7724,12 @@ function _paintVideoHero() {
     return '<button class="vhero-dot' + (i === _videoHero.index ? ' active' : '') +
       '" data-hero="' + i + '" aria-label="Feature ' + (i + 1) + '"></button>'
   }).join('')
+  // The biggest My List control in the app showed a plus and the word
+  // "My List" whether or not the title was saved, so pressing it on a saved
+  // film read as "add" and silently removed it. It now paints from the store
+  // like every poster button does.
+  const heroFaceOn = _inMyList(item.type, item.id)
+  const heroFace = _myListFace(heroFaceOn)
 
   mount.innerHTML = '<div class="vhero">' +
     '<img class="vhero-bg" alt="" src="' + esc(item.backdrop) + '">' +
@@ -7735,7 +7741,9 @@ function _paintVideoHero() {
       (item.overview ? '<p class="vhero-overview">' + esc(_stripTags(item.overview)) + '</p>' : '') +
       '<div class="vhero-actions">' +
         '<button class="vbtn vbtn-primary" id="vhero-play">' + _VICON.play + 'Play</button>' +
-        '<button class="vbtn" id="vhero-list">' + _VICON.plus + 'My List</button>' +
+        '<button class="vbtn' + (heroFaceOn ? ' on' : '') + '" id="vhero-list"' +
+          ' data-key="' + esc(key) + '" aria-label="' + esc(heroFace.aria) + '">' +
+          heroFace.icon + heroFace.text + '</button>' +
         '<button class="vbtn" id="vhero-info">' + _VICON.info + 'Details</button>' +
       '</div>' +
     '</div>' +
@@ -7805,9 +7813,58 @@ function _toggleWatchlist(item) {
     })
     const added = store.inWatchlist(type, item.id)
     showToast(added ? 'Added to My List' : 'Removed from My List')
-    document.querySelectorAll('.vcard-act-list[data-key="' + (item.type || 'movie') + ':' + item.id + '"]')
-      .forEach(function (b) { b.classList.toggle('on', added); b.innerHTML = added ? _VICON.check : _VICON.plus })
+    _paintMyListButtons(type + ':' + item.id, added)
+    // My List is a page built out of this same store, and it only repainted
+    // when you pressed a sort chip or folded a franchise. Removing a title
+    // from the list itself left its card on screen and the count one too
+    // high until you navigated away and came back — the app looked like it
+    // had ignored the press. Only the list tab repaints: every other tab's
+    // grid is a catalogue row that saving a title does not change.
+    if (_videoTab === 'list') {
+      const rows = document.getElementById('vrows')
+      if (rows) _renderMyList(rows)
+    }
   } catch (_) { showToast('Could not update My List') }
+}
+
+// Is this title saved? One answer for every surface that shows a My List
+// control, so the hero, the poster buttons and the detail page can never
+// disagree about the same title.
+function _inMyList(type, id) {
+  const store = _vStore()
+  try { return store ? !!store.inWatchlist(type || 'movie', id) : false } catch (_) { return false }
+}
+
+// The two faces of a My List control. The label is part of the state, not
+// decoration: a poster button kept saying "Remove from My List" after the
+// title had been removed, which is the only thing a screen reader had to go
+// on, and the icon flip it contradicted was the only thing anyone else did.
+function _myListFace(added) {
+  return {
+    icon: added ? _VICON.check : _VICON.plus,
+    text: added ? 'In My List' : 'My List',
+    aria: added ? 'Remove from My List' : 'Add to My List',
+  }
+}
+
+// Repaint every control on screen that speaks for this title.
+function _paintMyListButtons(key, added) {
+  const face = _myListFace(added)
+  document.querySelectorAll('.vcard-act-list[data-key="' + key + '"]').forEach(function (b) {
+    b.classList.toggle('on', added)
+    b.innerHTML = face.icon
+    b.setAttribute('aria-label', face.aria)
+  })
+  // The hero carries a word as well as an icon, and it showed a plus and
+  // "My List" for a title that was already saved. It is keyed, so a toggle
+  // from a poster further down the page repaints it too when it is the same
+  // title.
+  const hero = document.getElementById('vhero-list')
+  if (hero && hero.dataset && hero.dataset.key === key) {
+    hero.classList.toggle('on', added)
+    hero.innerHTML = face.icon + face.text
+    hero.setAttribute('aria-label', face.aria)
+  }
 }
 
 // ── My List page ────────────────────────────────────────────────────────────
@@ -9113,10 +9170,8 @@ function _videoCard(item) {
     ? _watchKey(item.type || 'movie', item.id, item.season, item.episode)
     : null
 
-  const inList = (function () {
-    const store = _vStore()
-    try { return store ? !!store.inWatchlist(item.type || 'movie', item.id) : false } catch (_) { return false }
-  })()
+  const inList = _inMyList(item.type, item.id)
+  const listFace = _myListFace(inList)
 
   const metaBits = []
   if (item.year != null && item.year !== '') metaBits.push(esc(String(item.year)))
@@ -9142,7 +9197,7 @@ function _videoCard(item) {
       '<div class="vcard-actions">' +
         '<button class="vcard-act vcard-act-play" data-act="play" aria-label="Play">' + _VICON.play + '</button>' +
         '<button class="vcard-act vcard-act-list' + (inList ? ' on' : '') + '" data-act="list" data-key="' + esc(key) + '"' +
-          ' aria-label="' + (inList ? 'Remove from My List' : 'Add to My List') + '">' + (inList ? _VICON.check : _VICON.plus) + '</button>' +
+          ' aria-label="' + listFace.aria + '">' + listFace.icon + '</button>' +
         (cwKey ? '<button class="vcard-act vcard-act-seen" data-act="cwremove" data-cwkey="' + esc(cwKey) + '"' +
           ' aria-label="Remove from Continue Watching">&#10005;</button>' : '') +
       '</div>' +

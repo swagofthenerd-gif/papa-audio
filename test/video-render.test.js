@@ -55,7 +55,10 @@ function sandbox({ store = null, tab = 'all' } = {}) {
     // builds the same data-video key and reuses esc, so it is exercised here
     // for real alongside the catalog card.
     '_airingCardHtml', '_airingSubLabel', '_airingWhenLabel',
-    '_vRatesHtml', '_vCreditHtml', '_vRuntime', '_watchKey', '_cwIsStale']) {
+    '_vRatesHtml', '_vCreditHtml', '_vRuntime', '_watchKey', '_cwIsStale',
+    // The saved/unsaved face of a My List control is one shared pair of
+    // functions now, so the card builder and the live repaint cannot drift.
+    '_inMyList', '_myListFace']) {
     vm.runInContext(extract(fn), ctx)
   }
   return ctx

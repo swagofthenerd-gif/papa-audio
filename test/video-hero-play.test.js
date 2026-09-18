@@ -88,6 +88,9 @@ function harness (source) {
     navigated: [],
     toggled: [],
     _playOnArrival: null,
+    // No watch store in this harness: the hero's My List face falls back to
+    // "not saved", which is what an unloaded store has to mean.
+    _vStore: () => null,
     _videoHero: { items: [], index: 0, timer: null, paused: false },
     _VICON: { play: '<svg/>', plus: '<svg/>', info: '<svg/>' },
     navigate (page, id) { sandbox.navigated.push([page, id]) },
@@ -101,7 +104,8 @@ function harness (source) {
   }
   sandbox.globalThis = sandbox
   vm.createContext(sandbox)
-  vm.runInContext([extractFn(source, '_heroNum'), extractFn(source, '_paintVideoHero')].join('\n'), sandbox)
+  vm.runInContext([extractFn(source, '_heroNum'), extractFn(source, '_inMyList'),
+    extractFn(source, '_myListFace'), extractFn(source, '_paintVideoHero')].join('\n'), sandbox)
   return { sandbox, byId, mount }
 }
 

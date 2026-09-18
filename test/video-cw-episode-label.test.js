@@ -63,6 +63,8 @@ function build (source) {
     extractFn(source, '_cwIsStale'),
     extractFn(source, '_certLabel'),
     extractFn(source, '_vRatesHtml'),
+    extractFn(source, '_inMyList'),
+    extractFn(source, '_myListFace'),
     extractFn(source, '_vRuntime'),
     extractFn(source, '_videoCard'),
     'const _VRATE_SOURCES = ' + /const _VRATE_SOURCES = (\[[\s\S]*?\n\])/.exec(source)[1],

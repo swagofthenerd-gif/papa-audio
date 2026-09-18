@@ -150,13 +150,14 @@ function heroHarness (source, item) {
     querySelectorAll: () => [],
   }
   byId['vhero-mount'] = mount
-  const s = sandboxFor(source, ['_heroNum', '_paintVideoHero'], {
+  const s = sandboxFor(source, ['_heroNum', '_inMyList', '_myListFace', '_paintVideoHero'], {
     document: { getElementById: id => byId[id] || null, createElement: () => el('img') },
     navigated: [],
     navigate (page, id) { s.navigated.push([page, id]) },
     _videoHero: { items: [item], index: 0, timer: null, paused: false },
     _VICON: { play: '<svg/>', plus: '<svg/>', info: '<svg/>' },
     _toggleWatchlist () {},
+    _vStore: () => null,
     _stopHeroTrailer () {},
     _prefersReducedMotion: () => true,
     _stripTags: v => String(v == null ? '' : v),
