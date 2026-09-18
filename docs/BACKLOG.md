@@ -842,3 +842,32 @@ QA; downloads/cancels/messages are physically refused in main.
   Reworded (3254bd3); gate 6,139/0, pushed. Lesson re-learned: I pushed the
   merge BEFORE the gate this once — gate, then push, always. Comments in
   main.js must not contain a slash-star sequence.
+
+### 19 Sep — main-process audit (Fable, read-only): 3 critical, 6 high, 9 medium, 14 low
+Load-bearing claims re-checked by the lead before routing: `stalledItems`
+never reads bytes/state; the bridge has 26 `store.get/set` sites on keys
+that are ABSENT from his live config.json; config.json mode 666;
+`purgeOrphanStreams` has no owner check; `if (!gotLock) { app.quit() }`
+with module scope continuing. Routed to three Opus executors:
+`fix/audit-scheduler` (C1 stall re-source cancels a live transfer; C2 two
+empty snapshots abandon every in-flight song at identity level forever;
+H2 same-title tracks collapse; H3 `_foldSources` has no 2% size gate —
+the 5.1 scar path; H6 health monitor "restarts" nothing because slskd is
+our own child; M2/M3/M4; L10/L11), `fix/audit-bridge` (C3 the phone has
+been seeing an EMPTY library since the 27 Aug key retirement and
+`/api/library/scan` writes 1.6 MB back into config.json — the 15 orphan
+tmp files; H4 token holder can read any file, the AI keys, walk out of
+ARTWORK_DIR; M7 `slskFetch` never checks `res.ok`, two Android routes do
+not exist; L5), `fix/audit-engine-startup` (H1; H5 relay ends a range
+short → mpv waits 30 s; M1 mpv left running on start failure; M5; M6
+sync multi-GB copy on the main thread; M8; M9 twins write into HIS
+crash-log; L1–L4, L6 `library.json` written by nobody's reader, L7 logger
+drops the newest line, L8 no WebTorrent destroy on quit, L9
+`library-restore-trashed` ungated, L13, L14).
+Verified fine by the audit: IPC wiring 305↔303 with 0 orphans and 0 shape
+mismatches; SideStore atomicity; quit ordering; crash flag semantics
+(twins fire it only because they copy his `cleanShutdown:false`);
+scheduler backoff/caps/sticky cancel; bridge range parsing and `isInside`;
+mpv ticker/respawn caps; startup does no serial awaits before the window.
+Main timers that never gate on visibility: dlTick 4 s (+~1 MB), presence
+20 s, chat 30 s, upload 60/300 s, slskd health 60 s, connectivity 60 s.
