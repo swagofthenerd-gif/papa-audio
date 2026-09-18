@@ -12894,9 +12894,21 @@ function _maybePrefetchNextEpisode() {
 // player has no mpv state stream; complete-on-disk is a torrent fact, not a
 // playback fact, so no position is needed.
 const PACK_CHAIN_TICK_MS = 15000
+// One tick, whoever is serving the picture. It used to be started only by
+// _startTorrentStream, which is why RealDebrid — the path tried FIRST whenever
+// an account is configured — cached nothing at all: not the next episode, not
+// even the one being watched.
+function _startPackChainTick() {
+  if (_videoSession.packChainTimer) clearInterval(_videoSession.packChainTimer)
+  _videoSession.packChainTimer = setInterval(_maybeChainPackDownloads, PACK_CHAIN_TICK_MS)
+}
 function _maybeChainPackDownloads() {
   try {
     const streamer = _videoSession.streamer
+    // RealDebrid serves an HTTPS link, so there is no swarm and no streamer —
+    // every caching mechanism below asked for one and quietly did nothing.
+    // The debrid path pulls the next episode down over HTTP instead.
+    if (!streamer && _videoSession.debrid) return _debridCacheAhead()
     if (!streamer || typeof streamer.predownloadFile !== 'function' ||
         typeof streamer.fileInfo !== 'function') return
     // The rewatch copy rides this tick for films too — before the pack-only
@@ -13071,11 +13083,124 @@ function _maybeCacheFinishedFile() {
   } catch (_) { /* a cache is a bonus; teardown must never fail over it */ }
 }
 
+// ── Caching ahead when RealDebrid is serving (the smooth-watching fix) ──────
+//
+// Every caching mechanism above needs a WebTorrent streamer. RealDebrid is
+// tried FIRST whenever an account is configured, and it never builds one — it
+// resolves an HTTPS link and plays it. So for anyone with a debrid account
+// nothing was ever cached: not the next episode, not even the episode being
+// watched. "The next episode cache doesn't work at all" was exactly this.
+//
+// So: on the same tick the torrent path uses, pull the NEXT episode of the
+// pack down over HTTP into the rewatch cache, one at a time, in the
+// background.
+//
+// The "don't cache the same episode twice from a different source" rule is the
+// key check and nothing else: the cache is keyed by WHAT the episode is
+// (tv:1396:s1e6), never by which release or which source the bytes came from,
+// so an episode already held is skipped whatever produced it.
+let _debridAhead = null   // { key, part, ctrl } while one is in flight
+
+function _debridCacheAheadStop() {
+  const a = _debridAhead
+  _debridAhead = null
+  if (!a) return
+  try { if (a.ctrl) a.ctrl.abort() } catch (_) {}
+  // A half-written .part is never left posing as a cached episode.
+  if (a.part) { try { fs.unlinkSync(a.part) } catch (_) {} }
+}
+
+function _debridCacheAhead() {
+  // No live RealDebrid call and nothing written to disk in a dry run.
+  if (DRY_RUN) return
+  if (_debridAhead) return                       // one at a time
+  const s = _videoSession
+  const held = s.debrid
+  if (!held || !held.magnet) return
+  const meta = s.cacheMeta
+  // No identity, no name for the next episode — and an unnamed file could not
+  // be recognised later anyway.
+  if (!meta || !meta.type || meta.id == null) return
+  const capBytes = (Number(_videoSettings().videoCacheGB) || 0) * videoCache.GB
+  if (capBytes <= 0) return                      // the cache is switched off
+
+  const ctrl = typeof AbortController === 'function' ? new AbortController() : null
+  // Claimed synchronously, so a second tick 15 s later cannot start a
+  // duplicate while the file list is still being fetched.
+  _debridAhead = { key: null, part: null, ctrl }
+
+  Promise.resolve()
+    .then(() => debrid().packFiles(held.magnet, held.want))
+    .then(async files => {
+      if (!Array.isArray(files) || files.length < 2) return
+      const at = files.findIndex(f => f && f.current)
+      if (at < 0 || at + 1 >= files.length) return   // nothing after this one
+      const next = files[at + 1]
+      if (!next || next.episode == null) return
+      const key = watchKeys.watchKey(meta.type, meta.id, meta.season, next.episode)
+      // Already held — from this release, another release, or the torrent
+      // path. Same episode, same key, nothing to do.
+      if (_videoCacheEntries().some(e => e.key === key)) return
+      const root = _videoCacheRoot()
+      const dest = path.join(root, videoCache.fileNameFor(key, next.name))
+      const part = dest + '.part'
+      // A part file on disk means a previous run is still pulling it (or died
+      // mid-pull and will be retried after a restart clears it).
+      if (fs.existsSync(part)) return
+      // Would it even fit? Asking before spending a gigabyte of somebody's
+      // connection. The file on screen is never evicted to make room.
+      const plan = videoCache.evictPlan(_videoCacheEntries(), capBytes,
+        Number(next.length) || 0, [s.cacheKey])
+      if (!plan.ok) return
+
+      // Resolving the link is also what makes CLICKING that episode instant:
+      // debrid keeps the minted link per file, so the switch finds it ready.
+      const direct = await debrid().linkForFile(held.magnet, next.index)
+      if (!direct) return
+      if (!_debridAhead || _debridAhead.ctrl !== ctrl) return   // torn down meanwhile
+      _debridAhead.key = key
+      _debridAhead.part = part
+
+      await fs.promises.mkdir(root, { recursive: true })
+      const res = await _rdFetch(direct, Object.assign(
+        { method: 'GET', timeoutMs: 0 }, ctrl ? { signal: ctrl.signal } : {}))
+      if (!res || !res.ok || !res.body) throw new Error('debrid would not serve the next episode')
+      const out = fs.createWriteStream(part)
+      const reader = res.body.getReader()
+      let bytes = 0
+      for (;;) {
+        const chunk = await reader.read()
+        if (chunk.done) break
+        if (!_debridAhead || _debridAhead.ctrl !== ctrl) { try { reader.cancel() } catch (_) {} ; break }
+        bytes += (chunk.value && chunk.value.length) || 0
+        if (!out.write(Buffer.from(chunk.value))) {
+          await new Promise(r => out.once('drain', r))
+        }
+      }
+      await new Promise((rs, rj) => { out.end(err => err ? rj(err) : rs()) })
+      if (!_debridAhead || _debridAhead.ctrl !== ctrl) { try { fs.unlinkSync(part) } catch (_) {} ; return }
+      // Whole, then named: a crash mid-pull can never leave a truncated file
+      // posing as a cached episode.
+      await fs.promises.rename(part, dest)
+      _debridAhead.part = null
+      const entry = { key, path: dest, sizeBytes: bytes, savedAt: Date.now(), lastUsedAt: Date.now(),
+        title: meta.title || next.name,
+        meta: Object.assign({}, meta, { episode: next.episode }) }
+      if (!_videoCacheIndexAdd(entry)) { try { fs.unlinkSync(dest) } catch (_) {} }
+    })
+    .catch(() => {
+      if (_debridAhead && _debridAhead.part) { try { fs.unlinkSync(_debridAhead.part) } catch (_) {} }
+    })
+    .then(() => { if (_debridAhead && _debridAhead.ctrl === ctrl) _debridAhead = null })
+}
+
 function _videoTeardown() {
   // The relay is deliberately NOT stopped here: it is what makes the next
   // press of Play instant, it holds no upstream connection while idle, and it
   // is replaced when a different magnet is played or when it ages out.
   _maybeCacheFinishedFile()
+  // A background pull for the next episode belongs to the watch that is ending.
+  _debridCacheAheadStop()
   _videoSession.cacheKey = null
   _videoSession.cacheMeta = null
   _videoSession.cacheSaved = false
@@ -13384,8 +13509,7 @@ function _startTorrentStream(result, { current, fail, onReady, quiet }) {
   if (!quiet) _videoSession.streamer = streamer
   // The pack-chain tick lives exactly as long as a streamer does. One timer,
   // replaced on every new stream, cleared in _videoTeardown.
-  if (_videoSession.packChainTimer) clearInterval(_videoSession.packChainTimer)
-  _videoSession.packChainTimer = setInterval(_maybeChainPackDownloads, PACK_CHAIN_TICK_MS)
+  _startPackChainTick()
   // A season pack holds every episode, so the streamer is told which one is
   // wanted; without it the largest file wins, which is an arbitrary episode.
   streamer.start({
@@ -13482,7 +13606,7 @@ ipcMain.handle('video-play', async (_, { result }) => {
           const budget = new Promise((_r, rej) => setTimeout(() => rej(new Error('debrid budget')), DEBRID_BUDGET_MS))
           Promise.race([_debridPlayableAny(result), budget])
             .catch(e => { _sendDebridMiss(current, e); throw e })
-            .then(directUrl => { if (!current() || !directUrl) throw new Error('debrid unusable'); return serve(directUrl).then(() => { safeSend('video-event', { kind: 'debrid', ok: true }); _sendDebridPack(current) }) })
+            .then(directUrl => { if (!current() || !directUrl) throw new Error('debrid unusable'); return serve(directUrl).then(() => { safeSend('video-event', { kind: 'debrid', ok: true }); _sendDebridPack(current); _startPackChainTick() }) })
             .catch(() => { if (current()) startTorrent() })
         } else startTorrent()
         return { ok: true, smooth: true }
@@ -13579,6 +13703,9 @@ ipcMain.handle('video-play', async (_, { result }) => {
             started(directUrl)
             safeSend('video-event', { kind: 'debrid', ok: true })
             _sendDebridPack(current)
+            // Same tick the torrent path runs on: it is what pulls the next
+            // episode into the rewatch cache while this one plays.
+            _startPackChainTick()
           })
           .catch(() => {
             // Debrid did not deliver in time (or at all). Only start the torrent
@@ -13760,6 +13887,33 @@ ipcMain.handle('video-pack-select', async (_, { index, cacheKey, cacheMeta } = {
       _videoSession.cacheMeta = (cacheMeta && typeof cacheMeta === 'object') ? cacheMeta : null
       _videoSession.cacheSaved = false
       _videoSession.cacheSaving = false
+      // The point of caching ahead: if this episode is already on disk, play
+      // the file. No link to mint, no relay to stand up, no waiting.
+      const local = _videoCacheEntries().find(e => e.key === cacheKey)
+      if (local && fs.existsSync(local.path)) {
+        _videoSession.cacheSaved = true
+        const files = await debrid().packFiles(held.magnet, held.want).catch(e => {
+          // The strip is a convenience; the file on disk plays either way. The
+          // reason is said out loud rather than thrown away.
+          console.warn('[papa-video] no episode list for a cached switch:', (e && e.message) || e)
+          return []
+        })
+        const pickedLocal = (Array.isArray(files) ? files : [])
+          .find(f => f && Number(f.index) === Number(index)) || null
+        if (pickedLocal && pickedLocal.episode != null) {
+          _videoSession.debrid = {
+            magnet: held.magnet,
+            want: { season: (held.want && held.want.season) || null, episode: pickedLocal.episode },
+          }
+        }
+        const localFiles = (Array.isArray(files) ? files : [])
+          .map(f => Object.assign({}, f, { current: Number(f.index) === Number(index) }))
+        if (!await _loadIntoActivePlayer(local.path, current, pickedLocal && pickedLocal.name)) {
+          return { ok: false, error: 'Superseded' }
+        }
+        safeSend('video-event', { kind: 'playing' })
+        return { ok: true, url: local.path, files: localFiles, local: true }
+      }
     }
 
     // Where the viewer is, captured before the load, so a switch inside a pack

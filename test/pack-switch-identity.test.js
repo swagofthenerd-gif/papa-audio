@@ -24,6 +24,17 @@ const MAIN = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
 
 const META6 = { type: 'tv', id: 1396, title: 'Breaking Bad', season: 1, episode: 6 }
 
+// A sandbox where nothing is in the rewatch cache, so the "it is already on
+// disk, play the file" shortcut stays out of the way of these assertions. It
+// has its own test below.
+const GLOBALS = (session, over) => Object.assign({
+  _videoSession: session,
+  _loadIntoActivePlayer: async () => true,
+  safeSend() {},
+  _videoCacheEntries: () => [],
+  fs: { existsSync: () => false },
+}, over || {})
+
 // ── 1. the handler adopts what the renderer sends ───────────────────────────
 
 test('switching inside a streaming pack moves the cache identity to the new episode', async () => {
@@ -34,7 +45,7 @@ test('switching inside a streaming pack moves the cache identity to the new epis
   }
   await runHandler('video-pack-select', {
     args: { index: 6, cacheKey: 'tv:1396:s1e6', cacheMeta: META6 },
-    globals: { _videoSession: session, _loadIntoActivePlayer: async () => true, safeSend() {} },
+    globals: GLOBALS(session),
   })
   assert.strictEqual(session.cacheKey, 'tv:1396:s1e6')
   assert.deepStrictEqual(session.cacheMeta, META6)
@@ -50,7 +61,7 @@ test('a RealDebrid pack switch moves the identity too', async () => {
   }
   await runHandler('video-pack-select', {
     args: { index: 6, cacheKey: 'tv:1396:s1e6', cacheMeta: META6 },
-    globals: { _videoSession: session, _loadIntoActivePlayer: async () => true, safeSend() {} },
+    globals: GLOBALS(session),
   })
   assert.strictEqual(session.cacheKey, 'tv:1396:s1e6')
   assert.deepStrictEqual(session.cacheMeta, META6)
@@ -66,7 +77,7 @@ test('a dry run refuses the debrid switch before touching the identity', async (
   const { result } = await runHandler('video-pack-select', {
     dryRun: true,
     args: { index: 6, cacheKey: 'tv:1396:s1e6', cacheMeta: META6 },
-    globals: { _videoSession: session, _loadIntoActivePlayer: async () => true, safeSend() {} },
+    globals: GLOBALS(session),
   })
   assert.strictEqual(result && result.dryRun, true)
   assert.strictEqual(session.cacheKey, 'tv:1396:s1e5', 'a refused switch changes nothing')
@@ -80,7 +91,7 @@ test('a switch with no identity (an unidentified play) leaves the session alone'
   }
   await runHandler('video-pack-select', {
     args: { index: 6 },
-    globals: { _videoSession: session, _loadIntoActivePlayer: async () => true, safeSend() {} },
+    globals: GLOBALS(session),
   })
   assert.strictEqual(session.cacheKey, 'tv:1396:s1e5')
 })
