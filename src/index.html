@@ -531,6 +531,10 @@
           <label class="mcs-set-row" id="pb-bitperfect-row">Bit-perfect mode (turns off everything that changes the samples)
             <input type="checkbox" id="pb-bitperfect">
           </label>
+          <!-- Filled by _paintBitPerfectDependents while the mode is on: the
+               page says which other controls it has just overruled, instead of
+               leaving them looking live. -->
+          <div class="mcs-set-warning" id="pb-bitperfect-active-note" style="display:none"></div>
           <div class="mcs-set-hint" id="pb-bitperfect-hint">Opens the device exclusively AND turns off EQ, ReplayGain, volume leveling, the volume boost and crossfade, so the file’s own samples reach the DAC. Gapless stays on, and <strong>a queue that mixes sample rates is still resampled at the handoff</strong> to keep it seamless — that is a deliberate choice in favour of not hearing a gap between tracks.</div>
           <label class="mcs-set-row">Apply ReplayGain (even out album loudness)
             <input type="checkbox" id="pb-replaygain-apply">

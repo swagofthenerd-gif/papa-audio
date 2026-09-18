@@ -8,9 +8,15 @@ const RENDERER = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'
 const CSS = fs.readFileSync(path.join(__dirname, '..', 'src', 'styles.css'), 'utf8')
 
 test('album findings render as named, clickable rows that open the album', () => {
+  // The cards themselves moved into _mgHealthFindingsHtml so the instant paint
+  // from the cache and the paint after the scan share one builder; the wiring
+  // that turns a row into a navigation stayed on the page.
+  const cardsAt = RENDERER.indexOf('function _mgHealthFindingsHtml(')
+  assert.ok(cardsAt !== -1, 'the finding-card builder must still exist')
+  const cards = RENDERER.slice(cardsAt, cardsAt + 3000)
   const at = RENDERER.indexOf('var findings = H.assessLibrary(state.library, extras)')
   assert.ok(at !== -1)
-  const page = RENDERER.slice(at, at + 4000)
+  const page = cards + RENDERER.slice(at, at + 4000)
   assert.match(page, /f\.items\s*\?\s*f\.items\.slice\(0, 6\)\.map/)
   assert.match(page, /data-album-open="' \+ esc\(it\.id\) \+ '"/)
   assert.match(page, /esc\(it\.label\)/)

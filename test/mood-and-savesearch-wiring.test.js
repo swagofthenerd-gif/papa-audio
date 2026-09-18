@@ -45,7 +45,13 @@ test('R6: the Library filters and ranks by mood, counts it as a filter, clears i
   assert.match(lib, /id="clear-mood-filter"/)
   // Roadmap 019 moved the empty state into _libEmptyHtml; the mood wording lives there.
   assert.match(lib, /_libEmptyHtml\(activeFilterCount\)/)
-  assert.match(fn('_libEmptyHtml'), /Nothing feels ' \+ _moodDef\.emoji/)
+  // The mood def is now derived by the shared top-level _libMoodDef(): the old
+  // `var _moodDef` lived inside renderLibrary(), so _libEmptyHtml() reading it
+  // threw ReferenceError and killed the page (see
+  // test/library-empty-state-scope.test.js).
+  assert.match(fn('_libEmptyHtml'), /const moodDef = _libMoodDef\(\)/)
+  assert.match(fn('_libEmptyHtml'), /Nothing feels ' \+ moodDef\.emoji/)
+  assert.match(fn('renderLibrary'), /var _moodDef = _libMoodDef\(\)/)
   assert.equal((lib.match(/state\.libMood = null/g) || []).length, 2, 'both reset buttons clear it')
   assert.match(CODE, /getElementById\('clear-mood-filter'\)\?\.addEventListener\('click', function\(\) \{ state\.libMood = null; renderLibrary\(\) \}\)/, 'and the chip ✕ clears it')
 })

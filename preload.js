@@ -249,6 +249,11 @@ contextBridge.exposeInMainWorld('api', {
   // Offline detection (App §11). Main flips this on connectivity transitions;
   // the renderer draws the banner. Returns an unsubscribe function.
   onAppOnlineState: (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('app-online-state', h); return () => ipcRenderer.removeListener('app-online-state', h) },
+  // Force a probe now instead of waiting up to a minute for the next scheduled
+  // one — a Retry button, or the browser's own 'online' event firing.
+  connectivityRecheck: () => ipcRenderer.invoke('connectivity-recheck'),
+  // "One of my requests just worked." Clears a claimed offline state at once.
+  connectivityNoteOnline: () => ipcRenderer.invoke('connectivity-note-online'),
 
   // Power management
   setPowerSave: (playing) => ipcRenderer.send('set-power-save', playing),
@@ -502,6 +507,7 @@ contextBridge.exposeInMainWorld('api', {
       'slsk-user-status', 'slsk-saved-users-changed', 'slsk-scheduler-stats',
       'library-updated', 'scan-progress', 'app-recovered-from-crash',
       'queue-analysis-progress',
+      'library-extras-progress',
       'video-event',
       'video-state',
       // The tray menu, MPRIS and the power monitor all send these, and none of

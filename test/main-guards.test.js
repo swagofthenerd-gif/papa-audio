@@ -487,12 +487,18 @@ test('connectivity is probed on a slow interval with a short timeout', () => {
   assert.match(probe, /req\.on\('error'/)
 })
 
-test('a single blip never flips the online state — two in a row are required', () => {
+test('a single blip never claims OFFLINE — two in a row are required', () => {
+  // Asymmetric on purpose, and the asymmetry is the point: a failure proves only
+  // that one host did not answer at one moment, so it still takes two; a success
+  // proves the network is up, so one is enough to come back. The old symmetric
+  // rule meant one blip latched "You're offline" for at least two minutes on a
+  // 60 s cadence. Behaviour is covered in test/connectivity-asymmetric.test.js.
   const fn = CODE.slice(CODE.indexOf('async function _checkConnectivity()'),
                         CODE.indexOf('function startConnectivityMonitor()'))
-  assert.match(fn, /_lastProbe === up && _onlineState !== up/,
-    'the current probe must match the previous one before the state moves')
-  assert.match(fn, /safeSend\('app-online-state', \{ online: up \}\)/)
+  assert.match(fn, /_lastProbe === false && _onlineState !== false/,
+    'going offline must still need the previous probe to agree')
+  assert.match(fn, /safeSend\('app-online-state', \{ online: false \}\)/)
+  assert.match(fn, /safeSend\('app-online-state', \{ online: true \}\)/)
 })
 
 test('the connectivity monitor is started after startup settles', () => {

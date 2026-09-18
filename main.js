@@ -2221,21 +2221,42 @@ function _probeOnce() {
   })
 }
 
+// Any evidence the network answered: a successful HTTP response anywhere in the
+// app, or the renderer telling us its own request worked. Clears a claimed
+// offline state AT ONCE.
+//
+// The two-in-a-row rule used to apply in both directions, and on a 60 s cadence
+// that meant one blip latched "You're offline" for at least two minutes. It was
+// seen claiming offline while navigator.onLine was true, music.youtube.com
+// returned 200, and the app's own YouTube widget said "connected". Believing a
+// success costs nothing and a success is proof; believing a failure costs the
+// user features, and a failure proves much less (one host, one moment). So the
+// rule is now asymmetric.
+function _noteOnlineSignal() {
+  if (_onlineState === true) return
+  _onlineState = true
+  _lastProbe = true
+  safeSend('app-online-state', { online: true })
+  console.log('[papa] connectivity: online (a request succeeded)')
+}
+
 async function _checkConnectivity() {
   const up = await _probeOnce()
-  // Only a result that matches the previous one is allowed to flip the state,
-  // so a lone failed probe on an otherwise-fine connection is ignored.
-  if (_lastProbe === up && _onlineState !== up) {
-    _onlineState = up
-    safeSend('app-online-state', { online: up })
-    console.log(`[papa] connectivity: now ${up ? 'online' : 'offline'}`)
-  } else if (_onlineState === null && _lastProbe === up) {
-    // First settled reading: adopt it silently so the renderer starts in the
-    // right state without a spurious "transition".
-    _onlineState = up
-    safeSend('app-online-state', { online: up })
+  if (up) {
+    // One good probe is enough to come back.
+    if (_onlineState !== true) {
+      _onlineState = true
+      safeSend('app-online-state', { online: true })
+      console.log('[papa] connectivity: now online')
+    }
+  } else if (_lastProbe === false && _onlineState !== false) {
+    // Two failures in a row before we will say so.
+    _onlineState = false
+    safeSend('app-online-state', { online: false })
+    console.log('[papa] connectivity: now offline')
   }
   _lastProbe = up
+  return _onlineState
 }
 
 function startConnectivityMonitor() {
@@ -2244,6 +2265,7 @@ function startConnectivityMonitor() {
   setTimeout(() => { _checkConnectivity().catch(() => {}) }, 10000).unref?.()
   setInterval(() => { _checkConnectivity().catch(() => {}) }, CONNECTIVITY_PROBE_INTERVAL_MS)
 }
+
 
 // ── Auto-backups (App §4) ────────────────────────────────────────────────────
 // Once per app launch, after startup has settled, write a full rotating backup
@@ -2771,9 +2793,19 @@ function getPlayerSettings() {
   const crossfadeAllowed = crossfadeSeconds > 0 && !bitPerfect.forcesGapless(bitPerfectOn)
   // What the ENGINE actually got, as distinct from what the dropdown shows.
   // The badge reads this; the dropdown keeps his preference.
-  const replaygainEffective = bitPerfect.effectiveReplaygain({
+  const replaygainResolved = bitPerfect.effectiveReplaygain({
     replaygain: saved.replaygain, bitPerfect: bitPerfectOn,
-  }).mode
+  })
+  const replaygainEffective = replaygainResolved.mode
+  // The other two sample-altering comforts the bit-perfect hint promises to turn
+  // off. They were promised and never enforced: the loudness-scan leveling kept
+  // scaling mpv's volume, and the settings page went on showing both as active.
+  const levelingEffective = bitPerfect.effectiveLoudnessLeveling({
+    replaygainApply: saved.replaygainApply === true, bitPerfect: bitPerfectOn,
+  })
+  const boostEffective = bitPerfect.effectiveBoost({
+    boost: saved.boost === true, bitPerfect: bitPerfectOn,
+  })
   return {
     outputMode: 'default', alsaDevice: null,
     mode: 'gapless', crossfadeSecs: 4, replaygain: 'no',
@@ -2800,6 +2832,17 @@ function getPlayerSettings() {
     // read this, or it will keep claiming bit-perfect while ReplayGain scales
     // the samples.
     replaygainEffective,
+    replaygainSuppressedReason: replaygainResolved.reason,
+    // What the loudness leveling and the volume boost are really doing, and why,
+    // so the settings page can show the controls as overruled instead of leaving
+    // them looking live while bit-perfect silently ignores them.
+    replaygainApplyEffective: levelingEffective.on,
+    replaygainApplySuppressedReason: levelingEffective.reason,
+    boostEffective: boostEffective.on,
+    boostSuppressedReason: boostEffective.reason,
+    // The engine opens the device exclusively while bit-perfect is on, whatever
+    // the Output dropdown says (see resolveEngineConfig).
+    outputModeEffective: bitPerfectOn ? 'exclusive' : (saved.outputMode || 'default'),
   }
 }
 
@@ -3291,7 +3334,9 @@ ipcMain.handle('queue-build', async (_e, { mode = 'surprise', seedFilePath = nul
 // yet this session (linearToMpv(1) = 100, the neutral value).
 function _baseMpvVolume() {
   var linear = (lastLinearVolume == null) ? 1 : lastLinearVolume
-  return linearToMpv(linear, getPlayerSettings().boost)
+  // boostEffective, not boost: bit-perfect caps mpv at 100 and promises the
+  // +30% boost is off, so the base volume must be computed without it.
+  return linearToMpv(linear, getPlayerSettings().boostEffective)
 }
 
 // The file mpv currently has open, tracked so that when the slider moves we can
@@ -3307,7 +3352,10 @@ function applyLoudnessGain(resolvedPath) {
   if (!player) return
   var base = _baseMpvVolume()
   var cfg = getPlayerSettings()
-  if (!cfg.replaygainApply) {
+  // replaygainApplyEffective, not replaygainApply: bit-perfect mode promises in
+  // its own hint that volume leveling goes off, and this is the path that would
+  // otherwise keep scaling the samples behind that promise.
+  if (!cfg.replaygainApplyEffective) {
     // Application is off: make sure the base volume (no gain) is what is in force,
     // in case a previous track left a gained value on mpv's volume property.
     return player.setVolume(base).catch(() => {})
@@ -3441,11 +3489,11 @@ let lastLinearVolume = null
 ipcMain.handle('player-set-volume', (_, v) => wrap(() => {
   lastLinearVolume = v / 100
   var cfg = getPlayerSettings()
-  var base = linearToMpv(lastLinearVolume, cfg.boost)
+  var base = linearToMpv(lastLinearVolume, cfg.boostEffective)
   // With ReplayGain application on, the slider still means "how loud overall",
   // but the current track's gain rides on top so moving the slider does not lose
   // the per-track correction until the next track change.
-  if (cfg.replaygainApply && _loudnessCurrentPath) {
+  if (cfg.replaygainApplyEffective && _loudnessCurrentPath) {
     var map = sideStores.loudnessMap.get() || {}
     var entry = map[_loudnessCurrentPath]
     var gainDb = entry && typeof entry === 'object' ? entry.gainDb : null
@@ -4287,6 +4335,15 @@ ipcMain.on('save-liked', (_, ids) => store.set('likedAlbums', ids))
 ipcMain.handle('get-liked-tracks', () => (sideStores.likedTracks.get() || []))
 ipcMain.on('save-liked-tracks', (_, paths) => sideStores.likedTracks.set(paths))
 
+// A Retry button, and the renderer's own 'online' event, must not wait up to a
+// minute for the next scheduled connectivity probe.
+ipcMain.handle('connectivity-recheck', async () => {
+  const online = await _checkConnectivity()
+  return { ok: true, online: online !== false }
+})
+// The renderer reporting that one of its own requests went through: a positive
+// signal clears a claimed offline state at once.
+ipcMain.handle('connectivity-note-online', () => { _noteOnlineSignal(); return { ok: true } })
 ipcMain.handle('get-play-counts', () => (sideStores.playCounts.get() || {}))
 ipcMain.on('increment-play-count', (_, filePath) => {
   const counts = (sideStores.playCounts.get() || {})
@@ -5239,9 +5296,27 @@ ipcMain.handle('library-scan-extras', async () => {
   const emptyDirs = []
   const roots = store.get('musicFolders', []) || []
 
+  // This walk takes the better part of a minute on a real library, and Manage →
+  // Health showed a bare "Scanning the library…" for the whole of it with no
+  // sign of life. Throttled so a deep tree cannot turn the scan into an IPC
+  // flood: at most one message every 400 ms, and the renderer only reads the
+  // latest one anyway.
+  let _walkedDirs = 0
+  let _lastProgressAt = 0
+  const _noteWalk = (dir) => {
+    _walkedDirs++
+    const now = Date.now()
+    if (now - _lastProgressAt < 400) return
+    _lastProgressAt = now
+    safeSend('library-extras-progress', {
+      dirs: _walkedDirs, files: nonAudio.length, path: dir,
+    })
+  }
+
   const walk = async (dir) => {
     let names
     try { names = await fs.promises.readdir(dir, { withFileTypes: true }) } catch (_) { return false }
+    _noteWalk(dir)
     let hasAudio = false
     for (const d of names) {
       if (d.name.startsWith('.')) continue          // .Trash-1000 and friends
@@ -6830,6 +6905,8 @@ function httpsGet(url, redirects = 0) {
         err.statusCode = res.statusCode
         return reject(err)
       }
+      // The server answered, so the network is up — whatever the status was.
+      try { _noteOnlineSignal() } catch (_) {}
       const chunks = []
       res.on('data', c => chunks.push(c))
       res.on('end', () => resolve(Buffer.concat(chunks)))

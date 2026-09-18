@@ -2456,7 +2456,26 @@ h2.section-title { font-size:18px; font-weight:700; }
 .mcs-set-input {; border:1px solid var(--glass-border);; padding:6px 10px; color:var(--text);; outline:none; width:100%;
 }
 .mcs-set-input:focus { border-color:var(--accent); }
+/* Keyboard focus rings on the Settings controls. Every select and text field in
+   Settings had a border-colour change on :focus and nothing else — a 1px tint
+   against a dark panel, which is not a focus ring, and which also fires on a
+   mouse click so it says nothing about keyboard position. Eight controls were
+   caught with no visible ring at all: the Playback selects (#pb-mode,
+   #pb-replaygain, #pb-channels, #pb-device-loss), Soulseek sharing
+   (#slsk-share-mode) and the Video keys and limit (#video-tmdb-key,
+   #video-opensubs-key, #video-download-limit). Same 2px accent ring as the rest
+   of the app, on :focus-visible so it only appears for keyboard users. */
+.mcs-set-select:focus-visible,
+.mcs-set-input:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
 .mcs-set-hint { font-size:10px; color:var(--text3); margin-top:2px; }
+/* A control bit-perfect mode has overruled. It keeps showing the user's own
+   choice — that choice comes back when bit-perfect goes off — but it must not
+   look like it is doing anything, because it is not. The reason is on the
+   control's tooltip and spelled out in #pb-bitperfect-active-note. */
+.mcs-set-row-overruled { opacity:.45; }
+.mcs-set-row-overruled input, .mcs-set-row-overruled select { cursor:not-allowed; }
 .mcs-set-hint-ok { color:#7fe3a0; }
 .mcs-set-hint-warn { color:#f0b959; }
 
@@ -7252,6 +7271,12 @@ body.app-unfocused .vt-menu {
   font-size:12px; color:#e0a33e; background:rgba(224,163,62,.1);
   border-radius:var(--r-sm); padding:8px 10px; margin-bottom:10px; line-height:1.5;
 }
+/* Manage → Health, while the folder walk is still running. Not a warning —
+   nothing is wrong — so it reads as neutral progress next to the findings that
+   are already on screen. */
+.mg-health-scanning { color:var(--text2); background:var(--bg3); }
+.mg-health-scan-where { color:var(--text3); }
+
 .mg-folder {
   display:flex; align-items:flex-start; gap:10px;
   padding:10px; border-radius:var(--r-sm); background:var(--bg3); margin-top:8px;

@@ -91,7 +91,10 @@ function syncScriptBytes () {
 // another ~10 KB — the per-source outage note and its Retry, the group-ordering
 // helper, and the shortened-query retry chain. Three executors tripped this
 // ceiling within hours of each other; the single re-base below covers all
-// three at ~14 % above the merged total.
+// three at ~14 % above the merged total. The live music-tab audit fixes (Library
+// empty-state scope, crossfade rewiring, bit-perfect dependent controls, Stats
+// totals split, connectivity asymmetry, Health progress paint, artwork miss
+// memory) landed the same night and sit under the same ceiling.
 const SCRIPT_BYTE_CEILING = 3360000
 
 test('the renderer loads its scripts and none is missing from disk', () => {

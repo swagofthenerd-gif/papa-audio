@@ -1300,9 +1300,17 @@ function updateGainPolicyText() {
   // the truth about whether anything can clip.
   var mpvVol = null
   try { mpvVol = (typeof audio !== 'undefined' && audio) ? audio.engineVolume : null } catch (_) { mpvVol = null }
-  var r = G.assess({ boost: !!settings.boost, volumePct: vol, eq: settings.eq,
-                     replaygain: settings.replaygain, bitPerfect: !!settings.bitPerfect,
-                     mpvVolume: mpvVol, replaygainApply: settings.replaygainApply })
+  // The EFFECTIVE values, not the requested ones. With bit-perfect on, the gain
+  // line went on warning "ReplayGain may raise quiet tracks" while main had
+  // already forced ReplayGain, the leveling and the boost off.
+  var r = G.assess({ boost: settings.boostEffective != null ? !!settings.boostEffective : !!settings.boost,
+                     volumePct: vol, eq: settings.eq,
+                     replaygain: settings.replaygain,
+                     replaygainEffective: settings.replaygainEffective,
+                     bitPerfect: !!settings.bitPerfect,
+                     mpvVolume: mpvVol,
+                     replaygainApply: settings.replaygainApplyEffective != null
+                       ? settings.replaygainApplyEffective : settings.replaygainApply })
   el.textContent = 'Gain policy: ' + r.text
   el.classList.toggle('mcs-set-chip-warn', r.risk === 'likely')
 }
@@ -13713,6 +13721,16 @@ function _libMoodRank() {
   _libMoodRankMemo = { key: key, rank: rank }
   return rank
 }
+// The mood the Library grid is filtered to, or null. Top level on purpose:
+// both renderLibrary() and _libEmptyHtml() need it, and _libEmptyHtml() used to
+// read a `var _moodDef` that lived INSIDE renderLibrary(). That is another
+// function's local, so the empty state threw ReferenceError the moment the
+// library had zero results — a no-match search showed the whole unfiltered
+// library, and the next full render killed the page ("This page failed to
+// render") for good, because state.libSearch persists across navigation.
+function _libMoodDef() {
+  return state.libMood && window.PapaMoodMap ? window.PapaMoodMap.moodById(state.libMood) : null
+}
 function _libMoodEmptyHint() {
   if (!window.PapaMoodMap) return ''
   var p = window.PapaMoodMap.profile(state.library, _audioFeaturesCache)
@@ -13757,8 +13775,9 @@ function _libSearchNoteHtml() {
 function _libEmptyHtml(activeFilterCount) {
   const tools = (typeof window !== 'undefined' && window.PapaMusicTools) || null
   const svg = '<svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>'
-  if (_moodDef) {
-    return '<div class="empty-wrap">' + svg + '<h2>Nothing feels ' + _moodDef.emoji + ' ' + esc(_moodDef.name) + ' yet</h2><p>' + _libMoodEmptyHint() + '</p></div>'
+  const moodDef = _libMoodDef()
+  if (moodDef) {
+    return '<div class="empty-wrap" data-empty="mood">' + svg + '<h2>Nothing feels ' + moodDef.emoji + ' ' + esc(moodDef.name) + ' yet</h2><p>' + _libMoodEmptyHint() + '</p></div>'
   }
   const e = tools ? tools.libraryEmptyState({ folders: state.musicFolders, unavailableRoots: state._unavailableRoots, albumCount: state.library.length, filtered: activeFilterCount > 0 })
     : { title: activeFilterCount ? 'No albums match' : 'Your library is empty', text: activeFilterCount ? 'Try clearing a filter or two.' : 'Add a music folder to get started.', action: activeFilterCount ? 'clear-filters' : 'add-folder' }
@@ -13980,7 +13999,7 @@ function renderLibrary() {
 
   var filterIndicator = ''
   if (state.libDecade) filterIndicator = '<div style="display:inline-flex;align-items:center;gap:6px;margin-left:12px;padding:3px 10px;background:var(--accent);color:#000;border-radius:100px;font-size:11px;font-weight:600">' + state.libDecade + 's<button style="background:none;border:none;color:#000;cursor:pointer;font-size:14px;line-height:1" id="clear-decade-filter">&times;</button></div>'
-  var _moodDef = state.libMood && window.PapaMoodMap ? window.PapaMoodMap.moodById(state.libMood) : null
+  var _moodDef = _libMoodDef()
   if (_moodDef) filterIndicator += '<div style="display:inline-flex;align-items:center;gap:6px;margin-left:12px;padding:3px 10px;background:' + _moodDef.color + ';color:#fff;border-radius:100px;font-size:11px;font-weight:600" title="Albums that feel ' + esc(_moodDef.name) + ', scored from the audio analysis and genre tags">' + _moodDef.emoji + ' ' + esc(_moodDef.name) + '<button style="background:none;border:none;color:#fff;cursor:pointer;font-size:14px;line-height:1" id="clear-mood-filter" aria-label="Clear mood">&times;</button></div>'
 
   // Folder membership: an album belongs to every directory that holds ANY of
@@ -15433,7 +15452,24 @@ function _ytFailureHtml(error, opts) {
   var btn = ''
   if (r.action === 'retry' || r.action === 'wait') btn = ' <button class="yt-retry" id="yt-retry-btn">' + esc(label) + '</button>'
   else if (r.action === 'settings') btn = ' <button class="yt-retry" id="yt-settings-btn">' + esc(label) + '</button>'
+  // "You are offline — YouTube is unavailable." used to be a dead end: the
+  // 'connection' action drew no button at all, so the one message most likely
+  // to be WRONG was the only one you could not argue with. It now re-probes and
+  // searches again.
+  else if (r.action === 'connection') btn = ' <button class="yt-retry" id="yt-retry-btn">Retry</button>'
   return '<div class="yt-status' + (r.kind === 'empty' || r.kind === 'cancelled' ? '' : ' yt-error') + '" data-failure="' + esc(r.kind) + '">' + esc(r.text) + btn + '</div>'
+}
+
+// Retry after a failure. If the failure was "you are offline", the FIRST thing
+// to do is check whether that was ever true — the state is a cached answer from
+// a probe that may be up to a minute old and may have latched on one blip.
+async function _retryYtSearch() {
+  if (!ytSearchState.lastQuery) return
+  if (!state.isOnline && window.api && typeof window.api.connectivityRecheck === 'function') {
+    const r = await window.api.connectivityRecheck().catch(function () { return null })
+    if (r && r.online) _applyOnlineState(true)
+  }
+  runYtSearch(ytSearchState.lastQuery, ytSearchState.scope)
 }
 
 async function runYtSearch(query, scope) {
@@ -18161,6 +18197,48 @@ function _statsCutoff(range) {
   return days ? Date.now() - days * 86400000 : 0
 }
 
+// Stats used to print two different all-time totals side by side:
+// "Listening time (All time) 112h 10m" next to "All time: 5d 4h · 4,600 total
+// plays" — 112 hours and 124 hours, in the same box, both labelled all time.
+//
+// Two separate causes, and they need separate answers.
+//
+// 1. The two TIME figures came from the same history but measured it
+//    differently. The headline only counted a play if its file was still in the
+//    library (byPath.get), and ignored the duration the history entry itself
+//    recorded; the smaller figure was the headline. Both now use one duration
+//    function, so "All time" in the headline and "All time" beside it are the
+//    same number, because they are the same thing.
+//
+// 2. The play COUNT comes from a different store. playCounts was incremented on
+//    every gapless auto-advance; playHistory was not written at all for those,
+//    so the counts are the more complete record and the history is the only one
+//    with timestamps (see history.js reconcile — main logs the gap at startup,
+//    "4600 counted vs 1661 recorded"). Neither is wrong; they measure different
+//    things. So both are reported, each labelled as what it actually is,
+//    instead of one number being quietly presented as the other.
+function _statsListeningTotals(playHistory, ranged, durationOf, playCounts) {
+  const hist = Array.isArray(playHistory) ? playHistory : []
+  const inRange = Array.isArray(ranged) ? ranged : []
+  const secs = list => list.reduce((n, p) => n + (Number(durationOf(p)) || 0), 0)
+  const counted = Object.keys(playCounts || {})
+    .reduce((n, k) => n + (Number(playCounts[k]) || 0), 0)
+  return {
+    rangeSecs: secs(inRange),
+    rangePlays: inRange.length,
+    allTimeSecs: secs(hist),
+    // Plays the timestamped history actually holds. This is what every windowed
+    // figure on the page is drawn from, so it is the one that can be compared
+    // with them.
+    historyPlays: hist.length,
+    // Plays the counter holds, including ones from before history was kept and
+    // every gapless auto-advance that history missed.
+    countedPlays: counted,
+    // Only worth saying out loud when they differ.
+    countsExceedHistory: Math.max(0, counted - hist.length),
+  }
+}
+
 function renderStats() {
   const all = _allLibraryTracks()
   const byPath = new Map(all.map(t => [t.filePath, t]))
@@ -18173,14 +18251,6 @@ function renderStats() {
     ? ranged
     : (state.playHistory || []).filter(function(h) { return (h.ts || 0) >= Date.now() - 30 * 86400000 })
 
-  let totalSecs = 0
-  for (const h of ranged) {
-    const t = byPath.get(h.filePath)
-    if (t) totalSecs += (t.duration || 0)
-  }
-  const hours = Math.floor(totalSecs / 3600)
-  const mins  = Math.floor((totalSecs % 3600) / 60)
-
   // History written before duration was recorded has none, so fall back to the
   // library's duration for that path. Without this the all-time figure read
   // "0h 0m" for every user, forever.
@@ -18190,8 +18260,12 @@ function renderStats() {
   })
   var _histDur = function (p) { return p.duration || _durByPath[p.filePath] || 0 }
 
-  var totalAllTime = 0
-  state.playHistory.forEach(function(p) { totalAllTime += _histDur(p) })
+  var _totals = _statsListeningTotals(state.playHistory, ranged, _histDur, state.playCounts)
+  const totalSecs = _totals.rangeSecs
+  const hours = Math.floor(totalSecs / 3600)
+  const mins  = Math.floor((totalSecs % 3600) / 60)
+
+  var totalAllTime = _totals.allTimeSecs
   var totalDays = Math.floor(totalAllTime / 86400)
   var totalHrs = Math.floor((totalAllTime % 86400) / 3600)
   var totalAllTimeStr = totalDays > 0 ? totalDays + 'd ' + totalHrs + 'h' : totalHrs + 'h ' + Math.floor((totalAllTime % 3600) / 60) + 'm'
@@ -18399,7 +18473,7 @@ function renderStats() {
 
   // ── Wave-6 additions: total plays, top albums, plays-per-month, dupes ───────
   var _mt = (typeof window !== 'undefined' && window.PapaMusicTools) || null
-  var totalPlays = Object.keys(state.playCounts || {}).reduce(function (s, k) { return s + (state.playCounts[k] || 0) }, 0)
+  var totalPlays = _totals.countedPlays
 
   // Top albums by play count (rolls track play-counts up to their album).
   var topAlbums = _mt ? _mt.topAlbumsByPlays(state.library, state.playCounts, 10) : []
@@ -18572,7 +18646,7 @@ function renderStats() {
       <button id="export-json-btn" class="secondary" style="padding:6px 14px;font-size:12px">Export JSON</button>
       <button id="export-csv-btn" class="secondary" style="padding:6px 14px;font-size:12px">Export CSV</button>
     </div>
-    <div class="stats-hero">Listening time (${rangeLabel})<span>${hours}h ${mins}m</span><div style="font-size:12px;color:var(--text3);margin-top:4px">All time: ${totalAllTimeStr} · ${totalPlays.toLocaleString()} total plays</div><div style="font-size:11px;color:var(--text3);margin-top:4px">${rangeText}</div><div class="scrobble-health scrobble-${_scrobHealth.state}" title="${esc(_scrobHealth.title)}">${esc(_scrobHealth.text)}</div></div>
+    <div class="stats-hero">Listening time (${rangeLabel})<span>${hours}h ${mins}m</span><div style="font-size:12px;color:var(--text3);margin-top:4px">${state.statsRange === 'all' ? '' : `All time: ${totalAllTimeStr} · `}${_totals.historyPlays.toLocaleString()} plays with a date</div>${_totals.countsExceedHistory ? `<div style="font-size:11px;color:var(--text3);margin-top:2px" title="Play counts were kept before listening history was, and a gapless album advance bumped the count without writing a history entry. Nothing on this page can be windowed by date from them, so they are shown separately rather than mixed in.">${totalPlays.toLocaleString()} play counts in total, incl. ${_totals.countsExceedHistory.toLocaleString()} from before history was kept</div>` : ''}<div style="font-size:11px;color:var(--text3);margin-top:4px">${rangeText}</div><div class="scrobble-health scrobble-${_scrobHealth.state}" title="${esc(_scrobHealth.title)}">${esc(_scrobHealth.text)}</div></div>
     ${monthsHTML}
     ${storageHTML}
     ${loudnessHTML}
@@ -22763,15 +22837,13 @@ function bindContentEvents() {
     fetchMissingArtwork()
   })
 
-  document.getElementById('yt-retry-btn')?.addEventListener('click', () => {
-    runYtSearch(ytSearchState.lastQuery, ytSearchState.scope)
-  })
+  document.getElementById('yt-retry-btn')?.addEventListener('click', () => { _retryYtSearch() })
   // The failure painter's buttons are re-rendered with every result, so the
   // retry/settings actions are delegated (roadmap 057).
   document.getElementById('content')?.addEventListener('click', e => {
     const t = e.target
     if (!t || !t.closest) return
-    if (t.closest('#yt-retry-btn')) { if (ytSearchState.lastQuery) runYtSearch(ytSearchState.lastQuery, ytSearchState.scope); return }
+    if (t.closest('#yt-retry-btn')) { _retryYtSearch(); return }
     if (t.closest('#yt-settings-btn')) { openSettings('ytdlp'); return }
   })
 
@@ -23195,12 +23267,16 @@ function albumCard(album, idx, sortMode, query) {
     ? '<span class="new-badge">NEW</span>' : ''
   const hue = _cardHue((album.artist || '') + (album.name || ''))
   var fallbackStyle = `background:linear-gradient(135deg,hsl(${hue},55%,22%) 0%,hsl(${(hue+40)%360},45%,14%) 100%)`
+  // A cover that already failed once this session is not asked for again: the
+  // card goes straight to its gradient fallback instead of firing another
+  // file:// request the browser will answer with ERR_FILE_NOT_FOUND.
+  const art = _artUsable(album.artPath) ? album.artPath : null
   return `<div class="album-card${album.unavailable ? ' unavailable' : ''}" data-album="${esc(album.id)}"${album.unavailable ? ' title="Not connected — this album\'s drive is unplugged"' : ''}>
     <div class="album-card-art-wrap">
-      ${album.artPath
-        ? `<img class="album-card-art" src="${isHttpPath(album.artPath) ? esc(album.artPath) : esc(`file://${album.artPath}`)}" alt="" loading="lazy" decoding="async" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
+      ${art
+        ? `<img class="album-card-art" src="${isHttpPath(art) ? esc(art) : esc(`file://${art}`)}" alt="" loading="lazy" decoding="async" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
         : ''}
-      <div class="album-card-art-fallback" ${album.artPath ? 'style="display:none"' : `style="${fallbackStyle}"`}>
+      <div class="album-card-art-fallback" ${art ? 'style="display:none"' : `style="${fallbackStyle}"`}>
         <svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>
       </div>
       ${album.isYt ? '<span class="yt-badge yt-card-badge">YT</span>' : ''}
@@ -23226,13 +23302,45 @@ function fmtSpec(bd, sr) {
 // main modal art uses: a streamed (YouTube) track carries an https thumbnail
 // URL that must be used as-is, while a local file path needs the file:// scheme.
 // Prepending 'file://' unconditionally broke art for streamed tracks (audit).
+// ── Artwork that is not there ───────────────────────────────────────────────
+// 654 net::ERR_FILE_NOT_FOUND on cover files in one session, and the SAME
+// missing file asked for six times in 0.4 seconds. The library remembers an
+// artPath for an album whose cover file has since gone, and nothing remembered
+// the answer, so every grid repaint, every queue repaint and every hover
+// re-requested every missing cover from scratch.
+//
+// One session-scoped set of paths that have already failed. Session-scoped on
+// purpose: a cover that comes back — fetched, or a drive remounted — is picked
+// up on the next launch, rather than being written off for ever.
+var _artMisses = new Set()
+function _noteArtMiss(src) {
+  if (!src) return
+  var p = String(src).replace(/^file:\/\//, '')
+  // Only local files. A remote URL can fail for a hundred reasons that have
+  // nothing to do with the file existing, and it costs the disk nothing.
+  if (p && p.charAt(0) === '/') _artMisses.add(p)
+}
+// Is this cover worth asking for? False once it has failed in this session.
+function _artUsable(artPath) {
+  if (!artPath) return false
+  return !_artMisses.has(String(artPath))
+}
+function _artMissCount() { return _artMisses.size }
+// One capture-phase listener catches every <img> on the page, so no call site
+// has to remember to report its own failure. `error` does not bubble, hence
+// capture.
+document.addEventListener('error', function (e) {
+  var t = e && e.target
+  if (t && t.tagName === 'IMG') _noteArtMiss(t.getAttribute('src'))
+}, true)
+
 function _artSrc(artPath) {
   return /^https?:\/\//.test(artPath) ? artPath : 'file://' + artPath
 }
 
 function artImg(artPath, imgClass, fallbackClass) {
   var musicNote = `<svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>`
-  if (artPath) {
+  if (_artUsable(artPath)) {
     const src = /^https?:\/\//.test(artPath) ? artPath : `file://${artPath}`
     return `<img class="${imgClass}" src="${esc(src)}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
             <div class="${fallbackClass}" style="display:none">${musicNote}</div>`
@@ -25702,6 +25810,86 @@ function _initSettingsSearch() {
   input.addEventListener('input', apply)
 }
 
+// Ticking Bit-perfect used to change nothing else on the page. ReplayGain still
+// read "track" and still looked live, the transition still read Crossfade, the
+// output still read System (shared), and the gain line still warned that
+// ReplayGain may raise quiet tracks — while the checkbox's own hint said all of
+// those were now off and the device was open exclusively. main already collapses
+// every one of them (replaygainEffective, mode, replaygainApplyEffective,
+// boostEffective, outputModeEffective); the page simply never asked again.
+//
+// So: re-read the settings after the toggle and paint what is ACTUALLY in force,
+// with each overruled control disabled and carrying the reason as its tooltip.
+// The value shown stays the user's own preference — it comes back when
+// bit-perfect goes off — but it can no longer look like it is doing something.
+function _paintBitPerfectDependents(cfg) {
+  cfg = cfg || {}
+  const $ = id => document.getElementById(id)
+  const on = cfg.bitPerfect === true
+  const note = cfg.exclusivityNote || ''
+  const rows = [
+    { id: 'pb-output-mode', value: on ? (cfg.outputModeEffective || 'exclusive') : cfg.outputMode, reason: note },
+    { id: 'pb-mode', value: cfg.mode, reason: note },
+    { id: 'pb-cf-secs', reason: note },
+    { id: 'pb-replaygain', shown: on ? cfg.replaygainEffective : cfg.replaygain, reason: cfg.replaygainSuppressedReason || note },
+    { id: 'pb-replaygain-apply', checked: on ? !!cfg.replaygainApplyEffective : !!cfg.replaygainApply, reason: cfg.replaygainApplySuppressedReason || note },
+    { id: 'pb-boost', checked: on ? !!cfg.boostEffective : !!cfg.boost, reason: cfg.boostSuppressedReason || note },
+  ]
+  for (const r of rows) {
+    const el = $(r.id)
+    if (!el) continue
+    el.disabled = on
+    // The row, not just the control, so the label goes quiet with it.
+    const row = el.closest ? el.closest('.mcs-set-row') : null
+    if (row) row.classList.toggle('mcs-set-row-overruled', on)
+    if (on && r.reason) el.title = r.reason
+    else if (el.removeAttribute) el.removeAttribute('title')
+    if ('checked' in r) el.checked = r.checked
+    else if (r.shown != null) el.value = r.shown
+    else if (r.value != null) el.value = r.value
+  }
+  // Crossfade length only exists while the transition is crossfade, and
+  // bit-perfect forces gapless.
+  if ($('pb-cf-row')) $('pb-cf-row').style.display = cfg.mode === 'crossfade' ? '' : 'none'
+  if ($('pb-device-row')) {
+    $('pb-device-row').style.display =
+      (on ? (cfg.outputModeEffective || 'exclusive') : cfg.outputMode) === 'exclusive' ? '' : 'none'
+  }
+  const hint = $('pb-bitperfect-active-note')
+  if (hint) {
+    hint.textContent = on ? note : ''
+    hint.style.display = on ? '' : 'none'
+  }
+}
+
+// What the two crossfade controls together mean, in the one unit main.js
+// actually stores: seconds, 0 = off. Gapless is crossfade of zero length.
+function _pbCrossfadeSeconds(mode, sliderSecs) {
+  if (mode !== 'crossfade') return 0
+  var n = Math.floor(Number(sliderSecs))
+  return isFinite(n) && n > 0 ? n : 4
+}
+
+// The ONE writer of the global crossfade.
+//
+// Settings used to save it with playerSetConfig({ mode, crossfadeSecs }). Those
+// two keys are not stored settings at all — main.js recomputes both from
+// playerSettings.crossfadeSeconds on every single load, and nothing in the
+// renderer ever wrote crossfadeSeconds. So config.json ended up holding
+// crossfadeSecs: 8 (what Settings wrote) next to crossfadeSeconds: 0 (what the
+// player reads), crossfadeAllowed was `crossfadeSeconds > 0` and therefore
+// always false, and the setting silently reverted to Gapless/4s on every
+// restart. Crossfade could not be switched on from the UI at all.
+function _setGlobalCrossfade(seconds) {
+  var n = Math.floor(Number(seconds))
+  if (!isFinite(n) || n < 0) n = 0
+  if (window.api && typeof window.api.playerSetCrossfade === 'function') {
+    return window.api.playerSetCrossfade({ seconds: n })
+  }
+  // Older backend with no crossfade IPC: the derived pair is all there is.
+  return window.api.playerSetConfig({ mode: n > 0 ? 'crossfade' : 'gapless', crossfadeSecs: n > 0 ? n : 4 })
+}
+
 async function initPlaybackSettings() {
   const cfg = await window.api.playerGetConfig()
   state._playerSettings = cfg
@@ -25714,8 +25902,12 @@ async function initPlaybackSettings() {
   const $ = id => document.getElementById(id)
   $('pb-output-mode').value = cfg.outputMode
   $('pb-mode').value = cfg.mode
-  $('pb-cf-secs').value = cfg.crossfadeSecs
-  $('pb-cf-label').textContent = `${cfg.crossfadeSecs}s`
+  // Read the authoritative key back, not the pair derived from it: when
+  // crossfade is off, crossfadeSecs is a placeholder 4 and would silently
+  // rewrite a saved 10 s down to 4 the next time the slider is touched.
+  const cfSecs = Number(cfg.crossfadeSeconds) > 0 ? Number(cfg.crossfadeSeconds) : (Number(cfg.crossfadeSecs) || 4)
+  $('pb-cf-secs').value = cfSecs
+  $('pb-cf-label').textContent = `${cfSecs}s`
   $('pb-replaygain').value = cfg.replaygain
   $('pb-channels').value = cfg.channels
   $('pb-boost').checked = !!cfg.boost
@@ -25777,19 +25969,31 @@ async function initPlaybackSettings() {
     apply({ outputMode: e.target.value, alsaDevice: $('pb-alsa-device').value || null })
   }
   $('pb-alsa-device').onchange = e => apply({ alsaDevice: e.target.value })
-  $('pb-mode').onchange = e => {
-    $('pb-cf-row').style.display = e.target.value === 'crossfade' ? '' : 'none'
-    apply({ mode: e.target.value })
-    var mode = e.target.value
+  // Both crossfade controls write ONE value — seconds — through
+  // playerSetCrossfade. Writing mode/crossfadeSecs through playerSetConfig, as
+  // this used to, wrote keys main.js recomputes on load, so the choice never
+  // survived a restart.
+  const applyCrossfade = (mode, sliderSecs) => {
+    const seconds = _pbCrossfadeSeconds(mode, sliderSecs)
+    state._playerSettings = { ...(state._playerSettings || {}),
+      mode: seconds > 0 ? 'crossfade' : 'gapless',
+      crossfadeSeconds: seconds, crossfadeSecs: seconds > 0 ? seconds : 4 }
+    try { updateBitPerfectBadge() } catch (_) {}
+    try { updateCrossfadeBadge() } catch (_) {}
     // A manual global change becomes the new baseline AND the new in-force state,
     // and clears any playlist override tracking — the user just chose directly.
-    _syncGlobalCrossfadeCache({ mode: mode, crossfadeSecs: Number($('pb-cf-secs').value) })
+    _syncGlobalCrossfadeCache({ mode: seconds > 0 ? 'crossfade' : 'gapless', crossfadeSecs: seconds > 0 ? seconds : 4 })
+    return _setGlobalCrossfade(seconds)
+  }
+  $('pb-mode').onchange = e => {
+    var mode = e.target.value
+    $('pb-cf-row').style.display = mode === 'crossfade' ? '' : 'none'
+    applyCrossfade(mode, $('pb-cf-secs').value)
     showSnackbar('Playback mode: ' + (mode === 'gapless' ? 'Gapless' : 'Crossfade'))
   }
   $('pb-cf-secs').oninput = e => { $('pb-cf-label').textContent = `${e.target.value}s` }
   $('pb-cf-secs').onchange = e => {
-    apply({ crossfadeSecs: Number(e.target.value) })
-    _syncGlobalCrossfadeCache({ mode: $('pb-mode').value, crossfadeSecs: Number(e.target.value) })
+    applyCrossfade($('pb-mode').value, e.target.value)
   }
   // Volume leveling (App #6): prefer the dedicated mpvReplaygainMode IPC when the
   // backend exposes it (it sets the property live AND persists to playerSettings
@@ -25822,11 +26026,18 @@ async function initPlaybackSettings() {
   // crossfade engine-side), feature-detected so an older backend simply has no
   // control. The honest sublabel already warns those three go quiet.
   if ($('pb-bitperfect') && window.api && typeof window.api.playerSetBitPerfect === 'function') {
-    $('pb-bitperfect').onchange = e => {
+    $('pb-bitperfect').onchange = async e => {
       const on = e.target.checked
-      window.api.playerSetBitPerfect({ on })
-      state._playerSettings = { ...(state._playerSettings || {}), bitPerfect: on }
+      await window.api.playerSetBitPerfect({ on })
+      // Ask main what is now actually in force rather than assuming. Ticking the
+      // box overrules five other controls on this very page, and until this
+      // re-read they all went on showing their old, now-ignored values.
+      let fresh = null
+      try { fresh = await window.api.playerGetConfig() } catch (_) { fresh = null }
+      state._playerSettings = fresh || { ...(state._playerSettings || {}), bitPerfect: on }
+      try { _paintBitPerfectDependents(state._playerSettings) } catch (_) {}
       try { updateBitPerfectBadge() } catch (_) {}
+      try { updateCrossfadeBadge() } catch (_) {}
       showSnackbar(on
         ? 'Bit-perfect on — EQ, volume leveling and crossfade are off'
         : 'Bit-perfect off')
@@ -25836,6 +26047,10 @@ async function initPlaybackSettings() {
     apply({ replaygainApply: e.target.checked })
     showSnackbar(e.target.checked ? 'ReplayGain on — quiet and loud tracks will be evened out' : 'ReplayGain off')
   }
+
+  // Opening Settings with bit-perfect already on must look the same as ticking
+  // it: the overruled controls arrive disabled, with the reason.
+  try { _paintBitPerfectDependents(cfg) } catch (_) {}
 
   await _initGeneralSettings()
   await _initEqSettings(cfg, apply)
@@ -28657,7 +28872,7 @@ function _renderActiveTab(files, container) {
     })
   })
 
-  _bindDlGroupDrag(container)
+  _bindDlGroupDrag(container, files)
 }
 
 // Drag-to-reorder the active download groups (roadmap #52). Reorders the DISPLAY
@@ -28666,7 +28881,7 @@ function _renderActiveTab(files, container) {
 // group takes its place and the pin order is rewritten from the resulting DOM
 // sequence, then the tab re-renders so the next poll keeps the order.
 let _dlDragKey = null
-function _bindDlGroupDrag(container) {
+function _bindDlGroupDrag(container, files) {
   container.querySelectorAll('.dl2-group-active').forEach(function (grp) {
     grp.addEventListener('dragstart', function (e) {
       _dlDragKey = grp.dataset.gkey || null
@@ -34048,7 +34263,12 @@ function _evalSmartPlaylist(pl) {
 // also drive the offline banner (App §11). No new global listeners: the banner
 // piggybacks on these and on api.onAppOnlineState, so the soak budget is
 // unchanged.
-window.addEventListener('online', () => { _applyOnlineState(true) })
+window.addEventListener('online', () => {
+  _applyOnlineState(true)
+  // Positive signals are believed at once; main's probe runs only once a minute,
+  // so without this its stale "offline" would paint the banner straight back on.
+  try { window.api && window.api.connectivityRecheck && window.api.connectivityRecheck() } catch (_) {}
+})
 window.addEventListener('offline', () => { _applyOnlineState(false) })
 
 // Shows/hides the slim offline banner and, on a genuine offline→online flip,
@@ -34426,12 +34646,98 @@ function _mgRefreshDashboardCaches() {
 // Everything here reports what it found and hands the fix to the same delete
 // funnel the rest of the app uses — so a "Fix" click still gets the file list,
 // the confirmation, the state pruning and the undo.
+// One builder for the finding cards, so the instant paint from the cache and
+// the final paint after the scan cannot drift apart.
+function _mgHealthFindingsHtml(findings, relinkHtml) {
+  var html = relinkHtml || ''
+  for (var i = 0; i < findings.length; i++) {
+    var f = findings[i]
+    // Album findings show real albums — name, folder, a click-through — not
+    // the 32-character ids they are keyed by (R9). File findings keep paths.
+    var sample = f.items
+      ? f.items.slice(0, 6).map(function (it) {
+          return '<button class="mg-health-path mg-health-item" data-album-open="' + esc(it.id) + '" title="' + esc(it.path || '') + '">' +
+            '<span class="mg-health-item-name">' + esc(it.label) + '</span>' +
+            (it.path ? '<span class="mg-health-item-path">' + esc(it.path) + '</span>' : '') +
+            '<span class="mg-health-item-go">Open \u203a</span></button>'
+        }).join('')
+      : f.paths.slice(0, 6).map(function (p) {
+          return '<div class="mg-health-path">' + esc(_mgBaseName(p) || p) + '</div>'
+        }).join('')
+    html += '<div class="mg-group mg-sev-' + f.severity + '">' +
+      '<div class="mg-group-head">' +
+        '<span class="mg-group-title">' + esc(f.title) + '</span>' +
+        '<span class="mg-group-meta">' + f.count + ' item' + (f.count === 1 ? '' : 's') +
+          (f.bytes ? ' · ' + _mgFmtBytes(f.bytes) : '') + '</span>' +
+      '</div>' +
+      '<div class="mg-health-detail">' + esc(f.detail) + '</div>' +
+      sample +
+      (f.paths.length > 6 ? '<div class="mg-health-path">…and ' + (f.paths.length - 6) + ' more</div>' : '') +
+      (f.fixAction
+        ? '<div class="mg-health-actions"><button class="mg-btn mg-btn-danger mg-btn-sm" data-fix="' + esc(f.id) + '">Review &amp; remove…</button></div>'
+        : (f.items
+          ? '<div class="mg-health-actions"><span class="mg-health-note">Nothing is removed for this. Open an album to fix its tags from its page.</span></div>'
+          : '<div class="mg-health-actions"><span class="mg-health-note">Nothing is removed for this — it needs a decision from you.</span></div>')) +
+      '</div>'
+  }
+  return html
+}
+
+// "Scanning the library…" and nothing else, for the better part of a minute,
+// while the Overview tab one click away was already showing "88/100 · 5
+// findings" from the same cached result. Two fixes, both about not making him
+// wait for something already known:
+//   * the findings we already have are painted at once, marked as still being
+//     re-checked, so the page is useful from the first frame;
+//   * the walk reports where it has got to (library-extras-progress), so the
+//     wait is visibly a wait rather than a hang.
+function _mgHealthScanningHtml(progress) {
+  var p = progress || {}
+  var where = p.dirs
+    ? esc(p.dirs.toLocaleString()) + ' folder' + (p.dirs === 1 ? '' : 's') + ' checked' +
+      (p.path ? ' · ' + esc(_mgBaseName(p.path) || p.path) : '')
+    : 'Starting…'
+  return '<div class="mg-warn mg-health-scanning" id="mg-health-scanning">' +
+    'Still checking the library for stray files and unfinished downloads. ' +
+    '<span class="mg-health-scan-where">' + where + '</span></div>'
+}
+
+function _mgPaintHealthScanning(progress) {
+  var el = document.getElementById('mg-health-scanning')
+  if (!el) return false
+  el.innerHTML = _mgHealthScanningHtml(progress).replace(/^<div[^>]*>/, '').replace(/<\/div>$/, '')
+  return true
+}
+
 async function renderManageHealth() {
   var _tabAtStart = _mgState.tab
-  setContent(_mgShell('<div class="mg-empty">Scanning the library…</div>'))
+  // What the dashboard's health card is already showing. Painting it first
+  // means the tab opens with the answer, not with a spinner for the answer.
+  var known = _mgCacheGet('health')
+  var knownFindings = (known && Array.isArray(known.findings)) ? known.findings : []
+  setContent(_mgShell(
+    _mgHealthScanningHtml(null) +
+    (knownFindings.length
+      ? _mgHealthFindingsHtml(knownFindings, '')
+      : '<div class="mg-empty">Nothing checked yet — this is the first scan.</div>'),
+    knownFindings.length
+      ? knownFindings.length + ' finding' + (knownFindings.length === 1 ? '' : 's') + ' · details still scanning'
+      : 'Scanning…'))
   _mgBindTabs()
 
+  var _offProgress = null
+  try {
+    if (window.api && typeof window.api.on === 'function') {
+      _offProgress = window.api.on('library-extras-progress', function (d) {
+        if (_mgState.tab !== _tabAtStart || state.currentPage !== 'manage') return
+        _mgPaintHealthScanning(d)
+      })
+    }
+  } catch (_) { _offProgress = null }
+  var _stopProgress = function () { try { if (typeof _offProgress === 'function') _offProgress() } catch (_) {} }
+
   var extras = await window.api.libraryScanExtras().catch(function () { return null })
+  _stopProgress()
   // The scan takes seconds. If you switched sub-tab (or left Manage entirely)
   // while it ran, the late result used to overwrite whatever you were now
   // looking at.
@@ -34464,37 +34770,7 @@ async function renderManageHealth() {
     return
   }
 
-  var html = relinkHtml
-  for (var i = 0; i < findings.length; i++) {
-    var f = findings[i]
-    // Album findings show real albums — name, folder, a click-through — not
-    // the 32-character ids they are keyed by (R9). File findings keep paths.
-    var sample = f.items
-      ? f.items.slice(0, 6).map(function (it) {
-          return '<button class="mg-health-path mg-health-item" data-album-open="' + esc(it.id) + '" title="' + esc(it.path || '') + '">' +
-            '<span class="mg-health-item-name">' + esc(it.label) + '</span>' +
-            (it.path ? '<span class="mg-health-item-path">' + esc(it.path) + '</span>' : '') +
-            '<span class="mg-health-item-go">Open \u203a</span></button>'
-        }).join('')
-      : f.paths.slice(0, 6).map(function (p) {
-          return '<div class="mg-health-path">' + esc(_mgBaseName(p) || p) + '</div>'
-        }).join('')
-    html += '<div class="mg-group mg-sev-' + f.severity + '">' +
-      '<div class="mg-group-head">' +
-        '<span class="mg-group-title">' + esc(f.title) + '</span>' +
-        '<span class="mg-group-meta">' + f.count + ' item' + (f.count === 1 ? '' : 's') +
-          (f.bytes ? ' · ' + _mgFmtBytes(f.bytes) : '') + '</span>' +
-      '</div>' +
-      '<div class="mg-health-detail">' + esc(f.detail) + '</div>' +
-      sample +
-      (f.paths.length > 6 ? '<div class="mg-health-path">…and ' + (f.paths.length - 6) + ' more</div>' : '') +
-      (f.fixAction
-        ? '<div class="mg-health-actions"><button class="mg-btn mg-btn-danger mg-btn-sm" data-fix="' + esc(f.id) + '">Review &amp; remove…</button></div>'
-        : (f.items
-          ? '<div class="mg-health-actions"><span class="mg-health-note">Nothing is removed for this. Open an album to fix its tags from its page.</span></div>'
-          : '<div class="mg-health-actions"><span class="mg-health-note">Nothing is removed for this — it needs a decision from you.</span></div>')) +
-      '</div>'
-  }
+  var html = _mgHealthFindingsHtml(findings, relinkHtml)
 
   if (extras && !extras.partialsChecked) {
     html = '<div class="mg-warn">Soulseek is not reachable, so unfinished downloads were not checked ' +
@@ -34785,14 +35061,21 @@ function _mgStorageHtml(rep) {
     var redRows = redundant.pairs.map(function (p, idx) {
       var la = p.lossyAlbum, ll = p.losslessAlbum
       return '<div class="mg-store-row mg-redundant-row">' +
-        '<label class="mg-pick"><input type="checkbox" class="mg-red-check" data-idx="' + idx + '" checked></label>' +
+        '<label class="mg-pick"><input type="checkbox" class="mg-red-check" data-idx="' + idx + '"></label>' +
         '<span class="mg-store-label">' + esc((la.artist || 'Unknown') + ' — ' + (la.name || 'Unknown')) +
           ' <span class="mg-store-sub">lossy copy · lossless kept' + (ll ? ': ' + esc(ll.name || '') : '') + '</span></span>' +
         '<span class="mg-store-val">' + _mgFmt(p.lossyBytes) + '</span></div>'
     }).join('')
+    // NOTHING is ticked. This list proposes deleting his music, and it sits
+    // directly above a red "Move selected to Trash…" button. A false positive
+    // costs him a recording he may never find again, so the default has to be
+    // "nothing happens". The Upgrades panel right below it already works this
+    // way and says so; this one shipped every box pre-ticked, which is exactly
+    // backwards. See test/upgrade-dupes-wiring.test.js for the same rationale.
     redHtml = '<div class="mg-store-section"><div class="mg-store-h">Redundant lossy copies</div>' +
       '<div class="mg-note">These albums have BOTH a lossless and a lossy copy — the lossy one is just wasting space. ' +
-      'Up to <strong>' + _mgFmt(redundant.totalReclaimBytes) + '</strong> reclaimable.</div>' +
+      'Up to <strong>' + _mgFmt(redundant.totalReclaimBytes) + '</strong> reclaimable. ' +
+      'Nothing is selected for you — tick the ones you want gone. Moved to Trash, not deleted.</div>' +
       redRows +
       '<div class="mg-rule-bar"><button class="mg-btn mg-btn-danger mg-btn-sm" id="mg-red-trash">Move selected to Trash…</button></div>' +
       '</div>'
@@ -35056,10 +35339,19 @@ function _mgBindTrash() {
     b.addEventListener('click', async function () {
       b.disabled = true
       b.textContent = 'Restoring…'
-      var r = await window.api.libraryRestoreTrashed({ paths: [b.dataset.restore] }).catch(function () { return null })
-      showSnackbar(r && r.restored ? 'Restored' : 'Could not restore — ' +
-        ((r && r.results && r.results[0] && r.results[0].error) || 'unknown reason'))
-      _scheduleLibRescan()
+      var label = 'Restore'
+      try {
+        var r = await window.api.libraryRestoreTrashed({ paths: [b.dataset.restore] }).catch(function () { return null })
+        showSnackbar(r && r.restored ? 'Restored' : 'Could not restore — ' +
+          ((r && r.results && r.results[0] && r.results[0].error) || 'unknown reason'))
+        _scheduleLibRescan()
+      } finally {
+        // The re-render below normally replaces this button, but it does not
+        // run if the tab changed or the render threw — and then "Restoring…"
+        // stays on a dead button for ever.
+        b.disabled = false
+        b.textContent = label
+      }
       renderManageTrash()
     })
   })
