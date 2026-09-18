@@ -2410,7 +2410,7 @@ async function renderPerson(personId) {
   if (!res.ok) {
     // A flaky fetch is exactly the case a Retry exists for: the second visit
     // used to work while the first sat on an error with no way out (R14).
-    if (rows) rows.innerHTML = '<div class="vrow-msg err">' + esc(_videoErrorText(res.error)) +
+    if (rows) rows.innerHTML = '<div class="vrow-msg err">' + esc(_videoErrorText(res.error, 'catalog')) +
       ' <button class="vbtn vbtn-retry" id="vperson-retry">Try again</button></div>'
     document.getElementById('vperson-retry')?.addEventListener('click', function () { renderPerson(personId) })
     return
@@ -3086,7 +3086,7 @@ async function _fetchBrowse(reset) {
       if (count) count.innerHTML = ''
     }
     if (more) {
-      more.innerHTML = '<div class="vrow-msg err">' + esc(_videoErrorText(res.error)) +
+      more.innerHTML = '<div class="vrow-msg err">' + esc(_videoErrorText(res.error, 'catalog')) +
         ' <button class="vbtn" id="vgrid-retry">Retry</button></div>'
       document.getElementById('vgrid-retry')?.addEventListener('click', function () {
         _fetchBrowse(reset)
@@ -5918,7 +5918,10 @@ function _certLabel(c) {
   return _CERT_CODES.test(t) ? t : 'Rated ' + t
 }
 
-function _videoErrorText(message) {
+// `context` is 'catalog' for anything that failed while browsing or opening a
+// title, and omitted (meaning playback) under the player. It decides whether
+// the advice may point at the source list, which only exists on one of those.
+function _videoErrorText(message, context) {
   const msg = String(message || 'Something went wrong')
   // V4: the one table of start-up failures and their next steps
   // (src/start-honesty.js). The cases below remain as the fallback when the
@@ -5926,7 +5929,7 @@ function _videoErrorText(message) {
   const hints = (typeof PapaInstallHints !== 'undefined' && PapaInstallHints) || null
   const platform = hints ? hints.detect() : 'linux'
   if (typeof PapaStartHonesty !== 'undefined' && PapaStartHonesty && typeof PapaStartHonesty.sentence === 'function') {
-    return PapaStartHonesty.sentence(msg, platform)
+    return PapaStartHonesty.sentence(msg, platform, context)
   }
   // The raw failure is "mpv socket not ready: /run/user/… (last error: ENOENT)"
   // — which reads like the app is broken when the actual problem is that the
@@ -5974,7 +5977,7 @@ function _videoError(message) {
   // _videoErrorText exists precisely to turn these into something a person can
   // act on, and this was the one place that skipped it — so a dropped
   // connection showed the literal string "fetch failed".
-  const msg = _videoErrorText(raw)
+  const msg = _videoErrorText(raw, 'catalog')
   const hint = /TMDB API key|401/i.test(raw)
     ? '<div class="video-error-hint">Set your TMDB API key in Settings → Video.</div>'
     : ''
@@ -6093,7 +6096,7 @@ async function _renderTasteRow(ticket) {
   if (!box) return
   if (typeof _releaseCardsIn === 'function') _releaseCardsIn(box)
   if (!res.ok) {
-    box.innerHTML = '<div class="vrow-msg err">' + esc(_videoErrorText(res.error)) + '</div>'
+    box.innerHTML = '<div class="vrow-msg err">' + esc(_videoErrorText(res.error, 'catalog')) + '</div>'
     return
   }
   const items = Array.isArray(res.results) ? res.results : []
@@ -6336,7 +6339,7 @@ async function _loadShelfPage(ticket) {
   if (state.currentPage !== 'shelf') { _shelfPage.loading = false; return }
   _shelfPage.loading = false
   if (!res.ok) {
-    if (more) more.innerHTML = '<div class="vrow-msg err">' + esc(_videoErrorText(res.error)) + '</div>'
+    if (more) more.innerHTML = '<div class="vrow-msg err">' + esc(_videoErrorText(res.error, 'catalog')) + '</div>'
     return
   }
   if (_shelfPage.page === 1 && res.shelf) {
@@ -7085,7 +7088,7 @@ async function _renderCalendarBody() {
   const target = document.getElementById('vcal-body')
   if (!target) return
   if (!res || !res.ok) {
-    target.innerHTML = '<div class="vrow-msg err">' + esc(_videoErrorText(res && res.error)) + '</div>'
+    target.innerHTML = '<div class="vrow-msg err">' + esc(_videoErrorText(res && res.error, 'catalog')) + '</div>'
     return
   }
   const groups = _airingByDay(res.airing, Date.now(), 14)
@@ -7120,7 +7123,7 @@ async function _renderCalendarMonth() {
   const target = document.getElementById('vcal-body')
   if (!target) return
   if (!res || !res.ok || !res.calendar) {
-    target.innerHTML = '<div class="vrow-msg err">' + esc(_videoErrorText(res && res.error)) + '</div>'
+    target.innerHTML = '<div class="vrow-msg err">' + esc(_videoErrorText(res && res.error, 'catalog')) + '</div>'
     return
   }
   const cal = res.calendar
@@ -7303,7 +7306,7 @@ function _rowMsg(key, html, isError) {
 function _rowEmpty(key, text) { _rowMsg(key, esc(text), false) }
 
 function _rowError(key, error) {
-  _rowMsg(key, esc(_videoErrorText(error)) +
+  _rowMsg(key, esc(_videoErrorText(error, 'catalog')) +
     '<div><button class="vbtn" data-retry="' + esc(key) + '">Try again</button></div>', true)
   const btn = document.querySelector('[data-retry="' + key + '"]')
   if (btn) btn.addEventListener('click', function () { _renderVideoTab(++_videoCatalogTicket) })
@@ -8845,7 +8848,7 @@ function _runVideoTitleSearch(query, opts) {
         const target = document.getElementById('video-search-results')
         if (!target) return
         if (!res.ok) {
-          _setVideoSearchHtml('<div class="vrow-msg err">' + esc(_videoErrorText(res.error)) + '</div>')
+          _setVideoSearchHtml('<div class="vrow-msg err">' + esc(_videoErrorText(res.error, 'catalog')) + '</div>')
           return
         }
         const results = Array.isArray(res.results) ? res.results : []

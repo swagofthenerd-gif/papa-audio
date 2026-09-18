@@ -48,3 +48,91 @@ test('a frozen picture says which side is stuck', () => {
   const purist = H.stuck({ phase: 'play', waited: 12, converted: null })
   assert.match(purist.text, /The source has stopped sending data/)
 })
+
+// ── catalogue failures vs playback failures ─────────────────────────────────
+// This table was written for the seconds between pressing Play and the first
+// frame, where a list of sources sits on screen underneath. The Movies & TV
+// catalogue routed through it too, so a title that simply did not come back
+// from the titles service was answered with "Try another source from the list
+// below" on a detail page that has no source list anywhere on it.
+test('a catalogue failure is not told to pick another source', () => {
+  const play = H.explain('fetch failed')
+  const browse = H.explain('fetch failed', 'linux', 'catalog')
+  // Same diagnosis either way — only the next step differs.
+  assert.strictEqual(browse.text, play.text)
+  assert.strictEqual(browse.kind, play.kind)
+})
+
+test('the catch-all is the one that bit: a 404 on a detail page', () => {
+  const play = H.explain('Request failed with status 404')
+  assert.strictEqual(play.kind, 'unknown')
+  assert.strictEqual(play.next, H.SOURCE, 'under the player that is right')
+  const browse = H.explain('Request failed with status 404', 'linux', 'catalog')
+  assert.strictEqual(browse.next, H.BROWSE, 'on a detail page it was nonsense')
+  assert.doesNotMatch(browse.next, /source/i)
+})
+
+test('every source-pointing answer is rewritten for the catalogue', () => {
+  const messages = [
+    'Request failed with status 404',
+    'ffprobe could not read the source',
+    'Nobody is sharing this right now',
+    'The stream did not start within 60s',
+    'no magnet link',
+    'the file could not be played',
+    'the converter keeps failing',
+  ]
+  for (const m of messages) {
+    const browse = H.explain(m, 'linux', 'catalog')
+    assert.doesNotMatch(String(browse.next || ''), /source (from|below)|list below/i,
+      m + ' still pointed at a source list that is not on the page')
+  }
+})
+
+test('advice that fits a catalogue is left exactly as it was', () => {
+  // Not every case points at the source list, and those must not be rewritten
+  // into something vaguer than the truth.
+  assert.strictEqual(H.explain('401 api key', 'linux', 'catalog').next,
+    'Set it in Settings → Video.')
+  assert.strictEqual(H.explain('request timed out', 'linux', 'catalog').next,
+    'Check your connection and try again.')
+  assert.strictEqual(H.explain('ENOTFOUND', 'linux', 'catalog').next,
+    'Check your connection.')
+})
+
+test('playback keeps the source advice — the default did not move', () => {
+  assert.strictEqual(H.explain('Request failed with status 404').next, H.SOURCE)
+  assert.strictEqual(H.explain('Nobody is sharing this', 'linux', 'playback').next, H.SOURCE)
+  assert.match(H.sentence('Request failed with status 404'), /another source/)
+})
+
+test('a one-line sentence carries the context through', () => {
+  assert.match(H.sentence('Request failed with status 404', 'linux', 'catalog'), /Try again, or go back\./)
+  assert.doesNotMatch(H.sentence('Request failed with status 404', 'linux', 'catalog'), /source/i)
+})
+
+// The renderer's own wrapper is where the context actually has to travel: the
+// detail page's error screen calls it, and that is the screen the wrong advice
+// was printed on.
+test("the renderer's _videoErrorText hands the context to the table", () => {
+  const fs = require('fs')
+  const path = require('path')
+  const vm = require('vm')
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
+  const start = src.indexOf('function _videoErrorText(')
+  assert.ok(start > -1)
+  let depth = 0, end = -1
+  for (let j = src.indexOf('{', start); j < src.length; j++) {
+    if (src[j] === '{') depth++
+    else if (src[j] === '}') { depth--; if (!depth) { end = j + 1; break } }
+  }
+  const ctx = { PapaStartHonesty: H, console }
+  ctx.globalThis = ctx
+  vm.createContext(ctx)
+  vm.runInContext(src.slice(start, end), ctx)
+  assert.match(ctx._videoErrorText('Request failed with status 404'), /another source/,
+    'under the player it still points at the list')
+  assert.match(ctx._videoErrorText('Request failed with status 404', 'catalog'), /Try again, or go back/)
+  assert.doesNotMatch(ctx._videoErrorText('Request failed with status 404', 'catalog'), /source/i,
+    'this is the sentence a detail page was printing with no source list on it')
+})
