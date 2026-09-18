@@ -657,3 +657,32 @@ load-bearing claims re-checked by grep before routing. In flight on
 - FOLLOW-UPS to route: six `_artSrc` call sites in the queue/now-playing
   painters still bypass the artwork miss memory; shuffle exhaustion
   (played-set) pending his decision.
+
+### 19 Sep — the watching loop: caching ahead, delete-watched, identity (merged)
+`fix/watch-loop-cache-ahead` (7 commits, +8 test files, executor suite
+5,623/0, twin pass on :9392 with 0 throws). My re-checks on the merged
+branch: E1 tick branch removed → 1/16 red; E3 identity assignments removed →
+2/7 red; E5 playing-file guard removed → 1/14 red.
+- `src/watch-key.js` — one episode identity for renderer AND main
+  (`tv:1396:s1e5`); a missing season spells `snull` on both sides (one path
+  used to say `sundefined`, i.e. two names for one episode).
+- Pack switch sends `{index, cacheKey, cacheMeta}`; both handler branches
+  adopt it; `cacheSaved` only set when the key at copy start still matches.
+- `_debridCacheAhead()` on the pack tick (now armed for debrid plays too):
+  skips keys already cached (source-independent, his "don't cache the same
+  episode from a different source"), runs `evictPlan` first, `.part` →
+  rename → index with the right episode, one at a time, aborted on
+  teardown, `if (DRY_RUN) return` before any RD call or write; pack switch
+  plays the local file when the key is cached.
+- `deleteWatchedCache` setting (default on) + `video-cache-sweep-watched`
+  (gated; never the playing key, never anything used in the last 10 min,
+  never the keep library) + "Delete watched (n)" on On Device + automatic
+  pass on entering; `markWatched(key, {reason})` — only ratio/ended sweep.
+- Early Next marks watched only past 50%; natural end auto-advances unless
+  auto-play is off, the card was dismissed or the still-watching cap hit;
+  Up Next follows what is PLAYING, not the page; torrent chain starts when
+  downloaded ≥ playhead + 15% (was: 100%); head prefetch in smooth mode.
+- Executor deviations accepted: E5/E8–E12 in one commit; helpers inlined
+  into handler bodies so `lift-ipc` sees them; `.catch` logs instead of
+  swallowing (the honesty guard flags the bare form). Not yet verified LIVE
+  with a real debrid pack — that needs his account and is his call.
