@@ -15398,7 +15398,7 @@ function renderSearch(query) {
       const bg = GENRE_COLORS[g] || `linear-gradient(135deg,hsl(${Math.abs(g.charCodeAt(0)*7)%360},55%,28%),hsl(${Math.abs(g.charCodeAt(0)*7+40)%360},45%,18%))`
       // data-genre carries the canonical key so a tile click filters the
       // library by the same case-insensitive identity the chips use (audit #11).
-      return `<div class="genre-tile" style="background:${bg}" data-genre="${esc(_genreKey(g))}">${esc(g)}</div>`
+      return `<div class="genre-tile" style="background:${bg}" title="${esc(g)}" data-genre="${esc(_genreKey(g))}">${esc(g)}</div>`
     }).join('')
     var surpriseStyle = document.getElementById('surprise-style')
     if (!surpriseStyle) {
