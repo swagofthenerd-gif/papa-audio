@@ -17830,6 +17830,48 @@ function _statsCutoff(range) {
   return days ? Date.now() - days * 86400000 : 0
 }
 
+// Stats used to print two different all-time totals side by side:
+// "Listening time (All time) 112h 10m" next to "All time: 5d 4h · 4,600 total
+// plays" — 112 hours and 124 hours, in the same box, both labelled all time.
+//
+// Two separate causes, and they need separate answers.
+//
+// 1. The two TIME figures came from the same history but measured it
+//    differently. The headline only counted a play if its file was still in the
+//    library (byPath.get), and ignored the duration the history entry itself
+//    recorded; the smaller figure was the headline. Both now use one duration
+//    function, so "All time" in the headline and "All time" beside it are the
+//    same number, because they are the same thing.
+//
+// 2. The play COUNT comes from a different store. playCounts was incremented on
+//    every gapless auto-advance; playHistory was not written at all for those,
+//    so the counts are the more complete record and the history is the only one
+//    with timestamps (see history.js reconcile — main logs the gap at startup,
+//    "4600 counted vs 1661 recorded"). Neither is wrong; they measure different
+//    things. So both are reported, each labelled as what it actually is,
+//    instead of one number being quietly presented as the other.
+function _statsListeningTotals(playHistory, ranged, durationOf, playCounts) {
+  const hist = Array.isArray(playHistory) ? playHistory : []
+  const inRange = Array.isArray(ranged) ? ranged : []
+  const secs = list => list.reduce((n, p) => n + (Number(durationOf(p)) || 0), 0)
+  const counted = Object.keys(playCounts || {})
+    .reduce((n, k) => n + (Number(playCounts[k]) || 0), 0)
+  return {
+    rangeSecs: secs(inRange),
+    rangePlays: inRange.length,
+    allTimeSecs: secs(hist),
+    // Plays the timestamped history actually holds. This is what every windowed
+    // figure on the page is drawn from, so it is the one that can be compared
+    // with them.
+    historyPlays: hist.length,
+    // Plays the counter holds, including ones from before history was kept and
+    // every gapless auto-advance that history missed.
+    countedPlays: counted,
+    // Only worth saying out loud when they differ.
+    countsExceedHistory: Math.max(0, counted - hist.length),
+  }
+}
+
 function renderStats() {
   const all = _allLibraryTracks()
   const byPath = new Map(all.map(t => [t.filePath, t]))
@@ -17842,14 +17884,6 @@ function renderStats() {
     ? ranged
     : (state.playHistory || []).filter(function(h) { return (h.ts || 0) >= Date.now() - 30 * 86400000 })
 
-  let totalSecs = 0
-  for (const h of ranged) {
-    const t = byPath.get(h.filePath)
-    if (t) totalSecs += (t.duration || 0)
-  }
-  const hours = Math.floor(totalSecs / 3600)
-  const mins  = Math.floor((totalSecs % 3600) / 60)
-
   // History written before duration was recorded has none, so fall back to the
   // library's duration for that path. Without this the all-time figure read
   // "0h 0m" for every user, forever.
@@ -17859,8 +17893,12 @@ function renderStats() {
   })
   var _histDur = function (p) { return p.duration || _durByPath[p.filePath] || 0 }
 
-  var totalAllTime = 0
-  state.playHistory.forEach(function(p) { totalAllTime += _histDur(p) })
+  var _totals = _statsListeningTotals(state.playHistory, ranged, _histDur, state.playCounts)
+  const totalSecs = _totals.rangeSecs
+  const hours = Math.floor(totalSecs / 3600)
+  const mins  = Math.floor((totalSecs % 3600) / 60)
+
+  var totalAllTime = _totals.allTimeSecs
   var totalDays = Math.floor(totalAllTime / 86400)
   var totalHrs = Math.floor((totalAllTime % 86400) / 3600)
   var totalAllTimeStr = totalDays > 0 ? totalDays + 'd ' + totalHrs + 'h' : totalHrs + 'h ' + Math.floor((totalAllTime % 3600) / 60) + 'm'
@@ -18068,7 +18106,7 @@ function renderStats() {
 
   // ── Wave-6 additions: total plays, top albums, plays-per-month, dupes ───────
   var _mt = (typeof window !== 'undefined' && window.PapaMusicTools) || null
-  var totalPlays = Object.keys(state.playCounts || {}).reduce(function (s, k) { return s + (state.playCounts[k] || 0) }, 0)
+  var totalPlays = _totals.countedPlays
 
   // Top albums by play count (rolls track play-counts up to their album).
   var topAlbums = _mt ? _mt.topAlbumsByPlays(state.library, state.playCounts, 10) : []
@@ -18241,7 +18279,7 @@ function renderStats() {
       <button id="export-json-btn" class="secondary" style="padding:6px 14px;font-size:12px">Export JSON</button>
       <button id="export-csv-btn" class="secondary" style="padding:6px 14px;font-size:12px">Export CSV</button>
     </div>
-    <div class="stats-hero">Listening time (${rangeLabel})<span>${hours}h ${mins}m</span><div style="font-size:12px;color:var(--text3);margin-top:4px">All time: ${totalAllTimeStr} · ${totalPlays.toLocaleString()} total plays</div><div style="font-size:11px;color:var(--text3);margin-top:4px">${rangeText}</div><div class="scrobble-health scrobble-${_scrobHealth.state}" title="${esc(_scrobHealth.title)}">${esc(_scrobHealth.text)}</div></div>
+    <div class="stats-hero">Listening time (${rangeLabel})<span>${hours}h ${mins}m</span><div style="font-size:12px;color:var(--text3);margin-top:4px">${state.statsRange === 'all' ? '' : `All time: ${totalAllTimeStr} · `}${_totals.historyPlays.toLocaleString()} plays with a date</div>${_totals.countsExceedHistory ? `<div style="font-size:11px;color:var(--text3);margin-top:2px" title="Play counts were kept before listening history was, and a gapless album advance bumped the count without writing a history entry. Nothing on this page can be windowed by date from them, so they are shown separately rather than mixed in.">${totalPlays.toLocaleString()} play counts in total, incl. ${_totals.countsExceedHistory.toLocaleString()} from before history was kept</div>` : ''}<div style="font-size:11px;color:var(--text3);margin-top:4px">${rangeText}</div><div class="scrobble-health scrobble-${_scrobHealth.state}" title="${esc(_scrobHealth.title)}">${esc(_scrobHealth.text)}</div></div>
     ${monthsHTML}
     ${storageHTML}
     ${loudnessHTML}
