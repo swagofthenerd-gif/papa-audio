@@ -9511,6 +9511,23 @@ body.theme-light .cinema {
 .whatsnew-body ul { margin:0; padding-left:18px; }
 .whatsnew-body h2, .whatsnew-body h3 { font-size:12.5px; color:var(--text2); margin:6px 0 2px; }
 
+/* Dry-run badge (PAPA_DRY_RUN=1). Deliberately loud and deliberately
+   undismissable: a QA screenshot must never be mistaken for the real app. */
+.dry-run-pill {
+  margin-left: 12px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid #ffb347;
+  background: rgba(255, 179, 71, .16);
+  color: #ffb347;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .09em;
+  line-height: 16px;
+  white-space: nowrap;
+  -webkit-app-region: no-drag;
+}
+
 /* ════════════════════════════════════════════════════
    PAPA CINEMA  ·  the film identity
    ────────────────────────────────────────────────────
@@ -10773,21 +10790,4 @@ body.theme-light .cinema {
   .cinema .vcard-poster[data-blurup] { transition: none; opacity: 1; filter: none; transform: none; }
   .cinema .vhero-bg.ready { animation: none; }
   .cinema .vhero-bg.vhero-bg-prev { animation: none; display: none; }
-}
-
-/* Dry-run badge (PAPA_DRY_RUN=1). Deliberately loud and deliberately
-   undismissable: a QA screenshot must never be mistaken for the real app. */
-.dry-run-pill {
-  margin-left: 12px;
-  padding: 2px 8px;
-  border-radius: 999px;
-  border: 1px solid #ffb347;
-  background: rgba(255, 179, 71, .16);
-  color: #ffb347;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: .09em;
-  line-height: 16px;
-  white-space: nowrap;
-  -webkit-app-region: no-drag;
 }

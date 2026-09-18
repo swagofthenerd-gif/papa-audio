@@ -126,6 +126,36 @@ test('video-keep-file: the gate is the only thing standing in front of a body th
   assert.ok(!isRefusal(live.result))
 })
 
+// ── video-pack-select: half gated, on purpose ──────────────────────────────
+
+// Switching episode has two paths. The local one re-points a torrent streamer
+// that is already running — no network, nothing new on disk — and a QA twin has
+// to be able to click through a pack. The other resolves the episode through
+// RealDebrid. Only the second is refused.
+function packSession(extra) {
+  return { _videoSession: Object.assign({ token: 7, streamer: null, debrid: null }, extra) }
+}
+
+test('video-pack-select refuses the RealDebrid path in a dry run', async () => {
+  const globals = packSession({ debrid: { magnet: 'magnet:?xt=urn:btih:1', want: null } })
+  const dry = await runHandler('video-pack-select', { dryRun: true, args: { index: 2 }, globals })
+  assert.ok(isRefusal(dry.result), JSON.stringify(dry.result))
+  assert.ok(!dry.calls.some(c => c.startsWith('debrid')),
+    'the dry run reached the debrid client: ' + dry.calls.join(', '))
+
+  const live = await runHandler('video-pack-select', { dryRun: false, args: { index: 2 }, globals })
+  assert.ok(!isRefusal(live.result))
+  assert.ok(live.calls.includes('debrid'),
+    'the live path stopped asking RealDebrid: ' + live.calls.join(', '))
+})
+
+test('video-pack-select still switches episode on a running local stream', async () => {
+  const globals = packSession({ streamer: { selectFile: () => 'http://127.0.0.1:1/f.mkv', files: () => [] } })
+  const run = await runHandler('video-pack-select', { dryRun: true, args: { index: 2 }, globals })
+  assert.ok(!isRefusal(run.result),
+    'a dry run must not block a local episode switch: ' + JSON.stringify(run.result))
+})
+
 // ── Nothing changes when the variable is absent ─────────────────────────────
 
 // The real predicate line, lifted from main.js and run against a fake env, so
