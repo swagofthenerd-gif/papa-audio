@@ -234,6 +234,16 @@
     const parts = String(k).split(':')
     return parts.length ? parts[0] : ''
   }
+  // An entry that can actually become a card: an object that knows what kind of
+  // thing it is and which one. Anything else is wreckage from a half-written
+  // blob or a much older writer, and the readers below all assume both.
+  function _isRenderable(it) {
+    if (!it || typeof it !== 'object' || Array.isArray(it)) return false
+    const type = it.type == null ? '' : String(it.type).trim()
+    const id = it.id == null ? '' : String(it.id).trim()
+    return type !== '' && id !== '' && id !== 'undefined' && id !== 'null'
+  }
+
   function _hasRealId(k, meta) {
     const fromMeta = meta && meta.id != null ? String(meta.id) : ''
     const id = fromMeta || _idFromKey(k)
@@ -598,15 +608,31 @@
     // becomes a string, and watchlist entries that collide once normalised
     // (1396 and "1396") merge down to one, keeping the more recent addedAt.
     function _normalize(state) {
+      let dropped = 0
       for (const k of Object.keys(state.items)) {
         const it = state.items[k]
         // One-time self-heal (like the watchlist dedupe below and the renderer's
         // search-history cleanup): a blob written before ids were validated can
         // hold a ghost entry keyed "movie:"/"tv:" with no real id. It renders an
         // empty Continue Watching card that 404s on click — drop it on load.
-        if (!_hasRealId(k, it)) { delete state.items[k]; continue }
+        if (!_hasRealId(k, it)) { delete state.items[k]; dropped++; continue }
+        // Audit N17: ONE malformed entry in a real history — no type, no id, no
+        // title, just a position and a duration — painted a blank Continue
+        // Watching card, and every reader that asks it what it is (the card's
+        // own navigation, the per-show collapse, the airing seed) reaches for
+        // `it.type`/`it.id` and gets undefined. A card that cannot say what it
+        // is cannot be opened, so it is worth nothing on screen and is a throw
+        // waiting to happen off it.
+        //
+        // Dropped on READ, never on write: the stored blob is left alone, so a
+        // future version that learns to repair these still has them, and a bug
+        // in this rule can never eat somebody's history off the disk.
+        if (!_isRenderable(it)) { delete state.items[k]; dropped++; continue }
         if (it && typeof it === 'object' && it.id != null) it.id = String(it.id)
       }
+      // One line, with the count — not one per entry. A history that has gone
+      // properly bad would otherwise print hundreds.
+      if (dropped) _log(`dropped ${dropped} unusable watch-history ${dropped === 1 ? 'entry' : 'entries'} (no type or id) while reading ${KEY}`)
       const seen = new Map()
       const deduped = []
       for (const w of state.watchlist) {
