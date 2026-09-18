@@ -178,6 +178,11 @@ const GATED_CHANNELS = [
   'slsk-enqueue-downloads', 'slsk-retry-transfer', 'slsk-cancel-transfer',
   'slsk-respread-backlog', 'slsk-configure', 'slsk-set-download-dir',
   'slsk-share-mode-set', 'yt-download',
+  // The four slskd write paths found ungated on 2026-09-19. slskdFetch refuses
+  // them all at the choke point now, but a twin's user should be told what did
+  // not happen rather than shown a thrown error, so each one carries its own
+  // refusal as well.
+  'slsk-download', 'slsk-chat-send', 'slsk-wishlist-run', 'slsk-setup',
   'library-trash-paths', 'library-empty-trash', 'library-move-path',
   'library-write-tags', 'tag-write-batch', 'library-set-artwork',
   'papa-import-all',

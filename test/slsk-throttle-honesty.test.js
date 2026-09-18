@@ -49,8 +49,11 @@ function liftFetch(responses, headers = {}) {
   // without the test sleeping. Shadowing Date inside the lift is what makes the
   // 90-second memory window observable at all.
   let now = 1700000000000
+  // DRY_RUN joined the lifted slice when the slskd write choke point landed
+  // (2026-09-19). These tests are about live throttle behaviour, so it is false
+  // here; the choke itself is covered by test/dry-run-slskd-choke.test.js.
   const names = ['fetch', 'slskdToken', 'slskdTokenExpiry', 'slskdAcquireToken', 'SLSKD_BASE',
-    'setTimeout', 'console', 'Date']
+    'setTimeout', 'console', 'Date', 'DRY_RUN']
   const waits = []
   const make = new Function(...names, `
     ${code}
@@ -63,6 +66,7 @@ function liftFetch(responses, headers = {}) {
     (fn, ms) => { waits.push(ms); now += Number(ms) || 0; fn(); return { unref () {} } },
     { log () {}, error () {} },
     { now: () => now },
+    false,
   )
   return { ...api, calls, waits, advance: ms => { now += ms }, at: () => now }
 }
