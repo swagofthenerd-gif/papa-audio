@@ -5188,6 +5188,17 @@ function _isInstantSource(s) {
   return _debridHeld.indexOf(s.magnet) !== -1
 }
 
+// The ONE size formatter for Movies & TV (audit N11). The providers baked a
+// DECIMAL "4.0 GB" into every source label while the row's own size stat next
+// to it rendered the same bytes BINARY as "3.7 GB" — one row, two numbers, the
+// same unit written on both. providers/quality.js `fmtSize` and this both call
+// PapaVideoFormat.size, so identical bytes now always read identically.
+function _fmtVideoSize(bytes) {
+  const F = (typeof window !== 'undefined' && window.PapaVideoFormat) || null
+  if (F && typeof F.size === 'function') return F.size(bytes)
+  return _fmtBytes(bytes)
+}
+
 // One source, described in the few words that actually decide between them:
 // who made it, how it looks, how well it is shared, how big it is, and whether
 // it will start instantly.
@@ -5201,7 +5212,7 @@ function _sourceOptionLabel(s) {
   const seeds = Number(s.seeders)
   if (Number.isFinite(seeds)) bits.push(seeds + ' seeds')
   const size = Number(s.sizeBytes)
-  if (Number.isFinite(size) && size > 0) bits.push(_fmtBytes(size))
+  if (Number.isFinite(size) && size > 0) bits.push(_fmtVideoSize(size))
   if (s.isPack) bits.push('pack')
   return bits.join(' · ')
 }
@@ -12300,7 +12311,7 @@ function _videoStreamRow(s, i) {
     : '<span class="video-source-stat video-source-seeds video-source-stat-unknown" title="Seeders unknown">↑ —</span>'
   const sizeN = Number(s.sizeBytes)
   const sizeStat = Number.isFinite(sizeN) && sizeN > 0
-    ? '<span class="video-source-stat video-source-size" title="Size">' + esc(_fmtBytes(sizeN)) + '</span>'
+    ? '<span class="video-source-stat video-source-size" title="Size">' + esc(_fmtVideoSize(sizeN)) + '</span>'
     : '<span class="video-source-stat video-source-size video-source-stat-unknown" title="Size unknown">—</span>'
   const label = s.label || s.source || (s.kind === 'torrent' ? (s.magnet || '') : (s.url || '')) || ''
   // The release name says who made the file (V2.2): the group as a badge, the

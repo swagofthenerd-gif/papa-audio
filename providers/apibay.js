@@ -19,6 +19,7 @@
 const {
   parseQuality, parseAudioLayout, isLowQualitySource, magnetFromHash,
   parseSizeBytes,
+  fmtSize,
 } = require('./quality')
 const { raceMirrors } = require('./mirror-race')
 
@@ -188,7 +189,7 @@ function normalizeResult(raw) {
   const audioLayout = parseAudioLayout(name)
   const seeds = Number(raw.seeders) || 0
   const lowQuality = isLowQualitySource(name)
-  const sizeGb = Number(raw.size) ? (Number(raw.size) / 1e9).toFixed(1) + ' GB' : null
+  const sizeGb = fmtSize(raw.size)
   return {
     kind: 'torrent',
     url: null,

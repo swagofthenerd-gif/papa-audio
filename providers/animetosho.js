@@ -20,7 +20,7 @@
 // helpers — the two providers index the same releases, so diverging rules
 // would only mean disagreeing about the same torrent.
 
-const { parseQuality, parseAudioLayout, parseDub, parseSub, magnetFromHash, parseSizeBytes } = require('./quality')
+const { parseQuality, parseAudioLayout, parseDub, parseSub, magnetFromHash, parseSizeBytes, fmtSize } = require('./quality')
 const { buildQuery, titleCandidates, matchesEpisode, isPack, DUB_QUALIFIERS } = require('./nyaa')
 const { raceMirrors } = require('./mirror-race')
 
@@ -59,7 +59,7 @@ function normalizeItem(raw, { preferDub = false, episode = null } = {}) {
   // Seeder counts are scraped and can be null while a release is fresh; null
   // is honest-unknown and sorts as 0 rather than being invented.
   const seeds = Number(raw.seeders) || 0
-  const sizeGb = Number(raw.total_size) ? (Number(raw.total_size) / 1e9).toFixed(1) + ' GB' : null
+  const sizeGb = fmtSize(raw.total_size)
   return {
     kind: 'torrent',
     url: null,

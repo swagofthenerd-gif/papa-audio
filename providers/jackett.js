@@ -35,6 +35,7 @@
 const {
   parseQuality, parseAudioLayout, isLowQualitySource, parseDub, parseSub,
   magnetFromHash, parseSizeBytes,
+  fmtSize,
 } = require('./quality')
 const {
   matchesTitle, matchesYear, matchesEpisode, matchesAnimeEpisode, requestTitles,
@@ -127,8 +128,7 @@ function normalizeResult(raw, { type = 'movie', episode = null } = {}) {
   const lowQuality = isLowQualitySource(name)
   const seeds = Number(raw && raw.Seeders) || 0
   const sizeBytes = parseSizeBytes(raw && raw.Size)
-  const sizeGb = Number.isFinite(sizeBytes) && sizeBytes > 0
-    ? (sizeBytes / 1e9).toFixed(1) + ' GB' : null
+  const sizeGb = fmtSize(sizeBytes)
   const tracker = String((raw && raw.Tracker) || '').trim()
   const pack = type === 'anime' ? isPack(name, episode) : false
   const dub = type === 'anime' ? parseDub(name) : false
