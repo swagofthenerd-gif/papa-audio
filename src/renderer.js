@@ -8297,10 +8297,22 @@ function _myListGridHtml(items) {
   if (!anyGrouped) {
     return '<div class="vgrid vmylist-grid" id="vmylist-grid">' + items.map(_videoCard).join('') + '</div>'
   }
-  const html = groups.map(function (g) {
+  // Singletons are cards, not blocks: a run of them has to share one .vgrid
+  // or each one stretches to the full container width (a 1975px poster).
+  // Consecutive singletons collapse into a single grid, order preserved.
+  const out = []
+  let run = []
+  const flushRun = function () {
+    if (!run.length) return
+    out.push('<div class="vgrid vmylist-grid">' + run.join('') + '</div>')
+    run = []
+  }
+  groups.forEach(function (g) {
     if (!g.grouped || g.items.length < 2) {
-      return g.items.map(_videoCard).join('')
+      g.items.forEach(function (it) { run.push(_videoCard(it)) })
+      return
     }
+    flushRun()
     const open = _myListUnfolded.has(g.name)
     const head = '<button type="button" class="vmylist-franchise-head" data-franchise="' + esc(g.name) + '"' +
       ' aria-expanded="' + open + '">' +
@@ -8311,9 +8323,10 @@ function _myListGridHtml(items) {
       ? '<div class="vgrid vmylist-grid">' + g.items.map(_videoCard).join('') + '</div>'
       // Folded: show only the first poster as a peek so the row still reads.
       : '<div class="vgrid vmylist-grid vmylist-franchise-peek">' + _videoCard(g.items[0]) + '</div>'
-    return '<div class="vmylist-franchise' + (open ? ' open' : '') + '">' + head + body + '</div>'
-  }).join('')
-  return '<div id="vmylist-grid">' + html + '</div>'
+    out.push('<div class="vmylist-franchise' + (open ? ' open' : '') + '">' + head + body + '</div>')
+  })
+  flushRun()
+  return '<div id="vmylist-grid">' + out.join('') + '</div>'
 }
 
 // "Download" on a title's page (2026-09-14): the same source Play would
