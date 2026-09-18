@@ -171,21 +171,31 @@ test('listDir derives its sort keys once per row, not once per comparison', () =
 
 // ── Ratio guards, for the paths whose SHAPE really does change ───────────────
 const RATIO_BAR = 3.0
-function best(fn, runs = 5) {
-	let b = Infinity
+// The sizes are timed INTERLEAVED — one run of n, one of 2n, one of n … —
+// rather than all of n and then all of 2n. Sequential timing let a burst of
+// load land inside the larger size and inflate the ratio on its own: two
+// independent runs under a concurrent test suite read 3.0× and 3.4× with the
+// code unchanged, against a bar of 3× (quadratic is ~4×). Interleaving means
+// any load hits both sizes alike and the minimum of each stays comparable.
+function bestInterleaved(fns, runs = 7) {
+	const b = fns.map(() => Infinity)
 	for (let i = 0; i < runs; i++) {
-		const t0 = process.hrtime.bigint()
-		fn()
-		const d = Number(process.hrtime.bigint() - t0) / 1e6
-		if (d < b) b = d
+		fns.forEach((fn, k) => {
+			const t0 = process.hrtime.bigint()
+			fn()
+			const d = Number(process.hrtime.bigint() - t0) / 1e6
+			if (d < b[k]) b[k] = d
+		})
 	}
 	return b
 }
 function assertSubQuadratic(label, sizes, make, run) {
-	const t = sizes.map(n => { const input = make(n); return best(() => run(input)) })
+	const inputs = sizes.map(make)
+	const t = bestInterleaved(inputs.map(input => () => run(input)))
 	const shape = sizes.map((n, i) => `${n}:${t[i].toFixed(1)}ms`).join('  ')
 	for (let i = 1; i < t.length; i++) {
-		if (t[i - 1] < 1) continue          // a sub-ms stage is all overhead
+		// Below a few milliseconds the ratio is timer jitter, not the algorithm.
+		if (t[i - 1] < 3) continue
 		const r = t[i] / t[i - 1]
 		assert.ok(r < RATIO_BAR,
 			`${label}: doubling ${sizes[i - 1]} → ${sizes[i]} cost ${r.toFixed(1)}× ` +
@@ -228,7 +238,7 @@ test('buildTree and extractAlbums stay linear in the size of the share', () => {
 	const make = (n) => C.buildShare({ albums: n, artists: Math.max(40, n / 6) }).dirs
 	assertSubQuadratic('buildTree', [1500, 3000, 6000], make, d => T.buildTree(d))
 	const trees = [1500, 3000, 6000].map(n => T.buildTree(make(n)))
-	const t = trees.map(tr => best(() => S.extractAlbums(tr)))
+	const t = bestInterleaved(trees.map(tr => () => S.extractAlbums(tr)))
 	for (let i = 1; i < t.length; i++) {
 		assert.ok(t[i] / t[i - 1] < RATIO_BAR,
 			`extractAlbums: doubling cost ${(t[i] / t[i - 1]).toFixed(1)}× — ` +

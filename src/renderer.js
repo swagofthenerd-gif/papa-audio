@@ -13363,6 +13363,16 @@ function _libMoodRank() {
   _libMoodRankMemo = { key: key, rank: rank }
   return rank
 }
+// The mood the Library grid is filtered to, or null. Top level on purpose:
+// both renderLibrary() and _libEmptyHtml() need it, and _libEmptyHtml() used to
+// read a `var _moodDef` that lived INSIDE renderLibrary(). That is another
+// function's local, so the empty state threw ReferenceError the moment the
+// library had zero results — a no-match search showed the whole unfiltered
+// library, and the next full render killed the page ("This page failed to
+// render") for good, because state.libSearch persists across navigation.
+function _libMoodDef() {
+  return state.libMood && window.PapaMoodMap ? window.PapaMoodMap.moodById(state.libMood) : null
+}
 function _libMoodEmptyHint() {
   if (!window.PapaMoodMap) return ''
   var p = window.PapaMoodMap.profile(state.library, _audioFeaturesCache)
@@ -13407,8 +13417,9 @@ function _libSearchNoteHtml() {
 function _libEmptyHtml(activeFilterCount) {
   const tools = (typeof window !== 'undefined' && window.PapaMusicTools) || null
   const svg = '<svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>'
-  if (_moodDef) {
-    return '<div class="empty-wrap">' + svg + '<h2>Nothing feels ' + _moodDef.emoji + ' ' + esc(_moodDef.name) + ' yet</h2><p>' + _libMoodEmptyHint() + '</p></div>'
+  const moodDef = _libMoodDef()
+  if (moodDef) {
+    return '<div class="empty-wrap" data-empty="mood">' + svg + '<h2>Nothing feels ' + moodDef.emoji + ' ' + esc(moodDef.name) + ' yet</h2><p>' + _libMoodEmptyHint() + '</p></div>'
   }
   const e = tools ? tools.libraryEmptyState({ folders: state.musicFolders, unavailableRoots: state._unavailableRoots, albumCount: state.library.length, filtered: activeFilterCount > 0 })
     : { title: activeFilterCount ? 'No albums match' : 'Your library is empty', text: activeFilterCount ? 'Try clearing a filter or two.' : 'Add a music folder to get started.', action: activeFilterCount ? 'clear-filters' : 'add-folder' }
@@ -13630,7 +13641,7 @@ function renderLibrary() {
 
   var filterIndicator = ''
   if (state.libDecade) filterIndicator = '<div style="display:inline-flex;align-items:center;gap:6px;margin-left:12px;padding:3px 10px;background:var(--accent);color:#000;border-radius:100px;font-size:11px;font-weight:600">' + state.libDecade + 's<button style="background:none;border:none;color:#000;cursor:pointer;font-size:14px;line-height:1" id="clear-decade-filter">&times;</button></div>'
-  var _moodDef = state.libMood && window.PapaMoodMap ? window.PapaMoodMap.moodById(state.libMood) : null
+  var _moodDef = _libMoodDef()
   if (_moodDef) filterIndicator += '<div style="display:inline-flex;align-items:center;gap:6px;margin-left:12px;padding:3px 10px;background:' + _moodDef.color + ';color:#fff;border-radius:100px;font-size:11px;font-weight:600" title="Albums that feel ' + esc(_moodDef.name) + ', scored from the audio analysis and genre tags">' + _moodDef.emoji + ' ' + esc(_moodDef.name) + '<button style="background:none;border:none;color:#fff;cursor:pointer;font-size:14px;line-height:1" id="clear-mood-filter" aria-label="Clear mood">&times;</button></div>'
 
   // Folder membership: an album belongs to every directory that holds ANY of
@@ -28178,7 +28189,7 @@ function _renderActiveTab(files, container) {
     })
   })
 
-  _bindDlGroupDrag(container)
+  _bindDlGroupDrag(container, files)
 }
 
 // Drag-to-reorder the active download groups (roadmap #52). Reorders the DISPLAY
@@ -28187,7 +28198,7 @@ function _renderActiveTab(files, container) {
 // group takes its place and the pin order is rewritten from the resulting DOM
 // sequence, then the tab re-renders so the next poll keeps the order.
 let _dlDragKey = null
-function _bindDlGroupDrag(container) {
+function _bindDlGroupDrag(container, files) {
   container.querySelectorAll('.dl2-group-active').forEach(function (grp) {
     grp.addEventListener('dragstart', function (e) {
       _dlDragKey = grp.dataset.gkey || null
