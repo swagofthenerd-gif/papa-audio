@@ -12103,6 +12103,13 @@ function _epResumeHtml(prog, total) {
 function _bindEpResume(root) {
   const banner = (root || document).querySelector('.video-resume')
   if (!banner) return
+  // Two render paths bind this banner — the anime controls bind the box they
+  // just built, and the TV episode list rebinds the row it re-inserted the
+  // banner into. When both reach the same node the button carries two
+  // listeners, so one press ran the source load twice and armed autoplay
+  // twice with it. The banner says once, out loud, that it is already wired.
+  if (banner.dataset.resumeBound === '1') return
+  banner.dataset.resumeBound = '1'
   banner.querySelector('.video-resume-go')?.addEventListener('click', function () {
     const n = Number(banner.dataset.ep) || 1
     _videoState.episode = n
