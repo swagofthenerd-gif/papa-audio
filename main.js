@@ -1369,7 +1369,54 @@ const SLSKD_THROTTLE_MEMORY_MS = 90 * 1000
 function slskdIsThrottled() { return Date.now() < _slskdThrottledUntil }
 function slskdThrottledRecently() { return Date.now() - _slskdLastThrottleAt < SLSKD_THROTTLE_MEMORY_MS }
 
+// ── The slskd write choke point ─────────────────────────────────────────────
+// slskd at :5030 is the user's REAL Soulseek account. A QA twin may look — the
+// whole point of a dry-run twin is that it stays useful — but it must never
+// start a transfer, cancel one of his, or message a peer. Gating handler by
+// handler was tried and leaked: slsk-download, slsk-chat-send and the wishlist
+// sweep were all ungated, and the download scheduler's own tick POSTs transfers
+// with no IPC call involved at all, so a queued dlState copied into a twin
+// profile would have started real downloads by itself.
+//
+// So the refusal sits here, at the single function every slskd request passes
+// through, exactly the way src/debrid.js's rd() refuses non-GET. Anything that
+// is not on the allow-list below is refused before the request is built.
+//
+// The allow-list is deliberately tiny:
+//   * every GET — reads are what make a twin worth running
+//   * any method on /searches — creating and deleting a search is how searching
+//     works, browsing peers is read-only, and a search cannot move a byte
+// Login is NOT here because it does not come through this function:
+// slskdAcquireToken() POSTs /session with a raw fetch of its own, and stays
+// live so a dry-run twin can still authenticate and read.
+//
+// Everything else — /transfers/*, /conversations/*, /options, /application
+// writes, anything added later — is refused by default.
+function _slskdDryRunAllowed(method, endpoint) {
+  if (String(method).toUpperCase() === 'GET') return true
+  // Match the path only: /searches?foo and /searches/<id>/responses both count,
+  // /searchesomething does not.
+  return /^\/searches(?:[/?#]|$)/.test(String(endpoint || ''))
+}
+
+// One line per distinct path, not per poll: the transfer poller alone would
+// otherwise fill the daily log with the same refusal every few seconds.
+const _slskdDryRunLogged = new Set()
+
 async function slskdFetch(method, endpoint, body) {
+  if (DRY_RUN && !_slskdDryRunAllowed(method, endpoint)) {
+    const path = String(endpoint || '').split('?')[0]
+    const key = String(method).toUpperCase() + ' ' + path
+    if (!_slskdDryRunLogged.has(key)) {
+      _slskdDryRunLogged.add(key)
+      console.log(`[papa] DRY RUN: refused ${key} to slskd`)
+    }
+    const err = new Error(
+      `Dry run — ${String(method).toUpperCase()} ${path} to slskd was not performed`)
+    err.dryRun = true
+    err.code = 'DRY_RUN'
+    throw err
+  }
   if (!slskdToken || Date.now() > slskdTokenExpiry) await slskdAcquireToken()
   const headers = { 'Content-Type': 'application/json' }
   if (slskdToken) headers['Authorization'] = `Bearer ${slskdToken}`
@@ -7119,6 +7166,9 @@ ipcMain.handle('slsk-configure', async (_, { username, password }) => {
 })
 
 ipcMain.handle('slsk-setup', async () => {
+  // Not a read: this fetches the slskd binary, overwrites slskd.yml and
+  // restarts the daemon the user's real account is connected through.
+  if (DRY_RUN) return _dryRunRefusal('installing and restarting the Soulseek daemon')
   try {
     await downloadSlskd(text => safeSend('slsk-progress', { text }))
     const cfg = store.get('slskConfig', {})
@@ -7388,6 +7438,9 @@ async function slskRunSearch({ query, timeoutMs = 25000, noCache = false, genera
 }
 
 ipcMain.handle('slsk-download', async (_, { username, filename, size }) => {
+  // The single most forbidden action on a QA twin. slskdFetch refuses the POST
+  // anyway; this is here so the renderer gets a sentence instead of a throw.
+  if (DRY_RUN) return _dryRunRefusal('starting a Soulseek download')
   try {
     const res = await slskdFetch('POST', `/transfers/downloads/${encodeURIComponent(username)}`,
       [{ filename, size }])
@@ -8067,6 +8120,17 @@ async function dlTick() {
           [{ filename: item.filename, size: item.size || 0 }])
         dlSched.markDispatched(dlState, item.key, item.username, Date.now(), item.filename)
       } catch (e) {
+        // A dry-run refusal is not the peer's fault and must not be treated as
+        // one. Counting it as a failure would burn the file's retry budget and
+        // then mark it exhausted, so a twin would quietly destroy the queue it
+        // was only supposed to look at — and the scheduler would keep re-asking
+        // every tick forever. Leave it exactly where it is, pending, with a
+        // reason a person can read, and say nothing more about it.
+        if (e && e.dryRun) {
+          const held = dlState.pending.find(x => x && x.key === item.key)
+          if (held) held.reason = 'Dry run — not dispatched to ' + item.username
+          continue
+        }
         // Rejected at request time counts against that peer, same as a failure.
         dlSched.markDispatched(dlState, item.key, item.username, Date.now(), item.filename)
         dlSched.recordFailure(dlState, item.key, item.username, cfg, Date.now())
@@ -8090,8 +8154,12 @@ async function dlTick() {
           `/transfers/downloads/${encodeURIComponent(st.from)}/${encodeURIComponent(await dlTransferId(st.from, live.sentFilename || live.filename))}?remove=true`)
         cancelled = true
       } catch (e) {
-        console.error(`[papa] could not cancel the stalled transfer of ${live.filename} from ${st.from}; ` +
-          `leaving it in flight rather than queuing a second copy:`, String(e && e.message || e))
+        // In a dry run the refusal is expected and already logged once by
+        // slskdFetch; re-reporting it every tick would bury the real log.
+        if (!(e && e.dryRun)) {
+          console.error(`[papa] could not cancel the stalled transfer of ${live.filename} from ${st.from}; ` +
+            `leaving it in flight rather than queuing a second copy:`, String(e && e.message || e))
+        }
       }
       // Only hand it back to the scheduler once slskd has actually let go of it.
       // If not, it stays in flight and the next tick tries again.
@@ -8500,6 +8568,7 @@ ipcMain.handle('slsk-chat-send', async (_, arg) => {
   const message = String((arg && arg.message) || '')
   if (!username) return { ok: false, error: 'no username' }
   if (!message) return { ok: false, error: 'empty message' }
+  if (DRY_RUN) return _dryRunRefusal('sending a message to a Soulseek peer')
   try {
     await slskdFetch('POST', `/conversations/${encodeURIComponent(username)}`, message)
     return { ok: true }
@@ -9138,8 +9207,14 @@ async function slskWishlistSweep() {
   }
 }
 
-// Manually trigger one sweep now, for the UI's "Search now" button.
-ipcMain.handle('slsk-wishlist-run', () => slskWishlistSweep())
+// Manually trigger one sweep now, for the UI's "Search now" button. The sweep
+// searches AND enqueues — it reaches dlSched.addItems directly, with no
+// slsk-enqueue-downloads call to be gated — so it is refused whole rather than
+// being allowed to run its search half.
+ipcMain.handle('slsk-wishlist-run', () => {
+  if (DRY_RUN) return _dryRunRefusal('running a wishlist sweep')
+  return slskWishlistSweep()
+})
 
 // ── Friend diffs ─────────────────────────────────────────────────────────────
 // "New since last visit": each saved user carries fileCount from the last browse
