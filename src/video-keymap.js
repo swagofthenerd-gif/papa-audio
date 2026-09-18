@@ -122,5 +122,45 @@
     return null
   }
 
-  return { resolve, ACTIONS, SEEK_SHORT, SEEK_LONG, VOLUME_STEP }
+  // ── The detail page's season shortcut ───────────────────────────────────────
+  // Separate from resolve(): the theatre's digits SEEK, the detail page's
+  // digits pick a SEASON, and conflating the two is how one of them ends up
+  // silently doing the other's job.
+  //
+  // It used to read event.key and accept 1-9 only, so a show with ten or more
+  // seasons — Doctor Who, Grey's Anatomy, It's Always Sunny — had no shortcut
+  // for most of its run, with nothing on screen to say where the keyboard
+  // stopped (audit N19). Now: 1-9 are themselves, 0 is season 10, and Shift
+  // adds ten, so Shift+1 is 11 through Shift+9 is 19 and Shift+0 is 20.
+  //
+  // Read from event.CODE, not event.key. Shift+1 arrives as '!' on a US
+  // layout, '"' on a UK one and something else again on a German one — a
+  // shifted digit has no stable key. `code` is the physical key and is the
+  // same everywhere. event.key is still accepted as a fallback for the plain
+  // digits, because synthetic events (and the odd remote) carry no code.
+  function seasonFromKey(event, context = {}) {
+    if (!event) return null
+    if (context.isInput) return null
+    if (event.ctrlKey || event.altKey || event.metaKey) return null
+
+    let digit = null
+    const code = typeof event.code === 'string' ? event.code : ''
+    const m = /^(?:Digit|Numpad)([0-9])$/.exec(code)
+    if (m) digit = Number(m[1])
+    // No code: only an unshifted digit can be trusted from `key` alone.
+    else if (!event.shiftKey && typeof event.key === 'string' && /^[0-9]$/.test(event.key)) digit = Number(event.key)
+
+    if (digit == null) return null
+    // 0 is the tenth season, not the zeroth: there is no season zero to pick
+    // (TMDB's specials bucket is season 0, but the picker names it "Specials"
+    // and it is reached by its own entry, not by a digit).
+    const base = digit === 0 ? 10 : digit
+    return event.shiftKey ? base + 10 : base
+  }
+
+  // How the help sheet says it, so the sheet and the mapping can never drift.
+  const SEASON_KEYS_LABEL = '1–9, 0, Shift+1–9'
+  const SEASON_KEYS_DESC = 'Pick a season (0 is season 10; Shift adds ten, so Shift+3 is 13)'
+
+  return { resolve, seasonFromKey, SEASON_KEYS_LABEL, SEASON_KEYS_DESC, ACTIONS, SEEK_SHORT, SEEK_LONG, VOLUME_STEP }
 })

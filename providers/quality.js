@@ -120,4 +120,19 @@ function parseSizeBytes(raw) {
   return Math.round(num * mult)
 }
 
-module.exports = { parseQuality, parseAudioLayout, isLowQualitySource, parseDub, parseSub, magnetFromHash, parseSizeBytes, PUBLIC_TRACKERS }
+// The ONE size formatter for Movies & TV. Every provider used to render its own
+// gigabytes at 1e9 while the source row beside it rendered the same bytes at
+// 1024**3, so a single row carried two different numbers both labelled "GB"
+// (audit N11 — 3.7 GB next to 4.0 GB for the same file). One definition,
+// binary like the rest of the app, shared by the providers and the renderer's
+// source rows. Returns null for an unknown size so a label can omit it instead
+// of inventing a zero.
+const { size: _fmtVideoSize } = require('../src/video-format.js')
+
+function fmtSize(raw) {
+  const n = typeof raw === 'number' ? raw : parseSizeBytes(raw)
+  if (!Number.isFinite(n) || n <= 0) return null
+  return _fmtVideoSize(n)
+}
+
+module.exports = { parseQuality, parseAudioLayout, isLowQualitySource, parseDub, parseSub, magnetFromHash, parseSizeBytes, fmtSize, PUBLIC_TRACKERS }

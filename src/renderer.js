@@ -393,7 +393,32 @@ function _timeCurTitle() {
 // at all. Every test in the handler now goes through matchesShortcut().
 // The detail page's keys (V2.8), shared by its handler and the music
 // handler's stand-down so the two can never disagree.
-var _DETAIL_KEYS = /^(?:[pstPST1-9]|Escape)$/
+// 1-9 and 0 are seasons; the shifted digits arrive as whatever symbol the
+// layout puts on them ('!' on US, '"' on UK), so the SHIFTED half is matched
+// by code in _seasonKeyPick below rather than by key here (audit N19).
+var _DETAIL_KEYS = /^(?:[pstPST0-9]|Escape)$/
+// Pick a season from a digit. The mapping is the keymap's (1-9, 0 = ten, Shift
+// adds ten); this is only the part that needs the DOM — finding the option and
+// firing the change the picker already listens for. Returns true when it acted,
+// so the caller knows whether to preventDefault.
+//
+// A season the show does not have does nothing at all: pressing 0 on a
+// four-season show must not select season ten, and must not swallow the key.
+function _pickSeasonByKey(e) {
+  const KM = (typeof window !== 'undefined' && window.PapaVideoKeymap) || null
+  if (!KM || typeof KM.seasonFromKey !== 'function') return false
+  const season = KM.seasonFromKey(e, { isInput: inInputNow(e) })
+  if (season == null) return false
+  const sel = document.getElementById('video-season-select')
+  if (!sel) return false
+  const want = String(season)
+  const has = Array.prototype.some.call(sel.options, function (o) { return o.value === want })
+  if (!has) return false
+  sel.value = want
+  sel.dispatchEvent(new Event('change', { bubbles: true }))
+  return true
+}
+
 function inInputNow(e) {
   const t = e && e.target
   if (!t) return false
@@ -677,7 +702,11 @@ var ALL_SHORTCUTS = [
   { category: 'Movies & TV page', keys: ['P'], desc: 'Play (the remembered source, or the best one)' },
   { category: 'Movies & TV page', keys: ['S'], desc: 'Add to / remove from My List' },
   { category: 'Movies & TV page', keys: ['T'], desc: 'Play the trailer in the hero (muted; Sound turns it up)' },
-  { category: 'Movies & TV page', keys: ['1–9'], desc: 'Pick a season' },
+  // Label and description come from the keymap so the sheet cannot drift from
+  // the mapping (audit N19).
+  { category: 'Movies & TV page',
+    keys: [(typeof window !== 'undefined' && window.PapaVideoKeymap && window.PapaVideoKeymap.SEASON_KEYS_LABEL) || '1–9, 0, Shift+1–9'],
+    desc: (typeof window !== 'undefined' && window.PapaVideoKeymap && window.PapaVideoKeymap.SEASON_KEYS_DESC) || 'Pick a season (0 is season 10; Shift adds ten, so Shift+3 is 13)' },
   { category: 'Movies & TV page', keys: ['Esc'], desc: 'Stop the trailer' },
   { category: 'Movies & TV page', keys: ['/'], desc: 'Search films and shows' },
   { category: 'Movies & TV page', keys: ['B'], desc: 'Browse' },
@@ -2370,20 +2399,17 @@ function _bindBrowseKeys() {
     // The detail page is keyboard-complete (V2.8): P plays, S toggles My
     // List, T plays the trailer, 1–9 pick a season, Esc stops the trailer.
     // The music shortcuts stand down for these keys on this page (below).
+    // The season digits are handled first and on their own, because they are
+    // the only detail-page keys that mean something WITH Shift held (audit
+    // N19: Shift+3 is season 13).
+    if (page === 'video-detail' && _pickSeasonByKey(e)) { e.preventDefault(); return }
     if (page === 'video-detail' && !e.shiftKey && _DETAIL_KEYS.test(e.key)) {
       const k = e.key.toLowerCase()
       if (k === 'p') document.getElementById('vdet-play')?.click()
       else if (k === 's') document.getElementById('vdet-list')?.click()
       else if (k === 't') document.getElementById('video-trailer-btn')?.click()
       else if (k === 'escape') { if (_inlineTrailer.video) _stopInlineTrailer(); else return }
-      else {
-        const sel = document.getElementById('video-season-select')
-        if (!sel) return
-        const has = Array.prototype.some.call(sel.options, function (o) { return o.value === k })
-        if (!has) return
-        sel.value = k
-        sel.dispatchEvent(new Event('change', { bubbles: true }))
-      }
+      else return
       e.preventDefault()
       return
     }
@@ -5253,6 +5279,17 @@ function _isInstantSource(s) {
   return _debridHeld.indexOf(s.magnet) !== -1
 }
 
+// The ONE size formatter for Movies & TV (audit N11). The providers baked a
+// DECIMAL "4.0 GB" into every source label while the row's own size stat next
+// to it rendered the same bytes BINARY as "3.7 GB" — one row, two numbers, the
+// same unit written on both. providers/quality.js `fmtSize` and this both call
+// PapaVideoFormat.size, so identical bytes now always read identically.
+function _fmtVideoSize(bytes) {
+  const F = (typeof window !== 'undefined' && window.PapaVideoFormat) || null
+  if (F && typeof F.size === 'function') return F.size(bytes)
+  return _fmtBytes(bytes)
+}
+
 // One source, described in the few words that actually decide between them:
 // who made it, how it looks, how well it is shared, how big it is, and whether
 // it will start instantly.
@@ -5266,7 +5303,7 @@ function _sourceOptionLabel(s) {
   const seeds = Number(s.seeders)
   if (Number.isFinite(seeds)) bits.push(seeds + ' seeds')
   const size = Number(s.sizeBytes)
-  if (Number.isFinite(size) && size > 0) bits.push(_fmtBytes(size))
+  if (Number.isFinite(size) && size > 0) bits.push(_fmtVideoSize(size))
   if (s.isPack) bits.push('pack')
   return bits.join(' · ')
 }
@@ -6705,11 +6742,16 @@ async function renderVideo(navId) {
 
 function _vHeadHtml() {
   const tabs = _videoTabs.map(function (t) {
+    // Roving tabindex (audit N13): one Tab stop for the whole strip, arrows to
+    // move inside it. Without it every tab is its own Tab stop, which is eight
+    // presses to get past the row, and the arrows — which a tablist is
+    // required to answer — did nothing at all.
     return '<button class="vtab' + (t.key === _videoTab ? ' active' : '') + '" data-vtab="' + t.key + '"' +
-      ' role="tab" aria-selected="' + (t.key === _videoTab) + '">' + esc(t.label) + '</button>'
+      ' role="tab" tabindex="' + (t.key === _videoTab ? '0' : '-1') + '"' +
+      ' aria-selected="' + (t.key === _videoTab) + '">' + esc(t.label) + '</button>'
   }).join('')
   return '<div class="vhead">' +
-    '<div class="vtabs" role="tablist">' + tabs + '</div>' +
+    '<div class="vtabs" role="tablist" aria-label="Movies &amp; TV sections">' + tabs + '</div>' +
     '<div class="vsearch">' +
       '<div class="vsearch-field">' + _VICON.search +
         '<input id="video-search-input" type="search" placeholder="Search movies, TV &amp; anime…" autocomplete="off" aria-label="Search">' +
@@ -6733,11 +6775,59 @@ function _bindVideoHead() {
         const on = x.dataset.vtab === _videoTab
         x.classList.toggle('active', on)
         x.setAttribute('aria-selected', String(on))
+        x.setAttribute('tabindex', on ? '0' : '-1')
       })
       _renderVideoTab(++_videoCatalogTicket)
     })
   })
+  _bindTablist(document.querySelector('.vtabs'))
   _bindVideoSearch()
+}
+
+// ── Tablists answer the arrow keys (audit N13) ───────────────────────────────
+// Every strip in the app that calls itself role="tablist" was a row of buttons
+// and nothing else: Left and Right did nothing, Home and End did nothing, and
+// every tab was its own Tab stop. A screen reader announces "tab, 3 of 8" and
+// then the keys that are supposed to move between them are inert.
+//
+// Which index an arrow press lands on, as a pure function of the key, the
+// count and where you are. Wraps at both ends — a tablist is a ring — and
+// returns null for anything it does not own so the caller leaves the event be.
+function _tablistNextIndex(key, count, index) {
+  if (!(count > 0)) return null
+  const at = Number.isInteger(index) && index >= 0 && index < count ? index : 0
+  switch (key) {
+    case 'ArrowRight':
+    case 'ArrowDown': return (at + 1) % count
+    case 'ArrowLeft':
+    case 'ArrowUp': return (at - 1 + count) % count
+    case 'Home': return 0
+    case 'End': return count - 1
+    default: return null
+  }
+}
+
+// The DOM half. Bound on the CONTAINER, so it survives tabs being repainted
+// inside it, and it moves focus AND selection together — the pattern where
+// arrows only move focus needs a separate Enter press, which is one more thing
+// to know than "the arrows change the tab".
+function _bindTablist(list) {
+  if (!list || list.dataset.tablistBound) return
+  list.dataset.tablistBound = '1'
+  list.addEventListener('keydown', function (e) {
+    if (e.ctrlKey || e.altKey || e.metaKey) return
+    const tabs = Array.prototype.slice.call(list.querySelectorAll('[role="tab"]'))
+    if (!tabs.length) return
+    const here = tabs.indexOf(e.target)
+    const next = _tablistNextIndex(e.key, tabs.length, here)
+    if (next == null || next === here) return
+    e.preventDefault()
+    // The roving index moves first so the strip keeps exactly one Tab stop
+    // even if the click handler below repaints nothing.
+    tabs.forEach(function (t, i) { t.setAttribute('tabindex', i === next ? '0' : '-1') })
+    tabs[next].focus()
+    tabs[next].click()
+  })
 }
 
 // Releases everything the three video-page mounts are about to throw away.
@@ -7256,14 +7346,15 @@ async function renderCalendar() {
         '<div class="vcal-head-main"><h1 class="vcal-title">Coming up</h1>' +
           '<p class="vcal-sub">' + (isMonth ? 'A month at a glance for the shows you follow' : 'The next 14 days for the shows you follow') + '</p></div>' +
         '<div class="vcal-viewtoggle" role="tablist" aria-label="Calendar view">' +
-          '<button class="vcal-viewbtn' + (!isMonth ? ' active' : '') + '" id="vcal-view-agenda" role="tab" aria-selected="' + String(!isMonth) + '">Agenda</button>' +
-          '<button class="vcal-viewbtn' + (isMonth ? ' active' : '') + '" id="vcal-view-month" role="tab" aria-selected="' + String(isMonth) + '">Calendar</button>' +
+          '<button class="vcal-viewbtn' + (!isMonth ? ' active' : '') + '" id="vcal-view-agenda" role="tab" tabindex="' + (!isMonth ? '0' : '-1') + '" aria-selected="' + String(!isMonth) + '">Agenda</button>' +
+          '<button class="vcal-viewbtn' + (isMonth ? ' active' : '') + '" id="vcal-view-month" role="tab" tabindex="' + (isMonth ? '0' : '-1') + '" aria-selected="' + String(isMonth) + '">Calendar</button>' +
         '</div>' +
       '</div>' +
       '<div class="vcal-body" id="vcal-body">' + _vRailSkeleton(3) + '</div>' +
     '</div>' +
   '</div>')
   _bindVideoHead()
+  _bindTablist(document.querySelector('.vcal-viewtoggle'))
   document.getElementById('vcal-view-agenda')?.addEventListener('click', function () {
     if (_vcalView === 'agenda') return
     _vcalView = 'agenda'; renderCalendar()
@@ -7809,6 +7900,48 @@ function _bindHeroPause() {
   })
 }
 
+// ── One conversion per trailer, per session (audit N15) ──────────────────────
+// Hovering the hero ten times converted the SAME YouTube trailer ten times —
+// ten yt-dlp resolves and, when the direct format is missing, ten paired
+// converter sessions on main, for one URL. Nothing cached the answer, and
+// mouseleave only invalidated the ticket the result would have been painted
+// under; the work carried on and was thrown away.
+//
+// This is the one door to window.api.videoTrailerUrl. An in-flight request is
+// shared rather than duplicated, and a settled one is remembered for the rest
+// of the session, so a pointer resting on and off the hero costs exactly one
+// conversion. Leaving the hero no longer needs to "cancel" anything: the work
+// already under way becomes the answer the next hover gets for free.
+//
+// A URL that turns out to be dead is forgotten (_forgetTrailerUrl, called from
+// the <video> error path), so a stale session cannot poison the whole visit.
+var _trailerUrlMemo = new Map()
+
+function _trailerMemoKey(p) {
+  return String((p && p.type) || 'movie') + ':' + (p && p.id == null ? '' : String(p.id))
+}
+
+function _trailerUrlOnce(p) {
+  const key = _trailerMemoKey(p)
+  const hit = _trailerUrlMemo.get(key)
+  if (hit) return hit
+  const req = window.api.videoTrailerUrl(p)
+    .catch(function () { return { ok: false } })
+    .then(function (res) {
+      // A refusal is not remembered: the catalogue may simply have been busy,
+      // and the next hover deserves a fresh try. A real answer is — including
+      // "this title has no trailer", which is a fact, not a failure.
+      if (!res || res.ok !== true) _trailerUrlMemo.delete(key)
+      return res || { ok: false }
+    })
+  _trailerUrlMemo.set(key, req)
+  return req
+}
+
+function _forgetTrailerUrl(p) {
+  _trailerUrlMemo.delete(_trailerMemoKey(p))
+}
+
 // ── Hero trailer autoplay (App §15) ─────────────────────────────────────────
 // Reuses the card's trailer pipeline wholesale: the same videoTrailerUrl IPC,
 // the same muted <video> factory, the same hover-trailer pref gate. The hero
@@ -7858,9 +7991,8 @@ async function _startHeroTrailer() {
   if (!mount || !item || !hero) return
   const ticket = ++_heroTrailerTicket
 
-  const res = await window.api.videoTrailerUrl({
-    type: item.type || 'movie', id: item.id == null ? '' : String(item.id),
-  }).catch(function () { return { ok: false } })
+  const trailerFor = { type: item.type || 'movie', id: item.id == null ? '' : String(item.id) }
+  const res = await _trailerUrlOnce(trailerFor)
 
   // Everything that can have changed while yt-dlp was running: the pointer
   // left (a new ticket), the pref went off, the feature rotated, or the page
@@ -7876,10 +8008,16 @@ async function _startHeroTrailer() {
   // poster frame until the video is actually playing.
   const scrim = hero.querySelector('.vhero-scrim')
   hero.insertBefore(v, scrim || hero.firstChild)
+  // A URL that will not play is a URL worth asking for again: the converter
+  // session behind it may have been swept. Forgetting it here is what stops
+  // the memo above from turning one bad answer into a dead trailer for the
+  // rest of the session (audit N15).
+  v.addEventListener('error', function () { _forgetTrailerUrl(trailerFor) }, { once: true })
   v.play().then(function () {
     if (_heroTrailerTicket === ticket) mount.classList.add('is-hero-previewing')
     else _stopHeroTrailer()
   }).catch(function () {
+    _forgetTrailerUrl(trailerFor)
     if (_heroTrailerTicket === ticket) _stopHeroTrailer()
   })
 }
@@ -7924,9 +8062,15 @@ function _paintVideoHero() {
   const na = item.nextAiring
   const until = na && na.airingAt ? _untilLabel(Number(na.airingAt) - Date.now()) : ''
   if (until) bits.push('<span class="vhero-chip">' + (na.episode ? 'Ep ' + esc(String(na.episode)) + ' ' : 'Next episode ') + esc(until) + '</span>')
+  // "Show N of M", not "Feature N" (audit N14): the position in the set is the
+  // whole point of a dot, and a screen reader reading "Feature 3" out of five
+  // buttons has to count the others to work out where it is. aria-current marks
+  // the one you are on for the same reason the filled dot does on screen.
   const dots = _videoHero.items.map(function (_, i) {
-    return '<button class="vhero-dot' + (i === _videoHero.index ? ' active' : '') +
-      '" data-hero="' + i + '" aria-label="Feature ' + (i + 1) + '"></button>'
+    const on = i === _videoHero.index
+    return '<button class="vhero-dot' + (on ? ' active' : '') +
+      '" data-hero="' + i + '"' + (on ? ' aria-current="true"' : '') +
+      ' aria-label="Show ' + (i + 1) + ' of ' + _videoHero.items.length + '"></button>'
   }).join('')
   // The biggest My List control showed a plus whatever the store held, so
   // pressing it on a saved film read as "add" and removed it.
@@ -9917,8 +10061,7 @@ async function _startHoverTrailer(card) {
   _hoverCard = card
   card.classList.add('is-preview-loading')
 
-  const res = await window.api.videoTrailerUrl({ type: parts[0], id: parts.slice(1).join(':') })
-    .catch(function () { return { ok: false } })
+  const res = await _trailerUrlOnce({ type: parts[0], id: parts.slice(1).join(':') })
 
   // Everything that can have changed while yt-dlp was running.
   if (_hoverTicket !== ticket) return
@@ -10200,6 +10343,76 @@ function _vCtxDismiss(e) {
   _closeVideoCardMenu()
 }
 
+// ── One section, one lane (audit N18) ────────────────────────────────────────
+// An anime detail page measured 53.6 s. The hero and the facts paint the
+// moment the catalogue answers, but the sections that need more requests — the
+// prequel/sequel walk in particular, which is one AniList round trip PER HOP
+// down a rate-limited lane — had no bound on them and no way to say they had
+// given up. A section that is still empty after half a minute is
+// indistinguishable from a section that has nothing to show.
+//
+// So each of those sections runs on its own: it cannot delay the hero, it
+// cannot delay its neighbours, and if it takes longer than this or throws, it
+// says so IN ITS OWN BOX with a Retry, and the rest of the page is untouched.
+const DETAIL_LANE_MS = 8000
+
+function _detailLane(name, mountId, label, run, ticket) {
+  const started = Date.now()
+  let settled = false
+  const timer = setTimeout(function () {
+    if (settled) return
+    if (_videoDetailTicket !== ticket) return
+    _paintLaneFailure(name, mountId, label, run, ticket, 'took too long')
+  }, DETAIL_LANE_MS)
+
+  // Promise.resolve() so a `run` that throws synchronously is a lane failure
+  // like any other, not an exception out of the page render.
+  return Promise.resolve().then(run).then(function () {
+    settled = true
+    clearTimeout(timer)
+    // A lane that arrives late, after its own note was painted, wins: it has
+    // real content and the note does not.
+  }, function (err) {
+    settled = true
+    clearTimeout(timer)
+    if (_videoDetailTicket !== ticket) return
+    console.error('[papa][video] the ' + name + ' section failed after ' +
+      Math.round((Date.now() - started) / 1000) + 's:', String((err && err.message) || err))
+    _paintLaneFailure(name, mountId, label, run, ticket, 'could not be loaded')
+  })
+}
+
+// The note one failed section shows. Deliberately small and inside the section
+// — a page-wide error for a missing recommendations rail would be a lie about
+// the page.
+function _paintLaneFailure(name, mountId, label, run, ticket, why) {
+  const box = document.getElementById(mountId)
+  if (!box) return
+  // Never paint over content that did arrive.
+  if (box.innerHTML && !box.dataset.laneFailed) return
+  box.hidden = false
+  box.dataset.laneFailed = '1'
+  box.innerHTML = '<div class="vlane-note" role="status">' +
+    '<span>Couldn\u2019t load ' + esc(label) + ' \u2014 it ' + esc(why) + '.</span>' +
+    '<button type="button" class="vbtn vlane-retry">Retry</button></div>'
+  const btn = box.querySelector('.vlane-retry')
+  if (!btn) return
+  btn.addEventListener('click', function () {
+    if (_videoDetailTicket !== ticket) return
+    btn.disabled = true
+    btn.textContent = 'Loading\u2026'
+    delete box.dataset.laneFailed
+    box.innerHTML = ''
+    _detailLane(name, mountId, label, run, ticket).finally(function () {
+      // If the retry painted something the button is detached and this is a
+      // no-op; if it came back with nothing to show, the note is still on
+      // screen and must not be left with a dead Retry on it.
+      btn.disabled = false
+      btn.textContent = 'Retry'
+    })
+  })
+}
+
 async function renderVideoDetail(navId) {
   _initVideoUI()
   const parts = String(navId || '').split(':')
@@ -10263,6 +10476,9 @@ async function renderVideoDetail(navId) {
   _bindDetailActions(d)
   _bindTrailerButton()
   _bindDetailMotion(d)
+  // Everything that paints from the detail we already have: cast, characters,
+  // your record, where it streams, what else is like it. All synchronous, all
+  // done before the next line runs.
   _renderCastRow(d)
   _renderTasteSection()
   _renderProviders(d)
@@ -10279,7 +10495,8 @@ async function renderVideoDetail(navId) {
   // multi-season anime always searched without the absolute and showed
   // "absolute number unknown" for good. So: let it land, then ask again if it
   // changed anything.
-  _chainPending = _renderSeasonChain(ticket).catch(function () {})
+  _chainPending = _detailLane('seasons', 'vseasons', 'the other seasons',
+    function () { return _renderSeasonChain(ticket) }, ticket)
   _chainPending.then(function () { _researchSourcesIfNumberingArrived(ticket) })
 
   if (type === 'tv') {
@@ -11108,7 +11325,7 @@ async function _playInlineTrailer() {
   if (!hero || !window.api.videoTrailerUrl) return _playTrailerInTheatre()
   const ticket = ++_inlineTrailer.ticket
   hero.classList.add('is-trailer-loading')
-  const res = await window.api.videoTrailerUrl({ type: _videoDetail.type || 'movie', id: d.id == null ? '' : String(d.id) })
+  const res = await _trailerUrlOnce({ type: _videoDetail.type || 'movie', id: d.id == null ? '' : String(d.id) })
     .catch(function () { return { ok: false } })
   if (_inlineTrailer.ticket !== ticket) return
   hero.classList.remove('is-trailer-loading')
@@ -12526,7 +12743,7 @@ function _videoStreamRow(s, i) {
     : '<span class="video-source-stat video-source-seeds video-source-stat-unknown" title="Seeders unknown">↑ —</span>'
   const sizeN = Number(s.sizeBytes)
   const sizeStat = Number.isFinite(sizeN) && sizeN > 0
-    ? '<span class="video-source-stat video-source-size" title="Size">' + esc(_fmtBytes(sizeN)) + '</span>'
+    ? '<span class="video-source-stat video-source-size" title="Size">' + esc(_fmtVideoSize(sizeN)) + '</span>'
     : '<span class="video-source-stat video-source-size video-source-stat-unknown" title="Size unknown">—</span>'
   const label = s.label || s.source || (s.kind === 'torrent' ? (s.magnet || '') : (s.url || '')) || ''
   // The release name says who made the file (V2.2): the group as a badge, the
@@ -33174,6 +33391,11 @@ function setupListeners() {
     // there, not to shuffle or the queue — one key, one action.
     if (state.currentPage === 'video-detail' && !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey &&
         _DETAIL_KEYS.test(e.key) && e.key !== 'Escape' && !inInputNow(e)) return
+    // Shift+digit is a season too now (audit N19), and a shifted digit arrives
+    // as '!', '"', '#'… depending on the layout — so it is recognised by the
+    // physical key, exactly as the picker recognises it.
+    if (state.currentPage === 'video-detail' && e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey &&
+        /^(?:Digit|Numpad)[0-9]$/.test(String(e.code || '')) && !inInputNow(e)) return
 
     // inInputNow also counts SELECT and contenteditable. This handler used to
     // test only INPUT and TEXTAREA, so with a dropdown focused, Space toggled

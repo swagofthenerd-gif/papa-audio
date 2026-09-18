@@ -68,6 +68,13 @@ function harness({ anilistById } = {}) {
     // The anime path never reaches these, but _videoShowDetail references them.
     tmdb: () => ({ detail: async () => null, season: async () => null }),
     _enrichExternalRatings: async d => d,
+    // The ratings lane is bounded now (audit N18) — a slow OMDb must not hold
+    // a detail page open — so the real timeout wrapper comes along too.
+    RATINGS_LANE_MS: constInt('RATINGS_LANE_MS'),
+    setTimeout,
+    clearTimeout,
+    Promise,
+    Error,
     _enrichAnimeDetail: async d => d,
     anilist: () => ({
       byId: async id => {
@@ -77,7 +84,7 @@ function harness({ anilistById } = {}) {
     }),
   }
   vm.createContext(ctx)
-  for (const fn of ['_animeDetailCacheWrite', '_animeDetailCacheRead', '_videoShowDetail']) {
+  for (const fn of ['withTimeout', '_animeDetailCacheWrite', '_animeDetailCacheRead', '_videoShowDetail']) {
     vm.runInContext(extract(fn), ctx)
   }
   return { ctx, dir, errors, calls, animeDetailCache }

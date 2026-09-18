@@ -8,6 +8,7 @@ const {
   createAnimetoshoProvider,
   _resetMirrorHealth,
 } = require('../providers/animetosho')
+const { fmtSize } = require('../providers/quality')
 
 const HASH = c => String(c).repeat(40).slice(0, 40)
 
@@ -44,7 +45,11 @@ test('normalizeItem maps a feed row to the shared torrent entry shape', () => {
   assert.strictEqual(entry.dub, false)
   assert.strictEqual(entry.sub, true)
   assert.ok(entry.label.includes('AnimeTosho'))
-  assert.ok(entry.label.includes('1.5 GB'))
+  // One size convention across Movies & TV (audit N11): the label now says the
+  // same binary gigabytes the source row's own size stat paints, so 1.5e9
+  // bytes reads "1.4 GB" here and "1.4 GB" there, not "1.5" beside "1.4".
+  assert.ok(entry.label.includes(fmtSize(1500000000)))
+  assert.ok(entry.label.includes('1.4 GB'))
 })
 
 test('normalizeItem builds a magnet from the hash when magnet_uri is missing', () => {
