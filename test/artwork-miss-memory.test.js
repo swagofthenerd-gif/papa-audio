@@ -81,6 +81,89 @@ function openPage(onDisk) {
   }
 }
 
+// The queue panel and the player deck paint from the same queue, many times a
+// session — every track change, every drag, every reorder. They used to build
+// their own <img src> straight from _artSrc and so never asked the miss memory
+// anything. These lift the REAL painters (renderQueuePanel's rows and the
+// deck's np-queue) and run them against the same counting browser stub.
+//
+// The painters live deep in renderer.js and touch a lot of page furniture, so
+// the sandbox answers any name they reach for; what is being measured is the
+// html they hand the browser, which is produced before any of that matters.
+function openQueuePage(onDisk, queue) {
+  const requests = []
+  const listeners = []
+  const painted = []
+
+  function el() {
+    const e = {
+      style: {}, dataset: {}, classList: { add() {}, remove() {}, toggle() {} },
+      addEventListener() {}, removeEventListener() {}, appendChild() {},
+      remove() {}, querySelectorAll: () => [], querySelector: () => null,
+      closest: () => null, insertBefore() {}, setAttribute() {}, focus() {},
+      scrollTop: 0, textContent: '', className: '', title: '',
+    }
+    Object.defineProperty(e, 'innerHTML', {
+      get() { return e._html || '' },
+      set(v) { e._html = v; painted.push(String(v)) },
+    })
+    return e
+  }
+
+  const base = {
+    Set, String, Date, Math, Number, Object, Array, JSON, console, parseInt, parseFloat,
+    esc: s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])),
+    isHttpPath: p => /^https?:\/\//.test(String(p)),
+    fmtDur: () => '0:00',
+    dragHandleSvg: '<svg></svg>',
+    autoplayEnabled: () => false,
+    keepGoingEnabled: () => false,
+    computeNextIndex: () => null,
+    _pendingShuffle: null,
+    state: {
+      queue, queueIndex: 0, shuffle: false, playCounts: {}, likedTracks: [],
+      _restoredFromQueue: false, queuePanelOpen: true, modalOpen: true,
+    },
+    document: {
+      addEventListener: (type, fn, capture) => listeners.push({ type, fn, capture }),
+      getElementById: () => el(),
+      createElement: () => el(),
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      body: el(),
+    },
+  }
+  const sandbox = new Proxy(base, {
+    has: () => true,
+    get: (t, k) => (k in t ? t[k] : undefined),
+  })
+  const ctx = vm.createContext(sandbox)
+  vm.runInContext(
+    missBlock() + lift('_artSrc') + lift('_artSrcIfUsable') + lift('artImg') +
+    lift('renderQueuePanel') + lift('renderNpQueue'), ctx)
+
+  const onError = listeners.find(l => l.type === 'error' && l.capture === true).fn
+
+  // The browser again: request every src that was painted, and report the ones
+  // that are not on disk.
+  function run(fnName) {
+    painted.length = 0
+    try { vm.runInContext(fnName + '()', ctx) } catch (e) { /* page furniture the painter reaches for afterwards */ }
+    const html = painted.join('')
+    assert.ok(html.length, fnName + ' must still paint something')
+    for (const m of html.matchAll(/<img[^>]*\ssrc="([^"]*)"/g)) {
+      const src = m[1].replace(/&amp;/g, '&')
+      requests.push(src)
+      if (!onDisk.has(src.replace(/^file:\/\//, ''))) {
+        onError({ target: { tagName: 'IMG', getAttribute: k => (k === 'src' ? src : null) } })
+      }
+    }
+    return html
+  }
+
+  return { requests, queuePanel: () => run('renderQueuePanel'), npQueue: () => run('renderNpQueue') }
+}
+
 const GONE = '/mnt/data/MUSIC/Radiohead/Kid A/cover.jpg'
 const THERE = '/mnt/data/MUSIC/Portishead/Dummy/cover.jpg'
 const ALBUM_GONE = { id: 'a1', name: 'Kid A', artist: 'Radiohead', artPath: GONE }
@@ -156,4 +239,55 @@ test('the memory lasts the session and no longer', () => {
   assert.match(block, /new Set\(\)/)
   assert.doesNotMatch(block, /localStorage|PapaLocal|window\.api/,
     'a persisted miss list would make a recovered cover invisible for good')
+})
+
+const TRACK_GONE = { title: 'Idioteque', artist: 'Radiohead', albumArtist: 'Radiohead', filePath: '/m/a.flac', artPath: GONE }
+const TRACK_OK   = { title: 'Roads', artist: 'Portishead', albumArtist: 'Portishead', filePath: '/m/b.flac', artPath: THERE }
+
+test('the queue panel stops re-requesting a cover that already failed', () => {
+  const p = openQueuePage(new Set([THERE]), [TRACK_GONE, TRACK_OK])
+  p.queuePanel(); p.queuePanel(); p.queuePanel()
+  assert.strictEqual(p.requests.filter(r => r.includes('Kid A')).length, 1,
+    'three repaints of the queue must cost one failed request, not three')
+  assert.strictEqual(p.requests.filter(r => r.includes('Dummy')).length, 3,
+    'and the cover that is really there is still painted every time')
+})
+
+test('the queue row shows its fallback once the cover is known gone', () => {
+  const p = openQueuePage(new Set([THERE]), [TRACK_GONE])
+  p.queuePanel()
+  const again = p.queuePanel()
+  assert.doesNotMatch(again, /<img/, 'no <img> at all on a repaint after the file failed')
+  assert.match(again, /queue-row-art-fallback/, 'the row still draws its placeholder')
+})
+
+test("the player deck's queue stops re-requesting it too", () => {
+  const p = openQueuePage(new Set([THERE]), [TRACK_GONE, TRACK_OK])
+  p.npQueue(); p.npQueue(); p.npQueue()
+  assert.strictEqual(p.requests.filter(r => r.includes('Kid A')).length, 1)
+  assert.strictEqual(p.requests.filter(r => r.includes('Dummy')).length, 3)
+})
+
+test('what one painter learns, the other already knows', () => {
+  // The queue panel and the deck share one memory: a cover that failed in the
+  // panel must not be asked for again by the deck.
+  const p = openQueuePage(new Set([THERE]), [TRACK_GONE])
+  p.queuePanel()
+  const deck = p.npQueue()
+  assert.doesNotMatch(deck, /<img/)
+  assert.strictEqual(p.requests.filter(r => r.includes('Kid A')).length, 1)
+})
+
+test('no painter builds a cover src without asking the miss memory', () => {
+  // _artSrc answers "file or http", not "is it worth asking for". Every call
+  // site goes through artImg or _artSrcIfUsable, which ask _artUsable first —
+  // one raw _artSrc anywhere is a painter that will hammer a dead file again.
+  const callers = [...SRC.matchAll(/_artSrc\(/g)]
+    .filter(m => !/function\s+$/.test(SRC.slice(0, m.index)))   // its own declaration
+    .map(m => {
+      const fn = [...SRC.slice(0, m.index).matchAll(/\nfunction\s+([\w$]+)\s*\(/g)].pop()
+      return fn ? fn[1] : '(top level)'
+    })
+  assert.deepStrictEqual([...new Set(callers)].sort(), ['_artSrcIfUsable'],
+    'only _artSrcIfUsable may call _artSrc; every painter goes through it or artImg')
 })

@@ -19607,9 +19607,10 @@ function renderQueuePanel() {
   }
   list.innerHTML = fromHtml + '<div style="padding:12px;font-size:13px;font-weight:600;display:flex;justify-content:space-between"><span>Queue (' + state.queue.length + ')</span><span style="font-size:11px;color:var(--text3);font-weight:400" title="Time left in the queue from here · total length of the queue">' + timeStr + '</span></div>' + shuffleNote + state.queue.map((t, i) => {
     const isPlaying = i === state.queueIndex
-    const art = t.artPath
-      ? `<img class="queue-row-art" src="${esc(_artSrc(t.artPath))}" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
-      : ''
+    // artImg paints the cover and its fallback together and is the one place
+    // that asks whether the cover is still worth requesting — a file that
+    // already failed this session is not asked for again on every repaint.
+    const art = artImg(t.artPath, 'queue-row-art', 'queue-row-art-fallback')
     const stereoBadge = (hasSurround && (t.channels || 0) < 6) ? '<span class="q-stereo-badge">STEREO</span>' : ''
     // Roadmap 048: a missing file is still a row — badged, with Locate.
     const missingBadge = t._missing ? '<span class="q-missing-badge" title="The file could not be found on disk">MISSING</span>' : ''
@@ -19618,9 +19619,6 @@ function renderQueuePanel() {
       <div class="queue-row ${isPlaying ? 'playing' : ''}${t._missing ? ' missing' : ''}" draggable="true" data-queue-idx="${i}">
         <div class="queue-drag-handle">${dragHandleSvg}</div>
         ${art}
-        <div class="queue-row-art-fallback" ${art ? 'style="display:none"' : ''}>
-          <svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>
-        </div>
         <div class="queue-row-info">
           <div class="queue-row-title">${esc(t.title)}${t.explicit ? '<span class="track-explicit">E</span>' : ''}${stereoBadge}${missingBadge}</div>
           <div class="queue-row-artist">${esc(t.artist || t.albumArtist || '')}${t.bpm ? `<span class="track-bpm">${t.bpm} BPM</span>` : ''}</div>
@@ -19858,9 +19856,10 @@ function renderQueuePanel() {
       if (t) {
         const ghost = document.createElement('div')
         ghost.style.cssText = 'position:fixed;top:-200px;left:-200px;z-index:9999;display:flex;align-items:center;gap:8px;padding:6px 12px 6px 8px;background:rgba(22,22,22,.96);border:1px solid rgba(255,255,255,.14);border-radius:8px;font-size:12px;color:#fff;max-width:230px;pointer-events:none'
-        if (t.artPath) {
+        const ghostArt = _artSrcIfUsable(t.artPath)
+        if (ghostArt) {
           const img = document.createElement('img')
-          img.src = _artSrc(t.artPath)
+          img.src = ghostArt
           img.style.cssText = 'width:28px;height:28px;border-radius:4px;object-fit:cover;flex-shrink:0'
           ghost.appendChild(img)
         }
@@ -19973,9 +19972,7 @@ function renderQueuePanel() {
       wrapper.innerHTML = `<div class="queue-suggestions-header"><span>Suggested next</span></div>` +
         suggs.map((t, i) => `
           <div class="queue-suggestion-row" data-sugg-idx="${i}">
-            ${t.artPath
-              ? `<img class="queue-suggestion-art" src="${esc(_artSrc(t.artPath))}" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"><div class="queue-suggestion-art-fb" style="display:none"><svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg></div>`
-              : `<div class="queue-suggestion-art-fb"><svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg></div>`}
+            ${artImg(t.artPath, 'queue-suggestion-art', 'queue-suggestion-art-fb')}
             <div class="queue-suggestion-info">
               <div class="queue-suggestion-title">${esc(t.title)}</div>
               <div class="queue-suggestion-artist">${esc(t.albumArtist || t.artist || '')}</div>
@@ -20482,8 +20479,9 @@ function renderNpQueue() {
   }
   list.innerHTML = state.queue.map((t, i) => {
     const isPlaying = i === state.queueIndex
-    const art = t.artPath
-      ? `<img class="np-q-art" src="${esc(_artSrc(t.artPath))}" alt="" onerror="this.style.visibility='hidden'">`
+    const artUrl = _artSrcIfUsable(t.artPath)
+    const art = artUrl
+      ? `<img class="np-q-art" src="${esc(artUrl)}" alt="" onerror="this.style.visibility='hidden'">`
       : '<div class="np-q-art"></div>'
     const eq = isPlaying ? '<span class="np-q-eq" aria-hidden="true">▶</span>' : ''
     return `<div class="np-q-row ${isPlaying ? 'playing' : ''}" role="button" tabindex="0" data-np-q-idx="${i}"
@@ -20658,7 +20656,8 @@ function updateNpNext() {
     if (titleEl)  titleEl.textContent  = cur ? (cur.title || '—') : '—'
     if (artistEl) artistEl.textContent = cur ? (cur.albumArtist || cur.artist || '') : ''
     if (artEl) {
-      if (cur && cur.artPath) { artEl.src = _artSrc(cur.artPath); artEl.style.display = 'block' }
+      var curArt = cur ? _artSrcIfUsable(cur.artPath) : ''
+      if (curArt) { artEl.src = curArt; artEl.style.display = 'block' }
       else { artEl.src = ''; artEl.style.display = 'none' }
     }
     return
@@ -20675,7 +20674,8 @@ function updateNpNext() {
   if (titleEl)  titleEl.textContent  = next.title || '—'
   if (artistEl) artistEl.textContent = next.albumArtist || next.artist || ''
   if (artEl) {
-    if (next.artPath) { artEl.src = _artSrc(next.artPath); artEl.style.display = 'block' }
+    var nextArt = _artSrcIfUsable(next.artPath)
+    if (nextArt) { artEl.src = nextArt; artEl.style.display = 'block' }
     else { artEl.src = ''; artEl.style.display = 'none' }
   }
 }
@@ -23336,6 +23336,14 @@ document.addEventListener('error', function (e) {
 
 function _artSrc(artPath) {
   return /^https?:\/\//.test(artPath) ? artPath : 'file://' + artPath
+}
+
+// For painters whose markup does not fit artImg (the deck's compact queue, the
+// drag ghost, the Up Next chip): the src to use, or '' when the file is already
+// known to be gone. Same single question — _artUsable — so no painter
+// re-requests a cover that failed earlier in the session.
+function _artSrcIfUsable(artPath) {
+  return _artUsable(artPath) ? _artSrc(artPath) : ''
 }
 
 function artImg(artPath, imgClass, fallbackClass) {
@@ -35957,7 +35965,13 @@ async function setAlbumArtwork() {
 
   // Roadmap 088: what is being replaced, by what, at what size, and where
   // the change lands — all visible before anything is written.
-  var currentArt = album.artPath ? '<div class="art-preview art-preview-current"><img src="' + esc(_artSrc(album.artPath)) + '" alt=""><div class="art-preview-cap">Current</div></div>' : '<div class="art-preview art-preview-current"><div class="art-preview-cap">No cover yet</div></div>'
+  // Same miss check as every other painter: a cover whose file already failed
+  // this session is not requested again just to draw a broken box.
+  var curSrc = _artSrcIfUsable(album.artPath)
+  var currentArt = curSrc
+    ? '<div class="art-preview art-preview-current"><img src="' + esc(curSrc) + '" alt=""><div class="art-preview-cap">Current</div></div>'
+    : '<div class="art-preview art-preview-current"><div class="art-preview-cap">' +
+      (album.artPath ? 'Current cover file is missing' : 'No cover yet') + '</div></div>'
   _mgConfirm('Set artwork',
     '<p class="mg-confirm-sum" style="margin-top:0">' +
       esc(album.artist + ' — ' + album.name) + '</p>' +
