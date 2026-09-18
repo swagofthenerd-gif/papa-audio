@@ -23396,6 +23396,50 @@ function _drawHomeClock() {
   canvas.title = now.toLocaleTimeString()
 }
 
+// ── The recently-played dropdown (L10) ──────────────────────────────────────
+// The player bar builds this menu by hand. Both keyboard halves live out here
+// so they are reachable — and testable — without the bar around them.
+
+// Close it, and put focus back where it came from. A menu that vanishes and
+// drops the keyboard on <body> has no way back.
+function _closeRecentDropdown(restoreFocus) {
+  var dd = document.getElementById('recent-dropdown')
+  if (dd && dd.parentNode) dd.parentNode.removeChild(dd)
+  var btn = document.getElementById('btn-recent')
+  if (!btn) return
+  btn.setAttribute('aria-expanded', 'false')
+  if (restoreFocus && btn.focus) btn.focus()
+}
+
+// Arrows move, Enter and Space choose, Escape closes. The rows used to be
+// tabindex="-1" with nothing that could ever focus them, so the whole list was
+// mouse-only and Escape did nothing at all.
+function _recentDropdownKey(e, dd) {
+  if (e.key === 'Escape') {
+    e.preventDefault(); e.stopPropagation()
+    _closeRecentDropdown(true)
+    return
+  }
+  var items = Array.prototype.slice.call(dd.querySelectorAll('.recent-item'))
+  if (!items.length) return
+  var here = items.indexOf(e.target)
+  if (e.key === 'Enter' || e.key === ' ') {
+    if (here < 0) return
+    e.preventDefault(); e.stopPropagation()
+    items[here].click()
+    return
+  }
+  var next = null
+  if (e.key === 'ArrowDown') next = here < 0 ? 0 : (here + 1) % items.length
+  else if (e.key === 'ArrowUp') next = here <= 0 ? items.length - 1 : here - 1
+  else if (e.key === 'Home') next = 0
+  else if (e.key === 'End') next = items.length - 1
+  if (next == null) return
+  e.preventDefault(); e.stopPropagation()
+  items.forEach(function (it, i) { it.setAttribute('tabindex', i === next ? '0' : '-1') })
+  items[next].focus()
+}
+
 // The readable part of a title or artist cell: the plain text, without the
 // badges that live inside it (explicit, surround, BPM, the YT chip). Reading
 // "Play RiversideE by Agnes Obel120 BPM" aloud is worse than reading nothing.
@@ -32197,22 +32241,32 @@ function setupListeners() {
     recentBtn.title = 'Recently played'
     likeBtn.parentNode.insertBefore(recentBtn, likeBtn)
 
+    // The list was mouse-only: its rows carried tabindex="-1", Escape did not
+    // close it, and focus never entered or came back. It is a menu now — a
+    // real one: arrows move, Enter plays, Escape closes and hands focus back
+    // to the button that opened it.
+    recentBtn.setAttribute('aria-haspopup', 'menu')
+    recentBtn.setAttribute('aria-expanded', 'false')
     recentBtn.addEventListener('click', function(e) {
       e.stopPropagation()
       var existing = document.getElementById('recent-dropdown')
-      if (existing) { existing.remove(); return }
+      if (existing) { _closeRecentDropdown(); return }
       var dd = document.createElement('div')
       dd.id = 'recent-dropdown'
+      dd.setAttribute('role', 'menu')
+      dd.setAttribute('aria-label', 'Recently played')
       dd.style.cssText = 'position:absolute;bottom:100%;right:0;background:var(--bg2);border:1px solid var(--glass-border);border-radius:var(--r);padding:8px;min-width:200px;z-index:100;margin-bottom:8px;box-shadow:0 8px 24px rgba(0,0,0,.4)'
       var tracks = state.playHistory.slice(0, 5)
       if (!tracks.length) { dd.innerHTML = '<div style="padding:8px;font-size:12px;color:var(--text3)">No recent plays</div>' }
       else {
         dd.innerHTML = tracks.map(function(t, i) {
-          return '<div class="recent-item" data-ri="' + i + '" style="padding:6px 8px;cursor:pointer;border-radius:4px;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(t.title) + ' &mdash; ' + esc(t.artist) + '</div>'
+          return '<div class="recent-item" role="menuitem" tabindex="' + (i === 0 ? '0' : '-1') + '" data-ri="' + i + '" style="padding:6px 8px;cursor:pointer;border-radius:4px;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(t.title) + ' &mdash; ' + esc(t.artist) + '</div>'
         }).join('')
         dd.querySelectorAll('.recent-item').forEach(function(item) {
           item.addEventListener('mouseenter', function() { item.style.background = 'var(--glass)' })
           item.addEventListener('mouseleave', function() { item.style.background = '' })
+          item.addEventListener('focus', function() { item.style.background = 'var(--glass)' })
+          item.addEventListener('blur', function() { item.style.background = '' })
           item.addEventListener('click', function() {
             var t = tracks[parseInt(item.dataset.ri)]
             if (t && t.filePath) {
@@ -32220,14 +32274,18 @@ function setupListeners() {
               state.queueIndex = 0
               playCurrentTrack()
             }
-            dd.remove()
+            _closeRecentDropdown(true)
           })
         })
       }
+      dd.addEventListener('keydown', function(ev) { _recentDropdownKey(ev, dd) })
       recentBtn.parentNode.style.position = 'relative'
       recentBtn.parentNode.appendChild(dd)
+      recentBtn.setAttribute('aria-expanded', 'true')
+      var first = dd.querySelector('.recent-item')
+      if (first) first.focus()
       setTimeout(function() {
-        document.addEventListener('click', function close() { if (dd.parentNode) dd.remove(); document.removeEventListener('click', close) }, { once: true })
+        document.addEventListener('click', function close() { _closeRecentDropdown(); document.removeEventListener('click', close) }, { once: true })
       }, 100)
     })
   }
@@ -32317,9 +32375,23 @@ function setupListeners() {
     function _cycleTimeDisplay() {
       timeDisplay = timeDisplay === 'elapsed' ? 'remaining' : timeDisplay === 'remaining' ? 'total' : 'elapsed'
       localStorage.setItem('papa_time_display', timeDisplay)
+      _labelTimeDisplay()
       showSnackbar(timeDisplay === 'total' ? 'Showing total album duration'
         : timeDisplay === 'remaining' ? 'Showing time remaining' : 'Showing time elapsed')
     }
+    // The readout is three different numbers depending on the mode, and the
+    // digits alone never said which. The name says what is shown AND what the
+    // next press will show, which is the only way a non-sighted user can use
+    // a three-way cycle at all.
+    function _labelTimeDisplay() {
+      var el = document.getElementById('time-cur')
+      if (!el) return
+      var says = { elapsed: 'Time elapsed', remaining: 'Time remaining', total: 'Total album duration' }
+      var next = { elapsed: 'remaining', remaining: 'total', total: 'elapsed' }
+      el.setAttribute('aria-label',
+        says[timeDisplay] + '. Activate to show ' + says[next[timeDisplay]].toLowerCase() + '.')
+    }
+    _labelTimeDisplay()
     document.getElementById('time-cur')?.addEventListener('click', _cycleTimeDisplay)
     progressTrack.addEventListener('contextmenu', function(e) {
       e.preventDefault()
@@ -34781,7 +34853,8 @@ function _omniRender() {
       var art = it.art
         ? '<div class="cmd-item-art"><img src="' + esc(/^https?:/.test(it.art) ? it.art : 'file://' + it.art) + '" alt=""></div>'
         : '<div class="cmd-item-art cmd-item-art-' + esc(it.kind) + '">' + _omniIcon(it.kind) + '</div>'
-      html += '<div class="cmd-item' + (idx === _cpIdx ? ' active' : '') + '" data-idx="' + idx + '" role="option">' +
+      html += '<div class="cmd-item' + (idx === _cpIdx ? ' active' : '') + '" id="cmd-item-' + idx + '" data-idx="' + idx + '" role="option"' +
+        (idx === _cpIdx ? ' aria-selected="true"' : ' aria-selected="false"') + '>' +
         art +
         '<div class="cmd-item-text"><div class="cmd-item-label">' + esc(it.label) + '</div>' +
         (it.sub ? '<div class="cmd-item-sub">' + esc(it.sub) + '</div>' : '') + '</div>' +
@@ -34792,6 +34865,16 @@ function _omniRender() {
   }
   if (!rows.length && !html) html = '<div class="cmd-empty">Nothing matches</div>'
   c.innerHTML = html
+  // The input is a combobox and the list is its listbox, but nothing ever told
+  // it WHICH option was current: the arrow keys moved a highlight a screen
+  // reader could not see. aria-activedescendant is the one attribute that
+  // carries that, and it must be dropped again when there is nothing to point
+  // at — a dangling id is worse than none.
+  if (rows.length && c.querySelector('#cmd-item-' + _cpIdx)) {
+    inp.setAttribute('aria-activedescendant', 'cmd-item-' + _cpIdx)
+  } else {
+    inp.removeAttribute('aria-activedescendant')
+  }
   var active = c.querySelector('.cmd-item.active')
   if (active && active.scrollIntoView) { try { active.scrollIntoView({ block: 'nearest' }) } catch (_) {} }
   _omniFetchVideo(q)
@@ -34873,7 +34956,16 @@ function _setupCP() {
     var item = e.target.closest && e.target.closest('.cmd-item')
     if (!item) return
     var i = parseInt(item.dataset.idx, 10)
-    if (i !== _cpIdx) { _cpIdx = i; results.querySelectorAll('.cmd-item').forEach(function (el) { el.classList.toggle('active', parseInt(el.dataset.idx, 10) === i) }) }
+    if (i !== _cpIdx) {
+      _cpIdx = i
+      results.querySelectorAll('.cmd-item').forEach(function (el) {
+        var on = parseInt(el.dataset.idx, 10) === i
+        el.classList.toggle('active', on)
+        el.setAttribute('aria-selected', on ? 'true' : 'false')
+      })
+      var inpH = document.getElementById('cmd-palette-input')
+      if (inpH) inpH.setAttribute('aria-activedescendant', 'cmd-item-' + i)
+    }
   })
 }
 

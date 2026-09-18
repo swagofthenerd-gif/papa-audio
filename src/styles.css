@@ -1248,6 +1248,21 @@ h2.section-title { font-size:18px; font-weight:700; }
 
 .progress-row { display:flex; align-items:center; gap:9px; width:100%; }
 .time-label { font-size:10px; color:var(--text3); min-width:28px; flex-shrink:0; }
+/* #time-cur is a <button> (L10) — strip the button chrome so it still reads
+   as the label it has always looked like, and give it a real target and a
+   focus ring. */
+.time-label-btn {
+  background:none; border:none; padding:0; margin:0; font:inherit;
+  font-size:10px; color:var(--text3); cursor:pointer; line-height:1;
+  position:relative; text-align:inherit;
+}
+.time-label-btn::after {
+  content:''; position:absolute; left:50%; top:50%;
+  transform:translate(-50%,-50%);
+  width:24px; height:24px; min-width:100%; min-height:100%;
+}
+.time-label-btn:hover { color:var(--text2); }
+.time-label-btn:focus-visible { outline:2px solid var(--accent); outline-offset:2px; border-radius:3px; }
 .time-label:last-child { text-align:right; }
 
 .progress-track {
@@ -7716,6 +7731,9 @@ body.app-unfocused .vt-menu {
 }
 .results-filter::placeholder { color: var(--text3); }
 .results-filter:focus { border-color: var(--accent); }
+/* L13: `outline:none` with only a 1px border tint to replace it is not a focus
+   ring — tabbing into the filter looked exactly like not being in it. */
+.results-filter:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* The YouTube row's second line. The class was renamed in JS and the CSS never
    followed, so it rendered at inherited body size and never truncated. */
