@@ -19232,10 +19232,13 @@ function renderQueuePanel() {
       // nothing follows now.
       updateNextPrefetch()
       renderQueuePanel()
+      // The tray and the MPRIS applet publish the queue, not just the track.
+      syncExtension()
       pushUndo('Cleared ' + dropped + ' upcoming track' + (dropped === 1 ? '' : 's'), function() {
         state.queue = savedQueue; state.queueIndex = savedIdx
         _pendingShuffle = null
         updateNextPrefetch()
+        syncExtension()
         if (state.queuePanelOpen) renderQueuePanel()
       })
     })
@@ -19267,6 +19270,7 @@ function renderQueuePanel() {
       updatePlayBtn()
       const restored = savedIdx >= 0 ? savedQueue[savedIdx] : null
       if (restored) updateNowPlaying(restored)
+      syncExtension()
       if (state.queuePanelOpen) renderQueuePanel()
     })
   })
@@ -19290,10 +19294,12 @@ function renderQueuePanel() {
       _pendingShuffle = null
       updateNextPrefetch()
       renderQueuePanel()
+      syncExtension()
       pushUndo('Cleared played tracks', function() {
         state.queue = savedQueue; state.queueIndex = savedIdx
         _pendingShuffle = null
         updateNextPrefetch()
+        syncExtension()
         if (state.queuePanelOpen) renderQueuePanel()
       })
     })
@@ -21340,6 +21346,14 @@ function updateNowPlaying(track) {
   updateCrossfadeBadge()
   updateStatsRow(track)
   updateRadioState()
+  // The header above says the stale tray was the bug this function was written
+  // to fix, and then never called syncExtension, so it never actually was.
+  // "Stop and clear" paints the bar empty and stops playback — and because the
+  // once-a-second sync only runs while something is playing, the tray, the
+  // MPRIS applet and now-playing.json went on advertising the cleared track
+  // until the app was restarted. The nothing-playing case is exactly the one
+  // nothing else will ever come back to correct, so it publishes here.
+  if (nothingPlaying) syncExtension()
 }
 
 // Roadmap 128: a long title is readable without watching it scroll for
