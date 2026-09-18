@@ -92,14 +92,14 @@ def main(dst, keep_slskd=False):
                      'show': 'Fixture Show' if i < 2 else None, 'season': 1 if i < 2 else None,
                      'episode': i + 1 if i < 2 else None, 'fileName': os.path.basename(path)})
         cache.append({'key': f'fixture:{i + 1}', 'path': path, 'title': title, 'sizeBytes': 4096, 'lastUsedAt': 1700000000000})
-    json.dump(keep, open(os.path.join(dst, 'video-keep-index.json'), 'w'))
-    json.dump(cache, open(os.path.join(dst, 'video-cache-index.json'), 'w'))
+    with open(os.path.join(dst, 'video-keep-index.json'), 'w') as f: json.dump(keep, f)
+    with open(os.path.join(dst, 'video-cache-index.json'), 'w') as f: json.dump(cache, f)
     # Verification: no original secret VALUE anywhere under the twin.
     leaks = []
     for root, _, files in os.walk(dst):
         for fn in files:
             if not fn.endswith('.json'): continue
-            txt = open(os.path.join(root, fn), encoding='utf-8', errors='ignore').read()
+            with open(os.path.join(root, fn), encoding='utf-8', errors='ignore') as f: txt = f.read()
             for sv in secrets:
                 if sv in txt: leaks.append(fn)
     if leaks:
@@ -112,7 +112,7 @@ def main(dst, keep_slskd=False):
         # slskd is his REAL Soulseek account. Its creds are kept ONLY so read-only
         # browse/search can be tested; downloads, cancels and config changes must
         # be refused in main by PAPA_DRY_RUN=1. The marker makes the choice auditable.
-        open(os.path.join(dst, 'TWIN-HAS-SLSKD-CREDS'), 'w').write('launch ONLY with PAPA_DRY_RUN=1\n')
+        with open(os.path.join(dst, 'TWIN-HAS-SLSKD-CREDS'), 'w') as f: f.write('launch ONLY with PAPA_DRY_RUN=1\n')
         print('WARNING: slskd credentials kept (--keep-slskd). Launch ONLY with PAPA_DRY_RUN=1, never press download/cancel.')
     print(f'launch: PAPA_USER_DATA={dst} PAPA_DRY_RUN=1 npx electron . --remote-debugging-port=<port>')
 
