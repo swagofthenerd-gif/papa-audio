@@ -13,7 +13,10 @@ test('pressing an episode row selects it and presses Play; an unaired row only s
   // Selecting refetches the episode's sources; the autoplay ticket plays once
   // the new list lands (playing at once used the previous episode's list).
   assert.match(block, /if \(!b\.classList\.contains\('unaired'\)\) _autoPlayTicket = _videoDetailTicket\n\s+setEp\(Number\(b\.dataset\.ep\) \|\| 1\)/)
-  assert.match(R, /if \(_autoPlayTicket === _videoDetailTicket && streams\.length\) \{\n\s+_autoPlayTicket = 0\n\s+_videoPlayResult\(_autoPickStream\(streams\)\)/)
+  // The consumption moved into _takeAutoPlayArm when the Resume banner was
+  // fixed — one named handoff shared by every Play surface. Behaviour of this
+  // path is covered for real in test/video-play-surfaces.test.js.
+  assert.match(R, /if \(_takeAutoPlayArm\(streams\)\) \{\n\s+_videoPlayResult\(_autoPickStream\(streams\)\)/)
   assert.match(block, /b\.addEventListener\('click', go\)/)
   assert.match(block, /if \(e\.key === 'Enter' \|\| e\.key === ' '\) \{ e\.preventDefault\(\); go\(\) \}/)
 })

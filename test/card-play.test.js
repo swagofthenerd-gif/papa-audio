@@ -40,7 +40,9 @@ function slice(from, to) {
 function liftArrival() {
   const bind = slice("      const act = e.target.closest('[data-act]')",
     "      if (act.dataset.act === 'cwremove') {")
-  const take = slice('  _videoState = { season: null, episode: 1, sub: true }', '\n  _videoStreams = []')
+  // The page's own state wipe follows the consume block; it moved into
+  // _resetDetailPageChoices() when the sticky quality choice was fixed.
+  const take = slice('  _videoState = { season: null, episode: 1, sub: true }', '\n  _resetDetailPageChoices()')
   const tvLine = /if \(!Number\.isFinite\(_videoState\.season\)\) _videoState\.season = pick/
   assert.ok(tvLine.test(RENDERER),
     'a tv page must still default its season only when none was asked for')
