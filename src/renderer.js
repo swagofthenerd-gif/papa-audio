@@ -1270,6 +1270,26 @@ function updateStopAfterBtn() {
   const btn = document.getElementById('btn-stop-after')
   if (!btn) return
   btn.classList.toggle('active', state.stopAfterTrack)
+  // The class is all a sighted user needs; aria-pressed is the only thing a
+  // screen reader has. It used to move only when updateAriaToggles happened to
+  // run for some other reason, so the button announced "not pressed" while it
+  // was plainly lit.
+  btn.setAttribute('aria-pressed', state.stopAfterTrack ? 'true' : 'false')
+}
+
+// Shuffle is flipped from seven places — the player bar, the now-playing deck,
+// a media key, the media-shuffle event, the keyboard shortcut, the agent tool
+// and the command palette — and every one of them painted the two buttons'
+// class by hand. None of them touched aria-pressed. One setter now owns both.
+function updateShuffleBtns() {
+  var on = !!state.shuffle
+  var ids = ['btn-shuffle', 'np-modal-shuffle']
+  for (var i = 0; i < ids.length; i++) {
+    var b = document.getElementById(ids[i])
+    if (!b) continue
+    b.classList.toggle('active', on)
+    b.setAttribute('aria-pressed', on ? 'true' : 'false')
+  }
 }
 
 function updateFormatBadge(track) {
@@ -20082,6 +20102,7 @@ function updatePlayerLikeBtn() {
   const liked = !!(currentTrack && currentTrack.filePath &&
     state.likedTracks.includes(currentTrack.filePath))
   likeBtn.classList.toggle('liked', liked)
+  likeBtn.setAttribute('aria-pressed', liked ? 'true' : 'false')
 }
 
 // ── Queue panel ─────────────────────────────────────────────────────────────
@@ -21169,7 +21190,7 @@ function updateNowPlayingModal() {
   _applyNpPalette(track, artImg, artUrl)
 
   // Sync shuffle/repeat/like state.
-  document.getElementById('np-modal-shuffle')?.classList.toggle('active', state.shuffle)
+  updateShuffleBtns()
   updateRepeatBtns()
   _syncNpLike(track)
 
@@ -24573,8 +24594,7 @@ async function _executeTool(name, input) {
 
     case 'set_shuffle': {
       state.shuffle = !!input.enabled
-      document.getElementById('btn-shuffle')?.classList.toggle('active', state.shuffle)
-      document.getElementById('np-modal-shuffle')?.classList.toggle('active', state.shuffle)
+      updateShuffleBtns()
       updateNextPrefetch()
       return `Shuffle ${state.shuffle ? 'on' : 'off'}.`
     }
@@ -32111,8 +32131,7 @@ function setupListeners() {
   document.getElementById('btn-shuffle')?.addEventListener('click', function() {
     state.shuffle = !state.shuffle
   _pendingShuffle = null
-    this.classList.toggle('active', state.shuffle)
-    document.getElementById('np-modal-shuffle')?.classList.toggle('active', state.shuffle)
+    updateShuffleBtns()
     updateNextPrefetch()
     showSnackbar(state.shuffle ? 'Shuffle on' : 'Shuffle off', '', function(){}, 1500)
   })
@@ -32535,8 +32554,7 @@ function setupListeners() {
     // _pendingShuffle index would otherwise decide the next track after the
     // toggle changed the intent.
     _pendingShuffle = null
-    this.classList.toggle('active', state.shuffle)
-    document.getElementById('btn-shuffle')?.classList.toggle('active', state.shuffle)
+    updateShuffleBtns()
     updateNextPrefetch()
     showSnackbar(state.shuffle ? 'Shuffle on' : 'Shuffle off', '', function(){}, 1500)
   })
@@ -33373,8 +33391,7 @@ function setupListeners() {
 
   window.api.on('media-shuffle', enabled => {
     state.shuffle = !!enabled
-    document.getElementById('btn-shuffle')?.classList.toggle('active', state.shuffle)
-    document.getElementById('np-modal-shuffle')?.classList.toggle('active', state.shuffle)
+    updateShuffleBtns()
     updateNextPrefetch()
   })
 
@@ -33465,8 +33482,7 @@ function setupListeners() {
     if (cmd === 'prev')       { playPrev();   return }
     if (cmd === 'shuffle') {
       state.shuffle = !state.shuffle
-      document.getElementById('btn-shuffle')?.classList.toggle('active', state.shuffle)
-      document.getElementById('np-modal-shuffle')?.classList.toggle('active', state.shuffle)
+      updateShuffleBtns()
       updateNextPrefetch()
       syncExtension()
       return
@@ -33873,8 +33889,7 @@ function setupListeners() {
       state.shuffle = !state.shuffle
       // Clear the cached shuffle pick like the bar button does.
       _pendingShuffle = null
-      document.getElementById('btn-shuffle')?.classList.toggle('active', state.shuffle)
-      document.getElementById('np-modal-shuffle')?.classList.toggle('active', state.shuffle)
+      updateShuffleBtns()
       updateNextPrefetch()
       showSnackbar(state.shuffle ? 'Shuffle on' : 'Shuffle off', '', function(){}, 1500)
       return
@@ -33894,7 +33909,7 @@ function setupListeners() {
     if (matchesShortcut('stopAfter', e)) {
       e.preventDefault()
       state.stopAfterTrack = !state.stopAfterTrack
-      document.getElementById('btn-stop-after')?.classList.toggle('active', state.stopAfterTrack)
+      updateStopAfterBtn()
       showSnackbar(state.stopAfterTrack ? 'Stopping after this track' : 'Stop-after cancelled', '', function () {}, 2000)
       return
     }
@@ -34483,8 +34498,7 @@ function toggleShuffleWrap() {
   // Clear the cached shuffle pick like the bar button does, so the command
   // palette toggle can't leave a stale index deciding the next track.
   _pendingShuffle = null
-  document.getElementById('btn-shuffle')?.classList.toggle('active', state.shuffle)
-  document.getElementById('np-modal-shuffle')?.classList.toggle('active', state.shuffle)
+  updateShuffleBtns()
   showSnackbar(state.shuffle ? 'Shuffle on' : 'Shuffle off', '', function(){}, 1500)
 }
 function cycleRepeatWrap() {
