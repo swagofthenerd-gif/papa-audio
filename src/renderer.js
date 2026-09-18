@@ -8536,6 +8536,9 @@ function _deviceStorageHtml(keepUsed, keepLimit, cacheUsed, cacheLimit) {
 // what is arriving, what you chose to keep (grouped by show, in episode
 // order), and what recent watching left behind. Nothing is invented — a
 // section with nothing in it is not drawn at all.
+// True between a "Delete watched" press and its answer, so repeated triggers
+// collapse into one sweep and one snackbar.
+var _delWatchedInFlight = false
 async function _renderDeviceTab(rows, ticket) {
   if (!rows) return
   // The spinner belongs to the FIRST paint only. This function re-runs on every
@@ -8612,7 +8615,7 @@ async function _renderDeviceTab(rows, ticket) {
     html += _deviceSectionHtml('Ready to rewatch',
       'Kept automatically from what you watched \u2014 the oldest go first',
       (watchedCached.length
-        ? '<div class="vdevice-actions-row"><button class="mcs-set-refresh" id="vdevice-del-watched">' +
+        ? '<div class="vdevice-actions-row"><button class="vbtn vbtn-sm" id="vdevice-del-watched">' +
             'Delete watched (' + watchedCached.length + ')</button></div>'
         : '') +
       '<div class="vgrid">' + cached.map(function (e) { return _deviceCardHtml(e, 'cache') }).join('') + '</div>')
@@ -8656,17 +8659,29 @@ async function _renderDeviceTab(rows, ticket) {
   // The explicit button: do it now, whatever the setting says, because the
   // viewer just asked for it in as many words.
   const delBtn = document.getElementById('vdevice-del-watched')
-  if (delBtn) {
+  if (delBtn && delBtn.dataset.delWatchedBound !== '1') {
+    delBtn.dataset.delWatchedBound = '1'
     delBtn.addEventListener('click', function () {
+      // One press, one answer. This page repaints from four places (a download
+      // event, the cache-swept event, the automatic sweep, and this handler's
+      // own re-render), each of which re-runs the binding above; a press that
+      // landed while two of those were in flight said the same thing three
+      // times. The in-flight latch makes the sweep single-shot no matter how
+      // many triggers reach it, and the dataset guard stops the listener
+      // stacking on a button that survived a repaint.
+      if (_delWatchedInFlight) return
       delBtn.disabled = true
       if (!window.api || typeof window.api.videoCacheSweepWatched !== 'function') return
+      _delWatchedInFlight = true
       window.api.videoCacheSweepWatched({ keys: watchedCached }).then(function (res) {
+        _delWatchedInFlight = false
         const n = (res && res.deleted && res.deleted.length) || 0
         if (res && res.ok === false) showSnackbar('Could not delete those' + (res.error ? ': ' + _shortQ(res.error, 90) : ''), null, null, 6000)
         else showSnackbar(n ? 'Removed ' + n + (n === 1 ? ' watched episode' : ' watched episodes') : 'Nothing to remove yet', null, null, 4000)
         if (typeof _refreshInstantKeys === 'function') _refreshInstantKeys(true)
         _renderDeviceTab(document.getElementById('vrows'), _videoCatalogTicket)
       }).catch(function (e) {
+        _delWatchedInFlight = false
         delBtn.disabled = false
         showSnackbar('Could not delete those: ' + _shortQ(String((e && e.message) || e), 90), null, null, 6000)
       })
