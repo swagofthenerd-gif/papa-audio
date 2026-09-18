@@ -2190,21 +2190,42 @@ function _probeOnce() {
   })
 }
 
+// Any evidence the network answered: a successful HTTP response anywhere in the
+// app, or the renderer telling us its own request worked. Clears a claimed
+// offline state AT ONCE.
+//
+// The two-in-a-row rule used to apply in both directions, and on a 60 s cadence
+// that meant one blip latched "You're offline" for at least two minutes. It was
+// seen claiming offline while navigator.onLine was true, music.youtube.com
+// returned 200, and the app's own YouTube widget said "connected". Believing a
+// success costs nothing and a success is proof; believing a failure costs the
+// user features, and a failure proves much less (one host, one moment). So the
+// rule is now asymmetric.
+function _noteOnlineSignal() {
+  if (_onlineState === true) return
+  _onlineState = true
+  _lastProbe = true
+  safeSend('app-online-state', { online: true })
+  console.log('[papa] connectivity: online (a request succeeded)')
+}
+
 async function _checkConnectivity() {
   const up = await _probeOnce()
-  // Only a result that matches the previous one is allowed to flip the state,
-  // so a lone failed probe on an otherwise-fine connection is ignored.
-  if (_lastProbe === up && _onlineState !== up) {
-    _onlineState = up
-    safeSend('app-online-state', { online: up })
-    console.log(`[papa] connectivity: now ${up ? 'online' : 'offline'}`)
-  } else if (_onlineState === null && _lastProbe === up) {
-    // First settled reading: adopt it silently so the renderer starts in the
-    // right state without a spurious "transition".
-    _onlineState = up
-    safeSend('app-online-state', { online: up })
+  if (up) {
+    // One good probe is enough to come back.
+    if (_onlineState !== true) {
+      _onlineState = true
+      safeSend('app-online-state', { online: true })
+      console.log('[papa] connectivity: now online')
+    }
+  } else if (_lastProbe === false && _onlineState !== false) {
+    // Two failures in a row before we will say so.
+    _onlineState = false
+    safeSend('app-online-state', { online: false })
+    console.log('[papa] connectivity: now offline')
   }
   _lastProbe = up
+  return _onlineState
 }
 
 function startConnectivityMonitor() {
@@ -2213,6 +2234,7 @@ function startConnectivityMonitor() {
   setTimeout(() => { _checkConnectivity().catch(() => {}) }, 10000).unref?.()
   setInterval(() => { _checkConnectivity().catch(() => {}) }, CONNECTIVITY_PROBE_INTERVAL_MS)
 }
+
 
 // ── Auto-backups (App §4) ────────────────────────────────────────────────────
 // Once per app launch, after startup has settled, write a full rotating backup
@@ -4282,6 +4304,15 @@ ipcMain.on('save-liked', (_, ids) => store.set('likedAlbums', ids))
 ipcMain.handle('get-liked-tracks', () => (sideStores.likedTracks.get() || []))
 ipcMain.on('save-liked-tracks', (_, paths) => sideStores.likedTracks.set(paths))
 
+// A Retry button, and the renderer's own 'online' event, must not wait up to a
+// minute for the next scheduled connectivity probe.
+ipcMain.handle('connectivity-recheck', async () => {
+  const online = await _checkConnectivity()
+  return { ok: true, online: online !== false }
+})
+// The renderer reporting that one of its own requests went through: a positive
+// signal clears a claimed offline state at once.
+ipcMain.handle('connectivity-note-online', () => { _noteOnlineSignal(); return { ok: true } })
 ipcMain.handle('get-play-counts', () => (sideStores.playCounts.get() || {}))
 ipcMain.on('increment-play-count', (_, filePath) => {
   const counts = (sideStores.playCounts.get() || {})
@@ -6825,6 +6856,8 @@ function httpsGet(url, redirects = 0) {
         err.statusCode = res.statusCode
         return reject(err)
       }
+      // The server answered, so the network is up — whatever the status was.
+      try { _noteOnlineSignal() } catch (_) {}
       const chunks = []
       res.on('data', c => chunks.push(c))
       res.on('end', () => resolve(Buffer.concat(chunks)))

@@ -15102,7 +15102,24 @@ function _ytFailureHtml(error, opts) {
   var btn = ''
   if (r.action === 'retry' || r.action === 'wait') btn = ' <button class="yt-retry" id="yt-retry-btn">' + esc(label) + '</button>'
   else if (r.action === 'settings') btn = ' <button class="yt-retry" id="yt-settings-btn">' + esc(label) + '</button>'
+  // "You are offline — YouTube is unavailable." used to be a dead end: the
+  // 'connection' action drew no button at all, so the one message most likely
+  // to be WRONG was the only one you could not argue with. It now re-probes and
+  // searches again.
+  else if (r.action === 'connection') btn = ' <button class="yt-retry" id="yt-retry-btn">Retry</button>'
   return '<div class="yt-status' + (r.kind === 'empty' || r.kind === 'cancelled' ? '' : ' yt-error') + '" data-failure="' + esc(r.kind) + '">' + esc(r.text) + btn + '</div>'
+}
+
+// Retry after a failure. If the failure was "you are offline", the FIRST thing
+// to do is check whether that was ever true — the state is a cached answer from
+// a probe that may be up to a minute old and may have latched on one blip.
+async function _retryYtSearch() {
+  if (!ytSearchState.lastQuery) return
+  if (!state.isOnline && window.api && typeof window.api.connectivityRecheck === 'function') {
+    const r = await window.api.connectivityRecheck().catch(function () { return null })
+    if (r && r.online) _applyOnlineState(true)
+  }
+  runYtSearch(ytSearchState.lastQuery, ytSearchState.scope)
 }
 
 async function runYtSearch(query, scope) {
@@ -22369,15 +22386,13 @@ function bindContentEvents() {
     fetchMissingArtwork()
   })
 
-  document.getElementById('yt-retry-btn')?.addEventListener('click', () => {
-    runYtSearch(ytSearchState.lastQuery, ytSearchState.scope)
-  })
+  document.getElementById('yt-retry-btn')?.addEventListener('click', () => { _retryYtSearch() })
   // The failure painter's buttons are re-rendered with every result, so the
   // retry/settings actions are delegated (roadmap 057).
   document.getElementById('content')?.addEventListener('click', e => {
     const t = e.target
     if (!t || !t.closest) return
-    if (t.closest('#yt-retry-btn')) { if (ytSearchState.lastQuery) runYtSearch(ytSearchState.lastQuery, ytSearchState.scope); return }
+    if (t.closest('#yt-retry-btn')) { _retryYtSearch(); return }
     if (t.closest('#yt-settings-btn')) { openSettings('ytdlp'); return }
   })
 
@@ -33712,7 +33727,12 @@ function _evalSmartPlaylist(pl) {
 // also drive the offline banner (App §11). No new global listeners: the banner
 // piggybacks on these and on api.onAppOnlineState, so the soak budget is
 // unchanged.
-window.addEventListener('online', () => { _applyOnlineState(true) })
+window.addEventListener('online', () => {
+  _applyOnlineState(true)
+  // Positive signals are believed at once; main's probe runs only once a minute,
+  // so without this its stale "offline" would paint the banner straight back on.
+  try { window.api && window.api.connectivityRecheck && window.api.connectivityRecheck() } catch (_) {}
+})
 window.addEventListener('offline', () => { _applyOnlineState(false) })
 
 // Shows/hides the slim offline banner and, on a genuine offline→online flip,
