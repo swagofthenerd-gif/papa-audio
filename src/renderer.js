@@ -30393,7 +30393,12 @@ function renderDownloads() {
   // The headline cards come from the one reconciled model (R5) and are
   // patched on every poll by _dlPaintDashboard.
   var dashHTML = _dlDashboardHtml()
-  var batchBtns = '<div style="display:flex;gap:8px;padding:12px 28px"><button class="dl-action-btn" id="dl-pause-all">\u23f8 Pause All</button><button class="dl-action-btn" id="dl-resume-all">\u25b6 Resume All</button></div>'
+  // No "Resume All": Soulseek has no resume at all, so the button could only
+  // ever answer "Resume not yet supported — re-queue downloads", which is a
+  // control that exists to say it does not work. Stopping is the only batch
+  // action there is, and its own confirm explains that re-queueing is the way
+  // back. (Stop All is what "Pause All" has always actually done.)
+  var batchBtns = '<div style="display:flex;gap:8px;padding:12px 28px"><button class="dl-action-btn" id="dl-pause-all">\u23f9 Stop All</button></div>'
   // Roadmap 082: each entry says what the automation does with it — download
   // on its own or only tell you — whether it is paused, and when it was last
   // checked; the header says the cadence. Nothing here is implied.
@@ -30685,10 +30690,6 @@ function renderDownloads() {
         })
         showSnackbar('Stopped ' + active.length + ' download' + (active.length === 1 ? '' : 's'))
       })
-  })
-
-  document.getElementById('dl-resume-all')?.addEventListener('click', function() {
-    showSnackbar('Resume not yet supported \u2014 re-queue downloads')
   })
 
   _pollAndRenderDownloads()
