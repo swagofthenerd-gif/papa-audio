@@ -834,3 +834,11 @@ at. My re-checks: allow-list widened to `/transfers` → 7/22 red;
 `slsk-download` handler refusal removed (choke intact) → 2 red on the
 refusal-shape assertion. A `--keep-slskd` twin is now safe for browse-only
 QA; downloads/cancels/messages are physically refused in main.
+- Gate after the choke merge: 19 red in four source-scanning tests
+  (`main-guards`, `tier6-hygiene`, `main-thread-hygiene`,
+  `ipc-channel-wiring`) — not a regression: the choke's comment said
+  "/transfers/*" and those tests strip block comments before scanning, so
+  the glob opened a comment that swallowed a large stretch of main.js.
+  Reworded (3254bd3); gate 6,139/0, pushed. Lesson re-learned: I pushed the
+  merge BEFORE the gate this once — gate, then push, always. Comments in
+  main.js must not contain a slash-star sequence.
