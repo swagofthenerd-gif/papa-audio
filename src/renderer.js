@@ -38145,12 +38145,16 @@ var _slskFriends = {
   bound: false,
   started: false,
   refreshing: false,
+  // Set when a status refresh fails, so a peer we could not look up says
+  // "Couldn't check" rather than sitting on "Checking…" forever.
+  statusFailed: false,
 }
 
 function _slskFriendRows() {
   var P = window.PapaSlskPresence
   if (!P) return []
-  return P.sortFriends(P.mergeStatuses(_slskFriends.users, _slskFriends.statuses))
+  return P.sortFriends(P.mergeStatuses(_slskFriends.users, _slskFriends.statuses,
+    { checkFailed: _slskFriends.statusFailed }))
 }
 
 function renderSlskFriends() {
@@ -38175,6 +38179,7 @@ function renderSlskFriends() {
 function _slskFriendsApplyStatuses(payload) {
   if (!payload) return
   if (Array.isArray(payload.statuses)) _slskFriends.statuses = payload.statuses
+  _slskFriends.statusFailed = false
   renderSlskFriends()
 }
 
@@ -38189,7 +38194,12 @@ function refreshSlskFriendStatuses() {
   _slskFriendsSetRefreshing(true)
   return window.api.slskRefreshUserStatuses()
     .then(function(res) { _slskFriendsApplyStatuses(res) })
-    .catch(function() {})
+    .catch(function() {
+      // Swallowing this left every unknown peer reading "Checking…" for the
+      // rest of the session, as though the request were still running.
+      _slskFriends.statusFailed = true
+      renderSlskFriends()
+    })
     .then(function() { _slskFriendsSetRefreshing(false) })
 }
 
