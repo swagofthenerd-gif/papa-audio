@@ -41,3 +41,14 @@ were lost. A status report is not a stopping point. There is no stopping point.
 A test that reads source as text cannot see behaviour. Every new test must
 `require`/`lift` production code, and every fix must be mutation-checked:
 revert the fix, confirm the test goes red, restore.
+
+### Killing a twin (2026-09-19, after it bit twice)
+Select PIDs with the comm filter, never with a bare grep — the grep matches
+the shell running it, and killing that pgid kills your own tool call:
+
+    for p in $(ps -eo pid,comm,args | awk '$2=="electron" && /remote-debugging-port=NNNN/ {print $1}'); do
+      PG=$(ps -o pgid= -p $p | tr -d ' '); [ -n "$PG" ] && [ "$PG" != "$$" ] && kill -TERM -- -$PG; done
+    sleep 2   # then the same loop with -KILL
+    echo "remaining: $(ps -eo pid,comm,args | awk '$2=="electron" && /remote-debugging-port=NNNN/' | wc -l)"   # must print 0
+
+Then delete the profile dir and its .log. A kill without the printed 0 is not done.

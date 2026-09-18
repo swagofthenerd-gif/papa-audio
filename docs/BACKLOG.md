@@ -686,3 +686,25 @@ branch: E1 tick branch removed → 1/16 red; E3 identity assignments removed →
   into handler bodies so `lift-ipc` sees them; `.catch` logs instead of
   swallowing (the honesty guard flags the bare form). Not yet verified LIVE
   with a real debrid pack — that needs his account and is his call.
+
+### 19 Sep — Movies & TV polish merged; gate 5,785/0; live sweep clean
+- `fix/video-polish-n11-n20` (8 commits): N11 five providers baked a DECIMAL
+  GB into `label` while the row painted BINARY — one `fmtSize` now; N13 the
+  only tablists are the top tabs and the calendar toggle (no detail-page
+  tablist exists) — arrow/Home/End + roving tabindex on both; N14/N20 24 px
+  dot and chip targets, `color-scheme` declared, poster Play visible at rest
+  (rule #5); N15 `_trailerUrlOnce` — 10 hovers → 1 conversion (my re-check:
+  hero bypasses the memo → 1 red); N16 offline copy says what plays and what
+  needs a connection; N17 corrupt watch-history entries dropped at READ with
+  one console.error (fired once on the twin: his real history holds one such
+  entry); N18 the page awaited OMDb ratings before returning — now a 4 s
+  bound (my re-check → 1 red) and season-chain lane has an 8 s ceiling with
+  its own Retry; N19 `0` = season 10, Shift+digit = 11–20 via `event.code`.
+- Gate: 5,785/0 after one stale anchor (`hover-trailer.test.js` sliced from
+  `window.api.videoTrailerUrl`, which N15 moved) was re-anchored. Live twin:
+  10 pages, 0 throws, 8 tabs with exactly one tabindex=0, colour-scheme dark,
+  "Delete watched" present, anime detail hero painted in 2,258 ms (audit had
+  measured 53.6 s for a season-2 page; not the same title — a like-for-like
+  timing is still owed).
+- The twin-kill self-match trap bit ME again (exit 144) an hour after I wrote
+  the rule; the comm-filtered form is now in CONTINUOUS-RUN.md and memory.
