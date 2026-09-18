@@ -250,6 +250,10 @@
     return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate())
   }
 
+  // Told when an episode genuinely finishes, so the rewatch cache can let it
+  // go. One hook for the whole module; see api.onWatchedSweep below.
+  let _sweepHook = null
+
   function createVideoStore(opts = {}) {
     const { storage, now, maxItems, debounceMs, onWatched } = opts
     // Diary auto-log (roadmap #34). When an item flips to watched:true, this is
@@ -695,18 +699,24 @@
       if (item.id != null) item.id = String(item.id)
       state.items[k] = item
       save()
-      _fireWatched(k, prev, item)
+      // 'ratio': the viewer actually reached the end of the picture.
+      _fireWatched(k, prev, item, 'ratio')
       return item
     }
 
-    function markWatched(key) {
+    // `opts.reason` says HOW this became watched, because not every route
+    // means the same thing. Reaching the end ('ratio'), or mpv reporting the
+    // file finished ('ended'), means the episode really is done. Pressing Next
+    // three minutes in ('advance') does not — it is a skip, and the file must
+    // not be treated as finished with.
+    function markWatched(key, opts) {
       const state = load()
       const k = String(key)
       const prev = state.items[k] || {}
       const item = { ...prev, watched: true, updatedAt: clock() }
       state.items[k] = item
       save()
-      _fireWatched(k, prev, item)
+      _fireWatched(k, prev, item, (opts && opts.reason) || 'manual')
       return item
     }
 
@@ -745,10 +755,18 @@
     // false, must not re-log — that is the dedupe the roadmap asks for at the
     // transition level; the day-granularity dedupe against the diary is the
     // caller's, via alreadyLogged() below.
-    function _fireWatched(k, prev, item) {
-      if (!watchedHook) return
+    function _fireWatched(k, prev, item, reason) {
       if (item.watched !== true) return
       if (prev && prev.watched === true) return
+      // "Delete watched episodes": the rewatch cache is told, so the file can
+      // go and leave the space to an episode that has NOT been seen. Only on
+      // the routes that mean the episode is genuinely finished — never on an
+      // early Next, and never on a bulk "mark season watched", where nothing
+      // was actually watched.
+      if (_sweepHook && (reason === 'ratio' || reason === 'ended')) {
+        try { _sweepHook(k, reason) } catch (_) { /* never breaks a save */ }
+      }
+      if (!watchedHook) return
       try {
         watchedHook({
           key: k,
@@ -920,6 +938,10 @@
   const api = {
     ...singleton,
     createVideoStore,
+    // Installed by the renderer once, at start-up. Kept out of the factory
+    // options because the store is a singleton created at load time, before
+    // there is any IPC to call.
+    onWatchedSweep(fn) { _sweepHook = typeof fn === 'function' ? fn : null },
     watchedLogKey,
     alreadyLogged,
     _dayOf,

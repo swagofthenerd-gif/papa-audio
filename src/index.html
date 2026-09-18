@@ -663,6 +663,10 @@
             <input class="mcs-set-input mcs-set-input-num" id="video-cache-gb" type="number" min="0" step="1" autocomplete="off">
           </label>
           <div class="mcs-set-hint">Episodes and films you finish stay on this device up to this size, so watching them again is instant. The oldest go first. 0 turns it off.</div>
+          <label class="mcs-set-row">Delete watched episodes
+            <input type="checkbox" id="video-delete-watched">
+          </label>
+          <div class="mcs-set-hint">Episodes you finish are removed from the rewatch cache. Files you chose to Download are never touched.</div>
 
           <button class="mcs-set-refresh mcs-set-reset" id="video-reset-defaults">Reset video options to defaults</button>
           <div class="mcs-set-chip mcs-set-chip-warn" id="video-storage-health" style="display:none">Your watch history may not be saving — check disk space</div>
@@ -1327,6 +1331,7 @@
 <script src="source-failure.js"></script>
 <script src="agent-disclosure.js"></script>
 <script src="start-honesty.js"></script>
+<script src="watch-key.js"></script>
 <script src="watch-rules.js"></script>
 <script src="release-name.js"></script>
 <script src="episode-list.js"></script>

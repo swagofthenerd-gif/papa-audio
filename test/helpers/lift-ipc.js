@@ -165,14 +165,16 @@ async function runHandler(channel, opts = {}) {
   } finally {
     clearTimeout(timer)
   }
-  return { result, calls, error, timedOut }
+  // `globals` is the sandbox's backing object, so a test can read what the
+  // handler assigned to a module-level variable (e.g. _debridReady).
+  return { result, calls, error, timedOut, globals: defined }
 }
 
 // Every channel the dry run is expected to refuse outright.
 const GATED_CHANNELS = [
   'video-play', 'video-switch-stream', 'video-warm', 'video-download-start',
   'video-keep-file', 'video-debrid-pick', 'video-predownload',
-  'video-cache-delete', 'video-keep-delete',
+  'video-cache-delete', 'video-keep-delete', 'video-cache-sweep-watched',
   'slsk-enqueue-downloads', 'slsk-retry-transfer', 'slsk-cancel-transfer',
   'slsk-respread-backlog', 'slsk-configure', 'slsk-set-download-dir',
   'slsk-share-mode-set', 'yt-download',

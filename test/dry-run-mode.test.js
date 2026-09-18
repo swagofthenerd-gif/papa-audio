@@ -32,6 +32,7 @@ const ARGS = {
   'video-debrid-pick': { magnets: ['magnet:?xt=urn:btih:1'], titleKey: 'k' },
   'video-predownload': { index: 0 },
   'video-cache-delete': { key: 'k' },
+  'video-cache-sweep-watched': { keys: ['k'] },
   'video-keep-delete': { id: 'k' },
   'slsk-enqueue-downloads': { items: [{ username: 'u', filename: 'f.flac' }] },
   'slsk-retry-transfer': { username: 'u', id: '1', filename: 'f.flac', size: 1 },
@@ -61,6 +62,11 @@ const EFFECT = {
   'video-debrid-pick': '_debridConfigured',
   'video-predownload': '_videoSession.streamer.predownloadFile',
   'video-cache-delete': 'fs.unlinkSync',
+  // The delete itself needs a real, eligible entry, which a stub sandbox cannot
+  // produce — so the marker here is the cache read the live path makes and the
+  // refusal never reaches. What actually gets deleted is pinned by
+  // test/cache-sweep-watched.test.js against real entries.
+  'video-cache-sweep-watched': '_videoCacheEntries',
   'video-keep-delete': 'fs.promises.rm',
   'slsk-enqueue-downloads': 'dlSched.addItems',
   'slsk-retry-transfer': 'slskdFetch',

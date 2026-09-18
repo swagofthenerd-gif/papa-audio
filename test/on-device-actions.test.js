@@ -263,7 +263,7 @@ test('the rendered page carries the id the binder looks for', async () => {
     'and the page node exists to bind to')
 })
 
-test('Play on a cached card plays that file, with no borrowed identity', async () => {
+test('Play on a cached card plays that file, as itself and not as the page behind it', async () => {
   const h = build({ cached: [cacheEntry(30, 2)] })
   await h.sandbox._renderDeviceTab(h.rows, 1)
   const card = h.rows.querySelectorAll('.vdevice-card')[0]
@@ -275,13 +275,17 @@ test('Play on a cached card plays that file, with no borrowed identity', async (
   assert.strictEqual(p.result.url, '/fixture/video-cache/anime_30_e2.mkv',
     'and it plays the file the card is about')
   assert.strictEqual(p.result.title, 'Show 30', 'the theatre gets a real name')
-  // The whole point: the On-device page has no detail page behind it, so the
-  // play must NOT be allowed to fall back to _videoDetail / _videoState — that
-  // is another title entirely, and its watch key is where the position ticks
-  // would have been written.
+  // The On-device page has no detail page behind it, so the play must NOT be
+  // allowed to fall back to _videoDetail / _videoState — that is another title
+  // entirely, and its watch key is where the position ticks would have been
+  // written. The context is explicit and comes from the CARD: the card knows
+  // exactly which episode of which show this file is, and handing that over is
+  // what makes rewatching a cached episode count as watching it.
   assert.ok(p.opts && p.opts.ctx, 'the play carries an explicit context')
-  assert.strictEqual(p.opts.ctx.detail, null, 'and that context is empty, not the page behind it')
-  assert.strictEqual(p.opts.ctx.state, null)
+  assert.ok(p.opts.ctx.detail, 'and the play knows what it is playing')
+  assert.strictEqual(p.opts.ctx.detail.type, 'anime')
+  assert.strictEqual(p.opts.ctx.detail.d.id, 30, 'its own show, not the page behind it')
+  assert.strictEqual(p.opts.ctx.state.episode, 2)
   assert.ok(Array.isArray(p.opts.ctx.streams) && p.opts.ctx.streams.length === 0)
 })
 
