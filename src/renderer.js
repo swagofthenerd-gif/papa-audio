@@ -37566,6 +37566,16 @@ function _slskRefreshFriendDiffs() {
     .catch(function () {})
 }
 
+// Why the Soulseek hub cannot run this query yet, or null when it can. An
+// empty box and a one-letter box are different mistakes and deserve different
+// answers — the old code gave the one-letter message for both.
+function _slskHubSearchProblem(raw) {
+  var q = String(raw == null ? '' : raw).trim()
+  if (!q) return 'Type what you’re looking for — an album or an artist'
+  if (q.length < 2) return 'Type at least two characters to search'
+  return null
+}
+
 function renderSoulseekHub() {
   setContent('<div class="page slsk-hub">' +
     '<div class="slsk-hub-head">' +
@@ -37612,8 +37622,17 @@ function renderSoulseekHub() {
   // page uses, so the card pipeline is shared, not duplicated.
   var input = document.getElementById('slsk-hub-search-input')
   var runHubSearch = function () {
-    var q = (input && input.value || '').trim()
-    if (q.length < 2) { showSnackbar('Type at least two characters to search'); return }
+    var raw = (input && input.value) || ''
+    var problem = _slskHubSearchProblem(raw)
+    if (problem) {
+      // Pressing Search on an empty box read as "nothing happened": the notice
+      // was easy to miss and the cursor was left wherever it had been. Put the
+      // caret where the answer has to be typed.
+      if (input) { input.focus(); if (input.select) input.select() }
+      showSnackbar(problem)
+      return
+    }
+    var q = raw.trim()
     _rememberSearch(q, 'soulseek')
     runSlskSearch(q) // refreshes the status itself; paints the offline row when it must
   }
