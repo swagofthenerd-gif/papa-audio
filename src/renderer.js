@@ -22141,10 +22141,23 @@ function makeDraggable(trackEl, fillEl, thumbEl, onChange) {
     pendingRatio = null
     onChange(r)
   }
+  // A slider you cannot drag to its own end is broken. The volume track is
+  // 80-110px wide, so one pixel is a whole percent: clicking ON the left edge
+  // landed on pixel 1 and floored at ~1%, and the only way to reach silence was
+  // to drag PAST the edge and let the clamp catch it. 1% is quiet, not off.
+  // The same applies to the right-hand end and to the seek bar. A few pixels at
+  // each end therefore mean the end, which is what aiming at the end means.
+  const END_SNAP_PX = 3
   function update(e, immediate) {
     const rect = trackEl.getBoundingClientRect()
     if (!rect.width) return
-    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
+    const fromLeft = e.clientX - rect.left
+    // On a track too narrow for two snap zones there is nothing left in the
+    // middle, so it keeps the plain proportion.
+    const snap = rect.width > END_SNAP_PX * 4 ? END_SNAP_PX : 0
+    const ratio = fromLeft <= snap ? 0
+      : fromLeft >= rect.width - snap ? 1
+      : Math.max(0, Math.min(1, fromLeft / rect.width))
     if (fillEl)  fillEl.style.width = `${ratio * 100}%`
     if (thumbEl) thumbEl.style.left = `${ratio * 100}%`
     if (immediate) {
