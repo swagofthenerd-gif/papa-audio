@@ -2251,6 +2251,13 @@ function requestVideoSearch(query) {
 var _videoSeasonTicket = 0
 var _videoDetail = null
 var _videoState = { season: null, episode: 1, sub: true }
+// A Play pressed on a card or the hero, waiting for the detail page to arrive
+// and consume it. Declared HERE because it was not, anywhere: three sites
+// assigned it and one read it, and in sloppy mode an assignment quietly makes
+// a global while a read of a never-assigned name throws. Restoring straight
+// into a video-detail page on startup did the read first — ReferenceError,
+// and the page never painted. Found on a live twin, not by the suite.
+var _playOnArrival = null
 var _videoStreams = []
 var _videoUiReady = false
 
