@@ -10,6 +10,21 @@
 })(typeof self !== 'undefined' ? self : this, function () {
   var SOURCE = 'Try another source from the list below.'
   var PURIST = 'Try another source below, or switch to Purist mode in Settings → Video.'
+  var PICK = 'Pick another source from the list below.'
+
+  // The table above is written for the moment between pressing Play and the
+  // first frame, where a list of sources is on screen underneath. The same
+  // table was being used for the catalogue too -- so a title that simply did
+  // not come back from the titles service told people to "try another source
+  // from the list below" on a page that has no source list anywhere on it.
+  // A catalogue failure gets catalogue advice instead.
+  var BROWSE = 'Try again, or go back.'
+  var SOURCE_ADVICE = [SOURCE, PURIST, PICK]
+  function adviceFor(next, context) {
+    if (context !== 'catalog') return next
+    for (var i = 0; i < SOURCE_ADVICE.length; i++) if (next === SOURCE_ADVICE[i]) return BROWSE
+    return next
+  }
 
   // The cases, most specific first. `test` is a regex on the raw message;
   // `text` the sentence; `next` what to do; `kind` a stable tag for callers.
@@ -42,7 +57,7 @@
     { kind: 'mpv-exited', test: /mpv exited|Playback stopped unexpectedly/i,
       text: 'mpv quit unexpectedly.', next: 'Press play to start again from where you were.' },
     { kind: 'no-source', test: /no magnet link|no playable URL|No source selected/i,
-      text: null, next: 'Pick another source from the list below.' },
+      text: null, next: PICK },
     { kind: 'corrupt', test: /could not be played|corrupt|incomplete/i, text: null, next: SOURCE },
     { kind: 'timeout', test: /timed out|timeout|abort/i,
       text: 'The source timed out.', next: 'Check your connection and try again.' },
@@ -52,21 +67,24 @@
 
   // `platform` is process.platform or one of its spellings; omitted means
   // Linux, which is what every caller before roadmap 008 silently assumed.
-  function explain(message, platform) {
+  // `context` is 'playback' (the default, and what every caller meant before
+  // the catalogue started sharing this table) or 'catalog' for a browsing or
+  // detail-page failure, where there is no source list to point at.
+  function explain(message, platform, context) {
     var msg = String(message || 'Something went wrong').trim()
     for (var i = 0; i < CASES.length; i++) {
       var c = CASES[i]
       if (c.test.test(msg)) {
         var next = typeof c.next === 'function' ? c.next(platform || 'linux') : c.next
-        return { kind: c.kind, text: c.text || msg, next: next }
+        return { kind: c.kind, text: c.text || msg, next: adviceFor(next, context) }
       }
     }
-    return { kind: 'unknown', text: msg, next: SOURCE }
+    return { kind: 'unknown', text: msg, next: adviceFor(SOURCE, context) }
   }
 
   // One line for a toast or a stage: sentence, then the next step.
-  function sentence(message, platform) {
-    var e = explain(message, platform)
+  function sentence(message, platform, context) {
+    var e = explain(message, platform, context)
     if (!e.next) return e.text
     // A sentence that already ends gets a space; a raw fragment gets a dash.
     return e.text + (/[.!?]$/.test(e.text) ? ' ' : ' — ') + e.next
@@ -90,5 +108,5 @@
     return { text: head + ' ' + why, next: conv != null && conv > 0 ? 'Purist mode in Settings → Video plays it through mpv instead.' : SOURCE }
   }
 
-  return { explain: explain, sentence: sentence, stuck: stuck, SOURCE: SOURCE, PURIST: PURIST }
+  return { explain: explain, sentence: sentence, stuck: stuck, SOURCE: SOURCE, PURIST: PURIST, BROWSE: BROWSE }
 })

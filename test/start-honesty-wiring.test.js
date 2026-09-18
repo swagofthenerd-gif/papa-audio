@@ -23,7 +23,9 @@ test('the page loads the honesty table before the video scripts and the error te
   // Roadmap 008: install-hints loads first so the honesty table can name the
   // right package manager, and the error text passes the platform through.
   assert.ok(HTML.indexOf('install-hints.js') < HTML.indexOf('start-honesty.js'))
-  assert.match(fn('_videoErrorText'), /PapaStartHonesty\.sentence\(msg, platform\)/)
+  // ...and the context, which decides whether the advice may point at a source
+  // list. A catalogue page has none.
+  assert.match(fn('_videoErrorText'), /PapaStartHonesty\.sentence\(msg, platform, context\)/)
 })
 
 test('the start-up watchdog is armed on play and disarmed on playing, ended, error and stop', () => {

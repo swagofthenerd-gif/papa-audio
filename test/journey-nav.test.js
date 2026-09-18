@@ -357,6 +357,9 @@ function journey (mutate) {
     'function _runNavDismiss() { Array.from(_navDismiss).forEach(function (fn) { try { fn() } catch (_) {} }) }',
     lift('_currentNavId'),
     lift('navigate'),
+    // Back's scroll restore retries while the page is still too short to hold
+    // the position; the real one runs here rather than a stub of it.
+    lift('_restoreScrollTop'),
     lift('navigateBack'),
     lift('navigateForward'),
     lift('_backOr'),

@@ -2207,7 +2207,7 @@ function navigate(page, navId, opts = {}) {
 
   if (opts.restoreScroll && contentEl) {
     const savedScroll = _scrollMemory.get(`${page}:${navId ?? ''}`) || 0
-    requestAnimationFrame(() => { contentEl.scrollTop = savedScroll })
+    requestAnimationFrame(() => { _restoreScrollTop(contentEl, savedScroll) })
   }
 
   window.api.saveSessionState({
@@ -2219,6 +2219,33 @@ function navigate(page, navId, opts = {}) {
     history: navHistory.slice(-NAV_SESSION_CAP).map(_navEntrySlim),
     future: navFuture.slice(-NAV_SESSION_CAP).map(_navEntrySlim),
   })
+}
+
+// Back restored the scroll one frame after navigating — before the shelves
+// have anything in them. Assigning past the bottom of a short page is clamped,
+// so "back to 2,400px" became "back to 180px", about one time in three.
+// Shelves arrive over many frames with no single settle point, so the position
+// is re-applied while the page is too short, up to a cap. It stops when the
+// assignment sticks, or when the viewer has scrolled since the last attempt —
+// a page that yanks itself back under a moving finger is worse than a forgetful
+// one.
+var _SCROLL_RESTORE_TRIES = 20
+var _SCROLL_RESTORE_MS = 100
+
+function _restoreScrollTop(el, wanted, schedule) {
+  if (!el || !(Number(wanted) > 0)) return
+  var later = schedule || function (fn) { setTimeout(fn, _SCROLL_RESTORE_MS) }
+  var tries = 0
+  var applied = -1
+  var step = function () {
+    if (applied !== -1 && el.scrollTop !== applied) return
+    el.scrollTop = wanted
+    applied = el.scrollTop
+    if (applied >= wanted) return
+    if (++tries >= _SCROLL_RESTORE_TRIES) return
+    later(step)
+  }
+  step()
 }
 
 function navigateBack() {
@@ -2432,7 +2459,7 @@ async function renderPerson(personId) {
   if (!res.ok) {
     // A flaky fetch is exactly the case a Retry exists for: the second visit
     // used to work while the first sat on an error with no way out (R14).
-    if (rows) rows.innerHTML = '<div class="vrow-msg err">' + esc(_videoErrorText(res.error)) +
+    if (rows) rows.innerHTML = '<div class="vrow-msg err">' + esc(_videoErrorText(res.error, 'catalog')) +
       ' <button class="vbtn vbtn-retry" id="vperson-retry">Try again</button></div>'
     document.getElementById('vperson-retry')?.addEventListener('click', function () { renderPerson(personId) })
     return
@@ -3108,7 +3135,7 @@ async function _fetchBrowse(reset) {
       if (count) count.innerHTML = ''
     }
     if (more) {
-      more.innerHTML = '<div class="vrow-msg err">' + esc(_videoErrorText(res.error)) +
+      more.innerHTML = '<div class="vrow-msg err">' + esc(_videoErrorText(res.error, 'catalog')) +
         ' <button class="vbtn" id="vgrid-retry">Retry</button></div>'
       document.getElementById('vgrid-retry')?.addEventListener('click', function () {
         _fetchBrowse(reset)
@@ -5096,6 +5123,24 @@ var _playQuality = ''
 var _playSourceKey = ''
 var _QUALITY_ORDER = ['2160p', '1080p', '720p', '480p']
 
+// Everything a detail page decides about how to play a title, wiped when a
+// new title opens. One function because these drifted: the hand-picked source
+// was cleared per page and the QUALITY was not, so choosing 720p on one film
+// pinned every film after it and its Auto line read "Auto - 720p".
+function _resetDetailPageChoices() {
+  _videoStreams = []
+  _debridPick = null
+  _debridHeld = []
+  _playSourceKey = ''
+  _playQuality = ''
+  // Whose numbering the last source list was fetched with — a new page's
+  // sources have not been fetched yet, and a stale value here would let the
+  // chain-landed re-search fire against the wrong title.
+  _lastNumbering = null
+  _playing = { dub: null, source: null, quality: null }
+  _prefetch = { key: null, streams: null, inflight: false }
+}
+
 // The sources that actually offer a quality, best first, for the picker.
 function _availableQualities(streams) {
   const seen = {}
@@ -5940,7 +5985,10 @@ function _certLabel(c) {
   return _CERT_CODES.test(t) ? t : 'Rated ' + t
 }
 
-function _videoErrorText(message) {
+// `context` is 'catalog' for anything that failed while browsing or opening a
+// title, and omitted (meaning playback) under the player. It decides whether
+// the advice may point at the source list, which only exists on one of those.
+function _videoErrorText(message, context) {
   const msg = String(message || 'Something went wrong')
   // V4: the one table of start-up failures and their next steps
   // (src/start-honesty.js). The cases below remain as the fallback when the
@@ -5948,7 +5996,7 @@ function _videoErrorText(message) {
   const hints = (typeof PapaInstallHints !== 'undefined' && PapaInstallHints) || null
   const platform = hints ? hints.detect() : 'linux'
   if (typeof PapaStartHonesty !== 'undefined' && PapaStartHonesty && typeof PapaStartHonesty.sentence === 'function') {
-    return PapaStartHonesty.sentence(msg, platform)
+    return PapaStartHonesty.sentence(msg, platform, context)
   }
   // The raw failure is "mpv socket not ready: /run/user/… (last error: ENOENT)"
   // — which reads like the app is broken when the actual problem is that the
@@ -5996,7 +6044,7 @@ function _videoError(message) {
   // _videoErrorText exists precisely to turn these into something a person can
   // act on, and this was the one place that skipped it — so a dropped
   // connection showed the literal string "fetch failed".
-  const msg = _videoErrorText(raw)
+  const msg = _videoErrorText(raw, 'catalog')
   const hint = /TMDB API key|401/i.test(raw)
     ? '<div class="video-error-hint">Set your TMDB API key in Settings → Video.</div>'
     : ''
@@ -6115,7 +6163,7 @@ async function _renderTasteRow(ticket) {
   if (!box) return
   if (typeof _releaseCardsIn === 'function') _releaseCardsIn(box)
   if (!res.ok) {
-    box.innerHTML = '<div class="vrow-msg err">' + esc(_videoErrorText(res.error)) + '</div>'
+    box.innerHTML = '<div class="vrow-msg err">' + esc(_videoErrorText(res.error, 'catalog')) + '</div>'
     return
   }
   const items = Array.isArray(res.results) ? res.results : []
@@ -6358,7 +6406,7 @@ async function _loadShelfPage(ticket) {
   if (state.currentPage !== 'shelf') { _shelfPage.loading = false; return }
   _shelfPage.loading = false
   if (!res.ok) {
-    if (more) more.innerHTML = '<div class="vrow-msg err">' + esc(_videoErrorText(res.error)) + '</div>'
+    if (more) more.innerHTML = '<div class="vrow-msg err">' + esc(_videoErrorText(res.error, 'catalog')) + '</div>'
     return
   }
   if (_shelfPage.page === 1 && res.shelf) {
@@ -7107,7 +7155,7 @@ async function _renderCalendarBody() {
   const target = document.getElementById('vcal-body')
   if (!target) return
   if (!res || !res.ok) {
-    target.innerHTML = '<div class="vrow-msg err">' + esc(_videoErrorText(res && res.error)) + '</div>'
+    target.innerHTML = '<div class="vrow-msg err">' + esc(_videoErrorText(res && res.error, 'catalog')) + '</div>'
     return
   }
   const groups = _airingByDay(res.airing, Date.now(), 14)
@@ -7142,7 +7190,7 @@ async function _renderCalendarMonth() {
   const target = document.getElementById('vcal-body')
   if (!target) return
   if (!res || !res.ok || !res.calendar) {
-    target.innerHTML = '<div class="vrow-msg err">' + esc(_videoErrorText(res && res.error)) + '</div>'
+    target.innerHTML = '<div class="vrow-msg err">' + esc(_videoErrorText(res && res.error, 'catalog')) + '</div>'
     return
   }
   const cal = res.calendar
@@ -7325,7 +7373,7 @@ function _rowMsg(key, html, isError) {
 function _rowEmpty(key, text) { _rowMsg(key, esc(text), false) }
 
 function _rowError(key, error) {
-  _rowMsg(key, esc(_videoErrorText(error)) +
+  _rowMsg(key, esc(_videoErrorText(error, 'catalog')) +
     '<div><button class="vbtn" data-retry="' + esc(key) + '">Try again</button></div>', true)
   const btn = document.querySelector('[data-retry="' + key + '"]')
   if (btn) btn.addEventListener('click', function () { _renderVideoTab(++_videoCatalogTicket) })
@@ -7746,6 +7794,10 @@ function _paintVideoHero() {
     return '<button class="vhero-dot' + (i === _videoHero.index ? ' active' : '') +
       '" data-hero="' + i + '" aria-label="Feature ' + (i + 1) + '"></button>'
   }).join('')
+  // The biggest My List control showed a plus whatever the store held, so
+  // pressing it on a saved film read as "add" and removed it.
+  const heroFaceOn = _inMyList(item.type, item.id)
+  const heroFace = _myListFace(heroFaceOn)
 
   mount.innerHTML = '<div class="vhero">' +
     '<img class="vhero-bg" alt="" src="' + esc(item.backdrop) + '">' +
@@ -7757,7 +7809,9 @@ function _paintVideoHero() {
       (item.overview ? '<p class="vhero-overview">' + esc(_stripTags(item.overview)) + '</p>' : '') +
       '<div class="vhero-actions">' +
         '<button class="vbtn vbtn-primary" id="vhero-play">' + _VICON.play + 'Play</button>' +
-        '<button class="vbtn" id="vhero-list">' + _VICON.plus + 'My List</button>' +
+        '<button class="vbtn' + (heroFaceOn ? ' on' : '') + '" id="vhero-list"' +
+          ' data-key="' + esc(key) + '" aria-label="' + esc(heroFace.aria) + '">' +
+          heroFace.icon + heroFace.text + '</button>' +
         '<button class="vbtn" id="vhero-info">' + _VICON.info + 'Details</button>' +
       '</div>' +
     '</div>' +
@@ -7827,9 +7881,51 @@ function _toggleWatchlist(item) {
     })
     const added = store.inWatchlist(type, item.id)
     showToast(added ? 'Added to My List' : 'Removed from My List')
-    document.querySelectorAll('.vcard-act-list[data-key="' + (item.type || 'movie') + ':' + item.id + '"]')
-      .forEach(function (b) { b.classList.toggle('on', added); b.innerHTML = added ? _VICON.check : _VICON.plus })
+    _paintMyListButtons(type + ':' + item.id, added)
+    // My List only repainted on a sort chip or a fold, so removing a title
+    // left its card up and the count one too high until you left the tab.
+    // Only that tab repaints: other grids are catalogue rows, unaffected.
+    if (_videoTab === 'list') {
+      const rows = document.getElementById('vrows')
+      if (rows) _renderMyList(rows)
+    }
   } catch (_) { showToast('Could not update My List') }
+}
+
+// Is this title saved? One answer for every My List control, so the hero,
+// the poster buttons and the detail page cannot disagree.
+function _inMyList(type, id) {
+  const store = _vStore()
+  try { return store ? !!store.inWatchlist(type || 'movie', id) : false } catch (_) { return false }
+}
+
+// The two faces of a My List control. The label is part of the state: a
+// poster button kept saying "Remove from My List" after removal, which is all
+// a screen reader had to go on.
+function _myListFace(added) {
+  return {
+    icon: added ? _VICON.check : _VICON.plus,
+    text: added ? 'In My List' : 'My List',
+    aria: added ? 'Remove from My List' : 'Add to My List',
+  }
+}
+
+// Repaint every control on screen that speaks for this title.
+function _paintMyListButtons(key, added) {
+  const face = _myListFace(added)
+  document.querySelectorAll('.vcard-act-list[data-key="' + key + '"]').forEach(function (b) {
+    b.classList.toggle('on', added)
+    b.innerHTML = face.icon
+    b.setAttribute('aria-label', face.aria)
+  })
+  // The hero carries a word as well as an icon, and showed a plus for a
+  // saved title. Keyed, so a poster toggle repaints it when it is the same.
+  const hero = document.getElementById('vhero-list')
+  if (hero && hero.dataset && hero.dataset.key === key) {
+    hero.classList.toggle('on', added)
+    hero.innerHTML = face.icon + face.text
+    hero.setAttribute('aria-label', face.aria)
+  }
 }
 
 // ── My List page ────────────────────────────────────────────────────────────
@@ -8810,7 +8906,7 @@ function _runVideoTitleSearch(query, opts) {
         const target = document.getElementById('video-search-results')
         if (!target) return
         if (!res.ok) {
-          _setVideoSearchHtml('<div class="vrow-msg err">' + esc(_videoErrorText(res.error)) + '</div>')
+          _setVideoSearchHtml('<div class="vrow-msg err">' + esc(_videoErrorText(res.error, 'catalog')) + '</div>')
           return
         }
         const results = Array.isArray(res.results) ? res.results : []
@@ -9135,10 +9231,8 @@ function _videoCard(item) {
     ? _watchKey(item.type || 'movie', item.id, item.season, item.episode)
     : null
 
-  const inList = (function () {
-    const store = _vStore()
-    try { return store ? !!store.inWatchlist(item.type || 'movie', item.id) : false } catch (_) { return false }
-  })()
+  const inList = _inMyList(item.type, item.id)
+  const listFace = _myListFace(inList)
 
   const metaBits = []
   if (item.year != null && item.year !== '') metaBits.push(esc(String(item.year)))
@@ -9164,7 +9258,7 @@ function _videoCard(item) {
       '<div class="vcard-actions">' +
         '<button class="vcard-act vcard-act-play" data-act="play" aria-label="Play">' + _VICON.play + '</button>' +
         '<button class="vcard-act vcard-act-list' + (inList ? ' on' : '') + '" data-act="list" data-key="' + esc(key) + '"' +
-          ' aria-label="' + (inList ? 'Remove from My List' : 'Add to My List') + '">' + (inList ? _VICON.check : _VICON.plus) + '</button>' +
+          ' aria-label="' + listFace.aria + '">' + listFace.icon + '</button>' +
         (cwKey ? '<button class="vcard-act vcard-act-seen" data-act="cwremove" data-cwkey="' + esc(cwKey) + '"' +
           ' aria-label="Remove from Continue Watching">&#10005;</button>' : '') +
       '</div>' +
@@ -9684,16 +9778,7 @@ async function renderVideoDetail(navId) {
     if (Number.isFinite(arrival.season)) _videoState.season = arrival.season
     _autoPlayTicket = ticket
   }
-  _videoStreams = []
-  _debridPick = null
-  _debridHeld = []
-  _playSourceKey = ''
-  // Whose numbering the last source list was fetched with — a new page's
-  // sources have not been fetched yet, and a stale value here would let the
-  // chain-landed re-search fire against the wrong title.
-  _lastNumbering = null
-  _playing = { dub: null, source: null, quality: null }
-  _prefetch = { key: null, streams: null, inflight: false }
+  _resetDetailPageChoices()
   setContent('<div class="page"><div class="skeleton skeleton-card" style="height:280px"></div>' +
     '<div class="vdet-waiting" id="vdet-waiting" hidden></div></div>')
 
@@ -9805,6 +9890,16 @@ function _detInList(d) {
 // Play pressed before the source lookup finished: remember the ask and honour
 // it the moment sources arrive, instead of making the button do nothing.
 var _autoPlayTicket = 0
+
+// The single place the arm is consumed. Every Play surface on a detail page
+// — hero, episode row, Resume banner, card arrival — sets _autoPlayTicket to
+// the live page ticket, and the source load hands over exactly once.
+function _takeAutoPlayArm(streams) {
+  if (_autoPlayTicket !== _videoDetailTicket) return false
+  if (!streams || !streams.length) return false
+  _autoPlayTicket = 0
+  return true
+}
 
 // The hero backdrop drifts at a quarter of the scroll (V3 parallax), and the
 // poster's dominant colour tints the top of the hero (palette.js, the same
@@ -10860,6 +10955,21 @@ function _seasonEpisodeNumbers(season) {
   return nums
 }
 
+// How long an Undo snackbar stays up (showSnackbar's default). The deferral
+// below waits exactly this long, so the two are one number.
+var UNDO_SNACKBAR_MS = 5000
+
+// "Mark season watched" promised Undo, then refetched the source list — about
+// four seconds of loading state over the five the bar was up, so the offer
+// expired before it could be taken (6/6). Deferred rather than the bar
+// lengthened: nothing the refetch returns depends on the mark, so it can wait,
+// whereas a longer bar is only a longer spinner. The returned function
+// cancels — after an Undo there is nothing to reload for.
+function _deferPastUndo(fn) {
+  var id = setTimeout(fn, UNDO_SNACKBAR_MS)
+  return function () { clearTimeout(id) }
+}
+
 // Mark every episode of a season watched (roadmap #33), behind a confirm and
 // with Undo. Only episodes not already watched are touched, so the count is
 // honest and Undo un-marks exactly what changed — an episode that was already
@@ -10900,9 +11010,14 @@ function _confirmMarkSeasonWatched(season) {
         store.markWatched(e.key)
       } catch (_) { /* one bad episode must not abort the rest */ }
     })
-    // Reflect it on the open detail page: the episode marks read from the store.
-    try { _refreshTvEpisodes(_videoDetailTicket, ++_videoSeasonTicket) } catch (_) {}
+    // Reflect it on the open detail page: the episode marks read from the
+    // store, so the grid is right immediately. Only the source refetch waits.
+    try { _refreshTvEpisodes(_videoDetailTicket, ++_videoSeasonTicket, { skipSources: true }) } catch (_) {}
+    var cancelReload = _deferPastUndo(function () {
+      try { _loadVideoSources(_videoDetailTicket, ++_videoSeasonTicket) } catch (_) {}
+    })
     pushUndo('Marked ' + n + ' episode' + (n === 1 ? '' : 's') + ' watched', function () {
+      cancelReload()
       var s = _vStore()
       if (!s) return
       toMark.forEach(function (e) {
@@ -10912,7 +11027,7 @@ function _confirmMarkSeasonWatched(season) {
           if (typeof s.remove === 'function') s.remove(e.key)
         } catch (_) {}
       })
-      try { _refreshTvEpisodes(_videoDetailTicket, ++_videoSeasonTicket) } catch (_) {}
+      try { _refreshTvEpisodes(_videoDetailTicket, ++_videoSeasonTicket, { skipSources: true }) } catch (_) {}
     })
   })
 }
@@ -11261,6 +11376,11 @@ function _bindEpResume(root) {
     const n = Number(banner.dataset.ep) || 1
     _videoState.episode = n
     _syncEpisodeSelection(n)
+    // Selecting the episode is only half of "Resume": without this arm the
+    // button refetched sources and stopped there, the same "Play that only
+    // navigates" the card and hero were fixed for. Set before the load —
+    // a cached list can land in the same turn.
+    _autoPlayTicket = _videoDetailTicket
     _loadVideoSources(_videoDetailTicket, ++_videoSeasonTicket)
   })
 }
@@ -11282,7 +11402,7 @@ function _syncEpisodeSelection(n) {
 // always true and whichever response happened to land last won — switching
 // 1 → 2 → 3 quickly could leave season 3 selected while showing season 1's
 // episodes. A ticket captured before the request fixes that.
-async function _refreshTvEpisodes(ticket, seasonTicket) {
+async function _refreshTvEpisodes(ticket, seasonTicket, opts) {
   const detail = _videoDetail
   if (!detail || detail.type !== 'tv') return
   if (seasonTicket == null) seasonTicket = ++_videoSeasonTicket
@@ -11345,6 +11465,9 @@ async function _refreshTvEpisodes(ticket, seasonTicket) {
       }
     }
   }
+  // Marking a season watched changes the store, not the swarm: that caller
+  // skips the refetch so it can happen later, clear of the Undo bar.
+  if (opts && opts.skipSources) return
   await _loadVideoSources(ticket, seasonTicket)
 }
 
@@ -11864,8 +11987,7 @@ async function _loadVideoSources(ticket, seasonTicket) {
       }
     })
   }
-  if (_autoPlayTicket === _videoDetailTicket && streams.length) {
-    _autoPlayTicket = 0
+  if (_takeAutoPlayArm(streams)) {
     _videoPlayResult(_autoPickStream(streams))
   }
   // The other half of the race. Not awaited: this list is already on screen

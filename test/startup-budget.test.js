@@ -73,7 +73,14 @@ function syncScriptBytes () {
 // renderer.js and video-player.js. Deliberate feature work; the old ceiling had
 // been reached to within 0.4 % before the last file. Re-based ~15% above the
 // new measured total (2,539,444).
-const SCRIPT_BYTE_CEILING = 2920000
+// Raised 2026-09-19 (detail-page honesty fixes): the Resume banner's autoplay
+// handoff, the shared My List paint helpers, the per-page reset of the quality
+// choice, the deferred reload behind the Undo bar and the retrying scroll
+// restore — plus the comments explaining each. About 3 KB of renderer, all of
+// it fixes rather than features. The old ceiling had 2.3 KB of headroom left,
+// which is under a tenth of a percent: too tight to mean anything, so this
+// re-base restores a real margin rather than tracking the last byte.
+const SCRIPT_BYTE_CEILING = 2950000
 
 test('the renderer loads its scripts and none is missing from disk', () => {
   const { count, missing } = syncScriptBytes()

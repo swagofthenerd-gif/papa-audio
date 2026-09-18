@@ -29,7 +29,9 @@ function declarationLine() {
 function consumeBlock() {
   const start = SRC.indexOf('const arrival = _playOnArrival')
   assert.ok(start > -1, 'the consume site must still exist')
-  const end = SRC.indexOf('_videoStreams = []', start)
+  // The page's own state wipe follows the consume block; it moved into
+  // _resetDetailPageChoices() when the quality reset was fixed.
+  const end = SRC.indexOf('_resetDetailPageChoices()', start)
   return SRC.slice(start, end)
 }
 
