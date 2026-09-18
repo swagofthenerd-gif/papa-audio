@@ -2457,6 +2457,12 @@ h2.section-title { font-size:18px; font-weight:700; }
 }
 .mcs-set-input:focus { border-color:var(--accent); }
 .mcs-set-hint { font-size:10px; color:var(--text3); margin-top:2px; }
+/* A control bit-perfect mode has overruled. It keeps showing the user's own
+   choice — that choice comes back when bit-perfect goes off — but it must not
+   look like it is doing anything, because it is not. The reason is on the
+   control's tooltip and spelled out in #pb-bitperfect-active-note. */
+.mcs-set-row-overruled { opacity:.45; }
+.mcs-set-row-overruled input, .mcs-set-row-overruled select { cursor:not-allowed; }
 .mcs-set-hint-ok { color:#7fe3a0; }
 .mcs-set-hint-warn { color:#f0b959; }
 

@@ -1300,9 +1300,17 @@ function updateGainPolicyText() {
   // the truth about whether anything can clip.
   var mpvVol = null
   try { mpvVol = (typeof audio !== 'undefined' && audio) ? audio.engineVolume : null } catch (_) { mpvVol = null }
-  var r = G.assess({ boost: !!settings.boost, volumePct: vol, eq: settings.eq,
-                     replaygain: settings.replaygain, bitPerfect: !!settings.bitPerfect,
-                     mpvVolume: mpvVol, replaygainApply: settings.replaygainApply })
+  // The EFFECTIVE values, not the requested ones. With bit-perfect on, the gain
+  // line went on warning "ReplayGain may raise quiet tracks" while main had
+  // already forced ReplayGain, the leveling and the boost off.
+  var r = G.assess({ boost: settings.boostEffective != null ? !!settings.boostEffective : !!settings.boost,
+                     volumePct: vol, eq: settings.eq,
+                     replaygain: settings.replaygain,
+                     replaygainEffective: settings.replaygainEffective,
+                     bitPerfect: !!settings.bitPerfect,
+                     mpvVolume: mpvVol,
+                     replaygainApply: settings.replaygainApplyEffective != null
+                       ? settings.replaygainApplyEffective : settings.replaygainApply })
   el.textContent = 'Gain policy: ' + r.text
   el.classList.toggle('mcs-set-chip-warn', r.risk === 'likely')
 }
@@ -25249,6 +25257,58 @@ function _initSettingsSearch() {
   input.addEventListener('input', apply)
 }
 
+// Ticking Bit-perfect used to change nothing else on the page. ReplayGain still
+// read "track" and still looked live, the transition still read Crossfade, the
+// output still read System (shared), and the gain line still warned that
+// ReplayGain may raise quiet tracks — while the checkbox's own hint said all of
+// those were now off and the device was open exclusively. main already collapses
+// every one of them (replaygainEffective, mode, replaygainApplyEffective,
+// boostEffective, outputModeEffective); the page simply never asked again.
+//
+// So: re-read the settings after the toggle and paint what is ACTUALLY in force,
+// with each overruled control disabled and carrying the reason as its tooltip.
+// The value shown stays the user's own preference — it comes back when
+// bit-perfect goes off — but it can no longer look like it is doing something.
+function _paintBitPerfectDependents(cfg) {
+  cfg = cfg || {}
+  const $ = id => document.getElementById(id)
+  const on = cfg.bitPerfect === true
+  const note = cfg.exclusivityNote || ''
+  const rows = [
+    { id: 'pb-output-mode', value: on ? (cfg.outputModeEffective || 'exclusive') : cfg.outputMode, reason: note },
+    { id: 'pb-mode', value: cfg.mode, reason: note },
+    { id: 'pb-cf-secs', reason: note },
+    { id: 'pb-replaygain', shown: on ? cfg.replaygainEffective : cfg.replaygain, reason: cfg.replaygainSuppressedReason || note },
+    { id: 'pb-replaygain-apply', checked: on ? !!cfg.replaygainApplyEffective : !!cfg.replaygainApply, reason: cfg.replaygainApplySuppressedReason || note },
+    { id: 'pb-boost', checked: on ? !!cfg.boostEffective : !!cfg.boost, reason: cfg.boostSuppressedReason || note },
+  ]
+  for (const r of rows) {
+    const el = $(r.id)
+    if (!el) continue
+    el.disabled = on
+    // The row, not just the control, so the label goes quiet with it.
+    const row = el.closest ? el.closest('.mcs-set-row') : null
+    if (row) row.classList.toggle('mcs-set-row-overruled', on)
+    if (on && r.reason) el.title = r.reason
+    else if (el.removeAttribute) el.removeAttribute('title')
+    if ('checked' in r) el.checked = r.checked
+    else if (r.shown != null) el.value = r.shown
+    else if (r.value != null) el.value = r.value
+  }
+  // Crossfade length only exists while the transition is crossfade, and
+  // bit-perfect forces gapless.
+  if ($('pb-cf-row')) $('pb-cf-row').style.display = cfg.mode === 'crossfade' ? '' : 'none'
+  if ($('pb-device-row')) {
+    $('pb-device-row').style.display =
+      (on ? (cfg.outputModeEffective || 'exclusive') : cfg.outputMode) === 'exclusive' ? '' : 'none'
+  }
+  const hint = $('pb-bitperfect-active-note')
+  if (hint) {
+    hint.textContent = on ? note : ''
+    hint.style.display = on ? '' : 'none'
+  }
+}
+
 // What the two crossfade controls together mean, in the one unit main.js
 // actually stores: seconds, 0 = off. Gapless is crossfade of zero length.
 function _pbCrossfadeSeconds(mode, sliderSecs) {
@@ -25413,11 +25473,18 @@ async function initPlaybackSettings() {
   // crossfade engine-side), feature-detected so an older backend simply has no
   // control. The honest sublabel already warns those three go quiet.
   if ($('pb-bitperfect') && window.api && typeof window.api.playerSetBitPerfect === 'function') {
-    $('pb-bitperfect').onchange = e => {
+    $('pb-bitperfect').onchange = async e => {
       const on = e.target.checked
-      window.api.playerSetBitPerfect({ on })
-      state._playerSettings = { ...(state._playerSettings || {}), bitPerfect: on }
+      await window.api.playerSetBitPerfect({ on })
+      // Ask main what is now actually in force rather than assuming. Ticking the
+      // box overrules five other controls on this very page, and until this
+      // re-read they all went on showing their old, now-ignored values.
+      let fresh = null
+      try { fresh = await window.api.playerGetConfig() } catch (_) { fresh = null }
+      state._playerSettings = fresh || { ...(state._playerSettings || {}), bitPerfect: on }
+      try { _paintBitPerfectDependents(state._playerSettings) } catch (_) {}
       try { updateBitPerfectBadge() } catch (_) {}
+      try { updateCrossfadeBadge() } catch (_) {}
       showSnackbar(on
         ? 'Bit-perfect on — EQ, volume leveling and crossfade are off'
         : 'Bit-perfect off')
@@ -25427,6 +25494,10 @@ async function initPlaybackSettings() {
     apply({ replaygainApply: e.target.checked })
     showSnackbar(e.target.checked ? 'ReplayGain on — quiet and loud tracks will be evened out' : 'ReplayGain off')
   }
+
+  // Opening Settings with bit-perfect already on must look the same as ticking
+  // it: the overruled controls arrive disabled, with the reason.
+  try { _paintBitPerfectDependents(cfg) } catch (_) {}
 
   await _initGeneralSettings()
   await _initEqSettings(cfg, apply)

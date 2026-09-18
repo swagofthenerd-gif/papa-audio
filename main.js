@@ -2740,9 +2740,19 @@ function getPlayerSettings() {
   const crossfadeAllowed = crossfadeSeconds > 0 && !bitPerfect.forcesGapless(bitPerfectOn)
   // What the ENGINE actually got, as distinct from what the dropdown shows.
   // The badge reads this; the dropdown keeps his preference.
-  const replaygainEffective = bitPerfect.effectiveReplaygain({
+  const replaygainResolved = bitPerfect.effectiveReplaygain({
     replaygain: saved.replaygain, bitPerfect: bitPerfectOn,
-  }).mode
+  })
+  const replaygainEffective = replaygainResolved.mode
+  // The other two sample-altering comforts the bit-perfect hint promises to turn
+  // off. They were promised and never enforced: the loudness-scan leveling kept
+  // scaling mpv's volume, and the settings page went on showing both as active.
+  const levelingEffective = bitPerfect.effectiveLoudnessLeveling({
+    replaygainApply: saved.replaygainApply === true, bitPerfect: bitPerfectOn,
+  })
+  const boostEffective = bitPerfect.effectiveBoost({
+    boost: saved.boost === true, bitPerfect: bitPerfectOn,
+  })
   return {
     outputMode: 'default', alsaDevice: null,
     mode: 'gapless', crossfadeSecs: 4, replaygain: 'no',
@@ -2769,6 +2779,17 @@ function getPlayerSettings() {
     // read this, or it will keep claiming bit-perfect while ReplayGain scales
     // the samples.
     replaygainEffective,
+    replaygainSuppressedReason: replaygainResolved.reason,
+    // What the loudness leveling and the volume boost are really doing, and why,
+    // so the settings page can show the controls as overruled instead of leaving
+    // them looking live while bit-perfect silently ignores them.
+    replaygainApplyEffective: levelingEffective.on,
+    replaygainApplySuppressedReason: levelingEffective.reason,
+    boostEffective: boostEffective.on,
+    boostSuppressedReason: boostEffective.reason,
+    // The engine opens the device exclusively while bit-perfect is on, whatever
+    // the Output dropdown says (see resolveEngineConfig).
+    outputModeEffective: bitPerfectOn ? 'exclusive' : (saved.outputMode || 'default'),
   }
 }
 
@@ -3260,7 +3281,9 @@ ipcMain.handle('queue-build', async (_e, { mode = 'surprise', seedFilePath = nul
 // yet this session (linearToMpv(1) = 100, the neutral value).
 function _baseMpvVolume() {
   var linear = (lastLinearVolume == null) ? 1 : lastLinearVolume
-  return linearToMpv(linear, getPlayerSettings().boost)
+  // boostEffective, not boost: bit-perfect caps mpv at 100 and promises the
+  // +30% boost is off, so the base volume must be computed without it.
+  return linearToMpv(linear, getPlayerSettings().boostEffective)
 }
 
 // The file mpv currently has open, tracked so that when the slider moves we can
@@ -3276,7 +3299,10 @@ function applyLoudnessGain(resolvedPath) {
   if (!player) return
   var base = _baseMpvVolume()
   var cfg = getPlayerSettings()
-  if (!cfg.replaygainApply) {
+  // replaygainApplyEffective, not replaygainApply: bit-perfect mode promises in
+  // its own hint that volume leveling goes off, and this is the path that would
+  // otherwise keep scaling the samples behind that promise.
+  if (!cfg.replaygainApplyEffective) {
     // Application is off: make sure the base volume (no gain) is what is in force,
     // in case a previous track left a gained value on mpv's volume property.
     return player.setVolume(base).catch(() => {})
@@ -3410,11 +3436,11 @@ let lastLinearVolume = null
 ipcMain.handle('player-set-volume', (_, v) => wrap(() => {
   lastLinearVolume = v / 100
   var cfg = getPlayerSettings()
-  var base = linearToMpv(lastLinearVolume, cfg.boost)
+  var base = linearToMpv(lastLinearVolume, cfg.boostEffective)
   // With ReplayGain application on, the slider still means "how loud overall",
   // but the current track's gain rides on top so moving the slider does not lose
   // the per-track correction until the next track change.
-  if (cfg.replaygainApply && _loudnessCurrentPath) {
+  if (cfg.replaygainApplyEffective && _loudnessCurrentPath) {
     var map = sideStores.loudnessMap.get() || {}
     var entry = map[_loudnessCurrentPath]
     var gainDb = entry && typeof entry === 'object' ? entry.gainDb : null

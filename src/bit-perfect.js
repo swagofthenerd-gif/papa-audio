@@ -125,6 +125,44 @@
     }
   }
 
+  // The loudness-scan leveling (replaygainApply) is a SECOND gain path: main
+  // folds each track's measured gain into mpv's volume. The bit-perfect hint has
+  // always promised "volume leveling" goes off, but nothing enforced it, so the
+  // toggle left it running and the samples were scaled anyway. Same shape as
+  // effectiveReplaygain so the settings surface can paint either the same way.
+  function effectiveLoudnessLeveling(cfg) {
+    cfg = cfg || {}
+    const requested = cfg.replaygainApply === true
+    if (!isOn(cfg.bitPerfect) || !requested) {
+      return { on: requested, requested, suppressed: false, reason: '' }
+    }
+    return {
+      on: false,
+      requested,
+      suppressed: true,
+      reason: 'Bit-perfect mode is on, so volume leveling stays off: it raises ' +
+        'quiet tracks by changing their level, which is what the mode exists to ' +
+        'prevent. Turn bit-perfect off to level volume.',
+    }
+  }
+
+  // The volume boost is software gain above unity, so bit-perfect suppresses it
+  // too — the engine already caps --volume-max at 100 instead of 130 while on.
+  function effectiveBoost(cfg) {
+    cfg = cfg || {}
+    const requested = cfg.boost === true
+    if (!isOn(cfg.bitPerfect) || !requested) {
+      return { on: requested, requested, suppressed: false, reason: '' }
+    }
+    return {
+      on: false,
+      requested,
+      suppressed: true,
+      reason: 'Bit-perfect mode is on, so the +30% volume boost stays off: it is ' +
+        'software gain above unity. Turn bit-perfect off to use it.',
+    }
+  }
+
   // Map the player-settings blob to the MpvEngine spawn config. When bitPerfect is
   // off this is a straight pass-through of the existing fields; when on it:
   //   - sets outputMode 'exclusive' (engine adds --audio-exclusive=yes),
@@ -167,6 +205,7 @@
 
   return {
     EXCLUSIVITY_NOTE, isOn, forcesGapless, resolveEngineConfig,
-    effectiveReplaygain, CONTROL_LABELS, controlLabel, claimsBitPerfect,
+    effectiveReplaygain, effectiveLoudnessLeveling, effectiveBoost,
+    CONTROL_LABELS, controlLabel, claimsBitPerfect,
   }
 })
