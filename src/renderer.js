@@ -10432,31 +10432,69 @@ function _vCtxDismiss(e) {
 // cannot delay its neighbours, and if it takes longer than this or throws, it
 // says so IN ITS OWN BOX with a Retry, and the rest of the page is untouched.
 const DETAIL_LANE_MS = 8000
+// The seasons lane is the one section that is not a single request: it is one
+// AniList round trip PER HOP down a rate-limited lane, so a long franchise
+// (One Piece, Bungo Stray Dogs, Tokyo Revengers) hit the 8 s ceiling on every
+// visit — and a hand Retry then took 21 s and succeeded, which is the proof
+// that the work was fine and only the budget was wrong. It gets its own, and
+// says it is still going rather than sitting empty in the meantime.
+const SEASON_LANE_MS = 25000
 
-function _detailLane(name, mountId, label, run, ticket) {
+// `opts.budgetMs` overrides the ceiling for one lane. `opts.noticeMs` is when
+// a lane that is still running admits it — without this a longer budget just
+// means a longer silence, which is the failure this whole mechanism exists to
+// prevent.
+function _detailLane(name, mountId, label, run, ticket, opts) {
   const started = Date.now()
+  const budget = (opts && Number(opts.budgetMs)) || DETAIL_LANE_MS
+  const notice = (opts && Number(opts.noticeMs)) || 0
   let settled = false
-  const timer = setTimeout(function () {
+  const timers = []
+  if (notice > 0 && notice < budget) {
+    timers.push(setTimeout(function () {
+      if (settled) return
+      if (_videoDetailTicket !== ticket) return
+      _paintLaneWaiting(mountId, label)
+    }, notice))
+  }
+  timers.push(setTimeout(function () {
     if (settled) return
     if (_videoDetailTicket !== ticket) return
     _paintLaneFailure(name, mountId, label, run, ticket, 'took too long')
-  }, DETAIL_LANE_MS)
+  }, budget))
+  const done = function () { settled = true; timers.forEach(clearTimeout) }
 
   // Promise.resolve() so a `run` that throws synchronously is a lane failure
   // like any other, not an exception out of the page render.
   return Promise.resolve().then(run).then(function () {
-    settled = true
-    clearTimeout(timer)
+    done()
     // A lane that arrives late, after its own note was painted, wins: it has
-    // real content and the note does not.
+    // real content and the note does not. But if it painted nothing at all,
+    // the waiting note must not be left behind claiming it is still coming.
+    const box = document.getElementById(mountId)
+    if (box && box.dataset.laneWaiting) {
+      delete box.dataset.laneWaiting
+      if (/vlane-note/.test(box.innerHTML)) { box.innerHTML = ''; box.hidden = true }
+    }
   }, function (err) {
-    settled = true
-    clearTimeout(timer)
+    done()
     if (_videoDetailTicket !== ticket) return
     console.error('[papa][video] the ' + name + ' section failed after ' +
       Math.round((Date.now() - started) / 1000) + 's:', String((err && err.message) || err))
     _paintLaneFailure(name, mountId, label, run, ticket, 'could not be loaded')
   })
+}
+
+// Still working. A box that is merely slow reads exactly like a box with
+// nothing in it, so it says which one it is.
+function _paintLaneWaiting(mountId, label) {
+  const box = document.getElementById(mountId)
+  if (!box) return
+  if (box.innerHTML && !box.dataset.laneWaiting) return
+  box.hidden = false
+  box.dataset.laneWaiting = '1'
+  box.innerHTML = '<div class="vlane-note" role="status">' +
+    '<div class="spin"></div><span>Still finding ' + esc(label) + '\u2026</span></div>'
 }
 
 // The note one failed section shows. Deliberately small and inside the section
@@ -10466,8 +10504,9 @@ function _paintLaneFailure(name, mountId, label, run, ticket, why) {
   const box = document.getElementById(mountId)
   if (!box) return
   // Never paint over content that did arrive.
-  if (box.innerHTML && !box.dataset.laneFailed) return
+  if (box.innerHTML && !box.dataset.laneFailed && !box.dataset.laneWaiting) return
   box.hidden = false
+  delete box.dataset.laneWaiting
   box.dataset.laneFailed = '1'
   box.innerHTML = '<div class="vlane-note" role="status">' +
     '<span>Couldn\u2019t load ' + esc(label) + ' \u2014 it ' + esc(why) + '.</span>' +
@@ -10573,7 +10612,8 @@ async function renderVideoDetail(navId) {
   // "absolute number unknown" for good. So: let it land, then ask again if it
   // changed anything.
   _chainPending = _detailLane('seasons', 'vseasons', 'the other seasons',
-    function () { return _renderSeasonChain(ticket) }, ticket)
+    function () { return _renderSeasonChain(ticket) }, ticket,
+    { budgetMs: SEASON_LANE_MS, noticeMs: DETAIL_LANE_MS })
   _chainPending.then(function () { _researchSourcesIfNumberingArrived(ticket) })
 
   if (type === 'tv') {
