@@ -7774,6 +7774,48 @@ function _bindHeroPause() {
   })
 }
 
+// ── One conversion per trailer, per session (audit N15) ──────────────────────
+// Hovering the hero ten times converted the SAME YouTube trailer ten times —
+// ten yt-dlp resolves and, when the direct format is missing, ten paired
+// converter sessions on main, for one URL. Nothing cached the answer, and
+// mouseleave only invalidated the ticket the result would have been painted
+// under; the work carried on and was thrown away.
+//
+// This is the one door to window.api.videoTrailerUrl. An in-flight request is
+// shared rather than duplicated, and a settled one is remembered for the rest
+// of the session, so a pointer resting on and off the hero costs exactly one
+// conversion. Leaving the hero no longer needs to "cancel" anything: the work
+// already under way becomes the answer the next hover gets for free.
+//
+// A URL that turns out to be dead is forgotten (_forgetTrailerUrl, called from
+// the <video> error path), so a stale session cannot poison the whole visit.
+var _trailerUrlMemo = new Map()
+
+function _trailerMemoKey(p) {
+  return String((p && p.type) || 'movie') + ':' + (p && p.id == null ? '' : String(p.id))
+}
+
+function _trailerUrlOnce(p) {
+  const key = _trailerMemoKey(p)
+  const hit = _trailerUrlMemo.get(key)
+  if (hit) return hit
+  const req = window.api.videoTrailerUrl(p)
+    .catch(function () { return { ok: false } })
+    .then(function (res) {
+      // A refusal is not remembered: the catalogue may simply have been busy,
+      // and the next hover deserves a fresh try. A real answer is — including
+      // "this title has no trailer", which is a fact, not a failure.
+      if (!res || res.ok !== true) _trailerUrlMemo.delete(key)
+      return res || { ok: false }
+    })
+  _trailerUrlMemo.set(key, req)
+  return req
+}
+
+function _forgetTrailerUrl(p) {
+  _trailerUrlMemo.delete(_trailerMemoKey(p))
+}
+
 // ── Hero trailer autoplay (App §15) ─────────────────────────────────────────
 // Reuses the card's trailer pipeline wholesale: the same videoTrailerUrl IPC,
 // the same muted <video> factory, the same hover-trailer pref gate. The hero
@@ -7823,9 +7865,8 @@ async function _startHeroTrailer() {
   if (!mount || !item || !hero) return
   const ticket = ++_heroTrailerTicket
 
-  const res = await window.api.videoTrailerUrl({
-    type: item.type || 'movie', id: item.id == null ? '' : String(item.id),
-  }).catch(function () { return { ok: false } })
+  const trailerFor = { type: item.type || 'movie', id: item.id == null ? '' : String(item.id) }
+  const res = await _trailerUrlOnce(trailerFor)
 
   // Everything that can have changed while yt-dlp was running: the pointer
   // left (a new ticket), the pref went off, the feature rotated, or the page
@@ -7841,10 +7882,16 @@ async function _startHeroTrailer() {
   // poster frame until the video is actually playing.
   const scrim = hero.querySelector('.vhero-scrim')
   hero.insertBefore(v, scrim || hero.firstChild)
+  // A URL that will not play is a URL worth asking for again: the converter
+  // session behind it may have been swept. Forgetting it here is what stops
+  // the memo above from turning one bad answer into a dead trailer for the
+  // rest of the session (audit N15).
+  v.addEventListener('error', function () { _forgetTrailerUrl(trailerFor) }, { once: true })
   v.play().then(function () {
     if (_heroTrailerTicket === ticket) mount.classList.add('is-hero-previewing')
     else _stopHeroTrailer()
   }).catch(function () {
+    _forgetTrailerUrl(trailerFor)
     if (_heroTrailerTicket === ticket) _stopHeroTrailer()
   })
 }
@@ -9788,8 +9835,7 @@ async function _startHoverTrailer(card) {
   _hoverCard = card
   card.classList.add('is-preview-loading')
 
-  const res = await window.api.videoTrailerUrl({ type: parts[0], id: parts.slice(1).join(':') })
-    .catch(function () { return { ok: false } })
+  const res = await _trailerUrlOnce({ type: parts[0], id: parts.slice(1).join(':') })
 
   // Everything that can have changed while yt-dlp was running.
   if (_hoverTicket !== ticket) return
@@ -10979,7 +11025,7 @@ async function _playInlineTrailer() {
   if (!hero || !window.api.videoTrailerUrl) return _playTrailerInTheatre()
   const ticket = ++_inlineTrailer.ticket
   hero.classList.add('is-trailer-loading')
-  const res = await window.api.videoTrailerUrl({ type: _videoDetail.type || 'movie', id: d.id == null ? '' : String(d.id) })
+  const res = await _trailerUrlOnce({ type: _videoDetail.type || 'movie', id: d.id == null ? '' : String(d.id) })
     .catch(function () { return { ok: false } })
   if (_inlineTrailer.ticket !== ticket) return
   hero.classList.remove('is-trailer-loading')
