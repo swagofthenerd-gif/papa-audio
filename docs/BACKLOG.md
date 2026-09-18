@@ -515,3 +515,55 @@ catalogue is the visible stutter: ~1 frame in 9 late.
   red against the frozen pre-speedup fixtures and green under load — with an
   executor. An earlier version of this entry claimed 0/5; that was written
   before the load run finished and was wrong.
+
+### 19 Sep — seven idle twins, the probe branch merged, L2 verified
+- He asked why "so many Papa Audio sessions" were open. All seven were MY QA
+  twins (ports 9377–9383, 9–24 min idle): every kill routine had targeted the
+  launcher PID and never checked that Electron's children died. Killed by
+  process group, verified 0 remaining; profiles and logs deleted (/tmp 1.6G →
+  1.1G). Rule recorded in memory (`twin-kill-must-verify-death`) and now in
+  every executor brief. His real app was untouched; he has since restarted it
+  himself (new pid 870484).
+- Two Claude chip sessions he was shown — "Fix debrid isCached…" and "Fix
+  video-keep-file…" — duplicate fixes already merged in
+  `fix/keep-file-and-iscached`; told him to close them. Chips are no longer
+  spawned for work already routed to an executor.
+- `feat/twin-probe-and-dryrun-visibility` merged (3 commits, +21 tests, 83/83
+  in its files). `tools/twin-probe.js` prints `EVAL THREW` for every
+  `exceptionDetails` and waits for `state` + sidebar before navigating — the
+  harness fault that hid three renderer throws tonight. The DRY RUN badge now
+  paints even without a titlebar. Real fault found on the way: `_queueLog`
+  returned when `_logDir` was unset, so EVERY early-startup line was
+  discarded and `installFileLogging`'s "flush what was buffered" was a no-op
+  over an always-empty buffer; that is why the profile log I grepped was
+  empty. My re-checks: pill early-return restored → 2 red; `!_logDir` guard
+  restored → 3 red.
+- L2 (stall watchdog "frozen for Infinityms") verified independently: full
+  revert of 460ae17's shim hunk → 3/7 red. A partial mutation (getter to
+  Infinity + load stamp removed, resume/paused stamps kept) stays 7/7 green,
+  because the test's live sequence includes the optimistic `paused=false`
+  stamp — the fix is layered and the test proves the layer as a whole, not
+  each stamp. Good enough; noted so nobody reads a single-stamp mutation as
+  the test being decoration.
+- Music-tabs live QA (Fable) returned 16 defects; three critical and routed
+  to two Opus executors in their own worktrees: D1 `_moodDef` is a local of
+  `renderLibrary` read by `_libEmptyHtml` → ReferenceError on any zero-result
+  library search, and the page stays dead because `state.libSearch` persists
+  (same class as `_playOnArrival`); D2 shuffle Next stops playback ~1 in 7 —
+  `playNext` reads index 0 as "queue finished" even when the shuffle picker
+  chose track 0; D3 crossfade can never be enabled — Settings writes
+  `crossfadeSecs`, main reads `crossfadeSeconds`, and the only writer of that
+  (`player-set-crossfade`) has zero renderer call sites, so every crossfade
+  fix this week was unreachable from the UI. Also D4 stop-and-clear leaves
+  tray/MPRIS stale (no `syncExtension`), D5 queue rows unfocusable, D6 two
+  disagreeing all-time totals on Stats, D7 Manage pre-ticks "redundant lossy"
+  for Trash, D8 bit-perfect toggle changes nothing visible, D9 Next on the
+  last track silently restarts the album, D10 reconciler fights fast Next (88
+  "UI and mpv disagree"), D11 false offline latch ≥2 min, D12 Health scan has
+  no progress for 50 s, D13 eight Settings controls with no focus ring, D14
+  mute tooltip, D15 volume can't reach 0, plus 654 re-requests of missing
+  artwork files. Every one gets a behavioural test and a mutation check
+  before merge.
+- `slsk-shelves-complexity` ratio→operation-count conversion handed to an
+  executor (prove red on the frozen old modules, 5/5 green under an 8-core
+  busy loop).
