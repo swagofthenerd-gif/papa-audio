@@ -21572,17 +21572,30 @@ function playNext() {
   // never hits the wrap-to-0 "queue finished" stop below.
   _radioMaybeRefill()
   if (state.repeat === 'one') { audio.currentTime = 0; audio.play(); return }
+  // "The queue finished" used to be inferred from the index landing on 0. That
+  // only means anything for the sequential step below, which reaches 0 by
+  // wrapping off the end. A shuffle pick of 0 is an ordinary track -- the first
+  // one in the queue -- and reading it as the end stopped the music dead on
+  // roughly one Next in every len presses, with no way back but pressing Play.
+  // The autoplay rescue could not save it either: that path requires
+  // !state.shuffle. So the wrap is computed where the wrap actually happens and
+  // is never re-derived from the value of the index.
+  const prevIdx = state.queueIndex
+  const len = state.queue.length
+  let nextIdx
   if (state.shuffle) {
     // Use the pick already prefetched, or mpv played one file while we advance
     // to a different one.
-    const committed = (_pendingShuffle != null && _pendingShuffle < state.queue.length)
+    const committed = (_pendingShuffle != null && _pendingShuffle < len)
       ? _pendingShuffle : pickShuffleIndex(state.queue, _shuffleHistory.slice(-3))
     _pendingShuffle = null
-    state.queueIndex = committed
+    nextIdx = committed
   } else {
-    state.queueIndex = (state.queueIndex + 1) % state.queue.length
+    nextIdx = (prevIdx + 1) % len
   }
-  if (state.queueIndex === 0 && state.repeat === 'off') {
+  const wrapped = !state.shuffle && nextIdx === 0 && prevIdx === len - 1
+  state.queueIndex = nextIdx
+  if (wrapped && state.repeat === 'off') {
     // Queue finished — restore prior queue if standalone play was active
     if (_oldQueue) { restoreOldQueue(); return }
     // "Keep the music going" (App #2): opt-in library radio continuation, using
