@@ -13232,6 +13232,20 @@ function _resolveHomeRows() {
   return { order: _HOME_DEFAULT_ROWS.slice(), hidden: {}, visible: _HOME_DEFAULT_ROWS.slice() }
 }
 
+// The empty-Home call to action. Picks a folder, un-defers the wizard decision
+// (the person has now answered it the other way), and scans — the same three
+// steps Settings' "Add folder" does, so there is one behaviour, not two.
+async function _addMusicFromHome() {
+  var folders = null
+  try { folders = await window.api.addMusicFolder() } catch (_) { folders = null }
+  if (!folders || !folders.length) return
+  state.musicFolders = folders
+  _setSetupDeferred(false)
+  if (typeof renderFolders === 'function') renderFolders()
+  showLoading()
+  await fullScan()
+}
+
 function renderHome() {
   const hour = new Date().getHours()
   // Time-aware, name-carrying greeting (App §100). This is a personal app for
@@ -13376,7 +13390,13 @@ function renderHome() {
     <div class="album-grid">${state.library.slice(0, 24).map(albumCard).join('')}</div>` : `
     <div class="empty-wrap">
       <svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>
-      <h2>No music found</h2><p>Add FLAC files to your music folder.</p>
+      <h2>No music found</h2>
+      <!-- Someone who chose "Set up later" in the wizard had a dead end here:
+           a statement of fact with nothing to press. -->
+      <p>${state.musicFolders.length
+        ? 'Nothing turned up in the folders you added.'
+        : 'Papa Audio has nowhere to look yet.'}</p>
+      <button id="home-add-music">Add your music</button>
     </div>`
 
   // ── Home personalization (App #15) ─────────────────────────────────────────
@@ -13459,6 +13479,7 @@ function renderHome() {
     _homeEditMode = !_homeEditMode
     renderHome()
   })
+  document.getElementById('home-add-music')?.addEventListener('click', _addMusicFromHome)
   document.querySelectorAll('[data-home-move]').forEach(function (btn) {
     btn.addEventListener('click', function () {
       var _mt = window.PapaMusicTools
@@ -18737,7 +18758,11 @@ function renderLikedSongs() {
       </div>`
   }).join('')
 
-  var totalLikedLocal = state.likedTracks.length
+  // The liked list is file paths; `tracks` is the ones the library can actually
+  // resolve. Counting the raw paths made the header read "1 Local Likes" over a
+  // page listing "0 songs" whenever the library was empty or unscanned — and it
+  // also skewed the average length, whose total only sums resolvable tracks.
+  var totalLikedLocal = tracks.length
   var totalLikedYT = state.ytLiked.length
   var likedArtists = {}
   state.likedTracks.forEach(function(fp) {
