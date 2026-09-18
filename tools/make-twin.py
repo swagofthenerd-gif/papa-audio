@@ -61,7 +61,7 @@ def main(dst, keep_slskd=False):
           const rv = r ? r[k] : undefined;
           const here = path + "." + k;
           if (rv === MARK) {
-            if (KEEP_SLSKD && /^\.(slskdApiCreds|slskConfig)\b/.test(here)) continue;   // --keep-slskd, see below
+            if (KEEP_SLSKD && /^[.](slskdApiCreds|slskConfig)[.]/.test(here)) continue;   // --keep-slskd, see below
             if (CRED_PATH.test(here)) leaves(o[k], secretValues, typeof o[k] === "string");
             delete o[k]; continue;
           }
@@ -105,7 +105,8 @@ def main(dst, keep_slskd=False):
     if leaks:
         shutil.rmtree(dst); sys.exit(f'LEAK: a secret value survived in {sorted(set(leaks))} — twin destroyed')
     size = sum(os.path.getsize(os.path.join(r, f)) for r, _, fs in os.walk(dst) for f in fs)
-    print(f'twin at {dst}: {len(copied)} stores copied, {len(secrets)} secret values stripped and verified absent, '
+    kept = 'slskd password KEPT' if keep_slskd else 'all credentials stripped'
+    print(f'twin at {dst}: {len(copied)} stores copied, {len(secrets)} secret values stripped and verified absent ({kept}), '
           f'{len(keep)} fixture cache entries, {size / 1048576:.1f} MB')
     if keep_slskd:
         # slskd is his REAL Soulseek account. Its creds are kept ONLY so read-only
