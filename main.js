@@ -9254,7 +9254,19 @@ ipcMain.handle('slsk-get-transfers', async () => {
   // and the "Can't reach the Soulseek daemon" empty state was unreachable dead
   // code. It also fired a bogus "all downloads complete" notification, because
   // the active count dropped to zero.
-  const data = await slskdFetch('GET', '/transfers/downloads')
+  // A 401 that survives slskdFetch's own token refresh is bad credentials, not
+  // an outage, and this handler is polled every couple of seconds: throwing
+  // turned one wrong password into an endless run of "Error occurred in
+  // handler" and a banner telling someone to restart a daemon that was
+  // answering fine. Answered, not thrown, so the renderer can say the true
+  // thing once. Everything else still throws — see the note above.
+  let data
+  try {
+    data = await slskdFetch('GET', '/transfers/downloads')
+  } catch (e) {
+    if (e && e.status === 401) return { ok: false, unauthorized: true, error: 'slskd rejected the credentials' }
+    throw e
+  }
   // Same shape as slskd's — users, each with directories, each with files — but
   // with every field the renderer never looks at removed.
   const slim = (data || []).map(user => ({

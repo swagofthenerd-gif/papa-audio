@@ -21964,7 +21964,7 @@ async function _startSlskLeg(spec, token) {
       var res = await window.api.slskResolveFile({ username: spec.username, filename: spec.filename }).catch(function () { return null })
       if (_papaPreview.token !== token) return
       if (res && res.path) { _previewSlskReady(res.path, token); return }
-      var raw = await window.api.slskGetTransfers().catch(function () { return [] })
+      var raw = _slskTransfers(await window.api.slskGetTransfers().catch(function () { return [] }))
       var hit = raw.flatMap(function (u) { return (u.directories || []).flatMap(function (d) { return d.files || [] }) })
         .find(function (f) { return f.filename === spec.filename })
       if (hit && hit.state && /Failed|Aborted|Cancelled|Rejected/.test(hit.state)) { _previewEvent('slskFailed', token); return }
@@ -22074,7 +22074,7 @@ async function _cancelPreviewSlskTransfer() {
   var slsk = _papaPreview.slsk
   if (!slsk || !slsk.username || !slsk.filename) return
   try {
-    var raw = await window.api.slskGetTransfers().catch(function () { return [] })
+    var raw = _slskTransfers(await window.api.slskGetTransfers().catch(function () { return [] }))
     for (var u of raw) {
       if (u.username !== slsk.username) continue
       for (var d of (u.directories || [])) {
@@ -28486,11 +28486,40 @@ function _dlRenderDaemonDown() {
     el.className = 'dl2-daemon-banner'
     list.parentNode.insertBefore(el, list)
   }
+  delete el.dataset.reason
   el.textContent = "Can't reach the Soulseek daemon — showing the last known state. "
   var btn = document.createElement('button')
   btn.className = 'dl2-action-btn'
   btn.textContent = 'Retry'
   btn.addEventListener('click', function () { _pollAndRenderDownloads() })
+  el.appendChild(btn)
+}
+
+// slskd is up and refusing us. Said once — the banner is keyed by id, so a
+// poll every two seconds repaints the same element rather than stacking, and
+// the console line is printed once per session rather than once per poll.
+var _dlAuthWarned = false
+function _dlRenderUnauthorized() {
+  if (!_dlAuthWarned) {
+    _dlAuthWarned = true
+    console.warn('[papa] slskd rejected the credentials — check them in Settings → Soulseek')
+  }
+  var list = document.getElementById('dl2-list')
+  if (!list || !list.parentNode) return
+  var id = 'dl2-daemon-banner'
+  var el = document.getElementById(id)
+  if (!el) {
+    el = document.createElement('div')
+    el.id = id
+    el.className = 'dl2-daemon-banner'
+    list.parentNode.insertBefore(el, list)
+  }
+  el.dataset.reason = 'unauthorized'
+  el.textContent = 'The Soulseek daemon refused these credentials — check them in Settings \u2192 Soulseek. '
+  var btn = document.createElement('button')
+  btn.className = 'dl2-action-btn'
+  btn.textContent = 'Retry'
+  btn.addEventListener('click', function () { _dlAuthWarned = false; _pollAndRenderDownloads() })
   el.appendChild(btn)
 }
 
@@ -28732,9 +28761,23 @@ async function _pollAndRenderDownloads() {
   } finally { _dlPollInFlight = false }
 }
 
+// slsk-get-transfers answers a list, or — when slskd rejects the credentials —
+// a refusal object. Every caller that only wants the transfers reads it
+// through here, so a refusal is an empty list to them rather than something
+// that is not iterable.
+function _slskTransfers(raw) { return Array.isArray(raw) ? raw : [] }
+
 async function _pollAndRenderDownloadsInner() {
   var _dlReachable = true
   const raw = await window.api.slskGetTransfers().catch(function () { _dlReachable = false; return null })
+  // Bad credentials are not an outage: slskd answered, it just would not let
+  // us in. Saying "can't reach the daemon" sent people to restart a daemon
+  // that was running, and the poll said it every two seconds.
+  if (raw && raw.unauthorized) {
+    _dlDaemonDown = false
+    _dlRenderUnauthorized()
+    return
+  }
   _dlDaemonDown = !_dlReachable
   // A single failed poll must not erase the page. Treating an unreachable
   // daemon as "zero transfers" zeroed every tab badge, hid the nav badge,
@@ -30710,7 +30753,7 @@ function _bindSlskCards(section, query, groups) {
         await new Promise(r => setTimeout(r, 2000))
         const res = await window.api.slskResolveFile({ username: g.username, filename: targetFile.filename })
         if (res?.path) { _playFile(res.path); played = true; break }
-        const raw = await window.api.slskGetTransfers().catch(() => [])
+        const raw = _slskTransfers(await window.api.slskGetTransfers().catch(() => []))
         const hit = raw.flatMap(u => (u.directories||[]).flatMap(d => d.files||[])).find(f => f.filename === targetFile.filename)
         if (hit?.state?.match(/Failed|Aborted|Cancelled/)) break
       }
