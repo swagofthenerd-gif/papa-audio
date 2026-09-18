@@ -11973,22 +11973,45 @@ ipcMain.handle('video-search', async (_, { query, type }) => {
       if (!results.length && anilist().lastFailure() && jikan().lastFailure() && kitsu().lastFailure()) {
         return { ok: false, error: 'The anime databases are unreachable right now (AniList, MyAnimeList and Kitsu all failed to answer). This is on their side — try again in a little while.' }
       }
-      return { ok: true, results }
+      return { ok: true, results, sources: { tmdb: 'skipped', anime: 'ok' }, failed: [] }
     }
 
     if (type === 'movie' || type === 'tv') {
       const results = sortJunkLast((await tmdb().search(query)).filter(r => r.type === type))
-      return { ok: true, results }
+      return { ok: true, results, sources: { tmdb: 'ok', anime: 'skipped' }, failed: [] }
     }
 
     // Both catalogs, in parallel. Neither is allowed to fail the search: a
     // dead AniList should still return films, and vice versa. The anime side
     // rides the AniList → Jikan fallback so an AniList outage still surfaces
     // anime entries (with their nyaa-backed sources) in the merged list.
+    //
+    // But "not allowed to fail the search" used to mean "not allowed to be
+    // mentioned". Both lanes discarded the error and substituted an empty
+    // list, so a rate-limited or timed-out TMDB produced the same answer as a
+    // film that does not exist —
+    // an empty list under `ok: true` — and the renderer then blamed the user's
+    // spelling. Five of twenty searches for famous films came back empty that
+    // way. Each lane now records WHY it is empty, and the answer carries a
+    // per-source verdict the renderer can read out loud.
+    const sources = { tmdb: 'ok', anime: 'ok' }
+    const failed = []
+    const _lost = (which, e) => {
+      sources[which] = 'failed'
+      failed.push({ source: which, error: (e && e.message) || String(e) })
+    }
     const [tmdbRes, animeRes] = await Promise.all([
-      tmdb().search(query).catch(() => []),
-      _animeSearch(query).catch(() => []),
+      tmdb().search(query).catch(e => { _lost('tmdb', e); return [] }),
+      _animeSearch(query).catch(e => { _lost('anime', e); return [] }),
     ])
+    // The anime lane does not throw when its three databases are down — it
+    // degrades to an empty list and flags the outage — so an empty answer has
+    // to be checked against those flags the same way the anime-only branch
+    // above already does.
+    if (sources.anime === 'ok' && !animeRes.length &&
+        anilist().lastFailure() && jikan().lastFailure() && kitsu().lastFailure()) {
+      _lost('anime', new Error('AniList, MyAnimeList and Kitsu all failed to answer'))
+    }
 
     const merged = []
     for (const r of tmdbRes) {
@@ -12001,7 +12024,12 @@ ipcMain.handle('video-search', async (_, { query, type }) => {
     }
     // Entries with no year and no poster are strays sharing a title with
     // the real thing; they go last (R10).
-    return { ok: true, results: sortJunkLast(merged.concat(animeRes)) }
+    return {
+      ok: true,
+      results: sortJunkLast(merged.concat(animeRes)),
+      sources,
+      failed,
+    }
   } catch (e) {
     return { ok: false, error: e.message }
   }

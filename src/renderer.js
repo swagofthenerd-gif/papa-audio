@@ -8632,6 +8632,77 @@ function _vSearchFilterBarHtml(results) {
   return '<div class="vsfilter" id="vsfilter">' + typeHtml + decadeHtml + '</div>'
 }
 
+// ── Telling the truth about which catalogue answered ────────────────────────
+// `video-search` returns a per-source verdict: { tmdb: 'ok'|'failed'|'skipped',
+// anime: ... }. Before it did, a failed catalogue and a film that does not
+// exist produced exactly the same empty list, and the empty state below blamed
+// the spelling for both. That is the whole of "most of the films I search and
+// open are not opening": five of twenty searches for famous films (Oppenheimer,
+// Dune: Part Two, The Dark Knight, Spider-Man: No Way Home) came back empty
+// with the app reporting success.
+function _vSearchFailedSources(sources) {
+  const s = sources || {}
+  const out = []
+  if (s.tmdb === 'failed') out.push('tmdb')
+  if (s.anime === 'failed') out.push('anime')
+  return out
+}
+
+// One Retry control, used by both the outage empty-state and the partial note.
+// It re-runs the SAME query — nothing about the query was wrong.
+function _vSearchRetryHtml(label) {
+  return '<button type="button" class="vsearch-retry" data-vsearch-retry>' +
+    esc(label || 'Retry') + '</button>'
+}
+
+// Shown ABOVE results that did arrive, when one lane was missing from them.
+// Empty string when every lane answered, so a healthy search is unchanged.
+function _vSearchSourceNoteHtml(sources) {
+  const failedNames = _vSearchFailedSources(sources)
+  if (!failedNames.length) return ''
+  // Both lanes down with results on screen is impossible — the results came
+  // from somewhere — so this is always exactly one lane.
+  const text = failedNames[0] === 'tmdb'
+    ? 'Films and series couldn’t be fetched just now — showing anime only'
+    : 'Anime couldn’t be fetched just now — showing films and series only'
+  return '<p class="vsearch-note warn" role="status">' + esc(text) + ' · ' +
+    _vSearchRetryHtml('Retry') + '</p>'
+}
+
+// The empty-state for a search that found nothing BECAUSE a catalogue was down.
+// Deliberately carries no spelling advice: the spelling was fine, the server
+// was not.
+function _vSearchOutageHtml(query, sources) {
+  const failedNames = _vSearchFailedSources(sources)
+  const title = failedNames.length > 1
+    ? 'The catalogues didn’t answer'
+    : failedNames[0] === 'anime'
+      ? 'The anime catalogue didn’t answer'
+      : 'The film catalogue didn’t answer'
+  return '<div class="vempty">' +
+    '<div class="vempty-icon">⚠</div>' +
+    '<div class="vempty-title">' + esc(title) + '</div>' +
+    '<div class="vempty-text">Nothing came back for &ldquo;' + esc(_shortQ(query)) +
+      '&rdquo; because the search never reached a working catalogue. Try again.</div>' +
+    '<div class="vempty-actions">' + _vSearchRetryHtml('Try again') + '</div>' +
+  '</div>'
+}
+
+// Wires whichever Retry control the last paint put on screen. Called after
+// every paint that can contain one; the control lives inside the innerHTML
+// that was just replaced, so its old listener went with it.
+function _bindVideoSearchRetry() {
+  const box = document.getElementById('video-search-results')
+  if (!box || !box.querySelectorAll) return
+  const buttons = box.querySelectorAll('[data-vsearch-retry]')
+  for (let i = 0; i < buttons.length; i++) {
+    buttons[i].addEventListener('click', function () {
+      const q = (_vSearchFilter && _vSearchFilter.query) || state.currentVideoQuery
+      if (q) _runVideoTitleSearch(q, { commit: false })
+    })
+  }
+}
+
 // The empty-state markup, shared by the first miss and the simplified retry's
 // miss, so the two paths read the same.
 function _vSearchEmptyHtml(query) {
@@ -8686,6 +8757,10 @@ function _paintVideoSearchResults(note) {
   ]
   let html = ''
   if (note) html += '<p class="vsearch-note">' + note + '</p>'
+  // Which lane is missing from what follows. Lives on the filter object rather
+  // than in `note` so it survives a chip click — the catalogue is still down
+  // after the user narrows to Films.
+  html += _vSearchSourceNoteHtml(_vSearchFilter.sources)
   // A description of a kind of film gets its Browse chip above the title
   // matches, and — when nothing was left over as a title — loses the fuzzy
   // anime hits that were never what was asked for (R11).
@@ -8715,6 +8790,7 @@ function _paintVideoSearchResults(note) {
     }
   }
   _bindVideoSearchFilters()
+  _bindVideoSearchRetry()
 }
 
 // The chip bar's listeners. Delegated onto the bar itself, which is rebuilt on
@@ -8767,7 +8843,7 @@ function _runVideoTitleSearch(query, opts) {
     state.currentVideoQuery = query
     // Every new query starts the filters from scratch, so a decade picked on
     // the last search cannot survive into this one.
-    _vSearchFilter = { results: [], type: 'all', decade: 'all', query: query, intent: _searchIntent(query) }
+    _vSearchFilter = { results: [], type: 'all', decade: 'all', query: query, intent: _searchIntent(query), sources: null }
     // Hide rather than unmount, so clearing the query restores the catalog
     // instantly without refetching every row. All THREE catalog surfaces go:
     // the taste row is a sibling of the rows container, not a child, so hiding
@@ -8792,10 +8868,19 @@ function _runVideoTitleSearch(query, opts) {
           return
         }
         const results = Array.isArray(res.results) ? res.results : []
+        _vSearchFilter.sources = res.sources || null
         // Do NOT remember here: this runs on every debounced keystroke, which is
         // what filled the history with prefixes ("toky","tokyo r",…). History is
         // committed only on Enter (keydown handler) or when a result is clicked.
         if (!results.length) {
+          // Nothing came back AND a catalogue was down: that is not a miss and
+          // the spelling advice would be a lie. Say what actually happened and
+          // offer to run the same query again.
+          if (_vSearchFailedSources(_vSearchFilter.sources).length) {
+            _setVideoSearchHtml(_vSearchOutageHtml(query, _vSearchFilter.sources))
+            _bindVideoSearchRetry()
+            return
+          }
           // App §21: a zero-result title search gets exactly one retry with a
           // simplified query, and only if simplifying actually changed it.
           const simplified = _simplifyVideoQuery(query)
@@ -8824,10 +8909,20 @@ function _retryVideoTitleSearch(original, simplified, ticket) {
       const target = document.getElementById('video-search-results')
       if (!target) return
       const results = (res && res.ok && Array.isArray(res.results)) ? res.results : []
+      const sources = (res && res.sources) || null
       if (!results.length) {
+        // Same rule as the first attempt: an outage is not a miss, so the
+        // simplified query's miss must not be blamed on the spelling either.
+        if (_vSearchFailedSources(sources).length) {
+          _vSearchFilter.sources = sources
+          _setVideoSearchHtml(_vSearchOutageHtml(original, sources))
+          _bindVideoSearchRetry()
+          return
+        }
         _setVideoSearchHtml(_vSearchEmptyHtml(original))
         return
       }
+      _vSearchFilter.sources = sources
       // Commit-only: don't remember on this debounced retry. Update the pending
       // commit query to the simplified form so a result click records what
       // actually matched.

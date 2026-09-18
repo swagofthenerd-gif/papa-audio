@@ -880,7 +880,10 @@ test('the title search resets the filter state on every new query', () => {
   // query is carried so a later result click can commit it to history
   // (audit #3: history is committed on click, not per keystroke).
   // …and the parsed intent behind the query (R11), computed fresh each time.
-  assert.match(src, /_vSearchFilter = \{ results: \[\], type: 'all', decade: 'all', query: query, intent: _searchIntent\(query\) \}/)
+  // sources starts null and is filled from the handler's per-source verdict,
+  // so a stale "the film catalogue didn't answer" cannot survive into the
+  // next query.
+  assert.match(src, /_vSearchFilter = \{ results: \[\], type: 'all', decade: 'all', query: query, intent: _searchIntent\(query\), sources: null \}/)
 })
 
 test('a zero-result search retries once with a simplified query, only if it differs', () => {
