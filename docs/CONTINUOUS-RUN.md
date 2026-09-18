@@ -21,7 +21,12 @@ were lost. A status report is not a stopping point. There is no stopping point.
 ## Hard constraints (never relaxed)
 
 - Never touch his running app (`electron .` with no `--remote-debugging-port`).
-- Every live test on a throwaway twin profile, volume 0.
+- Every live test on a throwaway twin profile, volume 0 — built ONLY with
+  `python3 tools/make-twin.py /tmp/claude-1000/twin-<name>`, which strips every
+  credential and verifies none survives. A hand-copied profile carried his real
+  RealDebrid token on 18 Sep and a QA click reached his account (rejected by
+  luck). One twin per agent, own port; launch with `PAPA_DRY_RUN=1` once it
+  lands; `--keep-slskd` only for read-only Soulseek QA and only with DRY_RUN.
 - slskd at :5030 is his real account: search/browse only. No downloads, no
   cancels, no retries, no reordering, no messages, no config changes.
 - Manage tab: analyses and dry-runs only. Never apply, fix, delete, reclaim.

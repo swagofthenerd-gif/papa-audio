@@ -379,3 +379,21 @@ agent-browser`), expo-skill-feedback (telemetry), git-guardrails-claude-code
 **Standing conflict, decided in his favour:** superpowers' writing-plans and
 finishing-a-development-branch instruct `git commit`/`git push` inside their
 loop; his `no-bullshit` rule wants an account BEFORE commits. His rule wins.
+
+### 19 Sep — twin builder, benchmarks, skills
+- `tools/make-twin.py` lands: strips every credential the app's own redactor
+  knows (single source of truth), deletes the keys, verifies no key-shaped
+  secret survives anywhere under the twin, writes fixture On Device indexes
+  pointing inside the twin, refuses a destination outside /tmp. Built against
+  his real config: 7 credential strings stripped, 0 present, library still
+  245 albums. `--keep-slskd` exists for read-only Soulseek QA and writes an
+  audit marker; DRY_RUN is required with it.
+- Two wall-clock benches (library-index, slsk-shelves-bench) now take the
+  minimum over runs; the index bench proved 0/5 failures under an 8-core load
+  where the mean version failed. Remaining wall-clock ceilings: manage-bench
+  (already best-of-5), slsk-shelves-chunked-bench (6× headroom by design).
+- Skills: 74 installed after three rounds; whole-tree sweep shows six scripts,
+  all read (Cloudflare's two JSON validators + tests, one bisection helper,
+  one TS example). Two full-suite runs were killed by their own 20-minute
+  timeout because four agents' suites ran concurrently — never run two full
+  suites at once on this machine.
