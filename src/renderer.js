@@ -10920,6 +10920,29 @@ function _seasonEpisodeNumbers(season) {
   return nums
 }
 
+// How long an Undo snackbar stays on screen (showSnackbar's own default). The
+// deferral below waits exactly this long, so the two are one number.
+var UNDO_SNACKBAR_MS = 5000
+
+// "Mark season watched" promised Undo and then immediately refetched the
+// source list — a network round trip measured at about four seconds, which
+// put a loading state over the page for most of the five seconds the Undo bar
+// was up. Six attempts out of six, the bar was gone before it could be used.
+//
+// The reload is deferred rather than the bar lengthened. Nothing the reload
+// fetches depends on the mark — marking episodes watched does not change which
+// sources exist for the episode on screen — so the work is not urgent, and
+// doing it a few seconds later costs nothing. Lengthening the bar instead
+// would only mean staring at a spinner for longer, which is not the same as
+// being able to undo.
+//
+// The returned function cancels: pressing Undo puts the state back where it
+// started, so there is nothing left to reload for.
+function _deferPastUndo(fn) {
+  var id = setTimeout(fn, UNDO_SNACKBAR_MS)
+  return function () { clearTimeout(id) }
+}
+
 // Mark every episode of a season watched (roadmap #33), behind a confirm and
 // with Undo. Only episodes not already watched are touched, so the count is
 // honest and Undo un-marks exactly what changed — an episode that was already
@@ -10960,9 +10983,14 @@ function _confirmMarkSeasonWatched(season) {
         store.markWatched(e.key)
       } catch (_) { /* one bad episode must not abort the rest */ }
     })
-    // Reflect it on the open detail page: the episode marks read from the store.
-    try { _refreshTvEpisodes(_videoDetailTicket, ++_videoSeasonTicket) } catch (_) {}
+    // Reflect it on the open detail page: the episode marks read from the
+    // store, so the grid is right immediately. Only the source refetch waits.
+    try { _refreshTvEpisodes(_videoDetailTicket, ++_videoSeasonTicket, { skipSources: true }) } catch (_) {}
+    var cancelReload = _deferPastUndo(function () {
+      try { _loadVideoSources(_videoDetailTicket, ++_videoSeasonTicket) } catch (_) {}
+    })
     pushUndo('Marked ' + n + ' episode' + (n === 1 ? '' : 's') + ' watched', function () {
+      cancelReload()
       var s = _vStore()
       if (!s) return
       toMark.forEach(function (e) {
@@ -10972,7 +11000,7 @@ function _confirmMarkSeasonWatched(season) {
           if (typeof s.remove === 'function') s.remove(e.key)
         } catch (_) {}
       })
-      try { _refreshTvEpisodes(_videoDetailTicket, ++_videoSeasonTicket) } catch (_) {}
+      try { _refreshTvEpisodes(_videoDetailTicket, ++_videoSeasonTicket, { skipSources: true }) } catch (_) {}
     })
   })
 }
@@ -11349,7 +11377,7 @@ function _syncEpisodeSelection(n) {
 // always true and whichever response happened to land last won — switching
 // 1 → 2 → 3 quickly could leave season 3 selected while showing season 1's
 // episodes. A ticket captured before the request fixes that.
-async function _refreshTvEpisodes(ticket, seasonTicket) {
+async function _refreshTvEpisodes(ticket, seasonTicket, opts) {
   const detail = _videoDetail
   if (!detail || detail.type !== 'tv') return
   if (seasonTicket == null) seasonTicket = ++_videoSeasonTicket
@@ -11412,6 +11440,11 @@ async function _refreshTvEpisodes(ticket, seasonTicket) {
       }
     }
   }
+  // Marking a season watched changes the store, not the swarm: the sources
+  // for the episode on screen are exactly the ones already listed. That caller
+  // asks to skip the refetch so it can be done later, out of the way of the
+  // Undo bar.
+  if (opts && opts.skipSources) return
   await _loadVideoSources(ticket, seasonTicket)
 }
 

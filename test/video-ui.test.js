@@ -130,8 +130,11 @@ function fnBody(name) {
 test('season switching is guarded by a ticket captured before the request', () => {
   assert.match(RENDERER, /var _videoSeasonTicket = 0/, 'a season ticket must exist')
   const body = fnBody('_refreshTvEpisodes')
-  assert.match(body, /function _refreshTvEpisodes\(ticket, seasonTicket\)/)
-  assert.match(RENDERER, /async function _refreshTvEpisodes\(ticket, seasonTicket\)/)
+  // `opts` carries skipSources, which the mark-season-watched path uses to
+  // keep a four-second refetch out of the Undo bar's way. The two tickets are
+  // what this test is about and they are unchanged.
+  assert.match(body, /function _refreshTvEpisodes\(ticket, seasonTicket, opts\)/)
+  assert.match(RENDERER, /async function _refreshTvEpisodes\(ticket, seasonTicket, opts\)/)
   assert.match(body, /_videoSeasonTicket !== seasonTicket/, 'the response must be checked against its own ticket')
   assert.ok(!/_refreshTvEpisodes\(_videoDetailTicket\)\s*$/m.test(RENDERER),
     'no caller may pass the live detail ticket as its own guard')
