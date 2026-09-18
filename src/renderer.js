@@ -2022,8 +2022,30 @@ function _currentNavId() {
 // an auto-play: pressing Resume rebuilds the exact queue, track and position the
 // session died on, paused, and returns to the view that was open. Anything else
 // the user does first supersedes it (the restore guards on an empty queue).
-async function _offerCrashRestore() {
-  if (!_uncleanExit) return
+// Only one crash notice per launch. Two used to fire: this one at boot, and a
+// second from main's app-recovered-from-crash event, each with its own Resume
+// doing something different (one played, one restored the queue paused). Both
+// paths now come through here and the first one to actually say something wins.
+var _crashRestoreOffered = false
+
+// What to call the track the session died on. The library's own title when it
+// knows the file; the bare filename only when it does not — "05 - track.flac"
+// told the user nothing, and that was what the second snackbar printed.
+function _crashRestoreTitle(filePath, queued) {
+  if (queued && queued.title) return queued.title
+  var libs = (state && state.library) || []
+  for (var i = 0; i < libs.length; i++) {
+    var tracks = libs[i].tracks || []
+    for (var j = 0; j < tracks.length; j++) {
+      if (tracks[j].filePath === filePath && tracks[j].title) return tracks[j].title
+    }
+  }
+  return (filePath || '').split('/').pop() || 'the last track'
+}
+
+async function _offerCrashRestore(opts) {
+  opts = opts || {}
+  if (!_uncleanExit || _crashRestoreOffered) return false
   // Only worth offering if there was a queue mid-flight. The `_auto` saved queue
   // is the same snapshot restorePlaybackState() reads, written on every track
   // start; no queue means nothing to pick up.
@@ -2032,16 +2054,33 @@ async function _offerCrashRestore() {
     var queues = await window.api.getSavedQueues()
     autoQueue = (queues || []).find(function (q) { return q.id === '_auto' })
   } catch (_) { autoQueue = null }
-  if (!autoQueue || !autoQueue.tracks || !autoQueue.tracks.length) return
+  if (!autoQueue || !autoQueue.tracks || !autoQueue.tracks.length) {
+    // Nothing to resume. main's event still deserves an answer, once.
+    if (opts.notifyIfNothing) {
+      _crashRestoreOffered = true
+      showSnackbar('Papa Audio did not shut down cleanly last time', '', function () {}, 6000)
+    }
+    return false
+  }
   // The user may have started playing something in the ~1.2s before this ran;
   // if so, leave them be rather than yanking the queue out from under them.
-  if (state.queue.length || state.isPlaying) return
+  if (state.queue.length || state.isPlaying) return false
 
+  var saved = null
+  try { saved = await window.api.getPlaybackState() } catch (_) { saved = null }
+  if (_crashRestoreOffered) return false      // the other path won the await
+  _crashRestoreOffered = true
+
+  var filePath = saved && saved.filePath
+  var queued = (autoQueue.tracks || []).find(function (t) { return t && t.filePath === filePath })
+  var pos = Number(saved && saved.position) || 0
   var count = autoQueue.tracks.length
-  showSnackbar('Pick up where you left off? (' + count + ' track' +
-    (count === 1 ? '' : 's') + ')', 'Resume', function () {
-    _resumeCrashSession()
-  }, 15000)
+  var bits = [_crashRestoreTitle(filePath, queued)]
+  if (pos > 1) bits[0] += ' at ' + fmtDur(pos)
+  bits.push(count + ' track' + (count === 1 ? '' : 's'))
+  showSnackbar('Pick up where you left off? ' + bits.join(' \u00b7 '),
+    'Resume', function () { _resumeCrashSession() }, 15000)
+  return true
 }
 
 // Rebuilds queue + index + position (paused) and re-opens the saved view. Shares
@@ -33191,17 +33230,11 @@ function setupListeners() {
   // it went nowhere. A crash and a deliberate pause looked identical on restart.
   window.api.on('app-recovered-from-crash', async () => {
     console.error('[papa] the previous session did not shut down cleanly')
-    let saved = null
-    try { saved = await window.api.getPlaybackState() } catch (_) {}
-    if (!saved || !saved.filePath) {
-      showSnackbar('Papa Audio did not shut down cleanly last time', '', function () {}, 6000)
-      return
-    }
-    const name = (saved.filePath || '').split('/').pop() || 'the last track'
-    // A notice with an action, never a blocking prompt: the same rule as the
-    // engine-recovery notice.
-    showSnackbar(`Last time ended mid-track — ${name} at ${fmtDur(saved.position || 0)}`,
-      'Resume', function () { resumeFromSavedState(saved) }, 12000)
+    // main and the renderer both detect the unclean exit, and each used to put
+    // up its own snackbar with its own Resume — two offers, two behaviours, one
+    // of them printing the raw filename. One offer now, from one place.
+    _uncleanExit = true
+    await _offerCrashRestore({ notifyIfNothing: true })
   })
 
   // Library changed in main (a mutation, or the folder watcher). Until now this
