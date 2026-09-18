@@ -83,7 +83,10 @@ function strip(labels, activeIndex = 0) {
     },
     addEventListener(type, fn) { assert.strictEqual(type, 'keydown'); handler = fn },
     press(key, target, extra = {}) {
-      const e = { key, target, prevented: false, preventDefault() { this.prevented = true }, ...extra }
+      // stopPropagation is real DOM API the binder calls (F2: the document's
+      // card-focus handler must never see a tablist arrow) — the fake needs it.
+      const e = { key, target, prevented: false, stopped: false,
+        preventDefault() { this.prevented = true }, stopPropagation() { this.stopped = true }, ...extra }
       handler(e)
       return e
     },

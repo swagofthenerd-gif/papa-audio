@@ -88,6 +88,9 @@ function build(opts) {
         : { playing: false })
     }
     function refreshJumpbackCard() {}
+    // The cover paint was extracted (F11, artwork miss memory); the tray
+    // payload under test does not depend on pixels.
+    function _paintNowPlayingArt() {}
     function applyTicker() {}
     function fmtSpec() { return '' }
     function updateFormatBadge() {}
