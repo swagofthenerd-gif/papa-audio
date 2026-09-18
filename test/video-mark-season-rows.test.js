@@ -48,8 +48,12 @@ function extractFn (source, name) {
   throw new Error('unbalanced braces in ' + name)
 }
 
-// A querySelectorAll good enough for the two selectors this function uses:
-// a container id, then either a class or an attribute.
+// A DOM stub shaped like the real grid rather than like the selector under
+// test. The old one special-cased the literal string 'data-ep', so renaming
+// the attribute in the production selector to [data-episode] matched every
+// node anyway and five of six tests stayed green. Here a node has the
+// attributes it really has, and a selector matches only if the node carries
+// what the selector asks for.
 function makeDoc (nodes) {
   return {
     querySelectorAll (sel) {
@@ -60,8 +64,8 @@ function makeDoc (nodes) {
         const [, container, cls, attr] = m
         for (const n of nodes) {
           if (n.container !== container) continue
-          if (cls && n.cls !== cls) continue
-          if (attr === 'data-ep' && n.ep == null) continue
+          if (cls && n.classList.indexOf(cls) === -1) continue
+          if (attr && !(attr in n.attrs)) continue
           if (out.indexOf(n) === -1) out.push(n)
         }
       }
@@ -69,7 +73,22 @@ function makeDoc (nodes) {
     },
   }
 }
-const node = (container, cls, ep) => ({ container, cls, ep, dataset: { ep: ep == null ? undefined : String(ep) } })
+
+// Built from the markup each grid really renders: an episode row carries
+// class="vep-row" and data-ep="<n>"; a numbered button carries
+// class="video-episode-btn" and the same data-ep. Nothing carries an
+// attribute it does not have in the app.
+function node (container, cls, ep) {
+  const attrs = { class: cls }
+  if (ep != null) attrs['data-ep'] = String(ep)
+  return {
+    container,
+    classList: cls.split(/\s+/),
+    attrs,
+    dataset: ep == null ? {} : { ep: String(ep) },
+    getAttribute (k) { return k in attrs ? attrs[k] : null },
+  }
+}
 
 function run (source, nodes, detail, season) {
   const sandbox = {
@@ -127,4 +146,19 @@ test('MUTATION: keying on the button class alone finds nothing on a real page', 
   const rows = [1, 2, 3, 4].map(n => node('video-episode-list-inner', 'vep-row', n))
   assert.strictEqual(run(broken, rows, DETAIL_NO_EPISODES, 2).length, 0,
     'this is the defect: four episode rows on screen, "No episodes to mark"')
+})
+
+test('MUTATION: renaming the attribute in the selector finds nothing either', () => {
+  // The other half of the same failure: the data attribute the rows actually
+  // carry is data-ep, and a selector asking for anything else is as dead as
+  // the old class-only one. The DOM stub must be able to tell the difference.
+  const broken = SRC.replace(
+    "    document.querySelectorAll('#video-episode-list [data-ep], #video-episode-list-inner [data-ep]')",
+    "    document.querySelectorAll('#video-episode-list [data-episode], #video-episode-list-inner [data-episode]')")
+  assert.notStrictEqual(broken, SRC, 'the mutation applied')
+  const rows = [1, 2, 3, 4].map(n => node('video-episode-list-inner', 'vep-row', n))
+  assert.strictEqual(run(broken, rows, DETAIL_NO_EPISODES, 2).length, 0,
+    'four episode rows on screen, "No episodes to mark" again')
+  const btns = [1, 2, 3].map(n => node('video-episode-list', 'video-episode-btn', n))
+  assert.strictEqual(run(broken, btns, DETAIL_NO_EPISODES, 2).length, 0)
 })
