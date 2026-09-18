@@ -79,14 +79,21 @@ test('the trailer plays inline in the hero with sound and close; the theatre is 
 })
 
 test('the detail page is keyboard-complete and the music shortcuts stand down for its keys', () => {
-  assert.match(RENDERER, /var _DETAIL_KEYS = \/\^\(\?:\[pstPST1-9\]\|Escape\)\$\//)
+  // 0 joined the set when the season shortcut learned to reach past nine
+  // (audit N19); the mapping itself is test/video-season-shortcut.test.js.
+  assert.match(RENDERER, /var _DETAIL_KEYS = \/\^\(\?:\[pstPST0-9\]\|Escape\)\$\//)
   const grid = RENDERER.slice(RENDERER.indexOf('if (!VIDEO_PAGES.has(page)) return'), RENDERER.indexOf('function _moveCardFocus('))
   assert.match(grid, /if \(k === 'p'\) document\.getElementById\('vdet-play'\)\?\.click\(\)/)
   assert.match(grid, /if \(k === 's'\) document\.getElementById\('vdet-list'\)\?\.click\(\)/)
   assert.match(grid, /if \(k === 't'\) document\.getElementById\('video-trailer-btn'\)\?\.click\(\)/)
-  assert.match(grid, /sel\.dispatchEvent\(new Event\('change', \{ bubbles: true \}\)\)/)
+  // The season branch moved out to _pickSeasonByKey so Shift+digit can reach it.
+  assert.match(grid, /if \(page === 'video-detail' && _pickSeasonByKey\(e\)\)/)
+  assert.match(RENDERER, /sel\.dispatchEvent\(new Event\('change', \{ bubbles: true \}\)\)/)
   assert.match(RENDERER, /state\.currentPage === 'video-detail' && !e\.ctrlKey && !e\.altKey && !e\.metaKey && !e\.shiftKey &&\n\s+_DETAIL_KEYS\.test\(e\.key\) && e\.key !== 'Escape' && !inInputNow\(e\)\) return/)
-  for (const k of ["keys: \\['P'\\]", "keys: \\['S'\\]", "keys: \\['T'\\]", "keys: \\['1–9'\\]"]) assert.match(RENDERER, new RegExp("category: 'Movies & TV page', " + k))
+  for (const k of ["keys: \\['P'\\]", "keys: \\['S'\\]", "keys: \\['T'\\]"]) assert.match(RENDERER, new RegExp("category: 'Movies & TV page', " + k))
+  // The season entry's label now comes from the keymap, so the sheet and the
+  // mapping cannot disagree about where the digits reach.
+  assert.match(RENDERER, /window\.PapaVideoKeymap\.SEASON_KEYS_LABEL/)
 })
 
 test('V2.5 small repairs: collections sort by year and never claim Watching; untitled airing entries are skipped; rating slots are blank, not dashed; a diary delete has Undo', () => {

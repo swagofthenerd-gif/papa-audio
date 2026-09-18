@@ -393,7 +393,32 @@ function _timeCurTitle() {
 // at all. Every test in the handler now goes through matchesShortcut().
 // The detail page's keys (V2.8), shared by its handler and the music
 // handler's stand-down so the two can never disagree.
-var _DETAIL_KEYS = /^(?:[pstPST1-9]|Escape)$/
+// 1-9 and 0 are seasons; the shifted digits arrive as whatever symbol the
+// layout puts on them ('!' on US, '"' on UK), so the SHIFTED half is matched
+// by code in _seasonKeyPick below rather than by key here (audit N19).
+var _DETAIL_KEYS = /^(?:[pstPST0-9]|Escape)$/
+// Pick a season from a digit. The mapping is the keymap's (1-9, 0 = ten, Shift
+// adds ten); this is only the part that needs the DOM — finding the option and
+// firing the change the picker already listens for. Returns true when it acted,
+// so the caller knows whether to preventDefault.
+//
+// A season the show does not have does nothing at all: pressing 0 on a
+// four-season show must not select season ten, and must not swallow the key.
+function _pickSeasonByKey(e) {
+  const KM = (typeof window !== 'undefined' && window.PapaVideoKeymap) || null
+  if (!KM || typeof KM.seasonFromKey !== 'function') return false
+  const season = KM.seasonFromKey(e, { isInput: inInputNow(e) })
+  if (season == null) return false
+  const sel = document.getElementById('video-season-select')
+  if (!sel) return false
+  const want = String(season)
+  const has = Array.prototype.some.call(sel.options, function (o) { return o.value === want })
+  if (!has) return false
+  sel.value = want
+  sel.dispatchEvent(new Event('change', { bubbles: true }))
+  return true
+}
+
 function inInputNow(e) {
   const t = e && e.target
   if (!t) return false
@@ -677,7 +702,11 @@ var ALL_SHORTCUTS = [
   { category: 'Movies & TV page', keys: ['P'], desc: 'Play (the remembered source, or the best one)' },
   { category: 'Movies & TV page', keys: ['S'], desc: 'Add to / remove from My List' },
   { category: 'Movies & TV page', keys: ['T'], desc: 'Play the trailer in the hero (muted; Sound turns it up)' },
-  { category: 'Movies & TV page', keys: ['1–9'], desc: 'Pick a season' },
+  // Label and description come from the keymap so the sheet cannot drift from
+  // the mapping (audit N19).
+  { category: 'Movies & TV page',
+    keys: [(typeof window !== 'undefined' && window.PapaVideoKeymap && window.PapaVideoKeymap.SEASON_KEYS_LABEL) || '1–9, 0, Shift+1–9'],
+    desc: (typeof window !== 'undefined' && window.PapaVideoKeymap && window.PapaVideoKeymap.SEASON_KEYS_DESC) || 'Pick a season (0 is season 10; Shift adds ten, so Shift+3 is 13)' },
   { category: 'Movies & TV page', keys: ['Esc'], desc: 'Stop the trailer' },
   { category: 'Movies & TV page', keys: ['/'], desc: 'Search films and shows' },
   { category: 'Movies & TV page', keys: ['B'], desc: 'Browse' },
@@ -2363,20 +2392,17 @@ function _bindBrowseKeys() {
     // The detail page is keyboard-complete (V2.8): P plays, S toggles My
     // List, T plays the trailer, 1–9 pick a season, Esc stops the trailer.
     // The music shortcuts stand down for these keys on this page (below).
+    // The season digits are handled first and on their own, because they are
+    // the only detail-page keys that mean something WITH Shift held (audit
+    // N19: Shift+3 is season 13).
+    if (page === 'video-detail' && _pickSeasonByKey(e)) { e.preventDefault(); return }
     if (page === 'video-detail' && !e.shiftKey && _DETAIL_KEYS.test(e.key)) {
       const k = e.key.toLowerCase()
       if (k === 'p') document.getElementById('vdet-play')?.click()
       else if (k === 's') document.getElementById('vdet-list')?.click()
       else if (k === 't') document.getElementById('video-trailer-btn')?.click()
       else if (k === 'escape') { if (_inlineTrailer.video) _stopInlineTrailer(); else return }
-      else {
-        const sel = document.getElementById('video-season-select')
-        if (!sel) return
-        const has = Array.prototype.some.call(sel.options, function (o) { return o.value === k })
-        if (!has) return
-        sel.value = k
-        sel.dispatchEvent(new Event('change', { bubbles: true }))
-      }
+      else return
       e.preventDefault()
       return
     }
@@ -32947,6 +32973,11 @@ function setupListeners() {
     // there, not to shuffle or the queue — one key, one action.
     if (state.currentPage === 'video-detail' && !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey &&
         _DETAIL_KEYS.test(e.key) && e.key !== 'Escape' && !inInputNow(e)) return
+    // Shift+digit is a season too now (audit N19), and a shifted digit arrives
+    // as '!', '"', '#'… depending on the layout — so it is recognised by the
+    // physical key, exactly as the picker recognises it.
+    if (state.currentPage === 'video-detail' && e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey &&
+        /^(?:Digit|Numpad)[0-9]$/.test(String(e.code || '')) && !inInputNow(e)) return
 
     // inInputNow also counts SELECT and contenteditable. This handler used to
     // test only INPUT and TEXTAREA, so with a dropdown focused, Space toggled
