@@ -37,10 +37,11 @@ const { spawn, execFile } = require('child_process')
 // trashes, writes tags, or talks to RealDebrid/slskd. Reads — search, browse,
 // list, status — stay live, because a dry-run twin still has to be useful.
 const DRY_RUN = process.env.PAPA_DRY_RUN === '1'
-if (DRY_RUN) {
-  console.log('[papa] DRY RUN: nothing will be downloaded, resolved, trashed, ' +
-    'written to tags, or sent to RealDebrid/slskd')
-}
+// The banner used to be printed right here, and went nowhere: console.log is
+// not patched until the file-logging section far below, so this line reached
+// neither the daily log nor anything that could be grepped afterwards. It is
+// emitted by _emitStartupBanner() instead, immediately after the logger is
+// installed. Don't move it back up.
 
 // The one refusal shape. `what` is plain English naming the action that did not
 // happen, so the renderer can show the user a sentence rather than a code.
@@ -866,7 +867,11 @@ function _flushLog() {
 // bundle is exported — the log on disk is itself something people copy.
 const _redact = require('./src/redact')
 function _queueLog(level, args) {
-  if (!_logDir) return
+  // No `if (!_logDir) return` here. installFileLogging's flush is commented
+  // "anything buffered before the directory was known" — but with that guard
+  // nothing could ever be buffered before then, so every line written during
+  // early startup was silently discarded and the flush had nothing to do.
+  // Buffering without a directory is safe: LOG_MAX_BUFFER already caps it.
   if ((LOG_LEVELS[level.toLowerCase()] || LOG_LEVELS.info) < LOG_MIN_LEVEL) return
   let msg
   try {
@@ -902,6 +907,31 @@ console.debug = (...args) => {
   if (LOG_MIN_LEVEL <= LOG_LEVELS.debug) _origLog(...args)
   _queueLog('DEBUG', args)
 }
+
+// The first [papa] line of every run. Emitted HERE, not at the top of the file,
+// because console.log only became the patched one a few lines above: anything
+// logged earlier went to the real stdout and nowhere else. The dry-run banner
+// was exactly that — grepping a dry-run twin's daily log AND its stdout found
+// nothing, and a twin that cannot prove it is a twin is a safety problem.
+//
+// Written twice on purpose: through console.log so it is buffered and lands in
+// the daily log once installFileLogging knows the directory, and straight to
+// process.stderr, which is NOT patched by anything above and therefore survives
+// however the log file goes. dryRun is on the line itself, so the very first
+// thing a run says is what kind of run it is.
+function _emitStartupBanner() {
+  const lines = [`[papa] start pid=${process.pid} session=${SESSION_ID} dryRun=${DRY_RUN}`]
+  if (DRY_RUN) {
+    lines.push('[papa] DRY RUN: nothing will be downloaded, resolved, trashed, ' +
+      'written to tags, or sent to RealDebrid/slskd')
+  }
+  for (const line of lines) {
+    console.log(line)
+    try { process.stderr.write(line + '\n') } catch (_) { /* no stderr: not our problem */ }
+  }
+  return lines
+}
+_emitStartupBanner()
 
 // Nothing buffered may be lost on the way out. Sync here for the same reason
 // the side stores are: the process is exiting.

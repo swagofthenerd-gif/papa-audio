@@ -25656,18 +25656,33 @@ function _applyDensityEarly() {
 // The dry-run badge. Persistent, in the title bar, next to the logo — it is
 // never dismissed and never animates away, because its whole job is to be in
 // every screenshot a QA twin produces.
+// A safety indicator that can silently not appear is a defect in the safety
+// feature. This used to `return` when `.titlebar-left` was missing, so on a twin
+// where getAppInfo().dryRun was true the pill was simply null and a screenshot
+// of that twin was indistinguishable from the real app. There is now no path out
+// of here that leaves the window unmarked: no titlebar means a fixed top-right
+// badge appended to <body>, and the body class is set before either branch.
 function _paintDryRunPill() {
   if (document.getElementById('dry-run-pill')) return
+  document.body.classList.add('is-dry-run')
   const host = document.querySelector('.titlebar-left')
-  if (!host) return
   const pill = document.createElement('span')
   pill.id = 'dry-run-pill'
-  pill.className = 'dry-run-pill'
+  pill.className = host ? 'dry-run-pill' : 'dry-run-pill dry-run-pill-floating'
   pill.textContent = 'DRY RUN'
   pill.title = 'Nothing will be downloaded, resolved, trashed, written to tags, ' +
     'or sent to RealDebrid/slskd'
-  host.appendChild(pill)
-  document.body.classList.add('is-dry-run')
+  if (!host) {
+    // Inline, not a stylesheet rule: the fallback has to survive a window whose
+    // CSS never loaded, which is one of the ways the titlebar goes missing in
+    // the first place. z-index is above the deck.
+    pill.style.cssText = 'position:fixed;top:10px;right:12px;z-index:99999;' +
+      'padding:2px 8px;border-radius:999px;border:1px solid #ffb347;' +
+      'background:rgba(255,179,71,.16);color:#ffb347;font-size:10px;' +
+      'font-weight:700;letter-spacing:.09em;line-height:16px;white-space:nowrap;' +
+      'pointer-events:none;-webkit-app-region:no-drag;'
+  }
+  ;(host || document.body).appendChild(pill)
 }
 
 function _initDensityField() {
