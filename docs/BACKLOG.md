@@ -324,3 +324,58 @@ Still open from the review: `test/main-load-order.test.js` is a static scan —
 it would miss a circular require or `const X = obj.method()`. A real
 load-in-Electron smoke test is the honest fix; the twin launch is doing that
 job by hand today.
+
+## 14. Live QA on the running app (18–19 Sep) — 9/11 pass, and a near-miss
+
+PASS on the live twin: song click plays (280 ms), second click switches, Space
+no longer pauses, 5 fast Nexts → track 7, hero Play arms playback, Specials
+keeps season 0, search from Browse navigates, 240-card Soulseek library in
+591 ms / max frame gap 150 ms, 40/40 cards pointer+role=button, "pink floyd"
+keeps its space, filter chip repaint 13–20 ms.
+
+**NEAR-MISS, mine:** the twin profile carried his real RealDebrid token. A QA
+agent's renderer-side `window.api` stubs silently no-oped (contextBridge is
+frozen), so a hero-Play click sent 12 `addMagnet` calls to RealDebrid. All
+rejected (404/451) — nothing added — by luck. Rule now in memory: twins are
+built with credentials stripped; side-effect blocking belongs in main.
+**TODO: add `PAPA_DRY_RUN=1` to main.js** so debrid/download/keep handlers
+answer `{ok:false, dryRun:true}` on a twin.
+
+Also: four agents shared one twin and contaminated each other's results; a
+native file dialog froze it. One twin per agent from now on.
+
+### New open findings from the live run
+| # | Finding | State |
+|---|---|---|
+| L1 | `[papa][debrid] no candidate held: linkCache is not iterable` ×10 in main log — a real crash in the debrid fallback | TODO |
+| L2 | `the progress bar has not moved for Infinityms` — `Infinity` leaking into a duration format (renderer ~31491) | TODO |
+| L3 | `.track-row` has no tabindex/role — songs inside an album are not keyboard-reachable; the Space fix covers 21 card classes but not these | TODO |
+| L4 | On Device untestable on a twin without fixture indexes; real indexes point at his real cache paths (Delete would trash them) — needs fixture-path indexes under the twin dir | TODO |
+| L5 | Backup-picker Cancel copy (3f9548b) still unverified live — the picker froze the twin | TODO |
+
+### Skills, round 3 — installed 19 Sep
+52 non-Anthropic skills now installed (see `ls ~/.claude/skills`). Round-3
+adds: the superpowers planning/execution spine (brainstorming, writing-plans,
+executing-plans, subagent-driven-development, dispatching-parallel-agents,
+requesting/receiving-code-review, finishing-a-development-branch,
+using-git-worktrees — hooks and the visual-companion server excluded);
+grilling, codebase-design, writing-for-agents, handoff; refactoring,
+a-philosophy-of-software-design, release-it; security-and-hardening,
+api-and-interface-design, performance-optimization, git-workflow-and-
+versioning, documentation-and-adrs, source-driven-development;
+security-threat-model, security-audit, sharp-edges, differential-review;
+avoid-ai-writing; commit-work, crafting-effective-readmes, reducing-entropy;
+tech-debt-analyzer; ffmpeg-audio-processing; react-native-best-practices,
+react-native-skills, electron-builder (no licence file — accepted knowingly,
+as for electron-dev); expo-* leaf skills with the `npx --yes
+submit-expo-feedback` footer stripped.
+
+Skipped on purpose: expo skills whose frontmatter grants Bash (eas-simulator,
+eas-update, eas-update-insights, eas-workflows, expo-examples, expo-ui),
+eas-app-stores (`npm install -g eas-cli`), expo-web-to-native (`npm i -g
+agent-browser`), expo-skill-feedback (telemetry), git-guardrails-claude-code
+(writes settings.json), supply-chain-risk-auditor (scripts + network).
+
+**Standing conflict, decided in his favour:** superpowers' writing-plans and
+finishing-a-development-branch instruct `git commit`/`git push` inside their
+loop; his `no-bullshit` rule wants an account BEFORE commits. His rule wins.
