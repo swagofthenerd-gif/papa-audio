@@ -191,6 +191,7 @@ function build(opts) {
     plays: [],
     navs: [],
     instantRefreshes: 0,
+    instantForce: [],
     // Stubs for the formatting helpers — not what is under test here.
     _fmtBytes: n => String(n) + 'B',
     _agoLabel: () => 'a while',
@@ -200,7 +201,11 @@ function build(opts) {
     showToast: m => sandbox.toasts.push(m),
     showSnackbar: m => sandbox.snackbars.push(m),
     _videoPlayResult: (result, o) => sandbox.plays.push({ result, opts: o }),
-    _refreshInstantKeys: () => { sandbox.instantRefreshes++; return Promise.resolve() },
+    // Records the ARGUMENT as well as the count. Calling this without `true`
+    // is a no-op for the first 30 seconds after any earlier refresh, so a bare
+    // `_refreshInstantKeys()` leaves every poster claiming CACHED for a file
+    // that was just deleted — a call, but not a refresh.
+    _refreshInstantKeys: f => { sandbox.instantRefreshes++; sandbox.instantForce.push(f); return Promise.resolve() },
   }
   sandbox.window.window = sandbox.window
   vm.createContext(sandbox)
@@ -208,6 +213,19 @@ function build(opts) {
   const names = ['esc', '_shortQ', '_etaLabel', '_deviceFactsHtml', '_deviceEpisodeLabel',
     '_deviceCardHtml', '_groupDeviceEntries', '_deviceSectionHtml', '_deviceStorageHtml',
     '_renderDeviceTab', '_deviceAction', '_bindDeviceCards', '_playDeviceFile']
+  // With realInstant the actual badge refresher is lifted in, throttle and
+  // all, instead of the counting stub — so the test can watch whether the
+  // badge list is genuinely re-fetched rather than merely called.
+  if (opts.realInstant) {
+    delete sandbox._refreshInstantKeys
+    sandbox._instantKeys = []
+    sandbox._instantAt = Date.now()
+    sandbox.window.api.videoInstantList = () => {
+      calls.push(['instant-list'])
+      return Promise.resolve({ ok: true, instant: ['anime:30:e1'] })
+    }
+    names.push('_refreshInstantKeys')
+  }
   let code = names.map(n => extractFrom(opts.source || SRC, n)).join('\n')
   vm.runInContext(code, sandbox)
   return { sandbox, rows, doc, calls, api }
@@ -339,6 +357,23 @@ test('a successful delete re-asks for the instant badges it just invalidated', a
   await new Promise(r => setTimeout(r, 0))
   assert.strictEqual(h.sandbox.instantRefreshes, 1,
     'otherwise every poster for that title keeps claiming CACHED')
+  assert.strictEqual(h.sandbox.instantForce[0], true,
+    'and it must FORCE the refresh — an unforced call inside the 30s window ' +
+    'returns without asking, so the badges keep lying about a deleted file')
+})
+
+test('the forced refresh actually re-fetches, throttle window or not', async () => {
+  // The real refresher, not the counting stub: a delete happening seconds
+  // after the page painted is exactly the case the throttle would swallow.
+  const h = build({ realInstant: true, cached: [cacheEntry(30, 1)] })
+  await h.sandbox._renderDeviceTab(h.rows, 1)
+  const before = h.calls.filter(c => c[0] === 'instant-list').length
+  press(h.rows.querySelectorAll('.vdevice-card')[0], 'delete')
+  await new Promise(r => setTimeout(r, 0))
+  await new Promise(r => setTimeout(r, 0))
+  const after = h.calls.filter(c => c[0] === 'instant-list').length
+  assert.strictEqual(after - before, 1,
+    'the badge list is asked for again after the delete, inside the throttle window')
 })
 
 test('Cancel stops a running download and reports a refusal', async () => {
