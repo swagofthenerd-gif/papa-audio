@@ -1270,6 +1270,26 @@ function updateStopAfterBtn() {
   const btn = document.getElementById('btn-stop-after')
   if (!btn) return
   btn.classList.toggle('active', state.stopAfterTrack)
+  // The class is all a sighted user needs; aria-pressed is the only thing a
+  // screen reader has. It used to move only when updateAriaToggles happened to
+  // run for some other reason, so the button announced "not pressed" while it
+  // was plainly lit.
+  btn.setAttribute('aria-pressed', state.stopAfterTrack ? 'true' : 'false')
+}
+
+// Shuffle is flipped from seven places — the player bar, the now-playing deck,
+// a media key, the media-shuffle event, the keyboard shortcut, the agent tool
+// and the command palette — and every one of them painted the two buttons'
+// class by hand. None of them touched aria-pressed. One setter now owns both.
+function updateShuffleBtns() {
+  var on = !!state.shuffle
+  var ids = ['btn-shuffle', 'np-modal-shuffle']
+  for (var i = 0; i < ids.length; i++) {
+    var b = document.getElementById(ids[i])
+    if (!b) continue
+    b.classList.toggle('active', on)
+    b.setAttribute('aria-pressed', on ? 'true' : 'false')
+  }
 }
 
 function updateFormatBadge(track) {
@@ -3985,13 +4005,13 @@ function _diaryTimelineHtml(store) {
   const rows = built.months.map(function (m) {
     const items = m.events.map(function (e) {
       if (e.kind === 'album') {
-        const art = e.art ? '<img class="tl-art" src="' + esc(e.art) + '" alt="" onerror="this.style.display=\'none\'">' : '<span class="tl-art tl-art-fallback"></span>'
+        const art = _tlArtHtml(e.art)
         const who = e.artist ? '<span class="tl-sub">' + esc(e.artist) + '</span>' : ''
         return '<li class="tl-item tl-album">' + art +
           '<span class="tl-body"><span class="tl-title">First listen · ' + esc(e.album) + '</span>' + who + '</span>' +
           '<time class="tl-date">' + esc(e.date) + '</time></li>'
       }
-      const poster = e.poster ? '<img class="tl-art" src="' + esc(e.poster) + '" alt="" onerror="this.style.display=\'none\'">' : '<span class="tl-art tl-art-fallback"></span>'
+      const poster = _tlArtHtml(e.poster)
       const stars = e.rating != null ? '<span class="tl-sub">' + esc(_tlStars(e.rating)) + '</span>' : ''
       const linked = e.key ? ' data-tl-key="' + esc(String(e.key)) + '"' : ''
       return '<li class="tl-item tl-film"' + linked + '>' + poster +
@@ -4004,6 +4024,19 @@ function _diaryTimelineHtml(store) {
   const note = built.hasAlbums ? '' :
     '<div class="tp-empty">Films and shows only — start playing music and your first listens will appear here too.</div>'
   return '<section class="tp-block"><h3 class="tp-h">Timeline</h3>' + note + rows + '</section>'
+}
+
+// A timeline thumbnail. The old markup hid the <img> on error and showed
+// nothing in its place, so a cover or poster that has gone missing left a hole
+// in the row where every neighbour has a picture. The fallback block is
+// rendered alongside and revealed by the same onerror, and a cover already
+// known to be gone never gets requested at all.
+function _tlArtHtml(src) {
+  const usable = _artSrcIfUsable(src)
+  if (!usable) return '<span class="tl-art tl-art-fallback"></span>'
+  return '<img class="tl-art" src="' + esc(usable) + '" alt="" ' +
+    'onerror="this.style.display=\'none\';if(this.nextElementSibling)this.nextElementSibling.style.display=\'inline-block\'">' +
+    '<span class="tl-art tl-art-fallback" style="display:none"></span>'
 }
 
 // Half-star rating → a compact star string for the timeline row.
@@ -15365,7 +15398,7 @@ function renderSearch(query) {
       const bg = GENRE_COLORS[g] || `linear-gradient(135deg,hsl(${Math.abs(g.charCodeAt(0)*7)%360},55%,28%),hsl(${Math.abs(g.charCodeAt(0)*7+40)%360},45%,18%))`
       // data-genre carries the canonical key so a tile click filters the
       // library by the same case-insensitive identity the chips use (audit #11).
-      return `<div class="genre-tile" style="background:${bg}" data-genre="${esc(_genreKey(g))}">${esc(g)}</div>`
+      return `<div class="genre-tile" style="background:${bg}" title="${esc(g)}" data-genre="${esc(_genreKey(g))}">${esc(g)}</div>`
     }).join('')
     var surpriseStyle = document.getElementById('surprise-style')
     if (!surpriseStyle) {
@@ -15569,7 +15602,7 @@ function renderSearch(query) {
   const tabs = ['All', 'Songs', 'Albums', 'Artists', 'Playlists']
   var html = `<div class="page">
     <div class="search-tabs" id="search-tabs" role="tablist" aria-label="Search result categories">
-      ${tabs.map(t => `<button class="search-tab${t==='All'?' active':''}" role="tab" aria-selected="${t==='All'}" data-tab="${t}">${t}</button>`).join('')}
+      ${tabs.map(t => `<button class="search-tab${t==='All'?' active':''}" role="tab" aria-selected="${t==='All'}" tabindex="${t==='All'?'0':'-1'}" data-tab="${t}">${t}</button>`).join('')}
     </div>
     ${query ? '<div style="padding:4px 0 8px 0;display:flex;align-items:center;gap:12px"><button class="save-search-btn" id="save-search-btn" title="Save as smart playlist">+ Save search</button><div class="search-sort"><select id="search-sort-select">' + sortOptions.map(function(o) { return '<option value="' + o.value + '"' + (o.value === currentSort ? ' selected' : '') + '>' + o.label + '</option>' }).join('') + '</select></div></div>' : ''}
     ${dymHTML}
@@ -15827,6 +15860,12 @@ function renderSearch(query) {
       _applyYtFilter()
     })
   })
+  // The strip declared role="tablist" and role="tab" and then answered to
+  // nothing but the mouse: Left/Right/Home/End did not move between the
+  // categories, which is the one thing the role promises. _bindTablist was
+  // written for exactly this and had only ever been wired to the two video
+  // strips.
+  _bindTablist(document.getElementById('search-tabs'))
 
   // YouTube scope tabs (Music / All of YouTube)
   document.querySelectorAll('.yt-scope').forEach(tab => {
@@ -20069,6 +20108,7 @@ function updatePlayerLikeBtn() {
   const liked = !!(currentTrack && currentTrack.filePath &&
     state.likedTracks.includes(currentTrack.filePath))
   likeBtn.classList.toggle('liked', liked)
+  likeBtn.setAttribute('aria-pressed', liked ? 'true' : 'false')
 }
 
 // ── Queue panel ─────────────────────────────────────────────────────────────
@@ -21156,7 +21196,7 @@ function updateNowPlayingModal() {
   _applyNpPalette(track, artImg, artUrl)
 
   // Sync shuffle/repeat/like state.
-  document.getElementById('np-modal-shuffle')?.classList.toggle('active', state.shuffle)
+  updateShuffleBtns()
   updateRepeatBtns()
   _syncNpLike(track)
 
@@ -23356,14 +23396,81 @@ function _drawHomeClock() {
   canvas.title = now.toLocaleTimeString()
 }
 
+// ── The recently-played dropdown (L10) ──────────────────────────────────────
+// The player bar builds this menu by hand. Both keyboard halves live out here
+// so they are reachable — and testable — without the bar around them.
+
+// Close it, and put focus back where it came from. A menu that vanishes and
+// drops the keyboard on <body> has no way back.
+function _closeRecentDropdown(restoreFocus) {
+  var dd = document.getElementById('recent-dropdown')
+  if (dd && dd.parentNode) dd.parentNode.removeChild(dd)
+  var btn = document.getElementById('btn-recent')
+  if (!btn) return
+  btn.setAttribute('aria-expanded', 'false')
+  if (restoreFocus && btn.focus) btn.focus()
+}
+
+// Arrows move, Enter and Space choose, Escape closes. The rows used to be
+// tabindex="-1" with nothing that could ever focus them, so the whole list was
+// mouse-only and Escape did nothing at all.
+function _recentDropdownKey(e, dd) {
+  if (e.key === 'Escape') {
+    e.preventDefault(); e.stopPropagation()
+    _closeRecentDropdown(true)
+    return
+  }
+  var items = Array.prototype.slice.call(dd.querySelectorAll('.recent-item'))
+  if (!items.length) return
+  var here = items.indexOf(e.target)
+  if (e.key === 'Enter' || e.key === ' ') {
+    if (here < 0) return
+    e.preventDefault(); e.stopPropagation()
+    items[here].click()
+    return
+  }
+  var next = null
+  if (e.key === 'ArrowDown') next = here < 0 ? 0 : (here + 1) % items.length
+  else if (e.key === 'ArrowUp') next = here <= 0 ? items.length - 1 : here - 1
+  else if (e.key === 'Home') next = 0
+  else if (e.key === 'End') next = items.length - 1
+  if (next == null) return
+  e.preventDefault(); e.stopPropagation()
+  items.forEach(function (it, i) { it.setAttribute('tabindex', i === next ? '0' : '-1') })
+  items[next].focus()
+}
+
 // The readable part of a title or artist cell: the plain text, without the
 // badges that live inside it (explicit, surround, BPM, the YT chip). Reading
 // "Play RiversideE by Agnes Obel120 BPM" aloud is worse than reading nothing.
 function _rowLabelText(el) {
   if (!el) return ''
-  var first = el.firstChild
-  var text = (first && first.nodeType === 3 ? first.textContent : el.textContent) || ''
-  return text.replace(/\s+/g, ' ').trim()
+  // The cell's own words: its leading text nodes plus the <mark> wrappers
+  // highlightMatch() leaves behind on a search hit. A search row's title is
+  // "Lady <mark>Fantasy</mark>", so reading only firstChild named it "Lady".
+  // Anything else inside a title cell is a badge, and the walk stops there.
+  var out = ''
+  for (var n = el.firstChild; n; n = n.nextSibling) {
+    if (n.nodeType === 3) { out += n.textContent || ''; continue }
+    if (n.nodeName === 'MARK' || n.nodeName === 'B') { out += n.textContent || ''; continue }
+    break
+  }
+  if (!out) out = el.textContent || ''
+  return out.replace(/\s+/g, ' ').trim()
+}
+
+// Play the song a row stands for, through its album so the rest of the record
+// becomes the queue — the same thing clicking an album row's track number
+// does. Returns false when the row cannot be resolved, so a caller can fall
+// back to whatever it did before.
+function _playRowTrack(row) {
+  if (!row || !row.dataset) return false
+  var album = state.library.find(function (a) { return a.id === row.dataset.album })
+  if (!album) return false
+  var idx = album.tracks.findIndex(function (t) { return t.filePath === row.dataset.file })
+  if (idx < 0) return false
+  playAlbum(album, idx)
+  return true
 }
 
 function bindContentEvents() {
@@ -23389,8 +23496,10 @@ function bindContentEvents() {
     if (!row.hasAttribute('tabindex')) row.setAttribute('tabindex', '0')
     if (!row.hasAttribute('role')) row.setAttribute('role', 'button')
     if (row.hasAttribute('aria-label')) return
-    var _title = _rowLabelText(row.querySelector('.track-title'))
-    var _artist = _rowLabelText(row.querySelector('.track-artist'))
+    // The Top Result songs are .track-row too, but their cells are .str-track-*
+    // — so the labeller found nothing and every one of them went unnamed.
+    var _title = _rowLabelText(row.querySelector('.track-title') || row.querySelector('.str-track-title'))
+    var _artist = _rowLabelText(row.querySelector('.track-artist') || row.querySelector('.str-track-artist'))
     if (_title) row.setAttribute('aria-label', 'Play ' + _title + (_artist ? ' by ' + _artist : ''))
   })
 
@@ -23515,14 +23624,14 @@ function bindContentEvents() {
       // a data-album, so this generic handler and renderPlaylist's own handler
       // both fired: clicking a track started playback AND yanked you to the
       // album page. Multi-select above still applies to those rows.
+      // A song listed under "Top Result" is an answer, not a signpost. It
+      // carried a data-album, so this handler treated the whole row as "open
+      // the album" — clicking the exact song you searched for played nothing
+      // and yanked you to its record instead. It plays, like the track number
+      // on an album page does.
+      if (row.classList.contains('str-track')) { _playRowTrack(row); return }
       if (row.dataset.noAlbumNav) return
-      if (e.target.closest('.track-num')) {
-        const album = state.library.find(a => a.id === row.dataset.album)
-        if (!album) return
-        const idx = album.tracks.findIndex(t => t.filePath === row.dataset.file)
-        if (idx >= 0) playAlbum(album, idx)
-        return
-      }
+      if (e.target.closest('.track-num')) { _playRowTrack(row); return }
       const albumId = row.dataset.album
       if (albumId) navigate('album', albumId)
     })
@@ -24535,8 +24644,7 @@ async function _executeTool(name, input) {
 
     case 'set_shuffle': {
       state.shuffle = !!input.enabled
-      document.getElementById('btn-shuffle')?.classList.toggle('active', state.shuffle)
-      document.getElementById('np-modal-shuffle')?.classList.toggle('active', state.shuffle)
+      updateShuffleBtns()
       updateNextPrefetch()
       return `Shuffle ${state.shuffle ? 'on' : 'off'}.`
     }
@@ -27917,7 +28025,7 @@ function renderSoulseekRow(query) {
   if (!s.configured) {
     return `<div class="osrc-row slsk-row" id="slsk-row">
       <span class="osrc-name">Soulseek</span>
-      <span class="osrc-status" style="color:#f0a500">Setup required</span>
+      <span class="osrc-status setup">Setup required</span>
       <button class="osrc-agent-btn" id="slsk-config-btn">Configure</button>
     </div>`
   }
@@ -28664,7 +28772,12 @@ function _setActiveTab(selector, activeEl) {
   document.querySelectorAll(selector).forEach(function (b) {
     var on = b === activeEl
     b.classList.toggle('active', on)
-    if (b.getAttribute('role') === 'tab') b.setAttribute('aria-selected', on ? 'true' : 'false')
+    if (b.getAttribute('role') === 'tab') {
+      b.setAttribute('aria-selected', on ? 'true' : 'false')
+      // Roving tabindex: one stop for the whole strip, so Tab lands on the
+      // chosen category and the arrows move within it.
+      b.setAttribute('tabindex', on ? '0' : '-1')
+    }
   })
 }
 
@@ -32073,8 +32186,7 @@ function setupListeners() {
   document.getElementById('btn-shuffle')?.addEventListener('click', function() {
     state.shuffle = !state.shuffle
   _pendingShuffle = null
-    this.classList.toggle('active', state.shuffle)
-    document.getElementById('np-modal-shuffle')?.classList.toggle('active', state.shuffle)
+    updateShuffleBtns()
     updateNextPrefetch()
     showSnackbar(state.shuffle ? 'Shuffle on' : 'Shuffle off', '', function(){}, 1500)
   })
@@ -32129,22 +32241,32 @@ function setupListeners() {
     recentBtn.title = 'Recently played'
     likeBtn.parentNode.insertBefore(recentBtn, likeBtn)
 
+    // The list was mouse-only: its rows carried tabindex="-1", Escape did not
+    // close it, and focus never entered or came back. It is a menu now — a
+    // real one: arrows move, Enter plays, Escape closes and hands focus back
+    // to the button that opened it.
+    recentBtn.setAttribute('aria-haspopup', 'menu')
+    recentBtn.setAttribute('aria-expanded', 'false')
     recentBtn.addEventListener('click', function(e) {
       e.stopPropagation()
       var existing = document.getElementById('recent-dropdown')
-      if (existing) { existing.remove(); return }
+      if (existing) { _closeRecentDropdown(); return }
       var dd = document.createElement('div')
       dd.id = 'recent-dropdown'
+      dd.setAttribute('role', 'menu')
+      dd.setAttribute('aria-label', 'Recently played')
       dd.style.cssText = 'position:absolute;bottom:100%;right:0;background:var(--bg2);border:1px solid var(--glass-border);border-radius:var(--r);padding:8px;min-width:200px;z-index:100;margin-bottom:8px;box-shadow:0 8px 24px rgba(0,0,0,.4)'
       var tracks = state.playHistory.slice(0, 5)
       if (!tracks.length) { dd.innerHTML = '<div style="padding:8px;font-size:12px;color:var(--text3)">No recent plays</div>' }
       else {
         dd.innerHTML = tracks.map(function(t, i) {
-          return '<div class="recent-item" data-ri="' + i + '" style="padding:6px 8px;cursor:pointer;border-radius:4px;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(t.title) + ' &mdash; ' + esc(t.artist) + '</div>'
+          return '<div class="recent-item" role="menuitem" tabindex="' + (i === 0 ? '0' : '-1') + '" data-ri="' + i + '" style="padding:6px 8px;cursor:pointer;border-radius:4px;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(t.title) + ' &mdash; ' + esc(t.artist) + '</div>'
         }).join('')
         dd.querySelectorAll('.recent-item').forEach(function(item) {
           item.addEventListener('mouseenter', function() { item.style.background = 'var(--glass)' })
           item.addEventListener('mouseleave', function() { item.style.background = '' })
+          item.addEventListener('focus', function() { item.style.background = 'var(--glass)' })
+          item.addEventListener('blur', function() { item.style.background = '' })
           item.addEventListener('click', function() {
             var t = tracks[parseInt(item.dataset.ri)]
             if (t && t.filePath) {
@@ -32152,14 +32274,18 @@ function setupListeners() {
               state.queueIndex = 0
               playCurrentTrack()
             }
-            dd.remove()
+            _closeRecentDropdown(true)
           })
         })
       }
+      dd.addEventListener('keydown', function(ev) { _recentDropdownKey(ev, dd) })
       recentBtn.parentNode.style.position = 'relative'
       recentBtn.parentNode.appendChild(dd)
+      recentBtn.setAttribute('aria-expanded', 'true')
+      var first = dd.querySelector('.recent-item')
+      if (first) first.focus()
       setTimeout(function() {
-        document.addEventListener('click', function close() { if (dd.parentNode) dd.remove(); document.removeEventListener('click', close) }, { once: true })
+        document.addEventListener('click', function close() { _closeRecentDropdown(); document.removeEventListener('click', close) }, { once: true })
       }, 100)
     })
   }
@@ -32249,9 +32375,23 @@ function setupListeners() {
     function _cycleTimeDisplay() {
       timeDisplay = timeDisplay === 'elapsed' ? 'remaining' : timeDisplay === 'remaining' ? 'total' : 'elapsed'
       localStorage.setItem('papa_time_display', timeDisplay)
+      _labelTimeDisplay()
       showSnackbar(timeDisplay === 'total' ? 'Showing total album duration'
         : timeDisplay === 'remaining' ? 'Showing time remaining' : 'Showing time elapsed')
     }
+    // The readout is three different numbers depending on the mode, and the
+    // digits alone never said which. The name says what is shown AND what the
+    // next press will show, which is the only way a non-sighted user can use
+    // a three-way cycle at all.
+    function _labelTimeDisplay() {
+      var el = document.getElementById('time-cur')
+      if (!el) return
+      var says = { elapsed: 'Time elapsed', remaining: 'Time remaining', total: 'Total album duration' }
+      var next = { elapsed: 'remaining', remaining: 'total', total: 'elapsed' }
+      el.setAttribute('aria-label',
+        says[timeDisplay] + '. Activate to show ' + says[next[timeDisplay]].toLowerCase() + '.')
+    }
+    _labelTimeDisplay()
     document.getElementById('time-cur')?.addEventListener('click', _cycleTimeDisplay)
     progressTrack.addEventListener('contextmenu', function(e) {
       e.preventDefault()
@@ -32497,8 +32637,7 @@ function setupListeners() {
     // _pendingShuffle index would otherwise decide the next track after the
     // toggle changed the intent.
     _pendingShuffle = null
-    this.classList.toggle('active', state.shuffle)
-    document.getElementById('btn-shuffle')?.classList.toggle('active', state.shuffle)
+    updateShuffleBtns()
     updateNextPrefetch()
     showSnackbar(state.shuffle ? 'Shuffle on' : 'Shuffle off', '', function(){}, 1500)
   })
@@ -33335,8 +33474,7 @@ function setupListeners() {
 
   window.api.on('media-shuffle', enabled => {
     state.shuffle = !!enabled
-    document.getElementById('btn-shuffle')?.classList.toggle('active', state.shuffle)
-    document.getElementById('np-modal-shuffle')?.classList.toggle('active', state.shuffle)
+    updateShuffleBtns()
     updateNextPrefetch()
   })
 
@@ -33427,8 +33565,7 @@ function setupListeners() {
     if (cmd === 'prev')       { playPrev();   return }
     if (cmd === 'shuffle') {
       state.shuffle = !state.shuffle
-      document.getElementById('btn-shuffle')?.classList.toggle('active', state.shuffle)
-      document.getElementById('np-modal-shuffle')?.classList.toggle('active', state.shuffle)
+      updateShuffleBtns()
       updateNextPrefetch()
       syncExtension()
       return
@@ -33835,8 +33972,7 @@ function setupListeners() {
       state.shuffle = !state.shuffle
       // Clear the cached shuffle pick like the bar button does.
       _pendingShuffle = null
-      document.getElementById('btn-shuffle')?.classList.toggle('active', state.shuffle)
-      document.getElementById('np-modal-shuffle')?.classList.toggle('active', state.shuffle)
+      updateShuffleBtns()
       updateNextPrefetch()
       showSnackbar(state.shuffle ? 'Shuffle on' : 'Shuffle off', '', function(){}, 1500)
       return
@@ -33856,7 +33992,7 @@ function setupListeners() {
     if (matchesShortcut('stopAfter', e)) {
       e.preventDefault()
       state.stopAfterTrack = !state.stopAfterTrack
-      document.getElementById('btn-stop-after')?.classList.toggle('active', state.stopAfterTrack)
+      updateStopAfterBtn()
       showSnackbar(state.stopAfterTrack ? 'Stopping after this track' : 'Stop-after cancelled', '', function () {}, 2000)
       return
     }
@@ -34445,8 +34581,7 @@ function toggleShuffleWrap() {
   // Clear the cached shuffle pick like the bar button does, so the command
   // palette toggle can't leave a stale index deciding the next track.
   _pendingShuffle = null
-  document.getElementById('btn-shuffle')?.classList.toggle('active', state.shuffle)
-  document.getElementById('np-modal-shuffle')?.classList.toggle('active', state.shuffle)
+  updateShuffleBtns()
   showSnackbar(state.shuffle ? 'Shuffle on' : 'Shuffle off', '', function(){}, 1500)
 }
 function cycleRepeatWrap() {
@@ -34500,8 +34635,23 @@ function _trailIcon(kind) {
   return { search: '&#9906;', open: '&#8594;', album: '&#9636;', track: '&#9834;', artist: '&#9835;', video: '&#9654;', listen: '&#9835;', watch: '&#9654;' }[kind] || '&#8226;'
 }
 
+// The 28x28 square at the head of a moment. It used to build its own
+// 'file://' + m.art, which meant it bypassed the artwork miss memory
+// _artSrcIfUsable owns AND carried no onerror — so 133 of 990 moments painted
+// a blank square for covers that are no longer on disk, and re-requested every
+// one of them on every repaint. A cover that is known gone, or that fails
+// here, falls back to the moment's own glyph.
+function _trailArtHtml(m) {
+  var glyph = _trailIcon(m.icon || m.kind)
+  var src = _artSrcIfUsable(m.art)
+  if (!src) return '<span class="trail-ico">' + glyph + '</span>'
+  return '<img class="trail-art" src="' + esc(src) + '" alt="" ' +
+    'onerror="this.style.display=\'none\';if(this.nextElementSibling)this.nextElementSibling.style.display=\'inline-flex\'">' +
+    '<span class="trail-ico" style="display:none">' + glyph + '</span>'
+}
+
 function _trailMomentHtml(m, idx, epIdx) {
-  var art = m.art ? '<img class="trail-art" src="' + esc(/^https?:/.test(m.art) ? m.art : 'file://' + m.art) + '" alt="">' : '<span class="trail-ico">' + _trailIcon(m.icon || m.kind) + '</span>'
+  var art = _trailArtHtml(m)
   return '<button class="trail-moment trail-' + esc(m.kind) + '" data-trail-ep="' + epIdx + '" data-trail-i="' + idx + '" title="Go back to this">' +
     art + '<span class="trail-text"><span class="trail-label">' + esc(m.label) + '</span>' +
     (m.sub ? '<span class="trail-sub">' + esc(m.sub) + '</span>' : '') + '</span>' +
@@ -34703,7 +34853,8 @@ function _omniRender() {
       var art = it.art
         ? '<div class="cmd-item-art"><img src="' + esc(/^https?:/.test(it.art) ? it.art : 'file://' + it.art) + '" alt=""></div>'
         : '<div class="cmd-item-art cmd-item-art-' + esc(it.kind) + '">' + _omniIcon(it.kind) + '</div>'
-      html += '<div class="cmd-item' + (idx === _cpIdx ? ' active' : '') + '" data-idx="' + idx + '" role="option">' +
+      html += '<div class="cmd-item' + (idx === _cpIdx ? ' active' : '') + '" id="cmd-item-' + idx + '" data-idx="' + idx + '" role="option"' +
+        (idx === _cpIdx ? ' aria-selected="true"' : ' aria-selected="false"') + '>' +
         art +
         '<div class="cmd-item-text"><div class="cmd-item-label">' + esc(it.label) + '</div>' +
         (it.sub ? '<div class="cmd-item-sub">' + esc(it.sub) + '</div>' : '') + '</div>' +
@@ -34714,6 +34865,16 @@ function _omniRender() {
   }
   if (!rows.length && !html) html = '<div class="cmd-empty">Nothing matches</div>'
   c.innerHTML = html
+  // The input is a combobox and the list is its listbox, but nothing ever told
+  // it WHICH option was current: the arrow keys moved a highlight a screen
+  // reader could not see. aria-activedescendant is the one attribute that
+  // carries that, and it must be dropped again when there is nothing to point
+  // at — a dangling id is worse than none.
+  if (rows.length && c.querySelector('#cmd-item-' + _cpIdx)) {
+    inp.setAttribute('aria-activedescendant', 'cmd-item-' + _cpIdx)
+  } else {
+    inp.removeAttribute('aria-activedescendant')
+  }
   var active = c.querySelector('.cmd-item.active')
   if (active && active.scrollIntoView) { try { active.scrollIntoView({ block: 'nearest' }) } catch (_) {} }
   _omniFetchVideo(q)
@@ -34795,7 +34956,16 @@ function _setupCP() {
     var item = e.target.closest && e.target.closest('.cmd-item')
     if (!item) return
     var i = parseInt(item.dataset.idx, 10)
-    if (i !== _cpIdx) { _cpIdx = i; results.querySelectorAll('.cmd-item').forEach(function (el) { el.classList.toggle('active', parseInt(el.dataset.idx, 10) === i) }) }
+    if (i !== _cpIdx) {
+      _cpIdx = i
+      results.querySelectorAll('.cmd-item').forEach(function (el) {
+        var on = parseInt(el.dataset.idx, 10) === i
+        el.classList.toggle('active', on)
+        el.setAttribute('aria-selected', on ? 'true' : 'false')
+      })
+      var inpH = document.getElementById('cmd-palette-input')
+      if (inpH) inpH.setAttribute('aria-activedescendant', 'cmd-item-' + i)
+    }
   })
 }
 

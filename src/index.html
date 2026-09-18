@@ -882,7 +882,11 @@
       </button>
     </div>
     <div class="progress-row">
-      <span class="time-label" id="time-cur">0:00</span>
+      <!-- L10: this cycles elapsed -> remaining -> total on click, which made
+           it a control disguised as a label: no tab stop, no role, no name.
+           _cycleTimeDisplay keeps the aria-label in step with the mode. -->
+      <button class="time-label time-label-btn" id="time-cur" type="button"
+              aria-label="Time elapsed. Activate to show time remaining.">0:00</button>
       <!-- Roadmap 114: a real slider to assistive technology — name, value,
            bounds and keyboard (arrows, Home/End; Shift for big steps). -->
       <div class="progress-track" id="progress-track" role="slider" tabindex="0"
