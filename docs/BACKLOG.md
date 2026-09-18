@@ -301,3 +301,26 @@ agents to create their own worktree of the target repo explicitly.
 
 Adversarial reviews of tonight's merged work (test integrity, semantic
 conflicts, live QA of every tab) are running; findings land here as they arrive.
+
+### Adversarial regression review — verdict and follow-ups (18 Sep)
+
+Verdict: **safe to run; no semantic conflicts between the five merged
+branches.** Five follow-ups, all landed in one commit. The two that matter
+most were MINE, and both had the same shape — a fix that shipped with green
+tests and did not do what it said:
+
+- `video-anime-episodes` honesty (f5c624b) changed nothing on screen; the
+  renderer returned on an empty list either way. Now paints a note. **Lesson:
+  a wire-level fix is not a fix until the pixel changes.**
+- The browse fingerprint's "~11 ms" comment was an agent's number repeated,
+  not measured; measured 95–183 ms on the main thread. Now backgrounded.
+  **Lesson: never put a number in a comment I did not measure myself.**
+
+Confirmed NOT breakable by the reviewer: `_pendingLoad`, `_playbackIntent`,
+`_videoPlayResult` (two agents), pack `via`, `_guardVideoRenders`,
+`capByBytes` keepKey, shelves frozen baseline, startup path.
+
+Still open from the review: `test/main-load-order.test.js` is a static scan —
+it would miss a circular require or `const X = obj.method()`. A real
+load-in-Electron smoke test is the honest fix; the twin launch is doing that
+job by hand today.
