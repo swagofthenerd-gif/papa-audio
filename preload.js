@@ -8,6 +8,14 @@ const _seqGaps = []
 
 function reportSeq(channel, meta) {
   const prev = _seqSeen.get(channel)
+  // The SAME event, seen again. main never reuses a sequence number on a
+  // channel, so the only way to see one twice is two listeners on the same
+  // delivery — and player-event has exactly two (renderer.js and player-shim).
+  // Both went through this check against one shared counter, so every single
+  // event was reported once as fine and once as "out-of-order (expected N+1,
+  // got N)": 147 console errors per page load, burying anything real, and a
+  // gap list full of phantoms. A repeat is not a gap. It is not even news.
+  if (meta.seq === prev) return
   _seqSeen.set(channel, meta.seq)
   if (prev === undefined) return
   if (meta.seq === prev + 1) return
