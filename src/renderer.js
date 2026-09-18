@@ -9784,6 +9784,19 @@ function _detInList(d) {
 // it the moment sources arrive, instead of making the button do nothing.
 var _autoPlayTicket = 0
 
+// The single place the arm is consumed. Every Play surface on a detail page
+// (the hero's Play, an episode row, the "Continue episode N · Resume" banner,
+// and the card arm that renderVideoDetail converts on arrival) ends here: it
+// sets `_autoPlayTicket` to the live page ticket, and the source load hands
+// over to the player exactly once. Its own function so the handoff can be
+// exercised for real in a test instead of being re-implemented by one.
+function _takeAutoPlayArm(streams) {
+  if (_autoPlayTicket !== _videoDetailTicket) return false
+  if (!streams || !streams.length) return false
+  _autoPlayTicket = 0
+  return true
+}
+
 // The hero backdrop drifts at a quarter of the scroll (V3 parallax), and the
 // poster's dominant colour tints the top of the hero (palette.js, the same
 // extractor the music side uses). Both are decoration: a missing poster, a
@@ -11239,6 +11252,13 @@ function _bindEpResume(root) {
     const n = Number(banner.dataset.ep) || 1
     _videoState.episode = n
     _syncEpisodeSelection(n)
+    // Selecting the episode is only half of "Resume". Without the autoplay
+    // arm this button refetched the source list and stopped there — the same
+    // "a Play that only navigates" defect the shelf card and the hero were
+    // each fixed for. `_autoPlayTicket` is what _loadVideoSources reads when
+    // the new list lands, and it has to be set BEFORE the load because a
+    // cached list can land in the same turn.
+    _autoPlayTicket = _videoDetailTicket
     _loadVideoSources(_videoDetailTicket, ++_videoSeasonTicket)
   })
 }
@@ -11842,8 +11862,7 @@ async function _loadVideoSources(ticket, seasonTicket) {
       }
     })
   }
-  if (_autoPlayTicket === _videoDetailTicket && streams.length) {
-    _autoPlayTicket = 0
+  if (_takeAutoPlayArm(streams)) {
     _videoPlayResult(_autoPickStream(streams))
   }
   // The other half of the race. Not awaited: this list is already on screen
