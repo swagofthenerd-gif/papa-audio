@@ -23,11 +23,15 @@ const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'u
 
 // The card-activation keydown handler, taken from the shipped source.
 function liftCardKeydown() {
+  // Anchored on the #content delegate itself, not on the Enter/Space test
+  // inside it. The queue panel has its own row keydown handler with the same
+  // Enter/Space line, and it appears EARLIER in the file, so anchoring on that
+  // line lifted the wrong function body.
+  const open = src.indexOf("document.getElementById('content')?.addEventListener('keydown', e => {")
+  assert.ok(open > -1, 'the #content card-activation delegate must still exist')
   const marker = "if (e.key !== 'Enter' && e.key !== ' ') return"
-  const at = src.indexOf(marker)
-  assert.ok(at > -1, 'the card-activation keydown handler must still exist')
-  const open = src.lastIndexOf('addEventListener(\'keydown\', e => {', at)
-  assert.ok(open > -1 && open < at)
+  const at = src.indexOf(marker, open)
+  assert.ok(at > -1 && at - open < 200, 'the card-activation keydown handler must still exist')
   const bodyStart = src.indexOf('{', src.indexOf('e => {', open)) + 1
   // Balance braces to find the end of the arrow body.
   let depth = 1, i = bodyStart
