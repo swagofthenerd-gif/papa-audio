@@ -310,3 +310,91 @@ test('main tells the renderer, and the renderer paints a pill that cannot be mis
   const CSS = fs.readFileSync(require('path').join(__dirname, '..', 'src', 'styles.css'), 'utf8')
   assert.match(CSS, /\.dry-run-pill\s*\{/)
 })
+
+// ── ...and the pill cannot silently fail to appear ───────────────────────────
+// The check above reads the renderer as text, which cannot see whether the pill
+// actually renders. On the lead's twin getAppInfo().dryRun was true and
+// document.getElementById('dry-run-pill') was null: _paintDryRunPill returned
+// early because `.titlebar-left` was missing. A safety indicator that can
+// silently not appear is a defect in the safety feature, so the real function is
+// lifted and run against a DOM with and without the titlebar host.
+
+// Minimal DOM: only what _paintDryRunPill touches.
+function domStub({ titlebar }) {
+  const created = []
+  const bodyClasses = new Set()
+  const host = titlebar ? { children: [], appendChild(c) { this.children.push(c) } } : null
+  const body = {
+    children: [],
+    appendChild(c) { this.children.push(c) },
+    classList: { add: c => bodyClasses.add(c), contains: c => bodyClasses.has(c) },
+  }
+  return {
+    host, body, bodyClasses,
+    document: {
+      body,
+      getElementById: id => created.find(e => e.id === id) || null,
+      querySelector: sel => (sel === '.titlebar-left' ? host : null),
+      createElement: () => {
+        const el = { id: '', className: '', textContent: '', title: '', style: { cssText: '' } }
+        created.push(el)
+        return el
+      },
+    },
+  }
+}
+
+// Lift the REAL function and compile it in a context whose only global is the
+// stub document, so the test exercises the shipped body rather than a copy.
+function liftPaintPill(dom) {
+  const R = fs.readFileSync(require('path').join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
+  const start = R.indexOf('function _paintDryRunPill()')
+  assert.ok(start > -1, '_paintDryRunPill not found in the renderer')
+  let depth = 0
+  let end = -1
+  for (let j = R.indexOf('{', start); j < R.length; j++) {
+    if (R[j] === '{') depth++
+    else if (R[j] === '}') { depth--; if (!depth) { end = j + 1; break } }
+  }
+  assert.ok(end > -1, 'unbalanced braces in _paintDryRunPill')
+  const ctx = { console, document: dom.document }
+  vm.createContext(ctx)
+  vm.runInContext(R.slice(start, end), ctx)
+  return ctx._paintDryRunPill
+}
+
+test('the DRY RUN pill renders inside the titlebar when the titlebar is there', () => {
+  const dom = domStub({ titlebar: true })
+  liftPaintPill(dom)()
+
+  assert.strictEqual(dom.host.children.length, 1, 'the pill goes in the titlebar')
+  assert.strictEqual(dom.host.children[0].textContent, 'DRY RUN')
+  assert.strictEqual(dom.host.children[0].id, 'dry-run-pill')
+  assert.strictEqual(dom.body.children.length, 0, 'and not also on body')
+  assert.ok(dom.bodyClasses.has('is-dry-run'), 'body must carry is-dry-run')
+})
+
+test('the DRY RUN pill still renders when .titlebar-left is missing', () => {
+  const dom = domStub({ titlebar: false })
+  liftPaintPill(dom)()
+
+  assert.strictEqual(dom.body.children.length, 1,
+    'with no titlebar the pill must fall back to document.body, not vanish')
+  const pill = dom.body.children[0]
+  assert.strictEqual(pill.id, 'dry-run-pill')
+  assert.strictEqual(pill.textContent, 'DRY RUN')
+  assert.match(pill.style.cssText, /position:fixed/, 'the fallback must be fixed-position')
+  assert.match(pill.style.cssText, /z-index:\s*9\d\d+/, 'and sit above the deck')
+  assert.ok(dom.bodyClasses.has('is-dry-run'),
+    'the body class must be set regardless of the host')
+})
+
+test('_paintDryRunPill is idempotent — a second call adds no second pill', () => {
+  for (const titlebar of [true, false]) {
+    const dom = domStub({ titlebar })
+    const paint = liftPaintPill(dom)
+    paint(); paint()
+    const where = titlebar ? dom.host.children : dom.body.children
+    assert.strictEqual(where.length, 1, `two calls, one pill (titlebar=${titlebar})`)
+  }
+})
