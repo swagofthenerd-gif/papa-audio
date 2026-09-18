@@ -2276,17 +2276,56 @@ function navigate(page, navId, opts = {}) {
 var _SCROLL_RESTORE_TRIES = 20
 var _SCROLL_RESTORE_MS = 100
 
+// Landing on the right number is not the same as staying there. Two things
+// move the page AFTER a correct restore, and both cost the viewer the position
+// they pressed Back for:
+//
+//   * scroll anchoring — a shelf ABOVE the target finishes loading, grows, and
+//     Chromium pushes the scroll position down to keep the anchored element
+//     still. Measured on Movies & TV: restored to 1499, drifted to 1590 and
+//     then 2328 as two rows above filled in;
+//   * `.content { scroll-behavior: smooth }` — a plain scrollTop assignment
+//     becomes an animation, so the value read back is the position on the way
+//     there, not the one asked for.
+//
+// So the restore holds the target for the whole window rather than stopping
+// the moment it first sticks, with anchoring and smoothing suspended for the
+// duration and put back exactly as found. The viewer's own scroll still ends
+// it immediately — but content moving underneath is not the viewer, and that
+// is the distinction the old single `scrollTop !== applied` check could not
+// make.
 function _restoreScrollTop(el, wanted, schedule) {
   if (!el || !(Number(wanted) > 0)) return
   var later = schedule || function (fn) { setTimeout(fn, _SCROLL_RESTORE_MS) }
   var tries = 0
-  var applied = -1
+  var userMoved = false
+  var onUser = function () { userMoved = true }
+  var USER_EVENTS = ['wheel', 'touchstart', 'keydown', 'mousedown']
+  var listening = typeof el.addEventListener === 'function'
+  if (listening) {
+    USER_EVENTS.forEach(function (t) { el.addEventListener(t, onUser, { passive: true }) })
+  }
+  var style = el.style || null
+  var prevBehavior = style ? style.scrollBehavior : null
+  var prevAnchor = style ? style.overflowAnchor : null
+  if (style) {
+    style.scrollBehavior = 'auto'
+    style.overflowAnchor = 'none'
+  }
+  var finish = function () {
+    if (style) {
+      style.scrollBehavior = prevBehavior || ''
+      style.overflowAnchor = prevAnchor || ''
+    }
+    if (listening) {
+      USER_EVENTS.forEach(function (t) { el.removeEventListener(t, onUser) })
+    }
+  }
   var step = function () {
-    if (applied !== -1 && el.scrollTop !== applied) return
+    // Moved AND the viewer did it: theirs. Moved on its own: drift, re-apply.
+    if (userMoved && el.scrollTop !== wanted) return finish()
     el.scrollTop = wanted
-    applied = el.scrollTop
-    if (applied >= wanted) return
-    if (++tries >= _SCROLL_RESTORE_TRIES) return
+    if (++tries >= _SCROLL_RESTORE_TRIES) return finish()
     later(step)
   }
   step()
