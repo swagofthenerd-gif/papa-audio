@@ -1622,7 +1622,7 @@
   // progress affordance. Falls back to the sync build if the module is old.
   if (streaming) {
     const loadingEl = body.querySelector('.slsk-lib-loading')
-    const tb = SH.createTreeBuilder()
+    const treeBuilder = SH.createTreeBuilder()
     const total = Number(res.dirCount) || 0
     let pulled = 0
     try {
@@ -1630,16 +1630,16 @@
         // Closing the dialog is simply "stop asking" — no cancellation protocol
         // needed, which is the other reason this pulls rather than being pushed.
         if (!dlg.isConnected) return
-        const part = await window.api.slskBrowseChunk({ token: res.token, offset: off, limit: 400 })
+        const slice = await window.api.slskBrowseChunk({ token: res.token, offset: off, limit: 400 })
         // An expired token must not read as "the library ends here".
-        if (!part || !part.ok) {
-          if (part && part.expired && loadingEl && loadingEl.isConnected) {
+        if (!slice || !slice.ok) {
+          if (slice && slice.expired && loadingEl && loadingEl.isConnected) {
             loadingEl.textContent = 'That browse timed out — open it again.'
           }
           return
         }
-        tb.add(part.directories || [])
-        pulled += (part.directories || []).length
+        treeBuilder.add(slice.directories || [])
+        pulled += (slice.directories || []).length
         if (loadingEl && loadingEl.isConnected && total) {
           loadingEl.textContent =
             `Loading ${username}'s library… ${Math.round((pulled / total) * 100)}%`
@@ -1650,12 +1650,12 @@
       // hands the result back here. The renderer no longer has the payload to
       // fingerprint itself, and must not — that hash is ~100 ms of work.
       try {
-        const done = await window.api.slskBrowseEnd({ token: res.token })
-        if (done && done.fingerprint && dlg.isConnected) shBrowseFp = done.fingerprint
+        const endReply = await window.api.slskBrowseEnd({ token: res.token })
+        if (endReply && endReply.fingerprint && dlg.isConnected) shBrowseFp = endReply.fingerprint
       } catch (_) {}
     }
     if (!dlg.isConnected) return
-    tree = tb.finish()
+    tree = treeBuilder.finish()
   } else if (SH && SH.buildTreeChunked) {
     const loadingEl = body.querySelector('.slsk-lib-loading')
     tree = await SH.buildTreeChunked(res.directories || [], {

@@ -5,9 +5,11 @@
 // main and 1,208 ms to deserialise in the renderer. 1.8 seconds of frozen
 // window, none of it interruptible, behind a static "Loading…" with no cancel.
 //
-// The tree now stays in main and the renderer pulls it in slices. This drives
-// the REAL pull loop lifted out of slsk-shop-ui.js against fake IPC, and the
-// REAL createTreeBuilder, so the assertion is about what actually happens.
+// The tree now stays in main and the renderer pulls it in slices. The first
+// half of this file drives the REAL pull contract against the REAL
+// createTreeBuilder. The second half lifts the real session handlers out of
+// main.js and executes them — an earlier version pinned their spelling
+// instead, which test-guard's Rule 1 exists to forbid.
 
 const test = require('node:test')
 const assert = require('node:assert')
@@ -17,6 +19,12 @@ const path = require('path')
 const SH = require('../src/slsk-shelves.js')
 const T = require('../src/slsk-tree.js')
 const MAIN = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
+
+function liftFn(name) {
+  const start = MAIN.indexOf(`function ${name}(`)
+  assert.ok(start > -1, `${name} must still exist in main.js`)
+  return MAIN.slice(start, MAIN.indexOf('\n}', start) + 2)
+}
 
 function share(dirCount, filesPer = 6) {
   const dirs = []
@@ -30,7 +38,8 @@ function share(dirCount, filesPer = 6) {
   return dirs
 }
 
-// The pull loop, reduced to its contract: slice, build, finish.
+// ── The pull contract, against the real tree builder ────────────────────────
+
 async function pull(dirs, { limit = 400, expireAfter = Infinity } = {}) {
   const calls = []
   let served = 0
@@ -50,7 +59,6 @@ async function pull(dirs, { limit = 400, expireAfter = Infinity } = {}) {
 }
 
 test('a tree built from slices is identical to one built in one go', async () => {
-  // The whole refactor rests on this.
   const dirs = share(1200)
   const whole = T.buildTree(dirs)
   const { tree } = await pull(dirs, { limit: 400 })
@@ -69,47 +77,72 @@ test('it is identical at every slice size, including boundaries that split a fol
   const whole = JSON.stringify(T.listDir(T.buildTree(dirs), '', { audioOnly: false }))
   for (const limit of [1, 2, 7, 96, 97, 98, 400]) {
     const { tree } = await pull(dirs, { limit })
-    assert.strictEqual(JSON.stringify(T.listDir(tree, '', { audioOnly: false })), whole,
-      'slice size ' + limit + ' must not change the answer')
+    assert.strictEqual(JSON.stringify(T.listDir(tree, '', { audioOnly: false })), whole, 'slice size ' + limit)
   }
 })
 
 test('no single slice is anywhere near the whole library', async () => {
-  const dirs = share(4000)
-  const { calls } = await pull(dirs, { limit: 400 })
+  const { calls } = await pull(share(4000), { limit: 400 })
   assert.ok(calls.length >= 10, 'a 4000-folder share must take many slices, took ' + calls.length)
-  for (const c of calls) {
-    assert.ok(c.limit <= 400, 'a slice must stay small — that is the entire point')
-  }
+  for (const c of calls) assert.ok(c.limit <= 400, 'a slice must stay small — that is the entire point')
 })
 
 test('an expired token stops the pull instead of reading as the end of the library', async () => {
-  // The dangerous failure: a short tree looks like a peer with a small share.
-  const dirs = share(2000)
-  const { tree, expired } = await pull(dirs, { limit: 400, expireAfter: 2 })
+  const { tree, expired } = await pull(share(2000), { limit: 400, expireAfter: 2 })
   assert.strictEqual(expired, true)
   assert.strictEqual(tree, null, 'a truncated pull must produce no tree at all')
 })
 
-test('main hands back a head, not the directories', () => {
-  const at = MAIN.indexOf("ipcMain.handle('slsk-browse-begin'")
-  assert.ok(at > -1, 'the begin handler must exist')
-  const body = MAIN.slice(at, MAIN.indexOf('\n})', at)).replace(/^[ \t]*\/\/.*$/gm, '')
-  assert.doesNotMatch(body, /directories:/,
-    'returning the directories here would put the 114 MB back on the wire')
-  const head = MAIN.slice(MAIN.indexOf('function _browseHead'), MAIN.indexOf('\n}', MAIN.indexOf('function _browseHead')))
-  assert.match(head, /token/)
-  assert.match(head, /dirCount/)
-  assert.match(head, /fingerprint/, 'main fingerprints it while it still holds the array')
+// ── The main-side session handlers, executed ────────────────────────────────
+
+function sessionHarness({ ttlMs = 2 * 60 * 1000, now } = {}) {
+  const sessions = new Map()
+  const clock = { t: now || 1_700_000_000_000 }
+  const shelves = { fingerprintBrowseChunked: () => new Promise(() => {}) }   // never resolves; not under test here
+  const fn = new Function('crypto', 'slskShelves', '_browseSessions', 'BROWSE_SESSION_TTL_MS', 'Date', 'console', `
+    ${liftFn('_browseSessionSweep')}
+    ${liftFn('_browseSessionOpen')}
+    ${liftFn('_browseHead')}
+    return { _browseHead, _browseSessionOpen, _browseSessionSweep }
+  `)
+  const FakeDate = { now: () => clock.t }
+  const api = fn(require('crypto'), shelves, sessions, ttlMs, FakeDate, { warn() {} })
+  return { ...api, sessions, clock }
+}
+
+test('the head is a few dozen bytes: counts and a token, never the directories', () => {
+  const h = sessionHarness()
+  const dirs = share(300)
+  const head = h._browseHead(dirs, { fromCache: true, cachedAt: 5 })
+  assert.ok(!('directories' in head), 'returning them here puts the 114 MB back on the wire')
+  assert.strictEqual(head.dirCount, 300)
+  assert.strictEqual(head.fileCount, 1800)
+  assert.strictEqual(head.fromCache, true)
+  assert.strictEqual(head.cachedAt, 5)
+  assert.ok(JSON.stringify(head).length < 200, 'this is the whole point of the reply')
 })
 
-test('the session holds a reference, not a copy', () => {
-  const fn = MAIN.slice(MAIN.indexOf('function _browseSessionOpen'), MAIN.indexOf('\n}', MAIN.indexOf('function _browseSessionOpen')))
-  assert.doesNotMatch(fn, /\.slice\(\)|\[\s*\.\.\./,
-    'copying the array would double the very memory this exists to stop moving')
+test('the session holds the SAME array, not a copy', () => {
+  const h = sessionHarness()
+  const dirs = share(10)
+  const head = h._browseHead(dirs)
+  assert.strictEqual(h.sessions.get(head.token).directories, dirs,
+    'a copy would double the very memory this exists to stop moving')
 })
 
-test('abandoned sessions are swept, so an unclosed browse cannot leak the tree', () => {
-  assert.match(MAIN, /_browseSessionSweep/)
-  assert.match(MAIN, /BROWSE_SESSION_TTL_MS/)
+test('every open gets its own token', () => {
+  const h = sessionHarness()
+  const a = h._browseHead(share(1)).token
+  const b = h._browseHead(share(1)).token
+  assert.notStrictEqual(a, b)
+  assert.strictEqual(h.sessions.size, 2)
+})
+
+test('abandoned sessions are swept after the TTL, live ones are kept', () => {
+  const h = sessionHarness({ ttlMs: 1000 })
+  const old = h._browseHead(share(1)).token
+  h.clock.t += 1500
+  const fresh = h._browseHead(share(1)).token           // opening sweeps
+  assert.strictEqual(h.sessions.has(old), false, 'an unclosed browse must not leak the tree forever')
+  assert.strictEqual(h.sessions.has(fresh), true)
 })

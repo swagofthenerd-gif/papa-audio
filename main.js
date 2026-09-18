@@ -10064,38 +10064,38 @@ function _browseRefresh(username) {
   })()
 }
 
-ipcMain.handle('slsk-browse-user', async (_, { username }) => {
+// The one rule for getting a peer's directories: cache hit serves instantly and
+// refreshes in the background; a miss fetches, with ONE automatic retry on a
+// longer deadline when the first attempt times out, because a big library
+// often just needs more time. Both browse entry points call this — the single-
+// shot slsk-browse-user and the sliced slsk-browse-begin — so the rule cannot
+// drift between them. Returns { ok, dirs, fromCache, cachedAt } or { ok, error }.
+async function _browseDirectories(username) {
   const cached = _browseCacheRead(username)
-
-  // Cache present: serve it instantly and refresh in the background. The open is
-  // immediate; the fresh tree arrives via slsk-browse-refreshed a moment later.
   if (cached) {
     _browseRefresh(username)
-    return { ok: true, directories: cached.directories || [], fromCache: true, cachedAt: cached.cachedAt }
+    return { ok: true, dirs: cached.directories || [], fromCache: true, cachedAt: cached.cachedAt }
   }
-
-  // No cache: fetch synchronously so the first-ever open still returns a tree.
-  try {
-    const dirs = await _browseFetch(username, 30000)
+  const attempt = async (deadlineMs) => {
+    const dirs = await _browseFetch(username, deadlineMs)
     _browseCacheWrite(username, dirs)
     _browseRecordDiff(username, dirs)
-    return { ok: true, directories: dirs }
-  } catch (e) {
-    // A timeout on the first open, with nothing cached, gets ONE automatic retry
-    // on a longer deadline before erroring — a big library often just needs more
-    // time than the first attempt allowed.
-    if (/timed out/i.test(String(e && e.message))) {
-      try {
-        const dirs = await _browseFetch(username, 60000)
-        _browseCacheWrite(username, dirs)
-        _browseRecordDiff(username, dirs)
-        return { ok: true, directories: dirs }
-      } catch (e2) {
-        return { ok: false, error: e2.message }
-      }
-    }
-    return { ok: false, error: e.message }
+    return { ok: true, dirs, fromCache: false, cachedAt: null }
   }
+  try {
+    return await attempt(30000)
+  } catch (e) {
+    if (!/timed out/i.test(String(e && e.message))) return { ok: false, error: e.message }
+    try { return await attempt(60000) } catch (e2) { return { ok: false, error: e2.message } }
+  }
+}
+
+ipcMain.handle('slsk-browse-user', async (_, { username }) => {
+  const got = await _browseDirectories(username)
+  if (!got.ok) return { ok: false, error: got.error }
+  const reply = { ok: true, directories: got.dirs }
+  if (got.fromCache) { reply.fromCache = true; reply.cachedAt = got.cachedAt }
+  return reply
 })
 
 // ── Browsing a peer's library without freezing the window ───────────────────
@@ -10141,7 +10141,10 @@ function _browseSessionOpen(directories) {
     budgetMs: 8,
     yieldFn: () => new Promise(r => setImmediate(r)),
     shouldAbort: () => !_browseSessions.has(token),
-  }).then(fp => { if (fp) sess.fingerprint = fp }).catch(() => {})
+  }).then(fp => { if (fp) sess.fingerprint = fp })
+    // Best-effort by contract: a missing fingerprint just means the next refresh
+    // rebuilds. But best-effort is not the same as silent.
+    .catch(e => console.warn('[papa] browse fingerprint skipped:', (e && e.message) || e))
   return token
 }
 
@@ -10161,31 +10164,9 @@ function _browseHead(directories, extra) {
 }
 
 ipcMain.handle('slsk-browse-begin', async (_, { username } = {}) => {
-  const cached = _browseCacheRead(username)
-  if (cached) {
-    _browseRefresh(username)
-    return _browseHead(cached.directories, { fromCache: true, cachedAt: cached.cachedAt })
-  }
-  try {
-    const dirs = await _browseFetch(username, 30000)
-    _browseCacheWrite(username, dirs)
-    _browseRecordDiff(username, dirs)
-    return _browseHead(dirs)
-  } catch (e) {
-    // Same one-retry-on-timeout behaviour and the same error shape as
-    // slsk-browse-user, so browseFailureText() still reads it.
-    if (/timed out/i.test(String(e && e.message))) {
-      try {
-        const dirs = await _browseFetch(username, 60000)
-        _browseCacheWrite(username, dirs)
-        _browseRecordDiff(username, dirs)
-        return _browseHead(dirs)
-      } catch (e2) {
-        return { ok: false, error: e2.message }
-      }
-    }
-    return { ok: false, error: e.message }
-  }
+  const got = await _browseDirectories(username)
+  if (!got.ok) return { ok: false, error: got.error }
+  return _browseHead(got.dirs, got.fromCache ? { fromCache: true, cachedAt: got.cachedAt } : null)
 })
 
 ipcMain.handle('slsk-browse-chunk', (_, { token, offset = 0, limit = 400 } = {}) => {
