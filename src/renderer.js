@@ -4774,9 +4774,12 @@ function _handleVideoEvent(payload) {
     // used to be a black screen with live controls and no explanation; a
     // natural end left the last frame up and nothing marked as watched.
     if (payload.error) {
+      // 'theatre': the player covers the page, so there is no list below it.
+      // The advice has to name the way out, and the second line repeated the
+      // wrong half of it on top of that.
       _player.setStageMessage('<div style="color:var(--color-error)">' +
-        esc(_videoErrorText(payload.reason || 'The file could not be played — it may be corrupt or incomplete.')) +
-        '</div><div style="opacity:.6">Try another source from the list below.</div>')
+        esc(_videoErrorText(payload.reason || 'The file could not be played — it may be corrupt or incomplete.', 'theatre')) +
+        '</div>')
       return
     }
     try {

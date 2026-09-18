@@ -19,10 +19,25 @@
   // from the list below" on a page that has no source list anywhere on it.
   // A catalogue failure gets catalogue advice instead.
   var BROWSE = 'Try again, or go back.'
+  // And the theatre is the third place with no list on it: it covers the page
+  // while it is open, so "the list below" points at nothing a viewer can see.
+  // Naming the way out first is the only advice that can actually be followed
+  // from in there.
+  var THEATRE = 'Close and pick another source.'
   var SOURCE_ADVICE = [SOURCE, PURIST, PICK]
   function adviceFor(next, context) {
-    if (context !== 'catalog') return next
-    for (var i = 0; i < SOURCE_ADVICE.length; i++) if (next === SOURCE_ADVICE[i]) return BROWSE
+    if (context !== 'catalog' && context !== 'theatre') return next
+    var replacement = context === 'theatre' ? THEATRE : BROWSE
+    for (var i = 0; i < SOURCE_ADVICE.length; i++) {
+      if (next === SOURCE_ADVICE[i]) {
+        // Purist mode is a real, reachable setting from anywhere, so the
+        // theatre keeps that half of the advice and only loses "below".
+        if (next === PURIST && context === 'theatre') {
+          return 'Close and pick another source, or switch to Purist mode in Settings → Video.'
+        }
+        return replacement
+      }
+    }
     return next
   }
 
@@ -68,8 +83,9 @@
   // `platform` is process.platform or one of its spellings; omitted means
   // Linux, which is what every caller before roadmap 008 silently assumed.
   // `context` is 'playback' (the default, and what every caller meant before
-  // the catalogue started sharing this table) or 'catalog' for a browsing or
-  // detail-page failure, where there is no source list to point at.
+  // the catalogue started sharing this table), 'catalog' for a browsing or
+  // detail-page failure, or 'theatre' for one raised over the player — the
+  // last two have no source list on screen to point at.
   function explain(message, platform, context) {
     var msg = String(message || 'Something went wrong').trim()
     for (var i = 0; i < CASES.length; i++) {
@@ -108,5 +124,5 @@
     return { text: head + ' ' + why, next: conv != null && conv > 0 ? 'Purist mode in Settings → Video plays it through mpv instead.' : SOURCE }
   }
 
-  return { explain: explain, sentence: sentence, stuck: stuck, SOURCE: SOURCE, PURIST: PURIST, BROWSE: BROWSE }
+  return { explain: explain, sentence: sentence, stuck: stuck, SOURCE: SOURCE, PURIST: PURIST, BROWSE: BROWSE, THEATRE: THEATRE }
 })

@@ -2364,7 +2364,12 @@
           // Escape means "back out one level": leave fullscreen first, and only
           // close the theatre when there is nothing left to back out of.
           if (isFullscreen) { toggleFullscreen(false); break }
-          // Escape backs out of the player, it does not stop playback.
+          // Escape backs out of the player, it does not stop playback — but
+          // there has to be playback to back out of. A refused or failed play
+          // never produced a state, and minimising one leaves the mini card up
+          // and body.video-active set (so the music bar stays collapsed) for a
+          // video that does not exist. Close it properly instead.
+          if (!state) { close(); break }
           minimise()
           break
         default: return

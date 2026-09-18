@@ -136,3 +136,49 @@ test("the renderer's _videoErrorText hands the context to the table", () => {
   assert.doesNotMatch(ctx._videoErrorText('Request failed with status 404', 'catalog'), /source/i,
     'this is the sentence a detail page was printing with no source list on it')
 })
+
+// ── the theatre has no list below it either ────────────────────────────────
+// A failed or refused play paints its sentence over the player, which covers
+// the page. "Try another source from the list below." pointed at a list the
+// viewer could not see and could not reach without first knowing to press
+// Escape — so the advice names the way out instead.
+
+test('a failure raised over the player does not point at a list', () => {
+  const inTheatre = H.explain('The file could not be played — it may be corrupt', 'linux', 'theatre')
+  assert.strictEqual(inTheatre.next, H.THEATRE)
+  assert.doesNotMatch(inTheatre.next, /below/,
+    'nothing is below the theatre; it covers the page')
+})
+
+test('every source-pointing answer is rewritten for the theatre', () => {
+  const sourcePointing = [
+    'ffprobe could not read the source',
+    'Nobody is sharing this right now',
+    'the stream did not start within 60s',
+    'no magnet link',
+    'this file could not be played',
+  ]
+  for (const m of sourcePointing) {
+    const inTheatre = H.explain(m, 'linux', 'theatre')
+    assert.doesNotMatch(inTheatre.next, /list below|below\./,
+      m + ' still sent the viewer to a list that is not on screen')
+  }
+})
+
+test('Purist mode is still offered in the theatre — it is reachable from anywhere', () => {
+  const inTheatre = H.explain('the converter keeps failing', 'linux', 'theatre')
+  assert.match(inTheatre.next, /Purist mode/, 'that half of the advice still works')
+  assert.doesNotMatch(inTheatre.next, /below/)
+})
+
+test('advice that has nothing to do with a source list is untouched', () => {
+  assert.strictEqual(H.explain('401 api key', 'linux', 'theatre').next,
+    H.explain('401 api key', 'linux').next)
+  assert.strictEqual(H.explain('request timed out', 'linux', 'theatre').next,
+    H.explain('request timed out', 'linux').next)
+})
+
+test('and playback outside the theatre still points at the list', () => {
+  assert.strictEqual(H.explain('Nobody is sharing this', 'linux').next, H.SOURCE)
+  assert.strictEqual(H.explain('Nobody is sharing this', 'linux', 'playback').next, H.SOURCE)
+})

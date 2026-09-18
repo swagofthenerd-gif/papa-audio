@@ -133,3 +133,15 @@ test('the engine reports a frozen picture and the page says which side is stuck'
   // The in-page engine's own buffering says "Buffering", not "Downloading".
   assert.match(h, /payload\.phase === 'prebuffer' \|\| payload\.web \? 'Buffering' : 'Downloading'/)
 })
+
+// The theatre covers the page, so an error painted on its stage has no source
+// list under it. The stage used to append "Try another source from the list
+// below." as a hardcoded second line, on top of whatever the table said.
+test('the theatre stage asks for theatre advice and hardcodes none of its own', () => {
+  assert.doesNotMatch(RENDERER, /Try another source from the list below\.<\/div>/,
+    'the stage must not carry its own copy of the advice')
+  const stage = RENDERER.slice(RENDERER.indexOf("payload.kind === 'ended'"))
+    .slice(0, 900)
+  assert.match(stage, /_videoErrorText\([^)]*'theatre'\)/,
+    "the ended-with-error stage message must pass the 'theatre' context")
+})
