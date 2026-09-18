@@ -507,6 +507,7 @@ contextBridge.exposeInMainWorld('api', {
       'slsk-user-status', 'slsk-saved-users-changed', 'slsk-scheduler-stats',
       'library-updated', 'scan-progress', 'app-recovered-from-crash',
       'queue-analysis-progress',
+      'library-extras-progress',
       'video-event',
       'video-state',
       // The tray menu, MPRIS and the power monitor all send these, and none of

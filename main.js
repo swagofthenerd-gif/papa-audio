@@ -5265,9 +5265,27 @@ ipcMain.handle('library-scan-extras', async () => {
   const emptyDirs = []
   const roots = store.get('musicFolders', []) || []
 
+  // This walk takes the better part of a minute on a real library, and Manage →
+  // Health showed a bare "Scanning the library…" for the whole of it with no
+  // sign of life. Throttled so a deep tree cannot turn the scan into an IPC
+  // flood: at most one message every 400 ms, and the renderer only reads the
+  // latest one anyway.
+  let _walkedDirs = 0
+  let _lastProgressAt = 0
+  const _noteWalk = (dir) => {
+    _walkedDirs++
+    const now = Date.now()
+    if (now - _lastProgressAt < 400) return
+    _lastProgressAt = now
+    safeSend('library-extras-progress', {
+      dirs: _walkedDirs, files: nonAudio.length, path: dir,
+    })
+  }
+
   const walk = async (dir) => {
     let names
     try { names = await fs.promises.readdir(dir, { withFileTypes: true }) } catch (_) { return false }
+    _noteWalk(dir)
     let hasAudio = false
     for (const d of names) {
       if (d.name.startsWith('.')) continue          // .Trash-1000 and friends

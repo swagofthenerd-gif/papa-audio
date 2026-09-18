@@ -34110,12 +34110,98 @@ function _mgRefreshDashboardCaches() {
 // Everything here reports what it found and hands the fix to the same delete
 // funnel the rest of the app uses — so a "Fix" click still gets the file list,
 // the confirmation, the state pruning and the undo.
+// One builder for the finding cards, so the instant paint from the cache and
+// the final paint after the scan cannot drift apart.
+function _mgHealthFindingsHtml(findings, relinkHtml) {
+  var html = relinkHtml || ''
+  for (var i = 0; i < findings.length; i++) {
+    var f = findings[i]
+    // Album findings show real albums — name, folder, a click-through — not
+    // the 32-character ids they are keyed by (R9). File findings keep paths.
+    var sample = f.items
+      ? f.items.slice(0, 6).map(function (it) {
+          return '<button class="mg-health-path mg-health-item" data-album-open="' + esc(it.id) + '" title="' + esc(it.path || '') + '">' +
+            '<span class="mg-health-item-name">' + esc(it.label) + '</span>' +
+            (it.path ? '<span class="mg-health-item-path">' + esc(it.path) + '</span>' : '') +
+            '<span class="mg-health-item-go">Open \u203a</span></button>'
+        }).join('')
+      : f.paths.slice(0, 6).map(function (p) {
+          return '<div class="mg-health-path">' + esc(_mgBaseName(p) || p) + '</div>'
+        }).join('')
+    html += '<div class="mg-group mg-sev-' + f.severity + '">' +
+      '<div class="mg-group-head">' +
+        '<span class="mg-group-title">' + esc(f.title) + '</span>' +
+        '<span class="mg-group-meta">' + f.count + ' item' + (f.count === 1 ? '' : 's') +
+          (f.bytes ? ' · ' + _mgFmtBytes(f.bytes) : '') + '</span>' +
+      '</div>' +
+      '<div class="mg-health-detail">' + esc(f.detail) + '</div>' +
+      sample +
+      (f.paths.length > 6 ? '<div class="mg-health-path">…and ' + (f.paths.length - 6) + ' more</div>' : '') +
+      (f.fixAction
+        ? '<div class="mg-health-actions"><button class="mg-btn mg-btn-danger mg-btn-sm" data-fix="' + esc(f.id) + '">Review &amp; remove…</button></div>'
+        : (f.items
+          ? '<div class="mg-health-actions"><span class="mg-health-note">Nothing is removed for this. Open an album to fix its tags from its page.</span></div>'
+          : '<div class="mg-health-actions"><span class="mg-health-note">Nothing is removed for this — it needs a decision from you.</span></div>')) +
+      '</div>'
+  }
+  return html
+}
+
+// "Scanning the library…" and nothing else, for the better part of a minute,
+// while the Overview tab one click away was already showing "88/100 · 5
+// findings" from the same cached result. Two fixes, both about not making him
+// wait for something already known:
+//   * the findings we already have are painted at once, marked as still being
+//     re-checked, so the page is useful from the first frame;
+//   * the walk reports where it has got to (library-extras-progress), so the
+//     wait is visibly a wait rather than a hang.
+function _mgHealthScanningHtml(progress) {
+  var p = progress || {}
+  var where = p.dirs
+    ? esc(p.dirs.toLocaleString()) + ' folder' + (p.dirs === 1 ? '' : 's') + ' checked' +
+      (p.path ? ' · ' + esc(_mgBaseName(p.path) || p.path) : '')
+    : 'Starting…'
+  return '<div class="mg-warn mg-health-scanning" id="mg-health-scanning">' +
+    'Still checking the library for stray files and unfinished downloads. ' +
+    '<span class="mg-health-scan-where">' + where + '</span></div>'
+}
+
+function _mgPaintHealthScanning(progress) {
+  var el = document.getElementById('mg-health-scanning')
+  if (!el) return false
+  el.innerHTML = _mgHealthScanningHtml(progress).replace(/^<div[^>]*>/, '').replace(/<\/div>$/, '')
+  return true
+}
+
 async function renderManageHealth() {
   var _tabAtStart = _mgState.tab
-  setContent(_mgShell('<div class="mg-empty">Scanning the library…</div>'))
+  // What the dashboard's health card is already showing. Painting it first
+  // means the tab opens with the answer, not with a spinner for the answer.
+  var known = _mgCacheGet('health')
+  var knownFindings = (known && Array.isArray(known.findings)) ? known.findings : []
+  setContent(_mgShell(
+    _mgHealthScanningHtml(null) +
+    (knownFindings.length
+      ? _mgHealthFindingsHtml(knownFindings, '')
+      : '<div class="mg-empty">Nothing checked yet — this is the first scan.</div>'),
+    knownFindings.length
+      ? knownFindings.length + ' finding' + (knownFindings.length === 1 ? '' : 's') + ' · details still scanning'
+      : 'Scanning…'))
   _mgBindTabs()
 
+  var _offProgress = null
+  try {
+    if (window.api && typeof window.api.on === 'function') {
+      _offProgress = window.api.on('library-extras-progress', function (d) {
+        if (_mgState.tab !== _tabAtStart || state.currentPage !== 'manage') return
+        _mgPaintHealthScanning(d)
+      })
+    }
+  } catch (_) { _offProgress = null }
+  var _stopProgress = function () { try { if (typeof _offProgress === 'function') _offProgress() } catch (_) {} }
+
   var extras = await window.api.libraryScanExtras().catch(function () { return null })
+  _stopProgress()
   // The scan takes seconds. If you switched sub-tab (or left Manage entirely)
   // while it ran, the late result used to overwrite whatever you were now
   // looking at.
@@ -34148,37 +34234,7 @@ async function renderManageHealth() {
     return
   }
 
-  var html = relinkHtml
-  for (var i = 0; i < findings.length; i++) {
-    var f = findings[i]
-    // Album findings show real albums — name, folder, a click-through — not
-    // the 32-character ids they are keyed by (R9). File findings keep paths.
-    var sample = f.items
-      ? f.items.slice(0, 6).map(function (it) {
-          return '<button class="mg-health-path mg-health-item" data-album-open="' + esc(it.id) + '" title="' + esc(it.path || '') + '">' +
-            '<span class="mg-health-item-name">' + esc(it.label) + '</span>' +
-            (it.path ? '<span class="mg-health-item-path">' + esc(it.path) + '</span>' : '') +
-            '<span class="mg-health-item-go">Open \u203a</span></button>'
-        }).join('')
-      : f.paths.slice(0, 6).map(function (p) {
-          return '<div class="mg-health-path">' + esc(_mgBaseName(p) || p) + '</div>'
-        }).join('')
-    html += '<div class="mg-group mg-sev-' + f.severity + '">' +
-      '<div class="mg-group-head">' +
-        '<span class="mg-group-title">' + esc(f.title) + '</span>' +
-        '<span class="mg-group-meta">' + f.count + ' item' + (f.count === 1 ? '' : 's') +
-          (f.bytes ? ' · ' + _mgFmtBytes(f.bytes) : '') + '</span>' +
-      '</div>' +
-      '<div class="mg-health-detail">' + esc(f.detail) + '</div>' +
-      sample +
-      (f.paths.length > 6 ? '<div class="mg-health-path">…and ' + (f.paths.length - 6) + ' more</div>' : '') +
-      (f.fixAction
-        ? '<div class="mg-health-actions"><button class="mg-btn mg-btn-danger mg-btn-sm" data-fix="' + esc(f.id) + '">Review &amp; remove…</button></div>'
-        : (f.items
-          ? '<div class="mg-health-actions"><span class="mg-health-note">Nothing is removed for this. Open an album to fix its tags from its page.</span></div>'
-          : '<div class="mg-health-actions"><span class="mg-health-note">Nothing is removed for this — it needs a decision from you.</span></div>')) +
-      '</div>'
-  }
+  var html = _mgHealthFindingsHtml(findings, relinkHtml)
 
   if (extras && !extras.partialsChecked) {
     html = '<div class="mg-warn">Soulseek is not reachable, so unfinished downloads were not checked ' +
