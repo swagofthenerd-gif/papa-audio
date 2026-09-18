@@ -22997,6 +22997,19 @@ function setVolDisplay(vol) {
   }
   var volIcon = document.querySelector('.vol-icon')
   if (volIcon) volIcon.title = Math.round(vol * 100) + '%'
+  // The button is a toggle, so its label has to say what pressing it will DO.
+  // It read "Mute (M)" while already muted, which tells a hovering user and a
+  // screen-reader user the same wrong thing: that the sound is still on.
+  // Set here because this is the one funnel every volume change goes through —
+  // the bar, the wheel, the keyboard, the typed value and the mute button
+  // itself all end up in setVolDisplay.
+  var volBtn = document.getElementById('btn-vol')
+  if (volBtn) {
+    var isMuted = vol <= 0
+    volBtn.title = isMuted ? 'Unmute (M)' : 'Mute (M)'
+    volBtn.setAttribute('aria-label', isMuted ? 'Unmute' : 'Mute')
+    volBtn.setAttribute('aria-pressed', isMuted ? 'true' : 'false')
+  }
 
   if (vol <= 0.01 && _lastVolDisplay > 0.01) {
     showSnackbar('Muted', 'Unmute', function() { audio.volume = state.lastVolume || 0.8; setVolDisplay(audio.volume) }, 2000)
