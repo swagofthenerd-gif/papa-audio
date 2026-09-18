@@ -88,7 +88,11 @@ test('a slow resolve is discarded rather than played into a card you have left',
   // again on the way back.
   const fn = RENDERER.slice(RENDERER.indexOf('async function _startHoverTrailer'),
                             RENDERER.indexOf('function _bindVideoCards(root)'))
-  const after = fn.slice(fn.indexOf('await window.api.videoTrailerUrl'))
+  // The resolve goes through the session memo (_trailerUrlOnce) since the
+  // N15 fix; the checks below guard what happens AFTER it answers.
+  const at = fn.indexOf('await _trailerUrlOnce(')
+  assert.ok(at > -1, 'the hover path must resolve through the trailer memo')
+  const after = fn.slice(at)
   assert.match(after, /if \(_hoverTicket !== ticket\) return/, 'a stale answer must not play')
   assert.match(after, /if \(!card\.isConnected/, 'the card may have been re-rendered away')
   assert.match(after, /!_hoverTrailerAllowed\(\)/, 'playback may have started meanwhile')
