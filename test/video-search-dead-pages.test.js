@@ -82,7 +82,11 @@ function harness (source, page) {
     els['vtaste-row'] = el('vtaste-row')
   }
   const sandbox = {
-    document: { getElementById: id => els[id] || null },
+    // querySelectorAll answers the tab strip's lookup: _bindVideoHead walks
+    // `.vtab` before it binds the search box, and an empty strip is a real
+    // state (the Diary and Calendar shells render the head with no tabs
+    // painted yet).
+    document: { getElementById: id => els[id] || null, querySelectorAll: () => [] },
     window: { api: { videoSearch: () => new Promise(() => {}) }, PapaSearchMemory: { DEBOUNCE: { remote: 0 } } },
     state: { currentPage: page, currentVideoQuery: '' },
     navigated: [],
@@ -126,6 +130,10 @@ function harness (source, page) {
   vm.runInContext([
     extractFn(source, '_runVideoTitleSearch'),
     extractFn(source, '_bindVideoSearch'),
+    // The binder's caller, lifted too. Every other test here calls
+    // _bindVideoSearch by hand, which proves the box works but not that
+    // anything in the app ever binds it.
+    extractFn(source, '_bindVideoHead'),
   ].join('\n'), sandbox)
   return { sandbox, els }
 }
@@ -211,5 +219,46 @@ test('MUTATION: the old bail leaves the box dead on all three pages', () => {
     assert.strictEqual(h.sandbox.navigated.length, 0, page + ': this is the bug')
     assert.strictEqual(h.sandbox.searched.filter(s => s.startsWith('FETCH:')).length, 0,
       page + ': nothing was searched either')
+  }
+})
+
+// ── The wiring, not just the logic ───────────────────────────────────────────
+// Nine test files drive this search box and all of them bind it themselves.
+// Delete the `_bindVideoSearch()` call from _bindVideoHead — the one line in
+// the app that ever binds it — and all nine stay green while the box on every
+// page is inert. These two run the real head binder instead.
+
+test('the page head binder is what binds the search box', () => {
+  const h = harness(SRC, 'browse')
+  h.sandbox._bindVideoHead()
+  h.els['video-search-input'].value = 'Tokyo Revengers'
+  h.els['video-search-input'].fire('keydown', { key: 'Enter' })
+  assert.deepStrictEqual(h.sandbox.navigated, [['video', 'Tokyo Revengers']],
+    'binding the head must leave the box live — nothing else in the app binds it')
+})
+
+test('and on the catalogue page the head binder leaves a box that searches', () => {
+  const h = harness(SRC, 'video')
+  h.sandbox._bindVideoHead()
+  h.els['video-search-input'].value = 'Perfect Blue'
+  h.els['video-search-input'].fire('keydown', { key: 'Enter' })
+  assert.ok(h.sandbox.searched.includes('FETCH:Perfect Blue'),
+    'the search box the head painted actually runs a search')
+})
+
+test('MUTATION: unbinding the search box from the head kills it everywhere', () => {
+  // The exact edit: remove the _bindVideoSearch() call at the end of
+  // _bindVideoHead. Every keystroke test above still passes, because they bind
+  // by hand; these do not.
+  const broken = SRC.replace(/\n  _bindVideoSearch\(\)\n\}/, '\n}')
+  assert.notStrictEqual(broken, SRC, 'the mutation applied')
+  for (const page of ['browse', 'video']) {
+    const h = harness(broken, page)
+    h.sandbox._bindVideoHead()
+    h.els['video-search-input'].value = 'Tokyo Revengers'
+    h.els['video-search-input'].fire('keydown', { key: 'Enter' })
+    assert.strictEqual(h.sandbox.navigated.length, 0, page + ': nothing is bound')
+    assert.strictEqual(h.sandbox.searched.filter(s => s.startsWith('FETCH:')).length, 0,
+      page + ': and nothing searched')
   }
 })
