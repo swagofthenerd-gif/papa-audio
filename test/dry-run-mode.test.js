@@ -197,10 +197,17 @@ test('every refusal says in plain words what did not happen', async () => {
 })
 
 test('the startup line says, in plain words, what will not happen', () => {
-  const at = MAIN.indexOf('const DRY_RUN =')
-  const banner = MAIN.slice(at, at + 400)
+  // The banner moved out of the top of the file: printed there it ran before
+  // console.log was patched, so it reached neither the daily log nor anything
+  // greppable. It now lives in _emitStartupBanner(), right after the logger is
+  // installed. Where it actually LANDS — stderr, and the daily log via the early
+  // buffer — is proved behaviourally in test/startup-banner-log.test.js.
+  const at = MAIN.indexOf('function _emitStartupBanner()')
+  assert.ok(at > -1, '_emitStartupBanner not found in main.js')
+  const banner = MAIN.slice(at, at + 700)
   assert.match(banner, /\[papa\] DRY RUN: nothing will be downloaded, resolved, trashed, /)
   assert.match(banner, /written to tags, or sent to RealDebrid\/slskd/)
+  assert.match(banner, /dryRun=\$\{DRY_RUN\}/, 'the first line must carry dryRun')
 })
 
 // ── The RealDebrid client itself ────────────────────────────────────────────
