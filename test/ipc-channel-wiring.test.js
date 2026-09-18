@@ -169,8 +169,15 @@ test('the crash-recovery notice is a notice, not a blocking prompt', () => {
     RENDERER.indexOf("window.api.on('app-recovered-from-crash'"),
     RENDERER.indexOf("window.api.on('library-updated'")
   )
-  assert.match(handler, /showSnackbar/)
-  assert.doesNotMatch(handler, /confirm\(|alert\(|dialog\./)
+  // Since M5 (one crash-restore offer, not two) the handler delegates to
+  // _offerCrashRestore; the notice itself lives there. Follow the delegation
+  // so the rule is checked where the pixels are painted.
+  assert.match(handler, /_offerCrashRestore\(/, 'the handler must hand off to the single restore offer')
+  const offerStart = RENDERER.indexOf('async function _offerCrashRestore(')
+  assert.ok(offerStart > -1, '_offerCrashRestore must exist')
+  const offer = RENDERER.slice(offerStart, RENDERER.indexOf('\n}\n', offerStart))
+  assert.match(offer, /showSnackbar/)
+  assert.doesNotMatch(handler + offer, /confirm\(|alert\(|dialog\./)
 })
 
 // ── Item 107: a renderer that missed an event could not tell ───────────────

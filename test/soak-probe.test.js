@@ -417,7 +417,10 @@ test('the number of global listener registrations is a deliberate budget', () =>
   //     Cancel, Escape, backdrop, navigation dismissal) funnels through. The
   //     same paired add-on-open/remove-on-close shape as the saved-libraries
   //     and numbering modals above, not a standing listener.
-  assert.strictEqual(sites.inFunction.length, 25,
+  // 25→26 (2026-09-19, QA H2): the Soulseek Account modal's Escape-close
+  // keydown in showSlskConfigModal — added on open, removed in _closeCfg, and
+  // the function returns early when the modal is already on screen.
+  assert.strictEqual(sites.inFunction.length, 26,
     'a global listener was added inside a function. Nothing collects a listener ' +
     'on document or window, so make sure that function cannot run twice — this ' +
     'app has shipped that exact leak three times (items 73, 74, 257) — then ' +
@@ -444,7 +447,10 @@ test('no function registers more than one global listener of the same type', () 
   // keydown (roadmap #44), the same paired add-on-open/remove-on-close shape.
   // Cap raised 11→12 in J1: the smart-playlist modal's Escape-close keydown
   // (_onSmartPlKey), paired add-on-open/remove-on-close through _closeSmartPl.
-  assert.ok(seen.get('document:keydown') <= 12, 'document keydown registrations: ' + seen.get('document:keydown'))
+  // Cap raised 12→13 (2026-09-19, QA H2): the Soulseek Account modal's
+  // Escape-close keydown (_onCfgKey), paired add-on-open/remove-on-close
+  // through _closeCfg, behind a re-entry guard.
+  assert.ok(seen.get('document:keydown') <= 13, 'document keydown registrations: ' + seen.get('document:keydown'))
   assert.ok((seen.get('window:online') || 0) <= 1)
   assert.ok((seen.get('window:offline') || 0) <= 1)
 })
