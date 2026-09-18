@@ -1627,28 +1627,55 @@ async function init() {
     document.getElementById('setup-overlay').style.display = 'flex'
   }
 
+  await _bootRestore()
+}
+
+// The last step of init(), on its own so a test can drive the boot decision.
+//
+// Session restore and the library scan are two different questions, and they
+// used to be one branch: the saved page, its scroll offset and the Back/Forward
+// stacks only came back when the MUSIC cache was non-empty. Someone with no
+// music folders, an empty cache or a first run after a cache wipe always landed
+// on Home with dead arrows even though a session was saved -- and for a person
+// here for Movies & TV that is the normal case, not the edge. Now the session
+// comes back on every boot; the cache decides only whether a scan runs first.
+async function _bootRestore() {
   const cached = await window.api.getLibraryCache()
-  if (cached?.length) {
+  const haveLibrary = !!(cached && cached.length)
+  const session = await window.api.getSessionState()
+  // The journey survives the restart: rebuild Back/Forward from the session
+  // before the first navigate(), so the Back arrow is live immediately.
+  _restoreNavStacks(session)
+  // A page that needs an id to render anything (an album, a show, a search)
+  // saved with no id is a dead end on restore -- it used to reopen straight
+  // into the same broken error state that got saved, with no way out short
+  // of leaving the page by hand. Land on Home instead. A page WITH its id
+  // restores there, ids and all -- deep pages are not forced home.
+  var _restorePage = session && session.page ? session.page : 'home'
+  var _restoreNavId = session && session.page ? session.navId : null
+  if (_NEEDS_NAV_ID.indexOf(_restorePage) !== -1 && !_restoreNavId) _restorePage = 'home'
+  // Seed the scroll memory with the persisted offset so the restoreScroll
+  // below actually has something to restore -- the memory starts empty.
+  if (session && session.page && typeof session.scrollTop === 'number') {
+    _scrollMemory.set(session.page + ':' + (session.navId ?? ''), session.scrollTop)
+  }
+
+  if (haveLibrary) {
     state.library = cached
     checkFollowedArtistsForNew()
-    var session = await window.api.getSessionState()
-    // The journey survives the restart: rebuild Back/Forward from the session
-    // before the first navigate(), so the Back arrow is live immediately.
-    _restoreNavStacks(session)
-    // A page that needs an id to render anything (an album, a show, a search)
-    // saved with no id is a dead end on restore -- it used to reopen straight
-    // into the same broken error state that got saved, with no way out short
-    // of leaving the page by hand. Land on Home instead. A page WITH its id
-    // restores there, ids and all -- deep pages are not forced home.
-    var _restorePage = session && session.page ? session.page : 'home'
-    var _restoreNavId = session && session.page ? session.navId : null
-    if (_NEEDS_NAV_ID.indexOf(_restorePage) !== -1 && !_restoreNavId) _restorePage = 'home'
-    // Seed the scroll memory with the persisted offset so the restoreScroll
-    // below actually has something to restore -- the memory starts empty.
-    if (session && session.page && typeof session.scrollTop === 'number') {
-      _scrollMemory.set(session.page + ':' + (session.navId ?? ''), session.scrollTop)
-    }
-    navigate(_restorePage, _restorePage === 'home' ? null : _restoreNavId, { skipHistory: true, restoreScroll: true })
+  } else if (state.musicFolders.length) {
+    // Folders but no cache: scan first, behind the spinner, and land the saved
+    // page afterwards -- the scan itself no longer forces a trip to Home. (A
+    // scan that fails also no longer strands the spinner on screen: the
+    // landing below runs either way.)
+    showLoading()
+    await fullScan({ land: false })
+  }
+  // Nothing saved, or nothing cached and nothing to scan: this is Home in its
+  // empty state, rather than a "0 albums found" for a scan never asked for.
+  navigate(_restorePage, _restorePage === 'home' ? null : _restoreNavId, { skipHistory: true, restoreScroll: true })
+
+  if (haveLibrary) {
     syncLibraryExt()
     setTimeout(backgroundSync, 800)
     // After a clean shutdown, quietly restore the previous queue as before. After
@@ -1657,13 +1684,6 @@ async function init() {
     // queue the user may not want back.
     if (_uncleanExit) setTimeout(_offerCrashRestore, 1200)
     else setTimeout(restorePlaybackState, 1200)
-  } else if (state.musicFolders.length) {
-    showLoading()
-    await fullScan()
-  } else {
-    // Nothing to scan and nothing cached: land on Home in its empty state
-    // rather than reporting "0 albums found" for a scan that was never asked.
-    navigate('home', null, { skipHistory: true })
   }
 }
 
@@ -1679,7 +1699,9 @@ function _setSetupDeferred(on) {
 }
 
 // ── Library ─────────────────────────────────────────────────────────────────
-async function fullScan() {
+// opts.land === false: scan only, the caller lands the page (boot restores the
+// saved one). Every other caller still ends on Home, as before.
+async function fullScan(opts) {
   const data = await window.api.scanLibrary()
   // A failed scan returns an empty array, and `|| []` cannot tell that apart
   // from a genuinely empty folder — so this used to blank the library AND then
@@ -1691,7 +1713,7 @@ async function fullScan() {
     return
   }
   state.library = data.albums || []
-  navigate('home', null, { skipHistory: true })
+  if (!(opts && opts.land === false)) navigate('home', null, { skipHistory: true })
   setTimeout(fetchMissingArtwork, 1200)
   syncLibraryExt()
   showSnackbar('Library scan complete: ' + _plural(state.library.length, 'album') + ' found')

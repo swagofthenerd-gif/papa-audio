@@ -209,7 +209,7 @@ test('the wizard offers Add / Explore / Later, remembers the answer, and init co
   const i = R.indexOf("if (!state.musicFolders.length && !_setupDeferred()) {")
   assert.ok(i > 0, 'the gate consults the remembered decision')
   assert.doesNotMatch(R.slice(i, i + 200), /\n\s+return\n/, 'and does not stop initialising')
-  assert.match(R, /\} else if \(state\.musicFolders\.length\) \{\n\s+showLoading\(\)\n\s+await fullScan\(\)/, 'no scan is run with no folders')
+  assert.match(R, /\} else if \(state\.musicFolders\.length\) \{\n(\s+\/\/[^\n]*\n)*\s+showLoading\(\)\n\s+await fullScan\(\{ land: false \}\)/, 'no scan is run with no folders')
   assert.match(R, /\$\('setup-skip-1'\)\?\.addEventListener\('click', \(\) => later\(null\)\)/)
   assert.match(R, /\$\('setup-explore'\)\?\.addEventListener\('click', \(\) => later\('explore'\)\)/)
   // renderFolders keeps the Add Folder route and never re-raises the wizard

@@ -207,7 +207,7 @@ test('a failed scan is distinguishable from an empty library, everywhere', () =>
     assert.match(body, /\.failed/, `${fn} must not treat a failed scan as an empty library`)
   }
   // And fullScan must not claim success.
-  const full = RENDERER.slice(RENDERER.indexOf('async function fullScan()'), RENDERER.indexOf('async function fullScan()') + 900)
+  const full = RENDERER.slice(RENDERER.indexOf('async function fullScan('), RENDERER.indexOf('async function fullScan(') + 900)
   const failBranch = full.slice(full.indexOf('data.failed'))
   assert.match(failBranch.slice(0, 400), /return/, 'it used to report "0 albums found" as the answer')
 })
