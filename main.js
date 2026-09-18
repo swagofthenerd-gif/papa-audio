@@ -1390,8 +1390,10 @@ function slskdThrottledRecently() { return Date.now() - _slskdLastThrottleAt < S
 // slskdAcquireToken() POSTs /session with a raw fetch of its own, and stays
 // live so a dry-run twin can still authenticate and read.
 //
-// Everything else — /transfers/*, /conversations/*, /options, /application
-// writes, anything added later — is refused by default.
+// Everything else — anything under /transfers or /conversations, /options,
+// /application writes, anything added later — is refused by default.
+// (No "slash-star" in this comment on purpose: several tests strip block
+// comments from main.js before scanning it, and a path glob reads as one.)
 function _slskdDryRunAllowed(method, endpoint) {
   if (String(method).toUpperCase() === 'GET') return true
   // Match the path only: /searches?foo and /searches/<id>/responses both count,
