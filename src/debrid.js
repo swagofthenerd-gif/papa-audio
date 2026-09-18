@@ -512,9 +512,15 @@ function createDebrid(opts = {}) {
     // file), so looking only under the bare hash missed every entry a
     // previously-resolved episode had left behind and re-asked RealDebrid for
     // something it had already answered.
+    // makeCache() hands back a plain object with get/set/has/keys, NOT a Map,
+    // so `for (const [k, v] of linkCache)` threw "linkCache is not iterable"
+    // on every single call and the held-link shortcut never ran. keys() is the
+    // cache's own live-entries-only listing, which is what this scan wants.
     if (hash) {
-      for (const [k, v] of linkCache) {
-        if (v && v.ok && (k === hash || k.startsWith(hash + '#') || k.startsWith(hash + '/'))) return true
+      for (const k of linkCache.keys()) {
+        if (k !== hash && !k.startsWith(hash + '#') && !k.startsWith(hash + '/')) continue
+        const v = linkCache.get(k)
+        if (v && v.ok) return true
       }
     }
     let id = null
