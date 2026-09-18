@@ -34411,14 +34411,21 @@ function _mgStorageHtml(rep) {
     var redRows = redundant.pairs.map(function (p, idx) {
       var la = p.lossyAlbum, ll = p.losslessAlbum
       return '<div class="mg-store-row mg-redundant-row">' +
-        '<label class="mg-pick"><input type="checkbox" class="mg-red-check" data-idx="' + idx + '" checked></label>' +
+        '<label class="mg-pick"><input type="checkbox" class="mg-red-check" data-idx="' + idx + '"></label>' +
         '<span class="mg-store-label">' + esc((la.artist || 'Unknown') + ' — ' + (la.name || 'Unknown')) +
           ' <span class="mg-store-sub">lossy copy · lossless kept' + (ll ? ': ' + esc(ll.name || '') : '') + '</span></span>' +
         '<span class="mg-store-val">' + _mgFmt(p.lossyBytes) + '</span></div>'
     }).join('')
+    // NOTHING is ticked. This list proposes deleting his music, and it sits
+    // directly above a red "Move selected to Trash…" button. A false positive
+    // costs him a recording he may never find again, so the default has to be
+    // "nothing happens". The Upgrades panel right below it already works this
+    // way and says so; this one shipped every box pre-ticked, which is exactly
+    // backwards. See test/upgrade-dupes-wiring.test.js for the same rationale.
     redHtml = '<div class="mg-store-section"><div class="mg-store-h">Redundant lossy copies</div>' +
       '<div class="mg-note">These albums have BOTH a lossless and a lossy copy — the lossy one is just wasting space. ' +
-      'Up to <strong>' + _mgFmt(redundant.totalReclaimBytes) + '</strong> reclaimable.</div>' +
+      'Up to <strong>' + _mgFmt(redundant.totalReclaimBytes) + '</strong> reclaimable. ' +
+      'Nothing is selected for you — tick the ones you want gone. Moved to Trash, not deleted.</div>' +
       redRows +
       '<div class="mg-rule-bar"><button class="mg-btn mg-btn-danger mg-btn-sm" id="mg-red-trash">Move selected to Trash…</button></div>' +
       '</div>'
