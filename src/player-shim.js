@@ -8,6 +8,13 @@
 // expire: two independent writers with no expiry is how state.isPlaying and
 // this flag ended up disagreeing, and both staying wrong after an engineDown.
 const OPTIMISTIC_PAUSE_MS = 1500
+// How long after a load settles mpv is allowed to still be reporting the file
+// it is replacing. The player-load IPC resolves when MAIN has sent `loadfile`,
+// not when mpv has opened it: in between, `mpvPath` is the PREVIOUS file and
+// every read of it is a false disagreement. Measured on the D10 soak, 13 of
+// them across 40 Nexts at a ~650 ms cadence. Generous enough to cover a cold
+// mpv, short enough that a load mpv genuinely dropped still gets reported.
+const LOAD_SETTLE_BLIND_MS = 1200
 
 class PapaPlayerShim extends EventTarget {
   constructor() {
@@ -27,6 +34,11 @@ class PapaPlayerShim extends EventTarget {
     this._pendingLoad = null
     // True only for the duration of an atomic switchToTrack.
     this._switching = false
+    // True from the moment a load is asked for until mpv says something about
+    // the file it opened. Together with _loadSettledAt this is the blind
+    // window between the IPC reply and mpv's own answer.
+    this._awaitingMpvPath = false
+    this._loadSettledAt = 0
     // The last path mpv reported. Not what the renderer asked for — what mpv
     // says it has open.
     this._mpvPath = null
@@ -67,6 +79,7 @@ class PapaPlayerShim extends EventTarget {
         case 'autoAdvanced':
           this._src = `file://${data}`
           this._mpvPath = data
+          this._awaitingMpvPath = false
           this._currentTime = 0
           // The next track's clock starts here, not at its first position
           // report — a gapless advance is a load like any other.
@@ -80,6 +93,8 @@ class PapaPlayerShim extends EventTarget {
           // this is what mpv is actually playing, which is the thing several
           // desync findings turn on.
           this._mpvPath = data
+          // mpv has answered: the blind window closes here, not on a timer.
+          this._awaitingMpvPath = false
           this.dispatchEvent(new CustomEvent('trackchanged', { detail: data }))
           break
         case 'ended':
@@ -196,7 +211,12 @@ class PapaPlayerShim extends EventTarget {
     const pending = Promise.resolve(window.api.playerLoad({ path: this._pathOf(v), play: false }))
       .catch(e => ({ ok: false, error: String((e && e.message) || e) }))
     this._pendingLoad = pending
-    pending.then(() => { if (this._pendingLoad === pending) this._pendingLoad = null })
+    this._awaitingMpvPath = true
+    pending.then(() => {
+      if (this._pendingLoad !== pending) return
+      this._pendingLoad = null
+      this._loadSettledAt = Date.now()
+    })
   }
 
   async play() {
@@ -236,11 +256,13 @@ class PapaPlayerShim extends EventTarget {
     this._duration = 0
     this._lastPositionAt = Date.now()
     this._switching = true
+    this._awaitingMpvPath = true
     try {
       var r = await window.api.playerSwitch(this._pathOf(path))
       if (!r.ok) throw new Error(r.error)
     } finally {
       this._switching = false
+      this._loadSettledAt = Date.now()
     }
   }
 
@@ -283,7 +305,16 @@ class PapaPlayerShim extends EventTarget {
   // either route in, the src setter's load or switchToTrack's atomic switch.
   // Derived from the two fields that already track those; nothing else to keep
   // in step.
-  get loadInFlight() { return !!this._pendingLoad || !!this._switching }
+  get loadInFlight() {
+    if (this._pendingLoad || this._switching) return true
+    // The reply said main sent the loadfile. mpv answers separately, and until
+    // it does its path is the file being replaced — not evidence of a
+    // disagreement, evidence that the change has not landed yet. Blind, not
+    // wrong, for at most LOAD_SETTLE_BLIND_MS; after that a load mpv silently
+    // dropped is a real disagreement again and gets reported.
+    if (!this._awaitingMpvPath) return false
+    return (Date.now() - this._loadSettledAt) < LOAD_SETTLE_BLIND_MS
+  }
 
   get engineDown() { return this._engineDown }
   // What mpv has open, for reconciling against what the UI is showing.
