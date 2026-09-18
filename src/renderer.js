@@ -25249,6 +25249,34 @@ function _initSettingsSearch() {
   input.addEventListener('input', apply)
 }
 
+// What the two crossfade controls together mean, in the one unit main.js
+// actually stores: seconds, 0 = off. Gapless is crossfade of zero length.
+function _pbCrossfadeSeconds(mode, sliderSecs) {
+  if (mode !== 'crossfade') return 0
+  var n = Math.floor(Number(sliderSecs))
+  return isFinite(n) && n > 0 ? n : 4
+}
+
+// The ONE writer of the global crossfade.
+//
+// Settings used to save it with playerSetConfig({ mode, crossfadeSecs }). Those
+// two keys are not stored settings at all — main.js recomputes both from
+// playerSettings.crossfadeSeconds on every single load, and nothing in the
+// renderer ever wrote crossfadeSeconds. So config.json ended up holding
+// crossfadeSecs: 8 (what Settings wrote) next to crossfadeSeconds: 0 (what the
+// player reads), crossfadeAllowed was `crossfadeSeconds > 0` and therefore
+// always false, and the setting silently reverted to Gapless/4s on every
+// restart. Crossfade could not be switched on from the UI at all.
+function _setGlobalCrossfade(seconds) {
+  var n = Math.floor(Number(seconds))
+  if (!isFinite(n) || n < 0) n = 0
+  if (window.api && typeof window.api.playerSetCrossfade === 'function') {
+    return window.api.playerSetCrossfade({ seconds: n })
+  }
+  // Older backend with no crossfade IPC: the derived pair is all there is.
+  return window.api.playerSetConfig({ mode: n > 0 ? 'crossfade' : 'gapless', crossfadeSecs: n > 0 ? n : 4 })
+}
+
 async function initPlaybackSettings() {
   const cfg = await window.api.playerGetConfig()
   state._playerSettings = cfg
@@ -25261,8 +25289,12 @@ async function initPlaybackSettings() {
   const $ = id => document.getElementById(id)
   $('pb-output-mode').value = cfg.outputMode
   $('pb-mode').value = cfg.mode
-  $('pb-cf-secs').value = cfg.crossfadeSecs
-  $('pb-cf-label').textContent = `${cfg.crossfadeSecs}s`
+  // Read the authoritative key back, not the pair derived from it: when
+  // crossfade is off, crossfadeSecs is a placeholder 4 and would silently
+  // rewrite a saved 10 s down to 4 the next time the slider is touched.
+  const cfSecs = Number(cfg.crossfadeSeconds) > 0 ? Number(cfg.crossfadeSeconds) : (Number(cfg.crossfadeSecs) || 4)
+  $('pb-cf-secs').value = cfSecs
+  $('pb-cf-label').textContent = `${cfSecs}s`
   $('pb-replaygain').value = cfg.replaygain
   $('pb-channels').value = cfg.channels
   $('pb-boost').checked = !!cfg.boost
@@ -25324,19 +25356,31 @@ async function initPlaybackSettings() {
     apply({ outputMode: e.target.value, alsaDevice: $('pb-alsa-device').value || null })
   }
   $('pb-alsa-device').onchange = e => apply({ alsaDevice: e.target.value })
-  $('pb-mode').onchange = e => {
-    $('pb-cf-row').style.display = e.target.value === 'crossfade' ? '' : 'none'
-    apply({ mode: e.target.value })
-    var mode = e.target.value
+  // Both crossfade controls write ONE value — seconds — through
+  // playerSetCrossfade. Writing mode/crossfadeSecs through playerSetConfig, as
+  // this used to, wrote keys main.js recomputes on load, so the choice never
+  // survived a restart.
+  const applyCrossfade = (mode, sliderSecs) => {
+    const seconds = _pbCrossfadeSeconds(mode, sliderSecs)
+    state._playerSettings = { ...(state._playerSettings || {}),
+      mode: seconds > 0 ? 'crossfade' : 'gapless',
+      crossfadeSeconds: seconds, crossfadeSecs: seconds > 0 ? seconds : 4 }
+    try { updateBitPerfectBadge() } catch (_) {}
+    try { updateCrossfadeBadge() } catch (_) {}
     // A manual global change becomes the new baseline AND the new in-force state,
     // and clears any playlist override tracking — the user just chose directly.
-    _syncGlobalCrossfadeCache({ mode: mode, crossfadeSecs: Number($('pb-cf-secs').value) })
+    _syncGlobalCrossfadeCache({ mode: seconds > 0 ? 'crossfade' : 'gapless', crossfadeSecs: seconds > 0 ? seconds : 4 })
+    return _setGlobalCrossfade(seconds)
+  }
+  $('pb-mode').onchange = e => {
+    var mode = e.target.value
+    $('pb-cf-row').style.display = mode === 'crossfade' ? '' : 'none'
+    applyCrossfade(mode, $('pb-cf-secs').value)
     showSnackbar('Playback mode: ' + (mode === 'gapless' ? 'Gapless' : 'Crossfade'))
   }
   $('pb-cf-secs').oninput = e => { $('pb-cf-label').textContent = `${e.target.value}s` }
   $('pb-cf-secs').onchange = e => {
-    apply({ crossfadeSecs: Number(e.target.value) })
-    _syncGlobalCrossfadeCache({ mode: $('pb-mode').value, crossfadeSecs: Number(e.target.value) })
+    applyCrossfade($('pb-mode').value, e.target.value)
   }
   // Volume leveling (App #6): prefer the dedicated mpvReplaygainMode IPC when the
   // backend exposes it (it sets the property live AND persists to playerSettings
