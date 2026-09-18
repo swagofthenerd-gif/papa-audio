@@ -22327,19 +22327,7 @@ function updateNowPlaying(track) {
   if (artistEl) { artistEl.textContent = artistStr || '—'; applyTicker(artistEl) }
   if (albumEl)  { albumEl.textContent = albumStr; albumEl.dataset.albumId = track.albumId || '' }
   if (sepEl)    sepEl.style.display = (artistStr && albumStr) ? 'inline' : 'none'
-  if (artEl && artFb) {
-    if (track.artPath) {
-      const newSrc = /^https?:\/\//.test(track.artPath) ? track.artPath : `file://${track.artPath}`
-      if (artEl.getAttribute('src') !== newSrc) {
-        artEl.style.opacity = '0'
-        artEl.addEventListener('load', () => { artEl.style.opacity = '1' }, { once: true })
-        artEl.src = newSrc
-      }
-      artEl.style.display = 'block'; artFb.style.display = 'none'
-    } else {
-      artEl.style.display = 'none'; artFb.style.display = 'flex'
-    }
-  }
+  _paintNowPlayingArt(artEl, artFb, track.artPath)
   var npArtWrap = document.getElementById('np-art-wrap')
   if (npArtWrap && !nothingPlaying && track.title) {
     var tt = track.title + ' — ' + (track.albumArtist || track.artist || '') + ' · ' + (track.albumName || '')
@@ -23898,6 +23886,30 @@ function _artSrc(artPath) {
 // re-requests a cover that failed earlier in the session.
 function _artSrcIfUsable(artPath) {
   return _artUsable(artPath) ? _artSrc(artPath) : ''
+}
+
+// The player bar's cover. Split out of updateNowPlaying so it can be tested
+// on its own, and routed through the miss memory like every other painter:
+// this one built the file:// URL itself and assigned it straight to the img,
+// so a cover that had already failed this session was re-requested on EVERY
+// updateNowPlaying — once a second while playing — and each failure left a
+// broken image where the fallback belongs. '' from _artSrcIfUsable means
+// known-missing, which is the same answer as no artPath at all.
+function _paintNowPlayingArt(artEl, artFb, artPath) {
+  if (!artEl || !artFb) return
+  const src = _artSrcIfUsable(artPath)
+  if (!src) {
+    artEl.style.display = 'none'
+    artFb.style.display = 'flex'
+    return
+  }
+  if (artEl.getAttribute('src') !== src) {
+    artEl.style.opacity = '0'
+    artEl.addEventListener('load', function () { artEl.style.opacity = '1' }, { once: true })
+    artEl.src = src
+  }
+  artEl.style.display = 'block'
+  artFb.style.display = 'none'
 }
 
 function artImg(artPath, imgClass, fallbackClass) {

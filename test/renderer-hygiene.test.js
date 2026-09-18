@@ -170,8 +170,12 @@ test('the renderer reconciles its playback state against mpv once a second', () 
   // state.isPlaying. This makes the last converge on the first.
   const tick = reconcileTick()
   assert.match(tick, /state\.isPlaying !== playing/, 'the UI flag must follow mpv, not the last optimistic write')
-  assert.match(tick, /Number\.isFinite\(ageMs\) && ageMs > STALE_POSITION_MS/,
+  assert.match(tick, /Number\.isFinite\(ageMs\) && ageMs > limitMs/,
     'a frozen bar is its own signal, and only a real duration may declare one')
+  // The limit is two numbers, not one: mpv's FIRST position report for a file
+  // lands several seconds after the load, so waiting for it is not a stall.
+  assert.match(tick, /audio\.hasReportedPosition === false \? STALE_AFTER_LOAD_MS : STALE_POSITION_MS/,
+    'a cold start and a frozen track get different patience')
   assert.match(tick, /if \(audio\.engineDown\) return/, 'do not shout while the engine is already down')
   assert.match(tick, /reconcileTimer\.unref/, 'a 1s interval must not hold the process open')
   assert.match(tick, /reconcileWhatIsPlaying\(\)/, 'the poll still runs the reconcile')
