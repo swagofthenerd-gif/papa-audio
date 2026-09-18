@@ -13033,8 +13033,13 @@ function _maybeCacheCurrentFile(streamer) {
     .then(() => {
       s.cacheSaving = false
       // The play may have moved on to another episode of the pack meanwhile;
-      // the copy is still the file the key named when it started.
-      if (_videoCacheIndexAdd(_cacheEntryFor(key, meta, info, dest, info.total))) s.cacheSaved = true
+      // the copy is still the file the key named when it started, so it is
+      // indexed under THAT key. But 'this session has already saved its file'
+      // is only true if the session is still on that episode — marking it
+      // saved after a switch told the next tick that episode 6 was already on
+      // disk when what landed was episode 5.
+      const landed = _videoCacheIndexAdd(_cacheEntryFor(key, meta, info, dest, info.total))
+      if (landed) { if (s.cacheKey === key) s.cacheSaved = true }
       else { try { fs.unlinkSync(dest) } catch (_) {} }
     })
     .catch(() => {
@@ -13709,12 +13714,31 @@ ipcMain.handle('video-trailer-url', async (_, { type, id } = {}) => {
 })
 
 // Switch to another episode inside the pack already streaming.
-ipcMain.handle('video-pack-select', async (_, { index } = {}) => {
+// Moving to another episode inside a pack changes WHAT IS BEING WATCHED, so
+// the cache identity has to move with it. Without this the session kept the
+// key of the episode the play started on for its whole life: episode 6's bytes
+// were written under episode 5's name and label, or — once 5 was already
+// saved — nothing after it ever entered the cache at all. The renderer knows
+// which episode the clicked index is (it drew the strip), so it sends the key
+// and the label rather than main guessing from a file name.
+//
+// Written out in both branches rather than factored into a helper: it must be
+// inside the handler body the dry-run harness lifts, and the debrid branch
+// must reach it only AFTER its refusal.
+ipcMain.handle('video-pack-select', async (_, { index, cacheKey, cacheMeta } = {}) => {
   try {
     const token = _videoSession.token
     const current = () => _videoSession.token === token
     const streamer = _videoSession.streamer
     if (streamer) {
+      if (typeof cacheKey === 'string' && cacheKey) {
+        _videoSession.cacheKey = cacheKey
+        _videoSession.cacheMeta = (cacheMeta && typeof cacheMeta === 'object') ? cacheMeta : null
+        // Nothing is saved for the new episode yet, and a copy still running
+        // belongs to the OLD key — it re-checks the key before claiming this.
+        _videoSession.cacheSaved = false
+        _videoSession.cacheSaving = false
+      }
       const url = streamer.selectFile(Number(index))
       if (!url) return { ok: false, error: 'That episode is not in this release' }
       if (!await _loadIntoActivePlayer(url, current)) return { ok: false, error: 'Superseded' }
@@ -13731,6 +13755,12 @@ ipcMain.handle('video-pack-select', async (_, { index } = {}) => {
     // running local streamer — no network, nothing new on disk — so a QA twin
     // can still click through a pack. Everything below is a live RealDebrid call.
     if (DRY_RUN) return _dryRunRefusal('switching episode through RealDebrid')
+    if (typeof cacheKey === 'string' && cacheKey) {
+      _videoSession.cacheKey = cacheKey
+      _videoSession.cacheMeta = (cacheMeta && typeof cacheMeta === 'object') ? cacheMeta : null
+      _videoSession.cacheSaved = false
+      _videoSession.cacheSaving = false
+    }
 
     // Where the viewer is, captured before the load, so a switch inside a pack
     // does not silently restart them at zero on the new episode... except that

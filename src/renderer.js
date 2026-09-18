@@ -5646,7 +5646,26 @@ async function _switchPackEpisode(index, opts) {
   opts = opts || {}
   if (!_player) return
   _player.setStageMessage('<div class="spin"></div><div>Switching episode…</div>')
-  const res = await window.api.videoPackSelect({ index: index })
+  // WHICH episode this switch lands on, worked out from the strip BEFORE the
+  // request and sent with it. Main used to keep the identity of the episode
+  // the play STARTED on for the whole session, so moving from episode 5 to 6
+  // inside a pack either saved episode 6's bytes under episode 5's name, or —
+  // once 5 was saved — never cached anything again. That is the whole of
+  // "only the first episode ever caches".
+  const switchTo = (Array.isArray(_packFiles) ? _packFiles : [])
+    .find(function (f) { return f && Number(f.index) === Number(index) }) || null
+  const sd = _videoDetail && _videoDetail.d
+  let cacheKey = null
+  let cacheMeta = null
+  if (sd && switchTo && switchTo.episode != null) {
+    const season = _videoDetail.type === 'tv' ? _videoState.season : null
+    cacheKey = _watchKey(_videoDetail.type, sd.id, season, switchTo.episode)
+    cacheMeta = {
+      type: _videoDetail.type, id: sd.id, title: sd.title, poster: sd.poster || null,
+      season: season, episode: switchTo.episode,
+    }
+  }
+  const res = await window.api.videoPackSelect({ index: index, cacheKey: cacheKey, cacheMeta: cacheMeta })
     .catch(function (e) { return { ok: false, error: String((e && e.message) || e) } })
   if (!res.ok) {
     _player.setStageMessage('<div style="color:var(--color-error)">' + esc(_videoErrorText(res.error)) + '</div>')
