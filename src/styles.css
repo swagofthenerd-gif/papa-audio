@@ -4900,6 +4900,11 @@ kbd {
   padding: 5px 12px; line-height: 1.3;
 }
 .offline-banner[hidden] { display: none; }
+/* The second clause — what does NOT work offline (audit N16) — is quieter than
+   the first but never hidden: a promise the app cannot keep is worse than a
+   busy strip. It wraps onto its own line on a narrow window. */
+.offline-works { margin-right: 6px; }
+.offline-wont { opacity: .78; font-weight: 500; }
 
 /* Toast stack (App §82). Column of up to three toasts above the player bar,
    centred, growing upward. Each toast fades/slides in on its own; the container

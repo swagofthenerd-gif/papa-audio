@@ -10,9 +10,15 @@
 
 <!-- Offline banner (App §11). Slim, non-blocking strip that only takes space
      while offline; hidden by default so it never reserves layout when online.
-     role="status" + aria-live so the state change is announced. -->
+     role="status" + aria-live so the state change is announced.
+     Two clauses, always (audit N16): the old copy said "browsing and playback
+     of downloaded content still work", which promised the Movies & TV
+     CATALOGUE — every shelf, search and trailer of which is a live request.
+     The banner now names what still works and what does not, so nothing is
+     discovered by trying it. .offline-wont carries the second clause. -->
 <div class="offline-banner" id="offline-banner" role="status" aria-live="polite" hidden>
-  You're offline — browsing and playback of downloaded content still work
+  <span class="offline-works">You're offline — your music library, On device downloads and anything already on disk still play.</span>
+  <span class="offline-wont">The Movies &amp; TV catalogue, streaming and trailers need a connection.</span>
 </div>
 
 <!-- Titlebar -->

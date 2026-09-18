@@ -264,7 +264,10 @@ test('going offline shows the banner; reconnecting hides it and toasts', () => {
   // "Back online" only on a real offline→online transition, not every online call.
   assert.match(apply, /if \(on && _wasOffline\) showToast\('Back online'\)/)
   assert.match(HTML, /id="offline-banner"/)
-  assert.match(HTML, /browsing and playback of downloaded content still work/)
+  // The wording itself moved to test/offline-banner-honesty.test.js when the
+  // copy stopped promising that "browsing" works offline (audit N16). What is
+  // still this test's business is that the banner says SOMETHING.
+  assert.match(HTML, /offline-works/)
 })
 
 test('the banner reuses the existing online/offline listeners, adding none', () => {
