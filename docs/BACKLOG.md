@@ -397,3 +397,23 @@ loop; his `no-bullshit` rule wants an account BEFORE commits. His rule wins.
   one TS example). Two full-suite runs were killed by their own 20-minute
   timeout because four agents' suites ran concurrently — never run two full
   suites at once on this machine.
+
+### 19 Sep — the twelve wiring holes are closed
+Merged `fix/test-wiring-holes` (1e18c7d): tests only, no production change.
+Each hole was reproduced first, then fixed, then shown red under its own
+mutation — and I re-ran the two that matter most myself: unwiring
+`_bindVideoSearch()` now fails 3 tests (was 0 of 302); letting the assistant
+authorise its own download now fails 7 (was 0 of 8). Other mutations now red:
+inner ok:true catch (1), `_bindDeviceEvents` unwired (2), import-all settings
+skipped (3), cap bypassed at its call site (3), `_refreshInstantKeys` gutted
+(3), selector attribute renamed (5), force flag dropped (2), Back losing the
+navId (5), re-hide inside @media (1). The engine-death test no longer races a
+timer. 5,284 pass in a clean run.
+
+Still load-flaky and known: `manage-bench` read 741 ms against a 100 ms
+ceiling with four suites contending; best-of-5 is not enough under that. The
+rule stands — one full suite at a time on this machine.
+
+In flight: L2 (Infinityms), L3 (track rows unreachable by keyboard), and the
+load-order guard's two blind spots → one Opus worktree. L1 (`linkCache is not
+iterable`) waits for the DRY_RUN branch, which is editing the same debrid code.
