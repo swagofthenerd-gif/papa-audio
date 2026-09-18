@@ -1321,6 +1321,90 @@ test('papa-import-all validates the shape and never overwrites blind', () => {
   assert.match(body, /return \{ ok: true, imported[,}]/)
 })
 
+// The settings half of papa-import-all, LIFTED AND RUN. The pins above are
+// spelling checks: wrapping the whole branch in `if (false && …)` left them
+// green while a restore silently brought back no settings at all — liked
+// albums, followed artists, music folders, the lot. This runs the real branch
+// against a real store double and the real restore-merge planner.
+function runSettingsRestore (source, parsed) {
+  const vm = require('vm')
+  const from = source.indexOf("ipcMain.handle('papa-import-all'")
+  assert.ok(from > -1, 'papa-import-all must still exist')
+  const start = source.indexOf('    const settingsWritten = []', from)
+  const end = source.indexOf('    return { ok: true, imported', from)
+  assert.ok(start > -1 && end > start, 'the settings branch must still be there')
+  const code = source.slice(start, end)
+
+  const writes = []
+  const files = []
+  const store = {
+    store: { musicFolders: ['/mnt/data/MUSIC'], creds: { username: 'slskd', password: 'realpassword' } },
+    set (k, v) { writes.push([k, v]) },
+  }
+  const sandbox = {
+    parsed,
+    store,
+    restoreMerge: require('../src/restore-merge'),
+    path: require('path'),
+    USER_DATA: require('os').tmpdir(),
+    fs: { writeFileSync: (f, d) => files.push(f) },
+    stamp: 'STAMP',
+    console,
+  }
+  vm.createContext(sandbox)
+  // `const settingsWritten` is script-scoped, so it never lands on the sandbox
+  // object; the branch is run inside a function that hands both arrays back.
+  const out = vm.runInContext('(function(){\n' + code + '\nreturn { w: settingsWritten, s: settingsSkipped }\n})()', sandbox)
+  // The arrays are built inside the vm realm, so they are copied out before
+  // any deepStrictEqual compares them against a literal from this one.
+  return { writes, files, written: Array.from(out.w), skipped: Array.from(out.s) }
+}
+
+test('importing a backup actually writes the settings back', () => {
+  const r = runSettingsRestore(MAIN, {
+    settings: {
+      musicFolders: ['/mnt/data/MUSIC', '/mnt/data/MORE'],
+      likedAlbums: ['a', 'b'],
+      volume: 0.4,
+    },
+  })
+  const keys = r.writes.map(w => w[0]).sort()
+  assert.deepStrictEqual(keys, ['likedAlbums', 'musicFolders', 'volume'],
+    'every real key in the backup reaches the store')
+  assert.deepStrictEqual(Array.from(r.writes.find(w => w[0] === 'likedAlbums')[1]), ['a', 'b'])
+  assert.deepStrictEqual(r.written.sort(), keys, 'and the handler reports what it wrote')
+  assert.ok(r.files.some(f => /settings\.STAMP\.bak$/.test(f)),
+    'the current settings are snapshotted before being overwritten')
+})
+
+test('a redacted secret is left alone while the rest of its object is restored', () => {
+  const MARK = require('../src/restore-merge').MARK
+  const r = runSettingsRestore(MAIN, {
+    settings: { creds: { username: 'sherrybaaz', password: MARK } },
+  })
+  const creds = r.writes.find(w => w[0] === 'creds')
+  assert.ok(creds, 'the object is still restored')
+  assert.strictEqual(creds[1].username, 'sherrybaaz', 'the real field comes back')
+  assert.strictEqual(creds[1].password, 'realpassword',
+    'and the real password on disk is kept, not overwritten with the marker')
+  assert.ok(r.skipped.includes('creds'), 'the UI is told this one was only partly restored')
+})
+
+test('a backup with no settings writes nothing and says nothing was written', () => {
+  const r = runSettingsRestore(MAIN, { stores: {} })
+  assert.deepStrictEqual(r.writes, [])
+  assert.deepStrictEqual(r.written, [])
+})
+
+test('MUTATION: switching the settings branch off is caught', () => {
+  const broken = MAIN.replace("    if (parsed.settings && typeof parsed.settings === 'object') {",
+    "    if (false && parsed.settings && typeof parsed.settings === 'object') {")
+  assert.notStrictEqual(broken, MAIN, 'the mutation applied')
+  const r = runSettingsRestore(broken, { settings: { likedAlbums: ['a'] } })
+  assert.deepStrictEqual(r.writes, [],
+    'this is the bug: a restore that reports success and brings back nothing')
+})
+
 test('the export/import channels are reachable from the renderer', () => {
   assert.match(PRELOAD, /papaExportAll:/)
   assert.match(PRELOAD, /papaImportAll:/)

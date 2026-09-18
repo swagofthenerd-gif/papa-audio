@@ -34,6 +34,39 @@ const DEGRADES_ON_PURPOSE = {
     'playing; returning a failure here would stop the fallback and break playback',
 }
 
+// Every `catch` block in a handler, not just the last one. The bug this test
+// was written for can hide in any of them: an inner catch that swallows a
+// failed fetch and answers `{ ok: true, ... }` is exactly as dishonest as the
+// outer one, and the old lastIndexOf-plus-250-characters check could not see
+// it. Blocks are extracted by balanced braces, so a long catch is read whole
+// instead of through a fixed window.
+function catchBlocks(body) {
+	const out = []
+	const re = /\bcatch\b/g
+	let m
+	while ((m = re.exec(body))) {
+		let i = body.indexOf('{', m.index)
+		if (i < 0) continue
+		let depth = 0
+		let quote = null
+		let end = -1
+		for (let j = i; j < body.length; j++) {
+			const ch = body[j]
+			if (quote) {
+				if (ch === '\\') { j++; continue }
+				if (ch === quote) quote = null
+				continue
+			}
+			if (ch === "'" || ch === '"' || ch === '`') { quote = ch; continue }
+			if (ch === '{') depth++
+			else if (ch === '}') { depth--; if (depth === 0) { end = j; break } }
+		}
+		if (end < 0) end = body.length
+		out.push(body.slice(i, end + 1))
+	}
+	return out
+}
+
 function videoHandlers() {
   const out = []
   const re = /ipcMain\.handle\('(video-[^']+)'/g
@@ -57,17 +90,35 @@ test('there are video handlers to check at all', () => {
   assert.ok(videoHandlers().length > 40, 'expected the video handlers, found ' + videoHandlers().length)
 })
 
-test('no video handler returns ok:true from its catch', () => {
+test('no video handler returns ok:true from any of its catches', () => {
   const liars = []
+  let blocks = 0
   for (const { name, body } of videoHandlers()) {
     if (name in DEGRADES_ON_PURPOSE) continue
-    const c = body.lastIndexOf('catch')
-    if (c < 0) continue
-    if (/ok:\s*true/.test(body.slice(c, c + 250))) liars.push(name)
+    for (const block of catchBlocks(body)) {
+      blocks++
+      // Only a RETURN of ok:true is a lie. Assigning ok:true to a variable the
+      // handler later overwrites, or mentioning it, is not — the thing that
+      // reaches the renderer is what is returned.
+      if (/return\s*\{[^{}]*ok:\s*true/.test(block)) liars.push(name)
+    }
   }
-  assert.deepStrictEqual(liars, [],
+  assert.ok(blocks > 60, 'expected to inspect every catch, inspected ' + blocks)
+  assert.deepStrictEqual([...new Set(liars)], [],
     'these answer "it worked" after it did not, which the UI cannot tell from ' +
     'an empty result:\n  ' + liars.join('\n  '))
+})
+
+test('the catch-block reader sees inner catches, not just the last one', () => {
+  // A floor on the reader itself: without this, a broken extractor would make
+  // the test above pass on nothing.
+  const sample = "x\ntry { a() } catch (e) { if (1) { b() } return { ok: false } }\n" +
+    'try { c() } catch (e2) { return { ok: true } }'
+  const found = catchBlocks(sample)
+  assert.strictEqual(found.length, 2, 'both catches are found')
+  assert.match(found[0], /ok: false/)
+  assert.ok(found[0].includes('b()'), 'a nested brace does not end the block early')
+  assert.match(found[1], /ok: true/)
 })
 
 test('a handler that fails says so in a way the UI can act on', () => {

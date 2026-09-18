@@ -73,3 +73,84 @@ test('the badge memory is capped so it cannot grow without end', () => {
   assert.ok(ctx.sideStores.videoInstantIndex.v['movie:699'], 'the newest is kept')
   assert.ok(!ctx.sideStores.videoInstantIndex.v['movie:0'], 'the oldest went')
 })
+
+// ── the refresher itself, lifted and run ─────────────────────────────────────
+// The line above ("the instant map is still awaited before the row list is
+// built") is a regex over renderer.js: it sees the CALL, not what the call
+// does. Emptying the body of _refreshInstantKeys left all five tests green
+// while no badge was ever fetched again. These run it.
+
+function liftRefresher (source, opts) {
+  opts = opts || {}
+  const at = source.indexOf('function _refreshInstantKeys(')
+  assert.ok(at > -1, '_refreshInstantKeys must still exist')
+  let depth = 0
+  let end = -1
+  for (let j = source.indexOf('{', at); j < source.length; j++) {
+    if (source[j] === '{') depth++
+    else if (source[j] === '}') { depth--; if (!depth) { end = j + 1; break } }
+  }
+  assert.ok(end > at, 'unbalanced braces in _refreshInstantKeys')
+  const asks = []
+  const ctx = {
+    _instantKeys: {},
+    _instantAt: opts.lastAt == null ? 0 : opts.lastAt,
+    Date,
+    Promise,
+    window: {
+      api: opts.noApi ? {} : {
+        videoInstantList () {
+          asks.push(1)
+          return opts.answer || Promise.resolve({ ok: true, instant: { 'anime:21': 'cached' } })
+        },
+      },
+    },
+  }
+  vm.createContext(ctx)
+  vm.runInContext(source.slice(at, end) + '\nglobalThis.__call = _refreshInstantKeys', ctx)
+  return { ctx, asks, call: f => ctx.__call(f) }
+}
+
+test('refreshing the badges actually asks main and keeps the answer', async () => {
+  const h = liftRefresher(RENDERER)
+  await h.call()
+  assert.strictEqual(h.asks.length, 1, 'it asks')
+  assert.strictEqual(h.ctx._instantKeys['anime:21'], 'cached', 'and remembers what it was told')
+})
+
+test('a second refresh inside the 30-second window does not re-ask', async () => {
+  const h = liftRefresher(RENDERER, { lastAt: Date.now() })
+  await h.call()
+  assert.strictEqual(h.asks.length, 0, 'the throttle is the point of the unforced call')
+})
+
+test('a forced refresh ignores the window — that is what force is for', async () => {
+  const h = liftRefresher(RENDERER, { lastAt: Date.now() })
+  await h.call(true)
+  assert.strictEqual(h.asks.length, 1)
+})
+
+test('a failed fetch leaves the badges as they were instead of throwing', async () => {
+  const h = liftRefresher(RENDERER, { answer: Promise.reject(new Error('ipc closed')) })
+  h.ctx._instantKeys = { 'movie:603': 'saved' }
+  await h.call()
+  assert.strictEqual(h.ctx._instantKeys['movie:603'], 'saved')
+})
+
+test('MUTATION: emptying the refresher is caught', async () => {
+  const at = RENDERER.indexOf('function _refreshInstantKeys(')
+  let depth = 0
+  let end = -1
+  for (let j = RENDERER.indexOf('{', at); j < RENDERER.length; j++) {
+    if (RENDERER[j] === '{') depth++
+    else if (RENDERER[j] === '}') { depth--; if (!depth) { end = j + 1; break } }
+  }
+  const broken = RENDERER.slice(0, at) +
+    'function _refreshInstantKeys(force) {\n  return Promise.resolve()\n}' +
+    RENDERER.slice(end)
+  assert.notStrictEqual(broken, RENDERER, 'the mutation applied')
+  const h = liftRefresher(broken)
+  await h.call()
+  assert.strictEqual(h.asks.length, 0,
+    'this is the bug: every badge on every poster silently frozen')
+})

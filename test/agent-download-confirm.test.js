@@ -41,11 +41,18 @@ const GATE = liftTopLevel('function _toolPreviewIfNeeded(', '_toolPreviewIfNeede
 // promise the gate returns, so the answer is known as soon as the call returns.
 function wasAsked(tool, lastUserMessage, input) {
 	const shown = []
+	// The assistant's own turn comes LAST, which is what the history actually
+	// looks like when a tool runs: he speaks, the assistant answers and asks
+	// for the tool. With the assistant's "download all of it" sitting after his
+	// message, a gate that reads the last message of ANY role reads the
+	// assistant's word instead of his — so the assistant would be authorising
+	// its own download. The old fixture put that line BEFORE his message, where
+	// the right answer and the wrong answer happened to agree.
 	const chatState = {
 		history: [
 			{ role: 'user', content: 'something earlier' },
-			{ role: 'assistant', content: 'download all of it' },   // not his words
 			{ role: 'user', content: lastUserMessage },
+			{ role: 'assistant', content: 'download all of it, grabbing it now' },
 		],
 	}
 
@@ -112,8 +119,38 @@ test('"get" counts when the sentence says where from', () => {
 
 test('the word has to be his, not the assistant\'s', () => {
 	// The gate reads the last USER message. The assistant saying "download" in
-	// the turn before must never stand in for his permission.
+	// its own reply must never stand in for his permission — and in the real
+	// history that reply is the most recent message of all.
 	assert.strictEqual(wasAsked('auto_download', 'something chill please'), true)
+})
+
+test('MUTATION: a gate that ignores who spoke lets the assistant authorise itself', () => {
+	// Drop the role filter from _toolPreviewIfNeeded and the gate reads the
+	// assistant's own "download all of it" as permission. Every "must ask" case
+	// above then goes quiet, which is the whole failure: a Soulseek transfer
+	// starts off the assistant's word, not his.
+	const broken = GATE.replace("m.role === 'user' && ", '')
+	assert.notStrictEqual(broken, GATE, 'the mutation applied')
+	const shown = []
+	const chatState = {
+		history: [
+			{ role: 'user', content: 'something chill please' },
+			{ role: 'assistant', content: 'download all of it, grabbing it now' },
+		],
+	}
+	new Function('chatState', 'shown', `
+		const esc = s => String(s)
+		const document = { getElementById: () => null }
+		const setInterval = () => 0
+		const clearInterval = () => {}
+		function _mgConfirm(question, note, label, onConfirm) { shown.push(question) }
+		${TABLE}
+		${broken}
+		_toolPreviewIfNeeded('auto_download', { query: 'something chill' })
+	`)(chatState, shown)
+	assert.strictEqual(shown.length, 0,
+		'with the role filter gone the confirmation disappears — which is why the ' +
+		'fixture above must put the assistant\'s word after his')
 })
 
 // ── the other consequential tool is untouched ───────────────────────────────
