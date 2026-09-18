@@ -22816,12 +22816,16 @@ function albumCard(album, idx, sortMode, query) {
     ? '<span class="new-badge">NEW</span>' : ''
   const hue = _cardHue((album.artist || '') + (album.name || ''))
   var fallbackStyle = `background:linear-gradient(135deg,hsl(${hue},55%,22%) 0%,hsl(${(hue+40)%360},45%,14%) 100%)`
+  // A cover that already failed once this session is not asked for again: the
+  // card goes straight to its gradient fallback instead of firing another
+  // file:// request the browser will answer with ERR_FILE_NOT_FOUND.
+  const art = _artUsable(album.artPath) ? album.artPath : null
   return `<div class="album-card${album.unavailable ? ' unavailable' : ''}" data-album="${esc(album.id)}"${album.unavailable ? ' title="Not connected — this album\'s drive is unplugged"' : ''}>
     <div class="album-card-art-wrap">
-      ${album.artPath
-        ? `<img class="album-card-art" src="${isHttpPath(album.artPath) ? esc(album.artPath) : esc(`file://${album.artPath}`)}" alt="" loading="lazy" decoding="async" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
+      ${art
+        ? `<img class="album-card-art" src="${isHttpPath(art) ? esc(art) : esc(`file://${art}`)}" alt="" loading="lazy" decoding="async" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
         : ''}
-      <div class="album-card-art-fallback" ${album.artPath ? 'style="display:none"' : `style="${fallbackStyle}"`}>
+      <div class="album-card-art-fallback" ${art ? 'style="display:none"' : `style="${fallbackStyle}"`}>
         <svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>
       </div>
       ${album.isYt ? '<span class="yt-badge yt-card-badge">YT</span>' : ''}
@@ -22847,13 +22851,47 @@ function fmtSpec(bd, sr) {
 // main modal art uses: a streamed (YouTube) track carries an https thumbnail
 // URL that must be used as-is, while a local file path needs the file:// scheme.
 // Prepending 'file://' unconditionally broke art for streamed tracks (audit).
+// ── Artwork that is not there ───────────────────────────────────────────────
+// 654 net::ERR_FILE_NOT_FOUND on cover files in one session, and the SAME
+// missing file asked for six times in 0.4 seconds. The library remembers an
+// artPath for an album whose cover file has since gone, and nothing remembered
+// the answer, so every grid repaint, every queue repaint and every hover
+// re-requested every missing cover from scratch.
+//
+// One session-scoped set of paths that have already failed. Session-scoped on
+// purpose: a cover that comes back — fetched, or a drive remounted — is picked
+// up on the next launch, rather than being written off for ever.
+var _artMisses = new Set()
+function _noteArtMiss(src) {
+  if (!src) return
+  var p = String(src).replace(/^file:\/\//, '')
+  // Only local files. A remote URL can fail for a hundred reasons that have
+  // nothing to do with the file existing, and it costs the disk nothing.
+  if (p && p.charAt(0) === '/') _artMisses.add(p)
+}
+// Is this cover worth asking for? False once it has failed in this session.
+function _artUsable(artPath) {
+  if (!artPath) return false
+  return !_artMisses.has(String(artPath))
+}
+function _artMissCount() { return _artMisses.size }
+// One capture-phase listener catches every <img> on the page, so no call site
+// has to remember to report its own failure. `error` does not bubble, hence
+// capture.
+if (typeof document !== 'undefined' && document.addEventListener) {
+  document.addEventListener('error', function (e) {
+    var t = e && e.target
+    if (t && t.tagName === 'IMG') _noteArtMiss(t.getAttribute('src'))
+  }, true)
+}
+
 function _artSrc(artPath) {
   return /^https?:\/\//.test(artPath) ? artPath : 'file://' + artPath
 }
 
 function artImg(artPath, imgClass, fallbackClass) {
   var musicNote = `<svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>`
-  if (artPath) {
+  if (_artUsable(artPath)) {
     const src = /^https?:\/\//.test(artPath) ? artPath : `file://${artPath}`
     return `<img class="${imgClass}" src="${esc(src)}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
             <div class="${fallbackClass}" style="display:none">${musicNote}</div>`
