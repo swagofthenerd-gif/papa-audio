@@ -516,6 +516,14 @@ function functionsDisablingAButton(src) {
       if (esc) esc = false
       else if (c === '\\') esc = true
       else if (c === instr) instr = null
+      // A ' or " string cannot contain a raw newline, so reaching one means we
+      // were never in a string: a quote inside a REGEX literal opened it. That
+      // really happens here — /\bartist:"([^"]+)"|…/ in _parseSearchOperators —
+      // and without this the scanner stayed "inside a string" for thousands of
+      // lines, stopped counting braces, and reported whichever unrelated
+      // function happened to line up. Template literals may span lines, so they
+      // are left alone.
+      else if (c === '\n' && instr !== '`') instr = null
     } else {
       if (c === '/' && src[i + 1] === '/') comment = 'line'
       else if (c === '/' && src[i + 1] === '*') comment = 'block'

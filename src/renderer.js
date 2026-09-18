@@ -34839,10 +34839,19 @@ function _mgBindTrash() {
     b.addEventListener('click', async function () {
       b.disabled = true
       b.textContent = 'Restoring…'
-      var r = await window.api.libraryRestoreTrashed({ paths: [b.dataset.restore] }).catch(function () { return null })
-      showSnackbar(r && r.restored ? 'Restored' : 'Could not restore — ' +
-        ((r && r.results && r.results[0] && r.results[0].error) || 'unknown reason'))
-      _scheduleLibRescan()
+      var label = 'Restore'
+      try {
+        var r = await window.api.libraryRestoreTrashed({ paths: [b.dataset.restore] }).catch(function () { return null })
+        showSnackbar(r && r.restored ? 'Restored' : 'Could not restore — ' +
+          ((r && r.results && r.results[0] && r.results[0].error) || 'unknown reason'))
+        _scheduleLibRescan()
+      } finally {
+        // The re-render below normally replaces this button, but it does not
+        // run if the tab changed or the render threw — and then "Restoring…"
+        // stays on a dead button for ever.
+        b.disabled = false
+        b.textContent = label
+      }
       renderManageTrash()
     })
   })
