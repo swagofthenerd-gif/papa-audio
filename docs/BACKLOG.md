@@ -806,3 +806,17 @@ theme on the main pages, offline banner copy.
 - Deviations accepted: `wrapped` records its year for Back but is not in
   `_NEEDS_NAV_ID` (an id-less entry is not a dead end there); "Resume All"
   removed (slskd has no resume) and "Pause All" relabelled "Stop All".
+
+### 19 Sep — DRY_RUN gate holes on slskd writes (found before any Soulseek live QA)
+Scan of every `ipcMain.handle` body for `slskdFetch('POST'|'PUT'|'DELETE')`
+without a DRY_RUN check: `slsk-download` (POST /transfers/downloads —
+STARTS A REAL DOWNLOAD), `slsk-chat-send` (messages a peer),
+`slsk-wishlist-run` (enqueues via `dlSched.addItems` internally, bypassing
+the `slsk-enqueue-downloads` IPC gate), `slsk-search` (allowed — searching
+is permitted), `slsk-setup` (DELETE; to be read). Plus the scheduler's own
+tick POST, reachable from a copied `dlState` with no IPC at all. No twin has
+hit these because every twin so far had slskd credentials stripped; a
+`--keep-slskd` twin would have. Routed to `fix/dry-run-slskd-holes`: one
+choke point in `slskdFetch` (DRY_RUN refuses non-GET except `/searches`
+and whatever login needs), per-handler refusals, GATED_CHANNELS + maps,
+scheduler test. Soulseek live QA waits for this merge.
