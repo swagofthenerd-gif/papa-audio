@@ -181,7 +181,7 @@ function resumeHarness (source) {
     _syncEpisodeSelection (n) { s.synced = n },
   })
   s._bindEpResume(root)
-  return { s, go }
+  return { s, go, root, banner }
 }
 
 // The step renderVideoDetail performs on arrival: it takes `_playOnArrival`
@@ -273,4 +273,50 @@ test('an empty source list leaves the arm standing for the next list', () => {
   s._autoPlayTicket = 9
   assert.strictEqual(s._takeAutoPlayArm([]), false)
   assert.strictEqual(s._takeAutoPlayArm(STREAMS), true, 'the ask survives an empty first answer')
+})
+
+// ── One press, one load (live re-test, 2026-09-19) ──────────────────────────
+// Two render paths bind the same banner: the anime controls bind the box they
+// built, and the TV episode list rebinds the row after re-inserting the
+// banner into it. On a title that goes through both, one Resume press ran the
+// source load twice and armed autoplay twice with it — two play attempts for
+// one press, on a torrent that is expensive to start.
+
+test('a banner bound twice still answers one press once', () => {
+  const r = resumeHarness(SRC)
+  // The second render path arrives and binds the same node again.
+  r.s._bindEpResume(r.root)
+  r.go.fire('click')
+  assert.strictEqual(r.s.loads.length, 1,
+    'one press started ' + r.s.loads.length + ' source loads')
+})
+
+test('and arms autoplay once, not once per bound listener', () => {
+  const r = resumeHarness(SRC)
+  r.s._bindEpResume(r.root)
+  // Watch the arm itself being written. Two writes is the shape of the
+  // defect: each listener arms, each starts a load, and whichever load wins
+  // the season-ticket race plays — which is how one press became two
+  // attempts at a torrent that is expensive to start.
+  let arms = 0
+  let armed = r.s._autoPlayTicket
+  Object.defineProperty(r.s, '_autoPlayTicket', {
+    configurable: true,
+    get () { return armed },
+    set (v) { if (v) arms++; armed = v },
+  })
+  r.go.fire('click')
+  assert.strictEqual(arms, 1, 'one press armed autoplay ' + arms + ' times')
+  assert.strictEqual(r.s._takeAutoPlayArm(STREAMS), true)
+  assert.strictEqual(r.s._takeAutoPlayArm(STREAMS), false, 'and the second load does not play')
+})
+
+test('a fresh banner on a later render is still bound', () => {
+  // The guard must be per-node, not a module flag: every repaint builds a new
+  // banner and that one has to work.
+  const r = resumeHarness(SRC)
+  r.go.fire('click')
+  const again = resumeHarness(SRC)
+  again.go.fire('click')
+  assert.strictEqual(again.s.loads.length, 1, 'a repainted banner still resumes')
 })

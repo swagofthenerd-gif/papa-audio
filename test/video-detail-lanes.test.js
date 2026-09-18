@@ -44,6 +44,7 @@ function liftBody(src, name) {
 }
 
 const LANE_MS = Number(/const DETAIL_LANE_MS = (\d+)/.exec(RENDERER)[1])
+const SEASON_MS = Number(/const SEASON_LANE_MS = (\d+)/.exec(RENDERER)[1])
 
 // A page with named section mounts, and the two lifted functions closed over it.
 function page(opts) {
@@ -82,21 +83,25 @@ function page(opts) {
   const esc = (x) => String(x)
   const api = {}
   // eslint-disable-next-line no-new-func
-  const laneFn = new Function('document', 'console', 'setTimeout', 'clearTimeout', 'Promise', 'Date', 'Math',
-    'esc', '_videoDetailTicket', '_paintLaneFailure', '_detailLane', 'DETAIL_LANE_MS',
-    'name', 'mountId', 'label', 'run', 'ticket', liftBody(RENDERER, '_detailLane'))
+  const DEPS = ['document', 'console', 'setTimeout', 'clearTimeout', 'Promise', 'Date', 'Math', 'Number',
+    'esc', '_videoDetailTicket', '_paintLaneFailure', '_paintLaneWaiting', '_detailLane', 'DETAIL_LANE_MS']
+  const laneFn = new Function(...DEPS,
+    'name', 'mountId', 'label', 'run', 'ticket', 'opts', liftBody(RENDERER, '_detailLane'))
   // eslint-disable-next-line no-new-func
-  const paintFn = new Function('document', 'console', 'setTimeout', 'clearTimeout', 'Promise', 'Date', 'Math',
-    'esc', '_videoDetailTicket', '_paintLaneFailure', '_detailLane', 'DETAIL_LANE_MS',
+  const paintFn = new Function(...DEPS,
     'name', 'mountId', 'label', 'run', 'ticket', 'why', liftBody(RENDERER, '_paintLaneFailure'))
+  // eslint-disable-next-line no-new-func
+  const waitFn = new Function(...DEPS,
+    'mountId', 'label', liftBody(RENDERER, '_paintLaneWaiting'))
 
   const fakeConsole = { error: (...a) => logs.push(a.join(' ')) }
-  const paint = (...a) => paintFn(doc, fakeConsole, setT, clearTimeout, Promise, Date, Math,
-    esc, ticket, paint, lane, LANE_MS, ...a)
-  const lane = (...a) => laneFn(doc, fakeConsole, setT, clearTimeout, Promise, Date, Math,
-    esc, ticket, paint, lane, LANE_MS, ...a)
+  const deps = () => [doc, fakeConsole, setT, clearTimeout, Promise, Date, Math, Number,
+    esc, ticket, paint, waiting, lane, LANE_MS]
+  const paint = (...a) => paintFn(...deps(), ...a)
+  const waiting = (...a) => waitFn(...deps(), ...a)
+  const lane = (...a) => laneFn(...deps(), ...a)
 
-  return { box, lane, logs, api, setTicket: (t) => { ticket = t } }
+  return { box, lane, waiting, logs, api, setTicket: (t) => { ticket = t } }
 }
 
 const tick = () => new Promise(r => setTimeout(r, 0))
@@ -201,6 +206,83 @@ test('the season chain is the lane it needs to be', () => {
 
 test('the bound is eight seconds', () => {
   assert.strictEqual(LANE_MS, 8000)
+})
+
+// ── The seasons lane needs longer (live re-test, 2026-09-19) ───────────────
+// Every anime page tested — One Piece, Bungo Stray Dogs, Tokyo Revengers S2 —
+// hit the 8 s ceiling on the seasons lane, and a hand Retry then took 21 s and
+// SUCCEEDED. The walk was never failing; the budget was wrong for a section
+// that makes one rate-limited AniList request per hop. A longer budget on its
+// own would only buy a longer silence, so the box says it is still going.
+
+test('the seasons lane gets a budget a franchise walk can actually finish in', () => {
+  assert.ok(SEASON_MS >= 21000,
+    'a Retry took 21 s and succeeded; a budget under that fails work that was fine')
+  assert.ok(SEASON_MS > LANE_MS, 'and it is longer than the ordinary lane')
+  const call = RENDERER.slice(RENDERER.indexOf("_detailLane('seasons'"), RENDERER.indexOf("_detailLane('seasons'") + 300)
+  assert.match(call, /budgetMs: SEASON_LANE_MS/, 'and the seasons lane is the one that gets it')
+  assert.match(call, /noticeMs: DETAIL_LANE_MS/, 'and it speaks up at the old ceiling')
+})
+
+test('a slow lane says it is still going instead of sitting empty', async () => {
+  const p = page()
+  const seasons = p.box('vseasons')
+  p.lane('seasons', 'vseasons', 'the other seasons', () => new Promise(() => {}), 1,
+    { budgetMs: 200, noticeMs: 20 })
+  await new Promise(r => setTimeout(r, 60))
+  assert.match(seasons.innerHTML, /Still finding the other seasons/,
+    'an empty box and a slow box must not look the same: ' + seasons.innerHTML)
+  assert.doesNotMatch(seasons.innerHTML, /Retry/, 'it has not given up yet, so it offers nothing to retry')
+  assert.strictEqual(seasons.hidden, false)
+})
+
+test('and the note is replaced by the real thing when it lands', async () => {
+  const p = page()
+  const seasons = p.box('vseasons')
+  let finish
+  const run = () => new Promise(r => { finish = () => { seasons.innerHTML = '<div>eight seasons</div>'; r() } })
+  const lane = p.lane('seasons', 'vseasons', 'the other seasons', run, 1, { budgetMs: 400, noticeMs: 20 })
+  await new Promise(r => setTimeout(r, 60))
+  assert.match(seasons.innerHTML, /Still finding/)
+  finish()
+  await lane
+  assert.strictEqual(seasons.innerHTML, '<div>eight seasons</div>',
+    'the content wins over its own waiting note')
+})
+
+test('the waiting note becomes the failure note if the budget does run out', async () => {
+  const p = page()
+  const seasons = p.box('vseasons')
+  p.lane('seasons', 'vseasons', 'the other seasons', () => new Promise(() => {}), 1,
+    { budgetMs: 60, noticeMs: 20 })
+  await new Promise(r => setTimeout(r, 120))
+  assert.match(seasons.innerHTML, /Couldn.t load the other seasons/,
+    'a waiting note must not block the give-up note: ' + seasons.innerHTML)
+  assert.match(seasons.innerHTML, /Retry/)
+})
+
+test('a lane that finishes with nothing to show leaves no note behind', async () => {
+  const p = page()
+  const seasons = p.box('vseasons')
+  let finish
+  // The real chain hides the box when a title has fewer than two entries.
+  const run = () => new Promise(r => { finish = () => { seasons.innerHTML = ''; seasons.hidden = true; r() } })
+  const lane = p.lane('seasons', 'vseasons', 'the other seasons', run, 1, { budgetMs: 400, noticeMs: 20 })
+  await new Promise(r => setTimeout(r, 60))
+  assert.match(seasons.innerHTML, /Still finding/)
+  finish()
+  await lane
+  assert.strictEqual(seasons.innerHTML, '', 'a one-season show must not be told seasons are still coming')
+  assert.strictEqual(seasons.hidden, true)
+})
+
+test('an ordinary lane still keeps the old bound and says nothing early', async () => {
+  const p = page()
+  const similar = p.box('vsimilar')
+  p.lane('similar', 'vsimilar', 'more like this', () => new Promise(() => {}), 1)
+  await new Promise(r => setTimeout(r, 60))
+  assert.strictEqual(similar.innerHTML, '',
+    'only the lane that asked for a notice gets one')
 })
 
 test('the hero is painted before any lane starts', () => {

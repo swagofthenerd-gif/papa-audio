@@ -7971,6 +7971,10 @@ body.app-unfocused .vt-menu {
   color:var(--text2); font-size:12.5px;
 }
 .vlane-note .vlane-retry { padding:5px 14px; font-size:12px; }
+/* The same box while the section is still working — the seasons walk takes up
+   to 25 s on a long franchise, and a silent empty box for that long is the
+   defect this note exists to prevent. */
+.vlane-note .spin { width:16px; height:16px; flex-shrink:0; }
 .vhero-dots { position:absolute; right:28px; bottom:20px; display:flex; gap:2px; }
 .vhero-dot {
   width:24px; min-width:24px; height:24px; min-height:24px;
@@ -8620,9 +8624,11 @@ body.app-unfocused .vt-menu {
    a filter rail of fat pills reads as a toolbar — so the target is grown
    WITHOUT growing the chip: a transparent overlay, centred on the chip, at
    least 24 px tall and never smaller than the chip itself. Nothing on screen
-   moves; the pointer and the touch just stop missing. */
-.vf-chip, .vlist-chip, .vsfilter-chip, .vt-chip { position:relative; }
-.vf-chip::after, .vlist-chip::after, .vsfilter-chip::after, .vt-chip::after {
+   moves; the pointer and the touch just stop missing.
+   The genre chips were left out of the first pass and measured 17-21 px on
+   both the hub cards and the detail page, so they are in the list too. */
+.vf-chip, .vlist-chip, .vsfilter-chip, .vt-chip, .video-genre-chip { position:relative; }
+.vf-chip::after, .vlist-chip::after, .vsfilter-chip::after, .vt-chip::after, .video-genre-chip::after {
   content:''; position:absolute; left:0; right:0; top:50%;
   transform:translateY(-50%);
   height:24px; min-height:100%;

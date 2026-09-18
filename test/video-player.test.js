@@ -2771,3 +2771,67 @@ test('releaseAgreement scores group and source agreement and warns on a differen
   const anime = ra('[SubsPlease] Show - 01 (1080p)', '[SubsPlease] Show - 01 (1080p) [ABCD1234].mkv')
   assert.ok(anime.score >= 2, 'bracketed groups count too')
 })
+
+// ── Escape out of a play that never started (live re-test, 2026-09-19) ──────
+// A refused play leaves the theatre on screen with an error and no picture.
+// Escape means "back out one level", which minimised: the mini card appeared
+// and body.video-active stayed set, so the music bar stayed collapsed for a
+// video that did not exist and never had.
+test('Escape with nothing playing closes the theatre instead of minimising', () => {
+  const nodes = {}
+  for (const id of ['vtheatre', 'vt-stage', 'vt-stage-msg', 'vt-menu', 'vmini', 'vt-deck']) nodes[id] = el(id)
+  nodes['vt-menu'].classList.add('hidden')
+  nodes['vmini'].classList.add('hidden')
+  const body = el('body')
+  const docHandlers = {}
+  const p = create({
+    document: {
+      getElementById: id => nodes[id] || null,
+      querySelector: () => null,
+      createElement: tag => el(tag),
+      addEventListener (ev, fn) { (docHandlers[ev] = docHandlers[ev] || []).push(fn) },
+      documentElement: { clientWidth: 1280, clientHeight: 800 },
+      body,
+    },
+    api: { videoControl: () => Promise.resolve({ ok: true }), onVideoState: () => () => {} },
+    keymap, skipModel,
+  })
+  p.bind()
+  p.open({ title: 'Dune' })
+  assert.ok(body.classList.contains('video-active'))
+  // The play was refused: no state ever arrived.
+  assert.strictEqual(p._state(), null)
+  ;(docHandlers.keydown || []).forEach(fn => fn({ key: 'Escape', target: { tagName: 'DIV' }, preventDefault () {} }))
+  assert.ok(!body.classList.contains('video-active'),
+    'the music bar must come back when there is no video')
+  assert.ok(nodes['vmini'].classList.contains('hidden'),
+    'and no mini card for a video that never played')
+})
+
+test('Escape with a video playing still minimises, as it always did', () => {
+  const nodes = {}
+  for (const id of ['vtheatre', 'vt-stage', 'vt-stage-msg', 'vt-menu', 'vmini', 'vt-deck']) nodes[id] = el(id)
+  nodes['vt-menu'].classList.add('hidden')
+  nodes['vmini'].classList.add('hidden')
+  const body = el('body')
+  const docHandlers = {}
+  const p = create({
+    document: {
+      getElementById: id => nodes[id] || null,
+      querySelector: () => null,
+      createElement: tag => el(tag),
+      addEventListener (ev, fn) { (docHandlers[ev] = docHandlers[ev] || []).push(fn) },
+      documentElement: { clientWidth: 1280, clientHeight: 800 },
+      body,
+    },
+    api: { videoControl: () => Promise.resolve({ ok: true }), onVideoState: () => () => {} },
+    keymap, skipModel,
+  })
+  p.bind()
+  p.open({ title: 'Dune' })
+  p._setState(stateAt(120))
+  ;(docHandlers.keydown || []).forEach(fn => fn({ key: 'Escape', target: { tagName: 'DIV' }, preventDefault () {} }))
+  assert.ok(body.classList.contains('video-active'),
+    'a minimised video is still a video: the bar stays out of the way')
+  assert.ok(!nodes['vmini'].classList.contains('hidden'), 'and the card is up')
+})

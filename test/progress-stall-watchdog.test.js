@@ -61,6 +61,16 @@ function liftTickBody() {
 
 const TICK_BODY = liftTickBody()
 
+// The thresholds come out of renderer.js, not out of this file: a stub that
+// carries its own copy of a number cannot notice the number changing.
+function liftConst(name) {
+  const m = new RegExp('const ' + name + ' = (\\d+)').exec(RENDERER)
+  assert.ok(m, name + ' must still be declared in renderer.js')
+  return Number(m[1])
+}
+const STALE_POSITION_MS = liftConst('STALE_POSITION_MS')
+const STALE_AFTER_LOAD_MS = liftConst('STALE_AFTER_LOAD_MS')
+
 // Everything the tick touches, and nothing else. `_barStale` and the stale
 // classes live in the closure, so the builder returns a fresh tick each time.
 function buildTick(audio) {
@@ -75,10 +85,11 @@ function buildTick(audio) {
       } : null,
     },
     console: { error: (...a) => errors.push(a.join(' ')) },
-    STALE_POSITION_MS: 3000,
+    STALE_POSITION_MS,
+    STALE_AFTER_LOAD_MS,
   }
   const tick = new Function('env', `
-    const { audio, state, document, console, STALE_POSITION_MS } = env
+    const { audio, state, document, console, STALE_POSITION_MS, STALE_AFTER_LOAD_MS } = env
     let _barStale = false
     function updatePlayBtn() {}
     function syncModalPlayBtn() {}
@@ -212,5 +223,61 @@ test('nothing is said while the engine is down', () => {
     advance(30000)
     tick()
     assert.deepStrictEqual(errors, [], 'the engine being down is already being reported, loudly')
+  })
+})
+
+// ── The cold start (live re-test, 2026-09-19) ───────────────────────────────
+// The watchdog fired ~2.5 s into a fresh local play: mpv's FIRST position
+// report for a file lands well after the loadfile on a cold start, and the
+// 3 s mid-track threshold was being applied to that wait. Silence before the
+// first report is a different silence from silence after one.
+
+test('a cold start gets the longer patience until mpv reports a position', () => {
+  withClock(({ advance }) => {
+    const { player, emit } = loadShim()
+    const { tick, errors } = buildTick(player)
+    player.src = 'file:///mnt/data/MUSIC/Camel/Moonmadness/01 Aristillus.flac'
+    emit('paused', false)
+    assert.strictEqual(player.hasReportedPosition, false,
+      'mpv has not reported a position for this file yet')
+    advance(2500)                       // the measured cold-start lag
+    tick()
+    assert.deepStrictEqual(errors, [],
+      '2.5 s waiting for mpv to open a file is not a frozen bar')
+    advance(STALE_AFTER_LOAD_MS - 2500 + 100)
+    tick()
+    assert.strictEqual(errors.length, 1,
+      'but a load that never produces a position IS a stall, just later')
+  })
+})
+
+test('once mpv has reported, the ordinary threshold applies again', () => {
+  withClock(({ advance }) => {
+    const { player, emit } = loadShim()
+    const { tick, errors } = buildTick(player)
+    player.src = 'file:///music/a.flac'
+    emit('paused', false)
+    emit('position', 0.5)
+    assert.strictEqual(player.hasReportedPosition, true)
+    advance(STALE_POSITION_MS + 100)
+    tick()
+    assert.strictEqual(errors.length, 1,
+      'the long grace is for the first report only, not for the rest of the track')
+  })
+})
+
+test('the next track in a queue gets its own cold-start grace', () => {
+  withClock(({ advance }) => {
+    const { player, emit } = loadShim()
+    const { tick, errors } = buildTick(player)
+    player.src = 'file:///music/a.flac'
+    emit('paused', false)
+    emit('position', 30)
+    player.src = 'file:///music/b.flac'   // Next
+    assert.strictEqual(player.hasReportedPosition, false,
+      'a new file has had nothing reported about it')
+    advance(STALE_POSITION_MS + 500)
+    tick()
+    assert.deepStrictEqual(errors, [], 'the previous track having reported does not count for this one')
   })
 })

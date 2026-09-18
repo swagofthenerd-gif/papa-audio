@@ -2276,17 +2276,56 @@ function navigate(page, navId, opts = {}) {
 var _SCROLL_RESTORE_TRIES = 20
 var _SCROLL_RESTORE_MS = 100
 
+// Landing on the right number is not the same as staying there. Two things
+// move the page AFTER a correct restore, and both cost the viewer the position
+// they pressed Back for:
+//
+//   * scroll anchoring — a shelf ABOVE the target finishes loading, grows, and
+//     Chromium pushes the scroll position down to keep the anchored element
+//     still. Measured on Movies & TV: restored to 1499, drifted to 1590 and
+//     then 2328 as two rows above filled in;
+//   * `.content { scroll-behavior: smooth }` — a plain scrollTop assignment
+//     becomes an animation, so the value read back is the position on the way
+//     there, not the one asked for.
+//
+// So the restore holds the target for the whole window rather than stopping
+// the moment it first sticks, with anchoring and smoothing suspended for the
+// duration and put back exactly as found. The viewer's own scroll still ends
+// it immediately — but content moving underneath is not the viewer, and that
+// is the distinction the old single `scrollTop !== applied` check could not
+// make.
 function _restoreScrollTop(el, wanted, schedule) {
   if (!el || !(Number(wanted) > 0)) return
   var later = schedule || function (fn) { setTimeout(fn, _SCROLL_RESTORE_MS) }
   var tries = 0
-  var applied = -1
+  var userMoved = false
+  var onUser = function () { userMoved = true }
+  var USER_EVENTS = ['wheel', 'touchstart', 'keydown', 'mousedown']
+  var listening = typeof el.addEventListener === 'function'
+  if (listening) {
+    USER_EVENTS.forEach(function (t) { el.addEventListener(t, onUser, { passive: true }) })
+  }
+  var style = el.style || null
+  var prevBehavior = style ? style.scrollBehavior : null
+  var prevAnchor = style ? style.overflowAnchor : null
+  if (style) {
+    style.scrollBehavior = 'auto'
+    style.overflowAnchor = 'none'
+  }
+  var finish = function () {
+    if (style) {
+      style.scrollBehavior = prevBehavior || ''
+      style.overflowAnchor = prevAnchor || ''
+    }
+    if (listening) {
+      USER_EVENTS.forEach(function (t) { el.removeEventListener(t, onUser) })
+    }
+  }
   var step = function () {
-    if (applied !== -1 && el.scrollTop !== applied) return
+    // Moved AND the viewer did it: theirs. Moved on its own: drift, re-apply.
+    if (userMoved && el.scrollTop !== wanted) return finish()
     el.scrollTop = wanted
-    applied = el.scrollTop
-    if (applied >= wanted) return
-    if (++tries >= _SCROLL_RESTORE_TRIES) return
+    if (++tries >= _SCROLL_RESTORE_TRIES) return finish()
     later(step)
   }
   step()
@@ -2431,6 +2470,10 @@ function _bindBrowseKeys() {
 // than assumed, because the grid is responsive and the column count changes
 // with the window.
 function _moveCardFocus(e) {
+  // A tab strip owns its own arrow keys. Without this the document handler
+  // sees a non-card active element and yanks focus onto the first poster.
+  const t = e.target
+  if (t && typeof t.closest === 'function' && t.closest('[role="tablist"]')) return
   const cards = Array.prototype.slice.call(document.querySelectorAll('.vcard'))
   if (!cards.length) return
   const active = document.activeElement
@@ -4731,9 +4774,12 @@ function _handleVideoEvent(payload) {
     // used to be a black screen with live controls and no explanation; a
     // natural end left the last frame up and nothing marked as watched.
     if (payload.error) {
+      // 'theatre': the player covers the page, so there is no list below it.
+      // The advice has to name the way out, and the second line repeated the
+      // wrong half of it on top of that.
       _player.setStageMessage('<div style="color:var(--color-error)">' +
-        esc(_videoErrorText(payload.reason || 'The file could not be played — it may be corrupt or incomplete.')) +
-        '</div><div style="opacity:.6">Try another source from the list below.</div>')
+        esc(_videoErrorText(payload.reason || 'The file could not be played — it may be corrupt or incomplete.', 'theatre')) +
+        '</div>')
       return
     }
     try {
@@ -6822,8 +6868,11 @@ function _bindTablist(list) {
     const next = _tablistNextIndex(e.key, tabs.length, here)
     if (next == null || next === here) return
     e.preventDefault()
-    // The roving index moves first so the strip keeps exactly one Tab stop
-    // even if the click handler below repaints nothing.
+    // The document-level arrow handler treats any arrow press whose active
+    // element is not a .vcard as "enter the grid" and focuses the first
+    // poster. Stop the event here so a tab strip keeps the focus it just
+    // moved (_moveCardFocus also declines tablist events, belt and braces).
+    e.stopPropagation()
     tabs.forEach(function (t, i) { t.setAttribute('tabindex', i === next ? '0' : '-1') })
     tabs[next].focus()
     tabs[next].click()
@@ -8297,10 +8346,22 @@ function _myListGridHtml(items) {
   if (!anyGrouped) {
     return '<div class="vgrid vmylist-grid" id="vmylist-grid">' + items.map(_videoCard).join('') + '</div>'
   }
-  const html = groups.map(function (g) {
+  // Singletons are cards, not blocks: a run of them has to share one .vgrid
+  // or each one stretches to the full container width (a 1975px poster).
+  // Consecutive singletons collapse into a single grid, order preserved.
+  const out = []
+  let run = []
+  const flushRun = function () {
+    if (!run.length) return
+    out.push('<div class="vgrid vmylist-grid">' + run.join('') + '</div>')
+    run = []
+  }
+  groups.forEach(function (g) {
     if (!g.grouped || g.items.length < 2) {
-      return g.items.map(_videoCard).join('')
+      g.items.forEach(function (it) { run.push(_videoCard(it)) })
+      return
     }
+    flushRun()
     const open = _myListUnfolded.has(g.name)
     const head = '<button type="button" class="vmylist-franchise-head" data-franchise="' + esc(g.name) + '"' +
       ' aria-expanded="' + open + '">' +
@@ -8311,9 +8372,10 @@ function _myListGridHtml(items) {
       ? '<div class="vgrid vmylist-grid">' + g.items.map(_videoCard).join('') + '</div>'
       // Folded: show only the first poster as a peek so the row still reads.
       : '<div class="vgrid vmylist-grid vmylist-franchise-peek">' + _videoCard(g.items[0]) + '</div>'
-    return '<div class="vmylist-franchise' + (open ? ' open' : '') + '">' + head + body + '</div>'
-  }).join('')
-  return '<div id="vmylist-grid">' + html + '</div>'
+    out.push('<div class="vmylist-franchise' + (open ? ' open' : '') + '">' + head + body + '</div>')
+  })
+  flushRun()
+  return '<div id="vmylist-grid">' + out.join('') + '</div>'
 }
 
 // "Download" on a title's page (2026-09-14): the same source Play would
@@ -8516,6 +8578,9 @@ function _deviceStorageHtml(keepUsed, keepLimit, cacheUsed, cacheLimit) {
 // what is arriving, what you chose to keep (grouped by show, in episode
 // order), and what recent watching left behind. Nothing is invented — a
 // section with nothing in it is not drawn at all.
+// True between a "Delete watched" press and its answer, so repeated triggers
+// collapse into one sweep and one snackbar.
+var _delWatchedInFlight = false
 async function _renderDeviceTab(rows, ticket) {
   if (!rows) return
   // The spinner belongs to the FIRST paint only. This function re-runs on every
@@ -8592,7 +8657,7 @@ async function _renderDeviceTab(rows, ticket) {
     html += _deviceSectionHtml('Ready to rewatch',
       'Kept automatically from what you watched \u2014 the oldest go first',
       (watchedCached.length
-        ? '<div class="vdevice-actions-row"><button class="mcs-set-refresh" id="vdevice-del-watched">' +
+        ? '<div class="vdevice-actions-row"><button class="vbtn vbtn-sm" id="vdevice-del-watched">' +
             'Delete watched (' + watchedCached.length + ')</button></div>'
         : '') +
       '<div class="vgrid">' + cached.map(function (e) { return _deviceCardHtml(e, 'cache') }).join('') + '</div>')
@@ -8636,17 +8701,29 @@ async function _renderDeviceTab(rows, ticket) {
   // The explicit button: do it now, whatever the setting says, because the
   // viewer just asked for it in as many words.
   const delBtn = document.getElementById('vdevice-del-watched')
-  if (delBtn) {
+  if (delBtn && delBtn.dataset.delWatchedBound !== '1') {
+    delBtn.dataset.delWatchedBound = '1'
     delBtn.addEventListener('click', function () {
+      // One press, one answer. This page repaints from four places (a download
+      // event, the cache-swept event, the automatic sweep, and this handler's
+      // own re-render), each of which re-runs the binding above; a press that
+      // landed while two of those were in flight said the same thing three
+      // times. The in-flight latch makes the sweep single-shot no matter how
+      // many triggers reach it, and the dataset guard stops the listener
+      // stacking on a button that survived a repaint.
+      if (_delWatchedInFlight) return
       delBtn.disabled = true
       if (!window.api || typeof window.api.videoCacheSweepWatched !== 'function') return
+      _delWatchedInFlight = true
       window.api.videoCacheSweepWatched({ keys: watchedCached }).then(function (res) {
+        _delWatchedInFlight = false
         const n = (res && res.deleted && res.deleted.length) || 0
         if (res && res.ok === false) showSnackbar('Could not delete those' + (res.error ? ': ' + _shortQ(res.error, 90) : ''), null, null, 6000)
         else showSnackbar(n ? 'Removed ' + n + (n === 1 ? ' watched episode' : ' watched episodes') : 'Nothing to remove yet', null, null, 4000)
         if (typeof _refreshInstantKeys === 'function') _refreshInstantKeys(true)
         _renderDeviceTab(document.getElementById('vrows'), _videoCatalogTicket)
       }).catch(function (e) {
+        _delWatchedInFlight = false
         delBtn.disabled = false
         showSnackbar('Could not delete those: ' + _shortQ(String((e && e.message) || e), 90), null, null, 6000)
       })
@@ -10355,31 +10432,69 @@ function _vCtxDismiss(e) {
 // cannot delay its neighbours, and if it takes longer than this or throws, it
 // says so IN ITS OWN BOX with a Retry, and the rest of the page is untouched.
 const DETAIL_LANE_MS = 8000
+// The seasons lane is the one section that is not a single request: it is one
+// AniList round trip PER HOP down a rate-limited lane, so a long franchise
+// (One Piece, Bungo Stray Dogs, Tokyo Revengers) hit the 8 s ceiling on every
+// visit — and a hand Retry then took 21 s and succeeded, which is the proof
+// that the work was fine and only the budget was wrong. It gets its own, and
+// says it is still going rather than sitting empty in the meantime.
+const SEASON_LANE_MS = 25000
 
-function _detailLane(name, mountId, label, run, ticket) {
+// `opts.budgetMs` overrides the ceiling for one lane. `opts.noticeMs` is when
+// a lane that is still running admits it — without this a longer budget just
+// means a longer silence, which is the failure this whole mechanism exists to
+// prevent.
+function _detailLane(name, mountId, label, run, ticket, opts) {
   const started = Date.now()
+  const budget = (opts && Number(opts.budgetMs)) || DETAIL_LANE_MS
+  const notice = (opts && Number(opts.noticeMs)) || 0
   let settled = false
-  const timer = setTimeout(function () {
+  const timers = []
+  if (notice > 0 && notice < budget) {
+    timers.push(setTimeout(function () {
+      if (settled) return
+      if (_videoDetailTicket !== ticket) return
+      _paintLaneWaiting(mountId, label)
+    }, notice))
+  }
+  timers.push(setTimeout(function () {
     if (settled) return
     if (_videoDetailTicket !== ticket) return
     _paintLaneFailure(name, mountId, label, run, ticket, 'took too long')
-  }, DETAIL_LANE_MS)
+  }, budget))
+  const done = function () { settled = true; timers.forEach(clearTimeout) }
 
   // Promise.resolve() so a `run` that throws synchronously is a lane failure
   // like any other, not an exception out of the page render.
   return Promise.resolve().then(run).then(function () {
-    settled = true
-    clearTimeout(timer)
+    done()
     // A lane that arrives late, after its own note was painted, wins: it has
-    // real content and the note does not.
+    // real content and the note does not. But if it painted nothing at all,
+    // the waiting note must not be left behind claiming it is still coming.
+    const box = document.getElementById(mountId)
+    if (box && box.dataset.laneWaiting) {
+      delete box.dataset.laneWaiting
+      if (/vlane-note/.test(box.innerHTML)) { box.innerHTML = ''; box.hidden = true }
+    }
   }, function (err) {
-    settled = true
-    clearTimeout(timer)
+    done()
     if (_videoDetailTicket !== ticket) return
     console.error('[papa][video] the ' + name + ' section failed after ' +
       Math.round((Date.now() - started) / 1000) + 's:', String((err && err.message) || err))
     _paintLaneFailure(name, mountId, label, run, ticket, 'could not be loaded')
   })
+}
+
+// Still working. A box that is merely slow reads exactly like a box with
+// nothing in it, so it says which one it is.
+function _paintLaneWaiting(mountId, label) {
+  const box = document.getElementById(mountId)
+  if (!box) return
+  if (box.innerHTML && !box.dataset.laneWaiting) return
+  box.hidden = false
+  box.dataset.laneWaiting = '1'
+  box.innerHTML = '<div class="vlane-note" role="status">' +
+    '<div class="spin"></div><span>Still finding ' + esc(label) + '\u2026</span></div>'
 }
 
 // The note one failed section shows. Deliberately small and inside the section
@@ -10389,8 +10504,9 @@ function _paintLaneFailure(name, mountId, label, run, ticket, why) {
   const box = document.getElementById(mountId)
   if (!box) return
   // Never paint over content that did arrive.
-  if (box.innerHTML && !box.dataset.laneFailed) return
+  if (box.innerHTML && !box.dataset.laneFailed && !box.dataset.laneWaiting) return
   box.hidden = false
+  delete box.dataset.laneWaiting
   box.dataset.laneFailed = '1'
   box.innerHTML = '<div class="vlane-note" role="status">' +
     '<span>Couldn\u2019t load ' + esc(label) + ' \u2014 it ' + esc(why) + '.</span>' +
@@ -10496,7 +10612,8 @@ async function renderVideoDetail(navId) {
   // "absolute number unknown" for good. So: let it land, then ask again if it
   // changed anything.
   _chainPending = _detailLane('seasons', 'vseasons', 'the other seasons',
-    function () { return _renderSeasonChain(ticket) }, ticket)
+    function () { return _renderSeasonChain(ticket) }, ticket,
+    { budgetMs: SEASON_LANE_MS, noticeMs: DETAIL_LANE_MS })
   _chainPending.then(function () { _researchSourcesIfNumberingArrived(ticket) })
 
   if (type === 'tv') {
@@ -12029,6 +12146,13 @@ function _epResumeHtml(prog, total) {
 function _bindEpResume(root) {
   const banner = (root || document).querySelector('.video-resume')
   if (!banner) return
+  // Two render paths bind this banner — the anime controls bind the box they
+  // just built, and the TV episode list rebinds the row it re-inserted the
+  // banner into. When both reach the same node the button carries two
+  // listeners, so one press ran the source load twice and armed autoplay
+  // twice with it. The banner says once, out loud, that it is already wired.
+  if (banner.dataset.resumeBound === '1') return
+  banner.dataset.resumeBound = '1'
   banner.querySelector('.video-resume-go')?.addEventListener('click', function () {
     const n = Number(banner.dataset.ep) || 1
     _videoState.episode = n
@@ -12723,6 +12847,29 @@ function _recordMeasuredStream(tracks) {
   if (row) { const b = _videoStreamBadge(s); row.textContent = b.text; row.className = b.cls; row.title = b.title }
 }
 
+// A provider's label usually already carries the size and the seeder count —
+// "AnimeTosho \u00b7 1080p \u00b7 sub \u00b7 1.3 GB \u00b7 58 seeds" — and the row paints both
+// as their own stats beside it, so 25 of 45 rows printed each number twice.
+// The row drops only the tokens it is itself about to show: a source whose
+// size the indexer never reported keeps whatever the label knew, because a
+// muted dash plus nothing is less than a dash plus the provider's guess.
+// Stripping here rather than in the providers keeps their labels intact for
+// every other reader (logs, the download list, the diary).
+function _labelWithoutShownStats(label, showsSize, showsSeeds) {
+  const text = String(label || '')
+  const parts = text.split('\u00b7')
+  // The first segment is the source name and is never a stat.
+  if (parts.length < 2) return text.trim()
+  const kept = parts.filter(function (part, i) {
+    if (i === 0) return true
+    const t = part.trim()
+    if (showsSeeds && /^\d[\d,]*\s*seed(er)?s?$/i.test(t)) return false
+    if (showsSize && /^\d+(\.\d+)?\s*(b|kb|mb|gb|tb|kib|mib|gib|tib)$/i.test(t)) return false
+    return true
+  })
+  return kept.join(' \u00b7 ').replace(/\s+/g, ' ').trim()
+}
+
 function _videoStreamRow(s, i) {
   const b = _videoStreamBadge(s)
   const badge = b.text
@@ -12738,14 +12885,18 @@ function _videoStreamRow(s, i) {
   // unparseable size are honest-unknown, shown as a muted dash rather than a
   // fabricated zero.
   const seeds = Number(s.seeders)
-  const seedStat = Number.isFinite(seeds)
+  const showsSeeds = Number.isFinite(seeds)
+  const seedStat = showsSeeds
     ? '<span class="video-source-stat video-source-seeds" title="Seeders">↑ ' + seeds + '</span>'
     : '<span class="video-source-stat video-source-seeds video-source-stat-unknown" title="Seeders unknown">↑ —</span>'
   const sizeN = Number(s.sizeBytes)
-  const sizeStat = Number.isFinite(sizeN) && sizeN > 0
+  const showsSize = Number.isFinite(sizeN) && sizeN > 0
+  const sizeStat = showsSize
     ? '<span class="video-source-stat video-source-size" title="Size">' + esc(_fmtVideoSize(sizeN)) + '</span>'
     : '<span class="video-source-stat video-source-size video-source-stat-unknown" title="Size unknown">—</span>'
-  const label = s.label || s.source || (s.kind === 'torrent' ? (s.magnet || '') : (s.url || '')) || ''
+  const label = _labelWithoutShownStats(
+    s.label || s.source || (s.kind === 'torrent' ? (s.magnet || '') : (s.url || '')) || '',
+    showsSize, showsSeeds)
   // The release name says who made the file (V2.2): the group as a badge, the
   // full name on hover, and a "batch" tag when it is a whole-season file.
   const rel = (window.PapaReleaseName && s.title) ? window.PapaReleaseName.parse(s.title) : null
@@ -21813,7 +21964,7 @@ async function _startSlskLeg(spec, token) {
       var res = await window.api.slskResolveFile({ username: spec.username, filename: spec.filename }).catch(function () { return null })
       if (_papaPreview.token !== token) return
       if (res && res.path) { _previewSlskReady(res.path, token); return }
-      var raw = await window.api.slskGetTransfers().catch(function () { return [] })
+      var raw = _slskTransfers(await window.api.slskGetTransfers().catch(function () { return [] }))
       var hit = raw.flatMap(function (u) { return (u.directories || []).flatMap(function (d) { return d.files || [] }) })
         .find(function (f) { return f.filename === spec.filename })
       if (hit && hit.state && /Failed|Aborted|Cancelled|Rejected/.test(hit.state)) { _previewEvent('slskFailed', token); return }
@@ -21923,7 +22074,7 @@ async function _cancelPreviewSlskTransfer() {
   var slsk = _papaPreview.slsk
   if (!slsk || !slsk.username || !slsk.filename) return
   try {
-    var raw = await window.api.slskGetTransfers().catch(function () { return [] })
+    var raw = _slskTransfers(await window.api.slskGetTransfers().catch(function () { return [] }))
     for (var u of raw) {
       if (u.username !== slsk.username) continue
       for (var d of (u.directories || [])) {
@@ -22216,19 +22367,7 @@ function updateNowPlaying(track) {
   if (artistEl) { artistEl.textContent = artistStr || '—'; applyTicker(artistEl) }
   if (albumEl)  { albumEl.textContent = albumStr; albumEl.dataset.albumId = track.albumId || '' }
   if (sepEl)    sepEl.style.display = (artistStr && albumStr) ? 'inline' : 'none'
-  if (artEl && artFb) {
-    if (track.artPath) {
-      const newSrc = /^https?:\/\//.test(track.artPath) ? track.artPath : `file://${track.artPath}`
-      if (artEl.getAttribute('src') !== newSrc) {
-        artEl.style.opacity = '0'
-        artEl.addEventListener('load', () => { artEl.style.opacity = '1' }, { once: true })
-        artEl.src = newSrc
-      }
-      artEl.style.display = 'block'; artFb.style.display = 'none'
-    } else {
-      artEl.style.display = 'none'; artFb.style.display = 'flex'
-    }
-  }
+  _paintNowPlayingArt(artEl, artFb, track.artPath)
   var npArtWrap = document.getElementById('np-art-wrap')
   if (npArtWrap && !nothingPlaying && track.title) {
     var tt = track.title + ' — ' + (track.albumArtist || track.artist || '') + ' · ' + (track.albumName || '')
@@ -23787,6 +23926,30 @@ function _artSrc(artPath) {
 // re-requests a cover that failed earlier in the session.
 function _artSrcIfUsable(artPath) {
   return _artUsable(artPath) ? _artSrc(artPath) : ''
+}
+
+// The player bar's cover. Split out of updateNowPlaying so it can be tested
+// on its own, and routed through the miss memory like every other painter:
+// this one built the file:// URL itself and assigned it straight to the img,
+// so a cover that had already failed this session was re-requested on EVERY
+// updateNowPlaying — once a second while playing — and each failure left a
+// broken image where the fallback belongs. '' from _artSrcIfUsable means
+// known-missing, which is the same answer as no artPath at all.
+function _paintNowPlayingArt(artEl, artFb, artPath) {
+  if (!artEl || !artFb) return
+  const src = _artSrcIfUsable(artPath)
+  if (!src) {
+    artEl.style.display = 'none'
+    artFb.style.display = 'flex'
+    return
+  }
+  if (artEl.getAttribute('src') !== src) {
+    artEl.style.opacity = '0'
+    artEl.addEventListener('load', function () { artEl.style.opacity = '1' }, { once: true })
+    artEl.src = src
+  }
+  artEl.style.display = 'block'
+  artFb.style.display = 'none'
 }
 
 function artImg(artPath, imgClass, fallbackClass) {
@@ -28323,11 +28486,40 @@ function _dlRenderDaemonDown() {
     el.className = 'dl2-daemon-banner'
     list.parentNode.insertBefore(el, list)
   }
+  delete el.dataset.reason
   el.textContent = "Can't reach the Soulseek daemon — showing the last known state. "
   var btn = document.createElement('button')
   btn.className = 'dl2-action-btn'
   btn.textContent = 'Retry'
   btn.addEventListener('click', function () { _pollAndRenderDownloads() })
+  el.appendChild(btn)
+}
+
+// slskd is up and refusing us. Said once — the banner is keyed by id, so a
+// poll every two seconds repaints the same element rather than stacking, and
+// the console line is printed once per session rather than once per poll.
+var _dlAuthWarned = false
+function _dlRenderUnauthorized() {
+  if (!_dlAuthWarned) {
+    _dlAuthWarned = true
+    console.warn('[papa] slskd rejected the credentials — check them in Settings → Soulseek')
+  }
+  var list = document.getElementById('dl2-list')
+  if (!list || !list.parentNode) return
+  var id = 'dl2-daemon-banner'
+  var el = document.getElementById(id)
+  if (!el) {
+    el = document.createElement('div')
+    el.id = id
+    el.className = 'dl2-daemon-banner'
+    list.parentNode.insertBefore(el, list)
+  }
+  el.dataset.reason = 'unauthorized'
+  el.textContent = 'The Soulseek daemon refused these credentials — check them in Settings \u2192 Soulseek. '
+  var btn = document.createElement('button')
+  btn.className = 'dl2-action-btn'
+  btn.textContent = 'Retry'
+  btn.addEventListener('click', function () { _dlAuthWarned = false; _pollAndRenderDownloads() })
   el.appendChild(btn)
 }
 
@@ -28569,9 +28761,23 @@ async function _pollAndRenderDownloads() {
   } finally { _dlPollInFlight = false }
 }
 
+// slsk-get-transfers answers a list, or — when slskd rejects the credentials —
+// a refusal object. Every caller that only wants the transfers reads it
+// through here, so a refusal is an empty list to them rather than something
+// that is not iterable.
+function _slskTransfers(raw) { return Array.isArray(raw) ? raw : [] }
+
 async function _pollAndRenderDownloadsInner() {
   var _dlReachable = true
   const raw = await window.api.slskGetTransfers().catch(function () { _dlReachable = false; return null })
+  // Bad credentials are not an outage: slskd answered, it just would not let
+  // us in. Saying "can't reach the daemon" sent people to restart a daemon
+  // that was running, and the poll said it every two seconds.
+  if (raw && raw.unauthorized) {
+    _dlDaemonDown = false
+    _dlRenderUnauthorized()
+    return
+  }
   _dlDaemonDown = !_dlReachable
   // A single failed poll must not erase the page. Treating an unreachable
   // daemon as "zero transfers" zeroed every tab badge, hid the nav badge,
@@ -30547,7 +30753,7 @@ function _bindSlskCards(section, query, groups) {
         await new Promise(r => setTimeout(r, 2000))
         const res = await window.api.slskResolveFile({ username: g.username, filename: targetFile.filename })
         if (res?.path) { _playFile(res.path); played = true; break }
-        const raw = await window.api.slskGetTransfers().catch(() => [])
+        const raw = _slskTransfers(await window.api.slskGetTransfers().catch(() => []))
         const hit = raw.flatMap(u => (u.directories||[]).flatMap(d => d.files||[])).find(f => f.filename === targetFile.filename)
         if (hit?.state?.match(/Failed|Aborted|Cancelled/)) break
       }
@@ -32654,6 +32860,12 @@ function setupListeners() {
   const RECONCILE_MS = 1000
   // A bar that has not moved for this long while unpaused is frozen, not paused.
   const STALE_POSITION_MS = 3000
+  // Except right after a load: mpv's FIRST position report for a file lands
+  // several seconds after the loadfile on a cold start, and the watchdog was
+  // firing ~2.5 s into a perfectly healthy local play. Silence before the
+  // first report is a different silence from silence after one, and it gets
+  // its own, longer patience.
+  const STALE_AFTER_LOAD_MS = 8000
   let _reconcileWarnedPath = null
   let _barStale = false
 
@@ -32738,7 +32950,10 @@ function setupListeners() {
     // anyway, so the sentence can never be printed with a number that is not
     // a duration.
     const ageMs = audio.positionAgeMs
-    const stale = playing && Number.isFinite(ageMs) && ageMs > STALE_POSITION_MS
+    // === false, not falsy: a shim that does not answer this at all keeps the
+    // old single threshold rather than silently getting the long one.
+    const limitMs = audio.hasReportedPosition === false ? STALE_AFTER_LOAD_MS : STALE_POSITION_MS
+    const stale = playing && Number.isFinite(ageMs) && ageMs > limitMs
     if (stale !== _barStale) {
       _barStale = stale
       document.getElementById('progress-track')?.classList.toggle('stale', stale)

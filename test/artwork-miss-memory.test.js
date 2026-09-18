@@ -291,3 +291,87 @@ test('no painter builds a cover src without asking the miss memory', () => {
   assert.deepStrictEqual([...new Set(callers)].sort(), ['_artSrcIfUsable'],
     'only _artSrcIfUsable may call _artSrc; every painter goes through it or artImg')
 })
+
+// ── The player bar's own cover (live re-test, 2026-09-19) ──────────────────
+// #np-art was the last painter still building its own file:// URL and
+// assigning it straight to the img. updateNowPlaying runs on every track
+// change, every play/pause and once a second while playing, so a cover that
+// had already failed was re-requested that often — and each failure left a
+// broken image in the bar where the fallback belongs.
+
+// The real _paintNowPlayingArt against the real miss memory, with a browser
+// that reports a miss for anything not on disk.
+function openBarPage(onDisk) {
+  const requests = []
+  const listeners = []
+  const ctx = vm.createContext({
+    Set, String, console,
+    document: { addEventListener: (type, fn, capture) => listeners.push({ type, fn, capture }) },
+  })
+  vm.runInContext(missBlock() + lift('_artSrc') + lift('_artSrcIfUsable') + lift('_paintNowPlayingArt'), ctx)
+  const onError = listeners.find(l => l.type === 'error' && l.capture === true).fn
+
+  const img = {
+    style: {}, _src: null, _loads: 0,
+    getAttribute: k => (k === 'src' ? img._src : null),
+    addEventListener (t, fn) { if (t === 'load') img._onLoad = fn },
+    set src (v) {
+      img._src = v
+      requests.push(v)
+      const file = String(v).replace(/^file:\/\//, '')
+      // The browser answers: a load, or an error the page learns from.
+      if (onDisk.has(file)) { img._loads++; if (img._onLoad) img._onLoad() }
+      else onError({ target: { tagName: 'IMG', getAttribute: k => (k === 'src' ? v : null) } })
+    },
+    get src () { return img._src },
+  }
+  const fb = { style: {} }
+  return {
+    requests,
+    img,
+    fb,
+    paint: p => { ctx.__i = img; ctx.__f = fb; ctx.__p = p; vm.runInContext('_paintNowPlayingArt(__i, __f, __p)', ctx) },
+  }
+}
+
+test('a missing cover is asked for once, however often the bar repaints', () => {
+  const page = openBarPage(new Set())
+  // A track change, then a second of ticking: the bar repaints constantly.
+  for (let i = 0; i < 20; i++) page.paint('/mnt/data/MUSIC/Gone/cover.jpg')
+  assert.strictEqual(page.requests.length, 1,
+    'the dead cover was requested ' + page.requests.length + ' times')
+})
+
+test('and once it is known missing the bar shows the fallback, not a broken image', () => {
+  const page = openBarPage(new Set())
+  page.paint('/mnt/data/MUSIC/Gone/cover.jpg')
+  page.paint('/mnt/data/MUSIC/Gone/cover.jpg')
+  assert.strictEqual(page.img.style.display, 'none', 'the broken img must be hidden')
+  assert.strictEqual(page.fb.style.display, 'flex', 'and the note shown in its place')
+})
+
+test('a cover that is there is still painted, and only once per track', () => {
+  const page = openBarPage(new Set(['/mnt/data/MUSIC/Camel/cover.jpg']))
+  page.paint('/mnt/data/MUSIC/Camel/cover.jpg')
+  page.paint('/mnt/data/MUSIC/Camel/cover.jpg')
+  page.paint('/mnt/data/MUSIC/Camel/cover.jpg')
+  assert.strictEqual(page.requests.length, 1, 'the same src is not re-assigned')
+  assert.strictEqual(page.img.style.display, 'block')
+  assert.strictEqual(page.fb.style.display, 'none')
+  assert.strictEqual(page.img.style.opacity, '1', 'and it faded in')
+})
+
+test('a track with no cover at all shows the fallback without asking for anything', () => {
+  const page = openBarPage(new Set())
+  page.paint(null)
+  assert.deepStrictEqual(page.requests, [])
+  assert.strictEqual(page.fb.style.display, 'flex')
+})
+
+test('moving from a missing cover to a real one still paints the real one', () => {
+  const page = openBarPage(new Set(['/mnt/data/MUSIC/Camel/cover.jpg']))
+  page.paint('/mnt/data/MUSIC/Gone/cover.jpg')
+  page.paint('/mnt/data/MUSIC/Camel/cover.jpg')
+  assert.strictEqual(page.img.style.display, 'block')
+  assert.match(page.img.src, /Camel/, 'the miss memory must not poison the next track')
+})
