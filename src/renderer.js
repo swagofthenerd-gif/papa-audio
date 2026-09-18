@@ -5672,11 +5672,12 @@ async function _switchPackEpisode(index, opts) {
     return
   }
   _player.setStageMessage('')
-  _player.setPack(res.files || [], _switchPackEpisode, _keepPackEpisode)
-  _setPackFiles(res.files || [])
 
-  // Keep the rest of the app in step: the episode being watched drives the
-  // watch store, the skip segments and what counts as next.
+  // The episode being watched moves FIRST, before anything is told about the
+  // new pack. Everything downstream — the Up Next card, the next-episode
+  // source prefetch, the "download next episode" control — asks what episode
+  // is playing, and when the file list moved first they all answered with the
+  // episode that had just ended and prepared the wrong one.
   const chosen = (res.files || []).find(function (f) { return f.current })
   if (chosen && chosen.episode != null) {
     _videoState.episode = chosen.episode
@@ -5704,11 +5705,25 @@ async function _switchPackEpisode(index, opts) {
         autoAdvanced: opts.fromAdvance === true,
         pick: carryPick || null,
         sourceCandidate: carryCandidate || null,
+        // The switch keeps playing the same title, so the play context the
+        // deck reads has to follow the new episode too.
+        ctx: _watch.ctx || null,
       }
     }
     _player.setSegments([])
     _loadSkipSegments()
   }
+
+  _player.setPack(res.files || [], _switchPackEpisode, _keepPackEpisode)
+  _setPackFiles(res.files || [])
+
+  // Now that the app agrees which episode is playing, look ahead: what comes
+  // next, its sources, and whether it can be pulled down in the background.
+  // None of this ran on a strip switch at all before — advancing through a
+  // pack quietly stopped preparing anything.
+  if (typeof _setUpNextInfo === 'function') _setUpNextInfo()
+  if (typeof _prefetchNextSources === 'function') _prefetchNextSources()
+  if (typeof _updatePredownloadControl === 'function') _updatePredownloadControl()
 }
 
 function _videoPlayResult(result, opts) {
