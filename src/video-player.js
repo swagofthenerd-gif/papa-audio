@@ -3235,6 +3235,17 @@
         if (seg) doSkip(seg)
       },
       setUpNext: setUpNext,
+      // Should reaching the true end of the file roll straight on to the next
+      // episode? The deck owns all three facts: whether auto-play is on,
+      // whether there IS a next episode, and whether the viewer dismissed the
+      // card ("Watch credits"). A file that ends before the countdown fires —
+      // a short outro, a seek into the credits, an episode with no trailing
+      // silence — used to stop dead on the last frame even with auto-play on.
+      // The still-watching cap still applies: after enough unattended
+      // advances the app asks rather than starting another one.
+      shouldAutoAdvanceAtEnd: function () {
+        return !!(autoNext && upNextInfo && !upNextDismissed && autoAdvances < STILL_WATCHING_AFTER)
+      },
       // Relayed from mpv when the picture is double-clicked: the click never
       // reaches the page, so the gesture has to arrive this way.
       toggleFullscreen: toggleFullscreen,

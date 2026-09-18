@@ -291,3 +291,35 @@ test('switching to an episode already cached plays the file on disk, with no Rea
   assert.strictEqual(result && result.ok, true)
   assert.strictEqual(result.local, true)
 })
+
+test('the relay built by an episode switch is labelled with that episode', async () => {
+  // `want: null` made every later look-up believe the relay was for "whatever
+  // the pack picks by default", so pressing Play on the very episode just
+  // switched to rebuilt the relay from scratch.
+  const session = {
+    token: 1, streamer: null,
+    debrid: { magnet: 'magnet:?xt=urn:btih:abc', want: { season: 1, episode: 5 } },
+  }
+  const run = await runHandler('video-pack-select', {
+    args: { index: 12 },
+    globals: {
+      _videoSession: session,
+      safeSend() {},
+      _videoCacheEntries: () => [],
+      fs: { existsSync: () => false },
+      _loadIntoActivePlayer: async () => true,
+      _debridProxyStop() {},
+      createDebridProxy: () => ({ serve: async () => 'http://relay/6' }),
+      debrid: () => ({
+        packFiles: async () => FILES,
+        linkForFile: async () => 'https://rd.example/12',
+      }),
+      _debridReady: null,
+    },
+  })
+  const ready = run.globals._debridReady
+  assert.ok(ready, 'no relay was recorded')
+  assert.deepEqual(ready.want, { season: 1, episode: 6 },
+    'the relay must say which episode it is serving')
+  assert.deepEqual(session.debrid.want, { season: 1, episode: 6 })
+})

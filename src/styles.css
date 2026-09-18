@@ -8222,6 +8222,9 @@ body.app-unfocused .vt-menu {
   font-size:15px; font-weight:700; color:var(--text); margin:0 0 12px;
 }
 .vdevice-note { font-size:12px; font-weight:500; color:var(--text3); }
+/* "Delete watched" — an explicit, destructive action, so it sits apart from
+   the cards rather than on one of them. */
+.vdevice-actions-row { display:flex; justify-content:flex-end; margin:0 0 10px; }
 .vdevice-group {
   display:flex; align-items:baseline; gap:10px; flex-wrap:wrap;
   font-size:13px; font-weight:600; color:var(--text2); margin:14px 0 8px;

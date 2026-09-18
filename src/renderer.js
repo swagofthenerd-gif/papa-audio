@@ -1617,6 +1617,13 @@ async function init() {
   // the supported flow — and it is what makes the localStorage→SideStore
   // migration happen before the first read.
   try { await (window.PapaVideoStore?.init?.() || null) } catch (_) { /* store degrades to localStorage */ }
+  // Finishing an episode should free the space it was holding in the rewatch
+  // cache. The store is the only thing that knows the moment it happens.
+  try { _wireWatchedSweep() } catch (_) { /* the sweep is a tidy-up, never a blocker */ }
+  try {
+    const vs = await window.api.videoSettingsGet().catch(function () { return null })
+    if (vs && vs.ok && vs.settings) _deleteWatchedCache = vs.settings.deleteWatchedCache !== false
+  } catch (_) { /* the default stands */ }
 
   // Roadmap 001: no folder is not a locked door. The wizard is offered until
   // the person answers it — Add my music, Explore instead, or Set up later —
@@ -3392,6 +3399,32 @@ var _videoHero = { items: [], index: 0, timer: null, paused: false }
 function _vStore() {
   return (typeof window !== 'undefined' && window.PapaVideoStore) || null
 }
+
+// ── "Delete watched episodes" ───────────────────────────────────────────────
+// An episode you have finished is the least likely thing you will open next,
+// and it is holding space the episode you have NOT seen wants. So finishing
+// one hands its key to main, which takes the file back out of the rewatch
+// cache. Never the keep library — files deliberately Downloaded for offline
+// are a library the viewer curates, not a cache the app manages — and never
+// the file on screen.
+var _deleteWatchedCache = true   // the shipped default; Settings overwrites it
+function _sweepWatchedCache(keys) {
+  const list = (Array.isArray(keys) ? keys : [keys]).filter(function (k) { return typeof k === 'string' && k })
+  if (!list.length) return Promise.resolve(null)
+  if (_deleteWatchedCache === false) return Promise.resolve(null)
+  if (!window.api || typeof window.api.videoCacheSweepWatched !== 'function') return Promise.resolve(null)
+  return window.api.videoCacheSweepWatched({ keys: list }).catch(function (e) {
+    console.warn('[papa-video] could not sweep watched episodes:', (e && e.message) || e)
+    return null
+  })
+}
+
+// Wired once: the store tells us the moment an episode genuinely finishes.
+function _wireWatchedSweep() {
+  const store = _vStore()
+  if (!store || typeof store.onWatchedSweep !== 'function') return
+  store.onWatchedSweep(function (key) { _sweepWatchedCache(key) })
+}
 function _vFmt() {
   return (typeof window !== 'undefined' && window.PapaVideoFormat) || null
 }
@@ -4671,10 +4704,21 @@ function _handleVideoEvent(payload) {
     }
     try {
       const store = _vStore()
-      if (store && _watch.key) store.markWatched(_watch.key)
+      // 'ended': mpv played the file to its end. That is a real finish, so the
+      // rewatch cache is allowed to let this episode go.
+      if (store && _watch.key) store.markWatched(_watch.key, { reason: 'ended' })
     } catch (_) {}
-    // Reaching the true end of a series episode means the Up Next card was
-    // dismissed or absent — auto-advancing here would override that choice.
+    // Rolling on to the next episode, when that is what the viewer asked for.
+    // The deck knows whether auto-play is on, whether there is a next episode
+    // and whether the card was dismissed. A file whose last frame arrives
+    // before the countdown ever fires — a short outro, a seek into the
+    // credits — used to stop dead on the last frame with auto-play plainly on,
+    // which is the opposite of watching a season straight through.
+    if (_player && typeof _player.shouldAutoAdvanceAtEnd === 'function' &&
+        _player.shouldAutoAdvanceAtEnd()) {
+      _playNextEpisode()
+      return
+    }
     showToast('Finished')
     _videoStopAndHide()
   } else if (payload.kind === 'stalled') {
@@ -4834,8 +4878,15 @@ function _prefetchKey(next) {
 }
 
 async function _prefetchNextSources() {
-  if (!_videoDetail || !_videoDetail.d) return
-  const next = _nextEpisodeOf(_videoDetail, _videoState)
+  // The title in the PICTURE, not the page being browsed. _videoDetail and
+  // _videoState are page-scoped: open another title while the mini player runs
+  // and both change under this, so the look-ahead resolved sources for
+  // whatever the viewer happened to be reading and the real next episode
+  // arrived cold.
+  const pctx = (typeof _playCtx === 'function' ? _playCtx()
+    : { detail: _videoDetail, state: _videoState, streams: [] })
+  if (!pctx.detail || !pctx.detail.d) return
+  const next = _nextEpisodeOf(pctx.detail, pctx.state)
   const key = _prefetchKey(next)
   if (!key || _prefetch.key === key || _prefetch.inflight) return
   _prefetch = { key: key, streams: null, inflight: true }
@@ -4843,12 +4894,12 @@ async function _prefetchNextSources() {
   // The request is the one we would make after advancing, with the episode
   // moved on. Building it by hand avoids mutating _videoState, which the UI
   // is still rendering from.
-  const d = _videoDetail.d
+  const d = pctx.detail.d
   const req = {
-    type: _videoDetail.type, title: d.title, year: d.year,
-    tmdbId: _videoDetail.type === 'tv' ? d.id : undefined,
+    type: pctx.detail.type, title: d.title, year: d.year,
+    tmdbId: pctx.detail.type === 'tv' ? d.id : undefined,
     imdbId: d.imdbId || null,
-    anilistId: _videoDetail.type === 'anime' ? d.id : undefined,
+    anilistId: pctx.detail.type === 'anime' ? d.id : undefined,
     titles: d.titles || null,
     season: next.season != null ? next.season : undefined,
     episode: next.episode,
@@ -4867,13 +4918,18 @@ async function _prefetchNextSources() {
 // Tells the theatre what is coming, so the Up Next card can show the real
 // episode rather than a generic "next".
 function _setUpNextInfo() {
-  if (!_player || !_videoDetail || !_videoDetail.d) return
-  const next = _nextEpisodeOf(_videoDetail, _videoState)
+  // Same reason as _prefetchNextSources: the card must describe what is
+  // PLAYING. Reading the page put someone else's episode on the Up Next card
+  // while the mini player ran.
+  const pctx = (typeof _playCtx === 'function' ? _playCtx()
+    : { detail: _videoDetail, state: _videoState, streams: [] })
+  if (!_player || !pctx.detail || !pctx.detail.d) return
+  const next = _nextEpisodeOf(pctx.detail, pctx.state)
   if (!next || next.unaired) return _player.setUpNext(null)   // V037: no card for an episode nobody has
-  const d = _videoDetail.d
+  const d = pctx.detail.d
   let title = 'Episode ' + next.episode
   let still = null
-  if (_videoDetail.type === 'tv' && Array.isArray(d.seasons)) {
+  if (pctx.detail.type === 'tv' && Array.isArray(d.seasons)) {
     const season = d.seasons.find(function (x) { return x.seasonNumber === next.season })
     const ep = season && Array.isArray(season.episodes)
       ? season.episodes.find(function (e) { return e.episodeNumber === next.episode })
@@ -4885,7 +4941,7 @@ function _setUpNextInfo() {
   }
   _player.setUpNext({
     title: title,
-    subtitle: _videoDetail.type === 'tv'
+    subtitle: pctx.detail.type === 'tv'
       ? 'Season ' + next.season + ' · Episode ' + next.episode
       : d.title,
     still: still,
@@ -5480,6 +5536,23 @@ function _packFileForEpisode(packFiles, next) {
 // exactly as a strip click does. Only when the pack does NOT carry the next
 // episode — a single-file torrent, a season boundary — does it fall back to
 // resolving fresh sources from the indexers.
+// Pressing Next is not the same as finishing. Advancing three minutes into an
+// episode used to mark it watched, which put it in the diary, greyed it out in
+// the episode list, and — now that finishing an episode frees its cached file
+// — would have deleted a file the viewer had barely started. Half way through
+// is the line: past it you have effectively seen it, before it you skipped.
+// The position is persisted either way, so the episode stays resumable.
+function _advanceCountsAsWatched() {
+  const R = (typeof PapaWatchRules !== 'undefined' && PapaWatchRules) ||
+    (typeof window !== 'undefined' && window.PapaWatchRules) || null
+  const st = _player && typeof _player._state === 'function' ? _player._state() : null
+  const pos = Number(st && st.position) || 0
+  const dur = Number(st && st.duration) || 0
+  if (dur <= 0) return false
+  const ratio = R && typeof R.ratio === 'function' ? R.ratio(pos, dur) : (pos / dur)
+  return ratio >= 0.5
+}
+
 async function _playNextEpisode() {
   // The fallback keeps this runnable in the single-function vm harnesses the
   // video tests use, which evaluate one function with the globals in scope.
@@ -5510,15 +5583,25 @@ async function _playNextEpisode() {
   if (packFile) {
     _persistPosition(true)
     const store = _vStore()
-    try { if (store && _watch.key) store.markWatched(_watch.key) } catch (_) {}
+    try {
+      if (store && _watch.key && _advanceCountsAsWatched()) {
+        store.markWatched(_watch.key, { reason: 'advance' })
+      }
+    } catch (_) {}
     await _switchPackEpisode(packFile.index, { fromAdvance: true })
     return
   }
 
   _persistPosition(true)
   const store = _vStore()
-  // Finishing an episode by advancing counts as having watched it.
-  try { if (store && _watch.key) store.markWatched(_watch.key) } catch (_) {}
+  // Advancing past the half-way mark counts as having watched it; pressing
+  // Next in the first few minutes is a skip, and the position already saved
+  // above is what makes it resumable.
+  try {
+    if (store && _watch.key && _advanceCountsAsWatched()) {
+      store.markWatched(_watch.key, { reason: 'advance' })
+    }
+  } catch (_) {}
 
   if (next.season != null) pctx.state.season = next.season
   pctx.state.episode = next.episode
@@ -8341,9 +8424,25 @@ async function _renderDeviceTab(rows, ticket) {
       keeps.length + (keeps.length === 1 ? ' file' : ' files') + ' \u00b7 ' + _fmtBytes(keepUsed), body)
   }
 
+  // Which cached episodes have actually been finished. The watch store is the
+  // only thing that knows, and it lives out here in the renderer.
+  const watchedCached = (function () {
+    const store = typeof _vStore === 'function' ? _vStore() : null
+    if (!store || typeof store.get !== 'function') return []
+    return cached.filter(function (e) {
+      let it = null
+      try { it = store.get(e.key) } catch (_) { it = null }
+      return !!(it && it.watched === true)
+    }).map(function (e) { return e.key })
+  })()
+
   if (cached.length) {
     html += _deviceSectionHtml('Ready to rewatch',
       'Kept automatically from what you watched \u2014 the oldest go first',
+      (watchedCached.length
+        ? '<div class="vdevice-actions-row"><button class="mcs-set-refresh" id="vdevice-del-watched">' +
+            'Delete watched (' + watchedCached.length + ')</button></div>'
+        : '') +
       '<div class="vgrid">' + cached.map(function (e) { return _deviceCardHtml(e, 'cache') }).join('') + '</div>')
   }
 
@@ -8381,6 +8480,36 @@ async function _renderDeviceTab(rows, ticket) {
   // leaving that as a property of this line.
   mount.innerHTML = '<div class="vdevice-page" id="vdevice-grid">' + html + '</div>'
   _bindDeviceCards(mount.querySelector('.vdevice-page'))
+
+  // The explicit button: do it now, whatever the setting says, because the
+  // viewer just asked for it in as many words.
+  const delBtn = document.getElementById('vdevice-del-watched')
+  if (delBtn) {
+    delBtn.addEventListener('click', function () {
+      delBtn.disabled = true
+      if (!window.api || typeof window.api.videoCacheSweepWatched !== 'function') return
+      window.api.videoCacheSweepWatched({ keys: watchedCached }).then(function (res) {
+        const n = (res && res.deleted && res.deleted.length) || 0
+        if (res && res.ok === false) showSnackbar('Could not delete those' + (res.error ? ': ' + _shortQ(res.error, 90) : ''), null, null, 6000)
+        else showSnackbar(n ? 'Removed ' + n + (n === 1 ? ' watched episode' : ' watched episodes') : 'Nothing to remove yet', null, null, 4000)
+        if (typeof _refreshInstantKeys === 'function') _refreshInstantKeys(true)
+        _renderDeviceTab(document.getElementById('vrows'), _videoCatalogTicket)
+      }).catch(function (e) {
+        delBtn.disabled = false
+        showSnackbar('Could not delete those: ' + _shortQ(String((e && e.message) || e), 90), null, null, 6000)
+      })
+    })
+  }
+
+  // And the automatic pass, on arriving at the page: anything finished, and
+  // not touched in the last ten minutes, goes. Only when the setting is on.
+  if (watchedCached.length && typeof _sweepWatchedCache === 'function') {
+    _sweepWatchedCache(watchedCached).then(function (res) {
+      if (!res || !res.ok || !(res.deleted && res.deleted.length)) return
+      if (_videoTab !== 'device' || state.currentPage !== 'video') return
+      _renderDeviceTab(document.getElementById('vrows'), _videoCatalogTicket)
+    })
+  }
 }
 
 // Reports what actually happened. An IPC that answers { ok:false, error } and a
@@ -8508,7 +8637,23 @@ function _bindDeviceEvents() {
   // page being broken rather than merely late.
   if (window.api.onVideoEvent) {
     window.api.onVideoEvent(function (e) {
-      if (!e || e.kind !== 'cached') return
+      if (!e) return
+      if (e.kind === 'cache-swept') {
+        // Watched episodes were cleared out; the page must not keep showing
+        // cards for files that are gone.
+        if (_videoTab === 'device' && state.currentPage === 'video') {
+          var swept = document.getElementById('vrows')
+          if (swept) _renderDeviceTab(swept, _videoCatalogTicket)
+        }
+        return
+      }
+      if (e.kind !== 'cached') return
+      // Say it out loud, once: the whole point of the rewatch cache is that
+      // the viewer knows an episode is now instant. It was silent, so it read
+      // as nothing happening.
+      if (typeof showToast === 'function') {
+        showToast('Saved for rewatching: ' + (e.title || 'this episode'))
+      }
       if (_videoTab !== 'device' || state.currentPage !== 'video') return
       var rows = document.getElementById('vrows')
       if (rows) _renderDeviceTab(rows, _videoCatalogTicket)
@@ -24814,6 +24959,18 @@ function _initVideoKeepManager(s, save) {
       if (!isFinite(n) || n < 0) n = 0
       cacheInput.value = String(n)
       save({ videoCacheGB: n })
+    })
+  }
+  // "Delete watched episodes" (2026-09-19). Defaults ON: the cache exists to
+  // make the NEXT watch instant, and an episode you have finished is the least
+  // likely thing you will open next while taking space from one you have not
+  // seen. The keep library is never touched by it.
+  const delWatched = $('video-delete-watched')
+  if (delWatched) {
+    delWatched.checked = s.deleteWatchedCache !== false
+    delWatched.addEventListener('change', function () {
+      _deleteWatchedCache = delWatched.checked
+      save({ deleteWatchedCache: delWatched.checked })
     })
   }
   _refreshVideoKeepList()

@@ -10420,6 +10420,12 @@ function _videoSettings() {
       // the keep quota: keeps are a library the user curates, this is a cache
       // the app manages.
       videoCacheGB: 15,
+      // An episode you have finished is the LEAST likely thing you will open
+      // next, and it is holding space the episode you have not seen wants.
+      // Default on: the cache exists to make the next watch instant, not to
+      // hoard what is already watched. Files deliberately Downloaded for
+      // offline live in their own library and are never touched by this.
+      deleteWatchedCache: true,
       // Bandwidth cap for streaming, in megabits per second, or null for no
       // cap (App #41). Applied to the WebTorrent client, which throttles
       // client-wide — one cap governs every stream and background download.
@@ -11227,6 +11233,8 @@ const VIDEO_SETTING_KEYS = new Set([
   // W5 surfaces: the offline-keeps quota and debrid credentials save through
   // the same settings path; missing keys here silently dropped their writes.
   'videoKeepQuotaGB', 'videoCacheGB', 'debridProvider', 'debridToken',
+  // Whether finishing an episode clears it out of the rewatch cache again.
+  'deleteWatchedCache',
   'videoUpscale',
   // The Smooth/Purist dropdown has always written this key and it was never on
   // the list, so every write was dropped: the control moved, said nothing, and
@@ -13920,22 +13928,26 @@ ipcMain.handle('video-pack-select', async (_, { index, cacheKey, cacheMeta } = {
     // does not silently restart them at zero on the new episode... except that
     // a DIFFERENT episode is not the same picture, so position is deliberately
     // NOT carried over. Only the source-swap case restores position.
+    // The wanted episode is now whatever was clicked, so the strip's own idea
+    // of "current" follows it and a later Next advances from here. Resolved
+    // BEFORE the relay is built, because the relay has to be labelled with the
+    // episode it is serving.
+    const files = await debrid().packFiles(held.magnet, held.want)
+    const chosen = files.find(f => f && Number(f.index) === Number(index))
+    const wantNow = chosen && chosen.episode != null
+      ? { season: (held.want && held.want.season) || null, episode: chosen.episode }
+      : held.want
+    _videoSession.debrid = { magnet: held.magnet, want: wantNow }
+
     const direct = await debrid().linkForFile(held.magnet, Number(index))
     const proxy = createDebridProxy({ fetchFn: (u, o) => _rdFetch(u, Object.assign({ timeoutMs: 20000 }, o || {})) })
     const url = await proxy.serve(direct)
     _debridProxyStop()
-    _debridReady = { magnet: held.magnet, proxy, url, want: null, at: Date.now() }
-
-    // The wanted episode is now whatever was clicked, so the strip's own idea
-    // of "current" follows it and a later Next advances from here.
-    const files = await debrid().packFiles(held.magnet, held.want)
-    const chosen = files.find(f => f && Number(f.index) === Number(index))
-    _videoSession.debrid = {
-      magnet: held.magnet,
-      want: chosen && chosen.episode != null
-        ? { season: (held.want && held.want.season) || null, episode: chosen.episode }
-        : held.want,
-    }
+    // The relay is standing for THIS episode, so it says which one. `want:
+    // null` made every later look-up believe the relay was for "whatever the
+    // pack picks by default", so pressing Play on this very episode rebuilt
+    // the relay from scratch instead of using the one just built.
+    _debridReady = { magnet: held.magnet, proxy, url, want: wantNow || null, at: Date.now() }
     const marked = files.map(f => Object.assign({}, f, { current: Number(f.index) === Number(index) }))
 
     if (!await _loadIntoActivePlayer(url, current, chosen && chosen.name)) return { ok: false, error: 'Superseded' }
@@ -14919,6 +14931,48 @@ ipcMain.handle('video-cache-delete', async (_, { key } = {}) => {
     if (e) { try { fs.unlinkSync(e.path) } catch (_) {} }
     sideStores.videoCacheIndex.set(entries.filter(x => x.key !== key))
     return { ok: true }
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) }
+  }
+})
+
+// "Delete watched episodes" (his words, 2026-09-19). An episode you have
+// finished is the least likely thing you will open next, and it is sitting on
+// space the episode you have NOT seen wants. So finishing one takes it back
+// out of the rewatch cache.
+//
+// Three things are never deleted:
+//   - the file on screen right now (_videoSession.cacheKey),
+//   - anything touched in the last ten minutes, so a rewatch you are in the
+//     middle of is not pulled out from under you by a stale sweep,
+//   - the keep library (videoKeepIndex) — files you deliberately chose to
+//     Download for offline are yours, not the cache's, and this never reads
+//     that store at all.
+ipcMain.handle('video-cache-sweep-watched', async (_, { keys } = {}) => {
+  if (DRY_RUN) return _dryRunRefusal('deleting watched episodes from the cache')
+  try {
+    // Inside the body on purpose: a watch started minutes ago is still a watch
+    // in progress, and this is the one number that decides it.
+    const CACHE_SWEEP_GRACE_MS = 10 * 60 * 1000
+    const want = new Set((Array.isArray(keys) ? keys : []).filter(k => typeof k === 'string' && k))
+    if (!want.size) return { ok: true, deleted: [] }
+    const entries = _videoCacheEntries()
+    const now = Date.now()
+    const playing = _videoSession.cacheKey
+    const gone = []
+    const kept = []
+    for (const e of entries) {
+      const eligible = want.has(e.key) && e.key !== playing &&
+        (now - (Number(e.lastUsedAt) || Number(e.savedAt) || 0)) > CACHE_SWEEP_GRACE_MS
+      if (!eligible) { kept.push(e); continue }
+      try { fs.unlinkSync(e.path) } catch (_) { /* already gone: drop it anyway */ }
+      gone.push(e.key)
+    }
+    if (gone.length) {
+      sideStores.videoCacheIndex.set(kept)
+      safeSend('video-event', { kind: 'cache-swept', keys: gone })
+    }
+    return { ok: true, deleted: gone }
   } catch (e) {
     return { ok: false, error: (e && e.message) || String(e) }
   }
