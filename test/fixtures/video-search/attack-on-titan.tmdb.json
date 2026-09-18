@@ -1,0 +1,70 @@
+{
+  "page": 1,
+  "results": [
+    {
+      "id": 1429,
+      "media_type": "tv",
+      "name": "Attack on Titan",
+      "original_name": "進撃の巨人",
+      "first_air_date": "2013-04-07",
+      "poster_path": "/p1429.jpg",
+      "genre_ids": [
+        16,
+        10759
+      ],
+      "original_language": "ja",
+      "origin_country": [
+        "JP"
+      ]
+    },
+    {
+      "id": 346672,
+      "media_type": "movie",
+      "title": "Attack on Titan",
+      "original_title": "進撃の巨人 アテンオンタイタン",
+      "release_date": "2015-08-01",
+      "poster_path": "/p346672.jpg",
+      "genre_ids": [
+        28,
+        878
+      ],
+      "original_language": "ja",
+      "origin_country": [
+        "JP"
+      ]
+    },
+    {
+      "id": 346673,
+      "media_type": "movie",
+      "title": "Attack on Titan II: End of the World",
+      "original_title": "Attack on Titan II: End of the World",
+      "release_date": "2015-09-19",
+      "poster_path": "/p346673.jpg",
+      "genre_ids": [
+        28,
+        878
+      ],
+      "original_language": "ja",
+      "origin_country": [
+        "JP"
+      ]
+    },
+    {
+      "id": 95479,
+      "media_type": "tv",
+      "name": "Attack on Titan: Junior High",
+      "original_name": "Attack on Titan: Junior High",
+      "first_air_date": "2015-10-04",
+      "poster_path": "/p95479.jpg",
+      "genre_ids": [
+        16
+      ],
+      "original_language": "ja",
+      "origin_country": [
+        "JP"
+      ]
+    }
+  ],
+  "total_pages": 1,
+  "total_results": 4
+}

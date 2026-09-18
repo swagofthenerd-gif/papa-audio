@@ -1,0 +1,50 @@
+{
+  "data": {
+    "Page": {
+      "media": [
+        {
+          "id": 16498,
+          "idMal": 16498,
+          "title": {
+            "english": "Attack on Titan",
+            "romaji": "Shingeki no Kyojin",
+            "native": "進撃の巨人"
+          },
+          "seasonYear": 2013,
+          "coverImage": {
+            "large": "https://img/16498.jpg"
+          },
+          "averageScore": 85,
+          "genres": [
+            "Action"
+          ],
+          "format": "TV"
+        },
+        {
+          "id": 25777,
+          "idMal": 25777,
+          "title": {
+            "english": "Attack on Titan Season 2",
+            "romaji": "Shingeki no Kyojin 2",
+            "native": "進撃の巨人 Season 2"
+          },
+          "seasonYear": 2017,
+          "coverImage": {
+            "large": "https://img/25777.jpg"
+          },
+          "averageScore": 85,
+          "genres": [
+            "Action"
+          ],
+          "format": "TV"
+        }
+      ],
+      "pageInfo": {
+        "currentPage": 1,
+        "lastPage": 1,
+        "total": 2,
+        "hasNextPage": false
+      }
+    }
+  }
+}

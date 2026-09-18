@@ -144,6 +144,7 @@ function harness (source, opts) {
     extractFn(source, '_vSearchSourceNoteHtml'),
     extractFn(source, '_vSearchOutageHtml'),
     extractFn(source, '_bindVideoSearchRetry'),
+    extractFn(source, '_vSearchGroupOrder'),
     extractFn(source, '_paintVideoSearchResults'),
     extractFn(source, '_runVideoTitleSearch'),
     'const _VSEARCH_TYPE_CHIPS = ' + /var _VSEARCH_TYPE_CHIPS = (\[[\s\S]*?\n\])/.exec(source)[1],

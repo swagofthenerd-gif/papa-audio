@@ -1,0 +1,86 @@
+{
+  "data": {
+    "Page": {
+      "media": [
+        {
+          "id": 7,
+          "idMal": 7,
+          "title": {
+            "english": "Interstella 5555",
+            "romaji": "Interstella 5555: The 5tory of the 5ecret 5tar 5ystem",
+            "native": "インターステラ 5555"
+          },
+          "seasonYear": 2003,
+          "coverImage": {
+            "large": "https://img/7.jpg"
+          },
+          "averageScore": 85,
+          "genres": [
+            "Action"
+          ],
+          "format": "TV"
+        },
+        {
+          "id": 8,
+          "idMal": 8,
+          "title": {
+            "english": "Space Brothers",
+            "romaji": "Uchuu Kyoudai",
+            "native": "宇宙兄弟"
+          },
+          "seasonYear": 2012,
+          "coverImage": {
+            "large": "https://img/8.jpg"
+          },
+          "averageScore": 85,
+          "genres": [
+            "Action"
+          ],
+          "format": "TV"
+        },
+        {
+          "id": 9,
+          "idMal": 9,
+          "title": {
+            "english": "Astra Lost in Space",
+            "romaji": "Kanata no Astra",
+            "native": "彼方のアストラ"
+          },
+          "seasonYear": 2019,
+          "coverImage": {
+            "large": "https://img/9.jpg"
+          },
+          "averageScore": 85,
+          "genres": [
+            "Action"
+          ],
+          "format": "TV"
+        },
+        {
+          "id": 10,
+          "idMal": 10,
+          "title": {
+            "english": "Planetes",
+            "romaji": "Planetes",
+            "native": "プラネテス"
+          },
+          "seasonYear": 2003,
+          "coverImage": {
+            "large": "https://img/10.jpg"
+          },
+          "averageScore": 85,
+          "genres": [
+            "Action"
+          ],
+          "format": "TV"
+        }
+      ],
+      "pageInfo": {
+        "currentPage": 1,
+        "lastPage": 1,
+        "total": 4,
+        "hasNextPage": false
+      }
+    }
+  }
+}

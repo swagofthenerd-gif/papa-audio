@@ -224,7 +224,7 @@ const { createKitsuCatalog, EPISODE_PAGE: KITSU_EPISODE_PAGE } = require('./cata
 const { resolveAnimeShelf } = require('./catalog/anime-shelf')
 const { createOmdbCatalog, plausibleMatch: omdbPlausibleMatch, omdbTypeFor } = require('./catalog/omdb')
 const { createWebStreamServer } = require('./web-stream')
-const { sortJunkLast } = require('./catalog/search-rank')
+const { sortJunkLast, rankByRelevance } = require('./catalog/search-rank')
 const { createOpenSubtitles } = require('./subs/opensubtitles')
 const { resolveStream, rankingSeeds } = require('./providers/index')
 const { createYtsProvider } = require('./providers/yts')
@@ -12022,11 +12022,15 @@ ipcMain.handle('video-search', async (_, { query, type }) => {
       if (r.isAnime && animeRes.some(a => _sameShow(a, r))) continue
       merged.push(r)
     }
+    // Both catalogues rank their own results well; concatenating them threw
+    // that away and put every anime entry after every film, whatever was
+    // asked for. rankByRelevance interleaves them by how well the title
+    // matches the query, keeping each catalogue's own order as the tiebreak.
     // Entries with no year and no poster are strays sharing a title with
-    // the real thing; they go last (R10).
+    // the real thing; they still go last (R10).
     return {
       ok: true,
-      results: sortJunkLast(merged.concat(animeRes)),
+      results: sortJunkLast(rankByRelevance(query, [merged, animeRes])),
       sources,
       failed,
     }

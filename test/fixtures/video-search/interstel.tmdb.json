@@ -1,0 +1,21 @@
+{
+  "page": 1,
+  "results": [
+    {
+      "id": 157336,
+      "media_type": "movie",
+      "title": "Interstellar",
+      "original_title": "Interstellar",
+      "release_date": "2014-11-05",
+      "poster_path": "/p157336.jpg",
+      "genre_ids": [
+        12,
+        18,
+        878
+      ],
+      "original_language": "en"
+    }
+  ],
+  "total_pages": 1,
+  "total_results": 1
+}

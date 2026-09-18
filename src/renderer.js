@@ -8703,6 +8703,22 @@ function _bindVideoSearchRetry() {
   }
 }
 
+// Which group goes first. A group's rank is where its best entry sits in the
+// backend-ranked result list, so the group holding the best answer is painted
+// at the top. A group with nothing in it keeps its place at the back, where it
+// is not painted anyway.
+function _vSearchGroupOrder(groups, ordered) {
+  const firstSeen = {}
+  for (let i = 0; i < ordered.length; i++) {
+    const key = ordered[i].type || 'movie'
+    if (firstSeen[key] === undefined) firstSeen[key] = i
+  }
+  const rank = function (g) {
+    return firstSeen[g.key] === undefined ? Number.MAX_SAFE_INTEGER : firstSeen[g.key]
+  }
+  return groups.slice().sort(function (a, b) { return rank(a) - rank(b) })
+}
+
 // The empty-state markup, shared by the first miss and the simplified retry's
 // miss, so the two paths read the same.
 function _vSearchEmptyHtml(query) {
@@ -8773,19 +8789,27 @@ function _paintVideoSearchResults(note) {
   for (const g of groupsShown) {
     groupItems[g.key] = shown.filter(function (r) { return (r.type || 'movie') === g.key })
   }
+  // The groups are painted in the order their BEST match arrived in, not in a
+  // fixed Films \u2192 Series \u2192 Anime. The fixed order buried the obvious answer:
+  // searching "Attack on Titan" showed the live-action films first and the
+  // famous series last, and "Breaking Bad" put El Camino above the show.
+  // The backend already ranks the merged results by relevance, so first
+  // appearance in `shown` IS the ranking \u2014 this just stops the paint throwing
+  // it away.
+  const groupOrder = _vSearchGroupOrder(groupsShown, shown)
   const anyShown = groupsShown.some(function (g) { return groupItems[g.key].length })
   if (!anyShown) {
     // The fetch found things; the chips filtered them all out. Say that, rather
     // than reading like the search itself failed.
     html += '<div class="vrow-msg">' + (intent ? 'Nothing matched this as a title \u2014 try Browse above.' : 'Nothing in this result set matches the current filters.') + '</div>'
   } else {
-    for (const g of groupsShown) {
+    for (const g of groupOrder) {
       if (groupItems[g.key].length) html += _vRowShell('search-' + g.key, g.label, groupItems[g.key].length)
     }
   }
   _setVideoSearchHtml(html)
   if (anyShown) {
-    for (const g of groupsShown) {
+    for (const g of groupOrder) {
       if (groupItems[g.key].length) _fillRow('search-' + g.key, groupItems[g.key])
     }
   }

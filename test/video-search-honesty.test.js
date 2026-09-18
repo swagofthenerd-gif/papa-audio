@@ -19,6 +19,7 @@ const fs = require('fs')
 const path = require('path')
 const vm = require('vm')
 const { runHandler } = require('./helpers/lift-ipc')
+const { sortJunkLast, rankByRelevance } = require('../catalog/search-rank')
 
 const SRC = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'utf8')
 
@@ -38,7 +39,10 @@ function globalsFor({ tmdbSearch, animeSearch, animeDatabasesDown = false }) {
     anilist: () => ({ lastFailure: down }),
     jikan: () => ({ lastFailure: down }),
     kitsu: () => ({ lastFailure: down }),
-    sortJunkLast: x => x,
+    // The real ones: ordering is not this test's subject, but a stub for them
+    // would quietly turn the results into something that is not a list.
+    sortJunkLast,
+    rankByRelevance,
     _sameShow: () => false,
   }
 }
@@ -198,6 +202,7 @@ function harness(videoSearch) {
     extractFn(SRC, '_vSearchSourceNoteHtml'),
     extractFn(SRC, '_vSearchOutageHtml'),
     extractFn(SRC, '_bindVideoSearchRetry'),
+    extractFn(SRC, '_vSearchGroupOrder'),
     extractFn(SRC, '_vSearchEmptyHtml'),
     extractFn(SRC, '_paintVideoSearchResults'),
     extractFn(SRC, '_runVideoTitleSearch'),

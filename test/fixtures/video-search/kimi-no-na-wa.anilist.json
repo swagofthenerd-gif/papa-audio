@@ -1,0 +1,32 @@
+{
+  "data": {
+    "Page": {
+      "media": [
+        {
+          "id": 21519,
+          "idMal": 21519,
+          "title": {
+            "english": "Your Name.",
+            "romaji": "Kimi no Na wa.",
+            "native": "君の名は。"
+          },
+          "seasonYear": 2016,
+          "coverImage": {
+            "large": "https://img/21519.jpg"
+          },
+          "averageScore": 85,
+          "genres": [
+            "Action"
+          ],
+          "format": "TV"
+        }
+      ],
+      "pageInfo": {
+        "currentPage": 1,
+        "lastPage": 1,
+        "total": 1,
+        "hasNextPage": false
+      }
+    }
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "page": 1,
+  "results": [
+    {
+      "id": 1396,
+      "media_type": "tv",
+      "name": "Breaking Bad",
+      "original_name": "Breaking Bad",
+      "first_air_date": "2008-01-20",
+      "poster_path": "/p1396.jpg",
+      "genre_ids": [
+        18
+      ],
+      "original_language": "en"
+    },
+    {
+      "id": 559969,
+      "media_type": "movie",
+      "title": "El Camino: A Breaking Bad Movie",
+      "original_title": "El Camino: A Breaking Bad Movie",
+      "release_date": "2019-10-11",
+      "poster_path": "/p559969.jpg",
+      "genre_ids": [
+        18
+      ],
+      "original_language": "en"
+    },
+    {
+      "id": 60059,
+      "media_type": "tv",
+      "name": "Better Call Saul",
+      "original_name": "Better Call Saul",
+      "first_air_date": "2015-02-08",
+      "poster_path": "/p60059.jpg",
+      "genre_ids": [
+        18
+      ],
+      "original_language": "en"
+    }
+  ],
+  "total_pages": 1,
+  "total_results": 3
+}
