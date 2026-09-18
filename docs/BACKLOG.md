@@ -708,3 +708,27 @@ branch: E1 tick branch removed → 1/16 red; E3 identity assignments removed →
   timing is still owed).
 - The twin-kill self-match trap bit ME again (exit 144) an hour after I wrote
   the rule; the comm-filtered form is now in CONTINUOUS-RUN.md and memory.
+
+### 19 Sep — live re-test of the whole night (Fable, twin :9394): 31 PASS, 3 FAIL, 9 new
+PASS live: D1–D9, D11–D15, artwork (queue), N1, N2, My List truth, quality
+reset, N11 units, N14, N15 (10 hovers → memo size 1), N16, N17 (one
+console.error, first boot only), N18 hero paints (Tokyo Revengers S2 47 ms vs
+the audit's 53.6 s; One Piece 2.16 s), N19 keymap, N20 colour-scheme + poster
+Play, E5 checkbox + "Delete watched (2)" + dry-run refusal with files intact,
+E7 meta on 6/6 cards, E3 payload, boot restore onto Stats with an empty music
+cache, zero out-of-order, zero ReferenceError/TypeError. NOT TESTABLE without
+a TMDB key: N9 undo bar, N19 real season select.
+FAIL / new, routed to `fix/retest-findings` (F1–F13): F1 My List singleton
+renders as a 3,000 px poster (`_myListGridHtml` emits singletons outside any
+`.vgrid`); F2 tablist arrows yank focus to the first poster (`_bindTablist`
+has no `stopPropagation`; `_moveCardFocus` grabs it); F3 "Delete watched" is
+styled as a 30×30 icon button and one press gives 3 snackbars; F4 Back-scroll
+restores the right value then drifts as shelves above grow (2 of 3 laps);
+F5 `.video-genre-chip` 17–21 px, missed by N20; F6 13 "UI and mpv disagree"
+during 40 fast Nexts (D10 guard window too short); F7 stall watchdog fires
+~2.5 s into a cold local play (3 s bar vs first-position lag); F8 size/seeds
+printed twice per source row; F9 one Resume click → two loads → two plays;
+F10 theatre error promises "the list below" with no list; `body.video-active`
+sticks after Escape; F11 `#np-art` bypasses the artwork miss memory; F12 the
+seasons lane hits its 8 s ceiling on every anime page (Retry took 21 s and
+worked); F13 `slsk-get-transfers` throws to the renderer on slskd 401 per poll.
