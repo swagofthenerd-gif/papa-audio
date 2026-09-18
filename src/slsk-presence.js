@@ -19,11 +19,14 @@ function presenceLabel(raw) {
   return PRESENCE_UNKNOWN
 }
 
-function presenceText(label) {
+// `checkFailed` is the difference between "we have not asked yet" and "we
+// asked and could not find out". Without it a failed lookup sat on "Checking…"
+// forever, which reads as a request still in flight.
+function presenceText(label, checkFailed) {
   if (label === PRESENCE_ONLINE) return 'Online'
   if (label === PRESENCE_AWAY) return 'Away'
   if (label === PRESENCE_OFFLINE) return 'Offline'
-  return 'Checking…'
+  return checkFailed ? "Couldn't check" : 'Checking…'
 }
 
 // Online sorts above away, away above offline, offline above unknown, so the
@@ -49,7 +52,8 @@ function indexStatuses(statuses) {
   return out
 }
 
-function mergeStatuses(users, statuses) {
+function mergeStatuses(users, statuses, opts) {
+  var checkFailed = !!(opts && opts.checkFailed)
   var byName = indexStatuses(statuses)
   return (users || []).map(function (u) {
     var s = byName[statusKey(u.username)]
@@ -62,7 +66,7 @@ function mergeStatuses(users, statuses) {
       savedAt: u.savedAt || 0,
       lastBrowsedAt: u.lastBrowsedAt || null,
       presence: label,
-      presenceText: presenceText(label),
+      presenceText: presenceText(label, checkFailed && label === PRESENCE_UNKNOWN),
       isPrivileged: !!(s && s.isPrivileged),
       checkedAt: s && s.checkedAt ? s.checkedAt : null,
     }

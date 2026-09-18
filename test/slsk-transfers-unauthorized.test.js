@@ -84,19 +84,23 @@ function liftFn (name) {
   throw new Error('unbalanced ' + name)
 }
 
-function bannerPage () {
+// `known` is what the page already fetched — the rows a refusal must not wipe.
+// The list starts on the page shell's "Loading…" placeholder, exactly as
+// renderDownloads paints it.
+function bannerPage (known) {
   const made = []
   const byId = {}
   const parent = { insertBefore (el) { byId[el.id] = el; made.push(el) } }
   const node = function (id) {
     return {
-      id, className: '', textContent: '', dataset: {}, children: [],
+      id, className: '', textContent: '', innerHTML: '', dataset: {}, children: [],
       parentNode: parent,
       appendChild (c) { this.children.push(c); return c },
       addEventListener () {},
     }
   }
   byId['dl2-list'] = node('dl2-list')
+  byId['dl2-list'].innerHTML = '<div class="dl2-empty"><p>Loading…</p></div>'
   const warnings = []
   const ctx = vm.createContext({
     document: {
@@ -107,12 +111,14 @@ function bannerPage () {
     _pollAndRenderDownloads () {},
   })
   vm.runInContext(
-    'var _dlAuthWarned = false\n' + liftFn('_dlRenderUnauthorized') + '\n' + liftFn('_dlRenderDaemonDown'),
+    'var _dlAuthWarned = false\nvar _dlLastFiles = ' + JSON.stringify(known || []) + '\n' +
+      liftFn('_dlRenderUnauthorized') + '\n' + liftFn('_dlRenderDaemonDown'),
     ctx)
   return {
     ctx,
     warnings,
     banner: () => byId['dl2-daemon-banner'] || null,
+    listHtml: () => byId['dl2-list'].innerHTML,
     madeCount: () => made.length,
     refuse: () => vm.runInContext('_dlRenderUnauthorized()', ctx),
     unreachable: () => vm.runInContext('_dlRenderDaemonDown()', ctx),
@@ -133,6 +139,60 @@ test('and says it once, not once per poll', () => {
   assert.strictEqual(p.madeCount(), 1, 'one banner, repainted, never stacked')
   assert.strictEqual(p.warnings.length, 1,
     'the console said it ' + p.warnings.length + ' times')
+})
+
+// ── M2: the banner was not the whole page ───────────────────────────────────
+// _pollAndRenderDownloadsInner returns straight after _dlRenderUnauthorized(),
+// so _renderDlTab never ran and #dl2-list kept the page shell's "Loading…"
+// forever — a refusal banner sitting above a list that claimed to be busy.
+
+test('the list stops claiming to be loading when the daemon will not let us in', () => {
+  const p = bannerPage([])
+  p.refuse()
+  assert.doesNotMatch(p.listHtml(), /Loading/,
+    'the list was still saying "Loading…" underneath the refusal banner')
+  assert.match(p.listHtml(), /Nothing to show until the daemon lets us in\./)
+})
+
+test('and it stays that way across a minute of polling', () => {
+  const p = bannerPage([])
+  for (let i = 0; i < 30; i++) p.refuse()
+  assert.match(p.listHtml(), /Nothing to show until the daemon lets us in\./)
+})
+
+test('but rows already fetched are not wiped by a later refusal', () => {
+  // Same rule _dlRenderDaemonDown follows: a refusal mid-session must not cost
+  // the user the state they were reading.
+  const p = bannerPage([{ filename: 'Radiohead - Karma Police.flac' }])
+  p.ctx.document.getElementById('dl2-list').innerHTML = '<div class="dl2-row">Karma Police</div>'
+  p.refuse()
+  assert.match(p.listHtml(), /Karma Police/)
+})
+
+test('MUTATION: without the list repaint the "Loading…" placeholder comes back', () => {
+  const broken = RENDERER.replace(/\n  if \(!_dlLastFiles\.length\) \{\n    list\.innerHTML = [\s\S]*?\n  \}\n\}/,
+    '\n}')
+  assert.notStrictEqual(broken, RENDERER, 'the mutation applied')
+  const made = []
+  const byId = {}
+  const parent = { insertBefore (el) { byId[el.id] = el; made.push(el) } }
+  const node = (id) => ({ id, className: '', textContent: '', innerHTML: '', dataset: {}, children: [],
+    parentNode: parent, appendChild (c) { this.children.push(c); return c }, addEventListener () {} })
+  byId['dl2-list'] = node('dl2-list')
+  byId['dl2-list'].innerHTML = '<div class="dl2-empty"><p>Loading…</p></div>'
+  const ctx = vm.createContext({
+    document: { getElementById: id => byId[id] || null, createElement: () => node('') },
+    console: { warn () {} }, _pollAndRenderDownloads () {},
+  })
+  const start = broken.indexOf('function _dlRenderUnauthorized(')
+  let depth = 0, end = broken.indexOf('{', start)
+  for (let j = end; j < broken.length; j++) {
+    if (broken[j] === '{') depth++
+    else if (broken[j] === '}') { depth--; if (!depth) { end = j + 1; break } }
+  }
+  vm.runInContext('var _dlAuthWarned = false\nvar _dlLastFiles = []\n' + broken.slice(start, end), ctx)
+  vm.runInContext('_dlRenderUnauthorized()', ctx)
+  assert.match(byId['dl2-list'].innerHTML, /Loading/, 'this is the reported bug')
 })
 
 test('a real outage after a refusal still reads as an outage', () => {

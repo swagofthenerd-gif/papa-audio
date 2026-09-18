@@ -33,10 +33,11 @@ test('crash detection is renderer-owned via a clean-exit flag', () => {
 })
 
 test('the crash banner offers Resume and never auto-plays', () => {
-  const fn = code.slice(code.indexOf('async function _offerCrashRestore()'),
+  const fn = code.slice(code.indexOf('async function _offerCrashRestore(opts)'),
                         code.indexOf('async function _resumeCrashSession()'))
   assert.ok(fn.length > 100, 'found _offerCrashRestore')
-  assert.match(fn, /if \(!_uncleanExit\) return/, 'only offered after an unclean exit')
+  assert.match(fn, /if \(!_uncleanExit \|\| _crashRestoreOffered\) return false/,
+    'only offered after an unclean exit, and only once')
   assert.match(fn, /getSavedQueues/, 'only when there was a queue mid-flight')
   assert.match(fn, /showSnackbar\('Pick up where you left off/, 'the dismissible banner')
   assert.match(fn, /'Resume'/, 'with a Resume action')

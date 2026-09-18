@@ -289,7 +289,17 @@ const NAV_SESSION_CAP = 60
 // Pages that cannot render anything without an id. A history entry for one of
 // these with no id is a dead end, so restores drop it rather than keep it.
 // (Two boot paths and the stack restore all consult this one list.)
-const _NEEDS_NAV_ID = ['album', 'artist', 'search', 'playlist', 'video-detail', 'person', 'shelf']
+const _NEEDS_NAV_ID = ['album', 'artist', 'search', 'playlist', 'video-detail', 'person', 'shelf',
+  'yt-album', 'yt-artist', 'yt-see-all', 'yt-playlist']
+
+// The online-source pages whose id lives in state.currentYtNavId. All four yt
+// pages are dead ends without one — renderYtArtist(null) paints a skeleton and
+// then "Couldn't load artist: Invalid artist id" behind a Retry that re-asks
+// with the same null, which is why they are in _NEEDS_NAV_ID above. `wrapped`
+// carries its id (the year) the same way but is NOT in that list: with no year
+// it legitimately opens the current one, so an id-less entry is not a dead end
+// — only a year Back would silently swap for this one.
+const YT_NAV_PAGES = new Set(['yt-album', 'yt-artist', 'yt-see-all', 'yt-playlist', 'wrapped'])
 
 function _navEntrySlim(e) { return { page: e.page, navId: e.navId ?? null } }
 
@@ -2017,6 +2027,9 @@ function _currentNavId() {
   if (state.currentPage === 'video-detail' || state.currentPage === 'person' || state.currentPage === 'shelf') {
     return state.currentVideoNavId
   }
+  // The online-source pages and Wrapped. Without this Back/Forward and session
+  // restore handed them a null id and they rendered a permanent error.
+  if (YT_NAV_PAGES.has(state.currentPage)) return state.currentYtNavId
   return null
 }
 
@@ -2029,8 +2042,30 @@ function _currentNavId() {
 // an auto-play: pressing Resume rebuilds the exact queue, track and position the
 // session died on, paused, and returns to the view that was open. Anything else
 // the user does first supersedes it (the restore guards on an empty queue).
-async function _offerCrashRestore() {
-  if (!_uncleanExit) return
+// Only one crash notice per launch. Two used to fire: this one at boot, and a
+// second from main's app-recovered-from-crash event, each with its own Resume
+// doing something different (one played, one restored the queue paused). Both
+// paths now come through here and the first one to actually say something wins.
+var _crashRestoreOffered = false
+
+// What to call the track the session died on. The library's own title when it
+// knows the file; the bare filename only when it does not — "05 - track.flac"
+// told the user nothing, and that was what the second snackbar printed.
+function _crashRestoreTitle(filePath, queued) {
+  if (queued && queued.title) return queued.title
+  var libs = (state && state.library) || []
+  for (var i = 0; i < libs.length; i++) {
+    var tracks = libs[i].tracks || []
+    for (var j = 0; j < tracks.length; j++) {
+      if (tracks[j].filePath === filePath && tracks[j].title) return tracks[j].title
+    }
+  }
+  return (filePath || '').split('/').pop() || 'the last track'
+}
+
+async function _offerCrashRestore(opts) {
+  opts = opts || {}
+  if (!_uncleanExit || _crashRestoreOffered) return false
   // Only worth offering if there was a queue mid-flight. The `_auto` saved queue
   // is the same snapshot restorePlaybackState() reads, written on every track
   // start; no queue means nothing to pick up.
@@ -2039,16 +2074,33 @@ async function _offerCrashRestore() {
     var queues = await window.api.getSavedQueues()
     autoQueue = (queues || []).find(function (q) { return q.id === '_auto' })
   } catch (_) { autoQueue = null }
-  if (!autoQueue || !autoQueue.tracks || !autoQueue.tracks.length) return
+  if (!autoQueue || !autoQueue.tracks || !autoQueue.tracks.length) {
+    // Nothing to resume. main's event still deserves an answer, once.
+    if (opts.notifyIfNothing) {
+      _crashRestoreOffered = true
+      showSnackbar('Papa Audio did not shut down cleanly last time', '', function () {}, 6000)
+    }
+    return false
+  }
   // The user may have started playing something in the ~1.2s before this ran;
   // if so, leave them be rather than yanking the queue out from under them.
-  if (state.queue.length || state.isPlaying) return
+  if (state.queue.length || state.isPlaying) return false
 
+  var saved = null
+  try { saved = await window.api.getPlaybackState() } catch (_) { saved = null }
+  if (_crashRestoreOffered) return false      // the other path won the await
+  _crashRestoreOffered = true
+
+  var filePath = saved && saved.filePath
+  var queued = (autoQueue.tracks || []).find(function (t) { return t && t.filePath === filePath })
+  var pos = Number(saved && saved.position) || 0
   var count = autoQueue.tracks.length
-  showSnackbar('Pick up where you left off? (' + count + ' track' +
-    (count === 1 ? '' : 's') + ')', 'Resume', function () {
-    _resumeCrashSession()
-  }, 15000)
+  var bits = [_crashRestoreTitle(filePath, queued)]
+  if (pos > 1) bits[0] += ' at ' + fmtDur(pos)
+  bits.push(count + ' track' + (count === 1 ? '' : 's'))
+  showSnackbar('Pick up where you left off? ' + bits.join(' \u00b7 '),
+    'Resume', function () { _resumeCrashSession() }, 15000)
+  return true
 }
 
 // Rebuilds queue + index + position (paused) and re-opens the saved view. Shares
@@ -2222,6 +2274,11 @@ function navigate(page, navId, opts = {}) {
   state.currentPlaylistId  = page === 'playlist' ? navId : null
   state.currentSmartListId = page === 'smartlist' ? navId : null
   state.currentVideoNavId  = (page === 'video-detail' || page === 'person' || page === 'shelf') ? navId : null
+  state.currentYtNavId     = YT_NAV_PAGES.has(page) ? (navId ?? null) : null
+  // Customize is a mode you are IN on Home, not a setting. It used to persist
+  // across navigation, so coming back to Home half an hour later still showed
+  // the reorder controls over every row.
+  if (page !== 'home') _homeEditMode = false
   // Leaving (or re-entering) a detail page ends its inline trailer (V2.7).
   if (typeof _stopInlineTrailer === 'function') _stopInlineTrailer()
   if (page !== 'playlist') state._plSearch = ''
@@ -13208,6 +13265,20 @@ function _resolveHomeRows() {
   return { order: _HOME_DEFAULT_ROWS.slice(), hidden: {}, visible: _HOME_DEFAULT_ROWS.slice() }
 }
 
+// The empty-Home call to action. Picks a folder, un-defers the wizard decision
+// (the person has now answered it the other way), and scans — the same three
+// steps Settings' "Add folder" does, so there is one behaviour, not two.
+async function _addMusicFromHome() {
+  var folders = null
+  try { folders = await window.api.addMusicFolder() } catch (_) { folders = null }
+  if (!folders || !folders.length) return
+  state.musicFolders = folders
+  _setSetupDeferred(false)
+  if (typeof renderFolders === 'function') renderFolders()
+  showLoading()
+  await fullScan()
+}
+
 function renderHome() {
   const hour = new Date().getHours()
   // Time-aware, name-carrying greeting (App §100). This is a personal app for
@@ -13352,7 +13423,13 @@ function renderHome() {
     <div class="album-grid">${state.library.slice(0, 24).map(albumCard).join('')}</div>` : `
     <div class="empty-wrap">
       <svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>
-      <h2>No music found</h2><p>Add FLAC files to your music folder.</p>
+      <h2>No music found</h2>
+      <!-- Someone who chose "Set up later" in the wizard had a dead end here:
+           a statement of fact with nothing to press. -->
+      <p>${state.musicFolders.length
+        ? 'Nothing turned up in the folders you added.'
+        : 'Papa Audio has nowhere to look yet.'}</p>
+      <button id="home-add-music">Add your music</button>
     </div>`
 
   // ── Home personalization (App #15) ─────────────────────────────────────────
@@ -13435,6 +13512,7 @@ function renderHome() {
     _homeEditMode = !_homeEditMode
     renderHome()
   })
+  document.getElementById('home-add-music')?.addEventListener('click', _addMusicFromHome)
   document.querySelectorAll('[data-home-move]').forEach(function (btn) {
     btn.addEventListener('click', function () {
       var _mt = window.PapaMusicTools
@@ -14007,6 +14085,30 @@ function _artistSortKey(name) {
   return String(name || '').replace(_ARTICLE, '').trim().toLowerCase()
 }
 
+// Show only the artists whose name contains `raw`, and say so when that is
+// none of them. Filtering to nothing used to leave a blank page under the
+// search box — no message, no way to tell a typo from an empty library.
+function _applyArtistFilter(raw) {
+  var q = String(raw == null ? '' : raw).toLowerCase()
+  var grid = document.getElementById('artist-grid')
+  if (!grid) return 0
+  var shown = 0
+  grid.querySelectorAll('.artist-card').forEach(function (card) {
+    var name = ((card.dataset && card.dataset.artist) || '').toLowerCase()
+    var hit = name.indexOf(q) !== -1
+    card.style.display = hit ? '' : 'none'
+    if (hit) shown++
+  })
+  var empty = document.getElementById('artist-filter-empty')
+  var msg = document.getElementById('artist-filter-empty-msg')
+  if (empty) {
+    var none = !shown && !!q.trim()
+    empty.style.display = none ? '' : 'none'
+    if (none && msg) msg.textContent = 'No artists match “' + String(raw).trim() + '”'
+  }
+  return shown
+}
+
 function renderArtists() {
   const artistMap = new Map()
   for (const album of state.library) {
@@ -14069,16 +14171,21 @@ function renderArtists() {
         <div class="artist-card-meta">Artist · YT</div>
       </div>`).join('')}
     </div>
+    <!-- Filtering to nothing used to leave a blank page under the search box:
+         no message, no way to tell a typo from an empty library. -->
+    <div class="empty-wrap" id="artist-filter-empty" style="display:none">
+      <h2 id="artist-filter-empty-msg"></h2>
+      <button class="secondary" id="artist-filter-clear">Clear</button>
+    </div>
   </div>`)
 
   document.getElementById('artist-search')?.addEventListener('input', e => {
-    const q = e.target.value.toLowerCase()
-    const grid = document.getElementById('artist-grid')
-    if (!grid) return
-    grid.querySelectorAll('.artist-card').forEach(card => {
-      const name = (card.dataset.artist || '').toLowerCase()
-      card.style.display = name.includes(q) ? '' : 'none'
-    })
+    _applyArtistFilter(e.target.value)
+  })
+  document.getElementById('artist-filter-clear')?.addEventListener('click', () => {
+    const box = document.getElementById('artist-search')
+    if (box) { box.value = ''; box.focus() }
+    _applyArtistFilter('')
   })
 
   // Surfaces that previously had no context menu at all.
@@ -18040,6 +18147,10 @@ function renderPlaylists() {
 }
 
 function _showNewPlaylistWithFolder() {
+  // Two clicks on "New playlist" used to build two identical dialogs stacked on
+  // top of each other, with only the top one reachable.
+  var _open = document.getElementById('new-pl-folder-modal')
+  if (_open) { _open.querySelector('#npfm-name')?.focus(); return }
   var existingFolders = state.playlistFolders.slice()
   state.playlists.forEach(function(pl) { if (pl.folder && existingFolders.indexOf(pl.folder) === -1) existingFolders.push(pl.folder) })
 
@@ -18079,7 +18190,10 @@ function _showNewPlaylistWithFolder() {
   var folderSelect = overlay.querySelector('#npfm-folder-select')
   var newFolderRow = overlay.querySelector('#npfm-new-folder-row')
   var newFolderInput = overlay.querySelector('#npfm-new-folder-input')
-  var close = function() { overlay.remove() }
+  // Leaving the page closes the dialog — it belonged to the page, not the shell,
+  // and it used to float over whatever came next.
+  var close = function() { _unregisterNavDismiss(close); overlay.remove() }
+  _registerNavDismiss(close)
 
   var confirm = function() {
     var name = (nameInput.value || '').trim()
@@ -18551,7 +18665,7 @@ function showImportPlaylistDialog() {
   var _mt = (typeof window !== 'undefined' && window.PapaMusicTools) || null
   if (!_mt) { showSnackbar('Import unavailable'); return }
   var existing = document.getElementById('import-pl-modal')
-  if (existing) existing.remove()
+  if (existing) { existing.querySelector('#imp-text')?.focus(); return }
   var overlay = document.createElement('div')
   overlay.id = 'import-pl-modal'
   overlay.className = 'addpl-overlay'
@@ -18572,7 +18686,8 @@ function showImportPlaylistDialog() {
       </div>
     </div>`
   document.body.appendChild(overlay)
-  var close = function () { overlay.remove() }
+  var close = function () { _unregisterNavDismiss(close); overlay.remove() }
+  _registerNavDismiss(close)
   overlay.querySelector('#imp-close')?.addEventListener('click', close)
   overlay.querySelector('#imp-cancel')?.addEventListener('click', close)
   overlay.addEventListener('click', function (e) { if (e.target === overlay) close() })
@@ -18682,7 +18797,11 @@ function renderLikedSongs() {
       </div>`
   }).join('')
 
-  var totalLikedLocal = state.likedTracks.length
+  // The liked list is file paths; `tracks` is the ones the library can actually
+  // resolve. Counting the raw paths made the header read "1 Local Likes" over a
+  // page listing "0 songs" whenever the library was empty or unscanned — and it
+  // also skewed the average length, whose total only sums resolvable tracks.
+  var totalLikedLocal = tracks.length
   var totalLikedYT = state.ytLiked.length
   var likedArtists = {}
   state.likedTracks.forEach(function(fp) {
@@ -19730,8 +19849,12 @@ function showNameInputModal(title, placeholder, onConfirm, confirmLabel) {
   // The button always said "Create", including from the three "Rename playlist"
   // call sites. Derive it from the title when the caller does not say.
   confirmLabel = confirmLabel || (/rename/i.test(String(title)) ? 'Rename' : 'Create')
+  // Unlike the argument-less dialogs this one is parameterised (Rename, New
+  // folder, …), so a second call is a DIFFERENT question and replaces the first
+  // rather than focusing it. Going through the old dialog's own close, not a
+  // bare .remove(), so its nav-dismiss registration goes with it.
   const existing = document.getElementById('name-input-modal')
-  if (existing) existing.remove()
+  if (existing) { if (existing._papaClose) existing._papaClose(); else existing.remove() }
   const overlay = document.createElement('div')
   overlay.id = 'name-input-modal'
   overlay.className = 'addpl-overlay'
@@ -19751,7 +19874,9 @@ function showNameInputModal(title, placeholder, onConfirm, confirmLabel) {
     </div>`
   document.body.appendChild(overlay)
   const input = overlay.querySelector('#nim-input')
-  const close = () => overlay.remove()
+  const close = () => { _unregisterNavDismiss(close); overlay.remove() }
+  overlay._papaClose = close
+  _registerNavDismiss(close)
   const confirm = () => {
     const name = (input.value || '').trim()
     if (!name) { input.focus(); return }
@@ -19972,8 +20097,10 @@ function showSmartPlaylistDialog(existing) {
 
 function showAddToPlaylistModal(tracks) {
   if (!tracks || !tracks.length) return
+  // Parameterised by the tracks being added, so a second call replaces the
+  // first — through its own close, so its nav-dismiss registration goes too.
   const existing = document.getElementById('addpl-modal')
-  if (existing) existing.remove()
+  if (existing) { if (existing._papaClose) existing._papaClose(); else existing.remove() }
 
   const slim = tracks.map(t => ({
     id: t.id, title: t.title, artist: t.artist, albumArtist: t.albumArtist || t.artist || '',
@@ -20017,9 +20144,12 @@ function showAddToPlaylistModal(tracks) {
   // forever — each closure holding the modal DOM and the whole track array.
   // Removing it in close() covers every exit, including ones added later.
   const close = () => {
+    _unregisterNavDismiss(close)
     document.removeEventListener('keydown', onEsc)
     overlay.remove()
   }
+  overlay._papaClose = close
+  _registerNavDismiss(close)
   const addTo = (pl) => {
     pl.tracks = pl.tracks || []
     // Adding the same track twice used to silently double it, with no feedback
@@ -21834,11 +21964,24 @@ function updateRadioState() {
 // All the building happens in the main process (Task 11). The renderer only
 // asks for a finished, playable list and starts it — same shape as playAlbum.
 var SMART_QUEUE_MODES = ['radio', 'mix', 'surprise', 'rediscover']
+// What to say when the build came back with nothing AND the analysis is
+// finished. "Still analysing your library" was printed for every empty result,
+// including a finished pass that simply had nothing to offer — telling the
+// user to wait for work that had already stopped.
+var _SMART_QUEUE_NOTHING = {
+  radio: 'Nothing close enough to build a radio from yet',
+  mix: 'That mix is empty right now',
+  surprise: 'Nothing to surprise you with yet — add more music',
+  rediscover: 'Nothing to rediscover yet — play more first',
+}
 async function startSmartQueue(mode, seedFilePath, opts) {
   const mixIndex = opts && Number.isInteger(opts.mixIndex) ? opts.mixIndex : null
   const result = await window.api.queueBuild({ mode: mode, seedFilePath: seedFilePath, mixIndex: mixIndex, length: 40 }).catch(() => null)
   if (!result || !result.tracks || !result.tracks.length) {
-    showSnackbar('Still analysing your library — try again shortly')
+    // A build that never answered is a failure, not a pending analysis.
+    if (!result) showSnackbar('Couldn’t build that queue just now — try again')
+    else if (!result.featuresReady) showSnackbar('Still analysing your library — try again shortly')
+    else showSnackbar(_SMART_QUEUE_NOTHING[mode] || 'Nothing to play there yet')
     return null
   }
   _oldQueue = null
@@ -22343,7 +22486,11 @@ function playCurrentTrack() {
   // Local files: existing fast path
   if (!audio.paused && !audio.ended) audio.pause()
   audio.src = `file://${track.filePath}`
-  audio.play().then(function () { _armMusicStartWatch(); return onStarted() }).catch(onError)
+  // Read the clock BEFORE asking for play, so the watchdog's baseline is the
+  // position play was asked from, not wherever it had reached by the time the
+  // promise settled.
+  var _startedAt = Number(audio.currentTime) || 0
+  audio.play().then(function () { _armMusicStartWatch(_startedAt); return onStarted() }).catch(onError)
 }
 
 // Home's "Continue listening" card is built by renderHome(), so it froze on
@@ -22594,6 +22741,14 @@ function isCurrentTrack(filePath) {
 // stream) showed "playing" forever. The first is caught; the second is
 // watched for a few seconds of no movement.
 var _musicStartWatch = null
+// Every position event the engine emits, counted. The watchdog compares this
+// counter rather than trusting a before/after reading of audio.currentTime: a
+// track change between arming and the check RESETS currentTime, so "did it
+// move?" answered false on music that was audibly playing.
+var _musicStartTicks = 0
+if (audio && audio.addEventListener) {
+  audio.addEventListener('timeupdate', function () { _musicStartTicks++ })
+}
 function _onPlayRefused(e) {
   state.isPlaying = false
   updatePlayBtn()
@@ -22605,12 +22760,21 @@ function _onPlayRefused(e) {
     : ('Could not start playback' + (why ? ' — ' + why : ''))
   showSnackbar(text, 'Retry', function () { togglePlay() }, 8000)
 }
-function _armMusicStartWatch() {
+// `startedAt` is the position the caller read BEFORE asking for play. Without
+// it the baseline was snapshotted here — after the play() promise resolved,
+// which with mpv can be well after the clock has already started moving — so
+// six seconds later "it moved past the baseline" came out false and the app
+// claimed nothing was sounding while the position was visibly advancing.
+function _armMusicStartWatch(startedAt) {
   _disarmMusicStartWatch()
-  var at = Number(audio.currentTime) || 0
+  var at = Number(startedAt != null ? startedAt : audio.currentTime) || 0
+  var ticks = _musicStartTicks
   _musicStartWatch = setTimeout(function () {
     _musicStartWatch = null
     if (!state.isPlaying || audio.paused) return
+    // Any position event since arming is progress, whatever the clock now
+    // reads — this is what catches the track-change reset.
+    if (_musicStartTicks > ticks) return
     if ((Number(audio.currentTime) || 0) > at + 0.2) return   // it moved: it is playing
     // Reported, not asserted: a slow mount can take longer than this, and
     // flipping the button to "paused" while mpv then starts would be a new
@@ -22626,7 +22790,9 @@ function _disarmMusicStartWatch() {
 function togglePlay() {
   if (!state.queue.length) return
   if (audio.paused) {
-    Promise.resolve().then(function () { return audio.play() }).then(_armMusicStartWatch).catch(_onPlayRefused)
+    var _resumeAt = Number(audio.currentTime) || 0
+    Promise.resolve().then(function () { return audio.play() })
+      .then(function () { _armMusicStartWatch(_resumeAt) }).catch(_onPlayRefused)
     state.isPlaying = true
     // A user-driven play. Pause any film on screen and take ownership so a
     // later video-close does not resume music the user is already hearing (#72).
@@ -28629,6 +28795,16 @@ function _dlRenderUnauthorized() {
   btn.textContent = 'Retry'
   btn.addEventListener('click', function () { _dlAuthWarned = false; _pollAndRenderDownloads() })
   el.appendChild(btn)
+  // The banner alone left the list below it stuck on the page shell's
+  // "Loading" placeholder forever: _pollAndRenderDownloadsInner returns here, so
+  // _renderDlTab never runs and nothing ever replaces that placeholder. Only
+  // when there is nothing real to lose: rows already fetched stay put, the same
+  // rule _dlRenderDaemonDown follows.
+  if (!_dlLastFiles.length) {
+    list.innerHTML = '<div class="dl2-empty">' +
+      '<svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>' +
+      '<p>Nothing to show until the daemon lets us in.</p></div>'
+  }
 }
 
 function _dlClearDaemonBanner() {
@@ -30424,7 +30600,12 @@ function renderDownloads() {
   // The headline cards come from the one reconciled model (R5) and are
   // patched on every poll by _dlPaintDashboard.
   var dashHTML = _dlDashboardHtml()
-  var batchBtns = '<div style="display:flex;gap:8px;padding:12px 28px"><button class="dl-action-btn" id="dl-pause-all">\u23f8 Pause All</button><button class="dl-action-btn" id="dl-resume-all">\u25b6 Resume All</button></div>'
+  // No "Resume All": Soulseek has no resume at all, so the button could only
+  // ever answer "Resume not yet supported — re-queue downloads", which is a
+  // control that exists to say it does not work. Stopping is the only batch
+  // action there is, and its own confirm explains that re-queueing is the way
+  // back. (Stop All is what "Pause All" has always actually done.)
+  var batchBtns = '<div style="display:flex;gap:8px;padding:12px 28px"><button class="dl-action-btn" id="dl-pause-all">\u23f9 Stop All</button></div>'
   // Roadmap 082: each entry says what the automation does with it — download
   // on its own or only tell you — whether it is paused, and when it was last
   // checked; the header says the cadence. Nothing here is implied.
@@ -30716,10 +30897,6 @@ function renderDownloads() {
         })
         showSnackbar('Stopped ' + active.length + ' download' + (active.length === 1 ? '' : 's'))
       })
-  })
-
-  document.getElementById('dl-resume-all')?.addEventListener('click', function() {
-    showSnackbar('Resume not yet supported \u2014 re-queue downloads')
   })
 
   _pollAndRenderDownloads()
@@ -31356,8 +31533,10 @@ async function showSlskSavedUsers() {
 }
 
 function showSlskConfigModal(query) {
+  // Argument-less as far as the user is concerned (the query is only what to
+  // re-run afterwards), so a second call focuses the open dialog.
   const existing = document.getElementById('slsk-config-modal')
-  if (existing) existing.remove()
+  if (existing) { existing.querySelector('#slsk-cfg-user')?.focus(); return }
   const dlg = document.createElement('div')
   dlg.id = 'slsk-config-modal'
   dlg.className = 'modal-overlay'
@@ -31380,11 +31559,21 @@ function showSlskConfigModal(query) {
     </div>
   </div>`
   document.body.appendChild(dlg)
+  // This one had neither: Escape did nothing and every navigation left it
+  // floating over the next page.
+  const _closeCfg = () => {
+    _unregisterNavDismiss(_closeCfg)
+    document.removeEventListener('keydown', _onCfgKey)
+    dlg.remove()
+  }
+  const _onCfgKey = e => { if (e.key === 'Escape') { e.preventDefault(); _closeCfg() } }
+  document.addEventListener('keydown', _onCfgKey)
+  _registerNavDismiss(_closeCfg)
   dlg.querySelector('#slsk-signup-link')?.addEventListener('click', e => {
     e.preventDefault()
     window.api.openExternal('https://www.slsknet.org/news/')
   })
-  dlg.querySelector('#slsk-cfg-cancel')?.addEventListener('click', () => dlg.remove())
+  dlg.querySelector('#slsk-cfg-cancel')?.addEventListener('click', _closeCfg)
   dlg.querySelector('#slsk-cfg-save')?.addEventListener('click', async () => {
     const username = dlg.querySelector('#slsk-cfg-user')?.value.trim()
     const password = dlg.querySelector('#slsk-cfg-pass')?.value
@@ -31411,7 +31600,7 @@ function showSlskConfigModal(query) {
       else showSnackbar(msg, null, null, 6000)
       return
     }
-    dlg.remove()
+    _closeCfg()
     // Poll in background until Soulseek login completes (takes ~5-20s), then auto-search
     ;(async () => {
       for (let i = 0; i < 25; i++) {
@@ -31425,7 +31614,7 @@ function showSlskConfigModal(query) {
       }
     })()
   })
-  dlg.addEventListener('click', e => { if (e.target === dlg) dlg.remove() })
+  dlg.addEventListener('click', e => { if (e.target === dlg) _closeCfg() })
 }
 
 // Roadmap 049: a saved queue is a listening SESSION — it keeps where you
@@ -33275,17 +33464,11 @@ function setupListeners() {
   // it went nowhere. A crash and a deliberate pause looked identical on restart.
   window.api.on('app-recovered-from-crash', async () => {
     console.error('[papa] the previous session did not shut down cleanly')
-    let saved = null
-    try { saved = await window.api.getPlaybackState() } catch (_) {}
-    if (!saved || !saved.filePath) {
-      showSnackbar('Papa Audio did not shut down cleanly last time', '', function () {}, 6000)
-      return
-    }
-    const name = (saved.filePath || '').split('/').pop() || 'the last track'
-    // A notice with an action, never a blocking prompt: the same rule as the
-    // engine-recovery notice.
-    showSnackbar(`Last time ended mid-track — ${name} at ${fmtDur(saved.position || 0)}`,
-      'Resume', function () { resumeFromSavedState(saved) }, 12000)
+    // main and the renderer both detect the unclean exit, and each used to put
+    // up its own snackbar with its own Resume — two offers, two behaviours, one
+    // of them printing the raw filename. One offer now, from one place.
+    _uncleanExit = true
+    await _offerCrashRestore({ notifyIfNothing: true })
   })
 
   // Library changed in main (a mutation, or the folder watcher). Until now this
@@ -33865,6 +34048,13 @@ function setupListeners() {
         if (npm && npm.classList.contains('queue-open')) { closeNpQueue(); return }
         if (npm && npm.classList.contains('art-expanded')) { toggleNpFullArt(); return }
         hideNowPlayingModal(); return
+      }
+      // Home's Customize mode is a page-level layer like the rest of these:
+      // Escape leaves it. It had no exit but the Done button.
+      if (_homeEditMode && state.currentPage === 'home') {
+        _homeEditMode = false
+        renderHome()
+        return
       }
       // Was `!el.style.display === 'none'` -- `!` binds tighter than `===`, so
       // this read `false === 'none'` and was ALWAYS false. Escape has never
@@ -34939,8 +35129,15 @@ function _setupCP() {
         e.preventDefault()
         var rows = _omniRows()
         var row = rows[_cpIdx]
-        // Enter on a bare query with nothing highlighted is a plain search.
-        if (!row && inp.value.trim()) { toggleCommandPalette(); commitSearchQuery(inp.value.trim()); return }
+        // Enter on a bare query with nothing highlighted is a plain search —
+        // but ">zzqq" is not a query, it is a command nobody has. Running it as
+        // a MUSIC search sent the user to a results page for the literal
+        // ">zzqq" and remembered it as a recent search. Stay put instead.
+        var _typed = inp.value.trim()
+        // The palette is already showing "Nothing matches" for it; leaving it
+        // open with that on screen is the answer.
+        if (!row && _typed && window.PapaOmnibox && window.PapaOmnibox.isCommandMode(_typed)) return
+        if (!row && _typed) { toggleCommandPalette(); commitSearchQuery(_typed); return }
         _omniExec(row)
       }
       else if (e.key === 'Escape') toggleCommandPalette()
@@ -37587,6 +37784,16 @@ function _slskRefreshFriendDiffs() {
     .catch(function () {})
 }
 
+// Why the Soulseek hub cannot run this query yet, or null when it can. An
+// empty box and a one-letter box are different mistakes and deserve different
+// answers — the old code gave the one-letter message for both.
+function _slskHubSearchProblem(raw) {
+  var q = String(raw == null ? '' : raw).trim()
+  if (!q) return 'Type what you’re looking for — an album or an artist'
+  if (q.length < 2) return 'Type at least two characters to search'
+  return null
+}
+
 function renderSoulseekHub() {
   setContent('<div class="page slsk-hub">' +
     '<div class="slsk-hub-head">' +
@@ -37633,8 +37840,17 @@ function renderSoulseekHub() {
   // page uses, so the card pipeline is shared, not duplicated.
   var input = document.getElementById('slsk-hub-search-input')
   var runHubSearch = function () {
-    var q = (input && input.value || '').trim()
-    if (q.length < 2) { showSnackbar('Type at least two characters to search'); return }
+    var raw = (input && input.value) || ''
+    var problem = _slskHubSearchProblem(raw)
+    if (problem) {
+      // Pressing Search on an empty box read as "nothing happened": the notice
+      // was easy to miss and the cursor was left wherever it had been. Put the
+      // caret where the answer has to be typed.
+      if (input) { input.focus(); if (input.select) input.select() }
+      showSnackbar(problem)
+      return
+    }
+    var q = raw.trim()
     _rememberSearch(q, 'soulseek')
     runSlskSearch(q) // refreshes the status itself; paints the offline row when it must
   }
@@ -38220,12 +38436,16 @@ var _slskFriends = {
   bound: false,
   started: false,
   refreshing: false,
+  // Set when a status refresh fails, so a peer we could not look up says
+  // "Couldn't check" rather than sitting on "Checking…" forever.
+  statusFailed: false,
 }
 
 function _slskFriendRows() {
   var P = window.PapaSlskPresence
   if (!P) return []
-  return P.sortFriends(P.mergeStatuses(_slskFriends.users, _slskFriends.statuses))
+  return P.sortFriends(P.mergeStatuses(_slskFriends.users, _slskFriends.statuses,
+    { checkFailed: _slskFriends.statusFailed }))
 }
 
 function renderSlskFriends() {
@@ -38250,6 +38470,7 @@ function renderSlskFriends() {
 function _slskFriendsApplyStatuses(payload) {
   if (!payload) return
   if (Array.isArray(payload.statuses)) _slskFriends.statuses = payload.statuses
+  _slskFriends.statusFailed = false
   renderSlskFriends()
 }
 
@@ -38264,7 +38485,12 @@ function refreshSlskFriendStatuses() {
   _slskFriendsSetRefreshing(true)
   return window.api.slskRefreshUserStatuses()
     .then(function(res) { _slskFriendsApplyStatuses(res) })
-    .catch(function() {})
+    .catch(function() {
+      // Swallowing this left every unknown peer reading "Checking…" for the
+      // rest of the session, as though the request were still running.
+      _slskFriends.statusFailed = true
+      renderSlskFriends()
+    })
     .then(function() { _slskFriendsSetRefreshing(false) })
 }
 
