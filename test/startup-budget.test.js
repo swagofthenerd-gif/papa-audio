@@ -73,7 +73,14 @@ function syncScriptBytes () {
 // renderer.js and video-player.js. Deliberate feature work; the old ceiling had
 // been reached to within 0.4 % before the last file. Re-based ~15% above the
 // new measured total (2,539,444).
-const SCRIPT_BYTE_CEILING = 2920000
+// Raised 2026-09-19 (live music-tab audit fixes): the Library empty-state scope
+// fix, the crossfade rewiring, the bit-perfect dependent-control painter, the
+// Stats totals split, the connectivity asymmetry, the Manage → Health progress
+// paint and the artwork miss memory — plus their explanatory comments, which
+// are most of the bytes. The previous ceiling had ~0.1 % left, so this is a
+// re-base rather than a raise for one change; ~2 % above the new measured total
+// (2,930,230).
+const SCRIPT_BYTE_CEILING = 2990000
 
 test('the renderer loads its scripts and none is missing from disk', () => {
   const { count, missing } = syncScriptBytes()

@@ -22878,12 +22878,10 @@ function _artMissCount() { return _artMisses.size }
 // One capture-phase listener catches every <img> on the page, so no call site
 // has to remember to report its own failure. `error` does not bubble, hence
 // capture.
-if (typeof document !== 'undefined' && document.addEventListener) {
-  document.addEventListener('error', function (e) {
-    var t = e && e.target
-    if (t && t.tagName === 'IMG') _noteArtMiss(t.getAttribute('src'))
-  }, true)
-}
+document.addEventListener('error', function (e) {
+  var t = e && e.target
+  if (t && t.tagName === 'IMG') _noteArtMiss(t.getAttribute('src'))
+}, true)
 
 function _artSrc(artPath) {
   return /^https?:\/\//.test(artPath) ? artPath : 'file://' + artPath

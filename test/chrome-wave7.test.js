@@ -276,7 +276,14 @@ test('the banner reuses the existing online/offline listeners, adding none', () 
   const offline = (SRC.match(/window\.addEventListener\('offline'/g) || []).length
   assert.strictEqual(online, 1, 'exactly one window online listener')
   assert.strictEqual(offline, 1, 'exactly one window offline listener')
-  assert.match(SRC, /window\.addEventListener\('online', \(\) => \{ _applyOnlineState\(true\) \}\)/)
+  // The handler also forces a fresh connectivity probe now: main's own probe
+  // runs only once a minute, so without that its stale "offline" repainted the
+  // banner straight back on after the browser said the link was up. Still the
+  // same single listener — see test/connectivity-asymmetric.test.js.
+  const body = SRC.slice(SRC.indexOf("window.addEventListener('online'"))
+    .slice(0, 500)
+  assert.match(body, /_applyOnlineState\(true\)/)
+  assert.match(body, /connectivityRecheck/)
 })
 
 // ── Keyboard help overlay (App §84) ──────────────────────────────────────────

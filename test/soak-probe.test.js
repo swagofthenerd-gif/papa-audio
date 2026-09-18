@@ -370,7 +370,12 @@ test('the number of global listener registrations is a deliberate budget', () =>
   const sites = globalListenerSites()
   // Module scope runs exactly once, so these cannot accumulate however the app
   // is driven.
-  assert.strictEqual(sites.moduleScope.length, 5,
+  // 6: the artwork miss memory's capture-phase document 'error' listener. It
+  //    catches every <img> that fails on the page so no individual painter has
+  //    to report its own, which is what stopped the same missing cover being
+  //    re-requested on every repaint (654 file-not-found errors in one session).
+  //    Module scope, so it is registered exactly once by construction.
+  assert.strictEqual(sites.moduleScope.length, 6,
     'module-scope global listeners changed; these are safe by construction, ' +
     'but update the number so the change was seen')
   // These are the ones that need a run-once guard or a paired removal. If this
