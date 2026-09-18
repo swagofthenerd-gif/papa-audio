@@ -39,6 +39,10 @@ class PapaPlayerShim extends EventTarget {
     // window between the IPC reply and mpv's own answer.
     this._awaitingMpvPath = false
     this._loadSettledAt = 0
+    // False from the moment a file is asked for until mpv reports a position
+    // FOR IT. A cold mpv takes several seconds over that first report, which
+    // is not the same silence as a bar that stopped mid-track.
+    this._positionSinceLoad = false
     // The last path mpv reported. Not what the renderer asked for — what mpv
     // says it has open.
     this._mpvPath = null
@@ -57,6 +61,7 @@ class PapaPlayerShim extends EventTarget {
         case 'position':
           this._currentTime = data
           this._lastPositionAt = Date.now()
+          this._positionSinceLoad = true
           this.dispatchEvent(new Event('timeupdate'))
           break
         case 'duration':
@@ -80,6 +85,7 @@ class PapaPlayerShim extends EventTarget {
           this._src = `file://${data}`
           this._mpvPath = data
           this._awaitingMpvPath = false
+          this._positionSinceLoad = false
           this._currentTime = 0
           // The next track's clock starts here, not at its first position
           // report — a gapless advance is a load like any other.
@@ -212,6 +218,7 @@ class PapaPlayerShim extends EventTarget {
       .catch(e => ({ ok: false, error: String((e && e.message) || e) }))
     this._pendingLoad = pending
     this._awaitingMpvPath = true
+    this._positionSinceLoad = false
     pending.then(() => {
       if (this._pendingLoad !== pending) return
       this._pendingLoad = null
@@ -257,6 +264,7 @@ class PapaPlayerShim extends EventTarget {
     this._lastPositionAt = Date.now()
     this._switching = true
     this._awaitingMpvPath = true
+    this._positionSinceLoad = false
     try {
       var r = await window.api.playerSwitch(this._pathOf(path))
       if (!r.ok) throw new Error(r.error)
@@ -326,6 +334,11 @@ class PapaPlayerShim extends EventTarget {
   // "the progress bar has not moved for Infinityms" — on a track that had only
   // just been asked for. Nothing has ever played: 0, because there is no bar
   // to freeze.
+  // Whether the age below is "since mpv last moved the bar" (true) or "since
+  // we asked mpv for a file it has not reported on yet" (false). The two want
+  // different patience: the watchdog fired ~2.5 s into a perfectly healthy
+  // cold start because it applied the mid-track threshold to a first report.
+  get hasReportedPosition() { return this._positionSinceLoad }
   get positionAgeMs() {
     return this._lastPositionAt === null ? 0 : Date.now() - this._lastPositionAt
   }

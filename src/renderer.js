@@ -32728,6 +32728,12 @@ function setupListeners() {
   const RECONCILE_MS = 1000
   // A bar that has not moved for this long while unpaused is frozen, not paused.
   const STALE_POSITION_MS = 3000
+  // Except right after a load: mpv's FIRST position report for a file lands
+  // several seconds after the loadfile on a cold start, and the watchdog was
+  // firing ~2.5 s into a perfectly healthy local play. Silence before the
+  // first report is a different silence from silence after one, and it gets
+  // its own, longer patience.
+  const STALE_AFTER_LOAD_MS = 8000
   let _reconcileWarnedPath = null
   let _barStale = false
 
@@ -32812,7 +32818,10 @@ function setupListeners() {
     // anyway, so the sentence can never be printed with a number that is not
     // a duration.
     const ageMs = audio.positionAgeMs
-    const stale = playing && Number.isFinite(ageMs) && ageMs > STALE_POSITION_MS
+    // === false, not falsy: a shim that does not answer this at all keeps the
+    // old single threshold rather than silently getting the long one.
+    const limitMs = audio.hasReportedPosition === false ? STALE_AFTER_LOAD_MS : STALE_POSITION_MS
+    const stale = playing && Number.isFinite(ageMs) && ageMs > limitMs
     if (stale !== _barStale) {
       _barStale = stale
       document.getElementById('progress-track')?.classList.toggle('stale', stale)
