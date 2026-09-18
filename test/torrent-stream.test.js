@@ -741,8 +741,11 @@ test('stop() closes the server, destroys the torrent and removes the download li
   test('the cache root can be moved to a disk', () => {
     const target = fsx.mkdtempSync(pathx.join(osx.tmpdir(), 'papa-root-'))
     try {
-      assert.strictEqual(setStreamRoot(target), target)
-      assert.ok(newStreamDir().startsWith(target))
+      // The folder the user picks is never used directly: we take a
+      // subdirectory of it that is ours alone, so the sweep has something it
+      // owns and their own files are never inside a purge target.
+      assert.strictEqual(setStreamRoot(target), pathx.join(target, 'papa-video-streams'))
+      assert.ok(newStreamDir().startsWith(pathx.join(target, 'papa-video-streams')))
     } finally {
       setStreamRoot('')
       fsx.rmSync(target, { recursive: true, force: true })
@@ -850,6 +853,56 @@ test('stop() closes the server, destroys the torrent and removes the download li
       assert.strictEqual(fsx.existsSync(live), true)
     } finally {
       fsx.rmSync(live, { recursive: true, force: true })
+    }
+  })
+
+  // The sweep used to delete EVERYTHING in the stream root: the pid regex only
+  // decided whether to skip a live entry, and anything that did not match fell
+  // through to fs.rmSync(recursive). The root is a user setting, so pointing it
+  // at a folder with anything else in it destroyed that too.
+  test('a sweep leaves files and folders it did not create alone', () => {
+    const base = fsx.mkdtempSync(pathx.join(osx.tmpdir(), 'papa-userdir-'))
+    const holiday = pathx.join(base, 'My Holiday Videos')
+    const notes = pathx.join(base, 'notes.txt')
+    fsx.mkdirSync(holiday, { recursive: true })
+    fsx.writeFileSync(pathx.join(holiday, 'beach.mp4'), Buffer.alloc(2048))
+    fsx.writeFileSync(notes, 'do not delete me')
+    try {
+      const root = setStreamRoot(base)
+      const dead = pathx.join(root, 's-999995-dead')
+      const live = pathx.join(root, 's-' + process.pid + '-live')
+      const stranger = pathx.join(root, 'someone-elses-folder')
+      for (const d of [dead, live, stranger]) fsx.mkdirSync(d, { recursive: true })
+      fsx.writeFileSync(pathx.join(dead, 'data.bin'), Buffer.alloc(2048))
+
+      purgeOrphanStreams({ keep: live })
+
+      assert.strictEqual(fsx.existsSync(pathx.join(holiday, 'beach.mp4')), true,
+        "the user's own folder must survive the sweep")
+      assert.strictEqual(fsx.existsSync(notes), true,
+        "the user's own file must survive the sweep")
+      assert.strictEqual(fsx.existsSync(stranger), true,
+        'a name we never created is not ours to delete')
+      assert.strictEqual(fsx.existsSync(live), true, 'a live stream is still in use')
+      assert.strictEqual(fsx.existsSync(dead), false, 'only the dead-pid entry goes')
+    } finally {
+      setStreamRoot('')
+      fsx.rmSync(base, { recursive: true, force: true })
+    }
+  })
+
+  // Same folder, no cache subdirectory of our own yet: the sweep must not be
+  // pointed at the folder the user picked.
+  test('the sweep never targets the folder the user picked', () => {
+    const base = fsx.mkdtempSync(pathx.join(osx.tmpdir(), 'papa-userdir-'))
+    try {
+      const root = setStreamRoot(base)
+      assert.notStrictEqual(root, base)
+      assert.strictEqual(pathx.dirname(root), base)
+      assert.strictEqual(pathx.basename(root), 'papa-video-streams')
+    } finally {
+      setStreamRoot('')
+      fsx.rmSync(base, { recursive: true, force: true })
     }
   })
 
