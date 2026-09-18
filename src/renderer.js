@@ -2255,6 +2255,10 @@ function navigate(page, navId, opts = {}) {
   state.currentSmartListId = page === 'smartlist' ? navId : null
   state.currentVideoNavId  = (page === 'video-detail' || page === 'person' || page === 'shelf') ? navId : null
   state.currentYtNavId     = YT_NAV_PAGES.has(page) ? (navId ?? null) : null
+  // Customize is a mode you are IN on Home, not a setting. It used to persist
+  // across navigation, so coming back to Home half an hour later still showed
+  // the reorder controls over every row.
+  if (page !== 'home') _homeEditMode = false
   // Leaving (or re-entering) a detail page ends its inline trailer (V2.7).
   if (typeof _stopInlineTrailer === 'function') _stopInlineTrailer()
   if (page !== 'playlist') state._plSearch = ''
@@ -33817,6 +33821,13 @@ function setupListeners() {
         if (npm && npm.classList.contains('queue-open')) { closeNpQueue(); return }
         if (npm && npm.classList.contains('art-expanded')) { toggleNpFullArt(); return }
         hideNowPlayingModal(); return
+      }
+      // Home's Customize mode is a page-level layer like the rest of these:
+      // Escape leaves it. It had no exit but the Done button.
+      if (_homeEditMode && state.currentPage === 'home') {
+        _homeEditMode = false
+        renderHome()
+        return
       }
       // Was `!el.style.display === 'none'` -- `!` binds tighter than `===`, so
       // this read `false === 'none'` and was ALWAYS false. Escape has never
