@@ -9,6 +9,15 @@ const TMDB_BASE = 'https://api.themoviedb.org/3'
 // 10s ceiling the Jikan fallback uses (catalog/jikan.js) keeps the two catalog
 // paths consistent.
 const REQUEST_TIMEOUT_MS = 10000
+// Retry/back-off policy, mirroring catalog/anilist.js so the two catalog lanes
+// behave the same way under load. Half a second is enough for a blip; a 429
+// carries its own Retry-After, honoured up to the cap. Past the cap the
+// request is a failure, not a wait: a search box cannot hold a user for eight
+// seconds and then still be wrong.
+const RETRY_BASE_MS = 500
+const RATE_LIMIT_WAIT_CAP_MS = 8000
+const BREAKER_BASE_MS = 15000
+const BREAKER_CEILING_MS = 10 * 60 * 1000
 const IMG_BASE = 'https://image.tmdb.org/t/p/w500'
 // Hero art is sized differently from a poster grid: a title logo is drawn at
 // roughly a third of the hero width, a hero backdrop fills it. w500 posters
@@ -720,33 +729,146 @@ function buildSeasonUrl(tvId, n) {
   return `${TMDB_BASE}/tv/${tvId}/season/${n}`
 }
 
-function createTmdbCatalog({ apiKey, fetchFn, timeoutMs = REQUEST_TIMEOUT_MS } = {}) {
+// Which failures are worth trying again. A 429 or a 5xx is TMDB having a
+// moment; a dead socket or an abort is the network having one. A 401/404 is an
+// answer.
+function _isTransient(status) {
+  if (status === 'unknown' || status == null) return true
+  const n = Number(status)
+  return n === 408 || n === 425 || n === 429 || n >= 500
+}
+
+// How long to wait before the one retry, or null when waiting is not worth it.
+// Pure, so the policy is testable without timers.
+function _retryWaitMs(err, base, capMs) {
+  if (err && Number(err.status) === 429) {
+    const ra = Number(err.retryAfter)
+    const asked = Number.isFinite(ra) && ra > 0 ? ra * 1000 : base
+    return asked <= capMs ? asked : null
+  }
+  return base
+}
+
+function _sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+function createTmdbCatalog({ apiKey, fetchFn, timeoutMs = REQUEST_TIMEOUT_MS,
+  retryDelayMs = RETRY_BASE_MS,
+  rateLimitWaitCapMs = fetchFn ? 0 : RATE_LIMIT_WAIT_CAP_MS } = {}) {
   const fetcher = fetchFn || fetch
+
+  // Circuit breaker, the same shape catalog/anilist.js already uses. Without
+  // it a dead TMDB cost every single search the full 10 s timeout (twice, once
+  // the retry below exists) before the film lane gave up — and the search box
+  // is typed into, so that is 10 s per keystroke's worth of debounced fetch.
+  // With it, the first failure is paid for once and the next calls fail
+  // instantly, which is what lets the renderer say "the film catalogue didn't
+  // answer" straight away instead of hanging.
+  //
+  // The window is shorter than AniList's 30 s on purpose: AniList's breaker
+  // guards unattended shelf polling, TMDB's guards a search box whose empty
+  // state now offers a Retry button the user will press within seconds. A
+  // 30 s hold would make that button a liar.
+  let _breakerUntil = 0
+  let _breakerStrikes = 0
+  const _breakerOpen = () => Date.now() < _breakerUntil
+  const _breakerTrip = err => {
+    _breakerStrikes = Math.min(_breakerStrikes + 1, 20)
+    let wait = Math.min(BREAKER_CEILING_MS, BREAKER_BASE_MS * Math.pow(2, _breakerStrikes - 1))
+    const ra = err && Number(err.retryAfter)
+    if (Number.isFinite(ra) && ra > 0) wait = Math.max(wait, Math.min(ra * 1000, BREAKER_CEILING_MS))
+    _breakerUntil = Date.now() + wait
+    return wait
+  }
+  const _breakerReset = () => { _breakerUntil = 0; _breakerStrikes = 0 }
+
+  // One request, bounded by an AbortController so a hung socket cannot wedge
+  // the catalog. Not every injected fetcher honours `signal`, so the timer is
+  // cleared regardless of how the request settles. A thrown error (abort, dead
+  // socket) is turned into the same shape a bad status produces, so the retry
+  // policy below has one thing to read.
+  async function _fetchOnce(full) {
+    const controller = typeof AbortController === 'function' ? new AbortController() : null
+    const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null
+    try {
+      return await fetcher(full, controller ? { signal: controller.signal } : undefined)
+    } catch (e) {
+      const err = new Error(`TMDB request failed (${(e && e.message) || 'network'})`)
+      err.status = null
+      err.transient = true
+      throw err
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
+  }
+
+  function _statusError(res) {
+    const status = res && res.status != null ? res.status : 'unknown'
+    const err = status === 401
+      ? new Error('Invalid or missing TMDB API key (401)')
+      : new Error(`TMDB request failed (${status})`)
+    err.status = res ? res.status : null
+    const headers = res && res.headers
+    if (headers && typeof headers.get === 'function') err.retryAfter = headers.get('retry-after')
+    // A 4xx that is not a rate limit is TMDB's real answer — a bad key, a
+    // deleted id. Retrying it is pointless and tripping the breaker on it
+    // would take the whole catalog down over one dead detail page.
+    err.transient = _isTransient(status)
+    return err
+  }
 
   async function _fetch(url) {
     const sep = url.includes('?') ? '&' : '?'
     const key = typeof apiKey === 'function' ? apiKey() : apiKey
     const full = key ? `${url}${sep}api_key=${key}` : url
-    // AbortController bounds the request so a hung socket cannot wedge the
-    // catalog. Not every injected fetcher honours `signal`, so the timer is
-    // cleared regardless of how the request settles.
-    const controller = typeof AbortController === 'function' ? new AbortController() : null
-    const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null
-    let res
-    try {
-      res = await fetcher(full, controller ? { signal: controller.signal } : undefined)
-    } finally {
-      if (timer) clearTimeout(timer)
+    // The outage is known and recent: fail now rather than spending another
+    // timeout discovering the same thing.
+    if (_breakerOpen()) {
+      const err = new Error('TMDB is not answering (paused after a recent failure)')
+      err.status = null
+      err.breakerOpen = true
+      throw err
     }
-    if (!res || !res.ok) {
-      const status = res && res.status != null ? res.status : 'unknown'
-      if (status === 401) throw new Error('Invalid or missing TMDB API key (401)')
-      throw new Error(`TMDB request failed (${status})`)
+    let lastErr = null
+    // Two attempts at most. Anything past that turns a blip into a stall, and
+    // the breaker is the thing that handles a real outage.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      let res = null
+      lastErr = null
+      try {
+        res = await _fetchOnce(full)
+      } catch (e) {
+        lastErr = e
+      }
+      if (!lastErr) {
+        if (res && res.ok) {
+          _breakerReset()
+          return res.json()
+        }
+        // A fetcher that resolves with nothing at all is as failed as one that
+        // resolves with a 500 — `unknown` reads as transient.
+        lastErr = _statusError(res)
+      }
+      if (!lastErr.transient) throw lastErr
+      if (attempt === 1) break
+      // A 429 says how long to wait; anything else gets a fixed back-off. A
+      // wait longer than the cap is not a wait, it is a failure — nobody is
+      // holding a search box open for half a minute.
+      const wait = _retryWaitMs(lastErr, retryDelayMs, rateLimitWaitCapMs)
+      if (wait == null) break
+      if (wait > 0) await _sleep(wait)
     }
-    return res.json()
+    _breakerTrip(lastErr)
+    throw lastErr
   }
 
   return {
+    // For tests and the doctor surface: is the breaker currently holding calls?
+    breaker() {
+      return { open: _breakerOpen(), until: _breakerUntil, strikes: _breakerStrikes }
+    },
+    _resetBreaker() { _breakerReset() },
     async trending(kind, page) {
       const data = await _fetch(buildTrendingUrl(kind, { page }))
       const norm = kind === 'tv' ? normalizeTv : normalizeMovie
@@ -876,4 +998,7 @@ module.exports = {
   MOVIE_APPEND,
   TV_APPEND,
   REQUEST_TIMEOUT_MS,
+  RATE_LIMIT_WAIT_CAP_MS,
+  _isTransient,
+  _retryWaitMs,
 }
