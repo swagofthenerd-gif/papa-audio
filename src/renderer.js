@@ -23361,9 +23361,32 @@ function _drawHomeClock() {
 // "Play RiversideE by Agnes Obel120 BPM" aloud is worse than reading nothing.
 function _rowLabelText(el) {
   if (!el) return ''
-  var first = el.firstChild
-  var text = (first && first.nodeType === 3 ? first.textContent : el.textContent) || ''
-  return text.replace(/\s+/g, ' ').trim()
+  // The cell's own words: its leading text nodes plus the <mark> wrappers
+  // highlightMatch() leaves behind on a search hit. A search row's title is
+  // "Lady <mark>Fantasy</mark>", so reading only firstChild named it "Lady".
+  // Anything else inside a title cell is a badge, and the walk stops there.
+  var out = ''
+  for (var n = el.firstChild; n; n = n.nextSibling) {
+    if (n.nodeType === 3) { out += n.textContent || ''; continue }
+    if (n.nodeName === 'MARK' || n.nodeName === 'B') { out += n.textContent || ''; continue }
+    break
+  }
+  if (!out) out = el.textContent || ''
+  return out.replace(/\s+/g, ' ').trim()
+}
+
+// Play the song a row stands for, through its album so the rest of the record
+// becomes the queue — the same thing clicking an album row's track number
+// does. Returns false when the row cannot be resolved, so a caller can fall
+// back to whatever it did before.
+function _playRowTrack(row) {
+  if (!row || !row.dataset) return false
+  var album = state.library.find(function (a) { return a.id === row.dataset.album })
+  if (!album) return false
+  var idx = album.tracks.findIndex(function (t) { return t.filePath === row.dataset.file })
+  if (idx < 0) return false
+  playAlbum(album, idx)
+  return true
 }
 
 function bindContentEvents() {
@@ -23389,8 +23412,10 @@ function bindContentEvents() {
     if (!row.hasAttribute('tabindex')) row.setAttribute('tabindex', '0')
     if (!row.hasAttribute('role')) row.setAttribute('role', 'button')
     if (row.hasAttribute('aria-label')) return
-    var _title = _rowLabelText(row.querySelector('.track-title'))
-    var _artist = _rowLabelText(row.querySelector('.track-artist'))
+    // The Top Result songs are .track-row too, but their cells are .str-track-*
+    // — so the labeller found nothing and every one of them went unnamed.
+    var _title = _rowLabelText(row.querySelector('.track-title') || row.querySelector('.str-track-title'))
+    var _artist = _rowLabelText(row.querySelector('.track-artist') || row.querySelector('.str-track-artist'))
     if (_title) row.setAttribute('aria-label', 'Play ' + _title + (_artist ? ' by ' + _artist : ''))
   })
 
@@ -23515,14 +23540,14 @@ function bindContentEvents() {
       // a data-album, so this generic handler and renderPlaylist's own handler
       // both fired: clicking a track started playback AND yanked you to the
       // album page. Multi-select above still applies to those rows.
+      // A song listed under "Top Result" is an answer, not a signpost. It
+      // carried a data-album, so this handler treated the whole row as "open
+      // the album" — clicking the exact song you searched for played nothing
+      // and yanked you to its record instead. It plays, like the track number
+      // on an album page does.
+      if (row.classList.contains('str-track')) { _playRowTrack(row); return }
       if (row.dataset.noAlbumNav) return
-      if (e.target.closest('.track-num')) {
-        const album = state.library.find(a => a.id === row.dataset.album)
-        if (!album) return
-        const idx = album.tracks.findIndex(t => t.filePath === row.dataset.file)
-        if (idx >= 0) playAlbum(album, idx)
-        return
-      }
+      if (e.target.closest('.track-num')) { _playRowTrack(row); return }
       const albumId = row.dataset.album
       if (albumId) navigate('album', albumId)
     })
