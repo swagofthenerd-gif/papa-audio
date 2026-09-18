@@ -21594,8 +21594,14 @@ function playNext() {
     nextIdx = (prevIdx + 1) % len
   }
   const wrapped = !state.shuffle && nextIdx === 0 && prevIdx === len - 1
-  state.queueIndex = nextIdx
   if (wrapped && state.repeat === 'off') {
+    // The index is deliberately NOT advanced past this point. It used to be
+    // moved to 0 before the decision, so the end of the queue left the index on
+    // track 1 while track 10 was still the audible one: the panel highlighted
+    // the wrong row, MPRIS and the tray named the wrong track, and two more
+    // presses of Next walked 1, 2, 3 -- the album silently restarting from the
+    // top. The continuation paths below set their own index (and are now
+    // correctly seeded from the LAST track rather than the first).
     // Queue finished — restore prior queue if standalone play was active
     if (_oldQueue) { restoreOldQueue(); return }
     // "Keep the music going" (App #2): opt-in library radio continuation, using
@@ -21604,8 +21610,22 @@ function playNext() {
     if (keepGoingEnabled()) { _keepGoingContinue(); return }
     // Spotify-style autoplay keeps going with similar tracks
     if (autoplayEnabled() && !state.shuffle) { tryAutoplayContinue(); return }
-    audio.pause(); state.isPlaying = false; updatePlayBtn(); syncExtension(); return
+    // Nothing follows: stop ON the last track and say so, rather than pausing
+    // while pointing somewhere else. Rewound so Play restarts that track from
+    // the beginning instead of resuming at its end and instantly ending again.
+    audio.pause()
+    state.isPlaying = false
+    try { audio.currentTime = 0 } catch (_) { /* engine already idle */ }
+    updatePlayBtn()
+    updateNowPlaying(state.queue[state.queueIndex] || null)
+    updateTrackHighlight()
+    if (state.queuePanelOpen) renderQueuePanel()
+    if (state.modalOpen) updateNowPlayingModal()
+    syncExtension()
+    showSnackbar('End of queue')
+    return
   }
+  state.queueIndex = nextIdx
   if (state.skipShortTracks && state.queue.length > 1) {
     const track = state.queue[state.queueIndex]
     if (track && track.duration != null && track.duration < state.skipShortSecs) {
