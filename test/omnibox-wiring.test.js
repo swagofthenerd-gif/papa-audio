@@ -60,7 +60,9 @@ test('every row kind is performed, and searches and opens land in the shared mem
 test('keyboard: arrows move over the flattened rows, Enter performs, a bare Enter searches', () => {
   const setup = fn('_setupCP')
   assert.match(setup, /e\.key === 'ArrowDown'[\s\S]{0,120}_omniRows\(\)\.length - 1/)
-  assert.match(setup, /if \(!row && inp\.value\.trim\(\)\) \{ toggleCommandPalette\(\); commitSearchQuery\(inp\.value\.trim\(\)\); return \}/)
+  assert.match(setup, /if \(!row && _typed\) \{ toggleCommandPalette\(\); commitSearchQuery\(_typed\); return \}/)
+  // ...but not for a command nobody has — see qa-omnibox-command-enter.
+  assert.match(setup, /isCommandMode\(_typed\)\) return/)
   assert.match(setup, /_omniExec\(_omniRows\(\)\[parseInt\(item\.dataset\.idx, 10\)\]\)/)
   assert.doesNotMatch(CODE, /function _filterCP\(/, 'the old label-substring palette is gone')
 })

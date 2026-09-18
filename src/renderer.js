@@ -34833,8 +34833,15 @@ function _setupCP() {
         e.preventDefault()
         var rows = _omniRows()
         var row = rows[_cpIdx]
-        // Enter on a bare query with nothing highlighted is a plain search.
-        if (!row && inp.value.trim()) { toggleCommandPalette(); commitSearchQuery(inp.value.trim()); return }
+        // Enter on a bare query with nothing highlighted is a plain search —
+        // but ">zzqq" is not a query, it is a command nobody has. Running it as
+        // a MUSIC search sent the user to a results page for the literal
+        // ">zzqq" and remembered it as a recent search. Stay put instead.
+        var _typed = inp.value.trim()
+        // The palette is already showing "Nothing matches" for it; leaving it
+        // open with that on screen is the answer.
+        if (!row && _typed && window.PapaOmnibox && window.PapaOmnibox.isCommandMode(_typed)) return
+        if (!row && _typed) { toggleCommandPalette(); commitSearchQuery(_typed); return }
         _omniExec(row)
       }
       else if (e.key === 'Escape') toggleCommandPalette()
