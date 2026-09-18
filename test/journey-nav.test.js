@@ -24,16 +24,10 @@ function fnBody(name) {
 
 // ── 1. The video search is a journey, not a mood ────────────────────────────
 
-test('the video search query is the video page navId', () => {
-  // state carries the committed query…
-  assert.match(RENDERER, /currentVideoQuery: ''/)
-  // …_currentNavId serves it for the video page…
-  assert.match(fnBody('_currentNavId'),
-    /currentPage === 'video'\) return state\.currentVideoQuery \|\| null/)
-  // …and navigate() seeds it from a video navId (and clears it elsewhere).
-  assert.match(fnBody('navigate'),
-    /state\.currentVideoQuery\s*=\s*page === 'video' \? \(navId \|\| ''\) : ''/)
-})
+// (The three pins that used to sit here — currentVideoQuery on state,
+// _currentNavId serving it for the video page, navigate() seeding it — are
+// gone: "Back out of a title lands on the search that found it" at the foot of
+// this file fails if any of them is broken, and it fails for the right reason.)
 
 test('running a video search registers the query as the navId', () => {
   const run = fnBody('_runVideoTitleSearch')
@@ -46,24 +40,17 @@ test('a successful video search is cached for replay, by reference', () => {
   assert.match(RENDERER, /var VSEARCH_CACHE_TTL = /)
   assert.match(fnBody('_runVideoTitleSearch'),
     /_lastVideoSearch = \{ filter: _vSearchFilter, timestamp: Date\.now\(\) \}/)
-  const restore = fnBody('_restoreVideoSearch')
-  // Replay guards: same query, fresh, has results — else re-run the search.
-  assert.match(restore, /c\.filter\.query === query/)
-  assert.match(restore, /VSEARCH_CACHE_TTL/)
-  assert.match(restore, /_runVideoTitleSearch\(query\)/)
-  // The replay invalidates any in-flight fetch before painting.
-  assert.match(restore, /_videoSearchTicket\+\+/)
+  // The replay guards themselves (same query, fresh enough, has results, else
+  // re-run) are driven in "a stale or missing cache makes Back re-run the
+  // search" below rather than pinned here. What stays is the one thing that
+  // test cannot see: the replay invalidates any in-flight fetch first, so a
+  // slow older search cannot overwrite the results it lost the race to.
+  assert.match(fnBody('_restoreVideoSearch'), /_videoSearchTicket\+\+/)
 })
 
-test('renderVideo restores a query navId instead of wiping to the catalog', () => {
-  const rv = fnBody('renderVideo')
-  assert.match(rv, /renderVideo\(navId\)/)
-  assert.match(rv, /const restoreQuery = typeof navId === 'string'/)
-  assert.match(rv, /preserveSearch: true/)
-  assert.match(rv, /_restoreVideoSearch\(restoreQuery\)/)
-  // The dispatcher hands the navId through.
-  assert.match(fnBody('navigate'), /renderVideo\(navId\)/)
-})
+// (renderVideo's restore branch had five pins here. They are replaced by the
+// behavioural tests at the foot of this file, which put a query in the box,
+// press Back and look at what is on the page.)
 
 test('_renderVideoTab only wipes the search when it is not restoring one', () => {
   const body = fnBody('_renderVideoTab')
@@ -239,4 +226,284 @@ test('every catalog-hiding path hides the taste row too', () => {
   // Clearing the box restores it with the rest of the catalog.
   const reset = RENDERER.slice(RENDERER.indexOf('const reset = function () {'), RENDERER.indexOf('const reset = function () {') + 700)
   assert.match(reset, /getElementById\('vtaste-row'\)\?\.style\.removeProperty\('display'\)/)
+})
+
+// ── The journey, driven ──────────────────────────────────────────────────────
+// Seventeen of the eighteen tests above are regexes over renderer.js. They see
+// that the lines exist; they cannot see whether Back actually brings the search
+// back. Changing navigateBack to `navigate(prev.page, null, …)` — Back losing
+// the query it was carrying — left all eighteen green.
+//
+// What follows runs the real stack: navigate, navigateBack, navigateForward,
+// _currentNavId, _pushNavHistory, the real renderVideo and the real
+// _restoreVideoSearch, against a DOM stub.
+
+function extractFn (name) {
+  const start = RENDERER.indexOf('function ' + name + '(')
+  assert.ok(start > -1, name + ' not found')
+  let i = RENDERER.indexOf('(', start)
+  let paren = 0
+  for (; i < RENDERER.length; i++) {
+    if (RENDERER[i] === '(') paren++
+    else if (RENDERER[i] === ')') { paren--; if (!paren) { i++; break } }
+  }
+  let depth = 0
+  for (let j = RENDERER.indexOf('{', i); j < RENDERER.length; j++) {
+    if (RENDERER[j] === '{') depth++
+    else if (RENDERER[j] === '}') {
+      depth--
+      if (!depth) {
+        const body = RENDERER.slice(start, j + 1)
+        return (RENDERER.slice(Math.max(0, start - 6), start) === 'async ' ? 'async ' : '') + body
+      }
+    }
+  }
+  throw new Error('unbalanced braces in ' + name)
+}
+
+function fakeEl (id) {
+  return {
+    id,
+    value: '',
+    hidden: false,
+    scrollTop: 0,
+    _html: '',
+    style: { display: '', removeProperty () { this.display = '' } },
+    get innerHTML () { return this._html },
+    set innerHTML (v) { this._html = v },
+    classList: { toggle () {}, remove () {}, add () {} },
+    addEventListener () {},
+    querySelector: () => null,
+    querySelectorAll: () => [],
+  }
+}
+
+function journey (mutate) {
+  const source = mutate ? mutate(RENDERER) : RENDERER
+  const lift = name => {
+    const src = source
+    const start = src.indexOf('function ' + name + '(')
+    assert.ok(start > -1, name + ' not found')
+    let i = src.indexOf('(', start)
+    let paren = 0
+    for (; i < src.length; i++) {
+      if (src[i] === '(') paren++
+      else if (src[i] === ')') { paren--; if (!paren) { i++; break } }
+    }
+    let depth = 0
+    for (let j = src.indexOf('{', i); j < src.length; j++) {
+      if (src[j] === '{') depth++
+      else if (src[j] === '}') {
+        depth--
+        if (!depth) {
+          const body = src.slice(start, j + 1)
+          return (src.slice(Math.max(0, start - 6), start) === 'async ' ? 'async ' : '') + body
+        }
+      }
+    }
+    throw new Error('unbalanced braces in ' + name)
+  }
+
+  const els = {}
+  for (const id of ['content', 'video-search-input', 'video-search-clear', 'vrows',
+    'vhero-mount', 'vtaste-row', 'video-search-results']) els[id] = fakeEl(id)
+  const painted = []
+  const fetched = []
+  const tabs = []
+  const detailsRendered = []
+  const sandbox = {
+    document: {
+      getElementById: id => els[id] || null,
+      querySelectorAll: () => [],
+      body: { classList: { toggle () {} } },
+    },
+    window: { api: { saveSessionState () {} }, PapaJourney: null },
+    state: { currentPage: '', currentVideoQuery: '', library: [], playlists: [], smartPlaylists: [] },
+    _scrollMemory: new Map(),
+    SCROLL_MEMORY_CAP: 50,
+    VIDEO_PAGES: new Set(['video', 'browse', 'video-detail', 'person', 'shelf', 'diary', 'calendar']),
+    requestAnimationFrame: fn => fn(),
+    Date, Set, Map, Array, Object, JSON, console,
+    // Everything that is not the navigation itself.
+    _initVideoUI () {},
+    _videoTab: 'all',
+    setContent () {},
+    _vHeadHtml: () => '',
+    _bindVideoHead () {},
+    _renderVideoTab: (ticket, opts) => { tabs.push(opts || null) },
+    _videoCatalogTicket: 0,
+    _videoSearchTicket: 0,
+    _paintVideoSearchResults: () => { painted.push(sandbox._vSearchFilter.query) },
+    _runVideoTitleSearch: q => { fetched.push(q) },
+    _vSearchFilter: { query: null, results: [] },
+    _lastVideoSearch: null,
+    VSEARCH_CACHE_TTL: 1000 * 60 * 10,
+    renderVideoDetail: id => { detailsRendered.push(id) },
+    _stopInlineTrailer () {},
+    retuneDownloadsPolling () {},
+    hideContextMenu () {},
+    _renderFailure: (page, err) => { throw err },
+    _dlLastSig: '',
+    slsk: { lastQuery: '' },
+    _videoDetail: null,
+  }
+  sandbox.globalThis = sandbox
+  vm.createContext(sandbox)
+  vm.runInContext([
+    source.slice(source.indexOf('const NAV_HISTORY_CAP'),
+                 source.indexOf('// ── Overlay dismissal on navigation')),
+    'const _navDismiss = new Set()',
+    'function _registerNavDismiss(fn) { _navDismiss.add(fn); return fn }',
+    'function _runNavDismiss() { Array.from(_navDismiss).forEach(function (fn) { try { fn() } catch (_) {} }) }',
+    lift('_currentNavId'),
+    lift('navigate'),
+    lift('navigateBack'),
+    lift('navigateForward'),
+    lift('_backOr'),
+    lift('updateNavBtns'),
+    lift('renderVideo'),
+    lift('_restoreVideoSearch'),
+    'globalThis.__api = { navigate, navigateBack, navigateForward, _backOr, _currentNavId,' +
+      ' history: navHistory, future: navFuture }',
+  ].join('\n'), sandbox)
+
+  const api = sandbox.__api
+  return {
+    sandbox, api, els, painted, fetched, tabs, detailsRendered,
+    // What running a search does to the page state, without the search code:
+    // the query becomes the video page's id in place, no navigation.
+    searchFor (q, results) {
+      sandbox.state.currentVideoQuery = q
+      sandbox._vSearchFilter = { query: q, results: results || [{ id: 1 }, { id: 2 }] }
+      sandbox._lastVideoSearch = { filter: sandbox._vSearchFilter, timestamp: Date.now() }
+    },
+  }
+}
+
+test('Back out of a title lands on the search that found it, query and results', async () => {
+  const j = journey()
+  j.api.navigate('video', null)
+  j.searchFor('tokyo revengers')
+  j.api.navigate('video-detail', 'anime:21')
+  assert.deepStrictEqual(j.detailsRendered, ['anime:21'], 'the title page opened')
+
+  j.api.navigateBack()
+  await new Promise(r => setImmediate(r))
+  assert.strictEqual(j.sandbox.state.currentPage, 'video')
+  assert.strictEqual(j.sandbox.state.currentVideoQuery, 'tokyo revengers',
+    'the page he came back to is the search, not the clean catalogue')
+  assert.strictEqual(j.els['video-search-input'].value, 'tokyo revengers',
+    'and the box he typed it into still holds it')
+  assert.strictEqual(j.els['video-search-clear'].hidden, false, 'with its clear button showing')
+  assert.deepStrictEqual(j.painted, ['tokyo revengers'],
+    'the cached results are replayed rather than re-fetched')
+  assert.deepStrictEqual(j.fetched, [], 'nothing was asked for again')
+  assert.strictEqual(JSON.stringify(j.tabs), JSON.stringify([null, { preserveSearch: true }]),
+    'and the catalogue underneath is painted without wiping the results')
+})
+
+test('a stale or missing cache makes Back re-run the search rather than show nothing', async () => {
+  const j = journey()
+  j.api.navigate('video', null)
+  j.searchFor('perfect blue')
+  j.sandbox._lastVideoSearch.timestamp = Date.now() - (1000 * 60 * 60)
+  j.api.navigate('video-detail', 'movie:1')
+  j.api.navigateBack()
+  await new Promise(r => setImmediate(r))
+  assert.deepStrictEqual(j.fetched, ['perfect blue'], 'it goes and gets them again')
+  assert.deepStrictEqual(j.painted, [])
+  assert.strictEqual(j.els['video-search-input'].value, 'perfect blue')
+})
+
+test('Back to a catalogue with no search open leaves the box empty', async () => {
+  const j = journey()
+  j.api.navigate('video', null)
+  j.api.navigate('video-detail', 'anime:21')
+  j.api.navigateBack()
+  await new Promise(r => setImmediate(r))
+  assert.strictEqual(j.sandbox.state.currentVideoQuery, '')
+  assert.strictEqual(j.els['video-search-input'].value, '')
+  assert.deepStrictEqual(j.fetched, [])
+  assert.strictEqual(JSON.stringify(j.tabs), JSON.stringify([null, null]), 'the clean catalogue, as before')
+})
+
+test('Forward returns to the title, and Back again to the search', async () => {
+  const j = journey()
+  j.api.navigate('video', null)
+  j.searchFor('tokyo revengers')
+  j.api.navigate('video-detail', 'anime:21')
+  j.api.navigateBack()
+  await new Promise(r => setImmediate(r))
+  j.api.navigateForward()
+  assert.strictEqual(j.sandbox.state.currentPage, 'video-detail')
+  assert.deepStrictEqual(j.detailsRendered, ['anime:21', 'anime:21'])
+  j.api.navigateBack()
+  await new Promise(r => setImmediate(r))
+  assert.strictEqual(j.sandbox.state.currentVideoQuery, 'tokyo revengers',
+    'the query survives a round trip, not just the first Back')
+})
+
+test("an in-page back button goes back to the search, not to the tab's front page", async () => {
+  const j = journey()
+  j.api.navigate('video', null)
+  j.searchFor('paprika')
+  j.api.navigate('video-detail', 'movie:9')
+  j.api._backOr('video')
+  await new Promise(r => setImmediate(r))
+  assert.strictEqual(j.sandbox.state.currentVideoQuery, 'paprika')
+
+  // With nowhere to return to, the stated fallback applies and is clean.
+  const fresh = journey()
+  fresh.api._backOr('video')
+  await new Promise(r => setImmediate(r))
+  assert.strictEqual(fresh.sandbox.state.currentPage, 'video')
+  assert.strictEqual(fresh.sandbox.state.currentVideoQuery, '')
+})
+
+test('MUTATION: Back dropping the navId loses the search silently', async () => {
+  const j = journey(src => {
+    const out = src.replace('  navigate(prev.page, prev.navId, { skipHistory: true, restoreScroll: true })',
+      '  navigate(prev.page, null, { skipHistory: true, restoreScroll: true })')
+    assert.notStrictEqual(out, src, 'the mutation applied')
+    return out
+  })
+  j.api.navigate('video', null)
+  j.searchFor('tokyo revengers')
+  j.api.navigate('video-detail', 'anime:21')
+  j.api.navigateBack()
+  await new Promise(r => setImmediate(r))
+  assert.strictEqual(j.sandbox.state.currentVideoQuery, '',
+    'this is the bug: Back to a blank catalogue, the search gone')
+  assert.strictEqual(j.els['video-search-input'].value, '')
+})
+
+test('MUTATION: the video page forgetting its query id has the same effect', async () => {
+  const j = journey(src => {
+    const out = src.replace("  if (state.currentPage === 'video') return state.currentVideoQuery || null",
+      "  if (state.currentPage === 'video') return null")
+    assert.notStrictEqual(out, src, 'the mutation applied')
+    return out
+  })
+  j.api.navigate('video', null)
+  j.searchFor('tokyo revengers')
+  j.api.navigate('video-detail', 'anime:21')
+  j.api.navigateBack()
+  await new Promise(r => setImmediate(r))
+  assert.strictEqual(j.sandbox.state.currentVideoQuery, '',
+    'nothing recorded the query when the page was left')
+})
+
+test('MUTATION: not replaying the results leaves the box full and the page empty', async () => {
+  const j = journey(src => {
+    const out = src.replace('    _restoreVideoSearch(restoreQuery)\n', '')
+    assert.notStrictEqual(out, src, 'the mutation applied')
+    return out
+  })
+  j.api.navigate('video', null)
+  j.searchFor('tokyo revengers')
+  j.api.navigate('video-detail', 'anime:21')
+  j.api.navigateBack()
+  await new Promise(r => setImmediate(r))
+  assert.deepStrictEqual(j.painted, [])
+  assert.deepStrictEqual(j.fetched, [], 'nothing replayed and nothing re-fetched')
 })
