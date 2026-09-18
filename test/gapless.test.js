@@ -26,8 +26,16 @@ test('the committed pick is the one actually played', () => {
   // one that plays — a gap AND the wrong track.
   assert.ok(/const committed = \(_pendingShuffle != null/.test(r),
     'playNext must consume the committed pick')
-  assert.ok(/_pendingShuffle = null\s*\n\s*state\.queueIndex = committed/.test(r),
+  // The pick used to be written straight into state.queueIndex. Since the fix
+  // for shuffle stopping the music (a pick of 0 was read as "the queue
+  // finished"), it lands in a local first and playNext commits that to
+  // state.queueIndex once it has decided the queue has not ended. The property
+  // this test cares about is unchanged: the commitment is dropped as it is
+  // consumed, and the consumed value is what plays.
+  assert.ok(/_pendingShuffle = null\s*\n\s*nextIdx = committed/.test(r),
     'the commitment must be cleared once used')
+  assert.ok(/state\.queueIndex = nextIdx/.test(r),
+    'and the pick that was prefetched must be the index that is played')
 })
 
 test('a stale commitment cannot outlive the queue or the shuffle toggle', () => {
