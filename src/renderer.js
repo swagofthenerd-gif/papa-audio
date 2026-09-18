@@ -21870,11 +21870,24 @@ function updateRadioState() {
 // All the building happens in the main process (Task 11). The renderer only
 // asks for a finished, playable list and starts it — same shape as playAlbum.
 var SMART_QUEUE_MODES = ['radio', 'mix', 'surprise', 'rediscover']
+// What to say when the build came back with nothing AND the analysis is
+// finished. "Still analysing your library" was printed for every empty result,
+// including a finished pass that simply had nothing to offer — telling the
+// user to wait for work that had already stopped.
+var _SMART_QUEUE_NOTHING = {
+  radio: 'Nothing close enough to build a radio from yet',
+  mix: 'That mix is empty right now',
+  surprise: 'Nothing to surprise you with yet — add more music',
+  rediscover: 'Nothing to rediscover yet — play more first',
+}
 async function startSmartQueue(mode, seedFilePath, opts) {
   const mixIndex = opts && Number.isInteger(opts.mixIndex) ? opts.mixIndex : null
   const result = await window.api.queueBuild({ mode: mode, seedFilePath: seedFilePath, mixIndex: mixIndex, length: 40 }).catch(() => null)
   if (!result || !result.tracks || !result.tracks.length) {
-    showSnackbar('Still analysing your library — try again shortly')
+    // A build that never answered is a failure, not a pending analysis.
+    if (!result) showSnackbar('Couldn’t build that queue just now — try again')
+    else if (!result.featuresReady) showSnackbar('Still analysing your library — try again shortly')
+    else showSnackbar(_SMART_QUEUE_NOTHING[mode] || 'Nothing to play there yet')
     return null
   }
   _oldQueue = null
