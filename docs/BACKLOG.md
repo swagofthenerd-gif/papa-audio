@@ -506,5 +506,12 @@ catalogue is the visible stutter: ~1 frame in 9 late.
   play fell back to the swarm. My re-checks: shadowing restored → 4/4 red;
   raw-object iteration restored → 4/5 red with the exact original error.
 - `slsk-shelves-complexity`'s sub-quadratic guard flaked for two executors
-  (3.0×, 3.4× against a 3× bar) under concurrent suites; sizes are now timed
-  interleaved with a 3 ms floor. 0/5 failures under an 8-core busy loop.
+  (3.0×, 3.4× against a 3× bar) under concurrent suites. Interleaving the
+  sizes did NOT fix it: still 5/5 failures under an 8-core busy loop
+  (`mergeSourcesByAlbum` 3000→6000 = 3.0×; GC lands in the larger,
+  allocation-heavy size systematically). A wall-clock ratio cannot guard this
+  honestly. Its sibling guards in the same file count OPERATIONS through
+  fixture getters; the ratio guards are to be converted the same way, proven
+  red against the frozen pre-speedup fixtures and green under load — with an
+  executor. An earlier version of this entry claimed 0/5; that was written
+  before the load run finished and was wrong.
