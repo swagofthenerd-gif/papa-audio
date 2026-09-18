@@ -18015,6 +18015,10 @@ function renderPlaylists() {
 }
 
 function _showNewPlaylistWithFolder() {
+  // Two clicks on "New playlist" used to build two identical dialogs stacked on
+  // top of each other, with only the top one reachable.
+  var _open = document.getElementById('new-pl-folder-modal')
+  if (_open) { _open.querySelector('#npfm-name')?.focus(); return }
   var existingFolders = state.playlistFolders.slice()
   state.playlists.forEach(function(pl) { if (pl.folder && existingFolders.indexOf(pl.folder) === -1) existingFolders.push(pl.folder) })
 
@@ -18054,7 +18058,10 @@ function _showNewPlaylistWithFolder() {
   var folderSelect = overlay.querySelector('#npfm-folder-select')
   var newFolderRow = overlay.querySelector('#npfm-new-folder-row')
   var newFolderInput = overlay.querySelector('#npfm-new-folder-input')
-  var close = function() { overlay.remove() }
+  // Leaving the page closes the dialog — it belonged to the page, not the shell,
+  // and it used to float over whatever came next.
+  var close = function() { _unregisterNavDismiss(close); overlay.remove() }
+  _registerNavDismiss(close)
 
   var confirm = function() {
     var name = (nameInput.value || '').trim()
@@ -18526,7 +18533,7 @@ function showImportPlaylistDialog() {
   var _mt = (typeof window !== 'undefined' && window.PapaMusicTools) || null
   if (!_mt) { showSnackbar('Import unavailable'); return }
   var existing = document.getElementById('import-pl-modal')
-  if (existing) existing.remove()
+  if (existing) { existing.querySelector('#imp-text')?.focus(); return }
   var overlay = document.createElement('div')
   overlay.id = 'import-pl-modal'
   overlay.className = 'addpl-overlay'
@@ -18547,7 +18554,8 @@ function showImportPlaylistDialog() {
       </div>
     </div>`
   document.body.appendChild(overlay)
-  var close = function () { overlay.remove() }
+  var close = function () { _unregisterNavDismiss(close); overlay.remove() }
+  _registerNavDismiss(close)
   overlay.querySelector('#imp-close')?.addEventListener('click', close)
   overlay.querySelector('#imp-cancel')?.addEventListener('click', close)
   overlay.addEventListener('click', function (e) { if (e.target === overlay) close() })
@@ -19705,8 +19713,12 @@ function showNameInputModal(title, placeholder, onConfirm, confirmLabel) {
   // The button always said "Create", including from the three "Rename playlist"
   // call sites. Derive it from the title when the caller does not say.
   confirmLabel = confirmLabel || (/rename/i.test(String(title)) ? 'Rename' : 'Create')
+  // Unlike the argument-less dialogs this one is parameterised (Rename, New
+  // folder, …), so a second call is a DIFFERENT question and replaces the first
+  // rather than focusing it. Going through the old dialog's own close, not a
+  // bare .remove(), so its nav-dismiss registration goes with it.
   const existing = document.getElementById('name-input-modal')
-  if (existing) existing.remove()
+  if (existing) { if (existing._papaClose) existing._papaClose(); else existing.remove() }
   const overlay = document.createElement('div')
   overlay.id = 'name-input-modal'
   overlay.className = 'addpl-overlay'
@@ -19726,7 +19738,9 @@ function showNameInputModal(title, placeholder, onConfirm, confirmLabel) {
     </div>`
   document.body.appendChild(overlay)
   const input = overlay.querySelector('#nim-input')
-  const close = () => overlay.remove()
+  const close = () => { _unregisterNavDismiss(close); overlay.remove() }
+  overlay._papaClose = close
+  _registerNavDismiss(close)
   const confirm = () => {
     const name = (input.value || '').trim()
     if (!name) { input.focus(); return }
@@ -19947,8 +19961,10 @@ function showSmartPlaylistDialog(existing) {
 
 function showAddToPlaylistModal(tracks) {
   if (!tracks || !tracks.length) return
+  // Parameterised by the tracks being added, so a second call replaces the
+  // first — through its own close, so its nav-dismiss registration goes too.
   const existing = document.getElementById('addpl-modal')
-  if (existing) existing.remove()
+  if (existing) { if (existing._papaClose) existing._papaClose(); else existing.remove() }
 
   const slim = tracks.map(t => ({
     id: t.id, title: t.title, artist: t.artist, albumArtist: t.albumArtist || t.artist || '',
@@ -19992,9 +20008,12 @@ function showAddToPlaylistModal(tracks) {
   // forever — each closure holding the modal DOM and the whole track array.
   // Removing it in close() covers every exit, including ones added later.
   const close = () => {
+    _unregisterNavDismiss(close)
     document.removeEventListener('keydown', onEsc)
     overlay.remove()
   }
+  overlay._papaClose = close
+  _registerNavDismiss(close)
   const addTo = (pl) => {
     pl.tracks = pl.tracks || []
     // Adding the same track twice used to silently double it, with no feedback
@@ -31257,8 +31276,10 @@ async function showSlskSavedUsers() {
 }
 
 function showSlskConfigModal(query) {
+  // Argument-less as far as the user is concerned (the query is only what to
+  // re-run afterwards), so a second call focuses the open dialog.
   const existing = document.getElementById('slsk-config-modal')
-  if (existing) existing.remove()
+  if (existing) { existing.querySelector('#slsk-cfg-user')?.focus(); return }
   const dlg = document.createElement('div')
   dlg.id = 'slsk-config-modal'
   dlg.className = 'modal-overlay'
@@ -31281,11 +31302,21 @@ function showSlskConfigModal(query) {
     </div>
   </div>`
   document.body.appendChild(dlg)
+  // This one had neither: Escape did nothing and every navigation left it
+  // floating over the next page.
+  const _closeCfg = () => {
+    _unregisterNavDismiss(_closeCfg)
+    document.removeEventListener('keydown', _onCfgKey)
+    dlg.remove()
+  }
+  const _onCfgKey = e => { if (e.key === 'Escape') { e.preventDefault(); _closeCfg() } }
+  document.addEventListener('keydown', _onCfgKey)
+  _registerNavDismiss(_closeCfg)
   dlg.querySelector('#slsk-signup-link')?.addEventListener('click', e => {
     e.preventDefault()
     window.api.openExternal('https://www.slsknet.org/news/')
   })
-  dlg.querySelector('#slsk-cfg-cancel')?.addEventListener('click', () => dlg.remove())
+  dlg.querySelector('#slsk-cfg-cancel')?.addEventListener('click', _closeCfg)
   dlg.querySelector('#slsk-cfg-save')?.addEventListener('click', async () => {
     const username = dlg.querySelector('#slsk-cfg-user')?.value.trim()
     const password = dlg.querySelector('#slsk-cfg-pass')?.value
@@ -31312,7 +31343,7 @@ function showSlskConfigModal(query) {
       else showSnackbar(msg, null, null, 6000)
       return
     }
-    dlg.remove()
+    _closeCfg()
     // Poll in background until Soulseek login completes (takes ~5-20s), then auto-search
     ;(async () => {
       for (let i = 0; i < 25; i++) {
@@ -31326,7 +31357,7 @@ function showSlskConfigModal(query) {
       }
     })()
   })
-  dlg.addEventListener('click', e => { if (e.target === dlg) dlg.remove() })
+  dlg.addEventListener('click', e => { if (e.target === dlg) _closeCfg() })
 }
 
 // Roadmap 049: a saved queue is a listening SESSION — it keeps where you
