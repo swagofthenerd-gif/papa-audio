@@ -449,3 +449,51 @@ Full suite 5,285 / 0 on the same tree.
   `.titlebar-left` is absent, and the DRY RUN banner lands in no log. Both,
   plus a reusable `tools/twin-probe.js` that surfaces evaluation exceptions
   and waits for readiness, are with an executor.
+
+## 15. Movies & TV live audit to the Netflix bar (19 Sep) — 20 defects, ranked
+
+Two hours, ~120 interactions on a private twin (own port; it caught four
+agents contaminating the shared one and moved). Blocked side effects INSIDE
+the renderer's own play path, not via frozen `window.api` — nothing played,
+downloaded, warmed or reached RealDebrid. Zero uncaught errors in two hours.
+
+### Must fix — his actual complaint
+| # | Finding | State |
+|---|---|---|
+| N1 | **A failed search is reported as an empty one and blames spelling.** 5/20 searches for famous films came back empty with `ok:true`. `video-search` folds `tmdb().search(q).catch(() => [])`; `catalog/tmdb.js` has no retry / 429 / back-off / breaker (anilist.js has all). Second shape: same query → 2 films+4 anime, then 0 films+4 anime, no warning. | executor `fix/video-search-honesty` |
+| N2 | **"Continue episode N · Resume" never plays** — `_bindEpResume` selects and reloads sources, then stops. 6/6. Third Play-that-only-navigates tonight; zero tests mention the banner. | executor `fix/video-detail-honesty` |
+
+### Should fix
+N3 fixed group order Films→Series→Anime buries the match (Attack on Titan →
+live-action films first) · N4 typo dead-end: spelling-retry fires only on
+zero results and the anime lane never returns zero ("Intersteller" → 18
+anime, 3/3) · N5 every catalogue error routed through the PLAYBACK error
+table ("Try another source from the list below" on a page with no sources) ·
+N6 hero My List button never reflects saved state · N7 removing from My List
+leaves the card until you leave the tab · N8 poster aria-label stale after
+removal.
+
+### Worth fixing
+N9 "You can undo this" — 5 s bar, hidden under a 4 s source reload, 6/6 ·
+N10 quality choice sticks across titles (`_playQuality` never reset) · N11
+two different sizes per source row (binary vs decimal, both labelled GB) ·
+N12 Back loses scroll ~1 in 3 (restore fires before shelves fill) · N13
+tablist without arrow-key behaviour · N14 hero page dots 3 px tall · N15
+hovering the hero re-converts the same trailer (10× one URL) · N16 offline
+banner over-promises · N17 one corrupt watch-history entry (no type/id/title)
+· N18 anime pages slow (Tokyo Revengers S2 53.6 s) · N19 season shortcuts
+reach only 1–9 · N20 `color-scheme: dark` undeclared; 18 px chips; hidden
+poster Play buttons contradict rule #5.
+
+### Verified PASS on the live app (nothing tonight regressed)
+Hero Play 3/3 · card Play 3/3 · 18/18 detail pages no errors · render guard ·
+search from Browse/Diary/Calendar · no grid leak over 15 searches · identical
+node counts across 3 tab laps · Specials 9/9 · mark-season rows · dead anime
+provider gone · On Device empty state · 45/45 focus stops visible, 0 traps ·
+0 dead controls in 3,600 scanned · zero stuck skeletons · My List survives
+reload · 0 `out-of-order` IPC errors on this build.
+
+### At the bar already
+Detail page richness (IMDb+RT+Metacritic, awards, box office, where-else-
+streaming — 17/17), keyboard support, empty/error copy. Scrolling the
+catalogue is the visible stutter: ~1 frame in 9 late.
