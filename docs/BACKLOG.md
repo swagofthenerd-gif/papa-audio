@@ -630,3 +630,30 @@ load-bearing claims re-checked by grep before routing. In flight on
 - Piece 1 of the old plan (debrid pack strip, `pickVideoFile(files, want)`,
   debrid branch of `video-pack-select`) is already on the branch; the plan
   file is stale there.
+
+### 19 Sep — Library/Settings/Stats/Manage merged (12 commits, +17 test files)
+- D1 `_libEmptyHtml` read `_moodDef`, a local of `renderLibrary` → one
+  top-level `_libMoodDef()`. My re-check (read the local again) → 5/13 red.
+  Generalised: `tools/scope-scan.js` (acorn) flags a top-level function
+  reading a name declared only inside another; found a third live case
+  (dragging one download group onto another threw `files is not defined`).
+- D3 Settings now writes ONE number through `playerSetCrossfade` and reads
+  `crossfadeSeconds` back; the derived-pair write is gone. My re-check
+  (call removed) → 4/9 red. Every crossfade fix this week is now reachable.
+- D8 bit-perfect paints the five overruled controls disabled with the reason;
+  two of its promises were never enforced (loudness leveling and the +30%
+  boost kept scaling volume) — enforced in `src/bit-perfect.js`.
+- D6 one function for both listening totals; `playCounts` (undated, bumped
+  on gapless advances) labelled as the play counter it is.
+- D11 offline needs two failures, online takes one; any successful `httpsGet`
+  clears it; YouTube-unavailable has a Retry.
+- D7 redundant-lossy defaults unchecked; D12 Health paints cached findings
+  at once with throttled scan progress; D13 focus rings on the eight shared
+  Settings controls; artwork misses remembered per session (6 requests → 1).
+- `test/renderer-hygiene.test.js` had been green by luck: its brace scanner
+  took a quote inside a regex literal as a string start and mis-counted for
+  thousands of lines. Fixed; it then found Manage → Trash's Restore button
+  disabling itself with no path back. Fixed.
+- FOLLOW-UPS to route: six `_artSrc` call sites in the queue/now-playing
+  painters still bypass the artwork miss memory; shuffle exhaustion
+  (played-set) pending his decision.
