@@ -173,15 +173,22 @@ function chipCtx(state) {
   mk('np-next'); mk('np-next-title'); mk('np-next-artist'); mk('np-next-art')
   const document = { getElementById: id => els[id] || null }
   const ctx = {
-    console, Math, document, state,
+    console, Math, String, document, state,
+    // The chip asks the artwork miss memory before setting a src, so the
+    // memory travels with it.
+    _artMisses: new Set(),
     _pendingShuffle: null,
     _shuffleHistory: [],
     pickShuffleIndex: () => 0,
   }
   vm.createContext(ctx)
   vm.runInContext(extract('computeNextIndex'), ctx)
-  // updateNpNext now resolves art through _artSrc (http vs file:// scheme).
+  // updateNpNext resolves art through _artSrcIfUsable: the http-vs-file://
+  // scheme rule of _artSrc, plus the session miss memory (_artUsable), so a
+  // cover that already failed is not asked for again.
   vm.runInContext(extract('_artSrc'), ctx)
+  vm.runInContext(extract('_artUsable'), ctx)
+  vm.runInContext(extract('_artSrcIfUsable'), ctx)
   vm.runInContext(extract('updateNpNext'), ctx)
   ctx._els = els
   return ctx
