@@ -4525,6 +4525,50 @@ ipcMain.handle('artist-info', async (_, { artist } = {}) => {
     return artistInfo.degraded()
   }
 })
+// Artist biography from Wikipedia's REST summary endpoint.
+//
+// This used to be a plain fetch() in the RENDERER, and it had been dead since
+// July: index.html's CSP has no connect-src, so default-src 'self' applied and
+// Chromium refused every en.wikipedia.org request. The page silently fell back
+// to "no bio" and logged two "Refused to connect" errors per artist. Widening
+// the CSP to let the renderer talk to the internet is the wrong trade for one
+// biography, so the lookup moved here, next to the other catalogue fetches.
+//
+// Always answers a shape, never throws: { ok:true, extract, thumbnail } or
+// { ok:false, reason }. 6 s budget, because a bio the user has stopped waiting
+// for is worth nothing.
+const ARTIST_BIO_TIMEOUT_MS = 6000
+ipcMain.handle('artist-bio', async (_, { artist } = {}) => {
+  const name = String(artist == null ? '' : artist).trim()
+  if (!name) return { ok: false, reason: 'no-artist' }
+  const controller = typeof AbortController === 'function' ? new AbortController() : null
+  const timer = controller
+    ? setTimeout(() => controller.abort(), ARTIST_BIO_TIMEOUT_MS) : null
+  try {
+    const res = await fetch(
+      'https://en.wikipedia.org/api/rest_v1/page/summary/' + encodeURIComponent(name),
+      {
+        headers: { 'User-Agent': 'PapaAudio/1.0 (https://github.com/)' },
+        signal: controller ? controller.signal : undefined,
+      })
+    if (!res || !res.ok) return { ok: false, reason: 'http-' + (res && res.status) }
+    const json = await res.json()
+    // A disambiguation page is never a biography -- "Air", "Bush", "Muse" and
+    // "Chicago" all resolve to one, and we used to print it as fact.
+    const isDisambig = json.type === 'disambiguation' ||
+      /may refer to|disambiguation/i.test(String(json.extract || '').slice(0, 120))
+    if (isDisambig) return { ok: true, extract: null, thumbnail: null }
+    return {
+      ok: true,
+      extract: json.extract || null,
+      thumbnail: (json.thumbnail && json.thumbnail.source) || null,
+    }
+  } catch (e) {
+    return { ok: false, reason: e && e.name === 'AbortError' ? 'timeout' : 'network' }
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+})
 ipcMain.handle('scrobble-track', async (_, track) => {
   if (!track) return
   await scrobbleTrack(track, Date.now())

@@ -60,7 +60,9 @@ function makeDom() {
     const stubs = new Map()
     return {
       tagName: tag, id: '', className: '', innerHTML: '', isConnected: false,
-      _stubs: stubs, _l: {},
+      _stubs: stubs, _l: {}, _attrs: {},
+      setAttribute(k, v) { this._attrs[k] = String(v) },
+      getAttribute(k) { return Object.prototype.hasOwnProperty.call(this._attrs, k) ? this._attrs[k] : null },
       querySelector(sel) {
         if (!stubs.has(sel)) stubs.set(sel, Stub(sel))
         return stubs.get(sel)
@@ -238,7 +240,7 @@ test('the dialogs carry the classes the app looks for when asking "is a modal up
 
 const REGISTER_LINES = [
   ['New playlist (with folder)', '  var close = function() { _unregisterNavDismiss(close); overlay.remove() }\n  _registerNavDismiss(close)\n'],
-  ['Import playlist from text', '  var close = function () { _unregisterNavDismiss(close); overlay.remove() }\n  _registerNavDismiss(close)\n'],
+  ['Import playlist from text', "  document.addEventListener('keydown', onImpKey)\n  _registerNavDismiss(close)\n"],
   ['Soulseek Account', "  document.addEventListener('keydown', _onCfgKey)\n  _registerNavDismiss(_closeCfg)\n"],
 ]
 

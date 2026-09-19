@@ -298,6 +298,7 @@ contextBridge.exposeInMainWorld('api', {
   // Artist page: keyless bio (MusicBrainz→Wikipedia) + a similar slot the UI
   // fills from its own library-derived "Fans also like" row (Wave 3 contract).
   artistInfo:       (p) => ipcRenderer.invoke('artist-info', p),
+  artistBio:        (p) => ipcRenderer.invoke('artist-bio', p),
 
   // Start on boot
   getStartOnBoot: () => ipcRenderer.invoke('get-start-on-boot'),

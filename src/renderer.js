@@ -2559,6 +2559,66 @@ function _bindBrowseKeys() {
   })
 }
 
+// ── Roving focus on the MUSIC grids ─────────────────────────────────────────
+// The cards on Home, Library, Artists and the YouTube pages are focusable and
+// carry role="button", but nothing owned their arrow keys -- so a bare
+// ArrowRight on a focused card fell through to the document handler, where
+// ArrowRight is seekForward, and choosing the next album scrubbed the playing
+// track +10 s. _moveCardFocus covers only the VIDEO grid (.vcard); this is its
+// music twin, and it stops the event so the seek shortcut never sees it.
+const MUSIC_CARD_SEL = '.album-card,.artist-card,.quick-card,.daily-mix-card,' +
+  '.q-mix-card,.jumpback-card,.yt-album-card,.yt-artist-card,.yt-playlist-card,' +
+  '.pl-card,.genre-tile,.mood-card'
+
+// The card that owns the keyboard right now, or null.
+function _focusedMusicCard(e) {
+  const t = (e && e.target) || null
+  if (!t || typeof t.closest !== 'function') return null
+  if (t.closest('[role="tablist"]')) return null
+  if (t.closest('input,textarea,select,[contenteditable="true"]')) return null
+  return t.closest(MUSIC_CARD_SEL)
+}
+
+// Move focus within the card's own row or grid. Returns true when the event
+// was consumed. Left/Right are always consumed -- they are the seek keys, and
+// the whole point is that a focused card owns them -- while Up/Down fall
+// through when they cannot move, so a horizontal row still scrolls the page.
+function _moveMusicCardFocus(e, card) {
+  const scope = card.parentElement
+  if (!scope) return false
+  const cards = Array.prototype.slice.call(scope.querySelectorAll(MUSIC_CARD_SEL))
+    .filter(function (c) { return c.parentElement === scope })
+  const index = cards.indexOf(card)
+  if (index === -1) return false
+
+  const horizontal = e.key === 'ArrowRight' || e.key === 'ArrowLeft'
+  let next = index
+  if (e.key === 'ArrowRight') next = Math.min(cards.length - 1, index + 1)
+  else if (e.key === 'ArrowLeft') next = Math.max(0, index - 1)
+  else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+    // Column count from the cards' own positions: the grid is responsive, so
+    // it cannot be assumed.
+    const firstTop = cards[0].getBoundingClientRect().top
+    const perRow = cards.findIndex(function (c) { return c.getBoundingClientRect().top > firstTop + 4 })
+    // Every card on one line -- a horizontal scroll row. There is no row above
+    // or below, so Up/Down belong to the page; jumping to the last card (what
+    // the video grid's handler does when it cannot find a second row) would
+    // make the page feel stuck.
+    if (perRow <= 0) return false
+    next = e.key === 'ArrowDown'
+      ? Math.min(cards.length - 1, index + perRow)
+      : Math.max(0, index - perRow)
+  } else return false
+
+  if (next !== index) {
+    cards[next].focus()
+    if (typeof cards[next].scrollIntoView === 'function') {
+      cards[next].scrollIntoView({ block: 'nearest', inline: 'nearest' })
+    }
+  }
+  return horizontal || next !== index
+}
+
 // Grid-aware arrow movement. Left and right step through the cards in order;
 // up and down move by a row, worked out from the cards' own positions rather
 // than assumed, because the grid is responsive and the column count changes
@@ -14168,7 +14228,7 @@ function renderArtists() {
             <svg viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
           </div>
         </div>
-        <div class="artist-card-name">${esc(ar.name)}<span style="font-size:10px;color:${state.followedArtists.indexOf(ar.name) !== -1 ? 'var(--accent)' : 'var(--text3)'}">${state.followedArtists.indexOf(ar.name) !== -1 ? ' Following' : ''}</span></div>
+        <div class="artist-card-name">${esc(ar.name)}<span class="artist-card-following${state.followedArtists.indexOf(ar.name) !== -1 ? ' on' : ''}">${state.followedArtists.indexOf(ar.name) !== -1 ? ' Following' : ''}</span></div>
         <div class="artist-card-meta">${ar.albums.length} album${ar.albums.length !== 1 ? 's' : ''}</div>
         <button class="artist-play-btn" data-play-artist="${esc(ar.name)}" title="Play this artist" aria-label="Play this artist">
           <svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:#000"><path d="M8 5v14l11-7z"/></svg>
@@ -15093,6 +15153,16 @@ function renderLibrary() {
         state._libNoCorrect = null
         clearTimeout(searchTimeout)
         renderLibrary()
+        // renderLibrary() rebuilds the page, so the input this handler is
+        // attached to no longer exists. Without carrying focus to its
+        // replacement, clearing the box dropped focus onto <body> and the next
+        // keystroke went nowhere -- the same repaint trap the debounce above
+        // already works around.
+        var fresh = document.getElementById('lib-search')
+        if (fresh) {
+          fresh.focus()
+          try { fresh.setSelectionRange(0, 0) } catch (_) {}
+        }
       }
     })
   }
@@ -15508,6 +15578,33 @@ const GENRE_COLORS = {
   'Reggae':      'linear-gradient(135deg,#009900,#004400)',
   'Latin':       'linear-gradient(135deg,#e05000,#6a2000)',
 }
+// The year a `year:` filter should judge an album by. Tag year first; when it
+// is missing, a leading 4-digit year in the folder/album name ("2000 Kid A
+// (4.0)") is the only thing the library knows. null means genuinely unknown.
+function _albumFilterYear(a) {
+	if (!a) return null
+	var y = parseInt(a.year, 10)
+	if (y >= 1000 && y <= 9999) return y
+	var src = String(a.name || a.folder || '')
+	var m = /^\s*(\d{4})\b/.exec(src)
+	if (!m) {
+		var pathStr = String(a.path || a.folderPath || '')
+		var base = pathStr ? pathStr.split('/').pop() : ''
+		m = /^\s*(\d{4})\b/.exec(base)
+	}
+	if (!m) return null
+	var n = parseInt(m[1], 10)
+	return (n >= 1000 && n <= 9999) ? n : null
+}
+
+// A filter chip must read back as the query that produced it. It used to print
+// `key + ':' + value`, so `year:>1999` and `year:<1999` both rendered
+// "year:1999" -- and the value went in unescaped.
+function _filterChipLabel(op) {
+	var sign = (op.op === '>' || op.op === '<') ? op.op : ''
+	return op.key + ':' + sign + op.value
+}
+
 function renderSearch(query) {
   // " " is truthy but means nothing: it used to fall through to the results
   // path where the needle became '' and String.includes('') matched the entire
@@ -15657,8 +15754,22 @@ function renderSearch(query) {
     matchAlbums = matchAlbums.filter(function(a) { return (a.artist || '').normalize('NFC').toLowerCase().indexOf(filters.artist.normalize('NFC').toLowerCase()) !== -1 })
     matchTracks = matchTracks.filter(function(t) { return (t.albumArtist || t.artist || '').normalize('NFC').toLowerCase().indexOf(filters.artist.normalize('NFC').toLowerCase()) !== -1 })
   }
-  if (filters.yearMin) matchAlbums = matchAlbums.filter(function(a) { return a.year >= filters.yearMin })
-  if (filters.yearMax) matchAlbums = matchAlbums.filter(function(a) { return a.year <= filters.yearMax })
+  // `radiohead year:>1999 format:flac` returned 0 albums on a library whose
+  // Radiohead folders are "2000 Kid A (4.0)" with no tag year at all: `null >=
+  // 1999` is false, so every untagged album was DROPPED. One helper now feeds
+  // both bounds -- it falls back to a leading 4-digit year in the folder/album
+  // name -- and an album whose year is STILL unknown is kept, not dropped,
+  // with the chip saying how many.
+  var unknownYearKept = 0
+  if (filters.yearMin || filters.yearMax) {
+    matchAlbums = matchAlbums.filter(function (a) {
+      var y = _albumFilterYear(a)
+      if (y == null) { unknownYearKept++; return true }
+      if (filters.yearMin && y < filters.yearMin) return false
+      if (filters.yearMax && y > filters.yearMax) return false
+      return true
+    })
+  }
   if (filters.format) {
     var fmt = filters.format.toLowerCase()
     matchTracks = matchTracks.filter(function(t) { return t.filePath && t.filePath.toLowerCase().endsWith('.' + fmt) })
@@ -15736,7 +15847,7 @@ function renderSearch(query) {
       '<button class="save-search-btn" id="search-jump-slsk" title="Go to the Soulseek results for this search">\u2193 Soulseek results</button><div class="search-sort"><select id="search-sort-select">' + sortOptions.map(function(o) { return '<option value="' + o.value + '"' + (o.value === currentSort ? ' selected' : '') + '>' + o.label + '</option>' }).join('') + '</select></div></div>' : ''}
     ${dymHTML}
     <div class="results-filter-wrap"><input class="results-filter" id="results-filter" placeholder="Filter results…"></div>
-    ${hasOperators ? '<div class="active-filters"><span>Filters active:</span>' + filters.operators.map(function(op) { return '<span class="filter-chip">' + op.key + ':' + op.value + '<button class="filter-chip-x" data-key="' + esc(op.key) + '">×</button></span>' }).join('') + '<button class="clear-filters-btn" id="clear-filters-btn">Clear all</button></div>' : ''}`
+    ${hasOperators ? '<div class="active-filters"><span>Filters active:</span>' + filters.operators.map(function(op) { return '<span class="filter-chip">' + esc(_filterChipLabel(op)) + '<button class="filter-chip-x" data-key="' + esc(op.key) + '">×</button></span>' }).join('') + (unknownYearKept ? '<span class="filter-chip-note">(' + unknownYearKept + ' with unknown year kept)</span>' : '') + '<button class="clear-filters-btn" id="clear-filters-btn">Clear all</button></div>' : ''}`
 
   if (hasLocal) {
     // Top result — best matching album or artist
@@ -16353,7 +16464,7 @@ function _ytSurroundBadge(r) {
 function _ytSongRows(songs, query) {
   return `<div class="yt-list">${songs.map((r, i) => {
     var inLib = isInLibrary(r.artist, r.album)
-    var badge = inLib ? '<span class="in-lib-badge" style="background:rgba(29,185,84,.15);color:#1db954;font-size:10px;padding:1px 6px;border-radius:8px;margin-left:6px">In Library</span>' : ''
+    var badge = inLib ? '<span class="in-lib-badge">In Library</span>' : ''
     var sur = _ytSurround(r)
     return `<div class="yt-row search-animate-in" data-i="${i}"${sur ? ' data-surround="1"' : ''}>
       ${r.thumbnailUrl
@@ -16381,7 +16492,7 @@ function _ytSongRows(songs, query) {
 function _ytAlbumCard(a, query) {
   const hue = _cardHue((a.artist || '') + (a.title || ''))
   var inLib = isInLibrary(a.artist, a.title)
-  var badge = inLib ? '<span class="in-lib-badge" style="background:rgba(29,185,84,.15);color:#1db954;font-size:10px;padding:1px 6px;border-radius:8px;margin-left:6px">In Library</span>' : ''
+  var badge = inLib ? '<span class="in-lib-badge">In Library</span>' : ''
   return `<div class="album-card yt-album-card search-animate-in" data-browse="${esc(a.browseId)}">
     <div class="album-card-art-wrap">
       ${a.thumbnailUrl
@@ -17693,10 +17804,23 @@ function startRadio(seedTrack, seedArtist, seedGenre) {
 
 async function loadArtistBio(artistName) {
   const PREVIEW_LEN = 320
-  const render = (data) => {
+  const render = (data, opts) => {
     const el = document.getElementById('artist-bio')
     if (!el) return
-    if (!data || !data.extract) { el.style.display = 'none'; return }
+    if (!data || !data.extract) {
+      // A lookup that FAILED is different from an artist Wikipedia has nothing
+      // on: hiding both left the user unable to tell "no bio" from "broken".
+      if (opts && opts.failed) {
+        el.style.display = ''
+        el.innerHTML = '<div class="artist-bio-text">' +
+          '<div class="artist-bio-heading">About</div>' +
+          '<p class="artist-bio-preview artist-bio-unavailable">' +
+          'Biography could not be fetched right now.</p></div>'
+        return
+      }
+      el.style.display = 'none'
+      return
+    }
 
     // Update hero with Wikipedia photo
     if (data.thumbnail) {
@@ -17740,32 +17864,24 @@ async function loadArtistBio(artistName) {
   }
   var _bio = _cacheGet(_bioCache, artistName)
   if (_bio !== undefined) { render(_bio); return }
-  // A hung connection (captive portal, DNS blackhole) left the shimmering
-  // skeleton up forever, because nothing ever resolved to replace it.
-  var ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null
-  var bioTimer = setTimeout(function () { if (ctrl) ctrl.abort() }, 8000)
-  try {
-    const res = await fetch('https://en.wikipedia.org/api/rest_v1/page/summary/' + encodeURIComponent(artistName),
-      ctrl ? { signal: ctrl.signal } : undefined)
-    if (!res.ok) throw new Error('no bio')
-    const json = await res.json()
-    // A disambiguation page is never a biography -- "Air", "Bush", "Muse" and
-    // "Chicago" all resolve to one, and we used to print it as fact.
-    const isDisambig = json.type === 'disambiguation' ||
-      /may refer to|disambiguation/i.test(String(json.extract || '').slice(0, 120))
-    const data = isDisambig
-      ? { extract: null, thumbnail: null }
-      : { extract: json.extract || null, thumbnail: json.thumbnail?.source || null }
-    _cacheSet(_bioCache, artistName, data, _BIO_CACHE_CAP)
-    if (state.currentPage === 'artist' && state.currentArtistName === artistName) render(data)
-  } catch (_) {
+  // The lookup lives in MAIN (window.api.artistBio). A renderer fetch to
+  // en.wikipedia.org was blocked by index.html's CSP -- no connect-src, so
+  // default-src 'self' applied -- and had been silently failing since July.
+  // Main answers a shape and never throws, so there is nothing to catch: an
+  // { ok:false } is an honest "could not fetch", not an exception.
+  if (!window.api || typeof window.api.artistBio !== 'function') { render(null); return }
+  const reply = await window.api.artistBio({ artist: artistName })
+  const fresh = state.currentPage === 'artist' && state.currentArtistName === artistName
+  if (!reply || reply.ok !== true) {
     // Don't cache a network failure forever: going offline once used to mean
     // that artist had no bio for the rest of the session, even after recovery.
     if (state.isOnline !== false) _cacheSet(_bioCache, artistName, null, _BIO_CACHE_CAP)
-    if (state.currentPage === 'artist' && state.currentArtistName === artistName) render(null)
-  } finally {
-    clearTimeout(bioTimer)
+    if (fresh) render(null, { failed: true })
+    return
   }
+  const data = { extract: reply.extract || null, thumbnail: reply.thumbnail || null }
+  _cacheSet(_bioCache, artistName, data, _BIO_CACHE_CAP)
+  if (fresh) render(data)
 }
 
 // Artist bio + similar-artist chips from the optional native provider (App #19).
@@ -18699,10 +18815,16 @@ function showImportPlaylistDialog() {
   var overlay = document.createElement('div')
   overlay.id = 'import-pl-modal'
   overlay.className = 'addpl-overlay'
+  // It had a nav dismisser but nothing else: no dialog role, so a screen
+  // reader never heard it open, and no Escape, so the only way out was the
+  // mouse.
+  overlay.setAttribute('role', 'dialog')
+  overlay.setAttribute('aria-modal', 'true')
+  overlay.setAttribute('aria-labelledby', 'imp-title')
   overlay.innerHTML = `
     <div class="addpl-card" style="max-width:520px;width:92%">
       <div class="addpl-header">
-        <span>Import playlist from text</span>
+        <span id="imp-title">Import playlist from text</span>
         <button class="addpl-close" id="imp-close">&#10005;</button>
       </div>
       <div style="padding:16px">
@@ -18716,7 +18838,15 @@ function showImportPlaylistDialog() {
       </div>
     </div>`
   document.body.appendChild(overlay)
-  var close = function () { _unregisterNavDismiss(close); overlay.remove() }
+  var _impRelease = _trapFocus(overlay, { initial: '#imp-text' })
+  var close = function () {
+    _unregisterNavDismiss(close)
+    document.removeEventListener('keydown', onImpKey)
+    try { _impRelease() } catch (_) {}
+    overlay.remove()
+  }
+  function onImpKey(e) { if (e.key === 'Escape') { e.preventDefault(); close() } }
+  document.addEventListener('keydown', onImpKey)
   _registerNavDismiss(close)
   overlay.querySelector('#imp-close')?.addEventListener('click', close)
   overlay.querySelector('#imp-cancel')?.addEventListener('click', close)
@@ -28095,7 +28225,7 @@ function _slskCardHtml(g, gi, query) {
     var fn = g.folderName.toLowerCase()
     return a.name && (a.name.toLowerCase().includes(fn) || fn.includes(a.name.toLowerCase()))
   })
-  var slskBadge = slskInLib ? '<span class="in-lib-badge" style="background:rgba(29,185,84,.15);color:#1db954;font-size:10px;padding:1px 6px;border-radius:8px;margin-left:6px">In Library</span>' : ''
+  var slskBadge = slskInLib ? '<span class="in-lib-badge">In Library</span>' : ''
   // Inline progress for cards the user pressed DL All on this session. When the
   // album is fully downloaded the action row is swapped for Play + In Library.
   const prog = _slskCardProgress(g)
@@ -28106,7 +28236,7 @@ function _slskCardHtml(g, gi, query) {
       <button class="slsk-play-album-btn slsk-card-action" data-gi="${gi}" title="Play this album">
         <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg> Play album
       </button>
-      <span class="in-lib-badge slsk-card-inlib" style="background:rgba(29,185,84,.15);color:#1db954;font-size:11px;padding:2px 8px;border-radius:8px">In Library</span>
+      <span class="in-lib-badge slsk-card-inlib">In Library</span>
     </div>`
   } else {
     btns = `<div class="slsk-card-btns">
@@ -28180,7 +28310,7 @@ function _slskMergedCardHtml(m, gi, query) {
     btns = `<div class="slsk-card-btns">
       <button class="slsk-play-album-btn slsk-card-action" data-gi="${gi}" title="Play this album">
         <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg> Play album</button>
-      <span class="in-lib-badge slsk-card-inlib" style="background:rgba(29,185,84,.15);color:#1db954;font-size:11px;padding:2px 8px;border-radius:8px">In Library</span>
+      <span class="in-lib-badge slsk-card-inlib">In Library</span>
     </div>`
   } else {
     btns = `<div class="slsk-card-btns">
@@ -32363,6 +32493,16 @@ function setupListeners() {
 
   // Cards are divs with a click listener; give them a real keyboard path.
   document.getElementById('content')?.addEventListener('keydown', e => {
+    // Arrows first: on a focused music card they walk the grid, and they must
+    // not reach the document handler, where ArrowRight is seekForward.
+    if (e.key.startsWith('Arrow') && !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey) {
+      const gridCard = _focusedMusicCard(e)
+      if (gridCard && _moveMusicCardFocus(e, gridCard)) {
+        e.preventDefault()
+        e.stopPropagation()
+      }
+      return
+    }
     if (e.key !== 'Enter' && e.key !== ' ') return
     const card = e.target.closest('.album-card,.quick-card,.artist-card,.daily-mix-card,.q-mix-card,.jumpback-card,.folder-tree-item,.pl-card,.pl-folder-header,.genre-tile,.mood-card,.recent-search-card,.artist-pill,.discovery-swipe-card,.yt-row,.yt-album-card,.yt-artist-card,.yt-playlist-card,.dl2-group-toggle,.dl2-group-toggle-failed,.pl-track-row,.track-row')
     if (!card || e.target.closest('button')) return
@@ -34283,14 +34423,18 @@ function setupListeners() {
     const _onVideoGrid = VIDEO_PAGES.has(state.currentPage) &&
       !(document.getElementById('vtheatre') &&
         !document.getElementById('vtheatre').classList.contains('hidden'))
+    // A focused music-grid card owns its arrows (the #content delegate stops
+    // the event, and this is the belt to that's braces): choosing the next
+    // album must not scrub the playing track.
+    const _onMusicCard = !!_focusedMusicCard(e)
     if (matchesShortcut('seekForward', e)) {
-      if (_onVideoGrid) return
+      if (_onVideoGrid || _onMusicCard) return
       e.preventDefault()
       audio.currentTime = Math.min(audio.duration || 0, audio.currentTime + 10)
       return
     }
     if (matchesShortcut('seekBackward', e)) {
-      if (_onVideoGrid) return
+      if (_onVideoGrid || _onMusicCard) return
       e.preventDefault()
       audio.currentTime = Math.max(0, audio.currentTime - 10)
       return
@@ -34876,27 +35020,48 @@ function updateNoticeBadge() {
   el.title = unread === 1 ? '1 recent notice' : `${unread} recent notices`
 }
 
+// The badge opens this; clicking the badge again closes it. It used to be the
+// only .modal-overlay in the app with no dialog role, no focus trap, no focus
+// move and no nav dismisser -- a screen reader never heard it open, Tab walked
+// straight out of it into the page behind, and Ctrl+1 left it floating over
+// Home. Mirrors showSlskSavedUsers.
+var _closeNoticeHistory = null
 function showNoticeHistory() {
   _noticesSeen = _noticeHistory.length
   updateNoticeBadge()
-  const existing = document.getElementById('notice-history-modal')
-  if (existing) { existing.remove(); return }
+  if (document.getElementById('notice-history-modal')) {
+    if (_closeNoticeHistory) _closeNoticeHistory()
+    return
+  }
   const dlg = document.createElement('div')
   dlg.id = 'notice-history-modal'
   dlg.className = 'modal-overlay'
+  dlg.setAttribute('role', 'dialog')
+  dlg.setAttribute('aria-modal', 'true')
+  dlg.setAttribute('aria-labelledby', 'notice-history-title')
   const rows = _noticeHistory.length
     ? _noticeHistory.map(n => '<div class="notice-row"><span class="notice-when">' +
         esc(new Date(n.at).toLocaleTimeString()) + '</span><span class="notice-text">' +
         esc(n.text) + '</span></div>').join('')
     : '<div class="mg-empty" style="padding:24px">Nothing has gone wrong yet.</div>'
   dlg.innerHTML = '<div class="modal-box">' +
-    '<div class="modal-header-row"><div class="modal-title">Recent notices</div>' +
+    '<div class="modal-header-row"><div class="modal-title" id="notice-history-title">Recent notices</div>' +
     '<button class="modal-close-btn" id="notice-close" aria-label="Close" title="Close">✕</button></div>' +
     '<div class="notice-list">' + rows + '</div></div>'
   document.body.appendChild(dlg)
-  const close = () => { document.removeEventListener('keydown', onKey); dlg.remove() }
-  function onKey(e) { if (e.key === 'Escape') close() }
+  const _release = _trapFocus(dlg, { initial: '#notice-close' })
+  const close = () => {
+    _closeNoticeHistory = null
+    _unregisterNavDismiss(close)
+    document.removeEventListener('keydown', onKey)
+    try { _release() } catch (_) {}
+    dlg.remove()
+  }
+  _closeNoticeHistory = close
+  function onKey(e) { if (e.key === 'Escape') { e.preventDefault(); close() } }
   document.addEventListener('keydown', onKey)
+  // Sidebar navigation used to leave this floating over the next page.
+  _registerNavDismiss(close)
   dlg.addEventListener('click', e => { if (e.target === dlg) close() })
   dlg.querySelector('#notice-close')?.addEventListener('click', close)
 }

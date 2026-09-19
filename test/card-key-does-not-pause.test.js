@@ -31,7 +31,11 @@ function liftCardKeydown() {
   assert.ok(open > -1, 'the #content card-activation delegate must still exist')
   const marker = "if (e.key !== 'Enter' && e.key !== ' ') return"
   const at = src.indexOf(marker, open)
-  assert.ok(at > -1 && at - open < 200, 'the card-activation keydown handler must still exist')
+  // The distance is a sanity bound, not a pin: the Enter/Space test is no
+  // longer the FIRST thing in the delegate (the music-grid arrow branch runs
+  // ahead of it, D7), so it sits further in. It still has to be inside this
+  // handler and not the queue panel's, which is why the bound exists at all.
+  assert.ok(at > -1 && at - open < 1200, 'the card-activation keydown handler must still exist')
   const bodyStart = src.indexOf('{', src.indexOf('e => {', open)) + 1
   // Balance braces to find the end of the arrow body.
   let depth = 1, i = bodyStart

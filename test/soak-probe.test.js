@@ -420,7 +420,11 @@ test('the number of global listener registrations is a deliberate budget', () =>
   // 25→26 (2026-09-19, QA H2): the Soulseek Account modal's Escape-close
   // keydown in showSlskConfigModal — added on open, removed in _closeCfg, and
   // the function returns early when the modal is already on screen.
-  assert.strictEqual(sites.inFunction.length, 26,
+  // 26→27 (2026-09-19, final pass D5): the "Import playlist from text" dialog's
+  // Escape-close keydown (onImpKey) — added on open, removed in close(), which
+  // every exit path (Escape, the X, Cancel, the backdrop, nav dismissal) goes
+  // through, and the function returns early when the dialog is already up.
+  assert.strictEqual(sites.inFunction.length, 27,
     'a global listener was added inside a function. Nothing collects a listener ' +
     'on document or window, so make sure that function cannot run twice — this ' +
     'app has shipped that exact leak three times (items 73, 74, 257) — then ' +
@@ -450,7 +454,10 @@ test('no function registers more than one global listener of the same type', () 
   // Cap raised 12→13 (2026-09-19, QA H2): the Soulseek Account modal's
   // Escape-close keydown (_onCfgKey), paired add-on-open/remove-on-close
   // through _closeCfg, behind a re-entry guard.
-  assert.ok(seen.get('document:keydown') <= 13, 'document keydown registrations: ' + seen.get('document:keydown'))
+  // Cap raised 13→14 (2026-09-19, final pass D5): the import-from-text dialog's
+  // Escape-close keydown (onImpKey), paired add-on-open/remove-on-close through
+  // close(), behind the dialog's existing re-entry guard.
+  assert.ok(seen.get('document:keydown') <= 14, 'document keydown registrations: ' + seen.get('document:keydown'))
   assert.ok((seen.get('window:online') || 0) <= 1)
   assert.ok((seen.get('window:offline') || 0) <= 1)
 })
