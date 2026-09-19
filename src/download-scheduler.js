@@ -383,6 +383,32 @@ function sameRecordingSize(wantSize, candidateSize) {
   return Math.abs(a - b) <= a * SIZE_TOLERANCE
 }
 
+// What a failed dispatch POST actually tells us.
+//
+// Every throw from the POST was treated as the peer's fault: markDispatched plus
+// recordFailure, which burns one of the file's four attempts and puts a strike
+// on the peer — five strikes and it is benched for ten minutes. But slskd being
+// unreachable, the request timing out, or the daemon rate-limiting us says
+// nothing whatever about the peer. A daemon restart could bench every good peer
+// we had and exhaust a whole album's attempt budget in a handful of ticks,
+// entirely on its own.
+//
+// Only an answer FROM slskd — an HTTP status — is evidence about the request.
+// Anything else is a transport problem: defer, change nothing, try again next
+// tick.
+//
+//   'skip'  — a dry-run refusal. Leave the item exactly as it is.
+//   'defer' — nothing was learned. Do not mark, do not blame, stop for this tick.
+//   'blame' — slskd answered and rejected it; that counts against the peer.
+function dispatchOutcome(err) {
+  if (!err) return 'blame'
+  if (err.dryRun) return 'skip'
+  if (err.code === 'SLSKD_THROTTLED' || err.throttled) return 'defer'
+  var status = Number(err.status != null ? err.status : err.statusCode)
+  if (Number.isFinite(status) && status > 0) return 'blame'
+  return 'defer'
+}
+
 function inflightIdentities(state) {
   var out = {}
   var keys = Object.keys(state.inflight)
@@ -1335,6 +1361,7 @@ var _PapaDownloadScheduler = {
   isAbandoned: isAbandoned,
   fileIdentity: fileIdentity,
   sameRecordingSize: sameRecordingSize,
+  dispatchOutcome: dispatchOutcome,
   inflightIdentities: inflightIdentities,
   logSubstitution: logSubstitution,
   nextGlobalInflight: nextGlobalInflight,

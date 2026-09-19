@@ -8239,16 +8239,30 @@ async function dlTick() {
           [{ filename: item.filename, size: item.size || 0 }])
         dlSched.markDispatched(dlState, item.key, item.username, Date.now(), item.filename)
       } catch (e) {
+        const outcome = dlSched.dispatchOutcome(e)
         // A dry-run refusal is not the peer's fault and must not be treated as
         // one. Counting it as a failure would burn the file's retry budget and
         // then mark it exhausted, so a twin would quietly destroy the queue it
         // was only supposed to look at — and the scheduler would keep re-asking
         // every tick forever. Leave it exactly where it is, pending, with a
         // reason a person can read, and say nothing more about it.
-        if (e && e.dryRun) {
+        if (outcome === 'skip') {
           const held = dlState.pending.find(x => x && x.key === item.key)
           if (held) held.reason = 'Dry run — not dispatched to ' + item.username
           continue
+        }
+        // Nothing was learned about the peer: slskd was unreachable, the request
+        // timed out, or the daemon is rate-limiting us. Blaming the peer here
+        // benched good sources for ten minutes and burned an attempt each time,
+        // so a daemon hiccup could exhaust a whole album on its own. Leave the
+        // item pending, untouched, and stop dispatching for this tick — the rest
+        // of the plan would hit the same wall.
+        if (outcome === 'defer') {
+          const held = dlState.pending.find(x => x && x.key === item.key)
+          if (held) held.reason = 'slskd could not be reached — still queued'
+          console.warn('[papa][dl] dispatch deferred, slskd did not answer:',
+            String(e && e.message || e))
+          break
         }
         // Rejected at request time counts against that peer, same as a failure.
         dlSched.markDispatched(dlState, item.key, item.username, Date.now(), item.filename)
