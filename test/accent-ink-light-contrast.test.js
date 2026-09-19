@@ -46,7 +46,7 @@ function ruleProps(selector, nth = 0) {
 }
 
 const AA = 4.5
-const INKS = ['--accent-ink', '--amber-ink', '--info-ink', '--error-ink']
+const INKS = ['--accent-ink', '--amber-ink', '--warn-ink', '--info-ink', '--error-ink']
 
 // ── the ink tokens themselves ────────────────────────────────────────────────
 
@@ -88,6 +88,16 @@ const WORDS = [
   ['a found online source', '.osrc-status.found', 'color', ['var(--bg)']],
   ['"Setup required"', '.osrc-status.setup', 'color', ['var(--bg)']],
   ['a failed online source', '.osrc-status.error', 'color', ['var(--bg)']],
+  // 2026-09-19 final pass (D4): the accent-as-text leftovers the M4 sweep
+  // missed, each measured on the surface it actually sits on.
+  ['the chosen sort button', '.sort-btn.active', 'color', ['var(--accent-dim)', 'var(--bg)']],
+  ['a Liked-songs stat number', '.liked-stat-val', 'color', ['var(--glass)', 'var(--bg)']],
+  ['the chosen Manage tab', '.mg-tab.active', 'color', ['var(--accent-dim)', 'var(--bg)']],
+  ['an "In Library" badge', '.in-lib-badge', 'color', ['rgba(29,185,84,.15)', 'var(--bg)']],
+  ['"Following" under an artist card', '.artist-card-following.on', 'color', ['var(--bg3)']],
+  // The unread-notice count lives on the RAISED player bar, not the page
+  // ground: --amber-ink cleared only 4.54:1 there, so it has its own pair.
+  ['the unread-notice count', '.notice-badge', 'color', ['rgba(240,165,0,.16)', 'var(--bg4)']],
 ]
 
 for (const [what, selector, prop, stack, nth] of WORDS) {
@@ -120,6 +130,26 @@ test('"Setup required" carries a class instead of an inline colour', () => {
     'the status must take its colour from the stylesheet')
   assert.ok(!/osrc-status"\s+style="color:#/.test(RENDERER),
     'an inline hex on .osrc-status is unreachable by the light theme')
+})
+
+test('the "In Library" badge and "Following" take their colour from the sheet', () => {
+  // Both used to carry a fill colour inline (#1db954 / var(--accent)), which
+  // the light theme cannot reach at all.
+  assert.ok(!/in-lib-badge"[^>]*style="[^"]*color:/.test(RENDERER),
+    'an inline colour on .in-lib-badge is unreachable by the light theme')
+  assert.ok(!/color:\$\{[^}]*'var\(--accent\)'[^}]*\}">\$\{[^}]*Following/.test(RENDERER),
+    '"Following" must take its colour from a class, not an inline ternary')
+  assert.match(RENDERER, /class="artist-card-following/)
+})
+
+test('the notice badge has its own ink pair, not a raw hex', () => {
+  const dark = tokens('dark')
+  const light = tokens('light')
+  assert.strictEqual(dark['--warn-ink'], dark['--amber-ink'],
+    'dark mode must look exactly as before')
+  assert.ok(light['--warn-ink'] !== light['--amber-ink'],
+    '--warn-ink exists because the player bar needs more headroom than --amber-ink gives')
+  assert.strictEqual(ruleProps('.notice-badge').color, 'var(--warn-ink)')
 })
 
 test('the active tab uses the page ground as its label, not black', () => {

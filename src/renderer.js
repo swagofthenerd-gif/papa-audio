@@ -14168,7 +14168,7 @@ function renderArtists() {
             <svg viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
           </div>
         </div>
-        <div class="artist-card-name">${esc(ar.name)}<span style="font-size:10px;color:${state.followedArtists.indexOf(ar.name) !== -1 ? 'var(--accent)' : 'var(--text3)'}">${state.followedArtists.indexOf(ar.name) !== -1 ? ' Following' : ''}</span></div>
+        <div class="artist-card-name">${esc(ar.name)}<span class="artist-card-following${state.followedArtists.indexOf(ar.name) !== -1 ? ' on' : ''}">${state.followedArtists.indexOf(ar.name) !== -1 ? ' Following' : ''}</span></div>
         <div class="artist-card-meta">${ar.albums.length} album${ar.albums.length !== 1 ? 's' : ''}</div>
         <button class="artist-play-btn" data-play-artist="${esc(ar.name)}" title="Play this artist" aria-label="Play this artist">
           <svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:#000"><path d="M8 5v14l11-7z"/></svg>
@@ -16394,7 +16394,7 @@ function _ytSurroundBadge(r) {
 function _ytSongRows(songs, query) {
   return `<div class="yt-list">${songs.map((r, i) => {
     var inLib = isInLibrary(r.artist, r.album)
-    var badge = inLib ? '<span class="in-lib-badge" style="background:rgba(29,185,84,.15);color:#1db954;font-size:10px;padding:1px 6px;border-radius:8px;margin-left:6px">In Library</span>' : ''
+    var badge = inLib ? '<span class="in-lib-badge">In Library</span>' : ''
     var sur = _ytSurround(r)
     return `<div class="yt-row search-animate-in" data-i="${i}"${sur ? ' data-surround="1"' : ''}>
       ${r.thumbnailUrl
@@ -16422,7 +16422,7 @@ function _ytSongRows(songs, query) {
 function _ytAlbumCard(a, query) {
   const hue = _cardHue((a.artist || '') + (a.title || ''))
   var inLib = isInLibrary(a.artist, a.title)
-  var badge = inLib ? '<span class="in-lib-badge" style="background:rgba(29,185,84,.15);color:#1db954;font-size:10px;padding:1px 6px;border-radius:8px;margin-left:6px">In Library</span>' : ''
+  var badge = inLib ? '<span class="in-lib-badge">In Library</span>' : ''
   return `<div class="album-card yt-album-card search-animate-in" data-browse="${esc(a.browseId)}">
     <div class="album-card-art-wrap">
       ${a.thumbnailUrl
@@ -28155,7 +28155,7 @@ function _slskCardHtml(g, gi, query) {
     var fn = g.folderName.toLowerCase()
     return a.name && (a.name.toLowerCase().includes(fn) || fn.includes(a.name.toLowerCase()))
   })
-  var slskBadge = slskInLib ? '<span class="in-lib-badge" style="background:rgba(29,185,84,.15);color:#1db954;font-size:10px;padding:1px 6px;border-radius:8px;margin-left:6px">In Library</span>' : ''
+  var slskBadge = slskInLib ? '<span class="in-lib-badge">In Library</span>' : ''
   // Inline progress for cards the user pressed DL All on this session. When the
   // album is fully downloaded the action row is swapped for Play + In Library.
   const prog = _slskCardProgress(g)
@@ -28166,7 +28166,7 @@ function _slskCardHtml(g, gi, query) {
       <button class="slsk-play-album-btn slsk-card-action" data-gi="${gi}" title="Play this album">
         <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg> Play album
       </button>
-      <span class="in-lib-badge slsk-card-inlib" style="background:rgba(29,185,84,.15);color:#1db954;font-size:11px;padding:2px 8px;border-radius:8px">In Library</span>
+      <span class="in-lib-badge slsk-card-inlib">In Library</span>
     </div>`
   } else {
     btns = `<div class="slsk-card-btns">
@@ -28240,7 +28240,7 @@ function _slskMergedCardHtml(m, gi, query) {
     btns = `<div class="slsk-card-btns">
       <button class="slsk-play-album-btn slsk-card-action" data-gi="${gi}" title="Play this album">
         <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg> Play album</button>
-      <span class="in-lib-badge slsk-card-inlib" style="background:rgba(29,185,84,.15);color:#1db954;font-size:11px;padding:2px 8px;border-radius:8px">In Library</span>
+      <span class="in-lib-badge slsk-card-inlib">In Library</span>
     </div>`
   } else {
     btns = `<div class="slsk-card-btns">

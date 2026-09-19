@@ -102,6 +102,11 @@
      Rule: fill on a surface → --accent; glyphs and words → --*-ink. */
   --accent-ink:    #1db954;
   --amber-ink:     #f0a500;
+  /* The unread-notice count in the player bar sits on an amber tint on the
+     RAISED bar (--bg4), not on the page ground, and --amber-ink only cleared
+     4.54:1 there -- a rounding error away from failing. Its own pair buys the
+     headroom without darkening every other amber word in the app. */
+  --warn-ink:      #f0a500;
   --info-ink:      #00c8ff;
   --error-ink:     #f58080;
   /* One token for the many 1px hairlines on music surfaces (App #68). On the
@@ -172,6 +177,7 @@ body.theme-light {
      painted on, --bg5 and the accent-dim tints included. */
   --accent-ink:    #0d5c2b;
   --amber-ink:     #7a5000;
+  --warn-ink:      #664200;
   --info-ink:      #075366;
   --error-ink:     #9c2020;
   /* Darker than the dark-mode hairline so the music-surface borders that adopt
@@ -894,7 +900,7 @@ h2.section-title { font-size:18px; font-weight:700; }
   padding:5px 14px; cursor:pointer; transition:background .15s, color .15s, border-color .15s;
 }
 .sort-btn:hover { background:var(--glass-hi); color:var(--text); }
-.sort-btn.active { background:var(--accent-dim); border-color:var(--accent); color:var(--accent); }
+.sort-btn.active { background:var(--accent-dim); border-color:var(--accent); color:var(--accent-ink); }
 
 /* ── Album detail page ────────────────────────────── */
 .album-hero {
@@ -5502,7 +5508,7 @@ textarea:focus:not(:focus-visible) { outline: none; }
 /* Unread-notice count in the player bar, and the list behind it. */
 .notice-badge {
   background: rgba(240,165,0,.16);
-  color: #f0a500;
+  color: var(--warn-ink);
   border: none;
   cursor: pointer;
   margin-left: 4px;
@@ -6108,7 +6114,7 @@ body.theme-light .cmd-palette-overlay { background:rgba(32,29,24,.38) }
 /* Liked Songs tab enhancements */
 .liked-analytics { display:flex;gap:12px;margin-bottom:20px;padding:0 28px }
 .liked-stat { flex:1;background:var(--glass);border:1px solid var(--glass-border);border-radius:var(--r);padding:14px;text-align:center }
-.liked-stat-val { font-size:22px;font-weight:700;color:var(--accent) }
+.liked-stat-val { font-size:22px;font-weight:700;color:var(--accent-ink) }
 .liked-stat-lbl { font-size:11px;color:var(--text3);margin-top:4px }
 .liked-calendar { margin:20px 28px;background:var(--glass);border:1px solid var(--glass-border);border-radius:var(--r);padding:16px;overflow:hidden }
 .liked-calendar-grid { display:grid;grid-template-rows:repeat(7,1fr);grid-auto-flow:column;gap:1px }
@@ -7473,7 +7479,7 @@ body.app-unfocused .vt-menu {
   transition:background .12s var(--ease), color .12s var(--ease);
 }
 .mg-tab:hover { background:var(--glass-hi); color:var(--text); }
-.mg-tab.active { background:var(--accent-dim); color:var(--accent); border-color:transparent; }
+.mg-tab.active { background:var(--accent-dim); color:var(--accent-ink); border-color:transparent; }
 .mg-trash-row {
   display:flex; align-items:flex-start; gap:10px;
   padding:10px; border-radius:var(--r-sm); background:var(--bg3); margin-bottom:8px;
@@ -7781,6 +7787,18 @@ body.app-unfocused .vt-menu {
   font-size: 12px; color: var(--text2);
 }
 .filter-chip-note { font-size: 12px; color: var(--text3); }
+
+/* "In Library" on a Soulseek / YouTube result, and "Following" under an artist
+   card. Both used to carry their colour inline as #1db954 / var(--accent) --
+   fill colours, which on paper read 1.97:1 and 2.4:1. The ink token is the
+   same green in dark mode and darkened for light. */
+.in-lib-badge {
+  background: rgba(29,185,84,.15); color: var(--accent-ink);
+  font-size: 10px; padding: 1px 6px; border-radius: 8px; margin-left: 6px;
+}
+.in-lib-badge.slsk-card-inlib { font-size: 11px; padding: 2px 8px; margin-left: 0; }
+.artist-card-following { font-size: 10px; color: var(--text3); }
+.artist-card-following.on { color: var(--accent-ink); }
 .filter-chip-x { cursor: pointer; color: var(--text3); font-weight: 700; line-height: 1; }
 .filter-chip-x:hover { color: var(--color-error); }
 .clear-filters-btn, .save-search-btn {
