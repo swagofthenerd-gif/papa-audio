@@ -304,3 +304,187 @@ test('start() drains on the interval and stop() drains once more on the way out'
   await new Promise(r => setTimeout(r, 120))
   assert.strictEqual(inbox.readInbox(ud).ops.length, 1, 'the ingester kept running after stop()')
 })
+
+// ── The config.json keys ─────────────────────────────────────────────────────
+//
+// likedAlbums, followedArtists, volume, eqSettings and agentModel never left
+// config.json. The bridge used to write them there with its own electron-store
+// while the desktop's `conf` rewrites that whole file on every set(): two
+// writers, no lock, last one wins — and the bridge's writer has no
+// `configFileMode`, so its write also widened the desktop's 0600 file. They now
+// come through the inbox and land here, through the desktop's own store.
+
+const Store = require('electron-store')
+
+// The desktop's store, opened exactly as main.js opens it.
+function makeStore(dir) {
+  return new Store({ cwd: dir, name: 'config', configFileMode: 0o600 })
+}
+const cfgPath = dir => path.join(dir, 'config.json')
+const cfgMode = dir => fs.statSync(cfgPath(dir)).mode & 0o777
+
+test('the settings keys are applied through the desktop store, matching the bridge replay', async () => {
+  const ud = mkUserData()
+  const stores = makeStores(ud)
+  const store = makeStore(ud)
+
+  // A base the desktop already holds, so this covers "merge onto what is
+  // there", not just "write onto empty".
+  store.set('likedAlbums', ['alb-desktop'])
+  store.set('volume', 0.8)
+  fs.chmodSync(cfgPath(ud), 0o600)
+
+  inbox.append(ud, 'likedAlbums.set', { ids: ['alb-phone-1', 'alb-phone-2'] })
+  inbox.append(ud, 'followedArtists.set', { artists: ['Aphex Twin'] })
+  inbox.append(ud, 'volume.set', { volume: 0.42 })
+  inbox.append(ud, 'eqSettings.set', { settings: { enabled: false, gains: [1,0,0,0,0,0,0,0,0,0], preamp: 2 } })
+  inbox.append(ud, 'agentModel.set', { model: 'gpt-4o-mini' })
+  const ops = inbox.readInbox(ud).ops.slice()
+
+  const r = ingest.ingestOnce({ userData: ud, sideStores: stores, store, log: () => {} })
+  assert.strictEqual(r.ops, 5, 'all five settings ops should have been consumed')
+
+  // The oracle again: what the bridge's read overlay showed the phone.
+  const onDisk = JSON.parse(fs.readFileSync(cfgPath(ud), 'utf8'))
+  assert.deepStrictEqual(onDisk.likedAlbums, inbox.applyInbox('likedAlbums', ['alb-desktop'], ops))
+  assert.deepStrictEqual(onDisk.followedArtists, inbox.applyInbox('followedArtists', [], ops))
+  assert.strictEqual(onDisk.volume, inbox.applyInbox('volume', 0.8, ops))
+  assert.deepStrictEqual(onDisk.eqSettings, inbox.applyInbox('eqSettings', null, ops))
+  assert.strictEqual(onDisk.agentModel, inbox.applyInbox('agentModel', '', ops))
+
+  assert.strictEqual(cfgMode(ud), 0o600, 'the ingest widened the desktop’s 0600 config.json')
+
+  // Consumed: the inbox is drained and the watermark moved.
+  assert.strictEqual(inbox.readInbox(ud).ops.length, 0)
+  assert.strictEqual(ingest.readWatermark(ud), ops[ops.length - 1].seq)
+})
+
+test('a settings op is never applied twice (volume does not bounce back)', async () => {
+  const ud = mkUserData()
+  const stores = makeStores(ud)
+  const store = makeStore(ud)
+  store.set('volume', 0.8)
+
+  inbox.append(ud, 'volume.set', { volume: 0.3 })
+  ingest.ingestOnce({ userData: ud, sideStores: stores, store, log: () => {} })
+  assert.strictEqual(store.get('volume'), 0.3)
+
+  // The desktop then changes it itself. A second pass must not re-apply the
+  // phone's op over the newer desktop value.
+  store.set('volume', 0.9)
+  ingest.ingestOnce({ userData: ud, sideStores: stores, store, log: () => {} })
+  assert.strictEqual(store.get('volume'), 0.9,
+    'an already-ingested op was replayed over a newer desktop value')
+})
+
+test('a settings op with no store stays queued rather than being dropped', async () => {
+  const ud = mkUserData()
+  const stores = makeStores(ud)
+
+  inbox.append(ud, 'likedAlbums.set', { ids: ['alb-phone'] })
+  const r = ingest.ingestOnce({ userData: ud, sideStores: stores, log: () => {} })
+
+  assert.strictEqual(r.partial, true, 'the pass claimed success with nowhere to put the op')
+  assert.strictEqual(ingest.readWatermark(ud), 0,
+    'the watermark moved past an op that was never applied')
+  assert.strictEqual(inbox.readInbox(ud).ops.length, 1,
+    'the op was truncated away without being applied')
+})
+
+test('side-store ops and settings ops in one batch both land', async () => {
+  const ud = mkUserData()
+  const stores = makeStores(ud)
+  const store = makeStore(ud)
+
+  inbox.append(ud, 'likedTracks.set', { paths: ['/music/a.flac'] })
+  inbox.append(ud, 'likedAlbums.set', { ids: ['alb-phone'] })
+
+  const r = ingest.ingestOnce({ userData: ud, sideStores: stores, store, log: () => {} })
+  assert.strictEqual(r.ops, 2)
+  await flushAll(stores)
+
+  assert.deepStrictEqual(readSideFile(ud, 'liked-tracks', null), ['/music/a.flac'])
+  assert.deepStrictEqual(store.get('likedAlbums'), ['alb-phone'])
+})
+
+test('every settings key the bridge can queue has somewhere on the desktop to land', () => {
+  // The two lists are maintained in different files. If an op type is added to
+  // the bridge and not here, the ingester logs "unknown key" and the phone's
+  // change is silently truncated away — the exact failure this whole path
+  // exists to prevent.
+  const known = new Set([...Object.keys(ingest.OP_KEY_TO_STORE), ...Object.keys(ingest.OP_KEY_TO_CONFIG)])
+  const orphans = [...inbox.OP_TYPES]
+    .map(t => t.split('.')[0])
+    .filter(k => !known.has(k))
+  assert.deepStrictEqual([...new Set(orphans)], [],
+    'the bridge can queue an op the desktop ingester cannot apply')
+})
+
+test('an op with an unusable payload leaves the desktop value alone, not on the default', async () => {
+  // The HTTP routes refuse these, but the inbox is a file: an older bridge, a
+  // hand-edited queue or a future route can put one there. Resetting the user's
+  // volume to the 0.8 default because a payload was malformed is a data loss
+  // dressed up as a merge, so applyInbox keeps the base — which means the
+  // ingester has to READ the desktop's value, not assume the default.
+  const ud = mkUserData()
+  const stores = makeStores(ud)
+  const store = makeStore(ud)
+  store.set('volume', 0.9)
+  store.set('agentModel', 'claude-haiku-4-5-20251001')
+
+  inbox.append(ud, 'volume.set', { volume: 'loud' })
+  inbox.append(ud, 'agentModel.set', { model: null })
+  ingest.ingestOnce({ userData: ud, sideStores: stores, store, log: () => {} })
+
+  assert.strictEqual(store.get('volume'), 0.9, 'a malformed op reset the user’s volume')
+  assert.strictEqual(store.get('agentModel'), 'claude-haiku-4-5-20251001')
+})
+
+// ── Wiring ───────────────────────────────────────────────────────────────────
+// Everything above proves ingestOnce applies the settings ops WHEN it is handed
+// a store. main.js is where it gets one, and main.js cannot be required outside
+// Electron. Without this, deleting `store` from that one call site leaves every
+// test in this file green while every phone settings change silently stops
+// arriving — the same wiring hole the scheduler work hit twice.
+
+test('main.js actually hands the ingester the store', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
+  const call = /bridgeInboxIngest\.start\(\{([\s\S]*?)\}\)/.exec(src)
+  assert.ok(call, 'main.js no longer starts the bridge inbox ingester at all')
+  const args = call[1]
+  assert.match(args, /(^|\n)\s*store,/, 'main.js starts the ingester without a store — every settings op from the phone would be logged as unapplied and stay queued forever')
+  assert.match(args, /(^|\n)\s*sideStores,/)
+  assert.match(args, /userData:\s*USER_DATA/)
+})
+
+test('an op that agrees with the desktop does not rewrite config.json at all', async () => {
+  // The phone echoes a value the desktop already holds — the common case when
+  // the phone simply re-sends its whole liked list. Rewriting the file anyway
+  // costs a full serialize of every setting the app has, on a file the desktop
+  // may be renaming over at that moment. Skipping it requires actually READING
+  // the desktop's value first, which is the point of this test.
+  const ud = mkUserData()
+  const stores = makeStores(ud)
+  const store = makeStore(ud)
+  store.set('volume', 0.9)
+  store.set('agentModel', 'gpt-4o-mini')
+
+  // A mode conf does not use, as a write detector with no clock resolution in
+  // it: any store.set() puts it straight back to configFileMode (0600).
+  fs.chmodSync(cfgPath(ud), 0o640)
+
+  inbox.append(ud, 'volume.set', { volume: 0.9 })
+  inbox.append(ud, 'agentModel.set', { model: 'gpt-4o-mini' })
+  const r = ingest.ingestOnce({ userData: ud, sideStores: stores, store, log: () => {} })
+  assert.strictEqual(r.ops, 2, 'the ops should still have been consumed')
+
+  assert.strictEqual(cfgMode(ud), 0o640,
+    'config.json was rewritten for a change that was not a change')
+  assert.strictEqual(store.get('volume'), 0.9)
+
+  // ...and a real change still writes, so the skip is not "never write".
+  inbox.append(ud, 'volume.set', { volume: 0.25 })
+  ingest.ingestOnce({ userData: ud, sideStores: stores, store, log: () => {} })
+  assert.strictEqual(store.get('volume'), 0.25)
+  assert.strictEqual(cfgMode(ud), 0o600, 'the desktop write did not restore the 0600 mode')
+})

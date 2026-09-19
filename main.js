@@ -1221,11 +1221,19 @@ const sideStores = {
 // counts, history, saved queues, recently-played and playback state in
 // bridge-inbox.json instead; this drains that queue through the stores above.
 // Without it a like made on the phone stayed a phone-only like forever.
+//
+// `store` is passed for the settings keys that never left config.json
+// (likedAlbums, followedArtists, volume, eqSettings, agentModel). The bridge
+// used to write those into config.json itself, while conf rewrites that whole
+// file on every set - two writers with no lock, last one wins, and the bridge's
+// write dropped the 0600 mode. Now the phone queues them and this applies them,
+// so config.json has one writer: this process.
 // See src/bridge-inbox-ingest.js.
 const bridgeInboxIngest = require('./src/bridge-inbox-ingest')
 bridgeInboxIngest.start({
   userData: USER_DATA,
   sideStores,
+  store,
   log: m => console.log(m),
 })
 
