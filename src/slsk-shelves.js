@@ -89,6 +89,50 @@ function isDiscFolder(name) {
   return DISC_RE.test(n) || /^(cd|dis[ck])\s*\d{1,3}$/i.test(n) || /^(cd|dis[ck])$/i.test(n)
 }
 
+// A leaf segment that is ONLY a quality/source label: "44.1", "FLAC", "16-44",
+// "24bit", "WEB". People file these as the last folder of a path
+// ("…\In Rainbows\FLAC\"), and the shop rendered each one as its own
+// one-person album sitting beside the real merged card. It is not an album
+// name — it is the same album, one folder deeper.
+//
+// Deliberately strict: the whole segment must be the label and nothing else, so
+// "24 Carat Black" and "1999" stay albums.
+const QUALITY_LEAF_RE = new RegExp(
+  '^[\\s._-]*(?:' +
+  '(?:16|24|32)[\\s._-]*(?:bit)?[\\s._-]*(?:44(?:[._]1)?|48|88(?:[._]2)?|96|176(?:[._]4)?|192)?' +
+  '|(?:44[._]1|88[._]2|176[._]4|48|96|192)(?:[\\s._-]*k?hz)?' +
+  '|flac|mp3|wav|aiff?|alac|ape|wv|dsd|dsf|dff|opus|ogg|m4a' +
+  '|lossless|hi[\\s._-]?res|hires|vinyl|web|webflac|cd|cdrip|cdda|scans?|artwork|covers?' +
+  ')[\\s._-]*(?:bit|khz|hz|kbps)?[\\s._-]*$', 'i')
+
+function isQualityLeaf(name) {
+  const n = String(name || '').trim()
+  if (!n) return false
+  // A bare number on its own is a disc or a year, not a quality label; the
+  // alternation above would otherwise swallow "48" and "96" as sample rates in
+  // isolation, which is right for "…\96\" beside "…\FLAC\" and wrong for
+  // nothing else we have seen. Keep it: the guard here is only against the
+  // empty-ish cases.
+  return QUALITY_LEAF_RE.test(n)
+}
+
+// Peel trailing noise segments off a folder path before parsing it as an album.
+// "…\In Rainbows\Disc 1" and "…\In Rainbows\FLAC" are both the SAME album as
+// "…\In Rainbows"; parsing the raw leaf made three albums out of one. Never
+// strips down to nothing — a path that is only noise keeps its last segment.
+//
+// Cost is O(segments) once per group, not per comparison, so the merge stays
+// linear.
+function stripLeafNoise(segs) {
+  const out = (segs || []).slice()
+  while (out.length > 1) {
+    const leaf = out[out.length - 1]
+    if (isDiscFolder(leaf) || isQualityLeaf(leaf)) out.pop()
+    else break
+  }
+  return out
+}
+
 // Clean a raw path segment down to human text: drop bracket tags, bare noise
 // words, leading track numbers, and normalise whitespace/separators.
 function cleanSegment(seg) {
@@ -1093,7 +1137,14 @@ function mergeSourcesByAlbum(groups, { detectSurround = null, parse = null } = {
   const doParse = parse || ((g) => {
     const raw = String(g.folderPath || g.folderName || '')
     const segs = raw.split(/[\\/]/).filter(Boolean)
-    return parseAlbumFolder(segs.length ? segs : [g.folderName || ''])
+    // Trailing disc and bare-quality segments are peeled off first, so
+    // "…\In Rainbows\Disc 1", "…\In Rainbows\CD1", "…\In Rainbows\44.1" and
+    // "…\In Rainbows" all parse to the same album and land in one bucket. The
+    // shelves walker has folded disc folders since day one; the search-side
+    // merge never did, which is why "Disc 1", "CD1", "disc 1" and "flac" showed
+    // up as their own one-person albums beside the merged card.
+    const trimmed = stripLeafNoise(segs)
+    return parseAlbumFolder(trimmed.length ? trimmed : [g.folderName || ''])
   })
 
   // Buckets indexed by album token, mirroring buildLibraryIndex: a group can only
@@ -1783,7 +1834,8 @@ const shApi = {
   upgradeReason, albumsMatch, albumsMatchComparable, albumComparable,
   buildLibraryIndex, tokenScore, tokenScoreSets, normKey, normTokenSet,
   cleanSegment, extractYear,
-  isDiscFolder, groupByLetter, albumQualityLabel, libAlbumToComparable,
+  isDiscFolder, isQualityLeaf, stripLeafNoise,
+  groupByLetter, albumQualityLabel, libAlbumToComparable,
   isAudioName, isLosslessName, qualityString, channelSuffix,
   SH_AUDIO_RE, SH_LOSSLESS_EXT,
   fmtSize, sourceScore, sourceQuality, qualityRankTuple, mergeSourcesByAlbum,
