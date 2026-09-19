@@ -1193,7 +1193,7 @@
       ;(dlg.querySelector('.slsh-box') || dlg).appendChild(bar)
     }
     const upgrades = picked.filter(a => a.upgrade && a.matchedLibId)
-    const files = picked.reduce((n, a) => n + (a.trackCount || 0), 0)
+    const files = picked.reduce((n, a) => n + (Number(a.trackCount) || (a.files && a.files.length) || 0), 0)
     bar.innerHTML = `<span class="slsh-batch-count slx-batch-n"><b class="slx-batch-count">${picked.length}</b> album${picked.length !== 1 ? 's' : ''} · ${files} tracks selected</span>
       <button class="slsh-batch-act slx-btn" data-batch="download">⬇ Download</button>
       <button class="slsh-batch-act slx-btn" data-batch="replace" ${upgrades.length ? '' : 'disabled'} title="${upgrades.length ? `Replace ${upgrades.length} of your copies after verification` : 'Only albums marked as upgrades over your copies can be replaced'}">⇄ Replace ${upgrades.length ? upgrades.length : ''}</button>
@@ -1337,7 +1337,7 @@
     side.querySelectorAll('.slx-folder').forEach(b => b.addEventListener('click', () => {
       const btn = dlg.querySelector('.slsh-mode-btn[data-mode="folders"]')
       if (btn) btn.click()
-      if (typeof navigateTo === 'function') { try { navigateTo(b.dataset.path) } catch (_) {} }
+      try { navTo(b.dataset.path) } catch (_) {}
     }))
     const pres = dlg.querySelector('#slsh-presence')
     const sp = side.querySelector('#slx-side-presence')
