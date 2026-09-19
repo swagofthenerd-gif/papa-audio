@@ -134,7 +134,7 @@ test('verification runs AFTER completion, not on a timer', () => {
 
 test('auto-organize never runs on a failed verdict or when off', () => {
   const verify = MAIN.slice(MAIN.indexOf('const verdict = dlOrganize.verdict'),
-    MAIN.indexOf('const verdict = dlOrganize.verdict') + 800)
+    MAIN.indexOf('const verdict = dlOrganize.verdict') + 1100)   // grew with the Replace assessment line
   // The move is gated on BOTH a clean verdict and the setting being on.
   assert.match(verify, /if \(verdict\.ok && _videoConfig\(\)\.autoOrganizeDownloads/)
 })

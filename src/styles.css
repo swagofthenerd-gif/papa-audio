@@ -3207,6 +3207,9 @@ h2.section-title { font-size:18px; font-weight:700; }
 .slsh-card.slsh-skel:hover { transform: none; box-shadow: none; }
 /* The action buttons keep their own affordance over the card's. */
 .slsh-card .slsh-card-act { cursor: pointer; }
+/* Shelf Replace: a track-count warning on the upgrade pair, so an album with more
+   or fewer songs than yours is flagged before download. */
+.slsh-q-count { display:inline-block; margin-left:8px; padding:1px 7px; border-radius:999px; font-size:11px; font-weight:600; color:var(--amber-ink, #b26a00); background:rgba(240,165,0,.14); }
 .slsh-card-art {
   position: relative; width: 100%; aspect-ratio: 1; border-radius: 6px;
   overflow: hidden; margin-bottom: 8px; background: var(--bg2, #181818);
@@ -11026,7 +11029,3 @@ body.theme-light .cinema {
   .cinema .vhero-bg.ready { animation: none; }
   .cinema .vhero-bg.vhero-bg-prev { animation: none; display: none; }
 }
-
-/* Shelf Replace (2026-09-19): a track-count warning sits on the upgrade pair so
-   an album with more or fewer songs than yours is flagged before download. */
-.slsh-q-count { display:inline-block; margin-left:8px; padding:1px 7px; border-radius:999px; font-size:11px; font-weight:600; color:var(--amber-ink, #b26a00); background:rgba(240,165,0,.14); }
