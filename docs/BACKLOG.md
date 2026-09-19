@@ -956,3 +956,15 @@ session. Kept; writes coalesced to a 2 s timer + async rename.
 L14 not acted on (policy calls): `video-cache/`, `web-stream-cache/`,
 `thumbs/`, `artwork/` unbounded on disk with no startup sweep; `backups/`
 rotation unverified for the scheduled path.
+
+### 19 Sep — post-merge twin sweep + two startup fixes
+Fresh twin after the three main-process merges: starts cleanly, 12 pages
+0 throws, `config.json` mode 600 on the twin. Two things seen in its
+startup output and fixed (9459fa5): the banner printed twice on a terminal
+launch (stdout via the patched console AND a belt-and-braces stderr copy —
+one copy now; test pins exactly one), and "stream cache <dir> is not
+writable; falling back to <dir>/papa-video-streams" — a false warning,
+because `setStreamRoot` now answers with its own subfolder and main compared
+it to the chosen dir with `!==`; fallback is now "active root not under the
+chosen one". Gate 6,324/0. Note: `twin-probe` connects once — on a busy
+machine give the twin ~10 s before probing (one false "ECONNREFUSED" scare).
