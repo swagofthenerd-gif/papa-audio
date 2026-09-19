@@ -102,6 +102,18 @@ test('the shop takes focus when it opens, in both modes', () => {
 		'shelves mode used to leave focus on the opener behind the modal')
 })
 
+test('focus enters the modal when it is mounted, not after the browse', () => {
+	// Verified on a twin: with no credentials the browse returns early, so the
+	// post-browse focus line never ran and the error state sat there with focus
+	// on the opener behind the overlay.
+	const mount = SHOP.indexOf('document.body.appendChild(dlg)')
+	assert.ok(mount > -1)
+	const after = SHOP.slice(mount, mount + 600)
+	assert.ok(/\(dlg\.querySelector\('#slsk-lib-close'\) \|\| dlg\)\.focus\(/.test(after), after.slice(0, 400))
+	// And it must come before the browse call, not after it.
+	assert.ok(mount < SHOP.indexOf('await window.api.slskBrowseBegin'))
+})
+
 test('closing the shop gives focus back to whatever opened it', () => {
 	assert.ok(/const opener = document\.activeElement/.test(SHOP))
 	assert.ok(/opener && opener\.isConnected && typeof opener\.focus === 'function'/.test(SHOP))

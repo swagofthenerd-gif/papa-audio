@@ -101,6 +101,11 @@
     <div class="slskx-statusbar" id="slskx-status"></div>
   </div>`
   document.body.appendChild(dlg)
+  // Focus moves into the modal the moment it exists, not after the browse.
+  // A browse that fails (an offline peer, no credentials) returns early, and
+  // focus used to stay on the opener behind the overlay for the whole of that
+  // error state -- Tab walked the page underneath it.
+  try { (dlg.querySelector('#slsk-lib-close') || dlg).focus({ preventScroll: true }) } catch (_) {}
 
   const body    = dlg.querySelector('#slsk-lib-body')
   const crumbs  = dlg.querySelector('#slskx-crumbs')
