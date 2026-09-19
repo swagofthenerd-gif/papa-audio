@@ -10954,19 +10954,14 @@ async function _browseDirectories(username) {
     // user is actually being shown.
     const newDirs = _browseRecordDiff(username, dirs)
     _browseRefresh(username)
-    const reply = { ok: true, dirs, fromCache: true, cachedAt: cached.cachedAt }
-    // Absent, not undefined: the reply shape is pinned and the shop only
-    // builds the shelf when the key is present.
-    if (newDirs && newDirs.length) reply.newDirs = newDirs
-    return reply
+    // Always an array here; the IPC boundary drops the key when it is empty.
+    return { ok: true, dirs, fromCache: true, cachedAt: cached.cachedAt, newDirs: newDirs || [] }
   }
   const attempt = async (deadlineMs) => {
     const dirs = await _browseFetch(username, deadlineMs)
     _browseCacheWrite(username, dirs)
     const newDirs = _browseRecordDiff(username, dirs)
-    const reply = { ok: true, dirs, fromCache: false, cachedAt: null }
-    if (newDirs && newDirs.length) reply.newDirs = newDirs
-    return reply
+    return { ok: true, dirs, fromCache: false, cachedAt: null, newDirs: newDirs || [] }
   }
   try {
     return await attempt(30000)

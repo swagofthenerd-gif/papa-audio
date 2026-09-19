@@ -150,7 +150,9 @@ function fetchRuleHarness({ cached = null, failWith = [] } = {}) {
 test('a cache hit answers instantly and refreshes in the background — no fetch', async () => {
   const h = fetchRuleHarness({ cached: { directories: [{ name: 'C' }], cachedAt: 123 } })
   const got = await h.run('peer')
-  assert.deepStrictEqual(got, { ok: true, dirs: [{ name: 'C' }], fromCache: true, cachedAt: 123 })
+  // newDirs is always an array on the internal reply (the IPC boundary drops
+  // it when empty) — the visit is recorded even on a cache hit.
+  assert.deepStrictEqual(got, { ok: true, dirs: [{ name: 'C' }], fromCache: true, cachedAt: 123, newDirs: [] })
   assert.deepStrictEqual(h.log.fetches, [])
   assert.strictEqual(h.log.refreshed, 1)
 })
