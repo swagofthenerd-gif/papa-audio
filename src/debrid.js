@@ -363,6 +363,18 @@ function createDebrid(opts = {}) {
     } catch (_) { return null }
   }
 
+  // Whether a failure genuinely means "RealDebrid does not have this", as
+  // opposed to "RealDebrid could not answer". Only a 404 and RD's own terminal
+  // verdicts on a magnet are about the release; a 401, a 429, a 503 and a
+  // network error are about the service or the account, and reporting those as
+  // a missing file sends the user hunting in the wrong place.
+  function _isNotFound(e) {
+    const code = e && e.code
+    if (!code) return false
+    return code === 'HTTP_404' || code === 'HTTP_204' ||
+      (typeof code === 'string' && code.startsWith('RD_'))
+  }
+
   // Prove a link still serves bytes. RealDebrid answers 503 on a link that has
   // gone stale, and handing that to the player looks exactly like debrid not
   // working at all. One byte is enough to tell.
@@ -432,8 +444,15 @@ function createDebrid(opts = {}) {
     let info = infoCache.get(hash)
     if (!info) {
       // Nothing remembered: resolving fills infoCache as a side effect. A
-      // failure here is not worth reporting — the strip is a convenience.
-      try { await resolveMagnet(magnet, want) } catch (_) { return [] }
+      // release RealDebrid genuinely does not have is an empty strip, fair
+      // enough — but swallowing EVERY failure here turned a bad token or an RD
+      // outage into "this release has one file", which is a lie the viewer has
+      // no way to see through. Anything that is not a plain not-found is said
+      // out loud.
+      try { await resolveMagnet(magnet, want) } catch (e) {
+        if (_isNotFound(e)) return []
+        throw e
+      }
       info = infoCache.get(hash)
     }
     const files = Array.isArray(info && info.files) ? info.files : []
@@ -481,7 +500,13 @@ function createDebrid(opts = {}) {
     }
     let info = infoCache.get(hash)
     if (!info) {
-      try { await resolveMagnet(magnet) } catch (_) {}
+      // The same lie as packFiles told, and worse here: a 401 or a 503 fell
+      // through to the NO_FILE below, so a bad token and an RD outage both
+      // reported "no such file in this release" — the viewer went looking for
+      // a problem with the release while the actual problem was their account.
+      try { await resolveMagnet(magnet) } catch (e) {
+        if (!_isNotFound(e)) throw e
+      }
       info = infoCache.get(hash)
     }
     const files = Array.isArray(info && info.files) ? info.files : []
