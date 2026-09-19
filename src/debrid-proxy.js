@@ -34,6 +34,13 @@ const RETRY_DELAY_MS = 400
 const HEAD_CACHE_BYTES = 4 * 1024 * 1024
 const TAIL_CACHE_BYTES = 8 * 1024 * 1024
 
+// A range asking to start at or past the end of the file. RFC 7233 says answer
+// 416 and name the real length; this used to come back null, which _handle read
+// as "no range header" and answered with a 206 labelled `bytes 0-99/100` for a
+// request for `bytes=150-`. The player is then told it received the range it
+// asked for, and it did not.
+const UNSATISFIABLE = Object.freeze({ unsatisfiable: true })
+
 function parseRange(header, total) {
   const m = /^bytes=(\d*)-(\d*)$/.exec(String(header || '').trim())
   if (!m) return null
@@ -48,9 +55,14 @@ function parseRange(header, total) {
   }
   const start = Number(m[1])
   if (!Number.isFinite(start) || start < 0) return null
+  if (total && start >= total) return UNSATISFIABLE
   // The whole point: an absent end becomes the last byte, never open-ended.
-  const end = hasEnd ? Number(m[2]) : (total ? total - 1 : null)
-  if (end == null || !Number.isFinite(end) || end < start) return null
+  let end = hasEnd ? Number(m[2]) : (total ? total - 1 : null)
+  if (end == null || !Number.isFinite(end)) return null
+  // A range running past the end is satisfiable, just clamped — that is what
+  // every other server does, and it is what a player probing the tail sends.
+  if (total && end > total - 1) end = total - 1
+  if (end < start) return null
   return { start, end }
 }
 
@@ -145,8 +157,19 @@ function createDebridProxy({ fetchFn, host = '127.0.0.1' } = {}) {
         // servers start refusing everything.
         try { if (res && res.body && res.body.cancel) await res.body.cancel() } catch (_) {}
         last = new Error('upstream ' + (res && res.status))
+        // The retries exist for the 5xx these servers throw at perfectly good
+        // ranges — two in five, measured. A 4xx is a settled answer about the
+        // request itself, and asking the same question twice more only spends
+        // round trips while the picture is frozen.
+        const status = res && res.status
+        if (status >= 400 && status < 500) {
+          last.status = status
+          throw last
+        }
       } catch (e) {
         if (signal && signal.aborted) throw e
+        // A 4xx decided above is final; anything else is worth another look.
+        if (e && e.status >= 400 && e.status < 500) throw e
         last = e
       }
       await _sleep(RETRY_DELAY_MS * (i + 1))
@@ -179,7 +202,18 @@ function createDebridProxy({ fetchFn, host = '127.0.0.1' } = {}) {
     res.once('close', giveUp)
     req.once('aborted', giveUp)
     try {
-      const wanted = parseRange(req.headers.range, total) || { start: 0, end: total ? total - 1 : 0 }
+      const parsed = parseRange(req.headers.range, total)
+      if (parsed === UNSATISFIABLE) {
+        // Answer it. Retrying an unsatisfiable range upstream three times just
+        // spends three round trips arriving at the same place.
+        res.writeHead(416, {
+          'Content-Range': `bytes */${total}`,
+          'Content-Length': '0',
+          'Accept-Ranges': 'bytes',
+        })
+        return res.end()
+      }
+      const wanted = parsed || { start: 0, end: total ? total - 1 : 0 }
       if (req.method === 'HEAD') {
         res.writeHead(200, { 'Content-Length': String(total), 'Content-Type': contentType, 'Accept-Ranges': 'bytes' })
         return res.end()
@@ -266,4 +300,4 @@ function createDebridProxy({ fetchFn, host = '127.0.0.1' } = {}) {
   }
 }
 
-module.exports = { createDebridProxy, parseRange, UPSTREAM_TRIES }
+module.exports = { createDebridProxy, parseRange, UPSTREAM_TRIES, UNSATISFIABLE }
