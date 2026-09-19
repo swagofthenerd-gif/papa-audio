@@ -176,12 +176,12 @@
     const rows = cmp.rows.map(r => {
       const t = r.theirs, m = r.mine
       return `<tr class="slx-cmp-row slx-v-${r.verdict}">
-        <td class="slx-cmp-n">${r.n != null ? r.n : ''}</td>
-        <td class="slx-cmp-title" title="${esc((t || m).rawTitle)}">${esc((t || m).rawTitle)}</td>
+        <td class="slx-cmp-n slx-n">${r.n != null ? r.n : ''}</td>
+        <td class="slx-cmp-title slx-t" title="${esc((t || m).rawTitle)}">${esc((t || m).rawTitle)}</td>
         <td class="slx-cmp-dur">${t ? fmtDur(t.duration) : '—'}<span class="slx-cmp-vs">/</span>${m ? fmtDur(m.duration) : '—'}</td>
         <td class="slx-cmp-qual">${esc(fmtQual(t))}<span class="slx-cmp-vs">/</span>${esc(fmtQual(m))}</td>
         <td class="slx-cmp-size">${t ? esc(fmtSize(t.size)) : '—'}<span class="slx-cmp-vs">/</span>${m ? esc(fmtSize(m.size)) : '—'}</td>
-        <td class="slx-cmp-verdict" title="${VERDICT_TEXT[r.verdict]}" aria-label="${VERDICT_TEXT[r.verdict]}">${VERDICT_GLYPH[r.verdict]}</td>
+        <td class="slx-cmp-verdict slx-v is-${r.verdict === 'only-theirs' || r.verdict === 'only-mine' ? 'missing' : r.verdict}" title="${VERDICT_TEXT[r.verdict]}" aria-label="${VERDICT_TEXT[r.verdict]}">${VERDICT_GLYPH[r.verdict]}</td>
       </tr>`
     }).join('')
     const replaceWhy = s.replaceOk ? 'Download this copy; once every track is verified, offer to move yours to Trash'

@@ -54,7 +54,7 @@ test('so the card does not tell him it is inert', () => {
 
 test('it announces itself as activatable, not as a div', () => {
   // The class carries a selection modifier since the batch bar landed.
-  const markup = SHOP.slice(SHOP.indexOf('<div class="slsh-card${picked ? \' slsh-picked\' : \'\'}" data-idx='))
+  const markup = SHOP.slice(SHOP.indexOf('<div class="slsh-card slx-card'))
   const tag = markup.slice(0, markup.indexOf('>') + 1)
   assert.match(tag, /role="button"/, 'screen readers must be told it activates')
   assert.match(tag, /tabindex="0"/, 'and it must stay reachable by keyboard')

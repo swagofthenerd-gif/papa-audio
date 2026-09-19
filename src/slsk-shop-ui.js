@@ -101,6 +101,7 @@
               title="List every surround-labelled folder in this library">Surround finder</button>
     </div>
     <div class="slskx-actionbar" id="slskx-actionbar"></div>
+    ${host ? '<aside class="slx-side" id="slx-side" aria-label="About this library"></aside>' : ''}
     <div class="slsk-lib-body" id="slsk-lib-body">
       <div class="slsk-lib-loading indeterminate">
         <div class="slsk-lib-loading-text">Fetching ${esc(username)}'s file list from slskd…</div>
@@ -1108,6 +1109,17 @@
 
   // One album card. `variant` tweaks the badge line: 'upgrade' shows the
   // yours/theirs quality pair, 'missing' shows a wishlist +.
+  // The design's "record label": one tier colour per album, meaning only what
+  // the sound is made of. Read from the shelf album's own fields.
+  function shTier(a, variant) {
+    if (variant === 'missing') return 'missing'
+    const SF = window.PapaSlskFilters
+    if (SF && SF.albumIsSurround && SF.albumIsSurround(a)) return 'surround'
+    if (a && a.isHiRes) return 'hires'
+    if (a && a.lossless) return 'lossless'
+    return 'lossy'
+  }
+
   function shLibraryAlbum(id) {
     if (id == null || !state || !Array.isArray(state.library)) return null
     const want = String(id)
@@ -1126,33 +1138,33 @@
       // Say it before the download, not after: an album with more or fewer
       // songs than yours is not a straight swap.
       const countNote = mineCount != null && mineCount !== a.trackCount
-        ? `<span class="slsh-q-count" title="Track counts differ — Replace will keep both copies">${a.trackCount} tracks · yours ${mineCount}</span>`
+        ? `<span class="slsh-q-count slx-countwarn" title="Track counts differ — Replace will keep both copies">${a.trackCount} tracks · yours ${mineCount}</span>`
         : ''
-      badgeLine = `<div class="slsh-card-upgrade">
-        <span class="slsh-q-yours">Yours: ${esc(a.upgrade.yours || '—')}</span>
-        <span class="slsh-q-arrow">→</span>
-        <span class="slsh-q-theirs">Theirs: ${esc(a.upgrade.theirs || qual)}</span>${countNote}</div>`
+      badgeLine = `<div class="slsh-card-upgrade slx-upgrade">
+        <span class="slsh-q-yours slx-yours">Yours: ${esc(a.upgrade.yours || '—')}</span>
+        <span class="slsh-q-arrow slx-arrow">→</span>
+        <span class="slsh-q-theirs slx-theirs">Theirs: ${esc(a.upgrade.theirs || qual)}</span>${countNote}</div>`
     } else if (variant === 'missing') {
-      badgeLine = `<div class="slsh-card-qual">${esc(qual)}</div>`
+      badgeLine = `<div class="slsh-card-qual slx-q">${esc(qual)}</div>`
     } else {
-      badgeLine = `<div class="slsh-card-qual">${esc(qual)}${a.inLibrary ? ' · <span class="slsh-inlib">In Library</span>' : ''}</div>`
+      badgeLine = `<div class="slsh-card-qual slx-q">${esc(qual)}${a.inLibrary ? ' · <span class="slsh-inlib slx-inlib">In Library</span>' : ''}</div>`
     }
     const wishBtn = variant === 'missing'
-      ? `<button class="slsh-card-act slsh-wish" data-idx="${idx}" title="Add to wishlist">＋</button>` : ''
+      ? `<button class="slsh-card-act slsh-wish slx-act" data-act="wish" data-idx="${idx}" title="Add to wishlist">＋</button>` : ''
     const replaceBtn = variant === 'upgrade' && a.matchedLibId
-      ? `<button class="slsh-card-act slsh-replace" data-idx="${idx}" title="Download this copy; once it is verified, offer to move your old copy to Trash" aria-label="Replace your copy">⇄</button>` : ''
+      ? `<button class="slsh-card-act slsh-replace slx-act" data-act="replace" data-idx="${idx}" title="Download this copy; once it is verified, offer to move your old copy to Trash" aria-label="Replace your copy">⇄</button>` : ''
     const picked = shSelected.has(a.folderPath)
-    return `<div class="slsh-card${picked ? ' slsh-picked' : ''}" data-idx="${idx}" data-folder="${esc(a.folderPath)}" tabindex="0" role="button" aria-label="Open ${esc((a.artist ? a.artist + ' — ' : '') + (a.album || 'album'))}">
-      <label class="slsh-pick" title="Select for a batch action"><input type="checkbox" class="slsh-pick-cb" data-idx="${idx}" ${picked ? 'checked' : ''} aria-label="Select ${esc(a.album || a.folderName || 'album')}"></label>
+    return `<div class="slsh-card slx-card${picked ? ' slsh-picked is-selected' : ''}${a.inLibrary ? ' is-inlib' : ''}" data-tier="${shTier(a, variant)}" data-idx="${idx}" data-folder="${esc(a.folderPath)}" tabindex="0" role="button" aria-label="Open ${esc((a.artist ? a.artist + ' — ' : '') + (a.album || 'album'))}">
+      <label class="slsh-pick slx-sel" title="Select for a batch action"><input type="checkbox" class="slsh-pick-cb" data-idx="${idx}" ${picked ? 'checked' : ''} aria-label="Select ${esc(a.album || a.folderName || 'album')}"></label>
       ${shAlbumArtHtml(a)}
-      <div class="slsh-card-title" title="${esc(title)}">${esc(title)}</div>
-      <div class="slsh-card-artist" title="${esc(artist)}">${esc(artist)}${a.year ? ' · ' + a.year : ''}</div>
+      <div class="slsh-card-title slx-card-title" title="${esc(title)}">${esc(title)}</div>
+      <div class="slsh-card-artist slx-card-artist" title="${esc(artist)}">${esc(artist)}${a.year ? ' · ' + a.year : ''}</div>
       ${badgeLine}
-      <div class="slsh-card-meta">${esc(meta)}</div>
-      <div class="slsh-card-actions">
-        <button class="slsh-card-act slsh-preview" data-idx="${idx}" title="Preview — hear it before you download (races Soulseek vs YouTube)">⚡</button>
-        <button class="slsh-card-act slsh-play" data-idx="${idx}" title="Download the first track and play">▶</button>
-        <button class="slsh-card-act slsh-dl" data-idx="${idx}" title="Download this album (${a.trackCount})">⬇</button>${replaceBtn}
+      <div class="slsh-card-meta slx-card-meta">${esc(meta)}</div>
+      <div class="slsh-card-actions slx-acts">
+        <button class="slsh-card-act slsh-preview slx-act" data-act="preview" data-idx="${idx}" title="Preview — hear it before you download (races Soulseek vs YouTube)">⚡</button>
+        <button class="slsh-card-act slsh-play slx-act" data-act="play" data-idx="${idx}" title="Download the first track and play">▶</button>
+        <button class="slsh-card-act slsh-dl slx-act" data-act="download" data-idx="${idx}" title="Download this album (${a.trackCount})">⬇</button>${replaceBtn}
         <button class="slsh-card-act slsh-find" data-idx="${idx}" title="Find other sources for this album">⌕</button>
         ${wishBtn}
       </div>
@@ -1173,20 +1185,21 @@
   function shPaintBatchBar() {
     let bar = dlg.querySelector('#slsh-batch')
     const picked = shPickedAlbums()
+    dlg.classList.toggle('slx-selecting', picked.length > 0)
     if (!picked.length) { if (bar) bar.remove(); return }
     if (!bar) {
       bar = document.createElement('div')
-      bar.id = 'slsh-batch'; bar.className = 'slsh-batch'; bar.setAttribute('role', 'region'); bar.setAttribute('aria-label', 'Selected albums')
+      bar.id = 'slsh-batch'; bar.className = 'slsh-batch slx-batchbar'; bar.setAttribute('role', 'region'); bar.setAttribute('aria-label', 'Selected albums')
       ;(dlg.querySelector('.slsh-box') || dlg).appendChild(bar)
     }
     const upgrades = picked.filter(a => a.upgrade && a.matchedLibId)
     const files = picked.reduce((n, a) => n + (a.trackCount || 0), 0)
-    bar.innerHTML = `<span class="slsh-batch-count">${picked.length} album${picked.length !== 1 ? 's' : ''} · ${files} tracks selected</span>
-      <button class="slsh-batch-act" data-batch="download">⬇ Download</button>
-      <button class="slsh-batch-act" data-batch="replace" ${upgrades.length ? '' : 'disabled'} title="${upgrades.length ? `Replace ${upgrades.length} of your copies after verification` : 'Only albums marked as upgrades over your copies can be replaced'}">⇄ Replace ${upgrades.length ? upgrades.length : ''}</button>
-      <button class="slsh-batch-act" data-batch="wishlist">＋ Wishlist</button>
-      <button class="slsh-batch-act" data-batch="compare" ${picked.length === 1 && picked[0].matchedLibId ? '' : 'disabled'} title="Compare one selected album against your copy">⇄ Compare</button>
-      <button class="slsh-batch-act slsh-batch-clear" data-batch="clear">Clear</button>`
+    bar.innerHTML = `<span class="slsh-batch-count slx-batch-n"><b class="slx-batch-count">${picked.length}</b> album${picked.length !== 1 ? 's' : ''} · ${files} tracks selected</span>
+      <button class="slsh-batch-act slx-btn" data-batch="download">⬇ Download</button>
+      <button class="slsh-batch-act slx-btn" data-batch="replace" ${upgrades.length ? '' : 'disabled'} title="${upgrades.length ? `Replace ${upgrades.length} of your copies after verification` : 'Only albums marked as upgrades over your copies can be replaced'}">⇄ Replace ${upgrades.length ? upgrades.length : ''}</button>
+      <button class="slsh-batch-act slx-btn" data-batch="wishlist">＋ Wishlist</button>
+      <button class="slsh-batch-act slx-btn" data-batch="compare" ${picked.length === 1 && picked[0].matchedLibId ? '' : 'disabled'} title="Compare one selected album against your copy">⇄ Compare</button>
+      <button class="slsh-batch-act slsh-batch-clear slx-btn slx-btn-ghost" data-batch="clear">Clear</button>`
     bar.onclick = async e => {
       const b = e.target.closest('[data-batch]'); if (!b) return
       const act = b.dataset.batch
@@ -1238,14 +1251,15 @@
     // Empty shelves hide entirely rather than rendering an empty rail.
     if (!albums || !albums.length) return ''
     const cards = albums.slice(0, 40).map(a => shCardHtml(a, a._idx, variant)).join('')
-    return `<section class="slsh-rail" data-rail="${id}">
-      <div class="slsh-rail-head">
-        <span class="slsh-rail-title">${esc(title)}</span>
-        <span class="slsh-rail-sub">${esc(sub || '')}</span>
+    const railTier = { upgrades: 'hires', missing: 'missing', surround: 'surround', hires: 'hires', new: 'lossless' }[id] || 'lossless'
+    return `<section class="slsh-rail slx-rail" data-rail="${id}" data-tier="${railTier}">
+      <div class="slsh-rail-head slx-rail-head">
+        <span class="slsh-rail-title slx-rail-title">${esc(title)}</span>
+        <span class="slsh-rail-sub slx-rail-sub">${esc(sub || '')}</span>
         ${headAction || ''}
-        ${SEE_ALL_FILTER[id] ? `<button class="slsh-see-all" data-seeall="${id}" title="Show every album on this shelf in the grid below">See all →</button>` : ''}
+        ${SEE_ALL_FILTER[id] ? `<button class="slsh-see-all slx-rail-seeall" data-seeall="${id}" title="Show every album on this shelf in the grid below">See all →</button>` : ''}
       </div>
-      <div class="slsh-rail-track">${cards}</div>
+      <div class="slsh-rail-track slx-rail-track">${cards}</div>
     </section>`
   }
 
@@ -1293,7 +1307,45 @@
   // The hero is therefore built once and then left alone. Later paints replace
   // only what sits after it and refresh the stats in place; the input element,
   // its value and its selection are never touched again.
+  // The peer sidebar (page mode only): the facts a collector wants at a glance,
+  // the shared folders as a jump list into Folders mode, and how much of this
+  // library I already have. Cheap to rebuild; called from every shelves paint.
+  function shPaintSidebar() {
+    const side = dlg.querySelector('#slx-side')
+    if (!side) return
+    const st = shelves ? shelves.stats : null
+    const common = shelves ? shelves.everything.filter(a => a.inLibrary).length : 0
+    const roots = tree ? [...tree.dirs.values()].sort((a, b) => (b.fileCount || 0) - (a.fileCount || 0)).slice(0, 14) : []
+    const saved = window.PapaSavedUsers && window.PapaSavedUsers.isSaved(savedList, username)
+    const fact = (k, v) => `<div class="slx-fact"><span class="slx-fact-k">${esc(k)}</span><span class="slx-fact-v">${v}</span></div>`
+    side.innerHTML = `
+      <div class="slx-side-head"><span class="slx-side-name" title="${esc(username)}">${esc(username)}</span><span class="slx-side-presence" id="slx-side-presence" aria-live="polite"></span></div>
+      <div class="slx-facts">
+        ${st ? fact('Albums', st.albums.toLocaleString()) + fact('Tracks', st.tracks.toLocaleString()) + fact('Size', esc(shFmtSize(st.size))) +
+          fact('Lossless', `${Math.round(st.losslessPct || 0)}%`) + fact('Hi-Res', st.hiRes.toLocaleString()) + fact('Surround', st.surround.toLocaleString()) : '<div class="slx-fact-skel"></div>'}
+        ${shelves ? fact('In common', `${common} album${common !== 1 ? 's' : ''}`) : ''}
+        ${shelves && shelves.upgrades.length ? fact('Better than mine', shelves.upgrades.length) : ''}
+      </div>
+      <div class="slx-side-actions">
+        <button class="slx-side-btn slx-btn" id="slx-side-save" aria-pressed="${!!saved}">${saved ? '★ Saved' : '☆ Save library'}</button>
+        ${openSlskChat ? '<button class="slx-side-btn slx-btn slx-btn-ghost" id="slx-side-msg">✉ Message</button>' : ''}
+      </div>
+      ${roots.length ? `<div class="slx-side-title">Shared folders</div><ul class="slx-folders slx-tree">${roots.map(d =>
+        `<li><button class="slx-folder" style="--depth:0" data-path="${esc(d.path)}" title="Open in Folders">${esc(d.name)}<span class="slx-folder-n slx-tree-n">${(d.fileCount || 0).toLocaleString()}</span></button></li>`).join('')}</ul>` : ''}`
+    side.querySelector('#slx-side-save')?.addEventListener('click', () => dlg.querySelector('#slskx-star')?.click())
+    side.querySelector('#slx-side-msg')?.addEventListener('click', () => dlg.querySelector('#slskx-msg')?.click())
+    side.querySelectorAll('.slx-folder').forEach(b => b.addEventListener('click', () => {
+      const btn = dlg.querySelector('.slsh-mode-btn[data-mode="folders"]')
+      if (btn) btn.click()
+      if (typeof navigateTo === 'function') { try { navigateTo(b.dataset.path) } catch (_) {} }
+    }))
+    const pres = dlg.querySelector('#slsh-presence')
+    const sp = side.querySelector('#slx-side-presence')
+    if (pres && sp) { sp.textContent = pres.title || ''; sp.className = 'slx-side-presence ' + (pres.classList.contains('online') ? 'online' : pres.classList.contains('offline') ? 'offline' : '') }
+  }
+
   function shPaint(bodyHtml) {
+    shPaintSidebar()
     const hero = shBody.querySelector('.slsh-hero')
     if (!hero) {
       shBody.innerHTML = shHeroHtml() + bodyHtml
@@ -1514,27 +1566,28 @@
     }
   }
 
+  const CHIP_TIER = { hires: 'hires', bd24: 'hires', sr88: 'hires', sr176: 'hires', surround: 'surround', lossless: 'lossless', flac: 'lossless', mp3: 'lossy', otherfmt: 'lossy', better: 'hires' }
   function shControlsHtml(count) {
     const SF = window.PapaSlskFilters
     const decades = (SF && SF.shelfDecades) ? SF.shelfDecades(shelves.everything) : []
     const labels = (SF && SF.SHELF_FILTER_LABELS) || {}
     const groups = (SF && SF.SHELF_FILTER_GROUPS) || []
     const chip = (k, label) =>
-      `<button class="slsh-chip${shFilters.has(k) ? ' active' : ''}" data-shfilter="${k}" aria-pressed="${shFilters.has(k)}">${esc(label)}</button>`
+      `<button class="slsh-chip slx-chip${shFilters.has(k) ? ' active' : ''}" data-shfilter="${k}" aria-pressed="${shFilters.has(k)}"${CHIP_TIER[k] ? ` data-tier="${CHIP_TIER[k]}"` : ''}>${esc(label)}</button>`
     const rows = groups.map(g =>
-      `<div class="slsh-chip-group" role="group" aria-label="${esc(g.label)}"><span class="slsh-chip-group-label">${esc(g.label)}</span>${g.keys.map(k => chip(k, labels[k] || k)).join('')}</div>`).join('')
+      `<div class="slsh-chip-group slx-chipgroup" role="group" aria-label="${esc(g.label)}"><span class="slsh-chip-group-label">${esc(g.label)}</span>${g.keys.map(k => chip(k, labels[k] || k)).join('')}</div>`).join('')
     const active = shFilters.size + (shDecade ? 1 : 0) + (shGridQuery ? 1 : 0)
-    return `<div class="slsh-controls" id="slsh-controls">
+    return `<div class="slsh-controls slx-filters" id="slsh-controls">
       <div class="slsh-ctl-row">
-        <input class="slsh-grid-search" id="slsh-grid-search" type="search" placeholder="Search this library…" value="${esc(shGridQuery)}" aria-label="Search within this library" autocomplete="off">
+        <input class="slsh-grid-search slx-search" id="slsh-grid-search" type="search" placeholder="Search this library…" value="${esc(shGridQuery)}" aria-label="Search within this library" autocomplete="off">
         <label class="slsh-ctl-sort">Sort
           <select id="slsh-sort">
             ${[['quality', 'Quality'], ['year', 'Year'], ['size', 'Size'], ['tracks', 'Tracks'], ['artist', 'Artist'], ['az', 'A–Z']]
               .map(([v, l]) => `<option value="${v}"${shSort === v ? ' selected' : ''}>${l}</option>`).join('')}
           </select>
         </label>
-        <span class="slsh-ctl-count" id="slsh-ctl-count" aria-live="polite">${count != null ? `${count} album${count !== 1 ? 's' : ''}` : ''}</span>
-        ${active ? `<button class="slsh-chip slsh-chip-clear" id="slsh-clear-filters" title="Clear every filter">Clear ${active}</button>` : ''}
+        <span class="slsh-ctl-count slx-count" id="slsh-ctl-count" aria-live="polite">${count != null ? `${count} album${count !== 1 ? 's' : ''}` : ''}</span>
+        ${active ? `<button class="slsh-chip slx-chip slsh-chip-clear" id="slsh-clear-filters" title="Clear every filter">Clear ${active}</button>` : ''}
       </div>
       <div class="slsh-chips">
         ${chip('lossless', 'Lossless')}${chip('hires', 'Hi-Res')}

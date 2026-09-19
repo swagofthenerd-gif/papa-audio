@@ -3101,6 +3101,30 @@ h2.section-title { font-size:18px; font-weight:700; }
 /* Page mode: the shop fills the content area instead of floating over it. */
 .slsk-explore { display: flex; flex-direction: column; min-height: calc(100vh - 230px); }
 .slsk-explore .slsh-box.slsh-box-page { width: 100% !important; max-width: none !important; height: calc(100vh - 230px); border-radius: 0; background: transparent; box-shadow: none; }
+/* Page mode layout: header row, then sidebar + body side by side (provisional). */
+.slsk-explore .slsh-box-page { display: grid; grid-template-columns: 240px minmax(0, 1fr); grid-template-rows: auto auto auto minmax(0, 1fr) auto; grid-template-areas: "hdr hdr" "tb tb" "ab ab" "side body" "st st"; }
+.slsk-explore .slsh-header { grid-area: hdr; }
+.slsk-explore .slskx-toolbar { grid-area: tb; }
+.slsk-explore .slskx-actionbar { grid-area: ab; }
+.slsk-explore .slx-side { grid-area: side; overflow: auto; padding: 12px 14px; border-right: 1px solid var(--glass-border); }
+.slsk-explore .slsk-lib-body { grid-area: body; min-width: 0; }
+.slsk-explore .slskx-statusbar { grid-area: st; }
+@media (max-width: 1100px) { .slsk-explore .slsh-box-page { grid-template-columns: minmax(0, 1fr); grid-template-areas: "hdr" "tb" "ab" "body" "st"; } .slsk-explore .slx-side { display: none; } }
+.slx-side-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+.slx-side-name { font-weight: 700; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slx-side-presence { font-size: 11px; color: var(--text3); }
+.slx-side-presence.online { color: var(--accent-ink, var(--accent)); }
+.slx-facts { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; margin-bottom: 12px; }
+.slx-fact-k { display: block; font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--text3); }
+.slx-fact-v { font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.slx-fact-skel { grid-column: 1 / -1; height: 48px; border-radius: 8px; background: var(--bg3, var(--bg2)); opacity: .6; }
+.slx-side-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
+.slx-side-btn { font: inherit; font-size: 12.5px; padding: 5px 10px; border-radius: 999px; border: 1px solid var(--glass-border); background: var(--bg2); color: var(--text); cursor: pointer; }
+.slx-side-title { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--text3); margin: 6px 0; }
+.slx-folders { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.slx-folder { width: 100%; display: flex; justify-content: space-between; gap: 8px; font: inherit; font-size: 12.5px; text-align: left; padding: 5px 8px; border: none; border-radius: 6px; background: none; color: var(--text); cursor: pointer; }
+.slx-folder:hover, .slx-folder:focus-visible { background: var(--bg2); }
+.slx-folder-n { color: var(--text3); font-variant-numeric: tabular-nums; }
 .slsh-presence {
   width: 9px; height: 9px; border-radius: 50%;
   background: var(--text3, #666); flex-shrink: 0;
