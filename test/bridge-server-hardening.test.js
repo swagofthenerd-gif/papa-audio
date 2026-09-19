@@ -33,7 +33,7 @@ const TOKEN = 'a1b2c3d4e5f60718293a4b5c6d7e8f90' // 32 hex, the shape the server
 //     artwork-private/   SIBLING of artwork — string-prefix bait
 //   music/               the one configured library folder
 //     album/01.flac      a real (tiny) file
-//     baddir/            a directory: stat() succeeds, read() fails EISDIR
+//     baddir.flac/       a directory: stat() succeeds, read() fails EISDIR
 //   music-private/       SIBLING of music — string-prefix bait
 let tmp, ud, music, child, base
 const spawned = [] // every child this file starts, so after() can reap them all
@@ -45,11 +45,15 @@ function fixture() {
   fs.mkdirSync(path.join(ud, 'artwork'), { recursive: true })
   fs.mkdirSync(path.join(ud, 'artwork-private'), { recursive: true })
   fs.mkdirSync(path.join(music, 'album'), { recursive: true })
-  fs.mkdirSync(path.join(music, 'baddir'), { recursive: true })
+  // Named with a music extension on purpose: /stream now enforces the
+  // MUSIC_EXT allow-list, and this fixture's job is to get PAST every check and
+  // then fail at read() with EISDIR.
+  fs.mkdirSync(path.join(music, 'baddir.flac'), { recursive: true })
   fs.mkdirSync(path.join(tmp, 'music-private'), { recursive: true })
   fs.writeFileSync(F.track, 'REALFLACBYTES')
   fs.writeFileSync(F.secretTrack, 'SECRET-TRACK')
   fs.writeFileSync(F.art, 'JPEGOK')
+  fs.writeFileSync(F.notes, 'PRIVATE-NOTES')
   fs.writeFileSync(F.secretArt, 'SECRET-ART')
   fs.writeFileSync(path.join(ud, 'bridge-token'), TOKEN)
   // config.json holds ONLY the settings keys now. The desktop retired
@@ -84,8 +88,10 @@ function fixture() {
 // `tmp` the fixture creates.
 const F = {
   get track()       { return path.join(music, 'album', '01.flac') },
-  get dir()         { return path.join(music, 'baddir') },
+  get dir()         { return path.join(music, 'baddir.flac') },
   get secretTrack() { return path.join(tmp, 'music-private', 'secret.flac') },
+  // Inside the library root, but not audio: the MUSIC_EXT allow-list's job.
+  get notes()       { return path.join(music, 'album', 'notes.txt') },
   get art()         { return path.join(ud, 'artwork', 'ok.jpg') },
   get secretArt()   { return path.join(ud, 'artwork-private', 'leak.jpg') },
 }
@@ -506,4 +512,119 @@ test('a side file the desktop rewrites is picked up without a bridge restart', a
   } finally {
     fs.writeFileSync(file, original)
   }
+})
+
+// ── H4. A token holder must not be able to read the disk or the API keys ──────
+// The pairing token is a LAN secret, not an admin credential: a phone, a guest
+// on the wifi, or anything that scraped the 0644 token file held it. Each of
+// these was a way from "holds the token" to "reads any file / takes the AI
+// keys / rewrites the desktop's config".
+
+test('POST /api/folders is gone — the allow-list is not writable over the LAN', async () => {
+  const r = await fetch(`${base}/api/folders`, {
+    method: 'POST',
+    headers: { ...authed.headers, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ folder: '/' }),
+  })
+  assert.strictEqual(r.status, 404, 'adding "/" to musicFolders makes /stream a file browser')
+  await r.text()
+
+  // And the allow-list really is unchanged, so /stream still refuses the world.
+  const folders = await (await fetch(`${base}/api/folders`, authed)).json()
+  assert.deepStrictEqual(folders, [music])
+  const etc = await fetch(media('/stream?path=' + encodeURIComponent('/etc/hostname')))
+  assert.strictEqual(etc.status, 403)
+  await etc.text()
+})
+
+test('DELETE /api/folders is gone too', async () => {
+  const r = await fetch(`${base}/api/folders?folder=` + encodeURIComponent(music), {
+    method: 'DELETE', ...authed,
+  })
+  assert.strictEqual(r.status, 404)
+  await r.text()
+  assert.deepStrictEqual(await (await fetch(`${base}/api/folders`, authed)).json(), [music])
+})
+
+test('a non-audio file inside the library is refused by /stream', async () => {
+  assert.ok(fs.existsSync(F.notes))
+  const r = await fetch(media('/stream?path=' + encodeURIComponent(F.notes)))
+  assert.strictEqual(r.status, 403, 'containment is not an allow-list; /stream serves AUDIO')
+  assert.doesNotMatch(await r.text(), /PRIVATE-NOTES/)
+})
+
+test('GET /api/settings/agent-keys is gone — the AI keys are not a bridge resource', async () => {
+  const r = await fetch(`${base}/api/settings/agent-keys`, authed)
+  assert.strictEqual(r.status, 404)
+  const body = await r.text()
+  assert.doesNotMatch(body, /apiKeys|anthropic|openai/i)
+})
+
+test('POST /api/settings/agent-keys is gone as well', async () => {
+  const r = await fetch(`${base}/api/settings/agent-keys`, {
+    method: 'POST',
+    headers: { ...authed.headers, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ anthropic: 'sk-attacker' }),
+  })
+  assert.strictEqual(r.status, 404)
+  await r.text()
+  const cfg = JSON.parse(fs.readFileSync(path.join(ud, 'config.json'), 'utf8'))
+  assert.ok(!('apiKeys' in cfg), 'the LAN rewrote the desktop’s API keys')
+})
+
+test('an albumId that walks out of the artwork cache is refused', async () => {
+  const escape = path.join(tmp, 'pwned')
+  const r = await fetch(`${base}/api/fetch-album-art`, {
+    method: 'POST',
+    headers: { ...authed.headers, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ albumId: '../../pwned', artist: 'x', album: 'y' }),
+  })
+  assert.strictEqual(r.status, 400, 'a traversing albumId must be refused, not answered 200 null')
+  await r.text()
+  assert.ok(!fs.existsSync(escape + '.jpg'), 'a file was written outside the artwork cache')
+})
+
+test('a real-shaped albumId is still accepted (the control)', async () => {
+  // Pre-seed the cache so the route answers from disk and never reaches iTunes.
+  const id = 'a'.repeat(32)
+  fs.writeFileSync(path.join(ud, 'artwork', `${id}.jpg`), 'CACHEDART')
+  const r = await fetch(`${base}/api/fetch-album-art`, {
+    method: 'POST',
+    headers: { ...authed.headers, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ albumId: id, artist: 'Tester', album: 'Fixture' }),
+  })
+  assert.strictEqual(r.status, 200)
+  assert.strictEqual((await r.json()).artPath, path.join(ud, 'artwork', `${id}.jpg`))
+})
+
+test('the Android local-scan id shape (short base36) is still accepted', async () => {
+  const id = '1f4x9z'
+  fs.writeFileSync(path.join(ud, 'artwork', `${id}.jpg`), 'CACHEDART')
+  const r = await fetch(`${base}/api/fetch-album-art`, {
+    method: 'POST',
+    headers: { ...authed.headers, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ albumId: id, artist: 'Tester', album: 'Fixture' }),
+  })
+  assert.strictEqual(r.status, 200)
+})
+
+test('the token file is not world-readable', async () => {
+  const mode = fs.statSync(path.join(ud, 'bridge-token')).mode & 0o777
+  assert.strictEqual(mode, 0o600, `bridge-token is ${mode.toString(8)}; any local account could pair`)
+})
+
+test('a wrong token is refused whatever its length (constant-time compare)', async () => {
+  // The observable contract of the timingSafeEqual switch: every wrong token
+  // is refused identically, including one that shares a long prefix with the
+  // real one and one of a different length.
+  const nearMiss = TOKEN.slice(0, 31) + (TOKEN[31] === '0' ? '1' : '0')
+  for (const bad of [nearMiss, TOKEN + 'ff', TOKEN.slice(0, 8), '']) {
+    const r = await fetch(`${base}/api/folders`, {
+      headers: { Authorization: `Bearer ${bad}` },
+    })
+    assert.strictEqual(r.status, 401, `token "${bad.slice(0, 8)}…" was accepted`)
+    await r.text()
+  }
+  // The control: the real token still works.
+  assert.strictEqual((await fetch(`${base}/api/folders`, authed)).status, 200)
 })

@@ -47,12 +47,33 @@ const TOKEN_FILE = path.join(USER_DATA, 'bridge-token')
 const BRIDGE_TOKEN = (() => {
   try {
     const t = fs.readFileSync(TOKEN_FILE, 'utf8').trim()
-    if (/^[0-9a-f]{32}$/.test(t)) return t
+    if (/^[0-9a-f]{32}$/.test(t)) {
+      // The file shipped 0644: every local account could read the pairing
+      // token and then talk to the bridge as the phone. Tighten it in place.
+      try { fs.chmodSync(TOKEN_FILE, 0o600) } catch (_) {}
+      return t
+    }
   } catch (_) {}
   const t = crypto.randomBytes(16).toString('hex')
-  try { fs.writeFileSync(TOKEN_FILE, t, 'utf8') } catch (_) {}
+  try { fs.writeFileSync(TOKEN_FILE, t, { encoding: 'utf8', mode: 0o600 }) } catch (_) {}
   return t
 })()
+
+// Compare a presented token against the real one WITHOUT leaking how far the
+// match got. `===` on strings short-circuits at the first differing byte, which
+// over a LAN is a measurable oracle for recovering the token a byte at a time.
+const _TOKEN_BUF = Buffer.from(BRIDGE_TOKEN, 'utf8')
+function tokenMatches(candidate) {
+  if (typeof candidate !== 'string') return false
+  const given = Buffer.from(candidate, 'utf8')
+  if (given.length !== _TOKEN_BUF.length) {
+    // Burn an equivalent compare so a wrong LENGTH is not faster than a wrong
+    // VALUE, then refuse.
+    crypto.timingSafeEqual(_TOKEN_BUF, _TOKEN_BUF)
+    return false
+  }
+  return crypto.timingSafeEqual(given, _TOKEN_BUF)
+}
 
 // The announced bridge version + what this build can do, so the Android app can
 // feature-detect instead of guessing. Bumped for the artwork + transcode work
@@ -384,7 +405,9 @@ app.use((req, res, next) => {
     req.path === '/art' || req.path.startsWith('/art/') ||
     req.path === '/events'
   const queryTok = isMedia ? req.query.token : undefined
-  if (auth === `Bearer ${BRIDGE_TOKEN}` || queryTok === BRIDGE_TOKEN) return next()
+  const bearer = typeof auth === 'string' && auth.startsWith('Bearer ')
+    ? auth.slice(7) : null
+  if (tokenMatches(bearer) || tokenMatches(queryTok)) return next()
   return res.status(401).json({ error: 'Unauthorized' })
 })
 
@@ -535,6 +558,12 @@ app.get('/stream', async (req, res) => {
   const resolved = path.resolve(filePath)
   const allowed = folders.some(function(f) { return isInside(resolved, f) })
   if (!allowed) return res.status(403).json({ error: 'Access denied: path outside music folders' })
+  // Containment alone is not an allow-list. A music root holds .cue, .log,
+  // .txt, .nfo and whatever else came down with an album; this route exists to
+  // serve AUDIO, so anything else is refused rather than handed to the LAN.
+  if (!MUSIC_EXT.test(resolved)) {
+    return res.status(403).json({ error: 'Access denied: not an audio file' })
+  }
 
   let stat
   try { stat = await fs.promises.stat(filePath) } catch (_) {
@@ -644,6 +673,9 @@ app.get('/stream/:trackId', async (req, res) => {
   if (!folders.some(function(f) { return isInside(resolved, f) })) {
     return res.status(403).json({ error: 'Access denied: path outside music folders' })
   }
+  if (!MUSIC_EXT.test(resolved)) {
+    return res.status(403).json({ error: 'Access denied: not an audio file' })
+  }
   try { await fs.promises.stat(filePath) } catch (_) {
     return res.status(404).json({ error: 'File not found' })
   }
@@ -706,8 +738,23 @@ app.get('/stream/:trackId', async (req, res) => {
   req.on('close', () => { try { ff.kill('SIGKILL') } catch (_) {} })
 })
 
+// The album id becomes a FILE NAME under ARTWORK_DIR, so it has to be a name
+// and not a path. Ids in the wild are two shapes: the desktop/bridge md5 hex
+// (32 chars) and the Android local-scan djb2 base36 (short). Both are covered
+// by a bare alphanumeric token; anything with a dot or a separator in it was an
+// attempt to write outside the artwork cache — `../../../../tmp/x.jpg` did
+// exactly that, and the blanket catch returned 200 null so it looked like a
+// harmless miss.
+const ALBUM_ID = /^[A-Za-z0-9_-]{1,64}$/
+
 app.post('/api/fetch-album-art', async (req, res) => {
-  const { albumId, artist, album } = req.body
+  const { albumId, artist, album } = req.body || {}
+  if (!ALBUM_ID.test(String(albumId || ''))) {
+    return res.status(400).json({ error: 'Invalid albumId' })
+  }
+  if (typeof artist !== 'string' || typeof album !== 'string') {
+    return res.status(400).json({ error: 'artist and album are required' })
+  }
   try {
     const cached = path.join(ARTWORK_DIR, `${albumId}.jpg`)
     if (fs.existsSync(cached)) return res.json({ artPath: cached })
@@ -723,7 +770,12 @@ app.post('/api/fetch-album-art', async (req, res) => {
     const imgBuf = await httpsGet(best.artworkUrl100.replace('100x100bb', '600x600bb'))
     fs.writeFileSync(cached, imgBuf)
     res.json({ artPath: cached })
-  } catch (e) { res.json(null) }
+  } catch (e) {
+    // "No artwork exists" is `null` above. THIS is "the lookup broke", and
+    // reporting it as a miss hid both a traversal and every iTunes outage.
+    console.error(`[bridge] fetch-album-art failed: ${e && e.message}`)
+    res.status(502).json({ error: 'Artwork lookup failed' })
+  }
 })
 
 // ── Settings ──────────────────────────────────────────────────────────────────
@@ -780,8 +832,9 @@ app.get('/api/settings/playback-state',   (_, res) => res.json(sideValue('playba
 app.post('/api/settings/playback-state',  (req, res) =>
   queueMutation(res, 'playbackState.set', { state: req.body }))
 
-app.get('/api/settings/agent-keys',       (_, res) => res.json(store.get('apiKeys', {})))
-app.post('/api/settings/agent-keys',      (req, res) => { store.set('apiKeys', req.body); res.json(req.body) })
+// /api/settings/agent-keys is gone. It handed every AI provider key in the
+// user's config to anyone holding the pairing token, and let them be replaced.
+// The keys are desktop-only; the Android app never called this.
 
 app.get('/api/settings/agent-model',      (_, res) => res.json({ model: store.get('agentModel', '') }))
 app.post('/api/settings/agent-model',     (req, res) => { store.set('agentModel', req.body.model); res.json({ ok: true }) })
@@ -927,19 +980,11 @@ app.get('/api/network', (_, res) => {
 
 // ── Music folder management ───────────────────────────────────────────────────
 app.get('/api/folders', (_, res) => res.json(store.get('musicFolders', [])))
-app.post('/api/folders', (req, res) => {
-  const { folder } = req.body
-  if (!folder || !fs.existsSync(folder)) return res.status(400).json({ error: 'Folder not found' })
-  const folders = store.get('musicFolders', [])
-  if (!folders.includes(folder)) folders.push(folder)
-  store.set('musicFolders', folders)
-  res.json(folders)
-})
-app.delete('/api/folders', (req, res) => {
-  const folders = store.get('musicFolders', []).filter(f => f !== req.query.folder)
-  store.set('musicFolders', folders)
-  res.json(folders)
-})
+// POST/DELETE /api/folders are gone. musicFolders IS the allow-list every
+// /stream and /art route checks against, so a route that appends to it let a
+// token holder add "/" and then read any file on disk through /stream?path=.
+// It only checked fs.existsSync. The music roots are the desktop's to choose;
+// the Android app never called these.
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 // YouTube bridge (search, stream, download for Android app)
