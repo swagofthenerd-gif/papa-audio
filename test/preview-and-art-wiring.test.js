@@ -134,7 +134,7 @@ test('the pill badges which source is playing', () => {
 
 test('a preview button is wired into all three remote-track surfaces', () => {
   // Shop shelf cards (moved to slsk-shop-ui.js).
-  assert.match(SHOP, /class="slsh-card-act slsh-preview"/, 'shelf card has ⚡')
+  assert.match(SHOP, /class="slsh-card-act slsh-preview slx-act" data-act="preview"/, 'shelf card has ⚡')
   assert.match(SHOP, /btn\.classList\.contains\('slsh-preview'\)/, 'and is handled')
   // Folders-mode file rows (moved to slsk-shop-ui.js).
   assert.match(SHOP, /data-act="preview"/, 'folder file row has ⚡')

@@ -152,6 +152,8 @@ function shop() {
 		const esc = s => String(s == null ? '' : s)
 		const shFmtSize = n => String(n) + 'B'
 		const _shAgo = () => 'just now'
+		// shPaint repaints the peer sidebar first (page mode); no sidebar here.
+		const shPaintSidebar = () => {}
 		// The debounce is captured rather than run, so the test decides when the
 		// 160ms is up. Nothing here is timing-dependent.
 		const setTimeout = (fn, ms) => { timers.push({ fn, ms }); return timers.length }
