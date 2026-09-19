@@ -368,10 +368,15 @@ async function slskFetch(method, endpoint, body) {
   try { return JSON.parse(text) } catch { return text }
 }
 
-// slskd answers /transfers/downloads as users -> directories -> files. The
-// Android app's Transfer type is a FLAT file record ({id, username, filename,
-// size, bytesTransferred, state}), so the raw nested array it was being handed
-// filtered down to nothing on every screen that reads it.
+// slskd answers /transfers/downloads as users -> directories -> files, and the
+// Android app's Transfer type is a FLAT file record — so this flattens it.
+//
+// It is NOT what /api/slsk/transfers answers with. The phone does its own
+// flattening (flattenTransfers in app/(tabs)/downloads.tsx walks
+// group.directories[].files[]), so handing it an already-flat list produced an
+// empty On PC screen exactly like the raw nested array used to: one shape, two
+// flattenings. The route sends the nested array the phone expects and this
+// stays for /api/slsk/active-count, which needs one list of states to count.
 function flattenTransfers(data) {
   const out = []
   for (const user of Array.isArray(data) ? data : []) {
@@ -392,6 +397,64 @@ function flattenTransfers(data) {
     }
   }
   return out
+}
+
+// slskd reports durations as .NET TimeSpan STRINGS — "HH:MM:SS", with
+// fractional seconds ("00:01:23.4560000") and a leading dot-separated day group
+// past 24 hours ("1.02:03:04"). The phone does arithmetic on them
+// (formatEta(secs) → `${Math.ceil(secs / 60)}m`), so a string reaches the
+// screen as "NaNm" and a seek estimate is unreadable.
+//
+// Same parser shape as the desktop renderer's _hmsToSecs: counted from the
+// RIGHT, so a bare "30" is thirty SECONDS and not thirty hours, the day group
+// is taken before the colon split, and fractional seconds are dropped rather
+// than rounded (an ETA to the ten-millionth of a second is noise).
+function hmsToSecs(value) {
+  if (typeof value === 'number') return Number.isFinite(value) ? Math.max(0, value) : 0
+  const str = String(value == null ? '' : value).trim()
+  if (!str) return 0
+  let days = 0
+  let rest = str
+  // The day separator and the fractional-seconds separator are both a dot, so
+  // the leading dot-group is a day count only when a colon follows it.
+  const dot = rest.indexOf('.')
+  if (dot > 0 && rest.indexOf(':') > dot) {
+    const d = Number(rest.slice(0, dot))
+    if (Number.isFinite(d)) days = d
+    rest = rest.slice(dot + 1)
+  }
+  const nums = rest.split(':').map(p => {
+    const v = Number(String(p).split('.')[0])
+    return Number.isFinite(v) ? v : 0
+  })
+  let secs = 0
+  let mult = 1
+  // Stops after the hours field: anything past it is the day part, already
+  // taken above.
+  for (let i = nums.length - 1; i >= 0 && mult <= 3600; i--) {
+    secs += nums[i] * mult
+    mult *= 60
+  }
+  return Math.max(0, days * 86400 + secs)
+}
+
+// The nested array, untouched except that the two TimeSpan fields inside each
+// file become SECONDS. A copy, never a mutation of the parsed upstream body.
+// Keys that are not there stay not there: inventing `elapsedTime: 0` would read
+// on the phone as a transfer that has been running for no time at all.
+const TIME_FIELDS = ['remainingTime', 'elapsedTime']
+function normaliseTransfers(data) {
+  return (Array.isArray(data) ? data : []).map(user => Object.assign({}, user, {
+    directories: ((user && user.directories) || []).map(dir => Object.assign({}, dir, {
+      files: ((dir && dir.files) || []).map(file => {
+        const out = Object.assign({}, file)
+        for (const k of TIME_FIELDS) {
+          if (out[k] !== undefined && out[k] !== null) out[k] = hmsToSecs(out[k])
+        }
+        return out
+      }),
+    })),
+  }))
 }
 
 // The same predicate the Downloads tab uses (isActive in downloads.tsx), so the
@@ -1090,9 +1153,11 @@ app.post('/api/slsk/download', async (req, res) => {
   } catch (e) { slskFail(res, e) }
 })
 
+// The NESTED slskd array, because the phone flattens it itself. See
+// normaliseTransfers above for the one thing that is changed on the way past.
 app.get('/api/slsk/transfers', async (_, res) => {
   try {
-    res.json(flattenTransfers(await slskFetch('GET', '/transfers/downloads')))
+    res.json(normaliseTransfers(await slskFetch('GET', '/transfers/downloads')))
   } catch (e) { slskFail(res, e) }
 })
 
