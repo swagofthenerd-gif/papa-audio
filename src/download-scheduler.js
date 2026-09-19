@@ -621,6 +621,37 @@ function _foldSources(state, members, out) {
     var srcs = (m.sources && m.sources.length)
       ? m.sources
       : [{ username: (m.username || ''), filename: m.filename, size: m.size }]
+    // THE SIZE GATE, and it is the important one here.
+    //
+    // Discovery and the seed hunt both refuse a candidate whose size is not
+    // within 2% of what we asked for (sameRecordingSize, and see its own
+    // comment for why). This path did not — it had only the quality
+    // fingerprint, and bitDepth/sampleRate are undefined on an enqueue payload,
+    // so compatible() was reduced to a lossless-vs-lossy check. A 5.1 rip and a
+    // stereo rip of one track are both lossless FLACs with the same title in
+    // the same album, so the 5.1 copy folded in as an "alternate source" of the
+    // stereo one and the album came down half surround and half not. That is
+    // the exact field failure this scheduler was written after, re-opened on
+    // the DL-All, respread, wishlist and retry paths.
+    //
+    // Size is what tells them apart: a 5.1 FLAC is two to three times the bytes
+    // of its stereo twin, and a different master is a different byte count too,
+    // while one release circulating between peers is the same size everywhere.
+    // An unknown size on either side proves nothing and is refused, same as
+    // everywhere else.
+    var anchorSize = anchor.size != null ? anchor.size
+      : (anchor.sources && anchor.sources[0] && anchor.sources[0].size)
+    var candSize = m.size != null ? m.size : (srcs[0] && srcs[0].size)
+    if (!sameRecordingSize(anchorSize, candSize)) {
+      logSubstitution(state, {
+        at: Date.now(), key: key, from: anchor.filename, to: m.filename,
+        candidate: (srcs[0] && srcs[0].username) || null, accepted: false,
+        reason: 'same track name, different recording: ' + (anchorSize || 'unknown') +
+          ' bytes vs ' + (candSize || 'unknown') +
+          ' bytes — not folded in as an alternate source',
+      })
+      continue
+    }
     if (!_fpCompatible(origFp, candFp)) {
       logSubstitution(state, {
         at: Date.now(), key: key, from: anchor.filename, to: m.filename,
