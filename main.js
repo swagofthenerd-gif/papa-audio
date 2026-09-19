@@ -572,6 +572,20 @@ let natUpnp; try { natUpnp = require('nat-upnp') } catch (e) {
   console.error('[papa] nat-upnp unavailable; automatic port mapping is off:', e && e.message)
 }
 
+// Where the crash log goes. USER_DATA, so a throwaway profile keeps its own
+// crashes: the hardcoded ~/.config/papa-audio meant every twin's renderer kill
+// landed in the real profile's crash-log.txt, 69 entries of it, drowning the
+// real crashes it exists to record.
+//
+// USER_DATA is a module-level const declared below these handlers, so it is in
+// the temporal dead zone only if something crashes before that line runs. The
+// catch covers that case rather than letting the crash logger become the crash.
+function _crashLogDir() {
+  try { return USER_DATA } catch (_) { /* crashed before USER_DATA was set */ }
+  if (process.env.PAPA_USER_DATA) return path.resolve(process.env.PAPA_USER_DATA)
+  return path.join(app.getPath('home'), '.config', 'papa-audio')
+}
+
 // A plain-English crash record the user can forward to the developer. It sits
 // in the app's data folder as crash-log.txt and gets one appended entry per
 // event: the date, what the app was last doing (the last IPC channel handled,
@@ -582,7 +596,7 @@ let natUpnp; try { natUpnp = require('nat-upnp') } catch (e) {
 // above the line that sets it.
 function _appendCrashLog(kind, err) {
   try {
-    const dir = path.join(app.getPath('home'), '.config', 'papa-audio')
+    const dir = _crashLogDir()
     const file = path.join(dir, 'crash-log.txt')
     const when = new Date().toISOString()
     const doing = _crashTrail.length
