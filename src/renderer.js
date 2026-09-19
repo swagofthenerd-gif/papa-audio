@@ -2559,6 +2559,66 @@ function _bindBrowseKeys() {
   })
 }
 
+// ── Roving focus on the MUSIC grids ─────────────────────────────────────────
+// The cards on Home, Library, Artists and the YouTube pages are focusable and
+// carry role="button", but nothing owned their arrow keys -- so a bare
+// ArrowRight on a focused card fell through to the document handler, where
+// ArrowRight is seekForward, and choosing the next album scrubbed the playing
+// track +10 s. _moveCardFocus covers only the VIDEO grid (.vcard); this is its
+// music twin, and it stops the event so the seek shortcut never sees it.
+const MUSIC_CARD_SEL = '.album-card,.artist-card,.quick-card,.daily-mix-card,' +
+  '.q-mix-card,.jumpback-card,.yt-album-card,.yt-artist-card,.yt-playlist-card,' +
+  '.pl-card,.genre-tile,.mood-card'
+
+// The card that owns the keyboard right now, or null.
+function _focusedMusicCard(e) {
+  const t = (e && e.target) || null
+  if (!t || typeof t.closest !== 'function') return null
+  if (t.closest('[role="tablist"]')) return null
+  if (t.closest('input,textarea,select,[contenteditable="true"]')) return null
+  return t.closest(MUSIC_CARD_SEL)
+}
+
+// Move focus within the card's own row or grid. Returns true when the event
+// was consumed. Left/Right are always consumed -- they are the seek keys, and
+// the whole point is that a focused card owns them -- while Up/Down fall
+// through when they cannot move, so a horizontal row still scrolls the page.
+function _moveMusicCardFocus(e, card) {
+  const scope = card.parentElement
+  if (!scope) return false
+  const cards = Array.prototype.slice.call(scope.querySelectorAll(MUSIC_CARD_SEL))
+    .filter(function (c) { return c.parentElement === scope })
+  const index = cards.indexOf(card)
+  if (index === -1) return false
+
+  const horizontal = e.key === 'ArrowRight' || e.key === 'ArrowLeft'
+  let next = index
+  if (e.key === 'ArrowRight') next = Math.min(cards.length - 1, index + 1)
+  else if (e.key === 'ArrowLeft') next = Math.max(0, index - 1)
+  else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+    // Column count from the cards' own positions: the grid is responsive, so
+    // it cannot be assumed.
+    const firstTop = cards[0].getBoundingClientRect().top
+    const perRow = cards.findIndex(function (c) { return c.getBoundingClientRect().top > firstTop + 4 })
+    // Every card on one line -- a horizontal scroll row. There is no row above
+    // or below, so Up/Down belong to the page; jumping to the last card (what
+    // the video grid's handler does when it cannot find a second row) would
+    // make the page feel stuck.
+    if (perRow <= 0) return false
+    next = e.key === 'ArrowDown'
+      ? Math.min(cards.length - 1, index + perRow)
+      : Math.max(0, index - perRow)
+  } else return false
+
+  if (next !== index) {
+    cards[next].focus()
+    if (typeof cards[next].scrollIntoView === 'function') {
+      cards[next].scrollIntoView({ block: 'nearest', inline: 'nearest' })
+    }
+  }
+  return horizontal || next !== index
+}
+
 // Grid-aware arrow movement. Left and right step through the cards in order;
 // up and down move by a row, worked out from the cards' own positions rather
 // than assumed, because the grid is responsive and the column count changes
@@ -32423,6 +32483,16 @@ function setupListeners() {
 
   // Cards are divs with a click listener; give them a real keyboard path.
   document.getElementById('content')?.addEventListener('keydown', e => {
+    // Arrows first: on a focused music card they walk the grid, and they must
+    // not reach the document handler, where ArrowRight is seekForward.
+    if (e.key.startsWith('Arrow') && !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey) {
+      const gridCard = _focusedMusicCard(e)
+      if (gridCard && _moveMusicCardFocus(e, gridCard)) {
+        e.preventDefault()
+        e.stopPropagation()
+      }
+      return
+    }
     if (e.key !== 'Enter' && e.key !== ' ') return
     const card = e.target.closest('.album-card,.quick-card,.artist-card,.daily-mix-card,.q-mix-card,.jumpback-card,.folder-tree-item,.pl-card,.pl-folder-header,.genre-tile,.mood-card,.recent-search-card,.artist-pill,.discovery-swipe-card,.yt-row,.yt-album-card,.yt-artist-card,.yt-playlist-card,.dl2-group-toggle,.dl2-group-toggle-failed,.pl-track-row,.track-row')
     if (!card || e.target.closest('button')) return
@@ -34343,14 +34413,18 @@ function setupListeners() {
     const _onVideoGrid = VIDEO_PAGES.has(state.currentPage) &&
       !(document.getElementById('vtheatre') &&
         !document.getElementById('vtheatre').classList.contains('hidden'))
+    // A focused music-grid card owns its arrows (the #content delegate stops
+    // the event, and this is the belt to that's braces): choosing the next
+    // album must not scrub the playing track.
+    const _onMusicCard = !!_focusedMusicCard(e)
     if (matchesShortcut('seekForward', e)) {
-      if (_onVideoGrid) return
+      if (_onVideoGrid || _onMusicCard) return
       e.preventDefault()
       audio.currentTime = Math.min(audio.duration || 0, audio.currentTime + 10)
       return
     }
     if (matchesShortcut('seekBackward', e)) {
-      if (_onVideoGrid) return
+      if (_onVideoGrid || _onMusicCard) return
       e.preventDefault()
       audio.currentTime = Math.max(0, audio.currentTime - 10)
       return
