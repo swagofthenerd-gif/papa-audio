@@ -5812,10 +5812,20 @@ ipcMain.handle('library-move-path', async (_, { from, to }) => {
     // trips over with "Something already exists at that name".
     _opUpdate(opId, { phase: 'copy' })
     try {
-      fs.cpSync(path.resolve(from), dest, { recursive: true })
+      // Asynchronous, never the synchronous copy this used to be. A
+      // cross-device move of a multi-GB album took the whole copy on the
+      // main thread — mpv's IPC, the tray,
+      // every IPC handler and the UI frozen solid for minutes, with no way to
+      // tell it apart from a hang. The journal phases are unchanged, so a
+      // crash mid-copy is still cleaned up at startup.
+      await fs.promises.cp(path.resolve(from), dest, { recursive: true })
       await shell.trashItem(path.resolve(from))
     } catch (e2) {
-      try { if (fs.existsSync(path.resolve(from))) fs.rmSync(dest, { recursive: true, force: true }) } catch (_) {}
+      try {
+        if (fs.existsSync(path.resolve(from))) {
+          await fs.promises.rm(dest, { recursive: true, force: true })
+        }
+      } catch (_) {}
       _opEnd(opId)
       return { ok: false, error: e2.message || e.message }
     }
