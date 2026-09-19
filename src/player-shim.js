@@ -39,6 +39,9 @@ class PapaPlayerShim extends EventTarget {
     // window between the IPC reply and mpv's own answer.
     this._awaitingMpvPath = false
     this._loadSettledAt = 0
+    // A seek asked for while mpv was still opening the file, held until it is.
+    this._deferredSeek = null
+    this._seekErrorSaid = false
     // False from the moment a file is asked for until mpv reports a position
     // FOR IT. A cold mpv takes several seconds over that first report, which
     // is not the same silence as a bar that stopped mid-track.
@@ -91,6 +94,8 @@ class PapaPlayerShim extends EventTarget {
           // report — a gapless advance is a load like any other.
           this._lastPositionAt = Date.now()
           this._ended = false
+          // A gapless advance discards a seek meant for the previous file.
+          this._deferredSeek = null
           this.dispatchEvent(new CustomEvent('autoadvanced', { detail: data }))
           break
         case 'trackChanged':
@@ -101,6 +106,7 @@ class PapaPlayerShim extends EventTarget {
           this._mpvPath = data
           // mpv has answered: the blind window closes here, not on a timer.
           this._awaitingMpvPath = false
+          this._flushDeferredSeek()
           this.dispatchEvent(new CustomEvent('trackchanged', { detail: data }))
           break
         case 'ended':
@@ -223,6 +229,9 @@ class PapaPlayerShim extends EventTarget {
       if (this._pendingLoad !== pending) return
       this._pendingLoad = null
       this._loadSettledAt = Date.now()
+      // The load has been accepted; a seek held for it can go now even if
+      // mpv's own trackChanged never arrives.
+      if (!this._awaitingMpvPath) this._flushDeferredSeek()
     })
   }
 
@@ -345,7 +354,35 @@ class PapaPlayerShim extends EventTarget {
   get ended() { return this._ended }
   get duration() { return this._duration }
   get currentTime() { return this._currentTime }
-  set currentTime(s) { this._currentTime = s; window.api.playerSeek(s) }
+  // A seek issued before mpv has the file open -- which is exactly what
+  // session restore does -- used to be fired anyway. The IPC deadline then
+  // rejected it 60 s later with nobody listening: three
+  // "player-seek did not answer within 60000ms" unhandled rejections in the
+  // console of every restored session. The seek is now held until mpv has
+  // answered about the file, and the promise is always handled.
+  set currentTime(s) {
+    this._currentTime = s
+    if (this._awaitingMpvPath || this._pendingLoad) { this._deferredSeek = s; return }
+    this._issueSeek(s)
+  }
+
+  _issueSeek(s) {
+    Promise.resolve(window.api.playerSeek(s)).catch(e => {
+      // Said once per session: a seek that cannot land will not land on the
+      // next track either, and three copies of the same line is noise.
+      if (this._seekErrorSaid) return
+      this._seekErrorSaid = true
+      console.warn('[papa][player] a seek did not land:', String((e && e.message) || e))
+    })
+  }
+
+  // Called wherever mpv answers about the file it has open.
+  _flushDeferredSeek() {
+    if (this._deferredSeek == null) return
+    const s = this._deferredSeek
+    this._deferredSeek = null
+    this._issueSeek(s)
+  }
   get volume() { return this._volume }
   set volume(v) { this._volume = v; window.api.playerSetVolume(Math.round(v * 100)) }
   set playbackRate(x) { window.api.playerSetSpeed(x) }

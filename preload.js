@@ -6,7 +6,38 @@ const { contextBridge, ipcRenderer, webFrame } = require('electron')
 const _seqSeen = new Map()
 const _seqGaps = []
 
+// How many live subscribers a channel has in this renderer. A channel with
+// none is not missing events -- nobody asked for them. The shop, the downloads
+// view and the album view all subscribe when they open and unsubscribe when
+// they close, so `slsk-progress` routinely has a stretch with no listener; the
+// counter used to survive that and report the stretch as
+// "missed 3 event(s)", which reads as data loss and is not.
+const _seqListeners = new Map()
+// Channels whose next event should re-baseline the counter instead of being
+// measured against a sequence recorded before the gap in subscription.
+const _seqResync = new Set()
+
+function noteSubscribe(channel) {
+  const n = (_seqListeners.get(channel) || 0) + 1
+  _seqListeners.set(channel, n)
+  // Going from nobody listening to somebody: whatever was emitted in between
+  // was not missed, it was not subscribed to.
+  if (n === 1 && _seqSeen.has(channel)) _seqResync.add(channel)
+}
+
+function noteUnsubscribe(channel, all) {
+  const n = all ? 0 : Math.max(0, (_seqListeners.get(channel) || 0) - 1)
+  _seqListeners.set(channel, n)
+}
+
 function reportSeq(channel, meta) {
+  // First event after a stretch with no subscriber: record where we are and
+  // say nothing. Anything after this is measured normally again.
+  if (_seqResync.has(channel)) {
+    _seqResync.delete(channel)
+    _seqSeen.set(channel, meta.seq)
+    return
+  }
   const prev = _seqSeen.get(channel)
   // The SAME event, seen again. main never reuses a sequence number on a
   // channel, so the only way to see one twice is two listeners on the same
@@ -541,9 +572,16 @@ contextBridge.exposeInMainWorld('api', {
       cb(data)
     }
     ipcRenderer.on(channel, h)
-    return () => ipcRenderer.removeListener(channel, h)
+    noteSubscribe(channel)
+    let offCalled = false
+    return () => {
+      if (offCalled) return
+      offCalled = true
+      noteUnsubscribe(channel)
+      ipcRenderer.removeListener(channel, h)
+    }
   },
-  off: (channel) => ipcRenderer.removeAllListeners(channel),
+  off: (channel) => { noteUnsubscribe(channel, true); ipcRenderer.removeAllListeners(channel) },
 })
 
 // The video watch-store bridge (src/video-store.js bridge mode): raw-string
