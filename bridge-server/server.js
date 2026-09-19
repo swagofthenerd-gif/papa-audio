@@ -649,10 +649,38 @@ app.get('/events', (req, res) => {
 })
 
 // ── Health ────────────────────────────────────────────────────────────────────
+// Every non-internal IPv4 address this host answers on: the LAN address, a
+// second NIC, Tailscale. One list, shared by /api/health, /api/network and the
+// startup banner, so they can never advertise different reachability.
+function localIps() {
+  const ips = []
+  for (const iface of Object.values(os.networkInterfaces())) {
+    for (const addr of (iface || [])) {
+      if (addr.family === 'IPv4' && !addr.internal) ips.push(addr.address)
+    }
+  }
+  return ips
+}
+
+// The port actually bound. BRIDGE_PORT=0 asks the OS to choose one, so PORT is
+// only the fallback for the window before listen() has resolved.
+function boundPort() {
+  const bound = server.address()
+  return (bound && bound.port) || PORT
+}
+
 app.get('/api/health', (_, res) => res.json({
   ok: true,
   version: BRIDGE_VERSION,
   capabilities: bridgeCapabilities(),
+  // The phone's multi-address failover (refreshServerCandidates in
+  // services/bridge.ts) reads `health.addresses` and remembers them as the
+  // candidates to probe when the configured address stops answering. Nothing
+  // ever put them here, so `Array.isArray(h.addresses)` was false on every
+  // refresh, the candidate list stayed empty, and the failover the user was
+  // told he had could only ever re-probe the address that had just failed.
+  // The IPs were already being computed — for the QR code on /api/network.
+  addresses: localIps().map(ip => `http://${ip}:${boundPort()}`),
 }))
 
 // ── App info ──────────────────────────────────────────────────────────────────
@@ -1244,17 +1272,10 @@ app.post('/api/library/delete-file', (req, res) => {
 
 // ── Network info (for QR code setup) ─────────────────────────────────────────
 app.get('/api/network', (_, res) => {
-  const interfaces = os.networkInterfaces()
-  const ips = []
-  for (const iface of Object.values(interfaces)) {
-    for (const addr of (iface || [])) {
-      if (addr.family === 'IPv4' && !addr.internal) ips.push(addr.address)
-    }
-  }
-  // Report the port actually bound (BRIDGE_PORT=0 means the OS chose one), so
-  // the QR code a client scans points somewhere real.
-  const bound = server.address()
-  res.json({ ips, port: (bound && bound.port) || PORT })
+  // Same list /api/health advertises, and the port actually bound
+  // (BRIDGE_PORT=0 means the OS chose one), so the QR code a client scans
+  // points somewhere real.
+  res.json({ ips: localIps(), port: boundPort() })
 })
 
 // ── Music folder management ───────────────────────────────────────────────────
@@ -1460,22 +1481,15 @@ const server = app.listen(PORT, HOST, () => {
   // With BRIDGE_PORT=0 the OS picks the port, so report the one we actually
   // got, not the one we asked for. The BRIDGE_LISTENING line is the handshake
   // the tests parse to learn where to send requests.
-  const bound = server.address()
-  const boundPort = (bound && bound.port) || PORT
-  console.log(`BRIDGE_LISTENING ${boundPort}`)
-  const interfaces = os.networkInterfaces()
-  const ips = []
-  for (const iface of Object.values(interfaces)) {
-    for (const addr of (iface || [])) {
-      if (addr.family === 'IPv4' && !addr.internal) ips.push(addr.address)
-    }
-  }
-  console.log(`\n🎵 Papa Audio Bridge Server v${BRIDGE_VERSION} running on port ${boundPort}`)
+  const port = boundPort()
+  console.log(`BRIDGE_LISTENING ${port}`)
+  const ips = localIps()
+  console.log(`\n🎵 Papa Audio Bridge Server v${BRIDGE_VERSION} running on port ${port}`)
   console.log(`Transcode: ${bridgeTranscodeEnabled() && FFMPEG_AVAILABLE ? 'on (mp3)' : (FFMPEG_AVAILABLE ? 'disabled in settings' : 'unavailable — ffmpeg not found')}`)
   console.log(`Bridge token (add this to Android app): ${BRIDGE_TOKEN}`)
   console.log(`\nAndroid app should connect to one of:`)
-  for (const ip of ips) console.log(`  http://${ip}:${boundPort}`)
-  console.log(`\nHealth check: http://localhost:${boundPort}/api/health`)
+  for (const ip of ips) console.log(`  http://${ip}:${port}`)
+  console.log(`\nHealth check: http://localhost:${port}/api/health`)
 })
 
 // listen() reports its failure as an 'error' event, and there was no listener.

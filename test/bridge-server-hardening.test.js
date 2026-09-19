@@ -844,6 +844,33 @@ test('thumbnails and stream ranges are not rate-limited; API calls still are', a
   } finally { proc.kill('SIGKILL') }
 })
 
+// M5. The phone's failover has never had a candidate to fail over TO.
+// refreshServerCandidates() reads `health.addresses`; nothing ever put them
+// there, so the candidate list stayed empty and findWorkingServer() could only
+// ever re-probe the address that had just failed.
+
+test('/api/health advertises the addresses the phone fails over to', async () => {
+  const h = await (await fetch(`${base}/api/health`)).json()
+  assert.ok(Array.isArray(h.addresses),
+    'refreshServerCandidates() requires Array.isArray(h.addresses) before it stores anything')
+
+  // The same addresses the QR code offers, in the base-URL form the phone
+  // stores and then passes straight to checkHealth().
+  const net = await (await fetch(`${base}/api/network`, authed)).json()
+  assert.deepStrictEqual(h.addresses, net.ips.map(ip => `http://${ip}:${net.port}`),
+    '/api/health and /api/network must not disagree about where the bridge is')
+
+  for (const url of h.addresses) {
+    assert.match(url, /^http:\/\/\d+\.\d+\.\d+\.\d+:\d+$/,
+      'a candidate is used as an axios baseURL; it needs scheme, host and port')
+    assert.ok(!url.endsWith(`:${0}`), 'the advertised port must be the bound one, never 0')
+  }
+  // The bound port is an ephemeral one here, so this also proves the port is
+  // read off the live listener rather than the configured 8765.
+  const port = Number(new URL(base).port)
+  for (const url of h.addresses) assert.strictEqual(Number(new URL(url).port), port)
+})
+
 // H2. The limiter made the app say "Offline" while the bridge was fine.
 //
 // A cold launch is ~12 API calls plus one per merged playlist and one per
