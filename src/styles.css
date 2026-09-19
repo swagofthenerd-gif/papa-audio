@@ -3098,6 +3098,9 @@ h2.section-title { font-size:18px; font-weight:700; }
   display: flex; flex-direction: column;
 }
 .slsh-header { display: flex; align-items: center; gap: 12px; }
+/* Page mode: the shop fills the content area instead of floating over it. */
+.slsk-explore { display: flex; flex-direction: column; min-height: calc(100vh - 230px); }
+.slsk-explore .slsh-box.slsh-box-page { width: 100% !important; max-width: none !important; height: calc(100vh - 230px); border-radius: 0; background: transparent; box-shadow: none; }
 .slsh-presence {
   width: 9px; height: 9px; border-radius: 50%;
   background: var(--text3, #666); flex-shrink: 0;

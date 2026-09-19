@@ -64,10 +64,13 @@
   // back into shelves every time.
   let mode = 'shelves'
   try { const m = localStorage.getItem('slsk_lib_mode'); if (m === 'folders' || m === 'shelves') mode = m } catch (_) {}
+  // Page mode (deps.host): the same shop mounted into the content area with
+  // no overlay chrome; close() hands control back through deps.onClose.
+  const host = deps.host || null
   const dlg = document.createElement('div')
   dlg.id = 'slsk-user-lib-modal'
-  dlg.className = 'modal-overlay slsh-overlay'
-  dlg.innerHTML = `<div class="modal-box slsk-lib-box slsh-box">
+  dlg.className = host ? 'slsk-explore' : 'modal-overlay slsh-overlay'
+  dlg.innerHTML = `<div class="${host ? 'slsk-lib-box slsh-box slsh-box-page' : 'modal-box slsk-lib-box slsh-box'}">
     <div class="modal-header-row slsh-header">
       <div class="modal-title">${esc(username)}</div>
       <span class="slsh-presence" id="slsh-presence" title="Presence"></span>
@@ -107,7 +110,7 @@
     <div class="slsh-body" id="slsh-body" style="display:none"></div>
     <div class="slskx-statusbar" id="slskx-status"></div>
   </div>`
-  document.body.appendChild(dlg)
+  if (host) { host.innerHTML = ''; host.appendChild(dlg) } else document.body.appendChild(dlg)
   // Focus moves into the modal the moment it exists, not after the browse.
   // A browse that fails (an offline peer, no credentials) returns early, and
   // focus used to stay on the opener behind the overlay for the whole of that
@@ -177,6 +180,7 @@
     // Drop the background-refresh subscription so it can't rebuild a dead shop.
     try { if (typeof _offBrowseRefreshed === 'function') _offBrowseRefreshed() } catch (_) {}
     dlg.remove()
+    if (host) { try { if (typeof deps.onClose === 'function') deps.onClose() } catch (_) {} ; return }
     if (opener && opener.isConnected && typeof opener.focus === 'function') {
       try { opener.focus() } catch (_) {}
     }

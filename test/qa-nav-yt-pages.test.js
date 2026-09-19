@@ -203,7 +203,7 @@ test('MUTATION: not recording the id in navigate() is the same bug one step earl
 
 test('MUTATION: taking the yt pages back out of _NEEDS_NAV_ID re-admits dead entries', () => {
   const broken = RENDERER.replace(
-    "'yt-album', 'yt-artist', 'yt-see-all', 'yt-playlist']", ']')
+    "'yt-album', 'yt-artist', 'yt-see-all', 'yt-playlist', 'soulseek-explore']", "'soulseek-explore']")
   assert.notStrictEqual(broken, RENDERER, 'the mutation applied')
   const h = harness(broken)
   h.run(`_restoreNavStacks({ history: [{ page: 'yt-artist', navId: null }], future: [] })`)

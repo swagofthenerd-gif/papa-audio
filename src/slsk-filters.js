@@ -203,7 +203,9 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = { detectSurround, groupSurround, isHiResGroup, isLosslessGroup, applyFilterSort, surroundQueries, SURROUND_TERMS, FILTERS, SORTS, SHELF_FILTERS, shelfDecades, applyShelfFilterSort, albumIsSurround, summaryLine }
 }
 if (typeof window !== 'undefined') {
-  window.PapaSlskFilters = { detectSurround, groupSurround, isHiResGroup, isLosslessGroup, applyFilterSort, summaryLine }
+  // The shelf filter/sort/decade helpers were missing here, so in the app the
+  // shop fell back to unfiltered, unsorted shelves and never showed a decade.
+  window.PapaSlskFilters = { detectSurround, groupSurround, isHiResGroup, isLosslessGroup, applyFilterSort, summaryLine, SHELF_FILTERS, shelfDecades, applyShelfFilterSort, albumIsSurround }
   // The same detector serves YouTube titles: both are uploader-written text,
   // and the failure modes ("Album 51", stereo SACD rips) are identical.
   window.PapaSurround = { detectSurround, surroundQueries }

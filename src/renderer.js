@@ -290,7 +290,7 @@ const NAV_SESSION_CAP = 60
 // these with no id is a dead end, so restores drop it rather than keep it.
 // (Two boot paths and the stack restore all consult this one list.)
 const _NEEDS_NAV_ID = ['album', 'artist', 'search', 'playlist', 'video-detail', 'person', 'shelf',
-  'yt-album', 'yt-artist', 'yt-see-all', 'yt-playlist']
+  'yt-album', 'yt-artist', 'yt-see-all', 'yt-playlist', 'soulseek-explore']
 
 // The online-source pages whose id lives in state.currentYtNavId. All four yt
 // pages are dead ends without one — renderYtArtist(null) paints a skeleton and
@@ -2027,6 +2027,7 @@ function _currentNavId() {
   if (state.currentPage === 'video-detail' || state.currentPage === 'person' || state.currentPage === 'shelf') {
     return state.currentVideoNavId
   }
+  if (state.currentPage === 'soulseek-explore') return state.currentSlskExploreUser || null
   // The online-source pages and Wrapped. Without this Back/Forward and session
   // restore handed them a null id and they rendered a permanent error.
   if (YT_NAV_PAGES.has(state.currentPage)) return state.currentYtNavId
@@ -2235,7 +2236,7 @@ const NAV_PAGES = new Set([
   'soulseek', 'playlists', 'playlist', 'smartlist', 'manage', 'stats',
   'trail', 'wrapped', 'liked', 'yt-album', 'yt-artist', 'yt-see-all',
   'yt-playlist', 'explore', 'video', 'browse', 'person', 'video-detail',
-  'shelf', 'diary', 'calendar',
+  'shelf', 'diary', 'calendar', 'soulseek-explore',
 ])
 
 function navigate(page, navId, opts = {}) {
@@ -2291,6 +2292,7 @@ function navigate(page, navId, opts = {}) {
   state.currentPlaylistId  = page === 'playlist' ? navId : null
   state.currentSmartListId = page === 'smartlist' ? navId : null
   state.currentVideoNavId  = (page === 'video-detail' || page === 'person' || page === 'shelf') ? navId : null
+  state.currentSlskExploreUser = page === 'soulseek-explore' ? navId : null
   state.currentYtNavId     = YT_NAV_PAGES.has(page) ? (navId ?? null) : null
   // Customize is a mode you are IN on Home, not a setting. It used to persist
   // across navigation, so coming back to Home half an hour later still showed
@@ -2312,6 +2314,7 @@ function navigate(page, navId, opts = {}) {
   else if (page === 'search')    renderSearch(navId)
   else if (page === 'downloads') renderDownloads()
   else if (page === 'soulseek')  renderSoulseekHub()
+  else if (page === 'soulseek-explore') renderSoulseekExplore(navId)
   else if (page === 'playlists') renderPlaylists()
   else if (page === 'playlist')  renderPlaylist(navId)
   else if (page === 'smartlist') renderSmartList(navId)
@@ -31737,10 +31740,26 @@ function _slskShowMore(query) {
 // by delegating to window.PapaSlskShopUI.show with an explicit deps object naming
 // every renderer global the module reads. The _slskExplorerClose slot moved into
 // the module (it was only ever read/written inside this region).
-async function showSlskUserExplorer(username) {
+// The record shop is a PAGE now, not a modal: a peer's library deserves the
+// whole window (sidebar, filters, compare drawer) and a place in Back/Forward.
+// Every existing caller keeps this name; it routes to the page.
+function showSlskUserExplorer(username) {
+  if (!username) return
+  navigate('soulseek-explore', String(username))
+}
+
+async function renderSoulseekExplore(username) {
   const S = (typeof window !== 'undefined' && window.PapaSlskShopUI) || null
-  if (!S || !S.show) { showSnackbar('The library explorer did not load'); return }
+  const host = document.getElementById('content')
+  if (!S || !S.show || !host) { showSnackbar('The library explorer did not load'); return }
+  if (!username) { navigate('soulseek', null, { skipHistory: true }); return }
   return S.show(username, {
+    host,
+    // Closing the page is a Back, so the journey that led here survives.
+    onClose: function () {
+      if (state.currentPage !== 'soulseek-explore') return
+      if (navHistory.length) navigateBack(); else navigate('soulseek')
+    },
     _mgConfirm, _scheduleLibRescan, _slskCardDownloads, _slskCardKey,
     _slskCardProgress, _slskDirQuality, _slskEnqueue, esc, hideContextMenu,
     navigate, playCurrentTrack, showSnackbar, slsk, startPreview, state,
