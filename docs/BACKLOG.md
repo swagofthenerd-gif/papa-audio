@@ -1160,3 +1160,31 @@ played sent to the bridge; local album art cached as `file://`. `tsc` clean,
 136/136. Nothing run on a device. HIS ACTIONS: restart `papa-bridge.service`;
 build + install the phone branch (`npm run build:local`); the transcode
 stream is still unseekable (design; needs a transcode cache if wanted).
+
+### 19 Sep — final whole-app live pass (Fable, twin :9411, 40-min session)
+Verified fine across every surface (boot/restore with a 0-byte library
+cache → saved page + ONE Resume prompt with a title; Home/Library/queue/
+player bar (40 fast Nexts, 0 "UI and mpv disagree")/Artists/Playlists/
+Liked/Search/Downloads/Soulseek hub/Movies & TV/Diary/Trail/Calendar/
+Stats/Manage/Settings/Omnibox; 1024×640 no horizontal scroll on 14
+pages; 0 uncaught exceptions, 0 ReferenceError/TypeError; 0 RD/slskd
+writes). Paint after navigate ≤ 336 ms everywhere (Home worst).
+D1 UNRESOLVED, NEEDS HIS EYES: the twin painted at 1–2 fps for most of the
+session with 0–2 % CPU, no long tasks, no leftover video/animation — and
+60 fps bursts in between; a fresh relaunch booted straight into 2 fps. Most
+consistent explanation: KWin withholding frame callbacks from an XWayland
+window sitting at the exact rectangle of his real app (same
+`window-state.json`). If HIS window also stutters after the restart, this
+becomes the top defect. Twin builder should offset the window.
+Routed to `fix/final-pass-findings`: D13 SAFETY make-twin copies
+`streamCacheDir` → a twin's purge ran against `/mnt/windows/PapaAudioCache`
+(empty, nothing removed); D6 no `connect-src` in the CSP → artist bios dead
+since 2026-07-04 (proxy via main); D3 `year:>1999` drops albums with
+`year:null` + chip loses the sign + unescaped value; D2 "Recent notices"
+modal has no trap/dismiss/role; D5 Import-list no Escape; D4 six light-theme
+accent-as-text leftovers (badge 1.43:1); D7 ArrowRight on a music card
+scrubs the track; D8 Library Escape drops focus; D9 Manage tabs not tabs;
+D10 mute label+pressed double semantics; D11 401 logged as "reconnected"
+every 60 s; D12 SIGTERM to the process GROUP leaves `cleanShutdown` false →
+false crash prompt (investigate main pid vs group); D14 fast Next resolves
+every skipped YouTube track (43 resolves for 20 Nexts, 4.5 s title lag).
