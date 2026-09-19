@@ -968,3 +968,37 @@ because `setStreamRoot` now answers with its own subfolder and main compared
 it to the chosen dir with `!==`; fallback is now "active root not under the
 chosen one". Gate 6,324/0. Note: `twin-probe` connects once — on a busy
 machine give the twin ~10 s before probing (one false "ECONNREFUSED" scare).
+
+### 19 Sep — Soulseek shop live QA (Fable, `--keep-slskd` + DRY_RUN on :9404)
+The gate held: zero real downloads/cancels/messages; every write hit a
+per-handler refusal (the choke's log line fires only for a raw non-GET, so
+`grep "DRY RUN: refused"` read 0 — expected). Credential-bearing profile
+deleted and verified. 20 defects, routed to `fix/slsk-shelves-qa` and
+`fix/slsk-ui-honesty`; lead re-checked #1, #2, #4, #5 in code:
+- #1 CRITICAL "Upgrades for you" offers STEREO 24/192 over his 6-channel
+  24/88.2 masters (9 of 13 "upgrades" were his surround copies; Grab all
+  would download them). `libAlbumToComparable` drops channels;
+  `upgradeReason` never reads them (0 mentions each). The 5.1 scar, new path.
+- #2 CRITICAL every download control reports success on a refused enqueue:
+  `_slskEnqueue` has no branch for a plain `{ok:false}`; the "Downloading
+  from N sources" snackbar fires BEFORE the await; grab-all counts any
+  non-throw; the tree button prints "N queued" unconditionally.
+- #3 Failed → Retry swallows `{ok:false}` and snaps to an empty tab; #4 848
+  iTunes art requests in one session (438 × 429, 410 × 403), no cooldown;
+  #5 old cards stay with no searching state while the spelling correction
+  awaits a 6 s network lookup; #6 up to 8 parallel `POST /searches` trip
+  slskd's limiter and Retry re-trips it; #7 "Disc 1"/"CD1"/"44.1" leaves
+  render as separate albums; #8 "This folder is empty" beside "1.9 GB
+  below"; #9 "5.1 Surround Sound" → album "1 Surround Sound" (leaks into the
+  wishlist); #10 "N new files" badge with no shelf, wiped by background
+  refresh; #11 raw "slskd 500" copy, offline friend gets 404 wording (the QA
+  said `slskUserStatus` is missing from preload — it is there; executor to
+  find the real cause); #12 copy says "Settings → Soulseek" but no such
+  section exists; #13 wishlist dedupe + generic error; #14 shop focus
+  management; #15–#20 a11y/labels/TB sizes/unknown `navigate` ids/copy.
+- Console: `player-seek did not answer within 60000ms` ×3 unhandled during
+  session-restore seeks; `[papa][ipc] missed N event(s) on slsk-progress` ×3.
+Verified fine: hub 54 ms; 764-album search 4.4 s; charXX (7,635 albums,
+111k tracks, 3.4 TB) shelves 10.9 s, max frame gap 75 ms; fingerprints
+arrive on `slsk-browse-end` at 6k AND 218k files (the "never arrives"
+hypothesis is dead); Escape mid-pull clean; cache-hit reopen 316 ms.
