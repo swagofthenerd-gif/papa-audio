@@ -3107,7 +3107,10 @@ h2.section-title { font-size:18px; font-weight:700; }
 .slsk-explore .slskx-toolbar { grid-area: tb; }
 .slsk-explore .slskx-actionbar { grid-area: ab; }
 .slsk-explore .slx-side { grid-area: side; overflow: auto; padding: 12px 14px; border-right: 1px solid var(--glass-border); }
-.slsk-explore .slsk-lib-body { grid-area: body; min-width: 0; }
+.slsk-explore .slsk-lib-body, .slsk-explore .slsh-body { grid-area: body; min-width: 0; }
+/* Folders and Shelves are two siblings that take turns; only the visible one
+   should own the area, and it must be allowed to scroll inside the grid row. */
+.slsk-explore .slsh-body { overflow-y: auto; min-height: 0; }
 .slsk-explore .slskx-statusbar { grid-area: st; }
 @media (max-width: 1100px) { .slsk-explore .slsh-box-page { grid-template-columns: minmax(0, 1fr); grid-template-areas: "hdr" "tb" "ab" "body" "st"; } .slsk-explore .slx-side { display: none; } }
 .slx-side-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 10px; }

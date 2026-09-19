@@ -112,21 +112,16 @@ body.theme-light .slsk-explore {
    Batch bar and compare drawer are positioned inside the frame so they
    respect the app's player bar beneath. */
 .slsk-explore {
+  /* Layout lives on .slsh-box-page (styles.css): the shop's markup is one
+     child of this root, so a grid HERE crammed the whole page into the
+     sidebar column. This rule now only sets ground, ink and type. */
   position: relative;
-  display: grid;
-  grid-template-columns: var(--slx-side-w) minmax(0, 1fr);
-  grid-template-rows: auto auto minmax(0, 1fr);
-  grid-template-areas:
-    "side head"
-    "side filters"
-    "side body";
-  height: 100%; min-height: 0;
-  overflow: hidden;
+  display: flex; flex-direction: column;
+  min-height: 0;
   background: var(--slx-ground); color: var(--slx-ink);
   font-family: var(--slx-body); font-size: 13px; line-height: 1.45;
   transition: grid-template-columns var(--slx-t-drawer) var(--ease);
 }
-.slsk-explore.slx-side-collapsed { grid-template-columns: 0 minmax(0, 1fr); }
 .slsk-explore.slx-side-collapsed .slx-side { visibility: hidden; }
 
 .slx-head    { grid-area: head; }
