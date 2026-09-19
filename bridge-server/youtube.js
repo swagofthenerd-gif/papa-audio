@@ -19,15 +19,35 @@ const ytDownloader = require('../youtube-download')
 // re-resolving on every range request the player makes while seeking.
 const URL_TTL_MS = 60 * 60 * 1000
 const _urlCache = new Map() // videoId -> { url, expiresAt }
+// videoId -> the in-flight resolve promise. A player opening a track fires
+// several range requests at once and each one used to spawn its own yt-dlp:
+// N processes, N network round-trips, all racing to write the same cache entry.
+// One resolve per videoId; everyone else waits on it.
+const _inflight = new Map() // videoId -> Promise
+
+// `spawnFn` is injectable so tests can count spawns without running yt-dlp.
+let _spawn = spawn
+function _setSpawn(fn) { _spawn = fn || spawn }
 
 function resolveAudioUrl(videoId) {
   const cached = _urlCache.get(videoId)
   if (cached && cached.expiresAt > Date.now()) return Promise.resolve({ ok: true, url: cached.url })
 
+  const pending = _inflight.get(videoId)
+  if (pending) return pending
+
+  const p = _resolveAudioUrlUncached(videoId)
+  _inflight.set(videoId, p)
+  // Always clear, success or failure: a failed resolve must be retryable.
+  p.then(() => _inflight.delete(videoId), () => _inflight.delete(videoId))
+  return p
+}
+
+function _resolveAudioUrlUncached(videoId) {
   return new Promise(resolve => {
     let proc
     try {
-      proc = spawn('yt-dlp', ['-f', 'bestaudio', '-g', '--no-playlist', '--', videoId])
+      proc = _spawn('yt-dlp', ['-f', 'bestaudio', '-g', '--no-playlist', '--', videoId])
     } catch (e) {
       resolve({ ok: false, error: `yt-dlp spawn failed: ${e.message}` })
       return
@@ -135,6 +155,14 @@ module.exports = function registerYouTube(app, { sseSend, getDownloadDir, cacheD
   app.post('/api/youtube/download', async (req, res) => {
     const { videoId, title, artist } = req.body || {}
     if (!videoId) return res.status(400).json({ error: 'videoId required' })
+    // A second request for a track already downloading used to spawn a second
+    // yt-dlp onto the same output path. Both wrote the same file, the progress
+    // events interleaved, and the Downloads tab showed one entry jumping
+    // backwards. The download already in flight IS the answer.
+    const running = ytDownloads.get(videoId)
+    if (running && running.state === 'downloading') {
+      return res.status(202).json({ ok: true, alreadyDownloading: true, pct: running.pct })
+    }
     const outDir = path.join(getDownloadDir(), 'YouTube')
     ytDownloads.set(videoId, { videoId, title: title || videoId, artist: artist || '', pct: 0, state: 'downloading', at: Date.now() })
     const result = await ytDownloader.downloadAudio({
@@ -163,5 +191,5 @@ module.exports = function registerYouTube(app, { sseSend, getDownloadDir, cacheD
   })
 
   // exposed for tests
-  return { resolveAudioUrl, _urlCache }
+  return { resolveAudioUrl, _urlCache, _inflight, _setSpawn, ytDownloads }
 }

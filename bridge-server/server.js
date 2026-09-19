@@ -33,7 +33,10 @@ const HOST        = process.env.BRIDGE_HOST || '0.0.0.0'
 const USER_DATA   = process.env.PAPA_BRIDGE_USER_DATA ||
   path.join(os.homedir(), '.config', 'papa-audio')
 const ARTWORK_DIR = path.join(USER_DATA, 'artwork')
-const SLSKD_BASE  = 'http://localhost:5030/api/v0'
+// BRIDGE_SLSKD_BASE points the daemon calls somewhere else. The tests aim it at
+// a local stub so they exercise the real error handling without ever touching
+// the user's live slskd (and his real Soulseek account) on :5030.
+const SLSKD_BASE  = process.env.BRIDGE_SLSKD_BASE || 'http://localhost:5030/api/v0'
 const SLSKD_CREDS = { username: 'slskd', password: 'slskd' }
 const MUSIC_EXT   = /\.(flac|mp3|wav|aiff?|m4a|aac|ogg|opus|ape|wv|wma|dsf|dff)$/i
 
@@ -47,12 +50,33 @@ const TOKEN_FILE = path.join(USER_DATA, 'bridge-token')
 const BRIDGE_TOKEN = (() => {
   try {
     const t = fs.readFileSync(TOKEN_FILE, 'utf8').trim()
-    if (/^[0-9a-f]{32}$/.test(t)) return t
+    if (/^[0-9a-f]{32}$/.test(t)) {
+      // The file shipped 0644: every local account could read the pairing
+      // token and then talk to the bridge as the phone. Tighten it in place.
+      try { fs.chmodSync(TOKEN_FILE, 0o600) } catch (_) {}
+      return t
+    }
   } catch (_) {}
   const t = crypto.randomBytes(16).toString('hex')
-  try { fs.writeFileSync(TOKEN_FILE, t, 'utf8') } catch (_) {}
+  try { fs.writeFileSync(TOKEN_FILE, t, { encoding: 'utf8', mode: 0o600 }) } catch (_) {}
   return t
 })()
+
+// Compare a presented token against the real one WITHOUT leaking how far the
+// match got. `===` on strings short-circuits at the first differing byte, which
+// over a LAN is a measurable oracle for recovering the token a byte at a time.
+const _TOKEN_BUF = Buffer.from(BRIDGE_TOKEN, 'utf8')
+function tokenMatches(candidate) {
+  if (typeof candidate !== 'string') return false
+  const given = Buffer.from(candidate, 'utf8')
+  if (given.length !== _TOKEN_BUF.length) {
+    // Burn an equivalent compare so a wrong LENGTH is not faster than a wrong
+    // VALUE, then refuse.
+    crypto.timingSafeEqual(_TOKEN_BUF, _TOKEN_BUF)
+    return false
+  }
+  return crypto.timingSafeEqual(given, _TOKEN_BUF)
+}
 
 // The announced bridge version + what this build can do, so the Android app can
 // feature-detect instead of guessing. Bumped for the artwork + transcode work
@@ -84,8 +108,44 @@ function bridgeCapabilities() {
   }
 }
 
-// Re-use the same electron-store data files the desktop app writes
+// Re-use the same electron-store data files the desktop app writes.
+//
+// NOTE the narrowed job: config.json is now only the SETTINGS keys
+// (musicFolders, volume, eqSettings, slskConfig, …). The eight big/hot keys —
+// libraryCache, playbackState, recentlyPlayed, playHistory, playCounts,
+// savedQueues, playlists, likedTracks — were moved to SideStore files on
+// 2026-08-27 and the desktop's retireLegacyKeys() deletes them from here. Read
+// those through `sideValue()` below, never through `store`.
 const store = new Store({ name: 'config', cwd: USER_DATA })
+
+// ── The desktop's SideStore files ─────────────────────────────────────────────
+// Read-only. The desktop is the single writer; a phone-side mutation is queued
+// in the bridge's own inbox and overlaid on the read, so the phone sees its own
+// action without a second process writing the desktop's files. See
+// side-store-read.js and inbox.js.
+const { createSideReader } = require('./side-store-read')
+const inbox = require('./inbox')
+const sideRead = createSideReader(USER_DATA)
+
+// The desktop's value for `key`, with any not-yet-ingested phone mutations
+// replayed on top.
+function sideValue(key) {
+  const base = sideRead.get(key)
+  const queued = inbox.readInbox(USER_DATA).ops
+  return inbox.applyInbox(key, base, queued)
+}
+
+// Queue a phone-side mutation. Answers 202 (accepted, not yet applied by the
+// desktop) so a client can tell "written" from "queued" if it ever wants to.
+function queueMutation(res, type, payload) {
+  try {
+    inbox.append(USER_DATA, type, payload)
+    return res.status(202).json({ ok: true, queued: true })
+  } catch (e) {
+    console.error(`[bridge] inbox write failed (${e && e.message})`)
+    return res.status(500).json({ error: 'Could not record the change' })
+  }
+}
 
 // ── Path containment ──────────────────────────────────────────────────────────
 // Is `child` the same as, or underneath, `parent`?
@@ -202,6 +262,17 @@ async function slskAcquireToken() {
   return true
 }
 
+// An upstream failure carries its status so a route can report the real thing
+// instead of inventing a success.
+class SlskError extends Error {
+  constructor(status, endpoint, body) {
+    super(`slskd ${status} on ${endpoint}${body ? `: ${String(body).slice(0, 200)}` : ''}`)
+    this.name = 'SlskError'
+    this.status = status
+    this.endpoint = endpoint
+  }
+}
+
 async function slskFetch(method, endpoint, body) {
   if (!slskToken || Date.now() > slskExpiry) await slskAcquireToken()
   const opts = {
@@ -215,10 +286,61 @@ async function slskFetch(method, endpoint, body) {
     opts.headers.Authorization = `Bearer ${slskToken}`
     res = await fetch(`${SLSKD_BASE}${endpoint}`, opts)
   }
+  // res.ok was never checked. A 400 on a DELETE returned null and the route
+  // above it answered {ok:true} -- which is exactly the non-sticking cancel the
+  // phone sees: it reports the transfer removed, slskd never removed it. A 400
+  // on a POST was an invented successful download; a 500 on a GET was an empty
+  // list that looked like "nothing is transferring".
+  if (!res.ok) {
+    let detail = ''
+    try { detail = await res.text() } catch (_) {}
+    throw new SlskError(res.status, endpoint, detail)
+  }
   if (method === 'DELETE') return null
   const text = await res.text()
   if (!text) return null
   try { return JSON.parse(text) } catch { return text }
+}
+
+// slskd answers /transfers/downloads as users -> directories -> files. The
+// Android app's Transfer type is a FLAT file record ({id, username, filename,
+// size, bytesTransferred, state}), so the raw nested array it was being handed
+// filtered down to nothing on every screen that reads it.
+function flattenTransfers(data) {
+  const out = []
+  for (const user of Array.isArray(data) ? data : []) {
+    for (const dir of (user && user.directories) || []) {
+      for (const f of (dir && dir.files) || []) {
+        out.push({
+          id: f.id,
+          username: user.username,
+          filename: String(f.filename || ''),
+          size: Number(f.size) || 0,
+          bytesTransferred: Number(f.bytesTransferred) || 0,
+          state: String(f.state || ''),
+          averageSpeed: Number(f.averageSpeed) || 0,
+          elapsed: f.elapsed ?? null,
+          remainingTime: f.remainingTime ?? null,
+        })
+      }
+    }
+  }
+  return out
+}
+
+// The same predicate the Downloads tab uses (isActive in downloads.tsx), so the
+// badge count and the list can never disagree.
+const SLSK_ACTIVE = /queued|initializing|inprogress|requested/i
+function countActive(transfers) {
+  return transfers.filter(t => SLSK_ACTIVE.test(t.state || '')).length
+}
+
+// An upstream failure must reach the client as an upstream failure.
+function slskFail(res, e) {
+  if (e instanceof SlskError) {
+    return res.status(502).json({ error: e.message, upstreamStatus: e.status })
+  }
+  return res.status(502).json({ error: `slskd unreachable: ${(e && e.message) || e}` })
 }
 
 // ── Library helpers (copied from main.js) ─────────────────────────────────────
@@ -348,7 +470,9 @@ app.use((req, res, next) => {
     req.path === '/art' || req.path.startsWith('/art/') ||
     req.path === '/events'
   const queryTok = isMedia ? req.query.token : undefined
-  if (auth === `Bearer ${BRIDGE_TOKEN}` || queryTok === BRIDGE_TOKEN) return next()
+  const bearer = typeof auth === 'string' && auth.startsWith('Bearer ')
+    ? auth.slice(7) : null
+  if (tokenMatches(bearer) || tokenMatches(queryTok)) return next()
   return res.status(401).json({ error: 'Unauthorized' })
 })
 
@@ -363,7 +487,20 @@ const RATE_LIMIT_WINDOW = 60 * 1000
 // and the map must not grow with it.
 const RATE_LIMIT_MAX_KEYS = 1024
 
+// Static media and the event stream are NOT rate-limited. 60 requests a minute
+// is a sane budget for API calls and an absurd one for a library screen: 245
+// albums means 245 thumbnail requests in a burst, and a single track seek is a
+// stream of range requests. Every one past the 60th came back as a JSON 429 to
+// an <Image> or the player. The limiter's job is to bound API work and writes,
+// which is what it still does.
+function rateLimitExempt(p) {
+  return p === '/events' ||
+    p === '/art'    || p.startsWith('/art/') ||
+    p === '/stream' || p.startsWith('/stream/')
+}
+
 app.use((req, res, next) => {
+  if (rateLimitExempt(req.path)) return next()
   const ip = req.ip || req.socket.remoteAddress || 'unknown'
   const now = Date.now()
   let entry = rateLimit.get(ip)
@@ -382,10 +519,14 @@ app.use((req, res, next) => {
   next()
 })
 
-setInterval(() => {
+// Held (and unref'd) so shutdown can clear them. An un-unref'd interval keeps
+// the event loop alive forever, so a closed server still could not let the
+// process exit.
+const _rateSweep = setInterval(() => {
   const now = Date.now()
   for (const [ip, e] of rateLimit) if (now > e.resetAt) rateLimit.delete(ip)
 }, 300000)
+_rateSweep.unref()
 
 // ── SSE event stream ──────────────────────────────────────────────────────────
 app.get('/events', (req, res) => {
@@ -420,7 +561,7 @@ app.get('/api/health', (_, res) => res.json({
 app.get('/api/app-info', (_, res) => res.json({
   musicFolders:   store.get('musicFolders', []),
   savedSites:     store.get('savedSites', []),
-  recentlyPlayed: store.get('recentlyPlayed', []),
+  recentlyPlayed: sideValue('recentlyPlayed') || [],
   volume:         store.get('volume', 0.8),
 }))
 
@@ -437,7 +578,7 @@ function withArtUrls(albums) {
 
 // ── Library ───────────────────────────────────────────────────────────────────
 app.get('/api/library', (_, res) => {
-  const cached = store.get('libraryCache', null)
+  const cached = sideValue('libraryCache')
   if (cached) return res.json({ albums: withArtUrls(cached), cached: true })
   res.json({ albums: [], cached: false })
 })
@@ -476,17 +617,19 @@ app.post('/api/library/scan', async (_, res) => {
       } catch (_) {}
     }
     const albums = await buildAlbums(tracks)
-    store.set('libraryCache', albums)
-    res.json({ albums: withArtUrls(albums) })
+    // Deliberately NOT persisted. The library cache is the desktop's
+    // library-cache.json now; writing it from here made the bridge a second
+    // writer AND (before that) pushed ~1.6 MB back into config.json on every
+    // scan, which is where the orphaned config.json.tmp-* files came from.
+    // The scan result is returned to the caller and nothing else.
+    res.json({ albums: withArtUrls(albums), persisted: false })
   } catch (e) {
     res.status(500).json({ error: e.message })
   }
 })
 
-app.post('/api/library/cache', (req, res) => {
-  store.set('libraryCache', req.body.albums)
-  res.json({ ok: true })
-})
+// /api/library/cache is gone: it let the phone overwrite the desktop's library
+// cache wholesale. The desktop owns library-cache.json.
 
 // ── Music streaming ───────────────────────────────────────────────────────────
 app.get('/stream', async (req, res) => {
@@ -497,6 +640,12 @@ app.get('/stream', async (req, res) => {
   const resolved = path.resolve(filePath)
   const allowed = folders.some(function(f) { return isInside(resolved, f) })
   if (!allowed) return res.status(403).json({ error: 'Access denied: path outside music folders' })
+  // Containment alone is not an allow-list. A music root holds .cue, .log,
+  // .txt, .nfo and whatever else came down with an album; this route exists to
+  // serve AUDIO, so anything else is refused rather than handed to the LAN.
+  if (!MUSIC_EXT.test(resolved)) {
+    return res.status(403).json({ error: 'Access denied: not an audio file' })
+  }
 
   let stat
   try { stat = await fs.promises.stat(filePath) } catch (_) {
@@ -571,7 +720,7 @@ function pathAllowed(resolved) {
 // GET /art/<albumId>.jpg — serve the album's artPath resolved from the library
 // cache, so the Android app can request art without knowing the on-disk path.
 app.get('/art/:albumId.jpg', async (req, res) => {
-  const albums = store.get('libraryCache', null)
+  const albums = sideValue('libraryCache')
   const { artById } = mediaLib.buildAlbumIndex(albums)
   const artPath = artById.get(String(req.params.albumId))
   if (!artPath) return res.status(404).send('Not found')
@@ -596,7 +745,7 @@ app.get('/art/:albumId.jpg', async (req, res) => {
 // The gate + ffmpeg presence are checked by mediaLib.transcodeDecision, which
 // returns a polite reason when the request cannot be honoured.
 app.get('/stream/:trackId', async (req, res) => {
-  const albums = store.get('libraryCache', null)
+  const albums = sideValue('libraryCache')
   const { trackById } = mediaLib.buildAlbumIndex(albums)
   const filePath = trackById.get(String(req.params.trackId))
   if (!filePath) return res.status(404).json({ error: 'Track not found' })
@@ -605,6 +754,9 @@ app.get('/stream/:trackId', async (req, res) => {
   const folders = store.get('musicFolders', [])
   if (!folders.some(function(f) { return isInside(resolved, f) })) {
     return res.status(403).json({ error: 'Access denied: path outside music folders' })
+  }
+  if (!MUSIC_EXT.test(resolved)) {
+    return res.status(403).json({ error: 'Access denied: not an audio file' })
   }
   try { await fs.promises.stat(filePath) } catch (_) {
     return res.status(404).json({ error: 'File not found' })
@@ -668,8 +820,23 @@ app.get('/stream/:trackId', async (req, res) => {
   req.on('close', () => { try { ff.kill('SIGKILL') } catch (_) {} })
 })
 
+// The album id becomes a FILE NAME under ARTWORK_DIR, so it has to be a name
+// and not a path. Ids in the wild are two shapes: the desktop/bridge md5 hex
+// (32 chars) and the Android local-scan djb2 base36 (short). Both are covered
+// by a bare alphanumeric token; anything with a dot or a separator in it was an
+// attempt to write outside the artwork cache — `../../../../tmp/x.jpg` did
+// exactly that, and the blanket catch returned 200 null so it looked like a
+// harmless miss.
+const ALBUM_ID = /^[A-Za-z0-9_-]{1,64}$/
+
 app.post('/api/fetch-album-art', async (req, res) => {
-  const { albumId, artist, album } = req.body
+  const { albumId, artist, album } = req.body || {}
+  if (!ALBUM_ID.test(String(albumId || ''))) {
+    return res.status(400).json({ error: 'Invalid albumId' })
+  }
+  if (typeof artist !== 'string' || typeof album !== 'string') {
+    return res.status(400).json({ error: 'artist and album are required' })
+  }
   try {
     const cached = path.join(ARTWORK_DIR, `${albumId}.jpg`)
     if (fs.existsSync(cached)) return res.json({ artPath: cached })
@@ -685,60 +852,51 @@ app.post('/api/fetch-album-art', async (req, res) => {
     const imgBuf = await httpsGet(best.artworkUrl100.replace('100x100bb', '600x600bb'))
     fs.writeFileSync(cached, imgBuf)
     res.json({ artPath: cached })
-  } catch (e) { res.json(null) }
+  } catch (e) {
+    // "No artwork exists" is `null` above. THIS is "the lookup broke", and
+    // reporting it as a miss hid both a traversal and every iTunes outage.
+    console.error(`[bridge] fetch-album-art failed: ${e && e.message}`)
+    res.status(502).json({ error: 'Artwork lookup failed' })
+  }
 })
 
 // ── Settings ──────────────────────────────────────────────────────────────────
 app.get('/api/settings/liked',           (_, res) => res.json(store.get('likedAlbums', [])))
 app.post('/api/settings/liked',          (req, res) => { store.set('likedAlbums', req.body.ids); res.json({ ok: true }) })
 
-app.get('/api/settings/liked-tracks',    (_, res) => res.json(store.get('likedTracks', [])))
-app.post('/api/settings/liked-tracks',   (req, res) => { store.set('likedTracks', req.body.paths); res.json({ ok: true }) })
+app.get('/api/settings/liked-tracks',    (_, res) => res.json(sideValue('likedTracks') || []))
+app.post('/api/settings/liked-tracks',   (req, res) =>
+  queueMutation(res, 'likedTracks.set', { paths: Array.isArray(req.body && req.body.paths) ? req.body.paths : [] }))
 
-app.get('/api/settings/play-counts',     (_, res) => res.json(store.get('playCounts', {})))
+app.get('/api/settings/play-counts',     (_, res) => res.json(sideValue('playCounts') || {}))
 app.post('/api/settings/play-counts/increment', (req, res) => {
-  const counts = store.get('playCounts', {})
-  counts[req.body.filePath] = (counts[req.body.filePath] || 0) + 1
-  store.set('playCounts', counts)
-  res.json({ ok: true })
+  const filePath = req.body && req.body.filePath
+  if (!filePath) return res.status(400).json({ error: 'filePath required' })
+  return queueMutation(res, 'playCounts.increment', { filePath })
 })
 
-app.get('/api/settings/play-history',    (_, res) => res.json(store.get('playHistory', [])))
-app.post('/api/settings/play-history',   (req, res) => {
-  const h = store.get('playHistory', [])
-  h.unshift(req.body)
-  if (h.length > 2000) h.splice(2000)
-  store.set('playHistory', h)
-  res.json({ ok: true })
-})
+app.get('/api/settings/play-history',    (_, res) => res.json(sideValue('playHistory') || []))
+app.post('/api/settings/play-history',   (req, res) =>
+  queueMutation(res, 'playHistory.push', { entry: req.body }))
 
 app.get('/api/settings/followed-artists',  (_, res) => res.json(store.get('followedArtists', [])))
 app.post('/api/settings/followed-artists', (req, res) => { store.set('followedArtists', req.body.artists); res.json({ ok: true }) })
 
-app.get('/api/settings/playlists',         (_, res) => res.json(store.get('playlists', [])))
+app.get('/api/settings/playlists',         (_, res) => res.json(sideValue('playlists') || []))
 app.post('/api/settings/playlists',        (req, res) => {
-  const pls = store.get('playlists', [])
-  const idx = pls.findIndex(p => p.id === req.body.id)
-  if (idx >= 0) { pls[idx] = req.body } else { pls.unshift(req.body) }
-  store.set('playlists', pls)
-  res.json({ ok: true })
+  if (!req.body || !req.body.id) return res.status(400).json({ error: 'playlist id required' })
+  return queueMutation(res, 'playlists.upsert', { playlist: req.body })
 })
-app.delete('/api/settings/playlists/:id', (req, res) => {
-  store.set('playlists', store.get('playlists', []).filter(p => p.id !== req.params.id))
-  res.json({ ok: true })
-})
+app.delete('/api/settings/playlists/:id', (req, res) =>
+  queueMutation(res, 'playlists.delete', { id: req.params.id }))
 
-app.get('/api/settings/saved-queues',      (_, res) => res.json(store.get('savedQueues', [])))
+app.get('/api/settings/saved-queues',      (_, res) => res.json(sideValue('savedQueues') || []))
 app.post('/api/settings/saved-queues',     (req, res) => {
-  const queues = store.get('savedQueues', []).filter(q => q.id !== req.body.id)
-  queues.unshift(req.body)
-  store.set('savedQueues', queues.slice(0, 30))
-  res.json({ ok: true })
+  if (!req.body || !req.body.id) return res.status(400).json({ error: 'queue id required' })
+  return queueMutation(res, 'savedQueues.upsert', { queue: req.body })
 })
-app.delete('/api/settings/saved-queues/:id', (req, res) => {
-  store.set('savedQueues', store.get('savedQueues', []).filter(q => q.id !== req.params.id))
-  res.json({ ok: true })
-})
+app.delete('/api/settings/saved-queues/:id', (req, res) =>
+  queueMutation(res, 'savedQueues.delete', { id: req.params.id }))
 
 app.get('/api/settings/eq',               (_, res) => res.json(store.get('eqSettings', { enabled: true, gains: [0,0,0,0,0,0,0,0,0,0], replayGainMode: 'track', preamp: 0 })))
 app.post('/api/settings/eq',              (req, res) => { store.set('eqSettings', req.body); res.json({ ok: true }) })
@@ -746,17 +904,19 @@ app.post('/api/settings/eq',              (req, res) => { store.set('eqSettings'
 app.get('/api/settings/volume',           (_, res) => res.json({ volume: store.get('volume', 0.8) }))
 app.post('/api/settings/volume',          (req, res) => { store.set('volume', req.body.volume); res.json({ ok: true }) })
 
+app.get('/api/settings/recently-played', (_, res) => res.json(sideValue('recentlyPlayed') || []))
 app.post('/api/settings/recently-played', (req, res) => {
-  let r = store.get('recentlyPlayed', []).filter(x => x !== req.body.id)
-  r.unshift(req.body.id); store.set('recentlyPlayed', r.slice(0, 20))
-  res.json({ ok: true })
+  if (!req.body || req.body.id === undefined) return res.status(400).json({ error: 'id required' })
+  return queueMutation(res, 'recentlyPlayed.push', { id: req.body.id })
 })
 
-app.get('/api/settings/playback-state',   (_, res) => res.json(store.get('playbackState', null)))
-app.post('/api/settings/playback-state',  (req, res) => { store.set('playbackState', req.body); res.json({ ok: true }) })
+app.get('/api/settings/playback-state',   (_, res) => res.json(sideValue('playbackState') ?? null))
+app.post('/api/settings/playback-state',  (req, res) =>
+  queueMutation(res, 'playbackState.set', { state: req.body }))
 
-app.get('/api/settings/agent-keys',       (_, res) => res.json(store.get('apiKeys', {})))
-app.post('/api/settings/agent-keys',      (req, res) => { store.set('apiKeys', req.body); res.json(req.body) })
+// /api/settings/agent-keys is gone. It handed every AI provider key in the
+// user's config to anyone holding the pairing token, and let them be replaced.
+// The keys are desktop-only; the Android app never called this.
 
 app.get('/api/settings/agent-model',      (_, res) => res.json({ model: store.get('agentModel', '') }))
 app.post('/api/settings/agent-model',     (req, res) => { store.set('agentModel', req.body.model); res.json({ ok: true }) })
@@ -826,9 +986,7 @@ app.post('/api/slsk/search', async (req, res) => {
     if (results.length) searchCacheSet(cacheKey, results)
     sseSend('slsk-progress', { query, results, done: true })
     res.json({ results })
-  } catch (e) {
-    res.status(500).json({ error: e.message })
-  }
+  } catch (e) { slskFail(res, e) }
 })
 
 // ── Soulseek download ─────────────────────────────────────────────────────────
@@ -837,23 +995,30 @@ app.post('/api/slsk/download', async (req, res) => {
   try {
     await slskFetch('POST', `/transfers/downloads/${encodeURIComponent(username)}`, [{ filename, size }])
     res.json({ ok: true })
-  } catch (e) {
-    res.status(500).json({ error: e.message })
-  }
+  } catch (e) { slskFail(res, e) }
 })
 
 app.get('/api/slsk/transfers', async (_, res) => {
   try {
-    const data = await slskFetch('GET', '/transfers/downloads')
-    res.json(data || [])
-  } catch { res.json([]) }
+    res.json(flattenTransfers(await slskFetch('GET', '/transfers/downloads')))
+  } catch (e) { slskFail(res, e) }
+})
+
+// The Downloads tab's badge. The phone was calling this and getting a 404 (it
+// does not exist in this server), so getSlskActiveCount()'s catch turned every
+// real count into 0 and the dot never appeared.
+app.get('/api/slsk/active-count', async (_, res) => {
+  try {
+    const flat = flattenTransfers(await slskFetch('GET', '/transfers/downloads'))
+    res.json({ count: countActive(flat) })
+  } catch (e) { slskFail(res, e) }
 })
 
 app.delete('/api/slsk/transfers/:username/:id', async (req, res) => {
   try {
     await slskFetch('DELETE', `/transfers/downloads/${encodeURIComponent(req.params.username)}/${encodeURIComponent(req.params.id)}?remove=true`)
     res.json({ ok: true })
-  } catch { res.json({ ok: true }) }
+  } catch (e) { slskFail(res, e) }
 })
 
 app.get('/api/slsk/resolve', (req, res) => {
@@ -885,6 +1050,33 @@ app.get('/api/slsk/resolve', (req, res) => {
   res.json({ path: null, downloadDir })
 })
 
+// ── Library file deletion ────────────────────────────────────────────────────
+// The Android app's "Phone only" download mode calls this to remove the PC copy
+// once the file has been pulled to the phone (services/phonePull.ts). It has
+// never existed here, so the PC copy was silently always kept.
+//
+// It is NOT implemented as an unlink. The desktop deletes library files through
+// Electron's shell.trashItem (main.js 'library-trash-paths'), which puts them in
+// the freedesktop trash so a mistake is recoverable — and the desktop has a
+// whole restore path built on that (trashRootsFor / library-restore-trashed).
+// This process is plain Node with no Electron and no IPC channel to the desktop
+// (main.js has no bridge/phone/remote surface at all — grepped), so there is no
+// way from here to the trash. An unlink() would be a permanent delete wearing
+// the name of a reversible one.
+//
+// So: answer honestly. 501 with the reason, which the phone's catch already
+// turns into "the PC copy was kept".
+app.post('/api/library/delete-file', (req, res) => {
+  const filePath = req.body && req.body.path
+  if (!filePath) return res.status(400).json({ error: 'path required' })
+  return res.status(501).json({
+    ok: false,
+    error: 'The bridge cannot delete PC files. Deleting goes through the ' +
+      'desktop app’s trash so it can be undone, and the bridge has no channel ' +
+      'to the desktop. Remove it from the desktop app instead.',
+  })
+})
+
 // ── Network info (for QR code setup) ─────────────────────────────────────────
 app.get('/api/network', (_, res) => {
   const interfaces = os.networkInterfaces()
@@ -902,19 +1094,11 @@ app.get('/api/network', (_, res) => {
 
 // ── Music folder management ───────────────────────────────────────────────────
 app.get('/api/folders', (_, res) => res.json(store.get('musicFolders', [])))
-app.post('/api/folders', (req, res) => {
-  const { folder } = req.body
-  if (!folder || !fs.existsSync(folder)) return res.status(400).json({ error: 'Folder not found' })
-  const folders = store.get('musicFolders', [])
-  if (!folders.includes(folder)) folders.push(folder)
-  store.set('musicFolders', folders)
-  res.json(folders)
-})
-app.delete('/api/folders', (req, res) => {
-  const folders = store.get('musicFolders', []).filter(f => f !== req.query.folder)
-  store.set('musicFolders', folders)
-  res.json(folders)
-})
+// POST/DELETE /api/folders are gone. musicFolders IS the allow-list every
+// /stream and /art route checks against, so a route that appends to it let a
+// token holder add "/" and then read any file on disk through /stream?path=.
+// It only checked fs.existsSync. The music roots are the desktop's to choose;
+// the Android app never called these.
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 // YouTube bridge (search, stream, download for Android app)
@@ -931,12 +1115,13 @@ const ytBridge = registerYouTube(app, {
 })
 
 // Periodic cleanup of stale YouTube URL cache entries to prevent memory leak
-setInterval(function() {
+const _ytSweep = setInterval(function() {
   const now = Date.now()
   for (const [id, entry] of ytBridge._urlCache) {
     if (now > entry.expiresAt) ytBridge._urlCache.delete(id)
   }
 }, 600000) // Every 10 minutes
+_ytSweep.unref()
 
 const server = app.listen(PORT, HOST, () => {
   // With BRIDGE_PORT=0 the OS picks the port, so report the one we actually
@@ -959,3 +1144,40 @@ const server = app.listen(PORT, HOST, () => {
   for (const ip of ips) console.log(`  http://${ip}:${boundPort}`)
   console.log(`\nHealth check: http://localhost:${boundPort}/api/health`)
 })
+
+// listen() reports its failure as an 'error' event, and there was no listener.
+// An unhandled 'error' on the server is an uncaught exception: the process died
+// with a stack trace and systemd restarted it 5 s later, forever, with nothing
+// in the journal but the same trace. Say what happened, once, and exit with a
+// status systemd can act on.
+let _exiting = false
+server.on('error', (e) => {
+  if (_exiting) return
+  _exiting = true
+  if (e && e.code === 'EADDRINUSE') {
+    console.error(`[bridge] port ${PORT} is already in use — another bridge (or ` +
+      `the papa-bridge service) is already listening. Not starting.`)
+  } else {
+    console.error(`[bridge] could not listen on ${HOST}:${PORT}: ${(e && e.message) || e}`)
+  }
+  process.exit(1)
+})
+
+// systemd sends SIGTERM on stop/restart. Close the listener, clear the timers
+// and let the loop drain, so in-flight streams finish instead of being cut.
+// The timeout is the backstop: a wedged connection must not make systemd wait
+// out its whole TimeoutStopSec.
+function shutdown(signal) {
+  if (_exiting) return
+  _exiting = true
+  console.log(`[bridge] ${signal} — shutting down`)
+  clearInterval(_rateSweep)
+  clearInterval(_ytSweep)
+  for (const res of _sseClients) { try { res.end() } catch (_) {} }
+  _sseClients.clear()
+  const force = setTimeout(() => process.exit(0), 5000)
+  force.unref()
+  server.close(() => process.exit(0))
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'))
+process.on('SIGINT', () => shutdown('SIGINT'))
