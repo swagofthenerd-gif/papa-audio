@@ -3461,6 +3461,30 @@ h2.section-title { font-size:18px; font-weight:700; }
   padding: 24px; text-align: center;
   font-size: 13px; color: var(--text3);
 }
+/* A cache-miss browse spends seconds inside slskd before a percentage can
+   exist, so the bar runs indeterminate until the first chunk lands. */
+.slsk-lib-loading-text { margin-bottom: 10px; }
+.slsk-lib-loading-bar {
+  height: 3px; border-radius: 2px; overflow: hidden;
+  background: var(--glass-border);
+  max-width: 260px; margin: 0 auto;
+}
+.slsk-lib-loading-bar > span {
+  display: block; height: 100%; width: 30%;
+  background: var(--accent, #1db954);
+  border-radius: 2px;
+  transition: width .2s ease;
+  animation: slskLibIndet 1.1s ease-in-out infinite;
+}
+/* Once a real percentage arrives the width is driven, not animated. */
+.slsk-lib-loading:not(.indeterminate) .slsk-lib-loading-bar > span { animation: none; }
+@keyframes slskLibIndet {
+  0%   { margin-left: -30%; }
+  100% { margin-left: 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .slsk-lib-loading-bar > span { animation: none; width: 100%; opacity: .4; }
+}
 .slsk-lib-dir { border-bottom: 1px solid var(--glass-border); }
 .slsk-lib-dir:last-child { border-bottom: none; }
 .slsk-lib-dir-header {

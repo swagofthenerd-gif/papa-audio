@@ -92,7 +92,10 @@
     </div>
     <div class="slskx-actionbar" id="slskx-actionbar"></div>
     <div class="slsk-lib-body" id="slsk-lib-body">
-      <div class="slsk-lib-loading">Loading ${esc(username)}'s library…</div>
+      <div class="slsk-lib-loading indeterminate">
+        <div class="slsk-lib-loading-text">Fetching ${esc(username)}'s file list from slskd…</div>
+        <div class="slsk-lib-loading-bar" role="progressbar" aria-label="Fetching the library"><span></span></div>
+      </div>
     </div>
     <div class="slsh-body" id="slsh-body" style="display:none"></div>
     <div class="slskx-statusbar" id="slskx-status"></div>
@@ -241,6 +244,43 @@
     state.downloadWishlist.push({ query: q, addedAt: Date.now() })
     window.api.saveDownloadWishlist(state.downloadWishlist)
     return { added: true, query: q }
+  }
+
+  // A cache-miss browse sits on a static line for the whole slskd fetch --
+  // seven seconds on a 7,635-album peer -- before the first percentage can
+  // exist, because the percentage needs a directory count we do not have yet.
+  // The bar runs indeterminate until then, and the copy names the phase.
+  function shLoadingProgress(el, text, pct) {
+    if (!el) return
+    el.classList.remove('indeterminate')
+    const t = el.querySelector('.slsk-lib-loading-text')
+    const bar = el.querySelector('.slsk-lib-loading-bar span')
+    const p = Math.max(0, Math.min(100, Math.round(pct)))
+    if (t) t.textContent = `${text} ${p}%`
+    else el.textContent = `${text} ${p}%`
+    if (bar) bar.style.width = p + '%'
+    const pb = el.querySelector('.slsk-lib-loading-bar')
+    if (pb) { pb.setAttribute('aria-valuenow', String(p)); pb.setAttribute('aria-valuemin', '0'); pb.setAttribute('aria-valuemax', '100') }
+  }
+
+  // Folder paths the engine reports as new since this peer was last browsed.
+  // Null until a reply carries the field, so an engine without it behaves
+  // exactly as before: no rail, nothing said.
+  let shNewDirs = null
+
+  function shNewAlbums() {
+    if (!shNewDirs || !shNewDirs.size || !shelves || !shelves.everything) return []
+    const out = []
+    for (const a of shelves.everything) {
+      if (shNewDirs.has(a.folderPath) || shNewDirs.has(a.folderName)) out.push(a)
+    }
+    return out
+  }
+
+  function shNoteNewDirs(reply) {
+    if (reply && Array.isArray(reply.newDirs) && reply.newDirs.length) {
+      shNewDirs = new Set(reply.newDirs)
+    }
   }
 
   function navTo(path) { hist.go(path); searching = ''; search.value = ''; render() }
@@ -901,6 +941,11 @@
     const albumId = 'slshart_' + key.replace(/[^a-z0-9]+/g, '_').slice(0, 60)
     try {
       const res = await window.api.fetchAlbumArt({ albumId, artist, album }).catch(() => null)
+      // The art source is rate-limiting us. Keep hammering it and every later
+      // fetch fails too, including the ones a shopper is actually looking at.
+      // Stop the background sweep for the session; on-demand fetches for
+      // visible cards still go out.
+      if (res && res.throttled) { shArtPrefetchAbort = true; return }
       const artPath = res && res.artPath
       shArtCache.set(key, artPath || '')
       if (artPath) shArtPaint(key, artPath)
@@ -1193,7 +1238,12 @@
     const grabAll = shelves.upgrades.length
       ? `<button class="slsh-grab-all" id="slsh-grab-all" title="Download every upgrade in this shelf">⬇ Grab all ${shelves.upgrades.length} upgrade${shelves.upgrades.length !== 1 ? 's' : ''}</button>`
       : ''
+    // Only rendered when the engine actually sent newDirs; shRailHtml hides an
+    // empty shelf on its own, so an engine without the field changes nothing.
+    const fresh = shNewAlbums()
     const rails =
+      shRailHtml('new', 'New since last visit',
+        `${fresh.length} added since you were last here`, fresh, 'plain') +
       shRailHtml('upgrades', 'Upgrades for you',
         `${shelves.upgrades.length} better than your copies`, shelves.upgrades, 'upgrade', grabAll) +
       shRailHtml('missing', 'You don\'t have these',
@@ -1723,6 +1773,7 @@
   // detect both fields so an engine without them behaves exactly as before.
   shFromCache = !!res.fromCache
   shCachedAt = Number(res.cachedAt) || 0
+  shNoteNewDirs(res)
   // Chunked, time-sliced build (SH.buildTreeChunked) so a 140k-file library
   // never blocks the main thread; the existing loading line doubles as the
   // progress affordance. Falls back to the sync build if the module is old.
@@ -1741,14 +1792,14 @@
         if (!slice || !slice.ok) {
           if (slice && slice.expired && loadingEl && loadingEl.isConnected) {
             loadingEl.textContent = 'That browse timed out — open it again.'
+            loadingEl.classList.remove('indeterminate')
           }
           return
         }
         treeBuilder.add(slice.directories || [])
         pulled += (slice.directories || []).length
         if (loadingEl && loadingEl.isConnected && total) {
-          loadingEl.textContent =
-            `Loading ${username}'s library… ${Math.round((pulled / total) * 100)}%`
+          shLoadingProgress(loadingEl, `Loading ${username}'s library…`, (pulled / total) * 100)
         }
       }
     } finally {
@@ -1758,6 +1809,7 @@
       try {
         const endReply = await window.api.slskBrowseEnd({ token: res.token })
         if (endReply && endReply.fingerprint && dlg.isConnected) shBrowseFp = endReply.fingerprint
+        shNoteNewDirs(endReply)
       } catch (_) {}
     }
     if (!dlg.isConnected) return
@@ -1768,8 +1820,7 @@
       shouldAbort: () => !dlg.isConnected,
       onProgress: (done, total) => {
         if (loadingEl && loadingEl.isConnected && total) {
-          loadingEl.textContent =
-            `Loading ${username}'s library… ${Math.round((done / total) * 100)}%`
+          shLoadingProgress(loadingEl, `Loading ${username}'s library…`, (done / total) * 100)
         }
       },
     })
