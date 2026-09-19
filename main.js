@@ -10876,17 +10876,40 @@ async function _browseFetch(username, timeoutMs) {
   return (data?.directories || data || []).filter(d => (d.files || []).length > 0)
 }
 
-// A completed browse of a SAVED user updates the diff record: the previous
-// fileCount rolls into prevFileCount, the fresh count and browse time land.
-// "new since last visit" is read from that pair by slsk-friend-diffs. Only saved
-// users are touched — recordBrowse is a no-op for the rest.
+// How many "New since last visit" folder paths ride back to the renderer. The
+// shelf is a prompt to go and look, not a manifest.
+const BROWSE_NEW_DIRS_CAP = 200
+
+// A USER-INITIATED browse of a SAVED user updates the diff record: the previous
+// fileCount and folder snapshot roll into prevFileCount / prevDirSnap, the
+// fresh ones land, and the folders that were not in the previous snapshot come
+// back as the "New since last visit" list. slsk-friend-diffs reads the count
+// pair for the badge; the shop reads this list for the shelf the badge
+// promises. Only saved users are touched — recordBrowse is a no-op for the rest.
+//
+// The background refresh does NOT call this. It used to, and that rotated the
+// snapshot seconds after the badge appeared: by the time the user opened the
+// library, last visit's folders were this visit's folders and the shelf was
+// empty. A visit is something a person does.
 function _browseRecordDiff(username, dirs) {
-  if (!savedUsers.isSaved(store.get('slskSavedUsers', []), username)) return
-  const fileCount = dirs.reduce((n, d) => n + (d.files || []).length, 0)
-  const list = savedUsers.recordBrowse(store.get('slskSavedUsers', []), username,
-    { fileCount, dirCount: dirs.length })
+  const list0 = store.get('slskSavedUsers', [])
+  if (!savedUsers.isSaved(list0, username)) return []
+  let fileCount = 0
+  const paths = []
+  for (const d of dirs) {
+    fileCount += (d && d.files && d.files.length) || 0
+    const name = String((d && d.name) || '')
+    if (name) paths.push(name)
+  }
+  const i = savedUsers.findIndex(list0, username)
+  const prevSnap = i >= 0 ? list0[i].dirSnap : null
+  const newDirs = savedUsers.newDirPaths(prevSnap, paths, BROWSE_NEW_DIRS_CAP)
+  const list = savedUsers.recordBrowse(list0, username, {
+    fileCount, dirCount: dirs.length, dirSnap: savedUsers.dirSnapshot(paths),
+  })
   store.set('slskSavedUsers', list)
   savedUsersChanged(list)
+  return newDirs
 }
 
 // Users with a background refresh already running, so an open that lands while
@@ -10901,7 +10924,9 @@ function _browseRefresh(username) {
     try {
       const dirs = await _browseFetch(username, 30000)
       _browseCacheWrite(username, dirs)
-      _browseRecordDiff(username, dirs)
+      // Deliberately no _browseRecordDiff here: a background refresh is not a
+      // visit, and rotating the snapshot from one would erase the very diff the
+      // next open is supposed to show.
       // The renderer re-reads via the normal call, which now serves the fresh
       // cache. The UI agent subscribes to this via onSlskBrowseRefreshed.
       safeSend('slsk-browse-refreshed', { username })
@@ -10918,18 +10943,24 @@ function _browseRefresh(username) {
 // longer deadline when the first attempt times out, because a big library
 // often just needs more time. Both browse entry points call this — the single-
 // shot slsk-browse-user and the sliced slsk-browse-begin — so the rule cannot
-// drift between them. Returns { ok, dirs, fromCache, cachedAt } or { ok, error }.
+// drift between them. Returns { ok, dirs, fromCache, cachedAt, newDirs } or
+// { ok, error }. Both entry points are user-initiated, so both record the visit
+// — including a cache hit, which is a visit like any other and the common case.
 async function _browseDirectories(username) {
   const cached = _browseCacheRead(username)
   if (cached) {
+    const dirs = cached.directories || []
+    // Record BEFORE kicking the refresh off, so the diff is against what the
+    // user is actually being shown.
+    const newDirs = _browseRecordDiff(username, dirs)
     _browseRefresh(username)
-    return { ok: true, dirs: cached.directories || [], fromCache: true, cachedAt: cached.cachedAt }
+    return { ok: true, dirs, fromCache: true, cachedAt: cached.cachedAt, newDirs }
   }
   const attempt = async (deadlineMs) => {
     const dirs = await _browseFetch(username, deadlineMs)
     _browseCacheWrite(username, dirs)
-    _browseRecordDiff(username, dirs)
-    return { ok: true, dirs, fromCache: false, cachedAt: null }
+    const newDirs = _browseRecordDiff(username, dirs)
+    return { ok: true, dirs, fromCache: false, cachedAt: null, newDirs }
   }
   try {
     return await attempt(30000)
@@ -10944,6 +10975,9 @@ ipcMain.handle('slsk-browse-user', async (_, { username }) => {
   if (!got.ok) return { ok: false, error: got.error }
   const reply = { ok: true, directories: got.dirs }
   if (got.fromCache) { reply.fromCache = true; reply.cachedAt = got.cachedAt }
+  // Folder paths that were not there last visit, capped. Absent when there is
+  // nothing new, or when this is the first recorded visit.
+  if (got.newDirs && got.newDirs.length) reply.newDirs = got.newDirs
   return reply
 })
 
@@ -11015,7 +11049,11 @@ function _browseHead(directories, extra) {
 ipcMain.handle('slsk-browse-begin', async (_, { username } = {}) => {
   const got = await _browseDirectories(username)
   if (!got.ok) return { ok: false, error: got.error }
-  return _browseHead(got.dirs, got.fromCache ? { fromCache: true, cachedAt: got.cachedAt } : null)
+  const extra = got.fromCache ? { fromCache: true, cachedAt: got.cachedAt } : {}
+  // Rides on the HEAD, not the end: the shop can build its "New since last
+  // visit" shelf while it is still pulling the slices.
+  if (got.newDirs && got.newDirs.length) extra.newDirs = got.newDirs
+  return _browseHead(got.dirs, extra)
 })
 
 ipcMain.handle('slsk-browse-chunk', (_, { token, offset = 0, limit = 400 } = {}) => {
