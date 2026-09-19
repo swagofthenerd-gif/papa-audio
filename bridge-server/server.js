@@ -998,8 +998,50 @@ app.post('/api/settings/liked',          (req, res) =>
   queueMutation(res, 'likedAlbums.set', { ids: Array.isArray(req.body && req.body.ids) ? req.body.ids : [] }))
 
 app.get('/api/settings/liked-tracks',    (_, res) => res.json(sideValue('likedTracks') || []))
-app.post('/api/settings/liked-tracks',   (req, res) =>
-  queueMutation(res, 'likedTracks.set', { paths: Array.isArray(req.body && req.body.paths) ? req.body.paths : [] }))
+
+// The phone has no "toggle" call. store/library.ts keeps the whole liked set in
+// memory (loaded once at startup) and POSTs all of it every time the user taps
+// a heart, so the body is a FULL LIST that means "one track changed".
+//
+// Queued verbatim as `likedTracks.set`, that list replaced the desktop's list
+// at ingest time — minutes later, against a value that had moved on. One tap on
+// the phone wiped every like made on the PC since the phone booted, and one
+// like on the PC was undone by the next tap on the phone. Last writer wins, and
+// the loser is never told.
+//
+// So the route diffs the posted list against the desktop's CURRENT value (with
+// the inbox replayed, so two taps in a row diff against each other and not
+// against a stale file) and queues only what actually changed. A tap then
+// touches exactly the one track it was about, and a like it never saw survives
+// because no op ever names it.
+//
+// The residual window is narrow and honest: a like made on the PC between the
+// phone's startup read and this POST is still in `removed`. Closing it needs
+// the phone to send the list it started FROM, which is a phone-side change.
+app.post('/api/settings/liked-tracks',   (req, res) => {
+  const paths = Array.isArray(req.body && req.body.paths)
+    ? req.body.paths.filter(p => typeof p === 'string') : []
+  const currentValue = sideValue('likedTracks')
+  const current = Array.isArray(currentValue) ? currentValue : []
+  const have = new Set(current)
+  const want = new Set(paths)
+  const added = paths.filter(p => !have.has(p))
+  const removed = current.filter(p => !want.has(p))
+
+  // Nothing changed: the phone re-sending its list is not a mutation, and an
+  // empty op would wake the desktop's ingester for no reason.
+  if (!added.length && !removed.length) {
+    return res.status(202).json({ ok: true, queued: false, added: 0, removed: 0 })
+  }
+  try {
+    if (added.length) inbox.append(USER_DATA, 'likedTracks.add', { paths: added })
+    if (removed.length) inbox.append(USER_DATA, 'likedTracks.remove', { paths: removed })
+  } catch (e) {
+    console.error(`[bridge] inbox write failed (${e && e.message})`)
+    return res.status(500).json({ error: 'Could not record the change' })
+  }
+  res.status(202).json({ ok: true, queued: true, added: added.length, removed: removed.length })
+})
 
 app.get('/api/settings/play-counts',     (_, res) => res.json(sideValue('playCounts') || {}))
 app.post('/api/settings/play-counts/increment', (req, res) => {

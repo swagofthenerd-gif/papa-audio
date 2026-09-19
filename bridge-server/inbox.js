@@ -41,7 +41,15 @@ const MAX_OPS = 2000
 // The op types the read overlay knows how to replay. An op whose type is not
 // here is refused at write time rather than silently queued for nobody.
 const OP_TYPES = new Set([
+  // `.set` replaces the whole list and is kept for a caller that genuinely
+  // means "this is now the list". The PHONE does not mean that: it POSTs the
+  // full list it loaded at startup on every toggle, so a `.set` applied
+  // minutes later at ingest time destroyed every like the desktop made in
+  // between. The route sends the DIFF instead, and these two apply it against
+  // whatever the desktop's list is at the moment it lands.
   'likedTracks.set',
+  'likedTracks.add',
+  'likedTracks.remove',
   'playlists.upsert',
   'playlists.delete',
   'playCounts.increment',
@@ -105,6 +113,18 @@ function applyInbox(key, base, ops) {
 
     if (key === 'likedTracks' && action === 'set') {
       value = Array.isArray(p.paths) ? p.paths.slice() : []
+    } else if (key === 'likedTracks' && action === 'add') {
+      const list = Array.isArray(value) ? value.slice() : []
+      const have = new Set(list)
+      // Appended, not prepended: the list is a membership set, and re-ordering
+      // it on every phone like would churn the desktop's file for nothing.
+      for (const p2 of Array.isArray(p.paths) ? p.paths : []) {
+        if (typeof p2 === 'string' && !have.has(p2)) { have.add(p2); list.push(p2) }
+      }
+      value = list
+    } else if (key === 'likedTracks' && action === 'remove') {
+      const gone = new Set(Array.isArray(p.paths) ? p.paths : [])
+      value = (Array.isArray(value) ? value : []).filter(x => !gone.has(x))
     } else if (key === 'playlists' && action === 'upsert') {
       const list = Array.isArray(value) ? value.slice() : []
       const idx = list.findIndex(x => x && x.id === (p.playlist && p.playlist.id))

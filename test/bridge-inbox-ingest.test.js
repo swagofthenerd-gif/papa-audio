@@ -106,6 +106,29 @@ test('every queued op is applied through the side stores, matching the bridge re
   assert.strictEqual(ingest.readWatermark(ud), 9)
 })
 
+// The phone's heart tap arrives as a DIFF (likedTracks.add / .remove), not as
+// the whole list it used to send. The point of the diff is that it is applied
+// against whatever the desktop holds at INGEST time, minutes after the tap — so
+// the ingester, not just the bridge's read overlay, has to land it that way.
+test('a liked-tracks diff merges into the desktop list instead of replacing it', async () => {
+  const ud = mkUserData()
+  const stores = makeStores(ud)
+  // What the desktop holds when the ingester finally runs: one like the phone
+  // had when it posted, and one it made afterwards and has never seen.
+  stores.likedTracks.set(['/music/shared.flac', '/music/desktop-only.flac'])
+  await flushAll(stores)
+
+  inbox.append(ud, 'likedTracks.add', { paths: ['/music/phone-liked.flac'] })
+  inbox.append(ud, 'likedTracks.remove', { paths: ['/music/shared.flac'] })
+
+  ingest.ingestOnce({ userData: ud, sideStores: stores, log: () => {} })
+  await flushAll(stores)
+
+  assert.deepStrictEqual(readSideFile(ud, 'liked-tracks', null),
+    ['/music/desktop-only.flac', '/music/phone-liked.flac'],
+    'the phone’s tap must not touch a like it never saw')
+})
+
 // The caps are part of the replay contract, not an implementation detail: the
 // phone's list is already truncated, so a desktop that keeps everything shows a
 // different history than the device it came from.

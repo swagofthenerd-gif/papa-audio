@@ -209,6 +209,79 @@ test('GET play-history carries `playedAt` for entries the DESKTOP wrote', async 
   assert.strictEqual(desktopEntry.ts, 1700000000000, '`ts` must not be replaced')
 })
 
+// ── /api/settings/liked-tracks ───────────────────────────────────────────────
+// The phone POSTs its FULL liked list on every heart tap (store/library.ts
+// holds the set in memory from startup). Queued as `likedTracks.set`, that list
+// replaced the desktop's at ingest time, so one tap on the phone wiped every
+// like the PC had made since. The route diffs instead and queues add/remove.
+
+const likedFile = () => path.join(ud, 'liked-tracks.json')
+
+// Drop only the liked ops from the shared inbox, so one test's queue cannot
+// leak into the next. `seq` is left alone — the bridge derives the next seq
+// from it and it must never go backwards.
+function resetLikedOps() {
+  const f = path.join(ud, 'bridge-inbox.json')
+  let state
+  try { state = JSON.parse(fs.readFileSync(f, 'utf8')) } catch (_) { return }
+  state.ops = (state.ops || []).filter(o => !String(o.type || '').startsWith('likedTracks.'))
+  fs.writeFileSync(f, JSON.stringify(state))
+}
+
+const getLiked = async () =>
+  (await fetch(`${base}/api/settings/liked-tracks`, authed)).json()
+
+test('a phone heart tap does not wipe a like the desktop made after it', async () => {
+  const A = '/music/desktop-had-this.flac'
+  const B = '/music/phone-just-liked.flac'
+  const C = '/music/desktop-liked-meanwhile.flac'
+  resetLikedOps()
+  fs.writeFileSync(likedFile(), JSON.stringify([A]))
+
+  // The tap: the phone re-sends everything it knows plus the new one.
+  const r = await postJson(`${base}/api/settings/liked-tracks`, { paths: [A, B] })
+  assert.strictEqual(r.status, 202)
+  const body = await r.json()
+  assert.deepStrictEqual({ added: body.added, removed: body.removed }, { added: 1, removed: 0 },
+    'a one-track toggle must queue a one-track change, not a whole list')
+
+  // The phone sees its own tap immediately, through the read overlay.
+  assert.deepStrictEqual(await getLiked(), [A, B])
+
+  // Now the desktop likes something of its own before the ingester runs — the
+  // exact race that used to end with C destroyed.
+  fs.writeFileSync(likedFile(), JSON.stringify([A, C]))
+  assert.deepStrictEqual(await getLiked(), [A, C, B],
+    'the phone tap replaced the desktop list instead of adding to it')
+})
+
+test('an unlike removes exactly the one track, and nothing else', async () => {
+  const A = '/music/being-unliked.flac'
+  const B = '/music/kept.flac'
+  const D = '/music/desktop-liked-after.flac'
+  resetLikedOps()
+  fs.writeFileSync(likedFile(), JSON.stringify([A, B]))
+
+  const body = await (await postJson(`${base}/api/settings/liked-tracks`, { paths: [B] })).json()
+  assert.deepStrictEqual({ added: body.added, removed: body.removed }, { added: 0, removed: 1 })
+  assert.deepStrictEqual(await getLiked(), [B])
+
+  fs.writeFileSync(likedFile(), JSON.stringify([A, B, D]))
+  assert.deepStrictEqual(await getLiked(), [B, D],
+    'the unlike must take A and leave the desktop’s later D alone')
+})
+
+test('re-sending the same list queues nothing at all', async () => {
+  const A = '/music/unchanged.flac'
+  resetLikedOps()
+  fs.writeFileSync(likedFile(), JSON.stringify([A]))
+  const body = await (await postJson(`${base}/api/settings/liked-tracks`, { paths: [A] })).json()
+  assert.strictEqual(body.queued, false, 'an idle re-send is not a mutation')
+
+  const queued = JSON.parse(fs.readFileSync(path.join(ud, 'bridge-inbox.json'), 'utf8'))
+  assert.strictEqual(queued.ops.filter(o => String(o.type).startsWith('likedTracks.')).length, 0)
+})
+
 // ── /api/crash-log ───────────────────────────────────────────────────────────
 // crash.ts POSTs and `.catch(() => {})` the result: it parses nothing, so the
 // contract is "accepted, and the report is on disk where it can be read".
