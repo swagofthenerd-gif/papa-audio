@@ -1077,3 +1077,16 @@ focus (undoes half of #14); NEW-1 `showSlskConfigModal` takes/returns no
 focus; NEW-2 friends read "Checking…" forever when slskd is not logged in
 (`pollPresenceOnce` resolves Unknown for everyone; L1 covered only the
 rejection path) → `connected:false` → "Soulseek offline".
+
+### 19 Sep — re-test follow-ups merged; night closed at 6,5xx/0
+`fix/retest2-focus-presence` (3 commits): shop `opener` captured before the
+dialog exists (my re-check: opener nulled → 3/18 red); Soulseek Account
+modal focuses its username field, traps focus, restores the opener;
+`pollPresenceOnce` returns `{statuses, connected}` and friends read
+"Soulseek offline" when the daemon is not logged in (my re-check:
+`connected` dropped from the reply → red). Gate green; pushed. Every branch
+of the night merged; only `flac-player-stable` remains as a worktree.
+READY FOR HIS RESTART. His actions: restart Papa Audio (he launches from
+the working tree); restart `papa-bridge.service` for the phone; decide
+shuffle exhaustion; try a debrid season pack and watch On Device for the
+next episode arriving.
