@@ -3397,6 +3397,25 @@ h2.section-title { font-size:18px; font-weight:700; }
 .slav-source-opt.current { color: var(--accent, #1db954); }
 .slav-source-q { color: var(--text3, #888); font-size: 11px; margin-left: 6px; }
 .slav-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+/* Compare drawer (provisional; the explorer design pass restyles under .slx-*). */
+.slx-compare { margin: 0 16px 8px; padding: 12px 14px; border: 1px solid var(--glass-border); border-radius: var(--r-md, 10px); background: var(--bg2); }
+.slx-compare[hidden] { display: none; }
+.slx-cmp-head { display: flex; gap: 18px; flex-wrap: wrap; font-size: 13px; margin-bottom: 4px; }
+.slx-cmp-label { font-weight: 700; margin-right: 6px; color: var(--text2); }
+.slx-cmp-verdictline { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+.slx-cmp-scroll { max-height: 42vh; overflow: auto; }
+.slx-cmp-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.slx-cmp-table th { text-align: left; font-weight: 600; color: var(--text2); padding: 4px 8px; position: sticky; top: 0; background: var(--bg2); }
+.slx-cmp-table th small { font-weight: 400; opacity: .7; }
+.slx-cmp-table td { padding: 4px 8px; border-top: 1px solid var(--glass-border); white-space: nowrap; }
+.slx-cmp-title { max-width: 32ch; overflow: hidden; text-overflow: ellipsis; }
+.slx-cmp-vs { opacity: .45; margin: 0 5px; }
+.slx-cmp-verdict { text-align: center; font-weight: 700; width: 28px; }
+.slx-v-better .slx-cmp-verdict { color: var(--accent-ink, var(--accent)); }
+.slx-v-worse .slx-cmp-verdict, .slx-v-only-mine .slx-cmp-verdict { color: var(--error-ink, #c0392b); }
+.slx-v-only-theirs .slx-cmp-verdict { color: var(--amber-ink, #b26a00); }
+.slx-cmp-actions { display: flex; align-items: center; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+.slx-cmp-why { font-size: 12px; color: var(--text2); }
 .slav-actions button {
   background: rgba(255,255,255,.08); border: none; color: #fff;
   font-size: 12px; font-weight: 600; padding: 7px 12px; border-radius: 8px; cursor: pointer;

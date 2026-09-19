@@ -21,7 +21,10 @@
 
 ;(function () {
 
-  const SH = () => (typeof window !== 'undefined' && window.PapaSlskShelves) || null
+  // In the app the shelves module is on window; under node (tests) it is a
+  // require, so the fuzzy library match works in both.
+  const SH = () => (typeof window !== 'undefined' && window.PapaSlskShelves) ||
+    (typeof require === 'function' ? (() => { try { return require('./slsk-shelves.js') } catch (_) { return null } })() : null)
 
   // ── Small pure helpers (also exported for unit tests) ───────────────────────
 
@@ -107,6 +110,7 @@
       src = { ...input, ...chosen }   // chosen's files/username override the album's
     }
     const rawFiles = (src.files || []).filter(Boolean)
+    const matchedLibId = input.matchedLibId != null ? String(input.matchedLibId) : null
     const s = SH()
     const files = rawFiles.map(f => ({
       // slsk-tree files carry fullPath (what slskd needs); search groups carry
@@ -114,7 +118,7 @@
       filename: f.fullPath || f.filename || f.name || '',
       name: baseName(f.name || f.filename || f.fullPath || ''),
       size: Number(f.size) || 0,
-      bitDepth: f.bitDepth, sampleRate: f.sampleRate, bitRate: f.bitRate,
+      bitDepth: f.bitDepth, sampleRate: f.sampleRate, bitRate: f.bitRate, length: f.length,
       isFlac: f.isFlac != null ? !!f.isFlac
         : (s ? s.isLosslessName(f.name || f.filename || '') : /\.flac$/i.test(f.name || f.filename || '')),
     }))
@@ -130,9 +134,74 @@
       totalSize,
       lossless: files.length ? files.filter(f => f.isFlac).length >= files.length / 2 : false,
       isHiRes: files.some(f => (Number(f.bitDepth) || 0) >= 24 || (Number(f.sampleRate) || 0) >= 88200),
+      matchedLibId,
       sources,          // kept so the header can offer "other sources"
       sourceIndex: sourceIndex != null ? sourceIndex : null,
     }
+  }
+
+  // My copy of this album, if I have one: the shelf's library match first,
+  // else the same fuzzy artist/album match the cover lookup already trusts.
+  function findMyCopy(a, state) {
+    if (!state || !Array.isArray(state.library)) return null
+    if (a.matchedLibId) {
+      const hit = state.library.find(l => l && String(l.id) === a.matchedLibId)
+      if (hit) return hit
+    }
+    const s = SH()
+    if (!s || !a.album) return null
+    return state.library.find(l => l && s.tokenScore(a.album, l.name) >= 0.6 &&
+      (!a.artist || !l.artist || s.tokenScore(a.artist, l.artist) >= 0.34)) || null
+  }
+
+  function fmtDur(sec) {
+    const n = Math.round(Number(sec) || 0)
+    if (!n) return '—'
+    return Math.floor(n / 60) + ':' + String(n % 60).padStart(2, '0')
+  }
+  function fmtQual(t) {
+    if (!t) return '—'
+    const bd = Number(t.bitDepth) || 0, sr = Number(t.sampleRate) || 0, kb = Number(t.bitRate) || 0
+    if (t.lossless) return t.fmt + (bd && sr ? ` ${bd}/${Math.round(sr / 1000)}` : sr ? ` ${Math.round(sr / 1000)}kHz` : '')
+    return t.fmt + (kb ? ` ${kb}k` : '')
+  }
+  const VERDICT_GLYPH = { better: '▲', same: '=', worse: '▼', 'only-theirs': '+', 'only-mine': '−' }
+  const VERDICT_TEXT = { better: 'theirs is better', same: 'same quality', worse: 'yours is better',
+    'only-theirs': 'only in theirs', 'only-mine': 'only in yours' }
+
+  // The compare drawer: peer album vs my copy, one row per track, and one
+  // honest verdict. Pure — takes the comparison, returns markup.
+  function compareDrawerHtml(cmp, mine, a, esc) {
+    const s = cmp.summary
+    const rows = cmp.rows.map(r => {
+      const t = r.theirs, m = r.mine
+      return `<tr class="slx-cmp-row slx-v-${r.verdict}">
+        <td class="slx-cmp-n">${r.n != null ? r.n : ''}</td>
+        <td class="slx-cmp-title" title="${esc((t || m).rawTitle)}">${esc((t || m).rawTitle)}</td>
+        <td class="slx-cmp-dur">${t ? fmtDur(t.duration) : '—'}<span class="slx-cmp-vs">/</span>${m ? fmtDur(m.duration) : '—'}</td>
+        <td class="slx-cmp-qual">${esc(fmtQual(t))}<span class="slx-cmp-vs">/</span>${esc(fmtQual(m))}</td>
+        <td class="slx-cmp-size">${t ? esc(fmtSize(t.size)) : '—'}<span class="slx-cmp-vs">/</span>${m ? esc(fmtSize(m.size)) : '—'}</td>
+        <td class="slx-cmp-verdict" title="${VERDICT_TEXT[r.verdict]}" aria-label="${VERDICT_TEXT[r.verdict]}">${VERDICT_GLYPH[r.verdict]}</td>
+      </tr>`
+    }).join('')
+    const replaceWhy = s.replaceOk ? 'Download this copy; once every track is verified, offer to move yours to Trash'
+      : !s.countsMatch ? 'Track counts differ — Replace would lose or duplicate music'
+      : s.worse ? 'Yours is better on some tracks'
+      : s.onlyMine ? 'Some of your tracks are missing from theirs'
+      : 'Not an upgrade over your copy'
+    return `<div class="slx-cmp-head">
+        <div class="slx-cmp-side"><span class="slx-cmp-label">Theirs</span> ${esc(albumQualityLabel(a))} · ${s.theirsCount} tracks</div>
+        <div class="slx-cmp-side"><span class="slx-cmp-label">Yours</span> ${esc(mine.name || '')} · ${s.mineCount} tracks</div>
+      </div>
+      <div class="slx-cmp-verdictline">${esc(s.line)}</div>
+      <div class="slx-cmp-scroll"><table class="slx-cmp-table">
+        <thead><tr><th>#</th><th>Title</th><th>Length <small>theirs / yours</small></th><th>Quality <small>theirs / yours</small></th><th>Size <small>theirs / yours</small></th><th></th></tr></thead>
+        <tbody>${rows}</tbody></table></div>
+      <div class="slx-cmp-actions">
+        <button class="slx-cmp-replace" ${s.replaceOk ? '' : 'disabled'} title="${esc(replaceWhy)}">⇄ Replace my copy</button>
+        <span class="slx-cmp-why">${s.replaceOk ? '' : esc(replaceWhy)}</span>
+        <button class="slx-cmp-close">Close compare</button>
+      </div>`
   }
 
   // The album-quality summary line for the header.
@@ -176,6 +245,7 @@
     const api = (typeof window !== 'undefined' && window.api) || {}
 
     const a = normalizeAlbum(spec.album, spec.sourceIndex)
+    const myCopy = a ? findMyCopy(a, state) : null
     if (!a || !a.files.length) { showSnackbar('That album had no readable tracks'); return { close() {} } }
     const username = a.username
 
@@ -246,11 +316,13 @@
             <button class="slav-dl-selected" disabled>Download selected</button>
             <button class="slav-wish" title="Add this album to your wishlist">＋ Wishlist</button>
             <button class="slav-find" title="Find other people sharing this album">⌕ Other sources</button>
+            ${myCopy ? '<button class="slav-compare" aria-expanded="false" title="Track-by-track against the copy in your library">⇄ Compare with my copy</button>' : ''}
             ${openSlskChat ? '<button class="slav-msg" title="Message this uploader">✉ Message</button>' : ''}
           </div>
         </div>
         <button class="slav-close" aria-label="Close" title="Close (Esc)">✕</button>
       </div>
+      <div class="slx-compare" hidden></div>
       <div class="slav-tracks-head">
         <label class="slav-selall" title="Select all tracks"><input type="checkbox" class="slav-selall-cb"> All</label>
         <span class="slav-th-num">#</span>
@@ -360,6 +432,38 @@
         showSnackbar('Could not queue the album: ' + String(e && e.message || e), null, null, 6000)
       }
     })
+
+    const cmpBtn = panel.querySelector('.slav-compare')
+    if (cmpBtn && myCopy) {
+      const drawer = panel.querySelector('.slx-compare')
+      cmpBtn.addEventListener('click', () => {
+        const C = (typeof window !== 'undefined' && window.PapaSlskCompare) || null
+        if (!C) { showSnackbar('The compare module did not load'); return }
+        const open = drawer.hasAttribute('hidden')
+        if (open) {
+          const cmp = C.compareAlbums(a.files, myCopy.tracks || [])
+          drawer.innerHTML = compareDrawerHtml(cmp, myCopy, a, esc)
+          drawer.removeAttribute('hidden')
+          const rep = drawer.querySelector('.slx-cmp-replace')
+          rep.addEventListener('click', async () => {
+            const label = rep.textContent
+            rep.disabled = true; rep.textContent = 'Queuing…'
+            try {
+              const res = await _slskEnqueue(a.files.map(f => ({ username, filename: f.filename, size: f.size, replaceLibId: String(myCopy.id) })))
+              if (!res || res.ok === false) { rep.disabled = false; rep.textContent = label; return }
+              _scheduleLibRescan()
+              rep.textContent = '✓ Downloading — Trash offered after verification'
+              showSnackbar('Downloading the upgrade. Once every track is verified you will be offered to move your old copy to Trash.')
+            } catch (e) { rep.disabled = false; rep.textContent = label; showSnackbar('Could not queue: ' + String(e && e.message || e)) }
+          })
+          drawer.querySelector('.slx-cmp-close').addEventListener('click', () => { drawer.setAttribute('hidden', ''); cmpBtn.setAttribute('aria-expanded', 'false'); cmpBtn.focus() })
+          cmpBtn.setAttribute('aria-expanded', 'true')
+          drawer.querySelector('.slx-cmp-replace').focus()
+        } else {
+          drawer.setAttribute('hidden', ''); cmpBtn.setAttribute('aria-expanded', 'false')
+        }
+      })
+    }
 
     panel.querySelector('.slav-dl-selected').addEventListener('click', async ev => {
       const btn = ev.currentTarget
@@ -558,6 +662,7 @@
 
   const api = {
     open,
+    compareDrawerHtml, findMyCopy,
     // Exposed for unit tests.
     normalizeAlbum, cleanTrackTitle, trackNumOf, trackQuality, baseName,
   }
