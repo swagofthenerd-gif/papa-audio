@@ -26959,7 +26959,39 @@ async function initPlaybackSettings() {
 
 // Roadmap 137: the sharing choice, with a sentence that says exactly what is
 // exposed for the chosen mode.
+// Settings → Soulseek: the account, the download folder and what is shared.
+// Two messages point people here ("check them in Settings → Soulseek"), so
+// this block has to exist and has to reach the same modal and the same folder
+// picker the shop and the Downloads tab already use — no new IPC.
+async function _initSoulseekAccountSettings() {
+  const accBtn = document.getElementById('slsk-account-btn')
+  const accText = document.getElementById('slsk-account-text')
+  const folderBtn = document.getElementById('slsk-folder-btn')
+  const folderLbl = document.getElementById('slsk-folder-label')
+  if (accBtn) accBtn.addEventListener('click', () => showSlskConfigModal(slsk && slsk.lastQuery))
+  if (accText && window.api && window.api.slskStatus) {
+    const st = await window.api.slskStatus().catch(() => null)
+    accText.textContent = !st ? 'Could not reach the Soulseek daemon.'
+      : st.connected ? 'Connected' + (st.username ? ' as ' + st.username : '') + '.'
+      : st.configured ? 'Signed in details are saved, but the daemon is not connected right now.'
+      : 'No Soulseek account is set up yet.'
+  }
+  if (folderBtn && folderLbl && window.api && window.api.slskGetDownloadDir) {
+    const paintDir = dir => {
+      folderLbl.textContent = dir ? (dir.split('/').pop() || dir) : 'Not set'
+      folderBtn.title = dir || 'Could not read the download folder from slskd'
+    }
+    paintDir(await window.api.slskGetDownloadDir().catch(() => null))
+    folderBtn.addEventListener('click', async () => {
+      const res = await window.api.slskSetDownloadDir().catch(() => null)
+      if (res && res.ok) { _dlDownloadDir = res.downloadDir; paintDir(res.downloadDir) }
+      else if (res && res.error) showSnackbar(res.error)
+    })
+  }
+}
+
 async function _initSharingSettings() {
+  await _initSoulseekAccountSettings()
   const sel = document.getElementById('slsk-share-mode')
   const text = document.getElementById('slsk-share-text')
   if (!sel || !window.api || typeof window.api.slskShareModeGet !== 'function') return
@@ -28809,6 +28841,12 @@ function _dlRenderUnauthorized() {
   btn.textContent = 'Retry'
   btn.addEventListener('click', function () { _dlAuthWarned = false; _pollAndRenderDownloads() })
   el.appendChild(btn)
+  // The copy names a place; make it one click away rather than a hunt.
+  var open = document.createElement('button')
+  open.className = 'dl2-action-btn'
+  open.textContent = 'Open Settings'
+  open.addEventListener('click', function () { openSettings('soulseek') })
+  el.appendChild(open)
   // The banner alone left the list below it stuck on the page shell's
   // "Loading" placeholder forever: _pollAndRenderDownloadsInner returns here, so
   // _renderDlTab never runs and nothing ever replaces that placeholder. Only
