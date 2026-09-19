@@ -14,9 +14,13 @@ test('slsk-verify-rip exists, is exposed, and cleans up on every exit', () => {
 
 test('slsk-verify-rip refuses to download in dry-run mode', () => {
   const body = MAIN.slice(MAIN.indexOf("ipcMain.handle('slsk-verify-rip'"), MAIN.indexOf("ipcMain.handle('slsk-verify-rip'") + 6000)
-  const guard = body.indexOf('if (DRY_RUN) return _dryRunRefusal')
+  const guard = body.indexOf('if (DRY_RUN)')
   const call = body.indexOf('slskdFetch(')
   assert.ok(guard > 0 && guard < call, 'the dry-run refusal comes before the download request')
+  assert.ok(body.includes('_dryRunRefusal('), 'it uses the standard refusal shape')
+  // The handler's contract is {ok, reason}; the bare refusal only has `error`.
+  assert.match(body.slice(guard, call), /reason: refusal\.error/,
+    'the dry-run refusal also carries reason')
 })
 
 test('the ceiling probe builds one highpass+volumedetect pass per band', () => {

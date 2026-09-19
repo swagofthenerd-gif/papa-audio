@@ -17,6 +17,16 @@ test('parseAstats takes the Overall block, not channel 1', () => {
   assert.deepEqual(R.parseAstats(err), { measuredBits: 24, dynamicRange: 13.4 })
 })
 
+test('parseAstats reports an absent Dynamic range line as null, not 0', () => {
+  // Fedora's ffmpeg prints no "Dynamic range:" line at all. Reporting 0 there
+  // would show the user a measured-looking zero for something never measured.
+  const err = [
+    '[Parsed_astats_0 @ 0x1] Overall', '[Parsed_astats_0 @ 0x1] Bit depth: 15/16/16/16',
+    '[Parsed_astats_0 @ 0x1] Peak level dB: -1.2',
+  ].join('\n')
+  assert.deepEqual(R.parseAstats(err), { measuredBits: 15, dynamicRange: null })
+})
+
 test('parseCeiling returns the highest band with energy above the floor', () => {
   // showspectrum is not used; we use a bank of highpass+volumedetect passes.
   const err = 'band=16000 mean_volume: -31.0 dB\nband=20000 mean_volume: -48.2 dB\nband=24000 mean_volume: -91.0 dB\nband=30000 mean_volume: -91.0 dB\n'

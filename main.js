@@ -123,6 +123,9 @@ const IPC_TIMEOUT_OVERRIDES = {
   'verify-surround': 120000,
   'verify-surround-folder': 300000,
   'slsk-verify-file': 120000,
+  // Waits up to 180 s for the sample track to arrive, then runs ffprobe and
+  // up to eight ffmpeg passes over it. The 60 s default fired mid-check.
+  'slsk-verify-rip': 300000,
   // Anything that waits on a person. A deadline here does not protect against a
   // wedged handler, it just cancels the user: a Google sign-in with 2FA takes
   // minutes, and add-music-folder commits the folder BEFORE it returns, so a
@@ -7823,12 +7826,25 @@ ipcMain.handle('discogs-token-set', (_, { token } = {}) => { store.set('discogsT
 // httpsGet already sends the User-Agent Discogs insists on (PapaAudio/1.0), so
 // it is reused here; the spacing below is Discogs' one-request-a-second limit.
 let _discogsLastAt = 0
+// Anything derived from a Discogs URL goes through here before it is shown or
+// logged: drop the query string, and belt-and-braces redact a bare token=.
+function _discogsRedact(text) {
+  return String(text || '').replace(/\?[^\s]*/g, '').replace(/token=[^&\s]+/g, 'token=__redacted__')
+}
 async function _discogsGetJson(pathAndQuery, token) {
   const wait = 1000 - (Date.now() - _discogsLastAt)
   if (wait > 0) await new Promise(r => setTimeout(r, wait))
   _discogsLastAt = Date.now()
   const sep = pathAndQuery.includes('?') ? '&' : '?'
-  const raw = await httpsGet(`https://api.discogs.com${pathAndQuery}${sep}token=${encodeURIComponent(token)}`)
+  let raw
+  try {
+    raw = await httpsGet(`https://api.discogs.com${pathAndQuery}${sep}token=${encodeURIComponent(token)}`)
+  } catch (e) {
+    // httpsGet embeds the full URL in its error text, and that URL carries the
+    // user's Discogs token. Strip the query string before this leaves main —
+    // it must never reach the renderer or a log line.
+    throw new Error(_discogsRedact(String(e && e.message || e)))
+  }
   return JSON.parse(String(raw))
 }
 
@@ -7849,7 +7865,7 @@ ipcMain.handle('discogs-album', async (_, { artist, album } = {}) => {
     _enrichSet(key, value)
     return { ok: true, ...value }
   } catch (e) {
-    return { ok: false, reason: 'Discogs did not answer: ' + String(e && e.message || e) }
+    return { ok: false, reason: 'Discogs did not answer: ' + _discogsRedact(String(e && e.message || e)) }
   }
 })
 
@@ -11084,8 +11100,9 @@ function _run(cmd, args, timeoutMs) {
   })
 }
 
-async function _ripWaitForFile(username, filename) {
+async function _ripWaitForFile(username, filename, expectedSize) {
   const deadline = Date.now() + RIP_WAIT_MS
+  const want = Number(expectedSize) > 0 ? Number(expectedSize) : 0
   while (Date.now() < deadline) {
     const found = slskCandidatePaths(filename, username, _downloadDir()).find(c => fs.existsSync(c))
     if (found) {
@@ -11094,7 +11111,10 @@ async function _ripWaitForFile(username, filename) {
       const s1 = fs.statSync(found).size
       await new Promise(r => setTimeout(r, 2000))
       const s2 = fs.existsSync(found) ? fs.statSync(found).size : -1
-      if (s1 === s2 && s1 > 0) return found
+      // A peer that stalls for 2 s would otherwise look "settled", and a
+      // truncated file measures as lossy. If the peer told us the size, demand
+      // essentially all of it before believing the transfer finished.
+      if (s1 === s2 && s1 > 0 && (!want || s1 >= want * 0.98)) return found
       continue
     }
     await new Promise(r => setTimeout(r, 1500))
@@ -11104,6 +11124,10 @@ async function _ripWaitForFile(username, filename) {
 
 function _ripCleanup(filePath) {
   if (!filePath) return
+  // Never unlink outside the download directory: the path is derived from a
+  // peer-supplied filename, so the root check is the one thing holding it.
+  const dlRoot = path.resolve(_downloadDir())
+  if (!path.resolve(filePath).startsWith(dlRoot + path.sep)) return
   try { fs.unlinkSync(filePath) } catch (_) {}
   // Remove the folders the sample created, up to (not including) the download dir.
   let dir = path.dirname(filePath)
@@ -11116,7 +11140,12 @@ function _ripCleanup(filePath) {
 }
 
 ipcMain.handle('slsk-verify-rip', async (_, { username, folderPath, files } = {}) => {
-  if (DRY_RUN) return _dryRunRefusal('downloading a track to verify a rip')
+  if (DRY_RUN) {
+    // Standard refusal shape, plus `reason`: this handler's contract is
+    // {ok, reason} and the renderer reads reason on every other exit.
+    const refusal = _dryRunRefusal('downloading a track to verify a rip')
+    return { ...refusal, reason: refusal.error }
+  }
   const track = ripCheck.pickTrack(files || [])
   if (!track) return { ok: false, reason: 'No audio file in this folder to test.' }
   const filename = track.fullPath || track.filename || track.name
@@ -11127,12 +11156,15 @@ ipcMain.handle('slsk-verify-rip', async (_, { username, folderPath, files } = {}
     } catch (e) {
       return { ok: false, reason: 'The peer did not accept the download: ' + String(e && e.message || e) }
     }
-    local = await _ripWaitForFile(username, filename)
+    local = await _ripWaitForFile(username, filename, track.size)
     if (!local) return { ok: false, reason: 'The track did not arrive within 3 minutes. The peer may be busy or offline.' }
     const probe = await _run('ffprobe', ripCheck.probeArgs(local), 15000)
     if (probe.err) return { ok: false, reason: 'ffprobe is missing or could not read the file.' }
     const declared = ripCheck.parseProbe(probe.stdout)
     const stats = await _run('ffmpeg', ripCheck.astatsArgs(local), 60000)
+    // A nonzero exit means ffmpeg never read the whole file (truncated sample,
+    // decode error). Measuring that is how a good rip gets called lossy.
+    if (stats.err) return { ok: false, reason: 'Could not analyse the file.' }
     const measured = ripCheck.parseAstats(stats.stderr)
     let bandText = ''
     for (const hz of ripCheck.BANDS) {
@@ -11145,7 +11177,8 @@ ipcMain.handle('slsk-verify-rip', async (_, { username, folderPath, files } = {}
     const ext = (String(filename).split('.').pop() || '').toLowerCase()
     const verdict = ripCheck.verdict({ declaredRate: declared.sampleRate, declaredBits: declared.bitDepth,
       measuredBits: measured.measuredBits, ceilingHz, ext })
-    return { ok: true, verdict, ceilingHz, measuredBits: measured.measuredBits, dynamicRange: measured.dynamicRange,
+    return { ok: true, verdict, ceilingHz, measuredBits: measured.measuredBits,
+      dynamicRange: measured.dynamicRange === null || measured.dynamicRange === undefined ? null : measured.dynamicRange,
       declaredBits: declared.bitDepth, declaredRate: declared.sampleRate, track: path.basename(filename), at: Date.now() }
   } catch (e) {
     return { ok: false, reason: 'The rip check could not finish: ' + String(e && e.message || e) }
@@ -12419,9 +12452,10 @@ function _browseCacheRead(username) {
   } catch (_) { return null }
 }
 
-// Every OTHER cached peer's albums as light {artist, album} pairs, for the
-// "Only here" shelf. Capped and yielded between peers so a fat cache cannot
-// stall mpv's IPC on this thread.
+// One list PER OTHER CACHED PEER, for the "Only here" shelf: returns an array
+// of arrays — each inner array is that peer's light {artist, album} pairs. The
+// shape is deliberate, the consumer counts peers. Capped and yielded between
+// peers so a fat cache cannot stall mpv's IPC on this thread.
 ipcMain.handle('slsk-cached-peer-albums', async (_, { except } = {}) => {
   const SHm = require('./src/slsk-shelves')
   const Tm = require('./src/slsk-tree')

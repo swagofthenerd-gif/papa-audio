@@ -37,7 +37,9 @@ function parseAstats(text) {
   const s = String(text || '')
   const bits = last(s, /Bit depth: (\d+)\/\d+/)
   const dr = last(s, /Dynamic range: ([\d.]+)/)
-  return { measuredBits: num(bits), dynamicRange: num(dr) }
+  // Absent is not zero: ffmpeg builds that print no "Dynamic range:" line must
+  // read as unmeasured (null), never as a measured 0 dB.
+  return { measuredBits: num(bits), dynamicRange: dr === null ? null : num(dr) }
 }
 
 function parseCeiling(text) {
