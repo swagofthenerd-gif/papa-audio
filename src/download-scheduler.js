@@ -957,12 +957,35 @@ function starvedItems(state, cfg, now) {
   return out
 }
 
+// slskd reports an actually-moving transfer as "InProgress". Everything else —
+// "Queued, Remotely", "Requested", "Initializing" — is a wait, not a transfer.
+var _TRANSFERRING_RE = /inprogress/i
+
 // A peer that accepts a request and then never uploads looks perfectly healthy
 // to failure-based logic — it never errors, it just sits there. Only report a
 // stall when there is somewhere better to go: abandoning a queue position we
 // have already waited for, with no alternative lined up, is strictly worse
 // than waiting. That mistake is what makes downloads look like they vanished.
-function stalledItems(state, cfg, now) {
+//
+// `progress` is what slskd says about each in-flight key RIGHT NOW, as
+// { key: { state, bytesTransferred } }. Without it this function measured
+// nothing but wall clock: a 20-minute wait counted as a stall whether the file
+// was sitting at zero bytes in a peer's queue or streaming steadily the whole
+// time. The caller then DELETEd the transfer and re-requested it elsewhere —
+// and Soulseek has no resume, so a slow-but-healthy FLAC that was 19 minutes in
+// restarted from zero, over and over, and never finished. A big file on a slow
+// peer is the normal case, not the broken one.
+//
+// So: a transfer slskd calls InProgress is never a stall, and neither is one
+// whose byte count moved since the last tick — however slowly. The bytes are
+// stamped on the in-flight entry here (`_lastBytes` / `_lastBytesAt`) because
+// this is the one place that sees both the previous picture and the new one.
+// A transfer stuck at ZERO bytes never refreshes the clock, which is exactly
+// the "Queued, Remotely for twenty minutes" case the stall check exists for.
+//
+// Passing no `progress` keeps the old wall-clock-only behaviour, so a caller
+// with no snapshot in hand still works.
+function stalledItems(state, cfg, now, progress) {
   cfg = Object.assign({}, DEFAULTS, cfg || {})
   now = now == null ? Date.now() : now
   var byPeer = inflightByPeer(state)
@@ -971,7 +994,24 @@ function stalledItems(state, cfg, now) {
   for (var i = 0; i < keys.length; i++) {
     var key = keys[i]
     var live = state.inflight[key]
+    var p = progress ? progress[key] : null
+    var active = false
+    if (p) {
+      if (_TRANSFERRING_RE.test(String(p.state == null ? '' : p.state))) active = true
+      var bytes = Number(p.bytesTransferred)
+      if (!Number.isFinite(bytes) || bytes < 0) bytes = 0
+      var prev = live._lastBytes == null ? null : Number(live._lastBytes)
+      if (prev != null && bytes > prev) active = true
+      // Only real movement refreshes the clock. Stamping on a first sighting of
+      // a zero-byte transfer would hand every wedged file a fresh twenty minutes
+      // on every restart, which is the failure this check exists to catch.
+      if (bytes > 0 && (prev == null || bytes > prev)) live._lastBytesAt = now
+      live._lastBytes = bytes
+    }
+    if (active) continue
     if ((now - live.since) < cfg.stallAfterMs) continue
+    // Bytes that moved recently, even if nothing moved during THIS tick.
+    if (live._lastBytesAt != null && (now - live._lastBytesAt) < cfg.stallAfterMs) continue
     var pseudo = { sources: live.sources || [], tried: live.tried || [], triedAt: live.triedAt || {} }
     var alt = eligibleSource(state, pseudo, cfg, byPeer, now)
     if (!alt || alt.username === live.username) continue

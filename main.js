@@ -8140,8 +8140,18 @@ async function dlTick() {
     }
 
     // A peer sitting on us for hours never errors, so failure logic never sees
-    // it. Move those files — but only where a better source already exists.
-    const stalled = dlSched.stalledItems(dlState, cfg, now)
+    // it. Move those files — but only where a better source already exists, and
+    // only when they are genuinely not moving. What slskd says about each
+    // in-flight key goes in with the question: Soulseek has no resume, so
+    // cancelling a transfer that is actually running throws away every byte it
+    // has fetched and starts again from zero.
+    const dlProgress = {}
+    for (const key of Object.keys(dlState.inflight)) {
+      const liveNow = dlState.inflight[key]
+      const rec = snap.get(liveNow.sentFilename || liveNow.filename)
+      if (rec) dlProgress[key] = { state: rec.state, bytesTransferred: rec.bytesTransferred }
+    }
+    const stalled = dlSched.stalledItems(dlState, cfg, now, dlProgress)
     for (const st of stalled) {
       const live = dlState.inflight[st.key]
       if (!live) continue
