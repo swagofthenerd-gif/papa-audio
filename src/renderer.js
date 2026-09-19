@@ -27159,6 +27159,20 @@ async function _initSoulseekAccountSettings() {
 
 async function _initSharingSettings() {
   await _initSoulseekAccountSettings()
+  // Wired before the share-mode guard below: these two controls do not depend
+  // on the daemon being reachable, and an early return would leave them dead.
+  const legacy = document.getElementById('slsk-legacy-shop')
+  if (legacy) {
+    try { legacy.checked = localStorage.getItem('slskLegacyShop') === '1' } catch (_) {}
+    legacy.onchange = () => { try { localStorage.setItem('slskLegacyShop', legacy.checked ? '1' : '0') } catch (_) {} }
+  }
+  const tok = document.getElementById('slsk-discogs-token')
+  if (tok && window.api && window.api.discogsTokenGet) {
+    window.api.discogsTokenGet().then(r => { tok.value = (r && r.token) || '' }).catch(() => {})
+    tok.onchange = () => window.api.discogsTokenSet({ token: tok.value })
+      .then(() => showSnackbar(tok.value ? 'Discogs connected' : 'Discogs token removed'))
+      .catch(() => {})
+  }
   const sel = document.getElementById('slsk-share-mode')
   const text = document.getElementById('slsk-share-text')
   if (!sel || !window.api || typeof window.api.slskShareModeGet !== 'function') return
@@ -31759,7 +31773,12 @@ function showSlskUserExplorer(username) {
 }
 
 async function renderSoulseekExplore(username) {
-  const S = (typeof window !== 'undefined' && window.PapaSlskShopUI) || null
+  // The Listening Room is the default; the old shop stays one setting away
+  // ("Use the old library view" in Settings → Soulseek) for one release.
+  let legacy = false
+  try { legacy = localStorage.getItem('slskLegacyShop') === '1' } catch (_) {}
+  const Room = (typeof window !== 'undefined' && window.PapaSlskRoomUI) || null
+  const S = (!legacy && Room && Room.show) ? Room : ((typeof window !== 'undefined' && window.PapaSlskShopUI) || null)
   const host = document.getElementById('content')
   if (!S || !S.show || !host) { showSnackbar('The library explorer did not load'); return }
   if (!username) { navigate('soulseek', null, { skipHistory: true }); return }
@@ -31773,6 +31792,8 @@ async function renderSoulseekExplore(username) {
     _mgConfirm, _scheduleLibRescan, _slskCardDownloads, _slskCardKey,
     _slskCardProgress, _slskDirQuality, _slskEnqueue, esc, hideContextMenu,
     navigate, playCurrentTrack, showSnackbar, slsk, startPreview, state,
+    // The dossier's "Add to wishlist" only renders when this dep is present.
+    wishlistAdd: _wishlistAdd,
     // Peer messaging (roadmap #55): only threaded through when the build can
     // actually message, so the explorer's ✉ hides itself otherwise.
     openSlskChat: (window.api && typeof window.api.slskChatSend === 'function')

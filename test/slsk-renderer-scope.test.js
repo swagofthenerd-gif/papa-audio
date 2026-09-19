@@ -95,7 +95,9 @@ test('both modules still publish their window API when run as page scripts', () 
 	// rest of the renderer reaches for. Run in a bare context with a `window`, the
 	// way the page provides one.
 	const ctx = vm.createContext({ window: {}, Intl, console })
-	for (const f of ['slsk-tree.js', 'slsk-shelves.js']) {
+	const ROOM_FILES = ['slsk-hunt.js', 'slsk-wander.js', 'slsk-columns.js',
+		'slsk-dossier.js', 'slsk-room-ui.js']
+	for (const f of ['slsk-tree.js', 'slsk-shelves.js', ...ROOM_FILES]) {
 		vm.runInContext(fs.readFileSync(path.join(SRC, f), 'utf8'), ctx, { filename: f })
 	}
 	assert.ok(ctx.window.PapaSlskTree, 'window.PapaSlskTree missing')
@@ -107,6 +109,16 @@ test('both modules still publish their window API when run as page scripts', () 
 		'sortMergedAlbums', 'buildLibraryIndex', 'parseAlbumFolder']) {
 		assert.strictEqual(typeof ctx.window.PapaSlskShelves[fn], 'function', `PapaSlskShelves.${fn}`)
 	}
+	// The Listening Room's five modules register alongside them, in the same
+	// shared scope, without a collision.
+	for (const g of ['PapaSlskHunt', 'PapaSlskWander', 'PapaSlskColumns',
+		'PapaSlskDossier', 'PapaSlskRoomUI']) {
+		assert.ok(ctx.window[g], `window.${g} missing`)
+	}
+	assert.strictEqual(typeof ctx.window.PapaSlskRoomUI.show, 'function')
+	assert.strictEqual(typeof ctx.window.PapaSlskColumns.mount, 'function')
+	assert.strictEqual(typeof ctx.window.PapaSlskDossier.open, 'function')
+
 	// And they work in that context, not merely exist.
 	const tree = ctx.window.PapaSlskTree.buildTree([
 		{ name: 'A\\B', files: [{ filename: '01.flac', size: 10 }, { filename: '02.flac', size: 20 }] },
