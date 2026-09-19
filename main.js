@@ -1487,6 +1487,64 @@ const SLSKD_THROTTLE_MEMORY_MS = 90 * 1000
 function slskdIsThrottled() { return Date.now() < _slskdThrottledUntil }
 function slskdThrottledRecently() { return Date.now() - _slskdLastThrottleAt < SLSKD_THROTTLE_MEMORY_MS }
 
+// ── The POST /searches token bucket ─────────────────────────────────────────
+// One search fires up to eight query variants in parallel, each of them its own
+// POST /searches. slskd's own rate limiter answers that burst with 429, and the
+// per-REQUEST backoff above cannot help: every variant backs off on its own
+// clock and they all come back at roughly the same moment, so pressing Retry
+// hit the same wall -- 27.5 s of "Searching 5 variants..." and then the same
+// error.
+//
+// So search POSTs queue behind one shared bucket: one every 1.5 s, burst 2, and
+// every waiter sits out the GLOBAL throttle window (_slskdThrottledUntil)
+// rather than only the one request that earned it. That is the part a
+// per-request backoff structurally cannot do, and it is why a Retry issued
+// during a throttle now waits instead of firing into it.
+//
+// Reads are untouched: browse, transfer polling and the health check must stay
+// responsive, and a GET was never what tripped the limiter. The dry-run choke
+// sits in front of this, so a refused request never takes a token.
+const SEARCH_BUCKET_INTERVAL_MS = 1500
+const SEARCH_BUCKET_BURST = 2
+let _searchTokens = SEARCH_BUCKET_BURST
+// -1 means "never primed". Not 0: Date.now() is never 0 in production, but a
+// virtual clock in a test starts there, and a falsy sentinel that is also a
+// legal clock reading is the kind of thing that works until it does not.
+let _searchTokensAt = -1
+let _searchGate = Promise.resolve()
+
+function _isSearchPost(method, endpoint) {
+  return String(method).toUpperCase() === 'POST' &&
+    /^\/searches(?:[/?#]|$)/.test(String(endpoint || ''))
+}
+
+function _searchBucketSleep(ms) { return new Promise(r => setTimeout(r, ms)) }
+
+// Serialised on purpose: waiters leave in the order they arrived, so the first
+// variant of a search is the first one sent. Each link keeps the chain alive
+// through a rejection, or one failure would wedge every later search.
+function _searchBucketTake() {
+  const run = _searchGate.then(async () => {
+    for (;;) {
+      const now = Date.now()
+      if (_slskdThrottledUntil > now) {
+        await _searchBucketSleep(_slskdThrottledUntil - now)
+        continue
+      }
+      if (_searchTokensAt < 0) _searchTokensAt = now
+      const gained = Math.floor((now - _searchTokensAt) / SEARCH_BUCKET_INTERVAL_MS)
+      if (gained > 0) {
+        _searchTokens = Math.min(SEARCH_BUCKET_BURST, _searchTokens + gained)
+        _searchTokensAt += gained * SEARCH_BUCKET_INTERVAL_MS
+      }
+      if (_searchTokens > 0) { _searchTokens--; return }
+      await _searchBucketSleep(Math.max(1, _searchTokensAt + SEARCH_BUCKET_INTERVAL_MS - now))
+    }
+  })
+  _searchGate = run.then(() => {}, () => {})
+  return run
+}
+
 // ── The slskd write choke point ─────────────────────────────────────────────
 // slskd at :5030 is the user's REAL Soulseek account. A QA twin may look — the
 // whole point of a dry-run twin is that it stays useful — but it must never
@@ -1537,6 +1595,9 @@ async function slskdFetch(method, endpoint, body) {
     err.code = 'DRY_RUN'
     throw err
   }
+  // Search POSTs leave one at a time (see the bucket above); everything else
+  // goes straight through.
+  if (_isSearchPost(method, endpoint)) await _searchBucketTake()
   if (!slskdToken || Date.now() > slskdTokenExpiry) await slskdAcquireToken()
   const headers = { 'Content-Type': 'application/json' }
   if (slskdToken) headers['Authorization'] = `Bearer ${slskdToken}`
