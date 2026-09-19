@@ -1236,3 +1236,21 @@ the visual language (`design/slsk-explorer/`, now `src/slsk-explorer.css`).
 Open: fold the design's remaining components (header eyebrow/stats, tree
 depth, skeleton/error sleeves) as the markup catches up; "Replace older
 copies" pass for duplicates already on disk; Manage → Duplicates link.
+
+### 19 Sep — explorer scroll lag: measured, named, fixed
+He reported "extremely laggy" scrolling on the new page. Measured with a
+scripted scroll + rAF gaps on a `--keep-slskd` twin: ~16 fps with 1.3–1.4 s
+freezes; the SAME freezes on the old modal, and disabling the design CSS or
+adding content-visibility changed nothing → not layout. New
+`tools/twin-profile.js` (CDP CPU profile of a twin while a script runs) put
+1.4 s in GC and the shelves fingerprint in the RENDERER: the background browse
+refresh re-pulled the whole library over IPC (`slskBrowseUser({noCache:true})`
+— a second slskd fetch AND a ~100 MB structure-clone), hashed it in the
+renderer and rebuilt 5,000 albums, on every open ~10 s in. Fix: main hashes
+the fresh payload (chunked, off the renderer) and sends it with
+`slsk-browse-refreshed`; the shop compares with the hash it opened with and,
+when equal, changes one text node; a real change waits for the scroll to
+settle and an idle callback, then reads the cache the refresh just wrote (no
+`noCache`). After: ~57 fps, worst frame 67–83 ms, JS negligible in the
+profile. Root layout bug fixed the same hour (design grid crammed the shop
+into the sidebar column; `.slsh-body` had no grid area).
