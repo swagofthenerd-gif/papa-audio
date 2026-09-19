@@ -1063,6 +1063,11 @@ test('config.json survives being replaced under a read (the desktop renames over
   const ud2 = path.join(tmp, 'userdata-torn')
   fs.mkdirSync(path.join(ud2, 'artwork'), { recursive: true })
   fs.writeFileSync(path.join(ud2, 'bridge-token'), TOKEN)
+  // Pre-seed the bridge-owned setting. Without it the transcode gate falls back
+  // to the legacy config.json copy, and THAT read — not the one this test
+  // asserts on — would eat the torn window, leaving musicFolders to succeed on
+  // its first attempt whether the retry exists or not.
+  fs.writeFileSync(path.join(ud2, 'bridge-settings.json'), JSON.stringify({ version: 1, bridgeTranscode: true }))
   const good = JSON.stringify({ musicFolders: [music] })
   const file = path.join(ud2, 'config.json')
   fs.writeFileSync(file, good)
@@ -1095,7 +1100,7 @@ test('config.json survives being replaced under a read (the desktop renames over
   assert.strictEqual(res.status, 200, 'a read during the desktop’s rename became an error')
   assert.deepStrictEqual(await res.json(), [music],
     'the retry did not pick up the renamed-in file')
-  assert.match(stderr.join(''), /config read of \w+ failed .*retrying once/,
+  assert.match(stderr.join(''), /config read of musicFolders failed .*retrying once/,
     'the read never actually hit the torn file — the test proved nothing')
 
   booted.proc.kill('SIGKILL')
