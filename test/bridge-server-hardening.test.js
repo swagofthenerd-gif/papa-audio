@@ -844,6 +844,51 @@ test('thumbnails and stream ranges are not rate-limited; API calls still are', a
   } finally { proc.kill('SIGKILL') }
 })
 
+// H2. The limiter made the app say "Offline" while the bridge was fine.
+//
+// A cold launch is ~12 API calls plus one per merged playlist and one per
+// artless album, so 60/min was crossed before the first screen finished
+// drawing. Then the phone's failover probed /api/health on every candidate to
+// find a live server — and /api/health was limited too, so every candidate
+// "failed" and the app gave up on a bridge that was answering everything else.
+
+test('one phone launch worth of API calls is not rate-limited', async () => {
+  // Default limit on purpose: this asserts the SHIPPED budget, not one the
+  // test picked. 100 calls in a minute is a busy launch, well inside it.
+  const { proc, base: b } = await boot({ BRIDGE_RATE_LIMIT_MAX: '' })
+  try {
+    for (let i = 0; i < 100; i++) {
+      const r = await fetch(`${b}/api/folders`, authed)
+      await r.text()
+      assert.strictEqual(r.status, 200, `API call ${i + 1} of a launch was rate-limited`)
+    }
+  } finally { proc.kill('SIGKILL') }
+})
+
+test('/api/health answers even with the limiter fully tripped', async () => {
+  const LIMIT = 3
+  const { proc, base: b } = await boot({ BRIDGE_RATE_LIMIT_MAX: String(LIMIT) })
+  try {
+    // Trip it, and prove it really is tripped.
+    let tripped = false
+    for (let i = 0; i < LIMIT * 3; i++) {
+      const r = await fetch(`${b}/api/folders`, authed)
+      await r.text()
+      if (r.status === 429) tripped = true
+    }
+    assert.ok(tripped, 'the limiter never engaged, so this proves nothing')
+
+    // The liveness probe must still say it is alive — this is the call
+    // findWorkingServer() makes on every candidate before declaring Offline.
+    for (let i = 0; i < LIMIT * 3; i++) {
+      const h = await fetch(`${b}/api/health`)
+      await h.text()
+      assert.strictEqual(h.status, 200,
+        'a throttled health probe reads as a dead server on every candidate')
+    }
+  } finally { proc.kill('SIGKILL') }
+})
+
 test('a port already in use exits once with a clear reason, not a crash loop', async () => {
   const first = await boot()
   const port = new URL(first.base).port

@@ -558,8 +558,19 @@ app.use((req, res, next) => {
 const rateLimit = new Map()
 // Overridable so the tests can drive the limiter to its edge in a few requests
 // instead of sixty.
+// 60/min was below what ONE phone does legitimately. A cold launch is ~12 API
+// calls, plus one per merged playlist and one per album with no art, so a
+// library of any size crossed 60 before the first screen had finished drawing —
+// and then the failover made it permanent (see rateLimitExempt below).
+//
+// 600 is the budget for a LAN with a handful of trusted, paired clients: ten
+// requests a second sustained from one address, which no phone reaches by using
+// the app and which still bounds a runaway loop or a token holder hammering
+// slskd. The alternative considered was limiting only non-GET; rejected because
+// the expensive routes here are GETs (the slskd search poll, the library read),
+// so that would have left the real work unbounded while capping the cheap part.
 const RATE_LIMIT_MAX = Number(process.env.BRIDGE_RATE_LIMIT_MAX) > 0
-  ? Number(process.env.BRIDGE_RATE_LIMIT_MAX) : 60
+  ? Number(process.env.BRIDGE_RATE_LIMIT_MAX) : 600
 const RATE_LIMIT_WINDOW = 60 * 1000
 // A LAN sees a handful of clients; anything beyond this is a forged-key flood,
 // and the map must not grow with it.
@@ -571,8 +582,17 @@ const RATE_LIMIT_MAX_KEYS = 1024
 // stream of range requests. Every one past the 60th came back as a JSON 429 to
 // an <Image> or the player. The limiter's job is to bound API work and writes,
 // which is what it still does.
+//
+// /api/health is exempt for a different reason: it is the LIVENESS PROBE, and a
+// probe that can itself be throttled cannot report liveness. The phone's
+// failover (findWorkingServer in services/bridge.ts) probes /api/health on every
+// candidate address the moment a call fails — so once the limiter tripped, the
+// probe tripped too, every candidate "failed", and the app showed Offline while
+// the bridge was answering everything else perfectly. A 429 on the one route
+// whose whole job is to say "I am here" turns a busy bridge into a dead one.
+// It reads nothing off disk and does no work worth bounding.
 function rateLimitExempt(p) {
-  return p === '/events' ||
+  return p === '/events' || p === '/api/health' ||
     p === '/art'    || p.startsWith('/art/') ||
     p === '/stream' || p.startsWith('/stream/')
 }
