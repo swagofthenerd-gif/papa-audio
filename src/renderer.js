@@ -17693,10 +17693,23 @@ function startRadio(seedTrack, seedArtist, seedGenre) {
 
 async function loadArtistBio(artistName) {
   const PREVIEW_LEN = 320
-  const render = (data) => {
+  const render = (data, opts) => {
     const el = document.getElementById('artist-bio')
     if (!el) return
-    if (!data || !data.extract) { el.style.display = 'none'; return }
+    if (!data || !data.extract) {
+      // A lookup that FAILED is different from an artist Wikipedia has nothing
+      // on: hiding both left the user unable to tell "no bio" from "broken".
+      if (opts && opts.failed) {
+        el.style.display = ''
+        el.innerHTML = '<div class="artist-bio-text">' +
+          '<div class="artist-bio-heading">About</div>' +
+          '<p class="artist-bio-preview artist-bio-unavailable">' +
+          'Biography could not be fetched right now.</p></div>'
+        return
+      }
+      el.style.display = 'none'
+      return
+    }
 
     // Update hero with Wikipedia photo
     if (data.thumbnail) {
@@ -17740,32 +17753,24 @@ async function loadArtistBio(artistName) {
   }
   var _bio = _cacheGet(_bioCache, artistName)
   if (_bio !== undefined) { render(_bio); return }
-  // A hung connection (captive portal, DNS blackhole) left the shimmering
-  // skeleton up forever, because nothing ever resolved to replace it.
-  var ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null
-  var bioTimer = setTimeout(function () { if (ctrl) ctrl.abort() }, 8000)
-  try {
-    const res = await fetch('https://en.wikipedia.org/api/rest_v1/page/summary/' + encodeURIComponent(artistName),
-      ctrl ? { signal: ctrl.signal } : undefined)
-    if (!res.ok) throw new Error('no bio')
-    const json = await res.json()
-    // A disambiguation page is never a biography -- "Air", "Bush", "Muse" and
-    // "Chicago" all resolve to one, and we used to print it as fact.
-    const isDisambig = json.type === 'disambiguation' ||
-      /may refer to|disambiguation/i.test(String(json.extract || '').slice(0, 120))
-    const data = isDisambig
-      ? { extract: null, thumbnail: null }
-      : { extract: json.extract || null, thumbnail: json.thumbnail?.source || null }
-    _cacheSet(_bioCache, artistName, data, _BIO_CACHE_CAP)
-    if (state.currentPage === 'artist' && state.currentArtistName === artistName) render(data)
-  } catch (_) {
+  // The lookup lives in MAIN (window.api.artistBio). A renderer fetch to
+  // en.wikipedia.org was blocked by index.html's CSP -- no connect-src, so
+  // default-src 'self' applied -- and had been silently failing since July.
+  // Main answers a shape and never throws, so there is nothing to catch: an
+  // { ok:false } is an honest "could not fetch", not an exception.
+  if (!window.api || typeof window.api.artistBio !== 'function') { render(null); return }
+  const reply = await window.api.artistBio({ artist: artistName })
+  const fresh = state.currentPage === 'artist' && state.currentArtistName === artistName
+  if (!reply || reply.ok !== true) {
     // Don't cache a network failure forever: going offline once used to mean
     // that artist had no bio for the rest of the session, even after recovery.
     if (state.isOnline !== false) _cacheSet(_bioCache, artistName, null, _BIO_CACHE_CAP)
-    if (state.currentPage === 'artist' && state.currentArtistName === artistName) render(null)
-  } finally {
-    clearTimeout(bioTimer)
+    if (fresh) render(null, { failed: true })
+    return
   }
+  const data = { extract: reply.extract || null, thumbnail: reply.thumbnail || null }
+  _cacheSet(_bioCache, artistName, data, _BIO_CACHE_CAP)
+  if (fresh) render(data)
 }
 
 // Artist bio + similar-artist chips from the optional native provider (App #19).
