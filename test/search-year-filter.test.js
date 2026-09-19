@@ -33,17 +33,24 @@ function lift(names) {
 
 const { _albumFilterYear, _filterChipLabel } = lift(['_albumFilterYear', '_filterChipLabel'])
 
-// The filter loop itself, so the test judges what the page judges.
+// The filter block VERBATIM out of renderSearch — re-typing it here would mean
+// a change to the page could not turn this file red.
+const YEAR_BLOCK = (() => {
+	const start = SRC.indexOf('  var unknownYearKept = 0')
+	assert.ok(start > -1, 'the year filter block must still start with unknownYearKept')
+	const end = SRC.indexOf('\n  if (filters.format)', start)
+	assert.ok(end > start, 'the year block must still be followed by the format filter')
+	return SRC.slice(start, end)
+})()
+
 function applyYear(albums, filters) {
-	let unknownYearKept = 0
-	const out = albums.filter(a => {
-		const y = _albumFilterYear(a)
-		if (y == null) { unknownYearKept++; return true }
-		if (filters.yearMin && y < filters.yearMin) return false
-		if (filters.yearMax && y > filters.yearMax) return false
-		return true
+	const ctx = vm.createContext({
+		String, Number, parseInt, RegExp, Math,
+		matchAlbums: albums.slice(), filters,
+		_albumFilterYear,
 	})
-	return { out, unknownYearKept }
+	vm.runInContext(YEAR_BLOCK + '\nvar __r = { out: matchAlbums, unknownYearKept: unknownYearKept }', ctx)
+	return ctx.__r
 }
 
 // ── the year fallback ────────────────────────────────────────────────────────
