@@ -340,6 +340,8 @@ contextBridge.exposeInMainWorld('api', {
   onSlskdStatusChange: (cb) => { const h = (_, d) => cb(d); ipcRenderer.on('slskd-status-change', h); return () => ipcRenderer.removeListener('slskd-status-change', h) },
   slskResolveFile:    (p) => ipcRenderer.invoke('slsk-resolve-file', p),
   slskVerifyFile:     (p) => ipcRenderer.invoke('slsk-verify-file', p),
+  // "Verify this rip": pulls one track from the peer, measures it, deletes it.
+  slskVerifyRip:      (p) => ipcRenderer.invoke('slsk-verify-rip', p),
   // Post-download verification verdict for one completed album group (#49).
   slskVerifyStatus:   (p) => ipcRenderer.invoke('slsk-verify-status', p),
   // A completed album group finished verification. Dedicated subscriber, returns

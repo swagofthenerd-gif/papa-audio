@@ -81,4 +81,24 @@ function pickTrack(files) {
   return audio.slice().sort((a, b) => (Number(a.size) || 0) - (Number(b.size) || 0))[0]
 }
 
-module.exports = { parseProbe, parseAstats, parseCeiling, verdict, pickTrack, BANDS, FLOOR_DB, MAX_SAMPLE_BYTES }
+// ffmpeg argv for one ceiling band: everything below `hz` removed, then how
+// loud what is left is. main runs one per BANDS entry and tags the stderr with
+// "band=<hz>" so parseCeiling can read them all from one string.
+function ceilingArgs(file, hz) {
+  return ['-hide_banner', '-nostats', '-t', '60', '-i', file,
+    '-af', `highpass=f=${hz}:poles=2,volumedetect`, '-f', 'null', '-']
+}
+
+// The whole-file figures parseAstats reads: "Bit depth" and "Dynamic range"
+// under Overall.
+function astatsArgs(file) {
+  return ['-hide_banner', '-nostats', '-t', '60', '-i', file, '-af', 'astats=measure_perchannel=none', '-f', 'null', '-']
+}
+
+// What the file claims to be, in the key=value form parseProbe expects.
+function probeArgs(file) {
+  return ['-v', 'error', '-select_streams', 'a:0', '-show_entries',
+    'stream=codec_name,sample_rate,bits_per_raw_sample,bits_per_sample', '-of', 'default=noprint_wrappers=1', file]
+}
+
+module.exports = { parseProbe, parseAstats, parseCeiling, verdict, pickTrack, ceilingArgs, astatsArgs, probeArgs, BANDS, FLOOR_DB, MAX_SAMPLE_BYTES }

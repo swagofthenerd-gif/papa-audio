@@ -11069,6 +11069,91 @@ ipcMain.handle('slsk-verify-file', async (_, { username, filename }) => {
   return { ok: true, filePath: resolved, ...result }
 })
 
+// ── Rip verification (album dossier → "Verify this rip") ────────────────────
+// Pulls ONE track through slskd, measures it with ffprobe/ffmpeg, deletes it.
+// It lands wherever slskd puts downloads (we do not control that), so the
+// cleanup removes the file and the empty folders it left, and this path never
+// schedules a library rescan — the scanner therefore never lists the sample.
+const ripCheck = require('./src/rip-check')
+const RIP_WAIT_MS = 3 * 60 * 1000
+
+function _run(cmd, args, timeoutMs) {
+  return new Promise(resolve => {
+    execFile(cmd, args, { timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) =>
+      resolve({ err, stdout: String(stdout || ''), stderr: String(stderr || '') }))
+  })
+}
+
+async function _ripWaitForFile(username, filename) {
+  const deadline = Date.now() + RIP_WAIT_MS
+  while (Date.now() < deadline) {
+    const found = slskCandidatePaths(filename, username, _downloadDir()).find(c => fs.existsSync(c))
+    if (found) {
+      // slskd writes in place; treat a file whose size stopped changing for 2 s
+      // as done, rather than analysing a half-written track.
+      const s1 = fs.statSync(found).size
+      await new Promise(r => setTimeout(r, 2000))
+      const s2 = fs.existsSync(found) ? fs.statSync(found).size : -1
+      if (s1 === s2 && s1 > 0) return found
+      continue
+    }
+    await new Promise(r => setTimeout(r, 1500))
+  }
+  return null
+}
+
+function _ripCleanup(filePath) {
+  if (!filePath) return
+  try { fs.unlinkSync(filePath) } catch (_) {}
+  // Remove the folders the sample created, up to (not including) the download dir.
+  let dir = path.dirname(filePath)
+  const root = path.resolve(_downloadDir())
+  for (let i = 0; i < 6; i++) {
+    if (path.resolve(dir) === root) break
+    try { if (fs.readdirSync(dir).length) break; fs.rmdirSync(dir) } catch (_) { break }
+    dir = path.dirname(dir)
+  }
+}
+
+ipcMain.handle('slsk-verify-rip', async (_, { username, folderPath, files } = {}) => {
+  if (DRY_RUN) return _dryRunRefusal('downloading a track to verify a rip')
+  const track = ripCheck.pickTrack(files || [])
+  if (!track) return { ok: false, reason: 'No audio file in this folder to test.' }
+  const filename = track.fullPath || track.filename || track.name
+  let local = null
+  try {
+    try {
+      await slskdFetch('POST', `/transfers/downloads/${encodeURIComponent(username)}`, [{ filename, size: track.size || 0 }])
+    } catch (e) {
+      return { ok: false, reason: 'The peer did not accept the download: ' + String(e && e.message || e) }
+    }
+    local = await _ripWaitForFile(username, filename)
+    if (!local) return { ok: false, reason: 'The track did not arrive within 3 minutes. The peer may be busy or offline.' }
+    const probe = await _run('ffprobe', ripCheck.probeArgs(local), 15000)
+    if (probe.err) return { ok: false, reason: 'ffprobe is missing or could not read the file.' }
+    const declared = ripCheck.parseProbe(probe.stdout)
+    const stats = await _run('ffmpeg', ripCheck.astatsArgs(local), 60000)
+    const measured = ripCheck.parseAstats(stats.stderr)
+    let bandText = ''
+    for (const hz of ripCheck.BANDS) {
+      if (declared.sampleRate && hz >= declared.sampleRate / 2) break
+      const r = await _run('ffmpeg', ripCheck.ceilingArgs(local, hz), 60000)
+      const m = r.stderr.match(/mean_volume: (-?[\d.]+) dB/)
+      bandText += `band=${hz} mean_volume: ${m ? m[1] : '-999'} dB\n`
+    }
+    const ceilingHz = ripCheck.parseCeiling(bandText)
+    const ext = (String(filename).split('.').pop() || '').toLowerCase()
+    const verdict = ripCheck.verdict({ declaredRate: declared.sampleRate, declaredBits: declared.bitDepth,
+      measuredBits: measured.measuredBits, ceilingHz, ext })
+    return { ok: true, verdict, ceilingHz, measuredBits: measured.measuredBits, dynamicRange: measured.dynamicRange,
+      declaredBits: declared.bitDepth, declaredRate: declared.sampleRate, track: path.basename(filename), at: Date.now() }
+  } catch (e) {
+    return { ok: false, reason: 'The rip check could not finish: ' + String(e && e.message || e) }
+  } finally {
+    _ripCleanup(local)
+  }
+})
+
 const savedUsers = require('./src/saved-users')
 
 ipcMain.handle('slsk-saved-users', () => savedUsers.sortUsers(store.get('slskSavedUsers', [])))
