@@ -466,9 +466,12 @@ app.use((req, res, next) => {
   // Media routes (/stream*, /art*) also accept ?token= — the phone's player
   // and image components consume plain URLs and cannot attach headers. /events
   // is in the same boat: EventSource cannot set an Authorization header.
+  // The APK download is in the same boat and for the same reason: the phone
+  // hands the URL to expo-file-system's downloader (and to Linking.openURL for
+  // the "save to Downloads" path), neither of which can attach a header.
   const isMedia = req.path === '/stream' || req.path.startsWith('/stream/') ||
     req.path === '/art' || req.path.startsWith('/art/') ||
-    req.path === '/events'
+    req.path === '/events' || req.path === '/api/app-update/apk'
   const queryTok = isMedia ? req.query.token : undefined
   const bearer = typeof auth === 'string' && auth.startsWith('Bearer ')
     ? auth.slice(7) : null
@@ -1099,6 +1102,174 @@ app.get('/api/folders', (_, res) => res.json(store.get('musicFolders', [])))
 // token holder add "/" and then read any file on disk through /stream?path=.
 // It only checked fs.existsSync. The music roots are the desktop's to choose;
 // the Android app never called these.
+
+// ── Per-track loudness (ReplayGain) ───────────────────────────────────────────
+// services/bridge.ts getLoudness(): GET /api/loudness?path=<filePath>, and it
+// reads exactly one field — `res.data?.gain`, a NUMBER in dB, which the phone
+// feeds to gainDbToLinear(). Anything else (including a missing entry) has to
+// come back as `gain: null`, which the phone caches as "this file has no
+// measurement" rather than retrying it on every play.
+//
+// The number is the desktop's own: main.js measures integrated loudness with
+// ffmpeg's ebur128 filter and stores { lufs, gainDb, at } per file in the
+// loudness-map SideStore. This route READS that file and nothing else — it
+// never measures, and it never writes. A track the desktop has not scanned is
+// honestly unknown here.
+app.get('/api/loudness', (req, res) => {
+  const p = req.query.path
+  if (typeof p !== 'string' || !p) return res.status(400).json({ error: 'path required' })
+  // No containment check on purpose: nothing is read from `p`, it is only a
+  // lookup key in a map the desktop wrote. There is no file access to escape.
+  const map = sideRead.get('loudnessMap') || {}
+  const entry = map[p]
+  const gainDb = entry && typeof entry === 'object' ? entry.gainDb : null
+  res.json({
+    gain: typeof gainDb === 'number' && isFinite(gainDb) ? gainDb : null,
+    lufs: entry && typeof entry === 'object' && typeof entry.lufs === 'number' ? entry.lufs : null,
+  })
+})
+
+// ── Phone crash / diagnostic reports ──────────────────────────────────────────
+// services/crash.ts POSTs JSON here from three places — reportCrash (context,
+// isFatal, message, stack, appVersion, at), sendScanReport (context
+// 'scan-report' plus the scan counters) and sendViewReport (context
+// 'view-report' plus whatever the Library screen was holding). All three
+// `.catch(() => {})` the response and parse nothing, so the body only has to be
+// honest, not shaped: `{ ok: true }`.
+//
+// The log is bridge-owned. It is NOT the desktop's app-crashes.log: that file
+// belongs to main.js's _appendCrashLog, and a second writer on it is the same
+// mistake the SideStore split exists to avoid. Phone reports get their own file.
+const PHONE_CRASH_LOG = path.join(USER_DATA, 'phone-crash-log.txt')
+const PHONE_CRASH_LOG_MAX = 1024 * 1024
+// One rotation, not a series: the point is bounded disk use plus "the last
+// couple of megabytes of reports are still there". `.1` is overwritten.
+function appendPhoneCrashLog(line) {
+  try {
+    let size = 0
+    try { size = fs.statSync(PHONE_CRASH_LOG).size } catch (_) { size = 0 }
+    if (size + Buffer.byteLength(line) > PHONE_CRASH_LOG_MAX) {
+      try { fs.renameSync(PHONE_CRASH_LOG, `${PHONE_CRASH_LOG}.1`) } catch (_) {}
+    }
+    fs.appendFileSync(PHONE_CRASH_LOG, line, { encoding: 'utf8', mode: 0o600 })
+    return true
+  } catch (e) {
+    console.error(`[bridge] phone crash log write failed (${(e && e.message) || e})`)
+    return false
+  }
+}
+
+app.post('/api/crash-log', (req, res) => {
+  const body = (req.body && typeof req.body === 'object') ? req.body : {}
+  // Serialised as one JSON line per report so the file stays greppable and a
+  // truncated write can only damage the line it was writing.
+  const record = Object.assign({}, body, {
+    receivedAt: new Date().toISOString(),
+    // The client's own `at` is kept as-is; this is when the bridge saw it.
+    source: 'phone',
+  })
+  let line
+  try {
+    line = JSON.stringify(record) + '\n'
+  } catch (_) {
+    line = JSON.stringify({ receivedAt: record.receivedAt, source: 'phone', error: 'unserialisable report' }) + '\n'
+  }
+  // A 10 MB body limit is already on express.json; this is the per-line cap so
+  // one enormous stack cannot eat the whole rotation budget by itself.
+  if (line.length > 64 * 1024) line = line.slice(0, 64 * 1024 - 1) + '\n'
+  appendPhoneCrashLog(line)
+  // Always 200: crash reporting that answers 500 turns a phone bug into two.
+  res.json({ ok: true })
+})
+
+// ── Android app update ────────────────────────────────────────────────────────
+// services/appUpdate.ts findUpdate(): GET /api/app-update, then
+// `typeof info.versionCode !== 'number'` → no update, else compares
+// info.versionCode against the phone's APP_VERSION_CODE. When it is newer the
+// banner shows info.versionName and info.notes, and downloads
+// appUpdateUrl(info.url) — the bridge base plus that path, with ?token=
+// appended, fetched as a plain URL by expo-file-system.
+//
+// So the advertised object is { versionCode, versionName, url, notes } at the
+// TOP level, not wrapped.
+//
+// There is no release feed and none is invented. The producer is the Android
+// repo's scripts/publish-apk.sh, which writes version.json
+// ({versionCode, versionName, notes}) and latest.apk into a dist directory. This
+// route serves that pair from the first of these that exists:
+//   1. $PAPA_BRIDGE_APK_DIR
+//   2. <USER_DATA>/apk/
+//   3. ~/papa-audio-android/dist/   (where publish-apk.sh writes today)
+// With no manifest anywhere the answer is `{ ok: true, update: null, reason }`,
+// which the phone reads as "no versionCode" → no update. The reason is there
+// for a human reading the endpoint, not for the app.
+// PAPA_BRIDGE_APK_DIR is an override, not an extra candidate: when it is set it
+// is the ONLY directory consulted. Anything else and a test (or a deliberate
+// "serve nothing") would still fall through to whatever happens to be in the
+// home directory, which is host state deciding the answer.
+const APK_DIRS = process.env.PAPA_BRIDGE_APK_DIR
+  ? [process.env.PAPA_BRIDGE_APK_DIR]
+  : [
+    path.join(USER_DATA, 'apk'),
+    path.join(os.homedir(), 'papa-audio-android', 'dist'),
+  ]
+
+function findApkManifest() {
+  for (const dir of APK_DIRS) {
+    const manifest = path.join(dir, 'version.json')
+    let raw
+    try { raw = fs.readFileSync(manifest, 'utf8') } catch (_) { continue }
+    let parsed
+    try { parsed = JSON.parse(raw) } catch (e) {
+      console.error(`[bridge] ${manifest} is unreadable (${(e && e.message) || e})`)
+      continue
+    }
+    if (!parsed || typeof parsed.versionCode !== 'number') {
+      console.error(`[bridge] ${manifest} has no numeric versionCode; ignoring it`)
+      continue
+    }
+    const apk = path.join(dir, 'latest.apk')
+    let size = 0
+    try { size = fs.statSync(apk).size } catch (_) {
+      // A manifest with no APK beside it would advertise a download that 404s.
+      console.error(`[bridge] ${manifest} names v${parsed.versionCode} but ${apk} is missing`)
+      continue
+    }
+    return { dir, apk, size, manifest: parsed }
+  }
+  return null
+}
+
+app.get('/api/app-update', (_, res) => {
+  const found = findApkManifest()
+  if (!found) {
+    return res.json({
+      ok: true,
+      update: null,
+      reason: `no version.json + latest.apk pair in ${APK_DIRS.join(', ')}`,
+    })
+  }
+  res.json({
+    versionCode: found.manifest.versionCode,
+    versionName: typeof found.manifest.versionName === 'string'
+      ? found.manifest.versionName : `v${found.manifest.versionCode}`,
+    notes: typeof found.manifest.notes === 'string' ? found.manifest.notes : '',
+    url: '/api/app-update/apk',
+    sizeBytes: found.size,
+  })
+})
+
+// The APK itself. Streamed through pipeFile for the same reason every other
+// file read is: an unhandled 'error' on a read stream kills the process.
+app.get('/api/app-update/apk', (_, res) => {
+  const found = findApkManifest()
+  if (!found) return res.status(404).json({ error: 'No published APK' })
+  res.setHeader('Content-Type', 'application/vnd.android.package-archive')
+  res.setHeader('Content-Length', String(found.size))
+  res.setHeader('Content-Disposition',
+    `attachment; filename="papa-audio-${found.manifest.versionCode}.apk"`)
+  pipeFile(fs.createReadStream(found.apk), res, 'apk')
+})
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 // YouTube bridge (search, stream, download for Android app)
