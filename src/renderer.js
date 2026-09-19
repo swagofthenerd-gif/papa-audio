@@ -15153,6 +15153,16 @@ function renderLibrary() {
         state._libNoCorrect = null
         clearTimeout(searchTimeout)
         renderLibrary()
+        // renderLibrary() rebuilds the page, so the input this handler is
+        // attached to no longer exists. Without carrying focus to its
+        // replacement, clearing the box dropped focus onto <body> and the next
+        // keystroke went nowhere -- the same repaint trap the debounce above
+        // already works around.
+        var fresh = document.getElementById('lib-search')
+        if (fresh) {
+          fresh.focus()
+          try { fresh.setSelectionRange(0, 0) } catch (_) {}
+        }
       }
     })
   }
