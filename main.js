@@ -9017,15 +9017,52 @@ ipcMain.handle('slsk-retry-transfer', async (_, { username, id, filename, size }
     }
     if (!name) return { ok: false, error: 'nothing to retry' }
 
-    // 2. Re-enqueue the same music, forced past its own terminal/abandoned mark so
+    // 2. Drop the scheduler's own in-flight record of what we just DELETEd.
+    //
+    //    addItems re-enqueues under the path slskd knows, which is often NOT the
+    //    key the original was filed under (an alternate source names the same
+    //    music differently). So the original entry stayed in `inflight`, where it
+    //    did two kinds of damage: planDispatch refuses to race a second copy of an
+    //    identity that is already in flight, so the retry never went out; and the
+    //    next tick's reconcile looked the original up, found the transfer we had
+    //    just deleted, and after thirty seconds abandoned the identity — which is
+    //    terminal and blocks the song from every peer. Pressing Retry was a way to
+    //    lose a song for good.
+    for (const k of Object.keys(dlState.inflight)) {
+      const live = dlState.inflight[k]
+      if (!live) continue
+      if (k === name || live.sentFilename === name || live.filename === name) {
+        delete dlState.inflight[k]
+      }
+    }
+
+    // 3. Re-enqueue the same music, forced past its own terminal/abandoned mark so
     //    the retry actually takes. Force is scoped to this one item.
-    const sources = username && !/^searching/i.test(String(username))
-      ? [{ username, filename: name, size: size || 0 }]
-      : []
+    //
+    //    A row still showing "searching…" has no peer behind it. Re-enqueuing
+    //    gives the scheduler an item with nowhere to send it, and the handler used
+    //    to answer `added: 1` — a success for a download that cannot start. The
+    //    fresh-source hunt below is the useful half and still runs; the answer
+    //    says what actually happened.
+    const searchingRow = !username || /^searching/i.test(String(username))
+    if (searchingRow) {
+      if (dlDiscoveryEnabled()) {
+        const k = dlSched.itemKey(name)
+        dlDiscoverForItem({ key: k, filename: name, size: size || 0, sources: [] },
+          Date.now()).catch(() => {})
+      }
+      dlPersist()
+      dlBroadcast()
+      return {
+        ok: true, added: 0, searching: true, refused: [],
+        message: 'Still looking for a peer with this file — nothing to retry yet',
+      }
+    }
+    const sources = [{ username, filename: name, size: size || 0 }]
     const res = dlSched.addItems(dlState, [{ filename: name, size: size || 0, sources }],
       { force: true })
 
-    // 3. Kick a fingerprint-gated fresh-source hunt for this identity, so the
+    // 4. Kick a fingerprint-gated fresh-source hunt for this identity, so the
     //    retry is not limited to the one peer that just stalled. Behind the
     //    response; discovery is rate-limited per album inside dlDiscoverForItem.
     if (dlDiscoveryEnabled()) {
