@@ -704,7 +704,20 @@ app.setPath('userData', USER_DATA)
 // ── Single instance lock ─────────────────────────────────────────────────────
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
-  app.quit()
+  // app.exit, not app.quit. app.quit() only ASKS to quit: it is cancellable,
+  // it fires before-quit and will-quit, and — the part that bit — it returns,
+  // so the whole of this module kept on running in the losing process. That
+  // second process opened its own store, ran the key migration, updated the
+  // dead-magnet side store, and then its before-quit wrote
+  // cleanShutdown: true while the real session was still playing. A
+  // double-click on the launcher was enough: the live session was now marked
+  // clean, so a later genuine crash was never offered a restore, and
+  // dead-magnets.json had been rewritten underneath it.
+  //
+  // app.exit(0) terminates here and now, skipping both quit handlers, before
+  // any store is opened. The gotLock guards on the writes below are the belt
+  // to this braces.
+  app.exit(0)
 } else {
   app.on('second-instance', () => {
     if (mainWindow) {
@@ -2555,6 +2568,9 @@ let _signalShutdown = false
 function shutdownFromSignal() {
   if (_signalShutdown) return
   _signalShutdown = true
+  // Same rule as the quit handlers: a process that never won the instance lock
+  // owns none of this state and must not write it.
+  if (!gotLock) { try { app.exit(0) } catch (_) {} ; return }
   // Do the will-quit work by hand: app.exit() skips those handlers, and
   // app.quit() is cancellable and can stall, which left the process alive
   // while mpv had already been stopped.
@@ -2604,9 +2620,13 @@ app.on('window-all-closed', () => {
 })
 app.on('before-quit', () => {
   app.isQuitting = true
+  // Only the process that owns the instance lock owns the on-disk state. A
+  // process without it must never claim the session shut down cleanly.
+  if (!gotLock) return
   store.set('cleanShutdown', true)
 })
 app.on('will-quit', () => {
+  if (!gotLock) return
   player?.stop()
   // The video mpv is a separate child process from the music one, and a live
   // torrent stream keeps a socket server open. Neither is reached by
