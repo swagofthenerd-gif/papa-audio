@@ -3316,6 +3316,17 @@ h2.section-title { font-size:18px; font-weight:700; }
 .slsh-chip-clear { border-style: dashed; }
 .slsh-see-all { margin-left: auto; background: none; border: none; color: var(--accent-ink, var(--accent)); font: inherit; font-size: 12.5px; cursor: pointer; padding: 4px 8px; border-radius: 6px; }
 .slsh-see-all:hover, .slsh-see-all:focus-visible { text-decoration: underline; }
+/* Batch selection (provisional): a tick on every card, a sticky bar when any is set. */
+.slsh-card { position: relative; }
+.slsh-pick { position: absolute; top: 6px; left: 6px; z-index: 2; opacity: 0; transition: opacity .12s; padding: 4px; }
+.slsh-card:hover .slsh-pick, .slsh-card:focus-within .slsh-pick, .slsh-card.slsh-picked .slsh-pick { opacity: 1; }
+.slsh-pick-cb { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
+.slsh-card.slsh-picked { outline: 2px solid var(--accent); outline-offset: 2px; }
+.slsh-batch { position: sticky; bottom: 0; z-index: 5; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 8px 12px 0; padding: 10px 14px; border-radius: 12px; background: var(--bg2); border: 1px solid var(--glass-border); box-shadow: 0 -6px 24px rgba(0,0,0,.25); }
+.slsh-batch-count { font-weight: 600; margin-right: auto; font-variant-numeric: tabular-nums; }
+.slsh-batch-act { font: inherit; padding: 6px 12px; border-radius: 999px; border: 1px solid var(--glass-border); background: var(--bg3, var(--bg)); color: var(--text); cursor: pointer; }
+.slsh-batch-act:disabled { opacity: .5; cursor: not-allowed; }
+.slsh-batch-clear { background: none; }
 .slsh-chip.active { background: rgba(29,185,84,.15); border-color: var(--accent, #1db954); color: var(--accent, #1db954); }
 
 /* "Grab all N upgrades" button in the Upgrades rail header. */

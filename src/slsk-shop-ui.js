@@ -759,6 +759,7 @@
   const shFilters = new Set()   // any of 'lossless' | 'hires' | 'surround'
   let shDecade = ''             // decade start year as a string, '' = all
   let shGridQuery = ''          // search-within-library text for the Everything grid
+  const shSelected = new Set()  // folderPaths ticked for a batch action
   // Cache provenance from slskBrowseUser (engine may send fromCache/cachedAt).
   // shJustRefreshed drives a brief "Updated just now" pulse after a background
   // refresh lands.
@@ -1140,7 +1141,9 @@
       ? `<button class="slsh-card-act slsh-wish" data-idx="${idx}" title="Add to wishlist">＋</button>` : ''
     const replaceBtn = variant === 'upgrade' && a.matchedLibId
       ? `<button class="slsh-card-act slsh-replace" data-idx="${idx}" title="Download this copy; once it is verified, offer to move your old copy to Trash" aria-label="Replace your copy">⇄</button>` : ''
-    return `<div class="slsh-card" data-idx="${idx}" data-folder="${esc(a.folderPath)}" tabindex="0" role="button" aria-label="Open ${esc((a.artist ? a.artist + ' — ' : '') + (a.album || 'album'))}">
+    const picked = shSelected.has(a.folderPath)
+    return `<div class="slsh-card${picked ? ' slsh-picked' : ''}" data-idx="${idx}" data-folder="${esc(a.folderPath)}" tabindex="0" role="button" aria-label="Open ${esc((a.artist ? a.artist + ' — ' : '') + (a.album || 'album'))}">
+      <label class="slsh-pick" title="Select for a batch action"><input type="checkbox" class="slsh-pick-cb" data-idx="${idx}" ${picked ? 'checked' : ''} aria-label="Select ${esc(a.album || a.folderName || 'album')}"></label>
       ${shAlbumArtHtml(a)}
       <div class="slsh-card-title" title="${esc(title)}">${esc(title)}</div>
       <div class="slsh-card-artist" title="${esc(artist)}">${esc(artist)}${a.year ? ' · ' + a.year : ''}</div>
@@ -1156,6 +1159,65 @@
       <div class="slsh-card-progress" data-folder="${esc(a.folderPath)}" style="display:none">
         <div class="slsh-card-progress-fill"></div><span class="slsh-card-progress-label"></span></div>
     </div>`
+  }
+
+  // The batch bar: appears with a selection, acts on every ticked album at once.
+  // Replace only runs for albums the shelf marked as upgrades over MY copy, and
+  // carries their library ids so verification can compare before any Trash offer.
+  function shPickedAlbums() {
+    const out = []
+    const seen = new Set()
+    for (const a of shFlat) if (a && shSelected.has(a.folderPath) && !seen.has(a.folderPath)) { seen.add(a.folderPath); out.push(a) }
+    return out
+  }
+  function shPaintBatchBar() {
+    let bar = dlg.querySelector('#slsh-batch')
+    const picked = shPickedAlbums()
+    if (!picked.length) { if (bar) bar.remove(); return }
+    if (!bar) {
+      bar = document.createElement('div')
+      bar.id = 'slsh-batch'; bar.className = 'slsh-batch'; bar.setAttribute('role', 'region'); bar.setAttribute('aria-label', 'Selected albums')
+      ;(dlg.querySelector('.slsh-box') || dlg).appendChild(bar)
+    }
+    const upgrades = picked.filter(a => a.upgrade && a.matchedLibId)
+    const files = picked.reduce((n, a) => n + (a.trackCount || 0), 0)
+    bar.innerHTML = `<span class="slsh-batch-count">${picked.length} album${picked.length !== 1 ? 's' : ''} · ${files} tracks selected</span>
+      <button class="slsh-batch-act" data-batch="download">⬇ Download</button>
+      <button class="slsh-batch-act" data-batch="replace" ${upgrades.length ? '' : 'disabled'} title="${upgrades.length ? `Replace ${upgrades.length} of your copies after verification` : 'Only albums marked as upgrades over your copies can be replaced'}">⇄ Replace ${upgrades.length ? upgrades.length : ''}</button>
+      <button class="slsh-batch-act" data-batch="wishlist">＋ Wishlist</button>
+      <button class="slsh-batch-act" data-batch="compare" ${picked.length === 1 && picked[0].matchedLibId ? '' : 'disabled'} title="Compare one selected album against your copy">⇄ Compare</button>
+      <button class="slsh-batch-act slsh-batch-clear" data-batch="clear">Clear</button>`
+    bar.onclick = async e => {
+      const b = e.target.closest('[data-batch]'); if (!b) return
+      const act = b.dataset.batch
+      if (act === 'clear') { shClearSelection(); return }
+      if (act === 'compare') { openAlbumView(picked[0]); return }
+      if (act === 'wishlist') {
+        let added = 0
+        for (const a of picked) { const q = `${a.artist} ${a.album}`.trim() || a.folderName; if (wishlistAdd(q).added) added++ }
+        showSnackbar(added ? `Added ${added} to your wishlist` : 'All of those were already on your wishlist'); shClearSelection(); return
+      }
+      const list = act === 'replace' ? upgrades : picked
+      const label = b.textContent; b.disabled = true; b.textContent = 'Queuing…'
+      const items = []
+      for (const a of list) for (const f of shAsGroup(a).files) items.push({ username, filename: f.filename, size: f.size, ...(act === 'replace' ? { replaceLibId: String(a.matchedLibId) } : {}) })
+      try {
+        const res = await _slskEnqueue(items)
+        if (!res || res.ok === false) { b.disabled = false; b.textContent = label; return }
+        _scheduleLibRescan()
+        for (const a of list) { _slskCardDownloads.set(_slskCardKey(username, a.folderName), { total: a.trackCount }); shTrackProgress(a) }
+        showSnackbar(act === 'replace'
+          ? `Downloading ${list.length} upgrade${list.length !== 1 ? 's' : ''}. Each one is verified track by track before you are offered to move the old copy to Trash.`
+          : `Queued ${list.length} album${list.length !== 1 ? 's' : ''}`)
+        shClearSelection()
+      } catch (err) { b.disabled = false; b.textContent = label; showSnackbar('Could not queue: ' + String(err && err.message || err)) }
+    }
+  }
+  function shClearSelection() {
+    shSelected.clear()
+    dlg.querySelectorAll('.slsh-picked').forEach(c => c.classList.remove('slsh-picked'))
+    dlg.querySelectorAll('.slsh-pick-cb').forEach(cb => { cb.checked = false })
+    shPaintBatchBar()
   }
 
   // "See all" on a rail = the matching chip in the Everything grid.
@@ -1663,6 +1725,17 @@
       if (!btn) {
         // A click on the card BODY (not an action button) opens the album view —
         // the card becomes a first-class, openable album.
+        const cb = e.target.closest('.slsh-pick-cb')
+        if (cb) {
+          e.stopPropagation()
+          const a = shFlat[parseInt(cb.dataset.idx, 10)]
+          if (!a) return
+          if (cb.checked) shSelected.add(a.folderPath); else shSelected.delete(a.folderPath)
+          dlg.querySelectorAll(`.slsh-card[data-folder="${CSS.escape(a.folderPath)}"]`).forEach(c => c.classList.toggle('slsh-picked', cb.checked))
+          shPaintBatchBar()
+          return
+        }
+        if (e.target.closest('.slsh-pick')) { e.stopPropagation(); return }
         const card = e.target.closest('.slsh-card:not(.slsh-skel)')
         if (card) {
           const a = shFlat[parseInt(card.dataset.idx, 10)]
