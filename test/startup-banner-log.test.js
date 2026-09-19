@@ -116,12 +116,12 @@ test('the first [papa] line carries dryRun, and the dry-run banner follows it', 
 		assert.ok(stdout.some(l => l.includes('[papa] DRY RUN: nothing will be downloaded')),
 			'the dry-run banner must be printed: ' + stdout.join(' | '))
 
-		// stderr: written directly, because nothing in main.js patches stderr —
-		// this line survives even if the log file never happens.
-		assert.ok(stderr.some(l => l.includes('dryRun=true')),
-			'the first line must reach stderr: ' + stderr.join(' | '))
-		assert.ok(stderr.some(l => l.includes('[papa] DRY RUN:')),
-			'the dry-run banner must reach stderr: ' + stderr.join(' | '))
+		// Exactly one terminal copy. A belt-and-braces stderr write used to sit
+		// beside the stdout line, and a terminal launch (stdout and stderr on the
+		// same tty) printed every banner line twice.
+		const terminalCopies = stdout.concat(stderr).filter(l => l.includes('dryRun=true')).length
+		assert.strictEqual(terminalCopies, 1, 'one banner line on the terminal, not two: ' +
+			stdout.concat(stderr).join(' | '))
 
 		// ...and the daily log, once the directory is known.
 		ctx.installFileLogging(dir)

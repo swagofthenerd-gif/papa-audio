@@ -991,8 +991,11 @@ function _emitStartupBanner() {
       'written to tags, or sent to RealDebrid/slskd')
   }
   for (const line of lines) {
+    // Once. The patched console.log reaches the real stdout AND the profile
+    // log buffer (flushed once the log directory is known). An earlier version
+    // also wrote each line to stderr as a belt-and-braces copy, so a terminal
+    // launch showed every banner line twice.
     console.log(line)
-    try { process.stderr.write(line + '\n') } catch (_) { /* no stderr: not our problem */ }
   }
   return lines
 }
@@ -2255,7 +2258,11 @@ app.whenReady().then(() => {
     // the cache is actually going as well as the one it used to.
     const wanted = _videoSettings().streamCacheDir || ''
     const active = setStreamRoot(wanted)
-    if (wanted && active !== wanted) {
+    // setStreamRoot answers with its own subfolder under the chosen dir, so a
+    // successful pick is NOT equal to `wanted` — the honest test for a
+    // fallback is that the active root no longer lives under the wanted one.
+    const fellBack = wanted && !path.resolve(active).startsWith(path.resolve(wanted))
+    if (fellBack) {
       console.warn(`[papa-video] stream cache ${wanted} is not writable; falling back to ${active}`)
     } else if (wanted) {
       console.log(`[papa-video] stream cache: ${active}`)
