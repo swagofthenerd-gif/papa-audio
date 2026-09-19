@@ -195,7 +195,12 @@
     const panel = document.createElement('div')
     panel.className = 'slav-panel' + (standalone ? ' slav-standalone' : '')
     panel.setAttribute('role', 'dialog')
+    panel.setAttribute('aria-modal', 'true')
     panel.setAttribute('aria-label', `${a.album} by ${a.artist || username}`)
+    // A dialog nobody can reach by keyboard is not a dialog. The panel takes
+    // focus when it opens and hands it back to whatever opened it on close.
+    panel.setAttribute('tabindex', '-1')
+    const slavOpener = document.activeElement
 
     // Selection state for the checkbox range-select.
     const selected = new Set()
@@ -286,6 +291,9 @@
         setTimeout(() => { if (panel.isConnected) panel.remove() }, 220)
       }
       if (typeof deps.onClose === 'function') { try { deps.onClose() } catch (_) {} }
+      if (slavOpener && slavOpener.isConnected && typeof slavOpener.focus === 'function') {
+        try { slavOpener.focus() } catch (_) {}
+      }
     }
 
     // ── Track row helpers ──────────────────────────────────────────────────────
@@ -496,6 +504,11 @@
     // Capture so we win the Esc race against the shop's own document keydown; the
     // shop's onKey checks for the album panel and defers (see the shop wiring).
     document.addEventListener('keydown', onKey, true)
+
+    // Focus the close button when there is one, otherwise the panel itself, so
+    // Tab walks the album's own controls rather than the page behind it.
+    const firstStop = panel.querySelector('.slav-close') || panel
+    try { firstStop.focus({ preventScroll: true }) } catch (_) { try { firstStop.focus() } catch (_) {} }
 
     return { close, panel, album: a }
   }

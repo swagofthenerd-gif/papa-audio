@@ -87,6 +87,7 @@
         <input type="checkbox" id="slskx-audio-only" checked> Audio only
       </label>
       <button class="slskx-nav slskx-sur-btn" id="slskx-surround" style="width:auto;padding:0 8px"
+              aria-pressed="false"
               title="List every surround-labelled folder in this library">Surround finder</button>
     </div>
     <div class="slskx-actionbar" id="slskx-actionbar"></div>
@@ -148,6 +149,11 @@
     })
   }
 
+  // Focus came from somewhere and has to go back there. Closing the shop used
+  // to leave focus on a removed node, which drops it to <body> -- Tab then
+  // restarted from the top of the page.
+  const opener = document.activeElement
+
   const close = () => {
     if (_slavPanel) { try { _slavPanel.close() } catch (_) {} _slavPanel = null }
     if (_slskExplorerClose === close) _slskExplorerClose = null
@@ -161,6 +167,9 @@
     // Drop the background-refresh subscription so it can't rebuild a dead shop.
     try { if (typeof _offBrowseRefreshed === 'function') _offBrowseRefreshed() } catch (_) {}
     dlg.remove()
+    if (opener && opener.isConnected && typeof opener.focus === 'function') {
+      try { opener.focus() } catch (_) {}
+    }
   }
   _slskExplorerClose = close
   dlg.querySelector('#slsk-lib-close').addEventListener('click', close)
@@ -280,7 +289,7 @@
       // pull the node back out rather than trying to carry them on the dir stub.
       const dNode = T.getNode(tree, d.path)
       const qSum  = dNode ? _slskDirQuality(dNode) : ''
-      rows.push(`<div class="slskx-row slskx-dir" data-path="${esc(d.path)}">
+      rows.push(`<div class="slskx-row slskx-dir" data-path="${esc(d.path)}" role="button" tabindex="0" aria-label="Open folder ${esc(d.name)}, ${d.fileCount} files">
         <span class="slskx-ico">📁</span>
         <span class="slskx-name">${esc(d.name)}${qSum ? `<span class="slskx-dir-qual">${esc(qSum)}</span>` : ''}</span>
         <span class="slskx-meta">${d.subdirCount ? d.subdirCount + ' folders · ' : ''}${d.fileCount} files</span>
@@ -332,7 +341,7 @@
     hits.sort((a, b) => b.node.fileCount - a.node.fileCount)
     actions.innerHTML = ''
     body.innerHTML = hits.length
-      ? hits.map(h => `<div class="slskx-row slskx-dir" data-path="${esc(h.node.path)}">
+      ? hits.map(h => `<div class="slskx-row slskx-dir" data-path="${esc(h.node.path)}" role="button" tabindex="0" aria-label="Open folder ${esc(h.node.name)}, ${h.node.fileCount} files">
           <span class="slskx-ico">📁</span>
           <span class="slskx-name">${esc(h.node.name)}
             <span class="slskx-card-surround" style="position:static;margin-left:6px">${esc(h.label)}</span></span>
@@ -344,8 +353,11 @@
     status.textContent = hits.length
       ? `${hits.length} surround folder${hits.length !== 1 ? 's' : ''} found`
       : 'No surround folders found'
-    body.querySelectorAll('.slskx-dir').forEach(r =>
-      r.addEventListener('click', () => { surroundOnly = false; navTo(r.dataset.path) }))
+    body.querySelectorAll('.slskx-dir').forEach(r => {
+      const open = () => { surroundOnly = false; navTo(r.dataset.path) }
+      r.addEventListener('click', open)
+      bindDirKeys(r, open)
+    })
   }
 
   function renderSearch() {
@@ -357,7 +369,7 @@
     actions.innerHTML = ''
     body.innerHTML = hits.length
       ? hits.map(h => h.type === 'dir'
-          ? `<div class="slskx-row slskx-dir" data-path="${esc(h.path)}">
+          ? `<div class="slskx-row slskx-dir" data-path="${esc(h.path)}" role="button" tabindex="0" aria-label="Open folder ${esc(h.name)}, ${h.fileCount} files">
                <span class="slskx-ico">📁</span><span class="slskx-name">${esc(h.name)}</span>
                <span class="slskx-meta">${esc(h.path)}</span>
                <span class="slskx-size">${h.fileCount} files</span></div>`
@@ -388,14 +400,28 @@
     }
   }
 
+  // A folder row is a control: Enter and Space open it, the same as a click.
+  // Without this the rows were reachable by Tab but did nothing.
+  function bindDirKeys(r, open) {
+    r.addEventListener('keydown', e => {
+      if (e.key !== 'Enter' && e.key !== ' ') return
+      if (e.target !== r) return
+      e.preventDefault()
+      open()
+    })
+  }
+
   function bindRows(l) {
-    body.querySelectorAll('.slskx-dir').forEach(r =>
+    body.querySelectorAll('.slskx-dir').forEach(r => {
+      const open = () => navTo(r.dataset.path)
       r.addEventListener('click', e => {
         // The per-folder search button lives inside the row; a click on it must
         // not also navigate into the folder.
         if (e.target.closest && e.target.closest('.slskx-dir-search')) return
-        navTo(r.dataset.path)
-      }))
+        open()
+      })
+      bindDirKeys(r, open)
+    })
 
     // Search the whole app for this uploader's folder name. Same handoff the
     // search-card breadcrumb uses: close the modal, then navigate('search', q).
@@ -658,6 +684,8 @@
     surroundOnly = !surroundOnly
     searching = ''; search.value = ''
     dlg.querySelector('#slskx-surround').classList.toggle('active', surroundOnly)
+    // The class was the only signal that the filter was on.
+    dlg.querySelector('#slskx-surround').setAttribute('aria-pressed', surroundOnly ? 'true' : 'false')
     render()
   })
   dlg.querySelector('#slskx-sort').addEventListener('change', e => { sort = e.target.value; render() })
@@ -1767,7 +1795,10 @@
   // tree. The album parse then runs in idle slices so a 100k-file tree never
   // blocks the main thread. When it finishes, the real shelves swap in.
   applyMode()
+  // Shelves mode used to leave focus on the opener behind the modal, so Tab
+  // walked the page underneath and Escape was the only key that reached it.
   if (mode === 'folders') search.focus()
+  else (dlg.querySelector('#slsk-lib-close') || dlg).focus()
 
   // Parse the current `tree` into albums+shelves off the paint thread, then swap
   // the real shelves in. Named (not an inline IIFE) so a background refresh can

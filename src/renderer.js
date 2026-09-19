@@ -28103,7 +28103,8 @@ function _slskCardHtml(g, gi, query) {
       <button class="slsk-dl-all-btn slsk-card-action" data-gi="${gi}" title="Download all files">
         <svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg> ${g.files.length}
       </button>
-      <button class="slsk-expand-btn slsk-card-action" data-gi="${gi}" title="Show tracks">
+      <button class="slsk-expand-btn slsk-card-action" data-gi="${gi}" title="Show tracks"
+        aria-expanded="false" aria-controls="slsk-tl-${gi}">
         ${g.files.length} track${g.files.length !== 1 ? 's' : ''} ▾
       </button>
     </div>`
@@ -28114,7 +28115,7 @@ function _slskCardHtml(g, gi, query) {
          <span class="slsk-card-progress-label">${prog.pct}%</span>
        </div>`
     : ''
-  return `<div class="slsk-card" data-gi="${gi}">
+  return `<div class="slsk-card" data-gi="${gi}" role="group" aria-label="${esc(g.folderName)} from ${esc(g.username)}, ${g.files.length} file${g.files.length !== 1 ? 's' : ''}${qual ? ', ' + esc(qual) : ''}">
     <div class="slsk-card-art" style="background:linear-gradient(135deg,hsl(${hue},45%,16%),hsl(${(hue+40)%360},35%,10%))">
       ${hasFlac ? '<span class="slsk-card-lossless">LOSSLESS</span>' : ''}
       ${sd ? `<span class="slsk-card-surround" title="Labelled ${esc(sd.label)} by the uploader">${esc(sd.label)}</span>` : ''}
@@ -28174,7 +28175,8 @@ function _slskMergedCardHtml(m, gi, query) {
         <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg> Play</button>
       <button class="slsk-dl-all-btn slsk-card-action" data-gi="${gi}" title="Download the best copy (${(best.files || []).length} files)">
         <svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg> ${(best.files || []).length}</button>
-      <button class="slsk-sources-btn slsk-card-action" data-gi="${gi}" title="Show every source">
+      <button class="slsk-sources-btn slsk-card-action" data-gi="${gi}" title="Show every source"
+        aria-expanded="false" aria-controls="slsk-src-${gi}">
         ${m.peopleCount} source${m.peopleCount !== 1 ? 's' : ''} ▾</button>
     </div>`
   }
@@ -28400,8 +28402,8 @@ function renderSoulseekRow(query) {
     <div class="slsk-header-row">
       <span class="osrc-name">Soulseek</span>
       <span class="osrc-status found">${summary}</span>
-      <button class="slsk-retry-btn" id="slsk-saved-btn" title="Saved libraries" style="margin-left:auto">★</button>
-      <button class="slsk-retry-btn" id="slsk-retry-btn" title="Search again">↺</button>
+      <button class="slsk-retry-btn" id="slsk-saved-btn" title="Saved libraries" aria-label="Saved libraries" style="margin-left:auto">★</button>
+      <button class="slsk-retry-btn" id="slsk-retry-btn" title="Search again" aria-label="Search again">↺</button>
     </div>
     ${_slskCorrectionChip()}
     <div class="slsk-filterbar">
@@ -28411,9 +28413,11 @@ function renderSoulseekRow(query) {
          ['lossless', 'Lossless', flacGroups.length]]
         .map(([k, label, n]) => `<button class="slsk-chip${slsk.filter === k ? ' active' : ''}"
               data-slsk-filter="${k}"${n === 0 && k !== 'all' ? ' disabled' : ''}
+              aria-pressed="${slsk.filter === k ? 'true' : 'false'}"
+              aria-label="${label}, ${n} source${n !== 1 ? 's' : ''}"
               title="${n} source${n !== 1 ? 's' : ''}">${label}<span class="slsk-chip-n">${n}</span></button>`).join('')}
       <label class="slsk-sort-wrap">Sort
-        <select class="slsk-sort" id="slsk-sort">
+        <select class="slsk-sort" id="slsk-sort" aria-label="Sort the Soulseek results">
           ${[['relevance', 'Best match'], ['queue', 'Queue position'], ['sampleRate', 'Sample rate'], ['bitDepth', 'Bit depth'],
              ['tracks', 'Track count'], ['speed', 'Upload speed'], ['size', 'File size']]
             .map(([k, l]) => `<option value="${k}"${slsk.sort === k ? ' selected' : ''}>${l}</option>`).join('')}
@@ -30815,6 +30819,11 @@ function renderDownloads() {
   const ytBox = document.getElementById('yt-dl-list')
   if (ytBox) _renderYtDownloadRows(ytBox)
 
+  // The strip declared role="tablist" and role="tab" and then answered to
+  // nothing but a click: the arrow keys the role promises did not move between
+  // the download categories.
+  _bindTablist(document.getElementById('dl2-tabs'))
+
   // Tab switching
   document.querySelectorAll('.dl2-tab').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -31324,6 +31333,7 @@ function _bindSlskCards(section, query, groups) {
         }
       }
       tl.style.display = open ? 'none' : 'block'
+      btn.setAttribute('aria-expanded', open ? 'false' : 'true')
       btn.classList.toggle('open', !open)
     })
   })
@@ -31406,6 +31416,7 @@ function _bindSlskCards(section, query, groups) {
           }))
       }
       list.style.display = open ? 'none' : 'block'
+      btn.setAttribute('aria-expanded', open ? 'false' : 'true')
       btn.classList.toggle('open', !open)
     })
   })
