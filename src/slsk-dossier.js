@@ -83,7 +83,7 @@
       : `<div class="slr-muted">${esc(r.reason || 'Nothing found.')}</div>`
     const stars = r.rating ? '★'.repeat(Math.round(r.rating)) + '☆'.repeat(5 - Math.round(r.rating)) : ''
     const chips = [...(r.genres || []), ...(r.styles || [])].map(t => `<span class="slr-chip">${esc(t)}</span>`).join('')
-    return `<div><span class="slr-stars">${stars}</span> <span class="slr-mono slr-muted">${r.rating != null ? r.rating : '—'} · ${Number(r.count || 0).toLocaleString()} ratings on Discogs</span></div>
+    return `<div><span class="slr-stars">${stars}</span> <span class="slr-mono slr-muted">${r.rating != null ? esc(String(r.rating)) : '—'} · ${Number(r.count || 0).toLocaleString()} ratings on Discogs</span></div>
       <div class="slr-chips">${chips}</div>`
   }
 
@@ -116,7 +116,9 @@
   }
 
   function open({ album, username, host, deps, siblings }) {
-    const esc = deps.esc
+    const esc = deps.esc || (s => String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'))
+    const showSnackbar = deps.showSnackbar || (() => {})
     const av = AV()
     const mine = av && av.findMyCopy ? av.findMyCopy(album, deps.state) : null
     const m = model(album, username, mine)
@@ -180,8 +182,8 @@
       m.rip = { running: true, track: '' }
       repaintBody()
       const res = await window.api.slskVerifyRip({ username, folderPath: album.folderPath, files: album.files }).catch(e => ({ ok: false, reason: e.message }))
-      m.rip = res
-      try { localStorage.setItem('slr_rip:' + username + ':' + album.folderPath, JSON.stringify(res)) } catch (_) {}
+      m.rip = res || { ok: false, reason: 'The check did not answer.' }
+      try { localStorage.setItem('slr_rip:' + username + ':' + album.folderPath, JSON.stringify(m.rip)) } catch (_) {}
       repaintBody()
     }
 
@@ -200,14 +202,25 @@
         case 'close': close(); break
         case 'verify': verify(); break
         case 'download': {
+          if (!deps._slskEnqueue) { showSnackbar('Downloads are not wired up'); break }
           const items = m.tracks.map(x => ({ username, filename: x.fullPath || x.filename || x.name, size: x.size || 0 }))
           const r = await deps._slskEnqueue(items)
-          deps.showSnackbar(r && r.ok ? 'Downloading ' + m.title : (r && r.reason) || 'Could not start the download')
+          showSnackbar(r && r.ok ? 'Downloading ' + m.title : (r && r.reason) || 'Could not start the download')
           if (r && r.ok && deps._scheduleLibRescan) deps._scheduleLibRescan()
           break
         }
-        case 'preview': if (f) deps.startPreview({ username, filename: f.fullPath || f.filename || f.name, title: m.title }); break
-        case 'dl': if (f) { const r = await deps._slskEnqueue([{ username, filename: f.fullPath || f.filename || f.name, size: f.size || 0 }]); deps.showSnackbar(r && r.ok ? 'Downloading' : 'Could not start the download') } break
+        case 'preview':
+          if (!f) break
+          if (!deps.startPreview) { showSnackbar('Preview is not wired up'); break }
+          deps.startPreview({ username, filename: f.fullPath || f.filename || f.name, title: m.title })
+          break
+        case 'dl': {
+          if (!f) break
+          if (!deps._slskEnqueue) { showSnackbar('Downloads are not wired up'); break }
+          const r = await deps._slskEnqueue([{ username, filename: f.fullPath || f.filename || f.name, size: f.size || 0 }])
+          showSnackbar(r && r.ok ? 'Downloading' : 'Could not start the download')
+          break
+        }
         case 'wishlist': if (deps.wishlistAdd) deps.wishlistAdd(m.artist + ' ' + m.title); break
         case 'chat': if (deps.openSlskChat) deps.openSlskChat(username); break
       }

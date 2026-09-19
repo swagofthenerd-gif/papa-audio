@@ -42,3 +42,21 @@ test('sectionsHtml never prints a missing dynamic range as a number', () => {
   assert.ok(!html.includes('dynamic range'))
   assert.ok(html.includes('upscaled from 16/44'))
 })
+
+// A real escaper — matching the default shipped in slsk-album-view.js and
+// open()'s own fallback. Every other test above passes `s => s`, which
+// proves nothing about escaping; this one actually escapes.
+function realEsc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+}
+
+test('sectionsHtml escapes a hostile folder/album/artist name', () => {
+  const payload = '<img src=x onerror=1>'
+  const evilAlbum = { ...album, folderName: payload, album: payload, artist: payload }
+  const m = D.model(evilAlbum, 'u', null)
+  const html = D.sectionsHtml(m, realEsc)
+  assert.ok(!html.includes('<img'))
+  assert.ok(html.includes('&lt;img src=x onerror=1&gt;'))
+})
