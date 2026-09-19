@@ -68,3 +68,34 @@ test('a dossier left behind by a host wipe unhooks its own keydown listener', ()
   const dos = fs.readFileSync(path.join(__dirname, '..', 'src', 'slsk-dossier.js'), 'utf8')
   assert.ok(/if \(!root\.isConnected\) \{ document\.removeEventListener\('keydown', onKey, true\); return \}/.test(dos))
 })
+
+// The header carries the live search input, so it is built once and only ever
+// updated in place after that. A repaint from the refresh path would destroy
+// #slr-search mid-keystroke — focus, caret and the pending debounce with it.
+test('the header is painted once and the refresh path only updates it in place', () => {
+  assert.equal((roomSrc.match(/headEl\.innerHTML\s*=/g) || []).length, 1,
+    'exactly one place serialises the header')
+  assert.equal((roomSrc.match(/\bpaintHead\(/g) || []).length, 2,
+    'paintHead is defined once and called once — only from updateHead\'s first-paint branch')
+  assert.ok(/function updateHead\(hm\) \{\s*if \(!headPainted\) \{ paintHead\(hm\); return \}/.test(roomSrc),
+    'updateHead builds on first call and updates in place thereafter')
+  assert.ok(/function refreshHead\(\) \{[\s\S]*?updateHead\(headerModel\(/.test(roomSrc),
+    'refreshHead goes through updateHead, never paintHead')
+  assert.ok(!/repaintHead/.test(roomSrc), 'the old head-repainting helper is gone')
+  const handler = roomSrc.slice(roomSrc.indexOf('onSlskBrowseRefreshed('))
+  assert.ok(handler.includes('refreshHead()'), 'the refresh path updates the head')
+  assert.ok(!handler.slice(0, handler.indexOf('const first = await pullBrowse')).includes('paintHead('),
+    'the refresh handler never rebuilds the head')
+  assert.ok(roomSrc.includes('id="slr-ring"') && roomSrc.includes('id="slr-headline"'),
+    'the mutable bits carry ids updateHead can reach')
+})
+
+// Nothing heavy rebuilds under a moving finger, and Folders keeps its place.
+test('the refresh path waits for the scroll to settle and leaves Folders mounted', () => {
+  assert.ok(/roomScrolling = true/.test(roomSrc) && /roomScrolling = false \}, 250\)/.test(roomSrc),
+    'a 250 ms scroll settle like the shop\'s shScrolling')
+  assert.ok(/while \(roomScrolling &&/.test(roomSrc), 'the refresh waits out the scroll')
+  assert.ok(/requestIdleCallback/.test(roomSrc), 'and yields to an idle slot')
+  assert.ok(/if \(mode !== 'folders'\) paintBody\(\)/.test(roomSrc),
+    'Folders is not destroyed and remounted by a background refresh')
+})

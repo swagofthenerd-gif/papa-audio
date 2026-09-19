@@ -83,19 +83,52 @@
     // instead of an includes() scan per card.
     let missingSet = new Set()
 
+    // The binding rule for this header: it is built EXACTLY ONCE, by the first
+    // paintHead, and never re-serialised. #slr-search is a live input, and
+    // re-serialising headEl after first paint blows away its focus, its caret
+    // and the debounce timer mid-keystroke, which is precisely the trap
+    // slsk-shop-ui.js documents around its hero rule. Everything that can
+    // change later (the ring, the one-line summary) carries an id and is
+    // updated in place by updateHead(); the input and the mode buttons are
+    // never touched again.
+    let headPainted = false
+
+    function ringGradient(hm) {
+      return 'conic-gradient(' + hm.ring.reduce((acc, x) => { const from = acc.at; acc.at += x.pct; acc.s.push(`var(--slr-${x.tier}) ${from}% ${acc.at}%`); return acc }, { at: 0, s: [] }).s.join(',') + ')'
+    }
+    function headLine(hm) {
+      return [hm.line, ((hm.stats && hm.stats.albums) || 0).toLocaleString() + ' albums', hm.status].filter(Boolean).join(' · ')
+    }
+
+    // Update only the mutable text nodes and styles. Safe to call at any time,
+    // including from the background-refresh handler while the user is typing.
+    function updateHead(hm) {
+      if (!headPainted) { paintHead(hm); return }
+      const ring = headEl.querySelector('#slr-ring')
+      if (ring) {
+        ring.style.background = ringGradient(hm)
+        ring.title = hm.ring.map(x => x.tier + ' ' + x.pct + '%').join(', ')
+        const b = ring.querySelector('b')
+        if (b) b.textContent = hm.losslessPct + '%'
+      }
+      const line = headEl.querySelector('#slr-headline')
+      if (line) line.textContent = headLine(hm)
+    }
+
     function paintHead(hm) {
-      const grad = 'conic-gradient(' + hm.ring.reduce((acc, x) => { const from = acc.at; acc.at += x.pct; acc.s.push(`var(--slr-${x.tier}) ${from}% ${acc.at}%`); return acc }, { at: 0, s: [] }).s.join(',') + ')'
+      const grad = ringGradient(hm)
       headEl.innerHTML = `
-        <div class="slr-ring" style="background:${grad}" title="${esc(hm.ring.map(x => x.tier + ' ' + x.pct + '%').join(', '))}"><b>${hm.losslessPct}%</b></div>
+        <div class="slr-ring" id="slr-ring" style="background:${grad}" title="${esc(hm.ring.map(x => x.tier + ' ' + x.pct + '%').join(', '))}"><b>${hm.losslessPct}%</b></div>
         <div class="slr-head-text">
           <h1 class="slr-name">${esc(username)}</h1>
-          <div class="slr-muted">${esc([hm.line, ((hm.stats && hm.stats.albums) || 0).toLocaleString() + ' albums', hm.status].filter(Boolean).join(' · '))}<span id="slr-cache" class="slr-cache"></span></div>
+          <div class="slr-muted"><span id="slr-headline">${esc(headLine(hm))}</span><span id="slr-cache" class="slr-cache"></span></div>
           <div class="slr-modes" role="tablist">${['hunt', 'wander', 'folders'].map(m => `<button role="tab" class="slr-mode${m === mode ? ' is-on' : ''}" data-mode="${m}" aria-selected="${m === mode}">${m[0].toUpperCase() + m.slice(1)}</button>`).join('')}</div>
         </div>
         <div class="slr-head-tools"><span class="slr-folder-filters" id="slr-folder-filters"${mode === 'folders' ? '' : ' hidden'}>
             <label class="slr-toggle"><input type="checkbox" id="slr-f-audio"${folders.audioOnly ? ' checked' : ''}> Audio only</label>
             <label class="slr-toggle"><input type="checkbox" id="slr-f-surround"${folders.surroundOnly ? ' checked' : ''}> Surround only</label>
           </span><input class="slr-search" id="slr-search" placeholder="Search ${esc(username)}'s library…" autocomplete="off"><button class="slr-btn slr-btn-quiet" id="slr-close" aria-label="Back">←</button></div>`
+      headPainted = true
       headEl.querySelector('#slr-close').addEventListener('click', () => deps.onClose && deps.onClose())
       headEl.querySelectorAll('.slr-mode').forEach(b => b.addEventListener('click', () => setMode(b.dataset.mode)))
       searchEl = headEl.querySelector('#slr-search')
@@ -416,10 +449,25 @@
       return true
     }
 
-    function repaintHead() {
+    // Builds the header on the first call and updates it in place on every one
+    // after that (see the binding rule above paintHead). Nothing here may
+    // re-serialise headEl, or the search box dies mid-keystroke.
+    function refreshHead() {
       const Wm = W()
-      paintHead(headerModel(shelves.stats, Wm ? Wm.characterLine(tree, albums) : '', lastStatus))
-      if (searchEl && hunt.query) searchEl.value = hunt.query
+      updateHead(headerModel(shelves.stats, Wm ? Wm.characterLine(tree, albums) : '', lastStatus))
+    }
+
+    // Mirrors the shop's shScrolling gate: nothing heavy may rebuild under a
+    // moving finger. A scroll sets the flag; 250 ms of quiet clears it.
+    let roomScrolling = false
+    let roomScrollSettle = null
+    bodyEl.addEventListener('scroll', () => {
+      roomScrolling = true
+      clearTimeout(roomScrollSettle)
+      roomScrollSettle = setTimeout(() => { roomScrolling = false }, 250)
+    }, { passive: true })
+    function idle() {
+      return new Promise(r => (typeof requestIdleCallback === 'function' ? requestIdleCallback(() => r()) : setTimeout(r, 50)))
     }
 
     // A background refresh landing means what is on screen is now stale.
@@ -438,6 +486,12 @@
             paintCacheLine(' · Updated just now')
             return
           }
+          // The library really did change. Never rebuild under a moving
+          // finger: wait out the scroll and take an idle slot first.
+          while (roomScrolling && !dead && host.isConnected) await new Promise(r => setTimeout(r, 250))
+          if (dead || !host.isConnected) return
+          await idle()
+          if (dead || !host.isConnected) return
           // The refresh wrote the cache a moment ago, so read it rather than
           // making slskd serve the whole library a second time.
           const res = await window.api.slskBrowseUser({ username }).catch(() => null)
@@ -461,9 +515,17 @@
           if (!next || dead || !host.isConnected) return
           tree = next
           if (!(await buildFromTree())) return
-          repaintHead()
+          refreshHead()
           paintCacheLine(' · Updated just now')
-          paintBody()
+          // In Folders, do NOT repaint. paintBody() destroys and remounts the
+          // columns, which throws away where the user had navigated to (the
+          // columns module exposes navTo but no way to read the current path
+          // back, so we cannot restore it). The tree variable is already the
+          // fresh one, so the next mount — a mode switch away and back — picks
+          // it up; the header cache line above is what tells them it changed
+          // in the meantime. Hunt and
+          // Wander have no such position to lose and repaint normally.
+          if (mode !== 'folders') paintBody()
         } catch (_) { /* a failed refresh must never disrupt the open page */ }
       })
     }
@@ -484,7 +546,7 @@
     if (dead || !host.isConnected) return
     const st = statuses && (statuses[username] || (Array.isArray(statuses) && statuses.find(x => x.username === username)))
     lastStatus = st ? { online: !!(st.online || st.isOnline || st.status === 'online'), queue: st.queueLength != null ? st.queueLength : st.queue } : null
-    repaintHead()
+    refreshHead()
     paintCacheLine(cacheText())
     paintBody()
 
