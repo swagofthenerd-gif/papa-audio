@@ -12,11 +12,23 @@
 // bridge), append-only, capped — and the read routes overlay the queued ops on
 // top of the desktop's value so the phone still sees its own action immediately.
 //
-// NOTHING ON THE DESKTOP READS THIS FILE YET. See the TODO in the audit report:
-// main.js needs an ingester that drains `ops` at startup and on a timer, applies
-// them through the existing sideStores, and truncates the file to the last
-// consumed `seq`. Until that exists these mutations are durable and visible to
-// the phone, but not yet merged into the desktop's copy.
+// The same argument applies to the SETTINGS keys that never left config.json
+// (likedAlbums, followedArtists, volume, eqSettings, agentModel). The bridge
+// used to write those straight into config.json with its own electron-store
+// instance while the desktop's `conf` rewrites that whole file on every set().
+// Two writers, no lock: whichever landed last silently destroyed the other's
+// change, and the bridge's write also dropped the desktop's 0600 file mode. So
+// those are queued here too, and src/bridge-inbox-ingest.js applies them
+// through the desktop's own store. The desktop is the only writer of
+// config.json.
+//
+// `bridgeTranscode` is deliberately NOT here: nothing on the desktop reads it,
+// so it is not a desktop-owned key at all. It moved to the bridge's own
+// bridge-settings.json (bridge-settings.js), where the bridge is the single
+// writer of a file the desktop never touches.
+//
+// src/bridge-inbox-ingest.js drains `ops`, applies them through the desktop's
+// side stores and store, and truncates the file to the last consumed `seq`.
 
 const fs = require('fs')
 const path = require('path')
@@ -38,6 +50,13 @@ const OP_TYPES = new Set([
   'savedQueues.delete',
   'recentlyPlayed.push',
   'playbackState.set',
+  // Settings keys that still live in config.json. The desktop's store is their
+  // single writer; these carry the phone's change to it.
+  'likedAlbums.set',
+  'followedArtists.set',
+  'volume.set',
+  'eqSettings.set',
+  'agentModel.set',
 ])
 
 function inboxPath(userData) { return path.join(userData, INBOX_FILE) }
@@ -116,6 +135,18 @@ function applyInbox(key, base, ops) {
       value = r.slice(0, 20)
     } else if (key === 'playbackState' && action === 'set') {
       value = p.state
+    } else if (key === 'likedAlbums' && action === 'set') {
+      value = Array.isArray(p.ids) ? p.ids.slice() : []
+    } else if (key === 'followedArtists' && action === 'set') {
+      value = Array.isArray(p.artists) ? p.artists.slice() : []
+    } else if (key === 'volume' && action === 'set') {
+      // A non-number would land NaN in the desktop's config and mute playback;
+      // an op that cannot say what it means leaves the base alone.
+      value = (typeof p.volume === 'number' && isFinite(p.volume)) ? p.volume : value
+    } else if (key === 'eqSettings' && action === 'set') {
+      value = (p.settings && typeof p.settings === 'object') ? p.settings : value
+    } else if (key === 'agentModel' && action === 'set') {
+      value = typeof p.model === 'string' ? p.model : value
     }
   }
   return value

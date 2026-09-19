@@ -64,6 +64,11 @@ function fixture() {
   fs.writeFileSync(path.join(ud, 'config.json'), JSON.stringify({
     musicFolders: [music],
   }))
+  // The desktop opens its store with `configFileMode: 0o600`. The bridge used
+  // to write this file too, with a plain electron-store that has no such
+  // option, so a phone POST silently widened it to 0644. The fixture starts at
+  // the desktop's mode so a widening is visible.
+  fs.chmodSync(path.join(ud, 'config.json'), 0o600)
   // The side files, exactly as ../side-store.js writes them: the bare JSON
   // value at <USER_DATA>/<kebab-case>.json.
   fs.writeFileSync(path.join(ud, 'library-cache.json'), JSON.stringify([
@@ -929,4 +934,193 @@ test('a second download request for the same video does not start a second yt-dl
   } finally {
     fs.rmSync(cacheDir, { recursive: true, force: true })
   }
+})
+
+// ── The two-writer keys: likedAlbums, followedArtists, volume, eqSettings, ────
+// agentModel, bridgeTranscode.
+//
+// These never left config.json, and the bridge wrote them there with its own
+// electron-store while the desktop's `conf` rewrites that whole file (tmp +
+// rename) on every set(). Two writers with no lock: the last one to land
+// silently destroyed the other's change, and the bridge's writer — which has no
+// `configFileMode` — also widened the desktop's 0600 file to 0644.
+//
+// The fix routes every one of them onto the inbox the retired keys already use,
+// except bridgeTranscode, which has no desktop reader at all and moved to the
+// bridge's own bridge-settings.json. Each test below asserts the same three
+// things: the file is byte-identical and its mtime unmoved, the mode is still
+// 0600, and the phone still sees its own change on the very next read.
+
+const CFG = () => path.join(ud, 'config.json')
+const cfgSnapshot = () => {
+  const st = fs.statSync(CFG())
+  return { bytes: fs.readFileSync(CFG(), 'utf8'), mtime: st.mtimeMs, mode: st.mode & 0o777 }
+}
+const postJson = (route, body) => fetch(`${base}${route}`, {
+  method: 'POST',
+  headers: { ...authed.headers, 'Content-Type': 'application/json' },
+  body: JSON.stringify(body),
+})
+
+test('a phone like-albums POST does not touch config.json, and the phone still sees it', async () => {
+  const before = cfgSnapshot()
+
+  const r = await postJson('/api/settings/liked', { ids: ['alb-from-phone'] })
+  assert.strictEqual(r.status, 202, 'a queued mutation is accepted, not silently "ok"')
+  assert.strictEqual((await r.json()).queued, true)
+
+  const after = cfgSnapshot()
+  assert.strictEqual(after.bytes, before.bytes, 'the bridge rewrote config.json for likedAlbums')
+  assert.strictEqual(after.mtime, before.mtime, 'config.json was rewritten (mtime moved)')
+  assert.strictEqual(after.mode, 0o600, 'the bridge widened the desktop’s 0600 config.json')
+  assert.ok(!('likedAlbums' in JSON.parse(after.bytes)))
+
+  // Replay: the phone reads back what it just sent, before any desktop ingest.
+  const liked = await (await fetch(`${base}/api/settings/liked`, authed)).json()
+  assert.deepStrictEqual(liked, ['alb-from-phone'])
+})
+
+test('a phone followed-artists POST does not touch config.json, and the phone still sees it', async () => {
+  const before = cfgSnapshot()
+
+  const r = await postJson('/api/settings/followed-artists', { artists: ['Aphex Twin'] })
+  assert.strictEqual(r.status, 202)
+
+  const after = cfgSnapshot()
+  assert.strictEqual(after.bytes, before.bytes, 'the bridge rewrote config.json for followedArtists')
+  assert.strictEqual(after.mtime, before.mtime)
+  assert.strictEqual(after.mode, 0o600)
+
+  const followed = await (await fetch(`${base}/api/settings/followed-artists`, authed)).json()
+  assert.deepStrictEqual(followed, ['Aphex Twin'])
+})
+
+test('volume, eq and agent-model POSTs are queued too, not written into config.json', async () => {
+  const before = cfgSnapshot()
+
+  assert.strictEqual((await postJson('/api/settings/volume', { volume: 0.42 })).status, 202)
+  assert.strictEqual((await postJson('/api/settings/eq', { enabled: false, gains: [1,0,0,0,0,0,0,0,0,0], preamp: 2 })).status, 202)
+  assert.strictEqual((await postJson('/api/settings/agent-model', { model: 'gpt-4o-mini' })).status, 202)
+
+  const after = cfgSnapshot()
+  assert.strictEqual(after.bytes, before.bytes, 'a settings POST rewrote config.json')
+  assert.strictEqual(after.mtime, before.mtime)
+  assert.strictEqual(after.mode, 0o600)
+
+  const vol = await (await fetch(`${base}/api/settings/volume`, authed)).json()
+  assert.strictEqual(vol.volume, 0.42, 'the phone did not see its own volume change')
+  const eq = await (await fetch(`${base}/api/settings/eq`, authed)).json()
+  assert.strictEqual(eq.enabled, false)
+  assert.strictEqual(eq.preamp, 2)
+  const model = await (await fetch(`${base}/api/settings/agent-model`, authed)).json()
+  assert.strictEqual(model.model, 'gpt-4o-mini')
+})
+
+test('a volume that is not a number is refused rather than queued as NaN', async () => {
+  const r = await postJson('/api/settings/volume', { volume: 'loud' })
+  assert.strictEqual(r.status, 400)
+  await r.text()
+  const vol = await (await fetch(`${base}/api/settings/volume`, authed)).json()
+  assert.strictEqual(typeof vol.volume, 'number')
+  assert.ok(isFinite(vol.volume), 'a bad payload reached the value the desktop will ingest')
+})
+
+test('the transcode gate is bridge-owned: its own 0600 file, config.json untouched', async () => {
+  const before = cfgSnapshot()
+
+  const r = await postJson('/api/settings/transcode', { enabled: false })
+  assert.strictEqual(r.status, 200, 'a bridge-owned setting is written, not queued')
+  assert.strictEqual((await r.json()).enabled, false)
+
+  const after = cfgSnapshot()
+  assert.strictEqual(after.bytes, before.bytes, 'bridgeTranscode was written into config.json')
+  assert.strictEqual(after.mtime, before.mtime)
+  assert.strictEqual(after.mode, 0o600)
+
+  const side = path.join(ud, 'bridge-settings.json')
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(side, 'utf8')).bridgeTranscode, false)
+  assert.strictEqual(fs.statSync(side).mode & 0o777, 0o600,
+    'the bridge’s own settings file is world-readable')
+
+  // And it is actually honoured, not just stored.
+  const caps = await (await fetch(`${base}/api/settings/transcode`, authed)).json()
+  assert.strictEqual(caps.enabled, false)
+
+  // Put it back so nothing after this runs against a disabled transcode.
+  assert.strictEqual((await postJson('/api/settings/transcode', { enabled: true })).status, 200)
+})
+
+test('config.json survives being replaced under a read (the desktop renames over it)', async () => {
+  // The desktop writes config.json by renaming a tmp file over it. electron-store
+  // re-reads the file on every get() and `conf` is built with
+  // clearInvalidConfig:false, so a read that lands mid-rename throws a
+  // SyntaxError — which used to become a 500 on a settings route.
+  //
+  // A real rename window is microseconds wide, so this boots its own bridge with
+  // the retry wait stretched to 400 ms and puts the good file back 80 ms in.
+  // Its own USER_DATA too: a torn config.json must not be visible to the shared
+  // instance the rest of this file is using.
+  const ud2 = path.join(tmp, 'userdata-torn')
+  fs.mkdirSync(path.join(ud2, 'artwork'), { recursive: true })
+  fs.writeFileSync(path.join(ud2, 'bridge-token'), TOKEN)
+  const good = JSON.stringify({ musicFolders: [music] })
+  const file = path.join(ud2, 'config.json')
+  fs.writeFileSync(file, good)
+
+  const saved = ud
+  ud = ud2
+  let booted
+  try {
+    booted = await boot({ BRIDGE_CONFIG_RETRY_MS: '400' })
+  } finally {
+    ud = saved
+  }
+  const b2 = booted.base
+  const stderr = []
+  booted.proc.stderr.on('data', d => stderr.push(d.toString()))
+
+  // Torn: valid-prefix JSON, which is exactly what a half-visible file looks
+  // like and what JSON.parse throws a SyntaxError on.
+  fs.writeFileSync(file, good.slice(0, good.length - 5))
+  const inflight = fetch(`${b2}/api/folders`, authed)
+  const restored = new Promise(r => setTimeout(() => {
+    // This runs in the TEST process; the bridge's own thread is parked in the
+    // retry wait and could not have run it.
+    fs.writeFileSync(file, good)
+    r()
+  }, 80))
+
+  const res = await inflight
+  await restored
+  assert.strictEqual(res.status, 200, 'a read during the desktop’s rename became an error')
+  assert.deepStrictEqual(await res.json(), [music],
+    'the retry did not pick up the renamed-in file')
+  assert.match(stderr.join(''), /config read of \w+ failed .*retrying once/,
+    'the read never actually hit the torn file — the test proved nothing')
+
+  booted.proc.kill('SIGKILL')
+})
+
+// ── Source tripwire ──────────────────────────────────────────────────────────
+// Every behavioural test above can be satisfied by one route at a time. This is
+// the standing rule: the bridge is not a writer of config.json, full stop. A new
+// route that reaches for store.set() has to add itself to the allow-list below
+// and say why, which is a conversation rather than a silent second writer.
+
+test('no store.set() survives in server.js outside the documented allow-list', () => {
+  // Bridge-owned keys the bridge may write into config.json. Empty on purpose:
+  // bridgeTranscode, the only candidate, moved to bridge-settings.json because
+  // nothing on the desktop reads it.
+  const BRIDGE_OWNED_CONFIG_KEYS = []
+
+  const src = fs.readFileSync(path.join(__dirname, '..', 'bridge-server', 'server.js'), 'utf8')
+  const found = []
+  src.split('\n').forEach((line, i) => {
+    if (/^\s*(\/\/|\*)/.test(line)) return // a comment is not a writer
+    const m = /store\.set\(\s*['"]([^'"]+)['"]/.exec(line)
+    if (m) { if (!BRIDGE_OWNED_CONFIG_KEYS.includes(m[1])) found.push(`${i + 1}: ${m[1]}`) }
+    else if (/store\.set\(/.test(line)) found.push(`${i + 1}: (dynamic key)`)
+  })
+  assert.deepStrictEqual(found, [],
+    'the bridge is writing config.json again — the desktop is its single writer')
 })

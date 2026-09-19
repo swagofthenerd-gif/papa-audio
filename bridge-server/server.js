@@ -94,8 +94,15 @@ const FFMPEG_AVAILABLE = (() => {
 
 // Optional transcode gate (roadmap #64), default ON. Off means the transcode
 // query param is refused even when ffmpeg is present.
+// bridgeTranscode lives in the bridge's own file. The legacy config.json copy
+// is consulted ONLY as the seed for a profile that predates bridge-settings.json
+// — a lazy fallback, not a read on every request, so a torn config.json cannot
+// stall unrelated traffic.
+const _TRANSCODE_UNSET = Symbol('unset')
 function bridgeTranscodeEnabled() {
-  return store.get('bridgeTranscode', true) !== false
+  const own = bridgeSettings.get(USER_DATA, 'bridgeTranscode', _TRANSCODE_UNSET)
+  if (own !== _TRANSCODE_UNSET) return own !== false
+  return cfgGet('bridgeTranscode', true) !== false
 }
 
 function bridgeCapabilities() {
@@ -108,7 +115,15 @@ function bridgeCapabilities() {
   }
 }
 
-// Re-use the same electron-store data files the desktop app writes.
+// Read the same electron-store config file the desktop app writes.
+//
+// READ-ONLY. The bridge no longer writes config.json at all: the desktop's `conf`
+// rewrites the whole of config.json on every set(), so a bridge write and a
+// desktop write with no lock between them silently destroyed each other, and
+// the bridge's write also dropped the desktop's `configFileMode: 0o600`.
+// Phone-side changes to a desktop-owned key are queued in the inbox and applied
+// by the desktop (src/bridge-inbox-ingest.js); the bridge's own setting lives
+// in bridge-settings.json. One writer per file, in both directions.
 //
 // NOTE the narrowed job: config.json is now only the SETTINGS keys
 // (musicFolders, volume, eqSettings, slskConfig, …). The eight big/hot keys —
@@ -117,6 +132,46 @@ function bridgeCapabilities() {
 // 2026-08-27 and the desktop's retireLegacyKeys() deletes them from here. Read
 // those through `sideValue()` below, never through `store`.
 const store = new Store({ name: 'config', cwd: USER_DATA })
+const bridgeSettings = require('./bridge-settings')
+
+// Every config read goes through here.
+//
+// electron-store re-reads config.json on every get(), and the desktop writes it
+// by renaming a tmp file over it. A read that lands between the unlink and the
+// rename, or on a partially visible file, throws a SyntaxError — `conf` is
+// configured with clearInvalidConfig:false, so it does NOT swallow it — and
+// that turned a 20-microsecond rename window into a 500 on a settings route.
+// One retry after a moment is enough: the rename is atomic, so the second read
+// either sees the old file or the new one, never a torn one.
+//
+// A second failure is reported as the fallback rather than thrown. A settings
+// GET answering the default beats the phone seeing an error, and the desktop
+// (the writer) is the one that has to notice a genuinely corrupt config.
+// How long the retry waits. Only the tests move it: they need a window wide
+// enough to put the good file back inside, which a microsecond-wide real rename
+// does not give them.
+const CONFIG_RETRY_MS = process.env.BRIDGE_CONFIG_RETRY_MS !== undefined
+  ? Number(process.env.BRIDGE_CONFIG_RETRY_MS) : 5
+
+function cfgGet(key, fallback) {
+  try {
+    return store.get(key, fallback)
+  } catch (e) {
+    console.error(`[bridge] config read of ${key} failed (${e && e.message}); retrying once`)
+    try {
+      // Synchronous on purpose: these are request paths, and sleeping the
+      // handler for a few milliseconds is cheaper than an async rewrite of
+      // every caller. The rename window is microseconds wide.
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, CONFIG_RETRY_MS)
+    } catch (_) {}
+    try {
+      return store.get(key, fallback)
+    } catch (e2) {
+      console.error(`[bridge] config read of ${key} failed twice (${e2 && e2.message}); using the default`)
+      return fallback
+    }
+  }
+}
 
 // ── The desktop's SideStore files ─────────────────────────────────────────────
 // Read-only. The desktop is the single writer; a phone-side mutation is queued
@@ -131,6 +186,17 @@ const sideRead = createSideReader(USER_DATA)
 // replayed on top.
 function sideValue(key) {
   const base = sideRead.get(key)
+  const queued = inbox.readInbox(USER_DATA).ops
+  return inbox.applyInbox(key, base, queued)
+}
+
+// The desktop's config value for `key`, with any not-yet-ingested phone
+// mutations replayed on top — the same overlay `sideValue` gives the side
+// files, for the settings keys that never left config.json. Without it a phone
+// POST followed by its own GET would read back the pre-POST value for up to a
+// full ingest interval and the phone's UI would snap backwards.
+function configValue(key, fallback) {
+  const base = cfgGet(key, fallback)
   const queued = inbox.readInbox(USER_DATA).ops
   return inbox.applyInbox(key, base, queued)
 }
@@ -562,10 +628,10 @@ app.get('/api/health', (_, res) => res.json({
 
 // ── App info ──────────────────────────────────────────────────────────────────
 app.get('/api/app-info', (_, res) => res.json({
-  musicFolders:   store.get('musicFolders', []),
-  savedSites:     store.get('savedSites', []),
+  musicFolders:   cfgGet('musicFolders', []),
+  savedSites:     cfgGet('savedSites', []),
   recentlyPlayed: sideValue('recentlyPlayed') || [],
-  volume:         store.get('volume', 0.8),
+  volume:         cfgGet('volume', 0.8),
 }))
 
 // Decorate each album with an `artUrl` (roadmap #64): the id-keyed artwork
@@ -587,7 +653,7 @@ app.get('/api/library', (_, res) => {
 })
 
 app.post('/api/library/scan', async (_, res) => {
-  const folders = store.get('musicFolders', [])
+  const folders = cfgGet('musicFolders', [])
   if (!folders.length) return res.json({ albums: [] })
   try {
     const allFiles = (await Promise.all(folders.map(f => scanDir(f)))).flat()
@@ -639,7 +705,7 @@ app.get('/stream', async (req, res) => {
   const filePath = req.query.path
   if (!filePath) return res.status(400).json({ error: 'Missing path parameter' })
 
-  const folders = store.get('musicFolders', [])
+  const folders = cfgGet('musicFolders', [])
   const resolved = path.resolve(filePath)
   const allowed = folders.some(function(f) { return isInside(resolved, f) })
   if (!allowed) return res.status(403).json({ error: 'Access denied: path outside music folders' })
@@ -714,7 +780,7 @@ app.get('/art', async (req, res) => {
 // ARTWORK_DIR rather than a second hardcoded ~/.config/papa-audio/artwork, so
 // the allow-list follows USER_DATA instead of silently diverging from it.
 function pathAllowed(resolved) {
-  const folders = store.get('musicFolders', [])
+  const folders = cfgGet('musicFolders', [])
   return folders.some(function(f) { return isInside(resolved, f) }) ||
     isInside(resolved, ARTWORK_DIR)
 }
@@ -754,7 +820,7 @@ app.get('/stream/:trackId', async (req, res) => {
   if (!filePath) return res.status(404).json({ error: 'Track not found' })
 
   const resolved = path.resolve(filePath)
-  const folders = store.get('musicFolders', [])
+  const folders = cfgGet('musicFolders', [])
   if (!folders.some(function(f) { return isInside(resolved, f) })) {
     return res.status(403).json({ error: 'Access denied: path outside music folders' })
   }
@@ -864,8 +930,9 @@ app.post('/api/fetch-album-art', async (req, res) => {
 })
 
 // ── Settings ──────────────────────────────────────────────────────────────────
-app.get('/api/settings/liked',           (_, res) => res.json(store.get('likedAlbums', [])))
-app.post('/api/settings/liked',          (req, res) => { store.set('likedAlbums', req.body.ids); res.json({ ok: true }) })
+app.get('/api/settings/liked',           (_, res) => res.json(configValue('likedAlbums', [])))
+app.post('/api/settings/liked',          (req, res) =>
+  queueMutation(res, 'likedAlbums.set', { ids: Array.isArray(req.body && req.body.ids) ? req.body.ids : [] }))
 
 app.get('/api/settings/liked-tracks',    (_, res) => res.json(sideValue('likedTracks') || []))
 app.post('/api/settings/liked-tracks',   (req, res) =>
@@ -882,8 +949,9 @@ app.get('/api/settings/play-history',    (_, res) => res.json(sideValue('playHis
 app.post('/api/settings/play-history',   (req, res) =>
   queueMutation(res, 'playHistory.push', { entry: req.body }))
 
-app.get('/api/settings/followed-artists',  (_, res) => res.json(store.get('followedArtists', [])))
-app.post('/api/settings/followed-artists', (req, res) => { store.set('followedArtists', req.body.artists); res.json({ ok: true }) })
+app.get('/api/settings/followed-artists',  (_, res) => res.json(configValue('followedArtists', [])))
+app.post('/api/settings/followed-artists', (req, res) =>
+  queueMutation(res, 'followedArtists.set', { artists: Array.isArray(req.body && req.body.artists) ? req.body.artists : [] }))
 
 app.get('/api/settings/playlists',         (_, res) => res.json(sideValue('playlists') || []))
 app.post('/api/settings/playlists',        (req, res) => {
@@ -901,11 +969,18 @@ app.post('/api/settings/saved-queues',     (req, res) => {
 app.delete('/api/settings/saved-queues/:id', (req, res) =>
   queueMutation(res, 'savedQueues.delete', { id: req.params.id }))
 
-app.get('/api/settings/eq',               (_, res) => res.json(store.get('eqSettings', { enabled: true, gains: [0,0,0,0,0,0,0,0,0,0], replayGainMode: 'track', preamp: 0 })))
-app.post('/api/settings/eq',              (req, res) => { store.set('eqSettings', req.body); res.json({ ok: true }) })
+app.get('/api/settings/eq',               (_, res) => res.json(configValue('eqSettings', { enabled: true, gains: [0,0,0,0,0,0,0,0,0,0], replayGainMode: 'track', preamp: 0 })))
+app.post('/api/settings/eq',              (req, res) => {
+  if (!req.body || typeof req.body !== 'object') return res.status(400).json({ error: 'eq settings required' })
+  return queueMutation(res, 'eqSettings.set', { settings: req.body })
+})
 
-app.get('/api/settings/volume',           (_, res) => res.json({ volume: store.get('volume', 0.8) }))
-app.post('/api/settings/volume',          (req, res) => { store.set('volume', req.body.volume); res.json({ ok: true }) })
+app.get('/api/settings/volume',           (_, res) => res.json({ volume: configValue('volume', 0.8) }))
+app.post('/api/settings/volume',          (req, res) => {
+  const volume = req.body && req.body.volume
+  if (typeof volume !== 'number' || !isFinite(volume)) return res.status(400).json({ error: 'volume must be a number' })
+  return queueMutation(res, 'volume.set', { volume })
+})
 
 app.get('/api/settings/recently-played', (_, res) => res.json(sideValue('recentlyPlayed') || []))
 app.post('/api/settings/recently-played', (req, res) => {
@@ -921,14 +996,28 @@ app.post('/api/settings/playback-state',  (req, res) =>
 // user's config to anyone holding the pairing token, and let them be replaced.
 // The keys are desktop-only; the Android app never called this.
 
-app.get('/api/settings/agent-model',      (_, res) => res.json({ model: store.get('agentModel', '') }))
-app.post('/api/settings/agent-model',     (req, res) => { store.set('agentModel', req.body.model); res.json({ ok: true }) })
+app.get('/api/settings/agent-model',      (_, res) => res.json({ model: configValue('agentModel', '') }))
+app.post('/api/settings/agent-model',     (req, res) => {
+  const model = req.body && req.body.model
+  if (typeof model !== 'string') return res.status(400).json({ error: 'model must be a string' })
+  return queueMutation(res, 'agentModel.set', { model })
+})
 
 // Transcode gate (roadmap #64): read/write the bridgeTranscode config the
 // id-keyed /stream endpoint honours. The read also reports whether ffmpeg is
 // present so a client can grey out the option when transcoding is impossible.
 app.get('/api/settings/transcode',        (_, res) => res.json({ enabled: bridgeTranscodeEnabled(), ffmpeg: FFMPEG_AVAILABLE }))
-app.post('/api/settings/transcode',       (req, res) => { store.set('bridgeTranscode', !!req.body.enabled); res.json({ enabled: bridgeTranscodeEnabled(), ffmpeg: FFMPEG_AVAILABLE }) })
+app.post('/api/settings/transcode',       (req, res) => {
+  // bridgeTranscode is bridge-owned (no desktop reader), so this writes the
+  // bridge's own file rather than queueing a mutation for the desktop.
+  try {
+    bridgeSettings.set(USER_DATA, 'bridgeTranscode', !!(req.body && req.body.enabled))
+  } catch (e) {
+    console.error(`[bridge] could not save bridgeTranscode (${e && e.message})`)
+    return res.status(500).json({ error: 'Could not save the setting' })
+  }
+  res.json({ enabled: bridgeTranscodeEnabled(), ffmpeg: FFMPEG_AVAILABLE })
+})
 
 // ── Soulseek status ───────────────────────────────────────────────────────────
 app.get('/api/slsk/status', async (_, res) => {
@@ -1026,8 +1115,8 @@ app.delete('/api/slsk/transfers/:username/:id', async (req, res) => {
 
 app.get('/api/slsk/resolve', (req, res) => {
   const { username, filename } = req.query
-  const cfg         = store.get('slskConfig', {})
-  const folders     = store.get('musicFolders', [])
+  const cfg         = cfgGet('slskConfig', {})
+  const folders     = cfgGet('musicFolders', [])
   const downloadDir = cfg.downloadDir || folders[0] || path.join(os.homedir(), 'Music')
   // The filename comes from a Soulseek peer, so ".." segments in it would walk
   // path.join() straight out of the download directory and let the caller probe
@@ -1096,7 +1185,7 @@ app.get('/api/network', (_, res) => {
 })
 
 // ── Music folder management ───────────────────────────────────────────────────
-app.get('/api/folders', (_, res) => res.json(store.get('musicFolders', [])))
+app.get('/api/folders', (_, res) => res.json(cfgGet('musicFolders', [])))
 // POST/DELETE /api/folders are gone. musicFolders IS the allow-list every
 // /stream and /art route checks against, so a route that appends to it let a
 // token holder add "/" and then read any file on disk through /stream?path=.
@@ -1277,8 +1366,8 @@ fs.mkdirSync(path.join(USER_DATA, 'yt-cache'), { recursive: true })
 const ytBridge = registerYouTube(app, {
   sseSend,
   getDownloadDir() {
-    const cfg = store.get('slskConfig', {})
-    const folders = store.get('musicFolders', [])
+    const cfg = cfgGet('slskConfig', {})
+    const folders = cfgGet('musicFolders', [])
     return cfg.downloadDir || folders[0] || path.join(os.homedir(), 'Music')
   },
   cacheDir: path.join(USER_DATA, 'yt-cache'),

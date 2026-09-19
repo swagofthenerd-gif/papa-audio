@@ -15,9 +15,16 @@
 //
 // The contract, in one place:
 //
-//   * ONE WRITER PER STORE. The desktop writes the side stores; this module is
-//     the desktop. The bridge writes the inbox; this module only ever TRUNCATES
-//     it, and only ops it has already applied.
+//   * ONE WRITER PER STORE. The desktop writes the side stores AND config.json;
+//     this module is the desktop. The bridge writes the inbox; this module only
+//     ever TRUNCATES it, and only ops it has already applied.
+//   * The settings keys that never left config.json (likedAlbums,
+//     followedArtists, volume, eqSettings, agentModel) come through here too.
+//     The bridge used to write them into config.json with its own
+//     electron-store instance while `conf` rewrites that whole file on every
+//     set(): last writer won and the other change vanished, and the bridge's
+//     write dropped the desktop's 0600 mode. They are applied through the
+//     desktop's own `store` below, so config.json has exactly one writer.
 //   * The replay semantics are not reimplemented here. `applyInbox` is required
 //     straight out of bridge-server/inbox.js, so the value the phone was shown
 //     by the read overlay and the value the desktop lands on disk come from the
@@ -56,6 +63,19 @@ const OP_KEY_TO_STORE = {
   savedQueues: 'savedQueues',
   recentlyPlayed: 'recentlyPlayed',
   playbackState: 'playbackState',
+}
+
+// op key -> the config.json key and the default to merge onto when the desktop
+// has never set it. These are the keys that stayed in config.json; the desktop
+// store is their single writer and this is where the phone's version of them
+// lands. The fallbacks mirror main.js's own reads so an ingest cannot invent a
+// different default than the app uses.
+const OP_KEY_TO_CONFIG = {
+  likedAlbums:     { key: 'likedAlbums', fallback: [] },
+  followedArtists: { key: 'followedArtists', fallback: [] },
+  volume:          { key: 'volume', fallback: 0.8 },
+  eqSettings:      { key: 'eqSettings', fallback: { enabled: true, gains: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0], replayGainMode: 'track', preamp: 0 } },
+  agentModel:      { key: 'agentModel', fallback: '' },
 }
 
 function inboxPath(userData) { return path.join(userData, INBOX_FILE) }
@@ -155,7 +175,7 @@ function truncateInbox(userData, consumedSeq, snapshotSeq) {
 //
 // Returns a small report so the tests (and the caller's log) can see what
 // happened without reaching into the file.
-function ingestOnce({ userData, sideStores, log = () => {} } = {}) {
+function ingestOnce({ userData, sideStores, store, log = () => {} } = {}) {
   if (!userData || !sideStores) throw new Error('ingestOnce needs userData and sideStores')
 
   const read = readInboxStrict(userData)
@@ -184,9 +204,11 @@ function ingestOnce({ userData, sideStores, log = () => {} } = {}) {
   // Which stores this batch actually touches. Applying a key with no ops would
   // still dirty its store and cost a pointless write.
   const keys = new Set()
+  const configKeys = new Set()
   for (const op of fresh) {
     const key = String(op.type).split('.')[0]
     if (OP_KEY_TO_STORE[key]) keys.add(key)
+    else if (OP_KEY_TO_CONFIG[key]) configKeys.add(key)
     else log(`[papa][inbox] skipping op with unknown key: ${op.type}`)
   }
 
@@ -205,6 +227,31 @@ function ingestOnce({ userData, sideStores, log = () => {} } = {}) {
       // One store failing must not advance the watermark past ops it never
       // took, so this pass stops here and the next one retries from the same
       // point. Nothing is truncated.
+      return { applied, lastSeq: watermark, quarantined: false, partial: true }
+    }
+  }
+
+  // The config.json keys. Same read-modify-write shape, through the desktop's
+  // electron-store — which is the only thing in the system allowed to write
+  // that file.
+  for (const key of configKeys) {
+    if (!store) {
+      // Started without a store (a caller that only cares about side stores).
+      // The ops stay queued rather than being dropped on the floor, and the
+      // watermark must not move past them, so this pass ends here.
+      log(`[papa][inbox] no config store available for ${key}; its ops stay queued`)
+      return { applied, lastSeq: watermark, quarantined: false, partial: true }
+    }
+    const spec = OP_KEY_TO_CONFIG[key]
+    try {
+      const base = store.get(spec.key, spec.fallback)
+      const next = applyInbox(key, base, fresh)
+      // An op whose payload was unusable leaves the base untouched; writing it
+      // back anyway would rewrite the whole 0600 file for nothing.
+      if (next !== base) store.set(spec.key, next)
+      applied++
+    } catch (e) {
+      log(`[papa][inbox] applying ${key} failed (${(e && e.message) || e}); its ops stay queued`)
       return { applied, lastSeq: watermark, quarantined: false, partial: true }
     }
   }
@@ -244,10 +291,10 @@ function _run() {
   }
 }
 
-function start({ userData, sideStores, intervalMs = DEFAULT_INTERVAL_MS, log } = {}) {
+function start({ userData, sideStores, store, intervalMs = DEFAULT_INTERVAL_MS, log } = {}) {
   if (!userData || !sideStores) throw new Error('bridge-inbox-ingest needs userData and sideStores')
   stop()
-  _ctx = { userData, sideStores, log: log || (m => { try { console.log(m) } catch (_) {} }) }
+  _ctx = { userData, sideStores, store, log: log || (m => { try { console.log(m) } catch (_) {} }) }
 
   // The first pass is deferred to the next tick rather than run inline. This
   // module is started from main.js's module body, right after `sideStores` is
@@ -306,6 +353,7 @@ module.exports = {
   readWatermark,
   STATE_FILE,
   OP_KEY_TO_STORE,
+  OP_KEY_TO_CONFIG,
   WATCH_DEBOUNCE_MS,
   DEFAULT_INTERVAL_MS,
 }
