@@ -1717,6 +1717,51 @@ async function purgeStaleSearches() {
   }
 }
 
+// How often the background watch re-checks, and when it admits defeat. The
+// give-up is generous because the cost of waiting is nothing (a poll every few
+// seconds) and the cost of giving up too early is a session that can log in but
+// never search.
+const SLSKD_READY_RETRY_MS = 5000
+const SLSKD_READY_GIVE_UP_MS = 10 * 60 * 1000
+
+let _slskdSettleTimer = null
+
+function _clearSlskdSettle() {
+  if (_slskdSettleTimer) { clearTimeout(_slskdSettleTimer); _slskdSettleTimer = null }
+}
+
+// Keeps polling a daemon that is still starting, and finishes the startup work
+// the moment it answers: take a token, clear the leaked searches, and tell the
+// UI it is really connected. One watcher at a time, and it stops itself once
+// the daemon is ready, once the deadline passes, or when slskd is stopped.
+function _settleSlskdWhenReady(deadline = Date.now() + SLSKD_READY_GIVE_UP_MS) {
+  if (_slskdSettleTimer) return
+  const tick = async () => {
+    _slskdSettleTimer = null
+    if (Date.now() > deadline) {
+      console.error('[papa] slskd never became ready; giving up the background watch')
+      safeSend('slskd-status-change', { connected: false, restarting: false, starting: false })
+      return
+    }
+    let ready = false
+    try { ready = await waitForSlskd(SLSKD_READY_RETRY_MS) } catch (_) {}
+    if (ready && await slskdAcquireToken()) {
+      const cleared = await purgeStaleSearches()
+      console.log(`[papa] slskd came up late; cleared ${cleared} stale search(es)`)
+      safeSend('slskd-status-change', { connected: true, restarting: false, starting: false })
+      return
+    }
+    _slskdSettleTimer = setTimeout(tick, SLSKD_READY_RETRY_MS)
+    _slskdSettleTimer.unref?.()
+  }
+  _slskdSettleTimer = setTimeout(tick, SLSKD_READY_RETRY_MS)
+  _slskdSettleTimer.unref?.()
+}
+
+// True while the daemon has been started but has not answered yet, so the UI can
+// say "starting up" instead of "disconnected" — which is what it is.
+function slskdIsStarting() { return _slskdSettleTimer !== null }
+
 async function startSlskd() {
   if (!fs.existsSync(SLSKD_BIN)) return
   // If already running externally, just authenticate and mark ready
@@ -1754,13 +1799,30 @@ async function startSlskd() {
       connected: false, restarting: false, error: String(e && e.message || e),
     })
   })
-  await waitForSlskd()
-  await slskdAcquireToken()
-  await purgeStaleSearches()
+  // slskd rebuilds its database on every start and can take MINUTES to answer
+  // — measured at about three on this machine — while waitForSlskd gives it
+  // thirty seconds. On timeout the two lines that used to follow ran anyway,
+  // against a daemon that was not up: the token acquire failed, and so did the
+  // stale-search purge. That purge is what keeps searching working at all (see
+  // purgeStaleSearches), so a slow start left Soulseek logged in and unable to
+  // search, with nothing retrying, until the app was restarted — which started
+  // the same race over. Found live: ten sessions in one day, every one of them
+  // logging 'slskd-start: fetch failed'.
+  if (await waitForSlskd()) {
+    await slskdAcquireToken()
+    await purgeStaleSearches()
+  } else {
+    // Not up YET is not the same as not coming up. Say so, and keep watching.
+    safeSend('slskd-status-change', { connected: false, restarting: false, starting: true })
+    _settleSlskdWhenReady()
+  }
   upnpMap(2234).catch(e => { console.error('[papa] upnp-map:', e.message || e) })
 }
 
 function stopSlskd() {
+  // A watcher polling for a daemon we are deliberately stopping would restart
+  // the startup work under the next one.
+  _clearSlskdSettle()
   upnpUnmap(2234)
   if (slskdProc) { try { slskdProc.kill() } catch (_) {} slskdProc = null }
   slskdReady = false
@@ -2878,8 +2940,50 @@ app.on('before-quit', () => {
   if (!gotLock) return
   store.set('cleanShutdown', true)
 })
+// A quit that never finishes is worse than an abrupt one.
+//
+// Twice in one evening the main process was seen alive hours after its window
+// was gone, spinning a full core inside node::FreeEnvironment — Node's own
+// environment teardown — looping through V8's exception machinery and never
+// reaching exit. It also left its slskd child a zombie, and because Electron
+// releases the single-instance lock EARLY in shutdown, a process that never
+// finishes shutting down leaves the lock free: the next launch started a
+// second full copy over the same profile.
+//
+// The cause of that loop is not yet known. Three hypotheses have been tried
+// and none reproduced it (see docs/quit-hang.md). What IS known is that by the
+// time it happens every flush below has already run, so there is nothing left
+// worth waiting for — and that no fix written in JavaScript can be trusted to
+// run at all, because the loop is past the point where the event loop still
+// turns. A timer armed here would never fire.
+//
+// So the guarantee is placed OUTSIDE the process: a tiny detached shell that
+// sleeps and then kills us if we are somehow still here. It checks
+// /proc/<pid>/cmdline first, so a recycled pid belonging to something else is
+// never signalled. shutdownFromSignal does not need this — it already ends in
+// an unconditional app.exit(0) with its own process.exit backstop, which is
+// exactly why a signal shutdown has never produced one of these.
+const QUIT_WATCHDOG_MS = 8000
+
+function _armQuitWatchdog(ms = QUIT_WATCHDOG_MS) {
+  try {
+    const pid = process.pid
+    const secs = Math.max(1, Math.ceil(ms / 1000))
+    // -qa: cmdline is NUL-separated, so grep must treat it as text.
+    const script =
+      `sleep ${secs}; ` +
+      `if [ -r /proc/${pid}/cmdline ] && grep -qa flac-player /proc/${pid}/cmdline; then ` +
+      `kill -9 ${pid} 2>/dev/null; fi`
+    const child = spawn('/bin/sh', ['-c', script], { detached: true, stdio: 'ignore' })
+    child.unref()
+  } catch (_) { /* a watchdog that cannot start must not stop the quit */ }
+}
+
 app.on('will-quit', () => {
   if (!gotLock) return
+  // First, before any of the work below: whatever happens after this point,
+  // the process will not outlive it.
+  _armQuitWatchdog()
   player?.stop()
   // Before the video teardown: the streamers being stopped here are the
   // background downloads, which the per-watch teardown deliberately leaves
@@ -7668,7 +7772,13 @@ ipcMain.handle('slsk-status', async () => {
       username: data?.user?.username || cfg.username || '',
     }
   } catch (_) {
-    return { installed: true, running: !!(slskdProc || slskdReady), connected: false, configured: !!(cfg.username && cfg.password) }
+    return {
+      installed: true, running: !!(slskdProc || slskdReady), connected: false,
+      // Not answering YET reads as broken unless it is named. slskd takes
+      // minutes to start here; the badge should say so rather than "offline".
+      starting: slskdIsStarting(),
+      configured: !!(cfg.username && cfg.password),
+    }
   }
 })
 

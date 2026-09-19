@@ -28905,8 +28905,13 @@ function _setSlskStatus(s) {
   var prev = slsk.status || {}
   slsk.status = (s && typeof s === 'object')
     ? s
-    : { installed: !!prev.installed, running: !!prev.running, connected: false, configured: !!prev.configured }
-  state.connectionStatus.slskd = slsk.status.connected ? 'connected' : 'disconnected'
+    : { installed: !!prev.installed, running: !!prev.running, connected: false, starting: !!prev.starting, configured: !!prev.configured }
+  // "Starting" is a third state, not a shade of offline. slskd rebuilds its
+  // database on every launch and can take minutes to answer; painting that as
+  // "Soulseek offline" is what made a perfectly healthy daemon look broken.
+  state.connectionStatus.slskd = slsk.status.connected
+    ? 'connected'
+    : (slsk.status.starting ? 'starting' : 'disconnected')
   _paintSlskConnDot()
   if (!prev.connected && slsk.status.connected) _onSlskConnected()
 }
@@ -28915,11 +28920,16 @@ function _paintSlskConnDot() {
   var slskdEl = document.getElementById('conn-slskd')
   if (!slskdEl) return
   var dot = slskdEl.querySelector('.conn-dot')
-  var isConnected = state.connectionStatus.slskd === 'connected'
-  if (dot) dot.style.cssText = 'width:7px;height:7px;border-radius:50%;display:inline-block;background:' + (isConnected ? '#1db954' : '#e74c3c')
+  var stateName = state.connectionStatus.slskd
+  var isConnected = stateName === 'connected'
+  var isStarting = stateName === 'starting'
+  // Amber for starting: not good yet, but nothing is wrong and nothing needs
+  // doing — it is worth waiting for rather than worth worrying about.
+  var colour = isConnected ? '#1db954' : (isStarting ? '#e0a800' : '#e74c3c')
+  if (dot) dot.style.cssText = 'width:7px;height:7px;border-radius:50%;display:inline-block;background:' + colour
   slskdEl.style.color = isConnected ? 'var(--text1)' : 'var(--text3)'
   var last = slskdEl.childNodes[slskdEl.childNodes.length - 1]
-  if (last) last.textContent = isConnected ? ' Soulseek' : ' Soulseek offline'
+  if (last) last.textContent = isConnected ? ' Soulseek' : (isStarting ? ' Soulseek starting…' : ' Soulseek offline')
 }
 
 // The connection just came up. A search asked for while the daemon was still

@@ -80,6 +80,9 @@ function runQuitHandlers(gotLock) {
     // NOT recorded as a write: it touches nothing outside this process, so a
     // lockless instance calling it still "writes nothing on the way out".
     _beginTeardown() {},
+    // The detached quit watchdog. Stubbed out: the harness is checking which
+    // state a quit writes, and spawning a real killer for this pid is not it.
+    _armQuitWatchdog() {},
     player: { stop() { writes.push('player.stop') } },
     _videoTeardown() { writes.push('_videoTeardown') },
     stopSlskd() { writes.push('stopSlskd') },
@@ -121,4 +124,31 @@ test('the signal shutdown is gated on the lock too', () => {
   assert.ok(at > 0, 'shutdownFromSignal must refuse to write without the lock')
   assert.ok(at < body.indexOf("store.set('cleanShutdown'"),
     'the guard has to come before the writes')
+})
+
+// Twice in one evening the main process was seen alive hours after its window
+// was gone, spinning a core inside node::FreeEnvironment and never exiting —
+// which also freed the single-instance lock and let a second copy start. The
+// cause of that loop is still open (docs/quit-hang.md); this is the guarantee
+// that it cannot outlive the quit either way.
+test('the quit arms a watchdog that cannot be defeated by a wedged teardown', () => {
+  const fn = slice('function _armQuitWatchdog(', '\napp.on(\'will-quit\'')
+  // Outside the process on purpose: the hang is past the point where the event
+  // loop still turns, so a JS timer armed in will-quit would never fire.
+  assert.match(fn, /detached: true/, 'the watchdog must outlive the process it is watching')
+  assert.match(fn, /child\.unref\(\)/, 'and must not hold the process open itself')
+  assert.match(fn, /kill -9/, 'a wedged teardown does not answer anything gentler')
+  // A pid is reused. Killing one blindly 8 seconds later could hit a stranger.
+  assert.match(fn, /\/proc\/\$\{pid\}\/cmdline/, 'it must confirm the pid is still this app')
+  assert.match(fn, /grep -qa flac-player/, 'cmdline is NUL-separated: grep needs -a')
+  assert.match(fn, /catch/, 'a watchdog that cannot start must not stop the quit')
+})
+
+test('the watchdog is armed before the quit does any work', () => {
+  const body = slice("app.on('will-quit', () => {", '\n// Given a saved window rectangle')
+  const armed = body.indexOf('_armQuitWatchdog()')
+  assert.ok(armed > -1, 'will-quit must arm it')
+  // Before the flushes, not after: the point is to cover whatever follows.
+  assert.ok(armed < body.indexOf('flushSideStores'),
+    'arming it after the work would leave the work itself uncovered')
 })

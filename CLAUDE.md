@@ -15,9 +15,14 @@ active and actively used.
 ## Stack
 - Electron app at `/home/shaharyar/flac-player/`
 - Main process: `main.js` | Renderer: `src/renderer.js` | Bridge: `preload.js` | Styles: `src/styles.css`
-- Soulseek daemon (slskd) at `http://localhost:5030/api/v0` — JWT auth with username/password `slskd`/`slskd`
+- Soulseek daemon (slskd) at `http://localhost:5030/api/v0` — JWT auth. The credentials are NOT `slskd`/`slskd`:
+  they are generated into `~/.config/papa-audio/slskd/slskd.yml` under `web.authentication` (currently user `papa`
+  with a long random password). Read them from that file — never assume, and never paste them into a commit or a log.
+  slskd takes MINUTES to answer after a start (it rebuilds its database); treat a non-answering daemon as starting,
+  not dead.
 - Music library: `/mnt/data/MUSIC` (scanned recursively; downloads go to `/mnt/data/MUSIC/Downloads/`)
-- slskd runs externally as PID ~466166, connected as Soulseek user "sherrybaaz"
+- slskd runs as a CHILD of the app (`startSlskd`/`stopSlskd` in main.js), so it restarts with the app and its pid
+  changes every launch — find it with `pgrep -a slskd`. Soulseek account: "sherrybaaz"
 - Playback: mpv engine (`mpv-engine.js`, JSON IPC) — NOT the <audio> element. Purist mode: no EQ, no visualizer. Settings in electron-store key `playerSettings`. Renderer talks to it via `src/player-shim.js` (`window.__papaPlayer`). mpv is a hard requirement (`dnf install mpv`).
 
 ## How searching works
