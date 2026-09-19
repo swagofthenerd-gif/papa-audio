@@ -1558,6 +1558,108 @@ function stopSlskd() {
   slskdReady = false
 }
 
+// A wedged daemon will not answer a SIGTERM promptly, and startSlskd returns
+// immediately while slskdProc is still set, so a restart that does not wait for
+// the old process to die is not a restart at all.
+const SLSKD_STOP_TIMEOUT_MS = 10000
+
+// Stop slskd and do not come back until it is actually gone. Resolves with the
+// pid that was killed, or null if there was nothing of ours to kill (slskd
+// running externally — not our process to restart).
+function stopSlskdAndWait() {
+  const proc = slskdProc
+  if (!proc) { stopSlskd(); return Promise.resolve(null) }
+  const pid = proc.pid || null
+  return new Promise(resolve => {
+    let done = false
+    let timer = null
+    const finish = () => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      resolve(pid)
+    }
+    proc.once('exit', finish)
+    timer = setTimeout(() => {
+      // SIGTERM did not land inside the cap. SIGKILL cannot be refused, and a
+      // daemon we are about to replace has nothing left to flush.
+      try { proc.kill('SIGKILL') } catch (_) {}
+      finish()
+    }, SLSKD_STOP_TIMEOUT_MS)
+    timer.unref?.()
+    stopSlskd()
+  })
+}
+
+// Ping slskd; restart it after three consecutive failures.
+//
+// This used to `await startSlskd()` and then log "slskd restarted after 3 failed
+// health checks" unconditionally. startSlskd returns immediately when slskdProc
+// is set — slskd is our own child — so nothing was restarted, nothing was fixed,
+// and the UI flickered "restarting" every three minutes for as long as the
+// daemon stayed wedged. The message was the only thing that ever changed.
+//
+// So: kill our child first and wait for it to die, then start a new one, and
+// claim a restart only when the pid actually changed. When it did not, say that
+// instead and leave the failure count alone so the next cycle tries again rather
+// than believing a restart that never happened.
+async function slskdHealthCheck() {
+  try {
+    await slskdFetch('GET', '/session')
+    _slskdFailures = 0
+    safeSend('slskd-status-change', { connected: true, restarting: false })
+    return 'ok'
+  } catch (e) {
+    // Being rate-limited is the opposite problem to being unhealthy: one needs
+    // patience, the other a restart. Counting a 429 as a failure meant that
+    // throttling got the daemon restarted, losing every in-flight transfer and
+    // then hammering it again from a cold start.
+    if (e && e.code === 'SLSKD_THROTTLED') {
+      console.log('[papa] slskd health check skipped: it is rate-limiting us, which is not a fault')
+      safeSend('slskd-status-change', { connected: true, restarting: false, throttled: true })
+      return 'throttled'
+    }
+    _slskdFailures++
+    if (_slskdFailures < 3) {
+      safeSend('slskd-status-change', { connected: false, restarting: false })
+      return 'counting'
+    }
+    safeSend('slskd-status-change', { connected: false, restarting: true })
+    try {
+      const before = slskdProc && slskdProc.pid ? slskdProc.pid : null
+      if (slskdProc) await stopSlskdAndWait()
+      await startSlskd()
+      const after = slskdProc && slskdProc.pid ? slskdProc.pid : null
+      if (before && after && after !== before) {
+        console.log(`[papa] slskd restarted after 3 failed health checks (pid ${before} -> ${after})`)
+        _slskdFailures = 0
+        return 'restarted'
+      }
+      if (!before) {
+        // Nothing of ours was running: either slskd runs externally and startSlskd
+        // just re-authenticated against it, or it spawned one for the first time.
+        console.log('[papa] slskd reconnected after 3 failed health checks')
+        _slskdFailures = 0
+        return after ? 'started' : 'reconnected'
+      }
+      // We had a child, we killed it, and there is still nothing running. Say so
+      // rather than reporting a restart, and keep the count so the next cycle
+      // tries again.
+      console.warn('[papa] slskd did not come back after 3 failed health checks; ' +
+        'it stays down and the next check will try again')
+      safeSend('slskd-status-change', { connected: false, restarting: false })
+      return 'failed'
+    } catch (err) {
+      // A restart that fails leaves downloads dead with the UI still saying
+      // "restarting". Say so, and let the counter keep climbing so the next
+      // cycle tries again rather than believing it succeeded.
+      console.error('[papa] slskd restart failed:', String(err && err.message || err))
+      safeSend('slskd-status-change', { connected: false, restarting: false })
+      return 'failed'
+    }
+  }
+}
+
 async function downloadSlskd(progressCb) {
   progressCb?.('Fetching latest release info…')
   const relRes = await fetch('https://api.github.com/repos/slskd/slskd/releases/latest',
@@ -2172,40 +2274,12 @@ app.whenReady().then(() => {
   if (fs.existsSync(SLSKD_BIN)) {
     startSlskd().catch(e => console.error('[papa] slskd failed to start at launch:', String(e && e.message || e)))
   }
-  // Auto-restart monitoring: ping slskd every 60s; restart after 3 consecutive failures
-  setInterval(async () => {
-    try {
-      await slskdFetch('GET', '/session')
-      _slskdFailures = 0
-      safeSend('slskd-status-change', { connected: true, restarting: false })
-    } catch (e) {
-      // Being rate-limited is the opposite problem to being unhealthy: one needs
-      // patience, the other a restart. Counting a 429 as a failure meant that
-      // throttling got the daemon restarted, losing every in-flight transfer and
-      // then hammering it again from a cold start.
-      if (e && e.code === 'SLSKD_THROTTLED') {
-        console.log('[papa] slskd health check skipped: it is rate-limiting us, which is not a fault')
-        safeSend('slskd-status-change', { connected: true, restarting: false, throttled: true })
-        return
-      }
-      _slskdFailures++
-      if (_slskdFailures >= 3) {
-        safeSend('slskd-status-change', { connected: false, restarting: true })
-        try {
-          await startSlskd()
-          _slskdFailures = 0
-          console.log('[papa] slskd restarted after 3 failed health checks')
-        } catch (e) {
-          // A restart that fails leaves downloads dead with the UI still saying
-          // "restarting". Say so, and let the counter keep climbing so the next
-          // cycle tries again rather than believing it succeeded.
-          console.error('[papa] slskd restart failed:', String(e && e.message || e))
-          safeSend('slskd-status-change', { connected: false, restarting: false })
-        }
-      } else {
-        safeSend('slskd-status-change', { connected: false, restarting: false })
-      }
-    }
+  // Auto-restart monitoring: ping slskd every 60s; restart after 3 consecutive
+  // failures. The decision lives in slskdHealthCheck so it can be run in a test
+  // without a timer and without a real daemon.
+  setInterval(() => {
+    slskdHealthCheck().catch(e =>
+      console.error('[papa] slskd health check threw:', String(e && e.message || e)))
   }, 60000)
   try {
     const configPath = path.join(app.getPath('userData'), 'config.json')

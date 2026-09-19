@@ -99,14 +99,28 @@ function makeStub(name, calls) {
   })
 }
 
+// The source text of one top-level single-line `const NAME = ...` declaration.
+// A function that reads a module-level constant must get the real value: left
+// as a recording stub it is not a number, and `setTimeout(fn, stub)` throws
+// "Cannot convert object to primitive value" from inside the code under test —
+// which the test then reports as the production code failing.
+function constSource(name, source = MAIN) {
+  const re = new RegExp('^const ' + name + ' = .*$', 'm')
+  const m = re.exec(source)
+  if (!m) throw new Error('no top-level const ' + name + ' in main.js')
+  return m[0]
+}
+
 // Lift one or more named functions and return them, callable.
 //
 //   const { fns, calls, globals } = liftFns(['dlReconcileMissing'], { dlSched })
+//   const { fns } = liftFns(['stopSlskdAndWait'], {}, ['SLSKD_STOP_TIMEOUT_MS'])
 //
 // `globals` is the sandbox's backing object, so a test can read (and pre-seed)
-// anything the body assigns at module level. `calls` records every stubbed call
-// as { name, args }.
-function liftFns(names, provided = {}) {
+// anything the body assigns at module level — note it is a COPY of `provided`,
+// so stubs that need to see the code's writes must be bound to it afterwards.
+// `calls` records every stubbed call as { name, args }.
+function liftFns(names, provided = {}, consts = []) {
   const calls = []
   const defined = Object.assign(Object.create(null), {
     console: { log() {}, warn() {}, error() {} },
@@ -129,7 +143,7 @@ function liftFns(names, provided = {}) {
 
   const ctx = vm.createContext(sandbox)
   const list = Array.isArray(names) ? names : [names]
-  const src = list.map(n => fnSource(n)).join('\n')
+  const src = (consts || []).map(n => constSource(n)).concat(list.map(n => fnSource(n))).join('\n')
   vm.runInContext(src + '\nvar __lifted = {' +
     list.map(n => n + ': ' + n).join(', ') + '}', ctx, { filename: 'main.js' })
   const fns = defined.__lifted
@@ -139,4 +153,4 @@ function liftFns(names, provided = {}) {
   return { fns, calls, globals: defined }
 }
 
-module.exports = { liftFns, fnSource, MAIN, MAIN_PATH }
+module.exports = { liftFns, fnSource, constSource, MAIN, MAIN_PATH }
