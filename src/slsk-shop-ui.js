@@ -223,6 +223,17 @@
     )
   }
 
+  // The wishlist add with its dedupe lives in renderer.js, where the state and
+  // the save call are. Falling back to a plain push keeps this file standalone.
+  function wishlistAdd(q) {
+    const W = window.PapaWishlist
+    if (W && typeof W.add === 'function') return W.add(q)
+    if (!Array.isArray(state.downloadWishlist)) state.downloadWishlist = []
+    state.downloadWishlist.push({ query: q, addedAt: Date.now() })
+    window.api.saveDownloadWishlist(state.downloadWishlist)
+    return { added: true, query: q }
+  }
+
   function navTo(path) { hist.go(path); searching = ''; search.value = ''; render() }
 
   function renderCrumbs(path) {
@@ -1531,10 +1542,9 @@
         close(); navigate('search', a.album || a.folderName)
       } else if (btn.classList.contains('slsh-wish')) {
         const q = `${a.artist} ${a.album}`.trim() || a.folderName
-        state.downloadWishlist.push({ query: q, addedAt: Date.now() })
-        window.api.saveDownloadWishlist(state.downloadWishlist)
+        const w = wishlistAdd(q)
         btn.textContent = '✓'; btn.disabled = true
-        showSnackbar(`Added “${q}” to your wishlist`)
+        showSnackbar(w.added ? `Added “${q}” to your wishlist` : `“${q}” is already on your wishlist`)
       }
     })
     // Right-click a missing card to wishlist it, too.
@@ -1545,9 +1555,9 @@
       if (!a || a.inLibrary) return
       e.preventDefault()
       const q = `${a.artist} ${a.album}`.trim() || a.folderName
-      state.downloadWishlist.push({ query: q, addedAt: Date.now() })
-      window.api.saveDownloadWishlist(state.downloadWishlist)
-      showSnackbar(`Added “${q}” to your wishlist`)
+      // Right-clicking the same card twice used to make two identical entries.
+      const w = wishlistAdd(q)
+      showSnackbar(w.added ? `Added “${q}” to your wishlist` : `“${q}” is already on your wishlist`)
     })
   }
 

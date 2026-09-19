@@ -373,11 +373,16 @@
 
     panel.querySelector('.slav-wish').addEventListener('click', ev => {
       const q = `${a.artist} ${a.album}`.trim() || a.folderName
-      if (!Array.isArray(state.downloadWishlist)) state.downloadWishlist = []
-      state.downloadWishlist.push({ query: q, addedAt: Date.now() })
-      if (api.saveDownloadWishlist) api.saveDownloadWishlist(state.downloadWishlist)
+      const W = window.PapaWishlist
+      let added = true
+      if (W && typeof W.add === 'function') added = W.add(q).added
+      else {
+        if (!Array.isArray(state.downloadWishlist)) state.downloadWishlist = []
+        state.downloadWishlist.push({ query: q, addedAt: Date.now() })
+        if (api.saveDownloadWishlist) api.saveDownloadWishlist(state.downloadWishlist)
+      }
       ev.currentTarget.textContent = '✓ Wishlisted'; ev.currentTarget.disabled = true
-      showSnackbar(`Added “${q}” to your wishlist`)
+      showSnackbar(added ? `Added “${q}” to your wishlist` : `“${q}” is already on your wishlist`)
     })
 
     panel.querySelector('.slav-find').addEventListener('click', () => {

@@ -32988,9 +32988,8 @@ function setupListeners() {
   })
   _ctxOn('ctx-wishlist', () => {
     if (!ctxTarget) return
-    state.downloadWishlist.push({ query: ctxTarget.artist + ' ' + (ctxTarget.track ? ctxTarget.track.album : ctxTarget.albumId), addedAt: Date.now() })
-    window.api.saveDownloadWishlist(state.downloadWishlist)
-    showSnackbar('Added to wishlist')
+    var w = _wishlistAdd(ctxTarget.artist + ' ' + (ctxTarget.track ? ctxTarget.track.album : ctxTarget.albumId))
+    showSnackbar(w.added ? 'Added to wishlist' : 'Already on your wishlist')
     hideContextMenu()
   })
   _ctxOn('ctx-play-next', () => {
@@ -38124,6 +38123,34 @@ function _renderHubWishlist() {
 // "Run all now" — asks the backend to search every wishlist entry. Defensive:
 // if the channel is missing, fall back to running the searches one at a time
 // through the existing runSlskSearch so the button still does something useful.
+// ── The wishlist, added to from five places ─────────────────────────────────
+// Every one of them pushed without looking, so right-clicking the same album
+// twice (or wishlisting it from the card and again from the album view) left
+// two identical entries that then ran as two identical searches.
+function _wishlistKey(q) {
+  return String(q || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+}
+
+// Returns { added, query }: false when it was already there, so the caller can
+// say "already on your wishlist" instead of claiming a second add.
+function _wishlistAdd(query) {
+  var q = String(query || '').trim()
+  if (!q) return { added: false, query: q, empty: true }
+  if (!Array.isArray(state.downloadWishlist)) state.downloadWishlist = []
+  var key = _wishlistKey(q)
+  for (var i = 0; i < state.downloadWishlist.length; i++) {
+    if (_wishlistKey(state.downloadWishlist[i] && state.downloadWishlist[i].query) === key) {
+      return { added: false, query: q }
+    }
+  }
+  state.downloadWishlist.push({ query: q, addedAt: Date.now() })
+  if (window.api && window.api.saveDownloadWishlist) window.api.saveDownloadWishlist(state.downloadWishlist)
+  return { added: true, query: q }
+}
+
+// The shop and the album view live in their own files and reach it here.
+window.PapaWishlist = { key: _wishlistKey, add: _wishlistAdd }
+
 function _slskRunWishlistAll() {
   var btn = document.getElementById('slsk-hub-wishlist-runall')
   if (!(state.downloadWishlist && state.downloadWishlist.length)) {
@@ -38137,11 +38164,15 @@ function _slskRunWishlistAll() {
           var found = (res.results || []).reduce(function (n, r) { return n + (r.found || 0) }, 0)
           showSnackbar('Wishlist run complete — ' + found + ' match' + (found === 1 ? '' : 'es') + ' found')
         } else {
-          showSnackbar('Wishlist run failed')
+          // The handler says why it refused; "Wishlist run failed" threw that
+          // away and left the person with nothing to act on.
+          showSnackbar((res && res.error) || 'Wishlist run failed')
         }
         _renderHubWishlist()
       })
-      .catch(function () { showSnackbar('Wishlist run failed') })
+      .catch(function (e) {
+        showSnackbar(String((e && e.message) || 'Wishlist run failed'))
+      })
       .then(function () { if (btn) { btn.disabled = false; btn.textContent = 'Run all now' } })
   } else {
     // Fallback: run the first entry as a live search.
