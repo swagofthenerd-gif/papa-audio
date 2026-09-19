@@ -158,10 +158,15 @@ test('the id-keyed art and stream routes exist', () => {
   assert.match(SERVER, /app\.get\('\/stream\/:trackId'/)
 })
 
+// The two `withArtUrls(<exact argument>)` greps that used to live here went red
+// the moment the argument changed, while the behaviour they stood in for was
+// still correct. A text match on a call site cannot see whether the decoration
+// reaches the client, so the real coverage is in
+// bridge-server-hardening.test.js: a booted server is asked for /api/library
+// and /api/library/scan, and the artUrl on the album it answers with is checked
+// against the id-keyed endpoint that then serves that art with a 200.
 test('album payloads carry an artUrl pointing at the id-keyed endpoint', () => {
   assert.match(SERVER, /artUrl: `\/art\/\$\{a\.id\}\.jpg`/)
-  assert.match(SERVER, /withArtUrls\(cached\)/)
-  assert.match(SERVER, /withArtUrls\(albums\)/)
 })
 
 test('the announced version is bumped and capabilities are reported', () => {
