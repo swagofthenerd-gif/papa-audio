@@ -66,7 +66,7 @@ test('the shop offers a Grab-all-upgrades batch action', () => {
 
 // ── Task 3: shelf sort/filter ─────────────────────────────────────────────────
 test('the shop has a sort/filter control row applied to the grid and search', () => {
-  assert.match(SHOP, /function shControlsHtml\(\)/)
+  assert.match(SHOP, /function shControlsHtml\(count\)/)   // takes the live count since the filter-bar rebuild
   assert.match(SHOP, /applyShelfFilterSort/, 'controls apply the shelf filter/sort')
   // Applied to BOTH the Everything grid and search-within-library.
   const grid = sliceShop('function shRenderGrid()', '\n  function shBindShelfControls')
