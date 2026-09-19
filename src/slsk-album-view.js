@@ -342,9 +342,11 @@
       const label = btn.textContent
       btn.disabled = true; btn.textContent = `Queuing ${a.files.length}…`
       try {
-        await _slskEnqueue(a.files.map(f => ({ username, filename: f.filename, size: f.size })))
+        const res = await _slskEnqueue(a.files.map(f => ({ username, filename: f.filename, size: f.size })))
+        // Not throwing is not acceptance; a refusal restores the button.
+        if (!res || res.ok === false) { btn.disabled = false; btn.textContent = label; return }
         _scheduleLibRescan()
-        btn.textContent = `✓ ${a.files.length} queued`
+        btn.textContent = `✓ ${res.added != null ? res.added : a.files.length} queued`
       } catch (e) {
         btn.disabled = false; btn.textContent = label
         showSnackbar('Could not queue the album: ' + String(e && e.message || e), null, null, 6000)
@@ -358,9 +360,10 @@
       const label = btn.textContent
       btn.disabled = true; btn.textContent = `Queuing ${picks.length}…`
       try {
-        await _slskEnqueue(picks.map(f => ({ username, filename: f.filename, size: f.size })))
+        const res = await _slskEnqueue(picks.map(f => ({ username, filename: f.filename, size: f.size })))
+        if (!res || res.ok === false) { btn.disabled = false; btn.textContent = label; return }
         _scheduleLibRescan()
-        btn.textContent = `✓ ${picks.length} queued`
+        btn.textContent = `✓ ${res.added != null ? res.added : picks.length} queued`
         setTimeout(() => { if (btn.isConnected) { selected.clear(); updateSelUi() } }, 1200)
       } catch (e) {
         btn.disabled = false; btn.textContent = label

@@ -31033,21 +31033,32 @@ function _bindSlskCards(section, query, groups) {
       // Check if already on disk
       const existing = await window.api.slskResolveFile({ username: g.username, filename: targetFile.filename })
       if (existing?.path) { _playFile(existing.path); btn.innerHTML = origHtml; btn.disabled = false; return }
-      // Queue download for this file only
-      await window.api.slskDownload({ username: g.username, filename: targetFile.filename, size: targetFile.size })
+      // Queue download for this file only. A refusal here used to leave the
+      // spinner turning until the poll timed out and then revert in silence.
+      const q = await window.api.slskDownload({ username: g.username, filename: targetFile.filename, size: targetFile.size })
+      if (q && q.ok === false) {
+        showSnackbar(q.error || 'Could not start that download')
+        btn.innerHTML = origHtml
+        btn.disabled = false
+        return
+      }
       _scheduleLibRescan()
       // Poll until file appears on disk (max 3 min)
       const deadline = Date.now() + 180000
       let played = false
+      let failed = false
       while (Date.now() < deadline && !played) {
         await new Promise(r => setTimeout(r, 2000))
         const res = await window.api.slskResolveFile({ username: g.username, filename: targetFile.filename })
         if (res?.path) { _playFile(res.path); played = true; break }
         const raw = _slskTransfers(await window.api.slskGetTransfers().catch(() => []))
         const hit = raw.flatMap(u => (u.directories||[]).flatMap(d => d.files||[])).find(f => f.filename === targetFile.filename)
-        if (hit?.state?.match(/Failed|Aborted|Cancelled/)) break
+        if (hit?.state?.match(/Failed|Aborted|Cancelled/)) { failed = true; break }
       }
-    } catch (_) {}
+      if (!played) showSnackbar(failed ? 'That transfer failed — try another source' : 'That download did not arrive in time')
+    } catch (e) {
+      showSnackbar(String((e && e.message) || 'Could not start that download'))
+    }
     btn.innerHTML = origHtml
     btn.disabled = false
   }
@@ -31091,9 +31102,16 @@ function _bindSlskCards(section, query, groups) {
           : g.files.map(f => ({ username: g.username, filename: f.filename, size: f.size }))
 
         const peers = S ? S.planPeers(plan) : 1
-        if (peers > 1) showSnackbar(`Downloading from ${peers} sources in parallel`)
 
-        await _slskEnqueue(plan)
+        // The "downloading from N sources" line used to be printed before the
+        // enqueue was even attempted, so a refusal still read as a success.
+        const res = await _slskEnqueue(plan)
+        if (!res || res.ok === false) {
+          btn.disabled = false
+          btn.innerHTML = origHtml
+          return
+        }
+        if (peers > 1) showSnackbar(`Downloading from ${peers} sources in parallel`)
         _scheduleLibRescan()
         if (anchorSur) _verifySurroundWhenDone(g, plan, anchorSur.label)
         // Remember this card so the inline progress strip can track it against
@@ -31269,7 +31287,8 @@ function _bindSlskCards(section, query, groups) {
             db.disabled = true
             db.innerHTML = '<svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>'
             try {
-              await _slskEnqueue(src.files.map(f => ({ username: src.username, filename: f.filename, size: f.size })))
+              const res = await _slskEnqueue(src.files.map(f => ({ username: src.username, filename: f.filename, size: f.size })))
+              if (!res || res.ok === false) { db.disabled = false; db.innerHTML = orig; return }
               _scheduleLibRescan()
               _slskCardDownloads.set(_slskCardKey(src.username, src.folderName), { total: src.files.length })
             } catch (_) { db.disabled = false; db.innerHTML = orig }
@@ -37639,12 +37658,14 @@ async function reloadPersistedState() {
 var _dlDestinationTold = false
 function _slskEnqueue(items) {
   var list = (items || []).filter(function(it) { return it && it.filename && it.username })
-  if (!list.length) return Promise.resolve(null)
+  // Every caller decides what to tell the person from res.ok, so even the
+  // trivial paths answer in that shape rather than null/an array.
+  if (!list.length) return Promise.resolve({ ok: true, added: 0 })
   if (!window.api || !window.api.slskEnqueueDownloads) {
     return Promise.all(list.map(function(it) {
       return window.api.slskDownload({ username: it.username, filename: it.filename, size: it.size || 0 })
         .catch(function() {})
-    }))
+    })).then(function () { return { ok: true, added: list.length } })
   }
   return window.api.slskEnqueueDownloads({ items: list })
     .then(function (res) {
@@ -37666,12 +37687,19 @@ function _slskEnqueue(items) {
       // Offer the one thing the user wants: ask again and mean it.
       var refused = (res && res.refused) || []
       if (refused.length) _slskOfferForcedEnqueue(list, refused)
-      return res
+      // A plain refusal ({ok:false} with no capacity/refused detail) used to
+      // fall straight through here, so every caller went on to announce a
+      // success that never happened. Say what went wrong, once, centrally.
+      else if (res && res.ok === false) {
+        showSnackbar(res.error || 'Could not queue those downloads')
+      }
+      return res || { ok: false, error: 'Could not queue those downloads' }
     })
     .catch(function (e) {
       console.error('[papa] enqueue failed:', String(e && e.message || e))
+      var msg = String((e && e.message) || e || '') || 'Could not queue those downloads'
       showSnackbar('Could not queue those downloads')
-      return null
+      return { ok: false, error: msg }
     })
 }
 

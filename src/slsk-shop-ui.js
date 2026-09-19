@@ -404,8 +404,11 @@
       btn.textContent = `Queuing ${files.length}…`
       // Without this, a throw left "Queuing N…" on a dead button forever.
       try {
-        await _slskEnqueue(files.map(f => ({ username, filename: f.fullPath, size: f.size || 0 })))
-        btn.textContent = `${files.length} queued`
+        const res = await _slskEnqueue(files.map(f => ({ username, filename: f.fullPath, size: f.size || 0 })))
+        // A refusal used to still print "N queued" on a button that had
+        // queued nothing. _slskEnqueue has already said why.
+        if (!res || res.ok === false) { btn.disabled = false; btn.textContent = label; return }
+        btn.textContent = `${res.added != null ? res.added : files.length} queued`
         _scheduleLibRescan()
       } catch (e) {
         btn.disabled = false
@@ -461,9 +464,10 @@
       const label = btn.textContent
       btn.disabled = true; btn.textContent = `Queuing ${picks.length}…`
       try {
-        await _slskEnqueue(picks.map(f => ({ username, filename: f.fullPath, size: f.size || 0 })))
+        const res = await _slskEnqueue(picks.map(f => ({ username, filename: f.fullPath, size: f.size || 0 })))
+        if (!res || res.ok === false) { btn.disabled = false; btn.textContent = label; return }
         _scheduleLibRescan()
-        btn.textContent = `${picks.length} queued`
+        btn.textContent = `${res.added != null ? res.added : picks.length} queued`
         setTimeout(() => { folderSel.clear(); folderSelLast = -1; updateFolderSelUi() }, 1200)
       } catch (e) {
         btn.disabled = false; btn.textContent = label
@@ -484,8 +488,9 @@
       btn.disabled = true
       btn.textContent = `Queuing ${files.length}…`
       try {
-        await _slskEnqueue(files.map(f => ({ username, filename: f.fullPath, size: f.size || 0 })))
-        btn.textContent = `${files.length} queued`
+        const res = await _slskEnqueue(files.map(f => ({ username, filename: f.fullPath, size: f.size || 0 })))
+        if (!res || res.ok === false) { btn.disabled = false; btn.textContent = label; return }
+        btn.textContent = `${res.added != null ? res.added : files.length} queued`
         _scheduleLibRescan()
       } catch (e) {
         btn.disabled = false
@@ -1136,20 +1141,27 @@
         `Download ${ups.length}`,
         async () => {
           let queued = 0
+          let refusal = ''
           for (const a of ups) {
             const g = shAsGroup(a)
             if (!g.files.length) continue
             try {
-              await _slskEnqueue(g.files.map(f => ({ username, filename: f.filename, size: f.size })))
+              const res = await _slskEnqueue(g.files.map(f => ({ username, filename: f.filename, size: f.size })))
+              // Not throwing is not the same as being accepted. Only an
+              // explicit ok counts towards "Queued N upgrades".
+              if (!res || res.ok === false) {
+                if (!refusal) refusal = (res && res.error) || ''
+                continue
+              }
               _slskCardDownloads.set(_slskCardKey(username, a.folderName), { total: g.files.length })
               shTrackProgress(a)
               queued++
             } catch (_) { /* keep going; one bad album must not abort the batch */ }
           }
-          _scheduleLibRescan()
+          if (queued) _scheduleLibRescan()
           showSnackbar(queued
             ? `Queued ${queued} upgrade${queued !== 1 ? 's' : ''} from ${username}`
-            : 'Could not queue those upgrades')
+            : (refusal || 'Could not queue those upgrades'))
         }
       )
     })
