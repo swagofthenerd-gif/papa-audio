@@ -96,7 +96,8 @@ test('music seek branch bails when a video page is active', () => {
   const region = CODE.slice(at - 400, at + 400)
   assert.ok(/VIDEO_PAGES\.has\(state\.currentPage\)/.test(region),
     'seek must be guarded by the video-page check')
-  assert.ok(/if \(_onVideoGrid\) return/.test(region),
+  // The guard gained a second clause (a focused music-grid card owns its arrows).
+  assert.ok(/if \(_onVideoGrid(?: \|\| _onMusicCard)?\) return/.test(region),
     'seekForward must bail when on the video grid')
 })
 

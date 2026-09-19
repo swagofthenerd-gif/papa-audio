@@ -2785,6 +2785,13 @@ function shutdownFromSignal() {
   // Same rule as the quit handlers: a process that never won the instance lock
   // owns none of this state and must not write it.
   if (!gotLock) { try { app.exit(0) } catch (_) {} ; return }
+  // The flag goes down FIRST. A TERM aimed at the whole process group (systemd
+  // logout, a session kill) takes the renderer and GPU children with it, and
+  // the main process did not always survive long enough to reach this write
+  // when it sat behind the engine and torrent teardown — so the next boot
+  // offered a crash restore for a shutdown that was asked for. A TERM to the
+  // main pid alone always reached it; the group case is the one this fixes.
+  try { store.set('cleanShutdown', true) } catch (_) {}
   // Do the will-quit work by hand: app.exit() skips those handlers, and
   // app.quit() is cancellable and can stall, which left the process alive
   // while mpv had already been stopped.
@@ -2796,7 +2803,6 @@ function shutdownFromSignal() {
   let torrentsDown = Promise.resolve()
   try { torrentsDown = _torrentTeardown(400) } catch (_) {}
   try { stopSlskd() } catch (_) {}
-  try { store.set('cleanShutdown', true) } catch (_) {}
   flushSideStores()
   flushLibraryExtSync()
   flushLogSync()
@@ -3781,8 +3787,20 @@ ipcMain.handle('loudness-scan', async (_, { paths } = {}) => {
 // spread. Returned whole; it is small (a few numbers per track).
 ipcMain.handle('loudness-get-map', () => ({ ok: true, map: sideStores.loudnessMap.get() || {} }))
 
+// A fast Next burst over YouTube-backed tracks used to resolve every skipped
+// track (43 yt-dlp resolves for 20 presses, 4.5 s until the audible title
+// matched). Only the load that is still the newest after a short settle is
+// resolved; an older one answers superseded and never touches the resolver.
+let _playerLoadGen = 0
+const PLAYER_LOAD_SETTLE_MS = 250
 ipcMain.handle('player-load',       async (_, { path: p, play }) => {
+  const gen = ++_playerLoadGen
+  if (extractVideoId(p)) {
+    await new Promise(r => setTimeout(r, PLAYER_LOAD_SETTLE_MS))
+    if (gen !== _playerLoadGen) return { ok: false, superseded: true }
+  }
   var resolved = await _resolvePlayerPath(p)
+  if (gen !== _playerLoadGen) return { ok: false, superseded: true }
   // Non-destructive ReplayGain (App #59): fold the incoming track's stored gain
   // into mpv's volume BEFORE the loadfile, not after. mpv keeps its `volume`
   // across a load, so applying it afterwards meant the opening moment of every

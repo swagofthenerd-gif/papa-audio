@@ -24526,8 +24526,12 @@ function setVolDisplay(vol) {
   var volBtn = document.getElementById('btn-vol')
   if (volBtn) {
     var isMuted = vol <= 0
+    // One semantic, like the app's other toggles: the name stays "Mute" and
+    // aria-pressed carries the state. Flipping the name AND the state read as
+    // "Unmute, pressed" to a screen reader. The tooltip may still say what the
+    // next click does.
     volBtn.title = isMuted ? 'Unmute (M)' : 'Mute (M)'
-    volBtn.setAttribute('aria-label', isMuted ? 'Unmute' : 'Mute')
+    volBtn.setAttribute('aria-label', 'Mute')
     volBtn.setAttribute('aria-pressed', isMuted ? 'true' : 'false')
   }
 
@@ -35825,17 +35829,22 @@ function _mgPickedPaths() {
 
 function _mgTabsHtml() {
   var t = _mgState.tab
-  return '<div class="mg-tabs">' +
-    '<button class="mg-tab' + (t === 'dashboard' ? ' active' : '') + '" data-mgtab="dashboard">Overview</button>' +
-    '<button class="mg-tab' + (t === 'duplicates' ? ' active' : '') + '" data-mgtab="duplicates">Duplicates</button>' +
-    '<button class="mg-tab' + (t === 'health' ? ' active' : '') + '" data-mgtab="health">Health</button>' +
-    '<button class="mg-tab' + (t === 'genres' ? ' active' : '') + '" data-mgtab="genres">Genres</button>' +
-    '<button class="mg-tab' + (t === 'storage' ? ' active' : '') + '" data-mgtab="storage">Storage</button>' +
-    '<button class="mg-tab' + (t === 'trash' ? ' active' : '') + '" data-mgtab="trash">Recently Deleted</button>' +
+  return '<div class="mg-tabs" role="tablist" aria-label="Manage sections">' +
+    '<button class="mg-tab' + (t === 'dashboard' ? ' active' : '') + '" role="tab" aria-selected="' + (t === 'dashboard') + '" tabindex="' + (t === 'dashboard' ? '0' : '-1') + '" data-mgtab="dashboard">Overview</button>' +
+    '<button class="mg-tab' + (t === 'duplicates' ? ' active' : '') + '" role="tab" aria-selected="' + (t === 'duplicates') + '" tabindex="' + (t === 'duplicates' ? '0' : '-1') + '" data-mgtab="duplicates">Duplicates</button>' +
+    '<button class="mg-tab' + (t === 'health' ? ' active' : '') + '" role="tab" aria-selected="' + (t === 'health') + '" tabindex="' + (t === 'health' ? '0' : '-1') + '" data-mgtab="health">Health</button>' +
+    '<button class="mg-tab' + (t === 'genres' ? ' active' : '') + '" role="tab" aria-selected="' + (t === 'genres') + '" tabindex="' + (t === 'genres' ? '0' : '-1') + '" data-mgtab="genres">Genres</button>' +
+    '<button class="mg-tab' + (t === 'storage' ? ' active' : '') + '" role="tab" aria-selected="' + (t === 'storage') + '" tabindex="' + (t === 'storage' ? '0' : '-1') + '" data-mgtab="storage">Storage</button>' +
+    '<button class="mg-tab' + (t === 'trash' ? ' active' : '') + '" role="tab" aria-selected="' + (t === 'trash') + '" tabindex="' + (t === 'trash' ? '0' : '-1') + '" data-mgtab="trash">Recently Deleted</button>' +
     '</div>'
 }
 
 function _mgBindTabs() {
+  // Arrow keys move between the sections like every other strip (N13/D9).
+  var strip = document.querySelector('.mg-tabs')
+  if (strip) _bindTablist(strip)
+  // D9: arrows/Home/End move between the Manage tabs, one Tab stop (N13 rule).
+  _bindTablist(document.querySelector('.mg-tabs'))
   document.querySelectorAll('[data-mgtab]').forEach(function (b) {
     b.addEventListener('click', function () {
       _mgSaveState()               // remember the scroll of the tab we are leaving
