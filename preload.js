@@ -356,6 +356,27 @@ contextBridge.exposeInMainWorld('api', {
   librarySetArtwork:   (p) => ipcRenderer.invoke('library-set-artwork', p),
 
   slskUserStatuses:        ()  => ipcRenderer.invoke('slsk-user-statuses'),
+  // ONE peer's status. The record shop has called window.api.slskUserStatus
+  // since it was written — for the presence dot on a library header, and to say
+  // "X is offline" instead of "slskd 404" when a browse fails — and it was never
+  // bridged, so both were dead code against `undefined` and the offline wording
+  // could not be reached. It resolves out of the same cached snapshot the
+  // plural call returns, so it costs no extra slskd request.
+  //
+  // Returns null when the peer is not in the snapshot or its presence is
+  // Unknown: unknown is not offline, and a caller that cannot tell them apart
+  // will say the wrong thing.
+  slskUserStatus:        (p) => ipcRenderer.invoke('slsk-user-statuses').then(r => {
+    const want = String((p && p.username) || '').trim().toLowerCase()
+    if (!want) return null
+    const hit = ((r && r.statuses) || []).find(
+      s => String((s && s.username) || '').trim().toLowerCase() === want)
+    if (!hit) return null
+    const presence = String(hit.presence || '').trim().toLowerCase()
+    if (presence === 'online' || presence === 'away') return { ...hit, online: true }
+    if (presence === 'offline') return { ...hit, online: false }
+    return null
+  }),
   slskEnqueueDownloads:  (p) => ipcRenderer.invoke('slsk-enqueue-downloads', p),
   slskSchedulerStats:    ()  => ipcRenderer.invoke('slsk-scheduler-stats'),
   // Substitution log surface (roadmap #56): the accept/reject decisions the
