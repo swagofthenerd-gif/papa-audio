@@ -896,3 +896,24 @@ dead); (3) two-writer risk on the non-retired keys the bridge still writes
 into config.json (`likedAlbums`, `followedArtists`, `volume`, `eqSettings`,
 `agentModel`, `bridgeTranscode`). HIS ACTION: `papa-bridge.service` must be
 restarted to pick the fix up — his call, not ours.
+
+### 19 Sep — download scheduler fixes merged; gate 6,228/0
+`fix/audit-scheduler` (11 commits, +9 test files, `test/helpers/lift-main-fn.js`).
+C1 `stalledItems(state, cfg, now, progress)`: InProgress or moving bytes is
+never a stall; zero bytes never refreshes the clock. My re-check: removing
+only the state layer stayed GREEN (every InProgress fixture also carried
+bytes) — added a 0-byte InProgress case (3b473b4) that goes red 1/8 under
+that mutation; removing both layers → 3/7 red. C2 `dlReconcileMissing`
+carries `snapshotLostTrack`: empty list → re-queue via `recordStall`
+(attempts kept, nobody blamed); abandonment only when slskd listed others
+but not this one; `dl-empty-snapshot.test.js` no longer pins the bug (my
+re-check: flag forced false → 1/10 red). H6 `stopSlskdAndWait` (TERM, 10 s,
+KILL) before `startSlskd`; "restarted" logged only on a pid change. H2
+`_trackNo` in the album-scoped key only (and in `songKey`, or cancelling one
+"Untitled" blacklisted the rest). H3 `_foldSources` uses the exported
+`sameRecordingSize` 2% rule. M2/L11 retry removes the stranded inflight;
+"searching…" rows return `{added:0, searching:true}`. M3 `dispatchOutcome`
+→ blame only on an HTTP status. M4 `dlNeedsSnapshot` + 60 s heartbeat (the
+first version tested the predicate only and stayed green with the call site
+deleted — wiring assertion added). L10 ledgers pruned/capped; refused
+members leave the group ledger so albums verify.
