@@ -61,7 +61,14 @@ const TAG_RE = /[\[\{（(][^\]\}）)]*[\]\}）)]/g
 const NOISE_WORDS = /\b(flac|mp3|wav|aac|alac|ape|wv|dsd|dsf|dff|24bit|16bit|24[\s._-]?96|24[\s._-]?192|16[\s._-]?44|96khz|192khz|44\.?1khz|48khz|88\.?2khz|vinyl|web|webflac|cd|cdrip|cdda|reissue|remaster(ed)?|remastered|hdtracks|qobuz|deluxe|edition|lossless|hi[\s._-]?res|hires|explicit|clean)\b/gi
 
 // A leading track number that leaked into a folder name ("01 - Album").
-const LEADING_NUM = /^\s*\d{1,3}\s*[-.]\s*/
+//
+// The trailing (?!\d) is load-bearing. Without it "5.1 Surround Sound" read as
+// track 5 of an album called "1 Surround Sound" — which is what the shop
+// rendered on a real share ("1 Surround Sound / Appetite For Destruction ·
+// 1987"), and the string then went into the wishlist. A digit immediately after
+// the separator means that separator is the decimal point of a channel layout
+// (5.1, 7.1, 2.0), not a track-number divider.
+const LEADING_NUM = /^\s*\d{1,3}\s*[-.]\s*(?!\d)/
 
 // A trailing 4-digit year in parens/brackets or bare — captured before we strip.
 function extractYear(text) {
@@ -87,6 +94,31 @@ function isDiscFolder(name) {
   const n = String(name || '').trim()
   // Also catches "CD01", "Disc04" (no separator) and a bare "CD".
   return DISC_RE.test(n) || /^(cd|dis[ck])\s*\d{1,3}$/i.test(n) || /^(cd|dis[ck])$/i.test(n)
+}
+
+// A folder whose whole name is a surround label — "5.1", "5.1 Surround Sound",
+// "MCH", "Multichannel", "Quad", "7.1 mix". Uploaders use these as a CHILD of
+// the album folder ("Appetite For Destruction (1987)\5.1 Surround Sound"), the
+// same way they use "CD1", so it folds into its parent exactly like a disc
+// does. Left alone it became an album of its own — and after LEADING_NUM ate
+// the "5.", an album literally called "1 Surround Sound".
+//
+// The vocabulary mirrors slsk-filters' detectSurround deliberately rather than
+// importing its window binding, so this module still stands alone in a test
+// process. It is strictly narrower: detectSurround answers "is surround
+// mentioned anywhere in this text", this answers "is this segment nothing but a
+// surround label", which is the question a folder-folding decision asks.
+const SURROUND_LEAF_RE =
+  /^[\s._-]*(?:(?:dolby[\s._-]*)?atmos|(?:5|7)[._-][01](?:ch)?|quadr[ao]phonic|quad|multi[\s._-]?channel|mch|surround)[\s._-]*(?:surround)?[\s._-]*(?:sound|mix(?:es)?|audio|version)?[\s._-]*$/i
+
+function isSurroundFolder(name) {
+  return SURROUND_LEAF_RE.test(String(name || '').trim())
+}
+
+// One question for the walker: does this child folder fold into its parent
+// instead of being an album in its own right?
+function isFoldableChild(name) {
+  return isDiscFolder(name) || isSurroundFolder(name)
 }
 
 // A leaf segment that is ONLY a quality/source label: "44.1", "FLAC", "16-44",
@@ -607,16 +639,19 @@ function extractAlbums(root, { minTracks = 2 } = {}) {
   const gatherWithDiscs = (node) => {
     const files = node.files.filter(f => isAudioName(f.name || f.filename))
     let discCount = 0
+    let surround = false
     if (node.dirs && node.dirs.size) {
       for (const child of node.dirs.values()) {
-        if (isDiscFolder(child.name)) {
+        if (isFoldableChild(child.name)) {
           discCount++
+          if (isSurroundFolder(child.name)) surround = true
           const inner = gatherWithDiscs(child)
           for (const f of inner.files) files.push(f)
+          if (inner.surround) surround = true
         }
       }
     }
-    return { files, discCount }
+    return { files, discCount, surround }
   }
 
   // The same count gatherWithDiscs would report, without building the array. A
@@ -630,7 +665,7 @@ function extractAlbums(root, { minTracks = 2 } = {}) {
     for (const f of node.files) if (isAudioName(f.name || f.filename)) n++
     if (node.dirs && node.dirs.size) {
       for (const child of node.dirs.values()) {
-        if (isDiscFolder(child.name)) n += countWithDiscs(child)
+        if (isFoldableChild(child.name)) n += countWithDiscs(child)
       }
     }
     return n
@@ -641,7 +676,7 @@ function extractAlbums(root, { minTracks = 2 } = {}) {
     const realSubdirs = []
     if (node.dirs && node.dirs.size) {
       for (const child of node.dirs.values()) {
-        if (!isDiscFolder(child.name)) realSubdirs.push(child)
+        if (!isFoldableChild(child.name)) realSubdirs.push(child)
       }
     }
 
@@ -737,6 +772,10 @@ function buildAlbum(node, segs, gathered) {
     isHiRes,
     maxBitDepth,
     maxSampleRate,
+    // True when a surround-labelled child folded into this album ("Appetite For
+    // Destruction (1987)\5.1 Surround Sound"). The folder name that carried
+    // the label is no longer in the path, so without this the fact is lost.
+    surround: !!gathered.surround,
     topExt,
     files,
   }
@@ -925,6 +964,9 @@ function buildShelves(peerAlbums, library, { detectSurround = null } = {}) {
   // adds no work, and the flags are kept beside the albums rather than stamped
   // on them so a caller's objects are not mutated.
   const isSurroundAlbum = (pa) => {
+    // A surround-labelled child folder that the walker already folded in is
+    // proof on its own — its name is no longer in folderPath to be read.
+    if (pa.surround) return true
     if (!detectSurround) return false
     const names = pa.files.map(f => f.name || f.filename || '').join(' ')
     return !!detectSurround(`${pa.folderPath} ${pa.folderName} ${names}`)
@@ -941,7 +983,7 @@ function buildShelves(peerAlbums, library, { detectSurround = null } = {}) {
       lossless: pa.lossless,
       maxBitDepth: pa.maxBitDepth,
       maxSampleRate: pa.maxSampleRate,
-      surround: surroundFlags[i] || !!pa.surround,
+      surround: surroundFlags[i],
     })
     // Find the best library match through the bucketed index.
     const match = libIndex.findMatch(peerComp)
@@ -1590,16 +1632,19 @@ async function extractAlbumsChunked(root, opts) {
   const gatherWithDiscs = (node) => {
     const files = node.files.filter(f => isAudioName(f.name || f.filename))
     let discCount = 0
+    let surround = false
     if (node.dirs && node.dirs.size) {
       for (const child of node.dirs.values()) {
-        if (isDiscFolder(child.name)) {
+        if (isFoldableChild(child.name)) {
           discCount++
+          if (isSurroundFolder(child.name)) surround = true
           const inner = gatherWithDiscs(child)
           for (const f of inner.files) files.push(f)
+          if (inner.surround) surround = true
         }
       }
     }
-    return { files, discCount }
+    return { files, discCount, surround }
   }
 
   // Stack of { node, segs } visits and { post } emissions. LIFO with children
@@ -1627,7 +1672,7 @@ async function extractAlbumsChunked(root, opts) {
       const realSubdirs = []
       if (node.dirs && node.dirs.size) {
         for (const child of node.dirs.values()) {
-          if (!isDiscFolder(child.name)) realSubdirs.push(child)
+          if (!isFoldableChild(child.name)) realSubdirs.push(child)
         }
       }
       const gathered = gatherWithDiscs(node)
@@ -1697,8 +1742,8 @@ async function buildShelvesChunked(peerAlbums, library, opts) {
   const surroundFlags = new Array(albums.length)
   for (let i = 0; i < albums.length; i++) {
     const pa = albums[i]
-    let sur = false
-    if (detectSurround) {
+    let sur = !!pa.surround
+    if (!sur && detectSurround) {
       const names = pa.files.map(f => f.name || f.filename || '').join(' ')
       sur = !!detectSurround(`${pa.folderPath} ${pa.folderName} ${names}`)
     }
@@ -1717,7 +1762,7 @@ async function buildShelvesChunked(peerAlbums, library, opts) {
       lossless: pa.lossless,
       maxBitDepth: pa.maxBitDepth,
       maxSampleRate: pa.maxSampleRate,
-      surround: surroundFlags[i] || !!pa.surround,
+      surround: surroundFlags[i],
     })
     const match = libIndex.findMatch(peerComp)
     if (markInLibrary) pa.inLibrary = !!match
@@ -1834,7 +1879,7 @@ const shApi = {
   upgradeReason, albumsMatch, albumsMatchComparable, albumComparable,
   buildLibraryIndex, tokenScore, tokenScoreSets, normKey, normTokenSet,
   cleanSegment, extractYear,
-  isDiscFolder, isQualityLeaf, stripLeafNoise,
+  isDiscFolder, isSurroundFolder, isFoldableChild, isQualityLeaf, stripLeafNoise,
   groupByLetter, albumQualityLabel, libAlbumToComparable,
   isAudioName, isLosslessName, qualityString, channelSuffix,
   SH_AUDIO_RE, SH_LOSSLESS_EXT,
