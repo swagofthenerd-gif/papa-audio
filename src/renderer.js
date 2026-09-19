@@ -18745,10 +18745,16 @@ function showImportPlaylistDialog() {
   var overlay = document.createElement('div')
   overlay.id = 'import-pl-modal'
   overlay.className = 'addpl-overlay'
+  // It had a nav dismisser but nothing else: no dialog role, so a screen
+  // reader never heard it open, and no Escape, so the only way out was the
+  // mouse.
+  overlay.setAttribute('role', 'dialog')
+  overlay.setAttribute('aria-modal', 'true')
+  overlay.setAttribute('aria-labelledby', 'imp-title')
   overlay.innerHTML = `
     <div class="addpl-card" style="max-width:520px;width:92%">
       <div class="addpl-header">
-        <span>Import playlist from text</span>
+        <span id="imp-title">Import playlist from text</span>
         <button class="addpl-close" id="imp-close">&#10005;</button>
       </div>
       <div style="padding:16px">
@@ -18762,7 +18768,15 @@ function showImportPlaylistDialog() {
       </div>
     </div>`
   document.body.appendChild(overlay)
-  var close = function () { _unregisterNavDismiss(close); overlay.remove() }
+  var _impRelease = _trapFocus(overlay, { initial: '#imp-text' })
+  var close = function () {
+    _unregisterNavDismiss(close)
+    document.removeEventListener('keydown', onImpKey)
+    try { _impRelease() } catch (_) {}
+    overlay.remove()
+  }
+  function onImpKey(e) { if (e.key === 'Escape') { e.preventDefault(); close() } }
+  document.addEventListener('keydown', onImpKey)
   _registerNavDismiss(close)
   overlay.querySelector('#imp-close')?.addEventListener('click', close)
   overlay.querySelector('#imp-cancel')?.addEventListener('click', close)
@@ -34922,27 +34936,48 @@ function updateNoticeBadge() {
   el.title = unread === 1 ? '1 recent notice' : `${unread} recent notices`
 }
 
+// The badge opens this; clicking the badge again closes it. It used to be the
+// only .modal-overlay in the app with no dialog role, no focus trap, no focus
+// move and no nav dismisser -- a screen reader never heard it open, Tab walked
+// straight out of it into the page behind, and Ctrl+1 left it floating over
+// Home. Mirrors showSlskSavedUsers.
+var _closeNoticeHistory = null
 function showNoticeHistory() {
   _noticesSeen = _noticeHistory.length
   updateNoticeBadge()
-  const existing = document.getElementById('notice-history-modal')
-  if (existing) { existing.remove(); return }
+  if (document.getElementById('notice-history-modal')) {
+    if (_closeNoticeHistory) _closeNoticeHistory()
+    return
+  }
   const dlg = document.createElement('div')
   dlg.id = 'notice-history-modal'
   dlg.className = 'modal-overlay'
+  dlg.setAttribute('role', 'dialog')
+  dlg.setAttribute('aria-modal', 'true')
+  dlg.setAttribute('aria-labelledby', 'notice-history-title')
   const rows = _noticeHistory.length
     ? _noticeHistory.map(n => '<div class="notice-row"><span class="notice-when">' +
         esc(new Date(n.at).toLocaleTimeString()) + '</span><span class="notice-text">' +
         esc(n.text) + '</span></div>').join('')
     : '<div class="mg-empty" style="padding:24px">Nothing has gone wrong yet.</div>'
   dlg.innerHTML = '<div class="modal-box">' +
-    '<div class="modal-header-row"><div class="modal-title">Recent notices</div>' +
+    '<div class="modal-header-row"><div class="modal-title" id="notice-history-title">Recent notices</div>' +
     '<button class="modal-close-btn" id="notice-close" aria-label="Close" title="Close">✕</button></div>' +
     '<div class="notice-list">' + rows + '</div></div>'
   document.body.appendChild(dlg)
-  const close = () => { document.removeEventListener('keydown', onKey); dlg.remove() }
-  function onKey(e) { if (e.key === 'Escape') close() }
+  const _release = _trapFocus(dlg, { initial: '#notice-close' })
+  const close = () => {
+    _closeNoticeHistory = null
+    _unregisterNavDismiss(close)
+    document.removeEventListener('keydown', onKey)
+    try { _release() } catch (_) {}
+    dlg.remove()
+  }
+  _closeNoticeHistory = close
+  function onKey(e) { if (e.key === 'Escape') { e.preventDefault(); close() } }
   document.addEventListener('keydown', onKey)
+  // Sidebar navigation used to leave this floating over the next page.
+  _registerNavDismiss(close)
   dlg.addEventListener('click', e => { if (e.target === dlg) close() })
   dlg.querySelector('#notice-close')?.addEventListener('click', close)
 }
