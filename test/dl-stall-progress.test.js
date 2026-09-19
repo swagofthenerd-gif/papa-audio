@@ -64,6 +64,19 @@ test('a transfer slskd calls InProgress is never a stall, however long it has ru
     'cancelling this restarts a running download from zero — Soulseek has no resume')
 })
 
+test('InProgress protects on the state alone, before a single byte is reported', () => {
+  // The state check and the bytes check are two layers. The lead's mutation
+  // check removed the state layer and every case above stayed green, because
+  // each InProgress fixture also carried bytes. This one carries none: slskd
+  // says the transfer is running, its counter has not ticked yet, and that is
+  // still not a stall.
+  const st = stateWithInflight()
+  const out = dlSched.stalledItems(st, cfg, T0 + 21 * MIN, {
+    k1: { state: 'InProgress', bytesTransferred: 0 },
+  })
+  assert.deepStrictEqual(out, [], 'the state alone must protect a running transfer')
+})
+
 test('Queued, Remotely at zero bytes for twenty-one minutes IS a stall', () => {
   const st = stateWithInflight()
   const out = dlSched.stalledItems(st, cfg, T0 + 21 * MIN, {
