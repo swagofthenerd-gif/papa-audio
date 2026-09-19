@@ -5643,6 +5643,9 @@ ipcMain.handle('library-empty-trash', async (_, { names, payloads }) => {
 })
 
 ipcMain.handle('library-restore-trashed', async (_, { paths }) => {
+  // This renames files back into /mnt/data/MUSIC. It is a write to his real
+  // library like any other and was the one trash path with no dry-run gate.
+  if (DRY_RUN) return _dryRunRefusal('restoring these files from the trash')
   const results = []
   for (const p of paths || []) {
     const found = findTrashedEntry(p)
