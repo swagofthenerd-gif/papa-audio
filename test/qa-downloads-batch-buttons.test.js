@@ -25,8 +25,11 @@ const RENDERER = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'
 function batchButtonsHtml(source) {
   const at = source.indexOf('  var batchBtns = ')
   assert.ok(at > -1, 'the batch button row must still be built in renderDownloads')
-  const end = source.indexOf('\n', at)
-  return vm.runInNewContext(source.slice(at + '  var batchBtns = '.length, end))
+  // The expression now spans lines (a disabled state when nothing is
+  // downloading, QA #19): end at the line that closes the row's div.
+  const close = source.indexOf("</div>'", at)
+  const end = source.indexOf('\n', close)
+  return vm.runInNewContext(source.slice(at + '  var batchBtns = '.length, end), { _anyActive: true })
 }
 
 test('the batch row offers exactly one action', () => {
@@ -59,9 +62,11 @@ test('the remaining action still stops what is downloading', () => {
 })
 
 test('MUTATION: putting the no-op button back is visible from the markup alone', () => {
+  // The Stop All button is built over three lines now (disabled state, QA #19);
+  // the mutation re-adds the dead Resume button after its closing tag.
   const broken = RENDERER.replace(
-    '<button class="dl-action-btn" id="dl-pause-all">\\u23f9 Stop All</button></div>',
-    '<button class="dl-action-btn" id="dl-pause-all">\\u23f9 Stop All</button><button class="dl-action-btn" id="dl-resume-all">\\u25b6 Resume All</button></div>')
+    "'>\\u23f9 Stop All</button></div>'",
+    "'>\\u23f9 Stop All</button><button class=\"dl-action-btn\" id=\"dl-resume-all\">\\u25b6 Resume All</button></div>'")
   assert.notStrictEqual(broken, RENDERER, 'the mutation applied')
   const ids = [...batchButtonsHtml(broken).matchAll(/id="([^"]+)"/g)].map(m => m[1])
   assert.deepStrictEqual(ids, ['dl-pause-all', 'dl-resume-all'], 'this is the reported bug')

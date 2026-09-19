@@ -243,7 +243,12 @@ test('the error text is escaped, never injected as markup', () => {
 test('a fresh search clears the flag, and any throttled variant sets it', () => {
   const run = RENDERER.slice(RENDERER.indexOf('async function runSlskSearch('),
     RENDERER.indexOf('async function refreshSlskStatus('))
-  assert.match(run, /slsk\.searched  = false\n  slsk\.throttledRecently = false/)
+  // The per-search reset lives in _slskBeginSearchPaint since QA #5 (it runs
+  // before the spelling-correction await as well); pin it there.
+  const begin = RENDERER.slice(RENDERER.indexOf('function _slskBeginSearchPaint('),
+    RENDERER.indexOf('async function runSlskSearch('))
+  assert.match(begin, /slsk\.searched  = false\n  slsk\.throttledRecently = false/)
+  assert.match(run, /_slskBeginSearchPaint\(query\)/, 'and runSlskSearch calls it')
   assert.match(run, /if \(throttled\) slsk\.throttledRecently = true/)
   assert.match(run, /if \(_slskIsThrottleError\(e\)\) \{ slsk\.throttledRecently = true;/)
 })

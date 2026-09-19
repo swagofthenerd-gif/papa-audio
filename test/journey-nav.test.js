@@ -13,13 +13,21 @@ const SRC = path.join(__dirname, '..', 'src')
 const RENDERER = fs.readFileSync(path.join(SRC, 'renderer.js'), 'utf8')
 const MAIN = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
 
+// navigate() refuses page ids outside NAV_PAGES (QA #18); the allow-list is
+// declared just above it, so a lift of navigate carries it along.
+const NAV_PAGES_AT = RENDERER.indexOf('const NAV_PAGES = new Set([')
+const NAV_PAGES_SRC = NAV_PAGES_AT > -1
+  ? RENDERER.slice(NAV_PAGES_AT, RENDERER.indexOf('\n])', NAV_PAGES_AT) + 3)
+  : ''
+
 function fnBody(name) {
   const start = RENDERER.indexOf(`function ${name}(`)
   assert.ok(start > -1, `${name} not found in the renderer`)
   const next = RENDERER.indexOf('\nfunction ', start + 1)
   const nextAsync = RENDERER.indexOf('\nasync function ', start + 1)
   const ends = [next, nextAsync].filter(i => i > -1)
-  return RENDERER.slice(start, ends.length ? Math.min(...ends) : RENDERER.length)
+  const body = RENDERER.slice(start, ends.length ? Math.min(...ends) : RENDERER.length)
+  return name === 'navigate' ? NAV_PAGES_SRC + '\n' + body : body
 }
 
 // ── 1. The video search is a journey, not a mood ────────────────────────────
@@ -319,6 +327,13 @@ function journey (mutate) {
     },
     window: { api: { saveSessionState () {} }, PapaJourney: null },
     state: { currentPage: '', currentVideoQuery: '', library: [], playlists: [], smartPlaylists: [] },
+    // navigate() consults the page allow-list (QA #18); evaluate the real one
+    // from the (possibly mutated) source so the sandbox agrees with the code.
+    NAV_PAGES: (() => {
+      const at = source.indexOf('const NAV_PAGES = new Set([')
+      assert.ok(at > -1, 'NAV_PAGES must be declared beside navigate')
+      return vm.runInNewContext(source.slice(at, source.indexOf('\n])', at) + 3) + '\nNAV_PAGES')
+    })(),
     _scrollMemory: new Map(),
     SCROLL_MEMORY_CAP: 50,
     VIDEO_PAGES: new Set(['video', 'browse', 'video-detail', 'person', 'shelf', 'diary', 'calendar']),

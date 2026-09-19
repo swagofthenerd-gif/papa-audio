@@ -414,7 +414,11 @@ test('an empty individual playlist points at the library', () => {
 test('the no-results search state routes to the P2P results already loading', () => {
   assert.match(SRC, /id="search-empty-slsk-btn"/)
   assert.match(SRC, /getElementById\('search-empty-slsk-btn'\)\?\.addEventListener/)
-  assert.match(SRC, /getElementById\('slsk-section'\)\?\.scrollIntoView/)
+  // QA #17: the jump is one helper that scrolls the lane AND moves focus to it.
+  const jump = SRC.slice(SRC.indexOf('function _jumpToSlskLane('), SRC.indexOf('function _jumpToSlskLane(') + 600)
+  assert.match(jump, /getElementById\('slsk-section'\)/)
+  assert.match(jump, /scrollIntoView/)
+  assert.match(jump, /sec\.focus\(/, 'a jump that only scrolls leaves the keyboard user at the top')
 })
 
 test('all four empty-state buttons share one CSS class', () => {

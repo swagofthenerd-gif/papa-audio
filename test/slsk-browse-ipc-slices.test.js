@@ -60,7 +60,8 @@ function liftPullBlock() {
 // dirs: what main holds. `serve` decides what each chunk request gets back.
 function shopHarness(dirs, { serve, connected = () => true, endReply = { ok: true, fingerprint: 'fp-real' } } = {}) {
   const calls = { chunks: [], ended: 0, progress: [] }
-  const loadingEl = { isConnected: true, set textContent(v) { calls.progress.push(v) } }
+  // classList: the expired branch drops the indeterminate bar (QA #20).
+  const loadingEl = { isConnected: true, classList: { add () {}, remove () {} }, set textContent(v) { calls.progress.push(v) } }
   const api = {
     slskBrowseChunk: async ({ token, offset, limit }) => {
       calls.chunks.push({ token, offset, limit })
@@ -69,7 +70,13 @@ function shopHarness(dirs, { serve, connected = () => true, endReply = { ok: tru
     },
     slskBrowseEnd: async () => { calls.ended++; return endReply },
   }
-  const fn = new Function('SH', 'window', 'body', 'dlg', 'res', 'username', 'streaming', `
+  // The pull paints progress through shLoadingProgress(el, text, pct) now; the
+  // stub records the text so the "told why" assertion still reads it.
+  const shLoadingProgress = (el, text, pct) => {
+    calls.progress.push(pct == null ? text : `${text} ${Math.round(pct)}%`)
+  }
+  const shNoteNewDirs = () => {}
+  const fn = new Function('SH', 'window', 'body', 'dlg', 'res', 'username', 'streaming', 'shLoadingProgress', 'shNoteNewDirs', `
     return (async function () {
       let tree = null
       let shBrowseFp = null
@@ -78,7 +85,7 @@ function shopHarness(dirs, { serve, connected = () => true, endReply = { ok: tru
     })()
   `)
   const run = () => fn(SH, { api }, { querySelector: () => loadingEl }, { get isConnected() { return connected() } },
-    { token: 'tok-1', dirCount: dirs.length }, 'peer', true)
+    { token: 'tok-1', dirCount: dirs.length }, 'peer', true, shLoadingProgress, shNoteNewDirs)
   return { run, calls }
 }
 
