@@ -1090,3 +1090,29 @@ READY FOR HIS RESTART. His actions: restart Papa Audio (he launches from
 the working tree); restart `papa-bridge.service` for the phone; decide
 shuffle exhaustion; try a debrid season pack and watch On Device for the
 next episode arriving.
+
+### 19 Sep — phone-side audit (Fable, read-only) vs the rewritten bridge
+Lead re-checked: the phone's `downloads.tsx` flattens `directories[]`
+itself, so tonight's server-side flattening of `/api/slsk/transfers` left
+the On PC list empty for a NEW reason (C1 — the earlier "always empty" was
+the `!res.ok` swallow, not the shape); play-history POSTs carry `playedAt`,
+the desktop needs `ts`, the bridge stamps neither → phone plays quarantined
+(H4). ~/papa-audio-android IS a git repo (CLAUDE.md says otherwise).
+Bridge-side (no rebuild; routed after the two-writer executor lands, same
+files): C1 nested passthrough + keep `/active-count`; H1 `/api/library/scan`
+returns the desktop cache instead of re-parsing 3.4 TB with ids that match
+nothing; H2 exempt `/api/health` from the 60/min limiter (a launch is ~12
+calls + one per playlist + one per artless album → 429 → "Offline"); H4
+`ts`/`playedAt` both ways; H5 liked-tracks POST as add/remove diffs (last
+writer wins wipes the other device's likes); M2 `remainingTime` seconds; M5
+`addresses` in `/api/health` (failover has never had candidates); L3
+coalesce `playbackState.set`; L4 filter `unavailable` albums.
+Phone-side (rebuild by him; routed to `fix/bridge-contract-2026-09-19` in
+the Android repo): C2 opening Downloads marks every in-flight download
+"Failed" (`load()` re-run on tab mount); H3 playlists deleted on the PC are
+resurrected every launch; H2 art misses never remembered; M1 "Phone only"
+silently keeps the PC copy; M2 `formatEta("00:01:23")` = "NaNm"; M3 502
+looks like "nothing downloading"; M4 recently-played never sent; L1 PC art
+path stored on local albums. Left alone: L5 swipe-away stops playback
+(design), M6 MP3 transcode is unseekable (needs a transcode cache — his
+call), L2 publish script JSON escaping.
