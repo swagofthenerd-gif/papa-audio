@@ -8006,6 +8006,38 @@ async function dlTransferId(username, filename) {
 const DL_TICK_DEADLINE_MS = 60000
 let _dlTickStartedAt = 0
 
+// What to do about one in-flight entry slskd no longer lists.
+//
+// A transfer vanishing from a list that still holds OTHER transfers really does
+// mean it was removed — the user cancelled it in slskd's own UI, or we did — and
+// re-requesting it is how "cancel" turned into "download it again". That case
+// stays terminal.
+//
+// A transfer vanishing from an EMPTY list means nothing of the kind. The daemon
+// has no record of anything, which is what a restart looks like: our own health
+// monitor restarting it, a settings change (the download folder, the share mode,
+// the Soulseek password all bounce it), or a crash. Treating that as a user
+// cancel abandoned every in-flight file at IDENTITY level — terminal, persisted,
+// and written with a band-independent song key, so the song was refused from
+// every peer in every format, forever, across restarts. Eight seconds of silence
+// destroyed a queue that nobody had touched.
+//
+// So on an empty list the entry goes back to the scheduler the way a stall does:
+// attempts intact, nobody blamed, a reason a person can read.
+//
+// Returns 'wait' | 'requeued' | 'abandoned' so the caller can log and the test
+// can read the decision.
+function dlReconcileMissing(state, key, live, cfg, now, lostTrack) {
+  if ((now - live.since) <= 30000) return 'wait'
+  if (lostTrack) {
+    const requeued = dlSched.recordStall(state, key, live.username, cfg, now)
+    if (requeued) requeued.reason = 'slskd lost track of this transfer — re-queued'
+    return 'requeued'
+  }
+  dlSched.recordAbandoned(state, key)
+  return 'abandoned'
+}
+
 async function dlTick() {
   if (dlTicking) {
     const stuckFor = Date.now() - _dlTickStartedAt
@@ -8046,6 +8078,15 @@ async function dlTick() {
     // changing the download folder, the share mode or the Soulseek password
     // does. So: queue an album, change a setting, and the album silently
     // vanished and could never be re-added.
+    //
+    // Waiting one extra tick was not enough on its own. After eight seconds the
+    // guard fell through and the reconcile loop below read every in-flight file
+    // as "removed by the user" and abandoned it at identity level. But an empty
+    // list is not evidence about any individual transfer — it is evidence that
+    // slskd has no transfers at all, which is what a daemon that just restarted
+    // looks like. So the two-tick wait stands, and after it the missing entries
+    // are RE-QUEUED rather than abandoned: see dlReconcileMissing.
+    let snapshotLostTrack = false
     if (snap.size === 0 && Object.keys(dlState.inflight).length > 0) {
       _dlEmptySnapshots++
       // Two in a row before believing it. One is indistinguishable from a
@@ -8055,6 +8096,7 @@ async function dlTick() {
           `${Object.keys(dlState.inflight).length} are in flight; waiting a tick before believing it`)
         return
       }
+      snapshotLostTrack = true
     } else {
       _dlEmptySnapshots = 0
     }
@@ -8087,10 +8129,11 @@ async function dlTick() {
       // music differently, and looking up the original key missed every time.
       const seen = snap.get(live.sentFilename || live.filename)
       if (!seen) {
-        // A transfer only disappears from slskd because it was removed —
-        // by the user cancelling, or by us. Re-requesting it is how "cancel"
-        // turned into "download it again", so this is terminal, not a retry.
-        if (now - live.since > 30000) dlSched.recordAbandoned(dlState, key)
+        const verdict = dlReconcileMissing(dlState, key, live, cfg, now, snapshotLostTrack)
+        if (verdict === 'requeued') {
+          console.warn(`[papa][dl] ${dlBaseName(live.filename)}: slskd has no record of this transfer ` +
+            'and none of any other either; re-queued rather than treated as a cancellation')
+        }
         continue
       }
       // Transitions, at info, into the same daily log. When a download stalls
