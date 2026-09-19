@@ -16,7 +16,6 @@ const http     = require('http')
 const https    = require('https')
 const os       = require('os')
 const { spawn, spawnSync } = require('child_process')
-const { parseFile } = require('music-metadata')
 const Store = require('electron-store')
 const registerYouTube = require('./youtube')
 const mediaLib = require('./media-lib')
@@ -472,59 +471,6 @@ function slskFail(res, e) {
   return res.status(502).json({ error: `slskd unreachable: ${(e && e.message) || e}` })
 }
 
-// ── Library helpers (copied from main.js) ─────────────────────────────────────
-async function scanDir(dir) {
-  const results = []
-  try {
-    const entries = await fs.promises.readdir(dir, { withFileTypes: true })
-    for (const entry of entries) {
-      const full = path.join(dir, entry.name)
-      if (entry.isDirectory())                        results.push(...(await scanDir(full)))
-      else if (entry.isFile() && MUSIC_EXT.test(entry.name)) results.push(full)
-    }
-  } catch (_) {}
-  return results
-}
-
-async function buildAlbums(tracks) {
-  const map = new Map()
-  for (const t of tracks) {
-    const key = `${(t.albumArtist || t.artist).toLowerCase()}_${t.album.toLowerCase()}`
-    if (!map.has(key)) {
-      map.set(key, {
-        id: crypto.createHash('md5').update(key).digest('hex'),
-        name: t.album, artist: t.albumArtist || t.artist,
-        year: t.year, artPath: t.artPath, tracks: [],
-      })
-    }
-    const album = map.get(key)
-    if (!album.artPath && t.artPath) album.artPath = t.artPath
-    if (t.addedAt > (album._maxAddedAt || 0)) album._maxAddedAt = t.addedAt
-    album.tracks.push({
-      id: t.id, title: t.title, artist: t.artist, genre: t.genre || null,
-      trackNumber: t.trackNumber, discNumber: t.discNumber,
-      duration: t.duration, filePath: t.filePath,
-      sampleRate: t.sampleRate || 0, bitsPerSample: t.bitsPerSample || 0,
-    })
-  }
-  for (const [, a] of map) {
-    if (!a.artPath) {
-      const cached = path.join(ARTWORK_DIR, `${a.id}.jpg`)
-      try { await fs.promises.stat(cached); a.artPath = cached } catch (_) {}
-    }
-    a.tracks.sort((x, y) => x.discNumber - y.discNumber || x.trackNumber - y.trackNumber)
-    a.maxBitsPerSample = Math.max(0, ...a.tracks.map(t => t.bitsPerSample || 0))
-    a.maxSampleRate    = Math.max(0, ...a.tracks.map(t => t.sampleRate    || 0))
-    a.isHiRes  = a.maxBitsPerSample >= 24 && a.maxSampleRate > 48000
-    const gc = {}
-    for (const t of a.tracks) if (t.genre) gc[t.genre] = (gc[t.genre] || 0) + 1
-    a.genre   = Object.entries(gc).sort((x, y) => y[1] - x[1])[0]?.[0] || null
-    a.addedAt = a._maxAddedAt || 0
-    delete a._maxAddedAt
-  }
-  return [...map.values()].sort((a, b) => a.name.localeCompare(b.name))
-}
-
 // ── HTTPS helper ──────────────────────────────────────────────────────────────
 function httpsGet(url, redirects = 0) {
   if (redirects > 5) return Promise.reject(new Error('Too many redirects'))
@@ -715,49 +661,25 @@ app.get('/api/library', (_, res) => {
   res.json({ albums: [], cached: false })
 })
 
-app.post('/api/library/scan', async (_, res) => {
-  const folders = cfgGet('musicFolders', [])
-  if (!folders.length) return res.json({ albums: [] })
-  try {
-    const allFiles = (await Promise.all(folders.map(f => scanDir(f)))).flat()
-    const tracks = []
-    for (const filePath of allFiles) {
-      try {
-        const meta = await parseFile(filePath, { duration: true })
-        const c = meta.common, f = meta.format
-        const pic = c.picture?.[0]
-        let artPath = null
-        if (pic) {
-          const ext = pic.format.includes('png') ? 'png' : 'jpg'
-          const key = crypto.createHash('md5').update((c.albumartist||c.artist||'')+(c.album||'')).digest('hex')
-          artPath = path.join(ARTWORK_DIR, `${key}.${ext}`)
-          try { await fs.promises.stat(artPath) } catch (_) { await fs.promises.writeFile(artPath, pic.data) }
-        }
-        tracks.push({
-          id: crypto.createHash('md5').update(filePath).digest('hex'),
-          title: c.title || path.basename(filePath, path.extname(filePath)),
-          artist: c.artist || c.albumartist || 'Unknown Artist',
-          albumArtist: c.albumartist || c.artist || 'Unknown Artist',
-          album: c.album || 'Unknown Album',
-          trackNumber: c.track?.no || 0, discNumber: c.disk?.no || 1,
-          year: c.year || null, genre: c.genre?.[0] || null,
-          duration: f.duration || 0, sampleRate: f.sampleRate || 0,
-          bitsPerSample: f.bitsPerSample || 0, channels: f.numberOfChannels || 0,
-          addedAt: await fs.promises.stat(filePath).then(s => s.mtimeMs).catch(() => 0),
-          filePath, artPath,
-        })
-      } catch (_) {}
-    }
-    const albums = await buildAlbums(tracks)
-    // Deliberately NOT persisted. The library cache is the desktop's
-    // library-cache.json now; writing it from here made the bridge a second
-    // writer AND (before that) pushed ~1.6 MB back into config.json on every
-    // scan, which is where the orphaned config.json.tmp-* files came from.
-    // The scan result is returned to the caller and nothing else.
-    res.json({ albums: withArtUrls(albums), persisted: false })
-  } catch (e) {
-    res.status(500).json({ error: e.message })
-  }
+// "Refresh" on the phone. It used to mean a full re-parse of the library with
+// music-metadata — 3.4 TB, tens of minutes, against the phone's 120 s axios
+// timeout, so it never returned an answer the phone could use. Worse, the album
+// ids it built (md5 of `artist_album`) are NOT the desktop's ids
+// (albumGrouping / tagEdit.albumKeyOf), so on the runs that did finish, every
+// /art/<id>.jpg and /stream/<trackId> the phone then asked for 404'd: a refresh
+// broke the library it was meant to refresh.
+//
+// The desktop already watches the music roots and rescans on its own, and
+// library-cache.json is the result. So the honest answer to "refresh" is the
+// desktop's current cache — the same albums, with the same ids, in under a
+// millisecond. `rescanned: false` says plainly that nothing was re-read.
+app.post('/api/library/scan', (_, res) => {
+  const cached = sideValue('libraryCache')
+  res.json({
+    albums: withArtUrls(Array.isArray(cached) ? cached : []),
+    persisted: false,
+    rescanned: false,
+  })
 })
 
 // /api/library/cache is gone: it let the phone overwrite the desktop's library

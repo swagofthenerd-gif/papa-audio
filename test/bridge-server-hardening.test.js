@@ -495,6 +495,30 @@ test('a scan does not push the library back into config.json', async () => {
     'the scan rewrote config.json — this is what left the 1.4-2.6 MB config.json.tmp-* orphans')
 })
 
+// "Refresh" on the phone used to re-parse the whole library with
+// music-metadata: 3.4 TB against a 120 s axios timeout, so it never returned.
+// And its album ids were md5(`artist_album`) — not the desktop's ids — so a
+// refresh that DID finish replaced every id the phone held with one that /art
+// and /stream/:id know nothing about: a refresh that broke the library.
+test('a scan answers the desktop cache, with the desktop ids, immediately', async () => {
+  const started = Date.now()
+  const r = await fetch(`${base}/api/library/scan`, { method: 'POST', ...authed })
+  const elapsed = Date.now() - started
+  assert.strictEqual(r.status, 200)
+  const body = await r.json()
+
+  assert.strictEqual(body.rescanned, false, 'the bridge must say plainly that it re-read nothing')
+  assert.deepStrictEqual(body.albums.map(a => a.id), ['alb1', 'albescape'],
+    'the ids must be the desktop’s, or every /art and /stream the phone then asks for 404s')
+  assert.strictEqual(body.albums[0].artUrl, '/art/alb1.jpg')
+  assert.ok(elapsed < 1000, `the scan took ${elapsed} ms; the phone gives it 120 s and the library is 3.4 TB`)
+
+  // And the ids it handed back really do resolve, which is the whole point.
+  const art = await fetch(media(`/art/${body.albums[0].id}.jpg`))
+  assert.strictEqual(art.status, 200)
+  await art.text()
+})
+
 test('/api/library/cache is gone (the phone must not overwrite the desktop cache)', async () => {
   const r = await fetch(`${base}/api/library/cache`, {
     method: 'POST',
