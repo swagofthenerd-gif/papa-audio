@@ -137,10 +137,57 @@ function albumIsSurround(a) {
   return !!detectSurround(`${(a && a.folderPath) || ''} ${(a && a.folderName) || ''} ${names}`)
 }
 
+// Every chip the explorer offers. Keys that need context (what is new since the
+// last visit, which albums beat mine) read it from the `ctx` argument so the
+// predicates stay pure. Groups are exclusive within a row (one format at a
+// time) and combine across rows.
+const SHELF_FILTER_GROUPS = [
+  { id: 'format',   label: 'Format',   keys: ['flac', 'mp3', 'otherfmt'] },
+  { id: 'depth',    label: 'Depth',    keys: ['bd16', 'bd24'] },
+  { id: 'rate',     label: 'Rate',     keys: ['sr44', 'sr48', 'sr88', 'sr176'] },
+  { id: 'channels', label: 'Channels', keys: ['stereo', 'surround'] },
+  { id: 'size',     label: 'Size',     keys: ['small', 'medium', 'large'] },
+  { id: 'mine',     label: 'Mine',     keys: ['notinlib', 'inlib', 'better', 'new'] },
+]
+const SHELF_FILTER_LABELS = {
+  lossless: 'Lossless', hires: 'Hi-Res', flac: 'FLAC', mp3: 'MP3', otherfmt: 'Other',
+  bd16: '16-bit', bd24: '24-bit', sr44: '44.1k', sr48: '48k', sr88: '88.2–96k', sr176: '176k+',
+  stereo: 'Stereo', surround: 'Surround', small: '< 300 MB', medium: '300 MB – 1 GB', large: '> 1 GB',
+  notinlib: 'Not in my library', inlib: 'In my library', better: 'Better than mine', new: 'New since last visit',
+}
+const ext = a => String((a && a.topExt) || '').toLowerCase()
+const sr = a => Number(a && a.maxSampleRate) || 0
+const bd = a => Number(a && a.maxBitDepth) || 0
+const sz = a => Number(a && a.totalSize) || 0
 const SHELF_FILTERS = {
   lossless: a => !!(a && a.lossless),
   hires:    a => !!(a && a.isHiRes),
   surround: albumIsSurround,
+  stereo:   a => !albumIsSurround(a),
+  flac:     a => ext(a) === 'flac',
+  mp3:      a => ext(a) === 'mp3',
+  otherfmt: a => { const e = ext(a); return !!e && e !== 'flac' && e !== 'mp3' },
+  bd16:     a => bd(a) === 16,
+  bd24:     a => bd(a) >= 24,
+  sr44:     a => sr(a) > 0 && sr(a) <= 44100,
+  sr48:     a => sr(a) === 48000,
+  sr88:     a => sr(a) >= 88200 && sr(a) < 176400,
+  sr176:    a => sr(a) >= 176400,
+  small:    a => sz(a) > 0 && sz(a) < 300e6,
+  medium:   a => sz(a) >= 300e6 && sz(a) < 1e9,
+  large:    a => sz(a) >= 1e9,
+  inlib:    a => !!(a && a.inLibrary),
+  notinlib: a => !(a && a.inLibrary),
+  better:   (a, ctx) => !!(ctx && ctx.upgradePaths && a && ctx.upgradePaths.has(a.folderPath)),
+  new:      (a, ctx) => !!(ctx && ctx.newPaths && a && (ctx.newPaths.has(a.folderPath) || ctx.newPaths.has(a.folderName))),
+}
+// Search within a library: every query token must appear in artist or album.
+function shelfQueryMatch(a, query) {
+  const q = String(query || '').toLowerCase().split(/\s+/).filter(Boolean)
+  if (!q.length) return true
+  const hay = ((a && a.artist) || '') + ' ' + ((a && (a.album || a.folderName)) || '')
+  const h = hay.toLowerCase()
+  return q.every(t => h.includes(t))
 }
 
 // Build the decade dropdown options from the years actually present, newest
@@ -158,13 +205,14 @@ function shelfDecades(albums) {
 
 // Apply the active shelf filters (a Set of filter keys) plus an optional decade
 // (the decade's start year as a string/number) and sort key. Pure — new array.
-function applyShelfFilterSort(albums, { filters = null, decade = null, sort = 'az' } = {}) {
+function applyShelfFilterSort(albums, { filters = null, decade = null, sort = 'az', query = '', ctx = null } = {}) {
   const active = filters instanceof Set ? [...filters] : (Array.isArray(filters) ? filters : [])
   let out = (albums || []).slice()
   for (const key of active) {
     const pred = SHELF_FILTERS[key]
-    if (pred) out = out.filter(pred)
+    if (pred) out = out.filter(a => pred(a, ctx))
   }
+  if (query) out = out.filter(a => shelfQueryMatch(a, query))
   if (decade != null && decade !== '') {
     const start = Number(decade) || 0
     out = out.filter(a => {
@@ -174,6 +222,8 @@ function applyShelfFilterSort(albums, { filters = null, decade = null, sort = 'a
   }
   const SH = (typeof window !== 'undefined' && window.PapaSlskShelves) ||
     (typeof require === 'function' ? (() => { try { return require('./slsk-shelves') } catch (_) { return null } })() : null)
+  if (sort === 'artist') return out.sort((x, y) => String(x.artist || '').localeCompare(String(y.artist || '')) || String(x.album || '').localeCompare(String(y.album || '')))
+  if (sort === 'tracks') return out.sort((x, y) => (Number(y.trackCount) || 0) - (Number(x.trackCount) || 0))
   return SH && SH.sortMergedAlbums ? SH.sortMergedAlbums(out, sort) : out
 }
 
@@ -200,12 +250,12 @@ function summaryLine(p) {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { detectSurround, groupSurround, isHiResGroup, isLosslessGroup, applyFilterSort, surroundQueries, SURROUND_TERMS, FILTERS, SORTS, SHELF_FILTERS, shelfDecades, applyShelfFilterSort, albumIsSurround, summaryLine }
+  module.exports = { detectSurround, groupSurround, isHiResGroup, isLosslessGroup, applyFilterSort, surroundQueries, SURROUND_TERMS, FILTERS, SORTS, SHELF_FILTERS, SHELF_FILTER_GROUPS, SHELF_FILTER_LABELS, shelfQueryMatch, shelfDecades, applyShelfFilterSort, albumIsSurround, summaryLine }
 }
 if (typeof window !== 'undefined') {
   // The shelf filter/sort/decade helpers were missing here, so in the app the
   // shop fell back to unfiltered, unsorted shelves and never showed a decade.
-  window.PapaSlskFilters = { detectSurround, groupSurround, isHiResGroup, isLosslessGroup, applyFilterSort, summaryLine, SHELF_FILTERS, shelfDecades, applyShelfFilterSort, albumIsSurround }
+  window.PapaSlskFilters = { detectSurround, groupSurround, isHiResGroup, isLosslessGroup, applyFilterSort, summaryLine, SHELF_FILTERS, SHELF_FILTER_GROUPS, SHELF_FILTER_LABELS, shelfQueryMatch, shelfDecades, applyShelfFilterSort, albumIsSurround }
   // The same detector serves YouTube titles: both are uploader-written text,
   // and the failure modes ("Album 51", stereo SACD rips) are identical.
   window.PapaSurround = { detectSurround, surroundQueries }

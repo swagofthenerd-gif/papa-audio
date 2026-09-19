@@ -758,6 +758,7 @@
   let shSort = 'az'
   const shFilters = new Set()   // any of 'lossless' | 'hires' | 'surround'
   let shDecade = ''             // decade start year as a string, '' = all
+  let shGridQuery = ''          // search-within-library text for the Everything grid
   // Cache provenance from slskBrowseUser (engine may send fromCache/cachedAt).
   // shJustRefreshed drives a brief "Updated just now" pulse after a background
   // refresh lands.
@@ -1157,6 +1158,20 @@
     </div>`
   }
 
+  // "See all" on a rail = the matching chip in the Everything grid.
+  const SEE_ALL_FILTER = { upgrades: 'better', missing: 'notinlib', surround: 'surround', hires: 'hires', new: 'new' }
+  function shBindSeeAll() {
+    dlg.querySelectorAll('.slsh-see-all').forEach(b => b.addEventListener('click', () => {
+      const k = SEE_ALL_FILTER[b.dataset.seeall]
+      if (!k) return
+      shFilters.clear(); shGridQuery = ''; shFilters.add(k)
+      shReRenderResults()
+      const head = dlg.querySelector('#slsh-grid-wrap')
+      if (head) head.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      dlg.querySelector(`[data-shfilter="${k}"]`)?.focus()
+    }))
+  }
+
   function shRailHtml(id, title, sub, albums, variant, headAction) {
     // Empty shelves hide entirely rather than rendering an empty rail.
     if (!albums || !albums.length) return ''
@@ -1166,6 +1181,7 @@
         <span class="slsh-rail-title">${esc(title)}</span>
         <span class="slsh-rail-sub">${esc(sub || '')}</span>
         ${headAction || ''}
+        ${SEE_ALL_FILTER[id] ? `<button class="slsh-see-all" data-seeall="${id}" title="Show every album on this shelf in the grid below">See all →</button>` : ''}
       </div>
       <div class="slsh-rail-track">${cards}</div>
     </section>`
@@ -1289,6 +1305,7 @@
     shRenderGrid()
     bindShCards(shBody)
     shBindGrabAll()
+    shBindSeeAll()
     shArmArtObserver(shBody)
   }
 
@@ -1419,27 +1436,48 @@
   // Is the grid in its plain, default A–Z / no-filter state? Only then do the
   // sticky letter headers make sense; any active sort or filter flattens it.
   function shGridIsPlain() {
+    if (shGridQuery) return false
     return shSort === 'az' && shFilters.size === 0 && !shDecade
   }
 
   // The compact control row: sort dropdown + Lossless/Hi-Res/Surround chips +
   // a Decade dropdown built from the years actually parsed. Applies to the
   // Everything grid and to search-within-library.
-  function shControlsHtml() {
+  // The context the contextual chips read: which folders beat my copies, and
+  // which are new since the last visit. Rebuilt per paint; cheap (two Sets).
+  function shFilterCtx() {
+    return {
+      upgradePaths: new Set((shelves && shelves.upgrades || []).map(a => a.folderPath)),
+      newPaths: shNewDirs || new Set(),
+    }
+  }
+
+  function shControlsHtml(count) {
     const SF = window.PapaSlskFilters
     const decades = (SF && SF.shelfDecades) ? SF.shelfDecades(shelves.everything) : []
+    const labels = (SF && SF.SHELF_FILTER_LABELS) || {}
+    const groups = (SF && SF.SHELF_FILTER_GROUPS) || []
     const chip = (k, label) =>
-      `<button class="slsh-chip${shFilters.has(k) ? ' active' : ''}" data-shfilter="${k}">${label}</button>`
+      `<button class="slsh-chip${shFilters.has(k) ? ' active' : ''}" data-shfilter="${k}" aria-pressed="${shFilters.has(k)}">${esc(label)}</button>`
+    const rows = groups.map(g =>
+      `<div class="slsh-chip-group" role="group" aria-label="${esc(g.label)}"><span class="slsh-chip-group-label">${esc(g.label)}</span>${g.keys.map(k => chip(k, labels[k] || k)).join('')}</div>`).join('')
+    const active = shFilters.size + (shDecade ? 1 : 0) + (shGridQuery ? 1 : 0)
     return `<div class="slsh-controls" id="slsh-controls">
-      <label class="slsh-ctl-sort">Sort
-        <select id="slsh-sort">
-          ${[['quality', 'Quality'], ['year', 'Year'], ['size', 'Size'], ['az', 'A–Z']]
-            .map(([v, l]) => `<option value="${v}"${shSort === v ? ' selected' : ''}>${l}</option>`).join('')}
-        </select>
-      </label>
-      <div class="slsh-chips">
-        ${chip('lossless', 'Lossless')}${chip('hires', 'Hi-Res')}${chip('surround', 'Surround')}
+      <div class="slsh-ctl-row">
+        <input class="slsh-grid-search" id="slsh-grid-search" type="search" placeholder="Search this library…" value="${esc(shGridQuery)}" aria-label="Search within this library" autocomplete="off">
+        <label class="slsh-ctl-sort">Sort
+          <select id="slsh-sort">
+            ${[['quality', 'Quality'], ['year', 'Year'], ['size', 'Size'], ['tracks', 'Tracks'], ['artist', 'Artist'], ['az', 'A–Z']]
+              .map(([v, l]) => `<option value="${v}"${shSort === v ? ' selected' : ''}>${l}</option>`).join('')}
+          </select>
+        </label>
+        <span class="slsh-ctl-count" id="slsh-ctl-count" aria-live="polite">${count != null ? `${count} album${count !== 1 ? 's' : ''}` : ''}</span>
+        ${active ? `<button class="slsh-chip slsh-chip-clear" id="slsh-clear-filters" title="Clear every filter">Clear ${active}</button>` : ''}
       </div>
+      <div class="slsh-chips">
+        ${chip('lossless', 'Lossless')}${chip('hires', 'Hi-Res')}
+      </div>
+      ${rows}
       ${decades.length ? `<label class="slsh-ctl-decade">Decade
         <select id="slsh-decade">
           <option value="">All</option>
@@ -1468,7 +1506,7 @@
       count = shelves.everything.length
     } else {
       const filtered = (SF && SF.applyShelfFilterSort)
-        ? SF.applyShelfFilterSort(shelves.everything, { filters: shFilters, decade: shDecade, sort: shSort })
+        ? SF.applyShelfFilterSort(shelves.everything, { filters: shFilters, decade: shDecade, sort: shSort, query: shGridQuery, ctx: shFilterCtx() })
         : shelves.everything
       for (const a of filtered) shGridFlat.push({ album: a })
       count = filtered.length
@@ -1476,7 +1514,7 @@
     shGridRendered = 0
     wrap.innerHTML = `<div class="slsh-rail-head slsh-grid-head"><span class="slsh-rail-title">Everything</span>
       <span class="slsh-rail-sub">${count} album${count !== 1 ? 's' : ''}</span></div>
-      ${shControlsHtml()}
+      ${shControlsHtml(count)}
       <div class="slsh-grid" id="slsh-grid"></div>
       <div class="slsh-grid-sentinel" id="slsh-grid-more" aria-hidden="true"></div>`
     shBindShelfControls()
@@ -1503,9 +1541,28 @@
     ctl.querySelectorAll('[data-shfilter]').forEach(b =>
       b.addEventListener('click', () => {
         const k = b.dataset.shfilter
-        if (shFilters.has(k)) shFilters.delete(k); else shFilters.add(k)
+        if (shFilters.has(k)) shFilters.delete(k)
+        else {
+          // One chip per group: FLAC and MP3 at once would select nothing.
+          const SF = window.PapaSlskFilters
+          const g = ((SF && SF.SHELF_FILTER_GROUPS) || []).find(x => x.keys.includes(k))
+          if (g) for (const other of g.keys) shFilters.delete(other)
+          shFilters.add(k)
+        }
         shReRenderResults()
       }))
+    ctl.querySelector('#slsh-clear-filters')?.addEventListener('click', () => {
+      shFilters.clear(); shDecade = ''; shGridQuery = ''; shReRenderResults()
+    })
+    const q = ctl.querySelector('#slsh-grid-search')
+    if (q) {
+      let t = null
+      q.addEventListener('input', () => {
+        clearTimeout(t)
+        t = setTimeout(() => { shGridQuery = q.value.trim(); shReRenderResults(); dlg.querySelector('#slsh-grid-search')?.focus() }, 160)
+      })
+      q.addEventListener('keydown', e => { if (e.key === 'Escape' && q.value) { e.stopPropagation(); q.value = ''; shGridQuery = ''; shReRenderResults() } })
+    }
   }
 
   // Repaint whichever surface the controls belong to: the search view when a

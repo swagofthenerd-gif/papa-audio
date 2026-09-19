@@ -3307,6 +3307,15 @@ h2.section-title { font-size:18px; font-weight:700; }
   font-size: 11px; font-family: inherit; transition: background .12s, border-color .12s, color .12s;
 }
 .slsh-chip:hover { border-color: var(--accent, #1db954); color: #e8e8e8; }
+/* Explorer filter bar: grouped chips, search-within, live count (provisional). */
+.slsh-ctl-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+.slsh-grid-search { flex: 1 1 220px; min-width: 180px; padding: 6px 10px; border-radius: 999px; border: 1px solid var(--glass-border); background: var(--bg2); color: var(--text); font: inherit; }
+.slsh-ctl-count { font-size: 12.5px; color: var(--text2); font-variant-numeric: tabular-nums; }
+.slsh-chip-group { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+.slsh-chip-group-label { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--text3); min-width: 64px; }
+.slsh-chip-clear { border-style: dashed; }
+.slsh-see-all { margin-left: auto; background: none; border: none; color: var(--accent-ink, var(--accent)); font: inherit; font-size: 12.5px; cursor: pointer; padding: 4px 8px; border-radius: 6px; }
+.slsh-see-all:hover, .slsh-see-all:focus-visible { text-decoration: underline; }
 .slsh-chip.active { background: rgba(29,185,84,.15); border-color: var(--accent, #1db954); color: var(--accent, #1db954); }
 
 /* "Grab all N upgrades" button in the Upgrades rail header. */
