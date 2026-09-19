@@ -1002,3 +1002,24 @@ Verified fine: hub 54 ms; 764-album search 4.4 s; charXX (7,635 albums,
 111k tracks, 3.4 TB) shelves 10.9 s, max frame gap 75 ms; fingerprints
 arrive on `slsk-browse-end` at 6k AND 218k files (the "never arrives"
 hypothesis is dead); Escape mid-pull clean; cache-hit reopen 316 ms.
+
+### 19 Sep — Soulseek shelves fixes merged
+`fix/slsk-shelves-qa` (7 commits, +7 test files). #1 `upgradeReason` gates
+on channels BEFORE the depth/rate ladder: surround copy + non-surround peer
+→ never an upgrade; surround peer + KNOWN stereo copy → `kind:'surround'`;
+unknown channels make no claim (frozen-module equivalence stays green).
+My re-check: gate line removed → 5/11 red. #7 `stripLeafNoise` folds
+disc/quality leaves once per group (complexity guard green). #9
+`LEADING_NUM` no longer eats "5." and a surround-only leaf folds into its
+parent with `surround:true`. #4 iTunes cooldown (Retry-After, else 60 s
+doubling to 15 min); `{throttled:true}` marker, no `_artMisses` write on
+a throttle (my re-check: arming removed → 4/7 red). #6 one token bucket for
+`POST /searches` (1/1.5 s, burst 2) honouring the global throttle window;
+the first mutation pass caught that deleting the CALL SITE left everything
+green — a wiring assertion was added. #10 hashed folder snapshots in
+`saved-users`; `newDirs` (≤200) on the browse head; background refresh no
+longer rotates. #11 real cause: preload exposed `slskUserStatuses` (plural)
+only — my grep hit the plural and I wrongly told the executor the singular
+existed; the QA was right. `slskUserStatus` now bridged from the cached
+snapshot; 5xx → "slskd could not fetch this library — try again";
+`browseFailureRetryable` for the UI executor.
