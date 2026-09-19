@@ -52,20 +52,32 @@ function fixture() {
   fs.writeFileSync(F.art, 'JPEGOK')
   fs.writeFileSync(F.secretArt, 'SECRET-ART')
   fs.writeFileSync(path.join(ud, 'bridge-token'), TOKEN)
+  // config.json holds ONLY the settings keys now. The desktop retired
+  // libraryCache/playlists/likedTracks/... out of it on 2026-08-27 (see
+  // ../src/store-migration.js), so the fixture must not contain them — a
+  // bridge that still reads them from here would otherwise pass on a fixture
+  // that no longer resembles the user's profile.
   fs.writeFileSync(path.join(ud, 'config.json'), JSON.stringify({
     musicFolders: [music],
-    libraryCache: [
-      {
-        id: 'alb1', name: 'Fixture', artist: 'Tester', artPath: F.art,
-        tracks: [
-          { id: 't1', filePath: F.track },
-          { id: 'tdir', filePath: F.dir },
-          { id: 'tescape', filePath: F.secretTrack },
-        ],
-      },
-      { id: 'albescape', name: 'Bait', artist: 'Tester', artPath: F.secretArt, tracks: [] },
-    ],
   }))
+  // The side files, exactly as ../side-store.js writes them: the bare JSON
+  // value at <USER_DATA>/<kebab-case>.json.
+  fs.writeFileSync(path.join(ud, 'library-cache.json'), JSON.stringify([
+    {
+      id: 'alb1', name: 'Fixture', artist: 'Tester', artPath: F.art,
+      tracks: [
+        { id: 't1', filePath: F.track },
+        { id: 'tdir', filePath: F.dir },
+        { id: 'tescape', filePath: F.secretTrack },
+      ],
+    },
+    { id: 'albescape', name: 'Bait', artist: 'Tester', artPath: F.secretArt, tracks: [] },
+  ]))
+  fs.writeFileSync(path.join(ud, 'playlists.json'), JSON.stringify([
+    { id: 'pl1', name: 'From the desktop', tracks: [] },
+  ]))
+  fs.writeFileSync(path.join(ud, 'liked-tracks.json'), JSON.stringify([F.track]))
+  fs.writeFileSync(path.join(ud, 'play-counts.json'), JSON.stringify({ [F.track]: 3 }))
 }
 
 // Paths are referenced before fixture() runs, so they are lazy getters over the
@@ -388,5 +400,110 @@ test('a forged X-Forwarded-For does not buy a fresh rate-limit budget', async ()
       'a forged X-Forwarded-For bought an unlimited request budget')
   } finally {
     proc.kill('SIGKILL')
+  }
+})
+
+// ── C3. The bridge reads the desktop's SideStore files, not retired config keys ─
+// On 2026-08-27 the desktop moved libraryCache, playlists, likedTracks,
+// playCounts, playHistory, savedQueues, recentlyPlayed and playbackState into
+// one small JSON file each, and retireLegacyKeys() deletes them from
+// config.json. The bridge kept reading config.json, so on the phone the library
+// was empty, every /art and /stream/:id 404'd, and a like went into a key
+// nothing reads. The fixture above deliberately has NO legacy keys in
+// config.json — these tests fail on the old code because there is nothing to
+// read there.
+
+test('the library comes from library-cache.json, with no legacy key in config', async () => {
+  const cfg = JSON.parse(fs.readFileSync(path.join(ud, 'config.json'), 'utf8'))
+  assert.ok(!('libraryCache' in cfg), 'the fixture must mirror the real profile: no retired keys')
+
+  const r = await fetch(`${base}/api/library`, authed)
+  assert.strictEqual(r.status, 200)
+  const body = await r.json()
+  assert.strictEqual(body.cached, true)
+  assert.strictEqual(body.albums.length, 2)
+  assert.strictEqual(body.albums[0].id, 'alb1')
+  assert.strictEqual(body.albums[0].artUrl, '/art/alb1.jpg')
+})
+
+test('art and audio resolve by id from the side file (200 / 206), not 404', async () => {
+  const art = await fetch(media('/art/alb1.jpg'))
+  assert.strictEqual(art.status, 200, '/art/<id>.jpg 404s when the bridge reads the retired key')
+  assert.strictEqual(await art.text(), 'JPEGOK')
+
+  const ranged = await fetch(media('/stream/t1'), { headers: { Range: 'bytes=0-3' } })
+  assert.strictEqual(ranged.status, 206)
+  assert.strictEqual(await ranged.text(), 'REAL')
+})
+
+test('playlists and liked tracks are served from their side files', async () => {
+  const pls = await (await fetch(`${base}/api/settings/playlists`, authed)).json()
+  assert.deepStrictEqual(pls.map(p => p.id), ['pl1'])
+
+  const liked = await (await fetch(`${base}/api/settings/liked-tracks`, authed)).json()
+  assert.deepStrictEqual(liked, [F.track])
+
+  const counts = await (await fetch(`${base}/api/settings/play-counts`, authed)).json()
+  assert.strictEqual(counts[F.track], 3)
+})
+
+test('a phone mutation never writes a legacy key back into config.json', async () => {
+  const before = fs.statSync(path.join(ud, 'config.json')).size
+
+  const r = await fetch(`${base}/api/settings/playlists`, {
+    method: 'POST',
+    headers: { ...authed.headers, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: 'pl2', name: 'From the phone', tracks: [] }),
+  })
+  assert.strictEqual(r.status, 202, 'a queued mutation is accepted, not silently "ok"')
+  assert.strictEqual((await r.json()).queued, true)
+
+  const cfg = JSON.parse(fs.readFileSync(path.join(ud, 'config.json'), 'utf8'))
+  assert.ok(!('playlists' in cfg), 'the bridge wrote `playlists` back into config.json')
+  assert.ok(!('libraryCache' in cfg))
+  assert.strictEqual(fs.statSync(path.join(ud, 'config.json')).size, before,
+    'config.json was rewritten by a playlist POST')
+
+  // The desktop's playlists.json must be untouched — one writer per store.
+  const side = JSON.parse(fs.readFileSync(path.join(ud, 'playlists.json'), 'utf8'))
+  assert.deepStrictEqual(side.map(p => p.id), ['pl1'],
+    'the bridge became a second writer on the desktop’s playlists.json')
+
+  // ...but the phone still sees what it just did, via the inbox overlay.
+  const after = await (await fetch(`${base}/api/settings/playlists`, authed)).json()
+  assert.deepStrictEqual(after.map(p => p.id).sort(), ['pl1', 'pl2'])
+})
+
+test('a scan does not push the library back into config.json', async () => {
+  const before = fs.readFileSync(path.join(ud, 'config.json'), 'utf8')
+  const r = await fetch(`${base}/api/library/scan`, { method: 'POST', ...authed })
+  assert.strictEqual(r.status, 200)
+  const body = await r.json()
+  assert.strictEqual(body.persisted, false)
+  assert.strictEqual(fs.readFileSync(path.join(ud, 'config.json'), 'utf8'), before,
+    'the scan rewrote config.json — this is what left the 1.4-2.6 MB config.json.tmp-* orphans')
+})
+
+test('/api/library/cache is gone (the phone must not overwrite the desktop cache)', async () => {
+  const r = await fetch(`${base}/api/library/cache`, {
+    method: 'POST',
+    headers: { ...authed.headers, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ albums: [] }),
+  })
+  assert.strictEqual(r.status, 404)
+  await r.text()
+  const side = JSON.parse(fs.readFileSync(path.join(ud, 'library-cache.json'), 'utf8'))
+  assert.strictEqual(side.length, 2, 'library-cache.json was overwritten by the phone')
+})
+
+test('a side file the desktop rewrites is picked up without a bridge restart', async () => {
+  const file = path.join(ud, 'liked-tracks.json')
+  const original = fs.readFileSync(file, 'utf8')
+  try {
+    fs.writeFileSync(file, JSON.stringify([F.track, '/mnt/data/MUSIC/new.flac']))
+    const liked = await (await fetch(`${base}/api/settings/liked-tracks`, authed)).json()
+    assert.strictEqual(liked.length, 2, 'the bridge cached the side file for the life of the process')
+  } finally {
+    fs.writeFileSync(file, original)
   }
 })

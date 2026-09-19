@@ -84,8 +84,44 @@ function bridgeCapabilities() {
   }
 }
 
-// Re-use the same electron-store data files the desktop app writes
+// Re-use the same electron-store data files the desktop app writes.
+//
+// NOTE the narrowed job: config.json is now only the SETTINGS keys
+// (musicFolders, volume, eqSettings, slskConfig, …). The eight big/hot keys —
+// libraryCache, playbackState, recentlyPlayed, playHistory, playCounts,
+// savedQueues, playlists, likedTracks — were moved to SideStore files on
+// 2026-08-27 and the desktop's retireLegacyKeys() deletes them from here. Read
+// those through `sideValue()` below, never through `store`.
 const store = new Store({ name: 'config', cwd: USER_DATA })
+
+// ── The desktop's SideStore files ─────────────────────────────────────────────
+// Read-only. The desktop is the single writer; a phone-side mutation is queued
+// in the bridge's own inbox and overlaid on the read, so the phone sees its own
+// action without a second process writing the desktop's files. See
+// side-store-read.js and inbox.js.
+const { createSideReader } = require('./side-store-read')
+const inbox = require('./inbox')
+const sideRead = createSideReader(USER_DATA)
+
+// The desktop's value for `key`, with any not-yet-ingested phone mutations
+// replayed on top.
+function sideValue(key) {
+  const base = sideRead.get(key)
+  const queued = inbox.readInbox(USER_DATA).ops
+  return inbox.applyInbox(key, base, queued)
+}
+
+// Queue a phone-side mutation. Answers 202 (accepted, not yet applied by the
+// desktop) so a client can tell "written" from "queued" if it ever wants to.
+function queueMutation(res, type, payload) {
+  try {
+    inbox.append(USER_DATA, type, payload)
+    return res.status(202).json({ ok: true, queued: true })
+  } catch (e) {
+    console.error(`[bridge] inbox write failed (${e && e.message})`)
+    return res.status(500).json({ error: 'Could not record the change' })
+  }
+}
 
 // ── Path containment ──────────────────────────────────────────────────────────
 // Is `child` the same as, or underneath, `parent`?
@@ -420,7 +456,7 @@ app.get('/api/health', (_, res) => res.json({
 app.get('/api/app-info', (_, res) => res.json({
   musicFolders:   store.get('musicFolders', []),
   savedSites:     store.get('savedSites', []),
-  recentlyPlayed: store.get('recentlyPlayed', []),
+  recentlyPlayed: sideValue('recentlyPlayed') || [],
   volume:         store.get('volume', 0.8),
 }))
 
@@ -437,7 +473,7 @@ function withArtUrls(albums) {
 
 // ── Library ───────────────────────────────────────────────────────────────────
 app.get('/api/library', (_, res) => {
-  const cached = store.get('libraryCache', null)
+  const cached = sideValue('libraryCache')
   if (cached) return res.json({ albums: withArtUrls(cached), cached: true })
   res.json({ albums: [], cached: false })
 })
@@ -476,17 +512,19 @@ app.post('/api/library/scan', async (_, res) => {
       } catch (_) {}
     }
     const albums = await buildAlbums(tracks)
-    store.set('libraryCache', albums)
-    res.json({ albums: withArtUrls(albums) })
+    // Deliberately NOT persisted. The library cache is the desktop's
+    // library-cache.json now; writing it from here made the bridge a second
+    // writer AND (before that) pushed ~1.6 MB back into config.json on every
+    // scan, which is where the orphaned config.json.tmp-* files came from.
+    // The scan result is returned to the caller and nothing else.
+    res.json({ albums: withArtUrls(albums), persisted: false })
   } catch (e) {
     res.status(500).json({ error: e.message })
   }
 })
 
-app.post('/api/library/cache', (req, res) => {
-  store.set('libraryCache', req.body.albums)
-  res.json({ ok: true })
-})
+// /api/library/cache is gone: it let the phone overwrite the desktop's library
+// cache wholesale. The desktop owns library-cache.json.
 
 // ── Music streaming ───────────────────────────────────────────────────────────
 app.get('/stream', async (req, res) => {
@@ -571,7 +609,7 @@ function pathAllowed(resolved) {
 // GET /art/<albumId>.jpg — serve the album's artPath resolved from the library
 // cache, so the Android app can request art without knowing the on-disk path.
 app.get('/art/:albumId.jpg', async (req, res) => {
-  const albums = store.get('libraryCache', null)
+  const albums = sideValue('libraryCache')
   const { artById } = mediaLib.buildAlbumIndex(albums)
   const artPath = artById.get(String(req.params.albumId))
   if (!artPath) return res.status(404).send('Not found')
@@ -596,7 +634,7 @@ app.get('/art/:albumId.jpg', async (req, res) => {
 // The gate + ffmpeg presence are checked by mediaLib.transcodeDecision, which
 // returns a polite reason when the request cannot be honoured.
 app.get('/stream/:trackId', async (req, res) => {
-  const albums = store.get('libraryCache', null)
+  const albums = sideValue('libraryCache')
   const { trackById } = mediaLib.buildAlbumIndex(albums)
   const filePath = trackById.get(String(req.params.trackId))
   if (!filePath) return res.status(404).json({ error: 'Track not found' })
@@ -692,53 +730,39 @@ app.post('/api/fetch-album-art', async (req, res) => {
 app.get('/api/settings/liked',           (_, res) => res.json(store.get('likedAlbums', [])))
 app.post('/api/settings/liked',          (req, res) => { store.set('likedAlbums', req.body.ids); res.json({ ok: true }) })
 
-app.get('/api/settings/liked-tracks',    (_, res) => res.json(store.get('likedTracks', [])))
-app.post('/api/settings/liked-tracks',   (req, res) => { store.set('likedTracks', req.body.paths); res.json({ ok: true }) })
+app.get('/api/settings/liked-tracks',    (_, res) => res.json(sideValue('likedTracks') || []))
+app.post('/api/settings/liked-tracks',   (req, res) =>
+  queueMutation(res, 'likedTracks.set', { paths: Array.isArray(req.body && req.body.paths) ? req.body.paths : [] }))
 
-app.get('/api/settings/play-counts',     (_, res) => res.json(store.get('playCounts', {})))
+app.get('/api/settings/play-counts',     (_, res) => res.json(sideValue('playCounts') || {}))
 app.post('/api/settings/play-counts/increment', (req, res) => {
-  const counts = store.get('playCounts', {})
-  counts[req.body.filePath] = (counts[req.body.filePath] || 0) + 1
-  store.set('playCounts', counts)
-  res.json({ ok: true })
+  const filePath = req.body && req.body.filePath
+  if (!filePath) return res.status(400).json({ error: 'filePath required' })
+  return queueMutation(res, 'playCounts.increment', { filePath })
 })
 
-app.get('/api/settings/play-history',    (_, res) => res.json(store.get('playHistory', [])))
-app.post('/api/settings/play-history',   (req, res) => {
-  const h = store.get('playHistory', [])
-  h.unshift(req.body)
-  if (h.length > 2000) h.splice(2000)
-  store.set('playHistory', h)
-  res.json({ ok: true })
-})
+app.get('/api/settings/play-history',    (_, res) => res.json(sideValue('playHistory') || []))
+app.post('/api/settings/play-history',   (req, res) =>
+  queueMutation(res, 'playHistory.push', { entry: req.body }))
 
 app.get('/api/settings/followed-artists',  (_, res) => res.json(store.get('followedArtists', [])))
 app.post('/api/settings/followed-artists', (req, res) => { store.set('followedArtists', req.body.artists); res.json({ ok: true }) })
 
-app.get('/api/settings/playlists',         (_, res) => res.json(store.get('playlists', [])))
+app.get('/api/settings/playlists',         (_, res) => res.json(sideValue('playlists') || []))
 app.post('/api/settings/playlists',        (req, res) => {
-  const pls = store.get('playlists', [])
-  const idx = pls.findIndex(p => p.id === req.body.id)
-  if (idx >= 0) { pls[idx] = req.body } else { pls.unshift(req.body) }
-  store.set('playlists', pls)
-  res.json({ ok: true })
+  if (!req.body || !req.body.id) return res.status(400).json({ error: 'playlist id required' })
+  return queueMutation(res, 'playlists.upsert', { playlist: req.body })
 })
-app.delete('/api/settings/playlists/:id', (req, res) => {
-  store.set('playlists', store.get('playlists', []).filter(p => p.id !== req.params.id))
-  res.json({ ok: true })
-})
+app.delete('/api/settings/playlists/:id', (req, res) =>
+  queueMutation(res, 'playlists.delete', { id: req.params.id }))
 
-app.get('/api/settings/saved-queues',      (_, res) => res.json(store.get('savedQueues', [])))
+app.get('/api/settings/saved-queues',      (_, res) => res.json(sideValue('savedQueues') || []))
 app.post('/api/settings/saved-queues',     (req, res) => {
-  const queues = store.get('savedQueues', []).filter(q => q.id !== req.body.id)
-  queues.unshift(req.body)
-  store.set('savedQueues', queues.slice(0, 30))
-  res.json({ ok: true })
+  if (!req.body || !req.body.id) return res.status(400).json({ error: 'queue id required' })
+  return queueMutation(res, 'savedQueues.upsert', { queue: req.body })
 })
-app.delete('/api/settings/saved-queues/:id', (req, res) => {
-  store.set('savedQueues', store.get('savedQueues', []).filter(q => q.id !== req.params.id))
-  res.json({ ok: true })
-})
+app.delete('/api/settings/saved-queues/:id', (req, res) =>
+  queueMutation(res, 'savedQueues.delete', { id: req.params.id }))
 
 app.get('/api/settings/eq',               (_, res) => res.json(store.get('eqSettings', { enabled: true, gains: [0,0,0,0,0,0,0,0,0,0], replayGainMode: 'track', preamp: 0 })))
 app.post('/api/settings/eq',              (req, res) => { store.set('eqSettings', req.body); res.json({ ok: true }) })
@@ -746,14 +770,15 @@ app.post('/api/settings/eq',              (req, res) => { store.set('eqSettings'
 app.get('/api/settings/volume',           (_, res) => res.json({ volume: store.get('volume', 0.8) }))
 app.post('/api/settings/volume',          (req, res) => { store.set('volume', req.body.volume); res.json({ ok: true }) })
 
+app.get('/api/settings/recently-played', (_, res) => res.json(sideValue('recentlyPlayed') || []))
 app.post('/api/settings/recently-played', (req, res) => {
-  let r = store.get('recentlyPlayed', []).filter(x => x !== req.body.id)
-  r.unshift(req.body.id); store.set('recentlyPlayed', r.slice(0, 20))
-  res.json({ ok: true })
+  if (!req.body || req.body.id === undefined) return res.status(400).json({ error: 'id required' })
+  return queueMutation(res, 'recentlyPlayed.push', { id: req.body.id })
 })
 
-app.get('/api/settings/playback-state',   (_, res) => res.json(store.get('playbackState', null)))
-app.post('/api/settings/playback-state',  (req, res) => { store.set('playbackState', req.body); res.json({ ok: true }) })
+app.get('/api/settings/playback-state',   (_, res) => res.json(sideValue('playbackState') ?? null))
+app.post('/api/settings/playback-state',  (req, res) =>
+  queueMutation(res, 'playbackState.set', { state: req.body }))
 
 app.get('/api/settings/agent-keys',       (_, res) => res.json(store.get('apiKeys', {})))
 app.post('/api/settings/agent-keys',      (req, res) => { store.set('apiKeys', req.body); res.json(req.body) })
