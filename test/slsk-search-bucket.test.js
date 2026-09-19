@@ -158,3 +158,59 @@ test('a Retry issued during the throttle window waits it out instead of firing',
   // three at once.
   assert.deepStrictEqual(grants, [5000, 5000, 6500])
 })
+
+// ── The wiring ───────────────────────────────────────────────────────────────
+// A bucket nothing calls is decoration. This lifts the shipped slskdFetch
+// ALONGSIDE the bucket (liftFns compiles them into one sandbox) and measures
+// when each request actually reaches the wire.
+function liftFetch() {
+  const clock = makeClock()
+  const wire = []
+  const { fns } = liftFns(
+    ['_isSearchPost', '_searchBucketSleep', '_searchBucketTake',
+      '_slskdDryRunAllowed', 'slskdFetch'],
+    {
+      Date: clock.Date,
+      setTimeout: clock.setTimeout,
+      clearTimeout: clock.clearTimeout,
+      DRY_RUN: false,
+      SLSKD_BASE: 'http://127.0.0.1:1/api/v0',
+      slskdToken: 'tok',
+      slskdTokenExpiry: Number.MAX_SAFE_INTEGER,
+      slskdAcquireToken: async () => true,
+      _slskdThrottledUntil: 0,
+      _slskdLastThrottleAt: 0,
+      _searchTokens: 2,
+      _searchTokensAt: -1,
+      _searchGate: Promise.resolve(),
+      fetch: async (url, init) => {
+        wire.push({
+          at: clock.now(),
+          method: (init && init.method) || 'GET',
+          path: String(url).replace(/^.*\/api\/v0/, ''),
+        })
+        return { ok: true, status: 200, headers: { get: () => null }, text: async () => '{}' }
+      },
+    },
+    ['SEARCH_BUCKET_INTERVAL_MS', 'SEARCH_BUCKET_BURST', 'SLSKD_THROTTLE_BACKOFF_MS'])
+  return { slskdFetch: fns.slskdFetch, wire, clock }
+}
+
+test('slskdFetch really routes search POSTs through the bucket, and reads past it', async () => {
+  const { slskdFetch, wire, clock } = liftFetch()
+  const pending = []
+  for (let i = 0; i < 5; i++) pending.push(slskdFetch('POST', '/searches', { searchText: 'q' + i }))
+  // A read fired in the middle of the fan-out must not wait behind it.
+  pending.push(slskdFetch('GET', '/users/sherrybaaz/browse'))
+  await clock.drain()
+  await Promise.all(pending)
+
+  const posts = wire.filter(w => w.method === 'POST').map(w => w.at)
+  const gets = wire.filter(w => w.method === 'GET').map(w => w.at)
+  assert.deepStrictEqual(posts, [0, 0, 1500, 3000, 4500],
+    'search POSTs did not leave on the bucket schedule')
+  assert.deepStrictEqual(gets, [0], 'a read queued behind the search fan-out')
+
+  const daemon = stubDaemon()
+  assert.ok(posts.map(t => daemon(t)).every(s => s === 200))
+})
