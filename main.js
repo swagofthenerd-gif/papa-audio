@@ -943,7 +943,45 @@ function flushLogSync() {
   try { fs.appendFileSync(_logFile(), lines.join('')) } catch (_) {}
 }
 
-const store = new Store()
+// configFileMode is not cosmetic. config.json holds the YouTube cookie, the
+// API keys and the debrid token, and conf's default is 0o666 — world
+// readable and world writable. The startup chmod to 0o600 further down only
+// fixed the file as it stood: conf rewrites via a temp file plus rename on
+// every set(), so the very next settings write replaced it with a fresh
+// 0o666 file and the secrets were public again.
+const store = new Store({ configFileMode: 0o600 })
+
+// Those same rewrites leave debris. atomically writes config.json.tmp-<stamp>
+// beside the real file and renames it into place; a kill or a crash between
+// the two leaves the temp file behind for good, and this profile had 15 of
+// them at 1.4-2.6 MB each — full copies of the config, secrets included, at
+// whatever mode they were written with. Only that exact name shape is
+// touched, and only once it is old enough that no live write can own it.
+const CONFIG_TMP_RE = /^config\.json\.tmp-\d{10}[a-f0-9]{6}$/
+const CONFIG_TMP_MAX_AGE_MS = 60 * 60 * 1000
+
+function sweepOrphanConfigTmp(dir, now) {
+  const at = typeof now === 'number' ? now : Date.now()
+  let removed = 0
+  let bytes = 0
+  let entries = []
+  try { entries = fs.readdirSync(dir) } catch (_) { return { removed, bytes } }
+  for (const name of entries) {
+    if (!CONFIG_TMP_RE.test(name)) continue
+    const full = path.join(dir, name)
+    try {
+      const st = fs.statSync(full)
+      if (!st.isFile()) continue
+      if (at - st.mtimeMs < CONFIG_TMP_MAX_AGE_MS) continue
+      fs.unlinkSync(full)
+      removed++
+      bytes += st.size
+    } catch (_) {
+      // A temp file we cannot remove is not worth failing startup over.
+    }
+  }
+  return { removed, bytes }
+}
 
 // ── The five keys that were nearly all of the config, and nearly all of its
 // writes ────────────────────────────────────────────────────────────────────
@@ -2208,8 +2246,14 @@ app.whenReady().then(() => {
     }
   }, 60000)
   try {
-    const configPath = path.join(app.getPath('userData'), 'config.json')
+    const userDir = app.getPath('userData')
+    const configPath = path.join(userDir, 'config.json')
     if (fs.existsSync(configPath)) fs.chmodSync(configPath, 0o600)
+    const swept = sweepOrphanConfigTmp(userDir)
+    if (swept.removed) {
+      console.log('[papa] swept ' + swept.removed +
+        ' orphaned config temp file(s), ' + Math.round(swept.bytes / 1024) + ' KB')
+    }
   } catch (_) {}
 
   // The wishlist auto-download engine (slskWishlistSweep, defined at module
