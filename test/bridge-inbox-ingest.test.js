@@ -106,6 +106,64 @@ test('every queued op is applied through the side stores, matching the bridge re
   assert.strictEqual(ingest.readWatermark(ud), 9)
 })
 
+// L3. The phone posts its playback position every 10 s while it plays. Queued
+// one op per post, an evening of listening is hundreds of ops that applyInbox
+// replays in order only to arrive at the last one — and once MAX_OPS is reached
+// the oldest are dropped, so stale positions start evicting REAL mutations.
+test('a new playback position replaces the queued one instead of stacking', async () => {
+  const ud = mkUserData()
+
+  inbox.append(ud, 'likedTracks.add', { paths: ['/music/a.flac'] })
+  for (let i = 1; i <= 25; i++) {
+    inbox.append(ud, 'playbackState.set', { state: { path: '/music/a.flac', position: i } })
+  }
+
+  const state = inbox.readInbox(ud)
+  const playback = state.ops.filter(o => o.type === 'playbackState.set')
+  assert.strictEqual(playback.length, 1, `25 position posts left ${playback.length} ops queued`)
+  assert.strictEqual(playback[0].payload.state.position, 25, 'the surviving op must be the NEWEST')
+
+  // The other op must not have been coalesced away with it — that is the whole
+  // reason coalescing is a per-type opt-in and not a blanket "last wins".
+  assert.strictEqual(state.ops.filter(o => o.type === 'likedTracks.add').length, 1)
+
+  // seq still climbs: the ingester's watermark is keyed on it, and a reused
+  // number would make it skip live ops.
+  assert.strictEqual(playback[0].seq, state.seq)
+  assert.strictEqual(state.seq, 26, 'coalescing must not rewind the sequence')
+
+  // And the desktop lands the newest position, through the real ingester.
+  const stores = makeStores(ud)
+  ingest.ingestOnce({ userData: ud, sideStores: stores, log: () => {} })
+  await flushAll(stores)
+  assert.deepStrictEqual(readSideFile(ud, 'playback-state', null),
+    { path: '/music/a.flac', position: 25 })
+  assert.deepStrictEqual(readSideFile(ud, 'liked-tracks', null), ['/music/a.flac'])
+})
+
+// The phone's heart tap arrives as a DIFF (likedTracks.add / .remove), not as
+// the whole list it used to send. The point of the diff is that it is applied
+// against whatever the desktop holds at INGEST time, minutes after the tap — so
+// the ingester, not just the bridge's read overlay, has to land it that way.
+test('a liked-tracks diff merges into the desktop list instead of replacing it', async () => {
+  const ud = mkUserData()
+  const stores = makeStores(ud)
+  // What the desktop holds when the ingester finally runs: one like the phone
+  // had when it posted, and one it made afterwards and has never seen.
+  stores.likedTracks.set(['/music/shared.flac', '/music/desktop-only.flac'])
+  await flushAll(stores)
+
+  inbox.append(ud, 'likedTracks.add', { paths: ['/music/phone-liked.flac'] })
+  inbox.append(ud, 'likedTracks.remove', { paths: ['/music/shared.flac'] })
+
+  ingest.ingestOnce({ userData: ud, sideStores: stores, log: () => {} })
+  await flushAll(stores)
+
+  assert.deepStrictEqual(readSideFile(ud, 'liked-tracks', null),
+    ['/music/desktop-only.flac', '/music/phone-liked.flac'],
+    'the phone’s tap must not touch a like it never saw')
+})
+
 // The caps are part of the replay contract, not an implementation detail: the
 // phone's list is already truncated, so a desktop that keeps everything shows a
 // different history than the device it came from.

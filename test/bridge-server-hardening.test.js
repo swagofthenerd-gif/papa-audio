@@ -495,6 +495,62 @@ test('a scan does not push the library back into config.json', async () => {
     'the scan rewrote config.json — this is what left the 1.4-2.6 MB config.json.tmp-* orphans')
 })
 
+// "Refresh" on the phone used to re-parse the whole library with
+// music-metadata: 3.4 TB against a 120 s axios timeout, so it never returned.
+// And its album ids were md5(`artist_album`) — not the desktop's ids — so a
+// refresh that DID finish replaced every id the phone held with one that /art
+// and /stream/:id know nothing about: a refresh that broke the library.
+test('a scan answers the desktop cache, with the desktop ids, immediately', async () => {
+  const started = Date.now()
+  const r = await fetch(`${base}/api/library/scan`, { method: 'POST', ...authed })
+  const elapsed = Date.now() - started
+  assert.strictEqual(r.status, 200)
+  const body = await r.json()
+
+  assert.strictEqual(body.rescanned, false, 'the bridge must say plainly that it re-read nothing')
+  assert.deepStrictEqual(body.albums.map(a => a.id), ['alb1', 'albescape'],
+    'the ids must be the desktop’s, or every /art and /stream the phone then asks for 404s')
+  assert.strictEqual(body.albums[0].artUrl, '/art/alb1.jpg')
+  assert.ok(elapsed < 1000, `the scan took ${elapsed} ms; the phone gives it 120 s and the library is 3.4 TB`)
+
+  // And the ids it handed back really do resolve, which is the whole point.
+  const art = await fetch(media(`/art/${body.albums[0].id}.jpg`))
+  assert.strictEqual(art.status, 200)
+  await art.text()
+})
+
+// L4. When a music root is unreachable, main.js keeps that root's albums in the
+// cache flagged `unavailable: true` so the desktop can grey them out. The phone
+// has no such UI: it sees an ordinary album, plays it, gets a 404 from /stream,
+// and its recovery gives up silently — so the album reads as broken, not absent.
+test('albums on an unreachable drive are not offered to the phone', async () => {
+  const cacheFile = path.join(ud, 'library-cache.json')
+  const original = fs.readFileSync(cacheFile, 'utf8')
+  const cache = JSON.parse(original)
+  cache.push({
+    id: 'albgone', name: 'On the unplugged drive', artist: 'Tester',
+    artPath: F.art, unavailable: true, unavailableRoot: '/mnt/not-mounted',
+    tracks: [{ id: 'tgone', filePath: '/mnt/not-mounted/x.flac' }],
+  })
+  fs.writeFileSync(cacheFile, JSON.stringify(cache))
+  try {
+    const lib = await (await fetch(`${base}/api/library`, authed)).json()
+    assert.deepStrictEqual(lib.albums.map(a => a.id), ['alb1', 'albescape'],
+      'an album whose files are not on this machine must not be offered over the LAN')
+
+    // A refresh must not put it back either.
+    const scan = await (await fetch(`${base}/api/library/scan`, { method: 'POST', ...authed })).json()
+    assert.deepStrictEqual(scan.albums.map(a => a.id), ['alb1', 'albescape'])
+
+    // The control: the desktop's own file is untouched. The bridge filters its
+    // reply, it does not edit the cache.
+    assert.strictEqual(JSON.parse(fs.readFileSync(cacheFile, 'utf8')).length, 3,
+      'the bridge rewrote the desktop’s library cache')
+  } finally {
+    fs.writeFileSync(cacheFile, original)
+  }
+})
+
 test('/api/library/cache is gone (the phone must not overwrite the desktop cache)', async () => {
   const r = await fetch(`${base}/api/library/cache`, {
     method: 'POST',
@@ -711,18 +767,22 @@ test('a 500 from slskd on the transfer list is an error, not an empty list', asy
     })
 })
 
-test('a healthy slskd still yields a flat transfer list and an active count', async () => {
-  // The control. It also pins the SHAPE: the Android Transfer type is a flat
-  // file record, and the raw nested users->directories->files array slskd
-  // returns filtered down to nothing on every screen that read it.
+test('a healthy slskd yields the NESTED transfer list the phone flattens itself', async () => {
+  // The control, and the shape pin. The phone's downloads.tsx has its own
+  // flattenTransfers() walking group.directories[].files[], so an
+  // already-flattened list leaves the On PC screen just as empty as the
+  // unhandled nested array once did — the route must answer nested.
+  //
+  // The one thing the bridge changes on the way past is the TimeSpan strings:
+  // the phone's formatEta() divides the value, so "00:02:00" renders "NaNm".
   const downloads = [{
     username: 'peer',
     directories: [{
       directory: 'Album',
       files: [
-        { id: 'f1', filename: 'Album\\01.flac', size: 100, bytesTransferred: 50, state: 'InProgress' },
+        { id: 'f1', filename: 'Album\\01.flac', size: 100, bytesTransferred: 50, state: 'InProgress', averageSpeed: 1024, remainingTime: '00:02:00', elapsedTime: '00:00:30.5000000' },
         { id: 'f2', filename: 'Album\\02.flac', size: 100, bytesTransferred: 100, state: 'Completed, Succeeded' },
-        { id: 'f3', filename: 'Album\\03.flac', size: 100, bytesTransferred: 0, state: 'Queued, Remotely' },
+        { id: 'f3', filename: 'Album\\03.flac', size: 100, bytesTransferred: 0, state: 'Queued, Remotely', remainingTime: '1.02:00:00' },
       ],
     }],
   }]
@@ -730,13 +790,33 @@ test('a healthy slskd still yields a flat transfer list and an active count', as
     [{ path: '/transfers/downloads', method: 'GET', status: 200, body: downloads }],
     async (b) => {
       const list = await (await fetch(`${b}/api/slsk/transfers`, authed)).json()
-      assert.strictEqual(list.length, 3)
-      assert.deepStrictEqual(Object.keys(list[0]).sort(), [
-        'averageSpeed', 'bytesTransferred', 'elapsed', 'filename', 'id',
-        'remainingTime', 'size', 'state', 'username',
-      ])
-      assert.strictEqual(list[0].username, 'peer')
 
+      // Nested, all the way down — this is what the phone walks.
+      assert.strictEqual(list.length, 1, 'the phone walks users, not files')
+      assert.strictEqual(list[0].username, 'peer')
+      assert.strictEqual(list[0].directories.length, 1)
+      const files = list[0].directories[0].files
+      assert.strictEqual(files.length, 3)
+      assert.strictEqual(files[0].id, 'f1')
+      assert.strictEqual(files[0].filename, 'Album\\01.flac')
+      assert.strictEqual(files[0].state, 'InProgress')
+      assert.strictEqual(files[0].averageSpeed, 1024)
+
+      // Seconds, not TimeSpan strings. formatEta() does `secs / 60` on these.
+      assert.strictEqual(files[0].remainingTime, 120,
+        'formatEta("00:02:00") renders "NaNm" on the phone')
+      assert.strictEqual(files[0].elapsedTime, 30,
+        'fractional seconds are dropped, not carried through as a string')
+      assert.strictEqual(files[2].remainingTime, 93600,
+        'the day group ("1.02:00:00" = 26 h) must not parse as 1 h')
+
+      // A file with no timing fields must not grow invented zeroes: a phone
+      // reading remainingTime: 0 draws "0s left" for a queued transfer.
+      assert.strictEqual('remainingTime' in files[1], false)
+      assert.strictEqual('elapsedTime' in files[1], false)
+
+      // The count route still flattens for itself, and still agrees with the
+      // tab's own isActive filter.
       const count = await (await fetch(`${b}/api/slsk/active-count`, authed)).json()
       assert.strictEqual(count.count, 2, 'the badge count must match the tab’s own isActive filter')
     })
@@ -793,6 +873,78 @@ test('thumbnails and stream ranges are not rate-limited; API calls still are', a
       await r.text()
     }
     assert.strictEqual(statuses[LIMIT], 429, `the API limiter stopped working: ${statuses}`)
+  } finally { proc.kill('SIGKILL') }
+})
+
+// M5. The phone's failover has never had a candidate to fail over TO.
+// refreshServerCandidates() reads `health.addresses`; nothing ever put them
+// there, so the candidate list stayed empty and findWorkingServer() could only
+// ever re-probe the address that had just failed.
+
+test('/api/health advertises the addresses the phone fails over to', async () => {
+  const h = await (await fetch(`${base}/api/health`)).json()
+  assert.ok(Array.isArray(h.addresses),
+    'refreshServerCandidates() requires Array.isArray(h.addresses) before it stores anything')
+
+  // The same addresses the QR code offers, in the base-URL form the phone
+  // stores and then passes straight to checkHealth().
+  const net = await (await fetch(`${base}/api/network`, authed)).json()
+  assert.deepStrictEqual(h.addresses, net.ips.map(ip => `http://${ip}:${net.port}`),
+    '/api/health and /api/network must not disagree about where the bridge is')
+
+  for (const url of h.addresses) {
+    assert.match(url, /^http:\/\/\d+\.\d+\.\d+\.\d+:\d+$/,
+      'a candidate is used as an axios baseURL; it needs scheme, host and port')
+    assert.ok(!url.endsWith(`:${0}`), 'the advertised port must be the bound one, never 0')
+  }
+  // The bound port is an ephemeral one here, so this also proves the port is
+  // read off the live listener rather than the configured 8765.
+  const port = Number(new URL(base).port)
+  for (const url of h.addresses) assert.strictEqual(Number(new URL(url).port), port)
+})
+
+// H2. The limiter made the app say "Offline" while the bridge was fine.
+//
+// A cold launch is ~12 API calls plus one per merged playlist and one per
+// artless album, so 60/min was crossed before the first screen finished
+// drawing. Then the phone's failover probed /api/health on every candidate to
+// find a live server — and /api/health was limited too, so every candidate
+// "failed" and the app gave up on a bridge that was answering everything else.
+
+test('one phone launch worth of API calls is not rate-limited', async () => {
+  // Default limit on purpose: this asserts the SHIPPED budget, not one the
+  // test picked. 100 calls in a minute is a busy launch, well inside it.
+  const { proc, base: b } = await boot({ BRIDGE_RATE_LIMIT_MAX: '' })
+  try {
+    for (let i = 0; i < 100; i++) {
+      const r = await fetch(`${b}/api/folders`, authed)
+      await r.text()
+      assert.strictEqual(r.status, 200, `API call ${i + 1} of a launch was rate-limited`)
+    }
+  } finally { proc.kill('SIGKILL') }
+})
+
+test('/api/health answers even with the limiter fully tripped', async () => {
+  const LIMIT = 3
+  const { proc, base: b } = await boot({ BRIDGE_RATE_LIMIT_MAX: String(LIMIT) })
+  try {
+    // Trip it, and prove it really is tripped.
+    let tripped = false
+    for (let i = 0; i < LIMIT * 3; i++) {
+      const r = await fetch(`${b}/api/folders`, authed)
+      await r.text()
+      if (r.status === 429) tripped = true
+    }
+    assert.ok(tripped, 'the limiter never engaged, so this proves nothing')
+
+    // The liveness probe must still say it is alive — this is the call
+    // findWorkingServer() makes on every candidate before declaring Offline.
+    for (let i = 0; i < LIMIT * 3; i++) {
+      const h = await fetch(`${b}/api/health`)
+      await h.text()
+      assert.strictEqual(h.status, 200,
+        'a throttled health probe reads as a dead server on every candidate')
+    }
   } finally { proc.kill('SIGKILL') }
 })
 

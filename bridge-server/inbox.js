@@ -41,7 +41,15 @@ const MAX_OPS = 2000
 // The op types the read overlay knows how to replay. An op whose type is not
 // here is refused at write time rather than silently queued for nobody.
 const OP_TYPES = new Set([
+  // `.set` replaces the whole list and is kept for a caller that genuinely
+  // means "this is now the list". The PHONE does not mean that: it POSTs the
+  // full list it loaded at startup on every toggle, so a `.set` applied
+  // minutes later at ingest time destroyed every like the desktop made in
+  // between. The route sends the DIFF instead, and these two apply it against
+  // whatever the desktop's list is at the moment it lands.
   'likedTracks.set',
+  'likedTracks.add',
+  'likedTracks.remove',
   'playlists.upsert',
   'playlists.delete',
   'playCounts.increment',
@@ -58,6 +66,13 @@ const OP_TYPES = new Set([
   'eqSettings.set',
   'agentModel.set',
 ])
+
+// Op types where only the LAST one matters, so an append replaces the queued
+// ones instead of stacking on them. A type belongs here only if replaying the
+// whole run of them is indistinguishable from replaying just the newest —
+// `playbackState.set` overwrites its key outright, so it qualifies.
+// `playCounts.increment` and `playHistory.push` never can: they accumulate.
+const COALESCED = new Set(['playbackState.set'])
 
 function inboxPath(userData) { return path.join(userData, INBOX_FILE) }
 
@@ -84,6 +99,19 @@ function writeInbox(userData, state) {
 function append(userData, type, payload) {
   if (!OP_TYPES.has(type)) throw new Error(`unknown inbox op: ${type}`)
   const state = readInbox(userData)
+  // The phone posts its playback position every 10 s while it plays, so an
+  // evening of listening appends hundreds of ops that applyInbox then replays
+  // in order only to arrive at the last one — an O(n) walk on every read route,
+  // and a file that grows until MAX_OPS starts dropping REAL mutations (a like,
+  // a playlist) off the front to make room for stale positions.
+  //
+  // Only the newest position has ever meant anything, so a new one REPLACES the
+  // ones not yet consumed instead of queueing behind them. The op still takes a
+  // fresh, higher seq: the desktop's ingester keys its watermark on seq, and a
+  // reused number would make it skip live ops.
+  if (COALESCED.has(type)) {
+    state.ops = state.ops.filter(op => !op || op.type !== type)
+  }
   state.seq = (state.seq || 0) + 1
   state.ops.push({ seq: state.seq, at: Date.now(), type, payload })
   if (state.ops.length > MAX_OPS) state.ops.splice(0, state.ops.length - MAX_OPS)
@@ -105,6 +133,18 @@ function applyInbox(key, base, ops) {
 
     if (key === 'likedTracks' && action === 'set') {
       value = Array.isArray(p.paths) ? p.paths.slice() : []
+    } else if (key === 'likedTracks' && action === 'add') {
+      const list = Array.isArray(value) ? value.slice() : []
+      const have = new Set(list)
+      // Appended, not prepended: the list is a membership set, and re-ordering
+      // it on every phone like would churn the desktop's file for nothing.
+      for (const p2 of Array.isArray(p.paths) ? p.paths : []) {
+        if (typeof p2 === 'string' && !have.has(p2)) { have.add(p2); list.push(p2) }
+      }
+      value = list
+    } else if (key === 'likedTracks' && action === 'remove') {
+      const gone = new Set(Array.isArray(p.paths) ? p.paths : [])
+      value = (Array.isArray(value) ? value : []).filter(x => !gone.has(x))
     } else if (key === 'playlists' && action === 'upsert') {
       const list = Array.isArray(value) ? value.slice() : []
       const idx = list.findIndex(x => x && x.id === (p.playlist && p.playlist.id))
@@ -152,4 +192,4 @@ function applyInbox(key, base, ops) {
   return value
 }
 
-module.exports = { append, readInbox, applyInbox, inboxPath, OP_TYPES, MAX_OPS, INBOX_FILE }
+module.exports = { append, readInbox, applyInbox, inboxPath, OP_TYPES, COALESCED, MAX_OPS, INBOX_FILE }

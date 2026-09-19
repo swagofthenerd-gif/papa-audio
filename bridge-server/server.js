@@ -16,7 +16,6 @@ const http     = require('http')
 const https    = require('https')
 const os       = require('os')
 const { spawn, spawnSync } = require('child_process')
-const { parseFile } = require('music-metadata')
 const Store = require('electron-store')
 const registerYouTube = require('./youtube')
 const mediaLib = require('./media-lib')
@@ -368,10 +367,15 @@ async function slskFetch(method, endpoint, body) {
   try { return JSON.parse(text) } catch { return text }
 }
 
-// slskd answers /transfers/downloads as users -> directories -> files. The
-// Android app's Transfer type is a FLAT file record ({id, username, filename,
-// size, bytesTransferred, state}), so the raw nested array it was being handed
-// filtered down to nothing on every screen that reads it.
+// slskd answers /transfers/downloads as users -> directories -> files, and the
+// Android app's Transfer type is a FLAT file record — so this flattens it.
+//
+// It is NOT what /api/slsk/transfers answers with. The phone does its own
+// flattening (flattenTransfers in app/(tabs)/downloads.tsx walks
+// group.directories[].files[]), so handing it an already-flat list produced an
+// empty On PC screen exactly like the raw nested array used to: one shape, two
+// flattenings. The route sends the nested array the phone expects and this
+// stays for /api/slsk/active-count, which needs one list of states to count.
 function flattenTransfers(data) {
   const out = []
   for (const user of Array.isArray(data) ? data : []) {
@@ -394,6 +398,64 @@ function flattenTransfers(data) {
   return out
 }
 
+// slskd reports durations as .NET TimeSpan STRINGS — "HH:MM:SS", with
+// fractional seconds ("00:01:23.4560000") and a leading dot-separated day group
+// past 24 hours ("1.02:03:04"). The phone does arithmetic on them
+// (formatEta(secs) → `${Math.ceil(secs / 60)}m`), so a string reaches the
+// screen as "NaNm" and a seek estimate is unreadable.
+//
+// Same parser shape as the desktop renderer's _hmsToSecs: counted from the
+// RIGHT, so a bare "30" is thirty SECONDS and not thirty hours, the day group
+// is taken before the colon split, and fractional seconds are dropped rather
+// than rounded (an ETA to the ten-millionth of a second is noise).
+function hmsToSecs(value) {
+  if (typeof value === 'number') return Number.isFinite(value) ? Math.max(0, value) : 0
+  const str = String(value == null ? '' : value).trim()
+  if (!str) return 0
+  let days = 0
+  let rest = str
+  // The day separator and the fractional-seconds separator are both a dot, so
+  // the leading dot-group is a day count only when a colon follows it.
+  const dot = rest.indexOf('.')
+  if (dot > 0 && rest.indexOf(':') > dot) {
+    const d = Number(rest.slice(0, dot))
+    if (Number.isFinite(d)) days = d
+    rest = rest.slice(dot + 1)
+  }
+  const nums = rest.split(':').map(p => {
+    const v = Number(String(p).split('.')[0])
+    return Number.isFinite(v) ? v : 0
+  })
+  let secs = 0
+  let mult = 1
+  // Stops after the hours field: anything past it is the day part, already
+  // taken above.
+  for (let i = nums.length - 1; i >= 0 && mult <= 3600; i--) {
+    secs += nums[i] * mult
+    mult *= 60
+  }
+  return Math.max(0, days * 86400 + secs)
+}
+
+// The nested array, untouched except that the two TimeSpan fields inside each
+// file become SECONDS. A copy, never a mutation of the parsed upstream body.
+// Keys that are not there stay not there: inventing `elapsedTime: 0` would read
+// on the phone as a transfer that has been running for no time at all.
+const TIME_FIELDS = ['remainingTime', 'elapsedTime']
+function normaliseTransfers(data) {
+  return (Array.isArray(data) ? data : []).map(user => Object.assign({}, user, {
+    directories: ((user && user.directories) || []).map(dir => Object.assign({}, dir, {
+      files: ((dir && dir.files) || []).map(file => {
+        const out = Object.assign({}, file)
+        for (const k of TIME_FIELDS) {
+          if (out[k] !== undefined && out[k] !== null) out[k] = hmsToSecs(out[k])
+        }
+        return out
+      }),
+    })),
+  }))
+}
+
 // The same predicate the Downloads tab uses (isActive in downloads.tsx), so the
 // badge count and the list can never disagree.
 const SLSK_ACTIVE = /queued|initializing|inprogress|requested/i
@@ -407,59 +469,6 @@ function slskFail(res, e) {
     return res.status(502).json({ error: e.message, upstreamStatus: e.status })
   }
   return res.status(502).json({ error: `slskd unreachable: ${(e && e.message) || e}` })
-}
-
-// ── Library helpers (copied from main.js) ─────────────────────────────────────
-async function scanDir(dir) {
-  const results = []
-  try {
-    const entries = await fs.promises.readdir(dir, { withFileTypes: true })
-    for (const entry of entries) {
-      const full = path.join(dir, entry.name)
-      if (entry.isDirectory())                        results.push(...(await scanDir(full)))
-      else if (entry.isFile() && MUSIC_EXT.test(entry.name)) results.push(full)
-    }
-  } catch (_) {}
-  return results
-}
-
-async function buildAlbums(tracks) {
-  const map = new Map()
-  for (const t of tracks) {
-    const key = `${(t.albumArtist || t.artist).toLowerCase()}_${t.album.toLowerCase()}`
-    if (!map.has(key)) {
-      map.set(key, {
-        id: crypto.createHash('md5').update(key).digest('hex'),
-        name: t.album, artist: t.albumArtist || t.artist,
-        year: t.year, artPath: t.artPath, tracks: [],
-      })
-    }
-    const album = map.get(key)
-    if (!album.artPath && t.artPath) album.artPath = t.artPath
-    if (t.addedAt > (album._maxAddedAt || 0)) album._maxAddedAt = t.addedAt
-    album.tracks.push({
-      id: t.id, title: t.title, artist: t.artist, genre: t.genre || null,
-      trackNumber: t.trackNumber, discNumber: t.discNumber,
-      duration: t.duration, filePath: t.filePath,
-      sampleRate: t.sampleRate || 0, bitsPerSample: t.bitsPerSample || 0,
-    })
-  }
-  for (const [, a] of map) {
-    if (!a.artPath) {
-      const cached = path.join(ARTWORK_DIR, `${a.id}.jpg`)
-      try { await fs.promises.stat(cached); a.artPath = cached } catch (_) {}
-    }
-    a.tracks.sort((x, y) => x.discNumber - y.discNumber || x.trackNumber - y.trackNumber)
-    a.maxBitsPerSample = Math.max(0, ...a.tracks.map(t => t.bitsPerSample || 0))
-    a.maxSampleRate    = Math.max(0, ...a.tracks.map(t => t.sampleRate    || 0))
-    a.isHiRes  = a.maxBitsPerSample >= 24 && a.maxSampleRate > 48000
-    const gc = {}
-    for (const t of a.tracks) if (t.genre) gc[t.genre] = (gc[t.genre] || 0) + 1
-    a.genre   = Object.entries(gc).sort((x, y) => y[1] - x[1])[0]?.[0] || null
-    a.addedAt = a._maxAddedAt || 0
-    delete a._maxAddedAt
-  }
-  return [...map.values()].sort((a, b) => a.name.localeCompare(b.name))
 }
 
 // ── HTTPS helper ──────────────────────────────────────────────────────────────
@@ -549,8 +558,19 @@ app.use((req, res, next) => {
 const rateLimit = new Map()
 // Overridable so the tests can drive the limiter to its edge in a few requests
 // instead of sixty.
+// 60/min was below what ONE phone does legitimately. A cold launch is ~12 API
+// calls, plus one per merged playlist and one per album with no art, so a
+// library of any size crossed 60 before the first screen had finished drawing —
+// and then the failover made it permanent (see rateLimitExempt below).
+//
+// 600 is the budget for a LAN with a handful of trusted, paired clients: ten
+// requests a second sustained from one address, which no phone reaches by using
+// the app and which still bounds a runaway loop or a token holder hammering
+// slskd. The alternative considered was limiting only non-GET; rejected because
+// the expensive routes here are GETs (the slskd search poll, the library read),
+// so that would have left the real work unbounded while capping the cheap part.
 const RATE_LIMIT_MAX = Number(process.env.BRIDGE_RATE_LIMIT_MAX) > 0
-  ? Number(process.env.BRIDGE_RATE_LIMIT_MAX) : 60
+  ? Number(process.env.BRIDGE_RATE_LIMIT_MAX) : 600
 const RATE_LIMIT_WINDOW = 60 * 1000
 // A LAN sees a handful of clients; anything beyond this is a forged-key flood,
 // and the map must not grow with it.
@@ -562,8 +582,17 @@ const RATE_LIMIT_MAX_KEYS = 1024
 // stream of range requests. Every one past the 60th came back as a JSON 429 to
 // an <Image> or the player. The limiter's job is to bound API work and writes,
 // which is what it still does.
+//
+// /api/health is exempt for a different reason: it is the LIVENESS PROBE, and a
+// probe that can itself be throttled cannot report liveness. The phone's
+// failover (findWorkingServer in services/bridge.ts) probes /api/health on every
+// candidate address the moment a call fails — so once the limiter tripped, the
+// probe tripped too, every candidate "failed", and the app showed Offline while
+// the bridge was answering everything else perfectly. A 429 on the one route
+// whose whole job is to say "I am here" turns a busy bridge into a dead one.
+// It reads nothing off disk and does no work worth bounding.
 function rateLimitExempt(p) {
-  return p === '/events' ||
+  return p === '/events' || p === '/api/health' ||
     p === '/art'    || p.startsWith('/art/') ||
     p === '/stream' || p.startsWith('/stream/')
 }
@@ -620,10 +649,38 @@ app.get('/events', (req, res) => {
 })
 
 // ── Health ────────────────────────────────────────────────────────────────────
+// Every non-internal IPv4 address this host answers on: the LAN address, a
+// second NIC, Tailscale. One list, shared by /api/health, /api/network and the
+// startup banner, so they can never advertise different reachability.
+function localIps() {
+  const ips = []
+  for (const iface of Object.values(os.networkInterfaces())) {
+    for (const addr of (iface || [])) {
+      if (addr.family === 'IPv4' && !addr.internal) ips.push(addr.address)
+    }
+  }
+  return ips
+}
+
+// The port actually bound. BRIDGE_PORT=0 asks the OS to choose one, so PORT is
+// only the fallback for the window before listen() has resolved.
+function boundPort() {
+  const bound = server.address()
+  return (bound && bound.port) || PORT
+}
+
 app.get('/api/health', (_, res) => res.json({
   ok: true,
   version: BRIDGE_VERSION,
   capabilities: bridgeCapabilities(),
+  // The phone's multi-address failover (refreshServerCandidates in
+  // services/bridge.ts) reads `health.addresses` and remembers them as the
+  // candidates to probe when the configured address stops answering. Nothing
+  // ever put them here, so `Array.isArray(h.addresses)` was false on every
+  // refresh, the candidate list stayed empty, and the failover the user was
+  // told he had could only ever re-probe the address that had just failed.
+  // The IPs were already being computed — for the QR code on /api/network.
+  addresses: localIps().map(ip => `http://${ip}:${boundPort()}`),
 }))
 
 // ── App info ──────────────────────────────────────────────────────────────────
@@ -645,56 +702,46 @@ function withArtUrls(albums) {
     : a)
 }
 
+// The desktop's library cache can carry albums it cannot actually play. When a
+// music root is unreachable (an unplugged drive, an unmounted share) main.js
+// keeps that root's albums from the previous cache and flags them
+// `unavailable: true` rather than dropping them, so the desktop can grey them
+// out and say which drive is missing.
+//
+// The phone has no such UI. It sees an ordinary album, plays it, and gets a 404
+// from /stream — and its recovery gives up without saying anything, so the
+// album looks broken rather than absent. An album whose files are not on this
+// machine right now is not something to offer over the LAN.
+function playableAlbums(albums) {
+  return (Array.isArray(albums) ? albums : []).filter(a => !(a && a.unavailable))
+}
+
 // ── Library ───────────────────────────────────────────────────────────────────
 app.get('/api/library', (_, res) => {
   const cached = sideValue('libraryCache')
-  if (cached) return res.json({ albums: withArtUrls(cached), cached: true })
+  if (cached) return res.json({ albums: withArtUrls(playableAlbums(cached)), cached: true })
   res.json({ albums: [], cached: false })
 })
 
-app.post('/api/library/scan', async (_, res) => {
-  const folders = cfgGet('musicFolders', [])
-  if (!folders.length) return res.json({ albums: [] })
-  try {
-    const allFiles = (await Promise.all(folders.map(f => scanDir(f)))).flat()
-    const tracks = []
-    for (const filePath of allFiles) {
-      try {
-        const meta = await parseFile(filePath, { duration: true })
-        const c = meta.common, f = meta.format
-        const pic = c.picture?.[0]
-        let artPath = null
-        if (pic) {
-          const ext = pic.format.includes('png') ? 'png' : 'jpg'
-          const key = crypto.createHash('md5').update((c.albumartist||c.artist||'')+(c.album||'')).digest('hex')
-          artPath = path.join(ARTWORK_DIR, `${key}.${ext}`)
-          try { await fs.promises.stat(artPath) } catch (_) { await fs.promises.writeFile(artPath, pic.data) }
-        }
-        tracks.push({
-          id: crypto.createHash('md5').update(filePath).digest('hex'),
-          title: c.title || path.basename(filePath, path.extname(filePath)),
-          artist: c.artist || c.albumartist || 'Unknown Artist',
-          albumArtist: c.albumartist || c.artist || 'Unknown Artist',
-          album: c.album || 'Unknown Album',
-          trackNumber: c.track?.no || 0, discNumber: c.disk?.no || 1,
-          year: c.year || null, genre: c.genre?.[0] || null,
-          duration: f.duration || 0, sampleRate: f.sampleRate || 0,
-          bitsPerSample: f.bitsPerSample || 0, channels: f.numberOfChannels || 0,
-          addedAt: await fs.promises.stat(filePath).then(s => s.mtimeMs).catch(() => 0),
-          filePath, artPath,
-        })
-      } catch (_) {}
-    }
-    const albums = await buildAlbums(tracks)
-    // Deliberately NOT persisted. The library cache is the desktop's
-    // library-cache.json now; writing it from here made the bridge a second
-    // writer AND (before that) pushed ~1.6 MB back into config.json on every
-    // scan, which is where the orphaned config.json.tmp-* files came from.
-    // The scan result is returned to the caller and nothing else.
-    res.json({ albums: withArtUrls(albums), persisted: false })
-  } catch (e) {
-    res.status(500).json({ error: e.message })
-  }
+// "Refresh" on the phone. It used to mean a full re-parse of the library with
+// music-metadata — 3.4 TB, tens of minutes, against the phone's 120 s axios
+// timeout, so it never returned an answer the phone could use. Worse, the album
+// ids it built (md5 of `artist_album`) are NOT the desktop's ids
+// (albumGrouping / tagEdit.albumKeyOf), so on the runs that did finish, every
+// /art/<id>.jpg and /stream/<trackId> the phone then asked for 404'd: a refresh
+// broke the library it was meant to refresh.
+//
+// The desktop already watches the music roots and rescans on its own, and
+// library-cache.json is the result. So the honest answer to "refresh" is the
+// desktop's current cache — the same albums, with the same ids, in under a
+// millisecond. `rescanned: false` says plainly that nothing was re-read.
+app.post('/api/library/scan', (_, res) => {
+  const cached = sideValue('libraryCache')
+  res.json({
+    albums: withArtUrls(playableAlbums(cached)),
+    persisted: false,
+    rescanned: false,
+  })
 })
 
 // /api/library/cache is gone: it let the phone overwrite the desktop's library
@@ -935,8 +982,50 @@ app.post('/api/settings/liked',          (req, res) =>
   queueMutation(res, 'likedAlbums.set', { ids: Array.isArray(req.body && req.body.ids) ? req.body.ids : [] }))
 
 app.get('/api/settings/liked-tracks',    (_, res) => res.json(sideValue('likedTracks') || []))
-app.post('/api/settings/liked-tracks',   (req, res) =>
-  queueMutation(res, 'likedTracks.set', { paths: Array.isArray(req.body && req.body.paths) ? req.body.paths : [] }))
+
+// The phone has no "toggle" call. store/library.ts keeps the whole liked set in
+// memory (loaded once at startup) and POSTs all of it every time the user taps
+// a heart, so the body is a FULL LIST that means "one track changed".
+//
+// Queued verbatim as `likedTracks.set`, that list replaced the desktop's list
+// at ingest time — minutes later, against a value that had moved on. One tap on
+// the phone wiped every like made on the PC since the phone booted, and one
+// like on the PC was undone by the next tap on the phone. Last writer wins, and
+// the loser is never told.
+//
+// So the route diffs the posted list against the desktop's CURRENT value (with
+// the inbox replayed, so two taps in a row diff against each other and not
+// against a stale file) and queues only what actually changed. A tap then
+// touches exactly the one track it was about, and a like it never saw survives
+// because no op ever names it.
+//
+// The residual window is narrow and honest: a like made on the PC between the
+// phone's startup read and this POST is still in `removed`. Closing it needs
+// the phone to send the list it started FROM, which is a phone-side change.
+app.post('/api/settings/liked-tracks',   (req, res) => {
+  const paths = Array.isArray(req.body && req.body.paths)
+    ? req.body.paths.filter(p => typeof p === 'string') : []
+  const currentValue = sideValue('likedTracks')
+  const current = Array.isArray(currentValue) ? currentValue : []
+  const have = new Set(current)
+  const want = new Set(paths)
+  const added = paths.filter(p => !have.has(p))
+  const removed = current.filter(p => !want.has(p))
+
+  // Nothing changed: the phone re-sending its list is not a mutation, and an
+  // empty op would wake the desktop's ingester for no reason.
+  if (!added.length && !removed.length) {
+    return res.status(202).json({ ok: true, queued: false, added: 0, removed: 0 })
+  }
+  try {
+    if (added.length) inbox.append(USER_DATA, 'likedTracks.add', { paths: added })
+    if (removed.length) inbox.append(USER_DATA, 'likedTracks.remove', { paths: removed })
+  } catch (e) {
+    console.error(`[bridge] inbox write failed (${e && e.message})`)
+    return res.status(500).json({ error: 'Could not record the change' })
+  }
+  res.status(202).json({ ok: true, queued: true, added: added.length, removed: removed.length })
+})
 
 app.get('/api/settings/play-counts',     (_, res) => res.json(sideValue('playCounts') || {}))
 app.post('/api/settings/play-counts/increment', (req, res) => {
@@ -945,9 +1034,33 @@ app.post('/api/settings/play-counts/increment', (req, res) => {
   return queueMutation(res, 'playCounts.increment', { filePath })
 })
 
-app.get('/api/settings/play-history',    (_, res) => res.json(sideValue('playHistory') || []))
-app.post('/api/settings/play-history',   (req, res) =>
-  queueMutation(res, 'playHistory.push', { entry: req.body }))
+// The two sides of this key name the same moment differently, and neither can
+// read the other's name.
+//
+// The phone posts { filePath, artist, title, playedAt } (hooks/usePlayer.ts)
+// and filters its Stats screen on `playedAt` (app/stats.tsx). The desktop
+// writes `ts` (main.js) and history.js quarantines any entry carrying neither
+// `ts` nor `timestamp` — so every play made on the phone was queued, ingested,
+// and then set aside on the desktop's next normalisation pass. Silently: a
+// quarantine is not a failure.
+//
+// So the bridge stamps `ts` on the way in (keeping `playedAt`, which is what
+// the phone reads back) and re-derives `playedAt` on the way out for the
+// entries the desktop wrote. One entry, both names, neither reader changed.
+app.get('/api/settings/play-history',    (_, res) => {
+  const list = sideValue('playHistory')
+  res.json((Array.isArray(list) ? list : []).map(e => (e && typeof e === 'object')
+    ? Object.assign({}, e, { playedAt: e.playedAt ?? e.ts })
+    : e))
+})
+app.post('/api/settings/play-history',   (req, res) => {
+  const entry = (req.body && typeof req.body === 'object' && !Array.isArray(req.body))
+    ? req.body : {}
+  // A playedAt of 0, or a string, is not a usable time; Date.now() is the
+  // honest stand-in (history.js rejects anything before 2000 outright).
+  const ts = Number(entry.playedAt) || Date.now()
+  return queueMutation(res, 'playHistory.push', { entry: Object.assign({}, entry, { ts }) })
+})
 
 app.get('/api/settings/followed-artists',  (_, res) => res.json(configValue('followedArtists', [])))
 app.post('/api/settings/followed-artists', (req, res) =>
@@ -1090,9 +1203,11 @@ app.post('/api/slsk/download', async (req, res) => {
   } catch (e) { slskFail(res, e) }
 })
 
+// The NESTED slskd array, because the phone flattens it itself. See
+// normaliseTransfers above for the one thing that is changed on the way past.
 app.get('/api/slsk/transfers', async (_, res) => {
   try {
-    res.json(flattenTransfers(await slskFetch('GET', '/transfers/downloads')))
+    res.json(normaliseTransfers(await slskFetch('GET', '/transfers/downloads')))
   } catch (e) { slskFail(res, e) }
 })
 
@@ -1171,17 +1286,10 @@ app.post('/api/library/delete-file', (req, res) => {
 
 // ── Network info (for QR code setup) ─────────────────────────────────────────
 app.get('/api/network', (_, res) => {
-  const interfaces = os.networkInterfaces()
-  const ips = []
-  for (const iface of Object.values(interfaces)) {
-    for (const addr of (iface || [])) {
-      if (addr.family === 'IPv4' && !addr.internal) ips.push(addr.address)
-    }
-  }
-  // Report the port actually bound (BRIDGE_PORT=0 means the OS chose one), so
-  // the QR code a client scans points somewhere real.
-  const bound = server.address()
-  res.json({ ips, port: (bound && bound.port) || PORT })
+  // Same list /api/health advertises, and the port actually bound
+  // (BRIDGE_PORT=0 means the OS chose one), so the QR code a client scans
+  // points somewhere real.
+  res.json({ ips: localIps(), port: boundPort() })
 })
 
 // ── Music folder management ───────────────────────────────────────────────────
@@ -1387,22 +1495,15 @@ const server = app.listen(PORT, HOST, () => {
   // With BRIDGE_PORT=0 the OS picks the port, so report the one we actually
   // got, not the one we asked for. The BRIDGE_LISTENING line is the handshake
   // the tests parse to learn where to send requests.
-  const bound = server.address()
-  const boundPort = (bound && bound.port) || PORT
-  console.log(`BRIDGE_LISTENING ${boundPort}`)
-  const interfaces = os.networkInterfaces()
-  const ips = []
-  for (const iface of Object.values(interfaces)) {
-    for (const addr of (iface || [])) {
-      if (addr.family === 'IPv4' && !addr.internal) ips.push(addr.address)
-    }
-  }
-  console.log(`\n🎵 Papa Audio Bridge Server v${BRIDGE_VERSION} running on port ${boundPort}`)
+  const port = boundPort()
+  console.log(`BRIDGE_LISTENING ${port}`)
+  const ips = localIps()
+  console.log(`\n🎵 Papa Audio Bridge Server v${BRIDGE_VERSION} running on port ${port}`)
   console.log(`Transcode: ${bridgeTranscodeEnabled() && FFMPEG_AVAILABLE ? 'on (mp3)' : (FFMPEG_AVAILABLE ? 'disabled in settings' : 'unavailable — ffmpeg not found')}`)
   console.log(`Bridge token (add this to Android app): ${BRIDGE_TOKEN}`)
   console.log(`\nAndroid app should connect to one of:`)
-  for (const ip of ips) console.log(`  http://${ip}:${boundPort}`)
-  console.log(`\nHealth check: http://localhost:${boundPort}/api/health`)
+  for (const ip of ips) console.log(`  http://${ip}:${port}`)
+  console.log(`\nHealth check: http://localhost:${port}/api/health`)
 })
 
 // listen() reports its failure as an 'error' event, and there was no listener.

@@ -151,6 +151,137 @@ test('/api/loudness needs a path and needs the token', async () => {
   assert.strictEqual((await fetch(`${base}/api/loudness?path=/x.flac`)).status, 401)
 })
 
+// ── /api/settings/play-history ───────────────────────────────────────────────
+// The phone posts `playedAt` (hooks/usePlayer.ts) and filters Stats on it
+// (app/stats.tsx). The desktop reads `ts`, and ../history.js quarantines any
+// entry with neither `ts` nor `timestamp` — so a phone play was queued, then
+// set aside on the desktop's next pass. Both names have to be on the entry.
+
+const { normaliseHistory } = require('../history')
+
+test('a phone play is stamped with `ts`, so the desktop does not quarantine it', async () => {
+  const playedAt = Date.now() - 60000
+  const r = await postJson(`${base}/api/settings/play-history`, {
+    filePath: TRACK(), artist: 'Tester', title: 'Fixture', playedAt,
+  })
+  assert.strictEqual(r.status, 202)
+
+  // Read the queued op the way the desktop's ingester does — out of the inbox
+  // file, not out of a shape of the test's choosing.
+  const queued = JSON.parse(fs.readFileSync(path.join(ud, 'bridge-inbox.json'), 'utf8'))
+  const op = queued.ops.filter(o => o.type === 'playHistory.push').pop()
+  assert.ok(op, 'the play was never queued at all')
+  assert.strictEqual(op.payload.entry.ts, playedAt,
+    'the desktop reads `ts`; the phone never sends one')
+  assert.strictEqual(op.payload.entry.playedAt, playedAt,
+    '`playedAt` must survive — the phone Stats screen filters on it')
+
+  // The actual consequence, through the desktop's own normaliser: a quarantine
+  // here is 100% of the phone's listening history disappearing.
+  const norm = normaliseHistory([op.payload.entry])
+  assert.strictEqual(norm.quarantined.length, 0,
+    `the desktop set the entry aside: ${JSON.stringify(norm.quarantined)}`)
+  assert.strictEqual(norm.entries[0].ts, playedAt)
+})
+
+test('an entry with no usable playedAt still gets a time rather than being dropped', async () => {
+  const before = Date.now()
+  await postJson(`${base}/api/settings/play-history`, { filePath: TRACK(), title: 'No time' })
+  const queued = JSON.parse(fs.readFileSync(path.join(ud, 'bridge-inbox.json'), 'utf8'))
+  const op = queued.ops.filter(o => o.type === 'playHistory.push').pop()
+  assert.strictEqual(op.payload.entry.title, 'No time')
+  assert.ok(op.payload.entry.ts >= before, 'a missing playedAt must become now, not NaN')
+  assert.strictEqual(normaliseHistory([op.payload.entry]).quarantined.length, 0)
+})
+
+test('GET play-history carries `playedAt` for entries the DESKTOP wrote', async () => {
+  // The desktop's own file: `ts` only, which is what main.js writes. The
+  // phone's Stats screen filters `h.playedAt >= week` — undefined >= week is
+  // false, so a desktop-written history read as zero plays.
+  fs.writeFileSync(path.join(ud, 'play-history.json'), JSON.stringify([
+    { filePath: TRACK(), title: 'From the desktop', ts: 1700000000000 },
+  ]))
+  const list = await (await fetch(`${base}/api/settings/play-history`, authed)).json()
+  const desktopEntry = list.find(e => e && e.title === 'From the desktop')
+  assert.ok(desktopEntry, 'the desktop entry did not reach the phone at all')
+  assert.strictEqual(desktopEntry.playedAt, 1700000000000,
+    'app/stats.tsx filters on playedAt; a desktop entry has only ts')
+  assert.strictEqual(desktopEntry.ts, 1700000000000, '`ts` must not be replaced')
+})
+
+// ── /api/settings/liked-tracks ───────────────────────────────────────────────
+// The phone POSTs its FULL liked list on every heart tap (store/library.ts
+// holds the set in memory from startup). Queued as `likedTracks.set`, that list
+// replaced the desktop's at ingest time, so one tap on the phone wiped every
+// like the PC had made since. The route diffs instead and queues add/remove.
+
+const likedFile = () => path.join(ud, 'liked-tracks.json')
+
+// Drop only the liked ops from the shared inbox, so one test's queue cannot
+// leak into the next. `seq` is left alone — the bridge derives the next seq
+// from it and it must never go backwards.
+function resetLikedOps() {
+  const f = path.join(ud, 'bridge-inbox.json')
+  let state
+  try { state = JSON.parse(fs.readFileSync(f, 'utf8')) } catch (_) { return }
+  state.ops = (state.ops || []).filter(o => !String(o.type || '').startsWith('likedTracks.'))
+  fs.writeFileSync(f, JSON.stringify(state))
+}
+
+const getLiked = async () =>
+  (await fetch(`${base}/api/settings/liked-tracks`, authed)).json()
+
+test('a phone heart tap does not wipe a like the desktop made after it', async () => {
+  const A = '/music/desktop-had-this.flac'
+  const B = '/music/phone-just-liked.flac'
+  const C = '/music/desktop-liked-meanwhile.flac'
+  resetLikedOps()
+  fs.writeFileSync(likedFile(), JSON.stringify([A]))
+
+  // The tap: the phone re-sends everything it knows plus the new one.
+  const r = await postJson(`${base}/api/settings/liked-tracks`, { paths: [A, B] })
+  assert.strictEqual(r.status, 202)
+  const body = await r.json()
+  assert.deepStrictEqual({ added: body.added, removed: body.removed }, { added: 1, removed: 0 },
+    'a one-track toggle must queue a one-track change, not a whole list')
+
+  // The phone sees its own tap immediately, through the read overlay.
+  assert.deepStrictEqual(await getLiked(), [A, B])
+
+  // Now the desktop likes something of its own before the ingester runs — the
+  // exact race that used to end with C destroyed.
+  fs.writeFileSync(likedFile(), JSON.stringify([A, C]))
+  assert.deepStrictEqual(await getLiked(), [A, C, B],
+    'the phone tap replaced the desktop list instead of adding to it')
+})
+
+test('an unlike removes exactly the one track, and nothing else', async () => {
+  const A = '/music/being-unliked.flac'
+  const B = '/music/kept.flac'
+  const D = '/music/desktop-liked-after.flac'
+  resetLikedOps()
+  fs.writeFileSync(likedFile(), JSON.stringify([A, B]))
+
+  const body = await (await postJson(`${base}/api/settings/liked-tracks`, { paths: [B] })).json()
+  assert.deepStrictEqual({ added: body.added, removed: body.removed }, { added: 0, removed: 1 })
+  assert.deepStrictEqual(await getLiked(), [B])
+
+  fs.writeFileSync(likedFile(), JSON.stringify([A, B, D]))
+  assert.deepStrictEqual(await getLiked(), [B, D],
+    'the unlike must take A and leave the desktop’s later D alone')
+})
+
+test('re-sending the same list queues nothing at all', async () => {
+  const A = '/music/unchanged.flac'
+  resetLikedOps()
+  fs.writeFileSync(likedFile(), JSON.stringify([A]))
+  const body = await (await postJson(`${base}/api/settings/liked-tracks`, { paths: [A] })).json()
+  assert.strictEqual(body.queued, false, 'an idle re-send is not a mutation')
+
+  const queued = JSON.parse(fs.readFileSync(path.join(ud, 'bridge-inbox.json'), 'utf8'))
+  assert.strictEqual(queued.ops.filter(o => String(o.type).startsWith('likedTracks.')).length, 0)
+})
+
 // ── /api/crash-log ───────────────────────────────────────────────────────────
 // crash.ts POSTs and `.catch(() => {})` the result: it parses nothing, so the
 // contract is "accepted, and the report is on disk where it can be read".
