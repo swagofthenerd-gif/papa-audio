@@ -21,8 +21,9 @@
 // would only mean disagreeing about the same torrent.
 
 const { parseQuality, parseAudioLayout, parseDub, parseSub, magnetFromHash, parseSizeBytes, fmtSize } = require('./quality')
-const { buildQuery, titleCandidates, matchesEpisode, isPack, DUB_QUALIFIERS } = require('./nyaa')
+const { buildQuery, titleCandidates, matchesEpisode, isPack, DUB_QUALIFIERS, PACK_QUALIFIERS } = require('./nyaa')
 const { raceMirrors } = require('./mirror-race')
+const { matchesShowTitle, showTitles } = require('./show-title')
 
 const DEFAULT_BASE_URLS = [
   'https://feed.animetosho.org',
@@ -126,10 +127,16 @@ function createAnimetoshoProvider({ fetchFn, baseUrls = DEFAULT_BASE_URLS, maxRe
     const preferDub = request.dub === true
     const seenHash = new Set()
 
+    // Same plain AND-over-words search as nyaa, so the same trap: without this
+    // a one-word title ("Monster") matches every unrelated show that contains
+    // the word, and the episode-number check waves them all through.
+    const names = showTitles(request)
+
     const collect = items => {
       const entries = []
       for (const i of items) {
         if (!i || typeof i !== 'object') continue
+        if (!matchesShowTitle(i.title, names)) continue
         if (!matchesEpisode(i.title, request.episode, {
           season: request.season, absoluteEpisode: request.absoluteEpisode,
         })) continue
@@ -157,29 +164,47 @@ function createAnimetoshoProvider({ fetchFn, baseUrls = DEFAULT_BASE_URLS, maxRe
       }
     }
 
-    // Each query is tried in turn and the first that yields anything wins;
-    // within a query the mirrors race and the losers are aborted.
+    // A bare-title query after the episode-specific ones, for the same reason
+    // nyaa has one: the answer is one page ordered by recency, so a show that
+    // finished years ago is buried under everything airing now, and its batch
+    // and BD packs are what is actually seeded. A pack is a valid source for
+    // any episode it holds.
+    if (request.episode != null && request.episode !== '') {
+      for (const candidate of candidates) queries.push(candidate)
+      for (const candidate of candidates) {
+        for (const q of PACK_QUALIFIERS) queries.push(`${candidate} ${q}`)
+      }
+    }
+
+    // Results accumulate across queries and stop as soon as there are enough,
+    // so a well-stocked first page still costs one request while a thin one
+    // keeps looking. See the same reasoning in providers/nyaa.js.
+    const ENOUGH = 8
+    const entries = []
+    const tried = new Set()
     for (const query of queries) {
-      if (!query) continue
+      if (!query || tried.has(query)) continue
+      tried.add(query)
       const won = await raceMirrors(_orderMirrors(urls), (baseUrl, signal) =>
         tryMirror(baseUrl, query, fetcher, signal))
       if (won) _lastGoodMirror = won.baseUrl
       const items = won ? won.result : null
       if (!items || !items.length) continue
-      const entries = collect(items)
-      if (!entries.length) continue
-      // Seeds decide playability, and a requested dub outranks a sub of the
-      // same popularity.
-      entries.sort((a, b) => {
-        if (a._preferred !== b._preferred) return a._preferred ? -1 : 1
-        return b.seeds - a.seeds
-      })
-      return entries.slice(0, maxResults).map(e => {
-        delete e._preferred
-        return e
-      })
+      // `collect` dedupes against seenHash, which is shared across queries.
+      for (const entry of collect(items)) entries.push(entry)
+      if (entries.length >= ENOUGH) break
     }
-    return []
+    if (!entries.length) return []
+    // Seeds decide playability, and a requested dub outranks a sub of the
+    // same popularity.
+    entries.sort((a, b) => {
+      if (a._preferred !== b._preferred) return a._preferred ? -1 : 1
+      return b.seeds - a.seeds
+    })
+    return entries.slice(0, maxResults).map(e => {
+      delete e._preferred
+      return e
+    })
   }
 }
 

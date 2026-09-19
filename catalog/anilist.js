@@ -172,6 +172,12 @@ function normalizeMedia(raw) {
       english: title.english || null,
       romaji: title.romaji || null,
       native: title.native || null,
+      // The alternative names AniList knows ("Naoki Urasawa's Monster",
+      // "Monsuta") ride along with the three canonical ones because release
+      // groups print them: providers/show-title.js rejects a release carrying
+      // a word none of the show's titles have, and without the synonyms a
+      // perfectly good release is the one that looks wrong.
+      synonyms: Array.isArray(raw.synonyms) ? raw.synonyms.filter(Boolean) : [],
     },
     year: raw.seasonYear ?? null,
     poster: raw.coverImage?.large ?? null,

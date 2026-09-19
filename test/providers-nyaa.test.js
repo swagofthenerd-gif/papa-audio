@@ -4,11 +4,19 @@ const assert = require('node:assert')
 const {
   DEFAULT_BASE_URLS, buildQuery, buildFeedUrl, parseFeed,
   matchesEpisode, createNyaaProvider, _resetMirrorHealth,
+  isPack, episodeRange,
 } = require('../providers/nyaa')
 
 const item = (title, hash, seeders) =>
   `<item><title><![CDATA[${title}]]></title><link>https://nyaa.si/download/1.torrent</link>` +
   `<nyaa:infoHash>${hash}</nyaa:infoHash><nyaa:seeders>${seeders}</nyaa:seeders><nyaa:size>1.4 GiB</nyaa:size></item>`
+
+// Eight matching rows: enough for one query to satisfy the provider on its
+// own, so a test that counts requests is measuring what it means to.
+const WIDE_FEED = '<?xml version="1.0"?><rss><channel>' +
+  Array.from({ length: 8 }, (_, i) =>
+    item(`[Group${i}] Frieren - 09 (1080p)`, `WIDE${i}`, 100 + i)).join('') +
+  '</channel></rss>'
 
 const FEED = '<?xml version="1.0"?><rss><channel>' +
   item('[SubsPlease] Frieren - 09 (1080p) [AAC2.0]', 'HASH09', 120) +
@@ -160,12 +168,12 @@ test('a dead mirror falls through and a total failure yields []', async () => {
     fetchFn: async url => {
       calls.push(url)
       if (url.startsWith('https://dead')) throw new Error('ENOTFOUND')
-      return feedResponse(FEED)
+      return feedResponse(WIDE_FEED)
     },
   })
   const entries = await provider({ type: 'anime', title: 'Frieren', episode: 9 })
-  assert.strictEqual(entries.length, 3)
-  assert.strictEqual(calls.length, 2)
+  assert.strictEqual(entries.length, 8)
+  assert.strictEqual(calls.length, 2, 'both mirrors raced, one query')
 
   const allDead = createNyaaProvider({ baseUrls: ['https://a'], fetchFn: async () => { throw new Error('boom') } })
   assert.deepStrictEqual(await allDead({ type: 'anime', title: 'Frieren', episode: 9 }), [])
@@ -187,7 +195,7 @@ test('the mirror that answered last is tried first on the next query', async () 
     fetchFn: async url => {
       calls.push(new URL(url).origin)
       if (url.startsWith('https://dead')) throw new Error('ENOTFOUND')
-      return feedResponse(FEED)
+      return feedResponse(WIDE_FEED)
     },
   })
   await provider({ type: 'anime', title: 'Frieren', episode: 9 })
@@ -243,6 +251,15 @@ test('the mirror that answered last is tried first on the next query', async () 
     ).join('') + '</channel></rss>',
   })
 
+  // The same, with the hash stated — for a test where two queries must answer
+  // with two different torrents rather than the same one twice.
+  const feedHashed = rows => ({
+    ok: true,
+    text: async () => '<rss><channel>' + rows.map(([t, h], i) =>
+      `<item><title><![CDATA[${t}]]></title><nyaa:infoHash>${h}</nyaa:infoHash><nyaa:seeders>${10 + i}</nyaa:seeders></item>`
+    ).join('') + '</channel></rss>',
+  })
+
   test('a title that finds nothing falls through to the next candidate', async () => {
     const queries = []
     const provider = createNyaaProvider({
@@ -263,15 +280,42 @@ test('the mirror that answered last is tried first on the next query', async () 
     assert.strictEqual(queries[0], 'Sousou no Frieren 09', 'romaji must be attempted first')
   })
 
-  test('the first candidate that yields results stops the search', async () => {
+  // A query that already answers well stops the search: anything currently
+  // airing fills the first page, and that is the common case.
+  test('a query with enough results stops the search', async () => {
     let calls = 0
     const provider = createNyaaProvider({
       baseUrls: ['https://n'],
-      fetchFn: async () => { calls++; return feed(['[G] Show - 01 (1080p)']) },
+      fetchFn: async () => {
+        calls++
+        return feed(Array.from({ length: 8 }, (_, i) => `[G${i}] Show - 01 (1080p)`))
+      },
     })
-    const entries = await provider({ type: 'anime', episode: 1, titles: { romaji: 'Show Season 2', english: 'Other' } })
-    assert.strictEqual(entries.length, 1)
-    assert.strictEqual(calls, 1, 'a hit on the first candidate must not trigger more requests')
+    const entries = await provider({ type: 'anime', episode: 1, titles: { romaji: 'Show Season 2', english: 'Show' } })
+    assert.strictEqual(entries.length, 8)
+    assert.strictEqual(calls, 1, 'a full first page must not trigger more requests')
+  })
+
+  // ...but a thin one does not. The title filter can leave a single query with
+  // one usable row for a show that is perfectly well seeded — the feed answers
+  // one page, newest first, so an older show is buried under everything airing
+  // now. Before this, that one row was the entire source list.
+  test('a thin result keeps looking, and a bare-title query finds the packs', async () => {
+    const queries = []
+    const provider = createNyaaProvider({
+      baseUrls: ['https://n'],
+      fetchFn: async url => {
+        const q = decodeURIComponent(new URL(url).searchParams.get('q'))
+        queries.push(q)
+        // Distinct hashes: the two queries answer with two different torrents.
+        if (q === 'Show 01') return feedHashed([['[G] Show - 01 (1080p)', 'EP01']])
+        if (q === 'Show') return feedHashed([['[G] Show (01-24) [Batch]', 'PACK']])
+        return feed([])
+      },
+    })
+    const entries = await provider({ type: 'anime', episode: 1, titles: { romaji: 'Show' } })
+    assert.strictEqual(entries.length, 2, 'the episode and the pack that holds it')
+    assert.ok(queries.includes('Show'), 'the bare title is queried so packs are found')
   })
 
   test('every candidate failing still returns [] rather than throwing', async () => {
@@ -282,3 +326,78 @@ test('the mirror that answered last is tried first on the next query', async () 
     )
   })
 }
+
+// A search for a short title comes back full of other shows that merely
+// contain the word, because nyaa's q= is a plain AND over words. Before the
+// title gate the provider checked only the episode number, so every one of
+// these was offered as a source for Monster — and the top-seeded wrong show
+// is what played.
+const MONSTER_FEED = '<?xml version="1.0"?><rss><channel>' +
+  item('[llbx] Monster Strike Deadverse Reloaded - 01 (AMZN.WEB-DL 1080p)', 'HASHSTRIKE', 900) +
+  item('[SubsPlease] Monogatari Series - Off & Monster Season - 01 (1080p)', 'HASHMONO', 800) +
+  item('[Mocha] Akujiki Reijou to Kyouketsu Koushaku (Pass the Monster Meat Milady) - 01 [WEB 1080p]', 'HASHMEAT', 700) +
+  item('[Anime Time] Monster (2004 - 2005) Complete [Dual Audio] [DVD][480p]', 'HASHREAL', 12) +
+  '</channel></rss>'
+
+test('only releases that actually name the show are offered', async () => {
+  _resetMirrorHealth()
+  const provider = createNyaaProvider({ fetchFn: async () => feedResponse(MONSTER_FEED) })
+  const out = await provider({
+    type: 'anime',
+    title: 'Monster',
+    titles: { romaji: 'Monster', english: 'Monster', native: 'MONSTER', synonyms: ["Naoki Urasawa's Monster"] },
+    episode: 1,
+  })
+  assert.deepStrictEqual(out.map(e => e.infoHash), ['HASHREAL'])
+})
+
+test('a wrong show is dropped even when it out-seeds the right one', async () => {
+  _resetMirrorHealth()
+  const provider = createNyaaProvider({ fetchFn: async () => feedResponse(MONSTER_FEED) })
+  const out = await provider({ type: 'anime', title: 'Monster', episode: 1 })
+  assert.ok(out.every(e => /Monster \(2004/.test(e.title)), 'Monster Strike had 900 seeds and must not lead')
+})
+
+// A show that finished years ago is not indexed episode by episode any more —
+// what is seeded is the complete series — and its name is a common word, so
+// the episode query and the bare title both answer with whatever is newest.
+// Asking for the pack by name is what finds it.
+test('a finished show is rescued by the pack-qualified query', async () => {
+  _resetMirrorHealth()
+  const queries = []
+  const provider = createNyaaProvider({
+    baseUrls: ['https://n'],
+    fetchFn: async url => {
+      const q = decodeURIComponent(new URL(url).searchParams.get('q'))
+      queries.push(q)
+      if (q === 'Monster Complete') {
+        return feedResponse('<rss><channel>' +
+          item('[V2] [JPN-ENG] Monster [2004-2005] COMPLETE (Series) DVDRip x265', 'HASHPACK', 33) +
+          '</channel></rss>')
+      }
+      // Every other query answers with other shows that merely contain the word.
+      return feedResponse(MONSTER_FEED.replace('HASHREAL', 'HASHDECOY')
+        .replace('[Anime Time] Monster (2004 - 2005) Complete [Dual Audio] [DVD][480p]',
+          '[Some-Stuffs] Pocket Monsters (2023) - 01 (1080p)'))
+    },
+  })
+  const out = await provider({ type: 'anime', title: 'Monster', episode: 12 })
+  assert.deepStrictEqual(out.map(e => e.infoHash), ['HASHPACK'])
+  assert.ok(out[0].isPack, 'the streamer must know to pick episode 12 out of the pack')
+  assert.ok(queries.includes('Monster Complete'))
+  _resetMirrorHealth()
+})
+
+// "Monster (2004 - 2005) Complete" is a run of broadcast years, not episodes
+// 2004 to 2005 — read the other way, the complete pack of every show whose
+// title carries its years held no episode anyone could ask for.
+test('a pair of years is not read as an episode range', () => {
+  assert.strictEqual(episodeRange('[Anime Time] Monster (2004 - 2005) Complete'), null)
+  assert.strictEqual(isPack('[Anime Time] Monster (2004 - 2005) Complete', 12), true)
+  assert.strictEqual(matchesEpisode('[Anime Time] Monster (2004 - 2005) Complete', 12, {}), true)
+  // A real range is still authoritative in both directions.
+  assert.deepStrictEqual(episodeRange('[A&C] One Piece (0001-0061)'), { from: 1, to: 61 })
+  assert.strictEqual(matchesEpisode('[Batch] Frieren 01~12', 20, {}), false)
+  // And a year range does not hide a real one later in the name.
+  assert.deepStrictEqual(episodeRange('Monster (2004-2005) 01-74'), { from: 1, to: 74 })
+})

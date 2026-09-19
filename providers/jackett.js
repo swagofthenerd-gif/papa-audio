@@ -40,6 +40,7 @@ const {
 const {
   matchesTitle, matchesYear, matchesEpisode, matchesAnimeEpisode, requestTitles,
 } = require('./apibay')
+const { matchesShowTitle, showTitles } = require('./show-title')
 const { isPack } = require('./nyaa')
 
 // The Torznab results path WITHOUT the api key — safe to log. The real request
@@ -207,6 +208,13 @@ function createJackettProvider({ fetchFn, baseUrl, apiKey, maxResults = 50 } = {
         if (seen.has(dedupeKey)) continue
         // A release only has to match one of the names the title goes by.
         if (!names.some(n => matchesTitle(entry.name, n))) continue
+        // matchesTitle above only asks that every word of the title appear in
+        // the release name, which a one-word title ("Monster", "Heat", "It")
+        // can never fail — it accepted Monster House, Red Heat and Blaze and
+        // the Monster Machines. The other direction is the missing half: a
+        // release carrying words the title does not have is a different show.
+        // See providers/show-title.js.
+        if (!matchesShowTitle(entry.name, showTitles(request))) continue
         if (type === 'movie' && !matchesYear(entry.name, request.year)) continue
         if (type === 'tv' &&
           !matchesEpisode(entry.name, request.season, request.episode)) continue

@@ -22,6 +22,7 @@ const {
   fmtSize,
 } = require('./quality')
 const { raceMirrors } = require('./mirror-race')
+const { matchesShowTitle, showTitles } = require('./show-title')
 
 const DEFAULT_BASE_URLS = [
   'https://apibay.org',
@@ -117,14 +118,12 @@ function matchesEpisode(name, season, episode) {
 // A stated batch range in the title ("01-24", "1~24"), or null when there is
 // none. Only counts as a range when the upper bound is above the lower — a lone
 // "12-12" or a hyphenated date is not a batch span.
-const _RANGE_RE = /(\d{1,4})\s*[-~]\s*(\d{1,4})/
-
-function _statedRange(text) {
-  const m = _RANGE_RE.exec(text)
-  if (!m) return null
-  const from = Number(m[1]), to = Number(m[2])
-  return to > from ? { from, to } : null
-}
+// Scanned, not first-match-only, and a pair of plausible years is skipped: a
+// title that carries its broadcast years ("Monster (2004 - 2005) Complete")
+// was being read as "episodes 2004 to 2005" and refused for every episode.
+// nyaa's episodeRange makes the same reading, and the two indexers list the
+// same releases, so they answer this the same way.
+const { episodeRange: _statedRange } = require('./nyaa')
 
 function _rangeSpans(range, n) {
   return Boolean(range && Number.isFinite(n) && n >= range.from && n <= range.to)
@@ -318,6 +317,13 @@ function createApibayProvider({ fetchFn, baseUrls = DEFAULT_BASE_URLS, maxResult
         // A release only has to match one of the names the show goes by.
         const names = request.type === 'anime' ? requestTitles(request) : [request.title]
         if (!names.some(n => matchesTitle(entry.name, n))) continue
+        // matchesTitle above only asks that every word of the title appear in
+        // the release name, which a one-word title ("Monster", "Heat", "It")
+        // can never fail — it accepted Monster House, Red Heat and Blaze and
+        // the Monster Machines. The other direction is the missing half: a
+        // release carrying words the title does not have is a different show.
+        // See providers/show-title.js.
+        if (!matchesShowTitle(entry.name, showTitles(request))) continue
         if (request.type === 'movie' && !matchesYear(entry.name, request.year)) continue
         if (request.type === 'tv' && !matchesEpisode(entry.name, request.season, request.episode)) continue
         if (request.type === 'anime' && !matchesAnimeEpisode(entry.name, request.episode, {

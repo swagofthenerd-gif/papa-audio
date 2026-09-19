@@ -242,7 +242,10 @@ test('racing: the fast mirror wins and the slow request is aborted', async () =>
   const provider = createAnimetoshoProvider({ fetchFn, baseUrls: ['https://slow', 'https://fast'] })
   const entries = await provider({ type: 'anime', titles: { romaji: 'Show' }, episode: 8 })
   assert.strictEqual(entries.length, 1)
-  assert.deepStrictEqual(aborted, ['slow'])
+  // One thin query is followed by the bare-title one, so the race is run more
+  // than once — what matters is that the loser is aborted every time.
+  assert.ok(aborted.length >= 1)
+  assert.ok(aborted.every(m => m === 'slow'))
   _resetMirrorHealth()
 })
 

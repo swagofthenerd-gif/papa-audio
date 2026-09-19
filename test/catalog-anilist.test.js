@@ -38,6 +38,9 @@ test('normalizeMedia maps a raw AniList media node to an anime catalog entry', (
       english: 'Fullmetal Alchemist: Brotherhood',
       romaji: 'Hagane no Renkinjutsushi',
       native: '鋼の錬金術師 FULLMETAL ALCHEMIST',
+      // The alternative names release groups print, for the source filter in
+      // providers/show-title.js. Empty when AniList knows none.
+      synonyms: [],
     },
     year: 2009,
     poster: 'https://example.com/fma.jpg',

@@ -18,6 +18,7 @@
 
 const { parseQuality, parseAudioLayout, parseDub, parseSub, magnetFromHash, parseSizeBytes } = require('./quality')
 const { raceMirrors } = require('./mirror-race')
+const { matchesShowTitle, showTitles } = require('./show-title')
 
 const DEFAULT_BASE_URLS = [
   'https://nyaa.si',
@@ -131,23 +132,46 @@ function parseFeed(xml) {
 // Packs are offered as sources because that is where the dubs live. Playing
 // one relies on the streamer selecting the episode's file by name, and on the
 // stream cache being deleted when playback ends — both of which are in place.
-const RANGE_RE = /(\d{1,4})\s*(?:-|~|to)\s*(\d{1,4})/
+const RANGE_RE = /(\d{1,4})\s*(?:-|~|to)\s*(\d{1,4})/g
 const PACK_RE = /\b(batch|complete|season\s*\d+|collection|bd[\s._-]?box)\b/i
+
+// A pair of plausible years is a run of broadcast dates, not a span of
+// episodes: "Monster (2004 - 2005) Complete" is the whole series, and reading
+// it as "episodes 2004 to 2005" made the complete pack of every show whose
+// title carries its years look like a pack that holds no episode anyone asked
+// for. Shared with apibay's _statedRange, which had the same reading.
+function _isYearPair(from, to) {
+  const year = n => n >= 1900 && n <= 2099
+  return year(from) && year(to)
+}
+
+// The first stated EPISODE range in a title, or null. Scans rather than taking
+// the first match so a leading year range does not hide a real one later in
+// the name ("Monster (2004-2005) 01-74").
+function episodeRange(title) {
+  const text = String(title || '')
+  RANGE_RE.lastIndex = 0
+  let m
+  while ((m = RANGE_RE.exec(text)) !== null) {
+    const from = Number(m[1]), to = Number(m[2])
+    if (to <= from) continue
+    if (_isYearPair(from, to)) continue
+    return { from, to }
+  }
+  return null
+}
 
 function isPack(title, episode) {
   const t = String(title || '')
   const n = Number(episode)
   // A single named episode is never a pack, whatever else the title says.
   if (/s\d{1,3}[\s._-]?e\d{1,4}/i.test(t)) return false
-  const range = RANGE_RE.exec(t)
+  const range = episodeRange(t)
   if (range) {
-    const from = Number(range[1]), to = Number(range[2])
-    if (to > from) {
-      // A stated range is authoritative in both directions. Falling through to
-      // the keyword check when it does not span the episode would accept
-      // "Batch 01~12" as a source for episode 20 purely because it says batch.
-      return !Number.isFinite(n) || (n >= from && n <= to)
-    }
+    // A stated range is authoritative in both directions. Falling through to
+    // the keyword check when it does not span the episode would accept
+    // "Batch 01~12" as a source for episode 20 purely because it says batch.
+    return !Number.isFinite(n) || (n >= range.from && n <= range.to)
   }
   return PACK_RE.test(t)
 }
@@ -156,6 +180,14 @@ function isPack(title, episode) {
 // two together cover nearly everything. Asking for them explicitly is the
 // difference between finding a dub and hoping one turns up in a general search.
 const DUB_QUALIFIERS = ['Dual Audio', 'Dub']
+
+// The same trick for a show that finished years ago. Its episodes are not
+// indexed one by one any more — what is seeded is the complete series — and a
+// bare title query answers with whatever is newest, which for a word like
+// "Monster" is every current show that contains it. Asking for the pack by
+// name is what actually finds "Monster (2004 - 2005) Complete", and a pack is
+// a valid source for any episode in it.
+const PACK_QUALIFIERS = ['Complete', 'Batch']
 
 function _matchesEpisodeNumber(t, n) {
   const pad = String(n).padStart(2, '0')
@@ -276,11 +308,19 @@ function createNyaaProvider({ fetchFn, baseUrls = DEFAULT_BASE_URLS, maxResults 
     const preferDub = request.dub === true
     const seenHash = new Set()
 
+    // Nyaa's q= is a plain AND over words, so a short title matches every
+    // unrelated show that contains it — "Monster 01" answers with Monster
+    // Musume, Monster Strike and Re:Monster and not one episode of the show
+    // that was asked for. Checking the episode number alone let all of them
+    // through; the release name has to name THIS show too.
+    const names = showTitles(request)
+
     const collect = items => {
       const entries = []
       for (const i of items) {
         if (!i || !i.infoHash) continue
         if (seenHash.has(i.infoHash)) continue
+        if (!matchesShowTitle(i.title, names)) continue
         if (!matchesEpisode(i.title, request.episode, {
           season: request.season, absoluteEpisode: request.absoluteEpisode,
         })) continue
@@ -307,11 +347,32 @@ function createNyaaProvider({ fetchFn, baseUrls = DEFAULT_BASE_URLS, maxResults 
       }
     }
 
-    // Each query is tried in turn and the first that yields anything wins.
-    // Stopping at the first hit keeps this to one request in the common case
-    // while still rescuing the shows whose English title matches nothing.
+    // The feed answers one page, newest first, so a show that finished years
+    // ago is buried under everything currently airing that shares a word with
+    // it — "Monster 12" is 75 rows of this season and no Monster at all. A
+    // bare-title query finds the batch and BD packs instead, and a pack is a
+    // legitimate source for any episode in it (the streamer picks the file).
+    // Appended after the episode-specific queries so a precise hit still
+    // leads; it only rescues the searches that would otherwise come back
+    // empty.
+    if (request.episode != null && request.episode !== '') {
+      for (const candidate of candidates) queries.push(candidate)
+      for (const candidate of candidates) {
+        for (const q of PACK_QUALIFIERS) queries.push(`${candidate} ${q}`)
+      }
+    }
+
+    // Queries are tried in turn and their results accumulated, because the
+    // title filter can leave a single query with one usable row (or none) even
+    // when the show is well seeded. Stopping as soon as there are enough keeps
+    // this to one request for anything currently airing, which is the common
+    // case; only a thin result pays for the next query.
+    const ENOUGH = 8
+    const entries = []
+    const tried = new Set()
     for (const query of queries) {
-      if (!query) continue
+      if (!query || tried.has(query)) continue
+      tried.add(query)
       // All mirrors race per query; the first usable feed wins and the rest
       // are aborted.
       const won = await raceMirrors(_orderMirrors(urls), (baseUrl, signal) =>
@@ -319,26 +380,30 @@ function createNyaaProvider({ fetchFn, baseUrls = DEFAULT_BASE_URLS, maxResults 
       if (won) _lastGoodMirror = won.baseUrl
       const items = won ? won.result : null
       if (!items || !items.length) continue
-      const entries = collect(items)
-      if (!entries.length) continue
-      // Seeds decide playability more than anything else on nyaa, and a
-      // requested dub outranks a sub of the same popularity.
-      entries.sort((a, b) => {
-        if (a._preferred !== b._preferred) return a._preferred ? -1 : 1
-        return b.seeds - a.seeds
-      })
-      return entries.slice(0, maxResults).map(e => {
-        delete e._preferred
-        return e
-      })
+      // `collect` dedupes against seenHash, which is shared across queries.
+      for (const entry of collect(items)) entries.push(entry)
+      if (entries.length >= ENOUGH) break
     }
-    return []
+    if (!entries.length) return []
+    // Seeds decide playability more than anything else on nyaa, and a
+    // requested dub outranks a sub of the same popularity.
+    entries.sort((a, b) => {
+      if (a._preferred !== b._preferred) return a._preferred ? -1 : 1
+      return b.seeds - a.seeds
+    })
+    return entries.slice(0, maxResults).map(e => {
+      delete e._preferred
+      return e
+    })
   }
 }
 
 module.exports = {
   DEFAULT_BASE_URLS,
   isPack,
+  episodeRange,
+  PACK_QUALIFIERS,
+  matchesShowTitle,
   DUB_QUALIFIERS,
   buildQuery,
   titleCandidates,
