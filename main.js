@@ -2582,6 +2582,7 @@ function shutdownFromSignal() {
   try { stopSlskd() } catch (_) {}
   try { store.set('cleanShutdown', true) } catch (_) {}
   flushSideStores()
+  flushLibraryExtSync()
   flushLogSync()
   try { if (fs.existsSync(NOW_PLAYING_PATH)) fs.unlinkSync(NOW_PLAYING_PATH) } catch (_) {}
   try { globalShortcut.unregisterAll() } catch (_) {}
@@ -2638,6 +2639,7 @@ app.on('will-quit', () => {
   // synchronously on write; force that flush before the process goes away.
   try { session.defaultSession.flushStorageData() } catch (_) {}
   flushSideStores()
+  flushLibraryExtSync()
   flushLogSync()
   // Before the unlink, or a write still in flight recreates the file.
   stopNowPlayingWrites()
@@ -6270,7 +6272,68 @@ function buildAlbums(tracks) {
 // ── Extension state sync ──────────────────────────────────────────────────────
 const LIBRARY_EXT_PATH = path.join(USER_DATA, 'library.json')
 
+// This file is not dead: the papa-audio GNOME Shell panel extension
+// (~/.local/share/gnome-shell/extensions/papa-audio@local) reads it on an
+// 800 ms poll to draw its album list. Nothing inside the app reads it, which
+// is why it looked unused. It stays.
+//
+// What had to change is how it is written. It was a 618 KB JSON.stringify plus
+// a SYNCHRONOUS writeFileSync on every scan and every watcher event, on the
+// thread that also drives mpv's IPC and the UI — so a burst of file-watcher
+// events during a download was a burst of blocking main-thread writes. It is
+// now coalesced onto one timer and written asynchronously, through a temp file
+// and a rename so the extension's poll can never catch a half-written file.
+const LIBRARY_EXT_DEBOUNCE_MS = 2000
+let _libraryExtPending = null
+let _libraryExtTimer = null
+let _libraryExtWriting = false
+
 function writeLibraryExt(albums) {
+  _libraryExtPending = _slimLibraryExt(albums)
+  if (_libraryExtTimer) return
+  _libraryExtTimer = setTimeout(() => {
+    _libraryExtTimer = null
+    _flushLibraryExt().catch(() => {})
+  }, LIBRARY_EXT_DEBOUNCE_MS)
+  _libraryExtTimer.unref?.()
+}
+
+async function _flushLibraryExt() {
+  if (_libraryExtWriting || !_libraryExtPending) return
+  const slim = _libraryExtPending
+  _libraryExtPending = null
+  _libraryExtWriting = true
+  const tmp = LIBRARY_EXT_PATH + '.tmp'
+  try {
+    await fs.promises.writeFile(tmp, JSON.stringify(slim))
+    await fs.promises.rename(tmp, LIBRARY_EXT_PATH)
+  } catch (_) {
+    try { await fs.promises.unlink(tmp) } catch (_) {}
+  } finally {
+    _libraryExtWriting = false
+  }
+  // A scan that landed while this write was in flight gets its own write.
+  if (_libraryExtPending && !_libraryExtTimer) {
+    _libraryExtTimer = setTimeout(() => {
+      _libraryExtTimer = null
+      _flushLibraryExt().catch(() => {})
+    }, LIBRARY_EXT_DEBOUNCE_MS)
+    _libraryExtTimer.unref?.()
+  }
+}
+
+// On the way out there is no next tick to write on, so the pending copy goes
+// out synchronously or not at all.
+function flushLibraryExtSync() {
+  if (!_libraryExtPending) return
+  const slim = _libraryExtPending
+  _libraryExtPending = null
+  clearTimeout(_libraryExtTimer)
+  _libraryExtTimer = null
+  try { fs.writeFileSync(LIBRARY_EXT_PATH, JSON.stringify(slim)) } catch (_) {}
+}
+
+function _slimLibraryExt(albums) {
   try {
     const slim = (albums || []).map(a => ({
       id: a.id, name: a.name, artist: a.artist, artPath: a.artPath || null,
@@ -6286,8 +6349,8 @@ function writeLibraryExt(albums) {
         bitsPerSample: t.bitsPerSample || 0,
       })),
     }))
-    fs.writeFileSync(LIBRARY_EXT_PATH, JSON.stringify(slim))
-  } catch (_) {}
+    return slim
+  } catch (_) { return [] }
 }
 
 let _lastNotifiedId = null
