@@ -636,11 +636,32 @@ function _appendCrashLog(kind, err) {
 // YouTube request would kill the app -- and the music with it -- with nothing
 // written down about why. Log it and keep running: a music player dying mid-song
 // because a metadata fetch 404'd is never the right trade.
+//
+// ...but only while the app is running. Once teardown starts these handlers
+// must do NOTHING, because Node settles every still-pending promise as it
+// frees the environment and each rejection re-enters JavaScript — a console
+// write, a synchronous crash-log append — at the exact point V8 is dismantling
+// the isolate. Found live: a network drop during YouTube playback left a pile
+// of in-flight fetches, the app was closed, and the main process then spun
+// inside node::FreeEnvironment for five and a half hours at a full core,
+// throwing and reporting forever. It never exited, held its slskd child as an
+// unreaped zombie, and — because Electron releases the single-instance lock
+// early in shutdown — let a second full copy of the app start alongside it.
+//
+// A module-level flag rather than a read of app.isQuitting: `app` is itself
+// being torn down by the time this matters, and the whole point is to touch
+// as little as possible. Set from both quit paths (before-quit and
+// shutdownFromSignal), so a signal shutdown is covered too.
+let _tearingDown = false
+function _beginTeardown() { _tearingDown = true }
+
 process.on('unhandledRejection', (reason) => {
+  if (_tearingDown) return
   console.error('[papa] unhandled rejection:', (reason && reason.stack) || reason)
   _appendCrashLog('a background task failed unexpectedly', reason)
 })
 process.on('uncaughtException', (err) => {
+  if (_tearingDown) return
   console.error('[papa] uncaught exception:', (err && err.stack) || err)
   _appendCrashLog('the app hit an unexpected error', err)
 })
@@ -2782,6 +2803,7 @@ let _signalShutdown = false
 function shutdownFromSignal() {
   if (_signalShutdown) return
   _signalShutdown = true
+  _beginTeardown()
   // Same rule as the quit handlers: a process that never won the instance lock
   // owns none of this state and must not write it.
   if (!gotLock) { try { app.exit(0) } catch (_) {} ; return }
@@ -2848,6 +2870,9 @@ app.on('window-all-closed', () => {
 })
 app.on('before-quit', () => {
   app.isQuitting = true
+  // Before anything else: from here on a settling promise must not drag the
+  // crash logger back into a dying isolate. See _beginTeardown above.
+  _beginTeardown()
   // Only the process that owns the instance lock owns the on-disk state. A
   // process without it must never claim the session shut down cleanly.
   if (!gotLock) return

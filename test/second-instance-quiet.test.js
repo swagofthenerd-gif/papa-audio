@@ -75,6 +75,11 @@ function runQuitHandlers(gotLock) {
   const ctx = {
     app, store, console: { log() {}, error() {}, warn() {} },
     gotLock,
+    // Flips a module-level flag so the unhandledRejection/uncaughtException
+    // handlers stand down while the environment is being freed. Deliberately
+    // NOT recorded as a write: it touches nothing outside this process, so a
+    // lockless instance calling it still "writes nothing on the way out".
+    _beginTeardown() {},
     player: { stop() { writes.push('player.stop') } },
     _videoTeardown() { writes.push('_videoTeardown') },
     stopSlskd() { writes.push('stopSlskd') },

@@ -331,6 +331,31 @@ test('switching a track tells the torrent where the viewer is, as a seek does', 
     'an audio or subtitle switch must re-prioritise at the playhead')
 })
 
+// A network drop during YouTube playback left a pile of in-flight fetches; the
+// app was then closed and the main process spun inside node::FreeEnvironment at
+// a full core for five and a half hours, never exiting — because Node settles
+// those promises as it frees the environment and each rejection re-entered the
+// crash logger inside a dying isolate. It also held its slskd child as a zombie
+// and released the single-instance lock, which let a second copy of the app run.
+test('the global error handlers stand down once teardown has begun', () => {
+  const rejection = MAIN.slice(MAIN.indexOf("process.on('unhandledRejection'"),
+    MAIN.indexOf("app.on('child-process-gone'"))
+  assert.match(rejection, /if \(_tearingDown\) return/,
+    'the rejection handler must do nothing while the environment is being freed')
+  assert.match(rejection.slice(rejection.indexOf("process.on('uncaughtException'")),
+    /if \(_tearingDown\) return/,
+    'and so must the uncaught-exception handler')
+  // Guarding only one quit path would leave the other spinning: a window close
+  // goes through before-quit, a logout or a TERM through shutdownFromSignal.
+  const beforeQuit = MAIN.slice(MAIN.indexOf("app.on('before-quit'"))
+  assert.match(beforeQuit.slice(0, 400), /_beginTeardown\(\)/, 'before-quit must flag teardown')
+  const signal = MAIN.slice(MAIN.indexOf('function shutdownFromSignal()'))
+  assert.match(signal.slice(0, 300), /_beginTeardown\(\)/, 'a signal shutdown must flag it too')
+  // The flag is read, never app.isQuitting: `app` is itself being torn down by
+  // the time this matters.
+  assert.match(MAIN, /let _tearingDown = false/)
+})
+
 test('the screenshot verb returns a path in the value field', () => {
   const body = handlerBody('video-control')
   assert.match(body, /case 'screenshot'/)
