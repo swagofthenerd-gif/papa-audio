@@ -209,6 +209,14 @@ function runDlTree(enqueueResult) {
 		const T = { AUDIO_RE: /\\.(flac|mp3|wav)$/i }
 		const l = { node: { files: [{ name: 'a.flac', fullPath: 'x/a.flac', size: 1 }], dirs: new Map() } }
 		const username = 'AnYeluX'
+		function audioBelow(node, out) {
+			out = out || { files: [], size: 0 }
+			for (const f of node.files) if (T.AUDIO_RE.test(f.name)) { out.files.push(f); out.size += f.size || 0 }
+			for (const c of node.dirs.values()) audioBelow(c, out)
+			return out
+		}
+		// One file is far under the confirmation thresholds, so this runs straight through.
+		function confirmSubtree(count, size, go) { return go() }
 		function _slskEnqueue(items) { return env.enqueue(items) }
 		function _scheduleLibRescan() { snacks.push('rescan') }
 		function showSnackbar(m) { snacks.push(String(m)) }

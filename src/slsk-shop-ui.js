@@ -177,12 +177,50 @@
   const folderSel = new Set()
   let folderSelLast = -1
 
-  function fmtSize(n) {
+  // The folders view used to round with its own GB-capped helper, so a big
+  // peer's root printed "1780.1 GB" and "2225.3 GB". One formatter for the
+  // whole shop -- the shelves module's, which rolls up to TB and PB.
+  function fmtSize(n) { return (SH && SH.fmtSize) ? SH.fmtSize(n) : _fmtSizeLocal(n) }
+  function _fmtSizeLocal(n) {
     n = Number(n) || 0
     if (n >= 1073741824) return (n / 1073741824).toFixed(1) + ' GB'
     if (n >= 1048576)    return (n / 1048576).toFixed(0) + ' MB'
     if (n >= 1024)       return (n / 1024).toFixed(0) + ' KB'
     return n + ' B'
+  }
+
+  // Every count and total the folders view prints about "everything below"
+  // must mean the same thing the Download button will actually queue: audio
+  // files only. The button used to say 1780 GB / 1 file from node.fileCount
+  // (which counts artwork, logs and cue sheets) and then queue none of them.
+  function audioBelow(node, out) {
+    out = out || { files: [], size: 0 }
+    if (!node) return out
+    for (const f of node.files) {
+      if (T.AUDIO_RE.test(f.name)) { out.files.push(f); out.size += Number(f.size) || 0 }
+    }
+    for (const c of node.dirs.values()) audioBelow(c, out)
+    return out
+  }
+
+  // Above either of these, "Download everything below" states the real totals
+  // and waits for a yes. A peer's root was offering 1780 GB on one click.
+  const SUBTREE_CONFIRM_FILES = 50
+  const SUBTREE_CONFIRM_BYTES = 5 * 1024 * 1024 * 1024
+
+  // Runs `go` straight away for a small subtree; for anything big, states the
+  // real totals first and runs it only on a yes. _mgConfirm has no cancel
+  // callback -- cancelling simply never calls back, which is what we want.
+  function confirmSubtree(count, size, go) {
+    if (count <= SUBTREE_CONFIRM_FILES && size <= SUBTREE_CONFIRM_BYTES) return go()
+    if (typeof _mgConfirm !== 'function') return go()
+    return _mgConfirm(
+      `Download ${count} file${count !== 1 ? 's' : ''}?`,
+      `<p>That is <strong>${fmtSize(size)}</strong> of audio from ${esc(username)}, ` +
+      `across every folder below this one.</p>`,
+      `Download ${count}`,
+      go,
+    )
   }
 
   function navTo(path) { hist.go(path); searching = ''; search.value = ''; render() }
@@ -213,12 +251,16 @@
     // A fresh folder view starts with nothing selected.
     folderSel.clear()
     const audioHere = l.files.filter(f => T.AUDIO_RE.test(f.name))
+    const belowAudio = audioBelow(l.node)
+    // With "Audio only" on, listDir hides the non-audio files, so a folder of
+    // artwork and logs rendered zero rows and said "This folder is empty."
+    const hiddenHere = audioOnly ? Math.max(0, (l.node.files.length || 0) - audioHere.length) : 0
     actions.innerHTML = audioHere.length
       ? `<button class="slskx-act" id="slskx-dl-folder">Download folder (${audioHere.length})</button>
          <button class="slskx-act" id="slskx-play-first">Play first track</button>
          <button class="slskx-act" id="slskx-dl-selected" disabled>Download selected</button>`
-      : (l.node.fileCount
-          ? `<button class="slskx-act" id="slskx-dl-tree">Download everything below (${l.node.fileCount})</button>` : '')
+      : (belowAudio.files.length
+          ? `<button class="slskx-act" id="slskx-dl-tree">Download everything below (${belowAudio.files.length} · ${fmtSize(belowAudio.size)})</button>` : '')
 
     const rows = []
     for (const d of l.dirs) {
@@ -253,8 +295,12 @@
       </div>`)
     })
 
-    body.innerHTML = rows.length ? rows.join('') : `<div class="slsk-lib-empty">This folder is empty.</div>`
-    status.textContent = `${l.dirs.length} folder${l.dirs.length !== 1 ? 's' : ''} · ${l.files.length} file${l.files.length !== 1 ? 's' : ''} · ${fmtSize(l.node.totalSize)} below this point`
+    const emptyCopy = hiddenHere
+      ? `<div class="slsk-lib-empty">No audio here — ${hiddenHere} non-audio file${hiddenHere !== 1 ? 's' : ''} hidden.
+           <button class="slskx-act" id="slskx-show-hidden">Show them</button></div>`
+      : `<div class="slsk-lib-empty">This folder is empty.</div>`
+    body.innerHTML = rows.length ? rows.join('') : emptyCopy
+    status.textContent = `${l.dirs.length} folder${l.dirs.length !== 1 ? 's' : ''} · ${l.files.length} file${l.files.length !== 1 ? 's' : ''} · ${fmtSize(belowAudio.size)} of audio below this point`
     bindRows(l)
   }
 
@@ -475,28 +521,38 @@
       }
     })
 
+    // "Audio only" is on by default, so a folder of artwork and logs showed
+    // no rows at all and read as empty. The copy now says what is hidden and
+    // this turns the filter off in place.
+    dlg.querySelector('#slskx-show-hidden')?.addEventListener('click', () => {
+      const cb = dlg.querySelector('#slskx-audio-only')
+      if (cb) { cb.checked = false; cb.dispatchEvent(new Event('change')) }
+    })
+
     dlg.querySelector('#slskx-dl-tree')?.addEventListener('click', async ev => {
-      // Walk every descendant folder, not just this one.
-      const collect = (n, out = []) => {
-        for (const f of n.files) if (T.AUDIO_RE.test(f.name)) out.push(f)
-        for (const c of n.dirs.values()) collect(c, out)
-        return out
-      }
-      const files = collect(l.node)
+      // Walk every descendant folder, not just this one -- the same audio set
+      // the button's own label counts.
+      const below = audioBelow(l.node)
+      const files = below.files
       const btn = ev.target
       const label = btn.textContent
-      btn.disabled = true
-      btn.textContent = `Queuing ${files.length}…`
-      try {
-        const res = await _slskEnqueue(files.map(f => ({ username, filename: f.fullPath, size: f.size || 0 })))
-        if (!res || res.ok === false) { btn.disabled = false; btn.textContent = label; return }
-        btn.textContent = `${res.added != null ? res.added : files.length} queued`
-        _scheduleLibRescan()
-      } catch (e) {
-        btn.disabled = false
-        btn.textContent = label
-        showSnackbar('Could not queue the tree: ' + String(e && e.message || e), null, null, 6000)
-      }
+      if (!files.length) { showSnackbar('There is no audio below this folder'); return }
+      // The root of a big peer holds thousands of files and terabytes. That is
+      // not something to start on one click with no statement of what it is.
+      await confirmSubtree(files.length, below.size, async () => {
+        btn.disabled = true
+        btn.textContent = `Queuing ${files.length}…`
+        try {
+          const res = await _slskEnqueue(files.map(f => ({ username, filename: f.fullPath, size: f.size || 0 })))
+          if (!res || res.ok === false) { btn.disabled = false; btn.textContent = label; return }
+          btn.textContent = `${res.added != null ? res.added : files.length} queued`
+          _scheduleLibRescan()
+        } catch (e) {
+          btn.disabled = false
+          btn.textContent = label
+          showSnackbar('Could not queue the tree: ' + String(e && e.message || e), null, null, 6000)
+        }
+      })
     })
   }
 
@@ -636,7 +692,7 @@
 
   // Prefer the module's TB-aware formatter so the shop hero never shows a
   // four-digit unit ("6453.3 GB" → "6.3 TB"); fall back to the local one.
-  function shFmtSize(n) { return (SH && SH.fmtSize) ? SH.fmtSize(n) : fmtSize(n) }
+  function shFmtSize(n) { return fmtSize(n) }
 
   // Token-bucketed index over the library albums that HAVE cover art, so the
   // "does the local library already supply this cover?" test is a handful of
