@@ -132,8 +132,12 @@ function createDebridProxy({ fetchFn, host = '127.0.0.1' } = {}) {
     for (let i = 0; i < UPSTREAM_TRIES; i++) {
       if (signal && signal.aborted) throw new Error('client gone')
       try {
+        // stream: true tells the Node fetch shim to drop its idle timeout once
+        // the headers land. mpv fills its cache and then stops reading for as
+        // long as it likes; the body phase has no business being on a 20 s
+        // deadline. The abort signal is what ends this request.
         const res = await fetcher(target, Object.assign(
-          { headers: { Range: `bytes=${start}-${end}` } },
+          { stream: true, headers: { Range: `bytes=${start}-${end}` } },
           signal ? { signal } : {}))
         if (res && (res.status === 206 || res.status === 200)) return res
         // Drain the error body so the socket is returned to the pool rather
@@ -212,7 +216,15 @@ function createDebridProxy({ fetchFn, host = '127.0.0.1' } = {}) {
     } catch (e) {
       try {
         if (!res.headersSent && !res.destroyed) { res.writeHead(502); res.end() }
-        else if (!res.writableEnded) res.end()
+        else if (!res.destroyed) {
+          // The headers are already out, and they promised a Content-Length
+          // this body is now never going to reach. res.end() here closed the
+          // response short of what was declared, so mpv sat waiting for bytes
+          // that were not coming — up to thirty seconds of a frozen picture
+          // before it gave up. Destroying the socket instead is an error the
+          // player sees immediately and can act on.
+          res.destroy(e instanceof Error ? e : new Error(String(e)))
+        }
       } catch (_) {}
     }
   }
