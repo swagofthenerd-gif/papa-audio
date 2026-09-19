@@ -16580,7 +16580,16 @@ async function _invokeVideoControl(verb, args) {
       case 'volume': await engine.setVolume(args?.value ?? args?.volume); break
       case 'mute': await engine.setMute(!!(args?.value ?? args?.muted)); break
       case 'speed': await engine.setSpeed(args?.value ?? args?.speed); break
-      case 'track': await engine.setTrack(args?.type, args?.id); break
+      case 'track':
+        await engine.setTrack(args?.type, args?.id)
+        // Switching a track makes mpv re-read the stream from the playhead to
+        // pick up the newly selected one's packets — the same demand a seek
+        // makes, so it needs the same answer. Without this the torrent went on
+        // fetching wherever the last seek pointed while mpv sat starving at
+        // the playhead: the picture stopped on an audio switch, and every seek
+        // afterwards queued behind the stale claim this call gives back.
+        _prioritiseStreamAtPlayhead()
+        break
       case 'subAdd': await engine.addSubtitle(args?.path, args?.select !== false); break
       // Milliseconds. The player sent `seconds` while this read `ms`, so both
       // nudges resolved to NaN and did nothing at all.

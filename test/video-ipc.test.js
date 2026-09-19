@@ -319,6 +319,18 @@ test('video-control dispatches the §4.1 verbs onto the engine', () => {
   assert.match(body, /videoEngine\(\)/, 'the verbs must land on the video engine')
 })
 
+// Switching audio made the picture stop, and seeking stayed laggy afterwards.
+// mpv re-reads the stream from the playhead to pick up the newly selected
+// track — the same demand a seek makes — but only the seek verb ever told the
+// torrent, so the swarm went on fetching wherever the last jump pointed.
+test('switching a track tells the torrent where the viewer is, as a seek does', () => {
+  const body = handlerBody('video-control')
+  const track = body.slice(body.indexOf("case 'track'"), body.indexOf("case 'subAdd'"))
+  assert.match(track, /setTrack\(/)
+  assert.match(track, /_prioritiseStreamAtPlayhead\(\)/,
+    'an audio or subtitle switch must re-prioritise at the playhead')
+})
+
 test('the screenshot verb returns a path in the value field', () => {
   const body = handlerBody('video-control')
   assert.match(body, /case 'screenshot'/)
