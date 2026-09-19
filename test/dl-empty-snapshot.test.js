@@ -162,15 +162,18 @@ test('two empty answers re-queue every in-flight file and abandon none of them',
 })
 
 test('nobody is blamed for a daemon that lost its list', () => {
+  // recordFailure would re-queue these too, so re-queueing alone does not prove
+  // the right call was made. The peer ledger is what separates them: a peer that
+  // was quietly uploading when its daemon restarted must not collect a strike,
+  // and five strikes bench it for ten minutes.
   const dlState = stateWithInflight(2)
   const now = T0 + 60000
   for (const key of Object.keys(dlState.inflight)) {
     dlReconcileMissing(dlState, key, dlState.inflight[key], CFG, now, true)
   }
-  for (const u of Object.keys(dlState.peerFailures)) {
-    assert.strictEqual(dlState.peerFailures[u].consecutive || 0, 0,
-      u + ' did nothing wrong and must not be benched for it')
-  }
+  assert.strictEqual(dlState.pending.length, 2, 'the files did come back')
+  assert.deepStrictEqual(dlState.peerFailures, {},
+    'and not one peer was charged for it')
 })
 
 test('a transfer missing from a list that holds others IS a cancellation', () => {
