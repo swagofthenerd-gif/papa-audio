@@ -2225,7 +2225,24 @@ async function restorePlaybackState(opts) {
 // ── Navigation ──────────────────────────────────────────────────────────────
 const VIDEO_PAGES = new Set(['video', 'browse', 'person', 'video-detail', 'shelf', 'diary', 'calendar'])
 
+// Every page id navigate() can actually paint. A typo or a stale saved session
+// used to sail straight through: state.currentPage, the history entry and the
+// nav highlight were all updated, the render if-chain matched nothing, and the
+// app sat on the previous page's markup under a new identity -- with Back now
+// pointing at a page that had never been left.
+const NAV_PAGES = new Set([
+  'home', 'library', 'artists', 'album', 'artist', 'search', 'downloads',
+  'soulseek', 'playlists', 'playlist', 'smartlist', 'manage', 'stats',
+  'trail', 'wrapped', 'liked', 'yt-album', 'yt-artist', 'yt-see-all',
+  'yt-playlist', 'explore', 'video', 'browse', 'person', 'video-detail',
+  'shelf', 'diary', 'calendar',
+])
+
 function navigate(page, navId, opts = {}) {
+  if (!NAV_PAGES.has(page)) {
+    console.warn('[papa] navigate() refused an unknown page id:', String(page))
+    return
+  }
   // Leaving a page closes what was floating over it. The rule, not per-modal
   // patches: every overlay that registered a dismisser gets closed here.
   _runNavDismiss()
