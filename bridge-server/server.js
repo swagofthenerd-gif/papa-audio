@@ -702,10 +702,24 @@ function withArtUrls(albums) {
     : a)
 }
 
+// The desktop's library cache can carry albums it cannot actually play. When a
+// music root is unreachable (an unplugged drive, an unmounted share) main.js
+// keeps that root's albums from the previous cache and flags them
+// `unavailable: true` rather than dropping them, so the desktop can grey them
+// out and say which drive is missing.
+//
+// The phone has no such UI. It sees an ordinary album, plays it, and gets a 404
+// from /stream — and its recovery gives up without saying anything, so the
+// album looks broken rather than absent. An album whose files are not on this
+// machine right now is not something to offer over the LAN.
+function playableAlbums(albums) {
+  return (Array.isArray(albums) ? albums : []).filter(a => !(a && a.unavailable))
+}
+
 // ── Library ───────────────────────────────────────────────────────────────────
 app.get('/api/library', (_, res) => {
   const cached = sideValue('libraryCache')
-  if (cached) return res.json({ albums: withArtUrls(cached), cached: true })
+  if (cached) return res.json({ albums: withArtUrls(playableAlbums(cached)), cached: true })
   res.json({ albums: [], cached: false })
 })
 
@@ -724,7 +738,7 @@ app.get('/api/library', (_, res) => {
 app.post('/api/library/scan', (_, res) => {
   const cached = sideValue('libraryCache')
   res.json({
-    albums: withArtUrls(Array.isArray(cached) ? cached : []),
+    albums: withArtUrls(playableAlbums(cached)),
     persisted: false,
     rescanned: false,
   })

@@ -519,6 +519,38 @@ test('a scan answers the desktop cache, with the desktop ids, immediately', asyn
   await art.text()
 })
 
+// L4. When a music root is unreachable, main.js keeps that root's albums in the
+// cache flagged `unavailable: true` so the desktop can grey them out. The phone
+// has no such UI: it sees an ordinary album, plays it, gets a 404 from /stream,
+// and its recovery gives up silently — so the album reads as broken, not absent.
+test('albums on an unreachable drive are not offered to the phone', async () => {
+  const cacheFile = path.join(ud, 'library-cache.json')
+  const original = fs.readFileSync(cacheFile, 'utf8')
+  const cache = JSON.parse(original)
+  cache.push({
+    id: 'albgone', name: 'On the unplugged drive', artist: 'Tester',
+    artPath: F.art, unavailable: true, unavailableRoot: '/mnt/not-mounted',
+    tracks: [{ id: 'tgone', filePath: '/mnt/not-mounted/x.flac' }],
+  })
+  fs.writeFileSync(cacheFile, JSON.stringify(cache))
+  try {
+    const lib = await (await fetch(`${base}/api/library`, authed)).json()
+    assert.deepStrictEqual(lib.albums.map(a => a.id), ['alb1', 'albescape'],
+      'an album whose files are not on this machine must not be offered over the LAN')
+
+    // A refresh must not put it back either.
+    const scan = await (await fetch(`${base}/api/library/scan`, { method: 'POST', ...authed })).json()
+    assert.deepStrictEqual(scan.albums.map(a => a.id), ['alb1', 'albescape'])
+
+    // The control: the desktop's own file is untouched. The bridge filters its
+    // reply, it does not edit the cache.
+    assert.strictEqual(JSON.parse(fs.readFileSync(cacheFile, 'utf8')).length, 3,
+      'the bridge rewrote the desktop’s library cache')
+  } finally {
+    fs.writeFileSync(cacheFile, original)
+  }
+})
+
 test('/api/library/cache is gone (the phone must not overwrite the desktop cache)', async () => {
   const r = await fetch(`${base}/api/library/cache`, {
     method: 'POST',
