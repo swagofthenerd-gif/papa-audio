@@ -1102,6 +1102,12 @@
 
   // One album card. `variant` tweaks the badge line: 'upgrade' shows the
   // yours/theirs quality pair, 'missing' shows a wishlist +.
+  function shLibraryAlbum(id) {
+    if (id == null || !state || !Array.isArray(state.library)) return null
+    const want = String(id)
+    return state.library.find(x => x && String(x.id) === want) || null
+  }
+
   function shCardHtml(a, idx, variant) {
     const title = a.album || a.folderName || 'Unknown album'
     const artist = a.artist || ''
@@ -1109,10 +1115,17 @@
     const meta = `${a.trackCount} track${a.trackCount !== 1 ? 's' : ''} · ${shFmtSize(a.totalSize)}`
     let badgeLine = ''
     if (variant === 'upgrade' && a.upgrade) {
+      const mine = shLibraryAlbum(a.matchedLibId)
+      const mineCount = mine && Array.isArray(mine.tracks) ? mine.tracks.length : null
+      // Say it before the download, not after: an album with more or fewer
+      // songs than yours is not a straight swap.
+      const countNote = mineCount != null && mineCount !== a.trackCount
+        ? `<span class="slsh-q-count" title="Track counts differ — Replace will keep both copies">${a.trackCount} tracks · yours ${mineCount}</span>`
+        : ''
       badgeLine = `<div class="slsh-card-upgrade">
         <span class="slsh-q-yours">Yours: ${esc(a.upgrade.yours || '—')}</span>
         <span class="slsh-q-arrow">→</span>
-        <span class="slsh-q-theirs">Theirs: ${esc(a.upgrade.theirs || qual)}</span></div>`
+        <span class="slsh-q-theirs">Theirs: ${esc(a.upgrade.theirs || qual)}</span>${countNote}</div>`
     } else if (variant === 'missing') {
       badgeLine = `<div class="slsh-card-qual">${esc(qual)}</div>`
     } else {
@@ -1120,6 +1133,8 @@
     }
     const wishBtn = variant === 'missing'
       ? `<button class="slsh-card-act slsh-wish" data-idx="${idx}" title="Add to wishlist">＋</button>` : ''
+    const replaceBtn = variant === 'upgrade' && a.matchedLibId
+      ? `<button class="slsh-card-act slsh-replace" data-idx="${idx}" title="Download this copy; once it is verified, offer to move your old copy to Trash" aria-label="Replace your copy">⇄</button>` : ''
     return `<div class="slsh-card" data-idx="${idx}" data-folder="${esc(a.folderPath)}" tabindex="0" role="button" aria-label="Open ${esc((a.artist ? a.artist + ' — ' : '') + (a.album || 'album'))}">
       ${shAlbumArtHtml(a)}
       <div class="slsh-card-title" title="${esc(title)}">${esc(title)}</div>
@@ -1129,7 +1144,7 @@
       <div class="slsh-card-actions">
         <button class="slsh-card-act slsh-preview" data-idx="${idx}" title="Preview — hear it before you download (races Soulseek vs YouTube)">⚡</button>
         <button class="slsh-card-act slsh-play" data-idx="${idx}" title="Download the first track and play">▶</button>
-        <button class="slsh-card-act slsh-dl" data-idx="${idx}" title="Download this album (${a.trackCount})">⬇</button>
+        <button class="slsh-card-act slsh-dl" data-idx="${idx}" title="Download this album (${a.trackCount})">⬇</button>${replaceBtn}
         <button class="slsh-card-act slsh-find" data-idx="${idx}" title="Find other sources for this album">⌕</button>
         ${wishBtn}
       </div>
@@ -1622,6 +1637,19 @@
           _slskCardDownloads.set(_slskCardKey(username, a.folderName), { total: g.files.length })
           btn.textContent = '✓'
           shTrackProgress(a)
+        } catch (_) { btn.disabled = false; btn.textContent = orig }
+      } else if (btn.classList.contains('slsh-replace')) {
+        const orig = btn.textContent
+        btn.disabled = true; btn.textContent = '…'
+        try {
+          const res = await _slskEnqueue(g.files.map(f => ({ username, filename: f.filename, size: f.size, replaceLibId: String(a.matchedLibId) })))
+          if (res && res.ok) {
+            _scheduleLibRescan()
+            _slskCardDownloads.set(_slskCardKey(username, a.folderName), { total: g.files.length })
+            btn.textContent = '✓'
+            shTrackProgress(a)
+            showSnackbar('Downloading the upgrade. Once every track is verified you will be offered to move your old copy to Trash.')
+          } else { btn.disabled = false; btn.textContent = orig }
         } catch (_) { btn.disabled = false; btn.textContent = orig }
       } else if (btn.classList.contains('slsh-find')) {
         close(); navigate('search', a.album || a.folderName)

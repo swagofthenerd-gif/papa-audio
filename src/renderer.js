@@ -29147,6 +29147,29 @@ function _hydrateVerdicts(groups, repaint) {
 // The slsk-verify-done push: a completed album finished verification. Cache the
 // verdict and repaint whatever is showing it. Bind-once, app-lifetime, guarded
 // by the current page like the other hub subscribers.
+// A shelf Replace has finished downloading and been verified. Only a clean
+// verdict with matching track counts gets the Trash offer; anything else is
+// said plainly and both copies stay. The old copy goes to Trash (recoverable
+// from Manage → Recently Deleted), never a hard delete.
+function _offerUpgradeReplace(rec) {
+  var r = rec.replace
+  var name = (r.artist ? r.artist + ' — ' : '') + (r.album || rec.folder)
+  if (!r.ok) {
+    showSnackbar('Upgrade of ' + name + ' downloaded, but ' + (r.reason || 'it could not be checked') + '.', '', function () {}, 9000)
+    return
+  }
+  showSnackbar('Upgrade of ' + name + ' verified (' + r.newCount + ' tracks). Move your old copy to Trash?',
+    'Move to Trash', function () { _trashReplacedAlbum(r, name) }, 15000)
+}
+
+async function _trashReplacedAlbum(r, name) {
+  if (!r || !Array.isArray(r.oldPaths) || !r.oldPaths.length) { showSnackbar('Nothing to move — the old copy has no files on disk.'); return }
+  var out = await window.api.libraryTrashPaths({ paths: r.oldPaths }).catch(function (e) { return { ok: false, error: String(e && e.message || e) } })
+  if (!out || out.ok === false) { showSnackbar('Could not move the old copy: ' + ((out && out.error) || 'unknown error')); return }
+  showSnackbar('Old copy of ' + name + ' moved to Trash (' + r.oldPaths.length + ' files). Recoverable from Manage → Recently Deleted.', '', function () {}, 8000)
+  if (typeof _scheduleLibRescan === 'function') _scheduleLibRescan()
+}
+
 let _slskVerifyDoneBound = false
 function _slskBindVerifyDone() {
   if (_slskVerifyDoneBound) return
@@ -29155,6 +29178,7 @@ function _slskBindVerifyDone() {
   window.api.onSlskVerifyDone(function (rec) {
     if (!rec || !rec.folder) return
     _slskVerdicts.set(_verdictKey(rec.username, rec.folder), rec)
+    if (rec.replace) _offerUpgradeReplace(rec)
     if (state.currentPage === 'downloads' && _dlTab === 'completed') {
       _pollAndRenderDownloads().catch(function () {})
     }

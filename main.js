@@ -7998,6 +7998,7 @@ function dlTrackGroups(items) {
   for (const [key, g] of fresh) {
     const existing = dlGroups.get(key)
     if (!existing) { dlGroups.set(key, g); continue }
+    if (g.replaceLibId && !existing.replaceLibId) existing.replaceLibId = g.replaceLibId
     for (const f of g.files) {
       if (!existing.files.has(f)) { existing.files.add(f); existing.expected++ }
     }
@@ -8894,6 +8895,30 @@ async function dlCheckCompletedGroups() {
 // channel count. Persists the verdict keyed username::folder, emits
 // 'slsk-verify-done', and, when the verdict is clean and auto-organize is on,
 // moves the files into a normalised folder (#50).
+// A shelf Replace is only safe when the new copy is whole AND the same album:
+// albums come with more or fewer songs than yours (bonus tracks, a missing
+// closer, a two-disc rip), and replacing on a count mismatch loses music. This
+// says exactly what was found; the renderer offers Trash only when `ok`.
+function _assessReplace(group, verdict, probes) {
+  const albums = sideStores.libraryCache.get() || []
+  const mine = albums.find(a => a && String(a.id) === String(group.replaceLibId))
+  if (!mine) return { ok: false, reason: 'the album this was meant to replace is no longer in your library' }
+  const oldTracks = Array.isArray(mine.tracks) ? mine.tracks : []
+  const newCount = probes.filter(pr => pr.ok && pr.filePath).length
+  const oldCount = oldTracks.length
+  const base = {
+    libId: String(mine.id), artist: mine.artist || '', album: mine.name || mine.album || '',
+    newCount, oldCount,
+    oldPaths: oldTracks.map(t => t && t.filePath).filter(Boolean),
+  }
+  if (!verdict.ok) return { ...base, ok: false, reason: 'the new copy did not pass verification' }
+  if (newCount !== oldCount) {
+    return { ...base, ok: false,
+      reason: `the new copy has ${newCount} track${newCount === 1 ? '' : 's'}, yours has ${oldCount} — both kept` }
+  }
+  return { ...base, ok: true }
+}
+
 async function dlVerifyGroup(group) {
   const downloadDir = _downloadDir()
   const probes = []
@@ -8921,6 +8946,7 @@ async function dlVerifyGroup(group) {
     dir: resolvedPaths.length ? path.dirname(resolvedPaths[0]) : null,
     at: Date.now(),
   }
+  if (group.replaceLibId) record.replace = _assessReplace(group, verdict, probes)
   try {
     sideStores.slskVerify.update(prev => {
       const next = prev && typeof prev === 'object' ? { ...prev } : {}
@@ -9419,6 +9445,10 @@ ipcMain.handle('slsk-enqueue-downloads', async (_, { items, force, ignoreCapacit
     .map(it => ({
       username: it.username || (it.sources && it.sources[0] && it.sources[0].username) || '',
       filename: it.filename,
+      // A shelf "Replace" carries the id of the library album it is meant to
+      // supersede. Verification compares the two and the renderer offers the
+      // trash step; nothing here ever deletes on its own.
+      replaceLibId: typeof it.replaceLibId === 'string' ? it.replaceLibId : null,
     })))
   // Collapse by track identity BEFORE enqueuing. "DL All" on a merged card can
   // hand the same song from several peers (with different track numbers and
