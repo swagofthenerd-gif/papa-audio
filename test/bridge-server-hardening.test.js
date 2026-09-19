@@ -628,3 +628,135 @@ test('a wrong token is refused whatever its length (constant-time compare)', asy
   // The control: the real token still works.
   assert.strictEqual((await fetch(`${base}/api/folders`, authed)).status, 200)
 })
+
+// ── M7. An upstream slskd failure must not be reported as success ─────────────
+// slskFetch never looked at res.ok, so a 400 on a DELETE became {ok:true} (the
+// cancel the phone thinks stuck and which never stuck), a 400 on a POST became
+// a download that was never queued, and a 500 on a GET became an empty
+// transfers list that reads as "nothing is downloading".
+//
+// These run against a LOCAL STUB, never the user's real slskd on :5030.
+
+const http = require('http')
+
+// A stand-in slskd. `plan` maps a path prefix to the status (and body) to
+// answer with, so one test can make the daemon fail on demand.
+function slskdStub(plan) {
+  const seen = []
+  const srv = http.createServer((req, res) => {
+    seen.push(`${req.method} ${req.url}`)
+    if (req.url.startsWith('/api/v0/session')) {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      return res.end(JSON.stringify({ token: 'stub-token' }))
+    }
+    const hit = plan.find(p => req.url.startsWith('/api/v0' + p.path) &&
+      (!p.method || p.method === req.method))
+    if (!hit) { res.writeHead(404); return res.end('{}') }
+    res.writeHead(hit.status, { 'Content-Type': 'application/json' })
+    res.end(typeof hit.body === 'string' ? hit.body : JSON.stringify(hit.body ?? {}))
+  })
+  return new Promise(resolve => {
+    srv.listen(0, '127.0.0.1', () => resolve({
+      srv, seen, url: `http://127.0.0.1:${srv.address().port}/api/v0`,
+    }))
+  })
+}
+
+async function withStubbedSlskd(plan, fn) {
+  const stub = await slskdStub(plan)
+  const { proc, base: b } = await boot({ BRIDGE_SLSKD_BASE: stub.url })
+  try { await fn(b, stub) } finally {
+    proc.kill('SIGKILL')
+    await new Promise(r => stub.srv.close(r))
+  }
+}
+
+test('a 400 from slskd on a cancel is reported, not answered {ok:true}', async () => {
+  await withStubbedSlskd(
+    [{ path: '/transfers/downloads/', method: 'DELETE', status: 400, body: { message: 'no such transfer' } }],
+    async (b) => {
+      const r = await fetch(`${b}/api/slsk/transfers/peer/abc`, { method: 'DELETE', ...authed })
+      assert.strictEqual(r.status, 502, 'a failed cancel was reported as a successful one')
+      const body = await r.json()
+      assert.strictEqual(body.upstreamStatus, 400)
+    })
+})
+
+test('a 400 from slskd on a download is reported, not answered {ok:true}', async () => {
+  await withStubbedSlskd(
+    [{ path: '/transfers/downloads/', method: 'POST', status: 400, body: { message: 'bad request' } }],
+    async (b) => {
+      const r = await fetch(`${b}/api/slsk/download`, {
+        method: 'POST',
+        headers: { ...authed.headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: 'peer', filename: 'x.flac', size: 1 }),
+      })
+      assert.strictEqual(r.status, 502, 'a download that was never queued reported ok')
+      assert.strictEqual((await r.json()).upstreamStatus, 400)
+    })
+})
+
+test('a 500 from slskd on the transfer list is an error, not an empty list', async () => {
+  await withStubbedSlskd(
+    [{ path: '/transfers/downloads', method: 'GET', status: 500, body: { message: 'boom' } }],
+    async (b) => {
+      const r = await fetch(`${b}/api/slsk/transfers`, authed)
+      assert.strictEqual(r.status, 502, '"slskd is broken" was indistinguishable from "nothing is downloading"')
+      assert.strictEqual((await r.json()).upstreamStatus, 500)
+    })
+})
+
+test('a healthy slskd still yields a flat transfer list and an active count', async () => {
+  // The control. It also pins the SHAPE: the Android Transfer type is a flat
+  // file record, and the raw nested users->directories->files array slskd
+  // returns filtered down to nothing on every screen that read it.
+  const downloads = [{
+    username: 'peer',
+    directories: [{
+      directory: 'Album',
+      files: [
+        { id: 'f1', filename: 'Album\\01.flac', size: 100, bytesTransferred: 50, state: 'InProgress' },
+        { id: 'f2', filename: 'Album\\02.flac', size: 100, bytesTransferred: 100, state: 'Completed, Succeeded' },
+        { id: 'f3', filename: 'Album\\03.flac', size: 100, bytesTransferred: 0, state: 'Queued, Remotely' },
+      ],
+    }],
+  }]
+  await withStubbedSlskd(
+    [{ path: '/transfers/downloads', method: 'GET', status: 200, body: downloads }],
+    async (b) => {
+      const list = await (await fetch(`${b}/api/slsk/transfers`, authed)).json()
+      assert.strictEqual(list.length, 3)
+      assert.deepStrictEqual(Object.keys(list[0]).sort(), [
+        'averageSpeed', 'bytesTransferred', 'elapsed', 'filename', 'id',
+        'remainingTime', 'size', 'state', 'username',
+      ])
+      assert.strictEqual(list[0].username, 'peer')
+
+      const count = await (await fetch(`${b}/api/slsk/active-count`, authed)).json()
+      assert.strictEqual(count.count, 2, 'the badge count must match the tab’s own isActive filter')
+    })
+})
+
+test('/api/slsk/active-count exists (the phone was getting a 404 and showing 0)', async () => {
+  await withStubbedSlskd(
+    [{ path: '/transfers/downloads', method: 'GET', status: 200, body: [] }],
+    async (b) => {
+      const r = await fetch(`${b}/api/slsk/active-count`, authed)
+      assert.strictEqual(r.status, 200)
+      assert.deepStrictEqual(await r.json(), { count: 0 })
+    })
+})
+
+test('/api/library/delete-file exists and refuses honestly rather than 404-ing', async () => {
+  const r = await fetch(`${base}/api/library/delete-file`, {
+    method: 'POST',
+    headers: { ...authed.headers, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: F.track }),
+  })
+  assert.strictEqual(r.status, 501, 'the route must exist and say why it cannot act')
+  const body = await r.json()
+  assert.strictEqual(body.ok, false)
+  assert.match(body.error, /desktop/i)
+  // The critical part: it must NOT have deleted the file behind the trash's back.
+  assert.ok(fs.existsSync(F.track), 'the bridge unlinked a library file')
+})

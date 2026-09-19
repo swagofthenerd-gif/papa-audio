@@ -33,7 +33,10 @@ const HOST        = process.env.BRIDGE_HOST || '0.0.0.0'
 const USER_DATA   = process.env.PAPA_BRIDGE_USER_DATA ||
   path.join(os.homedir(), '.config', 'papa-audio')
 const ARTWORK_DIR = path.join(USER_DATA, 'artwork')
-const SLSKD_BASE  = 'http://localhost:5030/api/v0'
+// BRIDGE_SLSKD_BASE points the daemon calls somewhere else. The tests aim it at
+// a local stub so they exercise the real error handling without ever touching
+// the user's live slskd (and his real Soulseek account) on :5030.
+const SLSKD_BASE  = process.env.BRIDGE_SLSKD_BASE || 'http://localhost:5030/api/v0'
 const SLSKD_CREDS = { username: 'slskd', password: 'slskd' }
 const MUSIC_EXT   = /\.(flac|mp3|wav|aiff?|m4a|aac|ogg|opus|ape|wv|wma|dsf|dff)$/i
 
@@ -259,6 +262,17 @@ async function slskAcquireToken() {
   return true
 }
 
+// An upstream failure carries its status so a route can report the real thing
+// instead of inventing a success.
+class SlskError extends Error {
+  constructor(status, endpoint, body) {
+    super(`slskd ${status} on ${endpoint}${body ? `: ${String(body).slice(0, 200)}` : ''}`)
+    this.name = 'SlskError'
+    this.status = status
+    this.endpoint = endpoint
+  }
+}
+
 async function slskFetch(method, endpoint, body) {
   if (!slskToken || Date.now() > slskExpiry) await slskAcquireToken()
   const opts = {
@@ -272,10 +286,61 @@ async function slskFetch(method, endpoint, body) {
     opts.headers.Authorization = `Bearer ${slskToken}`
     res = await fetch(`${SLSKD_BASE}${endpoint}`, opts)
   }
+  // res.ok was never checked. A 400 on a DELETE returned null and the route
+  // above it answered {ok:true} -- which is exactly the non-sticking cancel the
+  // phone sees: it reports the transfer removed, slskd never removed it. A 400
+  // on a POST was an invented successful download; a 500 on a GET was an empty
+  // list that looked like "nothing is transferring".
+  if (!res.ok) {
+    let detail = ''
+    try { detail = await res.text() } catch (_) {}
+    throw new SlskError(res.status, endpoint, detail)
+  }
   if (method === 'DELETE') return null
   const text = await res.text()
   if (!text) return null
   try { return JSON.parse(text) } catch { return text }
+}
+
+// slskd answers /transfers/downloads as users -> directories -> files. The
+// Android app's Transfer type is a FLAT file record ({id, username, filename,
+// size, bytesTransferred, state}), so the raw nested array it was being handed
+// filtered down to nothing on every screen that reads it.
+function flattenTransfers(data) {
+  const out = []
+  for (const user of Array.isArray(data) ? data : []) {
+    for (const dir of (user && user.directories) || []) {
+      for (const f of (dir && dir.files) || []) {
+        out.push({
+          id: f.id,
+          username: user.username,
+          filename: String(f.filename || ''),
+          size: Number(f.size) || 0,
+          bytesTransferred: Number(f.bytesTransferred) || 0,
+          state: String(f.state || ''),
+          averageSpeed: Number(f.averageSpeed) || 0,
+          elapsed: f.elapsed ?? null,
+          remainingTime: f.remainingTime ?? null,
+        })
+      }
+    }
+  }
+  return out
+}
+
+// The same predicate the Downloads tab uses (isActive in downloads.tsx), so the
+// badge count and the list can never disagree.
+const SLSK_ACTIVE = /queued|initializing|inprogress|requested/i
+function countActive(transfers) {
+  return transfers.filter(t => SLSK_ACTIVE.test(t.state || '')).length
+}
+
+// An upstream failure must reach the client as an upstream failure.
+function slskFail(res, e) {
+  if (e instanceof SlskError) {
+    return res.status(502).json({ error: e.message, upstreamStatus: e.status })
+  }
+  return res.status(502).json({ error: `slskd unreachable: ${(e && e.message) || e}` })
 }
 
 // ── Library helpers (copied from main.js) ─────────────────────────────────────
@@ -904,9 +969,7 @@ app.post('/api/slsk/search', async (req, res) => {
     if (results.length) searchCacheSet(cacheKey, results)
     sseSend('slsk-progress', { query, results, done: true })
     res.json({ results })
-  } catch (e) {
-    res.status(500).json({ error: e.message })
-  }
+  } catch (e) { slskFail(res, e) }
 })
 
 // ── Soulseek download ─────────────────────────────────────────────────────────
@@ -915,23 +978,30 @@ app.post('/api/slsk/download', async (req, res) => {
   try {
     await slskFetch('POST', `/transfers/downloads/${encodeURIComponent(username)}`, [{ filename, size }])
     res.json({ ok: true })
-  } catch (e) {
-    res.status(500).json({ error: e.message })
-  }
+  } catch (e) { slskFail(res, e) }
 })
 
 app.get('/api/slsk/transfers', async (_, res) => {
   try {
-    const data = await slskFetch('GET', '/transfers/downloads')
-    res.json(data || [])
-  } catch { res.json([]) }
+    res.json(flattenTransfers(await slskFetch('GET', '/transfers/downloads')))
+  } catch (e) { slskFail(res, e) }
+})
+
+// The Downloads tab's badge. The phone was calling this and getting a 404 (it
+// does not exist in this server), so getSlskActiveCount()'s catch turned every
+// real count into 0 and the dot never appeared.
+app.get('/api/slsk/active-count', async (_, res) => {
+  try {
+    const flat = flattenTransfers(await slskFetch('GET', '/transfers/downloads'))
+    res.json({ count: countActive(flat) })
+  } catch (e) { slskFail(res, e) }
 })
 
 app.delete('/api/slsk/transfers/:username/:id', async (req, res) => {
   try {
     await slskFetch('DELETE', `/transfers/downloads/${encodeURIComponent(req.params.username)}/${encodeURIComponent(req.params.id)}?remove=true`)
     res.json({ ok: true })
-  } catch { res.json({ ok: true }) }
+  } catch (e) { slskFail(res, e) }
 })
 
 app.get('/api/slsk/resolve', (req, res) => {
@@ -961,6 +1031,33 @@ app.get('/api/slsk/resolve', (req, res) => {
     if (c && fs.existsSync(c)) return res.json({ path: c, downloadDir })
   }
   res.json({ path: null, downloadDir })
+})
+
+// ── Library file deletion ────────────────────────────────────────────────────
+// The Android app's "Phone only" download mode calls this to remove the PC copy
+// once the file has been pulled to the phone (services/phonePull.ts). It has
+// never existed here, so the PC copy was silently always kept.
+//
+// It is NOT implemented as an unlink. The desktop deletes library files through
+// Electron's shell.trashItem (main.js 'library-trash-paths'), which puts them in
+// the freedesktop trash so a mistake is recoverable — and the desktop has a
+// whole restore path built on that (trashRootsFor / library-restore-trashed).
+// This process is plain Node with no Electron and no IPC channel to the desktop
+// (main.js has no bridge/phone/remote surface at all — grepped), so there is no
+// way from here to the trash. An unlink() would be a permanent delete wearing
+// the name of a reversible one.
+//
+// So: answer honestly. 501 with the reason, which the phone's catch already
+// turns into "the PC copy was kept".
+app.post('/api/library/delete-file', (req, res) => {
+  const filePath = req.body && req.body.path
+  if (!filePath) return res.status(400).json({ error: 'path required' })
+  return res.status(501).json({
+    ok: false,
+    error: 'The bridge cannot delete PC files. Deleting goes through the ' +
+      'desktop app’s trash so it can be undone, and the bridge has no channel ' +
+      'to the desktop. Remove it from the desktop app instead.',
+  })
 })
 
 // ── Network info (for QR code setup) ─────────────────────────────────────────
