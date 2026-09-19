@@ -25,6 +25,10 @@ function build() {
   const fn = new Function('console', `
     const _seqSeen = new Map()
     const _seqGaps = []
+    // reportSeq also consults the resubscribe re-baseline set (see
+    // ipc-seq-resubscribe.test.js). Empty here: these cases are all about a
+    // channel that has been subscribed throughout.
+    const _seqResync = new Set()
     ${SRC.slice(start, end)}
     return { reportSeq, gaps: _seqGaps }
   `)

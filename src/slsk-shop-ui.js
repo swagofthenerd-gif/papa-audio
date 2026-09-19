@@ -87,16 +87,25 @@
         <input type="checkbox" id="slskx-audio-only" checked> Audio only
       </label>
       <button class="slskx-nav slskx-sur-btn" id="slskx-surround" style="width:auto;padding:0 8px"
+              aria-pressed="false"
               title="List every surround-labelled folder in this library">Surround finder</button>
     </div>
     <div class="slskx-actionbar" id="slskx-actionbar"></div>
     <div class="slsk-lib-body" id="slsk-lib-body">
-      <div class="slsk-lib-loading">Loading ${esc(username)}'s library…</div>
+      <div class="slsk-lib-loading indeterminate">
+        <div class="slsk-lib-loading-text">Fetching ${esc(username)}'s file list from slskd…</div>
+        <div class="slsk-lib-loading-bar" role="progressbar" aria-label="Fetching the library"><span></span></div>
+      </div>
     </div>
     <div class="slsh-body" id="slsh-body" style="display:none"></div>
     <div class="slskx-statusbar" id="slskx-status"></div>
   </div>`
   document.body.appendChild(dlg)
+  // Focus moves into the modal the moment it exists, not after the browse.
+  // A browse that fails (an offline peer, no credentials) returns early, and
+  // focus used to stay on the opener behind the overlay for the whole of that
+  // error state -- Tab walked the page underneath it.
+  try { (dlg.querySelector('#slsk-lib-close') || dlg).focus({ preventScroll: true }) } catch (_) {}
 
   const body    = dlg.querySelector('#slsk-lib-body')
   const crumbs  = dlg.querySelector('#slskx-crumbs')
@@ -148,6 +157,11 @@
     })
   }
 
+  // Focus came from somewhere and has to go back there. Closing the shop used
+  // to leave focus on a removed node, which drops it to <body> -- Tab then
+  // restarted from the top of the page.
+  const opener = document.activeElement
+
   const close = () => {
     if (_slavPanel) { try { _slavPanel.close() } catch (_) {} _slavPanel = null }
     if (_slskExplorerClose === close) _slskExplorerClose = null
@@ -161,6 +175,9 @@
     // Drop the background-refresh subscription so it can't rebuild a dead shop.
     try { if (typeof _offBrowseRefreshed === 'function') _offBrowseRefreshed() } catch (_) {}
     dlg.remove()
+    if (opener && opener.isConnected && typeof opener.focus === 'function') {
+      try { opener.focus() } catch (_) {}
+    }
   }
   _slskExplorerClose = close
   dlg.querySelector('#slsk-lib-close').addEventListener('click', close)
@@ -177,12 +194,98 @@
   const folderSel = new Set()
   let folderSelLast = -1
 
-  function fmtSize(n) {
+  // The folders view used to round with its own GB-capped helper, so a big
+  // peer's root printed "1780.1 GB" and "2225.3 GB". One formatter for the
+  // whole shop -- the shelves module's, which rolls up to TB and PB.
+  function fmtSize(n) { return (SH && SH.fmtSize) ? SH.fmtSize(n) : _fmtSizeLocal(n) }
+  function _fmtSizeLocal(n) {
     n = Number(n) || 0
     if (n >= 1073741824) return (n / 1073741824).toFixed(1) + ' GB'
     if (n >= 1048576)    return (n / 1048576).toFixed(0) + ' MB'
     if (n >= 1024)       return (n / 1024).toFixed(0) + ' KB'
     return n + ' B'
+  }
+
+  // Every count and total the folders view prints about "everything below"
+  // must mean the same thing the Download button will actually queue: audio
+  // files only. The button used to say 1780 GB / 1 file from node.fileCount
+  // (which counts artwork, logs and cue sheets) and then queue none of them.
+  function audioBelow(node, out) {
+    out = out || { files: [], size: 0 }
+    if (!node) return out
+    for (const f of node.files) {
+      if (T.AUDIO_RE.test(f.name)) { out.files.push(f); out.size += Number(f.size) || 0 }
+    }
+    for (const c of node.dirs.values()) audioBelow(c, out)
+    return out
+  }
+
+  // Above either of these, "Download everything below" states the real totals
+  // and waits for a yes. A peer's root was offering 1780 GB on one click.
+  const SUBTREE_CONFIRM_FILES = 50
+  const SUBTREE_CONFIRM_BYTES = 5 * 1024 * 1024 * 1024
+
+  // Runs `go` straight away for a small subtree; for anything big, states the
+  // real totals first and runs it only on a yes. _mgConfirm has no cancel
+  // callback -- cancelling simply never calls back, which is what we want.
+  function confirmSubtree(count, size, go) {
+    if (count <= SUBTREE_CONFIRM_FILES && size <= SUBTREE_CONFIRM_BYTES) return go()
+    if (typeof _mgConfirm !== 'function') return go()
+    return _mgConfirm(
+      `Download ${count} file${count !== 1 ? 's' : ''}?`,
+      `<p>That is <strong>${fmtSize(size)}</strong> of audio from ${esc(username)}, ` +
+      `across every folder below this one.</p>`,
+      `Download ${count}`,
+      go,
+    )
+  }
+
+  // The wishlist add with its dedupe lives in renderer.js, where the state and
+  // the save call are. Falling back to a plain push keeps this file standalone.
+  function wishlistAdd(q) {
+    const W = window.PapaWishlist
+    if (W && typeof W.add === 'function') return W.add(q)
+    if (!Array.isArray(state.downloadWishlist)) state.downloadWishlist = []
+    state.downloadWishlist.push({ query: q, addedAt: Date.now() })
+    window.api.saveDownloadWishlist(state.downloadWishlist)
+    return { added: true, query: q }
+  }
+
+  // A cache-miss browse sits on a static line for the whole slskd fetch --
+  // seven seconds on a 7,635-album peer -- before the first percentage can
+  // exist, because the percentage needs a directory count we do not have yet.
+  // The bar runs indeterminate until then, and the copy names the phase.
+  function shLoadingProgress(el, text, pct) {
+    if (!el) return
+    el.classList.remove('indeterminate')
+    const t = el.querySelector('.slsk-lib-loading-text')
+    const bar = el.querySelector('.slsk-lib-loading-bar span')
+    const p = Math.max(0, Math.min(100, Math.round(pct)))
+    if (t) t.textContent = `${text} ${p}%`
+    else el.textContent = `${text} ${p}%`
+    if (bar) bar.style.width = p + '%'
+    const pb = el.querySelector('.slsk-lib-loading-bar')
+    if (pb) { pb.setAttribute('aria-valuenow', String(p)); pb.setAttribute('aria-valuemin', '0'); pb.setAttribute('aria-valuemax', '100') }
+  }
+
+  // Folder paths the engine reports as new since this peer was last browsed.
+  // Null until a reply carries the field, so an engine without it behaves
+  // exactly as before: no rail, nothing said.
+  let shNewDirs = null
+
+  function shNewAlbums() {
+    if (!shNewDirs || !shNewDirs.size || !shelves || !shelves.everything) return []
+    const out = []
+    for (const a of shelves.everything) {
+      if (shNewDirs.has(a.folderPath) || shNewDirs.has(a.folderName)) out.push(a)
+    }
+    return out
+  }
+
+  function shNoteNewDirs(reply) {
+    if (reply && Array.isArray(reply.newDirs) && reply.newDirs.length) {
+      shNewDirs = new Set(reply.newDirs)
+    }
   }
 
   function navTo(path) { hist.go(path); searching = ''; search.value = ''; render() }
@@ -213,12 +316,16 @@
     // A fresh folder view starts with nothing selected.
     folderSel.clear()
     const audioHere = l.files.filter(f => T.AUDIO_RE.test(f.name))
+    const belowAudio = audioBelow(l.node)
+    // With "Audio only" on, listDir hides the non-audio files, so a folder of
+    // artwork and logs rendered zero rows and said "This folder is empty."
+    const hiddenHere = audioOnly ? Math.max(0, (l.node.files.length || 0) - audioHere.length) : 0
     actions.innerHTML = audioHere.length
       ? `<button class="slskx-act" id="slskx-dl-folder">Download folder (${audioHere.length})</button>
          <button class="slskx-act" id="slskx-play-first">Play first track</button>
          <button class="slskx-act" id="slskx-dl-selected" disabled>Download selected</button>`
-      : (l.node.fileCount
-          ? `<button class="slskx-act" id="slskx-dl-tree">Download everything below (${l.node.fileCount})</button>` : '')
+      : (belowAudio.files.length
+          ? `<button class="slskx-act" id="slskx-dl-tree">Download everything below (${belowAudio.files.length} · ${fmtSize(belowAudio.size)})</button>` : '')
 
     const rows = []
     for (const d of l.dirs) {
@@ -227,7 +334,7 @@
       // pull the node back out rather than trying to carry them on the dir stub.
       const dNode = T.getNode(tree, d.path)
       const qSum  = dNode ? _slskDirQuality(dNode) : ''
-      rows.push(`<div class="slskx-row slskx-dir" data-path="${esc(d.path)}">
+      rows.push(`<div class="slskx-row slskx-dir" data-path="${esc(d.path)}" role="button" tabindex="0" aria-label="Open folder ${esc(d.name)}, ${d.fileCount} files">
         <span class="slskx-ico">📁</span>
         <span class="slskx-name">${esc(d.name)}${qSum ? `<span class="slskx-dir-qual">${esc(qSum)}</span>` : ''}</span>
         <span class="slskx-meta">${d.subdirCount ? d.subdirCount + ' folders · ' : ''}${d.fileCount} files</span>
@@ -253,8 +360,12 @@
       </div>`)
     })
 
-    body.innerHTML = rows.length ? rows.join('') : `<div class="slsk-lib-empty">This folder is empty.</div>`
-    status.textContent = `${l.dirs.length} folder${l.dirs.length !== 1 ? 's' : ''} · ${l.files.length} file${l.files.length !== 1 ? 's' : ''} · ${fmtSize(l.node.totalSize)} below this point`
+    const emptyCopy = hiddenHere
+      ? `<div class="slsk-lib-empty">No audio here — ${hiddenHere} non-audio file${hiddenHere !== 1 ? 's' : ''} hidden.
+           <button class="slskx-act" id="slskx-show-hidden">Show them</button></div>`
+      : `<div class="slsk-lib-empty">This folder is empty.</div>`
+    body.innerHTML = rows.length ? rows.join('') : emptyCopy
+    status.textContent = `${l.dirs.length} folder${l.dirs.length !== 1 ? 's' : ''} · ${l.files.length} file${l.files.length !== 1 ? 's' : ''} · ${fmtSize(belowAudio.size)} of audio below this point`
     bindRows(l)
   }
 
@@ -275,7 +386,7 @@
     hits.sort((a, b) => b.node.fileCount - a.node.fileCount)
     actions.innerHTML = ''
     body.innerHTML = hits.length
-      ? hits.map(h => `<div class="slskx-row slskx-dir" data-path="${esc(h.node.path)}">
+      ? hits.map(h => `<div class="slskx-row slskx-dir" data-path="${esc(h.node.path)}" role="button" tabindex="0" aria-label="Open folder ${esc(h.node.name)}, ${h.node.fileCount} files">
           <span class="slskx-ico">📁</span>
           <span class="slskx-name">${esc(h.node.name)}
             <span class="slskx-card-surround" style="position:static;margin-left:6px">${esc(h.label)}</span></span>
@@ -287,8 +398,11 @@
     status.textContent = hits.length
       ? `${hits.length} surround folder${hits.length !== 1 ? 's' : ''} found`
       : 'No surround folders found'
-    body.querySelectorAll('.slskx-dir').forEach(r =>
-      r.addEventListener('click', () => { surroundOnly = false; navTo(r.dataset.path) }))
+    body.querySelectorAll('.slskx-dir').forEach(r => {
+      const open = () => { surroundOnly = false; navTo(r.dataset.path) }
+      r.addEventListener('click', open)
+      bindDirKeys(r, open)
+    })
   }
 
   function renderSearch() {
@@ -300,7 +414,7 @@
     actions.innerHTML = ''
     body.innerHTML = hits.length
       ? hits.map(h => h.type === 'dir'
-          ? `<div class="slskx-row slskx-dir" data-path="${esc(h.path)}">
+          ? `<div class="slskx-row slskx-dir" data-path="${esc(h.path)}" role="button" tabindex="0" aria-label="Open folder ${esc(h.name)}, ${h.fileCount} files">
                <span class="slskx-ico">📁</span><span class="slskx-name">${esc(h.name)}</span>
                <span class="slskx-meta">${esc(h.path)}</span>
                <span class="slskx-size">${h.fileCount} files</span></div>`
@@ -331,14 +445,28 @@
     }
   }
 
+  // A folder row is a control: Enter and Space open it, the same as a click.
+  // Without this the rows were reachable by Tab but did nothing.
+  function bindDirKeys(r, open) {
+    r.addEventListener('keydown', e => {
+      if (e.key !== 'Enter' && e.key !== ' ') return
+      if (e.target !== r) return
+      e.preventDefault()
+      open()
+    })
+  }
+
   function bindRows(l) {
-    body.querySelectorAll('.slskx-dir').forEach(r =>
+    body.querySelectorAll('.slskx-dir').forEach(r => {
+      const open = () => navTo(r.dataset.path)
       r.addEventListener('click', e => {
         // The per-folder search button lives inside the row; a click on it must
         // not also navigate into the folder.
         if (e.target.closest && e.target.closest('.slskx-dir-search')) return
-        navTo(r.dataset.path)
-      }))
+        open()
+      })
+      bindDirKeys(r, open)
+    })
 
     // Search the whole app for this uploader's folder name. Same handoff the
     // search-card breadcrumb uses: close the modal, then navigate('search', q).
@@ -404,8 +532,11 @@
       btn.textContent = `Queuing ${files.length}…`
       // Without this, a throw left "Queuing N…" on a dead button forever.
       try {
-        await _slskEnqueue(files.map(f => ({ username, filename: f.fullPath, size: f.size || 0 })))
-        btn.textContent = `${files.length} queued`
+        const res = await _slskEnqueue(files.map(f => ({ username, filename: f.fullPath, size: f.size || 0 })))
+        // A refusal used to still print "N queued" on a button that had
+        // queued nothing. _slskEnqueue has already said why.
+        if (!res || res.ok === false) { btn.disabled = false; btn.textContent = label; return }
+        btn.textContent = `${res.added != null ? res.added : files.length} queued`
         _scheduleLibRescan()
       } catch (e) {
         btn.disabled = false
@@ -461,9 +592,10 @@
       const label = btn.textContent
       btn.disabled = true; btn.textContent = `Queuing ${picks.length}…`
       try {
-        await _slskEnqueue(picks.map(f => ({ username, filename: f.fullPath, size: f.size || 0 })))
+        const res = await _slskEnqueue(picks.map(f => ({ username, filename: f.fullPath, size: f.size || 0 })))
+        if (!res || res.ok === false) { btn.disabled = false; btn.textContent = label; return }
         _scheduleLibRescan()
-        btn.textContent = `${picks.length} queued`
+        btn.textContent = `${res.added != null ? res.added : picks.length} queued`
         setTimeout(() => { folderSel.clear(); folderSelLast = -1; updateFolderSelUi() }, 1200)
       } catch (e) {
         btn.disabled = false; btn.textContent = label
@@ -471,27 +603,38 @@
       }
     })
 
+    // "Audio only" is on by default, so a folder of artwork and logs showed
+    // no rows at all and read as empty. The copy now says what is hidden and
+    // this turns the filter off in place.
+    dlg.querySelector('#slskx-show-hidden')?.addEventListener('click', () => {
+      const cb = dlg.querySelector('#slskx-audio-only')
+      if (cb) { cb.checked = false; cb.dispatchEvent(new Event('change')) }
+    })
+
     dlg.querySelector('#slskx-dl-tree')?.addEventListener('click', async ev => {
-      // Walk every descendant folder, not just this one.
-      const collect = (n, out = []) => {
-        for (const f of n.files) if (T.AUDIO_RE.test(f.name)) out.push(f)
-        for (const c of n.dirs.values()) collect(c, out)
-        return out
-      }
-      const files = collect(l.node)
+      // Walk every descendant folder, not just this one -- the same audio set
+      // the button's own label counts.
+      const below = audioBelow(l.node)
+      const files = below.files
       const btn = ev.target
       const label = btn.textContent
-      btn.disabled = true
-      btn.textContent = `Queuing ${files.length}…`
-      try {
-        await _slskEnqueue(files.map(f => ({ username, filename: f.fullPath, size: f.size || 0 })))
-        btn.textContent = `${files.length} queued`
-        _scheduleLibRescan()
-      } catch (e) {
-        btn.disabled = false
-        btn.textContent = label
-        showSnackbar('Could not queue the tree: ' + String(e && e.message || e), null, null, 6000)
-      }
+      if (!files.length) { showSnackbar('There is no audio below this folder'); return }
+      // The root of a big peer holds thousands of files and terabytes. That is
+      // not something to start on one click with no statement of what it is.
+      await confirmSubtree(files.length, below.size, async () => {
+        btn.disabled = true
+        btn.textContent = `Queuing ${files.length}…`
+        try {
+          const res = await _slskEnqueue(files.map(f => ({ username, filename: f.fullPath, size: f.size || 0 })))
+          if (!res || res.ok === false) { btn.disabled = false; btn.textContent = label; return }
+          btn.textContent = `${res.added != null ? res.added : files.length} queued`
+          _scheduleLibRescan()
+        } catch (e) {
+          btn.disabled = false
+          btn.textContent = label
+          showSnackbar('Could not queue the tree: ' + String(e && e.message || e), null, null, 6000)
+        }
+      })
     })
   }
 
@@ -586,6 +729,8 @@
     surroundOnly = !surroundOnly
     searching = ''; search.value = ''
     dlg.querySelector('#slskx-surround').classList.toggle('active', surroundOnly)
+    // The class was the only signal that the filter was on.
+    dlg.querySelector('#slskx-surround').setAttribute('aria-pressed', surroundOnly ? 'true' : 'false')
     render()
   })
   dlg.querySelector('#slskx-sort').addEventListener('change', e => { sort = e.target.value; render() })
@@ -631,7 +776,7 @@
 
   // Prefer the module's TB-aware formatter so the shop hero never shows a
   // four-digit unit ("6453.3 GB" → "6.3 TB"); fall back to the local one.
-  function shFmtSize(n) { return (SH && SH.fmtSize) ? SH.fmtSize(n) : fmtSize(n) }
+  function shFmtSize(n) { return fmtSize(n) }
 
   // Token-bucketed index over the library albums that HAVE cover art, so the
   // "does the local library already supply this cover?" test is a handful of
@@ -801,6 +946,11 @@
     const albumId = 'slshart_' + key.replace(/[^a-z0-9]+/g, '_').slice(0, 60)
     try {
       const res = await window.api.fetchAlbumArt({ albumId, artist, album }).catch(() => null)
+      // The art source is rate-limiting us. Keep hammering it and every later
+      // fetch fails too, including the ones a shopper is actually looking at.
+      // Stop the background sweep for the session; on-demand fetches for
+      // visible cards still go out.
+      if (res && res.throttled) { shArtPrefetchAbort = true; return }
       const artPath = res && res.artPath
       shArtCache.set(key, artPath || '')
       if (artPath) shArtPaint(key, artPath)
@@ -1093,7 +1243,12 @@
     const grabAll = shelves.upgrades.length
       ? `<button class="slsh-grab-all" id="slsh-grab-all" title="Download every upgrade in this shelf">⬇ Grab all ${shelves.upgrades.length} upgrade${shelves.upgrades.length !== 1 ? 's' : ''}</button>`
       : ''
+    // Only rendered when the engine actually sent newDirs; shRailHtml hides an
+    // empty shelf on its own, so an engine without the field changes nothing.
+    const fresh = shNewAlbums()
     const rails =
+      shRailHtml('new', 'New since last visit',
+        `${fresh.length} added since you were last here`, fresh, 'plain') +
       shRailHtml('upgrades', 'Upgrades for you',
         `${shelves.upgrades.length} better than your copies`, shelves.upgrades, 'upgrade', grabAll) +
       shRailHtml('missing', 'You don\'t have these',
@@ -1136,20 +1291,27 @@
         `Download ${ups.length}`,
         async () => {
           let queued = 0
+          let refusal = ''
           for (const a of ups) {
             const g = shAsGroup(a)
             if (!g.files.length) continue
             try {
-              await _slskEnqueue(g.files.map(f => ({ username, filename: f.filename, size: f.size })))
+              const res = await _slskEnqueue(g.files.map(f => ({ username, filename: f.filename, size: f.size })))
+              // Not throwing is not the same as being accepted. Only an
+              // explicit ok counts towards "Queued N upgrades".
+              if (!res || res.ok === false) {
+                if (!refusal) refusal = (res && res.error) || ''
+                continue
+              }
               _slskCardDownloads.set(_slskCardKey(username, a.folderName), { total: g.files.length })
               shTrackProgress(a)
               queued++
             } catch (_) { /* keep going; one bad album must not abort the batch */ }
           }
-          _scheduleLibRescan()
+          if (queued) _scheduleLibRescan()
           showSnackbar(queued
             ? `Queued ${queued} upgrade${queued !== 1 ? 's' : ''} from ${username}`
-            : 'Could not queue those upgrades')
+            : (refusal || 'Could not queue those upgrades'))
         }
       )
     })
@@ -1463,10 +1625,9 @@
         close(); navigate('search', a.album || a.folderName)
       } else if (btn.classList.contains('slsh-wish')) {
         const q = `${a.artist} ${a.album}`.trim() || a.folderName
-        state.downloadWishlist.push({ query: q, addedAt: Date.now() })
-        window.api.saveDownloadWishlist(state.downloadWishlist)
+        const w = wishlistAdd(q)
         btn.textContent = '✓'; btn.disabled = true
-        showSnackbar(`Added “${q}” to your wishlist`)
+        showSnackbar(w.added ? `Added “${q}” to your wishlist` : `“${q}” is already on your wishlist`)
       }
     })
     // Right-click a missing card to wishlist it, too.
@@ -1477,9 +1638,9 @@
       if (!a || a.inLibrary) return
       e.preventDefault()
       const q = `${a.artist} ${a.album}`.trim() || a.folderName
-      state.downloadWishlist.push({ query: q, addedAt: Date.now() })
-      window.api.saveDownloadWishlist(state.downloadWishlist)
-      showSnackbar(`Added “${q}” to your wishlist`)
+      // Right-clicking the same card twice used to make two identical entries.
+      const w = wishlistAdd(q)
+      showSnackbar(w.added ? `Added “${q}” to your wishlist` : `“${q}” is already on your wishlist`)
     })
   }
 
@@ -1617,6 +1778,7 @@
   // detect both fields so an engine without them behaves exactly as before.
   shFromCache = !!res.fromCache
   shCachedAt = Number(res.cachedAt) || 0
+  shNoteNewDirs(res)
   // Chunked, time-sliced build (SH.buildTreeChunked) so a 140k-file library
   // never blocks the main thread; the existing loading line doubles as the
   // progress affordance. Falls back to the sync build if the module is old.
@@ -1635,14 +1797,14 @@
         if (!slice || !slice.ok) {
           if (slice && slice.expired && loadingEl && loadingEl.isConnected) {
             loadingEl.textContent = 'That browse timed out — open it again.'
+            loadingEl.classList.remove('indeterminate')
           }
           return
         }
         treeBuilder.add(slice.directories || [])
         pulled += (slice.directories || []).length
         if (loadingEl && loadingEl.isConnected && total) {
-          loadingEl.textContent =
-            `Loading ${username}'s library… ${Math.round((pulled / total) * 100)}%`
+          shLoadingProgress(loadingEl, `Loading ${username}'s library…`, (pulled / total) * 100)
         }
       }
     } finally {
@@ -1652,6 +1814,7 @@
       try {
         const endReply = await window.api.slskBrowseEnd({ token: res.token })
         if (endReply && endReply.fingerprint && dlg.isConnected) shBrowseFp = endReply.fingerprint
+        shNoteNewDirs(endReply)
       } catch (_) {}
     }
     if (!dlg.isConnected) return
@@ -1662,8 +1825,7 @@
       shouldAbort: () => !dlg.isConnected,
       onProgress: (done, total) => {
         if (loadingEl && loadingEl.isConnected && total) {
-          loadingEl.textContent =
-            `Loading ${username}'s library… ${Math.round((done / total) * 100)}%`
+          shLoadingProgress(loadingEl, `Loading ${username}'s library…`, (done / total) * 100)
         }
       },
     })
@@ -1689,7 +1851,10 @@
   // tree. The album parse then runs in idle slices so a 100k-file tree never
   // blocks the main thread. When it finishes, the real shelves swap in.
   applyMode()
+  // Shelves mode used to leave focus on the opener behind the modal, so Tab
+  // walked the page underneath and Escape was the only key that reached it.
   if (mode === 'folders') search.focus()
+  else (dlg.querySelector('#slsk-lib-close') || dlg).focus()
 
   // Parse the current `tree` into albums+shelves off the paint thread, then swap
   // the real shelves in. Named (not an inline IIFE) so a background refresh can

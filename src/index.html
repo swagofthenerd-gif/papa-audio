@@ -549,8 +549,19 @@
         </div>
         <!-- Roadmap 137: what this computer shares with Soulseek peers. The
              daemon used to be handed the whole first music folder silently. -->
-        <div class="mcs-set-group" id="sharing-settings">
-          <div class="mcs-set-group-label">Soulseek sharing</div>
+        <div class="mcs-set-group" id="soulseek-settings">
+          <div class="mcs-set-group-label">Soulseek</div>
+          <!-- Two messages tell people to "check them in Settings → Soulseek".
+               Before this block there was nothing here to check: the account
+               modal was reachable only from the shop's own config button, and
+               only while the daemon was unconfigured. -->
+          <div class="mcs-set-row">Account
+            <button class="mcs-set-refresh mcs-set-action" id="slsk-account-btn" type="button">Soulseek account…</button>
+          </div>
+          <div class="mcs-set-hint" id="slsk-account-text">Checking the daemon…</div>
+          <div class="mcs-set-row">Download folder
+            <button class="mcs-set-refresh mcs-set-action" id="slsk-folder-btn" type="button"><span id="slsk-folder-label">Loading…</span></button>
+          </div>
           <label class="mcs-set-row">Share with other people
             <select class="mcs-set-select" id="slsk-share-mode">
               <option value="library">My music library (default)</option>

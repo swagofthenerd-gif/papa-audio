@@ -122,6 +122,11 @@ test('seamless background refresh is feature-detected', () => {
 })
 
 test('the app-wide size formatter is used in the shop hero (no 4-digit units)', () => {
-  assert.match(SHOP, /function shFmtSize\(n\) \{ return \(SH && SH\.fmtSize\)/,
-    'shop hero uses the TB-aware module formatter')
+  // The shop has ONE formatter now (the folders view used to keep a second,
+  // GB-capped one and printed "1780.1 GB"). Both names route to the module's
+  // TB-aware fmtSize; the local rounder is only the no-module fallback.
+  assert.match(SHOP, /function fmtSize\(n\) \{ return \(SH && SH\.fmtSize\) \? SH\.fmtSize\(n\) : _fmtSizeLocal\(n\) \}/,
+    'the one shop formatter must prefer the module')
+  assert.match(SHOP, /function shFmtSize\(n\) \{ return fmtSize\(n\) \}/,
+    'shFmtSize must be that same formatter, not a second one')
 })

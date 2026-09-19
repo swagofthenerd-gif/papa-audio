@@ -2225,7 +2225,24 @@ async function restorePlaybackState(opts) {
 // ── Navigation ──────────────────────────────────────────────────────────────
 const VIDEO_PAGES = new Set(['video', 'browse', 'person', 'video-detail', 'shelf', 'diary', 'calendar'])
 
+// Every page id navigate() can actually paint. A typo or a stale saved session
+// used to sail straight through: state.currentPage, the history entry and the
+// nav highlight were all updated, the render if-chain matched nothing, and the
+// app sat on the previous page's markup under a new identity -- with Back now
+// pointing at a page that had never been left.
+const NAV_PAGES = new Set([
+  'home', 'library', 'artists', 'album', 'artist', 'search', 'downloads',
+  'soulseek', 'playlists', 'playlist', 'smartlist', 'manage', 'stats',
+  'trail', 'wrapped', 'liked', 'yt-album', 'yt-artist', 'yt-see-all',
+  'yt-playlist', 'explore', 'video', 'browse', 'person', 'video-detail',
+  'shelf', 'diary', 'calendar',
+])
+
 function navigate(page, navId, opts = {}) {
+  if (!NAV_PAGES.has(page)) {
+    console.warn('[papa] navigate() refused an unknown page id:', String(page))
+    return
+  }
   // Leaving a page closes what was floating over it. The rule, not per-modal
   // patches: every overlay that registered a dismisser gets closed here.
   _runNavDismiss()
@@ -15711,7 +15728,12 @@ function renderSearch(query) {
     <div class="search-tabs" id="search-tabs" role="tablist" aria-label="Search result categories">
       ${tabs.map(t => `<button class="search-tab${t==='All'?' active':''}" role="tab" aria-selected="${t==='All'}" tabindex="${t==='All'?'0':'-1'}" data-tab="${t}">${t}</button>`).join('')}
     </div>
-    ${query ? '<div style="padding:4px 0 8px 0;display:flex;align-items:center;gap:12px"><button class="save-search-btn" id="save-search-btn" title="Save as smart playlist">+ Save search</button><div class="search-sort"><select id="search-sort-select">' + sortOptions.map(function(o) { return '<option value="' + o.value + '"' + (o.value === currentSort ? ' selected' : '') + '>' + o.label + '</option>' }).join('') + '</select></div></div>' : ''}
+    ${query ? '<div style="padding:4px 0 8px 0;display:flex;align-items:center;gap:12px"><button class="save-search-btn" id="save-search-btn" title="Save as smart playlist">+ Save search</button>' +
+      // The Soulseek lane sits below every local hit -- about 1,900px down on a
+      // library with matches -- and the only way to it was a scroll. The jump
+      // existed, but only in the no-local-results state, which is the one case
+      // where you could already see the lane.
+      '<button class="save-search-btn" id="search-jump-slsk" title="Go to the Soulseek results for this search">\u2193 Soulseek results</button><div class="search-sort"><select id="search-sort-select">' + sortOptions.map(function(o) { return '<option value="' + o.value + '"' + (o.value === currentSort ? ' selected' : '') + '>' + o.label + '</option>' }).join('') + '</select></div></div>' : ''}
     ${dymHTML}
     <div class="results-filter-wrap"><input class="results-filter" id="results-filter" placeholder="Filter results…"></div>
     ${hasOperators ? '<div class="active-filters"><span>Filters active:</span>' + filters.operators.map(function(op) { return '<span class="filter-chip">' + op.key + ':' + op.value + '<button class="filter-chip-x" data-key="' + esc(op.key) + '">×</button></span>' }).join('') + '<button class="clear-filters-btn" id="clear-filters-btn">Clear all</button></div>' : ''}`
@@ -15863,9 +15885,17 @@ function renderSearch(query) {
     state._searchTrackCap = Infinity
     renderSearch(query)
   })
-  document.getElementById('search-empty-slsk-btn')?.addEventListener('click', function() {
-    document.getElementById('slsk-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-  })
+  // Both jumps move FOCUS as well as the viewport: scrolling alone leaves a
+  // keyboard user's next Tab back at the top of the page.
+  function _jumpToSlskLane() {
+    const sec = document.getElementById('slsk-section')
+    if (!sec) return
+    sec.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    if (!sec.hasAttribute('tabindex')) sec.setAttribute('tabindex', '-1')
+    try { sec.focus({ preventScroll: true }) } catch (_) { try { sec.focus() } catch (_) {} }
+  }
+  document.getElementById('search-empty-slsk-btn')?.addEventListener('click', _jumpToSlskLane)
+  document.getElementById('search-jump-slsk')?.addEventListener('click', _jumpToSlskLane)
 
   document.querySelectorAll('.related-chip').forEach(function(chip) {
     chip.addEventListener('click', function() {
@@ -26959,7 +26989,39 @@ async function initPlaybackSettings() {
 
 // Roadmap 137: the sharing choice, with a sentence that says exactly what is
 // exposed for the chosen mode.
+// Settings → Soulseek: the account, the download folder and what is shared.
+// Two messages point people here ("check them in Settings → Soulseek"), so
+// this block has to exist and has to reach the same modal and the same folder
+// picker the shop and the Downloads tab already use — no new IPC.
+async function _initSoulseekAccountSettings() {
+  const accBtn = document.getElementById('slsk-account-btn')
+  const accText = document.getElementById('slsk-account-text')
+  const folderBtn = document.getElementById('slsk-folder-btn')
+  const folderLbl = document.getElementById('slsk-folder-label')
+  if (accBtn) accBtn.addEventListener('click', () => showSlskConfigModal(slsk && slsk.lastQuery))
+  if (accText && window.api && window.api.slskStatus) {
+    const st = await window.api.slskStatus().catch(() => null)
+    accText.textContent = !st ? 'Could not reach the Soulseek daemon.'
+      : st.connected ? 'Connected' + (st.username ? ' as ' + st.username : '') + '.'
+      : st.configured ? 'Signed in details are saved, but the daemon is not connected right now.'
+      : 'No Soulseek account is set up yet.'
+  }
+  if (folderBtn && folderLbl && window.api && window.api.slskGetDownloadDir) {
+    const paintDir = dir => {
+      folderLbl.textContent = dir ? (dir.split('/').pop() || dir) : 'Not set'
+      folderBtn.title = dir || 'Could not read the download folder from slskd'
+    }
+    paintDir(await window.api.slskGetDownloadDir().catch(() => null))
+    folderBtn.addEventListener('click', async () => {
+      const res = await window.api.slskSetDownloadDir().catch(() => null)
+      if (res && res.ok) { _dlDownloadDir = res.downloadDir; paintDir(res.downloadDir) }
+      else if (res && res.error) showSnackbar(res.error)
+    })
+  }
+}
+
 async function _initSharingSettings() {
+  await _initSoulseekAccountSettings()
   const sel = document.getElementById('slsk-share-mode')
   const text = document.getElementById('slsk-share-text')
   if (!sel || !window.api || typeof window.api.slskShareModeGet !== 'function') return
@@ -28054,7 +28116,8 @@ function _slskCardHtml(g, gi, query) {
       <button class="slsk-dl-all-btn slsk-card-action" data-gi="${gi}" title="Download all files">
         <svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg> ${g.files.length}
       </button>
-      <button class="slsk-expand-btn slsk-card-action" data-gi="${gi}" title="Show tracks">
+      <button class="slsk-expand-btn slsk-card-action" data-gi="${gi}" title="Show tracks"
+        aria-expanded="false" aria-controls="slsk-tl-${gi}">
         ${g.files.length} track${g.files.length !== 1 ? 's' : ''} ▾
       </button>
     </div>`
@@ -28065,7 +28128,7 @@ function _slskCardHtml(g, gi, query) {
          <span class="slsk-card-progress-label">${prog.pct}%</span>
        </div>`
     : ''
-  return `<div class="slsk-card" data-gi="${gi}">
+  return `<div class="slsk-card" data-gi="${gi}" role="group" aria-label="${esc(g.folderName)} from ${esc(g.username)}, ${g.files.length} file${g.files.length !== 1 ? 's' : ''}${qual ? ', ' + esc(qual) : ''}">
     <div class="slsk-card-art" style="background:linear-gradient(135deg,hsl(${hue},45%,16%),hsl(${(hue+40)%360},35%,10%))">
       ${hasFlac ? '<span class="slsk-card-lossless">LOSSLESS</span>' : ''}
       ${sd ? `<span class="slsk-card-surround" title="Labelled ${esc(sd.label)} by the uploader">${esc(sd.label)}</span>` : ''}
@@ -28125,7 +28188,8 @@ function _slskMergedCardHtml(m, gi, query) {
         <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg> Play</button>
       <button class="slsk-dl-all-btn slsk-card-action" data-gi="${gi}" title="Download the best copy (${(best.files || []).length} files)">
         <svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg> ${(best.files || []).length}</button>
-      <button class="slsk-sources-btn slsk-card-action" data-gi="${gi}" title="Show every source">
+      <button class="slsk-sources-btn slsk-card-action" data-gi="${gi}" title="Show every source"
+        aria-expanded="false" aria-controls="slsk-src-${gi}">
         ${m.peopleCount} source${m.peopleCount !== 1 ? 's' : ''} ▾</button>
     </div>`
   }
@@ -28351,8 +28415,8 @@ function renderSoulseekRow(query) {
     <div class="slsk-header-row">
       <span class="osrc-name">Soulseek</span>
       <span class="osrc-status found">${summary}</span>
-      <button class="slsk-retry-btn" id="slsk-saved-btn" title="Saved libraries" style="margin-left:auto">★</button>
-      <button class="slsk-retry-btn" id="slsk-retry-btn" title="Search again">↺</button>
+      <button class="slsk-retry-btn" id="slsk-saved-btn" title="Saved libraries" aria-label="Saved libraries" style="margin-left:auto">★</button>
+      <button class="slsk-retry-btn" id="slsk-retry-btn" title="Search again" aria-label="Search again">↺</button>
     </div>
     ${_slskCorrectionChip()}
     <div class="slsk-filterbar">
@@ -28362,9 +28426,11 @@ function renderSoulseekRow(query) {
          ['lossless', 'Lossless', flacGroups.length]]
         .map(([k, label, n]) => `<button class="slsk-chip${slsk.filter === k ? ' active' : ''}"
               data-slsk-filter="${k}"${n === 0 && k !== 'all' ? ' disabled' : ''}
+              aria-pressed="${slsk.filter === k ? 'true' : 'false'}"
+              aria-label="${label}, ${n} source${n !== 1 ? 's' : ''}"
               title="${n} source${n !== 1 ? 's' : ''}">${label}<span class="slsk-chip-n">${n}</span></button>`).join('')}
       <label class="slsk-sort-wrap">Sort
-        <select class="slsk-sort" id="slsk-sort">
+        <select class="slsk-sort" id="slsk-sort" aria-label="Sort the Soulseek results">
           ${[['relevance', 'Best match'], ['queue', 'Queue position'], ['sampleRate', 'Sample rate'], ['bitDepth', 'Bit depth'],
              ['tracks', 'Track count'], ['speed', 'Upload speed'], ['size', 'File size']]
             .map(([k, l]) => `<option value="${k}"${slsk.sort === k ? ' selected' : ''}>${l}</option>`).join('')}
@@ -28491,6 +28557,22 @@ async function _slskCorrectQuery(query) {
   return { query: query, correction: null }
 }
 
+// Put the section into its "searching" state and clear the last query's cards.
+// Called once before the spelling-correction lookup (which is a network round
+// trip) and again once the real search is about to start, so there is never a
+// window where the previous album's results are on screen under a new query.
+function _slskBeginSearchPaint(query) {
+  slsk.lastQuery = query
+  slsk.searching = true
+  slsk.searched  = false
+  slsk.throttledRecently = false
+  slsk.results   = []
+  slsk.pendingSearches = 0
+  slsk.searchStart = Date.now()
+  const sectionEarly = document.getElementById('slsk-section')
+  if (sectionEarly) { sectionEarly.innerHTML = renderSoulseekRow(query); bindSlskSearchEvents(query) }
+}
+
 async function runSlskSearch(query) {
   // Second positional arg (opts) is read via arguments so the function signature
   // stays exactly `runSlskSearch(query)` — several structure tests grep for that
@@ -28510,6 +28592,11 @@ async function runSlskSearch(query) {
   // was the verified dead end.
   if (!opts.skipCorrect && slsk.lastQuery !== query && slsk.noCorrectFor !== query) {
     slsk.correction = null
+    // _slskCorrectQuery is a network lookup with a six-second timeout. Until
+    // this paint existed, the PREVIOUS query's cards sat on screen the whole
+    // time, with no searching state — you typed a new album and the old one's
+    // results looked like the answer.
+    _slskBeginSearchPaint(query)
     var fix = await _slskCorrectQuery(query)
     if (!current()) return // superseded while awaiting the suggestion
     if (fix.correction) {
@@ -28542,14 +28629,7 @@ async function runSlskSearch(query) {
   if (navQ) navQ.textContent = query
 
   // Show "Searching…" immediately — avoids flash while status is fetched
-  slsk.searching = true
-  slsk.searched  = false
-  slsk.throttledRecently = false
-  slsk.results   = []
-  slsk.pendingSearches = 0
-  slsk.searchStart = Date.now()
-  const sectionEarly = document.getElementById('slsk-section')
-  if (sectionEarly) { sectionEarly.innerHTML = renderSoulseekRow(query); bindSlskSearchEvents(query) }
+  _slskBeginSearchPaint(query)
 
   await refreshSlskStatus()
 
@@ -28795,6 +28875,12 @@ function _dlRenderUnauthorized() {
   btn.textContent = 'Retry'
   btn.addEventListener('click', function () { _dlAuthWarned = false; _pollAndRenderDownloads() })
   el.appendChild(btn)
+  // The copy names a place; make it one click away rather than a hunt.
+  var open = document.createElement('button')
+  open.className = 'dl2-action-btn'
+  open.textContent = 'Open Settings'
+  open.addEventListener('click', function () { openSettings('soulseek') })
+  el.appendChild(open)
   // The banner alone left the list below it stuck on the page shell's
   // "Loading" placeholder forever: _pollAndRenderDownloadsInner returns here, so
   // _renderDlTab never runs and nothing ever replaces that placeholder. Only
@@ -29488,6 +29574,18 @@ function _renderTorrentSection() {
   })
 }
 
+// An empty view caused by a filter has to offer the way out of it. Shared by
+// the tab-level empty state and the completed tab's own filter-empty.
+function _bindDlClearFilter(container) {
+  container.querySelector('#dl2-clear-filter')?.addEventListener('click', function () {
+    _dlFilter = ''
+    const input = document.getElementById('dl2-filter-input')
+    if (input) input.value = ''
+    _dlLastSig = ''
+    _renderDlTab(_dlLastFiles)
+  })
+}
+
 function _renderDlTab(files) {
   if (_dlTab === 'torrents') { _renderTorrentSection(); return }
   const subset = files.filter(f => _dlCategory(f.state) === _dlTab)
@@ -29536,10 +29634,19 @@ function _renderDlTab(files) {
           <span>slskd isn't responding, so downloads can't be listed. Check that it's running, then retry.</span>
           <button class="dl2-action-btn" id="dl2-daemon-retry" style="margin-top:12px">Retry</button>
         </div>`
-      : `<div class="dl2-empty">
-          <svg viewBox="0 0 24 24"><path d="${icons[_dlTab]}"/></svg>
-          <p>${msgs[_dlTab][0]}</p><span>${msgs[_dlTab][1]}</span>
-        </div>`
+      : (_dlFilter && _dlFilter.trim() && _dlTab === 'completed'
+        // "No completed downloads / Finished downloads will appear here" is a
+        // lie when there ARE finished downloads and a filter is hiding them.
+        ? `<div class="dl2-filter-empty">
+            <svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+            <p>No downloads match "${esc(_dlFilter.trim())}"</p>
+            <button class="dl2-action-btn" id="dl2-clear-filter" style="margin-top:12px">Clear the filter</button>
+          </div>`
+        : `<div class="dl2-empty">
+            <svg viewBox="0 0 24 24"><path d="${icons[_dlTab]}"/></svg>
+            <p>${msgs[_dlTab][0]}</p><span>${msgs[_dlTab][1]}</span>
+          </div>`)
+    _bindDlClearFilter(container)
     container.querySelector('#dl2-daemon-retry')?.addEventListener('click', function () {
       const btn = this
       btn.disabled = true
@@ -29804,8 +29911,14 @@ function _renderActiveTab(files, container) {
         try { items = JSON.parse(btn.dataset.retry || '[]') } catch (_) { items = [] }
         items = (Array.isArray(items) ? items : []).filter(Boolean)
         if (!items.length) return
-        await Promise.all(items.map(it => window.api.slskRetryTransfer(it).catch(() => {})))
-        showToast('Retrying ' + items.length + ' file' + (items.length === 1 ? '' : 's') + '…')
+        // "Retrying N files" used to be printed whatever came back, including
+        // when every single one was refused.
+        const rs = await Promise.all(items.map(it => window.api.slskRetryTransfer(it)
+          .then(r => !!(r && r.ok !== false)).catch(() => false)))
+        const took = rs.filter(Boolean).length
+        showToast(took
+          ? 'Retrying ' + took + ' file' + (took === 1 ? '' : 's') + '…'
+          : 'Could not retry ' + (items.length === 1 ? 'that file' : 'those files'))
         await _pollAndRenderDownloads()
       })
     })
@@ -29924,7 +30037,9 @@ function _renderCompletedTab(files, container) {
     container.innerHTML = statsHtml + `<div class="dl2-filter-empty">
       <svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
       <p>No albums match "${esc(filterQ)}"</p>
+      <button class="dl2-action-btn" id="dl2-clear-filter" style="margin-top:12px">Clear the filter</button>
     </div>`
+    _bindDlClearFilter(container)
     return
   }
 
@@ -30103,8 +30218,13 @@ function _renderCompletedTab(files, container) {
         // alreadyDone: this transfer has already finished or failed, so there
         // is no live scheduler intent to cancel -- and skipping that lookup
         // skips a FULL /transfers/downloads fetch (~1 MB) per item.
-        await window.api.slskCancelTransfer({ username: btn.dataset.user, id: btn.dataset.id, alreadyDone: true }).catch(() => {})
+        const r = await window.api.slskCancelTransfer({ username: btn.dataset.user, id: btn.dataset.id, alreadyDone: true })
+          .catch(e => ({ ok: false, error: String((e && e.message) || e) }))
         await _pollAndRenderDownloads()
+        if (!r || r.ok === false) {
+          showSnackbar((r && r.error) || 'Could not remove that download')
+          return
+        }
         // Undo audit (App #66): this clears a finished/failed record from slskd,
         // which has no client-side reversal (the file on disk is untouched). We
         // surface the action; a true Undo needs a backend "restore transfer
@@ -30358,7 +30478,9 @@ function _renderFailedTab(files, container) {
         try { pairs = JSON.parse(btn.dataset.pairs || '[]') } catch (_) {}
         var results = await Promise.all(pairs.map(function (p) {
           return window.api.slskCancelTransfer({ username: p[0], id: p[1], alreadyDone: true })
-            .then(function () { return true }).catch(function () { return false })
+            // Resolving is not the same as clearing: the handler reports a
+            // daemon refusal as { ok:false }, and that used to count as done.
+            .then(function (r) { return !!(r && r.ok !== false) }).catch(function () { return false })
         }))
         var failed = results.filter(function (ok) { return !ok }).length
         if (failed) showSnackbar(failed + ' of ' + results.length + " couldn't be cleared")
@@ -30372,8 +30494,18 @@ function _renderFailedTab(files, container) {
     btn.addEventListener('click', e => {
       e.stopPropagation()
       _dlBtnAction(btn, async () => {
-        await window.api.slskCancelTransfer({ username: btn.dataset.user, id: btn.dataset.id, alreadyDone: true }).catch(() => {})
-        await window.api.slskDownload({ username: btn.dataset.user, filename: btn.dataset.filename, size: Number(btn.dataset.size) }).catch(() => {})
+        // Both calls used to be swallowed, so a refusal still cleared the row
+        // and snapped the view to an empty Downloading tab with nothing said.
+        await window.api.slskCancelTransfer({ username: btn.dataset.user, id: btn.dataset.id, alreadyDone: true })
+          .catch(() => null)
+        const r = await window.api.slskDownload({
+          username: btn.dataset.user, filename: btn.dataset.filename, size: Number(btn.dataset.size),
+        }).catch(e => ({ ok: false, error: String((e && e.message) || e) }))
+        if (!r || r.ok === false) {
+          showSnackbar((r && r.error) || 'Could not retry that download')
+          await _pollAndRenderDownloads()
+          return
+        }
         _dlTab = 'active'; _dlLastSig = ''
         _setActiveTab('.dl2-tab', document.querySelector('.dl2-tab[data-tab="active"]'))
         await _pollAndRenderDownloads()
@@ -30386,8 +30518,13 @@ function _renderFailedTab(files, container) {
     btn.addEventListener('click', e => {
       e.stopPropagation()
       _dlBtnAction(btn, async () => {
-        await window.api.slskCancelTransfer({ username: btn.dataset.user, id: btn.dataset.id, alreadyDone: true }).catch(() => {})
+        const r = await window.api.slskCancelTransfer({ username: btn.dataset.user, id: btn.dataset.id, alreadyDone: true })
+          .catch(e => ({ ok: false, error: String((e && e.message) || e) }))
         await _pollAndRenderDownloads()
+        if (!r || r.ok === false) {
+          showSnackbar((r && r.error) || 'Could not remove that download')
+          return
+        }
         // Undo audit (App #66): server-side record removal, no client-side
         // reversal — surfaced, not undoable. See report on the backend gap.
         showSnackbar('Removed from the download list', '', function () {}, 3000)
@@ -30605,7 +30742,12 @@ function renderDownloads() {
   // control that exists to say it does not work. Stopping is the only batch
   // action there is, and its own confirm explains that re-queueing is the way
   // back. (Stop All is what "Pause All" has always actually done.)
-  var batchBtns = '<div style="display:flex;gap:8px;padding:12px 28px"><button class="dl-action-btn" id="dl-pause-all">\u23f9 Stop All</button></div>'
+  // Offered enabled with nothing to act on, it reads as a control that does
+  // nothing. Driven by whether there is anything running.
+  var _anyActive = (_dlLastFiles || []).some(function (f) { return _dlCategory(f.state) === 'active' })
+  var batchBtns = '<div style="display:flex;gap:8px;padding:12px 28px">' +
+    '<button class="dl-action-btn" id="dl-pause-all"' + (_anyActive ? '' : ' disabled title="Nothing is downloading right now"') +
+    '>\u23f9 Stop All</button></div>'
   // Roadmap 082: each entry says what the automation does with it — download
   // on its own or only tell you — whether it is paused, and when it was last
   // checked; the header says the cadence. Nothing here is implied.
@@ -30717,6 +30859,11 @@ function renderDownloads() {
 
   const ytBox = document.getElementById('yt-dl-list')
   if (ytBox) _renderYtDownloadRows(ytBox)
+
+  // The strip declared role="tablist" and role="tab" and then answered to
+  // nothing but a click: the arrow keys the role promises did not move between
+  // the download categories.
+  _bindTablist(document.getElementById('dl2-tabs'))
 
   // Tab switching
   document.querySelectorAll('.dl2-tab').forEach(btn => {
@@ -31033,21 +31180,32 @@ function _bindSlskCards(section, query, groups) {
       // Check if already on disk
       const existing = await window.api.slskResolveFile({ username: g.username, filename: targetFile.filename })
       if (existing?.path) { _playFile(existing.path); btn.innerHTML = origHtml; btn.disabled = false; return }
-      // Queue download for this file only
-      await window.api.slskDownload({ username: g.username, filename: targetFile.filename, size: targetFile.size })
+      // Queue download for this file only. A refusal here used to leave the
+      // spinner turning until the poll timed out and then revert in silence.
+      const q = await window.api.slskDownload({ username: g.username, filename: targetFile.filename, size: targetFile.size })
+      if (q && q.ok === false) {
+        showSnackbar(q.error || 'Could not start that download')
+        btn.innerHTML = origHtml
+        btn.disabled = false
+        return
+      }
       _scheduleLibRescan()
       // Poll until file appears on disk (max 3 min)
       const deadline = Date.now() + 180000
       let played = false
+      let failed = false
       while (Date.now() < deadline && !played) {
         await new Promise(r => setTimeout(r, 2000))
         const res = await window.api.slskResolveFile({ username: g.username, filename: targetFile.filename })
         if (res?.path) { _playFile(res.path); played = true; break }
         const raw = _slskTransfers(await window.api.slskGetTransfers().catch(() => []))
         const hit = raw.flatMap(u => (u.directories||[]).flatMap(d => d.files||[])).find(f => f.filename === targetFile.filename)
-        if (hit?.state?.match(/Failed|Aborted|Cancelled/)) break
+        if (hit?.state?.match(/Failed|Aborted|Cancelled/)) { failed = true; break }
       }
-    } catch (_) {}
+      if (!played) showSnackbar(failed ? 'That transfer failed — try another source' : 'That download did not arrive in time')
+    } catch (e) {
+      showSnackbar(String((e && e.message) || 'Could not start that download'))
+    }
     btn.innerHTML = origHtml
     btn.disabled = false
   }
@@ -31091,9 +31249,16 @@ function _bindSlskCards(section, query, groups) {
           : g.files.map(f => ({ username: g.username, filename: f.filename, size: f.size }))
 
         const peers = S ? S.planPeers(plan) : 1
-        if (peers > 1) showSnackbar(`Downloading from ${peers} sources in parallel`)
 
-        await _slskEnqueue(plan)
+        // The "downloading from N sources" line used to be printed before the
+        // enqueue was even attempted, so a refusal still read as a success.
+        const res = await _slskEnqueue(plan)
+        if (!res || res.ok === false) {
+          btn.disabled = false
+          btn.innerHTML = origHtml
+          return
+        }
+        if (peers > 1) showSnackbar(`Downloading from ${peers} sources in parallel`)
         _scheduleLibRescan()
         if (anchorSur) _verifySurroundWhenDone(g, plan, anchorSur.label)
         // Remember this card so the inline progress strip can track it against
@@ -31209,6 +31374,7 @@ function _bindSlskCards(section, query, groups) {
         }
       }
       tl.style.display = open ? 'none' : 'block'
+      btn.setAttribute('aria-expanded', open ? 'false' : 'true')
       btn.classList.toggle('open', !open)
     })
   })
@@ -31269,7 +31435,8 @@ function _bindSlskCards(section, query, groups) {
             db.disabled = true
             db.innerHTML = '<svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>'
             try {
-              await _slskEnqueue(src.files.map(f => ({ username: src.username, filename: f.filename, size: f.size })))
+              const res = await _slskEnqueue(src.files.map(f => ({ username: src.username, filename: f.filename, size: f.size })))
+              if (!res || res.ok === false) { db.disabled = false; db.innerHTML = orig; return }
               _scheduleLibRescan()
               _slskCardDownloads.set(_slskCardKey(src.username, src.folderName), { total: src.files.length })
             } catch (_) { db.disabled = false; db.innerHTML = orig }
@@ -31290,6 +31457,7 @@ function _bindSlskCards(section, query, groups) {
           }))
       }
       list.style.display = open ? 'none' : 'block'
+      btn.setAttribute('aria-expanded', open ? 'false' : 'true')
       btn.classList.toggle('open', !open)
     })
   })
@@ -32889,9 +33057,8 @@ function setupListeners() {
   })
   _ctxOn('ctx-wishlist', () => {
     if (!ctxTarget) return
-    state.downloadWishlist.push({ query: ctxTarget.artist + ' ' + (ctxTarget.track ? ctxTarget.track.album : ctxTarget.albumId), addedAt: Date.now() })
-    window.api.saveDownloadWishlist(state.downloadWishlist)
-    showSnackbar('Added to wishlist')
+    var w = _wishlistAdd(ctxTarget.artist + ' ' + (ctxTarget.track ? ctxTarget.track.album : ctxTarget.albumId))
+    showSnackbar(w.added ? 'Added to wishlist' : 'Already on your wishlist')
     hideContextMenu()
   })
   _ctxOn('ctx-play-next', () => {
@@ -37639,12 +37806,14 @@ async function reloadPersistedState() {
 var _dlDestinationTold = false
 function _slskEnqueue(items) {
   var list = (items || []).filter(function(it) { return it && it.filename && it.username })
-  if (!list.length) return Promise.resolve(null)
+  // Every caller decides what to tell the person from res.ok, so even the
+  // trivial paths answer in that shape rather than null/an array.
+  if (!list.length) return Promise.resolve({ ok: true, added: 0 })
   if (!window.api || !window.api.slskEnqueueDownloads) {
     return Promise.all(list.map(function(it) {
       return window.api.slskDownload({ username: it.username, filename: it.filename, size: it.size || 0 })
         .catch(function() {})
-    }))
+    })).then(function () { return { ok: true, added: list.length } })
   }
   return window.api.slskEnqueueDownloads({ items: list })
     .then(function (res) {
@@ -37666,12 +37835,19 @@ function _slskEnqueue(items) {
       // Offer the one thing the user wants: ask again and mean it.
       var refused = (res && res.refused) || []
       if (refused.length) _slskOfferForcedEnqueue(list, refused)
-      return res
+      // A plain refusal ({ok:false} with no capacity/refused detail) used to
+      // fall straight through here, so every caller went on to announce a
+      // success that never happened. Say what went wrong, once, centrally.
+      else if (res && res.ok === false) {
+        showSnackbar(res.error || 'Could not queue those downloads')
+      }
+      return res || { ok: false, error: 'Could not queue those downloads' }
     })
     .catch(function (e) {
       console.error('[papa] enqueue failed:', String(e && e.message || e))
+      var msg = String((e && e.message) || e || '') || 'Could not queue those downloads'
       showSnackbar('Could not queue those downloads')
-      return null
+      return { ok: false, error: msg }
     })
 }
 
@@ -37932,6 +38108,13 @@ function _renderHubWishlist() {
   var box = document.getElementById('slsk-hub-wishlist')
   if (!box) return
   var wl = state.downloadWishlist || []
+  // "Run all now" sat enabled over an empty wishlist and answered with a
+  // snackbar saying it was empty. Say it on the control instead.
+  var runAll = document.getElementById('slsk-hub-wishlist-runall')
+  if (runAll) {
+    runAll.disabled = !wl.length
+    runAll.title = wl.length ? 'Search every wishlist entry now' : 'Your wishlist is empty'
+  }
   if (!wl.length) {
     box.innerHTML = '<div class="slsk-hub-empty">Your wishlist is empty. On any album that has no lossless source yet, choose “Add to wishlist” — the app keeps searching in the background and grabs it the moment a copy appears.</div>'
     return
@@ -38016,6 +38199,34 @@ function _renderHubWishlist() {
 // "Run all now" — asks the backend to search every wishlist entry. Defensive:
 // if the channel is missing, fall back to running the searches one at a time
 // through the existing runSlskSearch so the button still does something useful.
+// ── The wishlist, added to from five places ─────────────────────────────────
+// Every one of them pushed without looking, so right-clicking the same album
+// twice (or wishlisting it from the card and again from the album view) left
+// two identical entries that then ran as two identical searches.
+function _wishlistKey(q) {
+  return String(q || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+}
+
+// Returns { added, query }: false when it was already there, so the caller can
+// say "already on your wishlist" instead of claiming a second add.
+function _wishlistAdd(query) {
+  var q = String(query || '').trim()
+  if (!q) return { added: false, query: q, empty: true }
+  if (!Array.isArray(state.downloadWishlist)) state.downloadWishlist = []
+  var key = _wishlistKey(q)
+  for (var i = 0; i < state.downloadWishlist.length; i++) {
+    if (_wishlistKey(state.downloadWishlist[i] && state.downloadWishlist[i].query) === key) {
+      return { added: false, query: q }
+    }
+  }
+  state.downloadWishlist.push({ query: q, addedAt: Date.now() })
+  if (window.api && window.api.saveDownloadWishlist) window.api.saveDownloadWishlist(state.downloadWishlist)
+  return { added: true, query: q }
+}
+
+// The shop and the album view live in their own files and reach it here.
+window.PapaWishlist = { key: _wishlistKey, add: _wishlistAdd }
+
 function _slskRunWishlistAll() {
   var btn = document.getElementById('slsk-hub-wishlist-runall')
   if (!(state.downloadWishlist && state.downloadWishlist.length)) {
@@ -38029,11 +38240,15 @@ function _slskRunWishlistAll() {
           var found = (res.results || []).reduce(function (n, r) { return n + (r.found || 0) }, 0)
           showSnackbar('Wishlist run complete — ' + found + ' match' + (found === 1 ? '' : 'es') + ' found')
         } else {
-          showSnackbar('Wishlist run failed')
+          // The handler says why it refused; "Wishlist run failed" threw that
+          // away and left the person with nothing to act on.
+          showSnackbar((res && res.error) || 'Wishlist run failed')
         }
         _renderHubWishlist()
       })
-      .catch(function () { showSnackbar('Wishlist run failed') })
+      .catch(function (e) {
+        showSnackbar(String((e && e.message) || 'Wishlist run failed'))
+      })
       .then(function () { if (btn) { btn.disabled = false; btn.textContent = 'Run all now' } })
   } else {
     // Fallback: run the first entry as a live search.
