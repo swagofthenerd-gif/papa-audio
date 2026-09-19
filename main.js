@@ -7710,6 +7710,26 @@ function dlClassify(stateStr) {
 // keeps one entry per name; purging needs all of them, with their ids.
 let _dlLastSnapshotFiles = []
 
+// GET /transfers/downloads measured 1,020,307 bytes on the reported install, and
+// dlTick runs every four seconds for the life of the process. With nothing
+// pending, nothing in flight and no album group waiting to be verified, there is
+// nothing in that answer the tick would act on — the reconcile loop, the
+// dispatch plan and the stall check all iterate empty collections. So it is
+// fetched on a heartbeat instead of every tick, which keeps the daemon's own
+// state visible (a transfer someone queued in slskd's UI, a purge that is due)
+// without megabytes of JSON a minute for nothing.
+const DL_IDLE_SNAPSHOT_MS = 60 * 1000
+let _dlLastSnapshotAt = 0
+
+// Is there anything this tick that a transfer snapshot could inform?
+function dlNeedsSnapshot(state, groups, now, lastAt) {
+  if (!state) return true
+  if ((state.pending || []).length > 0) return true
+  if (Object.keys(state.inflight || {}).length > 0) return true
+  if (groups && groups.size > 0) return true
+  return (now - (lastAt || 0)) >= DL_IDLE_SNAPSHOT_MS
+}
+
 async function dlSnapshot() {
   const out = new Map()
   const flat = []
@@ -8136,9 +8156,13 @@ async function dlTick() {
     // so a day→night boundary takes hold within a tick. No-op when the schedule is
     // disabled, and self-skipping when the limit has not changed since last tick.
     _applyBandwidthSchedule(now)
+    // Nothing queued, nothing moving, nothing awaiting verification: skip the
+    // megabyte and come back on the heartbeat. See dlNeedsSnapshot.
+    if (!dlNeedsSnapshot(dlState, dlGroups, now, _dlLastSnapshotAt)) return
     const snap = await dlSnapshot()
     // slskd unreachable — do nothing rather than double-request on recovery.
     if (!snap) return
+    _dlLastSnapshotAt = now
     // And an EMPTY answer while we believe files are in flight is not an
     // answer either. dlSnapshot only returns null when the fetch THROWS; a 204
     // or an empty body iterates nothing and hands back an empty Map, which is
