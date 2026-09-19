@@ -772,6 +772,38 @@ const WebTorrent = require('webtorrent')
 
 let _torrentClient = null
 const _activeTorrents = new Map()
+
+// Quitting used to leave the WebTorrent client running: nothing ever called
+// client.destroy(), so every torrent kept seeding, kept its sockets and kept
+// its file handles right up to the moment the process died — and the
+// background video downloads in _videoDownloads kept their own streamers and
+// their poll timers alongside. On a signal shutdown that meant half-written
+// files and a swarm that had not been told anybody was leaving.
+//
+// Bounded, because a destroy that never calls back must not be what stops the
+// app from quitting.
+let _torrentTornDown = false
+function _torrentTeardown(waitMs = 1500) {
+  if (_torrentTornDown) return Promise.resolve()
+  _torrentTornDown = true
+  try {
+    for (const d of _videoDownloads.values()) {
+      if (d && d.timer) { try { clearInterval(d.timer) } catch (_) {} }
+      try { if (d && d.streamer) d.streamer.stop() } catch (_) {}
+    }
+    _videoDownloads.clear()
+  } catch (_) { /* nothing here is worth blocking the quit */ }
+  const client = _torrentClient
+  _torrentClient = null
+  if (!client || typeof client.destroy !== 'function') return Promise.resolve()
+  return new Promise(resolve => {
+    let done = false
+    const finish = () => { if (done) return; done = true; clearTimeout(timer); resolve() }
+    const timer = setTimeout(finish, waitMs)
+    if (timer.unref) timer.unref()
+    try { client.destroy(finish) } catch (_) { finish() }
+  })
+}
 function getTorrentClient() {
   if (!_torrentClient) {
     // The default cap of 55 connections is tuned for background downloading.
@@ -2598,6 +2630,8 @@ function shutdownFromSignal() {
   // signal shutdown mid-film left the video mpv playing on as an orphan and
   // the torrent stream running until the next launch reaped them.
   try { _videoTeardown() } catch (_) {}
+  let torrentsDown = Promise.resolve()
+  try { torrentsDown = _torrentTeardown(400) } catch (_) {}
   try { stopSlskd() } catch (_) {}
   try { store.set('cleanShutdown', true) } catch (_) {}
   flushSideStores()
@@ -2610,7 +2644,12 @@ function shutdownFromSignal() {
   // synchronously on write. app.exit() below kills the process before that
   // timer would normally fire, so force the flush and give it a moment.
   try { session.defaultSession.flushStorageData() } catch (_) {}
-  setTimeout(() => { try { app.exit(0) } catch (_) {} }, 200)
+  // The torrent teardown gets the same short window the storage flush does,
+  // and no more: it is already bounded, and a swarm goodbye is never worth
+  // holding the process open for.
+  Promise.race([torrentsDown, new Promise(r => setTimeout(r, 200))])
+    .then(() => { try { app.exit(0) } catch (_) {} })
+    .catch(() => { try { app.exit(0) } catch (_) {} })
   // Deliberately NOT unref'd: an unref'd timer will not fire if Electron's
   // main loop stops pumping Node timers, which is exactly the case here.
   setTimeout(() => process.exit(0), 500)
@@ -2648,6 +2687,10 @@ app.on('before-quit', () => {
 app.on('will-quit', () => {
   if (!gotLock) return
   player?.stop()
+  // Before the video teardown: the streamers being stopped here are the
+  // background downloads, which the per-watch teardown deliberately leaves
+  // alone.
+  try { _torrentTeardown() } catch (_) {}
   // The video mpv is a separate child process from the music one, and a live
   // torrent stream keeps a socket server open. Neither is reached by
   // player.stop(), so quitting used to leave both behind.

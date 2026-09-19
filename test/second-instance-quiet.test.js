@@ -79,6 +79,8 @@ function runQuitHandlers(gotLock) {
     _videoTeardown() { writes.push('_videoTeardown') },
     stopSlskd() { writes.push('stopSlskd') },
     flushSideStores() { writes.push('flushSideStores') },
+    flushLibraryExtSync() { writes.push('flushLibraryExtSync') },
+    _torrentTeardown() { writes.push('_torrentTeardown'); return Promise.resolve() },
     flushLogSync() { writes.push('flushLogSync') },
     stopNowPlayingWrites() { writes.push('stopNowPlayingWrites') },
     globalShortcut: { unregisterAll() { writes.push('unregisterAll') } },
