@@ -1148,6 +1148,13 @@ const sideStores = {
   // kicks a background refresh whose fresh tree arrives via slsk-browse-refreshed.
   browseCache: new SideStore({ dir: USER_DATA, name: 'browse-cache', fallback: {}, debounceMs: 1000, onError: _sideErr }),
 
+  // Peer-library enrichment cache (Wander shelves + album dossier). One store
+  // for both sources, keyed 'mbtags:<artist>' / 'discogs:<artist>::<album>' ->
+  // { at, value }, each entry good for 30 days. Declared here with the others
+  // rather than beside its handlers so flushSideStores and the backup collector
+  // see it from the start.
+  peerEnrich: new SideStore({ dir: USER_DATA, name: 'peer-enrich', fallback: {}, debounceMs: 1000, onError: _sideErr }),
+
   // Learned dead-magnet memory (App #41). infohash -> { failures, lastFailAt }.
   // Written on the video streamer's give-up/error paths, read (and decayed) when
   // video sources are ranked so a repeatedly-dead torrent is demoted, never
@@ -7778,6 +7785,71 @@ ipcMain.handle('musicbrainz-check-album', async (_, { artist, album } = {}) => {
     }
   } catch (e) {
     return { ok: false, error: String(e && e.message || e) }
+  }
+})
+
+// ── Peer library enrichment (Wander shelves + album dossier) ────────────────
+// The store itself is declared with the other sideStores; only the read/write
+// helpers and the handlers live here, next to the MusicBrainz call they share.
+const peerEnrich = require('./src/peer-enrich')
+const ENRICH_TTL_MS = 30 * 24 * 3600 * 1000
+function _enrichGet(key) {
+  try { const m = sideStores.peerEnrich.get(); const e = m && m[key]; return e && (Date.now() - e.at) < ENRICH_TTL_MS ? e.value : null }
+  catch (_) { return null }
+}
+function _enrichSet(key, value) {
+  try { const m = sideStores.peerEnrich.get() || {}; m[key] = { at: Date.now(), value }; sideStores.peerEnrich.set(m) } catch (_) {}
+}
+
+ipcMain.handle('musicbrainz-artist-tags', async (_, { artist } = {}) => {
+  const name = String(artist || '').trim()
+  if (!name) return { ok: false, reason: 'No artist name to look up.' }
+  const key = 'mbtags:' + name.toLowerCase()
+  const hit = _enrichGet(key)
+  if (hit) return { ok: true, tags: hit, fromCache: true }
+  try {
+    const j = await _mbThrottle(() => _mbGetJson(`/artist?query=${encodeURIComponent('artist:"' + name + '"')}&limit=3&inc=tags`))
+    const tags = peerEnrich.pickArtistTags(j)
+    _enrichSet(key, tags)
+    return { ok: true, tags }
+  } catch (e) {
+    return { ok: false, reason: 'MusicBrainz did not answer: ' + String(e && e.message || e) }
+  }
+})
+
+ipcMain.handle('discogs-token-get', () => ({ token: store.get('discogsToken', '') }))
+ipcMain.handle('discogs-token-set', (_, { token } = {}) => { store.set('discogsToken', String(token || '').trim()); return { ok: true } })
+
+// httpsGet already sends the User-Agent Discogs insists on (PapaAudio/1.0), so
+// it is reused here; the spacing below is Discogs' one-request-a-second limit.
+let _discogsLastAt = 0
+async function _discogsGetJson(pathAndQuery, token) {
+  const wait = 1000 - (Date.now() - _discogsLastAt)
+  if (wait > 0) await new Promise(r => setTimeout(r, wait))
+  _discogsLastAt = Date.now()
+  const sep = pathAndQuery.includes('?') ? '&' : '?'
+  const raw = await httpsGet(`https://api.discogs.com${pathAndQuery}${sep}token=${encodeURIComponent(token)}`)
+  return JSON.parse(String(raw))
+}
+
+ipcMain.handle('discogs-album', async (_, { artist, album } = {}) => {
+  const token = store.get('discogsToken', '')
+  if (!token) return { ok: false, reason: 'no-token' }
+  const a = String(artist || '').trim(), b = String(album || '').trim()
+  if (!b) return { ok: false, reason: 'No album name to look up.' }
+  const key = 'discogs:' + (a + '::' + b).toLowerCase()
+  const hit = _enrichGet(key)
+  if (hit) return { ok: true, ...hit, fromCache: true }
+  try {
+    const search = await _discogsGetJson(`/database/search?type=master&artist=${encodeURIComponent(a)}&release_title=${encodeURIComponent(b)}&per_page=5`, token)
+    const master = peerEnrich.pickDiscogsMaster(search)
+    if (!master) return { ok: false, reason: 'Discogs has no entry for this album.' }
+    const detail = await _discogsGetJson(`/masters/${master.id}`, token)
+    const value = { ...peerEnrich.discogsSummary(detail), url: master.url }
+    _enrichSet(key, value)
+    return { ok: true, ...value }
+  } catch (e) {
+    return { ok: false, reason: 'Discogs did not answer: ' + String(e && e.message || e) }
   }
 })
 
@@ -16314,6 +16386,7 @@ const BACKUP_SKIP_STORES = new Set([
   'animeBrowseCache',
   'manageCache',
   'artistInfoCache',
+  'peerEnrich',
 ])
 
 function _collectBackupStores() {
