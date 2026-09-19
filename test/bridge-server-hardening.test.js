@@ -818,10 +818,12 @@ test('a port already in use exits once with a clear reason, not a crash loop', a
 test('SIGTERM shuts the bridge down instead of leaving timers holding the loop', async () => {
   const { proc } = await boot()
   const exited = new Promise(resolve => proc.on('exit', () => resolve(true)))
-  const timedOut = new Promise(resolve => setTimeout(() => resolve(false), 8000).unref())
+  // Well inside the server's own 5s force-exit backstop: the point is that the
+  // loop DRAINS, not that the backstop eventually fires.
+  const timedOut = new Promise(resolve => setTimeout(() => resolve(false), 3000).unref())
   proc.kill('SIGTERM')
   const clean = await Promise.race([exited, timedOut])
-  assert.ok(clean, 'the process was still alive 8s after SIGTERM — an interval is holding the event loop')
+  assert.ok(clean, 'the process was still alive 3s after SIGTERM — an interval is holding the event loop')
 })
 
 // ── yt-dlp: one resolve per videoId, one download per videoId ────────────────
