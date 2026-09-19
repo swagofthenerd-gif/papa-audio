@@ -11691,12 +11691,22 @@ ipcMain.handle('video-settings-set', (_, { patch }) => {
 // precisely so no id has to be trusted, and this is where the trust is earned:
 // a name that does not resolve produces no shelf rather than a shelf of the
 // wrong person.
-const _personIdCache = new Map()
+// Capped, not a bare Map. Both of these were written on every shelf render and
+// never read back out for eviction, so a long session of browsing kept one
+// entry per distinct name it had ever seen, for the life of the process.
+// Neither needs a TTL — a person's TMDB id does not change — so the cap is the
+// whole policy, and it is generous enough that the rotation never evicts a name
+// it is still using.
+const PERSON_CACHE_CAP = 500
+const _personIdCache = makeCache({ cap: PERSON_CACHE_CAP })
 // id -> name, so _shelfDefinition can label a shelf it is handed only an id for.
-const _directorNames = new Map()
+const _directorNames = makeCache({ cap: PERSON_CACHE_CAP })
 async function _resolvePersonId(name) {
   if (!name) return null
-  if (_personIdCache.has(name)) return _personIdCache.get(name)
+  // A miss is undefined; a cached "TMDB does not know this name" is null, and
+  // that answer is worth keeping too.
+  const held = _personIdCache.get(name)
+  if (held !== undefined) return held
   let id = null
   try {
     const people = await tmdb().searchPeople(name)
