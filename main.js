@@ -12419,6 +12419,31 @@ function _browseCacheRead(username) {
   } catch (_) { return null }
 }
 
+// Every OTHER cached peer's albums as light {artist, album} pairs, for the
+// "Only here" shelf. Capped and yielded between peers so a fat cache cannot
+// stall mpv's IPC on this thread.
+ipcMain.handle('slsk-cached-peer-albums', async (_, { except } = {}) => {
+  const SHm = require('./src/slsk-shelves')
+  const Tm = require('./src/slsk-tree')
+  let map
+  try { map = sideStores.browseCache.get() || {} } catch (_) { return [] }
+  const out = []
+  const skip = String(except || '').toLowerCase()
+  for (const k of Object.keys(map)) {
+    if (!k.startsWith('browse:')) continue
+    if (k.slice(7).toLowerCase() === skip) continue
+    const dirs = map[k] && map[k].directories
+    if (!Array.isArray(dirs)) continue
+    try {
+      const albums = SHm.extractAlbums(Tm.buildTree(dirs), { minTracks: 2 })
+      out.push(albums.map(a => ({ artist: a.artist, album: a.album })))
+    } catch (_) { continue }
+    if (out.length >= 12) break
+    await new Promise(r => setImmediate(r))
+  }
+  return out
+})
+
 // The anime browse cache mirrors the anime-detail cache exactly (bounded,
 // LRU-ish side store), but for the list ROWS the Anime tab scrolls. Its whole
 // job is to keep the last good shelves visible through an AniList outage. The

@@ -342,6 +342,8 @@ contextBridge.exposeInMainWorld('api', {
   slskVerifyFile:     (p) => ipcRenderer.invoke('slsk-verify-file', p),
   // "Verify this rip": pulls one track from the peer, measures it, deletes it.
   slskVerifyRip:      (p) => ipcRenderer.invoke('slsk-verify-rip', p),
+  // Every other cached peer's albums, for the "Only here" shelf.
+  slskCachedPeerAlbums: (p) => ipcRenderer.invoke('slsk-cached-peer-albums', p),
   // Post-download verification verdict for one completed album group (#49).
   slskVerifyStatus:   (p) => ipcRenderer.invoke('slsk-verify-status', p),
   // A completed album group finished verification. Dedicated subscriber, returns

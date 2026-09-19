@@ -38,3 +38,12 @@ test('discogs-album never calls out without a token', () => {
   const guard = body.indexOf("reason: 'no-token'"), call = body.indexOf('_discogsGetJson(')
   assert.ok(guard > 0 && guard < call, 'the no-token return comes before the first request')
 })
+
+test('slsk-cached-peer-albums exists, is exposed, and skips the asking peer', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
+  const pre = fs.readFileSync(path.join(__dirname, '..', 'preload.js'), 'utf8')
+  assert.ok(main.includes("ipcMain.handle('slsk-cached-peer-albums'"))
+  assert.ok(pre.includes("'slsk-cached-peer-albums'"))
+  const body = main.slice(main.indexOf("ipcMain.handle('slsk-cached-peer-albums'"), main.indexOf("ipcMain.handle('slsk-cached-peer-albums'") + 2500)
+  assert.ok(/except/.test(body) && /continue/.test(body))
+})
