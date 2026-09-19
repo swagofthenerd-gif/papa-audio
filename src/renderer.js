@@ -29804,8 +29804,14 @@ function _renderActiveTab(files, container) {
         try { items = JSON.parse(btn.dataset.retry || '[]') } catch (_) { items = [] }
         items = (Array.isArray(items) ? items : []).filter(Boolean)
         if (!items.length) return
-        await Promise.all(items.map(it => window.api.slskRetryTransfer(it).catch(() => {})))
-        showToast('Retrying ' + items.length + ' file' + (items.length === 1 ? '' : 's') + '…')
+        // "Retrying N files" used to be printed whatever came back, including
+        // when every single one was refused.
+        const rs = await Promise.all(items.map(it => window.api.slskRetryTransfer(it)
+          .then(r => !!(r && r.ok !== false)).catch(() => false)))
+        const took = rs.filter(Boolean).length
+        showToast(took
+          ? 'Retrying ' + took + ' file' + (took === 1 ? '' : 's') + '…'
+          : 'Could not retry ' + (items.length === 1 ? 'that file' : 'those files'))
         await _pollAndRenderDownloads()
       })
     })
@@ -30103,8 +30109,13 @@ function _renderCompletedTab(files, container) {
         // alreadyDone: this transfer has already finished or failed, so there
         // is no live scheduler intent to cancel -- and skipping that lookup
         // skips a FULL /transfers/downloads fetch (~1 MB) per item.
-        await window.api.slskCancelTransfer({ username: btn.dataset.user, id: btn.dataset.id, alreadyDone: true }).catch(() => {})
+        const r = await window.api.slskCancelTransfer({ username: btn.dataset.user, id: btn.dataset.id, alreadyDone: true })
+          .catch(e => ({ ok: false, error: String((e && e.message) || e) }))
         await _pollAndRenderDownloads()
+        if (!r || r.ok === false) {
+          showSnackbar((r && r.error) || 'Could not remove that download')
+          return
+        }
         // Undo audit (App #66): this clears a finished/failed record from slskd,
         // which has no client-side reversal (the file on disk is untouched). We
         // surface the action; a true Undo needs a backend "restore transfer
@@ -30358,7 +30369,9 @@ function _renderFailedTab(files, container) {
         try { pairs = JSON.parse(btn.dataset.pairs || '[]') } catch (_) {}
         var results = await Promise.all(pairs.map(function (p) {
           return window.api.slskCancelTransfer({ username: p[0], id: p[1], alreadyDone: true })
-            .then(function () { return true }).catch(function () { return false })
+            // Resolving is not the same as clearing: the handler reports a
+            // daemon refusal as { ok:false }, and that used to count as done.
+            .then(function (r) { return !!(r && r.ok !== false) }).catch(function () { return false })
         }))
         var failed = results.filter(function (ok) { return !ok }).length
         if (failed) showSnackbar(failed + ' of ' + results.length + " couldn't be cleared")
@@ -30372,8 +30385,18 @@ function _renderFailedTab(files, container) {
     btn.addEventListener('click', e => {
       e.stopPropagation()
       _dlBtnAction(btn, async () => {
-        await window.api.slskCancelTransfer({ username: btn.dataset.user, id: btn.dataset.id, alreadyDone: true }).catch(() => {})
-        await window.api.slskDownload({ username: btn.dataset.user, filename: btn.dataset.filename, size: Number(btn.dataset.size) }).catch(() => {})
+        // Both calls used to be swallowed, so a refusal still cleared the row
+        // and snapped the view to an empty Downloading tab with nothing said.
+        await window.api.slskCancelTransfer({ username: btn.dataset.user, id: btn.dataset.id, alreadyDone: true })
+          .catch(() => null)
+        const r = await window.api.slskDownload({
+          username: btn.dataset.user, filename: btn.dataset.filename, size: Number(btn.dataset.size),
+        }).catch(e => ({ ok: false, error: String((e && e.message) || e) }))
+        if (!r || r.ok === false) {
+          showSnackbar((r && r.error) || 'Could not retry that download')
+          await _pollAndRenderDownloads()
+          return
+        }
         _dlTab = 'active'; _dlLastSig = ''
         _setActiveTab('.dl2-tab', document.querySelector('.dl2-tab[data-tab="active"]'))
         await _pollAndRenderDownloads()
@@ -30386,8 +30409,13 @@ function _renderFailedTab(files, container) {
     btn.addEventListener('click', e => {
       e.stopPropagation()
       _dlBtnAction(btn, async () => {
-        await window.api.slskCancelTransfer({ username: btn.dataset.user, id: btn.dataset.id, alreadyDone: true }).catch(() => {})
+        const r = await window.api.slskCancelTransfer({ username: btn.dataset.user, id: btn.dataset.id, alreadyDone: true })
+          .catch(e => ({ ok: false, error: String((e && e.message) || e) }))
         await _pollAndRenderDownloads()
+        if (!r || r.ok === false) {
+          showSnackbar((r && r.error) || 'Could not remove that download')
+          return
+        }
         // Undo audit (App #66): server-side record removal, no client-side
         // reversal — surfaced, not undoable. See report on the backend gap.
         showSnackbar('Removed from the download list', '', function () {}, 3000)
