@@ -1135,3 +1135,28 @@ Routed next (`fix/bridge-phone-contract`, from the new tip): C1 nested
 transfers back + seconds for `remainingTime`; H4 `ts`/`playedAt`; H5
 liked-tracks diffs; H1 scan returns the cache; H2 health exempt / limiter;
 M5 `addresses`; L3 coalesce playbackState; L4 filter unavailable.
+
+### 19 Sep — bridge ↔ phone contract fixed on both sides
+Bridge (`fix/bridge-phone-contract`, 9 commits, merged): `/api/slsk/transfers`
+back to slskd's nested shape with `remainingTime`/`elapsedTime` in SECONDS
+(my re-check: flatten again → 1 red); play-history stamps `ts` in and maps
+`playedAt` out — one test runs the queued op through the desktop's real
+`normaliseHistory` and asserts zero quarantined (my re-check: stamp removed
+→ 2 red); liked-tracks POSTs become `likedTracks.add/remove` diffs (window
+between the phone's startup read and its POST is still lossy — phone-side
+follow-up noted in code); `/api/library/scan` returns the desktop cache
+(~9 ms, was a 3.4 TB re-parse with foreign ids; 53 lines deleted); limiter
+600/min with `/api/health` exempt; `addresses` on health from one shared
+`localIps()`; `playbackState.set` coalesced in the inbox; `unavailable`
+albums filtered from replies. Two source-as-text pins in `bridge-media`
+removed in favour of the booted-server coverage.
+Phone (`fix/bridge-contract-2026-09-19` in ~/papa-audio-android, 8 commits,
+NOT pushed, NOT built — his build): Downloads-tab `load()` latched (my
+re-check: latch removed → 2/136 red); bridge authoritative for playlists
+with `null`-on-failure and `playlistsPendingSync` guards; art misses 24 h;
+"Phone only" alert + honest copy; `formatEta` parses TimeSpan ("00:01:23" →
+"2m", original ceil kept); `pcError` state + bridge error text; recently
+played sent to the bridge; local album art cached as `file://`. `tsc` clean,
+136/136. Nothing run on a device. HIS ACTIONS: restart `papa-bridge.service`;
+build + install the phone branch (`npm run build:local`); the transcode
+stream is still unseekable (design; needs a transcode cache if wanted).
