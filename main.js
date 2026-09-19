@@ -1487,6 +1487,64 @@ const SLSKD_THROTTLE_MEMORY_MS = 90 * 1000
 function slskdIsThrottled() { return Date.now() < _slskdThrottledUntil }
 function slskdThrottledRecently() { return Date.now() - _slskdLastThrottleAt < SLSKD_THROTTLE_MEMORY_MS }
 
+// ── The POST /searches token bucket ─────────────────────────────────────────
+// One search fires up to eight query variants in parallel, each of them its own
+// POST /searches. slskd's own rate limiter answers that burst with 429, and the
+// per-REQUEST backoff above cannot help: every variant backs off on its own
+// clock and they all come back at roughly the same moment, so pressing Retry
+// hit the same wall -- 27.5 s of "Searching 5 variants..." and then the same
+// error.
+//
+// So search POSTs queue behind one shared bucket: one every 1.5 s, burst 2, and
+// every waiter sits out the GLOBAL throttle window (_slskdThrottledUntil)
+// rather than only the one request that earned it. That is the part a
+// per-request backoff structurally cannot do, and it is why a Retry issued
+// during a throttle now waits instead of firing into it.
+//
+// Reads are untouched: browse, transfer polling and the health check must stay
+// responsive, and a GET was never what tripped the limiter. The dry-run choke
+// sits in front of this, so a refused request never takes a token.
+const SEARCH_BUCKET_INTERVAL_MS = 1500
+const SEARCH_BUCKET_BURST = 2
+let _searchTokens = SEARCH_BUCKET_BURST
+// -1 means "never primed". Not 0: Date.now() is never 0 in production, but a
+// virtual clock in a test starts there, and a falsy sentinel that is also a
+// legal clock reading is the kind of thing that works until it does not.
+let _searchTokensAt = -1
+let _searchGate = Promise.resolve()
+
+function _isSearchPost(method, endpoint) {
+  return String(method).toUpperCase() === 'POST' &&
+    /^\/searches(?:[/?#]|$)/.test(String(endpoint || ''))
+}
+
+function _searchBucketSleep(ms) { return new Promise(r => setTimeout(r, ms)) }
+
+// Serialised on purpose: waiters leave in the order they arrived, so the first
+// variant of a search is the first one sent. Each link keeps the chain alive
+// through a rejection, or one failure would wedge every later search.
+function _searchBucketTake() {
+  const run = _searchGate.then(async () => {
+    for (;;) {
+      const now = Date.now()
+      if (_slskdThrottledUntil > now) {
+        await _searchBucketSleep(_slskdThrottledUntil - now)
+        continue
+      }
+      if (_searchTokensAt < 0) _searchTokensAt = now
+      const gained = Math.floor((now - _searchTokensAt) / SEARCH_BUCKET_INTERVAL_MS)
+      if (gained > 0) {
+        _searchTokens = Math.min(SEARCH_BUCKET_BURST, _searchTokens + gained)
+        _searchTokensAt += gained * SEARCH_BUCKET_INTERVAL_MS
+      }
+      if (_searchTokens > 0) { _searchTokens--; return }
+      await _searchBucketSleep(Math.max(1, _searchTokensAt + SEARCH_BUCKET_INTERVAL_MS - now))
+    }
+  })
+  _searchGate = run.then(() => {}, () => {})
+  return run
+}
+
 // ── The slskd write choke point ─────────────────────────────────────────────
 // slskd at :5030 is the user's REAL Soulseek account. A QA twin may look — the
 // whole point of a dry-run twin is that it stays useful — but it must never
@@ -1537,6 +1595,9 @@ async function slskdFetch(method, endpoint, body) {
     err.code = 'DRY_RUN'
     throw err
   }
+  // Search POSTs leave one at a time (see the bucket above); everything else
+  // goes straight through.
+  if (_isSearchPost(method, endpoint)) await _searchBucketTake()
   if (!slskdToken || Date.now() > slskdTokenExpiry) await slskdAcquireToken()
   const headers = { 'Content-Type': 'application/json' }
   if (slskdToken) headers['Authorization'] = `Bearer ${slskdToken}`
@@ -7252,6 +7313,9 @@ function httpsGet(url, redirects = 0) {
         res.resume()
         const err = new Error(`HTTP ${res.statusCode} for ${url}`)
         err.statusCode = res.statusCode
+        // A throttling server says when to come back. Carried on the error so
+        // the caller can honour it instead of guessing.
+        err.retryAfter = res.headers['retry-after'] || null
         return reject(err)
       }
       // The server answered, so the network is up — whatever the status was.
@@ -7284,6 +7348,62 @@ function looksLikeImage(buf) {
 const ART_MISS_TTL_MS = 24 * 60 * 60 * 1000
 const _artMisses = new Map()
 
+// The shop prefetches a cover for every album a peer holds, and iTunes answers
+// a burst of those with 429 -- then with 403 once it decides it has had enough
+// of this IP. One session logged 848 art lines: 438 of them 429 and 410 of them
+// 403, one per peer album, because a throttle was caught, logged and thrown
+// away. Every later lookup fired anyway and got the same answer, which is how a
+// prefetch turns into a ban.
+//
+// So a throttle now stops the whole sweep. The first 429/403 sets a cooldown
+// -- the server's own Retry-After when it sends one, else 60 s doubling on each
+// repeat to a 15 minute ceiling -- and until it expires every lookup returns
+// { throttled: true } without touching the network. The marker is not null on
+// purpose: null means "no art exists", and the renderer must be able to tell
+// "we did not ask" from "there is nothing there", so it can stop its sweep and
+// retry later rather than caching a miss.
+const ART_COOLDOWN_BASE_MS = 60 * 1000
+const ART_COOLDOWN_MAX_MS = 15 * 60 * 1000
+let _artCooldownUntil = 0
+let _artCooldownMs = 0
+
+// Retry-After is either delta-seconds or an HTTP date. Anything else is no hint.
+function _artRetryAfterMs(err, now) {
+  const raw = err && err.retryAfter
+  if (raw == null || raw === '') return 0
+  const secs = Number(raw)
+  if (Number.isFinite(secs) && secs > 0) return Math.min(secs * 1000, ART_COOLDOWN_MAX_MS)
+  const at = Date.parse(String(raw))
+  if (Number.isFinite(at)) {
+    const delta = at - (now || Date.now())
+    if (delta > 0) return Math.min(delta, ART_COOLDOWN_MAX_MS)
+  }
+  return 0
+}
+
+function _artThrottled(now) { return (now || Date.now()) < _artCooldownUntil }
+
+// Record a throttling response. Returns true when the error WAS one, so the
+// caller can answer { throttled: true } rather than recording a miss -- a
+// throttled album is not an album without art.
+function _artNoteThrottle(err, now) {
+  const code = Number(err && (err.statusCode || err.status)) || 0
+  if (code !== 429 && code !== 403) return false
+  const t = now || Date.now()
+  // A burst already in flight when the first one lands would otherwise double
+  // the cooldown once per sibling and log once per sibling, which is the noise
+  // this exists to remove.
+  if (t < _artCooldownUntil) return true
+  const hinted = _artRetryAfterMs(err, t)
+  const next = hinted > 0
+    ? hinted
+    : Math.min(_artCooldownMs > 0 ? _artCooldownMs * 2 : ART_COOLDOWN_BASE_MS, ART_COOLDOWN_MAX_MS)
+  _artCooldownMs = next
+  _artCooldownUntil = t + next
+  console.warn(`[papa][art] iTunes answered ${code}; pausing cover lookups for ${Math.round(next / 1000)}s`)
+  return true
+}
+
 ipcMain.handle('fetch-album-art', async (_, { albumId, artist, album }) => {
   const cached = path.join(artworkDir, `${albumId}.jpg`)
   try {
@@ -7298,6 +7418,8 @@ ipcMain.handle('fetch-album-art', async (_, { albumId, artist, album }) => {
     const missAt = _artMisses.get(albumId)
     if (missAt && Date.now() - missAt < ART_MISS_TTL_MS) return null
     if (_artMisses.size > 500) _artMisses.clear()
+    // Paused by a previous 429/403. Zero requests until it expires.
+    if (_artThrottled()) return { throttled: true }
 
     const query = encodeURIComponent(`${artist} ${album}`)
     const raw = await httpsGet(`https://itunes.apple.com/search?term=${query}&entity=album&limit=8&media=music`)
@@ -7321,8 +7443,14 @@ ipcMain.handle('fetch-album-art', async (_, { albumId, artist, album }) => {
     const tmp = cached + '.part'
     fs.writeFileSync(tmp, imgBuf)
     fs.renameSync(tmp, cached)
+    // A clean answer means the previous throttling is behind us, so the next
+    // one starts the backoff ladder from the bottom again.
+    _artCooldownMs = 0
     return { artPath: cached }
   } catch (e) {
+    // A throttle is not a miss. Recording one would blank this album's cover
+    // for a day over a rate limit that lasts a minute.
+    if (_artNoteThrottle(e)) return { throttled: true }
     _artMisses.set(albumId, Date.now())
     console.error(`[papa][art] ${artist} — ${album}:`, String(e && e.message || e))
     try { if (fs.existsSync(cached + '.part')) fs.unlinkSync(cached + '.part') } catch (_) {}
@@ -10748,17 +10876,40 @@ async function _browseFetch(username, timeoutMs) {
   return (data?.directories || data || []).filter(d => (d.files || []).length > 0)
 }
 
-// A completed browse of a SAVED user updates the diff record: the previous
-// fileCount rolls into prevFileCount, the fresh count and browse time land.
-// "new since last visit" is read from that pair by slsk-friend-diffs. Only saved
-// users are touched — recordBrowse is a no-op for the rest.
+// How many "New since last visit" folder paths ride back to the renderer. The
+// shelf is a prompt to go and look, not a manifest.
+const BROWSE_NEW_DIRS_CAP = 200
+
+// A USER-INITIATED browse of a SAVED user updates the diff record: the previous
+// fileCount and folder snapshot roll into prevFileCount / prevDirSnap, the
+// fresh ones land, and the folders that were not in the previous snapshot come
+// back as the "New since last visit" list. slsk-friend-diffs reads the count
+// pair for the badge; the shop reads this list for the shelf the badge
+// promises. Only saved users are touched — recordBrowse is a no-op for the rest.
+//
+// The background refresh does NOT call this. It used to, and that rotated the
+// snapshot seconds after the badge appeared: by the time the user opened the
+// library, last visit's folders were this visit's folders and the shelf was
+// empty. A visit is something a person does.
 function _browseRecordDiff(username, dirs) {
-  if (!savedUsers.isSaved(store.get('slskSavedUsers', []), username)) return
-  const fileCount = dirs.reduce((n, d) => n + (d.files || []).length, 0)
-  const list = savedUsers.recordBrowse(store.get('slskSavedUsers', []), username,
-    { fileCount, dirCount: dirs.length })
+  const list0 = store.get('slskSavedUsers', [])
+  if (!savedUsers.isSaved(list0, username)) return []
+  let fileCount = 0
+  const paths = []
+  for (const d of dirs) {
+    fileCount += (d && d.files && d.files.length) || 0
+    const name = String((d && d.name) || '')
+    if (name) paths.push(name)
+  }
+  const i = savedUsers.findIndex(list0, username)
+  const prevSnap = i >= 0 ? list0[i].dirSnap : null
+  const newDirs = savedUsers.newDirPaths(prevSnap, paths, BROWSE_NEW_DIRS_CAP)
+  const list = savedUsers.recordBrowse(list0, username, {
+    fileCount, dirCount: dirs.length, dirSnap: savedUsers.dirSnapshot(paths),
+  })
   store.set('slskSavedUsers', list)
   savedUsersChanged(list)
+  return newDirs
 }
 
 // Users with a background refresh already running, so an open that lands while
@@ -10773,7 +10924,9 @@ function _browseRefresh(username) {
     try {
       const dirs = await _browseFetch(username, 30000)
       _browseCacheWrite(username, dirs)
-      _browseRecordDiff(username, dirs)
+      // Deliberately no _browseRecordDiff here: a background refresh is not a
+      // visit, and rotating the snapshot from one would erase the very diff the
+      // next open is supposed to show.
       // The renderer re-reads via the normal call, which now serves the fresh
       // cache. The UI agent subscribes to this via onSlskBrowseRefreshed.
       safeSend('slsk-browse-refreshed', { username })
@@ -10790,18 +10943,24 @@ function _browseRefresh(username) {
 // longer deadline when the first attempt times out, because a big library
 // often just needs more time. Both browse entry points call this — the single-
 // shot slsk-browse-user and the sliced slsk-browse-begin — so the rule cannot
-// drift between them. Returns { ok, dirs, fromCache, cachedAt } or { ok, error }.
+// drift between them. Returns { ok, dirs, fromCache, cachedAt, newDirs } or
+// { ok, error }. Both entry points are user-initiated, so both record the visit
+// — including a cache hit, which is a visit like any other and the common case.
 async function _browseDirectories(username) {
   const cached = _browseCacheRead(username)
   if (cached) {
+    const dirs = cached.directories || []
+    // Record BEFORE kicking the refresh off, so the diff is against what the
+    // user is actually being shown.
+    const newDirs = _browseRecordDiff(username, dirs)
     _browseRefresh(username)
-    return { ok: true, dirs: cached.directories || [], fromCache: true, cachedAt: cached.cachedAt }
+    return { ok: true, dirs, fromCache: true, cachedAt: cached.cachedAt, newDirs }
   }
   const attempt = async (deadlineMs) => {
     const dirs = await _browseFetch(username, deadlineMs)
     _browseCacheWrite(username, dirs)
-    _browseRecordDiff(username, dirs)
-    return { ok: true, dirs, fromCache: false, cachedAt: null }
+    const newDirs = _browseRecordDiff(username, dirs)
+    return { ok: true, dirs, fromCache: false, cachedAt: null, newDirs }
   }
   try {
     return await attempt(30000)
@@ -10816,6 +10975,9 @@ ipcMain.handle('slsk-browse-user', async (_, { username }) => {
   if (!got.ok) return { ok: false, error: got.error }
   const reply = { ok: true, directories: got.dirs }
   if (got.fromCache) { reply.fromCache = true; reply.cachedAt = got.cachedAt }
+  // Folder paths that were not there last visit, capped. Absent when there is
+  // nothing new, or when this is the first recorded visit.
+  if (got.newDirs && got.newDirs.length) reply.newDirs = got.newDirs
   return reply
 })
 
@@ -10887,7 +11049,11 @@ function _browseHead(directories, extra) {
 ipcMain.handle('slsk-browse-begin', async (_, { username } = {}) => {
   const got = await _browseDirectories(username)
   if (!got.ok) return { ok: false, error: got.error }
-  return _browseHead(got.dirs, got.fromCache ? { fromCache: true, cachedAt: got.cachedAt } : null)
+  const extra = got.fromCache ? { fromCache: true, cachedAt: got.cachedAt } : {}
+  // Rides on the HEAD, not the end: the shop can build its "New since last
+  // visit" shelf while it is still pulling the slices.
+  if (got.newDirs && got.newDirs.length) extra.newDirs = got.newDirs
+  return _browseHead(got.dirs, extra)
 })
 
 ipcMain.handle('slsk-browse-chunk', (_, { token, offset = 0, limit = 400 } = {}) => {

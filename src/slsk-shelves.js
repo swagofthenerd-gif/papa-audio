@@ -61,7 +61,14 @@ const TAG_RE = /[\[\{（(][^\]\}）)]*[\]\}）)]/g
 const NOISE_WORDS = /\b(flac|mp3|wav|aac|alac|ape|wv|dsd|dsf|dff|24bit|16bit|24[\s._-]?96|24[\s._-]?192|16[\s._-]?44|96khz|192khz|44\.?1khz|48khz|88\.?2khz|vinyl|web|webflac|cd|cdrip|cdda|reissue|remaster(ed)?|remastered|hdtracks|qobuz|deluxe|edition|lossless|hi[\s._-]?res|hires|explicit|clean)\b/gi
 
 // A leading track number that leaked into a folder name ("01 - Album").
-const LEADING_NUM = /^\s*\d{1,3}\s*[-.]\s*/
+//
+// The trailing (?!\d) is load-bearing. Without it "5.1 Surround Sound" read as
+// track 5 of an album called "1 Surround Sound" — which is what the shop
+// rendered on a real share ("1 Surround Sound / Appetite For Destruction ·
+// 1987"), and the string then went into the wishlist. A digit immediately after
+// the separator means that separator is the decimal point of a channel layout
+// (5.1, 7.1, 2.0), not a track-number divider.
+const LEADING_NUM = /^\s*\d{1,3}\s*[-.]\s*(?!\d)/
 
 // A trailing 4-digit year in parens/brackets or bare — captured before we strip.
 function extractYear(text) {
@@ -87,6 +94,75 @@ function isDiscFolder(name) {
   const n = String(name || '').trim()
   // Also catches "CD01", "Disc04" (no separator) and a bare "CD".
   return DISC_RE.test(n) || /^(cd|dis[ck])\s*\d{1,3}$/i.test(n) || /^(cd|dis[ck])$/i.test(n)
+}
+
+// A folder whose whole name is a surround label — "5.1", "5.1 Surround Sound",
+// "MCH", "Multichannel", "Quad", "7.1 mix". Uploaders use these as a CHILD of
+// the album folder ("Appetite For Destruction (1987)\5.1 Surround Sound"), the
+// same way they use "CD1", so it folds into its parent exactly like a disc
+// does. Left alone it became an album of its own — and after LEADING_NUM ate
+// the "5.", an album literally called "1 Surround Sound".
+//
+// The vocabulary mirrors slsk-filters' detectSurround deliberately rather than
+// importing its window binding, so this module still stands alone in a test
+// process. It is strictly narrower: detectSurround answers "is surround
+// mentioned anywhere in this text", this answers "is this segment nothing but a
+// surround label", which is the question a folder-folding decision asks.
+const SURROUND_LEAF_RE =
+  /^[\s._-]*(?:(?:dolby[\s._-]*)?atmos|(?:5|7)[._-][01](?:ch)?|quadr[ao]phonic|quad|multi[\s._-]?channel|mch|surround)[\s._-]*(?:surround)?[\s._-]*(?:sound|mix(?:es)?|audio|version)?[\s._-]*$/i
+
+function isSurroundFolder(name) {
+  return SURROUND_LEAF_RE.test(String(name || '').trim())
+}
+
+// One question for the walker: does this child folder fold into its parent
+// instead of being an album in its own right?
+function isFoldableChild(name) {
+  return isDiscFolder(name) || isSurroundFolder(name)
+}
+
+// A leaf segment that is ONLY a quality/source label: "44.1", "FLAC", "16-44",
+// "24bit", "WEB". People file these as the last folder of a path
+// ("…\In Rainbows\FLAC\"), and the shop rendered each one as its own
+// one-person album sitting beside the real merged card. It is not an album
+// name — it is the same album, one folder deeper.
+//
+// Deliberately strict: the whole segment must be the label and nothing else, so
+// "24 Carat Black" and "1999" stay albums.
+const QUALITY_LEAF_RE = new RegExp(
+  '^[\\s._-]*(?:' +
+  '(?:16|24|32)[\\s._-]*(?:bit)?[\\s._-]*(?:44(?:[._]1)?|48|88(?:[._]2)?|96|176(?:[._]4)?|192)?' +
+  '|(?:44[._]1|88[._]2|176[._]4|48|96|192)(?:[\\s._-]*k?hz)?' +
+  '|flac|mp3|wav|aiff?|alac|ape|wv|dsd|dsf|dff|opus|ogg|m4a' +
+  '|lossless|hi[\\s._-]?res|hires|vinyl|web|webflac|cd|cdrip|cdda|scans?|artwork|covers?' +
+  ')[\\s._-]*(?:bit|khz|hz|kbps)?[\\s._-]*$', 'i')
+
+function isQualityLeaf(name) {
+  const n = String(name || '').trim()
+  if (!n) return false
+  // A bare number on its own is a disc or a year, not a quality label; the
+  // alternation above would otherwise swallow "48" and "96" as sample rates in
+  // isolation, which is right for "…\96\" beside "…\FLAC\" and wrong for
+  // nothing else we have seen. Keep it: the guard here is only against the
+  // empty-ish cases.
+  return QUALITY_LEAF_RE.test(n)
+}
+
+// Peel trailing noise segments off a folder path before parsing it as an album.
+// "…\In Rainbows\Disc 1" and "…\In Rainbows\FLAC" are both the SAME album as
+// "…\In Rainbows"; parsing the raw leaf made three albums out of one. Never
+// strips down to nothing — a path that is only noise keeps its last segment.
+//
+// Cost is O(segments) once per group, not per comparison, so the merge stays
+// linear.
+function stripLeafNoise(segs) {
+  const out = (segs || []).slice()
+  while (out.length > 1) {
+    const leaf = out[out.length - 1]
+    if (isDiscFolder(leaf) || isQualityLeaf(leaf)) out.pop()
+    else break
+  }
+  return out
 }
 
 // Clean a raw path segment down to human text: drop bracket tags, bare noise
@@ -308,6 +384,11 @@ function albumComparable(x) {
     lossless: x.lossless,
     maxBitDepth: x.maxBitDepth,
     maxSampleRate: x.maxSampleRate,
+    // Channel truth rides along so upgradeReason can see it. `channels` is a
+    // count (the library side knows one); `surround` is a boolean (the peer
+    // side has only folder/file text to read, never a channel count).
+    channels: x.channels,
+    surround: x.surround,
     ref: x.ref,
   }
 }
@@ -558,16 +639,19 @@ function extractAlbums(root, { minTracks = 2 } = {}) {
   const gatherWithDiscs = (node) => {
     const files = node.files.filter(f => isAudioName(f.name || f.filename))
     let discCount = 0
+    let surround = false
     if (node.dirs && node.dirs.size) {
       for (const child of node.dirs.values()) {
-        if (isDiscFolder(child.name)) {
+        if (isFoldableChild(child.name)) {
           discCount++
+          if (isSurroundFolder(child.name)) surround = true
           const inner = gatherWithDiscs(child)
           for (const f of inner.files) files.push(f)
+          if (inner.surround) surround = true
         }
       }
     }
-    return { files, discCount }
+    return { files, discCount, surround }
   }
 
   // The same count gatherWithDiscs would report, without building the array. A
@@ -581,7 +665,7 @@ function extractAlbums(root, { minTracks = 2 } = {}) {
     for (const f of node.files) if (isAudioName(f.name || f.filename)) n++
     if (node.dirs && node.dirs.size) {
       for (const child of node.dirs.values()) {
-        if (isDiscFolder(child.name)) n += countWithDiscs(child)
+        if (isFoldableChild(child.name)) n += countWithDiscs(child)
       }
     }
     return n
@@ -592,7 +676,7 @@ function extractAlbums(root, { minTracks = 2 } = {}) {
     const realSubdirs = []
     if (node.dirs && node.dirs.size) {
       for (const child of node.dirs.values()) {
-        if (!isDiscFolder(child.name)) realSubdirs.push(child)
+        if (!isFoldableChild(child.name)) realSubdirs.push(child)
       }
     }
 
@@ -688,6 +772,10 @@ function buildAlbum(node, segs, gathered) {
     isHiRes,
     maxBitDepth,
     maxSampleRate,
+    // True when a surround-labelled child folded into this album ("Appetite For
+    // Destruction (1987)\5.1 Surround Sound"). The folder name that carried
+    // the label is no longer in the path, so without this the fact is lost.
+    surround: !!gathered.surround,
     topExt,
     files,
   }
@@ -713,9 +801,15 @@ function albumQualityLabel(album) {
 
 // ── Library adaptation ────────────────────────────────────────────────────────
 // The renderer's library albums have their own shape ({ name, artist, year,
-// tracks:[{filePath,bitsPerSample,sampleRate}], isHiRes, maxBitsPerSample,
-// maxSampleRate }). Reduce one to the comparable {artist, album, lossless,
-// maxBitDepth, maxSampleRate} shape the upgrade logic needs.
+// tracks:[{filePath,bitsPerSample,sampleRate,channels}], isHiRes,
+// maxBitsPerSample, maxSampleRate, maxChannels }). Reduce one to the comparable
+// {artist, album, lossless, maxBitDepth, maxSampleRate, channels} shape the
+// upgrade logic needs.
+//
+// `channels` is not decoration. Its absence is what let the shop offer a STEREO
+// hi-res rip as an "upgrade" over a 5.1 master — see upgradeReason. A library
+// album that carries maxChannels is believed; otherwise the widest track wins,
+// and 0 means "we do not know", which is treated as no claim either way.
 function libAlbumToComparable(a) {
   const tracks = a.tracks || []
   // One walk, no argument spread — same reasons as buildAlbum. A library album
@@ -724,21 +818,26 @@ function libAlbumToComparable(a) {
   let losslessCount = 0
   let depthFallback = 0
   let rateFallback = 0
+  let chanFallback = 0
   for (const t of tracks) {
     if (isLosslessName(t.filePath || t.path || '')) losslessCount++
     const bd = Number(t.bitsPerSample || t.bitDepth) || 0
     if (bd > depthFallback) depthFallback = bd
     const sr = Number(t.sampleRate) || 0
     if (sr > rateFallback) rateFallback = sr
+    const ch = Number(t.channels) || 0
+    if (ch > chanFallback) chanFallback = ch
   }
   const maxBitDepth = a.maxBitsPerSample != null ? Number(a.maxBitsPerSample) || 0 : depthFallback
   const maxSampleRate = a.maxSampleRate != null ? Number(a.maxSampleRate) || 0 : rateFallback
+  const channels = a.maxChannels != null ? Number(a.maxChannels) || 0 : chanFallback
   return {
     artist: a.artist || a.albumArtist || '',
     album: a.name || a.album || '',
     lossless: tracks.length ? losslessCount >= tracks.length / 2 : false,
     maxBitDepth,
     maxSampleRate,
+    channels,
     ref: a,
   }
 }
@@ -746,15 +845,47 @@ function libAlbumToComparable(a) {
 // ── Upgrade detection ─────────────────────────────────────────────────────────
 // The flagship comparison. Given a peer album and the matching library album,
 // decide whether the peer's copy is genuinely better. "Better" means, in order:
-//   1. peer is lossless where yours is lossy       (the big one)
-//   2. peer has higher bit depth                    (16 → 24)
-//   3. peer has a higher sample rate                (44.1 → 96)
+//   0. CHANNELS, before anything else                (5.1 → stereo is a LOSS)
+//   1. peer is lossless where yours is lossy         (the big one)
+//   2. peer has higher bit depth                     (16 → 24)
+//   3. peer has a higher sample rate                 (44.1 → 96)
 // A peer copy that is only equal, or worse, is NOT an upgrade.
+//
+// Gate 0 is the one this comparison shipped without, and it is the one that
+// matters most. Depth and rate said a peer's stereo FLAC 24/192 beat a 6-channel
+// 24/88.2 master, so the shop listed nine of his surround albums under "better
+// than your copies" and "Grab all" would have replaced them with stereo. No
+// sample rate buys back a discrete rear channel: a stereo copy of a surround
+// album is a DIFFERENT, smaller record, never an upgrade of it.
+//
+// The two sides know different things. The library knows a channel COUNT (from
+// the tags); the peer side has only folder and file text, because slskd never
+// reports channels — so the peer carries a `surround` boolean from
+// detectSurround instead. Unknown on either side (0 / undefined) makes no claim
+// and falls through to the quality ladder exactly as before.
 //
 // Returns null when it is not an upgrade, otherwise a reason object with the
 // human strings the card renders: { kind, yours, theirs }.
 function upgradeReason(peer, mine) {
   if (!peer || !mine) return null
+
+  const mineChannels = Number(mine.channels) || 0
+  const mineSurround = mineChannels >= 5
+  const peerSurround = !!peer.surround
+
+  // 0a. Never sell stereo as an upgrade over a surround master. This is the
+  //     guard the 5.1 scar is named after; deleting it puts the scar back.
+  if (mineSurround && !peerSurround) return null
+  // 0b. The honest opposite: they have the surround mix and yours is stereo.
+  //     Requires a KNOWN stereo/mono count — an album whose channels we never
+  //     read is not evidence of anything.
+  if (peerSurround && mineChannels > 0 && !mineSurround) {
+    return {
+      kind: 'surround',
+      yours: qualityString(mine),
+      theirs: qualityString(peer),
+    }
+  }
 
   const peerLossless = !!peer.lossless
   const mineLossless = !!mine.lossless
@@ -784,14 +915,30 @@ function upgradeReason(peer, mine) {
   return null
 }
 
+// The card's "Yours: … → Theirs: …" strings. A channel layout is appended when
+// we know one, because "FLAC 24/88" beside "FLAC 24/192" is exactly the reading
+// that made a stereo rip look like the better record.
 function qualityString(x) {
   if (!x) return ''
+  let s
   if (x.lossless) {
-    if (x.maxBitDepth && x.maxSampleRate) return `FLAC ${x.maxBitDepth}/${Math.round(x.maxSampleRate / 1000)}`
-    if (x.maxSampleRate) return `FLAC ${Math.round(x.maxSampleRate / 1000)}kHz`
-    return 'FLAC'
-  }
-  return 'MP3'
+    if (x.maxBitDepth && x.maxSampleRate) s = `FLAC ${x.maxBitDepth}/${Math.round(x.maxSampleRate / 1000)}`
+    else if (x.maxSampleRate) s = `FLAC ${Math.round(x.maxSampleRate / 1000)}kHz`
+    else s = 'FLAC'
+  } else s = 'MP3'
+  return s + channelSuffix(x)
+}
+
+// " · 5.1" / " · 7.1" / " · surround" / "" — never a guess. The peer side has
+// only a boolean, so it says "surround" rather than inventing a count.
+function channelSuffix(x) {
+  const ch = Number(x && x.channels) || 0
+  if (ch >= 8) return ' · 7.1'
+  if (ch >= 6) return ' · 5.1'
+  if (ch >= 5) return ' · 5.0'
+  if (ch >= 4) return ' · quad'
+  if (!ch && x && x.surround) return ' · surround'
+  return ''
 }
 
 // ── Shelf assembly ────────────────────────────────────────────────────────────
@@ -811,7 +958,23 @@ function buildShelves(peerAlbums, library, { detectSurround = null } = {}) {
   const upgrades = []
   const missing = []
 
-  for (const pa of albums) {
+  // Surround is decided BEFORE the upgrade sweep now, because upgradeReason
+  // needs it (see gate 0 there). It is the same single detectSurround call per
+  // album the Surround shelf already paid for — read once, used twice — so this
+  // adds no work, and the flags are kept beside the albums rather than stamped
+  // on them so a caller's objects are not mutated.
+  const isSurroundAlbum = (pa) => {
+    // A surround-labelled child folder that the walker already folded in is
+    // proof on its own — its name is no longer in folderPath to be read.
+    if (pa.surround) return true
+    if (!detectSurround) return false
+    const names = pa.files.map(f => f.name || f.filename || '').join(' ')
+    return !!detectSurround(`${pa.folderPath} ${pa.folderName} ${names}`)
+  }
+  const surroundFlags = albums.map(isSurroundAlbum)
+
+  for (let i = 0; i < albums.length; i++) {
+    const pa = albums[i]
     // Pre-tokenise the peer side once (its Sets are reused by findMatch and
     // upgradeReason reads the quality fields off the same object).
     const peerComp = albumComparable({
@@ -820,6 +983,7 @@ function buildShelves(peerAlbums, library, { detectSurround = null } = {}) {
       lossless: pa.lossless,
       maxBitDepth: pa.maxBitDepth,
       maxSampleRate: pa.maxSampleRate,
+      surround: surroundFlags[i],
     })
     // Find the best library match through the bucketed index.
     const match = libIndex.findMatch(peerComp)
@@ -833,13 +997,7 @@ function buildShelves(peerAlbums, library, { detectSurround = null } = {}) {
     }
   }
 
-  const isSurround = (pa) => {
-    if (!detectSurround) return false
-    const names = pa.files.map(f => f.name || f.filename || '').join(' ')
-    return !!detectSurround(`${pa.folderPath} ${pa.folderName} ${names}`)
-  }
-
-  const surround = albums.filter(isSurround)
+  const surround = albums.filter((_a, i) => surroundFlags[i])
   const hires = albums.filter(a => a.isHiRes)
 
   // Sort helpers. Quality rank: lossless hi-res > lossless > lossy; then size.
@@ -1021,7 +1179,14 @@ function mergeSourcesByAlbum(groups, { detectSurround = null, parse = null } = {
   const doParse = parse || ((g) => {
     const raw = String(g.folderPath || g.folderName || '')
     const segs = raw.split(/[\\/]/).filter(Boolean)
-    return parseAlbumFolder(segs.length ? segs : [g.folderName || ''])
+    // Trailing disc and bare-quality segments are peeled off first, so
+    // "…\In Rainbows\Disc 1", "…\In Rainbows\CD1", "…\In Rainbows\44.1" and
+    // "…\In Rainbows" all parse to the same album and land in one bucket. The
+    // shelves walker has folded disc folders since day one; the search-side
+    // merge never did, which is why "Disc 1", "CD1", "disc 1" and "flac" showed
+    // up as their own one-person albums beside the merged card.
+    const trimmed = stripLeafNoise(segs)
+    return parseAlbumFolder(trimmed.length ? trimmed : [g.folderName || ''])
   })
 
   // Buckets indexed by album token, mirroring buildLibraryIndex: a group can only
@@ -1467,16 +1632,19 @@ async function extractAlbumsChunked(root, opts) {
   const gatherWithDiscs = (node) => {
     const files = node.files.filter(f => isAudioName(f.name || f.filename))
     let discCount = 0
+    let surround = false
     if (node.dirs && node.dirs.size) {
       for (const child of node.dirs.values()) {
-        if (isDiscFolder(child.name)) {
+        if (isFoldableChild(child.name)) {
           discCount++
+          if (isSurroundFolder(child.name)) surround = true
           const inner = gatherWithDiscs(child)
           for (const f of inner.files) files.push(f)
+          if (inner.surround) surround = true
         }
       }
     }
-    return { files, discCount }
+    return { files, discCount, surround }
   }
 
   // Stack of { node, segs } visits and { post } emissions. LIFO with children
@@ -1504,7 +1672,7 @@ async function extractAlbumsChunked(root, opts) {
       const realSubdirs = []
       if (node.dirs && node.dirs.size) {
         for (const child of node.dirs.values()) {
-          if (!isDiscFolder(child.name)) realSubdirs.push(child)
+          if (!isFoldableChild(child.name)) realSubdirs.push(child)
         }
       }
       const gathered = gatherWithDiscs(node)
@@ -1565,15 +1733,36 @@ async function buildShelvesChunked(peerAlbums, library, opts) {
   const libIndex = await buildLibraryIndexChunked(library, opts)
   if (!libIndex) return null
 
+  // Surround detection joins every file name per album — the heaviest string
+  // work in here, so it sits inside the budget loop. It runs BEFORE the upgrade
+  // sweep because upgradeReason's channel gate needs it (see gate 0 there), and
+  // the same flags then feed the Surround shelf, so it is still exactly one
+  // detectSurround call per album.
+  const surround = []
+  const surroundFlags = new Array(albums.length)
+  for (let i = 0; i < albums.length; i++) {
+    const pa = albums[i]
+    let sur = !!pa.surround
+    if (!sur && detectSurround) {
+      const names = pa.files.map(f => f.name || f.filename || '').join(' ')
+      sur = !!detectSurround(`${pa.folderPath} ${pa.folderName} ${names}`)
+    }
+    surroundFlags[i] = sur
+    if (sur) surround.push(pa)
+    if (await b.tick() && b.aborted()) return null
+  }
+
   const upgrades = []
   const missing = []
-  for (const pa of albums) {
+  for (let i = 0; i < albums.length; i++) {
+    const pa = albums[i]
     const peerComp = albumComparable({
       artist: pa.artist,
       album: pa.album,
       lossless: pa.lossless,
       maxBitDepth: pa.maxBitDepth,
       maxSampleRate: pa.maxSampleRate,
+      surround: surroundFlags[i],
     })
     const match = libIndex.findMatch(peerComp)
     if (markInLibrary) pa.inLibrary = !!match
@@ -1586,17 +1775,9 @@ async function buildShelvesChunked(peerAlbums, library, opts) {
     if (await b.tick() && b.aborted()) return null
   }
 
-  // Surround detection joins every file name per album — the heaviest string
-  // work in here, so it sits inside the budget loop too. The sort keys for the
-  // Everything grid are precomputed in the same pass.
-  const surround = []
   const hires = []
   const decorated = []
   for (const pa of albums) {
-    if (detectSurround) {
-      const names = pa.files.map(f => f.name || f.filename || '').join(' ')
-      if (detectSurround(`${pa.folderPath} ${pa.folderName} ${names}`)) surround.push(pa)
-    }
     if (pa.isHiRes) hires.push(pa)
     decorated.push({
       a: pa,
@@ -1698,8 +1879,10 @@ const shApi = {
   upgradeReason, albumsMatch, albumsMatchComparable, albumComparable,
   buildLibraryIndex, tokenScore, tokenScoreSets, normKey, normTokenSet,
   cleanSegment, extractYear,
-  isDiscFolder, groupByLetter, albumQualityLabel, libAlbumToComparable,
-  isAudioName, isLosslessName, qualityString, SH_AUDIO_RE, SH_LOSSLESS_EXT,
+  isDiscFolder, isSurroundFolder, isFoldableChild, isQualityLeaf, stripLeafNoise,
+  groupByLetter, albumQualityLabel, libAlbumToComparable,
+  isAudioName, isLosslessName, qualityString, channelSuffix,
+  SH_AUDIO_RE, SH_LOSSLESS_EXT,
   fmtSize, sourceScore, sourceQuality, qualityRankTuple, mergeSourcesByAlbum,
   finalizeMergedAlbum, sortMergedAlbums,
   // Big-library cooperative building (peer-library speed wave)

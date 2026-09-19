@@ -1825,10 +1825,22 @@
   var api = { show: show }
 
   // The wording for a library that could not be loaded (R15). `online` is
-  // true/false when the presence lookup answered, null when it did not.
+  // true/false when the presence lookup answered, null when it did not —
+  // unknown is NOT offline, so only an explicit false takes the offline branch.
+  //
+  // That branch was unreachable until now for a reason worth recording: the
+  // lookup feeding it called window.api.slskUserStatus, which preload never
+  // bridged (only the plural slskUserStatuses existed), so `online` was always
+  // null and an offline friend got the raw 404 wording instead. The bridge is
+  // there now; the ordering below is what turns it into the right sentence.
   function browseFailureText(username, error, online) {
     const msg = String(error || '')
     if (online === false) return username + ' is offline, so their library cannot be browsed right now. Try again when they are back.'
+    // A 5xx is slskd failing, not the peer — it said nothing about whether the
+    // library exists, so the honest answer is "ask again". This used to fall
+    // through to the raw "slskd 500 on GET /users/X/browse" after ten seconds
+    // of waiting, with no way to retry.
+    if (/\b5\d\d\b/.test(msg)) return 'slskd could not fetch this library — try again.'
     if (/\b404\b/.test(msg)) return 'slskd has no record of ' + username + ' right now — they may be offline or have changed their name.'
     if (/\b401\b|unauthor/i.test(msg)) return 'slskd rejected our login — check its username and password in Settings.'
     if (/ECONNREFUSED|fetch failed|ENOTFOUND/i.test(msg)) return 'Could not reach the slskd daemon.'
@@ -1836,6 +1848,23 @@
     return 'Could not load this library: ' + (msg || 'unknown error')
   }
   api.browseFailureText = browseFailureText
+
+  // Whether the failure is worth offering a Retry button for. A transient
+  // fault (slskd 5xx, a timeout, an unreachable daemon) is; a peer who is
+  // offline, a name slskd has never heard of, or a rejected login is not —
+  // pressing Retry on those just fails again and teaches the button to be
+  // ignored. Split from the wording so the card can render the affordance
+  // without re-parsing the message.
+  function browseFailureRetryable(error, online) {
+    if (online === false) return false
+    const msg = String(error || '')
+    if (/\b5\d\d\b/.test(msg)) return true
+    if (/\b40[134]\b|unauthor/i.test(msg)) return false
+    if (/ECONNREFUSED|fetch failed|ENOTFOUND/i.test(msg)) return true
+    if (/timed out|timeout|abort/i.test(msg)) return true
+    return true
+  }
+  api.browseFailureRetryable = browseFailureRetryable
   if (typeof window !== 'undefined') window.PapaSlskShopUI = api
   if (typeof module !== 'undefined' && module.exports) module.exports = api
 

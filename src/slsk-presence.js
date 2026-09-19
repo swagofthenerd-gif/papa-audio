@@ -73,6 +73,23 @@ function mergeStatuses(users, statuses, opts) {
   })
 }
 
+// One peer's online truth, out of a statuses snapshot. THREE answers, not two:
+// true, false, or null for "we do not know" — a peer nobody has looked up, or
+// one whose lookup failed while the Soulseek connection was down. Painting
+// unknown as offline is the lie this whole module exists to avoid, and it is
+// the lie a browse-failure message would tell if it read a missing record as
+// "they are offline".
+//
+// Away counts as reachable: an away peer answers a browse.
+function onlineOf(statuses, username) {
+  var s = indexStatuses(statuses)[statusKey(username)]
+  if (!s) return null
+  var label = presenceLabel(s.presence)
+  if (label === PRESENCE_ONLINE || label === PRESENCE_AWAY) return true
+  if (label === PRESENCE_OFFLINE) return false
+  return null
+}
+
 function sortFriends(rows) {
   return (rows || []).slice().sort(function (a, b) {
     var r = presenceRank(a.presence) - presenceRank(b.presence)
@@ -106,6 +123,7 @@ var _PapaSlskPresence = {
   statusKey: statusKey,
   indexStatuses: indexStatuses,
   mergeStatuses: mergeStatuses,
+  onlineOf: onlineOf,
   sortFriends: sortFriends,
   countOnline: countOnline,
 }
