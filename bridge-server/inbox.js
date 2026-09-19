@@ -67,6 +67,13 @@ const OP_TYPES = new Set([
   'agentModel.set',
 ])
 
+// Op types where only the LAST one matters, so an append replaces the queued
+// ones instead of stacking on them. A type belongs here only if replaying the
+// whole run of them is indistinguishable from replaying just the newest —
+// `playbackState.set` overwrites its key outright, so it qualifies.
+// `playCounts.increment` and `playHistory.push` never can: they accumulate.
+const COALESCED = new Set(['playbackState.set'])
+
 function inboxPath(userData) { return path.join(userData, INBOX_FILE) }
 
 function readInbox(userData) {
@@ -92,6 +99,19 @@ function writeInbox(userData, state) {
 function append(userData, type, payload) {
   if (!OP_TYPES.has(type)) throw new Error(`unknown inbox op: ${type}`)
   const state = readInbox(userData)
+  // The phone posts its playback position every 10 s while it plays, so an
+  // evening of listening appends hundreds of ops that applyInbox then replays
+  // in order only to arrive at the last one — an O(n) walk on every read route,
+  // and a file that grows until MAX_OPS starts dropping REAL mutations (a like,
+  // a playlist) off the front to make room for stale positions.
+  //
+  // Only the newest position has ever meant anything, so a new one REPLACES the
+  // ones not yet consumed instead of queueing behind them. The op still takes a
+  // fresh, higher seq: the desktop's ingester keys its watermark on seq, and a
+  // reused number would make it skip live ops.
+  if (COALESCED.has(type)) {
+    state.ops = state.ops.filter(op => !op || op.type !== type)
+  }
   state.seq = (state.seq || 0) + 1
   state.ops.push({ seq: state.seq, at: Date.now(), type, payload })
   if (state.ops.length > MAX_OPS) state.ops.splice(0, state.ops.length - MAX_OPS)
@@ -172,4 +192,4 @@ function applyInbox(key, base, ops) {
   return value
 }
 
-module.exports = { append, readInbox, applyInbox, inboxPath, OP_TYPES, MAX_OPS, INBOX_FILE }
+module.exports = { append, readInbox, applyInbox, inboxPath, OP_TYPES, COALESCED, MAX_OPS, INBOX_FILE }
