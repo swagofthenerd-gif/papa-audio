@@ -1206,3 +1206,33 @@ Token post-mortem: ~30 agents × 100–600k tokens; ~40 % spent on agents
 re-reading the same two huge files, my re-verification, long reports and
 ~25 full-suite runs. Rule now: no agents for small work, touched-file
 tests, one gate before push.
+
+### 19 Sep (day) — Soulseek explorer: Replace, compare, page, filters, batch, design
+Built by hand after the token-economy instruction; one design subagent for
+the visual language (`design/slsk-explorer/`, now `src/slsk-explorer.css`).
+- Replace (shelf card ⇄, album view, batch bar): download → the existing
+  post-download verification PLUS a track-count comparison against my copy
+  (`_assessReplace` in main) → "Move your old copy to Trash?" only on a clean,
+  equal-count verdict; mismatch/failed → both kept with the reason. Trash,
+  never unlink. Mutation: count guard removed → 3 red.
+- `src/slsk-compare.js` (pure) + Compare drawer in the album view: pairs by
+  track number, then cleaned title; verdict per row from lossless/depth/rate
+  (unknown tags never manufacture a verdict); Replace enabled only when
+  whole, equal in count, better somewhere and worse nowhere. Live on charXX:
+  "A Momentary Lapse Of Reason — 10 tracks vs your 11 — not a straight swap ·
+  worse on 10 · 1 only in yours", Replace disabled with the reason.
+- The shop is a PAGE (`soulseek-explore`, in Back/Forward; `showSlskUserExplorer`
+  routes there); peer sidebar (facts, in-common, shared-folder jump list,
+  save/message); filter bar with format/depth/rate/channels/size/mine chip
+  groups (exclusive per group), search within the library, live count,
+  Clear, See all on every rail; batch selection with a sticky bar (Download /
+  Replace for marked upgrades only / Wishlist / Compare / Clear).
+- Live bug found on the way: `window.PapaSlskFilters` never exposed the shelf
+  filter/sort/decade helpers, so the shop's sort, chips and decade have been
+  dead in the app (fallback: unfiltered, unsorted). Exposed.
+- Live on a `--keep-slskd` dry-run twin (0 writes): page mode, sidebar 7
+  facts, 20 chips, 24-bit chip 875/7,565, in-library chip 56, batch bar
+  "1 album · 10 tracks", album view + compare drawer. Gate green; pushed.
+Open: fold the design's remaining components (header eyebrow/stats, tree
+depth, skeleton/error sleeves) as the markup catches up; "Replace older
+copies" pass for duplicates already on disk; Manage → Duplicates link.
