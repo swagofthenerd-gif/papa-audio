@@ -487,7 +487,20 @@ const RATE_LIMIT_WINDOW = 60 * 1000
 // and the map must not grow with it.
 const RATE_LIMIT_MAX_KEYS = 1024
 
+// Static media and the event stream are NOT rate-limited. 60 requests a minute
+// is a sane budget for API calls and an absurd one for a library screen: 245
+// albums means 245 thumbnail requests in a burst, and a single track seek is a
+// stream of range requests. Every one past the 60th came back as a JSON 429 to
+// an <Image> or the player. The limiter's job is to bound API work and writes,
+// which is what it still does.
+function rateLimitExempt(p) {
+  return p === '/events' ||
+    p === '/art'    || p.startsWith('/art/') ||
+    p === '/stream' || p.startsWith('/stream/')
+}
+
 app.use((req, res, next) => {
+  if (rateLimitExempt(req.path)) return next()
   const ip = req.ip || req.socket.remoteAddress || 'unknown'
   const now = Date.now()
   let entry = rateLimit.get(ip)
@@ -506,10 +519,14 @@ app.use((req, res, next) => {
   next()
 })
 
-setInterval(() => {
+// Held (and unref'd) so shutdown can clear them. An un-unref'd interval keeps
+// the event loop alive forever, so a closed server still could not let the
+// process exit.
+const _rateSweep = setInterval(() => {
   const now = Date.now()
   for (const [ip, e] of rateLimit) if (now > e.resetAt) rateLimit.delete(ip)
 }, 300000)
+_rateSweep.unref()
 
 // ── SSE event stream ──────────────────────────────────────────────────────────
 app.get('/events', (req, res) => {
@@ -1098,12 +1115,13 @@ const ytBridge = registerYouTube(app, {
 })
 
 // Periodic cleanup of stale YouTube URL cache entries to prevent memory leak
-setInterval(function() {
+const _ytSweep = setInterval(function() {
   const now = Date.now()
   for (const [id, entry] of ytBridge._urlCache) {
     if (now > entry.expiresAt) ytBridge._urlCache.delete(id)
   }
 }, 600000) // Every 10 minutes
+_ytSweep.unref()
 
 const server = app.listen(PORT, HOST, () => {
   // With BRIDGE_PORT=0 the OS picks the port, so report the one we actually
@@ -1126,3 +1144,40 @@ const server = app.listen(PORT, HOST, () => {
   for (const ip of ips) console.log(`  http://${ip}:${boundPort}`)
   console.log(`\nHealth check: http://localhost:${boundPort}/api/health`)
 })
+
+// listen() reports its failure as an 'error' event, and there was no listener.
+// An unhandled 'error' on the server is an uncaught exception: the process died
+// with a stack trace and systemd restarted it 5 s later, forever, with nothing
+// in the journal but the same trace. Say what happened, once, and exit with a
+// status systemd can act on.
+let _exiting = false
+server.on('error', (e) => {
+  if (_exiting) return
+  _exiting = true
+  if (e && e.code === 'EADDRINUSE') {
+    console.error(`[bridge] port ${PORT} is already in use — another bridge (or ` +
+      `the papa-bridge service) is already listening. Not starting.`)
+  } else {
+    console.error(`[bridge] could not listen on ${HOST}:${PORT}: ${(e && e.message) || e}`)
+  }
+  process.exit(1)
+})
+
+// systemd sends SIGTERM on stop/restart. Close the listener, clear the timers
+// and let the loop drain, so in-flight streams finish instead of being cut.
+// The timeout is the backstop: a wedged connection must not make systemd wait
+// out its whole TimeoutStopSec.
+function shutdown(signal) {
+  if (_exiting) return
+  _exiting = true
+  console.log(`[bridge] ${signal} — shutting down`)
+  clearInterval(_rateSweep)
+  clearInterval(_ytSweep)
+  for (const res of _sseClients) { try { res.end() } catch (_) {} }
+  _sseClients.clear()
+  const force = setTimeout(() => process.exit(0), 5000)
+  force.unref()
+  server.close(() => process.exit(0))
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'))
+process.on('SIGINT', () => shutdown('SIGINT'))

@@ -760,3 +760,171 @@ test('/api/library/delete-file exists and refuses honestly rather than 404-ing',
   // The critical part: it must NOT have deleted the file behind the trash's back.
   assert.ok(fs.existsSync(F.track), 'the bridge unlinked a library file')
 })
+
+// ── L5. Operational sharp edges ───────────────────────────────────────────────
+
+test('thumbnails and stream ranges are not rate-limited; API calls still are', async () => {
+  const LIMIT = 3
+  const { proc, base: b } = await boot({ BRIDGE_RATE_LIMIT_MAX: String(LIMIT) })
+  try {
+    // A library screen with 245 albums is 245 art requests in a burst. Every
+    // one past the 60th came back as a JSON 429 into an <Image>.
+    for (let i = 0; i < LIMIT * 4; i++) {
+      const r = await fetch(`${b}/art/alb1.jpg?token=${TOKEN}`)
+      assert.strictEqual(r.status, 200, `art request ${i + 1} was rate-limited`)
+      await r.text()
+    }
+    // Same for the range requests a single seek produces.
+    for (let i = 0; i < LIMIT * 4; i++) {
+      const r = await fetch(`${b}/stream/t1?token=${TOKEN}`, { headers: { Range: 'bytes=0-1' } })
+      assert.strictEqual(r.status, 206, `range request ${i + 1} was rate-limited`)
+      await r.text()
+    }
+    // The control: the limiter is still doing its job on the API surface.
+    const statuses = []
+    for (let i = 0; i <= LIMIT; i++) {
+      const r = await fetch(`${b}/api/folders`, authed)
+      statuses.push(r.status)
+      await r.text()
+    }
+    assert.strictEqual(statuses[LIMIT], 429, `the API limiter stopped working: ${statuses}`)
+  } finally { proc.kill('SIGKILL') }
+})
+
+test('a port already in use exits once with a clear reason, not a crash loop', async () => {
+  const first = await boot()
+  const port = new URL(first.base).port
+  try {
+    const clash = spawn(process.execPath, [SERVER], {
+      cwd: path.dirname(SERVER),
+      env: { ...process.env, BRIDGE_PORT: port, BRIDGE_HOST: '127.0.0.1', PAPA_BRIDGE_USER_DATA: ud },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    spawned.push(clash)
+    let err = ''
+    clash.stderr.on('data', d => { err += d.toString() })
+    clash.stdout.on('data', () => {})
+    const code = await new Promise((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('the clashing bridge never exited: ' + err)), 15000)
+      clash.on('exit', c => { clearTimeout(t); resolve(c) })
+    })
+    assert.strictEqual(code, 1, 'EADDRINUSE must exit non-zero, not throw an uncaught error')
+    assert.match(err, /already in use/i, `no plain reason in stderr: ${err.slice(0, 300)}`)
+    assert.doesNotMatch(err, /UnhandledPromiseRejection|at Server\.emit/,
+      'the failure is still an uncaught exception rather than a handled one')
+  } finally { first.proc.kill('SIGKILL') }
+})
+
+test('SIGTERM shuts the bridge down instead of leaving timers holding the loop', async () => {
+  const { proc } = await boot()
+  const exited = new Promise(resolve => proc.on('exit', () => resolve(true)))
+  const timedOut = new Promise(resolve => setTimeout(() => resolve(false), 8000).unref())
+  proc.kill('SIGTERM')
+  const clean = await Promise.race([exited, timedOut])
+  assert.ok(clean, 'the process was still alive 8s after SIGTERM — an interval is holding the event loop')
+})
+
+// ── yt-dlp: one resolve per videoId, one download per videoId ────────────────
+
+test('concurrent stream requests for one video spawn yt-dlp once, not N times', async () => {
+  const { EventEmitter } = require('events')
+  const { PassThrough } = require('stream')
+  const registerYouTube = require('../bridge-server/youtube')
+
+  // A no-op express stand-in: this exercises the module, not the HTTP layer.
+  const routes = {}
+  const fakeApp = {
+    get: (p, h) => { routes['GET ' + p] = h },
+    post: (p, h) => { routes['POST ' + p] = h },
+  }
+  const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'papa-yt-'))
+  const yt = registerYouTube(fakeApp, {
+    sseSend() {}, getDownloadDir: () => cacheDir, cacheDir, scheduleRescan() {},
+  })
+
+  let spawns = 0
+  yt._setSpawn(() => {
+    spawns++
+    const proc = new EventEmitter()
+    proc.stdout = new PassThrough()
+    proc.stderr = new PassThrough()
+    proc.kill = () => {}
+    setTimeout(() => {
+      proc.stdout.end('https://example.invalid/audio\n')
+      proc.emit('close', 0)
+    }, 40)
+    return proc
+  })
+
+  try {
+    const results = await Promise.all(
+      Array.from({ length: 6 }, () => yt.resolveAudioUrl('VID1')))
+    assert.strictEqual(spawns, 1, `six concurrent range requests spawned ${spawns} yt-dlp processes`)
+    for (const r of results) assert.deepStrictEqual(r, { ok: true, url: 'https://example.invalid/audio' })
+    assert.strictEqual(yt._inflight.size, 0, 'the in-flight entry was never cleared')
+  } finally {
+    yt._setSpawn(null)
+    fs.rmSync(cacheDir, { recursive: true, force: true })
+  }
+})
+
+test('a failed resolve is retryable (the in-flight entry is cleared either way)', async () => {
+  const { EventEmitter } = require('events')
+  const { PassThrough } = require('stream')
+  const registerYouTube = require('../bridge-server/youtube')
+  const fakeApp = { get() {}, post() {} }
+  const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'papa-yt-'))
+  const yt = registerYouTube(fakeApp, {
+    sseSend() {}, getDownloadDir: () => cacheDir, cacheDir, scheduleRescan() {},
+  })
+  let spawns = 0
+  yt._setSpawn(() => {
+    spawns++
+    const proc = new EventEmitter()
+    proc.stdout = new PassThrough()
+    proc.stderr = new PassThrough()
+    proc.kill = () => {}
+    setTimeout(() => { proc.stderr.end('nope'); proc.stdout.end(''); proc.emit('close', 1) }, 20)
+    return proc
+  })
+  try {
+    const a = await yt.resolveAudioUrl('VID2')
+    assert.strictEqual(a.ok, false)
+    const b = await yt.resolveAudioUrl('VID2')
+    assert.strictEqual(b.ok, false)
+    assert.strictEqual(spawns, 2, 'a failed resolve was cached as in-flight and never retried')
+  } finally {
+    yt._setSpawn(null)
+    fs.rmSync(cacheDir, { recursive: true, force: true })
+  }
+})
+
+test('a second download request for the same video does not start a second yt-dlp', async () => {
+  const registerYouTube = require('../bridge-server/youtube')
+  const routes = {}
+  const fakeApp = {
+    get: (p, h) => { routes['GET ' + p] = h },
+    post: (p, h) => { routes['POST ' + p] = h },
+  }
+  const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'papa-yt-'))
+  const yt = registerYouTube(fakeApp, {
+    sseSend() {}, getDownloadDir: () => cacheDir, cacheDir, scheduleRescan() {},
+  })
+  try {
+    // Put the videoId in the state the route checks: already downloading.
+    yt.ytDownloads.set('VID3', {
+      videoId: 'VID3', title: 'T', artist: '', pct: 42, state: 'downloading', at: Date.now(),
+    })
+    let status = 0, payload = null
+    const res = {
+      status(c) { status = c; return this },
+      json(b) { payload = b; return this },
+    }
+    await routes['POST /api/youtube/download']({ body: { videoId: 'VID3' } }, res)
+    assert.strictEqual(status, 202, 'a duplicate download request started a second yt-dlp on the same file')
+    assert.strictEqual(payload.alreadyDownloading, true)
+    assert.strictEqual(payload.pct, 42)
+  } finally {
+    fs.rmSync(cacheDir, { recursive: true, force: true })
+  }
+})
