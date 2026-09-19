@@ -38666,13 +38666,17 @@ var _slskFriends = {
   // Set when a status refresh fails, so a peer we could not look up says
   // "Couldn't check" rather than sitting on "Checking…" forever.
   statusFailed: false,
+  // Set when main tells us slskd is not logged in to Soulseek. Different fact
+  // from statusFailed: the lookup did not fail, it never happened, and every
+  // peer came back Unknown. Without this the whole list sat on "Checking…".
+  serverOffline: false,
 }
 
 function _slskFriendRows() {
   var P = window.PapaSlskPresence
   if (!P) return []
   return P.sortFriends(P.mergeStatuses(_slskFriends.users, _slskFriends.statuses,
-    { checkFailed: _slskFriends.statusFailed }))
+    { checkFailed: _slskFriends.statusFailed, serverOffline: _slskFriends.serverOffline }))
 }
 
 function renderSlskFriends() {
@@ -38698,6 +38702,12 @@ function _slskFriendsApplyStatuses(payload) {
   if (!payload) return
   if (Array.isArray(payload.statuses)) _slskFriends.statuses = payload.statuses
   _slskFriends.statusFailed = false
+  // The IPC replies carry `connected`; the pushed broadcast calls it
+  // `serverConnected`. Either one, and only when it is an actual boolean —
+  // null means "no saved peers, nothing was asked", which is not a verdict.
+  var conn = typeof payload.connected === 'boolean' ? payload.connected
+    : (typeof payload.serverConnected === 'boolean' ? payload.serverConnected : null)
+  if (conn !== null) _slskFriends.serverOffline = !conn
   renderSlskFriends()
 }
 

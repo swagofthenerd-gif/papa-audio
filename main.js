@@ -10773,8 +10773,17 @@ const PRESENCE_CONCURRENCY = 4
 const presenceCache = new Map()
 let presenceTimer = null
 let presencePolling = false
+// Last verdict on the slskd-to-Soulseek connection: true, false, or null for
+// "not established yet". The renderer needs it to tell "nobody is logged in"
+// apart from "the lookup failed" -- both arrive as a list of Unknown peers,
+// and without this flag both read as "Checking..." forever.
+let presenceConnected = null
 
 function presenceSnapshot() { return Array.from(presenceCache.values()) }
+
+function presenceResult() {
+  return { statuses: presenceSnapshot(), connected: presenceConnected }
+}
 
 function presenceBroadcast(changed, serverConnected) {
   try {
@@ -10809,25 +10818,30 @@ function presenceRecord(username, presence, isPrivileged, changed) {
 }
 
 async function pollPresenceOnce() {
-  if (presencePolling) return presenceSnapshot()
+  if (presencePolling) return presenceResult()
   presencePolling = true
   try {
     const names = savedUsers.sortUsers(store.get('slskSavedUsers', [])).map(u => u.username)
     const live = new Set(names.map(n => String(n).toLowerCase()))
     for (const key of Array.from(presenceCache.keys())) if (!live.has(key)) presenceCache.delete(key)
-    if (!names.length) { presenceBroadcast([], null); return presenceSnapshot() }
+    // No saved peers: nothing was asked, so the connection gets no verdict.
+    if (!names.length) { presenceConnected = null; presenceBroadcast([], null); return presenceResult() }
 
     let connected = false
     try {
       const srv = await slskdFetch('GET', '/server')
       connected = !!srv?.isLoggedIn
     } catch (_) { connected = false }
+    presenceConnected = connected
 
     const changed = []
     if (!connected) {
+      // Every peer goes down as Unknown and this resolves normally, so the
+      // renderer cannot tell this from a fresh cache -- `connected: false` is
+      // what lets it say "Soulseek offline" instead of "Checking..." forever.
       for (const n of names) presenceRecord(n, 'Unknown', false, changed)
       presenceBroadcast(changed, false)
-      return presenceSnapshot()
+      return presenceResult()
     }
 
     const queue = names.slice()
@@ -10842,7 +10856,7 @@ async function pollPresenceOnce() {
     for (let i = 0; i < Math.min(PRESENCE_CONCURRENCY, queue.length); i++) workers.push(worker())
     await Promise.all(workers)
     presenceBroadcast(changed, true)
-    return presenceSnapshot()
+    return presenceResult()
   } finally {
     presencePolling = false
   }
@@ -10857,13 +10871,12 @@ function startPresenceWatch() {
 ipcMain.handle('slsk-user-statuses', () => {
   startPresenceWatch()
   if (!presenceCache.size) pollPresenceOnce()
-  return { statuses: presenceSnapshot() }
+  return presenceResult()
 })
 
 ipcMain.handle('slsk-refresh-user-statuses', async () => {
   startPresenceWatch()
-  await pollPresenceOnce()
-  return { statuses: presenceSnapshot() }
+  return await pollPresenceOnce()
 })
 
 // One browse fetch with a deadline. Returns the filtered directory list, or
