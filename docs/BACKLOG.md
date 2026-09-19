@@ -935,3 +935,24 @@ writes (`version.json` + `latest.apk`; `$PAPA_BRIDGE_APK_DIR` →
 with no APK beside it; `/api/app-update/apk` joins the `?token=` set. My
 re-checks: watermark guard removed → 3/9 red; truncation keep-set guard
 weakened → 3/9 red. HIS ACTION: restart `papa-bridge.service`.
+
+### 19 Sep — engine / startup / config hygiene merged
+`fix/audit-engine-startup` (18 commits, +14 test files). H1 purge deletes
+only names it made (`s-`, `thumbs-`, `warm-` + fixed dirs) inside a
+`papa-video-streams` subdir (my re-check: owner guard removed → 1 red).
+M8 `new Store({ configFileMode: 0o600 })` + startup sweep of
+`config.json.tmp-*` older than 1 h (my re-check: option dropped → 2 red).
+M5 `app.exit(0)` before any store opens; quit handlers guarded on
+`gotLock`. H5 relay `res.destroy()` after headers; the shim's idle timeout
+disarmed once a streaming body starts. M1 `_abandonStart` kills mpv on a
+failed start. M6 async cross-device move (main-thread heartbeat test).
+M9 crash log under `USER_DATA`. L1–L4, L7, L8 (`_torrentTeardown` on quit —
+deliberately NOT in `_videoTeardown`, which would cancel background
+downloads every time a film stops), L9 `library-restore-trashed` gated,
+L10 person caches capped, L13 probe sockets discarded.
+L6 FINDING: `library.json` IS read — by the legacy GNOME Shell extension
+(800 ms poll), still in `gsettings enabled-extensions` though KDE is the
+session. Kept; writes coalesced to a 2 s timer + async rename.
+L14 not acted on (policy calls): `video-cache/`, `web-stream-cache/`,
+`thumbs/`, `artwork/` unbounded on disk with no startup sweep; `backups/`
+rotation unverified for the scheduled path.
