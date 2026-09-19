@@ -123,7 +123,7 @@ test('the ✉ button is feature-detected and opens the chat for that user', () =
   assert.match(region, /typeof openSlskChat === 'function'/, 'hidden when the build cannot message')
   assert.match(region, /openSlskChat\(username\)/, 'clicking opens the panel for this user')
   // The renderer threads openSlskChat through only when the send contract exists.
-  const deps = slice(CODE, 'return S.show(username, {', '})')
+  const deps = slice(CODE, 'const handle = await S.show(username, {', '})')
   assert.match(deps, /openSlskChat:/, 'the dep is passed from the renderer')
   assert.match(deps, /typeof window\.api\.slskChatSend === 'function'/, 'feature-detected there too')
 })

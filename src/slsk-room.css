@@ -146,3 +146,8 @@ body.theme-light .slsk-room{ --slr-hires:#9a6d00; --slr-surround:#6a3aa0; --slr-
 
 @media (prefers-reduced-motion: reduce){.slsk-room *{transition:none!important;animation:none!important}}
 @media (max-width:900px){.slr-tiles{grid-template-columns:repeat(2,1fr)}.slr-head{grid-template-columns:auto 1fr}.slr-head-tools{grid-column:1/-1}}
+
+/* Keyboard focus: same 2px accent ring the modes and buttons use, so every
+   interactive part of the room is reachable and visible without a mouse. */
+.slr-search:focus-visible,.slr-row:focus-visible,.slr-crumb:focus-visible,
+.slr-mini:focus-visible,.slr-x:focus-visible,.slr-chip-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}

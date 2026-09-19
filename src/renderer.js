@@ -2293,6 +2293,14 @@ function navigate(page, navId, opts = {}) {
   state.currentSmartListId = page === 'smartlist' ? navId : null
   state.currentVideoNavId  = (page === 'video-detail' || page === 'person' || page === 'shelf') ? navId : null
   state.currentSlskExploreUser = page === 'soulseek-explore' ? navId : null
+  // The Listening Room keeps a MusicBrainz enrichment loop and an art
+  // IntersectionObserver alive; both outlive the page unless its close() is
+  // called. This is the one line every navigation goes through, including a
+  // move from one peer's room straight into another's, so the teardown lives
+  // here rather than in a per-page handler that a new route could miss.
+  // typeof-guarded like _stopInlineTrailer below: the nav tests run this
+  // function's source in isolation, without the rest of the renderer.
+  if (typeof _closeSlskRoom === 'function') _closeSlskRoom()
   state.currentYtNavId     = YT_NAV_PAGES.has(page) ? (navId ?? null) : null
   // Customize is a mode you are IN on Home, not a setting. It used to persist
   // across navigation, so coming back to Home half an hour later still showed
@@ -31772,6 +31780,18 @@ function showSlskUserExplorer(username) {
   navigate('soulseek-explore', String(username))
 }
 
+// The live Listening Room's close handle (the same slot pattern slsk-shop-ui.js
+// keeps for _slskExplorerClose). Module-level so navigate() can tear the room
+// down on the way out of the page.
+let _slskRoomClose = null
+
+function _closeSlskRoom() {
+  if (!_slskRoomClose) return
+  const fn = _slskRoomClose
+  _slskRoomClose = null
+  try { fn() } catch (_) {}
+}
+
 async function renderSoulseekExplore(username) {
   // The Listening Room is the default; the old shop stays one setting away
   // ("Use the old library view" in Settings → Soulseek) for one release.
@@ -31782,7 +31802,10 @@ async function renderSoulseekExplore(username) {
   const host = document.getElementById('content')
   if (!S || !S.show || !host) { showSnackbar('The library explorer did not load'); return }
   if (!username) { navigate('soulseek', null, { skipHistory: true }); return }
-  return S.show(username, {
+  // Opening a second room without closing the first would leak the first one's
+  // background loop and observer.
+  _closeSlskRoom()
+  const handle = await S.show(username, {
     host,
     // Closing the page is a Back, so the journey that led here survives.
     onClose: function () {
@@ -31800,6 +31823,16 @@ async function renderSoulseekExplore(username) {
       ? function (u) { if (state.currentPage !== 'soulseek') navigate('soulseek'); _openSlskChatPanel(u) }
       : undefined,
   })
+  if (handle && typeof handle.close === 'function') {
+    const close = handle.close.bind(handle)
+    // show() resolves only after the peer's library has loaded, by which time
+    // the user may already have left. Closing straight away in that case is
+    // what keeps the leak shut; storing the handle would have missed it,
+    // because navigate()'s teardown has already run.
+    if (state.currentPage === 'soulseek-explore' && state.currentSlskExploreUser === username) _slskRoomClose = close
+    else try { close() } catch (_) {}
+  }
+  return handle
 }
 
 // Open the shared album view over the SEARCH RESULTS surface. Fed by a merged

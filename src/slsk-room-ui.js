@@ -7,8 +7,16 @@
   const SH = () => (typeof window !== 'undefined' && window.PapaSlskShelves) || null
   const T = () => (typeof window !== 'undefined' && window.PapaSlskTree) || null
   const SF = () => (typeof window !== 'undefined' && window.PapaSlskFilters) || null
+  const CO = () => (typeof window !== 'undefined' && window.PapaSlskColumns) || null
 
   function modeKey(username) { return 'slsk_lib_mode:' + String(username || '').toLowerCase() }
+  function sortKey(username) { return 'slsk_hunt_sort:' + String(username || '').toLowerCase() }
+
+  // localStorage is user-editable and outlives any rename of these comparators,
+  // so a stored sort is only honoured when it names one sortRows actually has.
+  // Anything else falls back to the default instead of sorting by nothing.
+  const SORT_KEYS = ['verdict', 'title', 'artist', 'year', 'size', 'theirs']
+  const SORT_DIRS = ['asc', 'desc']
 
   // The header ring: four quality slices that always add up to exactly 100, so
   // the conic-gradient closes. Rounding drift is absorbed by the lossy slice.
@@ -76,7 +84,7 @@
         <div class="slr-ring" style="background:${grad}" title="${esc(hm.ring.map(x => x.tier + ' ' + x.pct + '%').join(', '))}"><b>${hm.losslessPct}%</b></div>
         <div class="slr-head-text">
           <h1 class="slr-name">${esc(username)}</h1>
-          <div class="slr-muted">${esc([hm.line, hm.stats.albums.toLocaleString() + ' albums', hm.status].filter(Boolean).join(' · '))}<span id="slr-cache" class="slr-cache"></span></div>
+          <div class="slr-muted">${esc([hm.line, ((hm.stats && hm.stats.albums) || 0).toLocaleString() + ' albums', hm.status].filter(Boolean).join(' · '))}<span id="slr-cache" class="slr-cache"></span></div>
           <div class="slr-modes" role="tablist">${['hunt', 'wander', 'folders'].map(m => `<button role="tab" class="slr-mode${m === mode ? ' is-on' : ''}" data-mode="${m}" aria-selected="${m === mode}">${m[0].toUpperCase() + m.slice(1)}</button>`).join('')}</div>
         </div>
         <div class="slr-head-tools"><input class="slr-search" id="slr-search" placeholder="Search ${esc(username)}'s library…" autocomplete="off"><button class="slr-btn slr-btn-quiet" id="slr-close" aria-label="Back">←</button></div>`
@@ -168,7 +176,7 @@
         const k = th.dataset.sort
         hunt.dir = hunt.sort === k && hunt.dir === 'asc' ? 'desc' : 'asc'
         hunt.sort = k
-        try { localStorage.setItem('slsk_hunt_sort:' + username, hunt.sort + ':' + hunt.dir) } catch (_) {}
+        try { localStorage.setItem(sortKey(username), hunt.sort + ':' + hunt.dir) } catch (_) {}
         paintHunt()
       }))
       bodyEl.querySelector('#slr-tbody').addEventListener('click', e => {
@@ -268,7 +276,12 @@
 
     function paintFolders() {
       bodyEl.innerHTML = ''
-      columns = window.PapaSlskColumns.mount({ host: bodyEl, tree, username, deps, albumsByPath, openDossier })
+      const C = CO()
+      if (!C || typeof C.mount !== 'function') {
+        bodyEl.innerHTML = `<div class="slr-empty">The folder browser did not load. Try Hunt or Wander instead.</div>`
+        return
+      }
+      columns = C.mount({ host: bodyEl, tree, username, deps, albumsByPath, openDossier })
       if (hunt.query) columns.search(hunt.query)
       bodyEl.addEventListener('click', onFoldersClick)
     }
@@ -300,7 +313,10 @@
     for (const u of shelves.upgrades) albumsByPath.set(String(u.folderPath).toLowerCase(), u)
     const nd = new Set((res.newDirs || []).map(s => String(s).toLowerCase()))
     fresh = nd.size ? albums.filter(a => nd.has(String(a.folderPath).toLowerCase())) : []
-    try { const s = localStorage.getItem('slsk_hunt_sort:' + username); if (s) { const [k, d] = s.split(':'); hunt.sort = k; hunt.dir = d } } catch (_) {}
+    try {
+      const s = localStorage.getItem(sortKey(username))
+      if (s) { const [k, d] = s.split(':'); if (SORT_KEYS.includes(k) && SORT_DIRS.includes(d)) { hunt.sort = k; hunt.dir = d } }
+    } catch (_) {}
     const statuses = window.api.slskUserStatuses ? await window.api.slskUserStatuses().catch(() => null) : null
     if (dead) return
     const st = statuses && (statuses[username] || (Array.isArray(statuses) && statuses.find(x => x.username === username)))
