@@ -1008,9 +1008,33 @@ app.post('/api/settings/play-counts/increment', (req, res) => {
   return queueMutation(res, 'playCounts.increment', { filePath })
 })
 
-app.get('/api/settings/play-history',    (_, res) => res.json(sideValue('playHistory') || []))
-app.post('/api/settings/play-history',   (req, res) =>
-  queueMutation(res, 'playHistory.push', { entry: req.body }))
+// The two sides of this key name the same moment differently, and neither can
+// read the other's name.
+//
+// The phone posts { filePath, artist, title, playedAt } (hooks/usePlayer.ts)
+// and filters its Stats screen on `playedAt` (app/stats.tsx). The desktop
+// writes `ts` (main.js) and history.js quarantines any entry carrying neither
+// `ts` nor `timestamp` — so every play made on the phone was queued, ingested,
+// and then set aside on the desktop's next normalisation pass. Silently: a
+// quarantine is not a failure.
+//
+// So the bridge stamps `ts` on the way in (keeping `playedAt`, which is what
+// the phone reads back) and re-derives `playedAt` on the way out for the
+// entries the desktop wrote. One entry, both names, neither reader changed.
+app.get('/api/settings/play-history',    (_, res) => {
+  const list = sideValue('playHistory')
+  res.json((Array.isArray(list) ? list : []).map(e => (e && typeof e === 'object')
+    ? Object.assign({}, e, { playedAt: e.playedAt ?? e.ts })
+    : e))
+})
+app.post('/api/settings/play-history',   (req, res) => {
+  const entry = (req.body && typeof req.body === 'object' && !Array.isArray(req.body))
+    ? req.body : {}
+  // A playedAt of 0, or a string, is not a usable time; Date.now() is the
+  // honest stand-in (history.js rejects anything before 2000 outright).
+  const ts = Number(entry.playedAt) || Date.now()
+  return queueMutation(res, 'playHistory.push', { entry: Object.assign({}, entry, { ts }) })
+})
 
 app.get('/api/settings/followed-artists',  (_, res) => res.json(configValue('followedArtists', [])))
 app.post('/api/settings/followed-artists', (req, res) =>

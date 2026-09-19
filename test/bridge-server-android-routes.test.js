@@ -151,6 +151,64 @@ test('/api/loudness needs a path and needs the token', async () => {
   assert.strictEqual((await fetch(`${base}/api/loudness?path=/x.flac`)).status, 401)
 })
 
+// ── /api/settings/play-history ───────────────────────────────────────────────
+// The phone posts `playedAt` (hooks/usePlayer.ts) and filters Stats on it
+// (app/stats.tsx). The desktop reads `ts`, and ../history.js quarantines any
+// entry with neither `ts` nor `timestamp` — so a phone play was queued, then
+// set aside on the desktop's next pass. Both names have to be on the entry.
+
+const { normaliseHistory } = require('../history')
+
+test('a phone play is stamped with `ts`, so the desktop does not quarantine it', async () => {
+  const playedAt = Date.now() - 60000
+  const r = await postJson(`${base}/api/settings/play-history`, {
+    filePath: TRACK(), artist: 'Tester', title: 'Fixture', playedAt,
+  })
+  assert.strictEqual(r.status, 202)
+
+  // Read the queued op the way the desktop's ingester does — out of the inbox
+  // file, not out of a shape of the test's choosing.
+  const queued = JSON.parse(fs.readFileSync(path.join(ud, 'bridge-inbox.json'), 'utf8'))
+  const op = queued.ops.filter(o => o.type === 'playHistory.push').pop()
+  assert.ok(op, 'the play was never queued at all')
+  assert.strictEqual(op.payload.entry.ts, playedAt,
+    'the desktop reads `ts`; the phone never sends one')
+  assert.strictEqual(op.payload.entry.playedAt, playedAt,
+    '`playedAt` must survive — the phone Stats screen filters on it')
+
+  // The actual consequence, through the desktop's own normaliser: a quarantine
+  // here is 100% of the phone's listening history disappearing.
+  const norm = normaliseHistory([op.payload.entry])
+  assert.strictEqual(norm.quarantined.length, 0,
+    `the desktop set the entry aside: ${JSON.stringify(norm.quarantined)}`)
+  assert.strictEqual(norm.entries[0].ts, playedAt)
+})
+
+test('an entry with no usable playedAt still gets a time rather than being dropped', async () => {
+  const before = Date.now()
+  await postJson(`${base}/api/settings/play-history`, { filePath: TRACK(), title: 'No time' })
+  const queued = JSON.parse(fs.readFileSync(path.join(ud, 'bridge-inbox.json'), 'utf8'))
+  const op = queued.ops.filter(o => o.type === 'playHistory.push').pop()
+  assert.strictEqual(op.payload.entry.title, 'No time')
+  assert.ok(op.payload.entry.ts >= before, 'a missing playedAt must become now, not NaN')
+  assert.strictEqual(normaliseHistory([op.payload.entry]).quarantined.length, 0)
+})
+
+test('GET play-history carries `playedAt` for entries the DESKTOP wrote', async () => {
+  // The desktop's own file: `ts` only, which is what main.js writes. The
+  // phone's Stats screen filters `h.playedAt >= week` — undefined >= week is
+  // false, so a desktop-written history read as zero plays.
+  fs.writeFileSync(path.join(ud, 'play-history.json'), JSON.stringify([
+    { filePath: TRACK(), title: 'From the desktop', ts: 1700000000000 },
+  ]))
+  const list = await (await fetch(`${base}/api/settings/play-history`, authed)).json()
+  const desktopEntry = list.find(e => e && e.title === 'From the desktop')
+  assert.ok(desktopEntry, 'the desktop entry did not reach the phone at all')
+  assert.strictEqual(desktopEntry.playedAt, 1700000000000,
+    'app/stats.tsx filters on playedAt; a desktop entry has only ts')
+  assert.strictEqual(desktopEntry.ts, 1700000000000, '`ts` must not be replaced')
+})
+
 // ── /api/crash-log ───────────────────────────────────────────────────────────
 // crash.ts POSTs and `.catch(() => {})` the result: it parses nothing, so the
 // contract is "accepted, and the report is on disk where it can be read".
