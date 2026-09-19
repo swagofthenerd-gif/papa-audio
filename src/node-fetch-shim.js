@@ -50,6 +50,22 @@ function nodeFetch(url, init = {}, _depth = 0) {
         }
         return resolve(nodeFetch(next, nextInit, _depth + 1))
       }
+      // The deadline above is a SOCKET IDLE timeout, and Node keeps it armed
+      // for the whole of the response, not just the wait for it. That is right
+      // for a JSON call and wrong for a film: the relay hands the body to mpv,
+      // mpv fills its cache and stops reading, TCP back-pressure stops the
+      // bytes, and twenty seconds of a legitimate pause looked exactly like a
+      // dead socket — so the shim destroyed it and the resume froze. Once the
+      // headers are here the request phase is over, so a streaming caller
+      // disarms it and relies on its own abort signal instead.
+      let disarmed = false
+      const disarmIdleTimeout = () => {
+        if (disarmed) return
+        disarmed = true
+        try { req.setTimeout(0) } catch (_) {}
+        try { if (res.socket) res.socket.setTimeout(0) } catch (_) {}
+      }
+      if (init.stream === true) disarmIdleTimeout()
       let webBody = null
       resolve({
         ok: status >= 200 && status < 300,
@@ -71,6 +87,9 @@ function nodeFetch(url, init = {}, _depth = 0) {
         // Lazy: reading `body` converts the stream, so it must not happen
         // unless a caller actually streams.
         get body() {
+          // Reaching for the body at all means streaming, whether or not the
+          // caller said so up front.
+          disarmIdleTimeout()
           if (!webBody) webBody = Readable.toWeb(res)
           return webBody
         },

@@ -729,6 +729,12 @@ class VideoEngine extends EventEmitter {
     this._stalled = false
     this.client?.close()
     this.client = null
+    // stop() removes the socket file; a crash never reaches stop(), and the
+    // next start() mints a new random name — so every crash left one more
+    // stale socket behind for the orphan reaper to puzzle over.
+    if (this._socketPath && !this._fixedSocketPath) {
+      try { require('fs').unlinkSync(this._socketPath) } catch { /* mpv may have taken it already */ }
+    }
     this.emit('engineDown', {})
   }
 

@@ -315,6 +315,7 @@ class MpvEngine extends EventEmitter {
     this._socketPath = socketPath
     this._stopping = false
     this._gen++
+    const gen = this._gen
     this._eofState = 'idle'
     this._rec('spawn', {
       binary: this.binary, socketPath, generation: this._gen,
@@ -342,7 +343,27 @@ class MpvEngine extends EventEmitter {
       if (this.proc === proc) this._onExit()
     })
     this.client = new MpvIpcClient(socketPath)
-    await this.client.connect()
+    try {
+      await this.client.connect()
+    } catch (err) {
+      // mpv spawned but its socket never became ready. The bare throw left an
+      // idle mpv running with its socket file on disk and nothing holding a
+      // reference to either — alive was never set, so stop() would never be
+      // called on it. video-engine already tore down on this exact path; this
+      // is the same teardown.
+      this._rec('connect-failed', { error: String((err && err.message) || err), socketPath })
+      this._abandonStart(gen)
+      throw err
+    }
+    // stop() while we were connecting nulls this.client, and a start() that
+    // lost a race has already had its client replaced. Either way the next
+    // line used to read `client.on` off null and throw a bare TypeError out of
+    // start() — a crash where the caller expected the engine's own "it is
+    // gone" answer, which every call site already handles.
+    if (this._stopping || gen !== this._gen || !this.client) {
+      this._abandonStart(gen)
+      throw new EngineGone('start')
+    }
     // Same identity rule: stop() destroys the socket, but the 'disconnected'
     // that follows is delivered a tick later, by which time this.client may be
     // the replacement's.
@@ -370,6 +391,9 @@ class MpvEngine extends EventEmitter {
         const err = new Error(`could not observe ${prop}: ${(e && e.message) || e}`)
         err.code = 'OBSERVE_FAILED'
         err.property = prop
+        // Same leak as the connect failure: the throw alone left mpv running
+        // idle with its socket open, a process nothing would ever reach again.
+        this._abandonStart(gen)
         throw err
       }
     }
@@ -421,8 +445,10 @@ class MpvEngine extends EventEmitter {
     this._stallReported = true
     this._rec('stalled', { path: this.state.path, position: this.state.position, stalledForMs: stalledFor })
     // Ask mpv what it thinks, rather than concluding anything from our own view.
+    const probeGen = this._gen
     this._probeStall(stalledFor).catch(e => {
       this._rec('stall-probe-failed', { error: String((e && e.message) || e) })
+      if (this._stopping || !this.alive || probeGen !== this._gen) return
       this._emitDiagnostic('stalled', { reason: 'probe-failed', stalledForMs: stalledFor })
       this.emit('stalled', { path: this.state.path, position: this.state.position, stalledForMs: stalledFor, probe: null })
     })
@@ -430,11 +456,18 @@ class MpvEngine extends EventEmitter {
 
   async _probeStall(stalledFor) {
     const cmd = this._guard('stall-probe')
+    // The probe is five awaited round trips. stop() can land in the middle of
+    // them, and the emits below then told a renderer that had already torn the
+    // player down that playback was stalling — a stall warning for a track
+    // nobody was playing. Pinned to the engine that started the probe.
+    const gen = this._gen
+    const speaking = () => !this._stopping && this.alive && gen === this._gen
     const probe = {}
     for (const prop of ['idle-active', 'core-idle', 'eof-reached', 'path', 'pause']) {
       try { probe[prop] = await cmd('get_property', prop) } catch (e) { probe[prop] = `<${(e && e.message) || e}>` }
     }
     this._rec('stall-probe', probe)
+    if (!speaking()) return
     // mpv idle while we believe we are playing IS the silent stop. Report it as
     // one, with the reason naming how it was found.
     if (probe['idle-active'] === true) {
@@ -448,6 +481,28 @@ class MpvEngine extends EventEmitter {
     }
     this.emit('stalled', { path: this.state.path, position: this.state.position, stalledForMs: stalledFor, probe })
     this._emitDiagnostic('stalled', { stalledForMs: stalledFor, probe })
+  }
+
+  // Remove the socket file this engine made. Only ours, only the one we made,
+  // and never fatal.
+  _unlinkSocket() {
+    if (!this._socketPath || this._fixedSocketPath) return
+    try { fs.unlinkSync(this._socketPath) } catch { /* mpv may have taken it already */ }
+  }
+
+  // Tear down a start() that failed part-way. Only while this start() is still
+  // the current one: a stale generation's process and client were already dealt
+  // with by the start() that replaced it, and this.proc now names that
+  // replacement's process — killing it here would take down a working engine.
+  _abandonStart(gen) {
+    if (gen !== this._gen) return
+    try { this.client?.close() } catch { /* already closed */ }
+    this.client = null
+    try { this.proc?.kill() } catch { /* already dead */ }
+    this.proc = null
+    this.alive = false
+    this._stopTicker()
+    this._unlinkSocket()
   }
 
   stop() {
@@ -465,10 +520,8 @@ class MpvEngine extends EventEmitter {
     try { this.proc?.kill() } catch { /* already dead */ }
     this.proc = null
     // Leaving the socket file behind is what made the orphan reaper's job
-    // ambiguous. Only ours, only the one we made, and never fatal.
-    if (this._socketPath && !this._fixedSocketPath) {
-      try { fs.unlinkSync(this._socketPath) } catch { /* mpv may have taken it already */ }
-    }
+    // ambiguous.
+    this._unlinkSocket()
   }
 
   async load(filePath, { play = true } = {}) {
@@ -910,6 +963,12 @@ class MpvEngine extends EventEmitter {
     this._eofState = 'idle'
     this.client?.close()
     this.client = null
+    // The dead mpv's socket file. stop() removes it; a crash never reaches
+    // stop(), and the respawn below mints a NEW random name — so every crash
+    // left one more stale socket in the runtime directory, and the orphan
+    // reaper, which matches on those names, had more and more ambiguity to
+    // work through.
+    this._unlinkSocket()
     // let, not const: the device-loss policy below rewrites this to come back
     // paused. As a const that reassignment threw a TypeError before start() was
     // ever reached, so unplugging headphones mid-track killed the engine for

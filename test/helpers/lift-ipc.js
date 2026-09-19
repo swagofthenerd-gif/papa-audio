@@ -183,7 +183,8 @@ const GATED_CHANNELS = [
   // not happen rather than shown a thrown error, so each one carries its own
   // refusal as well.
   'slsk-download', 'slsk-chat-send', 'slsk-wishlist-run', 'slsk-setup',
-  'library-trash-paths', 'library-empty-trash', 'library-move-path',
+  'library-trash-paths', 'library-restore-trashed', 'library-empty-trash',
+  'library-move-path',
   'library-write-tags', 'tag-write-batch', 'library-set-artwork',
   'papa-import-all',
 ]

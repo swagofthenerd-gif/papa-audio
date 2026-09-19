@@ -572,6 +572,20 @@ let natUpnp; try { natUpnp = require('nat-upnp') } catch (e) {
   console.error('[papa] nat-upnp unavailable; automatic port mapping is off:', e && e.message)
 }
 
+// Where the crash log goes. USER_DATA, so a throwaway profile keeps its own
+// crashes: the hardcoded ~/.config/papa-audio meant every twin's renderer kill
+// landed in the real profile's crash-log.txt, 69 entries of it, drowning the
+// real crashes it exists to record.
+//
+// USER_DATA is a module-level const declared below these handlers, so it is in
+// the temporal dead zone only if something crashes before that line runs. The
+// catch covers that case rather than letting the crash logger become the crash.
+function _crashLogDir() {
+  try { return USER_DATA } catch (_) { /* crashed before USER_DATA was set */ }
+  if (process.env.PAPA_USER_DATA) return path.resolve(process.env.PAPA_USER_DATA)
+  return path.join(app.getPath('home'), '.config', 'papa-audio')
+}
+
 // A plain-English crash record the user can forward to the developer. It sits
 // in the app's data folder as crash-log.txt and gets one appended entry per
 // event: the date, what the app was last doing (the last IPC channel handled,
@@ -582,7 +596,7 @@ let natUpnp; try { natUpnp = require('nat-upnp') } catch (e) {
 // above the line that sets it.
 function _appendCrashLog(kind, err) {
   try {
-    const dir = path.join(app.getPath('home'), '.config', 'papa-audio')
+    const dir = _crashLogDir()
     const file = path.join(dir, 'crash-log.txt')
     const when = new Date().toISOString()
     const doing = _crashTrail.length
@@ -704,7 +718,20 @@ app.setPath('userData', USER_DATA)
 // ── Single instance lock ─────────────────────────────────────────────────────
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
-  app.quit()
+  // app.exit, not app.quit. app.quit() only ASKS to quit: it is cancellable,
+  // it fires before-quit and will-quit, and — the part that bit — it returns,
+  // so the whole of this module kept on running in the losing process. That
+  // second process opened its own store, ran the key migration, updated the
+  // dead-magnet side store, and then its before-quit wrote
+  // cleanShutdown: true while the real session was still playing. A
+  // double-click on the launcher was enough: the live session was now marked
+  // clean, so a later genuine crash was never offered a restore, and
+  // dead-magnets.json had been rewritten underneath it.
+  //
+  // app.exit(0) terminates here and now, skipping both quit handlers, before
+  // any store is opened. The gotLock guards on the writes below are the belt
+  // to this braces.
+  app.exit(0)
 } else {
   app.on('second-instance', () => {
     if (mainWindow) {
@@ -745,6 +772,38 @@ const WebTorrent = require('webtorrent')
 
 let _torrentClient = null
 const _activeTorrents = new Map()
+
+// Quitting used to leave the WebTorrent client running: nothing ever called
+// client.destroy(), so every torrent kept seeding, kept its sockets and kept
+// its file handles right up to the moment the process died — and the
+// background video downloads in _videoDownloads kept their own streamers and
+// their poll timers alongside. On a signal shutdown that meant half-written
+// files and a swarm that had not been told anybody was leaving.
+//
+// Bounded, because a destroy that never calls back must not be what stops the
+// app from quitting.
+let _torrentTornDown = false
+function _torrentTeardown(waitMs = 1500) {
+  if (_torrentTornDown) return Promise.resolve()
+  _torrentTornDown = true
+  try {
+    for (const d of _videoDownloads.values()) {
+      if (d && d.timer) { try { clearInterval(d.timer) } catch (_) {} }
+      try { if (d && d.streamer) d.streamer.stop() } catch (_) {}
+    }
+    _videoDownloads.clear()
+  } catch (_) { /* nothing here is worth blocking the quit */ }
+  const client = _torrentClient
+  _torrentClient = null
+  if (!client || typeof client.destroy !== 'function') return Promise.resolve()
+  return new Promise(resolve => {
+    let done = false
+    const finish = () => { if (done) return; done = true; clearTimeout(timer); resolve() }
+    const timer = setTimeout(finish, waitMs)
+    if (timer.unref) timer.unref()
+    try { client.destroy(finish) } catch (_) { finish() }
+  })
+}
 function getTorrentClient() {
   if (!_torrentClient) {
     // The default cap of 55 connections is tuned for background downloading.
@@ -881,7 +940,12 @@ function _queueLog(level, args) {
     msg = args.map(a => String(a)).join(' ')   // circular structures, etc.
   }
   try { msg = _redact.redactText(msg) } catch (_) {}
-  if (_logBuf.length >= LOG_MAX_BUFFER) { _logDropped++; return }
+  // The cap said "the oldest are dropped" and dropped the NEWEST: it returned
+  // without buffering the line it had just been handed. So the moment the
+  // buffer filled, the log stopped recording anything — and a buffer fills
+  // precisely when something is going wrong, which is the one stretch worth
+  // having. Drop from the front instead; the counter still reports the loss.
+  while (_logBuf.length >= LOG_MAX_BUFFER) { _logBuf.shift(); _logDropped++ }
   _logBuf.push(`[${new Date().toISOString()}] [${SESSION_ID}] [${level}] ${msg}\n`)
   if (!_logTimer) {
     _logTimer = setTimeout(_flushLog, LOG_FLUSH_MS)
@@ -943,7 +1007,45 @@ function flushLogSync() {
   try { fs.appendFileSync(_logFile(), lines.join('')) } catch (_) {}
 }
 
-const store = new Store()
+// configFileMode is not cosmetic. config.json holds the YouTube cookie, the
+// API keys and the debrid token, and conf's default is 0o666 — world
+// readable and world writable. The startup chmod to 0o600 further down only
+// fixed the file as it stood: conf rewrites via a temp file plus rename on
+// every set(), so the very next settings write replaced it with a fresh
+// 0o666 file and the secrets were public again.
+const store = new Store({ configFileMode: 0o600 })
+
+// Those same rewrites leave debris. atomically writes config.json.tmp-<stamp>
+// beside the real file and renames it into place; a kill or a crash between
+// the two leaves the temp file behind for good, and this profile had 15 of
+// them at 1.4-2.6 MB each — full copies of the config, secrets included, at
+// whatever mode they were written with. Only that exact name shape is
+// touched, and only once it is old enough that no live write can own it.
+const CONFIG_TMP_RE = /^config\.json\.tmp-\d{10}[a-f0-9]{6}$/
+const CONFIG_TMP_MAX_AGE_MS = 60 * 60 * 1000
+
+function sweepOrphanConfigTmp(dir, now) {
+  const at = typeof now === 'number' ? now : Date.now()
+  let removed = 0
+  let bytes = 0
+  let entries = []
+  try { entries = fs.readdirSync(dir) } catch (_) { return { removed, bytes } }
+  for (const name of entries) {
+    if (!CONFIG_TMP_RE.test(name)) continue
+    const full = path.join(dir, name)
+    try {
+      const st = fs.statSync(full)
+      if (!st.isFile()) continue
+      if (at - st.mtimeMs < CONFIG_TMP_MAX_AGE_MS) continue
+      fs.unlinkSync(full)
+      removed++
+      bytes += st.size
+    } catch (_) {
+      // A temp file we cannot remove is not worth failing startup over.
+    }
+  }
+  return { removed, bytes }
+}
 
 // ── The five keys that were nearly all of the config, and nearly all of its
 // writes ────────────────────────────────────────────────────────────────────
@@ -2295,8 +2397,14 @@ app.whenReady().then(() => {
       console.error('[papa] slskd health check threw:', String(e && e.message || e)))
   }, 60000)
   try {
-    const configPath = path.join(app.getPath('userData'), 'config.json')
+    const userDir = app.getPath('userData')
+    const configPath = path.join(userDir, 'config.json')
     if (fs.existsSync(configPath)) fs.chmodSync(configPath, 0o600)
+    const swept = sweepOrphanConfigTmp(userDir)
+    if (swept.removed) {
+      console.log('[papa] swept ' + swept.removed +
+        ' orphaned config temp file(s), ' + Math.round(swept.bytes / 1024) + ' KB')
+    }
   } catch (_) {}
 
   // The wishlist auto-download engine (slskWishlistSweep, defined at module
@@ -2598,6 +2706,9 @@ let _signalShutdown = false
 function shutdownFromSignal() {
   if (_signalShutdown) return
   _signalShutdown = true
+  // Same rule as the quit handlers: a process that never won the instance lock
+  // owns none of this state and must not write it.
+  if (!gotLock) { try { app.exit(0) } catch (_) {} ; return }
   // Do the will-quit work by hand: app.exit() skips those handlers, and
   // app.quit() is cancellable and can stall, which left the process alive
   // while mpv had already been stopped.
@@ -2606,9 +2717,12 @@ function shutdownFromSignal() {
   // signal shutdown mid-film left the video mpv playing on as an orphan and
   // the torrent stream running until the next launch reaped them.
   try { _videoTeardown() } catch (_) {}
+  let torrentsDown = Promise.resolve()
+  try { torrentsDown = _torrentTeardown(400) } catch (_) {}
   try { stopSlskd() } catch (_) {}
   try { store.set('cleanShutdown', true) } catch (_) {}
   flushSideStores()
+  flushLibraryExtSync()
   flushLogSync()
   try { if (fs.existsSync(NOW_PLAYING_PATH)) fs.unlinkSync(NOW_PLAYING_PATH) } catch (_) {}
   try { globalShortcut.unregisterAll() } catch (_) {}
@@ -2617,7 +2731,12 @@ function shutdownFromSignal() {
   // synchronously on write. app.exit() below kills the process before that
   // timer would normally fire, so force the flush and give it a moment.
   try { session.defaultSession.flushStorageData() } catch (_) {}
-  setTimeout(() => { try { app.exit(0) } catch (_) {} }, 200)
+  // The torrent teardown gets the same short window the storage flush does,
+  // and no more: it is already bounded, and a swarm goodbye is never worth
+  // holding the process open for.
+  Promise.race([torrentsDown, new Promise(r => setTimeout(r, 200))])
+    .then(() => { try { app.exit(0) } catch (_) {} })
+    .catch(() => { try { app.exit(0) } catch (_) {} })
   // Deliberately NOT unref'd: an unref'd timer will not fire if Electron's
   // main loop stops pumping Node timers, which is exactly the case here.
   setTimeout(() => process.exit(0), 500)
@@ -2647,10 +2766,18 @@ app.on('window-all-closed', () => {
 })
 app.on('before-quit', () => {
   app.isQuitting = true
+  // Only the process that owns the instance lock owns the on-disk state. A
+  // process without it must never claim the session shut down cleanly.
+  if (!gotLock) return
   store.set('cleanShutdown', true)
 })
 app.on('will-quit', () => {
+  if (!gotLock) return
   player?.stop()
+  // Before the video teardown: the streamers being stopped here are the
+  // background downloads, which the per-watch teardown deliberately leaves
+  // alone.
+  try { _torrentTeardown() } catch (_) {}
   // The video mpv is a separate child process from the music one, and a live
   // torrent stream keeps a socket server open. Neither is reached by
   // player.stop(), so quitting used to leave both behind.
@@ -2665,6 +2792,7 @@ app.on('will-quit', () => {
   // puts them on disk.
   try { bridgeInboxIngest.stop() } catch (_) {}
   flushSideStores()
+  flushLibraryExtSync()
   flushLogSync()
   // Before the unlink, or a write still in flight recreates the file.
   stopNowPlayingWrites()
@@ -5649,6 +5777,9 @@ ipcMain.handle('library-empty-trash', async (_, { names, payloads }) => {
 })
 
 ipcMain.handle('library-restore-trashed', async (_, { paths }) => {
+  // This renames files back into /mnt/data/MUSIC. It is a write to his real
+  // library like any other and was the one trash path with no dry-run gate.
+  if (DRY_RUN) return _dryRunRefusal('restoring these files from the trash')
   const results = []
   for (const p of paths || []) {
     const found = findTrashedEntry(p)
@@ -5815,10 +5946,20 @@ ipcMain.handle('library-move-path', async (_, { from, to }) => {
     // trips over with "Something already exists at that name".
     _opUpdate(opId, { phase: 'copy' })
     try {
-      fs.cpSync(path.resolve(from), dest, { recursive: true })
+      // Asynchronous, never the synchronous copy this used to be. A
+      // cross-device move of a multi-GB album took the whole copy on the
+      // main thread — mpv's IPC, the tray,
+      // every IPC handler and the UI frozen solid for minutes, with no way to
+      // tell it apart from a hang. The journal phases are unchanged, so a
+      // crash mid-copy is still cleaned up at startup.
+      await fs.promises.cp(path.resolve(from), dest, { recursive: true })
       await shell.trashItem(path.resolve(from))
     } catch (e2) {
-      try { if (fs.existsSync(path.resolve(from))) fs.rmSync(dest, { recursive: true, force: true }) } catch (_) {}
+      try {
+        if (fs.existsSync(path.resolve(from))) {
+          await fs.promises.rm(dest, { recursive: true, force: true })
+        }
+      } catch (_) {}
       _opEnd(opId)
       return { ok: false, error: e2.message || e.message }
     }
@@ -6297,7 +6438,68 @@ function buildAlbums(tracks) {
 // ── Extension state sync ──────────────────────────────────────────────────────
 const LIBRARY_EXT_PATH = path.join(USER_DATA, 'library.json')
 
+// This file is not dead: the papa-audio GNOME Shell panel extension
+// (~/.local/share/gnome-shell/extensions/papa-audio@local) reads it on an
+// 800 ms poll to draw its album list. Nothing inside the app reads it, which
+// is why it looked unused. It stays.
+//
+// What had to change is how it is written. It was a 618 KB JSON.stringify plus
+// a SYNCHRONOUS writeFileSync on every scan and every watcher event, on the
+// thread that also drives mpv's IPC and the UI — so a burst of file-watcher
+// events during a download was a burst of blocking main-thread writes. It is
+// now coalesced onto one timer and written asynchronously, through a temp file
+// and a rename so the extension's poll can never catch a half-written file.
+const LIBRARY_EXT_DEBOUNCE_MS = 2000
+let _libraryExtPending = null
+let _libraryExtTimer = null
+let _libraryExtWriting = false
+
 function writeLibraryExt(albums) {
+  _libraryExtPending = _slimLibraryExt(albums)
+  if (_libraryExtTimer) return
+  _libraryExtTimer = setTimeout(() => {
+    _libraryExtTimer = null
+    _flushLibraryExt().catch(() => {})
+  }, LIBRARY_EXT_DEBOUNCE_MS)
+  _libraryExtTimer.unref?.()
+}
+
+async function _flushLibraryExt() {
+  if (_libraryExtWriting || !_libraryExtPending) return
+  const slim = _libraryExtPending
+  _libraryExtPending = null
+  _libraryExtWriting = true
+  const tmp = LIBRARY_EXT_PATH + '.tmp'
+  try {
+    await fs.promises.writeFile(tmp, JSON.stringify(slim))
+    await fs.promises.rename(tmp, LIBRARY_EXT_PATH)
+  } catch (_) {
+    try { await fs.promises.unlink(tmp) } catch (_) {}
+  } finally {
+    _libraryExtWriting = false
+  }
+  // A scan that landed while this write was in flight gets its own write.
+  if (_libraryExtPending && !_libraryExtTimer) {
+    _libraryExtTimer = setTimeout(() => {
+      _libraryExtTimer = null
+      _flushLibraryExt().catch(() => {})
+    }, LIBRARY_EXT_DEBOUNCE_MS)
+    _libraryExtTimer.unref?.()
+  }
+}
+
+// On the way out there is no next tick to write on, so the pending copy goes
+// out synchronously or not at all.
+function flushLibraryExtSync() {
+  if (!_libraryExtPending) return
+  const slim = _libraryExtPending
+  _libraryExtPending = null
+  clearTimeout(_libraryExtTimer)
+  _libraryExtTimer = null
+  try { fs.writeFileSync(LIBRARY_EXT_PATH, JSON.stringify(slim)) } catch (_) {}
+}
+
+function _slimLibraryExt(albums) {
   try {
     const slim = (albums || []).map(a => ({
       id: a.id, name: a.name, artist: a.artist, artPath: a.artPath || null,
@@ -6313,8 +6515,8 @@ function writeLibraryExt(albums) {
         bitsPerSample: t.bitsPerSample || 0,
       })),
     }))
-    fs.writeFileSync(LIBRARY_EXT_PATH, JSON.stringify(slim))
-  } catch (_) {}
+    return slim
+  } catch (_) { return [] }
 }
 
 let _lastNotifiedId = null
@@ -11763,12 +11965,22 @@ ipcMain.handle('video-settings-set', (_, { patch }) => {
 // precisely so no id has to be trusted, and this is where the trust is earned:
 // a name that does not resolve produces no shelf rather than a shelf of the
 // wrong person.
-const _personIdCache = new Map()
+// Capped, not a bare Map. Both of these were written on every shelf render and
+// never read back out for eviction, so a long session of browsing kept one
+// entry per distinct name it had ever seen, for the life of the process.
+// Neither needs a TTL — a person's TMDB id does not change — so the cap is the
+// whole policy, and it is generous enough that the rotation never evicts a name
+// it is still using.
+const PERSON_CACHE_CAP = 500
+const _personIdCache = makeCache({ cap: PERSON_CACHE_CAP })
 // id -> name, so _shelfDefinition can label a shelf it is handed only an id for.
-const _directorNames = new Map()
+const _directorNames = makeCache({ cap: PERSON_CACHE_CAP })
 async function _resolvePersonId(name) {
   if (!name) return null
-  if (_personIdCache.has(name)) return _personIdCache.get(name)
+  // A miss is undefined; a cached "TMDB does not know this name" is null, and
+  // that answer is worth keeping too.
+  const held = _personIdCache.get(name)
+  if (held !== undefined) return held
   let id = null
   try {
     const people = await tmdb().searchPeople(name)

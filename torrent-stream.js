@@ -18,8 +18,21 @@ const crypto = require('node:crypto')
 // machine: /tmp is a tmpfs, so the cache is held in RAM, and a season pack can
 // approach the memory limit while it is playing legitimately. Point
 // setStreamRoot at a real disk and it goes there instead.
-const DEFAULT_STREAM_ROOT = path.join(os.tmpdir(), 'papa-video-streams')
+const CACHE_DIR_NAME = 'papa-video-streams'
+const DEFAULT_STREAM_ROOT = path.join(os.tmpdir(), CACHE_DIR_NAME)
 let _streamRoot = DEFAULT_STREAM_ROOT
+// The folder the user picked, before CACHE_DIR_NAME was appended. Kept only so
+// a sweep can still reach entries an older build wrote directly into it.
+let _streamBase = null
+
+// The only names this module ever creates inside a stream root. Anything else
+// in there belongs to someone else — the user picked this folder, and it may
+// be a folder of their own — so the sweep must not touch it.
+// Three shapes carry the owning pid (the stream cache s-<pid>-…, the hover
+// thumbnail cache thumbs-<pid>-…, the prefetch warm cache warm-<pid>-…) and
+// one is a fixed name we own outright.
+const OWNED_PID_DIR = /^(?:s|thumbs|warm)-(\d+)-/
+const OWNED_FIXED_DIRS = new Set(['external-subs'])
 
 function streamRoot() {
   return _streamRoot
@@ -30,18 +43,31 @@ function streamRoot() {
 // a perfectly good directory until something tries to write to it. So the
 // location is proved by writing to it, not by checking that the path exists,
 // and anything unusable falls back to the default rather than failing playback.
+//
+// The location asked for is a folder the user picked in Settings, which may be
+// an ordinary folder of their own with their own files in it. We never use it
+// directly: everything we write lives in a CACHE_DIR_NAME subdirectory of it,
+// so the sweep below has a directory it owns outright and the user's own
+// folder is never itself a sweep target.
 function setStreamRoot(dir) {
   if (!dir) {
+    _streamBase = null
     _streamRoot = DEFAULT_STREAM_ROOT
     return _streamRoot
   }
+  const base = String(dir)
+  const nested = path.basename(base) === CACHE_DIR_NAME
+    ? base
+    : path.join(base, CACHE_DIR_NAME)
   try {
-    fs.mkdirSync(dir, { recursive: true })
-    const probe = path.join(dir, '.papa-write-probe')
+    fs.mkdirSync(nested, { recursive: true })
+    const probe = path.join(nested, '.papa-write-probe')
     fs.writeFileSync(probe, 'papa')
     fs.unlinkSync(probe)
-    _streamRoot = dir
+    _streamBase = base
+    _streamRoot = nested
   } catch (_) {
+    _streamBase = null
     _streamRoot = DEFAULT_STREAM_ROOT
   }
   return _streamRoot
@@ -60,21 +86,26 @@ function purgeOrphanStreams({ keep = null } = {}) {
   // Both roots, always. Moving the cache to a disk must not strand whatever
   // the previous location is still holding — on this machine that was gigabytes
   // sitting in RAM, which nothing would ever have come back for.
-  const roots = _streamRoot === DEFAULT_STREAM_ROOT
-    ? [_streamRoot]
-    : [_streamRoot, DEFAULT_STREAM_ROOT]
+  const roots = []
+  for (const r of [_streamRoot, DEFAULT_STREAM_ROOT, _streamBase]) {
+    if (r && !roots.includes(r)) roots.push(r)
+  }
   for (const root of roots) {
     let entries = []
     try { entries = fs.readdirSync(root) } catch (_) { continue }
     for (const name of entries) {
       const dir = path.join(root, name)
       if (keep && dir === keep) continue
-      // A directory belonging to a process that is still running is in use.
-      // Two shapes carry a pid: the stream cache (s-<pid>-…) and the hover
-      // thumbnail cache the video engine drops beside a reused torrent
-      // (thumbs-<pid>-<ts>); both accumulate across crashes without this.
-      const owner = /^s-(\d+)-/.exec(name) || /^thumbs-(\d+)-/.exec(name)
+      // Only names this module created are ours to delete. A stream root can be
+      // a folder the user picked in Settings, so anything we did not write —
+      // their own files and folders — is left exactly where it is. Deleting it
+      // was the whole bug: the pid match below only ever decided whether to
+      // SKIP a live entry, and every unrecognised name fell straight through
+      // to the recursive remove.
+      const owner = OWNED_PID_DIR.exec(name)
+      if (!owner && !OWNED_FIXED_DIRS.has(name)) continue
       if (owner) {
+        // A directory belonging to a process that is still running is in use.
         const pid = Number(owner[1])
         if (pid !== process.pid && isProcessAlive(pid)) continue
       }
@@ -828,13 +859,23 @@ class TorrentStreamer extends EventEmitter {
     // the current episode fully downloaded and idle peers holding the next
     // episode's data, prefetchFile() still pulled zero bytes in two minutes
     // until this was cancelled.
+    //
+    // All of which is true only of a torrent we added. On a REUSED torrent —
+    // one another part of the app already had, matched by info hash — these
+    // calls are somebody else's download: deselecting every other file and
+    // cancelling the whole-torrent selection silently stopped a background
+    // music torrent of the same hash mid-download. The file this stream wants
+    // is still selected either way, so a reused torrent gets the select and
+    // nothing else.
     try {
-      for (let i = 0; i < files.length; i++) {
-        if (i !== index && typeof files[i].deselect === 'function') files[i].deselect()
-      }
       if (typeof file.select === 'function') file.select()
-      if (typeof torrent.deselect === 'function' && torrent.pieces) {
-        torrent.deselect(0, torrent.pieces.length - 1, false)
+      if (this._ownsTorrent) {
+        for (let i = 0; i < files.length; i++) {
+          if (i !== index && typeof files[i].deselect === 'function') files[i].deselect()
+        }
+        if (typeof torrent.deselect === 'function' && torrent.pieces) {
+          torrent.deselect(0, torrent.pieces.length - 1, false)
+        }
       }
     } catch (_) { /* selection is an optimisation, never fatal */ }
 
@@ -1329,4 +1370,4 @@ class TorrentStreamer extends EventEmitter {
   }
 }
 
-module.exports = { TorrentStreamer, PREFETCH_BYTES, PROGRESS_THROTTLE_MS, buildFileUrl, pickVideoFile, matchesWantedEpisode, episodeNumberOf, DEFAULT_STREAM_ROOT, streamRoot, setStreamRoot, purgeOrphanStreams, newStreamDir, headBytesReady, VIDEO_EXT, SUBTITLE_EXT, JUNK }
+module.exports = { TorrentStreamer, PREFETCH_BYTES, PROGRESS_THROTTLE_MS, buildFileUrl, pickVideoFile, matchesWantedEpisode, episodeNumberOf, DEFAULT_STREAM_ROOT, CACHE_DIR_NAME, streamRoot, setStreamRoot, purgeOrphanStreams, newStreamDir, headBytesReady, VIDEO_EXT, SUBTITLE_EXT, JUNK }

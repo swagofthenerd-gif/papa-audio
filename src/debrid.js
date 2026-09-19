@@ -363,6 +363,30 @@ function createDebrid(opts = {}) {
     } catch (_) { return null }
   }
 
+  // Whether a failure genuinely means "RealDebrid does not have this", as
+  // opposed to "RealDebrid could not answer". Only a 404 and RD's own terminal
+  // verdicts on a magnet are about the release; a 401, a 429, a 503 and a
+  // network error are about the service or the account, and reporting those as
+  // a missing file sends the user hunting in the wrong place.
+  function _isNotFound(e) {
+    const code = e && e.code
+    if (!code) return false
+    return code === 'HTTP_404' || code === 'HTTP_204' ||
+      (typeof code === 'string' && code.startsWith('RD_'))
+  }
+
+  // Drop a response body we are never going to read. Cancel if it can be
+  // cancelled, consume it otherwise; either way the socket goes back.
+  function _discard(res) {
+    if (!res) return
+    try {
+      const body = res.body
+      if (body && typeof body.cancel === 'function') { body.cancel().catch(() => {}); return }
+      if (body && typeof body.destroy === 'function') { body.destroy(); return }
+    } catch (_) { /* fall through to draining */ }
+    try { if (typeof res.text === 'function') Promise.resolve(res.text()).catch(() => {}) } catch (_) {}
+  }
+
   // Prove a link still serves bytes. RealDebrid answers 503 on a link that has
   // gone stale, and handing that to the player looks exactly like debrid not
   // working at all. One byte is enough to tell.
@@ -377,6 +401,12 @@ function createDebrid(opts = {}) {
         const res = await fetchFn(url, Object.assign(
           { method: 'GET', headers: { Range: 'bytes=0-0' } },
           ctrl ? { signal: ctrl.signal } : {}))
+        // A server that ignores the one-byte range answers 200 and starts
+        // sending the whole film. Nothing here reads that body, so the socket
+        // sat open until the shim's own deadline killed it 20 s later — one
+        // held connection per candidate probed, against servers that start
+        // refusing everything once connections pile up. Let it go now.
+        _discard(res)
         if (res && (res.status === 206 || res.status === 200)) return true
         // A 404/410 is a settled answer about the link; only retry a refusal
         // that is plausibly the server being busy.
@@ -432,8 +462,15 @@ function createDebrid(opts = {}) {
     let info = infoCache.get(hash)
     if (!info) {
       // Nothing remembered: resolving fills infoCache as a side effect. A
-      // failure here is not worth reporting — the strip is a convenience.
-      try { await resolveMagnet(magnet, want) } catch (_) { return [] }
+      // release RealDebrid genuinely does not have is an empty strip, fair
+      // enough — but swallowing EVERY failure here turned a bad token or an RD
+      // outage into "this release has one file", which is a lie the viewer has
+      // no way to see through. Anything that is not a plain not-found is said
+      // out loud.
+      try { await resolveMagnet(magnet, want) } catch (e) {
+        if (_isNotFound(e)) return []
+        throw e
+      }
       info = infoCache.get(hash)
     }
     const files = Array.isArray(info && info.files) ? info.files : []
@@ -481,7 +518,13 @@ function createDebrid(opts = {}) {
     }
     let info = infoCache.get(hash)
     if (!info) {
-      try { await resolveMagnet(magnet) } catch (_) {}
+      // The same lie as packFiles told, and worse here: a 401 or a 503 fell
+      // through to the NO_FILE below, so a bad token and an RD outage both
+      // reported "no such file in this release" — the viewer went looking for
+      // a problem with the release while the actual problem was their account.
+      try { await resolveMagnet(magnet) } catch (e) {
+        if (!_isNotFound(e)) throw e
+      }
       info = infoCache.get(hash)
     }
     const files = Array.isArray(info && info.files) ? info.files : []
