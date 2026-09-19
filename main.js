@@ -7252,6 +7252,9 @@ function httpsGet(url, redirects = 0) {
         res.resume()
         const err = new Error(`HTTP ${res.statusCode} for ${url}`)
         err.statusCode = res.statusCode
+        // A throttling server says when to come back. Carried on the error so
+        // the caller can honour it instead of guessing.
+        err.retryAfter = res.headers['retry-after'] || null
         return reject(err)
       }
       // The server answered, so the network is up — whatever the status was.
@@ -7284,6 +7287,62 @@ function looksLikeImage(buf) {
 const ART_MISS_TTL_MS = 24 * 60 * 60 * 1000
 const _artMisses = new Map()
 
+// The shop prefetches a cover for every album a peer holds, and iTunes answers
+// a burst of those with 429 -- then with 403 once it decides it has had enough
+// of this IP. One session logged 848 art lines: 438 of them 429 and 410 of them
+// 403, one per peer album, because a throttle was caught, logged and thrown
+// away. Every later lookup fired anyway and got the same answer, which is how a
+// prefetch turns into a ban.
+//
+// So a throttle now stops the whole sweep. The first 429/403 sets a cooldown
+// -- the server's own Retry-After when it sends one, else 60 s doubling on each
+// repeat to a 15 minute ceiling -- and until it expires every lookup returns
+// { throttled: true } without touching the network. The marker is not null on
+// purpose: null means "no art exists", and the renderer must be able to tell
+// "we did not ask" from "there is nothing there", so it can stop its sweep and
+// retry later rather than caching a miss.
+const ART_COOLDOWN_BASE_MS = 60 * 1000
+const ART_COOLDOWN_MAX_MS = 15 * 60 * 1000
+let _artCooldownUntil = 0
+let _artCooldownMs = 0
+
+// Retry-After is either delta-seconds or an HTTP date. Anything else is no hint.
+function _artRetryAfterMs(err, now) {
+  const raw = err && err.retryAfter
+  if (raw == null || raw === '') return 0
+  const secs = Number(raw)
+  if (Number.isFinite(secs) && secs > 0) return Math.min(secs * 1000, ART_COOLDOWN_MAX_MS)
+  const at = Date.parse(String(raw))
+  if (Number.isFinite(at)) {
+    const delta = at - (now || Date.now())
+    if (delta > 0) return Math.min(delta, ART_COOLDOWN_MAX_MS)
+  }
+  return 0
+}
+
+function _artThrottled(now) { return (now || Date.now()) < _artCooldownUntil }
+
+// Record a throttling response. Returns true when the error WAS one, so the
+// caller can answer { throttled: true } rather than recording a miss -- a
+// throttled album is not an album without art.
+function _artNoteThrottle(err, now) {
+  const code = Number(err && (err.statusCode || err.status)) || 0
+  if (code !== 429 && code !== 403) return false
+  const t = now || Date.now()
+  // A burst already in flight when the first one lands would otherwise double
+  // the cooldown once per sibling and log once per sibling, which is the noise
+  // this exists to remove.
+  if (t < _artCooldownUntil) return true
+  const hinted = _artRetryAfterMs(err, t)
+  const next = hinted > 0
+    ? hinted
+    : Math.min(_artCooldownMs > 0 ? _artCooldownMs * 2 : ART_COOLDOWN_BASE_MS, ART_COOLDOWN_MAX_MS)
+  _artCooldownMs = next
+  _artCooldownUntil = t + next
+  console.warn(`[papa][art] iTunes answered ${code}; pausing cover lookups for ${Math.round(next / 1000)}s`)
+  return true
+}
+
 ipcMain.handle('fetch-album-art', async (_, { albumId, artist, album }) => {
   const cached = path.join(artworkDir, `${albumId}.jpg`)
   try {
@@ -7298,6 +7357,8 @@ ipcMain.handle('fetch-album-art', async (_, { albumId, artist, album }) => {
     const missAt = _artMisses.get(albumId)
     if (missAt && Date.now() - missAt < ART_MISS_TTL_MS) return null
     if (_artMisses.size > 500) _artMisses.clear()
+    // Paused by a previous 429/403. Zero requests until it expires.
+    if (_artThrottled()) return { throttled: true }
 
     const query = encodeURIComponent(`${artist} ${album}`)
     const raw = await httpsGet(`https://itunes.apple.com/search?term=${query}&entity=album&limit=8&media=music`)
@@ -7321,8 +7382,14 @@ ipcMain.handle('fetch-album-art', async (_, { albumId, artist, album }) => {
     const tmp = cached + '.part'
     fs.writeFileSync(tmp, imgBuf)
     fs.renameSync(tmp, cached)
+    // A clean answer means the previous throttling is behind us, so the next
+    // one starts the backoff ladder from the bottom again.
+    _artCooldownMs = 0
     return { artPath: cached }
   } catch (e) {
+    // A throttle is not a miss. Recording one would blank this album's cover
+    // for a day over a rate limit that lasts a minute.
+    if (_artNoteThrottle(e)) return { throttled: true }
     _artMisses.set(albumId, Date.now())
     console.error(`[papa][art] ${artist} — ${album}:`, String(e && e.message || e))
     try { if (fs.existsSync(cached + '.part')) fs.unlinkSync(cached + '.part') } catch (_) {}
