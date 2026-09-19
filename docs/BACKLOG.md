@@ -1023,3 +1023,10 @@ only — my grep hit the plural and I wrongly told the executor the singular
 existed; the QA was right. `slskUserStatus` now bridged from the cached
 snapshot; 5xx → "slskd could not fetch this library — try again";
 `browseFailureRetryable` for the UI executor.
+- Gate after the shelves merge: my own `review-followups` pin (exact cache-hit
+  reply object) collided with the executor's `newDirs` contract. Adopted the
+  cleaner one — always an array on the internal `_browseDirectories` reply,
+  dropped at the IPC boundary when empty — and updated my pin (92f40b4).
+  Gate 6,379/0, pushed. Note to self: a `&&` chain after `grep` committed
+  once while a test was red; the gate caught it, but commit only after the
+  test line prints `fail 0`.
