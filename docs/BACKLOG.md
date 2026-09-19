@@ -1054,3 +1054,26 @@ three lines; the search reset moved; the jump focuses; the pull block calls
 twin sweep 0 throws, `#soulseek-settings` present, unknown page id refused.
 The probe's `settings`/`queue`/`slsk` ids were never real `navigate` pages
 (0 call sites) — they only ever "worked" because navigate accepted anything.
+
+### 19 Sep — second live re-test (Fable, twin :9410 + ephemeral bridge :42539)
+Every fix merged since the first re-test re-checked live: H1 Back into
+`yt-artist` renders with its id; H2 dialogs close on navigation, one per
+double-click, Soulseek modal closes on Escape; H3 palette 13.9:1 in light
+theme; M1 Top-result row plays (queue index moves, page stays search,
+aria-label present); M2–M6 PASS (one Resume prompt with the TITLE "If at
+1:10 · 5 tracks"; Trail 104 gone covers → glyphs, not re-requested on
+repaint); L-items PASS except friends presence; Soulseek #2 (only the
+refusal text, no "Downloading from N"), #3, #5 (0 cards + "Searching…" in
+0.4 ms), #12, #18, #19, #9/#7/#1 (module-level) PASS; bridge on an ephemeral
+port: library from `library-cache.json`, `/api/slsk/active-count` exists
+(honest 502 without creds), `/api/loudness` `{gain:null}`, `/api/app-update`
+v22 manifest, `/stream?path=/etc/passwd` 403, `agent-keys` 404, a phone
+like → inbox seq 1 → ingested into `liked-tracks.json` in 14 s. Console: 0
+ReferenceError/TypeError, 0 out-of-order, 0 missed events, 0 seek timeouts;
+banner once; no false "not writable".
+NEW (routed to `fix/retest2-focus-presence`): NEW-3 the shop's `opener` is
+captured AFTER focus moves to its close button, so close never restores
+focus (undoes half of #14); NEW-1 `showSlskConfigModal` takes/returns no
+focus; NEW-2 friends read "Checking…" forever when slskd is not logged in
+(`pollPresenceOnce` resolves Unknown for everyone; L1 covered only the
+rejection path) → `connected:false` → "Soulseek offline".
