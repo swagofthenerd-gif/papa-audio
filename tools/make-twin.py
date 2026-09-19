@@ -14,6 +14,10 @@ What this does:
     source of truth — a hand-written key list would drift) and DELETES those
     keys rather than leaving a placeholder, so debrid/slskd/yt read as
     "not configured"
+  * re-points every absolute path setting INSIDE the twin dir, so a twin's
+    own housekeeping (purgeOrphanStreams, cache eviction, downloads) can only
+    ever touch fixture files. His read-only music roots (musicFolders) stay —
+    the app only reads those, and a twin with no library is untestable.
   * writes fixture video-keep/cache indexes pointing INSIDE the twin dir, so
     On Device is testable and a Delete there can only touch fixture files
   * verifies: no original secret value survives anywhere under the twin dir
@@ -21,11 +25,59 @@ Launch it with:  PAPA_USER_DATA=<dir> PAPA_DRY_RUN=1 npx electron . --remote-deb
 """
 import json, os, re, shutil, subprocess, sys
 
-SRC = os.path.expanduser('~/.config/papa-audio')
+SRC = os.environ.get('PAPA_TWIN_SRC') or os.path.expanduser('~/.config/papa-audio')
 KEEP = ['config.json', 'playback-state.json', 'session-state.json', 'window-state.json',
         'library-cache.json', 'video-store.json', 'play-counts.json', 'playlists.json',
         'liked-tracks.json', 'saved-queues.json', 'recently-played.json', 'play-history.json']
 MAX_BYTES = 8 * 1024 * 1024   # /tmp is tmpfs: refuse to copy anything large
+
+# Settings whose value is an absolute path the app only ever READS. These stay
+# pointed at his real disk; everything else that starts with "/" is re-pointed
+# inside the twin. Key paths are the dotted path from the config root.
+READ_ONLY_PATH_KEYS = ('.musicFolders',)
+
+
+def _twin_local_name(key):
+	"""`streamCacheDir` -> `stream-cache`, `downloadDir` -> `download`."""
+	base = re.sub(r'(Dir|Directory|Path|Folder)$', '', key) or key
+	kebab = re.sub(r'(?<!^)(?=[A-Z])', '-', base).lower()
+	return re.sub(r'[^a-z0-9-]+', '-', kebab).strip('-') or 'twin-path'
+
+
+def repoint_paths(config, dst):
+	"""Re-point every absolute path setting into the twin dir.
+
+	Returns (repointed, outside) where `repointed` is a list of
+	(dotted key path, original value, new value) and `outside` is the list of
+	dotted key paths that STILL point outside the twin (must be read-only ones
+	only). Generic on purpose: a setting added upstream after this was written
+	gets caught without anyone remembering to add it here.
+	"""
+	repointed, outside = [], []
+	dst = os.path.abspath(dst)
+
+	def inside(v):
+		return os.path.abspath(v) == dst or os.path.abspath(v).startswith(dst + os.sep)
+
+	def walk(node, path, key):
+		if isinstance(node, str):
+			if not node.startswith('/') or inside(node):
+				return node
+			if path.startswith(READ_ONLY_PATH_KEYS) or path in READ_ONLY_PATH_KEYS:
+				outside.append(path)
+				return node
+			new = os.path.join(dst, _twin_local_name(key))
+			os.makedirs(new, exist_ok=True)
+			repointed.append((path, node, new))
+			return new
+		if isinstance(node, dict):
+			return {k: walk(v, path + '.' + k, k) for k, v in node.items()}
+		if isinstance(node, list):
+			return [walk(v, path + '[' + str(i) + ']', key) for i, v in enumerate(node)]
+		return node
+
+	return walk(config, '', ''), repointed, outside
+
 
 def main(dst, keep_slskd=False):
     if not dst.startswith('/tmp/'):
@@ -75,6 +127,9 @@ def main(dst, keep_slskd=False):
         sys.exit('redaction failed: ' + node.stderr[:400])
     out = json.loads(node.stdout)
     config, secrets = out['config'], out['secretValues']
+    # Re-point absolute paths BEFORE the config is written: a twin that still
+    # names his stream cache runs purgeOrphanStreams against his disk.
+    config, repointed, outside_ro = repoint_paths(config, dst)
     with open(os.path.join(dst, 'config.json'), 'w', encoding='utf-8') as f:
         json.dump(config, f)
     copied = ['config.json']
@@ -109,6 +164,16 @@ def main(dst, keep_slskd=False):
                 if sv in txt: leaks.append(fn)
     if leaks:
         shutil.rmtree(dst); sys.exit(f'LEAK: a secret value survived in {sorted(set(leaks))} — twin destroyed')
+    # Verification: nothing writable still points at his disk.
+    _, still, _ = repoint_paths(json.load(open(os.path.join(dst, 'config.json'), encoding='utf-8')), dst)
+    if still:
+        shutil.rmtree(dst)
+        sys.exit('LEAK: %d settings still point outside the twin (%s) — twin destroyed'
+                 % (len(still), ', '.join(p for p, _, _ in still)))
+    for path, old, new in repointed:
+        print(f'  re-pointed {path.lstrip(".")}: {old} -> {new}')
+    print(f'0 settings point outside the twin ({len(repointed)} re-pointed, '
+          f'{len(outside_ro)} read-only roots kept)')
     size = sum(os.path.getsize(os.path.join(r, f)) for r, _, fs in os.walk(dst) for f in fs)
     kept = 'slskd password KEPT' if keep_slskd else 'all credentials stripped'
     print(f'twin at {dst}: {len(copied)} stores copied, {len(secrets)} secret values stripped and verified absent ({kept}), '
