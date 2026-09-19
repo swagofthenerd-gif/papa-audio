@@ -871,3 +871,28 @@ scheduler backoff/caps/sticky cancel; bridge range parsing and `isInside`;
 mpv ticker/respawn caps; startup does no serial awaits before the window.
 Main timers that never gate on visibility: dlTick 4 s (+~1 MB), presence
 20 s, chat 30 s, upload 60/300 s, slskd health 60 s, connectivity 60 s.
+
+### 19 Sep — bridge (phone) fixes merged
+`fix/audit-bridge` (5 commits): the bridge reads the SideStore files
+(`bridge-server/side-store-read.js`, mtime+size cached); phone mutations go
+to a bridge-owned `bridge-inbox.json` replayed over the read (202 queued);
+`/api/library/scan` no longer writes config.json; `/api/library/cache`
+deleted. H4: `/api/folders` writes and `agent-keys` removed, `MUSIC_EXT`
+on both `/stream*`, `albumId` shape-checked (Android local ids are base36,
+so `^[A-Za-z0-9_-]{1,64}$`), `timingSafeEqual`, token file 0600. M7:
+`slskFetch` throws on `!res.ok` → 502; `/api/slsk/transfers` flattened to
+the shape the Android `Transfer` type expects (the PC downloads list on the
+phone was ALWAYS empty); `/api/slsk/active-count` implemented (badge never
+showed); `/api/library/delete-file` answers an honest 501 (no Electron
+trash path from the bridge). L5: limiter exempts media/SSE, listen error
+handler, unref'd timers, yt-dlp dedupe. My re-checks: library read from the
+retired key → 1 red; `/stream` type check removed → 1 red.
+FOLLOW-UPS TO ROUTE: (1) desktop ingester for `bridge-inbox.json` (spec in
+the executor report: apply ops through `sideStores.*`, persist
+`lastIngestedSeq`, truncate); (2) three Android-called routes still absent:
+`/api/app-update`, `/api/loudness`, `/api/crash-log` (all inside try/catch
+on the phone — update check, ReplayGain fetch and crash reporting are
+dead); (3) two-writer risk on the non-retired keys the bridge still writes
+into config.json (`likedAlbums`, `followedArtists`, `volume`, `eqSettings`,
+`agentModel`, `bridgeTranscode`). HIS ACTION: `papa-bridge.service` must be
+restarted to pick the fix up — his call, not ours.
