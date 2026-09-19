@@ -62,7 +62,7 @@ test('the tooltip offers to unmute once the sound is off', () => {
   h.setVolDisplay(0)
   assert.strictEqual(h.btn.title, 'Unmute (M)',
     'saying "Mute" while already muted tells the user the sound is still on')
-  assert.strictEqual(h.btn.getAttribute('aria-label'), 'Unmute')
+  assert.strictEqual(h.btn.getAttribute('aria-label'), 'Mute', 'the name is stable; aria-pressed carries the state')
   assert.strictEqual(h.btn.getAttribute('aria-pressed'), 'true')
 })
 

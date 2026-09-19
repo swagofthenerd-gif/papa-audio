@@ -34,7 +34,7 @@ function lift() {
 test('a YouTube load superseded during the settle never reaches the resolver', async () => {
   const h = lift()
   const [ra, rb] = await Promise.all([h.load('https://youtube.com/watch?v=a'), h.load('https://youtube.com/watch?v=b')])
-  assert.deepStrictEqual(ra, { ok: false, superseded: true })
+  assert.deepEqual(ra, { ok: false, superseded: true })   // vm realm: not strict-equal by prototype
   assert.strictEqual(rb.ok, true)
   assert.deepStrictEqual(h.resolved, ['https://youtube.com/watch?v=b'], 'only the newest track is resolved')
 })
