@@ -5369,6 +5369,28 @@ async function _performScanOnce(onProgress) {
     // must be discarded rather than reused.
     const cache = readJsonSafe(TRACK_CACHE_PATH(), { version: 3, files: {} })
     if (cache.version !== 3) cache.files = {}
+    // Which cover files are actually on disk, read once.
+    //
+    // A cached track carries the artPath parseTrackFile wrote for it, and the
+    // cache hit below used to trust it — so once a cover file went missing the
+    // album lost its cover for good: the file's mtime and size had not
+    // changed, so it was never re-parsed, and parseTrackFile is the only thing
+    // that ever writes the art. Found live with 97 of 249 albums pointing at
+    // artwork that was no longer there.
+    //
+    // A single readdir rather than an existsSync per track: the check runs for
+    // every file in the library on every scan, and one directory listing is a
+    // great deal cheaper than tens of thousands of stats. Awaited, not sync —
+    // nothing in the scan phase may block the loop (test/perf-wave9).
+    const artOnDisk = await fs.promises.readdir(artworkDir)
+      .then(names => new Set(names))
+      .catch(() => null)
+    // null means the directory could not be read at all — in that case believe
+    // the cache rather than re-parsing the entire library for nothing.
+    const coverIsGone = track => {
+      if (!artOnDisk || !track || !track.artPath) return false
+      return !artOnDisk.has(path.basename(track.artPath))
+    }
     const newCache = { version: 3, files: {} }
     const tracks = []
     const total = found.audio.length
@@ -5383,7 +5405,8 @@ async function _performScanOnce(onProgress) {
         try { st = await fs.promises.stat(filePath) } catch (_) { done++; continue }
         const cached = cache.files[filePath]
         let base
-        if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) {
+        if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size &&
+            !coverIsGone(cached.track)) {
           base = cached.track
         } else {
           try { base = await parseTrackFile(filePath, st); parsed++ } catch (_) { done++; continue }
